@@ -49,6 +49,8 @@ class FinLabBackfillRunRequest(BaseModel):
     daily_source_refresh: bool = False
     callback_mode: str | None = None
     lanes: str | None = None
+    key_scope_json: str | None = None
+    reuse_successful_artifacts: bool = False
     skip_diff_counts: bool = False
     dry_run: bool = False
 

@@ -467,15 +467,20 @@ class BacktestDataset:
                 df = grp.drop("symbol").sort("date")
                 self._chip_cache[sym] = df
                 dates_arr = df.get_column("date").to_numpy().astype("U10")
-                has_fn = "foreign_net" in df.columns
-                has_tn = "trust_net" in df.columns
-                self._chip_np[sym] = {
-                    "dates":       dates_arr,
-                    "foreign_net": (df.get_column("foreign_net").to_numpy().astype(np.float64).copy()
-                                    if has_fn else np.zeros(len(df), dtype=np.float64)),
-                    "trust_net":   (df.get_column("trust_net").to_numpy().astype(np.float64).copy()
-                                    if has_tn else np.zeros(len(df), dtype=np.float64)),
-                }
+                chip_np = {"dates": dates_arr}
+                for col in (
+                    "foreign_net", "trust_net", "dealer_net",
+                    "broker_net_shares", "broker_estimated_amount", "broker_count", "broker_concentration",
+                    "margin_balance", "short_balance", "margin_usage_ratio",
+                    "short_buy", "short_sell", "short_stock_repayment", "short_usage_ratio",
+                    "security_lending_sell", "security_lending_sell_return",
+                    "security_lending_sell_balance", "security_lending_balance",
+                ):
+                    chip_np[col] = (
+                        df.get_column(col).to_numpy().astype(np.float64).copy()
+                        if col in df.columns else np.zeros(len(df), dtype=np.float64)
+                    )
+                self._chip_np[sym] = chip_np
 
         elapsed = _time.perf_counter() - t0
         logger.info(
@@ -532,12 +537,15 @@ class BacktestDataset:
         start = max(0, idx - lookback_days)
         if start >= idx:
             return None
-        return {
+        out = {
             "n":           idx - start,
             "dates":       dates[start:idx],
-            "foreign_net": cache["foreign_net"][start:idx],
-            "trust_net":   cache["trust_net"][start:idx],
         }
+        for key, values in cache.items():
+            if key == "dates":
+                continue
+            out[key] = values[start:idx]
+        return out
 
     # ─────────────────────────────────────────────────────────────────────────
     # SQL helpers — one query per table, whole range at once
@@ -685,6 +693,8 @@ class BacktestDataset:
         Chunk by date to stay under D1 row limit.
         """
         chunks: list[pl.DataFrame] = []
+        canonical_detail_chunks: list[pl.DataFrame] = []
+        broker_chunks: list[pl.DataFrame] = []
         chunk_start = start_date
         while chunk_start <= end_date:
             chunk_end = _date_add(chunk_start, 60)
@@ -704,6 +714,42 @@ class BacktestDataset:
             if rows:
                 chunks.append(pl.DataFrame(rows, infer_schema_length=None))
 
+            try:
+                canonical_rows = d1_client.query(
+                    """
+                    SELECT stock_id AS symbol, date,
+                           margin_usage_ratio,
+                           short_buy, short_sell, short_stock_repayment, short_usage_ratio,
+                           security_lending_sell, security_lending_sell_return,
+                           security_lending_sell_balance, security_lending_balance
+                    FROM canonical_chip_daily
+                    WHERE date >= ? AND date <= ?
+                    """,
+                    [chunk_start, chunk_end],
+                )
+                if canonical_rows:
+                    canonical_detail_chunks.append(pl.DataFrame(canonical_rows, infer_schema_length=None))
+            except Exception:
+                pass
+
+            try:
+                broker_rows = d1_client.query(
+                    """
+                    SELECT stock_id AS symbol, date,
+                           net_shares AS broker_net_shares,
+                           estimated_amount AS broker_estimated_amount,
+                           broker_count,
+                           concentration AS broker_concentration
+                    FROM canonical_broker_flow_daily
+                    WHERE date >= ? AND date <= ?
+                    """,
+                    [chunk_start, chunk_end],
+                )
+                if broker_rows:
+                    broker_chunks.append(pl.DataFrame(broker_rows, infer_schema_length=None))
+            except Exception:
+                pass
+
             if chunk_end == end_date:
                 break
             chunk_start = _date_add(chunk_end, 1)
@@ -712,6 +758,12 @@ class BacktestDataset:
             return _empty_flat_df()
 
         df = pl.concat(chunks, how="diagonal_relaxed")
+        if canonical_detail_chunks:
+            detail_df = pl.concat(canonical_detail_chunks, how="diagonal_relaxed").unique(subset=["symbol", "date"], keep="last")
+            df = df.join(detail_df, on=["symbol", "date"], how="left")
+        if broker_chunks:
+            broker_df = pl.concat(broker_chunks, how="diagonal_relaxed").unique(subset=["symbol", "date"], keep="last")
+            df = df.join(broker_df, on=["symbol", "date"], how="left")
         df = df.sort(["symbol", "date"])
         return df
 
@@ -1150,6 +1202,223 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def _chip_array(chip_np: dict, key: str, n: int) -> np.ndarray:
+    arr = chip_np.get(key)
+    if arr is None:
+        return np.zeros(n, dtype=np.float64)
+    out = np.asarray(arr[-n:], dtype=np.float64)
+    return np.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def _last_nonzero_or_none(values: np.ndarray) -> Optional[float]:
+    for value in values[::-1]:
+        v = float(value)
+        if math.isfinite(v) and abs(v) > 1e-12:
+            return v
+    return None
+
+
+def _format_abs_twd_amount(amount: float) -> str:
+    abs_amount = abs(float(amount or 0.0))
+    if abs_amount < 1e8:
+        return f"{round(abs_amount / 10_000)}萬"
+    return f"{abs_amount / 1e8:.2f}億"
+
+
+def _pressure_units_score(units: float, latest_close: float, avg_daily_turnover: float, multiplier: float, cap: float) -> float:
+    if not math.isfinite(units) or not math.isfinite(latest_close) or not math.isfinite(avg_daily_turnover) or avg_daily_turnover <= 0:
+        return 0.0
+    intensity = abs(units * latest_close) / avg_daily_turnover
+    return _clamp(math.sqrt(intensity) * multiplier, 0.0, cap)
+
+
+def _score_broker_flow_chip_np(
+    chip_np: dict,
+    recent_n: int,
+    closes: np.ndarray,
+    volumes: np.ndarray,
+    latest_close: float,
+) -> tuple[float, list[str]]:
+    shares = _chip_array(chip_np, "broker_net_shares", recent_n)
+    amounts = _chip_array(chip_np, "broker_estimated_amount", recent_n)
+    if not (np.any(np.abs(shares) > 1e-12) or np.any(np.abs(amounts) > 1e-12)):
+        return 0.0, []
+
+    row_amounts = np.where(np.abs(amounts) > 1e-12, amounts, shares * latest_close)
+    estimated_amount_5d = float(row_amounts.sum())
+    net_shares_5d = float(shares.sum())
+    avg_daily_turnover = float(np.mean(volumes * closes)) if len(closes) > 0 else 0.0
+    window_turnover = avg_daily_turnover * max(1, recent_n)
+    intensity = estimated_amount_5d / window_turnover if window_turnover > 0 else None
+    broker_count = _last_nonzero_or_none(_chip_array(chip_np, "broker_count", recent_n))
+    concentration = _last_nonzero_or_none(_chip_array(chip_np, "broker_concentration", recent_n))
+
+    consec_buy_days = 0
+    for i in range(recent_n - 1, -1, -1):
+        if shares[i] > 0:
+            consec_buy_days += 1
+        else:
+            break
+
+    score = 0.0
+    if estimated_amount_5d > 0:
+        amount_score = _clamp(math.log10(1 + abs(estimated_amount_5d) / 1_000_000) * 4.5, 4, 18)
+        intensity_score = (
+            _clamp((estimated_amount_5d / 1e8) * 80, 0, 14)
+            if intensity is None else _clamp(math.sqrt(abs(intensity)) * 24, 0, 16)
+        )
+        breadth_score = 3 if broker_count is None else _clamp(math.log2(max(1, broker_count)) * 1.2, 1, 6)
+        concentration_penalty = 0
+        if concentration is not None:
+            concentration_penalty = 5 if concentration > 0.85 else 3 if concentration > 0.65 else 0
+        score = amount_score + intensity_score + breadth_score - concentration_penalty
+    elif estimated_amount_5d > -1_000_000:
+        score = 2
+    else:
+        sell_pressure = _clamp(math.log10(1 + abs(estimated_amount_5d) / 1_000_000) * 2.5, 2, 10)
+        score = max(0.0, 6 - sell_pressure)
+
+    if consec_buy_days >= 3 and estimated_amount_5d > 0:
+        score += 3 if consec_buy_days >= 5 else 1
+    score = round(_clamp(score, 0, 40), 1)
+
+    direction = "buy" if estimated_amount_5d >= 0 else "sell"
+    reasons = [f"broker_flow_5d_{direction}_{_format_abs_twd_amount(estimated_amount_5d)}"]
+    if intensity is not None:
+        reasons.append(f"turnover_intensity_{abs(intensity * 100):.1f}%")
+    if broker_count is not None:
+        reasons.append(f"broker_count_{int(round(broker_count))}")
+    if concentration is not None:
+        reasons.append(f"broker_concentration_{concentration:.2f}")
+    return score, reasons
+
+
+def _broker_flow_source_reason(chip_np: dict, recent_n: int) -> str:
+    dates = chip_np.get("dates")
+    latest_date = ""
+    if dates is not None and len(dates) > 0:
+        latest_date = str(dates[-1])
+    net_shares = float(_chip_array(chip_np, "broker_net_shares", recent_n).sum())
+    return f"broker_flow:finlab.rotc_broker_transactions net={round(net_shares)} source_date={latest_date}"
+
+
+def _score_credit_lending_pressure_np(
+    chip_np: dict,
+    recent_n: int,
+    closes: np.ndarray,
+    volumes: np.ndarray,
+    latest_close: float,
+) -> tuple[float, list[str]]:
+    avg_daily_turnover = float(np.mean(volumes * closes)) if len(closes) > 0 else 0.0
+    adjustment = 0.0
+    reasons: list[str] = []
+
+    margin = _chip_array(chip_np, "margin_balance", recent_n)
+    if np.any(np.abs(margin) > 1e-12):
+        delta = float(margin[-1] - margin[0])
+        if abs(delta) > 1e-12:
+            score = _pressure_units_score(delta, latest_close, avg_daily_turnover, 1.2, 1.5)
+            if delta > 0:
+                adjustment += score
+                if score >= 0.3:
+                    reasons.append(f"margin_balance_rising_{round(delta)}")
+            else:
+                adjustment -= _clamp(score, 0, 1.0)
+                if score >= 0.3:
+                    reasons.append(f"margin_balance_falling_{round(abs(delta))}")
+
+    margin_usage = _last_nonzero_or_none(_chip_array(chip_np, "margin_usage_ratio", recent_n))
+    if margin_usage is not None:
+        if margin_usage > 0.8:
+            adjustment -= 2
+            reasons.append("margin_usage_crowded_gt_80pct")
+        elif margin_usage > 0.6:
+            adjustment -= 1
+            reasons.append("margin_usage_crowded_gt_60pct")
+
+    short_sell = _chip_array(chip_np, "short_sell", recent_n)
+    short_buy = _chip_array(chip_np, "short_buy", recent_n)
+    short_repay = _chip_array(chip_np, "short_stock_repayment", recent_n)
+    short_pressure: Optional[float] = None
+    if np.any(np.abs(short_sell) > 1e-12) or np.any(np.abs(short_buy) > 1e-12) or np.any(np.abs(short_repay) > 1e-12):
+        short_pressure = float((short_sell - short_buy - short_repay).sum())
+    else:
+        short_balance = _chip_array(chip_np, "short_balance", recent_n)
+        if np.any(np.abs(short_balance) > 1e-12):
+            short_pressure = float(short_balance[-1] - short_balance[0])
+    if short_pressure is not None and abs(short_pressure) > 1e-12:
+        score = _pressure_units_score(short_pressure, latest_close, avg_daily_turnover, 1.8, 2.0)
+        if short_pressure > 0:
+            adjustment -= score
+            if score >= 0.3:
+                reasons.append(f"short_pressure_rising_{round(short_pressure)}")
+        else:
+            adjustment += _clamp(score, 0, 1.5)
+            if score >= 0.3:
+                reasons.append(f"short_covering_{round(abs(short_pressure))}")
+
+    short_usage = _last_nonzero_or_none(_chip_array(chip_np, "short_usage_ratio", recent_n))
+    if short_usage is not None:
+        if short_usage > 0.75:
+            adjustment -= 2
+            reasons.append("short_usage_crowded_gt_75pct")
+        elif short_usage > 0.5:
+            adjustment -= 1
+            reasons.append("short_usage_crowded_gt_50pct")
+
+    lending_sell = _chip_array(chip_np, "security_lending_sell", recent_n)
+    lending_return = _chip_array(chip_np, "security_lending_sell_return", recent_n)
+    if np.any(np.abs(lending_sell) > 1e-12) or np.any(np.abs(lending_return) > 1e-12):
+        lending_net = float((lending_sell - lending_return).sum())
+        if abs(lending_net) > 1e-12:
+            score = _pressure_units_score(lending_net, latest_close, avg_daily_turnover, 2.2, 2.5)
+            if lending_net > 0:
+                adjustment -= score
+                if score >= 0.3:
+                    reasons.append(f"lending_sell_pressure_{round(lending_net)}")
+            else:
+                adjustment += _clamp(score, 0, 1.5)
+                if score >= 0.3:
+                    reasons.append(f"lending_sell_covering_{round(abs(lending_net))}")
+
+    lending_balance = _chip_array(chip_np, "security_lending_sell_balance", recent_n)
+    if np.any(np.abs(lending_balance) > 1e-12):
+        delta = float(lending_balance[-1] - lending_balance[0])
+        if abs(delta) > 1e-12:
+            score = _pressure_units_score(delta, latest_close, avg_daily_turnover, 1.4, 1.5)
+            if delta > 0:
+                adjustment -= score
+                if score >= 0.3:
+                    reasons.append(f"lending_sell_balance_rising_{round(delta)}")
+            else:
+                adjustment += _clamp(score, 0, 1.0)
+                if score >= 0.3:
+                    reasons.append(f"lending_sell_balance_falling_{round(abs(delta))}")
+
+    return round(_clamp(adjustment, -6, 4), 1), reasons
+
+
+def _chip_np_from_frame(recent: pl.DataFrame) -> dict:
+    n = len(recent)
+    out: dict[str, Any] = {
+        "n": n,
+        "dates": recent.get_column("date").to_numpy().astype("U10") if "date" in recent.columns else np.array([], dtype="U10"),
+    }
+    for col in (
+        "foreign_net", "trust_net", "dealer_net",
+        "broker_net_shares", "broker_estimated_amount", "broker_count", "broker_concentration",
+        "margin_balance", "short_balance", "margin_usage_ratio",
+        "short_buy", "short_sell", "short_stock_repayment", "short_usage_ratio",
+        "security_lending_sell", "security_lending_sell_return",
+        "security_lending_sell_balance", "security_lending_balance",
+    ):
+        out[col] = (
+            recent.get_column(col).to_numpy().astype(np.float64).copy()
+            if col in recent.columns else np.zeros(n, dtype=np.float64)
+        )
+    return out
+
+
 def _normalize(value: float, lower: float, upper: float, max_score: float) -> float:
     """Linear map [lower, upper] → [0, max_score], clamped."""
     if upper <= lower:
@@ -1231,7 +1500,7 @@ def score_multi_factor_np(
 
     Inputs:
       prices_np: {"n": int, "open"/"high"/"low"/"close"/"volume": np.ndarray[float64]}
-      chip_np:   {"n": int, "foreign_net"/"trust_net": np.ndarray[float64]} or None
+      chip_np:   canonical chip arrays with foreign/trust/dealer plus optional broker and credit-lending fields.
     """
     reasons: list[str] = []
     n = prices_np["n"]
@@ -1251,7 +1520,8 @@ def score_multi_factor_np(
         # tail-5 view
         fn = chip_np["foreign_net"][-recent_n:]
         tn = chip_np["trust_net"][-recent_n:]
-        day_nets = fn + tn  # element-wise
+        dn = _chip_array(chip_np, "dealer_net", recent_n)
+        day_nets = fn + tn + dn  # element-wise
         net_buy_shares = float(day_nets.sum())
 
         # Consec buy days: scan from the most recent day back (tail end of array),
@@ -1283,15 +1553,26 @@ def score_multi_factor_np(
             chip_score = tiers[4]
 
         if chip_intensity > 0.05:
-            reasons.append(f"法人佔成交{chip_intensity * 100:.1f}%")
+            reasons.append(f"institutional_turnover_intensity_{chip_intensity * 100:.1f}%")
 
         cb_bonus = sc.consec_buy_bonus_tiers
         cb_days = sc.consec_buy_day_thresholds
         if consec_buy_days >= cb_days[0]:
             chip_score += cb_bonus[0]
-            reasons.append(f"連買{consec_buy_days}天")
+            reasons.append(f"consecutive_buy_days_{consec_buy_days}")
         elif consec_buy_days >= cb_days[1]:
             chip_score += cb_bonus[1]
+
+        broker_score, broker_reasons = _score_broker_flow_chip_np(chip_np, recent_n, closes, volumes, latest_close)
+        if broker_score > chip_score:
+            reasons.extend(broker_reasons)
+            reasons.append(_broker_flow_source_reason(chip_np, recent_n))
+        chip_score = max(chip_score, broker_score)
+
+        credit_adjustment, credit_reasons = _score_credit_lending_pressure_np(chip_np, recent_n, closes, volumes, latest_close)
+        if abs(credit_adjustment) > 1e-12:
+            chip_score += credit_adjustment
+            reasons.extend(credit_reasons)
 
     chip_score = _clamp(chip_score, 0, 40)
 
@@ -1445,7 +1726,7 @@ def score_multi_factor(
     Inputs:
       prices: Polars DataFrame with columns date/open/high/low/close/volume.
               Must have at least 3 rows; 20+ rows recommended for full scoring.
-      chip_history: Polars DataFrame with foreign_net, trust_net columns (last 5 days).
+      chip_history: Polars DataFrame with canonical chip columns (last 5 days).
                     Pass empty DataFrame if no chip data.
       market_return_5d: 5-day return of market benchmark (0050 ETF close).
       sc: ScreenerParams instance.
@@ -1469,7 +1750,7 @@ def score_multi_factor(
         counting_consec = True
         for i in range(len(recent) - 1, -1, -1):
             row = recent.row(i, named=True)
-            day_net = (row.get("foreign_net") or 0) + (row.get("trust_net") or 0)
+            day_net = (row.get("foreign_net") or 0) + (row.get("trust_net") or 0) + (row.get("dealer_net") or 0)
             net_buy_shares += day_net
             if counting_consec:
                 if day_net > 0:
@@ -1497,15 +1778,28 @@ def score_multi_factor(
             chip_score = tiers[4]
 
         if chip_intensity > 0.05:
-            reasons.append(f"法人佔成交{chip_intensity * 100:.1f}%")
+            reasons.append(f"institutional_turnover_intensity_{chip_intensity * 100:.1f}%")
 
         cb_bonus = sc.consec_buy_bonus_tiers
         cb_days = sc.consec_buy_day_thresholds
         if consec_buy_days >= cb_days[0]:
             chip_score += cb_bonus[0]
-            reasons.append(f"連買{consec_buy_days}天")
+            reasons.append(f"consecutive_buy_days_{consec_buy_days}")
         elif consec_buy_days >= cb_days[1]:
             chip_score += cb_bonus[1]
+
+        chip_np_like = _chip_np_from_frame(recent)
+        recent_n = min(5, chip_np_like["n"])
+        broker_score, broker_reasons = _score_broker_flow_chip_np(chip_np_like, recent_n, closes, volumes, latest_close)
+        if broker_score > chip_score:
+            reasons.extend(broker_reasons)
+            reasons.append(_broker_flow_source_reason(chip_np_like, recent_n))
+        chip_score = max(chip_score, broker_score)
+
+        credit_adjustment, credit_reasons = _score_credit_lending_pressure_np(chip_np_like, recent_n, closes, volumes, latest_close)
+        if abs(credit_adjustment) > 1e-12:
+            chip_score += credit_adjustment
+            reasons.extend(credit_reasons)
 
     chip_score = _clamp(chip_score, 0, 40)
 

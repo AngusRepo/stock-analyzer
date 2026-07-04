@@ -826,6 +826,13 @@ def load_fundamental_quality_by_symbol(screener_recs: list[dict], decision_date:
                            revenue_growth_yoy, gross_margin, operating_margin, roe, eps,
                            pe, pb, dividend_yield, debt_ratio, current_ratio,
                            operating_cash_flow, industry_quality_percentile,
+                           roa, roa_comprehensive, roe_comprehensive,
+                           free_cash_flow, net_margin, quick_ratio, cash_flow_ratio,
+                           equity_to_assets, liabilities_to_equity,
+                           gross_margin_growth, operating_income_growth,
+                           net_income_growth, recurring_income_growth,
+                           total_asset_turnover, receivables_turnover,
+                           inventory_turnover, interest_expense_ratio,
                            source, as_of_date
                     FROM canonical_fundamental_features
                     WHERE stock_id IN ({placeholders})
@@ -1549,6 +1556,12 @@ def filter_and_score_recommendations(
             1 for chip in recent_chips
             if chip.get("broker_net_shares") is not None or chip.get("broker_estimated_amount") is not None
         )
+        upstream_chip_evidence = (
+            existing_score_components.get("chipEvidence")
+            if isinstance(existing_score_components, dict)
+            and isinstance(existing_score_components.get("chipEvidence"), dict)
+            else None
+        )
         chip_evidence = None
         if broker_rows > 0:
             broker_seed40 = _broker_chip_seed40(
@@ -1562,15 +1575,13 @@ def filter_and_score_recommendations(
                 broker_seed40=broker_seed40,
             )
             previous_chip_seed40 = float(score_seed_inputs["chipFlowSeed40"] or 0.0)
-            if broker_seed40 > previous_chip_seed40:
-                score_seed_inputs["chipFlowSeed40"] = broker_seed40
             chip_evidence = {
                 "schema_version": "canonical_chip_evidence_v2",
                 "evidence_status": evidence_status,
                 "evidenceStatus": evidence_status,
                 "brokerEvidenceStatus": broker_evidence_status,
-                "scoring_policy": "max_existing_screener_or_broker_flow_seed",
-                "scoringPolicy": "max_existing_screener_or_broker_flow_seed",
+                "scoring_policy": "screener_score_v2_seed_owner_evidence_only",
+                "scoringPolicy": "screener_score_v2_seed_owner_evidence_only",
                 "source": latest_broker.get("chip_source") or "finlab.rotc_broker_transactions",
                 "source_date": latest_broker.get("date"),
                 "sourceDate": latest_broker.get("date"),
@@ -1581,7 +1592,7 @@ def filter_and_score_recommendations(
                 "concentration_latest": latest_broker.get("broker_concentration"),
                 "broker_chip_seed40": broker_seed40,
                 "previous_chip_seed40": previous_chip_seed40,
-                "chip_seed_override_applied": broker_seed40 > previous_chip_seed40,
+                "chip_seed_override_applied": False,
                 "as_of_date": latest_broker.get("as_of_date"),
             }
         else:
@@ -1594,6 +1605,8 @@ def filter_and_score_recommendations(
                 "scoringPolicy": "existing_screener_chip_seed_only",
                 "brokerFlowUsed": False,
             }
+        if upstream_chip_evidence is not None:
+            chip_evidence = upstream_chip_evidence
 
         total_score = round((
             score_seed_inputs["chipFlowSeed40"]

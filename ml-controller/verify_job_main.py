@@ -86,6 +86,9 @@ async def _run() -> int:
         "VERIFY_RUN_ID",
         os.environ.get("CLOUD_RUN_EXECUTION", f"verify-job-{int(time.time())}-{uuid.uuid4().hex[:8]}"),
     )
+    from services.sizing_canary import assert_allowed_run_date
+
+    assert_allowed_run_date(run_date, label="verify-v2")
 
     logger.info(
         "[VerifyJob] Starting verify V2 run_id=%s date=%s lookback=%s limit=%s",

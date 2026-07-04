@@ -464,6 +464,33 @@ def test_materialize_outputs_include_institutional_amount_summary() -> None:
     assert any("INSERT INTO canonical_institutional_amount_daily" in sql for sql, _ in statements)
 
 
+def test_materialize_institutional_amount_summary_fails_on_missing_buy_amount() -> None:
+    root = _root("institutional_amount_missing_buy")
+    category = "foreign"
+    _write(
+        root / "raw" / "institutional_amount_summary" / "sell_amount.parquet",
+        pl.DataFrame({"date": ["2026-07-03"], category: [70.0]}),
+    )
+    _write(
+        root / "raw" / "institutional_amount_summary" / "net_amount.parquet",
+        pl.DataFrame({"date": ["2026-07-03"], category: [30.0]}),
+    )
+
+    try:
+        materialize_finlab_canonical_outputs(
+            root,
+            generated_at="2026-07-03T10:30:00+00:00",
+            start_date="2026-07-03",
+            end_date="2026-07-03",
+            datasets=["canonical_institutional_amount_daily"],
+        )
+    except RuntimeError as exc:
+        assert "canonical_institutional_amount_missing_fields" in str(exc)
+        assert "buy_amount" in str(exc)
+    else:
+        raise AssertionError("institutional amount materialization must fail closed on partial source fields")
+
+
 def test_materialize_outputs_include_regime_context_market_index_and_futures() -> None:
     root = _root("regime_context")
     _write(

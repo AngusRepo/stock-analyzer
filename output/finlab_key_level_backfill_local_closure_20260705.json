@@ -1,0 +1,62 @@
+{
+  "schema_version": "stockvision-finlab-key-level-backfill-local-closure-v1",
+  "generated_at": "2026-07-05T00:00:00+08:00",
+  "status": "pass",
+  "local_closure": "done",
+  "local_prod_ready": "done",
+  "no_partial": true,
+  "production_mutation_allowed": false,
+  "scope": "FinLab key-level backfill roadmap P0-P9",
+  "phases": {
+    "P0": "done: feature flags added; report defaults on, key retry/reuse defaults off",
+    "P1": "done: D1 source_key_attempts/source_key_report migration present and sqlite-parse verified",
+    "P2": "done: shared data/finlab_source_contract.json consumed by Python and Worker",
+    "P3": "done: data.get attempts write key-level source reports before canonical apply",
+    "P4": "done: Worker key retry planner supports failed/missing-only retry, sentinel-only source_not_ready, quota fail-closed",
+    "P5": "done: key_scope_json and reuse_successful_artifacts payload round-trip verified",
+    "P6": "done: ready artifact reuse resolver is implemented behind FINLAB_ARTIFACT_REUSE_ENABLED",
+    "P7": "done: canonical apply is per-dataset with materializer_blocked/materializer_failed states",
+    "P8": "done: scheduler/OBS details surface retry/skipped/sentinel/quota/materialized/blocked counters",
+    "P9": "done: local contract tests cover key retry/reuse/blocking/status behavior"
+  },
+  "validation": [
+    {
+      "command": "python -m py_compile tools/finlab_v4_remote_backfill.py ml-controller/routers/finlab.py ml-service/modal_app.py",
+      "status": "pass"
+    },
+    {
+      "command": "npx.cmd tsx src/lib/sourceReadinessProbeAutomationContract.test.ts",
+      "cwd": "worker",
+      "status": "pass"
+    },
+    {
+      "command": "npm.cmd run type-check",
+      "cwd": "worker",
+      "status": "pass"
+    },
+    {
+      "command": "python -m pytest ml-controller/tests/test_finlab_remote_backfill_tool_contract.py -q -p no:cacheprovider --basetemp .tmp/pytest-finlab-key-roadmap-local-closure",
+      "status": "pass",
+      "result": "26 passed"
+    },
+    {
+      "command": "sqlite3 executescript(worker/migration_finlab_source_key_report_2026_07_04.sql)",
+      "status": "pass"
+    },
+    {
+      "command": "git diff --check",
+      "status": "pass"
+    },
+    {
+      "command": "ml-controller/services/local_prod_ready_audit.py --repo .",
+      "status": "pass",
+      "result": "local_closure=done; local_prod_ready=done; failed_checks=[]; production_mutation_allowed=false",
+      "output": "ml-service/benchmark_results/local_prod_ready_audit_20260618.json"
+    }
+  ],
+  "notes": [
+    "No production deployment, commit, push, retrain, or live trading action was performed.",
+    "Key-level retry remains feature-flagged off by default until Wei explicitly enables production behavior.",
+    "This closure covers the latest FinLab key-level backfill roadmap, not the older Formal137/Active12 roadmap."
+  ]
+}

@@ -46,7 +46,7 @@ adminSimulationRoutes.post('/api/admin/test/score-multi-factor', async (c) => {
   const body = await c.req.json<any>().catch(() => null)
   if (!body || !Array.isArray(body.prices) || body.marketReturn5d == null) {
     return c.json({
-      error: 'Body must be { prices: CanonicalScreenerPrice[], chips?: [{date,foreign,trust}], marketReturn5d, cfg? }',
+      error: 'Body must be { prices: CanonicalScreenerPrice[], chips?: [{date,foreign,trust,dealer,...canonicalChipFields}], marketReturn5d, cfg? }',
     }, 400)
   }
 
@@ -59,13 +59,29 @@ adminSimulationRoutes.post('/api/admin/test/score-multi-factor', async (c) => {
       ? { ...baseCfg, ...body.cfg, screener: { ...baseCfg.screener, ...(body.cfg.screener ?? {}) } }
       : baseCfg
 
-    let chipDates: Map<string, { foreign: number; trust: number }> | undefined
+    let chipDates: Map<string, any> | undefined
     if (Array.isArray(body.chips) && body.chips.length > 0) {
       chipDates = new Map()
       for (const chip of body.chips) {
         chipDates.set(String(chip.date), {
           foreign: Number(chip.foreign ?? 0),
           trust: Number(chip.trust ?? 0),
+          dealer: Number(chip.dealer ?? chip.dealer_net ?? 0),
+          brokerFlow: Number(chip.brokerFlow ?? chip.broker_net_shares ?? 0),
+          estimatedAmount: chip.estimatedAmount ?? chip.broker_estimated_amount ?? null,
+          brokerCount: chip.brokerCount ?? chip.broker_count ?? null,
+          concentration: chip.concentration ?? chip.broker_concentration ?? null,
+          marginBalance: chip.marginBalance ?? chip.margin_balance ?? null,
+          shortBalance: chip.shortBalance ?? chip.short_balance ?? null,
+          marginUsageRatio: chip.marginUsageRatio ?? chip.margin_usage_ratio ?? null,
+          shortBuy: chip.shortBuy ?? chip.short_buy ?? null,
+          shortSell: chip.shortSell ?? chip.short_sell ?? null,
+          shortStockRepayment: chip.shortStockRepayment ?? chip.short_stock_repayment ?? null,
+          shortUsageRatio: chip.shortUsageRatio ?? chip.short_usage_ratio ?? null,
+          securityLendingSell: chip.securityLendingSell ?? chip.security_lending_sell ?? null,
+          securityLendingSellReturn: chip.securityLendingSellReturn ?? chip.security_lending_sell_return ?? null,
+          securityLendingSellBalance: chip.securityLendingSellBalance ?? chip.security_lending_sell_balance ?? null,
+          securityLendingBalance: chip.securityLendingBalance ?? chip.security_lending_balance ?? null,
         })
       }
     }

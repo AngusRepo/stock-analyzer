@@ -2578,6 +2578,10 @@ def finlab_v4_backfill(payload: dict) -> dict:
         argv.extend(["--canonical-limit-per-dataset", str(int(payload["canonical_limit_per_dataset"]))])
     if payload.get("lanes"):
         argv.extend(["--lanes", str(payload["lanes"])])
+    if payload.get("key_scope_json"):
+        argv.extend(["--key-scope-json", str(payload["key_scope_json"])])
+    if payload.get("reuse_successful_artifacts"):
+        argv.append("--reuse-successful-artifacts")
     if payload.get("canonical_dry_run"):
         argv.append("--canonical-dry-run")
 
@@ -2616,6 +2620,7 @@ def finlab_v4_backfill(payload: dict) -> dict:
         status = "success" if int(exit_code or 0) == 0 and not macro_error else "error"
         summary = (
             f"FinLab V4 backfill run_id={result.get('run_id', run_id)} "
+            f"status={result.get('backfill_status', 'ready')} "
             f"canonical={result.get('canonical_d1_apply') is not None} "
             f"rows={result.get('summary', {}).get('finlab_rows', 'n/a')} "
             f"macro_context={result.get('macro_context_writeback', {}).get('status', 'ok')} "

@@ -54,6 +54,12 @@ assert(
   'screener funnel metadata should expose fundamental_loader_error and L0 raw-signal coverage audit',
 )
 assert(
+  !source.includes('Direct financial quality bonus') &&
+    !source.includes('FinLab fundamental quality direct-field bonus') &&
+    !source.includes('fscoreApplied'),
+  'Worker screener must not keep a separate fundamental scoring owner; Score V2 fundamentalQuality owns fundamental points',
+)
+assert(
   !block.includes('catch {\n      // Older local D1 snapshots may not have canonical_fundamental_features.'),
   'canonical fundamental loader must not silently swallow missing-table or query errors',
 )

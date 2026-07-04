@@ -30,6 +30,49 @@ WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
 MAX_D1_RETRIES = int(os.environ.get("D1_CLIENT_MAX_RETRIES", "3"))
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sizing_canary_enabled() -> bool:
+    return _env_truthy("STOCKVISION_SIZING_CANARY")
+
+
+def _first_sql_token(sql: str) -> str:
+    text = (sql or "").strip()
+    while text.startswith("--"):
+        line_end = text.find("\n")
+        if line_end < 0:
+            return ""
+        text = text[line_end + 1 :].strip()
+    return (text.split(None, 1)[0] if text else "").lower()
+
+
+def _is_mutating_sql(sql: str) -> bool:
+    return _first_sql_token(sql) in {
+        "alter",
+        "create",
+        "delete",
+        "drop",
+        "insert",
+        "replace",
+        "truncate",
+        "update",
+        "vacuum",
+    }
+
+
+def _noop_write_meta(changes: int = 1) -> dict:
+    changes = max(0, int(changes or 0))
+    return {
+        "changes": changes,
+        "rows_written": changes,
+        "duration": 0,
+        "timings": {"sql_duration_ms": 0},
+        "sizing_canary_noop": True,
+    }
+
+
 def _check_env():
     missing = [k for k, v in [
         ("CF_API_TOKEN", CF_API_TOKEN),
@@ -155,6 +198,9 @@ def _post_raw(body: dict, timeout: float = 60.0) -> dict:
 
 
 def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:
+    if _sizing_canary_enabled() and _is_mutating_sql(sql):
+        logger.warning("[SizingCanary] D1 mutation passed to query() was no-op: %s", _first_sql_token(sql))
+        return []
     """Read query — returns list of row dicts."""
     body: dict = {"sql": sql}
     if params:
@@ -178,6 +224,9 @@ def execute(sql: str, params: list[Any] | None = None, timeout: float = 60.0) ->
           'results': []  # empty for write
         }
     """
+    if _sizing_canary_enabled():
+        logger.warning("[SizingCanary] D1 execute() no-op: %s", _first_sql_token(sql))
+        return {"success": True, "meta": _noop_write_meta(1), "results": []}
     body: dict = {"sql": sql}
     if params:
         body["params"] = params
@@ -212,6 +261,21 @@ def batch_execute(
     """
     if not statements:
         return {"total": 0, "success_count": 0, "error_count": 0, "changes_total": 0}
+
+    if _sizing_canary_enabled():
+        total = len(statements)
+        logger.warning("[SizingCanary] D1 batch_execute() no-op statements=%s", total)
+        return {
+            "total": total,
+            "success_count": total,
+            "error_count": 0,
+            "changes_total": total,
+            "first_error": None,
+            "partial_failure": False,
+            "mode": "sizing_canary_noop",
+            "rows_written_total": total,
+            "sql_duration_ms_total": 0,
+        }
 
     if WORKER_URL and WORKER_AUTH:
         try:

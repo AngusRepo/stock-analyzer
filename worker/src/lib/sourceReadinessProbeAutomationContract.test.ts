@@ -6,6 +6,7 @@ function assert(condition: unknown, message: string): void {
 
 const controllerResearchWorkflows = fs.readFileSync('src/lib/controllerResearchWorkflows.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const finlabSourceContract = fs.readFileSync('src/lib/finlabSourceContract.ts', 'utf8')
 const officialMarketSummaryRefresh = fs.readFileSync('src/lib/officialMarketSummaryRefresh.ts', 'utf8')
 const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const types = fs.readFileSync('src/types.ts', 'utf8')
@@ -16,8 +17,12 @@ const finlabRouter = fs.readFileSync('../ml-controller/routers/finlab.py', 'utf8
 const modalApp = fs.readFileSync('../ml-service/modal_app.py', 'utf8')
 
 assert(
-  controllerResearchWorkflows.includes('dailySourceRefresh?: boolean') &&
+    controllerResearchWorkflows.includes('dailySourceRefresh?: boolean') &&
     controllerResearchWorkflows.includes("callbackMode?: 'readiness_probe' | 'evening_chain'") &&
+    controllerResearchWorkflows.includes('keyScopeJson?: string') &&
+    controllerResearchWorkflows.includes('reuseSuccessfulArtifacts?: boolean') &&
+    controllerResearchWorkflows.includes('key_scope_json: optionalString(options.keyScopeJson)') &&
+    controllerResearchWorkflows.includes('reuse_successful_artifacts: Boolean(options.reuseSuccessfulArtifacts)') &&
     controllerResearchWorkflows.includes('options.dailySourceRefresh || options.continueEveningChain') &&
     controllerResearchWorkflows.includes('daily_source_refresh: dailySourceMode') &&
     controllerResearchWorkflows.includes('callback_mode: callbackMode') &&
@@ -46,9 +51,13 @@ assert(
     finlabRouter.includes('callback_mode: str | None = None') &&
     finlabRouter.includes('source_start_date: str | None = None') &&
     finlabRouter.includes('source_end_date: str | None = None') &&
+    finlabRouter.includes('key_scope_json: str | None = None') &&
+    finlabRouter.includes('reuse_successful_artifacts: bool = False') &&
     finlabRouter.includes('require_official_market_summary: bool = False') &&
     modalApp.includes('"--source-start-date"') &&
     modalApp.includes('"--source-end-date"') &&
+    modalApp.includes('"--key-scope-json"') &&
+    modalApp.includes('"--reuse-successful-artifacts"') &&
     modalApp.includes('"--require-official-market-summary"') &&
     modalApp.includes('"daily_source_refresh": bool(payload.get("daily_source_refresh"))') &&
     modalApp.includes('"callback_mode": payload.get("callback_mode")'),
@@ -66,10 +75,35 @@ assert(
     updateOrchestrator.includes('ignoreEveningChainInFlight') &&
     updateOrchestrator.includes("callbackMode: 'readiness_probe'") &&
     updateOrchestrator.includes('finLabRefreshScopeForReadiness') &&
+    updateOrchestrator.includes('finLabRetryScopeForReadiness') &&
+    updateOrchestrator.includes('readFinLabSourceKeyReportForTarget') &&
+    updateOrchestrator.includes('source_key_report') &&
+    updateOrchestrator.includes('finLabSentinelFieldForLane') &&
+    updateOrchestrator.includes('finLabRequiredFieldsForLane') &&
+    updateOrchestrator.includes('finLabContractFlagDefault') &&
+    updateOrchestrator.includes('FINLAB_KEY_REPORT_ENABLED') &&
+    updateOrchestrator.includes('FINLAB_KEY_LEVEL_RETRY_ENABLED') &&
+    updateOrchestrator.includes('FINLAB_ARTIFACT_REUSE_ENABLED') &&
+    updateOrchestrator.includes('keyScopeJson: refreshScope.keyScopeJson') &&
+    updateOrchestrator.includes('reuseSuccessfulArtifacts: finLabArtifactReuseEnabled(env) && Boolean(refreshScope.keyScopeJson)') &&
+    updateOrchestrator.includes('retry_keys=') &&
+    updateOrchestrator.includes('skipped_ok_keys=') &&
+    updateOrchestrator.includes('sentinel_keys=') &&
+    updateOrchestrator.includes('quota_blocked_keys=') &&
+    updateOrchestrator.includes('materialized_datasets=') &&
+    updateOrchestrator.includes('blocked_datasets=') &&
+    updateOrchestrator.includes('fetchedFinLabSourceLanesForTarget') &&
+    updateOrchestrator.includes('source_diff_report') &&
+    updateOrchestrator.includes("run_id LIKE ?") &&
+    updateOrchestrator.includes("finlab-v4-daily-${targetDate.replace(/-/g, '')}-%") &&
+    updateOrchestrator.includes('canonical_apply_pending_no_refetch') &&
+    updateOrchestrator.includes('skipped_fetched_lanes=') &&
+    updateOrchestrator.includes('isFinLabQuotaLimitLog') &&
+    updateOrchestrator.includes('quota_exhausted_no_refetch') &&
+    updateOrchestrator.includes('Usage exceed|quota|VIP program') &&
     updateOrchestrator.includes('22:00 fallback skipped FinLab refresh') &&
     updateOrchestrator.includes('22:00 fallback waiting at non-FinLab source-readiness gate') &&
-    updateOrchestrator.includes('22:00 fallback cannot derive FinLab lanes from missing readiness keys') &&
-    updateOrchestrator.includes('...refreshScope') &&
+    updateOrchestrator.includes('22:00 fallback skipped FinLab data.get refetch') &&
     updateOrchestrator.includes('malformed scheduler run log ignored') &&
     !updateOrchestrator.includes("lanes.add('market_summary')") &&
     updateOrchestrator.includes("'canonical_market_daily:listed_otc'") &&
@@ -81,9 +115,24 @@ assert(
     updateOrchestrator.includes("'canonical_trading_restrictions:daily_micro_lane'") &&
     updateOrchestrator.includes("if (key.startsWith('canonical_trading_restrictions:'))") &&
     updateOrchestrator.includes("lanes.add('trading_restrictions')") &&
+    updateOrchestrator.includes("datasets.add('canonical_trading_restrictions')") &&
     updateOrchestrator.includes("datasets.add('canonical_broker_rank_daily')") &&
     updateOrchestrator.includes('dailySourceRefresh: true'),
   'source-readiness-probe must trigger FinLab daily refresh and automatically queue a recheck callback without self-blocking on the same evening-chain run',
+)
+
+assert(
+  finlabSourceContract.includes("../../../data/finlab_source_contract.json") &&
+    finlabSourceContract.includes('FINLAB_SOURCE_CONTRACT') &&
+    finlabSourceContract.includes('finLabCanonicalDatasetsForLane') &&
+    finlabSourceContract.includes('finLabRequiredFieldsForLane') &&
+    finlabSourceContract.includes('finLabSentinelFieldForLane') &&
+    fs.readFileSync('../data/finlab_source_contract.json', 'utf8').includes('"FINLAB_KEY_REPORT_ENABLED": true') &&
+    fs.readFileSync('../data/finlab_source_contract.json', 'utf8').includes('"FINLAB_KEY_LEVEL_RETRY_ENABLED": false') &&
+    fs.readFileSync('../data/finlab_source_contract.json', 'utf8').includes('"FINLAB_ARTIFACT_REUSE_ENABLED": false') &&
+    fs.readFileSync('../data/finlab_source_contract.json', 'utf8').includes('"institutional_amount_summary"') &&
+    fs.readFileSync('../data/finlab_source_contract.json', 'utf8').includes('"buy_amount"'),
+  'FinLab source contract must be shared by Worker and Python with report-on/retry-off/reuse-off defaults',
 )
 
 assert(
@@ -123,7 +172,7 @@ assert(
   schedulerStatus.includes('details: lastLog?.details ?? []') &&
     frontendApi.includes('details?: string[]') &&
     observabilityPage.includes('schedulerReadinessDetails') &&
-    observabilityPage.includes('/canonical_|official_supplemental|finlab_/i') &&
+    observabilityPage.includes('retry_keys|skipped_ok_keys|sentinel_keys|quota_blocked_keys|materialized_datasets|blocked_datasets') &&
     observabilityPage.includes('stage.job.details') &&
     observabilityPage.includes("detail.replace(/^ok\\s+/i, '')"),
   'OBS scheduler UI must surface lane-level readiness details instead of only run-level status',

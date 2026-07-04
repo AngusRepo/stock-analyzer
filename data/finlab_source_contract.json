@@ -1,0 +1,172 @@
+{
+  "schema_version": "stockvision-finlab-source-contract-v1",
+  "feature_flags": {
+    "FINLAB_KEY_REPORT_ENABLED": true,
+    "FINLAB_KEY_LEVEL_RETRY_ENABLED": false,
+    "FINLAB_ARTIFACT_REUSE_ENABLED": false
+  },
+  "statuses": [
+    "ok",
+    "empty",
+    "failed",
+    "missing_target_date",
+    "source_not_ready",
+    "quota_blocked",
+    "schema_mismatch",
+    "skipped_reused",
+    "materializer_blocked",
+    "materializer_failed"
+  ],
+  "lanes": {
+    "daily_price": {
+      "canonical_datasets": ["canonical_market_daily"],
+      "required_fields": ["close"],
+      "optional_fields": [
+        "open",
+        "high",
+        "low",
+        "adj_open",
+        "adj_high",
+        "adj_low",
+        "adj_close",
+        "volume",
+        "trade_count",
+        "value",
+        "last_bid_price",
+        "last_ask_price",
+        "last_bid_volume",
+        "last_ask_volume",
+        "market_value"
+      ],
+      "sentinel_field": "close",
+      "fields": {
+        "close": { "required": true },
+        "open": { "required": false },
+        "high": { "required": false },
+        "low": { "required": false },
+        "adj_open": { "required": false },
+        "adj_high": { "required": false },
+        "adj_low": { "required": false },
+        "adj_close": { "required": false },
+        "volume": { "required": false },
+        "trade_count": { "required": false },
+        "value": { "required": false },
+        "last_bid_price": { "required": false },
+        "last_ask_price": { "required": false },
+        "last_bid_volume": { "required": false },
+        "last_ask_volume": { "required": false },
+        "market_value": { "required": false }
+      }
+    },
+    "chip_diversity": {
+      "canonical_datasets": ["canonical_chip_daily"],
+      "required_fields": ["foreign_net"],
+      "optional_fields": [],
+      "sentinel_field": "foreign_net",
+      "fields": {
+        "foreign_net": { "required": true }
+      }
+    },
+    "institutional_amount_summary": {
+      "canonical_datasets": ["canonical_institutional_amount_daily"],
+      "required_fields": ["buy_amount", "sell_amount", "net_amount"],
+      "optional_fields": [],
+      "sentinel_field": "net_amount",
+      "fields": {
+        "buy_amount": { "required": true },
+        "sell_amount": { "required": true },
+        "net_amount": { "required": true }
+      }
+    },
+    "broker_flow_diversity": {
+      "canonical_datasets": ["canonical_broker_flow_daily", "canonical_broker_rank_daily"],
+      "required_fields": ["broker_transactions"],
+      "optional_fields": [],
+      "sentinel_field": "broker_transactions",
+      "fields": {
+        "broker_transactions": { "required": true }
+      }
+    },
+    "regime_context": {
+      "canonical_datasets": ["canonical_market_index_daily", "canonical_futures_daily", "canonical_regime_context_daily"],
+      "required_fields": ["taiex_close"],
+      "optional_fields": [],
+      "sentinel_field": "taiex_close",
+      "fields": {
+        "taiex_close": { "required": true }
+      }
+    },
+    "trading_restrictions": {
+      "canonical_datasets": ["canonical_trading_restrictions"],
+      "required_fields": ["trading_attention"],
+      "optional_fields": [],
+      "sentinel_field": "trading_attention",
+      "fields": {
+        "trading_attention": { "required": true }
+      }
+    },
+    "revenue": {
+      "canonical_datasets": ["canonical_revenue_monthly"],
+      "required_fields": ["revenue"],
+      "optional_fields": [],
+      "sentinel_field": "revenue",
+      "fields": {
+        "revenue": { "required": true }
+      }
+    },
+    "fundamental_factor_diversity": {
+      "canonical_datasets": ["canonical_fundamental_features"],
+      "required_fields": ["pe"],
+      "optional_fields": [],
+      "sentinel_field": "pe",
+      "fields": {
+        "pe": { "required": true }
+      }
+    },
+    "emerging_price_diversity": {
+      "canonical_datasets": ["canonical_market_daily"],
+      "required_fields": ["close"],
+      "optional_fields": [],
+      "sentinel_field": "close",
+      "fields": {
+        "close": { "required": true }
+      }
+    },
+    "emerging_revenue_diversity": {
+      "canonical_datasets": ["canonical_revenue_monthly"],
+      "required_fields": ["revenue"],
+      "optional_fields": [],
+      "sentinel_field": "revenue",
+      "fields": {
+        "revenue": { "required": true }
+      }
+    },
+    "emerging_chip_diversity": {
+      "canonical_datasets": ["canonical_chip_daily"],
+      "required_fields": ["foreign_net"],
+      "optional_fields": [],
+      "sentinel_field": "foreign_net",
+      "fields": {
+        "foreign_net": { "required": true }
+      }
+    },
+    "security_master": {
+      "canonical_datasets": ["finlab_taxonomy_tags"],
+      "required_fields": ["table"],
+      "optional_fields": [],
+      "sentinel_field": "table",
+      "fields": {
+        "table": { "required": true }
+      }
+    },
+    "taxonomy_expansion": {
+      "canonical_datasets": ["finlab_taxonomy_tags"],
+      "required_fields": ["table"],
+      "optional_fields": [],
+      "sentinel_field": "table",
+      "fields": {
+        "table": { "required": true }
+      }
+    }
+  }
+}

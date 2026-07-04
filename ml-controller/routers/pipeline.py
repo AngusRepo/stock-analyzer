@@ -40,6 +40,10 @@ class CallbackWorkerError(RuntimeError):
     pass
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 # ─── Worker callback helpers (imported by pipeline_job_main too) ─────────────
 #
 # These two functions are kept in this router module because:
@@ -53,6 +57,14 @@ async def _callback_worker(
     payload: dict, client: httpx.AsyncClient | None = None
 ) -> None:
     """POST to Worker /api/admin/scheduler-callback and fail if closure is not durable."""
+    if _env_truthy("STOCKVISION_NOOP_CALLBACK") or _env_truthy("STOCKVISION_SIZING_CANARY"):
+        logger.warning(
+            "[SizingCanary] Worker callback no-op task=%s run_id=%s status=%s",
+            payload.get("task"),
+            payload.get("run_id"),
+            payload.get("status"),
+        )
+        return
     if not WORKER_URL:
         raise CallbackWorkerError(
             f"STOCKVISION_WORKER_URL missing; cannot close scheduler callback for task={payload.get('task')}"

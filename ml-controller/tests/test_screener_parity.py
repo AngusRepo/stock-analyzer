@@ -102,15 +102,34 @@ def bars_to_worker_json(bars: list[dict]) -> list[dict]:
 
 
 def chips_to_python_df(chips: list[dict]) -> pl.DataFrame:
-    """Convert canonical chip list → Polars DataFrame with foreign_net/trust_net columns."""
+    """Convert canonical chip list to the canonical ScoreV2 chip lane shape."""
+    columns = [
+        "date", "foreign_net", "trust_net", "dealer_net",
+        "broker_net_shares", "broker_estimated_amount", "broker_count", "broker_concentration",
+        "margin_balance", "short_balance", "margin_usage_ratio",
+        "short_buy", "short_sell", "short_stock_repayment", "short_usage_ratio",
+        "security_lending_sell", "security_lending_sell_return",
+        "security_lending_sell_balance", "security_lending_balance",
+    ]
     if not chips:
-        return pl.DataFrame(schema={"date": pl.Utf8, "foreign_net": pl.Float64, "trust_net": pl.Float64})
-    df = pl.DataFrame(chips).rename({"foreign": "foreign_net", "trust": "trust_net"})
-    return df.select(["date", "foreign_net", "trust_net"])
+        return pl.DataFrame(schema={col: (pl.Utf8 if col == "date" else pl.Float64) for col in columns})
+    raw_df = pl.DataFrame(chips)
+    df = raw_df.rename({k: v for k, v in {"foreign": "foreign_net", "trust": "trust_net", "dealer": "dealer_net"}.items() if k in raw_df.columns})
+    for col in columns:
+        if col not in df.columns:
+            df = df.with_columns(pl.lit("" if col == "date" else 0.0).alias(col))
+    return df.select(columns)
 
 
 def chips_to_worker_json(chips: list[dict]) -> list[dict]:
-    return [{"date": c["date"], "foreign": c["foreign"], "trust": c["trust"]} for c in chips]
+    out = []
+    for c in chips:
+        row = dict(c)
+        row.setdefault("foreign", row.get("foreign_net", 0.0))
+        row.setdefault("trust", row.get("trust_net", 0.0))
+        row.setdefault("dealer", row.get("dealer_net", 0.0))
+        out.append(row)
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -193,6 +212,45 @@ FIXTURES: list[dict] = [
         "id": "chip_below_all_tiers",
         "bars": _BASELINE_BARS,
         "chips": _mk_chip_days(_chip_dates(_BASELINE_BARS), [-20_000, -20_000, -20_000, -20_000, -20_000]),
+        "marketReturn5d": 0.0,
+    },
+    {
+        "id": "dealer_net_counts_as_institutional_chip",
+        "bars": _BASELINE_BARS,
+        "chips": [{"date": d, "foreign": 0.0, "trust": 0.0, "dealer": 80_000.0} for d in _chip_dates(_BASELINE_BARS)],
+        "marketReturn5d": 0.0,
+    },
+    {
+        "id": "broker_flow_can_seed_chip_score",
+        "bars": _BASELINE_BARS,
+        "chips": [
+            {
+                "date": d,
+                "foreign": 0.0,
+                "trust": 0.0,
+                "broker_net_shares": 50_000.0,
+                "broker_estimated_amount": 5_000_000.0,
+                "broker_count": 8.0,
+                "broker_concentration": 0.2,
+            }
+            for d in _chip_dates(_BASELINE_BARS)
+        ],
+        "marketReturn5d": 0.0,
+    },
+    {
+        "id": "lending_sell_pressure_penalizes_chip",
+        "bars": _BASELINE_BARS,
+        "chips": [
+            {
+                "date": d,
+                "foreign": 35_000.0,
+                "trust": 35_000.0,
+                "security_lending_sell": 60_000.0,
+                "security_lending_sell_return": 0.0,
+                "security_lending_sell_balance": 200_000.0 + i * 60_000.0,
+            }
+            for i, d in enumerate(_chip_dates(_BASELINE_BARS))
+        ],
         "marketReturn5d": 0.0,
     },
     # ── No chip data ───────────────────────────────────────────────────────

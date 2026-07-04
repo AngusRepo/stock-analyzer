@@ -496,6 +496,13 @@ def build_institutional_amount_rows(
     df = _join_market_fields(artifact_root / "raw" / "institutional_amount_summary", fields, start_date=start_date, end_date=end_date)
     if df.is_empty():
         return []
+    missing_fields = [field for field in fields if field not in df.columns]
+    if missing_fields:
+        raise RuntimeError(
+            "canonical_institutional_amount_missing_fields: "
+            + ",".join(missing_fields)
+            + "; source lane must be refetched as an atomic FinLab artifact"
+        )
     lineage = _lineage(run_id, "institutional_amount_summary", fields, artifact_root)
     df = df.with_columns(
         pl.col("category").map_elements(_institutional_market_segment, return_dtype=pl.Utf8).alias("market_segment"),

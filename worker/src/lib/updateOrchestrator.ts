@@ -10,6 +10,12 @@ import { runOfficialMarketSummaryRefresh } from './officialMarketSummaryRefresh'
 import { enqueuePostScreenerPipelineContinuation } from './postScreenerContinuation'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 import { fetchPunishedStocks } from './twseApi'
+import {
+  finLabCanonicalDatasetsForLane,
+  finLabContractFlagDefault,
+  finLabRequiredFieldsForLane,
+  finLabSentinelFieldForLane,
+} from './finlabSourceContract'
 
 const UPDATE_BATCH_SIZE = 40
 const UPDATE_SHARD_COUNT = 4
@@ -150,7 +156,13 @@ type SourceReadinessSnapshot = {
 type SchedulerRunSnapshot = {
   status?: string
   summary?: string
+  error?: string
   timestamp?: string
+}
+
+function isFinLabQuotaLimitLog(entry: SchedulerRunSnapshot | null): boolean {
+  const text = `${entry?.summary ?? ''} ${entry?.error ?? ''}`
+  return /Usage exceed|quota|VIP program|5000\s*MB\/day/i.test(text)
 }
 
 async function readSchedulerRunLogKey(
@@ -390,10 +402,97 @@ function hasFinLabRefreshableMissing(readiness: SourceReadinessSnapshot): boolea
   return readiness.missingKeys.some(isFinLabRefreshableMissingKey)
 }
 
-function finLabRefreshScopeForReadiness(readiness: SourceReadinessSnapshot): {
+type FinLabRefreshScope = {
   lanes?: string
   canonicalDatasets?: string
-} {
+}
+
+type FinLabRetryScope = FinLabRefreshScope & {
+  requestedLanes: string[]
+  skippedFetchedLanes: string[]
+  keyScopeJson?: string
+  retryKeyCount: number
+  skippedReadyKeyCount: number
+  sentinelKeyCount: number
+  quotaBlockedKeyCount: number
+  sourceNotReadyLanes: string[]
+  partialFailedLanes: string[]
+  fullyReadyLanes: string[]
+  blockedDatasets: string[]
+  materializedDatasets: string[]
+}
+
+type SourceKeyReportRow = {
+  lane: string | null
+  field: string | null
+  api_key: string | null
+  required: number | null
+  status: string | null
+  rows: number | null
+  target_rows: number | null
+  latest_date: string | null
+}
+
+function envFlag(env: Bindings, name: string, fallback: boolean): boolean {
+  const raw = String((env as Record<string, unknown>)[name] ?? '').trim().toLowerCase()
+  if (!raw) return fallback
+  if (['1', 'true', 'yes', 'y', 'on'].includes(raw)) return true
+  if (['0', 'false', 'no', 'n', 'off'].includes(raw)) return false
+  return fallback
+}
+
+function finLabKeyReportEnabled(env: Bindings): boolean {
+  return envFlag(env, 'FINLAB_KEY_REPORT_ENABLED', finLabContractFlagDefault('FINLAB_KEY_REPORT_ENABLED'))
+}
+
+function finLabKeyLevelRetryEnabled(env: Bindings): boolean {
+  return envFlag(env, 'FINLAB_KEY_LEVEL_RETRY_ENABLED', finLabContractFlagDefault('FINLAB_KEY_LEVEL_RETRY_ENABLED'))
+}
+
+function finLabArtifactReuseEnabled(env: Bindings): boolean {
+  return envFlag(env, 'FINLAB_ARTIFACT_REUSE_ENABLED', finLabContractFlagDefault('FINLAB_ARTIFACT_REUSE_ENABLED'))
+}
+
+function emptyFinLabRetryScope(sourceScope: FinLabRefreshScope, requestedLanes: string[]): FinLabRetryScope {
+  return {
+    ...sourceScope,
+    requestedLanes,
+    skippedFetchedLanes: [],
+    retryKeyCount: 0,
+    skippedReadyKeyCount: 0,
+    sentinelKeyCount: 0,
+    quotaBlockedKeyCount: 0,
+    sourceNotReadyLanes: [],
+    partialFailedLanes: [],
+    fullyReadyLanes: [],
+    blockedDatasets: [],
+    materializedDatasets: [],
+  }
+}
+
+function csvList(value: string | undefined): string[] {
+  return String(value ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function csvJoin(values: Iterable<string>): string | undefined {
+  const list = Array.from(new Set(Array.from(values).map((item) => item.trim()).filter(Boolean)))
+  return list.length ? list.join(',') : undefined
+}
+
+function canonicalDatasetsForLanes(lanes: string[]): string | undefined {
+  const datasets = new Set<string>()
+  for (const lane of lanes) {
+    for (const dataset of finLabCanonicalDatasetsForLane(lane)) {
+      datasets.add(dataset)
+    }
+  }
+  return csvJoin(datasets)
+}
+
+function finLabRefreshScopeForReadiness(readiness: SourceReadinessSnapshot): FinLabRefreshScope {
   const lanes = new Set<string>()
   const datasets = new Set<string>()
 
@@ -446,13 +545,236 @@ function finLabRefreshScopeForReadiness(readiness: SourceReadinessSnapshot): {
     }
     if (key.startsWith('canonical_trading_restrictions:')) {
       lanes.add('trading_restrictions')
+      datasets.add('canonical_trading_restrictions')
     }
   }
 
   return {
-    lanes: lanes.size ? Array.from(lanes).join(',') : undefined,
-    canonicalDatasets: datasets.size ? Array.from(datasets).join(',') : undefined,
+    lanes: csvJoin(lanes),
+    canonicalDatasets: csvJoin(datasets),
   }
+}
+
+async function fetchedFinLabSourceLanesForTarget(db: D1Database, targetDate: string): Promise<Set<string>> {
+  const runPattern = `finlab-v4-daily-${targetDate.replace(/-/g, '')}-%`
+  const rows = await db.prepare(`
+    SELECT dataset_lane, MAX(finlab_rows) AS finlab_rows
+      FROM source_diff_report
+     WHERE source = 'finlab'
+       AND run_id LIKE ?
+     GROUP BY dataset_lane
+  `).bind(runPattern).all<{ dataset_lane: string | null; finlab_rows: number | null }>()
+  const lanes = new Set<string>()
+  for (const row of rows.results ?? []) {
+    const lane = String(row.dataset_lane ?? '').trim()
+    if (lane && Number(row.finlab_rows ?? 0) > 0) lanes.add(lane)
+  }
+  return lanes
+}
+
+async function readFinLabSourceKeyReportForTarget(
+  db: D1Database,
+  targetDate: string,
+  lanes: string[],
+): Promise<SourceKeyReportRow[]> {
+  const requestedLanes = Array.from(new Set(lanes.map((lane) => lane.trim()).filter(Boolean)))
+  if (!requestedLanes.length) return []
+  const placeholders = requestedLanes.map(() => '?').join(',')
+  try {
+    const rows = await db.prepare(`
+      SELECT lane, field, api_key, required, status, rows, target_rows, latest_date
+        FROM source_key_report
+       WHERE target_date = ?
+         AND lane IN (${placeholders})
+    `).bind(targetDate, ...requestedLanes).all<SourceKeyReportRow>()
+    return rows.results ?? []
+  } catch (error) {
+    console.warn('[FinLab] source_key_report unavailable; falling back to lane-level retry scope:', error)
+    return []
+  }
+}
+
+function finLabSourceKeyReady(row: SourceKeyReportRow): boolean {
+  const status = String(row.status ?? '').toLowerCase()
+  if (status !== 'ok' && status !== 'skipped_reused') return false
+  return Number(row.target_rows ?? row.rows ?? 0) > 0
+}
+
+function finLabSourceKeyLooksSourceNotReady(row: SourceKeyReportRow): boolean {
+  const status = String(row.status ?? '').toLowerCase()
+  return status === 'empty' || status === 'missing_target_date' || status === 'source_not_ready'
+}
+
+function finLabSourceKeyQuotaBlocked(row: SourceKeyReportRow): boolean {
+  return String(row.status ?? '').toLowerCase() === 'quota_blocked'
+}
+
+async function finLabRetryScopeForReadiness(
+  env: Bindings,
+  targetDate: string,
+  readiness: SourceReadinessSnapshot,
+  options: { allowFetchedLaneRefetch?: boolean } = {},
+): Promise<FinLabRetryScope> {
+  const sourceScope = finLabRefreshScopeForReadiness(readiness)
+  const requestedLanes = csvList(sourceScope.lanes)
+  if (!requestedLanes.length || options.allowFetchedLaneRefetch) {
+    return emptyFinLabRetryScope(sourceScope, requestedLanes)
+  }
+
+  const laneLevelRetryScope = async (): Promise<FinLabRetryScope> => {
+    const fetchedLanes = await fetchedFinLabSourceLanesForTarget(env.DB, targetDate)
+    const retryLanes = requestedLanes.filter((lane) => !fetchedLanes.has(lane))
+    const skippedFetchedLanes = requestedLanes.filter((lane) => fetchedLanes.has(lane))
+    return {
+      ...emptyFinLabRetryScope({
+        lanes: csvJoin(retryLanes),
+        canonicalDatasets: canonicalDatasetsForLanes(retryLanes),
+      }, requestedLanes),
+      skippedFetchedLanes,
+    }
+  }
+
+  if (!finLabKeyReportEnabled(env) || !finLabKeyLevelRetryEnabled(env)) {
+    return laneLevelRetryScope()
+  }
+
+  const keyRows = await readFinLabSourceKeyReportForTarget(env.DB, targetDate, requestedLanes)
+  if (keyRows.length) {
+    const rowsByLane = new Map<string, SourceKeyReportRow[]>()
+    for (const row of keyRows) {
+      const lane = String(row.lane ?? '').trim()
+      if (!lane) continue
+      rowsByLane.set(lane, [...(rowsByLane.get(lane) ?? []), row])
+    }
+
+    const retryLanes: string[] = []
+    const skippedFetchedLanes: string[] = []
+    const keyScope: Array<{ lane: string; fields: string[] }> = []
+    const sourceNotReadyLanes: string[] = []
+    const partialFailedLanes: string[] = []
+    const fullyReadyLanes: string[] = []
+    const blockedDatasets = new Set<string>()
+    const materializedDatasets = new Set<string>()
+    let retryKeyCount = 0
+    let skippedReadyKeyCount = 0
+    let sentinelKeyCount = 0
+    let quotaBlockedKeyCount = 0
+
+    for (const lane of requestedLanes) {
+      const laneRows = rowsByLane.get(lane) ?? []
+      const contractRequiredFields = finLabRequiredFieldsForLane(lane)
+      if (!laneRows.length) {
+        retryLanes.push(lane)
+        keyScope.push({ lane, fields: contractRequiredFields })
+        retryKeyCount += contractRequiredFields.length
+        partialFailedLanes.push(lane)
+        for (const dataset of finLabCanonicalDatasetsForLane(lane)) blockedDatasets.add(dataset)
+        continue
+      }
+
+      const rowsByField = new Map<string, SourceKeyReportRow>()
+      for (const row of laneRows) {
+        const field = String(row.field ?? '').trim()
+        if (field && !rowsByField.has(field)) rowsByField.set(field, row)
+      }
+      const requiredRows = contractRequiredFields.length
+        ? contractRequiredFields.map((field) => rowsByField.get(field)).filter(Boolean) as SourceKeyReportRow[]
+        : laneRows.filter((row) => Number(row.required ?? 0) !== 0)
+      const scopedRows = requiredRows.length ? requiredRows : laneRows
+      const readyRows = scopedRows.filter(finLabSourceKeyReady)
+      const missingRequiredFields = contractRequiredFields.filter((field) => !rowsByField.has(field))
+      const retryRows = scopedRows.filter((row) => !finLabSourceKeyReady(row))
+      skippedReadyKeyCount += readyRows.length
+      quotaBlockedKeyCount += retryRows.filter(finLabSourceKeyQuotaBlocked).length
+
+      if (!retryRows.length && !missingRequiredFields.length) {
+        const readyFields = Array.from(new Set(
+          scopedRows.map((row) => String(row.field ?? '').trim()).filter(Boolean),
+        ))
+        fullyReadyLanes.push(lane)
+        for (const dataset of finLabCanonicalDatasetsForLane(lane)) materializedDatasets.add(dataset)
+        if (finLabArtifactReuseEnabled(env)) {
+          retryLanes.push(lane)
+          keyScope.push({ lane, fields: readyFields })
+        }
+        continue
+      }
+
+      const hasReadyRows = readyRows.length > 0
+      const retryableRows = retryRows.filter((row) => !finLabSourceKeyQuotaBlocked(row))
+      const entireLaneLooksUnavailable = !hasReadyRows && !missingRequiredFields.length && retryableRows.length > 0 && retryableRows.every(finLabSourceKeyLooksSourceNotReady)
+      const fields = entireLaneLooksUnavailable
+        ? [finLabSentinelFieldForLane(lane) ?? '']
+        : [
+            ...retryableRows.map((row) => String(row.field ?? '').trim()).filter(Boolean),
+            ...missingRequiredFields,
+          ]
+      const uniqueFields = Array.from(new Set(fields.filter(Boolean)))
+
+      if (uniqueFields.length) {
+        retryLanes.push(lane)
+        keyScope.push({ lane, fields: uniqueFields })
+        retryKeyCount += uniqueFields.length
+        partialFailedLanes.push(lane)
+        for (const dataset of finLabCanonicalDatasetsForLane(lane)) blockedDatasets.add(dataset)
+      } else if (retryRows.some(finLabSourceKeyQuotaBlocked)) {
+        partialFailedLanes.push(lane)
+        for (const dataset of finLabCanonicalDatasetsForLane(lane)) blockedDatasets.add(dataset)
+      }
+      if (entireLaneLooksUnavailable) {
+        sourceNotReadyLanes.push(lane)
+        sentinelKeyCount += uniqueFields.length
+      }
+    }
+
+    return {
+      lanes: csvJoin(retryLanes),
+      canonicalDatasets: canonicalDatasetsForLanes(retryLanes),
+      requestedLanes,
+      skippedFetchedLanes,
+      keyScopeJson: retryLanes.length ? JSON.stringify(keyScope) : undefined,
+      retryKeyCount,
+      skippedReadyKeyCount,
+      sentinelKeyCount,
+      quotaBlockedKeyCount,
+      sourceNotReadyLanes,
+      partialFailedLanes,
+      fullyReadyLanes,
+      blockedDatasets: Array.from(blockedDatasets),
+      materializedDatasets: Array.from(materializedDatasets),
+    }
+  }
+
+  return laneLevelRetryScope()
+}
+
+function finLabRetryScopeSuffix(scope: FinLabRetryScope): string {
+  const parts: string[] = []
+  if (scope.lanes) parts.push(`retry_lanes=${scope.lanes}`)
+  if (scope.retryKeyCount) parts.push(`retry_keys=${scope.retryKeyCount}`)
+  if (scope.skippedReadyKeyCount) parts.push(`skipped_ok_keys=${scope.skippedReadyKeyCount}`)
+  if (scope.sentinelKeyCount) parts.push(`sentinel_keys=${scope.sentinelKeyCount}`)
+  if (scope.quotaBlockedKeyCount) parts.push(`quota_blocked_keys=${scope.quotaBlockedKeyCount}`)
+  if (scope.skippedFetchedLanes.length) {
+    parts.push(`skipped_fetched_lanes=${scope.skippedFetchedLanes.join(',')}`)
+  }
+  if (scope.sourceNotReadyLanes.length) {
+    parts.push(`source_not_ready_lanes=${scope.sourceNotReadyLanes.join(',')}`)
+  }
+  if (scope.materializedDatasets.length) parts.push(`materialized_datasets=${scope.materializedDatasets.join(',')}`)
+  if (scope.blockedDatasets.length) parts.push(`blocked_datasets=${scope.blockedDatasets.join(',')}`)
+  return parts.length ? `; ${parts.join('; ')}` : ''
+}
+
+function finLabRetryScopeDetails(scope: FinLabRetryScope): string[] {
+  const details: string[] = []
+  if (scope.retryKeyCount) details.push(`retry_keys=${scope.retryKeyCount}`)
+  if (scope.skippedReadyKeyCount) details.push(`skipped_ok_keys=${scope.skippedReadyKeyCount}`)
+  if (scope.sentinelKeyCount) details.push(`sentinel_keys=${scope.sentinelKeyCount}`)
+  if (scope.quotaBlockedKeyCount) details.push(`quota_blocked_keys=${scope.quotaBlockedKeyCount}`)
+  if (scope.materializedDatasets.length) details.push(`materialized_datasets=${scope.materializedDatasets.join(',')}`)
+  if (scope.blockedDatasets.length) details.push(`blocked_datasets=${scope.blockedDatasets.join(',')}`)
+  return details
 }
 
 async function readFinLabRefreshLock(env: Bindings, runDate: string): Promise<string | null> {
@@ -1780,22 +2102,56 @@ export async function runSourceReadinessProbe(
   }
   if (!readiness.ok && hasFinLabRefreshableMissing(readiness)) {
     const finlabLog = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
+    if (!force && isFinLabQuotaLimitLog(finlabLog)) {
+      const summary = `running: ${readiness.summary}; finlab_refresh quota_exhausted_no_refetch=${finlabLog?.summary ?? finlabLog?.error ?? 'quota limit'}`
+      await logSchedulerResult(env.KV, 'source-readiness-probe', {
+        status: 'running',
+        summary,
+        duration_ms: Date.now() - started,
+        details: readinessDetails(readiness),
+        run_date: twDate,
+      })
+      return summary
+    }
     const finlabInFlight = finlabLog?.status === 'running' || finlabLog?.status === 'triggered'
     const refreshLock = await readFinLabRefreshLock(env, twDate)
     if ((!finlabInFlight && !refreshLock) || force) {
-      const refreshScope = finLabRefreshScopeForReadiness(readiness)
+      const refreshScope = await finLabRetryScopeForReadiness(env, twDate, readiness, {
+        allowFetchedLaneRefetch: force,
+      })
+      if (!refreshScope.lanes) {
+        const summary = `running: ${readiness.summary}; finlab_refresh skipped already fetched source lanes; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}`
+        await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+          status: 'skipped',
+          summary: `readiness probe skipped FinLab data.get refetch; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}`,
+          duration_ms: 0,
+          details: [...readinessDetails(readiness), ...finLabRetryScopeDetails(refreshScope)],
+          run_date: twDate,
+        })
+        await logSchedulerResult(env.KV, 'source-readiness-probe', {
+          status: 'running',
+          summary,
+          duration_ms: Date.now() - started,
+          details: [...readinessDetails(readiness), ...finLabRetryScopeDetails(refreshScope)],
+          run_date: twDate,
+        })
+        return summary
+      }
       const finlabSummary = String(await runFinLabV4Backfill(env, twDate, force, {
         continueEveningChain: false,
         dailySourceRefresh: true,
         callbackMode: 'readiness_probe',
-        ...refreshScope,
+        lanes: refreshScope.lanes,
+        canonicalDatasets: refreshScope.canonicalDatasets,
+        keyScopeJson: refreshScope.keyScopeJson,
+        reuseSuccessfulArtifacts: finLabArtifactReuseEnabled(env) && Boolean(refreshScope.keyScopeJson),
       }))
       const finlabStatus = classifySchedulerSummary(finlabSummary)
       await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
         status: finlabStatus,
-        summary: `readiness probe triggered daily source refresh without direct continuation; ${finlabSummary}`,
+        summary: `readiness probe triggered daily source refresh without direct continuation; ${finlabSummary}${finLabRetryScopeSuffix(refreshScope)}`,
         duration_ms: 0,
-        details: readinessDetails(readiness),
+        details: [...readinessDetails(readiness), ...finLabRetryScopeDetails(refreshScope)],
         run_date: twDate,
       })
       if (finlabStatus === 'error') {
@@ -1804,19 +2160,19 @@ export async function runSourceReadinessProbe(
           summary: `FinLab canonical refresh failed before readiness gate: ${finlabSummary}`,
           duration_ms: Date.now() - started,
           error: finlabSummary,
-          details: readinessDetails(readiness),
+          details: [...readinessDetails(readiness), ...finLabRetryScopeDetails(refreshScope)],
           run_date: twDate,
         }, env as any)
         throw new Error(`FinLab canonical refresh failed before readiness gate: ${finlabSummary}`)
       }
       await writeFinLabRefreshLock(env, twDate, finlabSummary)
       if (finlabStatus !== 'success') {
-        const summary = `running: ${readiness.summary}; finlab_refresh=${finlabSummary}${officialMarketSummaryWaiting ? `; ${officialMarketSummaryWaiting}` : ''}`
+        const summary = `running: ${readiness.summary}; finlab_refresh=${finlabSummary}${finLabRetryScopeSuffix(refreshScope)}${officialMarketSummaryWaiting ? `; ${officialMarketSummaryWaiting}` : ''}`
         await logSchedulerResult(env.KV, 'source-readiness-probe', {
           status: 'running',
           summary,
           duration_ms: Date.now() - started,
-          details: readinessDetails(readiness),
+          details: [...readinessDetails(readiness), ...finLabRetryScopeDetails(refreshScope)],
           run_date: twDate,
         })
         return summary
@@ -1988,21 +2344,54 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
     })
     return summary
   }
-  const refreshScope = finLabRefreshScopeForReadiness(fallbackReadiness)
+  const finlabLog = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
+  if (!force && isFinLabQuotaLimitLog(finlabLog)) {
+    const summary = `running: 22:00 fallback skipped FinLab data.get refetch; quota_exhausted_no_refetch=${finlabLog?.summary ?? finlabLog?.error ?? 'quota limit'}; ${fallbackReadiness.summary}`
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'running',
+      summary,
+      duration_ms: 0,
+      details: readinessDetails(fallbackReadiness),
+      run_date: twDate,
+    })
+    return summary
+  }
+  const refreshScope = await finLabRetryScopeForReadiness(env, twDate, fallbackReadiness, {
+    allowFetchedLaneRefetch: force,
+  })
   if (!refreshScope.lanes) {
-    throw new Error(`22:00 fallback cannot derive FinLab lanes from missing readiness keys: ${fallbackReadiness.missingKeys.join(',')}`)
+    const summary = `running: 22:00 fallback skipped FinLab data.get refetch; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}; ${fallbackReadiness.summary}`
+    await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+      status: 'skipped',
+      summary: `22:00 fallback skipped FinLab data.get refetch; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}`,
+      duration_ms: 0,
+      details: [...readinessDetails(fallbackReadiness), ...finLabRetryScopeDetails(refreshScope)],
+      run_date: twDate,
+    })
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'running',
+      summary,
+      duration_ms: 0,
+      details: [...readinessDetails(fallbackReadiness), ...finLabRetryScopeDetails(refreshScope)],
+      run_date: twDate,
+    })
+    return summary
   }
   const finlabSummary = String(await runFinLabV4Backfill(env, twDate, force, {
     continueEveningChain: true,
     dailySourceRefresh: true,
     callbackMode: 'evening_chain',
-    ...refreshScope,
+    lanes: refreshScope.lanes,
+    canonicalDatasets: refreshScope.canonicalDatasets,
+    keyScopeJson: refreshScope.keyScopeJson,
+    reuseSuccessfulArtifacts: finLabArtifactReuseEnabled(env) && Boolean(refreshScope.keyScopeJson),
   }))
   const finlabStatus = classifySchedulerSummary(finlabSummary)
   await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
     status: finlabStatus,
-    summary: finlabSummary,
+    summary: `${finlabSummary}${finLabRetryScopeSuffix(refreshScope)}`,
     duration_ms: 0,
+    details: [...readinessDetails(fallbackReadiness), ...finLabRetryScopeDetails(refreshScope)],
     run_date: twDate,
   })
   if (finlabStatus !== 'triggered' && finlabStatus !== 'success') {

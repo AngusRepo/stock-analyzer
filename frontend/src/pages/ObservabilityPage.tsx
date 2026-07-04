@@ -646,6 +646,8 @@ function schedulerJobPriority(job: SchedulerJob) {
 
 function schedulerDetailTone(detail: string): WorkstationTone {
   const text = detail.toLowerCase()
+  if (text.includes('quota_blocked') || text.includes('failed') || text.includes('materializer_failed')) return 'error'
+  if (text.includes('blocked') || text.includes('retry_keys') || text.includes('sentinel_keys')) return 'warn'
   if (text.startsWith('waiting') || text.includes('rows=0/') || text.includes('not ready')) return 'warn'
   if (text.startsWith('ok')) return 'ok'
   return 'neutral'
@@ -655,11 +657,12 @@ function schedulerReadinessDetails(job: SchedulerJob): string[] {
   const details = Array.isArray(job.details) ? job.details.filter(Boolean) : []
   if (!details.length) return []
   const readinessJob = job.id === 'source-readiness-probe' || job.id === 'finlab-v4-backfill' || job.id === 'evening-chain' || job.id === 'update'
-  const hasCanonicalDetail = details.some((detail) => /canonical_|official_supplemental|finlab_/i.test(detail))
+  const hasCanonicalDetail = details.some((detail) => /canonical_|official_supplemental|finlab_|source_key|retry_keys|skipped_ok_keys|sentinel_keys|quota_blocked_keys|materialized_datasets|blocked_datasets/i.test(detail))
   if (!readinessJob && !hasCanonicalDetail) return []
+  const keyLevel = details.filter((detail) => /source_key|retry_keys|skipped_ok_keys|sentinel_keys|quota_blocked_keys|materialized_datasets|blocked_datasets/i.test(detail))
   const waiting = details.filter((detail) => detail.toLowerCase().startsWith('waiting'))
   const ok = details.filter((detail) => detail.toLowerCase().startsWith('ok'))
-  return [...waiting, ...ok].slice(0, 8)
+  return [...keyLevel, ...waiting, ...ok].slice(0, 10)
 }
 
 function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?: boolean }) {

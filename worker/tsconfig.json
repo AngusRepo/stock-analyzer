@@ -4,6 +4,8 @@
     "module": "ES2020",
     "moduleResolution": "bundler",
     "lib": ["ES2022", "WebWorker"],
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
     "strict": false,
     "skipLibCheck": true,
     "noEmit": true

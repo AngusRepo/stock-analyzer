@@ -374,6 +374,8 @@ type FinLabBackfillRunOptions = {
   callbackMode?: 'readiness_probe' | 'evening_chain'
   lanes?: string
   canonicalDatasets?: string
+  keyScopeJson?: string
+  reuseSuccessfulArtifacts?: boolean
 }
 
 function buildFinLabBackfillRequestBody(
@@ -436,6 +438,8 @@ function buildFinLabBackfillRequestBody(
     lanes: dailySourceMode
       ? (optionalString(options.lanes) ?? optionalString((env as any).FINLAB_DAILY_PRICE_LANES) ?? FINLAB_DAILY_PRIMARY_LANES_DEFAULT)
       : archiveLanes,
+    key_scope_json: optionalString(options.keyScopeJson),
+    reuse_successful_artifacts: Boolean(options.reuseSuccessfulArtifacts),
     skip_diff_counts: dailySourceMode
       ? !truthyFlag((env as any).FINLAB_DAILY_PRICE_KEEP_DIFF_COUNTS)
       : truthyFlag((env as any).FINLAB_BACKFILL_SKIP_DIFF_COUNTS),

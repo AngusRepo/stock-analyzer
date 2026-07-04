@@ -367,6 +367,43 @@ def test_emerging_recommendation_uses_finlab_broker_chip_evidence(monkeypatch):
     assert row["score_components"]["chipEvidence"]["broker_net_amount_5d_billion"] == pytest.approx(0.013395)
 
 
+def test_recommendation_preserves_upstream_screener_chip_evidence(monkeypatch):
+    monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
+    upstream_evidence = {
+        "schema_version": "canonical_chip_evidence_v2",
+        "evidence_status": "materialized_chip_evidence",
+        "evidenceStatus": "materialized_chip_evidence",
+        "scoring_policy": "single_owner_institutional_broker_credit_lending_seed",
+        "scoringPolicy": "single_owner_institutional_broker_credit_lending_seed",
+        "source": "canonical_chip_daily+canonical_broker_flow_daily+credit_lending",
+        "brokerFlowUsed": True,
+        "brokerEvidenceStatus": "present_bullish",
+        "broker": {"score40": 18.5, "estimatedAmount5d": 2_500_000},
+        "creditLending": {"adjustment": -1.2, "lendingSellNet5d": 60_000},
+    }
+    score_components = _score_components()
+    score_components["chipEvidence"] = upstream_evidence
+    payload = _payload("2406")
+    payload["chips"] = [{
+        "date": "2026-04-21",
+        "foreign_net": 1200,
+        "trust_net": 300,
+        "broker_net_shares": 50_000,
+        "broker_estimated_amount": 2_500_000,
+        "broker_count": 7,
+        "broker_concentration": 0.2,
+    }]
+
+    final, sell_count = filter_and_score_recommendations(
+        [{**_screener_rec("2406"), "score_components": score_components}],
+        {"2406": _prediction_with_ensemble_v2()},
+        [payload],
+    )
+
+    assert sell_count == 0
+    assert final[0]["score_components"]["chipEvidence"] == upstream_evidence
+
+
 def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
     captured = {}
 

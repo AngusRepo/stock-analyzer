@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
+import shutil
 import sys
 import time
 import urllib.error
@@ -10,7 +13,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import pandas as pd
 
@@ -612,6 +615,415 @@ def filter_rows_date_range(
 
 def non_null_cells(df: pd.DataFrame) -> int:
     return int(df.notna().sum().sum())
+
+
+FINLAB_SOURCE_CONTRACT_PATH = ROOT / "data" / "finlab_source_contract.json"
+
+
+def load_finlab_source_contract() -> dict[str, Any]:
+    return json.loads(FINLAB_SOURCE_CONTRACT_PATH.read_text(encoding="utf-8"))
+
+
+FINLAB_SOURCE_CONTRACT = load_finlab_source_contract()
+FINLAB_SOURCE_STATUSES = set(FINLAB_SOURCE_CONTRACT.get("statuses") or [])
+FINLAB_SOURCE_LANES = FINLAB_SOURCE_CONTRACT.get("lanes") or {}
+REQUIRED_ATOMIC_WIDE_FIELDS = {
+    lane: set(meta.get("required_fields") or [])
+    for lane, meta in FINLAB_SOURCE_LANES.items()
+    if meta.get("required_fields")
+}
+FINLAB_CANONICAL_DATASETS_BY_LANE = {
+    lane: list(meta.get("canonical_datasets") or [])
+    for lane, meta in FINLAB_SOURCE_LANES.items()
+    if meta.get("canonical_datasets")
+}
+SENTINEL_FIELD_BY_LANE = {
+    lane: str(meta.get("sentinel_field") or "")
+    for lane, meta in FINLAB_SOURCE_LANES.items()
+    if meta.get("sentinel_field")
+}
+
+
+def canonical_datasets_for_lane(lane: str) -> str:
+    return ",".join(FINLAB_CANONICAL_DATASETS_BY_LANE.get(lane, [canonical_table_for_lane(lane)]))
+
+
+def parse_key_scope_json(raw: str | None) -> dict[str, set[str]]:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid key_scope_json: {exc}") from exc
+
+    scope: dict[str, set[str]] = {}
+    if isinstance(payload, dict):
+        items = payload.items()
+    elif isinstance(payload, list):
+        items = []
+        normalized: list[tuple[str, Any]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            normalized.append((str(item.get("lane") or "").strip(), item.get("fields") or item.get("keys") or []))
+        items = normalized
+    else:
+        raise ValueError("key_scope_json must be an object or list")
+
+    for lane, fields in items:
+        lane_text = str(lane or "").strip()
+        if not lane_text:
+            continue
+        if isinstance(fields, str):
+            field_set = {part.strip() for part in fields.split(",") if part.strip()}
+        else:
+            field_set = {str(part).strip() for part in fields or [] if str(part).strip()}
+        scope[lane_text] = field_set
+    return scope
+
+
+def spec_keys_for_scope(spec: DatasetSpec, key_scope: dict[str, set[str]]) -> dict[str, str]:
+    keys = dict(spec.keys)
+    if not key_scope or spec.lane not in key_scope:
+        return keys
+    requested = key_scope.get(spec.lane) or set()
+    if not requested:
+        return keys
+    selected = {
+        field: api_key
+        for field, api_key in keys.items()
+        if field in requested or api_key in requested
+    }
+    if selected:
+        return selected
+    if spec.kind in {"broker_aggregate", "rotc_broker_aggregate"} and spec.lane in key_scope:
+        return keys
+    return {}
+
+
+def source_key_required(lane: str, field: str) -> bool:
+    required = REQUIRED_ATOMIC_WIDE_FIELDS.get(lane)
+    if required is not None:
+        return field in required
+    return True
+
+
+def file_sha256(path: Path) -> str | None:
+    if not path.exists() or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
+def gcs_uri_for_artifact(
+    path: Path,
+    *,
+    run_dir: Path,
+    gcs_bucket: str | None,
+    gcs_prefix: str | None,
+) -> str | None:
+    bucket = str(gcs_bucket or "").strip()
+    if not bucket:
+        return None
+    rel = path.relative_to(run_dir).as_posix()
+    prefix = str(gcs_prefix or "").strip().strip("/")
+    return f"gs://{bucket}/{prefix}/{run_dir.name}/{rel}"
+
+
+def _target_non_null_cells(frame: pd.DataFrame, target_date: str | None, *, date_col: str | None = None) -> int:
+    if not target_date:
+        return non_null_cells(frame)
+    if date_col:
+        target = filter_rows_date_range(frame, date_col=date_col, start_date=target_date, end_date=target_date)
+    else:
+        target = filter_date_range(frame, start_date=target_date, end_date=target_date)
+    return non_null_cells(target)
+
+
+def source_key_status(*, rows: int, target_rows: int, target_date: str | None) -> str:
+    if rows <= 0:
+        return "empty"
+    if target_date and target_rows <= 0:
+        return "missing_target_date"
+    return "ok"
+
+
+def is_finlab_quota_error(exc: Exception) -> bool:
+    return bool(re.search(r"Usage exceed|quota|VIP program|5000\s*MB/day", str(exc), re.I))
+
+
+def source_key_status_for_exception(exc: Exception) -> str:
+    text = str(exc)
+    if is_finlab_quota_error(exc):
+        return "quota_blocked"
+    if re.search(r"ColumnNotFound|unable to find column|schema|field.*not.*found|key.*not.*found", text, re.I):
+        return "schema_mismatch"
+    return "failed"
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None or str(value).strip() == "":
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def finlab_contract_flag_default(name: str) -> bool:
+    return bool((FINLAB_SOURCE_CONTRACT.get("feature_flags") or {}).get(name))
+
+
+def finlab_key_report_enabled() -> bool:
+    return env_flag("FINLAB_KEY_REPORT_ENABLED", finlab_contract_flag_default("FINLAB_KEY_REPORT_ENABLED"))
+
+
+def finlab_artifact_reuse_enabled() -> bool:
+    return env_flag("FINLAB_ARTIFACT_REUSE_ENABLED", finlab_contract_flag_default("FINLAB_ARTIFACT_REUSE_ENABLED"))
+
+
+def source_key_report_row(
+    *,
+    run_id: str,
+    generated_at: str,
+    target_date: str,
+    lane: str,
+    field: str,
+    api_key: str,
+    status: str,
+    rows: int = 0,
+    target_rows: int = 0,
+    latest_date: str | None = None,
+    path: Path | None = None,
+    run_dir: Path | None = None,
+    gcs_bucket: str | None = None,
+    gcs_prefix: str | None = None,
+    error: Exception | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    artifact_uri = (
+        gcs_uri_for_artifact(path, run_dir=run_dir, gcs_bucket=gcs_bucket, gcs_prefix=gcs_prefix)
+        if path is not None and run_dir is not None
+        else None
+    )
+    return {
+        "run_id": run_id,
+        "target_date": target_date,
+        "lane": lane,
+        "canonical_dataset": canonical_datasets_for_lane(lane),
+        "field": field,
+        "api_key": api_key,
+        "source": "finlab" if not str(api_key).startswith("official.") else "official",
+        "required": source_key_required(lane, field),
+        "status": status,
+        "rows": int(rows or 0),
+        "target_rows": int(target_rows or 0),
+        "latest_date": latest_date,
+        "artifact_uri": artifact_uri,
+        "artifact_path": str(path) if path else None,
+        "artifact_checksum": file_sha256(path) if path else None,
+        "error_code": type(error).__name__ if error else None,
+        "error_message": str(error)[:500] if error else None,
+        "generated_at": generated_at,
+        "metadata_json": json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True, default=str),
+    }
+
+
+def parse_gcs_uri(uri: str) -> tuple[str, str] | None:
+    text = str(uri or "").strip()
+    if not text.startswith("gs://"):
+        return None
+    without_scheme = text[5:]
+    if "/" not in without_scheme:
+        return None
+    bucket, blob = without_scheme.split("/", 1)
+    bucket = bucket.strip()
+    blob = blob.strip("/")
+    if not bucket or not blob:
+        return None
+    return bucket, blob
+
+
+def download_gcs_artifact(uri: str, destination: Path) -> bool:
+    parsed = parse_gcs_uri(uri)
+    if parsed is None:
+        return False
+    bucket_name, blob_name = parsed
+    from google.cloud import storage
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    storage.Client().bucket(bucket_name).blob(blob_name).download_to_filename(str(destination))
+    return destination.exists()
+
+
+def copy_or_download_artifact(*, artifact_path: str | None, artifact_uri: str | None, destination: Path) -> bool:
+    local_path_text = str(artifact_path or "").strip()
+    if local_path_text:
+        local_path = Path(local_path_text)
+        if local_path.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(local_path, destination)
+            return True
+    if str(artifact_uri or "").strip().startswith("gs://"):
+        return download_gcs_artifact(str(artifact_uri), destination)
+    return False
+
+
+def read_ready_source_key_artifacts(
+    *,
+    target_date: str,
+    lane: str,
+    fields: Iterable[str],
+) -> dict[str, dict[str, Any]]:
+    wanted = sorted({str(field).strip() for field in fields if str(field).strip()})
+    if not wanted:
+        return {}
+    placeholders = ",".join("?" for _ in wanted)
+    try:
+        rows = d1_query(
+            f"""
+            SELECT field, api_key, status, rows, target_rows, latest_date,
+                   artifact_uri, artifact_path, artifact_checksum, last_run_id
+              FROM source_key_report
+             WHERE target_date = ?
+               AND lane = ?
+               AND field IN ({placeholders})
+               AND status IN ('ok', 'skipped_reused')
+               AND COALESCE(target_rows, rows, 0) > 0
+            """,
+            [target_date, lane, *wanted],
+        )
+    except Exception as exc:
+        print(
+            f"[finlab-backfill] source_key_report_reuse_lookup_failed lane={lane} error={type(exc).__name__}:{exc}",
+            flush=True,
+        )
+        return {}
+    return {str(row.get("field") or ""): row for row in rows if str(row.get("field") or "").strip()}
+
+
+def reuse_ready_field_artifacts(
+    *,
+    run_id: str,
+    generated_at: str,
+    target_date: str,
+    lane: str,
+    lane_dir: Path,
+    requested_field_frames: dict[str, pd.DataFrame],
+    all_keys: dict[str, str],
+    run_dir: Path,
+    gcs_bucket: str | None,
+    gcs_prefix: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    missing_fields = [field for field in all_keys if field not in requested_field_frames]
+    ready = read_ready_source_key_artifacts(target_date=target_date, lane=lane, fields=missing_fields)
+    artifacts: list[dict[str, Any]] = []
+    reports: list[dict[str, Any]] = []
+    for field in missing_fields:
+        row = ready.get(field)
+        if not row:
+            continue
+        path = lane_dir / f"{field}.parquet"
+        try:
+            copied = copy_or_download_artifact(
+                artifact_path=row.get("artifact_path"),
+                artifact_uri=row.get("artifact_uri"),
+                destination=path,
+            )
+            if not copied:
+                continue
+            frame = pd.read_parquet(path)
+        except Exception as exc:
+            print(
+                f"[finlab-backfill] source_key_artifact_reuse_failed lane={lane} field={field} "
+                f"error={type(exc).__name__}:{exc}",
+                flush=True,
+            )
+            continue
+        requested_field_frames[field] = frame
+        rows = non_null_cells(frame)
+        target_rows = _target_non_null_cells(frame, target_date)
+        api_key = str(row.get("api_key") or all_keys[field])
+        artifacts.append({
+            "field": field,
+            "api_key": api_key,
+            "path": str(path),
+            "shape": list(frame.shape),
+            "non_null_cells": rows,
+            "reused": True,
+            "reused_from_run_id": row.get("last_run_id"),
+        })
+        reports.append(source_key_report_row(
+            run_id=run_id,
+            generated_at=generated_at,
+            target_date=target_date,
+            lane=lane,
+            field=field,
+            api_key=api_key,
+            status="skipped_reused",
+            rows=rows,
+            target_rows=target_rows,
+            latest_date=latest_index(frame),
+            path=path,
+            run_dir=run_dir,
+            gcs_bucket=gcs_bucket,
+            gcs_prefix=gcs_prefix,
+            metadata={
+                "kind": "artifact_reuse",
+                "reused_from_run_id": row.get("last_run_id"),
+                "previous_artifact_uri": row.get("artifact_uri"),
+            },
+        ))
+    return artifacts, reports
+
+
+def validate_required_wide_field_completeness(
+    lane: str,
+    field_frames: dict[str, pd.DataFrame],
+    *,
+    target_date: str | None = None,
+) -> None:
+    errors = required_wide_field_errors(lane, field_frames, target_date=target_date)
+    if errors:
+        raise RuntimeError(
+            f"finlab_required_wide_field_incomplete lane={lane}: "
+            + "; ".join(errors)
+            + "; source artifact is partial and must be refetched"
+        )
+
+
+def required_wide_field_errors(
+    lane: str,
+    field_frames: dict[str, pd.DataFrame],
+    *,
+    target_date: str | None = None,
+) -> list[str]:
+    required = REQUIRED_ATOMIC_WIDE_FIELDS.get(lane)
+    if not required:
+        return []
+
+    errors: list[str] = []
+    for field in sorted(required):
+        frame = field_frames.get(field)
+        if frame is None or frame.empty:
+            errors.append(f"{field}=missing")
+            continue
+        if target_date:
+            target = filter_date_range(frame, start_date=target_date, end_date=target_date)
+            if non_null_cells(target) <= 0:
+                errors.append(f"{field}=missing_target_date:{target_date}")
+                continue
+        elif non_null_cells(frame) <= 0:
+            errors.append(f"{field}=empty")
+
+    return errors
 
 
 def latest_date_value(values: Any) -> str | None:
@@ -1217,7 +1629,12 @@ def materialize_specs(
     source_start_date: str | None = None,
     source_end_date: str | None = None,
     require_official_market_summary: bool = False,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    generated_at: str | None = None,
+    key_scope: dict[str, set[str]] | None = None,
+    reuse_successful_artifacts: bool = False,
+    gcs_bucket: str | None = None,
+    gcs_prefix: str | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     from finlab import data, login
 
     api_key = os.environ["FINLAB_API_KEY"]
@@ -1226,8 +1643,15 @@ def materialize_specs(
     counts = d1_counts(start)
     dataset_summaries: list[dict[str, Any]] = []
     diff_reports: list[dict[str, Any]] = []
+    source_key_reports: list[dict[str, Any]] = []
+    source_key_blockers: list[dict[str, Any]] = []
+    generated_at = generated_at or utc_now()
+    target_date = source_end_date or generated_at[:10]
+    key_scope = key_scope or {}
 
     requested_lanes = {str(lane).strip() for lane in lanes or [] if str(lane).strip()}
+    if key_scope:
+        requested_lanes.update(key_scope)
     all_lanes = {spec.lane for spec in CORE_SPECS}
     unknown_lanes = sorted(requested_lanes - all_lanes)
     if unknown_lanes:
@@ -1241,37 +1665,181 @@ def materialize_specs(
         t0 = time.time()
         print(f"[finlab-backfill] start lane={spec.lane} kind={spec.kind}", flush=True)
         lane_dir = run_dir / "raw" / spec.lane
+        spec_keys = spec_keys_for_scope(spec, key_scope)
+        if key_scope and spec.lane not in key_scope:
+            continue
+        if key_scope and spec.kind not in {"official_market_summary"} and not spec_keys:
+            continue
         artifacts: list[dict[str, Any]] = []
         finlab_rows = 0
         latest = None
         schema_fields: list[str] = []
 
         if spec.kind == "wide_fields":
-            for field, api_key_name in spec.keys.items():
-                frame = filter_date_range(
-                    normalize_wide_index(data.get(api_key_name)),
-                    start_date=start,
-                    end_date=source_end_date,
+            field_frames: dict[str, pd.DataFrame] = {}
+            if reuse_successful_artifacts and key_scope and spec.lane in key_scope:
+                reused_artifacts, reused_reports = reuse_ready_field_artifacts(
+                    run_id=run_dir.name,
+                    generated_at=generated_at,
+                    target_date=target_date,
+                    lane=spec.lane,
+                    lane_dir=lane_dir,
+                    requested_field_frames=field_frames,
+                    all_keys=spec.keys,
+                    run_dir=run_dir,
+                    gcs_bucket=gcs_bucket,
+                    gcs_prefix=gcs_prefix,
                 )
+                artifacts.extend(reused_artifacts)
+                source_key_reports.extend(reused_reports)
+                for artifact in reused_artifacts:
+                    field = str(artifact.get("field") or "")
+                    frame = field_frames.get(field)
+                    if frame is None:
+                        continue
+                    finlab_rows = max(finlab_rows, int(frame.notna().any(axis=1).sum() * frame.shape[1]))
+                    latest = max([x for x in [latest, latest_index(frame)] if x], default=None)
+                    if field and field not in schema_fields:
+                        schema_fields.append(field)
+            for field, api_key_name in spec_keys.items():
+                if field in field_frames:
+                    continue
+                path = lane_dir / f"{field}.parquet"
+                try:
+                    frame = filter_date_range(
+                        normalize_wide_index(data.get(api_key_name)),
+                        start_date=start,
+                        end_date=source_end_date,
+                    )
+                except Exception as exc:
+                    status = source_key_status_for_exception(exc)
+                    source_key_reports.append(source_key_report_row(
+                        run_id=run_dir.name,
+                        generated_at=generated_at,
+                        target_date=target_date,
+                        lane=spec.lane,
+                        field=field,
+                        api_key=api_key_name,
+                        status=status,
+                        error=exc,
+                        metadata={"kind": spec.kind},
+                    ))
+                    if status == "quota_blocked":
+                        raise
+                    continue
+                field_frames[field] = frame
                 finlab_rows = max(finlab_rows, int(frame.notna().any(axis=1).sum() * frame.shape[1]))
                 latest = max([x for x in [latest, latest_index(frame)] if x], default=None)
                 schema_fields.append(field)
-                path = lane_dir / f"{field}.parquet"
                 write_parquet(path, frame)
-                artifacts.append({"field": field, "api_key": api_key_name, "path": str(path), "shape": list(frame.shape), "non_null_cells": non_null_cells(frame)})
+                rows = non_null_cells(frame)
+                target_rows = _target_non_null_cells(frame, target_date)
+                status = source_key_status(rows=rows, target_rows=target_rows, target_date=target_date)
+                artifacts.append({"field": field, "api_key": api_key_name, "path": str(path), "shape": list(frame.shape), "non_null_cells": rows})
+                source_key_reports.append(source_key_report_row(
+                    run_id=run_dir.name,
+                    generated_at=generated_at,
+                    target_date=target_date,
+                    lane=spec.lane,
+                    field=field,
+                    api_key=api_key_name,
+                    status=status,
+                    rows=rows,
+                    target_rows=target_rows,
+                    latest_date=latest_index(frame),
+                    path=path,
+                    run_dir=run_dir,
+                    gcs_bucket=gcs_bucket,
+                    gcs_prefix=gcs_prefix,
+                    metadata={"kind": spec.kind, "shape": list(frame.shape)},
+                ))
+            field_errors = required_wide_field_errors(spec.lane, field_frames, target_date=target_date)
+            if field_errors:
+                source_key_blockers.append({
+                    "lane": spec.lane,
+                    "kind": spec.kind,
+                    "reason": "required_wide_field_incomplete",
+                    "errors": field_errors,
+                    "required_fields": sorted(REQUIRED_ATOMIC_WIDE_FIELDS.get(spec.lane) or []),
+                })
         elif spec.kind == "raw_frames":
-            for field, api_key_name in spec.keys.items():
-                frame = filter_date_range(
-                    normalize_context_frame(data.get(api_key_name)),
-                    start_date=start,
-                    end_date=source_end_date,
+            field_frames: dict[str, pd.DataFrame] = {}
+            if reuse_successful_artifacts and key_scope and spec.lane in key_scope:
+                reused_artifacts, reused_reports = reuse_ready_field_artifacts(
+                    run_id=run_dir.name,
+                    generated_at=generated_at,
+                    target_date=target_date,
+                    lane=spec.lane,
+                    lane_dir=lane_dir,
+                    requested_field_frames=field_frames,
+                    all_keys=spec.keys,
+                    run_dir=run_dir,
+                    gcs_bucket=gcs_bucket,
+                    gcs_prefix=gcs_prefix,
                 )
+                artifacts.extend(reused_artifacts)
+                source_key_reports.extend(reused_reports)
+                for artifact in reused_artifacts:
+                    field = str(artifact.get("field") or "")
+                    frame = field_frames.get(field)
+                    if frame is None:
+                        continue
+                    finlab_rows = max(finlab_rows, int(frame.notna().any(axis=1).sum()))
+                    latest = max([x for x in [latest, latest_index(frame)] if x], default=None)
+                    if field and field not in schema_fields:
+                        schema_fields.append(field)
+            for field, api_key_name in spec_keys.items():
+                if field in field_frames:
+                    continue
+                path = lane_dir / f"{field}.parquet"
+                try:
+                    frame = filter_date_range(
+                        normalize_context_frame(data.get(api_key_name)),
+                        start_date=start,
+                        end_date=source_end_date,
+                    )
+                except Exception as exc:
+                    status = source_key_status_for_exception(exc)
+                    source_key_reports.append(source_key_report_row(
+                        run_id=run_dir.name,
+                        generated_at=generated_at,
+                        target_date=target_date,
+                        lane=spec.lane,
+                        field=field,
+                        api_key=api_key_name,
+                        status=status,
+                        error=exc,
+                        metadata={"kind": spec.kind},
+                    ))
+                    if status == "quota_blocked":
+                        raise
+                    continue
+                field_frames[field] = frame
                 finlab_rows = max(finlab_rows, int(frame.notna().any(axis=1).sum()))
                 latest = max([x for x in [latest, latest_index(frame)] if x], default=None)
                 schema_fields.append(field)
-                path = lane_dir / f"{field}.parquet"
                 write_parquet(path, frame)
-                artifacts.append({"field": field, "api_key": api_key_name, "path": str(path), "shape": list(frame.shape), "non_null_cells": non_null_cells(frame)})
+                rows = non_null_cells(frame)
+                target_rows = _target_non_null_cells(frame, target_date)
+                status = source_key_status(rows=rows, target_rows=target_rows, target_date=target_date)
+                artifacts.append({"field": field, "api_key": api_key_name, "path": str(path), "shape": list(frame.shape), "non_null_cells": rows})
+                source_key_reports.append(source_key_report_row(
+                    run_id=run_dir.name,
+                    generated_at=generated_at,
+                    target_date=target_date,
+                    lane=spec.lane,
+                    field=field,
+                    api_key=api_key_name,
+                    status=status,
+                    rows=rows,
+                    target_rows=target_rows,
+                    latest_date=latest_index(frame),
+                    path=path,
+                    run_dir=run_dir,
+                    gcs_bucket=gcs_bucket,
+                    gcs_prefix=gcs_prefix,
+                    metadata={"kind": spec.kind, "shape": list(frame.shape)},
+                ))
             if spec.lane == "regime_context":
                 frame = fetch_official_twse_index_frame()
                 if not frame.empty:
@@ -1304,13 +1872,55 @@ def materialize_specs(
                         "non_null_cells": non_null_cells(frame),
                     })
         elif spec.kind == "table":
-            frame = pd.DataFrame(data.get(next(iter(spec.keys.values()))))
+            field = next(iter(spec_keys))
+            api_key_name = next(iter(spec_keys.values()))
+            path = lane_dir / "table.parquet"
+            table_error: Exception | None = None
+            try:
+                frame = pd.DataFrame(data.get(api_key_name))
+            except Exception as exc:
+                table_error = exc
+                status = source_key_status_for_exception(exc)
+                source_key_reports.append(source_key_report_row(
+                    run_id=run_dir.name,
+                    generated_at=generated_at,
+                    target_date=target_date,
+                    lane=spec.lane,
+                    field=field,
+                    api_key=api_key_name,
+                    status=status,
+                    error=exc,
+                    metadata={"kind": spec.kind},
+                ))
+                if status == "quota_blocked":
+                    raise
+                frame = pd.DataFrame()
             path = lane_dir / "table.parquet"
             write_parquet(path, frame)
             finlab_rows = int(len(frame))
             latest = utc_now()
             schema_fields = [str(col) for col in frame.columns]
-            artifacts.append({"field": next(iter(spec.keys)), "api_key": next(iter(spec.keys.values())), "path": str(path), "shape": list(frame.shape)})
+            target_rows = int(len(filter_rows_date_range(frame, start_date=target_date, end_date=target_date))) if "date" in frame.columns else finlab_rows
+            status = source_key_status(rows=finlab_rows, target_rows=target_rows, target_date=target_date)
+            artifacts.append({"field": field, "api_key": api_key_name, "path": str(path), "shape": list(frame.shape)})
+            if table_error is None:
+                source_key_reports.append(source_key_report_row(
+                    run_id=run_dir.name,
+                    generated_at=generated_at,
+                    target_date=target_date,
+                    lane=spec.lane,
+                    field=field,
+                    api_key=api_key_name,
+                    status=status,
+                    rows=finlab_rows,
+                    target_rows=target_rows,
+                    latest_date=latest_index(frame),
+                    path=path,
+                    run_dir=run_dir,
+                    gcs_bucket=gcs_bucket,
+                    gcs_prefix=gcs_prefix,
+                    metadata={"kind": spec.kind, "shape": list(frame.shape)},
+                ))
         elif spec.kind == "official_market_summary":
             frames = fetch_official_market_summary_frames(OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS)
             if require_official_market_summary:
@@ -1336,7 +1946,27 @@ def materialize_specs(
                     "non_null_cells": non_null_cells(frame),
                 })
         elif spec.kind == "broker_aggregate":
-            frame = pd.DataFrame(data.get("broker_transactions"))
+            api_key_name = "broker_transactions"
+            broker_error: Exception | None = None
+            try:
+                frame = pd.DataFrame(data.get(api_key_name))
+            except Exception as exc:
+                broker_error = exc
+                status = source_key_status_for_exception(exc)
+                source_key_reports.append(source_key_report_row(
+                    run_id=run_dir.name,
+                    generated_at=generated_at,
+                    target_date=target_date,
+                    lane=spec.lane,
+                    field=api_key_name,
+                    api_key=api_key_name,
+                    status=status,
+                    error=exc,
+                    metadata={"kind": spec.kind},
+                ))
+                if status == "quota_blocked":
+                    raise
+                frame = pd.DataFrame()
             grouped = normalize_broker_transactions_daily(frame, start)
             rank_rows = grouped.attrs.get("broker_rank_daily")
             grouped = filter_rows_date_range(
@@ -1377,45 +2007,100 @@ def materialize_specs(
             ]
             artifacts.append({"field": "broker_daily", "api_key": "broker_transactions", "path": str(path), "shape": list(grouped.shape)})
             artifacts.append({"field": "broker_rank_daily", "api_key": "broker_transactions", "path": str(rank_path), "shape": list(rank_rows.shape)})
+            target_rows = int(len(filter_rows_date_range(grouped, start_date=target_date, end_date=target_date))) if "date" in grouped.columns else finlab_rows
+            status = source_key_status(rows=finlab_rows, target_rows=target_rows, target_date=target_date)
+            if broker_error is None:
+                source_key_reports.append(source_key_report_row(
+                    run_id=run_dir.name,
+                    generated_at=generated_at,
+                    target_date=target_date,
+                    lane=spec.lane,
+                    field=api_key_name,
+                    api_key=api_key_name,
+                    status=status,
+                    rows=finlab_rows,
+                    target_rows=target_rows,
+                    latest_date=latest,
+                    path=path,
+                    run_dir=run_dir,
+                    gcs_bucket=gcs_bucket,
+                    gcs_prefix=gcs_prefix,
+                    metadata={"kind": spec.kind, "rank_path": str(rank_path), "rank_shape": list(rank_rows.shape)},
+                ))
         elif spec.kind == "rotc_broker_aggregate":
-            frame = pd.DataFrame(data.get("rotc_broker_transactions"))
-            frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
-            frame = frame[frame["date"] >= pd.Timestamp(start)]
-            if source_end_date:
-                frame = frame[frame["date"] <= pd.Timestamp(source_end_date)]
-            frame["buy_shares_raw"] = pd.to_numeric(frame["買進股數"], errors="coerce").fillna(0)
-            frame["sell_shares_raw"] = pd.to_numeric(frame["賣出股數"], errors="coerce").fillna(0)
-            frame["broker_net"] = frame["buy_shares_raw"] - frame["sell_shares_raw"]
-            broker_daily = frame.groupby(["date", "stock_id", "證券商代號"], observed=True).agg(
-                broker_buy_shares=("buy_shares_raw", "sum"),
-                broker_sell_shares=("sell_shares_raw", "sum"),
-                broker_net=("broker_net", "sum"),
-            ).reset_index()
-            broker_daily["abs_broker_net"] = broker_daily["broker_net"].abs()
-            dominant = (
-                broker_daily.sort_values(["date", "stock_id", "abs_broker_net"], ascending=[True, True, False])
-                .groupby(["date", "stock_id"], observed=True)
-                .head(1)[["date", "stock_id", "證券商代號", "broker_net", "abs_broker_net"]]
-                .rename(columns={
-                    "證券商代號": "dominant_broker_code",
-                    "broker_net": "dominant_net_shares",
-                    "abs_broker_net": "dominant_abs_net_shares",
-                })
-            )
-            pressure = broker_daily.groupby(["date", "stock_id"], observed=True).agg(
-                gross_imbalance_shares=("abs_broker_net", "sum"),
-                directional_broker_count=("abs_broker_net", lambda values: int((values > 0).sum())),
-            ).reset_index()
-            grouped = frame.groupby(["date", "stock_id"], observed=True).agg(
-                buy_shares=("buy_shares_raw", "sum"),
-                sell_shares=("sell_shares_raw", "sum"),
-                broker_count=("證券商代號", "nunique"),
-            ).reset_index()
-            grouped = grouped.merge(dominant, on=["date", "stock_id"], how="left").merge(pressure, on=["date", "stock_id"], how="left")
-            # Backward-compatible field consumed by older previews. The all-broker
-            # net is always zero by market mechanics, so V4.1 uses the dominant
-            # broker imbalance as the signed proxy instead.
-            grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
+            api_key_name = "rotc_broker_transactions"
+            rotc_error: Exception | None = None
+            try:
+                frame = pd.DataFrame(data.get(api_key_name))
+            except Exception as exc:
+                rotc_error = exc
+                status = source_key_status_for_exception(exc)
+                source_key_reports.append(source_key_report_row(
+                    run_id=run_dir.name,
+                    generated_at=generated_at,
+                    target_date=target_date,
+                    lane=spec.lane,
+                    field=api_key_name,
+                    api_key=api_key_name,
+                    status=status,
+                    error=exc,
+                    metadata={"kind": spec.kind},
+                ))
+                if status == "quota_blocked":
+                    raise
+                frame = pd.DataFrame()
+            if frame.empty or "date" not in frame.columns:
+                grouped = pd.DataFrame(columns=[
+                    "date",
+                    "stock_id",
+                    "buy_shares",
+                    "sell_shares",
+                    "broker_count",
+                    "dominant_broker_code",
+                    "dominant_net_shares",
+                    "dominant_abs_net_shares",
+                    "gross_imbalance_shares",
+                    "directional_broker_count",
+                    "buy_sell_net",
+                ])
+            else:
+                frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+                frame = frame[frame["date"] >= pd.Timestamp(start)]
+                if source_end_date:
+                    frame = frame[frame["date"] <= pd.Timestamp(source_end_date)]
+                frame["buy_shares_raw"] = pd.to_numeric(frame["買進股數"], errors="coerce").fillna(0)
+                frame["sell_shares_raw"] = pd.to_numeric(frame["賣出股數"], errors="coerce").fillna(0)
+                frame["broker_net"] = frame["buy_shares_raw"] - frame["sell_shares_raw"]
+                broker_daily = frame.groupby(["date", "stock_id", "證券商代號"], observed=True).agg(
+                    broker_buy_shares=("buy_shares_raw", "sum"),
+                    broker_sell_shares=("sell_shares_raw", "sum"),
+                    broker_net=("broker_net", "sum"),
+                ).reset_index()
+                broker_daily["abs_broker_net"] = broker_daily["broker_net"].abs()
+                dominant = (
+                    broker_daily.sort_values(["date", "stock_id", "abs_broker_net"], ascending=[True, True, False])
+                    .groupby(["date", "stock_id"], observed=True)
+                    .head(1)[["date", "stock_id", "證券商代號", "broker_net", "abs_broker_net"]]
+                    .rename(columns={
+                        "證券商代號": "dominant_broker_code",
+                        "broker_net": "dominant_net_shares",
+                        "abs_broker_net": "dominant_abs_net_shares",
+                    })
+                )
+                pressure = broker_daily.groupby(["date", "stock_id"], observed=True).agg(
+                    gross_imbalance_shares=("abs_broker_net", "sum"),
+                    directional_broker_count=("abs_broker_net", lambda values: int((values > 0).sum())),
+                ).reset_index()
+                grouped = frame.groupby(["date", "stock_id"], observed=True).agg(
+                    buy_shares=("buy_shares_raw", "sum"),
+                    sell_shares=("sell_shares_raw", "sum"),
+                    broker_count=("證券商代號", "nunique"),
+                ).reset_index()
+                grouped = grouped.merge(dominant, on=["date", "stock_id"], how="left").merge(pressure, on=["date", "stock_id"], how="left")
+                # Backward-compatible field consumed by older previews. The all-broker
+                # net is always zero by market mechanics, so V4.1 uses the dominant
+                # broker imbalance as the signed proxy instead.
+                grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
             path = lane_dir / "rotc_broker_daily.parquet"
             write_parquet(path, grouped)
             finlab_rows = int(len(grouped))
@@ -1432,6 +2117,26 @@ def materialize_specs(
                 "directional_broker_count",
             ]
             artifacts.append({"field": "rotc_broker_daily", "api_key": "rotc_broker_transactions", "path": str(path), "shape": list(grouped.shape)})
+            target_rows = int(len(filter_rows_date_range(grouped, start_date=target_date, end_date=target_date))) if "date" in grouped.columns else finlab_rows
+            status = source_key_status(rows=finlab_rows, target_rows=target_rows, target_date=target_date)
+            if rotc_error is None:
+                source_key_reports.append(source_key_report_row(
+                    run_id=run_dir.name,
+                    generated_at=generated_at,
+                    target_date=target_date,
+                    lane=spec.lane,
+                    field=api_key_name,
+                    api_key=api_key_name,
+                    status=status,
+                    rows=finlab_rows,
+                    target_rows=target_rows,
+                    latest_date=latest,
+                    path=path,
+                    run_dir=run_dir,
+                    gcs_bucket=gcs_bucket,
+                    gcs_prefix=gcs_prefix,
+                    metadata={"kind": spec.kind},
+                ))
         else:
             raise ValueError(f"unsupported spec kind: {spec.kind}")
 
@@ -1473,7 +2178,7 @@ def materialize_specs(
             flush=True,
         )
 
-    return dataset_summaries, diff_reports
+    return dataset_summaries, diff_reports, source_key_reports, source_key_blockers
 
 
 def insert_d1_summary(manifest: dict[str, Any]) -> None:
@@ -1496,8 +2201,13 @@ def insert_d1_summary(manifest: dict[str, Any]) -> None:
             summary["gap_fill_rows"],
             summary["value_conflicts"],
             manifest["checksum"],
-            "ready",
-            json.dumps({"artifact_root": manifest["artifact_root"], "mode": manifest["mode"]}, ensure_ascii=False, sort_keys=True),
+            "partial_failed" if manifest.get("backfill_status") == "partial_failed" else "ready",
+            json.dumps({
+                "artifact_root": manifest["artifact_root"],
+                "mode": manifest["mode"],
+                "backfill_status": manifest.get("backfill_status"),
+                "source_key_blockers": manifest.get("source_key_blockers") or [],
+            }, ensure_ascii=False, sort_keys=True),
         ],
     )
 
@@ -1581,6 +2291,146 @@ def insert_d1_summary(manifest: dict[str, Any]) -> None:
                     generated_at,
                 ],
             )
+
+
+def insert_source_key_report(manifest: dict[str, Any], *, chunk_size: int = 250) -> dict[str, Any]:
+    rows = [row for row in manifest.get("source_key_reports") or [] if isinstance(row, dict)]
+    if not rows:
+        return {"status": "skipped", "reason": "no_source_key_reports", "rows": 0}
+
+    statements: list[tuple[str, list[Any]]] = []
+    for row in rows:
+        params = [
+            row.get("run_id") or manifest.get("run_id"),
+            row.get("target_date") or manifest.get("source_end_date") or str(manifest.get("generated_at") or "")[:10],
+            row.get("lane"),
+            row.get("canonical_dataset"),
+            row.get("field"),
+            row.get("api_key"),
+            row.get("source") or "finlab",
+            1 if row.get("required", True) else 0,
+            row.get("status"),
+            int(row.get("rows") or 0),
+            int(row.get("target_rows") or 0),
+            row.get("latest_date"),
+            row.get("artifact_uri"),
+            row.get("artifact_path"),
+            row.get("artifact_checksum"),
+            row.get("error_code"),
+            row.get("error_message"),
+            row.get("generated_at") or manifest.get("generated_at"),
+            row.get("metadata_json"),
+        ]
+        statements.append((
+            """
+            INSERT INTO source_key_attempts (
+              run_id, target_date, lane, canonical_dataset, field, api_key, source, required,
+              status, rows, target_rows, latest_date, artifact_uri, artifact_path,
+              artifact_checksum, error_code, error_message, generated_at, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            params,
+        ))
+        statements.append((
+            """
+            INSERT INTO source_key_report (
+              target_date, lane, field, api_key, source, canonical_dataset, required, status,
+              rows, target_rows, latest_date, artifact_uri, artifact_path, artifact_checksum,
+              last_run_id, attempt_count, error_code, error_message, generated_at, updated_at,
+              metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+            ON CONFLICT(target_date, lane, field, api_key) DO UPDATE SET
+              source=excluded.source,
+              canonical_dataset=excluded.canonical_dataset,
+              required=excluded.required,
+              status=CASE
+                WHEN source_key_report.status IN ('ok', 'skipped_reused')
+                 AND COALESCE(source_key_report.target_rows, source_key_report.rows, 0) > 0
+                 AND excluded.status NOT IN ('ok', 'skipped_reused')
+                THEN source_key_report.status ELSE excluded.status END,
+              rows=CASE
+                WHEN source_key_report.status IN ('ok', 'skipped_reused')
+                 AND COALESCE(source_key_report.target_rows, source_key_report.rows, 0) > 0
+                 AND excluded.status NOT IN ('ok', 'skipped_reused')
+                THEN source_key_report.rows ELSE excluded.rows END,
+              target_rows=CASE
+                WHEN source_key_report.status IN ('ok', 'skipped_reused')
+                 AND COALESCE(source_key_report.target_rows, source_key_report.rows, 0) > 0
+                 AND excluded.status NOT IN ('ok', 'skipped_reused')
+                THEN source_key_report.target_rows ELSE excluded.target_rows END,
+              latest_date=CASE
+                WHEN source_key_report.status IN ('ok', 'skipped_reused')
+                 AND COALESCE(source_key_report.target_rows, source_key_report.rows, 0) > 0
+                 AND excluded.status NOT IN ('ok', 'skipped_reused')
+                THEN source_key_report.latest_date ELSE excluded.latest_date END,
+              artifact_uri=CASE
+                WHEN source_key_report.status IN ('ok', 'skipped_reused')
+                 AND COALESCE(source_key_report.target_rows, source_key_report.rows, 0) > 0
+                 AND excluded.status NOT IN ('ok', 'skipped_reused')
+                THEN source_key_report.artifact_uri ELSE excluded.artifact_uri END,
+              artifact_path=CASE
+                WHEN source_key_report.status IN ('ok', 'skipped_reused')
+                 AND COALESCE(source_key_report.target_rows, source_key_report.rows, 0) > 0
+                 AND excluded.status NOT IN ('ok', 'skipped_reused')
+                THEN source_key_report.artifact_path ELSE excluded.artifact_path END,
+              artifact_checksum=CASE
+                WHEN source_key_report.status IN ('ok', 'skipped_reused')
+                 AND COALESCE(source_key_report.target_rows, source_key_report.rows, 0) > 0
+                 AND excluded.status NOT IN ('ok', 'skipped_reused')
+                THEN source_key_report.artifact_checksum ELSE excluded.artifact_checksum END,
+              last_run_id=CASE
+                WHEN source_key_report.status IN ('ok', 'skipped_reused')
+                 AND COALESCE(source_key_report.target_rows, source_key_report.rows, 0) > 0
+                 AND excluded.status NOT IN ('ok', 'skipped_reused')
+                THEN source_key_report.last_run_id ELSE excluded.last_run_id END,
+              attempt_count=source_key_report.attempt_count + 1,
+              error_code=CASE
+                WHEN source_key_report.status IN ('ok', 'skipped_reused')
+                 AND COALESCE(source_key_report.target_rows, source_key_report.rows, 0) > 0
+                 AND excluded.status NOT IN ('ok', 'skipped_reused')
+                THEN source_key_report.error_code ELSE excluded.error_code END,
+              error_message=CASE
+                WHEN source_key_report.status IN ('ok', 'skipped_reused')
+                 AND COALESCE(source_key_report.target_rows, source_key_report.rows, 0) > 0
+                 AND excluded.status NOT IN ('ok', 'skipped_reused')
+                THEN source_key_report.error_message ELSE excluded.error_message END,
+              generated_at=CASE
+                WHEN source_key_report.status IN ('ok', 'skipped_reused')
+                 AND COALESCE(source_key_report.target_rows, source_key_report.rows, 0) > 0
+                 AND excluded.status NOT IN ('ok', 'skipped_reused')
+                THEN source_key_report.generated_at ELSE excluded.generated_at END,
+              updated_at=CURRENT_TIMESTAMP,
+              metadata_json=CASE
+                WHEN source_key_report.status IN ('ok', 'skipped_reused')
+                 AND COALESCE(source_key_report.target_rows, source_key_report.rows, 0) > 0
+                 AND excluded.status NOT IN ('ok', 'skipped_reused')
+                THEN source_key_report.metadata_json ELSE excluded.metadata_json END
+            """,
+            [
+                params[1],
+                params[2],
+                params[4],
+                params[5],
+                params[6],
+                params[3],
+                params[7],
+                params[8],
+                params[9],
+                params[10],
+                params[11],
+                params[12],
+                params[13],
+                params[14],
+                params[0],
+                params[15],
+                params[16],
+                params[17],
+                params[18],
+            ],
+        ))
+
+    result = d1_batch_execute(statements, chunk_size=chunk_size)
+    return {"status": "written", "rows": len(rows), "statements": len(statements), "result": result}
 
 
 def _artifact_path(manifest: dict[str, Any], lane: str) -> Path | None:
@@ -2031,6 +2881,119 @@ def materialize_canonical_to_d1(
     }
 
 
+def canonical_datasets_for_source_key_blockers(blockers: Iterable[dict[str, Any]]) -> set[str]:
+    datasets: set[str] = set()
+    for blocker in blockers or []:
+        lane = str((blocker or {}).get("lane") or "").strip()
+        if not lane:
+            continue
+        for dataset in FINLAB_CANONICAL_DATASETS_BY_LANE.get(lane, [canonical_table_for_lane(lane)]):
+            datasets.add(dataset)
+    return datasets
+
+
+def materialize_canonical_plan_to_d1(
+    manifest: dict[str, Any],
+    *,
+    start_date: str | None,
+    end_date: str | None,
+    datasets: list[str],
+    source_key_blockers: list[dict[str, Any]] | None = None,
+    limit_per_dataset: int | None = None,
+    chunk_size: int = 250,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    requested = list(dict.fromkeys(datasets))
+    blocked = canonical_datasets_for_source_key_blockers(source_key_blockers or [])
+    ready = [dataset for dataset in requested if dataset not in blocked]
+    per_dataset: dict[str, dict[str, Any]] = {}
+    row_counts: dict[str, int] = {}
+    failed: list[str] = []
+    totals = {"total": 0, "success_count": 0, "error_count": 0, "changes_total": 0, "dry_run": dry_run}
+
+    for dataset in sorted(blocked):
+        per_dataset[dataset] = {
+            "status": "materializer_blocked",
+            "reason": "source_key_blockers",
+            "blockers": [
+                blocker for blocker in source_key_blockers or []
+                if dataset in FINLAB_CANONICAL_DATASETS_BY_LANE.get(str(blocker.get("lane") or ""), [])
+            ],
+        }
+
+    for dataset in ready:
+        try:
+            result = materialize_canonical_to_d1(
+                manifest,
+                start_date=start_date,
+                end_date=end_date,
+                datasets=[dataset],
+                limit_per_dataset=limit_per_dataset,
+                chunk_size=chunk_size,
+                dry_run=dry_run,
+            )
+            validate_canonical_apply_result(result, dry_run=dry_run)
+            apply_result = result.get("apply_result") if isinstance(result.get("apply_result"), dict) else {}
+            for key in ("total", "success_count", "error_count", "changes_total"):
+                totals[key] = int(totals.get(key) or 0) + int(apply_result.get(key) or 0)
+            for name, count in (result.get("row_counts") or {}).items():
+                row_counts[str(name)] = int(count or 0)
+            per_dataset[dataset] = {"status": "ok", "result": result}
+        except Exception as exc:
+            failed.append(dataset)
+            per_dataset[dataset] = {
+                "status": "materializer_failed",
+                "error_code": type(exc).__name__,
+                "error_message": str(exc)[:500],
+            }
+
+    if failed or blocked:
+        status = "materializer_blocked" if blocked and not ready and not failed else "partial_failed"
+    else:
+        status = "ready"
+    return {
+        "schema_version": "finlab-canonical-d1-apply-plan-v1",
+        "run_id": manifest["run_id"],
+        "generated_at": manifest["generated_at"],
+        "artifact_root": manifest["artifact_root"],
+        "start_date": start_date,
+        "end_date": end_date,
+        "status": status,
+        "requested_datasets": requested,
+        "ready_datasets": ready,
+        "blocked_datasets": sorted(blocked),
+        "failed_datasets": failed,
+        "materialized_datasets": [dataset for dataset in ready if per_dataset.get(dataset, {}).get("status") == "ok"],
+        "per_dataset": per_dataset,
+        "row_counts": row_counts,
+        "statement_count": int(totals.get("total") or 0),
+        "apply_result": totals,
+    }
+
+
+def validate_canonical_apply_result(result: dict[str, Any] | None, *, dry_run: bool = False) -> None:
+    if dry_run:
+        return
+    if not isinstance(result, dict):
+        raise RuntimeError("canonical_d1_apply missing after requested apply")
+
+    apply_result = result.get("apply_result") if isinstance(result.get("apply_result"), dict) else {}
+    error_count = int(apply_result.get("error_count") or 0)
+    success_count = int(apply_result.get("success_count") or 0)
+    statement_count = int(result.get("statement_count") or 0)
+    if error_count > 0:
+        raise RuntimeError(f"canonical_d1_apply failed: error_count={error_count}")
+    if statement_count <= 0 or success_count <= 0:
+        raise RuntimeError(
+            f"canonical_d1_apply wrote no D1 statements: statement_count={statement_count} success_count={success_count}"
+        )
+
+    row_counts = result.get("row_counts") if isinstance(result.get("row_counts"), dict) else {}
+    row_total = sum(int(value or 0) for value in row_counts.values())
+    if row_total <= 0:
+        raise RuntimeError("canonical_d1_apply produced zero canonical rows")
+
+
 def canonical_table_for_lane(lane: str) -> str:
     if lane == "market_summary":
         return "canonical_market_summary_daily"
@@ -2071,6 +3034,8 @@ def main() -> int:
     parser.add_argument("--canonical-d1-chunk-size", type=int, default=250)
     parser.add_argument("--canonical-dry-run", action="store_true")
     parser.add_argument("--lanes", default="", help="Comma-separated FinLab source lanes to materialize. Empty means all CORE_SPECS lanes.")
+    parser.add_argument("--key-scope-json", default="", help="JSON object/list limiting data.get calls to lane fields.")
+    parser.add_argument("--reuse-successful-artifacts", action="store_true", help="Allow materializer repair to reuse previous successful key artifacts.")
     parser.add_argument("--source-start-date", default="", help="Inclusive source materialization start date. Defaults to --years lookback.")
     parser.add_argument("--source-end-date", default="", help="Inclusive source materialization end date.")
     parser.add_argument("--require-official-market-summary", action="store_true", help="Fail daily refresh when TWSE/TPEX market summary rows are incomplete.")
@@ -2091,16 +3056,25 @@ def main() -> int:
     run_dir = Path(args.output_dir) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     generated_at = utc_now()
+    key_scope = parse_key_scope_json(args.key_scope_json)
     requested_lanes = parse_lanes(args.lanes)
+    if key_scope and not requested_lanes:
+        requested_lanes = sorted(key_scope)
     source_start_date = args.source_start_date or None
     source_end_date = args.source_end_date or None
-    dataset_summaries, diff_reports = materialize_specs(
+    effective_reuse_successful_artifacts = bool(args.reuse_successful_artifacts and finlab_artifact_reuse_enabled())
+    dataset_summaries, diff_reports, source_key_reports, source_key_blockers = materialize_specs(
         years=args.years,
         run_dir=run_dir,
         lanes=requested_lanes,
         source_start_date=source_start_date,
         source_end_date=source_end_date,
         require_official_market_summary=args.require_official_market_summary,
+        generated_at=generated_at,
+        key_scope=key_scope,
+        reuse_successful_artifacts=effective_reuse_successful_artifacts,
+        gcs_bucket=args.gcs_bucket,
+        gcs_prefix=args.gcs_prefix.rstrip("/"),
     )
     summary = {
         "dataset_count": len(dataset_summaries),
@@ -2117,12 +3091,17 @@ def main() -> int:
         "mode": "remote_summary_writeback_full_artifacts",
         "artifact_root": str(run_dir),
         "requested_lanes": requested_lanes or None,
+        "key_scope": {lane: sorted(fields) for lane, fields in key_scope.items()} or None,
+        "reuse_successful_artifacts": effective_reuse_successful_artifacts,
         "source_start_date": source_start_date,
         "source_end_date": source_end_date,
         "require_official_market_summary": args.require_official_market_summary,
         "summary": summary,
         "datasets": dataset_summaries,
         "diff_reports": diff_reports,
+        "source_key_reports": source_key_reports,
+        "source_key_blockers": source_key_blockers,
+        "backfill_status": "partial_failed" if source_key_blockers else "ready",
     }
     manifest["checksum"] = checksum_manifest({"run_id": run_id, "summary": summary, "datasets": dataset_summaries})
     write_json(run_dir / "manifest.json", manifest)
@@ -2133,7 +3112,48 @@ def main() -> int:
             bucket_name=args.gcs_bucket,
             prefix=f"{args.gcs_prefix.rstrip('/')}/{run_id}",
         )
-        manifest["gcs_upload"] = gcs
+        manifest["gcs_upload_raw"] = gcs
+        write_json(run_dir / "manifest.json", manifest)
+
+    if args.write_d1 and finlab_key_report_enabled():
+        manifest["source_key_report_writeback"] = insert_source_key_report(
+            manifest,
+            chunk_size=args.canonical_d1_chunk_size,
+        )
+        write_json(run_dir / "manifest.json", manifest)
+    elif args.write_d1:
+        manifest["source_key_report_writeback"] = {
+            "status": "skipped",
+            "reason": "FINLAB_KEY_REPORT_ENABLED=false",
+            "rows": 0,
+        }
+        write_json(run_dir / "manifest.json", manifest)
+
+    if args.apply_canonical_d1:
+        default_start, default_end = default_canonical_window(
+            generated_at=generated_at,
+            window_days=args.canonical_window_days,
+        )
+        canonical_datasets = parse_canonical_datasets(args.canonical_datasets)
+        print("[finlab-backfill] canonical_d1_apply start", file=sys.stderr, flush=True)
+        manifest["canonical_d1_apply"] = materialize_canonical_plan_to_d1(
+            manifest,
+            start_date=args.canonical_start_date or default_start,
+            end_date=args.canonical_end_date or default_end,
+            datasets=canonical_datasets,
+            source_key_blockers=source_key_blockers,
+            limit_per_dataset=args.canonical_limit_per_dataset or None,
+            chunk_size=args.canonical_d1_chunk_size,
+            dry_run=args.canonical_dry_run,
+        )
+        if manifest["canonical_d1_apply"].get("status") == "ready":
+            validate_canonical_apply_result(manifest.get("canonical_d1_apply"), dry_run=args.canonical_dry_run)
+        manifest["materialized_datasets"] = manifest["canonical_d1_apply"].get("materialized_datasets") or []
+        manifest["blocked_datasets"] = manifest["canonical_d1_apply"].get("blocked_datasets") or []
+        manifest["failed_datasets"] = manifest["canonical_d1_apply"].get("failed_datasets") or []
+        if manifest["canonical_d1_apply"].get("status") != "ready":
+            manifest["backfill_status"] = "partial_failed"
+        print("[finlab-backfill] canonical_d1_apply done", file=sys.stderr, flush=True)
         write_json(run_dir / "manifest.json", manifest)
 
     if args.write_d1:
@@ -2143,22 +3163,13 @@ def main() -> int:
         print("[finlab-backfill] runtime_table_writeback done", file=sys.stderr, flush=True)
         write_json(run_dir / "manifest.json", manifest)
 
-    if args.apply_canonical_d1:
-        default_start, default_end = default_canonical_window(
-            generated_at=generated_at,
-            window_days=args.canonical_window_days,
+    if args.gcs_bucket:
+        gcs = upload_dir_to_gcs(
+            run_dir,
+            bucket_name=args.gcs_bucket,
+            prefix=f"{args.gcs_prefix.rstrip('/')}/{run_id}",
         )
-        print("[finlab-backfill] canonical_d1_apply start", file=sys.stderr, flush=True)
-        manifest["canonical_d1_apply"] = materialize_canonical_to_d1(
-            manifest,
-            start_date=args.canonical_start_date or default_start,
-            end_date=args.canonical_end_date or default_end,
-            datasets=parse_canonical_datasets(args.canonical_datasets),
-            limit_per_dataset=args.canonical_limit_per_dataset or None,
-            chunk_size=args.canonical_d1_chunk_size,
-            dry_run=args.canonical_dry_run,
-        )
-        print("[finlab-backfill] canonical_d1_apply done", file=sys.stderr, flush=True)
+        manifest["gcs_upload"] = gcs
         write_json(run_dir / "manifest.json", manifest)
 
     print(json.dumps({
@@ -2167,6 +3178,12 @@ def main() -> int:
         "source_start_date": source_start_date,
         "source_end_date": source_end_date,
         "summary": summary,
+        "backfill_status": manifest.get("backfill_status"),
+        "source_key_report_writeback": manifest.get("source_key_report_writeback"),
+        "source_key_blockers": manifest.get("source_key_blockers"),
+        "materialized_datasets": manifest.get("materialized_datasets"),
+        "blocked_datasets": manifest.get("blocked_datasets"),
+        "failed_datasets": manifest.get("failed_datasets"),
         "artifact_root": str(run_dir),
         "gcs_upload": manifest.get("gcs_upload"),
         "runtime_table_writeback": manifest.get("runtime_table_writeback"),

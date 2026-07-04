@@ -27,6 +27,23 @@ export interface CanonicalScreenerChip {
   concentration?: number | null
   margin_balance?: number | null
   short_balance?: number | null
+  margin_prev_balance?: number | null
+  margin_limit?: number | null
+  margin_usage_ratio?: number | null
+  short_buy?: number | null
+  short_sell?: number | null
+  short_stock_repayment?: number | null
+  short_prev_balance?: number | null
+  short_limit?: number | null
+  short_usage_ratio?: number | null
+  security_lending_borrow?: number | null
+  security_lending_return?: number | null
+  security_lending_delta?: number | null
+  security_lending_balance?: number | null
+  security_lending_sell?: number | null
+  security_lending_sell_return?: number | null
+  security_lending_sell_balance?: number | null
+  security_lending_sell_limit?: number | null
 }
 
 /** @deprecated Use CanonicalScreenerPrice. The FinMind fetcher is retired. */
@@ -44,6 +61,23 @@ export interface CanonicalChipRow {
   dealer_net: number | null
   margin_balance?: number | null
   short_balance?: number | null
+  margin_prev_balance?: number | null
+  margin_limit?: number | null
+  margin_usage_ratio?: number | null
+  short_buy?: number | null
+  short_sell?: number | null
+  short_stock_repayment?: number | null
+  short_prev_balance?: number | null
+  short_limit?: number | null
+  short_usage_ratio?: number | null
+  security_lending_borrow?: number | null
+  security_lending_return?: number | null
+  security_lending_delta?: number | null
+  security_lending_balance?: number | null
+  security_lending_sell?: number | null
+  security_lending_sell_return?: number | null
+  security_lending_sell_balance?: number | null
+  security_lending_sell_limit?: number | null
   source: string | null
   as_of_date?: string | null
 }
@@ -177,7 +211,18 @@ export function canonicalChipRowsToFmChips(
     if (foreign) chips.push(foreign)
     if (trust) chips.push(trust)
     if (dealer) chips.push(dealer)
-    if (row.margin_balance != null || row.short_balance != null) {
+    if (
+      row.margin_balance != null ||
+      row.short_balance != null ||
+      row.margin_usage_ratio != null ||
+      row.short_buy != null ||
+      row.short_sell != null ||
+      row.short_usage_ratio != null ||
+      row.security_lending_sell != null ||
+      row.security_lending_sell_return != null ||
+      row.security_lending_sell_balance != null ||
+      row.security_lending_balance != null
+    ) {
       chips.push({
         date: row.date,
         stock_id: row.stock_id,
@@ -188,6 +233,23 @@ export function canonicalChipRowsToFmChips(
         market_segment: row.market_segment ?? undefined,
         margin_balance: row.margin_balance ?? null,
         short_balance: row.short_balance ?? null,
+        margin_prev_balance: row.margin_prev_balance ?? null,
+        margin_limit: row.margin_limit ?? null,
+        margin_usage_ratio: row.margin_usage_ratio ?? null,
+        short_buy: row.short_buy ?? null,
+        short_sell: row.short_sell ?? null,
+        short_stock_repayment: row.short_stock_repayment ?? null,
+        short_prev_balance: row.short_prev_balance ?? null,
+        short_limit: row.short_limit ?? null,
+        short_usage_ratio: row.short_usage_ratio ?? null,
+        security_lending_borrow: row.security_lending_borrow ?? null,
+        security_lending_return: row.security_lending_return ?? null,
+        security_lending_delta: row.security_lending_delta ?? null,
+        security_lending_balance: row.security_lending_balance ?? null,
+        security_lending_sell: row.security_lending_sell ?? null,
+        security_lending_sell_return: row.security_lending_sell_return ?? null,
+        security_lending_sell_balance: row.security_lending_sell_balance ?? null,
+        security_lending_sell_limit: row.security_lending_sell_limit ?? null,
       })
     }
   }
@@ -238,11 +300,29 @@ async function loadCanonicalChipsFromD1(
     ).bind(maxAllowedDate, maxAllowedDate, chipDays).all<{ date: string }>()
     const dates = (canonicalDates ?? []).map(row => row.date).sort()
     if (dates.length) {
-      const { results } = await db.prepare(
-        `SELECT stock_id, date, market_segment, foreign_net, trust_net, dealer_net, margin_balance, short_balance, source, as_of_date
-         FROM canonical_chip_daily
-         WHERE date >= ? AND date <= ?`,
-      ).bind(dates[0], dates[dates.length - 1]).all<CanonicalChipRow>()
+      let results: CanonicalChipRow[] = []
+      try {
+        const response = await db.prepare(
+          `SELECT stock_id, date, market_segment, foreign_net, trust_net, dealer_net,
+                  margin_balance, short_balance,
+                  margin_prev_balance, margin_limit, margin_usage_ratio,
+                  short_buy, short_sell, short_stock_repayment, short_prev_balance, short_limit, short_usage_ratio,
+                  security_lending_borrow, security_lending_return, security_lending_delta, security_lending_balance,
+                  security_lending_sell, security_lending_sell_return, security_lending_sell_balance, security_lending_sell_limit,
+                  source, as_of_date
+           FROM canonical_chip_daily
+           WHERE date >= ? AND date <= ?`,
+        ).bind(dates[0], dates[dates.length - 1]).all<CanonicalChipRow>()
+        results = response.results ?? []
+      } catch {
+        const response = await db.prepare(
+          `SELECT stock_id, date, market_segment, foreign_net, trust_net, dealer_net,
+                  margin_balance, short_balance, source, as_of_date
+           FROM canonical_chip_daily
+           WHERE date >= ? AND date <= ?`,
+        ).bind(dates[0], dates[dates.length - 1]).all<CanonicalChipRow>()
+        results = response.results ?? []
+      }
       for (const chip of canonicalChipRowsToFmChips(results ?? [])) {
         chips.push(chip)
         const source = chip.source ?? 'canonical_chip_daily'

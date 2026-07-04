@@ -661,6 +661,23 @@ interface ChipDayNet {
   brokerFlow?: number
   marginBalance?: number | null
   shortBalance?: number | null
+  marginPrevBalance?: number | null
+  marginLimit?: number | null
+  marginUsageRatio?: number | null
+  shortBuy?: number | null
+  shortSell?: number | null
+  shortStockRepayment?: number | null
+  shortPrevBalance?: number | null
+  shortLimit?: number | null
+  shortUsageRatio?: number | null
+  securityLendingBorrow?: number | null
+  securityLendingReturn?: number | null
+  securityLendingDelta?: number | null
+  securityLendingBalance?: number | null
+  securityLendingSell?: number | null
+  securityLendingSellReturn?: number | null
+  securityLendingSellBalance?: number | null
+  securityLendingSellLimit?: number | null
   source?: string
   marketSegment?: string
   brokerCount?: number | null
@@ -841,6 +858,23 @@ function buildStockData(
     if (chipName.includes('margin_balance')) {
       entry.marginBalance = c.margin_balance ?? net
       entry.shortBalance = c.short_balance ?? entry.shortBalance ?? null
+      entry.marginPrevBalance = c.margin_prev_balance ?? entry.marginPrevBalance ?? null
+      entry.marginLimit = c.margin_limit ?? entry.marginLimit ?? null
+      entry.marginUsageRatio = c.margin_usage_ratio ?? entry.marginUsageRatio ?? null
+      entry.shortBuy = c.short_buy ?? entry.shortBuy ?? null
+      entry.shortSell = c.short_sell ?? entry.shortSell ?? null
+      entry.shortStockRepayment = c.short_stock_repayment ?? entry.shortStockRepayment ?? null
+      entry.shortPrevBalance = c.short_prev_balance ?? entry.shortPrevBalance ?? null
+      entry.shortLimit = c.short_limit ?? entry.shortLimit ?? null
+      entry.shortUsageRatio = c.short_usage_ratio ?? entry.shortUsageRatio ?? null
+      entry.securityLendingBorrow = c.security_lending_borrow ?? entry.securityLendingBorrow ?? null
+      entry.securityLendingReturn = c.security_lending_return ?? entry.securityLendingReturn ?? null
+      entry.securityLendingDelta = c.security_lending_delta ?? entry.securityLendingDelta ?? null
+      entry.securityLendingBalance = c.security_lending_balance ?? entry.securityLendingBalance ?? null
+      entry.securityLendingSell = c.security_lending_sell ?? entry.securityLendingSell ?? null
+      entry.securityLendingSellReturn = c.security_lending_sell_return ?? entry.securityLendingSellReturn ?? null
+      entry.securityLendingSellBalance = c.security_lending_sell_balance ?? entry.securityLendingSellBalance ?? null
+      entry.securityLendingSellLimit = c.security_lending_sell_limit ?? entry.securityLendingSellLimit ?? null
     }
     if (c.name.includes('憭?')) entry.foreign += net
     if (c.name.includes('?縑')) entry.trust += net
@@ -2014,6 +2048,154 @@ function scoreBrokerFlowChip(summary: BrokerFlowSummary): { score: number; reaso
   return { score, reasons }
 }
 
+interface CreditLendingPressureSummary {
+  adjustment: number
+  marginDelta: number | null
+  shortBalanceDelta: number | null
+  shortNetSell5d: number | null
+  lendingSellNet5d: number | null
+  lendingSellBalanceDelta: number | null
+  marginUsageRatio: number | null
+  shortUsageRatio: number | null
+  reasons: string[]
+}
+
+function pressureUnitsScore(units: number, latestClose: number, avgDailyTurnover: number, multiplier: number, cap: number): number {
+  if (!Number.isFinite(units) || !Number.isFinite(latestClose) || !Number.isFinite(avgDailyTurnover) || avgDailyTurnover <= 0) return 0
+  const intensity = Math.abs(units * latestClose) / avgDailyTurnover
+  return clamp(Math.sqrt(intensity) * multiplier, 0, cap)
+}
+
+function finiteRowValue(row: ChipDayNet | undefined, key: keyof ChipDayNet): number | null {
+  if (!row) return null
+  return finiteOrNull(row[key])
+}
+
+function scoreCreditLendingPressure(
+  chipDates: Map<string, ChipDayNet> | undefined,
+  prices: CanonicalScreenerPrice[],
+  latestClose: number,
+): CreditLendingPressureSummary | null {
+  if (!chipDates?.size) return null
+  const sortedDates = [...chipDates.keys()].sort().slice(-5)
+  const rows = sortedDates.map(date => chipDates.get(date)).filter((row): row is ChipDayNet => !!row)
+  const creditRows = rows.filter(row =>
+    row.marginBalance != null ||
+    row.shortBalance != null ||
+    row.shortBuy != null ||
+    row.shortSell != null ||
+    row.securityLendingSell != null ||
+    row.securityLendingSellReturn != null ||
+    row.securityLendingSellBalance != null ||
+    row.securityLendingBalance != null
+  )
+  if (!creditRows.length) return null
+
+  const first = creditRows[0]
+  const latest = creditRows[creditRows.length - 1]
+  const avgDailyTurnover = prices.reduce((s, p) => s + p.Trading_Volume * p.close, 0) / Math.max(1, prices.length)
+  const close = latestClose > 0 ? latestClose : (prices[prices.length - 1]?.close ?? 0)
+  let adjustment = 0
+  const reasons: string[] = []
+
+  const marginBalance0 = finiteRowValue(first, 'marginBalance')
+  const marginBalance1 = finiteRowValue(latest, 'marginBalance')
+  const marginDelta = marginBalance0 != null && marginBalance1 != null ? marginBalance1 - marginBalance0 : null
+  if (marginDelta != null && marginDelta !== 0) {
+    const score = pressureUnitsScore(marginDelta, close, avgDailyTurnover, 1.2, 1.5)
+    if (marginDelta > 0) {
+      adjustment += score
+      if (score >= 0.3) reasons.push(`margin_balance_rising_${Math.round(marginDelta)}`)
+    } else {
+      adjustment -= clamp(score, 0, 1.0)
+      if (score >= 0.3) reasons.push(`margin_balance_falling_${Math.round(Math.abs(marginDelta))}`)
+    }
+  }
+
+  const marginUsageRatio = finiteRowValue(latest, 'marginUsageRatio')
+  if (marginUsageRatio != null) {
+    if (marginUsageRatio > 0.8) { adjustment -= 2; reasons.push('margin_usage_crowded_gt_80pct') }
+    else if (marginUsageRatio > 0.6) { adjustment -= 1; reasons.push('margin_usage_crowded_gt_60pct') }
+  }
+
+  let shortNetSell5d: number | null = null
+  for (const row of creditRows) {
+    const sell = finiteRowValue(row, 'shortSell')
+    const buy = finiteRowValue(row, 'shortBuy')
+    const repay = finiteRowValue(row, 'shortStockRepayment')
+    if (sell != null || buy != null || repay != null) {
+      shortNetSell5d = (shortNetSell5d ?? 0) + (sell ?? 0) - (buy ?? 0) - (repay ?? 0)
+    }
+  }
+  const shortBalance0 = finiteRowValue(first, 'shortBalance')
+  const shortBalance1 = finiteRowValue(latest, 'shortBalance')
+  const shortBalanceDelta = shortBalance0 != null && shortBalance1 != null ? shortBalance1 - shortBalance0 : null
+  const shortPressure = shortNetSell5d ?? shortBalanceDelta
+  if (shortPressure != null && shortPressure !== 0) {
+    const score = pressureUnitsScore(shortPressure, close, avgDailyTurnover, 1.8, 2.0)
+    if (shortPressure > 0) {
+      adjustment -= score
+      if (score >= 0.3) reasons.push(`short_pressure_rising_${Math.round(shortPressure)}`)
+    } else {
+      adjustment += clamp(score, 0, 1.5)
+      if (score >= 0.3) reasons.push(`short_covering_${Math.round(Math.abs(shortPressure))}`)
+    }
+  }
+
+  const shortUsageRatio = finiteRowValue(latest, 'shortUsageRatio')
+  if (shortUsageRatio != null) {
+    if (shortUsageRatio > 0.75) { adjustment -= 2; reasons.push('short_usage_crowded_gt_75pct') }
+    else if (shortUsageRatio > 0.5) { adjustment -= 1; reasons.push('short_usage_crowded_gt_50pct') }
+  }
+
+  let lendingSellNet5d: number | null = null
+  for (const row of creditRows) {
+    const sell = finiteRowValue(row, 'securityLendingSell')
+    const ret = finiteRowValue(row, 'securityLendingSellReturn')
+    if (sell != null || ret != null) lendingSellNet5d = (lendingSellNet5d ?? 0) + (sell ?? 0) - (ret ?? 0)
+  }
+  if (lendingSellNet5d != null && lendingSellNet5d !== 0) {
+    const score = pressureUnitsScore(lendingSellNet5d, close, avgDailyTurnover, 2.2, 2.5)
+    if (lendingSellNet5d > 0) {
+      adjustment -= score
+      if (score >= 0.3) reasons.push(`lending_sell_pressure_${Math.round(lendingSellNet5d)}`)
+    } else {
+      adjustment += clamp(score, 0, 1.5)
+      if (score >= 0.3) reasons.push(`lending_sell_covering_${Math.round(Math.abs(lendingSellNet5d))}`)
+    }
+  }
+
+  const lendingSellBalance0 = finiteRowValue(first, 'securityLendingSellBalance')
+  const lendingSellBalance1 = finiteRowValue(latest, 'securityLendingSellBalance')
+  const lendingSellBalanceDelta = lendingSellBalance0 != null && lendingSellBalance1 != null
+    ? lendingSellBalance1 - lendingSellBalance0
+    : null
+  if (lendingSellBalanceDelta != null && lendingSellBalanceDelta !== 0) {
+    const score = pressureUnitsScore(lendingSellBalanceDelta, close, avgDailyTurnover, 1.4, 1.5)
+    if (lendingSellBalanceDelta > 0) {
+      adjustment -= score
+      if (score >= 0.3) reasons.push(`lending_sell_balance_rising_${Math.round(lendingSellBalanceDelta)}`)
+    } else {
+      adjustment += clamp(score, 0, 1.0)
+      if (score >= 0.3) reasons.push(`lending_sell_balance_falling_${Math.round(Math.abs(lendingSellBalanceDelta))}`)
+    }
+  }
+
+  const roundedAdjustment = Math.round(clamp(adjustment, -6, 4) * 10) / 10
+  if (roundedAdjustment === 0 && !reasons.length) return null
+  return {
+    adjustment: roundedAdjustment,
+    marginDelta,
+    shortBalanceDelta,
+    shortNetSell5d,
+    lendingSellNet5d,
+    lendingSellBalanceDelta,
+    marginUsageRatio,
+    shortUsageRatio,
+    reasons,
+  }
+}
+
 // ??? DB Operations ???????????????????????????????????????????????????????????
 
 async function updateScreenerWatchlist(db: D1Database, candidates: ScreenerCandidate[], tpexSymbolSet: Set<string>): Promise<void> {
@@ -2165,6 +2347,7 @@ export function scoreMultiFactor(
   let chip_score = 0
   let canonicalBrokerSummary: BrokerFlowSummary | null = null
   let canonicalBrokerScore = 0
+  let creditLendingSummary: CreditLendingPressureSummary | null = null
   let chipEvidenceStatus = 'missing_chip_evidence'
   let chipEvidenceSource = 'none'
   if (chipDates) {
@@ -2236,14 +2419,21 @@ export function scoreMultiFactor(
     chipEvidenceStatus = chip_score > 0 ? 'materialized_institutional_only' : 'materialized_neutral_or_bearish_institutional_only'
     chipEvidenceSource = 'canonical_chip_daily'
   }
+  creditLendingSummary = scoreCreditLendingPressure(chipDates, prices, latestClose)
+  if (creditLendingSummary) {
+    chip_score += creditLendingSummary.adjustment
+    reasons.push(...creditLendingSummary.reasons)
+    if (chipEvidenceSource === 'canonical_chip_daily') chipEvidenceSource = 'canonical_chip_daily+credit_lending'
+    else if (chipEvidenceSource === 'canonical_chip_daily+canonical_broker_flow_daily') chipEvidenceSource = 'canonical_chip_daily+canonical_broker_flow_daily+credit_lending'
+  }
   chip_score = clamp(chip_score, 0, 40)
   const chip_evidence: Record<string, unknown> = {
     schema_version: 'canonical_chip_evidence_v2',
     evidenceStatus: chipEvidenceStatus,
     evidence_status: chipEvidenceStatus,
     source: chipEvidenceSource,
-    scoringPolicy: 'institutional_plus_all_segment_broker_flow_max_score',
-    scoring_policy: 'institutional_plus_all_segment_broker_flow_max_score',
+    scoringPolicy: 'single_owner_institutional_broker_credit_lending_seed',
+    scoring_policy: 'single_owner_institutional_broker_credit_lending_seed',
     brokerFlowUsed: canonicalBrokerSummary != null,
     brokerEvidenceStatus: canonicalBrokerSummary == null
       ? 'missing'
@@ -2265,6 +2455,18 @@ export function scoreMultiFactor(
           marketSegment: canonicalBrokerSummary.marketSegment,
           source: canonicalBrokerSummary.latestSource,
           sourceDate: canonicalBrokerSummary.latestDate,
+        }
+      : null,
+    creditLending: creditLendingSummary
+      ? {
+          adjustment: creditLendingSummary.adjustment,
+          marginDelta: creditLendingSummary.marginDelta == null ? null : Math.round(creditLendingSummary.marginDelta),
+          shortBalanceDelta: creditLendingSummary.shortBalanceDelta == null ? null : Math.round(creditLendingSummary.shortBalanceDelta),
+          shortNetSell5d: creditLendingSummary.shortNetSell5d == null ? null : Math.round(creditLendingSummary.shortNetSell5d),
+          lendingSellNet5d: creditLendingSummary.lendingSellNet5d == null ? null : Math.round(creditLendingSummary.lendingSellNet5d),
+          lendingSellBalanceDelta: creditLendingSummary.lendingSellBalanceDelta == null ? null : Math.round(creditLendingSummary.lendingSellBalanceDelta),
+          marginUsageRatio: creditLendingSummary.marginUsageRatio,
+          shortUsageRatio: creditLendingSummary.shortUsageRatio,
         }
       : null,
   }
@@ -3666,122 +3868,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   scored.sort((a, b) => b.score - a.score)
-
-  // ?? Step 4b: Direct financial quality bonus ??
-  try {
-    const topSymbols4b = [...overlayEligibleSymbols]
-    if (topSymbols4b.length > 0) {
-      const ph = topSymbols4b.map(() => '?').join(',')
-
-      // P2-4: Direct financial quality score from FinLab canonical rows.
-      // Direct financial quality events; unavailable components are omitted.
-      const { results: finRows } = await env.DB.prepare(`
-        SELECT f.stock_id AS symbol,
-               f.eps,
-               f.revenue_growth_yoy,
-               f.roe,
-               f.gross_margin,
-               f.operating_margin,
-               (
-                 SELECT f2.roe
-                 FROM canonical_fundamental_features f2
-                 WHERE f2.stock_id = f.stock_id
-                   AND f2.source = 'finlab.fundamental_factor_diversity'
-                   AND f2.available_date < f.available_date
-                 ORDER BY f2.available_date DESC, f2.period DESC
-                 LIMIT 1
-               ) AS prev_roe,
-               (
-                 SELECT f2.gross_margin
-                 FROM canonical_fundamental_features f2
-                 WHERE f2.stock_id = f.stock_id
-                   AND f2.source = 'finlab.fundamental_factor_diversity'
-                   AND f2.available_date < f.available_date
-                 ORDER BY f2.available_date DESC, f2.period DESC
-                 LIMIT 1
-               ) AS prev_gross_margin,
-               (
-                 SELECT f2.eps
-                 FROM canonical_fundamental_features f2
-                 WHERE f2.stock_id = f.stock_id
-                   AND f2.source = 'finlab.fundamental_factor_diversity'
-                   AND f2.available_date < f.available_date
-                 ORDER BY f2.available_date DESC, f2.period DESC
-                 LIMIT 1
-               ) AS prev_eps,
-               (
-                 SELECT f2.operating_margin
-                 FROM canonical_fundamental_features f2
-                 WHERE f2.stock_id = f.stock_id
-                   AND f2.source = 'finlab.fundamental_factor_diversity'
-                   AND f2.available_date < f.available_date
-                 ORDER BY f2.available_date DESC, f2.period DESC
-                 LIMIT 1
-               ) AS prev_operating_margin
-        FROM canonical_fundamental_features f
-        WHERE f.stock_id IN (${ph})
-          AND f.source = 'finlab.fundamental_factor_diversity'
-          AND f.available_date <= ?
-          AND f.available_date = (
-            SELECT MAX(f2.available_date)
-              FROM canonical_fundamental_features f2
-             WHERE f2.stock_id = f.stock_id
-               AND f2.source = 'finlab.fundamental_factor_diversity'
-               AND f2.available_date <= ?
-          )
-      `).bind(...topSymbols4b, endDate, endDate).all<{
-        symbol: string
-        eps: number | null
-        revenue_growth_yoy: number | null
-        roe: number | null
-        gross_margin: number | null
-        operating_margin: number | null
-        prev_roe: number | null
-        prev_gross_margin: number | null
-        prev_eps: number | null
-        prev_operating_margin: number | null
-      }>()
-
-      // ??摮?
-      let fscoreApplied = 0
-      for (const r of (finRows ?? [])) {
-        const roe = finiteOrNull(r.roe)
-        const prevRoe = finiteOrNull(r.prev_roe)
-        const eps = finiteOrNull(r.eps)
-        const prevEps = finiteOrNull(r.prev_eps)
-        const revenueGrowthYoY = finiteOrNull(r.revenue_growth_yoy)
-        const grossMargin = finiteOrNull(r.gross_margin)
-        const prevGrossMargin = finiteOrNull(r.prev_gross_margin)
-        const operatingMargin = finiteOrNull(r.operating_margin)
-        const prevOperatingMargin = finiteOrNull(r.prev_operating_margin)
-        let fScore = 0
-        // ?脣??
-        if (roe != null && roe > 0) fScore++
-        if (eps != null && eps > 0) fScore++
-        // ???
-        if (revenueGrowthYoY != null && revenueGrowthYoY > 0) fScore++
-        if (roe != null && prevRoe != null && roe > prevRoe) fScore++
-        if (eps != null && prevEps != null && eps > prevEps) fScore++
-        if (grossMargin != null && prevGrossMargin != null && grossMargin > prevGrossMargin) fScore++
-        if (operatingMargin != null && prevOperatingMargin != null && operatingMargin > prevOperatingMargin) fScore++
-
-        // Direct-field financial quality score.
-        const c = scored.find(s => s.symbol === r.symbol)
-        if (c && fScore >= 5) {
-          c.score += 5
-          fscoreApplied++
-        } else if (c && fScore >= 3) {
-          c.score += 2
-        } else if (c && fScore <= 1) {
-          c.score -= 3
-        }
-      }
-
-      debugLog.push(`[Step 4b] FinLab fundamental quality direct-field bonus: ${fscoreApplied}`)
-    }
-  } catch (e) {
-    console.warn('[Screener v2] direct financial quality bonus failed:', e)
-  }
 
   // ?? P2-10: 憭?瘛刻眺頞予?訾?瘥?憭抒撅斤? risk overlay嚗??
   // P3-11: ATR V 頧?璅?

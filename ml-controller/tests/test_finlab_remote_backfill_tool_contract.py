@@ -354,8 +354,284 @@ def test_latest_index_does_not_parse_plain_numeric_index_as_epoch_date():
     assert tool.latest_index(frame) is None
 
 
-def test_apply_canonical_d1_is_not_gated_by_summary_writeback():
+def test_apply_canonical_d1_waits_for_source_key_report_but_not_summary_writeback():
     source = TOOL_PATH.read_text(encoding="utf-8")
 
+    assert 'manifest["source_key_report_writeback"] = insert_source_key_report' in source
     assert "\n    if args.apply_canonical_d1:" in source
-    assert source.index("if args.apply_canonical_d1") > source.index("if args.write_d1")
+    assert source.index('manifest["source_key_report_writeback"] = insert_source_key_report') < source.index("if args.apply_canonical_d1:")
+    assert "materialize_canonical_plan_to_d1" in source
+    assert "source_key_blockers=source_key_blockers" in source
+    assert 'if manifest["canonical_d1_apply"].get("status") == "ready":' in source
+    assert 'manifest["backfill_status"] = "partial_failed"' in source
+    assert "validate_canonical_apply_result(manifest.get(\"canonical_d1_apply\"), dry_run=args.canonical_dry_run)" in source
+    assert source.index("validate_canonical_apply_result(manifest.get(\"canonical_d1_apply\")") < source.index("insert_d1_summary(manifest)")
+
+
+def test_finlab_source_contract_drives_required_fields_and_flags():
+    tool = _load_tool_module()
+
+    assert tool.FINLAB_SOURCE_CONTRACT["schema_version"] == "stockvision-finlab-source-contract-v1"
+    assert tool.finlab_contract_flag_default("FINLAB_KEY_REPORT_ENABLED") is True
+    assert tool.finlab_contract_flag_default("FINLAB_KEY_LEVEL_RETRY_ENABLED") is False
+    assert tool.finlab_contract_flag_default("FINLAB_ARTIFACT_REUSE_ENABLED") is False
+    assert tool.REQUIRED_ATOMIC_WIDE_FIELDS["institutional_amount_summary"] == {"buy_amount", "sell_amount", "net_amount"}
+    assert tool.source_key_required("daily_price", "close") is True
+    assert tool.source_key_required("daily_price", "trade_count") is False
+
+
+def test_source_key_status_for_exception_classifies_schema_and_quota():
+    tool = _load_tool_module()
+
+    assert tool.source_key_status_for_exception(RuntimeError('ColumnNotFoundError: unable to find column "buy_amount"')) == "schema_mismatch"
+    assert tool.source_key_status_for_exception(RuntimeError("Usage exceed 5000 MB/day")) == "quota_blocked"
+    assert tool.source_key_status_for_exception(RuntimeError("temporary network issue")) == "failed"
+
+
+def test_validate_canonical_apply_result_rejects_zero_row_ready_false_positive():
+    tool = _load_tool_module()
+
+    try:
+        tool.validate_canonical_apply_result(
+            {
+                "statement_count": 0,
+                "row_counts": {"canonical_market_daily": 0},
+                "apply_result": {"success_count": 0, "error_count": 0},
+            }
+        )
+    except RuntimeError as exc:
+        assert "wrote no D1 statements" in str(exc)
+    else:
+        raise AssertionError("canonical D1 apply with no writes must not be accepted as ready")
+
+
+def test_validate_canonical_apply_result_rejects_d1_batch_errors():
+    tool = _load_tool_module()
+
+    try:
+        tool.validate_canonical_apply_result(
+            {
+                "statement_count": 3,
+                "row_counts": {"canonical_market_daily": 3},
+                "apply_result": {"success_count": 2, "error_count": 1},
+            }
+        )
+    except RuntimeError as exc:
+        assert "canonical_d1_apply failed" in str(exc)
+    else:
+        raise AssertionError("canonical D1 apply with batch errors must not be accepted as ready")
+
+
+def test_required_institutional_amount_fields_fail_closed_when_partial():
+    tool = _load_tool_module()
+    frames = {
+        "sell_amount": pd.DataFrame({"foreign": [70.0]}, index=pd.to_datetime(["2026-07-03"])),
+        "net_amount": pd.DataFrame({"foreign": [30.0]}, index=pd.to_datetime(["2026-07-03"])),
+    }
+
+    try:
+        tool.validate_required_wide_field_completeness(
+            "institutional_amount_summary",
+            frames,
+            target_date="2026-07-03",
+        )
+    except RuntimeError as exc:
+        assert "finlab_required_wide_field_incomplete" in str(exc)
+        assert "buy_amount=missing" in str(exc)
+    else:
+        raise AssertionError("partial institutional_amount_summary artifacts must fail closed")
+
+
+def test_required_institutional_amount_fields_validate_target_date():
+    tool = _load_tool_module()
+    frames = {
+        "buy_amount": pd.DataFrame({"foreign": [100.0]}, index=pd.to_datetime(["2026-07-02"])),
+        "sell_amount": pd.DataFrame({"foreign": [70.0]}, index=pd.to_datetime(["2026-07-03"])),
+        "net_amount": pd.DataFrame({"foreign": [30.0]}, index=pd.to_datetime(["2026-07-03"])),
+    }
+
+    try:
+        tool.validate_required_wide_field_completeness(
+            "institutional_amount_summary",
+            frames,
+            target_date="2026-07-03",
+        )
+    except RuntimeError as exc:
+        assert "buy_amount=missing_target_date:2026-07-03" in str(exc)
+    else:
+        raise AssertionError("required field with stale-only data must fail closed")
+
+
+def test_key_scope_json_limits_finlab_data_get_fields():
+    tool = _load_tool_module()
+    spec = next(spec for spec in tool.CORE_SPECS if spec.lane == "institutional_amount_summary")
+    scope = tool.parse_key_scope_json('[{"lane":"institutional_amount_summary","fields":["buy_amount"]}]')
+
+    assert scope == {"institutional_amount_summary": {"buy_amount"}}
+    assert tool.spec_keys_for_scope(spec, scope) == {"buy_amount": spec.keys["buy_amount"]}
+
+
+def test_source_key_report_writeback_records_attempt_and_latest_state(monkeypatch):
+    tool = _load_tool_module()
+    captured = {}
+
+    def fake_batch_execute(statements, **kwargs):
+        captured["statements"] = statements
+        captured["kwargs"] = kwargs
+        return {"success_count": len(statements), "error_count": 0}
+
+    monkeypatch.setattr(tool, "d1_batch_execute", fake_batch_execute)
+    manifest = {
+        "source_key_reports": [{
+            "run_id": "finlab-v4-daily-20260703-test",
+            "target_date": "2026-07-03",
+            "lane": "institutional_amount_summary",
+            "canonical_dataset": "canonical_institutional_amount_daily",
+            "field": "buy_amount",
+            "api_key": "institutional_investors_trading_summary:buy",
+            "source": "finlab",
+            "required": 1,
+            "status": "failed",
+            "rows": 0,
+            "target_rows": 0,
+            "latest_date": None,
+            "artifact_uri": None,
+            "artifact_path": None,
+            "artifact_checksum": None,
+            "error_code": "ColumnNotFoundError",
+            "error_message": "unable to find column buy_amount",
+            "generated_at": "2026-07-03T10:34:00+00:00",
+            "metadata_json": "{}",
+        }],
+    }
+
+    result = tool.insert_source_key_report(manifest)
+
+    assert result["status"] == "written"
+    assert result["rows"] == 1
+    assert len(captured["statements"]) == 2
+    assert "INSERT INTO source_key_attempts" in captured["statements"][0][0]
+    assert "INSERT INTO source_key_report" in captured["statements"][1][0]
+
+
+def test_reuse_ready_field_artifacts_completes_partial_institutional_lane(monkeypatch, tmp_path):
+    tool = _load_tool_module()
+    previous_dir = tmp_path / "previous"
+    previous_dir.mkdir()
+    sell_path = previous_dir / "sell_amount.parquet"
+    net_path = previous_dir / "net_amount.parquet"
+    pd.DataFrame({"foreign": [70.0]}, index=pd.to_datetime(["2026-07-03"])).to_parquet(sell_path)
+    pd.DataFrame({"foreign": [30.0]}, index=pd.to_datetime(["2026-07-03"])).to_parquet(net_path)
+
+    def fake_d1_query(_sql, params=None):
+        assert params[:2] == ["2026-07-03", "institutional_amount_summary"]
+        return [
+            {
+                "field": "sell_amount",
+                "api_key": "sell_api",
+                "status": "ok",
+                "rows": 1,
+                "target_rows": 1,
+                "latest_date": "2026-07-03",
+                "artifact_path": str(sell_path),
+                "artifact_uri": None,
+                "artifact_checksum": "sha256:sell",
+                "last_run_id": "previous-run",
+            },
+            {
+                "field": "net_amount",
+                "api_key": "net_api",
+                "status": "ok",
+                "rows": 1,
+                "target_rows": 1,
+                "latest_date": "2026-07-03",
+                "artifact_path": str(net_path),
+                "artifact_uri": None,
+                "artifact_checksum": "sha256:net",
+                "last_run_id": "previous-run",
+            },
+        ]
+
+    monkeypatch.setattr(tool, "d1_query", fake_d1_query)
+    field_frames = {
+        "buy_amount": pd.DataFrame({"foreign": [100.0]}, index=pd.to_datetime(["2026-07-03"])),
+    }
+    artifacts, reports = tool.reuse_ready_field_artifacts(
+        run_id="current-run",
+        generated_at="2026-07-03T11:00:00+00:00",
+        target_date="2026-07-03",
+        lane="institutional_amount_summary",
+        lane_dir=tmp_path / "current" / "raw" / "institutional_amount_summary",
+        requested_field_frames=field_frames,
+        all_keys={
+            "buy_amount": "buy_api",
+            "sell_amount": "sell_api",
+            "net_amount": "net_api",
+        },
+        run_dir=tmp_path / "current",
+        gcs_bucket=None,
+        gcs_prefix=None,
+    )
+
+    assert sorted(field_frames) == ["buy_amount", "net_amount", "sell_amount"]
+    assert not tool.required_wide_field_errors("institutional_amount_summary", field_frames, target_date="2026-07-03")
+    assert [artifact["field"] for artifact in artifacts] == ["sell_amount", "net_amount"]
+    assert {report["status"] for report in reports} == {"skipped_reused"}
+
+
+def test_materialize_canonical_plan_applies_ready_datasets_and_marks_blocked(monkeypatch):
+    tool = _load_tool_module()
+    called = []
+
+    def fake_materialize(_manifest, *, datasets, **_kwargs):
+        called.extend(datasets)
+        dataset = datasets[0]
+        return {
+            "statement_count": 1,
+            "row_counts": {dataset: 3},
+            "apply_result": {"total": 1, "success_count": 1, "error_count": 0, "changes_total": 3},
+        }
+
+    monkeypatch.setattr(tool, "materialize_canonical_to_d1", fake_materialize)
+    manifest = {
+        "run_id": "finlab-v4-daily-20260703-test",
+        "generated_at": "2026-07-03T11:00:00+00:00",
+        "artifact_root": "/tmp/finlab-test",
+    }
+    result = tool.materialize_canonical_plan_to_d1(
+        manifest,
+        start_date="2026-07-03",
+        end_date="2026-07-03",
+        datasets=["canonical_market_daily", "canonical_institutional_amount_daily"],
+        source_key_blockers=[{"lane": "institutional_amount_summary", "reason": "required_wide_field_incomplete"}],
+        dry_run=False,
+    )
+
+    assert result["status"] == "partial_failed"
+    assert called == ["canonical_market_daily"]
+    assert result["materialized_datasets"] == ["canonical_market_daily"]
+    assert result["blocked_datasets"] == ["canonical_institutional_amount_daily"]
+    assert result["per_dataset"]["canonical_institutional_amount_daily"]["status"] == "materializer_blocked"
+
+
+def test_materialize_canonical_plan_marks_all_blocked_without_throwing():
+    tool = _load_tool_module()
+    manifest = {
+        "run_id": "finlab-v4-daily-20260703-test",
+        "generated_at": "2026-07-03T11:00:00+00:00",
+        "artifact_root": "/tmp/finlab-test",
+    }
+
+    result = tool.materialize_canonical_plan_to_d1(
+        manifest,
+        start_date="2026-07-03",
+        end_date="2026-07-03",
+        datasets=["canonical_institutional_amount_daily"],
+        source_key_blockers=[{"lane": "institutional_amount_summary", "reason": "required_wide_field_incomplete"}],
+        dry_run=False,
+    )
+
+    assert result["status"] == "materializer_blocked"
+    assert result["statement_count"] == 0
+    assert result["materialized_datasets"] == []
+    assert result["blocked_datasets"] == ["canonical_institutional_amount_daily"]

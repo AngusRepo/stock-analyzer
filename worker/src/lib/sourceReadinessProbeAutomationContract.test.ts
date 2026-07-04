@@ -42,6 +42,7 @@ assert(
     !controllerResearchWorkflows.includes('FINLAB_DAILY_PRIMARY_LANES_DEFAULT = \'daily_price,chip_diversity,institutional_amount_summary,broker_flow_diversity,global_context') &&
     controllerResearchWorkflows.includes('canonical_broker_rank_daily,canonical_trading_restrictions,canonical_fundamental_features') &&
     controllerResearchWorkflows.includes('FINLAB_DAILY_SOURCE_KEY_SCOPE_JSON') &&
+    types.includes('FINLAB_DAILY_SOURCE_KEY_SCOPE_JSON?: string') &&
     controllerResearchWorkflows.includes('FINLAB_DAILY_PRICE_KEY_SCOPE_JSON') &&
     controllerResearchWorkflows.includes('FINLAB_BACKFILL_LANES must be set for archive backfill') &&
     !controllerResearchWorkflows.includes('canonical_market_summary_daily,canonical_regime_context_daily') &&

@@ -471,6 +471,14 @@ def test_key_scope_json_limits_finlab_data_get_fields():
     assert tool.spec_keys_for_scope(spec, scope) == {"buy_amount": spec.keys["buy_amount"]}
 
 
+def test_key_scope_json_empty_fields_keeps_lane_full_fetch():
+    tool = _load_tool_module()
+    spec = next(spec for spec in tool.CORE_SPECS if spec.lane == "daily_price")
+    scope = tool.parse_key_scope_json('[{"lane":"daily_price","fields":[]},{"lane":"fundamental_factor_diversity","fields":["pe","pb"]}]')
+
+    assert tool.spec_keys_for_scope(spec, scope) == spec.keys
+
+
 def test_source_key_report_writeback_records_attempt_and_latest_state(monkeypatch):
     tool = _load_tool_module()
     captured = {}

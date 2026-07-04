@@ -368,6 +368,22 @@ function optionalString(value: unknown): string | undefined {
   return text || undefined
 }
 
+function csvItems(value: string | undefined): string[] {
+  return String(value ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function dailyKeyScopeJsonForLanes(lanes: string | undefined): string | undefined {
+  const items = csvItems(lanes)
+  if (!items.includes('fundamental_factor_diversity')) return undefined
+  return JSON.stringify(items.map((lane) => ({
+    lane,
+    fields: lane === 'fundamental_factor_diversity' ? ['pe', 'pb'] : [],
+  })))
+}
+
 type FinLabBackfillRunOptions = {
   continueEveningChain?: boolean
   dailySourceRefresh?: boolean
@@ -408,6 +424,9 @@ function buildFinLabBackfillRequestBody(
   if (!dailySourceMode && !archiveLanes) {
     throw new Error('FINLAB_BACKFILL_LANES must be set for archive backfill; empty lanes would run all CORE_SPECS and burn FinLab quota')
   }
+  const dailyLanes = dailySourceMode
+    ? (optionalString(options.lanes) ?? optionalString((env as any).FINLAB_DAILY_PRICE_LANES) ?? FINLAB_DAILY_PRIMARY_LANES_DEFAULT)
+    : undefined
   return {
     years,
     run_id: runId,
@@ -435,11 +454,9 @@ function buildFinLabBackfillRequestBody(
     continue_evening_chain: Boolean(options.continueEveningChain),
     daily_source_refresh: dailySourceMode,
     callback_mode: callbackMode,
-    lanes: dailySourceMode
-      ? (optionalString(options.lanes) ?? optionalString((env as any).FINLAB_DAILY_PRICE_LANES) ?? FINLAB_DAILY_PRIMARY_LANES_DEFAULT)
-      : archiveLanes,
+    lanes: dailySourceMode ? dailyLanes : archiveLanes,
     key_scope_json: dailySourceMode
-      ? (optionalString(options.keyScopeJson) ?? optionalString((env as any).FINLAB_DAILY_SOURCE_KEY_SCOPE_JSON) ?? optionalString((env as any).FINLAB_DAILY_PRICE_KEY_SCOPE_JSON))
+      ? (optionalString(options.keyScopeJson) ?? optionalString((env as any).FINLAB_DAILY_SOURCE_KEY_SCOPE_JSON) ?? optionalString((env as any).FINLAB_DAILY_PRICE_KEY_SCOPE_JSON) ?? dailyKeyScopeJsonForLanes(dailyLanes))
       : optionalString(options.keyScopeJson),
     reuse_successful_artifacts: Boolean(options.reuseSuccessfulArtifacts),
     skip_diff_counts: dailySourceMode

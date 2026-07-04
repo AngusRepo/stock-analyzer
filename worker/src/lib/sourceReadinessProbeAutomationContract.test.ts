@@ -22,6 +22,7 @@ assert(
     controllerResearchWorkflows.includes('keyScopeJson?: string') &&
     controllerResearchWorkflows.includes('reuseSuccessfulArtifacts?: boolean') &&
     controllerResearchWorkflows.includes('key_scope_json: dailySourceMode') &&
+    controllerResearchWorkflows.includes('dailyKeyScopeJsonForLanes(dailyLanes)') &&
     controllerResearchWorkflows.includes('FINLAB_DAILY_PRICE_KEY_SCOPE_JSON') &&
     controllerResearchWorkflows.includes('reuse_successful_artifacts: Boolean(options.reuseSuccessfulArtifacts)') &&
     controllerResearchWorkflows.includes('options.dailySourceRefresh || options.continueEveningChain') &&
@@ -121,6 +122,7 @@ assert(
     updateOrchestrator.includes("addLane('broker_flow_diversity', ['canonical_broker_flow_daily', 'canonical_broker_rank_daily'])") &&
     updateOrchestrator.includes("if (key.startsWith('canonical_fundamental_features:valuation_daily'))") &&
     updateOrchestrator.includes("addLane('fundamental_factor_diversity', ['canonical_fundamental_features'], ['pe', 'pb'])") &&
+    updateOrchestrator.includes('keyScopeJsonForLanes') &&
     updateOrchestrator.includes('dailySourceRefresh: true'),
   'source-readiness-probe must trigger FinLab daily refresh and automatically queue a recheck callback without self-blocking on the same evening-chain run',
 )
@@ -135,7 +137,8 @@ assert(
     fs.readFileSync('../data/finlab_source_contract.json', 'utf8').includes('"FINLAB_KEY_LEVEL_RETRY_ENABLED": false') &&
     fs.readFileSync('../data/finlab_source_contract.json', 'utf8').includes('"FINLAB_ARTIFACT_REUSE_ENABLED": false') &&
     fs.readFileSync('../data/finlab_source_contract.json', 'utf8').includes('"institutional_amount_summary"') &&
-    fs.readFileSync('../data/finlab_source_contract.json', 'utf8').includes('"buy_amount"'),
+    fs.readFileSync('../data/finlab_source_contract.json', 'utf8').includes('"buy_amount"') &&
+    fs.readFileSync('../data/finlab_source_contract.json', 'utf8').includes('"required_fields": ["pe", "pb"]'),
   'FinLab source contract must be shared by Worker and Python with report-on/retry-off/reuse-off defaults',
 )
 
@@ -154,9 +157,10 @@ assert(
 )
 
 assert(
-  updateOrchestrator.includes("'canonical_market_summary_daily:listed_otc'") &&
+    updateOrchestrator.includes("'canonical_market_summary_daily:listed_otc'") &&
     updateOrchestrator.includes("'canonical_broker_flow_daily:listed_otc'") &&
     updateOrchestrator.includes("'canonical_broker_rank_daily:listed_otc'") &&
+    updateOrchestrator.includes("'canonical_fundamental_features:valuation_daily'") &&
     updateOrchestrator.includes("source = 'finlab.broker_transactions'") &&
     updateOrchestrator.includes("market_segment = 'LISTED_OTC'") &&
     updateOrchestrator.includes('assertFinLabCanonicalReadinessReady') &&

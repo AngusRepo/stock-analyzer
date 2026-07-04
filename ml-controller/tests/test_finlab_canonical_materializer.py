@@ -1074,6 +1074,36 @@ def test_fundamental_materialization_drops_valuation_only_daily_rows() -> None:
     assert rows[0]["ebitda"] == 2_500_000.0
 
 
+def test_fundamental_materialization_keeps_single_day_valuation_snapshot() -> None:
+    root = _root("fundamental_single_day_valuation_snapshot")
+    lane = root / "raw" / "fundamental_factor_diversity"
+    _write(
+        lane / "pe.parquet",
+        pl.DataFrame({"date": ["2026-06-27", "2026-06-29"], "2330": [18.2, 18.5]}),
+    )
+    _write(
+        lane / "pb.parquet",
+        pl.DataFrame({"date": ["2026-06-27", "2026-06-29"], "2330": [4.1, 4.2]}),
+    )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-06-29T18:30:00+08:00",
+        start_date="2026-06-29",
+        end_date="2026-06-29",
+        datasets=["canonical_fundamental_features"],
+    )
+
+    assert outputs.manifest["row_counts"] == {"canonical_fundamental_features": 1}
+    row = outputs.canonical_fundamental_features[0]
+    assert row["stock_id"] == "2330"
+    assert row["period"] == "2026-06-29"
+    assert row["available_date"] == "2026-06-29"
+    assert row["pe"] == 18.5
+    assert row["pb"] == 4.2
+    assert row["gross_margin"] is None
+
+
 def test_fundamental_materialization_drops_all_null_sparse_dates() -> None:
     root = _root("fundamental_sparse_null_dates")
     lane = root / "raw" / "fundamental_factor_diversity"

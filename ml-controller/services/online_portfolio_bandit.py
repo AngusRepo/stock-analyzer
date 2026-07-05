@@ -10,7 +10,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from services.portfolio_allocation import allocate_sparse_tangent
+from services.portfolio_allocation import allocate_sparse_tangent_with_evidence
 
 SCHEMA_VERSION = "online-portfolio-bandit-controller-v2"
 
@@ -65,7 +65,14 @@ def _ledger_by_arm(reward_ledger: list[dict[str, Any]]) -> dict[str, dict[str, f
         reward_mean = _to_float(row.get("reward_mean"), 0.0)
         if samples <= 0:
             continue
-        out[arm_id] = {"samples": float(samples), "reward_mean": reward_mean}
+        out[arm_id] = {
+            "samples": float(samples),
+            "reward_mean": reward_mean,
+            "reward_mean_r": _to_float(row.get("reward_mean_r"), 0.0),
+            "reward_r_samples": float(_to_int(row.get("reward_r_samples"), 0)),
+            "reward_source_counts": row.get("reward_source_counts") if isinstance(row.get("reward_source_counts"), dict) else {},
+            "reward_policy": str(row.get("reward_policy") or "").strip(),
+        }
     return out
 
 
@@ -83,6 +90,11 @@ def _warm_started_arm_stats(
         "reward_mean": reward_sum / total_samples,
         "prior_samples": float(arm.prior_samples),
         "live_samples": float(live_samples),
+        "live_reward_mean": live_reward_mean,
+        "live_reward_mean_r": _to_float(row.get("reward_mean_r"), 0.0),
+        "live_reward_r_samples": float(_to_int(row.get("reward_r_samples"), 0)),
+        "reward_source_counts": row.get("reward_source_counts") if isinstance(row.get("reward_source_counts"), dict) else {},
+        "reward_policy": str(row.get("reward_policy") or "").strip(),
     }
 
 
@@ -152,6 +164,11 @@ def build_online_portfolio_bandit_l2_packet(
             "arm_id": arm.arm_id,
             "ucb_score": _ucb_score(stats, total_samples, exploration_alpha),
             "reward_mean": stats["reward_mean"],
+            "live_reward_mean": stats["live_reward_mean"],
+            "live_reward_mean_r": stats["live_reward_mean_r"],
+            "live_reward_r_samples": int(stats["live_reward_r_samples"]),
+            "reward_source_counts": stats.get("reward_source_counts") or {},
+            "reward_policy": stats.get("reward_policy") or None,
             "samples": int(stats["samples"]),
             "prior_samples": int(stats["prior_samples"]),
             "live_samples": int(stats["live_samples"]),
@@ -170,26 +187,44 @@ def build_online_portfolio_bandit_l2_packet(
     ranked_candidates = sorted(candidates, key=_candidate_score, reverse=True)
     raw_weights: dict[str, float] = {}
     final_weights: dict[str, float] = {}
+    sparse_evidence: dict[str, Any] = {}
     cash_weight = 1.0
     if selected_arm is not None and ranked_candidates:
         knobs = selected.get("knobs", {}) if selected else {}
-        raw_weights = allocate_sparse_tangent(
+        sparse_evidence = allocate_sparse_tangent_with_evidence(
             ranked_candidates,
             return_history,
             top_k=int(knobs.get("candidate_cap") or selected_arm.candidate_cap),
             max_weight=float(knobs.get("max_weight") or selected_arm.max_weight),
         )
+        raw_weights = dict(sparse_evidence.get("weights") or {})
         final_weights = _normalize_to_exposure(
             raw_weights,
             target_exposure=1.0 - selected_arm.cash_buffer,
             min_trade_weight=selected_arm.min_trade_weight,
         )
         cash_weight = max(0.0, 1.0 - sum(final_weights.values()))
+        candidate_diagnostics = dict(sparse_evidence.get("candidate_diagnostics") or {})
+        if candidate_diagnostics:
+            candidate_diagnostics = {
+                symbol: {
+                    **diagnostic,
+                    "final_weight": round(float(final_weights.get(symbol, 0.0) or 0.0), 10),
+                    "opb_cash_buffer_adjusted": True,
+                }
+                for symbol, diagnostic in candidate_diagnostics.items()
+            }
+            sparse_evidence = {
+                **sparse_evidence,
+                "candidate_diagnostics": candidate_diagnostics,
+                "unallocated_cash_weight": round(cash_weight, 10),
+            }
 
     allocation = {
         "weights": final_weights,
         "cash_weight": cash_weight,
         "raw_sparse_tangent_weights": raw_weights,
+        "sparse_evidence": sparse_evidence,
     }
     production_controller = _is_production_controller_stage(stage)
     packet: dict[str, Any] = {

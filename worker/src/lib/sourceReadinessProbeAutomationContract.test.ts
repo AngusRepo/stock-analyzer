@@ -120,6 +120,8 @@ assert(
     updateOrchestrator.includes("'canonical_trading_restrictions:daily_micro_lane'") &&
     updateOrchestrator.includes("if (key.startsWith('canonical_trading_restrictions:'))") &&
     updateOrchestrator.includes("addLane('trading_restrictions', ['canonical_trading_restrictions'])") &&
+    updateOrchestrator.includes("FROM canonical_trading_restrictions") &&
+    updateOrchestrator.includes("canonical_active_rows=") &&
     updateOrchestrator.includes("addLane('broker_flow_diversity', ['canonical_broker_flow_daily', 'canonical_broker_rank_daily'])") &&
     updateOrchestrator.includes("if (key.startsWith('canonical_fundamental_features:valuation_daily'))") &&
     updateOrchestrator.includes("addLane('fundamental_factor_diversity', ['canonical_fundamental_features'], ['pe', 'pb'])") &&

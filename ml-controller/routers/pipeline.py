@@ -121,6 +121,7 @@ async def _emit_subtask_callbacks(
     prediction_symbols = int(metrics.get("prediction_symbols", 0) or 0)
     prediction_models = int(metrics.get("prediction_output_models", 0) or 0)
     recos_n = int(metrics.get("recommendations_updated", 0) or 0)
+    seed_rows_n = int(metrics.get("recommendation_seed_rows", 0) or 0)
     prediction_summary = (
         f"run_id={run_id} symbols={prediction_symbols} rows={predictions_n} models={prediction_models}"
         if prediction_symbols > 0
@@ -129,7 +130,7 @@ async def _emit_subtask_callbacks(
 
     subtasks = [
         ("ml-predict", predictions_n > 0, prediction_summary),
-        ("recommendation", recos_n > 0, f"run_id={run_id} recos={recos_n}"),
+        ("recommendation", recos_n > 0, f"run_id={run_id} recos_updated={recos_n} seed_rows={seed_rows_n}"),
     ]
 
     async with httpx.AsyncClient(timeout=15.0) as client:

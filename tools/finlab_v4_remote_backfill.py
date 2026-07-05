@@ -2184,6 +2184,9 @@ def materialize_specs(
 def insert_d1_summary(manifest: dict[str, Any]) -> None:
     run_id = manifest["run_id"]
     generated_at = manifest["generated_at"]
+    source_quality_as_of_date = (
+        str(manifest.get("source_end_date") or manifest.get("canonical_end_date") or generated_at)[:10]
+    )
     summary = manifest["summary"]
     d1_exec(
         """
@@ -2211,9 +2214,27 @@ def insert_d1_summary(manifest: dict[str, Any]) -> None:
         ],
     )
 
+    quality_by_lane: dict[str, dict[str, Any]] = {}
     for diff in manifest["diff_reports"]:
         diff_summary = diff["summary"]
-        source_quality_status = "ok" if int(diff_summary.get("finlab_rows") or 0) > 0 else "empty"
+        lane = str(diff["dataset_lane"])
+        lane_quality = quality_by_lane.setdefault(
+            lane,
+            {
+                "finlab_rows": 0,
+                "stockvision_rows": 0,
+                "matched": 0,
+                "missing_in_stockvision": 0,
+                "missing_in_finlab": 0,
+                "value_conflicts": 0,
+                "schema_extra_fields": set(),
+                "reports": [],
+            },
+        )
+        for key in ("finlab_rows", "stockvision_rows", "matched", "missing_in_stockvision", "missing_in_finlab", "value_conflicts"):
+            lane_quality[key] += int(diff_summary.get(key) or 0)
+        lane_quality["schema_extra_fields"].update(str(field) for field in diff_summary.get("schema_extra_fields") or [])
+        lane_quality["reports"].append(diff_summary)
         d1_exec(
             """
             INSERT INTO source_diff_report (
@@ -2238,6 +2259,47 @@ def insert_d1_summary(manifest: dict[str, Any]) -> None:
                 f"{run_id}:{diff['dataset_lane']}",
             ],
         )
+        if diff_summary["missing_in_stockvision"] > 0:
+            d1_exec(
+                """
+                INSERT INTO gap_fill_candidates (
+                  run_id, dataset_lane, canonical_table, stock_id, symbol, date, market_segment,
+                  field, finlab_value, stockvision_value, source, lineage_json, decision, generated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    run_id,
+                    diff["dataset_lane"],
+                    canonical_table_for_lane(diff["dataset_lane"]),
+                    None,
+                    None,
+                    source_quality_as_of_date,
+                    None,
+                    "__aggregate_missing_rows__",
+                    str(diff_summary["missing_in_stockvision"]),
+                    str(diff_summary["stockvision_rows"]),
+                    "finlab",
+                    json.dumps({"aggregate_diff": True, "run_id": run_id, "dataset_lane": diff["dataset_lane"]}, ensure_ascii=False),
+                    "candidate",
+                    generated_at,
+                ],
+            )
+
+    for dataset_lane, lane_summary in quality_by_lane.items():
+        source_quality_status = "ok" if int(lane_summary.get("finlab_rows") or 0) > 0 else "empty"
+        metrics_payload = {
+            **{key: lane_summary[key] for key in (
+                "finlab_rows",
+                "stockvision_rows",
+                "matched",
+                "missing_in_stockvision",
+                "missing_in_finlab",
+                "value_conflicts",
+            )},
+            "schema_extra_fields": sorted(lane_summary["schema_extra_fields"]),
+            "report_count": len(lane_summary["reports"]),
+            "as_of_date_owner": "source_end_date_or_canonical_end_date",
+        }
         d1_exec(
             """
             INSERT INTO source_quality_metrics (
@@ -2255,42 +2317,17 @@ def insert_d1_summary(manifest: dict[str, Any]) -> None:
             """,
             [
                 "finlab",
-                diff["dataset_lane"],
-                generated_at[:10],
+                dataset_lane,
+                source_quality_as_of_date,
                 source_quality_status,
-                0.0 if diff_summary["finlab_rows"] else 1.0,
+                0.0 if int(lane_summary.get("finlab_rows") or 0) > 0 else 1.0,
                 0.0,
                 "aggregate_diff",
                 0.95,
                 generated_at,
-                json.dumps(diff_summary, ensure_ascii=False, sort_keys=True),
+                json.dumps(metrics_payload, ensure_ascii=False, sort_keys=True),
             ],
         )
-        if diff_summary["missing_in_stockvision"] > 0:
-            d1_exec(
-                """
-                INSERT INTO gap_fill_candidates (
-                  run_id, dataset_lane, canonical_table, stock_id, symbol, date, market_segment,
-                  field, finlab_value, stockvision_value, source, lineage_json, decision, generated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    run_id,
-                    diff["dataset_lane"],
-                    canonical_table_for_lane(diff["dataset_lane"]),
-                    None,
-                    None,
-                    generated_at[:10],
-                    None,
-                    "__aggregate_missing_rows__",
-                    str(diff_summary["missing_in_stockvision"]),
-                    str(diff_summary["stockvision_rows"]),
-                    "finlab",
-                    json.dumps({"aggregate_diff": True, "run_id": run_id, "dataset_lane": diff["dataset_lane"]}, ensure_ascii=False),
-                    "candidate",
-                    generated_at,
-                ],
-            )
 
 
 def insert_source_key_report(manifest: dict[str, Any], *, chunk_size: int = 250) -> dict[str, Any]:
@@ -2622,6 +2659,7 @@ def insert_finlab_trading_restrictions(
     if not paths:
         return 0
     generated_date = str(manifest.get("generated_at") or utc_now())[:10]
+    target_date = str(manifest.get("source_end_date") or manifest.get("canonical_end_date") or generated_date)[:10]
     cutoff = (datetime.fromisoformat(generated_date) - timedelta(days=lookback_days)).date().isoformat()
     prepared: list[dict[str, Any]] = []
     for path in paths:
@@ -2692,7 +2730,47 @@ def insert_finlab_trading_restrictions(
         ]))
     if batch_statements:
         d1_batch_execute(batch_statements, timeout=120.0, chunk_size=250)
-    return len(batch_statements)
+    inserted = len(batch_statements)
+    d1_exec(
+        """
+        INSERT INTO source_quality_metrics (
+          source, dataset, as_of_date, freshness_status, missing_rate, duplicate_rate,
+          schema_drift_status, entity_link_confidence, latest_materialization, metrics_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source, dataset, as_of_date) DO UPDATE SET
+          freshness_status=excluded.freshness_status,
+          missing_rate=excluded.missing_rate,
+          duplicate_rate=excluded.duplicate_rate,
+          schema_drift_status=excluded.schema_drift_status,
+          entity_link_confidence=excluded.entity_link_confidence,
+          latest_materialization=excluded.latest_materialization,
+          metrics_json=excluded.metrics_json
+        """,
+        [
+            "finlab",
+            "trading_restrictions",
+            target_date,
+            "ok",
+            0.0,
+            0.0,
+            "canonical_target_materialized",
+            0.95,
+            manifest.get("generated_at") or utc_now(),
+            json.dumps(
+                {
+                    "schema_version": "trading-restrictions-source-quality-v1",
+                    "run_id": manifest.get("run_id"),
+                    "target_date": target_date,
+                    "artifact_count": len(paths),
+                    "canonical_rows": inserted,
+                    "policy": "artifact_read_success_marks_daily_micro_lane_ready_even_when_no_active_restrictions",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        ],
+    )
+    return inserted
 
 
 def cleanup_finlab_trading_restrictions(*, retention_days: int = TRADING_RESTRICTION_RETENTION_DAYS) -> int:

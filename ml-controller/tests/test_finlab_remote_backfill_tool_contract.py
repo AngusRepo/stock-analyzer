@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -84,11 +85,17 @@ def test_finlab_esb_attention_disposal_writes_canonical_restrictions(monkeypatch
         return {"success_count": len(statements)}
 
     monkeypatch.setattr(tool, "d1_batch_execute", fake_batch_execute)
+    d1_calls: list[tuple[str, list]] = []
+    monkeypatch.setattr(tool, "d1_exec", lambda sql, params=None: d1_calls.append((sql, list(params or []))) or {"success": True})
 
     assert tool.insert_finlab_trading_restrictions(manifest, lookback_days=31, max_rows=20) == 2
     params = [item[1] for item in captured["statements"]]
     assert ["2330", "attention", "2026-06-30", "2026-07-31", "2026-06-30"] == params[0][:5]
     assert ["6586", "disposition", "2026-06-26", "2026-07-02", "2026-06-25"] == params[1][:5]
+    source_quality = next(params for sql, params in d1_calls if "INSERT INTO source_quality_metrics" in sql)
+    assert source_quality[1] == "trading_restrictions"
+    assert source_quality[2] == "2026-07-01"
+    assert source_quality[3] == "ok"
 
 
 def test_remote_backfill_tool_bootstraps_cloud_run_app_root():
@@ -138,6 +145,7 @@ def test_source_quality_zero_finlab_rows_is_empty_not_ok(monkeypatch):
     manifest = {
         "run_id": "finlab-zero-row-test",
         "generated_at": "2026-07-02T10:30:00+00:00",
+        "source_end_date": "2026-07-01",
         "lookback_years": 3,
         "checksum": "checksum",
         "mode": "daily_price_primary",
@@ -168,8 +176,80 @@ def test_source_quality_zero_finlab_rows_is_empty_not_ok(monkeypatch):
 
     source_quality = next(params for sql, params in calls if "INSERT INTO source_quality_metrics" in sql)
     assert source_quality[1] == "chip_diversity"
+    assert source_quality[2] == "2026-07-01"
     assert source_quality[3] == "empty"
     assert source_quality[4] == 1.0
+
+
+def test_source_quality_aggregates_duplicate_lane_reports_without_empty_overwrite(monkeypatch):
+    tool = _load_tool_module()
+    calls: list[tuple[str, list]] = []
+
+    def fake_d1_exec(sql, params=None):
+        calls.append((sql, list(params or [])))
+        return {"success": True}
+
+    monkeypatch.setattr(tool, "d1_exec", fake_d1_exec)
+    manifest = {
+        "run_id": "finlab-duplicate-lane-test",
+        "generated_at": "2026-07-05T10:30:00+00:00",
+        "source_end_date": "2026-07-03",
+        "lookback_years": 3,
+        "checksum": "checksum",
+        "mode": "daily_price_primary",
+        "artifact_root": "gs://bucket/run",
+        "summary": {
+            "dataset_count": 2,
+            "finlab_rows": 95,
+            "gap_fill_rows": 0,
+            "value_conflicts": 0,
+        },
+        "diff_reports": [
+            {
+                "dataset_lane": "trading_restrictions",
+                "source": "finlab",
+                "generated_at": "2026-07-05T10:30:00+00:00",
+                "summary": {
+                    "finlab_rows": 95,
+                    "stockvision_rows": 95,
+                    "matched": 95,
+                    "missing_in_stockvision": 0,
+                    "missing_in_finlab": 0,
+                    "value_conflicts": 0,
+                    "schema_extra_fields": [],
+                },
+            },
+            {
+                "dataset_lane": "trading_restrictions",
+                "source": "finlab",
+                "generated_at": "2026-07-05T10:31:00+00:00",
+                "summary": {
+                    "finlab_rows": 0,
+                    "stockvision_rows": 0,
+                    "matched": 0,
+                    "missing_in_stockvision": 0,
+                    "missing_in_finlab": 0,
+                    "value_conflicts": 0,
+                    "schema_extra_fields": [],
+                },
+            },
+        ],
+    }
+
+    tool.insert_d1_summary(manifest)
+
+    source_quality_calls = [
+        params for sql, params in calls if "INSERT INTO source_quality_metrics" in sql
+    ]
+    assert len(source_quality_calls) == 1
+    source_quality = source_quality_calls[0]
+    assert source_quality[1] == "trading_restrictions"
+    assert source_quality[2] == "2026-07-03"
+    assert source_quality[3] == "ok"
+    assert source_quality[4] == 0.0
+    metrics = json.loads(source_quality[9])
+    assert metrics["finlab_rows"] == 95
+    assert metrics["report_count"] == 2
 
 
 def test_core_specs_include_finlab_wave2_official_replacement_keys():

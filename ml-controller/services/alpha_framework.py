@@ -1124,7 +1124,7 @@ def apply_alpha_context(rec: dict, ml: dict | None, ctx: AlphaContext) -> dict:
             "Market heat alpha: "
             f"score={ctx.market_heat_score}, "
             f"score_adjustment={ctx.market_heat_alpha}, "
-            f"expected_return={ctx.market_heat_expected_return}"
+            f"market_heat_overlay={ctx.market_heat_expected_return}"
         )
     structure = ctx.risk_overlay.structure_detail
     if structure.get("poc_price") is not None and structure.get("structure_status") == "ok":

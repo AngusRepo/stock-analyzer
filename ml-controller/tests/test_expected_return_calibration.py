@@ -12,13 +12,18 @@ from services.expected_return_calibration import (  # noqa: E402
 )
 
 
-def _row(avg_rank: float | None, actual_return_pct: float | None) -> dict[str, object]:
+def _row(
+    avg_rank: float | None,
+    actual_return_pct: float | None,
+    prediction_date: str = "2026-07-01",
+) -> dict[str, object]:
     forecast_data = {}
     if avg_rank is not None:
         forecast_data = {"ensemble_v2": {"avg_rank": avg_rank}}
     return {
         "forecast_data": json.dumps(forecast_data),
         "actual_return_pct": actual_return_pct,
+        "prediction_date": prediction_date,
     }
 
 
@@ -69,7 +74,10 @@ def test_load_expected_return_calibration_report_uses_verified_ensemble_query():
 
     def query_fn(sql: str, params: list[object]) -> list[dict[str, object]]:
         calls.append((sql, params))
-        return [_row(0.8, 0.03)] * 30
+        return [
+            _row(0.20 + idx * 0.015, -0.03 + idx * 0.002, "2026-07-01")
+            for idx in range(40)
+        ]
 
     report = load_expected_return_calibration_report(query_fn, lookback_days=45)
 
@@ -79,6 +87,7 @@ def test_load_expected_return_calibration_report_uses_verified_ensemble_query():
     assert "verified_at IS NOT NULL" in sql
     assert "actual_return_pct IS NOT NULL" in sql
     assert "forecast_data IS NOT NULL" in sql
+    assert "date(prediction_date) AS prediction_date" in sql
     assert params == ["-45 days"]
 
 
@@ -92,3 +101,43 @@ def test_load_expected_return_calibration_report_fails_closed_on_query_error():
     assert report["sampleCount"] == 0
     assert report["calibration"] is None
     assert "d1 unavailable" in report["error"]
+
+
+def test_build_expected_return_calibration_excludes_all_zero_verified_days():
+    good_rows = [
+        _row(0.20 + idx * 0.015, -0.03 + idx * 0.002, "2026-07-02")
+        for idx in range(40)
+    ]
+    zero_day = [_row(0.50 + idx * 0.001, 0.0, "2026-06-29") for idx in range(30)]
+
+    report = build_expected_return_calibration_from_rows(
+        [*zero_day, *good_rows],
+        min_samples=30,
+        min_bin_samples=8,
+        max_bins=4,
+    )
+
+    assert report["status"] == "loaded"
+    assert report["sampleCount"] == 40
+    assert report["excludedZeroReturnDayCount"] == 1
+    assert report["excludedZeroReturnRowCount"] == 30
+    assert report["excludedZeroReturnDates"] == ["2026-06-29"]
+
+
+def test_build_expected_return_calibration_fails_closed_when_bins_are_low_resolution():
+    rows = [
+        _row(0.20 + idx * 0.015, 0.001, "2026-07-02")
+        for idx in range(40)
+    ]
+
+    report = build_expected_return_calibration_from_rows(
+        rows,
+        min_samples=30,
+        min_bin_samples=8,
+        max_bins=4,
+    )
+
+    assert report["status"] == "low_resolution"
+    assert report["calibration"] is None
+    assert report["calibrationCandidate"]["status"] == "loaded"
+    assert "low_unique_forecast_bins" in report["quality"]["blockers"]

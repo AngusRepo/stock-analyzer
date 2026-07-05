@@ -126,11 +126,14 @@ def test_ensemble_v2_uses_negative_ic_only_with_approved_contrarian_policy():
     assert ev2["weights"] == {"LightGBM": 0.0, "XGBoost": 0.06}
     assert ev2["contrarian_policy_effect"]["inverted_models"] == ["XGBoost"]
     assert ev2["contrarian_policy_effect"]["rejected_inverse_models"] == ["LightGBM"]
-    assert ev2["expected_return"] == 0.04
-    assert ev2["expected_return_owner"] == "ensemble_v2_calibrated_forecast"
+    assert ev2["forecast_return_5bar"] == 0.04
+    assert ev2["forecast_return_5bar_owner"] == "ensemble_v2_calibrated_5bar_close_forecast"
+    assert ev2["expected_return"] is None
+    assert ev2["expected_return_owner"] == "s12_trade_ev"
+    assert ev2["expected_return_source"] == "s12_trade_ev_required"
 
 
-def test_attach_ensemble_v2_uses_calibrated_expected_return_not_hardcoded_cap():
+def test_attach_ensemble_v2_uses_calibrated_5bar_forecast_not_trade_ev():
     pred = {
         "rank_scores": {
             "XGBoost": 0.95,
@@ -157,9 +160,12 @@ def test_attach_ensemble_v2_uses_calibrated_expected_return_not_hardcoded_cap():
     ev2 = pred["ensemble_v2"]
     assert ev2["forecast_pct"] == 0.082
     assert ev2["forecast_pct_source"] == "calibrated_rank_bin"
-    assert ev2["expected_return"] == 0.082
-    assert ev2["expected_return_source"] == "calibrated_rank_bin"
-    assert ev2["expected_return_owner"] == "ensemble_v2_calibrated_forecast"
+    assert ev2["forecast_return_5bar"] == 0.082
+    assert ev2["forecast_return_5bar_source"] == "calibrated_rank_bin"
+    assert ev2["forecast_horizon_bars"] == 5
+    assert ev2["expected_return"] is None
+    assert ev2["expected_return_source"] == "s12_trade_ev_required"
+    assert ev2["expected_return_owner"] == "s12_trade_ev"
 
 
 def test_attach_ensemble_v2_marks_uncalibrated_forecast_as_none():

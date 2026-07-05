@@ -220,7 +220,8 @@ async def _run() -> int:
             summary = (
                 f"run_id={run_id} "
                 f"preds={metrics.get('predictions_written', 0)} "
-                f"recos={metrics.get('recommendations_updated', 0)} "
+                f"recos_updated={metrics.get('recommendations_updated', 0)} "
+                f"seed_rows={metrics.get('recommendation_seed_rows', 0)} "
                 f"llm_reasons={metrics.get('llm_reasons_count', 0)} "
                 f"snapshot={snapshot_status} "
                 f"errors={error_count}"

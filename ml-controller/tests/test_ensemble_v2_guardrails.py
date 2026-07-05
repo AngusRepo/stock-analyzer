@@ -381,10 +381,11 @@ def test_daily_pipeline_builds_expected_return_calibration_from_verified_outcome
     rows = []
     for idx in range(40):
         avg_rank = 0.40 + (idx * 0.01)
-        actual = -0.02 if avg_rank < 0.60 else 0.04
+        actual = -0.03 + idx * 0.002
         rows.append({
             "forecast_data": json.dumps({"ensemble_v2": {"avg_rank": avg_rank}}),
             "actual_return_pct": actual,
+            "prediction_date": "2026-07-01",
         })
 
     monkeypatch.setattr(daily_pipeline_v2.d1_client, "query", lambda *_args, **_kwargs: rows)
@@ -397,7 +398,7 @@ def test_daily_pipeline_builds_expected_return_calibration_from_verified_outcome
 
     assert calibration is not None
     assert calibration["source"] == "verified_ensemble_outcomes"
-    assert calibration["method"] == "empirical_rank_bins_monotonic"
+    assert calibration["method"] == "empirical_rank_bins_monotonic_5bar_close"
     assert calibration["sampleCount"] == 40
     assert len(calibration["bins"]) == 4
     assert calibration["bins"][-1]["meanReturn"] > 0

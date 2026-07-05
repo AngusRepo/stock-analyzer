@@ -89,6 +89,8 @@ export interface SparseAllocationSummary {
   allocation_rank: number | null
   expected_return: number | null
   expected_return_source: string | null
+  expected_R: number | null
+  s12_trade_ev: Record<string, unknown> | null
   positive_expected_edge: boolean | null
   risk_estimate: number | null
   risk_estimate_source: string | null
@@ -494,6 +496,9 @@ export function buildSparseAllocationSummary(alphaAllocation: unknown): SparseAl
   const sparseDiagnostics = allocation.sparse_diagnostics && typeof allocation.sparse_diagnostics === 'object'
     ? allocation.sparse_diagnostics as Record<string, unknown>
     : null
+  const s12TradeEv = allocation.s12_trade_ev && typeof allocation.s12_trade_ev === 'object'
+    ? allocation.s12_trade_ev as Record<string, unknown>
+    : null
   const controller = cleanTextOrNull(allocation.controller)
     ?? cleanTextOrNull(opbController?.controller)
     ?? cleanTextOrNull(opbController?.policy_id)
@@ -531,6 +536,8 @@ export function buildSparseAllocationSummary(alphaAllocation: unknown): SparseAl
     allocation_rank: finiteOrNull(allocation.allocation_rank),
     expected_return: finiteOrNull(allocation.expected_return),
     expected_return_source: cleanTextOrNull(allocation.expected_return_source),
+    expected_R: finiteOrNull(s12TradeEv?.expected_R ?? allocation.expected_R),
+    s12_trade_ev: s12TradeEv,
     positive_expected_edge: boolOrNull(allocation.positive_expected_edge),
     risk_estimate: finiteOrNull(allocation.risk_estimate),
     risk_estimate_source: cleanTextOrNull(allocation.risk_estimate_source),
@@ -585,7 +592,7 @@ export function buildMlVoteWatchPoint(summary: MlVoteSummary | null): string | n
   const thresholds = summary.thresholds
     ? `, bullish_threshold=${summary.thresholds.bullish.toFixed(3)}, bearish_threshold=${summary.thresholds.bearish.toFixed(3)}, regime=${summary.thresholds.regime}`
     : ''
-  return `ML ensemble: bullish=${summary.bullish}/${summary.total}, bearish=${summary.bearish}/${summary.total}, flat=${summary.flat}/${summary.total}, missing=${summary.missing}/${summary.total}, forecast=${forecast}%${thresholds}`
+  return `ML ensemble: bullish=${summary.bullish}/${summary.total}, bearish=${summary.bearish}/${summary.total}, flat=${summary.flat}/${summary.total}, missing=${summary.missing}/${summary.total}, 5bar_forecast=${forecast}%${thresholds}`
 }
 
 export function buildMarketStructureWatchPoint(alphaContext: any): string | null {

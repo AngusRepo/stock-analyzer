@@ -82,7 +82,7 @@ const forecastData = {
   ensemble_v2: {
     forecast_pct: 0.012,
     forecast_pct_source: 'empirical_rank_bins',
-    forecast_calibration_method: 'empirical_rank_bins_monotonic',
+    forecast_calibration_method: 'empirical_rank_bins_monotonic_5bar_close',
     forecast_calibration_sample_count: 1880,
     forecast_calibration_bin_samples: 91,
     ic_weight_scope: 'tpex',
@@ -168,7 +168,7 @@ const forecastData = {
   assert(diagnostics?.totalAlphaModels === 8, 'diagnostics must use direct-alpha voters only')
   assert(diagnostics?.activeWeightCount === 8, 'active weights must ignore overlays, challenger models, and TimesFM sidecar')
   assert(diagnostics?.icWeightScope === 'tpex', 'diagnostics should expose the lane-aware IC scope')
-  assert(diagnostics?.forecastCalibration.method === 'empirical_rank_bins_monotonic', 'forecast calibration method should be visible to UI')
+  assert(diagnostics?.forecastCalibration.method === 'empirical_rank_bins_monotonic_5bar_close', 'forecast calibration method should be visible to UI')
   assert((diagnostics?.scoreSignalThresholds as any)?.buyThreshold === 0.6, 'dynamic score thresholds should be visible to UI')
   assert((diagnostics?.rankSignalThresholds as any)?.buyThreshold === 0.6, 'legacy rank threshold field should mirror score thresholds')
   assert(diagnostics?.forecastCalibration.sampleCount === 1880, 'forecast calibration sample count should be visible to UI')
@@ -202,7 +202,13 @@ const forecastData = {
     eligible_for_sparse: true,
     allocation_rank: 1,
     expected_return: 0.0315,
-    expected_return_source: 'ml_forecast_pct',
+    expected_return_source: 's12_trade_ev_test',
+    s12_trade_ev: {
+      status: 'loaded',
+      expected_R: 1.42,
+      win_rate: 0.61,
+      trade_expected_return_net_pct: 0.0315,
+    },
     positive_expected_edge: true,
     risk_estimate: 0.0182,
     risk_estimate_source: 'return_history_sample_std',
@@ -246,7 +252,9 @@ const forecastData = {
   assert(allocation?.eligible_for_sparse === true, 'L4 sparse summary should expose candidate eligibility')
   assert(allocation?.allocation_rank === 1, 'L4 sparse summary should expose sparse capacity rank')
   assert(allocation?.expected_return === 0.0315, 'L4 sparse summary should expose expected edge')
-  assert(allocation?.expected_return_source === 'ml_forecast_pct', 'L4 sparse summary should expose expected edge source')
+  assert(allocation?.expected_return_source === 's12_trade_ev_test', 'L4 sparse summary should expose expected edge source')
+  assert(allocation?.expected_R === 1.42, 'L4 sparse summary should expose S12 expected R')
+  assert((allocation?.s12_trade_ev as any)?.win_rate === 0.61, 'L4 sparse summary should keep compact S12 trade EV payload')
   assert(allocation?.positive_expected_edge === true, 'L4 sparse summary should expose positive edge decision')
   assert(allocation?.risk_estimate === 0.0182, 'L4 sparse summary should expose risk estimate')
   assert(allocation?.risk_estimate_source === 'return_history_sample_std', 'L4 sparse summary should expose risk estimate source')
@@ -287,7 +295,7 @@ const forecastData = {
   assert(!('prediction_forecast_data' in card), 'card view should drop bulky forecast payload')
   assert(!('screener_funnel_timeline' in card), 'card view should drop bulky screener timeline')
   assert(card.ml_diagnostics?.dispersion?.rawRankStd === 0.073, 'card view must keep compact ML diagnostics')
-  assert(card.ml_diagnostics?.forecastCalibration?.method === 'empirical_rank_bins_monotonic', 'card view must keep forecast calibration evidence')
+  assert(card.ml_diagnostics?.forecastCalibration?.method === 'empirical_rank_bins_monotonic_5bar_close', 'card view must keep forecast calibration evidence')
   assert(card.score_components === '{"version":"score_v2"}', 'card view must keep Score V2 payload')
   assert(card.alpha_allocation === '{"engine":"sparse_tangent_inverse_risk"}', 'card view must keep sparse allocator payload')
   assert(card.institutional_raw_today?.schema_version === 'institutional_raw_today_v1', 'card view must keep institutional raw card data')

@@ -46,6 +46,69 @@ def _monotonic_smooth_return_bins(bins: list[dict[str, Any]]) -> list[dict[str, 
     return smoothed
 
 
+def _row_date(row: dict[str, Any]) -> str | None:
+    for key in ("prediction_date", "date", "run_date"):
+        raw = row.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            return text[:10]
+    return None
+
+
+def _pearson_corr(pairs: list[tuple[float, float]]) -> float | None:
+    if len(pairs) < 3:
+        return None
+    xs = [item[0] for item in pairs]
+    ys = [item[1] for item in pairs]
+    x_mean = sum(xs) / len(xs)
+    y_mean = sum(ys) / len(ys)
+    x_var = sum((value - x_mean) ** 2 for value in xs)
+    y_var = sum((value - y_mean) ** 2 for value in ys)
+    if x_var <= 0 or y_var <= 0:
+        return None
+    cov = sum((x - x_mean) * (y - y_mean) for x, y in pairs)
+    return cov / ((x_var * y_var) ** 0.5)
+
+
+def _calibration_quality(
+    *,
+    bins: list[dict[str, Any]],
+    smoothed_bins: list[dict[str, Any]],
+    samples: list[tuple[float, float]],
+    min_unique_mean_returns: int,
+    min_top_bottom_spread: float,
+) -> dict[str, Any]:
+    means = [float(row.get("meanReturn") or 0.0) for row in smoothed_bins]
+    raw_means = [float(row.get("meanReturn") or 0.0) for row in bins]
+    unique_mean_returns = len({round(value, 6) for value in means})
+    top_bottom_spread = means[-1] - means[0] if len(means) >= 2 else 0.0
+    raw_top_bottom_spread = raw_means[-1] - raw_means[0] if len(raw_means) >= 2 else 0.0
+    corr = _pearson_corr(samples)
+    smoothed_bin_count = sum(1 for row in smoothed_bins if row.get("monotonicSmoothed"))
+    blockers: list[str] = []
+    if unique_mean_returns < min_unique_mean_returns:
+        blockers.append("low_unique_forecast_bins")
+    if top_bottom_spread < min_top_bottom_spread:
+        blockers.append("low_top_bottom_spread")
+    if corr is not None and corr < 0.0:
+        blockers.append("negative_rank_return_correlation")
+    if smoothed_bin_count >= max(1, len(smoothed_bins) // 2):
+        blockers.append("excessive_monotonic_pooling")
+    return {
+        "status": "ok" if not blockers else "low_resolution",
+        "blockers": blockers,
+        "uniqueMeanReturnCount": unique_mean_returns,
+        "minUniqueMeanReturnCount": min_unique_mean_returns,
+        "topBottomSpread": round(top_bottom_spread, 6),
+        "rawTopBottomSpread": round(raw_top_bottom_spread, 6),
+        "minTopBottomSpread": round(min_top_bottom_spread, 6),
+        "rankReturnCorrelation": None if corr is None else round(corr, 6),
+        "monotonicSmoothedBinCount": smoothed_bin_count,
+    }
+
+
 def build_expected_return_calibration_from_rows(
     rows: list[dict[str, Any]],
     *,
@@ -53,11 +116,15 @@ def build_expected_return_calibration_from_rows(
     min_samples: int = 30,
     min_bin_samples: int = 8,
     max_bins: int = 8,
+    min_unique_mean_returns: int = 4,
+    min_top_bottom_spread: float = 0.001,
+    zero_return_day_min_samples: int = 20,
 ) -> dict[str, Any]:
     samples: list[tuple[float, float]] = []
     invalid_rows = 0
     missing_avg_rank = 0
     missing_actual = 0
+    parsed_by_date: dict[str, list[tuple[float, float]]] = {}
 
     for row in rows or []:
         try:
@@ -76,7 +143,21 @@ def build_expected_return_calibration_from_rows(
         if not (0.0 <= avg_rank <= 1.0) or not (-1.0 < actual < 1.0):
             invalid_rows += 1
             continue
-        samples.append((avg_rank, actual))
+        row_key = _row_date(row) or "unknown"
+        parsed_by_date.setdefault(row_key, []).append((avg_rank, actual))
+
+    excluded_zero_dates: list[str] = []
+    excluded_zero_rows = 0
+    for row_key, date_samples in parsed_by_date.items():
+        if (
+            row_key != "unknown"
+            and len(date_samples) >= zero_return_day_min_samples
+            and all(abs(actual) <= 1e-12 for _, actual in date_samples)
+        ):
+            excluded_zero_dates.append(row_key)
+            excluded_zero_rows += len(date_samples)
+            continue
+        samples.extend(date_samples)
 
     report: dict[str, Any] = {
         "status": "insufficient_samples",
@@ -91,6 +172,9 @@ def build_expected_return_calibration_from_rows(
         "missingAvgRankCount": missing_avg_rank,
         "missingActualReturnCount": missing_actual,
         "invalidRowCount": invalid_rows,
+        "excludedZeroReturnDayCount": len(excluded_zero_dates),
+        "excludedZeroReturnRowCount": excluded_zero_rows,
+        "excludedZeroReturnDates": excluded_zero_dates[:20],
         "calibration": None,
     }
     if len(samples) < min_samples:
@@ -120,20 +204,42 @@ def build_expected_return_calibration_from_rows(
         report["status"] = "insufficient_bin_samples"
         return report
 
+    smoothed_bins = _monotonic_smooth_return_bins(bins)
+    quality = _calibration_quality(
+        bins=bins,
+        smoothed_bins=smoothed_bins,
+        samples=samples,
+        min_unique_mean_returns=max(1, min(min_unique_mean_returns, len(smoothed_bins))),
+        min_top_bottom_spread=max(0.0, float(min_top_bottom_spread)),
+    )
     calibration = {
         "source": "verified_ensemble_outcomes",
-        "method": "empirical_rank_bins_monotonic",
+        "method": "empirical_rank_bins_monotonic_5bar_close",
+        "semantic": "forecast_return_5bar_not_trade_ev",
+        "forecastHorizonBars": 5,
         "lookbackDays": int(lookback_days),
         "minSamples": int(min_samples),
         "minBinSamples": int(min_bin_samples),
         "sampleCount": len(samples),
         "status": "loaded",
-        "bins": _monotonic_smooth_return_bins(bins),
+        "bins": smoothed_bins,
+        "rawBins": bins,
+        "quality": quality,
     }
+    if quality["status"] != "ok":
+        report.update({
+            "status": quality["status"],
+            "binCount": len(calibration["bins"]),
+            "calibration": None,
+            "calibrationCandidate": calibration,
+            "quality": quality,
+        })
+        return report
     report.update({
         "status": "loaded",
         "binCount": len(calibration["bins"]),
         "calibration": calibration,
+        "quality": quality,
     })
     return report
 
@@ -145,11 +251,14 @@ def load_expected_return_calibration_report(
     min_samples: int = 30,
     min_bin_samples: int = 8,
     max_bins: int = 8,
+    min_unique_mean_returns: int = 4,
+    min_top_bottom_spread: float = 0.001,
+    zero_return_day_min_samples: int = 20,
 ) -> dict[str, Any]:
     try:
         rows = query_fn(
             """
-            SELECT forecast_data, actual_return_pct
+            SELECT forecast_data, actual_return_pct, date(prediction_date) AS prediction_date
               FROM predictions
              WHERE model_name = 'ensemble'
                AND verified_at IS NOT NULL
@@ -172,6 +281,9 @@ def load_expected_return_calibration_report(
             "maxBins": int(max_bins),
             "rowCount": 0,
             "sampleCount": 0,
+            "excludedZeroReturnDayCount": 0,
+            "excludedZeroReturnRowCount": 0,
+            "excludedZeroReturnDates": [],
             "calibration": None,
             "error": str(exc)[:240],
         }
@@ -182,4 +294,7 @@ def load_expected_return_calibration_report(
         min_samples=min_samples,
         min_bin_samples=min_bin_samples,
         max_bins=max_bins,
+        min_unique_mean_returns=min_unique_mean_returns,
+        min_top_bottom_spread=min_top_bottom_spread,
+        zero_return_day_min_samples=zero_return_day_min_samples,
     )

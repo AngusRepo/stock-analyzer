@@ -165,6 +165,13 @@ def _sparse_policy(buy_signal_count: int = 1, slate_size: int = 3) -> dict:
     }
 
 
+def _trade_ev(value: float, source: str = "s12_trade_ev_test") -> dict:
+    return {
+        "trade_expected_return_net_pct": value,
+        "trade_expected_return_source": source,
+    }
+
+
 def _prediction_with_ensemble_v2() -> dict:
     return {
         "signal": "HOLD",
@@ -647,6 +654,7 @@ def test_sparse_tangent_allocation_marks_signal_source():
         "has_buy_signal": 0,
         "score": 70.0,
         "ml_forecast_pct": 0.03,
+        **_trade_ev(0.03),
         "score_components": _score_components(final_score=70.0, ml_edge=20.0),
     }]
 
@@ -665,7 +673,7 @@ def test_sparse_tangent_allocation_marks_signal_source():
     assert allocation["selection_reason"] == "selected_positive_edge_sparse_weight"
     assert allocation["sparse_weight_state"] == "selected_positive_sparse_weight"
     assert allocation["expected_return"] == 0.03
-    assert allocation["expected_return_source"] == "ml_forecast_pct"
+    assert allocation["expected_return_source"] == "s12_trade_ev_test"
     assert allocation["positive_expected_edge"] is True
     assert allocation["eligible_for_sparse"] is True
     assert allocation["allocation_rank"] == 1
@@ -691,7 +699,7 @@ def test_sparse_tangent_allocation_prefers_canonical_ensemble_expected_return():
         "ml_forecast_pct": 0.001,
         "ml_forecast_pct_source": "legacy_compat_should_not_own_allocator",
         "expected_return": 0.035,
-        "expected_return_source": "calibrated_rank_bin",
+        "expected_return_source": "s12_trade_ev",
         "score_components": _score_components(final_score=70.0, ml_edge=20.0),
     }]
 
@@ -704,7 +712,7 @@ def test_sparse_tangent_allocation_prefers_canonical_ensemble_expected_return():
     allocation = promoted[0]["alpha_allocation"]
     assert promoted[0]["signal"] == "BUY"
     assert allocation["expected_return"] == pytest.approx(0.035)
-    assert allocation["expected_return_source"] == "calibrated_rank_bin"
+    assert allocation["expected_return_source"] == "s12_trade_ev"
     assert allocation["alpha_utility"]["alpha_input"] == pytest.approx(0.035)
 
 
@@ -719,7 +727,7 @@ def test_sparse_tangent_allocation_applies_dispersion_uncertainty_haircut():
         "has_buy_signal": 0,
         "score": 70.0,
         "expected_return": 0.04,
-        "expected_return_source": "calibrated_rank_bin",
+        "expected_return_source": "s12_trade_ev",
         "dispersion_diagnostics": {
             "active_weight_count": 2,
             "weight_hhi": 0.6,
@@ -737,7 +745,7 @@ def test_sparse_tangent_allocation_applies_dispersion_uncertainty_haircut():
 
     allocation = promoted[0]["alpha_allocation"]
     assert allocation["expected_return"] < 0.04
-    assert allocation["expected_return_source"] == "calibrated_rank_bin_dispersion_adjusted"
+    assert allocation["expected_return_source"] == "s12_trade_ev_dispersion_adjusted"
     adjustment = allocation["expected_return_uncertainty_adjustment"]
     assert adjustment["policy"] == "positive_expected_return_haircut_not_signal_override"
     assert set(adjustment["reasons"]) == {
@@ -759,6 +767,7 @@ def test_sparse_tangent_allocation_blocks_positive_forecast_when_ml_edge_missing
         "has_buy_signal": 1,
         "score": 72.0,
         "ml_forecast_pct": 0.03,
+        **_trade_ev(0.03),
         "score_components": _score_components(final_score=72.0, ml_edge=0.0),
     }]
 
@@ -786,6 +795,7 @@ def test_sparse_tangent_allocation_blocks_negative_forecast():
         "signal_source": "ensemble_v2",
         "has_buy_signal": 0,
         "ml_forecast_pct": -0.01,
+        **_trade_ev(-0.01),
         "score": 80.0,
         "score_components": _score_components(final_score=80.0),
     }]
@@ -831,7 +841,7 @@ def test_sparse_tangent_allocation_explains_missing_expected_return_input():
     assert allocation["selection_reason"] == "not_eligible_for_sparse_input"
     assert allocation["sparse_input_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
     assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_source"] == "uncalibrated_rank_score_no_expected_return"
+    assert allocation["expected_return_source"] == "s12_trade_ev_missing_no_allocation_edge"
 
 
 def test_sparse_tangent_allocation_reowns_existing_buy_labels():
@@ -846,6 +856,7 @@ def test_sparse_tangent_allocation_reowns_existing_buy_labels():
         "topk_forced": True,
         "score": 72.0,
         "ml_forecast_pct": 0.03,
+        **_trade_ev(0.03),
         "score_components": _score_components(final_score=72.0, ml_edge=21.0),
     }, {
         "symbol": "2317",
@@ -857,6 +868,7 @@ def test_sparse_tangent_allocation_reowns_existing_buy_labels():
         "has_buy_signal": 0,
         "score": 62.0,
         "ml_forecast_pct": 0.01,
+        **_trade_ev(0.01),
         "score_components": _score_components(final_score=62.0, ml_edge=18.0),
     }]
 
@@ -887,6 +899,7 @@ def test_sparse_tangent_allocation_uses_alpha_policy_buy_signal_count():
             "has_buy_signal": 1,
             "score": 70.0,
             "ml_forecast_pct": 0.03,
+            **_trade_ev(0.03),
             "alpha_context": {"edge_bucket": "trend_following"},
             "score_components": _score_components(final_score=70.0, ml_edge=21.0),
         },
@@ -899,6 +912,7 @@ def test_sparse_tangent_allocation_uses_alpha_policy_buy_signal_count():
             "has_buy_signal": 1,
             "score": 69.0,
             "ml_forecast_pct": 0.02,
+            **_trade_ev(0.02),
             "alpha_context": {"edge_bucket": "mean_reversion"},
             "score_components": _score_components(final_score=69.0, ml_edge=20.0),
         },
@@ -911,6 +925,7 @@ def test_sparse_tangent_allocation_uses_alpha_policy_buy_signal_count():
             "has_buy_signal": 1,
             "score": 68.0,
             "ml_forecast_pct": 0.01,
+            **_trade_ev(0.01),
             "alpha_context": {"edge_bucket": "defensive_accumulation"},
             "score_components": _score_components(final_score=68.0, ml_edge=19.0),
         },
@@ -940,6 +955,7 @@ def test_sparse_tangent_allocation_does_not_pre_cut_by_buy_signal_rank():
             "has_buy_signal": 0,
             "score": 99.0,
             "ml_forecast_pct": 0.001,
+            **_trade_ev(0.001),
             "score_components": _score_components(final_score=99.0, ml_edge=25.0),
         },
         {
@@ -951,6 +967,7 @@ def test_sparse_tangent_allocation_does_not_pre_cut_by_buy_signal_rank():
             "has_buy_signal": 0,
             "score": 75.0,
             "ml_forecast_pct": 0.05,
+            **_trade_ev(0.05),
             "score_components": _score_components(final_score=75.0, ml_edge=20.0),
         },
     ]
@@ -988,6 +1005,7 @@ def test_sparse_tangent_allocation_keeps_cash_when_explicit_forecast_has_no_edge
             "has_buy_signal": 0,
             "score": 95.0,
             "ml_forecast_pct": 0.0,
+            **_trade_ev(0.0),
             "score_components": _score_components(final_score=95.0, ml_edge=20.0),
         },
         {
@@ -999,6 +1017,7 @@ def test_sparse_tangent_allocation_keeps_cash_when_explicit_forecast_has_no_edge
             "has_buy_signal": 0,
             "score": 94.0,
             "ml_forecast_pct": 0.0,
+            **_trade_ev(0.0),
             "score_components": _score_components(final_score=94.0, ml_edge=19.0),
         },
     ]
@@ -1056,13 +1075,13 @@ def test_sparse_tangent_allocation_blocks_score_only_expected_return_fallback():
     assert promoted[0]["signal"] == "HOLD"
     assert promoted[0].get("sparse_tangent_selected") is not True
     assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_source"] == "missing_expected_return_no_allocation_edge"
+    assert allocation["expected_return_source"] == "s12_trade_ev_missing_no_allocation_edge"
     assert allocation["positive_expected_edge"] is False
     assert allocation["selection_reason"] == "not_eligible_for_sparse_input"
     assert allocation["sparse_input_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
 
 
-def test_sparse_tangent_allocation_accepts_market_heat_factor_edge():
+def test_sparse_tangent_allocation_does_not_accept_market_heat_as_expected_edge():
     rows = [{
         "symbol": "3661",
         "chip_score": 22.0,
@@ -1088,15 +1107,14 @@ def test_sparse_tangent_allocation_accepts_market_heat_factor_edge():
     )
 
     allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "BUY"
-    assert promoted[0].get("sparse_tangent_selected") is True
-    assert allocation["expected_return"] == pytest.approx(0.0042)
-    assert allocation["expected_return_source"] == "market_heat_factor_expected_edge"
+    assert promoted[0]["signal"] == "HOLD"
+    assert promoted[0].get("sparse_tangent_selected") is not True
+    assert allocation["expected_return"] == 0.0
+    assert allocation["expected_return_source"] == "s12_trade_ev_missing_no_allocation_edge"
     assert allocation["market_heat_score"] == pytest.approx(0.82)
     assert allocation["market_heat_expected_return"] == pytest.approx(0.0042)
-    assert allocation["positive_expected_edge"] is True
-    assert allocation["optimizer_objective"] == "mean_variance_alpha_utility_with_cash"
-    assert allocation["alpha_utility"]["net_alpha_after_cost"] == pytest.approx(0.0042)
+    assert allocation["positive_expected_edge"] is False
+    assert allocation["selection_reason"] == "not_eligible_for_sparse_input"
 
 
 def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):

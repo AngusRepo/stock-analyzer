@@ -51,6 +51,7 @@ from services.similarity_evidence import (
     similarity_components,
     symbol_cluster_evidence,
 )
+from services.s12_trade_ev import extract_s12_trade_ev
 from services.timesfm_l175_sidecar import build_timesfm_l175_sidecar
 
 logger = logging.getLogger(__name__)
@@ -479,9 +480,13 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
             "confidence": 0.0,
             "forecast_pct": None,
             "forecast_pct_source": "missing",
+            "forecast_return_5bar": None,
+            "forecast_return_5bar_source": "missing",
             "expected_return": None,
             "expected_return_source": "missing",
             "expected_return_owner": "missing",
+            "trade_expected_return_net_pct": None,
+            "trade_expected_return_source": "missing",
             "signal_source": "missing",
             "signal_raw": None,
         }
@@ -499,13 +504,20 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
                 "confidence": confidence,
                 "forecast_pct": ev2.get("forecast_pct"),
                 "forecast_pct_source": ev2.get("forecast_pct_source") or "ensemble_v2",
-                "expected_return": ev2.get("expected_return", ev2.get("forecast_pct")),
-                "expected_return_source": (
-                    ev2.get("expected_return_source")
+                "forecast_return_5bar": ev2.get("forecast_return_5bar", ev2.get("forecast_pct")),
+                "forecast_return_5bar_source": (
+                    ev2.get("forecast_return_5bar_source")
                     or ev2.get("forecast_pct_source")
                     or "ensemble_v2"
                 ),
-                "expected_return_owner": ev2.get("expected_return_owner") or "ensemble_v2_calibrated_forecast",
+                "expected_return": ev2.get("expected_return"),
+                "expected_return_source": (
+                    ev2.get("expected_return_source")
+                    or "s12_trade_ev_required"
+                ),
+                "expected_return_owner": ev2.get("expected_return_owner") or "s12_trade_ev",
+                "trade_expected_return_net_pct": ev2.get("trade_expected_return_net_pct"),
+                "trade_expected_return_source": ev2.get("trade_expected_return_source") or "s12_trade_ev_missing",
                 "signal_source": ev2.get("signal_source") or "ensemble_v2",
                 "signal_raw": ev2.get("signal_raw") or legacy_signal,
             }
@@ -515,9 +527,13 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
         "confidence": legacy_conf,
         "forecast_pct": legacy_forecast,
         "forecast_pct_source": "legacy",
-        "expected_return": legacy_forecast,
-        "expected_return_source": "legacy_forecast_pct",
-        "expected_return_owner": "legacy_compat_forecast",
+        "forecast_return_5bar": legacy_forecast,
+        "forecast_return_5bar_source": "legacy_forecast_pct",
+        "expected_return": None,
+        "expected_return_source": "legacy_forecast_pct_not_trade_ev",
+        "expected_return_owner": "s12_trade_ev",
+        "trade_expected_return_net_pct": None,
+        "trade_expected_return_source": "s12_trade_ev_missing",
         "signal_source": "legacy",
         "signal_raw": legacy_signal,
     }
@@ -784,8 +800,8 @@ def _build_alpha_adjustment_details(alpha_context: dict[str, Any], alpha_policy:
             "label": "Market heat",
             "value": round(market_heat_alpha, 2),
             "score": alpha_context.get("market_heat_score"),
-            "expectedReturn": alpha_context.get("market_heat_expected_return"),
-            "explain": "Adds the momentum/relative-strength factor inside the same sparse allocator objective.",
+            "marketHeatOverlay": alpha_context.get("market_heat_expected_return"),
+            "explain": "Adds the momentum/relative-strength score overlay; it is not allocator expected return.",
         })
     if risk_penalty:
         flag_text = ", ".join(str(flag) for flag in risk_flags) if risk_flags else "risk_overlay"
@@ -1853,8 +1869,12 @@ def filter_and_score_recommendations(
             "ml_confidence": eff_ml.get("confidence") or 0,
             "ml_forecast_pct": eff_ml.get("forecast_pct"),
             "ml_forecast_pct_source": eff_ml.get("forecast_pct_source"),
+            "forecast_return_5bar": eff_ml.get("forecast_return_5bar"),
+            "forecast_return_5bar_source": eff_ml.get("forecast_return_5bar_source"),
             "expected_return": eff_ml.get("expected_return"),
             "expected_return_source": eff_ml.get("expected_return_source"),
+            "trade_expected_return_net_pct": eff_ml.get("trade_expected_return_net_pct"),
+            "trade_expected_return_source": eff_ml.get("trade_expected_return_source"),
             "ml_models_total": ml_models_total,
             "ml_models_up": ml_models_up,
             "ml_models_down": ml_models_down,
@@ -1894,9 +1914,13 @@ def filter_and_score_recommendations(
             "confidence": eff_ml.get("confidence"),
             "ml_forecast_pct": eff_ml.get("forecast_pct"),
             "ml_forecast_pct_source": eff_ml.get("forecast_pct_source"),
+            "forecast_return_5bar": eff_ml.get("forecast_return_5bar"),
+            "forecast_return_5bar_source": eff_ml.get("forecast_return_5bar_source"),
             "expected_return": eff_ml.get("expected_return"),
             "expected_return_source": eff_ml.get("expected_return_source"),
             "expected_return_owner": eff_ml.get("expected_return_owner"),
+            "trade_expected_return_net_pct": eff_ml.get("trade_expected_return_net_pct"),
+            "trade_expected_return_source": eff_ml.get("trade_expected_return_source"),
             "dispersion_diagnostics": ml.get("dispersion_diagnostics") if isinstance(ml, dict) else None,
             "ml_vote_summary": ml_vote_summary,
             "ml_vote_summary_text": ml_vote_text,
@@ -1973,26 +1997,20 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
     expected_return, expected_return_source = _row_expected_return_with_source(row)
     row["promotion_expected_return"] = expected_return
     row["promotion_expected_return_source"] = expected_return_source
-    forecast_pct = row.get("expected_return", row.get("ml_forecast_pct", row.get("forecast_pct")))
+    forecast_pct = row.get("forecast_return_5bar", row.get("ml_forecast_pct", row.get("forecast_pct")))
     forecast_pct_source = str(
-        row.get("expected_return_source")
+        row.get("forecast_return_5bar_source")
         or row.get("ml_forecast_pct_source")
         or row.get("forecast_pct_source")
         or ""
     ).strip()
-    missing_expected_return = expected_return_source in {
-        "missing_no_expected_return",
-        "uncalibrated_rank_score_no_expected_return",
-        "missing_calibrated_forecast_pct_no_expected_return",
-        "no_positive_lifecycle_weight_no_expected_return",
-        "missing_expected_return_no_allocation_edge",
-    }
+    missing_expected_return = _expected_return_source_missing(expected_return_source)
     if missing_expected_return:
         row["promotion_blocked_reason"] = "forecast_pct_missing_no_expected_return_input"
         row["promotion_blocked_forecast_pct"] = forecast_pct
         row["promotion_blocked_forecast_pct_source"] = forecast_pct_source or expected_return_source
         row["promotion_blocked_expected_return_source"] = expected_return_source
-        row["promotion_blocked_expected_return_policy"] = "requires_calibrated_positive_expected_return"
+        row["promotion_blocked_expected_return_policy"] = "requires_s12_trade_ev_positive_expected_return"
         return False
     min_forecast = float(ranking_config.get("promoteMinForecastPct", 0.0))
     if expected_return < min_forecast:
@@ -2479,6 +2497,14 @@ _MISSING_EXPECTED_RETURN_SOURCES = {
     "uncalibrated_rank_score",
     "missing_calibrated_forecast_pct",
     "no_positive_lifecycle_weight",
+    "s12_trade_ev_required",
+    "s12_trade_ev_missing",
+    "s12_trade_ev_missing_no_allocation_edge",
+    "legacy_forecast_pct_not_trade_ev",
+    "forecast_return_5bar_not_trade_ev",
+    "calibrated_rank_bin_forecast_not_trade_ev",
+    "calibrated_rank_tail_clamp_forecast_not_trade_ev",
+    "market_heat_factor_overlay_not_expected_return",
     "missing_no_expected_return",
     "uncalibrated_rank_score_no_expected_return",
     "missing_calibrated_forecast_pct_no_expected_return",
@@ -2501,10 +2527,40 @@ def _dict_payload(value: Any) -> dict[str, Any]:
 
 def _expected_return_source_missing(source: str) -> bool:
     normalized = str(source or "").strip()
-    return normalized in _MISSING_EXPECTED_RETURN_SOURCES or normalized.endswith("_no_expected_return")
+    return (
+        normalized in _MISSING_EXPECTED_RETURN_SOURCES
+        or normalized.endswith("_no_expected_return")
+        or normalized.endswith("_not_trade_ev")
+        or normalized.endswith("_insufficient_samples")
+        or normalized.endswith("_missing")
+    )
+
+
+def _expected_return_source_is_trade_ev(source: str) -> bool:
+    normalized = str(source or "").strip().lower()
+    if not normalized:
+        return False
+    if "forecast" in normalized or "market_heat" in normalized:
+        return False
+    return "trade_ev" in normalized or normalized.startswith("s12_") or normalized.startswith("paper_trade")
+
+
+def _forecast_source_not_trade_ev(source: str) -> str:
+    normalized = str(source or "").strip()
+    if not normalized:
+        return "missing_expected_return_no_allocation_edge"
+    if normalized in _MISSING_EXPECTED_RETURN_SOURCES or normalized.endswith("_no_expected_return"):
+        return normalized
+    if "forecast" in normalized or "calibrated_rank" in normalized or normalized == "legacy":
+        return f"{normalized}_forecast_not_trade_ev"
+    return f"{normalized}_not_trade_ev"
 
 
 def _canonical_expected_return_from_row(row: dict) -> tuple[float | None, str, dict[str, Any] | None]:
+    trade_ev_value, trade_ev_source, trade_ev_payload = extract_s12_trade_ev(row)
+    if trade_ev_value is not None:
+        return trade_ev_value, trade_ev_source, trade_ev_payload
+
     candidates: list[tuple[Any, Any, str, dict[str, Any] | None]] = [
         (
             row.get("expected_return"),
@@ -2516,8 +2572,8 @@ def _canonical_expected_return_from_row(row: dict) -> tuple[float | None, str, d
     ev2 = row.get("ensemble_v2") if isinstance(row.get("ensemble_v2"), dict) else {}
     if ev2:
         candidates.append((
-            ev2.get("expected_return", ev2.get("forecast_pct")),
-            ev2.get("expected_return_source") or ev2.get("forecast_pct_source"),
+            ev2.get("expected_return"),
+            ev2.get("expected_return_source"),
             "ensemble_v2.expected_return",
             ev2,
         ))
@@ -2525,25 +2581,31 @@ def _canonical_expected_return_from_row(row: dict) -> tuple[float | None, str, d
     fd_ev2 = forecast_data.get("ensemble_v2") if isinstance(forecast_data.get("ensemble_v2"), dict) else {}
     if fd_ev2:
         candidates.append((
-            fd_ev2.get("expected_return", fd_ev2.get("forecast_pct")),
-            fd_ev2.get("expected_return_source") or fd_ev2.get("forecast_pct_source"),
+            fd_ev2.get("expected_return"),
+            fd_ev2.get("expected_return_source"),
             "forecast_data.ensemble_v2.expected_return",
             fd_ev2,
         ))
 
+    first_rejected_source: str | None = trade_ev_source
     for raw_value, raw_source, owner, payload in candidates:
         source = str(raw_source or "").strip()
         if raw_value is None:
             if _expected_return_source_missing(source):
                 return None, f"{source}_no_expected_return", payload
+            if source:
+                first_rejected_source = _forecast_source_not_trade_ev(source)
             continue
         value = _float_or_none(raw_value)
         if value is None:
             continue
         if _expected_return_source_missing(source):
             return None, f"{source}_no_expected_return", payload
-        return value, source or owner, payload
-    return None, "missing_expected_return_no_allocation_edge", None
+        effective_source = source or owner
+        if not _expected_return_source_is_trade_ev(effective_source):
+            return None, _forecast_source_not_trade_ev(effective_source), payload
+        return value, effective_source, payload
+    return None, first_rejected_source or "missing_expected_return_no_allocation_edge", trade_ev_payload
 
 
 def _expected_return_uncertainty_adjustment(row: dict, value: float) -> tuple[float, dict[str, Any] | None]:
@@ -2601,51 +2663,71 @@ def _row_expected_return_with_source(row: dict) -> tuple[float, str]:
     if heat_edge is None:
         heat_edge = _float_or_none(alpha_context.get("market_heat_expected_return"))
     heat_edge = max(0.0, heat_edge or 0.0)
+    if heat_edge > 0:
+        row["_market_heat_allocator_overlay"] = {
+            "source": "market_heat_factor",
+            "market_heat_expected_return": heat_edge,
+            "policy": "diagnostic_overlay_not_expected_return",
+        }
 
-    canonical_value, canonical_source, _payload = _canonical_expected_return_from_row(row)
+    canonical_value, canonical_source, payload = _canonical_expected_return_from_row(row)
+    if isinstance(payload, dict):
+        row["_expected_return_payload"] = payload
     if canonical_value is None:
-        if heat_edge > 0 and canonical_source == "missing_expected_return_no_allocation_edge":
-            return heat_edge, "market_heat_factor_expected_edge"
         if (
             canonical_source != "missing_expected_return_no_allocation_edge"
             and _expected_return_source_missing(canonical_source)
         ):
+            return 0.0, canonical_source
+        if canonical_source != "missing_expected_return_no_allocation_edge":
             return 0.0, canonical_source
     else:
         adjusted_value, adjustment = _expected_return_uncertainty_adjustment(row, canonical_value)
         source = canonical_source
         if adjustment:
             source = f"{source}_dispersion_adjusted"
-        if heat_edge > 0:
-            return adjusted_value + heat_edge, f"{source}_plus_market_heat_factor"
         return adjusted_value, source
 
-    for key in ("ml_forecast_pct", "forecast_pct", "expected_return", "predicted_return"):
-        if key not in row:
-            continue
-        if row.get(key) is None:
-            source = str(row.get(f"{key}_source") or row.get("forecast_pct_source") or "").strip()
-            if key in ("ml_forecast_pct", "forecast_pct") and source in {
-                "missing",
-                "uncalibrated_rank_score",
-                "missing_calibrated_forecast_pct",
-                "no_positive_lifecycle_weight",
-            }:
-                if heat_edge > 0:
-                    return heat_edge, "market_heat_factor_expected_edge"
-                return 0.0, f"{source}_no_expected_return"
-            continue
-        try:
-            value = float(row.get(key))
-        except (TypeError, ValueError):
-            value = 0.0
-        if math.isfinite(value):
-            if heat_edge > 0:
-                return value + heat_edge, f"{key}_plus_market_heat_factor"
-            return value, key
-    if heat_edge > 0:
-        return heat_edge, "market_heat_factor_expected_edge"
     return 0.0, "missing_expected_return_no_allocation_edge"
+
+
+def _opb_trade_ev_payload(allocation: dict[str, Any]) -> dict[str, Any]:
+    for key in ("s12_trade_ev", "expected_return_payload", "trade_ev"):
+        payload = allocation.get(key)
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _opb_reward_from_row(row: dict[str, Any], allocation: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
+    trade_pnl_pct = _float_or_none(row.get("trade_pnl_pct"))
+    trade_pnl_r = _float_or_none(row.get("trade_pnl_r"))
+    actual_return_pct = _float_or_none(row.get("actual_return_pct"))
+    trade_ev = _opb_trade_ev_payload(allocation)
+    risk_pct = _float_or_none(trade_ev.get("risk_pct"))
+    source = "missing"
+    if trade_pnl_pct is not None:
+        reward = trade_pnl_pct
+        source = "trade_pnl_pct"
+    elif trade_pnl_r is not None:
+        scale = risk_pct if risk_pct is not None and risk_pct > 0 else 0.01
+        reward = trade_pnl_r * scale
+        source = "trade_pnl_r_scaled_by_s12_risk_pct" if risk_pct else "trade_pnl_r_scaled_default_1pct_risk"
+    elif actual_return_pct is not None:
+        reward = actual_return_pct
+        source = "actual_return_pct_5bar_fallback"
+    else:
+        return None, {"reward_source": source}
+    clamped = max(-0.20, min(0.20, reward))
+    return clamped, {
+        "reward_source": source,
+        "raw_reward": round(reward, 10),
+        "reward": round(clamped, 10),
+        "trade_pnl_pct": None if trade_pnl_pct is None else round(trade_pnl_pct, 10),
+        "trade_pnl_r": None if trade_pnl_r is None else round(trade_pnl_r, 6),
+        "risk_pct": None if risk_pct is None else round(risk_pct, 10),
+        "actual_return_pct": None if actual_return_pct is None else round(actual_return_pct, 10),
+    }
 
 
 def _row_daily_risk_estimate(symbol: str, risk_history: dict[str, list[float]], daily_vol_floor: float = 0.01) -> float:
@@ -2683,6 +2765,7 @@ def load_online_portfolio_bandit_reward_ledger(
                    dr.symbol,
                    dr.alpha_allocation,
                    p.trade_pnl_pct,
+                   p.trade_pnl_r,
                    p.actual_return_pct
               FROM daily_recommendations dr
               JOIN predictions p
@@ -2693,7 +2776,7 @@ def load_online_portfolio_bandit_reward_ledger(
                AND json_valid(dr.alpha_allocation)
                AND json_extract(dr.alpha_allocation, '$.selected') = 1
                AND json_extract(dr.alpha_allocation, '$.opb_controller.enabled') = 1
-               AND (p.trade_pnl_pct IS NOT NULL OR p.actual_return_pct IS NOT NULL)
+               AND (p.trade_pnl_pct IS NOT NULL OR p.trade_pnl_r IS NOT NULL OR p.actual_return_pct IS NOT NULL)
              ORDER BY dr.date DESC, dr.rank ASC
              LIMIT ?
             """,
@@ -2713,9 +2796,7 @@ def load_online_portfolio_bandit_reward_ledger(
         business_date = str(row.get("date") or "").strip()
         if not arm_id or not business_date:
             continue
-        reward = _float_or_none(row.get("trade_pnl_pct"))
-        if reward is None:
-            reward = _float_or_none(row.get("actual_return_pct"))
+        reward, reward_meta = _opb_reward_from_row(row, allocation or {})
         if reward is None:
             continue
         weight = _float_or_none((allocation or {}).get("allocation_weight"))
@@ -2723,30 +2804,68 @@ def load_online_portfolio_bandit_reward_ledger(
             weight = _float_or_none((allocation or {}).get("single_name_weight"))
         if weight is None or weight <= 0:
             weight = 1.0
-        bucket = daily_rewards.setdefault((business_date, arm_id), {"weighted_reward": 0.0, "weight": 0.0})
+        bucket = daily_rewards.setdefault((business_date, arm_id), {
+            "weighted_reward": 0.0,
+            "weight": 0.0,
+            "weighted_r": 0.0,
+            "r_weight": 0.0,
+            "source_counts": {},
+            "risk_pct_rows": 0.0,
+        })
         bucket["weighted_reward"] += reward * weight
         bucket["weight"] += weight
+        trade_pnl_r = _float_or_none(reward_meta.get("trade_pnl_r"))
+        if trade_pnl_r is not None:
+            bucket["weighted_r"] += trade_pnl_r * weight
+            bucket["r_weight"] += weight
+        reward_source = str(reward_meta.get("reward_source") or "unknown")
+        source_counts = bucket.setdefault("source_counts", {})
+        source_counts[reward_source] = float(source_counts.get(reward_source, 0.0) or 0.0) + 1.0
+        if reward_meta.get("risk_pct") is not None:
+            bucket["risk_pct_rows"] += 1.0
 
-    by_arm: dict[str, list[float]] = {}
+    by_arm: dict[str, dict[str, Any]] = {}
     for (_business_date, arm_id), bucket in daily_rewards.items():
         total_weight = bucket["weight"]
         if total_weight <= 0:
             continue
-        by_arm.setdefault(arm_id, []).append(bucket["weighted_reward"] / total_weight)
+        arm_bucket = by_arm.setdefault(arm_id, {
+            "rewards": [],
+            "r_rewards": [],
+            "source_counts": {},
+            "risk_pct_rows": 0.0,
+        })
+        arm_bucket["rewards"].append(bucket["weighted_reward"] / total_weight)
+        if bucket["r_weight"] > 0:
+            arm_bucket["r_rewards"].append(bucket["weighted_r"] / bucket["r_weight"])
+        for source, count in (bucket.get("source_counts") or {}).items():
+            source_counts = arm_bucket.setdefault("source_counts", {})
+            source_counts[source] = float(source_counts.get(source, 0.0) or 0.0) + float(count or 0.0)
+        arm_bucket["risk_pct_rows"] += float(bucket.get("risk_pct_rows") or 0.0)
 
     ledger: list[dict[str, Any]] = []
-    for arm_id, rewards in sorted(by_arm.items()):
+    for arm_id, stats in sorted(by_arm.items()):
+        rewards = stats.get("rewards") or []
         if not rewards:
             continue
         reward_sum = sum(rewards)
         samples = len(rewards)
+        r_rewards = stats.get("r_rewards") or []
         ledger.append({
             "policy_id": "OnlinePortfolioBandit",
             "arm_id": arm_id,
             "samples": samples,
             "reward_sum": reward_sum,
             "reward_mean": reward_sum / samples,
-            "source": "daily_recommendations.alpha_allocation+predictions.outcome",
+            "reward_mean_r": (sum(r_rewards) / len(r_rewards)) if r_rewards else None,
+            "reward_r_samples": len(r_rewards),
+            "reward_source_counts": {
+                key: int(value)
+                for key, value in sorted((stats.get("source_counts") or {}).items())
+            },
+            "risk_pct_rows": int(stats.get("risk_pct_rows") or 0),
+            "source": "daily_recommendations.alpha_allocation+predictions.trade_outcome",
+            "reward_policy": "prefer_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_then_actual_return_pct_fallback",
         })
     return ledger
 
@@ -2920,6 +3039,7 @@ def _apply_sparse_tangent_buy_selection(
             candidate_evidence_by_symbol[symbol] = {
                 "expected_return": expected_return,
                 "expected_return_source": expected_return_source,
+                "expected_return_payload": row.get("_expected_return_payload"),
                 "expected_return_uncertainty_adjustment": row.get("_expected_return_uncertainty_adjustment"),
                 "market_heat_score": row.get("market_heat_score"),
                 "market_heat_expected_return": row.get("market_heat_expected_return"),
@@ -2987,6 +3107,12 @@ def _apply_sparse_tangent_buy_selection(
         )
         weights = dict(allocation_result.get("weights") or {})
     else:
+        opb_allocation = (opb_packet.get("controlled_allocation") or {}) if opb_packet else {}
+        opb_sparse_evidence = (
+            opb_allocation.get("sparse_evidence")
+            if isinstance(opb_allocation.get("sparse_evidence"), dict)
+            else {}
+        )
         opb_similarity_symbols = sorted({
             *[str(row.get("symbol") or "").strip() for row in optimizer_candidates],
             *[str(symbol or "").strip() for symbol in weights],
@@ -3012,12 +3138,24 @@ def _apply_sparse_tangent_buy_selection(
                 edge_threshold=cluster_edge_threshold,
                 threshold_quantile=cluster_threshold_quantile,
             )
+        opb_candidate_diagnostics = dict(opb_sparse_evidence.get("candidate_diagnostics") or {})
+        if opb_candidate_diagnostics:
+            opb_candidate_diagnostics = {
+                symbol: {
+                    **diagnostic,
+                    "final_weight": round(float(weights.get(symbol, 0.0) or 0.0), 10),
+                    "opb_controller_diagnostics": True,
+                }
+                for symbol, diagnostic in opb_candidate_diagnostics.items()
+            }
         allocation_result = {
+            **opb_sparse_evidence,
             "weights": weights,
             "similarity_evidence": opb_similarity,
             "cluster_penalty_applied": cluster_penalty_applied,
             "max_cluster_weight": max_cluster_weight,
             "unallocated_cash_weight": round(max(0.0, 1.0 - sum(float(value or 0.0) for value in weights.values())), 10),
+            "candidate_diagnostics": opb_candidate_diagnostics,
         }
     selected_symbols = set(weights)
     selected_by_symbol = {row.get("symbol"): row for row in eligible_rows}
@@ -3149,6 +3287,11 @@ def _apply_sparse_tangent_buy_selection(
             "expected_return_uncertainty_adjustment": (
                 (evidence or {}).get("expected_return_uncertainty_adjustment")
                 or row.get("_expected_return_uncertainty_adjustment")
+            ),
+            "s12_trade_ev": (
+                (evidence or {}).get("expected_return_payload")
+                if isinstance((evidence or {}).get("expected_return_payload"), dict)
+                else None
             ),
             "market_heat_score": None if market_heat_score is None else round(market_heat_score, 6),
             "market_heat_expected_return": (
@@ -3389,6 +3532,7 @@ def write_predictions_to_d1(
             "signal_source": ev2_signal_source if (use_ev2 and ev2_signal) else "legacy",
             "alpha_context": data.get("alpha_context"),
             "alpha_allocation": data.get("alpha_allocation"),
+            "s12_trade_ev": data.get("s12_trade_ev"),
             "core_ml_evidence": data.get("core_ml_evidence") or data.get("core_ml_gate"),
             "core_ml_gate": data.get("core_ml_gate") or data.get("core_ml_evidence"),
             "core_family_vote": data.get("core_family_vote"),

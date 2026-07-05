@@ -541,6 +541,8 @@ def _sparse_recommendation_row(
         "signal_source": "ensemble_v2",
         "confidence": 0.72,
         "ml_forecast_pct": forecast_pct,
+        "trade_expected_return_net_pct": forecast_pct,
+        "trade_expected_return_source": "s12_trade_ev_test",
         "recommendation_lane": "tradable",
         "eligible_for_pending_buy": True,
         "has_buy_signal": 1 if signal == "BUY" else 0,

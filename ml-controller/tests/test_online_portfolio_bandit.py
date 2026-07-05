@@ -49,6 +49,8 @@ def _recommendation_row(symbol: str, score: float, forecast_pct: float) -> dict:
         "signal_source": "ensemble_v2",
         "confidence": 0.72,
         "ml_forecast_pct": forecast_pct,
+        "trade_expected_return_net_pct": forecast_pct,
+        "trade_expected_return_source": "s12_trade_ev_test",
         "recommendation_lane": "tradable",
         "eligible_for_pending_buy": True,
         "has_buy_signal": 0,
@@ -60,8 +62,15 @@ def _recommendation_row(symbol: str, score: float, forecast_pct: float) -> dict:
 def test_online_portfolio_bandit_selects_ucb_arm_and_keeps_cash_buffer(monkeypatch):
     monkeypatch.setattr(
         online_portfolio_bandit,
-        "allocate_sparse_tangent",
-        lambda candidates, return_history, **kwargs: {"AAA": 0.55, "BBB": 0.45},
+        "allocate_sparse_tangent_with_evidence",
+        lambda candidates, return_history, **kwargs: {
+            "weights": {"AAA": 0.55, "BBB": 0.45},
+            "candidate_diagnostics": {
+                "AAA": {"alpha_input": 0.05, "marginal_utility": 0.01, "final_weight": 0.55},
+                "BBB": {"alpha_input": 0.04, "marginal_utility": 0.01, "final_weight": 0.45},
+            },
+            "objective_evidence": {"objective": "mean_variance_alpha_utility_with_cash"},
+        },
     )
 
     packet = build_online_portfolio_bandit_l2_packet(
@@ -89,8 +98,14 @@ def test_online_portfolio_bandit_selects_ucb_arm_and_keeps_cash_buffer(monkeypat
 def test_online_portfolio_bandit_reward_ledger_can_override_static_prior(monkeypatch):
     monkeypatch.setattr(
         online_portfolio_bandit,
-        "allocate_sparse_tangent",
-        lambda candidates, return_history, **kwargs: {"AAA": 1.0},
+        "allocate_sparse_tangent_with_evidence",
+        lambda candidates, return_history, **kwargs: {
+            "weights": {"AAA": 1.0},
+            "candidate_diagnostics": {
+                "AAA": {"alpha_input": 0.05, "marginal_utility": 0.01, "final_weight": 1.0},
+            },
+            "objective_evidence": {"objective": "mean_variance_alpha_utility_with_cash"},
+        },
     )
 
     packet = build_online_portfolio_bandit_l2_packet(
@@ -102,6 +117,10 @@ def test_online_portfolio_bandit_reward_ledger_can_override_static_prior(monkeyp
                 "arm_id": "cash_guard",
                 "samples": 8,
                 "reward_mean": 0.030,
+                "reward_mean_r": 1.2,
+                "reward_r_samples": 8,
+                "reward_source_counts": {"trade_pnl_pct": 8},
+                "reward_policy": "prefer_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_then_actual_return_pct_fallback",
             }
         ],
         arms=(
@@ -114,14 +133,24 @@ def test_online_portfolio_bandit_reward_ledger_can_override_static_prior(monkeyp
 
     assert packet["selected_arm"]["arm_id"] == "cash_guard"
     assert packet["selected_arm"]["live_samples"] == 8
+    assert packet["selected_arm"]["live_reward_mean_r"] == pytest.approx(1.2)
+    assert packet["selected_arm"]["reward_source_counts"] == {"trade_pnl_pct": 8}
     assert packet["controlled_allocation"]["cash_weight"] == pytest.approx(0.30)
 
 
 def test_recommendation_service_uses_opb_packet_without_full_exposure_renormalization(monkeypatch):
     monkeypatch.setattr(
         online_portfolio_bandit,
-        "allocate_sparse_tangent",
-        lambda candidates, return_history, **kwargs: {"AAA": 0.40, "BBB": 0.35, "CCC": 0.25},
+        "allocate_sparse_tangent_with_evidence",
+        lambda candidates, return_history, **kwargs: {
+            "weights": {"AAA": 0.40, "BBB": 0.35, "CCC": 0.25},
+            "candidate_diagnostics": {
+                "AAA": {"alpha_input": 0.05, "marginal_utility": 0.011, "final_weight": 0.40},
+                "BBB": {"alpha_input": 0.04, "marginal_utility": 0.009, "final_weight": 0.35},
+                "CCC": {"alpha_input": 0.03, "marginal_utility": 0.007, "final_weight": 0.25},
+            },
+            "objective_evidence": {"objective": "mean_variance_alpha_utility_with_cash"},
+        },
     )
 
     rows = [
@@ -150,13 +179,20 @@ def test_recommendation_service_uses_opb_packet_without_full_exposure_renormaliz
     assert buys[0]["alpha_allocation"]["opb_controller"]["enabled"] is True
     assert buys[0]["alpha_allocation"]["sparse_diagnostics"]["controller_packet_enabled"] is True
     assert buys[0]["alpha_allocation"]["sparse_diagnostics"]["unallocated_cash_weight"] == pytest.approx(0.08)
+    assert buys[0]["alpha_allocation"]["alpha_utility"]["alpha_input"] == pytest.approx(0.05)
+    assert buys[0]["alpha_allocation"]["alpha_utility"]["opb_controller_diagnostics"] is True
 
 
 def test_opb_reward_ledger_aggregates_daily_portfolio_reward_by_arm():
-    def _allocation(arm_id: str, weight: float) -> str:
+    def _allocation(arm_id: str, weight: float, risk_pct: float = 0.04) -> str:
         return json.dumps({
             "selected": True,
             "allocation_weight": weight,
+            "s12_trade_ev": {
+                "status": "loaded",
+                "risk_pct": risk_pct,
+                "trade_expected_return_net_pct": 0.03,
+            },
             "opb_controller": {
                 "enabled": True,
                 "selected_arm": {"arm_id": arm_id},
@@ -169,6 +205,7 @@ def test_opb_reward_ledger_aggregates_daily_portfolio_reward_by_arm():
             "stock_id": "AAA",
             "alpha_allocation": _allocation("diversified_alpha", 0.60),
             "trade_pnl_pct": 0.02,
+            "trade_pnl_r": 0.50,
             "actual_return_pct": None,
         },
         {
@@ -176,6 +213,7 @@ def test_opb_reward_ledger_aggregates_daily_portfolio_reward_by_arm():
             "stock_id": "BBB",
             "alpha_allocation": _allocation("diversified_alpha", 0.40),
             "trade_pnl_pct": -0.01,
+            "trade_pnl_r": -0.25,
             "actual_return_pct": None,
         },
         {
@@ -183,6 +221,7 @@ def test_opb_reward_ledger_aggregates_daily_portfolio_reward_by_arm():
             "stock_id": "CCC",
             "alpha_allocation": _allocation("diversified_alpha", 0.50),
             "trade_pnl_pct": None,
+            "trade_pnl_r": None,
             "actual_return_pct": 0.04,
         },
     ]
@@ -195,3 +234,41 @@ def test_opb_reward_ledger_aggregates_daily_portfolio_reward_by_arm():
     assert ledger[0]["arm_id"] == "diversified_alpha"
     assert ledger[0]["samples"] == 2
     assert ledger[0]["reward_mean"] == pytest.approx(((0.60 * 0.02 + 0.40 * -0.01) + 0.04) / 2)
+    assert ledger[0]["reward_mean_r"] == pytest.approx((0.60 * 0.50 + 0.40 * -0.25) / 1.0)
+    assert ledger[0]["reward_r_samples"] == 1
+    assert ledger[0]["reward_source_counts"] == {"actual_return_pct_5bar_fallback": 1, "trade_pnl_pct": 2}
+    assert ledger[0]["risk_pct_rows"] == 3
+    assert ledger[0]["reward_policy"] == "prefer_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_then_actual_return_pct_fallback"
+
+
+def test_opb_reward_ledger_uses_trade_pnl_r_scaled_by_s12_risk_when_pct_missing():
+    rows = [
+        {
+            "date": "2026-07-03",
+            "stock_id": "AAA",
+            "symbol": "AAA",
+            "alpha_allocation": json.dumps({
+                "selected": True,
+                "allocation_weight": 1.0,
+                "s12_trade_ev": {"status": "loaded", "risk_pct": 0.04},
+                "opb_controller": {"enabled": True, "selected_arm": {"arm_id": "risk_on"}},
+            }),
+            "trade_pnl_pct": None,
+            "trade_pnl_r": 2.0,
+            "actual_return_pct": None,
+        }
+    ]
+
+    calls: list[str] = []
+
+    def query_fn(sql: str, params: list[object], timeout: float = 30.0) -> list[dict]:
+        calls.append(sql)
+        return rows
+
+    ledger = load_online_portfolio_bandit_reward_ledger(query_fn=query_fn)
+
+    assert calls and "p.trade_pnl_r" in calls[0]
+    assert ledger[0]["arm_id"] == "risk_on"
+    assert ledger[0]["reward_mean"] == pytest.approx(0.08)
+    assert ledger[0]["reward_mean_r"] == pytest.approx(2.0)
+    assert ledger[0]["reward_source_counts"] == {"trade_pnl_r_scaled_by_s12_risk_pct": 1}

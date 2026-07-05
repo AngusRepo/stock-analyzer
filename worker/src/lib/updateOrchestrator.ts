@@ -241,7 +241,7 @@ async function tradingRestrictionsDailyReadinessCheck(
 ): Promise<ReadinessCheck> {
   const key = 'canonical_trading_restrictions:daily_micro_lane'
   try {
-    const [quality, checkedAt] = await Promise.all([
+    const [quality, canonical, checkedAt] = await Promise.all([
       env.DB.prepare(`
         SELECT freshness_status, missing_rate, latest_materialization, metrics_json
           FROM source_quality_metrics
@@ -256,6 +256,17 @@ async function tradingRestrictionsDailyReadinessCheck(
         latest_materialization: string | null
         metrics_json: string | null
       }>(),
+      env.DB.prepare(`
+        SELECT COUNT(*) AS count,
+               MAX(updated_at) AS latest_materialization
+          FROM canonical_trading_restrictions
+         WHERE source = 'finlab.trading_attention'
+           AND source_date <= ?
+           AND (end_date IS NULL OR end_date >= ?)
+      `).bind(targetDate, targetDate).first<{
+        count: number | null
+        latest_materialization: string | null
+      }>(),
       env.KV.get('market:trading_restrictions:checked_at'),
     ])
     const freshness = String(quality?.freshness_status ?? '').trim().toLowerCase()
@@ -265,6 +276,14 @@ async function tradingRestrictionsDailyReadinessCheck(
         key,
         ok: true,
         summary: `${key} finlab=${quality?.freshness_status ?? 'ok'} materialized=${quality?.latest_materialization ?? 'n/a'}`,
+      }
+    }
+    const canonicalRows = Number(canonical?.count ?? 0)
+    if (canonicalRows > 0) {
+      return {
+        key,
+        ok: true,
+        summary: `${key} canonical_active_rows=${canonicalRows} materialized=${canonical?.latest_materialization ?? 'n/a'}`,
       }
     }
 

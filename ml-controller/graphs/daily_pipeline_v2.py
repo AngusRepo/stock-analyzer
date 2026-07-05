@@ -2694,6 +2694,8 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         "prediction_rows_per_symbol": prediction_rows_per_symbol,
         "stale_predictions_deleted": stale_predictions_deleted,
         "recommendations_updated": rec_updated,
+        "recommendation_seed_rows": len(state.get("screener_recs") or []),
+        "final_recommendations": len(final),
         "sell_marked_non_buy": sell_marked_non_buy,
         "llm_reasons_count": len(state.get("llm_reasons") or {}),
         "breeze2_reason_shadow": breeze2_reason_shadow_metrics(state.get("breeze2_reason_shadow") or {}),

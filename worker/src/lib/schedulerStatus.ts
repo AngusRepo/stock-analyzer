@@ -243,6 +243,7 @@ function inferPipelineChildLog(logs: CronLogEntry[] | undefined, taskId: string)
     const recommendationDetected =
       summary.includes('recommendation') ||
       /recommendations?_updated[=:](\d+)/i.test(summary) ||
+      /recos_updated[=:](\d+)/i.test(summary) ||
       /recos[=:](\d+)/i.test(summary)
 
     if (!recommendationDetected && pipelineLog.status === 'success') return undefined

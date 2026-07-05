@@ -11,20 +11,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from services.s12_trade_ev_bootstrap import S12TradeEvBootstrapProvider, load_s12_replay_trade_rows  # noqa: E402
 
 
-def _row(symbol: str, prediction_date: str, pnl: float, *, market: str = "TWSE", bucket: str = "breakout") -> dict:
+def _row(
+    symbol: str,
+    prediction_date: str,
+    pnl: float,
+    *,
+    market: str = "TWSE",
+    bucket: str = "breakout",
+    s12: bool = True,
+    trade_signal: str = "buy",
+) -> dict:
+    forecast_data = {
+        "stock_meta": {"market_segment": "LISTED" if market == "TWSE" else "OTC"},
+        "alpha_context": {"edge_bucket": bucket},
+    }
+    if s12:
+        forecast_data["s12_trade_ev"] = {
+            "schema_version": "s12-trade-ev-v1",
+            "status": "loaded",
+            "semantic": "trade_expected_return_not_5bar_close_forecast",
+            "trade_expected_return_net_pct": pnl,
+            "trade_expected_return_source": "s12_structural_exit_verified",
+        }
     return {
         "symbol": symbol,
         "market": market,
         "prediction_date": prediction_date,
+        "trade_signal": trade_signal,
         "trade_pnl_pct": pnl,
         "trade_pnl_r": pnl / 0.04,
         "trade_outcome": "tp1" if pnl > 0 else "structure_stop",
         "max_favorable_pct": max(pnl, 0.0),
         "max_adverse_pct": min(pnl, 0.0),
-        "forecast_data": json.dumps({
-            "stock_meta": {"market_segment": "LISTED" if market == "TWSE" else "OTC"},
-            "alpha_context": {"edge_bucket": bucket},
-        }),
+        "forecast_data": json.dumps(forecast_data),
     }
 
 
@@ -39,6 +58,8 @@ def test_load_s12_replay_trade_rows_enforces_strict_pre_run_date_query():
     load_s12_replay_trade_rows(run_date="2026-07-03", query_fn=fake_query)
 
     assert "date(p.prediction_date) < date(?)" in captured["sql"]
+    assert "lower(COALESCE(p.trade_signal, '')) IN ('buy', 'strong_buy')" in captured["sql"]
+    assert "p.forecast_data LIKE '%\"s12_trade_ev\"%'" in captured["sql"]
     assert captured["params"][0] == "2026-07-03"
 
 
@@ -61,6 +82,7 @@ def test_s12_trade_ev_bootstrap_prefers_market_bucket_before_global():
     assert ev["sampleCount"] == 24
     assert ev["sample_date_max"] == "2026-07-01"
     assert ev["as_of_guard"] == "prediction_date_strictly_before_run_date"
+    assert ev["sample_policy"] == "verified_s12_buy_trade_outcomes_only"
     assert ev["trade_expected_return_net_pct"] == pytest.approx(0.025)
 
 
@@ -80,3 +102,84 @@ def test_s12_trade_ev_bootstrap_filters_same_day_rows():
     assert ev["sampleCount"] == 1
     assert ev["sample_date_max"] == "2026-07-02"
     assert ev["trade_expected_return_net_pct"] == pytest.approx(0.02)
+
+
+def test_s12_trade_ev_bootstrap_excludes_legacy_non_s12_outcomes():
+    rows = [_row("1111", "2026-07-01", -0.10, s12=False)] * 40
+    rows += [_row("2222", "2026-07-01", 0.03, s12=True)] * 4
+    provider = S12TradeEvBootstrapProvider(rows, run_date="2026-07-03", min_samples=5, roundtrip_cost_bps=0)
+
+    ev = provider.build_for_row({
+        "symbol": "8091",
+        "current_price": 100,
+        "stop_loss": 96,
+        "market_segment": "LISTED",
+        "alpha_context": {"edge_bucket": "breakout"},
+    })
+
+    assert provider.summary()["input_rows"] == 44
+    assert provider.summary()["sample_rows"] == 4
+    assert provider.summary()["excluded_non_s12_rows"] == 40
+    assert ev["status"] == "loaded"
+    assert ev["sample_policy"] == "s12_structural_cold_start_no_replay"
+    assert ev["s12_structural_targets"]["target1_source"] == "s12_structure_exit_plan.r_multiple_fallback_1r"
+    assert ev["s12_structural_targets"]["target2_source"] == "s12_structure_exit_plan.r_multiple_fallback_2r"
+    assert ev["replay_bootstrap"]["sampleCount"] == 4
+    assert ev["replay_bootstrap"]["trade_expected_return_source"].endswith("_insufficient_samples")
+
+
+def test_s12_trade_ev_bootstrap_uses_structural_cold_start_when_verified_samples_are_sparse():
+    rows = [_row("1111", "2026-07-01", -0.10, s12=False)] * 40
+    rows += [_row("2222", "2026-07-01", 0.03, s12=True)] * 4
+    provider = S12TradeEvBootstrapProvider(rows, run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
+
+    ev = provider.build_for_row(
+        {
+            "symbol": "8091",
+            "current_price": 100,
+            "stop_loss": 96,
+            "target1": 101,
+            "target2": 102,
+            "market_segment": "LISTED",
+            "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
+            "ml_score": 18,
+            "tech_score": 17,
+            "chip_score": 28,
+        },
+        prediction={
+            "ensemble_v2": {"avg_rank": 0.72, "confidence": 0.72},
+            "s12_exit": {
+                "tp1": {"price": 104, "source": "15m_previous_high"},
+                "mainExit": {"price": 108, "source": "1h_supply_zone"},
+            },
+        },
+    )
+
+    assert ev["status"] == "loaded"
+    assert ev["source"] == "s12_structural_cold_start_ev"
+    assert ev["sample_policy"] == "s12_structural_cold_start_no_replay"
+    assert ev["target1_price"] == 104
+    assert ev["target2_price"] == 108
+    assert ev["s12_structural_targets"]["legacy_target1_ignored"] is True
+    assert ev["s12_structural_targets"]["legacy_target2_ignored"] is True
+    assert ev["replay_bootstrap"]["sampleCount"] == 4
+    assert ev["replay_bootstrap"]["trade_expected_return_source"].endswith("_insufficient_samples")
+    assert ev["trade_expected_return_net_pct"] > 0
+
+
+def test_s12_trade_ev_bootstrap_excludes_hold_signal_even_with_s12_payload():
+    provider = S12TradeEvBootstrapProvider(
+        [_row("1111", "2026-07-02", 0.08, trade_signal="hold")] * 10,
+        run_date="2026-07-03",
+        min_samples=1,
+        roundtrip_cost_bps=0,
+    )
+
+    ev = provider.build_for_row({"symbol": "1111", "current_price": 100, "stop_loss": 96})
+
+    assert provider.summary()["sample_rows"] == 0
+    assert ev["status"] == "loaded"
+    assert ev["sample_policy"] == "s12_structural_cold_start_no_replay"
+    assert ev["s12_structural_targets"]["target1_source"] == "s12_structure_exit_plan.r_multiple_fallback_1r"
+    assert ev["s12_structural_targets"]["target2_source"] == "s12_structure_exit_plan.r_multiple_fallback_2r"
+    assert ev["replay_bootstrap"]["sampleCount"] == 0

@@ -77,6 +77,7 @@ def test_resolve_ml_threshold_policy_applies_bounded_overlay_and_provenance():
     assert resolved.thresholds["sellThreshold"] == 0.28
     assert resolved.adaptive_overlay["raw_delta"] == 0.05
     assert resolved.adaptive_overlay["applied_delta"] == 0.02
+    assert resolved.evidence()["delta_cap"] == 0.02
     assert resolved.evidence()["policy_id"] == "policy-20260704"
     assert resolved.evidence()["evidence_hash"]
 
@@ -104,6 +105,20 @@ def test_resolve_ml_threshold_policy_rejects_candidate_runtime_status():
         )
 
 
+def test_resolve_ml_threshold_policy_requires_delta_cap_artifact_parameter():
+    policy = dict(_policy())
+    policy.pop("delta_cap", None)
+
+    with pytest.raises(ThresholdPolicyError, match="missing delta_cap"):
+        resolve_ml_threshold_policy(
+            run_date="2026-07-04",
+            regime_contract={"alpha_regime": "bull", "regime_surface": {"bull_market": 1.0}},
+            ev2_cfg={},
+            adaptive_params=_adaptive("2026-07-04", delta=0.01),
+            policy_snapshot=policy,
+        )
+
+
 def test_candidate_gate_blocks_live_config_mutation_and_missing_validation():
     candidate = {
         **_policy(),
@@ -119,6 +134,16 @@ def test_candidate_gate_blocks_live_config_mutation_and_missing_validation():
     assert result["ok"] is False
     assert "ga_optuna_candidate_must_not_mutate_trading_config" in result["blockers"]
     assert any(str(item).startswith("validation_evidence_missing:") for item in result["blockers"])
+
+
+def test_candidate_gate_requires_delta_cap_artifact_parameter():
+    candidate = {**_policy(), "status": "candidate"}
+    candidate.pop("delta_cap", None)
+
+    result = validate_threshold_policy_candidate(candidate)
+
+    assert result["ok"] is False
+    assert "ml_threshold_policy missing delta_cap artifact parameter" in result["blockers"]
 
 
 def test_payload_builder_prefers_run_date_scoped_adaptive_params(monkeypatch):

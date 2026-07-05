@@ -36,6 +36,208 @@ def _r_from_sample(sample: dict[str, Any]) -> float | None:
     )
 
 
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def _normalized(value: Any, denominator: float = 25.0) -> float | None:
+    number = _to_float(value)
+    if number is None:
+        return None
+    return _clamp(number / denominator, 0.0, 1.0)
+
+
+def _score_tilt(value: Any, denominator: float, scale: float) -> float:
+    normalized = _normalized(value, denominator)
+    if normalized is None:
+        return 0.0
+    return (normalized - 0.5) * scale
+
+
+def build_s12_trade_ev_from_structure(
+    *,
+    symbol: str | None = None,
+    entry_price: float | None = None,
+    stop_price: float | None = None,
+    target1_price: float | None = None,
+    target2_price: float | None = None,
+    avg_rank: float | None = None,
+    confidence: float | None = None,
+    ml_edge_score: float | None = None,
+    technical_score: float | None = None,
+    chip_score: float | None = None,
+    fundamental_score: float | None = None,
+    score_v2_final_score: float | None = None,
+    market_heat_expected_return: float | None = None,
+    reward_confidence_multiplier: float | None = None,
+    regime: str | None = None,
+    roundtrip_cost_bps: float = 18.0,
+    source: str = "s12_structural_cold_start_ev",
+) -> dict[str, Any]:
+    """Build conservative cold-start EV from current S12 structure.
+
+    This is used before verified S12 trade outcomes have enough samples. It is
+    not a replay fallback and not a 5-bar close forecast: it prices the current
+    S12 risk/reward plan, shrinks the estimated edge, and caps positive EV.
+    """
+
+    entry = _to_float(entry_price)
+    stop = _to_float(stop_price)
+    target1 = _to_float(target1_price)
+    target2 = _to_float(target2_price)
+    cost = max(0.0, float(roundtrip_cost_bps or 0.0)) / 10000.0
+
+    if entry is None or entry <= 0:
+        return {
+            "schema_version": "s12-trade-ev-v1",
+            "symbol": symbol,
+            "status": "missing_structure",
+            "source": source,
+            "semantic": "trade_expected_return_not_5bar_close_forecast",
+            "trade_expected_return_net_pct": None,
+            "trade_expected_return_source": f"{source}_missing_entry",
+            "sampleCount": 0,
+            "minSamples": 0,
+            "sample_policy": "s12_structural_cold_start_no_replay",
+        }
+    if stop is None or stop <= 0 or stop >= entry:
+        return {
+            "schema_version": "s12-trade-ev-v1",
+            "symbol": symbol,
+            "status": "missing_structure",
+            "source": source,
+            "semantic": "trade_expected_return_not_5bar_close_forecast",
+            "entry_price": entry,
+            "stop_price": stop,
+            "trade_expected_return_net_pct": None,
+            "trade_expected_return_source": f"{source}_missing_long_structure_stop",
+            "sampleCount": 0,
+            "minSamples": 0,
+            "sample_policy": "s12_structural_cold_start_no_replay",
+        }
+
+    risk_pct = (entry - stop) / entry
+    if risk_pct <= 0 or risk_pct > 0.18:
+        return {
+            "schema_version": "s12-trade-ev-v1",
+            "symbol": symbol,
+            "status": "invalid_structure",
+            "source": source,
+            "semantic": "trade_expected_return_not_5bar_close_forecast",
+            "entry_price": entry,
+            "stop_price": stop,
+            "risk_pct": round(risk_pct, 10),
+            "trade_expected_return_net_pct": None,
+            "trade_expected_return_source": f"{source}_invalid_risk_pct",
+            "sampleCount": 0,
+            "minSamples": 0,
+            "sample_policy": "s12_structural_cold_start_no_replay",
+        }
+
+    valid_targets = [target for target in (target1, target2) if target is not None and target > entry]
+    if not valid_targets:
+        return {
+            "schema_version": "s12-trade-ev-v1",
+            "symbol": symbol,
+            "status": "missing_structure",
+            "source": source,
+            "semantic": "trade_expected_return_not_5bar_close_forecast",
+            "entry_price": entry,
+            "stop_price": stop,
+            "risk_pct": round(risk_pct, 10),
+            "trade_expected_return_net_pct": None,
+            "trade_expected_return_source": f"{source}_missing_structure_target",
+            "sampleCount": 0,
+            "minSamples": 0,
+            "sample_policy": "s12_structural_cold_start_no_replay",
+        }
+
+    target1_gain = (valid_targets[0] - entry) / entry
+    target2_gain = (valid_targets[-1] - entry) / entry
+    blended_reward_pct = (0.65 * target1_gain) + (0.35 * target2_gain)
+    reward_confidence = _clamp(_to_float(reward_confidence_multiplier) or 1.0, 0.25, 1.0)
+    confidence_adjusted_reward_pct = blended_reward_pct * reward_confidence
+    reward_r = confidence_adjusted_reward_pct / risk_pct if risk_pct > 0 else None
+    raw_reward_r = blended_reward_pct / risk_pct if risk_pct > 0 else None
+
+    rank = _to_float(avg_rank)
+    if rank is None:
+        rank = _to_float(confidence)
+    rank = _clamp(rank if rank is not None else 0.5, 0.0, 1.0)
+    p_win = 0.5 + ((rank - 0.5) * 0.18)
+    p_win += _score_tilt(score_v2_final_score, 100.0, 0.16)
+    p_win += _score_tilt(ml_edge_score, 30.0, 0.06)
+    p_win += _score_tilt(technical_score, 25.0, 0.04)
+    p_win += _score_tilt(chip_score, 40.0, 0.03)
+    p_win += _score_tilt(fundamental_score, 25.0, 0.02)
+    heat = _to_float(market_heat_expected_return)
+    if heat is not None:
+        p_win += _clamp(heat, -0.01, 0.01) * 1.5
+    regime_text = str(regime or "").strip().lower()
+    if "bull" in regime_text:
+        p_win += 0.015
+    elif "bear" in regime_text:
+        p_win -= 0.035
+    elif "volatile" in regime_text:
+        p_win -= 0.015
+
+    # Cold-start must not pretend to be a calibrated win-rate model.
+    p_win = _clamp(p_win, 0.43, 0.58)
+    gross = (p_win * confidence_adjusted_reward_pct) - ((1.0 - p_win) * risk_pct)
+    raw_net = gross - cost
+    shrink = 0.55
+    positive_cap = min(0.012, max(0.003, risk_pct * 0.45))
+    net = raw_net * shrink if raw_net > 0 else raw_net
+    if net > 0:
+        net = min(net, positive_cap)
+    expected_r = net / risk_pct if risk_pct > 0 else None
+
+    return {
+        "schema_version": "s12-trade-ev-v1",
+        "symbol": symbol,
+        "status": "loaded",
+        "source": source,
+        "semantic": "trade_expected_return_not_5bar_close_forecast",
+        "sampleCount": 0,
+        "minSamples": 0,
+        "sample_policy": "s12_structural_cold_start_no_replay",
+        "entry_price": round(entry, 6),
+        "stop_price": round(stop, 6),
+        "target1_price": round(valid_targets[0], 6),
+        "target2_price": round(valid_targets[-1], 6),
+        "risk_pct": round(risk_pct, 10),
+        "roundtrip_cost_bps": round(cost * 10000.0, 4),
+        "trade_expected_return_gross_pct": round(gross, 10),
+        "trade_expected_return_net_pct": round(net, 10),
+        "trade_expected_return_source": source,
+        "expected_R": None if expected_r is None else round(expected_r, 6),
+        "win_rate": round(p_win, 6),
+        "payoff_ratio": None if reward_r is None else round(reward_r, 6),
+        "raw_structural_payoff_ratio": None if raw_reward_r is None else round(raw_reward_r, 6),
+        "reward_confidence_multiplier": round(reward_confidence, 6),
+        "profit_factor": None,
+        "cold_start": True,
+        "cold_start_policy": {
+            "formula": "shrunk_structural_R_multiple_ev",
+            "win_rate_bounds": [0.43, 0.58],
+            "positive_ev_shrink": shrink,
+            "positive_ev_cap": round(positive_cap, 10),
+            "reward_confidence_multiplier": round(reward_confidence, 6),
+            "inputs": {
+                "avg_rank": round(rank, 6),
+                "ml_edge_score": ml_edge_score,
+                "technical_score": technical_score,
+                "chip_score": chip_score,
+                "fundamental_score": fundamental_score,
+                "score_v2_final_score": score_v2_final_score,
+                "market_heat_expected_return": heat,
+                "regime": regime,
+            },
+        },
+        "exit_reason_distribution": {},
+    }
+
+
 def build_s12_trade_ev_from_replay(
     *,
     symbol: str | None = None,
@@ -171,8 +373,9 @@ def extract_s12_trade_ev(row: dict[str, Any]) -> tuple[float | None, str, dict[s
     status = str(payload.get("status") or "").strip()
     value = _to_float(payload.get("trade_expected_return_net_pct"))
     source = str(payload.get("trade_expected_return_source") or payload.get("source") or "s12_trade_ev")
+    if status and status != "loaded":
+        suffix = f"_{status}"
+        return None, source if source.endswith(suffix) else f"{source}{suffix}", payload
     if value is None:
         return None, f"{source}_no_trade_expected_return", payload
-    if status and status != "loaded":
-        return None, f"{source}_{status}", payload
     return value, source, payload

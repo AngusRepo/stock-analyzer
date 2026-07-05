@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from services import d1_client
 from services.market_segment_policy import normalize_segment
-from services.s12_trade_ev import build_s12_trade_ev_from_replay
+from services.s12_trade_ev import build_s12_trade_ev_from_replay, build_s12_trade_ev_from_structure
 
 
 QueryFn = Callable[[str, list[Any] | None], list[dict[str, Any]]]
@@ -69,6 +69,37 @@ def _symbol_from_row(row: dict[str, Any]) -> str:
     return str(row.get("symbol") or row.get("stock_id") or "").strip()
 
 
+def _is_buy_trade_signal(row: dict[str, Any]) -> bool:
+    signal = str(row.get("trade_signal") or "").strip().lower()
+    return signal in {"buy", "strong_buy"}
+
+
+def _s12_trade_ev_payload(row: dict[str, Any]) -> dict[str, Any]:
+    forecast_data = _json_obj(row.get("forecast_data"))
+    payload = forecast_data.get("s12_trade_ev")
+    if isinstance(payload, dict):
+        return payload
+    allocation = forecast_data.get("alpha_allocation")
+    if isinstance(allocation, dict) and isinstance(allocation.get("s12_trade_ev"), dict):
+        return allocation["s12_trade_ev"]
+    return {}
+
+
+def _has_verified_s12_trade_ev_provenance(row: dict[str, Any]) -> bool:
+    if not _is_buy_trade_signal(row):
+        return False
+    payload = _s12_trade_ev_payload(row)
+    if not payload:
+        return False
+    if str(payload.get("status") or "").strip().lower() != "loaded":
+        return False
+    if str(payload.get("semantic") or "").strip() != "trade_expected_return_not_5bar_close_forecast":
+        return False
+    if _to_float(payload.get("trade_expected_return_net_pct")) is None:
+        return False
+    return True
+
+
 def _market_segment_from_payloads(*payloads: dict[str, Any]) -> str:
     for payload in payloads:
         if not isinstance(payload, dict):
@@ -120,14 +151,229 @@ def _entry_stop_from_row(row: dict[str, Any], prediction: dict[str, Any] | None)
         pred.get("current_price"),
     )
     stop = _first_number(
-        row.get("stop_loss"),
         row.get("s12_structure_stop"),
-        pred.get("stop_loss"),
         pred.get("s12_structure_stop"),
         _nested(pred, "s12_defense", "stop_loss"),
         _nested(pred, "s12_exit", "structure_stop"),
+        _nested(pred, "s12_exit", "trailingStop", "initial"),
+        _nested(pred, "s12_exit", "trailing_stop", "initial"),
+        _nested(pred, "s12_structure", "exitPlan", "trailingStop", "initial"),
+        _nested(pred, "s12Structure", "exitPlan", "trailingStop", "initial"),
+        row.get("stop_loss"),
+        pred.get("stop_loss"),
     )
     return entry, stop
+
+
+def _payload_dicts(row: dict[str, Any], prediction: dict[str, Any] | None) -> list[dict[str, Any]]:
+    pred = prediction if isinstance(prediction, dict) else {}
+    payloads: list[dict[str, Any]] = []
+    for root in (row, pred):
+        if not isinstance(root, dict):
+            continue
+        payloads.append(root)
+        fd = _json_obj(root.get("forecast_data"))
+        if fd:
+            payloads.append(fd)
+        for key in ("alpha_context", "alpha_allocation", "ensemble_v2"):
+            direct = root.get(key)
+            if isinstance(direct, dict):
+                payloads.append(direct)
+            nested = fd.get(key) if fd else None
+            if isinstance(nested, dict):
+                payloads.append(nested)
+    return payloads
+
+
+def _number_from_paths(payloads: list[dict[str, Any]], paths: list[tuple[str, ...]]) -> tuple[float | None, str | None]:
+    for payload in payloads:
+        for path in paths:
+            value = _nested(payload, *path) if len(path) > 1 else payload.get(path[0])
+            number = _first_number(value)
+            if number is None and isinstance(value, dict):
+                number = _first_number(value.get("price"), value.get("value"))
+            if number is not None:
+                return number, ".".join(path)
+    return None, None
+
+
+def _first_above(entry: float | None, *values: Any) -> float | None:
+    if entry is None:
+        return None
+    for value in values:
+        number = _to_float(value)
+        if number is not None and number > entry:
+            return number
+    return None
+
+
+def _s12_reward_confidence_multiplier(evidence: dict[str, Any]) -> float:
+    target1_source = str(evidence.get("target1_source") or "")
+    target2_source = str(evidence.get("target2_source") or "")
+    target1_fallback = "r_multiple_fallback" in target1_source
+    target2_fallback = "r_multiple_fallback" in target2_source
+    if target1_fallback and target2_fallback:
+        return 0.65
+    if target2_fallback:
+        return 0.8
+    return 1.0
+
+
+def _targets_from_row(
+    row: dict[str, Any],
+    prediction: dict[str, Any] | None,
+) -> tuple[float | None, float | None]:
+    entry, stop = _entry_stop_from_row(row, prediction)
+    target1, target2, _ = _s12_structural_targets_from_row(row, prediction, entry_price=entry, stop_price=stop)
+    return target1, target2
+
+
+def _s12_structural_targets_from_row(
+    row: dict[str, Any],
+    prediction: dict[str, Any] | None,
+    *,
+    entry_price: float | None,
+    stop_price: float | None,
+) -> tuple[float | None, float | None, dict[str, Any]]:
+    payloads = _payload_dicts(row, prediction)
+    target1, target1_path = _number_from_paths(
+        payloads,
+        [
+            ("s12_exit", "tp1", "price"),
+            ("s12Exit", "tp1", "price"),
+            ("s12_exit", "exitPlan", "tp1", "price"),
+            ("s12_structure", "exitPlan", "tp1", "price"),
+            ("s12Structure", "exitPlan", "tp1", "price"),
+            ("s12", "exitPlan", "tp1", "price"),
+            ("exitPlan", "tp1", "price"),
+            ("s12_target1",),
+            ("s12Target1",),
+            ("structural_tp1",),
+            ("s12_trade_plan", "target1"),
+            ("s12TradePlan", "target1"),
+        ],
+    )
+    target2, target2_path = _number_from_paths(
+        payloads,
+        [
+            ("s12_exit", "mainExit", "price"),
+            ("s12Exit", "mainExit", "price"),
+            ("s12_exit", "exitPlan", "mainExit", "price"),
+            ("s12_structure", "exitPlan", "mainExit", "price"),
+            ("s12Structure", "exitPlan", "mainExit", "price"),
+            ("s12", "exitPlan", "mainExit", "price"),
+            ("exitPlan", "mainExit", "price"),
+            ("s12_target2",),
+            ("s12Target2",),
+            ("structural_main_exit",),
+            ("s12_trade_plan", "target2"),
+            ("s12TradePlan", "target2"),
+        ],
+    )
+    supply_low, supply_low_path = _number_from_paths(
+        payloads,
+        [
+            ("s12_exit", "mainExit", "zoneLow"),
+            ("s12Exit", "mainExit", "zoneLow"),
+            ("s12_structure", "exitPlan", "mainExit", "zoneLow"),
+            ("s12Structure", "exitPlan", "mainExit", "zoneLow"),
+            ("s12", "exitPlan", "mainExit", "zoneLow"),
+            ("supplyZone1h", "low"),
+            ("supply_zone_1h", "low"),
+            ("supply_zone_low",),
+        ],
+    )
+    supply_high, supply_high_path = _number_from_paths(
+        payloads,
+        [
+            ("s12_exit", "mainExit", "zoneHigh"),
+            ("s12Exit", "mainExit", "zoneHigh"),
+            ("s12_structure", "exitPlan", "mainExit", "zoneHigh"),
+            ("s12Structure", "exitPlan", "mainExit", "zoneHigh"),
+            ("s12", "exitPlan", "mainExit", "zoneHigh"),
+            ("supplyZone1h", "high"),
+            ("supply_zone_1h", "high"),
+            ("supply_zone_high",),
+        ],
+    )
+    prior_high, prior_high_path = _number_from_paths(
+        payloads,
+        [
+            ("s12_exit", "tp1", "priorHigh"),
+            ("s12Exit", "tp1", "priorHigh"),
+            ("priorHigh15m",),
+            ("prior_high_15m",),
+            ("nearest_prior_high_15m",),
+        ],
+    )
+
+    entry = _to_float(entry_price)
+    stop = _to_float(stop_price)
+    risk = entry - stop if entry is not None and stop is not None and stop < entry else None
+
+    structural_tp1 = _first_above(entry, target1, prior_high)
+    target1_source = target1_path
+    if structural_tp1 is None and risk is not None:
+        structural_tp1 = entry + risk
+        target1_source = "s12_structure_exit_plan.r_multiple_fallback_1r"
+    elif structural_tp1 == prior_high and target1_path is None:
+        target1_source = prior_high_path or "15m_previous_high"
+
+    structural_main_exit = _first_above(entry, target2, supply_low, supply_high)
+    target2_source = target2_path
+    if structural_main_exit is None and risk is not None:
+        structural_main_exit = entry + (risk * 2.0)
+        target2_source = "s12_structure_exit_plan.r_multiple_fallback_2r"
+    elif structural_main_exit == supply_low and target2_path is None:
+        target2_source = supply_low_path or "1h_supply_zone.low"
+    elif structural_main_exit == supply_high and target2_path is None:
+        target2_source = supply_high_path or "1h_supply_zone.high"
+
+    pred = prediction if isinstance(prediction, dict) else {}
+    legacy_target1 = _first_number(row.get("target1"), pred.get("target1"))
+    legacy_target2 = _first_number(row.get("target2"), pred.get("target2"))
+    evidence = {
+        "schema_version": "s12-structural-targets-v1",
+        "mode": "structure_first_trailing_v1",
+        "contract_ref": "worker/src/lib/s12IntradayStructure.ts::buildS12StructureExitPlan",
+        "target1_source": target1_source or "unavailable",
+        "target2_source": target2_source or "unavailable",
+        "target1_policy": "15m_previous_high_else_1r_fallback",
+        "target2_policy": "1h_supply_zone_else_2r_fallback",
+        "supply_zone_low": supply_low,
+        "supply_zone_high": supply_high,
+        "legacy_target1_ignored": legacy_target1 is not None and (
+            structural_tp1 is not None and round(float(legacy_target1), 6) != round(float(structural_tp1), 6)
+        ),
+        "legacy_target2_ignored": legacy_target2 is not None and (
+            structural_main_exit is not None and round(float(legacy_target2), 6) != round(float(structural_main_exit), 6)
+        ),
+    }
+    evidence["reward_confidence_multiplier"] = _s12_reward_confidence_multiplier(evidence)
+    return structural_tp1, structural_main_exit, evidence
+
+
+def _score_component(row: dict[str, Any], *path: str) -> float | None:
+    cur: Any = row.get("score_components")
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return _to_float(cur)
+
+
+def _score_v2_final_score(row: dict[str, Any]) -> float | None:
+    score = _to_float(row.get("score"))
+    if score is not None:
+        return score
+    payload = row.get("score_components")
+    if isinstance(payload, dict):
+        return (
+            _to_float(payload.get("finalScore"))
+            or _to_float(payload.get("final_score"))
+            or _to_float(payload.get("total"))
+        )
+    return None
 
 
 def load_s12_replay_trade_rows(
@@ -142,7 +388,7 @@ def load_s12_replay_trade_rows(
     safe_limit = max(1, min(int(limit or 5000), 20000))
     start_date = _fallback_start_date(run_date, lookback_days)
     query = query_fn or d1_client.query
-    return query(
+    rows = query(
         """
         SELECT p.stock_id,
                s.symbol,
@@ -163,12 +409,19 @@ def load_s12_replay_trade_rows(
            AND p.prediction_date IS NOT NULL
            AND date(p.prediction_date) < date(?)
            AND date(p.prediction_date) >= date(?)
+           AND lower(COALESCE(p.trade_signal, '')) IN ('buy', 'strong_buy')
+           AND p.forecast_data LIKE '%"s12_trade_ev"%'
            AND (p.trade_pnl_pct IS NOT NULL OR p.trade_pnl_r IS NOT NULL)
          ORDER BY date(p.prediction_date) DESC, p.id DESC
          LIMIT ?
         """.strip(),
         [run_date, start_date, safe_limit],
     )
+    return [
+        dict(row)
+        for row in rows or []
+        if _has_verified_s12_trade_ev_provenance(dict(row))
+    ]
 
 
 @dataclass(frozen=True)
@@ -196,7 +449,10 @@ class S12TradeEvBootstrapProvider:
         self.run_date = str(run_date)[:10]
         self.min_samples = max(1, int(min_samples or 30))
         self.roundtrip_cost_bps = max(0.0, float(roundtrip_cost_bps or 0.0))
-        self.rows = [dict(row) for row in rows or [] if _date_key(row.get("prediction_date")) < self.run_date]
+        raw_rows = [dict(row) for row in rows or [] if _date_key(row.get("prediction_date")) < self.run_date]
+        self.input_rows = len(raw_rows)
+        self.rows = [row for row in raw_rows if _has_verified_s12_trade_ev_provenance(row)]
+        self.excluded_non_s12_rows = self.input_rows - len(self.rows)
         self.by_symbol: dict[str, list[dict[str, Any]]] = {}
         self.by_market_bucket: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self.by_market: dict[str, list[dict[str, Any]]] = {}
@@ -275,8 +531,15 @@ class S12TradeEvBootstrapProvider:
         *,
         prediction: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        pred = prediction if isinstance(prediction, dict) else {}
         bucket = self._select_bucket(row, prediction)
         entry, stop = _entry_stop_from_row(row, prediction)
+        target1, target2, target_evidence = _s12_structural_targets_from_row(
+            row,
+            prediction,
+            entry_price=entry,
+            stop_price=stop,
+        )
         symbol = _symbol_from_row(row) or _symbol_from_row(prediction or {})
         source = f"s12_replay_trade_outcomes:{bucket.scope}"
         samples = [
@@ -299,24 +562,74 @@ class S12TradeEvBootstrapProvider:
             source=source,
         )
         dates = sorted({_date_key(item.get("prediction_date")) for item in bucket.rows if _date_key(item.get("prediction_date"))})
-        ev.update({
+        replay_meta = {
             "bootstrap_scope": bucket.scope,
             "bootstrap_key": bucket.key,
             "bootstrap_run_date": self.run_date,
             "as_of_guard": "prediction_date_strictly_before_run_date",
+            "sample_policy": "verified_s12_buy_trade_outcomes_only",
             "sample_date_min": dates[0] if dates else None,
             "sample_date_max": dates[-1] if dates else None,
             "candidate_market_segment": _market_segment_from_payloads(row, prediction or {}),
             "candidate_alpha_bucket": _alpha_bucket_from_payloads(row, prediction or {}),
+        }
+        ev.update(replay_meta)
+        if ev.get("status") == "loaded":
+            return ev
+
+        ev2 = pred.get("ensemble_v2") if isinstance(pred.get("ensemble_v2"), dict) else {}
+        alpha_ctx = row.get("alpha_context") if isinstance(row.get("alpha_context"), dict) else {}
+        cold = build_s12_trade_ev_from_structure(
+            symbol=symbol or None,
+            entry_price=entry,
+            stop_price=stop,
+            target1_price=target1,
+            target2_price=target2,
+            avg_rank=ev2.get("avg_rank"),
+            confidence=row.get("confidence") or ev2.get("confidence"),
+            ml_edge_score=row.get("ml_score") or _score_component(row, "components", "mlEdge"),
+            technical_score=row.get("tech_score") or _score_component(row, "components", "technicalStructure"),
+            chip_score=row.get("chip_score") or _score_component(row, "components", "chipFlow"),
+            fundamental_score=_score_component(row, "components", "fundamentalQuality"),
+            score_v2_final_score=_score_v2_final_score(row),
+            market_heat_expected_return=(
+                row.get("market_heat_expected_return")
+                or alpha_ctx.get("market_heat_expected_return")
+            ),
+            reward_confidence_multiplier=target_evidence.get("reward_confidence_multiplier"),
+            regime=(
+                row.get("regime")
+                or row.get("alpha_regime")
+                or alpha_ctx.get("regime")
+                or alpha_ctx.get("alpha_regime")
+            ),
+            roundtrip_cost_bps=self.roundtrip_cost_bps,
+        )
+        cold.update({
+            "bootstrap_run_date": self.run_date,
+            "as_of_guard": "run_date_current_structure_no_future_outcomes",
+            "s12_structural_targets": target_evidence,
+            "candidate_market_segment": _market_segment_from_payloads(row, prediction or {}),
+            "candidate_alpha_bucket": _alpha_bucket_from_payloads(row, prediction or {}),
+            "replay_bootstrap": {
+                **replay_meta,
+                "status": ev.get("status"),
+                "source": ev.get("source"),
+                "sampleCount": ev.get("sampleCount"),
+                "trade_expected_return_source": ev.get("trade_expected_return_source"),
+            },
         })
-        return ev
+        return cold
 
     def summary(self) -> dict[str, Any]:
         return {
             "schema_version": "s12-trade-ev-bootstrap-summary-v1",
             "run_date": self.run_date,
             "sample_rows": len(self.rows),
+            "input_rows": self.input_rows,
+            "excluded_non_s12_rows": self.excluded_non_s12_rows,
             "min_samples": self.min_samples,
+            "sample_policy": "verified_s12_buy_trade_outcomes_only",
             "symbol_buckets": len(self.by_symbol),
             "market_segment_buckets": len(self.by_market),
             "market_segment_alpha_buckets": len(self.by_market_bucket),

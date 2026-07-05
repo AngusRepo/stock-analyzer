@@ -769,6 +769,7 @@ def test_daily_pipeline_empty_segment_weights_do_not_cold_start_or_global_fallba
             "trained_until": "2026-07-03",
             "effective_from": "2026-07-04",
             "expires_at": "2026-07-10",
+            "delta_cap": 0.03,
             "thresholds": {
                 "strongBuyThreshold": 0.85,
                 "buyThreshold": 0.70,

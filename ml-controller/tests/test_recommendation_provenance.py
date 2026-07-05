@@ -1081,6 +1081,41 @@ def test_sparse_tangent_allocation_blocks_score_only_expected_return_fallback():
     assert allocation["sparse_input_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
 
 
+def test_sparse_tangent_allocation_persists_blocked_s12_trade_ev_payload():
+    payload = {
+        "schema_version": "s12-trade-ev-v1",
+        "status": "insufficient_samples",
+        "semantic": "trade_expected_return_not_5bar_close_forecast",
+        "trade_expected_return_net_pct": None,
+        "trade_expected_return_source": "s12_replay_trade_outcomes:global_insufficient_samples",
+        "sampleCount": 0,
+        "sample_policy": "verified_s12_buy_trade_outcomes_only",
+    }
+    rows = [{
+        "symbol": "2330",
+        "chip_score": 24.0,
+        "tech_score": 22.0,
+        "confidence": 0.82,
+        "signal": "HOLD",
+        "has_buy_signal": 0,
+        "score": 96.0,
+        "s12_trade_ev": payload,
+        "score_components": _score_components(final_score=96.0, ml_edge=20.0),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True},
+        alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    assert promoted[0]["signal"] == "HOLD"
+    assert allocation["s12_trade_ev"] == payload
+    assert allocation["expected_return_source"] == "s12_replay_trade_outcomes:global_insufficient_samples"
+    assert allocation["sparse_input_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
+
+
 def test_sparse_tangent_allocation_does_not_accept_market_heat_as_expected_edge():
     rows = [{
         "symbol": "3661",

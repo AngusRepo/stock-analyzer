@@ -22,6 +22,8 @@ REQUIRED_VALIDATION_EVIDENCE = (
     "turnover_capacity",
     "collapse_guard",
 )
+DELTA_CAP_MIN = 0.0
+DELTA_CAP_MAX = 0.10
 
 
 class ThresholdPolicyError(RuntimeError):
@@ -38,6 +40,7 @@ class ResolvedThresholdPolicy:
     run_date: str
     base_thresholds: dict[str, float]
     thresholds: dict[str, float]
+    delta_cap: float
     adaptive_overlay: dict[str, Any]
     validation_evidence: dict[str, Any]
     selector: dict[str, Any]
@@ -61,6 +64,7 @@ class ResolvedThresholdPolicy:
             "selector": self.selector,
             "base_thresholds": self.base_thresholds,
             "thresholds": self.thresholds,
+            "delta_cap": self.delta_cap,
             "adaptive_overlay": self.adaptive_overlay,
             "validation_evidence": self.validation_evidence,
             "evidence_hash": self.evidence_hash,
@@ -171,6 +175,21 @@ def _policy_thresholds(policy: dict[str, Any]) -> dict[str, float]:
             f"strongSell={strong_sell} sell={sell} buy={buy} strongBuy={strong_buy}"
         )
     return {key: round(_clipped(value), 4) for key, value in out.items()}
+
+
+def _policy_delta_cap(policy: dict[str, Any]) -> float:
+    raw = policy.get("delta_cap", policy.get("deltaCap"))
+    if raw is None:
+        raise ThresholdPolicyError("ml_threshold_policy missing delta_cap artifact parameter")
+    value = _as_float(raw, float("nan"))
+    if not math.isfinite(value):
+        raise ThresholdPolicyError("ml_threshold_policy delta_cap must be finite")
+    value = abs(value)
+    if value < DELTA_CAP_MIN or value > DELTA_CAP_MAX:
+        raise ThresholdPolicyError(
+            f"ml_threshold_policy delta_cap out of range: {value}; allowed=0..{DELTA_CAP_MAX}"
+        )
+    return round(value, 4)
 
 
 def _extract_adaptive_delta(adaptive_params: dict[str, Any] | None) -> tuple[float, dict[str, Any]]:
@@ -352,6 +371,7 @@ def _validate_runtime_policy(policy: dict[str, Any], *, run_dt: date) -> None:
             f"ml_threshold_policy expired: expires_at={expires_at} run_date={run_dt}"
         )
     _policy_thresholds(policy)
+    _policy_delta_cap(policy)
 
 
 def _apply_overlay(
@@ -400,7 +420,7 @@ def resolve_ml_threshold_policy(
     policy, selector = _select_policy(snapshot, regime_contract=regime_contract)
     _validate_runtime_policy(policy, run_dt=run_dt)
     base_thresholds = _policy_thresholds(policy)
-    delta_cap = _as_float(policy.get("delta_cap", policy.get("deltaCap")), 0.02)
+    delta_cap = _policy_delta_cap(policy)
     thresholds, overlay = _apply_overlay(
         base_thresholds,
         adaptive_params=adaptive_params,
@@ -420,6 +440,7 @@ def resolve_ml_threshold_policy(
         "run_date": run_dt.isoformat(),
         "selector": selector,
         "thresholds": thresholds,
+        "delta_cap": delta_cap,
         "adaptive_overlay": overlay,
         "validation_evidence": validation_evidence,
     }
@@ -432,6 +453,7 @@ def resolve_ml_threshold_policy(
         run_date=run_dt.isoformat(),
         base_thresholds=base_thresholds,
         thresholds=thresholds,
+        delta_cap=delta_cap,
         adaptive_overlay=overlay,
         validation_evidence=validation_evidence,
         selector=selector,
@@ -451,6 +473,10 @@ def validate_threshold_policy_candidate(candidate: dict[str, Any]) -> dict[str, 
         blockers.append("ga_optuna_candidate_must_not_mutate_trading_config")
     try:
         _policy_thresholds(candidate)
+    except ThresholdPolicyError as exc:
+        blockers.append(str(exc))
+    try:
+        _policy_delta_cap(candidate)
     except ThresholdPolicyError as exc:
         blockers.append(str(exc))
 

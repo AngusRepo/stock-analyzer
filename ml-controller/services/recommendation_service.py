@@ -3264,6 +3264,13 @@ def _apply_sparse_tangent_buy_selection(
         )
         expected_return = _float_or_none(expected_return_raw) or 0.0
         risk_estimate = float((evidence or {}).get("risk_estimate") or 0.0)
+        s12_trade_ev_payload = (
+            (evidence or {}).get("expected_return_payload")
+            if isinstance((evidence or {}).get("expected_return_payload"), dict)
+            else None
+        )
+        if s12_trade_ev_payload is None and isinstance(row.get("s12_trade_ev"), dict):
+            s12_trade_ev_payload = row["s12_trade_ev"]
         market_heat_score = _float_from_row(row, ("market_heat_score",))
         market_heat_expected_return = _float_from_row(row, ("market_heat_expected_return",))
         single_name_weight = round(float(weight or 0.0), 8)
@@ -3306,11 +3313,7 @@ def _apply_sparse_tangent_buy_selection(
                 (evidence or {}).get("expected_return_uncertainty_adjustment")
                 or row.get("_expected_return_uncertainty_adjustment")
             ),
-            "s12_trade_ev": (
-                (evidence or {}).get("expected_return_payload")
-                if isinstance((evidence or {}).get("expected_return_payload"), dict)
-                else None
-            ),
+            "s12_trade_ev": s12_trade_ev_payload,
             "market_heat_score": None if market_heat_score is None else round(market_heat_score, 6),
             "market_heat_expected_return": (
                 None if market_heat_expected_return is None else round(market_heat_expected_return, 10)

@@ -8,7 +8,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.s12_trade_ev import build_s12_trade_ev_from_replay, extract_s12_trade_ev  # noqa: E402
+from services.s12_trade_ev import (  # noqa: E402
+    build_s12_trade_ev_from_replay,
+    build_s12_trade_ev_from_structure,
+    extract_s12_trade_ev,
+)
 
 
 def test_build_s12_trade_ev_from_replay_outputs_full_trade_ev_contract():
@@ -83,3 +87,81 @@ def test_build_s12_trade_ev_uses_direct_r_when_candidate_risk_available():
     assert ev["status"] == "loaded"
     assert ev["trade_expected_return_gross_pct"] == pytest.approx(((1.5 - 1.0 + 0.5) / 3) * 0.05)
     assert ev["expected_R"] == pytest.approx((1.5 - 1.0 + 0.5) / 3)
+
+
+def test_build_s12_trade_ev_from_structure_outputs_conservative_cold_start_contract():
+    ev = build_s12_trade_ev_from_structure(
+        symbol="8091",
+        entry_price=100,
+        stop_price=96,
+        target1_price=106,
+        target2_price=112,
+        avg_rank=0.72,
+        ml_edge_score=18,
+        technical_score=17,
+        chip_score=28,
+        fundamental_score=15,
+        market_heat_expected_return=0.004,
+        regime="bull",
+        roundtrip_cost_bps=20,
+    )
+
+    assert ev["status"] == "loaded"
+    assert ev["source"] == "s12_structural_cold_start_ev"
+    assert ev["sample_policy"] == "s12_structural_cold_start_no_replay"
+    assert ev["semantic"] == "trade_expected_return_not_5bar_close_forecast"
+    assert ev["risk_pct"] == pytest.approx(0.04)
+    assert ev["target1_price"] == 106
+    assert ev["target2_price"] == 112
+    assert 0 < ev["trade_expected_return_net_pct"] <= ev["cold_start_policy"]["positive_ev_cap"]
+    assert 0.43 <= ev["win_rate"] <= 0.58
+    assert ev["cold_start"] is True
+
+
+def test_build_s12_trade_ev_from_structure_uses_score_v2_as_conservative_cold_start_tilt():
+    weak = build_s12_trade_ev_from_structure(
+        symbol="6257",
+        entry_price=254.5,
+        stop_price=224.14,
+        target1_price=278.4085,
+        target2_price=294.3475,
+        avg_rank=0.5,
+        ml_edge_score=12,
+        technical_score=14,
+        chip_score=20,
+        fundamental_score=8,
+        score_v2_final_score=50,
+    )
+    strong = build_s12_trade_ev_from_structure(
+        symbol="6257",
+        entry_price=254.5,
+        stop_price=224.14,
+        target1_price=278.4085,
+        target2_price=294.3475,
+        avg_rank=0.5,
+        ml_edge_score=12,
+        technical_score=14,
+        chip_score=20,
+        fundamental_score=8,
+        score_v2_final_score=66,
+    )
+
+    assert weak["status"] == "loaded"
+    assert strong["status"] == "loaded"
+    assert strong["win_rate"] > weak["win_rate"]
+    assert strong["trade_expected_return_net_pct"] > weak["trade_expected_return_net_pct"]
+    assert strong["cold_start_policy"]["inputs"]["score_v2_final_score"] == 66
+
+
+def test_build_s12_trade_ev_from_structure_fails_closed_without_target():
+    ev = build_s12_trade_ev_from_structure(
+        symbol="8091",
+        entry_price=100,
+        stop_price=96,
+        target1_price=None,
+        target2_price=None,
+    )
+
+    assert ev["status"] == "missing_structure"
+    assert ev["trade_expected_return_net_pct"] is None
+    assert ev["trade_expected_return_source"] == "s12_structural_cold_start_ev_missing_structure_target"

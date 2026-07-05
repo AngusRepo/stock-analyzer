@@ -288,6 +288,7 @@ const forecastData = {
     ml_diagnostics: buildMlDiagnostics(forecastData),
     score_components: '{"version":"score_v2"}',
     alpha_allocation: '{"engine":"sparse_tangent_inverse_risk"}',
+    chip_display_summary: { schema_version: 'chip_display_summary_v1', primary_text: '買超 1.23億' },
     institutional_raw_today: { schema_version: 'institutional_raw_today_v1' },
     broker_top_flows_today: { schema_version: 'broker_level_top5_v1' },
   })
@@ -298,6 +299,7 @@ const forecastData = {
   assert(card.ml_diagnostics?.forecastCalibration?.method === 'empirical_rank_bins_monotonic_5bar_close', 'card view must keep forecast calibration evidence')
   assert(card.score_components === '{"version":"score_v2"}', 'card view must keep Score V2 payload')
   assert(card.alpha_allocation === '{"engine":"sparse_tangent_inverse_risk"}', 'card view must keep sparse allocator payload')
+  assert(card.chip_display_summary?.schema_version === 'chip_display_summary_v1', 'card view must keep unified chip display summary')
   assert(card.institutional_raw_today?.schema_version === 'institutional_raw_today_v1', 'card view must keep institutional raw card data')
   assert(card.broker_top_flows_today?.schema_version === 'broker_level_top5_v1', 'card view must keep broker top-flow card data')
 }

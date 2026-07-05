@@ -3504,6 +3504,63 @@ function formatAbsTwdAmountFromBillion(value: number): string {
   return `${abs.toFixed(2)}億`
 }
 
+function formatSignedTwdAmountFromBillion(value: number): string {
+  if (!Number.isFinite(value)) return '待同步'
+  const direction = value >= 0 ? '買超' : '賣超'
+  return `${direction} ${formatAbsTwdAmountFromBillion(value)}`
+}
+
+function formatSignedLots(value: number | null | undefined): string | null {
+  if (value == null || !Number.isFinite(value)) return null
+  const direction = value >= 0 ? '買超' : '賣超'
+  return `${direction} ${Math.round(Math.abs(value)).toLocaleString('en-US')} 張`
+}
+
+function totalInstitutionalNetLots(institutionalRawToday: Record<string, any> | null | undefined): number | null {
+  const shares = finiteNumber(institutionalRawToday?.total_net_shares)
+  return shares == null ? null : shares / 1000
+}
+
+function brokerAggregateNetLots(brokerTopFlowsToday: Record<string, any> | null | undefined): number | null {
+  const aggregate = brokerTopFlowsToday?.aggregate
+  return finiteNumber(aggregate?.net_lots ?? aggregate?.dominant_net_lots)
+}
+
+function buildChipDisplaySummary(
+  row: Record<string, any>,
+  institutionalRawToday: Record<string, any> | null | undefined,
+  brokerTopFlowsToday: Record<string, any> | null | undefined,
+  brokerEvidence: Record<string, any> | null,
+): Record<string, any> {
+  const isEmerging = isEmergingRecommendation(row)
+  const primaryAmount = finiteNumber(
+    isEmerging
+      ? row.broker_chip_cash_total_5d ?? row.chip_cash_total_5d
+      : row.chip_cash_total_5d ?? (finiteNumber(row.chip_cash_foreign_5d) ?? 0) + (finiteNumber(row.chip_cash_trust_5d) ?? 0),
+  )
+  const brokerAmount = finiteNumber(brokerEvidence?.broker_net_amount_5d_billion ?? row.broker_chip_cash_total_5d)
+  const institutionalLots = totalInstitutionalNetLots(institutionalRawToday)
+  const brokerLots = brokerAggregateNetLots(brokerTopFlowsToday)
+  const secondaryParts = [
+    institutionalLots == null ? null : `法人今日${formatSignedLots(institutionalLots)}`,
+    brokerLots == null ? null : `分點當日${formatSignedLots(brokerLots)}`,
+    brokerAmount == null ? null : `分點5日${formatSignedTwdAmountFromBillion(brokerAmount)}`,
+  ].filter(Boolean)
+
+  return {
+    schema_version: 'chip_display_summary_v1',
+    primary_label: isEmerging ? '分點5日' : '籌碼5日',
+    primary_text: primaryAmount == null ? '待同步' : formatSignedTwdAmountFromBillion(primaryAmount),
+    primary_unit: 'twd_billion',
+    primary_value: primaryAmount,
+    primary_source: isEmerging
+      ? 'canonical_broker_flow_daily.estimated_amount_5d'
+      : 'daily_recommendations.foreign_net_5d+trust_net_5d',
+    secondary_text: secondaryParts.length ? secondaryParts.join(' / ') : null,
+    as_of_date: String(row.date ?? ''),
+  }
+}
+
 function buildEmergingBrokerEvidence(row: Record<string, any>): Record<string, any> | null {
   if (!isEmergingRecommendation(row)) return null
   const amountBillion = finiteNumber(row.broker_chip_cash_total_5d ?? row.chip_cash_total_5d)
@@ -3902,6 +3959,17 @@ recommendations.get('/daily', async (c) => {
     const emergingBrokerEvidence = buildEmergingBrokerEvidence(r)
     const watchPoints = mergeEmergingBrokerWatchPoints(parsedWatchPoints, emergingBrokerEvidence)
     const scoreComponents = mergeEmergingBrokerScoreComponents(persistedScoreComponents, emergingBrokerEvidence)
+    const symbol = String(r.symbol ?? '').trim()
+    const institutionalRawToday = institutionalRawBySymbol.get(symbol) ?? null
+    const rankRows = brokerRankRowsBySymbol.get(symbol) ?? []
+    const brokerTopFlowsToday = brokerTopFlowsBySymbol.get(symbol)
+      ?? buildBrokerTopFlowsToday(null, String(rankRows[0]?.date ?? r.date ?? date), rankRows)
+    const chipDisplaySummary = buildChipDisplaySummary(
+      r,
+      institutionalRawToday,
+      brokerTopFlowsToday,
+      emergingBrokerEvidence,
+    )
     const board = classifyBoard({
       market: r.market,
       open: r.latest_open,
@@ -3952,13 +4020,9 @@ recommendations.get('/daily', async (c) => {
       screener_funnel_reason: screenerFunnel?.reason_code ?? null,
       screener_funnel_evidence: screenerFunnelEvidence,
       screener_funnel_timeline: screenerFunnel?.timeline ?? [],
-      institutional_raw_today: institutionalRawBySymbol.get(String(r.symbol ?? '').trim()) ?? null,
-      broker_top_flows_today: (() => {
-        const symbol = String(r.symbol ?? '').trim()
-        const rankRows = brokerRankRowsBySymbol.get(symbol) ?? []
-        return brokerTopFlowsBySymbol.get(symbol)
-          ?? buildBrokerTopFlowsToday(null, String(rankRows[0]?.date ?? r.date ?? date), rankRows)
-      })(),
+      chip_display_summary: chipDisplaySummary,
+      institutional_raw_today: institutionalRawToday,
+      broker_top_flows_today: brokerTopFlowsToday,
       watch_points: watchPoints,
     }
   })

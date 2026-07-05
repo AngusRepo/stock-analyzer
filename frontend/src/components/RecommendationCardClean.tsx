@@ -548,6 +548,24 @@ function brokerTopFlowsFromRec(rec: any): any | null {
   return parseObject(rec?.broker_top_flows_today)
 }
 
+function chipDisplaySummaryFromRec(rec: any): {
+  primaryLabel: string
+  primaryText: string
+  signedValue: number | null
+  secondaryText?: string | null
+} | null {
+  const payload = parseObject(rec?.chip_display_summary)
+  const primaryText = typeof payload?.primary_text === 'string' ? payload.primary_text.trim() : ''
+  if (!primaryText) return null
+  const rawValue = Number(payload?.primary_value)
+  return {
+    primaryLabel: String(payload?.primary_label ?? '籌碼5日'),
+    primaryText,
+    signedValue: Number.isFinite(rawValue) ? rawValue : null,
+    secondaryText: typeof payload?.secondary_text === 'string' ? payload.secondary_text : null,
+  }
+}
+
 function displayForecastPct(summary: MlVoteSummary | null): number | null {
   if (!summary) return null
   if (typeof summary.forecastPct === 'number' && Number.isFinite(summary.forecastPct)) {
@@ -2705,6 +2723,8 @@ function buildTradePlanRows(
 }
 
 function chipPlanValue(rec: any, institutionalOverride?: ReturnType<typeof institutionalRawFromRec>, brokerFlowOverride?: any | null): string {
+  const chipSummary = chipDisplaySummaryFromRec(rec)
+  if (chipSummary) return chipSummary.primaryText
   const institutional = institutionalOverride ?? institutionalRawFromRec(rec)
   const todayNetShares = institutionalNetShares(institutional)
   if (todayNetShares != null) {
@@ -3093,6 +3113,7 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
   const scoreViewModel = buildScoreBreakdownViewModel(rec)
   const institutionalRaw = institutionalRawFromRec(rec)
   const brokerTopFlows = brokerTopFlowsFromRec(rec)
+  const chipDisplaySummary = chipDisplaySummaryFromRec(rec)
   const stockId = Number(rec.stock_id ?? rec.stockId ?? rec.id)
   const chipContextAsOf = String(rec.recommendation_date ?? rec.date ?? rec.prediction_date ?? '').slice(0, 10)
   const brokerHasData = Boolean(
@@ -3115,7 +3136,13 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
   const effectiveInstitutionalRaw = institutionalRaw ?? fallbackInstitutionalRaw
   const effectiveBrokerTopFlows = brokerHasData ? brokerTopFlows : (fallbackBrokerTopFlows ?? brokerTopFlows)
   const todayInstitutionalNetShares = institutionalNetShares(effectiveInstitutionalRaw)
-  const chipBadge = todayInstitutionalNetShares != null
+  const chipBadge = chipDisplaySummary
+    ? {
+        label: chipDisplaySummary.primaryLabel,
+        text: chipDisplaySummary.primaryText,
+        signedValue: chipDisplaySummary.signedValue,
+      }
+    : todayInstitutionalNetShares != null
     ? {
         label: '法人今日',
         text: `${flowDirectionText(todayInstitutionalNetShares)} ${fmtAbsLotsFromShares(todayInstitutionalNetShares)}`,

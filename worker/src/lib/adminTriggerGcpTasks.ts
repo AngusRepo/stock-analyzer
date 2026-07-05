@@ -6,6 +6,7 @@ import {
   runFinLabV4Backfill,
   runRegimeCompute,
   runVerifyV2,
+  runWeeklyDriftDetection,
   runWeeklyDriftRetrain,
   runMonthlyStrategyMining,
   runExternalEvidenceMaterialize,
@@ -45,7 +46,7 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'weekly-optuna': () => deps.runWeeklyOptunaResearch(requestedRunDate()),
     'weekly-drift-retrain': async () => {
       if (c.req.query('confirm') !== 'weekly_drift') {
-        return 'weekly_drift skipped: confirm=weekly_drift required; no retrain triggered'
+        return runWeeklyDriftDetection(c.env)
       }
       return runWeeklyDriftRetrain(c.env, requestedRunDate())
     },

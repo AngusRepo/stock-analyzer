@@ -131,6 +131,9 @@ def _forecast_fields(avg_rank: float, ev2_cfg: dict | None = None) -> dict:
     return {
         "forecast_pct": forecast,
         "forecast_pct_source": source,
+        "expected_return": forecast,
+        "expected_return_source": source,
+        "expected_return_owner": "ensemble_v2_calibrated_forecast",
         **meta,
     }
 
@@ -142,6 +145,119 @@ def _compute_lifecycle_weight(status: str, ic_value: float, degraded_dampening: 
     if status == "degraded":
         return base * max(0.0, degraded_dampening)
     return base
+
+
+def _contrarian_policy_from_cfg(ev2_cfg: dict | None) -> dict:
+    raw = (ev2_cfg or {}).get("contrarianPolicy") or (ev2_cfg or {}).get("inverseIcPolicy") or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _contrarian_policy_approved(policy: dict) -> bool:
+    status = str(policy.get("status") or policy.get("approval_status") or "").lower()
+    approved_level = str(policy.get("approved_level") or policy.get("level") or "").upper()
+    return bool(policy.get("enabled")) and (
+        policy.get("approved") is True
+        or status in {"approved", "production_approved", "capped_production_approved"}
+        or approved_level in {"L3", "L4"}
+    )
+
+
+def _contrarian_allowed_models(policy: dict) -> set[str] | None:
+    raw = policy.get("allowedModels") or policy.get("allowed_models") or policy.get("models")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        return set()
+    return {str(item) for item in raw if str(item or "").strip()}
+
+
+def _build_weighted_model_inputs(
+    *,
+    merged: dict[str, float],
+    model_status: dict,
+    ic_weights: dict,
+    degraded_dampening: float,
+    ev2_cfg: dict | None,
+) -> tuple[dict[str, float], dict[str, float], dict]:
+    """Apply lifecycle weighting and explicit inverse-edge policy.
+
+    Negative IC is not silently trusted. It is either rejected as a zero-weight
+    model, or inverted only when an approved contrarian policy explicitly
+    allows that model and the absolute IC clears the policy floor.
+    """
+    policy = _contrarian_policy_from_cfg(ev2_cfg)
+    approved = _contrarian_policy_approved(policy)
+    allowed_models = _contrarian_allowed_models(policy)
+    try:
+        min_abs_ic = abs(float(policy.get("minAbsIc", policy.get("min_abs_ic", 0.0)) or 0.0))
+    except (TypeError, ValueError):
+        min_abs_ic = 0.0
+    try:
+        max_weight = abs(float(policy.get("maxWeight", policy.get("max_weight", 0.05)) or 0.05))
+    except (TypeError, ValueError):
+        max_weight = 0.05
+    max_weight = max(0.0, min(0.25, max_weight))
+
+    transformed: dict[str, float] = {}
+    weights: dict[str, float] = {}
+    model_states: dict[str, dict] = {}
+    inverted: list[str] = []
+    rejected_inverse: list[str] = []
+
+    for name, rank in merged.items():
+        status = _weight_status(model_status, name)
+        try:
+            ic_value = float(ic_weights.get(name, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            ic_value = 0.0
+        transformed[name] = rank
+        transform = "identity"
+        reject_reason = None
+        if ic_value < 0:
+            model_allowed = allowed_models is None or name in allowed_models
+            can_invert = (
+                approved
+                and model_allowed
+                and abs(ic_value) >= min_abs_ic
+                and status not in {"retired", "challenger"}
+            )
+            if can_invert:
+                transformed[name] = 1.0 - rank
+                base = min(abs(ic_value), max_weight)
+                weight = base * (max(0.0, degraded_dampening) if status == "degraded" else 1.0)
+                transform = "contrarian_inverse_rank"
+                inverted.append(name)
+            else:
+                weight = 0.0
+                reject_reason = (
+                    "negative_ic_contrarian_policy_not_approved"
+                    if not approved
+                    else "negative_ic_contrarian_gate_failed"
+                )
+                rejected_inverse.append(name)
+        else:
+            weight = _compute_lifecycle_weight(status, ic_value, degraded_dampening)
+        weights[name] = max(0.0, weight)
+        model_states[name] = {
+            "ic_value": round(ic_value, 6),
+            "status": status,
+            "transform": transform,
+            "weight": round(max(0.0, weight), 6),
+            "reject_reason": reject_reason,
+        }
+
+    return transformed, weights, {
+        "schema_version": "ensemble-v2-contrarian-policy-v1",
+        "enabled": bool(policy.get("enabled")),
+        "approved": approved,
+        "policy_id": policy.get("policy_id") or policy.get("id"),
+        "min_abs_ic": min_abs_ic,
+        "max_weight": max_weight,
+        "inverted_models": sorted(inverted),
+        "rejected_inverse_models": sorted(rejected_inverse),
+        "model_states": model_states,
+        "production_effect": bool(inverted),
+    }
 
 
 def _weight_status(model_status: dict, model_name: str) -> str:
@@ -384,14 +500,13 @@ def attach_ensemble_v2(
         return
 
     observed_ic_models = set((ev2_cfg or {}).get("observedIcModels") or [])
-    base_weights = {
-        name: _compute_lifecycle_weight(
-            _weight_status(model_status, name),
-            ic_weights.get(name, 0.0),
-            degraded_dampening,
-        )
-        for name in merged
-    }
+    merged, base_weights, contrarian_policy_effect = _build_weighted_model_inputs(
+        merged=merged,
+        model_status=model_status,
+        ic_weights=ic_weights,
+        degraded_dampening=degraded_dampening,
+        ev2_cfg=ev2_cfg,
+    )
     weights, allocator_policy_effect = _apply_allocator_policy(base_weights, ev2_cfg)
     allocator_learning_ledger = _build_allocator_learning_ledger(
         merged=merged,
@@ -453,6 +568,7 @@ def attach_ensemble_v2(
                 "weight_formula": "cold_start_equal_weight_until_ic_available",
                 "allocator_policy_effect": allocator_policy_effect,
                 "allocator_learning_ledger": allocator_learning_ledger,
+                "contrarian_policy_effect": contrarian_policy_effect,
                 **_forecast_fields(avg, ev2_cfg),
             }
             return
@@ -462,14 +578,18 @@ def attach_ensemble_v2(
             "confidence": 0.5,
             "forecast_pct": None,
             "forecast_pct_source": "no_positive_lifecycle_weight",
+            "expected_return": None,
+            "expected_return_source": "no_positive_lifecycle_weight",
+            "expected_return_owner": "ensemble_v2_calibrated_forecast",
             "signal_source": "ensemble_v2",
             "contributing_models": [],
             "weights": {k: round(v, 6) for k, v in weights.items()},
             "weight_total": 0.0,
             "reason": "no_positive_lifecycle_weight",
-            "weight_formula": "max(0,shrunk_ic) * status_filter * dampening_if_degraded",
+            "weight_formula": "max(0,shrunk_ic) or approved_contrarian_inverse_edge * status_filter * dampening_if_degraded",
             "allocator_policy_effect": allocator_policy_effect,
             "allocator_learning_ledger": allocator_learning_ledger,
+            "contrarian_policy_effect": contrarian_policy_effect,
         }
         return
 
@@ -499,8 +619,9 @@ def attach_ensemble_v2(
         "contributing_models": sorted([name for name, weight in weights.items() if weight > 0]),
         "weights": {k: round(v, 6) for k, v in weights.items()},
         "weight_total": round(weight_total, 6),
-        "weight_formula": "max(0,shrunk_ic) * status_filter * dampening_if_degraded * capped_allocator_multiplier",
+        "weight_formula": "max(0,shrunk_ic) or approved_contrarian_inverse_edge * status_filter * dampening_if_degraded * capped_allocator_multiplier",
         "allocator_policy_effect": allocator_policy_effect,
         "allocator_learning_ledger": allocator_learning_ledger,
+        "contrarian_policy_effect": contrarian_policy_effect,
         **_forecast_fields(avg, ev2_cfg),
     }

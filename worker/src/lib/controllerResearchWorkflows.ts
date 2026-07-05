@@ -56,6 +56,34 @@ interface OptunaResearchOptions {
   }
 }
 
+function cleanText(value: unknown): string | undefined {
+  const text = String(value ?? '').trim()
+  return text && text !== 'unknown' && text !== 'undefined' && text !== 'null' ? text : undefined
+}
+
+function normalizeRemoteExecution(data: Record<string, any>): {
+  backend: string
+  executionId?: string
+  executionName?: string
+  functionCallId?: string
+  runId?: string
+  remoteExecutionId?: string
+} {
+  const backend = cleanText(data.backend) ?? (cleanText(data.function_call_id) ? 'modal' : 'cloud_run_job')
+  const executionId = cleanText(data.execution_id)
+  const executionName = cleanText(data.execution_name)
+  const functionCallId = cleanText(data.function_call_id)
+  const runId = cleanText(data.run_id)
+  return {
+    backend,
+    executionId,
+    executionName,
+    functionCallId,
+    runId,
+    remoteExecutionId: cleanText(data.remote_execution_id) ?? executionId ?? functionCallId ?? runId,
+  }
+}
+
 function buildOptunaSweepRequestBody(options: OptunaResearchOptions): Record<string, unknown> {
   return {
     cadence: options.cadence,
@@ -93,9 +121,15 @@ async function runOptunaResearch(env: Bindings, options: OptunaResearchOptions) 
     throw new Error(`${options.cadence} research sweep HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
   }
   const data = text ? JSON.parse(text) as Record<string, any> : {}
-  const executionId = String(data.execution_id ?? '')
-  const runId = String(data.run_id ?? '')
-  const summary = `optuna research Job triggered cadence=${options.cadence} run_id=${runId || 'unknown'} execution_id=${executionId || 'unknown'} callback expected`
+  const remote = normalizeRemoteExecution(data)
+  const summary = [
+    `optuna research Job triggered cadence=${options.cadence}`,
+    `backend=${remote.backend}`,
+    `remote_execution_id=${remote.remoteExecutionId ?? 'unknown'}`,
+    `run_id=${remote.runId ?? 'unknown'}`,
+    `execution_id=${remote.executionId ?? 'unknown'}`,
+    'callback expected',
+  ].join(' ')
 
   if ((env as any).DISCORD_WEBHOOK_URL) {
     const { sendDiscordNotification } = await import('./notify')
@@ -206,10 +240,25 @@ export async function runMonthlyStrategyMining(env: Bindings, runDate?: string) 
     throw new Error(`monthly strategy mining ${data.status}: ${(data.errors ?? data.error ?? data.detail ?? []).toString().slice(0, 300)}`)
   }
   if (data.status === 'triggered') {
-    return `triggered monthly_pymoo_strategy_mining execution_id=${data.execution_id ?? 'unknown'} callback expected`
+    const remote = normalizeRemoteExecution(data)
+    return [
+      'triggered monthly_pymoo_strategy_mining',
+      `backend=${remote.backend}`,
+      `remote_execution_id=${remote.remoteExecutionId ?? 'unknown'}`,
+      `execution_id=${remote.executionId ?? 'unknown'}`,
+      remote.functionCallId ? `function_call_id=${remote.functionCallId}` : null,
+      'callback expected',
+    ].filter(Boolean).join(' ')
   }
   if (data.status === 'already_running') {
-    return `triggered monthly_pymoo_strategy_mining already_running execution_id=${data.execution_id ?? 'unknown'} callback expected`
+    const remote = normalizeRemoteExecution(data)
+    return [
+      'triggered monthly_pymoo_strategy_mining already_running',
+      `backend=${remote.backend}`,
+      `remote_execution_id=${remote.remoteExecutionId ?? 'unknown'}`,
+      `execution_id=${remote.executionId ?? 'unknown'}`,
+      'callback expected',
+    ].join(' ')
   }
   const pool = data.feature_pool && typeof data.feature_pool === 'object' ? data.feature_pool as Record<string, any> : {}
   return [
@@ -224,8 +273,10 @@ function isFailureSummary(value: string): boolean {
   const normalized = value.trim().toLowerCase()
   return normalized.startsWith('failed') ||
     normalized.startsWith('error') ||
+    normalized.includes(':fail') ||
     normalized.includes(':failed') ||
     normalized.includes(':error') ||
+    normalized.includes('gate=fail') ||
     normalized.includes('http')
 }
 
@@ -674,7 +725,19 @@ export async function runWeeklyMonteCarlo(env: Bindings) {
     if (result.status === 'failed' || result.status === 'error') {
       results.push(`${source}:${result.error ?? 'failed'}`)
     } else {
-      results.push(`${source}:${result.go_live_verdict}(95th=${result.mdd_95th})`)
+      const mdd95 = Number(result.mdd_95th ?? NaN)
+      const threshold = Number(result.fail_threshold ?? result.max_mdd_95th ?? 0.30)
+      const verdict = String(result.go_live_verdict ?? 'UNKNOWN')
+      const gate = Number.isFinite(mdd95) && Number.isFinite(threshold) && mdd95 <= threshold ? 'pass' : 'fail'
+      const nextAction = gate === 'pass'
+        ? 'promotion_gate_clear'
+        : 'run_capacity_stop_allocator_remediation_simulation'
+      results.push(
+        `${source}:${verdict}` +
+        `(gate=${gate};mdd95=${Number.isFinite(mdd95) ? mdd95 : 'n/a'};` +
+        `threshold=${Number.isFinite(threshold) ? threshold : 'n/a'};` +
+        `method=${result.method ?? 'block_bootstrap'};next=${nextAction})`,
+      )
     }
   }
 
@@ -858,12 +921,12 @@ function isWeeklyDriftTarget(model: Record<string, any>): boolean {
   )
 }
 
-export async function runWeeklyDriftRetrain(env: Bindings, runDate?: string) {
+async function resolveWeeklyDriftTargets(env: Bindings) {
   requireController(env)
 
   const pool = await controllerJson<any>(env, '/model_pool/status', { timeoutMs: 30_000 })
   const models = pool?.models && typeof pool.models === 'object' ? pool.models as Record<string, Record<string, any>> : {}
-  const targets = Object.entries(models)
+  return Object.entries(models)
     .filter(([name, model]) => ACTIVE_WEEKLY_DRIFT_MODEL_NAMES.has(name) && isWeeklyDriftTarget(model))
     .map(([name, model]) => {
       const hasMappedGroup = Object.prototype.hasOwnProperty.call(MODEL_GROUP_BY_NAME, name)
@@ -878,6 +941,28 @@ export async function runWeeklyDriftRetrain(env: Bindings, runDate?: string) {
         lastIcStatus: model.last_ic_status ?? null,
       }
     })
+}
+
+export async function runWeeklyDriftDetection(env: Bindings) {
+  const targets = await resolveWeeklyDriftTargets(env)
+  const retrainTargets = targets.filter((target) => target.group)
+  const artifactLifecycleTargets = targets.filter((target) => !target.group && target.artifactLifecycle)
+  const trainModelGroups = [
+    ...new Set(retrainTargets.map((target) => target.group).filter((group): group is string => Boolean(group))),
+  ]
+  return [
+    'weekly_drift detection',
+    `target_count=${targets.length}`,
+    `retrain_groups=${trainModelGroups.join(',') || 'none'}`,
+    `retrain_targets=${retrainTargets.map((target) => target.name).join(',') || 'none'}`,
+    `artifact_lifecycle_targets=${artifactLifecycleTargets.map((target) => `${target.name}:${target.artifactLifecycle}`).join(',') || 'none'}`,
+    'approval_required=confirm=weekly_drift',
+    'production_effect=none',
+  ].join('; ')
+}
+
+export async function runWeeklyDriftRetrain(env: Bindings, runDate?: string) {
+  const targets = await resolveWeeklyDriftTargets(env)
 
   if (targets.length === 0) {
     return 'weekly_drift skipped: no degraded/weak model family; monthly release remains owner'

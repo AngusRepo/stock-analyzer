@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import copy
 from datetime import datetime, timedelta, timezone
 from numbers import Integral, Real
 from typing import Any, Optional
@@ -303,6 +304,134 @@ def _timesfm_sidecar_payload(data: dict) -> dict[str, Any] | None:
 # ML score calculation (port from dailyRecommendation.ts:558-568)
 # ?????????????????????????????????????????????????????????????????????????????
 
+def _ml_thresholds_from_ensemble_v2(ev2: dict[str, Any]) -> dict[str, float] | None:
+    policy = ev2.get("ml_threshold_policy")
+    policy_thresholds = policy.get("thresholds") if isinstance(policy, dict) else None
+    raw_thresholds = policy_thresholds if isinstance(policy_thresholds, dict) else ev2.get("rank_signal_thresholds")
+    if not isinstance(raw_thresholds, dict):
+        return None
+    thresholds = {
+        "strongBuyThreshold": _finite_float_or_none(raw_thresholds.get("strongBuyThreshold")),
+        "buyThreshold": _finite_float_or_none(raw_thresholds.get("buyThreshold")),
+        "sellThreshold": _finite_float_or_none(raw_thresholds.get("sellThreshold")),
+        "strongSellThreshold": _finite_float_or_none(raw_thresholds.get("strongSellThreshold")),
+    }
+    if any(value is None for value in thresholds.values()):
+        return None
+    strong_buy = thresholds["strongBuyThreshold"]
+    buy = thresholds["buyThreshold"]
+    sell = thresholds["sellThreshold"]
+    strong_sell = thresholds["strongSellThreshold"]
+    if not (0 <= strong_sell < sell < buy < strong_buy <= 1):
+        return None
+    return {key: float(value) for key, value in thresholds.items() if value is not None}
+
+
+def _linear_between(value: float, left: float, right: float, low: float, high: float) -> float:
+    if right <= left:
+        return low
+    ratio = max(0.0, min(1.0, (value - left) / (right - left)))
+    return low + ratio * (high - low)
+
+
+def _ml_threshold_policy_edge_seed30(ev2: dict[str, Any]) -> tuple[float | None, dict[str, Any] | None]:
+    """Score ML EDGE from promoted threshold-policy provenance, not legacy signal tiers."""
+    if not isinstance(ev2, dict) or not ev2:
+        return None, None
+    policy = ev2.get("ml_threshold_policy")
+    if not isinstance(policy, dict):
+        return None, None
+    weight_total = _finite_float_or_none(ev2.get("weight_total")) or 0.0
+    reason = str(ev2.get("reason") or "")
+    thresholds = _ml_thresholds_from_ensemble_v2(ev2)
+    avg_rank = _finite_float_or_none(ev2.get("avg_rank"))
+    evidence: dict[str, Any] = {
+        "schema_version": "score-v2-ml-edge-policy-v1",
+        "source": "ensemble_v2.ml_threshold_policy",
+        "policy_id": policy.get("policy_id"),
+        "version": policy.get("version"),
+        "selected_regime": policy.get("selected_regime") or policy.get("regime"),
+        "evidence_hash": policy.get("evidence_hash"),
+        "signal": ev2.get("signal"),
+        "avg_rank": avg_rank,
+        "thresholds": thresholds,
+        "weight_total": weight_total,
+        "contributing_models": ev2.get("contributing_models") or [],
+    }
+    if weight_total <= 0 or reason == "no_positive_lifecycle_weight":
+        evidence.update({
+            "score_seed30": 0.0,
+            "status": "blocked",
+            "reason": reason or "non_positive_weight_total",
+        })
+        return 0.0, evidence
+    if avg_rank is None or thresholds is None:
+        return None, None
+
+    strong_buy = thresholds["strongBuyThreshold"]
+    buy = thresholds["buyThreshold"]
+    sell = thresholds["sellThreshold"]
+    strong_sell = thresholds["strongSellThreshold"]
+    if avg_rank >= strong_buy:
+        score = _linear_between(avg_rank, strong_buy, 1.0, 26.0, 30.0)
+    elif avg_rank >= buy:
+        score = _linear_between(avg_rank, buy, strong_buy, 18.0, 26.0)
+    elif avg_rank >= 0.5:
+        score = _linear_between(avg_rank, 0.5, buy, 8.0, 18.0)
+    elif avg_rank > sell:
+        score = _linear_between(avg_rank, sell, 0.5, 3.0, 8.0)
+    elif avg_rank > strong_sell:
+        score = _linear_between(avg_rank, strong_sell, sell, 0.0, 3.0)
+    else:
+        score = 0.0
+    score = _round1(max(0.0, min(30.0, score)))
+    evidence.update({
+        "score_seed30": score,
+        "status": "scored",
+        "buy_distance": _round1(avg_rank - buy),
+        "sell_distance": _round1(avg_rank - sell),
+    })
+    return score, evidence
+
+
+def _ml_edge_policy_evidence(raw_prediction: dict | None) -> dict[str, Any] | None:
+    ev2 = (raw_prediction or {}).get("ensemble_v2") or {}
+    _score, evidence = _ml_threshold_policy_edge_seed30(ev2)
+    return evidence
+
+
+def overlay_ml_threshold_policy_source_of_truth(
+    predictions: dict[str, dict],
+    policy_evidence: dict[str, Any],
+    *,
+    force: bool = True,
+) -> dict[str, dict]:
+    """Return prediction copies with threshold-policy provenance attached.
+
+    This is for local/read-only rescoring and rerun previews. Runtime pipeline
+    should still attach policy evidence before scoring and fail closed when the
+    evidence is absent.
+    """
+    if not isinstance(policy_evidence, dict) or not policy_evidence:
+        raise ValueError("policy_evidence is required for local threshold-policy rescore")
+    thresholds = policy_evidence.get("thresholds")
+    if not isinstance(thresholds, dict) or not thresholds:
+        raise ValueError("policy_evidence.thresholds is required for local threshold-policy rescore")
+
+    out: dict[str, dict] = {}
+    for symbol, prediction in (predictions or {}).items():
+        row = copy.deepcopy(prediction) if isinstance(prediction, dict) else {}
+        ev2 = row.get("ensemble_v2")
+        if not isinstance(ev2, dict):
+            out[symbol] = row
+            continue
+        if force or not isinstance(ev2.get("ml_threshold_policy"), dict):
+            ev2["ml_threshold_policy"] = copy.deepcopy(policy_evidence)
+            ev2["rank_signal_thresholds"] = copy.deepcopy(thresholds)
+        out[symbol] = row
+    return out
+
+
 def calculate_ml_score(prediction: dict, raw_prediction: dict | None = None) -> float:
     """Compute ml_score 0-30 from actual model evidence.
 
@@ -315,11 +444,10 @@ def calculate_ml_score(prediction: dict, raw_prediction: dict | None = None) -> 
     source = str(prediction.get("signal_source") or "")
     ev2 = (raw_prediction or {}).get("ensemble_v2") or {}
     if ev2:
-        weight_total = float(ev2.get("weight_total") or 0.0)
-        contributors = ev2.get("contributing_models") or []
-        ev2_reason = str(ev2.get("reason") or "")
-        if weight_total <= 0 or ev2_reason == "no_positive_lifecycle_weight":
-            return 0.0
+        policy_score, _evidence = _ml_threshold_policy_edge_seed30(ev2)
+        if policy_score is not None:
+            return _round1(policy_score)
+        return 0.0
     sig = _normalized_signal(prediction.get("signal"))
     score = 0.0
     if sig == "STRONG_BUY":
@@ -351,6 +479,9 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
             "confidence": 0.0,
             "forecast_pct": None,
             "forecast_pct_source": "missing",
+            "expected_return": None,
+            "expected_return_source": "missing",
+            "expected_return_owner": "missing",
             "signal_source": "missing",
             "signal_raw": None,
         }
@@ -368,6 +499,13 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
                 "confidence": confidence,
                 "forecast_pct": ev2.get("forecast_pct"),
                 "forecast_pct_source": ev2.get("forecast_pct_source") or "ensemble_v2",
+                "expected_return": ev2.get("expected_return", ev2.get("forecast_pct")),
+                "expected_return_source": (
+                    ev2.get("expected_return_source")
+                    or ev2.get("forecast_pct_source")
+                    or "ensemble_v2"
+                ),
+                "expected_return_owner": ev2.get("expected_return_owner") or "ensemble_v2_calibrated_forecast",
                 "signal_source": ev2.get("signal_source") or "ensemble_v2",
                 "signal_raw": ev2.get("signal_raw") or legacy_signal,
             }
@@ -377,6 +515,9 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
         "confidence": legacy_conf,
         "forecast_pct": legacy_forecast,
         "forecast_pct_source": "legacy",
+        "expected_return": legacy_forecast,
+        "expected_return_source": "legacy_forecast_pct",
+        "expected_return_owner": "legacy_compat_forecast",
         "signal_source": "legacy",
         "signal_raw": legacy_signal,
     }
@@ -868,15 +1009,27 @@ def _score_v2_components_from_row(row: dict) -> dict[str, float]:
     if isinstance(payload, dict) and payload.get("version") == SCORE_V2_VERSION and isinstance(payload.get("components"), dict):
         components = payload["components"]
         ml_edge = _clamp_score(components.get("mlEdge"), SCORE_V2_WEIGHTS["mlEdge"])
+        chip_flow = _clamp_score(components.get("chipFlow"), SCORE_V2_WEIGHTS["chipFlow"])
+        technical_structure = _clamp_score(
+            components.get("technicalStructure"),
+            SCORE_V2_WEIGHTS["technicalStructure"],
+        )
         fundamental_quality = row.get("fundamental_quality_score")
         if fundamental_quality is None and isinstance(row.get("fundamental_quality"), dict):
             fundamental_quality = row["fundamental_quality"].get("score")
         if "score_seed_inputs" in row:
-            ml_edge = _rescale_score(_score_v2_seed_inputs(row)["mlEdgeSeed30"], 30, SCORE_V2_WEIGHTS["mlEdge"])
+            seeds = _score_v2_seed_inputs(row)
+            ml_edge = _rescale_score(seeds["mlEdgeSeed30"], 30, SCORE_V2_WEIGHTS["mlEdge"])
+            chip_flow = _rescale_score(seeds["chipFlowSeed40"], 40, SCORE_V2_WEIGHTS["chipFlow"])
+            technical_structure = _rescale_score(
+                seeds["technicalSeed30"] + seeds["screenerMomentumSeed20"],
+                50,
+                SCORE_V2_WEIGHTS["technicalStructure"],
+            )
         return {
             "mlEdge": ml_edge,
-            "chipFlow": _clamp_score(components.get("chipFlow"), SCORE_V2_WEIGHTS["chipFlow"]),
-            "technicalStructure": _clamp_score(components.get("technicalStructure"), SCORE_V2_WEIGHTS["technicalStructure"]),
+            "chipFlow": chip_flow,
+            "technicalStructure": technical_structure,
             "fundamentalQuality": _clamp_score(
                 components.get("fundamentalQuality") if fundamental_quality is None else fundamental_quality,
                 SCORE_V2_WEIGHTS["fundamentalQuality"],
@@ -1116,6 +1269,8 @@ def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | 
         payload["fundamentalQuality"] = row["fundamental_quality"]
     if isinstance(row.get("chip_evidence"), dict):
         payload["chipEvidence"] = row["chip_evidence"]
+    if isinstance(row.get("ml_edge_policy"), dict):
+        payload["mlEdgePolicy"] = row["ml_edge_policy"]
     return payload
 
 
@@ -1139,28 +1294,51 @@ def _sum_chip_cash_billion(chips: list[dict], prices: list[dict], field: str) ->
     return round(total, 6)
 
 
+def _broker_estimated_amount_twd(amount: Any, shares: Any, close: float, source: Any = None) -> float:
+    try:
+        amount_value = float(amount) if amount is not None else None
+    except (TypeError, ValueError):
+        amount_value = None
+    try:
+        share_value = float(shares or 0.0)
+    except (TypeError, ValueError):
+        share_value = 0.0
+    source_text = str(source or "")
+    listed_broker_lots = "finlab.broker_transactions" in source_text and "rotc" not in source_text
+    unit_multiplier = 1000.0 if listed_broker_lots else 1.0
+    fallback = share_value * close * unit_multiplier if close > 0 else 0.0
+    if amount_value is None or not math.isfinite(amount_value):
+        return fallback
+    nominal_lot_amount = abs(share_value * close)
+    if listed_broker_lots and nominal_lot_amount > 0:
+        ratio = abs(amount_value) / nominal_lot_amount
+        if 0.2 <= ratio <= 5:
+            return amount_value * 1000.0
+    return amount_value
+
+
 def _sum_broker_cash_billion(chips: list[dict], prices: list[dict]) -> float:
     """Prefer FinLab estimated broker amount, fallback to broker shares * close."""
     if not chips:
         return 0.0
     total_amount = 0.0
-    missing_amount_rows: list[dict] = []
+    price_by_date = {p.get("date"): float(p.get("close") or 0.0) for p in prices if p.get("date")}
+    fallback_close = 0.0
+    for p in reversed(prices):
+        close = float(p.get("close") or 0.0)
+        if close > 0:
+            fallback_close = close
+            break
     for c in chips:
-        if c.get("broker_estimated_amount") is None:
-            missing_amount_rows.append(c)
+        if c.get("broker_estimated_amount") is None and c.get("broker_net_shares") is None:
             continue
-        total_amount += float(c.get("broker_estimated_amount") or 0.0)
-    if missing_amount_rows:
-        price_by_date = {p.get("date"): float(p.get("close") or 0.0) for p in prices if p.get("date")}
-        fallback_close = 0.0
-        for p in reversed(prices):
-            close = float(p.get("close") or 0.0)
-            if close > 0:
-                fallback_close = close
-                break
-        for c in missing_amount_rows:
-            close = price_by_date.get(c.get("date")) or fallback_close
-            total_amount += float(c.get("broker_net_shares") or 0.0) * close
+        close = price_by_date.get(c.get("date")) or fallback_close
+        total_amount += _broker_estimated_amount_twd(
+            c.get("broker_estimated_amount"),
+            c.get("broker_net_shares"),
+            close,
+            c.get("chip_source") or c.get("source"),
+        )
     return round(total_amount / 1e8, 6)
 
 
@@ -1495,6 +1673,7 @@ def filter_and_score_recommendations(
         # ML score reflects model evidence only; ranking/top-K promotion is
         # tracked in signal_source/reason but should not inflate ML votes.
         ml_score = calculate_ml_score(eff_ml, ml) if ml else 0.0
+        ml_edge_policy = _ml_edge_policy_evidence(ml) if ml else None
         existing_score_components = _parse_score_components_payload(rec.get("score_components"))
         score_seed_inputs = _score_v2_seed_inputs_from_payload(existing_score_components, ml_score=ml_score)
         if score_seed_inputs is None:
@@ -1674,6 +1853,8 @@ def filter_and_score_recommendations(
             "ml_confidence": eff_ml.get("confidence") or 0,
             "ml_forecast_pct": eff_ml.get("forecast_pct"),
             "ml_forecast_pct_source": eff_ml.get("forecast_pct_source"),
+            "expected_return": eff_ml.get("expected_return"),
+            "expected_return_source": eff_ml.get("expected_return_source"),
             "ml_models_total": ml_models_total,
             "ml_models_up": ml_models_up,
             "ml_models_down": ml_models_down,
@@ -1703,6 +1884,7 @@ def filter_and_score_recommendations(
             "tech_score": score_seed_inputs["technicalSeed30"],
             "momentum_score": score_seed_inputs["screenerMomentumSeed20"],
             "ml_score": score_seed_inputs["mlEdgeSeed30"],
+            "ml_edge_policy": ml_edge_policy,
             "persona_score": persona_score,
             "persona_applied": persona_applied,  # None if no persona data
             "score": total_score,
@@ -1712,6 +1894,10 @@ def filter_and_score_recommendations(
             "confidence": eff_ml.get("confidence"),
             "ml_forecast_pct": eff_ml.get("forecast_pct"),
             "ml_forecast_pct_source": eff_ml.get("forecast_pct_source"),
+            "expected_return": eff_ml.get("expected_return"),
+            "expected_return_source": eff_ml.get("expected_return_source"),
+            "expected_return_owner": eff_ml.get("expected_return_owner"),
+            "dispersion_diagnostics": ml.get("dispersion_diagnostics") if isinstance(ml, dict) else None,
             "ml_vote_summary": ml_vote_summary,
             "ml_vote_summary_text": ml_vote_text,
             "current_price": current_price,
@@ -1787,9 +1973,10 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
     expected_return, expected_return_source = _row_expected_return_with_source(row)
     row["promotion_expected_return"] = expected_return
     row["promotion_expected_return_source"] = expected_return_source
-    forecast_pct = row.get("ml_forecast_pct", row.get("forecast_pct"))
+    forecast_pct = row.get("expected_return", row.get("ml_forecast_pct", row.get("forecast_pct")))
     forecast_pct_source = str(
-        row.get("ml_forecast_pct_source")
+        row.get("expected_return_source")
+        or row.get("ml_forecast_pct_source")
         or row.get("forecast_pct_source")
         or ""
     ).strip()
@@ -2287,12 +2474,152 @@ def _row_expected_return(row: dict) -> float:
     return value
 
 
+_MISSING_EXPECTED_RETURN_SOURCES = {
+    "missing",
+    "uncalibrated_rank_score",
+    "missing_calibrated_forecast_pct",
+    "no_positive_lifecycle_weight",
+    "missing_no_expected_return",
+    "uncalibrated_rank_score_no_expected_return",
+    "missing_calibrated_forecast_pct_no_expected_return",
+    "no_positive_lifecycle_weight_no_expected_return",
+    "missing_expected_return_no_allocation_edge",
+}
+
+
+def _dict_payload(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _expected_return_source_missing(source: str) -> bool:
+    normalized = str(source or "").strip()
+    return normalized in _MISSING_EXPECTED_RETURN_SOURCES or normalized.endswith("_no_expected_return")
+
+
+def _canonical_expected_return_from_row(row: dict) -> tuple[float | None, str, dict[str, Any] | None]:
+    candidates: list[tuple[Any, Any, str, dict[str, Any] | None]] = [
+        (
+            row.get("expected_return"),
+            row.get("expected_return_source"),
+            "daily_recommendation.expected_return",
+            None,
+        ),
+    ]
+    ev2 = row.get("ensemble_v2") if isinstance(row.get("ensemble_v2"), dict) else {}
+    if ev2:
+        candidates.append((
+            ev2.get("expected_return", ev2.get("forecast_pct")),
+            ev2.get("expected_return_source") or ev2.get("forecast_pct_source"),
+            "ensemble_v2.expected_return",
+            ev2,
+        ))
+    forecast_data = _dict_payload(row.get("forecast_data"))
+    fd_ev2 = forecast_data.get("ensemble_v2") if isinstance(forecast_data.get("ensemble_v2"), dict) else {}
+    if fd_ev2:
+        candidates.append((
+            fd_ev2.get("expected_return", fd_ev2.get("forecast_pct")),
+            fd_ev2.get("expected_return_source") or fd_ev2.get("forecast_pct_source"),
+            "forecast_data.ensemble_v2.expected_return",
+            fd_ev2,
+        ))
+
+    for raw_value, raw_source, owner, payload in candidates:
+        source = str(raw_source or "").strip()
+        if raw_value is None:
+            if _expected_return_source_missing(source):
+                return None, f"{source}_no_expected_return", payload
+            continue
+        value = _float_or_none(raw_value)
+        if value is None:
+            continue
+        if _expected_return_source_missing(source):
+            return None, f"{source}_no_expected_return", payload
+        return value, source or owner, payload
+    return None, "missing_expected_return_no_allocation_edge", None
+
+
+def _expected_return_uncertainty_adjustment(row: dict, value: float) -> tuple[float, dict[str, Any] | None]:
+    if value <= 0:
+        return value, None
+    diagnostics = row.get("dispersion_diagnostics")
+    if not isinstance(diagnostics, dict):
+        forecast_data = _dict_payload(row.get("forecast_data"))
+        diagnostics = forecast_data.get("dispersion_diagnostics")
+    if not isinstance(diagnostics, dict):
+        return value, None
+
+    multiplier = 1.0
+    reasons: list[str] = []
+    active_count = _float_or_none(diagnostics.get("active_weight_count"))
+    weight_hhi = _float_or_none(diagnostics.get("weight_hhi"))
+    merge_compression = _float_or_none(diagnostics.get("merge_compression"))
+    raw_model_count = _float_or_none(diagnostics.get("raw_model_count"))
+    if active_count is not None and active_count < 4:
+        multiplier *= 0.85
+        reasons.append("low_active_weight_count")
+    if weight_hhi is not None and weight_hhi > 0.45:
+        multiplier *= 0.90
+        reasons.append("high_weight_concentration")
+    if merge_compression is not None and merge_compression > 0.08:
+        multiplier *= 0.90
+        reasons.append("high_merge_compression")
+    if raw_model_count is not None and raw_model_count < 4:
+        multiplier *= 0.90
+        reasons.append("low_raw_model_count")
+    multiplier = max(0.65, min(1.0, multiplier))
+    if not reasons or multiplier >= 0.999999:
+        return value, None
+    adjusted = round(value * multiplier, 10)
+    evidence = {
+        "schema_version": "expected-return-uncertainty-adjustment-v1",
+        "source": "prediction_dispersion",
+        "raw_expected_return": round(value, 10),
+        "adjusted_expected_return": adjusted,
+        "multiplier": round(multiplier, 6),
+        "reasons": reasons,
+        "active_weight_count": active_count,
+        "weight_hhi": weight_hhi,
+        "merge_compression": merge_compression,
+        "raw_model_count": raw_model_count,
+        "policy": "positive_expected_return_haircut_not_signal_override",
+    }
+    row["_expected_return_uncertainty_adjustment"] = evidence
+    return adjusted, evidence
+
+
 def _row_expected_return_with_source(row: dict) -> tuple[float, str]:
     alpha_context = row.get("alpha_context") if isinstance(row.get("alpha_context"), dict) else {}
     heat_edge = _float_or_none(row.get("market_heat_expected_return"))
     if heat_edge is None:
         heat_edge = _float_or_none(alpha_context.get("market_heat_expected_return"))
     heat_edge = max(0.0, heat_edge or 0.0)
+
+    canonical_value, canonical_source, _payload = _canonical_expected_return_from_row(row)
+    if canonical_value is None:
+        if heat_edge > 0 and canonical_source == "missing_expected_return_no_allocation_edge":
+            return heat_edge, "market_heat_factor_expected_edge"
+        if (
+            canonical_source != "missing_expected_return_no_allocation_edge"
+            and _expected_return_source_missing(canonical_source)
+        ):
+            return 0.0, canonical_source
+    else:
+        adjusted_value, adjustment = _expected_return_uncertainty_adjustment(row, canonical_value)
+        source = canonical_source
+        if adjustment:
+            source = f"{source}_dispersion_adjusted"
+        if heat_edge > 0:
+            return adjusted_value + heat_edge, f"{source}_plus_market_heat_factor"
+        return adjusted_value, source
+
     for key in ("ml_forecast_pct", "forecast_pct", "expected_return", "predicted_return"):
         if key not in row:
             continue
@@ -2593,6 +2920,7 @@ def _apply_sparse_tangent_buy_selection(
             candidate_evidence_by_symbol[symbol] = {
                 "expected_return": expected_return,
                 "expected_return_source": expected_return_source,
+                "expected_return_uncertainty_adjustment": row.get("_expected_return_uncertainty_adjustment"),
                 "market_heat_score": row.get("market_heat_score"),
                 "market_heat_expected_return": row.get("market_heat_expected_return"),
                 "risk_estimate": _row_daily_risk_estimate(symbol, risk_history),
@@ -2818,6 +3146,10 @@ def _apply_sparse_tangent_buy_selection(
             "expected_return": round(expected_return, 10),
             "expected_return_source": (evidence or {}).get("expected_return_source")
             or row.get("promotion_expected_return_source"),
+            "expected_return_uncertainty_adjustment": (
+                (evidence or {}).get("expected_return_uncertainty_adjustment")
+                or row.get("_expected_return_uncertainty_adjustment")
+            ),
             "market_heat_score": None if market_heat_score is None else round(market_heat_score, 6),
             "market_heat_expected_return": (
                 None if market_heat_expected_return is None else round(market_heat_expected_return, 10)

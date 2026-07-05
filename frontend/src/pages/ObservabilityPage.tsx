@@ -19,6 +19,12 @@ import {
   type WorkstationTone,
 } from '@/components/workstation/WorkstationChrome'
 import {
+  ApprovalReviewPanel,
+  type ApprovalReviewGate,
+  type ApprovalReviewImpact,
+  type ApprovalReviewMetric,
+} from '@/components/workstation/ApprovalReviewPanel'
+import {
   dataQualityApi,
   deployGateApi,
   observabilityApi,
@@ -1074,9 +1080,14 @@ function AdaptiveMetaPanel({
 }) {
   const adaptive = events.find((event) => event.domain === 'adaptive_meta' && event.source === 'adaptive_params')
   const ga = events.find((event) => event.domain === 'adaptive_meta' && event.source === 'ga_optimizer')
+  const thresholdPolicyEvent = events.find((event) => event.domain === 'ml_threshold_policy' && event.source === 'predictions.forecast_data')
   const evidence = asRecord(adaptive?.evidence)
   const threshold = asRecord(evidence.threshold_components)
   const thresholdInputs = asRecord(threshold.inputs)
+  const thresholdPolicyEvidence = asRecord(thresholdPolicyEvent?.evidence)
+  const runtimePolicy = asRecord(thresholdPolicyEvidence.policy)
+  const runtimePolicyThresholds = asRecord(runtimePolicy.thresholds)
+  const runtimePolicyOverlay = asRecord(runtimePolicy.adaptive_overlay)
   const bandit = asRecord(evidence.bandit_context)
   const linucbLedger = asRecord(bandit.linucb_reward_ledger)
   const expandedContext = asRecord(bandit.expanded_context)
@@ -1114,6 +1125,153 @@ function AdaptiveMetaPanel({
         : ['keep collecting GA history']
   const metaLearners: Array<[string, string, string, string]> = []
   const tone = severityTone(adaptive?.severity ?? ga?.severity)
+  const gaRuntime = asRecord(evidence.ga_optimizer_runtime)
+  const gaEffectPolicy = asRecord(gaRuntime.effect_policy)
+  const historyRows = Array.isArray(historyTail) ? historyTail.map(asRecord) : []
+  const previousHistory = historyRows.length >= 2 ? historyRows[historyRows.length - 2] : null
+  const latestHistory = historyRows.length >= 1 ? historyRows[historyRows.length - 1] : null
+  const gate = asRecord(gaEvidence.gate)
+  const failedGates = Array.isArray(gaEvidence.failed_gates)
+    ? gaEvidence.failed_gates.map(String)
+    : Array.isArray(gate.failed_gates)
+      ? gate.failed_gates.map(String)
+      : []
+  const gaReviewStatusTone: WorkstationTone = pendingApprovalLevel
+    ? 'warn'
+    : missingEvidence.length || failedGates.length
+      ? 'error'
+      : canRequestNextLevel || approvalRequiredForNextLevel
+        ? 'warn'
+        : severityTone(ga?.severity)
+  const gaMetrics: ApprovalReviewMetric[] = [
+    {
+      label: 'Best score',
+      candidate: fmtNumber(gaEvidence.best_score, 4),
+      champion: previousHistory ? fmtNumber(previousHistory.best_score, 4) : 'previous N/A',
+      delta: scoreDelta(historyTail),
+      detail: 'GA fitness；必須搭配 PBO/MDD/Sharpe，不可單看分數。',
+      tone: Number(latestHistory?.best_score ?? gaEvidence.best_score) >= Number(previousHistory?.best_score ?? -Infinity) ? 'ok' : 'warn',
+    },
+    {
+      label: 'Sharpe',
+      value: fmtNumber(bestMetrics.sharpe, 2),
+      detail: '候選策略風險調整後報酬；低於門檻不能只靠 score delta 通過。',
+      tone: Number(bestMetrics.sharpe) >= 0.5 ? 'ok' : 'warn',
+    },
+    {
+      label: 'PBO',
+      value: fmtNumber(bestMetrics.pbo, 3),
+      detail: '過擬合風險；越低越好，>= 0.5 應擋 promotion。',
+      tone: Number(bestMetrics.pbo) < 0.5 ? 'ok' : 'error',
+    },
+    {
+      label: 'MDD95',
+      value: fmtNumber(bestMetrics.mdd_95th, 3),
+      detail: 'Monte Carlo 95th percentile drawdown；用來避免只挑漂亮回測。',
+      tone: Number(bestMetrics.mdd_95th) <= 0.2 ? 'ok' : 'warn',
+    },
+    {
+      label: 'Training cadence',
+      value: `${String(gaRunPopulation ?? '-')} pop / ${String(gaRunGenerations ?? '-')} gen`,
+      detail: `history ${String(gaEvidence.history_count ?? (historyRows.length || '-'))}; last ${gaLearningUpdatedAt}`,
+      tone: historyRows.length >= 2 ? 'ok' : 'warn',
+    },
+  ]
+  const gaGates: ApprovalReviewGate[] = [
+    ...(requiredEvidence.length ? requiredEvidence : ['policy_candidate', 'primary_gate', 'stable_history', 'pbo_mc_cost_governance']).map((item) => ({
+      label: item,
+      status: missingEvidence.includes(item) ? 'missing' as const : 'pass' as const,
+      detail: missingEvidence.includes(item) ? '缺 evidence，不能升 L3/L4。' : 'promotion packet 已具備此 evidence。',
+    })),
+    ...failedGates.slice(0, 4).map((item) => ({
+      label: item,
+      status: 'fail' as const,
+      detail: 'GA primary gate 回報 failed gate。',
+    })),
+    {
+      label: 'Wei approval boundary',
+      status: pendingApprovalLevel || approvalRequiredForNextLevel ? 'warn' : 'pass',
+      detail: pendingApprovalLevel
+        ? `等待 ${pendingApprovalLevel} approval；通過前不改 production config。`
+        : '目前沒有待批准層級。',
+    },
+  ]
+  const gaImpacts: ApprovalReviewImpact[] = [
+    {
+      label: 'Runtime owner',
+      value: String(gaRuntime.runtime_role ?? 'learning/review only'),
+      detail: 'GA 不進 model_pool；由 adaptive meta context 消費。',
+      tone: gaRuntime.runtime_role ? 'info' : 'neutral',
+    },
+    {
+      label: 'Production write',
+      value: gaEvidence.mutates_trading_config === false ? 'trading:config blocked' : 'unknown',
+      detail: '批准也應走 gated resolver，不直接 raw mutate trading config。',
+      tone: gaEvidence.mutates_trading_config === false ? 'ok' : 'error',
+    },
+    {
+      label: 'Exposure cap',
+      value: gaEffectPolicy.max_bandit_max_mult != null ? `bandit max ${fmtNumber(gaEffectPolicy.max_bandit_max_mult, 2)}x` : 'not active',
+      detail: String(gaEffectPolicy.scope ?? 'L3 approved 才能套 capped meta-policy effect。'),
+      tone: gaEffectPolicy.enabled === true ? 'warn' : 'neutral',
+    },
+  ]
+  const gaCandidateSummary = (
+    <>
+      <div>candidate: {String(gaEvidence.best_candidate_id ?? 'best GA policy')}</div>
+      <div>learned policy: {summarizeLearnedPolicy(learnedPolicy)}</div>
+      <div>requested: {pendingApprovalLevel || (canRequestNextLevel ? `${nextLevel} ready for approval` : 'none')}</div>
+    </>
+  )
+  const gaCurrentSummary = (
+    <>
+      <div>level: {String(promotion.level ?? 'L0')} / status: {String(promotion.status ?? ga?.status ?? '-')}</div>
+      <div>runtime: {String(gaRuntime.runtime_role ?? 'no approved runtime effect')}</div>
+      <div>last learned: {gaLearningUpdatedAt}</div>
+    </>
+  )
+  const gaActions = (
+    <>
+      {canRequestNextLevel && !pendingApprovalLevel && (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!onGaReview || gaReviewPending}
+          className="h-8 rounded-full border-amber-400/30 px-3 text-xs text-amber-200 hover:bg-amber-400/10"
+          onClick={() => onGaReview?.('request', nextLevel)}
+        >
+          {gaReviewPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+          Request {nextLevel} review
+        </Button>
+      )}
+      {pendingApprovalLevel && (
+        <>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!onGaReview || gaReviewPending}
+            className="h-8 rounded-full border-emerald-400/30 px-3 text-xs text-emerald-200 hover:bg-emerald-400/10"
+            onClick={() => onGaReview?.('approve', pendingApprovalLevel)}
+          >
+            {gaReviewPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+            Approve {pendingApprovalLevel}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!onGaReview || gaReviewPending}
+            className="h-8 rounded-full border-rose-400/30 px-3 text-xs text-rose-200 hover:bg-rose-400/10"
+            onClick={() => onGaReview?.('reject', pendingApprovalLevel)}
+          >
+            Reject {pendingApprovalLevel}
+          </Button>
+        </>
+      )}
+      <a href="/strategy-lab" className="inline-flex items-center gap-1 sv-num text-xs normal-case text-amber-200 hover:text-amber-100">
+        Review GA candidate <ExternalLink className="h-3 w-3" />
+      </a>
+    </>
+  )
 
   return (
     <WorkstationPanel title="Adaptive / Meta Evidence" kicker="threshold, bandit, GA">
@@ -1139,6 +1297,20 @@ function AdaptiveMetaPanel({
               <span>model {fmtNumber(threshold.model_quality_penalty)}</span>
               <span>vol {fmtNumber(threshold.volatility_penalty)}</span>
               <span>credit {fmtNumber(Number(threshold.regime_opportunity_credit ?? 0) + Number(threshold.trend_quality_credit ?? 0))}</span>
+            </div>
+            <div className="mt-3 rounded-lg border border-sky-400/15 bg-sky-400/5 p-2 text-xs leading-5 text-slate-300">
+              <div className="flex items-center justify-between gap-2">
+                <span className="sv-num text-sky-200">Runtime ML threshold policy</span>
+                <WorkstationPill tone={severityTone(thresholdPolicyEvent?.severity)}>{thresholdPolicyEvent?.status ?? 'missing'}</WorkstationPill>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
+                <span>id {String(runtimePolicy.policy_id ?? '-')}</span>
+                <span>regime {String(runtimePolicy.selected_regime ?? '-')}</span>
+                <span>buy {fmtNumber(runtimePolicyThresholds.buyThreshold, 3)}</span>
+                <span>sell {fmtNumber(runtimePolicyThresholds.sellThreshold, 3)}</span>
+                <span>overlay {fmtNumber(runtimePolicyOverlay.applied_delta, 3)}</span>
+                <span>hash {String(runtimePolicy.evidence_hash ?? '-').slice(0, 10)}</span>
+              </div>
             </div>
           </div>
 
@@ -1177,123 +1349,21 @@ function AdaptiveMetaPanel({
           </div>
         </div>
 
-        <div className="h-full rounded-xl border border-[#263247] bg-[#05070c] p-3">
-          <div className="flex items-center justify-between gap-2">
-            <p className="sv-num text-xs normal-case text-[#70809b]">GA Promotion</p>
-            <WorkstationPill tone={severityTone(ga?.severity)}>{String(promotion.level ?? 'L0')}</WorkstationPill>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-            <div>
-              <p className="text-slate-500">status</p>
-              <p className="sv-num text-lg text-slate-100">{String(promotion.status ?? ga?.status ?? '-')}</p>
-            </div>
-            <div>
-              <p className="text-slate-500">next</p>
-              <p className="sv-num text-lg text-amber-200">{String(promotion.nextLevel ?? '-')}</p>
-            </div>
-            <div>
-              <p className="text-slate-500">L3 request</p>
-              <p className={`sv-num text-lg ${canRequestNextLevel || pendingApprovalLevel ? 'text-emerald-300' : 'text-slate-100'}`}>
-                {pendingApprovalLevel ? `pending ${pendingApprovalLevel}` : canRequestNextLevel ? 'ready for approval' : 'not ready'}
-              </p>
-            </div>
-            <div>
-              <p className="text-slate-500">best score</p>
-              <p className="sv-num text-lg text-emerald-300">{fmtNumber(gaEvidence.best_score, 4)}</p>
-            </div>
-            <div>
-              <p className="text-slate-500">score delta</p>
-              <p className="sv-num text-lg text-sky-200">{scoreDelta(historyTail)}</p>
-            </div>
-            <div className="col-span-2">
-              <p className="text-slate-500">last learned</p>
-              <p className="sv-num text-sm text-slate-100">{gaLearningUpdatedAt}</p>
-            </div>
-          </div>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-slate-400">
-            <span>run population {String(gaRunPopulation ?? '-')}</span>
-            <span>run generations {String(gaRunGenerations ?? '-')}</span>
-            <span>history {String(gaEvidence.history_count ?? '-')}</span>
-            <span>PBO {fmtNumber(bestMetrics.pbo, 3)}</span>
-            <span>MDD95 {fmtNumber(bestMetrics.mdd_95th, 3)}</span>
-            <span>Sharpe {fmtNumber(bestMetrics.sharpe, 2)}</span>
-          </div>
-          <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-300">
-            <p className="font-semibold text-slate-100">L3 gate evidence</p>
-            <div className="mt-2 flex flex-wrap gap-1">
-              {(requiredEvidence.length ? requiredEvidence : ['policy_candidate', 'primary_gate', 'stable_history', 'pbo_mc_cost_governance']).map((item) => (
-                <WorkstationPill key={item} tone={missingEvidence.includes(item) ? 'warn' : 'ok'}>
-                  {item} {missingEvidence.includes(item) ? 'missing' : 'ok'}
-                </WorkstationPill>
-              ))}
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-1">
-              <span className="text-[#70809b]">L3 blockers:</span>
-              {l3Blockers.map((item) => (
-                <WorkstationPill key={item} tone={item === 'Wei approval' || item.startsWith('pending') ? 'warn' : 'info'}>
-                  {item}
-                </WorkstationPill>
-              ))}
-            </div>
-            <p className="mt-2 text-[#9badbf]">{gaNextAction || 'GA promotion state has not exposed a next action yet.'}</p>
-          </div>
-          <p className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-300">
-            learned policy: {summarizeLearnedPolicy(learnedPolicy)}
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <WorkstationPill tone={gaEvidence.mutates_trading_config === false ? 'ok' : 'error'}>
-              config mutate {gaEvidence.mutates_trading_config === false ? 'blocked' : 'unknown'}
-            </WorkstationPill>
-            <WorkstationPill tone={approvalRequiredForNextLevel ? 'warn' : 'ok'}>
-              approval {approvalRequiredForNextLevel ? 'required' : 'not yet'}
-            </WorkstationPill>
-          </div>
-          <div className="mt-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.05] p-2 text-xs leading-5 text-amber-100">
-            <p className="font-semibold text-amber-200">GA 學習節奏</p>
-            <p>weekly 會跑小型 GA sweep（目前 12 population / 4 generations），monthly 會跑較大型 sweep（目前 36 / 12）。這些數字是單次 run 設定，不是累積進度；是否持續學習要看 last learned、history 與 best score 是否更新。L3/L4 仍需 approval gate，通過前不寫入 production trading config。</p>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              {canRequestNextLevel && !pendingApprovalLevel && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!onGaReview || gaReviewPending}
-                  className="h-7 rounded-full border-amber-400/30 px-3 text-xs text-amber-200 hover:bg-amber-400/10"
-                  onClick={() => onGaReview?.('request', nextLevel)}
-                >
-                  {gaReviewPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
-                  Request {nextLevel} review
-                </Button>
-              )}
-              {pendingApprovalLevel && (
-                <>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!onGaReview || gaReviewPending}
-                    className="h-7 rounded-full border-emerald-400/30 px-3 text-xs text-emerald-200 hover:bg-emerald-400/10"
-                    onClick={() => onGaReview?.('approve', pendingApprovalLevel)}
-                  >
-                    {gaReviewPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
-                    Approve {pendingApprovalLevel}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!onGaReview || gaReviewPending}
-                    className="h-7 rounded-full border-rose-400/30 px-3 text-xs text-rose-200 hover:bg-rose-400/10"
-                    onClick={() => onGaReview?.('reject', pendingApprovalLevel)}
-                  >
-                    Reject {pendingApprovalLevel}
-                  </Button>
-                </>
-              )}
-              <a href="/strategy-lab" className="inline-flex items-center gap-1 sv-num text-xs normal-case text-amber-200 hover:text-amber-100">
-                Review GA candidate <ExternalLink className="h-3 w-3" />
-              </a>
-            </div>
-            {gaReviewError && <p className="mt-2 text-rose-200">{gaReviewError}</p>}
-          </div>
-        </div>
+        <ApprovalReviewPanel
+          title="GA Promotion"
+          kicker="parameter candidate / manual approval"
+          status={`${String(promotion.status ?? ga?.status ?? 'learning')} / ${String(promotion.level ?? 'L0')}`}
+          statusTone={gaReviewStatusTone}
+          candidate={gaCandidateSummary}
+          champion={gaCurrentSummary}
+          summary="weekly/monthly GA 只產生候選政策與 promotion packet；approval 前必須看分數、PBO、MDD、history、gate 與 production impact。"
+          metrics={gaMetrics}
+          gates={gaGates}
+          impacts={gaImpacts}
+          blockers={l3Blockers.map((item) => `L3 blockers: ${item}`)}
+          nextAction={(gaReviewError ?? gaNextAction) || 'GA promotion state has not exposed a next action yet.'}
+          actions={gaActions}
+        />
       </div>
       <div className="border-t border-[#263247] p-3">
         <div className="grid gap-2 xl:grid-cols-5">

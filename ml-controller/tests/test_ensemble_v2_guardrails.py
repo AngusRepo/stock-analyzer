@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from services.ensemble_v2 import attach_ensemble_v2
+from services.ml_threshold_policy import resolve_ml_threshold_policy
 
 
 def _full_trading_config() -> dict:
@@ -137,6 +138,7 @@ def test_daily_pipeline_wrapper_no_longer_contains_legacy_plain_mean_body():
 
     assert "attach_ensemble_v2(pred, model_status, serving_weights, degraded_dampening, effective_cfg)" in body
     assert "rank_signal_thresholds" in body
+    assert "ml_threshold_policy" in body
     assert "ic_weight_diagnostics" in body
     assert "plain mean" not in body
     assert "weight_total > 0" not in body
@@ -568,11 +570,11 @@ def test_daily_pipeline_requires_regime_before_recommendation(monkeypatch):
         {"threshold_components": {"inputs": {"regime": "bull"}}},
     ) == "bull"
     import inspect
-    source = inspect.getsource(daily_pipeline_v2.node_recommend)
-    assert "market_regime_state missing before recommendation" in source
+    source = inspect.getsource(daily_pipeline_v2._resolve_runtime_regime_contract)
+    assert "market_regime_state missing before" in source
 
 
-def test_daily_pipeline_applies_adaptive_thresholds_to_ensemble(monkeypatch):
+def test_daily_pipeline_applies_resolved_threshold_policy_to_ensemble(monkeypatch):
     daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
     pred = {
         "stock_meta": {"market_segment": "LISTED"},
@@ -584,8 +586,39 @@ def test_daily_pipeline_applies_adaptive_thresholds_to_ensemble(monkeypatch):
             "ExtraTrees": {"status": "active", "last_ic_by_segment": {"LISTED": {"ic": 0.10}}},
         }
     }
-    adaptive = {"confidence_delta": -0.03}
+    adaptive = {
+        "confidence_delta": -0.03,
+        "computed_at": "2026-07-04T18:00:00+08:00",
+        "provenance": {
+            "schema_version": "adaptive-params-v2",
+            "computed_at": "2026-07-04T18:00:00+08:00",
+            "fallback": False,
+        },
+    }
     ev2_cfg = {"buyThreshold": 0.70, "strongBuyThreshold": 0.85}
+    threshold_policy = resolve_ml_threshold_policy(
+        run_date="2026-07-04",
+        regime_contract={"alpha_regime": "bull", "regime_surface": {"bull_market": 1.0}},
+        ev2_cfg=ev2_cfg,
+        adaptive_params=adaptive,
+        policy_snapshot={
+            "policy_id": "unit-policy",
+            "version": "v1",
+            "status": "champion",
+            "source": "unit-test",
+            "trained_until": "2026-07-03",
+            "effective_from": "2026-07-04",
+            "expires_at": "2026-07-10",
+            "delta_cap": 0.03,
+            "thresholds": {
+                "strongBuyThreshold": 0.85,
+                "buyThreshold": 0.70,
+                "sellThreshold": 0.30,
+                "strongSellThreshold": 0.15,
+            },
+            "validation_evidence": {"status": "pass"},
+        },
+    )
 
     daily_pipeline_v2._attach_ensemble_v2(
         pred,
@@ -594,11 +627,13 @@ def test_daily_pipeline_applies_adaptive_thresholds_to_ensemble(monkeypatch):
         1.0,
         ev2_cfg,
         adaptive_params=adaptive,
+        threshold_policy=threshold_policy,
     )
 
     ev2 = pred["ensemble_v2"]
     assert ev2["signal"] == "BUY"
     assert ev2["rank_signal_thresholds"]["buyThreshold"] == 0.67
+    assert ev2["ml_threshold_policy"]["policy_id"] == "unit-policy"
     assert ev2["ic_weight_scope"] == "LISTED"
 
 
@@ -711,6 +746,37 @@ def test_daily_pipeline_empty_segment_weights_do_not_cold_start_or_global_fallba
     }
     import inspect
     source = inspect.getsource(daily_pipeline_v2)
+    adaptive = {
+        "confidence_delta": 0.0,
+        "computed_at": "2026-07-04T18:00:00+08:00",
+        "provenance": {
+            "schema_version": "adaptive-params-v2",
+            "computed_at": "2026-07-04T18:00:00+08:00",
+            "fallback": False,
+        },
+    }
+    threshold_policy = resolve_ml_threshold_policy(
+        run_date="2026-07-04",
+        regime_contract={"alpha_regime": "bull", "regime_surface": {"bull_market": 1.0}},
+        ev2_cfg={},
+        adaptive_params=adaptive,
+        policy_snapshot={
+            "policy_id": "unit-policy",
+            "version": "v1",
+            "status": "champion",
+            "source": "unit-test",
+            "trained_until": "2026-07-03",
+            "effective_from": "2026-07-04",
+            "expires_at": "2026-07-10",
+            "thresholds": {
+                "strongBuyThreshold": 0.85,
+                "buyThreshold": 0.70,
+                "sellThreshold": 0.30,
+                "strongSellThreshold": 0.15,
+            },
+            "validation_evidence": {"status": "pass"},
+        },
+    )
 
     assert 'if not serving_ic["weights"] and ic_universe' not in source
     daily_pipeline_v2._attach_ensemble_v2(
@@ -719,6 +785,8 @@ def test_daily_pipeline_empty_segment_weights_do_not_cold_start_or_global_fallba
         daily_pipeline_v2._build_serving_ic_bundle(pool, "EMERGING"),
         0.1,
         {},
+        adaptive_params=adaptive,
+        threshold_policy=threshold_policy,
     )
 
     ev2 = pred["ensemble_v2"]

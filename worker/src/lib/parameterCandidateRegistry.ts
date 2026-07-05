@@ -244,6 +244,112 @@ function stringArray(value: unknown): string[] {
     : []
 }
 
+function numberValue(value: unknown): number | null {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+function passLike(value: unknown): boolean {
+  if (value === true) return true
+  const text = String(value ?? '').trim().toUpperCase()
+  return text === 'PASS' || text === 'OK' || text === 'READY' || text === 'TRUE'
+}
+
+function nestedEvidence(root: JsonRecord, snakeKey: string, camelKey: string): JsonRecord {
+  return recordValue(root[snakeKey] ?? root[camelKey])
+}
+
+export const ML_THRESHOLD_POLICY_REQUIRED_EVIDENCE = [
+  'walk_forward_oos',
+  'cpcv_pbo',
+  'regime_segments',
+  'twse_otc_segments',
+  'turnover_capacity',
+  'collapse_guard',
+] as const
+
+export function buildMlThresholdPolicyCandidateEvidence(input: {
+  candidate: JsonRecord
+  validation?: JsonRecord | null
+  source?: string
+  candidateId?: string | null
+}): JsonRecord {
+  const candidate = recordValue(input.candidate)
+  const validation = recordValue(input.validation)
+  const evidenceRoot = recordValue(
+    validation.validation_evidence ??
+    validation.evidence ??
+    candidate.validation_evidence ??
+    candidate.validationEvidence,
+  )
+  const thresholds = recordValue(candidate.thresholds ?? candidate.scoring)
+  const trainedUntil = String(candidate.trained_until ?? candidate.trainedUntil ?? '').slice(0, 10)
+  const effectiveFrom = String(candidate.effective_from ?? candidate.effectiveFrom ?? '').slice(0, 10)
+  const blockers: string[] = []
+  const checks: Record<string, boolean> = {}
+
+  if (candidate.mutates_trading_config === true || validation.mutates_trading_config === true) {
+    blockers.push('threshold_policy_candidate_must_not_mutate_trading_config')
+  }
+  for (const key of ['strongBuyThreshold', 'buyThreshold', 'sellThreshold', 'strongSellThreshold']) {
+    if (numberValue(thresholds[key]) == null) blockers.push(`threshold_missing:${key}`)
+  }
+  if (!trainedUntil || !effectiveFrom) {
+    blockers.push('threshold_policy_missing_trained_until_or_effective_from')
+  } else if (effectiveFrom <= trainedUntil) {
+    blockers.push('threshold_policy_lookahead_guard_failed')
+  }
+
+  for (const key of ML_THRESHOLD_POLICY_REQUIRED_EVIDENCE) {
+    const camel = key.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase())
+    const item = nestedEvidence(evidenceRoot, key, camel)
+    const ok = passLike(item.status ?? item.decision ?? item.pass ?? evidenceRoot[key] ?? evidenceRoot[camel])
+    checks[key] = ok
+    if (!ok) blockers.push(`validation_evidence_missing_or_failed:${key}`)
+  }
+
+  const cpcvPbo = nestedEvidence(evidenceRoot, 'cpcv_pbo', 'cpcvPbo')
+  const pbo = numberValue(cpcvPbo.pbo ?? evidenceRoot.pbo)
+  if (pbo != null && pbo >= 0.5) blockers.push('pbo_too_high')
+
+  const collapse = nestedEvidence(evidenceRoot, 'collapse_guard', 'collapseGuard')
+  if (collapse.all_hold === true || collapse.allHold === true) blockers.push('all_hold_collapse')
+  if (collapse.all_buy === true || collapse.allBuy === true) blockers.push('all_buy_collapse')
+
+  const decision = blockers.length === 0 ? 'PASS' : 'FAIL'
+  return {
+    schema_version: 'ml-threshold-policy-candidate-validation-v1',
+    source: input.source ?? 'ml_threshold_policy',
+    validator: 'threshold_policy_candidate_gate',
+    candidate_id: input.candidateId ?? candidate.policy_id ?? candidate.policyId ?? null,
+    decision,
+    validation_status: decision === 'PASS' ? 'PROMOTION_READY' : 'EVIDENCE_INSUFFICIENT',
+    mutation_policy: {
+      mutates_trading_config: false,
+      runtime_owner: 'ml_threshold_policy_resolver',
+      production_effect: false,
+    },
+    required_evidence: [...ML_THRESHOLD_POLICY_REQUIRED_EVIDENCE],
+    checks,
+    blockers,
+    validation_packet: {
+      schema_version: 'ml-threshold-policy-promotion-packet-v1',
+      decision,
+      trained_until: trainedUntil || null,
+      effective_from: effectiveFrom || null,
+      thresholds,
+      pbo,
+      collapse_guard: collapse,
+      blockers,
+    },
+    gate: {
+      decision,
+      validation_packet: { decision },
+      checks,
+    },
+  }
+}
+
 export function buildGaOptimizerPolicyValidationEvidence(input: {
   learningState: JsonRecord
   promotion: JsonRecord
@@ -265,6 +371,23 @@ export function buildGaOptimizerPolicyValidationEvidence(input: {
     learningState.bestAlphaFramework ??
     bestCandidateParams.alphaFramework,
   )
+  const thresholdPolicyCandidate = recordValue(
+    learningState.best_threshold_policy ??
+    learningState.bestThresholdPolicy ??
+    learningState.ml_threshold_policy ??
+    best.threshold_policy ??
+    best.thresholdPolicy ??
+    bestCandidateParams.mlThresholdPolicy ??
+    bestCandidateParams.ml_threshold_policy,
+  )
+  const thresholdPolicyValidation = Object.keys(thresholdPolicyCandidate).length > 0
+    ? buildMlThresholdPolicyCandidateEvidence({
+      candidate: thresholdPolicyCandidate,
+      validation: recordValue(thresholdPolicyCandidate.validation_evidence ?? thresholdPolicyCandidate.validationEvidence),
+      source: 'ga_optimizer',
+      candidateId: input.candidateId ?? null,
+    })
+    : null
   const missingEvidence = stringArray(promotion.missingEvidence)
   const level = String(promotion.level ?? '').trim() || 'L0'
   const nextLevel = String(promotion.nextLevel ?? '').trim() || null
@@ -285,6 +408,7 @@ export function buildGaOptimizerPolicyValidationEvidence(input: {
     checks.pbo_mc_cost_governance &&
     checks.kv_readback &&
     missingEvidence.length === 0 &&
+    (!thresholdPolicyValidation || thresholdPolicyValidation.decision === 'PASS') &&
     ['L3', 'L4'].includes(String(targetLevel))
 
   return {
@@ -316,6 +440,7 @@ export function buildGaOptimizerPolicyValidationEvidence(input: {
       },
       checks,
       missing_evidence: missingEvidence,
+      threshold_policy_candidate: thresholdPolicyValidation,
       blocked_reason: pass ? null : 'ga_policy_packet_evidence_incomplete',
     },
     gate: {

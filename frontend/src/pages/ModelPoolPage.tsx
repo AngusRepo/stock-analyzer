@@ -10,12 +10,17 @@ import {
   WorkstationPill,
   type WorkstationTone,
 } from '@/components/workstation/WorkstationChrome'
+import {
+  ApprovalReviewPanel,
+  type ApprovalReviewGate,
+  type ApprovalReviewImpact,
+  type ApprovalReviewMetric,
+} from '@/components/workstation/ApprovalReviewPanel'
 import { Button } from '@/components/ui/button'
 import {
   modelPoolApi,
   type ModelArtifactCompare,
   strategyLabApi,
-  type ModelArtifactActionContext,
   type ModelArtifactPromotionControllerResponse,
   type ModelArtifactPromotionQueueResponse,
   type ModelArtifactSelectionResponse,
@@ -112,70 +117,9 @@ function artifactCompareTone(compare?: ModelArtifactCompare): WorkstationTone {
   return 'neutral'
 }
 
-function ArtifactDeltaGrid({
-  compare,
-  context,
-}: {
-  compare?: ModelArtifactCompare
-  context?: ModelArtifactActionContext
-}) {
-  const rootCause = context?.root_cause ?? compare?.metric_status ?? 'pending'
-  const liveRootCause = rootCause === 'live_shadow_not_started'
-    ? 'live shadow not started'
-    : humanizeGovernanceToken(rootCause)
-  return (
-    <div className="mt-3 grid gap-2 text-[11px] text-[#9aa6bd] md:grid-cols-4">
-      <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-        <p className="sv-num text-[#70809b]">Candidate OOS</p>
-        <p className="mt-1 sv-num text-slate-100">{governanceMetric(compare?.candidate_oos_ic)}</p>
-      </div>
-      <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-        <p className="sv-num text-[#70809b]">Champion OOS</p>
-        <p className="mt-1 sv-num text-slate-100">{governanceMetric(compare?.champion_oos_ic)}</p>
-      </div>
-      <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-        <p className="sv-num text-[#70809b]">Delta</p>
-        <p className={`mt-1 sv-num ${artifactCompareTone(compare) === 'ok' ? 'text-emerald-200' : artifactCompareTone(compare) === 'error' ? 'text-rose-200' : 'text-amber-200'}`}>
-          {signedGovernanceMetric(compare?.oos_ic_delta)}
-        </p>
-      </div>
-      <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-        <p className="sv-num text-[#70809b]">Root cause</p>
-        <p className="mt-1 text-slate-100">{liveRootCause}</p>
-      </div>
-    </div>
-  )
-}
-
 function humanizeGovernanceToken(value: string | null | undefined): string {
   const text = String(value ?? '').trim()
   return text ? text.replace(/[_-]+/g, ' ') : 'pending'
-}
-
-function ActionContextNote({ context }: { context?: ModelArtifactActionContext }) {
-  if (!context) return null
-  const blockers = Array.isArray(context.blockers) ? context.blockers : []
-  return (
-    <div className="mt-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-[11px] leading-5 text-[#8a92a6]">
-      <div className="sv-num text-amber-200">root: {context.root_cause}</div>
-      <div>impact: {context.impact}</div>
-      <div>next: {context.next_action}</div>
-      {context.scheduler_dependency?.length ? (
-        <div className="mt-1 text-sky-200">needs: {context.scheduler_dependency.join(' -> ')}</div>
-      ) : null}
-      {blockers.length > 0 && (
-        <div className="mt-2 space-y-1 rounded-lg border border-amber-400/20 bg-amber-400/[0.04] p-2">
-          <div className="sv-num text-amber-200">blockers</div>
-          {blockers.slice(0, 5).map((blocker) => (
-            <div key={blocker.code} className="border-l border-amber-300/30 pl-2">
-              <div className="font-semibold text-slate-100">{blocker.label}</div>
-              <div className="text-[#9aa7bd]">{blocker.next_action}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
 }
 
 function PromotionControllerResultPanel({ result }: { result: ModelArtifactPromotionControllerResponse }) {
@@ -243,65 +187,149 @@ function PromotionQueuePanelV2({
         {rows.length ? rows.map((row) => {
           const blockers = Array.isArray(row.blockers) ? row.blockers : []
           const isBlocked = String(row.promotion_decision ?? '').includes('blocked') || blockers.length > 0
+          const compare = row.artifact_compare
+          const context = row.action_context
+          const offlineStatus = String(row.offline_gate_decision ?? '').toLowerCase()
+          const liveStatus = String(row.live_gate_status ?? '').toLowerCase()
+          const finalCompareReady = Boolean(row.final_compared_to)
+          const approvalTone: WorkstationTone = isBlocked ? 'error' : row.approval_required ? 'warn' : row.promotion_decision === 'auto_promote_candidate' ? 'ok' : 'info'
+          const reviewMetrics: ApprovalReviewMetric[] = [
+            {
+              label: 'OOS IC',
+              candidate: governanceMetric(compare?.candidate_oos_ic),
+              champion: governanceMetric(compare?.champion_oos_ic),
+              delta: signedGovernanceMetric(compare?.oos_ic_delta),
+              detail: compare?.metric_status ?? 'candidate minus current champion',
+              tone: artifactCompareTone(compare),
+            },
+            {
+              label: 'Offline / live gate',
+              value: `${row.offline_gate_decision ?? '-'} / ${row.live_gate_status ?? '-'}`,
+              detail: 'offline gate 與 live gate 必須同時可解釋；缺任一邊不應直接 promote。',
+              tone: offlineStatus.includes('pass') && (liveStatus.includes('pass') || liveStatus.includes('ok')) ? 'ok' : 'warn',
+            },
+            {
+              label: 'Final compare',
+              value: row.final_compared_to ?? 'pending',
+              detail: 'promotion 前必須知道候選 artifact 是跟哪個 current champion 比。',
+              tone: finalCompareReady ? 'ok' : 'warn',
+            },
+            {
+              label: 'Candidate type',
+              value: row.candidate_type,
+              detail: `state ${row.state}`,
+              tone: row.candidate_type === 'weekly_drift' || row.approval_required ? 'warn' : 'info',
+            },
+          ]
+          const reviewGates: ApprovalReviewGate[] = [
+            {
+              label: 'Offline evidence',
+              status: offlineStatus.includes('pass') || offlineStatus.includes('allow') ? 'pass' : offlineStatus ? 'warn' : 'missing',
+              detail: row.offline_gate_decision ?? 'offline gate missing',
+            },
+            {
+              label: 'Live evidence',
+              status: liveStatus.includes('pass') || liveStatus.includes('ok') ? 'pass' : liveStatus ? 'warn' : 'missing',
+              detail: row.live_gate_status ?? 'live gate missing',
+            },
+            {
+              label: 'Candidate vs champion compare',
+              status: finalCompareReady ? 'pass' : 'missing',
+              detail: row.final_compared_to ?? 'final compare not linked to champion pointer',
+            },
+            {
+              label: 'Approval boundary',
+              status: row.approval_required ? 'warn' : 'pass',
+              detail: row.approval_required ? '此列需要 Wei approval 才能 promote pointer。' : '此列可走 auto promote，但仍需 final compare 可讀。',
+            },
+            ...blockers.slice(0, 4).map((blocker) => ({
+              label: blocker.label ?? blocker.code,
+              status: 'fail' as const,
+              detail: blocker.next_action,
+            })),
+          ]
+          const reviewImpacts: ApprovalReviewImpact[] = [
+            {
+              label: 'Pointer owner',
+              value: 'model_champion_pointers',
+              detail: `model ${row.model_name}`,
+              tone: 'info',
+            },
+            {
+              label: 'Candidate artifact',
+              value: row.artifact_id ?? 'artifact N/A',
+              detail: row.candidate_version ?? 'candidate version N/A',
+              tone: row.artifact_id ? 'ok' : 'warn',
+            },
+            {
+              label: 'Downstream',
+              value: context?.affected_downstream?.join(' / ') || 'L3 model serving',
+              detail: context?.impact ?? 'promotion changes production model artifact pointer only after controller approval.',
+              tone: row.approval_required ? 'warn' : 'info',
+            },
+          ]
           return (
-            <div key={row.artifact_id ?? `${row.model_name}-${row.candidate_version}`} className="rounded-xl border border-[#263247] bg-[#070a10] p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="sv-num text-[12px] font-semibold text-slate-100">{row.model_name}</p>
-                  <p className="mt-1 sv-num text-[11px] text-[#70809b]">
-                    {row.current_champion_version ?? 'champion N/A'} -&gt; {row.candidate_version ?? 'candidate N/A'}
-                  </p>
-                </div>
-                <WorkstationPill tone={row.promotion_decision === 'auto_promote_candidate' ? 'ok' : row.approval_required ? 'warn' : isBlocked ? 'error' : 'info'}>
-                  {row.promotion_decision}
-                </WorkstationPill>
-              </div>
-              <div className="mt-3 grid gap-2 text-[11px] text-[#9aa6bd] md:grid-cols-2">
-                <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-                  <p className="sv-num text-[#70809b]">offline / live</p>
-                  <p className="mt-1 text-slate-200">{row.offline_gate_decision ?? '-'} / {row.live_gate_status ?? '-'}</p>
-                </div>
-                <div className="rounded-lg border border-[#263247] bg-[#05070c] p-2">
-                  <p className="sv-num text-[#70809b]">final compared to</p>
-                  <p className="mt-1 text-slate-200">{row.final_compared_to ?? 'pending champion pointer'}</p>
-                </div>
-              </div>
-              <ArtifactDeltaGrid compare={row.artifact_compare} context={row.action_context} />
-              <p className="mt-3 text-[12px] leading-5 text-slate-300">{row.next_action}</p>
-              <ActionContextNote context={row.action_context} />
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!row.artifact_id || isPromoting || isBlocked}
-                  className="rounded-full border-emerald-400/30 text-emerald-200 hover:bg-emerald-400/10"
-                  onClick={() => row.artifact_id && onPromote(row.artifact_id, false, false)}
-                >
-                  Final compare dry-run
-                </Button>
-                {row.approval_required ? (
+            <ApprovalReviewPanel
+              key={row.artifact_id ?? `${row.model_name}-${row.candidate_version}`}
+              title={`${row.model_name} artifact promotion`}
+              kicker="model artifact / champion pointer approval"
+              status={row.promotion_decision}
+              statusTone={approvalTone}
+              candidate={
+                <>
+                  <div>{row.candidate_version ?? 'candidate N/A'}</div>
+                  <div>{row.artifact_id ?? 'artifact N/A'}</div>
+                  <div>{row.candidate_type} / {row.state}</div>
+                </>
+              }
+              champion={
+                <>
+                  <div>{row.current_champion_version ?? 'champion N/A'}</div>
+                  <div>baseline {row.evaluation_baseline_version ?? 'N/A'}</div>
+                  <div>final compared to {row.final_compared_to ?? 'pending'}</div>
+                </>
+              }
+              summary={row.next_action}
+              metrics={reviewMetrics}
+              gates={reviewGates}
+              impacts={reviewImpacts}
+              blockers={blockers.map((blocker) => `${blocker.label ?? blocker.code}: ${blocker.next_action}`)}
+              nextAction={context?.next_action ?? row.next_action}
+              actions={
+                <>
                   <Button
                     size="sm"
                     variant="outline"
                     disabled={!row.artifact_id || isPromoting || isBlocked}
-                    className="rounded-full border-amber-400/30 text-amber-200 hover:bg-amber-400/10"
-                    onClick={() => row.artifact_id && onPromote(row.artifact_id, true, true)}
+                    className="rounded-full border-emerald-400/30 text-emerald-200 hover:bg-emerald-400/10"
+                    onClick={() => row.artifact_id && onPromote(row.artifact_id, false, false)}
                   >
-                    Wei approve + promote pointer
+                    Final compare dry-run
                   </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!row.artifact_id || isPromoting || isBlocked}
-                    className="rounded-full border-sky-400/30 text-sky-200 hover:bg-sky-400/10"
-                    onClick={() => row.artifact_id && onPromote(row.artifact_id, false, true)}
-                  >
-                    Auto promote pointer
-                  </Button>
-                )}
-              </div>
-            </div>
+                  {row.approval_required ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!row.artifact_id || isPromoting || isBlocked}
+                      className="rounded-full border-amber-400/30 text-amber-200 hover:bg-amber-400/10"
+                      onClick={() => row.artifact_id && onPromote(row.artifact_id, true, true)}
+                    >
+                      Wei approve + promote pointer
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!row.artifact_id || isPromoting || isBlocked}
+                      className="rounded-full border-sky-400/30 text-sky-200 hover:bg-sky-400/10"
+                      onClick={() => row.artifact_id && onPromote(row.artifact_id, false, true)}
+                    >
+                      Auto promote pointer
+                    </Button>
+                  )}
+                </>
+              }
+            />
           )
         }) : (
           <div className="rounded-xl border border-[#263247] bg-[#070a10] p-3 text-sm text-[#8a92a6] lg:col-span-2">

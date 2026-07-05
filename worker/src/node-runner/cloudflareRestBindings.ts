@@ -1,3 +1,5 @@
+import { allocatorContractGuardEnabled } from './allocatorContractGuard'
+
 type D1RestResponse = {
   success?: boolean
   result?: Array<{
@@ -44,14 +46,6 @@ function retryDelayMs(attempt: number): number {
   return Math.min(500 * (2 ** attempt), 4000) + Math.floor(Math.random() * 250)
 }
 
-function envTruthy(name: string): boolean {
-  return ['1', 'true', 'yes', 'on'].includes((process.env[name] ?? '').trim().toLowerCase())
-}
-
-function sizingCanaryEnabled(): boolean {
-  return envTruthy('STOCKVISION_SIZING_CANARY')
-}
-
 function firstSqlToken(sql: string): string {
   return sql.trim().replace(/^--.*(?:\r?\n|$)/, '').trim().split(/\s+/, 1)[0]?.toLowerCase() ?? ''
 }
@@ -70,7 +64,7 @@ function noopD1Result<T>(changes = 1): D1Result<T> {
       rows_written: changes,
       duration: 0,
       timings: { sql_duration_ms: 0 },
-      sizing_canary_noop: true,
+      allocator_contract_noop: true,
     },
   }
 }
@@ -158,8 +152,8 @@ export class RestD1Database implements D1Database {
 
   async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
     if (!statements.length) return []
-    if (sizingCanaryEnabled()) {
-      console.warn(`[SizingCanary] D1 batch() no-op statements=${statements.length}`)
+    if (allocatorContractGuardEnabled()) {
+      console.warn(`[AllocatorContractGuard] D1 batch() no-op statements=${statements.length}`)
       return statements.map(() => noopD1Result<T>(1))
     }
     const chunkSize = Math.max(1, Math.min(optionalIntEnv('SCREENER_D1_RAW_BATCH_SIZE', 250), 500))
@@ -199,8 +193,8 @@ export class RestD1Database implements D1Database {
   }
 
   async execute<T = unknown>(sql: string, params: unknown[]): Promise<D1Result<T>> {
-    if (sizingCanaryEnabled() && isMutatingSql(sql)) {
-      console.warn(`[SizingCanary] D1 execute() no-op op=${firstSqlToken(sql)}`)
+    if (allocatorContractGuardEnabled() && isMutatingSql(sql)) {
+      console.warn(`[AllocatorContractGuard] D1 execute() no-op op=${firstSqlToken(sql)}`)
       return noopD1Result<T>(1)
     }
     const data = await this.postQuery({ sql, params })
@@ -284,8 +278,8 @@ export class RestKVNamespace implements KVNamespace {
     value: string | ArrayBuffer | ReadableStream,
     options?: { expirationTtl?: number; expiration?: number; metadata?: unknown },
   ): Promise<void> {
-    if (sizingCanaryEnabled()) {
-      console.warn(`[SizingCanary] KV put() no-op key=${key}`)
+    if (allocatorContractGuardEnabled()) {
+      console.warn(`[AllocatorContractGuard] KV put() no-op key=${key}`)
       return
     }
     const params = new URLSearchParams()
@@ -305,8 +299,8 @@ export class RestKVNamespace implements KVNamespace {
   }
 
   async delete(key: string): Promise<void> {
-    if (sizingCanaryEnabled()) {
-      console.warn(`[SizingCanary] KV delete() no-op key=${key}`)
+    if (allocatorContractGuardEnabled()) {
+      console.warn(`[AllocatorContractGuard] KV delete() no-op key=${key}`)
       return
     }
     const res = await fetchWithRetry(`${this.baseUrl}/values/${encodeURIComponent(key)}`, {

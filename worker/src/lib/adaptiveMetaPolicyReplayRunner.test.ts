@@ -101,7 +101,7 @@ void (async () => {
             TabM: 0.85,
           },
         },
-        gates: [{ name: 'min_windows', passed: true }],
+        gates: [{ name: 'min_windows', passed: false }],
       }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }) as typeof fetch
 
@@ -128,6 +128,8 @@ void (async () => {
       assert(result.real_trading_allowed === false, 'replay must be marked real-trading forbidden')
       assert(result.allocator_policy_candidate?.status === 'candidate_requires_approval', 'adaptive replay evidence must preserve allocator policy candidate packet')
       assert(result.summary.includes('allocator_candidate=candidate_requires_approval'), 'summary must expose allocator candidate status for OBS triage')
+      assert(result.summary.includes('failed_gates=min_windows'), 'summary must expose failed gates for OBS triage')
+      assert(result.gate_report.failed_gates.includes('min_windows'), 'persisted evidence must normalize failed gates')
       assert(writes.some((row) => row.key === 'meta:adaptive_policy_replay:latest'), 'persisted replay must write latest evidence key')
       assert(writes.some((row) => row.key === 'meta:adaptive_policy_replay:2026-06-08'), 'persisted replay must write date evidence key')
       assert(writes.every((row) => row.key.startsWith('meta:adaptive_policy_replay:')), 'adaptive replay must only persist evidence keys')

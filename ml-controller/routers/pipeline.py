@@ -23,6 +23,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+from services.allocator_contract_guard import allocator_contract_guard_enabled
 from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
 
 logger = logging.getLogger(__name__)
@@ -57,9 +58,9 @@ async def _callback_worker(
     payload: dict, client: httpx.AsyncClient | None = None
 ) -> None:
     """POST to Worker /api/admin/scheduler-callback and fail if closure is not durable."""
-    if _env_truthy("STOCKVISION_NOOP_CALLBACK") or _env_truthy("STOCKVISION_SIZING_CANARY"):
+    if _env_truthy("STOCKVISION_NOOP_CALLBACK") or allocator_contract_guard_enabled():
         logger.warning(
-            "[SizingCanary] Worker callback no-op task=%s run_id=%s status=%s",
+            "[AllocatorContractGuard] Worker callback no-op task=%s run_id=%s status=%s",
             payload.get("task"),
             payload.get("run_id"),
             payload.get("status"),

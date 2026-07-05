@@ -171,9 +171,15 @@ export async function listAdaptiveMetaPolicyReplayRows(
 }
 
 function replaySummary(report: Record<string, any>, sourceRows: number): string {
+  const failedGates = Array.isArray(report.failed_gates)
+    ? report.failed_gates.map(String).filter(Boolean)
+    : Array.isArray(report.gates)
+      ? report.gates.filter((gate: any) => gate && gate.passed === false).map((gate: any) => String(gate.name ?? 'unknown_gate'))
+      : []
   const gates = Array.isArray(report.gates)
     ? report.gates.map((gate: any) => `${gate.name}:${gate.passed ? 'pass' : 'fail'}`).join(',')
     : 'gates=missing'
+  const bestDelta = report.best_delta ?? report.best_reward_delta ?? report.candidate_delta ?? report.delta
   return [
     `adaptive_meta_replay status=${report.status ?? 'unknown'}`,
     `allowed_use=${report.allowed_use ?? 'unknown'}`,
@@ -182,8 +188,10 @@ function replaySummary(report: Record<string, any>, sourceRows: number): string 
     `recommended=${report.recommended_method ?? 'none'}`,
     `source_rows=${sourceRows}`,
     `windows=${report.sample_windows ?? 0}`,
+    `failed_gates=${failedGates.length ? failedGates.join(',') : 'none'}`,
+    bestDelta != null ? `best_delta=${bestDelta}` : null,
     `gates=${gates}`,
-  ].join(' ')
+  ].filter(Boolean).join(' ')
 }
 
 export async function runAdaptiveMetaPolicyReplay(
@@ -220,8 +228,24 @@ export async function runAdaptiveMetaPolicyReplay(
   }
 
   const report = await response.json() as Record<string, any>
+  const failedGates = Array.isArray(report.failed_gates)
+    ? report.failed_gates.map(String).filter(Boolean)
+    : Array.isArray(report.gates)
+      ? report.gates.filter((gate: any) => gate && gate.passed === false).map((gate: any) => String(gate.name ?? 'unknown_gate'))
+      : []
   const evidence = {
     ...report,
+    failed_gates: failedGates,
+    gate_report: {
+      failed_gates: failedGates,
+      gates: Array.isArray(report.gates) ? report.gates : [],
+      allowed_use: report.allowed_use ?? 'unknown',
+      status: report.status ?? 'unknown',
+      best_ranked_method: report.best_ranked_method ?? null,
+      recommended_method: report.recommended_method ?? null,
+      sample_windows: report.sample_windows ?? 0,
+      candidate_delta: report.best_delta ?? report.best_reward_delta ?? report.candidate_delta ?? report.delta ?? null,
+    },
     production_effect: false,
     mutation_allowed: false,
     real_trading_allowed: false,

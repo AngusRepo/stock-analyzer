@@ -14,6 +14,7 @@ export type ObservabilityDomain =
   | 'model_pool'
   | 'validation'
   | 'adaptive_meta'
+  | 'ml_threshold_policy'
   | 'owner_boundary'
 
 const OBSERVABILITY_SEVERITIES: ObservabilitySeverity[] = ['ok', 'info', 'warn', 'error']
@@ -24,6 +25,7 @@ const OBSERVABILITY_DOMAINS: ObservabilityDomain[] = [
   'model_pool',
   'validation',
   'adaptive_meta',
+  'ml_threshold_policy',
   'owner_boundary',
 ]
 
@@ -663,6 +665,86 @@ export function buildEventsFromAdaptiveMeta(input: {
   }]
 }
 
+export function buildEventsFromMlThresholdPolicy(input: {
+  generatedAt: string
+  policy?: Record<string, unknown> | null
+  sampleCount?: number
+  sourceError?: string
+}): ObservabilityEvent[] {
+  if (input.sourceError) {
+    return [{
+      id: eventId('ml_threshold_policy', 'runtime_policy', 'unavailable'),
+      ts: input.generatedAt,
+      severity: 'warn',
+      domain: 'ml_threshold_policy',
+      source: 'predictions.forecast_data',
+      status: 'unavailable',
+      title: 'ML threshold policy unavailable',
+      summary: 'OBS could not read runtime threshold policy evidence from predictions.',
+      owner: 'ML Runtime',
+      impact: 'BUY/HOLD/SELL threshold provenance is not observable for the latest pipeline run.',
+      next_action: 'Check predictions.forecast_data.ensemble_v2.ml_threshold_policy after daily pipeline completes.',
+      runbook: 'ML threshold policy runtime contract',
+      evidence: { error: input.sourceError },
+    }]
+  }
+
+  const policy = input.policy
+  if (!policy) {
+    return [{
+      id: eventId('ml_threshold_policy', 'runtime_policy', 'missing'),
+      ts: input.generatedAt,
+      severity: 'warn',
+      domain: 'ml_threshold_policy',
+      source: 'predictions.forecast_data',
+      status: 'missing',
+      title: 'ML threshold policy missing',
+      summary: 'Latest predictions do not expose ensemble_v2.ml_threshold_policy evidence.',
+      owner: 'ML Runtime',
+      impact: 'Runtime may still be using legacy threshold wiring or the daily pipeline has not completed.',
+      next_action: 'Rerun daily pipeline after ml_threshold_policy resolver deploy, then verify forecast_data provenance.',
+      runbook: 'ML threshold policy runtime contract',
+      evidence: { sample_count: input.sampleCount ?? 0 },
+    }]
+  }
+
+  const status = String(policy.status ?? 'unknown')
+  const source = String(policy.source ?? 'unknown')
+  const overlay = policy.adaptive_overlay && typeof policy.adaptive_overlay === 'object'
+    ? policy.adaptive_overlay as Record<string, unknown>
+    : {}
+  const validation = policy.validation_evidence && typeof policy.validation_evidence === 'object'
+    ? policy.validation_evidence as Record<string, unknown>
+    : {}
+  const thresholds = policy.thresholds && typeof policy.thresholds === 'object'
+    ? policy.thresholds as Record<string, unknown>
+    : {}
+  const bootstrap = String(validation.status ?? '').includes('bootstrap') || source.includes('bootstrap')
+  const severity: ObservabilitySeverity = bootstrap || status === 'unknown' ? 'warn' : 'ok'
+  return [{
+    id: eventId('ml_threshold_policy', 'runtime_policy', String(policy.policy_id ?? 'unknown')),
+    ts: input.generatedAt,
+    severity,
+    domain: 'ml_threshold_policy',
+    source: 'predictions.forecast_data',
+    status: bootstrap ? 'bootstrap_compat' : status,
+    title: 'ML threshold policy',
+    summary: `policy=${String(policy.policy_id ?? 'unknown')} regime=${String(policy.selected_regime ?? 'unknown')} buy=${String(thresholds.buyThreshold ?? '-')} sell=${String(thresholds.sellThreshold ?? '-')} overlay=${String(overlay.applied_delta ?? '-')}.`,
+    owner: 'ML Runtime',
+    impact: bootstrap
+      ? 'Runtime is observable, but still using bootstrap compatibility until ml:threshold_policy:champion is seeded.'
+      : 'BUY/HOLD/SELL classification uses a resolved threshold policy with capped adaptive overlay.',
+    next_action: bootstrap
+      ? 'Seed/promote ml:threshold_policy:champion after validation evidence is available.'
+      : 'Keep policy freshness, validation evidence, and adaptive as-of guards green.',
+    runbook: 'ML threshold policy runtime contract',
+    evidence: {
+      sample_count: input.sampleCount ?? 0,
+      policy,
+    },
+  }]
+}
+
 export function buildEventsFromGaOptimizer(input: {
   generatedAt: string
   state?: Record<string, unknown> | null
@@ -802,6 +884,9 @@ export function buildObservabilityEventReport(input: {
   validationError?: string
   adaptiveParams?: Record<string, unknown>
   adaptiveError?: string
+  mlThresholdPolicy?: Record<string, unknown>
+  mlThresholdPolicySampleCount?: number
+  mlThresholdPolicyError?: string
   gaOptimizerState?: Record<string, unknown> | null
   gaOptimizerError?: string
 }): ObservabilityEventReport {
@@ -827,6 +912,12 @@ export function buildObservabilityEventReport(input: {
       generatedAt: input.generatedAt,
       params: input.adaptiveParams,
       sourceError: input.adaptiveError,
+    }),
+    ...buildEventsFromMlThresholdPolicy({
+      generatedAt: input.generatedAt,
+      policy: input.mlThresholdPolicy,
+      sampleCount: input.mlThresholdPolicySampleCount,
+      sourceError: input.mlThresholdPolicyError,
     }),
     ...buildEventsFromGaOptimizer({
       generatedAt: input.generatedAt,
@@ -946,11 +1037,46 @@ function mergeLinUcbLedgerEvidence(
   }
 }
 
+async function readLatestMlThresholdPolicyEvidence(env: Bindings, date: string): Promise<{
+  policy?: Record<string, unknown> | null
+  sampleCount: number
+  error?: string
+}> {
+  try {
+    const { results } = await env.DB.prepare(`
+      SELECT forecast_data
+        FROM predictions
+       WHERE COALESCE(prediction_date, substr(generated_at, 1, 10)) = ?
+         AND lower(model_name) IN ('ensemble', 'ensemble_v2')
+         AND forecast_data IS NOT NULL
+         AND forecast_data LIKE '%ml_threshold_policy%'
+       ORDER BY generated_at DESC, id DESC
+       LIMIT 80
+    `).bind(date).all<Record<string, unknown>>()
+    const rows = results ?? []
+    for (const row of rows) {
+      const forecast = safeJsonParse(row.forecast_data)
+      const ev2 = forecast.ensemble_v2 && typeof forecast.ensemble_v2 === 'object' && !Array.isArray(forecast.ensemble_v2)
+        ? forecast.ensemble_v2 as Record<string, unknown>
+        : {}
+      const policy = ev2.ml_threshold_policy && typeof ev2.ml_threshold_policy === 'object' && !Array.isArray(ev2.ml_threshold_policy)
+        ? ev2.ml_threshold_policy as Record<string, unknown>
+        : null
+      if (policy) {
+        return { policy, sampleCount: rows.length }
+      }
+    }
+    return { policy: null, sampleCount: rows.length }
+  } catch (error) {
+    return { policy: null, sampleCount: 0, error: String(error) }
+  }
+}
+
 export async function buildLiveObservabilityEventReport(env: Bindings, options: { date?: string; live?: boolean } = {}) {
   const date = options.date ?? twToday()
   const generatedAt = new Date().toISOString()
 
-  const [scheduler, dataQuality, deployGate, modelPoolResult, validationResult, adaptiveResult, gaOptimizerResult, linucbLedgerSummary] = await Promise.all([
+  const [scheduler, dataQuality, deployGate, modelPoolResult, validationResult, adaptiveResult, gaOptimizerResult, linucbLedgerSummary, thresholdPolicyResult] = await Promise.all([
     getSchedulerStatus(env).catch((error: unknown) => ({ error: String(error), jobs: [] })),
     buildDataQualityReport(env, { date }).catch((error: unknown) => ({
       overall: 'fail' as const,
@@ -982,6 +1108,7 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
       .then((state) => ({ state: state as Record<string, unknown> | null }))
       .catch((error: unknown) => ({ error: String(error) })),
     readLinUcbLedgerSummary(env),
+    readLatestMlThresholdPolicyEvidence(env, date),
   ])
 
   const modelPoolPayload = 'payload' in modelPoolResult ? modelPoolResult.payload : undefined
@@ -1001,6 +1128,9 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
     validationError: validationResult.error,
     adaptiveParams: 'params' in adaptiveResult ? mergeLinUcbLedgerEvidence(adaptiveResult.params, linucbLedgerSummary) : undefined,
     adaptiveError: 'error' in adaptiveResult ? adaptiveResult.error : undefined,
+    mlThresholdPolicy: thresholdPolicyResult.policy ?? undefined,
+    mlThresholdPolicySampleCount: thresholdPolicyResult.sampleCount,
+    mlThresholdPolicyError: thresholdPolicyResult.error,
     gaOptimizerState: 'state' in gaOptimizerResult ? gaOptimizerResult.state : undefined,
     gaOptimizerError: 'error' in gaOptimizerResult ? gaOptimizerResult.error : undefined,
   })

@@ -50,6 +50,7 @@ export {
   runWeeklyOptunaResearch,
   runWeeklyPBO,
   runWeeklyValidationChain,
+  runWeeklyDriftDetection,
   runWeeklyDriftRetrain,
   runWeeklyRetrain,
   summarizeWeeklyValidationChain,

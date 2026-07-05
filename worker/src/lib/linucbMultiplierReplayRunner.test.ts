@@ -110,6 +110,8 @@ void (async () => {
     assert(result.allocator_policy_candidate?.candidate_type === 'linucb_model_learning_weight_multipliers', 'LinUCB replay must preserve allocator learning-weight candidate packet')
     assert(result.summary.includes('adaptive_candidate=candidate_requires_approval'), 'summary must expose candidate status for OBS triage')
     assert(result.summary.includes('allocator_candidate=candidate_requires_approval'), 'summary must expose allocator learning candidate status for OBS triage')
+    assert(result.summary.includes('failed_gates=min_decisions'), 'summary must expose failed gates for OBS triage')
+    assert(result.gate_report.failed_gates.includes('min_decisions'), 'persisted evidence must normalize failed gates')
     assert(writes.some((row) => row.key === 'meta:linucb_multiplier_replay:latest'), 'persisted replay must write latest evidence key')
     assert(writes.some((row) => row.key === 'meta:linucb_multiplier_replay:2026-06-08'), 'persisted replay must write date evidence key')
     assert(writes.every((row) => row.key.startsWith('meta:linucb_multiplier_replay:')), 'LinUCB multiplier replay must only persist evidence keys')

@@ -52,6 +52,11 @@ from services.market_regime_state import (
     build_market_regime_contract_from_market_env,
     resolve_market_regime_contract,
 )
+from services.ml_threshold_policy import (
+    ThresholdPolicyError,
+    load_threshold_policy_snapshot,
+    resolve_ml_threshold_policy,
+)
 from services.prediction_dispersion import build_prediction_dispersion_report
 from services.screener_sizing_policy import resolve_controller_screener_sizing
 from services.state_space_series import (
@@ -1201,6 +1206,30 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     used_pool = serving_used_pool
     pool = serving_pool
     if used_pool:
+        regime_contract = _resolve_runtime_regime_contract(state, scope="ml_threshold_policy")
+        try:
+            policy_snapshot = load_threshold_policy_snapshot(
+                kv_reader=kv_client,
+                trading_config=state.get("trading_config") or {},
+                ev2_cfg=ev2_cfg,
+                run_date=state["run_date"],
+            )
+            threshold_policy = resolve_ml_threshold_policy(
+                run_date=state["run_date"],
+                regime_contract=regime_contract,
+                ev2_cfg=ev2_cfg,
+                adaptive_params=state.get("adaptive_params") or {},
+                policy_snapshot=policy_snapshot,
+            )
+        except ThresholdPolicyError as exc:
+            raise RuntimeError(f"ml_threshold_policy_unavailable: {exc}") from exc
+        logger.info(
+            "[Pipeline V2] ML threshold policy resolved: policy_id=%s version=%s regime=%s hash=%s",
+            threshold_policy.policy_id,
+            threshold_policy.version,
+            threshold_policy.selected_regime,
+            threshold_policy.evidence_hash,
+        )
         for sym, r in pred_map.items():
             try:
                 serving_ic = _build_serving_ic_bundle(pool, _prediction_market_segment(r), ev2_cfg)
@@ -1211,6 +1240,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                     degraded_dampening,
                     ev2_cfg,
                     adaptive_params=state.get("adaptive_params") or {},
+                    threshold_policy=threshold_policy,
                 )
             except Exception as e:
                 logger.debug(f"[Pipeline V2] ensemble_v2 merge failed for {sym}: {e}")
@@ -2007,6 +2037,27 @@ def _resolve_alpha_regime_label(
     return "unknown"
 
 
+def _resolve_runtime_regime_contract(state: dict[str, Any], *, scope: str) -> dict[str, Any]:
+    regime_contract = resolve_market_regime_contract(kv_client)
+    if regime_contract.get("missing"):
+        regime_contract = build_market_regime_contract_from_market_env(
+            state.get("market_env"),
+            run_date=state.get("run_date"),
+        )
+        logger.warning(
+            "[Pipeline V2] market_regime_state missing in KV; using %s for run_date=%s scope=%s",
+            regime_contract.get("source"),
+            state.get("run_date"),
+            scope,
+        )
+    regime_label = str(regime_contract.get("alpha_regime") or "unknown")
+    if regime_contract.get("missing") or regime_label == "unknown":
+        raise RuntimeError(
+            f"market_regime_state missing before {scope}; run regime-compute before pipeline"
+        )
+    return regime_contract
+
+
 def _rank_signal_thresholds(ev2_cfg: dict | None, adaptive_params: dict | None = None) -> dict[str, float]:
     cfg = ev2_cfg or {}
     delta, _meta = _adaptive_threshold_delta(adaptive_params)
@@ -2193,12 +2244,14 @@ def _attach_ensemble_v2(
     ev2_cfg: dict | None = None,
     *,
     adaptive_params: dict | None = None,
+    threshold_policy: Any | None = None,
 ) -> None:
     bundle = ic_weights if isinstance(ic_weights, dict) and "weights" in ic_weights else None
     serving_weights = bundle.get("weights", {}) if bundle else ic_weights
-    thresholds = _rank_signal_thresholds(ev2_cfg, adaptive_params)
-    adaptive_threshold_delta, adaptive_threshold_meta = _adaptive_threshold_delta(adaptive_params)
-    effective_cfg = {**(ev2_cfg or {}), **thresholds}
+    if threshold_policy is None:
+        raise RuntimeError("ml_threshold_policy must be resolved before ensemble_v2 attach")
+    thresholds = dict(threshold_policy.thresholds)
+    effective_cfg = threshold_policy.ensemble_config(ev2_cfg)
     if isinstance(adaptive_params, dict):
         allocator_policy = (
             adaptive_params.get("model_allocator")
@@ -2224,10 +2277,8 @@ def _attach_ensemble_v2(
     if isinstance(ev2, dict):
         ev2["ic_weight_scope"] = (bundle or {}).get("scope") or _prediction_market_segment(pred) or "GLOBAL"
         ev2["rank_signal_thresholds"] = {k: round(float(v), 4) for k, v in thresholds.items()}
-        ev2["adaptive_threshold"] = {
-            **adaptive_threshold_meta,
-            "applied_delta": round(float(adaptive_threshold_delta), 4),
-        }
+        ev2["adaptive_threshold"] = dict(threshold_policy.adaptive_overlay)
+        ev2["ml_threshold_policy"] = threshold_policy.evidence()
         if bundle:
             ev2["ic_weight_diagnostics"] = bundle.get("diagnostics") or {}
 
@@ -2387,23 +2438,9 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     except Exception:
         persona_weight = 1.0
     persona_weight = max(0.0, min(2.0, persona_weight))  # clamp [0, 2] safety bound
-    regime_contract = resolve_market_regime_contract(kv_client)
-    if regime_contract.get("missing"):
-        regime_contract = build_market_regime_contract_from_market_env(
-            state.get("market_env"),
-            run_date=state.get("run_date"),
-        )
-        logger.warning(
-            "[Pipeline V2] market_regime_state missing in KV; using %s for run_date=%s",
-            regime_contract.get("source"),
-            state.get("run_date"),
-        )
+    regime_contract = _resolve_runtime_regime_contract(state, scope="recommendation")
     regime_label = str(regime_contract.get("alpha_regime") or "unknown")
     regime_surface = regime_contract.get("regime_surface") if isinstance(regime_contract.get("regime_surface"), dict) else {}
-    if regime_contract.get("missing") or regime_label == "unknown":
-        raise RuntimeError(
-            "market_regime_state missing before recommendation; run regime-compute before pipeline"
-        )
 
     from services.trading_config_loader import load_merged_trading_config_with_contract
     cfg_result = load_merged_trading_config_with_contract()

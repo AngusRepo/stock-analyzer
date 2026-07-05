@@ -78,20 +78,26 @@ def _load_current_regime_label() -> str | None:
     return str(contract.get("alpha_regime") or contract.get("label") or "") or None
 
 
-def load_effective_adaptive_params() -> dict:
+def load_effective_adaptive_params(run_date: str | None = None) -> dict:
     """Load KV adaptive params and resolve P8 regime overrides for ML runtime."""
-    raw = kv_client.get_json("ml:adaptive_params", default=None)
+    scoped_key = f"ml:adaptive_params:{run_date}" if run_date else None
+    raw = kv_client.get_json(scoped_key, default=None) if scoped_key else None
+    source_key = scoped_key if isinstance(raw, dict) and raw else "ml:adaptive_params"
     if not isinstance(raw, dict) or not raw:
-        raise RuntimeError("adaptive params missing: ml:adaptive_params")
+        raw = kv_client.get_json("ml:adaptive_params", default=None)
+    if not isinstance(raw, dict) or not raw:
+        raise RuntimeError(f"adaptive params missing: {source_key}")
     provenance = raw.get("provenance")
     if not isinstance(provenance, dict):
-        raise RuntimeError("adaptive params missing provenance: ml:adaptive_params")
+        raise RuntimeError(f"adaptive params missing provenance: {source_key}")
     if provenance.get("schema_version") != "adaptive-params-v2":
-        raise RuntimeError("adaptive params invalid schema_version: ml:adaptive_params")
+        raise RuntimeError(f"adaptive params invalid schema_version: {source_key}")
     if provenance.get("fallback") is True:
         raise RuntimeError(f"adaptive params fallback provenance not allowed: source={provenance.get('source')}")
     regime = _load_current_regime_label()
-    return resolve_adaptive_params_for_regime(raw, regime)
+    resolved = resolve_adaptive_params_for_regime(raw, regime)
+    resolved["runtime_source_key"] = source_key
+    return resolved
 
 
 @dataclass
@@ -419,7 +425,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     latest_breadth = breadth_rows[0] if breadth_rows else {}
 
     # ?? 6. Adaptive params from KV ??????????????????????????????????????????
-    adaptive_params = load_effective_adaptive_params()
+    adaptive_params = load_effective_adaptive_params(run_date=run_date)
 
     # ?? 7. Trading config ??barrier_params ??????????????????????????????????
     from services.trading_config_loader import load_merged_trading_config_with_contract

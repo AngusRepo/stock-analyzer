@@ -548,8 +548,8 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
         : pboMax == null
           ? `PBO ${formatMetric(pboValue, 2)} / max missing`
           : pboValue <= pboMax
-            ? `PBO ok ${formatMetric(pboValue, 2)} <= max ${formatMetric(pboMax, 2)}`
-            : `PBO high ${formatMetric(pboValue, 2)} > max ${formatMetric(pboMax, 2)}`
+            ? `PBO ${formatMetric(pboValue, 2)}<${formatMetric(pboMax, 2)} PASS`
+            : `PBO ${formatMetric(pboValue, 2)}>${formatMetric(pboMax, 2)} FAIL`
   const cpcvDetail = decision
     ? `CPCV ${gateToken(decision)}${cpcvMinIc != null ? ` / min IC ${formatMetric(cpcvMinIc, 3)}` : ''}`
     : cpcvMinIc == null

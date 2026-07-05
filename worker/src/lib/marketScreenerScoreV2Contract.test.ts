@@ -89,6 +89,52 @@ for (let index = 0; index < 5; index++) {
 }
 
 {
+  const percentUsageDates = new Map<string, any>()
+  const supportiveDates = new Map<string, any>()
+  const legacyLotBrokerDates = new Map<string, any>()
+  for (let index = 0; index < 5; index++) {
+    const date = `2026-04-${String(26 + index).padStart(2, '0')}`
+    percentUsageDates.set(date, {
+      foreign: 0,
+      trust: 0,
+      dealer: 0,
+      marginBalance: 1000,
+      shortBalance: 100,
+      marginUsageRatio: 19.8,
+      shortUsageRatio: 21.0,
+    })
+    supportiveDates.set(date, {
+      foreign: 500_000,
+      trust: 0,
+      dealer: 0,
+    })
+    legacyLotBrokerDates.set(date, {
+      foreign: 500_000,
+      trust: 0,
+      dealer: 0,
+      brokerFlow: -100,
+      estimatedAmount: -10_000,
+      brokerCount: 10,
+      concentration: 0.2,
+      source: 'finlab.broker_transactions',
+    })
+  }
+
+  const usage = scoreMultiFactor(prices, percentUsageDates, 0.02, prices[prices.length - 1].close)
+  assert(
+    !usage.reasons.some((reason) => reason.includes('usage_crowded')),
+    'margin/short usage stored as percent must be normalized before crowded thresholds',
+  )
+
+  const supportive = scoreMultiFactor(prices, supportiveDates, 0.02, prices[prices.length - 1].close)
+  const legacyLotSell = scoreMultiFactor(prices, legacyLotBrokerDates, 0.02, prices[prices.length - 1].close)
+  assert(
+    legacyLotSell.chip_score < supportive.chip_score,
+    'legacy broker estimated_amount stored as lots*price must be converted to TWD before scoring',
+  )
+}
+
+{
   const tradingConfigSource = readFileSync(join(process.cwd(), 'src/lib/tradingConfig.ts'), 'utf8')
   const markerIndex = tradingConfigSource.indexOf('screenerDenominator')
   assert(markerIndex >= 0, 'tradingConfig should keep screenerDenominator only as deprecated compatibility')

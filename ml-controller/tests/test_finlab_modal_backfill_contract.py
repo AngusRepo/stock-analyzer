@@ -54,6 +54,8 @@ def test_modal_deploy_packages_finlab_tool_and_controller_services() -> None:
     assert 'repo_root / "ml-controller" / "services"' in admin_router
     assert 'remote_path="/root/tools"' in modal_app
     assert 'remote_path="/root/services"' in modal_app
+    assert '_LOCAL_FINLAB_SOURCE_CONTRACT = _LOCAL_REPO_ROOT / "data" / "finlab_source_contract.json"' in modal_app
+    assert 'remote_path="/root/data/finlab_source_contract.json"' in modal_app
     assert "finlab==2.0.13" in requirements
     assert "finlab==2.0.7" not in requirements
     assert "COPY tools/finlab_macro_context_snapshot.py" in dockerfile

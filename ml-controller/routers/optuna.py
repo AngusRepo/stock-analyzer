@@ -1131,7 +1131,12 @@ def trigger_research_sweep_job(req: OptunaResearchSweepReq = Body(default=Optuna
         "cadence": req.cadence,
         "execution_id": execution.execution_id,
         "execution_name": execution.execution_name,
-        "message": "optuna research Job triggered; callback expected",
+        "remote_execution_id": execution.execution_id,
+        "backend": "cloud_run_job",
+        "message": (
+            "optuna research Job triggered "
+            f"backend=cloud_run_job remote_execution_id={execution.execution_id}; callback expected"
+        ),
     }
 
 

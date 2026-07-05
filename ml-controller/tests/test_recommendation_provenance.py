@@ -101,6 +101,49 @@ def _screener_rec(symbol: str) -> dict:
     }
 
 
+def test_score_v2_projection_uses_fresh_seed_inputs_for_all_owned_components():
+    payload = _score_components(
+        chip_flow=20.0,
+        technical_structure=20.0,
+        ml_edge=11.1,
+    )
+    components = recommendation_service._score_v2_components_from_row({
+        "score_components": payload,
+        "score_seed_inputs": {
+            "chipFlowSeed40": 24.2,
+            "technicalSeed30": 19.8,
+            "screenerMomentumSeed20": 9.7,
+            "mlEdgeSeed30": 9.1,
+            "personaAlphaSeed": 0.0,
+        },
+        "fundamental_quality_score": 15.6,
+    })
+
+    assert components["mlEdge"] == pytest.approx(7.6)
+    assert components["chipFlow"] == pytest.approx(15.1)
+    assert components["technicalStructure"] == pytest.approx(14.8)
+    assert components["fundamentalQuality"] == pytest.approx(15.6)
+
+
+def test_listed_broker_cash_billion_normalizes_legacy_lot_amounts():
+    prices = [{"date": "2026-06-30", "close": 271.5}]
+    listed = [{
+        "date": "2026-06-30",
+        "broker_net_shares": -104,
+        "broker_estimated_amount": -28236,
+        "chip_source": "finlab.broker_transactions",
+    }]
+    rotc = [{
+        "date": "2026-06-30",
+        "broker_net_shares": -104,
+        "broker_estimated_amount": -28236,
+        "chip_source": "finlab.rotc_broker_transactions",
+    }]
+
+    assert recommendation_service._sum_broker_cash_billion(listed, prices) == pytest.approx(-0.28236)
+    assert recommendation_service._sum_broker_cash_billion(rotc, prices) == pytest.approx(-0.000282)
+
+
 def _payload(symbol: str) -> dict:
     return {
         "symbol": symbol,
@@ -633,6 +676,76 @@ def test_sparse_tangent_allocation_marks_signal_source():
     assert allocation["sparse_diagnostics"]["selected_count"] == 1
     assert allocation["optimizer_objective"] == "mean_variance_alpha_utility_with_cash"
     assert allocation["alpha_utility"]["alpha_input"] == pytest.approx(0.03)
+
+
+def test_sparse_tangent_allocation_prefers_canonical_ensemble_expected_return():
+    rows = [{
+        "symbol": "2406",
+        "chip_score": 20.0,
+        "tech_score": 15.0,
+        "confidence": 0.72,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+        "score": 70.0,
+        "ml_forecast_pct": 0.001,
+        "ml_forecast_pct_source": "legacy_compat_should_not_own_allocator",
+        "expected_return": 0.035,
+        "expected_return_source": "calibrated_rank_bin",
+        "score_components": _score_components(final_score=70.0, ml_edge=20.0),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True, "promoteMinConf": 0.72},
+        alpha_policy=_sparse_policy(buy_signal_count=1),
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    assert promoted[0]["signal"] == "BUY"
+    assert allocation["expected_return"] == pytest.approx(0.035)
+    assert allocation["expected_return_source"] == "calibrated_rank_bin"
+    assert allocation["alpha_utility"]["alpha_input"] == pytest.approx(0.035)
+
+
+def test_sparse_tangent_allocation_applies_dispersion_uncertainty_haircut():
+    rows = [{
+        "symbol": "2407",
+        "chip_score": 20.0,
+        "tech_score": 15.0,
+        "confidence": 0.72,
+        "signal": "HOLD",
+        "signal_source": "ensemble_v2",
+        "has_buy_signal": 0,
+        "score": 70.0,
+        "expected_return": 0.04,
+        "expected_return_source": "calibrated_rank_bin",
+        "dispersion_diagnostics": {
+            "active_weight_count": 2,
+            "weight_hhi": 0.6,
+            "merge_compression": 0.12,
+            "raw_model_count": 3,
+        },
+        "score_components": _score_components(final_score=70.0, ml_edge=20.0),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True, "promoteMinConf": 0.72},
+        alpha_policy=_sparse_policy(buy_signal_count=1),
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    assert allocation["expected_return"] < 0.04
+    assert allocation["expected_return_source"] == "calibrated_rank_bin_dispersion_adjusted"
+    adjustment = allocation["expected_return_uncertainty_adjustment"]
+    assert adjustment["policy"] == "positive_expected_return_haircut_not_signal_override"
+    assert set(adjustment["reasons"]) == {
+        "low_active_weight_count",
+        "high_weight_concentration",
+        "high_merge_compression",
+        "low_raw_model_count",
+    }
 
 
 def test_sparse_tangent_allocation_blocks_positive_forecast_when_ml_edge_missing():

@@ -94,9 +94,9 @@ async def _run() -> int:
         "SCREENER_RUN_ID",
         os.environ.get("CLOUD_RUN_EXECUTION", f"screener-job-{int(time.time())}-{uuid.uuid4().hex[:8]}"),
     )
-    from services.sizing_canary import assert_allowed_run_date
+    from services.allocator_contract_guard import assert_allocator_contract_run_date
 
-    assert_allowed_run_date(run_date, label="screener-v2")
+    assert_allocator_contract_run_date(run_date, label="screener-v2")
     chain_run_id = os.environ.get("SCREENER_CHAIN_RUN_ID", "").strip()
     callback_task = os.environ.get("SCREENER_CALLBACK_TASK", "screener") or "screener"
 

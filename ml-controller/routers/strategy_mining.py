@@ -160,15 +160,19 @@ async def run_monthly_pymoo_strategy_mining(req: MonthlyPymooRunReq):
                 raise HTTPException(status_code=503, detail=f"strategy_mining_modal_trigger_failed:{exc}") from exc
             packet["modal_trigger_error"] = str(exc)
         else:
+            function_call_id = spawned.get("function_call_id")
             return {
                 **packet,
                 "status": "triggered",
                 "triggered": True,
                 "backend": "modal",
-                "function_call_id": spawned.get("function_call_id"),
+                "function_call_id": function_call_id,
+                "execution_id": function_call_id,
+                "remote_execution_id": function_call_id,
                 "summary": (
                     "monthly_pymoo_strategy_mining triggered "
-                    f"modal_function_call_id={spawned.get('function_call_id', 'unknown')} callback expected"
+                    f"backend=modal remote_execution_id={function_call_id or 'unknown'} "
+                    f"function_call_id={function_call_id or 'unknown'} callback expected"
                 ),
             }
 
@@ -197,5 +201,10 @@ async def run_monthly_pymoo_strategy_mining(req: MonthlyPymooRunReq):
         "backend": "cloud_run",
         "execution_id": execution.execution_id,
         "execution_name": execution.execution_name,
-        "summary": f"monthly_pymoo_strategy_mining triggered execution_id={execution.execution_id} callback expected",
+        "remote_execution_id": execution.execution_id,
+        "summary": (
+            "monthly_pymoo_strategy_mining triggered "
+            f"backend=cloud_run remote_execution_id={execution.execution_id} "
+            f"execution_id={execution.execution_id} callback expected"
+        ),
     }

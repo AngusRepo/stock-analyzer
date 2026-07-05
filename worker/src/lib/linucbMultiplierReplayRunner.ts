@@ -30,6 +30,11 @@ function daysAgoTw(days: number): string {
 }
 
 function replaySummary(report: Record<string, any>, sourceRows: number): string {
+  const failedGates = Array.isArray(report.failed_gates)
+    ? report.failed_gates.map(String).filter(Boolean)
+    : Array.isArray(report.gates)
+      ? report.gates.filter((gate: any) => gate && gate.passed === false).map((gate: any) => String(gate.name ?? 'unknown_gate'))
+      : []
   const gates = Array.isArray(report.gates)
     ? report.gates.map((gate: any) => `${gate.name}:${gate.passed ? 'pass' : 'fail'}`).join(',')
     : 'gates=missing'
@@ -45,6 +50,7 @@ function replaySummary(report: Record<string, any>, sourceRows: number): string 
     `prepared_rows=${report.prepared_rows ?? 0}`,
     `candidates=${report.candidate_count ?? 0}`,
     `best=${best}`,
+    `failed_gates=${failedGates.length ? failedGates.join(',') : 'none'}`,
     `gates=${gates}`,
   ].join(' ')
 }
@@ -83,8 +89,23 @@ export async function runLinUcbMultiplierReplay(
   }
 
   const report = await response.json() as Record<string, any>
+  const failedGates = Array.isArray(report.failed_gates)
+    ? report.failed_gates.map(String).filter(Boolean)
+    : Array.isArray(report.gates)
+      ? report.gates.filter((gate: any) => gate && gate.passed === false).map((gate: any) => String(gate.name ?? 'unknown_gate'))
+      : []
   const evidence = {
     ...report,
+    failed_gates: failedGates,
+    gate_report: {
+      failed_gates: failedGates,
+      gates: Array.isArray(report.gates) ? report.gates : [],
+      allowed_use: report.allowed_use ?? 'unknown',
+      status: report.status ?? 'unknown',
+      prepared_rows: report.prepared_rows ?? 0,
+      candidate_count: report.candidate_count ?? 0,
+      best_candidate: report.best_candidate ?? null,
+    },
     production_effect: false,
     mutation_allowed: false,
     real_trading_allowed: false,

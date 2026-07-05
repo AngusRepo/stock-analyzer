@@ -15,6 +15,8 @@ import random
 import time
 from typing import Any, Optional
 
+from services.allocator_contract_guard import allocator_contract_guard_enabled
+
 try:
     import httpx
 except ModuleNotFoundError:  # allow pure domain tests to import services without HTTP deps
@@ -32,10 +34,6 @@ MAX_D1_RETRIES = int(os.environ.get("D1_CLIENT_MAX_RETRIES", "3"))
 
 def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _sizing_canary_enabled() -> bool:
-    return _env_truthy("STOCKVISION_SIZING_CANARY")
 
 
 def _first_sql_token(sql: str) -> str:
@@ -69,7 +67,7 @@ def _noop_write_meta(changes: int = 1) -> dict:
         "rows_written": changes,
         "duration": 0,
         "timings": {"sql_duration_ms": 0},
-        "sizing_canary_noop": True,
+        "allocator_contract_noop": True,
     }
 
 
@@ -198,8 +196,8 @@ def _post_raw(body: dict, timeout: float = 60.0) -> dict:
 
 
 def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> list[dict]:
-    if _sizing_canary_enabled() and _is_mutating_sql(sql):
-        logger.warning("[SizingCanary] D1 mutation passed to query() was no-op: %s", _first_sql_token(sql))
+    if allocator_contract_guard_enabled() and _is_mutating_sql(sql):
+        logger.warning("[AllocatorContractGuard] D1 mutation passed to query() was no-op: %s", _first_sql_token(sql))
         return []
     """Read query — returns list of row dicts."""
     body: dict = {"sql": sql}
@@ -224,8 +222,8 @@ def execute(sql: str, params: list[Any] | None = None, timeout: float = 60.0) ->
           'results': []  # empty for write
         }
     """
-    if _sizing_canary_enabled():
-        logger.warning("[SizingCanary] D1 execute() no-op: %s", _first_sql_token(sql))
+    if allocator_contract_guard_enabled():
+        logger.warning("[AllocatorContractGuard] D1 execute() no-op: %s", _first_sql_token(sql))
         return {"success": True, "meta": _noop_write_meta(1), "results": []}
     body: dict = {"sql": sql}
     if params:
@@ -262,9 +260,9 @@ def batch_execute(
     if not statements:
         return {"total": 0, "success_count": 0, "error_count": 0, "changes_total": 0}
 
-    if _sizing_canary_enabled():
+    if allocator_contract_guard_enabled():
         total = len(statements)
-        logger.warning("[SizingCanary] D1 batch_execute() no-op statements=%s", total)
+        logger.warning("[AllocatorContractGuard] D1 batch_execute() no-op statements=%s", total)
         return {
             "total": total,
             "success_count": total,
@@ -272,7 +270,7 @@ def batch_execute(
             "changes_total": total,
             "first_error": None,
             "partial_failure": False,
-            "mode": "sizing_canary_noop",
+            "mode": "allocator_contract_noop",
             "rows_written_total": total,
             "sql_duration_ms_total": 0,
         }

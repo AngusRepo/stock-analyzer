@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import ast
 import hashlib
@@ -58,7 +58,7 @@ def normalize_symbol(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw:
         return ""
-    # FinLab ROTC broker rows use values like "1260 富味鄉".
+    # FinLab ROTC broker rows use values like "1260 撖??.
     first = raw.split()[0].strip()
     return first or raw
 
@@ -222,7 +222,7 @@ def _first_row_match(row: dict[str, Any], names: Iterable[str]) -> tuple[str, An
 
 
 def _date_value(row: dict[str, Any]) -> str:
-    raw = _first_row_value(row, ["date", "trading_date", "data_date", "__index_level_0__", "年月", "月份", "日期"])
+    raw = _first_row_value(row, ["date", "trading_date", "data_date", "__index_level_0__", "撟湔?", "?遢", "?交?"])
     return str(raw or "")[:10]
 
 
@@ -453,32 +453,32 @@ def build_chip_rows(
 
 def _institutional_market_segment(category: Any) -> str:
     text = str(category or "")
-    if "上櫃" in text:
+    if "\u4e0a\u6ac3" in text:
         return "OTC"
-    if "上市" in text:
+    if "\u4e0a\u5e02" in text:
         return "LISTED"
     return "LISTED_OTC"
 
 
 def _institutional_investor(category: Any) -> str:
     text = str(category or "")
-    if "外資及陸資合計" in text or "外陸資合計" in text:
-        return "foreign_total"
-    if "不含外資自營商" in text or "不含自營商" in text:
+    has_foreign = "\u5916\u8cc7" in text or "\u9678\u8cc7" in text
+    has_dealer = "\u81ea\u71df\u5546" in text
+    if has_foreign and "\u4e0d\u542b" in text:
         return "foreign"
-    if "外資自營商" in text:
+    if has_foreign and has_dealer:
         return "foreign_dealer"
-    if "外資" in text or "外陸資" in text:
+    if has_foreign:
         return "foreign"
-    if "投信" in text:
+    if "\u6295\u4fe1" in text:
         return "trust"
-    if "自營商合計" in text:
-        return "dealer_total"
-    if "自行買賣" in text:
+    if "\u81ea\u884c\u8cb7\u8ce3" in text:
         return "dealer_self"
-    if "避險" in text:
+    if "\u907f\u96aa" in text:
         return "dealer_hedge"
-    if "合計" in text or "三大法人" in text:
+    if has_dealer:
+        return "dealer_total"
+    if "\u5408\u8a08" in text or "\u7e3d\u8a08" in text:
         return "total"
     return normalize_symbol(text).lower() or "unknown"
 
@@ -536,9 +536,9 @@ def build_institutional_amount_rows(
 def _market_index_symbol(value: Any, *, fallback: str = "") -> str:
     text = str(value or "").strip()
     upper = text.upper()
-    if "TWOII" in upper or "TPEX" in upper or "OTC" in upper or "櫃買" in text or "上櫃" in text:
+    if "TWOII" in upper or "TPEX" in upper or "OTC" in upper or "\u4e0a\u6ac3" in text or "\u6ac3\u8cb7" in text:
         return "TWOII"
-    if "TWII" in upper or "TAIEX" in upper or "加權" in text or "發行量加權" in text:
+    if "TWII" in upper or "TAIEX" in upper or "\u52a0\u6b0a" in text or "\u767c\u884c\u91cf\u52a0\u6b0a" in text:
         return "TWII"
     return fallback or normalize_symbol(text) or upper
 
@@ -572,9 +572,9 @@ def _market_index_rows_from_frame(
         return []
     lineage = _lineage(run_id, lane, list(frame.columns), artifact_root)
     rows: list[dict[str, Any]] = []
-    close_candidates = ["close", "收盤價", "指數", "value", "price", "發行量加權股價報酬指數"]
+    close_candidates = ["close", "value", "price", "\u6536\u76e4", "\u6307\u6578", "\u767c\u884c\u91cf\u52a0\u6b0a\u80a1\u50f9\u6307\u6578"]
     table_like = _table_has_any(frame, close_candidates) and (
-        _table_has_any(frame, ["symbol", "stock_id", "index_code", "代號", "name", "指數名稱"]) or len(frame.columns) > 3
+        _table_has_any(frame, ["symbol", "stock_id", "index_code", "code", "name", "\u6307\u6578\u540d\u7a31"]) or len(frame.columns) > 3
     )
 
     if table_like:
@@ -582,7 +582,7 @@ def _market_index_rows_from_frame(
             date = _date_value(row)
             if not date:
                 continue
-            raw_symbol = _first_row_value(row, ["symbol", "stock_id", "index_code", "代號", "name", "指數名稱"])
+            raw_symbol = _first_row_value(row, ["symbol", "stock_id", "index_code", "code", "name", "\u6307\u6578\u540d\u7a31"])
             close = _coerce_number(_first_row_value(row, close_candidates))
             if close is None:
                 continue
@@ -590,16 +590,16 @@ def _market_index_rows_from_frame(
             rows.append({
                 "symbol": symbol,
                 "date": date,
-                "name": _clean_text(_first_row_value(row, ["name", "指數名稱"])) or default_name or symbol,
+                "name": _clean_text(_first_row_value(row, ["name", "\u6307\u6578\u540d\u7a31"])) or default_name or symbol,
                 "market_segment": "OTC" if symbol == "TWOII" else "LISTED",
-                "open": _coerce_number(_first_row_value(row, ["open", "開盤價"])),
-                "high": _coerce_number(_first_row_value(row, ["high", "最高價"])),
-                "low": _coerce_number(_first_row_value(row, ["low", "最低價"])),
+                "open": _coerce_number(_first_row_value(row, ["open", "\u958b\u76e4"])),
+                "high": _coerce_number(_first_row_value(row, ["high", "\u6700\u9ad8"])),
+                "low": _coerce_number(_first_row_value(row, ["low", "\u6700\u4f4e"])),
                 "close": close,
-                "change": _coerce_number(_first_row_value(row, ["change", "漲跌價", "漲跌點"])),
-                "change_pct": _coerce_number(_first_row_value(row, ["change_pct", "漲跌幅"])),
-                "volume": _coerce_number(_first_row_value(row, ["volume", "成交量"])),
-                "value": _coerce_number(_first_row_value(row, ["value", "成交值", "成交金額"])),
+                "change": _coerce_number(_first_row_value(row, ["change", "\u6f32\u8dcc", "\u6f32\u8dcc\u9ede\u6578"])),
+                "change_pct": _coerce_number(_first_row_value(row, ["change_pct", "\u6f32\u8dcc\u5e45"])),
+                "volume": _coerce_number(_first_row_value(row, ["volume", "\u6210\u4ea4\u91cf"])),
+                "value": _coerce_number(_first_row_value(row, ["value", "\u6210\u4ea4\u503c", "\u6210\u4ea4\u91d1\u984d"])),
                 "source": source,
                 "lineage_json": lineage,
                 "as_of_date": generated_at[:10],
@@ -712,7 +712,7 @@ def _taiex_total_index_rows(
         rows.append({
             "symbol": "TWII",
             "date": row["date"],
-            "name": "發行量加權股價指數",
+            "name": "\u767c\u884c\u91cf\u52a0\u6b0a\u80a1\u50f9\u6307\u6578",
             "market_segment": "LISTED",
             "open": _coerce_number(row.get("open")),
             "high": _coerce_number(row.get("high")),
@@ -758,7 +758,7 @@ def build_market_index_rows(
             lane="regime_context",
             source="twse.mi_5mins_hist.official",
             default_symbol="TWII",
-            default_name="發行量加權股價指數",
+            default_name="\u767c\u884c\u91cf\u52a0\u6b0a\u80a1\u50f9\u6307\u6578",
             start_date=start_date,
             end_date=end_date,
         ))
@@ -787,7 +787,7 @@ def build_market_index_rows(
             lane="regime_context",
             source="tpex.openapi.tpex_index",
             default_symbol="TWOII",
-            default_name="櫃買指數",
+            default_name="\u4e0a\u6ac3\u6307\u6578",
             start_date=start_date,
             end_date=end_date,
         ))
@@ -802,7 +802,7 @@ def build_market_index_rows(
             lane="regime_context",
             source="finlab.benchmark_return",
             default_symbol="TWII_RETURN",
-            default_name="發行量加權股價報酬指數",
+            default_name="\u767c\u884c\u91cf\u52a0\u6b0a\u5831\u916c\u6307\u6578",
             start_date=start_date,
             end_date=end_date,
         )
@@ -840,14 +840,14 @@ def _wide_or_table_values(
     if frame.is_empty():
         return []
     rows: list[dict[str, Any]] = []
-    value_candidates = [value_field, "value", "close", "收盤價", "ratio", "淨部位"]
+    value_candidates = [value_field, "value", "close", "ratio", "\u6536\u76e4", "\u6307\u6578"]
     table_like = _table_has_any(frame, value_candidates) and len(frame.columns) > 2
     if table_like:
         for row in _rows(frame):
             date = _date_value(row)
             if not date:
                 continue
-            category = _clean_text(_first_row_value(row, ["symbol", "stock_id", "contract", "契約", "name", "商品", "category"])) or "market"
+            category = _clean_text(_first_row_value(row, ["symbol", "stock_id", "contract", "code", "name", "category"])) or "market"
             rows.append({
                 "date": date,
                 "category": category,
@@ -876,9 +876,9 @@ def _wide_or_table_values(
 def _futures_symbol(category: Any, contract_month: Any = None) -> str:
     text = f"{category or ''} {contract_month or ''}".strip()
     upper = text.upper()
-    if "MTX" in upper or "小型" in text:
+    if "MTX" in upper or "撠?" in text:
         return "MTX"
-    if upper.startswith("TX") or "TXF" in upper or "臺股" in text or "台股" in text:
+    if upper.startswith("TX") or "TXF" in upper or "?箄" in text or "?啗" in text:
         return "TXF"
     return ""
 
@@ -922,7 +922,7 @@ def build_futures_rows(
         if not symbol:
             continue
         category = str(item.get("category") or "")
-        session = "night" if "盤後" in category else "day"
+        session = "night" if ("\u76e4\u5f8c" in category or "NIGHT" in category.upper()) else "day"
         rows.append({
             "symbol": symbol,
             "date": item["date"],
@@ -969,10 +969,10 @@ def _context_rows_from_frame(
     lineage = _lineage(run_id, lane, list(frame.columns), artifact_root)
     rows: list[dict[str, Any]] = []
     date_columns = {"date", "trading_date", "data_date", "__index_level_0__"}
-    category_columns = {"symbol", "stock_id", "contract", "category", "name", "商品", "契約"}
+    category_columns = {"symbol", "stock_id", "contract", "category", "name", "code", "\u5951\u7d04"}
     category_column_order = ["symbol", "stock_id", "contract", "category", "name"]
-    expiry_columns = {"到期月份(週別)", "expiry", "contract_month", "month", "settlement_month"}
-    option_type_columns = {"買賣權", "option_type", "call_put", "cp"}
+    expiry_columns = {"expiry", "contract_month", "month", "settlement_month", "\u5951\u7d04\u6708\u4efd", "\u5230\u671f\u6708\u4efd(\u9031\u5225)"}
+    option_type_columns = {"option_type", "call_put", "cp", "\u9078\u64c7\u6b0a\u985e\u578b", "\u8cb7\u8ce3\u6b0a"}
     large_trader_datasets = {"tw_taifex_futures_large_trader", "tw_taifex_option_large_trader"}
     table_like = len([col for col in frame.columns if col not in date_columns]) > 2 and _table_has_any(frame, category_columns | {"value", "ratio", "close"})
 
@@ -1100,7 +1100,7 @@ def _market_summary_number(row: dict[str, Any], names: Iterable[str]) -> float |
     parsed = _coerce_number(value)
     if parsed is None:
         return None
-    if "仟元" in key or "千元" in key:
+    if "\u5f35" in key or "\u53e3" in key:
         return parsed * 1000
     return parsed
 
@@ -1109,13 +1109,13 @@ def _market_summary_segment(value: Any) -> str:
     text = str(value or "").strip().upper()
     if not text:
         return "ALL"
-    if text in {"ALL", "MARKET", "TOTAL"} or "合計" in text or "全市場" in text:
+    if text in {"ALL", "MARKET", "TOTAL"} or "\u5168\u9ad4" in text or "\u5408\u8a08" in text:
         return "ALL"
-    if text in {"TWSE", "LISTED"} or "上市" in text:
+    if text in {"TWSE", "LISTED"} or "\u4e0a\u5e02" in text:
         return "LISTED"
-    if text in {"TPEX", "OTC"} or "上櫃" in text or "櫃買" in text:
+    if text in {"TPEX", "OTC"} or "\u4e0a\u6ac3" in text:
         return "OTC"
-    if "興櫃" in text or "EMERGING" in text:
+    if "\u8208\u6ac3" in text or "EMERGING" in text:
         return "EMERGING"
     return text
 
@@ -1124,13 +1124,13 @@ def _market_summary_field(value: Any, *, kind: str) -> str | None:
     text = str(value or "").strip()
     if not text:
         return None
-    if "融資金額" in text:
+    if "\u878d\u8cc7" in text and ("\u91d1\u984d" in text or "\u9918\u984d" in text):
         return "margin_value"
-    if "融資" in text:
+    if "\u878d\u8cc7" in text:
         return "margin_units"
-    if "融券" in text:
+    if "\u878d\u5238" in text:
         return "short_units"
-    if kind == "breadth" and ("漲跌" in text or "家數" in text):
+    if kind == "breadth" and ("\u6f32\u8dcc" in text or "\u5bb6\u6578" in text):
         return "breadth"
     return None
 
@@ -1145,29 +1145,29 @@ def _market_summary_amount_row(
     date = _date_value(raw)
     if not date:
         return None
-    segment = _market_summary_segment(_first_row_value(raw, ["market_segment", "segment", "market", "市場別", "市場"]))
+    segment = _market_summary_segment(_first_row_value(raw, ["market_segment", "segment", "market", "\u5e02\u5834"]))
     row = {
         "date": date,
         "market_segment": segment,
-        "advance_count": _market_summary_number(raw, ["advance_count", "advance", "rising", "up", "上漲", "上漲家數"]),
-        "unchanged_count": _market_summary_number(raw, ["unchanged_count", "unchanged", "flat", "平盤", "持平", "平盤家數"]),
-        "decline_count": _market_summary_number(raw, ["decline_count", "decline", "falling", "down", "下跌", "下跌家數"]),
-        "total_volume": _market_summary_number(raw, ["total_volume", "market_volume", "volume", "成交股數", "成交量", "總成交量"]),
-        "total_value": _market_summary_number(raw, ["total_value", "market_value", "amount", "value", "成交金額", "成交值", "總成交額"]),
-        "margin_buy_units": _market_summary_number(raw, ["margin_buy_units", "margin_buy", "融資買進", "融資買進(交易單位)"]),
-        "margin_sell_units": _market_summary_number(raw, ["margin_sell_units", "margin_sell", "融資賣出", "融資賣出(交易單位)"]),
-        "margin_return_units": _market_summary_number(raw, ["margin_return_units", "margin_return", "cash_redemption", "融資現償", "融資現金償還"]),
-        "margin_balance_units": _market_summary_number(raw, ["margin_balance_units", "margin_balance", "margin_today_balance_units", "融資今日餘額", "融資餘額"]),
-        "margin_buy_value": _market_summary_number(raw, ["margin_buy_value", "margin_buy_amount", "融資買進金額", "融資買進(仟元)"]),
-        "margin_sell_value": _market_summary_number(raw, ["margin_sell_value", "margin_sell_amount", "融資賣出金額", "融資賣出(仟元)"]),
-        "margin_return_value": _market_summary_number(raw, ["margin_return_value", "margin_return_amount", "融資現償金額", "融資現償(仟元)"]),
-        "margin_balance_value": _market_summary_number(raw, ["margin_balance_value", "margin_balance_amount", "margin_today_balance_value", "融資金額", "融資金額(仟元)", "融資今日餘額金額"]),
-        "margin_balance_change_pct": _market_summary_number(raw, ["margin_balance_change_pct", "margin_change_pct", "融資餘額變動率"]),
-        "short_buy_units": _market_summary_number(raw, ["short_buy_units", "short_buy", "融券買進", "融券買進(交易單位)"]),
-        "short_sell_units": _market_summary_number(raw, ["short_sell_units", "short_sell", "融券賣出", "融券賣出(交易單位)"]),
-        "short_return_units": _market_summary_number(raw, ["short_return_units", "short_return", "short_cover", "融券現償", "融券償還"]),
-        "short_balance_units": _market_summary_number(raw, ["short_balance_units", "short_balance", "short_today_balance_units", "融券今日餘額", "融券餘額"]),
-        "short_balance_change_pct": _market_summary_number(raw, ["short_balance_change_pct", "short_change_pct", "融券餘額變動率"]),
+        "advance_count": _market_summary_number(raw, ["advance_count", "advance", "rising", "up", "\u4e0a\u6f32"]),
+        "unchanged_count": _market_summary_number(raw, ["unchanged_count", "unchanged", "flat", "\u5e73\u76e4"]),
+        "decline_count": _market_summary_number(raw, ["decline_count", "decline", "falling", "down", "\u4e0b\u8dcc"]),
+        "total_volume": _market_summary_number(raw, ["total_volume", "market_volume", "volume", "\u6210\u4ea4\u91cf"]),
+        "total_value": _market_summary_number(raw, ["total_value", "market_value", "amount", "value", "\u6210\u4ea4\u503c", "\u6210\u4ea4\u91d1\u984d"]),
+        "margin_buy_units": _market_summary_number(raw, ["margin_buy_units", "margin_buy"]),
+        "margin_sell_units": _market_summary_number(raw, ["margin_sell_units", "margin_sell"]),
+        "margin_return_units": _market_summary_number(raw, ["margin_return_units", "margin_return", "cash_redemption"]),
+        "margin_balance_units": _market_summary_number(raw, ["margin_balance_units", "margin_balance", "margin_today_balance_units"]),
+        "margin_buy_value": _market_summary_number(raw, ["margin_buy_value", "margin_buy_amount"]),
+        "margin_sell_value": _market_summary_number(raw, ["margin_sell_value", "margin_sell_amount"]),
+        "margin_return_value": _market_summary_number(raw, ["margin_return_value", "margin_return_amount"]),
+        "margin_balance_value": _market_summary_number(raw, ["margin_balance_value", "margin_balance_amount", "margin_today_balance_value"]),
+        "margin_balance_change_pct": _market_summary_number(raw, ["margin_balance_change_pct", "margin_change_pct"]),
+        "short_buy_units": _market_summary_number(raw, ["short_buy_units", "short_buy"]),
+        "short_sell_units": _market_summary_number(raw, ["short_sell_units", "short_sell"]),
+        "short_return_units": _market_summary_number(raw, ["short_return_units", "short_return", "short_cover"]),
+        "short_balance_units": _market_summary_number(raw, ["short_balance_units", "short_balance", "short_today_balance_units"]),
+        "short_balance_change_pct": _market_summary_number(raw, ["short_balance_change_pct", "short_change_pct"]),
         "source": source,
         "lineage_json": lineage,
         "as_of_date": generated_at[:10],
@@ -1194,8 +1194,8 @@ def _market_summary_rows_from_item_table(
         date = _date_value(raw)
         if not date:
             continue
-        segment = _market_summary_segment(_first_row_value(raw, ["market_segment", "segment", "market", "市場別", "市場"]))
-        field = _market_summary_field(_first_row_value(raw, ["item", "項目", "name", "category", "類別"]), kind="credit")
+        segment = _market_summary_segment(_first_row_value(raw, ["market_segment", "segment", "market", "\u5e02\u5834"]))
+        field = _market_summary_field(_first_row_value(raw, ["item", "name", "category"]), kind="credit")
         if not field:
             continue
         bucket = buckets.setdefault((date, segment), {
@@ -1225,10 +1225,10 @@ def _market_summary_rows_from_item_table(
             "as_of_date": generated_at[:10],
         })
         multiplier = 1000 if field == "margin_value" else 1
-        buy = _market_summary_number(raw, ["buy", "buy_amount", "買進"])
-        sell = _market_summary_number(raw, ["sell", "sell_amount", "賣出"])
-        returned = _market_summary_number(raw, ["return", "return_amount", "現金(券)償還", "現償", "償還"])
-        today = _market_summary_number(raw, ["today_balance", "balance", "今日餘額", "今餘"])
+        buy = _market_summary_number(raw, ["buy", "buy_amount", "\u8cb7\u9032"])
+        sell = _market_summary_number(raw, ["sell", "sell_amount", "\u8ce3\u51fa"])
+        returned = _market_summary_number(raw, ["return", "return_amount", "\u73fe\u91d1(\u5238)\u511f\u9084", "\u511f\u9084"])
+        today = _market_summary_number(raw, ["today_balance", "balance", "\u4eca\u65e5\u9918\u984d"])
         if field == "margin_value":
             bucket["margin_buy_value"] = None if buy is None else buy * multiplier
             bucket["margin_sell_value"] = None if sell is None else sell * multiplier
@@ -1468,7 +1468,7 @@ def build_listed_broker_flow_rows(
         artifact_root,
     )
     broker = broker.with_columns(
-        (pl.col("net_shares") * pl.col("close")).alias("estimated_amount"),
+        (pl.col("net_shares") * pl.col("close") * pl.lit(1000.0)).alias("estimated_amount"),
         (
             pl.col("net_shares").abs()
             / (pl.col("buy_shares").fill_null(0).abs() + pl.col("sell_shares").fill_null(0).abs()).clip(1, None)

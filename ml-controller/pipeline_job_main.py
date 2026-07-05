@@ -140,10 +140,10 @@ async def _run_deferred_snapshot_followup(*, run_date: str, run_id: str) -> None
     detached Job and exits after callbacks. The detached Job writes GCS/D1
     manifests and emits the terminal dataset-snapshot-export callback.
     """
-    from services.sizing_canary import sizing_canary_enabled
+    from services.allocator_contract_guard import allocator_contract_guard_enabled
 
-    if sizing_canary_enabled():
-        logger.warning("[SizingCanary] Deferred dataset snapshot follow-up skipped")
+    if allocator_contract_guard_enabled():
+        logger.warning("[AllocatorContractGuard] Deferred dataset snapshot follow-up skipped")
         return
     if _falsey_env("STOCKVISION_DEFERRED_SNAPSHOT_FOLLOWUP", "1"):
         return
@@ -198,9 +198,9 @@ async def _run() -> int:
         "CLOUD_RUN_EXECUTION",
         f"job-{int(time.time())}-{uuid.uuid4().hex[:8]}",
     )
-    from services.sizing_canary import assert_allowed_run_date
+    from services.allocator_contract_guard import assert_allocator_contract_run_date
 
-    assert_allowed_run_date(run_date, label="pipeline-v2")
+    assert_allocator_contract_run_date(run_date, label="pipeline-v2")
 
     logger.info("[JobEntry] Starting pipeline V2 run_id=%s date=%s", run_id, run_date or "today")
 

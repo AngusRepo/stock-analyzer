@@ -5,10 +5,10 @@
   "actions_allowed_without_wei_approval": [],
   "local_gate": {
     "audit_path": "ml-service/benchmark_results/local_prod_ready_audit_20260618.json",
-    "local_closure": "done",
-    "local_prod_ready": "done",
-    "failed_check_count": 0,
-    "self_refresh_only": false,
+    "local_closure": "blocked",
+    "local_prod_ready": "blocked",
+    "failed_check_count": 1,
+    "self_refresh_only": true,
     "passed": true
   },
   "evidence_inventory": [

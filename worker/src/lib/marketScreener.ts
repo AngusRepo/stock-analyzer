@@ -1969,6 +1969,27 @@ interface BrokerFlowSummary {
   marketSegment: string
 }
 
+function normalizeUsageRatio(value: number | null): number | null {
+  if (value == null || !Number.isFinite(value)) return null
+  return Math.abs(value) > 1.5 ? value / 100 : value
+}
+
+function brokerEstimatedAmountTwd(amount: number | null | undefined, shares: number, latestClose: number, source?: string): number {
+  const listedBrokerLots = String(source ?? '').includes('finlab.broker_transactions')
+    && !String(source ?? '').includes('rotc')
+  const unitMultiplier = listedBrokerLots ? 1000 : 1
+  const fallback = Number.isFinite(shares) && Number.isFinite(latestClose)
+    ? shares * latestClose * unitMultiplier
+    : 0
+  if (amount == null || !Number.isFinite(amount)) return fallback
+  const nominalLotAmount = Math.abs(shares * latestClose)
+  if (listedBrokerLots && nominalLotAmount > 0) {
+    const ratio = Math.abs(amount) / nominalLotAmount
+    if (ratio >= 0.2 && ratio <= 5) return amount * 1000
+  }
+  return amount
+}
+
 function formatAbsTwdAmount(amount: number): string {
   const abs = Math.abs(amount)
   if (abs < 1e8) return `${Math.round(abs / 10_000)}萬`
@@ -2000,7 +2021,7 @@ function summarizeBrokerFlowChip(
     const row = chipDates.get(date)
     if (!row) continue
     const shares = row.brokerFlow ?? 0
-    const amount = row.estimatedAmount ?? (shares * latestClose)
+    const amount = brokerEstimatedAmountTwd(row.estimatedAmount, shares, latestClose, row.source)
     if (shares !== 0 || row.estimatedAmount != null) hasBrokerFlow = true
     netShares5d += shares
     estimatedAmount5d += Number.isFinite(amount) ? amount : 0
@@ -2146,7 +2167,7 @@ function scoreCreditLendingPressure(
     }
   }
 
-  const marginUsageRatio = finiteRowValue(latest, 'marginUsageRatio')
+  const marginUsageRatio = normalizeUsageRatio(finiteRowValue(latest, 'marginUsageRatio'))
   if (marginUsageRatio != null) {
     if (marginUsageRatio > 0.8) { adjustment -= 2; reasons.push('margin_usage_crowded_gt_80pct') }
     else if (marginUsageRatio > 0.6) { adjustment -= 1; reasons.push('margin_usage_crowded_gt_60pct') }
@@ -2176,7 +2197,7 @@ function scoreCreditLendingPressure(
     }
   }
 
-  const shortUsageRatio = finiteRowValue(latest, 'shortUsageRatio')
+  const shortUsageRatio = normalizeUsageRatio(finiteRowValue(latest, 'shortUsageRatio'))
   if (shortUsageRatio != null) {
     if (shortUsageRatio > 0.75) { adjustment -= 2; reasons.push('short_usage_crowded_gt_75pct') }
     else if (shortUsageRatio > 0.5) { adjustment -= 1; reasons.push('short_usage_crowded_gt_50pct') }

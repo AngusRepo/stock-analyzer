@@ -140,7 +140,7 @@ def test_listed_broker_transactions_materialize_canonical_broker_flow() -> None:
     assert row_2330["market_segment"] == "LISTED_OTC"
     assert row_2330["source"] == "finlab.broker_transactions"
     assert row_2330["net_shares"] == 6000.0
-    assert row_2330["estimated_amount"] == 600000.0
+    assert row_2330["estimated_amount"] == 600000000.0
     assert row_2330["broker_count"] == 11
     assert row_2330["concentration"] > 0
 

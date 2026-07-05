@@ -1265,6 +1265,24 @@ def _pressure_units_score(units: float, latest_close: float, avg_daily_turnover:
     return _clamp(math.sqrt(intensity) * multiplier, 0.0, cap)
 
 
+def _normalize_usage_ratio(value: Optional[float]) -> Optional[float]:
+    if value is None or not math.isfinite(value):
+        return None
+    return value / 100.0 if abs(value) > 1.5 else value
+
+
+def _broker_estimated_amount_twd(amount: float, shares: float, latest_close: float) -> float:
+    fallback = shares * latest_close * 1000.0 if math.isfinite(shares) and math.isfinite(latest_close) else 0.0
+    if not math.isfinite(amount) or abs(amount) <= 1e-12:
+        return fallback
+    nominal_lot_amount = abs(shares * latest_close)
+    if nominal_lot_amount > 0:
+        ratio = abs(amount) / nominal_lot_amount
+        if 0.2 <= ratio <= 5:
+            return amount * 1000.0
+    return amount
+
+
 def _score_broker_flow_chip_np(
     chip_np: dict,
     recent_n: int,
@@ -1277,7 +1295,10 @@ def _score_broker_flow_chip_np(
     if not (np.any(np.abs(shares) > 1e-12) or np.any(np.abs(amounts) > 1e-12)):
         return 0.0, []
 
-    row_amounts = np.where(np.abs(amounts) > 1e-12, amounts, shares * latest_close)
+    row_amounts = np.array([
+        _broker_estimated_amount_twd(float(amount), float(share), latest_close)
+        for amount, share in zip(amounts, shares)
+    ], dtype=float)
     estimated_amount_5d = float(row_amounts.sum())
     net_shares_5d = float(shares.sum())
     avg_daily_turnover = float(np.mean(volumes * closes)) if len(closes) > 0 else 0.0
@@ -1363,7 +1384,7 @@ def _score_credit_lending_pressure_np(
                 if score >= 0.3:
                     reasons.append(f"margin_balance_falling_{round(abs(delta))}")
 
-    margin_usage = _last_nonzero_or_none(_chip_array(chip_np, "margin_usage_ratio", recent_n))
+    margin_usage = _normalize_usage_ratio(_last_nonzero_or_none(_chip_array(chip_np, "margin_usage_ratio", recent_n)))
     if margin_usage is not None:
         if margin_usage > 0.8:
             adjustment -= 2
@@ -1393,7 +1414,7 @@ def _score_credit_lending_pressure_np(
             if score >= 0.3:
                 reasons.append(f"short_covering_{round(abs(short_pressure))}")
 
-    short_usage = _last_nonzero_or_none(_chip_array(chip_np, "short_usage_ratio", recent_n))
+    short_usage = _normalize_usage_ratio(_last_nonzero_or_none(_chip_array(chip_np, "short_usage_ratio", recent_n)))
     if short_usage is not None:
         if short_usage > 0.75:
             adjustment -= 2

@@ -18,6 +18,12 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Activity, BrainCircuit, FlaskConical, GitBranch, Loader2, PlayCircle, RefreshCw, ShieldCheck, TestTube2 } from 'lucide-react'
+import {
+  ApprovalReviewPanel,
+  type ApprovalReviewGate,
+  type ApprovalReviewImpact,
+  type ApprovalReviewMetric,
+} from '@/components/workstation/ApprovalReviewPanel'
 
 type MetaLearningTrack = NonNullable<ResearchExperimentsResponse['meta_learning_tracks']>[number]
 type MetaLearningEvidenceRow = NonNullable<ResearchExperimentsResponse['meta_learning_evidence_matrix']>[number]
@@ -850,6 +856,90 @@ function RegistryInspectorPanel({
     : null
   const showModelArtifactIntent = selectedExperiment?.status === 'approved_for_patch' && Boolean(selectedModelUpgrade)
   const showStrategyPatchOnly = selectedExperiment?.status === 'approved_for_patch' && !selectedModelUpgrade
+  const selectedExperimentMissingEvidence = selectedExperiment
+    ? [
+        ...(selectedExperiment.metrics.length ? [] : ['metrics_missing']),
+        ...(selectedExperiment.strategy_spec_ids.length ? [] : ['strategy_specs_missing']),
+        ...(selectedExperiment.evaluation_plan ? [] : ['dry_run_plan_missing']),
+        ...(selectedModelUpgrade?.missing_evidence ?? []),
+      ]
+    : []
+  const selectedExperimentReviewMetrics: ApprovalReviewMetric[] = selectedExperiment ? [
+    {
+      label: 'Evidence count',
+      value: `${selectedExperiment.metrics.length} metrics / ${selectedExperiment.strategy_spec_ids.length} specs`,
+      detail: selectedExperiment.metrics.join(' / ') || 'metrics missing',
+      tone: selectedExperiment.metrics.length && selectedExperiment.strategy_spec_ids.length ? 'ok' : 'warn',
+    },
+    {
+      label: 'Dry-run plan',
+      value: selectedExperiment.evaluation_plan ? selectedExperiment.evaluation_plan.mode : 'missing',
+      detail: selectedExperiment.evaluation_plan
+        ? `${selectedExperiment.evaluation_plan.steps.length} validation steps`
+        : 'approval 前至少要有 dry-run review packet。',
+      tone: selectedExperiment.evaluation_plan ? 'ok' : 'warn',
+    },
+    {
+      label: 'Model upgrade link',
+      value: selectedModelUpgrade?.candidate_id ?? 'strategy-only',
+      detail: selectedModelUpgrade
+        ? `${selectedModelUpgrade.registry_status} / evaluation ${selectedModelUpgrade.latest_evaluation_verdict ?? 'pending'}`
+        : 'strategy spec/runtime patch，不建立 model artifact intent。',
+      tone: selectedModelUpgrade ? 'info' : 'neutral',
+    },
+    {
+      label: 'Production effect',
+      value: 'false',
+      detail: 'Strategy Lab approval 只推進 metadata / shadow / patch handoff；不直接下單。',
+      tone: 'ok',
+    },
+  ] : []
+  const selectedExperimentReviewGates: ApprovalReviewGate[] = selectedExperiment ? [
+    {
+      label: 'Can deploy gate',
+      status: selectedExperiment.approval_gate.can_deploy ? 'pass' : 'warn',
+      detail: `approval_gate.can_deploy=${String(selectedExperiment.approval_gate.can_deploy)}`,
+    },
+    {
+      label: 'Metrics evidence',
+      status: selectedExperiment.metrics.length ? 'pass' : 'missing',
+      detail: selectedExperiment.metrics.join(' / ') || 'metrics missing',
+    },
+    {
+      label: 'Dry-run evidence',
+      status: selectedExperiment.evaluation_plan ? 'pass' : 'missing',
+      detail: selectedExperiment.evaluation_plan ? 'dry-run only validation plan available' : 'run dry-run review packet first',
+    },
+    {
+      label: 'Artifact intent',
+      status: selectedModelUpgrade
+        ? selectedModelUpgrade.registry_preflight_ready ? 'pass' : 'warn'
+        : 'info',
+      detail: selectedModelUpgrade
+        ? `${selectedModelUpgrade.latest_artifact_intent_status ?? 'intent missing'} / missing ${selectedModelUpgrade.artifact_intent_missing_fields.join(', ') || 'none'}`
+        : 'not a model artifact experiment',
+    },
+  ] : []
+  const selectedExperimentReviewImpacts: ApprovalReviewImpact[] = selectedExperiment ? [
+    {
+      label: 'Approval target',
+      value: selectedExperiment.status,
+      detail: '按鈕只改 experiment lifecycle metadata。',
+      tone: selectedExperiment.status === 'review_ready' ? 'warn' : 'info',
+    },
+    {
+      label: 'Affected flow',
+      value: selectedModelUpgrade ? 'model-upgrade artifact intent' : 'strategy spec patch handoff',
+      detail: selectedModelUpgrade?.next_action ?? 'Generate patch handoff before runtime patch review.',
+      tone: selectedModelUpgrade ? 'warn' : 'info',
+    },
+    {
+      label: 'Trading safety',
+      value: 'production trading unchanged',
+      detail: 'paper-active / production allocation 仍需後續 explicit approval。',
+      tone: 'ok',
+    },
+  ] : []
 
   return (
     <Card className="sticky top-4 border-slate-800 bg-slate-950/80">
@@ -989,93 +1079,131 @@ function RegistryInspectorPanel({
                 <div className="font-semibold text-slate-100">{selectedExperiment.id}</div>
                 <div className="mt-1 text-xs text-slate-500">updated {selectedExperiment.updated_at}</div>
               </div>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <Badge variant="outline" className={statusClass(selectedExperiment.status)}>{selectedExperiment.status}</Badge>
-                {!['approved_for_shadow', 'paper_active_requested', 'rejected', 'archived'].includes(selectedExperiment.status) && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
-                    onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'approved_for_shadow')}
-                  >
-                    Approve shadow
-                  </Button>
-                )}
-                {selectedExperiment.status !== 'needs_more_evidence' && !['rejected', 'archived'].includes(selectedExperiment.status) && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
-                    onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'needs_more_evidence')}
-                  >
-                    Request evidence
-                  </Button>
-                )}
-                {['approved_for_shadow', 'review_ready', 'approved_for_patch'].includes(selectedExperiment.status) && (
-                  <Button
-                    size="sm"
-                    className="bg-emerald-400 text-slate-950 hover:bg-emerald-300"
-                    disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
-                    onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'paper_active_requested')}
-                  >
-                    Promote paper-active
-                  </Button>
-                )}
-                {selectedExperiment.status === 'review_ready' && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
-                    onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'approved_for_patch')}
-                  >
-                    Approve patch handoff
-                  </Button>
-                )}
-                {!['rejected', 'archived'].includes(selectedExperiment.status) && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
-                    onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'rejected')}
-                  >
-                    Reject
-                  </Button>
-                )}
-                {selectedExperiment.status !== 'archived' && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
-                    onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'archived')}
-                  >
-                    Archive
-                  </Button>
-                )}
-                {selectedExperiment.status === 'approved_for_patch' && (
+              <Badge variant="outline" className={statusClass(selectedExperiment.status)}>{selectedExperiment.status}</Badge>
+            </div>
+            <p className="mt-3 text-sm leading-relaxed text-slate-300">{selectedExperiment.hypothesis}</p>
+            <div className="mt-3">
+              <ApprovalReviewPanel
+                title="Research experiment approval"
+                kicker="Strategy Lab / metadata-only approval"
+                status={selectedExperiment.status}
+                statusTone={selectedExperiment.status === 'review_ready' ? 'warn' : selectedExperiment.status === 'rejected' ? 'error' : 'info'}
+                candidate={
                   <>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={actionBusy === `patch-handoff:${selectedExperiment.id}`}
-                      onClick={() => onCreatePatchHandoff(selectedExperiment.id)}
-                    >
-                      {actionBusy === `patch-handoff:${selectedExperiment.id}` ? 'Generating...' : 'Generate patch handoff'}
-                    </Button>
-                    {selectedModelUpgrade && (
+                    <div>{selectedExperiment.id}</div>
+                    <div>specs {selectedExperiment.strategy_spec_ids.join(' / ') || 'none'}</div>
+                    <div>metrics {selectedExperiment.metrics.join(' / ') || 'none'}</div>
+                  </>
+                }
+                champion={
+                  <>
+                    <div>current lifecycle: {selectedExperiment.status}</div>
+                    <div>model link: {selectedModelUpgrade?.candidate_id ?? 'strategy-only'}</div>
+                    <div>production effect: false</div>
+                  </>
+                }
+                summary="此區的 approve 只代表研究 evidence 或 patch handoff 放行；不代表模型 pointer、交易 config 或真實交易已生效。"
+                metrics={selectedExperimentReviewMetrics}
+                gates={selectedExperimentReviewGates}
+                impacts={selectedExperimentReviewImpacts}
+                blockers={selectedExperimentMissingEvidence.map(compactEvidenceLabel)}
+                nextAction={
+                  selectedExperiment.status === 'approved_for_shadow'
+                    ? 'run shadow validation and write reward ledger'
+                    : selectedExperiment.status === 'paper_active_requested'
+                      ? 'manual review before paper-active allocation'
+                      : selectedExperiment.status === 'needs_more_evidence'
+                        ? 'run dry-run plan or request more evidence'
+                        : selectedModelUpgrade?.next_action ?? 'approve shadow, request evidence, or reject'
+                }
+                actions={
+                  <>
+                    {!['approved_for_shadow', 'paper_active_requested', 'rejected', 'archived'].includes(selectedExperiment.status) && (
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={actionBusy === `artifact-intent:${selectedExperiment.id}`}
-                        onClick={() => onCreateArtifactIntent(selectedExperiment.id)}
+                        disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                        onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'approved_for_shadow')}
                       >
-                        {actionBusy === `artifact-intent:${selectedExperiment.id}` ? 'Checking...' : 'Artifact intent'}
+                        Approve shadow
                       </Button>
                     )}
+                    {selectedExperiment.status !== 'needs_more_evidence' && !['rejected', 'archived'].includes(selectedExperiment.status) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                        onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'needs_more_evidence')}
+                      >
+                        Request evidence
+                      </Button>
+                    )}
+                    {['approved_for_shadow', 'review_ready', 'approved_for_patch'].includes(selectedExperiment.status) && (
+                      <Button
+                        size="sm"
+                        className="bg-emerald-400 text-slate-950 hover:bg-emerald-300"
+                        disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                        onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'paper_active_requested')}
+                      >
+                        Promote paper-active
+                      </Button>
+                    )}
+                    {selectedExperiment.status === 'review_ready' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                        onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'approved_for_patch')}
+                      >
+                        Approve patch handoff
+                      </Button>
+                    )}
+                    {!['rejected', 'archived'].includes(selectedExperiment.status) && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                        onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'rejected')}
+                      >
+                        Reject
+                      </Button>
+                    )}
+                    {selectedExperiment.status !== 'archived' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={actionBusy?.startsWith(`experiment-status:${selectedExperiment.id}`)}
+                        onClick={() => onUpdateExperimentStatus(selectedExperiment.id, 'archived')}
+                      >
+                        Archive
+                      </Button>
+                    )}
+                    {selectedExperiment.status === 'approved_for_patch' && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={actionBusy === `patch-handoff:${selectedExperiment.id}`}
+                          onClick={() => onCreatePatchHandoff(selectedExperiment.id)}
+                        >
+                          {actionBusy === `patch-handoff:${selectedExperiment.id}` ? 'Generating...' : 'Generate patch handoff'}
+                        </Button>
+                        {selectedModelUpgrade && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={actionBusy === `artifact-intent:${selectedExperiment.id}`}
+                            onClick={() => onCreateArtifactIntent(selectedExperiment.id)}
+                          >
+                            {actionBusy === `artifact-intent:${selectedExperiment.id}` ? 'Checking...' : 'Artifact intent'}
+                          </Button>
+                        )}
+                      </>
+                    )}
                   </>
-                )}
-              </div>
+                }
+              />
             </div>
-            <p className="mt-3 text-sm leading-relaxed text-slate-300">{selectedExperiment.hypothesis}</p>
             <div className="mt-3 grid grid-cols-1 gap-2 text-xs md:grid-cols-2">
               <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/[0.04] p-3">
                 <div className="font-semibold text-cyan-100">Gate evidence</div>

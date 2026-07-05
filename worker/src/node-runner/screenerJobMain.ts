@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { runBottomUpScreener } from '../lib/marketScreener'
+import { assertAllocatorContractRunDate } from './allocatorContractGuard'
 import { RestD1Database, RestKVNamespace, createNoopQueue } from './cloudflareRestBindings'
 
 type Args = {
@@ -30,19 +31,6 @@ function resolveRunDate(value?: string): string {
     throw new Error(`Invalid screener date: ${trimmed}; expected YYYY-MM-DD`)
   }
   return trimmed
-}
-
-function envTruthy(name: string): boolean {
-  return ['1', 'true', 'yes', 'on'].includes((process.env[name] ?? '').trim().toLowerCase())
-}
-
-function assertSizingCanaryRunDate(runDate: string): void {
-  if (!envTruthy('STOCKVISION_SIZING_CANARY')) return
-  const allowed = (process.env.STOCKVISION_CANARY_ALLOWED_RUN_DATE ?? '').trim()
-  if (!allowed) throw new Error('STOCKVISION_CANARY_ALLOWED_RUN_DATE is required when STOCKVISION_SIZING_CANARY=1')
-  if (!runDate) throw new Error('explicit run_date is required for sizing canary')
-  if (runDate !== allowed) throw new Error(`sizing canary run_date=${runDate} blocked; allowed=${allowed}`)
-  console.warn(`[SizingCanary] screener node runner enabled for run_date=${runDate}; D1/KV writes are no-op`)
 }
 
 function buildBindings(): Bindings {
@@ -114,7 +102,7 @@ async function latestFunnelRun(env: Bindings, date: string): Promise<{
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2))
   const runDate = resolveRunDate(args.date)
-  assertSizingCanaryRunDate(runDate)
+  assertAllocatorContractRunDate(runDate, 'screener node runner')
   const runId = args.runId || `screener-node-${Date.now()}`
   const env = buildBindings()
 

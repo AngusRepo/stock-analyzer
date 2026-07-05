@@ -29,6 +29,7 @@ assert(
   'monthly-optuna must not alias weekly optuna and must preserve requested run_date',
 )
 assert(workflows.includes("cadence: 'monthly'"), 'monthly optuna must pass a monthly cadence contract')
+assert(workflows.includes('remote_execution_id'), 'monthly optuna/strategy mining summaries must expose normalized remote_execution_id')
 
 assert(followup.includes('/api/admin/scheduler-callback'), 'retrain followup must notify Worker scheduler callback')
 assert(followup.includes('"monthly-retrain"'), 'monthly retrain followup must callback task=monthly-retrain')

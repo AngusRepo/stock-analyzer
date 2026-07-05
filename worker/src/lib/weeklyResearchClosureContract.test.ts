@@ -30,8 +30,9 @@ assert(
 assert(
   workflows.includes('callback expected') &&
     workflows.includes('execution_id') &&
+    workflows.includes('remote_execution_id') &&
     workflows.includes('research_sweep/run'),
-  'weekly/monthly Optuna must not synchronously wait for the full heavy sweep; it should return triggered and rely on Job callback',
+  'weekly/monthly Optuna must not synchronously wait for the full heavy sweep; it should return triggered with normalized remote_execution_id and rely on Job callback',
 )
 
 assert(
@@ -57,8 +58,9 @@ assert(
 
 assert(
   workflows.includes('summarizeWeeklyValidationChain') &&
-    workflows.includes('weekly validation chain failed'),
-  'weekly backtest/MC/PBO must classify partial MC/PBO failures as an error, not a success summary',
+    workflows.includes('weekly validation chain failed') &&
+    workflows.includes("normalized.includes('gate=fail')"),
+  'weekly backtest/MC/PBO must classify partial MC/PBO failures and MC gate failures as errors, not success summaries',
 )
 
 assert(
@@ -128,10 +130,11 @@ assert(
 
 assert(
   adminGcp.includes("'weekly-drift-retrain'") &&
-    adminGcp.includes("confirm=weekly_drift required") &&
+    adminGcp.includes('runWeeklyDriftDetection') &&
+    adminGcp.includes("confirm') !== 'weekly_drift") &&
     triggerRoutes.includes("'weekly-drift-retrain'") &&
     schedulerStatusIncludesManualWeeklyDrift(),
-  'weekly drift retrain must be manual/approval-gated and visible in scheduler surfaces',
+  'weekly drift retrain must expose detection evidence without approval and remain manual/approval-gated; require confirm=weekly_drift before retrain',
 )
 
 assert(

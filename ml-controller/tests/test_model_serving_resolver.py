@@ -170,3 +170,41 @@ def test_model_pool_reconcile_plan_blocks_archived_d1_champion():
         "section": "models",
         "champion_version": "vBad",
     }]
+
+
+def test_apply_model_pool_reconcile_plan_updates_stale_compat_artifact_id():
+    current_pool = {
+        "models": {
+            "PatchTST": {
+                "status": "active",
+                "version": "vGood",
+                "gcs_path": "universal/patchtst/vGood.zip",
+                "serving_owner": "model_champion_pointers",
+                "serving_artifact_id": "PatchTST:vOld:weekly_drift",
+            }
+        }
+    }
+    champion_pool = {
+        "models": {
+            "PatchTST": {
+                "status": "active",
+                "version": "vGood",
+                "gcs_path": "universal/patchtst/vGood.zip",
+                "metadata_path": "universal/patchtst/metadata_vGood.json",
+                "serving_owner": "model_champion_pointers",
+                "serving_artifact_id": "PatchTST:vGood:weekly_drift",
+            }
+        }
+    }
+    plan = resolver.build_model_pool_reconcile_plan(
+        model_pool=current_pool,
+        champion_pool=champion_pool,
+        model_names=("PatchTST",),
+    )
+
+    patched = resolver.apply_model_pool_reconcile_plan(model_pool=current_pool, plan=plan)
+
+    assert patched["models"]["PatchTST"]["serving_artifact_id"] == "PatchTST:vGood:weekly_drift"
+    assert patched["models"]["PatchTST"]["version"] == "vGood"
+    assert patched["source_of_truth"] == "model_champion_pointers"
+    assert patched["reconcile_evidence"]["applied_count"] == 1

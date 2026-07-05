@@ -62,3 +62,24 @@ def test_extract_s12_trade_ev_fails_closed_when_missing():
     assert value is None
     assert source == "s12_trade_ev_missing_no_allocation_edge"
     assert evidence is None
+
+
+def test_build_s12_trade_ev_uses_direct_r_when_candidate_risk_available():
+    samples = [
+        {"trade_pnl_r": 1.5, "exit_reason": "structure_take_profit"},
+        {"trade_pnl_r": -1.0, "exit_reason": "structure_stop"},
+        {"trade_pnl_r": 0.5, "exit_reason": "time_exit"},
+    ] * 10
+
+    ev = build_s12_trade_ev_from_replay(
+        symbol="8091",
+        entry_price=100,
+        stop_price=95,
+        samples=samples,
+        min_samples=30,
+        roundtrip_cost_bps=0,
+    )
+
+    assert ev["status"] == "loaded"
+    assert ev["trade_expected_return_gross_pct"] == pytest.approx(((1.5 - 1.0 + 0.5) / 3) * 0.05)
+    assert ev["expected_R"] == pytest.approx((1.5 - 1.0 + 0.5) / 3)

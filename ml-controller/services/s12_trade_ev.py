@@ -27,6 +27,15 @@ def _pct_from_exit(entry_price: float | None, sample: dict[str, Any]) -> float |
     return (exit_price - entry_price) / entry_price
 
 
+def _r_from_sample(sample: dict[str, Any]) -> float | None:
+    return _to_float(
+        sample.get("trade_pnl_r")
+        or sample.get("pnl_r")
+        or sample.get("return_r")
+        or sample.get("realized_pnl_r")
+    )
+
+
 def build_s12_trade_ev_from_replay(
     *,
     symbol: str | None = None,
@@ -62,15 +71,28 @@ def build_s12_trade_ev_from_replay(
         if not isinstance(sample, dict):
             invalid_samples += 1
             continue
+        direct_r = _r_from_sample(sample)
         ret = _pct_from_exit(entry, sample)
+        if ret is None and direct_r is not None and risk_pct and risk_pct > 0:
+            ret = direct_r * risk_pct
         if ret is None:
             invalid_samples += 1
             continue
         returns.append(ret)
-        if risk_pct and risk_pct > 0:
+        if direct_r is not None:
+            r_values.append(direct_r)
+        elif risk_pct and risk_pct > 0:
             r_values.append(ret / risk_pct)
-        mfe = _to_float(sample.get("mfe_pct") or sample.get("max_favorable_excursion_pct"))
-        mae = _to_float(sample.get("mae_pct") or sample.get("max_adverse_excursion_pct"))
+        mfe = _to_float(
+            sample.get("mfe_pct")
+            or sample.get("max_favorable_excursion_pct")
+            or sample.get("max_favorable_pct")
+        )
+        mae = _to_float(
+            sample.get("mae_pct")
+            or sample.get("max_adverse_excursion_pct")
+            or sample.get("max_adverse_pct")
+        )
         bars = _to_float(sample.get("bars_to_exit") or sample.get("holding_bars"))
         if mfe is not None:
             mfe_values.append(mfe)

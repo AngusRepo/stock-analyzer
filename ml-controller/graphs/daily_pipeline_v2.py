@@ -2466,6 +2466,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         regime_surface=regime_surface,
         alpha_policy=alpha_policy,
         fundamental_quality_by_symbol=fundamental_quality_by_symbol,
+        run_date=state["run_date"],
     )
     final = apply_l2_timesfm_evidence(
         final,
@@ -2531,8 +2532,13 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     for row in final:
         allocation = row.get("alpha_allocation")
         symbol = row.get("symbol")
-        if allocation and symbol in state["predictions"]:
-            state["predictions"][symbol]["alpha_allocation"] = allocation
+        if symbol in state["predictions"]:
+            if allocation:
+                state["predictions"][symbol]["alpha_allocation"] = allocation
+            if isinstance(row.get("s12_trade_ev"), dict):
+                state["predictions"][symbol]["s12_trade_ev"] = row["s12_trade_ev"]
+                state["predictions"][symbol]["trade_expected_return_net_pct"] = row.get("trade_expected_return_net_pct")
+                state["predictions"][symbol]["trade_expected_return_source"] = row.get("trade_expected_return_source")
 
     # Track which symbols were filtered out (for D1 delete in write_d1)
     final_syms = {r["symbol"] for r in final}

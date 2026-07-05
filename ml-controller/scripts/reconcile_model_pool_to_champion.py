@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
 
 from services.model_serving_resolver import (  # noqa: E402
     DIRECT_ALPHA_MODELS,
+    apply_model_pool_reconcile_plan,
     build_model_pool_reconcile_plan,
 )
 
@@ -31,16 +32,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--champion-pool-json", required=True, help="Local D1 champion resolver pool snapshot.")
     parser.add_argument("--model", action="append", help="Model name to reconcile. Repeatable; defaults to direct alpha models.")
     parser.add_argument("--output", help="Optional path to write the dry-run plan JSON.")
+    parser.add_argument("--apply-output", help="Optional path to write patched model_pool JSON. This is local-only; it does not upload to GCS.")
     args = parser.parse_args(argv)
 
+    model_pool = _load_json(args.model_pool_json)
     plan = build_model_pool_reconcile_plan(
-        model_pool=_load_json(args.model_pool_json),
+        model_pool=model_pool,
         champion_pool=_load_json(args.champion_pool_json),
         model_names=tuple(args.model or DIRECT_ALPHA_MODELS),
     )
     raw = json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True)
     if args.output:
         Path(args.output).write_text(raw + "\n", encoding="utf-8")
+    if args.apply_output:
+        patched = apply_model_pool_reconcile_plan(model_pool=model_pool, plan=plan)
+        Path(args.apply_output).write_text(json.dumps(patched, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(raw)
     return 0 if not plan["blocked_count"] else 2
 

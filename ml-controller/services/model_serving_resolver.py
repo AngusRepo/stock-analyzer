@@ -305,6 +305,52 @@ def build_model_pool_reconcile_plan(
     }
 
 
+def apply_model_pool_reconcile_plan(
+    *,
+    model_pool: dict[str, Any],
+    plan: dict[str, Any],
+) -> dict[str, Any]:
+    """Return a compat model_pool projection with D1 champion pointer patches applied.
+
+    This function is pure and performs no GCS/D1 writes. Callers must still
+    require explicit operator approval before uploading the returned JSON.
+    """
+
+    if plan.get("blocked"):
+        raise RuntimeError(f"model_pool_reconcile_blocked: {plan.get('blocked')}")
+    updated = copy.deepcopy(model_pool or {})
+    updated["models"] = dict(updated.get("models") or {})
+    updated["l2_feature_sidecars"] = dict(updated.get("l2_feature_sidecars") or {})
+    applied: list[dict[str, Any]] = []
+    for action in plan.get("actions") or []:
+        if not isinstance(action, dict) or action.get("action") != "update_model_pool_pointer":
+            continue
+        model_name = str(action.get("model_name") or "").strip()
+        section = str(action.get("section") or "models").strip()
+        patch = action.get("patch") if isinstance(action.get("patch"), dict) else {}
+        if not model_name or section not in {"models", "l2_feature_sidecars"}:
+            continue
+        target = updated.setdefault(section, {})
+        current = dict(target.get(model_name) or {})
+        current.update(patch)
+        target[model_name] = current
+        applied.append({
+            "model_name": model_name,
+            "section": section,
+            "fields": sorted(patch.keys()),
+        })
+    updated["last_updated"] = datetime.now(timezone.utc).isoformat()
+    updated["source_of_truth"] = "model_champion_pointers"
+    updated["compat_shape"] = "model_pool"
+    updated["reconcile_evidence"] = {
+        "schema_version": "model-pool-reconcile-apply-v1",
+        "source": plan.get("source") or "model_champion_pointers/model_artifact_registry",
+        "applied_count": len(applied),
+        "applied": applied,
+    }
+    return updated
+
+
 def load_d1_champion_pool(
     *,
     fallback_pool: dict[str, Any] | None = None,

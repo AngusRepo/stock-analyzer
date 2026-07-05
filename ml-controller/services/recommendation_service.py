@@ -1634,6 +1634,7 @@ def filter_and_score_recommendations(
     regime_surface: dict | None = None,
     alpha_policy: dict | None = None,
     fundamental_quality_by_symbol: dict[str, dict[str, Any]] | None = None,
+    run_date: str | None = None,
 ) -> tuple[list[dict], int]:
     """
     Returns (final_recs, sell_filtered_count).
@@ -1674,6 +1675,17 @@ def filter_and_score_recommendations(
         except Exception as e:
             logger.warning(f"[reco] persona helpers unavailable ({e}); disabling persona_score")
             _persona_helpers = None
+
+    s12_trade_ev_provider = None
+    if run_date:
+        try:
+            from services.s12_trade_ev_bootstrap import S12TradeEvBootstrapProvider
+
+            s12_trade_ev_provider = S12TradeEvBootstrapProvider.for_run_date(str(run_date))
+            logger.info("[reco] S12 trade EV bootstrap loaded: %s", s12_trade_ev_provider.summary())
+        except Exception as e:  # noqa: BLE001 - fail closed; allocator will see missing EV.
+            logger.warning("[reco] S12 trade EV bootstrap unavailable; allocator EV will fail closed: %s", e)
+            s12_trade_ev_provider = None
 
     for rec in screener_recs:
         symbol = rec["symbol"]
@@ -1963,6 +1975,12 @@ def filter_and_score_recommendations(
         if regime_label:
             alpha_context = build_alpha_context(row, eff_ml, payload, regime_label, regime_surface=regime_surface, policy=alpha_policy)
             apply_alpha_context(row, ml, alpha_context)
+        if s12_trade_ev_provider is not None:
+            s12_trade_ev = s12_trade_ev_provider.build_for_row(row, prediction=ml)
+            row["s12_trade_ev"] = s12_trade_ev
+            if s12_trade_ev.get("status") == "loaded":
+                row["trade_expected_return_net_pct"] = s12_trade_ev.get("trade_expected_return_net_pct")
+                row["trade_expected_return_source"] = s12_trade_ev.get("trade_expected_return_source")
         row["score_components"] = build_score_components(row, raw_score=total_score, alpha_policy=alpha_policy)
         row["score"] = row["score_components"]["finalScore"]
         row["reason"] = build_reason({**reason_data, **row})

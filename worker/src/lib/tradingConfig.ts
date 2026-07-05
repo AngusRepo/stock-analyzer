@@ -238,11 +238,11 @@ export interface TradingConfig {
     maxPerIndustry: number       // 同官方產業上限（預設 5）
     correlationThreshold: number // 報酬率去重門檻（預設 0.8）
     correlationWindow: number    // 去重計算天數（預設 60）
-    chipScoreTiers: number[]     // 籌碼分級分數（預設 [32,24,16,8,2]）
-    chipIntensityThresholds: number[] // 籌碼強度門檻（預設 [0.80,0.45,0.20,0.05,-0.05]）
+    chipScoreTiers: number[]     // deprecated compatibility only; runtime chip lane uses continuous signed score
+    chipIntensityThresholds: number[] // deprecated compatibility only; runtime chip lane uses continuous signed score
     consecBuyBonusTiers: number[]    // 連續買超加分（預設 [3,1]，對應 >=5天, >=3天）
     consecBuyDayThresholds: number[] // 連續買超天數門檻（預設 [5,3]）
-    rsiScoreTiers: number[]          // RSI 分級分數（預設 [10,6,4,2,2]）
+    rsiScoreTiers: number[]          // deprecated compatibility only; runtime RSI score uses continuous trend-quality curve
     macdNegativeFactor: number       // MACD 負值比較因子（預設 0.5）
     keltnerMultiplier: number        // 肯特納通道 ATR 倍數（預設 1.5）
     natrThreshold: number            // NATR 低波動門檻（預設 3）

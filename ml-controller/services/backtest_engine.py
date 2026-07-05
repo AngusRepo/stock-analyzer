@@ -948,13 +948,8 @@ class ScreenerParams:
     min_daily_turnover: float = 5_000_000
     max_per_industry: int = 5
     max_candidates: int = 25
-    chip_score_tiers: list[float] = field(default_factory=lambda: [32, 24, 16, 8, 2])
-    chip_intensity_thresholds: list[float] = field(
-        default_factory=lambda: [0.80, 0.45, 0.20, 0.05, -0.05]
-    )
     consec_buy_bonus_tiers: list[float] = field(default_factory=lambda: [3, 1])
     consec_buy_day_thresholds: list[int] = field(default_factory=lambda: [5, 3])
-    rsi_score_tiers: list[float] = field(default_factory=lambda: [10, 6, 4, 2, 2])
     macd_negative_factor: float = 0.5
     keltner_multiplier: float = 1.5
     natr_threshold: float = 3.0
@@ -976,11 +971,8 @@ class ScreenerParams:
             min_daily_turnover=sc.get("minDailyTurnover", 5_000_000),
             max_per_industry=sc.get("maxPerIndustry", 5),
             max_candidates=sc.get("maxCandidates", 25),
-            chip_score_tiers=sc.get("chipScoreTiers", [32, 24, 16, 8, 2]),
-            chip_intensity_thresholds=sc.get("chipIntensityThresholds", [0.80, 0.45, 0.20, 0.05, -0.05]),
             consec_buy_bonus_tiers=sc.get("consecBuyBonusTiers", [3, 1]),
             consec_buy_day_thresholds=sc.get("consecBuyDayThresholds", [5, 3]),
-            rsi_score_tiers=sc.get("rsiScoreTiers", [10, 6, 4, 2, 2]),
             macd_negative_factor=sc.get("macdNegativeFactor", 0.5),
             keltner_multiplier=sc.get("keltnerMultiplier", 1.5),
             natr_threshold=sc.get("natrThreshold", 3.0),
@@ -1202,6 +1194,47 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def _round1(v: float) -> float:
+    return round(float(v) * 10) / 10
+
+
+def _interpolate_clamped(value: float, lower: float, upper: float, lower_score: float, upper_score: float) -> float:
+    if not math.isfinite(value):
+        return 0.0
+    if upper == lower:
+        return (lower_score + upper_score) / 2
+    t = _clamp((value - lower) / (upper - lower), 0.0, 1.0)
+    return lower_score + (upper_score - lower_score) * t
+
+
+def _score_institutional_chip_intensity(intensity: float) -> float:
+    if not math.isfinite(intensity):
+        return 0.0
+    centered = 15 + math.tanh(intensity / 0.65) * 15
+    participation_bonus = _clamp(math.sqrt(max(0.0, intensity)) * 2, 0.0, 2.0) if intensity > 0 else 0.0
+    return _round1(_clamp(centered + participation_bonus, 0.0, 32.0))
+
+
+def _score_rsi_trend_quality(rsi: float) -> float:
+    if not math.isfinite(rsi):
+        return 0.0
+    if rsi < 30:
+        score = _interpolate_clamped(rsi, 15, 30, 0, 2)
+    elif rsi < 45:
+        score = _interpolate_clamped(rsi, 30, 45, 2, 5)
+    elif rsi < 55:
+        score = _interpolate_clamped(rsi, 45, 55, 5, 7)
+    elif rsi <= 65:
+        score = _interpolate_clamped(rsi, 55, 65, 7, 10)
+    elif rsi <= 72:
+        score = _interpolate_clamped(rsi, 65, 72, 10, 6)
+    elif rsi <= 80:
+        score = _interpolate_clamped(rsi, 72, 80, 6, 2)
+    else:
+        score = _interpolate_clamped(rsi, 80, 95, 2, 0)
+    return _round1(_clamp(score, 0.0, 10.0))
+
+
 def _chip_array(chip_np: dict, key: str, n: int) -> np.ndarray:
     arr = chip_np.get(key)
     if arr is None:
@@ -1262,25 +1295,28 @@ def _score_broker_flow_chip_np(
 
     score = 0.0
     if estimated_amount_5d > 0:
-        amount_score = _clamp(math.log10(1 + abs(estimated_amount_5d) / 1_000_000) * 4.5, 4, 18)
+        amount_score = _clamp(math.log10(1 + abs(estimated_amount_5d) / 1_000_000) * 1.7, 1, 7)
         intensity_score = (
-            _clamp((estimated_amount_5d / 1e8) * 80, 0, 14)
-            if intensity is None else _clamp(math.sqrt(abs(intensity)) * 24, 0, 16)
+            _clamp((estimated_amount_5d / 1e8) * 8, 0, 4)
+            if intensity is None else _clamp(math.sqrt(abs(intensity)) * 7, 0, 5)
         )
-        breadth_score = 3 if broker_count is None else _clamp(math.log2(max(1, broker_count)) * 1.2, 1, 6)
+        breadth_score = 1 if broker_count is None else _clamp(math.log2(max(1, broker_count)) * 0.8, 0.5, 3)
         concentration_penalty = 0
         if concentration is not None:
-            concentration_penalty = 5 if concentration > 0.85 else 3 if concentration > 0.65 else 0
-        score = amount_score + intensity_score + breadth_score - concentration_penalty
+            concentration_penalty = 3 if concentration > 0.85 else 1.5 if concentration > 0.65 else 0
+        score = _clamp(amount_score + intensity_score + breadth_score - concentration_penalty, 0, 12)
     elif estimated_amount_5d > -1_000_000:
-        score = 2
+        score = 0
     else:
-        sell_pressure = _clamp(math.log10(1 + abs(estimated_amount_5d) / 1_000_000) * 2.5, 2, 10)
-        score = max(0.0, 6 - sell_pressure)
+        sell_pressure = _clamp(math.log10(1 + abs(estimated_amount_5d) / 1_000_000) * 2.0, 1, 10)
+        concentration_penalty = 0
+        if concentration is not None:
+            concentration_penalty = 2 if concentration > 0.85 else 1 if concentration > 0.65 else 0
+        score = -_clamp(sell_pressure + concentration_penalty, 0, 12)
 
     if consec_buy_days >= 3 and estimated_amount_5d > 0:
         score += 3 if consec_buy_days >= 5 else 1
-    score = round(_clamp(score, 0, 40), 1)
+    score = _round1(_clamp(score, -12, 14))
 
     direction = "buy" if estimated_amount_5d >= 0 else "sell"
     reasons = [f"broker_flow_5d_{direction}_{_format_abs_twd_amount(estimated_amount_5d)}"]
@@ -1539,35 +1575,25 @@ def score_multi_factor_np(
             net_buy_amount / avg_daily_turnover if avg_daily_turnover > 0 else 0
         )
 
-        tiers = sc.chip_score_tiers
-        thresholds = sc.chip_intensity_thresholds
-        if chip_intensity > thresholds[0]:
-            chip_score = tiers[0]
-        elif chip_intensity > thresholds[1]:
-            chip_score = tiers[1]
-        elif chip_intensity > thresholds[2]:
-            chip_score = tiers[2]
-        elif chip_intensity > thresholds[3]:
-            chip_score = tiers[3]
-        elif chip_intensity > thresholds[4]:
-            chip_score = tiers[4]
+        chip_score = _score_institutional_chip_intensity(chip_intensity)
 
-        if chip_intensity > 0.05:
-            reasons.append(f"institutional_turnover_intensity_{chip_intensity * 100:.1f}%")
+        if abs(chip_intensity) > 0.03:
+            sign = "+" if chip_intensity >= 0 else ""
+            reasons.append(f"institutional_turnover_intensity_{sign}{chip_intensity * 100:.1f}%")
 
         cb_bonus = sc.consec_buy_bonus_tiers
         cb_days = sc.consec_buy_day_thresholds
-        if consec_buy_days >= cb_days[0]:
+        if chip_intensity > 0 and consec_buy_days >= cb_days[0]:
             chip_score += cb_bonus[0]
             reasons.append(f"consecutive_buy_days_{consec_buy_days}")
-        elif consec_buy_days >= cb_days[1]:
+        elif chip_intensity > 0 and consec_buy_days >= cb_days[1]:
             chip_score += cb_bonus[1]
 
         broker_score, broker_reasons = _score_broker_flow_chip_np(chip_np, recent_n, closes, volumes, latest_close)
-        if broker_score > chip_score:
+        if abs(broker_score) > 1e-12:
             reasons.extend(broker_reasons)
             reasons.append(_broker_flow_source_reason(chip_np, recent_n))
-        chip_score = max(chip_score, broker_score)
+        chip_score += broker_score
 
         credit_adjustment, credit_reasons = _score_credit_lending_pressure_np(chip_np, recent_n, closes, volumes, latest_close)
         if abs(credit_adjustment) > 1e-12:
@@ -1589,19 +1615,10 @@ def score_multi_factor_np(
         avg_loss = losses.sum() / 14 if len(losses) > 0 else 0.001
         rsi = 100 - 100 / (1 + avg_gain / avg_loss)
         rsi_value = rsi
-        tiers = sc.rsi_score_tiers
-        if 55 <= rsi <= 68:
-            tech_score += tiers[0]
+        rsi_score = _score_rsi_trend_quality(rsi)
+        tech_score += rsi_score
+        if rsi_score >= 6:
             reasons.append(f"RSI {rsi:.0f}")
-        elif 68 < rsi <= 75:
-            tech_score += tiers[1]
-            reasons.append(f"RSI {rsi:.0f}")
-        elif 45 <= rsi < 55:
-            tech_score += tiers[2]
-        elif 75 < rsi <= 85:
-            tech_score += tiers[3]
-        elif 30 <= rsi < 45:
-            tech_score += tiers[4]
 
     # MACD approximation
     if n >= 20:
@@ -1764,37 +1781,27 @@ def score_multi_factor(
             net_buy_amount / avg_daily_turnover if avg_daily_turnover > 0 else 0
         )
 
-        tiers = sc.chip_score_tiers
-        thresholds = sc.chip_intensity_thresholds
-        if chip_intensity > thresholds[0]:
-            chip_score = tiers[0]
-        elif chip_intensity > thresholds[1]:
-            chip_score = tiers[1]
-        elif chip_intensity > thresholds[2]:
-            chip_score = tiers[2]
-        elif chip_intensity > thresholds[3]:
-            chip_score = tiers[3]
-        elif chip_intensity > thresholds[4]:
-            chip_score = tiers[4]
+        chip_score = _score_institutional_chip_intensity(chip_intensity)
 
-        if chip_intensity > 0.05:
-            reasons.append(f"institutional_turnover_intensity_{chip_intensity * 100:.1f}%")
+        if abs(chip_intensity) > 0.03:
+            sign = "+" if chip_intensity >= 0 else ""
+            reasons.append(f"institutional_turnover_intensity_{sign}{chip_intensity * 100:.1f}%")
 
         cb_bonus = sc.consec_buy_bonus_tiers
         cb_days = sc.consec_buy_day_thresholds
-        if consec_buy_days >= cb_days[0]:
+        if chip_intensity > 0 and consec_buy_days >= cb_days[0]:
             chip_score += cb_bonus[0]
             reasons.append(f"consecutive_buy_days_{consec_buy_days}")
-        elif consec_buy_days >= cb_days[1]:
+        elif chip_intensity > 0 and consec_buy_days >= cb_days[1]:
             chip_score += cb_bonus[1]
 
         chip_np_like = _chip_np_from_frame(recent)
         recent_n = min(5, chip_np_like["n"])
         broker_score, broker_reasons = _score_broker_flow_chip_np(chip_np_like, recent_n, closes, volumes, latest_close)
-        if broker_score > chip_score:
+        if abs(broker_score) > 1e-12:
             reasons.extend(broker_reasons)
             reasons.append(_broker_flow_source_reason(chip_np_like, recent_n))
-        chip_score = max(chip_score, broker_score)
+        chip_score += broker_score
 
         credit_adjustment, credit_reasons = _score_credit_lending_pressure_np(chip_np_like, recent_n, closes, volumes, latest_close)
         if abs(credit_adjustment) > 1e-12:
@@ -1816,19 +1823,10 @@ def score_multi_factor(
         avg_loss = losses.sum() / 14 if len(losses) > 0 else 0.001
         rsi = 100 - 100 / (1 + avg_gain / avg_loss)
         rsi_value = rsi
-        tiers = sc.rsi_score_tiers
-        if 55 <= rsi <= 68:
-            tech_score += tiers[0]
+        rsi_score = _score_rsi_trend_quality(rsi)
+        tech_score += rsi_score
+        if rsi_score >= 6:
             reasons.append(f"RSI {rsi:.0f}")
-        elif 68 < rsi <= 75:
-            tech_score += tiers[1]
-            reasons.append(f"RSI {rsi:.0f}")
-        elif 45 <= rsi < 55:
-            tech_score += tiers[2]
-        elif 75 < rsi <= 85:
-            tech_score += tiers[3]
-        elif 30 <= rsi < 45:
-            tech_score += tiers[4]
 
     # MACD approximation
     if n >= 20:

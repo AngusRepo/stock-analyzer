@@ -52,6 +52,43 @@ for (let index = 0; index < 5; index++) {
 }
 
 {
+  const neutralChipDates = new Map<string, any>()
+  const brokerBuyDates = new Map<string, any>()
+  const brokerSellDates = new Map<string, any>()
+  for (let index = 0; index < 5; index++) {
+    const date = `2026-04-${String(26 + index).padStart(2, '0')}`
+    neutralChipDates.set(date, { foreign: 0, trust: 0, dealer: 0 })
+    brokerBuyDates.set(date, {
+      foreign: 0,
+      trust: 0,
+      dealer: 0,
+      brokerProxy: 80_000,
+      estimatedAmount: 8_000_000,
+      brokerCount: 12,
+      concentration: 0.25,
+      source: 'finlab.rotc_broker_transactions',
+    })
+    brokerSellDates.set(date, {
+      foreign: 0,
+      trust: 0,
+      dealer: 0,
+      brokerProxy: -80_000,
+      estimatedAmount: -8_000_000,
+      brokerCount: 12,
+      concentration: 0.25,
+      source: 'finlab.rotc_broker_transactions',
+    })
+  }
+
+  const neutral = scoreMultiFactor(prices, neutralChipDates, 0.02, prices[prices.length - 1].close)
+  const bullish = scoreMultiFactor(prices, brokerBuyDates, 0.02, prices[prices.length - 1].close)
+  const bearish = scoreMultiFactor(prices, brokerSellDates, 0.02, prices[prices.length - 1].close)
+  assert(bullish.chip_score > neutral.chip_score, 'bullish broker flow should raise continuous signed chip score')
+  assert(bearish.chip_score < neutral.chip_score, 'bearish broker flow should lower continuous signed chip score')
+  assert(bearish.reasons.some((reason) => reason.includes('broker_flow_5d_sell')), 'bearish broker flow should be visible in reasons')
+}
+
+{
   const tradingConfigSource = readFileSync(join(process.cwd(), 'src/lib/tradingConfig.ts'), 'utf8')
   const markerIndex = tradingConfigSource.indexOf('screenerDenominator')
   assert(markerIndex >= 0, 'tradingConfig should keep screenerDenominator only as deprecated compatibility')

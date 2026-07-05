@@ -598,6 +598,33 @@ function normalize(value: number, lower: number, upper: number, maxScore: number
   return clamp(((value - lower) / (upper - lower)) * maxScore, 0, maxScore)
 }
 
+function interpolateClamped(value: number, lower: number, upper: number, lowerScore: number, upperScore: number): number {
+  if (!Number.isFinite(value)) return 0
+  if (upper === lower) return (lowerScore + upperScore) / 2
+  const t = clamp((value - lower) / (upper - lower), 0, 1)
+  return lowerScore + (upperScore - lowerScore) * t
+}
+
+function scoreInstitutionalChipIntensity(intensity: number): number {
+  if (!Number.isFinite(intensity)) return 0
+  const centered = 15 + Math.tanh(intensity / 0.65) * 15
+  const participationBonus = intensity > 0 ? clamp(Math.sqrt(Math.max(0, intensity)) * 2, 0, 2) : 0
+  return round1(clamp(centered + participationBonus, 0, 32))
+}
+
+function scoreRsiTrendQuality(rsi: number): number {
+  if (!Number.isFinite(rsi)) return 0
+  let score = 0
+  if (rsi < 30) score = interpolateClamped(rsi, 15, 30, 0, 2)
+  else if (rsi < 45) score = interpolateClamped(rsi, 30, 45, 2, 5)
+  else if (rsi < 55) score = interpolateClamped(rsi, 45, 55, 5, 7)
+  else if (rsi <= 65) score = interpolateClamped(rsi, 55, 65, 7, 10)
+  else if (rsi <= 72) score = interpolateClamped(rsi, 65, 72, 10, 6)
+  else if (rsi <= 80) score = interpolateClamped(rsi, 72, 80, 6, 2)
+  else score = interpolateClamped(rsi, 80, 95, 2, 0)
+  return round1(clamp(score, 0, 10))
+}
+
 function emaSeries(values: number[], period: number): number[] {
   if (values.length === 0 || period <= 0) return []
   const alpha = 2 / (period + 1)
@@ -2013,30 +2040,37 @@ function scoreBrokerFlowChip(summary: BrokerFlowSummary): { score: number; reaso
   let score = 0
 
   if (amount > 0) {
-    const amountScore = clamp(Math.log10(1 + Math.abs(amount) / 1_000_000) * 4.5, 4, 18)
+    const amountScore = clamp(Math.log10(1 + Math.abs(amount) / 1_000_000) * 1.7, 1, 7)
     const intensityScore = intensity == null
-      ? clamp(amountBillion * 80, 0, 14)
-      : clamp(Math.sqrt(Math.abs(intensity)) * 24, 0, 16)
+      ? clamp(amountBillion * 8, 0, 4)
+      : clamp(Math.sqrt(Math.abs(intensity)) * 7, 0, 5)
     const breadthScore = summary.latestBrokerCount == null
-      ? 3
-      : clamp(Math.log2(Math.max(1, summary.latestBrokerCount)) * 1.2, 1, 6)
+      ? 1
+      : clamp(Math.log2(Math.max(1, summary.latestBrokerCount)) * 0.8, 0.5, 3)
     const concentrationPenalty = summary.latestConcentration == null
       ? 0
       : summary.latestConcentration > 0.85
-        ? 5
+        ? 3
         : summary.latestConcentration > 0.65
-          ? 3
+          ? 1.5
           : 0
-    score = amountScore + intensityScore + breadthScore - concentrationPenalty
+    score = clamp(amountScore + intensityScore + breadthScore - concentrationPenalty, 0, 12)
   } else if (amount > -1_000_000) {
-    score = 2
+    score = 0
   } else {
-    const sellPressure = clamp(Math.log10(1 + Math.abs(amount) / 1_000_000) * 2.5, 2, 10)
-    score = Math.max(0, 6 - sellPressure)
+    const sellPressure = clamp(Math.log10(1 + Math.abs(amount) / 1_000_000) * 2.0, 1, 10)
+    const concentrationPenalty = summary.latestConcentration == null
+      ? 0
+      : summary.latestConcentration > 0.85
+        ? 2
+        : summary.latestConcentration > 0.65
+          ? 1
+          : 0
+    score = -clamp(sellPressure + concentrationPenalty, 0, 12)
   }
 
   if (summary.consecBuyDays >= 3 && amount > 0) score += summary.consecBuyDays >= 5 ? 3 : 1
-  score = Math.round(clamp(score, 0, 40) * 10) / 10
+  score = round1(clamp(score, -12, 14))
 
   const direction = amount >= 0 ? 'buy' : 'sell'
   const reasons = [
@@ -2386,33 +2420,28 @@ export function scoreMultiFactor(
       const avgDailyTurnover = prices.reduce((s, p) => s + p.Trading_Volume * p.close, 0) / prices.length
       const chipIntensity = avgDailyTurnover > 0 ? netBuyAmount / avgDailyTurnover : 0
 
-      // ?詨?瘥???嚗?0%+ ADTV ?餈扔蝡舐敞蝛??踹???銝剖之??⊿?亥?皛踹???
-      const chipTiers = sc?.chipScoreTiers ?? [32, 24, 16, 8, 2]
-      const chipThresholds = sc?.chipIntensityThresholds ?? [0.80, 0.45, 0.20, 0.05, -0.05]
-      if (chipIntensity > chipThresholds[0]) chip_score = chipTiers[0]
-      else if (chipIntensity > chipThresholds[1]) chip_score = chipTiers[1]
-      else if (chipIntensity > chipThresholds[2]) chip_score = chipTiers[2]
-      else if (chipIntensity > chipThresholds[3]) chip_score = chipTiers[3]
-      else if (chipIntensity > chipThresholds[4]) chip_score = chipTiers[4]  // 敺株都
-      // else 0
+      chip_score = scoreInstitutionalChipIntensity(chipIntensity)
 
-      if (chipIntensity > 0.05) reasons.push(`institutional_turnover_intensity_${(chipIntensity * 100).toFixed(1)}%`)
+      if (Math.abs(chipIntensity) > 0.03) {
+        const side = chipIntensity >= 0 ? '+' : ''
+        reasons.push(`institutional_turnover_intensity_${side}${(chipIntensity * 100).toFixed(1)}%`)
+      }
 
       // ???鞎瑁?憭拇 bonus
       const cbBonus = sc?.consecBuyBonusTiers ?? [3, 1]
       const cbDays = sc?.consecBuyDayThresholds ?? [5, 3]
-      if (consecBuyDays >= cbDays[0]) { chip_score += cbBonus[0]; reasons.push(`consecutive_buy_days_${consecBuyDays}`) }
-      else if (consecBuyDays >= cbDays[1]) { chip_score += cbBonus[1] }
+      if (chipIntensity > 0 && consecBuyDays >= cbDays[0]) { chip_score += cbBonus[0]; reasons.push(`consecutive_buy_days_${consecBuyDays}`) }
+      else if (chipIntensity > 0 && consecBuyDays >= cbDays[1]) { chip_score += cbBonus[1] }
     }
   }
   if (canonicalBrokerSummary) {
     const scoredBroker = scoreBrokerFlowChip(canonicalBrokerSummary)
     canonicalBrokerScore = scoredBroker.score
-    if (canonicalBrokerScore > chip_score) {
+    if (Math.abs(canonicalBrokerScore) > 0) {
       reasons.push(...scoredBroker.reasons)
       reasons.push(`broker_flow:${canonicalBrokerSummary.latestSource} net=${Math.round(canonicalBrokerSummary.netShares5d)} source_date=${canonicalBrokerSummary.latestDate}`)
     }
-    chip_score = Math.max(chip_score, canonicalBrokerScore)
+    chip_score += canonicalBrokerScore
     chipEvidenceStatus = chip_score > 0 ? 'materialized_chip_evidence' : 'materialized_neutral_or_bearish_chip_evidence'
     chipEvidenceSource = 'canonical_chip_daily+canonical_broker_flow_daily'
   } else if (chipDates?.size) {
@@ -2432,8 +2461,8 @@ export function scoreMultiFactor(
     evidenceStatus: chipEvidenceStatus,
     evidence_status: chipEvidenceStatus,
     source: chipEvidenceSource,
-    scoringPolicy: 'single_owner_institutional_broker_credit_lending_seed',
-    scoring_policy: 'single_owner_institutional_broker_credit_lending_seed',
+    scoringPolicy: 'continuous_signed_institutional_broker_credit_lending_seed',
+    scoring_policy: 'continuous_signed_institutional_broker_credit_lending_seed',
     brokerFlowUsed: canonicalBrokerSummary != null,
     brokerEvidenceStatus: canonicalBrokerSummary == null
       ? 'missing'
@@ -2444,7 +2473,8 @@ export function scoreMultiFactor(
           : 'present_neutral',
     broker: canonicalBrokerSummary
       ? {
-          score40: Math.round(clamp(canonicalBrokerScore, 0, 40) * 10) / 10,
+          score40: round1(clamp(canonicalBrokerScore, 0, 40)),
+          signedContribution40: round1(canonicalBrokerScore),
           netShares5d: Math.round(canonicalBrokerSummary.netShares5d),
           estimatedAmount5d: Math.round(canonicalBrokerSummary.estimatedAmount5d),
           turnoverIntensity5d: canonicalBrokerSummary.turnoverIntensity5d == null
@@ -2487,12 +2517,9 @@ export function scoreMultiFactor(
     const rsi = 100 - 100 / (1 + avgGain / avgLoss)
     rsiValue = rsi
 
-    const rsiTiers = sc?.rsiScoreTiers ?? [10, 6, 4, 2, 2]
-    if (rsi >= 55 && rsi <= 68) { tech_score += rsiTiers[0]; reasons.push(`RSI ${rsi.toFixed(0)}`) }
-    else if (rsi > 68 && rsi <= 75) { tech_score += rsiTiers[1]; reasons.push(`RSI ${rsi.toFixed(0)}`) }
-    else if (rsi >= 45 && rsi < 55) tech_score += rsiTiers[2]
-    else if (rsi > 75 && rsi <= 85) tech_score += rsiTiers[3]
-    else if (rsi >= 30 && rsi < 45) tech_score += rsiTiers[4]
+    const rsiScore = scoreRsiTrendQuality(rsi)
+    tech_score += rsiScore
+    if (rsiScore >= 6) reasons.push(`RSI ${rsi.toFixed(0)}`)
   }
 
   // MACD(12,26,9)

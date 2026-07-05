@@ -47,5 +47,5 @@ const small = scoreMultiFactor(prices, smallBrokerFlow, 0, 50)
 const large = scoreMultiFactor(prices, largeBrokerFlow, 0, 50)
 
 assert(small.chip_score < large.chip_score, 'emerging broker proxy score must vary with broker amount/intensity')
-assert(small.reasons.some((reason) => reason.includes('券商分點')), 'emerging broker reason should use broker wording')
-assert(!small.reasons.some((reason) => reason.includes('法人佔成交')), 'emerging broker reason must not use listed/OTC institution wording')
+assert(small.reasons.some((reason) => reason.includes('broker_flow_5d_buy')), 'emerging broker reason should use broker wording')
+assert(!small.reasons.some((reason) => reason.includes('institutional_turnover_intensity')), 'emerging broker reason must not use listed/OTC institution wording')

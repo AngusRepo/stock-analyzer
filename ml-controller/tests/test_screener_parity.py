@@ -446,11 +446,8 @@ def _build_cfg_override_from_params(sc: ScreenerParams) -> dict:
     """Build a trading:config.screener override so Worker uses identical params."""
     return {
         "screener": {
-            "chipScoreTiers": list(sc.chip_score_tiers),
-            "chipIntensityThresholds": list(sc.chip_intensity_thresholds),
             "consecBuyBonusTiers": list(sc.consec_buy_bonus_tiers),
             "consecBuyDayThresholds": list(sc.consec_buy_day_thresholds),
-            "rsiScoreTiers": list(sc.rsi_score_tiers),
             "macdNegativeFactor": sc.macd_negative_factor,
             "keltnerMultiplier": sc.keltner_multiplier,
             "natrThreshold": sc.natr_threshold,

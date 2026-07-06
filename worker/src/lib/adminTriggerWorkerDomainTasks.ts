@@ -246,6 +246,23 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     recommendation: () => deps.runDailyRecommendation(requestedRunDate()),
     'post-screener-pipeline': () => enqueuePostScreenerPipelineContinuation(c, requestedRunDate()),
     'strategy-learning': () => enqueueStrategyLearningMaterialization(c, requestedRunDate()),
+    's12-replay-backfill': async () => {
+      const { runS12HistoricalReplayForDate } = await import('./s12ReplayTradeOutcome')
+      const runDate = assertRunDate(requestedRunDate())
+      const result = await runS12HistoricalReplayForDate(c.env, runDate, {
+        limit: parseBoundedPositiveInt(c.req.query('limit'), 500, 5000),
+        persist: c.req.query('dry_run') !== '1',
+      })
+      return [
+        `s12_replay_backfill date=${result.trade_date}`,
+        `l0=${result.l0_symbols}`,
+        `attempted=${result.attempted}`,
+        `executed=${result.executed}`,
+        `setup_only=${result.setup_only}`,
+        `skipped=${result.skipped}`,
+        `persisted=${result.persisted}`,
+      ].join(' ')
+    },
     'paper-trade': () => deps.runPaperAutoTrade(),
     'morning-setup': async () => {
       const { settlePaperT2 } = await import('./cronOrchestrator')

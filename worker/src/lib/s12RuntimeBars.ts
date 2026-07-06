@@ -618,3 +618,72 @@ export async function loadS12IntradayBaseBars(
     },
   }
 }
+
+export async function loadS12HistoricalReplayBars(
+  env: Bindings,
+  symbol: string,
+  tradeDate: string,
+): Promise<{
+  bars: IntradayRollingBar[]
+  fallback15mBars: IntradayRollingBar[]
+  fallback4hBars: IntradayRollingBar[]
+  fallback1hBars: IntradayRollingBar[]
+  diagnostics: S12BaseBarDiagnostics
+}> {
+  const previous4h = await loadPreviousTradingDay4hFallback(env, symbol, tradeDate)
+  let diagnostics: S12BaseBarDiagnostics = {
+    raw_kbars_count: 0,
+    parsed_kbars_count: 0,
+    invalid_kbars_count: 0,
+    event_bars_count: 0,
+    base_bars_count: 0,
+    kbars_first_tw: null,
+    kbars_last_tw: null,
+    kbars_min_interval_ms: null,
+    kbars_granularity: 'empty',
+    kbars_unusable_reason: 'not_loaded',
+    kbars_time_adjustment: null,
+    kbars_raw_first_tw: null,
+    kbars_raw_last_tw: null,
+    kbars_raw_session_count: 0,
+    kbars_shifted_session_count: 0,
+    kbars_normalized_session_count: 0,
+    kbars_filtered_count: 0,
+    kbars_filtered_outside_trade_date_count: 0,
+    previous_4h_fallback_loaded: previous4h.bar != null,
+    previous_4h_reference_date: previous4h.referenceDate,
+    previous_4h_reference_close: previous4h.referenceClose,
+    previous_session_kbars_count: 0,
+    previous_session_kbars_date: null,
+    previous_session_kbars_first_tw: null,
+    previous_session_kbars_last_tw: null,
+    kbars_error: null,
+  }
+  try {
+    const kbars = await fetchS12ShioajiKbars(env, symbol, tradeDate)
+    diagnostics = {
+      ...diagnostics,
+      ...kbars.diagnostics,
+      base_bars_count: kbars.diagnostics.kbars_unusable_reason == null ? kbars.bars.length : 0,
+    }
+    return {
+      bars: kbars.diagnostics.kbars_unusable_reason == null ? kbars.bars : [],
+      fallback15mBars: kbars.previousSessionBars,
+      fallback4hBars: previous4h.bar ? [previous4h.bar] : [],
+      fallback1hBars: kbars.previousSessionBars,
+      diagnostics,
+    }
+  } catch (error) {
+    return {
+      bars: [],
+      fallback15mBars: [],
+      fallback4hBars: previous4h.bar ? [previous4h.bar] : [],
+      fallback1hBars: [],
+      diagnostics: {
+        ...diagnostics,
+        kbars_error: error instanceof Error ? error.message : String(error),
+        kbars_unusable_reason: 'kbars_fetch_error',
+      },
+    }
+  }
+}

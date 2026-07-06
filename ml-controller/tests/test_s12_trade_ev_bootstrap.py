@@ -63,6 +63,86 @@ def test_load_s12_replay_trade_rows_enforces_strict_pre_run_date_query():
     assert captured["params"][0] == "2026-07-03"
 
 
+def test_load_s12_replay_trade_rows_accepts_dedicated_replay_outcomes():
+    calls: list[str] = []
+
+    def fake_query(sql, params=None, **_kwargs):
+        calls.append(sql)
+        if "FROM s12_replay_trade_outcomes" in sql:
+            return [
+                {
+                    "symbol": "8091",
+                    "market": "TWSE",
+                    "trade_date": "2026-07-02",
+                    "assessment_state": "reaction_ready",
+                    "setup_id": "8091:setup",
+                    "entry_price": 100,
+                    "stop_price": 96,
+                    "pnl_pct": 0.04,
+                    "trade_pnl_r": 1.0,
+                    "max_favorable_pct": 0.06,
+                    "max_adverse_pct": -0.01,
+                    "bars_to_exit": 5,
+                    "exit_reason": "tp1",
+                    "sample_eligible": 1,
+                    "source": "s12_intraday_structure_replay_v1",
+                    "detail_json": json.dumps({"conservative_intrabar_order": "stop_before_target"}),
+                }
+            ]
+        return []
+
+    rows = load_s12_replay_trade_rows(run_date="2026-07-03", query_fn=fake_query)
+
+    assert any("FROM s12_replay_trade_outcomes" in sql for sql in calls)
+    assert rows[0]["symbol"] == "8091"
+    assert rows[0]["prediction_date"] == "2026-07-02"
+    assert rows[0]["trade_pnl_pct"] == pytest.approx(0.04)
+    assert json.loads(rows[0]["forecast_data"])["s12_trade_ev"]["status"] == "loaded"
+
+
+def test_s12_trade_ev_bootstrap_retires_cold_with_dedicated_replay_min_samples():
+    rows = []
+    for i in range(30):
+        rows.append({
+            "symbol": "8091",
+            "market": "TWSE",
+            "prediction_date": f"2026-06-{(i % 20) + 1:02d}",
+            "trade_signal": "buy",
+            "trade_pnl_pct": 0.04,
+            "trade_pnl_r": 1.0,
+            "trade_outcome": "tp1",
+            "max_favorable_pct": 0.06,
+            "max_adverse_pct": -0.01,
+            "forecast_data": json.dumps({
+                "stock_meta": {"market_segment": "LISTED"},
+                "alpha_context": {"edge_bucket": "breakout"},
+                "s12_trade_ev": {
+                    "schema_version": "s12-trade-ev-v1",
+                    "status": "loaded",
+                    "semantic": "trade_expected_return_not_5bar_close_forecast",
+                    "trade_expected_return_net_pct": 0.04,
+                    "trade_expected_return_source": "s12_intraday_structure_replay_v1",
+                },
+            }),
+        })
+    provider = S12TradeEvBootstrapProvider(rows, run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
+
+    ev = provider.build_for_row({
+        "symbol": "8091",
+        "current_price": 100,
+        "stop_loss": 96,
+        "market_segment": "LISTED",
+        "alpha_context": {"edge_bucket": "breakout"},
+    })
+
+    assert ev["status"] == "loaded"
+    assert ev["source"] == "s12_replay_trade_outcomes:symbol"
+    assert ev["sample_policy"] == "verified_s12_buy_trade_outcomes_only"
+    assert ev["sampleCount"] == 30
+    assert ev.get("cold_start") is None
+    assert "replay_bootstrap" not in ev
+
+
 def test_s12_trade_ev_bootstrap_prefers_market_bucket_before_global():
     rows = [_row("1111", "2026-07-01", 0.02)] * 12
     rows += [_row("2222", "2026-07-01", 0.03)] * 12

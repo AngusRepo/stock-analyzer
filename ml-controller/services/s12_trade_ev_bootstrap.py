@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from services import d1_client
 from services.market_segment_policy import normalize_segment
+from services.s12_replay_trade_outcomes import s12_replay_outcome_to_bootstrap_row
 from services.s12_trade_ev import build_s12_trade_ev_from_replay, build_s12_trade_ev_from_structure
 
 
@@ -652,6 +653,12 @@ def load_s12_replay_trade_rows(
     safe_limit = max(1, min(int(limit or 5000), 20000))
     start_date = _fallback_start_date(run_date, lookback_days)
     query = query_fn or d1_client.query
+    dedicated_rows = _load_dedicated_s12_replay_trade_rows(
+        run_date=run_date,
+        start_date=start_date,
+        limit=safe_limit,
+        query_fn=query,
+    )
     rows = query(
         """
         SELECT p.stock_id,
@@ -681,11 +688,92 @@ def load_s12_replay_trade_rows(
         """.strip(),
         [run_date, start_date, safe_limit],
     )
-    return [
+    prediction_rows = [
         dict(row)
         for row in rows or []
         if _has_verified_s12_trade_ev_provenance(dict(row))
     ]
+    return dedicated_rows + prediction_rows
+
+
+def _load_dedicated_s12_replay_trade_rows(
+    *,
+    run_date: str,
+    start_date: str,
+    limit: int,
+    query_fn: QueryFn,
+) -> list[dict[str, Any]]:
+    """Load replay-generated S12 outcomes when the dedicated evidence table exists."""
+
+    try:
+        rows = query_fn(
+            """
+            SELECT symbol,
+                   market,
+                   trade_date,
+                   assessment_state,
+                   setup_id,
+                   entry_price,
+                   stop_price,
+                   target1_price,
+                   target2_price,
+                   target3_price,
+                   exit_price,
+                   pnl_pct,
+                   trade_pnl_r,
+                   max_favorable_pct,
+                   max_adverse_pct,
+                   bars_to_exit,
+                   exit_reason,
+                   sample_eligible,
+                   source,
+                   detail_json
+              FROM s12_replay_trade_outcomes
+             WHERE trade_date IS NOT NULL
+               AND date(trade_date) < date(?)
+               AND date(trade_date) >= date(?)
+               AND COALESCE(sample_eligible, 0) = 1
+               AND pnl_pct IS NOT NULL
+             ORDER BY date(trade_date) DESC, symbol
+             LIMIT ?
+            """.strip(),
+            [run_date, start_date, limit],
+        )
+    except Exception:
+        return []
+
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        raw = dict(row)
+        detail = _json_obj(raw.get("detail_json"))
+        outcome = {
+            "schema_version": "s12-replay-trade-outcome-v1",
+            "symbol": raw.get("symbol"),
+            "market": raw.get("market"),
+            "trade_date": raw.get("trade_date"),
+            "status": "executed",
+            "sample_eligible": True,
+            "source": raw.get("source") or "s12_intraday_structure_replay_v1",
+            "assessment_state": raw.get("assessment_state"),
+            "setup_id": raw.get("setup_id"),
+            "entry_price": raw.get("entry_price"),
+            "stop_price": raw.get("stop_price"),
+            "target1_price": raw.get("target1_price"),
+            "target2_price": raw.get("target2_price"),
+            "target3_price": raw.get("target3_price"),
+            "exit_price": raw.get("exit_price"),
+            "pnl_pct": raw.get("pnl_pct"),
+            "trade_pnl_r": raw.get("trade_pnl_r"),
+            "mfe_pct": raw.get("max_favorable_pct"),
+            "mae_pct": raw.get("max_adverse_pct"),
+            "bars_to_exit": raw.get("bars_to_exit"),
+            "exit_reason": raw.get("exit_reason"),
+            "conservative_intrabar_order": detail.get("conservative_intrabar_order") or "stop_before_target",
+        }
+        converted = s12_replay_outcome_to_bootstrap_row(outcome)
+        if converted is not None:
+            out.append(converted)
+    return out
 
 
 @dataclass(frozen=True)

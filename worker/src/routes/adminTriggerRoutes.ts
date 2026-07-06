@@ -21,6 +21,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'finlab-v4-backfill',
   'external-evidence',
   'strategy-learning',
+  's12-replay-backfill',
   'audit-json-retention',
   'monthly-retrain',
 ])
@@ -109,6 +110,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'alpha-quality',
       'finlab-v4-backfill',
       'strategy-learning',
+      's12-replay-backfill',
       'audit-json-retention',
       'weekly-optuna',
       'weekly-drift-retrain',

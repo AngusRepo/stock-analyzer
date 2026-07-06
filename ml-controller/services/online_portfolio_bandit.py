@@ -126,6 +126,33 @@ def _candidate_score(row: dict[str, Any]) -> float:
     return _to_float(row.get("score"), 0.0)
 
 
+def _candidate_feature_summary(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    qualities: list[float] = []
+    target_states: dict[str, int] = {}
+    conditional_count = 0
+    positive_edge_count = 0
+    for row in candidates or []:
+        quality = _to_float(row.get("allocator_edge_quality_score"), float("nan"))
+        if math.isfinite(quality):
+            qualities.append(quality)
+        state = str(row.get("s12_target_quality_state") or "unknown").strip() or "unknown"
+        target_states[state] = target_states.get(state, 0) + 1
+        if row.get("conditional_admission_allowed") is True:
+            conditional_count += 1
+        if _to_float(row.get("expected_return"), 0.0) > 0:
+            positive_edge_count += 1
+    return {
+        "schema_version": "opb-candidate-feature-summary-v1",
+        "candidate_count": len(candidates or []),
+        "positive_edge_count": positive_edge_count,
+        "allocator_edge_quality_avg": round(sum(qualities) / len(qualities), 6) if qualities else None,
+        "allocator_edge_quality_max": round(max(qualities), 6) if qualities else None,
+        "conditional_admission_count": conditional_count,
+        "s12_target_quality_state_counts": target_states,
+        "learning_role": "candidate_features_recorded_for_opb_reward_attribution_not_direct_order_signal",
+    }
+
+
 def _is_production_controller_stage(stage: str) -> bool:
     normalized = str(stage or "").lower()
     return normalized.startswith("l3_") or "production" in normalized
@@ -185,6 +212,7 @@ def build_online_portfolio_bandit_l2_packet(
     selected_arm = next((arm for arm in arms if selected and arm.arm_id == selected["arm_id"]), None)
 
     ranked_candidates = sorted(candidates, key=_candidate_score, reverse=True)
+    candidate_feature_summary = _candidate_feature_summary(ranked_candidates)
     raw_weights: dict[str, float] = {}
     final_weights: dict[str, float] = {}
     sparse_evidence: dict[str, Any] = {}
@@ -206,9 +234,23 @@ def build_online_portfolio_bandit_l2_packet(
         cash_weight = max(0.0, 1.0 - sum(final_weights.values()))
         candidate_diagnostics = dict(sparse_evidence.get("candidate_diagnostics") or {})
         if candidate_diagnostics:
+            candidates_by_symbol = {
+                str(row.get("symbol") or "").strip(): row
+                for row in ranked_candidates
+                if str(row.get("symbol") or "").strip()
+            }
             candidate_diagnostics = {
                 symbol: {
                     **diagnostic,
+                    "allocator_edge_quality_score": (
+                        candidates_by_symbol.get(symbol, {}).get("allocator_edge_quality_score")
+                    ),
+                    "conditional_admission_allowed": (
+                        candidates_by_symbol.get(symbol, {}).get("conditional_admission_allowed")
+                    ),
+                    "s12_target_quality_state": (
+                        candidates_by_symbol.get(symbol, {}).get("s12_target_quality_state")
+                    ),
                     "final_weight": round(float(final_weights.get(symbol, 0.0) or 0.0), 10),
                     "opb_cash_buffer_adjusted": True,
                 }
@@ -218,6 +260,7 @@ def build_online_portfolio_bandit_l2_packet(
                 **sparse_evidence,
                 "candidate_diagnostics": candidate_diagnostics,
                 "unallocated_cash_weight": round(cash_weight, 10),
+                "opb_candidate_feature_summary": candidate_feature_summary,
             }
 
     allocation = {
@@ -245,6 +288,7 @@ def build_online_portfolio_bandit_l2_packet(
         "selected_arm": selected,
         "arm_scores": scored,
         "controlled_allocation": allocation,
+        "candidate_feature_summary": candidate_feature_summary,
         "constraints": {
             "bandit_controls_final_weights": False,
             "bandit_controls_allocator_knobs": True,

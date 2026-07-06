@@ -1169,6 +1169,87 @@ def test_sparse_tangent_allocation_accepts_s12_setup_ev_but_keeps_execution_gate
     assert allocation["s12_trade_ev"]["execution_gate_required"] == "s12_reaction_ready"
 
 
+def test_sparse_tangent_allocation_records_allocator_edge_resolver_without_heat_override():
+    payload = {
+        "schema_version": "s12-trade-ev-v1",
+        "status": "loaded",
+        "semantic": "trade_expected_return_not_5bar_close_forecast",
+        "trade_expected_return_net_pct": 0.0031,
+        "trade_expected_return_source": "s12_structural_cold_start_ev",
+        "sample_policy": "s12_structural_cold_start_no_replay",
+    }
+    rows = [{
+        "symbol": "6257",
+        "chip_score": 24.0,
+        "tech_score": 22.0,
+        "confidence": 0.82,
+        "signal": "HOLD",
+        "has_buy_signal": 0,
+        "score": 96.0,
+        "s12_trade_ev": payload,
+        "market_heat_expected_return": 0.0088,
+        "score_components": _score_components(final_score=96.0, ml_edge=20.0),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True},
+        alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    resolver = allocation["allocator_edge_resolver"]
+    assert allocation["expected_return"] == pytest.approx(0.0031)
+    assert allocation["expected_return_source"] == "s12_structural_cold_start_ev"
+    assert resolver["expected_return_owner"] == "s12_trade_ev"
+    assert resolver["expected_return"] == pytest.approx(0.0031)
+    assert resolver["market_heat_expected_return"] == pytest.approx(0.0088)
+    assert resolver["market_heat_role"] == "diagnostic_context_not_expected_return_owner"
+    assert resolver["adjustment_applied"] is False
+    assert resolver["allocator_edge_quality_score"] > 60
+    assert resolver["conditional_admission_allowed"] is True
+
+
+def test_sparse_tangent_allocation_allows_positive_s12_cold_ev_below_static_min_as_conditional_candidate():
+    payload = {
+        "schema_version": "s12-trade-ev-v1",
+        "status": "loaded",
+        "semantic": "trade_expected_return_not_5bar_close_forecast",
+        "trade_expected_return_net_pct": 0.0031,
+        "trade_expected_return_source": "s12_structural_cold_start_ev",
+        "sample_policy": "s12_structural_cold_start_no_replay",
+        "s12_structural_targets": {
+            "target_quality_state": "structure_targets",
+            "reward_confidence_multiplier": 1.0,
+        },
+    }
+    rows = [{
+        "symbol": "6257",
+        "chip_score": 24.0,
+        "tech_score": 22.0,
+        "confidence": 0.82,
+        "signal": "HOLD",
+        "has_buy_signal": 0,
+        "score": 96.0,
+        "s12_trade_ev": payload,
+        "market_heat_expected_return": 0.0088,
+        "score_components": _score_components(final_score=96.0, chip_flow=24.0, technical_structure=22.0, ml_edge=20.0),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True, "promoteMinForecastPct": 0.005, "promoteMinMlEdge": 0.0},
+        alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    assert promoted[0]["signal"] == "BUY"
+    assert allocation["expected_return"] == pytest.approx(0.0031)
+    assert allocation["promotion_conditional_admission"] is True
+    assert allocation["promotion_static_min_expected_return"] == pytest.approx(0.005)
+    assert allocation["allocator_edge_resolver"]["expected_return_owner"] == "s12_trade_ev"
+
+
 def test_sparse_tangent_allocation_does_not_accept_market_heat_as_expected_edge():
     rows = [{
         "symbol": "3661",

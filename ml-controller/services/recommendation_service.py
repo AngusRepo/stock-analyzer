@@ -2032,6 +2032,14 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
         return False
     min_forecast = float(ranking_config.get("promoteMinForecastPct", 0.0))
     if expected_return < min_forecast:
+        resolver = row.get("_allocator_edge_resolver") if isinstance(row.get("_allocator_edge_resolver"), dict) else {}
+        if resolver.get("conditional_admission_allowed") is True and expected_return > 0:
+            row["promotion_conditional_admission"] = True
+            row["promotion_conditional_admission_policy"] = resolver.get("conditional_admission_policy")
+            row["promotion_static_min_expected_return"] = min_forecast
+            row["promotion_expected_return"] = expected_return
+            row["promotion_expected_return_source"] = expected_return_source
+            return True
         row["promotion_blocked_reason"] = "negative_or_below_min_forecast"
         row["promotion_blocked_forecast_pct"] = forecast_pct
         row["promotion_blocked_forecast_pct_source"] = forecast_pct_source or None
@@ -2675,6 +2683,135 @@ def _expected_return_uncertainty_adjustment(row: dict, value: float) -> tuple[fl
     return adjusted, evidence
 
 
+def _allocator_target_quality(payload: dict[str, Any]) -> dict[str, Any]:
+    targets = payload.get("s12_structural_targets") if isinstance(payload.get("s12_structural_targets"), dict) else {}
+    multiplier = _float_or_none(targets.get("reward_confidence_multiplier"))
+    if multiplier is None:
+        multiplier = _float_or_none(payload.get("reward_confidence_multiplier"))
+    if multiplier is None:
+        multiplier = 1.0
+    state = str(targets.get("target_quality_state") or "").strip()
+    if not state:
+        t1 = str(targets.get("target1_source") or "")
+        t2 = str(targets.get("target2_source") or "")
+        if "r_multiple_fallback" in t1 and "r_multiple_fallback" in t2:
+            state = "r_multiple_fallback_both"
+        elif "r_multiple_fallback" in t2:
+            state = "partial_structure_target"
+        else:
+            state = "structure_targets"
+    return {
+        "target_quality_state": state,
+        "reward_confidence_multiplier": round(max(0.25, min(1.0, float(multiplier))), 6),
+        "target1_source": targets.get("target1_source"),
+        "target2_source": targets.get("target2_source"),
+    }
+
+
+def _allocator_edge_quality(
+    row: dict,
+    *,
+    payload: dict[str, Any],
+    market_heat_expected_return: float,
+    target_quality: dict[str, Any],
+) -> dict[str, Any]:
+    components = _score_v2_components_from_row(row)
+    final_score = _float_or_none(row.get("score"))
+    if final_score is None:
+        final_score = _float_or_none(row.get("_combined_score"))
+        if final_score is not None:
+            final_score *= 100.0
+    score_quality = max(0.0, min(1.0, (final_score or 0.0) / 100.0))
+    heat_quality = max(0.0, min(1.0, market_heat_expected_return / 0.01))
+    target_multiplier = float(target_quality.get("reward_confidence_multiplier") or 1.0)
+    status = str(payload.get("status") or "").strip().lower()
+    execution_ready = payload.get("execution_ready")
+    status_quality = 0.90 if status == "loaded" else 0.72 if status == "setup_only" else 0.50
+    if execution_ready is False:
+        status_quality = min(status_quality, 0.72)
+    component_floor = min(
+        float(components.get("chipFlow") or 0.0) / 25.0,
+        float(components.get("technicalStructure") or 0.0) / 25.0,
+        float(components.get("fundamentalQuality") or 0.0) / 25.0,
+    )
+    quality = (
+        (0.35 * score_quality)
+        + (0.20 * heat_quality)
+        + (0.25 * target_multiplier)
+        + (0.10 * status_quality)
+        + (0.10 * max(0.0, min(1.0, component_floor)))
+    )
+    return {
+        "allocator_edge_quality_score": round(quality * 100.0, 4),
+        "score_quality": round(score_quality, 6),
+        "market_heat_quality": round(heat_quality, 6),
+        "target_quality_multiplier": round(target_multiplier, 6),
+        "status_quality": round(status_quality, 6),
+        "component_floor_quality": round(max(0.0, min(1.0, component_floor)), 6),
+        "components": components,
+    }
+
+
+def _allocator_edge_resolver(
+    row: dict,
+    *,
+    expected_return: float,
+    expected_return_source: str,
+    payload: dict[str, Any] | None,
+    market_heat_expected_return: float,
+) -> tuple[float, str, dict[str, Any]]:
+    payload_dict = payload if isinstance(payload, dict) else {}
+    source = str(expected_return_source or "").strip()
+    target_quality = _allocator_target_quality(payload_dict)
+    edge_quality = _allocator_edge_quality(
+        row,
+        payload=payload_dict,
+        market_heat_expected_return=market_heat_expected_return,
+        target_quality=target_quality,
+    )
+    cold_start_source = source.startswith("s12_structural_cold_start_ev") or source.startswith("s12_structural_setup_cold_start_ev")
+    conditional_admission_allowed = (
+        cold_start_source
+        and expected_return > 0
+        and edge_quality["allocator_edge_quality_score"] >= 60.0
+        and market_heat_expected_return >= 0.003
+    )
+    evidence = {
+        "schema_version": "allocator-edge-resolver-v1",
+        "expected_return_owner": "s12_trade_ev",
+        "expected_return": round(float(expected_return), 10),
+        "expected_return_source": source,
+        "payload_status": payload_dict.get("status"),
+        "payload_semantic": payload_dict.get("semantic"),
+        "sample_policy": payload_dict.get("sample_policy"),
+        "execution_ready": payload_dict.get("execution_ready"),
+        "execution_gate_required": payload_dict.get("execution_gate_required"),
+        "market_heat_expected_return": round(float(market_heat_expected_return), 10),
+        "market_heat_role": "diagnostic_context_not_expected_return_owner",
+        "policy": "allocator_expected_edge_requires_s12_trade_ev",
+        "adjustment_applied": False,
+        "allocator_edge_quality_score": edge_quality["allocator_edge_quality_score"],
+        "edge_quality": edge_quality,
+        "s12_target_quality": target_quality,
+        "conditional_admission_allowed": conditional_admission_allowed,
+        "conditional_admission_policy": (
+            "positive_s12_cold_ev_can_enter_allocator_when_quality_high_even_if_below_static_min"
+            if conditional_admission_allowed
+            else "standard_static_min_gate"
+        ),
+    }
+    if source.startswith("s12_structural_setup_cold_start_ev"):
+        evidence["candidate_contract"] = "setup_ev_allowed_for_selection_execution_requires_s12_reaction_ready"
+    elif source.startswith("s12_structural_cold_start_ev"):
+        evidence["candidate_contract"] = "s12_structural_cold_start_ev_until_replay_samples_sufficient"
+    elif source.startswith("s12_replay_trade_outcomes"):
+        evidence["candidate_contract"] = "verified_s12_replay_trade_outcomes"
+    else:
+        evidence["candidate_contract"] = "accepted_trade_ev_source"
+    row["_allocator_edge_resolver"] = evidence
+    return expected_return, source, evidence
+
+
 def _row_expected_return_with_source(row: dict) -> tuple[float, str]:
     alpha_context = row.get("alpha_context") if isinstance(row.get("alpha_context"), dict) else {}
     heat_edge = _float_or_none(row.get("market_heat_expected_return"))
@@ -2700,10 +2837,19 @@ def _row_expected_return_with_source(row: dict) -> tuple[float, str]:
         if canonical_source != "missing_expected_return_no_allocation_edge":
             return 0.0, canonical_source
     else:
-        adjusted_value, adjustment = _expected_return_uncertainty_adjustment(row, canonical_value)
-        source = canonical_source
+        resolved_value, resolved_source, resolver_evidence = _allocator_edge_resolver(
+            row,
+            expected_return=canonical_value,
+            expected_return_source=canonical_source,
+            payload=payload,
+            market_heat_expected_return=heat_edge,
+        )
+        adjusted_value, adjustment = _expected_return_uncertainty_adjustment(row, resolved_value)
+        source = resolved_source
         if adjustment:
             source = f"{source}_dispersion_adjusted"
+            resolver_evidence["dispersion_adjusted"] = True
+            resolver_evidence["post_dispersion_expected_return"] = round(adjusted_value, 10)
         return adjusted_value, source
 
     return 0.0, "missing_expected_return_no_allocation_edge"
@@ -3048,6 +3194,21 @@ def _apply_sparse_tangent_buy_selection(
             "score": row.get("score"),
             "expected_return": expected_return,
             "expected_return_source": expected_return_source,
+            "allocator_edge_quality_score": (
+                (row.get("_allocator_edge_resolver") or {}).get("allocator_edge_quality_score")
+                if isinstance(row.get("_allocator_edge_resolver"), dict)
+                else None
+            ),
+            "conditional_admission_allowed": (
+                (row.get("_allocator_edge_resolver") or {}).get("conditional_admission_allowed")
+                if isinstance(row.get("_allocator_edge_resolver"), dict)
+                else None
+            ),
+            "s12_target_quality_state": (
+                ((row.get("_allocator_edge_resolver") or {}).get("s12_target_quality") or {}).get("target_quality_state")
+                if isinstance(row.get("_allocator_edge_resolver"), dict)
+                else None
+            ),
             "market_heat_score": row.get("market_heat_score"),
             "market_heat_expected_return": row.get("market_heat_expected_return"),
             "turnover_pressure": row.get("turnover_pressure") or row.get("turnover") or row.get("expected_turnover"),
@@ -3058,6 +3219,10 @@ def _apply_sparse_tangent_buy_selection(
                 "expected_return": expected_return,
                 "expected_return_source": expected_return_source,
                 "expected_return_payload": row.get("_expected_return_payload"),
+                "allocator_edge_resolver": row.get("_allocator_edge_resolver"),
+                "promotion_conditional_admission": row.get("promotion_conditional_admission"),
+                "promotion_conditional_admission_policy": row.get("promotion_conditional_admission_policy"),
+                "promotion_static_min_expected_return": row.get("promotion_static_min_expected_return"),
                 "expected_return_uncertainty_adjustment": row.get("_expected_return_uncertainty_adjustment"),
                 "market_heat_score": row.get("market_heat_score"),
                 "market_heat_expected_return": row.get("market_heat_expected_return"),
@@ -3339,6 +3504,22 @@ def _apply_sparse_tangent_buy_selection(
             "expected_return": round(expected_return, 10),
             "expected_return_source": (evidence or {}).get("expected_return_source")
             or row.get("promotion_expected_return_source"),
+            "allocator_edge_resolver": (
+                (evidence or {}).get("allocator_edge_resolver")
+                or row.get("_allocator_edge_resolver")
+            ),
+            "promotion_conditional_admission": bool(
+                (evidence or {}).get("promotion_conditional_admission")
+                or row.get("promotion_conditional_admission")
+            ),
+            "promotion_conditional_admission_policy": (
+                (evidence or {}).get("promotion_conditional_admission_policy")
+                or row.get("promotion_conditional_admission_policy")
+            ),
+            "promotion_static_min_expected_return": (
+                (evidence or {}).get("promotion_static_min_expected_return")
+                or row.get("promotion_static_min_expected_return")
+            ),
             "expected_return_uncertainty_adjustment": (
                 (evidence or {}).get("expected_return_uncertainty_adjustment")
                 or row.get("_expected_return_uncertainty_adjustment")

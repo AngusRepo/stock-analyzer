@@ -338,6 +338,28 @@ def test_s12_trade_ev_bootstrap_keeps_setup_ev_but_requires_reaction_ready_execu
     assert ev["candidate_s12_entry_context"]["state"] == "waiting_sweep"
 
 
+def test_s12_trade_ev_bootstrap_uses_fundamental_quality_before_score_components_are_rebuilt():
+    provider = S12TradeEvBootstrapProvider([], run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
+
+    ev = provider.build_for_row(
+        {
+            "symbol": "6257",
+            "current_price": 100,
+            "stop_loss": 96,
+            "target1": 106,
+            "target2": 112,
+            "market_segment": "LISTED",
+            "score": 66,
+            "fundamental_quality": {"score": 14.2},
+            "score_components": {"components": {"fundamentalQuality": 0.0}},
+        },
+        prediction={"ensemble_v2": {"avg_rank": 0.72, "confidence": 0.72}},
+    )
+
+    assert ev["status"] == "loaded"
+    assert ev["cold_start_policy"]["inputs"]["fundamental_score"] == pytest.approx(14.2)
+
+
 def test_s12_trade_ev_bootstrap_prefers_structured_canonical_entry_context():
     provider = S12TradeEvBootstrapProvider([], run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
 

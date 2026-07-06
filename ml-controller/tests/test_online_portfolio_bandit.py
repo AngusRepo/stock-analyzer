@@ -95,6 +95,42 @@ def test_online_portfolio_bandit_selects_ucb_arm_and_keeps_cash_buffer(monkeypat
     assert packet["controlled_allocation"]["cash_weight"] == pytest.approx(0.25)
 
 
+def test_online_portfolio_bandit_records_allocator_edge_quality_features(monkeypatch):
+    monkeypatch.setattr(
+        online_portfolio_bandit,
+        "allocate_sparse_tangent_with_evidence",
+        lambda candidates, return_history, **kwargs: {
+            "weights": {"AAA": 1.0},
+            "candidate_diagnostics": {
+                "AAA": {"alpha_input": 0.05, "marginal_utility": 0.01, "final_weight": 1.0},
+            },
+            "objective_evidence": {"objective": "mean_variance_alpha_utility_with_cash"},
+        },
+    )
+
+    packet = build_online_portfolio_bandit_l2_packet(
+        candidates=[{
+            **_candidate("AAA", 90.0, 0.05),
+            "allocator_edge_quality_score": 83.5,
+            "conditional_admission_allowed": True,
+            "s12_target_quality_state": "structure_targets",
+        }],
+        return_history={},
+        arms=(PortfolioBanditArm("quality_arm", 1, 1.0, 0.0, 0.0, 0.20, 0.020, 30),),
+        exploration_alpha=0.0,
+        stage="L3_production_allocation_controller",
+    )
+
+    summary = packet["candidate_feature_summary"]
+    diagnostics = packet["controlled_allocation"]["sparse_evidence"]["candidate_diagnostics"]["AAA"]
+    assert summary["allocator_edge_quality_avg"] == pytest.approx(83.5)
+    assert summary["conditional_admission_count"] == 1
+    assert summary["s12_target_quality_state_counts"] == {"structure_targets": 1}
+    assert diagnostics["allocator_edge_quality_score"] == pytest.approx(83.5)
+    assert diagnostics["conditional_admission_allowed"] is True
+    assert diagnostics["s12_target_quality_state"] == "structure_targets"
+
+
 def test_online_portfolio_bandit_reward_ledger_can_override_static_prior(monkeypatch):
     monkeypatch.setattr(
         online_portfolio_bandit,

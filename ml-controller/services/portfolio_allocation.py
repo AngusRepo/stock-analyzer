@@ -313,6 +313,9 @@ def _alpha_utility_raw(
         diagnostics[symbol] = {
             "optimizer_objective": "mean_variance_alpha_utility_with_cash",
             "alpha_input": round(expected_returns[idx], 10),
+            "allocator_edge_quality_score": rows[idx].get("allocator_edge_quality_score"),
+            "conditional_admission_allowed": rows[idx].get("conditional_admission_allowed"),
+            "s12_target_quality_state": rows[idx].get("s12_target_quality_state"),
             "alpha_strength": round(alpha_strength, 6),
             "net_alpha_after_cost": round(net_alpha[idx], 10),
             "individual_variance": round(diag[idx], 10),
@@ -512,6 +515,9 @@ def allocate_sparse_tangent_with_evidence(
             symbol: {
                 "optimizer_objective": "sparse_tangent_inverse_risk_legacy",
                 "alpha_input": round(expected_returns[idx], 10),
+                "allocator_edge_quality_score": evaluated[idx].get("allocator_edge_quality_score"),
+                "conditional_admission_allowed": evaluated[idx].get("conditional_admission_allowed"),
+                "s12_target_quality_state": evaluated[idx].get("s12_target_quality_state"),
                 "individual_variance": round(diag[idx], 10),
                 "individual_volatility": round(math.sqrt(diag[idx]), 10),
                 "final_weight": 0.0,

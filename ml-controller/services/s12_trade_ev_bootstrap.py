@@ -438,6 +438,18 @@ def _s12_reward_confidence_multiplier(evidence: dict[str, Any]) -> float:
     return 1.0
 
 
+def _s12_target_quality_state(evidence: dict[str, Any]) -> str:
+    target1_source = str(evidence.get("target1_source") or "")
+    target2_source = str(evidence.get("target2_source") or "")
+    target1_fallback = "r_multiple_fallback" in target1_source
+    target2_fallback = "r_multiple_fallback" in target2_source
+    if target1_fallback and target2_fallback:
+        return "r_multiple_fallback_both"
+    if target2_fallback:
+        return "partial_structure_target"
+    return "structure_targets"
+
+
 def _targets_from_row(
     row: dict[str, Any],
     prediction: dict[str, Any] | None,
@@ -615,6 +627,8 @@ def _s12_structural_targets_from_row(
         ),
     }
     evidence["reward_confidence_multiplier"] = _s12_reward_confidence_multiplier(evidence)
+    evidence["target_quality_state"] = _s12_target_quality_state(evidence)
+    evidence["target_quality_role"] = "allocator_confidence_evidence_and_cold_ev_reward_multiplier"
     return structural_tp1, structural_main_exit, evidence
 
 
@@ -625,6 +639,22 @@ def _score_component(row: dict[str, Any], *path: str) -> float | None:
             return None
         cur = cur.get(key)
     return _to_float(cur)
+
+
+def _fundamental_score_from_row(row: dict[str, Any]) -> float | None:
+    score = _score_component(row, "components", "fundamentalQuality")
+    if score is not None and score > 0:
+        return score
+    for key in ("fundamental_quality_score", "fundamental_score"):
+        value = _to_float(row.get(key))
+        if value is not None:
+            return value
+    payload = row.get("fundamental_quality")
+    if isinstance(payload, dict):
+        value = _to_float(payload.get("score") or payload.get("fundamentalQuality"))
+        if value is not None:
+            return value
+    return score
 
 
 def _score_v2_final_score(row: dict[str, Any]) -> float | None:
@@ -946,7 +976,7 @@ class S12TradeEvBootstrapProvider:
             ml_edge_score=row.get("ml_score") or _score_component(row, "components", "mlEdge"),
             technical_score=row.get("tech_score") or _score_component(row, "components", "technicalStructure"),
             chip_score=row.get("chip_score") or _score_component(row, "components", "chipFlow"),
-            fundamental_score=_score_component(row, "components", "fundamentalQuality"),
+            fundamental_score=_fundamental_score_from_row(row),
             score_v2_final_score=_score_v2_final_score(row),
             market_heat_expected_return=(
                 row.get("market_heat_expected_return")

@@ -34,6 +34,15 @@ export interface S12ReplayOutcome {
   bars_to_exit: number | null
   exit_reason: string | null
   conservative_intrabar_order: 'stop_before_target'
+  assessment_ready?: boolean | null
+  assessment_reason?: string | null
+  assessment_detail?: string | null
+  assessment_completed_bars?: S12IntradayAssessment['completedBars'] | null
+  assessment_bar_diagnostics?: S12IntradayAssessment['barDiagnostics'] | null
+  assessment_maturity?: S12IntradayAssessment['maturity'] | null
+  assessment_execution?: S12IntradayAssessment['execution'] | null
+  assessment_sequence?: S12IntradayAssessment['sequence'] | null
+  replay_diagnostics?: Record<string, unknown> | null
 }
 
 export interface S12ReplayInput {
@@ -46,6 +55,7 @@ export interface S12ReplayInput {
   policy?: Partial<S12TimingPolicy> | null
   h4ReferenceDate?: string | null
   h4ReferenceClose?: number | null
+  replayDiagnostics?: Record<string, unknown> | null
 }
 
 export interface S12ReplayOptions {
@@ -141,6 +151,52 @@ function isSetupValidState(state: string | null | undefined): boolean {
   ].includes(String(state ?? ''))
 }
 
+function isEquityMutationReplayEntry(assessment: S12IntradayAssessment): boolean {
+  const detail = String(assessment.detail ?? '')
+  const entry = finitePositive(assessment.execution.entryPrice)
+  const stop = finitePositive(assessment.exitPlan.trailingStop.initial) ?? finitePositive(assessment.execution.stopLoss)
+  return (
+    assessment.reason === 's12_equity_mutation_context_ready' &&
+    detail.includes('equity_mutation_context=true') &&
+    detail.includes('entry_archetype=equity_repricing_breakout') &&
+    entry != null &&
+    stop != null &&
+    stop < entry
+  )
+}
+
+function isReplayEntryAssessment(assessment: S12IntradayAssessment): boolean {
+  return (assessment.state === 'reaction_ready' && assessment.ready) || isEquityMutationReplayEntry(assessment)
+}
+
+function replayEntryStatusReason(assessment: S12IntradayAssessment): string {
+  if (isEquityMutationReplayEntry(assessment)) return 'executed_equity_mutation_context_ready'
+  return 'executed_reaction_ready'
+}
+
+function assessmentSnapshot(assessment?: S12IntradayAssessment | null): Pick<
+  S12ReplayOutcome,
+  | 'assessment_ready'
+  | 'assessment_reason'
+  | 'assessment_detail'
+  | 'assessment_completed_bars'
+  | 'assessment_bar_diagnostics'
+  | 'assessment_maturity'
+  | 'assessment_execution'
+  | 'assessment_sequence'
+> {
+  return {
+    assessment_ready: assessment?.ready ?? null,
+    assessment_reason: assessment?.reason ?? null,
+    assessment_detail: assessment?.detail ?? null,
+    assessment_completed_bars: assessment?.completedBars ?? null,
+    assessment_bar_diagnostics: assessment?.barDiagnostics ?? null,
+    assessment_maturity: assessment?.maturity ?? null,
+    assessment_execution: assessment?.execution ?? null,
+    assessment_sequence: assessment?.sequence ?? null,
+  }
+}
+
 function emptyOutcome(input: S12ReplayInput, status: S12ReplayOutcomeStatus, reason: string, assessment?: S12IntradayAssessment | null): S12ReplayOutcome {
   return {
     schema_version: 's12-replay-trade-outcome-v1',
@@ -167,6 +223,8 @@ function emptyOutcome(input: S12ReplayInput, status: S12ReplayOutcomeStatus, rea
     bars_to_exit: null,
     exit_reason: null,
     conservative_intrabar_order: 'stop_before_target',
+    ...assessmentSnapshot(assessment),
+    replay_diagnostics: input.replayDiagnostics ?? null,
   }
 }
 
@@ -181,7 +239,7 @@ function findEntryAssessment(
   for (let i = 0; i < bars.length; i += 1) {
     const nowMs = bars[i].startMs + M15_MS
     const assessment = provider(bars.slice(0, i + 1), nowMs)
-    if (assessment.state === 'reaction_ready' && assessment.ready) return assessment
+    if (isReplayEntryAssessment(assessment)) return assessment
     if (isSetupValidState(assessment.state)) latestSetup = assessment
   }
   return latestSetup ?? null
@@ -210,7 +268,7 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
   const provider = options.assessmentProvider ?? defaultAssessmentProvider(input)
   const assessment = findEntryAssessment(input, bars, provider, options.entryAssessment)
   if (!assessment) return emptyOutcome(input, 'skipped', 'no_s12_assessment')
-  if (assessment.state !== 'reaction_ready' || !assessment.ready) {
+  if (!isReplayEntryAssessment(assessment)) {
     return emptyOutcome(input, isSetupValidState(assessment.state) ? 'setup_only' : 'skipped', `s12_state_${assessment.state}`, assessment)
   }
 
@@ -220,7 +278,7 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
     return emptyOutcome(input, 'skipped', 'invalid_entry_or_stop', assessment)
   }
 
-  const entryMs = Number(assessment.sequence.reactionMs ?? 0)
+  const entryMs = Number(assessment.sequence.reactionMs ?? assessment.sequence.zoneTouchMs ?? 0)
   const foundEntryIndex = bars.findIndex((bar) => bar.startMs >= entryMs)
   const entryIndex = foundEntryIndex >= 0 ? foundEntryIndex : bars.length - 1
   const futureBars = bars.slice(entryIndex + 1, entryIndex + 1 + Math.max(1, Math.floor(options.maxExitBars ?? 80)))
@@ -303,7 +361,7 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
     sample_eligible: true,
     source: 's12_intraday_structure_replay_v1',
     assessment_state: assessment.state,
-    status_reason: 'executed_reaction_ready',
+    status_reason: replayEntryStatusReason(assessment),
     setup_id: assessment.setupId,
     entry_ms: entryMs || null,
     exit_ms: exitMs,
@@ -320,6 +378,8 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
     bars_to_exit: barsToExit,
     exit_reason: exitReason,
     conservative_intrabar_order: 'stop_before_target',
+    ...assessmentSnapshot(assessment),
+    replay_diagnostics: input.replayDiagnostics ?? null,
   }
 }
 
@@ -459,6 +519,7 @@ export async function runS12HistoricalReplayForDate(
       fallback4hBars: loaded.fallback4hBars,
       h4ReferenceDate: loaded.h4ReferenceDate,
       h4ReferenceClose: loaded.h4ReferenceClose,
+      replayDiagnostics: loaded.diagnostics ?? null,
     })
     outcomes.push(outcome)
     if (options.persist !== false) {

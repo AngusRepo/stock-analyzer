@@ -149,6 +149,41 @@ function assessment(overrides: Partial<S12IntradayAssessment> = {}): S12Intraday
 }
 
 {
+  const setup = assessment({
+    state: 'waiting_sweep',
+    ready: false,
+    reason: 's12_equity_mutation_context_ready',
+    detail: 'state=waiting_sweep;reason=s12_equity_mutation_context_ready;equity_mutation_context=true;entry_archetype=equity_repricing_breakout',
+    sequence: { zoneTouchMs: baseMs + 4 * M15 },
+    maturity: {
+      takeoverEligible: false,
+      takeoverRole: 'none',
+      tier: 'none',
+      riskMode: 'none',
+      policy: 'advisory_until_long_reaction_bearish_defense_or_invalidated',
+      blocker: 'waiting_sweep',
+      stage: 'trigger_sequence',
+    },
+  })
+  const bars = [
+    bar(0, 98, 100, 97, 99),
+    bar(1, 99, 101, 98, 100),
+    bar(2, 100, 102, 99, 101),
+    bar(3, 101, 102, 100, 101),
+    bar(4, 99, 101, 98, 100),
+    bar(5, 100, 105, 99, 104),
+    bar(6, 104, 109, 103, 108),
+  ]
+  const outcome = simulateS12ReplayTradeOutcome(
+    { symbol: '8091', tradeDate: '2026-07-02', baseBars: bars },
+    { entryAssessment: setup, assessmentProvider: () => setup },
+  )
+  assert(outcome.status === 'executed', 'S12 equity-mutation setup-valid replay should simulate an entry')
+  assert(outcome.status_reason === 'executed_equity_mutation_context_ready', 'S12 equity-mutation replay should preserve entry provenance')
+  assert(outcome.sample_eligible === true, 'S12 equity-mutation replay should feed trade EV samples')
+}
+
+{
   let calls = 0
   const bars = [
     bar(0, 98, 100, 97, 99),
@@ -246,9 +281,14 @@ async function runPersistenceTests(): Promise<void> {
     bars_to_exit: 1,
     exit_reason: 'tp1',
     conservative_intrabar_order: 'stop_before_target',
+    assessment_detail: 'state=reaction_ready;equity_mutation_context=true;vwap_fast_acceptance=true',
+    replay_diagnostics: { source: 'historical_asof' },
   })
   assert(binds.length === 1, 'persist should execute one upsert')
   assert(binds[0][0] === '8091' && binds[0][18] === 1, 'persist should bind symbol and sample_eligible')
+  const detail = JSON.parse(String(binds[0][20])) as Record<string, unknown>
+  assert(String(detail.assessment_detail).includes('equity_mutation_context=true'), 'persisted detail should retain SMCVWAP diagnostics')
+  assert((detail.replay_diagnostics as Record<string, unknown>).source === 'historical_asof', 'persisted detail should retain replay loader diagnostics')
 }
 
 void runPersistenceTests().catch((error) => {

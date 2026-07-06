@@ -65,6 +65,68 @@ function positiveNumber(value: unknown): number | null {
   return n != null && n > 0 ? n : null
 }
 
+function parseJsonObject(value: unknown): Record<string, any> | null {
+  if (!value) return null
+  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, any>
+  if (typeof value !== 'string') return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, any>
+      : null
+  } catch {
+    return null
+  }
+}
+
+function lifecycleS12ExitPlanFromPosition(pos: { trade_lifecycle_json?: unknown }): Record<string, any> | null {
+  const lifecycle = parseJsonObject(pos.trade_lifecycle_json)
+  if (lifecycle?.version !== 'canonical_trade_lifecycle_v1') return null
+  const plan = lifecycle.entry?.s12?.exitPlan
+  return plan && typeof plan === 'object' && !Array.isArray(plan) ? plan as Record<string, any> : null
+}
+
+function lifecycleS12StopFromPosition(pos: { trade_lifecycle_json?: unknown }): {
+  price: number
+  source: string | null
+  method: string | null
+} | null {
+  const lifecycle = parseJsonObject(pos.trade_lifecycle_json)
+  if (lifecycle?.version !== 'canonical_trade_lifecycle_v1') return null
+  const s12 = lifecycle.entry?.s12
+  const plan = s12?.exitPlan
+  const candidates = [
+    plan?.trailingInitial,
+    s12?.structureStop,
+    lifecycle.entry?.stopLoss,
+  ]
+  const price = candidates.map(positiveNumber).find((value): value is number => value != null)
+  if (price == null) return null
+  return {
+    price,
+    source: String(plan?.trailingSource ?? 'canonical_trade_lifecycle').trim() || 'canonical_trade_lifecycle',
+    method: String(plan?.trailingMethod ?? 'lifecycle_s12_structural_stop').trim() || 'lifecycle_s12_structural_stop',
+  }
+}
+
+function withLifecycleS12ExitInputs<T extends Record<string, any>>(pos: T): T {
+  const plan = lifecycleS12ExitPlanFromPosition(pos)
+  const lifecycleStop = lifecycleS12StopFromPosition(pos)
+  const existingStop = positiveNumber(pos.s12_position_stop_price)
+  const stopPrice = existingStop ?? lifecycleStop?.price ?? null
+  return {
+    ...pos,
+    s12_position_stop_price: stopPrice,
+    s12_position_stop_source: pos.s12_position_stop_source ?? lifecycleStop?.source ?? null,
+    s12_position_stop_method: pos.s12_position_stop_method ?? lifecycleStop?.method ?? null,
+    tp1_price: pos.tp1_price ?? positiveNumber(plan?.tp1),
+    tp2_price: pos.tp2_price ?? positiveNumber(plan?.mainExit),
+    tp3_price: pos.tp3_price ?? positiveNumber(plan?.tp3),
+    tp4_price: pos.tp4_price ?? positiveNumber(plan?.tp4),
+    planned_take_profit: pos.planned_take_profit ?? plan?.plannedTakeProfit ?? null,
+  }
+}
+
 export function resolveS12HoldingDefenseEventAction(reason: string | null | undefined): S12HoldingDefenseEventAction {
   const text = String(reason ?? '')
   if (text.includes('take_profit_or_tighten_stop') || text.includes('TAKE_PROFIT_OR_TIGHTEN_STOP')) return 'take_profit_or_tighten_stop'
@@ -208,6 +270,7 @@ export function resolveS12HoldingDefenseUpdate(params: {
     s12_position_stop_price?: number | null
     s12_position_stop_source?: string | null
     s12_position_stop_method?: string | null
+    trade_lifecycle_json?: unknown
   }
   currentPrice: number
   atr14: number
@@ -215,15 +278,16 @@ export function resolveS12HoldingDefenseUpdate(params: {
   executableBookAvailable?: boolean
   tp1SellRatio?: number | null
 }): ExitDecision | null {
+  const pos = withLifecycleS12ExitInputs(params.pos)
   const s12Decision = resolveS12PositionDecision({
     assessment: params.assessment,
     currentPrice: params.currentPrice,
     executableBookAvailable: params.executableBookAvailable ?? true,
     atr14: params.atr14,
     tp1SellRatio: params.tp1SellRatio,
-    pos: params.pos,
+    pos,
   })
-  return s12PositionDecisionToExitDecision(s12Decision, params.pos, params.currentPrice)
+  return s12PositionDecisionToExitDecision(s12Decision, pos, params.currentPrice)
 }
 
 function s12PositionDecisionToExitDecision(
@@ -373,6 +437,8 @@ async function evaluateS12HoldingDefense(
     const completed15m = aggregateCompletedS12Bars(s12Base.bars, S12_M15_MS, Date.now())
     const entryPrice = positiveNumber(pos.entry_price) ?? positiveNumber(pos.avg_cost) ?? 0
     const previousTrailingStop = positiveNumber(pos.trailing_stop)
+    const lifecycleStop = lifecycleS12StopFromPosition(pos)
+    const lifecycleExitPlan = lifecycleS12ExitPlanFromPosition(pos)
     const computedPositionStop = buildS12LongPositionStopPlan({
       bars15m: completed15m,
       entryPrice,
@@ -380,15 +446,28 @@ async function evaluateS12HoldingDefense(
       policy,
       stopSource: policy.positionStopSource,
     })
-    const appliedPositionStopPrice = computedPositionStop
-      ? Math.max(previousTrailingStop ?? computedPositionStop.price, computedPositionStop.price)
+    const effectiveStopCandidate = computedPositionStop ?? (
+      lifecycleStop
+        ? {
+          price: lifecycleStop.price,
+          source: 'adaptive' as const,
+          method: lifecycleStop.method as any,
+          zoneLow: null,
+          zoneHigh: null,
+          noAtrBuffer: true,
+        }
+        : null
+    )
+    const appliedPositionStopPrice = effectiveStopCandidate
+      ? Math.max(previousTrailingStop ?? effectiveStopCandidate.price, effectiveStopCandidate.price)
       : null
-    const positionStop = computedPositionStop && appliedPositionStopPrice != null
-      ? { ...computedPositionStop, price: appliedPositionStopPrice }
+    const positionStop = effectiveStopCandidate && appliedPositionStopPrice != null
+      ? { ...effectiveStopCandidate, price: appliedPositionStopPrice }
       : null
     const rawAssessment = assessS12IntradayStructureFromBaseBars({
       symbol: pos.symbol,
       baseBars: s12Base.bars,
+      fallback15mBars: s12Base.fallback15mBars,
       fallback4hBars: s12Base.fallback4hBars,
       fallback1hBars: s12Base.fallback1hBars,
       nowMs: Date.now(),
@@ -402,8 +481,13 @@ async function evaluateS12HoldingDefense(
     const s12Position = {
       ...pos,
       s12_position_stop_price: positionStop?.price ?? null,
-      s12_position_stop_source: positionStop?.source ?? null,
-      s12_position_stop_method: positionStop?.method ?? null,
+      s12_position_stop_source: computedPositionStop?.source ?? lifecycleStop?.source ?? positionStop?.source ?? null,
+      s12_position_stop_method: computedPositionStop?.method ?? lifecycleStop?.method ?? positionStop?.method ?? null,
+      tp1_price: pos.tp1_price ?? positiveNumber(lifecycleExitPlan?.tp1),
+      tp2_price: pos.tp2_price ?? positiveNumber(lifecycleExitPlan?.mainExit),
+      tp3_price: pos.tp3_price ?? positiveNumber(lifecycleExitPlan?.tp3),
+      tp4_price: pos.tp4_price ?? positiveNumber(lifecycleExitPlan?.tp4),
+      planned_take_profit: pos.planned_take_profit ?? lifecycleExitPlan?.plannedTakeProfit ?? null,
     }
     const s12Decision = resolveS12PositionDecision({
       assessment,
@@ -445,24 +529,28 @@ async function evaluateS12HoldingDefense(
           ? {
             mode: 's12_structure_trailing_stop_v1',
             candidate_price: computedPositionStop?.price ?? null,
+            lifecycle_price: lifecycleStop?.price ?? null,
             applied_price: positionStop.price,
             previous_trailing_stop: previousTrailingStop ?? null,
-            source: positionStop.source,
-            method: positionStop.method,
+            source: computedPositionStop?.source ?? lifecycleStop?.source ?? positionStop.source,
+            method: computedPositionStop?.method ?? lifecycleStop?.method ?? positionStop.method,
             zone_low: positionStop.zoneLow,
             zone_high: positionStop.zoneHigh,
             no_atr_buffer: true,
             trailing_rule: 'never_loosen_max_existing',
-            auto_trade_adaptation: 'recompute_15m_structure_below_current_price',
+            auto_trade_adaptation: computedPositionStop
+              ? 'recompute_15m_structure_below_current_price'
+              : 'preserve_canonical_lifecycle_s12_stop_until_new_15m_structure',
           }
           : {
             mode: 's12_structure_trailing_stop_v1',
             candidate_price: null,
+            lifecycle_price: lifecycleStop?.price ?? null,
             applied_price: null,
             previous_trailing_stop: previousTrailingStop ?? null,
             no_atr_buffer: true,
             trailing_rule: 'never_loosen_max_existing',
-            auto_trade_adaptation: 'recompute_15m_structure_below_current_price',
+            auto_trade_adaptation: 'preserve_canonical_lifecycle_s12_stop_until_new_15m_structure',
           },
       },
     }
@@ -665,7 +753,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
   const { results: exitPositions } = await env.DB.prepare(
     `SELECT symbol, shares, avg_cost, name, entry_price, entry_date,
             initial_stop, trailing_stop, highest_since_entry, stop_multiplier,
-            tp1_price, tp2_price, tp1_hit, original_shares
+            tp1_price, tp2_price, tp1_hit, original_shares, trade_lifecycle_json
      FROM paper_positions WHERE account_id=? AND shares>0`,
   ).bind(ACCOUNT_ID).all<any>()
 
@@ -908,7 +996,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
   const { results: positions } = await env.DB.prepare(
     `SELECT symbol, shares, avg_cost, name, entry_price, entry_date,
             initial_stop, trailing_stop, highest_since_entry, stop_multiplier,
-            tp1_price, tp2_price, tp1_hit, original_shares
+            tp1_price, tp2_price, tp1_hit, original_shares, trade_lifecycle_json
      FROM paper_positions WHERE account_id=? AND shares>0`,
   ).bind(ACCOUNT_ID).all<any>()
 

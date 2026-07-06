@@ -1062,7 +1062,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         daily_remaining: Math.round(account.dailyRemaining),
         min_position_value: config.minPositionValue,
         max_pct_cash: config.maxPctOfCash,
-        cash_cap: Math.round(account.cash * config.maxPctOfCash),
+        cash_cap: Math.round(account.cash),
+        cash_pacing_pct: config.maxPctOfCash,
         max_pct_portfolio: config.maxPctOfPortfolio,
         portfolio_cap: Math.round(totalPortfolio * config.maxPctOfPortfolio),
         market_risk_level: marketRisk.risk_level,
@@ -1187,6 +1188,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       const rawAssessment = assessS12IntradayStructureFromBaseBars({
         symbol: pending.symbol,
         baseBars: s12Base.bars,
+        fallback15mBars: s12Base.fallback15mBars,
         fallback4hBars: s12Base.fallback4hBars,
         fallback1hBars: s12Base.fallback1hBars,
         nowMs: Date.now(),
@@ -1837,7 +1839,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         allocationWeight: sparseSizing?.weight,
       })
       allocationTargetBudget = sparseFloor.allocationTarget
-      budget = Math.min(sparseFloor.budget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash * cfg.position.maxPctOfCash, dailyRemaining)
+      budget = Math.min(sparseFloor.budget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash, dailyRemaining)
       sizingMode = sparseFloor.sizingMode === 'l4_sparse_weight' ? 'l4_sparse_weight' : 'kelly'
       console.log(`[Sizing] ${pending.symbol} kelly ${(kellyAdj * 100).toFixed(1)}% -> budget ${budget.toFixed(0)}`)
     } else {
@@ -1849,7 +1851,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         allocationWeight: sparseSizing?.weight,
       })
       allocationTargetBudget = sparseFloor.allocationTarget
-      budget = Math.min(sparseFloor.budget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash * cfg.position.maxPctOfCash, dailyRemaining)
+      budget = Math.min(sparseFloor.budget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash, dailyRemaining)
       sizingMode = sparseFloor.sizingMode
     }
 

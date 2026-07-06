@@ -102,6 +102,77 @@ const structuralStopExit = resolveS12HoldingDefenseUpdate({
 assert(structuralStopExit?.action === 'full_sell', 'S12 position structural stop touch should trigger a primary full exit')
 assert(String(structuralStopExit?.reason ?? '').includes('s12_position_structural_stop_full_exit'), 'S12 structural stop exit reason should be explicit')
 
+const lifecycleStopWatch = resolveS12HoldingDefenseUpdate({
+  pos: {
+    shares: 2000,
+    original_shares: 2000,
+    avg_cost: 100,
+    entry_price: 100,
+    initial_stop: 92,
+    trailing_stop: 94,
+    highest_since_entry: 103,
+    tp1_hit: 0,
+    trade_lifecycle_json: JSON.stringify({
+      version: 'canonical_trade_lifecycle_v1',
+      entry: {
+        stopLoss: 96,
+        s12: {
+          structureStop: 96,
+          exitPlan: {
+            tp1: 108,
+            mainExit: 118,
+            tp3: 126,
+            tp4: 134,
+            plannedTakeProfit: 'tp4',
+            trailingInitial: 97,
+            trailingSource: '15m_recent_fvg',
+            trailingMethod: '15m_recent_bullish_fvg',
+          },
+        },
+      },
+    }),
+  },
+  currentPrice: 102,
+  atr14: 2,
+  assessment: assessment(false),
+})
+assert(lifecycleStopWatch?.action === 'hold', 'S12 lifecycle stop should survive market-open incomplete 15m structure')
+assert(lifecycleStopWatch?.newTrailingStop === 97, 'S12 lifecycle stop should be restored instead of falling back to ATR trailing')
+assert(String(lifecycleStopWatch?.reason ?? '').includes('s12_position_structural_stop_watch'), 'restored lifecycle S12 stop should keep structural-stop reason')
+
+const lifecycleStopExit = resolveS12HoldingDefenseUpdate({
+  pos: {
+    shares: 2000,
+    original_shares: 2000,
+    avg_cost: 100,
+    entry_price: 100,
+    initial_stop: 92,
+    trailing_stop: 94,
+    highest_since_entry: 103,
+    tp1_hit: 0,
+    trade_lifecycle_json: JSON.stringify({
+      version: 'canonical_trade_lifecycle_v1',
+      entry: {
+        stopLoss: 96,
+        s12: {
+          structureStop: 96,
+          exitPlan: {
+            trailingInitial: 97,
+            trailingSource: '15m_recent_fvg',
+            trailingMethod: '15m_recent_bullish_fvg',
+          },
+        },
+      },
+    }),
+  },
+  currentPrice: 96.9,
+  atr14: 2,
+  assessment: assessment(false),
+  executableBookAvailable: true,
+})
+assert(lifecycleStopExit?.action === 'full_sell', 'S12 lifecycle stop breach should trigger primary structural exit')
+assert(String(lifecycleStopExit?.reason ?? '').includes('s12_position_structural_stop_full_exit'), 'S12 lifecycle stop breach should not become ATR fallback')
+
 const structuralProfitStopExit = resolveS12HoldingDefenseUpdate({
   pos: {
     shares: 2000,

@@ -165,7 +165,7 @@ export interface TradingConfig {
     dailyBuyLimit: number        // 每日自動買入上限 NT$
     manualDailyLimit: number     // 每日手動買入上限 NT$
     maxPctOfPortfolio: number    // 單筆最大佔 portfolio %（預設 0.25）
-    maxPctOfCash: number         // 單筆最大佔現金 %（預設 0.30）
+    maxPctOfCash: number         // legacy cash pacing hint; execution hard cap uses available cash + NAV risk caps
     minCashToTrade: number       // 最低可交易現金（預設 10000）
     minStopPct: number           // 最低停損 %（預設 0.03）
     partialFillThreshold: number // 佔日均量超過此比例 → partial fill（預設 0.05 = 5%）

@@ -528,6 +528,7 @@ export async function loadS12IntradayBaseBars(
   currentTotalVolume: number,
 ): Promise<{
   bars: IntradayRollingBar[]
+  fallback15mBars: IntradayRollingBar[]
   fallback4hBars: IntradayRollingBar[]
   fallback1hBars: IntradayRollingBar[]
   source: S12BaseBarSource
@@ -585,6 +586,7 @@ export async function loadS12IntradayBaseBars(
       const bars = [...kbars.bars, ...eventBars].sort((a, b) => a.startMs - b.startMs)
       return {
         bars,
+        fallback15mBars: previousSessionBars,
         fallback4hBars: previous4h.bar ? [previous4h.bar] : [],
         fallback1hBars: previousSessionBars,
         source: 'shioaji_kbars_usable',
@@ -604,6 +606,7 @@ export async function loadS12IntradayBaseBars(
   }
   return {
     bars: eventBars,
+    fallback15mBars: previousSessionBars,
     fallback4hBars: previous4h.bar ? [previous4h.bar] : [],
     fallback1hBars: previousSessionBars,
     source: diagnostics.raw_kbars_count > 0

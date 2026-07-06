@@ -88,8 +88,8 @@ assert(
 assert(
   uiHelper.includes('formatPositionRiskPlan') &&
     uiHelper.includes('S12 買賣主機制') &&
-    uiHelper.includes('ATR trailing 備援') &&
-    uiHelper.includes("primaryS12 ? 'paper SLTP 備援' : 'paper SLTP'") &&
+    uiHelper.includes('S12 結構停損待同步') &&
+    uiHelper.includes("primaryS12 ? 'S12 結構停利待同步' : 'paper SLTP'") &&
     uiHelper.includes('position_stop_trailing') &&
     uiHelper.includes('detail?.execution?.stopLoss') &&
     uiHelper.includes('exitPlanPrice') &&
@@ -104,6 +104,21 @@ assert(
 assert(
   !uiHelper.includes('S12 fallback ATR'),
   'S12 holding risk-plan UI must not expose raw fallback ATR wording',
+)
+assert(
+  !uiHelper.includes('ATR trailing 備援') && !uiHelper.includes('paper SLTP 備援'),
+  'S12 holding risk-plan UI must not surface fallback ATR/SLTP as primary display copy',
+)
+assert(
+  uiHelper.includes('VWAP+') &&
+    uiHelper.includes('vwap_context_schema') &&
+    uiHelper.includes('TP1 source:') &&
+    uiHelper.includes('Main exit source:') &&
+    uiHelper.includes('structural_tp1_source') &&
+    uiHelper.includes('structural_main_exit_source') &&
+    uiHelper.includes('tp1Source') &&
+    uiHelper.includes('mainExitSource'),
+  'frontend S12 UI must expose VWAP+ context and structural target source provenance',
 )
 assert(
   !uiHelper.includes('S12 防守備援') && !uiHelper.includes('S12 出場備援'),

@@ -16,6 +16,44 @@ const s12Assessment = {
   defensiveAction: 'none',
   quality: {
     vwap: { state: 'above', priceVsVwapPct: 0.012 },
+    vwapContext: {
+      schemaVersion: 's12_vwap_context_v1',
+      stackState: 'bullish_stack',
+      confluenceWidthPct: 0.018,
+      session: { value: 103, priceVsPct: 0.01, state: 'above', bars: 8 },
+      h1: { value: 102, priceVsPct: 0.02, state: 'above', bars: 2 },
+      h4: { value: 101, priceVsPct: 0.03, state: 'above', bars: 1 },
+      daily: { value: 100, priceVsPct: 0.04, state: 'above', bars: 1 },
+      anchored: {
+        day: { value: 103, priceVsPct: 0.01, state: 'above', bars: 8 },
+        week: { value: 101, priceVsPct: 0.03, state: 'above', bars: 3 },
+        month: { value: 100, priceVsPct: 0.04, state: 'above', bars: 8 },
+        quarter: { value: 99, priceVsPct: 0.05, state: 'above', bars: 21 },
+        year: { value: 98, priceVsPct: 0.06, state: 'above', bars: 60 },
+      },
+      nearestAbove: { price: 118, source: 'previous_h1_vwap', distancePct: 0.1 },
+      nearestBelow: { price: 102, source: 'h1_vwap', distancePct: 0.01 },
+      initialBalance: { high: 106, low: 99, state: 'above', bars: 4 },
+      previousZones: { h1: null, h4: null, daily: null },
+      previousPeriodZones: {
+        day: { value: 100, upper: 102, lower: 98, source: 'previous_day_vwap' },
+        week: null,
+        month: null,
+        quarter: null,
+        year: null,
+      },
+      rolling15m: {
+        bars7: { value: 103, priceVsPct: 0.01, state: 'above', bars: 7 },
+        bars30: { value: 102, priceVsPct: 0.02, state: 'above', bars: 8 },
+        bars90: { value: 102, priceVsPct: 0.02, state: 'above', bars: 8 },
+      },
+      rollingDays: {
+        days7: { value: 101, priceVsPct: 0.03, state: 'above', bars: 3 },
+        days30: { value: 100, priceVsPct: 0.04, state: 'above', bars: 8 },
+        days90: { value: 99, priceVsPct: 0.05, state: 'above', bars: 21 },
+        days365: { value: 98, priceVsPct: 0.06, state: 'above', bars: 60 },
+      },
+    },
     rvol: { state: 'strong_participation', value: 1.8 },
     notes: [],
   },
@@ -72,4 +110,9 @@ assert(lifecycle.entry.s12?.exitPlan.tp3 === 126, 'canonical lifecycle must pres
 assert(lifecycle.entry.s12?.exitPlan.tp4 === 134, 'canonical lifecycle must preserve Pine-style TP4')
 assert(lifecycle.entry.s12?.exitPlan.manualTp === 130, 'canonical lifecycle must preserve manual TP')
 assert(lifecycle.entry.s12?.exitPlan.plannedTakeProfit === 'tp4', 'canonical lifecycle must preserve planned TP')
+assert(lifecycle.entry.s12?.quality.vwapContext.schemaVersion === 's12_vwap_context_v1', 'canonical lifecycle must preserve S12 VWAP+ context')
+assert(lifecycle.entry.s12?.quality.vwapContext.nearestAbove === 118, 'canonical lifecycle must preserve nearest VWAP+ target')
+assert(lifecycle.entry.s12?.quality.vwapContext.anchoredWeek === 101, 'canonical lifecycle must preserve anchored weekly VWAP')
+assert(lifecycle.entry.s12?.quality.vwapContext.rolling30d === 100, 'canonical lifecycle must preserve rolling 30D VWAP')
+assert(lifecycle.entry.s12?.quality.vwapContext.previousDay === 100, 'canonical lifecycle must preserve previous-day VWAP zone')
 assert(lifecycle.exit.fallbackOwner === 'paper_sltp_atr_trailing_v1', 'exit block must expose fallback owner')

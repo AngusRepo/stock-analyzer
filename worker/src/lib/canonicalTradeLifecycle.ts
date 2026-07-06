@@ -39,6 +39,34 @@ export interface CanonicalTradeLifecycle {
       quality: {
         vwapState: string | null
         priceVsVwapPct: number | null
+        vwapContext: {
+          schemaVersion: string | null
+          stackState: string | null
+          confluenceWidthPct: number | null
+          session: number | null
+          h1: number | null
+          h4: number | null
+          daily: number | null
+          anchoredDay: number | null
+          anchoredWeek: number | null
+          anchoredMonth: number | null
+          anchoredQuarter: number | null
+          anchoredYear: number | null
+          rolling7d: number | null
+          rolling30d: number | null
+          rolling90d: number | null
+          rolling365d: number | null
+          previousDay: number | null
+          previousWeek: number | null
+          previousMonth: number | null
+          nearestAbove: number | null
+          nearestAboveSource: string | null
+          nearestBelow: number | null
+          nearestBelowSource: string | null
+          initialBalanceHigh: number | null
+          initialBalanceLow: number | null
+          initialBalanceState: string | null
+        }
         rvolState: string | null
         rvol: number | null
         notes: string[]
@@ -120,6 +148,7 @@ export function buildCanonicalTradeLifecycle(input: {
   protectiveFloorPolicy: CanonicalTradeLifecycle['exit']['protectiveFloorPolicy']
 }): CanonicalTradeLifecycle {
   const s12 = input.s12Assessment
+  const s12VwapContext = s12?.quality?.vwapContext
   const exitOwner = input.s12ExitPrimary ? 's12_position_decision_v1' : 'paper_sltp_atr_trailing_v1'
   return {
     version: 'canonical_trade_lifecycle_v1',
@@ -161,6 +190,34 @@ export function buildCanonicalTradeLifecycle(input: {
           quality: {
             vwapState: s12.quality.vwap.state,
             priceVsVwapPct: finiteNumber(s12.quality.vwap.priceVsVwapPct),
+            vwapContext: {
+              schemaVersion: s12VwapContext?.schemaVersion ?? null,
+              stackState: s12VwapContext?.stackState ?? null,
+              confluenceWidthPct: finiteNumber(s12VwapContext?.confluenceWidthPct),
+              session: positiveNumber(s12VwapContext?.session?.value),
+              h1: positiveNumber(s12VwapContext?.h1?.value),
+              h4: positiveNumber(s12VwapContext?.h4?.value),
+              daily: positiveNumber(s12VwapContext?.daily?.value),
+              anchoredDay: positiveNumber(s12VwapContext?.anchored?.day?.value),
+              anchoredWeek: positiveNumber(s12VwapContext?.anchored?.week?.value),
+              anchoredMonth: positiveNumber(s12VwapContext?.anchored?.month?.value),
+              anchoredQuarter: positiveNumber(s12VwapContext?.anchored?.quarter?.value),
+              anchoredYear: positiveNumber(s12VwapContext?.anchored?.year?.value),
+              rolling7d: positiveNumber(s12VwapContext?.rollingDays?.days7?.value),
+              rolling30d: positiveNumber(s12VwapContext?.rollingDays?.days30?.value),
+              rolling90d: positiveNumber(s12VwapContext?.rollingDays?.days90?.value),
+              rolling365d: positiveNumber(s12VwapContext?.rollingDays?.days365?.value),
+              previousDay: positiveNumber(s12VwapContext?.previousPeriodZones?.day?.value),
+              previousWeek: positiveNumber(s12VwapContext?.previousPeriodZones?.week?.value),
+              previousMonth: positiveNumber(s12VwapContext?.previousPeriodZones?.month?.value),
+              nearestAbove: positiveNumber(s12VwapContext?.nearestAbove?.price),
+              nearestAboveSource: s12VwapContext?.nearestAbove?.source ?? null,
+              nearestBelow: positiveNumber(s12VwapContext?.nearestBelow?.price),
+              nearestBelowSource: s12VwapContext?.nearestBelow?.source ?? null,
+              initialBalanceHigh: positiveNumber(s12VwapContext?.initialBalance?.high),
+              initialBalanceLow: positiveNumber(s12VwapContext?.initialBalance?.low),
+              initialBalanceState: s12VwapContext?.initialBalance?.state ?? null,
+            },
             rvolState: s12.quality.rvol.state,
             rvol: finiteNumber(s12.quality.rvol.value),
             notes: s12.quality.notes,

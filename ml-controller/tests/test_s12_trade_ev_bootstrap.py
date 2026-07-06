@@ -167,6 +167,72 @@ def test_s12_trade_ev_bootstrap_uses_structural_cold_start_when_verified_samples
     assert ev["trade_expected_return_net_pct"] > 0
 
 
+def test_s12_trade_ev_bootstrap_preserves_vwap_fair_value_target_sources():
+    provider = S12TradeEvBootstrapProvider([], run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
+
+    ev = provider.build_for_row(
+        {
+            "symbol": "8091",
+            "current_price": 100,
+            "stop_loss": 96,
+            "market_segment": "LISTED",
+            "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
+        },
+        prediction={
+            "s12_exit": {
+                "tp1": {"price": 104, "source": "vwap_fair_value"},
+                "mainExit": {"price": 109, "source": "vwap_fair_value"},
+            },
+        },
+    )
+
+    assert ev["status"] == "loaded"
+    assert ev["target1_price"] == 104
+    assert ev["target2_price"] == 109
+    assert ev["s12_structural_targets"]["target1_declared_source"] == "vwap_fair_value"
+    assert ev["s12_structural_targets"]["target2_declared_source"] == "vwap_fair_value"
+    assert ev["s12_structural_targets"]["target1_source"].endswith("source=vwap_fair_value")
+    assert ev["s12_structural_targets"]["target2_source"].endswith("source=vwap_fair_value")
+    assert "vwap_fair_value" in ev["s12_structural_targets"]["target1_policy"]
+    assert "vwap_fair_value" in ev["s12_structural_targets"]["target2_policy"]
+
+
+def test_s12_trade_ev_bootstrap_reads_canonical_lifecycle_vwap_targets():
+    provider = S12TradeEvBootstrapProvider([], run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
+
+    ev = provider.build_for_row(
+        {
+            "symbol": "8091",
+            "current_price": 100,
+            "stop_loss": 96,
+            "forecast_data": json.dumps({
+                "canonical_trade_lifecycle": {
+                    "entry": {
+                        "s12": {
+                            "exitPlan": {
+                                "tp1": 104,
+                                "tp1Source": "15m_previous_high",
+                                "mainExit": 109,
+                                "mainExitSource": "vwap_fair_value",
+                            },
+                            "supplyZoneLow": 108,
+                            "supplyZoneHigh": 111,
+                        },
+                    },
+                },
+            }),
+            "market_segment": "LISTED",
+            "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
+        },
+    )
+
+    assert ev["status"] == "loaded"
+    assert ev["target1_price"] == 104
+    assert ev["target2_price"] == 109
+    assert ev["s12_structural_targets"]["target2_declared_source"] == "vwap_fair_value"
+    assert "canonical_trade_lifecycle.entry.s12.exitPlan.mainExit" in ev["s12_structural_targets"]["target2_source"]
+
+
 def test_s12_trade_ev_bootstrap_excludes_hold_signal_even_with_s12_payload():
     provider = S12TradeEvBootstrapProvider(
         [_row("1111", "2026-07-02", 0.08, trade_signal="hold")] * 10,

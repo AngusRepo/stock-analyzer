@@ -343,6 +343,20 @@ function confidenceLabel(value: string | undefined): string | null {
   return value || null
 }
 
+function vwapStackLabel(value: string | undefined): string | null {
+  if (value === 'bullish_stack') return 'bullish stack'
+  if (value === 'bearish_stack') return 'bearish stack'
+  if (value === 'mixed') return 'mixed'
+  if (value === 'unavailable') return 'unavailable'
+  return value || null
+}
+
+function compactSource(value: unknown): string | null {
+  const text = String(value ?? '').trim()
+  if (!text || text === 'unavailable') return null
+  return text
+}
+
 function s12Tone(reason: string): PendingBuyExecutionTone {
   if (
     reason === 's12_reaction_ready' ||
@@ -375,13 +389,29 @@ function formatS12Detail(detail: string | null): string {
     parsed.bearish_defense_action ? `防守動作：${S12_DEFENSE_ACTION_LABELS[parsed.bearish_defense_action] ?? parsed.bearish_defense_action}` : null,
     parsed.vwap_state ? `VWAP：${parsed.vwap_state}${parsed.price_vwap_pct ? ` (${parsed.price_vwap_pct})` : ''}` : null,
     parsed.rvol_state ? `RVOL：${parsed.rvol_state}${parsed.rvol ? ` (${parsed.rvol})` : ''}` : null,
+    parsed.vwap_context_schema === 's12_vwap_context_v1'
+      ? `VWAP+ ${[
+        vwapStackLabel(parsed.vwap_stack),
+        parsed.vwap_confluence_width_pct ? `width ${parsed.vwap_confluence_width_pct}` : null,
+        parsed.vwap_anchor_day ? `D ${parsed.vwap_anchor_day}` : null,
+        parsed.vwap_anchor_week ? `W ${parsed.vwap_anchor_week}` : null,
+        parsed.vwap_anchor_month ? `M ${parsed.vwap_anchor_month}` : null,
+        parsed.vwap_rolling_7d ? `R7D ${parsed.vwap_rolling_7d}` : null,
+        parsed.vwap_rolling_30d ? `R30D ${parsed.vwap_rolling_30d}` : null,
+        parsed.vwap_nearest_above ? `above ${parsed.vwap_nearest_above}${parsed.vwap_nearest_above_source ? `/${parsed.vwap_nearest_above_source}` : ''}` : null,
+        parsed.vwap_nearest_below ? `below ${parsed.vwap_nearest_below}${parsed.vwap_nearest_below_source ? `/${parsed.vwap_nearest_below_source}` : ''}` : null,
+        parsed.ib_state ? `IB ${parsed.ib_state}` : null,
+      ].filter(Boolean).join(' · ')}`
+      : null,
     parsed.takeover_role ? `接手角色：${S12_TAKEOVER_ROLE_LABELS[parsed.takeover_role] ?? parsed.takeover_role}` : null,
     parsed.maturity_stage ? `成熟階段：${parsed.maturity_stage}` : null,
     parsed.entry ? `進場參考：${parsed.entry}` : null,
     parsed.chase_ceiling ? `追價上限：${parsed.chase_ceiling}` : null,
     parsed.stop ? `結構停損：${parsed.stop}` : null,
     parsed.structural_tp1 ? `TP1：${parsed.structural_tp1}` : parsed.t1 ? `TP1：${parsed.t1}` : null,
+    compactSource(parsed.structural_tp1_source) ? `TP1 source: ${compactSource(parsed.structural_tp1_source)}` : null,
     parsed.structural_main_exit ? `主出場：${parsed.structural_main_exit}` : parsed.t2 ? `主出場：${parsed.t2}` : null,
+    compactSource(parsed.structural_main_exit_source) ? `Main exit source: ${compactSource(parsed.structural_main_exit_source)}` : null,
     parsed.stale === 'true' ? `等待過久：${parsed.stale_reason ?? '結構未成熟'}` : null,
   ].filter(Boolean)
   return parts.join('；')
@@ -513,7 +543,7 @@ export function formatPositionRiskPlan(raw: Record<string, unknown> | null | und
   const stopSource = s12Stop != null
     ? 'S12 結構停損'
     : trailingStop != null
-      ? primaryS12 ? 'ATR trailing 備援' : 'ATR trailing'
+      ? primaryS12 ? 'S12 結構停損待同步' : 'ATR trailing'
       : lifecycleStop != null
         ? '生命週期'
         : initialStop != null
@@ -524,14 +554,20 @@ export function formatPositionRiskPlan(raw: Record<string, unknown> | null | und
   const s12MainExit = exitPlanPrice(s12ExitPlan.mainExit)
   const s12Tp3 = exitPlanPrice(s12ExitPlan.tp3)
   const s12Tp4 = exitPlanPrice(s12ExitPlan.tp4)
+  const s12Tp1Source = compactSource(s12ExitPlan.tp1Source ?? s12ExitPlan.tp1?.source)
+  const s12MainExitSource = compactSource(s12ExitPlan.mainExitSource ?? s12ExitPlan.mainExit?.source)
   const tp1Value = s12Tp1 ?? positivePrice(lifecycle?.exit?.tp1) ?? positivePrice(raw?.tp1_price)
   const tp2Value = s12MainExit ?? positivePrice(lifecycle?.exit?.tp2) ?? positivePrice(raw?.tp2_price)
   const tpSource = s12Tp1 != null || s12MainExit != null || s12Tp3 != null || s12Tp4 != null
-    ? hasS12HoldingPlan ? 'S12 持倉主機制' : 'S12 結構'
+    ? [
+      hasS12HoldingPlan ? 'S12 持倉主機制' : 'S12 結構',
+      s12Tp1Source ? `TP1 ${s12Tp1Source}` : null,
+      s12MainExitSource ? `主出場 ${s12MainExitSource}` : null,
+    ].filter(Boolean).join(' · ')
     : lifecycle?.owners?.exit
       ? OWNER_LABELS[String(lifecycle.owners.exit)] ?? String(lifecycle.owners.exit)
     : tp1Value != null || tp2Value != null
-        ? primaryS12 ? 'paper SLTP 備援' : 'paper SLTP'
+        ? primaryS12 ? 'S12 結構停利待同步' : 'paper SLTP'
         : null
 
   return {

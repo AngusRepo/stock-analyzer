@@ -95,6 +95,53 @@ export interface S12StructureQuality {
     priceVsVwapPct: number | null
     state: 'above' | 'below' | 'flat' | 'unavailable'
   }
+  vwapContext: {
+    schemaVersion: 's12_vwap_context_v1'
+    session: S12VwapMetric
+    h1: S12VwapMetric
+    h4: S12VwapMetric
+    daily: S12VwapMetric
+    anchored: {
+      day: S12VwapMetric
+      week: S12VwapMetric
+      month: S12VwapMetric
+      quarter: S12VwapMetric
+      year: S12VwapMetric
+    }
+    rolling15m: {
+      bars7: S12VwapMetric
+      bars30: S12VwapMetric
+      bars90: S12VwapMetric
+    }
+    rollingDays: {
+      days7: S12VwapMetric
+      days30: S12VwapMetric
+      days90: S12VwapMetric
+      days365: S12VwapMetric
+    }
+    previousZones: {
+      h1: S12VwapZone | null
+      h4: S12VwapZone | null
+      daily: S12VwapZone | null
+    }
+    previousPeriodZones: {
+      day: S12VwapZone | null
+      week: S12VwapZone | null
+      month: S12VwapZone | null
+      quarter: S12VwapZone | null
+      year: S12VwapZone | null
+    }
+    initialBalance: {
+      high: number | null
+      low: number | null
+      state: 'above' | 'below' | 'inside' | 'unavailable'
+      bars: number
+    }
+    stackState: 'bullish_stack' | 'bearish_stack' | 'mixed' | 'unavailable'
+    confluenceWidthPct: number | null
+    nearestAbove: S12VwapTarget | null
+    nearestBelow: S12VwapTarget | null
+  }
   rvol: {
     value: number | null
     state: 'strong_participation' | 'participating' | 'thin' | 'unavailable'
@@ -103,28 +150,73 @@ export interface S12StructureQuality {
   notes: string[]
 }
 
+export interface S12VwapMetric {
+  value: number | null
+  priceVsPct: number | null
+  state: 'above' | 'below' | 'flat' | 'unavailable'
+  bars: number
+}
+
+export interface S12VwapZone {
+  value: number | null
+  upper: number | null
+  lower: number | null
+  source:
+    | 'previous_h1_vwap'
+    | 'previous_h4_vwap'
+    | 'previous_daily_vwap'
+    | 'previous_day_vwap'
+    | 'previous_week_vwap'
+    | 'previous_month_vwap'
+    | 'previous_quarter_vwap'
+    | 'previous_year_vwap'
+}
+
+export interface S12VwapTarget {
+  price: number
+  source:
+    | S12VwapZone['source']
+    | 'session_vwap'
+    | 'h1_vwap'
+    | 'h4_vwap'
+    | 'daily_vwap'
+    | 'anchored_day_vwap'
+    | 'anchored_week_vwap'
+    | 'anchored_month_vwap'
+    | 'anchored_quarter_vwap'
+    | 'anchored_year_vwap'
+    | 'rolling15m_7'
+    | 'rolling15m_30'
+    | 'rolling15m_90'
+    | 'rolling7d_vwap'
+    | 'rolling30d_vwap'
+    | 'rolling90d_vwap'
+    | 'rolling365d_vwap'
+  distancePct: number
+}
+
 export interface S12StructureExitPlan {
   mode: 'structure_first_trailing_v1'
   tp1: {
     price: number | null
-    source: '15m_previous_high' | 'r_multiple_fallback' | 'unavailable'
+    source: '15m_previous_high' | 'vwap_fair_value' | 'r_multiple_fallback' | 'unavailable'
     action: 'partial_take_profit'
   }
   mainExit: {
     price: number | null
     zoneLow: number | null
     zoneHigh: number | null
-    source: '1h_supply_zone' | 'tp_ladder' | 'r_multiple_fallback' | 'unavailable'
+    source: '1h_supply_zone' | 'vwap_fair_value' | 'tp_ladder' | 'r_multiple_fallback' | 'unavailable'
     action: 'main_take_profit'
   }
   tp3: {
     price: number | null
-    source: '1h_supply_zone' | 'tp_ladder' | 'r_multiple_fallback' | 'unavailable'
+    source: '1h_supply_zone' | 'vwap_fair_value' | 'tp_ladder' | 'r_multiple_fallback' | 'unavailable'
     action: 'extended_take_profit'
   }
   tp4: {
     price: number | null
-    source: '1h_supply_zone' | 'tp_ladder' | 'r_multiple_fallback' | 'unavailable'
+    source: '1h_supply_zone' | 'vwap_fair_value' | 'tp_ladder' | 'r_multiple_fallback' | 'unavailable'
     action: 'extended_take_profit'
   }
   manualTp: {
@@ -363,6 +455,7 @@ interface S12IntradayInput {
   bars1h: S12Bar[]
   bars4h: S12Bar[]
   bars1d?: S12Bar[]
+  fallback15mBars?: S12Bar[]
   fallback1hBars?: S12Bar[]
   nowMs?: number
   min15mBars?: number
@@ -376,6 +469,7 @@ interface S12IntradayInput {
 interface S12FromBaseBarsInput {
   symbol: string
   baseBars: S12Bar[]
+  fallback15mBars?: S12Bar[]
   fallback4hBars?: S12Bar[]
   fallback1hBars?: S12Bar[]
   nowMs?: number
@@ -828,8 +922,48 @@ function setupKey(symbol: string, ...parts: Array<number | null | undefined>): s
 function emptyQuality(): S12StructureQuality {
   return {
     vwap: { value: null, priceVsVwapPct: null, state: 'unavailable' },
+    vwapContext: emptyVwapContext(),
     rvol: { value: null, state: 'unavailable', lookbackBars: 0 },
     notes: [],
+  }
+}
+
+function emptyVwapMetric(): S12VwapMetric {
+  return { value: null, priceVsPct: null, state: 'unavailable', bars: 0 }
+}
+
+function emptyVwapContext(): S12StructureQuality['vwapContext'] {
+  return {
+    schemaVersion: 's12_vwap_context_v1',
+    session: emptyVwapMetric(),
+    h1: emptyVwapMetric(),
+    h4: emptyVwapMetric(),
+    daily: emptyVwapMetric(),
+    anchored: {
+      day: emptyVwapMetric(),
+      week: emptyVwapMetric(),
+      month: emptyVwapMetric(),
+      quarter: emptyVwapMetric(),
+      year: emptyVwapMetric(),
+    },
+    rolling15m: {
+      bars7: emptyVwapMetric(),
+      bars30: emptyVwapMetric(),
+      bars90: emptyVwapMetric(),
+    },
+    rollingDays: {
+      days7: emptyVwapMetric(),
+      days30: emptyVwapMetric(),
+      days90: emptyVwapMetric(),
+      days365: emptyVwapMetric(),
+    },
+    previousZones: { h1: null, h4: null, daily: null },
+    previousPeriodZones: { day: null, week: null, month: null, quarter: null, year: null },
+    initialBalance: { high: null, low: null, state: 'unavailable', bars: 0 },
+    stackState: 'unavailable',
+    confluenceWidthPct: null,
+    nearestAbove: null,
+    nearestBelow: null,
   }
 }
 
@@ -855,10 +989,310 @@ function emptyExitPlan(defense: S12BearishDefense | null = null): S12StructureEx
   }
 }
 
-function buildStructureQuality(bars15m: S12Bar[], policy: S12TimingPolicy = DEFAULT_S12_TIMING_POLICY): S12StructureQuality {
+function vwapForBars(barsInput: S12Bar[], latestPrice: number): S12VwapMetric {
+  const bars = normalizeBars(barsInput)
+  if (!bars.length || latestPrice <= 0) return emptyVwapMetric()
+  const totalVolume = bars.reduce((sum, bar) => sum + Math.max(0, Number(bar.volume ?? 0)), 0)
+  const weightedValue = bars.reduce((sum, bar) => sum + Math.max(0, Number(bar.volume ?? 0)) * bar.close, 0)
+  const value = totalVolume > 0
+    ? weightedValue / totalVolume
+    : bars.reduce((sum, bar) => sum + bar.close, 0) / bars.length
+  const priceVsPct = value > 0 ? (latestPrice - value) / value : null
+  const state =
+    priceVsPct == null
+      ? 'unavailable'
+      : priceVsPct > 0.001
+        ? 'above'
+        : priceVsPct < -0.001
+          ? 'below'
+          : 'flat'
+  return {
+    value: price(value),
+    priceVsPct: priceVsPct == null ? null : round(priceVsPct, 4),
+    state,
+    bars: bars.length,
+  }
+}
+
+function twPeriodKey(ms: number, period: 'day' | 'week' | 'month' | 'quarter' | 'year'): string {
+  const tw = new Date(ms + TW_OFFSET_MS)
+  const year = tw.getUTCFullYear()
+  const month = tw.getUTCMonth() + 1
+  if (period === 'day') return tw.toISOString().slice(0, 10)
+  if (period === 'month') return `${year}-${String(month).padStart(2, '0')}`
+  if (period === 'quarter') return `${year}-Q${Math.floor((month - 1) / 3) + 1}`
+  if (period === 'year') return String(year)
+  const day = tw.getUTCDay() || 7
+  const monday = new Date(Date.UTC(year, tw.getUTCMonth(), tw.getUTCDate()))
+  monday.setUTCDate(monday.getUTCDate() - day + 1)
+  return monday.toISOString().slice(0, 10)
+}
+
+function sameCurrentPeriodBars(
+  barsInput: S12Bar[],
+  latestMs: number,
+  period: 'day' | 'week' | 'month' | 'quarter' | 'year',
+): S12Bar[] {
+  const key = twPeriodKey(latestMs, period)
+  return normalizeBars(barsInput).filter((bar) => twPeriodKey(bar.startMs, period) === key)
+}
+
+function rollingDayBars(barsInput: S12Bar[], latestMs: number, days: number): S12Bar[] {
+  const cutoff = latestMs - days * DAY_MS
+  return normalizeBars(barsInput).filter((bar) => bar.startMs >= cutoff && bar.startMs <= latestMs)
+}
+
+function weightedStdDevForBars(barsInput: S12Bar[], center: number): number | null {
+  const bars = normalizeBars(barsInput)
+  if (!bars.length || center <= 0) return null
+  const volumeSum = bars.reduce((sum, bar) => sum + Math.max(0, Number(bar.volume ?? 0)), 0)
+  if (volumeSum > 0) {
+    const variance = bars.reduce((sum, bar) => {
+      const volume = Math.max(0, Number(bar.volume ?? 0))
+      return sum + volume * Math.pow(bar.close - center, 2)
+    }, 0) / volumeSum
+    return Math.sqrt(Math.max(0, variance))
+  }
+  const variance = bars.reduce((sum, bar) => sum + Math.pow(bar.close - center, 2), 0) / bars.length
+  return Math.sqrt(Math.max(0, variance))
+}
+
+function vwapZoneForBars(
+  barsInput: S12Bar[],
+  latestPrice: number,
+  source: S12VwapZone['source'],
+): S12VwapZone | null {
+  const bars = normalizeBars(barsInput)
+  if (!bars.length) return null
+  const metric = vwapForBars(bars, latestPrice)
+  if (metric.value == null) return null
+  const sigma = weightedStdDevForBars(bars, metric.value)
+  const rangeFallback = Math.max(...bars.map((bar) => bar.high)) - Math.min(...bars.map((bar) => bar.low))
+  const halfRange = Math.max(0.01, sigma ?? rangeFallback * 0.25)
+  return {
+    value: metric.value,
+    upper: price(metric.value + halfRange),
+    lower: price(Math.max(0.01, metric.value - halfRange)),
+    source,
+  }
+}
+
+function previousCompletedPeriodZone(
+  barsInput: S12Bar[],
+  latestMs: number,
+  latestPrice: number,
+  period: 'day' | 'week' | 'month' | 'quarter' | 'year',
+  source: S12VwapZone['source'],
+): S12VwapZone | null {
+  const currentKey = twPeriodKey(latestMs, period)
+  const byPeriod = new Map<string, S12Bar[]>()
+  for (const bar of normalizeBars(barsInput)) {
+    const key = twPeriodKey(bar.startMs, period)
+    if (key >= currentKey) continue
+    const bucket = byPeriod.get(key) ?? []
+    bucket.push(bar)
+    byPeriod.set(key, bucket)
+  }
+  const previousKey = [...byPeriod.keys()].sort().pop()
+  return previousKey ? vwapZoneForBars(byPeriod.get(previousKey) ?? [], latestPrice, source) : null
+}
+
+function vwapZoneFromPreviousBar(
+  barsInput: S12Bar[],
+  latestPrice: number,
+  source: S12VwapZone['source'],
+): S12VwapZone | null {
+  const bars = normalizeBars(barsInput)
+  if (bars.length < 2) return null
+  const previous = bars[bars.length - 2]
+  const metric = vwapForBars([previous], latestPrice)
+  if (metric.value == null) return null
+  const halfRange = Math.max(0.01, (previous.high - previous.low) * 0.25)
+  return {
+    value: metric.value,
+    upper: price(metric.value + halfRange),
+    lower: price(Math.max(0.01, metric.value - halfRange)),
+    source,
+  }
+}
+
+function nearestVwapTargets(
+  latestPrice: number,
+  metrics: Array<{ value: number | null; source: S12VwapTarget['source'] }>,
+  zones: Array<S12VwapZone | null>,
+): { nearestAbove: S12VwapTarget | null; nearestBelow: S12VwapTarget | null } {
+  const targets = [
+    ...metrics.map((item) => item.value == null ? null : { price: item.value, source: item.source }),
+    ...zones.flatMap((zone) => zone == null
+      ? []
+      : [
+        zone.upper == null ? null : { price: zone.upper, source: zone.source },
+        zone.lower == null ? null : { price: zone.lower, source: zone.source },
+        zone.value == null ? null : { price: zone.value, source: zone.source },
+      ]),
+  ].filter((item): item is { price: number; source: S12VwapTarget['source'] } => item != null && item.price > 0)
+  const above = targets
+    .filter((item) => item.price > latestPrice)
+    .sort((a, b) => a.price - b.price)[0] ?? null
+  const below = targets
+    .filter((item) => item.price < latestPrice)
+    .sort((a, b) => b.price - a.price)[0] ?? null
+  return {
+    nearestAbove: above
+      ? { ...above, distancePct: round((above.price - latestPrice) / latestPrice, 4) }
+      : null,
+    nearestBelow: below
+      ? { ...below, distancePct: round((latestPrice - below.price) / latestPrice, 4) }
+      : null,
+  }
+}
+
+function buildVwapContext(
+  bars15m: S12Bar[],
+  policy: S12TimingPolicy,
+  higher: { bars1h?: S12Bar[]; bars4h?: S12Bar[]; bars1d?: S12Bar[] } = {},
+): S12StructureQuality['vwapContext'] {
+  const bars = normalizeBars(bars15m)
+  if (!bars.length) return emptyVwapContext()
+  const latest = bars[bars.length - 1]
+  const session = vwapForBars(bars, latest.close)
+  const h1 = vwapForBars(higher.bars1h ?? [], latest.close)
+  const h4 = vwapForBars(higher.bars4h ?? [], latest.close)
+  const dailyBars = normalizeBars(higher.bars1d ?? [])
+  const dailySourceBars = dailyBars.length ? dailyBars : bars
+  const daily = vwapForBars(dailySourceBars, latest.close)
+  const anchored = {
+    day: vwapForBars(sameCurrentPeriodBars(bars, latest.startMs, 'day'), latest.close),
+    week: vwapForBars(sameCurrentPeriodBars(dailySourceBars, latest.startMs, 'week'), latest.close),
+    month: vwapForBars(sameCurrentPeriodBars(dailySourceBars, latest.startMs, 'month'), latest.close),
+    quarter: vwapForBars(sameCurrentPeriodBars(dailySourceBars, latest.startMs, 'quarter'), latest.close),
+    year: vwapForBars(sameCurrentPeriodBars(dailySourceBars, latest.startMs, 'year'), latest.close),
+  }
+  const rolling15m = {
+    bars7: vwapForBars(bars.slice(-7), latest.close),
+    bars30: vwapForBars(bars.slice(-30), latest.close),
+    bars90: vwapForBars(bars.slice(-90), latest.close),
+  }
+  const rollingDays = {
+    days7: vwapForBars(rollingDayBars(dailySourceBars, latest.startMs, 7), latest.close),
+    days30: vwapForBars(rollingDayBars(dailySourceBars, latest.startMs, 30), latest.close),
+    days90: vwapForBars(rollingDayBars(dailySourceBars, latest.startMs, 90), latest.close),
+    days365: vwapForBars(rollingDayBars(dailySourceBars, latest.startMs, 365), latest.close),
+  }
+  const previousZones = {
+    h1: vwapZoneFromPreviousBar(higher.bars1h ?? [], latest.close, 'previous_h1_vwap'),
+    h4: vwapZoneFromPreviousBar(higher.bars4h ?? [], latest.close, 'previous_h4_vwap'),
+    daily: vwapZoneFromPreviousBar(dailySourceBars, latest.close, 'previous_daily_vwap'),
+  }
+  const previousPeriodZones = {
+    day: previousCompletedPeriodZone(dailySourceBars, latest.startMs, latest.close, 'day', 'previous_day_vwap'),
+    week: previousCompletedPeriodZone(dailySourceBars, latest.startMs, latest.close, 'week', 'previous_week_vwap'),
+    month: previousCompletedPeriodZone(dailySourceBars, latest.startMs, latest.close, 'month', 'previous_month_vwap'),
+    quarter: previousCompletedPeriodZone(dailySourceBars, latest.startMs, latest.close, 'quarter', 'previous_quarter_vwap'),
+    year: previousCompletedPeriodZone(dailySourceBars, latest.startMs, latest.close, 'year', 'previous_year_vwap'),
+  }
+  const ibBars = bars.slice(0, Math.min(4, bars.length))
+  const ibHigh = ibBars.length ? Math.max(...ibBars.map((bar) => bar.high)) : null
+  const ibLow = ibBars.length ? Math.min(...ibBars.map((bar) => bar.low)) : null
+  const initialBalanceState =
+    ibHigh == null || ibLow == null
+      ? 'unavailable'
+      : latest.close > ibHigh
+        ? 'above'
+        : latest.close < ibLow
+          ? 'below'
+          : 'inside'
+  const stackInputs = [
+    session,
+    h1,
+    h4,
+    daily,
+    anchored.day,
+    anchored.week,
+    anchored.month,
+    anchored.quarter,
+    anchored.year,
+    rollingDays.days7,
+    rollingDays.days30,
+    rollingDays.days90,
+    rollingDays.days365,
+  ].filter((metric) => metric.value != null)
+  const aboveCount = stackInputs.filter((metric) => metric.state === 'above').length
+  const belowCount = stackInputs.filter((metric) => metric.state === 'below').length
+  const values = stackInputs.map((metric) => metric.value).filter((value): value is number => value != null)
+  const confluenceWidthPct = values.length >= 2 && latest.close > 0
+    ? round((Math.max(...values) - Math.min(...values)) / latest.close, 4)
+    : null
+  const nearest = nearestVwapTargets(
+    latest.close,
+    [
+      { value: session.value, source: 'session_vwap' },
+      { value: h1.value, source: 'h1_vwap' },
+      { value: h4.value, source: 'h4_vwap' },
+      { value: daily.value, source: 'daily_vwap' },
+      { value: anchored.day.value, source: 'anchored_day_vwap' },
+      { value: anchored.week.value, source: 'anchored_week_vwap' },
+      { value: anchored.month.value, source: 'anchored_month_vwap' },
+      { value: anchored.quarter.value, source: 'anchored_quarter_vwap' },
+      { value: anchored.year.value, source: 'anchored_year_vwap' },
+      { value: rolling15m.bars7.value, source: 'rolling15m_7' },
+      { value: rolling15m.bars30.value, source: 'rolling15m_30' },
+      { value: rolling15m.bars90.value, source: 'rolling15m_90' },
+      { value: rollingDays.days7.value, source: 'rolling7d_vwap' },
+      { value: rollingDays.days30.value, source: 'rolling30d_vwap' },
+      { value: rollingDays.days90.value, source: 'rolling90d_vwap' },
+      { value: rollingDays.days365.value, source: 'rolling365d_vwap' },
+    ],
+    [
+      previousZones.h1,
+      previousZones.h4,
+      previousZones.daily,
+      previousPeriodZones.day,
+      previousPeriodZones.week,
+      previousPeriodZones.month,
+      previousPeriodZones.quarter,
+      previousPeriodZones.year,
+    ],
+  )
+  return {
+    schemaVersion: 's12_vwap_context_v1',
+    session,
+    h1,
+    h4,
+    daily,
+    anchored,
+    rolling15m,
+    rollingDays,
+    previousZones,
+    previousPeriodZones,
+    initialBalance: {
+      high: price(ibHigh),
+      low: price(ibLow),
+      state: initialBalanceState,
+      bars: ibBars.length,
+    },
+    stackState: stackInputs.length < 2
+      ? 'unavailable'
+      : aboveCount === stackInputs.length
+        ? 'bullish_stack'
+        : belowCount === stackInputs.length
+          ? 'bearish_stack'
+          : 'mixed',
+    confluenceWidthPct,
+    nearestAbove: nearest.nearestAbove,
+    nearestBelow: nearest.nearestBelow,
+  }
+}
+
+function buildStructureQuality(
+  bars15m: S12Bar[],
+  policy: S12TimingPolicy = DEFAULT_S12_TIMING_POLICY,
+  higher: { bars1h?: S12Bar[]; bars4h?: S12Bar[]; bars1d?: S12Bar[] } = {},
+): S12StructureQuality {
   const bars = normalizeBars(bars15m)
   if (!bars.length) return emptyQuality()
   const latest = bars[bars.length - 1]
+  const vwapContext = buildVwapContext(bars, policy, higher)
   const totalVolume = bars.reduce((sum, bar) => sum + Math.max(0, Number(bar.volume ?? 0)), 0)
   const weightedValue = bars.reduce((sum, bar) => sum + Math.max(0, Number(bar.volume ?? 0)) * bar.close, 0)
   const vwap = totalVolume > 0
@@ -891,6 +1325,10 @@ function buildStructureQuality(bars15m: S12Bar[], policy: S12TimingPolicy = DEFA
   const notes = [
     vwapState === 'above' ? 'price_above_vwap' : null,
     vwapState === 'below' ? 'price_below_vwap' : null,
+    vwapContext.stackState === 'bullish_stack' ? 'vwap_bullish_stack' : null,
+    vwapContext.stackState === 'bearish_stack' ? 'vwap_bearish_stack' : null,
+    vwapContext.initialBalance.state === 'above' ? 'ib_breakout_above' : null,
+    vwapContext.initialBalance.state === 'below' ? 'ib_breakdown_below' : null,
     rvolState === 'strong_participation' ? 'rvol_strong_ge_1_5' : null,
     rvolState === 'participating' ? 'rvol_participating_ge_1_2' : null,
     rvolState === 'thin' ? 'rvol_below_1_2' : null,
@@ -901,6 +1339,7 @@ function buildStructureQuality(bars15m: S12Bar[], policy: S12TimingPolicy = DEFA
       priceVsVwapPct: priceVsVwapPct == null ? null : round(priceVsVwapPct, 4),
       state: vwapState,
     },
+    vwapContext,
     rvol: {
       value: rvol == null ? null : round(rvol, 4),
       state: rvolState,
@@ -1399,6 +1838,32 @@ function completeAssessment(params: {
       vwap: quality.vwap.value,
       price_vwap_pct: quality.vwap.priceVsVwapPct,
       vwap_state: quality.vwap.state,
+      vwap_context_schema: quality.vwapContext.schemaVersion,
+      vwap_stack: quality.vwapContext.stackState,
+      vwap_confluence_width_pct: quality.vwapContext.confluenceWidthPct,
+      vwap_session: quality.vwapContext.session.value,
+      vwap_h1: quality.vwapContext.h1.value,
+      vwap_h4: quality.vwapContext.h4.value,
+      vwap_daily: quality.vwapContext.daily.value,
+      vwap_anchor_day: quality.vwapContext.anchored.day.value,
+      vwap_anchor_week: quality.vwapContext.anchored.week.value,
+      vwap_anchor_month: quality.vwapContext.anchored.month.value,
+      vwap_anchor_quarter: quality.vwapContext.anchored.quarter.value,
+      vwap_anchor_year: quality.vwapContext.anchored.year.value,
+      vwap_rolling_7d: quality.vwapContext.rollingDays.days7.value,
+      vwap_rolling_30d: quality.vwapContext.rollingDays.days30.value,
+      vwap_rolling_90d: quality.vwapContext.rollingDays.days90.value,
+      vwap_rolling_365d: quality.vwapContext.rollingDays.days365.value,
+      vwap_previous_day: quality.vwapContext.previousPeriodZones.day?.value ?? null,
+      vwap_previous_week: quality.vwapContext.previousPeriodZones.week?.value ?? null,
+      vwap_previous_month: quality.vwapContext.previousPeriodZones.month?.value ?? null,
+      vwap_nearest_above: quality.vwapContext.nearestAbove?.price ?? null,
+      vwap_nearest_above_source: quality.vwapContext.nearestAbove?.source ?? null,
+      vwap_nearest_below: quality.vwapContext.nearestBelow?.price ?? null,
+      vwap_nearest_below_source: quality.vwapContext.nearestBelow?.source ?? null,
+      ib_high: quality.vwapContext.initialBalance.high,
+      ib_low: quality.vwapContext.initialBalance.low,
+      ib_state: quality.vwapContext.initialBalance.state,
       rvol: quality.rvol.value,
       rvol_state: quality.rvol.state,
       rvol_lookback_bars: quality.rvol.lookbackBars,
@@ -1777,14 +2242,95 @@ function nearestPriorHighAbove(bars: S12Bar[], start: number, endInclusive: numb
   return nearestPriorHighsAbove(bars, start, endInclusive, entryPrice)[0] ?? null
 }
 
-function nextTargetAbove(candidates: number[], minExclusive: number, fallback: number | null): {
+type S12LongTargetSource = '15m_previous_high' | '1h_supply_zone' | 'vwap_fair_value' | 'tp_ladder'
+
+interface S12LongTargetCandidate {
+  price: number
+  source: S12LongTargetSource
+  detail: string
+}
+
+function uniqueSortedTargets(candidates: S12LongTargetCandidate[]): S12LongTargetCandidate[] {
+  const seen = new Set<string>()
+  return candidates
+    .filter((candidate) => candidate.price > 0)
+    .map((candidate) => ({ ...candidate, price: price(candidate.price)! }))
+    .sort((a, b) => a.price - b.price)
+    .filter((candidate) => {
+      const key = `${candidate.price}:${candidate.source}:${candidate.detail}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+}
+
+function vwapTargetCandidatesAbove(
+  context: S12StructureQuality['vwapContext'],
+  entryPrice: number,
+): S12LongTargetCandidate[] {
+  const minDistance = Math.max(0.01, entryPrice * 0.003)
+  const raw: Array<{ value: number | null; detail: string }> = [
+    { value: context.h1.value, detail: 'h1_vwap' },
+    { value: context.h4.value, detail: 'h4_vwap' },
+    { value: context.daily.value, detail: 'daily_vwap' },
+    { value: context.anchored.day.value, detail: 'anchored_day_vwap' },
+    { value: context.anchored.week.value, detail: 'anchored_week_vwap' },
+    { value: context.anchored.month.value, detail: 'anchored_month_vwap' },
+    { value: context.anchored.quarter.value, detail: 'anchored_quarter_vwap' },
+    { value: context.anchored.year.value, detail: 'anchored_year_vwap' },
+    { value: context.rolling15m.bars30.value, detail: 'rolling15m_30_vwap' },
+    { value: context.rolling15m.bars90.value, detail: 'rolling15m_90_vwap' },
+    { value: context.rollingDays.days7.value, detail: 'rolling7d_vwap' },
+    { value: context.rollingDays.days30.value, detail: 'rolling30d_vwap' },
+    { value: context.rollingDays.days90.value, detail: 'rolling90d_vwap' },
+    { value: context.rollingDays.days365.value, detail: 'rolling365d_vwap' },
+    { value: context.previousZones.h1?.value ?? null, detail: 'previous_h1_vwap_mid' },
+    { value: context.previousZones.h1?.upper ?? null, detail: 'previous_h1_vwap_upper' },
+    { value: context.previousZones.h4?.value ?? null, detail: 'previous_h4_vwap_mid' },
+    { value: context.previousZones.h4?.upper ?? null, detail: 'previous_h4_vwap_upper' },
+    { value: context.previousZones.daily?.value ?? null, detail: 'previous_daily_vwap_mid' },
+    { value: context.previousZones.daily?.upper ?? null, detail: 'previous_daily_vwap_upper' },
+    { value: context.previousPeriodZones.day?.value ?? null, detail: 'previous_day_vwap_mid' },
+    { value: context.previousPeriodZones.day?.upper ?? null, detail: 'previous_day_vwap_upper' },
+    { value: context.previousPeriodZones.week?.value ?? null, detail: 'previous_week_vwap_mid' },
+    { value: context.previousPeriodZones.week?.upper ?? null, detail: 'previous_week_vwap_upper' },
+    { value: context.previousPeriodZones.month?.value ?? null, detail: 'previous_month_vwap_mid' },
+    { value: context.previousPeriodZones.month?.upper ?? null, detail: 'previous_month_vwap_upper' },
+    { value: context.previousPeriodZones.quarter?.value ?? null, detail: 'previous_quarter_vwap_mid' },
+    { value: context.previousPeriodZones.quarter?.upper ?? null, detail: 'previous_quarter_vwap_upper' },
+    { value: context.previousPeriodZones.year?.value ?? null, detail: 'previous_year_vwap_mid' },
+    { value: context.previousPeriodZones.year?.upper ?? null, detail: 'previous_year_vwap_upper' },
+    context.nearestAbove?.source === 'session_vwap' || context.nearestAbove?.source === 'rolling15m_7'
+      ? { value: null, detail: 'nearest_above_reactive_vwap_ignored' }
+      : { value: context.nearestAbove?.price ?? null, detail: `nearest_above_${context.nearestAbove?.source ?? 'none'}` },
+  ]
+  return uniqueSortedTargets(
+    raw
+      .filter((item): item is { value: number; detail: string } => item.value != null && item.value > entryPrice + minDistance)
+      .map((item) => ({
+        price: item.value,
+        source: 'vwap_fair_value',
+        detail: item.detail,
+      })),
+  )
+}
+
+function nextCandidateTargetAbove(
+  candidates: S12LongTargetCandidate[],
+  minExclusive: number,
+  fallback: number | null,
+): {
   price: number | null
-  source: '15m_previous_high' | 'tp_ladder' | 'r_multiple_fallback' | 'unavailable'
+  source: S12StructureExitPlan['mainExit']['source'] | '15m_previous_high'
+  detail: string | null
 } {
-  const structural = candidates.find((candidate) => candidate > minExclusive + 0.01) ?? null
-  if (structural != null) return { price: structural, source: 'tp_ladder' }
-  if (fallback != null && fallback > minExclusive + 0.01) return { price: fallback, source: 'r_multiple_fallback' }
-  return { price: null, source: 'unavailable' }
+  const structural = uniqueSortedTargets(candidates)
+    .find((candidate) => candidate.price > minExclusive + 0.01) ?? null
+  if (structural) return { price: structural.price, source: structural.source, detail: structural.detail }
+  if (fallback != null && fallback > minExclusive + 0.01) {
+    return { price: fallback, source: 'r_multiple_fallback', detail: null }
+  }
+  return { price: null, source: 'unavailable', detail: null }
 }
 
 function latestBullishFvg15mStop(
@@ -2084,6 +2630,7 @@ function buildLongExitPlan(params: {
   risk: number
   supplyZone1h: S12IntradayZone | null
   bearishDefense: S12BearishDefense
+  quality: S12StructureQuality
   policy: S12TimingPolicy
 }): S12StructureExitPlan {
   const priorHighs = nearestPriorHighsAbove(params.bars15m, params.touchIndex, params.reactionIndex, params.entryPrice)
@@ -2096,17 +2643,29 @@ function buildLongExitPlan(params: {
     : supplyHigh != null && supplyHigh > params.entryPrice
       ? supplyHigh
       : null
+  const vwapTargets = vwapTargetCandidatesAbove(params.quality.vwapContext, params.entryPrice)
   const fallbackMainExit = price(params.entryPrice + params.risk * 2)
   const fallbackTp3 = price(params.entryPrice + params.risk * 3)
   const fallbackTp4 = price(params.entryPrice + params.risk * 4)
-  const tp1Price = priorHigh ?? fallbackTp1
-  const mainExitPrice = supplyExit != null ? price(supplyExit) : fallbackMainExit
-  const tp3 = nextTargetAbove(
-    [...priorHighs, supplyHigh != null ? price(supplyHigh) : null].filter((value): value is number => value != null),
+  const tp1Vwap = priorHigh == null
+    ? vwapTargets.find((candidate) => candidate.price > params.entryPrice + 0.01) ?? null
+    : null
+  const tp1Price = priorHigh ?? tp1Vwap?.price ?? fallbackTp1
+  const mainExitCandidate = supplyExit != null
+    ? { price: price(supplyExit), source: '1h_supply_zone' as const, detail: '1h_supply_zone' }
+    : nextCandidateTargetAbove(vwapTargets, tp1Price ?? params.entryPrice, fallbackMainExit)
+  const mainExitPrice = price(mainExitCandidate.price)
+  const ladderCandidates: S12LongTargetCandidate[] = uniqueSortedTargets([
+    ...priorHighs.map((value) => ({ price: value, source: '15m_previous_high' as const, detail: '15m_previous_high' })),
+    ...(supplyHigh != null ? [{ price: price(supplyHigh)!, source: '1h_supply_zone' as const, detail: '1h_supply_zone_high' }] : []),
+    ...vwapTargets,
+  ])
+  const tp3 = nextCandidateTargetAbove(
+    ladderCandidates,
     mainExitPrice ?? params.entryPrice,
     fallbackTp3,
   )
-  const tp4 = nextTargetAbove(priorHighs, tp3.price ?? mainExitPrice ?? params.entryPrice, fallbackTp4)
+  const tp4 = nextCandidateTargetAbove(ladderCandidates, tp3.price ?? mainExitPrice ?? params.entryPrice, fallbackTp4)
   const stopPlan = selectLongStopPlan({
     bars15m: params.bars15m,
     sweepIndex: params.sweepIndex,
@@ -2121,14 +2680,24 @@ function buildLongExitPlan(params: {
     mode: 'structure_first_trailing_v1',
     tp1: {
       price: tp1Price,
-      source: priorHigh != null ? '15m_previous_high' : fallbackTp1 != null ? 'r_multiple_fallback' : 'unavailable',
+      source: priorHigh != null
+        ? '15m_previous_high'
+        : tp1Vwap != null
+          ? 'vwap_fair_value'
+          : fallbackTp1 != null
+            ? 'r_multiple_fallback'
+            : 'unavailable',
       action: 'partial_take_profit',
     },
     mainExit: {
       price: mainExitPrice,
       zoneLow: price(supplyLow),
       zoneHigh: price(supplyHigh),
-      source: supplyExit != null ? '1h_supply_zone' : fallbackMainExit != null ? 'r_multiple_fallback' : 'unavailable',
+      source: supplyExit != null
+        ? '1h_supply_zone'
+        : mainExitCandidate.source === '15m_previous_high'
+          ? 'tp_ladder'
+          : mainExitCandidate.source,
       action: 'main_take_profit',
     },
     tp3: {
@@ -2437,6 +3006,7 @@ function scanLongSequence(params: {
     risk,
     supplyZone1h,
     bearishDefense,
+    quality,
     policy,
   })
   const effectiveStopLoss = exitPlan.trailingStop.initial ?? stopLoss
@@ -2506,6 +3076,8 @@ function scanLongSequence(params: {
 
 export function assessS12IntradayStructure(input: S12IntradayInput): S12IntradayAssessment {
   const bars15m = normalizeBars(input.bars15m)
+  const fallback15mBars = normalizeBars(input.fallback15mBars ?? [])
+  const context15mBars = [...fallback15mBars, ...bars15m].sort((a, b) => a.startMs - b.startMs)
   const bars1h = normalizeBars(input.bars1h)
   const bars4h = normalizeBars(input.bars4h)
   const bars1d = normalizeBars(input.bars1d ?? [])
@@ -2521,9 +3093,13 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
     (!currentSupplyZone1h && fallbackSupplyZone1h),
   )
   const effectiveMin15mBars = effectiveMin15mBarsForSeed(policy, previousSession1hSeedCandidate)
-  if (bars15m.length < effectiveMin15mBars) {
+  const context15mCount = Math.max(bars15m.length, context15mBars.length)
+  if (bars15m.length < 1 || context15mCount < effectiveMin15mBars) {
     return emptyAssessment(input, 'waiting_15m_completed_bars', 's12_waiting_15m_completed_bars', {
       bars15m: bars15m.length,
+      current_session_15m_bars: bars15m.length,
+      previous_session_15m_seed_bars: fallback15mBars.length,
+      seeded_context_15m_bars: context15mBars.length,
       min15mBars: policy.min15mBars,
       effective_min15m_bars: effectiveMin15mBars,
       previous_session_1h_seed_candidate: previousSession1hSeedCandidate ? 'true' : 'false',
@@ -2540,11 +3116,14 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
   const bias1h = bars1h.length > 0 ? resolve1hBias(bars1h) : neutral1hBias
   const supplyZone1h = currentSupplyZone1h ?? fallbackSupplyZone1h
   const demandZone1h = currentDemandZone1h ?? fallbackDemandZone1h
-  const parityDiagnostics = zoneLifecycleDiagnostics({ demandZone1h, supplyZone1h, bars15m, bars1h, bars4h, bars1d, policy })
+  const parityDiagnostics = zoneLifecycleDiagnostics({ demandZone1h, supplyZone1h, bars15m: context15mBars, bars1h, bars4h, bars1d, policy })
   const inputWithZoneDiagnostics: S12IntradayInput = {
     ...input,
     barDiagnostics: {
       ...(input.barDiagnostics ?? {}),
+      current_session_15m_bars: bars15m.length,
+      previous_session_15m_seed_bars: fallback15mBars.length,
+      seeded_context_15m_bars: context15mBars.length,
       fallback_1h_completed_bars: fallback1hBars.length,
       effective_min15m_bars: effectiveMin15mBars,
       previous_session_1h_seed_candidate: previousSession1hSeedCandidate ? 'true' : 'false',
@@ -2556,7 +3135,7 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
     },
   }
   const bearishDefense = scanBearishDefenseSequence({ input: inputWithZoneDiagnostics, bars15m, supplyZone1h, policy })
-  const quality = buildStructureQuality(bars15m, policy)
+  const quality = buildStructureQuality(context15mBars, policy, { bars1h, bars4h, bars1d })
 
   if (bearishDefense.ready) {
     return completeAssessment({
@@ -2632,14 +3211,15 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
 
 export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInput): S12IntradayAssessment {
   const nowMs = input.nowMs ?? Date.now()
-  const bars15m = aggregateCompletedS12Bars(input.baseBars, M15_MS, nowMs, { alignToTwSession: true })
+  const currentSession15m = aggregateCompletedS12Bars(input.baseBars, M15_MS, nowMs, { alignToTwSession: true })
+  const fallback15m = aggregateCompletedS12Bars(input.fallback15mBars ?? [], M15_MS, nowMs, { alignToTwSession: true })
   const bars1h = aggregateCompletedS12Bars(input.baseBars, H1_MS, nowMs, { alignToTwSession: true })
   const currentSession4h = aggregateCompletedS12Bars(input.baseBars, H4_MS, nowMs, { alignToTwSession: true })
   const fallback4h = currentSession4h.length > 0
     ? []
     : aggregateCompletedS12Bars(input.fallback4hBars ?? [], H4_MS, nowMs, { alignToTwSession: true })
   const fallback1h = aggregateCompletedS12Bars(input.fallback1hBars ?? [], H1_MS, nowMs, { alignToTwSession: true })
-  const bars1d = aggregateTwDailyS12Bars([...(input.fallback4hBars ?? []), ...(input.fallback1hBars ?? []), ...input.baseBars], nowMs)
+  const bars1d = aggregateTwDailyS12Bars([...(input.fallback4hBars ?? []), ...(input.fallback1hBars ?? []), ...(input.fallback15mBars ?? []), ...input.baseBars], nowMs)
   const h4Source: S12H4Source = currentSession4h.length > 0
     ? 'current_session'
     : fallback4h.length > 0
@@ -2649,10 +3229,11 @@ export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInp
   return assessS12IntradayStructure({
     symbol: input.symbol,
     nowMs,
-    bars15m,
+    bars15m: currentSession15m,
     bars1h,
     bars4h,
     bars1d,
+    fallback15mBars: fallback15m,
     fallback1hBars: fallback1h,
     h4Source,
     h4ReferenceDate: h4Source === 'previous_trading_day_fallback' ? input.h4ReferenceDate ?? null : null,
@@ -2661,7 +3242,9 @@ export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInp
     barDiagnostics: {
       ...(input.barDiagnostics ?? {}),
       ...sessionAggregationDiagnostics(input.baseBars, nowMs),
-      completed_15m_bars: bars15m.length,
+      completed_15m_bars: currentSession15m.length,
+      completed_15m_current_session_bars: currentSession15m.length,
+      completed_15m_seeded_context_bars: fallback15m.length,
       completed_1h_bars: bars1h.length,
       completed_4h_current_session_bars: currentSession4h.length,
       completed_4h_fallback_bars: fallback4h.length,

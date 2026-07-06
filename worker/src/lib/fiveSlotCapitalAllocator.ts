@@ -241,7 +241,7 @@ function capBudget(value: number, account: FiveSlotAllocatorAccount, config: Fiv
   return Math.max(0, Math.min(
     value,
     finiteNumber(account.totalPortfolio, 0) * finiteNumber(config.maxPctOfPortfolio, 0.25),
-    finiteNumber(account.cash, 0) * finiteNumber(config.maxPctOfCash, 0.30),
+    finiteNumber(account.cash, 0),
     finiteNumber(account.dailyRemaining, finiteNumber(config.dailyBuyLimit, 0)),
   ))
 }

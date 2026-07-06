@@ -142,3 +142,19 @@ const baseConfig = {
     'weakness score should expose the same replacement evidence used by paper auto-swap',
   )
 }
+
+{
+  const plan = buildFiveSlotCapitalPlan({
+    account: { cash: 150_000, totalPortfolio: 1_000_000, dailyRemaining: 800_000 },
+    marketRiskLevel: 'low',
+    config: baseConfig,
+    holdings: [],
+    candidates: [{ symbol: 'CASH', confidence: 0.82, score: 80, riskPct: 0.015 }],
+  })
+  const decision = plan.decisions.get('CASH')
+  assert(decision?.action === 'buy', 'open slot should remain buyable when available cash is below one NAV slot')
+  assert(
+    (decision?.budgetCap ?? 0) > 100_000,
+    'available cash should not be geometrically throttled by the legacy maxPctOfCash cap',
+  )
+}

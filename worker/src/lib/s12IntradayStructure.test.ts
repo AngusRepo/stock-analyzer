@@ -85,6 +85,62 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
 }
 
 {
+  const bars4h = [
+    bar(-2 * H4, 98, 102, 96, 101, 1000),
+    bar(-1 * H4, 101, 108, 100, 107, 1200),
+  ]
+  const bars1h = [
+    bar(-2 * H1, 100, 103, 99, 102, 500),
+    bar(-1 * H1, 102, 106, 101, 105, 700),
+  ]
+  const bars15m = Array.from({ length: 10 }, (_, i) =>
+    bar(i * M15, 102 + i * 0.2, 103 + i * 0.25, 101.8 + i * 0.15, 102.5 + i * 0.25, 100 + i * 20),
+  )
+  const assessment = assessS12IntradayStructure({
+    symbol: '2330',
+    bars15m,
+    bars1h,
+    bars4h,
+  })
+  assert(assessment.quality.vwapContext.schemaVersion === 's12_vwap_context_v1', 'S12 should expose VWAP+ context contract')
+  assert(assessment.quality.vwapContext.session.value != null, 'S12 VWAP+ context should include session VWAP')
+  assert(assessment.quality.vwapContext.anchored.day.value != null, 'S12 VWAP+ context should include anchored day VWAP')
+  assert(assessment.quality.vwapContext.anchored.week.value != null, 'S12 VWAP+ context should include anchored week VWAP')
+  assert(assessment.quality.vwapContext.rolling15m.bars7.value != null, 'S12 VWAP+ context should include rolling 15m VWAP')
+  assert(assessment.quality.vwapContext.rollingDays.days7.value != null, 'S12 VWAP+ context should include rolling day VWAP')
+  assert(assessment.detail.includes('vwap_context_schema=s12_vwap_context_v1'), 'S12 detail should expose VWAP+ schema')
+  assert(assessment.detail.includes('vwap_anchor_day='), 'S12 detail should expose anchored VWAP values')
+  assert(assessment.detail.includes('vwap_rolling_7d='), 'S12 detail should expose rolling-day VWAP values')
+  assert(assessment.detail.includes('ib_state='), 'S12 detail should expose initial-balance state')
+}
+
+{
+  const previous15m = Array.from({ length: 16 }, (_, i) =>
+    bar(-24 * H1 + i * M15, 98 + i * 0.1, 99 + i * 0.15, 97 + i * 0.1, 98.5 + i * 0.1, 100 + i),
+  )
+  const current15m = [
+    bar(0, 101.0, 101.5, 100.8, 101.2, 300),
+  ]
+  const fallback4h = [
+    bar(-24 * H1, 96, 103, 95, 102, 1000),
+  ]
+  const assessment = assessS12IntradayStructureFromBaseBars({
+    symbol: '2330',
+    baseBars: current15m,
+    fallback15mBars: previous15m,
+    fallback4hBars: fallback4h,
+    fallback1hBars: previous15m,
+    nowMs: baseMs + M15 + 60_000,
+    h4ReferenceDate: '2026-07-03',
+    h4ReferenceClose: 102,
+  })
+  assert(assessment.state !== 'waiting_15m_completed_bars', 'previous-session 15m seed should prevent full 15m maturity reset after the first current bar')
+  assert(assessment.state !== 'reaction_ready', 'previous-session 15m seed must not trigger a same-day buy without a current-session sequence')
+  assert(assessment.detail.includes('previous_session_15m_seed_bars=16'), 'S12 detail should expose previous-session 15m seed count')
+  assert(assessment.detail.includes('seeded_context_15m_bars=17'), 'S12 detail should expose combined seeded 15m context count')
+}
+
+{
   const policy = s12TimingPolicyFromEnv({
     S12_INTRADAY_MIN_15M_BARS: '2',
     S12_INTRADAY_ATR_15M_BARS: '99',
@@ -558,6 +614,20 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   })
   assert(assessmentStopExit.action === 'EXIT_ON_REVERSE_BOS', 'S12 assessment stopLoss breach should trigger structural stop exit')
   assert(assessmentStopExit.reason === 's12_position_structural_stop_full_exit', 'S12 assessment stopLoss breach should use structural-stop reason')
+
+  const vwapTargetAssessment = assessS12IntradayStructure({
+    symbol: '2330',
+    bars15m,
+    bars1h,
+    bars4h: [
+      bar(0, 100, 116, 98, 112, 1000),
+    ],
+  })
+  assert(vwapTargetAssessment.state === 'reaction_ready', `expected VWAP target fixture reaction_ready, got ${vwapTargetAssessment.state}: ${vwapTargetAssessment.detail}`)
+  assert(vwapTargetAssessment.exitPlan.tp1.source === '15m_previous_high', 'S12 TP1 should still prefer the nearest 15m prior high')
+  assert(vwapTargetAssessment.exitPlan.mainExit.source === 'vwap_fair_value', 'S12 main exit should use VWAP fair value when no 1H supply target is available')
+  assert(vwapTargetAssessment.exitPlan.mainExit.price != null && vwapTargetAssessment.exitPlan.mainExit.price > (vwapTargetAssessment.exitPlan.tp1.price ?? 0), 'VWAP main exit should remain above TP1')
+  assert(vwapTargetAssessment.detail.includes('structural_main_exit_source=vwap_fair_value'), 'S12 detail should expose VWAP fair-value main-exit provenance')
 
   const positionTp4 = resolveS12PositionDecision({
     assessment,

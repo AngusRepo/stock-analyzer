@@ -197,6 +197,15 @@ def _number_from_paths(payloads: list[dict[str, Any]], paths: list[tuple[str, ..
     return None, None
 
 
+def _string_from_paths(payloads: list[dict[str, Any]], paths: list[tuple[str, ...]]) -> str | None:
+    for payload in payloads:
+        for path in paths:
+            value = _nested(payload, *path) if len(path) > 1 else payload.get(path[0])
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
 def _first_above(entry: float | None, *values: Any) -> float | None:
     if entry is None:
         return None
@@ -245,6 +254,8 @@ def _s12_structural_targets_from_row(
             ("s12_structure", "exitPlan", "tp1", "price"),
             ("s12Structure", "exitPlan", "tp1", "price"),
             ("s12", "exitPlan", "tp1", "price"),
+            ("canonical_trade_lifecycle", "entry", "s12", "exitPlan", "tp1"),
+            ("canonicalTradeLifecycle", "entry", "s12", "exitPlan", "tp1"),
             ("exitPlan", "tp1", "price"),
             ("s12_target1",),
             ("s12Target1",),
@@ -262,6 +273,8 @@ def _s12_structural_targets_from_row(
             ("s12_structure", "exitPlan", "mainExit", "price"),
             ("s12Structure", "exitPlan", "mainExit", "price"),
             ("s12", "exitPlan", "mainExit", "price"),
+            ("canonical_trade_lifecycle", "entry", "s12", "exitPlan", "mainExit"),
+            ("canonicalTradeLifecycle", "entry", "s12", "exitPlan", "mainExit"),
             ("exitPlan", "mainExit", "price"),
             ("s12_target2",),
             ("s12Target2",),
@@ -278,6 +291,8 @@ def _s12_structural_targets_from_row(
             ("s12_structure", "exitPlan", "mainExit", "zoneLow"),
             ("s12Structure", "exitPlan", "mainExit", "zoneLow"),
             ("s12", "exitPlan", "mainExit", "zoneLow"),
+            ("canonical_trade_lifecycle", "entry", "s12", "supplyZoneLow"),
+            ("canonicalTradeLifecycle", "entry", "s12", "supplyZoneLow"),
             ("supplyZone1h", "low"),
             ("supply_zone_1h", "low"),
             ("supply_zone_low",),
@@ -291,6 +306,8 @@ def _s12_structural_targets_from_row(
             ("s12_structure", "exitPlan", "mainExit", "zoneHigh"),
             ("s12Structure", "exitPlan", "mainExit", "zoneHigh"),
             ("s12", "exitPlan", "mainExit", "zoneHigh"),
+            ("canonical_trade_lifecycle", "entry", "s12", "supplyZoneHigh"),
+            ("canonicalTradeLifecycle", "entry", "s12", "supplyZoneHigh"),
             ("supplyZone1h", "high"),
             ("supply_zone_1h", "high"),
             ("supply_zone_high",),
@@ -306,13 +323,45 @@ def _s12_structural_targets_from_row(
             ("nearest_prior_high_15m",),
         ],
     )
+    target1_declared_source = _string_from_paths(
+        payloads,
+        [
+            ("s12_exit", "tp1", "source"),
+            ("s12Exit", "tp1", "source"),
+            ("s12_exit", "exitPlan", "tp1", "source"),
+            ("s12_structure", "exitPlan", "tp1", "source"),
+            ("s12Structure", "exitPlan", "tp1", "source"),
+            ("s12", "exitPlan", "tp1", "source"),
+            ("canonical_trade_lifecycle", "entry", "s12", "exitPlan", "tp1Source"),
+            ("canonicalTradeLifecycle", "entry", "s12", "exitPlan", "tp1Source"),
+            ("exitPlan", "tp1", "source"),
+        ],
+    )
+    target2_declared_source = _string_from_paths(
+        payloads,
+        [
+            ("s12_exit", "mainExit", "source"),
+            ("s12Exit", "mainExit", "source"),
+            ("s12_exit", "exitPlan", "mainExit", "source"),
+            ("s12_structure", "exitPlan", "mainExit", "source"),
+            ("s12Structure", "exitPlan", "mainExit", "source"),
+            ("s12", "exitPlan", "mainExit", "source"),
+            ("canonical_trade_lifecycle", "entry", "s12", "exitPlan", "mainExitSource"),
+            ("canonicalTradeLifecycle", "entry", "s12", "exitPlan", "mainExitSource"),
+            ("exitPlan", "mainExit", "source"),
+        ],
+    )
 
     entry = _to_float(entry_price)
     stop = _to_float(stop_price)
     risk = entry - stop if entry is not None and stop is not None and stop < entry else None
 
     structural_tp1 = _first_above(entry, target1, prior_high)
-    target1_source = target1_path
+    target1_source = (
+        f"{target1_path}.source={target1_declared_source}"
+        if target1_path and target1_declared_source
+        else target1_path
+    )
     if structural_tp1 is None and risk is not None:
         structural_tp1 = entry + risk
         target1_source = "s12_structure_exit_plan.r_multiple_fallback_1r"
@@ -320,7 +369,11 @@ def _s12_structural_targets_from_row(
         target1_source = prior_high_path or "15m_previous_high"
 
     structural_main_exit = _first_above(entry, target2, supply_low, supply_high)
-    target2_source = target2_path
+    target2_source = (
+        f"{target2_path}.source={target2_declared_source}"
+        if target2_path and target2_declared_source
+        else target2_path
+    )
     if structural_main_exit is None and risk is not None:
         structural_main_exit = entry + (risk * 2.0)
         target2_source = "s12_structure_exit_plan.r_multiple_fallback_2r"
@@ -338,8 +391,10 @@ def _s12_structural_targets_from_row(
         "contract_ref": "worker/src/lib/s12IntradayStructure.ts::buildS12StructureExitPlan",
         "target1_source": target1_source or "unavailable",
         "target2_source": target2_source or "unavailable",
-        "target1_policy": "15m_previous_high_else_1r_fallback",
-        "target2_policy": "1h_supply_zone_else_2r_fallback",
+        "target1_policy": "15m_previous_high_or_vwap_fair_value_else_1r_fallback",
+        "target2_policy": "1h_supply_zone_or_vwap_fair_value_else_2r_fallback",
+        "target1_declared_source": target1_declared_source,
+        "target2_declared_source": target2_declared_source,
         "supply_zone_low": supply_low,
         "supply_zone_high": supply_high,
         "legacy_target1_ignored": legacy_target1 is not None and (

@@ -392,6 +392,59 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
 
 {
   const bars4h = [
+    bar(0, 100, 110, 90, 100, 1000),
+  ]
+  const bars15m = [
+    bar(H4 + 0 * M15, 100.0, 100.5, 99.8, 100.2, 100),
+    bar(H4 + 1 * M15, 100.2, 100.6, 99.9, 100.1, 120),
+    bar(H4 + 2 * M15, 101.2, 102.0, 101.2, 101.8, 150),
+    bar(H4 + 3 * M15, 101.8, 102.2, 101.4, 102.0, 180),
+    bar(H4 + 4 * M15, 102.0, 103.0, 101.8, 102.8, 220),
+    bar(H4 + 5 * M15, 102.8, 103.3, 102.5, 103.0, 240),
+    bar(H4 + 6 * M15, 103.0, 106.0, 102.9, 105.8, 600),
+  ]
+  const assessment = assessS12IntradayStructure({
+    symbol: '8091',
+    bars15m,
+    bars1h: [],
+    bars4h,
+  })
+  assert(assessment.reason === 's12_equity_mutation_context_ready', `equity mutation should replace the 1H-demand hard gate, got ${assessment.reason}: ${assessment.detail}`)
+  assert(assessment.state === 'waiting_sweep', 'equity mutation remains inside the S12 maturity ladder as provisional takeover')
+  assert(assessment.maturity.takeoverRole === 'long_entry', 'equity mutation must be handled by the same S12 long-entry owner')
+  assert(assessment.maturity.tier === 'provisional_takeover', 'equity mutation should produce reduced-size provisional takeover')
+  assert(assessment.execution.entryPrice === 105.8, 'equity mutation should use latest 15m close as S12 entry reference')
+  assert((assessment.execution.stopLoss ?? 0) > 0 && (assessment.execution.stopLoss ?? 999) < 105.8, 'equity mutation must expose a structural S12 stop below entry')
+  assert(assessment.exitPlan.trailingStop.source !== 'adaptive', 'equity mutation stop must resolve to a concrete 15m structure source')
+  assert(assessment.detail.includes('s12_owner=primary_single_owner'), 'S12 detail should prove no split-owner entry path was introduced')
+  assert(assessment.detail.includes('entry_archetype=equity_repricing_breakout'), 'S12 detail should expose the individual-stock mutation archetype')
+  assert(assessment.detail.includes('one_h_demand_required=false'), '1H demand should become evidence, not a hard gate, under equity mutation')
+  assert(resolveS12UnifiedDecision(assessment).action === 'READY', 'S12 unified decision should let equity mutation reach execution gates')
+}
+
+{
+  const bars4h = [
+    bar(0, 100, 110, 90, 100, 1000),
+  ]
+  const bars15m = [
+    bar(H4 + 0 * M15, 105.0, 105.5, 104.0, 104.5, 300),
+    bar(H4 + 1 * M15, 104.5, 105.0, 103.8, 104.2, 260),
+    bar(H4 + 2 * M15, 104.2, 104.6, 103.6, 103.9, 220),
+    bar(H4 + 3 * M15, 103.9, 104.2, 103.2, 103.5, 180),
+  ]
+  const assessment = assessS12IntradayStructure({
+    symbol: '8091',
+    bars15m,
+    bars1h: [],
+    bars4h,
+  })
+  assert(assessment.state === 'waiting_4h_long_bias' || assessment.state === 'waiting_1h_completed_bar', 'non-mutation individual stocks should still wait inside S12 context gates')
+  assert(assessment.maturity.takeoverRole === 'none', 'weak/no-volume context must not become a hidden buy path')
+  assert(assessment.detail.includes('equity_mutation_context=false'), 'S12 detail should expose why equity mutation did not activate')
+}
+
+{
+  const bars4h = [
     bar(0, 100, 110, 98, 108, 1000),
   ]
   const bars1h = [

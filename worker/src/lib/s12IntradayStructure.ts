@@ -241,6 +241,18 @@ export interface S12StructureExitPlan {
   }
 }
 
+interface S12EquityMutationContext {
+  active: boolean
+  archetype: 'equity_repricing_breakout' | 'unavailable'
+  score: number
+  reasons: string[]
+  zone: S12IntradayZone | null
+  stopPlan: S12PositionStopPlan | null
+  entryPrice: number | null
+  chaseCeiling: number | null
+  atr15m: number | null
+}
+
 export type S12H4Source = 'current_session' | 'previous_trading_day_fallback' | 'unavailable'
 
 export type S12RuntimeBarDiagnostics = Record<string, unknown>
@@ -1728,6 +1740,321 @@ function findSupplyZone1h(bars1h: S12Bar[], policy: S12TimingPolicy = DEFAULT_S1
   return null
 }
 
+function volumeExpansionRatio(bars: S12Bar[], lookback = 4): number | null {
+  if (bars.length < 2) return null
+  const latest = Math.max(0, Number(bars[bars.length - 1].volume ?? 0))
+  const previous = bars
+    .slice(Math.max(0, bars.length - 1 - lookback), bars.length - 1)
+    .map((bar) => Math.max(0, Number(bar.volume ?? 0)))
+    .filter((value) => value > 0)
+  if (!previous.length || latest <= 0) return null
+  const avg = previous.reduce((sum, value) => sum + value, 0) / previous.length
+  return avg > 0 ? round(latest / avg, 4) : null
+}
+
+function buildEquityMutationZone(params: {
+  bars15m: S12Bar[]
+  entryPrice: number
+  atr15m: number
+  policy: S12TimingPolicy
+}): { zone: S12IntradayZone | null; stopPlan: S12PositionStopPlan | null } {
+  const stopPlan = buildS12LongPositionStopPlan({
+    bars15m: params.bars15m,
+    entryPrice: params.entryPrice,
+    referencePrice: params.entryPrice,
+    policy: params.policy,
+    stopSource: 'adaptive',
+  })
+  if (stopPlan) {
+    return {
+      stopPlan,
+      zone: {
+        type: stopPlan.source === '15m_recent_fvg'
+          ? 'bullish_fvg'
+          : stopPlan.source === '15m_order_block'
+            ? 'bullish_order_block'
+            : 'support',
+        low: stopPlan.zoneLow,
+        high: Math.min(params.entryPrice - 0.01, Math.max(stopPlan.zoneHigh, stopPlan.price)),
+        createdMs: params.bars15m[params.bars15m.length - 1]?.startMs ?? Date.now(),
+        ageBars: 0,
+      },
+    }
+  }
+
+  const recent = params.bars15m.slice(Math.max(0, params.bars15m.length - 5))
+  const protectedLow = recent
+    .map((bar) => bar.low)
+    .filter((value) => Number.isFinite(value) && value > 0 && value < params.entryPrice)
+    .sort((a, b) => b - a)[0] ?? null
+  if (protectedLow == null) return { zone: null, stopPlan: null }
+  const stop = price(protectedLow - params.atr15m * 0.1)
+  if (stop == null || stop <= 0 || stop >= params.entryPrice) return { zone: null, stopPlan: null }
+  const zoneHigh = price(Math.min(params.entryPrice - 0.01, protectedLow + params.atr15m * 0.35))
+  if (zoneHigh == null || zoneHigh <= stop) return { zone: null, stopPlan: null }
+  return {
+    zone: {
+      type: 'support',
+      low: stop,
+      high: zoneHigh,
+      createdMs: recent[recent.length - 1]?.startMs ?? Date.now(),
+      ageBars: 0,
+    },
+    stopPlan: {
+      price: stop,
+      source: '15m_protected_low',
+      method: '15m_protected_low',
+      zoneLow: stop,
+      zoneHigh,
+      noAtrBuffer: true,
+    },
+  }
+}
+
+function buildEquityMutationContext(params: {
+  bars15m: S12Bar[]
+  bias4h: S12HtfBias
+  bias1h: S12HtfBias
+  quality: S12StructureQuality
+  policy: S12TimingPolicy
+}): S12EquityMutationContext {
+  const bars = normalizeBars(params.bars15m)
+  const latest = bars[bars.length - 1]
+  const previous = bars[bars.length - 2] ?? null
+  const atr15m = averageTrueRange(bars, params.policy.atr15mBars) ?? (latest ? Math.max(0.01, latest.high - latest.low) : null)
+  if (!latest || !atr15m || atr15m <= 0) {
+    return { active: false, archetype: 'unavailable', score: 0, reasons: [], zone: null, stopPlan: null, entryPrice: null, chaseCeiling: null, atr15m }
+  }
+
+  const priorHigh = highBetween(bars, Math.max(0, bars.length - 7), bars.length - 1)
+  const priorClose = previous?.close ?? null
+  const range = Math.max(0.0001, latest.high - latest.low)
+  const closePosition = (latest.close - latest.low) / range
+  const bodyPct = Math.abs(latest.close - latest.open) / range
+  const volExpansion = volumeExpansionRatio(bars, 4)
+  const vwapConstructive =
+    params.quality.vwap.state === 'above' ||
+    params.quality.vwapContext.stackState === 'bullish_stack' ||
+    params.quality.vwapContext.initialBalance.state === 'above'
+  const volumeConstructive =
+    params.quality.rvol.state === 'strong_participation' ||
+    params.quality.rvol.state === 'participating' ||
+    (volExpansion != null && volExpansion >= 1.25)
+  const repricingBreakout = priorHigh != null && latest.close > priorHigh + atr15m * 0.05
+  const reclaimBreakout = priorClose != null && priorHigh != null && priorClose <= priorHigh && latest.close > priorHigh
+  const strongClose = latest.close > latest.open && closePosition >= 0.62 && bodyPct >= 0.22
+  const higherLow = previous != null && latest.low >= previous.low - atr15m * 0.15
+  const htfAllowed = params.bias4h.direction !== 'short' && params.bias1h.direction !== 'short'
+  const reasons = [
+    repricingBreakout ? '15m_repricing_breakout' : null,
+    reclaimBreakout ? '15m_prior_high_reclaim' : null,
+    strongClose ? '15m_strong_close' : null,
+    higherLow ? '15m_higher_low_acceptance' : null,
+    vwapConstructive ? 'vwap_constructive' : null,
+    volumeConstructive ? 'volume_participation' : null,
+    htfAllowed ? 'htf_not_short' : null,
+  ].filter((value): value is string => value != null)
+  const score = reasons.length
+  const entryPrice = price(latest.close)
+  const zoneResult = entryPrice != null
+    ? buildEquityMutationZone({ bars15m: bars, entryPrice, atr15m, policy: params.policy })
+    : { zone: null, stopPlan: null }
+  const active = Boolean(
+    entryPrice != null &&
+    zoneResult.zone != null &&
+    zoneResult.stopPlan != null &&
+    htfAllowed &&
+    vwapConstructive &&
+    volumeConstructive &&
+    strongClose &&
+    (repricingBreakout || reclaimBreakout) &&
+    score >= 5,
+  )
+  return {
+    active,
+    archetype: active ? 'equity_repricing_breakout' : 'unavailable',
+    score,
+    reasons,
+    zone: zoneResult.zone,
+    stopPlan: zoneResult.stopPlan,
+    entryPrice,
+    chaseCeiling: entryPrice == null ? null : price(entryPrice + atr15m * 0.25),
+    atr15m: price(atr15m),
+  }
+}
+
+function buildEquityMutationExitPlan(params: {
+  bars15m: S12Bar[]
+  entryPrice: number
+  stopPlan: S12PositionStopPlan
+  supplyZone1h: S12IntradayZone | null
+  bearishDefense: S12BearishDefense
+  quality: S12StructureQuality
+  policy: S12TimingPolicy
+}): S12StructureExitPlan {
+  const risk = Math.max(0.01, params.entryPrice - params.stopPlan.price)
+  const priorHighs = nearestPriorHighsAbove(params.bars15m, 0, params.bars15m.length - 1, params.entryPrice)
+  const priorHigh = priorHighs[0] ?? null
+  const supplyLow = params.supplyZone1h?.low ?? null
+  const supplyHigh = params.supplyZone1h?.high ?? null
+  const supplyExit = supplyLow != null && supplyLow > params.entryPrice
+    ? supplyLow
+    : supplyHigh != null && supplyHigh > params.entryPrice
+      ? supplyHigh
+      : null
+  const vwapTargets = vwapTargetCandidatesAbove(params.quality.vwapContext, params.entryPrice)
+  const fallbackTp1 = price(params.entryPrice + risk)
+  const fallbackMainExit = price(params.entryPrice + risk * 2)
+  const fallbackTp3 = price(params.entryPrice + risk * 3)
+  const fallbackTp4 = price(params.entryPrice + risk * 4)
+  const tp1Vwap = priorHigh == null
+    ? vwapTargets.find((candidate) => candidate.price > params.entryPrice + 0.01) ?? null
+    : null
+  const tp1Price = priorHigh ?? tp1Vwap?.price ?? fallbackTp1
+  const mainExitCandidate = supplyExit != null
+    ? { price: price(supplyExit), source: '1h_supply_zone' as const, detail: '1h_supply_zone' }
+    : nextCandidateTargetAbove(vwapTargets, tp1Price ?? params.entryPrice, fallbackMainExit)
+  const mainExitPrice = price(mainExitCandidate.price)
+  const ladderCandidates: S12LongTargetCandidate[] = uniqueSortedTargets([
+    ...priorHighs.map((value) => ({ price: value, source: '15m_previous_high' as const, detail: '15m_previous_high' })),
+    ...(supplyHigh != null ? [{ price: price(supplyHigh)!, source: '1h_supply_zone' as const, detail: '1h_supply_zone_high' }] : []),
+    ...vwapTargets,
+  ])
+  const tp3 = nextCandidateTargetAbove(ladderCandidates, mainExitPrice ?? params.entryPrice, fallbackTp3)
+  const tp4 = nextCandidateTargetAbove(ladderCandidates, tp3.price ?? mainExitPrice ?? params.entryPrice, fallbackTp4)
+
+  return {
+    mode: 'structure_first_trailing_v1',
+    tp1: {
+      price: tp1Price,
+      source: priorHigh != null
+        ? '15m_previous_high'
+        : tp1Vwap != null
+          ? 'vwap_fair_value'
+          : fallbackTp1 != null
+            ? 'r_multiple_fallback'
+            : 'unavailable',
+      action: 'partial_take_profit',
+    },
+    mainExit: {
+      price: mainExitPrice,
+      zoneLow: price(supplyLow),
+      zoneHigh: price(supplyHigh),
+      source: supplyExit != null
+        ? '1h_supply_zone'
+        : mainExitCandidate.source === '15m_previous_high'
+          ? 'tp_ladder'
+          : mainExitCandidate.source,
+      action: 'main_take_profit',
+    },
+    tp3: {
+      price: tp3.price,
+      source: tp3.source === '15m_previous_high' ? 'tp_ladder' : tp3.source,
+      action: 'extended_take_profit',
+    },
+    tp4: {
+      price: tp4.price,
+      source: tp4.source === '15m_previous_high' ? 'tp_ladder' : tp4.source,
+      action: 'extended_take_profit',
+    },
+    manualTp: {
+      price: null,
+      source: 'unavailable',
+      action: 'manual_take_profit',
+    },
+    trailingStop: {
+      initial: params.stopPlan.price,
+      method: params.stopPlan.method,
+      source: params.stopPlan.source,
+      activation: 'after_tp1_or_reverse_choch',
+    },
+    reverseWarning: {
+      state: params.bearishDefense.state,
+      action: params.bearishDefense.ready ? 'EXIT_ON_REVERSE_BOS' : params.bearishDefense.action,
+      source: 'bearish_defense_sidecar',
+    },
+  }
+}
+
+function completeEquityMutationAssessment(params: {
+  input: S12IntradayInput
+  bars15m: S12Bar[]
+  completedBars: S12IntradayAssessment['completedBars']
+  bias4h: S12HtfBias
+  bias1h: S12HtfBias
+  supplyZone1h: S12IntradayZone | null
+  bearishDefense: S12BearishDefense
+  quality: S12StructureQuality
+  mutation: S12EquityMutationContext
+  policy: S12TimingPolicy
+}): S12IntradayAssessment {
+  const entryPrice = params.mutation.entryPrice ?? params.bars15m[params.bars15m.length - 1]?.close
+  const stopPlan = params.mutation.stopPlan
+  const mutationZone = params.mutation.zone
+  if (entryPrice == null || stopPlan == null || mutationZone == null) {
+    return completeAssessment({
+      input: params.input,
+      state: 'waiting_1h_demand_zone',
+      completedBars: params.completedBars,
+      bias4h: params.bias4h,
+      bias1h: params.bias1h,
+      demandZone1h: null,
+      supplyZone1h: params.supplyZone1h,
+      bearishDefense: params.bearishDefense,
+      quality: params.quality,
+      sequence: {},
+    })
+  }
+  const exitPlan = buildEquityMutationExitPlan({
+    bars15m: params.bars15m,
+    entryPrice,
+    stopPlan,
+    supplyZone1h: params.supplyZone1h,
+    bearishDefense: params.bearishDefense,
+    quality: params.quality,
+    policy: params.policy,
+  })
+  return completeAssessment({
+    input: params.input,
+    state: 'waiting_sweep',
+    reason: 's12_equity_mutation_context_ready',
+    completedBars: params.completedBars,
+    bias4h: params.bias4h,
+    bias1h: params.bias1h,
+    demandZone1h: mutationZone,
+    supplyZone1h: params.supplyZone1h,
+    bearishDefense: params.bearishDefense,
+    quality: params.quality,
+    exitPlan,
+    sequence: { zoneTouchMs: params.bars15m[params.bars15m.length - 1]?.startMs ?? null },
+    execution: {
+      entryPrice,
+      chaseCeiling: params.mutation.chaseCeiling,
+      stopLoss: stopPlan.price,
+      target1: exitPlan.tp1.price,
+      target2: exitPlan.mainExit.price,
+      target3: exitPlan.tp3.price,
+      target4: exitPlan.tp4.price,
+      atr15m: params.mutation.atr15m,
+      rMultiple: params.mutation.atr15m != null && params.mutation.atr15m > 0
+        ? (entryPrice - stopPlan.price) / params.mutation.atr15m
+        : null,
+    },
+    setupId: setupKey(params.input.symbol, params.bars15m[params.bars15m.length - 1]?.startMs),
+    extraDetail: {
+      s12_owner: 'primary_single_owner',
+      entry_archetype: params.mutation.archetype,
+      equity_mutation_context: 'true',
+      equity_mutation_score: params.mutation.score,
+      equity_mutation_reasons: params.mutation.reasons.join('|'),
+      one_h_demand_required: 'false',
+      one_h_demand_role: 'evidence_not_hard_gate',
+      structural_stop_source: stopPlan.source,
+      structural_stop_method: stopPlan.method,
+    },
+  })
+}
+
 function stateReason(state: S12IntradayState, extra?: string): string {
   if (extra) return extra
   switch (state) {
@@ -3136,6 +3463,13 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
   }
   const bearishDefense = scanBearishDefenseSequence({ input: inputWithZoneDiagnostics, bars15m, supplyZone1h, policy })
   const quality = buildStructureQuality(context15mBars, policy, { bars1h, bars4h, bars1d })
+  const equityMutation = buildEquityMutationContext({
+    bars15m: context15mBars,
+    bias4h,
+    bias1h,
+    quality,
+    policy,
+  })
 
   if (bearishDefense.ready) {
     return completeAssessment({
@@ -3159,7 +3493,7 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
   }
 
   const h4Source = input.h4Source ?? (completedBars.h4 > 0 ? 'current_session' : 'unavailable')
-  if (shouldBlockOn4hBias(h4Source, bias4h)) {
+  if (shouldBlockOn4hBias(h4Source, bias4h) && !equityMutation.active) {
     return completeAssessment({
       input: inputWithZoneDiagnostics,
       state: 'waiting_4h_long_bias',
@@ -3175,7 +3509,24 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
         latest4h_close: price(bars4h[bars4h.length - 1]?.close),
         required: '4h_long_channel_align',
         h4_bias_gate: 'current_session_only',
+        equity_mutation_context: 'false',
+        equity_mutation_score: equityMutation.score,
+        equity_mutation_reasons: equityMutation.reasons.join('|'),
       },
+    })
+  }
+  if (equityMutation.active && !demandZone1h) {
+    return completeEquityMutationAssessment({
+      input: inputWithZoneDiagnostics,
+      bars15m: context15mBars,
+      completedBars,
+      bias4h,
+      bias1h,
+      supplyZone1h,
+      bearishDefense,
+      quality,
+      mutation: equityMutation,
+      policy,
     })
   }
   if (bars1h.length < 1 && fallback1hBars.length < 1) {
@@ -3190,6 +3541,13 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
       bearishDefense,
       quality,
       sequence: {},
+      extraDetail: {
+        equity_mutation_context: 'false',
+        equity_mutation_score: equityMutation.score,
+        equity_mutation_reasons: equityMutation.reasons.join('|'),
+        one_h_demand_required: 'true',
+        one_h_demand_role: 'hard_gate_until_equity_mutation_context',
+      },
     })
   }
   if (!demandZone1h) {
@@ -3204,6 +3562,13 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
       bearishDefense,
       quality,
       sequence: {},
+      extraDetail: {
+        equity_mutation_context: 'false',
+        equity_mutation_score: equityMutation.score,
+        equity_mutation_reasons: equityMutation.reasons.join('|'),
+        one_h_demand_required: 'true',
+        one_h_demand_role: 'hard_gate_until_equity_mutation_context',
+      },
     })
   }
   return scanLongSequence({ input: inputWithZoneDiagnostics, bars15m, completedBars, bias4h, bias1h, demandZone1h, supplyZone1h, bearishDefense, quality, policy })

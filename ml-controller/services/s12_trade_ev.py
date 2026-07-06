@@ -54,6 +54,76 @@ def _score_tilt(value: Any, denominator: float, scale: float) -> float:
     return (normalized - 0.5) * scale
 
 
+def _boolish(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    return None
+
+
+def _listish(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    return [part.strip() for part in text.replace(",", "|").split("|") if part.strip()]
+
+
+def _s12_context_multiplier(context: dict[str, Any] | None) -> tuple[float, list[str], dict[str, Any]]:
+    if not isinstance(context, dict):
+        return 1.0, [], {}
+
+    multiplier = 1.0
+    reasons: list[str] = []
+    hard_block = _boolish(context.get("htf_hard_block"))
+    fast_acceptance = _boolish(context.get("vwap_fast_acceptance"))
+    slow_context = str(context.get("vwap_slow_context") or "").strip().lower()
+    haircuts = _listish(context.get("equity_mutation_risk_haircuts") or context.get("risk_haircuts"))
+
+    for item in haircuts:
+        normalized = item.lower()
+        if "1h_short" in normalized:
+            multiplier *= 0.90
+            reasons.append("1h_short_risk_haircut")
+        elif "4h_short" in normalized:
+            multiplier *= 0.85
+            reasons.append("4h_short_risk_haircut")
+        elif "slow_vwap_overhead" in normalized:
+            multiplier *= 0.90
+            reasons.append("slow_vwap_overhead_supply_haircut")
+
+    if fast_acceptance is False:
+        multiplier *= 0.85
+        reasons.append("missing_fast_vwap_acceptance")
+    if slow_context == "overhead_supply":
+        multiplier *= 0.90
+        if "slow_vwap_overhead_supply_haircut" not in reasons:
+            reasons.append("slow_vwap_overhead_supply_haircut")
+    elif slow_context == "mixed":
+        multiplier *= 0.95
+        reasons.append("mixed_slow_vwap_context")
+
+    multiplier = _clamp(multiplier, 0.50, 1.0)
+    evidence = {
+        "schema_version": "s12-equity-mutation-context-v1",
+        "vwap_fast_acceptance": fast_acceptance,
+        "vwap_fast_reasons": _listish(context.get("vwap_fast_reasons")),
+        "vwap_slow_context": slow_context or None,
+        "equity_mutation_risk_haircuts": haircuts,
+        "htf_hard_block": hard_block,
+        "entry_archetype": context.get("entry_archetype"),
+        "multiplier": round(multiplier, 6),
+        "reasons": reasons,
+        "policy": "worker_s12_entry_context_is_ev_haircut_source",
+    }
+    return multiplier, reasons, evidence
+
+
 def build_s12_trade_ev_from_structure(
     *,
     symbol: str | None = None,
@@ -70,6 +140,7 @@ def build_s12_trade_ev_from_structure(
     score_v2_final_score: float | None = None,
     market_heat_expected_return: float | None = None,
     reward_confidence_multiplier: float | None = None,
+    s12_context: dict[str, Any] | None = None,
     regime: str | None = None,
     roundtrip_cost_bps: float = 18.0,
     source: str = "s12_structural_cold_start_ev",
@@ -86,6 +157,22 @@ def build_s12_trade_ev_from_structure(
     target1 = _to_float(target1_price)
     target2 = _to_float(target2_price)
     cost = max(0.0, float(roundtrip_cost_bps or 0.0)) / 10000.0
+    context_multiplier, context_haircut_reasons, context_evidence = _s12_context_multiplier(s12_context)
+
+    if context_evidence.get("htf_hard_block") is True:
+        return {
+            "schema_version": "s12-trade-ev-v1",
+            "symbol": symbol,
+            "status": "invalid_structure",
+            "source": source,
+            "semantic": "trade_expected_return_not_5bar_close_forecast",
+            "trade_expected_return_net_pct": None,
+            "trade_expected_return_source": f"{source}_htf_hard_block",
+            "sampleCount": 0,
+            "minSamples": 0,
+            "sample_policy": "s12_structural_cold_start_no_replay",
+            "s12_entry_context": context_evidence,
+        }
 
     if entry is None or entry <= 0:
         return {
@@ -155,7 +242,8 @@ def build_s12_trade_ev_from_structure(
     target1_gain = (valid_targets[0] - entry) / entry
     target2_gain = (valid_targets[-1] - entry) / entry
     blended_reward_pct = (0.65 * target1_gain) + (0.35 * target2_gain)
-    reward_confidence = _clamp(_to_float(reward_confidence_multiplier) or 1.0, 0.25, 1.0)
+    base_reward_confidence = _clamp(_to_float(reward_confidence_multiplier) or 1.0, 0.25, 1.0)
+    reward_confidence = _clamp(base_reward_confidence * context_multiplier, 0.25, 1.0)
     confidence_adjusted_reward_pct = blended_reward_pct * reward_confidence
     reward_r = confidence_adjusted_reward_pct / risk_pct if risk_pct > 0 else None
     raw_reward_r = blended_reward_pct / risk_pct if risk_pct > 0 else None
@@ -215,14 +303,18 @@ def build_s12_trade_ev_from_structure(
         "payoff_ratio": None if reward_r is None else round(reward_r, 6),
         "raw_structural_payoff_ratio": None if raw_reward_r is None else round(raw_reward_r, 6),
         "reward_confidence_multiplier": round(reward_confidence, 6),
+        "base_reward_confidence_multiplier": round(base_reward_confidence, 6),
         "profit_factor": None,
         "cold_start": True,
+        "s12_entry_context": context_evidence,
         "cold_start_policy": {
             "formula": "shrunk_structural_R_multiple_ev",
             "win_rate_bounds": [0.43, 0.58],
             "positive_ev_shrink": shrink,
             "positive_ev_cap": round(positive_cap, 10),
             "reward_confidence_multiplier": round(reward_confidence, 6),
+            "s12_context_multiplier": round(context_multiplier, 6),
+            "s12_context_haircuts": context_haircut_reasons,
             "inputs": {
                 "avg_rank": round(rank, 6),
                 "ml_edge_score": ml_edge_score,
@@ -232,6 +324,7 @@ def build_s12_trade_ev_from_structure(
                 "score_v2_final_score": score_v2_final_score,
                 "market_heat_expected_return": heat,
                 "regime": regime,
+                "s12_entry_context": context_evidence,
             },
         },
         "exit_reason_distribution": {},

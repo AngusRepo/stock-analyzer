@@ -1090,6 +1090,17 @@ def test_sparse_tangent_allocation_persists_blocked_s12_trade_ev_payload():
         "trade_expected_return_source": "s12_replay_trade_outcomes:global_insufficient_samples",
         "sampleCount": 0,
         "sample_policy": "verified_s12_buy_trade_outcomes_only",
+        "s12_entry_context": {
+            "vwap_fast_acceptance": True,
+            "vwap_slow_context": "overhead_supply",
+            "htf_hard_block": False,
+            "equity_mutation_risk_haircuts": ["1h_short_risk_haircut"],
+            "multiplier": 0.81,
+        },
+        "cold_start_policy": {
+            "s12_context_multiplier": 0.81,
+            "s12_context_haircuts": ["1h_short_risk_haircut"],
+        },
     }
     rows = [{
         "symbol": "2330",
@@ -1112,6 +1123,11 @@ def test_sparse_tangent_allocation_persists_blocked_s12_trade_ev_payload():
     allocation = promoted[0]["alpha_allocation"]
     assert promoted[0]["signal"] == "HOLD"
     assert allocation["s12_trade_ev"] == payload
+    assert allocation["s12_entry_context"]["vwap_fast_acceptance"] is True
+    assert allocation["s12_context_multiplier"] == pytest.approx(0.81)
+    assert allocation["s12_context_haircuts"] == ["1h_short_risk_haircut"]
+    assert allocation["s12_vwap_slow_context"] == "overhead_supply"
+    assert allocation["s12_htf_hard_block"] is False
     assert allocation["expected_return_source"] == "s12_replay_trade_outcomes:global_insufficient_samples"
     assert allocation["sparse_input_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
 

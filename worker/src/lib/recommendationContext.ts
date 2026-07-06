@@ -91,6 +91,12 @@ export interface SparseAllocationSummary {
   expected_return_source: string | null
   expected_R: number | null
   s12_trade_ev: Record<string, unknown> | null
+  s12_entry_context: Record<string, unknown> | null
+  s12_context_multiplier: number | null
+  s12_context_haircuts: string[]
+  vwap_fast_acceptance: boolean | null
+  vwap_slow_context: string | null
+  htf_hard_block: boolean | null
   positive_expected_edge: boolean | null
   risk_estimate: number | null
   risk_estimate_source: string | null
@@ -271,6 +277,11 @@ function boolOrNull(value: unknown): boolean | null {
 function cleanTextOrNull(value: unknown): string | null {
   const text = String(value ?? '').trim()
   return text ? text : null
+}
+
+function stringListOrEmpty(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => String(item ?? '').trim()).filter(Boolean)
 }
 
 function clamp01(value: number): number {
@@ -499,6 +510,26 @@ export function buildSparseAllocationSummary(alphaAllocation: unknown): SparseAl
   const s12TradeEv = allocation.s12_trade_ev && typeof allocation.s12_trade_ev === 'object'
     ? allocation.s12_trade_ev as Record<string, unknown>
     : null
+  const s12EntryContext = s12TradeEv?.s12_entry_context && typeof s12TradeEv.s12_entry_context === 'object'
+    ? s12TradeEv.s12_entry_context as Record<string, unknown>
+    : null
+  const coldStartPolicy = s12TradeEv?.cold_start_policy && typeof s12TradeEv.cold_start_policy === 'object'
+    ? s12TradeEv.cold_start_policy as Record<string, unknown>
+    : null
+  const s12ContextHaircuts = stringListOrEmpty(coldStartPolicy?.s12_context_haircuts)
+  const vwapFastAcceptance = boolOrNull(
+    s12EntryContext?.vwap_fast_acceptance
+      ?? s12EntryContext?.vwapFastAcceptance
+      ?? s12EntryContext?.fast_vwap_acceptance,
+  )
+  const vwapSlowContext = cleanTextOrNull(
+    s12EntryContext?.vwap_slow_context
+      ?? s12EntryContext?.vwapSlowContext,
+  )
+  const htfHardBlock = boolOrNull(
+    s12EntryContext?.htf_hard_block
+      ?? s12EntryContext?.htfHardBlock,
+  )
   const controller = cleanTextOrNull(allocation.controller)
     ?? cleanTextOrNull(opbController?.controller)
     ?? cleanTextOrNull(opbController?.policy_id)
@@ -538,6 +569,12 @@ export function buildSparseAllocationSummary(alphaAllocation: unknown): SparseAl
     expected_return_source: cleanTextOrNull(allocation.expected_return_source),
     expected_R: finiteOrNull(s12TradeEv?.expected_R ?? allocation.expected_R),
     s12_trade_ev: s12TradeEv,
+    s12_entry_context: s12EntryContext,
+    s12_context_multiplier: finiteOrNull(coldStartPolicy?.s12_context_multiplier ?? s12EntryContext?.multiplier),
+    s12_context_haircuts: s12ContextHaircuts,
+    vwap_fast_acceptance: vwapFastAcceptance,
+    vwap_slow_context: vwapSlowContext,
+    htf_hard_block: htfHardBlock,
     positive_expected_edge: boolOrNull(allocation.positive_expected_edge),
     risk_estimate: finiteOrNull(allocation.risk_estimate),
     risk_estimate_source: cleanTextOrNull(allocation.risk_estimate_source),

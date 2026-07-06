@@ -104,6 +104,18 @@ function assert(condition: unknown, message: string): asserts condition {
     technicalSignals: { adx14: 28.4, volumeMomentumDivergence132710: 120.5 },
     alphaReason: { bucket: 'breakout_vol_expansion' },
     chipEvidence: { source: 'canonical_chip_daily' },
+    mlEdgePolicy: {
+      source: 'ensemble_v2.ml_threshold_policy',
+      policyId: 'ml-threshold-policy-20260703',
+      buyThreshold: 0.58,
+      effectiveScore: 17.2,
+    },
+    fundamentalQuality: {
+      source: 'canonical_fundamental_features',
+      pe: 14.2,
+      pb: 1.3,
+      revenueGrowthYoY: 18.4,
+    },
     reasonVariants: {
       breeze2: {
         source: 'breeze2_generation_shadow',
@@ -120,9 +132,13 @@ function assert(condition: unknown, message: string): asserts condition {
   assert(snapshot.finalScore === 61.5, 'final score should preserve canonical alpha-adjusted score')
   assert(snapshot.alphaAdjustment === 2.5, 'alpha adjustment should be exposed to downstream readers')
   assert(snapshot.payload.technicalSignals?.adx14 === 28.4, 'technical signals should survive Score V2 serialization')
+  assert(snapshot.payload.mlEdgePolicy?.policyId === 'ml-threshold-policy-20260703', 'ML threshold policy evidence should survive Score V2 parsing')
+  assert(snapshot.payload.fundamentalQuality?.source === 'canonical_fundamental_features', 'fundamental detail payload should survive Score V2 parsing')
   assert(snapshot.payload.reasonVariants?.breeze2?.reason === 'Breeze2：量能需確認。', 'Breeze2 reason variant should survive Score V2 serialization')
   const summary = serializeScoreV2Snapshot(snapshot)
   assert(summary.technicalSignals?.adx14 === 28.4, 'API Score V2 summary should include technical signals for frontend explanations')
+  assert(summary.mlEdgePolicy?.buyThreshold === 0.58, 'API Score V2 summary should include ML threshold policy evidence')
+  assert(summary.fundamentalQuality?.pe === 14.2, 'API Score V2 summary should include fundamental quality evidence')
   assert(summary.reasonVariants?.breeze2?.reason === 'Breeze2：量能需確認。', 'API Score V2 summary should include Breeze2 reason variants')
 }
 

@@ -418,8 +418,67 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assessment.exitPlan.trailingStop.source !== 'adaptive', 'equity mutation stop must resolve to a concrete 15m structure source')
   assert(assessment.detail.includes('s12_owner=primary_single_owner'), 'S12 detail should prove no split-owner entry path was introduced')
   assert(assessment.detail.includes('entry_archetype=equity_repricing_breakout'), 'S12 detail should expose the individual-stock mutation archetype')
+  assert(assessment.detail.includes('vwap_fast_acceptance=true'), 'individual-stock mutation should use fast VWAP acceptance, not the full slow VWAP stack')
   assert(assessment.detail.includes('one_h_demand_required=false'), '1H demand should become evidence, not a hard gate, under equity mutation')
   assert(resolveS12UnifiedDecision(assessment).action === 'READY', 'S12 unified decision should let equity mutation reach execution gates')
+}
+
+{
+  const bars4h = [
+    bar(0, 100, 110, 90, 100, 1000),
+  ]
+  const bars1h = [
+    bar(H4, 99.0, 103.0, 95.5, 102.0, 500),
+  ]
+  const bars15m = [
+    bar(H4 + 0 * M15, 100.0, 100.5, 99.8, 100.2, 100),
+    bar(H4 + 1 * M15, 100.2, 100.6, 99.9, 100.1, 120),
+    bar(H4 + 2 * M15, 101.2, 102.0, 101.2, 101.8, 150),
+    bar(H4 + 3 * M15, 101.8, 102.2, 101.4, 102.0, 180),
+    bar(H4 + 4 * M15, 102.0, 103.0, 101.8, 102.8, 220),
+    bar(H4 + 5 * M15, 102.8, 103.3, 102.5, 103.0, 240),
+    bar(H4 + 6 * M15, 103.0, 106.0, 102.9, 105.8, 600),
+  ]
+  const assessment = assessS12IntradayStructure({
+    symbol: '8091',
+    bars15m,
+    bars1h,
+    bars4h,
+  })
+  assert(assessment.demandZone1h != null, 'fixture must contain a 1H demand zone that would previously divert to strict SMC sequence')
+  assert(assessment.reason === 's12_equity_mutation_context_ready', `active equity mutation must not be blocked by an existing 1H demand zone, got ${assessment.reason}: ${assessment.detail}`)
+  assert(assessment.detail.includes('one_h_demand_required=false'), '1H demand should remain evidence-only when equity mutation is active')
+  assert(resolveS12UnifiedDecision(assessment).action === 'READY', 'equity mutation with 1H demand context should still reach execution gates')
+}
+
+{
+  const bars4h = [
+    bar(0, 100, 112, 98, 109, 1200),
+  ]
+  const bars1h = [
+    bar(H4, 110.0, 111.0, 104.0, 105.0, 600),
+    bar(H4 + H1, 105.0, 106.0, 99.5, 101.0, 800),
+  ]
+  const bars15m = [
+    bar(H4 + 2 * H1 + 0 * M15, 100.0, 100.7, 99.7, 100.2, 120),
+    bar(H4 + 2 * H1 + 1 * M15, 100.2, 101.0, 99.9, 100.5, 140),
+    bar(H4 + 2 * H1 + 2 * M15, 100.5, 101.2, 100.1, 100.8, 160),
+    bar(H4 + 2 * H1 + 3 * M15, 100.8, 101.6, 100.5, 101.2, 180),
+    bar(H4 + 2 * H1 + 4 * M15, 101.2, 102.0, 101.0, 101.7, 220),
+    bar(H4 + 2 * H1 + 5 * M15, 101.7, 102.5, 101.4, 102.1, 260),
+    bar(H4 + 2 * H1 + 6 * M15, 102.1, 105.8, 102.0, 105.4, 900),
+  ]
+  const assessment = assessS12IntradayStructure({
+    symbol: '6257',
+    bars15m,
+    bars1h,
+    bars4h,
+  })
+  assert(assessment.reason === 's12_equity_mutation_context_ready', `1H short should be a risk haircut, not a hard block for fast individual-stock repricing, got ${assessment.reason}: ${assessment.detail}`)
+  assert(assessment.detail.includes('equity_mutation_risk_haircuts=1h_short_risk_haircut'), 'S12 detail should expose 1H short as a risk haircut')
+  assert(assessment.detail.includes('vwap_fast_acceptance=true'), 'fast VWAP acceptance should be the entry gate for individual-stock repricing')
+  assert(assessment.detail.includes('htf_hard_block=false'), '1H short alone must not become an HTF hard block')
+  assert(resolveS12UnifiedDecision(assessment).action === 'READY', 'risk-haircut repricing should still reach execution gates under S12 ownership')
 }
 
 {

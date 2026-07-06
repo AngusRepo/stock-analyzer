@@ -206,6 +206,150 @@ def _string_from_paths(payloads: list[dict[str, Any]], paths: list[tuple[str, ..
     return None
 
 
+def _parse_detail_pairs(detail: Any) -> dict[str, str]:
+    text = str(detail or "").strip()
+    if not text:
+        return {}
+    out: dict[str, str] = {}
+    for part in text.split(";"):
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key:
+            out[key] = value
+    return out
+
+
+def _value_from_paths(payloads: list[dict[str, Any]], paths: list[tuple[str, ...]]) -> Any:
+    for payload in payloads:
+        for path in paths:
+            value = _nested(payload, *path) if len(path) > 1 else payload.get(path[0])
+            if value is not None:
+                return value
+    return None
+
+
+def _s12_entry_context_from_row(row: dict[str, Any], prediction: dict[str, Any] | None) -> dict[str, Any]:
+    payloads = _payload_dicts(row, prediction)
+    detail: str | None = None
+    for payload in payloads:
+        for path in (
+            ("s12_detail",),
+            ("s12", "detail"),
+            ("s12_structure", "detail"),
+            ("s12Structure", "detail"),
+            ("canonical_trade_lifecycle", "entry", "s12", "detail"),
+            ("canonicalTradeLifecycle", "entry", "s12", "detail"),
+            ("canonical_trade_lifecycle", "entry", "s12Assessment", "detail"),
+        ):
+            value = _nested(payload, *path) if len(path) > 1 else payload.get(path[0])
+            if isinstance(value, str) and value.strip():
+                detail = value.strip()
+                break
+        if detail:
+            break
+    parsed = _parse_detail_pairs(detail)
+
+    context = {
+        "schema_version": "s12-equity-mutation-context-v1",
+        "source": "worker_s12_intraday_structure_detail",
+        "entry_archetype": (
+            _string_from_paths(payloads, [
+                ("canonical_trade_lifecycle", "entry", "s12", "entryContext", "entryArchetype"),
+                ("canonicalTradeLifecycle", "entry", "s12", "entryContext", "entryArchetype"),
+                ("s12_entry_context", "entry_archetype"),
+                ("s12_entry_context", "entryArchetype"),
+                ("s12_context", "entry_archetype"),
+                ("s12_context", "entryArchetype"),
+                ("entry_archetype",),
+            ])
+            or parsed.get("entry_archetype")
+        ),
+        "vwap_fast_acceptance": (
+            _value_from_paths(payloads, [
+                ("canonical_trade_lifecycle", "entry", "s12", "entryContext", "vwapFastAcceptance"),
+                ("canonicalTradeLifecycle", "entry", "s12", "entryContext", "vwapFastAcceptance"),
+                ("s12_entry_context", "vwap_fast_acceptance"),
+                ("s12_entry_context", "vwapFastAcceptance"),
+                ("s12_context", "vwap_fast_acceptance"),
+                ("s12_context", "vwapFastAcceptance"),
+                ("vwap_fast_acceptance",),
+            ])
+            if _value_from_paths(payloads, [
+                ("canonical_trade_lifecycle", "entry", "s12", "entryContext", "vwapFastAcceptance"),
+                ("canonicalTradeLifecycle", "entry", "s12", "entryContext", "vwapFastAcceptance"),
+                ("s12_entry_context", "vwap_fast_acceptance"),
+                ("s12_entry_context", "vwapFastAcceptance"),
+                ("s12_context", "vwap_fast_acceptance"),
+                ("s12_context", "vwapFastAcceptance"),
+                ("vwap_fast_acceptance",),
+            ]) is not None
+            else parsed.get("vwap_fast_acceptance")
+        ),
+        "vwap_fast_reasons": (
+            _value_from_paths(payloads, [
+                ("canonical_trade_lifecycle", "entry", "s12", "entryContext", "vwapFastReasons"),
+                ("canonicalTradeLifecycle", "entry", "s12", "entryContext", "vwapFastReasons"),
+                ("s12_entry_context", "vwap_fast_reasons"),
+                ("s12_entry_context", "vwapFastReasons"),
+                ("s12_context", "vwap_fast_reasons"),
+                ("s12_context", "vwapFastReasons"),
+                ("vwap_fast_reasons",),
+            ])
+            or parsed.get("vwap_fast_reasons")
+        ),
+        "vwap_slow_context": (
+            _string_from_paths(payloads, [
+                ("canonical_trade_lifecycle", "entry", "s12", "entryContext", "vwapSlowContext"),
+                ("canonicalTradeLifecycle", "entry", "s12", "entryContext", "vwapSlowContext"),
+                ("s12_entry_context", "vwap_slow_context"),
+                ("s12_entry_context", "vwapSlowContext"),
+                ("s12_context", "vwap_slow_context"),
+                ("s12_context", "vwapSlowContext"),
+                ("vwap_slow_context",),
+            ])
+            or parsed.get("vwap_slow_context")
+        ),
+        "equity_mutation_risk_haircuts": (
+            _value_from_paths(payloads, [
+                ("canonical_trade_lifecycle", "entry", "s12", "entryContext", "equityMutationRiskHaircuts"),
+                ("canonicalTradeLifecycle", "entry", "s12", "entryContext", "equityMutationRiskHaircuts"),
+                ("s12_entry_context", "equity_mutation_risk_haircuts"),
+                ("s12_entry_context", "equityMutationRiskHaircuts"),
+                ("s12_context", "equity_mutation_risk_haircuts"),
+                ("s12_context", "equityMutationRiskHaircuts"),
+                ("equity_mutation_risk_haircuts",),
+            ])
+            or parsed.get("equity_mutation_risk_haircuts")
+        ),
+        "htf_hard_block": (
+            _value_from_paths(payloads, [
+                ("canonical_trade_lifecycle", "entry", "s12", "entryContext", "htfHardBlock"),
+                ("canonicalTradeLifecycle", "entry", "s12", "entryContext", "htfHardBlock"),
+                ("s12_entry_context", "htf_hard_block"),
+                ("s12_entry_context", "htfHardBlock"),
+                ("s12_context", "htf_hard_block"),
+                ("s12_context", "htfHardBlock"),
+                ("htf_hard_block",),
+            ])
+            if _value_from_paths(payloads, [
+                ("canonical_trade_lifecycle", "entry", "s12", "entryContext", "htfHardBlock"),
+                ("canonicalTradeLifecycle", "entry", "s12", "entryContext", "htfHardBlock"),
+                ("s12_entry_context", "htf_hard_block"),
+                ("s12_entry_context", "htfHardBlock"),
+                ("s12_context", "htf_hard_block"),
+                ("s12_context", "htfHardBlock"),
+                ("htf_hard_block",),
+            ]) is not None
+            else parsed.get("htf_hard_block")
+        ),
+        "detail_available": bool(detail),
+    }
+    return {key: value for key, value in context.items() if value not in (None, "")}
+
+
 def _first_above(entry: float | None, *values: Any) -> float | None:
     if entry is None:
         return None
@@ -629,6 +773,9 @@ class S12TradeEvBootstrapProvider:
             "candidate_alpha_bucket": _alpha_bucket_from_payloads(row, prediction or {}),
         }
         ev.update(replay_meta)
+        s12_entry_context = _s12_entry_context_from_row(row, prediction)
+        if s12_entry_context:
+            ev["candidate_s12_entry_context"] = s12_entry_context
         if ev.get("status") == "loaded":
             return ev
 
@@ -652,6 +799,7 @@ class S12TradeEvBootstrapProvider:
                 or alpha_ctx.get("market_heat_expected_return")
             ),
             reward_confidence_multiplier=target_evidence.get("reward_confidence_multiplier"),
+            s12_context=s12_entry_context,
             regime=(
                 row.get("regime")
                 or row.get("alpha_regime")
@@ -664,6 +812,7 @@ class S12TradeEvBootstrapProvider:
             "bootstrap_run_date": self.run_date,
             "as_of_guard": "run_date_current_structure_no_future_outcomes",
             "s12_structural_targets": target_evidence,
+            "candidate_s12_entry_context": s12_entry_context,
             "candidate_market_segment": _market_segment_from_payloads(row, prediction or {}),
             "candidate_alpha_bucket": _alpha_bucket_from_payloads(row, prediction or {}),
             "replay_bootstrap": {

@@ -39,6 +39,7 @@ import {
   buildMarketStructureWatchPoint,
   buildMlVoteSummary,
   buildMlVoteWatchPoint,
+  buildSparseAllocationSummary,
   parsePredictionForecastData,
   type MlVoteSummary,
 } from '../lib/recommendationContext'
@@ -420,6 +421,8 @@ async function enrichPendingBuyContext(
              dr.date AS recommendation_date,
              dr.score_components,
              dr.ml_vote_summary,
+             dr.alpha_context,
+             dr.alpha_allocation,
              dr.market_segment,
              dr.recommendation_lane,
              s.id AS stock_id,
@@ -489,6 +492,11 @@ async function enrichPendingBuyContext(
     const forecastData = parsePredictionForecastData(row.prediction_forecast_data)
     const scoreSnapshot = readScoreV2Snapshot(row as ScoreV2StorageRow)
     const scoreV2 = scoreSnapshot ? serializeScoreV2Snapshot(scoreSnapshot) : null
+    const persistedAlphaContext = parsePredictionForecastData(row.alpha_context)
+    const persistedAlphaAllocation = parsePredictionForecastData(row.alpha_allocation)
+    const alphaContext = forecastData?.alpha_context ?? persistedAlphaContext ?? null
+    const alphaAllocation = forecastData?.alpha_allocation ?? persistedAlphaAllocation ?? null
+    const l4SparseAllocation = buildSparseAllocationSummary(alphaAllocation)
     if (!forecastData) {
       contextBySymbol.set(row.symbol, {
         score_v2: scoreV2,
@@ -496,6 +504,9 @@ async function enrichPendingBuyContext(
         recommendation_date: row.recommendation_date,
         market_segment: row.market_segment,
         recommendation_lane: row.recommendation_lane,
+        alpha_context: alphaContext,
+        alpha_allocation: alphaAllocation,
+        l4_sparse_allocation: l4SparseAllocation,
       })
       continue
     }
@@ -512,10 +523,11 @@ async function enrichPendingBuyContext(
       market_segment: row.market_segment,
       recommendation_lane: row.recommendation_lane,
       prediction_forecast_data: row.prediction_forecast_data,
-      alpha_context: forecastData.alpha_context ?? null,
-      alpha_allocation: forecastData.alpha_allocation ?? null,
+      alpha_context: alphaContext,
+      alpha_allocation: alphaAllocation,
+      l4_sparse_allocation: l4SparseAllocation,
       ml_vote_summary: mlVoteSummary,
-      market_watch_point: buildMarketStructureWatchPoint(forecastData.alpha_context),
+      market_watch_point: buildMarketStructureWatchPoint(alphaContext),
       ml_watch_point: buildMlVoteWatchPoint(mlVoteSummary),
     })
   }
@@ -545,6 +557,7 @@ async function enrichPendingBuyContext(
       recommendation_lane: item.recommendation_lane ?? context.recommendation_lane ?? null,
       alpha_context: context.alpha_context,
       alpha_allocation: context.alpha_allocation,
+      l4_sparse_allocation: context.l4_sparse_allocation,
       ml_vote_summary: context.ml_vote_summary,
       prediction_forecast_data: context.prediction_forecast_data,
       watch_points: watchPoints,

@@ -15,6 +15,12 @@ assert(
   paperExitTasksSource.includes('s12_primary_independent_of_long_entry_readiness'),
   'S12 holding-defense telemetry must expose S12 as primary position-decision owner while preserving no-short and fallback owner boundaries',
 )
+assert(
+  paperExitTasksSource.includes('updateLifecycleS12TrailingStop') &&
+    paperExitTasksSource.includes('trade_lifecycle_json=COALESCE(?, trade_lifecycle_json)') &&
+    paperExitTasksSource.includes('resolveEffectiveS12PositionStop(pos, entryPx)'),
+  'S12 position updates and partial exits must persist the active structural stop back to canonical trade lifecycle',
+)
 
 function assessment(ready: boolean): S12IntradayAssessment {
   return {
@@ -205,6 +211,9 @@ const lowerTimeframeWeakTightened = resolveS12HoldingDefenseUpdate({
     trailing_stop: 94,
     highest_since_entry: 103,
     tp1_hit: 0,
+    s12_position_stop_price: 101.5,
+    s12_position_stop_source: '15m_recent_fvg',
+    s12_position_stop_method: '15m_recent_bullish_fvg',
   },
   currentPrice: 103,
   atr14: 2,
@@ -250,6 +259,9 @@ const tightened = resolveS12HoldingDefenseUpdate({
     trailing_stop: 94,
     highest_since_entry: 100.5,
     tp1_hit: 0,
+    s12_position_stop_price: 99.2,
+    s12_position_stop_source: '15m_recent_order_block',
+    s12_position_stop_method: '15m_recent_bullish_order_block',
   },
   currentPrice: 100.5,
   atr14: 2,
@@ -274,6 +286,9 @@ const trimAdvisory = resolveS12HoldingDefenseUpdate({
     trailing_stop: 98,
     highest_since_entry: 105,
     tp1_hit: 0,
+    s12_position_stop_price: 103.5,
+    s12_position_stop_source: '15m_recent_fvg',
+    s12_position_stop_method: '15m_recent_bullish_fvg',
   },
   currentPrice: 105,
   atr14: 2,
@@ -295,6 +310,9 @@ const defensiveOnly = resolveS12HoldingDefenseUpdate({
     trailing_stop: 90,
     highest_since_entry: 100,
     tp1_hit: 0,
+    s12_position_stop_price: 98.5,
+    s12_position_stop_source: '15m_recent_fvg',
+    s12_position_stop_method: '15m_recent_bullish_fvg',
   },
   currentPrice: 100.8,
   atr14: 2,

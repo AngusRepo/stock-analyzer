@@ -127,6 +127,59 @@ function withLifecycleS12ExitInputs<T extends Record<string, any>>(pos: T): T {
   }
 }
 
+function resolveEffectiveS12PositionStop(pos: Record<string, any>, minimumStop?: number | null): number | null {
+  const enriched = withLifecycleS12ExitInputs(pos)
+  const candidates = [
+    positiveNumber(enriched.s12_position_stop_price),
+    positiveNumber(enriched.trailing_stop),
+    positiveNumber(minimumStop),
+  ].filter((value): value is number => value != null)
+  return candidates.length > 0 ? Math.max(...candidates) : null
+}
+
+function s12TrailingSourceFromReason(reason: string): { source: string; method: string } {
+  if (reason.includes('bearish_defense')) {
+    return { source: 's12_bearish_defense', method: 's12_bearish_defense_tighten_stop' }
+  }
+  if (reason.includes('tp1')) {
+    return { source: 's12_tp1_profit_lock', method: 's12_tp1_move_stop_to_structure_or_entry' }
+  }
+  if (reason.includes('position_structural_stop')) {
+    return { source: 's12_position_structural_stop', method: 's12_structure_trailing_stop_v1' }
+  }
+  return { source: 's12_holding_defense', method: 's12_structure_trailing_stop_v1' }
+}
+
+function updateLifecycleS12TrailingStop(
+  raw: unknown,
+  nextTrailingStop: number | null,
+  reason: string,
+): string | null {
+  const stop = positiveNumber(nextTrailingStop)
+  if (stop == null) return typeof raw === 'string' ? raw : null
+  const lifecycle = parseJsonObject(raw)
+  if (lifecycle?.version !== 'canonical_trade_lifecycle_v1') return typeof raw === 'string' ? raw : null
+
+  const next = JSON.parse(JSON.stringify(lifecycle)) as Record<string, any>
+  const { source, method } = s12TrailingSourceFromReason(reason)
+  next.owners = {
+    ...(next.owners ?? {}),
+    exit: 's12_position_decision_v1',
+    fallbackExit: 'paper_sltp_atr_trailing_v1',
+  }
+  next.entry = next.entry && typeof next.entry === 'object' ? next.entry : {}
+  next.entry.s12 = next.entry.s12 && typeof next.entry.s12 === 'object' ? next.entry.s12 : {}
+  next.entry.s12.exitPlan = next.entry.s12.exitPlan && typeof next.entry.s12.exitPlan === 'object' ? next.entry.s12.exitPlan : {}
+  next.entry.s12.structureStop = Math.max(positiveNumber(next.entry.s12.structureStop) ?? 0, stop)
+  next.entry.s12.exitPlan.trailingInitial = stop
+  next.entry.s12.exitPlan.trailingSource = next.entry.s12.exitPlan.trailingSource ?? source
+  next.entry.s12.exitPlan.trailingMethod = next.entry.s12.exitPlan.trailingMethod ?? method
+  next.exit = next.exit && typeof next.exit === 'object' ? next.exit : {}
+  next.exit.trailingStop = stop
+  next.exit.fallbackOwner = 'paper_sltp_atr_trailing_v1'
+  return JSON.stringify(next)
+}
+
 export function resolveS12HoldingDefenseEventAction(reason: string | null | undefined): S12HoldingDefenseEventAction {
   const text = String(reason ?? '')
   if (text.includes('take_profit_or_tighten_stop') || text.includes('TAKE_PROFIT_OR_TIGHTEN_STOP')) return 'take_profit_or_tighten_stop'
@@ -184,21 +237,26 @@ async function persistExitPositionUpdate(
   const nextTrailingStop = decision.newTrailingStop ?? pos.trailing_stop
   const nextHighest = decision.newHighest ?? pos.highest_since_entry
   const nextTp2 = decision.newTp2Price ?? pos.tp2_price
+  const nextLifecycleJson = updateLifecycleS12TrailingStop(pos.trade_lifecycle_json, positiveNumber(nextTrailingStop), decision.reason)
   const changed =
     nextTrailingStop !== pos.trailing_stop ||
     nextHighest !== pos.highest_since_entry ||
-    nextTp2 !== pos.tp2_price
+    nextTp2 !== pos.tp2_price ||
+    (nextLifecycleJson != null && nextLifecycleJson !== pos.trade_lifecycle_json)
 
   if (!changed) return
 
   await env.DB.prepare(`
     UPDATE paper_positions
-    SET trailing_stop=?, highest_since_entry=?, tp2_price=?, updated_at=datetime('now')
+    SET trailing_stop=?, highest_since_entry=?, tp2_price=?,
+        trade_lifecycle_json=COALESCE(?, trade_lifecycle_json),
+        updated_at=datetime('now')
     WHERE account_id=? AND symbol=?
   `).bind(
     nextTrailingStop,
     nextHighest,
     nextTp2,
+    nextLifecycleJson,
     ACCOUNT_ID,
     pos.symbol,
   ).run()
@@ -944,6 +1002,8 @@ export async function runEODExit(env: Bindings): Promise<void> {
       const proceeds = txValue - commission - tax
       const remainingShares = pos.shares - sellShares
       const entryPx = pos.entry_price ?? pos.avg_cost
+      const partialTrailingStop = resolveEffectiveS12PositionStop(pos, entryPx) ?? entryPx
+      const partialLifecycleJson = updateLifecycleS12TrailingStop(pos.trade_lifecycle_json, partialTrailingStop, decision.reason)
       const sellNote = buildSellOrderNote({
         reason: decision.reason,
         entry_date: pos.entry_date,
@@ -956,9 +1016,10 @@ export async function runEODExit(env: Bindings): Promise<void> {
         env.DB.prepare(`
           UPDATE paper_positions SET shares=?, tp1_hit=1,
             trailing_stop=CASE WHEN ? > COALESCE(trailing_stop, 0) THEN ? ELSE trailing_stop END,
+            trade_lifecycle_json=COALESCE(?, trade_lifecycle_json),
             updated_at=datetime('now')
           WHERE account_id=? AND symbol=?
-        `).bind(remainingShares, pos.entry_price ?? pos.avg_cost, pos.entry_price ?? pos.avg_cost, ACCOUNT_ID, pos.symbol),
+        `).bind(remainingShares, partialTrailingStop, partialTrailingStop, partialLifecycleJson, ACCOUNT_ID, pos.symbol),
         env.DB.prepare(`
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
@@ -1194,6 +1255,8 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       const proceeds = txValue - commission - tax
       const remainingShares = pos.shares - sellShares
       const entryPx = pos.entry_price ?? pos.avg_cost
+      const partialTrailingStop = resolveEffectiveS12PositionStop(pos, entryPx) ?? entryPx
+      const partialLifecycleJson = updateLifecycleS12TrailingStop(pos.trade_lifecycle_json, partialTrailingStop, decision.reason)
       const sellNote = buildSellOrderNote({
         reason: `[intraday] ${decision.reason}`,
         entry_date: pos.entry_date,
@@ -1205,9 +1268,10 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         env.DB.prepare(`
           UPDATE paper_positions SET shares=?, tp1_hit=1,
             trailing_stop=CASE WHEN ? > COALESCE(trailing_stop, 0) THEN ? ELSE trailing_stop END,
+            trade_lifecycle_json=COALESCE(?, trade_lifecycle_json),
             updated_at=datetime('now')
           WHERE account_id=? AND symbol=?
-        `).bind(remainingShares, pos.entry_price ?? pos.avg_cost, pos.entry_price ?? pos.avg_cost, ACCOUNT_ID, pos.symbol),
+        `).bind(remainingShares, partialTrailingStop, partialTrailingStop, partialLifecycleJson, ACCOUNT_ID, pos.symbol),
         env.DB.prepare(`
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)

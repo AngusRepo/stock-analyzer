@@ -57,6 +57,8 @@ export interface ScoreV2Payload {
   reasons: string[]
   alphaReason?: Record<string, unknown>
   chipEvidence?: Record<string, unknown>
+  mlEdgePolicy?: Record<string, unknown>
+  fundamentalQuality?: Record<string, unknown>
   reasonVariants?: Record<string, any>
 }
 
@@ -79,6 +81,8 @@ export interface ScoreV2Snapshot {
   reasons: string[]
   alphaReason?: Record<string, unknown>
   chipEvidence?: Record<string, unknown>
+  mlEdgePolicy?: Record<string, unknown>
+  fundamentalQuality?: Record<string, unknown>
   reasonVariants?: Record<string, any>
 }
 
@@ -96,6 +100,8 @@ export interface ScoreV2SnapshotSummary {
   reasons: string[]
   alphaReason?: Record<string, unknown>
   chipEvidence?: Record<string, unknown>
+  mlEdgePolicy?: Record<string, unknown>
+  fundamentalQuality?: Record<string, unknown>
   reasonVariants?: Record<string, any>
 }
 
@@ -185,6 +191,8 @@ function parseScoreV2Payload(value: unknown): ScoreV2Payload | null {
     ...(parseComponentsRecord(record.technicalSignals) ? { technicalSignals: parseComponentsRecord(record.technicalSignals)! } : {}),
     ...(parseComponentsRecord(record.alphaReason) ? { alphaReason: parseComponentsRecord(record.alphaReason)! } : {}),
     ...(parseComponentsRecord(record.chipEvidence) ? { chipEvidence: parseComponentsRecord(record.chipEvidence)! } : {}),
+    ...(parseComponentsRecord(record.mlEdgePolicy) ? { mlEdgePolicy: parseComponentsRecord(record.mlEdgePolicy)! } : {}),
+    ...(parseComponentsRecord(record.fundamentalQuality) ? { fundamentalQuality: parseComponentsRecord(record.fundamentalQuality)! } : {}),
     ...(parseComponentsRecord(record.reasonVariants) ? { reasonVariants: parseComponentsRecord(record.reasonVariants)! as Record<string, any> } : {}),
   }
 }
@@ -235,6 +243,8 @@ export function readScoreV2Snapshot(row: ScoreV2StorageRow): ScoreV2Snapshot | n
     reasons: payload.reasons,
     ...(payload.alphaReason ? { alphaReason: payload.alphaReason } : {}),
     ...(payload.chipEvidence ? { chipEvidence: payload.chipEvidence } : {}),
+    ...(payload.mlEdgePolicy ? { mlEdgePolicy: payload.mlEdgePolicy } : {}),
+    ...(payload.fundamentalQuality ? { fundamentalQuality: payload.fundamentalQuality } : {}),
     ...(payload.reasonVariants ? { reasonVariants: payload.reasonVariants } : {}),
   }
 }
@@ -254,6 +264,8 @@ export function serializeScoreV2Snapshot(snapshot: ScoreV2Snapshot): ScoreV2Snap
     reasons: snapshot.reasons,
     ...(snapshot.alphaReason ? { alphaReason: snapshot.alphaReason } : {}),
     ...(snapshot.chipEvidence ? { chipEvidence: snapshot.chipEvidence } : {}),
+    ...(snapshot.mlEdgePolicy ? { mlEdgePolicy: snapshot.mlEdgePolicy } : {}),
+    ...(snapshot.fundamentalQuality ? { fundamentalQuality: snapshot.fundamentalQuality } : {}),
     ...(snapshot.reasonVariants ? { reasonVariants: snapshot.reasonVariants } : {}),
   }
 }

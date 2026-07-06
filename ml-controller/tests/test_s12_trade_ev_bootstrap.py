@@ -167,6 +167,96 @@ def test_s12_trade_ev_bootstrap_uses_structural_cold_start_when_verified_samples
     assert ev["trade_expected_return_net_pct"] > 0
 
 
+def test_s12_trade_ev_bootstrap_passes_worker_s12_context_to_cold_start_ev():
+    provider = S12TradeEvBootstrapProvider([], run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
+
+    ev = provider.build_for_row(
+        {
+            "symbol": "6257",
+            "current_price": 100,
+            "stop_loss": 96,
+            "market_segment": "LISTED",
+            "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
+            "score": 66,
+            "forecast_data": json.dumps({
+                "canonical_trade_lifecycle": {
+                    "entry": {
+                        "s12": {
+                            "detail": (
+                                "state=waiting_sweep;entry_archetype=equity_repricing_breakout;"
+                                "vwap_fast_acceptance=true;vwap_fast_reasons=session_vwap_above|rolling15m_7_above;"
+                                "vwap_slow_context=overhead_supply;"
+                                "equity_mutation_risk_haircuts=1h_short_risk_haircut|slow_vwap_overhead_supply_haircut;"
+                                "htf_hard_block=false"
+                            ),
+                            "exitPlan": {
+                                "tp1": 106,
+                                "tp1Source": "15m_previous_high",
+                                "mainExit": 112,
+                                "mainExitSource": "vwap_fair_value",
+                            },
+                        },
+                    },
+                },
+            }),
+        },
+        prediction={"ensemble_v2": {"avg_rank": 0.72, "confidence": 0.72}},
+    )
+
+    assert ev["status"] == "loaded"
+    assert ev["source"] == "s12_structural_cold_start_ev"
+    assert ev["candidate_s12_entry_context"]["entry_archetype"] == "equity_repricing_breakout"
+    assert ev["candidate_s12_entry_context"]["vwap_fast_acceptance"] == "true"
+    assert ev["s12_entry_context"]["vwap_fast_acceptance"] is True
+    assert ev["s12_entry_context"]["vwap_slow_context"] == "overhead_supply"
+    assert ev["s12_entry_context"]["htf_hard_block"] is False
+    assert ev["cold_start_policy"]["inputs"]["s12_entry_context"]["vwap_slow_context"] == "overhead_supply"
+    assert "1h_short_risk_haircut" in ev["cold_start_policy"]["s12_context_haircuts"]
+
+
+def test_s12_trade_ev_bootstrap_prefers_structured_canonical_entry_context():
+    provider = S12TradeEvBootstrapProvider([], run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
+
+    ev = provider.build_for_row(
+        {
+            "symbol": "6257",
+            "current_price": 100,
+            "stop_loss": 96,
+            "market_segment": "LISTED",
+            "forecast_data": json.dumps({
+                "canonical_trade_lifecycle": {
+                    "entry": {
+                        "s12": {
+                            "entryContext": {
+                                "entryArchetype": "equity_repricing_breakout",
+                                "vwapFastAcceptance": True,
+                                "vwapFastReasons": ["session_vwap_above", "rolling15m_7_above"],
+                                "vwapSlowContext": "mixed",
+                                "equityMutationRiskHaircuts": ["1h_short_risk_haircut"],
+                                "htfHardBlock": False,
+                            },
+                            "exitPlan": {
+                                "tp1": 106,
+                                "tp1Source": "15m_previous_high",
+                                "mainExit": 112,
+                                "mainExitSource": "vwap_fair_value",
+                            },
+                        },
+                    },
+                },
+            }),
+        },
+        prediction={"ensemble_v2": {"avg_rank": 0.72, "confidence": 0.72}},
+    )
+
+    assert ev["status"] == "loaded"
+    assert ev["candidate_s12_entry_context"]["detail_available"] is False
+    assert ev["candidate_s12_entry_context"]["vwap_fast_acceptance"] is True
+    assert ev["s12_entry_context"]["vwap_fast_acceptance"] is True
+    assert ev["s12_entry_context"]["vwap_slow_context"] == "mixed"
+    assert "1h_short_risk_haircut" in ev["s12_entry_context"]["equity_mutation_risk_haircuts"]
+
+
 def test_s12_trade_ev_bootstrap_preserves_vwap_fair_value_target_sources():
     provider = S12TradeEvBootstrapProvider([], run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
 

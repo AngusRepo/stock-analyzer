@@ -3271,6 +3271,36 @@ def _apply_sparse_tangent_buy_selection(
         )
         if s12_trade_ev_payload is None and isinstance(row.get("s12_trade_ev"), dict):
             s12_trade_ev_payload = row["s12_trade_ev"]
+        s12_entry_context = (
+            s12_trade_ev_payload.get("s12_entry_context")
+            if isinstance(s12_trade_ev_payload, dict) and isinstance(s12_trade_ev_payload.get("s12_entry_context"), dict)
+            else None
+        )
+        s12_cold_policy = (
+            s12_trade_ev_payload.get("cold_start_policy")
+            if isinstance(s12_trade_ev_payload, dict) and isinstance(s12_trade_ev_payload.get("cold_start_policy"), dict)
+            else None
+        )
+        s12_context_haircuts = []
+        if isinstance(s12_cold_policy, dict) and isinstance(s12_cold_policy.get("s12_context_haircuts"), list):
+            s12_context_haircuts = [
+                str(item).strip()
+                for item in s12_cold_policy.get("s12_context_haircuts") or []
+                if str(item).strip()
+            ]
+        elif isinstance(s12_entry_context, dict) and isinstance(s12_entry_context.get("equity_mutation_risk_haircuts"), list):
+            s12_context_haircuts = [
+                str(item).strip()
+                for item in s12_entry_context.get("equity_mutation_risk_haircuts") or []
+                if str(item).strip()
+            ]
+        s12_context_multiplier = _float_or_none(
+            (s12_cold_policy or {}).get("s12_context_multiplier")
+            if isinstance(s12_cold_policy, dict)
+            else None
+        )
+        if s12_context_multiplier is None and isinstance(s12_entry_context, dict):
+            s12_context_multiplier = _float_or_none(s12_entry_context.get("multiplier"))
         market_heat_score = _float_from_row(row, ("market_heat_score",))
         market_heat_expected_return = _float_from_row(row, ("market_heat_expected_return",))
         single_name_weight = round(float(weight or 0.0), 8)
@@ -3314,6 +3344,24 @@ def _apply_sparse_tangent_buy_selection(
                 or row.get("_expected_return_uncertainty_adjustment")
             ),
             "s12_trade_ev": s12_trade_ev_payload,
+            "s12_entry_context": s12_entry_context,
+            "s12_context_multiplier": s12_context_multiplier,
+            "s12_context_haircuts": s12_context_haircuts,
+            "s12_vwap_fast_acceptance": (
+                s12_entry_context.get("vwap_fast_acceptance")
+                if isinstance(s12_entry_context, dict)
+                else None
+            ),
+            "s12_vwap_slow_context": (
+                s12_entry_context.get("vwap_slow_context")
+                if isinstance(s12_entry_context, dict)
+                else None
+            ),
+            "s12_htf_hard_block": (
+                s12_entry_context.get("htf_hard_block")
+                if isinstance(s12_entry_context, dict)
+                else None
+            ),
             "market_heat_score": None if market_heat_score is None else round(market_heat_score, 6),
             "market_heat_expected_return": (
                 None if market_heat_expected_return is None else round(market_heat_expected_return, 10)

@@ -36,6 +36,20 @@ export interface CanonicalTradeLifecycle {
       structureStop: number | null
       rMultiple: number | null
       defensiveAction: string | null
+      entryContext: {
+        schemaVersion: 's12_equity_mutation_context_v1'
+        entryArchetype: string | null
+        equityMutationContext: boolean | null
+        equityMutationScore: number | null
+        equityMutationReasons: string[]
+        equityMutationRiskHaircuts: string[]
+        vwapFastAcceptance: boolean | null
+        vwapFastReasons: string[]
+        vwapSlowContext: string | null
+        htfHardBlock: boolean | null
+        oneHDemandRequired: boolean | null
+        oneHDemandRole: string | null
+      }
       quality: {
         vwapState: string | null
         priceVsVwapPct: number | null
@@ -121,6 +135,53 @@ function positiveNumber(value: unknown): number | null {
   return n != null && n > 0 ? n : null
 }
 
+function detailPairs(detail: unknown): Record<string, string> {
+  const text = String(detail ?? '').trim()
+  if (!text) return {}
+  const out: Record<string, string> = {}
+  for (const part of text.split(';')) {
+    const idx = part.indexOf('=')
+    if (idx <= 0) continue
+    const key = part.slice(0, idx).trim()
+    const value = part.slice(idx + 1).trim()
+    if (key) out[key] = value
+  }
+  return out
+}
+
+function boolFromDetail(value: unknown): boolean | null {
+  const text = String(value ?? '').trim().toLowerCase()
+  if (['true', '1', 'yes', 'y'].includes(text)) return true
+  if (['false', '0', 'no', 'n'].includes(text)) return false
+  return null
+}
+
+function listFromDetail(value: unknown): string[] {
+  const text = String(value ?? '').trim()
+  if (!text) return []
+  return text.split('|').map((item) => item.trim()).filter(Boolean)
+}
+
+function buildS12EntryContext(s12: S12IntradayAssessment): CanonicalTradeLifecycle['entry']['s12'] extends infer T
+  ? T extends { entryContext: infer C } ? C : never
+  : never {
+  const parts = detailPairs(s12.detail)
+  return {
+    schemaVersion: 's12_equity_mutation_context_v1',
+    entryArchetype: parts.entry_archetype ?? null,
+    equityMutationContext: boolFromDetail(parts.equity_mutation_context),
+    equityMutationScore: finiteNumber(parts.equity_mutation_score),
+    equityMutationReasons: listFromDetail(parts.equity_mutation_reasons),
+    equityMutationRiskHaircuts: listFromDetail(parts.equity_mutation_risk_haircuts),
+    vwapFastAcceptance: boolFromDetail(parts.vwap_fast_acceptance),
+    vwapFastReasons: listFromDetail(parts.vwap_fast_reasons),
+    vwapSlowContext: parts.vwap_slow_context ?? null,
+    htfHardBlock: boolFromDetail(parts.htf_hard_block),
+    oneHDemandRequired: boolFromDetail(parts.one_h_demand_required),
+    oneHDemandRole: parts.one_h_demand_role ?? null,
+  }
+}
+
 export function buildCanonicalTradeLifecycle(input: {
   tradeDate: string
   symbol: string
@@ -187,6 +248,7 @@ export function buildCanonicalTradeLifecycle(input: {
           structureStop: positiveNumber(s12.execution.stopLoss),
           rMultiple: finiteNumber(s12.execution.rMultiple),
           defensiveAction: s12.defensiveAction === 'none' ? null : s12.defensiveAction,
+          entryContext: buildS12EntryContext(s12),
           quality: {
             vwapState: s12.quality.vwap.state,
             priceVsVwapPct: finiteNumber(s12.quality.vwap.priceVsVwapPct),

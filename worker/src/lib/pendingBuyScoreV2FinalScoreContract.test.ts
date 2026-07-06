@@ -122,6 +122,14 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
     'morning setup pending buys should persist L4 sparse allocation weight evidence for execution sizing',
   )
   assert(
+    paperRoute.includes('dr.alpha_allocation') &&
+      paperRoute.includes('persistedAlphaAllocation') &&
+      paperRoute.includes('forecastData?.alpha_allocation ?? persistedAlphaAllocation ?? null') &&
+      paperRoute.includes('buildSparseAllocationSummary(alphaAllocation)') &&
+      paperRoute.includes('l4_sparse_allocation: context.l4_sparse_allocation'),
+    'paper pending-buy context enrichment must fall back to persisted daily_recommendations.alpha_allocation and expose compact L4 sparse summary',
+  )
+  assert(
     pendingBuyOrchestrator.includes('pending_buy_filter_audit') &&
       pendingBuyOrchestrator.includes('filter_audit: filterAudit') &&
       pendingBuyOrchestrator.includes('empty_reason: emptyReason'),

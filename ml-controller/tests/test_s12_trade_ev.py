@@ -153,6 +153,70 @@ def test_build_s12_trade_ev_from_structure_uses_score_v2_as_conservative_cold_st
     assert strong["cold_start_policy"]["inputs"]["score_v2_final_score"] == 66
 
 
+def test_build_s12_trade_ev_from_structure_applies_s12_context_haircuts():
+    base = build_s12_trade_ev_from_structure(
+        symbol="6257",
+        entry_price=100,
+        stop_price=96,
+        target1_price=106,
+        target2_price=112,
+        avg_rank=0.72,
+        ml_edge_score=18,
+        technical_score=17,
+        chip_score=28,
+        fundamental_score=15,
+        score_v2_final_score=66,
+        roundtrip_cost_bps=0,
+        s12_context={
+            "vwap_fast_acceptance": True,
+            "vwap_slow_context": "supportive",
+            "htf_hard_block": False,
+        },
+    )
+    haircut = build_s12_trade_ev_from_structure(
+        symbol="6257",
+        entry_price=100,
+        stop_price=96,
+        target1_price=106,
+        target2_price=112,
+        avg_rank=0.72,
+        ml_edge_score=18,
+        technical_score=17,
+        chip_score=28,
+        fundamental_score=15,
+        score_v2_final_score=66,
+        roundtrip_cost_bps=0,
+        s12_context={
+            "vwap_fast_acceptance": True,
+            "vwap_slow_context": "overhead_supply",
+            "equity_mutation_risk_haircuts": "1h_short_risk_haircut|slow_vwap_overhead_supply_haircut",
+            "htf_hard_block": False,
+        },
+    )
+
+    assert base["status"] == "loaded"
+    assert haircut["status"] == "loaded"
+    assert haircut["trade_expected_return_net_pct"] < base["trade_expected_return_net_pct"]
+    assert haircut["s12_entry_context"]["vwap_slow_context"] == "overhead_supply"
+    assert "1h_short_risk_haircut" in haircut["cold_start_policy"]["s12_context_haircuts"]
+
+
+def test_build_s12_trade_ev_from_structure_fails_closed_on_s12_htf_hard_block():
+    ev = build_s12_trade_ev_from_structure(
+        symbol="6257",
+        entry_price=100,
+        stop_price=96,
+        target1_price=106,
+        target2_price=112,
+        s12_context={"htf_hard_block": True},
+    )
+
+    assert ev["status"] == "invalid_structure"
+    assert ev["trade_expected_return_net_pct"] is None
+    assert ev["trade_expected_return_source"] == "s12_structural_cold_start_ev_htf_hard_block"
+    assert ev["s12_entry_context"]["htf_hard_block"] is True
+
+
 def test_build_s12_trade_ev_from_structure_fails_closed_without_target():
     ev = build_s12_trade_ev_from_structure(
         symbol="8091",

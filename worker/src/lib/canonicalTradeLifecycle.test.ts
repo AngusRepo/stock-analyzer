@@ -67,7 +67,20 @@ const s12Assessment = {
     reverseWarning: { action: 'none' },
   },
   barDiagnostics: { position_planned_tp: 'tp4' },
-  detail: 'state=reaction_ready',
+  detail: [
+    'state=reaction_ready',
+    'entry_archetype=equity_repricing_breakout',
+    'equity_mutation_context=true',
+    'equity_mutation_score=5',
+    'equity_mutation_reasons=15m_repricing_breakout|vwap_fast_acceptance|volume_participation',
+    'equity_mutation_risk_haircuts=1h_short_risk_haircut',
+    'vwap_fast_acceptance=true',
+    'vwap_fast_reasons=session_vwap_above|rolling15m_7_above',
+    'vwap_slow_context=mixed',
+    'htf_hard_block=false',
+    'one_h_demand_required=false',
+    'one_h_demand_role=evidence_not_hard_gate',
+  ].join(';'),
 } as unknown as S12IntradayAssessment
 
 const lifecycle = buildCanonicalTradeLifecycle({
@@ -110,6 +123,12 @@ assert(lifecycle.entry.s12?.exitPlan.tp3 === 126, 'canonical lifecycle must pres
 assert(lifecycle.entry.s12?.exitPlan.tp4 === 134, 'canonical lifecycle must preserve Pine-style TP4')
 assert(lifecycle.entry.s12?.exitPlan.manualTp === 130, 'canonical lifecycle must preserve manual TP')
 assert(lifecycle.entry.s12?.exitPlan.plannedTakeProfit === 'tp4', 'canonical lifecycle must preserve planned TP')
+assert(lifecycle.entry.s12?.entryContext.schemaVersion === 's12_equity_mutation_context_v1', 'canonical lifecycle must preserve structured S12 entry context')
+assert(lifecycle.entry.s12?.entryContext.entryArchetype === 'equity_repricing_breakout', 'canonical lifecycle must expose S12 entry archetype')
+assert(lifecycle.entry.s12?.entryContext.vwapFastAcceptance === true, 'canonical lifecycle must expose fast VWAP acceptance')
+assert(lifecycle.entry.s12?.entryContext.vwapSlowContext === 'mixed', 'canonical lifecycle must expose slow VWAP context')
+assert(lifecycle.entry.s12?.entryContext.equityMutationRiskHaircuts.includes('1h_short_risk_haircut'), 'canonical lifecycle must preserve S12 risk haircuts')
+assert(lifecycle.entry.s12?.entryContext.htfHardBlock === false, 'canonical lifecycle must expose HTF hard-block state')
 assert(lifecycle.entry.s12?.quality.vwapContext.schemaVersion === 's12_vwap_context_v1', 'canonical lifecycle must preserve S12 VWAP+ context')
 assert(lifecycle.entry.s12?.quality.vwapContext.nearestAbove === 118, 'canonical lifecycle must preserve nearest VWAP+ target')
 assert(lifecycle.entry.s12?.quality.vwapContext.anchoredWeek === 101, 'canonical lifecycle must preserve anchored weekly VWAP')

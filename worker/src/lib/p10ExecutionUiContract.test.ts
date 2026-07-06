@@ -60,7 +60,7 @@ assert(
   'frontend S12 holding-defense badge must distinguish take-profit advisory from tighten-stop advisory',
 )
 assert(
-  uiHelper.includes('formatCanonicalTradeLifecycleBadge') && uiHelper.includes('S12 結構進場'),
+  uiHelper.includes('formatCanonicalTradeLifecycleBadge') && uiHelper.includes('SMCVWAP 結構進場'),
   'frontend must expose canonical trade lifecycle labels',
 )
 assert(

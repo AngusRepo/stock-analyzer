@@ -26,6 +26,7 @@ assert(
 )
 assert(paperEntryTasks.includes('s12PrimaryMomentumContext'), 'S12 ready owner must replace overlapping momentum direction gates')
 assert(paperEntryTasks.includes('slope5min: null') && paperEntryTasks.includes('rangePosition: null'), 'S12 ready owner should clear slope/range vetoes while keeping liquidity gates')
+assert(paperEntryTasks.includes('!assessment?.ready'), 'S12 entry overlay must require assessment.ready, not only takeoverRole')
 assert(paperEntryTasks.includes('resolveS12AssistedExitInputs'), 'S12-assisted fills must resolve structure-first exit inputs')
 assert(paperEntryTasks.includes('effectiveInitialStop') && paperEntryTasks.includes('effectiveTp1Price') && paperEntryTasks.includes('effectiveTp2Price'), 'paper positions should persist effective S12/ATR stop and TP inputs')
 assert(paperEntryTasks.includes("'s12_structure_exit_plan'"), 'S12-assisted order notes should expose structure exit input source')

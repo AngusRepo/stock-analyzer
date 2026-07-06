@@ -410,9 +410,9 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     bars4h,
   })
   assert(assessment.reason === 's12_equity_mutation_context_ready', `equity mutation should replace the 1H-demand hard gate, got ${assessment.reason}: ${assessment.detail}`)
-  assert(assessment.state === 'waiting_sweep', 'equity mutation remains inside the S12 maturity ladder as provisional takeover')
-  assert(assessment.maturity.takeoverRole === 'long_entry', 'equity mutation must be handled by the same S12 long-entry owner')
-  assert(assessment.maturity.tier === 'provisional_takeover', 'equity mutation should produce reduced-size provisional takeover')
+  assert(assessment.state === 'waiting_sweep', 'equity mutation remains inside the SMCVWAP sequence until reaction confirmation')
+  assert(assessment.maturity.takeoverRole === 'none', 'waiting_sweep must not be treated as executable S12 long-entry ownership')
+  assert(assessment.maturity.tier === 'none', 'waiting_sweep must not expose a provisional executable tier')
   assert(assessment.execution.entryPrice === 105.8, 'equity mutation should use latest 15m close as S12 entry reference')
   assert((assessment.execution.stopLoss ?? 0) > 0 && (assessment.execution.stopLoss ?? 999) < 105.8, 'equity mutation must expose a structural S12 stop below entry')
   assert(assessment.exitPlan.trailingStop.source !== 'adaptive', 'equity mutation stop must resolve to a concrete 15m structure source')
@@ -420,7 +420,7 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assessment.detail.includes('entry_archetype=equity_repricing_breakout'), 'S12 detail should expose the individual-stock mutation archetype')
   assert(assessment.detail.includes('vwap_fast_acceptance=true'), 'individual-stock mutation should use fast VWAP acceptance, not the full slow VWAP stack')
   assert(assessment.detail.includes('one_h_demand_required=false'), '1H demand should become evidence, not a hard gate, under equity mutation')
-  assert(resolveS12UnifiedDecision(assessment).action === 'READY', 'S12 unified decision should let equity mutation reach execution gates')
+  assert(resolveS12UnifiedDecision(assessment).action === 'WAIT', 'S12 unified decision must wait until the mutation reaches reaction_ready')
 }
 
 {
@@ -448,7 +448,7 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assessment.demandZone1h != null, 'fixture must contain a 1H demand zone that would previously divert to strict SMC sequence')
   assert(assessment.reason === 's12_equity_mutation_context_ready', `active equity mutation must not be blocked by an existing 1H demand zone, got ${assessment.reason}: ${assessment.detail}`)
   assert(assessment.detail.includes('one_h_demand_required=false'), '1H demand should remain evidence-only when equity mutation is active')
-  assert(resolveS12UnifiedDecision(assessment).action === 'READY', 'equity mutation with 1H demand context should still reach execution gates')
+  assert(resolveS12UnifiedDecision(assessment).action === 'WAIT', 'equity mutation with 1H demand context must still wait for reaction confirmation')
 }
 
 {
@@ -478,7 +478,7 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assessment.detail.includes('equity_mutation_risk_haircuts=1h_short_risk_haircut'), 'S12 detail should expose 1H short as a risk haircut')
   assert(assessment.detail.includes('vwap_fast_acceptance=true'), 'fast VWAP acceptance should be the entry gate for individual-stock repricing')
   assert(assessment.detail.includes('htf_hard_block=false'), '1H short alone must not become an HTF hard block')
-  assert(resolveS12UnifiedDecision(assessment).action === 'READY', 'risk-haircut repricing should still reach execution gates under S12 ownership')
+  assert(resolveS12UnifiedDecision(assessment).action === 'WAIT', 'risk-haircut repricing must not reach execution gates before reaction confirmation')
 }
 
 {
@@ -521,13 +521,13 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     bars1h,
     bars4h,
   })
-  assert(assessment.state === 'waiting_sweep', `expected waiting_sweep provisional takeover, got ${assessment.state}: ${assessment.detail}`)
-  assert(assessment.maturity.tier === 'provisional_takeover', 'S12 zone-touch state should expose provisional single-owner takeover')
-  assert(assessment.maturity.takeoverRole === 'long_entry', 'S12 provisional takeover should remain under the same long-entry owner')
-  assert(assessment.execution.entryPrice != null && assessment.execution.stopLoss != null, 'S12 provisional takeover must expose an executable risk box')
-  assert(assessment.detail.includes('maturity_tier=provisional_takeover'), 'S12 detail should expose maturity ladder tier')
-  assert(s12PreTradeTechnicalDecision(assessment, 'require_ready')?.action === 'pass', 'S12 primary owner should pass provisional takeover instead of waiting for full reaction')
-  assert(resolveS12UnifiedDecision(assessment).action === 'READY', 'S12 unified decision should allow provisional takeover to reach execution gates')
+  assert(assessment.state === 'waiting_sweep', `expected waiting_sweep context, got ${assessment.state}: ${assessment.detail}`)
+  assert(assessment.maturity.tier === 'none', 'S12 zone-touch state must not expose an executable tier')
+  assert(assessment.maturity.takeoverRole === 'none', 'S12 waiting_sweep must remain non-executable until reaction_ready')
+  assert(assessment.execution.entryPrice != null && assessment.execution.stopLoss != null, 'S12 waiting context may expose a risk box for audit only')
+  assert(assessment.detail.includes('maturity_tier=none'), 'S12 detail should expose non-executable maturity tier')
+  assert(s12PreTradeTechnicalDecision(assessment, 'require_ready')?.action === 'defer', 'S12 primary owner must defer waiting_sweep instead of buying early')
+  assert(resolveS12UnifiedDecision(assessment).action === 'WAIT', 'S12 unified decision must not allow waiting_sweep to reach execution gates')
 }
 
 {
@@ -549,7 +549,7 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     bars1h,
     bars4h,
   })
-  assert(previous.maturity.takeoverRole === 'long_entry', 'fixture must start from a provisional takeover')
+  assert(previous.maturity.takeoverRole === 'none', 'fixture must start from a non-executable waiting context')
   const overlappingRegression = {
     ...previous,
     state: 'waiting_15m_zone_touch' as const,
@@ -573,11 +573,10 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     },
     detail: previous.detail.replace('state=waiting_sweep', 'state=waiting_15m_zone_touch'),
   }
-  const preserved = applyS12TakeoverContinuity(overlappingRegression, JSON.stringify(previous))
-  assert(preserved.state === previous.state, 'overlapping zone re-selection must not reset S12 takeover state')
-  assert(preserved.maturity.takeoverRole === 'long_entry', 'overlapping zone re-selection must preserve long-entry takeover role')
-  assert(preserved.sequence.zoneTouchMs === previous.sequence.zoneTouchMs, 'overlapping zone re-selection must preserve the original touch sequence')
-  assert(preserved.detail.includes('takeover_continuity=preserved'), 'S12 continuity preservation must be visible in diagnostics')
+  const notReadyPreserved = applyS12TakeoverContinuity(overlappingRegression, JSON.stringify(previous))
+  assert(notReadyPreserved.state === 'waiting_15m_zone_touch', 'overlapping non-ready state must not restore old waiting_sweep as executable continuity')
+  assert(notReadyPreserved.maturity.takeoverRole === 'none', 'non-ready continuity must preserve non-executable ownership')
+  assert(!notReadyPreserved.detail.includes('takeover_continuity=preserved'), 'non-ready continuity must not be marked preserved')
 
   const differentZone = {
     ...overlappingRegression,

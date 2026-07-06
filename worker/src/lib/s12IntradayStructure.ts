@@ -380,8 +380,6 @@ export interface S12IntradayAssessment {
     takeoverRole: 'none' | 'long_entry' | 'no_buy_defense' | 'invalidate'
     tier:
       | 'none'
-      | 'provisional_takeover'
-      | 'confirmed_takeover'
       | 'full_reaction_ready'
       | 'defensive_invalidation'
       | 'no_buy_defense'
@@ -885,15 +883,6 @@ function maturityTier(
   }
   if (state === 'invalidated') {
     return { tier: 'defensive_invalidation', riskMode: 'defense_only', takeoverRole: 'invalidate' }
-  }
-  if ((state === 'waiting_bos' || state === 'waiting_retest') && sequence.chochMs != null) {
-    return { tier: 'confirmed_takeover', riskMode: 'normal_size_structure_stop', takeoverRole: 'long_entry' }
-  }
-  if (state === 'waiting_choch' && sequence.sweepMs != null) {
-    return { tier: 'confirmed_takeover', riskMode: 'normal_size_structure_stop', takeoverRole: 'long_entry' }
-  }
-  if (state === 'waiting_sweep' && sequence.zoneTouchMs != null) {
-    return { tier: 'provisional_takeover', riskMode: 'reduced_size_tight_stop', takeoverRole: 'long_entry' }
   }
   return { tier: 'none', riskMode: 'none', takeoverRole: maturityTakeoverRole(state) }
 }
@@ -2348,6 +2337,7 @@ export function applyS12TakeoverContinuity(
   if (current.maturity?.takeoverRole === 'long_entry') return current
   if (current.invalidated || current.state === 'invalidated' || current.state === 'bearish_defense_ready') return current
   if (previous.invalidated || previous.state === 'invalidated' || previous.state === 'bearish_defense_ready') return current
+  if (!previous.ready) return current
   if (previous.maturity?.takeoverRole !== 'long_entry') return current
   if (previous.maturity?.stale) return current
   if (!previous.demandZone1h || !current.demandZone1h) return current
@@ -3717,11 +3707,11 @@ export function s12PreTradeTechnicalDecision(
   if (assessment.invalidated) {
     return { action: 'skip', reason: assessment.reason, detail: assessment.detail }
   }
-  const longEntryTakeover = assessment.maturity.takeoverRole === 'long_entry'
-  if (mode === 'require_ready' && !longEntryTakeover) {
+  const longEntryReady = assessment.ready && assessment.maturity.takeoverRole === 'long_entry'
+  if (mode === 'require_ready' && !longEntryReady) {
     return { action: 'defer', reason: assessment.reason, detail: assessment.detail }
   }
-  if ((mode === 'require_ready' || mode === 'assist_entry') && longEntryTakeover) {
+  if ((mode === 'require_ready' || mode === 'assist_entry') && longEntryReady) {
     return { action: 'pass', reason: assessment.reason, detail: assessment.detail }
   }
   return null
@@ -3772,7 +3762,7 @@ export function resolveS12UnifiedDecision(
       setupId: assessment.setupId,
     }
   }
-  if (assessment.maturity.takeoverRole === 'long_entry') {
+  if (assessment.ready && assessment.maturity.takeoverRole === 'long_entry') {
     return {
       action: 'READY',
       reason: assessment.reason,

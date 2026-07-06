@@ -43,6 +43,17 @@ def _first_number(*values: Any) -> float | None:
     return None
 
 
+def _boolish(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    return None
+
+
 def _nested(obj: dict[str, Any], *path: str) -> Any:
     cur: Any = obj
     for key in path:
@@ -255,6 +266,36 @@ def _s12_entry_context_from_row(row: dict[str, Any], prediction: dict[str, Any] 
     context = {
         "schema_version": "s12-equity-mutation-context-v1",
         "source": "worker_s12_intraday_structure_detail",
+        "state": (
+            _string_from_paths(payloads, [
+                ("canonical_trade_lifecycle", "entry", "s12", "state"),
+                ("canonicalTradeLifecycle", "entry", "s12", "state"),
+                ("s12", "state"),
+                ("s12_structure", "state"),
+                ("s12Structure", "state"),
+                ("s12_state",),
+            ])
+            or parsed.get("state")
+        ),
+        "ready": (
+            _value_from_paths(payloads, [
+                ("canonical_trade_lifecycle", "entry", "s12", "ready"),
+                ("canonicalTradeLifecycle", "entry", "s12", "ready"),
+                ("s12", "ready"),
+                ("s12_structure", "ready"),
+                ("s12Structure", "ready"),
+                ("s12_ready",),
+            ])
+            if _value_from_paths(payloads, [
+                ("canonical_trade_lifecycle", "entry", "s12", "ready"),
+                ("canonicalTradeLifecycle", "entry", "s12", "ready"),
+                ("s12", "ready"),
+                ("s12_structure", "ready"),
+                ("s12Structure", "ready"),
+                ("s12_ready",),
+            ]) is not None
+            else parsed.get("ready")
+        ),
         "entry_archetype": (
             _string_from_paths(payloads, [
                 ("canonical_trade_lifecycle", "entry", "s12", "entryContext", "entryArchetype"),
@@ -348,6 +389,30 @@ def _s12_entry_context_from_row(row: dict[str, Any], prediction: dict[str, Any] 
         "detail_available": bool(detail),
     }
     return {key: value for key, value in context.items() if value not in (None, "")}
+
+
+def _s12_context_not_ready_reason(context: dict[str, Any]) -> str | None:
+    ready = _boolish(context.get("ready"))
+    state = str(context.get("state") or "").strip().lower()
+    if ready is False:
+        return "s12_ready_false"
+    if state and state != "reaction_ready":
+        return f"s12_state_{state}"
+    return None
+
+
+def _mark_setup_only_ev(ev: dict[str, Any], *, reason: str, context: dict[str, Any]) -> dict[str, Any]:
+    out = dict(ev)
+    if out.get("status") == "loaded":
+        out["status"] = "setup_only"
+        out["trade_expected_return_source"] = "s12_structural_setup_cold_start_ev"
+        out["sample_policy"] = "s12_structural_setup_cold_start_no_replay"
+    out["execution_ready"] = False
+    out["execution_gate_required"] = "s12_reaction_ready"
+    out["execution_blocked_reason"] = reason
+    out["candidate_s12_entry_context"] = context
+    out["s12_entry_context"] = context
+    return out
 
 
 def _first_above(entry: float | None, *values: Any) -> float | None:
@@ -774,9 +839,10 @@ class S12TradeEvBootstrapProvider:
         }
         ev.update(replay_meta)
         s12_entry_context = _s12_entry_context_from_row(row, prediction)
+        not_ready_reason = _s12_context_not_ready_reason(s12_entry_context) if s12_entry_context else None
         if s12_entry_context:
             ev["candidate_s12_entry_context"] = s12_entry_context
-        if ev.get("status") == "loaded":
+        if ev.get("status") == "loaded" and not not_ready_reason:
             return ev
 
         ev2 = pred.get("ensemble_v2") if isinstance(pred.get("ensemble_v2"), dict) else {}
@@ -823,6 +889,8 @@ class S12TradeEvBootstrapProvider:
                 "trade_expected_return_source": ev.get("trade_expected_return_source"),
             },
         })
+        if not_ready_reason:
+            cold = _mark_setup_only_ev(cold, reason=not_ready_reason, context=s12_entry_context)
         return cold
 
     def summary(self) -> dict[str, Any]:

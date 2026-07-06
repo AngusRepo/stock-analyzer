@@ -201,7 +201,11 @@ function buildS12AssistEntryOverlay(
   mode: S12IntradayGateMode,
   maxChasePctCap: number,
 ): S12AssistEntryOverlay | null {
-  if (mode !== 'assist_entry' || assessment?.maturity.takeoverRole !== 'long_entry') return null
+  if (
+    mode !== 'assist_entry' ||
+    !assessment?.ready ||
+    assessment.maturity.takeoverRole !== 'long_entry'
+  ) return null
   const entryPrice = positiveNumber(assessment.execution.entryPrice)
   if (entryPrice == null) return null
   const stopLoss = positiveNumber(assessment.execution.stopLoss)

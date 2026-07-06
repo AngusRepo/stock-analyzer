@@ -159,8 +159,8 @@ const EXECUTION_REASON_LABELS: Record<string, string> = {
   s12_waiting_choch: 'S12 等待 CHoCH 轉強',
   s12_waiting_bos: 'S12 等待 BOS 確認',
   s12_waiting_retest: 'S12 等待 OB/FVG 回測反應',
-  s12_reaction_ready: 'S12 反應確認完成',
-  s12_assist_entry_ready: 'S12 輔助進場成立',
+  s12_reaction_ready: 'SMCVWAP 反應確認完成',
+  s12_assist_entry_ready: 'SMCVWAP 進場確認完成',
   s12_structure_advisory_waiting: 'S12 結構觀察，尚未接手',
   s12_structure_primary_waiting: 'S12 主機制等待結構成熟',
   s12_primary_structure_owner_waiting: 'S12 主控結構等待中',
@@ -218,7 +218,7 @@ const S12_DEFENSE_ACTION_LABELS: Record<string, string> = {
 
 const OWNER_LABELS: Record<string, string> = {
   market_regime_alpha_context_v1: '市場 regime / alpha context',
-  s12_intraday_structure_v1: 'S12 結構進場',
+  s12_intraday_structure_v1: 'SMCVWAP 結構進場',
   s12_position_decision_v1: 'S12 持倉出場',
   ohlcv_pre_trade_plan_v1: 'OHLCV 進場計畫',
   paper_sltp_atr_trailing_v1: 'ATR trailing 出場',
@@ -603,7 +603,7 @@ export function formatCanonicalTradeLifecycleBadge(raw: unknown): PendingBuyExec
   const primaryS12 = entryOwner === 's12_intraday_structure_v1' || exitOwner === 's12_position_decision_v1'
   const parts = [
     contextOwner ? `情境：${OWNER_LABELS[contextOwner] ?? contextOwner}` : null,
-    entrySource ? `進場來源：${entrySource === 's12_assist_entry' ? 'S12 輔助進場' : '盤前交易計畫'}` : null,
+    entrySource ? `進場來源：${entrySource === 's12_assist_entry' ? 'SMCVWAP 盤中進場確認' : '盤前交易計畫'}` : null,
     exitLabel ? `出場：${exitLabel}` : null,
     lifecycle.owners?.fallbackExit ? `備援：${OWNER_LABELS[String(lifecycle.owners.fallbackExit)] ?? String(lifecycle.owners.fallbackExit)}` : null,
     stop ? `防守停損 ${stop}` : null,

@@ -1978,7 +1978,7 @@ def filter_and_score_recommendations(
         if s12_trade_ev_provider is not None:
             s12_trade_ev = s12_trade_ev_provider.build_for_row(row, prediction=ml)
             row["s12_trade_ev"] = s12_trade_ev
-            if s12_trade_ev.get("status") == "loaded":
+            if s12_trade_ev.get("status") in {"loaded", "setup_only"}:
                 row["trade_expected_return_net_pct"] = s12_trade_ev.get("trade_expected_return_net_pct")
                 row["trade_expected_return_source"] = s12_trade_ev.get("trade_expected_return_source")
         row["score_components"] = build_score_components(row, raw_score=total_score, alpha_policy=alpha_policy)

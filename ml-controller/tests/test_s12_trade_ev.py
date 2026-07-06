@@ -60,6 +60,26 @@ def test_extract_s12_trade_ev_accepts_nested_forecast_payload():
     assert evidence["status"] == "loaded"
 
 
+def test_extract_s12_trade_ev_accepts_setup_only_allocator_edge():
+    payload = {
+        "s12_trade_ev": {
+            "status": "setup_only",
+            "trade_expected_return_net_pct": 0.012,
+            "trade_expected_return_source": "s12_structural_setup_cold_start_ev",
+            "execution_ready": False,
+            "execution_gate_required": "s12_reaction_ready",
+        }
+    }
+
+    value, source, evidence = extract_s12_trade_ev({"forecast_data": json.dumps(payload)})
+
+    assert value == pytest.approx(0.012)
+    assert source == "s12_structural_setup_cold_start_ev"
+    assert evidence["status"] == "setup_only"
+    assert evidence["execution_ready"] is False
+    assert evidence["execution_gate_required"] == "s12_reaction_ready"
+
+
 def test_extract_s12_trade_ev_fails_closed_when_missing():
     value, source, evidence = extract_s12_trade_ev({"forecast_data": "{}"})
 

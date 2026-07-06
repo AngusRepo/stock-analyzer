@@ -288,7 +288,6 @@ export interface UpdateQueueMsg {
     | 'post_screener_pipeline'
     | 'news_batch'
     | 'source_readiness_retry'
-    | 'source_readiness_recheck'
     | 'finlab_backfill_complete'
     | 'strategy_learning_materialize'
   newsStocks?: Array<{

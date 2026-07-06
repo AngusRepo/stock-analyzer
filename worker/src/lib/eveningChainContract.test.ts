@@ -10,17 +10,16 @@ const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 
 const jobs = manifest.jobs as Array<{ id: string; task: string; schedule: string; query?: string }>
 
 assert(
-  jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.query === 'sync=1' && job.schedule === '0 14 * * 1-5'),
-  'GCP Scheduler must keep one TW 22:00 evening-chain fallback job for the post-market DAG',
+  jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.query === 'sync=1' && job.schedule === '0 13 * * 1-5'),
+  'GCP Scheduler must keep one TW 21:00 evening-chain primary job for the post-market DAG',
 )
 assert(
   jobs.some((job) => job.id === 'market-close-refresh' && job.task === 'market-close-refresh' && job.query === 'sync=1' && job.schedule === '10 10 * * 1-5'),
-  'GCP Scheduler must trigger TW 18:10 market-close-refresh before readiness probes',
+  'GCP Scheduler must trigger TW 18:10 market-close-refresh before the 21:00 evening chain',
 )
 assert(
-  jobs.some((job) => job.id === 'source-readiness-probe-1830-1850' && job.task === 'source-readiness-probe' && job.query === 'sync=1') &&
-    jobs.some((job) => job.id === 'source-readiness-probe-1910-2150' && job.task === 'source-readiness-probe' && job.query === 'sync=1'),
-  'GCP Scheduler must poll source-readiness-probe from TW 18:30 through 21:50 before 22:00 fallback',
+  !jobs.some((job) => job.task === 'source-readiness-probe' || job.id.startsWith('source-readiness-probe')),
+  'GCP Scheduler must not run source-readiness-probe jobs',
 )
 
 for (const removed of ['update', 'screener', 'pipeline', 'ml-warmup', 'adapt', 'daily-report', 'obsidian-sync', 'regime-compute', 'verify-v2']) {
@@ -33,7 +32,7 @@ for (const removed of ['update', 'screener', 'pipeline', 'ml-warmup', 'adapt', '
 const workerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 assert(workerTasks.includes("'evening-chain'"), 'admin trigger map must expose evening-chain')
 assert(workerTasks.includes("'market-close-refresh'"), 'admin trigger map must expose market-close-refresh')
-assert(workerTasks.includes("'source-readiness-probe'"), 'admin trigger map must expose source-readiness-probe')
+assert(!workerTasks.includes("'source-readiness-probe'"), 'admin trigger map must not expose source-readiness-probe')
 assert(
   workerTasks.includes("'post-screener-pipeline'") &&
     workerTasks.includes('enqueuePostScreenerPipelineContinuation') &&
@@ -68,10 +67,10 @@ assert(
 )
 assert(
   updateOrchestrator.includes('runMarketCloseRefresh') &&
-    updateOrchestrator.includes('runSourceReadinessProbe') &&
     updateOrchestrator.includes('hasEveningChainSucceeded') &&
-    updateOrchestrator.includes('22:00 fallback suppressed'),
-  'readiness-gated evening chain must implement 18:10 refresh, polling probe, and 22:00 fallback suppression in backend/runtime',
+    updateOrchestrator.includes('21:00 root suppressed') &&
+    !updateOrchestrator.includes('runSourceReadinessProbe'),
+  'evening chain must run as the TW 21:00 primary root without the source-readiness probe backend/runtime path',
 )
 assert(
   updateOrchestrator.includes('runFinLabV4Backfill(env, twDate, force, {') &&

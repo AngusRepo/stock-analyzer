@@ -4,7 +4,6 @@ import type { Bindings, Variables, UpdateQueueMsg } from './types'
 import {
   runDailyUpdate as runDailyUpdateWorkflow,
   runMarketCloseRefresh,
-  runSourceReadinessProbe,
   processUpdateBatch,
 } from './lib/updateOrchestrator'
 import { runMorningWarmup } from './lib/localMaintenance'
@@ -59,7 +58,6 @@ const adminTriggerRoutes = createAdminTriggerRoutes({
     runScreenerV2: (runDate?: string, options?: { chainRunId?: string }) => runScreenerV2(c.env, runDate, options),
     runDailyUpdate: (force?: boolean, runDate?: string) => runDailyUpdateWorkflow(c.env, force, runDate),
     runMarketCloseRefresh: (force?: boolean, runDate?: string) => runMarketCloseRefresh(c.env, force, runDate),
-    runSourceReadinessProbe: (force?: boolean, runDate?: string) => runSourceReadinessProbe(c.env, force, runDate),
     runMLAndRiskV2: (runDate?: string) => runMLAndRiskV2(c.env, runDate),
     runDailyRecommendation: (runDate?: string) => runDailyRecommendation(c.env, runDate),
     runPaperAutoTrade: () => runPaperAutoTrade(c.env),

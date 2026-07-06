@@ -59,9 +59,9 @@ assert(
   'bulk fetch should skip official supplemental writes once FinLab mirror readiness passes',
 )
 assert(
-  source.includes('finlab_probe_mirror=') &&
-    source.includes('official_supplemental_fetch=disabled'),
-  'source-readiness probe must retry FinLab mirror and honor disabled official supplemental fetch mode before TWSE/TPEX fallback',
+  source.includes("TWSE/TPEX supplemental bulk fetch skipped") &&
+    source.includes('officialSupplementalFetchMode'),
+  'bulk fetch must prefer FinLab mirror and honor official supplemental fetch mode before TWSE/TPEX fallback',
 )
 
 const bulkStart = source.indexOf('export async function runBulkFetch')
@@ -74,32 +74,31 @@ assert(
 )
 
 const marketCloseStart = source.indexOf('export async function runMarketCloseRefresh')
-const marketCloseMirror = source.indexOf('syncLegacyMarketDataFromFinLabCanonical(env.DB, twDate)', marketCloseStart)
-const marketCloseOfficial = source.indexOf('bulkFetchAndStorePrices', marketCloseStart)
-assert(marketCloseMirror > marketCloseStart, 'market-close refresh must attempt FinLab mirror')
+const marketCloseEnd = source.indexOf('export async function runDailyUpdate', marketCloseStart)
+const marketCloseBody = source.slice(marketCloseStart, marketCloseEnd)
 assert(
-  marketCloseOfficial < 0 || marketCloseMirror < marketCloseOfficial,
-  'market-close refresh must attempt FinLab mirror before official price fetch',
+  marketCloseBody.includes('bulkFetchAndStorePrices') &&
+    marketCloseBody.includes('fetchWave2Data(env, twDate, { finLabMirror: false })') &&
+    !marketCloseBody.includes('syncLegacyMarketDataFromFinLabCanonical(env.DB, twDate)') &&
+    !marketCloseBody.includes('skipped_finlab_primary'),
+  'market-close refresh must use official close-data refresh directly and must not attempt pre-backfill FinLab mirror',
 )
 
 const wave2Start = source.indexOf('export async function fetchWave2Data')
+const wave2End = source.indexOf('async function refreshOfficialMarketSummaryIfMissing', wave2Start)
+const wave2Body = source.slice(wave2Start, wave2End)
 const wave2Breadth = source.indexOf('syncMarketBreadthFromFinLabCanonical(env.DB, today)', wave2Start)
-const officialBreadth = source.indexOf('fetchMarketBreadth()', wave2Start)
 const wave2Revenue = source.indexOf('syncLegacyRevenueFromFinLabCanonical(env.DB, today)', wave2Start)
 const officialRevenue = source.indexOf('fetchTwseMonthlyRevenue()', wave2Start)
 const wave2Financials = source.indexOf('syncLegacyFinancialsFromFinLabCanonical(env.DB, today)', wave2Start)
 const officialFinancials = source.indexOf('fetchTwseFinancials()', wave2Start)
-assert(wave2Breadth > wave2Start && wave2Breadth < officialBreadth, 'Wave2 must derive breadth from FinLab before official breadth')
+assert(
+  wave2Body.includes('const useFinLabMirror = options.finLabMirror !== false') &&
+    wave2Body.includes('if (useFinLabMirror)') &&
+    wave2Breadth > wave2Start,
+  'Wave2 must keep FinLab breadth mirror behind an explicit finLabMirror gate',
+)
 assert(wave2Revenue > wave2Start && wave2Revenue < officialRevenue, 'Wave2 must mirror FinLab revenue before official revenue')
 assert(wave2Financials > wave2Start && wave2Financials < officialFinancials, 'Wave2 must mirror FinLab financials before official financials')
-
-const readinessStart = source.indexOf('export async function runSourceReadinessProbe')
-const readinessFinlabProbe = source.indexOf('syncLegacyMarketDataFromFinLabCanonical(env.DB, twDate)', readinessStart)
-const readinessOfficialImport = source.indexOf("await import('./twseApi')", readinessStart)
-assert(readinessFinlabProbe > readinessStart, 'source-readiness probe must retry FinLab supplemental mirror')
-assert(
-  readinessOfficialImport < 0 || readinessFinlabProbe < readinessOfficialImport,
-  'source-readiness probe must retry FinLab mirror before importing official TWSE/TPEX fetchers',
-)
 
 console.log('finlabLegacyMirrorContract.test.ts passed')

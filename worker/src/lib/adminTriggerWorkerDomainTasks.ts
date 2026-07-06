@@ -235,7 +235,6 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
 
   return {
     'market-close-refresh': () => deps.runMarketCloseRefresh(!!c.req.query('force'), requestedRunDate()),
-    'source-readiness-probe': () => deps.runSourceReadinessProbe(!!c.req.query('force'), requestedRunDate()),
     'evening-chain': () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     screener: () => deps.runMarketScreener(requestedRunDate()),
     'screener-v2': () => {

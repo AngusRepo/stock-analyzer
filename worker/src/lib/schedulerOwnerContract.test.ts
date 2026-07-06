@@ -38,7 +38,6 @@ const tradingDayTasks = [
   'post-close-price-refresh',
   'daily-snapshot',
   'market-close-refresh',
-  'source-readiness-probe',
   'evening-chain',
   'indicator-queue',
   'post-pipeline-chain',
@@ -69,7 +68,7 @@ for (const task of tradingDayTasks) {
   assert(policyPattern.test(schedulerPolicy), `${task} must be gated by TW trading calendar / holiday KV`)
 }
 
-for (const required of ['market-close-refresh', 'source-readiness-probe', 'evening-chain', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
+for (const required of ['market-close-refresh', 'evening-chain', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
   assert(manifest.jobs.some((job: any) => job.task === required || job.id === required), `manifest missing required scheduler job: ${required}`)
 }
 
@@ -95,8 +94,6 @@ for (const chained of ['ml-warmup', 'adapt', 'daily-report', 'obsidian-sync', 'r
 for (const critical of [
   'evening-chain',
   'market-close-refresh',
-  'source-readiness-probe-1830-1850',
-  'source-readiness-probe-1910-2150',
   'rescore-10',
   'rescore-11',
   'rescore-12',
@@ -117,6 +114,11 @@ for (const critical of [
   const job = manifest.jobs.find((j: any) => j.id === critical)
   assert(String(job?.query ?? '').split('&').includes('sync=1'), `${critical} scheduler must run synchronously so GCP sees data-readiness failures`)
 }
+
+assert(
+  !manifest.jobs.some((job: any) => job.id?.startsWith('source-readiness-probe') || job.task === 'source-readiness-probe'),
+  'source-readiness-probe must stay removed from GCP Scheduler',
+)
 
 for (const monthly of ['monthly-optuna', 'monthly-strategy-mining', 'monthly-retrain']) {
   const job = manifest.jobs.find((j: any) => j.id === monthly)

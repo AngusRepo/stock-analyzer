@@ -30,7 +30,6 @@ type SchedulerRunResultInput = Omit<SchedulerRunLogEntry, 'task' | 'timestamp'> 
 const TASK_NAMES: Record<string, string> = {
   'pre-market-warmup': 'Pre-market Warmup',
   'market-close-refresh': 'Market Close Refresh',
-  'source-readiness-probe': 'Source Readiness Probe',
   'evening-chain': 'Evening Chain',
   update: 'Market Data Update',
   'indicator-queue': 'Indicator Queue',

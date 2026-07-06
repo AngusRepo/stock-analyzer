@@ -115,10 +115,10 @@ assert(
 const manifestTaskSet = new Set(manifest.jobs.map((job) => job.task))
 assert(
   schedulerStatus.includes("id: 'market-close-refresh'") &&
-    schedulerStatus.includes("id: 'source-readiness-probe'") &&
-    schedulerStatus.indexOf("id: 'market-close-refresh'") < schedulerStatus.indexOf("id: 'source-readiness-probe'") &&
-    schedulerStatus.indexOf("id: 'source-readiness-probe'") < schedulerStatus.indexOf("id: 'evening-chain'"),
-  'scheduler status must show real readiness-gated jobs before the 22:00 fallback evening-chain',
+    schedulerStatus.includes("id: 'evening-chain'") &&
+    !schedulerStatus.includes("id: 'source-readiness-probe'") &&
+    schedulerStatus.indexOf("id: 'market-close-refresh'") < schedulerStatus.indexOf("id: 'evening-chain'"),
+  'scheduler status must show market-close-refresh before the TW 21:00 primary evening-chain without source-readiness-probe',
 )
 assert(
   !schedulerStatus.includes('market-data-update') &&

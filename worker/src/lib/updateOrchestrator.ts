@@ -937,55 +937,6 @@ async function scheduleSourceReadinessRetry(
   }, { delaySeconds: SOURCE_READINESS_RETRY_DELAY_SECONDS } as any)
 }
 
-async function scheduleSourceReadinessRecheck(
-  env: Bindings,
-  runDate: string,
-  attempt: number,
-  reason: string,
-  runId?: string,
-): Promise<void> {
-  const safeAttempt = Math.max(1, Math.floor(attempt))
-  const summary = [
-    `source-readiness recheck for ${runDate}`,
-    `attempt=${safeAttempt}/${SOURCE_READINESS_RETRY_MAX_ATTEMPTS}`,
-    `retry_in=${SOURCE_READINESS_RETRY_DELAY_SECONDS}s`,
-    reason,
-  ].join('; ')
-
-  await logSchedulerResult(env.KV, 'source-readiness-probe', {
-    status: safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS ? 'error' : 'running',
-    summary: safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS
-      ? `source readiness recheck timeout for ${runDate}; ${reason}`
-      : summary,
-    duration_ms: 0,
-    error: safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS ? reason : undefined,
-    run_id: runId,
-    run_date: runDate,
-  })
-  await logSchedulerResult(env.KV, 'evening-chain', {
-    status: safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS ? 'error' : 'running',
-    summary: safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS
-      ? `root chain waiting timed out at source-readiness gate for ${runDate}`
-      : `root chain waiting at source-readiness gate; ${summary}`,
-    duration_ms: 0,
-    error: safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS ? reason : undefined,
-    run_id: runId,
-    run_date: runDate,
-  }, safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS ? env as any : undefined)
-
-  if (safeAttempt >= SOURCE_READINESS_RETRY_MAX_ATTEMPTS) {
-    throw new Error(`source readiness recheck timeout for ${runDate}: ${reason}`)
-  }
-
-  await env.UPDATE_QUEUE.send({
-    type: 'source_readiness_recheck',
-    cursor: 0,
-    triggerTime: runDate,
-    runId,
-    attempt: safeAttempt + 1,
-  }, { delaySeconds: SOURCE_READINESS_RETRY_DELAY_SECONDS } as any)
-}
-
 type ProcessUpdateBatchDeps = {
   runMarketScreener: (env: Bindings, runDate?: string) => Promise<any>
   runMarketScreenerAsync?: (
@@ -2014,25 +1965,8 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
   const started = Date.now()
   const parts: string[] = []
   let sourceWaiting = false
-  let shouldFetchOfficialPrices = officialSupplementalFetchMode(env) === 'always'
-
-  if (!shouldFetchOfficialPrices) {
-    try {
-      const mirror = await syncLegacyMarketDataFromFinLabCanonical(env.DB, twDate)
-      const stats = await loadMarketDataReadinessStats(env.DB, twDate)
-      const finlabPriceReady =
-        stats.priceLatestDate === twDate &&
-        stats.priceRowsOnLatest >= 1000 &&
-        Number(stats.priceTwseRowsOnLatest ?? 0) >= 900 &&
-        Number(stats.priceOtcRowsOnLatest ?? 0) >= 700
-      parts.push(`finlab_mirror=${mirror.priceRows}/${mirror.chipRows}/${mirror.marginRows}`)
-      shouldFetchOfficialPrices = !finlabPriceReady
-    } catch (e) {
-      parts.push(`finlab_mirror_waiting=${e instanceof Error ? e.message : String(e)}`)
-      shouldFetchOfficialPrices = officialSupplementalFetchMode(env) !== 'disabled'
-      sourceWaiting = officialSupplementalFetchMode(env) === 'disabled'
-    }
-  }
+  const supplementalMode = officialSupplementalFetchMode(env)
+  const shouldFetchOfficialPrices = supplementalMode !== 'disabled'
 
   if (shouldFetchOfficialPrices) {
     try {
@@ -2045,11 +1979,12 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
       parts.push(`official_prices_waiting=${e instanceof Error ? e.message : String(e)}`)
     }
   } else {
-    parts.push('official_prices=skipped_finlab_primary')
+    sourceWaiting = true
+    parts.push('official_prices=disabled')
   }
 
   try {
-    await fetchWave2Data(env, twDate)
+    await fetchWave2Data(env, twDate, { finLabMirror: false })
     parts.push('wave2=attempted')
   } catch (e) {
     parts.push(`wave2_warn=${e instanceof Error ? e.message : String(e)}`)
@@ -2110,250 +2045,13 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
   return summary
 }
 
-export async function runSourceReadinessProbe(
-  env: Bindings,
-  force = false,
-  runDate?: string,
-  options: { ignoreEveningChainInFlight?: boolean } = {},
-): Promise<string> {
-  const twDate = resolveUpdateDate(runDate)
-  const started = Date.now()
-  const supplementalMode = officialSupplementalFetchMode(env)
-  if (!force && await hasEveningChainSucceeded(env, twDate)) {
-    const summary = `SKIP: full evening chain already succeeded for ${twDate}; readiness probe will not rerun`
-    await logSchedulerResult(env.KV, 'source-readiness-probe', {
-      status: 'skipped',
-      summary,
-      duration_ms: Date.now() - started,
-      run_date: twDate,
-    })
-    return summary
-  }
-  if (!force && !options.ignoreEveningChainInFlight && await hasEveningChainInFlight(env, twDate)) {
-    const summary = `running: full evening chain already in flight for ${twDate}; readiness probe will not duplicate trigger`
-    await logSchedulerResult(env.KV, 'source-readiness-probe', {
-      status: 'running',
-      summary,
-      duration_ms: Date.now() - started,
-      run_date: twDate,
-    })
-    return summary
-  }
-
-  let readiness = await checkEveningChainSourceReadiness(env, twDate)
-  let officialMarketSummaryWaiting: string | null = null
-  if (!readiness.ok && hasOfficialMarketSummaryMissing(readiness)) {
-    const officialSummary = await refreshOfficialMarketSummaryIfMissing(env, twDate, started)
-    readiness = await checkEveningChainSourceReadiness(env, twDate)
-    if (officialSummary?.startsWith('official_market_summary_waiting=')) {
-      officialMarketSummaryWaiting = officialSummary
-    }
-  }
-  if (!readiness.ok && hasFinLabRefreshableMissing(readiness)) {
-    const finlabLog = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
-    if (!force && isFinLabQuotaLimitLog(finlabLog)) {
-      const summary = `running: ${readiness.summary}; finlab_refresh quota_exhausted_no_refetch=${finlabLog?.summary ?? finlabLog?.error ?? 'quota limit'}`
-      await logSchedulerResult(env.KV, 'source-readiness-probe', {
-        status: 'running',
-        summary,
-        duration_ms: Date.now() - started,
-        details: readinessDetails(readiness),
-        run_date: twDate,
-      })
-      return summary
-    }
-    const finlabInFlight = finlabLog?.status === 'running' || finlabLog?.status === 'triggered'
-    const refreshLock = await readFinLabRefreshLock(env, twDate)
-    if ((!finlabInFlight && !refreshLock) || force) {
-      const refreshScope = await finLabRetryScopeForReadiness(env, twDate, readiness, {
-        allowFetchedLaneRefetch: force,
-      })
-      if (!refreshScope.lanes) {
-        const summary = `running: ${readiness.summary}; finlab_refresh skipped already fetched source lanes; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}`
-        await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
-          status: 'skipped',
-          summary: `readiness probe skipped FinLab data.get refetch; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}`,
-          duration_ms: 0,
-          details: [...readinessDetails(readiness), ...finLabRetryScopeDetails(refreshScope)],
-          run_date: twDate,
-        })
-        await logSchedulerResult(env.KV, 'source-readiness-probe', {
-          status: 'running',
-          summary,
-          duration_ms: Date.now() - started,
-          details: [...readinessDetails(readiness), ...finLabRetryScopeDetails(refreshScope)],
-          run_date: twDate,
-        })
-        return summary
-      }
-      const finlabSummary = String(await runFinLabV4Backfill(env, twDate, force, {
-        continueEveningChain: false,
-        dailySourceRefresh: true,
-        callbackMode: 'readiness_probe',
-        lanes: refreshScope.lanes,
-        canonicalDatasets: refreshScope.canonicalDatasets,
-        keyScopeJson: refreshScope.keyScopeJson,
-        reuseSuccessfulArtifacts: finLabArtifactReuseEnabled(env) && Boolean(refreshScope.keyScopeJson),
-      }))
-      const finlabStatus = classifySchedulerSummary(finlabSummary)
-      await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
-        status: finlabStatus,
-        summary: `readiness probe triggered daily source refresh without direct continuation; ${finlabSummary}${finLabRetryScopeSuffix(refreshScope)}`,
-        duration_ms: 0,
-        details: [...readinessDetails(readiness), ...finLabRetryScopeDetails(refreshScope)],
-        run_date: twDate,
-      })
-      if (finlabStatus === 'error') {
-        await logSchedulerResult(env.KV, 'source-readiness-probe', {
-          status: 'error',
-          summary: `FinLab canonical refresh failed before readiness gate: ${finlabSummary}`,
-          duration_ms: Date.now() - started,
-          error: finlabSummary,
-          details: [...readinessDetails(readiness), ...finLabRetryScopeDetails(refreshScope)],
-          run_date: twDate,
-        }, env as any)
-        throw new Error(`FinLab canonical refresh failed before readiness gate: ${finlabSummary}`)
-      }
-      await writeFinLabRefreshLock(env, twDate, finlabSummary)
-      if (finlabStatus !== 'success') {
-        const summary = `running: ${readiness.summary}; finlab_refresh=${finlabSummary}${finLabRetryScopeSuffix(refreshScope)}${officialMarketSummaryWaiting ? `; ${officialMarketSummaryWaiting}` : ''}`
-        await logSchedulerResult(env.KV, 'source-readiness-probe', {
-          status: 'running',
-          summary,
-          duration_ms: Date.now() - started,
-          details: [...readinessDetails(readiness), ...finLabRetryScopeDetails(refreshScope)],
-          run_date: twDate,
-        })
-        return summary
-      }
-      readiness = await checkEveningChainSourceReadiness(env, twDate)
-    } else {
-      const refreshState = finlabInFlight ? (finlabLog?.status ?? 'in-flight') : `cooldown ${refreshLock}`
-      const summary = `running: ${readiness.summary}; finlab_refresh already ${refreshState}${officialMarketSummaryWaiting ? `; ${officialMarketSummaryWaiting}` : ''}`
-      await logSchedulerResult(env.KV, 'source-readiness-probe', {
-        status: 'running',
-        summary,
-        duration_ms: Date.now() - started,
-        details: readinessDetails(readiness),
-        run_date: twDate,
-      })
-      return summary
-    }
-  }
-
-  if (!readiness.ok && officialMarketSummaryWaiting && !hasFinLabRefreshableMissing(readiness)) {
-    const summary = `running: ${readiness.summary}; ${officialMarketSummaryWaiting}`
-    await logSchedulerResult(env.KV, 'source-readiness-probe', {
-      status: 'running',
-      summary,
-      duration_ms: Date.now() - started,
-      details: readinessDetails(readiness),
-      run_date: twDate,
-    })
-    return summary
-  }
-
-  if (!readiness.ok && readiness.missingKeys.includes('official_supplemental_market_data')) {
-    let finlabSupplementalSummary: string | null = null
-    if (supplementalMode !== 'always') {
-      try {
-        const mirror = await syncLegacyMarketDataFromFinLabCanonical(env.DB, twDate)
-        await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] readiness probe FinLab refresh failed:', e))
-        readiness = await checkEveningChainSourceReadiness(env, twDate)
-        finlabSupplementalSummary = `finlab_probe_mirror=${mirror.priceRows}/${mirror.chipRows}/${mirror.marginRows}`
-        readiness.summary = `${readiness.summary}; ${finlabSupplementalSummary}`
-      } catch (e) {
-        finlabSupplementalSummary = `finlab_probe_mirror_waiting=${e instanceof Error ? e.message : String(e)}`
-      }
-    }
-    if (!readiness.ok && readiness.missingKeys.includes('official_supplemental_market_data') && supplementalMode === 'disabled') {
-      const summary = `running: ${readiness.summary}; ${finlabSupplementalSummary ?? 'finlab_probe_mirror=not_attempted'}; official_supplemental_fetch=disabled`
-      await logSchedulerResult(env.KV, 'source-readiness-probe', {
-        status: 'running',
-        summary,
-        duration_ms: Date.now() - started,
-        details: readinessDetails(readiness),
-        run_date: twDate,
-      })
-      return summary
-    }
-  }
-
-  if (!readiness.ok && readiness.missingKeys.includes('official_supplemental_market_data')) {
-    try {
-      const { bulkFetchAndStoreChipData, bulkFetchAndStorePrices } = await import('./twseApi')
-      const controllerUrl = env.ML_CONTROLLER_URL ?? env.SHIOAJI_PROXY_URL
-      const [{ chipCount, marginCount }, priceCount] = await Promise.all([
-        bulkFetchAndStoreChipData(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
-        bulkFetchAndStorePrices(env.DB, twDate, controllerUrl, env.ML_CONTROLLER_SECRET),
-      ])
-      await fetchWave2Data(env, twDate).catch((e) => console.warn('[Wave2] readiness probe refresh failed:', e))
-      readiness = await checkEveningChainSourceReadiness(env, twDate)
-      readiness.summary = `${readiness.summary}; supplemental_probe_fetch price=${priceCount} chip=${chipCount} margin=${marginCount}`
-    } catch (e) {
-      if (!isBulkPriceSourceNotReady(e)) throw e
-      const summary = `running: ${readiness.summary}; supplemental_fetch_waiting=${e instanceof Error ? e.message : String(e)}`
-      await logSchedulerResult(env.KV, 'source-readiness-probe', {
-        status: 'running',
-        summary,
-        duration_ms: Date.now() - started,
-        details: readinessDetails(readiness),
-        run_date: twDate,
-      })
-      return summary
-    }
-  }
-
-  if (!readiness.ok) {
-    const summary = `running: ${readiness.summary}`
-    await logSchedulerResult(env.KV, 'source-readiness-probe', {
-      status: 'running',
-      summary,
-      duration_ms: Date.now() - started,
-      details: readinessDetails(readiness),
-      run_date: twDate,
-    })
-    return summary
-  }
-
-  const runId = `readiness-gated-${twDate}-${Date.now().toString(36)}`
-  await env.KV.put(`readiness-gated:evening-chain-triggered:${twDate}`, runId, { expirationTtl: 2 * 86400 })
-  await logSchedulerResult(env.KV, 'evening-chain', {
-    status: 'triggered',
-    summary: `readiness probe accepted for ${twDate}; full evening chain starting; ${readiness.summary}`,
-    duration_ms: 0,
-    details: readinessDetails(readiness),
-    run_id: runId,
-    run_date: twDate,
-  })
-  const continuation = await continueAfterFinLabBackfill(env, twDate, force, runId)
-  const summary = `triggered evening-chain: source readiness ready for ${twDate}; ${continuation}`
-  await logSchedulerResult(env.KV, 'source-readiness-probe', {
-    status: 'triggered',
-    summary,
-    duration_ms: Date.now() - started,
-    details: readinessDetails(readiness),
-    run_id: runId,
-    run_date: twDate,
-  })
-  await logSchedulerResult(env.KV, 'evening-chain', {
-    status: 'running',
-    summary: `readiness-gated evening chain started; ${summary}`,
-    duration_ms: 0,
-    details: readinessDetails(readiness),
-    run_id: runId,
-    run_date: twDate,
-  })
-  return summary
-}
-
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
   if (!force && await hasEveningChainSucceeded(env, twDate)) {
-    return `readiness-gated full chain already succeeded for ${twDate}; 22:00 fallback suppressed`
+    return `full evening chain already succeeded for ${twDate}; 21:00 root suppressed`
   }
   if (!force && await hasEveningChainInFlight(env, twDate)) {
-    const summary = `running: readiness-gated full chain already in flight for ${twDate}; 22:00 fallback suppressed`
+    const summary = `running: full evening chain already in flight for ${twDate}; 21:00 root suppressed`
     await logSchedulerResult(env.KV, 'evening-chain', {
       status: 'running',
       summary,
@@ -2379,11 +2077,11 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
   }
   const fallbackReadiness = await checkEveningChainSourceReadiness(env, twDate)
   if (fallbackReadiness.ok) {
-    const continuation = await continueAfterFinLabBackfill(env, twDate, force, `fallback-ready-${twDate}`)
-    return `triggered evening-chain: 22:00 fallback skipped FinLab refresh; source readiness already ready for ${twDate}; ${continuation}`
+    const continuation = await continueAfterFinLabBackfill(env, twDate, force, `evening-ready-${twDate}`)
+    return `triggered evening-chain: source readiness already ready for ${twDate}; ${continuation}`
   }
   if (!hasFinLabRefreshableMissing(fallbackReadiness)) {
-    const summary = `running: 22:00 fallback waiting at non-FinLab source-readiness gate; ${fallbackReadiness.summary}`
+    const summary = `running: 21:00 evening-chain waiting at non-FinLab source-readiness gate; ${fallbackReadiness.summary}`
     await logSchedulerResult(env.KV, 'evening-chain', {
       status: 'running',
       summary,
@@ -2395,7 +2093,7 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
   }
   const finlabLog = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
   if (!force && isFinLabQuotaLimitLog(finlabLog)) {
-    const summary = `running: 22:00 fallback skipped FinLab data.get refetch; quota_exhausted_no_refetch=${finlabLog?.summary ?? finlabLog?.error ?? 'quota limit'}; ${fallbackReadiness.summary}`
+    const summary = `running: 21:00 evening-chain skipped FinLab data.get refetch; quota_exhausted_no_refetch=${finlabLog?.summary ?? finlabLog?.error ?? 'quota limit'}; ${fallbackReadiness.summary}`
     await logSchedulerResult(env.KV, 'evening-chain', {
       status: 'running',
       summary,
@@ -2409,10 +2107,10 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
     allowFetchedLaneRefetch: force,
   })
   if (!refreshScope.lanes) {
-    const summary = `running: 22:00 fallback skipped FinLab data.get refetch; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}; ${fallbackReadiness.summary}`
+    const summary = `running: 21:00 evening-chain skipped FinLab data.get refetch; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}; ${fallbackReadiness.summary}`
     await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
       status: 'skipped',
-      summary: `22:00 fallback skipped FinLab data.get refetch; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}`,
+      summary: `21:00 evening-chain skipped FinLab data.get refetch; canonical_apply_pending_no_refetch${finLabRetryScopeSuffix(refreshScope)}`,
       duration_ms: 0,
       details: [...readinessDetails(fallbackReadiness), ...finLabRetryScopeDetails(refreshScope)],
       run_date: twDate,
@@ -2466,10 +2164,15 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
   return `triggered evening-chain: ${finlabSummary}; awaiting FinLab canonical callback`
 }
 
-export async function fetchWave2Data(env: Bindings, today: string): Promise<void> {
+export async function fetchWave2Data(
+  env: Bindings,
+  today: string,
+  options: { finLabMirror?: boolean } = {},
+): Promise<void> {
   const supplementalMode = officialSupplementalFetchMode(env)
   const forceOfficial = supplementalMode === 'always'
   const officialFallbackAllowed = supplementalMode !== 'disabled'
+  const useFinLabMirror = options.finLabMirror !== false
   const {
     fetchTwseValuation,
     fetchTpexValuation,
@@ -2483,67 +2186,70 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
   let finlabFinancialRows = 0
   let finlabValuationRows = 0
 
-  try {
-    const finlabBreadth = await syncMarketBreadthFromFinLabCanonical(env.DB, today)
-    if (finlabBreadth.sampleSize >= 1000) {
+  const fetchOfficialBreadth = async () => {
+    const breadth = await fetchMarketBreadth()
+    if (breadth) {
+      await env.DB.prepare(`
+        INSERT INTO market_breadth (date, advance_count, decline_count, unchanged_count, advance_ratio)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(date) DO UPDATE SET
+          advance_count=excluded.advance_count,
+          decline_count=excluded.decline_count,
+          unchanged_count=excluded.unchanged_count,
+          advance_ratio=excluded.advance_ratio
+      `).bind(
+        breadth.date,
+        breadth.advance_count,
+        breadth.decline_count,
+        breadth.unchanged_count,
+        breadth.advance_ratio,
+      ).run()
       console.log(
-        `[Wave2] FinLab market breadth: ${finlabBreadth.advanceCount}/${finlabBreadth.declineCount}/${finlabBreadth.unchangedCount} sample=${finlabBreadth.sampleSize}`,
+        `[Wave2] Official fallback market breadth: ${breadth.advance_count}/${breadth.decline_count}/${breadth.unchanged_count} (${(breadth.advance_ratio * 100).toFixed(0)}%)`,
       )
-    }
-    if ((forceOfficial || finlabBreadth.sampleSize < 1000) && officialFallbackAllowed) {
-      const breadth = await fetchMarketBreadth()
-      if (breadth) {
-        await env.DB.prepare(`
-          INSERT INTO market_breadth (date, advance_count, decline_count, unchanged_count, advance_ratio)
-          VALUES (?, ?, ?, ?, ?)
-          ON CONFLICT(date) DO UPDATE SET
-            advance_count=excluded.advance_count,
-            decline_count=excluded.decline_count,
-            unchanged_count=excluded.unchanged_count,
-            advance_ratio=excluded.advance_ratio
-        `).bind(
-          breadth.date,
-          breadth.advance_count,
-          breadth.decline_count,
-          breadth.unchanged_count,
-          breadth.advance_ratio,
-        ).run()
-        console.log(
-          `[Wave2] Official fallback market breadth: ${breadth.advance_count}/${breadth.decline_count}/${breadth.unchanged_count} (${(breadth.advance_ratio * 100).toFixed(0)}%)`,
-        )
-      }
-    }
-  } catch (e) {
-    console.warn('[Wave2] FinLab market breadth failed:', e)
-    if (officialFallbackAllowed) {
-      try {
-        const breadth = await fetchMarketBreadth()
-        if (breadth) {
-          await env.DB.prepare(`
-            INSERT INTO market_breadth (date, advance_count, decline_count, unchanged_count, advance_ratio)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(date) DO UPDATE SET
-              advance_count=excluded.advance_count,
-              decline_count=excluded.decline_count,
-              unchanged_count=excluded.unchanged_count,
-              advance_ratio=excluded.advance_ratio
-          `).bind(breadth.date, breadth.advance_count, breadth.decline_count, breadth.unchanged_count, breadth.advance_ratio).run()
-        }
-      } catch (fallbackError) {
-        console.warn('[Wave2] Official fallback market breadth failed:', fallbackError)
-      }
     }
   }
 
-  try {
-    const finlabFinancials = await syncLegacyFinancialsFromFinLabCanonical(env.DB, today)
-    finlabFinancialRows = finlabFinancials.financialRows
-    finlabValuationRows = finlabFinancials.valuationRows
-    console.log(
-      `[Wave2] FinLab financials mirror: facts=${finlabFinancialRows} valuation=${finlabValuationRows}`,
-    )
-  } catch (e) {
-    console.warn('[Wave2] FinLab financials mirror failed:', e)
+  if (useFinLabMirror) {
+    try {
+      const finlabBreadth = await syncMarketBreadthFromFinLabCanonical(env.DB, today)
+      if (finlabBreadth.sampleSize >= 1000) {
+        console.log(
+          `[Wave2] FinLab market breadth: ${finlabBreadth.advanceCount}/${finlabBreadth.declineCount}/${finlabBreadth.unchangedCount} sample=${finlabBreadth.sampleSize}`,
+        )
+      }
+      if ((forceOfficial || finlabBreadth.sampleSize < 1000) && officialFallbackAllowed) {
+        await fetchOfficialBreadth()
+      }
+    } catch (e) {
+      console.warn('[Wave2] FinLab market breadth failed:', e)
+      if (officialFallbackAllowed) {
+        try {
+          await fetchOfficialBreadth()
+        } catch (fallbackError) {
+          console.warn('[Wave2] Official fallback market breadth failed:', fallbackError)
+        }
+      }
+    }
+  } else if (officialFallbackAllowed) {
+    try {
+      await fetchOfficialBreadth()
+    } catch (fallbackError) {
+      console.warn('[Wave2] Official fallback market breadth failed:', fallbackError)
+    }
+  }
+
+  if (useFinLabMirror) {
+    try {
+      const finlabFinancials = await syncLegacyFinancialsFromFinLabCanonical(env.DB, today)
+      finlabFinancialRows = finlabFinancials.financialRows
+      finlabValuationRows = finlabFinancials.valuationRows
+      console.log(
+        `[Wave2] FinLab financials mirror: facts=${finlabFinancialRows} valuation=${finlabValuationRows}`,
+      )
+    } catch (e) {
+      console.warn('[Wave2] FinLab financials mirror failed:', e)
+    }
   }
 
   if (forceOfficial || (officialFallbackAllowed && finlabValuationRows === 0)) {
@@ -2597,7 +2303,7 @@ export async function fetchWave2Data(env: Bindings, today: string): Promise<void
 
   const day = parseInt(today.slice(8, 10), 10)
   let finlabRevenueRows = 0
-  if (day <= 12) {
+  if (useFinLabMirror && day <= 12) {
     try {
       finlabRevenueRows = await syncLegacyRevenueFromFinLabCanonical(env.DB, today)
       console.log(`[Wave2] FinLab monthly revenue mirror: rows=${finlabRevenueRows}`)
@@ -2775,27 +2481,10 @@ export async function processUpdateBatch(
           run_id: msg.runId,
           run_date: triggerTime,
         })
-        await scheduleSourceReadinessRecheck(env, triggerTime, attempt, message, msg.runId)
+        await scheduleSourceReadinessRetry(env, triggerTime, attempt, message)
         return
       }
       throw e
-    }
-    return
-  }
-
-  if (msg.type === 'source_readiness_recheck') {
-    const triggerTime = msg.triggerTime
-    const attempt = Number.isFinite(msg.attempt) ? Number(msg.attempt) : 1
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
-      console.log(`[Queue] Invalid source readiness recheck date ${triggerTime}, skipping.`)
-      return
-    }
-
-    const summary = await runSourceReadinessProbe(env, Boolean(msg.force), triggerTime, {
-      ignoreEveningChainInFlight: true,
-    })
-    if (summary.trim().toLowerCase().startsWith('running:')) {
-      await scheduleSourceReadinessRecheck(env, triggerTime, attempt, summary, msg.runId)
     }
     return
   }

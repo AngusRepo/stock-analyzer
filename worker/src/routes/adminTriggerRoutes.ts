@@ -12,7 +12,6 @@ interface TriggerRouteDeps {
 const SYNC_REQUIRED_TASKS = new Set([
   'evening-chain',
   'market-close-refresh',
-  'source-readiness-probe',
   'update', 'pipeline', 'post-screener-pipeline',
   'intraday-rescore',
   'alpha-quality', 'sector-leaders', 'optuna-queue',
@@ -97,7 +96,6 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'pipeline',
       'evening-chain',
       'market-close-refresh',
-      'source-readiness-probe',
       'ml',
       'update',
       'ml-warmup',

@@ -438,7 +438,7 @@ function dailyKeyScopeJsonForLanes(lanes: string | undefined): string | undefine
 type FinLabBackfillRunOptions = {
   continueEveningChain?: boolean
   dailySourceRefresh?: boolean
-  callbackMode?: 'readiness_probe' | 'evening_chain'
+  callbackMode?: 'evening_chain'
   lanes?: string
   canonicalDatasets?: string
   keyScopeJson?: string

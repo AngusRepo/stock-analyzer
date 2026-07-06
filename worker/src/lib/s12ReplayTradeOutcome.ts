@@ -67,6 +67,7 @@ export interface S12ReplayBars {
 export interface S12HistoricalReplayRunOptions {
   symbols?: S12L0PassedSymbol[]
   limit?: number
+  offset?: number
   persist?: boolean
   loadBars?: (symbol: string, tradeDate: string) => Promise<S12ReplayBars>
 }
@@ -431,7 +432,8 @@ export async function runS12HistoricalReplayForDate(
   const l0 = options.symbols ?? await loadL0PassedSymbolsByHistoricalDate(env.DB, tradeDate)
   const requestedLimit = options.limit ?? (l0.length || 1)
   const limit = Math.max(1, Math.min(5000, Math.floor(Number(requestedLimit))))
-  const selected = l0.slice(0, limit)
+  const offset = Math.max(0, Math.floor(Number(options.offset ?? 0)))
+  const selected = l0.slice(offset, offset + limit)
   const outcomes: S12ReplayOutcome[] = []
   let persisted = 0
   for (const row of selected) {

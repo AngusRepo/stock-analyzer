@@ -251,6 +251,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const runDate = assertRunDate(requestedRunDate())
       const result = await runS12HistoricalReplayForDate(c.env, runDate, {
         limit: parseBoundedPositiveInt(c.req.query('limit'), 500, 5000),
+        offset: Math.max(0, parseBoundedPositiveInt(c.req.query('offset'), 0, 20000)),
         persist: c.req.query('dry_run') !== '1',
       })
       return [

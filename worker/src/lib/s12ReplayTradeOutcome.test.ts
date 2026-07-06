@@ -281,6 +281,18 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
   assert(summary.attempted === 2, 'runner should attempt supplied L0 symbols')
   assert(summary.skipped === 2, 'empty bars should produce skipped replay outcomes')
   assert(summary.persisted === 2 && writes === 2, 'runner should persist every replay outcome by default')
+
+  const offsetSummary = await runS12HistoricalReplayForDate(fakeEnv, '2026-07-02', {
+    symbols: [{ symbol: '1111' }, { symbol: '2222' }, { symbol: '3333' }],
+    offset: 1,
+    limit: 1,
+    persist: false,
+    loadBars: async (symbol) => {
+      assert(symbol === '2222', 'runner offset should select the requested L0 slice')
+      return { bars: [] }
+    },
+  })
+  assert(offsetSummary.attempted === 1 && offsetSummary.persisted === 0, 'runner should support dry-run offset slices')
 }
 
 void runHistoricalReplayRunnerTests().catch((error) => {

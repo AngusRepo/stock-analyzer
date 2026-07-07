@@ -246,6 +246,24 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     recommendation: () => deps.runDailyRecommendation(requestedRunDate()),
     'post-screener-pipeline': () => enqueuePostScreenerPipelineContinuation(c, requestedRunDate()),
     'strategy-learning': () => enqueueStrategyLearningMaterialization(c, requestedRunDate()),
+    'strategy-threshold-calibration': async () => {
+      const { runStrategyThresholdAutoCalibration } = await import('./strategyLearning')
+      const cadence = c.req.query('cadence') === 'monthly'
+        ? 'monthly'
+        : c.req.query('cadence') === 'daily_drift'
+          ? 'daily_drift'
+          : c.req.query('cadence') === 'regime_shift'
+            ? 'regime_shift'
+            : 'weekly'
+      const result = await runStrategyThresholdAutoCalibration(c.env.DB, {
+        runDate: requestedRunDate() ?? twToday(),
+        cadence,
+        startDate: c.req.query('start_date') || undefined,
+        endDate: c.req.query('end_date') || undefined,
+        dryRun: c.req.query('dry_run') === '1',
+      })
+      return result.summary
+    },
     's12-replay-backfill': async () => {
       const { runS12HistoricalReplayForDate } = await import('./s12ReplayTradeOutcome')
       const runDate = assertRunDate(requestedRunDate())

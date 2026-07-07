@@ -14,6 +14,20 @@ import {
   type StrategySpecStatus,
 } from './strategySpec'
 import { assertOwnerCanOwn } from './strategyOwnerFreeze'
+import {
+  applyStrategyThresholdCalibrationArtifacts,
+  buildStrategyThresholdAutoDecisions,
+  classifyStrategyThresholdCalibrationCoverage,
+  defaultStrategyThresholdCalibrationWindow,
+  ensureStrategyThresholdCalibrationTables,
+  listLatestApprovedStrategyThresholdCalibrations,
+  listStrategyThresholdCalibrationEvidenceRows,
+  persistStrategyThresholdAutoCalibrationResult,
+  summarizeStrategyThresholdCalibrationResult,
+  type StrategyThresholdAutoCalibrationOptions,
+  type StrategyThresholdAutoCalibrationResult,
+  type StrategyThresholdCalibrationCadence,
+} from './strategyThresholdCalibration'
 
 export const STRATEGY_LEARNING_VERSION = 'strategy-learning-v1'
 
@@ -325,6 +339,7 @@ export async function ensureStrategyLearningTables(db: D1Database): Promise<void
     await db.prepare(sql).run()
   }
   await ensureStrategyRegistryGovernanceColumns(db)
+  await ensureStrategyThresholdCalibrationTables(db)
 }
 
 async function ensureStrategyRegistryGovernanceColumns(db: D1Database): Promise<void> {
@@ -590,7 +605,9 @@ export async function listStrategySpecsForLearning(
   if (registrySpecs.length === 0) {
     throw new Error('strategy_spec_registry_empty_seed_required')
   }
-  const specs = registrySpecs.filter((spec) => spec.status !== 'retired')
+  const latestThresholdCalibrations = await listLatestApprovedStrategyThresholdCalibrations(db)
+  const calibratedSpecs = applyStrategyThresholdCalibrationArtifacts(registrySpecs, latestThresholdCalibrations)
+  const specs = calibratedSpecs.filter((spec) => spec.status !== 'retired')
   if (specs.length === 0) {
     throw new Error('strategy_spec_registry_no_runtime_specs_seed_required')
   }
@@ -1314,6 +1331,67 @@ export async function refreshStrategyAdaptivePolicyState(
   }
 }
 
+export async function runStrategyThresholdAutoCalibration(
+  db: D1Database,
+  options: Partial<StrategyThresholdAutoCalibrationOptions> & {
+    runDate: string
+    cadence?: StrategyThresholdCalibrationCadence
+    dryRun?: boolean
+  },
+): Promise<StrategyThresholdAutoCalibrationResult> {
+  await ensureStrategyLearningTables(db)
+  const cadence = options.cadence ?? 'weekly'
+  const window = defaultStrategyThresholdCalibrationWindow({
+    ...options,
+    runDate: options.runDate,
+    cadence,
+  })
+  const { specs } = await listStrategySpecsForLearning(db)
+  const coverage = classifyStrategyThresholdCalibrationCoverage(specs)
+  const evidenceRows = await listStrategyThresholdCalibrationEvidenceRows(db, {
+    startDate: window.startDate,
+    endDate: window.endDate,
+  })
+  const { guardrails, decisions } = buildStrategyThresholdAutoDecisions(specs, evidenceRows, {
+    ...options,
+    runDate: options.runDate,
+    cadence,
+    startDate: window.startDate,
+    endDate: window.endDate,
+  })
+  const runId = `strategy-threshold-${cadence}-${options.runDate}-${Date.now().toString(36)}`
+  const status: StrategyThresholdAutoCalibrationResult['status'] = decisions.length === 0
+    ? 'skipped'
+    : decisions.every((decision) => decision.status === 'approved')
+      ? 'success'
+      : 'partial'
+  const baseResult = {
+    runId,
+    runDate: options.runDate,
+    cadence,
+    status,
+    specsSeen: specs.filter((spec) => spec.status === 'active' || spec.status === 'candidate').length,
+    eligibleSpecs: coverage.eligible.length,
+    unsupportedSpecs: coverage.unsupported,
+    decisions,
+    guardrails,
+    summary: '',
+  }
+  const artifactsWritten = await persistStrategyThresholdAutoCalibrationResult(db, baseResult, {
+    dryRun: options.dryRun,
+    validationStart: window.startDate,
+    validationEnd: window.endDate,
+  })
+  const result: StrategyThresholdAutoCalibrationResult = {
+    ...baseResult,
+    mode: options.dryRun === false ? 'persisted' : 'dry_run',
+    artifactsWritten,
+    summary: '',
+  }
+  result.summary = summarizeStrategyThresholdCalibrationResult(result)
+  return result
+}
+
 export async function buildStrategyLearningSummary(
   db: D1Database,
   date: string,
@@ -1412,7 +1490,7 @@ export async function buildStrategyLearningSummary(
 export async function runStrategyLearningClosure(
   db: D1Database,
   date: string,
-  options: { persistPolicy?: boolean } = {},
+  options: { persistPolicy?: boolean; calibrateThresholds?: boolean; calibrationCadence?: StrategyThresholdCalibrationCadence } = {},
 ): Promise<string> {
   await ensureStrategyLearningTables(db)
   const seeded = await seedDefaultStrategySpecRegistry(db)
@@ -1425,6 +1503,13 @@ export async function runStrategyLearningClosure(
   const policy = options.persistPolicy === false
     ? null
     : await refreshStrategyAdaptivePolicyState(db, { date, dryRun: false })
+  const thresholdCalibration = options.calibrateThresholds === false
+    ? null
+    : await runStrategyThresholdAutoCalibration(db, {
+      runDate: date,
+      cadence: options.calibrationCadence ?? 'daily_drift',
+      dryRun: false,
+    })
   return [
     `seeded=${seeded.seeded}`,
     `spec_source=${decisions.spec_source}`,
@@ -1434,5 +1519,7 @@ export async function runStrategyLearningClosure(
     `reward_rows=${rewards.persisted_rows}`,
     `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
     `policy_eligible=${policy ? policy.policy_state.evidence.eligible_strategy_count : 'n/a'}`,
+    `threshold_calibration=${thresholdCalibration ? thresholdCalibration.status : 'skipped'}`,
+    `threshold_artifacts=${thresholdCalibration ? thresholdCalibration.artifactsWritten : 0}`,
   ].join(' ')
 }

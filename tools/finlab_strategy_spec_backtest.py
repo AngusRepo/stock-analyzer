@@ -162,6 +162,8 @@ RUNTIME_RANK_FEATURES = {
     "tech_roc_10": ("finlabCsTechRoc10Rank", 1.0),
     "tech_gap_down": ("finlabCsTechGapDownRank", 1.0),
     "vola_cv_90d": ("finlabCsVolaCv90dLowRank", -1.0),
+    "vwap_bias": ("finlabCsVwapBiasRank", 1.0),
+    "vwap_bias_5d": ("finlabCsVwapBias5dRank", 1.0),
     "brokerNetAmount5d": ("finlabCsBrokerNetAmount5dRank", 1.0),
     "nonCurrentAssets": ("finlabCsNonCurrentAssetsRank", 1.0),
     "cashAndCashEquivalentsIncreaseDecrease": ("finlabCsCashAndCashEquivalentsIncreaseDecreaseRank", 1.0),
@@ -515,6 +517,10 @@ def _technical_features(close: pd.DataFrame, high: pd.DataFrame, low: pd.DataFra
     volume_momentum_divergence = volume_diff - volume_diff.rolling(10).mean()
     high_low = high - low
     open_ = open_proxy(close)
+    typical_price = (high + low + close) / 3.0
+    vwap_bias = _safe_div(close, typical_price) - 1.0
+    vwap_5d = _safe_div((typical_price * volume).rolling(5).sum(), volume.rolling(5).sum())
+    vwap_bias_5d = _safe_div(close, vwap_5d) - 1.0
     candle_body_low = open_.where(open_ <= close, close)
     up = (close > close.shift(1)).astype(float)
     down = (close < close.shift(1)).astype(float)
@@ -552,6 +558,9 @@ def _technical_features(close: pd.DataFrame, high: pd.DataFrame, low: pd.DataFra
         "tech_roc_10": close / close.shift(10).replace(0, np.nan) - 1.0,
         "tech_gap_down": (high < low.shift()).astype(float),
         "vola_cv_90d": close.rolling(90).std() / close.rolling(90).mean().replace(0, np.nan),
+        "vwap_bias": vwap_bias,
+        "vwap_5d": vwap_5d,
+        "vwap_bias_5d": vwap_bias_5d,
         "return20d": return20d,
         "return60d": return60d,
         "rsi14": _rsi(close),
@@ -1184,6 +1193,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "broker": "finlab etl:broker_transactions top15_buy/top15_sell/balance_index proxy; full broker_transactions was not used",
             "sector_flow": "reconstructed from FinLab security_categories + OHLCV relative strength proxy",
             "smc": "reconstructed OHLCV price-action proxy; not a byte-identical production SMC replay",
+            "vwap": "daily OHLCV proxy: typical-price VWAP bias and 5d volume-weighted typical price; not intraday VWAP",
             "alpha_miner": alpha_miner_feature_mapping,
         },
         "results": results,

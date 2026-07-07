@@ -74,16 +74,23 @@ assert(
 )
 assert(
   normalizationBlock.includes('zScoreKey') &&
-  normalizationBlock.includes('winsorizedKey') &&
-  normalizationBlock.includes('sectorNeutralRankKey') &&
+    normalizationBlock.includes('winsorizedKey') &&
+    normalizationBlock.includes('sectorNeutralRankKey') &&
   normalizationBlock.includes('finlabInverseVolatilityWeight') &&
   normalizationBlock.includes('finlabIndustryCapWeight') &&
   normalizationBlock.includes('finlabTurnoverControlWeight'),
   'FinLab-style normalization should expose z-score, winsorized, sector-neutral, inverse-vol, industry-cap, and turnover-control evidence',
 )
 assert(
+  source.includes("rawField: 'vwapBias'") &&
+    source.includes("rawField: 'vwapBias5d'") &&
+    source.includes('vwap_bias') &&
+    source.includes('vwap_bias_5d'),
+  'daily VWAP should be materialized as raw evidence and normalized ranks without touching intraday execution gates',
+)
+assert(
   normalizationBlock.includes('finlabQualityCompositeRank') &&
-  normalizationBlock.includes('finlabValueCompositeRank') &&
+    normalizationBlock.includes('finlabValueCompositeRank') &&
   normalizationBlock.includes('finlabSectorQualityCompositeRank'),
   'FinLab-style normalization should expose quality/value/sector-relative composite evidence',
 )

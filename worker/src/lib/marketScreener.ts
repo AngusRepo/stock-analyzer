@@ -771,6 +771,9 @@ interface StrategyRawSignals extends StrategyRawFundamentalSignals {
   volaCv90d?: number | null
   bestOrderBlockStrength?: number | null
   bbBandwidthPct?: number | null
+  vwapBias?: number | null
+  vwap5d?: number | null
+  vwapBias5d?: number | null
   return5d?: number | null
   volumeExpansion20?: number | null
   return20d?: number | null
@@ -1287,6 +1290,14 @@ function deriveStrategyRawSignals(
   const latestOhlcv = indicatorRows[latestIndex]
   const previousOhlcv = latestIndex >= 1 ? indicatorRows[latestIndex - 1] : null
   const techGapDown = latestOhlcv && previousOhlcv ? (latestOhlcv.high < previousOhlcv.low ? 1 : 0) : null
+  const latestTypicalPrice = latestOhlcv ? (latestOhlcv.high + latestOhlcv.low + latestOhlcv.close) / 3 : null
+  const vwapBias = pctChange(close, latestTypicalPrice)
+  const vwapRows5d = indicatorRows.slice(-5)
+  const vwap5dDenominator = vwapRows5d.reduce((sum, row) => sum + Math.max(0, row.volume), 0)
+  const vwap5d = vwapRows5d.length >= 5 && vwap5dDenominator > 0
+    ? vwapRows5d.reduce((sum, row) => sum + (((row.high + row.low + row.close) / 3) * Math.max(0, row.volume)), 0) / vwap5dDenominator
+    : null
+  const vwapBias5d = pctChange(close, vwap5d)
   const last90Closes = closes.slice(-90)
   const volaCv90dMean = last90Closes.length >= 90 ? avg(last90Closes) : null
   const volaCv90d = volaCv90dMean != null && volaCv90dMean > 0 ? (stddev(last90Closes) ?? 0) / volaCv90dMean : null
@@ -1398,6 +1409,9 @@ function deriveStrategyRawSignals(
     volaCv90d,
     bestOrderBlockStrength: bestOrderBlock?.strength ?? null,
     bbBandwidthPct,
+    vwapBias,
+    vwap5d,
+    vwapBias5d,
     volumeExpansion20,
     return5d,
     return20d,
@@ -1454,6 +1468,11 @@ function deriveStrategyRawSignals(
       bbMid: technicals.bbMid,
       bbLower: technicals.bbLower,
       bbBandwidthPct,
+      vwapBias,
+      vwap_5d: vwap5d,
+      vwapBias5d,
+      vwap_bias: vwapBias,
+      vwap_bias_5d: vwapBias5d,
       bbPctB,
       atr14: technicals.atr14,
       plusDi14: technicals.plusDi14,
@@ -1500,6 +1519,12 @@ function deriveStrategyRawSignals(
       tech_roc_10: techRoc10,
       tech_gap_down: techGapDown,
       vola_cv_90d: volaCv90d,
+      vwap_bias: vwapBias,
+      vwap_5d: vwap5d,
+      vwap_bias_5d: vwapBias5d,
+      vwapBias,
+      vwap5d,
+      vwapBias5d,
       ma10_bias: ma10Bias,
       ma10Bias,
       return_5d: return5d,
@@ -1576,6 +1601,8 @@ const FINLAB_STYLE_NORMALIZATION_FIELDS: FinLabNormalizationField[] = [
   { rawField: 'techRoc10', signalKey: 'TechRoc10', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'techGapDown', signalKey: 'TechGapDown', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'volaCv90d', signalKey: 'VolaCv90dLow', direction: 'lower_is_better', sectorRank: false },
+  { rawField: 'vwapBias', signalKey: 'VwapBias', direction: 'higher_is_better', sectorRank: false },
+  { rawField: 'vwapBias5d', signalKey: 'VwapBias5d', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'brokerNetAmount5d', signalKey: 'BrokerNetAmount5d', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'bestOrderBlockStrength', signalKey: 'BestOrderBlockStrength', direction: 'higher_is_better', sectorRank: false },
   { rawField: 'bbBandwidthPct', signalKey: 'BbBandwidthPct', direction: 'higher_is_better', sectorRank: false },

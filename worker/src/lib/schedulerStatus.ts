@@ -68,6 +68,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'alpha-quality', name: 'Alpha Quality', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
   { id: 'weekly-optuna', name: 'Weekly Optuna', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
   { id: 'adaptive-meta-policy-replay', name: 'Adaptive Meta Policy Replay', schedule: 'Sunday 06:40', cron: '40 22 * * 6', group: 'weekly' },
+  { id: 'strategy-threshold-calibration', name: 'Strategy Threshold Calibration', schedule: 'Sunday 06:45', cron: '45 22 * * 6', group: 'weekly' },
   { id: 'linucb-multiplier-replay', name: 'LinUCB Multiplier Replay', schedule: 'Sunday 06:50', cron: '50 22 * * 6', group: 'weekly' },
   { id: 'l4-alpha-ev-refresh', name: 'L4 Alpha EV Refresh', schedule: 'Sunday 07:05', cron: '5 23 * * 6', group: 'weekly' },
   { id: 'weekly-drift-retrain', name: 'Weekly Drift Retrain', schedule: 'Manual, approval-gated shadow candidate', cron: 'manual confirm=weekly_drift', group: 'weekly' },

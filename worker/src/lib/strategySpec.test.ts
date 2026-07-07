@@ -465,6 +465,146 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 }
 
 {
+  const smrcVwapSpec: StrategySpec = {
+    id: 'smrc_vwap_reclaim_v1',
+    version: 'strategy-spec-v1',
+    name: 'SMRC VWAP daily reclaim',
+    status: 'candidate',
+    owner: 'strategy',
+    familyId: 'SMC_STRUCTURE_RECLAIM',
+    variantId: 'daily_smc_vwap_reclaim_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'candidate',
+    alphaBucket: 'breakout_vol_expansion',
+    supportedRegimes: ['bull', 'sideways', 'volatile'],
+    thesis: 'Daily SMC structure reclaim plus VWAP bias setup; intraday S12 remains the execution gate.',
+    thresholds: {
+      minPrice: 10,
+      minVolumeExpansion20: 0.6,
+      featureRefs: {
+        all: [
+          { featureRef: 'vwap_bias', signal: 'factorSignals.vwap_bias', op: '>=', value: -0.005 },
+          { featureRef: 'vwap_bias_5d', signal: 'factorSignals.vwap_bias_5d', op: '>=', value: -0.01 },
+          { featureRef: 'l1_smcNetScore', signal: 'technicalIndicators.smcNetScore', op: '>=', value: 0 },
+        ],
+        not: [
+          { featureRef: 'smcBiasBearish', signal: 'technicalIndicators.smcBiasBearish', op: '==', value: 1 },
+        ],
+        weightedScore: {
+          min: 0.58,
+          terms: [
+            { featureRef: 'vwap_bias', signal: 'factorSignals.finlabCsVwapBiasRank', weight: 0.28 },
+            { featureRef: 'vwap_bias_5d', signal: 'factorSignals.finlabCsVwapBias5dRank', weight: 0.22 },
+            { featureRef: 'l1_bestOrderBlockStrength', signal: 'factorSignals.finlabCsBestOrderBlockStrengthRank', weight: 0.25 },
+            { featureRef: 'l1_volumeExpansion20', signal: 'factorSignals.finlabCsVolumeExpansion20Rank', weight: 0.15 },
+            { featureRef: 'l1_smcBullishScore', signal: 'technicalIndicators.smcBullishScore', weight: 0.1 },
+          ],
+          calibration: {
+            schemaVersion: 'strategy-feature-ref-weighted-score-calibration-v1',
+            calibrationId: 'smrc_vwap_reclaim_v1:threshold-sensitivity:v20260707',
+            status: 'active',
+            method: 'threshold_sensitivity_backtest',
+            originalMin: 0.58,
+            calibratedMin: 0.74,
+            validationFold: { startDate: '2023-01-01', endDate: '2026-06-15' },
+            targetDailyMatches: 160,
+            observed: {
+              validationRows: 830,
+              validationCompleteFeatureRows: 830,
+              validationMatchesAtOriginalMin: 301,
+              validationMatchesAtCalibratedMin: 135,
+              holdoutDate: '2026-06-15',
+              holdoutMatchesAtCalibratedMin: 180,
+            },
+            sourceRefs: [
+              'data/strategy_calibrations/smrc_vwap_reclaim_v1_threshold_selection_20260707.json',
+              'output/finlab_strategy_backtests_smrc_vwap/finlab_strategy_spec_runtime1_20230101_20260615.csv',
+            ],
+            frozenAt: '2026-07-07T00:00:00Z',
+          },
+        },
+      },
+    },
+    candidatePolicy: {
+      poolQuota: 8,
+      costBudget: 12,
+      evidenceRequirements: ['daily_vwap_proxy', 'smc_structure_reclaim', 'finlab_strategy_spec_backtest'],
+      maxMlShare: 0.18,
+    },
+    riskNotes: ['Candidate only; daily VWAP setup must not override S12 intraday execution confirmation.'],
+    createdBy: 'p5_strategy_governance',
+  }
+
+  const matched = assessCandidateAgainstStrategySpecs({
+    symbol: '3034',
+    current_price: 85,
+    raw_signals: {
+      volumeExpansion20: 0.9,
+      factorSignals: {
+        vwap_bias: 0.004,
+        vwap_bias_5d: 0.018,
+        finlabCsVwapBiasRank: 0.9,
+        finlabCsVwapBias5dRank: 0.86,
+        finlabCsBestOrderBlockStrengthRank: 0.82,
+        finlabCsVolumeExpansion20Rank: 0.8,
+      },
+      technicalIndicators: {
+        smcBullishScore: 0.5,
+        smcNetScore: 0.06,
+        smcBiasBearish: 0,
+        bestOrderBlockStrength: 0.7,
+      },
+    },
+  }, [smrcVwapSpec])
+  assert(matched.matches.some((match) => match.specId === 'smrc_vwap_reclaim_v1'), 'SMRC VWAP daily strategy should match daily VWAP + SMC evidence')
+
+  const aboveOriginalBelowCalibration = assessCandidateAgainstStrategySpecs({
+    symbol: '3035',
+    current_price: 85,
+    raw_signals: {
+      volumeExpansion20: 0.9,
+      factorSignals: {
+        vwap_bias: 0.004,
+        vwap_bias_5d: 0.018,
+        finlabCsVwapBiasRank: 0.62,
+        finlabCsVwapBias5dRank: 0.62,
+        finlabCsBestOrderBlockStrengthRank: 0.62,
+        finlabCsVolumeExpansion20Rank: 0.62,
+      },
+      technicalIndicators: {
+        smcBullishScore: 0.62,
+        smcNetScore: 0.06,
+        smcBiasBearish: 0,
+        bestOrderBlockStrength: 0.7,
+      },
+    },
+  }, [smrcVwapSpec])
+  assert(
+    !aboveOriginalBelowCalibration.matches.length,
+    'SMRC VWAP daily strategy should use calibratedMin=0.74 instead of the original weightedScore.min=0.58',
+  )
+
+  const missingVwap = assessCandidateAgainstStrategySpecs({
+    symbol: '3034',
+    current_price: 85,
+    raw_signals: {
+      volumeExpansion20: 0.9,
+      technicalIndicators: {
+        stockTechS12Score: 2,
+        smcBullishScore: 0.08,
+        smcNetScore: 0.06,
+        smcBiasBearish: 0,
+      },
+    },
+  }, [smrcVwapSpec])
+  assert(!missingVwap.matches.length, 'SMRC VWAP daily strategy must fail closed when daily VWAP evidence is absent')
+  assert(
+    missingVwap.watchPoints.some((point) => point.includes('strategy_spec_missing_required_feature_refs:smrc_vwap_reclaim_v1')),
+    'SMRC VWAP daily strategy should report missing daily feature refs instead of falling through to intraday S12',
+  )
+}
+
+{
   const validation = validateStrategySpec({
     ...DEFAULT_STRATEGY_SPECS[0],
     thresholds: {

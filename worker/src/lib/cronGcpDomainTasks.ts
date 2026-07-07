@@ -15,6 +15,7 @@ import {
   summarizeWeeklyValidationChain,
 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
+import { runStrategyThresholdAutoCalibration } from './strategyLearning'
 
 interface GcpCronDeps {
   cron: string
@@ -69,6 +70,18 @@ export async function handleGcpDomainCron(deps: GcpCronDeps): Promise<boolean> {
 
   if (cron === '30 22 * * 6') {
     runWithLog('weekly-optuna', async () => runWeeklyOptunaResearch(env))
+    return true
+  }
+
+  if (cron === '45 22 * * 6') {
+    runWithLog('strategy-threshold-calibration', async () => {
+      const result = await runStrategyThresholdAutoCalibration(env.DB, {
+        runDate: twToday(),
+        cadence: 'weekly',
+        dryRun: false,
+      })
+      return result.summary
+    })
     return true
   }
 

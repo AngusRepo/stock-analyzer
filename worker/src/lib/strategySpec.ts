@@ -99,7 +99,7 @@ export interface StrategyFeatureRefWeightedScoreCalibration {
   schemaVersion: 'strategy-feature-ref-weighted-score-calibration-v1'
   calibrationId: string
   status: 'shadow' | 'candidate' | 'active'
-  method: 'validation_fold_top_after_base_gates'
+  method: 'validation_fold_top_after_base_gates' | 'threshold_sensitivity_backtest' | 'auto_threshold_guardrail'
   originalMin: number
   calibratedMin: number
   validationFold: {
@@ -143,6 +143,9 @@ export interface StrategyRawSignals {
   volumeExpansion20?: number | null
   return20d?: number | null
   return60d?: number | null
+  vwapBias?: number | null
+  vwap5d?: number | null
+  vwapBias5d?: number | null
   foreignNet5d?: number | null
   trustNet5d?: number | null
   dealerNet5d?: number | null
@@ -418,6 +421,8 @@ function scoreV2StorageRow(candidate: StrategyCandidateInput): ScoreV2StorageRow
 export function deriveStrategyRawSignals(candidate: StrategyCandidateInput): StrategyRawSignals {
   const raw = parseRecord(candidate.raw_signals)
   if (!raw) return {}
+  const rawTechnicalIndicators = parseRecord(raw.technicalIndicators)
+  const rawFactorSignals = parseRecord(raw.factorSignals)
   const base: StrategyRawSignals = {
     close: finiteNumber(raw.close),
     ma20: finiteNumber(raw.ma20),
@@ -429,6 +434,9 @@ export function deriveStrategyRawSignals(candidate: StrategyCandidateInput): Str
     volumeExpansion20: finiteNumber(raw.volumeExpansion20),
     return20d: finiteNumber(raw.return20d),
     return60d: finiteNumber(raw.return60d),
+    vwapBias: finiteNumber(raw.vwapBias ?? raw.vwap_bias ?? rawFactorSignals?.vwap_bias ?? rawTechnicalIndicators?.vwap_bias),
+    vwap5d: finiteNumber(raw.vwap5d ?? raw.vwap_5d ?? rawFactorSignals?.vwap_5d ?? rawTechnicalIndicators?.vwap_5d),
+    vwapBias5d: finiteNumber(raw.vwapBias5d ?? raw.vwap_bias_5d ?? rawFactorSignals?.vwap_bias_5d ?? rawTechnicalIndicators?.vwap_bias_5d),
     foreignNet5d: finiteNumber(raw.foreignNet5d),
     trustNet5d: finiteNumber(raw.trustNet5d),
     dealerNet5d: finiteNumber(raw.dealerNet5d),
@@ -452,7 +460,7 @@ export function deriveStrategyRawSignals(candidate: StrategyCandidateInput): Str
     source: cleanText(raw.source) || null,
   }
   const technicalIndicators = {
-    ...numberMap(raw.technicalIndicators),
+    ...numberMap(rawTechnicalIndicators),
     closeAboveMa20Pct: base.closeAboveMa20Pct ?? null,
     closeAboveMa60Pct: base.closeAboveMa60Pct ?? null,
     volumeExpansion20: base.volumeExpansion20 ?? null,
@@ -460,9 +468,14 @@ export function deriveStrategyRawSignals(candidate: StrategyCandidateInput): Str
     return5d: base.return5d ?? null,
     return20d: base.return20d ?? null,
     return60d: base.return60d ?? null,
+    vwapBias: base.vwapBias ?? null,
+    vwap_5d: base.vwap5d ?? null,
+    vwapBias5d: base.vwapBias5d ?? null,
+    vwap_bias: base.vwapBias ?? null,
+    vwap_bias_5d: base.vwapBias5d ?? null,
   }
   const factorSignals = {
-    ...numberMap(raw.factorSignals),
+    ...numberMap(rawFactorSignals),
     foreignTrustNet5d: base.foreignTrustNet5d ?? null,
     brokerNetShares5d: base.brokerNetShares5d ?? null,
     brokerNetAmount5d: base.brokerNetAmount5d ?? null,
@@ -470,6 +483,12 @@ export function deriveStrategyRawSignals(candidate: StrategyCandidateInput): Str
     ma10Bias: base.ma10Bias ?? null,
     return_5d: base.return5d ?? null,
     return5d: base.return5d ?? null,
+    vwap_bias: base.vwapBias ?? null,
+    vwap_5d: base.vwap5d ?? null,
+    vwap_bias_5d: base.vwapBias5d ?? null,
+    vwapBias: base.vwapBias ?? null,
+    vwap5d: base.vwap5d ?? null,
+    vwapBias5d: base.vwapBias5d ?? null,
     margin_balance: base.marginBalance ?? null,
     marginBalance: base.marginBalance ?? null,
     short_balance: base.shortBalance ?? null,
@@ -631,6 +650,11 @@ function featureRefValue(raw: StrategyRawSignals, term: StrategyFeatureRefTerm):
     l1_squeezeMomentum: ['technicalIndicators.squeezeMomentum'],
     l1_bbBandwidthPct: ['factorSignals.finlabCsBbBandwidthPctRank', 'technicalIndicators.bbBandwidthPct'],
     l1_bestOrderBlockStrength: ['factorSignals.finlabCsBestOrderBlockStrengthRank', 'technicalIndicators.bestOrderBlockStrength'],
+    l1_smcBullishScore: ['factorSignals.finlabCsSmcBullishScoreRank', 'technicalIndicators.smcBullishScore', 'factorSignals.smcBullishScore'],
+    l1_smcNetScore: ['factorSignals.finlabCsSmcNetScoreRank', 'technicalIndicators.smcNetScore', 'factorSignals.smcNetScore'],
+    vwap_bias: ['factorSignals.finlabCsVwapBiasRank', 'factorSignals.vwap_bias', 'technicalIndicators.vwap_bias', 'vwapBias'],
+    vwap_5d: ['factorSignals.vwap_5d', 'technicalIndicators.vwap_5d', 'vwap5d'],
+    vwap_bias_5d: ['factorSignals.finlabCsVwapBias5dRank', 'factorSignals.vwap_bias_5d', 'technicalIndicators.vwap_bias_5d', 'vwapBias5d'],
     vol_share_turnover_21d: ['factorSignals.finlabCsVolShareTurnover21dRank', 'factorSignals.vol_share_turnover_21d', 'factorSignals.volShareTurnover21d'],
     val_ep: ['pe', 'factorSignals.pe'],
     val_bp: ['pb', 'factorSignals.pb'],

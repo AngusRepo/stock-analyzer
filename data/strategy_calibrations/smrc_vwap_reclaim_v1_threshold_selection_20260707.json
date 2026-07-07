@@ -1,0 +1,126 @@
+{
+  "schema_version": "stockvision-strategy-threshold-selection-record-v1",
+  "strategy_id": "smrc_vwap_reclaim_v1",
+  "strategy_spec_version": "strategy-spec-v1",
+  "calibration_id": "smrc_vwap_reclaim_v1:threshold-sensitivity:v20260707",
+  "status": "active",
+  "allowed_use": "candidate_strategy_threshold_calibration",
+  "decision_effect": "calibrates featureRefs.weightedScore.effective_min only; does not promote strategy to active and does not alter S12/intraday execution",
+  "created_at": "2026-07-07T00:00:00Z",
+  "method": {
+    "name": "threshold_sensitivity_backtest",
+    "runner": "tools/finlab_strategy_spec_backtest.py",
+    "universe": "FinLab security_categories market in sii/otc and 4-digit common stocks",
+    "start_date": "2023-01-01",
+    "end_date": "2026-06-15",
+    "resample": "M",
+    "trade_at_price": "close",
+    "position_limit": 0.1,
+    "fee_ratio": 0.001425,
+    "tax_ratio": 0.003,
+    "feature_mapping": {
+      "smc": "daily OHLCV price-action proxy",
+      "vwap": "daily OHLCV typical-price VWAP proxy; not intraday VWAP"
+    }
+  },
+  "weighted_score": {
+    "original_min": 0.58,
+    "selected_calibrated_min": 0.74,
+    "target_daily_matches": 160,
+    "selection_rule": "Prefer the narrowest threshold that keeps monthly_sharpe >= 1.0, max_drawdown no worse than -18%, CAGR above the 0.58 baseline, and materially reduces average daily matches versus the 0.58 baseline.",
+    "terms": [
+      { "featureRef": "vwap_bias", "signal": "factorSignals.finlabCsVwapBiasRank", "weight": 0.28 },
+      { "featureRef": "vwap_bias_5d", "signal": "factorSignals.finlabCsVwapBias5dRank", "weight": 0.22 },
+      { "featureRef": "l1_bestOrderBlockStrength", "signal": "factorSignals.finlabCsBestOrderBlockStrengthRank", "weight": 0.25 },
+      { "featureRef": "l1_volumeExpansion20", "signal": "factorSignals.finlabCsVolumeExpansion20Rank", "weight": 0.15 },
+      { "featureRef": "l1_smcBullishScore", "signal": "technicalIndicators.smcBullishScore", "weight": 0.1 }
+    ]
+  },
+  "threshold_candidates": [
+    {
+      "min": 0.58,
+      "cagr": 0.16211527223610345,
+      "monthly_sharpe": 1.0754124252215325,
+      "max_drawdown": -0.14741039425027735,
+      "avg_n_stock": 296.3095238095238,
+      "trade_count": 12005,
+      "avg_daily_matches": 300.9385542168675,
+      "latest_matches": 372,
+      "median_trade_return": -0.005843694374999986
+    },
+    {
+      "min": 0.66,
+      "cagr": 0.15243102549320353,
+      "monthly_sharpe": 0.9876479448801068,
+      "max_drawdown": -0.16549831578165775,
+      "avg_n_stock": 213.26190476190476,
+      "trade_count": 8652,
+      "avg_daily_matches": 214.96626506024097,
+      "latest_matches": 266,
+      "median_trade_return": -0.009252230279999996
+    },
+    {
+      "min": 0.7,
+      "cagr": 0.16580225590656505,
+      "monthly_sharpe": 1.0385822291650773,
+      "max_drawdown": -0.16688394350672986,
+      "avg_n_stock": 172.8095238095238,
+      "trade_count": 7026,
+      "avg_daily_matches": 173.96024096385543,
+      "latest_matches": 219,
+      "median_trade_return": -0.010245864915652603
+    },
+    {
+      "min": 0.74,
+      "selected": true,
+      "cagr": 0.18029386666928127,
+      "monthly_sharpe": 1.063051710106194,
+      "max_drawdown": -0.1727571608642986,
+      "avg_n_stock": 134.9047619047619,
+      "trade_count": 5492,
+      "avg_daily_matches": 135.20361445783132,
+      "latest_matches": 180,
+      "median_trade_return": -0.012736897014027415
+    },
+    {
+      "min": 0.8,
+      "cagr": 0.17669513747001675,
+      "monthly_sharpe": 0.9131517182155412,
+      "max_drawdown": -0.24842438952564538,
+      "avg_n_stock": 80.28571428571429,
+      "trade_count": 3283,
+      "avg_daily_matches": 81.03493975903615,
+      "latest_matches": 96,
+      "median_trade_return": -0.015059524182450101,
+      "rejection_reason": "monthly_sharpe_below_1_and_drawdown_worse_than_18pct"
+    },
+    {
+      "min": 0.86,
+      "cagr": 0.19512225261726468,
+      "monthly_sharpe": 0.8103235398075816,
+      "max_drawdown": -0.3011727496954455,
+      "avg_n_stock": 35.214285714285715,
+      "trade_count": 1438,
+      "avg_daily_matches": 35.69759036144578,
+      "latest_matches": 47,
+      "median_trade_return": -0.01841348674497112,
+      "rejection_reason": "monthly_sharpe_below_1_and_drawdown_worse_than_18pct"
+    }
+  ],
+  "selected_threshold": {
+    "min": 0.74,
+    "reason": "Best balance among tested fixed thresholds: reduces average daily matches from 301 to 135 while improving CAGR versus 0.58 and keeping Sharpe above 1.0 and max drawdown within the -18% guardrail."
+  },
+  "runtime_contract": {
+    "strategy_status": "candidate",
+    "promotion_status": "candidate",
+    "intraday_gate": "unchanged",
+    "s12_dependency": "none"
+  },
+  "source_refs": [
+    "data/strategy_specs/smrc_vwap_reclaim_v1_candidate.json",
+    "worker/migration_strategy_registry_smrc_vwap_reclaim_2026_07_07.sql",
+    "tools/finlab_strategy_spec_backtest.py",
+    "output/finlab_strategy_backtests_smrc_vwap/finlab_strategy_spec_runtime1_20230101_20260615.csv"
+  ]
+}

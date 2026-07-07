@@ -2457,6 +2457,16 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     _require_trading_config_contract(cfg_result, "recommend")
     trading_cfg = cfg_result.config
     alpha_policy = trading_cfg.get("alphaFramework", {}) or trading_cfg.get("alpha_framework", {}) or {}
+    l4_alpha_ev_policy = (
+        trading_cfg.get("l4AlphaEv")
+        or trading_cfg.get("l4_alpha_ev")
+        or trading_cfg.get("alphaEvResolver")
+        or (trading_cfg.get("ensemble_v2", {}) or {}).get("l4AlphaEv")
+        or (trading_cfg.get("ensemble_v2", {}) or {}).get("l4_alpha_ev")
+    )
+    if isinstance(l4_alpha_ev_policy, dict):
+        alpha_policy = dict(alpha_policy) if isinstance(alpha_policy, dict) else {}
+        alpha_policy.setdefault("l4_alpha_ev", l4_alpha_ev_policy)
     screener_recs = state["screener_recs"]
     if not screener_recs:
         raise RuntimeError(

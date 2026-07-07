@@ -51,6 +51,7 @@ from services.similarity_evidence import (
     similarity_components,
     symbol_cluster_evidence,
 )
+from services.l4_alpha_ev_producer import materialize_l4_alpha_ev
 from services.l4_alpha_ev_resolver import extract_l4_alpha_ev
 from services.s12_trade_ev import extract_s12_trade_ev
 from services.timesfm_l175_sidecar import build_timesfm_l175_sidecar
@@ -1996,6 +1997,14 @@ def filter_and_score_recommendations(
                 row["trade_expected_return_source"] = s12_trade_ev.get("trade_expected_return_source")
         row["score_components"] = build_score_components(row, raw_score=total_score, alpha_policy=alpha_policy)
         row["score"] = row["score_components"]["finalScore"]
+        l4_alpha_ev = materialize_l4_alpha_ev(row, prediction=ml, policy=alpha_policy)
+        if isinstance(l4_alpha_ev, dict):
+            row["l4_alpha_ev"] = l4_alpha_ev
+            if isinstance(ml, dict):
+                ml["l4_alpha_ev"] = l4_alpha_ev
+                ev2 = ml.get("ensemble_v2") if isinstance(ml.get("ensemble_v2"), dict) else None
+                if ev2 is not None:
+                    ev2["l4_alpha_ev"] = l4_alpha_ev
         row["reason"] = build_reason({**reason_data, **row})
         final.append(row)
 

@@ -217,6 +217,33 @@ export async function runMonthlyOptunaResearch(env: Bindings, runDate?: string) 
   })
 }
 
+export async function runL4AlphaEvRefresh(env: Bindings, runDate?: string, cadence: 'weekly' | 'monthly' = 'weekly') {
+  requireController(env)
+
+  const resp = await controllerFetch(env, '/l4_alpha_ev/refresh', {
+    method: 'POST',
+    jsonBody: {
+      cadence,
+      end_date: runDate,
+      promote: true,
+      dry_run: false,
+      trigger_source: 'worker_scheduler',
+    },
+    timeoutMs: 120_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    throw new Error(`l4 alpha EV refresh HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
+  }
+  const data = text ? JSON.parse(text) as Record<string, any> : {}
+  const status = String(data.status ?? '').toLowerCase()
+  const summary = String(data.summary ?? `l4_alpha_ev_refresh status=${status || 'unknown'}`)
+  if (!['promoted', 'validated'].includes(status)) {
+    throw new Error(summary)
+  }
+  return summary
+}
+
 export async function runMonthlyStrategyMining(env: Bindings, runDate?: string) {
   requireController(env)
 

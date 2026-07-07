@@ -42,6 +42,7 @@ export {
   runWeeklyBacktest,
   runWeeklyBacktestResearchBundle,
   runWeeklyLifecycleCheck,
+  runL4AlphaEvRefresh,
   runWeeklyModelArtifactCandidateValidation,
   runMonthlyOptunaResearch,
   runMonthlyStrategyMining,

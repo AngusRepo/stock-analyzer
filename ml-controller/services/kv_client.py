@@ -17,6 +17,7 @@ import os
 import json
 import logging
 from typing import Any, Optional
+from urllib.parse import quote
 
 try:
     import httpx
@@ -49,9 +50,10 @@ def get(key: str, timeout: float = 30.0) -> Optional[str]:
     _check_env()
     if httpx is None:
         raise RuntimeError("KV request failed: httpx not installed")
+    encoded_key = quote(key, safe="")
     url = (
         f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
-        f"/storage/kv/namespaces/{CF_KV_NAMESPACE_ID}/values/{key}"
+        f"/storage/kv/namespaces/{CF_KV_NAMESPACE_ID}/values/{encoded_key}"
     )
     headers = {"Authorization": f"Bearer {CF_API_TOKEN}"}
     try:

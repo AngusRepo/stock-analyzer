@@ -75,7 +75,7 @@ def get_json(key: str, default: Any = None, timeout: float = 30.0) -> Any:
     if raw is None:
         return default
     try:
-        return json.loads(raw)
+        return json.loads(raw.lstrip("\ufeff"))
     except json.JSONDecodeError as e:
         logger.warning(f"[KV] Failed to parse JSON for {key}: {e}")
         return default

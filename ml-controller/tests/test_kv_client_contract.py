@@ -27,3 +27,9 @@ def test_kv_client_url_encodes_colon_scoped_keys(monkeypatch):
         "https://api.cloudflare.com/client/v4/accounts/account"
         "/storage/kv/namespaces/namespace/values/ml%3Aadaptive_params%3A2026-07-06"
     ]
+
+
+def test_kv_client_json_accepts_utf8_bom(monkeypatch):
+    monkeypatch.setattr(kv_client, "get", lambda *_args, **_kwargs: "\ufeff{\"ok\": true}")
+
+    assert kv_client.get_json("ml:adaptive_params:2026-07-06") == {"ok": True}

@@ -16,6 +16,7 @@ const adminTriggerWorkerDomainTasks = fs.readFileSync('src/lib/adminTriggerWorke
 const schedulerStatus = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
 const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const types = fs.readFileSync('src/types.ts', 'utf8')
+const observabilityPage = fs.readFileSync('../frontend/src/pages/ObservabilityPage.tsx', 'utf8')
 
 assert(
   manifest.jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.schedule === '0 13 * * 1-5' && job.query === 'sync=1'),
@@ -36,6 +37,7 @@ for (const source of [
   schedulerStatus,
   schedulerPolicy,
   types,
+  observabilityPage,
 ]) {
   assert(!source.includes('source-readiness-probe'), 'source-readiness-probe must not remain in Worker runtime paths')
   assert(!source.includes('source_readiness_recheck'), 'source_readiness_recheck queue path must be retired')

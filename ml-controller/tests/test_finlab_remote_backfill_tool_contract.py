@@ -702,6 +702,44 @@ def test_materialize_canonical_plan_applies_ready_datasets_and_marks_blocked(mon
     assert result["per_dataset"]["canonical_institutional_amount_daily"]["status"] == "materializer_blocked"
 
 
+def test_materialize_canonical_plan_caps_wide_fundamental_chunk_size(monkeypatch):
+    tool = _load_tool_module()
+    calls = []
+
+    def fake_materialize(_manifest, *, datasets, chunk_size, **_kwargs):
+        dataset = datasets[0]
+        calls.append((dataset, chunk_size))
+        return {
+            "statement_count": 1,
+            "row_counts": {dataset: 3},
+            "apply_result": {"total": 1, "success_count": 1, "error_count": 0, "changes_total": 3},
+        }
+
+    monkeypatch.setattr(tool, "materialize_canonical_to_d1", fake_materialize)
+    manifest = {
+        "run_id": "finlab-v4-daily-20260707-test",
+        "generated_at": "2026-07-07T13:00:00+00:00",
+        "artifact_root": "/tmp/finlab-test",
+    }
+
+    result = tool.materialize_canonical_plan_to_d1(
+        manifest,
+        start_date="2026-07-07",
+        end_date="2026-07-07",
+        datasets=["canonical_market_daily", "canonical_fundamental_features"],
+        source_key_blockers=[],
+        chunk_size=250,
+        dry_run=False,
+    )
+
+    assert calls == [
+        ("canonical_market_daily", 250),
+        ("canonical_fundamental_features", 50),
+    ]
+    assert result["per_dataset"]["canonical_fundamental_features"]["chunk_size"] == 50
+    assert result["per_dataset"]["canonical_market_daily"]["chunk_size"] == 250
+
+
 def test_materialize_canonical_plan_marks_all_blocked_without_throwing():
     tool = _load_tool_module()
     manifest = {

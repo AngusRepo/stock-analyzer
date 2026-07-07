@@ -3,6 +3,7 @@ import {
   DEFAULT_ADAPTIVE_PARAMS,
   getAdaptiveParams,
   invalidateAdaptiveCache,
+  setAdaptiveParams,
 } from './adaptiveConfig'
 
 class FakeKV {
@@ -14,6 +15,10 @@ class FakeKV {
     const raw = this.store.get(key)
     if (!raw) return null
     return mode === 'json' ? JSON.parse(raw) : raw
+  }
+
+  async put(key: string, value: string) {
+    this.store.set(key, value)
   }
 }
 
@@ -68,6 +73,24 @@ async function run(): Promise<void> {
     const params = await getAdaptiveParams(kv as unknown as KVNamespace)
     assert.equal(params.confidence_delta, 0.03)
     assert.equal(params.provenance.fallback, false)
+  }
+
+  {
+    invalidateAdaptiveCache()
+    const kv = new FakeKV()
+    await setAdaptiveParams(kv as unknown as KVNamespace, {
+      ...DEFAULT_ADAPTIVE_PARAMS,
+      confidence_delta: 0.07,
+      computed_at: '2026-07-07T23:05:00+08:00',
+      provenance: {
+        ...DEFAULT_ADAPTIVE_PARAMS.provenance,
+        source: 'ml-controller',
+        fallback: false,
+      },
+    }, { source: 'ml-controller', fallback: false })
+
+    assert.ok(kv.store.has('ml:adaptive_params'), 'adaptive params write path must persist the global KV key')
+    assert.ok(kv.store.has('ml:adaptive_params:2026-07-07'), 'adaptive params write path must also persist the computed-date scoped KV key')
   }
 }
 

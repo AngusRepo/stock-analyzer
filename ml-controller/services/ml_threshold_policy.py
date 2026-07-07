@@ -24,6 +24,7 @@ REQUIRED_VALIDATION_EVIDENCE = (
 )
 DELTA_CAP_MIN = 0.0
 DELTA_CAP_MAX = 0.10
+ADAPTIVE_OVERLAY_MAX_AGE_DAYS = int(os.getenv("ML_THRESHOLD_POLICY_ADAPTIVE_MAX_AGE_DAYS", "7"))
 
 
 class ThresholdPolicyError(RuntimeError):
@@ -227,13 +228,21 @@ def _validate_adaptive_asof(
     computed_dt = _adaptive_computed_date(adaptive_params)
     if computed_dt is None:
         raise ThresholdPolicyError("adaptive params computed_at missing for threshold policy")
-    if computed_dt != run_dt:
+    if computed_dt > run_dt:
         raise ThresholdPolicyError(
-            "adaptive params as-of mismatch for threshold policy: "
+            "adaptive params lookahead guard failed for threshold policy: "
             f"computed_at={computed_dt.isoformat()} run_date={run_dt.isoformat()}"
+        )
+    age_days = (run_dt - computed_dt).days
+    if age_days > ADAPTIVE_OVERLAY_MAX_AGE_DAYS:
+        raise ThresholdPolicyError(
+            "adaptive params stale for threshold policy: "
+            f"computed_at={computed_dt.isoformat()} run_date={run_dt.isoformat()} "
+            f"age_days={age_days} max_age_days={ADAPTIVE_OVERLAY_MAX_AGE_DAYS}"
         )
     return {
         "computed_at": computed_dt.isoformat(),
+        "age_days": age_days,
         "provenance": provenance,
     }
 
@@ -381,7 +390,21 @@ def _apply_overlay(
     run_dt: date,
     delta_cap: float,
 ) -> tuple[dict[str, float], dict[str, Any]]:
-    asof = _validate_adaptive_asof(adaptive_params, run_dt=run_dt)
+    try:
+        asof = _validate_adaptive_asof(adaptive_params, run_dt=run_dt)
+    except ThresholdPolicyError as exc:
+        computed_dt = _adaptive_computed_date(adaptive_params)
+        return dict(base), {
+            "status": "skipped",
+            "source": "adaptive_params_guard",
+            "reason": str(exc),
+            "raw_delta": 0.0,
+            "applied_delta": 0.0,
+            "delta_cap": round(abs(float(delta_cap or 0.0)), 4),
+            "computed_at": computed_dt.isoformat() if computed_dt else None,
+            "components": None,
+            "provenance": (adaptive_params or {}).get("provenance") if isinstance(adaptive_params, dict) else {},
+        }
     raw_delta, meta = _extract_adaptive_delta(adaptive_params)
     cap = abs(float(delta_cap or 0.0))
     applied = max(-cap, min(cap, raw_delta))
@@ -398,6 +421,7 @@ def _apply_overlay(
         "applied_delta": round(applied, 4),
         "delta_cap": round(cap, 4),
         "computed_at": asof["computed_at"],
+        "age_days": asof.get("age_days"),
         "components": meta.get("components"),
         "provenance": asof.get("provenance") or {},
     }

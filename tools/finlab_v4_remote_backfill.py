@@ -524,6 +524,22 @@ def controller_d1_batch_execute(
     }
 
 
+DATASET_D1_CHUNK_SIZE_CAPS = {
+    # Fundamental rows are much wider than price/chip rows. Keeping them at the
+    # default 250 can create ~1.8MB controller requests and exceed the Modal
+    # client timeout while Cloud Run eventually succeeds.
+    "canonical_fundamental_features": 50,
+}
+
+
+def canonical_dataset_chunk_size(dataset: str, default_chunk_size: int | None = None) -> int:
+    default = max(1, min(int(default_chunk_size or 250), 500))
+    cap = DATASET_D1_CHUNK_SIZE_CAPS.get(str(dataset or "").strip())
+    if cap is None:
+        return default
+    return max(1, min(default, int(cap)))
+
+
 def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
     return d1_request(sql, params).get("results") or []
 
@@ -3000,6 +3016,7 @@ def materialize_canonical_plan_to_d1(
         }
 
     for dataset in ready:
+        effective_chunk_size = canonical_dataset_chunk_size(dataset, chunk_size)
         try:
             result = materialize_canonical_to_d1(
                 manifest,
@@ -3007,7 +3024,7 @@ def materialize_canonical_plan_to_d1(
                 end_date=end_date,
                 datasets=[dataset],
                 limit_per_dataset=limit_per_dataset,
-                chunk_size=chunk_size,
+                chunk_size=effective_chunk_size,
                 dry_run=dry_run,
             )
             validate_canonical_apply_result(result, dry_run=dry_run)
@@ -3016,11 +3033,16 @@ def materialize_canonical_plan_to_d1(
                 totals[key] = int(totals.get(key) or 0) + int(apply_result.get(key) or 0)
             for name, count in (result.get("row_counts") or {}).items():
                 row_counts[str(name)] = int(count or 0)
-            per_dataset[dataset] = {"status": "ok", "result": result}
+            per_dataset[dataset] = {
+                "status": "ok",
+                "chunk_size": effective_chunk_size,
+                "result": result,
+            }
         except Exception as exc:
             failed.append(dataset)
             per_dataset[dataset] = {
                 "status": "materializer_failed",
+                "chunk_size": effective_chunk_size,
                 "error_code": type(exc).__name__,
                 "error_message": str(exc)[:500],
             }

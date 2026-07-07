@@ -128,6 +128,11 @@ function nowIso(): string {
   return new Date().toISOString()
 }
 
+function adaptiveParamsDateKey(params: Pick<AdaptiveParams, 'computed_at'>): string | null {
+  const date = String(params.computed_at ?? '').trim().slice(0, 10)
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${KV_KEY}:${date}` : null
+}
+
 export const DEFAULT_ADAPTIVE_PARAMS: AdaptiveParams = {
   confidence_delta: 0,
   position_pct_delta: 0,
@@ -394,7 +399,12 @@ export async function setAdaptiveParams(
   options: { source?: AdaptiveParamSource | string; fallback?: boolean } = {},
 ): Promise<void> {
   const normalized = normalizeAdaptiveParams(params, options)
-  await kv.put(KV_KEY, JSON.stringify(normalized))
+  const payload = JSON.stringify(normalized)
+  const scopedKey = adaptiveParamsDateKey(normalized)
+  await Promise.all([
+    kv.put(KV_KEY, payload),
+    scopedKey ? kv.put(scopedKey, payload) : Promise.resolve(),
+  ])
   const persisted = await kv.get(KV_KEY, 'json') as AdaptiveParams | null
   if (!persisted || typeof persisted !== 'object') {
     throw new Error(`adaptive params KV write verification failed: ${KV_KEY} missing after put`)

@@ -165,10 +165,10 @@ const READINESS_STAGES: Array<{
   {
     id: 'source-readiness',
     label: '資料就緒閘門',
-    owner: 'readiness probe',
-    detail: '檢查 primary canonical 與官方補件是否達到今日交易日。',
-    jobIds: ['source-readiness-probe', 'evening-chain'],
-    nextAction: '若未 ready，持續 polling；超時才標記 degraded。',
+    owner: 'evening chain',
+    detail: '由 evening chain 內建 source readiness retry 檢查 primary canonical 與官方補件。',
+    jobIds: ['evening-chain', 'finlab-v4-backfill', 'update'],
+    nextAction: '若未 ready，evening chain 會延遲重試；不再依賴獨立 probe job。',
   },
   {
     id: 'indicator-queue',
@@ -662,7 +662,7 @@ function schedulerDetailTone(detail: string): WorkstationTone {
 function schedulerReadinessDetails(job: SchedulerJob): string[] {
   const details = Array.isArray(job.details) ? job.details.filter(Boolean) : []
   if (!details.length) return []
-  const readinessJob = job.id === 'source-readiness-probe' || job.id === 'finlab-v4-backfill' || job.id === 'evening-chain' || job.id === 'update'
+  const readinessJob = job.id === 'finlab-v4-backfill' || job.id === 'evening-chain' || job.id === 'update'
   const hasCanonicalDetail = details.some((detail) => /canonical_|official_supplemental|finlab_|source_key|retry_keys|skipped_ok_keys|sentinel_keys|quota_blocked_keys|materialized_datasets|blocked_datasets/i.test(detail))
   if (!readinessJob && !hasCanonicalDetail) return []
   const keyLevel = details.filter((detail) => /source_key|retry_keys|skipped_ok_keys|sentinel_keys|quota_blocked_keys|materialized_datasets|blocked_datasets/i.test(detail))

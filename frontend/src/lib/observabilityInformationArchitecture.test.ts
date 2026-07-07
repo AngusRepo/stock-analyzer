@@ -28,6 +28,8 @@ assert(page.includes('Request {nextLevel} review'), 'GA panel should expose a cl
 assert(page.includes('Approve {pendingApprovalLevel}'), 'GA panel should expose a clickable pending GA approval action')
 assert(page.includes('Loading OBS evidence'), 'OBS should show a loading transition before rendering empty evidence frames')
 assert(page.includes('function SchedulerShortcutDeck'), 'OBS should keep the five compact scheduler shortcut cards')
+assert(!page.includes('source-readiness-probe'), 'OBS must not reference the retired source-readiness-probe scheduler id')
+assert(!page.includes("owner: 'readiness probe'"), 'OBS source readiness owner must be evening-chain retry, not the retired probe')
 assert(
   page.includes('<DataQualityCompactMatrix gates={gates} />\n          <SchedulerShortcutDeck jobs={jobs} schedulerApiError={schedulerApiError} />'),
   'OBS should place the five compact scheduler cards inside Source Gates / data readiness',

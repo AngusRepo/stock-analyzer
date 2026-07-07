@@ -82,15 +82,38 @@ def test_resolve_ml_threshold_policy_applies_bounded_overlay_and_provenance():
     assert resolved.evidence()["evidence_hash"]
 
 
-def test_resolve_ml_threshold_policy_rejects_stale_adaptive_params():
-    with pytest.raises(ThresholdPolicyError, match="as-of mismatch"):
-        resolve_ml_threshold_policy(
-            run_date="2026-07-04",
-            regime_contract={"alpha_regime": "bull", "regime_surface": {"bull_market": 1.0}},
-            ev2_cfg={},
-            adaptive_params=_adaptive("2026-07-03", delta=0.01),
-            policy_snapshot=_policy(),
-        )
+def test_resolve_ml_threshold_policy_accepts_recent_prior_day_adaptive_overlay():
+    resolved = resolve_ml_threshold_policy(
+        run_date="2026-07-04",
+        regime_contract={"alpha_regime": "bull", "regime_surface": {"bull_market": 1.0}},
+        ev2_cfg={},
+        adaptive_params=_adaptive("2026-07-03", delta=0.01),
+        policy_snapshot=_policy(),
+    )
+
+    assert resolved.thresholds["buyThreshold"] == 0.71
+    assert resolved.thresholds["sellThreshold"] == 0.29
+    assert resolved.adaptive_overlay["status"] == "applied"
+    assert resolved.adaptive_overlay["age_days"] == 1
+    assert resolved.adaptive_overlay["applied_delta"] == 0.01
+
+
+def test_resolve_ml_threshold_policy_skips_stale_adaptive_overlay_without_blocking_runtime():
+    policy = {**_policy(), "effective_from": "2026-07-07", "expires_at": "2026-07-14"}
+    resolved = resolve_ml_threshold_policy(
+        run_date="2026-07-07",
+        regime_contract={"alpha_regime": "bull", "regime_surface": {"bull_market": 1.0}},
+        ev2_cfg={},
+        adaptive_params=_adaptive("2026-06-26", delta=0.05),
+        policy_snapshot=policy,
+    )
+
+    assert resolved.thresholds["buyThreshold"] == 0.70
+    assert resolved.thresholds["sellThreshold"] == 0.30
+    assert resolved.adaptive_overlay["status"] == "skipped"
+    assert "adaptive params stale" in resolved.adaptive_overlay["reason"]
+    assert resolved.adaptive_overlay["computed_at"] == "2026-06-26"
+    assert resolved.adaptive_overlay["applied_delta"] == 0.0
 
 
 def test_resolve_ml_threshold_policy_rejects_candidate_runtime_status():
@@ -161,6 +184,28 @@ def test_payload_builder_prefers_run_date_scoped_adaptive_params(monkeypatch):
 
     assert params["confidence_delta"] == 0.04
     assert params["runtime_source_key"] == "ml:adaptive_params:2026-07-04"
+
+
+def test_payload_builder_prefers_recent_scoped_adaptive_params_before_stale_global(monkeypatch):
+    seen: list[str] = []
+
+    def fake_get_json(key, default=None, timeout=30.0):
+        seen.append(key)
+        if key == "ml:adaptive_params:2026-07-06":
+            return _adaptive("2026-07-06", delta=0.06)
+        if key == "ml:adaptive_params":
+            return _adaptive("2026-06-26", delta=0.01)
+        return default
+
+    monkeypatch.setattr(payload_builder.kv_client, "get_json", fake_get_json)
+    monkeypatch.setattr(payload_builder.kv_client, "get", lambda *_args, **_kwargs: None)
+
+    params = payload_builder.load_effective_adaptive_params(run_date="2026-07-07")
+
+    assert params["confidence_delta"] == 0.06
+    assert params["runtime_source_key"] == "ml:adaptive_params:2026-07-06"
+    assert seen[:2] == ["ml:adaptive_params:2026-07-07", "ml:adaptive_params:2026-07-06"]
+    assert "ml:adaptive_params" not in seen
 
 
 def test_policy_loader_prefers_run_date_scoped_snapshot():

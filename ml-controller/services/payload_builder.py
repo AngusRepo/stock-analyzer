@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import json
 from dataclasses import dataclass, field, asdict
+from datetime import date, timedelta
 from typing import Any, Optional
 
 from services import d1_client, kv_client
@@ -78,13 +79,34 @@ def _load_current_regime_label() -> str | None:
     return str(contract.get("alpha_regime") or contract.get("label") or "") or None
 
 
+ADAPTIVE_PARAMS_KV_KEY = "ml:adaptive_params"
+ADAPTIVE_PARAMS_LOOKBACK_DAYS = 7
+
+
+def _adaptive_param_key_candidates(run_date: str | None = None) -> list[str]:
+    keys: list[str] = []
+    if run_date:
+        try:
+            run_dt = date.fromisoformat(str(run_date)[:10])
+        except ValueError:
+            run_dt = None
+        if run_dt:
+            for offset in range(0, ADAPTIVE_PARAMS_LOOKBACK_DAYS + 1):
+                keys.append(f"{ADAPTIVE_PARAMS_KV_KEY}:{(run_dt - timedelta(days=offset)).isoformat()}")
+    keys.append(ADAPTIVE_PARAMS_KV_KEY)
+    return keys
+
+
 def load_effective_adaptive_params(run_date: str | None = None) -> dict:
     """Load KV adaptive params and resolve P8 regime overrides for ML runtime."""
-    scoped_key = f"ml:adaptive_params:{run_date}" if run_date else None
-    raw = kv_client.get_json(scoped_key, default=None) if scoped_key else None
-    source_key = scoped_key if isinstance(raw, dict) and raw else "ml:adaptive_params"
-    if not isinstance(raw, dict) or not raw:
-        raw = kv_client.get_json("ml:adaptive_params", default=None)
+    raw: dict | None = None
+    source_key = ADAPTIVE_PARAMS_KV_KEY
+    for key in _adaptive_param_key_candidates(run_date):
+        candidate = kv_client.get_json(key, default=None)
+        if isinstance(candidate, dict) and candidate:
+            raw = candidate
+            source_key = key
+            break
     if not isinstance(raw, dict) or not raw:
         raise RuntimeError(f"adaptive params missing: {source_key}")
     provenance = raw.get("provenance")

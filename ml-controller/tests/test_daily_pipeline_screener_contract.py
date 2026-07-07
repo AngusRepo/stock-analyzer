@@ -64,6 +64,14 @@ def test_pipeline_keeps_sector_flow_out_of_market_env_fanout():
     assert "D1_RETRYABLE_MARKERS" in source
 
 
+def test_pipeline_loads_run_date_scoped_adaptive_params_for_threshold_policy():
+    source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
+
+    assert "load_effective_adaptive_params" in source
+    assert "adaptive = load_effective_adaptive_params(run_date=run_date)" in source
+    assert '"[Pipeline V2] adaptive params loaded: source=%s computed_at=%s provenance_computed_at=%s"' in source
+
+
 def test_build_ml_universe_uses_tradable_screener_rows_without_watchlist():
     from services.payload_builder import build_ml_universe  # noqa: E402
 

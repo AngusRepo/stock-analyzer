@@ -33,6 +33,7 @@ from services.payload_builder import (
     DAILY_RECOMMENDATION_PIPELINE_COLUMNS,
     PredictPayload,
     load_market_env,
+    load_effective_adaptive_params,
     build_payloads,
     build_ml_universe,
 )
@@ -667,7 +668,16 @@ async def node_load_market_env(state: PipelineStateV2) -> dict:
     Load shared market data + adaptive_params + barrier_params + lifecycle_weights.
     """
     logger.info("[Pipeline V2] node_load_market_env")
-    market_env, adaptive, barrier, lifecycle, trading_cfg = await _load_market_env_with_backoff(state["run_date"])
+    run_date = state["run_date"]
+    market_env, _adaptive, barrier, lifecycle, trading_cfg = await _load_market_env_with_backoff(run_date)
+    adaptive = load_effective_adaptive_params(run_date=run_date)
+    adaptive_provenance = adaptive.get("provenance") if isinstance(adaptive, dict) else {}
+    logger.info(
+        "[Pipeline V2] adaptive params loaded: source=%s computed_at=%s provenance_computed_at=%s",
+        adaptive.get("runtime_source_key") if isinstance(adaptive, dict) else None,
+        adaptive.get("computed_at") if isinstance(adaptive, dict) else None,
+        adaptive_provenance.get("computed_at") if isinstance(adaptive_provenance, dict) else None,
+    )
     return {
         "market_env": _to_dict(market_env),
         "adaptive_params": adaptive,

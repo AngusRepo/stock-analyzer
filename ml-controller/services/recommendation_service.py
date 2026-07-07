@@ -4539,35 +4539,32 @@ def delete_filtered_recommendations(filtered_symbols: list[str], run_date: str) 
                      )
                      ELSE json_array('ml_filter:preserved_screener_seed_not_buy')
                    END,
-                   alpha_allocation = CASE
-                     WHEN json_valid(alpha_allocation) THEN json_set(
-                       alpha_allocation,
-                       '$.selected',
-                       0,
-                       '$.stale_selection_cleared_reason',
-                       'ml_filter_preserved_non_buy'
-                     )
-                     ELSE json_object(
-                       'engine',
-                       'sparse_tangent_inverse_risk',
-                       'allocation_method',
-                       'sparse_tangent_inverse_risk_final_allocation',
-                       'input_scope',
-                       'post_l3_5_evidence_fusion_candidates',
-                       'selection_policy',
-                       'positive_expected_edge_sparse_weights_no_forced_fill',
-                       'selected',
-                       0,
-                       'eligible_for_sparse',
-                       0,
-                       'selection_reason',
-                       'preserved_screener_seed_non_buy',
-                       'sparse_input_blocked_reason',
-                       'ml_filter_preserved_non_buy',
-                       'no_l3_allocation_reason',
-                       'ml_filtered_sell_or_no_signal_preserved_seed'
-                     )
-                   END
+                   alpha_allocation = json_object(
+                     'engine',
+                     'sparse_tangent_inverse_risk',
+                     'allocation_method',
+                     'sparse_tangent_inverse_risk_final_allocation',
+                     'input_scope',
+                     'post_l3_5_evidence_fusion_candidates',
+                     'selection_policy',
+                     'positive_expected_edge_sparse_weights_no_forced_fill',
+                     'selected',
+                     0,
+                     'eligible_for_sparse',
+                     0,
+                     'expected_return',
+                     0,
+                     'expected_return_source',
+                     'ml_filtered_sell_or_no_signal_preserved_seed',
+                     'selection_reason',
+                     'preserved_screener_seed_non_buy',
+                     'stale_selection_cleared_reason',
+                     'ml_filter_preserved_non_buy',
+                     'sparse_input_blocked_reason',
+                     'ml_filter_preserved_non_buy',
+                     'no_l3_allocation_reason',
+                     'ml_filtered_sell_or_no_signal_preserved_seed'
+                   )
              WHERE date = ? AND symbol = ?
             """.strip(),
             [run_date, sym],

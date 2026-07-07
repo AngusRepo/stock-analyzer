@@ -53,11 +53,13 @@ def test_filtered_recommendations_preserve_screener_seed_rows(monkeypatch):
         assert "UPDATE daily_recommendations" in sql
         assert "DELETE FROM daily_recommendations" not in sql
         assert "has_buy_signal = 0" in sql
-        assert "json_set(" in sql
         assert "json_object(" in sql
         assert "preserved_screener_seed_non_buy" in sql
         assert "ml_filtered_sell_or_no_signal_preserved_seed" in sql
-        assert "'$.selected'" in sql
+        assert "'expected_return_source'" in sql
+        assert "'selected'" in sql
+        assert "json_set(" not in sql
+        assert "'s12_trade_ev'" not in sql
         assert "ml_filter_preserved_non_buy" in sql
         assert "ml_filter:preserved_screener_seed_not_buy" in sql
         assert params[0] == "2026-06-08"

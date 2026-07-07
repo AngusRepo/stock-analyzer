@@ -42,6 +42,10 @@ export interface S12ReplayOutcome {
   assessment_maturity?: S12IntradayAssessment['maturity'] | null
   assessment_execution?: S12IntradayAssessment['execution'] | null
   assessment_sequence?: S12IntradayAssessment['sequence'] | null
+  market_segment?: string | null
+  alpha_bucket?: string | null
+  alpha_context?: Record<string, unknown> | null
+  alpha_allocation?: Record<string, unknown> | null
   replay_diagnostics?: Record<string, unknown> | null
 }
 
@@ -55,6 +59,10 @@ export interface S12ReplayInput {
   policy?: Partial<S12TimingPolicy> | null
   h4ReferenceDate?: string | null
   h4ReferenceClose?: number | null
+  marketSegment?: string | null
+  alphaBucket?: string | null
+  alphaContext?: Record<string, unknown> | null
+  alphaAllocation?: Record<string, unknown> | null
   replayDiagnostics?: Record<string, unknown> | null
 }
 
@@ -100,6 +108,9 @@ export interface S12L0PassedSymbol {
   score_after?: number | null
   rank?: number | null
   evidence?: string | null
+  market_segment?: string | null
+  alpha_context?: string | null
+  alpha_allocation?: string | null
 }
 
 const M15_MS = 15 * 60_000
@@ -113,6 +124,37 @@ function round(value: number | null, digits = 10): number | null {
   if (value == null || !Number.isFinite(value)) return null
   const scale = 10 ** digits
   return Math.round(value * scale) / scale
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value !== 'string' || !value.trim()) return null
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
+  } catch {
+    return null
+  }
+}
+
+function alphaBucketFromContext(context: Record<string, unknown> | null, allocation: Record<string, unknown> | null): string | null {
+  const raw = context?.edge_bucket ?? context?.bucket ?? allocation?.edge_bucket ?? allocation?.bucket ?? allocation?.alpha_bucket
+  const text = String(raw ?? '').trim()
+  return text || null
+}
+
+function alphaReplayMetadata(input: S12ReplayInput): Pick<
+  S12ReplayOutcome,
+  'market_segment' | 'alpha_bucket' | 'alpha_context' | 'alpha_allocation'
+> {
+  const alphaContext = parseJsonRecord(input.alphaContext)
+  const alphaAllocation = parseJsonRecord(input.alphaAllocation)
+  return {
+    market_segment: String(input.marketSegment ?? '').trim() || null,
+    alpha_bucket: String(input.alphaBucket ?? alphaBucketFromContext(alphaContext, alphaAllocation) ?? '').trim() || null,
+    alpha_context: alphaContext,
+    alpha_allocation: alphaAllocation,
+  }
 }
 
 function normalizeBars(bars: S12Bar[]): S12Bar[] {
@@ -224,6 +266,7 @@ function emptyOutcome(input: S12ReplayInput, status: S12ReplayOutcomeStatus, rea
     exit_reason: null,
     conservative_intrabar_order: 'stop_before_target',
     ...assessmentSnapshot(assessment),
+    ...alphaReplayMetadata(input),
     replay_diagnostics: input.replayDiagnostics ?? null,
   }
 }
@@ -379,6 +422,7 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
     exit_reason: exitReason,
     conservative_intrabar_order: 'stop_before_target',
     ...assessmentSnapshot(assessment),
+    ...alphaReplayMetadata(input),
     replay_diagnostics: input.replayDiagnostics ?? null,
   }
 }
@@ -410,13 +454,23 @@ export async function loadL0PassedSymbolsByHistoricalDate(
   `).bind(tradeDate).first<{ run_id: string }>()
   if (!run?.run_id) return []
   const { results } = await db.prepare(`
-    SELECT symbol, name, score_after, rank, evidence
-      FROM screener_funnel_items
-     WHERE run_id = ?
-       AND date = ?
-       AND stage = 'universe'
-       AND decision = 'pass'
-     ORDER BY COALESCE(rank, 999999), symbol
+    SELECT sfi.symbol,
+           sfi.name,
+           sfi.score_after,
+           sfi.rank,
+           sfi.evidence,
+           dr.market_segment,
+           dr.alpha_context,
+           dr.alpha_allocation
+      FROM screener_funnel_items sfi
+      LEFT JOIN daily_recommendations dr
+        ON dr.date = sfi.date
+       AND dr.symbol = sfi.symbol
+     WHERE sfi.run_id = ?
+       AND sfi.date = ?
+       AND sfi.stage = 'universe'
+       AND sfi.decision = 'pass'
+     ORDER BY COALESCE(sfi.rank, 999999), sfi.symbol
   `).bind(run.run_id, tradeDate).all<S12L0PassedSymbol>()
   return (results ?? []).map((row) => ({
     symbol: String(row.symbol ?? '').trim(),
@@ -424,6 +478,9 @@ export async function loadL0PassedSymbolsByHistoricalDate(
     score_after: row.score_after ?? null,
     rank: row.rank ?? null,
     evidence: row.evidence ?? null,
+    market_segment: row.market_segment ?? null,
+    alpha_context: row.alpha_context ?? null,
+    alpha_allocation: row.alpha_allocation ?? null,
   })).filter((row) => row.symbol)
 }
 
@@ -519,6 +576,9 @@ export async function runS12HistoricalReplayForDate(
       fallback4hBars: loaded.fallback4hBars,
       h4ReferenceDate: loaded.h4ReferenceDate,
       h4ReferenceClose: loaded.h4ReferenceClose,
+      marketSegment: row.market_segment ?? null,
+      alphaContext: parseJsonRecord(row.alpha_context),
+      alphaAllocation: parseJsonRecord(row.alpha_allocation),
       replayDiagnostics: loaded.diagnostics ?? null,
     })
     outcomes.push(outcome)

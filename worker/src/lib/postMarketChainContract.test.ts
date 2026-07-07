@@ -72,13 +72,20 @@ assert(
   'rolling IC refresh must receive the callback business date',
 )
 assert(
+  postMarketChain.includes("type: 's12_replay_backfill_chunk'") &&
+    postMarketChain.includes("'s12-replay-backfill', () => enqueueS12ReplayBackfillTask"),
+  'post-verify chain must enqueue S12 replay backfill after daily recommendations are available',
+)
+assert(
   postMarketChain.indexOf("runPostPipelineCallbackChain") < postMarketChain.indexOf("runPostVerifyCallbackChain"),
   'post-pipeline and post-verify chains must stay separate owners',
 )
 assert(
   postMarketChain.indexOf("'model-ic-tracker', () => runModelIcRollingRefresh") <
+    postMarketChain.indexOf("'s12-replay-backfill', () => enqueueS12ReplayBackfillTask") &&
+    postMarketChain.indexOf("'s12-replay-backfill', () => enqueueS12ReplayBackfillTask") <
     postMarketChain.indexOf("'paper-intraday-cache-clear', () => clearOpenPositionIntradayPriceCache"),
-  'post-verify chain must clear intraday price cache after model IC and before current-date report tasks',
+  'post-verify chain must enqueue S12 replay after model IC and before current-date report tasks',
 )
 assert(
   postMarketChain.indexOf("'paper-intraday-cache-clear', () => clearOpenPositionIntradayPriceCache") <
@@ -170,5 +177,6 @@ assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visibl
 assert(logger.includes("'linucb-reward-ledger'"), 'LinUCB reward ledger must be visible in scheduler/OBS logs')
 assert(logger.includes("'meta-learning-shadow'"), 'Neural shadow closure must be visible in scheduler/OBS logs')
 assert(logger.includes("'strategy-learning'"), 'Strategy learning closure must be visible in scheduler/OBS logs')
+assert(logger.includes("'s12-replay-backfill'"), 'S12 replay backfill must be visible in scheduler/OBS logs')
 assert(logger.includes("'paper-intraday-cache-clear'"), 'paper intraday cache cleanup must be visible in scheduler/OBS logs')
 assert(logger.includes("'paper-active-postmarket'"), 'paper-active postmarket must be visible in scheduler/OBS logs')

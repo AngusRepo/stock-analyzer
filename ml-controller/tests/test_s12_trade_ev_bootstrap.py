@@ -61,6 +61,19 @@ def test_load_s12_replay_trade_rows_enforces_strict_pre_run_date_query():
     assert "lower(COALESCE(p.trade_signal, '')) IN ('buy', 'strong_buy')" in captured["sql"]
     assert "p.forecast_data LIKE '%\"s12_trade_ev\"%'" in captured["sql"]
     assert captured["params"][0] == "2026-07-03"
+    assert captured["params"][1] == "2026-03-05"
+
+
+def test_load_s12_replay_trade_rows_caps_lookback_window():
+    starts: list[str] = []
+
+    def fake_query(_sql, params=None, **_kwargs):
+        starts.append(params[1])
+        return []
+
+    load_s12_replay_trade_rows(run_date="2026-07-03", lookback_days=365, query_fn=fake_query)
+
+    assert starts == ["2026-03-05", "2026-03-05"]
 
 
 def test_load_s12_replay_trade_rows_accepts_dedicated_replay_outcomes():
@@ -86,7 +99,13 @@ def test_load_s12_replay_trade_rows_accepts_dedicated_replay_outcomes():
                     "exit_reason": "tp1",
                     "sample_eligible": 1,
                     "source": "s12_intraday_structure_replay_v1",
-                    "detail_json": json.dumps({"conservative_intrabar_order": "stop_before_target"}),
+                    "detail_json": json.dumps({
+                        "conservative_intrabar_order": "stop_before_target",
+                        "market_segment": "LISTED",
+                        "alpha_bucket": "breakout_vol_expansion",
+                        "alpha_context": {"edge_bucket": "breakout_vol_expansion", "regime": "bull"},
+                        "alpha_allocation": {"bucket": "breakout_vol_expansion"},
+                    }),
                 }
             ]
         return []
@@ -98,6 +117,8 @@ def test_load_s12_replay_trade_rows_accepts_dedicated_replay_outcomes():
     assert rows[0]["symbol"] == "8091"
     assert rows[0]["prediction_date"] == "2026-07-02"
     assert rows[0]["market_segment"] == "TWSE"
+    assert rows[0]["alpha_context"]["edge_bucket"] == "breakout_vol_expansion"
+    assert json.loads(rows[0]["forecast_data"])["alpha_context"]["edge_bucket"] == "breakout_vol_expansion"
     assert rows[0]["trade_pnl_pct"] == pytest.approx(0.04)
     assert json.loads(rows[0]["forecast_data"])["s12_trade_ev"]["status"] == "loaded"
 

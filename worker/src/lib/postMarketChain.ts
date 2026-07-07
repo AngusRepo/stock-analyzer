@@ -189,6 +189,18 @@ async function enqueueStrategyLearningClosureTask(env: Bindings, ctx: ChainConte
   return `triggered strategy-learning queue run_date=${runDate} run_id=${runId}`
 }
 
+async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): Promise<string> {
+  const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const runId = ctx.upstreamRunId || `s12-replay-backfill-${runDate}-${Date.now()}`
+  await env.UPDATE_QUEUE.send({
+    type: 's12_replay_backfill_chunk',
+    cursor: 0,
+    triggerTime: runDate,
+    runId,
+  })
+  return `triggered s12 replay backfill queue run_date=${runDate} run_id=${runId}`
+}
+
 async function logChainSummary(
   env: Bindings,
   ctx: ChainContext,
@@ -240,6 +252,10 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
   const results: ChainedTask[] = []
 
   results.push(await logChainedTask(env, ctx, 'model-ic-tracker', () => runModelIcRollingRefresh(env, ctx.runDate)))
+  results.push(await logChainedTask(env, ctx, 's12-replay-backfill', () => enqueueS12ReplayBackfillTask(env, ctx), {
+    critical: false,
+    timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
+  }))
 
   if (isCurrentBusinessDate(ctx.runDate)) {
     results.push(await logChainedTask(env, ctx, 'paper-intraday-cache-clear', () => clearOpenPositionIntradayPriceCache(env), { critical: false }))

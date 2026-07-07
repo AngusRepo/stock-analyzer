@@ -15,6 +15,9 @@ from services.s12_trade_ev import build_s12_trade_ev_from_replay, build_s12_trad
 
 QueryFn = Callable[[str, list[Any] | None], list[dict[str, Any]]]
 
+S12_TRADE_EV_BOOTSTRAP_DEFAULT_LOOKBACK_DAYS = 120
+S12_TRADE_EV_BOOTSTRAP_MAX_LOOKBACK_DAYS = 120
+
 
 def _to_float(value: Any) -> float | None:
     try:
@@ -34,6 +37,38 @@ def _json_obj(value: Any) -> dict[str, Any]:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+def _with_alpha_replay_metadata(row: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
+    alpha_context = detail.get("alpha_context") if isinstance(detail.get("alpha_context"), dict) else {}
+    alpha_allocation = detail.get("alpha_allocation") if isinstance(detail.get("alpha_allocation"), dict) else {}
+    alpha_bucket = str(
+        detail.get("alpha_bucket")
+        or alpha_context.get("edge_bucket")
+        or alpha_context.get("bucket")
+        or alpha_allocation.get("edge_bucket")
+        or alpha_allocation.get("bucket")
+        or alpha_allocation.get("alpha_bucket")
+        or ""
+    ).strip()
+    if not alpha_context and alpha_bucket:
+        alpha_context = {"edge_bucket": alpha_bucket}
+    if alpha_context:
+        row["alpha_context"] = alpha_context
+    if alpha_allocation:
+        row["alpha_allocation"] = alpha_allocation
+
+    forecast_data = _json_obj(row.get("forecast_data"))
+    changed = False
+    if alpha_context and not isinstance(forecast_data.get("alpha_context"), dict):
+        forecast_data["alpha_context"] = alpha_context
+        changed = True
+    if alpha_allocation and not isinstance(forecast_data.get("alpha_allocation"), dict):
+        forecast_data["alpha_allocation"] = alpha_allocation
+        changed = True
+    if changed:
+        row["forecast_data"] = json.dumps(forecast_data, separators=(",", ":"))
+    return row
 
 
 def _first_number(*values: Any) -> float | None:
@@ -75,6 +110,18 @@ def _fallback_start_date(run_date: str, lookback_days: int) -> str:
     except ValueError:
         base = date.today()
     return (base - timedelta(days=max(1, int(lookback_days)))).isoformat()
+
+
+def _bounded_lookback_days(value: Any, max_days: Any | None = None) -> int:
+    try:
+        requested = int(value)
+    except (TypeError, ValueError):
+        requested = S12_TRADE_EV_BOOTSTRAP_DEFAULT_LOOKBACK_DAYS
+    try:
+        cap = int(max_days) if max_days is not None else S12_TRADE_EV_BOOTSTRAP_MAX_LOOKBACK_DAYS
+    except (TypeError, ValueError):
+        cap = S12_TRADE_EV_BOOTSTRAP_MAX_LOOKBACK_DAYS
+    return max(1, min(max(1, requested), max(1, cap)))
 
 
 def _symbol_from_row(row: dict[str, Any]) -> str:
@@ -674,14 +721,15 @@ def _score_v2_final_score(row: dict[str, Any]) -> float | None:
 def load_s12_replay_trade_rows(
     *,
     run_date: str,
-    lookback_days: int = 180,
+    lookback_days: int = S12_TRADE_EV_BOOTSTRAP_DEFAULT_LOOKBACK_DAYS,
     limit: int = 5000,
     query_fn: QueryFn | None = None,
 ) -> list[dict[str, Any]]:
     """Load historical verified S12-style trade outcomes strictly before run_date."""
 
     safe_limit = max(1, min(int(limit or 5000), 20000))
-    start_date = _fallback_start_date(run_date, lookback_days)
+    bounded_lookback = _bounded_lookback_days(lookback_days, os.getenv("S12_TRADE_EV_BOOTSTRAP_MAX_LOOKBACK_DAYS"))
+    start_date = _fallback_start_date(run_date, bounded_lookback)
     query = query_fn or d1_client.query
     dedicated_rows = _load_dedicated_s12_replay_trade_rows(
         run_date=run_date,
@@ -807,6 +855,7 @@ def _load_dedicated_s12_replay_trade_rows(
             if market:
                 converted["market"] = market
                 converted["market_segment"] = market
+            converted = _with_alpha_replay_metadata(converted, detail)
             out.append(converted)
     return out
 
@@ -858,7 +907,13 @@ class S12TradeEvBootstrapProvider:
     ) -> "S12TradeEvBootstrapProvider":
         rows = load_s12_replay_trade_rows(
             run_date=run_date,
-            lookback_days=int(lookback_days or os.getenv("S12_TRADE_EV_BOOTSTRAP_LOOKBACK_DAYS", "180")),
+            lookback_days=_bounded_lookback_days(
+                lookback_days if lookback_days is not None else os.getenv(
+                    "S12_TRADE_EV_BOOTSTRAP_LOOKBACK_DAYS",
+                    str(S12_TRADE_EV_BOOTSTRAP_DEFAULT_LOOKBACK_DAYS),
+                ),
+                os.getenv("S12_TRADE_EV_BOOTSTRAP_MAX_LOOKBACK_DAYS"),
+            ),
             limit=int(limit or os.getenv("S12_TRADE_EV_BOOTSTRAP_LIMIT", "5000")),
             query_fn=query_fn,
         )

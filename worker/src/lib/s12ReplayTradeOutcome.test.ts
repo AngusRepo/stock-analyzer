@@ -223,7 +223,16 @@ async function runAsyncTests(): Promise<void> {
               queries.push({ sql, params })
               return {
                 results: [
-                  { symbol: '8091', name: 'A', score_after: 88, rank: 1, evidence: '{}' },
+                  {
+                    symbol: '8091',
+                    name: 'A',
+                    score_after: 88,
+                    rank: 1,
+                    evidence: '{}',
+                    market_segment: 'LISTED',
+                    alpha_context: JSON.stringify({ edge_bucket: 'breakout_vol_expansion', regime: 'bull' }),
+                    alpha_allocation: JSON.stringify({ bucket: 'breakout_vol_expansion' }),
+                  },
                   { symbol: '', name: 'bad', score_after: 1, rank: 2, evidence: '{}' },
                 ],
               }
@@ -236,7 +245,10 @@ async function runAsyncTests(): Promise<void> {
   const rows = await loadL0PassedSymbolsByHistoricalDate(fakeDb, '2026-07-02')
   assert(rows.length === 1 && rows[0].symbol === '8091', 'L0 loader should return latest pass symbols only')
   assert(queries[0].sql.includes('FROM screener_funnel_runs'), 'L0 loader should use screener run source of truth')
-  assert(queries[1].sql.includes("stage = 'universe'"), 'L0 loader should read universe pass stage')
+  assert(queries[1].sql.includes('LEFT JOIN daily_recommendations'), 'L0 loader should enrich replay symbols with alpha metadata')
+  assert(queries[1].sql.includes("sfi.stage = 'universe'"), 'L0 loader should read universe pass stage')
+  assert(rows[0].market_segment === 'LISTED', 'L0 loader should preserve market segment metadata')
+  assert(String(rows[0].alpha_context).includes('breakout_vol_expansion'), 'L0 loader should preserve alpha context metadata')
 }
 
 void runAsyncTests().catch((error) => {
@@ -282,12 +294,18 @@ async function runPersistenceTests(): Promise<void> {
     exit_reason: 'tp1',
     conservative_intrabar_order: 'stop_before_target',
     assessment_detail: 'state=reaction_ready;equity_mutation_context=true;vwap_fast_acceptance=true',
+    market_segment: 'LISTED',
+    alpha_bucket: 'breakout_vol_expansion',
+    alpha_context: { edge_bucket: 'breakout_vol_expansion', regime: 'bull' },
+    alpha_allocation: { bucket: 'breakout_vol_expansion' },
     replay_diagnostics: { source: 'historical_asof' },
   })
   assert(binds.length === 1, 'persist should execute one upsert')
   assert(binds[0][0] === '8091' && binds[0][18] === 1, 'persist should bind symbol and sample_eligible')
   const detail = JSON.parse(String(binds[0][20])) as Record<string, unknown>
   assert(String(detail.assessment_detail).includes('equity_mutation_context=true'), 'persisted detail should retain SMCVWAP diagnostics')
+  assert(detail.alpha_bucket === 'breakout_vol_expansion', 'persisted detail should retain alpha bucket metadata')
+  assert((detail.alpha_context as Record<string, unknown>).edge_bucket === 'breakout_vol_expansion', 'persisted detail should retain alpha context metadata')
   assert((detail.replay_diagnostics as Record<string, unknown>).source === 'historical_asof', 'persisted detail should retain replay loader diagnostics')
 }
 
@@ -314,11 +332,21 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
     },
   } as any
   const summary = await runS12HistoricalReplayForDate(fakeEnv, '2026-07-02', {
-    symbols: [{ symbol: '8091' }, { symbol: '2330' }],
+    symbols: [
+      {
+        symbol: '8091',
+        market_segment: 'LISTED',
+        alpha_context: JSON.stringify({ edge_bucket: 'breakout_vol_expansion' }),
+        alpha_allocation: JSON.stringify({ bucket: 'breakout_vol_expansion' }),
+      },
+      { symbol: '2330' },
+    ],
     loadBars: async () => ({ bars: [] }),
   })
   assert(summary.schema_version === 's12-historical-replay-run-summary-v1', 'runner should return stable summary contract')
   assert(summary.attempted === 2, 'runner should attempt supplied L0 symbols')
+  assert(summary.outcomes[0].alpha_bucket === 'breakout_vol_expansion', 'runner should attach alpha bucket metadata to replay outcomes')
+  assert(summary.outcomes[0].market_segment === 'LISTED', 'runner should attach market segment metadata to replay outcomes')
   assert(summary.skipped === 2, 'empty bars should produce skipped replay outcomes')
   assert(summary.persisted === 2 && writes === 2, 'runner should persist every replay outcome by default')
 

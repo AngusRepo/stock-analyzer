@@ -28,6 +28,7 @@ const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
 const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
 const SOURCE_READINESS_FINLAB_REFRESH_COOLDOWN_SECONDS = 45 * 60
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
+const S12_REPLAY_QUEUE_CHUNK_SIZE = 250
 const FINLAB_CANONICAL_DAILY_CHECKS = [
   {
     key: 'canonical_market_daily:listed_otc',
@@ -2661,6 +2662,52 @@ export async function processUpdateBatch(
       return
     }
     await continuePostScreenerPipeline(env, deps, triggerTime, runId)
+    return
+  }
+
+  if (msg.type === 's12_replay_backfill_chunk') {
+    const triggerTime = msg.triggerTime
+    const runId = msg.runId || `s12-replay-backfill-${triggerTime}-${Date.now()}`
+    const offset = Math.max(0, Number.isFinite(msg.cursor) ? Number(msg.cursor) : 0)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid S12 replay backfill date ${triggerTime}, skipping.`)
+      return
+    }
+    const { runS12HistoricalReplayForDate } = await import('./s12ReplayTradeOutcome')
+    const result = await runS12HistoricalReplayForDate(env, triggerTime, {
+      limit: S12_REPLAY_QUEUE_CHUNK_SIZE,
+      offset,
+      persist: true,
+    })
+    const nextOffset = offset + Math.max(0, Number(result.attempted ?? 0))
+    const hasMore = nextOffset < Number(result.l0_symbols ?? 0) && Number(result.attempted ?? 0) > 0
+    const summary = [
+      `s12_replay_backfill date=${result.trade_date}`,
+      `offset=${offset}`,
+      `next_offset=${nextOffset}`,
+      `l0=${result.l0_symbols}`,
+      `attempted=${result.attempted}`,
+      `executed=${result.executed}`,
+      `setup_only=${result.setup_only}`,
+      `skipped=${result.skipped}`,
+      `persisted=${result.persisted}`,
+      hasMore ? 'queued_next=1' : 'complete=1',
+    ].join(' ')
+    await logSchedulerResult(env.KV, 's12-replay-backfill', {
+      status: hasMore ? 'running' : 'success',
+      summary,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: triggerTime,
+    }, env)
+    if (hasMore) {
+      await env.UPDATE_QUEUE.send({
+        type: 's12_replay_backfill_chunk',
+        cursor: nextOffset,
+        triggerTime,
+        runId,
+      })
+    }
     return
   }
 

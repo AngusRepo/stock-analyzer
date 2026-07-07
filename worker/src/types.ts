@@ -290,6 +290,7 @@ export interface UpdateQueueMsg {
     | 'source_readiness_retry'
     | 'finlab_backfill_complete'
     | 'strategy_learning_materialize'
+    | 's12_replay_backfill_chunk'
   newsStocks?: Array<{
     id: number
     symbol: string

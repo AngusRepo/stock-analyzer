@@ -50,6 +50,14 @@ assert.match(source, /confirmPhrase !== AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE/)
 const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 assert.match(triggerRoutes, /'audit-json-retention'/)
 
+const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+assert.match(updateOrchestrator, /S12_REPLAY_QUEUE_CHUNK_SIZE = 250/)
+assert.match(updateOrchestrator, /msg\.type === 's12_replay_backfill_chunk'/)
+assert.match(updateOrchestrator, /runS12HistoricalReplayForDate\(env, triggerTime/)
+assert.match(updateOrchestrator, /type: 's12_replay_backfill_chunk'/)
+assert.match(updateOrchestrator, /cursor: nextOffset/)
+assert.match(updateOrchestrator, /logSchedulerResult\(env\.KV, 's12-replay-backfill'/)
+
 const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 assert.match(schedulerPolicy, /'audit-json-retention'/)
 

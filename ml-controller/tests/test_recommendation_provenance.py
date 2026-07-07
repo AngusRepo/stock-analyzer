@@ -38,6 +38,7 @@ def _score_components(
     final_score: float = 60.0,
     chip_flow: float = 10.0,
     technical_structure: float = 12.0,
+    fundamental_quality: float = 0.0,
     ml_edge: float = 0.0,
 ) -> dict:
     return {
@@ -53,7 +54,7 @@ def _score_components(
             "mlEdge": ml_edge,
             "chipFlow": chip_flow,
             "technicalStructure": technical_structure,
-            "fundamentalQuality": 0.0,
+            "fundamentalQuality": fundamental_quality,
             "newsTheme": 0.0,
         },
         "total": final_score,
@@ -169,6 +170,24 @@ def _trade_ev(value: float, source: str = "s12_trade_ev_test") -> dict:
     return {
         "trade_expected_return_net_pct": value,
         "trade_expected_return_source": source,
+    }
+
+
+def _l4_alpha_ev(value: float, *, method: str = "stacked_meta_calibrator") -> dict:
+    return {
+        "schema_version": "l4-alpha-ev-v1",
+        "expected_return_owner": "l4_alpha_ev",
+        "expected_return_mean": value,
+        "expected_return_source": "l4_alpha_ev:stacked_meta_calibrator",
+        "promotion_state": "production_approved",
+        "validation_packet": {"decision": "PASS", "failed_gates": []},
+        "resolver_method": method,
+        "model_version": "l4-alpha-ev-20260707",
+        "feature_snapshot_version": "l4-alpha-features-v1",
+        "trained_until": "2026-07-06",
+        "horizon_days": 3,
+        "cost_model_bps": 18.0,
+        "feature_families": ["fundamental", "formal_ml", "chip", "technical", "regime", "s12_context"],
     }
 
 
@@ -1177,6 +1196,16 @@ def test_sparse_tangent_allocation_records_allocator_edge_resolver_without_heat_
         "trade_expected_return_net_pct": 0.0031,
         "trade_expected_return_source": "s12_structural_cold_start_ev",
         "sample_policy": "s12_structural_cold_start_no_replay",
+        "s12_structural_targets": {
+            "target_quality_state": "structure_targets",
+            "reward_confidence_multiplier": 1.0,
+            "structure_stop_source": "s12_structure_stop",
+        },
+        "candidate_s12_entry_context": {
+            "detail_available": True,
+            "vwap_fast_acceptance": True,
+            "state": "reaction_ready",
+        },
     }
     rows = [{
         "symbol": "6257",
@@ -1221,6 +1250,12 @@ def test_sparse_tangent_allocation_allows_positive_s12_cold_ev_below_static_min_
         "s12_structural_targets": {
             "target_quality_state": "structure_targets",
             "reward_confidence_multiplier": 1.0,
+            "structure_stop_source": "s12_structure_stop",
+        },
+        "candidate_s12_entry_context": {
+            "detail_available": True,
+            "vwap_fast_acceptance": True,
+            "state": "reaction_ready",
         },
     }
     rows = [{
@@ -1248,6 +1283,128 @@ def test_sparse_tangent_allocation_allows_positive_s12_cold_ev_below_static_min_
     assert allocation["promotion_conditional_admission"] is True
     assert allocation["promotion_static_min_expected_return"] == pytest.approx(0.005)
     assert allocation["allocator_edge_resolver"]["expected_return_owner"] == "s12_trade_ev"
+
+
+def test_sparse_tangent_allocation_blocks_weak_cold_ev_without_real_s12_structure():
+    payload = {
+        "schema_version": "s12-trade-ev-v1",
+        "status": "loaded",
+        "semantic": "trade_expected_return_not_5bar_close_forecast",
+        "trade_expected_return_net_pct": 0.0002534981,
+        "trade_expected_return_source": "s12_structural_cold_start_ev",
+        "sample_policy": "s12_structural_cold_start_no_replay",
+        "s12_structural_targets": {
+            "target_quality_state": "r_multiple_fallback_both",
+            "reward_confidence_multiplier": 0.65,
+            "target1_source": "s12_structure_exit_plan.r_multiple_fallback_1r",
+            "target2_source": "s12_structure_exit_plan.r_multiple_fallback_2r",
+            "structure_stop_source": "s12_structure_stop",
+        },
+        "candidate_s12_entry_context": {
+            "detail_available": False,
+        },
+        "replay_bootstrap": {
+            "bootstrap_scope": "market_segment_alpha_bucket",
+            "sampleCount": 178,
+            "minSamples": 30,
+            "sampleDateCount": 3,
+            "minSampleDates": 8,
+            "trade_expected_return_net_pct": -0.005258,
+            "expected_R": -0.365635,
+            "trade_expected_return_source": "s12_replay_trade_outcomes:market_segment_alpha_bucket_insufficient_sample_dates",
+        },
+    }
+    rows = [{
+        "symbol": "6781",
+        "chip_score": 38.7,
+        "tech_score": 21.5,
+        "confidence": 0.60,
+        "signal": "HOLD",
+        "has_buy_signal": 0,
+        "score": 63.9,
+        "s12_trade_ev": payload,
+        "market_heat_expected_return": 0.00493754,
+        "score_components": _score_components(
+            final_score=63.9,
+            chip_flow=24.2,
+            technical_structure=15.1,
+            fundamental_quality=14.4,
+            ml_edge=6.9,
+        ),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True, "promoteMinForecastPct": 0.0, "promoteMinMlEdge": 0.0},
+        alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    assert promoted[0]["signal"] == "HOLD"
+    assert promoted[0]["has_buy_signal"] == 0
+    assert promoted[0]["promotion_blocked_reason"] == "s12_cold_start_peer_replay_negative_or_zero"
+    assert allocation["selected"] is False
+    assert allocation["eligible_for_sparse"] is False
+    assert allocation["expected_return"] == pytest.approx(0.0002534981)
+    assert allocation["allocator_edge_resolver"]["conditional_admission_allowed"] is False
+    assert allocation["allocator_edge_resolver"]["conditional_admission_block_reason"] == (
+        "s12_cold_start_peer_replay_negative_or_zero"
+    )
+
+
+def test_sparse_tangent_allocation_allows_warmup_positive_peer_replay_to_support_cold_ev():
+    payload = {
+        "schema_version": "s12-trade-ev-v1",
+        "status": "loaded",
+        "semantic": "trade_expected_return_not_5bar_close_forecast",
+        "trade_expected_return_net_pct": 0.0031,
+        "trade_expected_return_source": "s12_structural_cold_start_ev",
+        "sample_policy": "s12_structural_cold_start_no_replay",
+        "s12_structural_targets": {
+            "target_quality_state": "r_multiple_fallback_both",
+            "reward_confidence_multiplier": 0.65,
+            "target1_source": "s12_structure_exit_plan.r_multiple_fallback_1r",
+            "target2_source": "s12_structure_exit_plan.r_multiple_fallback_2r",
+            "structure_stop_source": "s12_structure_stop",
+        },
+        "candidate_s12_entry_context": {
+            "detail_available": False,
+        },
+        "replay_bootstrap": {
+            "bootstrap_scope": "market_segment_alpha_bucket",
+            "sampleCount": 72,
+            "minSamples": 30,
+            "sampleDateCount": 3,
+            "minSampleDates": 8,
+            "trade_expected_return_net_pct": 0.0062,
+            "expected_R": 0.18,
+            "trade_expected_return_source": "s12_replay_trade_outcomes:market_segment_alpha_bucket_insufficient_sample_dates",
+        },
+    }
+    rows = [{
+        "symbol": "2330",
+        "chip_score": 24.0,
+        "tech_score": 22.0,
+        "confidence": 0.82,
+        "signal": "HOLD",
+        "has_buy_signal": 0,
+        "score": 82.0,
+        "s12_trade_ev": payload,
+        "market_heat_expected_return": 0.0088,
+        "score_components": _score_components(final_score=82.0, chip_flow=24.0, technical_structure=22.0, ml_edge=12.0),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True, "promoteMinForecastPct": 0.005, "promoteMinMlEdge": 0.0},
+        alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    assert promoted[0]["signal"] == "BUY"
+    assert allocation["promotion_conditional_admission"] is True
+    assert allocation["allocator_edge_resolver"]["conditional_admission_allowed"] is True
+    assert allocation["allocator_edge_resolver"]["conditional_admission_block_reason"] is None
 
 
 def test_sparse_tangent_allocation_does_not_accept_market_heat_as_expected_edge():
@@ -1284,6 +1441,121 @@ def test_sparse_tangent_allocation_does_not_accept_market_heat_as_expected_edge(
     assert allocation["market_heat_expected_return"] == pytest.approx(0.0042)
     assert allocation["positive_expected_edge"] is False
     assert allocation["selection_reason"] == "not_eligible_for_sparse_input"
+
+
+def test_sparse_tangent_allocation_accepts_validated_l4_alpha_ev_owner():
+    rows = [{
+        "symbol": "3661",
+        "chip_score": 22.0,
+        "tech_score": 23.0,
+        "confidence": 0.78,
+        "signal": "HOLD",
+        "has_buy_signal": 0,
+        "score": 82.0,
+        "l4_alpha_ev": _l4_alpha_ev(0.021),
+        "score_components": _score_components(
+            final_score=82.0,
+            chip_flow=22.0,
+            technical_structure=23.0,
+            fundamental_quality=18.0,
+            ml_edge=20.0,
+        ),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True, "promoteMinForecastPct": 0.005, "promoteMinMlEdge": 0.0},
+        alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    resolver = allocation["allocator_edge_resolver"]
+    assert promoted[0]["signal"] == "BUY"
+    assert allocation["expected_return"] == pytest.approx(0.021)
+    assert allocation["expected_return_source"] == "l4_alpha_ev:stacked_meta_calibrator"
+    assert allocation["expected_return_owner"] == "l4_alpha_ev"
+    assert allocation["l4_alpha_ev"]["validation_decision"] == "PASS"
+    assert allocation["s12_trade_ev"] is None
+    assert resolver["expected_return_owner"] == "l4_alpha_ev"
+    assert resolver["candidate_contract"] == "production_l4_alpha_ev_selection_expected_return"
+
+
+def test_sparse_tangent_allocation_blocks_unvalidated_l4_alpha_ev_payload():
+    payload = _l4_alpha_ev(0.021, method="empirical_bucket")
+    payload["promotion_state"] = "shadow_only"
+    payload["validation_packet"] = {"decision": "FAIL", "failed_gates": ["walk_forward"]}
+    rows = [{
+        "symbol": "3661",
+        "chip_score": 22.0,
+        "tech_score": 23.0,
+        "confidence": 0.78,
+        "signal": "HOLD",
+        "has_buy_signal": 0,
+        "score": 82.0,
+        "l4_alpha_ev": payload,
+        "score_components": _score_components(final_score=82.0, ml_edge=20.0),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True, "promoteMinForecastPct": 0.005, "promoteMinMlEdge": 0.0},
+        alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    assert promoted[0]["signal"] == "HOLD"
+    assert allocation["selected"] is False
+    assert allocation["expected_return"] == 0.0
+    assert allocation["expected_return_source"].endswith("_validation_failed_no_expected_return")
+    assert "validation_packet_not_pass" in allocation["l4_alpha_ev"]["blockers"]
+    assert "empirical_bucket_not_production_alpha_ev_owner" in allocation["l4_alpha_ev"]["blockers"]
+
+
+def test_sparse_tangent_allocation_prefers_l4_alpha_ev_over_s12_cold_fallback():
+    cold_payload = {
+        "schema_version": "s12-trade-ev-v1",
+        "status": "loaded",
+        "semantic": "trade_expected_return_not_5bar_close_forecast",
+        "trade_expected_return_net_pct": 0.0002534981,
+        "trade_expected_return_source": "s12_structural_cold_start_ev",
+        "sample_policy": "s12_structural_cold_start_no_replay",
+        "s12_structural_targets": {
+            "target_quality_state": "r_multiple_fallback_both",
+            "reward_confidence_multiplier": 0.65,
+        },
+        "candidate_s12_entry_context": {"detail_available": False},
+    }
+    rows = [{
+        "symbol": "6781",
+        "chip_score": 38.7,
+        "tech_score": 21.5,
+        "confidence": 0.60,
+        "signal": "HOLD",
+        "has_buy_signal": 0,
+        "score": 72.0,
+        "s12_trade_ev": cold_payload,
+        "l4_alpha_ev": _l4_alpha_ev(0.018),
+        "score_components": _score_components(
+            final_score=72.0,
+            chip_flow=24.2,
+            technical_structure=15.1,
+            fundamental_quality=14.4,
+            ml_edge=6.9,
+        ),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True, "promoteMinForecastPct": 0.005, "promoteMinMlEdge": 0.0},
+        alpha_policy=_sparse_policy(buy_signal_count=1, slate_size=1),
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    assert promoted[0]["signal"] == "BUY"
+    assert allocation["expected_return"] == pytest.approx(0.018)
+    assert allocation["expected_return_owner"] == "l4_alpha_ev"
+    assert allocation["allocator_edge_resolver"]["conditional_admission_block_reason"] is None
+    assert allocation["s12_trade_ev"] == cold_payload
 
 
 def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):

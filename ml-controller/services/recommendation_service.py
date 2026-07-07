@@ -51,6 +51,7 @@ from services.similarity_evidence import (
     similarity_components,
     symbol_cluster_evidence,
 )
+from services.l4_alpha_ev_resolver import extract_l4_alpha_ev
 from services.s12_trade_ev import extract_s12_trade_ev
 from services.timesfm_l175_sidecar import build_timesfm_l175_sidecar
 
@@ -487,6 +488,7 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
             "expected_return_owner": "missing",
             "trade_expected_return_net_pct": None,
             "trade_expected_return_source": "missing",
+            "l4_alpha_ev": None,
             "signal_source": "missing",
             "signal_raw": None,
         }
@@ -499,6 +501,13 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
         ev2 = ml.get("ensemble_v2") or {}
         if ev2.get("signal"):
             confidence = ev2.get("confidence") if ev2.get("confidence") is not None else legacy_conf
+            l4_alpha_ev = (
+                ev2.get("l4_alpha_ev")
+                or ev2.get("alpha_ev")
+                or ml.get("l4_alpha_ev")
+                or ml.get("alpha_ev")
+                or ml.get("alpha_ev_prediction")
+            )
             return {
                 "signal": ev2.get("signal"),
                 "confidence": confidence,
@@ -518,6 +527,7 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
                 "expected_return_owner": ev2.get("expected_return_owner") or "s12_trade_ev",
                 "trade_expected_return_net_pct": ev2.get("trade_expected_return_net_pct"),
                 "trade_expected_return_source": ev2.get("trade_expected_return_source") or "s12_trade_ev_missing",
+                "l4_alpha_ev": l4_alpha_ev,
                 "signal_source": ev2.get("signal_source") or "ensemble_v2",
                 "signal_raw": ev2.get("signal_raw") or legacy_signal,
             }
@@ -534,6 +544,7 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
         "expected_return_owner": "s12_trade_ev",
         "trade_expected_return_net_pct": None,
         "trade_expected_return_source": "s12_trade_ev_missing",
+        "l4_alpha_ev": ml.get("l4_alpha_ev") or ml.get("alpha_ev") or ml.get("alpha_ev_prediction"),
         "signal_source": "legacy",
         "signal_raw": legacy_signal,
     }
@@ -1887,6 +1898,7 @@ def filter_and_score_recommendations(
             "expected_return_source": eff_ml.get("expected_return_source"),
             "trade_expected_return_net_pct": eff_ml.get("trade_expected_return_net_pct"),
             "trade_expected_return_source": eff_ml.get("trade_expected_return_source"),
+            "l4_alpha_ev": eff_ml.get("l4_alpha_ev"),
             "ml_models_total": ml_models_total,
             "ml_models_up": ml_models_up,
             "ml_models_down": ml_models_down,
@@ -1933,6 +1945,7 @@ def filter_and_score_recommendations(
             "expected_return_owner": eff_ml.get("expected_return_owner"),
             "trade_expected_return_net_pct": eff_ml.get("trade_expected_return_net_pct"),
             "trade_expected_return_source": eff_ml.get("trade_expected_return_source"),
+            "l4_alpha_ev": eff_ml.get("l4_alpha_ev"),
             "dispersion_diagnostics": ml.get("dispersion_diagnostics") if isinstance(ml, dict) else None,
             "ml_vote_summary": ml_vote_summary,
             "ml_vote_summary_text": ml_vote_text,
@@ -2028,11 +2041,20 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict) -> bool:
         row["promotion_blocked_forecast_pct"] = forecast_pct
         row["promotion_blocked_forecast_pct_source"] = forecast_pct_source or expected_return_source
         row["promotion_blocked_expected_return_source"] = expected_return_source
-        row["promotion_blocked_expected_return_policy"] = "requires_s12_trade_ev_positive_expected_return"
+        row["promotion_blocked_expected_return_policy"] = (
+            "requires_validated_l4_alpha_ev_or_s12_trade_ev_positive_expected_return"
+        )
+        return False
+    resolver = row.get("_allocator_edge_resolver") if isinstance(row.get("_allocator_edge_resolver"), dict) else {}
+    cold_start_block_reason = str(resolver.get("conditional_admission_block_reason") or "").strip()
+    if cold_start_block_reason:
+        row["promotion_blocked_reason"] = cold_start_block_reason
+        row["promotion_blocked_expected_return"] = expected_return
+        row["promotion_blocked_expected_return_source"] = expected_return_source
+        row["promotion_blocked_expected_return_policy"] = "cold_start_requires_verified_s12_structure_before_l4_buy"
         return False
     min_forecast = float(ranking_config.get("promoteMinForecastPct", 0.0))
     if expected_return < min_forecast:
-        resolver = row.get("_allocator_edge_resolver") if isinstance(row.get("_allocator_edge_resolver"), dict) else {}
         if resolver.get("conditional_admission_allowed") is True and expected_return > 0:
             row["promotion_conditional_admission"] = True
             row["promotion_conditional_admission_policy"] = resolver.get("conditional_admission_policy")
@@ -2571,6 +2593,37 @@ def _expected_return_source_is_trade_ev(source: str) -> bool:
     return "trade_ev" in normalized or normalized.startswith("s12_") or normalized.startswith("paper_trade")
 
 
+def _expected_return_source_is_l4_alpha_ev(source: str, payload: dict[str, Any] | None = None) -> bool:
+    normalized = str(source or "").strip().lower()
+    owner = str((payload or {}).get("expected_return_owner") or (payload or {}).get("selection_alpha_owner") or "").lower()
+    if owner == "l4_alpha_ev":
+        return True
+    return normalized.startswith("l4_alpha_ev") or "l4_alpha_ev" in normalized
+
+
+def _s12_trade_ev_is_verified_symbol_owner(source: str, payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    normalized = str(source or payload.get("trade_expected_return_source") or "").strip().lower()
+    if normalized.startswith("s12_structural_cold_start_ev") or normalized.startswith("s12_structural_setup_cold_start_ev"):
+        return False
+    if normalized.endswith("_insufficient_samples") or normalized.endswith("_insufficient_sample_dates"):
+        return False
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in {"loaded", "verified"}:
+        return False
+    scope = str(
+        payload.get("bootstrap_scope")
+        or payload.get("replay_scope")
+        or payload.get("scope")
+        or ""
+    ).strip().lower()
+    if scope == "symbol":
+        return True
+    sample_policy = str(payload.get("sample_policy") or "").strip().lower()
+    return "verified_s12" in sample_policy and "symbol" in sample_policy
+
+
 def _forecast_source_not_trade_ev(source: str) -> str:
     normalized = str(source or "").strip()
     if not normalized:
@@ -2584,6 +2637,13 @@ def _forecast_source_not_trade_ev(source: str) -> str:
 
 def _canonical_expected_return_from_row(row: dict) -> tuple[float | None, str, dict[str, Any] | None]:
     trade_ev_value, trade_ev_source, trade_ev_payload = extract_s12_trade_ev(row)
+    if trade_ev_value is not None and _s12_trade_ev_is_verified_symbol_owner(trade_ev_source, trade_ev_payload):
+        return trade_ev_value, trade_ev_source, trade_ev_payload
+
+    alpha_ev_value, alpha_ev_source, alpha_ev_payload = extract_l4_alpha_ev(row)
+    if alpha_ev_value is not None:
+        return alpha_ev_value, alpha_ev_source, alpha_ev_payload
+
     if trade_ev_value is not None:
         return trade_ev_value, trade_ev_source, trade_ev_payload
 
@@ -2613,7 +2673,7 @@ def _canonical_expected_return_from_row(row: dict) -> tuple[float | None, str, d
             fd_ev2,
         ))
 
-    first_rejected_source: str | None = trade_ev_source
+    first_rejected_source: str | None = alpha_ev_source if alpha_ev_payload else trade_ev_source
     for raw_value, raw_source, owner, payload in candidates:
         source = str(raw_source or "").strip()
         if raw_value is None:
@@ -2628,10 +2688,12 @@ def _canonical_expected_return_from_row(row: dict) -> tuple[float | None, str, d
         if _expected_return_source_missing(source):
             return None, f"{source}_no_expected_return", payload
         effective_source = source or owner
+        if _expected_return_source_is_l4_alpha_ev(effective_source, payload):
+            return None, f"{effective_source}_requires_validated_l4_alpha_ev_payload_no_expected_return", payload
         if not _expected_return_source_is_trade_ev(effective_source):
             return None, _forecast_source_not_trade_ev(effective_source), payload
         return value, effective_source, payload
-    return None, first_rejected_source or "missing_expected_return_no_allocation_edge", trade_ev_payload
+    return None, first_rejected_source or "missing_expected_return_no_allocation_edge", alpha_ev_payload or trade_ev_payload
 
 
 def _expected_return_uncertainty_adjustment(row: dict, value: float) -> tuple[float, dict[str, Any] | None]:
@@ -2752,6 +2814,61 @@ def _allocator_edge_quality(
     }
 
 
+def _cold_start_admission_block_reason(
+    *,
+    payload: dict[str, Any],
+    source: str,
+    target_quality: dict[str, Any],
+) -> str | None:
+    cold_start_source = source.startswith("s12_structural_cold_start_ev") or source.startswith("s12_structural_setup_cold_start_ev")
+    if not cold_start_source:
+        return None
+    if payload.get("execution_ready") is False or str(payload.get("status") or "").strip().lower() == "setup_only":
+        return "s12_cold_start_execution_not_ready"
+    replay = payload.get("replay_bootstrap") if isinstance(payload.get("replay_bootstrap"), dict) else {}
+    replay_scope = str(replay.get("bootstrap_scope") or "").strip()
+    replay_samples = _float_or_none(replay.get("sampleCount")) or 0.0
+    replay_min_samples = _float_or_none(replay.get("minSamples")) or 30.0
+    replay_dates = _float_or_none(replay.get("sampleDateCount")) or 0.0
+    replay_warmup_min_dates = min(3.0, _float_or_none(replay.get("minSampleDates")) or 8.0)
+    replay_ev = _float_or_none(replay.get("trade_expected_return_net_pct"))
+    replay_r = _float_or_none(replay.get("expected_R"))
+    replay_has_warmup_breadth = (
+        replay_scope in {"symbol", "market_segment_alpha_bucket", "market_segment"}
+        and replay_samples >= replay_min_samples
+        and replay_dates >= replay_warmup_min_dates
+    )
+    replay_positive_support = (
+        replay_has_warmup_breadth
+        and replay_ev is not None
+        and replay_ev > 0
+        and (replay_r is None or replay_r > 0)
+    )
+    if replay_has_warmup_breadth and not replay_positive_support:
+        return "s12_cold_start_peer_replay_negative_or_zero"
+    if str(target_quality.get("target_quality_state") or "").strip() == "r_multiple_fallback_both":
+        if replay_positive_support:
+            return None
+        return "s12_cold_start_requires_real_structure_targets"
+    targets = payload.get("s12_structural_targets") if isinstance(payload.get("s12_structural_targets"), dict) else {}
+    if str(targets.get("structure_stop_source") or "").strip() == "missing_s12_structure_stop":
+        return "s12_cold_start_requires_real_structure_stop"
+    context = payload.get("candidate_s12_entry_context")
+    if not isinstance(context, dict):
+        context = payload.get("s12_entry_context")
+    if not isinstance(context, dict):
+        context = {}
+    has_entry_context = bool(context.get("detail_available")) or any(
+        context.get(key) is not None
+        for key in ("ready", "state", "entry_archetype", "vwap_fast_acceptance", "vwap_slow_context", "htf_hard_block")
+    )
+    if not has_entry_context:
+        if replay_positive_support:
+            return None
+        return "s12_cold_start_requires_s12_entry_context"
+    return None
+
+
 def _allocator_edge_resolver(
     row: dict,
     *,
@@ -2762,6 +2879,11 @@ def _allocator_edge_resolver(
 ) -> tuple[float, str, dict[str, Any]]:
     payload_dict = payload if isinstance(payload, dict) else {}
     source = str(expected_return_source or "").strip()
+    expected_return_owner = (
+        "l4_alpha_ev"
+        if _expected_return_source_is_l4_alpha_ev(source, payload_dict)
+        else "s12_trade_ev"
+    )
     target_quality = _allocator_target_quality(payload_dict)
     edge_quality = _allocator_edge_quality(
         row,
@@ -2770,29 +2892,44 @@ def _allocator_edge_resolver(
         target_quality=target_quality,
     )
     cold_start_source = source.startswith("s12_structural_cold_start_ev") or source.startswith("s12_structural_setup_cold_start_ev")
+    cold_start_block_reason = _cold_start_admission_block_reason(
+        payload=payload_dict,
+        source=source,
+        target_quality=target_quality,
+    ) if expected_return_owner == "s12_trade_ev" else None
     conditional_admission_allowed = (
+        expected_return_owner == "s12_trade_ev"
+        and
         cold_start_source
+        and cold_start_block_reason is None
         and expected_return > 0
         and edge_quality["allocator_edge_quality_score"] >= 60.0
         and market_heat_expected_return >= 0.003
     )
     evidence = {
         "schema_version": "allocator-edge-resolver-v1",
-        "expected_return_owner": "s12_trade_ev",
+        "expected_return_owner": expected_return_owner,
         "expected_return": round(float(expected_return), 10),
         "expected_return_source": source,
         "payload_status": payload_dict.get("status"),
         "payload_semantic": payload_dict.get("semantic"),
+        "selection_alpha_owner": payload_dict.get("selection_alpha_owner"),
+        "validation_decision": payload_dict.get("validation_decision"),
+        "approval_state": payload_dict.get("approval_state"),
+        "model_version": payload_dict.get("model_version"),
+        "feature_snapshot_version": payload_dict.get("feature_snapshot_version"),
+        "trained_until": payload_dict.get("trained_until"),
         "sample_policy": payload_dict.get("sample_policy"),
         "execution_ready": payload_dict.get("execution_ready"),
         "execution_gate_required": payload_dict.get("execution_gate_required"),
         "market_heat_expected_return": round(float(market_heat_expected_return), 10),
         "market_heat_role": "diagnostic_context_not_expected_return_owner",
-        "policy": "allocator_expected_edge_requires_s12_trade_ev",
+        "policy": "allocator_expected_edge_accepts_validated_l4_alpha_ev_or_s12_trade_ev",
         "adjustment_applied": False,
         "allocator_edge_quality_score": edge_quality["allocator_edge_quality_score"],
         "edge_quality": edge_quality,
         "s12_target_quality": target_quality,
+        "conditional_admission_block_reason": cold_start_block_reason,
         "conditional_admission_allowed": conditional_admission_allowed,
         "conditional_admission_policy": (
             "positive_s12_cold_ev_can_enter_allocator_when_quality_high_even_if_below_static_min"
@@ -2800,7 +2937,9 @@ def _allocator_edge_resolver(
             else "standard_static_min_gate"
         ),
     }
-    if source.startswith("s12_structural_setup_cold_start_ev"):
+    if expected_return_owner == "l4_alpha_ev":
+        evidence["candidate_contract"] = "production_l4_alpha_ev_selection_expected_return"
+    elif source.startswith("s12_structural_setup_cold_start_ev"):
         evidence["candidate_contract"] = "setup_ev_allowed_for_selection_execution_requires_s12_reaction_ready"
     elif source.startswith("s12_structural_cold_start_ev"):
         evidence["candidate_contract"] = "s12_structural_cold_start_ev_until_replay_samples_sufficient"
@@ -3220,6 +3359,11 @@ def _apply_sparse_tangent_buy_selection(
                 "expected_return_source": expected_return_source,
                 "expected_return_payload": row.get("_expected_return_payload"),
                 "allocator_edge_resolver": row.get("_allocator_edge_resolver"),
+                "expected_return_owner": (
+                    row.get("_allocator_edge_resolver", {}).get("expected_return_owner")
+                    if isinstance(row.get("_allocator_edge_resolver"), dict)
+                    else None
+                ),
                 "promotion_conditional_admission": row.get("promotion_conditional_admission"),
                 "promotion_conditional_admission_policy": row.get("promotion_conditional_admission_policy"),
                 "promotion_static_min_expected_return": row.get("promotion_static_min_expected_return"),
@@ -3429,11 +3573,26 @@ def _apply_sparse_tangent_buy_selection(
         )
         expected_return = _float_or_none(expected_return_raw) or 0.0
         risk_estimate = float((evidence or {}).get("risk_estimate") or 0.0)
-        s12_trade_ev_payload = (
+        expected_return_payload = (
             (evidence or {}).get("expected_return_payload")
             if isinstance((evidence or {}).get("expected_return_payload"), dict)
+            else row.get("_expected_return_payload") if isinstance(row.get("_expected_return_payload"), dict) else None
+        )
+        resolver = (
+            (evidence or {}).get("allocator_edge_resolver")
+            if isinstance((evidence or {}).get("allocator_edge_resolver"), dict)
+            else row.get("_allocator_edge_resolver")
+        )
+        expected_return_owner = str((resolver or {}).get("expected_return_owner") or "").strip()
+        l4_alpha_ev_payload = (
+            expected_return_payload
+            if expected_return_owner == "l4_alpha_ev"
+            or str((expected_return_payload or {}).get("expected_return_owner") or "").strip() == "l4_alpha_ev"
             else None
         )
+        if l4_alpha_ev_payload is None and isinstance(row.get("l4_alpha_ev"), dict):
+            l4_alpha_ev_payload = row["l4_alpha_ev"]
+        s12_trade_ev_payload = expected_return_payload if expected_return_owner != "l4_alpha_ev" else None
         if s12_trade_ev_payload is None and isinstance(row.get("s12_trade_ev"), dict):
             s12_trade_ev_payload = row["s12_trade_ev"]
         s12_entry_context = (
@@ -3504,10 +3663,8 @@ def _apply_sparse_tangent_buy_selection(
             "expected_return": round(expected_return, 10),
             "expected_return_source": (evidence or {}).get("expected_return_source")
             or row.get("promotion_expected_return_source"),
-            "allocator_edge_resolver": (
-                (evidence or {}).get("allocator_edge_resolver")
-                or row.get("_allocator_edge_resolver")
-            ),
+            "expected_return_owner": expected_return_owner or None,
+            "allocator_edge_resolver": resolver,
             "promotion_conditional_admission": bool(
                 (evidence or {}).get("promotion_conditional_admission")
                 or row.get("promotion_conditional_admission")
@@ -3524,6 +3681,7 @@ def _apply_sparse_tangent_buy_selection(
                 (evidence or {}).get("expected_return_uncertainty_adjustment")
                 or row.get("_expected_return_uncertainty_adjustment")
             ),
+            "l4_alpha_ev": l4_alpha_ev_payload,
             "s12_trade_ev": s12_trade_ev_payload,
             "s12_entry_context": s12_entry_context,
             "s12_context_multiplier": s12_context_multiplier,
@@ -3782,6 +3940,7 @@ def write_predictions_to_d1(
             "signal_source": ev2_signal_source if (use_ev2 and ev2_signal) else "legacy",
             "alpha_context": data.get("alpha_context"),
             "alpha_allocation": data.get("alpha_allocation"),
+            "l4_alpha_ev": data.get("l4_alpha_ev") or data.get("alpha_ev") or data.get("alpha_ev_prediction"),
             "s12_trade_ev": data.get("s12_trade_ev"),
             "core_ml_evidence": data.get("core_ml_evidence") or data.get("core_ml_gate"),
             "core_ml_gate": data.get("core_ml_gate") or data.get("core_ml_evidence"),

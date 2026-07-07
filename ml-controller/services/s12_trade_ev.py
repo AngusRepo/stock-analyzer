@@ -36,6 +36,11 @@ def _r_from_sample(sample: dict[str, Any]) -> float | None:
     )
 
 
+def _date_key(value: Any) -> str:
+    text = str(value or "").strip()
+    return text[:10] if len(text) >= 10 else ""
+
+
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
@@ -338,6 +343,7 @@ def build_s12_trade_ev_from_replay(
     stop_price: float | None = None,
     samples: list[dict[str, Any]] | None = None,
     min_samples: int = 30,
+    min_sample_dates: int = 8,
     roundtrip_cost_bps: float = 18.0,
     source: str = "s12_replay_trade_outcomes",
 ) -> dict[str, Any]:
@@ -360,12 +366,21 @@ def build_s12_trade_ev_from_replay(
     mae_values: list[float] = []
     bars_to_exit: list[float] = []
     exit_reasons: Counter[str] = Counter()
+    sample_dates: set[str] = set()
     invalid_samples = 0
 
     for sample in samples or []:
         if not isinstance(sample, dict):
             invalid_samples += 1
             continue
+        sample_date = _date_key(
+            sample.get("sample_date")
+            or sample.get("prediction_date")
+            or sample.get("trade_date")
+            or sample.get("date")
+        )
+        if sample_date:
+            sample_dates.add(sample_date)
         direct_r = _r_from_sample(sample)
         ret = _pct_from_exit(entry, sample)
         if ret is None and direct_r is not None and risk_pct and risk_pct > 0:
@@ -412,7 +427,16 @@ def build_s12_trade_ev_from_replay(
     payoff = (avg_win / abs(avg_loss)) if avg_win is not None and avg_loss and avg_loss < 0 else None
     expected_r = sum(r_values) / len(r_values) if r_values else None
 
-    status = "loaded" if sample_count >= max(1, int(min_samples)) else "insufficient_samples"
+    min_sample_count = max(1, int(min_samples))
+    min_date_count = max(1, int(min_sample_dates or 1))
+    sample_date_count = len(sample_dates)
+    status = "loaded" if sample_count >= min_sample_count and sample_date_count >= min_date_count else "insufficient_samples"
+    if sample_count < min_sample_count:
+        source_suffix = "insufficient_samples"
+    elif sample_date_count < min_date_count:
+        source_suffix = "insufficient_sample_dates"
+    else:
+        source_suffix = ""
     return {
         "schema_version": "s12-trade-ev-v1",
         "symbol": symbol,
@@ -420,7 +444,9 @@ def build_s12_trade_ev_from_replay(
         "source": source,
         "semantic": "trade_expected_return_not_5bar_close_forecast",
         "sampleCount": sample_count,
-        "minSamples": max(1, int(min_samples)),
+        "minSamples": min_sample_count,
+        "sampleDateCount": sample_date_count,
+        "minSampleDates": min_date_count,
         "invalidSampleCount": invalid_samples,
         "entry_price": entry,
         "stop_price": stop,
@@ -428,7 +454,7 @@ def build_s12_trade_ev_from_replay(
         "roundtrip_cost_bps": round(cost * 10000.0, 4),
         "trade_expected_return_gross_pct": None if gross is None else round(gross, 10),
         "trade_expected_return_net_pct": None if net is None else round(net, 10),
-        "trade_expected_return_source": source if status == "loaded" else f"{source}_insufficient_samples",
+        "trade_expected_return_source": source if status == "loaded" else f"{source}_{source_suffix}",
         "expected_R": None if expected_r is None else round(expected_r, 6),
         "win_rate": None if not sample_count else round(len(wins) / sample_count, 6),
         "avg_win_pct": None if avg_win is None else round(avg_win, 10),

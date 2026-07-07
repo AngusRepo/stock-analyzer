@@ -880,10 +880,12 @@ class S12TradeEvBootstrapProvider:
         *,
         run_date: str,
         min_samples: int = 30,
+        min_sample_dates: int = 8,
         roundtrip_cost_bps: float = 18.0,
     ) -> None:
         self.run_date = str(run_date)[:10]
         self.min_samples = max(1, int(min_samples or 30))
+        self.min_sample_dates = max(1, int(min_sample_dates or 8))
         self.roundtrip_cost_bps = max(0.0, float(roundtrip_cost_bps or 0.0))
         raw_rows = [dict(row) for row in rows or [] if _date_key(row.get("prediction_date")) < self.run_date]
         self.input_rows = len(raw_rows)
@@ -903,6 +905,7 @@ class S12TradeEvBootstrapProvider:
         lookback_days: int | None = None,
         limit: int | None = None,
         min_samples: int | None = None,
+        min_sample_dates: int | None = None,
         roundtrip_cost_bps: float | None = None,
     ) -> "S12TradeEvBootstrapProvider":
         rows = load_s12_replay_trade_rows(
@@ -921,6 +924,7 @@ class S12TradeEvBootstrapProvider:
             rows,
             run_date=run_date,
             min_samples=int(min_samples or os.getenv("S12_TRADE_EV_BOOTSTRAP_MIN_SAMPLES", "30")),
+            min_sample_dates=int(min_sample_dates or os.getenv("S12_TRADE_EV_BOOTSTRAP_MIN_SAMPLE_DATES", "8")),
             roundtrip_cost_bps=float(roundtrip_cost_bps or os.getenv("S12_TRADE_EV_ROUNDTRIP_COST_BPS", "18")),
         )
 
@@ -996,6 +1000,7 @@ class S12TradeEvBootstrapProvider:
                 "mfe_pct": item.get("max_favorable_pct"),
                 "mae_pct": item.get("max_adverse_pct"),
                 "exit_reason": item.get("trade_outcome") or "unknown",
+                "sample_date": _date_key(item.get("prediction_date")),
             }
             for item in bucket.rows
         ]
@@ -1005,6 +1010,7 @@ class S12TradeEvBootstrapProvider:
             stop_price=stop,
             samples=samples,
             min_samples=self.min_samples,
+            min_sample_dates=self.min_sample_dates,
             roundtrip_cost_bps=self.roundtrip_cost_bps,
             source=source,
         )
@@ -1086,6 +1092,7 @@ class S12TradeEvBootstrapProvider:
             "input_rows": self.input_rows,
             "excluded_non_s12_rows": self.excluded_non_s12_rows,
             "min_samples": self.min_samples,
+            "min_sample_dates": self.min_sample_dates,
             "sample_policy": "verified_s12_buy_trade_outcomes_only",
             "symbol_buckets": len(self.by_symbol),
             "market_segment_buckets": len(self.by_market),

@@ -170,7 +170,13 @@ def test_s12_trade_ev_bootstrap_prefers_market_bucket_before_global():
     rows = [_row("1111", "2026-07-01", 0.02)] * 12
     rows += [_row("2222", "2026-07-01", 0.03)] * 12
     rows += [_row("9999", "2026-07-01", -0.03, market="OTC", bucket="mean_revert")] * 12
-    provider = S12TradeEvBootstrapProvider(rows, run_date="2026-07-03", min_samples=20, roundtrip_cost_bps=0)
+    provider = S12TradeEvBootstrapProvider(
+        rows,
+        run_date="2026-07-03",
+        min_samples=20,
+        min_sample_dates=1,
+        roundtrip_cost_bps=0,
+    )
 
     ev = provider.build_for_row({
         "symbol": "8091",
@@ -210,6 +216,41 @@ def test_s12_trade_ev_bootstrap_does_not_use_global_as_direct_ev_owner():
     assert ev["replay_bootstrap"]["trade_expected_return_source"].endswith("_insufficient_samples")
 
 
+def test_s12_trade_ev_bootstrap_requires_date_breadth_before_peer_replay_takes_over():
+    rows = []
+    for i in range(60):
+        rows.append(_row(
+            f"{2000 + i}",
+            f"2026-07-{(i % 3) + 1:02d}",
+            -0.02,
+            market="TWSE",
+            bucket="breakout",
+        ))
+    provider = S12TradeEvBootstrapProvider(
+        rows,
+        run_date="2026-07-06",
+        min_samples=30,
+        min_sample_dates=8,
+        roundtrip_cost_bps=0,
+    )
+
+    ev = provider.build_for_row({
+        "symbol": "8091",
+        "current_price": 100,
+        "stop_loss": 96,
+        "market_segment": "LISTED",
+        "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
+        "score": 70,
+    })
+
+    assert ev["status"] == "loaded"
+    assert ev["source"] == "s12_structural_cold_start_ev"
+    assert ev["sample_policy"] == "s12_structural_cold_start_no_replay"
+    assert ev["replay_bootstrap"]["bootstrap_scope"] == "market_segment_alpha_bucket"
+    assert ev["replay_bootstrap"]["sampleCount"] == 60
+    assert ev["replay_bootstrap"]["trade_expected_return_source"].endswith("_insufficient_sample_dates")
+
+
 def test_s12_trade_ev_bootstrap_filters_same_day_rows():
     provider = S12TradeEvBootstrapProvider(
         [
@@ -218,6 +259,7 @@ def test_s12_trade_ev_bootstrap_filters_same_day_rows():
         ],
         run_date="2026-07-03",
         min_samples=1,
+        min_sample_dates=1,
         roundtrip_cost_bps=0,
     )
 

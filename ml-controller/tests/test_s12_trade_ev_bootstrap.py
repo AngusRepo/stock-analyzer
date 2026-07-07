@@ -94,8 +94,10 @@ def test_load_s12_replay_trade_rows_accepts_dedicated_replay_outcomes():
     rows = load_s12_replay_trade_rows(run_date="2026-07-03", query_fn=fake_query)
 
     assert any("FROM s12_replay_trade_outcomes" in sql for sql in calls)
+    assert any("LEFT JOIN stocks st ON st.symbol = r.symbol" in sql for sql in calls)
     assert rows[0]["symbol"] == "8091"
     assert rows[0]["prediction_date"] == "2026-07-02"
+    assert rows[0]["market_segment"] == "TWSE"
     assert rows[0]["trade_pnl_pct"] == pytest.approx(0.04)
     assert json.loads(rows[0]["forecast_data"])["s12_trade_ev"]["status"] == "loaded"
 
@@ -164,6 +166,27 @@ def test_s12_trade_ev_bootstrap_prefers_market_bucket_before_global():
     assert ev["as_of_guard"] == "prediction_date_strictly_before_run_date"
     assert ev["sample_policy"] == "verified_s12_buy_trade_outcomes_only"
     assert ev["trade_expected_return_net_pct"] == pytest.approx(0.025)
+    assert ev["global_direct_ev_owner_allowed"] is False
+
+
+def test_s12_trade_ev_bootstrap_does_not_use_global_as_direct_ev_owner():
+    rows = [_row(f"{1000 + i}", "2026-07-01", 0.02, market="OTC", bucket="mean_revert") for i in range(40)]
+    provider = S12TradeEvBootstrapProvider(rows, run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
+
+    ev = provider.build_for_row({
+        "symbol": "8091",
+        "current_price": 100,
+        "stop_loss": 96,
+    })
+
+    assert ev["status"] == "loaded"
+    assert ev["source"] == "s12_structural_cold_start_ev"
+    assert ev["sample_policy"] == "s12_structural_cold_start_no_replay"
+    assert ev["replay_bootstrap"]["bootstrap_scope"] == "symbol"
+    assert ev["replay_bootstrap"]["sampleCount"] == 0
+    assert ev["replay_bootstrap"]["global_sample_count"] == 40
+    assert ev["replay_bootstrap"]["global_direct_ev_owner_allowed"] is False
+    assert ev["replay_bootstrap"]["trade_expected_return_source"].endswith("_insufficient_samples")
 
 
 def test_s12_trade_ev_bootstrap_filters_same_day_rows():

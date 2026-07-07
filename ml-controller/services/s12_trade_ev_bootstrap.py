@@ -738,33 +738,34 @@ def _load_dedicated_s12_replay_trade_rows(
     try:
         rows = query_fn(
             """
-            SELECT symbol,
-                   market,
-                   trade_date,
-                   assessment_state,
-                   setup_id,
-                   entry_price,
-                   stop_price,
-                   target1_price,
-                   target2_price,
-                   target3_price,
-                   exit_price,
-                   pnl_pct,
-                   trade_pnl_r,
-                   max_favorable_pct,
-                   max_adverse_pct,
-                   bars_to_exit,
-                   exit_reason,
-                   sample_eligible,
-                   source,
-                   detail_json
-              FROM s12_replay_trade_outcomes
-             WHERE trade_date IS NOT NULL
-               AND date(trade_date) < date(?)
-               AND date(trade_date) >= date(?)
-               AND COALESCE(sample_eligible, 0) = 1
-               AND pnl_pct IS NOT NULL
-             ORDER BY date(trade_date) DESC, symbol
+            SELECT r.symbol,
+                   COALESCE(r.market, st.market) AS market,
+                   r.trade_date,
+                   r.assessment_state,
+                   r.setup_id,
+                   r.entry_price,
+                   r.stop_price,
+                   r.target1_price,
+                   r.target2_price,
+                   r.target3_price,
+                   r.exit_price,
+                   r.pnl_pct,
+                   r.trade_pnl_r,
+                   r.max_favorable_pct,
+                   r.max_adverse_pct,
+                   r.bars_to_exit,
+                   r.exit_reason,
+                   r.sample_eligible,
+                   r.source,
+                   r.detail_json
+              FROM s12_replay_trade_outcomes r
+              LEFT JOIN stocks st ON st.symbol = r.symbol
+             WHERE r.trade_date IS NOT NULL
+               AND date(r.trade_date) < date(?)
+               AND date(r.trade_date) >= date(?)
+               AND COALESCE(r.sample_eligible, 0) = 1
+               AND r.pnl_pct IS NOT NULL
+             ORDER BY date(r.trade_date) DESC, r.symbol
              LIMIT ?
             """.strip(),
             [run_date, start_date, limit],
@@ -802,6 +803,10 @@ def _load_dedicated_s12_replay_trade_rows(
         }
         converted = s12_replay_outcome_to_bootstrap_row(outcome)
         if converted is not None:
+            market = raw.get("market")
+            if market:
+                converted["market"] = market
+                converted["market_segment"] = market
             out.append(converted)
     return out
 
@@ -902,10 +907,13 @@ class S12TradeEvBootstrapProvider:
         prediction: dict[str, Any] | None,
     ) -> _ReplayBucket:
         buckets = self._candidate_buckets(row, prediction)
-        for bucket in buckets:
+        direct_buckets = [bucket for bucket in buckets if bucket.scope != "global"]
+        for bucket in direct_buckets:
             if len(bucket.rows) >= self.min_samples:
                 return bucket
-        return max(buckets, key=lambda bucket: len(bucket.rows))
+        if direct_buckets:
+            return max(direct_buckets, key=lambda bucket: len(bucket.rows))
+        return _ReplayBucket("no_candidate_replay_bucket", "NONE", [])
 
     def build_for_row(
         self,
@@ -914,6 +922,8 @@ class S12TradeEvBootstrapProvider:
         prediction: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         pred = prediction if isinstance(prediction, dict) else {}
+        buckets = self._candidate_buckets(row, prediction)
+        global_bucket = next((item for item in buckets if item.scope == "global"), None)
         bucket = self._select_bucket(row, prediction)
         entry, stop = _entry_stop_from_row(row, prediction)
         target1, target2, target_evidence = _s12_structural_targets_from_row(
@@ -954,6 +964,8 @@ class S12TradeEvBootstrapProvider:
             "sample_date_max": dates[-1] if dates else None,
             "candidate_market_segment": _market_segment_from_payloads(row, prediction or {}),
             "candidate_alpha_bucket": _alpha_bucket_from_payloads(row, prediction or {}),
+            "global_direct_ev_owner_allowed": False,
+            "global_sample_count": len(global_bucket.rows) if global_bucket is not None else 0,
         }
         ev.update(replay_meta)
         s12_entry_context = _s12_entry_context_from_row(row, prediction)

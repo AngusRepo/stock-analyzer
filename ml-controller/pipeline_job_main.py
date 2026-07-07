@@ -44,6 +44,10 @@ def _falsey_env(name: str, default: str = "") -> bool:
     return os.environ.get(name, default).strip().lower() in {"0", "false", "no", "off"}
 
 
+def _truthy_env(name: str, default: str = "") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _dataset_snapshot_job_name() -> str:
     return (
         os.environ.get("DATASET_SNAPSHOT_JOB_NAME", "")
@@ -191,7 +195,10 @@ async def _run_deferred_snapshot_followup(*, run_date: str, run_id: str) -> None
 
 async def _run() -> int:
     """Execute run_pipeline_v2, callback Worker, return process exit code."""
-    from graphs.daily_pipeline_v2 import run_pipeline_v2
+    from graphs.daily_pipeline_v2 import (
+        run_pipeline_v2,
+        run_pipeline_v2_until_modal_prediction_spawn,
+    )
 
     run_date = os.environ.get("PIPELINE_RUN_DATE", "") or ""
     run_id = os.environ.get(
@@ -209,9 +216,13 @@ async def _run() -> int:
     summary = ""
     error: str | None = None
     result: dict | None = None
+    emit_subtasks = True
 
     try:
-        result = await run_pipeline_v2(run_date=run_date, producer_run_id=run_id)
+        if _truthy_env("PIPELINE_MODAL_PREDICTION_CALLBACK_ENABLED"):
+            result = await run_pipeline_v2_until_modal_prediction_spawn(run_date=run_date, producer_run_id=run_id)
+        else:
+            result = await run_pipeline_v2(run_date=run_date, producer_run_id=run_id)
         if isinstance(result, dict) and result.get("status") == "completed":
             status = "success"
             metrics = result.get("metrics") or {}
@@ -225,6 +236,17 @@ async def _run() -> int:
                 f"llm_reasons={metrics.get('llm_reasons_count', 0)} "
                 f"snapshot={snapshot_status} "
                 f"errors={error_count}"
+            )
+        elif isinstance(result, dict) and result.get("status") == "deferred":
+            status = "triggered"
+            emit_subtasks = False
+            metrics = result.get("metrics") or {}
+            async_state = metrics.get("async_modal_prediction") or {}
+            summary = (
+                f"run_id={run_id} "
+                f"modal_prediction={async_state.get('status', 'triggered')} "
+                f"function_call_id={async_state.get('function_call_id')} "
+                f"callback expected"
             )
         else:
             err_detail = result.get("error") if isinstance(result, dict) else str(result)
@@ -249,7 +271,8 @@ async def _run() -> int:
         overall_payload["error"] = error
 
     await _callback_worker(overall_payload)
-    await _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms, run_date=run_date or None)
+    if emit_subtasks:
+        await _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms, run_date=run_date or None)
 
     snapshot_state = ((result or {}).get("metrics") or {}).get("dataset_snapshot_export") or {}
     if status == "success" and snapshot_state.get("status") == "deferred":
@@ -258,7 +281,7 @@ async def _run() -> int:
     logger.info(
         "[JobEntry] Pipeline finished: status=%s elapsed=%dms", status, elapsed_ms
     )
-    return 0 if status == "success" else 1
+    return 0 if status in {"success", "triggered"} else 1
 
 
 def main() -> None:

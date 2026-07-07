@@ -973,6 +973,27 @@ def spawn_state_space_overlays_batch_predict(
     }
 
 
+def spawn_pipeline_prediction_bundle(payload: dict) -> dict:
+    """Spawn Modal-resident pipeline L3 raw prediction bundle and return immediately."""
+    fn = _lookup("pipeline_prediction_bundle")
+    call = fn.spawn(payload)
+    call_id = (
+        getattr(call, "object_id", None)
+        or getattr(call, "function_call_id", None)
+        or getattr(call, "call_id", None)
+    )
+    return {
+        "spawned": True,
+        "function_name": "pipeline_prediction_bundle",
+        "function_call_id": call_id,
+        "run_id": payload.get("run_id"),
+        "run_date": payload.get("run_date"),
+        "n_input": len(payload.get("payloads") or []),
+        "state_gcs_uri": payload.get("state_gcs_uri"),
+        "callback_configured": bool(payload.get("callback_url") and payload.get("callback_token")),
+    }
+
+
 def spawn_walk_forward_orchestrator(payload: dict):
     """Spawn the Modal-resident walk-forward orchestrator and return its FunctionCall.
     Fire-and-forget from ml-controller side: orchestrator runs inside Modal for

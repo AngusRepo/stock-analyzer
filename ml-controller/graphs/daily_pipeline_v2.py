@@ -43,7 +43,7 @@ from services.active_model_policy import (
     RETIRED_ALPHA_MODELS,
     daily_sequence_target_points,
 )
-from services.modal_client import batch_predict
+from services.modal_client import batch_predict, batch_predict_contract
 from services.model_lifecycle_policy import (
     DEFAULT_DEGRADED_DAMPENING,
     resolve_degraded_dampening,
@@ -463,6 +463,9 @@ class PipelineStateV2(TypedDict, total=False):
     timesfm_l2_summary: dict                 # L2 feature enrichment telemetry
     timesfm_l175_sidecars: dict              # Legacy key for TimesFM L2 sidecar payload
     timesfm_l175_summary: dict               # Legacy key for TimesFM L2 enrichment telemetry
+    modal_prediction_bundle: dict            # Raw Modal L3 bundle returned by async callback path
+    modal_prediction_state_gcs_uri: str       # Durable partial state URI for async callback continuation
+    pipeline_modal_serving_context: dict      # Frozen model_pool/trading context for async Modal split path
     predictions: dict                       # symbol ??ml result
     l3_payloads: list[dict]                  # optional override; default is the full L1.5 slate after L2 TimesFM enrichment
     l3_predictions: dict                     # symbol -> formal L3 merged result
@@ -755,19 +758,36 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         "sequence_model_excluded_symbols": sequence_model_excluded[:20],
     }
 
+    modal_prediction_bundle = state.get("modal_prediction_bundle") or {}
+    use_modal_prediction_bundle = (
+        isinstance(modal_prediction_bundle, dict)
+        and modal_prediction_bundle.get("schema_version") == "pipeline-modal-prediction-bundle-v1"
+    )
+    serving_context = state.get("pipeline_modal_serving_context") if isinstance(state.get("pipeline_modal_serving_context"), dict) else {}
+
     # Parallel: alpha predictors + state overlays.
     # Kalman/Markov are state overlays only; they do not enter alpha challenger.
-    model_status, active_versions, _challenger_versions, pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
-    (
-        serving_model_status,
-        _serving_ic_universe,
-        serving_degraded_dampening,
-        serving_ev2_cfg,
-        serving_used_pool,
-        serving_pool,
-    ) = await asyncio.to_thread(_load_pool_and_ic)
-    if serving_model_status:
-        model_status = _merge_model_status_preserving_sidecars(model_status, serving_model_status)
+    if use_modal_prediction_bundle and serving_context:
+        model_status = dict(serving_context.get("model_status") or {})
+        active_versions = dict(serving_context.get("active_versions") or {})
+        pool_versions_loaded = bool(serving_context.get("pool_versions_loaded"))
+        serving_model_status = dict(serving_context.get("serving_model_status") or {})
+        serving_degraded_dampening = serving_context.get("serving_degraded_dampening", DEFAULT_DEGRADED_DAMPENING)
+        serving_ev2_cfg = dict(serving_context.get("serving_ev2_cfg") or {})
+        serving_used_pool = bool(serving_context.get("serving_used_pool"))
+        serving_pool = dict(serving_context.get("serving_pool") or {})
+    else:
+        model_status, active_versions, _challenger_versions, pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
+        (
+            serving_model_status,
+            _serving_ic_universe,
+            serving_degraded_dampening,
+            serving_ev2_cfg,
+            serving_used_pool,
+            serving_pool,
+        ) = await asyncio.to_thread(_load_pool_and_ic)
+        if serving_model_status:
+            model_status = _merge_model_status_preserving_sidecars(model_status, serving_model_status)
 
     async def _skip_batch(reason: str) -> dict:
         return {"error": reason, "results": []}
@@ -800,48 +820,57 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 "error": error,
             }
 
-    feat_task = batch_predict(payloads)
-    gnn_task = (
-        modal_client.gnn_graphsage_batch_predict(
-            payloads,
-            version=_require_loaded_serving_version(active_versions, "GNN", "ml_predict_task_plan"),
-        )
-        if _is_loaded_serving_model(model_status, "GNN", "ml_predict_task_plan")
-        else _skip_batch("GNN retired by model_pool")
-    )
-    dlinear_task = (
-        modal_client.dlinear_batch_predict(
-            sequence_model_series,
-            horizon_used=5,
-            version=_require_loaded_serving_version(active_versions, "DLinear", "ml_predict_task_plan"),
-        )
-        if _is_loaded_serving_model(model_status, "DLinear", "ml_predict_task_plan") and sequence_model_series
-        else _skip_batch(_sequence_model_skip_reason("DLinear"))
-    )
-    patchtst_task = (
-        modal_client.patchtst_batch_predict(
-            sequence_model_series,
-            horizon_used=5,
-            version=_require_loaded_serving_version(active_versions, "PatchTST", "ml_predict_task_plan"),
-        )
-        if _is_loaded_serving_model(model_status, "PatchTST", "ml_predict_task_plan") and sequence_model_series
-        else _skip_batch(_sequence_model_skip_reason("PatchTST"))
-    )
-    itransformer_task = (
-        modal_client.itransformer_batch_predict(
-            sequence_model_series,
-            horizon_used=5,
-            version=_require_loaded_serving_version(active_versions, "iTransformer", "ml_predict_task_plan"),
-        )
-        if _is_loaded_serving_model(model_status, "iTransformer", "ml_predict_task_plan") and sequence_model_series
-        else _skip_batch(_sequence_model_skip_reason("iTransformer"))
-    )
+    feat_task = None
+    gnn_task = None
+    dlinear_task = None
+    patchtst_task = None
+    itransformer_task = None
+    state_space_task = None
+
     state_space_mode = _state_space_overlay_mode()
     state_space_models = {
         model_name: _require_loaded_serving_version(active_versions, model_name, "ml_predict_task_plan")
         for model_name in ("KalmanFilter", "MarkovSwitching")
         if _is_optional_loaded_serving_model(model_status, model_name, "ml_predict_task_plan")
     }
+
+    if not use_modal_prediction_bundle:
+        feat_task = batch_predict(payloads)
+        gnn_task = (
+            modal_client.gnn_graphsage_batch_predict(
+                payloads,
+                version=_require_loaded_serving_version(active_versions, "GNN", "ml_predict_task_plan"),
+            )
+            if _is_loaded_serving_model(model_status, "GNN", "ml_predict_task_plan")
+            else _skip_batch("GNN retired by model_pool")
+        )
+        dlinear_task = (
+            modal_client.dlinear_batch_predict(
+                sequence_model_series,
+                horizon_used=5,
+                version=_require_loaded_serving_version(active_versions, "DLinear", "ml_predict_task_plan"),
+            )
+            if _is_loaded_serving_model(model_status, "DLinear", "ml_predict_task_plan") and sequence_model_series
+            else _skip_batch(_sequence_model_skip_reason("DLinear"))
+        )
+        patchtst_task = (
+            modal_client.patchtst_batch_predict(
+                sequence_model_series,
+                horizon_used=5,
+                version=_require_loaded_serving_version(active_versions, "PatchTST", "ml_predict_task_plan"),
+            )
+            if _is_loaded_serving_model(model_status, "PatchTST", "ml_predict_task_plan") and sequence_model_series
+            else _skip_batch(_sequence_model_skip_reason("PatchTST"))
+        )
+        itransformer_task = (
+            modal_client.itransformer_batch_predict(
+                sequence_model_series,
+                horizon_used=5,
+                version=_require_loaded_serving_version(active_versions, "iTransformer", "ml_predict_task_plan"),
+            )
+            if _is_loaded_serving_model(model_status, "iTransformer", "ml_predict_task_plan") and sequence_model_series
+            else _skip_batch(_sequence_model_skip_reason("iTransformer"))
+        )
 
     async def _shadow_state_space_overlays() -> dict:
         if not state_space_models:
@@ -894,23 +923,52 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 }
         return await overlay_call
 
-    state_space_task = _shadow_state_space_overlays()
-    (
-        results,
-        gnn_raw,
-        dlinear_raw,
-        patchtst_raw,
-        state_space_raw,
-        itransformer_raw,
-    ) = await asyncio.gather(
-        _timed_stage("predict_batch_v2", feat_task, required_alpha=True),
-        _timed_stage("gnn_graphsage_universal_predict", gnn_task, required_alpha=True),
-        _timed_stage("dlinear_universal_predict", dlinear_task, required_alpha=True),
-        _timed_stage("patchtst_universal_predict", patchtst_task, required_alpha=True),
-        _timed_stage("state_space_universal_predict", state_space_task, required_alpha=False),
-        _timed_stage("itransformer_universal_predict", itransformer_task, required_alpha=True),
-        return_exceptions=True,
-    )
+    if not use_modal_prediction_bundle:
+        state_space_task = _shadow_state_space_overlays()
+
+    if use_modal_prediction_bundle:
+        logger.info(
+            "[Pipeline V2] node_ml_predict using async Modal prediction bundle run_id=%s",
+            modal_prediction_bundle.get("run_id"),
+        )
+        results = modal_prediction_bundle.get("predict_batch_v2_results") or []
+        gnn_raw = modal_prediction_bundle.get("gnn_graphsage_raw") or {"results": []}
+        dlinear_raw = modal_prediction_bundle.get("dlinear_raw") or {"results": []}
+        patchtst_raw = modal_prediction_bundle.get("patchtst_raw") or {"results": []}
+        state_space_raw = modal_prediction_bundle.get("state_space_raw") or {"results": []}
+        itransformer_raw = modal_prediction_bundle.get("itransformer_raw") or {"results": []}
+        stage_timings = dict(modal_prediction_bundle.get("stage_timings") or {})
+        for stage_name, raw_payload in (
+            ("predict_batch_v2", results),
+            ("gnn_graphsage_universal_predict", gnn_raw),
+            ("dlinear_universal_predict", dlinear_raw),
+            ("patchtst_universal_predict", patchtst_raw),
+            ("state_space_universal_predict", state_space_raw),
+            ("itransformer_universal_predict", itransformer_raw),
+        ):
+            stage_timings.setdefault(stage_name, {
+                "wall_sec": 0.0,
+                "required_alpha": stage_name != "state_space_universal_predict",
+                "status": "callback_bundle",
+                "error": None if not (isinstance(raw_payload, dict) and raw_payload.get("error")) else raw_payload.get("error"),
+            })
+    else:
+        (
+            results,
+            gnn_raw,
+            dlinear_raw,
+            patchtst_raw,
+            state_space_raw,
+            itransformer_raw,
+        ) = await asyncio.gather(
+            _timed_stage("predict_batch_v2", feat_task, required_alpha=True),
+            _timed_stage("gnn_graphsage_universal_predict", gnn_task, required_alpha=True),
+            _timed_stage("dlinear_universal_predict", dlinear_task, required_alpha=True),
+            _timed_stage("patchtst_universal_predict", patchtst_task, required_alpha=True),
+            _timed_stage("state_space_universal_predict", state_space_task, required_alpha=False),
+            _timed_stage("itransformer_universal_predict", itransformer_task, required_alpha=True),
+            return_exceptions=True,
+        )
 
     gnn_result_summary = _modal_batch_result_summary(gnn_raw)
     modal_waiter = max((stage.get("wall_sec", 0.0) for stage in stage_timings.values()), default=0.0)
@@ -2842,6 +2900,179 @@ def _to_dict(obj: Any) -> dict:
     return dict(obj) if obj else {}
 
 
+def _json_safe(obj: Any) -> Any:
+    return json.loads(json.dumps(obj, ensure_ascii=False, default=str))
+
+
+def _pipeline_modal_prediction_callback_url() -> str:
+    base = (
+        os.environ.get("ML_CONTROLLER_PUBLIC_URL", "")
+        or os.environ.get("ML_CONTROLLER_URL", "")
+        or ""
+    ).strip().rstrip("/")
+    if not base:
+        raise RuntimeError("ML_CONTROLLER_PUBLIC_URL or ML_CONTROLLER_URL is required for async pipeline Modal callback")
+    return f"{base}/pipeline/v2/modal-prediction/callback"
+
+
+def _pipeline_modal_prediction_callback_token() -> str:
+    token = (
+        os.environ.get("ML_CONTROLLER_SECRET", "")
+        or os.environ.get("ML_CONTROLLER_TOKEN", "")
+        or os.environ.get("INTERNAL_TOKEN", "")
+        or os.environ.get("STOCKVISION_AUTH_TOKEN", "")
+    ).strip()
+    if not token:
+        raise RuntimeError("ML_CONTROLLER_SECRET/ML_CONTROLLER_TOKEN is required for async pipeline Modal callback")
+    return token
+
+
+def _pipeline_async_bucket_and_blob(*, run_date: str, producer_run_id: str) -> tuple[str, str]:
+    bucket = os.environ.get("GCS_BUCKET_NAME", "").strip()
+    if not bucket:
+        raise RuntimeError("GCS_BUCKET_NAME is required for async pipeline state artifact")
+    safe_run_id = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in producer_run_id)
+    prefix = os.environ.get("PIPELINE_ASYNC_STATE_GCS_PREFIX", "pipeline-v2/async-modal-prediction").strip().strip("/")
+    return bucket, f"{prefix}/{run_date}/{safe_run_id}/partial_state.json"
+
+
+def _write_pipeline_async_state_artifact(state: PipelineStateV2) -> str:
+    from google.cloud import storage
+
+    run_date = state["run_date"]
+    producer_run_id = state.get("producer_run_id") or f"pipeline-v2:{run_date}"
+    bucket_name, blob_name = _pipeline_async_bucket_and_blob(run_date=run_date, producer_run_id=producer_run_id)
+    payload = {
+        "schema_version": "pipeline-async-state-v1",
+        "run_date": run_date,
+        "producer_run_id": producer_run_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "state": _json_safe(dict(state)),
+    }
+    blob = storage.Client().bucket(bucket_name).blob(blob_name)
+    blob.upload_from_string(
+        json.dumps(payload, ensure_ascii=False, default=str),
+        content_type="application/json",
+    )
+    return f"gs://{bucket_name}/{blob_name}"
+
+
+def _read_pipeline_async_state_artifact(gcs_uri: str) -> PipelineStateV2:
+    from google.cloud import storage
+
+    if not gcs_uri.startswith("gs://"):
+        raise ValueError(f"invalid pipeline async state uri: {gcs_uri}")
+    bucket_name, blob_name = gcs_uri.removeprefix("gs://").split("/", 1)
+    raw = storage.Client().bucket(bucket_name).blob(blob_name).download_as_text()
+    payload = json.loads(raw.lstrip("\ufeff"))
+    if payload.get("schema_version") != "pipeline-async-state-v1":
+        raise RuntimeError(f"invalid pipeline async state schema: {payload.get('schema_version')}")
+    state = payload.get("state")
+    if not isinstance(state, dict):
+        raise RuntimeError("pipeline async state artifact missing state object")
+    return state
+
+
+async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict:
+    model_status, active_versions, _challenger_versions, _pool_versions_loaded = await asyncio.to_thread(_load_model_pool_versions)
+    (
+        serving_model_status,
+        _serving_ic_universe,
+        _serving_degraded_dampening,
+        _serving_ev2_cfg,
+        _serving_used_pool,
+        _serving_pool,
+    ) = await asyncio.to_thread(_load_pool_and_ic)
+    if serving_model_status:
+        model_status = _merge_model_status_preserving_sidecars(model_status, serving_model_status)
+    context = {
+        "schema_version": "pipeline-modal-serving-context-v1",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "model_status": _json_safe(model_status),
+        "active_versions": _json_safe(active_versions),
+        "pool_versions_loaded": bool(_pool_versions_loaded),
+        "serving_model_status": _json_safe(serving_model_status),
+        "serving_degraded_dampening": _serving_degraded_dampening,
+        "serving_ev2_cfg": _json_safe(serving_ev2_cfg),
+        "serving_used_pool": bool(_serving_used_pool),
+        "serving_pool": _json_safe(serving_pool),
+    }
+    state["pipeline_modal_serving_context"] = context
+    return context
+
+
+async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, state_gcs_uri: str) -> dict:
+    context = state.get("pipeline_modal_serving_context")
+    if not isinstance(context, dict) or context.get("schema_version") != "pipeline-modal-serving-context-v1":
+        context = await _attach_pipeline_modal_serving_context(state)
+    model_status = dict(context.get("model_status") or {})
+    active_versions = dict(context.get("active_versions") or {})
+
+    payloads = state.get("l3_payloads") or state.get("payloads") or []
+    batch_ab_key = "|".join(sorted(
+        str(p.get("symbol") or p.get("stock_id") or "")
+        for p in payloads
+        if isinstance(p, dict) and (p.get("symbol") or p.get("stock_id"))
+    ))
+    predict_contract = batch_predict_contract(ab_key=batch_ab_key)
+    base_sequence_series = build_state_space_series_from_payloads(payloads)
+    sequence_series, sequence_dataset_meta = enrich_state_space_series_with_long_history(
+        base_sequence_series,
+        target_points=daily_sequence_target_points(),
+    )
+    sequence_model_series, sequence_model_excluded = _sequence_contract_subset(
+        sequence_series,
+        min_points=daily_sequence_target_points(),
+    )
+    state_space_models = {
+        model_name: _require_loaded_serving_version(active_versions, model_name, "pipeline_modal_prediction_bundle")
+        for model_name in ("KalmanFilter", "MarkovSwitching")
+        if _is_optional_loaded_serving_model(model_status, model_name, "pipeline_modal_prediction_bundle")
+    }
+    return {
+        "schema_version": "pipeline-modal-prediction-request-v1",
+        "run_date": state["run_date"],
+        "run_id": state.get("producer_run_id"),
+        "state_gcs_uri": state_gcs_uri,
+        "payloads": _json_safe(payloads),
+        "predict_batch_v2_contract": predict_contract,
+        "predict_batch_v2_chunk_size": int(predict_contract.get("chunk_size") or len(payloads) or 1),
+        "sequence_series": _json_safe(sequence_series),
+        "sequence_model_series": _json_safe(sequence_model_series),
+        "sequence_dataset_meta": {
+            **sequence_dataset_meta,
+            "sequence_model_contract_points": daily_sequence_target_points(),
+            "sequence_model_usable": len(sequence_model_series),
+            "sequence_model_excluded_count": len(sequence_model_excluded),
+            "sequence_model_excluded_symbols": sequence_model_excluded[:20],
+        },
+        "model_status": model_status,
+        "active_versions": active_versions,
+        "state_space_overlay_mode": _state_space_overlay_mode(),
+        "state_space_soft_deadline_sec": _state_space_overlay_soft_deadline_seconds(),
+        "state_space_models": state_space_models,
+        "callback_url": _pipeline_modal_prediction_callback_url(),
+        "callback_token": _pipeline_modal_prediction_callback_token(),
+    }
+
+
+def _merge_pipeline_state_update(state: PipelineStateV2, update: dict | None) -> None:
+    if not update:
+        return
+    errors = update.get("errors")
+    for key, value in update.items():
+        if key != "errors":
+            state[key] = value
+    if errors:
+        state["errors"] = list(state.get("errors") or []) + list(errors)
+
+
+async def _run_pipeline_nodes(state: PipelineStateV2, nodes: list[Any]) -> PipelineStateV2:
+    for node in nodes:
+        _merge_pipeline_state_update(state, await node(state))
+    return state
+
+
 # ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 # Build graph
 # ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
@@ -2961,4 +3192,111 @@ async def run_pipeline_v2(run_date: str = "", producer_run_id: str = "") -> dict
             "run_date": run_date,
             "elapsed_s": round(elapsed, 1),
             "error": str(e),
+        }
+
+
+async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", producer_run_id: str = "") -> dict:
+    """Run pipeline-v2 through L2 payload enrichment, then defer L3 raw prediction to Modal."""
+    if not run_date:
+        tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
+        run_date = tw_now.strftime("%Y-%m-%d")
+
+    state: PipelineStateV2 = {
+        "run_date": run_date,
+        "producer_run_id": producer_run_id or f"pipeline-v2:{run_date}",
+        "errors": [],
+        "metrics": {},
+    }
+    t0 = asyncio.get_event_loop().time()
+    try:
+        await _run_pipeline_nodes(state, [
+            node_load_inputs,
+            node_load_market_env,
+            node_build_payloads,
+            node_l2_timesfm_enrich,
+        ])
+        state["l3_payloads"] = list(state.get("payloads") or [])
+        await _attach_pipeline_modal_serving_context(state)
+        state_gcs_uri = _write_pipeline_async_state_artifact(state)
+        modal_payload = await _build_pipeline_modal_prediction_payload(state, state_gcs_uri=state_gcs_uri)
+
+        from services import modal_client
+
+        spawn_info = await asyncio.to_thread(modal_client.spawn_pipeline_prediction_bundle, modal_payload)
+        elapsed = asyncio.get_event_loop().time() - t0
+        return {
+            "status": "deferred",
+            "deferred_reason": "modal_prediction_callback",
+            "run_date": run_date,
+            "elapsed_s": round(elapsed, 1),
+            "metrics": {
+                "async_modal_prediction": {
+                    "status": "triggered",
+                    "state_gcs_uri": state_gcs_uri,
+                    "function_call_id": spawn_info.get("function_call_id"),
+                    "function_name": spawn_info.get("function_name"),
+                    "n_input": spawn_info.get("n_input"),
+                    "callback_configured": spawn_info.get("callback_configured"),
+                },
+                "timesfm_l2_summary": state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary") or {},
+            },
+            "errors": list(state.get("errors") or []),
+        }
+    except Exception as e:  # noqa: BLE001
+        elapsed = asyncio.get_event_loop().time() - t0
+        logger.exception("[Pipeline V2] async Modal prediction spawn failed after %.1fs", elapsed)
+        return {
+            "status": "error",
+            "run_date": run_date,
+            "elapsed_s": round(elapsed, 1),
+            "error": str(e),
+        }
+
+
+async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict) -> dict:
+    """Resume pipeline-v2 after Modal posts the raw L3 prediction bundle."""
+    state_gcs_uri = str(callback_payload.get("state_gcs_uri") or "").strip()
+    if not state_gcs_uri:
+        raise ValueError("state_gcs_uri is required for pipeline Modal prediction callback")
+    result = callback_payload.get("result") or callback_payload.get("modal_prediction_bundle") or {}
+    if not isinstance(result, dict):
+        raise ValueError("pipeline Modal prediction callback result must be an object")
+
+    state = _read_pipeline_async_state_artifact(state_gcs_uri)
+    state["modal_prediction_state_gcs_uri"] = state_gcs_uri
+    state["modal_prediction_bundle"] = result
+    if callback_payload.get("run_id"):
+        state["producer_run_id"] = str(callback_payload.get("run_id"))
+    if callback_payload.get("run_date"):
+        state["run_date"] = str(callback_payload.get("run_date"))
+
+    t0 = asyncio.get_event_loop().time()
+    try:
+        await _run_pipeline_nodes(state, [
+            node_l3_formal_predict,
+            node_compute_personas,
+            node_recommend,
+            node_llm_reasons,
+            node_write_d1,
+            node_compute_sector_flow,
+            node_export_dataset_snapshot,
+        ])
+        elapsed = asyncio.get_event_loop().time() - t0
+        return {
+            "status": "completed",
+            "run_date": state["run_date"],
+            "elapsed_s": round(elapsed, 1),
+            "metrics": state.get("metrics", {}),
+            "errors": state.get("errors", []),
+        }
+    except Exception as e:  # noqa: BLE001
+        elapsed = asyncio.get_event_loop().time() - t0
+        logger.exception("[Pipeline V2] async Modal prediction continuation failed after %.1fs", elapsed)
+        return {
+            "status": "error",
+            "run_date": state.get("run_date"),
+            "elapsed_s": round(elapsed, 1),
+            "error": str(e),
+            "metrics": state.get("metrics", {}),
+            "errors": state.get("errors", []),
         }

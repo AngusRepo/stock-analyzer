@@ -1197,6 +1197,239 @@ def predict_batch_v2(payload: dict) -> dict:
     }
 
 
+def _post_pipeline_prediction_callback(input_payload: dict, bundle: dict, elapsed_s: float) -> dict:
+    import json
+    import time
+    import urllib.error
+    import urllib.request
+
+    callback_url = str(input_payload.get("callback_url") or "").strip()
+    token = str(input_payload.get("callback_token") or _controller_callback_token()).strip()
+    if not callback_url or not token:
+        return {"status": "skipped", "reason": "callback_url_or_token_missing"}
+    body = {
+        "schema_version": "pipeline-modal-prediction-callback-v1",
+        "run_date": input_payload.get("run_date"),
+        "run_id": input_payload.get("run_id"),
+        "state_gcs_uri": input_payload.get("state_gcs_uri"),
+        "elapsed_s": elapsed_s,
+        "result": bundle,
+    }
+    req = urllib.request.Request(
+        callback_url,
+        data=json.dumps(body, ensure_ascii=False, default=str).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "X-Service-Token": token,
+        },
+        method="POST",
+    )
+    last_error: dict | None = None
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+                return {"status": "ok", "code": resp.status, "attempt": attempt, "text": text[:500]}
+        except urllib.error.HTTPError as exc:
+            last_error = {
+                "status": "error",
+                "code": exc.code,
+                "attempt": attempt,
+                "text": exc.read().decode("utf-8", errors="replace")[:500],
+            }
+        except Exception as exc:
+            last_error = {"status": "error", "attempt": attempt, "error": f"{type(exc).__name__}: {exc}"}
+        time.sleep(min(attempt * 2, 5))
+    return last_error or {"status": "error", "error": "unknown_callback_failure"}
+
+
+@app.function(
+    cpu=4,
+    memory=8192,
+    timeout=1800,
+    min_containers=0,
+    scaledown_window=900,
+    max_containers=1,
+)
+def pipeline_prediction_bundle(payload: dict) -> dict:
+    """Run pipeline-v2 raw L3 prediction families inside Modal, then callback controller."""
+    _setup_env()
+    import time
+    import traceback
+
+    from app.batch_prediction import predict_gnn_graphsage_batch, predict_stock_v2_batch_with_metrics
+    from app.dlinear_universal import dlinear_batch_predict
+    from app.itransformer_universal import itransformer_batch_predict
+    from app.patchtst_universal import patchtst_batch_predict
+    from app.state_space_universal import state_space_overlays_batch_predict
+
+    started = time.time()
+    payloads = payload.get("payloads") or []
+    sequence_model_series = payload.get("sequence_model_series") or []
+    sequence_series = payload.get("sequence_series") or []
+    active_versions = payload.get("active_versions") or {}
+    model_status = payload.get("model_status") or {}
+    state_space_models = payload.get("state_space_models") or {}
+    state_space_mode = str(payload.get("state_space_overlay_mode") or "blocking").strip().lower()
+
+    def _is_active(model_name: str) -> bool:
+        return str(model_status.get(model_name) or "").strip() in {"active", "degraded"}
+
+    def _skip(reason: str) -> dict:
+        return {"error": reason, "results": []}
+
+    def _feature() -> list[dict]:
+        raw_chunk_size = payload.get("predict_batch_v2_chunk_size")
+        try:
+            chunk_size = int(raw_chunk_size or len(payloads) or 1)
+        except (TypeError, ValueError):
+            chunk_size = len(payloads) or 1
+        chunk_size = max(1, chunk_size)
+        chunks = [payloads[i:i + chunk_size] for i in range(0, len(payloads), chunk_size)]
+        results: list[dict] = []
+        batch_responses: list[dict] = []
+
+        def _chunk_error_rows(chunk: list[dict], reason: str) -> list[dict]:
+            return [
+                {
+                    "stock_id": p.get("stock_id", 0) if isinstance(p, dict) else 0,
+                    "symbol": p.get("symbol", "?") if isinstance(p, dict) else "?",
+                    "error": reason,
+                    "signal": "NO_SIGNAL",
+                    "direction": "neutral",
+                    "confidence": 0.0,
+                }
+                for p in chunk
+            ]
+
+        for chunk in chunks:
+            try:
+                batch = predict_stock_v2_batch_with_metrics(chunk)
+                batch_responses.append(batch)
+                chunk_results = batch.get("results") if isinstance(batch, dict) else None
+                if isinstance(chunk_results, list):
+                    results.extend(chunk_results)
+                else:
+                    results.extend(_chunk_error_rows(chunk, "predict_batch_v2 returned invalid payload"))
+            except Exception as exc:  # noqa: BLE001
+                reason = f"predict_batch_v2 chunk error: {type(exc).__name__}: {exc}"
+                results.extend(_chunk_error_rows(chunk, reason))
+        return {
+            "results": results,
+            "n_input": len(payloads),
+            "n_error": sum(1 for row in results if isinstance(row, dict) and row.get("error")),
+            "chunk_count": len(chunks),
+            "chunk_size": chunk_size,
+            "batch_contract": payload.get("predict_batch_v2_contract") or {},
+            "batch_metrics": [batch.get("metrics") or {} for batch in batch_responses],
+        }
+
+    def _gnn() -> dict:
+        if not _is_active("GNN"):
+            return _skip("GNN retired by model_pool")
+        return predict_gnn_graphsage_batch(payloads)
+
+    def _dlinear() -> dict:
+        if not _is_active("DLinear") or not sequence_model_series:
+            return _skip("DLinear sequence contract unmet")
+        results = dlinear_batch_predict(
+            series_list=sequence_model_series,
+            horizon_used=5,
+            version=active_versions.get("DLinear", "v1"),
+        )
+        return {"results": results, "n_input": len(sequence_model_series), "n_success": sum(1 for r in results if not r.get("error"))}
+
+    def _patchtst() -> dict:
+        if not _is_active("PatchTST") or not sequence_model_series:
+            return _skip("PatchTST sequence contract unmet")
+        results = patchtst_batch_predict(
+            series_list=sequence_model_series,
+            horizon_used=5,
+            version=active_versions.get("PatchTST", "v1"),
+        )
+        return {"results": results, "n_input": len(sequence_model_series), "n_success": sum(1 for r in results if not r.get("error"))}
+
+    def _itransformer() -> dict:
+        if not _is_active("iTransformer") or not sequence_model_series:
+            return _skip("iTransformer sequence contract unmet")
+        results = itransformer_batch_predict(
+            series_list=sequence_model_series,
+            horizon_used=5,
+            version=active_versions.get("iTransformer", "v1"),
+        )
+        return {"results": results, "n_input": len(sequence_model_series), "n_success": sum(1 for r in results if not r.get("error"))}
+
+    def _state_space() -> dict:
+        if not state_space_models:
+            return _skip("state-space overlays retired by model_pool")
+        if state_space_mode in {"disabled", "shadow"}:
+            return _skip(f"state-space overlays {state_space_mode}; not blocking prediction")
+        return state_space_overlays_batch_predict(
+            model_names=["KalmanFilter", "MarkovSwitching"],
+            series_list=sequence_series,
+            horizon=5,
+            version_by_model=state_space_models,
+        )
+
+    stages = {
+        "predict_batch_v2": (_feature, True),
+        "gnn_graphsage_universal_predict": (_gnn, True),
+        "dlinear_universal_predict": (_dlinear, True),
+        "patchtst_universal_predict": (_patchtst, True),
+        "itransformer_universal_predict": (_itransformer, True),
+        "state_space_universal_predict": (_state_space, False),
+    }
+    outputs: dict[str, object] = {}
+    timings: dict[str, dict] = {}
+
+    def _run_stage(name: str, fn, required_alpha: bool):
+        t0 = time.time()
+        try:
+            result = fn()
+            status = "skipped" if isinstance(result, dict) and result.get("error") and result.get("results") == [] else "ok"
+            return name, result, {
+                "wall_sec": round(time.time() - t0, 3),
+                "required_alpha": required_alpha,
+                "status": status,
+                "error": result.get("error") if isinstance(result, dict) else None,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return name, {"error": f"{type(exc).__name__}: {exc}", "trace": traceback.format_exc()[:2000], "results": []}, {
+                "wall_sec": round(time.time() - t0, 3),
+                "required_alpha": required_alpha,
+                "status": "exception",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    for name, (fn, required_alpha) in stages.items():
+        stage_name, result, timing = _run_stage(name, fn, required_alpha)
+        outputs[stage_name] = result
+        timings[stage_name] = timing
+
+    elapsed_s = round(time.time() - started, 3)
+    bundle = {
+        "schema_version": "pipeline-modal-prediction-bundle-v1",
+        "run_date": payload.get("run_date"),
+        "run_id": payload.get("run_id"),
+        "state_gcs_uri": payload.get("state_gcs_uri"),
+        "elapsed_s": elapsed_s,
+        "predict_batch_v2_results": (outputs.get("predict_batch_v2") or {}).get("results") if isinstance(outputs.get("predict_batch_v2"), dict) else (outputs.get("predict_batch_v2") or []),
+        "predict_batch_v2_raw": outputs.get("predict_batch_v2") or {},
+        "gnn_graphsage_raw": outputs.get("gnn_graphsage_universal_predict") or {"results": []},
+        "dlinear_raw": outputs.get("dlinear_universal_predict") or {"results": []},
+        "patchtst_raw": outputs.get("patchtst_universal_predict") or {"results": []},
+        "itransformer_raw": outputs.get("itransformer_universal_predict") or {"results": []},
+        "state_space_raw": outputs.get("state_space_universal_predict") or {"results": []},
+        "stage_timings": timings,
+        "sequence_dataset": payload.get("sequence_dataset_meta") or {},
+        "n_input": len(payloads),
+    }
+    callback_status = _post_pipeline_prediction_callback(payload, bundle, elapsed_s)
+    bundle["callback_status"] = callback_status
+    return bundle
+
+
 @app.function(
     cpu=1,
     memory=2048,

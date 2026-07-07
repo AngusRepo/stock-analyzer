@@ -18,9 +18,11 @@ import logging
 import os
 import time
 import uuid
+import hmac
+from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from services.allocator_contract_guard import allocator_contract_guard_enabled
@@ -28,6 +30,7 @@ from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunning
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
+callback_router = APIRouter(prefix="/pipeline", tags=["pipeline-callback"])
 
 WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
 WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "")
@@ -43,6 +46,34 @@ class CallbackWorkerError(RuntimeError):
 
 def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").strip().lower()
+
+
+def _valid_service_tokens() -> list[str]:
+    tokens = [
+        os.environ.get("INTERNAL_TOKEN", ""),
+        os.environ.get("ML_CONTROLLER_TOKEN", ""),
+        os.environ.get("ML_CONTROLLER_SECRET", ""),
+        os.environ.get("STOCKVISION_AUTH_TOKEN", ""),
+    ]
+    return list(dict.fromkeys(token.strip() for token in tokens if token and token.strip()))
+
+
+def _check_service_token(request: Request) -> None:
+    tokens = _valid_service_tokens()
+    if not tokens:
+        if _ENVIRONMENT == "production":
+            raise HTTPException(status_code=500, detail="pipeline callback token not configured")
+        return
+    provided = (
+        request.headers.get("X-Service-Token", "")
+        or request.headers.get("X-Controller-Token", "")
+        or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    )
+    if not any(hmac.compare_digest(provided, token) for token in tokens):
+        raise HTTPException(status_code=401, detail="invalid service token")
 
 
 # ─── Worker callback helpers (imported by pipeline_job_main too) ─────────────
@@ -133,6 +164,27 @@ async def _emit_subtask_callbacks(
         ("recommendation", recos_n > 0, f"run_id={run_id} recos_updated={recos_n} seed_rows={seed_rows_n}"),
     ]
 
+    async def _send(payload: dict, client: httpx.AsyncClient | None = None) -> None:
+        await _callback_worker(payload, client=client)
+
+    async_client_cls = getattr(httpx, "AsyncClient", None)
+    if async_client_cls is object or not callable(async_client_cls):
+        for task, ok, summary in subtasks:
+            status = "success" if (overall_status == "success" and ok) else "error"
+            payload: dict = {
+                "task": task,
+                "status": status,
+                "summary": summary,
+                "duration_ms": elapsed_ms,
+                "run_id": run_id,
+            }
+            if run_date:
+                payload["run_date"] = run_date
+            if status == "error":
+                payload["error"] = overall_error or f"{task}: no output"
+            await _send(payload)
+        return
+
     async with httpx.AsyncClient(timeout=15.0) as client:
         for task, ok, summary in subtasks:
             status = "success" if (overall_status == "success" and ok) else "error"
@@ -151,6 +203,114 @@ async def _emit_subtask_callbacks(
 
 
 # ─── V2 trigger endpoint ─────────────────────────────────────────────────────
+
+
+async def _record_pipeline_modal_bundle_telemetry(payload: dict[str, Any]) -> None:
+    bundle = payload.get("result") or payload.get("modal_prediction_bundle") or {}
+    if not isinstance(bundle, dict):
+        return
+    elapsed_s = bundle.get("elapsed_s") or payload.get("elapsed_s")
+    try:
+        elapsed = float(elapsed_s)
+    except (TypeError, ValueError):
+        return
+    if elapsed <= 0:
+        return
+    try:
+        from services.cost_tracker import record_modal_call
+
+        await record_modal_call(
+            source="pipeline_v2_async_modal_prediction_callback",
+            function_name="pipeline_prediction_bundle",
+            compute_sec=elapsed,
+            cpu=4.0,
+            memory_mb=8192,
+            meta={
+                "wall_sec": elapsed,
+                "run_id": payload.get("run_id") or bundle.get("run_id"),
+                "run_date": payload.get("run_date") or bundle.get("run_date"),
+                "input_count": bundle.get("n_input"),
+                "stage_timings": bundle.get("stage_timings") or {},
+                "callback_status": bundle.get("callback_status") or {},
+                "state_gcs_uri": payload.get("state_gcs_uri") or bundle.get("state_gcs_uri"),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry must never block callback closure.
+        logger.debug("[Pipeline V2] Modal bundle telemetry skipped: %s", exc)
+
+
+@callback_router.post("/v2/modal-prediction/callback")
+async def pipeline_modal_prediction_callback(request: Request) -> dict[str, Any]:
+    """Resume pipeline-v2 after Modal completes the raw L3 prediction bundle."""
+    _check_service_token(request)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="callback payload must be an object")
+
+    from graphs.daily_pipeline_v2 import run_pipeline_v2_from_modal_prediction_callback
+    from services.pipeline_snapshot_followup import run_deferred_snapshot_followup
+
+    run_id = str(payload.get("run_id") or "")
+    run_date = str(payload.get("run_date") or "")
+    await _record_pipeline_modal_bundle_telemetry(payload)
+    started = time.time()
+    status = "error"
+    summary = ""
+    error: str | None = None
+    result: dict | None = None
+
+    try:
+        result = await run_pipeline_v2_from_modal_prediction_callback(payload)
+        if isinstance(result, dict) and result.get("status") == "completed":
+            status = "success"
+            metrics = result.get("metrics") or {}
+            snapshot_status = (metrics.get("dataset_snapshot_export") or {}).get("status", "n/a")
+            error_count = len(result.get("errors") or [])
+            summary = (
+                f"run_id={run_id} "
+                f"preds={metrics.get('predictions_written', 0)} "
+                f"recos_updated={metrics.get('recommendations_updated', 0)} "
+                f"seed_rows={metrics.get('recommendation_seed_rows', 0)} "
+                f"llm_reasons={metrics.get('llm_reasons_count', 0)} "
+                f"snapshot={snapshot_status} "
+                f"errors={error_count}"
+            )
+        else:
+            err_detail = result.get("error") if isinstance(result, dict) else str(result)
+            error = str(err_detail or "pipeline continuation returned non-completed status")
+            summary = f"run_id={run_id} {error[:120]}"
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[Pipeline V2] Modal prediction callback continuation failed")
+        error = f"{type(exc).__name__}: {exc}"
+        summary = f"run_id={run_id} {error[:120]}"
+
+    elapsed_ms = int((time.time() - started) * 1000)
+    overall_payload: dict[str, Any] = {
+        "task": "pipeline",
+        "status": status,
+        "summary": summary,
+        "duration_ms": elapsed_ms,
+        "run_id": run_id,
+    }
+    if run_date:
+        overall_payload["run_date"] = run_date
+    if error:
+        overall_payload["error"] = error
+
+    await _callback_worker(overall_payload)
+    await _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms, run_date=run_date or None)
+
+    snapshot_state = ((result or {}).get("metrics") or {}).get("dataset_snapshot_export") or {}
+    if status == "success" and snapshot_state.get("status") == "deferred":
+        await run_deferred_snapshot_followup(run_date=run_date, run_id=run_id, callback_worker=_callback_worker)
+
+    return {
+        "status": status,
+        "run_id": run_id,
+        "run_date": run_date,
+        "summary": summary,
+        "duration_ms": elapsed_ms,
+    }
 
 
 @router.post("/v2/run")

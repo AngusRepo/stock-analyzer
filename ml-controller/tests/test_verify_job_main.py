@@ -52,6 +52,26 @@ def test_verify_job_unmatured_replay_zero_written_rows_is_skipped():
     assert "no matured outcome writes yet" in error
 
 
+def test_verify_job_missing_bars_zero_written_rows_is_skipped():
+    result = {
+        "status": "ok",
+        "run_date": "2026-07-06",
+        "pending": 9,
+        "verified": 0,
+        "metrics": {"verified_rows_written": 0, "skipped_no_bars": 9},
+        "errors": [],
+    }
+
+    status, error = classify_verify_callback_status(
+        result,
+        run_date="2026-07-06",
+        tw_now=datetime(2026, 7, 7, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert status == "skipped"
+    assert "no verifiable price bars" in error
+
+
 def test_verify_summary_includes_durable_write_count():
     result = {
         "pending": 12,

@@ -204,6 +204,7 @@ def test_s12_trade_ev_bootstrap_does_not_use_global_as_direct_ev_owner():
         "symbol": "8091",
         "current_price": 100,
         "stop_loss": 96,
+        "s12_structure_stop": 96,
     })
 
     assert ev["status"] == "loaded"
@@ -238,6 +239,7 @@ def test_s12_trade_ev_bootstrap_requires_date_breadth_before_peer_replay_takes_o
         "symbol": "8091",
         "current_price": 100,
         "stop_loss": 96,
+        "s12_structure_stop": 96,
         "market_segment": "LISTED",
         "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
         "score": 70,
@@ -279,6 +281,7 @@ def test_s12_trade_ev_bootstrap_excludes_legacy_non_s12_outcomes():
         "symbol": "8091",
         "current_price": 100,
         "stop_loss": 96,
+        "s12_structure_stop": 96,
         "market_segment": "LISTED",
         "alpha_context": {"edge_bucket": "breakout"},
     })
@@ -304,6 +307,7 @@ def test_s12_trade_ev_bootstrap_uses_structural_cold_start_when_verified_samples
             "symbol": "8091",
             "current_price": 100,
             "stop_loss": 96,
+            "s12_structure_stop": 96,
             "target1": 101,
             "target2": 102,
             "market_segment": "LISTED",
@@ -355,6 +359,7 @@ def test_s12_trade_ev_bootstrap_passes_worker_s12_context_to_cold_start_ev():
                                 "equity_mutation_risk_haircuts=1h_short_risk_haircut|slow_vwap_overhead_supply_haircut;"
                                 "htf_hard_block=false"
                             ),
+                            "structureStop": 96,
                             "exitPlan": {
                                 "tp1": 106,
                                 "tp1Source": "15m_previous_high",
@@ -396,6 +401,7 @@ def test_s12_trade_ev_bootstrap_keeps_setup_ev_but_requires_reaction_ready_execu
                         "s12": {
                             "ready": False,
                             "state": "waiting_sweep",
+                            "structureStop": 96,
                             "detail": (
                                 "state=waiting_sweep;ready=false;entry_archetype=equity_repricing_breakout;"
                                 "vwap_fast_acceptance=true;htf_hard_block=false"
@@ -432,6 +438,7 @@ def test_s12_trade_ev_bootstrap_uses_fundamental_quality_before_score_components
             "symbol": "6257",
             "current_price": 100,
             "stop_loss": 96,
+            "s12_structure_stop": 96,
             "target1": 106,
             "target2": 112,
             "market_segment": "LISTED",
@@ -467,6 +474,7 @@ def test_s12_trade_ev_bootstrap_prefers_structured_canonical_entry_context():
                                 "equityMutationRiskHaircuts": ["1h_short_risk_haircut"],
                                 "htfHardBlock": False,
                             },
+                            "structureStop": 96,
                             "exitPlan": {
                                 "tp1": 106,
                                 "tp1Source": "15m_previous_high",
@@ -497,11 +505,13 @@ def test_s12_trade_ev_bootstrap_preserves_vwap_fair_value_target_sources():
             "symbol": "8091",
             "current_price": 100,
             "stop_loss": 96,
+            "s12_structure_stop": 96,
             "market_segment": "LISTED",
             "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
         },
         prediction={
             "s12_exit": {
+                "structure_stop": 96,
                 "tp1": {"price": 104, "source": "vwap_fair_value"},
                 "mainExit": {"price": 109, "source": "vwap_fair_value"},
             },
@@ -532,6 +542,7 @@ def test_s12_trade_ev_bootstrap_reads_canonical_lifecycle_vwap_targets():
                     "entry": {
                         "s12": {
                             "exitPlan": {
+                                "trailingInitial": 96,
                                 "tp1": 104,
                                 "tp1Source": "15m_previous_high",
                                 "mainExit": 109,
@@ -563,7 +574,12 @@ def test_s12_trade_ev_bootstrap_excludes_hold_signal_even_with_s12_payload():
         roundtrip_cost_bps=0,
     )
 
-    ev = provider.build_for_row({"symbol": "1111", "current_price": 100, "stop_loss": 96})
+    ev = provider.build_for_row({
+        "symbol": "1111",
+        "current_price": 100,
+        "stop_loss": 96,
+        "s12_structure_stop": 96,
+    })
 
     assert provider.summary()["sample_rows"] == 0
     assert ev["status"] == "loaded"
@@ -571,3 +587,24 @@ def test_s12_trade_ev_bootstrap_excludes_hold_signal_even_with_s12_payload():
     assert ev["s12_structural_targets"]["target1_source"] == "s12_structure_exit_plan.r_multiple_fallback_1r"
     assert ev["s12_structural_targets"]["target2_source"] == "s12_structure_exit_plan.r_multiple_fallback_2r"
     assert ev["replay_bootstrap"]["sampleCount"] == 0
+
+
+def test_s12_trade_ev_bootstrap_does_not_treat_legacy_stop_loss_as_s12_structure():
+    provider = S12TradeEvBootstrapProvider([], run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
+
+    ev = provider.build_for_row({
+        "symbol": "8091",
+        "current_price": 100,
+        "stop_loss": 80,
+        "target1": 110,
+        "target2": 120,
+        "market_segment": "LISTED",
+        "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
+        "score": 70,
+    })
+
+    assert ev["status"] == "missing_structure"
+    assert ev["trade_expected_return_source"] == "s12_structural_cold_start_ev_missing_long_structure_stop"
+    assert ev["s12_structural_targets"]["structure_stop_source"] == "missing_s12_structure_stop"
+    assert ev["s12_structural_targets"]["legacy_stop_loss_ignored"] is True
+    assert ev["candidate_s12_structure_policy"] == "shared_symbol_peer_cold_structure_resolver"

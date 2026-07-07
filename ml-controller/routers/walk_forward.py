@@ -36,7 +36,7 @@ class WalkForwardRequest(BaseModel):
 @router.post("/walk_forward/dry-run")
 async def walk_forward_dry_run(req: WalkForwardRequest):
     """Preview window plan + compute budget without triggering retrains."""
-    from services.walk_forward_retrain import run_walk_forward, MODELS_ALL
+    from services.walk_forward_retrain import MODELS_ALL, run_walk_forward, walk_forward_model_coverage
     from services.backtest_engine import BacktestDataset
     from services.stratified_subset import select_stratified_subset
 
@@ -64,7 +64,9 @@ async def walk_forward_dry_run(req: WalkForwardRequest):
         "dry_run": True,
         "windows_count": len(run.windows),
         "planned_retrains": run.aggregate.get("planned_retrains"),
+        "planned_model_evaluations": run.aggregate.get("planned_model_evaluations"),
         "estimated_tree_wall_clock_hours": run.aggregate.get("estimated_tree_wall_clock_hours"),
+        "model_coverage": run.aggregate.get("model_coverage") or walk_forward_model_coverage(req.models or MODELS_ALL),
         "data_access": data_access,
         "windows": [
             {
@@ -91,13 +93,13 @@ async def walk_forward_run(req: WalkForwardRequest):
         raise HTTPException(
             status_code=400,
             detail=(
-                "walk_forward/run requires confirm=true — triggers Modal retrains "
-                "(12+ windows × 5 models = 60+ GPU jobs, ~2-3 hr wall clock). "
+                "walk_forward/run requires confirm=true — triggers Modal walk-forward jobs "
+                "(active-8 coverage: tree native retrain + non-tree artifact lifecycle evidence). "
                 "Use /walk_forward/dry-run first."
             ),
         )
 
-    from services.walk_forward_retrain import MODELS_ALL
+    from services.walk_forward_retrain import MODELS_ALL, walk_forward_model_coverage
     from services.backtest_engine import BacktestDataset, walk_forward_windows
     from services.stratified_subset import select_stratified_subset
     from services.payload_builder import load_market_env
@@ -175,6 +177,7 @@ async def walk_forward_run(req: WalkForwardRequest):
         "fn_call_id": fn_call_id,
         "windows_planned": len(windows),
         "models": req.models or MODELS_ALL,
+        "model_coverage": walk_forward_model_coverage(req.models or MODELS_ALL),
         "data_access": data_access,
         "gcs_result_path": f"walk_forward/runs/{req.start_date}_{req.end_date}.json",
         "poll_endpoint": f"/walk_forward/report/{req.start_date}/{req.end_date}",

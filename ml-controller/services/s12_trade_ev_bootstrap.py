@@ -201,26 +201,47 @@ def _alpha_bucket_from_payloads(*payloads: dict[str, Any]) -> str:
     return "UNKNOWN"
 
 
-def _entry_stop_from_row(row: dict[str, Any], prediction: dict[str, Any] | None) -> tuple[float | None, float | None]:
+def _entry_from_row(row: dict[str, Any], prediction: dict[str, Any] | None) -> float | None:
     pred = prediction if isinstance(prediction, dict) else {}
-    entry = _first_number(
+    return _first_number(
         row.get("entry_price"),
         row.get("current_price"),
         pred.get("entry_price"),
         pred.get("current_price"),
     )
-    stop = _first_number(
-        row.get("s12_structure_stop"),
-        pred.get("s12_structure_stop"),
-        _nested(pred, "s12_defense", "stop_loss"),
-        _nested(pred, "s12_exit", "structure_stop"),
-        _nested(pred, "s12_exit", "trailingStop", "initial"),
-        _nested(pred, "s12_exit", "trailing_stop", "initial"),
-        _nested(pred, "s12_structure", "exitPlan", "trailingStop", "initial"),
-        _nested(pred, "s12Structure", "exitPlan", "trailingStop", "initial"),
-        row.get("stop_loss"),
-        pred.get("stop_loss"),
+
+
+def _s12_structure_stop_from_row(
+    row: dict[str, Any],
+    prediction: dict[str, Any] | None,
+) -> tuple[float | None, str | None]:
+    payloads = _payload_dicts(row, prediction)
+    return _number_from_paths(
+        payloads,
+        [
+            ("s12_structure_stop",),
+            ("s12StructureStop",),
+            ("s12_defense", "stop_loss"),
+            ("s12Defense", "stopLoss"),
+            ("s12_exit", "structure_stop"),
+            ("s12Exit", "structureStop"),
+            ("s12_exit", "trailingStop", "initial"),
+            ("s12Exit", "trailingStop", "initial"),
+            ("s12_exit", "trailing_stop", "initial"),
+            ("s12_structure", "exitPlan", "trailingStop", "initial"),
+            ("s12Structure", "exitPlan", "trailingStop", "initial"),
+            ("s12", "exitPlan", "trailingStop", "initial"),
+            ("canonical_trade_lifecycle", "entry", "s12", "structureStop"),
+            ("canonicalTradeLifecycle", "entry", "s12", "structureStop"),
+            ("canonical_trade_lifecycle", "entry", "s12", "exitPlan", "trailingInitial"),
+            ("canonicalTradeLifecycle", "entry", "s12", "exitPlan", "trailingInitial"),
+        ],
     )
+
+
+def _entry_stop_from_row(row: dict[str, Any], prediction: dict[str, Any] | None) -> tuple[float | None, float | None]:
+    entry = _entry_from_row(row, prediction)
+    stop, _stop_source = _s12_structure_stop_from_row(row, prediction)
     return entry, stop
 
 
@@ -623,6 +644,7 @@ def _s12_structural_targets_from_row(
 
     entry = _to_float(entry_price)
     stop = _to_float(stop_price)
+    _s12_stop, stop_source = _s12_structure_stop_from_row(row, prediction)
     risk = entry - stop if entry is not None and stop is not None and stop < entry else None
 
     structural_tp1 = _first_above(entry, target1, prior_high)
@@ -664,6 +686,8 @@ def _s12_structural_targets_from_row(
         "target2_policy": "1h_supply_zone_or_vwap_fair_value_else_2r_fallback",
         "target1_declared_source": target1_declared_source,
         "target2_declared_source": target2_declared_source,
+        "structure_stop_source": stop_source or "missing_s12_structure_stop",
+        "legacy_stop_loss_ignored": _first_number(row.get("stop_loss"), pred.get("stop_loss")) is not None and stop_source is None,
         "supply_zone_low": supply_low,
         "supply_zone_high": supply_high,
         "legacy_target1_ignored": legacy_target1 is not None and (
@@ -1029,6 +1053,8 @@ class S12TradeEvBootstrapProvider:
             "global_sample_count": len(global_bucket.rows) if global_bucket is not None else 0,
         }
         ev.update(replay_meta)
+        ev["s12_structural_targets"] = target_evidence
+        ev["candidate_s12_structure_policy"] = "shared_symbol_peer_cold_structure_resolver"
         s12_entry_context = _s12_entry_context_from_row(row, prediction)
         not_ready_reason = _s12_context_not_ready_reason(s12_entry_context) if s12_entry_context else None
         if s12_entry_context:
@@ -1069,6 +1095,7 @@ class S12TradeEvBootstrapProvider:
             "bootstrap_run_date": self.run_date,
             "as_of_guard": "run_date_current_structure_no_future_outcomes",
             "s12_structural_targets": target_evidence,
+            "candidate_s12_structure_policy": "shared_symbol_peer_cold_structure_resolver",
             "candidate_s12_entry_context": s12_entry_context,
             "candidate_market_segment": _market_segment_from_payloads(row, prediction or {}),
             "candidate_alpha_bucket": _alpha_bucket_from_payloads(row, prediction or {}),
@@ -1077,6 +1104,12 @@ class S12TradeEvBootstrapProvider:
                 "status": ev.get("status"),
                 "source": ev.get("source"),
                 "sampleCount": ev.get("sampleCount"),
+                "minSamples": ev.get("minSamples"),
+                "sampleDateCount": ev.get("sampleDateCount"),
+                "minSampleDates": ev.get("minSampleDates"),
+                "trade_expected_return_net_pct": ev.get("trade_expected_return_net_pct"),
+                "expected_R": ev.get("expected_R"),
+                "win_rate": ev.get("win_rate"),
                 "trade_expected_return_source": ev.get("trade_expected_return_source"),
             },
         })

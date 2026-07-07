@@ -1551,9 +1551,11 @@ def train_wf_hmm_window(payload: dict) -> dict:
     max_containers=1,   # only one orchestrator at a time
 )
 def walk_forward_orchestrator(payload: dict) -> dict:
-    """Walk-forward orchestrator that runs the full pipeline across windows.
-    all windows, calling train_wf_tree_window / train_wf_hmm_window.
-    internally. Persists aggregate result to GCS walk_forward/runs/{start}_{end}.json.
+    """Walk-forward orchestrator for active-8 coverage across windows.
+
+    Tree active models run native per-window retrain. Non-tree active-8 models
+    are reported as artifact-lifecycle-required until family-specific
+    walk-forward adapters are wired into this route.
 
     payload:
         windows: list of {window_id, train_start, train_end, test_start, test_end}
@@ -1571,12 +1573,34 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     import time
     import json
     import asyncio
+    from app.model_pool import ALPHA_PREDICTION_MODELS
 
     t0 = time.time()
     windows = payload["windows"]
     market_env = payload["market_env"]
     batch_count = payload.get("batch_count", 5)
-    models = payload.get("models") or ["XGBoost", "ExtraTrees", "LightGBM"]
+    active8_models = list(ALPHA_PREDICTION_MODELS)
+    native_retrain_models = ["LightGBM", "XGBoost", "ExtraTrees"]
+    artifact_lifecycle_models = [m for m in active8_models if m not in native_retrain_models]
+    raw_models = payload.get("models") or active8_models
+    models = []
+    for model in raw_models:
+        name = str(model or "").strip()
+        if name and name not in models:
+            models.append(name)
+    model_coverage = {
+        "schema_version": "walk-forward-active8-coverage-v1",
+        "requested_models": models,
+        "active8_models": active8_models,
+        "native_retrain_models": [m for m in models if m in native_retrain_models],
+        "artifact_lifecycle_required_models": [m for m in models if m in artifact_lifecycle_models],
+        "unsupported_models": [m for m in models if m not in active8_models],
+        "coverage_mode": (
+            "active8_with_artifact_lifecycle_gaps"
+            if any(m in artifact_lifecycle_models or m not in active8_models for m in models)
+            else "native_walk_forward_retrain"
+        ),
+    }
     concurrent = int(payload.get("concurrent_windows", 2))
     start_date = payload["start_date"]
     end_date = payload["end_date"]
@@ -1602,7 +1626,21 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "train_range": [window["train_start"], window["train_end"]],
             "test_range": [window["test_start"], window["test_end"]],
             "model_metrics": {},
+            "model_coverage": model_coverage,
         }
+
+        for model_name in model_coverage["artifact_lifecycle_required_models"]:
+            result["model_metrics"][model_name] = {
+                "status": "artifact_lifecycle_required",
+                "oos_ic": None,
+                "reason": "active8_non_tree_family_requires_artifact_lifecycle_or_family_specific_walk_forward_adapter",
+            }
+        for model_name in model_coverage["unsupported_models"]:
+            result["model_metrics"][model_name] = {
+                "status": "unsupported",
+                "oos_ic": None,
+                "reason": "model_not_in_active8_walk_forward_contract",
+            }
 
         # Step 0: per-window feature selection prevents future leakage in the tree path.
         # Tree training requires this pool for the same window.
@@ -1656,7 +1694,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "skip_feature_pool": False,
         }
 
-        need_tree = any(m in models for m in ["XGBoost", "ExtraTrees", "LightGBM"])
+        need_tree = bool(model_coverage["native_retrain_models"])
         tasks = []
         if need_tree:
             if fs_ok:
@@ -1765,6 +1803,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         "n_windows_total": len(all_results),
         "n_windows_errored": n_err,
         "per_model": summary,
+        "model_coverage": model_coverage,
         "fs_stats": fs_stats,
         "elapsed_s": round(time.time() - t0, 1),
     }

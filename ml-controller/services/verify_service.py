@@ -350,6 +350,8 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
     updates: list[dict] = []
     arf_batch: list[dict] = []
     errors: list[str] = []
+    skipped_no_bars = 0
+    skipped_no_update = 0
     bars_by_stock = load_bars_for_predictions(pending)
 
     for pred in pending:
@@ -359,12 +361,16 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
                 b for b in bars_by_stock.get(int(pred["stock_id"]), [])
                 if look_from <= str(b.get("date")) <= look_to
             ][:7]
+            if not pred_bars:
+                skipped_no_bars += 1
+                continue
             result = verify_single_prediction(
                 pred,
                 market_risk,
                 bars_override=pred_bars,
             )
             if result is None:
+                skipped_no_update += 1
                 continue
             updates.append(result)
             if result.get("arf"):
@@ -378,6 +384,10 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
         "verify_updates": updates,
         "arf_feedback_items": arf_batch,
         "errors": errors,
+        "metrics": {
+            "skipped_no_bars": skipped_no_bars,
+            "skipped_no_update": skipped_no_update,
+        },
     }
 
 

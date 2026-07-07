@@ -17,9 +17,9 @@ from services.s12_trade_ev import (  # noqa: E402
 
 def test_build_s12_trade_ev_from_replay_outputs_full_trade_ev_contract():
     samples = [
-        {"exit_price": 108, "mfe_pct": 0.10, "mae_pct": -0.02, "bars_to_exit": 8, "exit_reason": "tp2"},
-        {"exit_price": 104, "mfe_pct": 0.06, "mae_pct": -0.01, "bars_to_exit": 5, "exit_reason": "tp1"},
-        {"exit_price": 96, "mfe_pct": 0.02, "mae_pct": -0.05, "bars_to_exit": 4, "exit_reason": "structure_stop"},
+        {"exit_price": 108, "mfe_pct": 0.10, "mae_pct": -0.02, "bars_to_exit": 8, "exit_reason": "tp2", "sample_date": "2026-07-01"},
+        {"exit_price": 104, "mfe_pct": 0.06, "mae_pct": -0.01, "bars_to_exit": 5, "exit_reason": "tp1", "sample_date": "2026-07-01"},
+        {"exit_price": 96, "mfe_pct": 0.02, "mae_pct": -0.05, "bars_to_exit": 4, "exit_reason": "structure_stop", "sample_date": "2026-07-01"},
     ] * 10
 
     ev = build_s12_trade_ev_from_replay(
@@ -28,6 +28,7 @@ def test_build_s12_trade_ev_from_replay_outputs_full_trade_ev_contract():
         stop_price=96,
         samples=samples,
         min_samples=30,
+        min_sample_dates=1,
         roundtrip_cost_bps=20,
     )
 
@@ -90,9 +91,9 @@ def test_extract_s12_trade_ev_fails_closed_when_missing():
 
 def test_build_s12_trade_ev_uses_direct_r_when_candidate_risk_available():
     samples = [
-        {"trade_pnl_r": 1.5, "exit_reason": "structure_take_profit"},
-        {"trade_pnl_r": -1.0, "exit_reason": "structure_stop"},
-        {"trade_pnl_r": 0.5, "exit_reason": "time_exit"},
+        {"trade_pnl_r": 1.5, "exit_reason": "structure_take_profit", "sample_date": "2026-07-01"},
+        {"trade_pnl_r": -1.0, "exit_reason": "structure_stop", "sample_date": "2026-07-01"},
+        {"trade_pnl_r": 0.5, "exit_reason": "time_exit", "sample_date": "2026-07-01"},
     ] * 10
 
     ev = build_s12_trade_ev_from_replay(
@@ -101,6 +102,7 @@ def test_build_s12_trade_ev_uses_direct_r_when_candidate_risk_available():
         stop_price=95,
         samples=samples,
         min_samples=30,
+        min_sample_dates=1,
         roundtrip_cost_bps=0,
     )
 

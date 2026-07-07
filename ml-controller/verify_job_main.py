@@ -58,10 +58,18 @@ def classify_verify_callback_status(
     pending = int(result.get("pending") or 0)
     verified = int(result.get("verified") or 0)
     written = int((result.get("metrics") or {}).get("verified_rows_written") or 0)
+    metrics = result.get("metrics") or {}
+    skipped_no_bars = int(metrics.get("skipped_no_bars") or 0)
 
     if pending <= 0:
         return "skipped", "no pending predictions in verifiable window"
     if verified <= 0 or written <= 0:
+        if skipped_no_bars >= pending:
+            return "skipped", (
+                "pending predictions have no verifiable price bars yet: "
+                f"pending={pending} skipped_no_bars={skipped_no_bars} "
+                f"verified={verified} verified_rows_written={written}"
+            )
         if _is_unmatured_replay_window(run_date or str(result.get("run_date") or ""), tw_now):
             return "skipped", (
                 "no matured outcome writes yet for replay window: "

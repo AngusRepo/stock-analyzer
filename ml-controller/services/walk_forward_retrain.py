@@ -47,13 +47,62 @@ from services.backtest_engine import (  # noqa: E402
 )
 from services.payload_builder import load_market_env
 from services import modal_client
+from services.active_model_policy import ACTIVE_ALPHA_MODELS
 
 logger = logging.getLogger(__name__)
 
 ML_SERVICE_URL    = os.environ.get("ML_SERVICE_URL", "")
 ML_SERVICE_SECRET = os.environ.get("ML_SERVICE_SECRET", "")
 
-MODELS_ALL = ["LightGBM", "XGBoost", "ExtraTrees"]
+MODELS_ALL = list(ACTIVE_ALPHA_MODELS)
+WALK_FORWARD_NATIVE_RETRAIN_MODELS = ("LightGBM", "XGBoost", "ExtraTrees")
+WALK_FORWARD_ARTIFACT_LIFECYCLE_MODELS = tuple(
+    model for model in MODELS_ALL if model not in WALK_FORWARD_NATIVE_RETRAIN_MODELS
+)
+
+
+def _normalize_requested_models(models: Optional[list[str]]) -> list[str]:
+    requested = models or MODELS_ALL
+    out: list[str] = []
+    seen: set[str] = set()
+    for model in requested:
+        name = str(model or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def walk_forward_model_coverage(models: Optional[list[str]] = None) -> dict[str, Any]:
+    """Return the active-8 walk-forward coverage contract.
+
+    Tree models have a native per-window retrain implementation today. The
+    remaining active-8 formal artifacts are governed by artifact lifecycle /
+    model-CPCV evidence and must be validated there until family-specific
+    per-window retrain adapters are wired into this route.
+    """
+
+    requested = _normalize_requested_models(models)
+    native = [model for model in requested if model in WALK_FORWARD_NATIVE_RETRAIN_MODELS]
+    artifact_required = [model for model in requested if model in WALK_FORWARD_ARTIFACT_LIFECYCLE_MODELS]
+    unsupported = [model for model in requested if model not in MODELS_ALL]
+    return {
+        "schema_version": "walk-forward-active8-coverage-v1",
+        "requested_models": requested,
+        "active8_models": list(MODELS_ALL),
+        "native_retrain_models": native,
+        "artifact_lifecycle_required_models": artifact_required,
+        "unsupported_models": unsupported,
+        "coverage_mode": (
+            "active8_with_artifact_lifecycle_gaps"
+            if artifact_required or unsupported
+            else "native_walk_forward_retrain"
+        ),
+        "native_retrain_count": len(native),
+        "artifact_lifecycle_required_count": len(artifact_required),
+        "unsupported_count": len(unsupported),
+    }
 
 
 @dataclass
@@ -324,7 +373,8 @@ async def _train_one_window(
         result.error = f"hmm: {e}"
         return result
 
-    # Step 2 & 3: active tree/coarse train. Retired models are ignored here.
+    # Step 2 & 3: active-8 coverage. Tree models have native per-window retrain;
+    # non-tree active-8 artifacts remain governed by artifact lifecycle evidence.
     train_payload = {
         "window_id": window.window_id,
         "train_start": window.train_start,
@@ -335,11 +385,20 @@ async def _train_one_window(
         "skip_feature_pool": False,
     }
 
-    active_tree_models = {"LightGBM", "XGBoost", "ExtraTrees"}
-    ignored_models = sorted(set(models) - active_tree_models)
-    if ignored_models:
-        logger.info("[WalkForward] ignoring retired/non-walk-forward models: %s", ignored_models)
-    need_tree = any(m in active_tree_models for m in models)
+    coverage = walk_forward_model_coverage(models)
+    for model_name in coverage["artifact_lifecycle_required_models"]:
+        result.model_metrics[model_name] = {
+            "status": "artifact_lifecycle_required",
+            "oos_ic": None,
+            "reason": "active8_non_tree_family_requires_artifact_lifecycle_or_family_specific_walk_forward_adapter",
+        }
+    for model_name in coverage["unsupported_models"]:
+        result.model_metrics[model_name] = {
+            "status": "unsupported",
+            "oos_ic": None,
+            "reason": "model_not_in_active8_walk_forward_contract",
+        }
+    need_tree = bool(coverage["native_retrain_models"])
 
     tasks = []
     if need_tree:
@@ -387,7 +446,8 @@ async def run_walk_forward(
                        tree max_containers). Default 2 keeps GCS and Modal load
                        predictable.
     """
-    models = models or MODELS_ALL
+    models = _normalize_requested_models(models)
+    coverage = walk_forward_model_coverage(models)
     trading_days = [d for d in dataset.trading_days if start_date <= d <= end_date]
     if len(trading_days) < train_window_days + test_window_days:
         raise ValueError(
@@ -424,7 +484,9 @@ async def run_walk_forward(
         run.aggregate = {
             "dry_run": True,
             "planned_windows": len(windows),
-            "planned_retrains": len(windows) * len(models),
+            "planned_retrains": len(windows) * len(coverage["native_retrain_models"]),
+            "planned_model_evaluations": len(windows) * len(models),
+            "model_coverage": coverage,
             "estimated_tree_wall_clock_hours": len(windows) * 15 / 60 / max(1, concurrent_windows),
         }
         return run
@@ -465,7 +527,7 @@ async def run_walk_forward(
     clear_hmm_cache()
 
     # Aggregate IC stats per model
-    run.aggregate = _aggregate_run(run)
+    run.aggregate = _aggregate_run(run, model_coverage=coverage)
     return run
 
 
@@ -473,7 +535,7 @@ async def run_walk_forward(
 # Analysis / aggregation
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _aggregate_run(run: WalkForwardRun) -> dict:
+def _aggregate_run(run: WalkForwardRun, *, model_coverage: Optional[dict[str, Any]] = None) -> dict:
     """Per-model IC statistics across windows + comparison anchor."""
     import numpy as np
 
@@ -504,11 +566,14 @@ def _aggregate_run(run: WalkForwardRun) -> dict:
             "ic_per_window": arr.tolist(),
         }
 
-    return {
+    aggregate = {
         "n_windows_total": len(run.windows),
         "n_windows_errored": n_errors,
         "per_model": summary,
     }
+    if model_coverage is not None:
+        aggregate["model_coverage"] = model_coverage
+    return aggregate
 
 
 def build_report(run: WalkForwardRun, current_universal_ic: Optional[dict] = None) -> str:
@@ -527,6 +592,18 @@ def build_report(run: WalkForwardRun, current_universal_ic: Optional[dict] = Non
     ]
 
     agg = run.aggregate
+    coverage = agg.get("model_coverage") if isinstance(agg.get("model_coverage"), dict) else {}
+    if coverage:
+        lines.extend([
+            f"**Model coverage mode**: `{coverage.get('coverage_mode')}`",
+            f"**Requested models**: {', '.join(coverage.get('requested_models') or [])}",
+            f"**Native per-window retrain**: {', '.join(coverage.get('native_retrain_models') or []) or 'none'}",
+            (
+                f"**Artifact lifecycle required**: "
+                f"{', '.join(coverage.get('artifact_lifecycle_required_models') or []) or 'none'}"
+            ),
+            "",
+        ])
     if not agg.get("per_model"):
         lines.append("*No successful windows — check individual errors.*")
         return "\n".join(lines)

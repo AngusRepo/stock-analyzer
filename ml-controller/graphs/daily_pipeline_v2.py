@@ -2993,9 +2993,9 @@ async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict
         "pool_versions_loaded": bool(_pool_versions_loaded),
         "serving_model_status": _json_safe(serving_model_status),
         "serving_degraded_dampening": _serving_degraded_dampening,
-        "serving_ev2_cfg": _json_safe(serving_ev2_cfg),
+        "serving_ev2_cfg": _json_safe(_serving_ev2_cfg),
         "serving_used_pool": bool(_serving_used_pool),
-        "serving_pool": _json_safe(serving_pool),
+        "serving_pool": _json_safe(_serving_pool),
     }
     state["pipeline_modal_serving_context"] = context
     return context

@@ -202,6 +202,13 @@ def _feature_values(
         forecast_data = _dict_payload(row.get("forecast_data"))
         dispersion = forecast_data.get("dispersion_diagnostics")
     dispersion_multiplier = _float_or_none((dispersion or {}).get("multiplier")) if isinstance(dispersion, dict) else None
+    edge_agreement = (
+        1.0
+        if l4_value is not None
+        and s12_value is not None
+        and ((l4_value >= 0 and s12_value >= 0) or (l4_value < 0 and s12_value < 0))
+        else 0.0
+    )
     return {
         "l4_expected_return": l4_value if l4_value is not None else 0.0,
         "l4_available": 1.0 if l4_value is not None else 0.0,
@@ -212,6 +219,7 @@ def _feature_values(
         "s12_context_multiplier_minus_1": multiplier - 1.0,
         "s12_target_quality_score": _target_quality_numeric(target_state),
         "market_heat_expected_return": max(0.0, market_heat_expected_return),
+        "l4_s12_edge_agreement": edge_agreement,
         "dispersion_multiplier": dispersion_multiplier if dispersion_multiplier is not None else 1.0,
     }
 

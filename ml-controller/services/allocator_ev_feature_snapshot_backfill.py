@@ -11,7 +11,9 @@ from services.l4_alpha_ev_artifact_builder import (
     load_l4_alpha_ev_training_rows,
 )
 from services.l4_alpha_ev_producer import materialize_l4_alpha_ev
+from services.l4_alpha_ev_resolver import resolve_l4_alpha_ev
 from services.s12_trade_ev_bootstrap import S12TradeEvBootstrapProvider
+from services.s12_trade_ev import extract_s12_trade_ev
 
 
 QueryFn = Callable[[str, list[Any] | None], list[dict[str, Any]]]
@@ -53,6 +55,13 @@ def _date_range(start_date: str, end_date: str) -> list[str]:
 
 def _previous_day(day: str) -> str:
     return (date.fromisoformat(str(day)[:10]) - timedelta(days=1)).isoformat()
+
+
+def _date_lte(left: str, right: str) -> bool:
+    try:
+        return date.fromisoformat(str(left)[:10]) <= date.fromisoformat(str(right)[:10])
+    except ValueError:
+        return False
 
 
 def load_allocator_ev_snapshot_candidate_rows(
@@ -107,6 +116,33 @@ def _parse_candidate_row(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     if isinstance(forecast_data.get("alpha_allocation"), dict) and not parsed.get("existing_alpha_allocation"):
         parsed["existing_alpha_allocation"] = forecast_data["alpha_allocation"]
     return parsed, prediction
+
+
+def _existing_l4_payload(allocation: dict[str, Any], *, snapshot_date: str) -> dict[str, Any] | None:
+    raw = allocation.get("l4_alpha_ev")
+    if not isinstance(raw, dict):
+        raw = allocation.get("alpha_ev") if isinstance(allocation.get("alpha_ev"), dict) else None
+    if not isinstance(raw, dict):
+        return None
+    payload = resolve_l4_alpha_ev(raw)
+    if payload.get("status") != "loaded":
+        return None
+    trained_until = str(payload.get("trained_until") or "").strip()
+    if not trained_until or not _date_lte(trained_until, _previous_day(snapshot_date)):
+        return None
+    payload["snapshot_reuse_policy"] = "persisted_candidate_time_l4_payload"
+    return payload
+
+
+def _existing_s12_payload(allocation: dict[str, Any]) -> dict[str, Any] | None:
+    raw = allocation.get("s12_trade_ev")
+    if not isinstance(raw, dict):
+        return None
+    value, _source, payload = extract_s12_trade_ev({"s12_trade_ev": raw})
+    if value is None or not isinstance(payload, dict):
+        return None
+    payload["snapshot_reuse_policy"] = "persisted_candidate_time_s12_payload"
+    return payload
 
 
 def _build_l4_asof_artifact(
@@ -243,21 +279,34 @@ def build_allocator_ev_feature_snapshots_for_date(
     )
     statements: list[tuple[str, list[Any]]] = []
     skipped = 0
+    skip_reasons: dict[str, int] = {}
+    reused_l4 = 0
+    reused_s12 = 0
     for raw in candidates:
         row, prediction = _parse_candidate_row(raw)
-        l4_payload = materialize_l4_alpha_ev(
-            row,
-            prediction=prediction,
-            policy={"l4_alpha_ev": artifact},
-        )
+        existing = row.get("existing_alpha_allocation") if isinstance(row.get("existing_alpha_allocation"), dict) else {}
+        l4_payload = _existing_l4_payload(existing, snapshot_date=snapshot_date)
+        if isinstance(l4_payload, dict):
+            reused_l4 += 1
+        else:
+            l4_payload = materialize_l4_alpha_ev(
+                row,
+                prediction=prediction,
+                policy={"l4_alpha_ev": artifact},
+            )
         if not isinstance(l4_payload, dict) or l4_payload.get("status") != "loaded":
             skipped += 1
+            skip_reasons["l4_missing_or_rejected"] = skip_reasons.get("l4_missing_or_rejected", 0) + 1
             continue
-        s12_payload = provider.build_for_row(row, prediction=prediction)
+        s12_payload = _existing_s12_payload(existing)
+        if isinstance(s12_payload, dict):
+            reused_s12 += 1
+        else:
+            s12_payload = provider.build_for_row(row, prediction=prediction)
         if not isinstance(s12_payload, dict) or s12_payload.get("trade_expected_return_net_pct") is None:
             skipped += 1
+            skip_reasons["s12_missing_expected_return"] = skip_reasons.get("s12_missing_expected_return", 0) + 1
             continue
-        existing = row.get("existing_alpha_allocation") if isinstance(row.get("existing_alpha_allocation"), dict) else {}
         alpha_allocation = {
             **existing,
             "l4_alpha_ev": l4_payload,
@@ -284,6 +333,9 @@ def build_allocator_ev_feature_snapshots_for_date(
         "candidate_rows": len(candidates),
         "snapshots_built": len(statements),
         "snapshots_skipped": skipped,
+        "skip_reasons": skip_reasons,
+        "reused_l4_payloads": reused_l4,
+        "reused_s12_payloads": reused_s12,
         "written": 0 if dry_run else int(write_result.get("changes_total") or 0),
         "write_result": write_result,
     }

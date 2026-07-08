@@ -285,3 +285,81 @@ def test_allocator_ev_feature_snapshot_backfill_dry_run_uses_previous_day_l4_art
     assert result["l4"]["trained_until"] == "2026-07-06"
     assert result["snapshots_built"] == 1
     assert result["written"] == 0
+
+
+def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_payloads():
+    l4_training_rows = []
+    for day_idx in range(30):
+        day = f"2026-06-{day_idx + 1:02d}"
+        for symbol_idx in range(24):
+            l4_training_rows.append({
+                "stock_id": symbol_idx,
+                "symbol": f"{symbol_idx:04d}",
+                "prediction_date": day,
+                "forecast_data": json.dumps({
+                    "ensemble_v2": {"avg_rank": 0.30, "confidence": 0.70}
+                }),
+                "actual_return_pct": 0.01 + (symbol_idx % 10) * 0.001,
+                "score": 60 + symbol_idx % 10,
+                "score_components": json.dumps({
+                    "finalScore": 60 + symbol_idx % 10,
+                    "components": {
+                        "mlEdge": 15,
+                        "fundamentalQuality": 16,
+                        "chipFlow": 17,
+                        "technicalStructure": 18,
+                    },
+                }),
+            })
+    persisted = {
+        "selected": True,
+        "l4_alpha_ev": {
+            **_l4_payload(0.021),
+            "trained_until": "2026-07-06",
+        },
+        "s12_trade_ev": _s12_payload(0.009),
+    }
+    candidate = {
+        "stock_id": 1,
+        "symbol": "2330",
+        "recommendation_date": "2026-07-07",
+        "forecast_data": json.dumps({"ensemble_v2": {"avg_rank": 0.35, "confidence": 0.72}}),
+        "score": 70,
+        "score_components": json.dumps({
+            "finalScore": 70,
+            "components": {
+                "mlEdge": 18,
+                "fundamentalQuality": 19,
+                "chipFlow": 20,
+                "technicalStructure": 21,
+            },
+        }),
+        "alpha_context": json.dumps({"market_heat_expected_return": 0.003}),
+        "existing_alpha_allocation": json.dumps(persisted),
+        "current_price": 100,
+    }
+
+    def query_fn(sql: str, params: list[object] | None = None) -> list[dict]:
+        if "FROM predictions p" in sql and "JOIN daily_recommendations dr" in sql:
+            assert params[0] == "2026-07-06"
+            return l4_training_rows
+        if "FROM s12_replay_trade_outcomes" in sql:
+            return []
+        if "FROM s12_structure_snapshots" in sql:
+            return []
+        if "FROM daily_recommendations dr" in sql and "JOIN predictions p" in sql:
+            return [candidate]
+        return []
+
+    result = build_allocator_ev_feature_snapshots_for_date(
+        snapshot_date="2026-07-07",
+        query_fn=query_fn,
+        dry_run=True,
+        l4_min_samples=200,
+        l4_min_dates=20,
+    )
+
+    assert result["snapshots_built"] == 1
+    assert result["reused_l4_payloads"] == 1
+    assert result["reused_s12_payloads"] == 1
+    assert result["skip_reasons"] == {}

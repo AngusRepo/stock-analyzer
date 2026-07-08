@@ -355,7 +355,7 @@ def load_allocator_ev_fusion_training_rows(
             dr.score_components,
             dr.alpha_context,
             dr.alpha_allocation,
-            dr.market_heat_expected_return,
+            NULL AS market_heat_expected_return,
             dr.market_segment,
             dr.recommendation_lane
         FROM predictions p

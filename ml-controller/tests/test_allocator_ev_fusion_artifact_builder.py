@@ -120,5 +120,7 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
 
     assert rows == []
     assert "dr.alpha_allocation" in observed["sql"]
+    assert "NULL AS market_heat_expected_return" in observed["sql"]
+    assert "dr.market_heat_expected_return" not in observed["sql"]
     assert "p.verified_at IS NOT NULL" in observed["sql"]
     assert observed["params"] == ["2026-07-07", "2026-07-07", "-45 days", 123]

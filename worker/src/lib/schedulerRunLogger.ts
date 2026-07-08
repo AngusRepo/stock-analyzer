@@ -131,7 +131,12 @@ export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus
   ) {
     return 'skipped'
   }
-  if (normalized.startsWith('failed') || normalized.startsWith('error')) {
+  if (
+    normalized.startsWith('failed') ||
+    normalized.startsWith('error') ||
+    normalized.includes('failed_validation') ||
+    normalized.includes('promotion_failed')
+  ) {
     return 'error'
   }
   if (

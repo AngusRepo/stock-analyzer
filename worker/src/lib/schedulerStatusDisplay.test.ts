@@ -5,6 +5,7 @@ import {
   selectSchedulerDisplayLogs,
   type SchedulerDisplayLogCandidate,
 } from './schedulerStatus'
+import { classifySchedulerSummary } from './schedulerRunLogger'
 import * as fs from 'node:fs'
 
 function assert(condition: unknown, message: string): void {
@@ -61,6 +62,11 @@ const logs: SchedulerDisplayLogCandidate[] = [
   const display = selectSchedulerDisplayLogs(logs)
   assert(display.lastAttempt?.timestamp === '2026-04-29T05:30:00.000Z', 'lastAttempt must show the newest cron attempt even when skipped')
   assert(display.lastEffective?.timestamp === '2026-04-28T02:10:00.000Z', 'lastEffective should preserve the latest non-skipped run')
+}
+
+{
+  const status = classifySchedulerSummary('allocator_ev_fusion_refresh failed_validation cadence=weekly decision=FAIL')
+  assert(status === 'error', 'artifact refresh failed_validation summaries must be logged as scheduler errors')
 }
 
 {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
@@ -11,6 +13,7 @@ from services.allocator_ev_fusion_artifact_builder import (
     load_allocator_ev_fusion_training_rows,
 )
 from services.allocator_ev_feature_snapshot_backfill import backfill_allocator_ev_feature_snapshots
+from services.model_artifact_registry import upsert_artifact_record
 from services.worker_config_client import worker_fetch
 
 
@@ -73,14 +76,91 @@ def _defaults_for_cadence(cadence: str) -> dict[str, int]:
     return {"lookback_days": 90, "min_samples": 500, "min_dates": 20}
 
 
+def _artifact_checksum(artifact: dict[str, Any]) -> str:
+    payload = json.dumps(artifact, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _promotion_config_allowed(artifact: dict[str, Any] | None, decision: str) -> bool:
+    if not isinstance(artifact, dict) or decision != "PASS":
+        return False
+    state = str(artifact.get("promotion_state") or "").strip()
+    tier = str(artifact.get("promotion_tier") or "").strip()
+    if state == "production_primary" and tier == "primary":
+        return artifact.get("primary_expected_return_allowed") is True
+    if state == "production_assistive" and tier == "assistive":
+        return artifact.get("assistive_expected_return_allowed") is True
+    return False
+
+
+def _registry_record(
+    *,
+    artifact: dict[str, Any],
+    validation: dict[str, Any],
+    cadence: str,
+    end_date: str,
+    lookback_days: int,
+    rows_loaded: int,
+    promoted: bool = False,
+    promotion_error: str | None = None,
+) -> dict[str, Any]:
+    model_version = str(artifact.get("model_version") or "unknown")
+    decision = str(validation.get("decision") or "PENDING").upper()
+    failed_gates = validation.get("failed_gates") if isinstance(validation.get("failed_gates"), list) else []
+    promotion_state = str(artifact.get("promotion_state") or "shadow")
+    evidence = {
+        "cadence": cadence,
+        "end_date": end_date,
+        "lookback_days": lookback_days,
+        "rows_loaded": rows_loaded,
+        "promotion_state": promotion_state,
+        "promotion_tier": artifact.get("promotion_tier"),
+        "primary_expected_return_allowed": artifact.get("primary_expected_return_allowed"),
+        "assistive_expected_return_allowed": artifact.get("assistive_expected_return_allowed"),
+        "validation_packet": validation,
+        "training_data": artifact.get("training_data"),
+        "promoted_to_trading_config": promoted,
+        "promotion_error": promotion_error,
+    }
+    return {
+        "artifact_id": f"allocator_ev_fusion:{model_version}",
+        "model_name": "allocator_ev_fusion",
+        "version": model_version,
+        "candidate_type": "allocator_ev_fusion_refresh",
+        "state": promotion_state,
+        "artifact_path": None,
+        "metadata_path": None,
+        "training_run_id": f"allocator_ev_fusion_refresh:{cadence}:{end_date}",
+        "training_manifest_path": None,
+        "trained_from_snapshot": artifact.get("feature_snapshot_version"),
+        "evaluation_baseline_version": None,
+        "final_compared_to": None,
+        "feature_policy_version": artifact.get("feature_snapshot_version"),
+        "checksum": _artifact_checksum(artifact),
+        "source_run_date": end_date,
+        "is_monthly": 1 if cadence == "monthly" else 0,
+        "offline_gate_status": "passed" if decision == "PASS" else "failed",
+        "offline_gate_decision": decision,
+        "offline_gate_failed_gates": json.dumps(failed_gates, ensure_ascii=False),
+        "offline_evidence_json": json.dumps(evidence, ensure_ascii=False),
+        "live_gate_status": "promoted" if promoted else ("promotion_failed" if promotion_error else "not_started"),
+        "live_evidence_json": json.dumps(
+            {"promoted_to_trading_config": promoted, "promotion_error": promotion_error},
+            ensure_ascii=False,
+        ),
+        "promotion_decision": str(artifact.get("promotion_tier") or "shadow"),
+        "approval_state": promotion_state,
+    }
+
+
 @router.post("/refresh")
 async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq) -> dict[str, Any]:
     """Build and optionally promote the allocator EV fusion artifact.
 
     This artifact is the production allocator expected-return owner that combines
     L4 selection alpha EV and S12 execution trade EV. Promotion is fail-closed:
-    only a PASS validation packet with a production-approved artifact mutates
-    Worker trading:config.
+    only a PASS validation packet with a production_primary/production_assistive
+    artifact mutates Worker trading:config.
     """
 
     defaults = _defaults_for_cadence(req.cadence)
@@ -105,16 +185,31 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
     artifact = result.get("artifact") if isinstance(result, dict) else None
     validation = result.get("validation_packet") if isinstance(result, dict) else None
     decision = str((validation or {}).get("decision") or "").upper()
-    promotion_state = str((artifact or {}).get("promotion_state") or "")
+    registry_error: str | None = None
+    if isinstance(artifact, dict):
+        try:
+            upsert_artifact_record(
+                _registry_record(
+                    artifact=artifact,
+                    validation=validation if isinstance(validation, dict) else {},
+                    cadence=req.cadence,
+                    end_date=end_date,
+                    lookback_days=lookback_days,
+                    rows_loaded=len(rows),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - config promotion gate remains authoritative.
+            registry_error = str(exc)
 
     promoted = False
     promotion_error: str | None = None
     if req.promote and not req.dry_run:
-        if not isinstance(artifact, dict) or promotion_state != "production_approved" or decision != "PASS":
+        if not _promotion_config_allowed(artifact, decision):
             return {
                 **result,
                 "status": "failed_validation",
                 "promoted": False,
+                "registry_error": registry_error,
                 "production_mutation_allowed": False,
                 "summary": (
                     "allocator_ev_fusion_refresh failed_validation "
@@ -129,7 +224,11 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
                     "ensemble_v2": {
                         "allocatorEvFusion": artifact,
                         "allocator_ev_fusion": artifact,
-                    }
+                    },
+                    "meta": {
+                        "source": "allocator_ev_fusion_refresh",
+                        "push_id": f"allocator_ev_fusion:{req.cadence}:{end_date}:{(artifact or {}).get('model_version', 'unknown')}",
+                    },
                 },
                 timeout=30.0,
             )
@@ -140,6 +239,22 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
     status = "promoted" if promoted else ("validated" if decision == "PASS" else "failed_validation")
     if promotion_error:
         status = "promotion_failed"
+    if isinstance(artifact, dict) and (promoted or promotion_error):
+        try:
+            upsert_artifact_record(
+                _registry_record(
+                    artifact=artifact,
+                    validation=validation if isinstance(validation, dict) else {},
+                    cadence=req.cadence,
+                    end_date=end_date,
+                    lookback_days=lookback_days,
+                    rows_loaded=len(rows),
+                    promoted=promoted,
+                    promotion_error=promotion_error,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - surface registry failure without masking promotion result.
+            registry_error = registry_error or str(exc)
 
     return {
         **result,
@@ -152,11 +267,13 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
         "rows_loaded": len(rows),
         "promoted": promoted,
         "promotion_error": promotion_error,
+        "registry_error": registry_error,
         "production_mutation_allowed": bool(req.promote and not req.dry_run and decision == "PASS"),
         "summary": (
             f"allocator_ev_fusion_refresh status={status} cadence={req.cadence} "
             f"end_date={end_date} model_version={(artifact or {}).get('model_version', 'unknown')} "
-            f"decision={decision or 'UNKNOWN'} promoted={1 if promoted else 0}"
+            f"decision={decision or 'UNKNOWN'} tier={(artifact or {}).get('promotion_tier', 'unknown')} "
+            f"promoted={1 if promoted else 0}"
         ),
     }
 

@@ -22,6 +22,17 @@ adminConfigCoreRoutes.put('/api/admin/config', async (c) => {
 
   const { setTradingConfig, getTradingConfig, validateTradingConfig, mergeAlphaFrameworkConfig } = await import('../lib/tradingConfig')
   const current = await getTradingConfig(c.env.KV)
+  const requestMeta = body.meta && typeof body.meta === 'object' && !Array.isArray(body.meta)
+    ? body.meta
+    : {}
+  const snapshotMeta = {
+    source: typeof requestMeta.source === 'string' && requestMeta.source.trim()
+      ? requestMeta.source.trim().slice(0, 120)
+      : 'admin_config_put',
+    push_id: typeof requestMeta.push_id === 'string' && requestMeta.push_id.trim()
+      ? requestMeta.push_id.trim().slice(0, 240)
+      : undefined,
+  }
   const mergedPosition = {
     ...current.position,
     ...(body.position ?? {}),
@@ -72,8 +83,8 @@ adminConfigCoreRoutes.put('/api/admin/config', async (c) => {
   const errors = validateTradingConfig(merged)
   if (errors.length > 0) return c.json({ error: 'Config validation failed', errors }, 400)
 
-  await setTradingConfig(c.env.KV, merged)
-  return c.json({ success: true, config: merged })
+  const snapshot = await setTradingConfig(c.env.KV, merged, snapshotMeta)
+  return c.json({ success: true, config: merged, snapshot })
 })
 
 adminConfigCoreRoutes.post('/api/admin/config/push-defaults', async (c) => {

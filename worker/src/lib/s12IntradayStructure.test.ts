@@ -4,6 +4,9 @@ import {
   assessS12IntradayStructure,
   assessS12IntradayStructureFromBaseBars,
   buildS12LongPositionStopPlan,
+  isS12ExecutableLongAssessment,
+  isS12HardVetoAssessment,
+  isS12PrimaryOwnerBlockingAssessment,
   resolveS12PositionDecision,
   resolveS12UnifiedDecision,
   s12TimingPolicyFromEnv,
@@ -415,6 +418,9 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assessment.maturity.takeoverRole === 'long_entry', 'limited takeover should expose long-entry ownership')
   assert(assessment.maturity.tier === 'limited_takeover_ready', 'limited takeover should expose an executable reduced-risk tier')
   assert(assessment.maturity.riskMode === 'reduced_size_tight_stop', 'limited takeover must not use full reaction sizing')
+  assert(isS12ExecutableLongAssessment(assessment), 'limited takeover should activate executable S12 ownership')
+  assert(!isS12HardVetoAssessment(assessment), 'limited takeover must not be treated as a hard veto')
+  assert(isS12PrimaryOwnerBlockingAssessment(assessment), 'limited takeover should be a primary-owner blocking assessment')
   assert(assessment.execution.entryPrice === 105.8, 'equity mutation should use latest 15m close as S12 entry reference')
   assert((assessment.execution.stopLoss ?? 0) > 0 && (assessment.execution.stopLoss ?? 999) < 105.8, 'equity mutation must expose a structural S12 stop below entry')
   assert(assessment.exitPlan.trailingStop.source !== 'adaptive', 'equity mutation stop must resolve to a concrete 15m structure source')
@@ -827,6 +833,9 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   })
   assert(assessment.state === 'invalidated', `expected invalidated, got ${assessment.state}: ${assessment.detail}`)
   assert(assessment.maturity.tier === 'defensive_invalidation', 'S12 invalidation should be a defensive maturity tier')
+  assert(!isS12ExecutableLongAssessment(assessment), 'invalidated S12 setup must not be executable')
+  assert(isS12HardVetoAssessment(assessment), 'invalidated S12 setup should be classified as hard veto')
+  assert(isS12PrimaryOwnerBlockingAssessment(assessment), 'invalidated S12 setup should remain a primary-owner block')
   const gateDecision = s12PreTradeTechnicalDecision(assessment, 'block_invalidated')
   assert(gateDecision?.action === 'skip', 'block_invalidated mode should skip structurally invalidated S12 setups')
   const assistDecision = s12PreTradeTechnicalDecision(assessment, 'assist_entry')
@@ -870,6 +879,9 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assessment.maturity.stale === true, 'S12 stale telemetry should flag long waits without 15m zone touch')
   assert(assessment.maturity.staleReason === '15m_zone_touch_timeout', 'S12 stale telemetry should expose timeout reason')
   assert(!assessment.ready && !assessment.invalidated, 'S12 stale telemetry must not become a trade decision by itself')
+  assert(!isS12ExecutableLongAssessment(assessment), 'waiting S12 state must not be executable')
+  assert(!isS12HardVetoAssessment(assessment), 'waiting S12 state must not be treated as a hard veto')
+  assert(!isS12PrimaryOwnerBlockingAssessment(assessment), 'waiting S12 state should be advisory, not a primary-owner block')
 }
 
 {
@@ -900,6 +912,9 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assessment.maturity.takeoverRole === 'no_buy_defense', 'bearish defense should expose a no-buy/defense takeover role')
   assert(assessment.defensiveAction === 'NO_BUY', 'complete bearish SMC structure should only emit a no-buy defensive action')
   assert(assessment.bearishDefense.ready, 'bearish defense checklist should be marked ready')
+  assert(!isS12ExecutableLongAssessment(assessment), 'bearish defense must not be executable long ownership')
+  assert(isS12HardVetoAssessment(assessment), 'bearish defense should be classified as hard veto')
+  assert(isS12PrimaryOwnerBlockingAssessment(assessment), 'bearish defense should remain a primary-owner block')
   assert(
     s12PreTradeTechnicalDecision(assessment, 'observe') === null,
     'observe mode must keep bearish defense informational only',

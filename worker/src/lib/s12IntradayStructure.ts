@@ -3808,6 +3808,26 @@ export function s12PreTradeTechnicalDecision(
   return null
 }
 
+export function isS12ExecutableLongAssessment(assessment: S12IntradayAssessment | null | undefined): boolean {
+  return Boolean(assessment?.ready && assessment.maturity.takeoverRole === 'long_entry')
+}
+
+export function isS12HardVetoAssessment(assessment: S12IntradayAssessment | null | undefined): boolean {
+  if (!assessment) return false
+  return Boolean(
+    assessment.invalidated ||
+      assessment.state === 'invalidated' ||
+      assessment.state === 'bearish_defense_ready' ||
+      assessment.defensiveAction === 'NO_BUY' ||
+      assessment.maturity.takeoverRole === 'invalidate' ||
+      assessment.maturity.takeoverRole === 'no_buy_defense',
+  )
+}
+
+export function isS12PrimaryOwnerBlockingAssessment(assessment: S12IntradayAssessment | null | undefined): boolean {
+  return isS12ExecutableLongAssessment(assessment) || isS12HardVetoAssessment(assessment)
+}
+
 export function resolveS12UnifiedDecision(
   assessment: S12IntradayAssessment | null,
 ): S12UnifiedDecision {

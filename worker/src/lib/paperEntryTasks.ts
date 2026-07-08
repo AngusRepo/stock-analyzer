@@ -43,6 +43,9 @@ import {
 import {
   applyS12TakeoverContinuity,
   assessS12IntradayStructureFromBaseBars,
+  isS12ExecutableLongAssessment,
+  isS12HardVetoAssessment,
+  isS12PrimaryOwnerBlockingAssessment,
   s12TimingPolicyFromEnv,
   s12PreTradeTechnicalDecision,
   type S12IntradayAssessment,
@@ -1223,9 +1226,15 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         s12Mode,
         optionalPositiveNumber((env as any).S12_INTRADAY_MAX_CHASE_PCT_CAP, 0.012),
       )
+      const s12PrimaryOwnerBlocking =
+        s12PrimaryOwnerEnabled &&
+        isS12PrimaryOwnerBlockingAssessment(assessment)
+      const s12GateModeForAssessment: S12IntradayGateMode = s12PrimaryOwnerEnabled
+        ? (s12PrimaryOwnerBlocking ? 'require_ready' : 'block_invalidated')
+        : s12Mode
       const technicalDecision = s12PreTradeTechnicalDecision(
         assessment,
-        s12PrimaryOwnerEnabled ? 'require_ready' : s12Mode,
+        s12GateModeForAssessment,
       )
       const sidecar: S12RuntimeSidecar = {
         assessment,
@@ -1255,6 +1264,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           assist_only: s12Mode === 'observe',
           assist_entry_applied: assistEntryOverlay != null,
           assist_entry_overlay: assistEntryOverlay,
+          primary_owner_blocking: s12PrimaryOwnerBlocking,
+          effective_gate_mode: s12GateModeForAssessment,
           bar_source: s12Base.source,
           bar_diagnostics: s12Base.diagnostics,
           sidecar_stage: 'pre_allocator',
@@ -1277,11 +1288,14 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           `${assessment.detail};primary_owner=${s12PrimaryOwnerEnabled ? 'true' : 'false'}`,
         )
       } else if (s12PrimaryOwnerEnabled && !assessment.ready && !assessment.invalidated) {
+        const s12PrimaryOwnerWaitingBlocks = isS12PrimaryOwnerBlockingAssessment(assessment)
         recordExecutionNote(
           pending.symbol,
           'checked_waiting',
-          's12_structure_primary_waiting',
-          `${assessment.detail};primary_owner=true;blocked=entry_model_v2,intraday_technical_veto`,
+          s12PrimaryOwnerWaitingBlocks ? 's12_structure_primary_waiting' : 's12_structure_advisory_waiting',
+          s12PrimaryOwnerWaitingBlocks
+            ? `${assessment.detail};primary_owner=true;blocked=entry_model_v2,intraday_technical_veto`
+            : `${assessment.detail};primary_owner=true;advisory=true;entry_model_v2_allowed=true`,
         )
       }
       if (technicalDecision) {
@@ -1623,21 +1637,34 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         detail: 'primary_owner=true;blocked=entry_model_v2,intraday_technical_veto',
       }
       : null
-    const s12PrimaryStructureOwnerActive =
+    const s12ExecutableOwnerActive =
       s12PrimaryOwnerEnabled &&
-      s12Assessment != null
+      isS12ExecutableLongAssessment(s12Assessment)
+    const s12HardVetoActive =
+      s12PrimaryOwnerEnabled &&
+      isS12HardVetoAssessment(s12Assessment)
+    const s12PrimaryStructureOwnerActive =
+      s12ExecutableOwnerActive ||
+      s12HardVetoActive
     if (s12AssistEntryOverlay) {
       executionEntryPrice = s12AssistEntryOverlay.entryPrice
       executionStopLoss = s12AssistEntryOverlay.stopLoss ?? executionStopLoss
       effectivePreTradePlan = buildS12AssistTradePlan(s12AssistEntryOverlay, effectiveOhlcvTradePlan)
       entryModelV2 = null
-    } else if (s12PrimaryStructureOwnerActive && s12Assessment && !s12Assessment.invalidated) {
+    } else if (s12ExecutableOwnerActive && s12Assessment) {
       entryModelV2 = null
       recordExecutionNote(
         pending.symbol,
         'checked_waiting',
-        's12_primary_structure_owner_waiting',
+        's12_primary_structure_owner_ready',
         `${s12Assessment.detail};replaced=entry_model_v2,intraday_technical_veto`,
+      )
+    } else if (s12PrimaryOwnerEnabled && s12Assessment && !s12HardVetoActive) {
+      recordExecutionNote(
+        pending.symbol,
+        'checked_waiting',
+        's12_structure_advisory_waiting',
+        `${s12Assessment.detail};primary_owner=false;advisory=true;entry_model_v2_allowed=true`,
       )
     }
     const effectiveTechnicalDecision = s12PrimaryStructureOwnerActive

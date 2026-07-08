@@ -82,7 +82,7 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
     )
     result = build_l4_alpha_ev_artifact_from_rows(
         rows,
-        end_date=end_date,
+        trained_until=end_date,
         lookback_days=lookback_days,
         min_samples=min_samples,
         min_dates=min_dates,
@@ -144,4 +144,3 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
             f"decision={decision or 'UNKNOWN'} promoted={1 if promoted else 0}"
         ),
     }
-

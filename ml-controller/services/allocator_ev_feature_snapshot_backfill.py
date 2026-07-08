@@ -139,10 +139,14 @@ def _existing_s12_payload(allocation: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     value, _source, payload = extract_s12_trade_ev({"s12_trade_ev": raw})
-    if value is None or not isinstance(payload, dict):
+    if isinstance(payload, dict):
+        payload["snapshot_reuse_policy"] = "persisted_candidate_time_s12_payload"
+        return payload
+    if value is None:
         return None
-    payload["snapshot_reuse_policy"] = "persisted_candidate_time_s12_payload"
-    return payload
+    out = dict(raw)
+    out["snapshot_reuse_policy"] = "persisted_candidate_time_s12_payload"
+    return out
 
 
 def _build_l4_asof_artifact(
@@ -303,9 +307,9 @@ def build_allocator_ev_feature_snapshots_for_date(
             reused_s12 += 1
         else:
             s12_payload = provider.build_for_row(row, prediction=prediction)
-        if not isinstance(s12_payload, dict) or s12_payload.get("trade_expected_return_net_pct") is None:
+        if not isinstance(s12_payload, dict):
             skipped += 1
-            skip_reasons["s12_missing_expected_return"] = skip_reasons.get("s12_missing_expected_return", 0) + 1
+            skip_reasons["s12_payload_missing"] = skip_reasons.get("s12_payload_missing", 0) + 1
             continue
         alpha_allocation = {
             **existing,

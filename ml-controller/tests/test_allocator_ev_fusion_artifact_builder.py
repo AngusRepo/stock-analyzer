@@ -90,6 +90,7 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["resolver_method"] == "ridge_allocator_ev_fusion"
     assert "l4_expected_return" in artifact["coefficients"]
     assert "s12_trade_expected_return" in artifact["coefficients"]
+    assert "s12_available" in artifact["coefficients"]
     assert artifact["coefficients"]["l4_expected_return"] != 0
     assert artifact["coefficients"]["s12_trade_expected_return"] != 0
 
@@ -363,3 +364,45 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
     assert result["reused_l4_payloads"] == 1
     assert result["reused_s12_payloads"] == 1
     assert result["skip_reasons"] == {}
+
+
+def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload_as_unavailable_feature():
+    rows = []
+    for day_idx in range(26):
+        day = f"2026-06-{day_idx + 1:02d}"
+        for symbol_idx in range(24):
+            l4 = 0.004 + (symbol_idx % 12) * 0.001
+            has_s12 = symbol_idx % 3 != 0
+            s12_payload = (
+                _s12_payload(0.002 + (symbol_idx % 8) * 0.0008)
+                if has_s12
+                else {
+                    "schema_version": "s12-trade-ev-v1",
+                    "status": "invalid_structure",
+                    "semantic": "trade_expected_return_not_5bar_close_forecast",
+                    "trade_expected_return_source": "s12_structural_cold_start_ev_missing_long_structure_stop",
+                    "s12_structural_targets": {"target_quality_state": "unknown"},
+                    "candidate_s12_entry_context": {"detail_available": True, "ready": False},
+                }
+            )
+            rows.append({
+                "symbol": f"{symbol_idx:04d}",
+                "prediction_date": day,
+                "actual_return_pct": l4 + (0.004 if has_s12 else -0.003),
+                "alpha_allocation": json.dumps({
+                    "l4_alpha_ev": _l4_payload(l4),
+                    "s12_trade_ev": s12_payload,
+                }),
+            })
+
+    out = build_allocator_ev_fusion_artifact_from_rows(
+        rows,
+        trained_until="2026-07-07",
+        min_samples=200,
+        min_dates=20,
+    )
+
+    audit = out["artifact"]["validation_packet"]["sample_audit"]
+    assert audit["sample_count"] == len(rows)
+    assert audit["missing_feature_rows"] == 0
+    assert "s12_available" in out["artifact"]["feature_names"]

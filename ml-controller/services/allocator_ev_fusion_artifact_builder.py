@@ -14,6 +14,7 @@ from services.s12_trade_ev import extract_s12_trade_ev
 FEATURE_NAMES = [
     "l4_expected_return",
     "s12_trade_expected_return",
+    "s12_available",
     "s12_execution_ready",
     "s12_context_multiplier",
     "s12_target_quality_score",
@@ -98,12 +99,19 @@ def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
     extractor_row = _row_for_extractors(row)
     l4_value, _l4_source, _l4_payload = extract_l4_alpha_ev(extractor_row)
     s12_value, _s12_source, s12_payload = extract_s12_trade_ev(extractor_row)
-    if l4_value is None or s12_value is None:
+    if l4_value is None:
         return None
+    s12_available = 1.0
+    if s12_value is None:
+        if not isinstance(s12_payload, dict):
+            return None
+        s12_value = 0.0
+        s12_available = 0.0
     target_state = _target_quality_state(s12_payload)
     return {
         "l4_expected_return": float(l4_value),
         "s12_trade_expected_return": float(s12_value),
+        "s12_available": s12_available,
         "s12_execution_ready": _s12_execution_ready(s12_payload),
         "s12_context_multiplier": _s12_multiplier(s12_payload),
         "s12_target_quality_score": _target_quality_numeric(target_state),

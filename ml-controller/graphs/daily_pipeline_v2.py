@@ -473,6 +473,7 @@ class PipelineStateV2(TypedDict, total=False):
     layer2_recommendation_symbols: list[str] # symbols entering formal L3 family evidence
     layer3_formal_gate_target_size: int      # legacy audit field; now equals L3 evidence input count
     sell_filtered_symbols: list[str]        # symbols dropped due to SELL/NO_SIGNAL
+    sell_filtered_diagnostics: dict          # symbol -> diagnostic payload for preserved non-buy seed rows
     llm_reasons: dict                       # symbol ??{reason, watchPoints}
 
     breeze2_reason_shadow: dict             # symbol -> advisory-only Breeze2 shadow reason
@@ -2544,7 +2545,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
 
     fundamental_quality_by_symbol = load_fundamental_quality_by_symbol(screener_recs, state["run_date"])
 
-    final, sell_count = filter_and_score_recommendations(
+    final, sell_count, filter_stage_diagnostics = filter_and_score_recommendations(
         screener_recs,
         state["predictions"],
         state["payloads"],
@@ -2555,6 +2556,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         alpha_policy=alpha_policy,
         fundamental_quality_by_symbol=fundamental_quality_by_symbol,
         run_date=state["run_date"],
+        include_filtered_diagnostics=True,
     )
     final = apply_l2_timesfm_evidence(
         final,
@@ -2631,6 +2633,32 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     # Track which symbols were filtered out (for D1 delete in write_d1)
     final_syms = {r["symbol"] for r in final}
     filtered_syms = [r["symbol"] for r in screener_recs if r["symbol"] not in final_syms]
+    filtered_diagnostics: dict[str, dict[str, Any]] = dict(filter_stage_diagnostics or {})
+    for rec in screener_recs:
+        symbol = str(rec.get("symbol") or "").strip()
+        if not symbol or symbol not in filtered_syms or symbol in filtered_diagnostics:
+            continue
+        prediction = state["predictions"].get(symbol) if isinstance(state.get("predictions"), dict) else None
+        ev2 = prediction.get("ensemble_v2") if isinstance(prediction, dict) and isinstance(prediction.get("ensemble_v2"), dict) else {}
+        filtered_diagnostics[symbol] = {
+            "filtered_signal": (
+                ev2.get("signal")
+                or (prediction or {}).get("signal")
+                or rec.get("signal")
+            ),
+            "filtered_signal_source": (
+                ev2.get("signal_source")
+                or (prediction or {}).get("signal_source")
+                or rec.get("signal_source")
+            ),
+            "filtered_confidence": (
+                ev2.get("confidence")
+                or (prediction or {}).get("confidence")
+                or rec.get("confidence")
+            ),
+            "sparse_decision_coverage": False,
+            "decision_pool_reason": "ml_filter_preserved_non_buy",
+        }
 
     logger.info(
         f"[Pipeline V2] Recommend done: {len(final)} kept, {sell_count} SELL filtered"
@@ -2640,6 +2668,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         "layer2_recommendation_symbols": layer2_symbols,
         "layer3_formal_gate_target_size": core_family_target_size,
         "sell_filtered_symbols": filtered_syms,
+        "sell_filtered_diagnostics": filtered_diagnostics,
     }
 
 
@@ -2738,7 +2767,11 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     rec_updated = update_recommendations_in_d1(final, run_date)
 
     # 4. Preserve screener seed rows while marking SELL/NO_SIGNAL outputs as non-buy.
-    sell_marked_non_buy = delete_filtered_recommendations(state.get("sell_filtered_symbols") or [], run_date)
+    sell_marked_non_buy = delete_filtered_recommendations(
+        state.get("sell_filtered_symbols") or [],
+        run_date,
+        filtered_diagnostics=state.get("sell_filtered_diagnostics") or {},
+    )
 
     # 5. Re-rank
     re_rank_recommendations(run_date)

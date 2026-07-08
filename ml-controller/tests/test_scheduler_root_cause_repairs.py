@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -46,7 +47,16 @@ def test_filtered_recommendations_preserve_screener_seed_rows(monkeypatch):
 
     monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
 
-    written = recommendation_service.delete_filtered_recommendations(["2330", "2317"], "2026-06-08")
+    written = recommendation_service.delete_filtered_recommendations(
+        ["2330", "2317"],
+        "2026-06-08",
+        filtered_diagnostics={
+            "2330": {
+                "filtered_signal": "SELL",
+                "sparse_decision_coverage": False,
+            }
+        },
+    )
 
     assert written == 2
     for sql, params in captured["statements"]:
@@ -62,4 +72,10 @@ def test_filtered_recommendations_preserve_screener_seed_rows(monkeypatch):
         assert "'s12_trade_ev'" not in sql
         assert "ml_filter_preserved_non_buy" in sql
         assert "ml_filter:preserved_screener_seed_not_buy" in sql
-        assert params[0] == "2026-06-08"
+        diagnostic = json.loads(params[0])
+        assert diagnostic["status"] == "not_evaluated"
+        assert diagnostic["reason"] == "ml_filter_preserved_non_buy"
+        if params[2] == "2330":
+            assert diagnostic["filtered_signal"] == "SELL"
+            assert diagnostic["sparse_decision_coverage"] is False
+        assert params[1] == "2026-06-08"

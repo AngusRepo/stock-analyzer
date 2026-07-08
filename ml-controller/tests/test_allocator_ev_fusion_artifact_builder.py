@@ -71,7 +71,7 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     rows = []
     for day_idx in range(32):
         day = f"2026-05-{day_idx + 1:02d}"
-        for symbol_idx in range(24):
+        for symbol_idx in range(64):
             rows.append(_row(day, symbol_idx))
 
     out = build_allocator_ev_fusion_artifact_from_rows(
@@ -85,8 +85,11 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     artifact = out["artifact"]
     assert out["status"] == "ok"
     assert artifact["expected_return_owner"] == "allocator_ev_fusion"
-    assert artifact["promotion_state"] == "production_approved"
+    assert artifact["promotion_state"] == "production_primary"
+    assert artifact["promotion_tier"] == "primary"
+    assert artifact["primary_expected_return_allowed"] is True
     assert artifact["validation_packet"]["decision"] == "PASS"
+    assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
     assert artifact["resolver_method"] == "ridge_allocator_ev_fusion"
     assert "l4_expected_return" in artifact["coefficients"]
     assert "s12_trade_expected_return" in artifact["coefficients"]
@@ -107,9 +110,44 @@ def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_sampl
 
     artifact = out["artifact"]
     assert out["status"] == "failed_validation"
-    assert artifact["promotion_state"] == "approval_required"
+    assert artifact["promotion_state"] == "shadow"
+    assert artifact["promotion_tier"] == "shadow"
+    assert artifact["primary_expected_return_allowed"] is False
     assert artifact["validation_packet"]["decision"] == "FAIL"
     assert "insufficient_samples" in artifact["validation_packet"]["failed_gates"]
+
+
+def test_allocator_ev_fusion_artifact_builder_demotes_hot_start_pass_to_assistive():
+    rows = []
+    for day_idx in range(6):
+        day = f"2026-06-{day_idx + 1:02d}"
+        for symbol_idx in range(140):
+            l4 = -0.01 + (symbol_idx % 40) * 0.001
+            s12 = 0.004 + (symbol_idx % 8) * 0.0005
+            rows.append({
+                "symbol": f"{symbol_idx:04d}",
+                "prediction_date": day,
+                "actual_return_pct": (0.6 * l4) + (0.4 * s12),
+                "alpha_allocation": json.dumps({
+                    "l4_alpha_ev": _l4_payload(l4),
+                    "s12_trade_ev": _s12_payload(s12, ready=True),
+                }),
+            })
+
+    out = build_allocator_ev_fusion_artifact_from_rows(
+        rows,
+        trained_until="2026-07-07",
+        min_samples=500,
+        min_dates=5,
+        l2=0.15,
+    )
+
+    artifact = out["artifact"]
+    assert artifact["validation_packet"]["decision"] == "PASS"
+    assert artifact["promotion_tier"] == "assistive"
+    assert artifact["promotion_state"] == "production_assistive"
+    assert artifact["primary_expected_return_allowed"] is False
+    assert "primary_insufficient_dates" in artifact["promotion_blockers"]
 
 
 def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evidence():

@@ -13,7 +13,14 @@ from typing import Any
 
 SCHEMA_VERSION = "allocator-ev-fusion-v1"
 OWNER = "allocator_ev_fusion"
-APPROVED_STATES = {"production_approved", "approved_for_production", "live"}
+APPROVED_STATES = {
+    "production_approved",
+    "approved_for_production",
+    "live",
+    "production_primary",
+    "production_assistive",
+    "shadow",
+}
 PASS_STATES = {"PASS", "PASSED", "PRODUCTION_APPROVED"}
 POLICY_KEYS = (
     "allocator_ev_fusion",
@@ -88,6 +95,26 @@ def _approval_state(artifact: dict[str, Any]) -> str:
         or artifact.get("status")
         or ""
     ).strip().lower()
+
+
+def _promotion_tier(artifact: dict[str, Any]) -> str:
+    tier = str(artifact.get("promotion_tier") or "").strip().lower()
+    if tier in {"primary", "assistive", "shadow"}:
+        return tier
+    state = _approval_state(artifact)
+    if state in {"production_primary", "production_approved", "approved_for_production", "live"}:
+        return "primary"
+    if state == "production_assistive":
+        return "assistive"
+    return "shadow"
+
+
+def _primary_expected_return_allowed(artifact: dict[str, Any]) -> bool:
+    if artifact.get("primary_expected_return_allowed") is False:
+        return False
+    if artifact.get("primary_expected_return_allowed") is True:
+        return True
+    return _promotion_tier(artifact) == "primary"
 
 
 def _resolver_method(artifact: dict[str, Any]) -> str:
@@ -343,6 +370,13 @@ def materialize_allocator_ev_fusion(
         "s12_trade_expected_return_source": s12_source,
         "market_heat_expected_return": round(max(0.0, market_heat_expected_return), 10),
         "feature_values": {key: round(value, 10) for key, value in values.items()},
+        "promotion_tier": _promotion_tier(artifact),
+        "primary_expected_return_allowed": _primary_expected_return_allowed(artifact),
+        "diagnostic_role": (
+            "primary_expected_return_owner"
+            if _primary_expected_return_allowed(artifact)
+            else "assistive_diagnostic_not_expected_return_owner"
+        ),
         "semantic": "allocation_expected_return_fuses_l4_selection_alpha_and_s12_execution_trade_ev",
         "blockers": [],
     }

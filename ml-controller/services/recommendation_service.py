@@ -1637,6 +1637,38 @@ def build_watch_points(s: dict) -> list[str]:
     return points
 
 
+def _filtered_allocator_ev_diagnostic(row: dict[str, Any], eff_ml: dict[str, Any]) -> dict[str, Any]:
+    fusion_payload = row.get("allocator_ev_fusion") if isinstance(row.get("allocator_ev_fusion"), dict) else None
+    resolver = row.get("_allocator_edge_resolver") if isinstance(row.get("_allocator_edge_resolver"), dict) else None
+    expected_payload = row.get("_expected_return_payload") if isinstance(row.get("_expected_return_payload"), dict) else None
+    diagnostic: dict[str, Any] = {
+        "status": "loaded" if fusion_payload and fusion_payload.get("status") == "loaded" else "not_evaluated",
+        "reason": "ml_filter_preserved_non_buy",
+        "diagnostic_role": "filtered_row_diagnostic_not_expected_return_owner",
+        "sparse_decision_coverage": False,
+        "decision_pool_reason": "ml_filter_preserved_non_buy",
+        "filtered_signal": eff_ml.get("signal") or row.get("signal"),
+        "filtered_signal_source": eff_ml.get("signal_source") or row.get("signal_source"),
+        "filtered_confidence": eff_ml.get("confidence") or row.get("confidence"),
+        "expected_return": row.get("promotion_expected_return"),
+        "expected_return_source": row.get("promotion_expected_return_source"),
+        "expected_return_owner": (resolver or {}).get("expected_return_owner"),
+        "allocator_edge_resolver": resolver,
+    }
+    if fusion_payload:
+        diagnostic.update({
+            "fusion_status": fusion_payload.get("status"),
+            "fusion_expected_return": fusion_payload.get("expected_return"),
+            "fusion_expected_return_source": fusion_payload.get("expected_return_source"),
+            "fusion_promotion_tier": fusion_payload.get("promotion_tier"),
+            "fusion_primary_expected_return_allowed": fusion_payload.get("primary_expected_return_allowed"),
+            "allocator_ev_fusion": fusion_payload,
+        })
+    elif expected_payload:
+        diagnostic["expected_return_payload"] = expected_payload
+    return {k: v for k, v in diagnostic.items() if v is not None}
+
+
 def filter_and_score_recommendations(
     screener_recs: list[dict],
     predictions: dict[str, dict],   # symbol ??ml result from ml-service
@@ -1648,9 +1680,12 @@ def filter_and_score_recommendations(
     alpha_policy: dict | None = None,
     fundamental_quality_by_symbol: dict[str, dict[str, Any]] | None = None,
     run_date: str | None = None,
-) -> tuple[list[dict], int]:
+    include_filtered_diagnostics: bool = False,
+) -> tuple[list[dict], int] | tuple[list[dict], int, dict[str, dict[str, Any]]]:
     """
     Returns (final_recs, sell_filtered_count).
+    When include_filtered_diagnostics=True, also returns diagnostics for
+    SELL/NO_SIGNAL rows after L4/S12/fusion materialization.
 
     For each screener_rec:
       1. Look up matching prediction
@@ -1668,6 +1703,7 @@ def filter_and_score_recommendations(
     """
     payload_by_sym = {p["symbol"]: p for p in payloads}
     final: list[dict] = []
+    filtered_diagnostics: dict[str, dict[str, Any]] = {}
     sell_count = 0
 
     # ML_POOL Plan A migration (2026-04-19): toggle which signal drives the
@@ -1705,11 +1741,6 @@ def filter_and_score_recommendations(
         ml = predictions.get(symbol)
         eff_ml = _effective_prediction_view(ml, use_ensemble_v2=use_ev2)
         sig = (eff_ml.get("signal") or "").upper() or None
-
-        # Filter SELL / NO_SIGNAL
-        if sig and ("SELL" in sig or sig == "NO_SIGNAL"):
-            sell_count += 1
-            continue
 
         # ML score reflects model evidence only; ranking/top-K promotion is
         # tracked in signal_source/reason but should not inflate ML votes.
@@ -1993,7 +2024,7 @@ def filter_and_score_recommendations(
         if s12_trade_ev_provider is not None:
             s12_trade_ev = s12_trade_ev_provider.build_for_row(row, prediction=ml)
             row["s12_trade_ev"] = s12_trade_ev
-            if s12_trade_ev.get("status") in {"loaded", "setup_only"}:
+            if s12_trade_ev.get("status") == "loaded":
                 row["trade_expected_return_net_pct"] = s12_trade_ev.get("trade_expected_return_net_pct")
                 row["trade_expected_return_source"] = s12_trade_ev.get("trade_expected_return_source")
         row["score_components"] = build_score_components(row, raw_score=total_score, alpha_policy=alpha_policy)
@@ -2006,9 +2037,23 @@ def filter_and_score_recommendations(
                 ev2 = ml.get("ensemble_v2") if isinstance(ml.get("ensemble_v2"), dict) else None
                 if ev2 is not None:
                     ev2["l4_alpha_ev"] = l4_alpha_ev
+        expected_return, expected_return_source = _row_expected_return_with_source(row, alpha_policy=alpha_policy)
+        row["promotion_expected_return"] = expected_return
+        row["promotion_expected_return_source"] = expected_return_source
+
+        # Preserve full diagnostic coverage for ML-filtered rows without
+        # allowing them into the sparse allocator decision pool.
+        if sig and ("SELL" in sig or sig == "NO_SIGNAL"):
+            sell_count += 1
+            if include_filtered_diagnostics:
+                filtered_diagnostics[symbol] = _filtered_allocator_ev_diagnostic(row, eff_ml)
+            continue
+
         row["reason"] = build_reason({**reason_data, **row})
         final.append(row)
 
+    if include_filtered_diagnostics:
+        return final, sell_count, filtered_diagnostics
     return final, sell_count
 
 
@@ -2672,13 +2717,20 @@ def _canonical_expected_return_from_row(
         market_heat_expected_return=market_heat_expected_return,
         policy=alpha_policy,
     )
+    fusion_loaded_non_primary = False
     if isinstance(fusion_payload, dict):
         row["allocator_ev_fusion"] = fusion_payload
         status = str(fusion_payload.get("status") or "").strip().lower()
         value = _float_or_none(fusion_payload.get("expected_return"))
-        if status == "loaded" and value is not None:
+        primary_allowed = fusion_payload.get("primary_expected_return_allowed") is True
+        if status == "loaded" and value is not None and primary_allowed:
             return value, str(fusion_payload.get("expected_return_source") or "allocator_ev_fusion"), fusion_payload
-        return None, str(fusion_payload.get("expected_return_source") or "allocator_ev_fusion_rejected"), fusion_payload
+        fusion_loaded_non_primary = status == "loaded"
+        if status == "rejected":
+            return None, str(fusion_payload.get("expected_return_source") or "allocator_ev_fusion_rejected"), fusion_payload
+
+    if fusion_loaded_non_primary and alpha_ev_value is not None:
+        return alpha_ev_value, alpha_ev_source, alpha_ev_payload
 
     if trade_ev_value is not None and _s12_trade_ev_is_verified_symbol_owner(trade_ev_source, trade_ev_payload):
         return trade_ev_value, trade_ev_source, trade_ev_payload
@@ -3755,6 +3807,11 @@ def _apply_sparse_tangent_buy_selection(
                 or row.get("_expected_return_uncertainty_adjustment")
             ),
             "allocator_ev_fusion": allocator_ev_fusion_payload,
+            "allocator_ev_fusion_diagnostic": allocator_ev_fusion_payload if isinstance(allocator_ev_fusion_payload, dict) else {
+                "status": "not_evaluated",
+                "reason": "artifact_missing_or_candidate_not_materialized",
+                "diagnostic_role": "coverage_marker_not_expected_return_owner",
+            },
             "l4_alpha_ev": l4_alpha_ev_payload,
             "s12_trade_ev": s12_trade_ev_payload,
             "s12_entry_context": s12_entry_context,
@@ -4754,7 +4811,12 @@ def update_recommendations_in_d1(
     return len(statements)
 
 
-def delete_filtered_recommendations(filtered_symbols: list[str], run_date: str) -> int:
+def delete_filtered_recommendations(
+    filtered_symbols: list[str],
+    run_date: str,
+    *,
+    filtered_diagnostics: dict[str, dict[str, Any]] | None = None,
+) -> int:
     """Preserve screener-owned rows and mark ML-filtered symbols as non-buy."""
     if not filtered_symbols:
         return 0
@@ -4796,11 +4858,25 @@ def delete_filtered_recommendations(filtered_symbols: list[str], run_date: str) 
                      'sparse_input_blocked_reason',
                      'ml_filter_preserved_non_buy',
                      'no_l3_allocation_reason',
-                     'ml_filtered_sell_or_no_signal_preserved_seed'
+                     'ml_filtered_sell_or_no_signal_preserved_seed',
+                     'allocator_ev_fusion_diagnostic',
+                     json(?)
                    )
              WHERE date = ? AND symbol = ?
             """.strip(),
-            [run_date, sym],
+            [
+                json.dumps(
+                    {
+                        "status": "not_evaluated",
+                        "reason": "ml_filter_preserved_non_buy",
+                        "diagnostic_role": "coverage_marker_not_expected_return_owner",
+                        **((filtered_diagnostics or {}).get(sym) or {}),
+                    },
+                    ensure_ascii=False,
+                ),
+                run_date,
+                sym,
+            ],
         )
         for sym in filtered_symbols
     ]

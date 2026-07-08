@@ -22,6 +22,13 @@ FEATURE_NAMES = [
     "l4_s12_edge_agreement",
 ]
 
+PRIMARY_MIN_DATES = 20
+PRIMARY_MIN_SAMPLES = 1500
+PRIMARY_MIN_S12_READY_COVERAGE = 0.20
+PRIMARY_MIN_S12_AVAILABLE_COVERAGE = 0.35
+ASSISTIVE_MIN_DATES = 5
+ASSISTIVE_MIN_SAMPLES = 500
+
 
 def _float_or_none(value: Any) -> float | None:
     try:
@@ -149,12 +156,26 @@ def _samples(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str
             "features": features,
             "target": target,
         })
+    s12_ready_count = sum(
+        1
+        for sample in out
+        if float(sample["features"].get("s12_execution_ready") or 0.0) > 0.0
+    )
+    s12_available_count = sum(
+        1
+        for sample in out
+        if float(sample["features"].get("s12_available") or 0.0) > 0.0
+    )
     return out, {
         "input_rows": len(rows),
         "sample_count": len(out),
         "invalid_rows": invalid,
         "missing_feature_rows": missing_features,
         "date_count": len({row["date"] for row in out}),
+        "s12_ready_count": s12_ready_count,
+        "s12_available_count": s12_available_count,
+        "s12_ready_coverage": round(s12_ready_count / len(out), 8) if out else 0.0,
+        "s12_available_coverage": round(s12_available_count / len(out), 8) if out else 0.0,
     }
 
 
@@ -257,6 +278,60 @@ def _walk_forward(samples: list[dict[str, Any]], *, folds: int, l2: float) -> di
     }
 
 
+def _promotion_tier(
+    *,
+    decision: str,
+    diagnostics: dict[str, Any],
+    oos_metrics: dict[str, Any],
+    walk_forward: dict[str, Any],
+    min_dates: int,
+    min_samples: int,
+) -> tuple[str, list[str]]:
+    blockers: list[str] = []
+    sample_count = int(diagnostics.get("sample_count") or 0)
+    date_count = int(diagnostics.get("date_count") or 0)
+    s12_ready_coverage = float(diagnostics.get("s12_ready_coverage") or 0.0)
+    s12_available_coverage = float(diagnostics.get("s12_available_coverage") or 0.0)
+    top_mean = float(oos_metrics.get("top_quintile_mean_return") or 0.0)
+    spread = float(oos_metrics.get("top_bottom_spread") or 0.0)
+    corr = float(oos_metrics.get("prediction_target_corr") or 0.0)
+
+    if decision != "PASS":
+        return "shadow", ["validation_not_pass"]
+
+    if sample_count < max(min_samples, PRIMARY_MIN_SAMPLES):
+        blockers.append("primary_insufficient_samples")
+    if date_count < max(min_dates, PRIMARY_MIN_DATES):
+        blockers.append("primary_insufficient_dates")
+    if s12_ready_coverage < PRIMARY_MIN_S12_READY_COVERAGE:
+        blockers.append("primary_s12_ready_coverage_low")
+    if s12_available_coverage < PRIMARY_MIN_S12_AVAILABLE_COVERAGE:
+        blockers.append("primary_s12_available_coverage_low")
+    if top_mean <= 0.0:
+        blockers.append("primary_top_bucket_not_positive")
+    if spread <= 0.0:
+        blockers.append("primary_top_bottom_spread_not_positive")
+    if corr <= 0.0:
+        blockers.append("primary_oos_corr_not_positive")
+    if not walk_forward.get("passed"):
+        blockers.append("primary_walk_forward_not_stable")
+
+    if not blockers:
+        return "primary", []
+
+    assistive_ok = (
+        sample_count >= min(min_samples, ASSISTIVE_MIN_SAMPLES)
+        and date_count >= min(min_dates, ASSISTIVE_MIN_DATES)
+        and top_mean > 0.0
+        and spread > 0.0
+        and corr > 0.0
+        and bool(walk_forward.get("passed"))
+    )
+    if assistive_ok:
+        return "assistive", blockers
+    return "shadow", blockers
+
+
 def build_allocator_ev_fusion_artifact_from_rows(
     rows: list[dict[str, Any]],
     *,
@@ -298,6 +373,14 @@ def build_allocator_ev_fusion_artifact_from_rows(
         if not walk_forward.get("passed"):
             blockers.append("walk_forward_not_stable")
     decision = "PASS" if not blockers else "FAIL"
+    promotion_tier, promotion_blockers = _promotion_tier(
+        decision=decision,
+        diagnostics=diagnostics,
+        oos_metrics=oos_metrics,
+        walk_forward=walk_forward,
+        min_dates=min_dates,
+        min_samples=min_samples,
+    )
     validation_packet = {
         "schema_version": "allocator-ev-fusion-validation-packet-v1",
         "decision": decision,
@@ -312,11 +395,35 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "train_metrics": train_metrics,
         "oos_metrics": oos_metrics,
         "walk_forward": walk_forward,
+        "promotion": {
+            "schema_version": "allocator-ev-fusion-promotion-v2",
+            "tier": promotion_tier,
+            "automatic": True,
+            "failed_gates": promotion_blockers,
+            "primary_requirements": {
+                "min_dates": max(min_dates, PRIMARY_MIN_DATES),
+                "min_samples": max(min_samples, PRIMARY_MIN_SAMPLES),
+                "min_s12_ready_coverage": PRIMARY_MIN_S12_READY_COVERAGE,
+                "min_s12_available_coverage": PRIMARY_MIN_S12_AVAILABLE_COVERAGE,
+                "top_bucket_return_positive": True,
+                "top_bottom_spread_positive": True,
+                "oos_corr_positive": True,
+                "walk_forward_passed": True,
+            },
+        },
     }
     artifact = {
-        "schema_version": "allocator-ev-fusion-artifact-v1",
+        "schema_version": "allocator-ev-fusion-artifact-v2",
         "expected_return_owner": "allocator_ev_fusion",
-        "promotion_state": "production_approved" if decision == "PASS" else "approval_required",
+        "promotion_state": (
+            "production_primary" if promotion_tier == "primary"
+            else "production_assistive" if promotion_tier == "assistive"
+            else "shadow"
+        ),
+        "promotion_tier": promotion_tier,
+        "primary_expected_return_allowed": promotion_tier == "primary",
+        "assistive_expected_return_allowed": promotion_tier in {"assistive", "primary"},
+        "promotion_blockers": promotion_blockers,
         "validation_packet": validation_packet,
         "resolver_method": "ridge_allocator_ev_fusion",
         "model_version": f"allocator-ev-fusion-ridge-{trained_until.replace('-', '')}",

@@ -565,19 +565,20 @@ def _s12_entry_context_from_row(row: dict[str, Any], prediction: dict[str, Any] 
 def _s12_context_not_ready_reason(context: dict[str, Any]) -> str | None:
     ready = _boolish(context.get("ready"))
     state = str(context.get("state") or "").strip().lower()
-    if ready is False:
-        return "s12_ready_false"
     if state and state != "reaction_ready":
         return f"s12_state_{state}"
+    if ready is False:
+        return "s12_ready_false"
     return None
 
 
 def _mark_setup_only_ev(ev: dict[str, Any], *, reason: str, context: dict[str, Any]) -> dict[str, Any]:
     out = dict(ev)
-    if out.get("status") == "loaded":
-        out["status"] = "setup_only"
-        out["trade_expected_return_source"] = "s12_structural_setup_cold_start_ev"
-        out["sample_policy"] = "s12_structural_setup_cold_start_no_replay"
+    out["status"] = "setup_only"
+    out["trade_expected_return_net_pct"] = None
+    out["expected_R"] = None
+    out["trade_expected_return_source"] = "s12_structural_setup_cold_start_ev"
+    out["sample_policy"] = "s12_structural_setup_cold_start_no_replay"
     out["execution_ready"] = False
     out["execution_gate_required"] = "s12_reaction_ready"
     out["execution_blocked_reason"] = reason

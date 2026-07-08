@@ -50,7 +50,14 @@ def test_s12_replay_outcome_to_ev_sample_keeps_breakeven_trades():
 
 
 def test_build_s12_trade_ev_from_replay_outcomes_retires_cold_when_min_samples_met():
-    outcomes = [_outcome(pnl=0.04), _outcome(pnl=0.08), _outcome(pnl=-0.04)] * 10
+    outcomes = []
+    for day in range(10):
+        date = f"2026-07-{day + 1:02d}"
+        outcomes.extend([
+            _outcome(date=date, pnl=0.04),
+            _outcome(date=date, pnl=0.08),
+            _outcome(date=date, pnl=-0.04),
+        ])
 
     ev = build_s12_trade_ev_from_replay_outcomes(
         symbol="8091",

@@ -492,6 +492,8 @@ def extract_s12_trade_ev(row: dict[str, Any]) -> tuple[float | None, str, dict[s
     status = str(payload.get("status") or "").strip()
     value = _to_float(payload.get("trade_expected_return_net_pct"))
     source = str(payload.get("trade_expected_return_source") or payload.get("source") or "s12_trade_ev")
+    if status == "setup_only":
+        return None, source if source.endswith("_setup_only") else f"{source}_setup_only", payload
     if status and status not in {"loaded", "setup_only"}:
         suffix = f"_{status}"
         return None, source if source.endswith(suffix) else f"{source}{suffix}", payload

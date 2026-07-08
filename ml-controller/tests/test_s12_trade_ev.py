@@ -61,7 +61,7 @@ def test_extract_s12_trade_ev_accepts_nested_forecast_payload():
     assert evidence["status"] == "loaded"
 
 
-def test_extract_s12_trade_ev_accepts_setup_only_allocator_edge():
+def test_extract_s12_trade_ev_keeps_setup_only_diagnostic_only():
     payload = {
         "s12_trade_ev": {
             "status": "setup_only",
@@ -74,8 +74,8 @@ def test_extract_s12_trade_ev_accepts_setup_only_allocator_edge():
 
     value, source, evidence = extract_s12_trade_ev({"forecast_data": json.dumps(payload)})
 
-    assert value == pytest.approx(0.012)
-    assert source == "s12_structural_setup_cold_start_ev"
+    assert value is None
+    assert source == "s12_structural_setup_cold_start_ev_setup_only"
     assert evidence["status"] == "setup_only"
     assert evidence["execution_ready"] is False
     assert evidence["execution_gate_required"] == "s12_reaction_ready"

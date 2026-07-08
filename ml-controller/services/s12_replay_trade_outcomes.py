@@ -40,6 +40,7 @@ def s12_replay_outcome_to_ev_sample(outcome: dict[str, Any]) -> dict[str, Any] |
         "mae_pct": _first_float(outcome.get("mae_pct"), outcome.get("max_adverse_pct")),
         "bars_to_exit": _first_float(outcome.get("bars_to_exit"), outcome.get("holding_bars")),
         "exit_reason": str(outcome.get("exit_reason") or "unknown"),
+        "sample_date": str(outcome.get("trade_date") or outcome.get("prediction_date") or "")[:10],
     }
 
 

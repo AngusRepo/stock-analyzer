@@ -13,6 +13,7 @@ from services.s12_trade_ev_bootstrap import (  # noqa: E402
     load_s12_replay_trade_rows,
     load_s12_structure_snapshots,
 )
+from services.s12_trade_ev import extract_s12_trade_ev  # noqa: E402
 
 
 def _row(
@@ -425,12 +426,12 @@ def test_s12_trade_ev_bootstrap_keeps_setup_ev_but_requires_reaction_ready_execu
     )
 
     assert ev["status"] == "setup_only"
-    assert ev["trade_expected_return_net_pct"] is not None
+    assert ev["trade_expected_return_net_pct"] is None
     assert ev["trade_expected_return_source"] == "s12_structural_setup_cold_start_ev"
     assert ev["sample_policy"] == "s12_structural_setup_cold_start_no_replay"
     assert ev["execution_ready"] is False
     assert ev["execution_gate_required"] == "s12_reaction_ready"
-    assert ev["execution_blocked_reason"] == "s12_ready_false"
+    assert ev["execution_blocked_reason"] == "s12_state_waiting_sweep"
     assert ev["candidate_s12_entry_context"]["state"] == "waiting_sweep"
 
 
@@ -693,3 +694,72 @@ def test_s12_structure_snapshots_merge_into_cold_start_ev():
     assert ev["s12_structural_targets"]["structure_stop_source"] == "s12_structure_stop"
     assert ev["candidate_s12_entry_context"]["detail_available"] is True
     assert ev["s12_entry_context"]["vwap_fast_acceptance"] is True
+
+
+def test_s12_waiting_structure_snapshot_is_setup_only_not_missing_structure():
+    def fake_query(sql, params=None, **_kwargs):
+        if "FROM s12_structure_snapshots" in sql:
+            return [
+                {
+                    "id": 1,
+                    "trade_date": "2026-07-07",
+                    "symbol": "8091",
+                    "source": "s12_intraday_structure",
+                    "side": "buy",
+                    "state": "waiting_4h_long_bias",
+                    "ready": 0,
+                    "invalidated": 0,
+                    "setup_id": "8091:setup",
+                    "entry_price": 100,
+                    "structure_stop": None,
+                    "target1_price": None,
+                    "target2_price": None,
+                    "detail": "state=waiting_4h_long_bias;ready=false",
+                    "entry_context_json": json.dumps({
+                        "schema_version": "s12-equity-mutation-context-v1",
+                        "state": "waiting_4h_long_bias",
+                        "ready": False,
+                        "detail_available": True,
+                    }),
+                    "exit_plan_json": "{}",
+                    "raw_json": "{}",
+                    "updated_at": "2026-07-07 10:00:00",
+                }
+            ]
+        return []
+
+    provider = S12TradeEvBootstrapProvider.for_run_date(
+        "2026-07-07",
+        query_fn=fake_query,
+        min_samples=30,
+        roundtrip_cost_bps=0,
+    )
+
+    ev = provider.build_for_row({
+        "symbol": "8091",
+        "current_price": 100,
+        "market_segment": "LISTED",
+        "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
+        "ml_score": 20,
+        "tech_score": 20,
+        "chip_score": 25,
+    })
+
+    assert ev["status"] == "setup_only"
+    assert ev["trade_expected_return_net_pct"] is None
+    assert ev["execution_ready"] is False
+    assert ev["execution_blocked_reason"] == "s12_state_waiting_4h_long_bias"
+
+
+def test_extract_s12_trade_ev_treats_setup_only_as_unavailable():
+    value, source, payload = extract_s12_trade_ev({
+        "s12_trade_ev": {
+            "status": "setup_only",
+            "trade_expected_return_net_pct": 0.02,
+            "trade_expected_return_source": "s12_structural_setup_cold_start_ev",
+        }
+    })
+
+    assert value is None
+    assert source == "s12_structural_setup_cold_start_ev_setup_only"
+    assert payload["status"] == "setup_only"

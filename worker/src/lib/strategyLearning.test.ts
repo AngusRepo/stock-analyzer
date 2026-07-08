@@ -4,6 +4,7 @@ import {
   buildStrategyAdaptivePolicyState,
   buildStrategyDecisionRows,
   buildStrategyRewardLedgerRows,
+  hydrateStrategyCandidateDailyFeatures,
   evaluateStrategyPromotionGate,
   listStrategySpecsForLearning,
   registryRowToStrategySpec,
@@ -140,6 +141,47 @@ class FakeStrategyRegistryD1 {
   }
 }
 
+interface FakePriceRow {
+  symbol: string
+  date: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+
+class FakeCandidateFeatureStatement {
+  constructor(
+    private readonly rows: FakePriceRow[],
+    private readonly args: unknown[] = [],
+  ) {}
+
+  bind(...args: unknown[]): FakeCandidateFeatureStatement {
+    return new FakeCandidateFeatureStatement(this.rows, args)
+  }
+
+  async all<T>(): Promise<{ results: T[] }> {
+    const date = String(this.args[this.args.length - 2] ?? '')
+    const limit = Number(this.args[this.args.length - 1] ?? this.rows.length)
+    const symbols = new Set(this.args.slice(0, -2).map(String))
+    const results = this.rows
+      .filter((row) => symbols.has(row.symbol) && row.date <= date)
+      .sort((left, right) => left.symbol.localeCompare(right.symbol) || right.date.localeCompare(left.date))
+      .slice(0, limit)
+    return { results: results as T[] }
+  }
+}
+
+class FakeCandidateFeatureD1 {
+  constructor(private readonly rows: FakePriceRow[]) {}
+
+  prepare(sql: string): FakeCandidateFeatureStatement {
+    assert(sql.includes('stock_prices'), 'daily strategy candidate feature hydration should read stock_prices')
+    return new FakeCandidateFeatureStatement(this.rows)
+  }
+}
+
 {
   const source = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
   assert(
@@ -177,6 +219,14 @@ class FakeStrategyRegistryD1 {
       source.includes('strategy_spec_registry_contains_stale_runtime_rows_seed_required') &&
       source.includes('candidate_policy_json'),
     'runtime strategy specs must come from D1 registry only; code defaults are seed manifests, not silent screener fallback',
+  )
+  assert(
+    source.includes('hydrateStrategyCandidateDailyFeatures') &&
+      source.includes('materializeFormal137FeatureAliases(candidates.map') &&
+      source.includes('materializeSmrcVwapCrossSectionalRanks(candidates)') &&
+      source.includes('FROM stock_prices sp') &&
+      source.includes('JOIN stocks s ON s.id = sp.stock_id'),
+    'strategy learning candidates must materialize daily VWAP/SMC aliases before strategy decision evaluation',
   )
 }
 
@@ -257,6 +307,70 @@ async function runStrategyRegistrySeedContractTest(): Promise<void> {
 }
 
 runStrategyRegistrySeedContractTest().catch((error) => {
+  throw error
+})
+
+async function runStrategyCandidateDailyFeatureHydrationTest(): Promise<void> {
+  const priceRows: FakePriceRow[] = [
+    { symbol: '1111', date: '2026-07-03', open: 10, high: 10.2, low: 9.9, close: 10.1, volume: 1000 },
+    { symbol: '1111', date: '2026-07-04', open: 10.1, high: 10.5, low: 10, close: 10.4, volume: 1100 },
+    { symbol: '1111', date: '2026-07-05', open: 10.4, high: 10.9, low: 10.3, close: 10.8, volume: 1300 },
+    { symbol: '1111', date: '2026-07-06', open: 10.8, high: 11.4, low: 10.7, close: 11.3, volume: 1500 },
+    { symbol: '1111', date: '2026-07-07', open: 11.3, high: 12, low: 11.2, close: 12, volume: 2000 },
+    { symbol: '2222', date: '2026-07-03', open: 20, high: 20.3, low: 19.9, close: 20.1, volume: 1000 },
+    { symbol: '2222', date: '2026-07-04', open: 20.1, high: 20.2, low: 19.6, close: 19.8, volume: 1100 },
+    { symbol: '2222', date: '2026-07-05', open: 19.8, high: 20, low: 19.3, close: 19.5, volume: 1200 },
+    { symbol: '2222', date: '2026-07-06', open: 19.5, high: 19.7, low: 19, close: 19.2, volume: 1300 },
+    { symbol: '2222', date: '2026-07-07', open: 19.2, high: 19.4, low: 18.8, close: 19, volume: 1400 },
+  ]
+  const candidates = [
+    {
+      symbol: '1111',
+      current_price: 12,
+      raw_signals: {
+        close: 12,
+        volumeExpansion20: 1.4,
+        technicalIndicators: {
+          smcNetScore: 0.2,
+          smcBullishScore: 0.4,
+          smcBiasBearish: 0,
+          bestOrderBlockStrength: 0.7,
+        },
+      },
+    },
+    {
+      symbol: '2222',
+      current_price: 19,
+      raw_signals: {
+        close: 19,
+        volumeExpansion20: 0.8,
+        technicalIndicators: {
+          smcNetScore: 0.1,
+          smcBullishScore: 0.2,
+          smcBiasBearish: 0,
+          bestOrderBlockStrength: 0.3,
+        },
+      },
+    },
+  ]
+  const telemetry = await hydrateStrategyCandidateDailyFeatures(
+    new FakeCandidateFeatureD1(priceRows) as unknown as D1Database,
+    '2026-07-07',
+    candidates,
+  )
+  const strong = candidates[0].raw_signals as any
+  const weak = candidates[1].raw_signals as any
+  assert(telemetry.hydratedSymbols === 2, 'daily feature hydration should touch candidates missing VWAP evidence')
+  assert(strong.factorSignals.vwap_bias > 0, 'daily feature hydration should materialize positive same-day VWAP bias')
+  assert(strong.factorSignals.vwap_bias_5d > 0, 'daily feature hydration should materialize positive 5-day VWAP bias')
+  assert(weak.factorSignals.vwap_bias < 0, 'daily feature hydration should preserve weak VWAP evidence for ranking')
+  assert(strong.factorSignals.finlabCsVwapBiasRank === 1, 'cross-sectional VWAP rank should favor the stronger reclaim setup')
+  assert(strong.factorSignals.finlabCsVwapBias5dRank === 1, 'cross-sectional 5-day VWAP rank should favor the stronger reclaim setup')
+  assert(strong.factorSignals.finlabCsBestOrderBlockStrengthRank === 1, 'cross-sectional order-block rank should use SMC strength evidence')
+  assert(strong.factorSignals.finlabCsVolumeExpansion20Rank === 1, 'cross-sectional volume rank should use daily raw signals')
+}
+
+runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   throw error
 })
 

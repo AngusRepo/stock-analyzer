@@ -469,12 +469,12 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
     id: 'smrc_vwap_reclaim_v1',
     version: 'strategy-spec-v1',
     name: 'SMRC VWAP daily reclaim',
-    status: 'candidate',
+    status: 'active',
     owner: 'strategy',
     familyId: 'SMC_STRUCTURE_RECLAIM',
     variantId: 'daily_smc_vwap_reclaim_v1',
     ownerType: 'strategy',
-    promotionStatus: 'candidate',
+    promotionStatus: 'production',
     alphaBucket: 'breakout_vol_expansion',
     supportedRegimes: ['bull', 'sideways', 'volatile'],
     thesis: 'Daily SMC structure reclaim plus VWAP bias setup; intraday S12 remains the execution gate.',
@@ -531,7 +531,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
       evidenceRequirements: ['daily_vwap_proxy', 'smc_structure_reclaim', 'finlab_strategy_spec_backtest'],
       maxMlShare: 0.18,
     },
-    riskNotes: ['Candidate only; daily VWAP setup must not override S12 intraday execution confirmation.'],
+    riskNotes: ['Active daily strategy; daily VWAP setup must not override S12 intraday execution confirmation.'],
     createdBy: 'p5_strategy_governance',
   }
 

@@ -194,6 +194,8 @@ def _feature_value(name: str, row: dict[str, Any], prediction: dict[str, Any] | 
         if isinstance(s12_payload.get("candidate_s12_entry_context"), dict)
         else {}
     )
+    if not s12_context and isinstance(s12_payload.get("s12_entry_context"), dict):
+        s12_context = s12_payload["s12_entry_context"]
     values = {
         "score_final_norm": None if final_score is None else final_score / 100.0,
         "ml_edge_norm": None if _component(row, "mlEdge") is None else _component(row, "mlEdge") / 25.0,

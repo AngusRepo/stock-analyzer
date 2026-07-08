@@ -146,6 +146,7 @@ export interface StrategyRawSignals {
   vwapBias?: number | null
   vwap5d?: number | null
   vwapBias5d?: number | null
+  bestOrderBlockStrength?: number | null
   foreignNet5d?: number | null
   trustNet5d?: number | null
   dealerNet5d?: number | null

@@ -191,6 +191,29 @@ def _l4_alpha_ev(value: float, *, method: str = "stacked_meta_calibrator") -> di
     }
 
 
+def _allocator_ev_fusion_artifact(**overrides) -> dict:
+    artifact = {
+        "schema_version": "allocator-ev-fusion-artifact-v1",
+        "promotion_state": "production_approved",
+        "validation_packet": {"decision": "PASS", "failed_gates": []},
+        "resolver_method": "regularized_allocator_ev_fusion",
+        "model_version": "allocator-ev-fusion-20260708",
+        "feature_snapshot_version": "allocator-ev-fusion-features-v1",
+        "trained_until": "2026-07-07",
+        "horizon_days": 3,
+        "cost_model_bps": 18.0,
+        "output_is_net_of_costs": True,
+        "intercept": 0.0,
+        "coefficients": {
+            "l4_expected_return": 0.7,
+            "s12_trade_expected_return": 0.3,
+        },
+        "output_clip": {"min": -0.08, "max": 0.08},
+    }
+    artifact.update(overrides)
+    return artifact
+
+
 def _prediction_with_ensemble_v2() -> dict:
     return {
         "signal": "HOLD",
@@ -1556,6 +1579,101 @@ def test_sparse_tangent_allocation_prefers_l4_alpha_ev_over_s12_cold_fallback():
     assert allocation["expected_return_owner"] == "l4_alpha_ev"
     assert allocation["allocator_edge_resolver"]["conditional_admission_block_reason"] is None
     assert allocation["s12_trade_ev"] == cold_payload
+
+
+def test_sparse_tangent_allocation_uses_allocator_ev_fusion_when_artifact_is_configured():
+    s12_payload = {
+        "schema_version": "s12-trade-ev-v1",
+        "status": "loaded",
+        "semantic": "trade_expected_return_not_5bar_close_forecast",
+        "trade_expected_return_net_pct": 0.006,
+        "trade_expected_return_source": "s12_replay_trade_outcomes",
+        "sample_policy": "verified_s12_symbol_replay",
+        "bootstrap_scope": "symbol",
+        "s12_structural_targets": {
+            "target_quality_state": "structure_targets",
+            "reward_confidence_multiplier": 0.92,
+        },
+        "candidate_s12_entry_context": {"detail_available": True, "ready": True},
+    }
+    rows = [{
+        "symbol": "3661",
+        "chip_score": 22.0,
+        "tech_score": 23.0,
+        "confidence": 0.78,
+        "signal": "HOLD",
+        "has_buy_signal": 0,
+        "score": 82.0,
+        "s12_trade_ev": s12_payload,
+        "l4_alpha_ev": _l4_alpha_ev(0.018),
+        "score_components": _score_components(final_score=82.0, ml_edge=20.0),
+    }]
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True, "promoteMinForecastPct": 0.005, "promoteMinMlEdge": 0.0},
+        alpha_policy={
+            **_sparse_policy(buy_signal_count=1, slate_size=1),
+            "allocatorEvFusion": _allocator_ev_fusion_artifact(),
+        },
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    resolver = allocation["allocator_edge_resolver"]
+    assert promoted[0]["signal"] == "BUY"
+    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["expected_return"] == pytest.approx((0.018 * 0.7) + (0.006 * 0.3))
+    assert allocation["allocator_ev_fusion"]["status"] == "loaded"
+    assert allocation["allocator_ev_fusion"]["l4_expected_return"] == pytest.approx(0.018)
+    assert allocation["allocator_ev_fusion"]["s12_trade_expected_return"] == pytest.approx(0.006)
+    assert allocation["l4_alpha_ev"]["expected_return_owner"] == "l4_alpha_ev"
+    assert allocation["s12_trade_ev"] == s12_payload
+    assert resolver["expected_return_owner"] == "allocator_ev_fusion"
+    assert resolver["candidate_contract"] == "production_allocator_ev_fusion_l4_selection_alpha_plus_s12_execution_trade_ev"
+    assert resolver["conditional_admission_block_reason"] is None
+
+
+def test_sparse_tangent_allocation_fails_closed_when_allocator_ev_fusion_artifact_is_invalid():
+    rows = [{
+        "symbol": "3661",
+        "chip_score": 22.0,
+        "tech_score": 23.0,
+        "confidence": 0.78,
+        "signal": "HOLD",
+        "has_buy_signal": 0,
+        "score": 82.0,
+        "s12_trade_ev": {
+            "schema_version": "s12-trade-ev-v1",
+            "status": "loaded",
+            "trade_expected_return_net_pct": 0.006,
+            "trade_expected_return_source": "s12_replay_trade_outcomes",
+            "bootstrap_scope": "symbol",
+            "sample_policy": "verified_s12_symbol_replay",
+        },
+        "l4_alpha_ev": _l4_alpha_ev(0.018),
+        "score_components": _score_components(final_score=82.0, ml_edge=20.0),
+    }]
+    invalid_artifact = _allocator_ev_fusion_artifact(
+        validation_packet={"decision": "FAIL", "failed_gates": ["walk_forward"]},
+        coefficients={"l4_expected_return": 1.0},
+    )
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True, "promoteMinForecastPct": 0.005, "promoteMinMlEdge": 0.0},
+        alpha_policy={
+            **_sparse_policy(buy_signal_count=1, slate_size=1),
+            "allocatorEvFusion": invalid_artifact,
+        },
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    assert promoted[0]["signal"] == "HOLD"
+    assert allocation["expected_return"] == 0.0
+    assert allocation["expected_return_source"] == "allocator_ev_fusion:artifact_validation_failed_no_expected_return"
+    assert allocation["allocator_ev_fusion"]["status"] == "rejected"
+    assert "validation_packet_not_pass" in allocation["allocator_ev_fusion"]["blockers"]
+    assert "required_s12_feature_missing_from_artifact" in allocation["allocator_ev_fusion"]["blockers"]
 
 
 def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):

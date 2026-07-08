@@ -167,6 +167,15 @@ def build_online_portfolio_bandit_l2_packet(
     arms: tuple[PortfolioBanditArm, ...] = DEFAULT_ARMS,
     stage: str = "L2_paper_active",
     candidate_cap_limit: int | None = None,
+    max_cluster_weight: float | None = None,
+    cluster_edge_threshold: float | None = None,
+    cluster_threshold_quantile: float = 0.9,
+    allocation_objective: str = "mean_variance_alpha_utility",
+    alpha_strength: float = 1.0,
+    risk_aversion: float = 2.0,
+    turnover_penalty: float = 0.0,
+    l2_penalty: float = 0.0,
+    utility_iterations: int = 180,
 ) -> dict[str, Any]:
     """Select allocator knobs with warm-start UCB and compute allocation weights."""
 
@@ -224,6 +233,15 @@ def build_online_portfolio_bandit_l2_packet(
             return_history,
             top_k=int(knobs.get("candidate_cap") or selected_arm.candidate_cap),
             max_weight=float(knobs.get("max_weight") or selected_arm.max_weight),
+            max_cluster_weight=max_cluster_weight,
+            cluster_edge_threshold=cluster_edge_threshold,
+            cluster_threshold_quantile=cluster_threshold_quantile,
+            allocation_objective=allocation_objective,
+            alpha_strength=alpha_strength,
+            risk_aversion=risk_aversion,
+            turnover_penalty=turnover_penalty,
+            l2_penalty=l2_penalty,
+            utility_iterations=utility_iterations,
         )
         raw_weights = dict(sparse_evidence.get("weights") or {})
         final_weights = _normalize_to_exposure(
@@ -292,6 +310,7 @@ def build_online_portfolio_bandit_l2_packet(
         "constraints": {
             "bandit_controls_final_weights": False,
             "bandit_controls_allocator_knobs": True,
+            "inherits_sparse_allocator_policy_knobs": True,
             "requires_paper_active_attribution": not production_controller,
             "requires_wei_approval_for_L3_or_production": not production_controller,
             "production_controller_enabled": production_controller,

@@ -95,6 +95,50 @@ def test_online_portfolio_bandit_selects_ucb_arm_and_keeps_cash_buffer(monkeypat
     assert packet["controlled_allocation"]["cash_weight"] == pytest.approx(0.25)
 
 
+def test_online_portfolio_bandit_forwards_sparse_allocator_policy_knobs(monkeypatch):
+    observed: dict[str, object] = {}
+
+    def fake_allocate(candidates, return_history, **kwargs):
+        observed.update(kwargs)
+        return {
+            "weights": {"AAA": 0.5},
+            "candidate_diagnostics": {
+                "AAA": {"alpha_input": 0.05, "marginal_utility": 0.01, "final_weight": 0.5},
+            },
+            "objective_evidence": {"objective": kwargs.get("allocation_objective")},
+        }
+
+    monkeypatch.setattr(online_portfolio_bandit, "allocate_sparse_tangent_with_evidence", fake_allocate)
+
+    packet = build_online_portfolio_bandit_l2_packet(
+        candidates=[_candidate("AAA", 90.0, 0.05)],
+        return_history={},
+        arms=(PortfolioBanditArm("policy_arm", 1, 1.0, 0.0, 0.0, 0.20, 0.020, 30),),
+        exploration_alpha=0.0,
+        stage="L3_production_allocation_controller",
+        max_cluster_weight=0.33,
+        cluster_edge_threshold=0.72,
+        cluster_threshold_quantile=0.8,
+        allocation_objective="alpha_utility_sparse",
+        alpha_strength=1.25,
+        risk_aversion=3.5,
+        turnover_penalty=0.04,
+        l2_penalty=0.02,
+        utility_iterations=240,
+    )
+
+    assert observed["max_cluster_weight"] == pytest.approx(0.33)
+    assert observed["cluster_edge_threshold"] == pytest.approx(0.72)
+    assert observed["cluster_threshold_quantile"] == pytest.approx(0.8)
+    assert observed["allocation_objective"] == "alpha_utility_sparse"
+    assert observed["alpha_strength"] == pytest.approx(1.25)
+    assert observed["risk_aversion"] == pytest.approx(3.5)
+    assert observed["turnover_penalty"] == pytest.approx(0.04)
+    assert observed["l2_penalty"] == pytest.approx(0.02)
+    assert observed["utility_iterations"] == 240
+    assert packet["constraints"]["inherits_sparse_allocator_policy_knobs"] is True
+
+
 def test_online_portfolio_bandit_records_allocator_edge_quality_features(monkeypatch):
     monkeypatch.setattr(
         online_portfolio_bandit,

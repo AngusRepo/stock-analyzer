@@ -9,11 +9,15 @@ import {
   type StrategyFamilyId,
   type StrategyOwnerType,
   type StrategyPromotionStatus,
+  type StrategyRawSignals,
   type StrategySpec,
   type StrategySpecCandidatePolicy,
   type StrategySpecStatus,
 } from './strategySpec'
 import { assertOwnerCanOwn } from './strategyOwnerFreeze'
+import { materializeFormal137FeatureAliases } from './formal137FeatureMaterialization'
+import { buildPriceActionStructure } from './priceActionStructure'
+import type { OhlcvRow } from './ohlcvTradePlanLevels'
 import {
   applyStrategyThresholdCalibrationArtifacts,
   buildStrategyThresholdAutoDecisions,
@@ -328,6 +332,170 @@ function finiteNumber(value: unknown): number | null {
 
 function round6(value: number | null): number | null {
   return value == null ? null : Math.round(value * 1_000_000) / 1_000_000
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10_000) / 10_000
+}
+
+function pctChange(current: number | null, base: number | null): number | null {
+  if (current == null || base == null || Math.abs(base) < 1e-9) return null
+  return current / base - 1
+}
+
+function firstFinite(...values: unknown[]): number | null {
+  for (const value of values) {
+    const number = finiteNumber(value)
+    if (number != null) return number
+  }
+  return null
+}
+
+function percentileRank(value: number, sortedAsc: number[]): number | null {
+  if (!Number.isFinite(value) || sortedAsc.length < 2) return null
+  let lower = 0
+  while (lower < sortedAsc.length && sortedAsc[lower] < value) lower++
+  let upper = lower
+  while (upper < sortedAsc.length && sortedAsc[upper] <= value) upper++
+  const midpointIndex = (lower + Math.max(lower, upper - 1)) / 2
+  return Math.min(1, Math.max(0, midpointIndex / (sortedAsc.length - 1)))
+}
+
+function ensureRawSignalObjects(candidate: StrategyCandidateInput): StrategyRawSignals {
+  const raw = (
+    candidate.raw_signals && typeof candidate.raw_signals === 'object' && !Array.isArray(candidate.raw_signals)
+      ? candidate.raw_signals
+      : {}
+  ) as StrategyRawSignals
+  raw.technicalIndicators = { ...(raw.technicalIndicators ?? {}) }
+  raw.factorSignals = { ...(raw.factorSignals ?? {}) }
+  candidate.raw_signals = raw
+  return raw
+}
+
+function setIfFinite(target: Record<string, number | null | undefined>, key: string, value: number | null): boolean {
+  if (value == null || !Number.isFinite(value)) return false
+  if (finiteNumber(target[key]) != null) return false
+  target[key] = round6(value)
+  return true
+}
+
+function sortedDailyBars(rows: Array<{
+  date: string
+  open: number | string | null
+  high: number | string | null
+  low: number | string | null
+  close: number | string | null
+  volume: number | string | null
+}>): OhlcvRow[] {
+  return rows
+    .map((row) => ({
+      date: String(row.date ?? ''),
+      open: finiteNumber(row.open),
+      high: finiteNumber(row.high),
+      low: finiteNumber(row.low),
+      close: finiteNumber(row.close),
+      volume: finiteNumber(row.volume) ?? 0,
+    }))
+    .filter((row): row is OhlcvRow => (
+      Boolean(row.date)
+      && row.open != null
+      && row.high != null
+      && row.low != null
+      && row.close != null
+      && row.high >= row.low
+    ))
+    .sort((left, right) => left.date.localeCompare(right.date))
+}
+
+interface StrategyCandidatePriceRow {
+  symbol: string
+  date: string
+  open: number | string | null
+  high: number | string | null
+  low: number | string | null
+  close: number | string | null
+  volume: number | string | null
+}
+
+function materializeDailyVwapAndSmc(raw: StrategyRawSignals, bars: OhlcvRow[]): boolean {
+  if (bars.length < 2) return false
+  raw.technicalIndicators = { ...(raw.technicalIndicators ?? {}) }
+  raw.factorSignals = { ...(raw.factorSignals ?? {}) }
+  let touched = false
+  const latest = bars[bars.length - 1]
+  const close = finiteNumber(raw.close) ?? latest.close
+  const latestTypical = (latest.high + latest.low + latest.close) / 3
+  const vwapBias = pctChange(close, latestTypical)
+  const vwapBars = bars.slice(-5)
+  const volumeSum = vwapBars.reduce((sum, row) => sum + Math.max(0, row.volume ?? 0), 0)
+  const vwap5d = vwapBars.length >= 5 && volumeSum > 0
+    ? vwapBars.reduce((sum, row) => sum + (((row.high + row.low + row.close) / 3) * Math.max(0, row.volume ?? 0)), 0) / volumeSum
+    : null
+  const vwapBias5d = pctChange(close, vwap5d)
+  raw.close = firstFinite(raw.close, close)
+  raw.vwapBias = firstFinite(raw.vwapBias, raw.factorSignals.vwap_bias, raw.technicalIndicators.vwap_bias, vwapBias)
+  raw.vwap5d = firstFinite(raw.vwap5d, raw.factorSignals.vwap_5d, raw.technicalIndicators.vwap_5d, vwap5d)
+  raw.vwapBias5d = firstFinite(raw.vwapBias5d, raw.factorSignals.vwap_bias_5d, raw.technicalIndicators.vwap_bias_5d, vwapBias5d)
+  for (const [key, value] of [
+    ['vwapBias', raw.vwapBias],
+    ['vwap5d', raw.vwap5d],
+    ['vwapBias5d', raw.vwapBias5d],
+  ] as const) {
+    touched = setIfFinite(raw.technicalIndicators, key, value) || touched
+    if (key === 'vwap5d') touched = setIfFinite(raw.technicalIndicators, 'vwap_5d', value) || touched
+  }
+  touched = setIfFinite(raw.technicalIndicators, 'vwap_bias', raw.vwapBias ?? null) || touched
+  touched = setIfFinite(raw.technicalIndicators, 'vwap_bias_5d', raw.vwapBias5d ?? null) || touched
+  touched = setIfFinite(raw.factorSignals, 'vwap_bias', raw.vwapBias ?? null) || touched
+  touched = setIfFinite(raw.factorSignals, 'vwap_5d', raw.vwap5d ?? null) || touched
+  touched = setIfFinite(raw.factorSignals, 'vwap_bias_5d', raw.vwapBias5d ?? null) || touched
+  touched = setIfFinite(raw.factorSignals, 'vwapBias', raw.vwapBias ?? null) || touched
+  touched = setIfFinite(raw.factorSignals, 'vwap5d', raw.vwap5d ?? null) || touched
+  touched = setIfFinite(raw.factorSignals, 'vwapBias5d', raw.vwapBias5d ?? null) || touched
+
+  if (bars.length >= 5) {
+    const structure = buildPriceActionStructure(bars, { latestPrice: close })
+    const smc = structure.smc
+    raw.bestOrderBlockStrength = firstFinite(raw.bestOrderBlockStrength, raw.technicalIndicators.bestOrderBlockStrength, structure.bestOrderBlock?.strength)
+    touched = setIfFinite(raw.technicalIndicators, 'bestOrderBlockStrength', raw.bestOrderBlockStrength ?? null) || touched
+    touched = setIfFinite(raw.technicalIndicators, 'smcBullishScore', firstFinite(raw.technicalIndicators.smcBullishScore, smc.bullishScore)) || touched
+    touched = setIfFinite(raw.technicalIndicators, 'smcBearishScore', firstFinite(raw.technicalIndicators.smcBearishScore, smc.bearishScore)) || touched
+    touched = setIfFinite(raw.technicalIndicators, 'smcNetScore', firstFinite(raw.technicalIndicators.smcNetScore, smc.score)) || touched
+    touched = setIfFinite(raw.technicalIndicators, 'smcBiasBullish', firstFinite(raw.technicalIndicators.smcBiasBullish, smc.bias === 'bullish' ? 1 : 0)) || touched
+    touched = setIfFinite(raw.technicalIndicators, 'smcBiasBearish', firstFinite(raw.technicalIndicators.smcBiasBearish, smc.bias === 'bearish' ? 1 : 0)) || touched
+  }
+  return touched
+}
+
+function materializeSmrcVwapCrossSectionalRanks(candidates: StrategyCandidateInput[]): void {
+  const rankFields = [
+    { rawKey: 'vwapBias' as const, factorKey: 'finlabCsVwapBiasRank' },
+    { rawKey: 'vwapBias5d' as const, factorKey: 'finlabCsVwapBias5dRank' },
+    { rawKey: 'bestOrderBlockStrength' as const, factorKey: 'finlabCsBestOrderBlockStrengthRank' },
+    { rawKey: 'volumeExpansion20' as const, factorKey: 'finlabCsVolumeExpansion20Rank' },
+  ]
+  const valuesByField = new Map<string, number[]>()
+  for (const field of rankFields) {
+    valuesByField.set(field.factorKey, candidates
+      .map((candidate) => {
+        const raw = ensureRawSignalObjects(candidate)
+        return firstFinite(raw[field.rawKey], raw.factorSignals?.[field.rawKey], raw.technicalIndicators?.[field.rawKey])
+      })
+      .filter((value): value is number => value != null)
+      .sort((a, b) => a - b))
+  }
+  for (const candidate of candidates) {
+    const raw = ensureRawSignalObjects(candidate)
+    for (const field of rankFields) {
+      if (finiteNumber(raw.factorSignals?.[field.factorKey]) != null) continue
+      const value = firstFinite(raw[field.rawKey], raw.factorSignals?.[field.rawKey], raw.technicalIndicators?.[field.rawKey])
+      if (value == null) continue
+      const rank = percentileRank(value, valuesByField.get(field.factorKey) ?? [])
+      if (rank == null) continue
+      raw.factorSignals![field.factorKey] = round4(rank)
+    }
+  }
 }
 
 function stableIdPart(value: string): string {
@@ -761,7 +929,7 @@ export async function listStrategyLearningCandidates(
     funnel_score?: number | null
     funnel_rank?: number | null
   }>()
-  return (results ?? []).map(({ score_components, funnel_evidence, funnel_score: _funnelScore, funnel_rank: _funnelRank, ...row }) => {
+  const candidates = (results ?? []).map(({ score_components, funnel_evidence, funnel_score: _funnelScore, funnel_rank: _funnelRank, ...row }) => {
     const evidence = parseJson<Record<string, any>>(funnel_evidence, {})
     const rawSignals = evidence && typeof evidence.raw_signals === 'object'
       ? evidence.raw_signals
@@ -779,6 +947,86 @@ export async function listStrategyLearningCandidates(
       score_v2: row.score_v2 ?? score_components ?? evidence.score_components,
     }
   })
+  await hydrateStrategyCandidateDailyFeatures(db, date, candidates)
+  return candidates
+}
+
+export async function hydrateStrategyCandidateDailyFeatures(
+  db: D1Database,
+  date: string,
+  candidates: StrategyCandidateInput[],
+): Promise<{
+  hydratedSymbols: number
+  materializedAliases: number
+}> {
+  if (!candidates.length) return { hydratedSymbols: 0, materializedAliases: 0 }
+  for (const candidate of candidates) ensureRawSignalObjects(candidate)
+  const symbols = [...new Set(candidates.map((candidate) => cleanToken(candidate.symbol)).filter(Boolean))]
+  const symbolsNeedingOhlcv = symbols.filter((symbol) => {
+    const candidate = candidates.find((row) => cleanToken(row.symbol) === symbol)
+    const raw = candidate ? ensureRawSignalObjects(candidate) : {}
+    return (
+      firstFinite(
+        raw.vwapBias,
+        raw.factorSignals?.vwap_bias,
+        raw.technicalIndicators?.vwap_bias,
+      ) == null
+      || firstFinite(
+        raw.vwapBias5d,
+        raw.factorSignals?.vwap_bias_5d,
+        raw.technicalIndicators?.vwap_bias_5d,
+      ) == null
+      || firstFinite(
+        raw.technicalIndicators?.smcNetScore,
+      ) == null
+      || firstFinite(
+        raw.bestOrderBlockStrength,
+        raw.technicalIndicators?.bestOrderBlockStrength,
+      ) == null
+    )
+  })
+  let hydratedSymbols = 0
+  if (symbolsNeedingOhlcv.length > 0) {
+    const placeholders = symbolsNeedingOhlcv.map(() => '?').join(', ')
+    try {
+      const { results } = await db.prepare(`
+        SELECT s.symbol, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume
+          FROM stock_prices sp
+          JOIN stocks s ON s.id = sp.stock_id
+         WHERE s.symbol IN (${placeholders})
+           AND sp.date <= ?
+         ORDER BY s.symbol ASC, sp.date DESC
+         LIMIT ?
+      `).bind(...symbolsNeedingOhlcv, date, Math.min(5000, symbolsNeedingOhlcv.length * 70)).all<StrategyCandidatePriceRow>()
+      const bySymbol = new Map<string, StrategyCandidatePriceRow[]>()
+      for (const row of results ?? []) {
+        const symbol = cleanToken(row.symbol)
+        if (!symbol) continue
+        const rows = bySymbol.get(symbol) ?? []
+        rows.push(row)
+        bySymbol.set(symbol, rows)
+      }
+      for (const candidate of candidates) {
+        const symbol = cleanToken(candidate.symbol)
+        if (!symbol) continue
+        const bars = sortedDailyBars((bySymbol.get(symbol) ?? []).slice(0, 70))
+        if (!bars.length) continue
+        const touched = materializeDailyVwapAndSmc(ensureRawSignalObjects(candidate), bars)
+        if (touched) hydratedSymbols += 1
+      }
+    } catch {
+      // Strategy learning must still run when historical D1 shards lack stock_prices;
+      // missing feature refs remain visible in decision evidence.
+    }
+  }
+  const aliasTelemetry = materializeFormal137FeatureAliases(candidates.map((candidate) => ({
+    raw_signals: ensureRawSignalObjects(candidate),
+  })))
+  materializeSmrcVwapCrossSectionalRanks(candidates)
+  return {
+    hydratedSymbols,
+    materializedAliases: aliasTelemetry.materializedCount,
+  }
 }
 
 export async function persistStrategyDecisionRows(db: D1Database, rows: StrategyDecisionLogRow[]): Promise<number> {

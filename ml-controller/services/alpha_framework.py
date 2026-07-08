@@ -482,6 +482,21 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
                     if bucket.value in bucket_weights:
                         current[bucket.value] = max(0.0, min(3.0, _to_float(bucket_weights[bucket.value], current[bucket.value])))
 
+    allocator_ev_fusion = (
+        raw.get("allocator_ev_fusion")
+        or raw.get("allocatorEvFusion")
+        or raw.get("allocatorEVFusion")
+        or raw.get("allocationEvFusion")
+    )
+    raw_ensemble_v2 = raw.get("ensemble_v2") if isinstance(raw.get("ensemble_v2"), dict) else {}
+    if allocator_ev_fusion is None and raw_ensemble_v2:
+        allocator_ev_fusion = (
+            raw_ensemble_v2.get("allocator_ev_fusion")
+            or raw_ensemble_v2.get("allocatorEvFusion")
+            or raw_ensemble_v2.get("allocatorEVFusion")
+            or raw_ensemble_v2.get("allocationEvFusion")
+        )
+
     return {
         "risk_overlay": overlay,
         "allocation": {
@@ -502,6 +517,7 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
         "regime_bucket_multipliers": regime_bucket_multipliers,
         "scoring": scoring,
         "execution_overlay": execution_overlay,
+        "allocator_ev_fusion": allocator_ev_fusion,
     }
 
 

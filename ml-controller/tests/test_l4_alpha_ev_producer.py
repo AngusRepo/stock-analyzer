@@ -136,6 +136,26 @@ def test_materialize_l4_alpha_ev_fails_closed_on_missing_required_feature():
     assert "feature_missing:market_heat_expected_return" in payload["blockers"]
 
 
+def test_materialize_l4_alpha_ev_reads_s12_entry_context_alias():
+    row = {
+        **_row(),
+        "s12_trade_ev": {
+            "schema_version": "s12-trade-ev-v1",
+            "status": "loaded",
+            "s12_entry_context": {"reward_confidence_multiplier": 0.82},
+        },
+    }
+    payload = materialize_l4_alpha_ev(
+        row,
+        prediction=_prediction(),
+        policy={"l4_alpha_ev": _artifact(coefficients={"s12_context_multiplier_minus_1": 1.0}, intercept=0.0)},
+    )
+
+    assert payload["status"] == "loaded"
+    assert payload["feature_values"]["s12_context_multiplier_minus_1"] == pytest.approx(-0.18)
+    assert payload["expected_return"] == pytest.approx(-0.08)
+
+
 def test_filter_and_score_materializes_l4_alpha_ev_for_allocator(monkeypatch):
     monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     screener_rec = {

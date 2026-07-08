@@ -70,6 +70,46 @@ def test_registry_json_io_sanitizes_non_finite_values():
     }
 
 
+def test_upsert_artifact_record_conflict_updates_promotion_metadata(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        captured["sql"] = sql
+        captured["params"] = params
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+
+    registry.upsert_artifact_record(
+        {
+            "artifact_id": "l4_alpha_ev:l4-alpha-ev-ridge-20260707:weekly",
+            "model_name": "l4_alpha_ev",
+            "version": "l4-alpha-ev-ridge-20260707",
+            "candidate_type": "weekly",
+            "state": "production",
+            "artifact_path": "artifacts/l4_alpha_ev/weekly/l4-alpha-ev-ridge-20260707.json",
+            "offline_gate_status": "passed",
+            "offline_gate_decision": "PASS",
+            "offline_gate_failed_gates": "[]",
+            "offline_evidence_json": "{}",
+            "live_gate_status": "passed",
+            "live_evidence_json": '{"promoted":true}',
+            "promotion_decision": "promoted",
+            "approval_state": "auto_approved",
+        }
+    )
+
+    sql = str(captured["sql"])
+    for field in (
+        "final_compared_to",
+        "live_gate_status",
+        "live_evidence_json",
+        "promotion_decision",
+        "approval_state",
+    ):
+        assert f"{field} = excluded.{field}" in sql
+
+
 def test_build_artifact_records_from_weekly_followup_failed_registration():
     payload = {
         "run_id": "weekly-202605w2",

@@ -775,6 +775,7 @@ def upsert_artifact_record(record: dict[str, Any]) -> dict:
           training_manifest_path = excluded.training_manifest_path,
           trained_from_snapshot = excluded.trained_from_snapshot,
           evaluation_baseline_version = excluded.evaluation_baseline_version,
+          final_compared_to = excluded.final_compared_to,
           feature_policy_version = excluded.feature_policy_version,
           checksum = excluded.checksum,
           source_run_date = excluded.source_run_date,
@@ -783,6 +784,10 @@ def upsert_artifact_record(record: dict[str, Any]) -> dict:
           offline_gate_decision = excluded.offline_gate_decision,
           offline_gate_failed_gates = excluded.offline_gate_failed_gates,
           offline_evidence_json = excluded.offline_evidence_json,
+          live_gate_status = excluded.live_gate_status,
+          live_evidence_json = excluded.live_evidence_json,
+          promotion_decision = excluded.promotion_decision,
+          approval_state = excluded.approval_state,
           updated_at = CURRENT_TIMESTAMP
         """,
         [

@@ -27,6 +27,7 @@ import {
   type S12UnifiedDecision,
 } from './s12IntradayStructure'
 import { loadS12IntradayBaseBars } from './s12RuntimeBars'
+import { persistS12StructureSnapshot } from './s12StructureSnapshots'
 import {
   getCurrentRegime as getCurrentSltpRegime,
   getTradingConfig,
@@ -535,6 +536,13 @@ async function evaluateS12HoldingDefense(
       h4ReferenceClose: s12Base.diagnostics.previous_4h_reference_close,
     })
     const assessment = applyS12TakeoverContinuity(rawAssessment, latestEvent?.detail_json)
+    await persistS12StructureSnapshot(env, {
+      tradeDate,
+      symbol: pos.symbol,
+      assessment,
+      source: 's12_holding_defense',
+      side: 'sell',
+    })
     const executableBookAvailable = positiveNumber(quote.bid) != null && positiveNumber(quote.ask) != null
     const s12Position = {
       ...pos,

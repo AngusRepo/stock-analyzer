@@ -49,6 +49,7 @@ import {
   type S12IntradayGateMode,
 } from './s12IntradayStructure'
 import { buildCanonicalTradeLifecycle, serializeCanonicalTradeLifecycle } from './canonicalTradeLifecycle'
+import { persistS12StructureSnapshot } from './s12StructureSnapshots'
 import { loadIntradayTechnicalRollingBars, loadS12IntradayBaseBars, rollingBarsToOhlcvRows, type S12BaseBarSource } from './s12RuntimeBars'
 import { getTwClockParts, isTwIntradayTradingMinute } from './twMarketSession'
 import {
@@ -1222,6 +1223,14 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         barSource: s12Base.source,
       }
       s12Sidecars.set(pending.symbol, sidecar)
+      await persistS12StructureSnapshot(env, {
+        tradeDate: today,
+        symbol: pending.symbol,
+        assessment,
+        source: 's12_intraday_structure',
+        side: 'buy',
+        pendingRunId,
+      })
       await recordPaperExecutionEvent(env, {
         tradeDate: today,
         symbol: pending.symbol,

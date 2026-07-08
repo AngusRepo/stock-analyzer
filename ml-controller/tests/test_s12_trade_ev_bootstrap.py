@@ -8,7 +8,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.s12_trade_ev_bootstrap import S12TradeEvBootstrapProvider, load_s12_replay_trade_rows  # noqa: E402
+from services.s12_trade_ev_bootstrap import (  # noqa: E402
+    S12TradeEvBootstrapProvider,
+    load_s12_replay_trade_rows,
+    load_s12_structure_snapshots,
+)
 
 
 def _row(
@@ -608,3 +612,84 @@ def test_s12_trade_ev_bootstrap_does_not_treat_legacy_stop_loss_as_s12_structure
     assert ev["s12_structural_targets"]["structure_stop_source"] == "missing_s12_structure_stop"
     assert ev["s12_structural_targets"]["legacy_stop_loss_ignored"] is True
     assert ev["candidate_s12_structure_policy"] == "shared_symbol_peer_cold_structure_resolver"
+
+
+def test_s12_structure_snapshots_merge_into_cold_start_ev():
+    calls: list[str] = []
+
+    def fake_query(sql, params=None, **_kwargs):
+        calls.append(sql)
+        if "FROM s12_structure_snapshots" in sql:
+            return [
+                {
+                    "id": 1,
+                    "trade_date": "2026-07-07",
+                    "symbol": "8091",
+                    "source": "s12_intraday_structure",
+                    "side": "buy",
+                    "state": "reaction_ready",
+                    "ready": 1,
+                    "invalidated": 0,
+                    "setup_id": "8091:setup",
+                    "entry_price": 100,
+                    "structure_stop": 96,
+                    "target1_price": 106,
+                    "target2_price": 112,
+                    "supply_zone_low": 111,
+                    "supply_zone_high": 114,
+                    "detail": (
+                        "state=reaction_ready;ready=true;entry_archetype=equity_repricing_breakout;"
+                        "vwap_fast_acceptance=true;vwap_slow_context=overhead_supply;htf_hard_block=false"
+                    ),
+                    "entry_context_json": json.dumps({
+                        "schema_version": "s12-equity-mutation-context-v1",
+                        "state": "reaction_ready",
+                        "ready": True,
+                        "entry_archetype": "equity_repricing_breakout",
+                        "vwap_fast_acceptance": True,
+                        "vwap_slow_context": "overhead_supply",
+                        "htf_hard_block": False,
+                        "detail_available": True,
+                    }),
+                    "exit_plan_json": json.dumps({
+                        "tp1": {"price": 106, "source": "15m_previous_high"},
+                        "mainExit": {"price": 112, "source": "1h_supply_zone"},
+                        "trailingStop": {"initial": 96, "source": "adaptive"},
+                    }),
+                    "raw_json": "{}",
+                    "updated_at": "2026-07-07 10:00:00",
+                }
+            ]
+        return []
+
+    snapshots = load_s12_structure_snapshots(run_date="2026-07-07", query_fn=fake_query)
+    provider = S12TradeEvBootstrapProvider.for_run_date(
+        "2026-07-07",
+        query_fn=fake_query,
+        min_samples=30,
+        roundtrip_cost_bps=0,
+    )
+
+    ev = provider.build_for_row({
+        "symbol": "8091",
+        "current_price": 100,
+        "market_segment": "LISTED",
+        "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
+        "ml_score": 20,
+        "tech_score": 20,
+        "chip_score": 25,
+    })
+
+    assert any("FROM s12_structure_snapshots" in sql for sql in calls)
+    snapshot_sql = next(sql for sql in calls if "FROM s12_structure_snapshots" in sql)
+    assert "WHEN 's12_candidate_snapshot' THEN 0" in snapshot_sql
+    assert "WHEN 's12_intraday_structure' THEN 1" in snapshot_sql
+    assert snapshots["8091"]["s12_structure_stop"] == 96
+    assert provider.summary()["structure_snapshots"] == 1
+    assert ev["status"] == "loaded"
+    assert ev["source"] == "s12_structural_cold_start_ev"
+    assert ev["target1_price"] == 106
+    assert ev["target2_price"] == 112
+    assert ev["s12_structural_targets"]["structure_stop_source"] == "s12_structure_stop"
+    assert ev["candidate_s12_entry_context"]["detail_available"] is True
+    assert ev["s12_entry_context"]["vwap_fast_acceptance"] is True

@@ -1831,6 +1831,30 @@ async function continuePostScreenerPipeline(
   }
 
   try {
+    const startedAt = Date.now()
+    const { runS12CandidateStructureSnapshots } = await import('./s12CandidateStructureSnapshots')
+    const snapshotSummary = await runS12CandidateStructureSnapshots(env, triggerTime)
+    const summary = `pre-pipeline S12 snapshots persisted=${snapshotSummary.persisted}/${snapshotSummary.attempted} ready=${snapshotSummary.ready} setup=${snapshotSummary.setup_only} skipped=${snapshotSummary.skipped} errors=${snapshotSummary.errors}`
+    await logSchedulerResult(env.KV, 's12-structure-snapshot', {
+      status: snapshotSummary.errors > 0 && snapshotSummary.persisted === 0 ? 'error' : 'success',
+      summary,
+      duration_ms: Date.now() - startedAt,
+      run_date: triggerTime,
+    })
+    console.log(`[Queue] Event-driven: ${summary}`)
+  } catch (e) {
+    const summary = `pre-pipeline S12 snapshots failed open for ${triggerTime}`
+    await logSchedulerResult(env.KV, 's12-structure-snapshot', {
+      status: 'error',
+      summary,
+      duration_ms: 0,
+      error: e instanceof Error ? e.message : String(e),
+      run_date: triggerTime,
+    })
+    console.warn('[Queue] Event-driven S12 snapshot failed open:', e)
+  }
+
+  try {
     const summary = await deps.runMLAndRiskV2(env, triggerTime, { prevalidatedEventChain: true })
     if (summary.trim().toUpperCase().startsWith('LOCKED')) {
       const lockedSummary = `pipeline already running for ${triggerTime}; existing run lock preserved`

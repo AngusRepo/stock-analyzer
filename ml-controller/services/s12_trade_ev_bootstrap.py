@@ -39,6 +39,19 @@ def _json_obj(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _truthy(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
 def _with_alpha_replay_metadata(row: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
     alpha_context = detail.get("alpha_context") if isinstance(detail.get("alpha_context"), dict) else {}
     alpha_allocation = detail.get("alpha_allocation") if isinstance(detail.get("alpha_allocation"), dict) else {}
@@ -126,6 +139,95 @@ def _bounded_lookback_days(value: Any, max_days: Any | None = None) -> int:
 
 def _symbol_from_row(row: dict[str, Any]) -> str:
     return str(row.get("symbol") or row.get("stock_id") or "").strip()
+
+
+def _safe_json_loads(value: Any) -> dict[str, Any]:
+    return _json_obj(value)
+
+
+def _snapshot_payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    symbol = _symbol_from_row(row)
+    if not symbol:
+        return {}
+    entry_context = _safe_json_loads(row.get("entry_context_json"))
+    exit_plan = _safe_json_loads(row.get("exit_plan_json"))
+    raw = _safe_json_loads(row.get("raw_json"))
+    ready = _truthy(row.get("ready"))
+    state = str(row.get("state") or "").strip() or None
+    detail = str(row.get("detail") or "").strip() or raw.get("detail") or None
+    structure_stop = _first_number(row.get("structure_stop"), _nested(exit_plan, "trailingStop", "initial"), _nested(raw, "execution", "stopLoss"))
+    target1 = _first_number(row.get("target1_price"), _nested(exit_plan, "tp1", "price"), _nested(raw, "execution", "target1"))
+    target2 = _first_number(row.get("target2_price"), _nested(exit_plan, "mainExit", "price"), _nested(raw, "execution", "target2"))
+    payload: dict[str, Any] = {
+        "symbol": symbol,
+        "entry_price": _first_number(row.get("entry_price"), _nested(raw, "execution", "entryPrice")),
+        "s12_structure_stop": structure_stop,
+        "s12_target1": target1,
+        "s12_target2": target2,
+        "s12_state": state,
+        "s12_ready": ready,
+        "s12_detail": detail,
+        "s12_entry_context": entry_context or None,
+        "s12_structure_snapshot": {
+            "trade_date": row.get("trade_date"),
+            "source": row.get("source") or "s12_structure_snapshots",
+            "updated_at": row.get("updated_at"),
+        },
+        "s12_structure": {
+            "state": state,
+            "ready": ready,
+            "detail": detail,
+            "exitPlan": exit_plan or {
+                "tp1": {"price": target1, "source": "s12_structure_snapshots"},
+                "mainExit": {
+                    "price": target2,
+                    "zoneLow": _first_number(row.get("supply_zone_low")),
+                    "zoneHigh": _first_number(row.get("supply_zone_high")),
+                    "source": "s12_structure_snapshots",
+                },
+                "trailingStop": {
+                    "initial": structure_stop,
+                    "source": row.get("source") or "s12_structure_snapshots",
+                },
+            },
+        },
+        "canonical_trade_lifecycle": {
+            "entry": {
+                "s12": {
+                    "state": state,
+                    "ready": ready,
+                    "detail": detail,
+                    "structureStop": structure_stop,
+                    "demandZoneLow": _first_number(row.get("demand_zone_low")),
+                    "demandZoneHigh": _first_number(row.get("demand_zone_high")),
+                    "supplyZoneLow": _first_number(row.get("supply_zone_low")),
+                    "supplyZoneHigh": _first_number(row.get("supply_zone_high")),
+                    "entryContext": entry_context or {},
+                    "exitPlan": {
+                        "tp1": target1,
+                        "tp1Source": _nested(exit_plan, "tp1", "source") or row.get("source") or "s12_structure_snapshots",
+                        "mainExit": target2,
+                        "mainExitSource": _nested(exit_plan, "mainExit", "source") or row.get("source") or "s12_structure_snapshots",
+                        "trailingInitial": structure_stop,
+                        "trailingSource": _nested(exit_plan, "trailingStop", "source") or row.get("source") or "s12_structure_snapshots",
+                    },
+                }
+            }
+        },
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "")}
+
+
+def _merge_snapshot_payload(row: dict[str, Any], snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    if not snapshot:
+        return row
+    out = dict(row)
+    for key, value in snapshot.items():
+        if value in (None, ""):
+            continue
+        if key not in out or out.get(key) in (None, ""):
+            out[key] = value
+    return out
 
 
 def _is_buy_trade_signal(row: dict[str, Any]) -> bool:
@@ -884,6 +986,71 @@ def _load_dedicated_s12_replay_trade_rows(
     return out
 
 
+def load_s12_structure_snapshots(
+    *,
+    run_date: str,
+    query_fn: QueryFn | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Load same-day Worker S12 structure snapshots for recommendation cold EV."""
+
+    query = query_fn or d1_client.query
+    try:
+        rows = query(
+            """
+            SELECT trade_date,
+                   symbol,
+                   source,
+                   side,
+                   state,
+                   ready,
+                   invalidated,
+                   setup_id,
+                   entry_price,
+                   chase_ceiling,
+                   structure_stop,
+                   target1_price,
+                   target2_price,
+                   target3_price,
+                   target4_price,
+                   demand_zone_low,
+                   demand_zone_high,
+                   supply_zone_low,
+                   supply_zone_high,
+                   detail,
+                   entry_context_json,
+                   exit_plan_json,
+                   raw_json,
+                   updated_at,
+                   id
+              FROM s12_structure_snapshots
+             WHERE date(trade_date) = date(?)
+             ORDER BY symbol,
+                      CASE source
+                        WHEN 's12_candidate_snapshot' THEN 0
+                        WHEN 's12_intraday_structure' THEN 1
+                        WHEN 's12_holding_defense' THEN 2
+                        ELSE 3
+                      END,
+                      datetime(updated_at) DESC,
+                      id DESC
+            """.strip(),
+            [run_date],
+        )
+    except Exception:
+        return {}
+
+    snapshots: dict[str, dict[str, Any]] = {}
+    for raw in rows or []:
+        row = dict(raw)
+        symbol = _symbol_from_row(row)
+        if not symbol or symbol in snapshots:
+            continue
+        payload = _snapshot_payload_from_row(row)
+        if payload:
+            snapshots[symbol] = payload
+    return snapshots
+
+
 @dataclass(frozen=True)
 class _ReplayBucket:
     scope: str
@@ -906,11 +1073,13 @@ class S12TradeEvBootstrapProvider:
         min_samples: int = 30,
         min_sample_dates: int = 8,
         roundtrip_cost_bps: float = 18.0,
+        structure_snapshots: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.run_date = str(run_date)[:10]
         self.min_samples = max(1, int(min_samples or 30))
         self.min_sample_dates = max(1, int(min_sample_dates or 8))
         self.roundtrip_cost_bps = max(0.0, float(roundtrip_cost_bps or 0.0))
+        self.structure_snapshots = dict(structure_snapshots or {})
         raw_rows = [dict(row) for row in rows or [] if _date_key(row.get("prediction_date")) < self.run_date]
         self.input_rows = len(raw_rows)
         self.rows = [row for row in raw_rows if _has_verified_s12_trade_ev_provenance(row)]
@@ -944,12 +1113,14 @@ class S12TradeEvBootstrapProvider:
             limit=int(limit or os.getenv("S12_TRADE_EV_BOOTSTRAP_LIMIT", "5000")),
             query_fn=query_fn,
         )
+        snapshots = load_s12_structure_snapshots(run_date=run_date, query_fn=query_fn)
         return cls(
             rows,
             run_date=run_date,
             min_samples=int(min_samples or os.getenv("S12_TRADE_EV_BOOTSTRAP_MIN_SAMPLES", "30")),
             min_sample_dates=int(min_sample_dates or os.getenv("S12_TRADE_EV_BOOTSTRAP_MIN_SAMPLE_DATES", "8")),
             roundtrip_cost_bps=float(roundtrip_cost_bps or os.getenv("S12_TRADE_EV_ROUNDTRIP_COST_BPS", "18")),
+            structure_snapshots=snapshots,
         )
 
     def _index_rows(self) -> None:
@@ -1005,6 +1176,12 @@ class S12TradeEvBootstrapProvider:
         prediction: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         pred = prediction if isinstance(prediction, dict) else {}
+        raw_symbol = _symbol_from_row(row) or _symbol_from_row(pred)
+        snapshot = self.structure_snapshots.get(raw_symbol) if raw_symbol else None
+        if snapshot:
+            row = _merge_snapshot_payload(row, snapshot)
+            pred = _merge_snapshot_payload(pred, snapshot)
+            prediction = pred
         buckets = self._candidate_buckets(row, prediction)
         global_bucket = next((item for item in buckets if item.scope == "global"), None)
         bucket = self._select_bucket(row, prediction)
@@ -1127,6 +1304,7 @@ class S12TradeEvBootstrapProvider:
             "min_samples": self.min_samples,
             "min_sample_dates": self.min_sample_dates,
             "sample_policy": "verified_s12_buy_trade_outcomes_only",
+            "structure_snapshots": len(self.structure_snapshots),
             "symbol_buckets": len(self.by_symbol),
             "market_segment_buckets": len(self.by_market),
             "market_segment_alpha_buckets": len(self.by_market_bucket),

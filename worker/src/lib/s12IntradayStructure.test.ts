@@ -410,9 +410,11 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     bars4h,
   })
   assert(assessment.reason === 's12_equity_mutation_context_ready', `equity mutation should replace the 1H-demand hard gate, got ${assessment.reason}: ${assessment.detail}`)
-  assert(assessment.state === 'waiting_sweep', 'equity mutation remains inside the SMCVWAP sequence until reaction confirmation')
-  assert(assessment.maturity.takeoverRole === 'none', 'waiting_sweep must not be treated as executable S12 long-entry ownership')
-  assert(assessment.maturity.tier === 'none', 'waiting_sweep must not expose a provisional executable tier')
+  assert(assessment.state === 'limited_takeover_ready', 'equity mutation should become a limited S12 takeover instead of waiting forever')
+  assert(assessment.ready, 'limited takeover must be executable by primary-owner mode')
+  assert(assessment.maturity.takeoverRole === 'long_entry', 'limited takeover should expose long-entry ownership')
+  assert(assessment.maturity.tier === 'limited_takeover_ready', 'limited takeover should expose an executable reduced-risk tier')
+  assert(assessment.maturity.riskMode === 'reduced_size_tight_stop', 'limited takeover must not use full reaction sizing')
   assert(assessment.execution.entryPrice === 105.8, 'equity mutation should use latest 15m close as S12 entry reference')
   assert((assessment.execution.stopLoss ?? 0) > 0 && (assessment.execution.stopLoss ?? 999) < 105.8, 'equity mutation must expose a structural S12 stop below entry')
   assert(assessment.exitPlan.trailingStop.source !== 'adaptive', 'equity mutation stop must resolve to a concrete 15m structure source')
@@ -420,7 +422,7 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assessment.detail.includes('entry_archetype=equity_repricing_breakout'), 'S12 detail should expose the individual-stock mutation archetype')
   assert(assessment.detail.includes('vwap_fast_acceptance=true'), 'individual-stock mutation should use fast VWAP acceptance, not the full slow VWAP stack')
   assert(assessment.detail.includes('one_h_demand_required=false'), '1H demand should become evidence, not a hard gate, under equity mutation')
-  assert(resolveS12UnifiedDecision(assessment).action === 'WAIT', 'S12 unified decision must wait until the mutation reaches reaction_ready')
+  assert(resolveS12UnifiedDecision(assessment).action === 'READY', 'S12 unified decision should allow limited takeover through execution gates')
 }
 
 {
@@ -447,8 +449,13 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   })
   assert(assessment.demandZone1h != null, 'fixture must contain a 1H demand zone that would previously divert to strict SMC sequence')
   assert(assessment.reason === 's12_equity_mutation_context_ready', `active equity mutation must not be blocked by an existing 1H demand zone, got ${assessment.reason}: ${assessment.detail}`)
+  assert(assessment.state === 'limited_takeover_ready', `equity mutation should become limited takeover, got ${assessment.state}: ${assessment.detail}`)
+  assert(assessment.ready, 'limited takeover should be executable by the S12 primary owner')
+  assert(assessment.maturity.tier === 'limited_takeover_ready', 'equity mutation should expose a limited takeover tier')
+  assert(assessment.maturity.riskMode === 'reduced_size_tight_stop', 'limited takeover must use reduced sizing with a tight stop')
   assert(assessment.detail.includes('one_h_demand_required=false'), '1H demand should remain evidence-only when equity mutation is active')
-  assert(resolveS12UnifiedDecision(assessment).action === 'WAIT', 'equity mutation with 1H demand context must still wait for reaction confirmation')
+  assert(s12PreTradeTechnicalDecision(assessment, 'require_ready')?.action === 'pass', 'S12 primary owner should pass limited takeover')
+  assert(resolveS12UnifiedDecision(assessment).action === 'READY', 'limited takeover should reach execution gates with reduced risk mode')
 }
 
 {
@@ -478,7 +485,8 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   assert(assessment.detail.includes('equity_mutation_risk_haircuts=1h_short_risk_haircut'), 'S12 detail should expose 1H short as a risk haircut')
   assert(assessment.detail.includes('vwap_fast_acceptance=true'), 'fast VWAP acceptance should be the entry gate for individual-stock repricing')
   assert(assessment.detail.includes('htf_hard_block=false'), '1H short alone must not become an HTF hard block')
-  assert(resolveS12UnifiedDecision(assessment).action === 'WAIT', 'risk-haircut repricing must not reach execution gates before reaction confirmation')
+  assert(assessment.state === 'limited_takeover_ready', 'risk-haircut repricing should become limited takeover, not full reaction ready')
+  assert(resolveS12UnifiedDecision(assessment).action === 'READY', 'risk-haircut repricing should reach execution gates as limited takeover')
 }
 
 {

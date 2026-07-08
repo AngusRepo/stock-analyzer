@@ -128,6 +128,7 @@ interface S12AssistEntryOverlay {
   stopLoss: number | null
   chaseCeiling: number | null
   maxEntryChasePct: number | null
+  sizeMultiplier: number | null
   detail: string
 }
 
@@ -197,6 +198,14 @@ function roundPct(value: number): number {
   return Math.round(value * 10_000) / 10_000
 }
 
+function s12LimitedTakeoverSizeMultiplier(assessment: S12IntradayAssessment): number | null {
+  if (assessment.maturity.riskMode !== 'reduced_size_tight_stop') return null
+  const match = String(assessment.detail ?? '').match(/limited_takeover_sizing_multiplier=([0-9.]+)/)
+  const parsed = match ? Number(match[1]) : null
+  if (parsed != null && Number.isFinite(parsed) && parsed > 0 && parsed < 1) return parsed
+  return 0.4
+}
+
 function buildS12AssistEntryOverlay(
   assessment: S12IntradayAssessment | null,
   mode: S12IntradayGateMode,
@@ -219,10 +228,12 @@ function buildS12AssistEntryOverlay(
     rawChasePct != null
       ? roundPct(maxChasePctCap > 0 ? Math.min(rawChasePct, maxChasePctCap) : rawChasePct)
       : null
+  const sizeMultiplier = s12LimitedTakeoverSizeMultiplier(assessment)
   const detail = [
     `state=${assessment.state}`,
     `maturity_tier=${assessment.maturity.tier}`,
     `risk_mode=${assessment.maturity.riskMode}`,
+    sizeMultiplier != null ? `size_multiplier=${sizeMultiplier}` : null,
     assessment.setupId ? `setup_id=${assessment.setupId}` : null,
     `entry=${entryPrice}`,
     stopLoss != null ? `stop=${stopLoss}` : null,
@@ -230,7 +241,7 @@ function buildS12AssistEntryOverlay(
     maxEntryChasePct != null ? `max_entry_chase_pct=${maxEntryChasePct}` : null,
     assessment.execution.target1 != null ? `t1=${assessment.execution.target1}` : null,
   ].filter(Boolean).join(';')
-  return { entryPrice, stopLoss, chaseCeiling, maxEntryChasePct, detail }
+  return { entryPrice, stopLoss, chaseCeiling, maxEntryChasePct, sizeMultiplier, detail }
 }
 
 function buildS12AssistTradePlan(
@@ -1866,6 +1877,16 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       allocationTargetBudget = sparseFloor.allocationTarget
       budget = Math.min(sparseFloor.budget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash, dailyRemaining)
       sizingMode = sparseFloor.sizingMode
+    }
+    if (s12AssistEntryOverlay?.sizeMultiplier != null && s12AssistEntryOverlay.sizeMultiplier > 0 && s12AssistEntryOverlay.sizeMultiplier < 1) {
+      const before = budget
+      budget *= s12AssistEntryOverlay.sizeMultiplier
+      recordActiveExecutionStatus(
+        pending.symbol,
+        'checked_waiting',
+        's12_limited_takeover_reduced_sizing',
+        `budget=${Math.round(before)}->${Math.round(budget)};multiplier=${s12AssistEntryOverlay.sizeMultiplier};risk_mode=${s12Assessment?.maturity.riskMode ?? 'na'}`,
+      )
     }
 
     const minPosVal = cfg.position.minPositionValue ?? 30_000

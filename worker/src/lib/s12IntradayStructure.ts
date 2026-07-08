@@ -18,6 +18,7 @@ export type S12IntradayState =
   | 'waiting_choch'
   | 'waiting_bos'
   | 'waiting_retest'
+  | 'limited_takeover_ready'
   | 'reaction_ready'
   | 'bearish_defense_ready'
   | 'invalidated'
@@ -243,7 +244,7 @@ export interface S12StructureExitPlan {
 
 interface S12EquityMutationContext {
   active: boolean
-  archetype: 'equity_repricing_breakout' | 'unavailable'
+  archetype: 'equity_repricing_breakout' | 'equity_limited_takeover' | 'unavailable'
   score: number
   reasons: string[]
   riskHaircuts: string[]
@@ -251,6 +252,11 @@ interface S12EquityMutationContext {
   vwapFastReasons: string[]
   vwapSlowContext: string
   htfHardBlock: boolean
+  strictBreakout: boolean
+  limitedTakeover: boolean
+  sizeMultiplier: number | null
+  stopRiskPct: number | null
+  stopRiskAtr: number | null
   zone: S12IntradayZone | null
   stopPlan: S12PositionStopPlan | null
   entryPrice: number | null
@@ -380,6 +386,7 @@ export interface S12IntradayAssessment {
     takeoverRole: 'none' | 'long_entry' | 'no_buy_defense' | 'invalidate'
     tier:
       | 'none'
+      | 'limited_takeover_ready'
       | 'full_reaction_ready'
       | 'defensive_invalidation'
       | 'no_buy_defense'
@@ -849,6 +856,7 @@ function maturityStage(state: S12IntradayState): S12IntradayAssessment['maturity
     case 'waiting_bos':
     case 'waiting_retest':
       return 'trigger_sequence'
+    case 'limited_takeover_ready':
     case 'reaction_ready':
       return 'ready'
     case 'bearish_defense_ready':
@@ -860,6 +868,7 @@ function maturityStage(state: S12IntradayState): S12IntradayAssessment['maturity
 
 function maturityTakeoverRole(state: S12IntradayState): S12IntradayAssessment['maturity']['takeoverRole'] {
   switch (state) {
+    case 'limited_takeover_ready':
     case 'reaction_ready':
       return 'long_entry'
     case 'bearish_defense_ready':
@@ -875,6 +884,9 @@ function maturityTier(
   state: S12IntradayState,
   sequence: S12IntradayAssessment['sequence'] = {},
 ): Pick<S12IntradayAssessment['maturity'], 'tier' | 'riskMode' | 'takeoverRole'> {
+  if (state === 'limited_takeover_ready') {
+    return { tier: 'limited_takeover_ready', riskMode: 'reduced_size_tight_stop', takeoverRole: 'long_entry' }
+  }
   if (state === 'reaction_ready') {
     return { tier: 'full_reaction_ready', riskMode: 'full_size_reaction', takeoverRole: 'long_entry' }
   }
@@ -1827,6 +1839,11 @@ function buildEquityMutationContext(params: {
       vwapFastReasons: [],
       vwapSlowContext: 'unavailable',
       htfHardBlock: false,
+      strictBreakout: false,
+      limitedTakeover: false,
+      sizeMultiplier: null,
+      stopRiskPct: null,
+      stopRiskAtr: null,
       zone: null,
       stopPlan: null,
       entryPrice: null,
@@ -1908,20 +1925,64 @@ function buildEquityMutationContext(params: {
   const zoneResult = entryPrice != null
     ? buildEquityMutationZone({ bars15m: bars, entryPrice, atr15m, policy: params.policy })
     : { zone: null, stopPlan: null }
-  const active = Boolean(
+  const stopRisk =
+    entryPrice != null && zoneResult.stopPlan?.price != null
+      ? entryPrice - zoneResult.stopPlan.price
+      : null
+  const stopRiskPct =
+    stopRisk != null && entryPrice != null && entryPrice > 0
+      ? round(stopRisk / entryPrice, 4)
+      : null
+  const stopRiskAtr =
+    stopRisk != null && atr15m > 0
+      ? round(stopRisk / atr15m, 4)
+      : null
+  const tightStopRisk = Boolean(
+    stopRisk != null &&
+    stopRisk > 0 &&
+    stopRiskPct != null &&
+    stopRiskPct <= 0.045 &&
+    stopRiskAtr != null &&
+    stopRiskAtr <= 3.2,
+  )
+  const strictBreakout = Boolean(
     entryPrice != null &&
     zoneResult.zone != null &&
     zoneResult.stopPlan != null &&
     !htfHardBlock &&
+    tightStopRisk &&
     vwapFastAcceptance &&
     volumeConstructive &&
     strongClose &&
     (repricingBreakout || reclaimBreakout) &&
     score >= 5,
   )
+  const supportiveSlowVwap = vwapSlowContext === 'supportive' || vwapSlowContext === 'mixed'
+  const limitedTakeover = Boolean(
+    entryPrice != null &&
+    zoneResult.zone != null &&
+    zoneResult.stopPlan != null &&
+    !htfHardBlock &&
+    tightStopRisk &&
+    strongClose &&
+    higherLow &&
+    score >= 4 &&
+    (vwapFastAcceptance || supportiveSlowVwap) &&
+    vwapSlowContext !== 'overhead_supply',
+  )
+  const active = strictBreakout || limitedTakeover
+  const sizeMultiplier = active
+    ? strictBreakout
+      ? 0.65
+      : 0.4
+    : null
   return {
     active,
-    archetype: active ? 'equity_repricing_breakout' : 'unavailable',
+    archetype: active
+      ? strictBreakout
+        ? 'equity_repricing_breakout'
+        : 'equity_limited_takeover'
+      : 'unavailable',
     score,
     reasons: positiveReasons,
     riskHaircuts,
@@ -1929,6 +1990,11 @@ function buildEquityMutationContext(params: {
     vwapFastReasons: fastVwapSignals,
     vwapSlowContext,
     htfHardBlock,
+    strictBreakout,
+    limitedTakeover,
+    sizeMultiplier,
+    stopRiskPct,
+    stopRiskAtr,
     zone: zoneResult.zone,
     stopPlan: zoneResult.stopPlan,
     entryPrice,
@@ -2070,7 +2136,7 @@ function completeEquityMutationAssessment(params: {
   })
   return completeAssessment({
     input: params.input,
-    state: 'waiting_sweep',
+    state: 'limited_takeover_ready',
     reason: 's12_equity_mutation_context_ready',
     completedBars: params.completedBars,
     bias4h: params.bias4h,
@@ -2080,7 +2146,10 @@ function completeEquityMutationAssessment(params: {
     bearishDefense: params.bearishDefense,
     quality: params.quality,
     exitPlan,
-    sequence: { zoneTouchMs: params.bars15m[params.bars15m.length - 1]?.startMs ?? null },
+    sequence: {
+      zoneTouchMs: params.bars15m[params.bars15m.length - 1]?.startMs ?? null,
+      reactionMs: params.bars15m[params.bars15m.length - 1]?.startMs ?? null,
+    },
     execution: {
       entryPrice,
       chaseCeiling: params.mutation.chaseCeiling,
@@ -2099,9 +2168,15 @@ function completeEquityMutationAssessment(params: {
       s12_owner: 'primary_single_owner',
       entry_archetype: params.mutation.archetype,
       equity_mutation_context: 'true',
+      limited_takeover: 'true',
+      limited_takeover_sizing_multiplier: params.mutation.sizeMultiplier,
+      equity_mutation_strict_breakout: String(params.mutation.strictBreakout),
+      equity_mutation_limited_takeover: String(params.mutation.limitedTakeover),
       equity_mutation_score: params.mutation.score,
       equity_mutation_reasons: params.mutation.reasons.join('|'),
       equity_mutation_risk_haircuts: params.mutation.riskHaircuts.join('|'),
+      equity_mutation_stop_risk_pct: params.mutation.stopRiskPct,
+      equity_mutation_stop_risk_atr: params.mutation.stopRiskAtr,
       vwap_fast_acceptance: String(params.mutation.vwapFastAcceptance),
       vwap_fast_reasons: params.mutation.vwapFastReasons.join('|'),
       vwap_slow_context: params.mutation.vwapSlowContext,
@@ -2127,6 +2202,7 @@ function stateReason(state: S12IntradayState, extra?: string): string {
     case 'waiting_choch': return 's12_waiting_choch'
     case 'waiting_bos': return 's12_waiting_bos'
     case 'waiting_retest': return 's12_waiting_retest'
+    case 'limited_takeover_ready': return 's12_limited_takeover_ready'
     case 'reaction_ready': return 's12_reaction_ready'
     case 'bearish_defense_ready': return 's12_bearish_defense_ready'
     case 'invalidated': return 's12_structure_invalidated'
@@ -2150,7 +2226,7 @@ function completeAssessment(params: {
   setupId?: string | null
   extraDetail?: Record<string, unknown>
 }): S12IntradayAssessment {
-  const ready = params.state === 'reaction_ready'
+  const ready = params.state === 'reaction_ready' || params.state === 'limited_takeover_ready'
   const invalidated = params.state === 'invalidated'
   const reason = stateReason(params.state, params.reason)
   const stale = String(params.extraDetail?.stale ?? '').toLowerCase() === 'true'
@@ -3581,6 +3657,21 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
     })
   }
   if (equityMutation.active) {
+    if (demandZone1h) {
+      const strictSequence = scanLongSequence({
+        input: inputWithZoneDiagnostics,
+        bars15m,
+        completedBars,
+        bias4h,
+        bias1h,
+        demandZone1h,
+        supplyZone1h,
+        bearishDefense,
+        quality,
+        policy,
+      })
+      if (strictSequence.state === 'reaction_ready') return strictSequence
+    }
     return completeEquityMutationAssessment({
       input: inputWithZoneDiagnostics,
       bars15m: context15mBars,

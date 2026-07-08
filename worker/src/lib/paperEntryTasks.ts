@@ -31,6 +31,7 @@ import {
   normalizeFinLabL5Quote,
   quoteQualityFromL5,
   type FinLabL5Quote,
+  type L5QuoteQuality,
 } from './finlabL5MarketData'
 import { fetchFinLabExecutionPreview } from './finlabExecutionPreviewClient'
 import { buildStockVisionOrderIntent, buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
@@ -131,7 +132,6 @@ interface S12AssistEntryOverlay {
   stopLoss: number | null
   chaseCeiling: number | null
   maxEntryChasePct: number | null
-  sizeMultiplier: number | null
   detail: string
 }
 
@@ -201,12 +201,13 @@ function roundPct(value: number): number {
   return Math.round(value * 10_000) / 10_000
 }
 
-function s12LimitedTakeoverSizeMultiplier(assessment: S12IntradayAssessment): number | null {
-  if (assessment.maturity.riskMode !== 'reduced_size_tight_stop') return null
-  const match = String(assessment.detail ?? '').match(/limited_takeover_sizing_multiplier=([0-9.]+)/)
-  const parsed = match ? Number(match[1]) : null
-  if (parsed != null && Number.isFinite(parsed) && parsed > 0 && parsed < 1) return parsed
-  return 0.4
+function s12VwapFastAcceptance(assessment: S12IntradayAssessment | null): boolean {
+  return /(?:^|[;,\s])vwap_fast_acceptance=(true|1)(?:[;,\s]|$)/i.test(String(assessment?.detail ?? ''))
+}
+
+function s12AllocatorAdvisory(assessment: S12IntradayAssessment | null): boolean {
+  if (!assessment || assessment.invalidated || isS12HardVetoAssessment(assessment)) return false
+  return !isS12ExecutableLongAssessment(assessment)
 }
 
 function buildS12AssistEntryOverlay(
@@ -231,12 +232,10 @@ function buildS12AssistEntryOverlay(
     rawChasePct != null
       ? roundPct(maxChasePctCap > 0 ? Math.min(rawChasePct, maxChasePctCap) : rawChasePct)
       : null
-  const sizeMultiplier = s12LimitedTakeoverSizeMultiplier(assessment)
   const detail = [
     `state=${assessment.state}`,
     `maturity_tier=${assessment.maturity.tier}`,
     `risk_mode=${assessment.maturity.riskMode}`,
-    sizeMultiplier != null ? `size_multiplier=${sizeMultiplier}` : null,
     assessment.setupId ? `setup_id=${assessment.setupId}` : null,
     `entry=${entryPrice}`,
     stopLoss != null ? `stop=${stopLoss}` : null,
@@ -244,7 +243,7 @@ function buildS12AssistEntryOverlay(
     maxEntryChasePct != null ? `max_entry_chase_pct=${maxEntryChasePct}` : null,
     assessment.execution.target1 != null ? `t1=${assessment.execution.target1}` : null,
   ].filter(Boolean).join(';')
-  return { entryPrice, stopLoss, chaseCeiling, maxEntryChasePct, sizeMultiplier, detail }
+  return { entryPrice, stopLoss, chaseCeiling, maxEntryChasePct, detail }
 }
 
 function buildS12AssistTradePlan(
@@ -1027,15 +1026,30 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     `).bind(ACCOUNT_ID).all<any>()
     return (results ?? []).map(toCapitalHolding)
   }
-  const buildExecutionAllocatorEvaluation = async (pending: PendingBuy): Promise<{
+  const buildExecutionAllocatorEvaluation = async (
+    pending: PendingBuy,
+    s12Sidecar: S12RuntimeSidecar | null,
+    l5Quality: L5QuoteQuality | null,
+  ): Promise<{
     decision: FiveSlotDecision | null
     context: Record<string, unknown>
   }> => {
+    const s12Assessment = s12Sidecar?.assessment ?? null
+    const s12Ready = isS12ExecutableLongAssessment(s12Assessment)
+    const s12HardVeto = isS12HardVetoAssessment(s12Assessment)
+    const s12Advisory = s12AllocatorAdvisory(s12Assessment)
+    const s12VwapFast = s12VwapFastAcceptance(s12Assessment)
     const candidate: FiveSlotCandidate = {
       symbol: pending.symbol,
       confidence: pending.confidence,
       score_v2: pending.score_v2 ?? null,
       riskPct: pending.risk_pct,
+      buySignal: true,
+      s12Ready,
+      s12Advisory,
+      s12HardVeto,
+      s12VwapFastAcceptance: s12VwapFast,
+      l5Pass: l5Quality?.status === 'pass',
     }
     const holdings = await loadCurrentCapitalHoldings()
     const account = {
@@ -1087,14 +1101,26 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         portfolio_cap: Math.round(totalPortfolio * config.maxPctOfPortfolio),
         market_risk_level: marketRisk.risk_level,
         market_risk_score: allocatorMarketContext.riskScore ?? null,
+        s12_ready: s12Ready,
+        s12_advisory: s12Advisory,
+        s12_hard_veto: s12HardVeto,
+        s12_vwap_fast_acceptance: s12VwapFast,
+        l5_status: l5Quality?.status ?? null,
+        nav_slot_floor_ratio: decision?.slotFloorRatio ?? null,
+        nav_slot_floor_budget: decision == null ? null : Math.round(decision.slotFloorBudget),
+        nav_slot_floor_reasons: decision?.slotFloorReasons.join('|') ?? null,
       },
     }
   }
-  const buildExecutionAllocatorPlan = async (pending: PendingBuy): Promise<{
+  const buildExecutionAllocatorPlan = async (
+    pending: PendingBuy,
+    s12Sidecar: S12RuntimeSidecar | null,
+    l5Quality: L5QuoteQuality | null,
+  ): Promise<{
     decision: FiveSlotDecision | null
     context: Record<string, unknown>
   }> => {
-    return buildExecutionAllocatorEvaluation(pending)
+    return buildExecutionAllocatorEvaluation(pending, s12Sidecar, l5Quality)
   }
   const capitalHoldings: FiveSlotHolding[] = (capitalPositionRows ?? []).map(toCapitalHolding)
   const capitalPlanPreview = buildFiveSlotCapitalPlan({
@@ -1376,7 +1402,19 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     const currentOhlc = ohlcMap.get(pending.symbol)
     const s12Sidecar = await runS12Sidecar(pending, price, currentOhlc)
-    const allocatorPlan = await buildExecutionAllocatorPlan(pending)
+    const finLabL5Quote = finLabL5MarketDataMap.get(pending.symbol) ?? null
+    const finLabL5Quality = finLabL5Quote
+      ? quoteQualityFromL5(finLabL5Quote, {
+        maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
+        maxSpreadPct: optionalPositiveNumber(env.FINLAB_L5_MAX_SPREAD_PCT, 0.006),
+        minDepthLevels: Math.max(1, Math.floor(optionalPositiveNumber(env.FINLAB_L5_MIN_DEPTH_LEVELS, 5))),
+        minTopAskVolume: optionalPositiveNumber(env.FINLAB_L5_MIN_TOP_ASK_VOLUME, 1),
+        minOrderBookImbalance: Number.isFinite(Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE))
+          ? Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE)
+          : -0.7,
+      })
+      : null
+    const allocatorPlan = await buildExecutionAllocatorPlan(pending, s12Sidecar, finLabL5Quality)
     const allocatorDecision = allocatorPlan.decision
     if (allocatorDecision) recordAllocatorDecision(pending.symbol, allocatorDecision, allocatorPlan.context)
     if (!allocatorDecision || allocatorDecision.action === 'skip' || allocatorDecision.action === 'hold') {
@@ -1514,18 +1552,6 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       }
       : ohlcvTradePlan
     let effectivePreTradePlan: PreTradeOhlcvTradePlan | null = effectiveOhlcvTradePlan
-    const finLabL5Quote = finLabL5MarketDataMap.get(pending.symbol) ?? null
-    const finLabL5Quality = finLabL5Quote
-      ? quoteQualityFromL5(finLabL5Quote, {
-        maxQuoteAgeMs: optionalPositiveNumber(env.FINLAB_L5_MAX_QUOTE_AGE_MS, Math.min(cfg.position.maxQuoteAgeMs ?? 60_000, 3000)),
-        maxSpreadPct: optionalPositiveNumber(env.FINLAB_L5_MAX_SPREAD_PCT, 0.006),
-        minDepthLevels: Math.max(1, Math.floor(optionalPositiveNumber(env.FINLAB_L5_MIN_DEPTH_LEVELS, 5))),
-        minTopAskVolume: optionalPositiveNumber(env.FINLAB_L5_MIN_TOP_ASK_VOLUME, 1),
-        minOrderBookImbalance: Number.isFinite(Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE))
-          ? Number(env.FINLAB_L5_MIN_ORDER_BOOK_IMBALANCE)
-          : -0.7,
-      })
-      : null
     const finLabL5MarketDataEnabled = truthyFlag(env.FINLAB_L5_MARKET_DATA_ENABLED)
     const finLabL5Persistence = finLabL5MarketDataEnabled
       ? evaluateL5OrderBookPersistence(
@@ -1879,8 +1905,9 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     const sparseSizing = l4SparseSizingFromWatchPoints(pending.watch_points)
     let budget: number
-    let sizingMode: 'kelly' | 'risk_parity' | 'l4_sparse_weight'
+    let sizingMode: 'kelly' | 'risk_parity' | 'l4_sparse_weight' | 'nav_slot_floor'
     let allocationTargetBudget: number | null = null
+    let navSlotFloorBudget: number | null = null
     if (pending.kelly_pct != null && pending.kelly_pct > 0) {
       const kellyAdj = pending.kelly_pct * mediumRiskDampen
       const kellyBudget = totalPortfolio * kellyAdj
@@ -1890,8 +1917,14 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         allocationWeight: sparseSizing?.weight,
       })
       allocationTargetBudget = sparseFloor.allocationTarget
-      budget = Math.min(sparseFloor.budget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash, dailyRemaining)
-      sizingMode = sparseFloor.sizingMode === 'l4_sparse_weight' ? 'l4_sparse_weight' : 'kelly'
+      navSlotFloorBudget = allocatorDecision.slotFloorBudget > sparseFloor.budget
+        ? allocatorDecision.slotFloorBudget
+        : null
+      const baseBudget = Math.max(sparseFloor.budget, allocatorDecision.slotFloorBudget)
+      budget = Math.min(baseBudget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash, dailyRemaining)
+      sizingMode = navSlotFloorBudget != null
+        ? 'nav_slot_floor'
+        : sparseFloor.sizingMode === 'l4_sparse_weight' ? 'l4_sparse_weight' : 'kelly'
       console.log(`[Sizing] ${pending.symbol} kelly ${(kellyAdj * 100).toFixed(1)}% -> budget ${budget.toFixed(0)}`)
     } else {
       const riskPctAdj = pending.risk_pct * mediumRiskDampen
@@ -1902,18 +1935,12 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         allocationWeight: sparseSizing?.weight,
       })
       allocationTargetBudget = sparseFloor.allocationTarget
-      budget = Math.min(sparseFloor.budget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash, dailyRemaining)
-      sizingMode = sparseFloor.sizingMode
-    }
-    if (s12AssistEntryOverlay?.sizeMultiplier != null && s12AssistEntryOverlay.sizeMultiplier > 0 && s12AssistEntryOverlay.sizeMultiplier < 1) {
-      const before = budget
-      budget *= s12AssistEntryOverlay.sizeMultiplier
-      recordActiveExecutionStatus(
-        pending.symbol,
-        'checked_waiting',
-        's12_limited_takeover_reduced_sizing',
-        `budget=${Math.round(before)}->${Math.round(budget)};multiplier=${s12AssistEntryOverlay.sizeMultiplier};risk_mode=${s12Assessment?.maturity.riskMode ?? 'na'}`,
-      )
+      navSlotFloorBudget = allocatorDecision.slotFloorBudget > sparseFloor.budget
+        ? allocatorDecision.slotFloorBudget
+        : null
+      const baseBudget = Math.max(sparseFloor.budget, allocatorDecision.slotFloorBudget)
+      budget = Math.min(baseBudget, allocatorDecision.budgetCap, totalPortfolio * cfg.position.maxPctOfPortfolio, acc.cash, dailyRemaining)
+      sizingMode = navSlotFloorBudget != null ? 'nav_slot_floor' : sparseFloor.sizingMode
     }
 
     const minPosVal = cfg.position.minPositionValue ?? 30_000
@@ -2190,6 +2217,10 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             allocation_target_position: Math.round(allocatorDecision.targetPositionValue),
             allocation_current_position: Math.round(allocatorDecision.currentPositionValue),
             allocation_budget_cap: Math.round(allocatorDecision.budgetCap),
+            nav_slot_floor_ratio: allocatorDecision.slotFloorRatio,
+            nav_slot_floor_budget: Math.round(allocatorDecision.slotFloorBudget),
+            nav_slot_floor_reasons: allocatorDecision.slotFloorReasons,
+            nav_slot_floor_applied_budget: navSlotFloorBudget == null ? null : Math.round(navSlotFloorBudget),
             l4_sparse_allocation_weight: sparseSizing?.weight ?? null,
             l4_sparse_allocation_rank: sparseSizing?.allocationRank ?? null,
             l4_sparse_allocation_target_budget: allocationTargetBudget == null ? null : Math.round(allocationTargetBudget),
@@ -2290,6 +2321,10 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         exit_owner: canonicalTradeLifecycle.owners.exit,
         fallback_exit_owner: canonicalTradeLifecycle.owners.fallbackExit,
         sizing_mode: sizingMode,
+        nav_slot_floor_ratio: allocatorDecision.slotFloorRatio,
+        nav_slot_floor_budget: Math.round(allocatorDecision.slotFloorBudget),
+        nav_slot_floor_reasons: allocatorDecision.slotFloorReasons,
+        nav_slot_floor_applied_budget: navSlotFloorBudget == null ? null : Math.round(navSlotFloorBudget),
         l4_sparse_allocation_weight: sparseSizing?.weight ?? null,
         l4_sparse_allocation_rank: sparseSizing?.allocationRank ?? null,
         l4_sparse_allocation_target_budget: allocationTargetBudget == null ? null : Math.round(allocationTargetBudget),

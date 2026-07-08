@@ -1,6 +1,7 @@
 import {
   buildFiveSlotCapitalPlan,
   fiveSlotHoldingWeaknessScore,
+  fiveSlotSlotFloorRatio,
   formatFiveSlotDecisionWatchPoint,
   inferFiveSlotTargetExposure,
   inferFiveSlotTargetExposureFromContext,
@@ -89,6 +90,72 @@ const baseConfig = {
   const watchPoint = decision ? formatFiveSlotDecisionWatchPoint(decision) : ''
   assert(watchPoint.startsWith('allocator:replace:allocator_replace_weakest_slot:'), 'allocator decision should have a structured watch point')
   assert(watchPoint.includes('replace=WEAK'), 'allocator watch point should expose replacement target')
+}
+
+{
+  const lowRiskL5 = fiveSlotSlotFloorRatio(
+    { symbol: 'L5', confidence: 0.76, score: 70, riskPct: 0.01, buySignal: true, l5Pass: true },
+    'low',
+  )
+  assert(lowRiskL5.ratio >= 0.55, 'low-risk BUY with L5 pass should receive at least 55% NAV slot floor')
+
+  const advisory = fiveSlotSlotFloorRatio(
+    { symbol: 'ADV', confidence: 0.78, score: 72, riskPct: 0.01, buySignal: true, s12Advisory: true },
+    'low',
+  )
+  assert(advisory.ratio >= 0.45 && advisory.ratio <= 0.60, 'S12 waiting/advisory should stay in the 45-60% slot-floor band')
+
+  const topRankAdvisory = fiveSlotSlotFloorRatio(
+    { symbol: 'TOPADV', confidence: 0.90, score: 90, riskPct: 0.02, buySignal: true, s12Advisory: true, l5Pass: true },
+    'low',
+  )
+  assert(topRankAdvisory.ratio <= 0.60, 'top-rank evidence must not lift S12 advisory above its 60% ceiling')
+
+  const topRankNoS12 = fiveSlotSlotFloorRatio(
+    { symbol: 'TOP', confidence: 0.90, score: 90, riskPct: 0.02, buySignal: true, l5Pass: true },
+    'low',
+  )
+  assert(topRankNoS12.ratio >= 0.65 && topRankNoS12.ratio <= 0.70, 'top-rank non-advisory evidence should receive a 65-70% slot floor')
+
+  const readyFast = fiveSlotSlotFloorRatio(
+    { symbol: 'FAST', confidence: 0.84, score: 82, riskPct: 0.015, buySignal: true, s12Ready: true, s12VwapFastAcceptance: true, l5Pass: true },
+    'low',
+  )
+  assert(readyFast.ratio >= 0.75, 'top-rank S12 ready + VWAP fast acceptance should receive the upper 75% slot floor')
+
+  const veto = fiveSlotSlotFloorRatio(
+    { symbol: 'VETO', confidence: 0.90, score: 90, riskPct: 0.02, buySignal: true, s12HardVeto: true, l5Pass: true },
+    'low',
+  )
+  assert(veto.ratio === 0, 'S12 hard veto should produce a zero slot floor')
+}
+
+{
+  const plan = buildFiveSlotCapitalPlan({
+    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 800_000 },
+    marketRiskLevel: 'low',
+    config: baseConfig,
+    holdings: [],
+    candidates: [{ symbol: 'S12READY', confidence: 0.84, score: 82, riskPct: 0.015, buySignal: true, s12Ready: true, s12VwapFastAcceptance: true, l5Pass: true }],
+  })
+  const decision = plan.decisions.get('S12READY')
+  assert(decision?.action === 'buy', 'S12 ready open slot should remain buyable')
+  assert((decision?.slotFloorRatio ?? 0) >= 0.75, 'allocator decision should carry NAV slot-floor ratio')
+  assert((decision?.slotFloorBudget ?? 0) >= plan.targetSlotValue * 0.75 - 1, 'allocator decision should expose NAV slot-floor budget')
+  assert(formatFiveSlotDecisionWatchPoint(decision!).includes('slot_floor='), 'allocator watch point should expose slot-floor telemetry')
+}
+
+{
+  const plan = buildFiveSlotCapitalPlan({
+    account: { cash: 700_000, totalPortfolio: 1_000_000, dailyRemaining: 800_000 },
+    marketRiskLevel: 'low',
+    config: baseConfig,
+    holdings: [],
+    candidates: [{ symbol: 'S12VETO', confidence: 0.90, score: 90, riskPct: 0.02, buySignal: true, s12HardVeto: true }],
+  })
+  const decision = plan.decisions.get('S12VETO')
+  assert(decision?.action === 'skip', 'S12 hard veto should skip at allocator level')
+  assert(decision?.reason === 'allocator_s12_hard_veto', 'S12 hard veto skip reason should be explicit')
 }
 
 {

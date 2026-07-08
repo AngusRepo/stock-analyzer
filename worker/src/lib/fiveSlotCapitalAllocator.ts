@@ -43,6 +43,12 @@ export interface FiveSlotCandidate {
   score?: number | null
   score_v2?: Pick<ScoreV2SnapshotSummary, 'finalScore' | 'total'> | null
   riskPct?: number | null
+  buySignal?: boolean | null
+  s12Ready?: boolean | null
+  s12Advisory?: boolean | null
+  s12HardVeto?: boolean | null
+  s12VwapFastAcceptance?: boolean | null
+  l5Pass?: boolean | null
 }
 
 export interface FiveSlotDecision {
@@ -55,6 +61,9 @@ export interface FiveSlotDecision {
   targetExposure: number
   targetSlotValue: number
   confidenceMultiplier: number
+  slotFloorRatio: number
+  slotFloorBudget: number
+  slotFloorReasons: string[]
   replaceSymbol?: string | null
   replaceWeaknessScore?: number | null
   replaceRequiredRank?: number | null
@@ -162,6 +171,60 @@ function candidateRank(candidate: FiveSlotCandidate): number {
   return score + confidence * 20 + riskPct * 500
 }
 
+function candidateFlag(value: unknown): boolean {
+  return value === true || value === 1 || String(value ?? '').toLowerCase() === 'true'
+}
+
+function applySlotFloor(
+  current: { ratio: number; reasons: string[] },
+  ratio: number,
+  reason: string,
+): void {
+  if (ratio > current.ratio) {
+    current.ratio = ratio
+    current.reasons = [reason]
+  } else if (ratio === current.ratio && ratio > 0 && !current.reasons.includes(reason)) {
+    current.reasons.push(reason)
+  }
+}
+
+export function fiveSlotSlotFloorRatio(
+  candidate: FiveSlotCandidate,
+  marketRiskLevel: string | null | undefined,
+): { ratio: number; reasons: string[] } {
+  if (candidateFlag(candidate.s12HardVeto)) {
+    return { ratio: 0, reasons: ['s12_hard_veto'] }
+  }
+
+  const level = normalizedRiskLevel(marketRiskLevel)
+  const floor = { ratio: 0, reasons: [] as string[] }
+  const rank = candidateRank(candidate)
+  const topRank = rank >= 85 || scoreV2FinalScore(candidate) >= 78 || finiteNumber(candidate.confidence, 0) >= 0.82
+  const buySignal = candidate.buySignal !== false
+  const l5Pass = candidateFlag(candidate.l5Pass)
+  const s12Ready = candidateFlag(candidate.s12Ready)
+  const s12Advisory = candidateFlag(candidate.s12Advisory)
+  const vwapFast = candidateFlag(candidate.s12VwapFastAcceptance)
+
+  if (s12Advisory) applySlotFloor(floor, topRank || l5Pass ? 0.60 : 0.50, 's12_advisory_slot_floor')
+  if (buySignal && l5Pass && level === 'green') applySlotFloor(floor, 0.55, 'low_risk_buy_l5_slot_floor')
+  if (s12Ready) applySlotFloor(floor, 0.65, 's12_ready_slot_floor')
+  if (vwapFast) applySlotFloor(floor, 0.65, 'vwap_fast_acceptance_slot_floor')
+  if (topRank && (s12Ready || vwapFast)) applySlotFloor(floor, 0.75, 'top_rank_s12_vwap_slot_floor')
+  else if (topRank && !s12Advisory) applySlotFloor(floor, l5Pass ? 0.70 : 0.65, 'top_rank_slot_floor')
+
+  const cap =
+    level === 'black' ? 0 :
+      level === 'red' ? 0.45 :
+        level === 'orange' ? 0.55 :
+          level === 'yellow' ? 0.65 :
+            0.75
+  return {
+    ratio: round4(clamp(floor.ratio, 0, cap)),
+    reasons: floor.reasons.length > 0 ? floor.reasons : ['slot_floor_unavailable'],
+  }
+}
+
 function stopDistancePct(holding: FiveSlotHolding): number | null {
   const lastPrice = finiteNumber(holding.lastPrice, finiteNumber(holding.avgCost, 0))
   const stop = Math.max(
@@ -259,6 +322,9 @@ export function formatFiveSlotDecisionWatchPoint(decision: FiveSlotDecision): st
     metricPart('target', Math.round(decision.targetPositionValue)),
     metricPart('current', Math.round(decision.currentPositionValue)),
     metricPart('budget', Math.round(decision.budgetCap)),
+    metricPart('slot_floor', decision.slotFloorRatio),
+    metricPart('slot_floor_budget', Math.round(decision.slotFloorBudget)),
+    metricPart('slot_floor_reason', decision.slotFloorReasons.join('|')),
     metricPart('replace', decision.replaceSymbol ?? null),
     metricPart('weakness', decision.replaceWeaknessScore ?? null),
     metricPart('required', decision.replaceRequiredRank ?? null),
@@ -276,6 +342,9 @@ function skipDecision(
   confidenceMultiplier: number,
   currentPositionValue = 0,
   targetPositionValue = 0,
+  slotFloorRatio = 0,
+  slotFloorBudget = 0,
+  slotFloorReasons: string[] = [],
   replaceSymbol: string | null = null,
   replaceWeaknessScore: number | null = null,
   replaceRequiredRank: number | null = null,
@@ -290,6 +359,9 @@ function skipDecision(
     targetExposure,
     targetSlotValue,
     confidenceMultiplier,
+    slotFloorRatio,
+    slotFloorBudget,
+    slotFloorReasons,
     replaceSymbol,
     replaceWeaknessScore,
     replaceRequiredRank,
@@ -329,14 +401,31 @@ export function buildFiveSlotCapitalPlan(input: {
     const targetPositionValue = targetSlotValue * confidenceMultiplier
     const holding = holdingsBySymbol.get(candidate.symbol)
     const currentPositionValue = holding ? holdingValue(holding) : 0
+    const slotFloor = fiveSlotSlotFloorRatio(candidate, input.marketRiskLevel)
+    const slotFloorBudget = Math.max(0, targetSlotValue * slotFloor.ratio - currentPositionValue)
     const rank = candidateRank(candidate)
 
+    if (candidateFlag(candidate.s12HardVeto)) {
+      decisions.set(candidate.symbol, skipDecision(
+        candidate,
+        'allocator_s12_hard_veto',
+        targetExposure,
+        targetSlotValue,
+        confidenceMultiplier,
+        currentPositionValue,
+        targetPositionValue,
+        slotFloor.ratio,
+        slotFloorBudget,
+        slotFloor.reasons,
+      ))
+      continue
+    }
     if (targetExposure <= 0) {
-      decisions.set(candidate.symbol, skipDecision(candidate, 'allocator_target_exposure_zero', targetExposure, targetSlotValue, confidenceMultiplier, currentPositionValue, targetPositionValue))
+      decisions.set(candidate.symbol, skipDecision(candidate, 'allocator_target_exposure_zero', targetExposure, targetSlotValue, confidenceMultiplier, currentPositionValue, targetPositionValue, slotFloor.ratio, slotFloorBudget, slotFloor.reasons))
       continue
     }
     if (cash < minPositionValue || dailyRemaining < minPositionValue) {
-      decisions.set(candidate.symbol, skipDecision(candidate, 'allocator_budget_below_min', targetExposure, targetSlotValue, confidenceMultiplier, currentPositionValue, targetPositionValue))
+      decisions.set(candidate.symbol, skipDecision(candidate, 'allocator_budget_below_min', targetExposure, targetSlotValue, confidenceMultiplier, currentPositionValue, targetPositionValue, slotFloor.ratio, slotFloorBudget, slotFloor.reasons))
       continue
     }
 
@@ -354,6 +443,9 @@ export function buildFiveSlotCapitalPlan(input: {
           targetExposure,
           targetSlotValue,
           confidenceMultiplier,
+          slotFloorRatio: slotFloor.ratio,
+          slotFloorBudget,
+          slotFloorReasons: slotFloor.reasons,
           replaceSymbol: null,
           replaceWeaknessScore: null,
           candidateRank: rank,
@@ -370,6 +462,9 @@ export function buildFiveSlotCapitalPlan(input: {
         targetExposure,
         targetSlotValue,
         confidenceMultiplier,
+        slotFloorRatio: slotFloor.ratio,
+        slotFloorBudget,
+        slotFloorReasons: slotFloor.reasons,
         replaceSymbol: null,
         replaceWeaknessScore: null,
         candidateRank: rank,
@@ -393,6 +488,9 @@ export function buildFiveSlotCapitalPlan(input: {
           targetExposure,
           targetSlotValue,
           confidenceMultiplier,
+          slotFloorRatio: slotFloor.ratio,
+          slotFloorBudget,
+          slotFloorReasons: slotFloor.reasons,
           replaceSymbol: replacement.holding.symbol,
           replaceWeaknessScore: Math.round(replacement.weakness * 10) / 10,
           replaceRequiredRank: Math.round(replacement.requiredRank * 10) / 10,
@@ -408,6 +506,9 @@ export function buildFiveSlotCapitalPlan(input: {
         confidenceMultiplier,
         currentPositionValue,
         targetPositionValue,
+        slotFloor.ratio,
+        slotFloorBudget,
+        slotFloor.reasons,
         weakest?.holding.symbol ?? null,
         weakest ? Math.round(weakest.weakness * 10) / 10 : null,
         weakest ? Math.round(weakest.weakness * replacementThresholdForHolding(weakest.holding, replacementThreshold) * 10) / 10 : null,
@@ -417,7 +518,7 @@ export function buildFiveSlotCapitalPlan(input: {
 
     const capped = capBudget(targetPositionValue, { ...input.account, cash, dailyRemaining }, input.config)
     if (capped < minPositionValue) {
-      decisions.set(candidate.symbol, skipDecision(candidate, 'allocator_budget_below_min', targetExposure, targetSlotValue, confidenceMultiplier, currentPositionValue, targetPositionValue))
+      decisions.set(candidate.symbol, skipDecision(candidate, 'allocator_budget_below_min', targetExposure, targetSlotValue, confidenceMultiplier, currentPositionValue, targetPositionValue, slotFloor.ratio, slotFloorBudget, slotFloor.reasons))
       continue
     }
 
@@ -431,6 +532,9 @@ export function buildFiveSlotCapitalPlan(input: {
       targetExposure,
       targetSlotValue,
       confidenceMultiplier,
+      slotFloorRatio: slotFloor.ratio,
+      slotFloorBudget,
+      slotFloorReasons: slotFloor.reasons,
       replaceSymbol: null,
       replaceWeaknessScore: null,
       candidateRank: rank,

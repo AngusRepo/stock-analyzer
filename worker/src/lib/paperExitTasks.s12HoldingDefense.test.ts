@@ -146,6 +146,94 @@ assert(lifecycleStopWatch?.action === 'hold', 'S12 lifecycle stop should survive
 assert(lifecycleStopWatch?.newTrailingStop === 97, 'S12 lifecycle stop should be restored instead of falling back to ATR trailing')
 assert(String(lifecycleStopWatch?.reason ?? '').includes('s12_position_structural_stop_watch'), 'restored lifecycle S12 stop should keep structural-stop reason')
 
+const exitFusionRaisesAssessmentStop = resolveS12HoldingDefenseUpdate({
+  pos: {
+    shares: 1000,
+    original_shares: 1000,
+    avg_cost: 141.7,
+    entry_price: 141.5,
+    initial_stop: 117.75,
+    trailing_stop: 123,
+    highest_since_entry: 144,
+    tp1_price: 175.46,
+    tp2_price: 209.43,
+    tp1_hit: 0,
+    s12_position_stop_price: 123,
+    s12_position_stop_source: 'paper_sltp_atr_trailing_v1',
+    s12_position_stop_method: 'atr_trailing_fallback',
+  },
+  currentPrice: 143.5,
+  atr14: 4,
+  assessment: {
+    ...assessment(false),
+    state: 'limited_takeover_ready',
+    reason: 's12_limited_takeover_ready',
+    setupId: 's12l-fusion',
+    maturity: {
+      takeoverEligible: true,
+      takeoverRole: 'long_entry',
+      policy: 'advisory_until_long_reaction_bearish_defense_or_invalidated',
+      blocker: 'limited_takeover_ready',
+      stage: 'ready',
+    },
+    exitPlan: {
+      mode: 'structure_first_trailing_v1',
+      tp1: { price: 144, source: 'vwap_fair_value', action: 'partial_take_profit' },
+      mainExit: { price: 144.5, zoneLow: 144, zoneHigh: 145, source: 'vwap_fair_value', action: 'main_take_profit' },
+      tp3: { price: 145, source: 'vwap_fair_value', action: 'extended_take_profit' },
+      tp4: { price: 145.5, source: 'vwap_fair_value', action: 'extended_take_profit' },
+      manualTp: { price: null, source: 'unavailable', action: 'manual_take_profit' },
+      trailingStop: { initial: 142.5, source: '15m_recent_fvg', method: '15m_recent_bullish_fvg', activation: 'after_tp1_or_reverse_choch' },
+      reverseWarning: { state: 'waiting_supply_zone_touch', action: 'none', source: 'bearish_defense_sidecar' },
+    },
+    execution: { entryPrice: 143.5, stopLoss: 142.5 },
+    quality: {
+      vwap: { value: 144.33, priceVsVwapPct: -0.58, state: 'below' },
+      vwapContext: {
+        schemaVersion: 's12_vwap_context_v1',
+        session: { value: 144.33, priceVsPct: -0.58, state: 'below', bars: 16 },
+        h1: { value: 143.47, priceVsPct: 0.02, state: 'above', bars: 4 },
+        h4: { value: null, priceVsPct: null, state: 'unavailable', bars: 0 },
+        daily: { value: null, priceVsPct: null, state: 'unavailable', bars: 0 },
+        anchored: {
+          day: { value: 144.33, priceVsPct: -0.58, state: 'below', bars: 16 },
+          week: { value: null, priceVsPct: null, state: 'unavailable', bars: 0 },
+          month: { value: null, priceVsPct: null, state: 'unavailable', bars: 0 },
+          quarter: { value: null, priceVsPct: null, state: 'unavailable', bars: 0 },
+          year: { value: null, priceVsPct: null, state: 'unavailable', bars: 0 },
+        },
+        rolling15m: {
+          bars7: { value: 143.7, priceVsPct: -0.14, state: 'below', bars: 7 },
+          bars30: { value: null, priceVsPct: null, state: 'unavailable', bars: 16 },
+          bars90: { value: null, priceVsPct: null, state: 'unavailable', bars: 16 },
+        },
+        rollingDays: {
+          days7: { value: null, priceVsPct: null, state: 'unavailable', bars: 0 },
+          days30: { value: null, priceVsPct: null, state: 'unavailable', bars: 0 },
+          days90: { value: null, priceVsPct: null, state: 'unavailable', bars: 0 },
+          days365: { value: null, priceVsPct: null, state: 'unavailable', bars: 0 },
+        },
+        previousZones: { h1: null, h4: null, daily: null },
+        previousPeriodZones: { day: null, week: null, month: null, quarter: null, year: null },
+        initialBalance: { high: 145, low: 143.8, state: 'below', bars: 4 },
+        stackState: 'mixed',
+        confluenceWidthPct: null,
+        nearestAbove: { price: 144.33, source: 'session_vwap', distancePct: 0.58 },
+        nearestBelow: { price: 143.47, source: 'h1_vwap', distancePct: 0.02 },
+      },
+      rvol: { value: 0.3235, state: 'thin', lookbackBars: 20 },
+      notes: [],
+    },
+  } as S12IntradayAssessment,
+})
+assert(exitFusionRaisesAssessmentStop?.action === 'hold', 'S12/VWAP exit fusion should raise defense stop without forcing a sell')
+assert(exitFusionRaisesAssessmentStop?.newTrailingStop === 142.5, 'S12/VWAP exit fusion should use the newer assessment structural stop above ATR fallback')
+assert(String(exitFusionRaisesAssessmentStop?.reason ?? '').includes('exit_fusion'), 'S12/VWAP exit fusion should be visible in holding-defense reason')
+assert(
+  resolveS12HoldingDefenseEventAction(exitFusionRaisesAssessmentStop?.reason) === 'tighten_stop',
+  'S12/VWAP exit fusion should surface as tighten-stop, not take-profit',
+)
+
 const lifecycleStopExit = resolveS12HoldingDefenseUpdate({
   pos: {
     shares: 2000,

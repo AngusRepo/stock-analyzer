@@ -3909,8 +3909,11 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
   const currentPrice = finitePositive(input.currentPrice)
   const shares = Math.floor(finitePositive(input.pos.shares) ?? 0)
   const originalShares = Math.floor(finitePositive(input.pos.original_shares) ?? shares)
-  const tp1 = finitePositive(input.pos.tp1_price) ?? finitePositive(assessment?.exitPlan?.tp1?.price)
-  const tp2 = finitePositive(input.pos.tp2_price) ?? finitePositive(assessment?.exitPlan?.mainExit?.price)
+  const positionTp1 = finitePositive(input.pos.tp1_price)
+  const assessmentTp1 = finitePositive(assessment?.exitPlan?.tp1?.price)
+  const assessmentMainExit = finitePositive(assessment?.exitPlan?.mainExit?.price)
+  const tp1 = positionTp1 ?? assessmentTp1
+  const tp2 = finitePositive(input.pos.tp2_price) ?? assessmentMainExit
   const tp3 = finitePositive(input.pos.tp3_price) ?? finitePositive(assessment?.exitPlan?.tp3?.price)
   const tp4 = finitePositive(input.pos.tp4_price) ?? finitePositive(assessment?.exitPlan?.tp4?.price)
   const plannedTp = normalizePlannedTakeProfit(input.pos.planned_take_profit ?? assessment?.barDiagnostics?.position_planned_tp ?? 'tp2')
@@ -3927,14 +3930,31 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
   const positionStructuralMethod = input.pos.s12_position_stop_method != null
     ? String(input.pos.s12_position_stop_method)
     : null
-  const s12StructuralStop =
-    positionStructuralStop ??
+  const assessmentStructuralStop =
     finitePositive(assessment?.exitPlan?.trailingStop?.initial) ??
     finitePositive(assessment?.execution?.stopLoss)
+  const s12StructuralStopCandidates = [
+    positionStructuralStop,
+    assessmentStructuralStop,
+  ].filter((value): value is number => value != null)
+  const s12StructuralStop = s12StructuralStopCandidates.length > 0
+    ? Math.max(...s12StructuralStopCandidates)
+    : null
+  const structuralStopFromAssessment =
+    assessmentStructuralStop != null &&
+    s12StructuralStop === assessmentStructuralStop &&
+    (positionStructuralStop == null || assessmentStructuralStop > positionStructuralStop)
+  const structuralStopSource = structuralStopFromAssessment
+    ? assessment?.exitPlan?.trailingStop?.source ?? 's12_assessment_stop'
+    : positionStructuralSource ?? assessment?.exitPlan?.trailingStop?.source ?? null
+  const structuralStopMethod = structuralStopFromAssessment
+    ? assessment?.exitPlan?.trailingStop?.method ?? 's12_assessment_stop_loss'
+    : positionStructuralMethod ?? assessment?.exitPlan?.trailingStop?.method ?? null
   const structuralStop =
     s12StructuralStop ??
     finitePositive(input.pos.initial_stop) ??
     finitePositive(input.pos.trailing_stop)
+  const vwapContext = assessment?.quality?.vwapContext
   const atr = finitePositive(input.atr14) ?? (currentPrice != null ? currentPrice * 0.02 : null)
   const baseDetail = {
     source: 's12_position_decision_v1',
@@ -3946,13 +3966,28 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     tp2: price(tp2),
     tp3: price(tp3),
     tp4: price(tp4),
+    assessment_tp1: price(assessmentTp1),
+    assessment_main_exit: price(assessmentMainExit),
     manual_tp: null,
     planned_take_profit: plannedTp,
     planned_exit_target: price(plannedExitTarget),
     structural_stop: price(structuralStop),
-    structural_stop_source: positionStructuralSource ?? assessment?.exitPlan?.trailingStop?.source ?? null,
-    structural_stop_method: positionStructuralMethod ?? assessment?.exitPlan?.trailingStop?.method ?? null,
+    position_structural_stop: price(positionStructuralStop),
+    assessment_structural_stop: price(assessmentStructuralStop),
+    structural_stop_source: structuralStopSource,
+    structural_stop_method: structuralStopMethod,
     structural_stop_no_atr_buffer: s12StructuralStop != null ? 'true' : null,
+    exit_fusion_policy: 's12_vwap_atr_lifecycle_fusion_v1',
+    active_tp1_source: positionTp1 != null ? 'position_lifecycle' : assessmentTp1 != null ? 's12_assessment' : null,
+    vwap_state: assessment?.quality?.vwap?.state ?? null,
+    vwap_stack: vwapContext?.stackState ?? null,
+    vwap_nearest_above: price(vwapContext?.nearestAbove?.price),
+    vwap_nearest_above_source: vwapContext?.nearestAbove?.source ?? null,
+    vwap_nearest_below: price(vwapContext?.nearestBelow?.price),
+    vwap_nearest_below_source: vwapContext?.nearestBelow?.source ?? null,
+    ib_state: vwapContext?.initialBalance?.state ?? null,
+    rvol: assessment?.quality?.rvol?.value ?? null,
+    rvol_state: assessment?.quality?.rvol?.state ?? null,
     position_exit_policy: 'independent_of_long_entry_readiness',
     executable_book_available: input.executableBookAvailable ? 'true' : 'false',
     no_short_order: 'true',
@@ -4211,9 +4246,12 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
   }
 
   if (s12StructuralStop != null && structuralStop != null && currentPrice > structuralStop) {
+    const reason = structuralStopFromAssessment
+      ? 's12_position_structural_stop_watch_exit_fusion'
+      : 's12_position_structural_stop_watch'
     return {
       action: 'SET_STRUCTURAL_STOP',
-      reason: 's12_position_structural_stop_watch',
+      reason,
       detail: s12DecisionDetail({ ...baseDetail, trigger: 'position_structural_stop_watch', stop: structuralStop }),
       stage: assessment.maturity.stage,
       role: 'position_defense',

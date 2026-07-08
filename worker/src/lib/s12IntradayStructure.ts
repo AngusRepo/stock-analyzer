@@ -455,10 +455,14 @@ export interface S12PositionDecisionInput {
     tp4_price?: number | null
     manual_tp_price?: number | null
     planned_take_profit?: S12PlannedTakeProfit | string | null
+    tp1_source?: string | null
+    s12_tp1_source?: string | null
+    s12_main_exit_source?: string | null
     tp1_hit?: number | null
     s12_position_stop_price?: number | null
     s12_position_stop_source?: S12PositionStopSource | string | null
     s12_position_stop_method?: string | null
+    position_opened_today?: boolean | null
   }
 }
 
@@ -679,6 +683,152 @@ function price(value: number | null | undefined): number | null {
 
 function roundLot(value: number): number {
   return Math.floor(Math.max(0, value) / 1000) * 1000
+}
+
+function partialTakeProfitShares(params: {
+  shares: number
+  originalShares: number
+  sellRatio: number
+}): number {
+  const shares = Math.max(0, Math.floor(params.shares))
+  const originalShares = Math.max(0, Math.floor(params.originalShares || shares))
+  if (shares <= 1) return shares
+
+  const raw = Math.max(1, Math.floor(originalShares * params.sellRatio))
+  const partial = raw >= 1000
+    ? roundLot(raw)
+    : raw
+  const bounded = Math.min(shares - 1, Math.max(1, partial))
+  return bounded > 0 && bounded < shares ? bounded : shares
+}
+
+function resolveTakeProfitFusion(params: {
+  entryPrice: number
+  currentPrice: number
+  positionTp1: number | null
+  assessmentTp1: number | null
+  assessmentMainExit: number | null
+  positionTp1Source: string | null
+  assessmentTp1Source: string | null
+  assessmentMainExitSource: string | null
+  structuralStop: number | null
+  initialStop: number | null
+  atr: number | null
+  tp1Hit: boolean
+  openedToday: boolean
+  bearishDefenseReady: boolean
+  dailyWeak: boolean
+  fourHourWeak: boolean
+  rvolState: string | null | undefined
+  vwapStack: string | null | undefined
+  nearestAboveSource: string | null | undefined
+  sellRatio: number
+}): {
+  structuralTp1Touched: boolean
+  shouldTakeProfit: boolean
+  pressureOnly: boolean
+  confluenceScore: number
+  profitR: number | null
+  gainPct: number
+  minProfitR: number
+  minGainPct: number
+  minConfluence: number
+  sellRatio: number
+  reasons: string[]
+  pressureSources: string[]
+} {
+  const lifecycleTp1 = params.positionTp1
+  const structuralTp1 = params.assessmentTp1
+  const structuralTp1ImprovesLifecycle =
+    lifecycleTp1 != null &&
+    structuralTp1 != null &&
+    structuralTp1 > params.entryPrice &&
+    structuralTp1 < lifecycleTp1
+  const lifecycleTp1LooksIntraday =
+    lifecycleTp1 != null &&
+    params.positionTp1Source != null &&
+    ['15m_previous_high', 'vwap_fair_value', 's12_structure_exit_plan'].includes(params.positionTp1Source)
+  const structuralTp1Touched =
+    !params.tp1Hit &&
+    structuralTp1 != null &&
+    params.currentPrice >= structuralTp1 &&
+    (structuralTp1ImprovesLifecycle || lifecycleTp1LooksIntraday || lifecycleTp1 == null)
+
+  const gainPct = (params.currentPrice - params.entryPrice) / params.entryPrice
+  const belowEntryStop =
+    [params.initialStop, params.structuralStop]
+      .filter((value): value is number => value != null && value > 0 && value < params.entryPrice)
+      .sort((a, b) => b - a)[0] ?? null
+  const riskAmount =
+    belowEntryStop != null
+      ? params.entryPrice - belowEntryStop
+      : params.atr != null
+        ? params.atr
+        : params.entryPrice * 0.02
+  const profitR = riskAmount > 0 ? (params.currentPrice - params.entryPrice) / riskAmount : null
+
+  const reasons: string[] = []
+  const pressureSources: string[] = []
+  let confluenceScore = 0
+
+  if (structuralTp1Touched) {
+    const source = params.assessmentTp1Source ?? params.positionTp1Source ?? 'structural_tp1'
+    pressureSources.push(source)
+    reasons.push(`tp1_source:${source}`)
+    confluenceScore += source === '15m_previous_high' ? 1 : 2
+  }
+  if (
+    params.assessmentMainExit != null &&
+    params.currentPrice >= params.assessmentMainExit * 0.995
+  ) {
+    const source = params.assessmentMainExitSource ?? 'main_exit'
+    pressureSources.push(source)
+    reasons.push(`main_exit_source:${source}`)
+    confluenceScore += source === '1h_supply_zone' ? 2 : 1
+  }
+  if (params.bearishDefenseReady) {
+    reasons.push('bearish_defense_ready')
+    confluenceScore += 1
+  }
+  if (params.dailyWeak && params.fourHourWeak && gainPct > 0) {
+    reasons.push('daily_4h_profit_protect')
+    confluenceScore += 1
+  }
+  if (['normal', 'active', 'high'].includes(String(params.rvolState ?? '').toLowerCase())) {
+    reasons.push(`rvol:${params.rvolState}`)
+    confluenceScore += 1
+  }
+  if (['mixed', 'bearish', 'resistance_above'].includes(String(params.vwapStack ?? '').toLowerCase())) {
+    reasons.push(`vwap_stack:${params.vwapStack}`)
+    confluenceScore += 1
+  }
+  if (params.nearestAboveSource && /vwap|previous|supply/i.test(params.nearestAboveSource)) {
+    reasons.push(`nearest_above:${params.nearestAboveSource}`)
+    confluenceScore += 1
+  }
+
+  const minConfluence = params.openedToday ? 3 : 2
+  const minProfitR = params.openedToday ? 1 : 0.6
+  const minGainPct = params.openedToday ? 0.012 : 0.008
+  const profitGate = gainPct >= minGainPct || (profitR != null && profitR >= minProfitR)
+  const shouldTakeProfit =
+    structuralTp1Touched &&
+    profitGate &&
+    confluenceScore >= minConfluence
+  return {
+    structuralTp1Touched,
+    shouldTakeProfit,
+    pressureOnly: structuralTp1Touched && !shouldTakeProfit,
+    confluenceScore,
+    profitR,
+    gainPct,
+    minProfitR,
+    minGainPct,
+    minConfluence,
+    sellRatio: params.openedToday ? Math.min(params.sellRatio, 0.3) : params.sellRatio,
+    reasons,
+    pressureSources,
+  }
 }
 
 function boundedRatio(value: unknown, fallback: number): number {
@@ -3912,6 +4062,21 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
   const positionTp1 = finitePositive(input.pos.tp1_price)
   const assessmentTp1 = finitePositive(assessment?.exitPlan?.tp1?.price)
   const assessmentMainExit = finitePositive(assessment?.exitPlan?.mainExit?.price)
+  const positionTp1Source =
+    input.pos.s12_tp1_source != null
+      ? String(input.pos.s12_tp1_source)
+      : input.pos.tp1_source != null
+        ? String(input.pos.tp1_source)
+        : null
+  const assessmentTp1Source = assessment?.exitPlan?.tp1?.source === 'unavailable'
+    ? null
+    : assessment?.exitPlan?.tp1?.source ?? null
+  const assessmentMainExitSource =
+    input.pos.s12_main_exit_source != null
+      ? String(input.pos.s12_main_exit_source)
+      : assessment?.exitPlan?.mainExit?.source === 'unavailable'
+        ? null
+        : assessment?.exitPlan?.mainExit?.source ?? null
   const tp1 = positionTp1 ?? assessmentTp1
   const tp2 = finitePositive(input.pos.tp2_price) ?? assessmentMainExit
   const tp3 = finitePositive(input.pos.tp3_price) ?? finitePositive(assessment?.exitPlan?.tp3?.price)
@@ -3978,7 +4143,12 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     structural_stop_method: structuralStopMethod,
     structural_stop_no_atr_buffer: s12StructuralStop != null ? 'true' : null,
     exit_fusion_policy: 's12_vwap_atr_lifecycle_fusion_v1',
+    tp_fusion_policy: 'tw_equity_confluence_profit_gate_v1',
+    position_opened_today: input.pos.position_opened_today === true ? 'true' : 'false',
     active_tp1_source: positionTp1 != null ? 'position_lifecycle' : assessmentTp1 != null ? 's12_assessment' : null,
+    position_tp1_source: positionTp1Source,
+    assessment_tp1_source: assessmentTp1Source,
+    assessment_main_exit_source: assessmentMainExitSource,
     vwap_state: assessment?.quality?.vwap?.state ?? null,
     vwap_stack: vwapContext?.stackState ?? null,
     vwap_nearest_above: price(vwapContext?.nearestAbove?.price),
@@ -4014,8 +4184,41 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
   const fourHourWeak = assessment.bias4h?.direction === 'short'
   const bearishDefenseReady = assessment.bearishDefense.ready || assessment.state === 'bearish_defense_ready'
   const sellRatio = boundedRatio(input.tp1SellRatio, 0.5)
-  const partialShares = roundLot(originalShares * sellRatio)
-  const clampedPartial = partialShares > 0 && partialShares < shares ? partialShares : shares
+  const tpFusion = resolveTakeProfitFusion({
+    entryPrice,
+    currentPrice,
+    positionTp1,
+    assessmentTp1,
+    assessmentMainExit,
+    positionTp1Source,
+    assessmentTp1Source,
+    assessmentMainExitSource,
+    structuralStop,
+    initialStop: finitePositive(input.pos.initial_stop),
+    atr,
+    tp1Hit,
+    openedToday: input.pos.position_opened_today === true,
+    bearishDefenseReady,
+    dailyWeak,
+    fourHourWeak,
+    rvolState: assessment.quality?.rvol?.state,
+    vwapStack: vwapContext?.stackState,
+    nearestAboveSource: vwapContext?.nearestAbove?.source,
+    sellRatio,
+  })
+  const fusedSellRatio = tpFusion.sellRatio
+  const clampedPartial = partialTakeProfitShares({ shares, originalShares, sellRatio: fusedSellRatio })
+  const tpFusionDetail = {
+    tp_fusion_action: tpFusion.shouldTakeProfit ? 'partial_take_profit' : tpFusion.pressureOnly ? 'tighten_only' : 'none',
+    tp_fusion_score: tpFusion.confluenceScore,
+    tp_fusion_min_score: tpFusion.minConfluence,
+    tp_fusion_profit_r: tpFusion.profitR == null ? null : round(tpFusion.profitR, 3),
+    tp_fusion_min_profit_r: tpFusion.minProfitR,
+    tp_fusion_gain_pct: round(tpFusion.gainPct, 4),
+    tp_fusion_min_gain_pct: tpFusion.minGainPct,
+    tp_fusion_pressure_sources: tpFusion.pressureSources.join('|') || null,
+    tp_fusion_reasons: tpFusion.reasons.join('|') || null,
+  }
 
   if (assessment.invalidated) {
     if (!input.executableBookAvailable) {
@@ -4081,12 +4284,89 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     }
   }
 
-  if (!tp1Hit && tp1 != null && currentPrice >= tp1) {
+  if (tpFusion.pressureOnly) {
+    const pressureStop = [
+      structuralStop,
+      finitePositive(input.pos.trailing_stop),
+      finitePositive(input.pos.initial_stop),
+      entryPrice,
+    ]
+      .filter((value): value is number => value != null && value > 0 && value < currentPrice)
+      .sort((a, b) => b - a)[0] ?? null
+    if (pressureStop != null) {
+      return {
+        action: 'SET_STRUCTURAL_STOP',
+        reason: 's12_position_structural_stop_watch_tp_fusion_pressure',
+        detail: s12DecisionDetail({
+          ...baseDetail,
+          ...tpFusionDetail,
+          trigger: 'tp_fusion_pressure_tighten_only',
+          stop: pressureStop,
+        }),
+        stage: assessment.maturity.stage,
+        role: 'position_defense',
+        source: 's12_position_decision_v1',
+        executableBookRequired: false,
+        noShortOrder: true,
+        s12State: assessment.state,
+        setupId: assessment.setupId,
+        stopPrice: pressureStop,
+      }
+    }
+  }
+
+  if (tpFusion.shouldTakeProfit && assessmentTp1 != null) {
+    if (!input.executableBookAvailable) {
+      return {
+        action: 'QUOTE_UNAVAILABLE',
+        reason: 's12_take_profit_fusion_tp1_quote_unavailable',
+        detail: s12DecisionDetail({ ...baseDetail, ...tpFusionDetail, trigger: 'tp_fusion_structural_tp1' }),
+        stage: assessment.maturity.stage,
+        role: 'position_exit',
+        source: 's12_position_decision_v1',
+        executableBookRequired: true,
+        noShortOrder: true,
+        s12State: assessment.state,
+        setupId: assessment.setupId,
+        targetPrice: assessmentTp1,
+      }
+    }
+    return {
+      action: 'TAKE_PROFIT',
+      reason: clampedPartial < shares
+        ? 's12_tp_fusion_confluence_partial_take_profit'
+        : 's12_tp_fusion_confluence_full_take_profit',
+      detail: s12DecisionDetail({
+        ...baseDetail,
+        ...tpFusionDetail,
+        trigger: 'tp_fusion_structural_tp1',
+        active_tp1: positionTp1,
+        structural_tp1: assessmentTp1,
+        sell_shares: clampedPartial,
+        sell_ratio: fusedSellRatio,
+      }),
+      stage: assessment.maturity.stage,
+      role: 'position_exit',
+      source: 's12_position_decision_v1',
+      executableBookRequired: true,
+      noShortOrder: true,
+      s12State: assessment.state,
+      setupId: assessment.setupId,
+      targetPrice: assessmentTp1,
+      sellShares: clampedPartial,
+      sellRatio: fusedSellRatio,
+    }
+  }
+
+  const directTp1Allowed =
+    positionTp1 != null &&
+    !['15m_previous_high', 'vwap_fair_value', 's12_structure_exit_plan'].includes(String(positionTp1Source ?? ''))
+  if (!tp1Hit && tp1 != null && currentPrice >= tp1 && directTp1Allowed) {
     if (!input.executableBookAvailable) {
       return {
         action: 'QUOTE_UNAVAILABLE',
         reason: 's12_tp1_quote_unavailable',
-        detail: s12DecisionDetail({ ...baseDetail, trigger: 'tp1' }),
+        detail: s12DecisionDetail({ ...baseDetail, ...tpFusionDetail, trigger: 'tp1' }),
         stage: assessment.maturity.stage,
         role: 'position_exit',
         source: 's12_position_decision_v1',
@@ -4100,7 +4380,7 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     return {
       action: 'TAKE_PROFIT',
       reason: clampedPartial < shares ? 's12_tp1_partial_take_profit' : 's12_tp1_full_take_profit',
-      detail: s12DecisionDetail({ ...baseDetail, trigger: 'tp1', sell_shares: clampedPartial, sell_ratio: sellRatio }),
+      detail: s12DecisionDetail({ ...baseDetail, ...tpFusionDetail, trigger: 'tp1', sell_shares: clampedPartial, sell_ratio: sellRatio }),
       stage: assessment.maturity.stage,
       role: 'position_exit',
       source: 's12_position_decision_v1',

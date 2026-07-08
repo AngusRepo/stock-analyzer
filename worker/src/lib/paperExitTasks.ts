@@ -124,6 +124,8 @@ function withLifecycleS12ExitInputs<T extends Record<string, any>>(pos: T): T {
     tp2_price: pos.tp2_price ?? positiveNumber(plan?.mainExit),
     tp3_price: pos.tp3_price ?? positiveNumber(plan?.tp3),
     tp4_price: pos.tp4_price ?? positiveNumber(plan?.tp4),
+    s12_tp1_source: pos.s12_tp1_source ?? plan?.tp1Source ?? null,
+    s12_main_exit_source: pos.s12_main_exit_source ?? plan?.mainExitSource ?? null,
     planned_take_profit: pos.planned_take_profit ?? plan?.plannedTakeProfit ?? null,
   }
 }
@@ -329,6 +331,9 @@ export function resolveS12HoldingDefenseUpdate(params: {
     s12_position_stop_price?: number | null
     s12_position_stop_source?: string | null
     s12_position_stop_method?: string | null
+    s12_tp1_source?: string | null
+    s12_main_exit_source?: string | null
+    position_opened_today?: boolean | null
     trade_lifecycle_json?: unknown
   }
   currentPrice: number
@@ -553,6 +558,9 @@ async function evaluateS12HoldingDefense(
       tp2_price: pos.tp2_price ?? positiveNumber(lifecycleExitPlan?.mainExit),
       tp3_price: pos.tp3_price ?? positiveNumber(lifecycleExitPlan?.tp3),
       tp4_price: pos.tp4_price ?? positiveNumber(lifecycleExitPlan?.tp4),
+      s12_tp1_source: lifecycleExitPlan?.tp1Source ?? null,
+      s12_main_exit_source: lifecycleExitPlan?.mainExitSource ?? null,
+      position_opened_today: pos.entry_date === tradeDate,
       planned_take_profit: pos.planned_take_profit ?? lifecycleExitPlan?.plannedTakeProfit ?? null,
     }
     const s12Decision = resolveS12PositionDecision({

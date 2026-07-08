@@ -2525,6 +2525,16 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     if isinstance(l4_alpha_ev_policy, dict):
         alpha_policy = dict(alpha_policy) if isinstance(alpha_policy, dict) else {}
         alpha_policy.setdefault("l4_alpha_ev", l4_alpha_ev_policy)
+    allocator_ev_fusion_policy = (
+        trading_cfg.get("allocatorEvFusion")
+        or trading_cfg.get("allocator_ev_fusion")
+        or (trading_cfg.get("ensemble_v2", {}) or {}).get("allocatorEvFusion")
+        or (trading_cfg.get("ensemble_v2", {}) or {}).get("allocator_ev_fusion")
+    )
+    if isinstance(allocator_ev_fusion_policy, dict):
+        alpha_policy = dict(alpha_policy) if isinstance(alpha_policy, dict) else {}
+        alpha_policy.setdefault("allocatorEvFusion", allocator_ev_fusion_policy)
+        alpha_policy.setdefault("allocator_ev_fusion", allocator_ev_fusion_policy)
     screener_recs = state["screener_recs"]
     if not screener_recs:
         raise RuntimeError(

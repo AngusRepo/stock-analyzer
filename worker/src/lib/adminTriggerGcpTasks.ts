@@ -45,6 +45,7 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     lifecycle: () => deps.runWeeklyLifecycleCheck(),
     'weekly-optuna': () => deps.runWeeklyOptunaResearch(requestedRunDate()),
     'l4-alpha-ev-refresh': () => deps.runL4AlphaEvRefresh(requestedRunDate(), 'weekly'),
+    'allocator-ev-fusion-refresh': () => deps.runAllocatorEvFusionRefresh(requestedRunDate(), 'weekly'),
     'weekly-drift-retrain': async () => {
       if (c.req.query('confirm') !== 'weekly_drift') {
         return runWeeklyDriftDetection(c.env)
@@ -53,6 +54,7 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     },
     'monthly-optuna': () => deps.runMonthlyOptunaResearch(requestedRunDate()),
     'monthly-l4-alpha-ev-refresh': () => deps.runL4AlphaEvRefresh(requestedRunDate(), 'monthly'),
+    'monthly-allocator-ev-fusion-refresh': () => deps.runAllocatorEvFusionRefresh(requestedRunDate(), 'monthly'),
     'monthly-strategy-mining': () => runMonthlyStrategyMining(c.env, requestedRunDate()),
     'external-evidence': () => runExternalEvidenceMaterialize(c.env, requestedRunDate()),
     'optuna-queue': () => deps.runOptunaQueueProcessor(),

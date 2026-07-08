@@ -28,6 +28,7 @@ import {
   runWeeklyAlphaQuality as runWeeklyAlphaQualityWorkflow,
   runMonthlyOptunaResearch as runMonthlyOptunaResearchWorkflow,
   runL4AlphaEvRefresh as runL4AlphaEvRefreshWorkflow,
+  runAllocatorEvFusionRefresh as runAllocatorEvFusionRefreshWorkflow,
   runOptunaQueueProcessor as runOptunaQueueProcessorWorkflow,
 } from './lib/controllerWorkflows'
 import { auth } from './routes/auth'
@@ -78,6 +79,7 @@ const adminTriggerRoutes = createAdminTriggerRoutes({
     runWeeklyOptunaResearch: (runDate?: string) => runWeeklyOptunaResearchWorkflow(c.env, runDate),
     runMonthlyOptunaResearch: (runDate?: string) => runMonthlyOptunaResearchWorkflow(c.env, runDate),
     runL4AlphaEvRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => runL4AlphaEvRefreshWorkflow(c.env, runDate, cadence),
+    runAllocatorEvFusionRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => runAllocatorEvFusionRefreshWorkflow(c.env, runDate, cadence),
     runOptunaQueueProcessor: () => runOptunaQueueProcessorWorkflow(c.env),
   }),
 })

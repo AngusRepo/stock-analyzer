@@ -342,7 +342,48 @@ def load_allocator_ev_fusion_training_rows(
     lookback_days: int = 90,
     limit: int = 6000,
 ) -> list[dict[str, Any]]:
-    return query_fn(
+    snapshot_rows: list[dict[str, Any]] = []
+    snapshot_available = False
+    try:
+        snapshot_rows = query_fn(
+            """
+            SELECT
+                p.stock_id,
+                fs.symbol,
+                date(p.prediction_date) AS prediction_date,
+                fs.forecast_data,
+                p.actual_return_pct,
+                p.trade_pnl_pct,
+                fs.score,
+                fs.score_components,
+                fs.alpha_context,
+                fs.alpha_allocation,
+                fs.market_heat_expected_return,
+                fs.market_segment,
+                fs.recommendation_lane,
+                fs.snapshot_source AS allocator_ev_feature_snapshot_source,
+                fs.as_of_guard AS allocator_ev_feature_snapshot_guard
+            FROM allocator_ev_feature_snapshots fs
+            JOIN predictions p
+              ON p.stock_id = fs.stock_id
+             AND p.prediction_date = fs.snapshot_date
+             AND p.model_name = 'ensemble'
+            WHERE p.verified_at IS NOT NULL
+              AND (p.actual_return_pct IS NOT NULL OR p.trade_pnl_pct IS NOT NULL)
+              AND fs.alpha_allocation IS NOT NULL
+              AND date(p.prediction_date) <= date(?)
+              AND date(p.prediction_date) >= date(?, ?)
+            ORDER BY date(p.prediction_date) ASC, fs.symbol ASC
+            LIMIT ?
+            """,
+            [end_date, end_date, f"-{max(1, int(lookback_days))} days", int(limit)],
+        )
+        snapshot_available = True
+    except Exception as exc:  # noqa: BLE001 - migration may not be deployed yet.
+        if "allocator_ev_feature_snapshots" not in str(exc):
+            raise
+
+    daily_rows = query_fn(
         """
         SELECT
             p.stock_id,
@@ -375,3 +416,17 @@ def load_allocator_ev_fusion_training_rows(
         """,
         [end_date, end_date, f"-{max(1, int(lookback_days))} days", int(limit)],
     )
+    if not snapshot_available or not snapshot_rows:
+        return daily_rows
+
+    seen = {
+        (str(row.get("prediction_date") or "")[:10], str(row.get("stock_id") or ""))
+        for row in snapshot_rows
+    }
+    merged = list(snapshot_rows)
+    for row in daily_rows:
+        key = (str(row.get("prediction_date") or "")[:10], str(row.get("stock_id") or ""))
+        if key not in seen:
+            merged.append(row)
+            seen.add(key)
+    return merged[: int(limit)]

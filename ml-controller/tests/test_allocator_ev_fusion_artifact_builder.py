@@ -11,6 +11,9 @@ from services.allocator_ev_fusion_artifact_builder import (  # noqa: E402
     build_allocator_ev_fusion_artifact_from_rows,
     load_allocator_ev_fusion_training_rows,
 )
+from services.allocator_ev_feature_snapshot_backfill import (  # noqa: E402
+    build_allocator_ev_feature_snapshots_for_date,
+)
 
 
 def _l4_payload(value: float) -> dict:
@@ -109,18 +112,176 @@ def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_sampl
 
 
 def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evidence():
-    observed = {}
+    observed = []
 
     def query_fn(sql: str, params: list[object]) -> list[dict]:
-        observed["sql"] = sql
-        observed["params"] = params
+        observed.append({"sql": sql, "params": params})
         return []
 
     rows = load_allocator_ev_fusion_training_rows(query_fn, end_date="2026-07-07", lookback_days=45, limit=123)
 
     assert rows == []
-    assert "dr.alpha_allocation" in observed["sql"]
-    assert "NULL AS market_heat_expected_return" in observed["sql"]
-    assert "dr.market_heat_expected_return" not in observed["sql"]
-    assert "p.verified_at IS NOT NULL" in observed["sql"]
-    assert observed["params"] == ["2026-07-07", "2026-07-07", "-45 days", 123]
+    assert len(observed) == 2
+    assert "allocator_ev_feature_snapshots fs" in observed[0]["sql"]
+    assert "dr.alpha_allocation" in observed[1]["sql"]
+    assert "NULL AS market_heat_expected_return" in observed[1]["sql"]
+    assert "dr.market_heat_expected_return" not in observed[1]["sql"]
+    assert "p.verified_at IS NOT NULL" in observed[1]["sql"]
+    assert observed[0]["params"] == ["2026-07-07", "2026-07-07", "-45 days", 123]
+    assert observed[1]["params"] == ["2026-07-07", "2026-07-07", "-45 days", 123]
+
+
+def test_load_allocator_ev_fusion_training_rows_prefers_asof_snapshot_rows():
+    snapshot_row = {
+        "stock_id": 1,
+        "symbol": "2330",
+        "prediction_date": "2026-07-07",
+        "actual_return_pct": 0.01,
+        "alpha_allocation": json.dumps({
+            "l4_alpha_ev": _l4_payload(0.02),
+            "s12_trade_ev": _s12_payload(0.01),
+        }),
+        "allocator_ev_feature_snapshot_source": "allocator_ev_asof_backfill_v1",
+    }
+    duplicate_daily_row = {
+        **snapshot_row,
+        "alpha_allocation": json.dumps({"legacy": True}),
+    }
+    other_daily_row = {
+        **snapshot_row,
+        "stock_id": 2,
+        "symbol": "2317",
+        "alpha_allocation": json.dumps({
+            "l4_alpha_ev": _l4_payload(0.015),
+            "s12_trade_ev": _s12_payload(0.005),
+        }),
+    }
+
+    def query_fn(sql: str, _params: list[object]) -> list[dict]:
+        if "allocator_ev_feature_snapshots fs" in sql:
+            return [snapshot_row]
+        return [duplicate_daily_row, other_daily_row]
+
+    rows = load_allocator_ev_fusion_training_rows(query_fn, end_date="2026-07-07", lookback_days=45, limit=123)
+
+    assert rows == [snapshot_row, other_daily_row]
+
+
+def test_load_allocator_ev_fusion_training_rows_falls_back_when_snapshot_table_missing():
+    daily_row = {
+        "stock_id": 1,
+        "symbol": "2330",
+        "prediction_date": "2026-07-07",
+        "actual_return_pct": 0.01,
+        "alpha_allocation": json.dumps({
+            "l4_alpha_ev": _l4_payload(0.02),
+            "s12_trade_ev": _s12_payload(0.01),
+        }),
+    }
+
+    def query_fn(sql: str, _params: list[object]) -> list[dict]:
+        if "allocator_ev_feature_snapshots fs" in sql:
+            raise RuntimeError("no such table: allocator_ev_feature_snapshots")
+        return [daily_row]
+
+    rows = load_allocator_ev_fusion_training_rows(query_fn, end_date="2026-07-07", lookback_days=45, limit=123)
+
+    assert rows == [daily_row]
+
+
+def test_allocator_ev_feature_snapshot_backfill_dry_run_uses_previous_day_l4_artifact():
+    l4_training_rows = []
+    for day_idx in range(30):
+        day = f"2026-06-{day_idx + 1:02d}"
+        for symbol_idx in range(24):
+            score = 45 + (symbol_idx % 35)
+            ml_edge = 8 + (symbol_idx % 15)
+            fundamental = 10 + (symbol_idx % 12)
+            chip = 9 + (symbol_idx % 14)
+            technical = 11 + (symbol_idx % 13)
+            target = (
+                (score / 100.0) * 0.025
+                + (ml_edge / 25.0) * 0.012
+                + (technical / 25.0) * 0.008
+                - 0.015
+            )
+            l4_training_rows.append({
+                "stock_id": symbol_idx,
+                "symbol": f"{symbol_idx:04d}",
+                "prediction_date": day,
+                "forecast_data": json.dumps({
+                    "ensemble_v2": {
+                        "avg_rank": 0.25 + (symbol_idx % 10) * 0.04,
+                        "confidence": 0.55 + (symbol_idx % 8) * 0.03,
+                    }
+                }),
+                "actual_return_pct": target,
+                "score": score,
+                "score_components": json.dumps({
+                    "finalScore": score,
+                    "components": {
+                        "mlEdge": ml_edge,
+                        "fundamentalQuality": fundamental,
+                        "chipFlow": chip,
+                        "technicalStructure": technical,
+                    },
+                }),
+            })
+    candidate = {
+        "stock_id": 1,
+        "symbol": "2330",
+        "recommendation_date": "2026-07-07",
+        "forecast_data": json.dumps({
+            "ensemble_v2": {"avg_rank": 0.35, "confidence": 0.72},
+        }),
+        "score": 70,
+        "score_components": json.dumps({
+            "finalScore": 70,
+            "components": {
+                "mlEdge": 18,
+                "fundamentalQuality": 19,
+                "chipFlow": 20,
+                "technicalStructure": 21,
+            },
+        }),
+        "alpha_context": json.dumps({
+            "market_heat_expected_return": 0.003,
+            "edge_bucket": "breakout_vol_expansion",
+        }),
+        "existing_alpha_allocation": json.dumps({"selected": True}),
+        "current_price": 100,
+    }
+
+    def query_fn(sql: str, params: list[object] | None = None) -> list[dict]:
+        if "FROM predictions p" in sql and "JOIN daily_recommendations dr" in sql:
+            assert params[0] == "2026-07-06"
+            return l4_training_rows
+        if "FROM s12_replay_trade_outcomes" in sql:
+            return []
+        if "FROM s12_structure_snapshots" in sql:
+            return [{
+                "symbol": "2330",
+                "trade_date": "2026-07-07",
+                "entry_price": 100,
+                "structure_stop": 97,
+                "target1_price": 104,
+                "target2_price": 108,
+                "ready": 1,
+                "state": "reaction_ready",
+            }]
+        if "FROM daily_recommendations dr" in sql and "JOIN predictions p" in sql:
+            return [candidate]
+        return []
+
+    result = build_allocator_ev_feature_snapshots_for_date(
+        snapshot_date="2026-07-07",
+        query_fn=query_fn,
+        dry_run=True,
+        l4_min_samples=200,
+        l4_min_dates=20,
+    )
+
+    assert result["status"] == "ok"
+    assert result["l4"]["trained_until"] == "2026-07-06"
+    assert result["snapshots_built"] == 1
+    assert result["written"] == 0

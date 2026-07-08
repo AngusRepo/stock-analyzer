@@ -15,6 +15,12 @@ import {
 } from './controllerWorkflows'
 import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
 
+function parseBoundedInt(raw: string | null | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseInt(raw ?? '', 10)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
+
 export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<string, TaskHandler> {
   const requestedRunDate = () => c.req.query('date') || undefined
 
@@ -46,6 +52,14 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'weekly-optuna': () => deps.runWeeklyOptunaResearch(requestedRunDate()),
     'l4-alpha-ev-refresh': () => deps.runL4AlphaEvRefresh(requestedRunDate(), 'weekly'),
     'allocator-ev-fusion-refresh': () => deps.runAllocatorEvFusionRefresh(requestedRunDate(), 'weekly'),
+    'allocator-ev-feature-snapshot-backfill': () => deps.runAllocatorEvFeatureSnapshotBackfill({
+      startDate: c.req.query('start_date') || requestedRunDate() || twToday(),
+      endDate: c.req.query('end_date') || requestedRunDate() || twToday(),
+      dryRun: c.req.query('dry_run') !== '0',
+      candidateLimit: parseBoundedInt(c.req.query('candidate_limit'), 1000, 1, 5000),
+      l4MinSamples: parseBoundedInt(c.req.query('l4_min_samples'), 500, 50, 10000),
+      l4MinDates: parseBoundedInt(c.req.query('l4_min_dates'), 20, 5, 252),
+    }),
     'weekly-drift-retrain': async () => {
       if (c.req.query('confirm') !== 'weekly_drift') {
         return runWeeklyDriftDetection(c.env)

@@ -271,6 +271,39 @@ export async function runAllocatorEvFusionRefresh(env: Bindings, runDate?: strin
   return summary
 }
 
+export async function runAllocatorEvFeatureSnapshotBackfill(
+  env: Bindings,
+  params: {
+    startDate: string
+    endDate: string
+    dryRun?: boolean
+    candidateLimit?: number
+    l4MinSamples?: number
+    l4MinDates?: number
+  },
+) {
+  requireController(env)
+
+  const resp = await controllerFetch(env, '/allocator_ev_fusion/feature_snapshots/backfill', {
+    method: 'POST',
+    jsonBody: {
+      start_date: params.startDate,
+      end_date: params.endDate,
+      dry_run: params.dryRun ?? false,
+      candidate_limit: params.candidateLimit,
+      l4_min_samples: params.l4MinSamples,
+      l4_min_dates: params.l4MinDates,
+    },
+    timeoutMs: 120_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    throw new Error(`allocator EV feature snapshot backfill HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
+  }
+  const data = text ? JSON.parse(text) as Record<string, any> : {}
+  return String(data.summary ?? `allocator_ev_feature_snapshot_backfill status=${data.status ?? 'unknown'}`)
+}
+
 export async function runMonthlyStrategyMining(env: Bindings, runDate?: string) {
   requireController(env)
 

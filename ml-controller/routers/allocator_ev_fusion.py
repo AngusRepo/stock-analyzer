@@ -10,6 +10,7 @@ from services.allocator_ev_fusion_artifact_builder import (
     build_allocator_ev_fusion_artifact_from_rows,
     load_allocator_ev_fusion_training_rows,
 )
+from services.allocator_ev_feature_snapshot_backfill import backfill_allocator_ev_feature_snapshots
 from services.worker_config_client import worker_fetch
 
 
@@ -26,6 +27,21 @@ class AllocatorEvFusionRefreshReq(BaseModel):
     promote: bool = True
     dry_run: bool = False
     trigger_source: str = "worker_scheduler"
+
+
+class AllocatorEvFeatureSnapshotBackfillReq(BaseModel):
+    start_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    dry_run: bool = True
+    candidate_limit: int = Field(default=1000, ge=1, le=5000)
+    l4_lookback_days: int = Field(default=90, ge=30, le=365)
+    l4_min_samples: int = Field(default=500, ge=50, le=10000)
+    l4_min_dates: int = Field(default=20, ge=5, le=252)
+    l4_training_limit: int = Field(default=6000, ge=500, le=20000)
+    s12_lookback_days: int = Field(default=120, ge=30, le=365)
+    s12_limit: int = Field(default=5000, ge=500, le=20000)
+    s12_min_samples: int = Field(default=30, ge=5, le=1000)
+    s12_min_sample_dates: int = Field(default=8, ge=2, le=252)
 
 
 def _latest_verified_end_date(max_date: str | None) -> str:
@@ -141,5 +157,38 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
             f"allocator_ev_fusion_refresh status={status} cadence={req.cadence} "
             f"end_date={end_date} model_version={(artifact or {}).get('model_version', 'unknown')} "
             f"decision={decision or 'UNKNOWN'} promoted={1 if promoted else 0}"
+        ),
+    }
+
+
+@router.post("/feature_snapshots/backfill")
+async def backfill_allocator_ev_feature_snapshots_route(req: AllocatorEvFeatureSnapshotBackfillReq) -> dict[str, Any]:
+    """Build no-leakage as-of L4/S12 feature snapshots for fusion training.
+
+    This route writes an independent training snapshot table only. It never
+    mutates historical daily_recommendations rows.
+    """
+
+    result = backfill_allocator_ev_feature_snapshots(
+        start_date=req.start_date,
+        end_date=req.end_date,
+        dry_run=req.dry_run,
+        candidate_limit=req.candidate_limit,
+        l4_lookback_days=req.l4_lookback_days,
+        l4_min_samples=req.l4_min_samples,
+        l4_min_dates=req.l4_min_dates,
+        l4_training_limit=req.l4_training_limit,
+        s12_lookback_days=req.s12_lookback_days,
+        s12_limit=req.s12_limit,
+        s12_min_samples=req.s12_min_samples,
+        s12_min_sample_dates=req.s12_min_sample_dates,
+    )
+    return {
+        **result,
+        "summary": (
+            "allocator_ev_feature_snapshot_backfill "
+            f"status={result.get('status')} dry_run={1 if req.dry_run else 0} "
+            f"range={req.start_date}..{req.end_date} built={result.get('snapshots_built')} "
+            f"written={result.get('written')}"
         ),
     }

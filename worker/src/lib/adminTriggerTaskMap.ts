@@ -28,6 +28,14 @@ export interface TriggerDeps {
   runMonthlyOptunaResearch: (runDate?: string) => Promise<any>
   runL4AlphaEvRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => Promise<any>
   runAllocatorEvFusionRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => Promise<any>
+  runAllocatorEvFeatureSnapshotBackfill: (params: {
+    startDate: string
+    endDate: string
+    dryRun?: boolean
+    candidateLimit?: number
+    l4MinSamples?: number
+    l4MinDates?: number
+  }) => Promise<any>
   runOptunaQueueProcessor: () => Promise<any>
 }
 

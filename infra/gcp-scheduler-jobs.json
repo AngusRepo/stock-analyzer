@@ -24,6 +24,7 @@
     { "id": "weekly-backtest", "schedule": "0 22 * * 6", "task": "weekly-backtest", "query": "sync=1", "description": "Sunday TW 06:00 lightweight validation: backtest, MC, PBO" },
     { "id": "alpha-quality", "schedule": "0 22 * * 6", "task": "alpha-quality", "query": "sync=1", "description": "Sunday TW 06:00 alpha quality refresh" },
     { "id": "weekly-optuna", "schedule": "30 22 * * 6", "task": "weekly-optuna", "query": "sync=1", "description": "Sunday TW 06:30 lightweight Optuna/GA calibration" },
+    { "id": "weekly-s12-smcvwap-calibration", "schedule": "45 22 * * 6", "task": "s12-smcvwap-calibration", "query": "sync=1&cadence=weekly", "description": "Sunday TW 06:45 S12 Taiwan-equity walk-forward calibration, guarded promotion, and last-known-good freeze" },
     { "id": "l4-alpha-ev-refresh", "schedule": "5 23 * * 6", "task": "l4-alpha-ev-refresh", "query": "sync=1", "description": "Sunday TW 07:05 production-gated L4 alpha EV artifact refresh" },
     { "id": "allocator-ev-fusion-refresh", "schedule": "10 23 * * 6", "task": "allocator-ev-fusion-refresh", "query": "sync=1", "description": "Sunday TW 07:10 production-gated allocator EV fusion artifact refresh" },
     { "id": "adaptive-meta-policy-replay", "schedule": "40 22 * * 6", "task": "adaptive-meta-policy-replay", "query": "sync=1&persist=1", "headers": { "X-Confirm-Meta-Learning": "true" }, "description": "Sunday TW 06:40 persisted evidence-only active-9 replay comparing LinUCB, NeuralUCB, NeuralTS, and NeuCB" },

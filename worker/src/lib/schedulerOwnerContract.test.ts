@@ -72,6 +72,11 @@ for (const required of ['market-close-refresh', 'evening-chain', 'intraday-resco
   assert(manifest.jobs.some((job: any) => job.task === required || job.id === required), `manifest missing required scheduler job: ${required}`)
 }
 
+const weeklyS12Calibration = manifest.jobs.find((job: any) => job.id === 'weekly-s12-smcvwap-calibration')
+assert(weeklyS12Calibration?.task === 's12-smcvwap-calibration', 'weekly S12 calibration must have a first-class GCP Scheduler owner')
+assert(weeklyS12Calibration?.schedule === '45 22 * * 6', 'weekly S12 calibration must run Sunday TW 06:45')
+assert(weeklyS12Calibration?.query === 'sync=1&cadence=weekly', 'weekly S12 calibration must run synchronously with explicit cadence')
+
 for (const replay of [
   ['adaptive-meta-policy-replay', '40 22 * * 6'],
   ['linucb-multiplier-replay', '50 22 * * 6'],

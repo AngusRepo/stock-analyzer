@@ -287,14 +287,17 @@ export function applyS12TwCalibrationArtifact(
 
 async function loadEvidence(db: D1Database, startDate: string, endDate: string): Promise<CalibrationEvidence[]> {
   const { results } = await db.prepare(`
-    SELECT symbol, trade_date, market, entry_ms, entry_price, stop_price, trade_pnl_r,
-           max_favorable_pct, max_adverse_pct, detail_json
-      FROM s12_replay_trade_outcomes
-     WHERE trade_date >= ?
-       AND trade_date <= ?
-       AND sample_eligible = 1
-       AND trade_pnl_r IS NOT NULL
-     ORDER BY trade_date ASC, symbol ASC
+    SELECT o.symbol, o.trade_date,
+           COALESCE(NULLIF(TRIM(o.market), ''), s.market, 'UNKNOWN') AS market,
+           o.entry_ms, o.entry_price, o.stop_price, o.trade_pnl_r,
+           o.max_favorable_pct, o.max_adverse_pct, o.detail_json
+      FROM s12_replay_trade_outcomes o
+      LEFT JOIN stocks s ON s.symbol = o.symbol
+     WHERE o.trade_date >= ?
+       AND o.trade_date <= ?
+       AND o.sample_eligible = 1
+       AND o.trade_pnl_r IS NOT NULL
+     ORDER BY o.trade_date ASC, o.symbol ASC
      LIMIT 100000
   `).bind(startDate, endDate).all<Record<string, unknown>>()
   const evidence: CalibrationEvidence[] = []

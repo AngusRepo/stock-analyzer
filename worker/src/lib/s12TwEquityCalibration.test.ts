@@ -12,8 +12,10 @@ function assert(condition: unknown, message: string): void {
 
 const schema = readFileSync('schema.sql', 'utf8')
 const migration = readFileSync('migration_s12_tw_calibration_v2_2026_07_11.sql', 'utf8')
+const source = readFileSync('src/lib/s12TwEquityCalibration.ts', 'utf8')
 assert(schema.includes('CREATE TABLE IF NOT EXISTS s12_tw_calibration_artifacts'), 'base schema must include calibration artifacts')
 assert(migration.includes('idx_s12_tw_calibration_active'), 'production migration must include the active-artifact resolver index')
+assert(source.includes('LEFT JOIN stocks s ON s.symbol = o.symbol'), 'calibration evidence must recover missing historical market segments from stocks')
 
 function artifact(
   id: string,

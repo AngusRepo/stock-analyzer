@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable
 
 from services.allocator_ev_fusion import _s12_execution_ready, _s12_multiplier, _target_quality_numeric, _target_quality_state
-from services.l4_alpha_ev_resolver import extract_l4_alpha_ev
+from services.l4_alpha_ev_resolver import (
+    SNAPSHOT_BACKFILL_AS_OF_GUARD,
+    SNAPSHOT_BACKFILL_SOURCE,
+    SNAPSHOT_BACKFILL_USAGE_SCOPE,
+    extract_l4_alpha_ev,
+)
 from services.s12_trade_ev import extract_s12_trade_ev
 
 
@@ -102,9 +107,35 @@ def _market_heat(row: dict[str, Any]) -> float:
     return 0.0
 
 
+def _l4_usage_scope(row: dict[str, Any]) -> str:
+    if (
+        str(row.get("allocator_ev_feature_snapshot_source") or "").strip() == SNAPSHOT_BACKFILL_SOURCE
+        and str(row.get("allocator_ev_feature_snapshot_guard") or "").strip()
+        == SNAPSHOT_BACKFILL_AS_OF_GUARD
+    ):
+        return SNAPSHOT_BACKFILL_USAGE_SCOPE
+    return "production"
+
+
+def _date_strictly_before(left: Any, right: Any) -> bool:
+    try:
+        return date.fromisoformat(str(left)[:10]) < date.fromisoformat(str(right)[:10])
+    except (TypeError, ValueError):
+        return False
+
+
 def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
     extractor_row = _row_for_extractors(row)
-    l4_value, _l4_source, _l4_payload = extract_l4_alpha_ev(extractor_row)
+    usage_scope = _l4_usage_scope(row)
+    l4_value, _l4_source, _l4_payload = extract_l4_alpha_ev(
+        extractor_row,
+        usage_scope=usage_scope,
+    )
+    if usage_scope == SNAPSHOT_BACKFILL_USAGE_SCOPE and (
+        not isinstance(_l4_payload, dict)
+        or not _date_strictly_before(_l4_payload.get("trained_until"), row.get("prediction_date"))
+    ):
+        return None
     s12_value, _s12_source, s12_payload = extract_s12_trade_ev(extractor_row)
     if l4_value is None:
         return None

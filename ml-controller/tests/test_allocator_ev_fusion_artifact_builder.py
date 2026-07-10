@@ -8,11 +8,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.allocator_ev_fusion_artifact_builder import (  # noqa: E402
+    _feature_vector,
     build_allocator_ev_fusion_artifact_from_rows,
     load_allocator_ev_fusion_training_rows,
 )
 from services.allocator_ev_feature_snapshot_backfill import (  # noqa: E402
     build_allocator_ev_feature_snapshots_for_date,
+)
+
+from services.l4_alpha_ev_resolver import (  # noqa: E402
+    SNAPSHOT_BACKFILL_AS_OF_GUARD,
+    SNAPSHOT_BACKFILL_SOURCE,
+    SNAPSHOT_BACKFILL_USAGE_SCOPE,
 )
 
 
@@ -228,7 +235,47 @@ def test_load_allocator_ev_fusion_training_rows_falls_back_when_snapshot_table_m
     assert rows == [daily_row]
 
 
-def test_allocator_ev_feature_snapshot_backfill_dry_run_uses_previous_day_l4_artifact():
+def test_allocator_ev_fusion_feature_vector_accepts_backfill_only_l4_under_canonical_guard():
+    l4_payload = {
+        **_l4_payload(0.02),
+        "promotion_state": "snapshot_backfill_only",
+        "validation_packet": {"decision": "FAIL", "failed_gates": ["walk_forward_not_stable"]},
+        "snapshot_backfill_only": True,
+        "snapshot_backfill_fit_eligible": True,
+        "snapshot_backfill_usage_scope": SNAPSHOT_BACKFILL_USAGE_SCOPE,
+        "trained_until": "2026-07-06",
+    }
+    row = {
+        "symbol": "2330",
+        "prediction_date": "2026-07-07",
+        "actual_return_pct": 0.01,
+        "alpha_allocation": json.dumps({
+            "l4_alpha_ev": l4_payload,
+            "s12_trade_ev": _s12_payload(0.01),
+        }),
+        "allocator_ev_feature_snapshot_source": SNAPSHOT_BACKFILL_SOURCE,
+        "allocator_ev_feature_snapshot_guard": SNAPSHOT_BACKFILL_AS_OF_GUARD,
+    }
+
+    features = _feature_vector(row)
+    assert features is not None
+    assert features["l4_expected_return"] == 0.02
+
+    without_guard = {**row, "allocator_ev_feature_snapshot_guard": ""}
+    assert _feature_vector(without_guard) is None
+
+    future_l4 = {**l4_payload, "trained_until": "2026-07-07"}
+    future_row = {
+        **row,
+        "alpha_allocation": json.dumps({
+            "l4_alpha_ev": future_l4,
+            "s12_trade_ev": _s12_payload(0.01),
+        }),
+    }
+    assert _feature_vector(future_row) is None
+
+
+def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_for_training():
     l4_training_rows = []
     for day_idx in range(30):
         day = f"2026-06-{day_idx + 1:02d}"
@@ -244,6 +291,8 @@ def test_allocator_ev_feature_snapshot_backfill_dry_run_uses_previous_day_l4_art
                 + (technical / 25.0) * 0.008
                 - 0.015
             )
+            if day_idx >= 24:
+                target = -target
             l4_training_rows.append({
                 "stock_id": symbol_idx,
                 "symbol": f"{symbol_idx:04d}",
@@ -322,6 +371,8 @@ def test_allocator_ev_feature_snapshot_backfill_dry_run_uses_previous_day_l4_art
 
     assert result["status"] == "ok"
     assert result["l4"]["trained_until"] == "2026-07-06"
+    assert result["l4"]["decision"] == "FAIL"
+    assert result["l4_usage_mode"] == "snapshot_backfill_only"
     assert result["snapshots_built"] == 1
     assert result["written"] == 0
 
@@ -381,7 +432,7 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
     def query_fn(sql: str, params: list[object] | None = None) -> list[dict]:
         if "FROM predictions p" in sql and "JOIN daily_recommendations dr" in sql:
             assert params[0] == "2026-07-06"
-            return l4_training_rows
+            return []
         if "FROM s12_replay_trade_outcomes" in sql:
             return []
         if "FROM s12_structure_snapshots" in sql:
@@ -399,6 +450,7 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
     )
 
     assert result["snapshots_built"] == 1
+    assert result["l4_usage_mode"] == "not_fit_eligible"
     assert result["reused_l4_payloads"] == 1
     assert result["reused_s12_payloads"] == 1
     assert result["skip_reasons"] == {}

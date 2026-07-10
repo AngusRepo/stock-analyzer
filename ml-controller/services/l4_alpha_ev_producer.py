@@ -14,6 +14,7 @@ from services.l4_alpha_ev_resolver import (
     EMPIRICAL_ONLY_METHODS,
     OWNER,
     PASS_STATES,
+    SNAPSHOT_BACKFILL_USAGE_SCOPE,
     resolve_l4_alpha_ev,
 )
 
@@ -249,15 +250,22 @@ def materialize_l4_alpha_ev(
     *,
     prediction: dict[str, Any] | None = None,
     policy: dict[str, Any] | None = None,
+    usage_scope: str = "production",
 ) -> dict[str, Any] | None:
     """Return validated row-level L4 alpha EV, or None when no producer is configured."""
     existing = _existing_payload(row, prediction)
     if existing is not None:
-        return resolve_l4_alpha_ev(existing)
+        return resolve_l4_alpha_ev(existing, usage_scope=usage_scope)
 
     artifact = _policy_artifact(policy)
     if artifact is None:
         return None
+
+    snapshot_backfill_mode = (
+        usage_scope == SNAPSHOT_BACKFILL_USAGE_SCOPE
+        and artifact.get("snapshot_backfill_only") is True
+        and artifact.get("snapshot_backfill_fit_eligible") is True
+    )
 
     blockers: list[str] = []
     method = _resolver_method(artifact)
@@ -265,9 +273,12 @@ def materialize_l4_alpha_ev(
         blockers.append("empirical_bucket_not_production_alpha_ev_owner")
     if method == "empirical_rank_bins":
         blockers.append("expected_return_calibration_is_not_l4_alpha_ev_artifact")
-    if _validation_decision(artifact) not in PASS_STATES:
+    if _validation_decision(artifact) not in PASS_STATES and not snapshot_backfill_mode:
         blockers.append("validation_packet_not_pass")
-    if _approval_state(artifact) not in {"production_approved", "approved_for_production", "live"}:
+    if (
+        _approval_state(artifact) not in {"production_approved", "approved_for_production", "live"}
+        and not snapshot_backfill_mode
+    ):
         blockers.append("production_approval_missing")
 
     families = _feature_families(artifact)
@@ -334,4 +345,4 @@ def materialize_l4_alpha_ev(
         "feature_values": {key: round(value, 10) for key, value in feature_values.items()},
         "semantic": "selection_alpha_expected_return_not_s12_execution_trade_ev",
     }
-    return resolve_l4_alpha_ev(payload)
+    return resolve_l4_alpha_ev(payload, usage_scope=usage_scope)

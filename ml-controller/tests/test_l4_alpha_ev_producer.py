@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import recommendation_service  # noqa: E402
 from services.l4_alpha_ev_producer import materialize_l4_alpha_ev  # noqa: E402
+from services.l4_alpha_ev_resolver import SNAPSHOT_BACKFILL_USAGE_SCOPE  # noqa: E402
 from services.recommendation_service import (  # noqa: E402
     apply_sparse_tangent_allocation,
     filter_and_score_recommendations,
@@ -109,6 +110,54 @@ def test_materialize_l4_alpha_ev_uses_production_learned_artifact():
     assert payload["approval_state"] == "production_approved"
     assert payload["expected_return"] == pytest.approx(0.02748)
     assert payload["feature_values"]["fundamental_quality_norm"] == pytest.approx(0.72)
+
+
+def test_materialize_l4_alpha_ev_allows_fitted_fail_only_for_snapshot_backfill():
+    artifact = _artifact(
+        promotion_state="snapshot_backfill_only",
+        validation_packet={"decision": "FAIL", "failed_gates": ["walk_forward_not_stable"]},
+        snapshot_backfill_only=True,
+        snapshot_backfill_fit_eligible=True,
+        snapshot_backfill_usage_scope=SNAPSHOT_BACKFILL_USAGE_SCOPE,
+    )
+    production_payload = materialize_l4_alpha_ev(
+        _row(),
+        prediction=_prediction(),
+        policy={"l4_alpha_ev": artifact},
+    )
+    backfill_payload = materialize_l4_alpha_ev(
+        _row(),
+        prediction=_prediction(),
+        policy={"l4_alpha_ev": artifact},
+        usage_scope=SNAPSHOT_BACKFILL_USAGE_SCOPE,
+    )
+
+    assert production_payload["status"] == "rejected"
+    assert production_payload["expected_return"] is None
+    assert backfill_payload["status"] == "loaded"
+    assert backfill_payload["snapshot_backfill_eligible"] is True
+    assert backfill_payload["production_eligible"] is False
+
+
+def test_materialize_l4_alpha_ev_keeps_non_fitted_backfill_artifact_rejected():
+    artifact = _artifact(
+        promotion_state="snapshot_backfill_only",
+        validation_packet={"decision": "FAIL", "failed_gates": ["insufficient_dates"]},
+        snapshot_backfill_only=True,
+        snapshot_backfill_fit_eligible=True,
+        snapshot_backfill_usage_scope=SNAPSHOT_BACKFILL_USAGE_SCOPE,
+    )
+    payload = materialize_l4_alpha_ev(
+        _row(),
+        prediction=_prediction(),
+        policy={"l4_alpha_ev": artifact},
+        usage_scope=SNAPSHOT_BACKFILL_USAGE_SCOPE,
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["expected_return"] is None
+    assert "validation_packet_not_pass" in payload["blockers"]
+    assert payload["snapshot_backfill_eligible"] is False
 
 
 def test_materialize_l4_alpha_ev_rejects_empirical_calibration_as_owner():

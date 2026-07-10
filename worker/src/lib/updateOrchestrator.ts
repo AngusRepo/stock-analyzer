@@ -5,7 +5,12 @@ import { computeAndStoreIndicators } from './technicalIndicators'
 import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady, loadMarketDataReadinessStats } from './marketDataReadiness'
 import { runRegimeCompute } from './controllerDailyWorkflows'
-import { runFinLabV4Backfill } from './controllerResearchWorkflows'
+import {
+  runAllocatorEvFeatureSnapshotBackfill,
+  runAllocatorEvFusionRefresh,
+  runFinLabV4Backfill,
+  runL4AlphaEvRefresh,
+} from './controllerResearchWorkflows'
 import { runOfficialMarketSummaryRefresh } from './officialMarketSummaryRefresh'
 import { enqueuePostScreenerPipelineContinuation } from './postScreenerContinuation'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
@@ -1778,6 +1783,96 @@ async function repairFinalizeContinuationIfNeeded(
   await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'stale-lock-repair')
 }
 
+async function runDailyAllocatorEvReadiness(
+  env: Bindings,
+  triggerTime: string,
+): Promise<{ ok: boolean; summary: string }> {
+  const started = Date.now()
+  const parts: string[] = []
+
+  try {
+    const snapshotStarted = Date.now()
+    const snapshotSummary = await runAllocatorEvFeatureSnapshotBackfill(env, {
+      startDate: triggerTime,
+      endDate: triggerTime,
+      dryRun: false,
+      candidateLimit: 1000,
+      l4MinSamples: 500,
+      l4MinDates: 20,
+    })
+    parts.push(`snapshot=${snapshotSummary}`)
+    await logSchedulerResult(env.KV, 'allocator-ev-feature-snapshot-backfill', {
+      status: 'success',
+      summary: `daily-chain ${snapshotSummary}`,
+      duration_ms: Date.now() - snapshotStarted,
+      run_date: triggerTime,
+    })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    await logSchedulerResult(env.KV, 'allocator-ev-feature-snapshot-backfill', {
+      status: 'error',
+      summary: `daily-chain allocator EV feature snapshot failed for ${triggerTime}`,
+      duration_ms: Date.now() - started,
+      error: message,
+      run_date: triggerTime,
+    })
+    return { ok: false, summary: `allocator EV feature snapshot failed: ${message}` }
+  }
+
+  try {
+    const l4Started = Date.now()
+    const l4Summary = await runL4AlphaEvRefresh(env, triggerTime, 'weekly')
+    parts.push(`l4=${l4Summary}`)
+    await logSchedulerResult(env.KV, 'l4-alpha-ev-refresh', {
+      status: 'success',
+      summary: `daily-chain ${l4Summary}`,
+      duration_ms: Date.now() - l4Started,
+      run_date: triggerTime,
+    })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    await logSchedulerResult(env.KV, 'l4-alpha-ev-refresh', {
+      status: 'error',
+      summary: `daily-chain L4 alpha EV refresh failed for ${triggerTime}`,
+      duration_ms: Date.now() - started,
+      error: message,
+      run_date: triggerTime,
+    })
+    return { ok: false, summary: `L4 alpha EV refresh failed: ${message}` }
+  }
+
+  try {
+    const fusionStarted = Date.now()
+    const fusionSummary = await runAllocatorEvFusionRefresh(env, triggerTime, 'weekly')
+    parts.push(`fusion=${fusionSummary}`)
+    await logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh', {
+      status: 'success',
+      summary: `daily-chain ${fusionSummary}`,
+      duration_ms: Date.now() - fusionStarted,
+      run_date: triggerTime,
+    })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    parts.push(`fusion_degraded=${message}`)
+    await logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh', {
+      status: 'error',
+      summary: `daily-chain allocator EV fusion degraded; stale config cleared by controller when available; pipeline continues with L4 alpha EV for ${triggerTime}`,
+      duration_ms: Date.now() - started,
+      error: message,
+      run_date: triggerTime,
+    })
+  }
+
+  const summary = `allocator EV readiness before pipeline for ${triggerTime}; ${parts.join(' | ')}`
+  await logSchedulerResult(env.KV, 'allocator-ev-readiness', {
+    status: 'success',
+    summary,
+    duration_ms: Date.now() - started,
+    run_date: triggerTime,
+  })
+  return { ok: true, summary }
+}
+
 async function continuePostScreenerPipeline(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
@@ -1852,6 +1947,18 @@ async function continuePostScreenerPipeline(
       run_date: triggerTime,
     })
     console.warn('[Queue] Event-driven S12 snapshot failed open:', e)
+  }
+
+  const evReadiness = await runDailyAllocatorEvReadiness(env, triggerTime)
+  if (!evReadiness.ok) {
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'error',
+      summary: `event-driven chain stopped: allocator EV readiness failed before pipeline for ${triggerTime}; ${evReadiness.summary}`,
+      duration_ms: 0,
+      error: evReadiness.summary,
+      run_date: triggerTime,
+    })
+    return
   }
 
   try {

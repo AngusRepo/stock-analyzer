@@ -74,6 +74,8 @@ const TASK_NAMES: Record<string, string> = {
   'weekly-backtest': 'Weekly Backtest/MC',
   'alpha-quality': 'Alpha Quality',
   'weekly-optuna': 'Weekly Optuna',
+  'allocator-ev-feature-snapshot-backfill': 'Allocator EV Feature Snapshot Backfill',
+  'allocator-ev-readiness': 'Allocator EV Readiness',
   'l4-alpha-ev-refresh': 'L4 Alpha EV Refresh',
   'allocator-ev-fusion-refresh': 'Allocator EV Fusion Refresh',
   'sector-leaders': 'Sector Leaders',

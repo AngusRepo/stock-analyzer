@@ -129,6 +129,21 @@ assert(
     updateOrchestrator.includes("status: 'triggered'"),
   'pipeline trigger must keep evening-chain in triggered state until callback closure writes final root-chain success',
 )
+assert(
+  updateOrchestrator.includes('runDailyAllocatorEvReadiness') &&
+    updateOrchestrator.includes('runAllocatorEvFeatureSnapshotBackfill') &&
+    updateOrchestrator.includes('runL4AlphaEvRefresh') &&
+    updateOrchestrator.includes('runAllocatorEvFusionRefresh') &&
+    updateOrchestrator.indexOf('const evReadiness = await runDailyAllocatorEvReadiness') <
+      updateOrchestrator.indexOf('const summary = await deps.runMLAndRiskV2'),
+  'evening-chain must refresh allocator EV feature snapshots/L4/fusion readiness before triggering pipeline',
+)
+assert(
+  updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh'") &&
+    updateOrchestrator.includes('fusion_degraded=') &&
+    updateOrchestrator.includes('pipeline continues with L4 alpha EV'),
+  'allocator EV fusion validation failure must be visible but degrade to L4 instead of stopping the evening-chain pipeline',
+)
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')
 const marketDataReadiness = fs.readFileSync('src/lib/marketDataReadiness.ts', 'utf8')

@@ -332,6 +332,10 @@ async def backfill_allocator_ev_feature_snapshots_route(req: AllocatorEvFeatureS
             "allocator_ev_feature_snapshot_backfill "
             f"status={result.get('status')} dry_run={1 if req.dry_run else 0} "
             f"range={req.start_date}..{req.end_date} built={result.get('snapshots_built')} "
-            f"written={result.get('written')}"
+            f"written={result.get('written')} skipped_days={result.get('skipped_days')} "
+            "l4_backfill_only_days="
+            f"{result.get('l4_snapshot_backfill_only_days')} "
+            "skip_reasons="
+            f"{json.dumps(result.get('skip_reasons') or {}, separators=(',', ':'))}"
         ),
     }

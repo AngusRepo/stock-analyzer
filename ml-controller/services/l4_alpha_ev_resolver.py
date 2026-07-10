@@ -15,6 +15,17 @@ SCHEMA_VERSION = "l4-alpha-ev-v1"
 OWNER = "l4_alpha_ev"
 APPROVED_STATES = {"production_approved", "approved_for_production", "live"}
 PASS_STATES = {"PASS", "PASSED", "PRODUCTION_APPROVED"}
+SNAPSHOT_BACKFILL_USAGE_SCOPE = "allocator_ev_feature_snapshot_backfill"
+SNAPSHOT_BACKFILL_SOURCE = "allocator_ev_asof_backfill_v1"
+SNAPSHOT_BACKFILL_AS_OF_GUARD = (
+    "l4_trained_until_strictly_before_snapshot_date_and_s12_samples_before_run_date"
+)
+SNAPSHOT_BACKFILL_APPROVAL_STATE = "snapshot_backfill_only"
+SNAPSHOT_BACKFILL_NON_FITTED_GATES = {
+    "insufficient_samples",
+    "insufficient_dates",
+    "insufficient_train_test_split",
+}
 EMPIRICAL_ONLY_METHODS = {
     "empirical",
     "empirical_bucket",
@@ -81,6 +92,29 @@ def _resolver_method(payload: dict[str, Any]) -> str:
     ).strip().lower()
 
 
+def _snapshot_backfill_allowed(payload: dict[str, Any], usage_scope: str) -> bool:
+    if usage_scope != SNAPSHOT_BACKFILL_USAGE_SCOPE:
+        return False
+    packet = _first_dict(
+        payload.get("validation_packet"),
+        payload.get("validation_evidence"),
+        payload.get("validation"),
+    ) or {}
+    failed_gates = {
+        str(value).strip()
+        for value in (packet.get("failed_gates") or [])
+        if str(value).strip()
+    }
+    return (
+        payload.get("snapshot_backfill_only") is True
+        and payload.get("snapshot_backfill_fit_eligible") is True
+        and str(payload.get("snapshot_backfill_usage_scope") or "").strip()
+        == SNAPSHOT_BACKFILL_USAGE_SCOPE
+        and _approval_state(payload) == SNAPSHOT_BACKFILL_APPROVAL_STATE
+        and not failed_gates.intersection(SNAPSHOT_BACKFILL_NON_FITTED_GATES)
+    )
+
+
 def _expected_return_value(payload: dict[str, Any]) -> float | None:
     for key in (
         "expected_return_mean",
@@ -94,7 +128,11 @@ def _expected_return_value(payload: dict[str, Any]) -> float | None:
     return None
 
 
-def resolve_l4_alpha_ev(payload: dict[str, Any] | None) -> dict[str, Any]:
+def resolve_l4_alpha_ev(
+    payload: dict[str, Any] | None,
+    *,
+    usage_scope: str = "production",
+) -> dict[str, Any]:
     """Return a normalized L4 alpha EV payload, fail-closed on weak evidence."""
     if not isinstance(payload, dict):
         return {
@@ -119,12 +157,13 @@ def resolve_l4_alpha_ev(payload: dict[str, Any] | None) -> dict[str, Any]:
     if "forecast" in source.lower() and OWNER not in source.lower():
         blockers.append("forecast_source_not_selection_alpha_ev")
 
+    snapshot_backfill_allowed = _snapshot_backfill_allowed(payload, usage_scope)
     approval_state = _approval_state(payload)
-    if approval_state not in APPROVED_STATES:
+    if approval_state not in APPROVED_STATES and not snapshot_backfill_allowed:
         blockers.append("production_approval_missing")
 
     validation_decision = _validation_decision(payload)
-    if validation_decision not in PASS_STATES:
+    if validation_decision not in PASS_STATES and not snapshot_backfill_allowed:
         blockers.append("validation_packet_not_pass")
 
     method = _resolver_method(payload)
@@ -157,12 +196,19 @@ def resolve_l4_alpha_ev(payload: dict[str, Any] | None) -> dict[str, Any]:
         "approval_state": approval_state or None,
         "validation_decision": validation_decision or None,
         "resolver_method": method or None,
+        "usage_scope": usage_scope,
+        "production_eligible": status == "loaded" and not snapshot_backfill_allowed,
+        "snapshot_backfill_eligible": status == "loaded" and snapshot_backfill_allowed,
         "blockers": blockers,
     }
     return normalized
 
 
-def extract_l4_alpha_ev(row: dict[str, Any]) -> tuple[float | None, str, dict[str, Any] | None]:
+def extract_l4_alpha_ev(
+    row: dict[str, Any],
+    *,
+    usage_scope: str = "production",
+) -> tuple[float | None, str, dict[str, Any] | None]:
     """Extract and validate L4 alpha EV from row or nested forecast payload."""
     payload = _first_dict(
         row.get("l4_alpha_ev"),
@@ -188,7 +234,7 @@ def extract_l4_alpha_ev(row: dict[str, Any]) -> tuple[float | None, str, dict[st
     if payload is None:
         return None, "l4_alpha_ev_missing_no_expected_return", None
 
-    normalized = resolve_l4_alpha_ev(payload)
+    normalized = resolve_l4_alpha_ev(payload, usage_scope=usage_scope)
     if normalized["status"] != "loaded":
         return None, str(normalized["expected_return_source"]), normalized
     return (

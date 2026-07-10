@@ -11,15 +11,22 @@ from services.l4_alpha_ev_artifact_builder import (
     load_l4_alpha_ev_training_rows,
 )
 from services.l4_alpha_ev_producer import materialize_l4_alpha_ev
-from services.l4_alpha_ev_resolver import resolve_l4_alpha_ev
+from services.l4_alpha_ev_resolver import (
+    SNAPSHOT_BACKFILL_APPROVAL_STATE,
+    SNAPSHOT_BACKFILL_AS_OF_GUARD,
+    SNAPSHOT_BACKFILL_NON_FITTED_GATES,
+    SNAPSHOT_BACKFILL_SOURCE,
+    SNAPSHOT_BACKFILL_USAGE_SCOPE,
+    resolve_l4_alpha_ev,
+)
 from services.s12_trade_ev_bootstrap import S12TradeEvBootstrapProvider
 from services.s12_trade_ev import extract_s12_trade_ev
 
 
 QueryFn = Callable[[str, list[Any] | None], list[dict[str, Any]]]
 
-SNAPSHOT_SOURCE = "allocator_ev_asof_backfill_v1"
-AS_OF_GUARD = "l4_trained_until_strictly_before_snapshot_date_and_s12_samples_before_run_date"
+SNAPSHOT_SOURCE = SNAPSHOT_BACKFILL_SOURCE
+AS_OF_GUARD = SNAPSHOT_BACKFILL_AS_OF_GUARD
 
 
 def _loads(value: Any) -> dict[str, Any]:
@@ -185,6 +192,46 @@ def _build_l4_asof_artifact(
     }
 
 
+def _select_l4_snapshot_artifact(l4_result: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    artifact = (
+        l4_result.get("artifact")
+        if isinstance(l4_result.get("artifact"), dict)
+        else None
+    )
+    if artifact is None:
+        return None, "missing"
+    decision = str(l4_result.get("decision") or "").upper()
+    if decision == "PASS":
+        return artifact, "production_pass"
+    failed_gates = {
+        str(value).strip()
+        for value in (l4_result.get("failed_gates") or [])
+        if str(value).strip()
+    }
+    if (
+        decision != "FAIL"
+        or failed_gates.intersection(SNAPSHOT_BACKFILL_NON_FITTED_GATES)
+    ):
+        return None, "not_fit_eligible"
+    return (
+        {
+            **artifact,
+            "promotion_state": SNAPSHOT_BACKFILL_APPROVAL_STATE,
+            "snapshot_backfill_only": True,
+            "snapshot_backfill_fit_eligible": True,
+            "snapshot_backfill_usage_scope": SNAPSHOT_BACKFILL_USAGE_SCOPE,
+            "primary_expected_return_allowed": False,
+            "assistive_expected_return_allowed": False,
+            "production_eligible": False,
+            "strict_validation_decision": decision,
+            "strict_validation_failed_gates": sorted(failed_gates),
+        },
+        "snapshot_backfill_only",
+    )
+
+
+
+
 def _snapshot_statement(snapshot_date: str, row: dict[str, Any], alpha_allocation: dict[str, Any]) -> tuple[str, list[Any]]:
     l4 = alpha_allocation.get("l4_alpha_ev") if isinstance(alpha_allocation.get("l4_alpha_ev"), dict) else {}
     s12 = alpha_allocation.get("s12_trade_ev") if isinstance(alpha_allocation.get("s12_trade_ev"), dict) else {}
@@ -256,17 +303,11 @@ def build_allocator_ev_feature_snapshots_for_date(
         min_dates=l4_min_dates,
         limit=l4_training_limit,
     )
-    artifact = l4_result.get("artifact") if isinstance(l4_result.get("artifact"), dict) else None
-    if not artifact or l4_result.get("decision") != "PASS":
-        return {
-            "date": snapshot_date,
-            "status": "skipped",
-            "reason": "l4_asof_artifact_not_pass",
-            "l4": l4_result,
-            "candidate_rows": 0,
-            "snapshots_built": 0,
-            "written": 0,
-        }
+    artifact, l4_usage_mode = _select_l4_snapshot_artifact(l4_result)
+    materialization_scope = (
+        SNAPSHOT_BACKFILL_USAGE_SCOPE if l4_usage_mode == "snapshot_backfill_only"
+        else "production"
+    )
 
     provider = S12TradeEvBootstrapProvider.for_run_date(
         snapshot_date,
@@ -297,10 +338,12 @@ def build_allocator_ev_feature_snapshots_for_date(
                 row,
                 prediction=prediction,
                 policy={"l4_alpha_ev": artifact},
+                usage_scope=materialization_scope,
             )
         if not isinstance(l4_payload, dict) or l4_payload.get("status") != "loaded":
             skipped += 1
-            skip_reasons["l4_missing_or_rejected"] = skip_reasons.get("l4_missing_or_rejected", 0) + 1
+            reason = "l4_missing_or_rejected" if artifact else "l4_asof_artifact_not_fit_eligible"
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
             continue
         s12_payload = _existing_s12_payload(existing)
         if isinstance(s12_payload, dict):
@@ -317,6 +360,7 @@ def build_allocator_ev_feature_snapshots_for_date(
             "s12_trade_ev": s12_payload,
             "snapshot_source": SNAPSHOT_SOURCE,
             "as_of_guard": AS_OF_GUARD,
+            "snapshot_l4_usage_mode": l4_usage_mode,
         }
         statements.append(_snapshot_statement(snapshot_date, row, alpha_allocation))
 
@@ -325,9 +369,13 @@ def build_allocator_ev_feature_snapshots_for_date(
         writer = write_fn or (lambda items: d1_client.batch_execute(items, timeout=60.0, chunk_size=100))
         write_result = writer(statements)
 
+    day_status = "ok" if statements else "skipped"
+    day_reason = None if statements else "no_feature_snapshots_built"
     return {
         "date": snapshot_date,
-        "status": "ok",
+        "status": day_status,
+        "reason": day_reason,
+        "l4_usage_mode": l4_usage_mode,
         "l4": {
             key: value
             for key, value in l4_result.items()
@@ -377,6 +425,15 @@ def backfill_allocator_ev_feature_snapshots(
             s12_min_samples=s12_min_samples,
             s12_min_sample_dates=s12_min_sample_dates,
         ))
+    aggregate_skip_reasons: dict[str, int] = {}
+    for row in rows:
+        for reason, count in (row.get("skip_reasons") or {}).items():
+            aggregate_skip_reasons[reason] = aggregate_skip_reasons.get(reason, 0) + int(count or 0)
+        day_reason = str(row.get("reason") or "").strip()
+        if row.get("status") == "skipped" and day_reason:
+            key = f"day:{day_reason}"
+            aggregate_skip_reasons[key] = aggregate_skip_reasons.get(key, 0) + 1
+
     return {
         "schema_version": "allocator-ev-feature-snapshot-backfill-v1",
         "status": "ok",
@@ -387,5 +444,9 @@ def backfill_allocator_ev_feature_snapshots(
         "snapshots_built": sum(int(row.get("snapshots_built") or 0) for row in rows),
         "written": sum(int(row.get("written") or 0) for row in rows),
         "skipped_days": sum(1 for row in rows if row.get("status") == "skipped"),
+        "l4_snapshot_backfill_only_days": sum(
+            1 for row in rows if row.get("l4_usage_mode") == "snapshot_backfill_only"
+        ),
+        "skip_reasons": aggregate_skip_reasons,
         "results": rows,
     }

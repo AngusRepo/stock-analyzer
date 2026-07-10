@@ -6,6 +6,11 @@ import {
 } from './s12IntradayStructure'
 import { loadS12HistoricalReplayBars } from './s12RuntimeBars'
 import { persistS12StructureSnapshot } from './s12StructureSnapshots'
+import {
+  applyS12TwCalibrationArtifact,
+  listApprovedS12TwCalibrationArtifacts,
+  resolveS12TwCalibrationArtifact,
+} from './s12TwEquityCalibration'
 
 const M15_MS = 15 * 60_000
 
@@ -47,6 +52,7 @@ function isSetupOnly(assessment: S12IntradayAssessment): boolean {
     'waiting_choch',
     'waiting_bos',
     'waiting_retest',
+    'waiting_reaction',
   ].includes(String(assessment.state ?? ''))
 }
 
@@ -117,7 +123,8 @@ export async function runS12CandidateStructureSnapshots(
   const candidates = options.symbols ?? await loadS12PipelineSeedSymbolsByDate(env.DB, tradeDate, limit)
   const selected = candidates.slice(0, limit)
   const loadBars = options.loadBars ?? loadS12HistoricalReplayBars
-  const policy = s12TimingPolicyFromEnv(env as any)
+  const basePolicy = s12TimingPolicyFromEnv(env as any)
+  const calibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(env.DB, { includeSuperseded: true }).catch(() => [])
   let persisted = 0
   let ready = 0
   let setupOnly = 0
@@ -131,17 +138,27 @@ export async function runS12CandidateStructureSnapshots(
         skipped += 1
         continue
       }
+      const stockRow = await env.DB.prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(row.symbol).first<{ market?: string | null }>()
+      const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
+        marketSegment: stockRow?.market ?? 'UNKNOWN',
+        asOfDate: tradeDate,
+      })
       const assessment = assessS12IntradayStructureFromBaseBars({
         symbol: row.symbol,
         baseBars: loaded.bars,
         fallback15mBars: loaded.fallback15mBars,
         fallback1hBars: loaded.fallback1hBars,
         fallback4hBars: loaded.fallback4hBars,
+        fallbackDailyBars: loaded.fallbackDailyBars,
         nowMs: lastBarEndMs(loaded.bars),
-        policy,
-        barDiagnostics: loaded.diagnostics,
-        h4ReferenceDate: loaded.diagnostics.previous_4h_reference_date ?? null,
-        h4ReferenceClose: Number(loaded.diagnostics.previous_4h_reference_close ?? 0) || null,
+        policy: applyS12TwCalibrationArtifact(basePolicy, calibration),
+        barDiagnostics: {
+          ...loaded.diagnostics,
+          calibration_artifact_id: calibration?.artifactId ?? null,
+          calibration_scope: calibration?.scope ?? null,
+        },
+        h4ReferenceDate: loaded.diagnostics.previous_daily_context_date ?? null,
+        h4ReferenceClose: Number(loaded.diagnostics.previous_daily_raw_close ?? 0) || null,
       })
       const ok = await persistS12StructureSnapshot(env, {
         tradeDate,
@@ -149,6 +166,10 @@ export async function runS12CandidateStructureSnapshots(
         assessment,
         source: 's12_candidate_snapshot',
         side: 'buy',
+        metadata: {
+          calibration_artifact_id: calibration?.artifactId ?? null,
+          calibration_scope: calibration?.scope ?? null,
+        },
       })
       if (ok) persisted += 1
       if (assessment.ready) ready += 1
@@ -174,4 +195,3 @@ export async function runS12CandidateStructureSnapshots(
     limit,
   }
 }
-

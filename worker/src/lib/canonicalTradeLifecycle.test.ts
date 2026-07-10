@@ -107,6 +107,10 @@ const lifecycle = buildCanonicalTradeLifecycle({
   stopMultiplier: 2,
   tpMultiplier: 1.5,
   tp2Multiplier: 2,
+  atrTp1: 108.5,
+  atrTp2: 113,
+  mlTp1: 110,
+  mlTp2: 116,
   protectiveFloorPolicy: {
     breakEvenActivationPct: 0,
     breakEvenBufferPct: 0,
@@ -117,12 +121,14 @@ const lifecycle = buildCanonicalTradeLifecycle({
 })
 
 assert(lifecycle.owners.entry === 's12_intraday_structure_v1', 'S12-assisted fills must use S12 as entry owner')
-assert(lifecycle.owners.exit === 's12_position_decision_v1', 'S12-assisted fills must use S12 as primary exit owner')
+assert(lifecycle.owners.exit === 'tw_equity_exit_fusion_v2', 'S12-assisted fills must use Taiwan equity fusion as primary exit owner')
 assert(lifecycle.owners.fallbackExit === 'paper_sltp_atr_trailing_v1', 'ATR trailing must remain explicit fallback owner')
 assert(lifecycle.entry.s12?.exitPlan.tp3 === 126, 'canonical lifecycle must preserve Pine-style TP3')
 assert(lifecycle.entry.s12?.exitPlan.tp4 === 134, 'canonical lifecycle must preserve Pine-style TP4')
 assert(lifecycle.entry.s12?.exitPlan.manualTp === 130, 'canonical lifecycle must preserve manual TP')
 assert(lifecycle.entry.s12?.exitPlan.plannedTakeProfit === 'tp4', 'canonical lifecycle must preserve planned TP')
+assert(lifecycle.exit.fusionPolicy === 'tw_equity_exit_fusion_v2', 'canonical lifecycle must version the exit fusion policy')
+assert(lifecycle.exit.anchors.atrTp1 === 108.5 && lifecycle.exit.anchors.mlTp1 === 110, 'canonical lifecycle must preserve ATR and ML runner anchors')
 assert(lifecycle.entry.s12?.entryContext.schemaVersion === 's12_equity_mutation_context_v1', 'canonical lifecycle must preserve structured S12 entry context')
 assert(lifecycle.entry.s12?.entryContext.entryArchetype === 'equity_repricing_breakout', 'canonical lifecycle must expose S12 entry archetype')
 assert(lifecycle.entry.s12?.entryContext.vwapFastAcceptance === true, 'canonical lifecycle must expose fast VWAP acceptance')
@@ -135,3 +141,39 @@ assert(lifecycle.entry.s12?.quality.vwapContext.anchoredWeek === 101, 'canonical
 assert(lifecycle.entry.s12?.quality.vwapContext.rolling30d === 100, 'canonical lifecycle must preserve rolling 30D VWAP')
 assert(lifecycle.entry.s12?.quality.vwapContext.previousDay === 100, 'canonical lifecycle must preserve previous-day VWAP zone')
 assert(lifecycle.exit.fallbackOwner === 'paper_sltp_atr_trailing_v1', 'exit block must expose fallback owner')
+
+const setupOnlyLifecycle = buildCanonicalTradeLifecycle({
+  ...{
+    tradeDate: '2026-07-08',
+    symbol: '1785',
+    marketRiskLevel: 'low',
+    marketRiskScore: 0.2,
+    regime: 'volatile',
+    sizingMode: 'risk_parity',
+    targetExposure: 0.92,
+    allocationAction: 'buy',
+    allocationReason: 'allocator_open_slot',
+    entryPrice: 141.5,
+    stopLoss: 123,
+    chaseCeiling: null,
+    s12Assessment: { ...s12Assessment, ready: false, state: 'waiting_15m_zone_touch' } as S12IntradayAssessment,
+    s12AssistApplied: false,
+    s12ExitPrimary: false,
+    initialStop: 117.75,
+    trailingStop: 117.75,
+    tp1: 175.4625,
+    tp2: 209.425,
+    atr14: 9.5,
+    stopMultiplier: 2.5,
+    tpMultiplier: 3.575,
+    tp2Multiplier: 2,
+    atrTp1: 175.4625,
+    atrTp2: 209.425,
+    mlTp1: 186.43,
+    mlTp2: 203.53,
+    protectiveFloorPolicy: lifecycle.exit.protectiveFloorPolicy,
+  },
+})
+assert(setupOnlyLifecycle.owners.entry === 'ohlcv_pre_trade_plan_v1', 'setup-only S12 context must not take entry ownership')
+assert(setupOnlyLifecycle.owners.exit === 'paper_sltp_atr_trailing_v1', 'setup-only S12 context must keep paper SLTP exit ownership')
+assert(setupOnlyLifecycle.exit.initialStop === 117.75, 'setup-only lifecycle must preserve the executable paper SLTP stop')

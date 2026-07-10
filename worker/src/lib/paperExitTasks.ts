@@ -15,6 +15,7 @@ import { buildSellOrderNote, calcRealizedPnlSnapshot } from './paperOrderAccount
 import { putIntradayPrice } from './paperIntradayPriceCache'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
+import { resolveTwEquityPriceBand } from './twEquityMarketContract'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
 import {
   aggregateCompletedS12Bars,
@@ -27,6 +28,11 @@ import {
   type S12UnifiedDecision,
 } from './s12IntradayStructure'
 import { loadS12IntradayBaseBars } from './s12RuntimeBars'
+import {
+  applyS12TwCalibrationArtifact,
+  listApprovedS12TwCalibrationArtifacts,
+  resolveS12TwCalibrationArtifact,
+} from './s12TwEquityCalibration'
 import { persistS12StructureSnapshot } from './s12StructureSnapshots'
 import {
   getCurrentRegime as getCurrentSltpRegime,
@@ -34,6 +40,12 @@ import {
   resolveSltpForRegime,
   type TradingConfig,
 } from './tradingConfig'
+import {
+  extractTwEquityExitFusionAnchorsFromOrderNote,
+  isTwEquityExitFusionEligible,
+  migrateCanonicalLifecycleExitFusionV2,
+  resolveTwEquityExitFusionV2,
+} from './twEquityExitFusion'
 
 const ACCOUNT_ID = 1
 const S12_HOLDING_DEFENSE_EVENT_MIN_INTERVAL_MS = 10 * 60_000
@@ -92,6 +104,7 @@ function lifecycleS12StopFromPosition(pos: { trade_lifecycle_json?: unknown }): 
   source: string | null
   method: string | null
 } | null {
+  if (!isTwEquityExitFusionEligible(pos.trade_lifecycle_json)) return null
   const lifecycle = parseJsonObject(pos.trade_lifecycle_json)
   if (lifecycle?.version !== 'canonical_trade_lifecycle_v1') return null
   const s12 = lifecycle.entry?.s12
@@ -110,8 +123,20 @@ function lifecycleS12StopFromPosition(pos: { trade_lifecycle_json?: unknown }): 
   }
 }
 
+function lifecycleFusionTargetsFromPosition(pos: {
+  trade_lifecycle_json?: unknown
+  entry_order_note?: unknown
+}, exitCalibration: import('./s12TwEquityCalibration').S12TwExitCalibration | null = null) {
+  return resolveTwEquityExitFusionV2(
+    pos.trade_lifecycle_json,
+    extractTwEquityExitFusionAnchorsFromOrderNote(pos.entry_order_note),
+    exitCalibration,
+  )
+}
+
 function withLifecycleS12ExitInputs<T extends Record<string, any>>(pos: T): T {
   const plan = lifecycleS12ExitPlanFromPosition(pos)
+  const fusionTargets = lifecycleFusionTargetsFromPosition(pos)
   const lifecycleStop = lifecycleS12StopFromPosition(pos)
   const existingStop = positiveNumber(pos.s12_position_stop_price)
   const stopPrice = existingStop ?? lifecycleStop?.price ?? null
@@ -125,6 +150,10 @@ function withLifecycleS12ExitInputs<T extends Record<string, any>>(pos: T): T {
     tp3_price: pos.tp3_price ?? positiveNumber(plan?.tp3),
     tp4_price: pos.tp4_price ?? positiveNumber(plan?.tp4),
     s12_tp1_source: pos.s12_tp1_source ?? plan?.tp1Source ?? null,
+    s12_pressure_tp1: pos.s12_pressure_tp1 ?? fusionTargets.nearPressureTp1,
+    s12_pressure_tp1_source: pos.s12_pressure_tp1_source ?? fusionTargets.nearPressureTp1Source,
+    fusion_runner_tp1: pos.fusion_runner_tp1 ?? fusionTargets.runnerTp1,
+    fusion_runner_tp1_source: pos.fusion_runner_tp1_source ?? fusionTargets.runnerTp1Source,
     s12_main_exit_source: pos.s12_main_exit_source ?? plan?.mainExitSource ?? null,
     planned_take_profit: pos.planned_take_profit ?? plan?.plannedTakeProfit ?? null,
   }
@@ -167,7 +196,7 @@ function updateLifecycleS12TrailingStop(
   const { source, method } = s12TrailingSourceFromReason(reason)
   next.owners = {
     ...(next.owners ?? {}),
-    exit: 's12_position_decision_v1',
+    exit: 'tw_equity_exit_fusion_v2',
     fallbackExit: 'paper_sltp_atr_trailing_v1',
   }
   next.entry = next.entry && typeof next.entry === 'object' ? next.entry : {}
@@ -332,6 +361,11 @@ export function resolveS12HoldingDefenseUpdate(params: {
     s12_position_stop_source?: string | null
     s12_position_stop_method?: string | null
     s12_tp1_source?: string | null
+    s12_pressure_tp1?: number | null
+    s12_pressure_tp1_source?: string | null
+    fusion_runner_tp1?: number | null
+    fusion_runner_tp1_source?: string | null
+    tp1_source?: string | null
     s12_main_exit_source?: string | null
     position_opened_today?: boolean | null
     trade_lifecycle_json?: unknown
@@ -478,19 +512,28 @@ async function evaluateS12HoldingDefense(
   cfg: TradingConfig,
 ): Promise<ExitDecision | null> {
   if (!enabledFlag((env as any).S12_INTRADAY_HOLDING_DEFENSE_ENABLED, true)) return null
+  if (!isTwEquityExitFusionEligible(pos.trade_lifecycle_json)) return null
   try {
-    const policy = s12TimingPolicyFromEnv(env as any)
-    const latestEvent = await env.DB.prepare(`
-      SELECT status, reason, detail_json, created_at
-        FROM paper_execution_events
-       WHERE account_id = ?
-         AND symbol = ?
-         AND trade_date = ?
-         AND event_type = 's12_intraday_structure'
-         AND source = 's12_holding_defense'
-       ORDER BY id DESC
-       LIMIT 1
-    `).bind(ACCOUNT_ID, pos.symbol, tradeDate).first<any>()
+    const [latestEvent, stockRow, calibrationArtifacts] = await Promise.all([
+      env.DB.prepare(`
+        SELECT status, reason, detail_json, created_at
+          FROM paper_execution_events
+         WHERE account_id = ?
+           AND symbol = ?
+           AND trade_date = ?
+           AND event_type = 's12_intraday_structure'
+           AND source = 's12_holding_defense'
+         ORDER BY id DESC
+         LIMIT 1
+      `).bind(ACCOUNT_ID, pos.symbol, tradeDate).first<any>(),
+      env.DB.prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(pos.symbol).first<{ market?: string | null }>(),
+      listApprovedS12TwCalibrationArtifacts(env.DB).catch(() => []),
+    ])
+    const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
+      marketSegment: stockRow?.market ?? 'UNKNOWN',
+      asOfDate: tradeDate,
+    })
+    const policy = applyS12TwCalibrationArtifact(s12TimingPolicyFromEnv(env as any), calibration)
     const s12Base = await loadS12IntradayBaseBars(
       env,
       pos.symbol,
@@ -503,12 +546,48 @@ async function evaluateS12HoldingDefense(
     const previousTrailingStop = positiveNumber(pos.trailing_stop)
     const lifecycleStop = lifecycleS12StopFromPosition(pos)
     const lifecycleExitPlan = lifecycleS12ExitPlanFromPosition(pos)
+    const lifecycleFusionTargets = lifecycleFusionTargetsFromPosition(pos, calibration?.exit ?? null)
+    const currentPositionTp1 = positiveNumber(pos.tp1_price)
+    const legacyPressureTarget = lifecycleFusionTargets.nearPressureTp1
+    const shouldMigrateLegacyTarget =
+      lifecycleFusionTargets.runnerTp1 != null &&
+      (
+        lifecycleFusionTargets.recoveredAnchorCount > 0 ||
+        currentPositionTp1 == null ||
+        Math.abs(lifecycleFusionTargets.runnerTp1 - currentPositionTp1) >= 0.01 ||
+        (
+          currentPositionTp1 != null &&
+          legacyPressureTarget != null &&
+          Math.abs(currentPositionTp1 - legacyPressureTarget) < 0.01
+        )
+      )
+    if (shouldMigrateLegacyTarget) {
+      const migratedLifecycle = migrateCanonicalLifecycleExitFusionV2(pos.trade_lifecycle_json, lifecycleFusionTargets)
+      await env.DB.prepare(`
+        UPDATE paper_positions
+           SET tp1_price=?,
+               tp2_price=COALESCE(?, tp2_price),
+               trade_lifecycle_json=COALESCE(?, trade_lifecycle_json),
+               updated_at=datetime('now')
+         WHERE account_id=? AND symbol=?
+      `).bind(
+        lifecycleFusionTargets.runnerTp1,
+        lifecycleFusionTargets.runnerTp2,
+        migratedLifecycle,
+        ACCOUNT_ID,
+        pos.symbol,
+      ).run()
+      pos.tp1_price = lifecycleFusionTargets.runnerTp1
+      if (lifecycleFusionTargets.runnerTp2 != null) pos.tp2_price = lifecycleFusionTargets.runnerTp2
+      pos.trade_lifecycle_json = migratedLifecycle ?? pos.trade_lifecycle_json
+    }
     const computedPositionStop = buildS12LongPositionStopPlan({
       bars15m: completed15m,
       entryPrice,
       referencePrice: quote.last,
       policy,
       stopSource: policy.positionStopSource,
+      minConfirmationBars: 1,
     })
     const effectiveStopCandidate = computedPositionStop ?? (
       lifecycleStop
@@ -533,12 +612,17 @@ async function evaluateS12HoldingDefense(
       baseBars: s12Base.bars,
       fallback15mBars: s12Base.fallback15mBars,
       fallback4hBars: s12Base.fallback4hBars,
+      fallbackDailyBars: s12Base.fallbackDailyBars,
       fallback1hBars: s12Base.fallback1hBars,
       nowMs: Date.now(),
       policy,
-      barDiagnostics: s12Base.diagnostics,
-      h4ReferenceDate: s12Base.diagnostics.previous_4h_reference_date,
-      h4ReferenceClose: s12Base.diagnostics.previous_4h_reference_close,
+      barDiagnostics: {
+        ...s12Base.diagnostics,
+        calibration_artifact_id: calibration?.artifactId ?? null,
+        calibration_scope: calibration?.scope ?? null,
+      },
+      h4ReferenceDate: s12Base.diagnostics.previous_daily_context_date,
+      h4ReferenceClose: quote.referencePrice ?? s12Base.diagnostics.previous_daily_raw_close,
     })
     const assessment = applyS12TakeoverContinuity(rawAssessment, latestEvent?.detail_json)
     await persistS12StructureSnapshot(env, {
@@ -548,7 +632,8 @@ async function evaluateS12HoldingDefense(
       source: 's12_holding_defense',
       side: 'sell',
     })
-    const executableBookAvailable = positiveNumber(quote.bid) != null && positiveNumber(quote.ask) != null
+    const positionHasOddLot = Math.max(0, Math.floor(Number(pos.shares ?? 0))) % 1000 !== 0
+    const executableBookAvailable = !positionHasOddLot && positiveNumber(quote.bid) != null && positiveNumber(quote.ask) != null
     const s12Position = {
       ...pos,
       s12_position_stop_price: positionStop?.price ?? null,
@@ -559,6 +644,11 @@ async function evaluateS12HoldingDefense(
       tp3_price: pos.tp3_price ?? positiveNumber(lifecycleExitPlan?.tp3),
       tp4_price: pos.tp4_price ?? positiveNumber(lifecycleExitPlan?.tp4),
       s12_tp1_source: lifecycleExitPlan?.tp1Source ?? null,
+      s12_pressure_tp1: lifecycleFusionTargets.nearPressureTp1,
+      s12_pressure_tp1_source: lifecycleFusionTargets.nearPressureTp1Source,
+      fusion_runner_tp1: lifecycleFusionTargets.runnerTp1,
+      fusion_runner_tp1_source: lifecycleFusionTargets.runnerTp1Source,
+      tp1_source: lifecycleFusionTargets.runnerTp1Source,
       s12_main_exit_source: lifecycleExitPlan?.mainExitSource ?? null,
       position_opened_today: pos.entry_date === tradeDate,
       planned_take_profit: pos.planned_take_profit ?? lifecycleExitPlan?.plannedTakeProfit ?? null,
@@ -599,6 +689,7 @@ async function evaluateS12HoldingDefense(
         fallback_exit_owner: 'paper_sltp_atr_trailing_v1',
         bar_source: s12Base.source,
         bar_diagnostics: s12Base.diagnostics,
+        calibration_artifact_id: calibration?.artifactId ?? null,
         position_stop_trailing: positionStop
           ? {
             mode: 's12_structure_trailing_stop_v1',
@@ -720,10 +811,20 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
       'SELECT close, volume FROM stock_prices WHERE stock_id=(SELECT id FROM stocks WHERE symbol=?) ORDER BY date DESC LIMIT 1',
     ).bind(pos.symbol).first<any>()
     if (prevCloseRow && prevCloseRow.close > 0) {
-      const dropPct = (price - prevCloseRow.close) / prevCloseRow.close
-      const limitDownLog = cfg.circuit.limitDownPct ?? -0.095
-      if (dropPct <= limitDownLog) {
-        console.log(`[Exit] ${pos.symbol} at limit-down (${(dropPct * 100).toFixed(1)}%), sell may not execute`)
+      const referencePrice = quote.referencePrice ?? prevCloseRow.close
+      const priceBand = resolveTwEquityPriceBand(referencePrice)
+      if (priceBand.limitDown != null && price <= priceBand.limitDown) {
+        await recordPaperExecutionEvent(env, {
+          tradeDate: today,
+          symbol: pos.symbol,
+          side: 'sell',
+          eventType: 'paper_order',
+          status: 'pending',
+          reason: 'tw_equity_limit_down_unfilled',
+          detail: { current_price: price, reference_price: referencePrice, limit_down: priceBand.limitDown },
+          source: 'force_day_trade_close',
+        })
+        continue
       }
     }
 
@@ -744,6 +845,19 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
     if (!dtCheck.allowed) continue
 
     const shares = pos.shares
+    if (Math.max(0, Math.floor(Number(shares))) % 1000 !== 0) {
+      await recordPaperExecutionEvent(env, {
+        tradeDate: today,
+        symbol: pos.symbol,
+        side: 'sell',
+        eventType: 'paper_order',
+        status: 'pending',
+        reason: 'tw_equity_odd_lot_book_required',
+        detail: { shares, exit_reason: decision.reason },
+        source: 'daytrade_force_close',
+      })
+      continue
+    }
     const sellFill = resolveExitSellFill(quote)
     if (!sellFill.fillable || sellFill.price == null) {
       await recordPaperExecutionEvent(env, {
@@ -827,7 +941,11 @@ export async function runEODExit(env: Bindings): Promise<void> {
   const { results: exitPositions } = await env.DB.prepare(
     `SELECT symbol, shares, avg_cost, name, entry_price, entry_date,
             initial_stop, trailing_stop, highest_since_entry, stop_multiplier,
-            tp1_price, tp2_price, tp1_hit, original_shares, trade_lifecycle_json
+            tp1_price, tp2_price, tp1_hit, original_shares, trade_lifecycle_json,
+            (SELECT note FROM paper_orders po
+              WHERE po.account_id=paper_positions.account_id
+                AND po.symbol=paper_positions.symbol AND po.side='buy'
+              ORDER BY po.id DESC LIMIT 1) AS entry_order_note
      FROM paper_positions WHERE account_id=? AND shares>0`,
   ).bind(ACCOUNT_ID).all<any>()
 
@@ -909,6 +1027,19 @@ export async function runEODExit(env: Bindings): Promise<void> {
 
     if (decision.action === 'full_sell') {
       const shares = pos.shares
+      if (Math.max(0, Math.floor(Number(shares))) % 1000 !== 0) {
+        await recordPaperExecutionEvent(env, {
+          tradeDate: eodToday,
+          symbol: pos.symbol,
+          side: 'sell',
+          eventType: 'paper_order',
+          status: 'pending',
+          reason: 'tw_equity_odd_lot_book_required',
+          detail: { shares, exit_reason: decision.reason },
+          source: 'eod_exit',
+        })
+        continue
+      }
       const sellFill = resolveExitSellFill(quote)
       if (!sellFill.fillable || sellFill.price == null) {
         await recordPaperExecutionEvent(env, {
@@ -1073,7 +1204,11 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
   const { results: positions } = await env.DB.prepare(
     `SELECT symbol, shares, avg_cost, name, entry_price, entry_date,
             initial_stop, trailing_stop, highest_since_entry, stop_multiplier,
-            tp1_price, tp2_price, tp1_hit, original_shares, trade_lifecycle_json
+            tp1_price, tp2_price, tp1_hit, original_shares, trade_lifecycle_json,
+            (SELECT note FROM paper_orders po
+              WHERE po.account_id=paper_positions.account_id
+                AND po.symbol=paper_positions.symbol AND po.side='buy'
+              ORDER BY po.id DESC LIMIT 1) AS entry_order_note
      FROM paper_positions WHERE account_id=? AND shares>0`,
   ).bind(ACCOUNT_ID).all<any>()
 
@@ -1142,10 +1277,19 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
     if (decision.action !== 'hold') {
       const prevC = prevCloseMapSell.get(pos.symbol)
       if (prevC && prevC > 0) {
-        const changePct = (currentPrice - prevC) / prevC
-        const limitDown = cfg.circuit.limitDownPct ?? -0.095
-        if (changePct <= limitDown) {
-          console.warn(`[Intraday] skip ${pos.symbol}: likely limit-down ${(changePct * 100).toFixed(1)}%`)
+        const referencePrice = quote.referencePrice ?? prevC
+        const priceBand = resolveTwEquityPriceBand(referencePrice)
+        if (priceBand.limitDown != null && currentPrice <= priceBand.limitDown) {
+          await recordPaperExecutionEvent(env, {
+            tradeDate: intradayToday,
+            symbol: pos.symbol,
+            side: 'sell',
+            eventType: 'paper_order',
+            status: 'pending',
+            reason: 'tw_equity_limit_down_unfilled',
+            detail: { current_price: currentPrice, reference_price: referencePrice, limit_down: priceBand.limitDown },
+            source: 'poll_intraday_stop_loss',
+          })
           continue
         }
       }
@@ -1165,6 +1309,19 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
 
     if (decision.action === 'full_sell') {
       const shares = pos.shares
+      if (Math.max(0, Math.floor(Number(shares))) % 1000 !== 0) {
+        await recordPaperExecutionEvent(env, {
+          tradeDate: intradayToday,
+          symbol: pos.symbol,
+          side: 'sell',
+          eventType: 'paper_order',
+          status: 'pending',
+          reason: 'tw_equity_odd_lot_book_required',
+          detail: { shares, exit_reason: decision.reason },
+          source: 'intraday_exit',
+        })
+        continue
+      }
       const sellFill = resolveExitSellFill(quote)
       if (!sellFill.fillable || sellFill.price == null) {
         await recordPaperExecutionEvent(env, {

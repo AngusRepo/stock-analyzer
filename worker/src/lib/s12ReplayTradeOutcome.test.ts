@@ -107,11 +107,11 @@ function assessment(overrides: Partial<S12IntradayAssessment> = {}): S12Intraday
   )
   assert(outcome.status === 'executed', 'reaction_ready replay should produce executed outcome')
   assert(outcome.sample_eligible === true, 'executed replay should be sample eligible')
-  assert(outcome.exit_reason === 'tp3', 'TP ladder should finish at tp3 when all targets hit')
-  assert(outcome.pnl_pct != null && Math.abs(outcome.pnl_pct - 0.08) < 0.000001, 'three equal tranches should average 4/8/12% into 8%')
-  assert(outcome.trade_pnl_r === 2, '8% pnl on 4% risk should be 2R')
+  assert(outcome.exit_reason === 'tp2', '15m pressure must be excluded so the formal TP ladder finishes at TP2')
+  assert(outcome.pnl_pct != null && Math.abs(outcome.pnl_pct - 0.10) < 0.000001, 'formal TP1/TP2 tranches should average 8/12% into 10%')
+  assert(outcome.trade_pnl_r === 2.5, '10% pnl on 4% risk should be 2.5R')
   const sample = s12ReplayOutcomeToEvSample(outcome)
-  assert(sample?.exit_reason === 'tp3', 'EV sample should preserve exit reason')
+  assert(sample?.exit_reason === 'tp2', 'EV sample should preserve the formal TP2 exit reason')
   assert(sample?.return_pct === outcome.pnl_pct, 'EV sample should expose return_pct')
 }
 

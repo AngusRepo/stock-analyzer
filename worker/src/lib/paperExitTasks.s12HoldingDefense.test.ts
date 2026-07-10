@@ -10,6 +10,7 @@ const paperExitTasksSource = readFileSync('src/lib/paperExitTasks.ts', 'utf8')
 assert(
   paperExitTasksSource.includes('no_short_order: true') &&
   paperExitTasksSource.includes("execution_owner: 's12_position_decision_v1'") &&
+  paperExitTasksSource.includes("exit: 'tw_equity_exit_fusion_v2'") &&
   paperExitTasksSource.includes("fallback_exit_owner: 'paper_sltp_atr_trailing_v1'") &&
   paperExitTasksSource.includes('resolveS12PrimaryExitDecision') &&
   paperExitTasksSource.includes('s12_primary_independent_of_long_entry_readiness'),
@@ -20,6 +21,12 @@ assert(
     paperExitTasksSource.includes('trade_lifecycle_json=COALESCE(?, trade_lifecycle_json)') &&
     paperExitTasksSource.includes('resolveEffectiveS12PositionStop(pos, entryPx)'),
   'S12 position updates and partial exits must persist the active structural stop back to canonical trade lifecycle',
+)
+assert(
+  paperExitTasksSource.includes('isTwEquityExitFusionEligible(pos.trade_lifecycle_json)') &&
+    paperExitTasksSource.includes('extractTwEquityExitFusionAnchorsFromOrderNote(pos.entry_order_note)') &&
+    paperExitTasksSource.includes("po.side='buy'"),
+  'holding defense must execute only for S12-owned positions and lazily recover legacy runner anchors from the buy order',
 )
 
 function assessment(ready: boolean): S12IntradayAssessment {
@@ -120,9 +127,13 @@ const lifecycleStopWatch = resolveS12HoldingDefenseUpdate({
     tp1_hit: 0,
     trade_lifecycle_json: JSON.stringify({
       version: 'canonical_trade_lifecycle_v1',
+      owners: { exit: 'tw_equity_exit_fusion_v2' },
       entry: {
         stopLoss: 96,
+        source: 's12_assist_entry',
         s12: {
+          ready: true,
+          invalidated: false,
           structureStop: 96,
           exitPlan: {
             tp1: 108,
@@ -405,6 +416,107 @@ assert(sameDayFifteenMinuteHighOnly?.action === 'hold', 'same-day 15m-high-only 
 assert(sameDayFifteenMinuteHighOnly?.sellShares == null, 'same-day 15m-high-only TP pressure should keep all shares')
 assert(!String(sameDayFifteenMinuteHighOnly?.reason ?? '').includes('take_profit'), '15m-high-only pressure should not be labeled as take profit')
 
+const priorHighPressureAssessment = {
+  ...assessment(false),
+  exitPlan: {
+    ...assessment(false).exitPlan,
+    tp1: { price: 138, source: '15m_previous_high', action: 'partial_take_profit' },
+  },
+  quality: {
+    vwap: { value: 143.8, priceVsVwapPct: 0.49, state: 'above' },
+    vwapContext: { stackState: 'mixed', nearestAbove: null },
+    rvol: { value: 1.1, state: 'active', lookbackBars: 20 },
+    notes: [],
+  },
+} as unknown as S12IntradayAssessment
+
+const runnerNotTouched = resolveS12HoldingDefenseUpdate({
+  pos: {
+    shares: 1000,
+    original_shares: 1000,
+    avg_cost: 137.7,
+    entry_price: 137.5,
+    initial_stop: 135.5,
+    trailing_stop: 140,
+    highest_since_entry: 144.5,
+    tp1_price: 138,
+    tp2_price: 150,
+    tp1_hit: 0,
+    s12_pressure_tp1: 138,
+    s12_pressure_tp1_source: '15m_previous_high',
+    fusion_runner_tp1: 145,
+    fusion_runner_tp1_source: 'tw_equity_runner_fusion_v2',
+    tp1_source: 'tw_equity_runner_fusion_v2',
+  },
+  currentPrice: 144.5,
+  atr14: 3.5,
+  assessment: priorHighPressureAssessment,
+  executableBookAvailable: true,
+})
+assert(runnerNotTouched?.action === 'hold', '15m pressure must only tighten defense before the V2 runner target is touched')
+
+const runnerTouched = resolveS12HoldingDefenseUpdate({
+  pos: {
+    shares: 1000,
+    original_shares: 1000,
+    avg_cost: 137.7,
+    entry_price: 137.5,
+    initial_stop: 135.5,
+    trailing_stop: 140,
+    highest_since_entry: 145.5,
+    tp1_price: 138,
+    tp2_price: 150,
+    tp1_hit: 0,
+    s12_pressure_tp1: 138,
+    s12_pressure_tp1_source: '15m_previous_high',
+    fusion_runner_tp1: 145,
+    fusion_runner_tp1_source: 'tw_equity_runner_fusion_v2',
+    tp1_source: 'tw_equity_runner_fusion_v2',
+  },
+  currentPrice: 145.5,
+  atr14: 3.5,
+  assessment: priorHighPressureAssessment,
+  executableBookAvailable: true,
+})
+assert(runnerTouched?.action === 'partial_sell', 'V2 runner target plus pressure confluence should allow partial take profit')
+assert(runnerTouched?.sellShares === 500, 'V2 runner partial should preserve half as the runner remainder')
+
+const medianRunnerWithoutConfluence = resolveS12HoldingDefenseUpdate({
+  pos: {
+    shares: 1000,
+    original_shares: 1000,
+    avg_cost: 137.7,
+    entry_price: 137.5,
+    initial_stop: 135.5,
+    trailing_stop: 140,
+    highest_since_entry: 145.5,
+    tp1_price: 145,
+    tp2_price: 150,
+    tp1_hit: 0,
+    fusion_runner_tp1: 145,
+    fusion_runner_tp1_source: 'tw_equity_runner_median_v2',
+    tp1_source: 'tw_equity_runner_median_v2',
+    position_opened_today: true,
+  },
+  currentPrice: 145.5,
+  atr14: 3.5,
+  assessment: {
+    ...priorHighPressureAssessment,
+    exitPlan: {
+      ...priorHighPressureAssessment.exitPlan,
+      tp1: { price: 160, source: '15m_previous_high', action: 'partial_take_profit' },
+    },
+    quality: {
+      ...priorHighPressureAssessment.quality,
+      vwap: { value: 147, priceVsVwapPct: -1.02, state: 'below' },
+      vwapContext: { ...priorHighPressureAssessment.quality.vwapContext, stackState: 'bearish_stack' },
+      rvol: { value: 0.7, state: 'thin', lookbackBars: 20 },
+    },
+  } as S12IntradayAssessment,
+  executableBookAvailable: true,
+})
+assert(medianRunnerWithoutConfluence?.action === 'hold', 'median V2 runner must not bypass the same-day fusion confluence gate')
+
 const lifecycleStopExit = resolveS12HoldingDefenseUpdate({
   pos: {
     shares: 2000,
@@ -417,9 +529,13 @@ const lifecycleStopExit = resolveS12HoldingDefenseUpdate({
     tp1_hit: 0,
     trade_lifecycle_json: JSON.stringify({
       version: 'canonical_trade_lifecycle_v1',
+      owners: { exit: 'tw_equity_exit_fusion_v2' },
       entry: {
         stopLoss: 96,
+        source: 's12_assist_entry',
         s12: {
+          ready: true,
+          invalidated: false,
           structureStop: 96,
           exitPlan: {
             trailingInitial: 97,
@@ -505,8 +621,8 @@ const htfBearishExit = resolveS12HoldingDefenseUpdate({
   } as S12IntradayAssessment,
   executableBookAvailable: true,
 })
-assert(htfBearishExit?.action === 'full_sell', 'S12 should full-exit only when Daily and 4H bearish regime confirm profit protection')
-assert(String(htfBearishExit?.reason ?? '').includes('s12_daily_4h_bearish_profit_protect_full_exit'), 'S12 HTF bearish full-exit reason should be explicit')
+assert(htfBearishExit?.action === 'full_sell', 'S12 should full-exit only when Daily and session-60M bearish regimes confirm profit protection')
+assert(String(htfBearishExit?.reason ?? '').includes('s12_daily_session_60m_bearish_profit_protect_full_exit'), 'S12 HTF bearish full-exit reason should be explicit')
 
 const tightened = resolveS12HoldingDefenseUpdate({
   pos: {

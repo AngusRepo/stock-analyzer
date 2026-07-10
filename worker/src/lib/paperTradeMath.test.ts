@@ -1,8 +1,13 @@
-import { applyPartialFill, resolveLimitBuyFill, resolveLimitSellFill, resolveMarketSellFill } from './paperTradeMath'
+import { applyPartialFill, isLimitDownLocked, resolveLimitBuyFill, resolveLimitSellFill, resolveMarketSellFill } from './paperTradeMath'
 import { isValidTwTickPrice } from './twMarketRules'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
+}
+
+{
+  assert(!isLimitDownLocked(90.5, 100, 1_000, 100_000), '9.5% down is not the official Taiwan-equity limit-down price')
+  assert(isLimitDownLocked(90, 100, 1_000, 100_000), 'official limit-down with a thin book should be treated as locked')
 }
 
 {

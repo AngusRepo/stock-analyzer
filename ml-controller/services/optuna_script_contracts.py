@@ -125,6 +125,15 @@ OPTUNA_SCRIPT_CONTRACTS: dict[str, OptunaScriptContract] = {
         push_target="worker_kv_live",
         requires_external_gate=True,
     ),
+    "s12_smcvwap_tw": OptunaScriptContract(
+        source="s12_smcvwap_tw",
+        script="optuna_s12_smcvwap_tw.py",
+        production_effect="candidate_for_worker_artifact_validation",
+        range_role="walk_forward_replay_evidence",
+        push_target="s12_tw_calibration_artifact_builder",
+        requires_external_gate=True,
+        notes=("Never writes trading config directly; Worker owns guarded artifact validation and promotion.",),
+    ),
 }
 
 

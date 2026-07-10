@@ -147,6 +147,15 @@ assert(
   'paper positions API must expose canonical lifecycle from position row first and latest buy order note fallback',
 )
 assert(
+  paperRoutes.includes('resolveTwEquityExitFusionV2') &&
+    paperRoutes.includes('s12_near_pressure_price') &&
+    paperRoutes.includes("tp_fusion_policy: fusionTargets.runnerTp1 != null ? 'tw_equity_exit_fusion_v2'") &&
+    uiHelper.includes('nearPressure') &&
+    botDashboard.includes('Fusion TP1') &&
+    botDashboard.includes('S12 近端壓力'),
+  'paper positions UI must separate executable Fusion TP from S12 near-pressure evidence',
+)
+assert(
   obsPage.includes('checked_waiting') && obsPage.includes('quote_unavailable') && obsPage.includes('partially_filled'),
   'OBS page must recognize P10 execution realism states',
 )

@@ -38,6 +38,12 @@ import { buildStockVisionOrderIntent, buildStockVisionSellOrderIntent } from './
 import { buildPaperBrokerReconciliation } from './paperBrokerReconciliation'
 import { buildTwOrderLegs, getTwTickSize, normalizeTwFilledSharesForRequestedOrder, normalizeTwLimitPrice } from './twMarketRules'
 import {
+  normalizeTwEquityStopPrice,
+  normalizeTwEquityTargetPrice,
+  resolveTwEquityExecutionGate,
+  resolveTwEquityPriceBand,
+} from './twEquityMarketContract'
+import {
   buildIntradayTechnicalSnapshot,
   resolveIntradayTechnicalDecision,
 } from './intradayTechnicalSnapshot'
@@ -55,6 +61,13 @@ import {
 import { buildCanonicalTradeLifecycle, serializeCanonicalTradeLifecycle } from './canonicalTradeLifecycle'
 import { persistS12StructureSnapshot } from './s12StructureSnapshots'
 import { loadIntradayTechnicalRollingBars, loadS12IntradayBaseBars, rollingBarsToOhlcvRows, type S12BaseBarSource } from './s12RuntimeBars'
+import {
+  applyS12TwCalibrationArtifact,
+  listApprovedS12TwCalibrationArtifacts,
+  resolveS12TwCalibrationArtifact,
+  type S12TwExitCalibration,
+} from './s12TwEquityCalibration'
+import { migrateCanonicalLifecycleExitFusionV2, resolveTwEquityExitFusionV2 } from './twEquityExitFusion'
 import { getTwClockParts, isTwIntradayTradingMinute } from './twMarketSession'
 import {
   appendPendingBuyExecutionNote,
@@ -140,6 +153,8 @@ interface S12RuntimeSidecar {
   technicalDecision: { action: 'pass' | 'defer' | 'skip'; reason: string; detail: string } | null
   assistEntryOverlay: S12AssistEntryOverlay | null
   barSource: S12BaseBarSource
+  exitCalibration: S12TwExitCalibration | null
+  calibrationArtifactId: string | null
 }
 
 function positiveNumber(value: unknown): number | null {
@@ -158,7 +173,7 @@ export function resolveS12AssistedExitInputs(params: {
   initialStop: number
   tp1: number
   tp2: number
-  source: 's12_structure_exit_plan' | 'sltp_atr_default'
+  source: 'tw_equity_exit_fusion_v2' | 'sltp_atr_default'
 } {
   if (!params.s12AssistApplied || !params.s12Assessment) {
     return {
@@ -172,28 +187,15 @@ export function resolveS12AssistedExitInputs(params: {
   const structuralStop =
     positiveNumber(params.s12Assessment.exitPlan.trailingStop.initial) ??
     positiveNumber(params.s12Assessment.execution.stopLoss)
-  const structuralTp1 = positiveNumber(params.s12Assessment.exitPlan.tp1.price)
-  const structuralMainExit = positiveNumber(params.s12Assessment.exitPlan.mainExit.price)
-
   const initialStop =
     structuralStop != null && structuralStop < params.fillPrice
       ? structuralStop
       : params.atrInitialStop
-  const tp1 =
-    structuralTp1 != null && structuralTp1 > params.fillPrice
-      ? structuralTp1
-      : params.atrTp1
-  const tp2Candidate =
-    structuralMainExit != null && structuralMainExit > params.fillPrice
-      ? structuralMainExit
-      : params.atrTp2
-  const tp2 = Math.max(tp2Candidate, tp1)
-
   return {
     initialStop,
-    tp1,
-    tp2,
-    source: 's12_structure_exit_plan',
+    tp1: params.atrTp1,
+    tp2: params.atrTp2,
+    source: 'tw_equity_exit_fusion_v2',
   }
 }
 
@@ -1202,11 +1204,14 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   }
   const s12Mode = s12GateMode((env as any).S12_INTRADAY_GATE_MODE)
   const s12Enabled = enabledFlag((env as any).S12_INTRADAY_ASSIST_ENABLED, true)
+  const s12CalibrationArtifactsPromise = s12Enabled
+    ? listApprovedS12TwCalibrationArtifacts(env.DB).catch(() => [])
+    : Promise.resolve([])
   const s12Sidecars = new Map<string, S12RuntimeSidecar>()
   const runS12Sidecar = async (
     pending: PendingBuy,
     price: number,
-    currentOhlc: { totalVolume?: number | null } | null | undefined,
+    currentOhlc: { totalVolume?: number | null; referencePrice?: number | null } | null | undefined,
   ): Promise<S12RuntimeSidecar | null> => {
     if (!s12Enabled) return null
     const existing = s12Sidecars.get(pending.symbol)
@@ -1219,28 +1224,44 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         price,
         Number(currentOhlc?.totalVolume ?? 0),
       )
-      const latestTakeoverEvent = await env.DB.prepare(`
-        SELECT detail_json
-          FROM paper_execution_events
-         WHERE account_id = ?
-           AND symbol = ?
-           AND trade_date = ?
-           AND event_type = 's12_intraday_structure'
-           AND source = 's12_intraday_structure'
-         ORDER BY id DESC
-         LIMIT 1
-      `).bind(ACCOUNT_ID, pending.symbol, today).first<any>()
+      const [latestTakeoverEvent, stockRow, calibrationArtifacts] = await Promise.all([
+        env.DB.prepare(`
+          SELECT detail_json
+            FROM paper_execution_events
+           WHERE account_id = ?
+             AND symbol = ?
+             AND trade_date = ?
+             AND event_type = 's12_intraday_structure'
+             AND source = 's12_intraday_structure'
+           ORDER BY id DESC
+           LIMIT 1
+        `).bind(ACCOUNT_ID, pending.symbol, today).first<any>(),
+        env.DB.prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(pending.symbol).first<{ market?: string | null }>(),
+        s12CalibrationArtifactsPromise,
+      ])
+      const twClock = getTwClockParts()
+      const minuteOfDay = twClock.hour * 60 + twClock.minute
+      const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
+        marketSegment: stockRow?.market ?? 'UNKNOWN',
+        entryTimeBucket: minuteOfDay < 10 * 60 ? 'opening' : minuteOfDay >= 13 * 60 ? 'close_window' : 'mid_session',
+        asOfDate: today,
+      })
       const rawAssessment = assessS12IntradayStructureFromBaseBars({
         symbol: pending.symbol,
         baseBars: s12Base.bars,
         fallback15mBars: s12Base.fallback15mBars,
         fallback4hBars: s12Base.fallback4hBars,
+        fallbackDailyBars: s12Base.fallbackDailyBars,
         fallback1hBars: s12Base.fallback1hBars,
         nowMs: Date.now(),
-        policy: s12TimingPolicyFromEnv(env as any),
-        barDiagnostics: s12Base.diagnostics,
-        h4ReferenceDate: s12Base.diagnostics.previous_4h_reference_date,
-        h4ReferenceClose: s12Base.diagnostics.previous_4h_reference_close,
+        policy: applyS12TwCalibrationArtifact(s12TimingPolicyFromEnv(env as any), calibration),
+        barDiagnostics: {
+          ...s12Base.diagnostics,
+          calibration_artifact_id: calibration?.artifactId ?? null,
+          calibration_scope: calibration?.scope ?? null,
+        },
+        h4ReferenceDate: s12Base.diagnostics.previous_daily_context_date,
+        h4ReferenceClose: currentOhlc?.referencePrice ?? s12Base.diagnostics.previous_daily_raw_close,
       })
       const assessment = applyS12TakeoverContinuity(rawAssessment, latestTakeoverEvent?.detail_json)
       const s12PrimaryOwnerEnabled =
@@ -1267,6 +1288,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         technicalDecision,
         assistEntryOverlay,
         barSource: s12Base.source,
+        exitCalibration: calibration?.exit ?? null,
+        calibrationArtifactId: calibration?.artifactId ?? null,
       }
       s12Sidecars.set(pending.symbol, sidecar)
       await persistS12StructureSnapshot(env, {
@@ -1294,6 +1317,8 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           effective_gate_mode: s12GateModeForAssessment,
           bar_source: s12Base.source,
           bar_diagnostics: s12Base.diagnostics,
+          calibration_artifact_id: calibration?.artifactId ?? null,
+          calibration_scope: calibration?.scope ?? null,
           sidecar_stage: 'pre_allocator',
           always_run: true,
         },
@@ -1768,7 +1793,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       stopLoss: executionStopLoss,
       originalEntry: s12AssistEntryOverlay?.entryPrice ?? effectiveOhlcvTradePlan?.entryPrice ?? (pending as any).original_entry ?? pending.ml_entry_price,
       retryCount: (pending as any).retry_count ?? 0,
-      previousClose: prevCloseMap.get(pending.symbol) ?? null,
+      previousClose: currentOhlc?.referencePrice ?? prevCloseMap.get(pending.symbol) ?? null,
       quoteAgeMs: quoteAgeMs(currentOhlc?.quoteTime),
       quoteSource: currentOhlc?.source === 'shioaji' ? 'shioaji' : currentOhlc?.source === 'yahoo' ? 'yahoo' : 'none',
       marketRiskLevel: marketRisk.risk_level,
@@ -1798,7 +1823,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         : null,
       technical: effectiveTechnicalDecision,
       policy: {
-        limitUpPct: cfg.circuit.limitUpPct ?? 0.095,
+        limitUpPct: cfg.circuit.limitUpPct ?? 0.10,
         requoteDeviationMax: cfg.position.requoteDeviationMax,
         requoteDiscount: cfg.position.requoteDiscount,
         requoteStopFallback: cfg.position.requoteStopFallback,
@@ -1969,6 +1994,20 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       }
     }
     const requestedShares = shares
+    const lotType = isOddLot ? 'odd_lot' : 'board_lot'
+    const twExecutionGate = resolveTwEquityExecutionGate({
+      lotType,
+      marketDataLotType: finLabL5Quote?.lotType ?? 'board_lot',
+    })
+    if (!twExecutionGate.allowed) {
+      recordActiveExecutionStatus(
+        pending.symbol,
+        'checked_waiting',
+        twExecutionGate.reason,
+        `phase=${twExecutionGate.phase};lot_type=${lotType};market_data_lot_type=${finLabL5Quote?.lotType ?? 'board_lot'}`,
+      )
+      continue
+    }
     const orderIntent = buildStockVisionOrderIntent({
       accountId: ACCOUNT_ID,
       tradeDate: today,
@@ -2106,9 +2145,12 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       atrTp1: tp1Price,
       atrTp2: tp2Price,
     })
-    const effectiveInitialStop = effectiveExitInputs.initialStop
-    const effectiveTp1Price = effectiveExitInputs.tp1
-    const effectiveTp2Price = effectiveExitInputs.tp2
+    const twPriceBand = currentOhlc?.referencePrice
+      ? resolveTwEquityPriceBand(currentOhlc.referencePrice)
+      : null
+    const effectiveInitialStop = normalizeTwEquityStopPrice(effectiveExitInputs.initialStop, twPriceBand)
+    let effectiveTp1Price = normalizeTwEquityTargetPrice(effectiveExitInputs.tp1, twPriceBand)
+    let effectiveTp2Price = normalizeTwEquityTargetPrice(effectiveExitInputs.tp2, twPriceBand)
     const canonicalTradeLifecycle = buildCanonicalTradeLifecycle({
       tradeDate: today,
       symbol: pending.symbol,
@@ -2124,7 +2166,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       chaseCeiling: s12AssistEntryOverlay?.chaseCeiling ?? null,
       s12Assessment,
       s12AssistApplied: s12AssistEntryOverlay != null,
-      s12ExitPrimary: s12PrimaryOwnerEnabled && s12Assessment != null,
+      s12ExitPrimary: s12PrimaryOwnerEnabled && effectiveExitInputs.source === 'tw_equity_exit_fusion_v2',
       initialStop: effectiveInitialStop,
       trailingStop: effectiveInitialStop,
       tp1: effectiveTp1Price,
@@ -2133,6 +2175,10 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       stopMultiplier: slMult,
       tpMultiplier: tpMult,
       tp2Multiplier: tp2Mult,
+      atrTp1: tp1Price,
+      atrTp2: tp2Price,
+      mlTp1: positiveNumber(pending.ml_target1),
+      mlTp2: positiveNumber(pending.ml_target2),
       protectiveFloorPolicy: {
         breakEvenActivationPct: 0,
         breakEvenBufferPct: 0,
@@ -2141,7 +2187,17 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         mfeProfitLock6Pct: sltp?.trailSwitch8pct ?? 0.08,
       },
     })
-    const canonicalTradeLifecycleJson = serializeCanonicalTradeLifecycle(canonicalTradeLifecycle)
+    const entryFusionTargets = resolveTwEquityExitFusionV2(
+      canonicalTradeLifecycle,
+      {},
+      s12Sidecar?.exitCalibration ?? null,
+    )
+    effectiveTp1Price = entryFusionTargets.runnerTp1 ?? effectiveTp1Price
+    effectiveTp2Price = entryFusionTargets.runnerTp2 ?? effectiveTp2Price
+    const canonicalTradeLifecycleJson = migrateCanonicalLifecycleExitFusionV2(
+      canonicalTradeLifecycle,
+      entryFusionTargets,
+    ) ?? serializeCanonicalTradeLifecycle(canonicalTradeLifecycle)
 
     const existing = await env.DB.prepare(
       'SELECT shares, avg_cost FROM paper_positions WHERE account_id=? AND symbol=?',

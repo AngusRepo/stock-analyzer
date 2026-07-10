@@ -33,11 +33,9 @@ function position(overrides: Partial<ExitPosition> = {}): ExitPosition {
     cfg,
   )
 
-  assert.equal(decision.action, 'hold')
-  assert.match(decision.reason, /moving TP2 update/)
-  assert.equal(decision.newHighest, 111)
-  assert.equal(decision.newTp2Price, 113)
-  assert.equal(decision.newTrailingStop, 107)
+  assert.equal(decision.action, 'full_sell')
+  assert.match(decision.reason, /TP2 take profit/)
+  assert.equal(decision.newTp2Price, undefined)
 }
 
 {

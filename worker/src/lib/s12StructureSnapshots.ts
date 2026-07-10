@@ -41,8 +41,14 @@ export function buildS12SnapshotEntryContext(assessment: S12IntradayAssessment):
   return {
     schema_version: 's12-equity-mutation-context-v1',
     source: 's12_structure_snapshots',
+    engine_version: assessment.engineVersion ?? null,
     state: assessment.state,
+    entry_state: assessment.entryState ?? parts.entry_state ?? null,
     ready: assessment.ready,
+    session_context_source: assessment.sessionContextSource ?? parts.session_context_source ?? null,
+    session_60m_bias: assessment.biasSession60?.direction ?? parts.bias_session_60m ?? null,
+    calibration_artifact_id: parts.calibration_artifact_id ?? null,
+    calibration_scope: parts.calibration_scope ?? null,
     entry_archetype: parts.entry_archetype ?? null,
     equity_mutation_context: boolFromDetail(parts.equity_mutation_context),
     equity_mutation_score: finiteNumber(parts.equity_mutation_score),
@@ -67,6 +73,7 @@ export async function persistS12StructureSnapshot(
     source?: string
     side?: string | null
     pendingRunId?: string | number | null
+    metadata?: Record<string, unknown> | null
   },
 ): Promise<boolean> {
   const assessment = params.assessment
@@ -132,7 +139,7 @@ export async function persistS12StructureSnapshot(
       assessment.detail ?? null,
       JSON.stringify(entryContext),
       JSON.stringify(assessment.exitPlan ?? null),
-      JSON.stringify(assessment),
+      JSON.stringify(params.metadata ? { ...assessment, runtimeMetadata: params.metadata } : assessment),
       params.pendingRunId == null ? null : String(params.pendingRunId),
     ).run()
     return true

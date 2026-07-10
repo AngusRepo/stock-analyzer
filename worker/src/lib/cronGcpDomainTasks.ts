@@ -82,6 +82,15 @@ export async function handleGcpDomainCron(deps: GcpCronDeps): Promise<boolean> {
       })
       return result.summary
     })
+    runWithLog('s12-smcvwap-calibration', async () => {
+      const { runS12TwCalibration } = await import('./s12TwEquityCalibration')
+      const result = await runS12TwCalibration(env.DB, {
+        runDate: twToday(),
+        cadence: 'weekly',
+        dryRun: false,
+      })
+      return result.summary
+    })
     return true
   }
 

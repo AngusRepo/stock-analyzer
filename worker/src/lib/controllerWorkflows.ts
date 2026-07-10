@@ -20,6 +20,7 @@ export const GCP_DOMAIN_ORCHESTRATION_TASKS = [
   'external-evidence',
   'allocator-ev-feature-snapshot-backfill',
   'finlab-v4-backfill',
+  'finlab-backfill-watchdog',
   'retrain',
   'monthly-retrain',
 ] as const

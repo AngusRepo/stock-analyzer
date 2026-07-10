@@ -1,5 +1,6 @@
 import { getExitMultiplier, type MarketRegime } from './dynamicExitPriority'
 import type { TradingConfig } from './tradingConfig'
+import { normalizeTwEquityStopPrice, normalizeTwEquityTargetPrice } from './twEquityMarketContract'
 
 export interface ExitPosition {
   symbol: string
@@ -74,7 +75,7 @@ export function checkExitConditions(
     }
   }
 
-  const initStopRaw = pos.initial_stop ?? entryPrice * ex.fallbackInitStopMult
+  const initStopRaw = normalizeTwEquityStopPrice(pos.initial_stop ?? entryPrice * ex.fallbackInitStopMult)
   const effInitStop = entryPrice - (entryPrice - initStopRaw) / mAtrTrail
   if (currentPrice <= effInitStop) {
     return {
@@ -99,7 +100,7 @@ export function checkExitConditions(
   const initStop = initStopRaw
   void trailingStopRaw
 
-  const tp1 = pos.tp1_price ?? entryPrice * ex.fallbackTp1Mult
+  const tp1 = normalizeTwEquityTargetPrice(pos.tp1_price ?? entryPrice * ex.fallbackTp1Mult)
   if (currentPrice >= tp1 && !pos.tp1_hit) {
     const sellShares = Math.floor(((pos.original_shares ?? pos.shares) * ex.tp1SellRatio) / 1000) * 1000
     if (sellShares > 0 && sellShares < pos.shares) {
@@ -123,15 +124,10 @@ export function checkExitConditions(
   else if (pnlPct > trailSwitch3) trailMult = ex.trailMultAt3pct
 
   const effectiveAtr = atr14 > 0 ? atr14 : currentPrice * ex.fallbackAtrPct
-  const tp2 = pos.tp2_price ?? entryPrice * ex.fallbackTp2Mult
+  const tp2 = normalizeTwEquityTargetPrice(pos.tp2_price ?? entryPrice * ex.fallbackTp2Mult)
   const previousHighest = pos.highest_since_entry ?? entryPrice
-  const tp2ExtensionMult = Math.max(0.5, (sltp?.tp2DistanceMultiplier ?? 2.0) / 2)
-  const movingTp2 = pos.tp1_hit
-    ? Math.max(tp2, highestSoFar + effectiveAtr * tp2ExtensionMult)
-    : tp2
-  const shouldMoveTp2 = Boolean(pos.tp1_hit && movingTp2 > tp2 && highestSoFar > previousHighest)
 
-  if (currentPrice >= tp2 && pos.tp1_hit && !shouldMoveTp2) {
+  if (currentPrice >= tp2 && pos.tp1_hit) {
     return { action: 'full_sell', reason: `TP2 take profit @ ${currentPrice.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%` }
   }
 
@@ -146,15 +142,14 @@ export function checkExitConditions(
   const floorStop = pos.tp1_hit ? entryPrice : initStop
   const finalTrailing = Math.max(newTrailing, floorStop)
   const prevTrailing = pos.trailing_stop ?? initStop
-  const updatedTrailing = Math.max(finalTrailing, prevTrailing)
+  const updatedTrailing = normalizeTwEquityStopPrice(Math.max(finalTrailing, prevTrailing))
 
-  if (updatedTrailing !== prevTrailing || highestSoFar !== previousHighest || shouldMoveTp2) {
+  if (updatedTrailing !== prevTrailing || highestSoFar !== previousHighest) {
     return {
       action: 'hold',
-      reason: shouldMoveTp2 ? 'trailing update; moving TP2 update' : 'trailing update',
+      reason: 'trailing update',
       newTrailingStop: updatedTrailing,
       newHighest: highestSoFar,
-      newTp2Price: shouldMoveTp2 ? movingTp2 : undefined,
     }
   }
 

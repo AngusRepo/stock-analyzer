@@ -35,6 +35,10 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
       c.req.query('force') === '1',
       { continueEveningChain: c.req.query('continue_evening_chain') === '1' },
     ),
+    'finlab-backfill-watchdog': async () => {
+      const { runFinLabBackfillWatchdog } = await import('./updateOrchestrator')
+      return runFinLabBackfillWatchdog(c.env, requestedRunDate())
+    },
     'paper-active-postmarket': async () => runPaperActivePostmarketPromotion(c.env, requestedRunDate()),
     'weekly-audit': () => deps.runWeeklyAudit(),
     'verify-v2': async () => runVerifyV2(c.env, requestedRunDate()),

@@ -1,4 +1,5 @@
 import type { TradingConfig } from './tradingConfig'
+import { resolveTwEquityPriceBand } from './twEquityMarketContract'
 import { getTwTickSize, normalizeTwLimitPrice, snapToTwPriceTick } from './twMarketRules'
 
 export function calcCommission(value: number, cfg: TradingConfig): number {
@@ -292,11 +293,10 @@ export function isLimitDownLocked(
   cfg?: TradingConfig,
 ): boolean {
   if (prevClose <= 0) return false
-  const dropPct = (currentPrice - prevClose) / prevClose
   const volRatio = prevVolume > 0 ? volume / prevVolume : 1
-  const dropThresh = cfg?.circuit?.lockedDropPct ?? -0.095
   const volThresh = cfg?.circuit?.lockedVolRatio ?? 0.1
-  return dropPct <= dropThresh && volRatio < volThresh
+  const limitDown = resolveTwEquityPriceBand(prevClose).limitDown
+  return limitDown != null && currentPrice <= limitDown && volRatio < volThresh
 }
 
 export function calcTax(value: number, cfg: TradingConfig, isDayTrade = false): number {

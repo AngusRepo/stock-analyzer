@@ -129,14 +129,14 @@ export interface TradingConfig {
     drawdownScaleStart: number   // 開始縮減部位的回撤起點（預設 0.03）
     mddMultFloor: number         // mddMultiplier 下限（預設 0.2 = 縮到 20%）
     // ── 2026-04-18 #36 paper.ts hardcode 一次到位 ───────────────────────────
-    lockedDropPct: number              // 鎖股判定跌幅（預設 -0.095，台股日限 ~-9.5%）
+    lockedDropPct: number              // Legacy telemetry only; execution uses official limit-down tick price.
     lockedVolRatio: number             // 鎖股低量判定（預設 0.1 = 10% 前日量）
     drawdownConfTriggerRatio: number   // drawdown 超過 halt × N 時提高 conf 門檻（預設 0.5 = halt 一半）
     defaultAccuracy: number            // 無歷史時預設準確率 fallback（預設 0.5）
     layer7ScaleRatio: number           // Layer7 SCALE（連 4/5 錯）maxPositionPct 縮減倍數（預設 0.3）
     preMarketGapThreshold: number      // 盤前隱含 gap 觸發 risk gate（預設 0.05）
-    limitUpPct: number                 // 漲停判定（預設 0.095）
-    limitDownPct: number               // 跌停判定（預設 -0.095）
+    limitUpPct: number                 // Legacy telemetry only; execution uses official reference-price band + TW tick.
+    limitDownPct: number               // Legacy telemetry only; execution uses official reference-price band + TW tick.
   }
   exit: {
     hardStopPct: number          // 硬上限止損（預設 -0.12）
@@ -457,14 +457,14 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     drawdownScaleStart: 0.03,
     mddMultFloor: 0.2,
     // 2026-04-18 #36
-    lockedDropPct: -0.095,
+    lockedDropPct: -0.10,
     lockedVolRatio: 0.1,
     drawdownConfTriggerRatio: 0.5,
     defaultAccuracy: 0.5,
     layer7ScaleRatio: 0.3,
     preMarketGapThreshold: 0.05,
-    limitUpPct: 0.095,
-    limitDownPct: -0.095,
+    limitUpPct: 0.10,
+    limitDownPct: -0.10,
   },
   exit: {
     hardStopPct: -0.10,

@@ -45,6 +45,9 @@ export interface CanonicalTradeLifecycleContext {
     trailingStop?: unknown
     tp1?: unknown
     tp2?: unknown
+    tp1Source?: unknown
+    tp2Source?: unknown
+    fusionPolicy?: unknown
     fallbackOwner?: unknown
   }
 }
@@ -58,6 +61,9 @@ export interface PositionRiskPlanBadge {
   tp3: string | null
   tp4: string | null
   tpSource: string | null
+  nearPressure: string | null
+  nearPressureSource: string | null
+  fusionV2: boolean
   tp1Hit: boolean
   primaryS12: boolean
 }
@@ -220,6 +226,7 @@ const OWNER_LABELS: Record<string, string> = {
   market_regime_alpha_context_v1: '市場 regime / alpha context',
   s12_intraday_structure_v1: 'SMCVWAP 結構進場',
   s12_position_decision_v1: 'S12 持倉出場',
+  tw_equity_exit_fusion_v2: '台股 Exit Fusion V2',
   ohlcv_pre_trade_plan_v1: 'OHLCV 進場計畫',
   paper_sltp_atr_trailing_v1: 'ATR trailing 出場',
 }
@@ -538,7 +545,8 @@ export function formatPositionRiskPlan(raw: Record<string, unknown> | null | und
     s12PositionStop?.candidate_price ||
     s12Defense?.detail?.execution?.stopLoss,
   )
-  const primaryS12 = hasS12HoldingPlan || s12Stop != null || lifecycle?.owners?.exit === 's12_position_decision_v1'
+  const fusionV2 = raw?.tp_fusion_policy === 'tw_equity_exit_fusion_v2' || lifecycle?.exit?.fusionPolicy === 'tw_equity_exit_fusion_v2'
+  const primaryS12 = hasS12HoldingPlan || s12Stop != null || lifecycle?.entry?.s12 != null || lifecycle?.owners?.exit === 's12_position_decision_v1' || fusionV2
   const stopValue = s12Stop ?? trailingStop ?? lifecycleStop ?? initialStop
   const stopSource = s12Stop != null
     ? 'S12 結構停損'
@@ -556,9 +564,16 @@ export function formatPositionRiskPlan(raw: Record<string, unknown> | null | und
   const s12Tp4 = exitPlanPrice(s12ExitPlan.tp4)
   const s12Tp1Source = compactSource(s12ExitPlan.tp1Source ?? s12ExitPlan.tp1?.source)
   const s12MainExitSource = compactSource(s12ExitPlan.mainExitSource ?? s12ExitPlan.mainExit?.source)
-  const tp1Value = s12Tp1 ?? positivePrice(lifecycle?.exit?.tp1) ?? positivePrice(raw?.tp1_price)
-  const tp2Value = s12MainExit ?? positivePrice(lifecycle?.exit?.tp2) ?? positivePrice(raw?.tp2_price)
-  const tpSource = s12Tp1 != null || s12MainExit != null || s12Tp3 != null || s12Tp4 != null
+  const tp1Value = positivePrice(raw?.tp1_price) ?? positivePrice(lifecycle?.exit?.tp1) ?? s12Tp1
+  const tp2Value = positivePrice(raw?.tp2_price) ?? positivePrice(lifecycle?.exit?.tp2) ?? s12MainExit
+  const nearPressure = positivePrice(raw?.s12_near_pressure_price) ?? (fusionV2 ? s12Tp1 : null)
+  const nearPressureSource = compactSource(raw?.s12_near_pressure_source ?? (fusionV2 ? s12Tp1Source : null))
+  const tpSource = fusionV2
+    ? [
+      '台股 Exit Fusion V2',
+      compactSource(raw?.tp1_source ?? lifecycle?.exit?.tp1Source),
+    ].filter(Boolean).join(' · ')
+    : s12Tp1 != null || s12MainExit != null || s12Tp3 != null || s12Tp4 != null
     ? [
       hasS12HoldingPlan ? 'S12 持倉主機制' : 'S12 結構',
       s12Tp1Source ? `TP1 ${s12Tp1Source}` : null,
@@ -579,6 +594,9 @@ export function formatPositionRiskPlan(raw: Record<string, unknown> | null | und
     tp3: fmtPrice(s12Tp3),
     tp4: fmtPrice(s12Tp4),
     tpSource,
+    nearPressure: fmtPrice(nearPressure),
+    nearPressureSource,
+    fusionV2,
     tp1Hit: Boolean(raw?.tp1_hit),
     primaryS12,
   }
@@ -595,12 +613,15 @@ export function formatCanonicalTradeLifecycleBadge(raw: unknown): PendingBuyExec
   const entryLabel = OWNER_LABELS[entryOwner] ?? entryOwner
   const exitLabel = OWNER_LABELS[exitOwner] ?? exitOwner
   const stop = fmtPrice(lifecycle.exit?.trailingStop ?? lifecycle.exit?.initialStop ?? lifecycle.entry?.stopLoss)
-  const tp1 = fmtPrice(lifecycle.entry?.s12?.exitPlan?.tp1 ?? lifecycle.exit?.tp1)
-  const mainExit = fmtPrice(lifecycle.entry?.s12?.exitPlan?.mainExit ?? lifecycle.exit?.tp2)
+  const tp1 = fmtPrice(lifecycle.exit?.tp1 ?? lifecycle.entry?.s12?.exitPlan?.tp1)
+  const mainExit = fmtPrice(lifecycle.exit?.tp2 ?? lifecycle.entry?.s12?.exitPlan?.mainExit)
+  const nearPressure = lifecycle.exit?.fusionPolicy === 'tw_equity_exit_fusion_v2'
+    ? fmtPrice(lifecycle.entry?.s12?.exitPlan?.tp1)
+    : null
   const tp3 = fmtPrice(lifecycle.entry?.s12?.exitPlan?.tp3)
   const tp4 = fmtPrice(lifecycle.entry?.s12?.exitPlan?.tp4)
   const plannedTp = String(lifecycle.entry?.s12?.exitPlan?.plannedTakeProfit ?? '').trim()
-  const primaryS12 = entryOwner === 's12_intraday_structure_v1' || exitOwner === 's12_position_decision_v1'
+  const primaryS12 = entryOwner === 's12_intraday_structure_v1' || exitOwner === 's12_position_decision_v1' || exitOwner === 'tw_equity_exit_fusion_v2'
   const parts = [
     contextOwner ? `情境：${OWNER_LABELS[contextOwner] ?? contextOwner}` : null,
     entrySource ? `進場來源：${entrySource === 's12_assist_entry' ? 'SMCVWAP 盤中進場確認' : '盤前交易計畫'}` : null,
@@ -608,6 +629,7 @@ export function formatCanonicalTradeLifecycleBadge(raw: unknown): PendingBuyExec
     lifecycle.owners?.fallbackExit ? `備援：${OWNER_LABELS[String(lifecycle.owners.fallbackExit)] ?? String(lifecycle.owners.fallbackExit)}` : null,
     stop ? `防守停損 ${stop}` : null,
     tp1 ? `TP1 ${tp1}` : null,
+    nearPressure ? `S12 近端壓力 ${nearPressure}` : null,
     mainExit ? `主出場 ${mainExit}` : null,
     tp3 ? `TP3 ${tp3}` : null,
     tp4 ? `TP4 ${tp4}` : null,

@@ -868,7 +868,7 @@ async def breeze2_reason_generation(payload: dict) -> dict:
 async def spawn_finlab_v4_backfill(payload: dict) -> dict:
     """Spawn the Modal FinLab canonical backfill and return immediately."""
     fn = _lookup("finlab_v4_backfill")
-    call = fn.spawn(payload)
+    call = await fn.spawn.aio(payload)
     call_id = (
         getattr(call, "object_id", None)
         or getattr(call, "function_call_id", None)
@@ -880,9 +880,22 @@ async def spawn_finlab_v4_backfill(payload: dict) -> dict:
         "function_call_id": call_id,
         "run_id": payload.get("run_id"),
         "run_date": payload.get("run_date"),
+        "dispatch_attempt": int(payload.get("dispatch_attempt") or 1),
         "continue_evening_chain": bool(payload.get("continue_evening_chain")),
         "callback_configured": bool(payload.get("callback_url") and payload.get("callback_token")),
     }
+
+
+async def cancel_finlab_v4_backfill(function_call_id: str) -> dict:
+    """Cancel a superseded FinLab call before an idempotent watchdog retry."""
+    import modal
+
+    call_id = str(function_call_id or "").strip()
+    if not call_id:
+        return {"status": "skipped", "reason": "function_call_id_missing"}
+    call = modal.FunctionCall.from_id(call_id)
+    await call.cancel.aio()
+    return {"status": "cancelled", "function_call_id": call_id}
 
 
 # 2026-04-20 ML_POOL Stage 6.2: state-space batch predict helpers

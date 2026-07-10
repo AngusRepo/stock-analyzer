@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -1102,6 +1103,54 @@ def test_fundamental_materialization_keeps_single_day_valuation_snapshot() -> No
     assert row["pe"] == 18.5
     assert row["pb"] == 4.2
     assert row["gross_margin"] is None
+
+
+def test_fundamental_materialization_keeps_pb_only_snapshot_with_owned_period() -> None:
+    root = _root("fundamental_single_day_pb_only_snapshot")
+    lane = root / "raw" / "fundamental_factor_diversity"
+    _write(
+        lane / "pe.parquet",
+        pl.DataFrame({"date": ["2026-07-09"], "1101": [None], "2330": [18.5]}),
+    )
+    _write(
+        lane / "pb.parquet",
+        pl.DataFrame({"date": ["2026-07-09"], "1101": [0.72], "2330": [4.2]}),
+    )
+
+    rows = build_fundamental_rows(
+        root,
+        run_id="finlab-v4-pb-only-test",
+        generated_at="2026-07-10T13:00:00+00:00",
+        start_date="2026-07-09",
+        end_date="2026-07-09",
+    )
+
+    pb_only = next(row for row in rows if row["stock_id"] == "1101")
+    assert pb_only["pe"] is None
+    assert pb_only["pb"] == 0.72
+    assert pb_only["period"] == "2026-07-09"
+    assert pb_only["report_date"] == "2026-07-09"
+    assert pb_only["available_date"] == "2026-07-09"
+
+
+def test_fundamental_d1_statement_preflight_rejects_null_period() -> None:
+    root = _root("fundamental_null_period_preflight")
+    lane = root / "raw" / "fundamental_factor_diversity"
+    _write(
+        lane / "pb.parquet",
+        pl.DataFrame({"date": ["2026-07-09"], "1101": [0.72]}),
+    )
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-07-10T13:00:00+00:00",
+        start_date="2026-07-09",
+        end_date="2026-07-09",
+        datasets=["canonical_fundamental_features"],
+    )
+    outputs.canonical_fundamental_features[0]["period"] = None
+
+    with pytest.raises(ValueError, match="missing required D1 columns: period"):
+        build_d1_upsert_statements(outputs)
 
 
 def test_fundamental_materialization_drops_all_null_sparse_dates() -> None:

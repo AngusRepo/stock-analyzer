@@ -6,6 +6,7 @@ function assert(condition: unknown, message: string): void {
 
 const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const schedulerRunLogger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
+const finLabDispatchFence = fs.readFileSync('src/lib/finLabDispatchFence.ts', 'utf8')
 
 assert(
   adminControlRoutes.includes("adminControlRoutes.post('/api/admin/cron-callback'") &&
@@ -32,6 +33,13 @@ assert(
     adminControlRoutes.includes("type: 'finlab_backfill_complete'") &&
     adminControlRoutes.includes('continue_evening_chain'),
   'FinLab backfill callback must enqueue the post-backfill evening-chain continuation',
+)
+assert(
+  adminControlRoutes.includes('resolveFinLabDispatchFence') &&
+    finLabDispatchFence.includes('stale_dispatch_attempt') &&
+    finLabDispatchFence.includes('stale_run_id') &&
+    finLabDispatchFence.includes('incomingAttempt < activeAttempt'),
+  'FinLab callback must fence stale run IDs and late callbacks from superseded Modal attempts',
 )
 
 assert(

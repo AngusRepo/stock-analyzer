@@ -1017,7 +1017,7 @@ function PositionsTable() {
                     <td className="p-2 text-right">
                       {riskPlan.tp1 && (
                         <div className={`sv-num text-xs ${riskPlan.tp1Hit ? 'text-muted-foreground line-through' : 'text-red-400'}`}>
-                          {riskPlan.primaryS12 ? 'S12 TP1' : 'T1'} ${riskPlan.tp1}
+                          {riskPlan.fusionV2 ? 'Fusion TP1' : riskPlan.primaryS12 ? 'S12 TP1' : 'T1'} ${riskPlan.tp1}
                         </div>
                       )}
                       {riskPlan.tp2 && (
@@ -1029,6 +1029,12 @@ function PositionsTable() {
                       {riskPlan.tp4 && (
                         <div className="sv-num text-xs text-red-300">TP4 ${riskPlan.tp4}</div>
                       )}
+                      {riskPlan.nearPressure && (
+                        <div className="sv-num text-[10px] text-amber-300">
+                          S12 近端壓力 ${riskPlan.nearPressure}
+                        </div>
+                      )}
+                      {riskPlan.nearPressureSource && <div className="mt-0.5 text-[10px] text-muted-foreground/70">{riskPlan.nearPressureSource}</div>}
                       {riskPlan.tpSource && <div className="mt-0.5 text-[10px] text-muted-foreground/70">{riskPlan.tpSource}</div>}
                       {!riskPlan.tp1 && !riskPlan.tp2 && !riskPlan.tp3 && !riskPlan.tp4 && <span className="text-muted-foreground/60">—</span>}
                     </td>

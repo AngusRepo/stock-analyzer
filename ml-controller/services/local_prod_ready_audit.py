@@ -477,7 +477,7 @@ def _optuna_scheduler_checks(root: Path) -> list[dict[str, Any]]:
                 "manual/approval-gated",
             ),
             "roadmap:p1:optuna_worker_boundary",
-            "Worker triggers controller-owned 9-source sweep Job; it does not fan out or mutate production",
+            "Worker triggers controller-owned 9-core-source sweep Job plus monthly S12 Taiwan-equity research; it does not fan out or mutate production",
         ),
         _check_text_contains(
             root,

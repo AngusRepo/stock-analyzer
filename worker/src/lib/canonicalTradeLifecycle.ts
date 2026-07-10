@@ -7,7 +7,7 @@ export interface CanonicalTradeLifecycle {
   owners: {
     context: 'market_regime_alpha_context_v1'
     entry: 's12_intraday_structure_v1' | 'ohlcv_pre_trade_plan_v1'
-    exit: 's12_position_decision_v1' | 'paper_sltp_atr_trailing_v1'
+    exit: 'tw_equity_exit_fusion_v2' | 'paper_sltp_atr_trailing_v1'
     fallbackExit: 'paper_sltp_atr_trailing_v1'
   }
   context: {
@@ -25,6 +25,10 @@ export interface CanonicalTradeLifecycle {
     chaseCeiling: number | null
     source: 's12_assist_entry' | 'pre_trade_plan'
     s12: {
+      engineVersion: string | null
+      entryState: string | null
+      sessionContextSource: string | null
+      calibrationArtifactId: string | null
       state: string | null
       setupId: string | null
       ready: boolean
@@ -60,6 +64,7 @@ export interface CanonicalTradeLifecycle {
           session: number | null
           h1: number | null
           h4: number | null
+          session60: number | null
           daily: number | null
           anchoredDay: number | null
           anchoredWeek: number | null
@@ -114,6 +119,15 @@ export interface CanonicalTradeLifecycle {
     stopMultiplier: number
     tpMultiplier: number
     tp2Multiplier: number
+    tp1Source: 'tw_equity_runner_fusion_v2' | 'sltp_atr_default'
+    tp2Source: 'tw_equity_runner_fusion_v2' | 'sltp_atr_default'
+    fusionPolicy: 'tw_equity_exit_fusion_v2' | null
+    anchors: {
+      atrTp1: number | null
+      atrTp2: number | null
+      mlTp1: number | null
+      mlTp2: number | null
+    }
     protectiveFloorPolicy: {
       breakEvenActivationPct: number
       breakEvenBufferPct: number
@@ -206,11 +220,15 @@ export function buildCanonicalTradeLifecycle(input: {
   stopMultiplier: number
   tpMultiplier: number
   tp2Multiplier: number
+  atrTp1?: number | null
+  atrTp2?: number | null
+  mlTp1?: number | null
+  mlTp2?: number | null
   protectiveFloorPolicy: CanonicalTradeLifecycle['exit']['protectiveFloorPolicy']
 }): CanonicalTradeLifecycle {
   const s12 = input.s12Assessment
   const s12VwapContext = s12?.quality?.vwapContext
-  const exitOwner = input.s12ExitPrimary ? 's12_position_decision_v1' : 'paper_sltp_atr_trailing_v1'
+  const exitOwner = input.s12ExitPrimary ? 'tw_equity_exit_fusion_v2' : 'paper_sltp_atr_trailing_v1'
   return {
     version: 'canonical_trade_lifecycle_v1',
     tradeDate: input.tradeDate,
@@ -237,6 +255,10 @@ export function buildCanonicalTradeLifecycle(input: {
       source: input.s12AssistApplied ? 's12_assist_entry' : 'pre_trade_plan',
       s12: s12
         ? {
+          engineVersion: s12.engineVersion ?? null,
+          entryState: s12.entryState ?? null,
+          sessionContextSource: s12.sessionContextSource ?? null,
+          calibrationArtifactId: String(s12.barDiagnostics?.calibration_artifact_id ?? '').trim() || null,
           state: s12.state,
           setupId: s12.setupId ?? null,
           ready: s12.ready,
@@ -259,6 +281,7 @@ export function buildCanonicalTradeLifecycle(input: {
               session: positiveNumber(s12VwapContext?.session?.value),
               h1: positiveNumber(s12VwapContext?.h1?.value),
               h4: positiveNumber(s12VwapContext?.h4?.value),
+              session60: positiveNumber(s12VwapContext?.session60?.value),
               daily: positiveNumber(s12VwapContext?.daily?.value),
               anchoredDay: positiveNumber(s12VwapContext?.anchored?.day?.value),
               anchoredWeek: positiveNumber(s12VwapContext?.anchored?.week?.value),
@@ -314,6 +337,15 @@ export function buildCanonicalTradeLifecycle(input: {
       stopMultiplier: input.stopMultiplier,
       tpMultiplier: input.tpMultiplier,
       tp2Multiplier: input.tp2Multiplier,
+      tp1Source: input.s12ExitPrimary ? 'tw_equity_runner_fusion_v2' : 'sltp_atr_default',
+      tp2Source: input.s12ExitPrimary ? 'tw_equity_runner_fusion_v2' : 'sltp_atr_default',
+      fusionPolicy: input.s12ExitPrimary ? 'tw_equity_exit_fusion_v2' : null,
+      anchors: {
+        atrTp1: positiveNumber(input.atrTp1),
+        atrTp2: positiveNumber(input.atrTp2),
+        mlTp1: positiveNumber(input.mlTp1),
+        mlTp2: positiveNumber(input.mlTp2),
+      },
       protectiveFloorPolicy: input.protectiveFloorPolicy,
       fallbackOwner: 'paper_sltp_atr_trailing_v1',
     },

@@ -6,6 +6,13 @@ import {
 } from './s12IntradayStructure'
 import { loadS12HistoricalReplayBars } from './s12RuntimeBars'
 import type { Bindings } from '../types'
+import {
+  applyS12TwCalibrationArtifact,
+  listApprovedS12TwCalibrationArtifacts,
+  resolveS12TwCalibrationArtifact,
+} from './s12TwEquityCalibration'
+import type { S12TwExitCalibration } from './s12TwEquityCalibration'
+import { normalizeTwEquityTargetPrice } from './twEquityMarketContract'
 
 export type S12ReplayOutcomeStatus = 'executed' | 'setup_only' | 'skipped'
 
@@ -56,6 +63,7 @@ export interface S12ReplayInput {
   fallback15mBars?: S12Bar[]
   fallback1hBars?: S12Bar[]
   fallback4hBars?: S12Bar[]
+  fallbackDailyBars?: S12Bar[]
   policy?: Partial<S12TimingPolicy> | null
   h4ReferenceDate?: string | null
   h4ReferenceClose?: number | null
@@ -64,6 +72,7 @@ export interface S12ReplayInput {
   alphaContext?: Record<string, unknown> | null
   alphaAllocation?: Record<string, unknown> | null
   replayDiagnostics?: Record<string, unknown> | null
+  exitCalibration?: S12TwExitCalibration | null
 }
 
 export interface S12ReplayOptions {
@@ -77,6 +86,7 @@ export interface S12ReplayBars {
   fallback15mBars?: S12Bar[]
   fallback1hBars?: S12Bar[]
   fallback4hBars?: S12Bar[]
+  fallbackDailyBars?: S12Bar[]
   h4ReferenceDate?: string | null
   h4ReferenceClose?: number | null
   diagnostics?: Record<string, unknown>
@@ -177,10 +187,12 @@ function defaultAssessmentProvider(input: S12ReplayInput) {
     fallback15mBars: input.fallback15mBars ?? [],
     fallback1hBars: input.fallback1hBars ?? [],
     fallback4hBars: input.fallback4hBars ?? [],
+    fallbackDailyBars: input.fallbackDailyBars ?? [],
     nowMs,
     policy: input.policy,
     h4ReferenceDate: input.h4ReferenceDate,
     h4ReferenceClose: input.h4ReferenceClose,
+    barDiagnostics: input.replayDiagnostics,
   })
 }
 
@@ -190,6 +202,7 @@ function isSetupValidState(state: string | null | undefined): boolean {
     'waiting_choch',
     'waiting_bos',
     'waiting_retest',
+    'waiting_reaction',
   ].includes(String(state ?? ''))
 }
 
@@ -288,17 +301,26 @@ function findEntryAssessment(
   return latestSetup ?? null
 }
 
-function targetLadder(assessment: S12IntradayAssessment): number[] {
+function targetLadder(assessment: S12IntradayAssessment, calibration?: S12TwExitCalibration | null): number[] {
   const entry = finitePositive(assessment.execution.entryPrice)
   const raw = [
-    finitePositive(assessment.execution.target1) ?? finitePositive(assessment.exitPlan.tp1.price),
+    assessment.exitPlan.tp1.source === '15m_previous_high'
+      ? null
+      : finitePositive(assessment.execution.target1) ?? finitePositive(assessment.exitPlan.tp1.price),
+    entry != null && calibration?.tp1MfeQuantile
+      ? entry * (1 + calibration.tp1MfeQuantile)
+      : null,
     finitePositive(assessment.execution.target2) ?? finitePositive(assessment.exitPlan.mainExit.price),
+    entry != null && calibration?.tp2MfeQuantile
+      ? entry * (1 + calibration.tp2MfeQuantile)
+      : null,
     finitePositive(assessment.execution.target3) ?? finitePositive(assessment.exitPlan.tp3.price),
   ]
   const out: number[] = []
   for (const target of raw) {
-    if (entry != null && target != null && target > entry && !out.some((x) => Math.abs(x - target) < 0.000001)) {
-      out.push(target)
+    const normalized = target == null ? null : normalizeTwEquityTargetPrice(target)
+    if (entry != null && normalized != null && normalized > entry && !out.some((x) => Math.abs(x - normalized) < 0.000001)) {
+      out.push(normalized)
     }
   }
   return out
@@ -327,7 +349,7 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
   const futureBars = bars.slice(entryIndex + 1, entryIndex + 1 + Math.max(1, Math.floor(options.maxExitBars ?? 80)))
   if (futureBars.length === 0) return emptyOutcome(input, 'skipped', 'missing_post_entry_bars', assessment)
 
-  const targets = targetLadder(assessment)
+  const targets = targetLadder(assessment, input.exitCalibration)
   const tranches = targets.map((price, index) => ({
     price,
     ratio: index === targets.length - 1 ? 1 : 1 / Math.max(1, targets.length),
@@ -552,6 +574,7 @@ export async function runS12HistoricalReplayForDate(
   const offset = Math.max(0, Math.floor(Number(options.offset ?? 0)))
   const selected = l0.slice(offset, offset + limit)
   const outcomes: S12ReplayOutcome[] = []
+  const calibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(env.DB, { includeSuperseded: true }).catch(() => [])
   let persisted = 0
   for (const row of selected) {
     const loadBars = options.loadBars ?? (async (symbol: string, date: string) => {
@@ -561,12 +584,21 @@ export async function runS12HistoricalReplayForDate(
         fallback15mBars: loaded.fallback15mBars,
         fallback1hBars: loaded.fallback1hBars,
         fallback4hBars: loaded.fallback4hBars,
-        h4ReferenceDate: loaded.diagnostics.previous_4h_reference_date ?? null,
-        h4ReferenceClose: Number(loaded.diagnostics.previous_4h_reference_close ?? 0) || null,
+        fallbackDailyBars: loaded.fallbackDailyBars,
+        h4ReferenceDate: loaded.diagnostics.previous_daily_context_date ?? null,
+        h4ReferenceClose: Number(loaded.diagnostics.previous_daily_raw_close ?? 0) || null,
         diagnostics: loaded.diagnostics,
       }
     })
     const loaded = await loadBars(row.symbol, tradeDate)
+    const alphaContext = parseJsonRecord(row.alpha_context)
+    const alphaAllocation = parseJsonRecord(row.alpha_allocation)
+    const alphaBucket = alphaBucketFromContext(alphaContext, alphaAllocation)
+    const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
+      marketSegment: row.market_segment ?? 'UNKNOWN',
+      alphaBucket,
+      asOfDate: tradeDate,
+    })
     const outcome = simulateS12ReplayTradeOutcome({
       symbol: row.symbol,
       tradeDate,
@@ -574,12 +606,20 @@ export async function runS12HistoricalReplayForDate(
       fallback15mBars: loaded.fallback15mBars,
       fallback1hBars: loaded.fallback1hBars,
       fallback4hBars: loaded.fallback4hBars,
+      fallbackDailyBars: loaded.fallbackDailyBars,
       h4ReferenceDate: loaded.h4ReferenceDate,
       h4ReferenceClose: loaded.h4ReferenceClose,
+      policy: applyS12TwCalibrationArtifact(undefined, calibration),
+      exitCalibration: calibration?.exit ?? null,
       marketSegment: row.market_segment ?? null,
-      alphaContext: parseJsonRecord(row.alpha_context),
-      alphaAllocation: parseJsonRecord(row.alpha_allocation),
-      replayDiagnostics: loaded.diagnostics ?? null,
+      alphaBucket,
+      alphaContext,
+      alphaAllocation,
+      replayDiagnostics: {
+        ...(loaded.diagnostics ?? {}),
+        calibration_artifact_id: calibration?.artifactId ?? null,
+        calibration_scope: calibration?.scope ?? null,
+      },
     })
     outcomes.push(outcome)
     if (options.persist !== false) {

@@ -1763,6 +1763,8 @@ def build_fundamental_rows(
         "total_assets",
         "capital_amount",
         "pe",
+        "pb",
+        "dividend_yield",
     ]
     if single_day_snapshot:
         date_exprs = [
@@ -1770,7 +1772,8 @@ def build_fundamental_rows(
             for field in period_preference_fields
             if f"{field}__date" in df.columns
         ]
-        period_expr = pl.coalesce(date_exprs) if date_exprs else pl.lit(end_date or generated_at[:10])
+        snapshot_date = end_date or start_date or generated_at[:10]
+        period_expr = pl.coalesce([*date_exprs, pl.lit(snapshot_date)])
         df = df.with_columns(
             period_expr.alias("period"),
             period_expr.alias("report_date"),
@@ -2262,7 +2265,18 @@ def _row_statements(
     columns: list[str],
     conflict_columns: list[str],
     update_columns: list[str],
+    required_columns: list[str] | None = None,
 ) -> list[tuple[str, list[Any]]]:
+    for index, row in enumerate(rows):
+        missing = [
+            column
+            for column in (required_columns or [])
+            if row.get(column) is None or row.get(column) == ""
+        ]
+        if missing:
+            raise ValueError(
+                f"{table} row {index} missing required D1 columns: {', '.join(missing)}"
+            )
     sql = _upsert_statement(table, columns, conflict_columns, update_columns)
     return [(sql, [_d1_param(row.get(column)) for column in columns]) for row in rows]
 
@@ -2719,6 +2733,7 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
             "lineage_json",
             "as_of_date",
         ],
+        required_columns=["stock_id", "period", "source"],
     ))
     statements.extend(_row_statements(
         "canonical_broker_flow_daily",

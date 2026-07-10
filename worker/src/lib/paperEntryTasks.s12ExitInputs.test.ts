@@ -33,10 +33,10 @@ const structural = resolveS12AssistedExitInputs({
   atrTp1: 106,
   atrTp2: 112,
 })
-assert(structural.source === 's12_structure_exit_plan', 'S12 assist should mark structure exit source')
+assert(structural.source === 'tw_equity_exit_fusion_v2', 'S12 assist should mark Taiwan equity exit fusion source')
 assert(structural.initialStop === 94, 'S12 assist should use structural initial stop')
-assert(structural.tp1 === 108, 'S12 assist should use structural TP1')
-assert(structural.tp2 === 118, 'S12 assist should use structural main exit as TP2')
+assert(structural.tp1 === 106, 'S12 15m pressure must not replace the ATR runner TP1')
+assert(structural.tp2 === 112, 'S12 structural resistance must remain evidence instead of replacing runner TP2')
 
 const fallback = resolveS12AssistedExitInputs({
   fillPrice: 100,
@@ -64,3 +64,14 @@ const disabled = resolveS12AssistedExitInputs({
 })
 assert(disabled.source === 'sltp_atr_default', 'non-S12 fills should keep ATR default source')
 assert(disabled.initialStop === 92 && disabled.tp1 === 106 && disabled.tp2 === 112, 'non-S12 fills should keep ATR defaults')
+
+const setupOnly = resolveS12AssistedExitInputs({
+  fillPrice: 141.5,
+  s12AssistApplied: false,
+  s12Assessment: assessment({}, { stopLoss: 123 }),
+  atrInitialStop: 117.75,
+  atrTp1: 175.4625,
+  atrTp2: 209.425,
+})
+assert(setupOnly.source === 'sltp_atr_default', 'setup-only S12 context must not take exit ownership')
+assert(setupOnly.initialStop === 117.75, 'setup-only S12 context must preserve the paper SLTP stop')

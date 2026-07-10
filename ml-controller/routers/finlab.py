@@ -52,6 +52,8 @@ class FinLabBackfillRunRequest(BaseModel):
     key_scope_json: str | None = None
     reuse_successful_artifacts: bool = False
     skip_diff_counts: bool = False
+    dispatch_attempt: int = Field(1, ge=1, le=5)
+    supersede_function_call_id: str | None = None
     dry_run: bool = False
 
 
@@ -322,8 +324,16 @@ async def run_finlab_backfill(req: FinLabBackfillRunRequest) -> dict:
             detail="FINLAB_BACKFILL_EXECUTOR=modal is required before spawning Modal FinLab backfill",
         )
     from services import modal_client
-
-    return await modal_client.spawn_finlab_v4_backfill(payload)
+    supersede_call_id = str(payload.get("supersede_function_call_id") or "").strip()
+    cancel_result = None
+    if supersede_call_id:
+        # Fail closed: spawning after a failed cancellation can run two writers
+        # for the same idempotency key and let a stale callback advance the DAG.
+        cancel_result = await modal_client.cancel_finlab_v4_backfill(supersede_call_id)
+    spawned = await modal_client.spawn_finlab_v4_backfill(payload)
+    if cancel_result is not None:
+        spawned["superseded_call"] = cancel_result
+    return spawned
 
 
 @router.post("/backfill/d1/query")

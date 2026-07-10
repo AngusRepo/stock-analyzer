@@ -1,3 +1,9 @@
+import {
+  normalizeTwEquityStopPrice,
+  normalizeTwEquityTargetPrice,
+  resolveTwEquityPriceBand,
+} from './twEquityMarketContract'
+
 export interface S12Bar {
   startMs: number
   open: number
@@ -9,6 +15,8 @@ export interface S12Bar {
 
 export type S12IntradayState =
   | 'waiting_15m_completed_bars'
+  | 'waiting_session_60m_completed_bar'
+  | 'waiting_session_60m_long_bias'
   | 'waiting_4h_completed_bar'
   | 'waiting_4h_long_bias'
   | 'waiting_1h_completed_bar'
@@ -18,6 +26,7 @@ export type S12IntradayState =
   | 'waiting_choch'
   | 'waiting_bos'
   | 'waiting_retest'
+  | 'waiting_reaction'
   | 'limited_takeover_ready'
   | 'reaction_ready'
   | 'bearish_defense_ready'
@@ -99,6 +108,7 @@ export interface S12StructureQuality {
   vwapContext: {
     schemaVersion: 's12_vwap_context_v1'
     session: S12VwapMetric
+    session60: S12VwapMetric
     h1: S12VwapMetric
     h4: S12VwapMetric
     daily: S12VwapMetric
@@ -250,6 +260,7 @@ interface S12EquityMutationContext {
   riskHaircuts: string[]
   vwapFastAcceptance: boolean
   vwapFastReasons: string[]
+  vwapFastBlockers: string[]
   vwapSlowContext: string
   htfHardBlock: boolean
   strictBreakout: boolean
@@ -298,6 +309,25 @@ export interface S12TimingPolicy {
   retestWaitBars: number
   fullCoverage15mBars: number
   fullCoverage1hBars: number
+  fullCoverageSession60Bars: number
+  minFastVwapSignals: number
+  maxFastVwapBlockers: number
+  slowVwapSupportiveRatio: number
+  slowVwapOverheadRatio: number
+  volumeExpansionMin: number
+  repricingBreakoutAtr: number
+  strongClosePosition: number
+  strongBodyPct: number
+  higherLowAtrTolerance: number
+  maxStopRiskPct: number
+  maxStopRiskAtr: number
+  strictMutationMinScore: number
+  limitedMutationMinScore: number
+  strictSizeMultiplier: number
+  limitedSizeMultiplier: number
+  chaseAtrMultiplier: number
+  stopStructureBufferAtr: number
+  /** @deprecated Compatibility only. V2 uses fullCoverageSession60Bars. */
   fullCoverage4hBars: number
 }
 
@@ -331,14 +361,34 @@ export const DEFAULT_S12_TIMING_POLICY: S12TimingPolicy = {
   retestWaitBars: 16,
   fullCoverage15mBars: 12,
   fullCoverage1hBars: 3,
-  fullCoverage4hBars: 2,
+  fullCoverageSession60Bars: 3,
+  minFastVwapSignals: 2,
+  maxFastVwapBlockers: 1,
+  slowVwapSupportiveRatio: 0.6,
+  slowVwapOverheadRatio: 0.25,
+  volumeExpansionMin: 1.25,
+  repricingBreakoutAtr: 0.05,
+  strongClosePosition: 0.62,
+  strongBodyPct: 0.22,
+  higherLowAtrTolerance: 0.15,
+  maxStopRiskPct: 0.045,
+  maxStopRiskAtr: 3.2,
+  strictMutationMinScore: 5,
+  limitedMutationMinScore: 4,
+  strictSizeMultiplier: 0.65,
+  limitedSizeMultiplier: 0.4,
+  chaseAtrMultiplier: 0.25,
+  stopStructureBufferAtr: 0.1,
+  fullCoverage4hBars: 3,
 }
 
 export interface S12IntradayAssessment {
   version: 's12_intraday_structure_v1'
+  engineVersion?: 's12_smcvwap_tw_equity_v2'
   symbol: string
   direction: 'long'
   state: S12IntradayState
+  entryState?: 'OBSERVE' | 'CONTEXT_ELIGIBLE' | 'REPRICING_OR_REVERSAL' | 'RETEST_ACCEPTED' | 'EXECUTABLE' | 'INVALIDATED'
   ready: boolean
   invalidated: boolean
   reason: string
@@ -347,14 +397,18 @@ export interface S12IntradayAssessment {
   completedBars: {
     m15: number
     h1: number
+    session60?: number
+    /** @deprecated Compatibility mirror of session60. */
     h4: number
   }
+  sessionContextSource?: 'current_session_60m' | 'previous_session_60m' | 'unavailable'
   h4Source: S12H4Source
   h4ReferenceDate: string | null
   h4ReferenceClose: number | null
   barDiagnostics: S12RuntimeBarDiagnostics
   coverage: 'none' | 'partial' | 'full'
   bias4h: S12HtfBias
+  biasSession60?: S12HtfBias
   bias1h: S12HtfBias
   demandZone1h: S12IntradayZone | null
   supplyZone1h: S12IntradayZone | null
@@ -457,7 +511,11 @@ export interface S12PositionDecisionInput {
     planned_take_profit?: S12PlannedTakeProfit | string | null
     tp1_source?: string | null
     s12_tp1_source?: string | null
+    s12_pressure_tp1?: number | null
+    s12_pressure_tp1_source?: string | null
     s12_main_exit_source?: string | null
+    fusion_runner_tp1?: number | null
+    fusion_runner_tp1_source?: string | null
     tp1_hit?: number | null
     s12_position_stop_price?: number | null
     s12_position_stop_source?: S12PositionStopSource | string | null
@@ -479,7 +537,8 @@ interface S12IntradayInput {
   symbol: string
   bars15m: S12Bar[]
   bars1h: S12Bar[]
-  bars4h: S12Bar[]
+  bars4h?: S12Bar[]
+  barsSession60?: S12Bar[]
   bars1d?: S12Bar[]
   fallback15mBars?: S12Bar[]
   fallback1hBars?: S12Bar[]
@@ -487,6 +546,7 @@ interface S12IntradayInput {
   min15mBars?: number
   policy?: Partial<S12TimingPolicy> | null
   h4Source?: S12H4Source
+  sessionContextSource?: S12IntradayAssessment['sessionContextSource']
   h4ReferenceDate?: string | null
   h4ReferenceClose?: number | null
   barDiagnostics?: S12RuntimeBarDiagnostics | null
@@ -497,6 +557,7 @@ interface S12FromBaseBarsInput {
   baseBars: S12Bar[]
   fallback15mBars?: S12Bar[]
   fallback4hBars?: S12Bar[]
+  fallbackDailyBars?: S12Bar[]
   fallback1hBars?: S12Bar[]
   nowMs?: number
   policy?: Partial<S12TimingPolicy> | null
@@ -513,7 +574,6 @@ type S12Bias4h = S12HtfBias
 
 const M15_MS = 15 * 60_000
 const H1_MS = 60 * 60_000
-const H4_MS = 4 * 60 * 60_000
 const DAY_MS = 24 * 60 * 60_000
 const TW_OFFSET_MS = 8 * H1_MS
 const TW_SESSION_OPEN_MS = 9 * H1_MS
@@ -580,7 +640,25 @@ export function normalizeS12TimingPolicy(policy: Partial<S12TimingPolicy> | null
     retestWaitBars: boundedInt(policy?.retestWaitBars, DEFAULT_S12_TIMING_POLICY.retestWaitBars, 4, 40),
     fullCoverage15mBars: boundedInt(policy?.fullCoverage15mBars, DEFAULT_S12_TIMING_POLICY.fullCoverage15mBars, 4, 40),
     fullCoverage1hBars: boundedInt(policy?.fullCoverage1hBars, DEFAULT_S12_TIMING_POLICY.fullCoverage1hBars, 1, 8),
-    fullCoverage4hBars: boundedInt(policy?.fullCoverage4hBars, DEFAULT_S12_TIMING_POLICY.fullCoverage4hBars, 1, 4),
+    fullCoverageSession60Bars: boundedInt(policy?.fullCoverageSession60Bars, DEFAULT_S12_TIMING_POLICY.fullCoverageSession60Bars, 1, 4),
+    minFastVwapSignals: boundedInt(policy?.minFastVwapSignals, DEFAULT_S12_TIMING_POLICY.minFastVwapSignals, 1, 5),
+    maxFastVwapBlockers: boundedInt(policy?.maxFastVwapBlockers, DEFAULT_S12_TIMING_POLICY.maxFastVwapBlockers, 0, 3),
+    slowVwapSupportiveRatio: Math.max(0.4, Math.min(0.9, Number(policy?.slowVwapSupportiveRatio ?? DEFAULT_S12_TIMING_POLICY.slowVwapSupportiveRatio))),
+    slowVwapOverheadRatio: Math.max(0.05, Math.min(0.4, Number(policy?.slowVwapOverheadRatio ?? DEFAULT_S12_TIMING_POLICY.slowVwapOverheadRatio))),
+    volumeExpansionMin: Math.max(1, Math.min(3, Number(policy?.volumeExpansionMin ?? DEFAULT_S12_TIMING_POLICY.volumeExpansionMin))),
+    repricingBreakoutAtr: Math.max(0, Math.min(0.5, Number(policy?.repricingBreakoutAtr ?? DEFAULT_S12_TIMING_POLICY.repricingBreakoutAtr))),
+    strongClosePosition: Math.max(0.5, Math.min(0.9, Number(policy?.strongClosePosition ?? DEFAULT_S12_TIMING_POLICY.strongClosePosition))),
+    strongBodyPct: Math.max(0.1, Math.min(0.8, Number(policy?.strongBodyPct ?? DEFAULT_S12_TIMING_POLICY.strongBodyPct))),
+    higherLowAtrTolerance: Math.max(0, Math.min(0.5, Number(policy?.higherLowAtrTolerance ?? DEFAULT_S12_TIMING_POLICY.higherLowAtrTolerance))),
+    maxStopRiskPct: Math.max(0.015, Math.min(0.1, Number(policy?.maxStopRiskPct ?? DEFAULT_S12_TIMING_POLICY.maxStopRiskPct))),
+    maxStopRiskAtr: Math.max(0.5, Math.min(6, Number(policy?.maxStopRiskAtr ?? DEFAULT_S12_TIMING_POLICY.maxStopRiskAtr))),
+    strictMutationMinScore: boundedInt(policy?.strictMutationMinScore, DEFAULT_S12_TIMING_POLICY.strictMutationMinScore, 3, 8),
+    limitedMutationMinScore: boundedInt(policy?.limitedMutationMinScore, DEFAULT_S12_TIMING_POLICY.limitedMutationMinScore, 2, 7),
+    strictSizeMultiplier: Math.max(0.1, Math.min(1, Number(policy?.strictSizeMultiplier ?? DEFAULT_S12_TIMING_POLICY.strictSizeMultiplier))),
+    limitedSizeMultiplier: Math.max(0.1, Math.min(0.8, Number(policy?.limitedSizeMultiplier ?? DEFAULT_S12_TIMING_POLICY.limitedSizeMultiplier))),
+    chaseAtrMultiplier: Math.max(0, Math.min(1, Number(policy?.chaseAtrMultiplier ?? DEFAULT_S12_TIMING_POLICY.chaseAtrMultiplier))),
+    stopStructureBufferAtr: Math.max(0, Math.min(0.5, Number(policy?.stopStructureBufferAtr ?? DEFAULT_S12_TIMING_POLICY.stopStructureBufferAtr))),
+    fullCoverage4hBars: boundedInt(policy?.fullCoverageSession60Bars ?? policy?.fullCoverage4hBars, DEFAULT_S12_TIMING_POLICY.fullCoverageSession60Bars, 1, 4),
   }
 }
 
@@ -614,7 +692,24 @@ export function s12TimingPolicyFromEnv(env: Record<string, unknown> | null | und
     retestWaitBars: env?.S12_INTRADAY_RETEST_WAIT_BARS as number | undefined,
     fullCoverage15mBars: env?.S12_INTRADAY_FULL_COVERAGE_15M_BARS as number | undefined,
     fullCoverage1hBars: env?.S12_INTRADAY_FULL_COVERAGE_1H_BARS as number | undefined,
-    fullCoverage4hBars: env?.S12_INTRADAY_FULL_COVERAGE_4H_BARS as number | undefined,
+    fullCoverageSession60Bars: env?.S12_INTRADAY_FULL_COVERAGE_SESSION_60M_BARS as number | undefined,
+    minFastVwapSignals: env?.S12_TW_MIN_FAST_VWAP_SIGNALS as number | undefined,
+    maxFastVwapBlockers: env?.S12_TW_MAX_FAST_VWAP_BLOCKERS as number | undefined,
+    slowVwapSupportiveRatio: env?.S12_TW_SLOW_VWAP_SUPPORTIVE_RATIO as number | undefined,
+    slowVwapOverheadRatio: env?.S12_TW_SLOW_VWAP_OVERHEAD_RATIO as number | undefined,
+    volumeExpansionMin: env?.S12_TW_VOLUME_EXPANSION_MIN as number | undefined,
+    repricingBreakoutAtr: env?.S12_TW_REPRICING_BREAKOUT_ATR as number | undefined,
+    strongClosePosition: env?.S12_TW_STRONG_CLOSE_POSITION as number | undefined,
+    strongBodyPct: env?.S12_TW_STRONG_BODY_PCT as number | undefined,
+    higherLowAtrTolerance: env?.S12_TW_HIGHER_LOW_ATR_TOLERANCE as number | undefined,
+    maxStopRiskPct: env?.S12_TW_MAX_STOP_RISK_PCT as number | undefined,
+    maxStopRiskAtr: env?.S12_TW_MAX_STOP_RISK_ATR as number | undefined,
+    strictMutationMinScore: env?.S12_TW_STRICT_MUTATION_MIN_SCORE as number | undefined,
+    limitedMutationMinScore: env?.S12_TW_LIMITED_MUTATION_MIN_SCORE as number | undefined,
+    strictSizeMultiplier: env?.S12_TW_STRICT_SIZE_MULTIPLIER as number | undefined,
+    limitedSizeMultiplier: env?.S12_TW_LIMITED_SIZE_MULTIPLIER as number | undefined,
+    chaseAtrMultiplier: env?.S12_TW_CHASE_ATR_MULTIPLIER as number | undefined,
+    stopStructureBufferAtr: env?.S12_TW_STOP_STRUCTURE_BUFFER_ATR as number | undefined,
   })
 }
 
@@ -654,6 +749,14 @@ function timingPolicyDetail(policy: S12TimingPolicy): Record<string, unknown> {
     policy_choch_wait_bars: policy.chochWaitBars,
     policy_bos_wait_bars: policy.bosWaitBars,
     policy_retest_wait_bars: policy.retestWaitBars,
+    policy_context_timeframe: 'tw_equity_session_60m',
+    policy_full_coverage_session_60m_bars: policy.fullCoverageSession60Bars,
+    policy_min_fast_vwap_signals: policy.minFastVwapSignals,
+    policy_max_fast_vwap_blockers: policy.maxFastVwapBlockers,
+    policy_max_stop_risk_pct: policy.maxStopRiskPct,
+    policy_max_stop_risk_atr: policy.maxStopRiskAtr,
+    policy_strict_mutation_min_score: policy.strictMutationMinScore,
+    policy_limited_mutation_min_score: policy.limitedMutationMinScore,
   }
 }
 
@@ -662,9 +765,9 @@ function effectiveMin15mBarsForSeed(policy: S12TimingPolicy, hasPreviousSession1
   return Math.min(policy.min15mBars, policy.seededMin15mBars)
 }
 
-function shouldBlockOn4hBias(h4Source: S12H4Source, bias4h: S12HtfBias): boolean {
-  if (bias4h.direction === 'long' && bias4h.channelAlign) return false
-  return h4Source === 'current_session'
+function shouldBlockOnSession60Bias(source: S12IntradayAssessment['sessionContextSource'], bias: S12HtfBias): boolean {
+  if (bias.direction === 'long' && bias.channelAlign) return false
+  return source === 'current_session_60m'
 }
 
 function finitePositive(value: unknown): number | null {
@@ -679,6 +782,38 @@ function round(value: number, decimals = 4): number {
 
 function price(value: number | null | undefined): number | null {
   return value == null || !Number.isFinite(value) ? null : round(value, 2)
+}
+
+function normalizeExitPlanForTwEquity(
+  plan: S12StructureExitPlan,
+  entryPrice: number | null,
+  referencePrice: number | null,
+): S12StructureExitPlan {
+  const band = referencePrice != null && referencePrice > 0 ? resolveTwEquityPriceBand(referencePrice) : null
+  const target = (value: number | null): number | null => {
+    if (value == null || value <= 0) return null
+    const normalized = normalizeTwEquityTargetPrice(value, band)
+    return entryPrice != null && normalized <= entryPrice ? null : normalized
+  }
+  const stop = plan.trailingStop.initial == null
+    ? null
+    : normalizeTwEquityStopPrice(plan.trailingStop.initial, band)
+  return {
+    ...plan,
+    tp1: { ...plan.tp1, price: target(plan.tp1.price) },
+    mainExit: {
+      ...plan.mainExit,
+      price: target(plan.mainExit.price),
+      zoneLow: plan.mainExit.zoneLow == null ? null : normalizeTwEquityTargetPrice(plan.mainExit.zoneLow, band),
+      zoneHigh: plan.mainExit.zoneHigh == null ? null : normalizeTwEquityTargetPrice(plan.mainExit.zoneHigh, band),
+    },
+    tp3: { ...plan.tp3, price: target(plan.tp3.price) },
+    tp4: { ...plan.tp4, price: target(plan.tp4.price) },
+    trailingStop: {
+      ...plan.trailingStop,
+      initial: entryPrice != null && stop != null && stop >= entryPrice ? null : stop,
+    },
+  }
 }
 
 function roundLot(value: number): number {
@@ -706,10 +841,11 @@ function resolveTakeProfitFusion(params: {
   entryPrice: number
   currentPrice: number
   positionTp1: number | null
-  assessmentTp1: number | null
+  pressureTp1: number | null
+  runnerTp1: number | null
   assessmentMainExit: number | null
   positionTp1Source: string | null
-  assessmentTp1Source: string | null
+  pressureTp1Source: string | null
   assessmentMainExitSource: string | null
   structuralStop: number | null
   initialStop: number | null
@@ -718,13 +854,16 @@ function resolveTakeProfitFusion(params: {
   openedToday: boolean
   bearishDefenseReady: boolean
   dailyWeak: boolean
-  fourHourWeak: boolean
+  session60Weak: boolean
   rvolState: string | null | undefined
   vwapStack: string | null | undefined
   nearestAboveSource: string | null | undefined
   sellRatio: number
 }): {
   structuralTp1Touched: boolean
+  executableTargetTouched: boolean
+  executableTarget: number | null
+  executableTargetSource: string | null
   shouldTakeProfit: boolean
   pressureOnly: boolean
   confluenceScore: number
@@ -737,22 +876,33 @@ function resolveTakeProfitFusion(params: {
   reasons: string[]
   pressureSources: string[]
 } {
-  const lifecycleTp1 = params.positionTp1
-  const structuralTp1 = params.assessmentTp1
-  const structuralTp1ImprovesLifecycle =
-    lifecycleTp1 != null &&
-    structuralTp1 != null &&
-    structuralTp1 > params.entryPrice &&
-    structuralTp1 < lifecycleTp1
-  const lifecycleTp1LooksIntraday =
-    lifecycleTp1 != null &&
-    params.positionTp1Source != null &&
-    ['15m_previous_high', 'vwap_fair_value', 's12_structure_exit_plan'].includes(params.positionTp1Source)
+  const structuralTp1 = params.pressureTp1
   const structuralTp1Touched =
     !params.tp1Hit &&
     structuralTp1 != null &&
-    params.currentPrice >= structuralTp1 &&
-    (structuralTp1ImprovesLifecycle || lifecycleTp1LooksIntraday || lifecycleTp1 == null)
+    structuralTp1 > params.entryPrice &&
+    params.currentPrice >= structuralTp1
+
+  const pressureSource = params.pressureTp1Source ?? 'structural_tp1'
+  const structuralExecutable =
+    structuralTp1Touched &&
+    !['15m_previous_high', 'tp_ladder', 's12_structure_exit_plan'].includes(pressureSource)
+  const runnerTouched =
+    !params.tp1Hit &&
+    params.runnerTp1 != null &&
+    params.runnerTp1 > params.entryPrice &&
+    params.currentPrice >= params.runnerTp1
+  const executableTarget = structuralExecutable
+    ? structuralTp1
+    : runnerTouched
+      ? params.runnerTp1
+      : null
+  const executableTargetSource = structuralExecutable
+    ? pressureSource
+    : runnerTouched
+      ? params.positionTp1Source ?? 'runner_target'
+      : null
+  const executableTargetTouched = executableTarget != null
 
   const gainPct = (params.currentPrice - params.entryPrice) / params.entryPrice
   const belowEntryStop =
@@ -772,10 +922,15 @@ function resolveTakeProfitFusion(params: {
   let confluenceScore = 0
 
   if (structuralTp1Touched) {
-    const source = params.assessmentTp1Source ?? params.positionTp1Source ?? 'structural_tp1'
+    pressureSources.push(pressureSource)
+    reasons.push(`near_pressure:${pressureSource}`)
+    confluenceScore += pressureSource === '15m_previous_high' ? 1 : 2
+  }
+  if (runnerTouched) {
+    const source = params.positionTp1Source ?? 'runner_target'
     pressureSources.push(source)
-    reasons.push(`tp1_source:${source}`)
-    confluenceScore += source === '15m_previous_high' ? 1 : 2
+    reasons.push(`runner_target:${source}`)
+    confluenceScore += 2
   }
   if (
     params.assessmentMainExit != null &&
@@ -790,8 +945,8 @@ function resolveTakeProfitFusion(params: {
     reasons.push('bearish_defense_ready')
     confluenceScore += 1
   }
-  if (params.dailyWeak && params.fourHourWeak && gainPct > 0) {
-    reasons.push('daily_4h_profit_protect')
+  if (params.dailyWeak && params.session60Weak && gainPct > 0) {
+    reasons.push('daily_session_60m_profit_protect')
     confluenceScore += 1
   }
   if (['normal', 'active', 'high'].includes(String(params.rvolState ?? '').toLowerCase())) {
@@ -812,13 +967,16 @@ function resolveTakeProfitFusion(params: {
   const minGainPct = params.openedToday ? 0.012 : 0.008
   const profitGate = gainPct >= minGainPct || (profitR != null && profitR >= minProfitR)
   const shouldTakeProfit =
-    structuralTp1Touched &&
+    executableTargetTouched &&
     profitGate &&
     confluenceScore >= minConfluence
   return {
     structuralTp1Touched,
+    executableTargetTouched,
+    executableTarget,
+    executableTargetSource,
     shouldTakeProfit,
-    pressureOnly: structuralTp1Touched && !shouldTakeProfit,
+    pressureOnly: (structuralTp1Touched || executableTargetTouched) && !shouldTakeProfit,
     confluenceScore,
     profitR,
     gainPct,
@@ -993,9 +1151,11 @@ function detailWithOverrides(detail: string, parts: Record<string, unknown>): st
 function maturityStage(state: S12IntradayState): S12IntradayAssessment['maturity']['stage'] {
   switch (state) {
     case 'waiting_15m_completed_bars':
+    case 'waiting_session_60m_completed_bar':
     case 'waiting_4h_completed_bar':
     case 'waiting_1h_completed_bar':
       return 'data'
+    case 'waiting_session_60m_long_bias':
     case 'waiting_4h_long_bias':
       return 'higher_timeframe_bias'
     case 'waiting_1h_demand_zone':
@@ -1005,6 +1165,7 @@ function maturityStage(state: S12IntradayState): S12IntradayAssessment['maturity
     case 'waiting_choch':
     case 'waiting_bos':
     case 'waiting_retest':
+    case 'waiting_reaction':
       return 'trigger_sequence'
     case 'limited_takeover_ready':
     case 'reaction_ready':
@@ -1028,6 +1189,15 @@ function maturityTakeoverRole(state: S12IntradayState): S12IntradayAssessment['m
     default:
       return 'none'
   }
+}
+
+function entryStateFor(state: S12IntradayState): NonNullable<S12IntradayAssessment['entryState']> {
+  if (state === 'invalidated' || state === 'bearish_defense_ready') return 'INVALIDATED'
+  if (state === 'reaction_ready' || state === 'limited_takeover_ready') return 'EXECUTABLE'
+  if (state === 'waiting_reaction') return 'RETEST_ACCEPTED'
+  if (['waiting_sweep', 'waiting_choch', 'waiting_bos', 'waiting_retest'].includes(state)) return 'REPRICING_OR_REVERSAL'
+  if (['waiting_1h_demand_zone', 'waiting_15m_zone_touch'].includes(state)) return 'CONTEXT_ELIGIBLE'
+  return 'OBSERVE'
 }
 
 function maturityTier(
@@ -1104,6 +1274,7 @@ function emptyVwapContext(): S12StructureQuality['vwapContext'] {
   return {
     schemaVersion: 's12_vwap_context_v1',
     session: emptyVwapMetric(),
+    session60: emptyVwapMetric(),
     h1: emptyVwapMetric(),
     h4: emptyVwapMetric(),
     daily: emptyVwapMetric(),
@@ -1325,7 +1496,8 @@ function buildVwapContext(
   const latest = bars[bars.length - 1]
   const session = vwapForBars(bars, latest.close)
   const h1 = vwapForBars(higher.bars1h ?? [], latest.close)
-  const h4 = vwapForBars(higher.bars4h ?? [], latest.close)
+  const session60 = vwapForBars(higher.bars4h ?? [], latest.close)
+  const h4 = session60
   const dailyBars = normalizeBars(higher.bars1d ?? [])
   const dailySourceBars = dailyBars.length ? dailyBars : bars
   const daily = vwapForBars(dailySourceBars, latest.close)
@@ -1425,6 +1597,7 @@ function buildVwapContext(
   return {
     schemaVersion: 's12_vwap_context_v1',
     session,
+    session60,
     h1,
     h4,
     daily,
@@ -1583,7 +1756,7 @@ function zoneLifecycleDiagnostics(params: {
     role_flip_detected: roleFlipDemand || roleFlipSupply ? 'true' : 'false',
     role_flip_side: roleFlipDemand && roleFlipSupply ? 'both' : roleFlipDemand ? 'demand' : roleFlipSupply ? 'supply' : null,
     channel_1h_direction: channelDirection(params.bars1h),
-    channel_4h_direction: channelDirection(params.bars4h),
+    channel_session_60m_direction: channelDirection(params.bars4h),
     channel_1d_direction: channelDirection(params.bars1d),
     idm_price: equalLevels.idmPrice,
     eqh_detected: equalLevels.eqh ? 'true' : 'false',
@@ -1618,20 +1791,30 @@ function emptyAssessment(
   completedBars: S12IntradayAssessment['completedBars'],
 ): S12IntradayAssessment {
   const h4Source = input.h4Source ?? (completedBars.h4 > 0 ? 'current_session' : 'unavailable')
+  const sessionContextSource: NonNullable<S12IntradayAssessment['sessionContextSource']> = input.sessionContextSource ?? (
+    h4Source === 'previous_trading_day_fallback'
+      ? 'previous_session_60m'
+      : (completedBars.session60 ?? completedBars.h4) > 0
+        ? 'current_session_60m'
+        : 'unavailable'
+  )
   const barDiagnostics = input.barDiagnostics ?? {}
   const policy = inputTimingPolicy(input)
   const maturity = maturitySnapshot(state)
   return {
     version: 's12_intraday_structure_v1',
+    engineVersion: 's12_smcvwap_tw_equity_v2',
     symbol: input.symbol,
     direction: 'long',
     state,
+    entryState: entryStateFor(state),
     ready: false,
     invalidated: state === 'invalidated',
     reason,
     detail: detailText({
       state,
       reason,
+      session_context_source: sessionContextSource,
       h4_source: h4Source,
       h4_reference_date: input.h4ReferenceDate ?? null,
       h4_reference_close: price(input.h4ReferenceClose),
@@ -1641,13 +1824,19 @@ function emptyAssessment(
       ...detail,
     }),
     setupId: null,
-    completedBars,
+    completedBars: {
+      ...completedBars,
+      session60: completedBars.session60 ?? completedBars.h4,
+      h4: completedBars.session60 ?? completedBars.h4,
+    },
+    sessionContextSource,
     h4Source,
     h4ReferenceDate: input.h4ReferenceDate ?? null,
     h4ReferenceClose: price(input.h4ReferenceClose),
     barDiagnostics,
     coverage: completedBars.h4 > 0 || completedBars.h1 > 0 || completedBars.m15 > 0 ? 'partial' : 'none',
     bias4h: { direction: 'neutral', confidence: 'none', channelAlign: false },
+    biasSession60: { direction: 'neutral', confidence: 'none', channelAlign: false },
     bias1h: { direction: 'neutral', confidence: 'none', channelAlign: false },
     demandZone1h: null,
     supplyZone1h: null,
@@ -1944,7 +2133,7 @@ function buildEquityMutationZone(params: {
     .filter((value) => Number.isFinite(value) && value > 0 && value < params.entryPrice)
     .sort((a, b) => b - a)[0] ?? null
   if (protectedLow == null) return { zone: null, stopPlan: null }
-  const stop = price(protectedLow - params.atr15m * 0.1)
+  const stop = price(protectedLow - params.atr15m * params.policy.stopStructureBufferAtr)
   if (stop == null || stop <= 0 || stop >= params.entryPrice) return { zone: null, stopPlan: null }
   const zoneHigh = price(Math.min(params.entryPrice - 0.01, protectedLow + params.atr15m * 0.35))
   if (zoneHigh == null || zoneHigh <= stop) return { zone: null, stopPlan: null }
@@ -1987,6 +2176,7 @@ function buildEquityMutationContext(params: {
       riskHaircuts: [],
       vwapFastAcceptance: false,
       vwapFastReasons: [],
+      vwapFastBlockers: [],
       vwapSlowContext: 'unavailable',
       htfHardBlock: false,
       strictBreakout: false,
@@ -2020,7 +2210,7 @@ function buildEquityMutationContext(params: {
     params.quality.vwapContext.rolling15m.bars7.state === 'below' ? 'rolling15m_7_below' : null,
     params.quality.vwapContext.initialBalance.state === 'below' ? 'initial_balance_breakdown' : null,
   ].filter((value): value is string => value != null)
-  const vwapFastAcceptance = fastVwapSignals.length >= 2 && fastVwapBlockers.length <= 1
+  const vwapFastAcceptance = fastVwapSignals.length >= params.policy.minFastVwapSignals && fastVwapBlockers.length <= params.policy.maxFastVwapBlockers
   const slowVwapAbove = [
     params.quality.vwapContext.h1,
     params.quality.vwapContext.h4,
@@ -2041,23 +2231,23 @@ function buildEquityMutationContext(params: {
   ].filter((metric) => metric.value != null).length
   const vwapSlowContext = slowVwapTotal <= 0
     ? 'unavailable'
-    : slowVwapAbove >= Math.ceil(slowVwapTotal * 0.6)
+    : slowVwapAbove >= Math.ceil(slowVwapTotal * params.policy.slowVwapSupportiveRatio)
       ? 'supportive'
-      : slowVwapAbove <= Math.floor(slowVwapTotal * 0.25)
+      : slowVwapAbove <= Math.floor(slowVwapTotal * params.policy.slowVwapOverheadRatio)
         ? 'overhead_supply'
         : 'mixed'
   const volumeConstructive =
     params.quality.rvol.state === 'strong_participation' ||
     params.quality.rvol.state === 'participating' ||
-    (volExpansion != null && volExpansion >= 1.25)
-  const repricingBreakout = priorHigh != null && latest.close > priorHigh + atr15m * 0.05
+    (volExpansion != null && volExpansion >= params.policy.volumeExpansionMin)
+  const repricingBreakout = priorHigh != null && latest.close > priorHigh + atr15m * params.policy.repricingBreakoutAtr
   const reclaimBreakout = priorClose != null && priorHigh != null && priorClose <= priorHigh && latest.close > priorHigh
-  const strongClose = latest.close > latest.open && closePosition >= 0.62 && bodyPct >= 0.22
-  const higherLow = previous != null && latest.low >= previous.low - atr15m * 0.15
+  const strongClose = latest.close > latest.open && closePosition >= params.policy.strongClosePosition && bodyPct >= params.policy.strongBodyPct
+  const higherLow = previous != null && latest.low >= previous.low - atr15m * params.policy.higherLowAtrTolerance
   const htfHardBlock = params.bias4h.direction === 'short' && params.bias1h.direction === 'short'
   const riskHaircuts = [
     params.bias1h.direction === 'short' ? '1h_short_risk_haircut' : null,
-    params.bias4h.direction === 'short' ? '4h_short_risk_haircut' : null,
+    params.bias4h.direction === 'short' ? 'session_60m_short_risk_haircut' : null,
     vwapSlowContext === 'overhead_supply' ? 'slow_vwap_overhead_supply_haircut' : null,
   ].filter((value): value is string => value != null)
   const positiveReasons = [
@@ -2067,7 +2257,7 @@ function buildEquityMutationContext(params: {
     higherLow ? '15m_higher_low_acceptance' : null,
     vwapFastAcceptance ? 'vwap_fast_acceptance' : null,
     volumeConstructive ? 'volume_participation' : null,
-    params.bias4h.direction !== 'short' ? '4h_not_short' : null,
+    params.bias4h.direction !== 'short' ? 'session_60m_not_short' : null,
     params.bias1h.direction !== 'short' ? '1h_not_short' : null,
   ].filter((value): value is string => value != null)
   const score = Math.max(0, positiveReasons.length - riskHaircuts.length)
@@ -2091,9 +2281,9 @@ function buildEquityMutationContext(params: {
     stopRisk != null &&
     stopRisk > 0 &&
     stopRiskPct != null &&
-    stopRiskPct <= 0.045 &&
+    stopRiskPct <= params.policy.maxStopRiskPct &&
     stopRiskAtr != null &&
-    stopRiskAtr <= 3.2,
+    stopRiskAtr <= params.policy.maxStopRiskAtr,
   )
   const strictBreakout = Boolean(
     entryPrice != null &&
@@ -2105,7 +2295,7 @@ function buildEquityMutationContext(params: {
     volumeConstructive &&
     strongClose &&
     (repricingBreakout || reclaimBreakout) &&
-    score >= 5,
+    score >= params.policy.strictMutationMinScore,
   )
   const supportiveSlowVwap = vwapSlowContext === 'supportive' || vwapSlowContext === 'mixed'
   const limitedTakeover = Boolean(
@@ -2116,15 +2306,15 @@ function buildEquityMutationContext(params: {
     tightStopRisk &&
     strongClose &&
     higherLow &&
-    score >= 4 &&
+    score >= params.policy.limitedMutationMinScore &&
     (vwapFastAcceptance || supportiveSlowVwap) &&
     vwapSlowContext !== 'overhead_supply',
   )
   const active = strictBreakout || limitedTakeover
   const sizeMultiplier = active
     ? strictBreakout
-      ? 0.65
-      : 0.4
+      ? params.policy.strictSizeMultiplier
+      : params.policy.limitedSizeMultiplier
     : null
   return {
     active,
@@ -2138,6 +2328,7 @@ function buildEquityMutationContext(params: {
     riskHaircuts,
     vwapFastAcceptance,
     vwapFastReasons: fastVwapSignals,
+    vwapFastBlockers: fastVwapBlockers,
     vwapSlowContext,
     htfHardBlock,
     strictBreakout,
@@ -2148,7 +2339,7 @@ function buildEquityMutationContext(params: {
     zone: zoneResult.zone,
     stopPlan: zoneResult.stopPlan,
     entryPrice,
-    chaseCeiling: entryPrice == null ? null : price(entryPrice + atr15m * 0.25),
+    chaseCeiling: entryPrice == null ? null : price(entryPrice + atr15m * params.policy.chaseAtrMultiplier),
     atr15m: price(atr15m),
   }
 }
@@ -2329,6 +2520,7 @@ function completeEquityMutationAssessment(params: {
       equity_mutation_stop_risk_atr: params.mutation.stopRiskAtr,
       vwap_fast_acceptance: String(params.mutation.vwapFastAcceptance),
       vwap_fast_reasons: params.mutation.vwapFastReasons.join('|'),
+      vwap_fast_blockers: params.mutation.vwapFastBlockers.join('|'),
       vwap_slow_context: params.mutation.vwapSlowContext,
       htf_hard_block: String(params.mutation.htfHardBlock),
       one_h_demand_required: 'false',
@@ -2343,6 +2535,8 @@ function stateReason(state: S12IntradayState, extra?: string): string {
   if (extra) return extra
   switch (state) {
     case 'waiting_15m_completed_bars': return 's12_waiting_15m_completed_bars'
+    case 'waiting_session_60m_completed_bar': return 's12_waiting_session_60m_completed_bar'
+    case 'waiting_session_60m_long_bias': return 's12_waiting_session_60m_long_bias'
     case 'waiting_4h_completed_bar': return 's12_waiting_4h_completed_bar'
     case 'waiting_4h_long_bias': return 's12_waiting_4h_long_bias'
     case 'waiting_1h_completed_bar': return 's12_waiting_1h_completed_bar'
@@ -2352,6 +2546,7 @@ function stateReason(state: S12IntradayState, extra?: string): string {
     case 'waiting_choch': return 's12_waiting_choch'
     case 'waiting_bos': return 's12_waiting_bos'
     case 'waiting_retest': return 's12_waiting_retest'
+    case 'waiting_reaction': return 's12_waiting_reaction'
     case 'limited_takeover_ready': return 's12_limited_takeover_ready'
     case 'reaction_ready': return 's12_reaction_ready'
     case 'bearish_defense_ready': return 's12_bearish_defense_ready'
@@ -2385,7 +2580,7 @@ function completeAssessment(params: {
   const elapsedBars = params.extraDetail?.elapsed_15m_bars == null ? null : Number(params.extraDetail.elapsed_15m_bars)
   const policy = inputTimingPolicy(params.input)
   const coverage =
-    params.completedBars.h4 >= policy.fullCoverage4hBars &&
+    (params.completedBars.session60 ?? params.completedBars.h4) >= policy.fullCoverageSession60Bars &&
     params.completedBars.h1 >= policy.fullCoverage1hBars &&
     params.completedBars.m15 >= policy.fullCoverage15mBars
     ? 'full'
@@ -2403,8 +2598,23 @@ function completeAssessment(params: {
       ? 'NO_BUY'
       : bearishDefense.action
   const quality = params.quality ?? emptyQuality()
-  const exitPlan = params.exitPlan ?? emptyExitPlan(bearishDefense)
+  const rawExitPlan = params.exitPlan ?? emptyExitPlan(bearishDefense)
+  const entryPrice = finitePositive(params.execution?.entryPrice)
+  const exitPlan = normalizeExitPlanForTwEquity(rawExitPlan, entryPrice, finitePositive(params.input.h4ReferenceClose))
+  const normalizedExecution: S12IntradayAssessment['execution'] = {
+    ...(params.execution ?? {}),
+    stopLoss: exitPlan.trailingStop.initial ?? params.execution?.stopLoss ?? null,
+    target1: exitPlan.tp1.price,
+    target2: exitPlan.mainExit.price,
+    target3: exitPlan.tp3.price,
+    target4: exitPlan.tp4.price,
+  }
   const h4Source = params.input.h4Source ?? (params.completedBars.h4 > 0 ? 'current_session' : 'unavailable')
+  const sessionContextSource: S12IntradayAssessment['sessionContextSource'] = h4Source === 'previous_trading_day_fallback'
+    ? 'previous_session_60m'
+    : (params.completedBars.session60 ?? params.completedBars.h4) > 0
+      ? 'current_session_60m'
+      : 'unavailable'
   const barDiagnostics = params.input.barDiagnostics ?? {}
   const maturity = maturitySnapshot(params.state, params.sequence, {
     stale,
@@ -2414,26 +2624,29 @@ function completeAssessment(params: {
   })
   return {
     version: 's12_intraday_structure_v1',
+    engineVersion: 's12_smcvwap_tw_equity_v2',
     symbol: params.input.symbol,
     direction: 'long',
     state: params.state,
+    entryState: entryStateFor(params.state),
     ready,
     invalidated,
     reason,
     detail: detailText({
       state: params.state,
+      entry_state: entryStateFor(params.state),
       reason,
       setup_id: params.setupId ?? null,
       coverage,
       bars15m: params.completedBars.m15,
       bars1h: params.completedBars.h1,
-      bars4h: params.completedBars.h4,
-      h4_source: h4Source,
+      bars_session_60m: params.completedBars.session60 ?? params.completedBars.h4,
+      session_context_source: sessionContextSource,
       h4_reference_date: params.input.h4ReferenceDate ?? null,
       h4_reference_close: price(params.input.h4ReferenceClose),
-      h4_fallback_bias_mode: h4Source === 'previous_trading_day_fallback' ? 'context_only' : null,
+      previous_session_60m_bias_mode: sessionContextSource === 'previous_session_60m' ? 'context_only' : null,
       ...timingPolicyDetail(policy),
-      bias4h: params.bias4h.direction,
+      bias_session_60m: params.bias4h.direction,
       bias_confidence: params.bias4h.confidence,
       bias_channel_align: params.bias4h.channelAlign ? 'true' : 'false',
       bias1h: bias1h.direction,
@@ -2455,7 +2668,7 @@ function completeAssessment(params: {
       vwap_confluence_width_pct: quality.vwapContext.confluenceWidthPct,
       vwap_session: quality.vwapContext.session.value,
       vwap_h1: quality.vwapContext.h1.value,
-      vwap_h4: quality.vwapContext.h4.value,
+      vwap_session_60m: quality.vwapContext.session60.value,
       vwap_daily: quality.vwapContext.daily.value,
       vwap_anchor_day: quality.vwapContext.anchored.day.value,
       vwap_anchor_week: quality.vwapContext.anchored.week.value,
@@ -2493,15 +2706,15 @@ function completeAssessment(params: {
       trailing_method: exitPlan.trailingStop.method,
       trailing_source: exitPlan.trailingStop.source,
       reverse_warning_action: exitPlan.reverseWarning.action === 'none' ? null : exitPlan.reverseWarning.action,
-      entry: price(params.execution?.entryPrice),
-      chase_ceiling: price(params.execution?.chaseCeiling),
-      stop: price(params.execution?.stopLoss),
-      t1: price(params.execution?.target1),
-      t2: price(params.execution?.target2),
-      t3: price(params.execution?.target3),
-      t4: price(params.execution?.target4),
-      atr15m: price(params.execution?.atr15m),
-      r: params.execution?.rMultiple == null ? null : round(params.execution.rMultiple, 4),
+      entry: price(normalizedExecution.entryPrice),
+      chase_ceiling: price(normalizedExecution.chaseCeiling),
+      stop: price(normalizedExecution.stopLoss),
+      t1: price(normalizedExecution.target1),
+      t2: price(normalizedExecution.target2),
+      t3: price(normalizedExecution.target3),
+      t4: price(normalizedExecution.target4),
+      atr15m: price(normalizedExecution.atr15m),
+      r: normalizedExecution.rMultiple == null ? null : round(normalizedExecution.rMultiple, 4),
       takeover_eligible: maturity.takeoverEligible ? 'true' : 'false',
       takeover_role: maturity.takeoverRole,
       maturity_tier: maturity.tier,
@@ -2517,12 +2730,14 @@ function completeAssessment(params: {
     }),
     setupId: params.setupId ?? null,
     completedBars: params.completedBars,
+    sessionContextSource,
     h4Source,
     h4ReferenceDate: params.input.h4ReferenceDate ?? null,
     h4ReferenceClose: price(params.input.h4ReferenceClose),
     barDiagnostics,
     coverage,
     bias4h: params.bias4h,
+    biasSession60: params.bias4h,
     bias1h,
     demandZone1h: params.demandZone1h,
     supplyZone1h,
@@ -2531,7 +2746,7 @@ function completeAssessment(params: {
     quality,
     exitPlan,
     sequence: params.sequence,
-    execution: params.execution ?? {},
+    execution: normalizedExecution,
     maturity,
   }
 }
@@ -3026,6 +3241,7 @@ export function buildS12LongPositionStopPlan(params: {
   referencePrice?: number | null
   policy?: Partial<S12TimingPolicy> | null
   stopSource?: S12PositionStopSource | null
+  minConfirmationBars?: number
 }): S12PositionStopPlan | null {
   const bars = normalizeBars(params.bars15m)
   const entryPrice = Number(params.entryPrice)
@@ -3107,6 +3323,7 @@ export function buildS12LongPositionStopPlan(params: {
       zoneHigh: price(fvg.high),
       source: '15m_recent_fvg' as const,
       method: '15m_recent_bullish_fvg' as const,
+      ageBars: fvg.ageBars,
     }
     : null
   const ob = nearestZoneBelow(bullObs, referencePrice)
@@ -3117,13 +3334,14 @@ export function buildS12LongPositionStopPlan(params: {
       zoneHigh: price(ob.high),
       source: '15m_order_block' as const,
       method: '15m_bullish_order_block' as const,
+      ageBars: ob.ageBars,
     }
     : null
 
-  type Candidate = Omit<S12PositionStopPlan, 'noAtrBuffer'>
+  type Candidate = Omit<S12PositionStopPlan, 'noAtrBuffer'> & { ageBars?: number }
   const rawCandidates: Array<Candidate | null> = [
     protectedLow != null && protectedLow.price != null && protectedLow.zoneLow != null && protectedLow.zoneHigh != null
-      ? { ...protectedLow, price: protectedLow.price, zoneLow: protectedLow.zoneLow, zoneHigh: protectedLow.zoneHigh }
+      ? { ...protectedLow, price: protectedLow.price, zoneLow: protectedLow.zoneLow, zoneHigh: protectedLow.zoneHigh, ageBars: policy.swingLookbackBars }
       : null,
     fvgStop != null && fvgStop.price != null && fvgStop.zoneLow != null && fvgStop.zoneHigh != null
       ? { ...fvgStop, price: fvgStop.price, zoneLow: fvgStop.zoneLow, zoneHigh: fvgStop.zoneHigh }
@@ -3135,7 +3353,8 @@ export function buildS12LongPositionStopPlan(params: {
   const candidates = rawCandidates.filter((candidate): candidate is Candidate => (
     candidate != null &&
     candidate.price > 0 &&
-    candidate.price < referencePrice
+    candidate.price < referencePrice &&
+    (candidate.ageBars ?? 0) >= Math.max(0, Math.floor(params.minConfirmationBars ?? 0))
   ))
   const requested = params.stopSource ?? policy.positionStopSource
   const selected = requested === 'adaptive'
@@ -3143,11 +3362,11 @@ export function buildS12LongPositionStopPlan(params: {
     : candidates.find((candidate) => candidate.source === requested) ?? null
   return selected
     ? {
-      price: selected.price,
+      price: normalizeTwEquityStopPrice(selected.price),
       source: selected.source,
       method: selected.method,
-      zoneLow: selected.zoneLow,
-      zoneHigh: selected.zoneHigh,
+      zoneLow: normalizeTwEquityStopPrice(selected.zoneLow),
+      zoneHigh: normalizeTwEquityStopPrice(selected.zoneHigh),
       noAtrBuffer: true,
     }
     : null
@@ -3168,7 +3387,7 @@ function latestBullishOrderBlock15mStop(
     const bullishDisplacement = current.close > current.open && current.close > previous.high && body >= atr15m * 0.08
     if (!bullishDisplacement) continue
     const ob = lastBearishBar(bars, Math.max(0, i - policy.obLookbackBars), i - 1) ?? previous
-    const stop = ob.low - atr15m * 0.1
+    const stop = ob.low - atr15m * policy.stopStructureBufferAtr
     if (stop > 0 && stop < entryPrice) return price(stop)
   }
   return null
@@ -3180,10 +3399,11 @@ function protectedLow15mStop(
   endInclusive: number,
   entryPrice: number,
   atr15m: number,
+  policy: S12TimingPolicy,
 ): number | null {
   const lows = bars
     .slice(Math.max(0, start), Math.min(bars.length, endInclusive + 1))
-    .map((bar) => bar.low - atr15m * 0.1)
+    .map((bar) => bar.low - atr15m * policy.stopStructureBufferAtr)
     .filter((value) => Number.isFinite(value) && value > 0 && value < entryPrice)
     .sort((a, b) => b - a)
   return lows.length ? price(lows[0]) : null
@@ -3203,7 +3423,7 @@ function selectLongStopPlan(params: {
   source: S12PositionStopSource
   method: S12StructureExitPlan['trailingStop']['method']
 } {
-  const protectedLow = protectedLow15mStop(params.bars15m, params.sweepIndex, params.reactionIndex, params.entryPrice, params.atr15m)
+  const protectedLow = protectedLow15mStop(params.bars15m, params.sweepIndex, params.reactionIndex, params.entryPrice, params.atr15m, params.policy)
   const fvg = latestBullishFvg15mStop(params.bars15m, params.reactionIndex, params.entryPrice, params.atr15m, params.policy)
   const ob = latestBullishOrderBlock15mStop(params.bars15m, params.sweepIndex, params.bosIndex, params.entryPrice, params.atr15m, params.policy)
   type StopCandidate = {
@@ -3560,11 +3780,13 @@ function scanLongSequence(params: {
     })
   }
 
+  let retestIndex = -1
   let reactionIndex = -1
   const retestEnd = Math.min(bars15m.length - 1, bosIndex + policy.retestWaitBars)
   for (let i = bosIndex + 1; i <= retestEnd; i += 1) {
     const bar = bars15m[i]
     const retest = bar.low <= entryZone.high && bar.high >= entryZone.low
+    if (retest && retestIndex < 0) retestIndex = i
     const reaction = retest && bar.close > bar.open && bar.close >= Math.min(entryZone.high, bar.open + atr15m * 0.08)
     if (reaction) {
       reactionIndex = i
@@ -3578,12 +3800,18 @@ function scanLongSequence(params: {
     const stopLoss = Math.max(0.01, Math.min(sweep.low, entryZone.low) - atr15m * 0.1)
     return completeAssessment({
       input,
-      state: 'waiting_retest',
+      state: retestIndex >= 0 ? 'waiting_reaction' : 'waiting_retest',
       completedBars,
       bias4h,
       ...context,
       demandZone1h,
-      sequence: { zoneTouchMs: touch.startMs, sweepMs: sweep.startMs, chochMs: choch.startMs, bosMs: bos.startMs },
+      sequence: {
+        zoneTouchMs: touch.startMs,
+        sweepMs: sweep.startMs,
+        chochMs: choch.startMs,
+        bosMs: bos.startMs,
+        retestMs: retestIndex >= 0 ? bars15m[retestIndex].startMs : null,
+      },
       execution: {
         entryPrice,
         chaseCeiling: entryPrice + atr15m * 0.25,
@@ -3595,8 +3823,9 @@ function scanLongSequence(params: {
       extraDetail: {
         entry_zone_low: price(entryZone.low),
         entry_zone_high: price(entryZone.high),
+        retest_accepted: retestIndex >= 0 ? 'true' : 'false',
         stale: stale ? 'true' : null,
-        stale_reason: stale ? 'retest_reaction_timeout' : null,
+        stale_reason: stale ? (retestIndex >= 0 ? 'reaction_timeout' : 'retest_timeout') : null,
         stale_after_15m_bars: policy.retestWaitBars,
         elapsed_15m_bars: elapsedBars,
       },
@@ -3692,10 +3921,10 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
   const fallback15mBars = normalizeBars(input.fallback15mBars ?? [])
   const context15mBars = [...fallback15mBars, ...bars15m].sort((a, b) => a.startMs - b.startMs)
   const bars1h = normalizeBars(input.bars1h)
-  const bars4h = normalizeBars(input.bars4h)
+  const barsSession60 = normalizeBars(input.barsSession60 ?? input.bars4h ?? [])
   const bars1d = normalizeBars(input.bars1d ?? [])
   const fallback1hBars = normalizeBars(input.fallback1hBars ?? [])
-  const completedBars = { m15: bars15m.length, h1: bars1h.length, h4: bars4h.length }
+  const completedBars = { m15: bars15m.length, h1: bars1h.length, session60: barsSession60.length, h4: barsSession60.length }
   const policy = inputTimingPolicy(input)
   const currentSupplyZone1h = bars1h.length > 0 ? findSupplyZone1h(bars1h, policy) : null
   const fallbackSupplyZone1h = !currentSupplyZone1h && fallback1hBars.length > 0 ? findSupplyZone1h(fallback1hBars, policy) : null
@@ -3721,15 +3950,15 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
       supply_zone_source: currentSupplyZone1h ? 'current_session_1h' : fallbackSupplyZone1h ? 'previous_session_1h' : null,
     }, completedBars)
   }
-  if (bars4h.length < 1) {
-    return emptyAssessment(input, 'waiting_4h_completed_bar', 's12_waiting_4h_completed_bar', completedBars, completedBars)
+  if (barsSession60.length < 1) {
+    return emptyAssessment(input, 'waiting_session_60m_completed_bar', 's12_waiting_session_60m_completed_bar', completedBars, completedBars)
   }
-  const bias4h = resolve4hBias(bars4h)
+  const bias4h = resolve4hBias(barsSession60)
   const neutral1hBias: S12HtfBias = { direction: 'neutral', confidence: 'none', channelAlign: false }
   const bias1h = bars1h.length > 0 ? resolve1hBias(bars1h) : neutral1hBias
   const supplyZone1h = currentSupplyZone1h ?? fallbackSupplyZone1h
   const demandZone1h = currentDemandZone1h ?? fallbackDemandZone1h
-  const parityDiagnostics = zoneLifecycleDiagnostics({ demandZone1h, supplyZone1h, bars15m: context15mBars, bars1h, bars4h, bars1d, policy })
+  const parityDiagnostics = zoneLifecycleDiagnostics({ demandZone1h, supplyZone1h, bars15m: context15mBars, bars1h, bars4h: barsSession60, bars1d, policy })
   const inputWithZoneDiagnostics: S12IntradayInput = {
     ...input,
     barDiagnostics: {
@@ -3748,7 +3977,7 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
     },
   }
   const bearishDefense = scanBearishDefenseSequence({ input: inputWithZoneDiagnostics, bars15m, supplyZone1h, policy })
-  const quality = buildStructureQuality(context15mBars, policy, { bars1h, bars4h, bars1d })
+  const quality = buildStructureQuality(context15mBars, policy, { bars1h, bars4h: barsSession60, bars1d })
   const equityMutation = buildEquityMutationContext({
     bars15m: context15mBars,
     bias4h,
@@ -3778,11 +4007,17 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
     })
   }
 
-  const h4Source = input.h4Source ?? (completedBars.h4 > 0 ? 'current_session' : 'unavailable')
-  if (shouldBlockOn4hBias(h4Source, bias4h) && !equityMutation.active) {
+  const sessionContextSource = input.sessionContextSource ?? (
+    input.h4Source === 'previous_trading_day_fallback'
+      ? 'previous_session_60m'
+      : completedBars.session60 > 0
+        ? 'current_session_60m'
+        : 'unavailable'
+  )
+  if (shouldBlockOnSession60Bias(sessionContextSource, bias4h) && !equityMutation.active) {
     return completeAssessment({
       input: inputWithZoneDiagnostics,
-      state: 'waiting_4h_long_bias',
+      state: 'waiting_session_60m_long_bias',
       completedBars,
       bias4h,
       bias1h,
@@ -3792,9 +4027,9 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
       quality,
       sequence: {},
       extraDetail: {
-        latest4h_close: price(bars4h[bars4h.length - 1]?.close),
-        required: '4h_long_channel_align',
-        h4_bias_gate: 'current_session_only',
+        latest_session_60m_close: price(barsSession60[barsSession60.length - 1]?.close),
+        required: 'session_60m_long_channel_align',
+        session_60m_bias_gate: 'current_session_only',
         equity_mutation_context: 'false',
         equity_mutation_score: equityMutation.score,
         equity_mutation_reasons: equityMutation.reasons.join('|'),
@@ -3895,28 +4130,33 @@ export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInp
   const currentSession15m = aggregateCompletedS12Bars(input.baseBars, M15_MS, nowMs, { alignToTwSession: true })
   const fallback15m = aggregateCompletedS12Bars(input.fallback15mBars ?? [], M15_MS, nowMs, { alignToTwSession: true })
   const bars1h = aggregateCompletedS12Bars(input.baseBars, H1_MS, nowMs, { alignToTwSession: true })
-  const currentSession4h = aggregateCompletedS12Bars(input.baseBars, H4_MS, nowMs, { alignToTwSession: true })
-  const fallback4h = currentSession4h.length > 0
-    ? []
-    : aggregateCompletedS12Bars(input.fallback4hBars ?? [], H4_MS, nowMs, { alignToTwSession: true })
   const fallback1h = aggregateCompletedS12Bars(input.fallback1hBars ?? [], H1_MS, nowMs, { alignToTwSession: true })
-  const bars1d = aggregateTwDailyS12Bars([...(input.fallback4hBars ?? []), ...(input.fallback1hBars ?? []), ...(input.fallback15mBars ?? []), ...input.baseBars], nowMs)
-  const h4Source: S12H4Source = currentSession4h.length > 0
+  const session60Bars = bars1h.length > 0 ? bars1h : fallback1h
+  const sessionContextSource: S12IntradayAssessment['sessionContextSource'] = bars1h.length > 0
+    ? 'current_session_60m'
+    : fallback1h.length > 0
+      ? 'previous_session_60m'
+      : 'unavailable'
+  const dailyContext = normalizeBars(input.fallbackDailyBars ?? [])
+  const bars1d = dailyContext.length > 0
+    ? dailyContext
+    : aggregateTwDailyS12Bars([...(input.fallback1hBars ?? []), ...(input.fallback15mBars ?? []), ...input.baseBars], nowMs)
+  const h4Source: S12H4Source = sessionContextSource === 'current_session_60m'
     ? 'current_session'
-    : fallback4h.length > 0
+    : sessionContextSource === 'previous_session_60m'
       ? 'previous_trading_day_fallback'
       : 'unavailable'
-  const bars4h = currentSession4h.length > 0 ? currentSession4h : fallback4h
   return assessS12IntradayStructure({
     symbol: input.symbol,
     nowMs,
     bars15m: currentSession15m,
     bars1h,
-    bars4h,
+    barsSession60: session60Bars,
     bars1d,
     fallback15mBars: fallback15m,
     fallback1hBars: fallback1h,
     h4Source,
+    sessionContextSource,
     h4ReferenceDate: h4Source === 'previous_trading_day_fallback' ? input.h4ReferenceDate ?? null : null,
     h4ReferenceClose: h4Source === 'previous_trading_day_fallback' ? input.h4ReferenceClose ?? null : null,
     policy: input.policy,
@@ -3927,8 +4167,10 @@ export function assessS12IntradayStructureFromBaseBars(input: S12FromBaseBarsInp
       completed_15m_current_session_bars: currentSession15m.length,
       completed_15m_seeded_context_bars: fallback15m.length,
       completed_1h_bars: bars1h.length,
-      completed_4h_current_session_bars: currentSession4h.length,
-      completed_4h_fallback_bars: fallback4h.length,
+      completed_session_60m_current_bars: bars1h.length,
+      completed_session_60m_fallback_bars: fallback1h.length,
+      context_timeframe: 'tw_equity_session_60m',
+      legacy_4h_proxy_disabled: 'true',
       completed_1h_fallback_bars: fallback1h.length,
       completed_1d_proxy_bars: bars1d.length,
     },
@@ -4063,14 +4305,26 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
   const assessmentTp1 = finitePositive(assessment?.exitPlan?.tp1?.price)
   const assessmentMainExit = finitePositive(assessment?.exitPlan?.mainExit?.price)
   const positionTp1Source =
-    input.pos.s12_tp1_source != null
-      ? String(input.pos.s12_tp1_source)
-      : input.pos.tp1_source != null
-        ? String(input.pos.tp1_source)
+    input.pos.tp1_source != null
+      ? String(input.pos.tp1_source)
+      : input.pos.fusion_runner_tp1_source != null
+        ? String(input.pos.fusion_runner_tp1_source)
+        : input.pos.s12_tp1_source != null
+          ? String(input.pos.s12_tp1_source)
         : null
   const assessmentTp1Source = assessment?.exitPlan?.tp1?.source === 'unavailable'
     ? null
     : assessment?.exitPlan?.tp1?.source ?? null
+  const persistedPressureTp1 = finitePositive(input.pos.s12_pressure_tp1)
+  const pressureTp1 = assessmentTp1 ?? persistedPressureTp1
+  const pressureTp1Source = assessmentTp1 != null
+    ? assessmentTp1Source
+    : input.pos.s12_pressure_tp1_source != null
+      ? String(input.pos.s12_pressure_tp1_source)
+      : input.pos.s12_tp1_source != null
+        ? String(input.pos.s12_tp1_source)
+        : null
+  const fusionRunnerTp1 = finitePositive(input.pos.fusion_runner_tp1) ?? positionTp1
   const assessmentMainExitSource =
     input.pos.s12_main_exit_source != null
       ? String(input.pos.s12_main_exit_source)
@@ -4142,12 +4396,16 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     structural_stop_source: structuralStopSource,
     structural_stop_method: structuralStopMethod,
     structural_stop_no_atr_buffer: s12StructuralStop != null ? 'true' : null,
-    exit_fusion_policy: 's12_vwap_atr_lifecycle_fusion_v1',
-    tp_fusion_policy: 'tw_equity_confluence_profit_gate_v1',
+    exit_fusion_policy: 'tw_equity_exit_fusion_v2',
+    tp_fusion_policy: 'tw_equity_exit_fusion_v2',
     position_opened_today: input.pos.position_opened_today === true ? 'true' : 'false',
     active_tp1_source: positionTp1 != null ? 'position_lifecycle' : assessmentTp1 != null ? 's12_assessment' : null,
     position_tp1_source: positionTp1Source,
     assessment_tp1_source: assessmentTp1Source,
+    near_pressure_tp1: price(pressureTp1),
+    near_pressure_tp1_source: pressureTp1Source,
+    fusion_runner_tp1: price(fusionRunnerTp1),
+    fusion_runner_tp1_source: positionTp1Source,
     assessment_main_exit_source: assessmentMainExitSource,
     vwap_state: assessment?.quality?.vwap?.state ?? null,
     vwap_stack: vwapContext?.stackState ?? null,
@@ -4181,17 +4439,18 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
   const tp1Hit = Number(input.pos.tp1_hit ?? 0) > 0
   const pnlPct = (currentPrice - entryPrice) / entryPrice
   const dailyWeak = String(assessment.barDiagnostics?.channel_1d_direction ?? '').toLowerCase() === 'short'
-  const fourHourWeak = assessment.bias4h?.direction === 'short'
+  const session60Weak = (assessment.biasSession60 ?? assessment.bias4h)?.direction === 'short'
   const bearishDefenseReady = assessment.bearishDefense.ready || assessment.state === 'bearish_defense_ready'
   const sellRatio = boundedRatio(input.tp1SellRatio, 0.5)
   const tpFusion = resolveTakeProfitFusion({
     entryPrice,
     currentPrice,
     positionTp1,
-    assessmentTp1,
+    pressureTp1,
+    runnerTp1: fusionRunnerTp1,
     assessmentMainExit,
     positionTp1Source,
-    assessmentTp1Source,
+    pressureTp1Source,
     assessmentMainExitSource,
     structuralStop,
     initialStop: finitePositive(input.pos.initial_stop),
@@ -4200,7 +4459,7 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     openedToday: input.pos.position_opened_today === true,
     bearishDefenseReady,
     dailyWeak,
-    fourHourWeak,
+    session60Weak,
     rvolState: assessment.quality?.rvol?.state,
     vwapStack: vwapContext?.stackState,
     nearestAboveSource: vwapContext?.nearestAbove?.source,
@@ -4218,6 +4477,10 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     tp_fusion_min_gain_pct: tpFusion.minGainPct,
     tp_fusion_pressure_sources: tpFusion.pressureSources.join('|') || null,
     tp_fusion_reasons: tpFusion.reasons.join('|') || null,
+    tp_fusion_executable_target: price(tpFusion.executableTarget),
+    tp_fusion_executable_target_source: tpFusion.executableTargetSource,
+    tp_fusion_near_pressure_target: price(pressureTp1),
+    tp_fusion_near_pressure_source: pressureTp1Source,
   }
 
   if (assessment.invalidated) {
@@ -4284,7 +4547,14 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     }
   }
 
-  if (tpFusion.pressureOnly) {
+  const normalizedPositionTp1Source = String(positionTp1Source ?? '')
+  const directTp1Allowed =
+    positionTp1 != null &&
+    !normalizedPositionTp1Source.startsWith('tw_equity_runner_') &&
+    !['15m_previous_high', 'vwap_fair_value', 's12_structure_exit_plan'].includes(normalizedPositionTp1Source)
+  const directTp1Touched = !tp1Hit && tp1 != null && currentPrice >= tp1 && directTp1Allowed
+
+  if (tpFusion.pressureOnly && !directTp1Touched) {
     const pressureStop = [
       structuralStop,
       finitePositive(input.pos.trailing_stop),
@@ -4315,7 +4585,7 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     }
   }
 
-  if (tpFusion.shouldTakeProfit && assessmentTp1 != null) {
+  if (tpFusion.shouldTakeProfit && tpFusion.executableTarget != null) {
     if (!input.executableBookAvailable) {
       return {
         action: 'QUOTE_UNAVAILABLE',
@@ -4328,7 +4598,7 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
         noShortOrder: true,
         s12State: assessment.state,
         setupId: assessment.setupId,
-        targetPrice: assessmentTp1,
+        targetPrice: tpFusion.executableTarget,
       }
     }
     return {
@@ -4341,7 +4611,8 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
         ...tpFusionDetail,
         trigger: 'tp_fusion_structural_tp1',
         active_tp1: positionTp1,
-        structural_tp1: assessmentTp1,
+        near_pressure_tp1: pressureTp1,
+        executable_tp1: tpFusion.executableTarget,
         sell_shares: clampedPartial,
         sell_ratio: fusedSellRatio,
       }),
@@ -4352,16 +4623,13 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
       noShortOrder: true,
       s12State: assessment.state,
       setupId: assessment.setupId,
-      targetPrice: assessmentTp1,
+      targetPrice: tpFusion.executableTarget,
       sellShares: clampedPartial,
       sellRatio: fusedSellRatio,
     }
   }
 
-  const directTp1Allowed =
-    positionTp1 != null &&
-    !['15m_previous_high', 'vwap_fair_value', 's12_structure_exit_plan'].includes(String(positionTp1Source ?? ''))
-  if (!tp1Hit && tp1 != null && currentPrice >= tp1 && directTp1Allowed) {
+  if (directTp1Touched) {
     if (!input.executableBookAvailable) {
       return {
         action: 'QUOTE_UNAVAILABLE',
@@ -4433,12 +4701,12 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     }
   }
 
-  if (dailyWeak && fourHourWeak && pnlPct > 0) {
+  if (dailyWeak && session60Weak && pnlPct > 0) {
     if (!input.executableBookAvailable) {
       return {
         action: 'QUOTE_UNAVAILABLE',
-        reason: 's12_daily_4h_bearish_profit_protect_quote_unavailable',
-        detail: s12DecisionDetail({ ...baseDetail, trigger: 'daily_4h_bearish_profit_protect' }),
+        reason: 's12_daily_session_60m_bearish_profit_protect_quote_unavailable',
+        detail: s12DecisionDetail({ ...baseDetail, trigger: 'daily_session_60m_bearish_profit_protect' }),
         stage: assessment.maturity.stage,
         role: 'position_defense',
         source: 's12_position_decision_v1',
@@ -4450,8 +4718,8 @@ export function resolveS12PositionDecision(input: S12PositionDecisionInput): S12
     }
     return {
       action: 'EXIT_ON_REVERSE_BOS',
-      reason: 's12_daily_4h_bearish_profit_protect_full_exit',
-      detail: s12DecisionDetail({ ...baseDetail, trigger: 'daily_4h_bearish_profit_protect', sell_shares: shares }),
+      reason: 's12_daily_session_60m_bearish_profit_protect_full_exit',
+      detail: s12DecisionDetail({ ...baseDetail, trigger: 'daily_session_60m_bearish_profit_protect', sell_shares: shares }),
       stage: assessment.maturity.stage,
       role: 'position_defense',
       source: 's12_position_decision_v1',

@@ -35,6 +35,15 @@ import { isTwIntradayTradingMinute } from '../lib/twMarketSession'
 import { normalizeTwLimitPrice } from '../lib/twMarketRules'
 import { buildStockVisionOrderIntent, buildStockVisionSellOrderIntent } from '../lib/stockvisionOrderIntent'
 import {
+  extractTwEquityExitFusionAnchorsFromOrderNote,
+  migrateCanonicalLifecycleExitFusionV2,
+  resolveTwEquityExitFusionV2,
+} from '../lib/twEquityExitFusion'
+import {
+  listApprovedS12TwCalibrationArtifacts,
+  resolveS12TwCalibrationArtifact,
+} from '../lib/s12TwEquityCalibration'
+import {
   appendUniqueWatchPoint,
   buildMarketStructureWatchPoint,
   buildMlVoteSummary,
@@ -701,10 +710,20 @@ paper.get('/positions', async (c) => {
   let totalPositionValue = 0
   const s12HoldingDefenseMap = new Map<string, any>()
   const canonicalLifecycleMap = new Map<string, any>()
+  const buyOrderNoteMap = new Map<string, unknown>()
+  const marketBySymbol = new Map<string, string>()
+  const s12CalibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(c.env.DB).catch(() => [])
   if (positions?.length) {
     const symbols = positionSymbols
     if (symbols.length > 0) {
       const placeholders = symbols.map(() => '?').join(',')
+      const { results: stockMarkets } = await c.env.DB.prepare(`
+        SELECT symbol, market FROM stocks WHERE symbol IN (${placeholders})
+      `).bind(...symbols).all<{ symbol?: string | null; market?: string | null }>()
+      for (const row of stockMarkets ?? []) {
+        const symbol = String(row.symbol ?? '').trim()
+        if (symbol) marketBySymbol.set(symbol, String(row.market ?? 'UNKNOWN'))
+      }
       const { results: s12Events } = await c.env.DB.prepare(`
         SELECT symbol, status, reason, detail_json, created_at
           FROM paper_execution_events
@@ -749,6 +768,7 @@ paper.get('/positions', async (c) => {
       for (const order of buyOrders ?? []) {
         const symbol = String(order.symbol ?? '').trim()
         if (!symbol || canonicalLifecycleMap.has(symbol)) continue
+        buyOrderNoteMap.set(symbol, order.note)
         const lifecycle = extractCanonicalTradeLifecycleFromOrderNote(order.note)
         if (!lifecycle) continue
         canonicalLifecycleMap.set(symbol, {
@@ -770,6 +790,19 @@ paper.get('/positions', async (c) => {
     const costBasis    = pos.avg_cost * pos.shares
     const unrealizedPnl    = marketValue - costBasis
     const unrealizedPnlPct = costBasis > 0 ? (unrealizedPnl / costBasis * 100) : 0
+    const rawCanonicalLifecycle = normalizeCanonicalTradeLifecycle(pos.trade_lifecycle_json) ?? canonicalLifecycleMap.get(pos.symbol) ?? null
+    const calibration = resolveS12TwCalibrationArtifact(s12CalibrationArtifacts, {
+      marketSegment: marketBySymbol.get(pos.symbol) ?? 'UNKNOWN',
+    })
+    const fusionTargets = resolveTwEquityExitFusionV2(
+      rawCanonicalLifecycle,
+      extractTwEquityExitFusionAnchorsFromOrderNote(buyOrderNoteMap.get(pos.symbol)),
+      calibration?.exit ?? null,
+    )
+    const migratedLifecycleJson = migrateCanonicalLifecycleExitFusionV2(rawCanonicalLifecycle, fusionTargets)
+    const canonicalLifecycle = parseJsonRecord(migratedLifecycleJson) ?? rawCanonicalLifecycle
+    const tp1Price = fusionTargets.runnerTp1 ?? finiteNumber(pos.tp1_price)
+    const tp2Price = fusionTargets.runnerTp2 ?? finiteNumber(pos.tp2_price)
     totalPositionValue += marketValue
 
     return {
@@ -787,11 +820,16 @@ paper.get('/positions', async (c) => {
 // Refresh stop-loss / take-profit state when a fresher price arrives.
       initial_stop:     pos.initial_stop ? Math.round(pos.initial_stop * 10) / 10 : null,
       trailing_stop:    pos.trailing_stop ? Math.round(pos.trailing_stop * 10) / 10 : null,
-      tp1_price:        pos.tp1_price ? Math.round(pos.tp1_price * 10) / 10 : null,
-      tp2_price:        pos.tp2_price ? Math.round(pos.tp2_price * 10) / 10 : null,
+      tp1_price:        tp1Price ? Math.round(tp1Price * 10) / 10 : null,
+      tp2_price:        tp2Price ? Math.round(tp2Price * 10) / 10 : null,
+      tp1_source:       fusionTargets.runnerTp1Source ?? canonicalLifecycle?.exit?.tp1Source ?? null,
+      tp_fusion_policy: fusionTargets.runnerTp1 != null ? 'tw_equity_exit_fusion_v2' : canonicalLifecycle?.exit?.fusionPolicy ?? null,
+      tp_fusion_calibration_artifact_id: calibration?.artifactId ?? null,
+      s12_near_pressure_price: fusionTargets.nearPressureTp1 ? Math.round(fusionTargets.nearPressureTp1 * 10) / 10 : null,
+      s12_near_pressure_source: fusionTargets.nearPressureTp1Source,
       tp1_hit:          !!pos.tp1_hit,
       s12_holding_defense: s12HoldingDefenseMap.get(pos.symbol) ?? null,
-      canonical_trade_lifecycle: normalizeCanonicalTradeLifecycle(pos.trade_lifecycle_json) ?? canonicalLifecycleMap.get(pos.symbol) ?? null,
+      canonical_trade_lifecycle: canonicalLifecycle,
     }
   }))
 

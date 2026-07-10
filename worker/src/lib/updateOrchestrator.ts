@@ -32,6 +32,8 @@ const FINALIZE_ORPHAN_REPAIR_DELAY_MS = 2 * 60_000
 const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
 const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
 const SOURCE_READINESS_FINLAB_REFRESH_COOLDOWN_SECONDS = 45 * 60
+const FINLAB_PENDING_WATCHDOG_STALE_MS = 15 * 60_000
+const FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS = 3
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
 const S12_REPLAY_QUEUE_CHUNK_SIZE = 250
 const FINLAB_CANONICAL_DAILY_CHECKS = [
@@ -164,6 +166,12 @@ type SchedulerRunSnapshot = {
   summary?: string
   error?: string
   timestamp?: string
+  run_id?: string
+}
+
+function schedulerSummaryField(entry: SchedulerRunSnapshot | null, field: string): string | null {
+  const match = String(entry?.summary ?? '').match(new RegExp(`(?:^|\\s)${field}=([^\\s;]+)`))
+  return match?.[1] ?? null
 }
 
 function isFinLabQuotaLimitLog(entry: SchedulerRunSnapshot | null): boolean {
@@ -395,10 +403,24 @@ async function checkEveningChainSourceReadiness(
     ),
     countReadinessRows(
       env.DB,
-      'canonical_fundamental_features:valuation_daily',
-      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND source = 'finlab.fundamental_factor_diversity' AND pe IS NOT NULL AND pb IS NOT NULL",
+      'canonical_fundamental_features:valuation_daily_union',
+      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND source = 'finlab.fundamental_factor_diversity' AND (pe IS NOT NULL OR pb IS NOT NULL)",
+      [targetDate],
+      1500,
+    ),
+    countReadinessRows(
+      env.DB,
+      'canonical_fundamental_features:valuation_daily_pe',
+      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND source = 'finlab.fundamental_factor_diversity' AND pe IS NOT NULL",
       [targetDate],
       1000,
+    ),
+    countReadinessRows(
+      env.DB,
+      'canonical_fundamental_features:valuation_daily_pb',
+      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND source = 'finlab.fundamental_factor_diversity' AND pb IS NOT NULL",
+      [targetDate],
+      1500,
     ),
   ])
   checks.push(...canonicalChecks)
@@ -2266,11 +2288,13 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
     reuseSuccessfulArtifacts: finLabArtifactReuseEnabled(env) && Boolean(refreshScope.keyScopeJson),
   }))
   const finlabStatus = classifySchedulerSummary(finlabSummary)
+  const finlabRunId = schedulerSummaryField({ summary: finlabSummary }, 'run_id') ?? undefined
   await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
     status: finlabStatus,
     summary: `${finlabSummary}${finLabRetryScopeSuffix(refreshScope)}`,
     duration_ms: 0,
     details: [...readinessDetails(fallbackReadiness), ...finLabRetryScopeDetails(refreshScope)],
+    run_id: finlabRunId,
     run_date: twDate,
   })
   if (finlabStatus !== 'triggered' && finlabStatus !== 'success') {
@@ -2294,6 +2318,96 @@ export async function runDailyUpdate(env: Bindings, force = false, runDate?: str
     run_date: twDate,
   })
   return `triggered evening-chain: ${finlabSummary}; awaiting FinLab canonical callback`
+}
+
+export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string): Promise<string> {
+  const twDate = resolveUpdateDate(runDate)
+  if (await hasEveningChainSucceeded(env, twDate)) {
+    return `skipped: evening-chain already succeeded for ${twDate}`
+  }
+
+  const finlabLog = await readSchedulerRunLog(env, 'finlab-v4-backfill', twDate)
+  if (finlabLog?.status === 'running') {
+    return `skipped: FinLab start heartbeat received for ${twDate}`
+  }
+  if (finlabLog?.status !== 'triggered' || !finlabLog.timestamp) {
+    return `skipped: no pending FinLab trigger for ${twDate}`
+  }
+
+  const triggeredAt = Date.parse(finlabLog.timestamp)
+  const ageMs = Number.isFinite(triggeredAt) ? Date.now() - triggeredAt : Number.POSITIVE_INFINITY
+  if (ageMs < FINLAB_PENDING_WATCHDOG_STALE_MS) {
+    return `skipped: FinLab trigger age=${Math.max(0, Math.floor(ageMs / 1000))}s below watchdog threshold`
+  }
+
+  const runId = finlabLog.run_id ?? schedulerSummaryField(finlabLog, 'run_id')
+  const functionCallId = schedulerSummaryField(finlabLog, 'function_call_id')
+  const previousAttempt = Number.parseInt(schedulerSummaryField(finlabLog, 'dispatch_attempt') ?? '1', 10)
+  if (!runId) throw new Error(`FinLab watchdog cannot recover ${twDate}: pending run_id missing`)
+  if (previousAttempt >= FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS) {
+    const summary = `failed: FinLab pending watchdog exhausted run_id=${runId} dispatch_attempt=${previousAttempt}`
+    await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+      status: 'error', summary, duration_ms: ageMs, run_id: runId, run_date: twDate,
+    }, env as any)
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'error', summary, duration_ms: ageMs, run_id: runId, run_date: twDate,
+    }, env as any)
+    return summary
+  }
+
+  const nextAttempt = previousAttempt + 1
+  const retryKey = `finlab:pending-watchdog:${twDate}:${runId}:${nextAttempt}`
+  if (await env.KV.get(retryKey)) {
+    return `skipped: FinLab watchdog retry already claimed run_id=${runId} dispatch_attempt=${nextAttempt}`
+  }
+  await env.KV.put(retryKey, new Date().toISOString(), { expirationTtl: 3600 })
+  // Reserve the attempt before cancellation/spawn so a late callback from the
+  // superseded call cannot overwrite the active dispatch while HTTP is in flight.
+  await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+    status: 'triggered',
+    summary: `triggered FinLab watchdog dispatch reservation run_id=${runId} function_call_id=${functionCallId ?? 'unknown'} dispatch_attempt=${nextAttempt}`,
+    duration_ms: 0,
+    run_id: runId,
+    run_date: twDate,
+  })
+
+  try {
+    const readiness = await checkEveningChainSourceReadiness(env, twDate)
+    const refreshScope = await finLabRetryScopeForReadiness(env, twDate, readiness, {
+      allowFetchedLaneRefetch: false,
+    })
+    const summary = String(await runFinLabV4Backfill(env, twDate, false, {
+      continueEveningChain: true,
+      dailySourceRefresh: true,
+      callbackMode: 'evening_chain',
+      lanes: refreshScope.lanes,
+      canonicalDatasets: refreshScope.canonicalDatasets,
+      keyScopeJson: refreshScope.keyScopeJson,
+      reuseSuccessfulArtifacts: true,
+      runId,
+      dispatchAttempt: nextAttempt,
+      supersedeFunctionCallId: functionCallId ?? undefined,
+    }))
+    const status = classifySchedulerSummary(summary)
+    await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
+      status,
+      summary: `${summary}; watchdog_retriggered_from_attempt=${previousAttempt}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: twDate,
+    })
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'triggered',
+      summary: `FinLab watchdog retriggered run_id=${runId} dispatch_attempt=${nextAttempt}; awaiting callback`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: twDate,
+    })
+    return summary
+  } catch (error) {
+    await env.KV.delete(retryKey)
+    throw error
+  }
 }
 
 export async function fetchWave2Data(

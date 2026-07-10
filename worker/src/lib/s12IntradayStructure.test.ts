@@ -63,27 +63,22 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
   const currentBars = Array.from({ length: 8 }, (_, i) =>
     bar(i * M15, 108 + i * 0.1, 109 + i * 0.1, 107 + i * 0.1, 108.5 + i * 0.1, 100),
   )
-  const fallback4h = [{
-    startMs: Date.parse('2026-06-25T01:00:00.000Z'),
-    open: 100,
-    high: 110,
-    low: 98,
-    close: 108,
-    volume: 1000,
-  }]
+  const fallback1h = Array.from({ length: 4 }, (_, i) =>
+    bar(-24 * H1 + i * H1, 100 + i, 102 + i, 99 + i, 101 + i, 250),
+  )
   const assessment = assessS12IntradayStructureFromBaseBars({
     symbol: '2330',
     baseBars: currentBars,
-    fallback4hBars: fallback4h,
-    nowMs: baseMs + 2 * H1,
+    fallback1hBars: fallback1h,
+    nowMs: baseMs + 30 * 60_000,
     barDiagnostics: { raw_kbars_count: 8, parsed_kbars_count: 8 },
     h4ReferenceDate: '2026-06-25',
     h4ReferenceClose: 108,
   })
-  assert(assessment.h4Source === 'previous_trading_day_fallback', 'S12 should use previous trading day 4H fallback before current 4H completes')
-  assert(assessment.completedBars.h4 === 1, 'previous trading day 4H fallback should satisfy the 4H anchor requirement')
-  assert(assessment.state !== 'waiting_4h_completed_bar', 'previous 4H fallback must prevent opening-session 4H deadlock')
-  assert(assessment.detail.includes('h4_source=previous_trading_day_fallback'), 'S12 detail should expose h4 fallback source')
+  assert(assessment.sessionContextSource === 'previous_session_60m', 'S12 should use previous-session 60M bars before the first current 60M bar completes')
+  assert(assessment.completedBars.session60 === 4, 'previous-session 60M bars should satisfy the session context requirement')
+  assert(assessment.state !== 'waiting_session_60m_completed_bar', 'previous-session 60M context must prevent opening-session deadlock')
+  assert(assessment.detail.includes('session_context_source=previous_session_60m'), 'S12 detail should expose the 60M session source')
   assert(assessment.detail.includes('raw_kbars_count=8'), 'S12 detail should expose kbar diagnostics')
 }
 
@@ -329,10 +324,10 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     h4ReferenceDate: '2026-06-25',
     h4ReferenceClose: 100,
   })
-  assert(assessment.h4Source === 'previous_trading_day_fallback', 'S12 should preserve previous-day 4H fallback source')
-  assert(assessment.bias4h.direction !== 'long', 'fixture should exercise neutral fallback 4H context')
-  assert(assessment.state !== 'waiting_4h_long_bias', 'previous-day 4H fallback must be context only, not a hard long-bias gate')
-  assert(assessment.detail.includes('h4_fallback_bias_mode=context_only'), 'S12 detail should explain fallback 4H bias is context-only')
+  assert(assessment.sessionContextSource === 'previous_session_60m', 'S12 should preserve previous-session 60M context source')
+  assert(assessment.biasSession60?.direction !== 'long', 'fixture should exercise neutral previous-session 60M context')
+  assert(assessment.state !== 'waiting_session_60m_long_bias', 'previous-session 60M context must be evidence-only, not a hard long-bias gate')
+  assert(assessment.detail.includes('previous_session_60m_bias_mode=context_only'), 'S12 detail should explain previous-session 60M bias is context-only')
 }
 
 {
@@ -511,7 +506,7 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     bars1h: [],
     bars4h,
   })
-  assert(assessment.state === 'waiting_4h_long_bias' || assessment.state === 'waiting_1h_completed_bar', 'non-mutation individual stocks should still wait inside S12 context gates')
+  assert(assessment.state === 'waiting_session_60m_long_bias' || assessment.state === 'waiting_1h_completed_bar', 'non-mutation individual stocks should still wait inside S12 context gates')
   assert(assessment.maturity.takeoverRole === 'none', 'weak/no-volume context must not become a hidden buy path')
   assert(assessment.detail.includes('equity_mutation_context=false'), 'S12 detail should expose why equity mutation did not activate')
 }

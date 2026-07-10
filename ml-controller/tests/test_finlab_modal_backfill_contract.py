@@ -34,6 +34,9 @@ def test_finlab_backfill_modal_function_and_spawn_contract_exist() -> None:
     assert "source_end_date: str | None = None" in finlab_router
     assert "require_official_market_summary: bool = False" in finlab_router
     assert "def spawn_finlab_v4_backfill(payload: dict)" in modal_client
+    assert "await fn.spawn.aio(payload)" in modal_client
+    assert "async def cancel_finlab_v4_backfill" in modal_client
+    assert "await call.cancel.aio()" in modal_client
     assert '"status": "triggered"' in modal_client
     assert "callback_url" in finlab_router
     assert "controller_d1_query_url" in finlab_router
@@ -41,6 +44,11 @@ def test_finlab_backfill_modal_function_and_spawn_contract_exist() -> None:
     assert '@router.post("/backfill/d1/batch")' in finlab_router
     assert '@router.post("/backfill/callback")' in finlab_router
     assert "STOCKVISION_WORKER_URL" in finlab_router
+    assert "dispatch_attempt" in finlab_router
+    assert "supersede_function_call_id" in finlab_router
+    assert "Fail closed" in finlab_router
+    assert "cancel_result = await modal_client.cancel_finlab_v4_backfill" in finlab_router
+    assert "FinLab V4 backfill started" in modal_app
 
 
 def test_modal_deploy_packages_finlab_tool_and_controller_services() -> None:

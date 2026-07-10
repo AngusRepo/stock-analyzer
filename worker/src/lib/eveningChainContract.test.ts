@@ -18,6 +18,10 @@ assert(
   'GCP Scheduler must trigger TW 18:10 market-close-refresh before the 21:00 evening chain',
 )
 assert(
+  jobs.some((job) => job.id === 'finlab-backfill-watchdog' && job.task === 'finlab-backfill-watchdog' && job.query === 'sync=1' && job.schedule === '*/10 13-15 * * 1-5'),
+  'GCP Scheduler must run the FinLab pending watchdog after the evening-chain root',
+)
+assert(
   !jobs.some((job) => job.task === 'source-readiness-probe' || job.id.startsWith('source-readiness-probe')),
   'GCP Scheduler must not run source-readiness-probe jobs',
 )
@@ -80,6 +84,18 @@ assert(
     updateOrchestrator.includes("'finlab_backfill_complete'") &&
     updateOrchestrator.includes('assertFinLabCanonicalReadinessReady'),
   'evening-chain must refresh all FinLab daily source lanes first, then continue through queue callback only after full canonical readiness is verified',
+)
+assert(
+  updateOrchestrator.includes('runFinLabBackfillWatchdog') &&
+    updateOrchestrator.includes('FINLAB_PENDING_WATCHDOG_STALE_MS') &&
+    updateOrchestrator.includes('supersedeFunctionCallId') &&
+    updateOrchestrator.includes('dispatchAttempt: nextAttempt'),
+  'FinLab pending calls must be retriggered idempotently with the same run id and incremented dispatch attempt',
+)
+assert(
+  updateOrchestrator.includes('watchdog dispatch reservation') &&
+    updateOrchestrator.indexOf('watchdog dispatch reservation') < updateOrchestrator.indexOf('supersedeFunctionCallId: functionCallId'),
+  'FinLab watchdog must reserve the next attempt before cancellation/spawn so stale callbacks are fenced',
 )
 assert(
   updateOrchestrator.includes('rowsOnTarget') &&

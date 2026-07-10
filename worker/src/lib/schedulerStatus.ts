@@ -29,6 +29,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'market-close-refresh', name: 'Market Close Refresh', schedule: 'Weekdays 18:10', cron: '10 10 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
   { id: 'evening-chain', name: 'Evening Chain', schedule: 'Weekdays 21:00', cron: '0 13 * * 1-5', group: 'pipeline_chain', chainIndex: 2 },
   { id: 'finlab-v4-backfill', name: 'FinLab V4 Backfill', schedule: 'Inside evening chain', cron: '', group: 'pipeline_chain', chainIndex: 3 },
+  { id: 'finlab-backfill-watchdog', name: 'FinLab Pending Watchdog', schedule: 'Weekdays 21:20-23:50 / 10m', cron: '*/10 13-15 * * 1-5', group: 'pipeline_chain', chainIndex: 3 },
   { id: 'update', name: 'Market Data Update', schedule: 'After FinLab canonical ready', cron: '', group: 'pipeline_chain', chainIndex: 4 },
   { id: 'indicator-queue', name: 'Indicator Queue', schedule: 'After update readiness', cron: '', group: 'pipeline_chain', chainIndex: 5 },
   { id: 'screener', name: 'Screener', schedule: 'After indicators', cron: '', group: 'pipeline_chain', chainIndex: 6 },

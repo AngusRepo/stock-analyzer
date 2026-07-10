@@ -296,7 +296,7 @@ def test_s12_trade_ev_bootstrap_excludes_legacy_non_s12_outcomes():
     assert provider.summary()["excluded_non_s12_rows"] == 40
     assert ev["status"] == "loaded"
     assert ev["sample_policy"] == "s12_structural_cold_start_no_replay"
-    assert ev["s12_structural_targets"]["target1_source"] == "s12_structure_exit_plan.r_multiple_fallback_1r"
+    assert ev["s12_structural_targets"]["target1_source"] == "tw_equity_exit_fusion_v2.r_multiple_fallback_1r"
     assert ev["s12_structural_targets"]["target2_source"] == "s12_structure_exit_plan.r_multiple_fallback_2r"
     assert ev["replay_bootstrap"]["sampleCount"] == 4
     assert ev["replay_bootstrap"]["trade_expected_return_source"].endswith("_insufficient_samples")
@@ -571,6 +571,83 @@ def test_s12_trade_ev_bootstrap_reads_canonical_lifecycle_vwap_targets():
     assert "canonical_trade_lifecycle.entry.s12.exitPlan.mainExit" in ev["s12_structural_targets"]["target2_source"]
 
 
+def test_s12_trade_ev_bootstrap_uses_fusion_runner_and_keeps_15m_high_as_pressure_only():
+    provider = S12TradeEvBootstrapProvider([], run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
+
+    ev = provider.build_for_row(
+        {
+            "symbol": "2441",
+            "current_price": 137.5,
+            "s12_structure_stop": 135.5,
+            "forecast_data": json.dumps({
+                "canonical_trade_lifecycle": {
+                    "version": "canonical_trade_lifecycle_v1",
+                    "owners": {"exit": "tw_equity_exit_fusion_v2"},
+                    "entry": {
+                        "entryPrice": 137.5,
+                        "s12": {
+                            "exitPlan": {
+                                "tp1": 138,
+                                "tp1Source": "15m_previous_high",
+                                "mainExit": 150,
+                                "mainExitSource": "1h_supply_zone",
+                            },
+                        },
+                    },
+                    "exit": {
+                        "tp1": 145,
+                        "tp1Source": "tw_equity_runner_median_v2",
+                        "fusionPolicy": "tw_equity_exit_fusion_v2",
+                        "anchors": {"atrTp1": 144.5, "mlTp1": 145.5},
+                    },
+                },
+            }),
+            "market_segment": "LISTED",
+            "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
+        },
+    )
+
+    assert ev["target1_price"] == 145
+    assert ev["s12_structural_targets"]["near_pressure_target1"] == 138
+    assert "tw_equity_exit_fusion_v2.median" in ev["s12_structural_targets"]["target1_source"]
+    assert ev["s12_structural_targets"]["near_pressure_role"] == "context_and_confluence_only_not_reward_target"
+
+
+def test_s12_trade_ev_bootstrap_deduplicates_legacy_target_equal_to_atr_anchor():
+    provider = S12TradeEvBootstrapProvider([], run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
+    ev = provider.build_for_row(
+        {
+            "symbol": "2441",
+            "current_price": 137.5,
+            "s12_structure_stop": 135.5,
+            "forecast_data": json.dumps({
+                "canonical_trade_lifecycle": {
+                    "version": "canonical_trade_lifecycle_v1",
+                    "owners": {"exit": "tw_equity_exit_fusion_v2"},
+                    "entry": {
+                        "entryPrice": 137.5,
+                        "source": "s12_assist_entry",
+                        "s12": {
+                            "ready": True,
+                            "exitPlan": {"tp1": 138, "tp1Source": "15m_previous_high"},
+                        },
+                    },
+                    "exit": {
+                        "tp1": 168.9089,
+                        "tp1Source": "tw_equity_runner_fusion_v2",
+                        "fusionPolicy": "tw_equity_exit_fusion_v2",
+                        "anchors": {"atrTp1": 168.9089, "mlTp1": 157.32},
+                    },
+                },
+            }),
+            "market_segment": "LISTED",
+            "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
+        },
+    )
+
+    assert abs(ev["target1_price"] - 163.11445) < 0.001
+
+
 def test_s12_trade_ev_bootstrap_excludes_hold_signal_even_with_s12_payload():
     provider = S12TradeEvBootstrapProvider(
         [_row("1111", "2026-07-02", 0.08, trade_signal="hold")] * 10,
@@ -589,7 +666,7 @@ def test_s12_trade_ev_bootstrap_excludes_hold_signal_even_with_s12_payload():
     assert provider.summary()["sample_rows"] == 0
     assert ev["status"] == "loaded"
     assert ev["sample_policy"] == "s12_structural_cold_start_no_replay"
-    assert ev["s12_structural_targets"]["target1_source"] == "s12_structure_exit_plan.r_multiple_fallback_1r"
+    assert ev["s12_structural_targets"]["target1_source"] == "tw_equity_exit_fusion_v2.r_multiple_fallback_1r"
     assert ev["s12_structural_targets"]["target2_source"] == "s12_structure_exit_plan.r_multiple_fallback_2r"
     assert ev["replay_bootstrap"]["sampleCount"] == 0
 
@@ -689,8 +766,10 @@ def test_s12_structure_snapshots_merge_into_cold_start_ev():
     assert provider.summary()["structure_snapshots"] == 1
     assert ev["status"] == "loaded"
     assert ev["source"] == "s12_structural_cold_start_ev"
-    assert ev["target1_price"] == 106
+    assert ev["target1_price"] == 104
     assert ev["target2_price"] == 112
+    assert ev["s12_structural_targets"]["near_pressure_target1"] == 106
+    assert ev["s12_structural_targets"]["near_pressure_role"] == "context_and_confluence_only_not_reward_target"
     assert ev["s12_structural_targets"]["structure_stop_source"] == "s12_structure_stop"
     assert ev["candidate_s12_entry_context"]["detail_available"] is True
     assert ev["s12_entry_context"]["vwap_fast_acceptance"] is True

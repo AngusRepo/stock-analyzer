@@ -20,6 +20,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -748,6 +749,35 @@ def run_risk_params(req: OptunaReq = Body(default=OptunaReq())):
             "push": push_response}
 
 
+@router.post("/s12_smcvwap_tw")
+def run_s12_smcvwap_tw(req: OptunaReq = Body(default=OptunaReq())):
+    """Research-only Taiwan-equity S12 search; Worker owns artifact promotion."""
+    from optuna_s12_smcvwap_tw import search_s12_smcvwap_tw  # type: ignore
+
+    date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    end_date = req.end_date if req.end_date and date_pattern.match(req.end_date) else None
+    start_date = req.start_date if req.start_date and date_pattern.match(req.start_date) else None
+    where = ["sample_eligible = 1", "trade_pnl_r IS NOT NULL"]
+    where.append(f"trade_date >= '{start_date}'" if start_date else "trade_date >= date('now', '-180 days')")
+    if end_date:
+        where.append(f"trade_date <= '{end_date}'")
+    rows = d1_query(
+        f"""
+        SELECT symbol, trade_date, market, entry_ms, entry_price, stop_price,
+               trade_pnl_r, max_favorable_pct, max_adverse_pct, detail_json
+          FROM s12_replay_trade_outcomes
+         WHERE {' AND '.join(where)}
+         ORDER BY trade_date ASC, symbol ASC
+         LIMIT 100000
+        """
+    )
+    result = search_s12_smcvwap_tw(rows or [], n_trials=req.n_trials)
+    result["contract"] = _contract_meta("s12_smcvwap_tw")
+    result["push"] = None
+    result["dry_run"] = req.dry_run
+    return result
+
+
 # ─── /optuna/rrg ─────────────────────────────────────────────────────────────
 
 @router.post("/rrg")
@@ -1046,6 +1076,19 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
             ),
         ),
     ]
+    if req.cadence == "monthly":
+        sweep_plan.append(
+            (
+                "s12_smcvwap_tw",
+                lambda: run_s12_smcvwap_tw(
+                    OptunaReq(
+                        **common,
+                        subset_size=req.subset_size,
+                        end_date=req.run_date,
+                    )
+                ),
+            )
+        )
 
     max_workers = min(req.max_parallel_sources, len(sweep_plan))
     ordered_results: list[dict[str, Any] | None] = [None] * len(sweep_plan)
@@ -1089,7 +1132,7 @@ def run_research_sweep(req: OptunaResearchSweepReq = Body(default=OptunaResearch
 def trigger_research_sweep_job(req: OptunaResearchSweepReq = Body(default=OptunaResearchSweepReq())):
     """Trigger the long-running Optuna research sweep as a Cloud Run Job.
 
-    Worker and Cloud Scheduler must not wait for the full 9-source research
+    Worker and Cloud Scheduler must not wait for the full research sweep
     sweep over HTTP. The Job owns the long lifecycle and callbacks Worker with
     the final weekly-optuna/monthly-optuna status.
     """

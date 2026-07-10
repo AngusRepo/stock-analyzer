@@ -1,3 +1,4 @@
+import { resolveTwEquityPriceBand } from './twEquityMarketContract'
 import type { EntryPriceModelV2 } from './entryPriceModelV2'
 
 export type PreTradeAction = 'BUY_AT' | 'REQUOTE' | 'DEFER' | 'SKIP'
@@ -176,9 +177,10 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
 
   const previousClose = Number(input.previousClose ?? 0)
   if (previousClose > 0) {
-    const changePct = (currentPrice - previousClose) / previousClose
-    if (changePct >= input.policy.limitUpPct) {
-      return { action: 'SKIP', reason: `limit_up_chase:${(changePct * 100).toFixed(1)}%` }
+    const priceBand = resolveTwEquityPriceBand(previousClose)
+    if (priceBand.limitUp != null && currentPrice >= priceBand.limitUp) {
+      const changePct = (currentPrice - previousClose) / previousClose
+      return { action: 'SKIP', reason: `limit_up_chase:${(changePct * 100).toFixed(1)}%;limit=${priceBand.limitUp}` }
     }
   }
 

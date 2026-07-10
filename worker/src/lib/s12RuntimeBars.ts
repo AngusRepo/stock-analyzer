@@ -47,6 +47,9 @@ export interface S12BaseBarDiagnostics {
   previous_4h_fallback_loaded: boolean
   previous_4h_reference_date: string | null
   previous_4h_reference_close: number | null
+  previous_daily_context_loaded: boolean
+  previous_daily_context_date: string | null
+  previous_daily_raw_close: number | null
   previous_session_kbars_count: number
   previous_session_kbars_date: string | null
   previous_session_kbars_first_tw: string | null
@@ -410,49 +413,86 @@ async function fetchS12ShioajiKbars(
   }
 }
 
-async function loadPreviousTradingDay4hFallback(
+async function loadPreviousTradingDayContext(
   env: Bindings,
   symbol: string,
   tradeDate: string,
-): Promise<{ bar: IntradayRollingBar | null; referenceDate: string | null; referenceClose: number | null }> {
-  const row = await env.DB.prepare(`
-    SELECT sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume
-      FROM stock_prices sp
-      JOIN stocks s ON s.id = sp.stock_id
-     WHERE s.symbol = ?
-       AND sp.date < ?
-       AND sp.open IS NOT NULL
-       AND sp.high IS NOT NULL
-       AND sp.low IS NOT NULL
-       AND sp.close IS NOT NULL
-     ORDER BY sp.date DESC
-     LIMIT 1
-  `).bind(symbol, tradeDate).first<{
+): Promise<{ bars: IntradayRollingBar[]; referenceDate: string | null; referenceClose: number | null }> {
+  type DailyRow = {
     date: string
     open: number | string | null
     high: number | string | null
     low: number | string | null
     close: number | string | null
+    raw_close?: number | string | null
     volume: number | string | null
-  }>()
-  const open = finiteNumber(row?.open)
-  const high = finiteNumber(row?.high)
-  const low = finiteNumber(row?.low)
-  const close = finiteNumber(row?.close)
-  if (!row?.date || open == null || high == null || low == null || close == null) {
-    return { bar: null, referenceDate: null, referenceClose: null }
   }
+  let adjustedRows: DailyRow[] = []
+  try {
+    const { results } = await env.DB.prepare(`
+      WITH ranked AS (
+        SELECT cmd.date,
+               COALESCE(cmd.adj_open, cmd.open) AS open,
+               COALESCE(cmd.adj_high, cmd.high) AS high,
+               COALESCE(cmd.adj_low, cmd.low) AS low,
+               COALESCE(cmd.adj_close, cmd.close) AS close,
+               cmd.close AS raw_close,
+               cmd.volume,
+               ROW_NUMBER() OVER (
+                 PARTITION BY cmd.date
+                 ORDER BY CASE WHEN cmd.source LIKE 'finlab%' THEN 0 ELSE 1 END, cmd.created_at DESC
+               ) AS source_rank
+          FROM canonical_market_daily cmd
+         WHERE (CAST(cmd.stock_id AS TEXT) = ? OR CAST(cmd.stock_id AS TEXT) = CAST((SELECT id FROM stocks WHERE symbol = ? LIMIT 1) AS TEXT))
+           AND cmd.date < ?
+           AND cmd.adj_open IS NOT NULL
+           AND cmd.adj_high IS NOT NULL
+           AND cmd.adj_low IS NOT NULL
+           AND cmd.adj_close IS NOT NULL
+      )
+      SELECT date, open, high, low, close, raw_close, volume
+        FROM ranked
+       WHERE source_rank = 1
+       ORDER BY date DESC
+       LIMIT 120
+    `).bind(symbol, symbol, tradeDate).all<DailyRow>()
+    adjustedRows = results ?? []
+  } catch {
+    adjustedRows = []
+  }
+  const rawReference = await env.DB.prepare(`
+    SELECT sp.date, sp.close
+      FROM stock_prices sp
+      JOIN stocks s ON s.id = sp.stock_id
+     WHERE s.symbol = ?
+       AND sp.date < ?
+       AND sp.close IS NOT NULL
+     ORDER BY sp.date DESC
+     LIMIT 1
+  `).bind(symbol, tradeDate).first<{ date?: string | null; close?: number | string | null }>()
+  const bars = adjustedRows
+    .map((row): IntradayRollingBar | null => {
+      const open = finiteNumber(row.open)
+      const high = finiteNumber(row.high)
+      const low = finiteNumber(row.low)
+      const close = finiteNumber(row.close)
+      if (!row.date || open == null || high == null || low == null || close == null) return null
+      return {
+        startMs: Date.parse(`${row.date}T01:00:00.000Z`),
+        open,
+        high: Math.max(high, open, close),
+        low: Math.min(low, open, close),
+        close,
+        volume: Math.max(0, finiteNumber(row.volume) ?? 0),
+      }
+    })
+    .filter((bar): bar is IntradayRollingBar => bar != null)
+    .sort((a, b) => a.startMs - b.startMs)
+  const latestAdjusted = adjustedRows[0]
   return {
-    bar: {
-      startMs: Date.parse(`${row.date}T01:00:00.000Z`),
-      open,
-      high: Math.max(high, open, close),
-      low: Math.min(low, open, close),
-      close,
-      volume: Math.max(0, finiteNumber(row.volume) ?? 0),
-    },
-    referenceDate: row.date,
-    referenceClose: close,
+    bars,
+    referenceDate: String(rawReference?.date ?? latestAdjusted?.date ?? '').trim() || null,
+    referenceClose: finiteNumber(rawReference?.close) ?? finiteNumber(latestAdjusted?.raw_close),
   }
 }
 
@@ -531,6 +571,7 @@ export async function loadS12IntradayBaseBars(
   fallback15mBars: IntradayRollingBar[]
   fallback4hBars: IntradayRollingBar[]
   fallback1hBars: IntradayRollingBar[]
+  fallbackDailyBars: IntradayRollingBar[]
   source: S12BaseBarSource
   diagnostics: S12BaseBarDiagnostics
 }> {
@@ -545,7 +586,7 @@ export async function loadS12IntradayBaseBars(
       lookback: optionalPositiveNumber((env as any).S12_INTRADAY_BAR_LOOKBACK, 720),
     },
   )
-  const previous4h = await loadPreviousTradingDay4hFallback(env, symbol, tradeDate)
+  const previousDaily = await loadPreviousTradingDayContext(env, symbol, tradeDate)
   let diagnostics: S12BaseBarDiagnostics = {
     raw_kbars_count: 0,
     parsed_kbars_count: 0,
@@ -565,9 +606,12 @@ export async function loadS12IntradayBaseBars(
     kbars_normalized_session_count: 0,
     kbars_filtered_count: 0,
     kbars_filtered_outside_trade_date_count: 0,
-    previous_4h_fallback_loaded: previous4h.bar != null,
-    previous_4h_reference_date: previous4h.referenceDate,
-    previous_4h_reference_close: previous4h.referenceClose,
+    previous_4h_fallback_loaded: false,
+    previous_4h_reference_date: null,
+    previous_4h_reference_close: null,
+    previous_daily_context_loaded: previousDaily.bars.length > 0,
+    previous_daily_context_date: previousDaily.referenceDate,
+    previous_daily_raw_close: previousDaily.referenceClose,
     previous_session_kbars_count: 0,
     previous_session_kbars_date: null,
     previous_session_kbars_first_tw: null,
@@ -587,8 +631,9 @@ export async function loadS12IntradayBaseBars(
       return {
         bars,
         fallback15mBars: previousSessionBars,
-        fallback4hBars: previous4h.bar ? [previous4h.bar] : [],
+        fallback4hBars: [],
         fallback1hBars: previousSessionBars,
+        fallbackDailyBars: previousDaily.bars,
         source: 'shioaji_kbars_usable',
         diagnostics: {
           ...diagnostics,
@@ -607,8 +652,9 @@ export async function loadS12IntradayBaseBars(
   return {
     bars: eventBars,
     fallback15mBars: previousSessionBars,
-    fallback4hBars: previous4h.bar ? [previous4h.bar] : [],
+    fallback4hBars: [],
     fallback1hBars: previousSessionBars,
+    fallbackDailyBars: previousDaily.bars,
     source: diagnostics.raw_kbars_count > 0
       ? 'shioaji_kbars_unusable_fallback_event_history'
       : 'event_history_only',
@@ -628,9 +674,10 @@ export async function loadS12HistoricalReplayBars(
   fallback15mBars: IntradayRollingBar[]
   fallback4hBars: IntradayRollingBar[]
   fallback1hBars: IntradayRollingBar[]
+  fallbackDailyBars: IntradayRollingBar[]
   diagnostics: S12BaseBarDiagnostics
 }> {
-  const previous4h = await loadPreviousTradingDay4hFallback(env, symbol, tradeDate)
+  const previousDaily = await loadPreviousTradingDayContext(env, symbol, tradeDate)
   let diagnostics: S12BaseBarDiagnostics = {
     raw_kbars_count: 0,
     parsed_kbars_count: 0,
@@ -650,9 +697,12 @@ export async function loadS12HistoricalReplayBars(
     kbars_normalized_session_count: 0,
     kbars_filtered_count: 0,
     kbars_filtered_outside_trade_date_count: 0,
-    previous_4h_fallback_loaded: previous4h.bar != null,
-    previous_4h_reference_date: previous4h.referenceDate,
-    previous_4h_reference_close: previous4h.referenceClose,
+    previous_4h_fallback_loaded: false,
+    previous_4h_reference_date: null,
+    previous_4h_reference_close: null,
+    previous_daily_context_loaded: previousDaily.bars.length > 0,
+    previous_daily_context_date: previousDaily.referenceDate,
+    previous_daily_raw_close: previousDaily.referenceClose,
     previous_session_kbars_count: 0,
     previous_session_kbars_date: null,
     previous_session_kbars_first_tw: null,
@@ -669,16 +719,18 @@ export async function loadS12HistoricalReplayBars(
     return {
       bars: kbars.diagnostics.kbars_unusable_reason == null ? kbars.bars : [],
       fallback15mBars: kbars.previousSessionBars,
-      fallback4hBars: previous4h.bar ? [previous4h.bar] : [],
+      fallback4hBars: [],
       fallback1hBars: kbars.previousSessionBars,
+      fallbackDailyBars: previousDaily.bars,
       diagnostics,
     }
   } catch (error) {
     return {
       bars: [],
       fallback15mBars: [],
-      fallback4hBars: previous4h.bar ? [previous4h.bar] : [],
+      fallback4hBars: [],
       fallback1hBars: [],
+      fallbackDailyBars: previousDaily.bars,
       diagnostics: {
         ...diagnostics,
         kbars_error: error instanceof Error ? error.message : String(error),

@@ -14,6 +14,7 @@ export interface FinLabL5Quote {
   spreadPct?: number | null
   orderBookImbalance?: number | null
   rawStatus?: string | null
+  lotType?: 'board_lot' | 'odd_lot'
 }
 
 export interface L5QuoteQualityThresholds {
@@ -205,6 +206,9 @@ export function normalizeFinLabL5Quote(
     spreadPct,
     orderBookImbalance,
     rawStatus: payload.status != null ? String(payload.status) : null,
+    lotType: ['odd_lot', 'intraday_odd'].includes(String(payload.lot_type ?? payload.order_lot ?? '').toLowerCase())
+      ? 'odd_lot'
+      : 'board_lot',
   }
 }
 
@@ -390,6 +394,7 @@ export function buildFinLabL5MarketDataDetail(quote: FinLabL5Quote | null): Reco
     source_time: quote?.sourceTime ?? null,
     received_at: quote?.receivedAt ?? null,
     live_submit_enabled: false,
+    lot_type: quote?.lotType ?? 'board_lot',
   }
 }
 

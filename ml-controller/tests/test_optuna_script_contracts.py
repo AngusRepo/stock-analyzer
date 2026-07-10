@@ -25,6 +25,7 @@ def test_optuna_script_contracts_cover_active_scripts():
         "screener",
         "signal",
         "sltp",
+        "s12_smcvwap_tw",
     }
 
     assert set(OPTUNA_SCRIPT_CONTRACTS) == expected
@@ -57,3 +58,6 @@ def test_optuna_script_contract_classifies_non_live_research_and_sandbox():
     assert ga.production_effect == "meta_optimizer_learning"
     assert ga.push_target == "worker_kv_ga_optimizer_state"
     assert get_optuna_script_contract("per_regime_robust").production_effect == "sandbox_challenger"
+    s12 = get_optuna_script_contract("s12_smcvwap_tw")
+    assert s12.production_effect == "candidate_for_worker_artifact_validation"
+    assert s12.requires_external_gate is True

@@ -132,8 +132,13 @@ function intradayProfileEntryModel(
 }
 
 {
-  const decision = evaluatePreTradeExecution(baseInput({ currentPrice: 109.6, previousClose: 100 }))
+  const decision = evaluatePreTradeExecution(baseInput({ currentPrice: 110, previousClose: 100 }))
   assert(decision.action === 'SKIP', 'limit-up chase must be skipped')
+}
+
+{
+  const decision = evaluatePreTradeExecution(baseInput({ currentPrice: 109.5, previousClose: 100 }))
+  assert(!decision.reason.startsWith('limit_up_chase'), '9.5% is not the official limit-up price and must not be hard-blocked as limit-up')
 }
 
 {

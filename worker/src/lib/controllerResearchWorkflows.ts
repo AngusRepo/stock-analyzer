@@ -43,6 +43,7 @@ const OPTUNA_RESEARCH_SOURCES = [
   'rrg',
   'alpha_framework',
   'ga_optimizer',
+  's12_smcvwap_tw',
 ]
 
 interface OptunaResearchOptions {
@@ -530,6 +531,9 @@ type FinLabBackfillRunOptions = {
   canonicalDatasets?: string
   keyScopeJson?: string
   reuseSuccessfulArtifacts?: boolean
+  runId?: string
+  dispatchAttempt?: number
+  supersedeFunctionCallId?: string
 }
 
 function buildFinLabBackfillRequestBody(
@@ -540,7 +544,7 @@ function buildFinLabBackfillRequestBody(
 ): Record<string, unknown> {
   const years = finLabBackfillYears(env)
   const dailySourceMode = Boolean(options.dailySourceRefresh || options.continueEveningChain)
-  const runId = buildFinLabBackfillRunId(years, runDate, dailySourceMode)
+  const runId = optionalString(options.runId) ?? buildFinLabBackfillRunId(years, runDate, dailySourceMode)
   const callbackMode = options.callbackMode ?? (options.continueEveningChain ? 'evening_chain' : undefined)
   const dailyTargetDate = runDate && /^\d{4}-\d{2}-\d{2}$/.test(runDate) ? runDate : undefined
   if (dailySourceMode && !dailyTargetDate) {
@@ -597,6 +601,8 @@ function buildFinLabBackfillRequestBody(
       ? (optionalString(options.keyScopeJson) ?? optionalString((env as any).FINLAB_DAILY_SOURCE_KEY_SCOPE_JSON) ?? optionalString((env as any).FINLAB_DAILY_PRICE_KEY_SCOPE_JSON) ?? dailyKeyScopeJsonForLanes(dailyLanes))
       : optionalString(options.keyScopeJson),
     reuse_successful_artifacts: Boolean(options.reuseSuccessfulArtifacts),
+    dispatch_attempt: Math.max(1, Math.min(5, Math.floor(options.dispatchAttempt ?? 1))),
+    supersede_function_call_id: optionalString(options.supersedeFunctionCallId),
     skip_diff_counts: dailySourceMode
       ? !truthyFlag((env as any).FINLAB_DAILY_PRICE_KEEP_DIFF_COUNTS)
       : truthyFlag((env as any).FINLAB_BACKFILL_SKIP_DIFF_COUNTS),
@@ -629,7 +635,8 @@ export async function runFinLabV4Backfill(
   if (result.status === 'failed' || result.status === 'error') return `failed: ${result.error ?? result.status}`
   const runId = String(result.run_id ?? 'unknown')
   const functionCallId = String(result.function_call_id ?? result.execution_id ?? 'unknown')
-  return `triggered finlab-v4-backfill run_id=${runId} function_call_id=${functionCallId} callback expected`
+  const dispatchAttempt = Number(result.dispatch_attempt ?? options.dispatchAttempt ?? 1)
+  return `triggered finlab-v4-backfill run_id=${runId} function_call_id=${functionCallId} dispatch_attempt=${dispatchAttempt} callback expected`
 }
 
 export async function runExternalEvidenceMaterialize(env: Bindings, runDate?: string) {

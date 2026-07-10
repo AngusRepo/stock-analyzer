@@ -5,6 +5,7 @@ export interface IntradayOHLC {
   low?: number
   high?: number
   open?: number
+  referencePrice?: number
   bid?: number
   ask?: number
   bidVolume?: number
@@ -109,6 +110,12 @@ export function normalizeShioajiSnapshot(snapshot: any, options: NormalizeSnapsh
   const low = finiteTwTickPrice(snapshot?.low)
   const high = finiteTwTickPrice(snapshot?.high)
   const open = finiteTwTickPrice(snapshot?.open)
+  const referencePrice = firstFiniteTwTickPrice(
+    snapshot?.reference_price,
+    snapshot?.referencePrice,
+    snapshot?.ref_price,
+    snapshot?.yesterday_close,
+  )
   const bid = includeExecutableBook
     ? firstFiniteTwTickPrice(snapshot?.bid, snapshot?.bid_price, snapshot?.bidPrice, snapshot?.best_bid, snapshot?.bestBid, snapshot?.bid_prices, snapshot?.bids)
     : undefined
@@ -146,7 +153,7 @@ export function normalizeShioajiSnapshot(snapshot: any, options: NormalizeSnapsh
   if (high != null && last > high) last = high
   if (!isValidTwTickPrice(last)) return null
 
-  return { last, low, high, open, bid, ask, bidVolume, askVolume, totalVolume, quoteTime, source: 'shioaji' }
+  return { last, low, high, open, referencePrice, bid, ask, bidVolume, askVolume, totalVolume, quoteTime, source: 'shioaji' }
 }
 
 function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
@@ -178,6 +185,7 @@ function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
 
   const bidVolume = firstFiniteNumber(payload?.bid_volume, payload?.bidVolume, payload?.best_bid_volume, payload?.bestBidVolume, payload?.bid_volumes)
   const askVolume = firstFiniteNumber(payload?.ask_volume, payload?.askVolume, payload?.best_ask_volume, payload?.bestAskVolume, payload?.ask_volumes)
+  const referencePrice = firstFiniteTwTickPrice(payload?.reference_price, payload?.referencePrice, payload?.ref_price, payload?.yesterday_close)
   const quoteTime = typeof payload?.source_time === 'string'
     ? payload.source_time
     : typeof payload?.quote_time === 'string'
@@ -188,7 +196,7 @@ function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
           ? payload.updated_at
           : undefined
 
-  return { last, bid, ask, bidVolume, askVolume, quoteTime, source: 'shioaji' }
+  return { last, referencePrice, bid, ask, bidVolume, askVolume, quoteTime, source: 'shioaji' }
 }
 
 function mergeSnapshotContext(current: IntradayOHLC, snapshot: any): IntradayOHLC {
@@ -199,6 +207,7 @@ function mergeSnapshotContext(current: IntradayOHLC, snapshot: any): IntradayOHL
     low: normalized.low ?? current.low,
     high: normalized.high ?? current.high,
     open: normalized.open ?? current.open,
+    referencePrice: normalized.referencePrice ?? current.referencePrice,
     totalVolume: normalized.totalVolume ?? current.totalVolume,
   }
 }

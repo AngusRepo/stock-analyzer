@@ -28,9 +28,15 @@ assert(
 )
 
 const context = buildS12SnapshotEntryContext({
+  engineVersion: 's12_smcvwap_tw_equity_v2',
   state: 'reaction_ready',
+  entryState: 'EXECUTABLE',
+  sessionContextSource: 'current_session_60m',
+  biasSession60: { direction: 'long', confidence: 'high', channelAlign: true },
   ready: true,
   detail: [
+    'calibration_artifact_id=s12-tw-calibration-2026w27',
+    'calibration_scope=TWSE|ALL|OPEN',
     'entry_archetype=equity_repricing_breakout',
     'vwap_fast_acceptance=true',
     'vwap_fast_reasons=session_vwap_above|rolling15m_7_above',
@@ -39,6 +45,11 @@ const context = buildS12SnapshotEntryContext({
   ].join(';'),
 } as any)
 
+assert.equal(context.engine_version, 's12_smcvwap_tw_equity_v2')
+assert.equal(context.entry_state, 'EXECUTABLE')
+assert.equal(context.session_context_source, 'current_session_60m')
+assert.equal(context.session_60m_bias, 'long')
+assert.equal(context.calibration_artifact_id, 's12-tw-calibration-2026w27')
 assert.equal(context.entry_archetype, 'equity_repricing_breakout')
 assert.equal(context.vwap_fast_acceptance, true)
 assert.deepEqual(context.vwap_fast_reasons, ['session_vwap_above', 'rolling15m_7_above'])

@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../types'
 import { requireAdminOrServiceToken } from '../lib/auth'
+import { resolveFinLabDispatchFence } from '../lib/finLabDispatchFence'
 
 export const adminControlRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -262,6 +263,30 @@ async function handleSchedulerCallback(c: any) {
       ? body.date
       : undefined
   const callbackRunId = typeof body.run_id === 'string' ? body.run_id : undefined
+
+  if (body.task === 'finlab-v4-backfill' && callbackRunDate) {
+    const current = await c.env.KV.get(
+      `scheduler:run:finlab-v4-backfill:${callbackRunDate}`,
+      'json',
+    ) as { run_id?: string; summary?: string } | null
+    const fence = resolveFinLabDispatchFence({
+      activeRunId: current?.run_id,
+      activeSummary: current?.summary,
+      incomingRunId: callbackRunId,
+      incomingAttempt: body.dispatch_attempt ?? body.metadata?.dispatch_attempt,
+    })
+    if (fence.ignored) {
+      return c.json({
+        success: true,
+        ignored: true,
+        reason: fence.reason,
+        run_id: callbackRunId,
+        dispatch_attempt: fence.incomingAttempt,
+        active_run_id: current?.run_id ?? null,
+        active_dispatch_attempt: fence.activeAttempt,
+      })
+    }
+  }
 
   await logSchedulerResult(c.env.KV, String(body.task), {
     status: body.status,

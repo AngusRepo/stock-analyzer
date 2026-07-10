@@ -264,6 +264,20 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       })
       return result.summary
     },
+    's12-smcvwap-calibration': async () => {
+      const { runS12TwCalibration } = await import('./s12TwEquityCalibration')
+      const cadence = c.req.query('cadence') === 'monthly'
+        ? 'monthly'
+        : c.req.query('cadence') === 'regime_shift'
+          ? 'regime_shift'
+          : 'weekly'
+      const result = await runS12TwCalibration(c.env.DB, {
+        runDate: requestedRunDate() ?? twToday(),
+        cadence,
+        dryRun: c.req.query('dry_run') === '1',
+      })
+      return result.summary
+    },
     's12-replay-backfill': async () => {
       const { runS12HistoricalReplayForDate } = await import('./s12ReplayTradeOutcome')
       const runDate = assertRunDate(requestedRunDate())

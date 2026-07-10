@@ -2668,6 +2668,7 @@ def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, su
         "run_id": str(payload.get("run_id") or result.get("run_id") or ""),
         "run_date": payload.get("run_date"),
         "force": bool(payload.get("force")),
+        "dispatch_attempt": int(payload.get("dispatch_attempt") or result.get("dispatch_attempt") or 1),
         "continue_evening_chain": bool(payload.get("continue_evening_chain")),
         "daily_source_refresh": bool(payload.get("daily_source_refresh")),
         "callback_mode": payload.get("callback_mode"),
@@ -2680,11 +2681,13 @@ def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, su
             "continue_evening_chain": bool(payload.get("continue_evening_chain")),
             "daily_source_refresh": bool(payload.get("daily_source_refresh")),
             "callback_mode": payload.get("callback_mode"),
+            "dispatch_attempt": int(payload.get("dispatch_attempt") or result.get("dispatch_attempt") or 1),
         },
         "metadata": {
             "daily_source_refresh": bool(payload.get("daily_source_refresh")),
             "callback_mode": payload.get("callback_mode"),
             "requested_lanes": result.get("requested_lanes") or payload.get("lanes"),
+            "dispatch_attempt": int(payload.get("dispatch_attempt") or result.get("dispatch_attempt") or 1),
         },
     }
     if error:
@@ -2804,6 +2807,7 @@ def finlab_v4_backfill(payload: dict) -> dict:
 
     started = time.time()
     run_id = str(payload.get("run_id") or "auto")
+    dispatch_attempt = int(payload.get("dispatch_attempt") or 1)
     controller_env = {
         "FINLAB_CONTROLLER_D1_QUERY_URL": payload.get("controller_d1_query_url"),
         "FINLAB_CONTROLLER_D1_BATCH_URL": payload.get("controller_d1_batch_url"),
@@ -2815,9 +2819,17 @@ def finlab_v4_backfill(payload: dict) -> dict:
             os.environ[key] = str(value)
     print(
         f"[finlab_v4_backfill] start run_id={run_id} "
+        f"dispatch_attempt={dispatch_attempt} "
         f"controller_proxy={bool(payload.get('controller_d1_query_url') and payload.get('controller_token'))} "
         f"controller_callback={bool(payload.get('controller_callback_url') and payload.get('controller_token'))}",
         flush=True,
+    )
+    start_callback = _post_worker_scheduler_callback(
+        payload,
+        {"run_id": run_id, "dispatch_attempt": dispatch_attempt},
+        "running",
+        f"FinLab V4 backfill started run_id={run_id} dispatch_attempt={dispatch_attempt}",
+        0,
     )
     argv = [
         "finlab_v4_remote_backfill.py",
@@ -2886,6 +2898,8 @@ def finlab_v4_backfill(payload: dict) -> dict:
         except Exception as exc:
             result["external_evidence_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
         result["continue_evening_chain"] = bool(payload.get("continue_evening_chain"))
+        result["dispatch_attempt"] = dispatch_attempt
+        result["start_callback"] = start_callback
         duration_ms = int((time.time() - started) * 1000)
         macro_error = isinstance(result.get("macro_context_writeback"), dict) and result["macro_context_writeback"].get("status") == "error"
         external_error = isinstance(result.get("external_evidence_writeback"), dict) and result["external_evidence_writeback"].get("status") == "error"
@@ -2916,6 +2930,8 @@ def finlab_v4_backfill(payload: dict) -> dict:
             "stdout_tail": stdout.getvalue()[-4000:],
             "continue_evening_chain": bool(payload.get("continue_evening_chain")),
             "duration_ms": duration_ms,
+            "dispatch_attempt": dispatch_attempt,
+            "start_callback": start_callback,
         }
         result["callback"] = _post_worker_scheduler_callback(payload, result, "error", error, duration_ms, error=error)
         return result

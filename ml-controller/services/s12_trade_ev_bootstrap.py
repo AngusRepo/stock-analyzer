@@ -597,6 +597,27 @@ def _first_above(entry: float | None, *values: Any) -> float | None:
     return None
 
 
+def _median_above(entry: float | None, *values: Any) -> float | None:
+    if entry is None:
+        return None
+    sorted_values = sorted(
+        number
+        for number in (_to_float(value) for value in values)
+        if number is not None and number > entry
+    )
+    valid = [
+        value
+        for index, value in enumerate(sorted_values)
+        if index == 0 or abs(value - sorted_values[index - 1]) >= 0.01
+    ]
+    if not valid:
+        return None
+    middle = len(valid) // 2
+    if len(valid) % 2:
+        return valid[middle]
+    return (valid[middle - 1] + valid[middle]) / 2.0
+
+
 def _s12_reward_confidence_multiplier(evidence: dict[str, Any]) -> float:
     target1_source = str(evidence.get("target1_source") or "")
     target2_source = str(evidence.get("target2_source") or "")
@@ -744,6 +765,44 @@ def _s12_structural_targets_from_row(
             ("exitPlan", "mainExit", "source"),
         ],
     )
+    fusion_policy = _string_from_paths(
+        payloads,
+        [
+            ("canonical_trade_lifecycle", "exit", "fusionPolicy"),
+            ("canonicalTradeLifecycle", "exit", "fusionPolicy"),
+            ("tp_fusion_policy",),
+        ],
+    )
+    fusion_tp1_source = _string_from_paths(
+        payloads,
+        [
+            ("canonical_trade_lifecycle", "exit", "tp1Source"),
+            ("canonicalTradeLifecycle", "exit", "tp1Source"),
+            ("tp1_source",),
+        ],
+    )
+    fusion_exit_tp1, fusion_exit_tp1_path = _number_from_paths(
+        payloads,
+        [
+            ("canonical_trade_lifecycle", "exit", "tp1"),
+            ("canonicalTradeLifecycle", "exit", "tp1"),
+            ("fusion_runner_tp1",),
+        ],
+    )
+    fusion_atr_tp1, fusion_atr_tp1_path = _number_from_paths(
+        payloads,
+        [
+            ("canonical_trade_lifecycle", "exit", "anchors", "atrTp1"),
+            ("canonicalTradeLifecycle", "exit", "anchors", "atrTp1"),
+        ],
+    )
+    fusion_ml_tp1, fusion_ml_tp1_path = _number_from_paths(
+        payloads,
+        [
+            ("canonical_trade_lifecycle", "exit", "anchors", "mlTp1"),
+            ("canonicalTradeLifecycle", "exit", "anchors", "mlTp1"),
+        ],
+    )
 
     entry = _to_float(entry_price)
     stop = _to_float(stop_price)
@@ -756,9 +815,36 @@ def _s12_structural_targets_from_row(
         if target1_path and target1_declared_source
         else target1_path
     )
+    pressure_source = str(target1_declared_source or target1_source or "").lower()
+    target1_is_near_pressure = "15m_previous_high" in pressure_source
+    fusion_owned = fusion_policy == "tw_equity_exit_fusion_v2" or str(fusion_tp1_source or "").startswith("tw_equity_runner_")
+    runner_tp1 = _median_above(
+        entry,
+        fusion_ml_tp1,
+        fusion_atr_tp1,
+        fusion_exit_tp1 if fusion_owned else None,
+    )
+    runner_paths = [
+        path
+        for value, path in (
+            (fusion_ml_tp1, fusion_ml_tp1_path),
+            (fusion_atr_tp1, fusion_atr_tp1_path),
+            (fusion_exit_tp1 if fusion_owned else None, fusion_exit_tp1_path),
+        )
+        if _to_float(value) is not None and path
+    ]
+    near_pressure_tp1 = structural_tp1 if target1_is_near_pressure else None
+    near_pressure_tp1_source = target1_source if target1_is_near_pressure else None
+    if target1_is_near_pressure:
+        structural_tp1 = runner_tp1
+        target1_source = (
+            f"tw_equity_exit_fusion_v2.median({','.join(runner_paths)})"
+            if runner_tp1 is not None and len(runner_paths) > 1
+            else (runner_paths[0] if runner_tp1 is not None and runner_paths else None)
+        )
     if structural_tp1 is None and risk is not None:
         structural_tp1 = entry + risk
-        target1_source = "s12_structure_exit_plan.r_multiple_fallback_1r"
+        target1_source = "tw_equity_exit_fusion_v2.r_multiple_fallback_1r"
     elif structural_tp1 == prior_high and target1_path is None:
         target1_source = prior_high_path or "15m_previous_high"
 
@@ -780,13 +866,18 @@ def _s12_structural_targets_from_row(
     legacy_target1 = _first_number(row.get("target1"), pred.get("target1"))
     legacy_target2 = _first_number(row.get("target2"), pred.get("target2"))
     evidence = {
-        "schema_version": "s12-structural-targets-v1",
-        "mode": "structure_first_trailing_v1",
-        "contract_ref": "worker/src/lib/s12IntradayStructure.ts::buildS12StructureExitPlan",
+        "schema_version": "s12-exit-fusion-targets-v2",
+        "mode": "tw_equity_exit_fusion_v2",
+        "contract_ref": "worker/src/lib/twEquityExitFusion.ts::resolveTwEquityExitFusionV2",
         "target1_source": target1_source or "unavailable",
         "target2_source": target2_source or "unavailable",
-        "target1_policy": "15m_previous_high_or_vwap_fair_value_else_1r_fallback",
+        "target1_policy": "fusion_runner_artifact_or_vwap_fair_value_else_1r_fallback",
         "target2_policy": "1h_supply_zone_or_vwap_fair_value_else_2r_fallback",
+        "near_pressure_target1": near_pressure_tp1,
+        "near_pressure_target1_source": near_pressure_tp1_source,
+        "near_pressure_role": "context_and_confluence_only_not_reward_target",
+        "fusion_policy": fusion_policy,
+        "fusion_tp1_source": fusion_tp1_source,
         "target1_declared_source": target1_declared_source,
         "target2_declared_source": target2_declared_source,
         "structure_stop_source": stop_source or "missing_s12_structure_stop",

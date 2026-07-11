@@ -19,8 +19,18 @@ from services.s12_trade_ev import extract_s12_trade_ev
 SELECTION_FEATURE_NAMES = [
     "l4_expected_return",
     "market_heat_expected_return",
+    "score_final_norm",
+    "ml_edge_norm",
+    "fundamental_quality_norm",
+    "chip_flow_norm",
+    "technical_structure_norm",
+    "ensemble_avg_rank_centered",
+    "ensemble_confidence_centered",
+    "score_v2_available",
+    "ensemble_rank_available",
 ]
 EXECUTION_FEATURE_NAMES = [
+    *SELECTION_FEATURE_NAMES,
     "s12_trade_expected_return",
     "s12_execution_ready",
     "s12_context_multiplier",
@@ -105,8 +115,44 @@ def _market_heat(row: dict[str, Any]) -> float:
     ):
         number = _float_or_none(value)
         if number is not None:
-            return max(0.0, number)
+            return number
     return 0.0
+
+
+def _component(score_components: dict[str, Any], name: str) -> float | None:
+    components = score_components.get("components")
+    if not isinstance(components, dict):
+        return None
+    return _float_or_none(components.get(name))
+
+
+def _selection_raw_features(row: dict[str, Any]) -> dict[str, float]:
+    score_components = _loads(row.get("score_components"))
+    forecast_data = _loads(row.get("forecast_data"))
+    ev2 = forecast_data.get("ensemble_v2") if isinstance(forecast_data.get("ensemble_v2"), dict) else {}
+    final_score = _float_or_none(
+        score_components.get("finalScore")
+        or score_components.get("total")
+        or row.get("score")
+    )
+    ml_edge = _component(score_components, "mlEdge")
+    fundamental = _component(score_components, "fundamentalQuality")
+    chip = _component(score_components, "chipFlow")
+    technical = _component(score_components, "technicalStructure")
+    avg_rank = _float_or_none(ev2.get("avg_rank"))
+    confidence = _float_or_none(ev2.get("confidence"))
+    score_values = (final_score, ml_edge, fundamental, chip, technical)
+    return {
+        "score_final_norm": (final_score / 100.0) if final_score is not None else 0.0,
+        "ml_edge_norm": (ml_edge / 25.0) if ml_edge is not None else 0.0,
+        "fundamental_quality_norm": (fundamental / 25.0) if fundamental is not None else 0.0,
+        "chip_flow_norm": (chip / 25.0) if chip is not None else 0.0,
+        "technical_structure_norm": (technical / 25.0) if technical is not None else 0.0,
+        "ensemble_avg_rank_centered": (avg_rank - 0.5) if avg_rank is not None else 0.0,
+        "ensemble_confidence_centered": (confidence - 0.5) if confidence is not None else 0.0,
+        "score_v2_available": 1.0 if all(value is not None for value in score_values) else 0.0,
+        "ensemble_rank_available": 1.0 if avg_rank is not None and confidence is not None else 0.0,
+    }
 
 
 def _l4_usage_scope(row: dict[str, Any]) -> str:
@@ -149,6 +195,7 @@ def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
         s12_available = 0.0
     target_state = _target_quality_state(s12_payload)
     return {
+        **_selection_raw_features(row),
         "l4_expected_return": float(l4_value),
         "s12_trade_expected_return": float(s12_value),
         "s12_available": s12_available,
@@ -165,7 +212,11 @@ def _bounded_return(row: dict[str, Any], key: str) -> float | None:
     return value if value is not None and -1.0 < value < 1.0 else None
 
 
-def _samples(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _samples(
+    rows: list[dict[str, Any]],
+    *,
+    execution_cost_bps: float = 0.0,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     out: list[dict[str, Any]] = []
     invalid = 0
     missing_features = 0
@@ -182,12 +233,12 @@ def _samples(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str
         day = str(row.get("prediction_date") or row.get("date") or "")[:10] or "unknown"
         replay_target = _bounded_return(row, "s12_replay_pnl_pct")
         actual_trade_target = _bounded_return(row, "trade_pnl_pct")
-        trade_target = replay_target if replay_target is not None else actual_trade_target
+        trade_target = replay_target
         replay_status = str(row.get("s12_replay_status") or "").strip().lower()
-        execution_observed = bool(replay_status) or actual_trade_target is not None
+        execution_observed = bool(replay_status) or replay_target is not None
         s12_available = float(features.get("s12_available") or 0.0) > 0.0
         execution_target = (
-            trade_target - selection_target
+            trade_target - max(0.0, execution_cost_bps) / 10000.0
             if s12_available and trade_target is not None
             else None
         )
@@ -208,12 +259,11 @@ def _samples(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str
             "execution_label_source": (
                 "s12_replay_trade_outcomes"
                 if replay_target is not None
-                else "predictions_trade_pnl_pct"
-                if actual_trade_target is not None
                 else "s12_replay_non_execution"
                 if replay_status
                 else None
             ),
+            "actual_trade_target_audit_only": actual_trade_target,
         })
     by_day: dict[str, list[dict[str, Any]]] = {}
     by_day_segment: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -275,8 +325,9 @@ def _samples(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str
         "s12_available_coverage": round(s12_available_count / len(out), 8) if out else 0.0,
         "target_policy": {
             "selection": "actual_return_pct",
-            "execution_residual": "canonical_s12_replay_pnl_then_actual_trade_pnl_minus_actual_return_pct",
-            "execution_probability": "observed_s12_replay_or_actual_trade_execution_indicator",
+            "execution_trade_return": "canonical_s12_replay_pnl_net_of_roundtrip_cost_when_executed",
+            "execution_probability": "canonical_s12_replay_execution_indicator",
+            "actual_trade_outcome_role": "audit_only_not_training_label",
             "rowwise_label_coalesce": False,
         },
     }
@@ -331,22 +382,63 @@ def _predict(sample: dict[str, Any], intercept: float, coefs: dict[str, float]) 
     return intercept + sum(coef * float(sample["features"][name]) for name, coef in coefs.items())
 
 
-def _linear_calibration(
-    samples: list[dict[str, Any]],
-    intercept: float,
-    coefs: dict[str, float],
+def _linear_calibration_from_pairs(
+    pairs: list[tuple[float, float]],
     *,
-    target_key: str,
     l2: float,
 ) -> tuple[float, float]:
-    xs = [_predict(sample, intercept, coefs) for sample in samples]
-    ys = [float(sample[target_key]) for sample in samples]
+    xs = [pair[0] for pair in pairs]
+    ys = [pair[1] for pair in pairs]
     xm = _mean(xs)
     ym = _mean(ys)
     covariance = sum((x - xm) * (y - ym) for x, y in zip(xs, ys, strict=True))
     variance = sum((x - xm) ** 2 for x in xs) + max(0.0, l2)
     slope = covariance / variance if variance > 1e-12 else 0.0
     return ym - slope * xm, slope
+
+
+def _expanding_oof_pairs(
+    samples: list[dict[str, Any]],
+    *,
+    feature_names: list[str],
+    rank_target_key: str,
+    calibration_target_key: str,
+    l2: float,
+    folds: int = 4,
+) -> list[tuple[float, float]]:
+    dates = sorted({str(sample["date"]) for sample in samples})
+    if len(dates) < 3:
+        return []
+    first_test_idx = max(1, len(dates) // (folds + 1))
+    test_date_groups = [group for group in _split_date_groups(dates[first_test_idx:], folds) if group]
+    pairs: list[tuple[float, float]] = []
+    for test_dates_list in test_date_groups:
+        first_test_date = test_dates_list[0]
+        train_dates = {day for day in dates if day < first_test_date}
+        test_dates = set(test_dates_list)
+        train = [sample for sample in samples if sample["date"] in train_dates]
+        test = [sample for sample in samples if sample["date"] in test_dates]
+        if len(train) < len(feature_names) + 2 or not test:
+            continue
+        intercept, coefs = _fit_ridge(
+            train,
+            l2=l2,
+            feature_names=feature_names,
+            target_key=rank_target_key,
+        )
+        pairs.extend(
+            (_predict(sample, intercept, coefs), float(sample[calibration_target_key]))
+            for sample in test
+        )
+    return pairs
+
+
+def _split_date_groups(dates: list[str], groups: int) -> list[list[str]]:
+    if not dates:
+        return []
+    group_count = max(1, min(groups, len(dates)))
+    chunk_size = math.ceil(len(dates) / group_count)
+    return [dates[idx:idx + chunk_size] for idx in range(0, len(dates), chunk_size)]
 
 
 def _compose_calibrated_model(
@@ -374,21 +466,38 @@ def _metrics(
     preds = [item[0] for item in pairs]
     targets = [item[1] for item in pairs]
     errors = [pred - target for pred, target in pairs]
-    ranked = sorted(pairs, key=lambda item: item[0])
-    bucket = max(1, len(ranked) // 5)
-    top = ranked[-bucket:]
-    bottom = ranked[:bucket]
-    top_returns = [target for _, target in top]
-    bottom_returns = [target for _, target in bottom]
-    spread = _mean(top_returns) - _mean(bottom_returns)
-    spread_se = math.sqrt(
-        (_sample_variance(top_returns) / max(1, len(top_returns)))
-        + (_sample_variance(bottom_returns) / max(1, len(bottom_returns)))
-    )
-    corr = _corr(preds, targets)
-    corr_lcb = None
-    if corr is not None and len(samples) > 3 and abs(corr) < 1.0:
-        corr_lcb = math.tanh(math.atanh(corr) - (1.645 / math.sqrt(len(samples) - 3)))
+    by_date: dict[str, list[tuple[float, float]]] = {}
+    for sample, pair in zip(samples, pairs, strict=True):
+        by_date.setdefault(str(sample["date"]), []).append(pair)
+    daily_top: list[float] = []
+    daily_bottom: list[float] = []
+    daily_spreads: list[float] = []
+    daily_corrs: list[float] = []
+    for day_pairs in by_date.values():
+        ranked = sorted(day_pairs, key=lambda item: item[0])
+        bucket = max(1, len(ranked) // 5)
+        top_mean = _mean([target for _, target in ranked[-bucket:]])
+        bottom_mean = _mean([target for _, target in ranked[:bucket]])
+        daily_top.append(top_mean)
+        daily_bottom.append(bottom_mean)
+        daily_spreads.append(top_mean - bottom_mean)
+        day_corr = _corr(
+            [prediction for prediction, _ in day_pairs],
+            [target for _, target in day_pairs],
+        )
+        if day_corr is not None:
+            daily_corrs.append(day_corr)
+
+    def lcb90(values: list[float]) -> float | None:
+        if not values:
+            return None
+        standard_error = math.sqrt(_sample_variance(values) / len(values))
+        return _mean(values) - 1.645 * standard_error
+
+    spread = _mean(daily_spreads)
+    corr = _mean(daily_corrs) if daily_corrs else None
+    corr_lcb = lcb90(daily_corrs)
+    spread_lcb = lcb90(daily_spreads)
     return {
         "samples": len(samples),
         "mean_target": round(_mean(targets), 8),
@@ -397,10 +506,12 @@ def _metrics(
         "rmse": round(math.sqrt(_mean([err * err for err in errors])), 8),
         "prediction_target_corr": None if corr is None else round(corr, 8),
         "prediction_target_corr_lcb90": None if corr_lcb is None else round(corr_lcb, 8),
-        "top_quintile_mean_return": round(_mean(top_returns), 8),
-        "bottom_quintile_mean_return": round(_mean(bottom_returns), 8),
+        "oos_date_count": len(by_date),
+        "top_quintile_mean_return": round(_mean(daily_top), 8),
+        "bottom_quintile_mean_return": round(_mean(daily_bottom), 8),
         "top_bottom_spread": round(spread, 8),
-        "top_bottom_spread_lcb90": round(spread - 1.645 * spread_se, 8),
+        "top_bottom_spread_lcb90": None if spread_lcb is None else round(spread_lcb, 8),
+        "uncertainty_unit": "prediction_date",
     }
 
 
@@ -436,11 +547,17 @@ def _walk_forward(
         intercept, coefs = _fit_ridge(train, l2=l2, feature_names=feature_names, target_key=target_key)
         metrics_target_key = target_key
         if calibration_target_key:
-            calibration_intercept, calibration_slope = _linear_calibration(
+            calibration_pairs = _expanding_oof_pairs(
                 train,
-                intercept,
-                coefs,
-                target_key=calibration_target_key,
+                feature_names=feature_names,
+                rank_target_key=target_key,
+                calibration_target_key=calibration_target_key,
+                l2=l2,
+            )
+            if not calibration_pairs:
+                continue
+            calibration_intercept, calibration_slope = _linear_calibration_from_pairs(
+                calibration_pairs,
                 l2=l2,
             )
             intercept, coefs = _compose_calibrated_model(
@@ -492,6 +609,8 @@ def _fit_expert(
         blockers.append("insufficient_train_test_split")
     intercept = 0.0
     coefs = {name: 0.0 for name in feature_names}
+    rank_intercept: float | None = None
+    rank_coefs: dict[str, float] | None = None
     train_metrics: dict[str, Any] = {"samples": len(train)}
     oos_metrics: dict[str, Any] = {"samples": len(test)}
     walk_forward: dict[str, Any] = {"passed": False, "reason": "not_run", "folds": []}
@@ -506,26 +625,34 @@ def _fit_expert(
         metrics_target_key = target_key
         calibration_model = None
         if calibration_target_key:
-            calibration_intercept, calibration_slope = _linear_calibration(
+            calibration_pairs = _expanding_oof_pairs(
                 train,
-                rank_intercept,
-                rank_coefs,
-                target_key=calibration_target_key,
+                feature_names=feature_names,
+                rank_target_key=target_key,
+                calibration_target_key=calibration_target_key,
                 l2=l2,
             )
-            intercept, coefs = _compose_calibrated_model(
-                rank_intercept,
-                rank_coefs,
-                calibration_intercept,
-                calibration_slope,
-            )
-            metrics_target_key = calibration_target_key
-            calibration_model = {
-                "method": "oof_rank_score_linear_ev_calibration",
-                "intercept": round(calibration_intercept, 10),
-                "slope": round(calibration_slope, 10),
-                "target": calibration_target_key,
-            }
+            if not calibration_pairs:
+                blockers.append("insufficient_oof_calibration_samples")
+            else:
+                calibration_intercept, calibration_slope = _linear_calibration_from_pairs(
+                    calibration_pairs,
+                    l2=l2,
+                )
+                intercept, coefs = _compose_calibrated_model(
+                    rank_intercept,
+                    rank_coefs,
+                    calibration_intercept,
+                    calibration_slope,
+                )
+                metrics_target_key = calibration_target_key
+                calibration_model = {
+                    "method": "expanding_window_oof_rank_score_linear_ev_calibration",
+                    "intercept": round(calibration_intercept, 10),
+                    "slope": round(calibration_slope, 10),
+                    "target": calibration_target_key,
+                    "oof_samples": len(calibration_pairs),
+                }
         train_metrics = _metrics(train, intercept, coefs, target_key=metrics_target_key)
         oos_metrics = _metrics(test, intercept, coefs, target_key=metrics_target_key)
         walk_forward = _walk_forward(
@@ -559,7 +686,7 @@ def _fit_expert(
         "oos_metrics": oos_metrics,
         "walk_forward": walk_forward,
     }
-    if not blockers and calibration_target_key:
+    if calibration_target_key and rank_intercept is not None and rank_coefs is not None:
         result["rank_model"] = {
             "intercept": round(rank_intercept, 10),
             "coefficients": {name: round(value, 10) for name, value in rank_coefs.items()},
@@ -574,50 +701,80 @@ def _fit_execution_probability_expert(
     *,
     l2: float,
 ) -> dict[str, Any]:
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
+    from sklearn.preprocessing import StandardScaler
+
     targets = [float(sample["execution_probability_target"]) for sample in samples]
-    dates = {sample["date"] for sample in samples}
-    if (
-        len(samples) >= PRIMARY_MIN_S12_AVAILABLE_SAMPLES
-        and len(dates) >= PRIMARY_MIN_S12_AVAILABLE_DATES
-        and targets
-        and max(targets) - min(targets) <= 1e-12
-    ):
-        probability = _mean(targets)
-        return {
-            "status": "fitted",
-            "decision": "PASS",
-            "failed_gates": [],
-            "sample_count": len(samples),
-            "date_count": len(dates),
-            "feature_names": EXECUTION_FEATURE_NAMES,
-            "target": "execution_probability_target",
-            "intercept": round(probability, 10),
-            "coefficients": {name: 0.0 for name in EXECUTION_FEATURE_NAMES},
-            "train_metrics": {
-                "samples": len(samples),
-                "mean_target": round(probability, 8),
-                "brier_score": 0.0,
-            },
-            "oos_metrics": {
-                "samples": len(samples),
-                "mean_target": round(probability, 8),
-                "brier_score": 0.0,
-                "constant_probability": True,
-            },
-            "walk_forward": {
-                "passed": True,
-                "reason": "stable_constant_execution_probability",
-                "folds": [],
-            },
-        }
-    return _fit_expert(
-        samples,
-        feature_names=EXECUTION_FEATURE_NAMES,
-        target_key="execution_probability_target",
-        min_samples=PRIMARY_MIN_S12_AVAILABLE_SAMPLES,
-        min_dates=PRIMARY_MIN_S12_AVAILABLE_DATES,
-        l2=l2,
-    )
+    dates = sorted({sample["date"] for sample in samples})
+    split_idx = max(1, round(len(dates) * 0.8)) if dates else 0
+    train_dates = set(dates[:split_idx])
+    test_dates = set(dates[split_idx:])
+    train = [sample for sample in samples if sample["date"] in train_dates]
+    test = [sample for sample in samples if sample["date"] in test_dates]
+    blockers: list[str] = []
+    if len(samples) < PRIMARY_MIN_S12_AVAILABLE_SAMPLES:
+        blockers.append("insufficient_samples")
+    if len(dates) < PRIMARY_MIN_S12_AVAILABLE_DATES:
+        blockers.append("insufficient_dates")
+    if not train or not test:
+        blockers.append("insufficient_train_test_split")
+    train_targets = [int(sample["execution_probability_target"]) for sample in train]
+    if len(set(train_targets)) < 2:
+        blockers.append("train_target_has_no_class_variation")
+
+    intercept = 0.0
+    coefs = {name: 0.0 for name in EXECUTION_FEATURE_NAMES}
+    train_metrics: dict[str, Any] = {"samples": len(train)}
+    oos_metrics: dict[str, Any] = {"samples": len(test)}
+    if not blockers:
+        train_x = [[float(sample["features"][name]) for name in EXECUTION_FEATURE_NAMES] for sample in train]
+        test_x = [[float(sample["features"][name]) for name in EXECUTION_FEATURE_NAMES] for sample in test]
+        scaler = StandardScaler().fit(train_x)
+        model = LogisticRegression(C=1.0 / max(l2, 1e-6), max_iter=2000, solver="lbfgs")
+        model.fit(scaler.transform(train_x), train_targets)
+        raw_coefs = model.coef_[0] / scaler.scale_
+        intercept = float(model.intercept_[0] - sum(raw_coefs * scaler.mean_))
+        coefs = {name: float(raw_coefs[idx]) for idx, name in enumerate(EXECUTION_FEATURE_NAMES)}
+
+        def probability_metrics(rows: list[dict[str, Any]], matrix: list[list[float]]) -> dict[str, Any]:
+            ys = [int(sample["execution_probability_target"]) for sample in rows]
+            probabilities = model.predict_proba(scaler.transform(matrix))[:, 1]
+            prevalence = max(1e-6, min(1.0 - 1e-6, _mean(train_targets)))
+            baseline = [prevalence] * len(ys)
+            return {
+                "samples": len(rows),
+                "mean_target": round(_mean(ys), 8),
+                "brier_score": round(float(brier_score_loss(ys, probabilities)), 8),
+                "brier_climatology": round(float(brier_score_loss(ys, baseline)), 8),
+                "log_loss": round(float(log_loss(ys, probabilities, labels=[0, 1])), 8),
+                "log_loss_climatology": round(float(log_loss(ys, baseline, labels=[0, 1])), 8),
+                "roc_auc": round(float(roc_auc_score(ys, probabilities)), 8) if len(set(ys)) > 1 else None,
+            }
+
+        train_metrics = probability_metrics(train, train_x)
+        oos_metrics = probability_metrics(test, test_x)
+        if float(oos_metrics["brier_score"]) >= float(oos_metrics["brier_climatology"]):
+            blockers.append("oos_brier_not_better_than_climatology")
+        if float(oos_metrics["log_loss"]) >= float(oos_metrics["log_loss_climatology"]):
+            blockers.append("oos_log_loss_not_better_than_climatology")
+
+    return {
+        "status": "fitted" if not blockers else "shadow",
+        "decision": "PASS" if not blockers else "FAIL",
+        "failed_gates": blockers,
+        "sample_count": len(samples),
+        "date_count": len(dates),
+        "feature_names": EXECUTION_FEATURE_NAMES,
+        "target": "execution_probability_target",
+        "model_family": "logistic_regression",
+        "link_function": "logit",
+        "intercept": round(intercept, 10),
+        "coefficients": {name: round(value, 10) for name, value in coefs.items()},
+        "train_metrics": train_metrics,
+        "oos_metrics": oos_metrics,
+        "benchmark": "training_prevalence_climatology",
+    }
 
 
 def _promotion_tier(
@@ -690,7 +847,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
     l2: float = 0.25,
     cost_model_bps: float = 18.0,
 ) -> dict[str, Any]:
-    samples, diagnostics = _samples(rows)
+    samples, diagnostics = _samples(rows, execution_cost_bps=cost_model_bps)
     selection_model = _fit_expert(
         samples,
         feature_names=SELECTION_FEATURE_NAMES,
@@ -729,14 +886,14 @@ def build_allocator_ev_fusion_artifact_from_rows(
         min_samples=min_samples,
     )
     validation_packet = {
-        "schema_version": "allocator-ev-fusion-validation-packet-v4",
+        "schema_version": "allocator-ev-fusion-validation-packet-v5",
         "decision": decision,
         "failed_gates": selection_model["failed_gates"],
         "validation_scope": {
             "owner": "allocator_ev_fusion",
             "selection_target": "actual_return_pct",
-            "execution_probability_target": "observed_replay_or_actual_trade_execution_indicator",
-            "execution_target": "canonical_replay_or_actual_trade_pnl_minus_candidate_return_when_executed",
+            "execution_probability_target": "canonical_replay_execution_indicator",
+            "execution_target": "canonical_replay_net_pnl_when_executed",
             "rowwise_label_coalesce": False,
             "method": "date_split_oos_plus_walk_forward",
             "lookback_days": lookback_days,
@@ -769,7 +926,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
         },
     }
     artifact = {
-        "schema_version": "allocator-ev-fusion-artifact-v4",
+        "schema_version": "allocator-ev-fusion-artifact-v5",
         "expected_return_owner": "allocator_ev_fusion",
         "promotion_state": (
             "production_primary" if promotion_tier == "primary"
@@ -781,13 +938,14 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "assistive_expected_return_allowed": promotion_tier in {"assistive", "primary"},
         "promotion_blockers": promotion_blockers,
         "validation_packet": validation_packet,
-        "resolver_method": "rank_calibrated_two_part_allocator_ev_fusion",
-        "model_version": f"allocator-ev-fusion-rank-two-part-{trained_until.replace('-', '')}",
-        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v3-rank-two-part",
+        "resolver_method": "cross_fitted_rank_two_part_trade_ev_fusion",
+        "model_version": f"allocator-ev-fusion-cross-fit-v5-{trained_until.replace('-', '')}",
+        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v5-raw-selection-replay-only",
+        "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
         "trained_until": trained_until,
         "horizon_days": 5,
         "cost_model_bps": cost_model_bps,
-        "output_is_net_of_costs": False,
+        "output_is_net_of_costs": True,
         "feature_names": FEATURE_NAMES,
         "selection_model": selection_model,
         "execution_model": execution_model,
@@ -795,11 +953,11 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "intercept": selection_model["intercept"],
         "coefficients": {
             **selection_model["coefficients"],
-            **{name: 0.0 for name in EXECUTION_FEATURE_NAMES},
+            **{name: 0.0 for name in EXECUTION_FEATURE_NAMES if name not in SELECTION_FEATURE_NAMES},
         },
         "output_clip": {"min": -0.08, "max": 0.08},
         "training_data": {
-            "source": "as-of L4/S12 snapshots joined to separate candidate-return and executed-trade outcomes",
+            "source": "as-of raw ScoreV2/L4/S12 snapshots joined to candidate returns and canonical replay outcomes",
             "trained_until": trained_until,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             **diagnostics,
@@ -868,6 +1026,14 @@ def load_allocator_ev_fusion_training_rows(
               ON st.id = fs.stock_id
             WHERE p.verified_at IS NOT NULL
               AND (p.actual_return_pct IS NOT NULL OR p.trade_pnl_pct IS NOT NULL)
+              AND p.actual_price = (
+                  SELECT sp.close
+                  FROM stock_prices sp
+                  WHERE sp.stock_id = p.stock_id
+                    AND date(sp.date) > date(p.prediction_date)
+                  ORDER BY date(sp.date) ASC
+                  LIMIT 1 OFFSET 4
+              )
               AND fs.alpha_allocation IS NOT NULL
               AND date(p.prediction_date) <= date(?)
               AND date(p.prediction_date) >= date(?, ?)
@@ -925,6 +1091,14 @@ def load_allocator_ev_fusion_training_rows(
         WHERE p.model_name = 'ensemble'
           AND p.verified_at IS NOT NULL
           AND (p.actual_return_pct IS NOT NULL OR p.trade_pnl_pct IS NOT NULL)
+          AND p.actual_price = (
+              SELECT sp.close
+              FROM stock_prices sp
+              WHERE sp.stock_id = p.stock_id
+                AND date(sp.date) > date(p.prediction_date)
+              ORDER BY date(sp.date) ASC
+              LIMIT 1 OFFSET 4
+          )
           AND dr.alpha_allocation IS NOT NULL
           AND date(p.prediction_date) <= date(?)
           AND date(p.prediction_date) >= date(?, ?)

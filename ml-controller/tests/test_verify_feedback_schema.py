@@ -95,6 +95,25 @@ def test_verify_neutral_rows_still_write_actual_return_for_ic(monkeypatch):
     assert result["arf"] is None
 
 
+def test_verify_does_not_write_immature_five_session_label():
+    result = verify_service.verify_single_prediction(
+        {
+            "id": 101,
+            "stock_id": 1,
+            "generated_at": "2026-07-03T10:00:00Z",
+            "entry_price": 100.0,
+            "forecast_data": json.dumps({"signal": "BUY"}),
+        },
+        market_risk={},
+        bars_override=[
+            {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
+            for _ in range(4)
+        ],
+    )
+
+    assert result is None
+
+
 def test_verify_uses_prediction_business_date_for_future_bars(monkeypatch):
     captured: dict[str, object] = {}
 
@@ -120,8 +139,8 @@ def test_load_pending_predictions_uses_bounded_run_date_window(monkeypatch):
     def fake_query(sql, params):
         if "MAX(date) AS latest_date" in sql:
             return [{"latest_date": "2026-05-04"}]
-        if "MAX(date) AS previous_date" in sql:
-            return [{"previous_date": "2026-04-30"}]
+        if "mature_prediction_date" in sql:
+            return [{"mature_prediction_date": "2026-04-24"}]
         captured["sql"] = sql
         captured["pending_params"] = params
         return []
@@ -140,7 +159,7 @@ def test_load_pending_predictions_uses_bounded_run_date_window(monkeypatch):
     assert "UPPER(COALESCE" not in str(captured["sql"])
     assert "p.prediction_date BETWEEN ? AND ?" in str(captured["sql"])
     assert "s.market IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')" in str(captured["sql"])
-    assert captured["pending_params"] == ["2026-04-20", "2026-04-30", 600]
+    assert captured["pending_params"] == ["2026-04-14", "2026-04-24", 600]
 
 
 def test_verification_window_does_not_use_calendar_days_across_holidays(monkeypatch):
@@ -150,8 +169,8 @@ def test_verification_window_does_not_use_calendar_days_across_holidays(monkeypa
         queries.append((sql, params))
         if "MAX(date) AS latest_date" in sql:
             return [{"latest_date": "2026-05-04"}]
-        if "MAX(date) AS previous_date" in sql:
-            return [{"previous_date": "2026-04-30"}]
+        if "mature_prediction_date" in sql:
+            return [{"mature_prediction_date": "2026-04-24"}]
         return []
 
     monkeypatch.setattr(verify_service.d1_client, "query", fake_query)
@@ -162,7 +181,7 @@ def test_verification_window_does_not_use_calendar_days_across_holidays(monkeypa
         stale_grace_days=10,
     )
 
-    assert (min_date, max_date) == ("2026-04-20", "2026-04-30")
+    assert (min_date, max_date) == ("2026-04-14", "2026-04-24")
     assert max_date != "2026-04-29"
     assert len(queries) == 2
 
@@ -177,6 +196,9 @@ def test_prepare_verification_updates_batches_bars(monkeypatch):
             1: [
                 {"date": "2026-05-01", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
                 {"date": "2026-05-04", "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0},
+                {"date": "2026-05-05", "open": 101.0, "high": 102.0, "low": 100.0, "close": 101.0},
+                {"date": "2026-05-06", "open": 101.0, "high": 103.0, "low": 100.0, "close": 102.0},
+                {"date": "2026-05-07", "open": 102.0, "high": 103.0, "low": 101.0, "close": 102.0},
             ]
         },
     )

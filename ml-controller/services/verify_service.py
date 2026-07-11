@@ -28,6 +28,7 @@ from ._trade_simulator import simulate_trade
 logger = logging.getLogger(__name__)
 
 VERIFIABLE_MARKETS = {"TWSE", "OTC", "TPEX", "EMERGING"}
+VERIFICATION_HORIZON_SESSIONS = 5
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -48,11 +49,9 @@ def _resolve_verification_prediction_window(
     """
     Resolve the mature prediction window from actual price dates.
 
-    `lookback_days` used to be applied as calendar days. That misses predictions
-    around holidays/weekends (for example 2026-04-30 -> 2026-05-04 after the
-    5/1 Taiwan holiday). The verification contract should follow completed
-    trading sessions, so the newest verifiable prediction date is the trading
-    day immediately before the latest available price date.
+    The newest verifiable prediction date must have five completed market
+    sessions after it. Calendar-day offsets are invalid around holidays and
+    unscheduled closures.
     """
     latest_rows = d1_client.query(
         "SELECT MAX(date) AS latest_date FROM stock_prices WHERE date <= ?",
@@ -60,13 +59,20 @@ def _resolve_verification_prediction_window(
     )
     latest_price_date = latest_rows[0].get("latest_date") if latest_rows else None
     if latest_price_date:
-        prev_rows = d1_client.query(
-            "SELECT MAX(date) AS previous_date FROM stock_prices WHERE date < ?",
-            params=[latest_price_date],
+        mature_rows = d1_client.query(
+            """
+            SELECT date AS mature_prediction_date
+            FROM (SELECT DISTINCT date FROM stock_prices WHERE date <= ?)
+            ORDER BY date DESC
+            LIMIT 1 OFFSET ?
+            """,
+            params=[latest_price_date, VERIFICATION_HORIZON_SESSIONS],
         )
-        previous_price_date = prev_rows[0].get("previous_date") if prev_rows else None
-        if previous_price_date:
-            max_prediction_date = str(previous_price_date)
+        mature_prediction_date = (
+            mature_rows[0].get("mature_prediction_date") if mature_rows else None
+        )
+        if mature_prediction_date:
+            max_prediction_date = str(mature_prediction_date)
             min_prediction_date = (
                 datetime.fromisoformat(max_prediction_date).date() - timedelta(days=stale_grace_days)
             ).isoformat()
@@ -113,6 +119,53 @@ def load_pending_predictions(
     rows = d1_client.query(sql, params=[min_prediction_date, max_prediction_date, limit])
     logger.info(f"[verify] Loaded {len(rows)} pending predictions")
     return rows
+
+
+def load_predictions_for_verification_repair(
+    start_date: str,
+    end_date: str,
+    *,
+    limit: int = 5000,
+) -> list[dict]:
+    """Load an explicit date slice for deterministic five-session label rebuild."""
+    return d1_client.query(
+        """
+        SELECT p.*, s.symbol, s.market
+        FROM predictions p
+        JOIN stocks s ON p.stock_id = s.id
+        WHERE p.prediction_date BETWEEN ? AND ?
+          AND s.market IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')
+          AND p.forecast_data IS NOT NULL
+        ORDER BY p.prediction_date ASC, p.generated_at ASC
+        LIMIT ?
+        """,
+        params=[start_date, end_date, limit],
+    )
+
+
+def rebuild_verification_labels(
+    start_date: str,
+    end_date: str,
+    *,
+    limit: int = 5000,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    rows = load_predictions_for_verification_repair(start_date, end_date, limit=limit)
+    prepared = prepare_verification_updates(rows, load_market_risk())
+    updates = prepared["verify_updates"]
+    written = 0 if dry_run else write_verified_predictions(updates)
+    return {
+        "status": "ok",
+        "dry_run": dry_run,
+        "start_date": start_date,
+        "end_date": end_date,
+        "rows_loaded": len(rows),
+        "mature_rows": len(updates),
+        "immature_or_invalid_rows": len(rows) - len(updates),
+        "written": written,
+        "metrics": prepared.get("metrics") or {},
+        "errors": prepared.get("errors") or [],
+    }
 
 
 def load_market_risk() -> dict:
@@ -236,13 +289,15 @@ def verify_single_prediction(
         bars = load_bars_for_prediction(pred["stock_id"], pred["generated_at"], pred.get("prediction_date"))
     else:
         bars = bars_override
-    if not bars:
-        return None  # data not arrived yet
+    if len(bars) < VERIFICATION_HORIZON_SESSIONS:
+        return None  # the stock-specific five-session label is not mature
+
+    horizon_bars = bars[:VERIFICATION_HORIZON_SESSIONS]
 
     # ── Derive entry/stop/targets (fall back to defaults if null) ────────────
-    actual_bar = bars[min(4, len(bars) - 1)]
+    actual_bar = horizon_bars[-1]
     actual_price = actual_bar["close"]
-    entry_price = pred.get("entry_price") or bars[0].get("open") or actual_price
+    entry_price = pred.get("entry_price") or horizon_bars[0].get("open") or actual_price
     is_long = predicted_direction == "up"
     stop_loss = pred.get("stop_loss") or (entry_price * (0.95 if is_long else 1.05))
     target1 = pred.get("target1") or (entry_price * (1.05 if is_long else 0.95))
@@ -297,7 +352,7 @@ def verify_single_prediction(
         stop=stop_loss,
         target1=target1,
         target2=target2,
-        bars=bars,
+        bars=horizon_bars,
     )
 
     # ── Build update binding (matches UPDATE_VERIFY_SQL parameter order) ─────

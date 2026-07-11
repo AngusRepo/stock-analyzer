@@ -10,6 +10,7 @@ mirroring the production-safe pipeline-v2 pattern.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -37,6 +38,13 @@ class VerifyRunRequest(BaseModel):
     async_mode: bool = False
     callback_task: str = "verify-v2"
     update_aggregates: bool = False
+
+
+class VerifyRepairRequest(BaseModel):
+    start_date: str
+    end_date: str
+    limit: int = 5000
+    dry_run: bool = True
 
 
 def _format_verify_summary(result: dict) -> str:
@@ -153,6 +161,18 @@ async def post_verify_dry_run(req: VerifyRunRequest = VerifyRunRequest()):
             "batch_update_arf",
         ],
     }
+
+
+@router.post("/verify/repair-labels")
+async def post_verify_repair_labels(req: VerifyRepairRequest):
+    """Rebuild a bounded date slice with the canonical five-session label contract."""
+    return await asyncio.to_thread(
+        verify_service.rebuild_verification_labels,
+        req.start_date,
+        req.end_date,
+        limit=req.limit,
+        dry_run=req.dry_run,
+    )
 
 
 class VerifyRecord(BaseModel):

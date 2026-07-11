@@ -156,3 +156,44 @@ def test_allocator_ev_fusion_materializer_probability_weights_execution_residual
     assert payload["raw_execution_residual"] == pytest.approx(0.004)
     assert payload["execution_residual_adjustment"] == pytest.approx(0.002)
     assert payload["expected_return"] == pytest.approx(0.022)
+
+
+def test_allocator_ev_fusion_v5_uses_execution_probability_times_conditional_trade_return():
+    artifact = {
+        **_artifact(),
+        "schema_version": "allocator-ev-fusion-artifact-v5",
+        "resolver_method": "cross_fitted_rank_two_part_trade_ev_fusion",
+        "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
+        "selection_model": {
+            "status": "fitted",
+            "intercept": 0.0,
+            "coefficients": {"l4_expected_return": 1.0},
+        },
+        "execution_model": {
+            "status": "fitted",
+            "intercept": 0.0,
+            "coefficients": {"s12_trade_expected_return": 1.0},
+        },
+        "execution_probability_model": {
+            "status": "fitted",
+            "link_function": "logit",
+            "intercept": 0.0,
+            "coefficients": {"s12_trade_expected_return": 0.0},
+        },
+    }
+    payload = materialize_allocator_ev_fusion(
+        {},
+        l4_value=0.02,
+        l4_source="l4:test",
+        l4_payload={},
+        s12_value=0.01,
+        s12_source="s12:test",
+        s12_payload={"status": "loaded"},
+        market_heat_expected_return=0.0,
+        policy={"allocatorEvFusion": artifact},
+    )
+
+    assert payload["selection_expected_return"] == pytest.approx(0.02)
+    assert payload["execution_probability"] == pytest.approx(0.5)
+    assert payload["raw_execution_residual"] == pytest.approx(0.01)
+    assert payload["expected_return"] == pytest.approx(0.005)

@@ -378,6 +378,14 @@ def load_l4_alpha_ev_training_rows(
         WHERE p.model_name = 'ensemble'
           AND p.verified_at IS NOT NULL
           AND p.actual_return_pct IS NOT NULL
+          AND p.actual_price = (
+              SELECT sp.close
+              FROM stock_prices sp
+              WHERE sp.stock_id = p.stock_id
+                AND date(sp.date) > date(p.prediction_date)
+              ORDER BY date(sp.date) ASC
+              LIMIT 1 OFFSET 4
+          )
           AND p.forecast_data IS NOT NULL
           AND dr.score_components IS NOT NULL
           AND date(p.prediction_date) <= date(?)

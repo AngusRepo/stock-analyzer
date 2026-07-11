@@ -236,6 +236,18 @@ def _feature_values(
         and ((l4_value >= 0 and s12_value >= 0) or (l4_value < 0 and s12_value < 0))
         else 0.0
     )
+    score_components = _dict_payload(row.get("score_components"))
+    components = score_components.get("components") if isinstance(score_components.get("components"), dict) else {}
+    forecast_data = _dict_payload(row.get("forecast_data"))
+    ev2 = forecast_data.get("ensemble_v2") if isinstance(forecast_data.get("ensemble_v2"), dict) else {}
+    final_score = _float_or_none(score_components.get("finalScore") or score_components.get("total") or row.get("score"))
+    ml_edge = _float_or_none(components.get("mlEdge"))
+    fundamental = _float_or_none(components.get("fundamentalQuality"))
+    chip = _float_or_none(components.get("chipFlow"))
+    technical = _float_or_none(components.get("technicalStructure"))
+    avg_rank = _float_or_none(ev2.get("avg_rank"))
+    confidence = _float_or_none(ev2.get("confidence"))
+    score_values = (final_score, ml_edge, fundamental, chip, technical)
     return {
         "l4_expected_return": l4_value if l4_value is not None else 0.0,
         "l4_available": 1.0 if l4_value is not None else 0.0,
@@ -245,9 +257,18 @@ def _feature_values(
         "s12_context_multiplier": multiplier,
         "s12_context_multiplier_minus_1": multiplier - 1.0,
         "s12_target_quality_score": _target_quality_numeric(target_state),
-        "market_heat_expected_return": max(0.0, market_heat_expected_return),
+        "market_heat_expected_return": market_heat_expected_return,
         "l4_s12_edge_agreement": edge_agreement,
         "dispersion_multiplier": dispersion_multiplier if dispersion_multiplier is not None else 1.0,
+        "score_final_norm": (final_score / 100.0) if final_score is not None else 0.0,
+        "ml_edge_norm": (ml_edge / 25.0) if ml_edge is not None else 0.0,
+        "fundamental_quality_norm": (fundamental / 25.0) if fundamental is not None else 0.0,
+        "chip_flow_norm": (chip / 25.0) if chip is not None else 0.0,
+        "technical_structure_norm": (technical / 25.0) if technical is not None else 0.0,
+        "ensemble_avg_rank_centered": (avg_rank - 0.5) if avg_rank is not None else 0.0,
+        "ensemble_confidence_centered": (confidence - 0.5) if confidence is not None else 0.0,
+        "score_v2_available": 1.0 if all(value is not None for value in score_values) else 0.0,
+        "ensemble_rank_available": 1.0 if avg_rank is not None and confidence is not None else 0.0,
     }
 
 
@@ -386,9 +407,17 @@ def materialize_allocator_ev_fusion(
             execution_probability = float(execution_probability_intercept or 0.0)
             for name, coef in execution_probability_coefs.items():
                 execution_probability += coef * values[name]
-            execution_probability = max(0.0, min(1.0, execution_probability))
+            if str((execution_probability_model or {}).get("link_function") or "").lower() == "logit":
+                execution_probability = 1.0 / (1.0 + math.exp(-max(-40.0, min(40.0, execution_probability))))
+            else:
+                execution_probability = max(0.0, min(1.0, execution_probability))
         execution_residual_adjustment = execution_probability * raw_execution_residual
-    expected_return = selection_expected_return + execution_residual_adjustment
+    direct_trade_ev = artifact.get("expected_return_semantic") == "execution_probability_times_conditional_replay_net_return"
+    expected_return = (
+        execution_residual_adjustment
+        if direct_trade_ev and execution_model_applied
+        else selection_expected_return + execution_residual_adjustment
+    )
     if artifact.get("output_is_net_of_costs") is False:
         cost_bps = _float_or_none(artifact.get("cost_model_bps"))
         if cost_bps is not None:
@@ -422,7 +451,7 @@ def materialize_allocator_ev_fusion(
         "s12_trade_ev": s12_payload,
         "s12_trade_expected_return": None if s12_value is None else round(s12_value, 10),
         "s12_trade_expected_return_source": s12_source,
-        "market_heat_expected_return": round(max(0.0, market_heat_expected_return), 10),
+        "market_heat_expected_return": round(market_heat_expected_return, 10),
         "feature_values": {key: round(value, 10) for key, value in values.items()},
         "promotion_tier": _promotion_tier(artifact),
         "primary_expected_return_allowed": _primary_expected_return_allowed(artifact),

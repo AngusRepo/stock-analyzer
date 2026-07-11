@@ -15,6 +15,7 @@ from services.allocator_ev_fusion_artifact_builder import (  # noqa: E402
     load_allocator_ev_fusion_training_rows,
 )
 from services.allocator_ev_feature_snapshot_backfill import (  # noqa: E402
+    _existing_s12_payload,
     build_allocator_ev_feature_snapshots_for_date,
 )
 
@@ -64,11 +65,15 @@ def _row(day: str, idx: int) -> dict:
     s12 = -0.004 + (idx % 20) * 0.0012
     ready = idx % 7 != 0
     target = (0.55 * l4) + (0.35 * s12) + (0.004 if ready else -0.002)
+    replay_executed = ready and idx % 5 != 0
+    replay_pnl = target + (0.4 * s12) + 0.002 if replay_executed else None
     return {
         "symbol": f"{idx:04d}",
         "prediction_date": day,
         "actual_return_pct": target,
         "trade_pnl_pct": target + (0.4 * s12) + (0.002 if ready else -0.001),
+        "s12_replay_pnl_pct": replay_pnl,
+        "s12_replay_status": "executed" if replay_executed else "not_triggered",
         "alpha_context": json.dumps({"market_heat_expected_return": 0.003 + (idx % 5) * 0.0005}),
         "alpha_allocation": json.dumps({
             "l4_alpha_ev": _l4_payload(l4),
@@ -100,8 +105,8 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["primary_expected_return_allowed"] is True
     assert artifact["validation_packet"]["decision"] == "PASS"
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
-    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v4"
-    assert artifact["resolver_method"] == "rank_calibrated_two_part_allocator_ev_fusion"
+    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v5"
+    assert artifact["resolver_method"] == "cross_fitted_rank_two_part_trade_ev_fusion"
     assert "l4_expected_return" in artifact["coefficients"]
     assert "s12_trade_expected_return" in artifact["coefficients"]
     assert artifact["coefficients"]["l4_expected_return"] != 0
@@ -109,7 +114,7 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["selection_model"]["target"] == "selection_rank_target"
     assert artifact["selection_model"]["calibration_target"] == "selection_target"
     assert artifact["selection_model"]["rank_model"]
-    assert artifact["selection_model"]["calibration_model"]["method"] == "oof_rank_score_linear_ev_calibration"
+    assert artifact["selection_model"]["calibration_model"]["method"] == "expanding_window_oof_rank_score_linear_ev_calibration"
     assert artifact["execution_model"]["decision"] == "PASS"
     assert artifact["execution_probability_model"]["decision"] == "PASS"
     assert artifact["execution_model"]["coefficients"]["s12_trade_expected_return"] != 0
@@ -470,6 +475,17 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
     assert result["skip_reasons"] == {}
 
 
+def test_allocator_ev_feature_snapshot_backfill_does_not_reuse_invalid_s12_payload():
+    invalid = {
+        "s12_trade_ev": {
+            "status": "invalid_structure",
+            "trade_expected_return_net_pct": None,
+        }
+    }
+
+    assert _existing_s12_payload(invalid) is None
+
+
 def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload_as_unavailable_feature():
     rows = []
     for day_idx in range(26):
@@ -516,14 +532,17 @@ def test_allocator_ev_fusion_keeps_candidate_and_trade_targets_separate():
     row = _row("2026-06-01", 1)
     row["actual_return_pct"] = 0.03
     row["trade_pnl_pct"] = -0.20
+    row["s12_replay_pnl_pct"] = None
+    row["s12_replay_status"] = "not_triggered"
 
     samples, audit = _samples([row])
 
     assert samples[0]["actual_return_target"] == pytest.approx(0.03)
     assert samples[0]["selection_target"] == pytest.approx(0.0)
     assert samples[0]["selection_rank_target"] == pytest.approx(0.0)
-    assert samples[0]["execution_target"] == pytest.approx(-0.23)
-    assert audit["target_policy"]["rowwise_label_coalesce"] is False
+    assert samples[0]["execution_target"] is None
+    assert samples[0]["actual_trade_target_audit_only"] == pytest.approx(-0.20)
+    assert audit["target_policy"]["actual_trade_outcome_role"] == "audit_only_not_training_label"
 
 
 def test_allocator_ev_fusion_prefers_canonical_s12_replay_outcome_label():
@@ -536,6 +555,6 @@ def test_allocator_ev_fusion_prefers_canonical_s12_replay_outcome_label():
     samples, audit = _samples([row])
 
     assert samples[0]["trade_target"] == pytest.approx(0.08)
-    assert samples[0]["execution_target"] == pytest.approx(0.05)
+    assert samples[0]["execution_target"] == pytest.approx(0.08)
     assert samples[0]["execution_label_source"] == "s12_replay_trade_outcomes"
     assert audit["execution_label_source_counts"] == {"s12_replay_trade_outcomes": 1}

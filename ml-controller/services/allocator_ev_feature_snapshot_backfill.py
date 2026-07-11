@@ -146,14 +146,10 @@ def _existing_s12_payload(allocation: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     value, _source, payload = extract_s12_trade_ev({"s12_trade_ev": raw})
-    if isinstance(payload, dict):
+    if value is not None and isinstance(payload, dict) and str(payload.get("status") or "loaded").lower() == "loaded":
         payload["snapshot_reuse_policy"] = "persisted_candidate_time_s12_payload"
         return payload
-    if value is None:
-        return None
-    out = dict(raw)
-    out["snapshot_reuse_policy"] = "persisted_candidate_time_s12_payload"
-    return out
+    return None
 
 
 def _build_l4_asof_artifact(

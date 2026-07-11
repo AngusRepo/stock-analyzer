@@ -16,21 +16,23 @@ from services.l4_alpha_ev_resolver import (
 from services.s12_trade_ev import extract_s12_trade_ev
 
 
-FEATURE_NAMES = [
+SELECTION_FEATURE_NAMES = [
     "l4_expected_return",
+    "market_heat_expected_return",
+]
+EXECUTION_FEATURE_NAMES = [
     "s12_trade_expected_return",
-    "s12_available",
     "s12_execution_ready",
     "s12_context_multiplier",
     "s12_target_quality_score",
-    "market_heat_expected_return",
     "l4_s12_edge_agreement",
 ]
+FEATURE_NAMES = list(dict.fromkeys([*SELECTION_FEATURE_NAMES, *EXECUTION_FEATURE_NAMES]))
 
 PRIMARY_MIN_DATES = 20
 PRIMARY_MIN_SAMPLES = 1500
-PRIMARY_MIN_S12_READY_COVERAGE = 0.20
-PRIMARY_MIN_S12_AVAILABLE_COVERAGE = 0.35
+PRIMARY_MIN_S12_AVAILABLE_SAMPLES = 300
+PRIMARY_MIN_S12_AVAILABLE_DATES = 8
 ASSISTIVE_MIN_DATES = 5
 ASSISTIVE_MIN_SAMPLES = 500
 
@@ -158,12 +160,9 @@ def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
     }
 
 
-def _target(row: dict[str, Any]) -> float | None:
-    for key in ("trade_pnl_pct", "actual_return_pct"):
-        value = _float_or_none(row.get(key))
-        if value is not None and -1.0 < value < 1.0:
-            return value
-    return None
+def _bounded_return(row: dict[str, Any], key: str) -> float | None:
+    value = _float_or_none(row.get(key))
+    return value if value is not None and -1.0 < value < 1.0 else None
 
 
 def _samples(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -172,20 +171,30 @@ def _samples(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str
     missing_features = 0
     for row in rows:
         features = _feature_vector(row)
-        target = _target(row)
+        selection_target = _bounded_return(row, "actual_return_pct")
         if features is None:
             missing_features += 1
             invalid += 1
             continue
-        if target is None:
+        if selection_target is None:
             invalid += 1
             continue
         day = str(row.get("prediction_date") or row.get("date") or "")[:10] or "unknown"
+        trade_target = _bounded_return(row, "trade_pnl_pct")
+        s12_available = float(features.get("s12_available") or 0.0) > 0.0
+        execution_target = (
+            trade_target - selection_target
+            if s12_available and trade_target is not None
+            else None
+        )
         out.append({
             "date": day,
             "symbol": row.get("symbol"),
             "features": features,
-            "target": target,
+            "target": selection_target,
+            "selection_target": selection_target,
+            "trade_target": trade_target,
+            "execution_target": execution_target,
         })
     s12_ready_count = sum(
         1
@@ -197,6 +206,7 @@ def _samples(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str
         for sample in out
         if float(sample["features"].get("s12_available") or 0.0) > 0.0
     )
+    execution_samples = [sample for sample in out if sample["execution_target"] is not None]
     return out, {
         "input_rows": len(rows),
         "sample_count": len(out),
@@ -205,8 +215,16 @@ def _samples(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str
         "date_count": len({row["date"] for row in out}),
         "s12_ready_count": s12_ready_count,
         "s12_available_count": s12_available_count,
+        "s12_available_date_count": len({row["date"] for row in out if row["features"]["s12_available"] > 0.0}),
+        "execution_sample_count": len(execution_samples),
+        "execution_date_count": len({row["date"] for row in execution_samples}),
         "s12_ready_coverage": round(s12_ready_count / len(out), 8) if out else 0.0,
         "s12_available_coverage": round(s12_available_count / len(out), 8) if out else 0.0,
+        "target_policy": {
+            "selection": "actual_return_pct",
+            "execution_residual": "trade_pnl_pct_minus_actual_return_pct_when_s12_available",
+            "rowwise_label_coalesce": False,
+        },
     }
 
 
@@ -230,13 +248,19 @@ def _solve_linear_system(a: list[list[float]], b: list[float]) -> list[float] | 
     return [mat[row][-1] for row in range(n)]
 
 
-def _fit_ridge(samples: list[dict[str, Any]], *, l2: float) -> tuple[float, dict[str, float]]:
-    p = len(FEATURE_NAMES) + 1
+def _fit_ridge(
+    samples: list[dict[str, Any]],
+    *,
+    l2: float,
+    feature_names: list[str],
+    target_key: str = "target",
+) -> tuple[float, dict[str, float]]:
+    p = len(feature_names) + 1
     xtx = [[0.0 for _ in range(p)] for _ in range(p)]
     xty = [0.0 for _ in range(p)]
     for sample in samples:
-        x = [1.0, *[float(sample["features"][name]) for name in FEATURE_NAMES]]
-        y = float(sample["target"])
+        x = [1.0, *[float(sample["features"][name]) for name in feature_names]]
+        y = float(sample[target_key])
         for i in range(p):
             xty[i] += x[i] * y
             for j in range(p):
@@ -246,17 +270,23 @@ def _fit_ridge(samples: list[dict[str, Any]], *, l2: float) -> tuple[float, dict
     solved = _solve_linear_system(xtx, xty)
     if solved is None:
         raise ValueError("allocator_ev_fusion_ridge_fit_singular_matrix")
-    return solved[0], {name: solved[idx + 1] for idx, name in enumerate(FEATURE_NAMES)}
+    return solved[0], {name: solved[idx + 1] for idx, name in enumerate(feature_names)}
 
 
 def _predict(sample: dict[str, Any], intercept: float, coefs: dict[str, float]) -> float:
-    return intercept + sum(coefs[name] * float(sample["features"][name]) for name in FEATURE_NAMES)
+    return intercept + sum(coef * float(sample["features"][name]) for name, coef in coefs.items())
 
 
-def _metrics(samples: list[dict[str, Any]], intercept: float, coefs: dict[str, float]) -> dict[str, Any]:
+def _metrics(
+    samples: list[dict[str, Any]],
+    intercept: float,
+    coefs: dict[str, float],
+    *,
+    target_key: str = "target",
+) -> dict[str, Any]:
     if not samples:
         return {"samples": 0}
-    pairs = [(_predict(sample, intercept, coefs), float(sample["target"])) for sample in samples]
+    pairs = [(_predict(sample, intercept, coefs), float(sample[target_key])) for sample in samples]
     preds = [item[0] for item in pairs]
     targets = [item[1] for item in pairs]
     errors = [pred - target for pred, target in pairs]
@@ -264,7 +294,17 @@ def _metrics(samples: list[dict[str, Any]], intercept: float, coefs: dict[str, f
     bucket = max(1, len(ranked) // 5)
     top = ranked[-bucket:]
     bottom = ranked[:bucket]
+    top_returns = [target for _, target in top]
+    bottom_returns = [target for _, target in bottom]
+    spread = _mean(top_returns) - _mean(bottom_returns)
+    spread_se = math.sqrt(
+        (_sample_variance(top_returns) / max(1, len(top_returns)))
+        + (_sample_variance(bottom_returns) / max(1, len(bottom_returns)))
+    )
     corr = _corr(preds, targets)
+    corr_lcb = None
+    if corr is not None and len(samples) > 3 and abs(corr) < 1.0:
+        corr_lcb = math.tanh(math.atanh(corr) - (1.645 / math.sqrt(len(samples) - 3)))
     return {
         "samples": len(samples),
         "mean_target": round(_mean(targets), 8),
@@ -272,13 +312,29 @@ def _metrics(samples: list[dict[str, Any]], intercept: float, coefs: dict[str, f
         "mae": round(_mean([abs(err) for err in errors]), 8),
         "rmse": round(math.sqrt(_mean([err * err for err in errors])), 8),
         "prediction_target_corr": None if corr is None else round(corr, 8),
-        "top_quintile_mean_return": round(_mean([target for _, target in top]), 8),
-        "bottom_quintile_mean_return": round(_mean([target for _, target in bottom]), 8),
-        "top_bottom_spread": round(_mean([target for _, target in top]) - _mean([target for _, target in bottom]), 8),
+        "prediction_target_corr_lcb90": None if corr_lcb is None else round(corr_lcb, 8),
+        "top_quintile_mean_return": round(_mean(top_returns), 8),
+        "bottom_quintile_mean_return": round(_mean(bottom_returns), 8),
+        "top_bottom_spread": round(spread, 8),
+        "top_bottom_spread_lcb90": round(spread - 1.645 * spread_se, 8),
     }
 
 
-def _walk_forward(samples: list[dict[str, Any]], *, folds: int, l2: float) -> dict[str, Any]:
+def _sample_variance(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = _mean(values)
+    return sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+
+
+def _walk_forward(
+    samples: list[dict[str, Any]],
+    *,
+    folds: int,
+    l2: float,
+    feature_names: list[str],
+    target_key: str = "target",
+) -> dict[str, Any]:
     dates = sorted({str(sample["date"]) for sample in samples})
     if len(dates) < folds + 1:
         return {"passed": False, "reason": "insufficient_dates", "folds": []}
@@ -290,10 +346,10 @@ def _walk_forward(samples: list[dict[str, Any]], *, folds: int, l2: float) -> di
         test_dates = set(dates[split_idx:next_idx])
         train = [sample for sample in samples if sample["date"] in train_dates]
         test = [sample for sample in samples if sample["date"] in test_dates]
-        if len(train) < len(FEATURE_NAMES) + 2 or not test:
+        if len(train) < len(feature_names) + 2 or not test:
             continue
-        intercept, coefs = _fit_ridge(train, l2=l2)
-        rows.append({"fold": fold, **_metrics(test, intercept, coefs)})
+        intercept, coefs = _fit_ridge(train, l2=l2, feature_names=feature_names, target_key=target_key)
+        rows.append({"fold": fold, **_metrics(test, intercept, coefs, target_key=target_key)})
     if not rows:
         return {"passed": False, "reason": "no_valid_folds", "folds": []}
     positive_spread = sum(1 for row in rows if float(row.get("top_bottom_spread") or 0.0) > 0.0)
@@ -309,20 +365,89 @@ def _walk_forward(samples: list[dict[str, Any]], *, folds: int, l2: float) -> di
     }
 
 
+def _fit_expert(
+    samples: list[dict[str, Any]],
+    *,
+    feature_names: list[str],
+    target_key: str,
+    min_samples: int,
+    min_dates: int,
+    l2: float,
+    minimum_spread: float = 0.0,
+) -> dict[str, Any]:
+    dates = sorted({sample["date"] for sample in samples})
+    split_idx = max(1, round(len(dates) * 0.8)) if dates else 0
+    train_dates = set(dates[:split_idx])
+    test_dates = set(dates[split_idx:])
+    train = [sample for sample in samples if sample["date"] in train_dates]
+    test = [sample for sample in samples if sample["date"] in test_dates]
+    blockers: list[str] = []
+    if len(samples) < min_samples:
+        blockers.append("insufficient_samples")
+    if len(dates) < min_dates:
+        blockers.append("insufficient_dates")
+    if len(train) < len(feature_names) + 2 or not test:
+        blockers.append("insufficient_train_test_split")
+    intercept = 0.0
+    coefs = {name: 0.0 for name in feature_names}
+    train_metrics: dict[str, Any] = {"samples": len(train)}
+    oos_metrics: dict[str, Any] = {"samples": len(test)}
+    walk_forward: dict[str, Any] = {"passed": False, "reason": "not_run", "folds": []}
+    if not blockers:
+        intercept, coefs = _fit_ridge(
+            train,
+            l2=l2,
+            feature_names=feature_names,
+            target_key=target_key,
+        )
+        train_metrics = _metrics(train, intercept, coefs, target_key=target_key)
+        oos_metrics = _metrics(test, intercept, coefs, target_key=target_key)
+        walk_forward = _walk_forward(
+            samples,
+            folds=4,
+            l2=l2,
+            feature_names=feature_names,
+            target_key=target_key,
+        )
+        if (oos_metrics.get("prediction_target_corr_lcb90") or 0.0) <= 0.0:
+            blockers.append("oos_prediction_target_corr_lcb90_not_positive")
+        if float(oos_metrics.get("top_bottom_spread_lcb90") or 0.0) <= minimum_spread:
+            blockers.append("oos_top_bottom_spread_lcb90_not_economic")
+        if not walk_forward.get("passed"):
+            blockers.append("walk_forward_not_stable")
+    return {
+        "status": "fitted" if not blockers else "shadow",
+        "decision": "PASS" if not blockers else "FAIL",
+        "failed_gates": blockers,
+        "sample_count": len(samples),
+        "date_count": len(dates),
+        "feature_names": feature_names,
+        "target": target_key,
+        "promotion_confidence_level": 0.90,
+        "minimum_economic_spread": round(minimum_spread, 8),
+        "intercept": round(intercept, 10),
+        "coefficients": {name: round(value, 10) for name, value in coefs.items()},
+        "train_metrics": train_metrics,
+        "oos_metrics": oos_metrics,
+        "walk_forward": walk_forward,
+    }
+
+
 def _promotion_tier(
     *,
     decision: str,
     diagnostics: dict[str, Any],
     oos_metrics: dict[str, Any],
     walk_forward: dict[str, Any],
+    execution_model: dict[str, Any],
     min_dates: int,
     min_samples: int,
 ) -> tuple[str, list[str]]:
     blockers: list[str] = []
     sample_count = int(diagnostics.get("sample_count") or 0)
     date_count = int(diagnostics.get("date_count") or 0)
-    s12_ready_coverage = float(diagnostics.get("s12_ready_coverage") or 0.0)
-    s12_available_coverage = float(diagnostics.get("s12_available_coverage") or 0.0)
+    execution_sample_count = int(diagnostics.get("execution_sample_count") or 0)
+    execution_date_count = int(diagnostics.get("execution_date_count") or 0)
     top_mean = float(oos_metrics.get("top_quintile_mean_return") or 0.0)
     spread = float(oos_metrics.get("top_bottom_spread") or 0.0)
     corr = float(oos_metrics.get("prediction_target_corr") or 0.0)
@@ -334,10 +459,12 @@ def _promotion_tier(
         blockers.append("primary_insufficient_samples")
     if date_count < max(min_dates, PRIMARY_MIN_DATES):
         blockers.append("primary_insufficient_dates")
-    if s12_ready_coverage < PRIMARY_MIN_S12_READY_COVERAGE:
-        blockers.append("primary_s12_ready_coverage_low")
-    if s12_available_coverage < PRIMARY_MIN_S12_AVAILABLE_COVERAGE:
-        blockers.append("primary_s12_available_coverage_low")
+    if execution_sample_count < PRIMARY_MIN_S12_AVAILABLE_SAMPLES:
+        blockers.append("primary_s12_available_samples_low")
+    if execution_date_count < PRIMARY_MIN_S12_AVAILABLE_DATES:
+        blockers.append("primary_s12_available_dates_low")
+    if execution_model.get("decision") != "PASS":
+        blockers.append("primary_s12_execution_expert_not_validated")
     if top_mean <= 0.0:
         blockers.append("primary_top_bucket_not_positive")
     if spread <= 0.0:
@@ -374,68 +501,64 @@ def build_allocator_ev_fusion_artifact_from_rows(
     cost_model_bps: float = 18.0,
 ) -> dict[str, Any]:
     samples, diagnostics = _samples(rows)
-    dates = sorted({sample["date"] for sample in samples})
-    split_idx = max(1, round(len(dates) * 0.8)) if dates else 0
-    train_dates = set(dates[:split_idx])
-    test_dates = set(dates[split_idx:])
-    train = [sample for sample in samples if sample["date"] in train_dates]
-    test = [sample for sample in samples if sample["date"] in test_dates]
-    blockers: list[str] = []
-    if len(samples) < min_samples:
-        blockers.append("insufficient_samples")
-    if len(dates) < min_dates:
-        blockers.append("insufficient_dates")
-    if len(train) < len(FEATURE_NAMES) + 2 or not test:
-        blockers.append("insufficient_train_test_split")
-    intercept = 0.0
-    coefs = {name: 0.0 for name in FEATURE_NAMES}
-    train_metrics: dict[str, Any] = {"samples": len(train)}
-    oos_metrics: dict[str, Any] = {"samples": len(test)}
-    walk_forward = {"passed": False, "reason": "not_run", "folds": []}
-    if not blockers:
-        intercept, coefs = _fit_ridge(train, l2=l2)
-        train_metrics = _metrics(train, intercept, coefs)
-        oos_metrics = _metrics(test, intercept, coefs)
-        walk_forward = _walk_forward(samples, folds=4, l2=l2)
-        if (oos_metrics.get("prediction_target_corr") or 0.0) <= 0.0:
-            blockers.append("oos_prediction_target_corr_not_positive")
-        if float(oos_metrics.get("top_bottom_spread") or 0.0) <= 0.0:
-            blockers.append("oos_top_bottom_spread_not_positive")
-        if not walk_forward.get("passed"):
-            blockers.append("walk_forward_not_stable")
-    decision = "PASS" if not blockers else "FAIL"
+    selection_model = _fit_expert(
+        samples,
+        feature_names=SELECTION_FEATURE_NAMES,
+        target_key="selection_target",
+        min_samples=min_samples,
+        min_dates=min_dates,
+        l2=l2,
+        minimum_spread=max(0.0, cost_model_bps) / 10000.0,
+    )
+    execution_samples = [sample for sample in samples if sample["execution_target"] is not None]
+    execution_model = _fit_expert(
+        execution_samples,
+        feature_names=EXECUTION_FEATURE_NAMES,
+        target_key="execution_target",
+        min_samples=PRIMARY_MIN_S12_AVAILABLE_SAMPLES,
+        min_dates=PRIMARY_MIN_S12_AVAILABLE_DATES,
+        l2=l2,
+    )
+    decision = str(selection_model["decision"])
     promotion_tier, promotion_blockers = _promotion_tier(
         decision=decision,
         diagnostics=diagnostics,
-        oos_metrics=oos_metrics,
-        walk_forward=walk_forward,
+        oos_metrics=selection_model["oos_metrics"],
+        walk_forward=selection_model["walk_forward"],
+        execution_model=execution_model,
         min_dates=min_dates,
         min_samples=min_samples,
     )
     validation_packet = {
-        "schema_version": "allocator-ev-fusion-validation-packet-v1",
+        "schema_version": "allocator-ev-fusion-validation-packet-v3",
         "decision": decision,
-        "failed_gates": blockers,
+        "failed_gates": selection_model["failed_gates"],
         "validation_scope": {
             "owner": "allocator_ev_fusion",
-            "target": "verified_trade_pnl_pct_or_actual_return_pct",
+            "selection_target": "actual_return_pct",
+            "execution_target": "trade_pnl_pct_minus_actual_return_pct_when_s12_available",
+            "rowwise_label_coalesce": False,
             "method": "date_split_oos_plus_walk_forward",
             "lookback_days": lookback_days,
         },
         "sample_audit": diagnostics,
-        "train_metrics": train_metrics,
-        "oos_metrics": oos_metrics,
-        "walk_forward": walk_forward,
+        "train_metrics": selection_model["train_metrics"],
+        "oos_metrics": selection_model["oos_metrics"],
+        "walk_forward": selection_model["walk_forward"],
+        "selection_model": selection_model,
+        "execution_model": execution_model,
         "promotion": {
-            "schema_version": "allocator-ev-fusion-promotion-v2",
+            "schema_version": "allocator-ev-fusion-promotion-v3",
             "tier": promotion_tier,
             "automatic": True,
             "failed_gates": promotion_blockers,
             "primary_requirements": {
                 "min_dates": max(min_dates, PRIMARY_MIN_DATES),
                 "min_samples": max(min_samples, PRIMARY_MIN_SAMPLES),
-                "min_s12_ready_coverage": PRIMARY_MIN_S12_READY_COVERAGE,
-                "min_s12_available_coverage": PRIMARY_MIN_S12_AVAILABLE_COVERAGE,
+                "min_s12_available_samples": PRIMARY_MIN_S12_AVAILABLE_SAMPLES,
+                "min_s12_available_dates": PRIMARY_MIN_S12_AVAILABLE_DATES,
+                "s12_coverage_is_diagnostic_only": True,
+                "execution_expert_validation_passed": True,
                 "top_bucket_return_positive": True,
                 "top_bottom_spread_positive": True,
                 "oos_corr_positive": True,
@@ -444,7 +567,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
         },
     }
     artifact = {
-        "schema_version": "allocator-ev-fusion-artifact-v2",
+        "schema_version": "allocator-ev-fusion-artifact-v3",
         "expected_return_owner": "allocator_ev_fusion",
         "promotion_state": (
             "production_primary" if promotion_tier == "primary"
@@ -456,19 +579,24 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "assistive_expected_return_allowed": promotion_tier in {"assistive", "primary"},
         "promotion_blockers": promotion_blockers,
         "validation_packet": validation_packet,
-        "resolver_method": "ridge_allocator_ev_fusion",
-        "model_version": f"allocator-ev-fusion-ridge-{trained_until.replace('-', '')}",
-        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v1",
+        "resolver_method": "two_stage_allocator_ev_fusion",
+        "model_version": f"allocator-ev-fusion-two-stage-{trained_until.replace('-', '')}",
+        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v2-two-stage",
         "trained_until": trained_until,
         "horizon_days": 5,
         "cost_model_bps": cost_model_bps,
         "output_is_net_of_costs": False,
         "feature_names": FEATURE_NAMES,
-        "intercept": round(intercept, 10),
-        "coefficients": {name: round(value, 10) for name, value in coefs.items()},
+        "selection_model": selection_model,
+        "execution_model": execution_model,
+        "intercept": selection_model["intercept"],
+        "coefficients": {
+            **selection_model["coefficients"],
+            **{name: 0.0 for name in EXECUTION_FEATURE_NAMES},
+        },
         "output_clip": {"min": -0.08, "max": 0.08},
         "training_data": {
-            "source": "daily_recommendations alpha_allocation l4_alpha_ev+s12_trade_ev joined verified outcomes",
+            "source": "as-of L4/S12 snapshots joined to separate candidate-return and executed-trade outcomes",
             "trained_until": trained_until,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             **diagnostics,

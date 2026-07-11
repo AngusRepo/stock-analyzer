@@ -9,10 +9,6 @@ from typing import Any, Callable
 
 FEATURE_NAMES = [
     "score_final_norm",
-    "ml_edge_norm",
-    "fundamental_quality_norm",
-    "chip_flow_norm",
-    "technical_structure_norm",
     "ensemble_avg_rank_centered",
     "ensemble_confidence_centered",
 ]
@@ -186,18 +182,39 @@ def _metrics(samples: list[dict[str, Any]], intercept: float, coefs: dict[str, f
     bucket = max(1, len(ranked) // 5)
     bottom = ranked[:bucket]
     top = ranked[-bucket:]
+    top_returns = [target for _, target in top]
+    bottom_returns = [target for _, target in bottom]
+    spread = _mean(top_returns) - _mean(bottom_returns)
+    spread_se = math.sqrt(
+        (_sample_variance(top_returns) / max(1, len(top_returns)))
+        + (_sample_variance(bottom_returns) / max(1, len(bottom_returns)))
+    )
+    corr = _corr(preds, targets)
+    corr_lcb = None
+    if corr is not None and len(samples) > 3 and abs(corr) < 1.0:
+        fisher_lcb = math.atanh(corr) - (1.645 / math.sqrt(len(samples) - 3))
+        corr_lcb = math.tanh(fisher_lcb)
     return {
         "samples": len(samples),
         "mean_target": round(_mean(targets), 8),
         "mean_prediction": round(_mean(preds), 8),
         "mae": round(_mean([abs(err) for err in errors]), 8),
         "rmse": round(math.sqrt(_mean([err * err for err in errors])), 8),
-        "prediction_target_corr": None if _corr(preds, targets) is None else round(float(_corr(preds, targets)), 8),
-        "top_quintile_mean_return": round(_mean([target for _, target in top]), 8),
-        "bottom_quintile_mean_return": round(_mean([target for _, target in bottom]), 8),
-        "top_bottom_spread": round(_mean([target for _, target in top]) - _mean([target for _, target in bottom]), 8),
+        "prediction_target_corr": None if corr is None else round(float(corr), 8),
+        "prediction_target_corr_lcb90": None if corr_lcb is None else round(corr_lcb, 8),
+        "top_quintile_mean_return": round(_mean(top_returns), 8),
+        "bottom_quintile_mean_return": round(_mean(bottom_returns), 8),
+        "top_bottom_spread": round(spread, 8),
+        "top_bottom_spread_lcb90": round(spread - 1.645 * spread_se, 8),
         "top_quintile_hit_rate": round(sum(1 for _, target in top if target > 0) / len(top), 8),
     }
+
+
+def _sample_variance(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = _mean(values)
+    return sum((value - mean) ** 2 for value in values) / (len(values) - 1)
 
 
 def _walk_forward(samples: list[dict[str, Any]], *, folds: int, l2: float) -> dict[str, Any]:
@@ -272,10 +289,11 @@ def build_l4_alpha_ev_artifact_from_rows(
         train_metrics = _metrics(train, intercept, coefs)
         oos_metrics = _metrics(test, intercept, coefs)
         walk_forward = _walk_forward(samples, folds=4, l2=l2)
-        if (oos_metrics.get("prediction_target_corr") or 0.0) <= 0.0:
-            blockers.append("oos_prediction_target_corr_not_positive")
-        if float(oos_metrics.get("top_bottom_spread") or 0.0) <= 0.0:
-            blockers.append("oos_top_bottom_spread_not_positive")
+        if (oos_metrics.get("prediction_target_corr_lcb90") or 0.0) <= 0.0:
+            blockers.append("oos_prediction_target_corr_lcb90_not_positive")
+        min_economic_spread = max(0.0, float(cost_model_bps)) / 10000.0
+        if float(oos_metrics.get("top_bottom_spread_lcb90") or 0.0) <= min_economic_spread:
+            blockers.append("oos_top_bottom_spread_lcb90_not_above_cost")
         if float(oos_metrics.get("top_quintile_mean_return") or 0.0) <= 0.0:
             blockers.append("oos_top_quintile_return_not_positive")
         if not walk_forward.get("passed"):
@@ -292,6 +310,8 @@ def build_l4_alpha_ev_artifact_from_rows(
             "target": "verified_ensemble_actual_return_pct",
             "method": "date_split_oos_plus_walk_forward",
             "lookback_days": lookback_days,
+            "promotion_confidence_level": 0.90,
+            "minimum_economic_spread": round(max(0.0, float(cost_model_bps)) / 10000.0, 8),
         },
         "sample_audit": diagnostics,
         "train_metrics": train_metrics,
@@ -305,12 +325,12 @@ def build_l4_alpha_ev_artifact_from_rows(
         "validation_packet": validation_packet,
         "resolver_method": "ridge_meta_calibrator",
         "model_version": model_version,
-        "feature_snapshot_version": "l4-alpha-feature-snapshot-v1",
+        "feature_snapshot_version": "l4-alpha-feature-snapshot-v2-score-rank",
         "trained_until": trained_until,
         "horizon_days": 5,
         "cost_model_bps": cost_model_bps,
         "output_is_net_of_costs": False,
-        "feature_families": ["formal_ml", "fundamental", "chip", "technical", "regime", "s12_context"],
+        "feature_families": ["score_v2_composite", "formal_ml_rank", "formal_ml_confidence"],
         "feature_names": FEATURE_NAMES,
         "intercept": round(intercept, 10),
         "coefficients": {name: round(value, 10) for name, value in coefs.items()},
@@ -367,4 +387,3 @@ def load_l4_alpha_ev_training_rows(
         """,
         [end_date, end_date, f"-{max(1, int(lookback_days))} days", int(limit)],
     )
-

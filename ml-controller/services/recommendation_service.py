@@ -3230,7 +3230,7 @@ def load_online_portfolio_bandit_reward_ledger(
             bucket["risk_pct_rows"] += 1.0
 
     by_arm: dict[str, dict[str, Any]] = {}
-    for (_business_date, arm_id), bucket in daily_rewards.items():
+    for (business_date, arm_id), bucket in daily_rewards.items():
         total_weight = bucket["weight"]
         if total_weight <= 0:
             continue
@@ -3239,10 +3239,19 @@ def load_online_portfolio_bandit_reward_ledger(
             "r_rewards": [],
             "source_counts": {},
             "risk_pct_rows": 0.0,
+            "reward_history": [],
         })
-        arm_bucket["rewards"].append(bucket["weighted_reward"] / total_weight)
+        daily_reward = bucket["weighted_reward"] / total_weight
+        arm_bucket["rewards"].append(daily_reward)
+        daily_r = None
         if bucket["r_weight"] > 0:
-            arm_bucket["r_rewards"].append(bucket["weighted_r"] / bucket["r_weight"])
+            daily_r = bucket["weighted_r"] / bucket["r_weight"]
+            arm_bucket["r_rewards"].append(daily_r)
+        arm_bucket["reward_history"].append({
+            "date": business_date,
+            "reward": daily_reward,
+            "reward_r": daily_r,
+        })
         for source, count in (bucket.get("source_counts") or {}).items():
             source_counts = arm_bucket.setdefault("source_counts", {})
             source_counts[source] = float(source_counts.get(source, 0.0) or 0.0) + float(count or 0.0)
@@ -3269,6 +3278,7 @@ def load_online_portfolio_bandit_reward_ledger(
                 for key, value in sorted((stats.get("source_counts") or {}).items())
             },
             "risk_pct_rows": int(stats.get("risk_pct_rows") or 0),
+            "reward_history": sorted(stats.get("reward_history") or [], key=lambda row: row["date"]),
             "source": "daily_recommendations.alpha_allocation+predictions.trade_outcome",
             "reward_policy": "prefer_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_then_actual_return_pct_fallback",
         })

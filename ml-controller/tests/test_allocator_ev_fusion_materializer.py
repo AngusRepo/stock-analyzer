@@ -71,3 +71,50 @@ def test_allocator_ev_fusion_materializer_marks_edge_disagreement_zero():
     assert payload["status"] == "loaded"
     assert payload["feature_values"]["l4_s12_edge_agreement"] == pytest.approx(0.0)
     assert payload["expected_return"] == pytest.approx(0.01)
+
+
+def test_allocator_ev_fusion_materializer_applies_s12_execution_residual_only_when_available():
+    artifact = {
+        **_artifact(),
+        "schema_version": "allocator-ev-fusion-artifact-v3",
+        "resolver_method": "two_stage_allocator_ev_fusion",
+        "selection_model": {
+            "status": "fitted",
+            "intercept": 0.0,
+            "feature_names": ["l4_expected_return"],
+            "coefficients": {"l4_expected_return": 1.0},
+        },
+        "execution_model": {
+            "status": "fitted",
+            "intercept": -0.001,
+            "feature_names": ["s12_trade_expected_return"],
+            "coefficients": {"s12_trade_expected_return": 0.5},
+        },
+    }
+    with_s12 = materialize_allocator_ev_fusion(
+        {},
+        l4_value=0.02,
+        l4_source="l4:test",
+        l4_payload={},
+        s12_value=0.01,
+        s12_source="s12:test",
+        s12_payload={"status": "loaded"},
+        market_heat_expected_return=0.0,
+        policy={"allocatorEvFusion": artifact},
+    )
+    without_s12 = materialize_allocator_ev_fusion(
+        {},
+        l4_value=0.02,
+        l4_source="l4:test",
+        l4_payload={},
+        s12_value=None,
+        s12_source="s12:missing",
+        s12_payload={"status": "invalid_structure"},
+        market_heat_expected_return=0.0,
+        policy={"allocatorEvFusion": artifact},
+    )
+
+    assert with_s12["expected_return"] == pytest.approx(0.024)
+    assert with_s12["s12_execution_model_applied"] is True
+    assert without_s12["expected_return"] == pytest.approx(0.02)
+    assert without_s12["s12_execution_model_applied"] is False

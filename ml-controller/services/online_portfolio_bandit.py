@@ -13,6 +13,8 @@ from typing import Any
 from services.portfolio_allocation import allocate_sparse_tangent_with_evidence
 
 SCHEMA_VERSION = "online-portfolio-bandit-controller-v2"
+REWARD_WINDOW_DAYS = 60
+REWARD_HALF_LIFE_DAYS = 20.0
 
 
 @dataclass(frozen=True)
@@ -52,8 +54,26 @@ def _to_int(value: object, default: int = 0) -> int:
     return out if out >= 0 else default
 
 
-def _ledger_by_arm(reward_ledger: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
-    out: dict[str, dict[str, float]] = {}
+def _decayed_reward_stats(history: list[dict[str, Any]]) -> dict[str, float] | None:
+    valid = [
+        row for row in history
+        if isinstance(row, dict) and _to_float(row.get("reward"), float("nan")) == _to_float(row.get("reward"), float("nan"))
+    ][-REWARD_WINDOW_DAYS:]
+    if not valid:
+        return None
+    decay = math.log(2.0) / REWARD_HALF_LIFE_DAYS
+    weights = [math.exp(-decay * age) for age in reversed(range(len(valid)))]
+    rewards = [_to_float(row.get("reward"), 0.0) for row in valid]
+    weight_sum = sum(weights)
+    return {
+        "samples": float(len(valid)),
+        "effective_samples": weight_sum,
+        "reward_mean": sum(weight * reward for weight, reward in zip(weights, rewards, strict=True)) / weight_sum,
+    }
+
+
+def _ledger_by_arm(reward_ledger: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
     for row in reward_ledger:
         policy_id = str(row.get("policy_id") or "OnlinePortfolioBandit").strip()
         if policy_id != "OnlinePortfolioBandit":
@@ -61,13 +81,19 @@ def _ledger_by_arm(reward_ledger: list[dict[str, Any]]) -> dict[str, dict[str, f
         arm_id = str(row.get("arm_id") or "").strip()
         if not arm_id:
             continue
-        samples = _to_int(row.get("samples"), 0)
-        reward_mean = _to_float(row.get("reward_mean"), 0.0)
+        history = row.get("reward_history") if isinstance(row.get("reward_history"), list) else []
+        decayed = _decayed_reward_stats(history)
+        samples = _to_int((decayed or {}).get("samples", row.get("samples")), 0)
+        reward_mean = _to_float((decayed or {}).get("reward_mean", row.get("reward_mean")), 0.0)
         if samples <= 0:
             continue
         out[arm_id] = {
             "samples": float(samples),
             "reward_mean": reward_mean,
+            "effective_samples": float((decayed or {}).get("effective_samples", samples)),
+            "reward_estimator": "sliding_window_exponential_decay" if decayed else "aggregate_fallback",
+            "reward_window_days": REWARD_WINDOW_DAYS if decayed else None,
+            "reward_half_life_days": REWARD_HALF_LIFE_DAYS if decayed else None,
             "reward_mean_r": _to_float(row.get("reward_mean_r"), 0.0),
             "reward_r_samples": float(_to_int(row.get("reward_r_samples"), 0)),
             "reward_source_counts": row.get("reward_source_counts") if isinstance(row.get("reward_source_counts"), dict) else {},
@@ -78,23 +104,28 @@ def _ledger_by_arm(reward_ledger: list[dict[str, Any]]) -> dict[str, dict[str, f
 
 def _warm_started_arm_stats(
     arm: PortfolioBanditArm,
-    ledger: dict[str, dict[str, float]],
-) -> dict[str, float]:
+    ledger: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     row = ledger.get(arm.arm_id, {})
     live_samples = int(row.get("samples", 0))
     live_reward_mean = _to_float(row.get("reward_mean"), 0.0)
-    total_samples = max(1, arm.prior_samples + live_samples)
-    reward_sum = arm.prior_reward_mean * arm.prior_samples + live_reward_mean * live_samples
+    live_effective_samples = _to_float(row.get("effective_samples"), float(live_samples))
+    total_samples = max(1.0, arm.prior_samples + live_effective_samples)
+    reward_sum = arm.prior_reward_mean * arm.prior_samples + live_reward_mean * live_effective_samples
     return {
-        "samples": float(total_samples),
+        "samples": total_samples,
         "reward_mean": reward_sum / total_samples,
         "prior_samples": float(arm.prior_samples),
         "live_samples": float(live_samples),
+        "live_effective_samples": live_effective_samples,
         "live_reward_mean": live_reward_mean,
         "live_reward_mean_r": _to_float(row.get("reward_mean_r"), 0.0),
         "live_reward_r_samples": float(_to_int(row.get("reward_r_samples"), 0)),
         "reward_source_counts": row.get("reward_source_counts") if isinstance(row.get("reward_source_counts"), dict) else {},
         "reward_policy": str(row.get("reward_policy") or "").strip(),
+        "reward_estimator": str(row.get("reward_estimator") or "aggregate_fallback"),
+        "reward_window_days": row.get("reward_window_days"),
+        "reward_half_life_days": row.get("reward_half_life_days"),
     }
 
 
@@ -208,6 +239,10 @@ def build_online_portfolio_bandit_l2_packet(
             "samples": int(stats["samples"]),
             "prior_samples": int(stats["prior_samples"]),
             "live_samples": int(stats["live_samples"]),
+            "live_effective_samples": round(float(stats["live_effective_samples"]), 6),
+            "reward_estimator": stats["reward_estimator"],
+            "reward_window_days": stats["reward_window_days"],
+            "reward_half_life_days": stats["reward_half_life_days"],
             "knobs": {
                 "candidate_cap": effective_candidate_cap,
                 "max_weight": effective_max_weight,

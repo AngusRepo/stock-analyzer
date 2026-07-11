@@ -218,6 +218,39 @@ def test_online_portfolio_bandit_reward_ledger_can_override_static_prior(monkeyp
     assert packet["controlled_allocation"]["cash_weight"] == pytest.approx(0.30)
 
 
+def test_online_portfolio_bandit_uses_recent_decayed_rewards_over_stale_aggregate(monkeypatch):
+    monkeypatch.setattr(
+        online_portfolio_bandit,
+        "allocate_sparse_tangent_with_evidence",
+        lambda candidates, return_history, **kwargs: {"weights": {"AAA": 1.0}},
+    )
+    history = [
+        {"date": f"2026-06-{day:02d}", "reward": 0.04 if day <= 10 else -0.04}
+        for day in range(1, 21)
+    ]
+    packet = build_online_portfolio_bandit_l2_packet(
+        candidates=[_candidate("AAA", 90.0, 0.05)],
+        return_history={},
+        reward_ledger=[{
+            "policy_id": "OnlinePortfolioBandit",
+            "arm_id": "stale_winner",
+            "samples": 100,
+            "reward_mean": 0.05,
+            "reward_history": history,
+        }],
+        arms=(
+            PortfolioBanditArm("stale_winner", 1, 1.0, 0.0, 0.0, 0.2, 0.0, 1),
+            PortfolioBanditArm("stable", 1, 1.0, 0.0, 0.0, 0.2, 0.005, 20),
+        ),
+        exploration_alpha=0.0,
+    )
+
+    stale = next(row for row in packet["arm_scores"] if row["arm_id"] == "stale_winner")
+    assert stale["live_reward_mean"] < 0.0
+    assert stale["reward_estimator"] == "sliding_window_exponential_decay"
+    assert packet["selected_arm"]["arm_id"] == "stable"
+
+
 def test_recommendation_service_uses_opb_packet_without_full_exposure_renormalization(monkeypatch):
     monkeypatch.setattr(
         online_portfolio_bandit,
@@ -318,6 +351,10 @@ def test_opb_reward_ledger_aggregates_daily_portfolio_reward_by_arm():
     assert ledger[0]["reward_r_samples"] == 1
     assert ledger[0]["reward_source_counts"] == {"actual_return_pct_5bar_fallback": 1, "trade_pnl_pct": 2}
     assert ledger[0]["risk_pct_rows"] == 3
+    assert ledger[0]["reward_history"] == [
+        {"date": "2026-07-01", "reward": pytest.approx(0.008), "reward_r": pytest.approx(0.2)},
+        {"date": "2026-07-02", "reward": pytest.approx(0.04), "reward_r": None},
+    ]
     assert ledger[0]["reward_policy"] == "prefer_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_then_actual_return_pct_fallback"
 
 

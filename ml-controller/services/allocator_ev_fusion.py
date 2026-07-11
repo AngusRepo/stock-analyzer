@@ -298,16 +298,30 @@ def materialize_allocator_ev_fusion(
         blockers.append("validation_packet_not_pass")
     if _approval_state(artifact) not in APPROVED_STATES:
         blockers.append("production_approval_missing")
-    coefs = _coefficients(artifact)
+    selection_model = artifact.get("selection_model") if isinstance(artifact.get("selection_model"), dict) else None
+    execution_model = artifact.get("execution_model") if isinstance(artifact.get("execution_model"), dict) else None
+    coefs = _coefficients(selection_model or artifact)
     if not coefs:
         blockers.append("learned_coefficients_missing")
     else:
-        for label, prefixes in REQUIRED_FEATURE_PREFIXES.items():
+        required_prefixes = {"l4": REQUIRED_FEATURE_PREFIXES["l4"]} if selection_model else REQUIRED_FEATURE_PREFIXES
+        for label, prefixes in required_prefixes.items():
             if not any(name == prefixes[0] or name.startswith(prefixes[1]) for name in coefs):
                 blockers.append(f"required_{label}_feature_missing_from_artifact")
-    intercept = _float_or_none(artifact.get("intercept", 0.0))
+    execution_coefs = _coefficients(execution_model) if execution_model and execution_model.get("status") == "fitted" else None
+    if execution_model and execution_model.get("status") == "fitted" and not execution_coefs:
+        blockers.append("execution_learned_coefficients_missing")
+    if execution_coefs and not any(
+        name == REQUIRED_FEATURE_PREFIXES["s12"][0] or name.startswith(REQUIRED_FEATURE_PREFIXES["s12"][1])
+        for name in execution_coefs
+    ):
+        blockers.append("required_s12_feature_missing_from_execution_artifact")
+    intercept = _float_or_none((selection_model or artifact).get("intercept", 0.0))
     if intercept is None:
         blockers.append("intercept_invalid")
+    execution_intercept = _float_or_none((execution_model or {}).get("intercept", 0.0))
+    if execution_coefs and execution_intercept is None:
+        blockers.append("execution_intercept_invalid")
     for key in ("model_version", "feature_snapshot_version", "trained_until"):
         if not str(artifact.get(key) or "").strip():
             blockers.append(f"{key}_missing")
@@ -323,8 +337,9 @@ def materialize_allocator_ev_fusion(
         market_heat_expected_return=market_heat_expected_return,
         row=row,
     )
+    active_coefs = {**(coefs or {}), **(execution_coefs or {})}
     missing_features = [
-        name for name in (coefs or {})
+        name for name in active_coefs
         if name not in values or _float_or_none(values.get(name)) is None
     ]
     blockers.extend(f"feature_missing:{name}" for name in sorted(missing_features))
@@ -337,9 +352,16 @@ def materialize_allocator_ev_fusion(
             feature_values=values,
         )
 
-    expected_return = float(intercept or 0.0)
+    selection_expected_return = float(intercept or 0.0)
     for name, coef in (coefs or {}).items():
-        expected_return += coef * values[name]
+        selection_expected_return += coef * values[name]
+    execution_residual_adjustment = 0.0
+    execution_model_applied = bool(execution_coefs) and s12_value is not None
+    if execution_model_applied:
+        execution_residual_adjustment = float(execution_intercept or 0.0)
+        for name, coef in (execution_coefs or {}).items():
+            execution_residual_adjustment += coef * values[name]
+    expected_return = selection_expected_return + execution_residual_adjustment
     if artifact.get("output_is_net_of_costs") is False:
         cost_bps = _float_or_none(artifact.get("cost_model_bps"))
         if cost_bps is not None:
@@ -359,6 +381,9 @@ def materialize_allocator_ev_fusion(
         "expected_return_owner": OWNER,
         "expected_return": round(expected_return, 10),
         "expected_return_mean": round(expected_return, 10),
+        "selection_expected_return": round(selection_expected_return, 10),
+        "execution_residual_adjustment": round(execution_residual_adjustment, 10),
+        "s12_execution_model_applied": execution_model_applied,
         "expected_return_source": f"allocator_ev_fusion:{method or 'formal_meta_calibrator'}",
         "selection_alpha_owner": "l4_alpha_ev",
         "execution_trade_owner": "s12_trade_ev",

@@ -21,6 +21,7 @@ from services.l4_alpha_ev_resolver import (
 
 PRODUCER_SCHEMA_VERSION = "l4-alpha-ev-producer-v1"
 CORE_FEATURE_FAMILIES = {"formal_ml", "fundamental", "chip", "technical", "regime"}
+SCORE_RANK_FEATURE_FAMILIES = {"score_v2_composite", "formal_ml_rank", "formal_ml_confidence"}
 POLICY_KEYS = (
     "l4_alpha_ev",
     "l4AlphaEv",
@@ -282,7 +283,12 @@ def materialize_l4_alpha_ev(
         blockers.append("production_approval_missing")
 
     families = _feature_families(artifact)
-    missing_families = sorted(CORE_FEATURE_FAMILIES - families)
+    required_families = (
+        SCORE_RANK_FEATURE_FAMILIES
+        if str(artifact.get("feature_snapshot_version") or "").startswith("l4-alpha-feature-snapshot-v2-")
+        else CORE_FEATURE_FAMILIES
+    )
+    missing_families = sorted(required_families - families)
     blockers.extend(f"feature_family_missing:{family}" for family in missing_families)
 
     coefs = _coefficients(artifact)

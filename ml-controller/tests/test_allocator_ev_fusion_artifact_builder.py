@@ -4,11 +4,13 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.allocator_ev_fusion_artifact_builder import (  # noqa: E402
     _feature_vector,
+    _samples,
     build_allocator_ev_fusion_artifact_from_rows,
     load_allocator_ev_fusion_training_rows,
 )
@@ -66,6 +68,7 @@ def _row(day: str, idx: int) -> dict:
         "symbol": f"{idx:04d}",
         "prediction_date": day,
         "actual_return_pct": target,
+        "trade_pnl_pct": target + (0.4 * s12) + (0.002 if ready else -0.001),
         "alpha_context": json.dumps({"market_heat_expected_return": 0.003 + (idx % 5) * 0.0005}),
         "alpha_allocation": json.dumps({
             "l4_alpha_ev": _l4_payload(l4),
@@ -97,12 +100,13 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["primary_expected_return_allowed"] is True
     assert artifact["validation_packet"]["decision"] == "PASS"
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
-    assert artifact["resolver_method"] == "ridge_allocator_ev_fusion"
+    assert artifact["resolver_method"] == "two_stage_allocator_ev_fusion"
     assert "l4_expected_return" in artifact["coefficients"]
     assert "s12_trade_expected_return" in artifact["coefficients"]
-    assert "s12_available" in artifact["coefficients"]
     assert artifact["coefficients"]["l4_expected_return"] != 0
-    assert artifact["coefficients"]["s12_trade_expected_return"] != 0
+    assert artifact["selection_model"]["decision"] == "PASS"
+    assert artifact["execution_model"]["decision"] == "PASS"
+    assert artifact["execution_model"]["coefficients"]["s12_trade_expected_return"] != 0
 
 
 def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_samples():
@@ -135,6 +139,7 @@ def test_allocator_ev_fusion_artifact_builder_demotes_hot_start_pass_to_assistiv
                 "symbol": f"{symbol_idx:04d}",
                 "prediction_date": day,
                 "actual_return_pct": (0.6 * l4) + (0.4 * s12),
+                "trade_pnl_pct": (0.6 * l4) + (0.7 * s12),
                 "alpha_allocation": json.dumps({
                     "l4_alpha_ev": _l4_payload(l4),
                     "s12_trade_ev": _s12_payload(s12, ready=True),
@@ -495,4 +500,16 @@ def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload
     audit = out["artifact"]["validation_packet"]["sample_audit"]
     assert audit["sample_count"] == len(rows)
     assert audit["missing_feature_rows"] == 0
-    assert "s12_available" in out["artifact"]["feature_names"]
+    assert audit["s12_available_count"] < len(rows)
+
+
+def test_allocator_ev_fusion_keeps_candidate_and_trade_targets_separate():
+    row = _row("2026-06-01", 1)
+    row["actual_return_pct"] = 0.03
+    row["trade_pnl_pct"] = -0.20
+
+    samples, audit = _samples([row])
+
+    assert samples[0]["selection_target"] == pytest.approx(0.03)
+    assert samples[0]["execution_target"] == pytest.approx(-0.23)
+    assert audit["target_policy"]["rowwise_label_coalesce"] is False

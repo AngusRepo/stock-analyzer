@@ -525,6 +525,97 @@ def _sample_variance(values: list[float]) -> float:
     return sum((value - mean) ** 2 for value in values) / (len(values) - 1)
 
 
+def _paired_canonical_l4_comparison(
+    samples: list[dict[str, Any]],
+    *,
+    fusion_intercept: float,
+    fusion_coefficients: dict[str, float],
+) -> dict[str, Any]:
+    """Compare Fusion and canonical L4 on identical OOS dates and candidates."""
+
+    dates = sorted({str(sample["date"]) for sample in samples})
+    split_idx = max(1, round(len(dates) * 0.8)) if dates else 0
+    test_dates = set(dates[split_idx:])
+    test = [
+        sample for sample in samples
+        if sample["date"] in test_dates
+        and float(sample["features"].get("l4_available") or 0.0) > 0.0
+    ]
+    by_date: dict[str, list[dict[str, Any]]] = {}
+    for sample in test:
+        by_date.setdefault(str(sample["date"]), []).append(sample)
+
+    correlation_deltas: list[float] = []
+    spread_deltas: list[float] = []
+    daily: list[dict[str, Any]] = []
+    for day, rows in sorted(by_date.items()):
+        if len(rows) < 3:
+            continue
+        targets = [float(row["selection_target"]) for row in rows]
+        fusion_predictions = [_predict(row, fusion_intercept, fusion_coefficients) for row in rows]
+        canonical_predictions = [float(row["features"]["l4_expected_return"]) for row in rows]
+        fusion_corr = _corr(fusion_predictions, targets)
+        canonical_corr = _corr(canonical_predictions, targets)
+
+        def spread(predictions: list[float]) -> float:
+            ranked = sorted(zip(predictions, targets, strict=True), key=lambda item: item[0])
+            bucket = max(1, len(ranked) // 5)
+            return _mean([target for _prediction, target in ranked[-bucket:]]) - _mean(
+                [target for _prediction, target in ranked[:bucket]]
+            )
+
+        fusion_spread = spread(fusion_predictions)
+        canonical_spread = spread(canonical_predictions)
+        spread_delta = fusion_spread - canonical_spread
+        spread_deltas.append(spread_delta)
+        correlation_delta = None
+        if fusion_corr is not None and canonical_corr is not None:
+            correlation_delta = fusion_corr - canonical_corr
+            correlation_deltas.append(correlation_delta)
+        daily.append({
+            "date": day,
+            "samples": len(rows),
+            "fusion_corr": None if fusion_corr is None else round(fusion_corr, 8),
+            "canonical_l4_corr": None if canonical_corr is None else round(canonical_corr, 8),
+            "corr_delta": None if correlation_delta is None else round(correlation_delta, 8),
+            "fusion_spread": round(fusion_spread, 8),
+            "canonical_l4_spread": round(canonical_spread, 8),
+            "spread_delta": round(spread_delta, 8),
+        })
+
+    def lcb90(values: list[float]) -> float | None:
+        if not values:
+            return None
+        return _mean(values) - 1.645 * math.sqrt(_sample_variance(values) / len(values))
+
+    corr_delta_lcb90 = lcb90(correlation_deltas)
+    spread_delta_lcb90 = lcb90(spread_deltas)
+    minimum_oos_dates = max(4, math.ceil(PRIMARY_MIN_DATES * 0.2))
+    blockers: list[str] = []
+    if len(daily) < minimum_oos_dates:
+        blockers.append("paired_oos_dates_insufficient")
+    if corr_delta_lcb90 is None or corr_delta_lcb90 < 0.0:
+        blockers.append("fusion_corr_delta_lcb90_inferior_to_canonical_l4")
+    if spread_delta_lcb90 is None or spread_delta_lcb90 < 0.0:
+        blockers.append("fusion_spread_delta_lcb90_inferior_to_canonical_l4")
+    return {
+        "schema_version": "allocator-ev-fusion-champion-comparison-v1",
+        "champion": "canonical_l4",
+        "challenger": "allocator_ev_fusion_v5",
+        "comparison_unit": "paired_prediction_date_same_candidates",
+        "decision": "PASS" if not blockers else "FAIL",
+        "failed_gates": blockers,
+        "samples": len(test),
+        "oos_date_count": len(daily),
+        "minimum_oos_dates": minimum_oos_dates,
+        "corr_delta_mean": round(_mean(correlation_deltas), 8) if correlation_deltas else None,
+        "corr_delta_lcb90": None if corr_delta_lcb90 is None else round(corr_delta_lcb90, 8),
+        "spread_delta_mean": round(_mean(spread_deltas), 8) if spread_deltas else None,
+        "spread_delta_lcb90": None if spread_delta_lcb90 is None else round(spread_delta_lcb90, 8),
+        "daily": daily,
+    }
+
+
 def _walk_forward(
     samples: list[dict[str, Any]],
     *,
@@ -788,6 +879,7 @@ def _promotion_tier(
     walk_forward: dict[str, Any],
     execution_model: dict[str, Any],
     execution_probability_model: dict[str, Any],
+    champion_comparison: dict[str, Any],
     min_dates: int,
     min_samples: int,
 ) -> tuple[str, list[str]]:
@@ -815,6 +907,8 @@ def _promotion_tier(
         blockers.append("primary_s12_execution_expert_not_validated")
     if execution_probability_model.get("decision") != "PASS":
         blockers.append("primary_s12_execution_probability_not_validated")
+    if champion_comparison.get("decision") != "PASS":
+        blockers.append("primary_not_superior_to_canonical_l4")
     if top_mean <= 0.0:
         blockers.append("primary_top_bucket_not_positive")
     if spread <= 0.0:
@@ -877,6 +971,14 @@ def build_allocator_ev_fusion_artifact_from_rows(
         min_dates=PRIMARY_MIN_S12_AVAILABLE_DATES,
         l2=l2,
     )
+    champion_comparison = _paired_canonical_l4_comparison(
+        samples,
+        fusion_intercept=float(selection_model.get("intercept") or 0.0),
+        fusion_coefficients={
+            str(name): float(value)
+            for name, value in (selection_model.get("coefficients") or {}).items()
+        },
+    )
     decision = str(selection_model["decision"])
     promotion_tier, promotion_blockers = _promotion_tier(
         decision=decision,
@@ -885,6 +987,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
         walk_forward=selection_model["walk_forward"],
         execution_model=execution_model,
         execution_probability_model=execution_probability_model,
+        champion_comparison=champion_comparison,
         min_dates=min_dates,
         min_samples=min_samples,
     )
@@ -908,6 +1011,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "selection_model": selection_model,
         "execution_model": execution_model,
         "execution_probability_model": execution_probability_model,
+        "champion_comparison": champion_comparison,
         "promotion": {
             "schema_version": "allocator-ev-fusion-promotion-v3",
             "tier": promotion_tier,
@@ -921,6 +1025,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
                 "s12_coverage_is_diagnostic_only": True,
                 "execution_expert_validation_passed": True,
                 "execution_probability_validation_passed": True,
+                "paired_canonical_l4_champion_comparison_passed": True,
                 "top_bucket_return_positive": True,
                 "top_bottom_spread_positive": True,
                 "oos_corr_positive": True,

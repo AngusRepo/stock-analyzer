@@ -413,6 +413,35 @@ def materialize_allocator_ev_fusion(
                 execution_probability = max(0.0, min(1.0, execution_probability))
         execution_residual_adjustment = execution_probability * raw_execution_residual
     direct_trade_ev = artifact.get("expected_return_semantic") == "execution_probability_times_conditional_replay_net_return"
+    if direct_trade_ev and not execution_model_applied:
+        return {
+            **artifact,
+            "schema_version": SCHEMA_VERSION,
+            "status": "candidate_fallback_required",
+            "expected_return_owner": OWNER,
+            "expected_return": None,
+            "expected_return_mean": None,
+            "expected_return_source": "allocator_ev_fusion:candidate_s12_execution_unavailable_fallback_required",
+            "selection_expected_return": round(selection_expected_return, 10),
+            "execution_residual_adjustment": 0.0,
+            "raw_execution_residual": 0.0,
+            "execution_probability": None,
+            "s12_execution_model_applied": False,
+            "primary_expected_return_allowed": False,
+            "selection_alpha_owner": "l4_alpha_ev",
+            "execution_trade_owner": "s12_trade_ev",
+            "l4_alpha_ev": l4_payload,
+            "l4_expected_return": None if l4_value is None else round(l4_value, 10),
+            "l4_expected_return_source": l4_source,
+            "s12_trade_ev": s12_payload,
+            "s12_trade_expected_return": None if s12_value is None else round(s12_value, 10),
+            "s12_trade_expected_return_source": s12_source,
+            "market_heat_expected_return": round(market_heat_expected_return, 10),
+            "feature_values": {key: round(value, 10) for key, value in values.items()},
+            "diagnostic_role": "candidate_coverage_fallback_to_canonical_l4",
+            "semantic": "fusion_owner_requires_fitted_execution_expert_and_candidate_s12_trade_ev",
+            "blockers": ["candidate_s12_execution_ev_unavailable"],
+        }
     expected_return = (
         execution_residual_adjustment
         if direct_trade_ev and execution_model_applied

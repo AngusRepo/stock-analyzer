@@ -497,6 +497,13 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
             or raw_ensemble_v2.get("allocationEvFusion")
         )
 
+    opb_arm_prior = (
+        raw_alloc.get("opb_arm_prior")
+        or raw_alloc.get("opbArmPrior")
+        or raw.get("opb_arm_prior")
+        or raw.get("opbArmPrior")
+    )
+
     return {
         "risk_overlay": overlay,
         "allocation": {
@@ -511,6 +518,7 @@ def normalize_alpha_policy(raw: dict | None = None) -> dict[str, Any]:
             "turnover_penalty": turnover_penalty,
             "l2_penalty": l2_penalty,
             "utility_iterations": utility_iterations,
+            "opb_arm_prior": opb_arm_prior,
             "weights": weights,
         },
         "classification": classification,

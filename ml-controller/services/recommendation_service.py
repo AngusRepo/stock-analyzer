@@ -2725,7 +2725,7 @@ def _canonical_expected_return_from_row(
         primary_allowed = fusion_payload.get("primary_expected_return_allowed") is True
         if status == "loaded" and value is not None and primary_allowed:
             return value, str(fusion_payload.get("expected_return_source") or "allocator_ev_fusion"), fusion_payload
-        fusion_loaded_non_primary = status == "loaded"
+        fusion_loaded_non_primary = status in {"loaded", "candidate_fallback_required"}
         if status == "rejected":
             return None, str(fusion_payload.get("expected_return_source") or "allocator_ev_fusion_rejected"), fusion_payload
 
@@ -3444,6 +3444,11 @@ def _apply_sparse_tangent_buy_selection(
             "score": row.get("score"),
             "expected_return": expected_return,
             "expected_return_source": expected_return_source,
+            "expected_return_owner": (
+                row.get("_allocator_edge_resolver", {}).get("expected_return_owner")
+                if isinstance(row.get("_allocator_edge_resolver"), dict)
+                else None
+            ),
             "allocator_edge_quality_score": (
                 (row.get("_allocator_edge_resolver") or {}).get("allocator_edge_quality_score")
                 if isinstance(row.get("_allocator_edge_resolver"), dict)
@@ -3508,12 +3513,27 @@ def _apply_sparse_tangent_buy_selection(
     allocation_result: dict[str, Any] = {}
     if controller == "OnlinePortfolioBandit":
         try:
-            from services.online_portfolio_bandit import build_online_portfolio_bandit_l2_packet
+            from services.online_portfolio_bandit import (
+                build_online_portfolio_bandit_l2_packet,
+                resolve_portfolio_bandit_arms,
+            )
+
+            expected_return_owners = {
+                str(row.get("expected_return_owner") or "").strip()
+                for row in allocation_candidates
+                if str(row.get("expected_return_owner") or "").strip()
+            }
+            runtime_owner = next(iter(expected_return_owners)) if len(expected_return_owners) == 1 else None
+            resolved_arms, prior_artifact_evidence = resolve_portfolio_bandit_arms(
+                allocation.get("opb_arm_prior"),
+                expected_return_owner=runtime_owner,
+            )
 
             opb_packet = build_online_portfolio_bandit_l2_packet(
                 candidates=allocation_candidates,
                 return_history=risk_history,
                 reward_ledger=opb_reward_ledger or [],
+                arms=resolved_arms,
                 stage="L3_production_allocation_controller",
                 candidate_cap_limit=None,
                 max_cluster_weight=max_cluster_weight,
@@ -3525,6 +3545,7 @@ def _apply_sparse_tangent_buy_selection(
                 turnover_penalty=turnover_penalty,
                 l2_penalty=l2_penalty,
                 utility_iterations=utility_iterations,
+                prior_artifact_evidence=prior_artifact_evidence,
             )
             weights = dict(((opb_packet.get("controlled_allocation") or {}).get("weights") or {}))
             weights = _sanitize_final_weights(weights, preserve_total_exposure=True)

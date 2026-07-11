@@ -12,7 +12,7 @@ from typing import Any
 
 from services.portfolio_allocation import allocate_sparse_tangent_with_evidence
 
-SCHEMA_VERSION = "online-portfolio-bandit-controller-v2"
+SCHEMA_VERSION = "online-portfolio-bandit-controller-v3"
 REWARD_WINDOW_DAYS = 60
 REWARD_HALF_LIFE_DAYS = 20.0
 
@@ -36,6 +36,56 @@ DEFAULT_ARMS: tuple[PortfolioBanditArm, ...] = (
     PortfolioBanditArm("conservative_diversified", 6, 0.20, 0.20, 0.04, 0.18, 0.0025, 24),
     PortfolioBanditArm("high_score_conservative", 5, 0.32, 0.18, 0.04, 0.20, 0.0030, 24),
 )
+
+
+def resolve_portfolio_bandit_arms(
+    artifact: dict[str, Any] | None,
+    *,
+    expected_return_owner: str | None,
+) -> tuple[tuple[PortfolioBanditArm, ...], dict[str, Any]]:
+    """Apply a validated, owner-specific replay prior without changing arm knobs."""
+
+    owner = str(expected_return_owner or "").strip()
+    if not isinstance(artifact, dict):
+        return DEFAULT_ARMS, {"status": "default_static_prior", "reason": "artifact_missing"}
+    validation = artifact.get("validation") if isinstance(artifact.get("validation"), dict) else {}
+    artifact_owner = str(artifact.get("expected_return_owner") or "").strip()
+    if str(validation.get("decision") or "").upper() != "PASS":
+        return DEFAULT_ARMS, {"status": "default_static_prior", "reason": "artifact_not_validated"}
+    if not owner or artifact_owner != owner:
+        return DEFAULT_ARMS, {
+            "status": "default_static_prior",
+            "reason": "expected_return_owner_mismatch",
+            "artifact_owner": artifact_owner or None,
+            "runtime_owner": owner or None,
+        }
+    priors = artifact.get("arm_priors") if isinstance(artifact.get("arm_priors"), list) else []
+    by_id = {
+        str(row.get("arm_id") or "").strip(): row
+        for row in priors
+        if isinstance(row, dict) and str(row.get("arm_id") or "").strip()
+    }
+    if set(by_id) != {arm.arm_id for arm in DEFAULT_ARMS}:
+        return DEFAULT_ARMS, {"status": "default_static_prior", "reason": "arm_set_mismatch"}
+    resolved = tuple(
+        PortfolioBanditArm(
+            arm_id=arm.arm_id,
+            candidate_cap=arm.candidate_cap,
+            max_weight=arm.max_weight,
+            cash_buffer=arm.cash_buffer,
+            min_trade_weight=arm.min_trade_weight,
+            turnover_budget=arm.turnover_budget,
+            prior_reward_mean=_to_float(by_id[arm.arm_id].get("prior_reward_mean"), arm.prior_reward_mean),
+            prior_samples=max(1, _to_int(by_id[arm.arm_id].get("prior_samples"), arm.prior_samples)),
+        )
+        for arm in DEFAULT_ARMS
+    )
+    return resolved, {
+        "status": "artifact_loaded",
+        "artifact_id": artifact.get("artifact_id"),
+        "model_version": artifact.get("model_version"),
+        "expected_return_owner": artifact_owner,
+    }
 
 
 def _to_float(value: object, default: float = 0.0) -> float:
@@ -207,6 +257,7 @@ def build_online_portfolio_bandit_l2_packet(
     turnover_penalty: float = 0.0,
     l2_penalty: float = 0.0,
     utility_iterations: int = 180,
+    prior_artifact_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Select allocator knobs with warm-start UCB and compute allocation weights."""
 
@@ -374,6 +425,10 @@ def build_online_portfolio_bandit_l2_packet(
         "arm_scores": scored,
         "controlled_allocation": allocation,
         "candidate_feature_summary": candidate_feature_summary,
+        "prior_artifact": prior_artifact_evidence or {
+            "status": "default_static_prior",
+            "reason": "not_supplied",
+        },
         "constraints": {
             "bandit_controls_final_weights": False,
             "bandit_controls_allocator_knobs": True,

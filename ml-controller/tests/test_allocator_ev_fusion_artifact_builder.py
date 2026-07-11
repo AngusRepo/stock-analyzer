@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.allocator_ev_fusion_artifact_builder import (  # noqa: E402
     _feature_vector,
+    _paired_canonical_l4_comparison,
     _samples,
     build_allocator_ev_fusion_artifact_from_rows,
     load_allocator_ev_fusion_training_rows,
@@ -118,6 +119,34 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["execution_model"]["decision"] == "PASS"
     assert artifact["execution_probability_model"]["decision"] == "PASS"
     assert artifact["execution_model"]["coefficients"]["s12_trade_expected_return"] != 0
+    assert artifact["validation_packet"]["champion_comparison"]["decision"] == "PASS"
+
+
+def test_fusion_challenger_must_beat_canonical_l4_on_paired_oos_dates():
+    samples = []
+    for day_idx in range(20):
+        for idx in range(20):
+            target = -0.02 + idx * 0.002
+            samples.append({
+                "date": f"2026-06-{day_idx + 1:02d}",
+                "selection_target": target,
+                "features": {
+                    "l4_available": 1.0,
+                    "l4_expected_return": target,
+                    "score_final_norm": float(20 - idx) / 20.0,
+                },
+            })
+
+    comparison = _paired_canonical_l4_comparison(
+        samples,
+        fusion_intercept=0.0,
+        fusion_coefficients={"score_final_norm": 1.0},
+    )
+
+    assert comparison["decision"] == "FAIL"
+    assert comparison["oos_date_count"] == 4
+    assert "fusion_corr_delta_lcb90_inferior_to_canonical_l4" in comparison["failed_gates"]
+    assert "fusion_spread_delta_lcb90_inferior_to_canonical_l4" in comparison["failed_gates"]
 
 
 def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_samples():

@@ -93,6 +93,14 @@ def _promotion_config_allowed(artifact: dict[str, Any] | None, decision: str) ->
     return False
 
 
+def _registry_lifecycle_state(*, decision: str, promoted: bool, promotion_error: str | None) -> str:
+    if promoted:
+        return "production"
+    if promotion_error:
+        return "approval_required"
+    return "offline_passed" if decision == "PASS" else "offline_failed"
+
+
 def _registry_record(
     *,
     artifact: dict[str, Any],
@@ -127,7 +135,11 @@ def _registry_record(
         "model_name": "allocator_ev_fusion",
         "version": model_version,
         "candidate_type": "allocator_ev_fusion_refresh",
-        "state": promotion_state,
+        "state": _registry_lifecycle_state(
+            decision=decision,
+            promoted=promoted,
+            promotion_error=promotion_error,
+        ),
         "artifact_path": None,
         "metadata_path": None,
         "training_run_id": f"allocator_ev_fusion_refresh:{cadence}:{end_date}",

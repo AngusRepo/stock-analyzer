@@ -42,3 +42,18 @@ def test_l4_alpha_ev_refresh_route_sends_config_snapshot_meta() -> None:
     assert '"meta"' in source
     assert '"source": "l4_alpha_ev_refresh"' in source
     assert '"push_id": f"l4_alpha_ev:' in source
+
+
+def test_l4_alpha_ev_registry_maps_promotion_to_lifecycle_states() -> None:
+    source = Path("ml-controller/routers/l4_alpha_ev.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_registry_lifecycle_state"
+    )
+    constants = {
+        node.value for node in ast.walk(function)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert {"production", "approval_required", "offline_passed", "offline_failed"} <= constants
+    assert "production_approved" not in constants

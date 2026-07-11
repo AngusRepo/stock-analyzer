@@ -66,6 +66,14 @@ def _artifact_checksum(artifact: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _registry_lifecycle_state(*, decision: str, promoted: bool, promotion_error: str | None) -> str:
+    if promoted:
+        return "production"
+    if promotion_error:
+        return "approval_required"
+    return "offline_passed" if decision == "PASS" else "offline_failed"
+
+
 def _registry_record(
     *,
     artifact: dict[str, Any],
@@ -97,7 +105,11 @@ def _registry_record(
         "model_name": "l4_alpha_ev",
         "version": model_version,
         "candidate_type": "l4_alpha_ev_refresh",
-        "state": promotion_state,
+        "state": _registry_lifecycle_state(
+            decision=decision,
+            promoted=promoted,
+            promotion_error=promotion_error,
+        ),
         "artifact_path": None,
         "metadata_path": None,
         "training_run_id": f"l4_alpha_ev_refresh:{cadence}:{end_date}",

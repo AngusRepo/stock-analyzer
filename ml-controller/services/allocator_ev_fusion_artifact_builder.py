@@ -242,7 +242,7 @@ def _samples(
         s12_available = float(features.get("s12_available") or 0.0) > 0.0
         execution_target = (
             trade_target - max(0.0, execution_cost_bps) / 10000.0
-            if s12_available and trade_target is not None
+            if trade_target is not None
             else None
         )
         out.append({
@@ -258,7 +258,7 @@ def _samples(
             "execution_target": execution_target,
             "execution_probability_target": (
                 1.0 if trade_target is not None else 0.0
-            ) if s12_available and execution_observed else None,
+            ) if execution_observed else None,
             "execution_label_source": (
                 "s12_replay_trade_outcomes"
                 if replay_target is not None
@@ -329,6 +329,7 @@ def _samples(
         "target_policy": {
             "selection": "actual_return_pct",
             "execution_trade_return": "canonical_s12_replay_pnl_net_of_roundtrip_cost_when_executed",
+            "execution_label_availability": "replay_execution_outcome_independent_of_prior_s12_ev_availability",
             "execution_probability": "canonical_s12_replay_execution_indicator",
             "actual_trade_outcome_role": "audit_only_not_training_label",
             "rowwise_label_coalesce": False,

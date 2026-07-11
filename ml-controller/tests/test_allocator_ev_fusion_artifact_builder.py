@@ -643,6 +643,38 @@ def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_miss
     assert samples[0]["execution_target"] is None
 
 
+def test_execution_replay_label_is_kept_when_prior_s12_ev_was_unavailable():
+    row = {
+        "symbol": "2330",
+        "prediction_date": "2026-07-02",
+        "actual_return_pct": 0.02,
+        "s12_replay_pnl_pct": 0.015,
+        "s12_replay_status": "executed",
+        "score": 70,
+        "score_components": json.dumps({
+            "finalScore": 70,
+            "components": {
+                "mlEdge": 18,
+                "fundamentalQuality": 19,
+                "chipFlow": 20,
+                "technicalStructure": 21,
+            },
+        }),
+        "forecast_data": json.dumps({
+            "ensemble_v2": {"avg_rank": 0.65, "confidence": 0.72},
+        }),
+        "alpha_allocation": json.dumps({}),
+    }
+
+    samples, audit = _samples([row], execution_cost_bps=18.0)
+
+    assert audit["s12_available_count"] == 0
+    assert audit["execution_sample_count"] == 1
+    assert samples[0]["features"]["s12_available"] == 0.0
+    assert samples[0]["execution_target"] == pytest.approx(0.0132)
+    assert samples[0]["execution_probability_target"] == 1.0
+
+
 def test_allocator_ev_fusion_keeps_candidate_and_trade_targets_separate():
     row = _row("2026-06-01", 1)
     row["actual_return_pct"] = 0.03

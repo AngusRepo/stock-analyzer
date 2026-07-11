@@ -69,7 +69,32 @@ def test_verify_job_missing_bars_zero_written_rows_is_skipped():
     )
 
     assert status == "skipped"
-    assert "no verifiable price bars" in error
+    assert "five stock-specific trading sessions" in error
+
+
+def test_verify_job_incomplete_stock_session_horizon_is_skipped():
+    result = {
+        "status": "ok",
+        "run_date": "2026-07-09",
+        "pending": 18,
+        "verified": 0,
+        "metrics": {
+            "verified_rows_written": 0,
+            "skipped_no_bars": 0,
+            "skipped_immature_bars": 18,
+            "skipped_no_update": 0,
+        },
+        "errors": [],
+    }
+
+    status, error = classify_verify_callback_status(
+        result,
+        run_date="2026-07-09",
+        tw_now=datetime(2026, 7, 11, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert status == "skipped"
+    assert "skipped_immature_bars=18" in error
 
 
 def test_verify_summary_includes_durable_write_count():

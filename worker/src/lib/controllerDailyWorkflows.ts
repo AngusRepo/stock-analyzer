@@ -133,17 +133,26 @@ export async function runModelIcRollingRefresh(env: Bindings, runDate?: string) 
 export async function runVerifyV2(env: Bindings, runDate?: string) {
   requireController(env)
 
-  const data = await controllerJson<any>(env, '/verify/run', {
-    method: 'POST',
-    jsonBody: {
-      lookback_days: 5,
-      limit: 600,
-      run_date: runDate || undefined,
-      async_mode: true,
-      callback_task: 'verify-v2',
-    },
-    timeoutMs: 30_000,
-  })
+  let data: any
+  try {
+    data = await controllerJson<any>(env, '/verify/run', {
+      method: 'POST',
+      jsonBody: {
+        lookback_days: 5,
+        limit: 600,
+        run_date: runDate || undefined,
+        async_mode: true,
+        callback_task: 'verify-v2',
+      },
+      timeoutMs: 30_000,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.includes('verify-v2 already has an active execution')) {
+      return `triggered existing active verify-v2 execution for ${runDate ?? 'current date'}, callback expected`
+    }
+    throw error
+  }
 
   if (data?.status === 'triggered') {
     return `triggered run_id=${data.run_id} callback expected`

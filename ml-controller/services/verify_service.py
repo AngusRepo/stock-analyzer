@@ -434,6 +434,7 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
     arf_batch: list[dict] = []
     errors: list[str] = []
     skipped_no_bars = 0
+    skipped_immature_bars = 0
     skipped_no_update = 0
     bars_by_stock = load_bars_for_predictions(pending)
 
@@ -446,6 +447,9 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
             ][:7]
             if not pred_bars:
                 skipped_no_bars += 1
+                continue
+            if len(pred_bars) < VERIFICATION_HORIZON_SESSIONS:
+                skipped_immature_bars += 1
                 continue
             result = verify_single_prediction(
                 pred,
@@ -469,6 +473,7 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
         "errors": errors,
         "metrics": {
             "skipped_no_bars": skipped_no_bars,
+            "skipped_immature_bars": skipped_immature_bars,
             "skipped_no_update": skipped_no_update,
         },
     }

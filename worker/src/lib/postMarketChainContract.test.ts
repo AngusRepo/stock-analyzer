@@ -8,6 +8,7 @@ const callbackRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const logger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
+const controllerDailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
 const pipelineCallbackBlock = callbackRoutes.slice(
   callbackRoutes.indexOf("if (body.task === 'pipeline'"),
   callbackRoutes.indexOf("const verifyCanContinue"),
@@ -26,6 +27,11 @@ const metaShadowBlock = postMarketChain.slice(
 )
 
 assert(callbackRoutes.includes("body.task === 'pipeline'"), 'pipeline callback must be explicitly handled')
+assert(
+  controllerDailyWorkflows.includes('verify-v2 already has an active execution') &&
+    controllerDailyWorkflows.includes('triggered existing active verify-v2 execution'),
+  'duplicate pipeline callbacks must reuse an active verify execution instead of failing the root chain',
+)
 assert(callbackRoutes.includes('lock:ml-predict'), 'pipeline terminal callback must clear the ML predict lock')
 assert(callbackRoutes.includes('runPostPipelineCallbackChain'), 'pipeline success callback must launch post-pipeline chain')
 assert(callbackRoutes.includes('runPostVerifyCallbackChain'), 'verify terminal callback must launch post-verify chain')

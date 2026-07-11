@@ -160,6 +160,13 @@ assert(
     updateOrchestrator.includes('pipeline continues with L4 alpha EV'),
   'allocator EV fusion validation failure must be visible but degrade to L4 instead of stopping the evening-chain pipeline',
 )
+assert(
+  updateOrchestrator.includes('l4_challenger_rejected=') &&
+    updateOrchestrator.includes('l4_champion_retained=') &&
+    updateOrchestrator.includes("champion.promotion_state === 'production_approved'") &&
+    updateOrchestrator.includes("championDecision === 'PASS'"),
+  'a rejected L4 challenger must retain a validated production champion and must not stop the evening chain',
+)
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')
 const marketDataReadiness = fs.readFileSync('src/lib/marketDataReadiness.ts', 'utf8')

@@ -323,6 +323,7 @@ def build_allocator_ev_feature_snapshots_for_date(
     skip_reasons: dict[str, int] = {}
     reused_l4 = 0
     reused_s12 = 0
+    snapshots_without_l4 = 0
     for raw in candidates:
         row, prediction = _parse_candidate_row(raw)
         existing = row.get("existing_alpha_allocation") if isinstance(row.get("existing_alpha_allocation"), dict) else {}
@@ -337,10 +338,8 @@ def build_allocator_ev_feature_snapshots_for_date(
                 usage_scope=materialization_scope,
             )
         if not isinstance(l4_payload, dict) or l4_payload.get("status") != "loaded":
-            skipped += 1
-            reason = "l4_missing_or_rejected" if artifact else "l4_asof_artifact_not_fit_eligible"
-            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
-            continue
+            l4_payload = None
+            snapshots_without_l4 += 1
         s12_payload = _existing_s12_payload(existing)
         if isinstance(s12_payload, dict):
             reused_s12 += 1
@@ -351,13 +350,18 @@ def build_allocator_ev_feature_snapshots_for_date(
             skip_reasons["s12_payload_missing"] = skip_reasons.get("s12_payload_missing", 0) + 1
             continue
         alpha_allocation = {
-            **existing,
-            "l4_alpha_ev": l4_payload,
+            **{
+                key: value for key, value in existing.items()
+                if key not in {"l4_alpha_ev", "alpha_ev", "alpha_ev_prediction", "allocator_ev_fusion"}
+            },
             "s12_trade_ev": s12_payload,
             "snapshot_source": SNAPSHOT_SOURCE,
             "as_of_guard": AS_OF_GUARD,
             "snapshot_l4_usage_mode": l4_usage_mode,
+            "snapshot_l4_available": l4_payload is not None,
         }
+        if l4_payload is not None:
+            alpha_allocation["l4_alpha_ev"] = l4_payload
         statements.append(_snapshot_statement(snapshot_date, row, alpha_allocation))
 
     write_result: dict[str, Any] = {"dry_run": True, "changes_total": 0}
@@ -384,6 +388,7 @@ def build_allocator_ev_feature_snapshots_for_date(
         "skip_reasons": skip_reasons,
         "reused_l4_payloads": reused_l4,
         "reused_s12_payloads": reused_s12,
+        "snapshots_without_l4": snapshots_without_l4,
         "written": 0 if dry_run else int(write_result.get("changes_total") or 0),
         "write_result": write_result,
     }
@@ -443,6 +448,7 @@ def backfill_allocator_ev_feature_snapshots(
         "l4_snapshot_backfill_only_days": sum(
             1 for row in rows if row.get("l4_usage_mode") == "snapshot_backfill_only"
         ),
+        "snapshots_without_l4": sum(int(row.get("snapshots_without_l4") or 0) for row in rows),
         "skip_reasons": aggregate_skip_reasons,
         "results": rows,
     }

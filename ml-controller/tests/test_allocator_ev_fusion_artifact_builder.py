@@ -507,6 +507,59 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
     assert result["skip_reasons"] == {}
 
 
+def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_cannot_fit():
+    candidate = {
+        "stock_id": 1,
+        "symbol": "2330",
+        "recommendation_date": "2026-06-08",
+        "forecast_data": json.dumps({"ensemble_v2": {"avg_rank": 0.35, "confidence": 0.72}}),
+        "score": 70,
+        "score_components": json.dumps({
+            "finalScore": 70,
+            "components": {
+                "mlEdge": 18,
+                "fundamentalQuality": 19,
+                "chipFlow": 20,
+                "technicalStructure": 21,
+            },
+        }),
+        "alpha_context": json.dumps({"market_heat_expected_return": 0.003}),
+        "existing_alpha_allocation": json.dumps({
+            "l4_alpha_ev": {"status": "rejected", "trained_until": "2026-06-08"},
+        }),
+        "current_price": 100,
+    }
+    written: list[tuple[str, list[object]]] = []
+
+    def query_fn(sql: str, params: list[object] | None = None) -> list[dict]:
+        if "FROM predictions p" in sql and "JOIN daily_recommendations dr" in sql:
+            return []
+        if "FROM s12_replay_trade_outcomes" in sql:
+            return []
+        if "FROM s12_structure_snapshots" in sql:
+            return []
+        if "FROM daily_recommendations dr" in sql and "JOIN predictions p" in sql:
+            return [candidate]
+        return []
+
+    result = build_allocator_ev_feature_snapshots_for_date(
+        snapshot_date="2026-06-08",
+        query_fn=query_fn,
+        write_fn=lambda statements: written.extend(statements) or {"changes_total": len(statements)},
+        dry_run=False,
+        l4_min_samples=500,
+        l4_min_dates=20,
+    )
+
+    assert result["status"] == "ok"
+    assert result["l4_usage_mode"] == "not_fit_eligible"
+    assert result["snapshots_built"] == 1
+    assert result["snapshots_without_l4"] == 1
+    allocation = json.loads(written[0][1][7])
+    assert "l4_alpha_ev" not in allocation
+    assert allocation["snapshot_l4_available"] is False
+
+
 def test_allocator_ev_feature_snapshot_backfill_does_not_reuse_invalid_s12_payload():
     invalid = {
         "s12_trade_ev": {

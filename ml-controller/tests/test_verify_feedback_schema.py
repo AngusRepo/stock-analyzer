@@ -114,6 +114,42 @@ def test_verify_does_not_write_immature_five_session_label():
     assert result is None
 
 
+def test_rebuild_verification_labels_clears_stale_unrepairable_rows(monkeypatch):
+    monkeypatch.setattr(
+        verify_service,
+        "load_predictions_for_verification_repair",
+        lambda *args, **kwargs: [{"id": 1}, {"id": 2}],
+    )
+    monkeypatch.setattr(verify_service, "load_market_risk", lambda: {})
+    monkeypatch.setattr(
+        verify_service,
+        "prepare_verification_updates",
+        lambda rows, risk: {
+            "verify_updates": [{"id": 1}],
+            "metrics": {},
+            "errors": [],
+        },
+    )
+    monkeypatch.setattr(verify_service, "write_verified_predictions", lambda updates: 1)
+    captured: list[int] = []
+    monkeypatch.setattr(
+        verify_service,
+        "clear_verification_labels",
+        lambda ids: captured.extend(ids) or len(ids),
+    )
+
+    result = verify_service.rebuild_verification_labels(
+        "2026-06-29",
+        "2026-06-29",
+        dry_run=False,
+    )
+
+    assert captured == [2]
+    assert result["written"] == 1
+    assert result["stale_labels_clear_planned"] == 1
+    assert result["stale_labels_cleared"] == 1
+
+
 def test_verify_uses_prediction_business_date_for_future_bars(monkeypatch):
     captured: dict[str, object] = {}
 

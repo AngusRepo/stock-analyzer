@@ -153,7 +153,10 @@ def rebuild_verification_labels(
     rows = load_predictions_for_verification_repair(start_date, end_date, limit=limit)
     prepared = prepare_verification_updates(rows, load_market_risk())
     updates = prepared["verify_updates"]
+    updated_ids = {int(update["id"]) for update in updates}
+    stale_ids = [int(row["id"]) for row in rows if int(row["id"]) not in updated_ids]
     written = 0 if dry_run else write_verified_predictions(updates)
+    cleared = 0 if dry_run else clear_verification_labels(stale_ids)
     return {
         "status": "ok",
         "dry_run": dry_run,
@@ -163,6 +166,8 @@ def rebuild_verification_labels(
         "mature_rows": len(updates),
         "immature_or_invalid_rows": len(rows) - len(updates),
         "written": written,
+        "stale_labels_clear_planned": len(stale_ids),
+        "stale_labels_cleared": cleared,
         "metrics": prepared.get("metrics") or {},
         "errors": prepared.get("errors") or [],
     }
@@ -397,6 +402,29 @@ def write_verified_predictions(updates: list[dict]) -> int:
         return 0
     statements = [(UPDATE_VERIFY_SQL, u["bind"]) for u in updates]
     result = d1_client.batch_execute(statements)
+    return result.get("changes_total", 0)
+
+
+def clear_verification_labels(prediction_ids: list[int]) -> int:
+    """Fail closed when a repaired row cannot form the canonical horizon label."""
+    if not prediction_ids:
+        return 0
+    sql = """
+        UPDATE predictions SET
+            actual_direction = NULL,
+            actual_price = NULL,
+            direction_correct = NULL,
+            price_error_pct = NULL,
+            actual_return_pct = NULL,
+            trade_outcome = NULL,
+            trade_pnl_pct = NULL,
+            trade_pnl_r = NULL,
+            max_favorable_pct = NULL,
+            max_adverse_pct = NULL,
+            verified_at = NULL
+        WHERE id = ?
+    """.strip()
+    result = d1_client.batch_execute([(sql, [prediction_id]) for prediction_id in prediction_ids])
     return result.get("changes_total", 0)
 
 

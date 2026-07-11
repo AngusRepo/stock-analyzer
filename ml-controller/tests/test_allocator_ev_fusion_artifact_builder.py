@@ -281,7 +281,10 @@ def test_allocator_ev_fusion_feature_vector_accepts_backfill_only_l4_under_canon
     assert features["l4_expected_return"] == 0.02
 
     without_guard = {**row, "allocator_ev_feature_snapshot_guard": ""}
-    assert _feature_vector(without_guard) is None
+    without_guard_features = _feature_vector(without_guard)
+    assert without_guard_features is not None
+    assert without_guard_features["l4_expected_return"] == 0.0
+    assert without_guard_features["l4_available"] == 0.0
 
     future_l4 = {**l4_payload, "trained_until": "2026-07-07"}
     future_row = {
@@ -526,6 +529,36 @@ def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload
     assert audit["sample_count"] == len(rows)
     assert audit["missing_feature_rows"] == 0
     assert audit["s12_available_count"] < len(rows)
+
+
+def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_missing():
+    row = {
+        "symbol": "2330",
+        "prediction_date": "2026-07-02",
+        "actual_return_pct": 0.02,
+        "score": 70,
+        "score_components": json.dumps({
+            "finalScore": 70,
+            "components": {
+                "mlEdge": 18,
+                "fundamentalQuality": 19,
+                "chipFlow": 20,
+                "technicalStructure": 21,
+            },
+        }),
+        "forecast_data": json.dumps({
+            "ensemble_v2": {"avg_rank": 0.65, "confidence": 0.72},
+        }),
+        "alpha_allocation": json.dumps({}),
+    }
+
+    samples, audit = _samples([row])
+
+    assert audit["sample_count"] == 1
+    assert samples[0]["features"]["l4_available"] == 0.0
+    assert samples[0]["features"]["s12_available"] == 0.0
+    assert samples[0]["features"]["score_v2_available"] == 1.0
+    assert samples[0]["execution_target"] is None
 
 
 def test_allocator_ev_fusion_keeps_candidate_and_trade_targets_separate():

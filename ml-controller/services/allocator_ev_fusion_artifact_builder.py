@@ -18,6 +18,7 @@ from services.s12_trade_ev import extract_s12_trade_ev
 
 SELECTION_FEATURE_NAMES = [
     "l4_expected_return",
+    "l4_available",
     "market_heat_expected_return",
     "score_final_norm",
     "ml_edge_norm",
@@ -32,6 +33,7 @@ SELECTION_FEATURE_NAMES = [
 EXECUTION_FEATURE_NAMES = [
     *SELECTION_FEATURE_NAMES,
     "s12_trade_expected_return",
+    "s12_available",
     "s12_execution_ready",
     "s12_context_multiplier",
     "s12_target_quality_score",
@@ -179,24 +181,25 @@ def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
         extractor_row,
         usage_scope=usage_scope,
     )
-    if usage_scope == SNAPSHOT_BACKFILL_USAGE_SCOPE and (
-        not isinstance(_l4_payload, dict)
-        or not _date_strictly_before(_l4_payload.get("trained_until"), row.get("prediction_date"))
+    if (
+        usage_scope == SNAPSHOT_BACKFILL_USAGE_SCOPE
+        and isinstance(_l4_payload, dict)
+        and not _date_strictly_before(_l4_payload.get("trained_until"), row.get("prediction_date"))
     ):
         return None
     s12_value, _s12_source, s12_payload = extract_s12_trade_ev(extractor_row)
+    l4_available = 1.0 if l4_value is not None else 0.0
     if l4_value is None:
-        return None
+        l4_value = 0.0
     s12_available = 1.0
     if s12_value is None:
-        if not isinstance(s12_payload, dict):
-            return None
         s12_value = 0.0
         s12_available = 0.0
     target_state = _target_quality_state(s12_payload)
     return {
         **_selection_raw_features(row),
         "l4_expected_return": float(l4_value),
+        "l4_available": l4_available,
         "s12_trade_expected_return": float(s12_value),
         "s12_available": s12_available,
         "s12_execution_ready": _s12_execution_ready(s12_payload),

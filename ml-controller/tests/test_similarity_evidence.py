@@ -114,7 +114,9 @@ def test_alpha_utility_allocator_lets_strong_alpha_compete_with_low_volatility()
         risk_aversion=2.0,
     )
 
-    assert set(result["weights"]) == {"HOT"}
+    assert set(result["weights"]) == {"HOT", "LOWVOL"}
+    assert result["holding_count_policy"] == "endogenous_positive_marginal_utility_no_hard_top_k"
+    assert result["legacy_top_k_ignored"] == 1
     assert result["allocation_objective"] == "mean_variance_alpha_utility"
     assert result["objective_evidence"]["cash_allowed"] is True
     assert result["candidate_diagnostics"]["HOT"]["alpha_input"] > result["candidate_diagnostics"]["LOWVOL"]["alpha_input"]

@@ -909,7 +909,7 @@ def _l4_execution_checks(root: Path) -> list[dict[str, Any]]:
                 "input_candidate_pool_policy",
                 "full_eligible_pool_no_buy_signal_rank_gate",
                 "buy_signal_count_role",
-                "maximum_selected_count_not_preallocation_rank_cut",
+                "legacy_display_setting_ignored_by_allocator",
                 "allocation_rank_policy",
                 "diagnostic_only_not_capacity_gate",
             ),

@@ -3348,7 +3348,7 @@ def _apply_sparse_tangent_buy_selection(
     l2_penalty = float(_allocation_float(["l2_penalty", "l2Penalty"], 0.0) or 0.0)
     utility_iterations = max(40, min(500, _allocation_int(["utility_iterations", "utilityIterations"], 180)))
 
-    def _cap_final_weight_count(
+    def _sanitize_final_weights(
         weights: dict[str, Any],
         *,
         preserve_total_exposure: bool = False,
@@ -3364,15 +3364,14 @@ def _apply_sparse_tangent_buy_selection(
                 continue
             if math.isfinite(weight) and weight > 0:
                 cleaned.append((symbol_text, weight))
-        capped = sorted(cleaned, key=lambda item: (-item[1], item[0]))[:buy_signal_count]
-        total = sum(weight for _symbol, weight in capped)
+        total = sum(weight for _symbol, weight in cleaned)
         if total <= 0:
             return {}
         if preserve_total_exposure:
             if total > 1.0:
-                return {symbol: round(weight / total, 10) for symbol, weight in capped}
-            return {symbol: round(weight, 10) for symbol, weight in capped}
-        return {symbol: round(weight / total, 10) for symbol, weight in capped}
+                return {symbol: round(weight / total, 10) for symbol, weight in cleaned}
+            return {symbol: round(weight, 10) for symbol, weight in cleaned}
+        return {symbol: round(weight / total, 10) for symbol, weight in cleaned}
 
     allocation_contract = {
         "engine": "sparse_tangent_inverse_risk",
@@ -3380,14 +3379,14 @@ def _apply_sparse_tangent_buy_selection(
         "input_scope": "post_l3_5_evidence_fusion_candidates",
         "input_candidate_pool_policy": "full_eligible_pool_no_buy_signal_rank_gate",
         "selection_policy": "positive_expected_edge_sparse_weights_no_forced_fill",
-        "capacity_policy": "maximum_capacity_not_minimum_fill",
-        "max_capacity_not_target": True,
+        "capacity_policy": "endogenous_positive_marginal_utility_no_hard_top_k",
+        "max_capacity_not_target": False,
         "hard_minimum_fill": False,
         "allows_empty_portfolio": True,
         "legacy_rank_topk_fallback_allowed": False,
         "buy_signal_count": buy_signal_count,
         "allocation_capacity": buy_signal_count,
-        "buy_signal_count_role": "maximum_selected_count_not_preallocation_rank_cut",
+        "buy_signal_count_role": "legacy_display_setting_ignored_by_allocator",
         "sector_concentration_cap": sector_concentration_cap,
         "strategy_concentration_cap": strategy_concentration_cap,
         "family_concentration_cap": family_concentration_cap,
@@ -3528,7 +3527,7 @@ def _apply_sparse_tangent_buy_selection(
                 utility_iterations=utility_iterations,
             )
             weights = dict(((opb_packet.get("controlled_allocation") or {}).get("weights") or {}))
-            weights = _cap_final_weight_count(weights, preserve_total_exposure=True)
+            weights = _sanitize_final_weights(weights, preserve_total_exposure=True)
         except Exception as exc:  # noqa: BLE001 - allocator must fall back deterministically.
             logger.warning("[Ranking] OnlinePortfolioBandit controller failed; fallback sparse tangent: %s", exc)
             weights = {}
@@ -3536,12 +3535,11 @@ def _apply_sparse_tangent_buy_selection(
         weights = {}
 
     if not weights:
-        # `buy_signal_count` is a max candidate capacity. Sparse tangent can
-        # legally return empty/fewer weights when expected edge is not positive.
+        # Legacy buy_signal_count cannot truncate the utility optimizer.
         allocation_result = allocate_sparse_tangent_with_evidence(
             allocation_candidates,
             risk_history,
-            top_k=buy_signal_count,
+            top_k=max(1, len(allocation_candidates)),
             max_weight=max_weight,
             max_cluster_weight=max_cluster_weight,
             cluster_edge_threshold=cluster_edge_threshold,
@@ -3627,12 +3625,12 @@ def _apply_sparse_tangent_buy_selection(
             "evaluated_candidate_count",
             len(optimizer_candidates),
         ),
-        "max_selected_count": allocation_result.get("max_selected_count", buy_signal_count),
-        "allocation_capacity": buy_signal_count,
+        "legacy_top_k_ignored": allocation_result.get("legacy_top_k_ignored", buy_signal_count),
+        "allocation_capacity": None,
         "positive_edge_count": positive_edge_count,
         "selected_count": len(selected_symbols),
         "zero_selection_allowed": True,
-        "capacity_policy": "maximum_capacity_not_minimum_fill",
+        "capacity_policy": "endogenous_positive_marginal_utility_no_hard_top_k",
         "return_history_candidate_count": len(return_history_candidate_symbols),
         "return_history_candidate_symbols": return_history_candidate_symbols,
         "controller": controller,

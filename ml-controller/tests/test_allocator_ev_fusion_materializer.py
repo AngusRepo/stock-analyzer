@@ -118,3 +118,41 @@ def test_allocator_ev_fusion_materializer_applies_s12_execution_residual_only_wh
     assert with_s12["s12_execution_model_applied"] is True
     assert without_s12["expected_return"] == pytest.approx(0.02)
     assert without_s12["s12_execution_model_applied"] is False
+
+
+def test_allocator_ev_fusion_materializer_probability_weights_execution_residual():
+    artifact = {
+        **_artifact(),
+        "resolver_method": "rank_calibrated_two_part_allocator_ev_fusion",
+        "selection_model": {
+            "status": "fitted",
+            "intercept": 0.0,
+            "coefficients": {"l4_expected_return": 1.0},
+        },
+        "execution_model": {
+            "status": "fitted",
+            "intercept": 0.0,
+            "coefficients": {"s12_trade_expected_return": 0.4},
+        },
+        "execution_probability_model": {
+            "status": "fitted",
+            "intercept": 0.5,
+            "coefficients": {"s12_trade_expected_return": 0.0},
+        },
+    }
+    payload = materialize_allocator_ev_fusion(
+        {},
+        l4_value=0.02,
+        l4_source="l4:test",
+        l4_payload={},
+        s12_value=0.01,
+        s12_source="s12:test",
+        s12_payload={"status": "loaded"},
+        market_heat_expected_return=0.0,
+        policy={"allocatorEvFusion": artifact},
+    )
+
+    assert payload["execution_probability"] == pytest.approx(0.5)
+    assert payload["raw_execution_residual"] == pytest.approx(0.004)
+    assert payload["execution_residual_adjustment"] == pytest.approx(0.002)
+    assert payload["expected_return"] == pytest.approx(0.022)

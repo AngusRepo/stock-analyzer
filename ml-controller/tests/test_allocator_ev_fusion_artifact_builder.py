@@ -100,12 +100,18 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["primary_expected_return_allowed"] is True
     assert artifact["validation_packet"]["decision"] == "PASS"
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
-    assert artifact["resolver_method"] == "two_stage_allocator_ev_fusion"
+    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v4"
+    assert artifact["resolver_method"] == "rank_calibrated_two_part_allocator_ev_fusion"
     assert "l4_expected_return" in artifact["coefficients"]
     assert "s12_trade_expected_return" in artifact["coefficients"]
     assert artifact["coefficients"]["l4_expected_return"] != 0
     assert artifact["selection_model"]["decision"] == "PASS"
+    assert artifact["selection_model"]["target"] == "selection_rank_target"
+    assert artifact["selection_model"]["calibration_target"] == "selection_target"
+    assert artifact["selection_model"]["rank_model"]
+    assert artifact["selection_model"]["calibration_model"]["method"] == "oof_rank_score_linear_ev_calibration"
     assert artifact["execution_model"]["decision"] == "PASS"
+    assert artifact["execution_probability_model"]["decision"] == "PASS"
     assert artifact["execution_model"]["coefficients"]["s12_trade_expected_return"] != 0
 
 
@@ -174,7 +180,10 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     assert rows == []
     assert len(observed) == 2
     assert "allocator_ev_feature_snapshots fs" in observed[0]["sql"]
+    assert "s12_replay_trade_outcomes" in observed[0]["sql"]
+    assert "AS s12_replay_pnl_pct" in observed[0]["sql"]
     assert "dr.alpha_allocation" in observed[1]["sql"]
+    assert "s12_replay_trade_outcomes" in observed[1]["sql"]
     assert "NULL AS market_heat_expected_return" in observed[1]["sql"]
     assert "dr.market_heat_expected_return" not in observed[1]["sql"]
     assert "p.verified_at IS NOT NULL" in observed[1]["sql"]
@@ -510,6 +519,23 @@ def test_allocator_ev_fusion_keeps_candidate_and_trade_targets_separate():
 
     samples, audit = _samples([row])
 
-    assert samples[0]["selection_target"] == pytest.approx(0.03)
+    assert samples[0]["actual_return_target"] == pytest.approx(0.03)
+    assert samples[0]["selection_target"] == pytest.approx(0.0)
+    assert samples[0]["selection_rank_target"] == pytest.approx(0.0)
     assert samples[0]["execution_target"] == pytest.approx(-0.23)
     assert audit["target_policy"]["rowwise_label_coalesce"] is False
+
+
+def test_allocator_ev_fusion_prefers_canonical_s12_replay_outcome_label():
+    row = _row("2026-06-01", 1)
+    row["actual_return_pct"] = 0.03
+    row["trade_pnl_pct"] = -0.20
+    row["s12_replay_pnl_pct"] = 0.08
+    row["s12_replay_status"] = "executed"
+
+    samples, audit = _samples([row])
+
+    assert samples[0]["trade_target"] == pytest.approx(0.08)
+    assert samples[0]["execution_target"] == pytest.approx(0.05)
+    assert samples[0]["execution_label_source"] == "s12_replay_trade_outcomes"
+    assert audit["execution_label_source_counts"] == {"s12_replay_trade_outcomes": 1}

@@ -219,37 +219,19 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
     stale_config_clear_error: str | None = None
     if req.promote and not req.dry_run:
         if not _promotion_config_allowed(artifact, decision):
-            try:
-                await worker_fetch(
-                    "/api/admin/config",
-                    method="PUT",
-                    json_body={
-                        "ensemble_v2": {
-                            "allocatorEvFusion": None,
-                            "allocator_ev_fusion": None,
-                        },
-                        "meta": {
-                            "source": "allocator_ev_fusion_refresh_failed_validation_clear_stale",
-                            "push_id": f"allocator_ev_fusion:clear_stale:{req.cadence}:{end_date}",
-                        },
-                    },
-                    timeout=30.0,
-                )
-                stale_config_cleared = True
-            except Exception as exc:  # noqa: BLE001 - failure must be visible to scheduler/operator.
-                stale_config_clear_error = str(exc)
             return {
                 **result,
                 "status": "failed_validation",
                 "promoted": False,
-                "stale_config_cleared": stale_config_cleared,
-                "stale_config_clear_error": stale_config_clear_error,
+                "existing_champion_preserved": True,
+                "stale_config_cleared": False,
+                "stale_config_clear_error": None,
                 "registry_error": registry_error,
                 "production_mutation_allowed": False,
                 "summary": (
                     "allocator_ev_fusion_refresh failed_validation "
                     f"cadence={req.cadence} end_date={end_date} decision={decision or 'UNKNOWN'} "
-                    f"stale_config_cleared={1 if stale_config_cleared else 0}"
+                    "existing_champion_preserved=1"
                 ),
             }
         try:

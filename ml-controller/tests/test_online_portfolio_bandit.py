@@ -137,6 +137,8 @@ def test_online_portfolio_bandit_forwards_sparse_allocator_policy_knobs(monkeypa
     assert observed["l2_penalty"] == pytest.approx(0.02)
     assert observed["utility_iterations"] == 240
     assert packet["constraints"]["inherits_sparse_allocator_policy_knobs"] is True
+    assert packet["constraints"]["bandit_controls_candidate_count"] is False
+    assert packet["constraints"]["hard_top_k_enabled"] is False
 
 
 def test_online_portfolio_bandit_records_allocator_edge_quality_features(monkeypatch):

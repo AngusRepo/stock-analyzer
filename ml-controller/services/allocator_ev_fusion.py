@@ -300,6 +300,11 @@ def materialize_allocator_ev_fusion(
         blockers.append("production_approval_missing")
     selection_model = artifact.get("selection_model") if isinstance(artifact.get("selection_model"), dict) else None
     execution_model = artifact.get("execution_model") if isinstance(artifact.get("execution_model"), dict) else None
+    execution_probability_model = (
+        artifact.get("execution_probability_model")
+        if isinstance(artifact.get("execution_probability_model"), dict)
+        else None
+    )
     coefs = _coefficients(selection_model or artifact)
     if not coefs:
         blockers.append("learned_coefficients_missing")
@@ -309,8 +314,19 @@ def materialize_allocator_ev_fusion(
             if not any(name == prefixes[0] or name.startswith(prefixes[1]) for name in coefs):
                 blockers.append(f"required_{label}_feature_missing_from_artifact")
     execution_coefs = _coefficients(execution_model) if execution_model and execution_model.get("status") == "fitted" else None
+    execution_probability_coefs = (
+        _coefficients(execution_probability_model)
+        if execution_probability_model and execution_probability_model.get("status") == "fitted"
+        else None
+    )
     if execution_model and execution_model.get("status") == "fitted" and not execution_coefs:
         blockers.append("execution_learned_coefficients_missing")
+    if (
+        execution_probability_model
+        and execution_probability_model.get("status") == "fitted"
+        and not execution_probability_coefs
+    ):
+        blockers.append("execution_probability_coefficients_missing")
     if execution_coefs and not any(
         name == REQUIRED_FEATURE_PREFIXES["s12"][0] or name.startswith(REQUIRED_FEATURE_PREFIXES["s12"][1])
         for name in execution_coefs
@@ -322,6 +338,9 @@ def materialize_allocator_ev_fusion(
     execution_intercept = _float_or_none((execution_model or {}).get("intercept", 0.0))
     if execution_coefs and execution_intercept is None:
         blockers.append("execution_intercept_invalid")
+    execution_probability_intercept = _float_or_none((execution_probability_model or {}).get("intercept", 0.0))
+    if execution_probability_coefs and execution_probability_intercept is None:
+        blockers.append("execution_probability_intercept_invalid")
     for key in ("model_version", "feature_snapshot_version", "trained_until"):
         if not str(artifact.get(key) or "").strip():
             blockers.append(f"{key}_missing")
@@ -337,7 +356,7 @@ def materialize_allocator_ev_fusion(
         market_heat_expected_return=market_heat_expected_return,
         row=row,
     )
-    active_coefs = {**(coefs or {}), **(execution_coefs or {})}
+    active_coefs = {**(coefs or {}), **(execution_coefs or {}), **(execution_probability_coefs or {})}
     missing_features = [
         name for name in active_coefs
         if name not in values or _float_or_none(values.get(name)) is None
@@ -357,10 +376,18 @@ def materialize_allocator_ev_fusion(
         selection_expected_return += coef * values[name]
     execution_residual_adjustment = 0.0
     execution_model_applied = bool(execution_coefs) and s12_value is not None
+    execution_probability = 1.0 if execution_model_applied else 0.0
+    raw_execution_residual = 0.0
     if execution_model_applied:
-        execution_residual_adjustment = float(execution_intercept or 0.0)
+        raw_execution_residual = float(execution_intercept or 0.0)
         for name, coef in (execution_coefs or {}).items():
-            execution_residual_adjustment += coef * values[name]
+            raw_execution_residual += coef * values[name]
+        if execution_probability_coefs:
+            execution_probability = float(execution_probability_intercept or 0.0)
+            for name, coef in execution_probability_coefs.items():
+                execution_probability += coef * values[name]
+            execution_probability = max(0.0, min(1.0, execution_probability))
+        execution_residual_adjustment = execution_probability * raw_execution_residual
     expected_return = selection_expected_return + execution_residual_adjustment
     if artifact.get("output_is_net_of_costs") is False:
         cost_bps = _float_or_none(artifact.get("cost_model_bps"))
@@ -383,6 +410,8 @@ def materialize_allocator_ev_fusion(
         "expected_return_mean": round(expected_return, 10),
         "selection_expected_return": round(selection_expected_return, 10),
         "execution_residual_adjustment": round(execution_residual_adjustment, 10),
+        "raw_execution_residual": round(raw_execution_residual, 10),
+        "execution_probability": round(execution_probability, 10),
         "s12_execution_model_applied": execution_model_applied,
         "expected_return_source": f"allocator_ev_fusion:{method or 'formal_meta_calibrator'}",
         "selection_alpha_owner": "l4_alpha_ev",

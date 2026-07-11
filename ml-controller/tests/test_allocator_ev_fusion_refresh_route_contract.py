@@ -45,6 +45,11 @@ def test_allocator_ev_fusion_refresh_route_sends_config_snapshot_meta() -> None:
     assert '"push_id": f"allocator_ev_fusion:' in SOURCE
 
 
+def test_allocator_ev_fusion_failed_challenger_preserves_existing_champion() -> None:
+    assert "existing_champion_preserved" in SOURCE
+    assert "allocator_ev_fusion_refresh_failed_validation_clear_stale" not in SOURCE
+
+
 def test_allocator_ev_fusion_registry_maps_promotion_to_lifecycle_states() -> None:
     tree = ast.parse(SOURCE)
     function = next(

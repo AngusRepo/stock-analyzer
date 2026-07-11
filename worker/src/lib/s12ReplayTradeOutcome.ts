@@ -54,6 +54,7 @@ export interface S12ReplayOutcome {
   alpha_context?: Record<string, unknown> | null
   alpha_allocation?: Record<string, unknown> | null
   replay_diagnostics?: Record<string, unknown> | null
+  market?: string | null
 }
 
 export interface S12ReplayInput {
@@ -68,6 +69,7 @@ export interface S12ReplayInput {
   h4ReferenceDate?: string | null
   h4ReferenceClose?: number | null
   marketSegment?: string | null
+  market?: string | null
   alphaBucket?: string | null
   alphaContext?: Record<string, unknown> | null
   alphaAllocation?: Record<string, unknown> | null
@@ -119,6 +121,7 @@ export interface S12L0PassedSymbol {
   rank?: number | null
   evidence?: string | null
   market_segment?: string | null
+  market?: string | null
   alpha_context?: string | null
   alpha_allocation?: string | null
 }
@@ -155,11 +158,12 @@ function alphaBucketFromContext(context: Record<string, unknown> | null, allocat
 
 function alphaReplayMetadata(input: S12ReplayInput): Pick<
   S12ReplayOutcome,
-  'market_segment' | 'alpha_bucket' | 'alpha_context' | 'alpha_allocation'
+  'market' | 'market_segment' | 'alpha_bucket' | 'alpha_context' | 'alpha_allocation'
 > {
   const alphaContext = parseJsonRecord(input.alphaContext)
   const alphaAllocation = parseJsonRecord(input.alphaAllocation)
   return {
+    market: String(input.market ?? '').trim() || null,
     market_segment: String(input.marketSegment ?? '').trim() || null,
     alpha_bucket: String(input.alphaBucket ?? alphaBucketFromContext(alphaContext, alphaAllocation) ?? '').trim() || null,
     alpha_context: alphaContext,
@@ -481,6 +485,7 @@ export async function loadL0PassedSymbolsByHistoricalDate(
            sfi.score_after,
            sfi.rank,
            sfi.evidence,
+           st.market,
            dr.market_segment,
            dr.alpha_context,
            dr.alpha_allocation
@@ -488,6 +493,8 @@ export async function loadL0PassedSymbolsByHistoricalDate(
       LEFT JOIN daily_recommendations dr
         ON dr.date = sfi.date
        AND dr.symbol = sfi.symbol
+      LEFT JOIN stocks st
+        ON st.symbol = sfi.symbol
      WHERE sfi.run_id = ?
        AND sfi.date = ?
        AND sfi.stage = 'universe'
@@ -500,6 +507,7 @@ export async function loadL0PassedSymbolsByHistoricalDate(
     score_after: row.score_after ?? null,
     rank: row.rank ?? null,
     evidence: row.evidence ?? null,
+    market: row.market ?? null,
     market_segment: row.market_segment ?? null,
     alpha_context: row.alpha_context ?? null,
     alpha_allocation: row.alpha_allocation ?? null,
@@ -513,13 +521,14 @@ export async function persistS12ReplayOutcome(
   const setupId = outcome.setup_id ?? `${outcome.symbol}:${outcome.trade_date}:${outcome.status_reason}`
   await db.prepare(`
     INSERT INTO s12_replay_trade_outcomes (
-      symbol, trade_date, assessment_state, setup_id,
+      symbol, market, trade_date, assessment_state, setup_id,
       entry_ms, exit_ms, entry_price, stop_price,
       target1_price, target2_price, target3_price, exit_price,
       pnl_pct, trade_pnl_r, max_favorable_pct, max_adverse_pct,
       bars_to_exit, exit_reason, sample_eligible, source, detail_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(symbol, trade_date, setup_id) DO UPDATE SET
+      market=excluded.market,
       assessment_state=excluded.assessment_state,
       entry_ms=excluded.entry_ms,
       exit_ms=excluded.exit_ms,
@@ -540,6 +549,7 @@ export async function persistS12ReplayOutcome(
       detail_json=excluded.detail_json
   `).bind(
     outcome.symbol,
+    outcome.market,
     outcome.trade_date,
     outcome.assessment_state,
     setupId,
@@ -612,6 +622,7 @@ export async function runS12HistoricalReplayForDate(
       policy: applyS12TwCalibrationArtifact(undefined, calibration),
       exitCalibration: calibration?.exit ?? null,
       marketSegment: row.market_segment ?? null,
+      market: row.market ?? null,
       alphaBucket,
       alphaContext,
       alphaAllocation,

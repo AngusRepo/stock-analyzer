@@ -271,6 +271,7 @@ async function runPersistenceTests(): Promise<void> {
   await persistS12ReplayOutcome(fakeDb, {
     schema_version: 's12-replay-trade-outcome-v1',
     symbol: '8091',
+    market: 'OTC',
     trade_date: '2026-07-02',
     status: 'executed',
     sample_eligible: true,
@@ -301,8 +302,8 @@ async function runPersistenceTests(): Promise<void> {
     replay_diagnostics: { source: 'historical_asof' },
   })
   assert(binds.length === 1, 'persist should execute one upsert')
-  assert(binds[0][0] === '8091' && binds[0][18] === 1, 'persist should bind symbol and sample_eligible')
-  const detail = JSON.parse(String(binds[0][20])) as Record<string, unknown>
+  assert(binds[0][0] === '8091' && binds[0][1] === 'OTC' && binds[0][19] === 1, 'persist should bind symbol, market, and sample_eligible')
+  const detail = JSON.parse(String(binds[0][21])) as Record<string, unknown>
   assert(String(detail.assessment_detail).includes('equity_mutation_context=true'), 'persisted detail should retain SMCVWAP diagnostics')
   assert(detail.alpha_bucket === 'breakout_vol_expansion', 'persisted detail should retain alpha bucket metadata')
   assert((detail.alpha_context as Record<string, unknown>).edge_bucket === 'breakout_vol_expansion', 'persisted detail should retain alpha context metadata')
@@ -335,6 +336,7 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
     symbols: [
       {
         symbol: '8091',
+        market: 'OTC',
         market_segment: 'LISTED',
         alpha_context: JSON.stringify({ edge_bucket: 'breakout_vol_expansion' }),
         alpha_allocation: JSON.stringify({ bucket: 'breakout_vol_expansion' }),
@@ -347,6 +349,7 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
   assert(summary.attempted === 2, 'runner should attempt supplied L0 symbols')
   assert(summary.outcomes[0].alpha_bucket === 'breakout_vol_expansion', 'runner should attach alpha bucket metadata to replay outcomes')
   assert(summary.outcomes[0].market_segment === 'LISTED', 'runner should attach market segment metadata to replay outcomes')
+  assert(summary.outcomes[0].market === 'OTC', 'runner should attach canonical stock market metadata to replay outcomes')
   assert(summary.skipped === 2, 'empty bars should produce skipped replay outcomes')
   assert(summary.persisted === 2 && writes === 2, 'runner should persist every replay outcome by default')
 

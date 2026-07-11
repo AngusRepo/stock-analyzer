@@ -440,7 +440,8 @@ def allocate_sparse_tangent_with_evidence(
     and keep cash.
     """
     # Production sparse allocation evaluates the full eligible candidate pool.
-    # `top_k` is a maximum final holding count, not a pre-optimization rank gate.
+    # `top_k` remains in the public API for backward compatibility only. The
+    # production optimizer evaluates and retains the full positive-utility set.
     evaluated = sorted([row for row in candidates if _symbol(row)], key=_score, reverse=True)
     symbols = [_symbol(row) for row in evaluated]
     expected_returns = [max(0.0, _expected_return(row)) for row in evaluated]
@@ -448,7 +449,8 @@ def allocate_sparse_tangent_with_evidence(
         "weights": {},
         "candidate_pool_policy": "full_eligible_pool_before_sparse_selection",
         "evaluated_candidate_count": len(evaluated),
-        "max_selected_count": max(1, int(top_k)),
+        "legacy_top_k_ignored": max(1, int(top_k)),
+        "holding_count_policy": "endogenous_positive_marginal_utility_no_hard_top_k",
         "similarity_evidence": similarity_components(
             symbols,
             return_history,
@@ -552,13 +554,6 @@ def allocate_sparse_tangent_with_evidence(
         }
     else:
         weights = _cap_and_renormalize(raw, max_weight=max_weight)
-    selected_cap = max(1, int(top_k))
-    if len(weights) > selected_cap:
-        weights = dict(
-            sorted(weights.items(), key=lambda item: (-item[1], item[0]))[:selected_cap]
-        )
-        if objective not in {"mean_variance_alpha_utility", "alpha_utility_sparse"}:
-            weights = _cap_and_renormalize(weights, max_weight=max_weight)
     similarity = similarity_components(
         symbols,
         return_history,
@@ -589,7 +584,8 @@ def allocate_sparse_tangent_with_evidence(
         "weights": capped_weights,
         "candidate_pool_policy": "full_eligible_pool_before_sparse_selection",
         "evaluated_candidate_count": len(evaluated),
-        "max_selected_count": selected_cap,
+        "legacy_top_k_ignored": max(1, int(top_k)),
+        "holding_count_policy": "endogenous_positive_marginal_utility_no_hard_top_k",
         "similarity_evidence": {
             **similarity,
             "covariance_method": covariance_packet.get("covariance_method") or similarity.get("covariance_method"),

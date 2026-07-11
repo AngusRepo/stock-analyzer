@@ -222,10 +222,10 @@ def build_online_portfolio_bandit_l2_packet(
     for row in arm_rows:
         arm = row["arm"]
         stats = row["stats"]
-        effective_candidate_cap = arm.candidate_cap
+        legacy_candidate_cap = arm.candidate_cap
         if candidate_cap_limit is not None:
-            effective_candidate_cap = max(1, min(arm.candidate_cap, int(candidate_cap_limit)))
-        feasible_floor = min(0.70, 1.0 / effective_candidate_cap + 0.05)
+            legacy_candidate_cap = max(1, min(arm.candidate_cap, int(candidate_cap_limit)))
+        feasible_floor = min(0.70, 1.0 / max(1, len(candidates)) + 0.05)
         effective_max_weight = max(arm.max_weight, feasible_floor)
         scored.append({
             "arm_id": arm.arm_id,
@@ -244,7 +244,7 @@ def build_online_portfolio_bandit_l2_packet(
             "reward_window_days": stats["reward_window_days"],
             "reward_half_life_days": stats["reward_half_life_days"],
             "knobs": {
-                "candidate_cap": effective_candidate_cap,
+                "legacy_candidate_cap_ignored": legacy_candidate_cap,
                 "max_weight": effective_max_weight,
                 "cash_buffer": arm.cash_buffer,
                 "min_trade_weight": arm.min_trade_weight,
@@ -266,7 +266,7 @@ def build_online_portfolio_bandit_l2_packet(
         sparse_evidence = allocate_sparse_tangent_with_evidence(
             ranked_candidates,
             return_history,
-            top_k=int(knobs.get("candidate_cap") or selected_arm.candidate_cap),
+            top_k=max(1, len(ranked_candidates)),
             max_weight=float(knobs.get("max_weight") or selected_arm.max_weight),
             max_cluster_weight=max_cluster_weight,
             cluster_edge_threshold=cluster_edge_threshold,
@@ -279,6 +279,38 @@ def build_online_portfolio_bandit_l2_packet(
             utility_iterations=utility_iterations,
         )
         raw_weights = dict(sparse_evidence.get("weights") or {})
+        initial_weight_count = len(raw_weights)
+        executable_symbols = {
+            symbol for symbol, weight in raw_weights.items()
+            if float(weight or 0.0) >= selected_arm.min_trade_weight
+        }
+        if executable_symbols and len(executable_symbols) < len(raw_weights):
+            executable_candidates = [
+                row for row in ranked_candidates
+                if str(row.get("symbol") or "").strip() in executable_symbols
+            ]
+            sparse_evidence = allocate_sparse_tangent_with_evidence(
+                executable_candidates,
+                return_history,
+                top_k=max(1, len(executable_candidates)),
+                max_weight=float(knobs.get("max_weight") or selected_arm.max_weight),
+                max_cluster_weight=max_cluster_weight,
+                cluster_edge_threshold=cluster_edge_threshold,
+                cluster_threshold_quantile=cluster_threshold_quantile,
+                allocation_objective=allocation_objective,
+                alpha_strength=alpha_strength,
+                risk_aversion=risk_aversion,
+                turnover_penalty=turnover_penalty,
+                l2_penalty=l2_penalty,
+                utility_iterations=utility_iterations,
+            )
+            raw_weights = dict(sparse_evidence.get("weights") or {})
+            sparse_evidence = {
+                **sparse_evidence,
+                "minimum_executable_weight_reoptimized": True,
+                "pre_reoptimization_candidate_count": initial_weight_count,
+                "post_threshold_candidate_count": len(executable_symbols),
+            }
         final_weights = _normalize_to_exposure(
             raw_weights,
             target_exposure=1.0 - selected_arm.cash_buffer,
@@ -327,7 +359,7 @@ def build_online_portfolio_bandit_l2_packet(
         "schema_version": SCHEMA_VERSION,
         "stage": stage,
         "controller": "OnlinePortfolioBandit",
-        "selection_policy": "warm_start_constrained_ucb",
+        "selection_policy": "warm_start_nonstationary_ucb_risk_knobs",
         "allocator_engine": "sparse_tangent_inverse_risk",
         "allocation_role": (
             "production_recommendation_allocation_controller"
@@ -345,6 +377,9 @@ def build_online_portfolio_bandit_l2_packet(
         "constraints": {
             "bandit_controls_final_weights": False,
             "bandit_controls_allocator_knobs": True,
+            "bandit_controls_candidate_count": False,
+            "full_eligible_pool_before_utility_optimization": True,
+            "hard_top_k_enabled": False,
             "inherits_sparse_allocator_policy_knobs": True,
             "requires_paper_active_attribution": not production_controller,
             "requires_wei_approval_for_L3_or_production": not production_controller,

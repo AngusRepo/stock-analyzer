@@ -755,7 +755,7 @@ def test_sparse_tangent_allocation_marks_signal_source():
     assert allocation["allocation_rank"] == 1
     assert allocation["allocation_rank_policy"] == "diagnostic_only_not_capacity_gate"
     assert allocation["input_candidate_pool_policy"] == "full_eligible_pool_no_buy_signal_rank_gate"
-    assert allocation["buy_signal_count_role"] == "maximum_selected_count_not_preallocation_rank_cut"
+    assert allocation["buy_signal_count_role"] == "legacy_display_setting_ignored_by_allocator"
     assert allocation["sparse_diagnostics"]["candidate_count"] == 1
     assert allocation["sparse_diagnostics"]["selected_count"] == 1
     assert allocation["optimizer_objective"] == "mean_variance_alpha_utility_with_cash"
@@ -957,11 +957,11 @@ def test_sparse_tangent_allocation_reowns_existing_buy_labels():
     assert promoted[0]["signal_source_raw"] == "ensemble_v2_topk_policy"
     assert promoted[0]["signal_source"] == "sparse_tangent_inverse_risk"
     assert promoted[0]["sparse_tangent_selected"] is True
-    assert promoted[1]["signal"] == "POTENTIAL_BUY"
-    assert promoted[1]["has_buy_signal"] == 0
-    assert promoted[1]["alpha_allocation"]["selected"] is False
-    assert promoted[1]["alpha_allocation"]["potential_buy"] is True
-    assert promoted[1].get("sparse_tangent_selected") is not True
+    assert promoted[1]["signal"] == "BUY"
+    assert promoted[1]["has_buy_signal"] == 1
+    assert promoted[1]["alpha_allocation"]["selected"] is True
+    assert promoted[1]["alpha_allocation"]["potential_buy"] is False
+    assert promoted[1].get("sparse_tangent_selected") is True
 
 
 def test_sparse_tangent_allocation_uses_alpha_policy_buy_signal_count():
@@ -1016,7 +1016,7 @@ def test_sparse_tangent_allocation_uses_alpha_policy_buy_signal_count():
 
     selected = [row for row in promoted if row.get("alpha_allocation", {}).get("selected")]
     assert len(selected) == 2
-    assert selected[0]["alpha_allocation"]["capacity_policy"] == "maximum_capacity_not_minimum_fill"
+    assert selected[0]["alpha_allocation"]["capacity_policy"] == "endogenous_positive_marginal_utility_no_hard_top_k"
     assert selected[0]["alpha_allocation"]["hard_minimum_fill"] is False
 
 
@@ -1055,13 +1055,10 @@ def test_sparse_tangent_allocation_does_not_pre_cut_by_buy_signal_rank():
     )
 
     selected = [row for row in promoted if row.get("alpha_allocation", {}).get("selected")]
-    assert [row["symbol"] for row in selected] == ["2222"]
+    assert [row["symbol"] for row in selected] == ["1111", "2222"]
     allocations = {row["symbol"]: row["alpha_allocation"] for row in promoted}
-    assert allocations["1111"]["selection_reason"] in {
-        "positive_edge_but_zero_weight_due_to_better_alternative",
-        "positive_edge_but_zero_weight_due_to_correlation",
-    }
-    assert allocations["1111"]["sparse_weight_state"] == "zero_sparse_weight_after_inverse_risk"
+    assert allocations["1111"]["selection_reason"] == "selected_positive_edge_sparse_weight"
+    assert allocations["1111"]["sparse_weight_state"] == "selected_positive_sparse_weight"
     assert allocations["1111"]["allocation_rank"] == 1
     assert allocations["1111"]["allocation_rank_policy"] == "diagnostic_only_not_capacity_gate"
     assert allocations["2222"]["allocation_rank"] == 2

@@ -2934,15 +2934,48 @@ export async function processUpdateBatch(
     const triggerTime = msg.triggerTime
     const runId = msg.runId || `s12-replay-backfill-${triggerTime}-${Date.now()}`
     const offset = Math.max(0, Number.isFinite(msg.cursor) ? Number(msg.cursor) : 0)
-    const replayScope = (msg as any).replayScope === 'fusion_snapshot_missing' ? 'fusion_snapshot_missing' : 'l0'
+    const requestedScope = (msg as any).replayScope
+    const replayScope = requestedScope === 'fusion_snapshot_missing'
+      ? 'fusion_snapshot_missing'
+      : requestedScope === 'fusion_snapshot_structure'
+        ? 'fusion_snapshot_structure'
+        : 'l0'
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
       console.log(`[Queue] Invalid S12 replay backfill date ${triggerTime}, skipping.`)
       return
     }
     const {
       loadFusionSnapshotMissingReplaySymbols,
+      loadFusionSnapshotSymbols,
       runS12HistoricalReplayForDate,
     } = await import('./s12ReplayTradeOutcome')
+    if (replayScope === 'fusion_snapshot_structure') {
+      const symbols = await loadFusionSnapshotSymbols(env.DB, triggerTime, UPDATE_BATCH_SIZE, offset)
+      const { runS12CandidateStructureSnapshots } = await import('./s12CandidateStructureSnapshots')
+      const snapshotResult = await runS12CandidateStructureSnapshots(env, triggerTime, {
+        limit: UPDATE_BATCH_SIZE,
+        symbols,
+      })
+      const nextOffset = offset + symbols.length
+      const hasMore = symbols.length === UPDATE_BATCH_SIZE
+      await logSchedulerResult(env.KV, 's12-structure-snapshot', {
+        status: hasMore ? 'running' : 'success',
+        summary: `historical canonical cohort date=${triggerTime} offset=${offset} attempted=${snapshotResult.attempted} persisted=${snapshotResult.persisted} ready=${snapshotResult.ready} setup=${snapshotResult.setup_only} skipped=${snapshotResult.skipped} errors=${snapshotResult.errors} ${hasMore ? 'queued_next=1' : 'complete=1'}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: triggerTime,
+      }, env)
+      if (hasMore) {
+        await env.UPDATE_QUEUE.send({
+          type: 's12_replay_backfill_chunk',
+          cursor: nextOffset,
+          triggerTime,
+          runId,
+          replayScope,
+        } as any)
+      }
+      return
+    }
     const cohortSymbols = replayScope === 'fusion_snapshot_missing'
       ? await loadFusionSnapshotMissingReplaySymbols(env.DB, triggerTime)
       : undefined
@@ -2959,7 +2992,9 @@ export async function processUpdateBatch(
       ? Number(result.l0_symbols ?? 0) > Number(result.attempted ?? 0) && Number(result.attempted ?? 0) > 0
       : nextOffset < Number(result.l0_symbols ?? 0) && Number(result.attempted ?? 0) > 0
     const summary = [
-      `s12_replay_backfill date=${result.trade_date}`,
+      `s12_replay_backfill signal_date=${result.signal_date}`,
+      `execution_dates=${result.execution_dates.join(',') || 'none'}`,
+      `unresolved_execution_dates=${result.unresolved_execution_dates}`,
       `scope=${replayScope}`,
       `offset=${offset}`,
       `next_offset=${nextOffset}`,

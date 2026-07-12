@@ -78,6 +78,7 @@ def s12_replay_outcome_to_bootstrap_row(outcome: dict[str, Any]) -> dict[str, An
     if sample is None:
         return None
     symbol = str(outcome.get("symbol") or "").strip()
+    signal_date = str(outcome.get("signal_date") or "").strip()[:10]
     trade_date = str(outcome.get("trade_date") or outcome.get("prediction_date") or "").strip()[:10]
     if not symbol or not trade_date:
         return None
@@ -85,14 +86,16 @@ def s12_replay_outcome_to_bootstrap_row(outcome: dict[str, Any]) -> dict[str, An
         "s12_trade_ev": {
             "schema_version": "s12-trade-ev-v1",
             "status": "loaded",
-            "source": "s12_intraday_structure_replay_v1",
+            "source": "s12_next_session_structure_replay_v2",
             "semantic": "trade_expected_return_not_5bar_close_forecast",
             "trade_expected_return_net_pct": sample["pnl_pct"],
-            "trade_expected_return_source": "s12_intraday_structure_replay_v1",
+            "trade_expected_return_source": "s12_next_session_structure_replay_v2",
         },
         "s12_replay_outcome": {
             "schema_version": outcome.get("schema_version") or "s12-replay-trade-outcome-v1",
-            "source": outcome.get("source") or "s12_intraday_structure_replay_v1",
+            "source": outcome.get("source") or "s12_next_session_structure_replay_v2",
+            "signal_date": signal_date or None,
+            "execution_date": trade_date,
             "assessment_state": outcome.get("assessment_state"),
             "setup_id": outcome.get("setup_id"),
             "exit_reason": outcome.get("exit_reason"),
@@ -102,6 +105,7 @@ def s12_replay_outcome_to_bootstrap_row(outcome: dict[str, Any]) -> dict[str, An
     return {
         "symbol": symbol,
         "market": outcome.get("market"),
+        "signal_date": signal_date or None,
         "prediction_date": trade_date,
         "trade_signal": "buy",
         "trade_outcome": sample["exit_reason"],

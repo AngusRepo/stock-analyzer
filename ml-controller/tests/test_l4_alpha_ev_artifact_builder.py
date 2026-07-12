@@ -87,3 +87,27 @@ def test_l4_alpha_ev_artifact_builder_fails_closed_on_insufficient_samples():
     assert artifact["validation_packet"]["decision"] == "FAIL"
     assert "insufficient_samples" in artifact["validation_packet"]["failed_gates"]
 
+
+def test_l4_alpha_ev_artifact_builder_can_fit_strict_asof_oof_without_promotion():
+    rows = []
+    for day_idx in range(6):
+        day = f"2026-06-{day_idx + 1:02d}"
+        for symbol_idx in range(24):
+            strength = symbol_idx / 24.0
+            rows.append(_row(day, symbol_idx, target=-0.01 + 0.025 * strength))
+
+    out = build_l4_alpha_ev_artifact_from_rows(
+        rows,
+        trained_until="2026-06-06",
+        min_samples=500,
+        min_dates=20,
+        fit_min_samples=100,
+        fit_min_dates=5,
+    )
+
+    artifact = out["artifact"]
+    assert out["status"] == "failed_validation"
+    assert artifact["fitted"] is True
+    assert artifact["promotion_state"] == "approval_required"
+    assert "insufficient_dates" in artifact["validation_packet"]["failed_gates"]
+    assert artifact["coefficients"]["score_final_norm"] != 0

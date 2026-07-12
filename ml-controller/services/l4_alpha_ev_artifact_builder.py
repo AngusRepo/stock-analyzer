@@ -292,6 +292,8 @@ def build_l4_alpha_ev_artifact_from_rows(
     min_dates: int = 20,
     l2: float = 0.25,
     cost_model_bps: float = 18.0,
+    fit_min_samples: int | None = None,
+    fit_min_dates: int | None = None,
 ) -> dict[str, Any]:
     samples, diagnostics = _samples(rows)
     dates = sorted({sample["date"] for sample in samples})
@@ -301,6 +303,8 @@ def build_l4_alpha_ev_artifact_from_rows(
     train = [sample for sample in samples if sample["date"] in train_dates]
     test = [sample for sample in samples if sample["date"] in test_dates]
     blockers: list[str] = []
+    effective_fit_min_samples = max(len(FEATURE_NAMES) + 2, int(fit_min_samples or min_samples))
+    effective_fit_min_dates = max(2, int(fit_min_dates or min_dates))
     if len(samples) < min_samples:
         blockers.append("insufficient_samples")
     if len(dates) < min_dates:
@@ -308,12 +312,21 @@ def build_l4_alpha_ev_artifact_from_rows(
     if len(train) < len(FEATURE_NAMES) + 2 or not test:
         blockers.append("insufficient_train_test_split")
 
+    fit_blockers: list[str] = []
+    if len(samples) < effective_fit_min_samples:
+        fit_blockers.append("insufficient_fit_samples")
+    if len(dates) < effective_fit_min_dates:
+        fit_blockers.append("insufficient_fit_dates")
+    if len(train) < len(FEATURE_NAMES) + 2 or not test:
+        fit_blockers.append("insufficient_fit_train_test_split")
+
+    fitted = not fit_blockers
     intercept = 0.0
     coefs = {name: 0.0 for name in FEATURE_NAMES}
     train_metrics: dict[str, Any] = {"samples": len(train)}
     oos_metrics: dict[str, Any] = {"samples": len(test)}
     walk_forward = {"passed": False, "reason": "not_run", "folds": []}
-    if not blockers:
+    if fitted:
         intercept, coefs = _fit_ridge(train, l2=l2)
         train_metrics = _metrics(train, intercept, coefs)
         oos_metrics = _metrics(test, intercept, coefs)
@@ -328,6 +341,7 @@ def build_l4_alpha_ev_artifact_from_rows(
         if not walk_forward.get("passed"):
             blockers.append("walk_forward_not_stable")
 
+    blockers.extend(value for value in fit_blockers if value not in blockers)
     decision = "PASS" if not blockers else "FAIL"
     model_version = f"l4-alpha-ev-ridge-{trained_until.replace('-', '')}"
     validation_packet = {
@@ -343,6 +357,8 @@ def build_l4_alpha_ev_artifact_from_rows(
             "minimum_economic_spread": round(max(0.0, float(cost_model_bps)) / 10000.0, 8),
             "feature_era": CANONICAL_SCORE_FEATURE_VERSION,
             "point_in_time_features_required": True,
+            "fit_min_samples": effective_fit_min_samples,
+            "fit_min_dates": effective_fit_min_dates,
         },
         "sample_audit": diagnostics,
         "train_metrics": train_metrics,
@@ -355,6 +371,8 @@ def build_l4_alpha_ev_artifact_from_rows(
         "promotion_state": "production_approved" if decision == "PASS" else "approval_required",
         "validation_packet": validation_packet,
         "resolver_method": "ridge_meta_calibrator",
+        "fitted": fitted,
+        "fit_blockers": fit_blockers,
         "model_version": model_version,
         "feature_snapshot_version": "l4-alpha-feature-snapshot-v3-canonical-score-v2-only",
         "trained_until": trained_until,

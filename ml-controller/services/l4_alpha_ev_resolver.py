@@ -21,11 +21,6 @@ SNAPSHOT_BACKFILL_AS_OF_GUARD = (
     "l4_trained_until_strictly_before_snapshot_date_and_s12_samples_before_run_date"
 )
 SNAPSHOT_BACKFILL_APPROVAL_STATE = "snapshot_backfill_only"
-SNAPSHOT_BACKFILL_NON_FITTED_GATES = {
-    "insufficient_samples",
-    "insufficient_dates",
-    "insufficient_train_test_split",
-}
 EMPIRICAL_ONLY_METHODS = {
     "empirical",
     "empirical_bucket",
@@ -100,18 +95,19 @@ def _snapshot_backfill_allowed(payload: dict[str, Any], usage_scope: str) -> boo
         payload.get("validation_evidence"),
         payload.get("validation"),
     ) or {}
-    failed_gates = {
+    fit_blockers = {
         str(value).strip()
-        for value in (packet.get("failed_gates") or [])
+        for value in (payload.get("fit_blockers") or [])
         if str(value).strip()
     }
     return (
         payload.get("snapshot_backfill_only") is True
         and payload.get("snapshot_backfill_fit_eligible") is True
+        and payload.get("fitted") is True
+        and not fit_blockers
         and str(payload.get("snapshot_backfill_usage_scope") or "").strip()
         == SNAPSHOT_BACKFILL_USAGE_SCOPE
         and _approval_state(payload) == SNAPSHOT_BACKFILL_APPROVAL_STATE
-        and not failed_gates.intersection(SNAPSHOT_BACKFILL_NON_FITTED_GATES)
     )
 
 

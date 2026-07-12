@@ -214,6 +214,29 @@ def _s12_execution_ready(payload: dict[str, Any] | None) -> float:
     return 1.0
 
 
+def _s12_structure_features(payload: dict[str, Any] | None) -> dict[str, float]:
+    source = payload if isinstance(payload, dict) else {}
+    context = _s12_context(source)
+    entry = _float_or_none(source.get("entry_price"))
+    stop = _float_or_none(source.get("stop_price"))
+    target1 = _float_or_none(source.get("target1_price"))
+    target2 = _float_or_none(source.get("target2_price"))
+    risk = (entry - stop) if entry is not None and stop is not None and entry > stop else None
+    risk_pct = (risk / entry) if risk is not None and entry and entry > 0 else None
+    target1_r = ((target1 - entry) / risk) if risk and target1 is not None and target1 > entry else None
+    target2_r = ((target2 - entry) / risk) if risk and target2 is not None and target2 > entry else None
+    mutation_score = _float_or_none(context.get("equity_mutation_score"))
+    return {
+        "s12_structure_available": 1.0 if context.get("detail_available") is True and risk is not None else 0.0,
+        "s12_risk_pct": max(0.0, min(0.25, risk_pct)) if risk_pct is not None else 0.0,
+        "s12_target1_r": max(0.0, min(10.0, target1_r)) if target1_r is not None else 0.0,
+        "s12_target2_r": max(0.0, min(10.0, target2_r)) if target2_r is not None else 0.0,
+        "s12_equity_mutation_score": max(0.0, min(1.0, mutation_score)) if mutation_score is not None else 0.0,
+        "s12_vwap_fast_acceptance": 1.0 if context.get("vwap_fast_acceptance") is True else 0.0,
+        "s12_htf_hard_block": 1.0 if context.get("htf_hard_block") is True else 0.0,
+    }
+
+
 def _feature_values(
     *,
     l4_value: float | None,
@@ -269,6 +292,7 @@ def _feature_values(
         "ensemble_confidence_centered": (confidence - 0.5) if confidence is not None else 0.0,
         "score_v2_available": 1.0 if all(value is not None for value in score_values) else 0.0,
         "ensemble_rank_available": 1.0 if avg_rank is not None and confidence is not None else 0.0,
+        **_s12_structure_features(s12_payload),
     }
 
 

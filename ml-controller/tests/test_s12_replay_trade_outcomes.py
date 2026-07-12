@@ -16,12 +16,13 @@ from services.s12_replay_trade_outcomes import (  # noqa: E402
 
 def _outcome(symbol: str = "8091", date: str = "2026-07-01", pnl: float = 0.04) -> dict:
     return {
-        "schema_version": "s12-replay-trade-outcome-v1",
+        "schema_version": "s12-replay-trade-outcome-v2",
         "symbol": symbol,
+        "signal_date": "2026-06-30",
         "trade_date": date,
         "status": "executed",
         "sample_eligible": True,
-        "source": "s12_intraday_structure_replay_v1",
+        "source": "s12_next_session_structure_replay_v2",
         "assessment_state": "reaction_ready",
         "setup_id": f"{symbol}:{date}",
         "entry_price": 100,
@@ -94,6 +95,7 @@ def test_s12_replay_outcome_to_bootstrap_row_has_verified_s12_trade_ev_provenanc
 
     assert row is not None
     assert row["symbol"] == "8091"
+    assert row["signal_date"] == "2026-06-30"
     assert row["prediction_date"] == "2026-07-01"
     assert row["trade_signal"] == "buy"
     assert row["trade_pnl_pct"] == pytest.approx(0.04)

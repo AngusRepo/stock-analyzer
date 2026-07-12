@@ -1,6 +1,7 @@
 import {
   loadL0PassedSymbolsByHistoricalDate,
   persistS12ReplayOutcome,
+  resolveNextExecutableSessionDate,
   runS12HistoricalReplayForDate,
   s12ReplayOutcomeToEvSample,
   simulateS12ReplayTradeOutcome,
@@ -249,6 +250,22 @@ async function runAsyncTests(): Promise<void> {
   assert(queries[1].sql.includes("sfi.stage = 'universe'"), 'L0 loader should read universe pass stage')
   assert(rows[0].market_segment === 'LISTED', 'L0 loader should preserve market segment metadata')
   assert(String(rows[0].alpha_context).includes('breakout_vol_expansion'), 'L0 loader should preserve alpha context metadata')
+
+  const executionDateDb = {
+    prepare(sql: string) {
+      assert(sql.includes('date(sp.date) > date(?)'), 'execution date resolver must require a session after the signal date')
+      return {
+        bind(symbol: string, signalDate: string) {
+          assert(symbol === '8091' && signalDate === '2026-07-02', 'execution date resolver should bind symbol and signal date')
+          return { async first() { return { execution_date: '2026-07-03' } } }
+        },
+      }
+    },
+  } as any
+  assert(
+    await resolveNextExecutableSessionDate(executionDateDb, '8091', '2026-07-02') === '2026-07-03',
+    'execution date resolver should return the next stock-specific session',
+  )
 }
 
 void runAsyncTests().catch((error) => {
@@ -269,13 +286,14 @@ async function runPersistenceTests(): Promise<void> {
     },
   } as any
   await persistS12ReplayOutcome(fakeDb, {
-    schema_version: 's12-replay-trade-outcome-v1',
+    schema_version: 's12-replay-trade-outcome-v2',
     symbol: '8091',
+    signal_date: '2026-07-02',
     market: 'OTC',
-    trade_date: '2026-07-02',
+    trade_date: '2026-07-03',
     status: 'executed',
     sample_eligible: true,
-    source: 's12_intraday_structure_replay_v1',
+    source: 's12_next_session_structure_replay_v2',
     assessment_state: 'reaction_ready',
     status_reason: 'executed_reaction_ready',
     setup_id: '8091:setup',
@@ -302,8 +320,10 @@ async function runPersistenceTests(): Promise<void> {
     replay_diagnostics: { source: 'historical_asof' },
   })
   assert(binds.length === 1, 'persist should execute one upsert')
-  assert(binds[0][0] === '8091' && binds[0][1] === 'OTC' && binds[0][19] === 1, 'persist should bind symbol, market, and sample_eligible')
-  const detail = JSON.parse(String(binds[0][21])) as Record<string, unknown>
+  assert(binds[0][0] === '8091' && binds[0][1] === 'OTC', 'persist should bind symbol and market')
+  assert(binds[0][2] === '2026-07-02' && binds[0][3] === '2026-07-03', 'persist should separate signal and execution dates')
+  assert(binds[0][20] === 1, 'persist should bind sample eligibility')
+  const detail = JSON.parse(String(binds[0][22])) as Record<string, unknown>
   assert(String(detail.assessment_detail).includes('equity_mutation_context=true'), 'persisted detail should retain SMCVWAP diagnostics')
   assert(detail.alpha_bucket === 'breakout_vol_expansion', 'persisted detail should retain alpha bucket metadata')
   assert((detail.alpha_context as Record<string, unknown>).edge_bucket === 'breakout_vol_expansion', 'persisted detail should retain alpha context metadata')
@@ -343,9 +363,15 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
       },
       { symbol: '2330' },
     ],
-    loadBars: async () => ({ bars: [] }),
+    resolveExecutionDate: async () => '2026-07-03',
+    loadBars: async (_symbol, executionDate) => {
+      assert(executionDate === '2026-07-03', 'runner should load bars from the next executable session')
+      return { bars: [] }
+    },
   })
-  assert(summary.schema_version === 's12-historical-replay-run-summary-v1', 'runner should return stable summary contract')
+  assert(summary.schema_version === 's12-historical-replay-run-summary-v2', 'runner should return next-session summary contract')
+  assert(summary.signal_date === '2026-07-02', 'runner should preserve recommendation signal date')
+  assert(summary.execution_dates[0] === '2026-07-03', 'runner should report resolved execution session')
   assert(summary.attempted === 2, 'runner should attempt supplied L0 symbols')
   assert(summary.outcomes[0].alpha_bucket === 'breakout_vol_expansion', 'runner should attach alpha bucket metadata to replay outcomes')
   assert(summary.outcomes[0].market_segment === 'LISTED', 'runner should attach market segment metadata to replay outcomes')
@@ -358,6 +384,7 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
     offset: 1,
     limit: 1,
     persist: false,
+    resolveExecutionDate: async () => '2026-07-03',
     loadBars: async (symbol) => {
       assert(symbol === '2222', 'runner offset should select the requested L0 slice')
       return { bars: [] }

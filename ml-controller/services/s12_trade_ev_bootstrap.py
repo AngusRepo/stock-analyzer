@@ -1006,6 +1006,7 @@ def _load_dedicated_s12_replay_trade_rows(
             """
             SELECT r.symbol,
                    COALESCE(r.market, st.market) AS market,
+                   r.signal_date,
                    r.trade_date,
                    r.assessment_state,
                    r.setup_id,
@@ -1026,7 +1027,8 @@ def _load_dedicated_s12_replay_trade_rows(
                    r.detail_json
               FROM s12_replay_trade_outcomes r
               LEFT JOIN stocks st ON st.symbol = r.symbol
-             WHERE r.trade_date IS NOT NULL
+             WHERE r.signal_date IS NOT NULL
+               AND r.source = 's12_next_session_structure_replay_v2'
                AND date(r.trade_date) < date(?)
                AND date(r.trade_date) >= date(?)
                AND COALESCE(r.sample_eligible, 0) = 1
@@ -1047,6 +1049,7 @@ def _load_dedicated_s12_replay_trade_rows(
             "schema_version": "s12-replay-trade-outcome-v1",
             "symbol": raw.get("symbol"),
             "market": raw.get("market"),
+            "signal_date": raw.get("signal_date"),
             "trade_date": raw.get("trade_date"),
             "status": "executed",
             "sample_eligible": True,

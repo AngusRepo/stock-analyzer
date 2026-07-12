@@ -115,10 +115,12 @@ def test_materialize_l4_alpha_ev_uses_production_learned_artifact():
 def test_materialize_l4_alpha_ev_allows_fitted_fail_only_for_snapshot_backfill():
     artifact = _artifact(
         promotion_state="snapshot_backfill_only",
-        validation_packet={"decision": "FAIL", "failed_gates": ["walk_forward_not_stable"]},
+        validation_packet={"decision": "FAIL", "failed_gates": ["insufficient_dates", "walk_forward_not_stable"]},
         snapshot_backfill_only=True,
         snapshot_backfill_fit_eligible=True,
         snapshot_backfill_usage_scope=SNAPSHOT_BACKFILL_USAGE_SCOPE,
+        fitted=True,
+        fit_blockers=[],
     )
     production_payload = materialize_l4_alpha_ev(
         _row(),
@@ -146,6 +148,8 @@ def test_materialize_l4_alpha_ev_keeps_non_fitted_backfill_artifact_rejected():
         snapshot_backfill_only=True,
         snapshot_backfill_fit_eligible=True,
         snapshot_backfill_usage_scope=SNAPSHOT_BACKFILL_USAGE_SCOPE,
+        fitted=False,
+        fit_blockers=["insufficient_fit_dates"],
     )
     payload = materialize_l4_alpha_ev(
         _row(),

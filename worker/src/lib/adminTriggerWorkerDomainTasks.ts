@@ -280,10 +280,13 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     },
     's12-replay-backfill': async () => {
       const runDate = assertRunDate(requestedRunDate())
-      const replayScope = c.req.query('scope') === 'fusion_snapshot_missing'
+      const requestedScope = c.req.query('scope')
+      const replayScope = requestedScope === 'fusion_snapshot_missing'
         ? 'fusion_snapshot_missing'
-        : 'l0'
-      if (replayScope === 'fusion_snapshot_missing') {
+        : requestedScope === 'fusion_snapshot_structure'
+          ? 'fusion_snapshot_structure'
+          : 'l0'
+      if (replayScope !== 'l0') {
         const runId = `manual-fusion-cohort-replay-${runDate}-${Date.now().toString(36)}`
         await c.env.UPDATE_QUEUE.send({
           type: 's12_replay_backfill_chunk',
@@ -301,7 +304,9 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         persist: c.req.query('dry_run') !== '1',
       })
       return [
-        `s12_replay_backfill date=${result.trade_date}`,
+        `s12_replay_backfill signal_date=${result.signal_date}`,
+        `execution_dates=${result.execution_dates.join(',') || 'none'}`,
+        `unresolved_execution_dates=${result.unresolved_execution_dates}`,
         `l0=${result.l0_symbols}`,
         `attempted=${result.attempted}`,
         `executed=${result.executed}`,

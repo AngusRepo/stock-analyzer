@@ -22,6 +22,7 @@ from services.l4_alpha_ev_resolver import (
 PRODUCER_SCHEMA_VERSION = "l4-alpha-ev-producer-v1"
 CORE_FEATURE_FAMILIES = {"formal_ml", "fundamental", "chip", "technical", "regime"}
 SCORE_RANK_FEATURE_FAMILIES = {"score_v2_composite", "formal_ml_rank", "formal_ml_confidence"}
+SCORE_RANK_FEATURE_NAMES = {"score_final_norm", "ensemble_avg_rank_centered", "ensemble_confidence_centered"}
 POLICY_KEYS = (
     "l4_alpha_ev",
     "l4AlphaEv",
@@ -266,6 +267,8 @@ def materialize_l4_alpha_ev(
         usage_scope == SNAPSHOT_BACKFILL_USAGE_SCOPE
         and artifact.get("snapshot_backfill_only") is True
         and artifact.get("snapshot_backfill_fit_eligible") is True
+        and artifact.get("fitted") is True
+        and not (artifact.get("fit_blockers") or [])
     )
 
     blockers: list[str] = []
@@ -283,9 +286,14 @@ def materialize_l4_alpha_ev(
         blockers.append("production_approval_missing")
 
     families = _feature_families(artifact)
+    artifact_feature_names = {
+        str(value).strip()
+        for value in (artifact.get("feature_names") or [])
+        if str(value).strip()
+    }
     required_families = (
         SCORE_RANK_FEATURE_FAMILIES
-        if str(artifact.get("feature_snapshot_version") or "").startswith("l4-alpha-feature-snapshot-v2-")
+        if artifact_feature_names and artifact_feature_names.issubset(SCORE_RANK_FEATURE_NAMES)
         else CORE_FEATURE_FAMILIES
     )
     missing_families = sorted(required_families - families)

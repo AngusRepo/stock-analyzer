@@ -6,7 +6,13 @@ import math
 from datetime import date, datetime, timezone
 from typing import Any, Callable
 
-from services.allocator_ev_fusion import _s12_execution_ready, _s12_multiplier, _target_quality_numeric, _target_quality_state
+from services.allocator_ev_fusion import (
+    _s12_execution_ready,
+    _s12_multiplier,
+    _s12_structure_features,
+    _target_quality_numeric,
+    _target_quality_state,
+)
 from services.l4_alpha_ev_resolver import (
     SNAPSHOT_BACKFILL_AS_OF_GUARD,
     SNAPSHOT_BACKFILL_SOURCE,
@@ -37,6 +43,13 @@ EXECUTION_FEATURE_NAMES = [
     "s12_execution_ready",
     "s12_context_multiplier",
     "s12_target_quality_score",
+    "s12_structure_available",
+    "s12_risk_pct",
+    "s12_target1_r",
+    "s12_target2_r",
+    "s12_equity_mutation_score",
+    "s12_vwap_fast_acceptance",
+    "s12_htf_hard_block",
     "l4_s12_edge_agreement",
 ]
 FEATURE_NAMES = list(dict.fromkeys([*SELECTION_FEATURE_NAMES, *EXECUTION_FEATURE_NAMES]))
@@ -45,8 +58,14 @@ PRIMARY_MIN_DATES = 20
 PRIMARY_MIN_SAMPLES = 1500
 PRIMARY_MIN_S12_AVAILABLE_SAMPLES = 300
 PRIMARY_MIN_S12_AVAILABLE_DATES = 8
+PRIMARY_MIN_L4_OOF_SAMPLES = 300
+PRIMARY_MIN_L4_OOF_DATES = 8
+PRIMARY_MIN_S12_STRUCTURE_SAMPLES = 300
+PRIMARY_MIN_S12_STRUCTURE_DATES = 8
 ASSISTIVE_MIN_DATES = 5
 ASSISTIVE_MIN_SAMPLES = 500
+ASSISTIVE_MIN_EXPERT_SAMPLES = 100
+ASSISTIVE_MIN_EXPERT_DATES = 5
 CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
 MIN_CROSS_SECTION_SAMPLES_PER_DATE = 20
 
@@ -216,6 +235,7 @@ def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
         "s12_target_quality_score": _target_quality_numeric(target_state),
         "market_heat_expected_return": _market_heat(row),
         "l4_s12_edge_agreement": 1.0 if (l4_value > 0 and s12_value > 0) or (l4_value <= 0 and s12_value <= 0) else 0.0,
+        **_s12_structure_features(s12_payload),
     }
 
 
@@ -329,6 +349,14 @@ def _samples(
         for sample in out
         if float(sample["features"].get("s12_available") or 0.0) > 0.0
     )
+    l4_available_samples = [
+        sample for sample in out
+        if float(sample["features"].get("l4_available") or 0.0) > 0.0
+    ]
+    s12_structure_samples = [
+        sample for sample in out
+        if float(sample["features"].get("s12_structure_available") or 0.0) > 0.0
+    ]
     execution_samples = [sample for sample in out if sample["execution_target"] is not None]
     execution_observation_samples = [
         sample for sample in out if sample["execution_probability_target"] is not None
@@ -355,6 +383,12 @@ def _samples(
         "s12_ready_count": s12_ready_count,
         "s12_available_count": s12_available_count,
         "s12_available_date_count": len({row["date"] for row in out if row["features"]["s12_available"] > 0.0}),
+        "l4_available_count": len(l4_available_samples),
+        "l4_available_date_count": len({row["date"] for row in l4_available_samples}),
+        "l4_available_coverage": round(len(l4_available_samples) / len(out), 8) if out else 0.0,
+        "s12_structure_available_count": len(s12_structure_samples),
+        "s12_structure_available_date_count": len({row["date"] for row in s12_structure_samples}),
+        "s12_structure_available_coverage": round(len(s12_structure_samples) / len(out), 8) if out else 0.0,
         "execution_sample_count": len(execution_samples),
         "execution_date_count": len({row["date"] for row in execution_samples}),
         "execution_observation_count": len(execution_observation_samples),
@@ -367,7 +401,7 @@ def _samples(
         "s12_available_coverage": round(s12_available_count / len(out), 8) if out else 0.0,
         "target_policy": {
             "selection": "actual_return_pct",
-            "execution_trade_return": "canonical_s12_replay_pnl_net_of_roundtrip_cost_when_executed",
+            "execution_trade_return": "next_session_canonical_s12_replay_pnl_net_of_roundtrip_cost_when_executed",
             "execution_label_availability": "replay_execution_outcome_independent_of_prior_s12_ev_availability",
             "execution_probability": "canonical_s12_replay_execution_indicator",
             "actual_trade_outcome_role": "audit_only_not_training_label",
@@ -928,6 +962,10 @@ def _promotion_tier(
     date_count = int(diagnostics.get("date_count") or 0)
     execution_sample_count = int(diagnostics.get("execution_sample_count") or 0)
     execution_date_count = int(diagnostics.get("execution_date_count") or 0)
+    l4_available_count = int(diagnostics.get("l4_available_count") or 0)
+    l4_available_date_count = int(diagnostics.get("l4_available_date_count") or 0)
+    structure_count = int(diagnostics.get("s12_structure_available_count") or 0)
+    structure_date_count = int(diagnostics.get("s12_structure_available_date_count") or 0)
     top_mean = float(oos_metrics.get("top_quintile_mean_return") or 0.0)
     spread = float(oos_metrics.get("top_bottom_spread") or 0.0)
     corr = float(oos_metrics.get("prediction_target_corr") or 0.0)
@@ -947,6 +985,14 @@ def _promotion_tier(
         blockers.append("primary_s12_execution_expert_not_validated")
     if execution_probability_model.get("decision") != "PASS":
         blockers.append("primary_s12_execution_probability_not_validated")
+    if l4_available_count < PRIMARY_MIN_L4_OOF_SAMPLES:
+        blockers.append("primary_l4_oof_samples_low")
+    if l4_available_date_count < PRIMARY_MIN_L4_OOF_DATES:
+        blockers.append("primary_l4_oof_dates_low")
+    if structure_count < PRIMARY_MIN_S12_STRUCTURE_SAMPLES:
+        blockers.append("primary_s12_structure_samples_low")
+    if structure_date_count < PRIMARY_MIN_S12_STRUCTURE_DATES:
+        blockers.append("primary_s12_structure_dates_low")
     if champion_comparison.get("decision") != "PASS":
         blockers.append("primary_not_superior_to_canonical_l4")
     if top_mean <= 0.0:
@@ -968,6 +1014,10 @@ def _promotion_tier(
         and spread > 0.0
         and corr > 0.0
         and bool(walk_forward.get("passed"))
+        and l4_available_count >= ASSISTIVE_MIN_EXPERT_SAMPLES
+        and l4_available_date_count >= ASSISTIVE_MIN_EXPERT_DATES
+        and structure_count >= ASSISTIVE_MIN_EXPERT_SAMPLES
+        and structure_date_count >= ASSISTIVE_MIN_EXPERT_DATES
     )
     if assistive_ok:
         return "assistive", blockers
@@ -1032,14 +1082,14 @@ def build_allocator_ev_fusion_artifact_from_rows(
         min_samples=min_samples,
     )
     validation_packet = {
-        "schema_version": "allocator-ev-fusion-validation-packet-v5",
+        "schema_version": "allocator-ev-fusion-validation-packet-v6",
         "decision": decision,
         "failed_gates": selection_model["failed_gates"],
         "validation_scope": {
             "owner": "allocator_ev_fusion",
             "selection_target": "actual_return_pct",
-            "execution_probability_target": "canonical_replay_execution_indicator",
-            "execution_target": "canonical_replay_net_pnl_when_executed",
+            "execution_probability_target": "next_session_canonical_replay_execution_indicator",
+            "execution_target": "next_session_canonical_replay_net_pnl_when_executed",
             "rowwise_label_coalesce": False,
             "method": "date_split_oos_plus_walk_forward",
             "lookback_days": lookback_days,
@@ -1065,6 +1115,10 @@ def build_allocator_ev_fusion_artifact_from_rows(
                 "min_s12_available_samples": PRIMARY_MIN_S12_AVAILABLE_SAMPLES,
                 "min_s12_available_dates": PRIMARY_MIN_S12_AVAILABLE_DATES,
                 "s12_coverage_is_diagnostic_only": True,
+                "min_l4_oof_samples": PRIMARY_MIN_L4_OOF_SAMPLES,
+                "min_l4_oof_dates": PRIMARY_MIN_L4_OOF_DATES,
+                "min_s12_structure_samples": PRIMARY_MIN_S12_STRUCTURE_SAMPLES,
+                "min_s12_structure_dates": PRIMARY_MIN_S12_STRUCTURE_DATES,
                 "execution_expert_validation_passed": True,
                 "execution_probability_validation_passed": True,
                 "paired_canonical_l4_champion_comparison_passed": True,
@@ -1076,7 +1130,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
         },
     }
     artifact = {
-        "schema_version": "allocator-ev-fusion-artifact-v5",
+        "schema_version": "allocator-ev-fusion-artifact-v6",
         "expected_return_owner": "allocator_ev_fusion",
         "promotion_state": (
             "production_primary" if promotion_tier == "primary"
@@ -1089,8 +1143,8 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "promotion_blockers": promotion_blockers,
         "validation_packet": validation_packet,
         "resolver_method": "cross_fitted_rank_two_part_trade_ev_fusion",
-        "model_version": f"allocator-ev-fusion-cross-fit-v5-{trained_until.replace('-', '')}",
-        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v6-canonical-score-v2-only",
+        "model_version": f"allocator-ev-fusion-cross-fit-v6-{trained_until.replace('-', '')}",
+        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v7-next-session-canonical",
         "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
         "trained_until": trained_until,
         "horizon_days": 5,
@@ -1143,7 +1197,8 @@ def load_allocator_ev_fusion_training_rows(
                     SELECT o.pnl_pct
                     FROM s12_replay_trade_outcomes o
                     WHERE o.symbol = fs.symbol
-                      AND date(o.trade_date) = date(fs.snapshot_date)
+                      AND date(o.signal_date) = date(fs.snapshot_date)
+                      AND o.source = 's12_next_session_structure_replay_v2'
                       AND o.sample_eligible = 1
                       AND o.pnl_pct IS NOT NULL
                     ORDER BY o.created_at DESC, o.id DESC
@@ -1153,7 +1208,8 @@ def load_allocator_ev_fusion_training_rows(
                     SELECT json_extract(o.detail_json, '$.status')
                     FROM s12_replay_trade_outcomes o
                     WHERE o.symbol = fs.symbol
-                      AND date(o.trade_date) = date(fs.snapshot_date)
+                      AND date(o.signal_date) = date(fs.snapshot_date)
+                      AND o.source = 's12_next_session_structure_replay_v2'
                     ORDER BY o.sample_eligible DESC, o.created_at DESC, o.id DESC
                     LIMIT 1
                 ) AS s12_replay_status,
@@ -1222,7 +1278,8 @@ def load_allocator_ev_fusion_training_rows(
                 SELECT o.pnl_pct
                 FROM s12_replay_trade_outcomes o
                 WHERE o.symbol = s.symbol
-                  AND date(o.trade_date) = date(p.prediction_date)
+                  AND date(o.signal_date) = date(p.prediction_date)
+                  AND o.source = 's12_next_session_structure_replay_v2'
                   AND o.sample_eligible = 1
                   AND o.pnl_pct IS NOT NULL
                 ORDER BY o.created_at DESC, o.id DESC
@@ -1232,7 +1289,8 @@ def load_allocator_ev_fusion_training_rows(
                 SELECT json_extract(o.detail_json, '$.status')
                 FROM s12_replay_trade_outcomes o
                 WHERE o.symbol = s.symbol
-                  AND date(o.trade_date) = date(p.prediction_date)
+                  AND date(o.signal_date) = date(p.prediction_date)
+                  AND o.source = 's12_next_session_structure_replay_v2'
                 ORDER BY o.sample_eligible DESC, o.created_at DESC, o.id DESC
                 LIMIT 1
             ) AS s12_replay_status,

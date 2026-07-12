@@ -53,9 +53,14 @@ def _s12_payload(value: float, *, ready: bool = True) -> dict:
         "trade_expected_return_source": "s12_replay_trade_outcomes",
         "bootstrap_scope": "symbol",
         "sample_policy": "verified_s12_symbol_replay",
+        "entry_price": 100.0,
+        "stop_price": 96.0,
+        "target1_price": 104.0,
+        "target2_price": 108.0,
         "s12_structural_targets": {
             "target_quality_state": "structure_targets" if ready else "partial_structure_target",
             "reward_confidence_multiplier": 0.95 if ready else 0.7,
+            "structure_stop_source": "s12_structure_snapshots.structure_stop",
         },
         "candidate_s12_entry_context": {"detail_available": True, "ready": ready},
     }
@@ -115,8 +120,10 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["promotion_tier"] == "primary"
     assert artifact["primary_expected_return_allowed"] is True
     assert artifact["validation_packet"]["decision"] == "PASS"
+    assert artifact["validation_packet"]["sample_audit"]["l4_available_count"] > 0
+    assert artifact["validation_packet"]["sample_audit"]["s12_structure_available_count"] > 0
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
-    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v5"
+    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v6"
     assert artifact["resolver_method"] == "cross_fitted_rank_two_part_trade_ev_fusion"
     assert "l4_expected_return" in artifact["coefficients"]
     assert "s12_trade_expected_return" in artifact["coefficients"]
@@ -302,10 +309,12 @@ def test_allocator_ev_fusion_feature_vector_accepts_backfill_only_l4_under_canon
         **_l4_payload(0.02),
         "promotion_state": "snapshot_backfill_only",
         "validation_packet": {"decision": "FAIL", "failed_gates": ["walk_forward_not_stable"]},
-        "snapshot_backfill_only": True,
-        "snapshot_backfill_fit_eligible": True,
-        "snapshot_backfill_usage_scope": SNAPSHOT_BACKFILL_USAGE_SCOPE,
-        "trained_until": "2026-07-06",
+            "snapshot_backfill_only": True,
+            "snapshot_backfill_fit_eligible": True,
+            "snapshot_backfill_usage_scope": SNAPSHOT_BACKFILL_USAGE_SCOPE,
+            "fitted": True,
+            "fit_blockers": [],
+            "trained_until": "2026-07-06",
     }
     row = {
         "symbol": "2330",

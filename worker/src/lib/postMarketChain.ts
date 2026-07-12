@@ -191,14 +191,21 @@ async function enqueueStrategyLearningClosureTask(env: Bindings, ctx: ChainConte
 
 async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): Promise<string> {
   const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  const runId = ctx.upstreamRunId || `s12-replay-backfill-${runDate}-${Date.now()}`
-  await env.UPDATE_QUEUE.send({
-    type: 's12_replay_backfill_chunk',
-    cursor: 0,
-    triggerTime: runDate,
-    runId,
-  })
-  return `triggered s12 replay backfill queue run_date=${runDate} run_id=${runId}`
+  const { loadReplayReadySignalDates } = await import('./s12ReplayTradeOutcome')
+  const signalDates = await loadReplayReadySignalDates(env.DB, runDate, 5)
+  for (const signalDate of signalDates) {
+    const runId = `${ctx.upstreamRunId || 'post-verify'}-s12-${signalDate}-${Date.now()}`
+    await env.UPDATE_QUEUE.send({
+      type: 's12_replay_backfill_chunk',
+      cursor: 0,
+      triggerTime: signalDate,
+      runId,
+      replayScope: 'fusion_snapshot_missing',
+    } as any)
+  }
+  return signalDates.length
+    ? `triggered next-session S12 replay signal_dates=${signalDates.join(',')} as_of=${runDate}`
+    : `next-session S12 replay current as_of=${runDate}`
 }
 
 async function logChainSummary(

@@ -14,7 +14,6 @@ from services.l4_alpha_ev_producer import materialize_l4_alpha_ev
 from services.l4_alpha_ev_resolver import (
     SNAPSHOT_BACKFILL_APPROVAL_STATE,
     SNAPSHOT_BACKFILL_AS_OF_GUARD,
-    SNAPSHOT_BACKFILL_NON_FITTED_GATES,
     SNAPSHOT_BACKFILL_SOURCE,
     SNAPSHOT_BACKFILL_USAGE_SCOPE,
     resolve_l4_alpha_ev,
@@ -146,7 +145,20 @@ def _existing_s12_payload(allocation: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     value, _source, payload = extract_s12_trade_ev({"s12_trade_ev": raw})
-    if value is not None and isinstance(payload, dict) and str(payload.get("status") or "loaded").lower() == "loaded":
+    context = payload.get("candidate_s12_entry_context") if isinstance(payload, dict) else None
+    targets = payload.get("s12_structural_targets") if isinstance(payload, dict) else None
+    structure_ready = (
+        isinstance(context, dict)
+        and context.get("detail_available") is True
+        and isinstance(targets, dict)
+        and str(targets.get("structure_stop_source") or "") != "missing_s12_structure_stop"
+    )
+    if (
+        value is not None
+        and isinstance(payload, dict)
+        and str(payload.get("status") or "loaded").lower() == "loaded"
+        and structure_ready
+    ):
         payload["snapshot_reuse_policy"] = "persisted_candidate_time_s12_payload"
         return payload
     return None
@@ -174,6 +186,8 @@ def _build_l4_asof_artifact(
         lookback_days=lookback_days,
         min_samples=min_samples,
         min_dates=min_dates,
+        fit_min_samples=min(100, min_samples),
+        fit_min_dates=min(5, min_dates),
     )
     artifact = result.get("artifact") if isinstance(result, dict) else None
     validation = result.get("validation_packet") if isinstance(result, dict) else {}
@@ -204,10 +218,7 @@ def _select_l4_snapshot_artifact(l4_result: dict[str, Any]) -> tuple[dict[str, A
         for value in (l4_result.get("failed_gates") or [])
         if str(value).strip()
     }
-    if (
-        decision != "FAIL"
-        or failed_gates.intersection(SNAPSHOT_BACKFILL_NON_FITTED_GATES)
-    ):
+    if decision != "FAIL" or artifact.get("fitted") is not True:
         return None, "not_fit_eligible"
     return (
         {

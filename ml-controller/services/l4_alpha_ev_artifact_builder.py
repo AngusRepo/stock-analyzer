@@ -12,6 +12,8 @@ FEATURE_NAMES = [
     "ensemble_avg_rank_centered",
     "ensemble_confidence_centered",
 ]
+CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
+MIN_CROSS_SECTION_SAMPLES_PER_DATE = 20
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -43,6 +45,8 @@ def _component(score_components: dict[str, Any], name: str) -> float | None:
 
 def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
     score_components = _loads(row.get("score_components"))
+    if str(score_components.get("version") or "").strip().lower() != CANONICAL_SCORE_FEATURE_VERSION:
+        return None
     forecast_data = _loads(row.get("forecast_data"))
     ev2 = forecast_data.get("ensemble_v2") if isinstance(forecast_data.get("ensemble_v2"), dict) else {}
     final_score = _float_or_none(score_components.get("finalScore") or score_components.get("total") or row.get("score"))
@@ -73,10 +77,21 @@ def _target(row: dict[str, Any]) -> float | None:
     return value
 
 
-def _samples(rows: list[dict[str, Any]], *, zero_return_day_min_samples: int = 20) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _samples(
+    rows: list[dict[str, Any]],
+    *,
+    zero_return_day_min_samples: int = 20,
+    min_cross_section_samples_per_date: int = MIN_CROSS_SECTION_SAMPLES_PER_DATE,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     by_date: dict[str, list[dict[str, Any]]] = {}
     invalid = 0
+    rejected_feature_era_rows = 0
+    feature_era_counts: dict[str, int] = {}
     for row in rows:
+        era = str(_loads(row.get("score_components")).get("version") or "legacy_unversioned").strip().lower()
+        feature_era_counts[era] = feature_era_counts.get(era, 0) + 1
+        if era != CANONICAL_SCORE_FEATURE_VERSION:
+            rejected_feature_era_rows += 1
         features = _feature_vector(row)
         target = _target(row)
         if features is None or target is None:
@@ -91,8 +106,16 @@ def _samples(rows: list[dict[str, Any]], *, zero_return_day_min_samples: int = 2
         })
 
     excluded_zero_dates: list[str] = []
+    sparse_dates: list[str] = []
+    sparse_date_rows_rejected = 0
+    minimum_day_samples = max(1, int(min_cross_section_samples_per_date))
     out: list[dict[str, Any]] = []
     for day, day_rows in sorted(by_date.items()):
+        if day != "unknown" and len(day_rows) < minimum_day_samples:
+            sparse_dates.append(day)
+            sparse_date_rows_rejected += len(day_rows)
+            invalid += len(day_rows)
+            continue
         if (
             day != "unknown"
             and len(day_rows) >= zero_return_day_min_samples
@@ -105,6 +128,12 @@ def _samples(rows: list[dict[str, Any]], *, zero_return_day_min_samples: int = 2
         "input_rows": len(rows),
         "sample_count": len(out),
         "invalid_rows": invalid,
+        "accepted_feature_era": CANONICAL_SCORE_FEATURE_VERSION,
+        "feature_era_counts": dict(sorted(feature_era_counts.items())),
+        "rejected_feature_era_rows": rejected_feature_era_rows,
+        "min_cross_section_samples_per_date": minimum_day_samples,
+        "sparse_dates_rejected": sparse_dates,
+        "sparse_date_rows_rejected": sparse_date_rows_rejected,
         "date_count": len({row["date"] for row in out}),
         "excluded_zero_return_dates": excluded_zero_dates,
     }
@@ -312,6 +341,8 @@ def build_l4_alpha_ev_artifact_from_rows(
             "lookback_days": lookback_days,
             "promotion_confidence_level": 0.90,
             "minimum_economic_spread": round(max(0.0, float(cost_model_bps)) / 10000.0, 8),
+            "feature_era": CANONICAL_SCORE_FEATURE_VERSION,
+            "point_in_time_features_required": True,
         },
         "sample_audit": diagnostics,
         "train_metrics": train_metrics,
@@ -325,7 +356,7 @@ def build_l4_alpha_ev_artifact_from_rows(
         "validation_packet": validation_packet,
         "resolver_method": "ridge_meta_calibrator",
         "model_version": model_version,
-        "feature_snapshot_version": "l4-alpha-feature-snapshot-v2-score-rank",
+        "feature_snapshot_version": "l4-alpha-feature-snapshot-v3-canonical-score-v2-only",
         "trained_until": trained_until,
         "horizon_days": 5,
         "cost_model_bps": cost_model_bps,

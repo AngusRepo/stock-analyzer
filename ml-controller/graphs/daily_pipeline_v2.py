@@ -414,12 +414,11 @@ def _timesfm_sync_gate(
 
 
 def _breeze2_reason_shadow_enabled() -> bool:
-    raw = os.environ.get("BREEZE2_REASON_SHADOW", "1")
-    return str(raw).strip().lower() not in {"0", "false", "off", "disabled", "no"}
+    return False
 
 
 def _breeze2_reason_shadow_provider() -> str:
-    provider = str(os.environ.get("BREEZE2_REASON_SHADOW_PROVIDER") or "modal_generation").strip().lower()
+    provider = str(os.environ.get("BREEZE2_REASON_SHADOW_PROVIDER") or "context").strip().lower()
     return provider if provider in {"context", "modal_generation"} else "context"
 
 

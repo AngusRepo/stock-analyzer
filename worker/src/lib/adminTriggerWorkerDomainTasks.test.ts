@@ -57,6 +57,16 @@ assert.match(updateOrchestrator, /runS12HistoricalReplayForDate\(env, triggerTim
 assert.match(updateOrchestrator, /type: 's12_replay_backfill_chunk'/)
 assert.match(updateOrchestrator, /cursor: nextOffset/)
 assert.match(updateOrchestrator, /logSchedulerResult\(env\.KV, 's12-replay-backfill'/)
+assert.match(source, /scope.*fusion_snapshot_missing/)
+assert.match(source, /replayScope/)
+assert.match(updateOrchestrator, /loadFusionSnapshotMissingReplaySymbols/)
+assert.match(updateOrchestrator, /scope=\$\{replayScope\}/)
+
+const replaySource = fs.readFileSync('src/lib/s12ReplayTradeOutcome.ts', 'utf8')
+assert.match(replaySource, /loadFusionSnapshotMissingReplaySymbols/)
+assert.match(replaySource, /allocator_ev_feature_snapshots/)
+assert.match(replaySource, /json_extract\(fs\.score_components, '\$\.version'\) = 'score_v2'/)
+assert.match(replaySource, /NOT EXISTS/)
 
 const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 assert.match(schedulerPolicy, /'audit-json-retention'/)

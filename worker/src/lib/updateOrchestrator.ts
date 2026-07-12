@@ -2934,20 +2934,33 @@ export async function processUpdateBatch(
     const triggerTime = msg.triggerTime
     const runId = msg.runId || `s12-replay-backfill-${triggerTime}-${Date.now()}`
     const offset = Math.max(0, Number.isFinite(msg.cursor) ? Number(msg.cursor) : 0)
+    const replayScope = (msg as any).replayScope === 'fusion_snapshot_missing' ? 'fusion_snapshot_missing' : 'l0'
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
       console.log(`[Queue] Invalid S12 replay backfill date ${triggerTime}, skipping.`)
       return
     }
-    const { runS12HistoricalReplayForDate } = await import('./s12ReplayTradeOutcome')
+    const {
+      loadFusionSnapshotMissingReplaySymbols,
+      runS12HistoricalReplayForDate,
+    } = await import('./s12ReplayTradeOutcome')
+    const cohortSymbols = replayScope === 'fusion_snapshot_missing'
+      ? await loadFusionSnapshotMissingReplaySymbols(env.DB, triggerTime)
+      : undefined
     const result = await runS12HistoricalReplayForDate(env, triggerTime, {
       limit: S12_REPLAY_QUEUE_CHUNK_SIZE,
-      offset,
+      offset: replayScope === 'fusion_snapshot_missing' ? 0 : offset,
       persist: true,
+      symbols: cohortSymbols,
     })
-    const nextOffset = offset + Math.max(0, Number(result.attempted ?? 0))
-    const hasMore = nextOffset < Number(result.l0_symbols ?? 0) && Number(result.attempted ?? 0) > 0
+    const nextOffset = replayScope === 'fusion_snapshot_missing'
+      ? 0
+      : offset + Math.max(0, Number(result.attempted ?? 0))
+    const hasMore = replayScope === 'fusion_snapshot_missing'
+      ? Number(result.l0_symbols ?? 0) > Number(result.attempted ?? 0) && Number(result.attempted ?? 0) > 0
+      : nextOffset < Number(result.l0_symbols ?? 0) && Number(result.attempted ?? 0) > 0
     const summary = [
       `s12_replay_backfill date=${result.trade_date}`,
+      `scope=${replayScope}`,
       `offset=${offset}`,
       `next_offset=${nextOffset}`,
       `l0=${result.l0_symbols}`,
@@ -2971,7 +2984,8 @@ export async function processUpdateBatch(
         cursor: nextOffset,
         triggerTime,
         runId,
-      })
+        replayScope,
+      } as any)
     }
     return
   }

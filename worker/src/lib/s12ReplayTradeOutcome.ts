@@ -126,6 +126,56 @@ export interface S12L0PassedSymbol {
   alpha_allocation?: string | null
 }
 
+export async function loadFusionSnapshotMissingReplaySymbols(
+  db: D1Database,
+  tradeDate: string,
+): Promise<S12L0PassedSymbol[]> {
+  const { results } = await db.prepare(`
+    WITH latest_snapshot AS (
+      SELECT fs.*,
+             ROW_NUMBER() OVER (
+               PARTITION BY fs.symbol
+               ORDER BY fs.generated_at DESC, fs.snapshot_source DESC
+             ) AS snapshot_rank
+        FROM allocator_ev_feature_snapshots fs
+       WHERE fs.snapshot_date = ?
+         AND json_extract(fs.score_components, '$.version') = 'score_v2'
+    )
+    SELECT fs.symbol,
+           st.name,
+           dr.score AS score_after,
+           dr.rank,
+           st.market,
+           fs.market_segment,
+           fs.alpha_context,
+           fs.alpha_allocation
+      FROM latest_snapshot fs
+      LEFT JOIN daily_recommendations dr
+        ON dr.date = fs.snapshot_date
+       AND dr.symbol = fs.symbol
+      LEFT JOIN stocks st
+        ON st.symbol = fs.symbol
+     WHERE fs.snapshot_rank = 1
+       AND NOT EXISTS (
+         SELECT 1
+           FROM s12_replay_trade_outcomes replay
+          WHERE replay.trade_date = fs.snapshot_date
+            AND replay.symbol = fs.symbol
+       )
+     ORDER BY COALESCE(dr.rank, 999999), fs.symbol
+  `).bind(tradeDate).all<S12L0PassedSymbol>()
+  return (results ?? []).map((row) => ({
+    symbol: String(row.symbol ?? '').trim(),
+    name: row.name ?? null,
+    score_after: row.score_after ?? null,
+    rank: row.rank ?? null,
+    market: row.market ?? null,
+    market_segment: row.market_segment ?? null,
+    alpha_context: row.alpha_context ?? null,
+    alpha_allocation: row.alpha_allocation ?? null,
+  })).filter((row) => row.symbol)
+}
+
 const M15_MS = 15 * 60_000
 
 function finitePositive(value: unknown): number | null {

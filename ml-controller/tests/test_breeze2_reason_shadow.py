@@ -138,7 +138,8 @@ def test_pipeline_keeps_breeze2_shadow_out_of_canonical_reason_writer():
     pipeline = pipeline_path.read_text(encoding="utf-8")
 
     assert 'provider in {"context", "modal_generation"}' in pipeline
-    assert 'or "modal_generation"' in pipeline
+    assert 'def _breeze2_reason_shadow_enabled() -> bool:\n    return False' in pipeline
+    assert 'or "context"' in pipeline
     assert "build_canonical_candidate_payloads(candidates)" in pipeline
     assert "generate_recommendation_reasons_from_payloads" in pipeline
     assert "build_breeze2_generation_shadow_for_canonical_payloads" in pipeline

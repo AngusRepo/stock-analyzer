@@ -279,8 +279,22 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       return result.summary
     },
     's12-replay-backfill': async () => {
-      const { runS12HistoricalReplayForDate } = await import('./s12ReplayTradeOutcome')
       const runDate = assertRunDate(requestedRunDate())
+      const replayScope = c.req.query('scope') === 'fusion_snapshot_missing'
+        ? 'fusion_snapshot_missing'
+        : 'l0'
+      if (replayScope === 'fusion_snapshot_missing') {
+        const runId = `manual-fusion-cohort-replay-${runDate}-${Date.now().toString(36)}`
+        await c.env.UPDATE_QUEUE.send({
+          type: 's12_replay_backfill_chunk',
+          cursor: 0,
+          triggerTime: runDate,
+          runId,
+          replayScope,
+        } as any)
+        return `triggered s12 replay backfill date=${runDate} scope=${replayScope} run_id=${runId} callback expected`
+      }
+      const { runS12HistoricalReplayForDate } = await import('./s12ReplayTradeOutcome')
       const result = await runS12HistoricalReplayForDate(c.env, runDate, {
         limit: parseBoundedPositiveInt(c.req.query('limit'), 500, 5000),
         offset: Math.max(0, parseBoundedPositiveInt(c.req.query('offset'), 0, 20000)),

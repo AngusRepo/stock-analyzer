@@ -166,7 +166,9 @@ def test_verify_uses_prediction_business_date_for_future_bars(monkeypatch):
         prediction_date="2026-04-30",
     )
 
-    assert captured["params"] == [1, "2026-05-01", "2026-05-10"]
+    assert captured["params"] == [1, "2026-04-30"]
+    assert "date > ?" in str(captured["sql"])
+    assert "date <= ?" not in str(captured["sql"])
 
 
 def test_load_pending_predictions_uses_bounded_run_date_window(monkeypatch):

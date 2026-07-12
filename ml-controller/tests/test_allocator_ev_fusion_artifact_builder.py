@@ -71,6 +71,16 @@ def _row(day: str, idx: int) -> dict:
     return {
         "symbol": f"{idx:04d}",
         "prediction_date": day,
+        "score_components": json.dumps({
+            "version": "score_v2",
+            "finalScore": 50.0 + (idx % 20),
+            "components": {
+                "mlEdge": 10.0 + (idx % 10),
+                "fundamentalQuality": 12.0,
+                "chipFlow": 11.0,
+                "technicalStructure": 13.0,
+            },
+        }),
         "actual_return_pct": target,
         "trade_pnl_pct": target + (0.4 * s12) + (0.002 if ready else -0.001),
         "s12_replay_pnl_pct": replay_pnl,
@@ -178,6 +188,7 @@ def test_allocator_ev_fusion_artifact_builder_demotes_hot_start_pass_to_assistiv
             rows.append({
                 "symbol": f"{symbol_idx:04d}",
                 "prediction_date": day,
+                "score_components": json.dumps({"version": "score_v2"}),
                 "actual_return_pct": (0.6 * l4) + (0.4 * s12),
                 "trade_pnl_pct": (0.6 * l4) + (0.7 * s12),
                 "alpha_allocation": json.dumps({
@@ -296,6 +307,7 @@ def test_allocator_ev_fusion_feature_vector_accepts_backfill_only_l4_under_canon
     row = {
         "symbol": "2330",
         "prediction_date": "2026-07-07",
+        "score_components": json.dumps({"version": "score_v2"}),
         "actual_return_pct": 0.01,
         "alpha_allocation": json.dumps({
             "l4_alpha_ev": l4_payload,
@@ -357,6 +369,7 @@ def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_f
                 "actual_return_pct": target,
                 "score": score,
                 "score_components": json.dumps({
+                    "version": "score_v2",
                     "finalScore": score,
                     "components": {
                         "mlEdge": ml_edge,
@@ -375,6 +388,7 @@ def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_f
         }),
         "score": 70,
         "score_components": json.dumps({
+            "version": "score_v2",
             "finalScore": 70,
             "components": {
                 "mlEdge": 18,
@@ -593,6 +607,7 @@ def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload
             rows.append({
                 "symbol": f"{symbol_idx:04d}",
                 "prediction_date": day,
+                "score_components": json.dumps({"version": "score_v2"}),
                 "actual_return_pct": l4 + (0.004 if has_s12 else -0.003),
                 "alpha_allocation": json.dumps({
                     "l4_alpha_ev": _l4_payload(l4),
@@ -620,6 +635,7 @@ def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_miss
         "actual_return_pct": 0.02,
         "score": 70,
         "score_components": json.dumps({
+            "version": "score_v2",
             "finalScore": 70,
             "components": {
                 "mlEdge": 18,
@@ -634,13 +650,48 @@ def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_miss
         "alpha_allocation": json.dumps({}),
     }
 
-    samples, audit = _samples([row])
+    samples, audit = _samples([row], min_cross_section_samples_per_date=1)
 
     assert audit["sample_count"] == 1
     assert samples[0]["features"]["l4_available"] == 0.0
     assert samples[0]["features"]["s12_available"] == 0.0
     assert samples[0]["features"]["score_v2_available"] == 1.0
     assert samples[0]["execution_target"] is None
+
+
+def test_allocator_ev_fusion_rejects_legacy_unversioned_score_feature_era():
+    row = {
+        "symbol": "2330",
+        "prediction_date": "2026-05-04",
+        "actual_return_pct": 0.02,
+        "score_components": json.dumps({
+            "chip": 33,
+            "tech": 16,
+            "ml": 13.5,
+            "rawScore": 62.5,
+        }),
+        "alpha_allocation": json.dumps({}),
+    }
+
+    samples, audit = _samples([row])
+
+    assert samples == []
+    assert audit["sample_count"] == 0
+    assert audit["rejected_feature_era_rows"] == 1
+    assert audit["feature_era_counts"] == {"legacy_unversioned": 1}
+    assert audit["feature_era_policy"]["legacy_direct_training_allowed"] is False
+
+
+def test_allocator_ev_fusion_rejects_sparse_cross_section_dates():
+    rows = [_row("2026-06-08", idx) for idx in range(19)]
+
+    samples, audit = _samples(rows)
+
+    assert samples == []
+    assert audit["date_count"] == 0
+    assert audit["sparse_dates_rejected"] == ["2026-06-08"]
+    assert audit["sparse_date_rows_rejected"] == 19
+    assert audit["min_cross_section_samples_per_date"] == 20
 
 
 def test_execution_replay_label_is_kept_when_prior_s12_ev_was_unavailable():
@@ -652,6 +703,7 @@ def test_execution_replay_label_is_kept_when_prior_s12_ev_was_unavailable():
         "s12_replay_status": "executed",
         "score": 70,
         "score_components": json.dumps({
+            "version": "score_v2",
             "finalScore": 70,
             "components": {
                 "mlEdge": 18,
@@ -666,7 +718,7 @@ def test_execution_replay_label_is_kept_when_prior_s12_ev_was_unavailable():
         "alpha_allocation": json.dumps({}),
     }
 
-    samples, audit = _samples([row], execution_cost_bps=18.0)
+    samples, audit = _samples([row], execution_cost_bps=18.0, min_cross_section_samples_per_date=1)
 
     assert audit["s12_available_count"] == 0
     assert audit["execution_sample_count"] == 1
@@ -682,7 +734,7 @@ def test_allocator_ev_fusion_keeps_candidate_and_trade_targets_separate():
     row["s12_replay_pnl_pct"] = None
     row["s12_replay_status"] = "not_triggered"
 
-    samples, audit = _samples([row])
+    samples, audit = _samples([row], min_cross_section_samples_per_date=1)
 
     assert samples[0]["actual_return_target"] == pytest.approx(0.03)
     assert samples[0]["selection_target"] == pytest.approx(0.0)
@@ -699,7 +751,7 @@ def test_allocator_ev_fusion_prefers_canonical_s12_replay_outcome_label():
     row["s12_replay_pnl_pct"] = 0.08
     row["s12_replay_status"] = "executed"
 
-    samples, audit = _samples([row])
+    samples, audit = _samples([row], min_cross_section_samples_per_date=1)
 
     assert samples[0]["trade_target"] == pytest.approx(0.08)
     assert samples[0]["execution_target"] == pytest.approx(0.08)

@@ -47,6 +47,8 @@ PRIMARY_MIN_S12_AVAILABLE_SAMPLES = 300
 PRIMARY_MIN_S12_AVAILABLE_DATES = 8
 ASSISTIVE_MIN_DATES = 5
 ASSISTIVE_MIN_SAMPLES = 500
+CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
+MIN_CROSS_SECTION_SAMPLES_PER_DATE = 20
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -128,6 +130,11 @@ def _component(score_components: dict[str, Any], name: str) -> float | None:
     return _float_or_none(components.get(name))
 
 
+def _score_feature_era(row: dict[str, Any]) -> str:
+    version = str(_loads(row.get("score_components")).get("version") or "").strip().lower()
+    return version or "legacy_unversioned"
+
+
 def _selection_raw_features(row: dict[str, Any]) -> dict[str, float]:
     score_components = _loads(row.get("score_components"))
     forecast_data = _loads(row.get("forecast_data"))
@@ -175,6 +182,8 @@ def _date_strictly_before(left: Any, right: Any) -> bool:
 
 
 def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
+    if _score_feature_era(row) != CANONICAL_SCORE_FEATURE_VERSION:
+        return None
     extractor_row = _row_for_extractors(row)
     usage_scope = _l4_usage_scope(row)
     l4_value, _l4_source, _l4_payload = extract_l4_alpha_ev(
@@ -219,11 +228,18 @@ def _samples(
     rows: list[dict[str, Any]],
     *,
     execution_cost_bps: float = 0.0,
+    min_cross_section_samples_per_date: int = MIN_CROSS_SECTION_SAMPLES_PER_DATE,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     out: list[dict[str, Any]] = []
     invalid = 0
     missing_features = 0
+    rejected_feature_era_rows = 0
+    feature_era_counts: dict[str, int] = {}
     for row in rows:
+        feature_era = _score_feature_era(row)
+        feature_era_counts[feature_era] = feature_era_counts.get(feature_era, 0) + 1
+        if feature_era != CANONICAL_SCORE_FEATURE_VERSION:
+            rejected_feature_era_rows += 1
         features = _feature_vector(row)
         selection_target = _bounded_return(row, "actual_return_pct")
         if features is None:
@@ -268,6 +284,16 @@ def _samples(
             ),
             "actual_trade_target_audit_only": actual_trade_target,
         })
+    raw_day_counts: dict[str, int] = {}
+    for sample in out:
+        raw_day_counts[sample["date"]] = raw_day_counts.get(sample["date"], 0) + 1
+    minimum_day_samples = max(1, int(min_cross_section_samples_per_date))
+    sparse_dates = sorted(day for day, count in raw_day_counts.items() if count < minimum_day_samples)
+    sparse_date_set = set(sparse_dates)
+    sparse_date_rows_rejected = sum(raw_day_counts[day] for day in sparse_dates)
+    if sparse_date_set:
+        out = [sample for sample in out if sample["date"] not in sparse_date_set]
+        invalid += sparse_date_rows_rejected
     by_day: dict[str, list[dict[str, Any]]] = {}
     by_day_segment: dict[tuple[str, str], list[dict[str, Any]]] = {}
     by_day_sector: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -312,6 +338,19 @@ def _samples(
         "sample_count": len(out),
         "invalid_rows": invalid,
         "missing_feature_rows": missing_features,
+        "accepted_feature_era": CANONICAL_SCORE_FEATURE_VERSION,
+        "feature_era_counts": dict(sorted(feature_era_counts.items())),
+        "rejected_feature_era_rows": rejected_feature_era_rows,
+        "feature_era_policy": {
+            "mode": "strict_canonical_only",
+            "accepted_versions": [CANONICAL_SCORE_FEATURE_VERSION],
+            "legacy_direct_training_allowed": False,
+            "counterfactual_rebuild_requires_explicit_versioned_snapshot": True,
+        },
+        "min_cross_section_samples_per_date": minimum_day_samples,
+        "sparse_dates_rejected": sparse_dates,
+        "sparse_date_rows_rejected": sparse_date_rows_rejected,
+        "raw_date_counts": dict(sorted(raw_day_counts.items())),
         "date_count": len({row["date"] for row in out}),
         "s12_ready_count": s12_ready_count,
         "s12_available_count": s12_available_count,
@@ -1004,6 +1043,8 @@ def build_allocator_ev_fusion_artifact_from_rows(
             "rowwise_label_coalesce": False,
             "method": "date_split_oos_plus_walk_forward",
             "lookback_days": lookback_days,
+            "feature_era": CANONICAL_SCORE_FEATURE_VERSION,
+            "point_in_time_features_required": True,
         },
         "sample_audit": diagnostics,
         "train_metrics": selection_model["train_metrics"],
@@ -1049,7 +1090,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "validation_packet": validation_packet,
         "resolver_method": "cross_fitted_rank_two_part_trade_ev_fusion",
         "model_version": f"allocator-ev-fusion-cross-fit-v5-{trained_until.replace('-', '')}",
-        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v5-raw-selection-replay-only",
+        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v6-canonical-score-v2-only",
         "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
         "trained_until": trained_until,
         "horizon_days": 5,

@@ -183,24 +183,24 @@ def load_market_risk() -> dict:
 
 def load_bars_for_prediction(stock_id: int, generated_at: str, prediction_date: str | None = None) -> list[dict]:
     """
-    Load 7 days of OHLC bars starting from day after generated_at.
+    Load the first seven actual stock sessions after the prediction date.
 
-    Matches worker predictionVerifier.ts:81-90 exactly.
+    Do not impose a calendar-day ceiling: exchange holidays and stock-specific
+    suspensions can push the fifth observable session beyond ten calendar days.
     """
     if prediction_date:
         business_date = datetime.fromisoformat(prediction_date).date()
     else:
         business_date = datetime.fromisoformat(generated_at.replace("Z", "+00:00")).date()
-    look_from = (business_date + timedelta(days=1)).isoformat()
-    look_to = (business_date + timedelta(days=10)).isoformat()
+    look_from = business_date.isoformat()
 
     sql = """
         SELECT date, open, high, low, close
         FROM stock_prices
-        WHERE stock_id=? AND date >= ? AND date <= ?
+        WHERE stock_id=? AND date > ?
         ORDER BY date ASC LIMIT 7
     """
-    return d1_client.query(sql, params=[stock_id, look_from, look_to])
+    return d1_client.query(sql, params=[stock_id, look_from])
 
 
 def load_bars_for_predictions(predictions: list[dict], chunk_size: int = 80) -> dict[int, list[dict]]:
@@ -208,7 +208,7 @@ def load_bars_for_predictions(predictions: list[dict], chunk_size: int = 80) -> 
     if not predictions:
         return {}
 
-    windows: list[tuple[int, str, str]] = []
+    windows: list[tuple[int, str]] = []
     for pred in predictions:
         if pred.get("prediction_date"):
             business_date = datetime.fromisoformat(str(pred["prediction_date"])).date()
@@ -216,13 +216,11 @@ def load_bars_for_predictions(predictions: list[dict], chunk_size: int = 80) -> 
             business_date = datetime.fromisoformat(str(pred["generated_at"]).replace("Z", "+00:00")).date()
         windows.append((
             int(pred["stock_id"]),
-            (business_date + timedelta(days=1)).isoformat(),
-            (business_date + timedelta(days=10)).isoformat(),
+            business_date.isoformat(),
         ))
 
     stock_ids = sorted({w[0] for w in windows})
     min_date = min(w[1] for w in windows)
-    max_date = max(w[2] for w in windows)
     bars_by_stock: dict[int, list[dict]] = {}
 
     for i in range(0, len(stock_ids), chunk_size):
@@ -233,11 +231,10 @@ def load_bars_for_predictions(predictions: list[dict], chunk_size: int = 80) -> 
             SELECT stock_id, date, open, high, low, close
             FROM stock_prices
             WHERE stock_id IN ({placeholders})
-              AND date >= ?
-              AND date <= ?
+              AND date > ?
             ORDER BY stock_id ASC, date ASC
             """,
-            params=[*chunk, min_date, max_date],
+            params=[*chunk, min_date],
         )
         for row in rows:
             bars_by_stock.setdefault(int(row["stock_id"]), []).append(row)
@@ -245,15 +242,12 @@ def load_bars_for_predictions(predictions: list[dict], chunk_size: int = 80) -> 
     return bars_by_stock
 
 
-def _prediction_bar_window(pred: dict) -> tuple[str, str]:
+def _prediction_bar_start(pred: dict) -> str:
     if pred.get("prediction_date"):
         business_date = datetime.fromisoformat(str(pred["prediction_date"])).date()
     else:
         business_date = datetime.fromisoformat(str(pred["generated_at"]).replace("Z", "+00:00")).date()
-    return (
-        (business_date + timedelta(days=1)).isoformat(),
-        (business_date + timedelta(days=10)).isoformat(),
-    )
+    return business_date.isoformat()
 
 
 def verify_single_prediction(
@@ -440,10 +434,10 @@ def prepare_verification_updates(pending: list[dict], market_risk: dict) -> dict
 
     for pred in pending:
         try:
-            look_from, look_to = _prediction_bar_window(pred)
+            look_from = _prediction_bar_start(pred)
             pred_bars = [
                 b for b in bars_by_stock.get(int(pred["stock_id"]), [])
-                if look_from <= str(b.get("date")) <= look_to
+                if str(b.get("date")) > look_from
             ][:7]
             if not pred_bars:
                 skipped_no_bars += 1

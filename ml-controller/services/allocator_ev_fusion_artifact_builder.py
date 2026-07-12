@@ -1176,6 +1176,8 @@ def load_allocator_ev_fusion_training_rows(
               ON st.id = fs.stock_id
             WHERE p.verified_at IS NOT NULL
               AND (p.actual_return_pct IS NOT NULL OR p.trade_pnl_pct IS NOT NULL)
+              AND fs.snapshot_source = ?
+              AND fs.as_of_guard = ?
               AND p.actual_price = (
                   SELECT sp.close
                   FROM stock_prices sp
@@ -1190,14 +1192,24 @@ def load_allocator_ev_fusion_training_rows(
             ORDER BY date(p.prediction_date) ASC, fs.symbol ASC
             LIMIT ?
             """,
-            [end_date, end_date, f"-{max(1, int(lookback_days))} days", int(limit)],
+            [
+                SNAPSHOT_BACKFILL_SOURCE,
+                SNAPSHOT_BACKFILL_AS_OF_GUARD,
+                end_date,
+                end_date,
+                f"-{max(1, int(lookback_days))} days",
+                int(limit),
+            ],
         )
         snapshot_available = True
     except Exception as exc:  # noqa: BLE001 - migration may not be deployed yet.
         if "allocator_ev_feature_snapshots" not in str(exc):
             raise
 
-    daily_rows = query_fn(
+    if snapshot_available:
+        return snapshot_rows
+
+    return query_fn(
         """
         SELECT
             p.stock_id,
@@ -1257,17 +1269,3 @@ def load_allocator_ev_fusion_training_rows(
         """,
         [end_date, end_date, f"-{max(1, int(lookback_days))} days", int(limit)],
     )
-    if not snapshot_available or not snapshot_rows:
-        return daily_rows
-
-    seen = {
-        (str(row.get("prediction_date") or "")[:10], str(row.get("stock_id") or ""))
-        for row in snapshot_rows
-    }
-    merged = list(snapshot_rows)
-    for row in daily_rows:
-        key = (str(row.get("prediction_date") or "")[:10], str(row.get("stock_id") or ""))
-        if key not in seen:
-            merged.append(row)
-            seen.add(key)
-    return merged[: int(limit)]

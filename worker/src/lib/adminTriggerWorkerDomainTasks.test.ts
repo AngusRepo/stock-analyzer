@@ -66,6 +66,8 @@ const replaySource = fs.readFileSync('src/lib/s12ReplayTradeOutcome.ts', 'utf8')
 assert.match(replaySource, /loadFusionSnapshotMissingReplaySymbols/)
 assert.match(replaySource, /allocator_ev_feature_snapshots/)
 assert.match(replaySource, /json_extract\(fs\.score_components, '\$\.version'\) = 'score_v2'/)
+assert.match(replaySource, /fs\.snapshot_source = 'allocator_ev_asof_backfill_v1'/)
+assert.match(replaySource, /fs\.as_of_guard = 'l4_trained_until_strictly_before_snapshot_date_and_s12_samples_before_run_date'/)
 assert.match(replaySource, /NOT EXISTS/)
 
 const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')

@@ -223,17 +223,20 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     rows = load_allocator_ev_fusion_training_rows(query_fn, end_date="2026-07-07", lookback_days=45, limit=123)
 
     assert rows == []
-    assert len(observed) == 2
+    assert len(observed) == 1
     assert "allocator_ev_feature_snapshots fs" in observed[0]["sql"]
     assert "s12_replay_trade_outcomes" in observed[0]["sql"]
     assert "AS s12_replay_pnl_pct" in observed[0]["sql"]
-    assert "dr.alpha_allocation" in observed[1]["sql"]
-    assert "s12_replay_trade_outcomes" in observed[1]["sql"]
-    assert "NULL AS market_heat_expected_return" in observed[1]["sql"]
-    assert "dr.market_heat_expected_return" not in observed[1]["sql"]
-    assert "p.verified_at IS NOT NULL" in observed[1]["sql"]
-    assert observed[0]["params"] == ["2026-07-07", "2026-07-07", "-45 days", 123]
-    assert observed[1]["params"] == ["2026-07-07", "2026-07-07", "-45 days", 123]
+    assert "fs.snapshot_source = ?" in observed[0]["sql"]
+    assert "fs.as_of_guard = ?" in observed[0]["sql"]
+    assert observed[0]["params"] == [
+        SNAPSHOT_BACKFILL_SOURCE,
+        SNAPSHOT_BACKFILL_AS_OF_GUARD,
+        "2026-07-07",
+        "2026-07-07",
+        "-45 days",
+        123,
+    ]
 
 
 def test_load_allocator_ev_fusion_training_rows_prefers_asof_snapshot_rows():
@@ -269,7 +272,7 @@ def test_load_allocator_ev_fusion_training_rows_prefers_asof_snapshot_rows():
 
     rows = load_allocator_ev_fusion_training_rows(query_fn, end_date="2026-07-07", lookback_days=45, limit=123)
 
-    assert rows == [snapshot_row, other_daily_row]
+    assert rows == [snapshot_row]
 
 
 def test_load_allocator_ev_fusion_training_rows_falls_back_when_snapshot_table_missing():

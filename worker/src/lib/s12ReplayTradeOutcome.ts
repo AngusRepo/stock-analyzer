@@ -140,6 +140,8 @@ export async function loadFusionSnapshotMissingReplaySymbols(
         FROM allocator_ev_feature_snapshots fs
        WHERE fs.snapshot_date = ?
          AND json_extract(fs.score_components, '$.version') = 'score_v2'
+         AND fs.snapshot_source = 'allocator_ev_asof_backfill_v1'
+         AND fs.as_of_guard = 'l4_trained_until_strictly_before_snapshot_date_and_s12_samples_before_run_date'
     )
     SELECT fs.symbol,
            st.name,

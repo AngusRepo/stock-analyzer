@@ -351,7 +351,8 @@ def build_allocator_ev_feature_snapshots_for_date(
         if not isinstance(l4_payload, dict) or l4_payload.get("status") != "loaded":
             l4_payload = None
             snapshots_without_l4 += 1
-        s12_payload = _existing_s12_payload(existing)
+        existing_is_backfill_snapshot = str(existing.get("snapshot_source") or "") == SNAPSHOT_SOURCE
+        s12_payload = None if existing_is_backfill_snapshot else _existing_s12_payload(existing)
         if isinstance(s12_payload, dict):
             reused_s12 += 1
         else:

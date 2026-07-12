@@ -597,6 +597,37 @@ def test_allocator_ev_feature_snapshot_backfill_does_not_reuse_invalid_s12_paylo
     assert _existing_s12_payload(invalid) is None
 
 
+def test_allocator_ev_feature_snapshot_backfill_recomputes_prior_backfill_s12_payload():
+    existing = {
+        "snapshot_source": "allocator_ev_asof_backfill_v1",
+        "s12_trade_ev": _s12_payload(0.009),
+    }
+    candidate = {
+        "stock_id": 1,
+        "symbol": "2330",
+        "recommendation_date": "2026-07-02",
+        "forecast_data": json.dumps({"ensemble_v2": {"avg_rank": 0.35, "confidence": 0.72}}),
+        "score": 70,
+        "score_components": json.dumps({"version": "score_v2", "finalScore": 70}),
+        "alpha_context": json.dumps({"market_heat_expected_return": 0.003}),
+        "existing_alpha_allocation": json.dumps(existing),
+        "current_price": 100,
+    }
+
+    def query_fn(sql: str, _params: list[object] | None = None) -> list[dict]:
+        if "FROM daily_recommendations dr" in sql and "JOIN predictions p" in sql:
+            return [candidate]
+        return []
+
+    result = build_allocator_ev_feature_snapshots_for_date(
+        snapshot_date="2026-07-02",
+        query_fn=query_fn,
+        dry_run=True,
+    )
+
+    assert result["reused_s12_payloads"] == 0
+
+
 def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload_as_unavailable_feature():
     rows = []
     for day_idx in range(26):

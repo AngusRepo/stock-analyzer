@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -551,10 +552,33 @@ def _train_stage_registrations(payload_dict: dict[str, Any]) -> dict[str, dict[s
     stages = _nested_dict(payload_dict.get("stages"))
     train = _nested_dict(stages.get("train"))
     ic_tracking = _nested_dict(train.get("ic_tracking"))
-    registrations: dict[str, dict[str, Any]] = {}
+    explicit_registrations = _nested_dict(train.get("artifact_registrations"))
+    registrations: dict[str, dict[str, Any]] = {
+        str(model_name): {
+            **dict(raw_registration),
+            "status": str(raw_registration.get("status") or "registered"),
+            "version": str(raw_registration.get("version") or version),
+            "metrics": (
+                raw_registration.get("metrics")
+                if isinstance(raw_registration.get("metrics"), dict)
+                else _nested_dict(ic_tracking.get(str(model_name)))
+            ),
+            "model_cpcv": (
+                raw_registration.get("model_cpcv")
+                or _nested_dict(ic_tracking.get(str(model_name))).get("model_cpcv")
+            ),
+            "training_run_id": (
+                raw_registration.get("training_run_id")
+                or payload_dict.get("run_id")
+                or payload_dict.get("trained_at")
+            ),
+        }
+        for model_name, raw_registration in explicit_registrations.items()
+        if is_production_artifact_model(str(model_name)) and isinstance(raw_registration, dict)
+    }
     for model_name, raw_metrics in ic_tracking.items():
         model_name = str(model_name)
-        if not is_production_artifact_model(model_name):
+        if not is_production_artifact_model(model_name) or model_name in registrations:
             continue
         metrics = _nested_dict(raw_metrics)
         model_cpcv = metrics.get("model_cpcv") if isinstance(metrics.get("model_cpcv"), dict) else None
@@ -627,6 +651,11 @@ def _artifact_record_from_registration(
         if eligible_pending_approval
         else "not_evaluated"
     )
+    snapshot = (
+        (payload_dict.get("stages") or {}).get("dataset_snapshot")
+        if isinstance(payload_dict.get("stages"), dict)
+        else None
+    ) or payload_dict.get("dataset_snapshot")
     return {
         "artifact_id": artifact_id,
         "model_name": model_name,
@@ -642,11 +671,7 @@ def _artifact_record_from_registration(
             or payload_dict.get("trained_at")
         ),
         "training_manifest_path": raw_registration.get("training_manifest_path") or payload_dict.get("training_manifest_path"),
-        "trained_from_snapshot": (
-            (payload_dict.get("stages") or {}).get("dataset_snapshot")
-            if isinstance(payload_dict.get("stages"), dict)
-            else None
-        ),
+        "trained_from_snapshot": _json_dumps(snapshot) if isinstance(snapshot, (dict, list)) else snapshot,
         "evaluation_baseline_version": raw_registration.get("evaluation_baseline_version"),
         "final_compared_to": raw_registration.get("final_compared_to"),
         "feature_policy_version": raw_registration.get("feature_policy_version") or evidence.get("feature_policy_version"),
@@ -687,6 +712,64 @@ def _is_suppressed_legacy_challenger_registration(raw_registration: Any) -> bool
         status == "disabled"
         and reason.startswith("legacy_model_pool_challenger_disabled")
     )
+
+
+def _load_artifact_metadata_from_gcs(metadata_path: str) -> dict[str, Any]:
+    bucket_name = str(os.environ.get("GCS_BUCKET_NAME") or "").strip()
+    path = str(metadata_path or "").strip()
+    if not bucket_name or not path:
+        return {}
+    try:
+        from google.cloud import storage
+
+        blob = storage.Client().bucket(bucket_name).blob(path)
+        if not blob.exists():
+            return {}
+        loaded = json.loads(blob.download_as_text())
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
+def hydrate_retrain_followup_artifact_metadata(payload: Any) -> dict[str, Any]:
+    """Repair registry-only lineage from immutable GCS artifact metadata."""
+
+    payload_dict = deepcopy(payload.model_dump() if hasattr(payload, "model_dump") else dict(payload))
+    version = str(payload_dict.get("candidate_version") or "").strip()
+    if not version:
+        return payload_dict
+    stages = payload_dict.setdefault("stages", {})
+    train = stages.setdefault("train", {}) if isinstance(stages, dict) else {}
+    if not isinstance(train, dict):
+        return payload_dict
+    ic_tracking = _nested_dict(train.get("ic_tracking"))
+    registrations = _nested_dict(train.get("artifact_registrations"))
+    for model_name in ic_tracking:
+        model_name = str(model_name)
+        if not is_production_artifact_model(model_name):
+            continue
+        metadata_path = model_metadata_path(model_name, version)
+        metadata = _load_artifact_metadata_from_gcs(metadata_path)
+        if not metadata:
+            continue
+        existing = _nested_dict(registrations.get(model_name))
+        registrations[model_name] = {
+            **existing,
+            "status": existing.get("status") or "registered",
+            "version": existing.get("version") or version,
+            "gcs_path": existing.get("gcs_path") or metadata.get("artifact_path") or model_artifact_path(model_name, version),
+            "metadata_path": existing.get("metadata_path") or metadata.get("metadata_path") or metadata_path,
+            "checksum": existing.get("checksum") or metadata.get("checksum") or metadata.get("artifact_checksum"),
+            "training_run_id": existing.get("training_run_id") or metadata.get("training_run_id"),
+            "training_manifest_path": existing.get("training_manifest_path") or metadata.get("training_manifest_path"),
+            "feature_policy_version": existing.get("feature_policy_version") or metadata.get("feature_policy_schema_version"),
+            "feature_policy": existing.get("feature_policy") or metadata.get("feature_policy"),
+            "model_cpcv": existing.get("model_cpcv") or metadata.get("model_cpcv"),
+            "oos_ic": existing.get("oos_ic") if existing.get("oos_ic") is not None else metadata.get("oos_ic"),
+            "metadata": metadata,
+        }
+    train["artifact_registrations"] = registrations
+    return payload_dict
 
 
 def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str, Any]]:

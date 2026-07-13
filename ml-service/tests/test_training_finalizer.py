@@ -173,6 +173,13 @@ def test_reduce_tree_model_child_results_merges_children_as_tree_group():
                 "results": {"XGBoost": {"oos_ic": 0.03, "saved": True}},
                 "ic_tracking": {"XGBoost": {"passed": True, "oos_ic": 0.03}},
                 "training_manifest_path": "universal/manifests/v1-xgboost.json",
+                "artifact_registrations": {
+                    "XGBoost": {
+                        "version": "v1",
+                        "gcs_path": "universal/xgboost/v1.joblib",
+                        "checksum": "sha256:xgb",
+                    },
+                },
             },
             "LightGBM": {
                 "total_samples": 100,
@@ -200,6 +207,13 @@ def test_reduce_tree_model_child_results_merges_children_as_tree_group():
     assert reduced["child_manifests"] == {
         "LightGBM": "universal/manifests/v1-lightgbm.json",
         "XGBoost": "universal/manifests/v1-xgboost.json",
+    }
+    assert reduced["artifact_registrations"] == {
+        "XGBoost": {
+            "version": "v1",
+            "gcs_path": "universal/xgboost/v1.joblib",
+            "checksum": "sha256:xgb",
+        }
     }
 
 

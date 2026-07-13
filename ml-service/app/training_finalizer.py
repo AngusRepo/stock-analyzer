@@ -206,6 +206,7 @@ def reduce_tree_model_child_results(
     merged_results: dict[str, dict] = {}
     merged_ic: dict[str, dict] = {}
     challenger_registrations: dict[str, dict] = {}
+    artifact_registrations: dict[str, dict] = {}
     child_elapsed_s: dict[str, float] = {}
     child_manifests: dict[str, str] = {}
     child_errors: list[dict] = []
@@ -257,6 +258,9 @@ def reduce_tree_model_child_results(
         for name, registration in (partial.get("challenger_registrations") or {}).items():
             if isinstance(registration, dict):
                 challenger_registrations[name] = registration
+        for name, registration in (partial.get("artifact_registrations") or {}).items():
+            if isinstance(registration, dict):
+                artifact_registrations[name] = registration
         if partial.get("training_manifest_path"):
             child_manifests[model_key] = str(partial["training_manifest_path"])
         if partial.get("trained_at"):
@@ -284,6 +288,7 @@ def reduce_tree_model_child_results(
         "ic_tracking": merged_ic,
         "circuit_breaker": circuit_breaker,
         "candidate_version": _first_present(*(partial.get("candidate_version") for partial in (child_results or {}).values())),
+        "artifact_registrations": artifact_registrations,
         "challenger_registrations": challenger_registrations,
         "oos_artifact": combined_oos_artifact,
         "child_manifests": dict(sorted(child_manifests.items())),

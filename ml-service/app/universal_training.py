@@ -168,7 +168,7 @@ def _save_universal_versioned_model(
     version: str,
     feature_medians: dict[str, float],
     extra_metadata: dict | None = None,
-) -> str:
+) -> dict:
     """Save a universal model as a versioned artifact_registry candidate."""
     import joblib
 
@@ -207,7 +207,12 @@ def _save_universal_versioned_model(
         json.dumps(meta, ensure_ascii=False),
         content_type="application/json",
     )
-    return model_path
+    return {
+        "artifact_path": model_path,
+        "metadata_path": meta_path,
+        "checksum": meta.get("artifact_checksum") or artifact_sha,
+        "metadata": meta,
+    }
 
 
 def _register_challenger_safe(
@@ -1255,6 +1260,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         })
 
     challenger_registrations: dict[str, dict] = {}
+    artifact_registrations: dict[str, dict] = {}
     for model_name, model_obj in trained_models.items():
         try:
             model_selection_evidence = {
@@ -1293,7 +1299,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 model_selection_evidence["feature_release_mode"] = req.feature_release_mode
             model_extra_meta.update(feature_policy_meta)
             if req.output_model_version and not walk_forward_mode and gcs_prefix == "universal":
-                model_path = _save_universal_versioned_model(
+                saved_artifact = _save_universal_versioned_model(
                     bucket=bucket,
                     model_name=model_name,
                     model=model_obj,
@@ -1303,6 +1309,21 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     feature_medians=feature_medians,
                     extra_metadata=model_extra_meta or None,
                 )
+                model_path = saved_artifact["artifact_path"]
+                artifact_registrations[model_name] = {
+                    "status": "registered",
+                    "version": req.output_model_version,
+                    "gcs_path": model_path,
+                    "metadata_path": saved_artifact["metadata_path"],
+                    "checksum": saved_artifact["checksum"],
+                    "training_run_id": training_run_id,
+                    "training_manifest_path": manifest_path,
+                    "feature_policy_version": model_extra_meta.get("feature_policy_schema_version"),
+                    "feature_policy": model_extra_meta.get("feature_policy"),
+                    "model_cpcv": model_cpcv_evidence_by_model.get(model_name),
+                    "oos_ic": (ic_tracking.get(model_name) or {}).get("oos_ic"),
+                    "metadata": saved_artifact["metadata"],
+                }
                 if req.register_challengers:
                     registration = _register_challenger_safe(
                         model_name,
@@ -1388,6 +1409,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         "ic_tracking": ic_tracking,
         "circuit_breaker": circuit_breaker_triggered,
         "candidate_version": req.output_model_version,
+        "artifact_registrations": artifact_registrations,
         "challenger_registrations": challenger_registrations,
         "oos_artifact": oos_artifact,
         "gcs_io": gcs_io,

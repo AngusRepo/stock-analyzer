@@ -381,7 +381,11 @@ def retrain_orchestrator(payload: dict) -> dict:
     ):
         sequence_batch_count = int(batch_count)
 
-    result = {"stages": {}}
+    result = {
+        "stages": {
+            "dataset_snapshot": payload.get("dataset_snapshot"),
+        }
+    }
     partial_results: dict[str, dict] = {}
     artifact_lifecycle_targets = [
         str(target)
@@ -624,6 +628,24 @@ def retrain_orchestrator(payload: dict) -> dict:
             candidate_version=candidate_version,
         )
 
+        artifact_registrations = dict(tree_result.get("artifact_registrations") or {})
+        dlinear_result = aux_train.get("dlinear") or {}
+        dlinear_saved = dlinear_result.get("saved") or {}
+        dlinear_metadata = dlinear_saved.get("metadata") or dlinear_result.get("metadata") or {}
+        if dlinear_saved and dlinear_metadata:
+            artifact_registrations["DLinear"] = {
+                "status": "registered",
+                "version": dlinear_result.get("version") or candidate_version,
+                "gcs_path": dlinear_saved.get("weights_path") or dlinear_metadata.get("artifact_path"),
+                "metadata_path": dlinear_saved.get("metadata_path") or dlinear_metadata.get("metadata_path"),
+                "checksum": dlinear_saved.get("checksum") or dlinear_metadata.get("checksum"),
+                "feature_policy_version": dlinear_metadata.get("feature_policy_schema_version"),
+                "feature_policy": dlinear_metadata.get("feature_policy"),
+                "model_cpcv": dlinear_metadata.get("model_cpcv"),
+                "oos_ic": (dlinear_result.get("ic_tracking", {}).get("DLinear") or {}).get("oos_ic"),
+                "metadata": dlinear_metadata,
+            }
+
         result["stages"]["train"] = {
             "status": summarize_training_stage_status(coverage),
             "requested_groups": requested_train_groups,
@@ -640,12 +662,15 @@ def retrain_orchestrator(payload: dict) -> dict:
                 **(tree_result.get("challenger_registrations") or {}),
                 **challenger_registrations,
             },
+            "artifact_registrations": artifact_registrations,
             "suppressed_legacy_challenger_registrations": suppressed_legacy_challenger_registrations,
             "tree_elapsed_s": tree_result.get("elapsed_s"),
             "aux_train": {
                 k: {
                     "status": "ok" if "error" not in v else "error",
                     "metadata": v.get("metadata"),
+                    "saved": v.get("saved"),
+                    "version": v.get("version"),
                     "ic_tracking": v.get("ic_tracking"),
                     "elapsed_s": v.get("elapsed_s"),
                     "type": v.get("type"),

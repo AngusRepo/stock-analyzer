@@ -603,6 +603,82 @@ def test_build_artifact_records_from_no_challenger_active8_train_stage():
     assert offline["source"] == "train_stage"
 
 
+def test_explicit_train_registration_preserves_artifact_and_snapshot_lineage():
+    snapshot = {
+        "snapshot_id": "backtest_dataset:2026-07-09:clean-lineage-v3",
+        "kind": "backtest_dataset",
+        "business_date": "2026-07-09",
+        "schema_version": "backtest-dataset-v3",
+        "row_count": 2397500,
+        "checksum": "sha256:snapshot",
+    }
+    payload = {
+        "run_id": "universal-clean-lineage",
+        "run_date": "2026-07-09",
+        "is_monthly": True,
+        "candidate_version": "v20260713112806",
+        "status": "completed",
+        "stages": {
+            "dataset_snapshot": snapshot,
+            "train": {
+                "ic_tracking": {
+                    "XGBoost": {
+                        "oos_ic": 0.1096,
+                        "model_cpcv": {"decision": "PASS", "failed_gates": []},
+                    },
+                },
+                "artifact_registrations": {
+                    "XGBoost": {
+                        "status": "registered",
+                        "version": "v20260713112806",
+                        "gcs_path": "universal/xgboost/v20260713112806.joblib",
+                        "metadata_path": "universal/xgboost/metadata_v20260713112806.json",
+                        "checksum": "sha256:xgb",
+                        "training_manifest_path": "universal/manifests/v20260713112806-xgboost.json",
+                        "feature_policy_version": "model-feature-policy-v2",
+                    },
+                },
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    assert len(records) == 1
+    row = records[0]
+    assert row["checksum"] == "sha256:xgb"
+    assert row["training_manifest_path"] == "universal/manifests/v20260713112806-xgboost.json"
+    assert row["feature_policy_version"] == "model-feature-policy-v2"
+    assert json.loads(row["trained_from_snapshot"])["snapshot_id"] == snapshot["snapshot_id"]
+
+
+def test_hydrate_retrain_followup_artifact_metadata_uses_immutable_metadata(monkeypatch):
+    monkeypatch.setattr(
+        registry,
+        "_load_artifact_metadata_from_gcs",
+        lambda path: {
+            "artifact_path": "universal/xgboost/v1.joblib",
+            "artifact_checksum": "sha256:xgb",
+            "training_run_id": "v1-xgboost",
+            "training_manifest_path": "universal/manifests/v1-xgboost.json",
+            "feature_policy_schema_version": "model-feature-policy-v2",
+            "model_cpcv": {"decision": "PASS", "failed_gates": []},
+        },
+    )
+    payload = {
+        "candidate_version": "v1",
+        "stages": {"train": {"ic_tracking": {"XGBoost": {"oos_ic": 0.1}}}},
+    }
+
+    hydrated = registry.hydrate_retrain_followup_artifact_metadata(payload)
+    registration = hydrated["stages"]["train"]["artifact_registrations"]["XGBoost"]
+
+    assert registration["checksum"] == "sha256:xgb"
+    assert registration["training_manifest_path"] == "universal/manifests/v1-xgboost.json"
+    assert registration["feature_policy_version"] == "model-feature-policy-v2"
+    assert "artifact_registrations" not in payload["stages"]["train"]
+
+
 def test_train_stage_artifact_survives_unrelated_run_level_lifecycle_error():
     payload = {
         "run_id": "universal-20260619T090702-aac5f10a",

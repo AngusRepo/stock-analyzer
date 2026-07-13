@@ -26,10 +26,12 @@ from services import d1_client, retrain_lock
 from services.model_artifact_registry import (
     backfill_champion_pointers_from_model_pool,
     build_artifact_records_from_retrain_followup,
+    hydrate_retrain_followup_artifact_metadata,
     is_production_artifact_model,
     list_artifact_registry,
     upsert_artifact_records,
 )
+from services.dataset_snapshots import latest_dataset_snapshot
 from services.foundation_forecast_evidence import (
     attach_timesfm_foundation_evidence_to_followup_payload,
 )
@@ -482,6 +484,28 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
     except Exception as exc:  # noqa: BLE001 - make operator-facing error explicit.
         raise HTTPException(status_code=500, detail=f"payload_summary JSON parse failed: {exc}")
 
+    run_date = str(payload_dict.get("run_date") or "").strip()
+    if not run_date:
+        raise HTTPException(status_code=409, detail="followup payload is missing run_date")
+    snapshot = latest_dataset_snapshot(
+        kind="backtest_dataset",
+        business_date=run_date,
+        access_tier="compute",
+    )
+    if not snapshot:
+        raise HTTPException(status_code=409, detail=f"exact backtest dataset snapshot not found for {run_date}")
+    manifest_errors = list(snapshot.get("manifest_errors") or [])
+    if manifest_errors:
+        raise HTTPException(
+            status_code=409,
+            detail=f"backtest dataset snapshot invalid: {','.join(manifest_errors)}",
+        )
+
+    stages = payload_dict.setdefault("stages", {})
+    if not isinstance(stages, dict):
+        raise HTTPException(status_code=409, detail="followup stages payload is invalid")
+    stages["dataset_snapshot"] = snapshot
+    payload_dict = hydrate_retrain_followup_artifact_metadata(payload_dict)
     artifact_records = build_artifact_records_from_retrain_followup(payload_dict)
     result = {
         "attempted": len(artifact_records),
@@ -506,6 +530,14 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
             "retrain_started": False,
         },
         "artifact_registry": result,
+        "dataset_snapshot": {
+            "snapshot_id": snapshot.get("snapshot_id"),
+            "business_date": snapshot.get("business_date"),
+            "schema_version": snapshot.get("schema_version"),
+            "row_count": snapshot.get("row_count"),
+            "checksum": snapshot.get("checksum"),
+            "manifest_errors": manifest_errors,
+        },
         "artifacts": [
             {
                 "artifact_id": row.get("artifact_id"),
@@ -515,6 +547,9 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
                 "state": row.get("state"),
                 "offline_gate_decision": row.get("offline_gate_decision"),
                 "feature_policy_version": row.get("feature_policy_version"),
+                "checksum": row.get("checksum"),
+                "training_manifest_path": row.get("training_manifest_path"),
+                "trained_from_snapshot": row.get("trained_from_snapshot"),
             }
             for row in artifact_records
         ],

@@ -151,7 +151,6 @@ def test_retrain_followup_reconciles_champion_pointer_after_artifact_lifecycle_c
             "errors": [],
         },
     )
-
     def fake_reconcile(**kwargs):
         reconcile_calls.append(kwargs)
         return {
@@ -327,8 +326,27 @@ def test_non_monthly_retrain_followup_keeps_compat_task():
 def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
     written: list[dict] = []
     executed: list[tuple] = []
+    snapshot = {
+        "snapshot_id": "backtest_dataset:2026-05-10:clean",
+        "kind": "backtest_dataset",
+        "business_date": "2026-05-10",
+        "schema_version": "backtest-dataset-v3",
+        "row_count": 1000,
+        "checksum": "sha256:snapshot",
+        "primary_store": "gcs",
+        "access_tier": "compute",
+        "gcs_uri": "gs://bucket/snapshot",
+        "producer_run_id": "snapshot-run",
+        "manifest_errors": [],
+    }
 
     monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: [])
+    monkeypatch.setattr(followup_router, "latest_dataset_snapshot", lambda **kwargs: snapshot)
+    monkeypatch.setattr(
+        followup_router,
+        "hydrate_retrain_followup_artifact_metadata",
+        lambda payload: payload,
+    )
     monkeypatch.setattr(
         followup_router.d1_client,
         "query",
@@ -384,6 +402,8 @@ def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
     assert result["artifact_registry"]["written"] == 1
     assert written[0]["artifact_id"] == "XGBoost:v20260510:weekly_drift"
     assert written[0]["state"] == "offline_strong_pass"
+    assert json.loads(written[0]["trained_from_snapshot"])["snapshot_id"] == snapshot["snapshot_id"]
+    assert result["dataset_snapshot"]["business_date"] == "2026-05-10"
     offline = json.loads(written[0]["offline_evidence_json"])
     assert offline["gate"]["policy"]["family"] == "tree"
     assert offline["gate"]["policy"]["pbo"]["max_pbo"] < 0.5

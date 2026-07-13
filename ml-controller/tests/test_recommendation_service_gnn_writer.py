@@ -12,6 +12,19 @@ from services.recommendation_service import (  # noqa: E402
 )
 
 
+def test_extract_per_model_scores_does_not_count_non_finite_output_as_coverage():
+    out = _extract_per_model_scores_for_d1(
+        {
+            "rank_scores": {"XGBoost": float("nan"), "GNN": float("inf")},
+            "dlinear": {"forecast_pct": float("nan")},
+        }
+    )
+
+    assert "XGBoost" not in out
+    assert "GNN" not in out
+    assert "DLinear" not in out
+
+
 def test_extract_per_model_scores_tracks_gnn_payload_when_rank_scores_dropped():
     out = _extract_per_model_scores_for_d1(
         {

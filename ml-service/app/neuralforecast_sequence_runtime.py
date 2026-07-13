@@ -28,6 +28,8 @@ from .training_promotion_policy import resolve_training_promotion_intent
 from .research_benchmarks.common import cpcv_proxy_pbo, data_slice_report, direction_accuracy, load_sequence_dataset, rank_ic
 from .sequence_training import build_sequence_window_dataset
 from .model_validation import build_model_cpcv_evidence
+from .artifact_contract import ArtifactValidationError, verify_artifact_bytes
+from .training_policy import build_model_feature_policy_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +112,7 @@ def _panel_train_eval_rows(
     seq_len: int,
     pred_len: int,
     max_series: int,
+    holdout_offset: int = 0,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     train_rows: list[dict[str, Any]] = []
     eval_rows: list[dict[str, Any]] = []
@@ -121,6 +124,11 @@ def _panel_train_eval_rows(
         if len(eval_rows) >= max(1, max_series):
             break
         close = _coerce_close(record)
+        dates = [str(value) for value in (record.get("dates") or [])]
+        end = len(close) - max(0, int(holdout_offset))
+        close = close[:end]
+        if dates and len(dates) >= end:
+            dates = dates[:end]
         if len(close) < min_history:
             skipped_short_history += 1
             continue
@@ -136,6 +144,8 @@ def _panel_train_eval_rows(
             "last_close": float(train_close[-1]),
             "actual_last": float(actual_close[-1]),
             "history_len": int(len(close)),
+            "signal_date": dates[-pred_len - 1] if len(dates) == len(close) else None,
+            "outcome_date": dates[-1] if len(dates) == len(close) else None,
         })
     return train_rows, eval_rows, {
         "considered_series": int(considered),
@@ -145,7 +155,29 @@ def _panel_train_eval_rows(
         "seq_len": int(seq_len),
         "pred_len": int(pred_len),
         "max_series": int(max_series),
+        "holdout_offset": int(max(0, holdout_offset)),
     }
+
+
+def _panel_full_train_rows(
+    records: list[dict[str, Any]],
+    *,
+    seq_len: int,
+    max_series: int,
+) -> tuple[list[dict[str, Any]], int]:
+    rows: list[dict[str, Any]] = []
+    valid_series = 0
+    for record in records:
+        if valid_series >= max(1, max_series):
+            break
+        close = _coerce_close(record)
+        if len(close) < seq_len:
+            continue
+        symbol = str(record.get("symbol") or f"series_{valid_series}")
+        for ds_idx, y_value in enumerate(close):
+            rows.append({"unique_id": symbol, "ds": int(ds_idx), "y": float(y_value)})
+        valid_series += 1
+    return rows, valid_series
 
 
 def _series_list_to_df_rows(series_list: list[dict[str, Any]], *, seq_len: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -353,8 +385,17 @@ def load_neuralforecast_artifact(model_name: str, version: str = "v1") -> tuple[
         if not artifact_blob.exists():
             return None, None
         metadata = json.loads(meta_blob.download_as_text()) if meta_blob.exists() else {}
+        raw = artifact_blob.download_as_bytes()
+        try:
+            metadata["artifact_integrity_report"] = verify_artifact_bytes(
+                raw,
+                metadata.get("checksum") or metadata.get("artifact_checksum"),
+                artifact_name=str(getattr(artifact_blob, "name", f"{cfg['gcs_prefix']}/{version}.zip")),
+            )
+        except ArtifactValidationError as exc:
+            raise RuntimeError(f"{model_name} artifact integrity failed: {exc.report}") from exc
         tmp = Path(tempfile.mkdtemp(prefix=f"nf_load_{model_name.lower()}_"))
-        _unzip_bytes(artifact_blob.download_as_bytes(), tmp)
+        _unzip_bytes(raw, tmp)
         nf = NeuralForecast.load(path=str(tmp))
         _MODEL_CACHE[cache_key] = {"model": nf, "metadata": metadata, "tmp_dir": str(tmp)}
         return nf, metadata
@@ -471,20 +512,112 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
     payload.setdefault("batch_count", int(payload.get("batch_count") or DEFAULT_BATCH_COUNT))
 
     dataset_source = load_sequence_dataset(payload)
-    train_rows, eval_rows, series_filter = _panel_train_eval_rows(
+    validation_folds = max(3, int(payload.get("validation_folds") or 5))
+    folds: list[dict[str, Any]] = []
+    all_pred_return: list[float] = []
+    all_actual_return: list[float] = []
+    pred_col = model_name
+    series_filter: dict[str, Any] = {}
+    for fold_index in range(validation_folds):
+        holdout_offset = fold_index * pred_len
+        fold_train_rows, eval_rows, fold_filter = _panel_train_eval_rows(
+            dataset_source.records,
+            seq_len=seq_len,
+            pred_len=pred_len,
+            max_series=max_series,
+            holdout_offset=holdout_offset,
+        )
+        if fold_index == 0:
+            series_filter = fold_filter
+        if len(eval_rows) < 10:
+            continue
+        fold_nf, fold_df = _train_nf(
+            fold_train_rows,
+            model_name=cfg["nf_model_name"],
+            pred_len=pred_len,
+            seq_len=seq_len,
+            max_steps=max_steps,
+            batch_size=batch_size,
+            seed=seed + fold_index,
+            n_series=len(eval_rows),
+        )
+        pred_by_id, pred_col = _predict_horizon_by_id_with_column(
+            fold_nf,
+            fold_df,
+            horizon_idx=pred_len,
+            model_name=model_name,
+        )
+        pred_return: list[float] = []
+        actual_return: list[float] = []
+        for row in eval_rows:
+            uid = str(row["unique_id"])
+            if uid not in pred_by_id:
+                continue
+            last_close = float(row["last_close"])
+            pred_return.append((float(pred_by_id[uid]) - last_close) / max(last_close, 1e-9))
+            actual_return.append((float(row["actual_last"]) - last_close) / max(last_close, 1e-9))
+        pred_array = np.asarray(pred_return, dtype=float)
+        actual_array = np.asarray(actual_return, dtype=float)
+        all_pred_return.extend(pred_return)
+        all_actual_return.extend(actual_return)
+        outcome_dates = sorted({str(row.get("outcome_date")) for row in eval_rows if row.get("outcome_date")})
+        signal_dates = sorted({str(row.get("signal_date")) for row in eval_rows if row.get("signal_date")})
+        folds.append({
+            "fold_id": f"chronological_{fold_index + 1}",
+            "oos_ic": rank_ic(pred_array, actual_array),
+            "direction_accuracy": direction_accuracy(pred_array, actual_array),
+            "test_rows": int(len(actual_array)),
+            "coverage": float(len(actual_array) / max(1, len(eval_rows))),
+            "signal_date": signal_dates[-1] if signal_dates else None,
+            "outcome_date": outcome_dates[-1] if outcome_dates else None,
+            "holdout_offset": holdout_offset,
+            "purge_horizon": pred_len,
+        })
+    if len(folds) < 3:
+        raise ValueError(
+            f"{model_name} chronological validation requires >=3 retrained folds, got {len(folds)} "
+            f"(min_history={series_filter.get('min_history')}, "
+            f"skipped_short_history={series_filter.get('skipped_short_history')})"
+        )
+    model_cpcv = build_model_cpcv_evidence(
+        model=model_name,
+        fold_metrics=folds,
+        policy=payload.get("model_cpcv_policy") or None,
+        family="learned_sequence",
+        coverage_mode="sequence_window",
+        method="purged_walk_forward_retrain_rank_ic",
+    )
+    model_cpcv["validation_design"] = {
+        "split_owner": "chronological_signal_date",
+        "refit_each_fold": True,
+        "non_overlapping_horizons": True,
+        "purge_horizon": pred_len,
+        "fold_order": "oldest_to_newest",
+    }
+    oos_ic = float(np.mean([float(fold["oos_ic"]) for fold in folds]))
+    all_pred_array = np.asarray(all_pred_return, dtype=float)
+    all_actual_array = np.asarray(all_actual_return, dtype=float)
+    metrics = {
+        "oos_ic": round(float(oos_ic), 6),
+        "direction_accuracy": round(float(direction_accuracy(all_pred_array, all_actual_array)), 6),
+        "rank_ic_all": round(float(oos_ic), 6),
+        "prediction_col_used": pred_col,
+        "pbo": cpcv_proxy_pbo(folds),
+        "oos_samples": int(len(all_actual_return)),
+        "fold_metrics": folds,
+        "model_cpcv_decision": model_cpcv.get("decision"),
+    }
+
+    # Validation models are discarded. The serving artifact is refit once on all
+    # point-in-time data known at training time.
+    train_rows, deployment_series = _panel_full_train_rows(
         dataset_source.records,
         seq_len=seq_len,
-        pred_len=pred_len,
         max_series=max_series,
     )
-    if len(eval_rows) < 10:
-        raise ValueError(
-            f"{model_name} NeuralForecast training requires >=10 valid series, got {len(eval_rows)} "
-            f"(min_history={series_filter['min_history']}, "
-            f"skipped_short_history={series_filter['skipped_short_history']}, "
-            f"considered_series={series_filter['considered_series']})"
-        )
-    nf, df = _train_nf(
+    if deployment_series < 10:
+        raise ValueError(f"{model_name} deployment refit requires >=10 valid series, got {deployment_series}")
+    nf, _deployment_df = _train_nf(
         train_rows,
         model_name=cfg["nf_model_name"],
         pred_len=pred_len,
@@ -492,42 +625,8 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         max_steps=max_steps,
         batch_size=batch_size,
         seed=seed,
-        n_series=len(eval_rows),
+        n_series=deployment_series,
     )
-    pred_by_id, pred_col = _predict_horizon_by_id_with_column(
-        nf,
-        df,
-        horizon_idx=pred_len,
-        model_name=model_name,
-    )
-    pred_return: list[float] = []
-    actual_return: list[float] = []
-    for row in eval_rows:
-        uid = str(row["unique_id"])
-        if uid not in pred_by_id:
-            continue
-        last_close = float(row["last_close"])
-        pred_return.append((float(pred_by_id[uid]) - last_close) / max(last_close, 1e-9))
-        actual_return.append((float(row["actual_last"]) - last_close) / max(last_close, 1e-9))
-    folds = _fold_metrics(model_name, np.asarray(pred_return, dtype=float), np.asarray(actual_return, dtype=float))
-    model_cpcv = build_model_cpcv_evidence(
-        model=model_name,
-        fold_metrics=folds,
-        policy=payload.get("model_cpcv_policy") or None,
-        family="learned_sequence",
-        coverage_mode="sequence_window",
-    )
-    oos_ic = rank_ic(np.asarray(pred_return, dtype=float), np.asarray(actual_return, dtype=float))
-    metrics = {
-        "oos_ic": round(float(oos_ic), 6),
-        "direction_accuracy": round(float(direction_accuracy(np.asarray(pred_return), np.asarray(actual_return))), 6),
-        "rank_ic_all": round(float(oos_ic), 6),
-        "prediction_col_used": pred_col,
-        "pbo": cpcv_proxy_pbo(folds),
-        "oos_samples": int(len(pred_return)),
-        "fold_metrics": folds,
-        "model_cpcv_decision": model_cpcv.get("decision"),
-    }
 
     lineage_dates = []
     for row in dataset_source.records[:max_series]:
@@ -574,10 +673,17 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         "seed": seed,
         "metrics": metrics,
         "model_cpcv": model_cpcv,
+        "validation_design": model_cpcv["validation_design"],
+        "deployment_fit": {
+            "method": "full_known_history_refit_after_chronological_validation",
+            "performed": True,
+            "series": deployment_series,
+            "validation_models_are_not_served": True,
+        },
         "oos_ic": metrics["oos_ic"],
         "direction_accuracy": metrics["direction_accuracy"],
         "sample_count": int(len(train_rows)),
-        "validation_sample_count": int(len(pred_return)),
+        "validation_sample_count": int(len(all_actual_return)),
         "dataset_snapshot": {
             "source": dataset_source.source,
             "gcs_prefix": gcs_prefix,
@@ -589,13 +695,14 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             "prep_lineage": prep_lineage,
             "prep_freshness": prep_freshness,
         },
-        "feature_policy": {
-            "model": model_name,
-            "family": "time_series",
-            "feature_policy_type": "sequence_artifact_required",
-            "feature_source": "universal/prep sequence_records",
-            "selection_method": "production_artifact",
-        },
+        **build_model_feature_policy_metadata(
+            model_name,
+            ["close"],
+            selection_evidence={
+                "selection_method": "production_artifact",
+                "sequence_contract": "sequence_records_v2",
+            },
+        ),
     }, prep_lineage)
     saved = _save_nf_artifact(bucket, nf, model_name=model_name, version=version, metadata=metadata)
     return {
@@ -620,6 +727,6 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         },
         "oos_ic": metrics["oos_ic"],
         "train_samples": int(len(train_rows)),
-        "validation_samples": int(len(pred_return)),
+        "validation_samples": int(len(all_actual_return)),
         "elapsed_s": round(time.time() - started_at, 3),
     }

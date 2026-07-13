@@ -18,6 +18,17 @@ def test_l4_alpha_ev_refresh_route_calls_builder_with_trained_until() -> None:
     assert "trained_until" in keyword_names
     assert "end_date" not in keyword_names
 
+    loader_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "load_l4_alpha_ev_training_rows"
+    ]
+    assert len(loader_calls) == 1
+    loader_keywords = {keyword.arg for keyword in loader_calls[0].keywords}
+    assert "knowledge_cutoff_date" in loader_keywords
+
 
 def test_l4_alpha_ev_refresh_route_writes_registry_before_config_promotion() -> None:
     source = Path("ml-controller/routers/l4_alpha_ev.py").read_text(encoding="utf-8")
@@ -42,6 +53,11 @@ def test_l4_alpha_ev_refresh_route_sends_config_snapshot_meta() -> None:
     assert '"meta"' in source
     assert '"source": "l4_alpha_ev_refresh"' in source
     assert '"push_id": f"l4_alpha_ev:' in source
+
+
+def test_l4_alpha_ev_dry_run_does_not_write_registry() -> None:
+    source = Path("ml-controller/routers/l4_alpha_ev.py").read_text(encoding="utf-8")
+    assert "if isinstance(artifact, dict) and not req.dry_run:" in source
 
 
 def test_l4_alpha_ev_registry_maps_promotion_to_lifecycle_states() -> None:

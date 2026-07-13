@@ -24,17 +24,16 @@ class PortfolioBanditArm:
     max_weight: float
     cash_buffer: float
     min_trade_weight: float
-    turnover_budget: float
     prior_reward_mean: float
     prior_samples: int
 
 
 DEFAULT_ARMS: tuple[PortfolioBanditArm, ...] = (
-    PortfolioBanditArm("diversified_alpha", 8, 0.28, 0.08, 0.03, 0.35, 0.0040, 24),
-    PortfolioBanditArm("diversified_all_eligible", 12, 0.22, 0.10, 0.025, 0.30, 0.0030, 24),
-    PortfolioBanditArm("liquidity_diversified", 10, 0.24, 0.12, 0.025, 0.25, 0.0035, 24),
-    PortfolioBanditArm("conservative_diversified", 6, 0.20, 0.20, 0.04, 0.18, 0.0025, 24),
-    PortfolioBanditArm("high_score_conservative", 5, 0.32, 0.18, 0.04, 0.20, 0.0030, 24),
+    PortfolioBanditArm("diversified_alpha", 8, 0.28, 0.08, 0.03, 0.0040, 24),
+    PortfolioBanditArm("diversified_all_eligible", 12, 0.22, 0.10, 0.025, 0.0030, 24),
+    PortfolioBanditArm("liquidity_diversified", 10, 0.24, 0.12, 0.025, 0.0035, 24),
+    PortfolioBanditArm("conservative_diversified", 6, 0.20, 0.20, 0.04, 0.0025, 24),
+    PortfolioBanditArm("high_score_conservative", 5, 0.32, 0.18, 0.04, 0.0030, 24),
 )
 
 
@@ -74,7 +73,6 @@ def resolve_portfolio_bandit_arms(
             max_weight=arm.max_weight,
             cash_buffer=arm.cash_buffer,
             min_trade_weight=arm.min_trade_weight,
-            turnover_budget=arm.turnover_budget,
             prior_reward_mean=_to_float(by_id[arm.arm_id].get("prior_reward_mean"), arm.prior_reward_mean),
             prior_samples=max(1, _to_int(by_id[arm.arm_id].get("prior_samples"), arm.prior_samples)),
         )
@@ -299,7 +297,6 @@ def build_online_portfolio_bandit_l2_packet(
                 "max_weight": effective_max_weight,
                 "cash_buffer": arm.cash_buffer,
                 "min_trade_weight": arm.min_trade_weight,
-                "turnover_budget": arm.turnover_budget,
             },
         })
     scored.sort(key=lambda item: (item["ucb_score"], item["reward_mean"]), reverse=True)
@@ -407,6 +404,7 @@ def build_online_portfolio_bandit_l2_packet(
     }
     production_controller = _is_production_controller_stage(stage)
     packet: dict[str, Any] = {
+        "status": "ok",
         "schema_version": SCHEMA_VERSION,
         "stage": stage,
         "controller": "OnlinePortfolioBandit",
@@ -433,6 +431,8 @@ def build_online_portfolio_bandit_l2_packet(
             "bandit_controls_final_weights": False,
             "bandit_controls_allocator_knobs": True,
             "bandit_controls_candidate_count": False,
+            "portfolio_turnover_budget_supported": False,
+            "portfolio_turnover_budget_reason": "recommendation_allocator_is_not_a_full_portfolio_rebalancer",
             "full_eligible_pool_before_utility_optimization": True,
             "hard_top_k_enabled": False,
             "inherits_sparse_allocator_policy_knobs": True,

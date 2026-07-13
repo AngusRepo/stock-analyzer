@@ -77,6 +77,92 @@ def test_compute_weekly_ic_uses_rank_score_and_reports_score_sources():
     assert result["XGBoost"]["score_sources"] == {"forecast_data.rank_score": 4}
 
 
+def test_weekly_ic_is_equal_weighted_across_daily_cross_sections():
+    rows = []
+    for rank in range(1, 6):
+        rows.append({
+            "model_name": "XGBoost",
+            "prediction_date": "2026-07-01",
+            "forecast_data": f'{{"rank_score": {rank}}}',
+            "actual_return_pct": rank / 100,
+        })
+    for rank in range(1, 4):
+        rows.append({
+            "model_name": "XGBoost",
+            "prediction_date": "2026-07-02",
+            "forecast_data": f'{{"rank_score": {rank}}}',
+            "actual_return_pct": -rank / 100,
+        })
+
+    result = compute_weekly_ic_from_rows(
+        rows,
+        min_samples=8,
+        min_dates=2,
+        all_tracked=("XGBoost",),
+    )["XGBoost"]
+
+    assert result["status"] == "computed"
+    assert result["ic"] == 0.0
+    assert result["n_dates"] == 2
+    assert result["daily_ic"] == {"2026-07-01": 1.0, "2026-07-02": -1.0}
+    assert result["positive_ic_rate"] == 0.5
+
+
+def test_weekly_ic_rejects_single_date_even_with_many_rows():
+    rows = [
+        {
+            "model_name": "XGBoost",
+            "prediction_date": "2026-07-01",
+            "forecast_data": f'{{"rank_score": {rank}}}',
+            "actual_return_pct": rank / 100,
+        }
+        for rank in range(1, 51)
+    ]
+
+    result = compute_weekly_ic_from_rows(
+        rows,
+        min_samples=50,
+        min_dates=3,
+        all_tracked=("XGBoost",),
+    )["XGBoost"]
+
+    assert result["status"] == "insufficient_dates"
+    assert result["root_cause"] == "date_coverage_low"
+    assert result["n_dates"] == 1
+    assert result.get("ic") is None
+
+
+def test_weekly_ic_deduplicates_reruns_by_stock_model_and_date():
+    rows = [
+        {
+            "id": 1,
+            "stock_id": rank,
+            "model_name": "XGBoost",
+            "prediction_date": "2026-07-01",
+            "generated_at": "2026-07-01T10:00:00Z",
+            "forecast_data": f'{{"rank_score": {6 - rank}}}',
+            "actual_return_pct": rank / 100,
+        }
+        for rank in range(1, 6)
+    ]
+    rows.extend({
+        **row,
+        "id": int(row["id"]) + 100,
+        "generated_at": "2026-07-01T11:00:00Z",
+        "forecast_data": f'{{"rank_score": {row["stock_id"]}}}',
+    } for row in list(rows))
+
+    result = compute_weekly_ic_from_rows(
+        rows,
+        min_samples=5,
+        all_tracked=("XGBoost",),
+    )["XGBoost"]
+
+    assert result["ic"] == 1.0
+    assert result["n_samples"] == 5
+    assert result["diagnostics"]["duplicate_rows_dropped"] == 5
+
+
 def test_compute_weekly_ic_reports_market_segment_diagnostics():
     rows = [
         {
@@ -181,6 +267,34 @@ def test_compute_weekly_ic_reports_actionable_root_causes():
     assert result["LightGBM"]["diagnostics"]["missing_score_rows"] == 1
     assert result["DLinear"]["root_cause"] == "prediction_missing"
     assert result["DLinear"]["diagnostics"]["raw_rows"] == 0
+
+
+def test_compute_weekly_ic_rejects_unmigrated_verification_labels():
+    rows = [
+        {
+            "model_name": "XGBoost",
+            "stock_id": idx,
+            "prediction_date": "2026-07-01",
+            "forecast_data": f'{{"rank_score": {idx}}}',
+            "actual_return_pct": idx / 100,
+            "verified_at": "2026-07-08",
+            "verification_label_schema_version": None,
+            "verification_label_entry_price": None,
+            "verification_label_end_date": None,
+            "verification_label_known_date": None,
+        }
+        for idx in range(1, 5)
+    ]
+
+    result = compute_weekly_ic_from_rows(
+        rows,
+        min_samples=2,
+        all_tracked=("XGBoost",),
+    )
+
+    assert result["XGBoost"]["status"] == "insufficient_samples"
+    assert result["XGBoost"]["root_cause"] == "label_semantic_mismatch"
+    assert result["XGBoost"]["diagnostics"]["label_semantic_mismatch_rows"] == 4
 
 
 def test_apply_weekly_ic_updates_active_and_challenger_histories():
@@ -332,3 +446,40 @@ def test_apply_weekly_ic_can_refresh_rolling_weight_without_appending_history():
     assert pool["models"]["XGBoost"]["rolling_ic"] == 0.04
     assert changes["XGBoost"]["rolling_ic"] == 0.04
     assert changes["XGBoost"]["history_len"] == 1
+
+
+def test_apply_weekly_ic_resets_history_when_estimator_semantic_changes():
+    pool = {
+        "models": {
+            "XGBoost": {
+                "weekly_ic": [0.2, 0.3],
+                "ic_4w_avg": 0.25,
+                "rolling_ic": 0.25,
+                "consecutive_negative_weeks": 0,
+            }
+        }
+    }
+    per_model_ic = {
+        "XGBoost": {
+            "status": "computed",
+            "root_cause": "ok",
+            "ic": -0.04,
+            "n_samples": 800,
+            "evaluation_contract": {
+                "semantic_version": "daily-cross-sectional-equal-date-v2"
+            },
+        }
+    }
+
+    changes, changed = apply_weekly_ic_to_pool(
+        pool,
+        per_model_ic,
+        history_max=26,
+        append_history=True,
+    )
+
+    assert changed is True
+    assert pool["models"]["XGBoost"]["weekly_ic"] == [-0.04]
+    assert pool["models"]["XGBoost"]["ic_4w_avg"] == -0.04
+    assert pool["models"]["XGBoost"]["last_ic_semantic_version"] == "daily-cross-sectional-equal-date-v2"
+    assert changes["XGBoost"]["semantic_migration"] is True

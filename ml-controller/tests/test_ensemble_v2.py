@@ -5,7 +5,28 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.ensemble_v2 import attach_ensemble_v2  # noqa: E402
+from services.ensemble_v2 import attach_ensemble_v2, build_formal_model_input_contract  # noqa: E402
+
+
+def test_formal_active8_contract_requires_finite_outputs_from_every_model():
+    pred = {
+        "rank_scores": {
+            "LightGBM": 0.51,
+            "XGBoost": 0.52,
+            "ExtraTrees": 0.53,
+            "TabM": 0.54,
+            "GNN": float("nan"),
+        },
+        "dlinear": {"forecast_pct": 0.01},
+        "patchtst": {"forecast_pct": 0.02},
+        "itransformer": {"forecast_pct": 0.03},
+    }
+
+    contract = build_formal_model_input_contract(pred)
+
+    assert contract["complete"] is False
+    assert contract["missing_models"] == ["GNN"]
+    assert contract["finite_scores_required"] is True
 
 
 def test_ensemble_v2_blocks_equal_weight_when_ic_is_cold_start_by_default():
@@ -53,6 +74,11 @@ def test_ensemble_v2_uses_equal_weight_only_when_explicitly_enabled():
     assert ev2["reason"] == "cold_start_equal_weight"
     assert ev2["weight_total"] == 3.0
     assert ev2["signal"] == "BUY"
+    assert ev2["schema_version"] == "ensemble-v2-payload-v3"
+    assert ev2["semantic_version"] == "active8-ic-weighted-rank-v3"
+    assert ev2["model_set_signature"] == (
+        "ExtraTrees@unknown|LightGBM@unknown|XGBoost@unknown"
+    )
 
 
 def test_ensemble_v2_missing_lifecycle_status_stays_zero_weight_even_with_cold_start():

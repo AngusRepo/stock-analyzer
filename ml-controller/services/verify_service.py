@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 VERIFIABLE_MARKETS = {"TWSE", "OTC", "TPEX", "EMERGING"}
 VERIFICATION_HORIZON_SESSIONS = 5
+VERIFICATION_RETURN_SEMANTIC_VERSION = "next-session-open-to-fifth-session-close-v2"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -259,7 +260,7 @@ def verify_single_prediction(
     Verify a single prediction: parse forecast_data, load bars, simulate trade.
 
     Returns update payload dict, or None if skipped (neutral/no bars/bad data).
-    Structure matches the 15-parameter UPDATE_VERIFY_SQL binding order.
+    Structure matches the 19-parameter UPDATE_VERIFY_SQL binding order.
     """
     # ── Parse forecast_data ──────────────────────────────────────────────────
     try:
@@ -296,18 +297,26 @@ def verify_single_prediction(
     # ── Derive entry/stop/targets (fall back to defaults if null) ────────────
     actual_bar = horizon_bars[-1]
     actual_price = actual_bar["close"]
-    entry_price = pred.get("entry_price") or horizon_bars[0].get("open") or actual_price
+    label_end_date = str(actual_bar.get("date") or "").strip()
+    if not label_end_date:
+        return None
+    label_entry_price = horizon_bars[0].get("open")
+    if not label_entry_price or label_entry_price <= 0:
+        return None
+    # Cross-sectional model evaluation requires one stock/date outcome shared by
+    # every model. Planned entry remains the trade-simulation input only.
+    entry_price = pred.get("entry_price") or label_entry_price
     is_long = predicted_direction == "up"
     stop_loss = pred.get("stop_loss") or (entry_price * (0.95 if is_long else 1.05))
     target1 = pred.get("target1") or (entry_price * (1.05 if is_long else 0.95))
     target2 = pred.get("target2") or (entry_price * (1.08 if is_long else 0.92))
 
-    actual_return_pct = (actual_price - entry_price) / entry_price
+    actual_return_pct = (actual_price - label_entry_price) / label_entry_price
 
     # Actual direction with noise band (matches worker 1.001/0.999 bands)
-    if actual_price > entry_price * 1.001:
+    if actual_price > label_entry_price * 1.001:
         actual_direction = "up"
-    elif actual_price < entry_price * 0.999:
+    elif actual_price < label_entry_price * 0.999:
         actual_direction = "down"
     else:
         actual_direction = "neutral"
@@ -337,6 +346,10 @@ def verify_single_prediction(
                 None,
                 None,
                 None,
+                VERIFICATION_RETURN_SEMANTIC_VERSION,
+                label_entry_price,
+                label_end_date,
+                label_end_date,
                 pred["id"],
             ],
             "arf": None,
@@ -374,6 +387,10 @@ def verify_single_prediction(
             sim.trade_pnl_r,
             sim.max_favorable,
             sim.max_adverse,
+            VERIFICATION_RETURN_SEMANTIC_VERSION,
+            label_entry_price,
+            label_end_date,
+            label_end_date,
             pred["id"],
         ],
         "arf": {
@@ -415,6 +432,10 @@ def clear_verification_labels(prediction_ids: list[int]) -> int:
             trade_pnl_r = NULL,
             max_favorable_pct = NULL,
             max_adverse_pct = NULL,
+            verification_label_schema_version = NULL,
+            verification_label_entry_price = NULL,
+            verification_label_end_date = NULL,
+            verification_label_known_date = NULL,
             verified_at = NULL
         WHERE id = ?
     """.strip()

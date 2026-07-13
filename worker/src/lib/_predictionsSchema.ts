@@ -38,6 +38,10 @@ export const COL_TRADE_PNL_R = 'trade_pnl_r'
 export const COL_MAX_FAVORABLE_PCT = 'max_favorable_pct'
 export const COL_MAX_ADVERSE_PCT = 'max_adverse_pct'
 export const COL_VERIFIED_AT = 'verified_at'
+export const COL_VERIFICATION_LABEL_SCHEMA_VERSION = 'verification_label_schema_version'
+export const COL_VERIFICATION_LABEL_ENTRY_PRICE = 'verification_label_entry_price'
+export const COL_VERIFICATION_LABEL_END_DATE = 'verification_label_end_date'
+export const COL_VERIFICATION_LABEL_KNOWN_DATE = 'verification_label_known_date'
 
 // ── Verify update SQL (shared with verify_service.py) ────────────────────────
 export const UPDATE_VERIFY_SQL = `
@@ -56,6 +60,10 @@ UPDATE predictions SET
   ${COL_TRADE_PNL_R}         = ?,
   ${COL_MAX_FAVORABLE_PCT}   = ?,
   ${COL_MAX_ADVERSE_PCT}     = ?,
+  ${COL_VERIFICATION_LABEL_SCHEMA_VERSION} = ?,
+  ${COL_VERIFICATION_LABEL_ENTRY_PRICE} = ?,
+  ${COL_VERIFICATION_LABEL_END_DATE} = ?,
+  ${COL_VERIFICATION_LABEL_KNOWN_DATE} = ?,
   ${COL_VERIFIED_AT}         = datetime('now')
 WHERE id = ?
 `.trim()

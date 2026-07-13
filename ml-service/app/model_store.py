@@ -16,6 +16,7 @@ from .artifact_contract import (
     ARTIFACT_SCHEMA_VERSION,
     ArtifactValidationError,
     build_model_artifact_metadata,
+    verify_artifact_bytes,
     validate_model_artifact_metadata,
 )
 from .artifact_runtime_versions import load_joblib_with_artifact_health, sklearn_version_report
@@ -259,9 +260,6 @@ def load_model(
         buf = io.BytesIO()
         blob.download_to_file(buf)
         _MODEL_CACHE_STATS["gcs_downloads"] += 1
-        buf.seek(0)
-        model, artifact_health = load_joblib_with_artifact_health(buf, artifact_name=blob_path)
-
         # 頛 metadata
         metadata = {}
         if meta_path:
@@ -271,6 +269,11 @@ def load_model(
                 if metadata.get("schema_version") == ARTIFACT_SCHEMA_VERSION:
                     try:
                         metadata["artifact_contract_report"] = validate_model_artifact_metadata(metadata)
+                        metadata["artifact_integrity_report"] = verify_artifact_bytes(
+                            buf.getvalue(),
+                            metadata.get("artifact_checksum"),
+                            artifact_name=blob_path,
+                        )
                     except ArtifactValidationError as exc:
                         logger.warning(
                             "[ModelStore] Artifact contract failed for %s: %s report=%s",
@@ -285,7 +288,6 @@ def load_model(
                         "reason": "metadata missing model-artifact-v2 schema",
                     }
                 metadata["runtime_version_report"] = sklearn_version_report(metadata)
-                metadata["artifact_health_report"] = artifact_health
                 if metadata["runtime_version_report"]["status"] == "mismatch":
                     logger.warning(
                         "[ModelStore] Artifact sklearn version mismatch for %s: artifact=%s runtime=%s",
@@ -293,6 +295,12 @@ def load_model(
                         metadata["runtime_version_report"].get("artifact_sklearn"),
                         metadata["runtime_version_report"].get("runtime_sklearn"),
                     )
+
+        # Governed artifacts are verified before any deserialization occurs.
+        buf.seek(0)
+        model, artifact_health = load_joblib_with_artifact_health(buf, artifact_name=blob_path)
+        if metadata:
+            metadata["artifact_health_report"] = artifact_health
 
         if used_pool:
             if not metadata:

@@ -363,6 +363,79 @@ class ModelFeaturePolicy:
         return asdict(self)
 
 
+ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v2"
+TIMESFM_L175_RELEASE_COHORT = (
+    "LightGBM",
+    "XGBoost",
+    "ExtraTrees",
+    "TabM",
+    "GNN",
+)
+
+
+def active8_family_feature_contract(
+    model_name: str,
+    *,
+    feature_release_mode: str | None = None,
+) -> dict[str, Any]:
+    """Return the model-family input contract, not a blanket column-count rule."""
+
+    model = str(model_name or "").strip()
+    release = str(feature_release_mode or "").strip()
+    if model in {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}:
+        timesfm_release = release == "timesfm_l175_l2_feature_release"
+        return {
+            "schema_version": ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION,
+            "model": model,
+            "family_schema": (
+                "formal137_plus_timesfm_l175_v1"
+                if timesfm_release
+                else "formal137_selected_tabular_v1"
+            ),
+            "input_semantics": (
+                "graph_node_features_from_governed_tabular_universe"
+                if model == "GNN"
+                else "selected_subset_from_governed_tabular_universe"
+            ),
+            "release_id": release or "formal137_baseline",
+            "release_cohort": list(TIMESFM_L175_RELEASE_COHORT) if timesfm_release else [model],
+            "atomic_cohort_required": timesfm_release,
+            "timesfm_l175_sidecar_required": timesfm_release,
+        }
+    sequence_schema = {
+        "DLinear": "close_univariate_decomposition_v1",
+        "PatchTST": "close_channel_independent_v1",
+        "iTransformer": "close_cross_stock_panel_v1",
+    }.get(model)
+    if sequence_schema:
+        return {
+            "schema_version": ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION,
+            "model": model,
+            "family_schema": sequence_schema,
+            "input_semantics": (
+                "cross_stock_series_are_variates"
+                if model == "iTransformer"
+                else "independent_close_series"
+            ),
+            "release_id": "sequence_records_v2",
+            "release_cohort": [model],
+            "atomic_cohort_required": False,
+            "timesfm_l175_sidecar_required": False,
+        }
+    if model == "TimesFM":
+        return {
+            "schema_version": ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION,
+            "model": model,
+            "family_schema": "timesfm_close_sidecar_v1",
+            "input_semantics": "l2_feature_sidecar_not_direct_alpha",
+            "release_id": release or "timesfm_l2_sidecar",
+            "release_cohort": [model],
+            "atomic_cohort_required": False,
+            "timesfm_l175_sidecar_required": False,
+        }
+    raise KeyError(f"Unknown active-8 family feature contract: {model_name}")
+
+
 TRAINING_GROUP_FEATURE_POLICIES: dict[str, TrainingGroupFeaturePolicy] = {
     "tree": TrainingGroupFeaturePolicy(
         group="tree",
@@ -622,11 +695,17 @@ def build_model_feature_policy_metadata(
     model_name: str,
     feature_names: list[str] | tuple[str, ...],
     selection_evidence: dict[str, Any] | None = None,
+    *,
+    feature_release_mode: str | None = None,
 ) -> dict[str, Any]:
     policy = feature_policy_for_model(model_name)
     return {
         "feature_policy": policy.to_dict(),
-        "feature_policy_schema_version": "model-feature-policy-v1",
+        "feature_policy_schema_version": "model-feature-policy-v2",
+        "family_feature_contract": active8_family_feature_contract(
+            model_name,
+            feature_release_mode=feature_release_mode,
+        ),
         "feature_count": int(len(feature_names)),
         "selection_evidence": selection_evidence or {},
     }

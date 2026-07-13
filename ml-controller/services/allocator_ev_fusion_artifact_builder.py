@@ -6,6 +6,8 @@ import math
 from datetime import date, datetime, timezone
 from typing import Any, Callable
 
+from scipy.stats import t as student_t
+
 from services.allocator_ev_fusion import (
     _s12_execution_ready,
     _s12_multiplier,
@@ -26,13 +28,11 @@ SELECTION_FEATURE_NAMES = [
     "l4_expected_return",
     "l4_available",
     "market_heat_expected_return",
-    "score_final_norm",
     "ml_edge_norm",
     "fundamental_quality_norm",
     "chip_flow_norm",
     "technical_structure_norm",
-    "ensemble_avg_rank_centered",
-    "ensemble_confidence_centered",
+    "ensemble_directional_margin",
     "score_v2_available",
     "ensemble_rank_available",
 ]
@@ -69,8 +69,13 @@ ASSISTIVE_MIN_SAMPLES = 500
 ASSISTIVE_MIN_EXPERT_SAMPLES = 100
 ASSISTIVE_MIN_EXPERT_DATES = 5
 CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
+CANONICAL_SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
+CANONICAL_ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v3"
 MIN_CROSS_SECTION_SAMPLES_PER_DATE = 20
 LABEL_PURGE_DATE_GROUPS = 5
+ARTIFACT_CONTRACT_VERSION = "allocator-ev-fusion-contract-v8"
+FEATURE_SEMANTIC_VERSION = "allocator-ev-fusion-directional-components-v2-lineage-bound"
+LABEL_SCHEMA_VERSION = "next-session-raw-open-to-fifth-session-raw-close-factor-stable-net-v2"
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -171,18 +176,15 @@ def _selection_raw_features(row: dict[str, Any]) -> dict[str, float]:
     chip = _component(score_components, "chipFlow")
     technical = _component(score_components, "technicalStructure")
     avg_rank = _float_or_none(ev2.get("avg_rank"))
-    confidence = _float_or_none(ev2.get("confidence"))
     score_values = (final_score, ml_edge, fundamental, chip, technical)
     return {
-        "score_final_norm": (final_score / 100.0) if final_score is not None else 0.0,
         "ml_edge_norm": (ml_edge / 25.0) if ml_edge is not None else 0.0,
         "fundamental_quality_norm": (fundamental / 25.0) if fundamental is not None else 0.0,
         "chip_flow_norm": (chip / 25.0) if chip is not None else 0.0,
         "technical_structure_norm": (technical / 25.0) if technical is not None else 0.0,
-        "ensemble_avg_rank_centered": (avg_rank - 0.5) if avg_rank is not None else 0.0,
-        "ensemble_confidence_centered": (confidence - 0.5) if confidence is not None else 0.0,
+        "ensemble_directional_margin": (avg_rank - 0.5) if avg_rank is not None else 0.0,
         "score_v2_available": 1.0 if all(value is not None for value in score_values) else 0.0,
-        "ensemble_rank_available": 1.0 if avg_rank is not None and confidence is not None else 0.0,
+        "ensemble_rank_available": 1.0 if avg_rank is not None else 0.0,
     }
 
 
@@ -205,6 +207,15 @@ def _date_strictly_before(left: Any, right: Any) -> bool:
 
 def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
     if _score_feature_era(row) != CANONICAL_SCORE_FEATURE_VERSION:
+        return None
+    score_payload = _loads(row.get("score_components"))
+    forecast_payload = _loads(row.get("forecast_data"))
+    ensemble_payload = forecast_payload.get("ensemble_v2") if isinstance(forecast_payload.get("ensemble_v2"), dict) else {}
+    if str(score_payload.get("semanticVersion") or "").strip() != CANONICAL_SCORE_SEMANTIC_VERSION:
+        return None
+    if str(ensemble_payload.get("semantic_version") or "").strip() != CANONICAL_ENSEMBLE_SEMANTIC_VERSION:
+        return None
+    if not str(ensemble_payload.get("model_set_signature") or "").strip():
         return None
     extractor_row = _row_for_extractors(row)
     usage_scope = _l4_usage_scope(row)
@@ -264,7 +275,12 @@ def _samples(
         if feature_era != CANONICAL_SCORE_FEATURE_VERSION:
             rejected_feature_era_rows += 1
         features = _feature_vector(row)
-        selection_target = _bounded_return(row, "actual_return_pct")
+        selection_gross_target = _bounded_return(row, "l4_executable_return_pct")
+        selection_target = (
+            selection_gross_target - max(0.0, execution_cost_bps) / 10000.0
+            if selection_gross_target is not None
+            else None
+        )
         if features is None:
             missing_features += 1
             invalid += 1
@@ -429,7 +445,8 @@ def _samples(
         "s12_ready_coverage": round(s12_ready_count / len(out), 8) if out else 0.0,
         "s12_available_coverage": round(s12_available_count / len(out), 8) if out else 0.0,
         "target_policy": {
-            "selection": "actual_return_pct",
+            "selection": "next_session_raw_open_to_fifth_session_raw_close_factor_stable_net_of_costs",
+            "selection_label_schema_version": LABEL_SCHEMA_VERSION,
             "execution_trade_return": "five_session_canonical_s12_lifecycle_pnl_net_of_roundtrip_cost_when_executed",
             "full_trade_ev": "zero_when_not_executed_else_multisession_canonical_replay_net_pnl",
             "execution_label_availability": "replay_execution_outcome_independent_of_prior_s12_ev_availability",
@@ -597,16 +614,10 @@ def _metrics(
         if day_corr is not None:
             daily_corrs.append(day_corr)
 
-    def lcb90(values: list[float]) -> float | None:
-        if not values:
-            return None
-        standard_error = math.sqrt(_sample_variance(values) / len(values))
-        return _mean(values) - 1.645 * standard_error
-
     spread = _mean(daily_spreads)
     corr = _mean(daily_corrs) if daily_corrs else None
-    corr_lcb = lcb90(daily_corrs)
-    spread_lcb = lcb90(daily_spreads)
+    corr_lcb = _date_cluster_lcb90(daily_corrs)
+    spread_lcb = _date_cluster_lcb90(daily_spreads)
     return {
         "samples": len(samples),
         "mean_target": round(_mean(targets), 8),
@@ -629,6 +640,14 @@ def _sample_variance(values: list[float]) -> float:
         return 0.0
     mean = _mean(values)
     return sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+
+
+def _date_cluster_lcb90(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    standard_error = math.sqrt(_sample_variance(values) / len(values))
+    critical_value = float(student_t.ppf(0.95, df=len(values) - 1))
+    return _mean(values) - critical_value * standard_error
 
 
 def _supported_feature_names(
@@ -719,13 +738,8 @@ def _paired_canonical_l4_comparison(
             "spread_delta": round(spread_delta, 8),
         })
 
-    def lcb90(values: list[float]) -> float | None:
-        if not values:
-            return None
-        return _mean(values) - 1.645 * math.sqrt(_sample_variance(values) / len(values))
-
-    corr_delta_lcb90 = lcb90(correlation_deltas)
-    spread_delta_lcb90 = lcb90(spread_deltas)
+    corr_delta_lcb90 = _date_cluster_lcb90(correlation_deltas)
+    spread_delta_lcb90 = _date_cluster_lcb90(spread_deltas)
     minimum_oos_dates = max(4, math.ceil(PRIMARY_MIN_DATES * 0.2))
     blockers: list[str] = []
     if len(daily) < minimum_oos_dates:
@@ -737,7 +751,7 @@ def _paired_canonical_l4_comparison(
     return {
         "schema_version": "allocator-ev-fusion-champion-comparison-v1",
         "champion": "canonical_l4",
-        "challenger": "allocator_ev_fusion_v7_selection_model",
+        "challenger": "allocator_ev_fusion_v8_selection_model",
         "comparison_unit": "paired_prediction_date_same_candidates",
         "decision": "PASS" if not blockers else "FAIL",
         "failed_gates": blockers,
@@ -767,7 +781,7 @@ def _paired_final_trade_ev_comparison(
         return {
             "schema_version": "allocator-ev-fusion-final-champion-comparison-v1",
             "champion": "canonical_l4",
-            "challenger": "allocator_ev_fusion_v7_final_trade_ev",
+            "challenger": "allocator_ev_fusion_v8_final_trade_ev",
             "comparison_target": "realized_multisession_trade_ev_net_of_costs",
             "decision": "FAIL",
             "failed_gates": blockers,
@@ -785,15 +799,25 @@ def _paired_final_trade_ev_comparison(
         and sample.get("realized_trade_ev_target") is not None
         and float(sample["features"].get("l4_available") or 0.0) > 0.0
     ]
-    execution_intercept = float(execution_model.get("intercept") or 0.0)
+    execution_validation_model = (
+        execution_model.get("validation_model")
+        if isinstance(execution_model.get("validation_model"), dict)
+        else execution_model
+    )
+    probability_validation_model = (
+        execution_probability_model.get("validation_model")
+        if isinstance(execution_probability_model.get("validation_model"), dict)
+        else execution_probability_model
+    )
+    execution_intercept = float(execution_validation_model.get("intercept") or 0.0)
     execution_coefs = {
         str(name): float(value)
-        for name, value in (execution_model.get("coefficients") or {}).items()
+        for name, value in (execution_validation_model.get("coefficients") or {}).items()
     }
-    probability_intercept = float(execution_probability_model.get("intercept") or 0.0)
+    probability_intercept = float(probability_validation_model.get("intercept") or 0.0)
     probability_coefs = {
         str(name): float(value)
-        for name, value in (execution_probability_model.get("coefficients") or {}).items()
+        for name, value in (probability_validation_model.get("coefficients") or {}).items()
     }
 
     by_date: dict[str, list[dict[str, Any]]] = {}
@@ -840,14 +864,9 @@ def _paired_final_trade_ev_comparison(
             "spread_delta": round(spread_delta, 8),
         })
 
-    def lcb90(values: list[float]) -> float | None:
-        if not values:
-            return None
-        return _mean(values) - 1.645 * math.sqrt(_sample_variance(values) / len(values))
-
     minimum_oos_dates = max(4, math.ceil(PRIMARY_MIN_DATES * 0.2))
-    corr_delta_lcb90 = lcb90(correlation_deltas)
-    spread_delta_lcb90 = lcb90(spread_deltas)
+    corr_delta_lcb90 = _date_cluster_lcb90(correlation_deltas)
+    spread_delta_lcb90 = _date_cluster_lcb90(spread_deltas)
     if len(daily) < minimum_oos_dates:
         blockers.append("paired_oos_dates_insufficient")
     if corr_delta_lcb90 is None or corr_delta_lcb90 < 0.0:
@@ -857,7 +876,7 @@ def _paired_final_trade_ev_comparison(
     return {
         "schema_version": "allocator-ev-fusion-final-champion-comparison-v1",
         "champion": "canonical_l4",
-        "challenger": "allocator_ev_fusion_v7_final_trade_ev",
+        "challenger": "allocator_ev_fusion_v8_final_trade_ev",
         "comparison_target": "realized_multisession_trade_ev_net_of_costs",
         "comparison_unit": "paired_prediction_date_same_candidates",
         "decision": "PASS" if not blockers else "FAIL",
@@ -976,6 +995,14 @@ def _fit_expert(
     train_metrics: dict[str, Any] = {"samples": len(train)}
     oos_metrics: dict[str, Any] = {"samples": len(test)}
     walk_forward: dict[str, Any] = {"passed": False, "reason": "not_run", "folds": []}
+    validation_intercept = intercept
+    validation_coefs = dict(coefs)
+    deployment_fit: dict[str, Any] = {
+        "method": "full_known_sample_refit_after_purged_oos_validation",
+        "samples": 0,
+        "dates": 0,
+        "performed": False,
+    }
     if not blockers:
         rank_intercept, rank_coefs = _fit_ridge(
             train,
@@ -1031,6 +1058,41 @@ def _fit_expert(
             blockers.append("oos_top_bottom_spread_lcb90_not_economic")
         if not walk_forward.get("passed"):
             blockers.append("walk_forward_not_stable")
+        validation_intercept = intercept
+        validation_coefs = dict(coefs)
+        if not blockers:
+            full_rank_intercept, full_rank_coefs = _fit_ridge(
+                samples,
+                l2=l2,
+                feature_names=feature_names,
+                target_key=target_key,
+            )
+            intercept, coefs = full_rank_intercept, full_rank_coefs
+            if calibration_target_key:
+                full_calibration_pairs = _expanding_oof_pairs(
+                    samples,
+                    feature_names=feature_names,
+                    rank_target_key=target_key,
+                    calibration_target_key=calibration_target_key,
+                    l2=l2,
+                )
+                full_calibration_intercept, full_calibration_slope = _linear_calibration_from_pairs(
+                    full_calibration_pairs,
+                    l2=l2,
+                )
+                intercept, coefs = _compose_calibrated_model(
+                    full_rank_intercept,
+                    full_rank_coefs,
+                    full_calibration_intercept,
+                    full_calibration_slope,
+                )
+            deployment_fit = {
+                "method": "full_known_sample_refit_after_purged_oos_validation",
+                "samples": len(samples),
+                "dates": len(dates),
+                "performed": True,
+                "validation_coefficients_are_not_served": True,
+            }
     result = {
         "status": "fitted" if not blockers else "shadow",
         "decision": "PASS" if not blockers else "FAIL",
@@ -1049,6 +1111,11 @@ def _fit_expert(
         "train_metrics": train_metrics,
         "oos_metrics": oos_metrics,
         "walk_forward": walk_forward,
+        "validation_model": {
+            "intercept": round(validation_intercept, 10),
+            "coefficients": {name: round(value, 10) for name, value in validation_coefs.items()},
+        },
+        "deployment_fit": deployment_fit,
     }
     if calibration_target_key and rank_intercept is not None and rank_coefs is not None:
         result["rank_model"] = {
@@ -1099,6 +1166,14 @@ def _fit_execution_probability_expert(
     coefs = {name: 0.0 for name in feature_names}
     train_metrics: dict[str, Any] = {"samples": len(train)}
     oos_metrics: dict[str, Any] = {"samples": len(test)}
+    validation_intercept = intercept
+    validation_coefs = dict(coefs)
+    deployment_fit: dict[str, Any] = {
+        "method": "full_known_sample_refit_after_purged_oos_validation",
+        "samples": 0,
+        "dates": 0,
+        "performed": False,
+    }
     if not blockers:
         train_x = [[float(sample["features"][name]) for name in feature_names] for sample in train]
         test_x = [[float(sample["features"][name]) for name in feature_names] for sample in test]
@@ -1130,6 +1205,24 @@ def _fit_execution_probability_expert(
             blockers.append("oos_brier_not_better_than_climatology")
         if float(oos_metrics["log_loss"]) >= float(oos_metrics["log_loss_climatology"]):
             blockers.append("oos_log_loss_not_better_than_climatology")
+        validation_intercept = intercept
+        validation_coefs = dict(coefs)
+        if not blockers:
+            full_x = [[float(sample["features"][name]) for name in feature_names] for sample in samples]
+            full_targets = [int(sample["execution_probability_target"]) for sample in samples]
+            full_scaler = StandardScaler().fit(full_x)
+            full_model = LogisticRegression(C=1.0 / max(l2, 1e-6), max_iter=2000, solver="lbfgs")
+            full_model.fit(full_scaler.transform(full_x), full_targets)
+            full_raw_coefs = full_model.coef_[0] / full_scaler.scale_
+            intercept = float(full_model.intercept_[0] - sum(full_raw_coefs * full_scaler.mean_))
+            coefs = {name: float(full_raw_coefs[idx]) for idx, name in enumerate(feature_names)}
+            deployment_fit = {
+                "method": "full_known_sample_refit_after_purged_oos_validation",
+                "samples": len(samples),
+                "dates": len(dates),
+                "performed": True,
+                "validation_coefficients_are_not_served": True,
+            }
 
     return {
         "status": "fitted" if not blockers else "shadow",
@@ -1148,6 +1241,11 @@ def _fit_execution_probability_expert(
         "train_metrics": train_metrics,
         "oos_metrics": oos_metrics,
         "benchmark": "training_prevalence_climatology",
+        "validation_model": {
+            "intercept": round(validation_intercept, 10),
+            "coefficients": {name: round(value, 10) for name, value in validation_coefs.items()},
+        },
+        "deployment_fit": deployment_fit,
     }
 
 
@@ -1275,10 +1373,24 @@ def build_allocator_ev_fusion_artifact_from_rows(
     )
     selection_champion_comparison = _paired_canonical_l4_comparison(
         samples,
-        fusion_intercept=float(selection_model.get("intercept") or 0.0),
+        fusion_intercept=float(
+            (
+                selection_model.get("validation_model")
+                if isinstance(selection_model.get("validation_model"), dict)
+                else selection_model
+            ).get("intercept")
+            or 0.0
+        ),
         fusion_coefficients={
             str(name): float(value)
-            for name, value in (selection_model.get("coefficients") or {}).items()
+            for name, value in (
+                (
+                    selection_model.get("validation_model")
+                    if isinstance(selection_model.get("validation_model"), dict)
+                    else selection_model
+                ).get("coefficients")
+                or {}
+            ).items()
         },
     )
     champion_comparison = _paired_final_trade_ev_comparison(
@@ -1311,12 +1423,13 @@ def build_allocator_ev_fusion_artifact_from_rows(
     if decision != "PASS":
         promotion_blockers = failed_gates
     validation_packet = {
-        "schema_version": "allocator-ev-fusion-validation-packet-v7",
+        "schema_version": "allocator-ev-fusion-validation-packet-v8",
         "decision": decision,
         "failed_gates": failed_gates,
         "validation_scope": {
             "owner": "allocator_ev_fusion",
-            "selection_target": "actual_return_pct",
+            "selection_target": "next_session_raw_open_to_fifth_session_raw_close_factor_stable_net_of_costs",
+            "label_schema_version": LABEL_SCHEMA_VERSION,
             "execution_probability_target": "next_session_canonical_execution_indicator_by_archetype",
             "execution_target": "five_session_canonical_lifecycle_net_pnl_when_executed",
             "rowwise_label_coalesce": False,
@@ -1361,7 +1474,10 @@ def build_allocator_ev_fusion_artifact_from_rows(
         },
     }
     artifact = {
-        "schema_version": "allocator-ev-fusion-artifact-v7",
+        "schema_version": "allocator-ev-fusion-artifact-v8",
+        "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
+        "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+        "label_schema_version": LABEL_SCHEMA_VERSION,
         "expected_return_owner": "allocator_ev_fusion",
         "promotion_state": (
             "production_primary" if promotion_tier == "primary"
@@ -1374,8 +1490,8 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "promotion_blockers": promotion_blockers,
         "validation_packet": validation_packet,
         "resolver_method": "cross_fitted_rank_two_part_trade_ev_fusion",
-        "model_version": f"allocator-ev-fusion-cross-fit-v7-{trained_until.replace('-', '')}",
-        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v8-multisession-canonical",
+        "model_version": f"allocator-ev-fusion-cross-fit-v8-{trained_until.replace('-', '')}",
+        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v9-directional-executable-label",
         "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
         "trained_until": trained_until,
         "horizon_days": 5,
@@ -1392,7 +1508,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
         },
         "output_clip": {"min": -0.08, "max": 0.08},
         "training_data": {
-            "source": "as-of raw ScoreV2/L4/S12 snapshots joined to verified returns and five-session canonical replay outcomes",
+            "source": "as-of ScoreV2/L4/S12 snapshots joined to executable adjusted five-session net labels and canonical replay outcomes",
             "trained_until": trained_until,
             "knowledge_cutoff_date": knowledge_cutoff_date or trained_until,
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1420,12 +1536,31 @@ def load_allocator_ev_fusion_training_rows(
     try:
         snapshot_rows = query_fn(
             """
+            WITH price_horizons AS (
+                SELECT
+                    sp.stock_id,
+                    date(sp.date) AS price_date,
+                    LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_raw_open,
+                    LEAD(
+                        CASE WHEN sp.close > 0 AND sp.adj_close > 0 THEN sp.adj_close / sp.close END,
+                        1
+                    ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_adjustment_factor,
+                    LEAD(date(sp.date), 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_date,
+                    LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_raw_close,
+                    LEAD(
+                        CASE WHEN sp.close > 0 AND sp.adj_close > 0 THEN sp.adj_close / sp.close END,
+                        5
+                    ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_adjustment_factor
+                FROM stock_prices sp
+                WHERE date(sp.date) >= date(?, ?, '-10 days')
+                  AND date(sp.date) <= date(?)
+            )
             SELECT
                 p.stock_id,
                 fs.symbol,
                 date(p.prediction_date) AS prediction_date,
                 fs.forecast_data,
-                p.actual_return_pct,
+                (ph.exit_raw_close / ph.entry_raw_open) - 1.0 AS l4_executable_return_pct,
                 p.trade_pnl_pct,
                 (
                     SELECT o.pnl_pct
@@ -1476,18 +1611,17 @@ def load_allocator_ev_fusion_training_rows(
              AND p.model_name = 'ensemble'
             JOIN stocks st
               ON st.id = fs.stock_id
-            WHERE p.verified_at IS NOT NULL
-              AND (p.actual_return_pct IS NOT NULL OR p.trade_pnl_pct IS NOT NULL)
+            JOIN price_horizons ph
+              ON ph.stock_id = p.stock_id
+             AND ph.price_date = date(p.prediction_date)
+            WHERE ph.entry_raw_open > 0
+              AND ph.exit_raw_close > 0
+              AND ph.entry_adjustment_factor > 0
+              AND ph.exit_adjustment_factor > 0
+              AND ABS((ph.exit_adjustment_factor / ph.entry_adjustment_factor) - 1.0) <= 0.02
+              AND date(ph.exit_date) <= date(?)
               AND fs.snapshot_source = ?
               AND fs.as_of_guard = ?
-              AND p.actual_price = (
-                  SELECT sp.close
-                  FROM stock_prices sp
-                  WHERE sp.stock_id = p.stock_id
-                    AND date(sp.date) > date(p.prediction_date)
-                  ORDER BY date(sp.date) ASC
-                  LIMIT 1 OFFSET 4
-              )
               AND fs.alpha_allocation IS NOT NULL
               AND date(p.prediction_date) <= date(?)
               AND date(p.prediction_date) >= date(?, ?)
@@ -1495,6 +1629,10 @@ def load_allocator_ev_fusion_training_rows(
             LIMIT ?
             """,
             [
+                end_date,
+                f"-{max(1, int(lookback_days))} days",
+                outcome_cutoff,
+                outcome_cutoff,
                 outcome_cutoff,
                 outcome_cutoff,
                 outcome_cutoff,
@@ -1516,12 +1654,31 @@ def load_allocator_ev_fusion_training_rows(
 
     return query_fn(
         """
+        WITH price_horizons AS (
+            SELECT
+                sp.stock_id,
+                date(sp.date) AS price_date,
+                LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_raw_open,
+                LEAD(
+                    CASE WHEN sp.close > 0 AND sp.adj_close > 0 THEN sp.adj_close / sp.close END,
+                    1
+                ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_adjustment_factor,
+                LEAD(date(sp.date), 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_date,
+                LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_raw_close,
+                LEAD(
+                    CASE WHEN sp.close > 0 AND sp.adj_close > 0 THEN sp.adj_close / sp.close END,
+                    5
+                ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_adjustment_factor
+            FROM stock_prices sp
+            WHERE date(sp.date) >= date(?, ?, '-10 days')
+              AND date(sp.date) <= date(?)
+        )
         SELECT
             p.stock_id,
             s.symbol,
             date(p.prediction_date) AS prediction_date,
             p.forecast_data,
-            p.actual_return_pct,
+            (ph.exit_raw_close / ph.entry_raw_open) - 1.0 AS l4_executable_return_pct,
             p.trade_pnl_pct,
             (
                 SELECT o.pnl_pct
@@ -1569,17 +1726,16 @@ def load_allocator_ev_fusion_training_rows(
          AND dr.date = p.prediction_date
         JOIN stocks s
           ON s.id = p.stock_id
+        JOIN price_horizons ph
+          ON ph.stock_id = p.stock_id
+         AND ph.price_date = date(p.prediction_date)
         WHERE p.model_name = 'ensemble'
-          AND p.verified_at IS NOT NULL
-          AND (p.actual_return_pct IS NOT NULL OR p.trade_pnl_pct IS NOT NULL)
-          AND p.actual_price = (
-              SELECT sp.close
-              FROM stock_prices sp
-              WHERE sp.stock_id = p.stock_id
-                AND date(sp.date) > date(p.prediction_date)
-              ORDER BY date(sp.date) ASC
-              LIMIT 1 OFFSET 4
-          )
+          AND ph.entry_raw_open > 0
+          AND ph.exit_raw_close > 0
+          AND ph.entry_adjustment_factor > 0
+          AND ph.exit_adjustment_factor > 0
+          AND ABS((ph.exit_adjustment_factor / ph.entry_adjustment_factor) - 1.0) <= 0.02
+          AND date(ph.exit_date) <= date(?)
           AND dr.alpha_allocation IS NOT NULL
           AND date(p.prediction_date) <= date(?)
           AND date(p.prediction_date) >= date(?, ?)
@@ -1587,6 +1743,10 @@ def load_allocator_ev_fusion_training_rows(
         LIMIT ?
         """,
         [
+            end_date,
+            f"-{max(1, int(lookback_days))} days",
+            outcome_cutoff,
+            outcome_cutoff,
             outcome_cutoff,
             outcome_cutoff,
             outcome_cutoff,

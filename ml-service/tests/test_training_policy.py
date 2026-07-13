@@ -499,7 +499,8 @@ def test_model_feature_policy_metadata_records_feature_count_and_evidence():
         selection_evidence={"feature_pool_path": "universal/feature_pool.json"},
     )
 
-    assert meta["feature_policy_schema_version"] == "model-feature-policy-v1"
+    assert meta["feature_policy_schema_version"] == "model-feature-policy-v2"
+    assert meta["family_feature_contract"]["family_schema"] == "formal137_selected_tabular_v1"
     assert meta["feature_count"] == 3
     assert meta["feature_policy"]["model"] == "TabM"
     assert meta["feature_policy"]["requires_schema_parity"] is True

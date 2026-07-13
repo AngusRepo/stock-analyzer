@@ -7,7 +7,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.l4_alpha_ev_artifact_builder import build_l4_alpha_ev_artifact_from_rows  # noqa: E402
+from services.l4_alpha_ev_artifact_builder import (  # noqa: E402
+    build_l4_alpha_ev_artifact_from_rows,
+    load_l4_alpha_ev_training_rows,
+)
 
 
 def _row(day: str, idx: int, *, target: float) -> dict:
@@ -21,10 +24,11 @@ def _row(day: str, idx: int, *, target: float) -> dict:
     return {
         "symbol": f"{idx:04d}",
         "prediction_date": day,
-        "actual_return_pct": target,
+        "l4_executable_return_pct": target,
         "score": score,
         "score_components": json.dumps({
             "version": "score_v2",
+            "semanticVersion": "score-v2-active8-components-v3",
             "finalScore": score,
             "components": {
                 "mlEdge": ml_edge,
@@ -36,6 +40,8 @@ def _row(day: str, idx: int, *, target: float) -> dict:
         }),
         "forecast_data": json.dumps({
             "ensemble_v2": {
+                "semantic_version": "active8-ic-weighted-rank-v3",
+                "model_set_signature": "LightGBM@vTest|XGBoost@vTest",
                 "avg_rank": avg_rank,
                 "confidence": confidence,
             },
@@ -66,9 +72,13 @@ def test_l4_alpha_ev_artifact_builder_emits_production_artifact_when_oos_passes(
     assert artifact["validation_packet"]["decision"] == "PASS"
     assert artifact["resolver_method"] == "ridge_meta_calibrator"
     assert artifact["expected_return_owner"] == "l4_alpha_ev"
-    assert artifact["output_is_net_of_costs"] is False
+    assert artifact["output_is_net_of_costs"] is True
+    assert artifact["artifact_contract_version"] == "l4-alpha-ev-contract-v2"
+    assert artifact["label_schema_version"] == "next-session-raw-open-to-fifth-session-raw-close-factor-stable-net-v2"
+    assert artifact["feature_semantic_version"] == "l4-directional-score-components-v2-lineage-bound"
     assert "expectedReturnCalibration" not in artifact
-    assert artifact["coefficients"]["score_final_norm"] != 0
+    assert artifact["coefficients"]["ensemble_directional_margin"] != 0
+    assert "ensemble_confidence_centered" not in artifact["coefficients"]
 
 
 def test_l4_alpha_ev_artifact_builder_fails_closed_on_insufficient_samples():
@@ -90,7 +100,7 @@ def test_l4_alpha_ev_artifact_builder_fails_closed_on_insufficient_samples():
 
 def test_l4_alpha_ev_artifact_builder_can_fit_strict_asof_oof_without_promotion():
     rows = []
-    for day_idx in range(6):
+    for day_idx in range(12):
         day = f"2026-06-{day_idx + 1:02d}"
         for symbol_idx in range(24):
             strength = symbol_idx / 24.0
@@ -98,7 +108,7 @@ def test_l4_alpha_ev_artifact_builder_can_fit_strict_asof_oof_without_promotion(
 
     out = build_l4_alpha_ev_artifact_from_rows(
         rows,
-        trained_until="2026-06-06",
+        trained_until="2026-06-12",
         min_samples=500,
         min_dates=20,
         fit_min_samples=100,
@@ -110,4 +120,25 @@ def test_l4_alpha_ev_artifact_builder_can_fit_strict_asof_oof_without_promotion(
     assert artifact["fitted"] is True
     assert artifact["promotion_state"] == "approval_required"
     assert "insufficient_dates" in artifact["validation_packet"]["failed_gates"]
-    assert artifact["coefficients"]["score_final_norm"] != 0
+    assert artifact["coefficients"]["ensemble_directional_margin"] != 0
+
+
+def test_l4_training_query_uses_outcome_knowledge_cutoff_after_signal_end_date():
+    captured = {}
+
+    def fake_query(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    load_l4_alpha_ev_training_rows(
+        fake_query,
+        end_date="2026-07-02",
+        knowledge_cutoff_date="2026-07-09",
+        lookback_days=90,
+        limit=6000,
+    )
+
+    assert captured["params"][2] == "2026-07-09"
+    assert captured["params"][3] == "2026-07-09"
+    assert captured["params"][4] == "2026-07-02"

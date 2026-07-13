@@ -15,7 +15,7 @@ def test_daily_pipeline_formal_layer3_slots_cannot_activate_missing_artifacts():
 def test_modal_prediction_runtime_retire_formal_slot_without_model_artifact():
     source = (Path(__file__).resolve().parents[2] / "ml-service" / "app" / "prediction_runtime.py").read_text(encoding="utf-8")
 
-    assert 'formal_slots = (pool_snapshot or {}).get("formal_layer3_slots", {})' in source
+    assert 'pool_models, formal_slots = _require_model_pool_contract(pool_snapshot, stage="predict_v2")' in source
     assert 'def _resolve_model_pool_status' in source
     assert '"production_adapter_active"' in source
     assert 'return "retired"' in source

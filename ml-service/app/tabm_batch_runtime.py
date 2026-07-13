@@ -13,6 +13,8 @@ from typing import Any
 
 import numpy as np
 
+from .artifact_contract import ArtifactValidationError, verify_artifact_bytes
+
 MODEL_NAME = "TabM"
 
 _ARTIFACT_CACHE: dict[tuple[str, str], "TabMArtifact"] = {}
@@ -110,15 +112,23 @@ def load_tabm_artifact(pool: dict | None = None) -> TabMArtifact:
 
     buf = io.BytesIO()
     blob.download_to_file(buf)
+    raw = buf.getvalue()
+    meta_blob = bucket.blob(_metadata_path_for(artifact_path, version))
+    if not meta_blob.exists():
+        raise RuntimeError("TabM production artifact metadata is missing")
+    metadata = json.loads(meta_blob.download_as_text().lstrip("\ufeff"))
+    try:
+        metadata["artifact_integrity_report"] = verify_artifact_bytes(
+            raw,
+            metadata.get("checksum") or metadata.get("artifact_checksum"),
+            artifact_name=artifact_path,
+        )
+    except ArtifactValidationError as exc:
+        raise RuntimeError(f"TabM artifact integrity failed: {exc.report}") from exc
     buf.seek(0)
     payload = torch.load(buf, map_location="cpu", weights_only=False)
     if not isinstance(payload, dict):
         raise RuntimeError("TabM artifact payload must be a dict")
-
-    metadata = payload.get("metadata")
-    if not isinstance(metadata, dict):
-        meta_blob = bucket.blob(_metadata_path_for(artifact_path, version))
-        metadata = json.loads(meta_blob.download_as_text()) if meta_blob.exists() else {}
 
     architecture = payload.get("architecture")
     if not isinstance(architecture, dict):

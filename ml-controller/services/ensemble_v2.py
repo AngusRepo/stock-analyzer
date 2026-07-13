@@ -2,24 +2,93 @@ from __future__ import annotations
 
 import math
 
+from services.active_model_policy import ACTIVE_ALPHA_MODELS
+
 
 _SRC_KEY_MODEL = (
     ("dlinear", "DLinear"),
     ("patchtst", "PatchTST"),
     ("itransformer", "iTransformer"),
 )
-_FORMAL_ALPHA_MODELS = (
-    "LightGBM",
-    "XGBoost",
-    "ExtraTrees",
-    "TabM",
-    "GNN",
-    "DLinear",
-    "PatchTST",
-    "iTransformer",
-)
+_FORMAL_ALPHA_MODELS = ACTIVE_ALPHA_MODELS
 _DIRECT_ALPHA_BLOCKED_MODELS = {"TimesFM"}
 _MODEL_STATUS_ALLOWED = {"active", "degraded", "challenger", "retired"}
+ENSEMBLE_V2_SCHEMA_VERSION = "ensemble-v2-payload-v3"
+ENSEMBLE_V2_SEMANTIC_VERSION = "active8-ic-weighted-rank-v3"
+
+
+def _ensemble_lineage_fields(
+    *,
+    formal_contract: dict,
+    weights: dict[str, float],
+    ev2_cfg: dict | None,
+) -> dict:
+    contributing = sorted(name for name, weight in weights.items() if weight > 0)
+    configured_versions = (ev2_cfg or {}).get("activeArtifactVersions") or {}
+    versions = configured_versions if isinstance(configured_versions, dict) else {}
+    artifact_versions = {
+        name: str(versions.get(name) or "unknown")
+        for name in contributing
+    }
+    return {
+        "schema_version": ENSEMBLE_V2_SCHEMA_VERSION,
+        "semantic_version": ENSEMBLE_V2_SEMANTIC_VERSION,
+        "input_contract_version": formal_contract.get("schema_version"),
+        "artifact_versions": artifact_versions,
+        "model_set_signature": "|".join(
+            f"{name}@{artifact_versions[name]}" for name in contributing
+        ),
+    }
+
+
+def _finite_rank(value: object) -> float | None:
+    try:
+        rank = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(rank):
+        return None
+    return max(0.0, min(1.0, rank))
+
+
+def _finite_number(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _formal_model_scores(pred: dict) -> dict[str, float]:
+    rank_scores = pred.get("rank_scores") if isinstance(pred.get("rank_scores"), dict) else {}
+    scores: dict[str, float] = {}
+    for model_name in ACTIVE_ALPHA_MODELS:
+        rank = _finite_rank(rank_scores.get(model_name))
+        if rank is not None:
+            scores[model_name] = rank
+    for source_key, model_name in _SRC_KEY_MODEL:
+        signal = pred.get(source_key) if isinstance(pred.get(source_key), dict) else {}
+        raw_forecast = _finite_number(signal.get("forecast_pct"))
+        if raw_forecast is None:
+            continue
+        scores[model_name] = _ts_to_rank(raw_forecast)
+    return scores
+
+
+def build_formal_model_input_contract(pred: dict | None) -> dict:
+    """Describe whether one symbol has a usable output from every Active-8 model."""
+    prediction = pred if isinstance(pred, dict) else {}
+    scores = _formal_model_scores(prediction)
+    available = [name for name in ACTIVE_ALPHA_MODELS if name in scores]
+    missing = [name for name in ACTIVE_ALPHA_MODELS if name not in scores]
+    return {
+        "schema_version": "formal-layer3-active8-input-contract-v1",
+        "required_models": list(ACTIVE_ALPHA_MODELS),
+        "available_models": available,
+        "missing_models": missing,
+        "complete": not missing,
+        "finite_scores_required": True,
+    }
 
 
 def _ts_to_rank(forecast_pct: float, scale: float = 12.0) -> float:
@@ -485,23 +554,9 @@ def attach_ensemble_v2(
     degraded_dampening: float,
     ev2_cfg: dict | None = None,
 ) -> None:
-    feat_ranks = pred.get("rank_scores") or {}
-    merged: dict[str, float] = {}
-    for name, score in dict(feat_ranks).items():
-        model_name = str(name)
-        if model_name in _DIRECT_ALPHA_BLOCKED_MODELS:
-            continue
-        try:
-            numeric_score = float(score)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(numeric_score):
-            merged[model_name] = numeric_score
-    for src_key, model_name in _SRC_KEY_MODEL:
-        sig = pred.get(src_key) or {}
-        if sig.get("forecast_pct") is None:
-            continue
-        merged[model_name] = _ts_to_rank(float(sig["forecast_pct"]))
+    formal_contract = build_formal_model_input_contract(pred)
+    pred["formal_layer3_contract"] = formal_contract
+    merged = _formal_model_scores(pred)
     if not merged:
         return
 
@@ -563,6 +618,11 @@ def attach_ensemble_v2(
                 label = "HOLD"
 
             pred["ensemble_v2"] = {
+                **_ensemble_lineage_fields(
+                    formal_contract=formal_contract,
+                    weights=weights,
+                    ev2_cfg=ev2_cfg,
+                ),
                 "avg_rank": round(avg, 4),
                 "signal": label,
                 "confidence": _rank_confidence(avg),
@@ -575,10 +635,16 @@ def attach_ensemble_v2(
                 "allocator_policy_effect": allocator_policy_effect,
                 "allocator_learning_ledger": allocator_learning_ledger,
                 "contrarian_policy_effect": contrarian_policy_effect,
+                "formal_model_input_contract": formal_contract,
                 **_forecast_fields(avg, ev2_cfg),
             }
             return
         pred["ensemble_v2"] = {
+            **_ensemble_lineage_fields(
+                formal_contract=formal_contract,
+                weights=weights,
+                ev2_cfg=ev2_cfg,
+            ),
             "avg_rank": 0.5,
             "signal": "HOLD",
             "confidence": 0.5,
@@ -602,6 +668,7 @@ def attach_ensemble_v2(
             "allocator_policy_effect": allocator_policy_effect,
             "allocator_learning_ledger": allocator_learning_ledger,
             "contrarian_policy_effect": contrarian_policy_effect,
+            "formal_model_input_contract": formal_contract,
         }
         return
 
@@ -624,6 +691,11 @@ def attach_ensemble_v2(
         label = "HOLD"
 
     pred["ensemble_v2"] = {
+        **_ensemble_lineage_fields(
+            formal_contract=formal_contract,
+            weights=weights,
+            ev2_cfg=ev2_cfg,
+        ),
         "avg_rank": round(avg, 4),
         "signal": label,
         "confidence": _rank_confidence(avg),
@@ -635,5 +707,6 @@ def attach_ensemble_v2(
         "allocator_policy_effect": allocator_policy_effect,
         "allocator_learning_ledger": allocator_learning_ledger,
         "contrarian_policy_effect": contrarian_policy_effect,
+        "formal_model_input_contract": formal_contract,
         **_forecast_fields(avg, ev2_cfg),
     }

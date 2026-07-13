@@ -233,6 +233,10 @@ CREATE TABLE IF NOT EXISTS predictions (
   trade_pnl_r         REAL,              -- 損益以 R 倍數表示（1R = 1 個停損距離）
   max_favorable_pct   REAL,              -- 持倉期間最大有利波動（MAE/MFE 分析用）
   max_adverse_pct     REAL,              -- 持倉期間最大不利波動
+  verification_label_schema_version TEXT,
+  verification_label_entry_price REAL,
+  verification_label_end_date TEXT,
+  verification_label_known_date TEXT,
   created_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_pred_stock    ON predictions(stock_id, model_name);

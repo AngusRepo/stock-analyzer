@@ -30,6 +30,9 @@ from services.l4_alpha_ev_resolver import (  # noqa: E402
 def _l4_payload(value: float) -> dict:
     return {
         "schema_version": "l4-alpha-ev-v1",
+        "artifact_contract_version": "l4-alpha-ev-contract-v2",
+        "feature_semantic_version": "l4-directional-score-components-v2-lineage-bound",
+        "label_schema_version": "next-session-adjusted-open-to-fifth-session-adjusted-close-net-v1",
         "expected_return_owner": "l4_alpha_ev",
         "expected_return_mean": value,
         "expected_return_source": "l4_alpha_ev:test",
@@ -42,6 +45,17 @@ def _l4_payload(value: float) -> dict:
         "horizon_days": 5,
         "cost_model_bps": 18.0,
     }
+
+
+def _ensemble_forecast(avg_rank: float = 0.65, confidence: float = 0.72) -> str:
+    return json.dumps({
+        "ensemble_v2": {
+            "semantic_version": "active8-ic-weighted-rank-v3",
+            "model_set_signature": "LightGBM@vTest|XGBoost@vTest",
+            "avg_rank": avg_rank,
+            "confidence": confidence,
+        },
+    })
 
 
 def _s12_payload(value: float, *, ready: bool = True) -> dict:
@@ -78,6 +92,7 @@ def _row(day: str, idx: int) -> dict:
         "prediction_date": day,
         "score_components": json.dumps({
             "version": "score_v2",
+            "semanticVersion": "score-v2-active8-components-v3",
             "finalScore": 50.0 + (idx % 20),
             "components": {
                 "mlEdge": 10.0 + (idx % 10),
@@ -86,7 +101,9 @@ def _row(day: str, idx: int) -> dict:
                 "technicalStructure": 13.0,
             },
         }),
-        "actual_return_pct": target,
+        "forecast_data": _ensemble_forecast(0.35 + (idx % 20) * 0.02),
+        "actual_return_pct": target + 0.25,
+        "l4_executable_return_pct": target,
         "trade_pnl_pct": target + (0.4 * s12) + (0.002 if ready else -0.001),
         "s12_replay_pnl_pct": replay_pnl,
         "s12_replay_status": "executed" if replay_executed else "not_triggered",
@@ -123,7 +140,11 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["validation_packet"]["sample_audit"]["l4_available_count"] > 0
     assert artifact["validation_packet"]["sample_audit"]["s12_structure_available_count"] > 0
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
-    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v7"
+    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v8"
+    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v8"
+    assert artifact["validation_packet"]["validation_scope"]["selection_target"] == (
+        "next_session_raw_open_to_fifth_session_raw_close_factor_stable_net_of_costs"
+    )
     assert artifact["resolver_method"] == "cross_fitted_rank_two_part_trade_ev_fusion"
     assert "l4_expected_return" in artifact["coefficients"]
     assert "s12_trade_expected_return" in artifact["coefficients"]
@@ -150,14 +171,14 @@ def test_fusion_challenger_must_beat_canonical_l4_on_paired_oos_dates():
                 "features": {
                     "l4_available": 1.0,
                     "l4_expected_return": target,
-                    "score_final_norm": float(20 - idx) / 20.0,
+                    "technical_structure_norm": float(20 - idx) / 20.0,
                 },
             })
 
     comparison = _paired_canonical_l4_comparison(
         samples,
         fusion_intercept=0.0,
-        fusion_coefficients={"score_final_norm": 1.0},
+        fusion_coefficients={"technical_structure_norm": 1.0},
     )
 
     assert comparison["decision"] == "FAIL"
@@ -195,8 +216,13 @@ def test_allocator_ev_fusion_artifact_builder_rejects_assistive_without_replay_e
             rows.append({
                 "symbol": f"{symbol_idx:04d}",
                 "prediction_date": day,
-                "score_components": json.dumps({"version": "score_v2"}),
-                "actual_return_pct": (0.6 * l4) + (0.4 * s12),
+                "score_components": json.dumps({
+                    "version": "score_v2",
+                    "semanticVersion": "score-v2-active8-components-v3",
+                }),
+                "forecast_data": _ensemble_forecast(),
+                "actual_return_pct": 0.25,
+                "l4_executable_return_pct": (0.6 * l4) + (0.4 * s12),
                 "trade_pnl_pct": (0.6 * l4) + (0.7 * s12),
                 "alpha_allocation": json.dumps({
                     "l4_alpha_ev": _l4_payload(l4),
@@ -237,7 +263,13 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     assert "fs.snapshot_source = ?" in observed[0]["sql"]
     assert "fs.as_of_guard = ?" in observed[0]["sql"]
     assert "replay_diagnostics.outcome_known_date" in observed[0]["sql"]
+    assert "AS l4_executable_return_pct" in observed[0]["sql"]
+    assert "p.verified_at IS NOT NULL" not in observed[0]["sql"]
     assert observed[0]["params"] == [
+        "2026-07-07",
+        "-45 days",
+        "2026-07-07",
+        "2026-07-07",
         "2026-07-07",
         "2026-07-07",
         "2026-07-07",
@@ -323,7 +355,11 @@ def test_allocator_ev_fusion_feature_vector_accepts_backfill_only_l4_under_canon
     row = {
         "symbol": "2330",
         "prediction_date": "2026-07-07",
-        "score_components": json.dumps({"version": "score_v2"}),
+        "score_components": json.dumps({
+            "version": "score_v2",
+            "semanticVersion": "score-v2-active8-components-v3",
+        }),
+        "forecast_data": _ensemble_forecast(),
         "actual_return_pct": 0.01,
         "alpha_allocation": json.dumps({
             "l4_alpha_ev": l4_payload,
@@ -376,16 +412,16 @@ def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_f
                 "stock_id": symbol_idx,
                 "symbol": f"{symbol_idx:04d}",
                 "prediction_date": day,
-                "forecast_data": json.dumps({
-                    "ensemble_v2": {
-                        "avg_rank": 0.25 + (symbol_idx % 10) * 0.04,
-                        "confidence": 0.55 + (symbol_idx % 8) * 0.03,
-                    }
-                }),
-                "actual_return_pct": target,
+                "forecast_data": _ensemble_forecast(
+                    0.25 + (symbol_idx % 10) * 0.04,
+                    0.55 + (symbol_idx % 8) * 0.03,
+                ),
+                "actual_return_pct": target + 0.25,
+                "l4_executable_return_pct": target,
                 "score": score,
                 "score_components": json.dumps({
                     "version": "score_v2",
+                    "semanticVersion": "score-v2-active8-components-v3",
                     "finalScore": score,
                     "components": {
                         "mlEdge": ml_edge,
@@ -399,12 +435,11 @@ def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_f
         "stock_id": 1,
         "symbol": "2330",
         "recommendation_date": "2026-07-07",
-        "forecast_data": json.dumps({
-            "ensemble_v2": {"avg_rank": 0.35, "confidence": 0.72},
-        }),
+        "forecast_data": _ensemble_forecast(0.35, 0.72),
         "score": 70,
         "score_components": json.dumps({
             "version": "score_v2",
+            "semanticVersion": "score-v2-active8-components-v3",
             "finalScore": 70,
             "components": {
                 "mlEdge": 18,
@@ -494,7 +529,7 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
         "stock_id": 1,
         "symbol": "2330",
         "recommendation_date": "2026-07-07",
-        "forecast_data": json.dumps({"ensemble_v2": {"avg_rank": 0.35, "confidence": 0.72}}),
+        "forecast_data": _ensemble_forecast(0.35, 0.72),
         "score": 70,
         "score_components": json.dumps({
             "finalScore": 70,
@@ -542,7 +577,7 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
         "stock_id": 1,
         "symbol": "2330",
         "recommendation_date": "2026-06-08",
-        "forecast_data": json.dumps({"ensemble_v2": {"avg_rank": 0.35, "confidence": 0.72}}),
+        "forecast_data": _ensemble_forecast(0.35, 0.72),
         "score": 70,
         "score_components": json.dumps({
             "finalScore": 70,
@@ -612,7 +647,11 @@ def test_allocator_ev_feature_snapshot_backfill_recomputes_prior_backfill_s12_pa
         "recommendation_date": "2026-07-02",
         "forecast_data": json.dumps({"ensemble_v2": {"avg_rank": 0.35, "confidence": 0.72}}),
         "score": 70,
-        "score_components": json.dumps({"version": "score_v2", "finalScore": 70}),
+        "score_components": json.dumps({
+            "version": "score_v2",
+            "semanticVersion": "score-v2-active8-components-v3",
+            "finalScore": 70,
+        }),
         "alpha_context": json.dumps({"market_heat_expected_return": 0.003}),
         "existing_alpha_allocation": json.dumps(existing),
         "current_price": 100,
@@ -654,8 +693,13 @@ def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload
             rows.append({
                 "symbol": f"{symbol_idx:04d}",
                 "prediction_date": day,
-                "score_components": json.dumps({"version": "score_v2"}),
-                "actual_return_pct": l4 + (0.004 if has_s12 else -0.003),
+                "score_components": json.dumps({
+                    "version": "score_v2",
+                    "semanticVersion": "score-v2-active8-components-v3",
+                }),
+                "forecast_data": _ensemble_forecast(),
+                "actual_return_pct": 0.25,
+                "l4_executable_return_pct": l4 + (0.004 if has_s12 else -0.003),
                 "alpha_allocation": json.dumps({
                     "l4_alpha_ev": _l4_payload(l4),
                     "s12_trade_ev": s12_payload,
@@ -679,10 +723,12 @@ def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_miss
     row = {
         "symbol": "2330",
         "prediction_date": "2026-07-02",
-        "actual_return_pct": 0.02,
+        "actual_return_pct": -0.30,
+        "l4_executable_return_pct": 0.02,
         "score": 70,
         "score_components": json.dumps({
             "version": "score_v2",
+            "semanticVersion": "score-v2-active8-components-v3",
             "finalScore": 70,
             "components": {
                 "mlEdge": 18,
@@ -691,9 +737,7 @@ def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_miss
                 "technicalStructure": 21,
             },
         }),
-        "forecast_data": json.dumps({
-            "ensemble_v2": {"avg_rank": 0.65, "confidence": 0.72},
-        }),
+        "forecast_data": _ensemble_forecast(0.65, 0.72),
         "alpha_allocation": json.dumps({}),
     }
 
@@ -711,7 +755,8 @@ def test_allocator_ev_fusion_rejects_legacy_unversioned_score_feature_era():
     row = {
         "symbol": "2330",
         "prediction_date": "2026-05-04",
-        "actual_return_pct": 0.02,
+        "actual_return_pct": -0.30,
+        "l4_executable_return_pct": 0.02,
         "score_components": json.dumps({
             "chip": 33,
             "tech": 16,
@@ -746,12 +791,14 @@ def test_execution_replay_label_is_kept_when_prior_s12_ev_was_unavailable():
     row = {
         "symbol": "2330",
         "prediction_date": "2026-07-02",
-        "actual_return_pct": 0.02,
+        "actual_return_pct": -0.30,
+        "l4_executable_return_pct": 0.02,
         "s12_replay_pnl_pct": 0.015,
         "s12_replay_status": "executed",
         "score": 70,
         "score_components": json.dumps({
             "version": "score_v2",
+            "semanticVersion": "score-v2-active8-components-v3",
             "finalScore": 70,
             "components": {
                 "mlEdge": 18,
@@ -760,9 +807,7 @@ def test_execution_replay_label_is_kept_when_prior_s12_ev_was_unavailable():
                 "technicalStructure": 21,
             },
         }),
-        "forecast_data": json.dumps({
-            "ensemble_v2": {"avg_rank": 0.65, "confidence": 0.72},
-        }),
+        "forecast_data": _ensemble_forecast(0.65, 0.72),
         "alpha_allocation": json.dumps({}),
     }
 
@@ -777,9 +822,10 @@ def test_execution_replay_label_is_kept_when_prior_s12_ev_was_unavailable():
     assert samples[0]["execution_probability_target"] == 1.0
 
 
-def test_allocator_ev_fusion_keeps_candidate_and_trade_targets_separate():
+def test_allocator_ev_fusion_uses_executable_selection_label_not_prediction_actual_return():
     row = _row("2026-06-01", 1)
-    row["actual_return_pct"] = 0.03
+    row["actual_return_pct"] = -0.30
+    row["l4_executable_return_pct"] = 0.03
     row["trade_pnl_pct"] = -0.20
     row["s12_replay_pnl_pct"] = None
     row["s12_replay_status"] = "not_triggered"
@@ -797,7 +843,8 @@ def test_allocator_ev_fusion_keeps_candidate_and_trade_targets_separate():
 
 def test_allocator_ev_fusion_prefers_canonical_s12_replay_outcome_label():
     row = _row("2026-06-01", 1)
-    row["actual_return_pct"] = 0.03
+    row["actual_return_pct"] = -0.30
+    row["l4_executable_return_pct"] = 0.03
     row["trade_pnl_pct"] = -0.20
     row["s12_replay_pnl_pct"] = 0.08
     row["s12_replay_status"] = "executed"

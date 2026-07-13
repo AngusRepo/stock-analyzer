@@ -28,7 +28,7 @@ def test_pipeline_subtask_callbacks_include_run_date(monkeypatch):
     asyncio.run(
         pipeline._emit_subtask_callbacks(
             "pipeline-v2-test",
-            {"metrics": {"predictions_written": 10, "prediction_symbols": 2, "prediction_output_models": 5, "recommendations_updated": 2, "recommendation_seed_rows": 3}},
+            {"metrics": {"predictions_written": 10, "prediction_symbols": 3, "prediction_seed_symbols": 3, "prediction_symbol_closure_passed": True, "prediction_output_models": 8, "incomplete_active_model_symbols": 1, "recommendations_updated": 2, "sell_marked_non_buy": 1, "recommendation_seed_rows": 3}},
             "success",
             None,
             1234,
@@ -38,8 +38,10 @@ def test_pipeline_subtask_callbacks_include_run_date(monkeypatch):
 
     assert {payload["task"] for payload in payloads} == {"ml-predict", "recommendation"}
     assert all(payload["run_date"] == "2026-05-04" for payload in payloads)
-    assert [p for p in payloads if p["task"] == "ml-predict"][0]["summary"] == "run_id=pipeline-v2-test symbols=2 rows=10 models=5"
-    assert [p for p in payloads if p["task"] == "recommendation"][0]["summary"] == "run_id=pipeline-v2-test recos_updated=2 seed_rows=3"
+    ml_payload = [p for p in payloads if p["task"] == "ml-predict"][0]
+    assert ml_payload["status"] == "error"
+    assert ml_payload["summary"] == "run_id=pipeline-v2-test symbols=3/3 rows=10 models=8 incomplete_active_model_symbols=1 symbol_closure=True active_model_closure=False"
+    assert [p for p in payloads if p["task"] == "recommendation"][0]["summary"] == "run_id=pipeline-v2-test recos_updated=2 filtered=1 seed_rows=3 closure=True"
 
 
 def test_pipeline_subtask_callbacks_do_not_overwrite_worker_owned_screener():

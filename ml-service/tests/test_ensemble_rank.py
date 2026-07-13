@@ -75,9 +75,9 @@ def test_load_ic_weights_uses_model_pool_only(monkeypatch):
             payloads = {
                 "universal/model_pool.json": {
                     "models": {
-                        "XGBoost": {"rolling_ic": 0.12, "weekly_ic": [0.01]},
-                        "LightGBM": {"ic_4w_avg": 0.08},
-                        "ExtraTrees": {"weekly_ic": [0.03, 0.04]},
+                        "XGBoost": {"last_ic_semantic_version": "daily-cross-sectional-equal-date-v2", "rolling_ic": 0.12, "weekly_ic": [0.01]},
+                        "LightGBM": {"last_ic_semantic_version": "daily-cross-sectional-equal-date-v2", "ic_4w_avg": 0.08},
+                        "ExtraTrees": {"last_ic_semantic_version": "daily-cross-sectional-equal-date-v2", "weekly_ic": [0.03, 0.04]},
                     }
                 },
                 "universal/ic_tracking.json": {
@@ -99,7 +99,7 @@ def test_load_ic_weights_uses_model_pool_only(monkeypatch):
 
     weights = ensemble.load_ic_weights()
 
-    assert 0.014 < weights["XGBoost"] < 0.016
+    assert 0.019 < weights["XGBoost"] < 0.021
     assert weights["LightGBM"] == 0.015
     assert 0.017 < weights["ExtraTrees"] < 0.018
     assert "CatBoost" not in weights
@@ -129,11 +129,13 @@ def test_load_ic_weights_prefers_market_segment_ic(monkeypatch):
             return json.dumps({
                 "models": {
                     "LightGBM": {
+                        "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
                         "rolling_ic": -0.03,
                         "weekly_ic": [0.06],
                         "last_ic_by_segment": {"LISTED": 0.19, "OTC": -0.48},
                     },
                     "PatchTST": {
+                        "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
                         "rolling_ic": -0.14,
                         "weekly_ic": [0.24],
                         "last_ic_by_segment": {"LISTED": -0.12, "OTC": -0.28},
@@ -198,3 +200,42 @@ def test_load_ic_weights_uses_artifact_oos_prior_while_awaiting_live_ic(monkeypa
     weights = ensemble.load_ic_weights()
 
     assert 0.047 < weights["iTransformer"] < 0.049
+
+
+def test_load_ic_weights_ignores_stale_live_weight_when_dates_are_insufficient(monkeypatch):
+    import json
+
+    from app import ensemble
+
+    class FakeBlob:
+        def exists(self):
+            return True
+
+        def download_as_text(self):
+            return json.dumps({
+                "models": {
+                    "PatchTST": {
+                        "status": "active",
+                        "last_ic_status": "insufficient_dates",
+                        "last_ic_root_cause": "date_coverage_low",
+                        "rolling_ic": -0.30,
+                        "ic_4w_avg": 0.25,
+                        "last_artifact_evidence": {"oos_ic": 0.04, "oos_samples": 512},
+                    }
+                }
+            })
+
+    class FakeBucket:
+        def blob(self, path):
+            return FakeBlob()
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setattr("app.model_pool._get_bucket", lambda: FakeBucket())
+    monkeypatch.setattr("app.model_pool._POOL_CACHE", None)
+    monkeypatch.setattr("app.model_pool._POOL_CACHE_LOADED_AT", 0.0)
+    ensemble._IC_WEIGHTS_CACHE = None
+    ensemble._IC_WEIGHTS_CACHE_LOADED_AT = 0.0
+
+    weights = ensemble.load_ic_weights()
+
+    assert 0.038 < weights["PatchTST"] < 0.040

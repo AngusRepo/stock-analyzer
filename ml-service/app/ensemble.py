@@ -25,6 +25,7 @@ from .models import ModelPrediction
 logger = logging.getLogger("ensemble")
 _IC_WEIGHTS_CACHE: dict[str, dict[str, float]] | None = None
 _IC_WEIGHTS_CACHE_LOADED_AT: float = 0.0
+IC_EVALUATION_SEMANTIC_VERSION = "daily-cross-sectional-equal-date-v2"
 
 
 def _normalize_market_segment(segment: Any) -> str | None:
@@ -54,27 +55,33 @@ def _coerce_ic_value(value: Any) -> float | None:
 
 def _entry_serving_ic(entry: dict, market_segment: str | None = None) -> float | None:
     """Choose the IC that matches the prediction lane before using global IC."""
+    semantic_ready = (
+        str(entry.get("last_ic_semantic_version") or "").strip()
+        == IC_EVALUATION_SEMANTIC_VERSION
+    )
+    live_status = str(entry.get("last_ic_status") or "").strip().lower()
+    live_root_cause = str(entry.get("last_ic_root_cause") or "").strip().lower()
+    live_ready = semantic_ready and (not live_status or (
+        live_status == "computed" and live_root_cause in {"", "ok"}
+    ))
     segment = _normalize_market_segment(market_segment)
     segment_map = entry.get("last_ic_by_segment")
-    if segment and isinstance(segment_map, dict):
+    if live_ready and segment and isinstance(segment_map, dict):
         segment_ic = _coerce_ic_value(segment_map.get(segment))
         if segment_ic is not None:
             return segment_ic
 
-    for key in ("ic_4w_avg", "weekly_ic", "rolling_ic"):
-        value = entry.get(key)
-        if key == "weekly_ic":
-            history = value or []
-            if history:
-                value = history[-1]
-            else:
-                value = None
-        ic_value = _coerce_ic_value(value)
-        if ic_value is not None:
-            return ic_value
+    if live_ready:
+        for key in ("rolling_ic", "ic_4w_avg", "weekly_ic"):
+            value = entry.get(key)
+            if key == "weekly_ic":
+                history = value or []
+                value = history[-1] if history else None
+            ic_value = _coerce_ic_value(value)
+            if ic_value is not None:
+                return ic_value
     evidence = entry.get("last_artifact_evidence")
-    status = str(entry.get("last_ic_status") or "").strip().lower()
-    if status in {"awaiting_live_ic", "artifact_oos_prior", "benchmark_evidence_pending_live_ic"} and isinstance(evidence, dict):
+    if not live_ready and isinstance(evidence, dict):
         artifact_ic = _coerce_ic_value(evidence.get("oos_ic") or evidence.get("after_oos_ic"))
         if artifact_ic is not None:
             return artifact_ic
@@ -91,6 +98,11 @@ def _coerce_sample_count(value: Any) -> int | None:
 
 
 def _entry_ic_sample_count(entry: dict, market_segment: str | None = None) -> int:
+    live_status = str(entry.get("last_ic_status") or "").strip().lower()
+    live_root_cause = str(entry.get("last_ic_root_cause") or "").strip().lower()
+    live_ready = not live_status or (
+        live_status == "computed" and live_root_cause in {"", "ok"}
+    )
     segment = _normalize_market_segment(market_segment)
     segment_map = entry.get("last_ic_by_segment")
     if segment and isinstance(segment_map, dict):
@@ -101,8 +113,7 @@ def _entry_ic_sample_count(entry: dict, market_segment: str | None = None) -> in
                 if count is not None:
                     return count
     evidence = entry.get("last_artifact_evidence")
-    status = str(entry.get("last_ic_status") or "").strip().lower()
-    if status in {"awaiting_live_ic", "artifact_oos_prior", "benchmark_evidence_pending_live_ic"} and isinstance(evidence, dict):
+    if not live_ready and isinstance(evidence, dict):
         for key in ("oos_samples", "validation_sample_count", "matched_rows", "sample_count"):
             count = _coerce_sample_count(evidence.get(key))
             if count is not None:

@@ -1278,6 +1278,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 model_name,
                 feature_names,
                 selection_evidence=model_selection_evidence,
+                feature_release_mode=req.feature_release_mode,
             )
             if req.feature_release_mode == "timesfm_l175_l2_feature_release":
                 feature_policy = dict(feature_policy_meta.get("feature_policy") or {})

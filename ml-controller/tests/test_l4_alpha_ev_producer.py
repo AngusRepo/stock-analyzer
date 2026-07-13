@@ -18,26 +18,34 @@ from services.recommendation_service import (  # noqa: E402
 
 def _artifact(**overrides):
     base = {
-        "schema_version": "l4-alpha-ev-artifact-v1",
+        "schema_version": "l4-alpha-ev-artifact-v2",
+        "artifact_contract_version": "l4-alpha-ev-contract-v2",
         "promotion_state": "production_approved",
         "validation_packet": {"decision": "PASS", "failed_gates": []},
         "resolver_method": "regularized_meta_calibrator",
         "model_version": "l4-alpha-ev-20260707",
-        "feature_snapshot_version": "l4-alpha-feature-snapshot-v1",
+        "feature_snapshot_version": "l4-alpha-feature-snapshot-v4-directional-components",
+        "feature_semantic_version": "l4-directional-score-components-v2-lineage-bound",
+        "label_schema_version": "next-session-adjusted-open-to-fifth-session-adjusted-close-net-v1",
         "trained_until": "2026-07-06",
         "horizon_days": 3,
         "cost_model_bps": 18.0,
         "output_is_net_of_costs": True,
-        "feature_families": ["formal_ml", "fundamental", "chip", "technical", "regime", "s12_context"],
+        "feature_families": ["score_v2_components", "formal_ml_direction"],
+        "feature_names": [
+            "ml_edge_norm",
+            "fundamental_quality_norm",
+            "chip_flow_norm",
+            "technical_structure_norm",
+            "ensemble_directional_margin",
+        ],
         "intercept": -0.002,
         "coefficients": {
-            "score_final_norm": 0.010,
             "ml_edge_norm": 0.008,
             "fundamental_quality_norm": 0.006,
             "chip_flow_norm": 0.004,
             "technical_structure_norm": 0.004,
-            "ensemble_avg_rank_centered": 0.012,
-            "ensemble_confidence_centered": 0.004,
+            "ensemble_directional_margin": 0.012,
         },
         "output_clip": {"min": -0.08, "max": 0.08},
     }
@@ -108,8 +116,34 @@ def test_materialize_l4_alpha_ev_uses_production_learned_artifact():
     assert payload["expected_return_source"] == "l4_alpha_ev:regularized_meta_calibrator"
     assert payload["validation_decision"] == "PASS"
     assert payload["approval_state"] == "production_approved"
-    assert payload["expected_return"] == pytest.approx(0.02748)
+    assert payload["expected_return"] == pytest.approx(0.01824)
     assert payload["feature_values"]["fundamental_quality_norm"] == pytest.approx(0.72)
+
+
+def test_materialize_l4_alpha_ev_rejects_legacy_unsigned_confidence_artifact():
+    legacy = _artifact(
+        schema_version="l4-alpha-ev-artifact-v1",
+        artifact_contract_version=None,
+        feature_semantic_version=None,
+        label_schema_version=None,
+        feature_names=["score_final_norm", "ensemble_avg_rank_centered", "ensemble_confidence_centered"],
+        coefficients={
+            "score_final_norm": 0.045,
+            "ensemble_avg_rank_centered": -0.071,
+            "ensemble_confidence_centered": 0.057,
+        },
+    )
+    payload = materialize_l4_alpha_ev(
+        _row(),
+        prediction=_prediction(),
+        policy={"l4_alpha_ev": legacy},
+    )
+
+    assert payload["status"] == "rejected"
+    assert payload["expected_return"] is None
+    assert "artifact_contract_version_incompatible" in payload["blockers"]
+    assert "feature_semantic_version_incompatible" in payload["blockers"]
+    assert "label_schema_version_incompatible" in payload["blockers"]
 
 
 def test_materialize_l4_alpha_ev_allows_fitted_fail_only_for_snapshot_backfill():
@@ -178,18 +212,21 @@ def test_materialize_l4_alpha_ev_rejects_empirical_calibration_as_owner():
 
 
 def test_materialize_l4_alpha_ev_fails_closed_on_missing_required_feature():
+    artifact = _artifact()
+    artifact["feature_names"] = [*artifact["feature_names"], "market_heat_expected_return"]
+    artifact["coefficients"] = {**artifact["coefficients"], "market_heat_expected_return": 1.0}
     payload = materialize_l4_alpha_ev(
         _row(),
         prediction=_prediction(),
-        policy={"l4_alpha_ev": _artifact(coefficients={"market_heat_expected_return": 1.0})},
+        policy={"l4_alpha_ev": artifact},
     )
 
     assert payload["status"] == "rejected"
     assert payload["expected_return"] is None
-    assert "feature_missing:market_heat_expected_return" in payload["blockers"]
+    assert "canonical_feature_set_mismatch" in payload["blockers"]
 
 
-def test_materialize_l4_alpha_ev_reads_s12_entry_context_alias():
+def test_materialize_l4_alpha_ev_rejects_s12_context_in_selection_owner():
     row = {
         **_row(),
         "s12_trade_ev": {
@@ -198,15 +235,18 @@ def test_materialize_l4_alpha_ev_reads_s12_entry_context_alias():
             "s12_entry_context": {"reward_confidence_multiplier": 0.82},
         },
     }
+    artifact = _artifact()
+    artifact["feature_names"] = [*artifact["feature_names"], "s12_context_multiplier_minus_1"]
+    artifact["coefficients"] = {**artifact["coefficients"], "s12_context_multiplier_minus_1": 1.0}
     payload = materialize_l4_alpha_ev(
         row,
         prediction=_prediction(),
-        policy={"l4_alpha_ev": _artifact(coefficients={"s12_context_multiplier_minus_1": 1.0}, intercept=0.0)},
+        policy={"l4_alpha_ev": artifact},
     )
 
-    assert payload["status"] == "loaded"
-    assert payload["feature_values"]["s12_context_multiplier_minus_1"] == pytest.approx(-0.18)
-    assert payload["expected_return"] == pytest.approx(-0.08)
+    assert payload["status"] == "rejected"
+    assert payload["expected_return"] is None
+    assert "canonical_feature_set_mismatch" in payload["blockers"]
 
 
 def test_filter_and_score_materializes_l4_alpha_ev_for_allocator(monkeypatch):

@@ -150,18 +150,33 @@ async def _emit_subtask_callbacks(
     # Populated by node_write_d1 in graphs/daily_pipeline_v2.py.
     predictions_n = int(metrics.get("predictions_written", 0) or 0)
     prediction_symbols = int(metrics.get("prediction_symbols", 0) or 0)
+    prediction_seed_symbols = int(metrics.get("prediction_seed_symbols", 0) or 0)
+    prediction_symbol_closure = bool(metrics.get("prediction_symbol_closure_passed", False))
+    incomplete_active_models = int(metrics.get("incomplete_active_model_symbols", 0) or 0)
     prediction_models = int(metrics.get("prediction_output_models", 0) or 0)
     recos_n = int(metrics.get("recommendations_updated", 0) or 0)
+    filtered_n = int(metrics.get("sell_marked_non_buy", 0) or 0)
     seed_rows_n = int(metrics.get("recommendation_seed_rows", 0) or 0)
+    recommendation_closed = seed_rows_n > 0 and recos_n + filtered_n == seed_rows_n
     prediction_summary = (
-        f"run_id={run_id} symbols={prediction_symbols} rows={predictions_n} models={prediction_models}"
+        f"run_id={run_id} symbols={prediction_symbols}/{prediction_seed_symbols} rows={predictions_n} "
+        f"models={prediction_models} incomplete_active_model_symbols={incomplete_active_models} "
+        f"symbol_closure={prediction_symbol_closure} active_model_closure={incomplete_active_models == 0}"
         if prediction_symbols > 0
         else f"run_id={run_id} predictions={predictions_n}"
     )
 
     subtasks = [
-        ("ml-predict", predictions_n > 0, prediction_summary),
-        ("recommendation", recos_n > 0, f"run_id={run_id} recos_updated={recos_n} seed_rows={seed_rows_n}"),
+        (
+            "ml-predict",
+            predictions_n > 0 and prediction_symbol_closure and incomplete_active_models == 0,
+            prediction_summary,
+        ),
+        (
+            "recommendation",
+            recommendation_closed,
+            f"run_id={run_id} recos_updated={recos_n} filtered={filtered_n} seed_rows={seed_rows_n} closure={recommendation_closed}",
+        ),
     ]
 
     async def _send(payload: dict, client: httpx.AsyncClient | None = None) -> None:

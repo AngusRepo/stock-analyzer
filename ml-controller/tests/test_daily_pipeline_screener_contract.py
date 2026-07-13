@@ -167,6 +167,37 @@ def test_core_family_evidence_does_not_truncate_when_family_evidence_missing():
     assert all(row["core_family_evidence"]["selection_role"] == "evidence_only_not_capacity_gate" for row in result)
 
 
+def test_core_family_evidence_strict_active8_rejects_missing_ensemble_output():
+    from services.recommendation_service import apply_core_family_evidence  # noqa: E402
+
+    prediction = {
+        "rank_scores": {
+            "LightGBM": 0.51,
+            "XGBoost": 0.52,
+            "ExtraTrees": 0.53,
+            "TabM": 0.54,
+            "GNN": 0.55,
+        },
+        "dlinear": {"forecast_pct": 0.01},
+        "patchtst": {"forecast_pct": 0.02},
+        "itransformer": {"forecast_pct": 0.03},
+    }
+
+    result = apply_core_family_evidence(
+        [{"symbol": "2330", "score": 80.0}],
+        {"2330": prediction},
+        strict=True,
+        require_lifecycle_weights=True,
+        require_complete_active_models=True,
+    )
+
+    assert result == []
+    evidence = prediction["core_family_evidence"]
+    assert evidence["formal_model_coverage_complete"] is True
+    assert evidence["formal_model_contract_passed"] is False
+    assert evidence["formal_model_contract_blockers"] == ["ensemble_v2_missing"]
+
+
 def test_l3_formal_predict_uses_full_post_l2_timesfm_slate(monkeypatch):
     _install_daily_pipeline_import_stubs()
     from graphs import daily_pipeline_v2  # noqa: E402

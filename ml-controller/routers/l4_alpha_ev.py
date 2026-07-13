@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
@@ -32,26 +32,39 @@ class L4AlphaEvRefreshReq(BaseModel):
     trigger_source: str = "worker_scheduler"
 
 
-def _latest_verified_end_date(max_date: str | None) -> str:
-    where = ""
-    params: list[Any] = []
-    if max_date:
-        where = "AND date(prediction_date) <= date(?)"
-        params.append(max_date)
+def _latest_mature_prediction_date(max_date: str | None) -> str:
+    cutoff = max_date or "now"
     rows = d1_client.query(
-        f"""
-        SELECT MAX(date(prediction_date)) AS end_date
-        FROM predictions
-        WHERE model_name = 'ensemble'
-          AND verified_at IS NOT NULL
-          AND actual_return_pct IS NOT NULL
-          {where}
+        """
+        WITH price_horizons AS (
+            SELECT
+                stock_id,
+                date(date) AS price_date,
+                LEAD(date(date), 5) OVER (
+                    PARTITION BY stock_id ORDER BY date(date)
+                ) AS exit_date
+            FROM stock_prices
+            WHERE date(date) <= date(?)
+        )
+        SELECT MAX(date(p.prediction_date)) AS end_date
+        FROM predictions p
+        JOIN daily_recommendations dr
+          ON dr.stock_id = p.stock_id
+         AND dr.date = p.prediction_date
+        JOIN price_horizons ph
+          ON ph.stock_id = p.stock_id
+         AND ph.price_date = date(p.prediction_date)
+        WHERE p.model_name = 'ensemble'
+          AND p.forecast_data IS NOT NULL
+          AND dr.score_components IS NOT NULL
+          AND date(p.prediction_date) <= date(?)
+          AND date(ph.exit_date) <= date(?)
         """,
-        params,
+        [cutoff, cutoff, cutoff],
     )
     end_date = str((rows[0] if rows else {}).get("end_date") or "").strip()
     if not end_date:
-        raise HTTPException(status_code=409, detail="l4_alpha_ev_no_verified_ensemble_outcomes")
+        raise HTTPException(status_code=409, detail="l4_alpha_ev_no_mature_executable_labels")
     return end_date
 
 
@@ -146,7 +159,8 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
     """
 
     defaults = _defaults_for_cadence(req.cadence)
-    end_date = _latest_verified_end_date(req.end_date)
+    knowledge_cutoff_date = req.end_date or datetime.now(timezone.utc).date().isoformat()
+    end_date = _latest_mature_prediction_date(knowledge_cutoff_date)
     lookback_days = req.lookback_days or defaults["lookback_days"]
     min_samples = req.min_samples or defaults["min_samples"]
     min_dates = req.min_dates or defaults["min_dates"]
@@ -154,6 +168,7 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
     rows = load_l4_alpha_ev_training_rows(
         d1_client.query,
         end_date=end_date,
+        knowledge_cutoff_date=knowledge_cutoff_date,
         lookback_days=lookback_days,
         limit=req.limit,
     )
@@ -169,7 +184,7 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
     decision = str((validation or {}).get("decision") or "").upper()
     promotion_state = str((artifact or {}).get("promotion_state") or "")
     registry_error: str | None = None
-    if isinstance(artifact, dict):
+    if isinstance(artifact, dict) and not req.dry_run:
         try:
             upsert_artifact_record(
                 _registry_record(

@@ -255,6 +255,7 @@ def build_model_cpcv_evidence(
     stage: str = "lifecycle",
     search_trials: int | None = None,
     coverage_mode: str | None = None,
+    method: str = "purged_cpcv_rank_ic",
 ) -> dict[str, Any]:
     rows = []
     for fold in fold_metrics or []:
@@ -372,7 +373,7 @@ def build_model_cpcv_evidence(
     evidence = {
         "schema_version": MODEL_CPCV_EVIDENCE_SCHEMA_VERSION,
         "model": model,
-        "method": "purged_cpcv_rank_ic",
+        "method": str(method or "purged_cpcv_rank_ic"),
         "decision": decision,
         "passed": decision == "PASS",
         "failed_gates": failed_gates,

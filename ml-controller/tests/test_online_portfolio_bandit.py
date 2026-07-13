@@ -80,8 +80,8 @@ def test_online_portfolio_bandit_selects_ucb_arm_and_keeps_cash_buffer(monkeypat
         ],
         return_history={},
         arms=(
-            PortfolioBanditArm("cash_guard", 2, 0.50, 0.25, 0.0, 0.20, 0.020, 30),
-            PortfolioBanditArm("risk_on", 2, 0.50, 0.00, 0.0, 0.35, 0.001, 30),
+            PortfolioBanditArm("cash_guard", 2, 0.50, 0.25, 0.0, 0.020, 30),
+            PortfolioBanditArm("risk_on", 2, 0.50, 0.00, 0.0, 0.001, 30),
         ),
         exploration_alpha=0.0,
         stage="L3_production_allocation_controller",
@@ -113,7 +113,7 @@ def test_online_portfolio_bandit_forwards_sparse_allocator_policy_knobs(monkeypa
     packet = build_online_portfolio_bandit_l2_packet(
         candidates=[_candidate("AAA", 90.0, 0.05)],
         return_history={},
-        arms=(PortfolioBanditArm("policy_arm", 1, 1.0, 0.0, 0.0, 0.20, 0.020, 30),),
+        arms=(PortfolioBanditArm("policy_arm", 1, 1.0, 0.0, 0.0, 0.020, 30),),
         exploration_alpha=0.0,
         stage="L3_production_allocation_controller",
         max_cluster_weight=0.33,
@@ -162,7 +162,7 @@ def test_online_portfolio_bandit_records_allocator_edge_quality_features(monkeyp
             "s12_target_quality_state": "structure_targets",
         }],
         return_history={},
-        arms=(PortfolioBanditArm("quality_arm", 1, 1.0, 0.0, 0.0, 0.20, 0.020, 30),),
+        arms=(PortfolioBanditArm("quality_arm", 1, 1.0, 0.0, 0.0, 0.020, 30),),
         exploration_alpha=0.0,
         stage="L3_production_allocation_controller",
     )
@@ -202,12 +202,12 @@ def test_online_portfolio_bandit_reward_ledger_can_override_static_prior(monkeyp
                 "reward_mean_r": 1.2,
                 "reward_r_samples": 8,
                 "reward_source_counts": {"trade_pnl_pct": 8},
-                "reward_policy": "prefer_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_then_actual_return_pct_fallback",
+                "reward_policy": "executed_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_censored_otherwise",
             }
         ],
         arms=(
-            PortfolioBanditArm("cash_guard", 1, 1.00, 0.30, 0.0, 0.20, 0.000, 1),
-            PortfolioBanditArm("risk_on", 1, 1.00, 0.00, 0.0, 0.35, 0.020, 1),
+            PortfolioBanditArm("cash_guard", 1, 1.00, 0.30, 0.0, 0.000, 1),
+            PortfolioBanditArm("risk_on", 1, 1.00, 0.00, 0.0, 0.020, 1),
         ),
         exploration_alpha=0.0,
         stage="L3_production_allocation_controller",
@@ -241,8 +241,8 @@ def test_online_portfolio_bandit_uses_recent_decayed_rewards_over_stale_aggregat
             "reward_history": history,
         }],
         arms=(
-            PortfolioBanditArm("stale_winner", 1, 1.0, 0.0, 0.0, 0.2, 0.0, 1),
-            PortfolioBanditArm("stable", 1, 1.0, 0.0, 0.0, 0.2, 0.005, 20),
+            PortfolioBanditArm("stale_winner", 1, 1.0, 0.0, 0.0, 0.0, 1),
+            PortfolioBanditArm("stable", 1, 1.0, 0.0, 0.0, 0.005, 20),
         ),
         exploration_alpha=0.0,
     )
@@ -347,17 +347,16 @@ def test_opb_reward_ledger_aggregates_daily_portfolio_reward_by_arm():
 
     assert len(ledger) == 1
     assert ledger[0]["arm_id"] == "diversified_alpha"
-    assert ledger[0]["samples"] == 2
-    assert ledger[0]["reward_mean"] == pytest.approx(((0.60 * 0.02 + 0.40 * -0.01) + 0.04) / 2)
+    assert ledger[0]["samples"] == 1
+    assert ledger[0]["reward_mean"] == pytest.approx(0.60 * 0.02 + 0.40 * -0.01)
     assert ledger[0]["reward_mean_r"] == pytest.approx((0.60 * 0.50 + 0.40 * -0.25) / 1.0)
     assert ledger[0]["reward_r_samples"] == 1
-    assert ledger[0]["reward_source_counts"] == {"actual_return_pct_5bar_fallback": 1, "trade_pnl_pct": 2}
-    assert ledger[0]["risk_pct_rows"] == 3
+    assert ledger[0]["reward_source_counts"] == {"trade_pnl_pct": 2}
+    assert ledger[0]["risk_pct_rows"] == 2
     assert ledger[0]["reward_history"] == [
         {"date": "2026-07-01", "reward": pytest.approx(0.008), "reward_r": pytest.approx(0.2)},
-        {"date": "2026-07-02", "reward": pytest.approx(0.04), "reward_r": None},
     ]
-    assert ledger[0]["reward_policy"] == "prefer_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_then_actual_return_pct_fallback"
+    assert ledger[0]["reward_policy"] == "executed_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_censored_otherwise"
 
 
 def test_opb_reward_ledger_uses_trade_pnl_r_scaled_by_s12_risk_when_pct_missing():
@@ -391,3 +390,24 @@ def test_opb_reward_ledger_uses_trade_pnl_r_scaled_by_s12_risk_when_pct_missing(
     assert ledger[0]["reward_mean"] == pytest.approx(0.08)
     assert ledger[0]["reward_mean_r"] == pytest.approx(2.0)
     assert ledger[0]["reward_source_counts"] == {"trade_pnl_r_scaled_by_s12_risk_pct": 1}
+
+
+def test_opb_reward_ledger_query_is_point_in_time_bounded():
+    observed: dict[str, object] = {}
+
+    def query_fn(sql: str, params: list[object], timeout: float = 30.0) -> list[dict]:
+        observed["sql"] = sql
+        observed["params"] = params
+        return []
+
+    ledger = load_online_portfolio_bandit_reward_ledger(
+        as_of_date="2026-07-09",
+        lookback_days=30,
+        query_fn=query_fn,
+    )
+
+    assert ledger == []
+    assert "dr.date < ?" in str(observed["sql"])
+    assert "p.model_name = 'ensemble'" in str(observed["sql"])
+    assert "date(p.verified_at) <= date(?)" in str(observed["sql"])
+    assert observed["params"][:3] == ["2026-06-09", "2026-07-09", "2026-07-09"]

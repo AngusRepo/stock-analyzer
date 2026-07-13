@@ -32,6 +32,8 @@ from services.model_artifact_registry import (
     build_promotion_queue,
     list_artifact_registry,
     list_champion_pointers,
+    run_feature_release_promotion_controller,
+    run_model_pool_release_bundle_writer,
     run_model_pool_release_writer,
     run_promotion_controller,
 )
@@ -449,6 +451,14 @@ class PromotionControllerRequest(BaseModel):
     manual_override: bool = False
 
 
+class FeatureReleasePromotionControllerRequest(BaseModel):
+    training_run_id: str
+    confirm: bool = False
+    approved: bool = False
+    approved_by: str | None = None
+    reason: str = "feature_release_bundle_controller"
+
+
 @router.post("/train_patchtst")
 async def train_patchtst(req: TrainPatchTSTRequest):
     """One-shot universal PatchTST training. Mirrors /train_dlinear pipeline."""
@@ -678,9 +688,12 @@ async def discard_challenger(req: DiscardChallengerRequest):
 
 
 class ComputeWeeklyICRequest(BaseModel):
-    lookback_days: int = 7              # Friday cron rolls last 7 days of verified rows
+    # Five-session outcomes make a 7-calendar-day window effectively one
+    # mature cross-section. Thirty-five days yields roughly 20 mature sessions.
+    lookback_days: int = 35
     history_max: int = 26               # cap weekly_ic array (~6 months rolling)
     min_samples: int = 50               # IC noise floor -> skip if fewer obs/model
+    min_dates: int = 10                 # repeated daily cross-sections, not one broad market day
     update_pool: bool = True            # write back to model_pool.json
     update_registry: bool = True        # write selected artifact live-gate evidence
     append_history: bool = True         # false = rolling refresh only; do not append weekly lifecycle history
@@ -690,14 +703,15 @@ class ComputeWeeklyICRequest(BaseModel):
 @router.post("/compute_weekly_ic")
 async def compute_weekly_ic(req: ComputeWeeklyICRequest):
     """Compute Spearman IC per managed model from last lookback_days of
-    verified predictions, append to model_pool.json weekly_ic, recompute
+      verified predictions over the mature 35-day window, append to
+      model_pool.json weekly_ic, recompute
     ic_4w_avg, increment consecutive_negative_weeks if IC<0.
 
     Reads:
       D1 predictions WHERE
         model_name IN (8 alpha prediction models + shadow challenger rows)
         AND verified_at IS NOT NULL
-        AND prediction business date >= date('now','-7 days')
+          AND prediction business date >= date('now','-35 days')
 
     Writes:
       gs://<configured bucket>/universal/model_pool.json
@@ -727,22 +741,50 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
     placeholders = ",".join(["?"] * len(all_tracked))
     if req.run_date:
         sql = f"""
-            SELECT model_name, direction_accuracy, forecast_data, actual_return_pct, verified_at, prediction_date
+              SELECT id, stock_id, model_name, direction_accuracy, forecast_data,
+                     actual_return_pct, verified_at, prediction_date, generated_at,
+                     verification_label_schema_version,
+                     verification_label_entry_price,
+                     verification_label_end_date,
+                     verification_label_known_date
             FROM predictions
             WHERE model_name IN ({placeholders})
               AND date(prediction_date) <= date(?)
+              AND date(verification_label_known_date) <= date(?)
               AND date(prediction_date) >= date(?, ?)
         """
-        rows = d1_query(sql, [*all_tracked, req.run_date, req.run_date, f"-{req.lookback_days} days"])
+        rows = d1_query(
+            sql,
+            [*all_tracked, req.run_date, req.run_date, req.run_date, f"-{req.lookback_days} days"],
+        )
     else:
         sql = f"""
-            SELECT model_name, direction_accuracy, forecast_data, actual_return_pct, verified_at, prediction_date
+              SELECT id, stock_id, model_name, direction_accuracy, forecast_data,
+                     actual_return_pct, verified_at, prediction_date, generated_at,
+                     verification_label_schema_version,
+                     verification_label_entry_price,
+                     verification_label_end_date,
+                     verification_label_known_date
             FROM predictions
             WHERE model_name IN ({placeholders})
+              AND date(verification_label_known_date) <= date('now')
               AND date(prediction_date) >= date('now', ?)
         """
         rows = d1_query(sql, [*all_tracked, f"-{req.lookback_days} days"])
-    per_model_ic = compute_weekly_ic_from_rows(rows, min_samples=req.min_samples, all_tracked=all_tracked)
+    per_model_ic = compute_weekly_ic_from_rows(
+        rows,
+        min_samples=req.min_samples,
+        min_dates=req.min_dates,
+        all_tracked=all_tracked,
+    )
+    for info in per_model_ic.values():
+        contract = info.get("evaluation_contract")
+        if isinstance(contract, dict):
+            contract.update({
+                "requested_run_date": req.run_date,
+                "lookback_days": req.lookback_days,
+                "append_history": req.append_history,
+            })
 
     # 3. Update model_pool.json.
     # Active rows update entry.weekly_ic; challenger rows update
@@ -803,6 +845,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
         "status": "ok",
         "run_date": req.run_date,
         "lookback_days": req.lookback_days,
+        "min_dates": req.min_dates,
         "n_rows_total": len(rows),
         "per_model_ic": per_model_ic,
         "pool_updates": pool_changes if req.update_pool else None,
@@ -1630,6 +1673,73 @@ async def artifact_registry_promotion_controller(req: PromotionControllerRequest
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry promotion controller failed: {e}")
+
+
+@router.post("/artifact_registry/feature_release_promotion_controller")
+async def artifact_registry_feature_release_promotion_controller(
+    req: FeatureReleasePromotionControllerRequest,
+):
+    """Promote one complete L3 feature release and one serving JSON generation."""
+    if not req.training_run_id.strip():
+        raise HTTPException(status_code=400, detail="training_run_id is required")
+    try:
+        import json as _json
+        from google.cloud import storage
+
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if not pool_blob.exists():
+            raise HTTPException(status_code=500, detail="universal/model_pool.json not found")
+        pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
+        champion_versions = {
+            str(name): str(entry.get("version"))
+            for name, entry in (pool.get("models") or {}).items()
+            if isinstance(entry, dict) and entry.get("version")
+        }
+        rows = list_artifact_registry(limit=500)
+        result = run_feature_release_promotion_controller(
+            training_run_id=req.training_run_id,
+            registry_rows=rows,
+            d1_pointers=list_champion_pointers(),
+            model_pool_versions=champion_versions,
+            confirm=req.confirm,
+            approved=req.approved,
+            approved_by=req.approved_by,
+            reason=req.reason,
+        )
+        artifacts = [dict(row) for row in result.pop("artifacts", [])]
+        if req.confirm and result.get("can_promote") is True:
+            if not artifacts:
+                raise RuntimeError("Atomic D1 release committed without artifact projection payload")
+            for artifact in artifacts:
+                metadata_path = str(artifact.get("metadata_path") or "").strip()
+                if metadata_path:
+                    metadata_blob = bucket.blob(metadata_path)
+                    if not metadata_blob.exists():
+                        raise RuntimeError(f"Feature release metadata missing: {metadata_path}")
+                    artifact["metadata"] = _json.loads(metadata_blob.download_as_text().lstrip("\ufeff"))
+            release_writer = run_model_pool_release_bundle_writer(
+                pool,
+                artifacts,
+                reason=req.reason,
+                promoted_at=result.get("confirmed_at"),
+                confirm=True,
+            )
+            pool_blob.upload_from_string(
+                _json.dumps(pool, ensure_ascii=False, indent=2, sort_keys=True),
+                content_type="application/json",
+            )
+            result = {
+                **result,
+                "serving_model_pool_updated": True,
+                "model_pool_release_writer": release_writer,
+                "note": "All affected L3 models moved in one D1 batch and one model_pool generation.",
+            }
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"feature release promotion controller failed: {e}")
 
 
 @router.get("/artifact_registry/champion_pointers")

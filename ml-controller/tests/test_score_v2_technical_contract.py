@@ -41,6 +41,7 @@ def test_score_v2_technical_signals_are_canonical_payload_fields():
     )
 
     assert payload["version"] == "score_v2"
+    assert payload["semanticVersion"] == "score-v2-active8-components-v3"
     assert payload["weights"] == {
         "mlEdge": 25,
         "chipFlow": 25,

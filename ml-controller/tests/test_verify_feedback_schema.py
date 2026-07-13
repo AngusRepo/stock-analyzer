@@ -26,11 +26,11 @@ def test_verify_feedback_keeps_return_pct_and_pnl_r_separate(monkeypatch):
         verify_service,
         "load_bars_for_prediction",
         lambda stock_id, generated_at, prediction_date=None: [
-            {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
-            {"open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0},
-            {"open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0},
-            {"open": 103.0, "high": 105.0, "low": 102.0, "close": 104.0},
-            {"open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0},
+            {"date": "2026-04-21", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
+            {"date": "2026-04-22", "open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0},
+            {"date": "2026-04-23", "open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0},
+            {"date": "2026-04-24", "open": 103.0, "high": 105.0, "low": 102.0, "close": 104.0},
+            {"date": "2026-04-27", "open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0},
         ],
     )
 
@@ -61,6 +61,10 @@ def test_verify_feedback_keeps_return_pct_and_pnl_r_separate(monkeypatch):
     assert feedback["realized_pnl_r"] == pytest.approx(1.0)
     assert feedback["forecast_pct"] == pytest.approx(0.03)
     assert "actual_return" not in feedback
+    assert result["bind"][14] == "next-session-open-to-fifth-session-close-v2"
+    assert result["bind"][15] == pytest.approx(100.0)
+    assert result["bind"][16] == "2026-04-27"
+    assert result["bind"][17] == "2026-04-27"
 
 
 def test_verify_neutral_rows_still_write_actual_return_for_ic(monkeypatch):
@@ -68,11 +72,11 @@ def test_verify_neutral_rows_still_write_actual_return_for_ic(monkeypatch):
         verify_service,
         "load_bars_for_prediction",
         lambda stock_id, generated_at, prediction_date=None: [
-            {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
-            {"open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0},
-            {"open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0},
-            {"open": 103.0, "high": 105.0, "low": 102.0, "close": 104.0},
-            {"open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0},
+            {"date": "2026-04-21", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
+            {"date": "2026-04-22", "open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0},
+            {"date": "2026-04-23", "open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0},
+            {"date": "2026-04-24", "open": 103.0, "high": 105.0, "low": 102.0, "close": 104.0},
+            {"date": "2026-04-27", "open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0},
         ],
     )
 
@@ -93,6 +97,37 @@ def test_verify_neutral_rows_still_write_actual_return_for_ic(monkeypatch):
     assert result["bind"][4] is None
     assert result["bind"][8] == pytest.approx(0.05)
     assert result["arf"] is None
+
+
+def test_verify_ic_label_uses_shared_next_open_not_planned_entry():
+    result = verify_service.verify_single_prediction(
+        {
+            "id": 102,
+            "stock_id": 1,
+            "generated_at": "2026-07-01T10:00:00Z",
+            "entry_price": 95.0,
+            "stop_loss": 90.0,
+            "target1": 105.0,
+            "target2": 110.0,
+            "forecast_data": json.dumps({
+                "signal": "BUY",
+                "rank_score": 0.8,
+                "arf_features": [0.8],
+            }),
+        },
+        market_risk={},
+        bars_override=[
+            {"date": "2026-07-02", "open": 100.0, "high": 101.0, "low": 96.0, "close": 100.0},
+            {"date": "2026-07-03", "open": 101.0, "high": 103.0, "low": 99.0, "close": 102.0},
+            {"date": "2026-07-06", "open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0},
+            {"date": "2026-07-07", "open": 103.0, "high": 105.0, "low": 102.0, "close": 104.0},
+            {"date": "2026-07-08", "open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0},
+        ],
+    )
+
+    assert result is not None
+    assert result["bind"][8] == pytest.approx(0.05)
+    assert result["arf"]["actual_return_pct"] == pytest.approx(0.05)
 
 
 def test_verify_does_not_write_immature_five_session_label():

@@ -20,7 +20,11 @@ def _full_trading_config() -> dict:
 
 def _full_model_pool(overrides: dict[str, dict] | None = None) -> dict:
     models = {
-        name: {"status": "retired", "version": "v1"}
+        name: {
+            "status": "retired",
+            "version": "v1",
+            "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
+        }
         for name in (
             "LightGBM",
             "XGBoost",
@@ -547,6 +551,7 @@ def test_daily_pipeline_uses_lane_ic_before_global_ic(monkeypatch):
     daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
 
     entry = {
+        "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
         "rolling_ic": -0.30,
         "ic_4w_avg": -0.25,
         "last_ic_by_segment": {
@@ -559,6 +564,38 @@ def test_daily_pipeline_uses_lane_ic_before_global_ic(monkeypatch):
 
     assert ic_value == 0.18
     assert source == "last_ic_by_segment.LISTED"
+
+
+def test_daily_pipeline_rejects_legacy_pooled_live_ic(monkeypatch):
+    daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
+
+    ic_value, source = daily_pipeline_v2._entry_serving_ic(
+        {
+            "last_ic_status": "computed",
+            "last_ic_root_cause": "ok",
+            "rolling_ic": 0.30,
+        },
+        "LISTED",
+    )
+
+    assert ic_value is None
+    assert source == "ic_semantic_mismatch"
+
+
+def test_daily_pipeline_uses_artifact_prior_when_live_ic_dates_are_insufficient(monkeypatch):
+    daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
+    entry = {
+        "last_ic_status": "insufficient_dates",
+        "last_ic_root_cause": "date_coverage_low",
+        "rolling_ic": -0.30,
+        "ic_4w_avg": 0.25,
+        "last_artifact_evidence": {"oos_ic": 0.04, "oos_samples": 512},
+    }
+
+    ic_value, source = daily_pipeline_v2._entry_serving_ic(entry, "LISTED")
+
+    assert ic_value == 0.04
+    assert source == "last_artifact_evidence.oos_ic"
 
 
 def test_daily_pipeline_requires_regime_before_recommendation(monkeypatch):
@@ -583,8 +620,8 @@ def test_daily_pipeline_applies_resolved_threshold_policy_to_ensemble(monkeypatc
     }
     pool = {
         "models": {
-            "XGBoost": {"status": "active", "last_ic_by_segment": {"LISTED": {"ic": 0.10}}},
-            "ExtraTrees": {"status": "active", "last_ic_by_segment": {"LISTED": {"ic": 0.10}}},
+            "XGBoost": {"status": "active", "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2", "last_ic_by_segment": {"LISTED": {"ic": 0.10}}},
+            "ExtraTrees": {"status": "active", "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2", "last_ic_by_segment": {"LISTED": {"ic": 0.10}}},
         }
     }
     adaptive = {
@@ -644,11 +681,13 @@ def test_daily_pipeline_validation_fail_dampens_serving_weight(monkeypatch):
         "models": {
             "XGBoost": {
                 "status": "active",
+                "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
                 "last_ic_by_segment": {"LISTED": {"ic": 0.20, "n_samples": 30}},
                 "model_cpcv": {"decision": "FAIL", "pbo": 0.82},
             },
             "ExtraTrees": {
                 "status": "active",
+                "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
                 "last_ic_by_segment": {"LISTED": {"ic": 0.10, "n_samples": 30}},
                 "model_cpcv": {"decision": "PASS", "pbo": 0.22},
             },
@@ -669,11 +708,13 @@ def test_daily_pipeline_ic_shrinkage_keeps_short_sample_model_from_hard_zero(mon
         "models": {
             "DLinear": {
                 "status": "active",
+                "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
                 "last_ic_by_segment": {"LISTED": {"ic": -0.006, "n_samples": 8}},
                 "model_cpcv": {"decision": "PASS", "pbo": 0.10},
             },
             "PatchTST": {
                 "status": "active",
+                "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
                 "last_ic_by_segment": {"LISTED": {"ic": -0.006, "n_samples": 80}},
                 "model_cpcv": {"decision": "PASS", "pbo": 0.10},
             },
@@ -694,6 +735,7 @@ def test_daily_pipeline_uncertain_negative_segment_gets_exploration_floor(monkey
         "models": {
             "XGBoost": {
                 "status": "active",
+                "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
                 "last_ic_by_segment": {"OTC": {"ic": -0.278226, "n_samples": 32}},
                 "model_cpcv": {"decision": "PASS", "pbo": 0.10},
             },
@@ -713,6 +755,7 @@ def test_daily_pipeline_blocks_confirmed_negative_segment_ic_without_pooled_fall
         "models": {
             "DLinear": {
                 "status": "active",
+                "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
                 "rolling_ic": 0.034,
                 "last_ic_sample_count": 132,
                 "last_ic_by_segment": {"EMERGING": {"ic": -0.089, "n_samples": 74}},
@@ -738,6 +781,7 @@ def test_daily_pipeline_empty_segment_weights_do_not_cold_start_or_global_fallba
         "models": {
             "DLinear": {
                 "status": "active",
+                "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
                 "rolling_ic": 0.034,
                 "last_ic_sample_count": 132,
                 "last_ic_by_segment": {"EMERGING": {"ic": -0.089, "n_samples": 74}},
@@ -803,6 +847,7 @@ def test_daily_pipeline_uses_pooled_floor_only_when_explicitly_enabled(monkeypat
         "models": {
             "DLinear": {
                 "status": "active",
+                "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
                 "rolling_ic": 0.034,
                 "last_ic_sample_count": 132,
                 "last_ic_by_segment": {"EMERGING": {"ic": -0.089, "n_samples": 74}},

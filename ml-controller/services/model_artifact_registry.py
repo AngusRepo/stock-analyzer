@@ -48,6 +48,12 @@ PRODUCTION_ARTIFACT_EXTENSIONS: dict[str, str] = {
     "TimesFM": "json",
 }
 PRODUCTION_ARTIFACT_MODEL_NAMES = frozenset(PRODUCTION_ARTIFACT_EXTENSIONS)
+ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v2"
+TIMESFM_L175_RELEASE_COHORT = frozenset({"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"})
+PROMOTION_GRADE_SEQUENCE_METHODS = frozenset({
+    "purged_cpcv_sequence_rank_ic",
+    "purged_walk_forward_retrain_rank_ic",
+})
 
 
 def _now_iso() -> str:
@@ -1228,6 +1234,10 @@ def _offline_monthly_release_blockers(blockers: list[dict[str, Any]]) -> list[di
         blocker
         for blocker in blockers
         if str(blocker.get("code") or "") in hard_blocker_codes
+        or str(blocker.get("code") or "").startswith("artifact_integrity_")
+        or str(blocker.get("code") or "").startswith("feature_contract_")
+        or str(blocker.get("code") or "").startswith("feature_release_")
+        or str(blocker.get("code") or "").startswith("validation_design_")
         or str(blocker.get("code") or "").startswith("cpcv_")
         or str(blocker.get("code") or "").startswith("foundation_")
     ]
@@ -1308,6 +1318,18 @@ def _artifact_live_decision(row: dict[str, Any]) -> dict[str, Any]:
 def _artifact_offline_evidence(row: dict[str, Any]) -> dict[str, Any]:
     offline = _json_loads(row.get("offline_evidence_json"))
     return offline if isinstance(offline, dict) else {}
+
+
+def _artifact_registration_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    direct = _nested_dict(row.get("metadata"))
+    if direct:
+        return direct
+    registration = _nested_dict(_artifact_offline_evidence(row).get("registration"))
+    return _nested_dict(registration.get("metadata"))
+
+
+def _artifact_registration(row: dict[str, Any]) -> dict[str, Any]:
+    return _nested_dict(_artifact_offline_evidence(row).get("registration"))
 
 
 def _deep_get(source: Any, keys: set[str]) -> Any:
@@ -1615,6 +1637,47 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
     extension_blocker = artifact_extension_blocker(row)
     if extension_blocker:
         blockers.append(extension_blocker)
+
+    registration = _artifact_registration(row)
+    metadata = _artifact_registration_metadata(row)
+    contract_required = (
+        str(row.get("feature_policy_version") or registration.get("feature_policy_version") or metadata.get("feature_policy_schema_version") or "")
+        == "model-feature-policy-v2"
+        or str(row.get("source_run_date") or "") >= "2026-07-13"
+        or str(row.get("candidate_type") or "") == "timesfm_l175_l2_feature_release"
+    )
+    checksum = row.get("checksum") or registration.get("checksum") or metadata.get("checksum") or metadata.get("artifact_checksum")
+    if contract_required and not str(checksum or "").startswith("sha256:"):
+        add(
+            "artifact_integrity_checksum_missing",
+            "Artifact bytes have no verifiable SHA-256 checksum",
+            "Regenerate the artifact and metadata together; promotion must verify bytes before deserialization.",
+        )
+
+    feature_contract = _nested_dict(metadata.get("family_feature_contract"))
+    if contract_required and str(feature_contract.get("schema_version") or "") != ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION:
+        add(
+            "feature_contract_family_schema_missing",
+            "Artifact lacks the active-8 family-specific feature schema",
+            "Retrain this model under active8-family-feature-contract-v2; do not infer parity from a column count.",
+        )
+
+    if contract_required and model_name in {"DLinear", "PatchTST", "iTransformer"}:
+        cpcv = _nested_dict(registration.get("model_cpcv")) or _nested_dict(metadata.get("model_cpcv"))
+        method = str(cpcv.get("method") or "")
+        validation_design = _nested_dict(cpcv.get("validation_design")) or _nested_dict(metadata.get("validation_design"))
+        if method not in PROMOTION_GRADE_SEQUENCE_METHODS:
+            add(
+                "validation_design_sequence_method_not_promotion_grade",
+                "Sequence validation is a holdout/proxy, not retrained temporal OOS",
+                "Run purged CPCV or chronological walk-forward with a fresh fit in every fold.",
+            )
+        if validation_design.get("refit_each_fold") is not True:
+            add(
+                "validation_design_sequence_refit_missing",
+                "Sequence validation did not prove per-fold refitting",
+                "Record signal-date splits, purge horizon, and refit_each_fold=true in artifact evidence.",
+            )
 
     if live_status not in {"passed", "multi_evidence_passed", "rolling_ic_passed"} and state != "live_gate_passed":
         add(
@@ -2453,6 +2516,7 @@ def apply_promoted_artifact_to_model_pool(
         "prep_lineage": metadata.get("prep_lineage"),
         "feature_policy": metadata.get("feature_policy"),
         "feature_policy_schema_version": metadata.get("feature_policy_schema_version"),
+        "family_feature_contract": metadata.get("family_feature_contract"),
     }
     entry["last_artifact_evidence"] = {
         key: value
@@ -2514,6 +2578,94 @@ def run_model_pool_release_writer(
     }
 
 
+def run_model_pool_release_bundle_writer(
+    pool: dict[str, Any],
+    artifacts: list[dict[str, Any]],
+    *,
+    reason: str,
+    promoted_at: str | None = None,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Apply one complete feature-era cohort to one model_pool generation."""
+    working_pool = pool if confirm else deepcopy(pool)
+    updates = [
+        apply_promoted_artifact_to_model_pool(
+            working_pool,
+            artifact,
+            reason=reason,
+            promoted_at=promoted_at,
+        )
+        for artifact in sorted(artifacts, key=lambda row: str(row.get("model_name") or ""))
+    ]
+    return {
+        "schema_version": "model-pool-release-bundle-writer-v1",
+        "source_of_truth": "model_artifact_registry",
+        "serving_reader": "model_pool.json",
+        "decision_effect": "write_model_pool_generation" if confirm else "dry_run_only",
+        "confirmed": bool(confirm),
+        "model_pool_updated": bool(confirm),
+        "can_release": True,
+        "serving_updates": updates,
+        "release_models": sorted(update["model_name"] for update in updates),
+        "requires_wei_approval": True,
+        "production_mutation_allowed": bool(confirm),
+    }
+
+
+def feature_release_cohort_blockers(
+    artifact: dict[str, Any],
+    registry_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if str(artifact.get("candidate_type") or "") != "timesfm_l175_l2_feature_release":
+        return []
+    training_run_id = str(artifact.get("training_run_id") or "")
+    matching = {
+        str(row.get("model_name") or ""): row
+        for row in registry_rows
+        if str(row.get("candidate_type") or "") == "timesfm_l175_l2_feature_release"
+        and str(row.get("training_run_id") or "") == training_run_id
+    }
+    blockers: list[dict[str, Any]] = []
+    missing = sorted(TIMESFM_L175_RELEASE_COHORT - set(matching))
+    if missing:
+        blockers.append({
+            "code": "feature_release_cohort_incomplete",
+            "label": "TimesFM feature release does not contain every affected L3 artifact",
+            "next_action": "Retrain one release cohort for LightGBM, XGBoost, ExtraTrees, TabM, and GNN.",
+            "severity": "blocker",
+            "missing_models": missing,
+        })
+    invalid: dict[str, list[str]] = {}
+    for model_name, row in matching.items():
+        if model_name not in TIMESFM_L175_RELEASE_COHORT:
+            continue
+        metadata = _artifact_registration_metadata(row)
+        contract = _nested_dict(metadata.get("family_feature_contract"))
+        reasons: list[str] = []
+        if contract.get("family_schema") != "formal137_plus_timesfm_l175_v1":
+            reasons.append("feature_schema_mismatch")
+        if contract.get("timesfm_l175_sidecar_required") is not True:
+            reasons.append("timesfm_sidecar_not_required")
+        if contract.get("atomic_cohort_required") is not True:
+            reasons.append("atomic_cohort_not_declared")
+        if str(row.get("offline_gate_decision") or "") not in {"PASS", "STRONG_PASS"}:
+            reasons.append("offline_gate_not_passed")
+        checksum = row.get("checksum") or _artifact_registration(row).get("checksum") or metadata.get("checksum") or metadata.get("artifact_checksum")
+        if not str(checksum or "").startswith("sha256:"):
+            reasons.append("checksum_missing")
+        if reasons:
+            invalid[model_name] = reasons
+    if invalid:
+        blockers.append({
+            "code": "feature_release_cohort_contract_mismatch",
+            "label": "TimesFM feature release cohort has mixed schema or incomplete evidence",
+            "next_action": "Rebuild the entire cohort from one dataset snapshot and release id before promotion.",
+            "severity": "blocker",
+            "invalid_models": invalid,
+        })
+    return blockers
+
+
 def _promotion_row_decision(
     *,
     artifact: dict[str, Any],
@@ -2522,6 +2674,7 @@ def _promotion_row_decision(
     approved: bool,
     manual_override: bool = False,
     allow_offline_monthly_release: bool = False,
+    cohort_blockers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Evaluate the final promotion step against the current champion pointer.
 
@@ -2551,6 +2704,7 @@ def _promotion_row_decision(
     blockers: list[str] = []
     offline_monthly_release_cutover = offline_monthly_release_candidate and approved
     promotion_blockers = artifact_promotion_blockers(artifact, champion_version=champion_version)
+    promotion_blockers.extend(cohort_blockers or [])
     if offline_monthly_release_candidate or offline_timesfm_l175_feature_release_candidate:
         promotion_blockers = _offline_monthly_release_blockers(promotion_blockers)
     manual_override_requested = bool(manual_override)
@@ -2715,6 +2869,14 @@ def run_promotion_controller(
             "serving_reader": "model_pool.json",
             "note": "Idempotent promotion-controller guard prevented rollback overwrite.",
         }
+    cohort_blockers = feature_release_cohort_blockers(artifact, registry_rows)
+    if str(artifact.get("candidate_type") or "") == "timesfm_l175_l2_feature_release":
+        cohort_blockers.append({
+            "code": "feature_release_requires_atomic_bundle_controller",
+            "label": "A feature-era release cannot promote one model at a time",
+            "next_action": "Use the feature release bundle controller for the complete training run.",
+            "severity": "blocker",
+        })
     decision = _promotion_row_decision(
         artifact=artifact,
         pointer=pointer,
@@ -2722,6 +2884,7 @@ def run_promotion_controller(
         approved=approved,
         manual_override=manual_override,
         allow_offline_monthly_release=allow_offline_monthly_release,
+        cohort_blockers=cohort_blockers,
     )
     evidence = {
         **decision["evidence"],
@@ -2827,4 +2990,170 @@ def run_promotion_controller(
         "errors": errors,
         "serving_reader": "model_pool.json",
         "note": "Champion pointer updated only when can_promote=true; model_pool.json serving migration remains explicit.",
+    }
+
+
+def run_feature_release_promotion_controller(
+    *,
+    training_run_id: str,
+    registry_rows: list[dict[str, Any]],
+    d1_pointers: list[dict[str, Any]],
+    model_pool_versions: dict[str, str],
+    confirm: bool = False,
+    approved: bool = False,
+    approved_by: str | None = None,
+    reason: str = "feature_release_bundle_controller",
+) -> dict[str, Any]:
+    """Promote one complete TimesFM L175 feature cohort as one D1 batch."""
+    artifacts_by_model = {
+        str(row.get("model_name") or ""): row
+        for row in registry_rows
+        if str(row.get("candidate_type") or "") == "timesfm_l175_l2_feature_release"
+        and str(row.get("training_run_id") or "") == str(training_run_id or "")
+        and str(row.get("model_name") or "") in TIMESFM_L175_RELEASE_COHORT
+    }
+    missing = sorted(TIMESFM_L175_RELEASE_COHORT - set(artifacts_by_model))
+    if missing:
+        return {
+            "status": "blocked",
+            "decision": "feature_release_cohort_incomplete",
+            "can_promote": False,
+            "training_run_id": training_run_id,
+            "missing_models": missing,
+        }
+
+    pointer_by_model = {str(row.get("model_name") or ""): row for row in d1_pointers}
+    cohort_rows = list(artifacts_by_model.values())
+    shared_blockers = feature_release_cohort_blockers(cohort_rows[0], registry_rows)
+    decisions: dict[str, dict[str, Any]] = {}
+    evidences: dict[str, dict[str, Any]] = {}
+    for model_name in sorted(TIMESFM_L175_RELEASE_COHORT):
+        artifact = artifacts_by_model[model_name]
+        pointer = pointer_by_model.get(model_name)
+        champion_version = (
+            str(pointer.get("champion_version"))
+            if pointer and pointer.get("champion_version")
+            else model_pool_versions.get(model_name)
+        )
+        decision = _promotion_row_decision(
+            artifact=artifact,
+            pointer=pointer,
+            champion_version=champion_version,
+            approved=approved,
+            cohort_blockers=shared_blockers,
+        )
+        decisions[model_name] = decision
+        evidences[model_name] = {
+            **decision["evidence"],
+            "approved_by": approved_by,
+            "reason": reason,
+            "confirmed": bool(confirm),
+            "atomic_release_training_run_id": training_run_id,
+        }
+
+    blocked = {
+        model_name: decision.get("evidence", {}).get("blockers", [])
+        for model_name, decision in decisions.items()
+        if decision.get("can_promote") is not True
+    }
+    if blocked:
+        return {
+            "status": "dry_run" if not confirm else "blocked",
+            "decision": "blocked",
+            "can_promote": False,
+            "training_run_id": training_run_id,
+            "approved": approved,
+            "blocked_models": blocked,
+            "model_decisions": decisions,
+        }
+    if not confirm:
+        return {
+            "status": "dry_run",
+            "decision": "promote_atomic_feature_release",
+            "can_promote": True,
+            "training_run_id": training_run_id,
+            "release_models": sorted(artifacts_by_model),
+            "model_decisions": decisions,
+        }
+
+    statements: list[tuple[str, list[Any]]] = []
+    for model_name in sorted(TIMESFM_L175_RELEASE_COHORT):
+        artifact = artifacts_by_model[model_name]
+        pointer = pointer_by_model.get(model_name)
+        decision = decisions[model_name]
+        evidence = evidences[model_name]
+        artifact_id = str(artifact.get("artifact_id") or "")
+        champion_version = decision.get("final_compared_to")
+        old_artifact_id = pointer.get("champion_artifact_id") if pointer else None
+        statements.extend([
+            (
+                """
+                UPDATE model_artifact_registry
+                SET state = ?, final_compared_to = ?, promotion_decision = ?,
+                    approval_state = ?, live_evidence_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE artifact_id = ?
+                """,
+                [
+                    decision["target_state"],
+                    champion_version,
+                    "atomic_feature_release_promote",
+                    decision["approval_state"],
+                    _json_dumps({
+                        **_json_loads(artifact.get("live_evidence_json")),
+                        "promotion_controller": evidence,
+                    }),
+                    artifact_id,
+                ],
+            ),
+            (
+                """
+                UPDATE model_artifact_registry
+                SET state = 'archived', promotion_decision = 'replaced_by_atomic_feature_release',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE model_name = ? AND state = 'production' AND artifact_id != ?
+                """,
+                [model_name, artifact_id],
+            ),
+            (
+                """
+                INSERT INTO model_champion_pointers (
+                  model_name, champion_version, champion_artifact_id,
+                  rollback_version, rollback_artifact_id, promoted_at,
+                  promotion_reason, promotion_evidence_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(model_name) DO UPDATE SET
+                  champion_version = excluded.champion_version,
+                  champion_artifact_id = excluded.champion_artifact_id,
+                  rollback_version = excluded.rollback_version,
+                  rollback_artifact_id = excluded.rollback_artifact_id,
+                  promoted_at = CURRENT_TIMESTAMP,
+                  promotion_reason = excluded.promotion_reason,
+                  promotion_evidence_json = excluded.promotion_evidence_json,
+                  updated_at = CURRENT_TIMESTAMP
+                """,
+                [
+                    model_name,
+                    artifact.get("version"),
+                    artifact_id,
+                    champion_version,
+                    old_artifact_id,
+                    reason,
+                    _json_dumps(evidence),
+                ],
+            ),
+        ])
+
+    batch_result = d1_client.atomic_batch_execute(statements, timeout=60.0)
+    now = _now_iso()
+    return {
+        "status": "ok",
+        "decision": "promoted_atomic_feature_release",
+        "can_promote": True,
+        "training_run_id": training_run_id,
+        "release_models": sorted(artifacts_by_model),
+        "artifacts": [artifacts_by_model[name] for name in sorted(artifacts_by_model)],
+        "confirmed_at": now,
+        "d1_batch": batch_result,
+        "model_decisions": decisions,
+        "serving_reader": "model_pool.json",
     }

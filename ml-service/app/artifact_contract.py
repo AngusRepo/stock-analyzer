@@ -35,6 +35,37 @@ def stable_sha256(value: Any) -> str:
     return "sha256:" + hashlib.sha256(_stable_json(value).encode("utf-8")).hexdigest()
 
 
+def bytes_sha256(raw: bytes) -> str:
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def verify_artifact_bytes(
+    raw: bytes,
+    expected_checksum: str | None,
+    *,
+    artifact_name: str = "artifact",
+) -> dict[str, Any]:
+    """Verify bytes before deserialization, including the legacy joblib wrapper hash."""
+
+    expected = str(expected_checksum or "").strip().lower()
+    actual = bytes_sha256(raw)
+    legacy_wrapped = stable_sha256({"joblib_sha256": actual})
+    report = {
+        "status": "ok",
+        "artifact_name": artifact_name,
+        "expected_checksum": expected or None,
+        "actual_checksum": actual,
+        "matched_legacy_wrapper": expected == legacy_wrapped,
+    }
+    if not expected:
+        report["status"] = "error"
+        raise ArtifactValidationError("artifact checksum missing", report)
+    if expected not in {actual, legacy_wrapped}:
+        report["status"] = "error"
+        raise ArtifactValidationError("artifact checksum mismatch", report)
+    return report
+
+
 def now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -190,6 +221,11 @@ def build_model_artifact_metadata(
 ) -> dict[str, Any]:
     """Build canonical metadata for a saved model artifact."""
 
+    raw_artifact_checksum = (
+        artifact_payload.get("joblib_sha256")
+        if isinstance(artifact_payload, dict)
+        else None
+    )
     meta: dict[str, Any] = {
         "schema_version": ARTIFACT_SCHEMA_VERSION,
         "model_name": model_name,
@@ -198,7 +234,11 @@ def build_model_artifact_metadata(
         "sample_count": int(sample_count),
         "trained_at": now_utc_iso(),
         "gcs_prefix": gcs_prefix,
-        "artifact_checksum": stable_sha256(artifact_payload),
+        "artifact_checksum": (
+            str(raw_artifact_checksum)
+            if str(raw_artifact_checksum or "").startswith("sha256:")
+            else stable_sha256(artifact_payload)
+        ),
         "training_run_id": training_run_id,
         "library_versions": runtime_library_versions(),
     }

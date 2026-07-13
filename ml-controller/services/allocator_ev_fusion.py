@@ -32,6 +32,9 @@ REQUIRED_FEATURE_PREFIXES = {
     "l4": ("l4_expected_return", "l4_"),
     "s12": ("s12_trade_expected_return", "s12_"),
 }
+REQUIRED_ARTIFACT_CONTRACT_VERSION = "allocator-ev-fusion-contract-v8"
+REQUIRED_FEATURE_SEMANTIC_VERSION = "allocator-ev-fusion-directional-components-v2-lineage-bound"
+REQUIRED_LABEL_SCHEMA_VERSION = "next-session-adjusted-open-to-fifth-session-adjusted-close-net-v1"
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -274,7 +277,6 @@ def _feature_values(
     chip = _float_or_none(components.get("chipFlow"))
     technical = _float_or_none(components.get("technicalStructure"))
     avg_rank = _float_or_none(ev2.get("avg_rank"))
-    confidence = _float_or_none(ev2.get("confidence"))
     score_values = (final_score, ml_edge, fundamental, chip, technical)
     return {
         "l4_expected_return": l4_value if l4_value is not None else 0.0,
@@ -288,15 +290,13 @@ def _feature_values(
         "market_heat_expected_return": market_heat_expected_return,
         "l4_s12_edge_agreement": edge_agreement,
         "dispersion_multiplier": dispersion_multiplier if dispersion_multiplier is not None else 1.0,
-        "score_final_norm": (final_score / 100.0) if final_score is not None else 0.0,
         "ml_edge_norm": (ml_edge / 25.0) if ml_edge is not None else 0.0,
         "fundamental_quality_norm": (fundamental / 25.0) if fundamental is not None else 0.0,
         "chip_flow_norm": (chip / 25.0) if chip is not None else 0.0,
         "technical_structure_norm": (technical / 25.0) if technical is not None else 0.0,
-        "ensemble_avg_rank_centered": (avg_rank - 0.5) if avg_rank is not None else 0.0,
-        "ensemble_confidence_centered": (confidence - 0.5) if confidence is not None else 0.0,
+        "ensemble_directional_margin": (avg_rank - 0.5) if avg_rank is not None else 0.0,
         "score_v2_available": 1.0 if all(value is not None for value in score_values) else 0.0,
-        "ensemble_rank_available": 1.0 if avg_rank is not None and confidence is not None else 0.0,
+        "ensemble_rank_available": 1.0 if avg_rank is not None else 0.0,
         **_s12_structure_features(s12_payload),
     }
 
@@ -343,6 +343,12 @@ def materialize_allocator_ev_fusion(
         return None
 
     blockers: list[str] = []
+    if str(artifact.get("artifact_contract_version") or "").strip() != REQUIRED_ARTIFACT_CONTRACT_VERSION:
+        blockers.append("artifact_contract_version_incompatible")
+    if str(artifact.get("feature_semantic_version") or "").strip() != REQUIRED_FEATURE_SEMANTIC_VERSION:
+        blockers.append("feature_semantic_version_incompatible")
+    if str(artifact.get("label_schema_version") or "").strip() != REQUIRED_LABEL_SCHEMA_VERSION:
+        blockers.append("label_schema_version_incompatible")
     method = _resolver_method(artifact)
     if _validation_decision(artifact) not in PASS_STATES:
         blockers.append("validation_packet_not_pass")

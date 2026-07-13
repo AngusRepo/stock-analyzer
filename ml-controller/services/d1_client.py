@@ -320,6 +320,46 @@ def batch_execute(
     }
 
 
+def atomic_batch_execute(
+    statements: list[tuple[str, list[Any]]],
+    timeout: float = 30.0,
+) -> dict:
+    """Execute one fail-closed D1 batch without per-statement fallback.
+
+    Promotion pointers must move as one cohort. The ordinary batch helper is
+    intentionally resilient and may fall back to independent REST writes;
+    that behavior is invalid for a release transaction.
+    """
+    if not statements:
+        return {
+            "total": 0,
+            "success_count": 0,
+            "error_count": 0,
+            "changes_total": 0,
+            "mode": "atomic_empty",
+            "atomic": True,
+        }
+    if len(statements) > 500:
+        raise RuntimeError(f"Atomic D1 batch exceeds 500 statements: {len(statements)}")
+    if allocator_contract_guard_enabled():
+        raise RuntimeError("Atomic D1 batch cannot run while allocator contract guard is enabled")
+    if not WORKER_URL or not WORKER_AUTH:
+        raise RuntimeError("Atomic D1 batch requires the Worker D1 binding endpoint")
+
+    result = _worker_batch_execute(
+        statements,
+        timeout=timeout,
+        chunk_size=len(statements),
+    )
+    if (
+        int(result.get("success_count") or 0) != len(statements)
+        or int(result.get("error_count") or 0) != 0
+        or bool(result.get("partial_failure"))
+    ):
+        raise RuntimeError(f"Atomic D1 batch did not fully commit: {result}")
+    return {**result, "atomic": True}
+
+
 def _raw_batch_execute(
     statements: list[tuple[str, list[Any]]],
     timeout: float = 30.0,

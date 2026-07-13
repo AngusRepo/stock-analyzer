@@ -49,6 +49,7 @@ from services.model_lifecycle_policy import (
     resolve_degraded_dampening,
 )
 from services.model_score_quality import drop_degenerate_rank_scores
+from services.model_ic_tracker import IC_EVALUATION_SEMANTIC_VERSION
 from services.market_regime_state import (
     build_market_regime_contract_from_market_env,
     resolve_market_regime_contract,
@@ -750,6 +751,16 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         sequence_series,
         min_points=sequence_contract_points,
     )
+    sequence_eligible_symbols = {
+        str(row.get("symbol") or row.get("stock_id") or "")
+        for row in sequence_model_series
+        if isinstance(row, dict) and (row.get("symbol") or row.get("stock_id"))
+    }
+    sequence_excluded_by_symbol = {
+        str(row.get("symbol") or ""): row
+        for row in sequence_model_excluded
+        if isinstance(row, dict) and row.get("symbol")
+    }
     sequence_dataset_meta = {
         **sequence_dataset_meta,
         "sequence_model_contract_points": sequence_contract_points,
@@ -1186,7 +1197,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     markov_raw = state_space_overlays.get("MarkovSwitching", {})
     kalman_map = _drain_state_space(kalman_raw, "KalmanFilter")
     markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
-    itransformer_map = _drain_ts_result(itransformer_raw, "iTransformer", sequence_series)
+    itransformer_map = _drain_ts_result(itransformer_raw, "iTransformer", sequence_model_series)
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
         logger.error(f"[Pipeline V2] Feature batch_predict failed: {results}")
@@ -1234,6 +1245,22 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             continue
         if isinstance(payload, dict):
             row["stock_meta"] = payload.get("stock_meta") or {}
+        if sym in sequence_eligible_symbols:
+            row["l3_model_eligibility"] = {
+                "schema_version": "l3-active8-universe-eligibility-v1",
+                "eligible": True,
+                "reason": "active8_sequence_history_contract_met",
+                "required_sequence_points": sequence_contract_points,
+            }
+        else:
+            exclusion = sequence_excluded_by_symbol.get(sym) or {}
+            row["l3_model_eligibility"] = {
+                "schema_version": "l3-active8-universe-eligibility-v1",
+                "eligible": False,
+                "reason": "active8_sequence_history_contract_unmet",
+                "required_sequence_points": sequence_contract_points,
+                "available_sequence_points": exclusion.get("point_count"),
+            }
         _attach_alt_sources(row, sym)
         pred_map[sym] = row
 
@@ -1309,9 +1336,11 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                     ev2_cfg,
                     adaptive_params=state.get("adaptive_params") or {},
                     threshold_policy=threshold_policy,
+                    artifact_versions=active_versions,
                 )
             except Exception as e:
-                logger.debug(f"[Pipeline V2] ensemble_v2 merge failed for {sym}: {e}")
+                r["ensemble_v2_error"] = f"{type(e).__name__}: {e}"
+                logger.warning("[Pipeline V2] ensemble_v2 merge failed for %s: %s", sym, e)
         logger.info(
             f"[Pipeline V2] Ensemble V2 merged: {sum(1 for v in pred_map.values() if 'ensemble_v2' in v)}/{len(pred_map)} stocks "
             f"(degraded_dampening={degraded_dampening})"
@@ -1790,28 +1819,35 @@ def _coerce_ic_value(value: Any) -> float | None:
 
 def _entry_serving_ic(entry: dict, market_segment: str | None = None) -> tuple[float | None, str]:
     """Choose lane IC first; fall back to global lifecycle IC only when absent."""
+    semantic = str(entry.get("last_ic_semantic_version") or "").strip()
+    semantic_ready = semantic == IC_EVALUATION_SEMANTIC_VERSION
+    live_status = str(entry.get("last_ic_status") or "").strip().lower()
+    live_root_cause = str(entry.get("last_ic_root_cause") or "").strip().lower()
+    live_ready = semantic_ready and (not live_status or (
+        live_status == "computed" and live_root_cause in {"", "ok"}
+    ))
     segment = _normalize_market_segment(market_segment)
     segment_map = entry.get("last_ic_by_segment")
-    if segment and isinstance(segment_map, dict):
+    if live_ready and segment and isinstance(segment_map, dict):
         segment_ic = _coerce_ic_value(segment_map.get(segment))
         if segment_ic is not None:
             return segment_ic, f"last_ic_by_segment.{segment}"
 
-    for key in ("ic_4w_avg", "weekly_ic", "rolling_ic"):
-        value = entry.get(key)
-        if key == "weekly_ic":
-            history = value or []
-            value = history[-1] if history else None
-        ic_value = _coerce_ic_value(value)
-        if ic_value is not None:
-            return ic_value, key
+    if live_ready:
+        for key in ("rolling_ic", "ic_4w_avg", "weekly_ic"):
+            value = entry.get(key)
+            if key == "weekly_ic":
+                history = value or []
+                value = history[-1] if history else None
+            ic_value = _coerce_ic_value(value)
+            if ic_value is not None:
+                return ic_value, key
     evidence = entry.get("last_artifact_evidence")
-    status = str(entry.get("last_ic_status") or "").strip().lower()
-    if status in {"awaiting_live_ic", "artifact_oos_prior", "benchmark_evidence_pending_live_ic"} and isinstance(evidence, dict):
+    if not live_ready and isinstance(evidence, dict):
         artifact_ic = _coerce_ic_value(evidence.get("oos_ic") or evidence.get("after_oos_ic"))
         if artifact_ic is not None:
             return artifact_ic, "last_artifact_evidence.oos_ic"
-    return None, "missing"
+    return None, "ic_semantic_mismatch" if not semantic_ready else "missing"
 
 
 def _coerce_sample_count(value: Any) -> int | None:
@@ -2185,8 +2221,17 @@ def _load_pool_and_ic():
                 continue
             last_status = str(entry.get("last_ic_status") or "").strip()
             last_root_cause = str(entry.get("last_ic_root_cause") or "").strip()
+            last_semantic = str(entry.get("last_ic_semantic_version") or "").strip()
             has_fresh_diagnostics = bool(last_status or last_root_cause)
             if has_fresh_diagnostics and not (last_status == "computed" and last_root_cause in ("", "ok")):
+                continue
+            if last_semantic != IC_EVALUATION_SEMANTIC_VERSION:
+                logger.warning(
+                    "[Pipeline V2] Ignoring incompatible IC for %s: expected=%s actual=%s",
+                    name,
+                    IC_EVALUATION_SEMANTIC_VERSION,
+                    last_semantic or "<missing>",
+                )
                 continue
             ic_value = entry.get("rolling_ic")
             if ic_value is None:
@@ -2313,6 +2358,7 @@ def _attach_ensemble_v2(
     *,
     adaptive_params: dict | None = None,
     threshold_policy: Any | None = None,
+    artifact_versions: dict[str, str] | None = None,
 ) -> None:
     bundle = ic_weights if isinstance(ic_weights, dict) and "weights" in ic_weights else None
     serving_weights = bundle.get("weights", {}) if bundle else ic_weights
@@ -2320,6 +2366,7 @@ def _attach_ensemble_v2(
         raise RuntimeError("ml_threshold_policy must be resolved before ensemble_v2 attach")
     thresholds = dict(threshold_policy.thresholds)
     effective_cfg = threshold_policy.ensemble_config(ev2_cfg)
+    effective_cfg["activeArtifactVersions"] = dict(artifact_versions or {})
     if isinstance(adaptive_params, dict):
         allocator_policy = (
             adaptive_params.get("model_allocator")
@@ -2583,6 +2630,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         state["predictions"],
         target_size=core_family_target_size,
         require_lifecycle_weights=True,
+        require_complete_active_models=True,
     )
     active_family_counts = [
         int(((row.get("core_family_evidence") or row.get("core_family_vote") or {}).get("active_family_count") or 0))
@@ -2751,7 +2799,11 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
     layer3_audit_rows = write_layer3_formal_gate_audit(
         predictions=state["predictions"],
         recommendations=state.get("final_recommendations") or [],
-        layer2_symbols=state.get("layer2_recommendation_symbols") or [],
+        layer2_symbols=[
+            str(row.get("symbol") or "")
+            for row in (state.get("screener_recs") or [])
+            if str(row.get("symbol") or "").strip()
+        ],
         run_date=run_date,
         screener_run_id=state.get("screener_run_id"),
         target_size=state.get("layer3_formal_gate_target_size"),
@@ -2771,6 +2823,13 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         run_date,
         filtered_diagnostics=state.get("sell_filtered_diagnostics") or {},
     )
+    seed_rows = len(state.get("screener_recs") or [])
+    closed_rows = rec_updated + sell_marked_non_buy
+    if seed_rows <= 0 or closed_rows != seed_rows:
+        raise RuntimeError(
+            "recommendation_row_closure_failed: "
+            f"updated={rec_updated} filtered={sell_marked_non_buy} seed_rows={seed_rows}"
+        )
 
     # 5. Re-rank
     re_rank_recommendations(run_date)
@@ -2807,20 +2866,56 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
                 if isinstance(pred.get(src_key), dict):
                     model_names.add(model_name)
         prediction_output_models = len(model_names)
+    prediction_seed_symbols = {
+        str(row.get("symbol") or "").strip()
+        for row in (state.get("screener_recs") or [])
+        if str(row.get("symbol") or "").strip()
+    }
+    successful_prediction_symbols = {
+        str(symbol)
+        for symbol, prediction in (state.get("predictions") or {}).items()
+        if isinstance(prediction, dict) and not prediction.get("error") and str(symbol) in prediction_seed_symbols
+    }
+    missing_prediction_symbols = sorted(prediction_seed_symbols - successful_prediction_symbols)
+    unexpected_prediction_symbols = sorted(successful_prediction_symbols - prediction_seed_symbols)
+    prediction_symbol_closure_passed = not missing_prediction_symbols and not unexpected_prediction_symbols
     prediction_rows_per_symbol = (
-        round(predictions_written / len(stock_id_map), 3) if stock_id_map else 0
+        round(predictions_written / len(successful_prediction_symbols), 3)
+        if successful_prediction_symbols else 0
+    )
+    l3_ineligible_symbols = {
+        symbol
+        for symbol in successful_prediction_symbols
+        if (((state.get("predictions") or {}).get(symbol) or {}).get("l3_model_eligibility") or {}).get("eligible") is False
+    }
+    l3_eligible_prediction_symbols = successful_prediction_symbols - l3_ineligible_symbols
+    full_active_model_symbols = sum(
+        1
+        for symbol in l3_eligible_prediction_symbols
+        if bool((((state.get("predictions") or {}).get(symbol) or {}).get("core_family_evidence") or {}).get("formal_model_contract_passed"))
     )
 
     metrics = {
         "predictions_written": predictions_written,
         "layer2_timesfm_enrichment_audit_rows": layer2_audit_rows,
         "layer3_formal_gate_audit_rows": layer3_audit_rows,
-        "prediction_symbols": len(stock_id_map),
+        "prediction_symbols": len(successful_prediction_symbols),
+        "prediction_seed_symbols": len(prediction_seed_symbols),
+        "prediction_symbol_closure_passed": prediction_symbol_closure_passed,
+        "missing_prediction_symbols": missing_prediction_symbols[:20],
+        "unexpected_prediction_symbols": unexpected_prediction_symbols[:20],
+        "full_active_model_symbols": full_active_model_symbols,
+        "incomplete_active_model_symbols": len(l3_eligible_prediction_symbols) - full_active_model_symbols,
+        "l3_eligible_prediction_symbols": len(l3_eligible_prediction_symbols),
+        "l3_ineligible_symbols": sorted(l3_ineligible_symbols)[:20],
+        "l3_ineligible_symbol_count": len(l3_ineligible_symbols),
         "prediction_output_models": prediction_output_models,
         "prediction_rows_per_symbol": prediction_rows_per_symbol,
         "stale_predictions_deleted": stale_predictions_deleted,
         "recommendations_updated": rec_updated,
-        "recommendation_seed_rows": len(state.get("screener_recs") or []),
+        "recommendation_seed_rows": seed_rows,
+        "recommendation_closed_rows": closed_rows,
+        "recommendation_row_closure_passed": closed_rows == seed_rows,
         "final_recommendations": len(final),
         "sell_marked_non_buy": sell_marked_non_buy,
         "llm_reasons_count": len(state.get("llm_reasons") or {}),

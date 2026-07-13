@@ -112,10 +112,13 @@ def test_sequence_cpcv_evidence_can_describe_existing_oos_fold_without_retrainin
         policy={"min_folds": 1, "min_test_rows": 10, "min_coverage": 0.8},
     )
 
-    assert evidence["method"] == "sequence_oos_fold_rank_ic"
+    assert evidence["method"] == "chronological_holdout_rank_ic"
     assert evidence["folds"] == 1
     assert evidence["model"] == "PatchTST"
     assert evidence["date_field"] == "target_date"
+    assert evidence["decision"] == "FAIL"
+    assert "sequence_temporal_refit_required" in evidence["failed_gates"]
+    assert evidence["validation_design"]["refit_each_fold"] is False
 
 
 def test_sequence_cpcv_policy_requires_explicit_enable():

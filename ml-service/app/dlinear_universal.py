@@ -31,6 +31,8 @@ from typing import Optional
 
 import numpy as np
 
+from .artifact_contract import ArtifactValidationError, bytes_sha256, verify_artifact_bytes
+
 logger = logging.getLogger(__name__)
 
 
@@ -384,16 +386,28 @@ def save_to_gcs(state_dict, metadata: dict, version: str = "v1") -> dict:
 
     buf = io.BytesIO()
     torch.save(state_dict, buf)
+    raw = buf.getvalue()
     buf.seek(0)
     weights_path = f"{GCS_WEIGHTS_PREFIX}/{version}.pt"
     bucket.blob(weights_path).upload_from_file(buf, content_type="application/octet-stream")
 
     meta_path = f"{GCS_WEIGHTS_PREFIX}/metadata_{version}.json"
+    metadata = {
+        **metadata,
+        "checksum": bytes_sha256(raw),
+        "artifact_path": weights_path,
+        "metadata_path": meta_path,
+    }
     bucket.blob(meta_path).upload_from_string(
         json.dumps(metadata, indent=2), content_type="application/json"
     )
     logger.info(f"[DLinearUniversal] Saved {weights_path} + {meta_path}")
-    return {"weights_path": weights_path, "metadata_path": meta_path}
+    return {
+        "weights_path": weights_path,
+        "metadata_path": meta_path,
+        "checksum": metadata["checksum"],
+        "metadata": metadata,
+    }
 
 
 def load_from_gcs(version: str = "v1"):
@@ -410,7 +424,16 @@ def load_from_gcs(version: str = "v1"):
         pred_len = meta.get("pred_len", DEFAULT_PRED_LEN)
         kernel = meta.get("kernel", DEFAULT_KERNEL)
         model = _build_model(seq_len, pred_len, kernel)
-        buf = io.BytesIO(weights_blob.download_as_bytes())
+        raw = weights_blob.download_as_bytes()
+        try:
+            meta["artifact_integrity_report"] = verify_artifact_bytes(
+                raw,
+                meta.get("checksum") or meta.get("artifact_checksum"),
+                artifact_name=f"{GCS_WEIGHTS_PREFIX}/{version}.pt",
+            )
+        except ArtifactValidationError as exc:
+            raise RuntimeError(f"DLinear artifact integrity failed: {exc.report}") from exc
+        buf = io.BytesIO(raw)
         state = torch.load(buf, map_location="cpu", weights_only=True)
         model.load_state_dict(state)
         model.eval()

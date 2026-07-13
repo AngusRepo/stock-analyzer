@@ -110,6 +110,45 @@ def test_batch_execute_only_uses_rest_loop_after_raw_batch_failure(monkeypatch):
     assert execute_calls == [("UPDATE predictions SET direction_correct=? WHERE id=?", [1, 10])]
 
 
+def test_atomic_batch_execute_is_fail_closed_without_worker(monkeypatch):
+    monkeypatch.setattr(d1_client, "WORKER_URL", "")
+    monkeypatch.setattr(d1_client, "WORKER_AUTH", "")
+
+    try:
+        d1_client.atomic_batch_execute([("UPDATE predictions SET direction_correct=? WHERE id=?", [1, 10])])
+    except RuntimeError as exc:
+        assert "requires the Worker D1 binding endpoint" in str(exc)
+    else:
+        raise AssertionError("atomic batch must not fall back to independent writes")
+
+
+def test_atomic_batch_execute_uses_exactly_one_worker_batch(monkeypatch):
+    captured: list[tuple[list[tuple[str, list]], float, int]] = []
+
+    def fake_worker_batch(statements, timeout=30.0, chunk_size=250):
+        captured.append((statements, timeout, chunk_size))
+        return {
+            "mode": "worker_d1_batch",
+            "total": len(statements),
+            "success_count": len(statements),
+            "error_count": 0,
+            "changes_total": len(statements),
+        }
+
+    monkeypatch.setattr(d1_client, "WORKER_URL", "https://worker.example")
+    monkeypatch.setattr(d1_client, "WORKER_AUTH", "token")
+    monkeypatch.setattr(d1_client, "_worker_batch_execute", fake_worker_batch)
+    statements = [
+        ("UPDATE predictions SET direction_correct=? WHERE id=?", [1, 10]),
+        ("DELETE FROM concept_buzz WHERE date=?", ["2026-05-03"]),
+    ]
+
+    result = d1_client.atomic_batch_execute(statements, timeout=60.0)
+
+    assert result["atomic"] is True
+    assert captured == [(statements, 60.0, 2)]
+
+
 def test_raw_batch_execute_uses_d1_raw_batch_endpoint(monkeypatch):
     calls: list[dict] = []
 

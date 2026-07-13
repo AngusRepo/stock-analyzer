@@ -218,7 +218,7 @@ def test_timesfm_l175_l2_feature_release_candidate_type_is_preserved():
     queue = registry.build_promotion_queue(records, champion_versions={"LightGBM": "vOld"})
     assert queue["count"] == 1
     assert queue["queue"][0]["approval_required"] is True
-    assert queue["queue"][0]["promotion_decision"] == "eligible_pending_approval"
+    assert queue["queue"][0]["promotion_decision"] == "blocked_multi_evidence_gate"
     decision = registry.run_promotion_controller(
         artifact_id=records[0]["artifact_id"],
         registry_rows=records,
@@ -227,8 +227,99 @@ def test_timesfm_l175_l2_feature_release_candidate_type_is_preserved():
         confirm=False,
         approved=False,
     )
-    assert decision["decision"] == "approval_required"
+    assert decision["decision"] == "blocked"
     assert decision["approval_required"] is True
+    assert "feature_release_cohort_incomplete" in decision["evidence"]["blockers"]
+
+
+def _complete_feature_release_rows() -> list[dict[str, object]]:
+    extensions = {
+        "LightGBM": "joblib",
+        "XGBoost": "joblib",
+        "ExtraTrees": "joblib",
+        "TabM": "pt",
+        "GNN": "pt",
+    }
+    rows = []
+    for model_name, extension in extensions.items():
+        rows.append({
+            "artifact_id": f"{model_name}:vFeatureRelease:timesfm_l175_l2_feature_release",
+            "model_name": model_name,
+            "version": "vFeatureRelease",
+            "training_run_id": "feature-release-run-1",
+            "candidate_type": "timesfm_l175_l2_feature_release",
+            "state": "offline_strong_pass",
+            "offline_gate_decision": "STRONG_PASS",
+            "offline_gate_status": "strong_pass",
+            "live_gate_status": "not_started",
+            "artifact_path": f"universal/{model_name.lower()}/vFeatureRelease.{extension}",
+            "checksum": f"sha256:{model_name.lower()}",
+            "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
+            "live_evidence_json": "{}",
+            "metadata": {
+                "feature_policy_schema_version": "model-feature-policy-v2",
+                "artifact_checksum": f"sha256:{model_name.lower()}",
+                "family_feature_contract": {
+                    "schema_version": "active8-family-feature-contract-v2",
+                    "family_schema": "formal137_plus_timesfm_l175_v1",
+                    "timesfm_l175_sidecar_required": True,
+                    "atomic_cohort_required": True,
+                },
+            },
+        })
+    return rows
+
+
+def test_single_model_controller_rejects_complete_feature_release_cohort():
+    rows = _complete_feature_release_rows()
+    result = registry.run_promotion_controller(
+        artifact_id=str(rows[0]["artifact_id"]),
+        registry_rows=rows,
+        d1_pointers=[],
+        model_pool_versions={name: "vOld" for name in registry.TIMESFM_L175_RELEASE_COHORT},
+        confirm=False,
+        approved=True,
+    )
+
+    assert result["decision"] == "blocked"
+    assert "feature_release_requires_atomic_bundle_controller" in result["evidence"]["blockers"]
+
+
+def test_feature_release_bundle_controller_commits_one_atomic_batch(monkeypatch):
+    rows = _complete_feature_release_rows()
+    captured: list[list[tuple[str, list[object]]]] = []
+
+    def fake_atomic_batch(statements, timeout=30.0):
+        captured.append(statements)
+        return {
+            "total": len(statements),
+            "success_count": len(statements),
+            "error_count": 0,
+            "atomic": True,
+        }
+
+    monkeypatch.setattr(registry.d1_client, "atomic_batch_execute", fake_atomic_batch)
+    pointers = [{
+        "model_name": name,
+        "champion_version": "vOld",
+        "champion_artifact_id": f"{name}:vOld:monthly_release",
+    } for name in registry.TIMESFM_L175_RELEASE_COHORT]
+
+    result = registry.run_feature_release_promotion_controller(
+        training_run_id="feature-release-run-1",
+        registry_rows=rows,
+        d1_pointers=pointers,
+        model_pool_versions={name: "vOld" for name in registry.TIMESFM_L175_RELEASE_COHORT},
+        confirm=True,
+        approved=True,
+        approved_by="Wei",
+    )
+
+    assert result["status"] == "ok"
+    assert result["decision"] == "promoted_atomic_feature_release"
+    assert result["release_models"] == sorted(registry.TIMESFM_L175_RELEASE_COHORT)
+    assert len(captured) == 1
+    assert len(captured[0]) == 15
 
 
 def test_model_pool_release_writer_syncs_artifact_metadata_evidence():
@@ -1202,6 +1293,7 @@ def test_update_live_gate_from_ic_marks_selected_candidate_not_enough_data(monke
                 "artifact_id": "XGBoost:vW:weekly_drift",
                 "model_name": "XGBoost",
                 "version": "vW",
+                "artifact_path": "universal/xgboost/vW.joblib",
                 "candidate_type": "weekly_drift",
                 "state": "offline_strong_pass",
                 "offline_gate_decision": "STRONG_PASS",
@@ -1245,6 +1337,7 @@ def test_promotion_queue_includes_backend_owned_action_context():
                 "artifact_id": "XGBoost:vW:weekly_drift",
                 "model_name": "XGBoost",
                 "version": "vW",
+                "artifact_path": "universal/xgboost/vW.joblib",
                 "candidate_type": "weekly_drift",
                 "state": "live_gate_passed",
                 "offline_gate_decision": "STRONG_PASS",
@@ -1525,11 +1618,12 @@ def test_promotion_controller_blocks_non_active8_artifact_models():
 def test_build_promotion_queue_requires_approval_for_weekly_drift_and_monthly_release():
     queue = registry.build_promotion_queue(
         [
-            {
-                "artifact_id": "XGBoost:vW:weekly_drift",
-                "model_name": "XGBoost",
-                "version": "vW",
-                "candidate_type": "weekly_drift",
+                {
+                    "artifact_id": "XGBoost:vW:weekly_drift",
+                    "model_name": "XGBoost",
+                    "version": "vW",
+                    "artifact_path": "universal/xgboost/vW.joblib",
+                    "candidate_type": "weekly_drift",
                 "state": "live_gate_passed",
                 "offline_gate_decision": "STRONG_PASS",
                 "live_gate_status": "passed",
@@ -1540,6 +1634,7 @@ def test_build_promotion_queue_requires_approval_for_weekly_drift_and_monthly_re
                 "artifact_id": "LightGBM:vM:monthly_release",
                 "model_name": "LightGBM",
                 "version": "vM",
+                "artifact_path": "universal/lightgbm/vM.joblib",
                 "candidate_type": "monthly_release",
                 "state": "live_gate_passed",
                 "offline_gate_decision": "STRONG_PASS",
@@ -1796,6 +1891,7 @@ def test_promotion_controller_dry_run_requires_weekly_approval():
             "artifact_id": "XGBoost:vW:weekly_drift",
             "model_name": "XGBoost",
             "version": "vW",
+            "artifact_path": "universal/xgboost/vW.joblib",
             "candidate_type": "weekly_drift",
             "state": "live_gate_passed",
             "offline_gate_decision": "STRONG_PASS",
@@ -1834,6 +1930,7 @@ def test_promotion_controller_confirm_updates_champion_pointer(monkeypatch):
             "artifact_id": "LightGBM:vM:monthly_release",
             "model_name": "LightGBM",
             "version": "vM",
+            "artifact_path": "universal/lightgbm/vM.joblib",
             "candidate_type": "monthly_release",
             "state": "live_gate_passed",
             "offline_gate_decision": "STRONG_PASS",

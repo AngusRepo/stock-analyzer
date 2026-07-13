@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import statistics
 from typing import Any
 
 ALPHA_PREDICTION_MODELS = (
@@ -28,6 +29,8 @@ EXPERIMENTAL_SHADOW_MODELS = (
 ACTIVE_ARTIFACT_CHALLENGER_MODELS = ALPHA_PREDICTION_MODELS
 
 PRODUCTION_IC_SEGMENTS = {"LISTED", "OTC", "UNKNOWN"}
+IC_EVALUATION_SEMANTIC_VERSION = "daily-cross-sectional-equal-date-v2"
+IC_TARGET_SEMANTIC_VERSION = "next-session-open-to-fifth-session-close-v2"
 
 
 def tracked_model_names() -> tuple[str, ...]:
@@ -114,15 +117,88 @@ def spearman_ic(pairs: list[tuple[float, float]]) -> float | None:
     return num / (denx * deny)
 
 
+def _prediction_date(row: dict[str, Any]) -> str:
+    value = str(row.get("prediction_date") or "").strip()
+    return value[:10] if value else "UNKNOWN_DATE"
+
+
+def _dedupe_prediction_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Keep the latest rerun for each stock/model/business-date observation."""
+    passthrough: list[dict[str, Any]] = []
+    latest: dict[tuple[str, str, str], dict[str, Any]] = {}
+    dropped: dict[str, int] = {}
+    for row in rows:
+        model_name = str(row.get("model_name") or "")
+        stock_id = row.get("stock_id")
+        business_date = _prediction_date(row)
+        if stock_id in (None, "") or business_date == "UNKNOWN_DATE" or not model_name:
+            passthrough.append(row)
+            continue
+        key = (str(stock_id), model_name, business_date)
+        previous = latest.get(key)
+        ordering = (str(row.get("generated_at") or ""), int(row.get("id") or 0))
+        previous_ordering = (
+            str((previous or {}).get("generated_at") or ""),
+            int((previous or {}).get("id") or 0),
+        )
+        if previous is None or ordering >= previous_ordering:
+            if previous is not None:
+                dropped[model_name] = dropped.get(model_name, 0) + 1
+            latest[key] = row
+        else:
+            dropped[model_name] = dropped.get(model_name, 0) + 1
+    return [*passthrough, *latest.values()], dropped
+
+
+def _cross_sectional_ic_summary(
+    dated_pairs: dict[str, list[tuple[float, float]]],
+) -> dict[str, Any]:
+    """Aggregate equal-weight daily cross-sectional rank IC.
+
+    Pooling observations across dates lets broad market drift masquerade as
+    stock-selection skill. Each date therefore contributes at most one IC.
+    """
+    daily_ic: dict[str, float] = {}
+    undefined_dates: list[str] = []
+    for business_date, pairs in sorted(dated_pairs.items()):
+        value = spearman_ic(pairs)
+        if value is None:
+            undefined_dates.append(business_date)
+        else:
+            daily_ic[business_date] = value
+
+    values = list(daily_ic.values())
+    mean_ic = statistics.fmean(values) if values else None
+    std_ic = statistics.stdev(values) if len(values) >= 2 else None
+    return {
+        "ic": mean_ic,
+        "n_dates": len(values),
+        "observed_dates": len(dated_pairs),
+        "undefined_dates": undefined_dates,
+        "daily_ic": {key: round(value, 6) for key, value in daily_ic.items()},
+        "ic_std": round(std_ic, 6) if std_ic is not None else None,
+        "icir": round(mean_ic / std_ic, 6) if mean_ic is not None and std_ic else None,
+        "positive_ic_rate": (
+            round(sum(value > 0 for value in values) / len(values), 6) if values else None
+        ),
+    }
+
+
 def compute_weekly_ic_from_rows(
     rows: list[dict[str, Any]],
     *,
     min_samples: int,
+    min_dates: int = 1,
     all_tracked: tuple[str, ...] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    rows, duplicate_rows_dropped = _dedupe_prediction_rows(rows)
     tracked = all_tracked or tracked_model_names()
     by_model: dict[str, list[tuple[float, float]]] = {name: [] for name in tracked}
     by_model_segment: dict[str, dict[str, list[tuple[float, float]]]] = {name: {} for name in tracked}
+    by_model_date: dict[str, dict[str, list[tuple[float, float]]]] = {name: {} for name in tracked}
+    by_model_segment_date: dict[str, dict[str, dict[str, list[tuple[float, float]]]]] = {
+        name: {} for name in tracked
+    }
     score_sources: dict[str, dict[str, int]] = {name: {} for name in tracked}
     diagnostics: dict[str, dict[str, int]] = {
         name: {
@@ -135,6 +211,9 @@ def compute_weekly_ic_from_rows(
             "unverified_rows": 0,
             "missing_outcome_rows": 0,
             "missing_score_rows": 0,
+            "label_semantic_mismatch_rows": 0,
+            "label_lineage_invalid_rows": 0,
+            "duplicate_rows_dropped": int(duplicate_rows_dropped.get(name, 0)),
         }
         for name in tracked
     }
@@ -149,6 +228,26 @@ def compute_weekly_ic_from_rows(
             diag["unverified_rows"] += 1
             continue
         diag["verified_rows"] += 1
+        if (
+            "verification_label_schema_version" in row
+            and str(row.get("verification_label_schema_version") or "").strip()
+            != IC_TARGET_SEMANTIC_VERSION
+        ):
+            diag["label_semantic_mismatch_rows"] += 1
+            continue
+        if "verification_label_schema_version" in row:
+            label_entry = _as_float(row.get("verification_label_entry_price"))
+            label_end = str(row.get("verification_label_end_date") or "").strip()
+            label_known = str(row.get("verification_label_known_date") or "").strip()
+            if (
+                label_entry is None
+                or label_entry <= 0
+                or not label_end
+                or not label_known
+                or label_known < label_end
+            ):
+                diag["label_lineage_invalid_rows"] += 1
+                continue
         score, source = rank_score_from_prediction_row(row)
         actual = _as_float(row.get("actual_return_pct"))
         if actual is None:
@@ -162,12 +261,17 @@ def compute_weekly_ic_from_rows(
         if score is None or actual is None:
             continue
         segment = market_segment_from_prediction_row(row)
+        business_date = _prediction_date(row)
         if segment in PRODUCTION_IC_SEGMENTS:
             by_model[model_name].append((score, actual))
+            by_model_date[model_name].setdefault(business_date, []).append((score, actual))
             diag["production_rows"] += 1
         else:
             diag["non_production_rows"] += 1
         by_model_segment[model_name].setdefault(segment, []).append((score, actual))
+        by_model_segment_date[model_name].setdefault(segment, {}).setdefault(
+            business_date, []
+        ).append((score, actual))
         source_counts = score_sources[model_name]
         source_counts[source] = source_counts.get(source, 0) + 1
 
@@ -176,15 +280,19 @@ def compute_weekly_ic_from_rows(
         pairs = by_model[name]
         segment_diag: dict[str, dict[str, Any]] = {}
         for segment, segment_pairs in sorted(by_model_segment[name].items()):
-            segment_ic = spearman_ic(segment_pairs)
+            summary = _cross_sectional_ic_summary(by_model_segment_date[name][segment])
+            segment_ic = summary["ic"]
+            enough_dates = int(summary["n_dates"]) >= max(1, int(min_dates))
             segment_diag[segment] = {
                 "status": (
                     "computed"
-                    if segment_ic is not None
+                    if segment_ic is not None and enough_dates
+                    else "insufficient_dates" if segment_ic is not None
                     else "insufficient_samples" if len(segment_pairs) < 2 else "undefined_variance"
                 ),
-                "ic": round(segment_ic, 6) if segment_ic is not None else None,
+                "ic": round(segment_ic, 6) if segment_ic is not None and enough_dates else None,
                 "n_samples": len(segment_pairs),
+                **{key: value for key, value in summary.items() if key != "ic"},
             }
         diag = diagnostics[name]
         root_cause = "ok"
@@ -193,32 +301,76 @@ def compute_weekly_ic_from_rows(
         elif diag["verified_rows"] == 0:
             root_cause = "verification_missing"
         elif diag["outcome_rows"] == 0:
-            root_cause = "outcome_missing"
+            root_cause = (
+                "label_semantic_mismatch"
+                if diag["label_semantic_mismatch_rows"] > 0
+                else "label_lineage_invalid"
+                if diag["label_lineage_invalid_rows"] > 0
+                else "outcome_missing"
+            )
         elif diag["score_rows"] == 0:
             root_cause = "ranking_signal_missing"
-        elif len(pairs) < min_samples:
+        cross_sectional = _cross_sectional_ic_summary(by_model_date[name])
+        evaluated_dates = sorted(cross_sectional["daily_ic"])
+        evaluation_contract = {
+            "semantic_version": IC_EVALUATION_SEMANTIC_VERSION,
+            "metric": "spearman_rank_ic",
+            "aggregation": "equal_weight_mean_of_daily_cross_sections",
+            "dedupe_key": "stock_id+model_name+prediction_date_latest_generated_at",
+            "target": "actual_return_pct",
+            "target_semantic_version": IC_TARGET_SEMANTIC_VERSION,
+            "min_samples": int(min_samples),
+            "min_dates": max(1, int(min_dates)),
+            "n_samples": len(pairs),
+            "n_dates": int(cross_sectional["n_dates"]),
+            "observed_start_date": evaluated_dates[0] if evaluated_dates else None,
+            "observed_end_date": evaluated_dates[-1] if evaluated_dates else None,
+        }
+        if root_cause == "ok" and len(pairs) < min_samples:
             root_cause = "coverage_low"
+        elif (
+            root_cause == "ok"
+            and cross_sectional["ic"] is not None
+            and int(cross_sectional["n_dates"]) < max(1, int(min_dates))
+        ):
+            root_cause = "date_coverage_low"
         if len(pairs) < min_samples:
             out[name] = {
                 "status": "insufficient_samples",
                 "root_cause": root_cause,
                 "n_samples": len(pairs),
+                "evaluation_contract": evaluation_contract,
+                **{key: value for key, value in cross_sectional.items() if key != "ic"},
                 "diagnostics": diag,
                 "score_sources": score_sources[name],
                 "segments": segment_diag,
             }
             continue
-        ic = spearman_ic(pairs)
+        ic = cross_sectional["ic"]
         if ic is None:
             out[name] = {
                 "status": "undefined_variance",
                 "root_cause": "undefined_variance",
                 "ic": None,
                 "n_samples": len(pairs),
+                "evaluation_contract": evaluation_contract,
+                **{key: value for key, value in cross_sectional.items() if key != "ic"},
                 "diagnostics": diag,
                 "score_sources": score_sources[name],
                 "segments": segment_diag,
                 "error": "rank_score_or_actual_return_has_zero_cross_sectional_variance",
+            }
+            continue
+        if int(cross_sectional["n_dates"]) < max(1, int(min_dates)):
+            out[name] = {
+                "status": "insufficient_dates",
+                "root_cause": "date_coverage_low",
+                "n_samples": len(pairs),
+                "evaluation_contract": evaluation_contract,
+                **{key: value for key, value in cross_sectional.items() if key != "ic"},
+                "diagnostics": diag,
+                "score_sources": score_sources[name],
+                "segments": segment_diag,
             }
             continue
         out[name] = {
@@ -226,6 +378,8 @@ def compute_weekly_ic_from_rows(
             "root_cause": "ok",
             "ic": round(ic, 6),
             "n_samples": len(pairs),
+            "evaluation_contract": evaluation_contract,
+            **{key: value for key, value in cross_sectional.items() if key != "ic"},
             "diagnostics": diag,
             "score_sources": score_sources[name],
             "segments": segment_diag,
@@ -254,6 +408,19 @@ def apply_weekly_ic_to_pool(
         if target is None:
             continue
 
+        previous_semantic = str(target.get("last_ic_semantic_version") or "").strip()
+        incoming_contract = info.get("evaluation_contract") or {}
+        incoming_semantic = str(incoming_contract.get("semantic_version") or "").strip()
+        semantic_migration = bool(
+            incoming_semantic and previous_semantic != incoming_semantic
+        )
+        if semantic_migration:
+            # A pooled-observation IC and an equal-date cross-sectional IC are
+            # different estimators. Their histories must never be averaged.
+            target["weekly_ic"] = []
+            target["ic_4w_avg"] = None
+            target["consecutive_negative_weeks"] = 0
+
         target["last_ic_status"] = info.get("status") or ("computed" if info.get("ic") is not None else "unknown")
         target["last_ic_sample_count"] = int(info.get("n_samples") or 0)
         target["last_ic_score_sources"] = info.get("score_sources") or {}
@@ -261,6 +428,10 @@ def apply_weekly_ic_to_pool(
         target["last_ic_error"] = info.get("error")
         target["last_ic_root_cause"] = info.get("root_cause")
         target["last_ic_diagnostics"] = info.get("diagnostics") or {}
+        target["last_ic_evaluation_contract"] = incoming_contract
+        target["last_ic_semantic_version"] = target["last_ic_evaluation_contract"].get(
+            "semantic_version"
+        )
 
         ic = info.get("ic")
         if ic is None:
@@ -271,6 +442,8 @@ def apply_weekly_ic_to_pool(
                 "diagnostics": target["last_ic_diagnostics"],
                 "score_sources": target["last_ic_score_sources"],
                 "segments": target["last_ic_by_segment"],
+                "evaluation_contract": target["last_ic_evaluation_contract"],
+                "semantic_migration": semantic_migration,
                 "history_len": len(target.get("weekly_ic") or []),
             }
             changed = True
@@ -286,6 +459,8 @@ def apply_weekly_ic_to_pool(
                 "diagnostics": target["last_ic_diagnostics"],
                 "score_sources": info.get("score_sources") or {},
                 "segments": info.get("segments") or {},
+                "evaluation_contract": target["last_ic_evaluation_contract"],
+                "semantic_migration": semantic_migration,
                 "history_len": len(target.get("weekly_ic") or []),
             }
             changed = True
@@ -311,6 +486,8 @@ def apply_weekly_ic_to_pool(
             "history_len": len(target["weekly_ic"]),
             "score_sources": info.get("score_sources") or {},
             "segments": info.get("segments") or {},
+            "evaluation_contract": target["last_ic_evaluation_contract"],
+            "semantic_migration": semantic_migration,
         }
         changed = True
 

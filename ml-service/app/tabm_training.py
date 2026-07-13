@@ -21,6 +21,7 @@ from .prep_lineage import (
 from .model_validation import build_model_cpcv_evidence
 from .research_benchmarks.common import direction_accuracy, load_tabular_dataset, rank_ic
 from .training_promotion_policy import resolve_training_promotion_intent
+from .training_policy import build_model_feature_policy_metadata
 
 MODEL_NAME = "TabM"
 DEFAULT_BATCH_COUNT = 5
@@ -414,13 +415,12 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
             "prep_lineage": prep_lineage,
             "prep_freshness": prep_freshness,
         },
-        "feature_policy": {
-            "model": MODEL_NAME,
-            "family": "tabular_neural",
-            "feature_policy_type": "tabm_artifact_required",
-            "feature_source": "universal/prep feature matrix",
-            "selection_method": "production_artifact",
-        },
+        **build_model_feature_policy_metadata(
+            MODEL_NAME,
+            dataset.feature_names,
+            selection_evidence={"selection_method": "production_artifact"},
+            feature_release_mode=payload.get("feature_release_mode") or payload.get("candidate_type"),
+        ),
         "training_params": {
             "epochs": epochs,
             "batch_size": batch_size,

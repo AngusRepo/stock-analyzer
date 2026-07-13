@@ -42,7 +42,8 @@ from services.alpha_framework import (
     normalize_alpha_policy,
     regime_aware_allocate,
 )
-from services.active_model_policy import gnn_return_history_lookback
+from services.active_model_policy import ACTIVE_ALPHA_MODELS, gnn_return_history_lookback
+from services.ensemble_v2 import ENSEMBLE_V2_SEMANTIC_VERSION, build_formal_model_input_contract
 from services.fundamental_quality import score_fundamental_quality
 from services.market_segment_policy import normalize_segment, policy_for_segment
 from services.portfolio_allocation import allocate_sparse_tangent_with_evidence
@@ -829,6 +830,7 @@ def _build_alpha_adjustment_details(alpha_context: dict[str, Any], alpha_policy:
 
 
 SCORE_V2_VERSION = "score_v2"
+SCORE_V2_SEMANTIC_VERSION = "score-v2-active8-components-v3"
 SCORE_V2_WEIGHTS = {
     "mlEdge": 25,
     "chipFlow": 25,
@@ -1261,6 +1263,7 @@ def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | 
     final_score = _clamp_score(total + _score_number(alpha_adjustment), 100)
     payload: dict[str, Any] = {
         "version": SCORE_V2_VERSION,
+        "semanticVersion": SCORE_V2_SEMANTIC_VERSION,
         "weights": SCORE_V2_WEIGHTS,
         "components": components,
         "total": total,
@@ -1293,6 +1296,7 @@ def build_score_components(row: dict, *, raw_score: float, alpha_policy: dict | 
         "finalScore": final_score,
         "formula": "score_v2_total + alphaAdjustment",
         "alphaReason": alpha_reason,
+        "upstreamEnsembleContract": row.get("upstream_ensemble_contract"),
     }
     if isinstance(row.get("fundamental_quality"), dict):
         payload["fundamentalQuality"] = row["fundamental_quality"]
@@ -2027,6 +2031,24 @@ def filter_and_score_recommendations(
             if s12_trade_ev.get("status") == "loaded":
                 row["trade_expected_return_net_pct"] = s12_trade_ev.get("trade_expected_return_net_pct")
                 row["trade_expected_return_source"] = s12_trade_ev.get("trade_expected_return_source")
+        ensemble_payload = (
+            ml.get("ensemble_v2")
+            if isinstance(ml, dict) and isinstance(ml.get("ensemble_v2"), dict)
+            else {}
+        )
+        row["upstream_ensemble_contract"] = {
+            key: ensemble_payload.get(key)
+            for key in (
+                "schema_version",
+                "semantic_version",
+                "input_contract_version",
+                "artifact_versions",
+                "model_set_signature",
+                "contributing_models",
+                "weights",
+            )
+        }
+        row["upstream_ensemble_contract"]["expected_semantic_version"] = ENSEMBLE_V2_SEMANTIC_VERSION
         row["score_components"] = build_score_components(row, raw_score=total_score, alpha_policy=alpha_policy)
         row["score"] = row["score_components"]["finalScore"]
         l4_alpha_ev = materialize_l4_alpha_ev(row, prediction=ml, policy=alpha_policy)
@@ -2143,7 +2165,7 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict, alpha_policy
 
 
 def build_return_history_from_payloads(payloads: list[dict], *, lookback: int | None = None) -> dict[str, list[float]]:
-    """Build close-to-close return history for allocator risk estimates."""
+    """Build split/dividend-adjusted return history for allocator risk estimates."""
     history: dict[str, list[float]] = {}
     safe_lookback = max(2, min(int(lookback or gnn_return_history_lookback()), 504))
     for payload in payloads or []:
@@ -2153,11 +2175,11 @@ def build_return_history_from_payloads(payloads: list[dict], *, lookback: int | 
         prices = _sorted_payload_rows(payload, "prices")[-(safe_lookback + 1):]
         closes: list[float] = []
         for row in prices:
-            close = _float_or_none(row.get("close"))
-            if close is None:
-                close = _float_or_none(row.get("adj_close"))
+            close = _float_or_none(row.get("adj_close"))
             if close is not None and close > 0:
                 closes.append(close)
+        if len(closes) != len(prices):
+            continue
         returns: list[float] = []
         for idx in range(1, len(closes)):
             prev = closes[idx - 1]
@@ -2319,9 +2341,13 @@ def _model_rank_score(prediction: dict, model_name: str) -> float | None:
             return None
         return _forecast_pct_to_rank_score(signal.get("forecast_pct"))
     rank_scores = prediction.get("rank_scores")
-    if not isinstance(rank_scores, dict):
-        return None
-    return _finite_rank_score(rank_scores.get(model_name))
+    score = _finite_rank_score(rank_scores.get(model_name)) if isinstance(rank_scores, dict) else None
+    if score is not None:
+        return score
+    if model_name == "GNN":
+        gnn_payload = prediction.get("gnn") if isinstance(prediction.get("gnn"), dict) else {}
+        return _finite_rank_score(gnn_payload.get("rank_score"))
+    return None
 
 
 def _positive_lifecycle_weights(prediction: dict) -> dict[str, float] | None:
@@ -2511,6 +2537,7 @@ def apply_core_family_evidence(
     min_active_families: int = 2,
     strict: bool = True,
     require_lifecycle_weights: bool = False,
+    require_complete_active_models: bool = False,
 ) -> list[dict]:
     """Attach Layer 3 family evidence without ranking or truncating the candidate pool."""
     if not recommendations:
@@ -2522,6 +2549,22 @@ def apply_core_family_evidence(
         symbol = str(row.get("symbol") or "")
         pred = predictions.get(symbol) if isinstance(predictions, dict) else None
         evidence = build_core_family_evidence(pred, require_lifecycle_weights=require_lifecycle_weights)
+        formal_contract = build_formal_model_input_contract(pred)
+        available_models = set(formal_contract["available_models"])
+        missing_active_models = list(formal_contract["missing_models"])
+        ensemble_available = isinstance((pred or {}).get("ensemble_v2"), dict) and bool((pred or {}).get("ensemble_v2"))
+        formal_contract_passed = bool(formal_contract["complete"] and ensemble_available)
+        evidence["active_model_contract"] = list(ACTIVE_ALPHA_MODELS)
+        evidence["available_active_models"] = sorted(set(ACTIVE_ALPHA_MODELS) & available_models)
+        evidence["missing_active_models"] = missing_active_models
+        evidence["formal_model_coverage_complete"] = bool(formal_contract["complete"])
+        evidence["formal_model_contract_passed"] = formal_contract_passed
+        evidence["ensemble_v2_available"] = ensemble_available
+        evidence["formal_model_contract_blockers"] = [
+            *(["active_model_output_incomplete"] if missing_active_models else []),
+            *(["ensemble_v2_missing"] if not ensemble_available else []),
+        ]
+        evidence["coverage_policy"] = "complete_active_model_set_no_missingness_calibrator"
         evidence["min_active_families"] = int(min_active_families)
         evidence["evidence_status"] = (
             "sufficient_family_breadth"
@@ -2536,6 +2579,8 @@ def apply_core_family_evidence(
             insufficient.append(symbol)
         enriched_row = {**row, "core_family_evidence": evidence, "core_family_vote": evidence}
         _merge_core_family_evidence(enriched_row, evidence)
+        if strict and require_complete_active_models and not formal_contract_passed:
+            continue
         enriched.append(enriched_row)
 
     if strict and insufficient and len(insufficient) == len(recommendations):
@@ -3107,7 +3152,6 @@ def _opb_trade_ev_payload(allocation: dict[str, Any]) -> dict[str, Any]:
 def _opb_reward_from_row(row: dict[str, Any], allocation: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
     trade_pnl_pct = _float_or_none(row.get("trade_pnl_pct"))
     trade_pnl_r = _float_or_none(row.get("trade_pnl_r"))
-    actual_return_pct = _float_or_none(row.get("actual_return_pct"))
     trade_ev = _opb_trade_ev_payload(allocation)
     risk_pct = _float_or_none(trade_ev.get("risk_pct"))
     source = "missing"
@@ -3118,11 +3162,8 @@ def _opb_reward_from_row(row: dict[str, Any], allocation: dict[str, Any]) -> tup
         scale = risk_pct if risk_pct is not None and risk_pct > 0 else 0.01
         reward = trade_pnl_r * scale
         source = "trade_pnl_r_scaled_by_s12_risk_pct" if risk_pct else "trade_pnl_r_scaled_default_1pct_risk"
-    elif actual_return_pct is not None:
-        reward = actual_return_pct
-        source = "actual_return_pct_5bar_fallback"
     else:
-        return None, {"reward_source": source}
+        return None, {"reward_source": "censored_no_executed_trade_outcome"}
     clamped = max(-0.20, min(0.20, reward))
     return clamped, {
         "reward_source": source,
@@ -3131,7 +3172,6 @@ def _opb_reward_from_row(row: dict[str, Any], allocation: dict[str, Any]) -> tup
         "trade_pnl_pct": None if trade_pnl_pct is None else round(trade_pnl_pct, 10),
         "trade_pnl_r": None if trade_pnl_r is None else round(trade_pnl_r, 6),
         "risk_pct": None if risk_pct is None else round(risk_pct, 10),
-        "actual_return_pct": None if actual_return_pct is None else round(actual_return_pct, 10),
     }
 
 
@@ -3155,11 +3195,17 @@ def load_online_portfolio_bandit_reward_ledger(
     *,
     lookback_days: int = 180,
     limit: int = 5000,
+    as_of_date: str | None = None,
     query_fn: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Build OPB arm rewards from realized recommendation outcomes."""
 
-    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=max(1, int(lookback_days)))).isoformat()
+    knowledge_date = (
+        datetime.fromisoformat(as_of_date).date()
+        if as_of_date
+        else datetime.now(timezone.utc).date()
+    )
+    cutoff = (knowledge_date - timedelta(days=max(1, int(lookback_days)))).isoformat()
     max_rows = max(1, min(int(limit), 20000))
     query = query_fn or d1_client.query
     try:
@@ -3170,22 +3216,25 @@ def load_online_portfolio_bandit_reward_ledger(
                    dr.symbol,
                    dr.alpha_allocation,
                    p.trade_pnl_pct,
-                   p.trade_pnl_r,
-                   p.actual_return_pct
+                   p.trade_pnl_r
               FROM daily_recommendations dr
               JOIN predictions p
                 ON p.stock_id = dr.stock_id
                AND p.prediction_date = dr.date
-             WHERE dr.date >= ?
-               AND dr.alpha_allocation IS NOT NULL
+               WHERE dr.date >= ?
+                 AND dr.date < ?
+                 AND dr.alpha_allocation IS NOT NULL
                AND json_valid(dr.alpha_allocation)
                AND json_extract(dr.alpha_allocation, '$.selected') = 1
-               AND json_extract(dr.alpha_allocation, '$.opb_controller.enabled') = 1
-               AND (p.trade_pnl_pct IS NOT NULL OR p.trade_pnl_r IS NOT NULL OR p.actual_return_pct IS NOT NULL)
+                 AND json_extract(dr.alpha_allocation, '$.opb_controller.enabled') = 1
+                 AND p.model_name = 'ensemble'
+                 AND (p.trade_pnl_pct IS NOT NULL OR p.trade_pnl_r IS NOT NULL)
+                 AND p.verified_at IS NOT NULL
+                 AND date(p.verified_at) <= date(?)
              ORDER BY dr.date DESC, dr.rank ASC
              LIMIT ?
             """,
-            [cutoff, max_rows],
+              [cutoff, knowledge_date.isoformat(), knowledge_date.isoformat(), max_rows],
             timeout=30.0,
         )
     except Exception as exc:  # noqa: BLE001 - OPB learning must not block serving.
@@ -3280,7 +3329,7 @@ def load_online_portfolio_bandit_reward_ledger(
             "risk_pct_rows": int(stats.get("risk_pct_rows") or 0),
             "reward_history": sorted(stats.get("reward_history") or [], key=lambda row: row["date"]),
             "source": "daily_recommendations.alpha_allocation+predictions.trade_outcome",
-            "reward_policy": "prefer_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_then_actual_return_pct_fallback",
+            "reward_policy": "executed_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_censored_otherwise",
         })
     return ledger
 
@@ -3551,6 +3600,15 @@ def _apply_sparse_tangent_buy_selection(
             weights = _sanitize_final_weights(weights, preserve_total_exposure=True)
         except Exception as exc:  # noqa: BLE001 - allocator must fall back deterministically.
             logger.warning("[Ranking] OnlinePortfolioBandit controller failed; fallback sparse tangent: %s", exc)
+            opb_packet = {
+                "status": "error",
+                "stage": "L3_production_allocation_controller",
+                "allocation_role": "fallback_sparse_tangent_only",
+                "selection_policy": "controller_failed_no_arm_applied",
+                "selected_arm": None,
+                "error": str(exc),
+                "fallback_engine": "sparse_tangent_inverse_risk",
+            }
             weights = {}
     else:
         weights = {}
@@ -3655,7 +3713,9 @@ def _apply_sparse_tangent_buy_selection(
         "return_history_candidate_count": len(return_history_candidate_symbols),
         "return_history_candidate_symbols": return_history_candidate_symbols,
         "controller": controller,
-        "controller_packet_enabled": opb_packet is not None,
+        "controller_packet_enabled": bool(opb_packet and opb_packet.get("status") == "ok"),
+        "controller_status": opb_packet.get("status") if opb_packet else "not_configured",
+        "controller_fallback_reason": opb_packet.get("error") if opb_packet else None,
         "controller_reward_ledger_samples": sum(
             int(float(row.get("samples") or 0))
             for row in (opb_reward_ledger or [])
@@ -3926,7 +3986,10 @@ def _apply_sparse_tangent_buy_selection(
             **_sparse_allocation_evidence(row, selected=True, weight=float(weight)),
             "potential_buy": False,
             "opb_controller": {
-                "enabled": opb_packet is not None,
+                "enabled": bool(opb_packet and opb_packet.get("status") == "ok"),
+                "status": opb_packet.get("status") if opb_packet else "not_configured",
+                "fallback_reason": opb_packet.get("error") if opb_packet else None,
+                "fallback_engine": opb_packet.get("fallback_engine") if opb_packet else None,
                 "stage": opb_packet.get("stage") if opb_packet else None,
                 "allocation_role": opb_packet.get("allocation_role") if opb_packet else None,
                 "selection_policy": opb_packet.get("selection_policy") if opb_packet else None,
@@ -4347,16 +4410,30 @@ def write_layer3_formal_gate_audit(
             if not vote:
                 vote = pred.get("core_family_vote") if isinstance(pred.get("core_family_vote"), dict) else {}
             ev2 = pred.get("ensemble_v2") if isinstance(pred.get("ensemble_v2"), dict) else {}
+        eligibility = (
+            pred.get("l3_model_eligibility")
+            if isinstance(pred, dict) and isinstance(pred.get("l3_model_eligibility"), dict)
+            else {}
+        )
         active_family_count = int((vote or {}).get("active_family_count") or 0)
         if not isinstance(pred, dict):
             decision = "drop"
             reason_code = "formal_family_prediction_missing"
+        elif eligibility.get("eligible") is False:
+            decision = "drop"
+            reason_code = "formal_l3_universe_ineligible"
         elif not ev2:
             decision = "drop"
             reason_code = "formal_family_ensemble_v2_missing"
+        elif (vote or {}).get("formal_model_coverage_complete") is False:
+            decision = "drop"
+            reason_code = "formal_active_model_coverage_incomplete"
         elif active_family_count < 2:
             decision = "drop"
             reason_code = "formal_family_insufficient_active_families"
+        elif final_row is None:
+            decision = "drop"
+            reason_code = "formal_l3_candidate_filtered"
         else:
             decision = "pass"
             reason_code = "formal_family_evidence_pass"
@@ -4366,11 +4443,18 @@ def write_layer3_formal_gate_audit(
             "source": "daily_pipeline_v2.apply_core_family_evidence",
             "target_size": target_size,
             "selection_role": "evidence_only_not_capacity_gate",
+            "l3_model_eligibility": eligibility,
             "layer2_count": len(symbols),
             "active_family_count": active_family_count,
             "active_families": (vote or {}).get("active_families") or [],
             "inactive_formal_models": (vote or {}).get("inactive_formal_models") or [],
             "inactive_lifecycle_models": (vote or {}).get("inactive_lifecycle_models") or [],
+            "active_model_contract": (vote or {}).get("active_model_contract") or list(ACTIVE_ALPHA_MODELS),
+            "available_active_models": (vote or {}).get("available_active_models") or [],
+            "missing_active_models": (vote or {}).get("missing_active_models") or [],
+            "formal_model_coverage_complete": (vote or {}).get("formal_model_coverage_complete"),
+            "formal_model_contract_passed": (vote or {}).get("formal_model_contract_passed"),
+            "formal_model_contract_blockers": (vote or {}).get("formal_model_contract_blockers") or [],
             "lifecycle_weight_source": (vote or {}).get("lifecycle_weight_source"),
             "contributing_models": ev2.get("contributing_models") if isinstance(ev2, dict) else [],
             "weights": ev2.get("weights") if isinstance(ev2, dict) else {},
@@ -4443,16 +4527,11 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
 
     Returns formal active/family slots that have a usable score in the dict.
     """
-    import math
     out: dict[str, float] = {}
-    rank_scores = pred.get("rank_scores") or {}
-    for name in ("XGBoost", "ExtraTrees", "LightGBM", "TabM", "GNN"):
-        v = rank_scores.get(name)
-        if v is not None:
-            try:
-                out[name] = float(v)
-            except (TypeError, ValueError):
-                pass
+    for name in ACTIVE_ALPHA_MODELS:
+        score = _model_rank_score(pred, name)
+        if score is not None:
+            out[name] = score
     challenger_rank_scores = pred.get("challenger_rank_scores") or {}
     if isinstance(challenger_rank_scores, dict):
         for name, value in challenger_rank_scores.items():
@@ -4463,29 +4542,6 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
                 out[f"{base_name}::challenger"] = float(value)
             except (TypeError, ValueError):
                 pass
-    # Time-series alpha predictors: forecast_pct ??sigmoid rank.
-    if "GNN" not in out:
-        gnn_payload = pred.get("gnn") if isinstance(pred.get("gnn"), dict) else {}
-        v = gnn_payload.get("rank_score")
-        if v is not None:
-            try:
-                out["GNN"] = float(v)
-            except (TypeError, ValueError):
-                pass
-    _SRC_KEY_MODEL = (
-        ("dlinear",          "DLinear"),
-        ("patchtst",         "PatchTST"),
-        ("itransformer",     "iTransformer"),
-    )
-    for src_key, model_name in _SRC_KEY_MODEL:
-        sig = pred.get(src_key) or {}
-        fp = sig.get("forecast_pct")
-        if fp is None:
-            continue
-        try:
-            out[model_name] = 1.0 / (1.0 + math.exp(-float(fp) * 12.0))
-        except (TypeError, ValueError, OverflowError):
-            pass
     return out
 
 
@@ -4853,8 +4909,25 @@ def delete_filtered_recommendations(
         (
             """
             UPDATE daily_recommendations
-               SET signal = 'HOLD',
+               SET score = 0,
+                   signal = 'HOLD',
+                   confidence = 0,
+                   reason = 'Formal ML gate filtered this screener seed; not allocation eligible',
                    has_buy_signal = 0,
+                   eligible_for_ml = 0,
+                   eligible_for_pending_buy = 0,
+                   ml_score = 0,
+                   ml_vote_summary = json_object(
+                     'status', 'filtered',
+                     'reason', 'formal_ml_gate_filtered'
+                   ),
+                   score_components = json_object(
+                     'version', 'score_v2_filtered_v1',
+                     'finalScore', 0,
+                     'screenerSeedScore', score,
+                     'eligibleForAllocation', 0,
+                     'reason', 'formal_ml_gate_filtered'
+                   ),
                    watch_points = CASE
                      WHEN json_valid(watch_points) THEN json_insert(
                        watch_points,

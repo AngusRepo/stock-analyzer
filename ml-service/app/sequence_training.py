@@ -224,28 +224,31 @@ def build_sequence_oos_fold_evidence(
     forecast_prices: np.ndarray,
     policy: dict | None = None,
 ) -> dict:
-    from .model_validation import build_model_cpcv_evidence
-
     ic = sequence_oos_ic_from_forecast(forecast_prices=forecast_prices, dataset=dataset)
-    evidence = build_model_cpcv_evidence(
-        model=model,
-        fold_metrics=[
-            {
-                "fold_id": "oos_holdout",
-                "oos_ic": ic.get("oos_ic", 0.0),
-                "test_rows": ic.get("oos_samples", 0),
-                "coverage": 1.0 if ic.get("oos_samples", 0) else 0.0,
-            }
-        ],
-        policy=policy or {"min_folds": 1, "min_test_rows": 1, "min_coverage": 0.8},
-    )
-    evidence["method"] = "sequence_oos_fold_rank_ic"
-    evidence["family"] = "sequence_model"
-    evidence["date_field"] = "target_date"
-    evidence["input_contract"] = "SequenceWindowDataset(symbol,target_date,last_close,forward_return)"
-    evidence["oos_dates"] = ic.get("oos_dates", 0)
-    evidence["daily_ic_count"] = ic.get("daily_ic_count", 0)
-    return evidence
+    return {
+        "schema_version": "model-cpcv-evidence-v2",
+        "model": model,
+        "method": "chronological_holdout_rank_ic",
+        "decision": "FAIL",
+        "passed": False,
+        "failed_gates": ["sequence_temporal_refit_required"],
+        "reason": "A single chronological holdout is monitoring evidence, not promotion-grade CPCV.",
+        "folds": 1,
+        "oos_ic_mean": ic.get("oos_ic", 0.0),
+        "min_test_rows": ic.get("oos_samples", 0),
+        "coverage_mean": 1.0 if ic.get("oos_samples", 0) else 0.0,
+        "family": "sequence_model",
+        "date_field": "target_date",
+        "input_contract": "SequenceWindowDataset(symbol,target_date,last_close,forward_return)",
+        "oos_dates": ic.get("oos_dates", 0),
+        "daily_ic_count": ic.get("daily_ic_count", 0),
+        "validation_design": {
+            "split_owner": "chronological_target_date",
+            "refit_each_fold": False,
+            "promotion_grade": False,
+        },
+        "policy": policy or {},
+    }
 
 
 def sequence_cpcv_policy_enabled(policy: dict | None, model: str) -> bool:

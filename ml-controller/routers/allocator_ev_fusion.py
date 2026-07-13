@@ -47,26 +47,35 @@ class AllocatorEvFeatureSnapshotBackfillReq(BaseModel):
     s12_min_sample_dates: int = Field(default=8, ge=2, le=252)
 
 
-def _latest_verified_end_date(max_date: str | None) -> str:
-    where = ""
-    params: list[Any] = []
-    if max_date:
-        where = "AND date(prediction_date) <= date(?)"
-        params.append(max_date)
+def _latest_mature_feature_date(max_date: str | None) -> str:
+    cutoff = max_date or "now"
     rows = d1_client.query(
-        f"""
-        SELECT MAX(date(prediction_date)) AS end_date
-        FROM predictions
-        WHERE model_name = 'ensemble'
-          AND verified_at IS NOT NULL
-          AND (actual_return_pct IS NOT NULL OR trade_pnl_pct IS NOT NULL)
-          {where}
+        """
+        WITH price_horizons AS (
+            SELECT
+                stock_id,
+                date(date) AS price_date,
+                LEAD(date(date), 5) OVER (
+                    PARTITION BY stock_id ORDER BY date(date)
+                ) AS exit_date
+            FROM stock_prices
+            WHERE date(date) <= date(?)
+        )
+        SELECT MAX(date(fs.snapshot_date)) AS end_date
+        FROM allocator_ev_feature_snapshots fs
+        JOIN price_horizons ph
+          ON ph.stock_id = fs.stock_id
+         AND ph.price_date = date(fs.snapshot_date)
+        WHERE fs.snapshot_source = 'allocator_ev_asof_backfill_v1'
+          AND fs.as_of_guard = 'trained_until_strictly_before_snapshot_date'
+          AND date(fs.snapshot_date) <= date(?)
+          AND date(ph.exit_date) <= date(?)
         """,
-        params,
+        [cutoff, cutoff, cutoff],
     )
     end_date = str((rows[0] if rows else {}).get("end_date") or "").strip()
     if not end_date:
-        raise HTTPException(status_code=409, detail="allocator_ev_fusion_no_verified_outcomes")
+        raise HTTPException(status_code=409, detail="allocator_ev_fusion_no_mature_feature_snapshots")
     return end_date
 
 
@@ -176,7 +185,7 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
     """
 
     defaults = _defaults_for_cadence(req.cadence)
-    end_date = _latest_verified_end_date(req.end_date)
+    end_date = _latest_mature_feature_date(req.end_date)
     lookback_days = req.lookback_days or defaults["lookback_days"]
     min_samples = req.min_samples or defaults["min_samples"]
     min_dates = req.min_dates or defaults["min_dates"]

@@ -19,10 +19,17 @@ from services.l4_alpha_ev_resolver import (
 )
 
 
-PRODUCER_SCHEMA_VERSION = "l4-alpha-ev-producer-v1"
-CORE_FEATURE_FAMILIES = {"formal_ml", "fundamental", "chip", "technical", "regime"}
-SCORE_RANK_FEATURE_FAMILIES = {"score_v2_composite", "formal_ml_rank", "formal_ml_confidence"}
-SCORE_RANK_FEATURE_NAMES = {"score_final_norm", "ensemble_avg_rank_centered", "ensemble_confidence_centered"}
+PRODUCER_SCHEMA_VERSION = "l4-alpha-ev-producer-v2"
+REQUIRED_ARTIFACT_CONTRACT_VERSION = "l4-alpha-ev-contract-v2"
+REQUIRED_FEATURE_SEMANTIC_VERSION = "l4-directional-score-components-v2-lineage-bound"
+REQUIRED_LABEL_SCHEMA_VERSION = "next-session-adjusted-open-to-fifth-session-adjusted-close-net-v1"
+CANONICAL_FEATURE_NAMES = {
+    "ml_edge_norm",
+    "fundamental_quality_norm",
+    "chip_flow_norm",
+    "technical_structure_norm",
+    "ensemble_directional_margin",
+}
 POLICY_KEYS = (
     "l4_alpha_ev",
     "l4AlphaEv",
@@ -212,6 +219,9 @@ def _feature_value(name: str, row: dict[str, Any], prediction: dict[str, Any] | 
         "ensemble_avg_rank_centered": (
             None if _float_or_none(ev2.get("avg_rank")) is None else _float_or_none(ev2.get("avg_rank")) - 0.5
         ),
+        "ensemble_directional_margin": (
+            None if _float_or_none(ev2.get("avg_rank")) is None else _float_or_none(ev2.get("avg_rank")) - 0.5
+        ),
         "ensemble_confidence_centered": (
             None if _float_or_none(ev2.get("confidence")) is None else _float_or_none(ev2.get("confidence")) - 0.5
         ),
@@ -247,6 +257,27 @@ def _rejected_payload(artifact: dict[str, Any], blockers: list[str]) -> dict[str
     return normalized
 
 
+def _semantic_contract_blockers(artifact: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    if str(artifact.get("artifact_contract_version") or "").strip() != REQUIRED_ARTIFACT_CONTRACT_VERSION:
+        blockers.append("artifact_contract_version_incompatible")
+    if str(artifact.get("feature_semantic_version") or "").strip() != REQUIRED_FEATURE_SEMANTIC_VERSION:
+        blockers.append("feature_semantic_version_incompatible")
+    if str(artifact.get("label_schema_version") or "").strip() != REQUIRED_LABEL_SCHEMA_VERSION:
+        blockers.append("label_schema_version_incompatible")
+    feature_names = {
+        str(value).strip()
+        for value in (artifact.get("feature_names") or [])
+        if str(value).strip()
+    }
+    if feature_names != CANONICAL_FEATURE_NAMES:
+        blockers.append("canonical_feature_set_mismatch")
+    coefficients = _coefficients(artifact) or {}
+    if set(coefficients) != CANONICAL_FEATURE_NAMES:
+        blockers.append("canonical_coefficient_set_mismatch")
+    return blockers
+
+
 def materialize_l4_alpha_ev(
     row: dict[str, Any],
     *,
@@ -257,6 +288,9 @@ def materialize_l4_alpha_ev(
     """Return validated row-level L4 alpha EV, or None when no producer is configured."""
     existing = _existing_payload(row, prediction)
     if existing is not None:
+        semantic_blockers = _semantic_contract_blockers(existing)
+        if semantic_blockers:
+            return _rejected_payload(existing, semantic_blockers)
         return resolve_l4_alpha_ev(existing, usage_scope=usage_scope)
 
     artifact = _policy_artifact(policy)
@@ -271,7 +305,7 @@ def materialize_l4_alpha_ev(
         and not (artifact.get("fit_blockers") or [])
     )
 
-    blockers: list[str] = []
+    blockers: list[str] = _semantic_contract_blockers(artifact)
     method = _resolver_method(artifact)
     if method in EMPIRICAL_ONLY_METHODS:
         blockers.append("empirical_bucket_not_production_alpha_ev_owner")
@@ -286,16 +320,7 @@ def materialize_l4_alpha_ev(
         blockers.append("production_approval_missing")
 
     families = _feature_families(artifact)
-    artifact_feature_names = {
-        str(value).strip()
-        for value in (artifact.get("feature_names") or [])
-        if str(value).strip()
-    }
-    required_families = (
-        SCORE_RANK_FEATURE_FAMILIES
-        if artifact_feature_names and artifact_feature_names.issubset(SCORE_RANK_FEATURE_NAMES)
-        else CORE_FEATURE_FAMILIES
-    )
+    required_families = {"score_v2_components", "formal_ml_direction"}
     missing_families = sorted(required_families - families)
     blockers.extend(f"feature_family_missing:{family}" for family in missing_families)
 

@@ -915,6 +915,19 @@ async def trigger_universal_retrain(
 
     # ?? 4. Sector encoding ??????????????????????????????????????????????????
     timesfm_l175_feature_release_requested = _timesfm_l175_feature_release_requested(req)
+    if timesfm_l175_feature_release_requested:
+        # TimesFM changes the governed tabular universe. TabM and GNN must be
+        # trained in the same release run as the three tree models.
+        req.artifact_lifecycle_targets = list(dict.fromkeys([
+            *(req.artifact_lifecycle_targets or []),
+            "TabM",
+            "GNN",
+        ]))
+        req.artifact_lifecycle_contracts = {
+            **(req.artifact_lifecycle_contracts or {}),
+            "TabM": "formal137_plus_timesfm_l175_v1",
+            "GNN": "formal137_plus_timesfm_l175_v1",
+        }
     timesfm_l175_history_by_stock_id: dict[int, dict[str, dict[str, float]]] = {}
     timesfm_l175_history_summary: dict[str, int | str | bool] = {
         "requested": timesfm_l175_feature_release_requested,

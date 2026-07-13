@@ -76,3 +76,32 @@ def test_write_layer3_formal_gate_audit_persists_pass_and_drop(monkeypatch):
     assert evidence["target_size"] == 1
     assert evidence["layer2_count"] == 2
     assert evidence["active_families"] == ["tree", "graph", "time_series"]
+
+
+def test_write_layer3_formal_gate_audit_distinguishes_universe_ineligible(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        recommendation_service.d1_client,
+        "batch_execute",
+        lambda statements: captured.extend(statements) or {"success": True},
+    )
+
+    write_layer3_formal_gate_audit(
+        predictions={
+            "6901": {
+                "l3_model_eligibility": {
+                    "eligible": False,
+                    "reason": "active8_sequence_history_contract_unmet",
+                },
+                "ensemble_v2": {"signal": "HOLD"},
+            }
+        },
+        recommendations=[],
+        layer2_symbols=["6901"],
+        run_date="2026-07-09",
+        screener_run_id="run-20260709",
+    )
+
+    params = captured[1][1]
+    assert params[5] == "drop"
+    assert params[6] == "formal_l3_universe_ineligible"

@@ -449,6 +449,7 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "artifact_path": saved["artifact_path"],
         "metadata_path": saved["metadata_path"],
         "checksum": saved["checksum"],
+        "metadata": saved["metadata"],
         "metrics": saved["metadata"]["metrics"],
         "model_cpcv": saved["metadata"]["model_cpcv"],
         "ic_tracking": {

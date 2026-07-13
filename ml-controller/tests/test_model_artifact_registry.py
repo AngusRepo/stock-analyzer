@@ -679,6 +679,48 @@ def test_hydrate_retrain_followup_artifact_metadata_uses_immutable_metadata(monk
     assert "artifact_registrations" not in payload["stages"]["train"]
 
 
+def test_hydrate_retrain_followup_enriches_lifecycle_metadata(monkeypatch):
+    monkeypatch.setattr(
+        registry,
+        "_load_artifact_metadata_from_gcs",
+        lambda path: {
+            "artifact_path": "universal/gnn/v1.pt",
+            "metadata_path": "universal/gnn/metadata_v1.json",
+            "checksum": "sha256:gnn",
+            "feature_policy_schema_version": "model-feature-policy-v2",
+            "family_feature_contract": {
+                "schema_version": "active8-family-feature-contract-v3",
+            },
+        },
+    )
+    payload = {
+        "candidate_version": "v1",
+        "stages": {
+            "train": {"ic_tracking": {}},
+            "artifact_lifecycle": {
+                "results": {
+                    "GNN": {
+                        "status": "ok",
+                        "version": "v1",
+                        "metadata_path": "universal/gnn/metadata_v1.json",
+                    },
+                },
+            },
+        },
+    }
+
+    hydrated = registry.hydrate_retrain_followup_artifact_metadata(payload)
+    raw_result = hydrated["stages"]["artifact_lifecycle"]["results"]["GNN"]
+    records = registry.build_artifact_records_from_retrain_followup(hydrated)
+
+    assert raw_result["checksum"] == "sha256:gnn"
+    assert records[0]["feature_policy_version"] == "model-feature-policy-v2"
+    offline = json.loads(records[0]["offline_evidence_json"])
+    assert offline["registration"]["metadata"]["family_feature_contract"]["schema_version"] == (
+        "active8-family-feature-contract-v3"
+    )
+
+
 def test_train_stage_artifact_survives_unrelated_run_level_lifecycle_error():
     payload = {
         "run_id": "universal-20260619T090702-aac5f10a",

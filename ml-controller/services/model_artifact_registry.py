@@ -486,7 +486,11 @@ def _normalise_lifecycle_registration(
         "metrics": metrics or model_ic,
         "model_cpcv": model_cpcv,
         "training_run_id": payload_dict.get("run_id") or payload_dict.get("trained_at"),
-        "training_manifest_path": payload_dict.get("training_manifest_path"),
+        "training_manifest_path": (
+            raw_result.get("training_manifest_path")
+            or metadata.get("training_manifest_path")
+            or payload_dict.get("training_manifest_path")
+        ),
         "evaluation_baseline_version": (
             raw_result.get("evaluation_baseline_version")
             or pool_update.get("old_version")
@@ -769,6 +773,28 @@ def hydrate_retrain_followup_artifact_metadata(payload: Any) -> dict[str, Any]:
             "metadata": metadata,
         }
     train["artifact_registrations"] = registrations
+
+    lifecycle = _nested_dict(stages.get("artifact_lifecycle"))
+    lifecycle_results = _nested_dict(lifecycle.get("results"))
+    for model_name, raw_result in list(lifecycle_results.items()):
+        if not is_production_artifact_model(str(model_name)) or not isinstance(raw_result, dict):
+            continue
+        version = str(raw_result.get("version") or payload_dict.get("candidate_version") or "").strip()
+        if not version:
+            continue
+        metadata_path = str(raw_result.get("metadata_path") or model_metadata_path(str(model_name), version))
+        metadata = _load_artifact_metadata_from_gcs(metadata_path)
+        if not metadata:
+            continue
+        lifecycle_results[str(model_name)] = {
+            **raw_result,
+            "artifact_path": raw_result.get("artifact_path") or metadata.get("artifact_path"),
+            "metadata_path": raw_result.get("metadata_path") or metadata.get("metadata_path") or metadata_path,
+            "checksum": raw_result.get("checksum") or metadata.get("checksum") or metadata.get("artifact_checksum"),
+            "training_manifest_path": raw_result.get("training_manifest_path") or metadata.get("training_manifest_path"),
+            "metadata": metadata,
+        }
+    lifecycle["results"] = lifecycle_results
     return payload_dict
 
 

@@ -48,7 +48,7 @@ PRODUCTION_ARTIFACT_EXTENSIONS: dict[str, str] = {
     "TimesFM": "json",
 }
 PRODUCTION_ARTIFACT_MODEL_NAMES = frozenset(PRODUCTION_ARTIFACT_EXTENSIONS)
-ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v2"
+ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v3"
 TIMESFM_L175_RELEASE_COHORT = frozenset({"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"})
 PROMOTION_GRADE_SEQUENCE_METHODS = frozenset({
     "purged_cpcv_sequence_rank_ic",
@@ -1659,7 +1659,7 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
         add(
             "feature_contract_family_schema_missing",
             "Artifact lacks the active-8 family-specific feature schema",
-            "Retrain this model under active8-family-feature-contract-v2; do not infer parity from a column count.",
+            "Retrain this model under active8-family-feature-contract-v3; do not infer parity from a column count.",
         )
 
     if contract_required and model_name in {"DLinear", "PatchTST", "iTransformer"}:

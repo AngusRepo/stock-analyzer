@@ -52,7 +52,7 @@ def test_parse_gcs_uri_splits_bucket_and_blob():
     )
 
 
-def test_load_training_maps_uses_as_of_snapshot_date(monkeypatch):
+def test_load_training_maps_requires_exact_snapshot_date(monkeypatch):
     captured = {}
 
     def fake_latest_dataset_snapshot(**kwargs):
@@ -75,22 +75,48 @@ def test_load_training_maps_uses_as_of_snapshot_date(monkeypatch):
     assert captured == {
         "kind": "backtest_dataset",
         "access_tier": "compute",
-        "as_of_business_date": "2026-05-06",
+        "business_date": "2026-05-06",
     }
+
+
+def test_timesfm_feature_release_coverage_requires_breadth_and_history():
+    failed = retrain_trigger._timesfm_l175_release_coverage(
+        {"stocks_with_history": 396, "history_dates": 7},
+        eligible_stocks=2317,
+    )
+    passed = retrain_trigger._timesfm_l175_release_coverage(
+        {"stocks_with_history": 2100, "history_dates": 25},
+        eligible_stocks=2317,
+    )
+
+    assert failed["status"] == "fail"
+    assert failed["blockers"] == [
+        "timesfm_l175_stock_coverage_below_minimum",
+        "timesfm_l175_history_dates_below_minimum",
+    ]
+    assert passed["status"] == "pass"
+    assert passed["blockers"] == []
 
 
 def test_snapshot_per_stock_ts_map_builds_wave3_history():
     mapped = retrain_trigger._snapshot_per_stock_ts_map(
         stock_ids=[1],
         monthly_revenue_rows=[{"stock_id": 1, "date": "2026-04", "revenue_yoy": 12.5}],
+        canonical_fundamental_rows=[{
+            "stock_id": "2330", "available_date": "2026-05-15",
+            "eps": 10.0, "roe": 25.0, "pe": 20.0, "pb": 5.0,
+        }],
         margin_rows=[{"stock_id": 1, "date": "2026-05-06", "margin_balance": 1000, "short_ratio": 0.2}],
         shareholding_rows=[{"stock_id": 1, "date": "2026-05-06", "retail_pct": 45.6}],
+        symbol_to_id={"2330": 1},
     )
 
     assert mapped[1]["2026-05-12"]["revenue_yoy"] == 12.5
     assert mapped[1]["2026-05-06"]["margin_balance"] == 1000
     assert mapped[1]["2026-05-06"]["short_ratio"] == 0.2
     assert mapped[1]["2026-05-06"]["retail_pct"] == 45.6
+    assert mapped[1]["2026-05-15"]["eps"] == 10.0
+    assert mapped[1]["2026-05-15"]["pb"] == 5.0
 
 
 def test_snapshot_sentiment_map_groups_by_stock():

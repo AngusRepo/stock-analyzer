@@ -340,6 +340,21 @@ def _query_monthly_revenue(start_date: str, end_date: str) -> pl.DataFrame:
     ))
 
 
+def _query_canonical_fundamentals(end_date: str) -> pl.DataFrame:
+    return _frame(d1_client.query(
+        """
+        SELECT stock_id, period, available_date, eps, roe, pe, pb,
+               dividend_yield, revenue_growth_yoy, source
+        FROM canonical_fundamental_features
+        WHERE available_date <= ?
+          AND source = 'finlab.fundamental_factor_diversity'
+        ORDER BY stock_id, available_date, period
+        """,
+        [end_date],
+        timeout=120.0,
+    ))
+
+
 def _query_margin_data(start_date: str, end_date: str, chunk_days: int) -> tuple[pl.DataFrame, int]:
     return _query_date_range(
         """
@@ -502,6 +517,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
     market_risk = _query_market_risk(req.start_date, req.end_date)
     sentiment, sentiment_queries = _query_sentiment_scores(req.start_date, req.end_date, chunk_days)
     monthly_revenue = _query_monthly_revenue(req.start_date, req.end_date)
+    canonical_fundamentals = _query_canonical_fundamentals(req.end_date)
     margin_data, margin_queries = _query_margin_data(req.start_date, req.end_date, chunk_days)
     shareholding, shareholding_queries = _query_shareholding(req.start_date, req.end_date, chunk_days)
 
@@ -519,6 +535,8 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         sentiment = _empty_frame(["stock_id", "date", "score"])
     if monthly_revenue.is_empty():
         monthly_revenue = _empty_frame(["stock_id", "date", "revenue_yoy"])
+    if canonical_fundamentals.is_empty():
+        canonical_fundamentals = _empty_frame(["stock_id", "available_date", "eps", "roe", "pe", "pb", "dividend_yield"])
     if margin_data.is_empty():
         margin_data = _empty_frame(["stock_id", "date", "margin_balance", "short_ratio"])
     if shareholding.is_empty():
@@ -532,6 +550,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         "market_risk": market_risk,
         "sentiment": sentiment,
         "monthly_revenue": monthly_revenue,
+        "canonical_fundamentals": canonical_fundamentals,
         "margin_data": margin_data,
         "shareholding": shareholding,
     }
@@ -568,6 +587,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
             "market_risk": 1,
             "sentiment": sentiment_queries,
             "monthly_revenue": 1,
+            "canonical_fundamentals": 1,
             "margin_data": margin_queries,
             "shareholding": shareholding_queries,
             "signals": signal_queries,

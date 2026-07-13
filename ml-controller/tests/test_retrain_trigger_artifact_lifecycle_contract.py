@@ -12,6 +12,7 @@ def test_universal_retrain_request_forwards_artifact_lifecycle_fields():
     assert "artifact_lifecycle_targets: list[str] = Field(default_factory=list)" in source
     assert "artifact_lifecycle_contracts: dict[str, str] = Field(default_factory=dict)" in source
     assert "artifact_lifecycle_only: bool = False" in source
+    assert "require_exact_dataset_snapshot: bool" in source
     assert "sequence_gcs_prefix: str | None" in source
     assert "patchtst_seq_len: int | None" in source
     assert "itransformer_seq_len: int | None" in source

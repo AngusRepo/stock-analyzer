@@ -260,7 +260,7 @@ def _complete_feature_release_rows() -> list[dict[str, object]]:
                 "feature_policy_schema_version": "model-feature-policy-v2",
                 "artifact_checksum": f"sha256:{model_name.lower()}",
                 "family_feature_contract": {
-                    "schema_version": "active8-family-feature-contract-v2",
+                    "schema_version": "active8-family-feature-contract-v3",
                     "family_schema": "formal137_plus_timesfm_l175_v1",
                     "timesfm_l175_sidecar_required": True,
                     "atomic_cohort_required": True,

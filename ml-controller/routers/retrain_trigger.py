@@ -52,6 +52,8 @@ _UNIVERSAL_PREP_CONCURRENCY_DEFAULT = 3
 _UNIVERSAL_PREP_CONCURRENCY_MAX = 5
 TIMESFM_L175_L2_FEATURE_RELEASE_CANDIDATE_TYPE = "timesfm_l175_l2_feature_release"
 TIMESFM_L175_HISTORY_LOOKBACK_DAYS = int(os.environ.get("TIMESFM_L175_HISTORY_LOOKBACK_DAYS", "420"))
+TIMESFM_L175_MIN_STOCK_COVERAGE = float(os.environ.get("TIMESFM_L175_MIN_STOCK_COVERAGE", "0.80"))
+TIMESFM_L175_MIN_HISTORY_DATES = int(os.environ.get("TIMESFM_L175_MIN_HISTORY_DATES", "20"))
 TIMESFM_L175_FEATURE_NAMES = (
     "timesfm_l175_forecast_return",
     "timesfm_l175_forecast_log_return",
@@ -84,6 +86,10 @@ class UniversalRetrainTriggerRequest(BaseModel):
     artifact_lifecycle_targets: list[str] = Field(default_factory=list)
     artifact_lifecycle_contracts: dict[str, str] = Field(default_factory=dict)
     artifact_lifecycle_only: bool = False
+    require_exact_dataset_snapshot: bool = Field(
+        default=False,
+        description="Fail closed unless the compute snapshot business date exactly matches run_date.",
+    )
     sequence_gcs_prefix: str | None = Field(default=None, description="GCS prefix for sequence_records_v2 batches.")
     sequence_batch_count: int | None = Field(default=None, description="Number of sequence_records_v2 batches.")
     sequence_seq_len: int | None = Field(default=None, description="Shared L3 sequence context override.")
@@ -225,9 +231,11 @@ def _snapshot_sentiment_map(rows: list[dict], stock_ids: list[int], limit: int =
 def _snapshot_per_stock_ts_map(
     *,
     monthly_revenue_rows: list[dict] | None,
+    canonical_fundamental_rows: list[dict] | None,
     margin_rows: list[dict] | None,
     shareholding_rows: list[dict] | None,
     stock_ids: list[int],
+    symbol_to_id: dict[str, int] | None = None,
 ) -> dict[int, dict[str, dict]]:
     stock_id_set = set(stock_ids)
     per_stock_ts: dict[int, dict[str, dict]] = {}
@@ -242,7 +250,25 @@ def _snapshot_per_stock_ts_map(
         if sid not in stock_id_set or row.get("revenue_yoy") is None:
             continue
         date_key = monthly_revenue_available_date(str(row.get("date") or ""))
-        ensure_date(sid, date_key)["revenue_yoy"] = row.get("revenue_yoy", 0)
+        values = ensure_date(sid, date_key)
+        for source, target in (
+            ("revenue_yoy", "revenue_yoy"),
+            ("revenue_mom", "revenue_mom"),
+            ("revenue", "revenue"),
+        ):
+            if row.get(source) is not None:
+                values[target] = row[source]
+
+    symbol_to_id = symbol_to_id or {}
+    for row in canonical_fundamental_rows or []:
+        sid = symbol_to_id.get(str(row.get("stock_id") or ""))
+        available_date = str(row.get("available_date") or "")
+        if sid not in stock_id_set or not available_date:
+            continue
+        values = ensure_date(sid, available_date)
+        for name in ("eps", "roe", "pe", "pb", "dividend_yield", "revenue_growth_yoy"):
+            if row.get(name) is not None:
+                values[name] = row[name]
 
     for row in margin_rows or []:
         sid = row.get("stock_id")
@@ -370,6 +396,34 @@ def _load_timesfm_l175_history(
         "rows_scanned": rows_scanned,
         "rows_loaded": rows_loaded,
         "stocks_with_history": len(history),
+        "history_dates": len({date_key for rows in history.values() for date_key in rows}),
+    }
+
+
+def _timesfm_l175_release_coverage(
+    summary: dict[str, object],
+    *,
+    eligible_stocks: int,
+    min_stock_coverage: float = TIMESFM_L175_MIN_STOCK_COVERAGE,
+    min_history_dates: int = TIMESFM_L175_MIN_HISTORY_DATES,
+) -> dict[str, object]:
+    stocks_with_history = int(summary.get("stocks_with_history") or 0)
+    history_dates = int(summary.get("history_dates") or 0)
+    stock_coverage = stocks_with_history / eligible_stocks if eligible_stocks > 0 else 0.0
+    blockers: list[str] = []
+    if stock_coverage < min_stock_coverage:
+        blockers.append("timesfm_l175_stock_coverage_below_minimum")
+    if history_dates < min_history_dates:
+        blockers.append("timesfm_l175_history_dates_below_minimum")
+    return {
+        "status": "pass" if not blockers else "fail",
+        "eligible_stocks": int(eligible_stocks),
+        "stocks_with_history": stocks_with_history,
+        "stock_coverage": round(stock_coverage, 6),
+        "min_stock_coverage": float(min_stock_coverage),
+        "history_dates": history_dates,
+        "min_history_dates": int(min_history_dates),
+        "blockers": blockers,
     }
 
 
@@ -392,7 +446,7 @@ def _load_training_maps_from_snapshot(
     snapshot = latest_dataset_snapshot(
         kind="backtest_dataset",
         access_tier="compute",
-        as_of_business_date=as_of_business_date,
+        business_date=as_of_business_date,
     )
     if not snapshot or snapshot.get("manifest_errors"):
         return None
@@ -409,6 +463,10 @@ def _load_training_maps_from_snapshot(
     sentiment_rows = _read_gcs_parquet_rows(component_uris["sentiment"]) if component_uris.get("sentiment") else []
     monthly_revenue_rows = (
         _read_gcs_parquet_rows(component_uris["monthly_revenue"]) if component_uris.get("monthly_revenue") else []
+    )
+    canonical_fundamental_rows = (
+        _read_gcs_parquet_rows(component_uris["canonical_fundamentals"])
+        if component_uris.get("canonical_fundamentals") else []
     )
     margin_rows = _read_gcs_parquet_rows(component_uris["margin_data"]) if component_uris.get("margin_data") else []
     shareholding_rows = (
@@ -466,9 +524,11 @@ def _load_training_maps_from_snapshot(
     sentiment_map = _snapshot_sentiment_map(sentiment_rows, stock_ids) if sentiment_rows else {}
     per_stock_ts_map = _snapshot_per_stock_ts_map(
         monthly_revenue_rows=monthly_revenue_rows,
+        canonical_fundamental_rows=canonical_fundamental_rows,
         margin_rows=margin_rows,
         shareholding_rows=shareholding_rows,
         stock_ids=stock_ids,
+        symbol_to_id={symbol: stock_id for stock_id, symbol in zip(stock_ids, symbols)},
     )
     return prices_map, indicators_map, chips_map, sentiment_map, per_stock_ts_map, {
         "snapshot_id": snapshot.get("snapshot_id"),
@@ -817,6 +877,45 @@ async def trigger_universal_retrain(
         logger.warning("[retrain/universal] GCS snapshot load failed, falling back to D1: %s", snapshot_err)
         snapshot_maps = None
 
+    if req.require_exact_dataset_snapshot and not snapshot_maps:
+        retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
+        summary = {
+            "lock_key": lock_key,
+            "run_date": run_date,
+            "reason": "exact_dataset_snapshot_missing",
+            "required_business_date": run_date,
+        }
+
+    if req.require_exact_dataset_snapshot and snapshot_maps:
+        snapshot_info = snapshot_maps[-1]
+        if "canonical_fundamentals" not in set(snapshot_info.get("components") or []):
+            retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
+            summary = {
+                "lock_key": lock_key,
+                "run_date": run_date,
+                "reason": "exact_dataset_snapshot_feature_component_missing",
+                "required_component": "canonical_fundamentals",
+                "snapshot_id": snapshot_info.get("snapshot_id"),
+            }
+            _upsert_retrain_status(
+                run_id,
+                status="prep_failed",
+                summary=summary,
+                downstream_notes="aborted_before_data_load",
+            )
+            return {"status": "rejected", "error": summary["reason"], **summary}
+        _upsert_retrain_status(
+            run_id,
+            status="prep_failed",
+            summary=summary,
+            downstream_notes="aborted_before_data_load",
+        )
+        return {
+            "status": "rejected",
+            "error": "exact_dataset_snapshot_missing",
+            **summary,
+        }
+
     if snapshot_maps:
         prices_map, indicators_map, chips_map, sentiment_map, per_stock_ts_map, dataset_snapshot_info = snapshot_maps
         logger.info(
@@ -990,6 +1089,33 @@ async def trigger_universal_retrain(
                 "timesfm_l175_history": timesfm_l175_history,
             },
         })
+
+    if timesfm_l175_feature_release_requested:
+        coverage_gate = _timesfm_l175_release_coverage(
+            timesfm_l175_history_summary,
+            eligible_stocks=len(per_stock_payloads),
+        )
+        timesfm_l175_history_summary["coverage_gate"] = coverage_gate
+        if coverage_gate["status"] != "pass":
+            retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
+            _upsert_retrain_status(
+                run_id,
+                status="prep_failed",
+                summary={
+                    "lock_key": lock_key,
+                    "run_date": run_date,
+                    "reason": "timesfm_l175_release_coverage_failed",
+                    "timesfm_l175_feature_release": timesfm_l175_history_summary,
+                },
+                downstream_notes="aborted_before_batch_prep",
+            )
+            return {
+                "status": "rejected",
+                "error": "timesfm_l175_release_coverage_failed",
+                "run_id": run_id,
+                "lock_key": lock_key,
+                "timesfm_l175_feature_release": timesfm_l175_history_summary,
+            }
 
     if len(per_stock_payloads) < 10:
         retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})

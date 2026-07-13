@@ -93,6 +93,46 @@ def test_build_feature_matrix_materializes_formal137_contract():
     X, _y, names = get_features(df, target_col="target_rank", allow_missing_target=True)
     assert X.shape[1] == 137
     assert names == FEATURE_COLS
+    assert df["l1_eps"][-1] == 5.0
+    assert df["l1_roe"][-1] == 12.0
+    assert df["val_bp"][-1] == 0.5
+
+
+def test_fundamentals_are_point_in_time_instead_of_latest_value_leakage():
+    start = date(2025, 1, 1)
+    prices = []
+    for idx in range(320):
+        close = 100 + idx * 0.1
+        prices.append({
+            "date": (start + timedelta(days=idx)).isoformat(),
+            "open": close - 0.2,
+            "high": close + 1,
+            "low": close - 1,
+            "close": close,
+            "adj_close": close,
+            "volume": 1_000_000,
+        })
+
+    available_date = (start + timedelta(days=120)).isoformat()
+    df = build_feature_matrix(
+        prices,
+        [],
+        [],
+        [],
+        market_env={
+            "per_stock_ts": {
+                available_date: {"eps": 10.0, "roe": 20.0, "pe": 25.0, "pb": 2.0},
+            },
+        },
+        stock_meta={},
+    )
+
+    before = df.filter(pl.col("date") < pl.lit(available_date).str.to_date())
+    after = df.filter(pl.col("date") >= pl.lit(available_date).str.to_date())
+    assert before["l1_eps"].max() == 0.0
+    assert before["val_bp"].max() == 0.0
+    assert after["l1_eps"].min() == 10.0
+    assert after["val_bp"].min() == 0.5
 
 
 def test_sanitize_feature_frame_reports_imputed_features_and_target_drops():

@@ -363,7 +363,7 @@ class ModelFeaturePolicy:
         return asdict(self)
 
 
-ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v2"
+ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v3"
 TIMESFM_L175_RELEASE_COHORT = (
     "LightGBM",
     "XGBoost",

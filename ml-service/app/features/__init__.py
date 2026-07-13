@@ -721,13 +721,35 @@ def build_feature_matrix(
         else:
             df = df.with_columns(pl.col(col).fill_null(default).fill_nan(default))
 
-    # Wave 3: per-stock time-series
-    wave3_defaults = {
-        "margin_balance": 0.0, "short_ratio": 0.0,
-        "margin_change_5d": 0.0, "retail_pct": 50.0,
-        "revenue_yoy": 0.0,
-    }
+    # Wave 3: per-stock time-series. A scalar is only a serving fallback when
+    # no point-in-time history for that field exists; using the latest scalar
+    # before its availability date would leak future fundamentals into train.
     per_stock_ts: dict = market_env.get("per_stock_ts", {}) if market_env else {}
+
+    def _pit_default(name: str, default: float = 0.0) -> float:
+        has_history = any(
+            isinstance(values, dict) and values.get(name) is not None
+            for values in per_stock_ts.values()
+        )
+        if has_history:
+            return default
+        return safe_float((market_env or {}).get(name), default)
+
+    wave3_defaults = {
+        "margin_balance": _pit_default("margin_balance"),
+        "short_ratio": _pit_default("short_ratio"),
+        "margin_change_5d": _pit_default("margin_change_5d"),
+        "retail_pct": _pit_default("retail_pct", 50.0),
+        "revenue_yoy": _pit_default("revenue_yoy"),
+        "revenue_mom": _pit_default("revenue_mom"),
+        "revenue": _pit_default("revenue"),
+        "eps": _pit_default("eps"),
+        "roe": _pit_default("roe"),
+        "pe": _pit_default("pe"),
+        "pb": _pit_default("pb"),
+        "dividend_yield": _pit_default("dividend_yield"),
+        "revenue_growth_yoy": _pit_default("revenue_growth_yoy"),
+    }
     if per_stock_ts:
         ps_records = []
         for date_str, vals in per_stock_ts.items():
@@ -741,7 +763,10 @@ def build_feature_matrix(
                 .sort("date")
             )
             # forward-fill monthly/weekly features
-            for ffill_col in ["revenue_yoy", "retail_pct"]:
+            for ffill_col in [
+                "revenue_yoy", "revenue_mom", "revenue", "retail_pct",
+                "eps", "roe", "pe", "pb", "dividend_yield", "revenue_growth_yoy",
+            ]:
                 if ffill_col in ps_df.columns:
                     ps_df = ps_df.with_columns(pl.col(ffill_col).cast(pl.Float64, strict=False).forward_fill())
             # margin_change_5d from margin_balance
@@ -759,7 +784,13 @@ def build_feature_matrix(
         if col not in df.columns:
             df = df.with_columns(pl.lit(default).alias(col))
         else:
-            df = df.with_columns(pl.col(col).fill_null(default).fill_nan(default))
+            df = df.with_columns(
+                pl.col(col)
+                .cast(pl.Float64, strict=False)
+                .forward_fill()
+                .fill_null(default)
+                .fill_nan(default)
+            )
 
     # ── 11. Lag features ─────────────────────────────────────────────────────
     for lag_col in ["rsi14", "macdHist", "vol_ratio_5d"]:
@@ -810,6 +841,11 @@ def build_feature_matrix(
             return pl.col(name).cast(pl.Float64, strict=False)
         return default if isinstance(default, pl.Expr) else pl.lit(float(default))
 
+    def _point_in_time_feature(name: str, default: float = 0.0) -> pl.Expr:
+        if name in df.columns:
+            return pl.col(name).cast(pl.Float64, strict=False)
+        return pl.lit(_series_scalar(name, default))
+
     def _add_missing(exprs: list[tuple[str, pl.Expr]]) -> None:
         nonlocal df
         todo = [expr.alias(name) for name, expr in exprs if name not in df.columns]
@@ -857,14 +893,14 @@ def build_feature_matrix(
     broker_amount = _feature_col("broker_estimated_amount")
     broker_net_shares = _feature_col("broker_net_shares")
     broker_net_amount = pl.when(broker_amount.abs() > 0).then(broker_amount).otherwise(broker_net_shares * close_expr)
-    eps = _series_scalar("eps")
-    roe = _series_scalar("roe")
-    pe = _series_scalar("pe")
-    pb = _series_scalar("pb")
-    dividend_yield = _series_scalar("dividend_yield")
-    revenue_yoy = _series_scalar("revenue_yoy")
-    revenue_mom = _series_scalar("revenue_mom")
-    revenue = _series_scalar("revenue")
+    eps = _point_in_time_feature("eps")
+    roe = _point_in_time_feature("roe")
+    pe = _point_in_time_feature("pe")
+    pb = _point_in_time_feature("pb")
+    dividend_yield = _point_in_time_feature("dividend_yield")
+    revenue_yoy = _point_in_time_feature("revenue_yoy")
+    revenue_mom = _point_in_time_feature("revenue_mom")
+    revenue = _point_in_time_feature("revenue")
     market_cap_proxy = _meta_scalar("market_cap_proxy")
     size_value = np.log1p(max(market_cap_proxy, 0.0)) if market_cap_proxy > 0 else _meta_scalar("market_cap_bucket")
 
@@ -879,14 +915,14 @@ def build_feature_matrix(
         ("l1_dealerNet5d", _feature_col("dealer_5d")),
         ("l1_diTrend", _feature_col("plusDi14") - _feature_col("minusDi14")),
         ("l1_displacementPct", displacement),
-        ("l1_eps", pl.lit(eps)),
+        ("l1_eps", eps),
         ("l1_foreignTrustNet5d", _feature_col("foreign_5d") + _feature_col("trust_net").rolling_sum(5)),
         ("l1_macdHist", _feature_col("macdHist")),
-        ("l1_monthlyRevenueMoM", pl.lit(revenue_mom)),
-        ("l1_monthlyRevenueYoY", pl.lit(revenue_yoy)),
+        ("l1_monthlyRevenueMoM", revenue_mom),
+        ("l1_monthlyRevenueYoY", revenue_yoy),
         ("l1_return20d", ret20_raw),
-        ("l1_revenueGrowthYoY", pl.lit(revenue_yoy)),
-        ("l1_roe", pl.lit(roe)),
+        ("l1_revenueGrowthYoY", _point_in_time_feature("revenue_growth_yoy", _series_scalar("revenue_yoy"))),
+        ("l1_roe", roe),
         ("l1_sectorFlowCore", pl.lit(_meta_scalar("sector_flow_core", _series_scalar("sector_flow_core")))),
         ("l1_sectorRsRatio", pl.lit(_meta_scalar("stock_vs_sector", _series_scalar("sector_rs_ratio")))),
         ("l1_sectorTurnoverShareDelta", pl.lit(_series_scalar("sector_turnover_share_delta"))),
@@ -945,10 +981,10 @@ def build_feature_matrix(
         ("tech_vr_26", _safe_div(vr_up, vr_down.clip(1e-9, None))),
         ("tech_williams_r_14", -100.0 * _safe_div(high_expr.rolling_max(14) - close_expr, (high_expr.rolling_max(14) - low_expr.rolling_min(14)).clip(1e-9, None))),
         ("tech_wma_10_pos", _feature_col("ma10_bias")),
-        ("val_bp", pl.lit(1.0 / pb if pb > 0 else 0.0)),
-        ("val_dp", pl.lit(dividend_yield / 100.0 if dividend_yield > 1.0 else dividend_yield)),
-        ("val_ep", pl.lit(1.0 / pe if pe > 0 else 0.0)),
-        ("val_sp", pl.lit(revenue) / dollar_volume),
+        ("val_bp", pl.when(pb > 0).then(1.0 / pb).otherwise(0.0)),
+        ("val_dp", pl.when(dividend_yield > 1.0).then(dividend_yield / 100.0).otherwise(dividend_yield)),
+        ("val_ep", pl.when(pe > 0).then(1.0 / pe).otherwise(0.0)),
+        ("val_sp", revenue / dollar_volume),
         ("vol_chg_turnover_1y", _safe_div(volume_expr.rolling_mean(21), volume_expr.rolling_mean(252)) - 1.0),
         ("vol_cv_volprice_20d", _safe_div((volume_expr * close_expr).rolling_std(20), (volume_expr * close_expr).rolling_mean(20).abs().clip(1.0, None))),
         ("vol_money_flow_5d", money_flow.rolling_sum(5)),

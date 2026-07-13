@@ -184,6 +184,31 @@ def _feature_edge_index(x_date: np.ndarray, sectors: np.ndarray, *, top_k: int, 
     return np.asarray(sorted(edges), dtype=np.int64).T
 
 
+def _build_graph_snapshots(
+    groups: list[np.ndarray],
+    *,
+    x: np.ndarray,
+    sectors: np.ndarray,
+    top_k: int,
+    threshold: float,
+) -> tuple[list[tuple[np.ndarray, np.ndarray]], dict[str, int]]:
+    """Build immutable date graphs once for reuse across epochs and evaluation."""
+
+    snapshots: list[tuple[np.ndarray, np.ndarray]] = []
+    edge_count = 0
+    node_count = 0
+    for idx in groups:
+        edge_index = _feature_edge_index(x[idx], sectors[idx], top_k=top_k, threshold=threshold)
+        snapshots.append((idx, edge_index))
+        node_count += int(len(idx))
+        edge_count += int(edge_index.shape[1]) if edge_index.ndim == 2 else 0
+    return snapshots, {
+        "snapshot_count": len(snapshots),
+        "node_count": node_count,
+        "edge_count": edge_count,
+    }
+
+
 def _build_model(*, n_features: int, hidden_dim: int, dropout: float):
     import torch.nn as nn
     from torch_geometric.nn import SAGEConv
@@ -205,7 +230,18 @@ def _build_model(*, n_features: int, hidden_dim: int, dropout: float):
     return GraphSAGERankModel()
 
 
-def _evaluate(model, *, groups: list[np.ndarray], x: np.ndarray, y: np.ndarray, sectors: np.ndarray, device, top_k: int, threshold: float) -> dict:
+def _evaluate(
+    model,
+    *,
+    groups: list[np.ndarray],
+    x: np.ndarray,
+    y: np.ndarray,
+    sectors: np.ndarray,
+    device,
+    top_k: int,
+    threshold: float,
+    graph_snapshots: list[tuple[np.ndarray, np.ndarray]] | None = None,
+) -> dict:
     import torch
 
     model.eval()
@@ -214,8 +250,16 @@ def _evaluate(model, *, groups: list[np.ndarray], x: np.ndarray, y: np.ndarray, 
     daily_ics: list[float] = []
     fold_metrics: list[dict[str, Any]] = []
     with torch.no_grad():
-        for fold_idx, idx in enumerate(groups, start=1):
-            edge_np = _feature_edge_index(x[idx], sectors[idx], top_k=top_k, threshold=threshold)
+        snapshots = graph_snapshots
+        if snapshots is None:
+            snapshots, _report = _build_graph_snapshots(
+                groups,
+                x=x,
+                sectors=sectors,
+                top_k=top_k,
+                threshold=threshold,
+            )
+        for fold_idx, (idx, edge_np) in enumerate(snapshots, start=1):
             xb = torch.tensor(x[idx], dtype=torch.float32, device=device)
             yb = y[idx]
             edge = torch.tensor(edge_np, dtype=torch.long, device=device)
@@ -363,7 +407,15 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     )
     promote_to_active, promotion_reason = resolve_training_promotion_intent(payload, model_name=MODEL_NAME)
 
+    stage_timings: dict[str, float] = {}
+    stage_t0 = time.time()
     x_raw, y, dates, sectors, io_report = _load_npz_batches(bucket, gcs_prefix=gcs_prefix, batch_count=batch_count)
+    stage_timings["load_batches_s"] = round(time.time() - stage_t0, 3)
+    print(
+        f"[GNNTrain] loaded rows={len(y)} features={x_raw.shape[1]} "
+        f"batches={batch_count} elapsed_s={stage_timings['load_batches_s']}",
+        flush=True,
+    )
     feature_names = _load_feature_names(bucket, gcs_prefix=gcs_prefix, n_features=x_raw.shape[1])
     finite_mask = np.isfinite(y)
     x_raw = x_raw[finite_mask]
@@ -394,11 +446,41 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         test_ratio=float(payload.get("test_ratio") or 0.2),
         embargo_dates=int(payload.get("embargo_dates") or 10),
     )
+    stage_t0 = time.time()
     x, medians, scales = _robust_standardize(x_raw[train_idx], x_raw, clip_value=standardization_clip)
+    stage_timings["standardize_s"] = round(time.time() - stage_t0, 3)
     train_groups = _group_by_date(train_idx, dates)
     test_groups = _group_by_date(test_idx, dates)
     if not train_groups or not test_groups:
         raise ValueError("GNN training requires non-empty train/test date groups")
+    print(
+        f"[GNNTrain] standardized train_rows={len(train_idx)} test_rows={len(test_idx)} "
+        f"train_dates={len(train_groups)} test_dates={len(test_groups)} "
+        f"elapsed_s={stage_timings['standardize_s']}",
+        flush=True,
+    )
+
+    stage_t0 = time.time()
+    train_graphs, train_graph_report = _build_graph_snapshots(
+        train_groups,
+        x=x,
+        sectors=sectors,
+        top_k=edge_top_k,
+        threshold=edge_threshold,
+    )
+    test_graphs, test_graph_report = _build_graph_snapshots(
+        test_groups,
+        x=x,
+        sectors=sectors,
+        top_k=edge_top_k,
+        threshold=edge_threshold,
+    )
+    stage_timings["build_graphs_s"] = round(time.time() - stage_t0, 3)
+    print(
+        f"[GNNTrain] graph cache train={train_graph_report} test={test_graph_report} "
+        f"elapsed_s={stage_timings['build_graphs_s']}",
+        flush=True,
+    )
 
     import torch
     import torch.nn.functional as F
@@ -409,14 +491,15 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     rng = np.random.default_rng(int(payload.get("seed") or 42))
     train_losses: list[float] = []
 
+    stage_t0 = time.time()
     for epoch in range(max(1, epochs)):
         model.train()
-        groups = list(train_groups)
-        rng.shuffle(groups)
-        groups = groups[: max(1, min(max_train_dates_per_epoch, len(groups)))]
+        graph_order = np.arange(len(train_graphs), dtype=np.int64)
+        rng.shuffle(graph_order)
+        graph_order = graph_order[: max(1, min(max_train_dates_per_epoch, len(graph_order)))]
         epoch_losses: list[float] = []
-        for idx in groups:
-            edge_np = _feature_edge_index(x[idx], sectors[idx], top_k=edge_top_k, threshold=edge_threshold)
+        for graph_idx in graph_order.tolist():
+            idx, edge_np = train_graphs[int(graph_idx)]
             xb = torch.tensor(x[idx], dtype=torch.float32, device=device)
             yb = torch.tensor(y[idx], dtype=torch.float32, device=device)
             edge = torch.tensor(edge_np, dtype=torch.long, device=device)
@@ -428,7 +511,14 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             optimizer.step()
             epoch_losses.append(float(loss.detach().cpu().item()))
         train_losses.append(round(float(np.mean(epoch_losses)), 6) if epoch_losses else 0.0)
+    stage_timings["train_s"] = round(time.time() - stage_t0, 3)
+    print(
+        f"[GNNTrain] trained epochs={epochs} dates_per_epoch={min(max_train_dates_per_epoch, len(train_graphs))} "
+        f"elapsed_s={stage_timings['train_s']}",
+        flush=True,
+    )
 
+    stage_t0 = time.time()
     eval_metrics = _evaluate(
         model,
         groups=test_groups,
@@ -438,16 +528,26 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         device=device,
         top_k=edge_top_k,
         threshold=edge_threshold,
+        graph_snapshots=test_graphs,
     )
+    recent_train_graphs = train_graphs[-min(60, len(train_graphs)):]
     train_eval = _evaluate(
         model,
-        groups=train_groups[-min(60, len(train_groups)):],
+        groups=train_groups[-len(recent_train_graphs):],
         x=x,
         y=y,
         sectors=sectors,
         device=device,
         top_k=edge_top_k,
         threshold=edge_threshold,
+        graph_snapshots=recent_train_graphs,
+    )
+    stage_timings["evaluate_s"] = round(time.time() - stage_t0, 3)
+    print(
+        f"[GNNTrain] evaluated oos_ic={eval_metrics.get('oos_ic')} "
+        f"daily_ic_count={eval_metrics.get('daily_ic_count')} "
+        f"elapsed_s={stage_timings['evaluate_s']}",
+        flush=True,
     )
     model_cpcv = build_model_cpcv_evidence(
         model=MODEL_NAME,
@@ -490,6 +590,12 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             "top_k": int(payload.get("serving_top_k") or 8),
             "training_edge_top_k": edge_top_k,
             "training_edge_threshold": edge_threshold,
+            "graph_cache": {
+                "schema_version": "date-graph-cache-v1",
+                "train": train_graph_report,
+                "validation": test_graph_report,
+                "reused_across_epochs": True,
+            },
         },
         "metrics": {
             **eval_metrics,
@@ -530,8 +636,16 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
             "standardization_clip": standardization_clip,
             "device": str(device),
         },
+        "stage_timings": stage_timings,
     }, prep_lineage)
+    stage_t0 = time.time()
     saved = _save_artifact(bucket=bucket, model=model.cpu(), version=version, metadata=metadata)
+    stage_timings["upload_s"] = round(time.time() - stage_t0, 3)
+    print(
+        f"[GNNTrain] artifact saved path={saved['artifact_path']} "
+        f"elapsed_s={stage_timings['upload_s']}",
+        flush=True,
+    )
     pool_update = None
     if promote_to_active:
         assert promotion_reason is not None
@@ -565,6 +679,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "train_samples": int(len(train_idx)),
         "validation_samples": int(len(test_idx)),
         "feature_count": len(feature_names),
+        "stage_timings": stage_timings,
         "pool_update": pool_update,
         "elapsed_s": round(time.time() - t0, 3),
     }

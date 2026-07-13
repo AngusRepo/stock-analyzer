@@ -84,3 +84,78 @@ def test_robust_standardize_applies_train_serve_clip():
     )
 
     assert scaled.tolist() == [[8.0, -8.0]]
+
+
+def test_build_graph_snapshots_builds_each_date_once(monkeypatch):
+    x = np.asarray(
+        [
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [0.8, 0.2],
+            [0.2, 0.8],
+        ],
+        dtype=np.float32,
+    )
+    sectors = np.asarray(["a", "a", "b", "b"])
+    groups = [np.asarray([0, 1]), np.asarray([2, 3])]
+    calls = []
+    original = gnn_training._feature_edge_index
+
+    def tracked(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(gnn_training, "_feature_edge_index", tracked)
+
+    snapshots, report = gnn_training._build_graph_snapshots(
+        groups,
+        x=x,
+        sectors=sectors,
+        top_k=1,
+        threshold=0.0,
+    )
+
+    assert len(calls) == len(groups)
+    assert len(snapshots) == len(groups)
+    assert report["snapshot_count"] == 2
+    assert report["node_count"] == 4
+    assert report["edge_count"] > 0
+
+
+def test_cached_graph_evaluation_does_not_rebuild_edges(monkeypatch):
+    torch = __import__("torch")
+
+    class _Model(torch.nn.Module):
+        def forward(self, x, edge_index):
+            del edge_index
+            return x[:, 0]
+
+    x = np.asarray([[0.1], [0.2], [0.3], [0.4]], dtype=np.float32)
+    y = np.asarray([0.1, 0.2, 0.3, 0.4], dtype=np.float32)
+    sectors = np.asarray(["a", "a", "b", "b"])
+    groups = [np.asarray([0, 1]), np.asarray([2, 3])]
+    snapshots = [
+        (groups[0], np.asarray([[0, 1], [1, 0]], dtype=np.int64)),
+        (groups[1], np.asarray([[0, 1], [1, 0]], dtype=np.int64)),
+    ]
+
+    monkeypatch.setattr(
+        gnn_training,
+        "_feature_edge_index",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must use cached graph")),
+    )
+
+    result = gnn_training._evaluate(
+        _Model(),
+        groups=groups,
+        x=x,
+        y=y,
+        sectors=sectors,
+        device=torch.device("cpu"),
+        top_k=1,
+        threshold=0.0,
+        graph_snapshots=snapshots,
+    )
+
+    assert result["samples"] == 4
+    assert result["daily_ic_count"] == 2

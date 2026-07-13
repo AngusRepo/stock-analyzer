@@ -1272,7 +1272,7 @@ def _post_pipeline_prediction_callback(input_payload: dict, bundle: dict, elapse
 @app.function(
     cpu=4,
     memory=8192,
-    timeout=1800,
+    timeout=3600,
     min_containers=0,
     scaledown_window=900,
     max_containers=1,
@@ -1410,22 +1410,38 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
 
     def _run_stage(name: str, fn, required_alpha: bool):
         t0 = time.time()
+        print(
+            f"[PipelinePredictionBundle] stage_start name={name} required_alpha={required_alpha}",
+            flush=True,
+        )
         try:
             result = fn()
             status = "skipped" if isinstance(result, dict) and result.get("error") and result.get("results") == [] else "ok"
-            return name, result, {
+            timing = {
                 "wall_sec": round(time.time() - t0, 3),
                 "required_alpha": required_alpha,
                 "status": status,
                 "error": result.get("error") if isinstance(result, dict) else None,
             }
+            print(
+                f"[PipelinePredictionBundle] stage_end name={name} status={status} "
+                f"wall_sec={timing['wall_sec']}",
+                flush=True,
+            )
+            return name, result, timing
         except Exception as exc:  # noqa: BLE001
-            return name, {"error": f"{type(exc).__name__}: {exc}", "trace": traceback.format_exc()[:2000], "results": []}, {
+            timing = {
                 "wall_sec": round(time.time() - t0, 3),
                 "required_alpha": required_alpha,
                 "status": "exception",
                 "error": f"{type(exc).__name__}: {exc}",
             }
+            print(
+                f"[PipelinePredictionBundle] stage_end name={name} status=exception "
+                f"wall_sec={timing['wall_sec']} error={timing['error']}",
+                flush=True,
+            )
+            return name, {"error": f"{type(exc).__name__}: {exc}", "trace": traceback.format_exc()[:2000], "results": []}, timing
 
     for name, (fn, required_alpha) in stages.items():
         stage_name, result, timing = _run_stage(name, fn, required_alpha)

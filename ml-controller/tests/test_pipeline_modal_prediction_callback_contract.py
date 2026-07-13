@@ -44,3 +44,6 @@ def test_pipeline_modal_prediction_bundle_contract_exists_on_modal() -> None:
     assert "pipeline_modal_serving_context" in graph
     assert "pipeline-modal-serving-context-v1" in graph
     assert "run_pipeline_v2_from_modal_prediction_callback" in graph
+    assert "timeout=3600" in modal_app
+    assert "[PipelinePredictionBundle] stage_start" in modal_app
+    assert "[PipelinePredictionBundle] stage_end" in modal_app

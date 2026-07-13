@@ -98,6 +98,38 @@ class UniversalRetrainTriggerRequest(BaseModel):
     itransformer_seq_len: int | None = Field(default=None, description="iTransformer sequence context override.")
 
 
+def _exact_dataset_snapshot_rejection(
+    *,
+    require_exact: bool,
+    run_date: str,
+    snapshot_maps: tuple | None,
+) -> dict[str, object] | None:
+    if not require_exact:
+        return None
+    if not snapshot_maps:
+        return {
+            "reason": "exact_dataset_snapshot_missing",
+            "required_business_date": run_date,
+        }
+
+    snapshot_info = snapshot_maps[-1]
+    business_date = str(snapshot_info.get("business_date") or "").strip()
+    if business_date != run_date:
+        return {
+            "reason": "exact_dataset_snapshot_business_date_mismatch",
+            "required_business_date": run_date,
+            "actual_business_date": business_date or None,
+            "snapshot_id": snapshot_info.get("snapshot_id"),
+        }
+    if "canonical_fundamentals" not in set(snapshot_info.get("components") or []):
+        return {
+            "reason": "exact_dataset_snapshot_feature_component_missing",
+            "required_component": "canonical_fundamentals",
+            "snapshot_id": snapshot_info.get("snapshot_id"),
+        }
+    return None
+
+
 def _force_https(url: str) -> str:
     parsed = urlsplit(url.strip())
     if parsed.scheme != "http":
@@ -877,33 +909,18 @@ async def trigger_universal_retrain(
         logger.warning("[retrain/universal] GCS snapshot load failed, falling back to D1: %s", snapshot_err)
         snapshot_maps = None
 
-    if req.require_exact_dataset_snapshot and not snapshot_maps:
+    snapshot_rejection = _exact_dataset_snapshot_rejection(
+        require_exact=req.require_exact_dataset_snapshot,
+        run_date=run_date,
+        snapshot_maps=snapshot_maps,
+    )
+    if snapshot_rejection:
         retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
         summary = {
             "lock_key": lock_key,
             "run_date": run_date,
-            "reason": "exact_dataset_snapshot_missing",
-            "required_business_date": run_date,
+            **snapshot_rejection,
         }
-
-    if req.require_exact_dataset_snapshot and snapshot_maps:
-        snapshot_info = snapshot_maps[-1]
-        if "canonical_fundamentals" not in set(snapshot_info.get("components") or []):
-            retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
-            summary = {
-                "lock_key": lock_key,
-                "run_date": run_date,
-                "reason": "exact_dataset_snapshot_feature_component_missing",
-                "required_component": "canonical_fundamentals",
-                "snapshot_id": snapshot_info.get("snapshot_id"),
-            }
-            _upsert_retrain_status(
-                run_id,
-                status="prep_failed",
-                summary=summary,
-                downstream_notes="aborted_before_data_load",
-            )
-            return {"status": "rejected", "error": summary["reason"], **summary}
         _upsert_retrain_status(
             run_id,
             status="prep_failed",
@@ -912,7 +929,7 @@ async def trigger_universal_retrain(
         )
         return {
             "status": "rejected",
-            "error": "exact_dataset_snapshot_missing",
+            "error": summary["reason"],
             **summary,
         }
 

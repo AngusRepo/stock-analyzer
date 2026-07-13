@@ -35,3 +35,51 @@ def test_sequence_batch_count_from_long_history_manifest():
     }
 
     assert retrain_trigger._sequence_batch_count_from_manifest(manifest, fallback=1) == 6
+
+
+def _snapshot_maps(*, business_date: str, components: list[str]) -> tuple:
+    return ({}, {}, {}, {}, {}, {
+        "snapshot_id": f"snapshot:{business_date}",
+        "business_date": business_date,
+        "components": components,
+    })
+
+
+def test_exact_snapshot_accepts_matching_date_and_canonical_fundamentals():
+    rejection = retrain_trigger._exact_dataset_snapshot_rejection(
+        require_exact=True,
+        run_date="2026-07-09",
+        snapshot_maps=_snapshot_maps(
+            business_date="2026-07-09",
+            components=["prices", "canonical_fundamentals"],
+        ),
+    )
+
+    assert rejection is None
+
+
+def test_exact_snapshot_rejects_missing_snapshot_component_or_wrong_date():
+    assert retrain_trigger._exact_dataset_snapshot_rejection(
+        require_exact=True,
+        run_date="2026-07-09",
+        snapshot_maps=None,
+    ) == {
+        "reason": "exact_dataset_snapshot_missing",
+        "required_business_date": "2026-07-09",
+    }
+    assert retrain_trigger._exact_dataset_snapshot_rejection(
+        require_exact=True,
+        run_date="2026-07-09",
+        snapshot_maps=_snapshot_maps(
+            business_date="2026-07-08",
+            components=["prices", "canonical_fundamentals"],
+        ),
+    )["reason"] == "exact_dataset_snapshot_business_date_mismatch"
+    assert retrain_trigger._exact_dataset_snapshot_rejection(
+        require_exact=True,
+        run_date="2026-07-09",
+        snapshot_maps=_snapshot_maps(
+            business_date="2026-07-09",
+            components=["prices"],
+        ),
+    )["reason"] == "exact_dataset_snapshot_feature_component_missing"

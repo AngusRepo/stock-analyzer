@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from services.broker_execution_repository import D1BrokerExecutionRepository
 from services.finlab_execution_gateway import PersistentFinlabExecutionGateway
 from services.finlab_live_submit_service import run_finlab_live_submit
+from services.finlab_execution_shadow_service import run_finlab_execution_shadow
 
 
 SERVICE_ROLE = os.environ.get("EXECUTION_GATEWAY_SERVICE_ROLE", "")
@@ -30,6 +31,10 @@ gateway = PersistentFinlabExecutionGateway(repository, env=os.environ)
 class ExecuteRequest(BaseModel):
     packet: dict[str, Any] = Field(default_factory=dict)
     allow_live_submit: bool = False
+
+
+class ShadowRequest(BaseModel):
+    packet: dict[str, Any] = Field(default_factory=dict)
 
 
 def _verify_service_token(authorization: str | None) -> None:
@@ -61,6 +66,8 @@ def health() -> dict[str, Any]:
         "status": "ready" if state.get("healthy") else "disabled_or_not_started",
         "service_role_ready": SERVICE_ROLE == "dedicated_execution_gateway",
         "live_submit_enabled": str(os.environ.get("FINLAB_LIVE_SUBMIT_ENABLED") or "").lower() in {"1", "true", "yes", "enabled"},
+        "execution_shadow_enabled": str(os.environ.get("LIVE_EXECUTION_SHADOW_ENABLED") or "").lower() in {"1", "true", "yes", "enabled"},
+        "shadow_broker_read_enabled": str(os.environ.get("LIVE_EXECUTION_SHADOW_BROKER_READ_ENABLED") or "").lower() in {"1", "true", "yes", "enabled"},
         "gateway": state,
     }
 
@@ -76,6 +83,21 @@ def execute(
         packet=req.packet or None,
         signature=x_execution_signature,
         allow_live_submit=req.allow_live_submit,
+        repository=repository,
+        gateway=gateway,
+    )
+
+
+@app.post("/v1/shadow/validate")
+def validate_shadow(
+    req: ShadowRequest,
+    authorization: str | None = Header(default=None),
+    x_execution_signature: str | None = Header(default=None, alias="X-Execution-Signature"),
+) -> dict[str, Any]:
+    _verify_service_token(authorization)
+    return run_finlab_execution_shadow(
+        packet=req.packet or None,
+        signature=x_execution_signature,
         repository=repository,
         gateway=gateway,
     )

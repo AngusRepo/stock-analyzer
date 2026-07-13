@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from services.finlab_execution_smoke import run_finlab_execution_smoke
 from services.finlab_execution_preview_service import run_finlab_execution_preview
 from services.finlab_live_submit_service import run_finlab_live_submit
+from services.execution_gateway_shadow_relay import relay_execution_shadow
 from services.finlab_production_simulated_loop import (
     build_execution_loop_plan as build_production_simulated_loop_plan,
     run_production_simulated_execution_loop,
@@ -107,6 +108,10 @@ class FinLabLiveSubmitRequest(BaseModel):
     # Retained only so legacy callers receive an explicit fail-closed response.
     intent: dict[str, Any] | None = None
     allow_live_submit: bool = False
+
+
+class FinLabExecutionShadowRelayRequest(BaseModel):
+    packet: dict[str, Any] = Field(default_factory=dict)
 
 
 class FinLabProductionSimulatedLoopRequest(BaseModel):
@@ -463,6 +468,15 @@ async def run_finlab_live_submit_route(
         signature=x_execution_signature,
         allow_live_submit=req.allow_live_submit,
     )
+
+
+@router.post("/execution/shadow-relay")
+def relay_finlab_execution_shadow_route(
+    req: FinLabExecutionShadowRelayRequest,
+    x_execution_signature: str | None = Header(default=None, alias="X-Execution-Signature"),
+) -> dict:
+    """Relay a signed non-mutating shadow packet to the IAM-private gateway."""
+    return relay_execution_shadow(packet=req.packet, signature=x_execution_signature)
 
 
 async def _run_finlab_production_simulated_loop(req: FinLabProductionSimulatedLoopRequest) -> dict:

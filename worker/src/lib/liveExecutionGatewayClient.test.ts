@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
-import { resolveAuthoritativeBuyExecutionSnapshot } from './authoritativeExecutionSnapshot'
+import { resolveAuthoritativeBuyExecutionSnapshot, resolveAuthoritativeSellExecutionSnapshot } from './authoritativeExecutionSnapshot'
 import { buildStockVisionOrderIntent } from './stockvisionOrderIntent'
 import {
   buildLiveExecutionPacket,
+  buildExecutionShadowPacket,
   canonicalExecutionPacketJson,
   fetchLiveExecutionIntentStatus,
   signExecutionPacket,
   submitSignedLiveExecutionPacket,
+  submitSignedExecutionShadowPacket,
 } from './liveExecutionGatewayClient'
 
 
@@ -106,6 +108,65 @@ async function main(): Promise<void> {
   assert.equal(capturedBody.packet.idempotency_key, packet.idempotency_key)
   assert.equal(capturedBody.allow_live_submit, true)
   assert.equal(submitted.status, 'submitted')
+
+  const shadowPacket = buildExecutionShadowPacket({
+    intent,
+    idempotencyKey: 'shadow-client-4953-buy-20260713-001',
+    shadowScope: 'paper-parity-v1',
+    snapshots: { board_lot: snapshot },
+    marketReference: { referencePrice: 143, limitUp: 157, limitDown: 129 },
+    controls: {
+      riskChecksPassed: true,
+      killSwitchActive: false,
+      marketSessionOpen: true,
+      tradingDayConfirmed: true,
+      marketPhase: 'continuous',
+    },
+    generatedAt: new Date('2026-07-13T01:01:00.000Z'),
+  })
+  let shadowUrl = ''
+  let shadowHeaders = new Headers()
+  const shadowResult = await submitSignedExecutionShadowPacket({
+    LIVE_EXECUTION_SHADOW_CLIENT_ENABLED: '1',
+    LIVE_EXECUTION_SHADOW_SCOPE: 'paper-parity-v1',
+    LIVE_EXECUTION_HMAC_SECRET: 'test-secret',
+    ML_CONTROLLER_URL: 'https://controller.invalid/',
+    ML_CONTROLLER_SECRET: 'controller-token',
+  }, shadowPacket, async (input, init) => {
+    shadowUrl = String(input)
+    shadowHeaders = new Headers(init?.headers)
+    return new Response(JSON.stringify({ status: 'partial', reason: 'broker_truth_shadow_disabled' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+  assert.equal(shadowUrl, 'https://controller.invalid/finlab/execution/shadow-relay')
+  assert.equal(shadowHeaders.get('X-Controller-Token'), 'controller-token')
+  assert.match(String(shadowHeaders.get('X-Execution-Signature')), /^[a-f0-9]{64}$/)
+  assert.equal(shadowResult.status, 'partial')
+  assert.equal(shadowResult.can_submit_real_order, false)
+
+  let shadowCalled = false
+  const shadowDisabled = await submitSignedExecutionShadowPacket({}, shadowPacket, async () => {
+    shadowCalled = true
+    return new Response('{}')
+  })
+  assert.equal(shadowDisabled.reason, 'execution_shadow_client_disabled')
+  assert.equal(shadowCalled, false)
+
+  const sellSnapshot = resolveAuthoritativeSellExecutionSnapshot({
+    limitPrice: 142,
+    lotType: 'board_lot',
+    observations: [{ source: 'shioaji_hub', lotType: 'board_lot', bid: 142.5, ask: 143, ageMs: 100 }],
+  })
+  assert.equal(sellSnapshot.status, 'ready')
+  const blockedSellSnapshot = resolveAuthoritativeSellExecutionSnapshot({
+    limitPrice: 143,
+    lotType: 'board_lot',
+    observations: [{ source: 'shioaji_hub', lotType: 'board_lot', bid: 142.5, ask: 143, ageMs: 100 }],
+  })
+  assert.equal(blockedSellSnapshot.status, 'blocked')
+  assert.match(blockedSellSnapshot.reason, /authoritative_bid_below_limit/)
 
   const lifecycle = await fetchLiveExecutionIntentStatus({
     EXECUTION_GATEWAY_URL: 'https://gateway.invalid',

@@ -28,6 +28,42 @@ order API. The general `ml-controller` live-submit route remains fail-closed.
 - `LIVE_EXECUTION_RECONCILE_SECONDS=30` (callback-first; polling is only for ambiguous `SUBMITTING/UNKNOWN` recovery)
 - `LIVE_EXECUTION_HUB_TIMEOUT_SECONDS=0.75`
 
+## Paper-to-live shadow bridge
+
+The Worker must not call this IAM-private service directly. The supported path
+is Worker signed packet -> authenticated ml-controller relay -> Cloud Run IAM
+-> `/v1/shadow/validate`.
+
+Dedicated Gateway, disabled defaults:
+
+- `LIVE_EXECUTION_SHADOW_ENABLED=0`
+- `LIVE_EXECUTION_SHADOW_BROKER_READ_ENABLED=0`
+- `LIVE_EXECUTION_SHADOW_SCOPE=<bounded paper parity scope>`
+
+General ml-controller, disabled default:
+
+- `EXECUTION_GATEWAY_SHADOW_RELAY_ENABLED=0`
+- `EXECUTION_GATEWAY_URL=<private Gateway URL>`
+- `EXECUTION_GATEWAY_IAM_AUDIENCE=<same private Gateway URL>`
+- `EXECUTION_GATEWAY_SHADOW_TIMEOUT_SECONDS=1.75` (per attempt, one bounded retry)
+- mount `EXECUTION_GATEWAY_SERVICE_TOKEN` as a secret
+- grant the ml-controller service account only `roles/run.invoker` on the
+  dedicated Gateway service
+
+Worker, disabled defaults:
+
+- `LIVE_EXECUTION_SHADOW_CLIENT_ENABLED=0`
+- `LIVE_EXECUTION_SHADOW_GUARD_ENABLED=0`
+- `LIVE_EXECUTION_SHADOW_SCOPE=<same bounded paper parity scope>`
+- keep `LIVE_EXECUTION_HMAC_SECRET` and `ML_CONTROLLER_SECRET` secret-bound
+
+The shadow endpoint validates signature, runtime kill switch, order caps,
+price band, lot-specific snapshots and last-moment Market Data Hub books. It
+never reserves a broker intent, writes the broker ledger, submits, updates or
+cancels an order. With broker-read disabled, a valid result is deliberately
+`partial / broker_truth_shadow_disabled`. Enabling broker-read is a separate
+explicit approval because it starts a broker session, but still cannot submit.
+
 ## Required secrets
 
 - Shioaji API key, secret, account id, certificate PFX file, certificate password and certificate person id

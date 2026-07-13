@@ -17,6 +17,9 @@ import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { resolveTwEquityPriceBand } from './twEquityMarketContract'
 import { buildTwOrderLegs } from './twMarketRules'
+import { resolveAuthoritativeSellExecutionSnapshot, type AuthoritativeExecutionSnapshot } from './authoritativeExecutionSnapshot'
+import { runLiveExecutionShadow } from './liveExecutionShadow'
+import { resolveTwEquitySessionPhase } from './twEquityMarketContract'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
 import {
   aggregateCompletedS12Bars,
@@ -344,6 +347,36 @@ function resolveExitSellFill(
       quote_source: quote.source ?? null,
     },
   }
+}
+
+function buildSellShadowSnapshots(
+  shares: number,
+  books: { boardLot?: IntradayOHLC | null; oddLot?: IntradayOHLC | null },
+  limitPrice: number,
+  maxAgeMs: number,
+): Partial<Record<'board_lot' | 'odd_lot', AuthoritativeExecutionSnapshot>> {
+  const snapshots: Partial<Record<'board_lot' | 'odd_lot', AuthoritativeExecutionSnapshot>> = {}
+  for (const leg of buildTwOrderLegs(shares)) {
+    const quote = leg.lotType === 'odd_lot' ? books.oddLot : books.boardLot
+    snapshots[leg.lotType] = resolveAuthoritativeSellExecutionSnapshot({
+      limitPrice,
+      lotType: leg.lotType,
+      maxAgeMs,
+      observations: quote
+        ? [{
+            source: 'shioaji_hub',
+            lotType: quote.lotType ?? leg.lotType,
+            bid: quote.bid ?? null,
+            ask: quote.ask ?? null,
+            bidVolume: quote.bidVolume ?? null,
+            askVolume: quote.askVolume ?? null,
+            sourceTime: quote.quoteTime ?? null,
+            ageMs: quote.quoteTime ? Math.max(0, Date.now() - (parseTimeMs(quote.quoteTime) ?? Date.now())) : null,
+          }]
+        : [],
+    })
+  }
+  return snapshots
 }
 
 export function resolvePositionExitSellFill(
@@ -1444,6 +1477,30 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         reason: decision.reason,
         strategyType: 'intraday_exit',
       })
+      const shadowReferencePrice = Number(quote.referencePrice ?? prevCloseMapSell.get(pos.symbol) ?? currentPrice)
+      const shadowBand = resolveTwEquityPriceBand(shadowReferencePrice)
+      const shadowPhase = resolveTwEquitySessionPhase()
+      const executionShadow = await runLiveExecutionShadow({
+        env: env as any,
+        intent: sellOrderIntent,
+        snapshots: buildSellShadowSnapshots(
+          shares,
+          {
+            boardLot: boardLotQuoteMap.get(pos.symbol) ?? null,
+            oddLot: oddLotQuoteMap.get(pos.symbol) ?? null,
+          },
+          sellFillPrice,
+          positiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS) ?? 1500,
+        ),
+        referencePrice: shadowBand.referencePrice,
+        limitUp: shadowBand.limitUp ?? 0,
+        limitDown: shadowBand.limitDown ?? 0,
+        marketSessionOpen: shadowPhase === 'continuous',
+        tradingDayConfirmed: sellOrderIntent.tradeDate === intradayToday,
+        marketPhase: shadowPhase,
+        source: 'paper_intraday_full_exit_pre_fill',
+      })
+      if (executionShadow.guardBlocked) continue
       const txValue = sellFillPrice * shares
       const commission = calcCommission(txValue, cfg)
       const tax = calcTax(txValue, cfg, dayTradeSell)
@@ -1520,6 +1577,30 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         reason: decision.reason,
         strategyType: 'intraday_tp1',
       })
+      const shadowReferencePrice = Number(quote.referencePrice ?? prevCloseMapSell.get(pos.symbol) ?? currentPrice)
+      const shadowBand = resolveTwEquityPriceBand(shadowReferencePrice)
+      const shadowPhase = resolveTwEquitySessionPhase()
+      const executionShadow = await runLiveExecutionShadow({
+        env: env as any,
+        intent: sellOrderIntent,
+        snapshots: buildSellShadowSnapshots(
+          sellShares,
+          {
+            boardLot: boardLotQuoteMap.get(pos.symbol) ?? null,
+            oddLot: oddLotQuoteMap.get(pos.symbol) ?? null,
+          },
+          fillPrice,
+          positiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS) ?? 1500,
+        ),
+        referencePrice: shadowBand.referencePrice,
+        limitUp: shadowBand.limitUp ?? 0,
+        limitDown: shadowBand.limitDown ?? 0,
+        marketSessionOpen: shadowPhase === 'continuous',
+        tradingDayConfirmed: sellOrderIntent.tradeDate === intradayToday,
+        marketPhase: shadowPhase,
+        source: 'paper_intraday_partial_exit_pre_fill',
+      })
+      if (executionShadow.guardBlocked) continue
       const txValue = fillPrice * sellShares
       const commission = calcCommission(txValue, cfg)
       const tax = calcTax(txValue, cfg, dayTradeSell)

@@ -80,6 +80,7 @@ import {
 import { evaluatePartialFillRemainingPolicy } from './partialFillRemainingPolicy'
 import { formatExecutionStatusEvent } from './executionEvent'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
+import { runLiveExecutionShadow } from './liveExecutionShadow'
 import { shouldMarkPendingDebateSlaReached } from './pendingDebateSla'
 import { computeProjectedVolumeRatio } from './preTradeMomentum'
 import { computePaperPositionValuation, computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
@@ -2139,6 +2140,34 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         )
         continue
       }
+    }
+    const shadowReferencePrice = Number(currentOhlc?.referencePrice ?? previousCloseForSnapshot ?? price)
+    const shadowBand = resolveTwEquityPriceBand(shadowReferencePrice)
+    const shadowSnapshots = authoritativeSnapshot.lotType === lotType
+      ? { [lotType]: authoritativeSnapshot }
+      : {}
+    const executionShadow = await runLiveExecutionShadow({
+      env: env as any,
+      intent: orderIntent,
+      snapshots: shadowSnapshots,
+      referencePrice: shadowBand.referencePrice,
+      limitUp: shadowBand.limitUp ?? 0,
+      limitDown: shadowBand.limitDown ?? 0,
+      marketSessionOpen: isTwIntradayTradingMinute(),
+      tradingDayConfirmed: orderIntent.tradeDate === today,
+      marketPhase: twExecutionGate.phase,
+      avgVolume20d: avgVolume20dMap.get(pending.symbol) ?? null,
+      pendingRunId,
+      source: 'paper_entry_pre_fill',
+    })
+    if (executionShadow.guardBlocked) {
+      recordActiveExecutionStatus(
+        pending.symbol,
+        'checked_waiting',
+        String(executionShadow.result.reason ?? 'execution_shadow_guard_blocked'),
+        'live_execution_shadow_guard',
+      )
+      continue
     }
     const intradayExecutableVolume = Number(currentOhlc?.totalVolume ?? 0)
     const liquidityBaseVolume = Number(avgVolume20dMap.get(pending.symbol) ?? intradayExecutableVolume)

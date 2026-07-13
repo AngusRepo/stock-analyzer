@@ -92,6 +92,7 @@ def _packet(intent: dict | None = None, **overrides: object) -> dict:
             "board_lot": {
                 "schema_version": "authoritative_execution_snapshot_v1",
                 "status": "ready",
+                "lot_type": "board_lot",
                 "selected_source": "shioaji_hub",
                 "age_ms": 100,
                 "bid": 142.5,
@@ -100,6 +101,7 @@ def _packet(intent: dict | None = None, **overrides: object) -> dict:
             "odd_lot": {
                 "schema_version": "authoritative_execution_snapshot_v1",
                 "status": "ready",
+                "lot_type": "odd_lot",
                 "selected_source": "shioaji_hub",
                 "age_ms": 120,
                 "bid": 142.5,

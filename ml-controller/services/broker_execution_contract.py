@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 
 SCHEMA_VERSION = "stockvision-live-execution-packet-v1"
+SHADOW_SCHEMA_VERSION = "stockvision-execution-shadow-packet-v1"
 TERMINAL_LEG_STATES = {"FILLED", "CANCELLED", "REJECTED"}
 NON_RETRYABLE_LEG_STATES = TERMINAL_LEG_STATES | {
     "SUBMITTING",
@@ -121,6 +122,8 @@ def _snapshot_errors(
             continue
         if snapshot.get("schema_version") not in {"authoritative_execution_snapshot_v1", "authoritative_execution_snapshot_v2"}:
             errors.append(f"execution_snapshot_schema_invalid:{current_lot}")
+        if str(snapshot.get("lot_type") or "") != current_lot:
+            errors.append(f"execution_snapshot_lot_type_mismatch:{current_lot}")
         if str(snapshot.get("status") or "").lower() != "ready":
             errors.append(f"execution_snapshot_not_ready:{current_lot}")
         age_ms = _integer(snapshot.get("age_ms"))
@@ -249,6 +252,102 @@ def validate_execution_packet(
             errors.append("broker_position_insufficient")
     else:
         errors.append("execution_side_invalid")
+
+    errors.extend(
+        _snapshot_errors(
+            packet,
+            intent,
+            max_snapshot_age_ms=max(100, int(env.get("LIVE_EXECUTION_MAX_SNAPSHOT_AGE_MS") or 500)),
+        )
+    )
+    return sorted(set(errors))
+
+
+def validate_execution_shadow_packet(
+    packet: Mapping[str, Any],
+    *,
+    signature: str | None,
+    env: Mapping[str, str],
+    risk_config: Mapping[str, Any] | None,
+    daily_side_order_count: int,
+    now: datetime | None = None,
+) -> list[str]:
+    """Validate market/risk parity without requiring broker login or live approval.
+
+    This contract intentionally cannot authorize a real order. Broker cash and
+    position truth are validated separately only when the read-only broker
+    shadow flag is explicitly enabled on the dedicated gateway.
+    """
+    errors: list[str] = []
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if packet.get("schema_version") != SHADOW_SCHEMA_VERSION:
+        errors.append("execution_shadow_packet_schema_invalid")
+    if not signature_valid(packet, signature, str(env.get("LIVE_EXECUTION_HMAC_SECRET") or "")):
+        errors.append("execution_packet_signature_invalid")
+
+    idempotency_key = str(packet.get("idempotency_key") or "").strip()
+    if len(idempotency_key) < 16 or len(idempotency_key) > 200:
+        errors.append("execution_idempotency_key_invalid")
+    expected_scope = str(env.get("LIVE_EXECUTION_SHADOW_SCOPE") or "").strip()
+    if not expected_scope or str(packet.get("shadow_scope") or "").strip() != expected_scope:
+        errors.append("execution_shadow_scope_mismatch")
+
+    generated_at = parse_time(packet.get("generated_at"))
+    expires_at = parse_time(packet.get("expires_at"))
+    max_packet_age_seconds = max(1, int(env.get("LIVE_EXECUTION_MAX_PACKET_AGE_SECONDS") or 5))
+    if generated_at is None or (now - generated_at).total_seconds() < -2 or (now - generated_at).total_seconds() > max_packet_age_seconds:
+        errors.append("execution_packet_stale_or_future")
+    if expires_at is None or now >= expires_at:
+        errors.append("execution_packet_expired")
+
+    controls = packet.get("controls") if isinstance(packet.get("controls"), Mapping) else {}
+    for key in ("risk_checks_passed", "market_session_open", "trading_day_confirmed"):
+        if not _truthy(controls.get(key)):
+            errors.append(f"execution_control_failed:{key}")
+    if controls.get("kill_switch_active") is not False:
+        errors.append("kill_switch_active_or_unknown")
+    if str(controls.get("market_phase") or "") != "continuous":
+        errors.append("unsupported_market_phase")
+    tw_now = now.astimezone(ZoneInfo("Asia/Taipei"))
+    minutes = tw_now.hour * 60 + tw_now.minute
+    if tw_now.weekday() >= 5 or not (9 * 60 <= minutes <= 13 * 60 + 30):
+        errors.append("runtime_market_session_closed")
+    if str(packet.get("trade_date") or "") != tw_now.date().isoformat():
+        errors.append("execution_trade_date_mismatch")
+
+    intent = packet.get("intent") if isinstance(packet.get("intent"), Mapping) else {}
+    if not intent:
+        errors.append("execution_intent_required")
+        return sorted(set(errors))
+    side = str(intent.get("side") or "").lower()
+    if side not in {"buy", "sell"}:
+        errors.append("execution_side_invalid")
+    price = limit_price(intent)
+    shares = requested_shares(intent)
+    reference_data = packet.get("market_reference") if isinstance(packet.get("market_reference"), Mapping) else {}
+    reference = _positive(reference_data.get("reference_price"))
+    limit_up = _positive(reference_data.get("limit_up"))
+    limit_down = _positive(reference_data.get("limit_down"))
+    if reference is None or limit_up is None or limit_down is None or not (limit_down <= price <= limit_up):
+        errors.append("market_price_band_invalid")
+
+    if risk_config is None:
+        errors.append("risk_config_unavailable")
+    else:
+        system = risk_config.get("system") if isinstance(risk_config.get("system"), Mapping) else {}
+        order = risk_config.get("order") if isinstance(risk_config.get("order"), Mapping) else {}
+        if system.get("killSwitch") is not False:
+            errors.append("runtime_kill_switch_active_or_unknown")
+        max_value = _positive(order.get("maxSingleOrderValue"))
+        if max_value is None or shares * price > max_value:
+            errors.append("max_single_order_value_exceeded")
+        daily_key = "maxDailyBuyOrders" if side == "buy" else "maxDailySellOrders"
+        daily_limit = _integer(order.get(daily_key))
+        if daily_limit is None or daily_side_order_count >= daily_limit:
+            errors.append("max_daily_side_orders_reached")
+        max_deviation = _positive(order.get("maxPriceDeviationPct"))
+        if reference is not None and (max_deviation is None or abs(price - reference) / reference > max_deviation):
+            errors.append("max_price_deviation_exceeded")
 
     errors.extend(
         _snapshot_errors(

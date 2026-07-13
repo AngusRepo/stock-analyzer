@@ -565,7 +565,7 @@ def _s12_entry_context_from_row(row: dict[str, Any], prediction: dict[str, Any] 
 def _s12_context_not_ready_reason(context: dict[str, Any]) -> str | None:
     ready = _boolish(context.get("ready"))
     state = str(context.get("state") or "").strip().lower()
-    if state and state != "reaction_ready":
+    if state and state not in {"reaction_ready", "limited_takeover_ready"}:
         return f"s12_state_{state}"
     if ready is False:
         return "s12_ready_false"
@@ -580,7 +580,7 @@ def _mark_setup_only_ev(ev: dict[str, Any], *, reason: str, context: dict[str, A
     out["trade_expected_return_source"] = "s12_structural_setup_cold_start_ev"
     out["sample_policy"] = "s12_structural_setup_cold_start_no_replay"
     out["execution_ready"] = False
-    out["execution_gate_required"] = "s12_reaction_ready"
+    out["execution_gate_required"] = "s12_reaction_or_limited_takeover_ready"
     out["execution_blocked_reason"] = reason
     out["candidate_s12_entry_context"] = context
     out["s12_entry_context"] = context
@@ -1008,6 +1008,7 @@ def _load_dedicated_s12_replay_trade_rows(
                    COALESCE(r.market, st.market) AS market,
                    r.signal_date,
                    r.trade_date,
+                   json_extract(r.detail_json, '$.replay_diagnostics.outcome_known_date') AS outcome_known_date,
                    r.assessment_state,
                    r.setup_id,
                    r.entry_price,
@@ -1028,9 +1029,10 @@ def _load_dedicated_s12_replay_trade_rows(
               FROM s12_replay_trade_outcomes r
               LEFT JOIN stocks st ON st.symbol = r.symbol
              WHERE r.signal_date IS NOT NULL
-               AND r.source = 's12_next_session_structure_replay_v2'
-               AND date(r.trade_date) < date(?)
-               AND date(r.trade_date) >= date(?)
+               AND r.source = 's12_multisession_structure_replay_v3'
+               AND json_extract(r.detail_json, '$.replay_diagnostics.outcome_known_date') IS NOT NULL
+               AND date(json_extract(r.detail_json, '$.replay_diagnostics.outcome_known_date')) < date(?)
+               AND date(json_extract(r.detail_json, '$.replay_diagnostics.outcome_known_date')) >= date(?)
                AND COALESCE(r.sample_eligible, 0) = 1
                AND r.pnl_pct IS NOT NULL
              ORDER BY date(r.trade_date) DESC, r.symbol
@@ -1046,14 +1048,14 @@ def _load_dedicated_s12_replay_trade_rows(
         raw = dict(row)
         detail = _json_obj(raw.get("detail_json"))
         outcome = {
-            "schema_version": "s12-replay-trade-outcome-v1",
+            "schema_version": "s12-replay-trade-outcome-v3",
             "symbol": raw.get("symbol"),
             "market": raw.get("market"),
             "signal_date": raw.get("signal_date"),
             "trade_date": raw.get("trade_date"),
             "status": "executed",
             "sample_eligible": True,
-            "source": raw.get("source") or "s12_intraday_structure_replay_v1",
+            "source": raw.get("source") or "s12_multisession_structure_replay_v3",
             "assessment_state": raw.get("assessment_state"),
             "setup_id": raw.get("setup_id"),
             "entry_price": raw.get("entry_price"),
@@ -1072,6 +1074,8 @@ def _load_dedicated_s12_replay_trade_rows(
         }
         converted = s12_replay_outcome_to_bootstrap_row(outcome)
         if converted is not None:
+            converted["prediction_date"] = raw.get("outcome_known_date")
+            converted["outcome_known_date"] = raw.get("outcome_known_date")
             market = raw.get("market")
             if market:
                 converted["market"] = market

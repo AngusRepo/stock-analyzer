@@ -19,6 +19,17 @@ function bar(i: number, open: number, high: number, low: number, close: number):
   return { startMs: baseMs + i * M15, open, high, low, close, volume: 100 + i }
 }
 
+function datedBar(date: string, i: number, open: number, high: number, low: number, close: number): S12Bar {
+  return {
+    startMs: Date.parse(`${date}T01:00:00.000Z`) + i * M15,
+    open,
+    high,
+    low,
+    close,
+    volume: 100 + i,
+  }
+}
+
 function assessment(overrides: Partial<S12IntradayAssessment> = {}): S12IntradayAssessment {
   return {
     version: 's12_intraday_structure_v1',
@@ -131,6 +142,36 @@ function assessment(overrides: Partial<S12IntradayAssessment> = {}): S12Intraday
   )
   assert(outcome.exit_reason === 'structure_stop', 'same-bar stop/target ambiguity must resolve stop first')
   assert(outcome.pnl_pct === -0.04, 'structure stop should realize -4%')
+}
+
+{
+  const bars = [
+    ...[0, 1, 2, 3, 4].map((i) => datedBar('2026-07-02', i, 99, 101, 98, 100)),
+    datedBar('2026-07-02', 5, 100, 102, 99, 101),
+    datedBar('2026-07-03', 0, 101, 103, 100, 102),
+    datedBar('2026-07-03', 1, 102, 109, 101, 108),
+    datedBar('2026-07-06', 0, 108, 113, 107, 112),
+  ]
+  const outcome = simulateS12ReplayTradeOutcome(
+    { symbol: '8091', tradeDate: '2026-07-02', baseBars: bars },
+    { entryAssessment: assessment(), assessmentProvider: () => assessment() },
+  )
+  assert(outcome.exit_reason === 'tp2', 'multi-session replay should preserve the position until the canonical target is reached')
+  assert(outcome.exit_ms === datedBar('2026-07-06', 0, 0, 0, 0, 0).startMs, 'exit should occur on a later stock session')
+}
+
+{
+  const bars = [
+    ...[0, 1, 2, 3, 4].map((i) => datedBar('2026-07-02', i, 99, 101, 98, 100)),
+    datedBar('2026-07-03', 0, 90, 92, 89, 91),
+  ]
+  const outcome = simulateS12ReplayTradeOutcome(
+    { symbol: '8091', tradeDate: '2026-07-02', baseBars: bars },
+    { entryAssessment: assessment(), assessmentProvider: () => assessment() },
+  )
+  assert(outcome.exit_reason === 'structure_stop', 'gap-through should remain a structure-stop exit')
+  assert(outcome.exit_price === 90, 'gap-through stop must fill at the observed open instead of the unavailable stop price')
+  assert(outcome.pnl_pct === -0.1, 'gap-through implementation shortfall must be included in replay PnL')
 }
 
 {
@@ -286,14 +327,14 @@ async function runPersistenceTests(): Promise<void> {
     },
   } as any
   await persistS12ReplayOutcome(fakeDb, {
-    schema_version: 's12-replay-trade-outcome-v2',
+    schema_version: 's12-replay-trade-outcome-v3',
     symbol: '8091',
     signal_date: '2026-07-02',
     market: 'OTC',
     trade_date: '2026-07-03',
     status: 'executed',
     sample_eligible: true,
-    source: 's12_next_session_structure_replay_v2',
+    source: 's12_multisession_structure_replay_v3',
     assessment_state: 'reaction_ready',
     status_reason: 'executed_reaction_ready',
     setup_id: '8091:setup',
@@ -364,18 +405,23 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
       { symbol: '2330' },
     ],
     resolveExecutionDate: async () => '2026-07-03',
+    maturityAsOfDate: '2026-07-09',
     loadBars: async (_symbol, executionDate) => {
       assert(executionDate === '2026-07-03', 'runner should load bars from the next executable session')
       return { bars: [] }
     },
   })
-  assert(summary.schema_version === 's12-historical-replay-run-summary-v2', 'runner should return next-session summary contract')
+  assert(summary.schema_version === 's12-historical-replay-run-summary-v3', 'runner should return multi-session summary contract')
   assert(summary.signal_date === '2026-07-02', 'runner should preserve recommendation signal date')
   assert(summary.execution_dates[0] === '2026-07-03', 'runner should report resolved execution session')
   assert(summary.attempted === 2, 'runner should attempt supplied L0 symbols')
   assert(summary.outcomes[0].alpha_bucket === 'breakout_vol_expansion', 'runner should attach alpha bucket metadata to replay outcomes')
   assert(summary.outcomes[0].market_segment === 'LISTED', 'runner should attach market segment metadata to replay outcomes')
   assert(summary.outcomes[0].market === 'OTC', 'runner should attach canonical stock market metadata to replay outcomes')
+  assert(
+    summary.outcomes[0].replay_diagnostics?.outcome_known_date === '2026-07-09',
+    'every executed or non-executed V3 label must persist a point-in-time outcome-known date',
+  )
   assert(summary.skipped === 2, 'empty bars should produce skipped replay outcomes')
   assert(summary.persisted === 2 && writes === 2, 'runner should persist every replay outcome by default')
 

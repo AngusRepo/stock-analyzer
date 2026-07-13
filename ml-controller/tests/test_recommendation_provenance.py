@@ -1714,7 +1714,7 @@ def test_sparse_tangent_allocation_keeps_assistive_allocator_ev_fusion_as_diagno
     assert allocation["allocator_ev_fusion"]["diagnostic_role"] == "assistive_diagnostic_not_expected_return_owner"
 
 
-def test_fusion_v5_candidate_without_s12_falls_back_to_canonical_l4_owner():
+def test_fusion_v5_candidate_without_direct_s12_uses_two_part_model_availability_features():
     rows = [{
         "symbol": "3661",
         "chip_score": 22.0,
@@ -1736,7 +1736,7 @@ def test_fusion_v5_candidate_without_s12_falls_back_to_canonical_l4_owner():
         },
         execution_model={
             "status": "fitted",
-            "intercept": 0.0,
+            "intercept": 0.02,
             "coefficients": {"s12_trade_expected_return": 1.0},
         },
         execution_probability_model={
@@ -1758,12 +1758,11 @@ def test_fusion_v5_candidate_without_s12_falls_back_to_canonical_l4_owner():
 
     allocation = promoted[0]["alpha_allocation"]
     assert promoted[0]["signal"] == "BUY"
-    assert allocation["expected_return_owner"] == "l4_alpha_ev"
-    assert allocation["expected_return"] == pytest.approx(0.018)
-    assert allocation["allocator_ev_fusion"]["status"] == "candidate_fallback_required"
-    assert allocation["allocator_ev_fusion"]["primary_expected_return_allowed"] is False
-    assert allocation["allocator_ev_fusion"]["execution_probability"] is None
-    assert allocation["allocator_ev_fusion"]["blockers"] == ["candidate_s12_execution_ev_unavailable"]
+    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["expected_return"] == pytest.approx(0.01)
+    assert allocation["allocator_ev_fusion"]["status"] == "loaded"
+    assert allocation["allocator_ev_fusion"]["s12_execution_model_applied"] is True
+    assert allocation["allocator_ev_fusion"]["execution_probability"] == pytest.approx(0.5)
 
 
 def test_sparse_tangent_allocation_fails_closed_when_allocator_ev_fusion_artifact_is_invalid():

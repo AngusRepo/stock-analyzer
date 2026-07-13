@@ -147,12 +147,11 @@ assert(
 )
 assert(
   updateOrchestrator.includes('runDailyAllocatorEvReadiness') &&
-    updateOrchestrator.includes('runAllocatorEvFeatureSnapshotBackfill') &&
     updateOrchestrator.includes('runL4AlphaEvRefresh') &&
     updateOrchestrator.includes('runAllocatorEvFusionRefresh') &&
     updateOrchestrator.indexOf('const evReadiness = await runDailyAllocatorEvReadiness') <
       updateOrchestrator.indexOf('const summary = await deps.runMLAndRiskV2'),
-  'evening-chain must refresh allocator EV feature snapshots/L4/fusion readiness before triggering pipeline',
+  'evening-chain must refresh L4/fusion model readiness before triggering pipeline',
 )
 assert(
   updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh'") &&

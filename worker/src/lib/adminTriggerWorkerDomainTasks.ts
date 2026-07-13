@@ -288,12 +288,14 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           : 'l0'
       if (replayScope !== 'l0') {
         const runId = `manual-fusion-cohort-replay-${runDate}-${Date.now().toString(36)}`
+        const maturityAsOfDate = c.req.query('as_of') ?? twToday()
         await c.env.UPDATE_QUEUE.send({
           type: 's12_replay_backfill_chunk',
           cursor: 0,
           triggerTime: runDate,
           runId,
           replayScope,
+          maturityAsOfDate,
         } as any)
         return `triggered s12 replay backfill date=${runDate} scope=${replayScope} run_id=${runId} callback expected`
       }
@@ -302,6 +304,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         limit: parseBoundedPositiveInt(c.req.query('limit'), 500, 5000),
         offset: Math.max(0, parseBoundedPositiveInt(c.req.query('offset'), 0, 20000)),
         persist: c.req.query('dry_run') !== '1',
+        maturityAsOfDate: c.req.query('as_of') ?? twToday(),
       })
       return [
         `s12_replay_backfill signal_date=${result.signal_date}`,

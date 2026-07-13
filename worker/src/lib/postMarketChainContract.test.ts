@@ -58,6 +58,17 @@ assert(
   'verify-v2 must receive the callback business date',
 )
 assert(
+  postMarketChain.includes('runAllocatorEvFeatureSnapshotBackfill') &&
+    postMarketChain.indexOf("'allocator-ev-feature-snapshot-backfill'") <
+      postMarketChain.indexOf("'verify-v2'"),
+  'same-date allocator feature snapshots must be materialized after pipeline output and before verify',
+)
+assert(
+  postMarketChain.includes("if (snapshotTask.status === 'error')") &&
+    postMarketChain.includes("await logChainSummary(env, ctx, 'post-pipeline-chain'"),
+  'post-pipeline chain must stop before verify when canonical allocator snapshots are missing',
+)
+assert(
   postScreenerContinuationBlock.indexOf('runRegimeCompute(env, triggerTime)') > 0 &&
     postScreenerContinuationBlock.indexOf('runRegimeCompute(env, triggerTime)') <
       postScreenerContinuationBlock.indexOf('deps.runMLAndRiskV2(env, triggerTime'),

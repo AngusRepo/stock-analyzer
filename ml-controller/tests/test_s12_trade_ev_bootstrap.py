@@ -88,10 +88,12 @@ def test_load_s12_replay_trade_rows_accepts_dedicated_replay_outcomes():
         calls.append(sql)
         if "FROM s12_replay_trade_outcomes" in sql:
             return [
-                {
-                    "symbol": "8091",
-                    "market": "TWSE",
-                    "trade_date": "2026-07-02",
+                    {
+                        "symbol": "8091",
+                        "market": "TWSE",
+                        "signal_date": "2026-06-30",
+                        "trade_date": "2026-07-02",
+                        "outcome_known_date": "2026-07-02",
                     "assessment_state": "reaction_ready",
                     "setup_id": "8091:setup",
                     "entry_price": 100,
@@ -103,7 +105,7 @@ def test_load_s12_replay_trade_rows_accepts_dedicated_replay_outcomes():
                     "bars_to_exit": 5,
                     "exit_reason": "tp1",
                     "sample_eligible": 1,
-                    "source": "s12_intraday_structure_replay_v1",
+                        "source": "s12_multisession_structure_replay_v3",
                     "detail_json": json.dumps({
                         "conservative_intrabar_order": "stop_before_target",
                         "market_segment": "LISTED",
@@ -390,7 +392,7 @@ def test_s12_trade_ev_bootstrap_passes_worker_s12_context_to_cold_start_ev():
     assert "1h_short_risk_haircut" in ev["cold_start_policy"]["s12_context_haircuts"]
 
 
-def test_s12_trade_ev_bootstrap_keeps_setup_ev_but_requires_reaction_ready_execution_gate():
+def test_s12_trade_ev_bootstrap_keeps_setup_ev_but_requires_canonical_execution_state():
     provider = S12TradeEvBootstrapProvider([], run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
 
     ev = provider.build_for_row(
@@ -430,9 +432,50 @@ def test_s12_trade_ev_bootstrap_keeps_setup_ev_but_requires_reaction_ready_execu
     assert ev["trade_expected_return_source"] == "s12_structural_setup_cold_start_ev"
     assert ev["sample_policy"] == "s12_structural_setup_cold_start_no_replay"
     assert ev["execution_ready"] is False
-    assert ev["execution_gate_required"] == "s12_reaction_ready"
+    assert ev["execution_gate_required"] == "s12_reaction_or_limited_takeover_ready"
     assert ev["execution_blocked_reason"] == "s12_state_waiting_sweep"
     assert ev["candidate_s12_entry_context"]["state"] == "waiting_sweep"
+
+
+def test_s12_trade_ev_bootstrap_treats_limited_takeover_as_reduced_risk_execution():
+    provider = S12TradeEvBootstrapProvider([], run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
+
+    ev = provider.build_for_row(
+        {
+            "symbol": "6257",
+            "current_price": 100,
+            "stop_loss": 96,
+            "market_segment": "LISTED",
+            "score": 66,
+            "forecast_data": json.dumps({
+                "canonical_trade_lifecycle": {
+                    "entry": {
+                        "s12": {
+                            "ready": True,
+                            "state": "limited_takeover_ready",
+                            "structureStop": 96,
+                            "detail": (
+                                "state=limited_takeover_ready;ready=true;"
+                                "entry_archetype=equity_repricing_breakout;"
+                                "vwap_fast_acceptance=true;htf_hard_block=false"
+                            ),
+                            "exitPlan": {
+                                "tp1": 106,
+                                "tp1Source": "tw_equity_exit_fusion_v2.r_multiple_fallback_1r",
+                                "mainExit": 112,
+                                "mainExitSource": "vwap_fair_value",
+                            },
+                        },
+                    },
+                },
+            }),
+        },
+        prediction={"ensemble_v2": {"avg_rank": 0.72, "confidence": 0.72}},
+    )
+
+    assert ev["status"] == "loaded"
+    assert ev["trade_expected_return_net_pct"] is not None
+    assert ev["candidate_s12_entry_context"]["state"] == "limited_takeover_ready"
 
 
 def test_s12_trade_ev_bootstrap_uses_fundamental_quality_before_score_components_are_rebuilt():

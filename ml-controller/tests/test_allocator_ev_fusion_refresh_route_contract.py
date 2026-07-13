@@ -39,6 +39,10 @@ def test_allocator_ev_fusion_refresh_route_writes_registry_before_config_promoti
     assert calls.index("upsert_artifact_record") < calls.index("worker_fetch")
 
 
+def test_allocator_ev_fusion_dry_run_does_not_write_registry() -> None:
+    assert "if isinstance(artifact, dict) and not req.dry_run:" in SOURCE
+
+
 def test_allocator_ev_fusion_refresh_route_sends_config_snapshot_meta() -> None:
     assert '"meta"' in SOURCE
     assert '"source": "allocator_ev_fusion_refresh"' in SOURCE

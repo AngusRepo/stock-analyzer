@@ -16,13 +16,13 @@ from services.s12_replay_trade_outcomes import (  # noqa: E402
 
 def _outcome(symbol: str = "8091", date: str = "2026-07-01", pnl: float = 0.04) -> dict:
     return {
-        "schema_version": "s12-replay-trade-outcome-v2",
+        "schema_version": "s12-replay-trade-outcome-v3",
         "symbol": symbol,
         "signal_date": "2026-06-30",
         "trade_date": date,
         "status": "executed",
         "sample_eligible": True,
-        "source": "s12_next_session_structure_replay_v2",
+        "source": "s12_multisession_structure_replay_v3",
         "assessment_state": "reaction_ready",
         "setup_id": f"{symbol}:{date}",
         "entry_price": 100,

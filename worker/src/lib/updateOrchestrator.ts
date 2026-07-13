@@ -6,7 +6,6 @@ import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady, loadMarketDataReadinessStats } from './marketDataReadiness'
 import { runRegimeCompute } from './controllerDailyWorkflows'
 import {
-  runAllocatorEvFeatureSnapshotBackfill,
   runAllocatorEvFusionRefresh,
   runFinLabV4Backfill,
   runL4AlphaEvRefresh,
@@ -1813,35 +1812,6 @@ async function runDailyAllocatorEvReadiness(
   const parts: string[] = []
 
   try {
-    const snapshotStarted = Date.now()
-    const snapshotSummary = await runAllocatorEvFeatureSnapshotBackfill(env, {
-      startDate: triggerTime,
-      endDate: triggerTime,
-      dryRun: false,
-      candidateLimit: 1000,
-      l4MinSamples: 500,
-      l4MinDates: 20,
-    })
-    parts.push(`snapshot=${snapshotSummary}`)
-    await logSchedulerResult(env.KV, 'allocator-ev-feature-snapshot-backfill', {
-      status: 'success',
-      summary: `daily-chain ${snapshotSummary}`,
-      duration_ms: Date.now() - snapshotStarted,
-      run_date: triggerTime,
-    })
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
-    await logSchedulerResult(env.KV, 'allocator-ev-feature-snapshot-backfill', {
-      status: 'error',
-      summary: `daily-chain allocator EV feature snapshot failed for ${triggerTime}`,
-      duration_ms: Date.now() - started,
-      error: message,
-      run_date: triggerTime,
-    })
-    return { ok: false, summary: `allocator EV feature snapshot failed: ${message}` }
-  }
-
-  try {
     const l4Started = Date.now()
     const l4Summary = await runL4AlphaEvRefresh(env, triggerTime, 'weekly')
     parts.push(`l4=${l4Summary}`)
@@ -1905,7 +1875,7 @@ async function runDailyAllocatorEvReadiness(
     })
   }
 
-  const summary = `allocator EV readiness before pipeline for ${triggerTime}; ${parts.join(' | ')}`
+  const summary = `allocator EV model readiness before pipeline for ${triggerTime}; ${parts.join(' | ')}`
   await logSchedulerResult(env.KV, 'allocator-ev-readiness', {
     status: 'success',
     summary,
@@ -2935,6 +2905,10 @@ export async function processUpdateBatch(
     const runId = msg.runId || `s12-replay-backfill-${triggerTime}-${Date.now()}`
     const offset = Math.max(0, Number.isFinite(msg.cursor) ? Number(msg.cursor) : 0)
     const requestedScope = (msg as any).replayScope
+    const requestedMaturityDate = String((msg as any).maturityAsOfDate ?? '').slice(0, 10)
+    const maturityAsOfDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedMaturityDate)
+      ? requestedMaturityDate
+      : new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
     const replayScope = requestedScope === 'fusion_snapshot_missing'
       ? 'fusion_snapshot_missing'
       : requestedScope === 'fusion_snapshot_structure'
@@ -2977,13 +2951,14 @@ export async function processUpdateBatch(
       return
     }
     const cohortSymbols = replayScope === 'fusion_snapshot_missing'
-      ? await loadFusionSnapshotMissingReplaySymbols(env.DB, triggerTime)
+      ? await loadFusionSnapshotMissingReplaySymbols(env.DB, triggerTime, maturityAsOfDate)
       : undefined
     const result = await runS12HistoricalReplayForDate(env, triggerTime, {
       limit: S12_REPLAY_QUEUE_CHUNK_SIZE,
       offset: replayScope === 'fusion_snapshot_missing' ? 0 : offset,
       persist: true,
       symbols: cohortSymbols,
+      maturityAsOfDate,
     })
     const nextOffset = replayScope === 'fusion_snapshot_missing'
       ? 0
@@ -3020,6 +2995,7 @@ export async function processUpdateBatch(
         triggerTime,
         runId,
         replayScope,
+        maturityAsOfDate,
       } as any)
     }
     return

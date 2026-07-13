@@ -123,7 +123,7 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["validation_packet"]["sample_audit"]["l4_available_count"] > 0
     assert artifact["validation_packet"]["sample_audit"]["s12_structure_available_count"] > 0
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
-    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v6"
+    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v7"
     assert artifact["resolver_method"] == "cross_fitted_rank_two_part_trade_ev_fusion"
     assert "l4_expected_return" in artifact["coefficients"]
     assert "s12_trade_expected_return" in artifact["coefficients"]
@@ -182,10 +182,10 @@ def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_sampl
     assert artifact["promotion_tier"] == "shadow"
     assert artifact["primary_expected_return_allowed"] is False
     assert artifact["validation_packet"]["decision"] == "FAIL"
-    assert "insufficient_samples" in artifact["validation_packet"]["failed_gates"]
+    assert "selection:insufficient_samples" in artifact["validation_packet"]["failed_gates"]
 
 
-def test_allocator_ev_fusion_artifact_builder_demotes_hot_start_pass_to_assistive():
+def test_allocator_ev_fusion_artifact_builder_rejects_assistive_without_replay_execution_labels():
     rows = []
     for day_idx in range(6):
         day = f"2026-06-{day_idx + 1:02d}"
@@ -213,11 +213,11 @@ def test_allocator_ev_fusion_artifact_builder_demotes_hot_start_pass_to_assistiv
     )
 
     artifact = out["artifact"]
-    assert artifact["validation_packet"]["decision"] == "PASS"
-    assert artifact["promotion_tier"] == "assistive"
-    assert artifact["promotion_state"] == "production_assistive"
+    assert artifact["validation_packet"]["decision"] == "FAIL"
+    assert artifact["promotion_tier"] == "shadow"
+    assert artifact["promotion_state"] == "shadow"
     assert artifact["primary_expected_return_allowed"] is False
-    assert "primary_insufficient_dates" in artifact["promotion_blockers"]
+    assert "execution:insufficient_samples" in artifact["promotion_blockers"]
 
 
 def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evidence():
@@ -236,7 +236,11 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     assert "AS s12_replay_pnl_pct" in observed[0]["sql"]
     assert "fs.snapshot_source = ?" in observed[0]["sql"]
     assert "fs.as_of_guard = ?" in observed[0]["sql"]
+    assert "replay_diagnostics.outcome_known_date" in observed[0]["sql"]
     assert observed[0]["params"] == [
+        "2026-07-07",
+        "2026-07-07",
+        "2026-07-07",
         SNAPSHOT_BACKFILL_SOURCE,
         SNAPSHOT_BACKFILL_AS_OF_GUARD,
         "2026-07-07",
@@ -698,6 +702,7 @@ def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_miss
     assert audit["sample_count"] == 1
     assert samples[0]["features"]["l4_available"] == 0.0
     assert samples[0]["features"]["s12_available"] == 0.0
+    assert samples[0]["features"]["s12_execution_ready"] == 0.0
     assert samples[0]["features"]["score_v2_available"] == 1.0
     assert samples[0]["execution_target"] is None
 
@@ -766,7 +771,9 @@ def test_execution_replay_label_is_kept_when_prior_s12_ev_was_unavailable():
     assert audit["s12_available_count"] == 0
     assert audit["execution_sample_count"] == 1
     assert samples[0]["features"]["s12_available"] == 0.0
+    assert samples[0]["features"]["s12_execution_ready"] == 0.0
     assert samples[0]["execution_target"] == pytest.approx(0.0132)
+    assert samples[0]["realized_trade_ev_target"] == pytest.approx(0.0132)
     assert samples[0]["execution_probability_target"] == 1.0
 
 
@@ -783,6 +790,7 @@ def test_allocator_ev_fusion_keeps_candidate_and_trade_targets_separate():
     assert samples[0]["selection_target"] == pytest.approx(0.0)
     assert samples[0]["selection_rank_target"] == pytest.approx(0.0)
     assert samples[0]["execution_target"] is None
+    assert samples[0]["realized_trade_ev_target"] == pytest.approx(0.0)
     assert samples[0]["actual_trade_target_audit_only"] == pytest.approx(-0.20)
     assert audit["target_policy"]["actual_trade_outcome_role"] == "audit_only_not_training_label"
 

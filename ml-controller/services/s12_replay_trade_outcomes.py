@@ -86,14 +86,14 @@ def s12_replay_outcome_to_bootstrap_row(outcome: dict[str, Any]) -> dict[str, An
         "s12_trade_ev": {
             "schema_version": "s12-trade-ev-v1",
             "status": "loaded",
-            "source": "s12_next_session_structure_replay_v2",
+            "source": "s12_multisession_structure_replay_v3",
             "semantic": "trade_expected_return_not_5bar_close_forecast",
             "trade_expected_return_net_pct": sample["pnl_pct"],
-            "trade_expected_return_source": "s12_next_session_structure_replay_v2",
+            "trade_expected_return_source": "s12_multisession_structure_replay_v3",
         },
         "s12_replay_outcome": {
             "schema_version": outcome.get("schema_version") or "s12-replay-trade-outcome-v1",
-            "source": outcome.get("source") or "s12_next_session_structure_replay_v2",
+            "source": outcome.get("source") or "s12_multisession_structure_replay_v3",
             "signal_date": signal_date or None,
             "execution_date": trade_date,
             "assessment_state": outcome.get("assessment_state"),

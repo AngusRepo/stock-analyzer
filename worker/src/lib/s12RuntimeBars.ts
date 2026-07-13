@@ -739,3 +739,66 @@ export async function loadS12HistoricalReplayBars(
     }
   }
 }
+
+export async function loadS12HistoricalReplayLifecycleBars(
+  env: Bindings,
+  symbol: string,
+  entryDate: string,
+  maxSessions = 5,
+  maxAvailableDate = '9999-12-31',
+): Promise<{
+  bars: IntradayRollingBar[]
+  fallback15mBars: IntradayRollingBar[]
+  fallback4hBars: IntradayRollingBar[]
+  fallback1hBars: IntradayRollingBar[]
+  fallbackDailyBars: IntradayRollingBar[]
+  diagnostics: S12BaseBarDiagnostics
+}> {
+  const sessionLimit = Math.max(1, Math.min(10, Math.floor(maxSessions)))
+  const { results } = await env.DB.prepare(`
+    SELECT DISTINCT date(sp.date) AS session_date
+      FROM stock_prices sp
+      JOIN stocks st ON st.id = sp.stock_id
+     WHERE st.symbol = ?
+       AND date(sp.date) >= date(?)
+       AND date(sp.date) <= date(?)
+       AND sp.open IS NOT NULL
+       AND sp.high IS NOT NULL
+       AND sp.low IS NOT NULL
+       AND sp.close IS NOT NULL
+     ORDER BY date(sp.date) ASC
+     LIMIT ?
+  `).bind(symbol, entryDate, maxAvailableDate, sessionLimit).all<{ session_date?: string | null }>()
+  const sessionDates = (results ?? [])
+    .map((row) => String(row.session_date ?? '').slice(0, 10))
+    .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
+  if (!sessionDates.includes(entryDate)) sessionDates.unshift(entryDate)
+
+  const loadedSessions = await Promise.all(
+    sessionDates.slice(0, sessionLimit).map(async (sessionDate) => ({
+      sessionDate,
+      loaded: await loadS12HistoricalReplayBars(env, symbol, sessionDate),
+    })),
+  )
+  const first = loadedSessions[0]?.loaded ?? await loadS12HistoricalReplayBars(env, symbol, entryDate)
+  const barsByStart = new Map<number, IntradayRollingBar>()
+  for (const session of loadedSessions) {
+    for (const bar of session.loaded.bars) barsByStart.set(bar.startMs, bar)
+  }
+  const bars = [...barsByStart.values()].sort((left, right) => left.startMs - right.startMs)
+  return {
+    bars,
+    fallback15mBars: first.fallback15mBars,
+    fallback4hBars: first.fallback4hBars,
+    fallback1hBars: first.fallback1hBars,
+    fallbackDailyBars: first.fallbackDailyBars,
+    diagnostics: {
+      ...first.diagnostics,
+      base_bars_count: bars.length,
+      lifecycle_session_dates: loadedSessions.map((session) => session.sessionDate).join(','),
+      lifecycle_session_count: loadedSessions.length,
+      lifecycle_horizon_sessions: sessionLimit,
+      lifecycle_contract: 'next_session_entry_then_multisession_canonical_exit',
+    },
+  }
+}

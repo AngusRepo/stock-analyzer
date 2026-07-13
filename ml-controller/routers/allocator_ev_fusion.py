@@ -186,6 +186,7 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
         end_date=end_date,
         lookback_days=lookback_days,
         limit=req.limit,
+        knowledge_cutoff_date=req.end_date or end_date,
     )
     result = build_allocator_ev_fusion_artifact_from_rows(
         rows,
@@ -193,12 +194,13 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
         lookback_days=lookback_days,
         min_samples=min_samples,
         min_dates=min_dates,
+        knowledge_cutoff_date=req.end_date or end_date,
     )
     artifact = result.get("artifact") if isinstance(result, dict) else None
     validation = result.get("validation_packet") if isinstance(result, dict) else None
     decision = str((validation or {}).get("decision") or "").upper()
     registry_error: str | None = None
-    if isinstance(artifact, dict):
+    if isinstance(artifact, dict) and not req.dry_run:
         try:
             upsert_artifact_record(
                 _registry_record(
@@ -329,6 +331,10 @@ async def backfill_allocator_ev_feature_snapshots_route(req: AllocatorEvFeatureS
             f"written={result.get('written')} skipped_days={result.get('skipped_days')} "
             "l4_backfill_only_days="
             f"{result.get('l4_snapshot_backfill_only_days')} "
+            f"s12_direct={result.get('snapshots_with_s12_direct_ev')} "
+            f"s12_structure={result.get('snapshots_with_s12_structure')} "
+            f"s12_limited={result.get('snapshots_with_s12_limited_takeover')} "
+            f"s12_reaction={result.get('snapshots_with_s12_full_reaction')} "
             "skip_reasons="
             f"{json.dumps(result.get('skip_reasons') or {}, separators=(',', ':'))}"
         ),

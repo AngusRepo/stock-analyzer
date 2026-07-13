@@ -7,6 +7,7 @@ import { runNeuralMetaShadow } from './metaLearningShadowRunner'
 import { clearOpenPositionIntradayPriceCache } from './paperIntradayPriceCache'
 import { classifySchedulerSummary, logSchedulerResult, type SchedulerRunStatus } from './schedulerRunLogger'
 import { recordWorkerTaskComputeProfile } from './computeProfileEvents'
+import { runAllocatorEvFeatureSnapshotBackfill } from './controllerResearchWorkflows'
 
 type ChainContext = {
   runDate?: string
@@ -201,6 +202,7 @@ async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): P
       triggerTime: signalDate,
       runId,
       replayScope: 'fusion_snapshot_missing',
+      maturityAsOfDate: runDate,
     } as any)
   }
   return signalDates.length
@@ -250,6 +252,35 @@ export async function runPostPipelineCallbackChain(env: Bindings, ctx: ChainCont
     await env.KV.delete(`lock:ml-predict:${ctx.runDate}`).catch(() => {})
   }
 
+  if (!ctx.runDate) {
+    results.push({
+      task: 'allocator-ev-feature-snapshot-backfill',
+      summary: 'pipeline callback missing run date',
+      status: 'error',
+      critical: true,
+    })
+    await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
+    return
+  }
+  const snapshotTask = await logChainedTask(
+    env,
+    ctx,
+    'allocator-ev-feature-snapshot-backfill',
+    () => runAllocatorEvFeatureSnapshotBackfill(env, {
+      startDate: ctx.runDate!,
+      endDate: ctx.runDate!,
+      dryRun: false,
+      candidateLimit: 1000,
+      l4MinSamples: 500,
+      l4MinDates: 20,
+    }),
+    { timeoutMs: 130_000 },
+  )
+  results.push(snapshotTask)
+  if (snapshotTask.status === 'error') {
+    await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
+    return
+  }
   results.push(await logChainedTask(env, ctx, 'verify-v2', () => runVerifyV2(env, ctx.runDate)))
   await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
 }

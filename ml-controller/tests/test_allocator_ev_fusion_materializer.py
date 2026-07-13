@@ -73,7 +73,7 @@ def test_allocator_ev_fusion_materializer_marks_edge_disagreement_zero():
     assert payload["expected_return"] == pytest.approx(0.01)
 
 
-def test_allocator_ev_fusion_materializer_applies_s12_execution_residual_only_when_available():
+def test_allocator_ev_fusion_materializer_uses_availability_features_instead_of_disabling_execution_model():
     artifact = {
         **_artifact(),
         "schema_version": "allocator-ev-fusion-artifact-v3",
@@ -116,8 +116,8 @@ def test_allocator_ev_fusion_materializer_applies_s12_execution_residual_only_wh
 
     assert with_s12["expected_return"] == pytest.approx(0.024)
     assert with_s12["s12_execution_model_applied"] is True
-    assert without_s12["expected_return"] == pytest.approx(0.02)
-    assert without_s12["s12_execution_model_applied"] is False
+    assert without_s12["expected_return"] == pytest.approx(0.019)
+    assert without_s12["s12_execution_model_applied"] is True
 
 
 def test_allocator_ev_fusion_materializer_probability_weights_execution_residual():

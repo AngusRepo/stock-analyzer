@@ -4,7 +4,7 @@ import {
   type S12IntradayAssessment,
   type S12TimingPolicy,
 } from './s12IntradayStructure'
-import { loadS12HistoricalReplayBars } from './s12RuntimeBars'
+import { loadS12HistoricalReplayLifecycleBars } from './s12RuntimeBars'
 import type { Bindings } from '../types'
 import {
   applyS12TwCalibrationArtifact,
@@ -17,13 +17,13 @@ import { normalizeTwEquityTargetPrice } from './twEquityMarketContract'
 export type S12ReplayOutcomeStatus = 'executed' | 'setup_only' | 'skipped'
 
 export interface S12ReplayOutcome {
-  schema_version: 's12-replay-trade-outcome-v2'
+  schema_version: 's12-replay-trade-outcome-v3'
   symbol: string
   signal_date: string
   trade_date: string
   status: S12ReplayOutcomeStatus
   sample_eligible: boolean
-  source: 's12_next_session_structure_replay_v2'
+  source: 's12_multisession_structure_replay_v3'
   assessment_state: string | null
   status_reason: string
   setup_id: string | null
@@ -94,6 +94,7 @@ export interface S12ReplayBars {
   h4ReferenceDate?: string | null
   h4ReferenceClose?: number | null
   diagnostics?: Record<string, unknown>
+  horizonComplete?: boolean
 }
 
 export interface S12HistoricalReplayRunOptions {
@@ -103,10 +104,11 @@ export interface S12HistoricalReplayRunOptions {
   persist?: boolean
   loadBars?: (symbol: string, tradeDate: string) => Promise<S12ReplayBars>
   resolveExecutionDate?: (symbol: string, signalDate: string) => Promise<string | null>
+  maturityAsOfDate?: string
 }
 
 export interface S12HistoricalReplayRunSummary {
-  schema_version: 's12-historical-replay-run-summary-v2'
+  schema_version: 's12-historical-replay-run-summary-v3'
   signal_date: string
   execution_dates: string[]
   unresolved_execution_dates: number
@@ -134,6 +136,7 @@ export interface S12L0PassedSymbol {
 export async function loadFusionSnapshotMissingReplaySymbols(
   db: D1Database,
   signalDate: string,
+  maturityAsOfDate = '9999-12-31',
 ): Promise<S12L0PassedSymbol[]> {
   const { results } = await db.prepare(`
     WITH latest_snapshot AS (
@@ -163,15 +166,27 @@ export async function loadFusionSnapshotMissingReplaySymbols(
       LEFT JOIN stocks st
         ON st.symbol = fs.symbol
      WHERE fs.snapshot_rank = 1
+       AND (
+         SELECT COUNT(DISTINCT date(sp.date))
+           FROM stock_prices sp
+           JOIN stocks price_stock ON price_stock.id = sp.stock_id
+          WHERE price_stock.symbol = fs.symbol
+            AND date(sp.date) > date(fs.snapshot_date)
+            AND date(sp.date) <= date(?)
+            AND sp.open IS NOT NULL
+            AND sp.high IS NOT NULL
+            AND sp.low IS NOT NULL
+            AND sp.close IS NOT NULL
+       ) >= 5
        AND NOT EXISTS (
          SELECT 1
            FROM s12_replay_trade_outcomes replay
           WHERE replay.signal_date = fs.snapshot_date
             AND replay.symbol = fs.symbol
-            AND replay.source = 's12_next_session_structure_replay_v2'
+            AND replay.source = 's12_multisession_structure_replay_v3'
        )
      ORDER BY COALESCE(dr.rank, 999999), fs.symbol
-  `).bind(signalDate).all<S12L0PassedSymbol>()
+  `).bind(signalDate, maturityAsOfDate).all<S12L0PassedSymbol>()
   return (results ?? []).map((row) => ({
     symbol: String(row.symbol ?? '').trim(),
     name: row.name ?? null,
@@ -277,13 +292,15 @@ export async function loadReplayReadySignalDates(
           WHERE st.symbol = fs.symbol
             AND date(sp.date) > date(fs.snapshot_date)
             AND date(sp.date) <= date(?)
+          GROUP BY st.symbol
+         HAVING COUNT(DISTINCT date(sp.date)) >= 5
        )
        AND NOT EXISTS (
          SELECT 1
            FROM s12_replay_trade_outcomes replay
           WHERE replay.signal_date = fs.snapshot_date
             AND replay.symbol = fs.symbol
-            AND replay.source = 's12_next_session_structure_replay_v2'
+            AND replay.source = 's12_multisession_structure_replay_v3'
        )
      GROUP BY fs.snapshot_date
      ORDER BY fs.snapshot_date DESC
@@ -295,6 +312,11 @@ export async function loadReplayReadySignalDates(
 }
 
 const M15_MS = 15 * 60_000
+const TW_OFFSET_MS = 8 * 60 * 60_000
+
+function twDateKey(startMs: number): string {
+  return new Date(startMs + TW_OFFSET_MS).toISOString().slice(0, 10)
+}
 
 function finitePositive(value: unknown): number | null {
   const n = Number(value)
@@ -426,13 +448,13 @@ function assessmentSnapshot(assessment?: S12IntradayAssessment | null): Pick<
 
 function emptyOutcome(input: S12ReplayInput, status: S12ReplayOutcomeStatus, reason: string, assessment?: S12IntradayAssessment | null): S12ReplayOutcome {
   return {
-    schema_version: 's12-replay-trade-outcome-v2',
+    schema_version: 's12-replay-trade-outcome-v3',
     symbol: input.symbol,
     signal_date: input.signalDate ?? input.tradeDate,
     trade_date: input.tradeDate,
     status,
     sample_eligible: false,
-    source: 's12_next_session_structure_replay_v2',
+    source: 's12_multisession_structure_replay_v3',
     assessment_state: assessment?.state ?? null,
     status_reason: reason,
     setup_id: assessment?.setupId ?? null,
@@ -503,8 +525,11 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
   const bars = normalizeBars(input.baseBars)
   if (bars.length === 0) return emptyOutcome(input, 'skipped', 'missing_intraday_bars')
 
+  const entrySessionBars = bars.filter((bar) => twDateKey(bar.startMs) === input.tradeDate)
+  if (entrySessionBars.length === 0) return emptyOutcome(input, 'skipped', 'missing_entry_session_bars')
+
   const provider = options.assessmentProvider ?? defaultAssessmentProvider(input)
-  const assessment = findEntryAssessment(input, bars, provider, options.entryAssessment)
+  const assessment = findEntryAssessment(input, entrySessionBars, provider, options.entryAssessment)
   if (!assessment) return emptyOutcome(input, 'skipped', 'no_s12_assessment')
   if (!isReplayEntryAssessment(assessment)) {
     return emptyOutcome(input, isSetupValidState(assessment.state) ? 'setup_only' : 'skipped', `s12_state_${assessment.state}`, assessment)
@@ -519,7 +544,10 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
   const entryMs = Number(assessment.sequence.reactionMs ?? assessment.sequence.zoneTouchMs ?? 0)
   const foundEntryIndex = bars.findIndex((bar) => bar.startMs >= entryMs)
   const entryIndex = foundEntryIndex >= 0 ? foundEntryIndex : bars.length - 1
-  const futureBars = bars.slice(entryIndex + 1, entryIndex + 1 + Math.max(1, Math.floor(options.maxExitBars ?? 80)))
+  const maxExitBars = options.maxExitBars == null
+    ? bars.length
+    : Math.max(1, Math.floor(options.maxExitBars))
+  const futureBars = bars.slice(entryIndex + 1, entryIndex + 1 + maxExitBars)
   if (futureBars.length === 0) return emptyOutcome(input, 'skipped', 'missing_post_entry_bars', assessment)
 
   const targets = targetLadder(assessment, input.exitCalibration)
@@ -545,9 +573,10 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
     minLow = Math.min(minLow, bar.low)
 
     if (bar.low <= activeStop) {
-      realized += remaining * ((activeStop - entry) / entry)
+      const stopFill = bar.open < activeStop ? bar.open : activeStop
+      realized += remaining * ((stopFill - entry) / entry)
       remaining = 0
-      exitPrice = activeStop
+      exitPrice = stopFill
       exitMs = bar.startMs
       exitReason = nextTarget > 0 ? 'trailing_structure_stop' : 'structure_stop'
       barsToExit = i + 1
@@ -563,6 +592,11 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
       exitReason = 'bearish_defense_exit'
       barsToExit = i + 1
       break
+    }
+    const refreshedStructureStop = finitePositive(defense.exitPlan.trailingStop.initial)
+      ?? finitePositive(defense.execution.stopLoss)
+    if (refreshedStructureStop != null && refreshedStructureStop > activeStop && refreshedStructureStop < bar.close) {
+      activeStop = refreshedStructureStop
     }
 
     while (nextTarget < tranches.length && bar.high >= tranches[nextTarget].price && remaining > 0) {
@@ -592,13 +626,13 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
 
   const riskPct = (entry - stop) / entry
   return {
-    schema_version: 's12-replay-trade-outcome-v2',
+    schema_version: 's12-replay-trade-outcome-v3',
     symbol: input.symbol,
     signal_date: input.signalDate ?? input.tradeDate,
     trade_date: input.tradeDate,
     status: 'executed',
     sample_eligible: true,
-    source: 's12_next_session_structure_replay_v2',
+    source: 's12_multisession_structure_replay_v3',
     assessment_state: assessment.state,
     status_reason: replayEntryStatusReason(assessment),
     setup_id: assessment.setupId,
@@ -773,7 +807,13 @@ export async function runS12HistoricalReplayForDate(
     }
     executionDates.add(executionDate)
     const loadBars = options.loadBars ?? (async (symbol: string, date: string) => {
-      const loaded = await loadS12HistoricalReplayBars(env, symbol, date)
+      const loaded = await loadS12HistoricalReplayLifecycleBars(
+        env,
+        symbol,
+        date,
+        5,
+        options.maturityAsOfDate,
+      )
       return {
         bars: loaded.bars,
         fallback15mBars: loaded.fallback15mBars,
@@ -783,9 +823,14 @@ export async function runS12HistoricalReplayForDate(
         h4ReferenceDate: loaded.diagnostics.previous_daily_context_date ?? null,
         h4ReferenceClose: Number(loaded.diagnostics.previous_daily_raw_close ?? 0) || null,
         diagnostics: loaded.diagnostics,
+        horizonComplete: Number(loaded.diagnostics.lifecycle_session_count ?? 0) >= 5,
       }
     })
     const loaded = await loadBars(row.symbol, executionDate)
+    if (loaded.horizonComplete === false) {
+      unresolvedExecutionDates += 1
+      continue
+    }
     const alphaContext = parseJsonRecord(row.alpha_context)
     const alphaAllocation = parseJsonRecord(row.alpha_allocation)
     const alphaBucket = alphaBucketFromContext(alphaContext, alphaAllocation)
@@ -794,6 +839,13 @@ export async function runS12HistoricalReplayForDate(
       alphaBucket,
       asOfDate: signalDate,
     })
+    const lifecycleSessionDates = String(loaded.diagnostics?.lifecycle_session_dates ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
+    const outcomeKnownDate = lifecycleSessionDates[lifecycleSessionDates.length - 1]
+      ?? options.maturityAsOfDate
+      ?? executionDate
     const outcome = simulateS12ReplayTradeOutcome({
       symbol: row.symbol,
       signalDate,
@@ -817,6 +869,9 @@ export async function runS12HistoricalReplayForDate(
         signal_date: signalDate,
         execution_date: executionDate,
         execution_date_contract: 'next_stock_specific_session_after_signal',
+        exit_horizon_contract: 'up_to_five_stock_specific_sessions_after_entry',
+        outcome_known_date: outcomeKnownDate,
+        outcome_known_at_contract: 'fifth_stock_specific_session_available',
         calibration_artifact_id: calibration?.artifactId ?? null,
         calibration_scope: calibration?.scope ?? null,
       },
@@ -828,7 +883,7 @@ export async function runS12HistoricalReplayForDate(
     }
   }
   return {
-    schema_version: 's12-historical-replay-run-summary-v2',
+    schema_version: 's12-historical-replay-run-summary-v3',
     signal_date: signalDate,
     execution_dates: [...executionDates].sort(),
     unresolved_execution_dates: unresolvedExecutionDates,

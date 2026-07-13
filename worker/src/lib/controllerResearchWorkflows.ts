@@ -302,6 +302,13 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
     throw new Error(`allocator EV feature snapshot backfill HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
   }
   const data = text ? JSON.parse(text) as Record<string, any> : {}
+  const built = Number(data.snapshots_built ?? 0)
+  const written = Number(data.written ?? 0)
+  if (built <= 0 || (!(params.dryRun ?? false) && written <= 0)) {
+    throw new Error(
+      `allocator EV feature snapshot incomplete range=${params.startDate}..${params.endDate} built=${built} written=${written}`,
+    )
+  }
   return String(data.summary ?? `allocator_ev_feature_snapshot_backfill status=${data.status ?? 'unknown'}`)
 }
 

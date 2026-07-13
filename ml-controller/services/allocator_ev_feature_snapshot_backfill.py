@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from typing import Any, Callable
 
 from services import d1_client
+from services.allocator_ev_fusion import _s12_structure_features
 from services.l4_alpha_ev_artifact_builder import (
     build_l4_alpha_ev_artifact_from_rows,
     load_l4_alpha_ev_training_rows,
@@ -335,6 +336,10 @@ def build_allocator_ev_feature_snapshots_for_date(
     reused_l4 = 0
     reused_s12 = 0
     snapshots_without_l4 = 0
+    snapshots_with_s12_direct_ev = 0
+    snapshots_with_s12_structure = 0
+    snapshots_with_s12_limited_takeover = 0
+    snapshots_with_s12_full_reaction = 0
     for raw in candidates:
         row, prediction = _parse_candidate_row(raw)
         existing = row.get("existing_alpha_allocation") if isinstance(row.get("existing_alpha_allocation"), dict) else {}
@@ -361,6 +366,16 @@ def build_allocator_ev_feature_snapshots_for_date(
             skipped += 1
             skip_reasons["s12_payload_missing"] = skip_reasons.get("s12_payload_missing", 0) + 1
             continue
+        s12_value, _s12_source, _ = extract_s12_trade_ev({"s12_trade_ev": s12_payload})
+        s12_features = _s12_structure_features(s12_payload)
+        if s12_value is not None:
+            snapshots_with_s12_direct_ev += 1
+        if s12_features["s12_structure_available"] > 0.0:
+            snapshots_with_s12_structure += 1
+        if s12_features["s12_limited_takeover_ready"] > 0.0:
+            snapshots_with_s12_limited_takeover += 1
+        if s12_features["s12_full_reaction_ready"] > 0.0:
+            snapshots_with_s12_full_reaction += 1
         alpha_allocation = {
             **{
                 key: value for key, value in existing.items()
@@ -401,6 +416,10 @@ def build_allocator_ev_feature_snapshots_for_date(
         "reused_l4_payloads": reused_l4,
         "reused_s12_payloads": reused_s12,
         "snapshots_without_l4": snapshots_without_l4,
+        "snapshots_with_s12_direct_ev": snapshots_with_s12_direct_ev,
+        "snapshots_with_s12_structure": snapshots_with_s12_structure,
+        "snapshots_with_s12_limited_takeover": snapshots_with_s12_limited_takeover,
+        "snapshots_with_s12_full_reaction": snapshots_with_s12_full_reaction,
         "written": 0 if dry_run else int(write_result.get("changes_total") or 0),
         "write_result": write_result,
     }
@@ -461,6 +480,10 @@ def backfill_allocator_ev_feature_snapshots(
             1 for row in rows if row.get("l4_usage_mode") == "snapshot_backfill_only"
         ),
         "snapshots_without_l4": sum(int(row.get("snapshots_without_l4") or 0) for row in rows),
+        "snapshots_with_s12_direct_ev": sum(int(row.get("snapshots_with_s12_direct_ev") or 0) for row in rows),
+        "snapshots_with_s12_structure": sum(int(row.get("snapshots_with_s12_structure") or 0) for row in rows),
+        "snapshots_with_s12_limited_takeover": sum(int(row.get("snapshots_with_s12_limited_takeover") or 0) for row in rows),
+        "snapshots_with_s12_full_reaction": sum(int(row.get("snapshots_with_s12_full_reaction") or 0) for row in rows),
         "skip_reasons": aggregate_skip_reasons,
         "results": rows,
     }

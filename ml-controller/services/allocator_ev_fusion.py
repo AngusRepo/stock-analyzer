@@ -201,13 +201,15 @@ def _s12_multiplier(payload: dict[str, Any] | None) -> float:
 
 def _s12_execution_ready(payload: dict[str, Any] | None) -> float:
     source = payload if isinstance(payload, dict) else {}
+    if not source:
+        return 0.0
     if source.get("execution_ready") is False:
         return 0.0
     status = str(source.get("status") or "").strip().lower()
-    if status == "setup_only":
+    if status != "loaded":
         return 0.0
     context = _s12_context(source)
-    if context.get("ready") is False:
+    if context.get("ready") is not True:
         return 0.0
     if context.get("htf_hard_block") is True:
         return 0.0
@@ -217,6 +219,7 @@ def _s12_execution_ready(payload: dict[str, Any] | None) -> float:
 def _s12_structure_features(payload: dict[str, Any] | None) -> dict[str, float]:
     source = payload if isinstance(payload, dict) else {}
     context = _s12_context(source)
+    state = str(context.get("state") or "").strip().lower()
     entry = _float_or_none(source.get("entry_price"))
     stop = _float_or_none(source.get("stop_price"))
     target1 = _float_or_none(source.get("target1_price"))
@@ -234,6 +237,8 @@ def _s12_structure_features(payload: dict[str, Any] | None) -> dict[str, float]:
         "s12_equity_mutation_score": max(0.0, min(1.0, mutation_score)) if mutation_score is not None else 0.0,
         "s12_vwap_fast_acceptance": 1.0 if context.get("vwap_fast_acceptance") is True else 0.0,
         "s12_htf_hard_block": 1.0 if context.get("htf_hard_block") is True else 0.0,
+        "s12_full_reaction_ready": 1.0 if state == "reaction_ready" else 0.0,
+        "s12_limited_takeover_ready": 1.0 if state == "limited_takeover_ready" else 0.0,
     }
 
 
@@ -420,7 +425,7 @@ def materialize_allocator_ev_fusion(
     for name, coef in (coefs or {}).items():
         selection_expected_return += coef * values[name]
     execution_residual_adjustment = 0.0
-    execution_model_applied = bool(execution_coefs) and s12_value is not None
+    execution_model_applied = bool(execution_coefs)
     execution_probability = 1.0 if execution_model_applied else 0.0
     raw_execution_residual = 0.0
     if execution_model_applied:
@@ -445,7 +450,7 @@ def materialize_allocator_ev_fusion(
             "expected_return_owner": OWNER,
             "expected_return": None,
             "expected_return_mean": None,
-            "expected_return_source": "allocator_ev_fusion:candidate_s12_execution_unavailable_fallback_required",
+            "expected_return_source": "allocator_ev_fusion:execution_expert_unavailable_fallback_required",
             "selection_expected_return": round(selection_expected_return, 10),
             "execution_residual_adjustment": 0.0,
             "raw_execution_residual": 0.0,
@@ -462,9 +467,9 @@ def materialize_allocator_ev_fusion(
             "s12_trade_expected_return_source": s12_source,
             "market_heat_expected_return": round(market_heat_expected_return, 10),
             "feature_values": {key: round(value, 10) for key, value in values.items()},
-            "diagnostic_role": "candidate_coverage_fallback_to_canonical_l4",
-            "semantic": "fusion_owner_requires_fitted_execution_expert_and_candidate_s12_trade_ev",
-            "blockers": ["candidate_s12_execution_ev_unavailable"],
+            "diagnostic_role": "artifact_execution_expert_fallback_to_canonical_l4",
+            "semantic": "fusion_owner_requires_fitted_execution_expert;candidate_s12_ev_is_optional_with_availability_indicator",
+            "blockers": ["execution_expert_unavailable"],
         }
     expected_return = (
         execution_residual_adjustment

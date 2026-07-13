@@ -70,6 +70,7 @@ class UniversalTrainRequest(BaseModel):
     window_id: int | None = None
     skip_weekly_backup: bool = False
     feature_pool_path: str | None = None
+    feature_release_mode: str | None = None
     followup_webhook_url: str | None = None
     output_model_version: str | None = None
     register_challengers: bool = False

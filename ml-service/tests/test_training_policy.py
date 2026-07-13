@@ -325,6 +325,14 @@ def test_timesfm_l175_feature_release_metadata_policy_is_explicit():
     assert '"selection_required": False' in source
 
 
+def test_universal_train_request_accepts_feature_release_lineage():
+    from app.universal_training import UniversalTrainRequest
+
+    request = UniversalTrainRequest(feature_release_mode="timesfm_l175_l2_feature_release")
+
+    assert request.feature_release_mode == "timesfm_l175_l2_feature_release"
+
+
 def test_universal_lifecycle_normalization_does_not_register_legacy_challengers():
     req = UniversalTrainRequest(gcs_prefix="universal")
 

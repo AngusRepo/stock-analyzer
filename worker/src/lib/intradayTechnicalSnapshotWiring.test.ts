@@ -14,11 +14,11 @@ assert(paperEntryTasks.includes('S12_INTRADAY_PRIMARY_OWNER_ENABLED'), 'S12 prim
 assert(paperEntryTasks.includes('s12PrimaryStructureOwnerActive'), 'S12 primary owner must be able to replace overlapping intraday technical vetoes')
 assert(
   paperEntryTasks.includes('isS12PrimaryOwnerBlockingAssessment') &&
-  paperEntryTasks.includes('s12_structure_advisory_waiting') &&
-  paperEntryTasks.includes('entry_model_v2_allowed=true') &&
-  paperEntryTasks.includes('s12PrimaryDataUnavailableDecision') &&
+  paperEntryTasks.includes('resolveS12UnifiedDecision') &&
+  paperEntryTasks.includes('s12_structure_primary_waiting') &&
+  paperEntryTasks.includes('entry_model_v2_allowed=false') &&
   paperEntryTasks.includes('blocked=entry_model_v2,intraday_technical_veto'),
-  'S12 primary owner must treat waiting states as advisory while preserving hard-veto/data-unavailable blocks',
+  'S12 primary owner must block Entry Model V2 for WAIT/DEFER/INVALIDATED and preserve one unified decision authority',
 )
 assert(
   readFileSync('src/lib/s12IntradayStructure.ts', 'utf8').includes("policy: 'advisory_until_long_reaction_bearish_defense_or_invalidated'") &&
@@ -30,7 +30,7 @@ assert(paperEntryTasks.includes('slope5min: null') && paperEntryTasks.includes('
 assert(paperEntryTasks.includes('!assessment?.ready'), 'S12 entry overlay must require assessment.ready, not only takeoverRole')
 assert(paperEntryTasks.includes('resolveS12AssistedExitInputs'), 'S12-assisted fills must resolve structure-first exit inputs')
 assert(paperEntryTasks.includes('effectiveInitialStop') && paperEntryTasks.includes('effectiveTp1Price') && paperEntryTasks.includes('effectiveTp2Price'), 'paper positions should persist effective S12/ATR stop and TP inputs')
-assert(paperEntryTasks.includes("'s12_structure_exit_plan'"), 'S12-assisted order notes should expose structure exit input source')
+assert(paperEntryTasks.includes('s12_exit_plan'), 'S12-assisted order notes should expose structure exit input source')
 assert(paperEntryTasks.includes('canonical_trade_lifecycle'), 'paper order notes should persist canonical trade lifecycle for UI and audits')
 assert(paperEntryTasks.includes("'intraday_technical_decision'"), 'intraday execution should persist active technical decision events')
 assert(paperEntryTasks.includes('INTRADAY_DYNAMIC_TECHNICAL_GUARD_ENABLED'), 'dynamic technical guard must be feature flagged')

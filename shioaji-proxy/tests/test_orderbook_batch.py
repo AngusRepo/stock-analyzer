@@ -19,7 +19,7 @@ def _load_proxy_main():
 def test_batch_orderbooks_returns_partial_data_and_structured_errors(monkeypatch):
     proxy = _load_proxy_main()
 
-    def fake_orderbook_payload(symbol: str, *, refresh: bool = True):
+    def fake_orderbook_payload(symbol: str, *, refresh: bool = True, lot_type: str = "board_lot"):
         if symbol == "2330":
             return 200, {"status": "ok", "symbol": symbol, "bid_prices": [100.0], "ask_prices": [100.5]}
         return 503, {"status": "waiting_callback", "symbol": symbol, "bidask_event_count": 0}
@@ -42,13 +42,11 @@ def test_orderbook_payload_reports_waiting_callback_when_subscription_has_no_dep
     proxy.last_bidasks.clear()
     proxy.bidask_stats.clear()
 
-    def fake_subscribe(symbol: str, *, force_bidask: bool = False):
+    def fake_recover(symbol: str, reason: str, lot_type: str = "board_lot"):
         proxy.subscribed.add(symbol)
         proxy.bidask_subscribed.add(symbol)
-        return True
 
-    monkeypatch.setattr(proxy, "subscribe_symbol", fake_subscribe)
-    monkeypatch.setattr(proxy, "orderbook_refresh_wait_seconds", lambda: 0)
+    monkeypatch.setattr(proxy, "recover_orderbook_symbol_async", fake_recover)
 
     status_code, payload = proxy._orderbook_payload("2330")
 
@@ -117,13 +115,11 @@ def test_orderbook_payload_registers_symbol_for_warm_watchlist(monkeypatch):
     proxy.connected = True
     proxy.watched_orderbook_symbols.clear()
 
-    def fake_subscribe(symbol: str, *, force_bidask: bool = False):
+    def fake_recover(symbol: str, reason: str, lot_type: str = "board_lot"):
         proxy.subscribed.add(symbol)
         proxy.bidask_subscribed.add(symbol)
-        return True
 
-    monkeypatch.setattr(proxy, "subscribe_symbol", fake_subscribe)
-    monkeypatch.setattr(proxy, "orderbook_refresh_wait_seconds", lambda: 0)
+    monkeypatch.setattr(proxy, "recover_orderbook_symbol_async", fake_recover)
     proxy._orderbook_payload("2330")
 
     assert "2330" in proxy.watched_orderbook_symbols
@@ -135,11 +131,11 @@ def test_force_bidask_refresh_unsubscribes_before_resubscribe(monkeypatch):
     contract = object()
 
     class Quote:
-        def subscribe(self, contract_arg, quote_type, version):
+        def subscribe(self, contract_arg, quote_type, version, intraday_odd=False):
             assert contract_arg is contract
             calls.append(("subscribe", quote_type))
 
-        def unsubscribe(self, contract_arg, quote_type, version):
+        def unsubscribe(self, contract_arg, quote_type, version, intraday_odd=False):
             assert contract_arg is contract
             calls.append(("unsubscribe", quote_type))
 
@@ -163,3 +159,44 @@ def test_force_bidask_refresh_unsubscribes_before_resubscribe(monkeypatch):
 
     assert proxy.subscribe_symbol("2330", force_bidask=True) is True
     assert calls == [("unsubscribe", "bidask"), ("subscribe", "bidask")]
+
+
+def test_odd_lot_orderbook_uses_dedicated_stream_cache():
+    proxy = _load_proxy_main()
+    proxy.api = object()
+    proxy.connected = True
+    symbol = "2441"
+    now = datetime.now(proxy.TW_TZ).isoformat()
+    proxy.last_bidasks[symbol] = {
+        "bid_prices": [143.0],
+        "bid_volumes": [2],
+        "ask_prices": [143.5],
+        "ask_volumes": [1],
+        "timestamp": now,
+        "updated_at": now,
+    }
+    proxy.last_odd_bidasks[symbol] = {
+        "bid_prices": [142.5],
+        "bid_volumes": [331],
+        "ask_prices": [143.0],
+        "ask_volumes": [120],
+        "timestamp": now,
+        "updated_at": now,
+        "intraday_odd": True,
+    }
+
+    status_code, payload = proxy._orderbook_payload(symbol, lot_type="odd_lot")
+
+    assert status_code == 200
+    assert payload["lot_type"] == "odd_lot"
+    assert payload["bid_prices"][0] == 142.5
+    assert payload["bid_volumes"][0] == 331
+
+
+def test_request_type_broker_query_fails_fast_when_capacity_is_busy():
+    proxy = _load_proxy_main()
+    assert proxy._broker_query_capacity.acquire(blocking=False)
+    try:
+        assert proxy.run_broker_query(lambda: "should-not-run", "test") is None
+    finally:
+        proxy._broker_query_capacity.release()

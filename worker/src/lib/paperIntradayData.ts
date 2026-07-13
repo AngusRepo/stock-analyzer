@@ -13,9 +13,15 @@ export interface IntradayOHLC {
   totalVolume?: number
   quoteTime?: string
   source?: 'shioaji' | 'yahoo'
+  lotType?: 'board_lot' | 'odd_lot'
 }
 
-type IntradayEnv = { SHIOAJI_PROXY_URL?: string; PROXY_SERVICE_TOKEN?: string; requireBrokerQuote?: boolean }
+type IntradayEnv = {
+  SHIOAJI_PROXY_URL?: string
+  PROXY_SERVICE_TOKEN?: string
+  requireBrokerQuote?: boolean
+  marketDataLotType?: 'board_lot' | 'odd_lot'
+}
 type NormalizeSnapshotOptions = { includeExecutableBook?: boolean }
 
 function proxyHeaders(env?: IntradayEnv, json = false): Record<string, string> {
@@ -196,7 +202,8 @@ function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
           ? payload.updated_at
           : undefined
 
-  return { last, referencePrice, bid, ask, bidVolume, askVolume, quoteTime, source: 'shioaji' }
+  const lotType = String(payload?.lot_type ?? '').toLowerCase() === 'odd_lot' ? 'odd_lot' : 'board_lot'
+  return { last, referencePrice, bid, ask, bidVolume, askVolume, quoteTime, source: 'shioaji', lotType }
 }
 
 function mergeSnapshotContext(current: IntradayOHLC, snapshot: any): IntradayOHLC {
@@ -295,9 +302,10 @@ async function fetchSingleOrderbookQuotes(
   const map = new Map<string, IntradayOHLC>()
   const proxyUrl = env?.SHIOAJI_PROXY_URL
   if (!proxyUrl) return map
+  const lotType = env?.marketDataLotType ?? 'board_lot'
 
   const results = await Promise.allSettled(symbols.map(async (symbol) => {
-    const res = await fetch(`${proxyUrl}/orderbook/${symbol}`, {
+    const res = await fetch(`${proxyUrl}/orderbook/${symbol}?lot_type=${encodeURIComponent(lotType)}`, {
       headers: proxyHeaders(env),
       signal: AbortSignal.timeout(3000),
     })
@@ -327,12 +335,13 @@ async function fetchFreshOrderbookQuotes(
   const map = new Map<string, IntradayOHLC>()
   const proxyUrl = env?.SHIOAJI_PROXY_URL
   if (!proxyUrl || symbols.length === 0) return map
+  const lotType = env?.marketDataLotType ?? 'board_lot'
 
   try {
     const res = await fetch(`${proxyUrl}/orderbooks`, {
       method: 'POST',
       headers: proxyHeaders(env, true),
-      body: JSON.stringify({ symbols }),
+      body: JSON.stringify({ symbols, lot_type: lotType }),
       signal: AbortSignal.timeout(10000),
     })
     if (res.ok) {

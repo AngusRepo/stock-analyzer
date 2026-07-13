@@ -16,6 +16,7 @@ import { putIntradayPrice } from './paperIntradayPriceCache'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { resolveTwEquityPriceBand } from './twEquityMarketContract'
+import { buildTwOrderLegs } from './twMarketRules'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
 import {
   aggregateCompletedS12Bars,
@@ -345,6 +346,82 @@ function resolveExitSellFill(
   }
 }
 
+export function resolvePositionExitSellFill(
+  shares: number,
+  books: { boardLot?: IntradayOHLC | null; oddLot?: IntradayOHLC | null },
+): { fillable: boolean; price?: number; reason: string; detail: Record<string, unknown> } {
+  const legs = buildTwOrderLegs(shares)
+  if (legs.length === 0) return { fillable: false, reason: 'invalid_exit_shares', detail: { shares } }
+
+  const fills: Array<{ lot_type: 'board_lot' | 'odd_lot'; shares: number; price: number; reason: string }> = []
+  for (const leg of legs) {
+    const quote = leg.lotType === 'odd_lot' ? books.oddLot : books.boardLot
+    if (!quote || quote.lotType !== leg.lotType) {
+      return {
+        fillable: false,
+        reason: leg.lotType === 'odd_lot' ? 'tw_equity_odd_lot_book_required' : 'tw_equity_board_lot_book_required',
+        detail: { shares, missing_lot_type: leg.lotType, order_legs: legs },
+      }
+    }
+    const fill = resolveExitSellFill(quote)
+    if (!fill.fillable || fill.price == null) {
+      return {
+        fillable: false,
+        reason: `${leg.lotType}_${fill.reason}`,
+        detail: { shares, failed_lot_type: leg.lotType, order_legs: legs, ...fill.detail },
+      }
+    }
+    fills.push({ lot_type: leg.lotType, shares: leg.shares, price: fill.price, reason: fill.reason })
+  }
+
+  const totalShares = fills.reduce((sum, fill) => sum + fill.shares, 0)
+  const weightedPrice = fills.reduce((sum, fill) => sum + fill.price * fill.shares, 0) / totalShares
+  return {
+    fillable: true,
+    price: weightedPrice,
+    reason: fills.length > 1 ? 'tw_equity_split_lot_sell_fill' : `${fills[0].lot_type}_sell_fill`,
+    detail: { shares: totalShares, order_legs: legs, leg_fills: fills },
+  }
+}
+
+async function recordPendingExitOnce(
+  env: Bindings,
+  input: {
+    tradeDate: string
+    symbol: string
+    reason: string
+    source: string
+    detail: Record<string, unknown>
+  },
+): Promise<boolean> {
+  const existing = await env.DB.prepare(`
+    SELECT id
+      FROM paper_execution_events
+     WHERE trade_date = ?
+       AND symbol = ?
+       AND side = 'sell'
+       AND event_type = 'paper_order'
+       AND status = 'pending'
+       AND reason = ?
+       AND source = ?
+       AND created_at >= datetime('now', '-10 minutes')
+     ORDER BY id DESC
+     LIMIT 1
+  `).bind(input.tradeDate, input.symbol, input.reason, input.source).first<{ id: number }>()
+  if (existing?.id) return false
+  await recordPaperExecutionEvent(env, {
+    tradeDate: input.tradeDate,
+    symbol: input.symbol,
+    side: 'sell',
+    eventType: 'paper_order',
+    status: 'pending',
+    reason: input.reason,
+    detail: input.detail,
+    source: input.source,
+  })
+  return true
+}
+
 export function resolveS12HoldingDefenseUpdate(params: {
   pos: {
     shares?: number | null
@@ -510,6 +587,7 @@ async function evaluateS12HoldingDefense(
   quote: IntradayOHLC,
   atr14: number,
   cfg: TradingConfig,
+  executionBooks: { boardLot?: IntradayOHLC | null; oddLot?: IntradayOHLC | null } = {},
 ): Promise<ExitDecision | null> {
   if (!enabledFlag((env as any).S12_INTRADAY_HOLDING_DEFENSE_ENABLED, true)) return null
   if (!isTwEquityExitFusionEligible(pos.trade_lifecycle_json)) return null
@@ -632,8 +710,18 @@ async function evaluateS12HoldingDefense(
       source: 's12_holding_defense',
       side: 'sell',
     })
-    const positionHasOddLot = Math.max(0, Math.floor(Number(pos.shares ?? 0))) % 1000 !== 0
-    const executableBookAvailable = !positionHasOddLot && positiveNumber(quote.bid) != null && positiveNumber(quote.ask) != null
+    const positionShares = Math.max(0, Math.floor(Number(pos.shares ?? 0)))
+    const requiresBoardLotBook = positionShares >= 1000
+    const requiresOddLotBook = positionShares % 1000 !== 0
+    const boardLotQuote = executionBooks.boardLot ?? (quote.lotType === 'board_lot' ? quote : null)
+    const oddLotQuote = executionBooks.oddLot ?? (quote.lotType === 'odd_lot' ? quote : null)
+    const boardLotBookAvailable = !requiresBoardLotBook || (
+      boardLotQuote?.lotType === 'board_lot' && positiveNumber(boardLotQuote.bid) != null && positiveNumber(boardLotQuote.ask) != null
+    )
+    const oddLotBookAvailable = !requiresOddLotBook || (
+      oddLotQuote?.lotType === 'odd_lot' && positiveNumber(oddLotQuote.bid) != null && positiveNumber(oddLotQuote.ask) != null
+    )
+    const executableBookAvailable = boardLotBookAvailable && oddLotBookAvailable
     const s12Position = {
       ...pos,
       s12_position_stop_price: positionStop?.price ?? null,
@@ -684,6 +772,9 @@ async function evaluateS12HoldingDefense(
         advisory_only: false,
         no_short_order: true,
         executable_book_available: executableBookAvailable,
+        required_lot_types: [requiresBoardLotBook ? 'board_lot' : null, requiresOddLotBook ? 'odd_lot' : null].filter(Boolean),
+        board_lot_book_available: boardLotBookAvailable,
+        odd_lot_book_available: oddLotBookAvailable,
         position_exit_policy: 's12_primary_independent_of_long_entry_readiness',
         execution_owner: 's12_position_decision_v1',
         fallback_exit_owner: 'paper_sltp_atr_trailing_v1',
@@ -1215,11 +1306,27 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
   if (!positions || positions.length === 0) return
 
   const symbols = positions.map((p: any) => p.symbol)
-  const quoteMap = await batchGetIntradayOHLC(symbols, {
+  const boardLotSymbols = positions
+    .filter((p: any) => Math.max(0, Math.floor(Number(p.shares ?? 0))) >= 1000)
+    .map((p: any) => p.symbol)
+  const oddLotSymbols = positions
+    .filter((p: any) => Math.max(0, Math.floor(Number(p.shares ?? 0))) % 1000 !== 0)
+    .map((p: any) => p.symbol)
+  const quoteEnv = {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
     requireBrokerQuote: true,
-  })
+  }
+  const [boardLotQuoteMap, oddLotQuoteMap] = await Promise.all([
+    batchGetIntradayOHLC(boardLotSymbols, { ...quoteEnv, marketDataLotType: 'board_lot' }),
+    batchGetIntradayOHLC(oddLotSymbols, { ...quoteEnv, marketDataLotType: 'odd_lot' }),
+  ])
+  const quoteMap = new Map<string, IntradayOHLC>()
+  for (const pos of positions) {
+    const shares = Math.max(0, Math.floor(Number(pos.shares ?? 0)))
+    const quote = shares >= 1000 ? boardLotQuoteMap.get(pos.symbol) : oddLotQuoteMap.get(pos.symbol)
+    if (quote) quoteMap.set(pos.symbol, quote)
+  }
   const atrMap = await batchGetATR(env.DB, symbols)
   const intraRegime = await getCurrentRegime(env.KV)
 
@@ -1260,6 +1367,10 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       quote,
       atr14,
       cfg,
+      {
+        boardLot: boardLotQuoteMap.get(pos.symbol) ?? null,
+        oddLot: oddLotQuoteMap.get(pos.symbol) ?? null,
+      },
     )
     const fallbackDecision = checkExitConditions(
       pos,
@@ -1309,28 +1420,15 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
 
     if (decision.action === 'full_sell') {
       const shares = pos.shares
-      if (Math.max(0, Math.floor(Number(shares))) % 1000 !== 0) {
-        await recordPaperExecutionEvent(env, {
-          tradeDate: intradayToday,
-          symbol: pos.symbol,
-          side: 'sell',
-          eventType: 'paper_order',
-          status: 'pending',
-          reason: 'tw_equity_odd_lot_book_required',
-          detail: { shares, exit_reason: decision.reason },
-          source: 'intraday_exit',
-        })
-        continue
-      }
-      const sellFill = resolveExitSellFill(quote)
+      const sellFill = resolvePositionExitSellFill(shares, {
+        boardLot: boardLotQuoteMap.get(pos.symbol) ?? null,
+        oddLot: oddLotQuoteMap.get(pos.symbol) ?? null,
+      })
       if (!sellFill.fillable || sellFill.price == null) {
-        await recordPaperExecutionEvent(env, {
+        await recordPendingExitOnce(env, {
           tradeDate: intradayToday,
           symbol: pos.symbol,
-          side: 'sell',
-          eventType: 'paper_order',
-          status: 'skipped',
-          reason: 'intraday_sell_unfillable',
+          reason: sellFill.reason,
           detail: { shares, exit_reason: decision.reason, ...sellFill.detail },
           source: 'intraday_exit',
         })

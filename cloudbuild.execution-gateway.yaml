@@ -1,0 +1,18 @@
+substitutions:
+  _IMAGE: asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/stockvision-execution-gateway:manual
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file
+      - Dockerfile.execution-gateway
+      - --tag
+      - ${_IMAGE}
+      - .
+
+images:
+  - ${_IMAGE}
+
+options:
+  logging: CLOUD_LOGGING_ONLY

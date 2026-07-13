@@ -469,6 +469,38 @@ def run_finlab_l5_market_data(
     env_status = l5_market_data_env_status(values)
     fallback_reader = proxy_quote_reader or _read_quotes_from_proxy_orderbook
     fallback_enabled = _proxy_fallback_configured(values)
+    hub_primary = fallback_enabled and _flag_enabled(values, "SHIOAJI_MARKET_DATA_HUB_PRIMARY", default=True)
+    direct_broker_corroboration = _flag_enabled(values, "FINLAB_L5_DIRECT_BROKER_CORROBORATION_ENABLED", default=False)
+
+    if hub_primary:
+        raw_hub_quotes, hub_errors = fallback_reader(clean_symbols, values)
+        hub_payload = _fallback_response(
+            env_status=env_status,
+            clean_symbols=clean_symbols,
+            raw_quotes=raw_hub_quotes,
+            fallback_errors=hub_errors,
+            fallback_reason="market_data_hub_primary",
+            now=now,
+        )
+        if hub_payload is not None:
+            hub_payload.update({
+                "source": "shioaji_market_data_hub",
+                "fallback_used": False,
+                "hub_primary": True,
+                "direct_broker_login_used": False,
+            })
+            return hub_payload
+        if not direct_broker_corroboration:
+            return {
+                **_base_response(env_status, clean_symbols),
+                "status": "blocked",
+                "source": "shioaji_market_data_hub",
+                "blocked_reasons": ["market_data_hub_unavailable"],
+                "hub_primary": True,
+                "direct_broker_login_used": False,
+                "fallback_errors": hub_errors,
+                "quotes": {},
+            }
 
     if fallback_enabled and (not allow_broker_login or not env_status["ready"]):
         fallback_reason = "broker_login_not_allowed" if not allow_broker_login else "finlab_env_not_ready"

@@ -185,7 +185,7 @@ def test_l5_market_data_can_capture_finlab_stream_bidask_when_snapshot_unimpleme
     assert result["quotes"]["2330"]["best_ask"] == 100.1
 
 
-def test_l5_market_data_falls_back_to_proxy_when_account_quote_method_unavailable() -> None:
+def test_l5_market_data_uses_proxy_hub_before_controller_account_login() -> None:
     class FakeAccount:
         def logout(self) -> None:
             pass
@@ -216,16 +216,17 @@ def test_l5_market_data_falls_back_to_proxy_when_account_quote_method_unavailabl
             "SHIOAJI_CERT_PERSON_ID": "A123456789",
             "SHIOAJI_PROXY_URL": "https://proxy.example.test",
         },
-        account_factory=FakeAccount,
+        account_factory=lambda: (_ for _ in ()).throw(AssertionError("controller account login must not run when hub is ready")),
         proxy_quote_reader=fake_proxy_reader,
         now=datetime(2026, 5, 28, 1, 0, 10, tzinfo=timezone.utc),
     )
 
     assert result["status"] == "pass"
-    assert result["source"] == "shioaji_proxy_orderbook_fallback"
-    assert result["fallback_used"] is True
-    assert result["fallback_reason"] == "finlab_account_quote_error"
-    assert result["account_error_type"] == "RuntimeError"
+    assert result["source"] == "shioaji_market_data_hub"
+    assert result["fallback_used"] is False
+    assert result["fallback_reason"] == "market_data_hub_primary"
+    assert result["hub_primary"] is True
+    assert result["direct_broker_login_used"] is False
     assert result["quotes"]["2330"]["provider"] == "shioaji_proxy_orderbook"
     assert result["quotes"]["2330"]["l5_depth_levels"] == 5
 
@@ -259,8 +260,10 @@ def test_l5_market_data_proxy_fallback_can_run_without_controller_broker_login()
     assert result["status"] == "pass"
     assert result["can_submit_real_order"] is False
     assert result["live_submit_enabled"] is False
-    assert result["fallback_used"] is True
-    assert result["fallback_reason"] == "broker_login_not_allowed"
+    assert result["source"] == "shioaji_market_data_hub"
+    assert result["fallback_used"] is False
+    assert result["fallback_reason"] == "market_data_hub_primary"
+    assert result["direct_broker_login_used"] is False
     assert result["env_status"]["ready"] is False
     assert result["quotes"]["2330"]["best_bid"] == 99.9
 

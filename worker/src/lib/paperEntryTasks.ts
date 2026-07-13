@@ -36,6 +36,7 @@ import {
 import { fetchFinLabExecutionPreview } from './finlabExecutionPreviewClient'
 import { buildStockVisionOrderIntent, buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { buildPaperBrokerReconciliation } from './paperBrokerReconciliation'
+import { resolveAuthoritativeBuyExecutionSnapshot } from './authoritativeExecutionSnapshot'
 import { buildTwOrderLegs, getTwTickSize, normalizeTwFilledSharesForRequestedOrder, normalizeTwLimitPrice } from './twMarketRules'
 import {
   normalizeTwEquityStopPrice,
@@ -53,6 +54,7 @@ import {
   isS12ExecutableLongAssessment,
   isS12HardVetoAssessment,
   isS12PrimaryOwnerBlockingAssessment,
+  resolveS12UnifiedDecision,
   s12TimingPolicyFromEnv,
   s12PreTradeTechnicalDecision,
   type S12IntradayAssessment,
@@ -571,8 +573,39 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         `Error **Shioaji quote missing** ${errMsg} (${zeroPriceSymbols.length}/${pendingSymbols.length} symbols)`,
       )
     }
+    await Promise.all(zeroPriceSymbols.map((symbol) => recordPaperExecutionEvent(env, {
+      tradeDate: today,
+      symbol,
+      side: 'buy',
+      eventType: 's12_intraday_structure',
+      status: 'error',
+      reason: 's12_market_data_unavailable',
+      detail: {
+        stage: 'authoritative_market_data',
+        broker_quote_required: true,
+        contract_bypass_allowed: false,
+      },
+      pendingRunId,
+      source: 's12_intraday_structure',
+    })))
   }
-  if (priceMap.size === 0) return
+  if (priceMap.size === 0) {
+    const quoteUnavailableTransition = applyPendingBuyExecutionStatusUpdates(
+      pendingBuys,
+      pendingBuys.map((item) => ({
+        symbol: item.symbol,
+        status: 'quote_unavailable' as const,
+        reason: 'authoritative_market_data_unavailable',
+      })),
+    )
+    await persistPendingBuyActiveState(
+      env,
+      today,
+      quoteUnavailableTransition.activeItems as PendingBuy[],
+      { stage: 'authoritative_market_data', broker_quote_required: true },
+    )
+    throw new Error('intraday_authoritative_market_data_unavailable_all_symbols')
+  }
 
   const acc = await env.DB.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
   if (!acc) return
@@ -1339,14 +1372,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
           `${assessment.detail};primary_owner=${s12PrimaryOwnerEnabled ? 'true' : 'false'}`,
         )
       } else if (s12PrimaryOwnerEnabled && !assessment.ready && !assessment.invalidated) {
-        const s12PrimaryOwnerWaitingBlocks = isS12PrimaryOwnerBlockingAssessment(assessment)
         recordExecutionNote(
           pending.symbol,
           'checked_waiting',
-          s12PrimaryOwnerWaitingBlocks ? 's12_structure_primary_waiting' : 's12_structure_advisory_waiting',
-          s12PrimaryOwnerWaitingBlocks
-            ? `${assessment.detail};primary_owner=true;blocked=entry_model_v2,intraday_technical_veto`
-            : `${assessment.detail};primary_owner=true;advisory=true;entry_model_v2_allowed=true`,
+          's12_structure_primary_waiting',
+          `${assessment.detail};primary_owner=true;entry_model_v2_allowed=false;blocked=entry_model_v2,intraday_technical_veto`,
         )
       }
       if (technicalDecision) {
@@ -1681,22 +1711,24 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       s12Enabled &&
       s12Mode === 'assist_entry' &&
       enabledFlag((env as any).S12_INTRADAY_PRIMARY_OWNER_ENABLED, true)
-    const s12PrimaryDataUnavailableDecision = s12PrimaryOwnerEnabled && !s12Sidecar
-      ? {
-        action: 'defer' as const,
-        reason: 's12_data_unavailable',
-        detail: 'primary_owner=true;blocked=entry_model_v2,intraday_technical_veto',
-      }
+    const s12UnifiedDecision = resolveS12UnifiedDecision(s12Assessment)
+    const s12UnifiedTechnicalDecision = s12PrimaryOwnerEnabled
+      ? s12UnifiedDecision.action === 'READY'
+        ? (s12TechnicalDecision ?? {
+          action: 'pass' as const,
+          reason: s12UnifiedDecision.reason,
+          detail: `${s12UnifiedDecision.detail};unified_owner=true`,
+        })
+        : {
+          action: ['NO_BUY', 'INVALIDATED'].includes(s12UnifiedDecision.action) ? 'skip' as const : 'defer' as const,
+          reason: `s12_unified_${s12UnifiedDecision.action.toLowerCase()}`,
+          detail: `${s12UnifiedDecision.detail};unified_owner=true;blocked=entry_model_v2,intraday_technical_veto`,
+        }
       : null
     const s12ExecutableOwnerActive =
       s12PrimaryOwnerEnabled &&
       isS12ExecutableLongAssessment(s12Assessment)
-    const s12HardVetoActive =
-      s12PrimaryOwnerEnabled &&
-      isS12HardVetoAssessment(s12Assessment)
-    const s12PrimaryStructureOwnerActive =
-      s12ExecutableOwnerActive ||
-      s12HardVetoActive
+    const s12PrimaryStructureOwnerActive = s12PrimaryOwnerEnabled
     if (s12AssistEntryOverlay) {
       executionEntryPrice = s12AssistEntryOverlay.entryPrice
       executionStopLoss = s12AssistEntryOverlay.stopLoss ?? executionStopLoss
@@ -1710,17 +1742,18 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         's12_primary_structure_owner_ready',
         `${s12Assessment.detail};replaced=entry_model_v2,intraday_technical_veto`,
       )
-    } else if (s12PrimaryOwnerEnabled && s12Assessment && !s12HardVetoActive) {
+    } else if (s12PrimaryOwnerEnabled && s12Assessment) {
+      entryModelV2 = null
       recordExecutionNote(
         pending.symbol,
         'checked_waiting',
-        's12_structure_advisory_waiting',
-        `${s12Assessment.detail};primary_owner=false;advisory=true;entry_model_v2_allowed=true`,
+        `s12_unified_${s12UnifiedDecision.action.toLowerCase()}`,
+        `${s12Assessment.detail};primary_owner=true;entry_model_v2_allowed=false;unified_action=${s12UnifiedDecision.action}`,
       )
     }
     const effectiveTechnicalDecision = s12PrimaryStructureOwnerActive
-      ? s12TechnicalDecision
-      : s12PrimaryDataUnavailableDecision ?? s12TechnicalDecision ?? intradayTechnicalDecision
+      ? s12UnifiedTechnicalDecision
+      : s12TechnicalDecision ?? intradayTechnicalDecision
     const effectivePreTradeMomentum = s12AssistEntryOverlay
       ? s12PrimaryMomentumContext(baseMomentum)
       : baseMomentum
@@ -1869,11 +1902,55 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
 
     const rawLimitPrice = preTrade.limitPrice ?? executionEntryPrice
     const limitPrice = normalizeTwLimitPrice(rawLimitPrice, 'buy')
+    const authoritativeSnapshot = resolveAuthoritativeBuyExecutionSnapshot({
+      limitPrice,
+      lotType: 'board_lot',
+      maxAgeMs: optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS, 1500),
+      maxDisagreementTicks: optionalPositiveNumber((env as any).EXECUTION_BOOK_MAX_DISAGREEMENT_TICKS, 1),
+      observations: [
+        currentOhlc
+          ? {
+            source: 'shioaji_hub',
+            lotType: currentOhlc.lotType ?? 'board_lot',
+            bid: currentOhlc.bid ?? null,
+            ask: currentOhlc.ask ?? null,
+            bidVolume: currentOhlc.bidVolume ?? null,
+            askVolume: currentOhlc.askVolume ?? null,
+            sourceTime: currentOhlc.quoteTime ?? null,
+            ageMs: quoteAgeMs(currentOhlc.quoteTime),
+          }
+          : null,
+        finLabL5Quote
+          ? {
+            source: 'finlab_l5',
+            lotType: finLabL5Quote.lotType ?? 'board_lot',
+            bid: finLabL5Quote.bestBid ?? null,
+            ask: finLabL5Quote.bestAsk ?? null,
+            bidVolume: finLabL5Quote.bidVolumes[0] ?? null,
+            askVolume: finLabL5Quote.askVolumes[0] ?? null,
+            sourceTime: finLabL5Quote.sourceTime ?? null,
+            receivedAt: finLabL5Quote.receivedAt ?? null,
+            ageMs: finLabL5Quote.quoteAgeMs ?? null,
+          }
+          : null,
+      ],
+    })
+    if (authoritativeSnapshot.status !== 'ready') {
+      const unavailable = ['execution_book_unavailable', 'execution_book_stale_or_incomplete'].includes(authoritativeSnapshot.reason)
+      recordActiveExecutionStatus(
+        pending.symbol,
+        unavailable ? 'quote_unavailable' : 'submitted',
+        authoritativeSnapshot.reason,
+        JSON.stringify(authoritativeSnapshot),
+      )
+      console.warn(`[ExecutionSnapshot] ${pending.symbol} blocked: ${authoritativeSnapshot.reason}`)
+      continue
+    }
     const fill = resolveLimitBuyFill({
       currentPrice: price,
       limitPrice,
-      bestAsk: currentOhlc?.ask,
-      bestBid: currentOhlc?.bid,
+      bestAsk: authoritativeSnapshot.ask,
+      bestBid: authoritativeSnapshot.bid,
       intradayLow: currentOhlc?.low,
       intradayHigh: currentOhlc?.high,
       slippageTicks: cfg.position.fillSlippageTicks ?? 1,
@@ -2019,10 +2096,10 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       strategyMode: effectivePreTradePlan?.mode ?? null,
       marketRiskLevel: marketRisk.risk_level,
       quote: {
-        bestAsk: currentOhlc?.ask ?? null,
-        bestBid: currentOhlc?.bid ?? null,
-        source: currentOhlc?.source ?? 'none',
-        quoteAgeMs: quoteAgeMs(currentOhlc?.quoteTime),
+        bestAsk: authoritativeSnapshot.ask,
+        bestBid: authoritativeSnapshot.bid,
+        source: authoritativeSnapshot.selectedSource ?? 'none',
+        quoteAgeMs: authoritativeSnapshot.ageMs,
       },
       adaptivePolicy: {
         maxEntryChasePct: effectiveMaxEntryChasePct,
@@ -2065,7 +2142,15 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     }
     const intradayExecutableVolume = Number(currentOhlc?.totalVolume ?? 0)
     const liquidityBaseVolume = Number(avgVolume20dMap.get(pending.symbol) ?? intradayExecutableVolume)
-    const rawFilledShares = applyPartialFill(shares, fillPrice, liquidityBaseVolume, cfg)
+    const volumeModelFilledShares = applyPartialFill(shares, fillPrice, liquidityBaseVolume, cfg)
+    const visibleAskShares = authoritativeSnapshot.askVolume == null
+      ? null
+      : lotType === 'board_lot'
+        ? Math.max(0, Math.floor(authoritativeSnapshot.askVolume)) * 1000
+        : Math.max(0, Math.floor(authoritativeSnapshot.askVolume))
+    const rawFilledShares = visibleAskShares == null
+      ? volumeModelFilledShares
+      : Math.min(volumeModelFilledShares, visibleAskShares)
     shares = normalizeTwFilledSharesForRequestedOrder(requestedShares, rawFilledShares)
     if (shares <= 0) {
       recordActiveExecutionStatus(
@@ -2112,6 +2197,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       reason: brokerReconciliation.mismatches[0] ?? brokerReconciliation.simulatedFillReason,
       detail: {
         ...brokerReconciliation.detail,
+        authoritative_execution_snapshot: authoritativeSnapshot,
         expected_slippage_pct: brokerReconciliation.expectedSlippagePct,
         mismatches: brokerReconciliation.mismatches,
         live_submit_enabled: false,

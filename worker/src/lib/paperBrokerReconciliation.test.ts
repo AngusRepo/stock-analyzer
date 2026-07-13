@@ -47,7 +47,8 @@ function assert(condition: unknown, message: string): void {
   })
 
   assert(reconciliation.schemaVersion === 'paper-broker-reconciliation-v1', 'reconciliation schema should be stable')
-  assert(reconciliation.status === 'matched', 'pass preview and fillable simulation should reconcile')
+  assert(reconciliation.status === 'mismatch', 'buy fill below fresh best ask must be a hard mismatch')
+  assert(reconciliation.mismatches.includes('buy_fill_below_fresh_best_ask'), 'impossible buy fill mismatch must be explicit')
   assert(reconciliation.expectedSlippagePct < 0, 'fill below best ask should show non-positive slippage')
   assert(reconciliation.liveSubmitEnabled === false, 'reconciliation must keep live submit disabled')
 }

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from services.finlab_execution_smoke import run_finlab_execution_smoke
@@ -103,7 +103,9 @@ class FinLabExecutionPreviewRequest(BaseModel):
 
 
 class FinLabLiveSubmitRequest(BaseModel):
-    intent: dict[str, Any] = Field(default_factory=dict)
+    packet: dict[str, Any] = Field(default_factory=dict)
+    # Retained only so legacy callers receive an explicit fail-closed response.
+    intent: dict[str, Any] | None = None
     allow_live_submit: bool = False
 
 
@@ -445,7 +447,10 @@ async def run_finlab_execution_preview_route(req: FinLabExecutionPreviewRequest)
 
 
 @router.post("/execution/live-submit")
-async def run_finlab_live_submit_route(req: FinLabLiveSubmitRequest) -> dict:
+async def run_finlab_live_submit_route(
+    req: FinLabLiveSubmitRequest,
+    x_execution_signature: str | None = Header(default=None, alias="X-Execution-Signature"),
+) -> dict:
     """Submit a validated StockVision order intent through FinLab/Sinopac.
 
     The route is installed before real trading so the execution contract is
@@ -453,7 +458,9 @@ async def run_finlab_live_submit_route(req: FinLabLiveSubmitRequest) -> dict:
     and request allow_live_submit are both explicit.
     """
     return run_finlab_live_submit(
+        packet=req.packet or None,
         intent=req.intent,
+        signature=x_execution_signature,
         allow_live_submit=req.allow_live_submit,
     )
 

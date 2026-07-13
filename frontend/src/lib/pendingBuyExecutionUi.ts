@@ -477,6 +477,12 @@ export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionB
   const active = Boolean(item.active)
   const action = String(item.action ?? item.detail?.holding_defense?.action ?? '').trim()
   const decisionReason = String(item.detail?.holding_defense?.decision_reason ?? '').trim()
+  const requiredLotTypes = Array.isArray(item.detail?.holding_defense?.required_lot_types)
+    ? item.detail.holding_defense.required_lot_types.map(String)
+    : []
+  const waitingOddLotBook = action === 'quote_unavailable' &&
+    requiredLotTypes.includes('odd_lot') &&
+    item.detail?.holding_defense?.odd_lot_book_available === false
   const before = item.trailing_stop_before ?? item.detail?.holding_defense?.trailing_stop_before ?? null
   const after = item.trailing_stop_after ?? item.detail?.holding_defense?.trailing_stop_after ?? null
   const detail = item.detail?.detail ? formatS12Detail(String(item.detail.detail)) : ''
@@ -492,7 +498,7 @@ export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionB
       : action === 'full_exit'
         ? 'S12 持倉全部出場'
         : action === 'quote_unavailable'
-          ? 'S12 報價不可用'
+          ? waitingOddLotBook ? 'S12 停損已觸發，等待零股報價' : 'S12 報價不可用'
           : 'S12 防守調整'
     : insufficientData
       ? 'S12 防守資料不足'
@@ -504,7 +510,9 @@ export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionB
   const stopText = before != null || after != null
     ? `防守停損：${before ?? '-'} -> ${after ?? '-'}`
     : null
-  const actionText = action
+  const actionText = waitingOddLotBook
+    ? '動作：已觸發防守出場，等待盤中零股 BidAsk'
+    : action
     ? `動作：${S12_DEFENSE_ACTION_LABELS[action] ?? action}`
     : null
   return {

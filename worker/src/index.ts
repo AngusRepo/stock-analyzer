@@ -44,6 +44,8 @@ import { adminConfigCoreRoutes } from './routes/adminConfigCoreRoutes'
 import { adminConfigWorkflowRoutes } from './routes/adminConfigWorkflowRoutes'
 import { adminConfigLifecycleRoutes } from './routes/adminConfigLifecycleRoutes'
 import { adminOptunaRoutes } from './routes/adminOptunaRoutes'
+import { strategyDiscoveryRoutes } from './routes/strategyDiscoveryRoutes'
+export { StrategyDiscoveryWorkflow } from './strategy-discovery/workflow'
 import { finlabExecutionLoopRoutes } from './routes/finlabExecutionLoopRoutes'
 import { buildAdminTriggerTaskMap } from './lib/adminTriggerTaskMap'
 import { createAdminTriggerRoutes } from './routes/adminTriggerRoutes'
@@ -111,7 +113,7 @@ app.use('/api/*', cors({
     ])
     return allowed.has(origin) ? origin : null
   },
-  allowHeaders: ['Content-Type', 'Authorization'],
+  allowHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true,
 }))
@@ -155,6 +157,7 @@ app.route('/',                    adminConfigLifecycleRoutes)
 app.route('/',                    adminOptunaRoutes)
 app.route('/',                    finlabExecutionLoopRoutes)
 app.route('/',                    adminTriggerRoutes)
+app.route('/',                    strategyDiscoveryRoutes)
 app.get('/api/health', (c) => c.json(buildWorkerHealthPayload()))
 export default {
   fetch: app.fetch,

@@ -291,7 +291,6 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
 
   results.push(await logChainedTask(env, ctx, 'model-ic-tracker', () => runModelIcRollingRefresh(env, ctx.runDate)))
   results.push(await logChainedTask(env, ctx, 's12-replay-backfill', () => enqueueS12ReplayBackfillTask(env, ctx), {
-    critical: false,
     timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
   }))
 

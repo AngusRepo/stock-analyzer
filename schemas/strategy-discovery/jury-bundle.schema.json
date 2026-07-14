@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stockvision://strategy-discovery/jury-bundle-v1",
+  "type": "object",
+  "required": ["run_id", "created_at", "feature_snapshot_hash", "strategy_snapshot_hash", "bundle_hash", "schema_versions", "candidate_hashes", "required_codex_outputs", "files"],
+  "properties": {
+    "run_id": { "type": "string", "minLength": 1 },
+    "created_at": { "type": "string", "format": "date-time" },
+    "feature_snapshot_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "strategy_snapshot_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "bundle_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "schema_versions": { "type": "object", "additionalProperties": { "type": "string" } },
+    "candidate_hashes": { "type": "object", "additionalProperties": { "type": "string", "pattern": "^[a-f0-9]{64}$" } },
+    "required_codex_outputs": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "files": { "type": "object", "additionalProperties": { "type": "string", "pattern": "^[a-f0-9]{64}$" } }
+  },
+  "additionalProperties": false
+}

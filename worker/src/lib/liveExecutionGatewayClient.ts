@@ -61,6 +61,7 @@ export interface LiveExecutionClientEnv {
   EXECUTION_GATEWAY_SERVICE_TOKEN?: string
   LIVE_EXECUTION_HMAC_SECRET?: string
   LIVE_EXECUTION_CLIENT_ENABLED?: string
+  LIVE_EXECUTION_SUBMIT_GUARD_ENABLED?: string
   LIVE_TRADING_APPROVAL_SCOPE?: string
 }
 
@@ -211,12 +212,28 @@ export async function submitSignedExecutionShadowPacket(
 }
 
 function normalizeSnapshot(snapshot: AuthoritativeExecutionSnapshot): Record<string, unknown> {
+  if (snapshot.status !== 'ready' || snapshot.hardMismatch) {
+    throw new Error(`execution_snapshot_not_ready:${snapshot.reason}`)
+  }
+  if (snapshot.ageMs == null || snapshot.ageMs > snapshot.maxAgeMs) {
+    throw new Error('execution_snapshot_stale')
+  }
   return {
     schema_version: snapshot.schemaVersion,
+    snapshot_id: snapshot.snapshotId,
+    created_at: snapshot.createdAt,
+    side: snapshot.side,
     status: snapshot.status,
     reason: snapshot.reason,
     lot_type: snapshot.lotType,
+    normalized_limit_price: snapshot.normalizedLimitPrice,
+    tick_size: snapshot.tickSize,
+    max_age_ms: snapshot.maxAgeMs,
     selected_source: snapshot.selectedSource,
+    selected_source_time: snapshot.selectedSourceTime,
+    selected_received_at: snapshot.selectedReceivedAt,
+    session_epoch: snapshot.sessionEpoch,
+    source_agreement: snapshot.sourceAgreement,
     bid: snapshot.bid,
     ask: snapshot.ask,
     bid_volume: snapshot.bidVolume,
@@ -224,6 +241,7 @@ function normalizeSnapshot(snapshot: AuthoritativeExecutionSnapshot): Record<str
     age_ms: snapshot.ageMs,
     disagreement_ticks: snapshot.disagreementTicks,
     hard_mismatch: snapshot.hardMismatch,
+    observations: snapshot.observations,
   }
 }
 
@@ -288,6 +306,9 @@ export async function submitSignedLiveExecutionPacket(
   if (!truthy(env.LIVE_EXECUTION_CLIENT_ENABLED)) {
     return { status: 'blocked', reason: 'live_execution_client_disabled', live_submit_enabled: false }
   }
+  if (!truthy(env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED)) {
+    return { status: 'blocked', reason: 'live_execution_submit_guard_disabled', live_submit_enabled: false }
+  }
   const gatewayUrl = env.EXECUTION_GATEWAY_URL?.trim().replace(/\/$/, '')
   const serviceToken = env.EXECUTION_GATEWAY_SERVICE_TOKEN?.trim()
   const hmacSecret = env.LIVE_EXECUTION_HMAC_SECRET?.trim()
@@ -321,6 +342,23 @@ export async function submitSignedLiveExecutionPacket(
       error_type: error instanceof Error ? error.name : 'Error',
       live_submit_enabled: true,
     }
+  }
+}
+
+export async function submitOrReconcileSignedLiveExecutionPacket(
+  env: LiveExecutionClientEnv,
+  packet: LiveExecutionPacket,
+  fetchFn: typeof fetch = fetch,
+): Promise<Record<string, unknown>> {
+  const submitted = await submitSignedLiveExecutionPacket(env, packet, fetchFn)
+  if (String(submitted.status ?? '').toLowerCase() !== 'unknown') return submitted
+  const lifecycle = await fetchLiveExecutionIntentStatus(env, packet.idempotency_key, fetchFn)
+  return {
+    status: 'reconciliation_required',
+    reason: 'submit_response_unknown_no_automatic_resubmit',
+    submission: submitted,
+    lifecycle,
+    live_submit_enabled: true,
   }
 }
 

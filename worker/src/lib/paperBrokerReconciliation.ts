@@ -51,11 +51,18 @@ export function buildPaperBrokerReconciliation(input: PaperBrokerReconciliationI
     mismatches.push('preview_passed_but_simulation_not_fillable')
   }
   const bestAsk = Number(input.l5?.bestAsk ?? input.intent.executionConstraints.bestAsk ?? 0)
+  const bestBid = Number(input.l5?.bestBid ?? input.intent.executionConstraints.bestBid ?? 0)
   const fillPrice = Number(input.simulatedFill.fillPrice ?? 0)
   if (input.intent.side === 'buy' && input.simulatedFill.fillable && bestAsk > 0 && fillPrice > 0 && fillPrice < bestAsk) {
     mismatches.push('buy_fill_below_fresh_best_ask')
   }
-  const expectedSlippagePct = bestAsk > 0 && fillPrice > 0 ? roundMetric((fillPrice - bestAsk) / bestAsk) : null
+  if (input.intent.side === 'sell' && input.simulatedFill.fillable && bestBid > 0 && fillPrice > 0 && fillPrice > bestBid) {
+    mismatches.push('sell_fill_above_fresh_best_bid')
+  }
+  const benchmark = input.intent.side === 'buy' ? bestAsk : bestBid
+  const expectedSlippagePct = benchmark > 0 && fillPrice > 0
+    ? roundMetric(input.intent.side === 'buy' ? (fillPrice - benchmark) / benchmark : (benchmark - fillPrice) / benchmark)
+    : null
   const status =
     previewStatus === 'missing' ? 'preview_missing'
       : (previewStatus === 'blocked' || previewStatus === 'error') ? 'blocked_by_preview'

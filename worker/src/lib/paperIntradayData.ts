@@ -10,6 +10,12 @@ export interface IntradayOHLC {
   ask?: number
   bidVolume?: number
   askVolume?: number
+  bidPrices?: number[]
+  askPrices?: number[]
+  bidVolumes?: number[]
+  askVolumes?: number[]
+  volumeUnit?: 'lots' | 'shares'
+  sessionEpoch?: number
   totalVolume?: number
   quoteTime?: string
   source?: 'shioaji' | 'yahoo'
@@ -162,6 +168,16 @@ export function normalizeShioajiSnapshot(snapshot: any, options: NormalizeSnapsh
   return { last, low, high, open, referencePrice, bid, ask, bidVolume, askVolume, totalVolume, quoteTime, source: 'shioaji' }
 }
 
+function finitePriceList(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => firstFiniteTwTickPrice(item)).filter((item): item is number => item != null).slice(0, 5)
+}
+
+function finiteVolumeList(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => firstFiniteNumber(item)).filter((item): item is number => item != null).slice(0, 5)
+}
+
 function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
   const status = String(payload?.status ?? 'ok').trim().toLowerCase()
   if (
@@ -191,6 +207,10 @@ function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
 
   const bidVolume = firstFiniteNumber(payload?.bid_volume, payload?.bidVolume, payload?.best_bid_volume, payload?.bestBidVolume, payload?.bid_volumes)
   const askVolume = firstFiniteNumber(payload?.ask_volume, payload?.askVolume, payload?.best_ask_volume, payload?.bestAskVolume, payload?.ask_volumes)
+  const bidPrices = finitePriceList(payload?.bid_prices ?? payload?.bids)
+  const askPrices = finitePriceList(payload?.ask_prices ?? payload?.asks)
+  const bidVolumes = finiteVolumeList(payload?.bid_volumes)
+  const askVolumes = finiteVolumeList(payload?.ask_volumes)
   const referencePrice = firstFiniteTwTickPrice(payload?.reference_price, payload?.referencePrice, payload?.ref_price, payload?.yesterday_close)
   const quoteTime = typeof payload?.source_time === 'string'
     ? payload.source_time
@@ -203,7 +223,16 @@ function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
           : undefined
 
   const lotType = String(payload?.lot_type ?? '').toLowerCase() === 'odd_lot' ? 'odd_lot' : 'board_lot'
-  return { last, referencePrice, bid, ask, bidVolume, askVolume, quoteTime, source: 'shioaji', lotType }
+  const sessionEpoch = Number.isFinite(Number(payload?.session_epoch)) ? Number(payload.session_epoch) : undefined
+  return {
+    last, referencePrice, bid, ask, bidVolume, askVolume,
+    bidPrices: bidPrices.length > 0 ? bidPrices : bid == null ? [] : [bid],
+    askPrices: askPrices.length > 0 ? askPrices : ask == null ? [] : [ask],
+    bidVolumes: bidVolumes.length > 0 ? bidVolumes : bidVolume == null ? [] : [bidVolume],
+    askVolumes: askVolumes.length > 0 ? askVolumes : askVolume == null ? [] : [askVolume],
+    volumeUnit: lotType === 'board_lot' ? 'lots' : 'shares',
+    quoteTime, source: 'shioaji', lotType, sessionEpoch,
+  }
 }
 
 function mergeSnapshotContext(current: IntradayOHLC, snapshot: any): IntradayOHLC {

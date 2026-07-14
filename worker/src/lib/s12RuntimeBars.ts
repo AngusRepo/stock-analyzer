@@ -44,6 +44,7 @@ export interface S12BaseBarDiagnostics {
   kbars_normalized_session_count: number
   kbars_filtered_count: number
   kbars_filtered_outside_trade_date_count: number
+  kbars_filtered_outside_session_count: number
   previous_4h_fallback_loaded: boolean
   previous_4h_reference_date: string | null
   previous_4h_reference_close: number | null
@@ -165,11 +166,14 @@ function twDateText(ms: number): string {
 export function filterS12KbarsToTradeDate(bars: IntradayRollingBar[], tradeDate: string): {
   bars: IntradayRollingBar[]
   outsideTradeDateCount: number
+  outsideSessionCount: number
 } {
-  const filtered = bars.filter((bar) => twDateText(bar.startMs) === tradeDate)
+  const tradeDateBars = bars.filter((bar) => twDateText(bar.startMs) === tradeDate)
+  const filtered = tradeDateBars.filter((bar) => isTwSessionTime(bar.startMs))
   return {
     bars: filtered,
-    outsideTradeDateCount: Math.max(0, bars.length - filtered.length),
+    outsideTradeDateCount: Math.max(0, bars.length - tradeDateBars.length),
+    outsideSessionCount: Math.max(0, tradeDateBars.length - filtered.length),
   }
 }
 
@@ -180,7 +184,7 @@ function selectPreviousSessionKbars(bars: IntradayRollingBar[], tradeDate: strin
   const byDate = new Map<string, IntradayRollingBar[]>()
   for (const bar of bars) {
     const date = twDateText(bar.startMs)
-    if (date >= tradeDate) continue
+    if (date >= tradeDate || !isTwSessionTime(bar.startMs)) continue
     const bucket = byDate.get(date) ?? []
     bucket.push(bar)
     byDate.set(date, bucket)
@@ -304,7 +308,7 @@ async function fetchS12ShioajiKbars(
     'kbars_last_tw' | 'kbars_min_interval_ms' | 'kbars_granularity' | 'kbars_unusable_reason' |
     'kbars_time_adjustment' | 'kbars_raw_first_tw' | 'kbars_raw_last_tw' |
     'kbars_raw_session_count' | 'kbars_shifted_session_count' | 'kbars_normalized_session_count' |
-    'kbars_filtered_count' | 'kbars_filtered_outside_trade_date_count' |
+    'kbars_filtered_count' | 'kbars_filtered_outside_trade_date_count' | 'kbars_filtered_outside_session_count' |
     'previous_session_kbars_count' | 'previous_session_kbars_date' |
     'previous_session_kbars_first_tw' | 'previous_session_kbars_last_tw'
   >
@@ -330,6 +334,7 @@ async function fetchS12ShioajiKbars(
         kbars_normalized_session_count: 0,
         kbars_filtered_count: 0,
         kbars_filtered_outside_trade_date_count: 0,
+        kbars_filtered_outside_session_count: 0,
         previous_session_kbars_count: 0,
         previous_session_kbars_date: null,
         previous_session_kbars_first_tw: null,
@@ -359,6 +364,7 @@ async function fetchS12ShioajiKbars(
         kbars_normalized_session_count: 0,
         kbars_filtered_count: 0,
         kbars_filtered_outside_trade_date_count: 0,
+        kbars_filtered_outside_session_count: 0,
         previous_session_kbars_count: 0,
         previous_session_kbars_date: null,
         previous_session_kbars_first_tw: null,
@@ -405,6 +411,7 @@ async function fetchS12ShioajiKbars(
       kbars_normalized_session_count: normalized.normalizedSessionCount,
       kbars_filtered_count: bars.length,
       kbars_filtered_outside_trade_date_count: filtered.outsideTradeDateCount,
+      kbars_filtered_outside_session_count: filtered.outsideSessionCount,
       previous_session_kbars_count: previousSession.bars.length,
       previous_session_kbars_date: previousSession.date,
       previous_session_kbars_first_tw: twTimeText(previousSession.bars[0]?.startMs),
@@ -427,15 +434,15 @@ async function loadPreviousTradingDayContext(
     raw_close?: number | string | null
     volume: number | string | null
   }
-  let adjustedRows: DailyRow[] = []
+  let dailyRows: DailyRow[] = []
   try {
     const { results } = await env.DB.prepare(`
       WITH ranked AS (
         SELECT cmd.date,
-               COALESCE(cmd.adj_open, cmd.open) AS open,
-               COALESCE(cmd.adj_high, cmd.high) AS high,
-               COALESCE(cmd.adj_low, cmd.low) AS low,
-               COALESCE(cmd.adj_close, cmd.close) AS close,
+               cmd.open AS open,
+               cmd.high AS high,
+               cmd.low AS low,
+               cmd.close AS close,
                cmd.close AS raw_close,
                cmd.volume,
                ROW_NUMBER() OVER (
@@ -445,10 +452,10 @@ async function loadPreviousTradingDayContext(
           FROM canonical_market_daily cmd
          WHERE (CAST(cmd.stock_id AS TEXT) = ? OR CAST(cmd.stock_id AS TEXT) = CAST((SELECT id FROM stocks WHERE symbol = ? LIMIT 1) AS TEXT))
            AND cmd.date < ?
-           AND cmd.adj_open IS NOT NULL
-           AND cmd.adj_high IS NOT NULL
-           AND cmd.adj_low IS NOT NULL
-           AND cmd.adj_close IS NOT NULL
+            AND cmd.open IS NOT NULL
+            AND cmd.high IS NOT NULL
+            AND cmd.low IS NOT NULL
+            AND cmd.close IS NOT NULL
       )
       SELECT date, open, high, low, close, raw_close, volume
         FROM ranked
@@ -456,9 +463,9 @@ async function loadPreviousTradingDayContext(
        ORDER BY date DESC
        LIMIT 120
     `).bind(symbol, symbol, tradeDate).all<DailyRow>()
-    adjustedRows = results ?? []
+    dailyRows = results ?? []
   } catch {
-    adjustedRows = []
+    dailyRows = []
   }
   const rawReference = await env.DB.prepare(`
     SELECT sp.date, sp.close
@@ -470,7 +477,7 @@ async function loadPreviousTradingDayContext(
      ORDER BY sp.date DESC
      LIMIT 1
   `).bind(symbol, tradeDate).first<{ date?: string | null; close?: number | string | null }>()
-  const bars = adjustedRows
+  const bars = dailyRows
     .map((row): IntradayRollingBar | null => {
       const open = finiteNumber(row.open)
       const high = finiteNumber(row.high)
@@ -488,11 +495,11 @@ async function loadPreviousTradingDayContext(
     })
     .filter((bar): bar is IntradayRollingBar => bar != null)
     .sort((a, b) => a.startMs - b.startMs)
-  const latestAdjusted = adjustedRows[0]
+  const latestDaily = dailyRows[0]
   return {
     bars,
-    referenceDate: String(rawReference?.date ?? latestAdjusted?.date ?? '').trim() || null,
-    referenceClose: finiteNumber(rawReference?.close) ?? finiteNumber(latestAdjusted?.raw_close),
+    referenceDate: String(rawReference?.date ?? latestDaily?.date ?? '').trim() || null,
+    referenceClose: finiteNumber(rawReference?.close) ?? finiteNumber(latestDaily?.raw_close),
   }
 }
 
@@ -606,6 +613,7 @@ export async function loadS12IntradayBaseBars(
     kbars_normalized_session_count: 0,
     kbars_filtered_count: 0,
     kbars_filtered_outside_trade_date_count: 0,
+    kbars_filtered_outside_session_count: 0,
     previous_4h_fallback_loaded: false,
     previous_4h_reference_date: null,
     previous_4h_reference_close: null,
@@ -697,6 +705,7 @@ export async function loadS12HistoricalReplayBars(
     kbars_normalized_session_count: 0,
     kbars_filtered_count: 0,
     kbars_filtered_outside_trade_date_count: 0,
+    kbars_filtered_outside_session_count: 0,
     previous_4h_fallback_loaded: false,
     previous_4h_reference_date: null,
     previous_4h_reference_close: null,

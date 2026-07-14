@@ -180,13 +180,26 @@ function assertRunDate(value?: string): string {
 async function enqueuePostScreenerPipelineContinuation(c: any, runDate?: string): Promise<string> {
   const triggerTime = assertRunDate(runDate)
   const screener = await c.env.DB.prepare(`
-    SELECT run_id, final_count, emerging_count
-      FROM screener_funnel_runs
-     WHERE date = ?
-       AND status = 'success'
-     ORDER BY created_at DESC
+    SELECT sfr.run_id, sfr.final_count, sfr.emerging_count
+      FROM screener_funnel_runs sfr
+     WHERE sfr.run_id = COALESCE(
+       (
+         SELECT h.run_id
+           FROM canonical_run_heads h
+           JOIN pipeline_runs p ON p.run_id = h.run_id AND p.status = 'canonical'
+          WHERE h.logical_run_key = ?
+          LIMIT 1
+       ),
+       (
+         SELECT run_id
+           FROM screener_funnel_runs
+          WHERE date = ? AND status = 'success'
+          ORDER BY created_at DESC
+          LIMIT 1
+       )
+     )
      LIMIT 1
-  `).bind(triggerTime).first() as { run_id?: string; final_count?: number; emerging_count?: number } | null
+  `).bind(`screener:${triggerTime}:TW:production:market_screener`, triggerTime).first() as { run_id?: string; final_count?: number; emerging_count?: number } | null
 
   if (!screener?.run_id) {
     throw new Error(`No successful screener_funnel_run found for ${triggerTime}; refusing post-screener pipeline continuation`)
@@ -361,10 +374,18 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const { buildPendingBuyStateSummary } = await import('./pendingBuyStateSummary')
       const { formatPendingBuyCronSummary } = await import('./pendingBuyCronSummary')
       const warmup = await runPreMarketWarmup(c.env)
+      const tradeDate = twToday()
+      const setupError = await c.env.KV.get(`paper:pending_buys_setup_error:${tradeDate}`)
+      const beforeRepair = await loadPendingBuySnapshot(c.env, tradeDate, { allowFallbackRecent: false })
+      const needsRepair = Boolean(setupError) || beforeRepair.source === 'none' || beforeRepair.meta?.status === 'error'
+      if (needsRepair) await deps.setupMorningPendingBuys()
       const debate = await reconcilePendingBuyDebates(c.env, twToday())
       const snapshot = await loadPendingBuySnapshot(c.env, twToday(), { allowFallbackRecent: false })
       const state = buildPendingBuyStateSummary(snapshot.pendingBuys, snapshot.meta)
-      return formatPendingBuyCronSummary(warmup, state, { debate })
+      return formatPendingBuyCronSummary(warmup, state, {
+        debate,
+        morning_setup_repair: needsRepair ? 'rerun_completed' : 'not_needed',
+      })
     },
     'intraday-rescore': async () => {
       const { runIntradayRescore } = await import('./cronOrchestrator')
@@ -410,6 +431,94 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       })
       return summarizeAuditJsonArchiveRun(result)
     },
+    'artifact-reconcile': async () => {
+      const { runArtifactReconcile } = await import('./artifactLifecycle')
+      const result = await runArtifactReconcile(c.env, {
+        limit: parseBoundedPositiveInt(c.req.query('limit'), 250, 500),
+      })
+      if (result.missing || result.mismatched || result.errors.length) {
+        throw new Error(`artifact reconcile failed ${JSON.stringify(result)}`)
+      }
+      return `artifact_reconcile checked=${result.checked} verified=${result.verified}`
+    },
+    'legacy-evidence-migration': async () => {
+      const { runLegacyEvidenceMigration } = await import('./legacyEvidenceMigration')
+      const chunkLimit = parseBoundedPositiveInt(c.req.query('limit'), 500, 500)
+      const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 5, 10)
+      let candidates = 0
+      let artifacts = 0
+      let queuedScrubs = 0
+      let backlogRemaining = false
+      for (let chunk = 0; chunk < maxChunks; chunk += 1) {
+        const result = await runLegacyEvidenceMigration(c.env, { limit: chunkLimit })
+        candidates += result.candidates
+        artifacts += result.artifacts
+        queuedScrubs += result.queued_scrubs
+        backlogRemaining = result.backlog_remaining
+        if (!backlogRemaining || result.candidates === 0) break
+      }
+      return `legacy_evidence_migration candidates=${candidates} artifacts=${artifacts} queued_scrubs=${queuedScrubs} backlog_remaining=${backlogRemaining}`
+    },
+    'd1-evidence-scrub': async () => {
+      const { runD1EvidenceScrub } = await import('./artifactLifecycle')
+      const result = await runD1EvidenceScrub(c.env, {
+        limit: parseBoundedPositiveInt(c.req.query('limit'), 250, 1000),
+      })
+      if (result.failed || result.blocked) throw new Error(`d1 evidence scrub failed ${JSON.stringify(result)}`)
+      return `d1_evidence_scrub candidates=${result.candidates} scrubbed=${result.scrubbed}`
+    },
+    'r2-retention-sweep': async () => {
+      const { runR2RetentionSweep } = await import('./artifactLifecycle')
+      const result = await runR2RetentionSweep(c.env, {
+        limit: parseBoundedPositiveInt(c.req.query('limit'), 250, 1000),
+      })
+      if (result.failed) throw new Error(`r2 retention sweep failed ${JSON.stringify(result)}`)
+      return `r2_retention_sweep candidates=${result.candidates} deleted=${result.deleted}`
+    },
+    'orphan-reachability-gc': async () => {
+      const { runOrphanReachabilityGc } = await import('./artifactLifecycle')
+      const result = await runOrphanReachabilityGc(c.env, {
+        limit: parseBoundedPositiveInt(c.req.query('limit'), 500, 1000),
+      })
+      return `orphan_reachability_gc scanned=${result.scanned} deleted=${result.deleted} referenced=${result.referenced}`
+    },
+    'cleanup-dlq-replay': async () => {
+      const { runCleanupDlqReplay } = await import('./artifactLifecycle')
+      const result = await runCleanupDlqReplay(c.env, {
+        limit: parseBoundedPositiveInt(c.req.query('limit'), 100, 500),
+      })
+      if (result.blocked) throw new Error(`cleanup dlq remains blocked ${JSON.stringify(result)}`)
+      return `cleanup_dlq_replay candidates=${result.candidates} resolved=${result.resolved}`
+    },
+    'storage-health-gate': async () => {
+      const { runStorageHealthGate } = await import('./artifactLifecycle')
+      const result = await runStorageHealthGate(c.env)
+      if (!result.healthy) throw new Error(`storage health gate failed ${JSON.stringify(result)}`)
+      return `storage_health_gate ${JSON.stringify(result)}`
+    },
+    'storage-integrity-audit': async () => {
+      const { runArtifactIntegrityAudit } = await import('./artifactLifecycle')
+      const result = await runArtifactIntegrityAudit(c.env, {
+        limit: parseBoundedPositiveInt(c.req.query('limit'), 100, 500),
+        includeBlocked: true,
+      })
+      if (result.missing || result.mismatched || result.errors.length) {
+        throw new Error(`storage integrity audit failed ${JSON.stringify(result)}`)
+      }
+      return `storage_integrity_audit checked=${result.checked} verified=${result.verified}`
+    },
+    'storage-capacity-report': async () => {
+      const { runStorageHealthGate } = await import('./artifactLifecycle')
+      const health = await runStorageHealthGate(c.env)
+      const { results } = await c.env.DB.prepare(`
+        SELECT retention_class, status, COUNT(*) AS artifacts,
+               COALESCE(SUM(byte_size), 0) AS bytes
+          FROM run_artifacts
+         GROUP BY retention_class, status
+         ORDER BY retention_class, status
+      `).all()
+      return `storage_capacity_report health=${JSON.stringify(health)} classes=${JSON.stringify(results ?? [])}`
+    },
     'timeverse-sync': async () => {
       const { syncTimeverse } = await import('./timeverse')
       return syncTimeverse(c.env)
@@ -449,10 +558,13 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     },
     pipeline: () => deps.runMLAndRiskV2(requestedRunDate()),
     'weekly-cleanup': async () => {
-      await runWeeklyCleanup(c.env)
-      await deps.runWeeklyLifecycleCheck().catch((e) => { console.warn('[Lifecycle] failed:', e) })
-      await runWeeklyLocalMaintenance(c.env)
-      return 'weekly cleanup done: local maintenance + lifecycle dry-run; retrain is monthly/manual only'
+      const cleanup = await runWeeklyCleanup(c.env)
+      const lifecycle = await deps.runWeeklyLifecycleCheck()
+      const maintenance = await runWeeklyLocalMaintenance(c.env)
+      if (!cleanup.ok || !maintenance.ok) {
+        throw new Error(`weekly cleanup failed ${JSON.stringify({ cleanup, maintenance })}`)
+      }
+      return `weekly_cleanup_v2 cleanup=${JSON.stringify(cleanup)} maintenance=${JSON.stringify(maintenance)} lifecycle dry-run=${String(lifecycle)}`
     },
     'sector-leaders': async () => {
       const { computeSectorLeaders } = await import('./sectorCorrelation')

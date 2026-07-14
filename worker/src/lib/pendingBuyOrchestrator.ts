@@ -29,6 +29,7 @@ import {
   applyPendingBuyExecutionStatusUpdates,
 } from './pendingBuyExecutionState'
 import { recordPendingBuyPaperAttribution } from './paperActiveAttributionWiring'
+import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { checkP1Mdd } from './riskChecks/p1Mdd'
 import { checkP2Accuracy } from './riskChecks/p2Accuracy'
 import { checkP3MarketRisk } from './riskChecks/p3MarketRisk'
@@ -49,6 +50,50 @@ import {
 } from './entryPriceModelV2'
 
 type CircuitBreakerState = _CBState
+
+function isTransientD1Error(error: unknown): boolean {
+  return /D1_ERROR|timeout|timed out|temporar|internal error|connection reset|network/i.test(String(error))
+}
+
+async function withD1Retry<T>(label: string, operation: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation()
+    } catch (error) {
+      lastError = error
+      if (!isTransientD1Error(error) || attempt >= attempts) throw error
+      const delayMs = 150 * (2 ** (attempt - 1)) + Math.floor(Math.random() * 100)
+      console.warn(`[MorningSetup] transient D1 failure label=${label} attempt=${attempt}/${attempts}; retry_ms=${delayMs}`)
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+  }
+  throw lastError
+}
+
+async function recordMorningSetupFailureWithoutReplacingState(
+  env: Bindings,
+  tradeDate: string,
+  error: unknown,
+): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error)
+  await Promise.allSettled([
+    env.KV.put(`paper:pending_buys_setup_error:${tradeDate}`, JSON.stringify({
+      status: 'error',
+      reason: message,
+      failed_at: new Date().toISOString(),
+      snapshot_policy: 'preserve_last_valid_state',
+    }), { expirationTtl: 7 * 86400 }),
+    recordPaperExecutionEvent(env, {
+      tradeDate,
+      eventType: 'pending_buy',
+      status: 'error',
+      reason: message,
+      detail: { snapshot_policy: 'preserve_last_valid_state' },
+      source: 'morning_setup_failure',
+    }),
+  ])
+}
 
 interface BuyRecommendationRow {
   stock_id: number | null
@@ -654,6 +699,9 @@ async function persistPendingBuys(
     pendingBuys,
     meta,
   })
+  if (meta?.status !== 'error') {
+    await env.KV.delete(`paper:pending_buys_setup_error:${tradeDate}`).catch(() => {})
+  }
   if (pendingBuys.length > 0) {
     await recordPendingBuyPaperAttribution(env, pendingBuys, {
       tradeDate,
@@ -747,7 +795,13 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     return 0
   })
   if (expiredStale > 0) console.log(`[MorningSetup] expired ${expiredStale} stale pending buys`)
-  const cb = await checkCircuitBreakers(env.DB, cfg, env.KV)
+  let cb: CircuitBreakerState
+  try {
+    cb = await withD1Retry('circuit_breakers', () => checkCircuitBreakers(env.DB, cfg, env.KV))
+  } catch (error) {
+    await recordMorningSetupFailureWithoutReplacingState(env, pendingDate, error)
+    throw error
+  }
   console.log(
     `[MorningSetup] circuit halt=${cb.halt} buyConfThreshold=${cb.buyConfThreshold} maxPositionPct=${cb.maxPositionPct} reason=${cb.reason ?? 'none'}`,
   )
@@ -770,10 +824,10 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   }
 
   try {
-    const prevDay = await getPrevTradingDay(env.DB, env.KV)
+    const prevDay = await withD1Retry('previous_trading_day', () => getPrevTradingDay(env.DB, env.KV))
     const sourceRecoDate = prevDay
     const configuredBuySignalCount = Math.max(1, Math.floor(cfg.alphaFramework?.allocation?.buySignalCount ?? 3))
-    const { results } = await env.DB.prepare(`
+    const { results } = await withD1Retry('buy_recommendations', () => env.DB.prepare(`
       SELECT s.id AS stock_id, dr.symbol, dr.name, dr.signal, dr.confidence, dr.has_buy_signal,
              dr.eligible_for_ml, dr.eligible_for_pending_buy, dr.reason,
              dr.watch_points, dr.score_components, dr.alpha_allocation,
@@ -848,7 +902,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
            dr.confidence DESC
     `).bind(sourceRecoDate,
       sourceRecoDate,
-    ).all<BuyRecommendationRow>()
+    ).all<BuyRecommendationRow>())
 
     const buyRecs = (results ?? []) as BuyRecommendationRow[]
     applyRecommendationProvenance(buyRecs)
@@ -1307,7 +1361,7 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     console.error('[MorningSetup] failed before pending buys persisted:', error)
-    await persistPendingBuys(env, pendingDate, [], { status: 'error', reason: message })
+    await recordMorningSetupFailureWithoutReplacingState(env, pendingDate, message)
     throw error
   }
 }

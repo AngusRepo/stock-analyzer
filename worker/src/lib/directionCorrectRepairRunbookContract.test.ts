@@ -4,7 +4,7 @@ function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
 }
 
-const runbook = fs.readFileSync('worker/runbook_direction_correct_skipped_repair_2026_06_22.md', 'utf8')
+const runbook = fs.readFileSync('runbook_direction_correct_skipped_repair_2026_06_22.md', 'utf8')
 
 assert(
   runbook.includes('Do not execute without explicit Wei approval'),

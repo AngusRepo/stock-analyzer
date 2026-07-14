@@ -712,12 +712,33 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             f"[TrainUniversal] Walk-forward mode: train={req.train_start}..{req.train_end} "
             f"test={req.test_start}..{req.test_end} window_id={req.window_id}"
         )
-        dates_str = dates_arr.astype(str)
-        train_mask = (dates_str >= req.train_start) & (dates_str <= req.train_end)
-        test_mask = (dates_str >= req.test_start) & (dates_str <= req.test_end)
-        X_train, y_train, dates_train = X[train_mask], y[train_mask], dates_arr[train_mask]
-        X_test, y_test, dates_test = X[test_mask], y[test_mask], dates_arr[test_mask]
-        print(f"[TrainUniversal] Walk-forward split: train={len(X_train)}, test={len(X_test)}")
+        from .purged_cv import purged_explicit_walk_forward_split
+
+        label_horizon_days = req.label_horizon_days or 5
+        (
+            X_train,
+            y_train,
+            dates_train,
+            X_test,
+            y_test,
+            dates_test,
+            walk_forward_split_metadata,
+        ) = purged_explicit_walk_forward_split(
+            X,
+            y,
+            dates_arr,
+            train_start=req.train_start,
+            train_end=req.train_end,
+            test_start=req.test_start,
+            test_end=req.test_end,
+            label_horizon_days=label_horizon_days,
+        )
+        print(
+            f"[TrainUniversal] Walk-forward split: train={len(X_train)}, test={len(X_test)}, "
+            f"purged={walk_forward_split_metadata['purged_row_count']} rows/"
+            f"{walk_forward_split_metadata['purged_date_count']} dates, "
+            f"label_horizon={label_horizon_days}d"
+        )
         if len(X_train) < 500:
             raise ValueError(
                 f"Walk-forward train window {req.train_start}..{req.train_end} has only "
@@ -730,11 +751,9 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             )
         validation_split_metadata = {
             **validation_split_metadata,
-            "method": "walk_forward_explicit",
+            **walk_forward_split_metadata,
             "window_id": req.window_id,
-            "train_range": [req.train_start, req.train_end],
-            "test_range": [req.test_start, req.test_end],
-            "purged": False,
+            "train_range": walk_forward_split_metadata["effective_train_range"],
             "cpcv_available": True,
             "cpcv_default": {
                 "method": "combinatorial_purged_cv",

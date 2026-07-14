@@ -9,7 +9,8 @@ import {
   logRegimeShadow,
   recordSellSettlement,
 } from './paperMarketData'
-import { applyPartialFill, calcCommission, calcTax, resolveLimitBuyFill, resolveMarketSellFill } from './paperTradeMath'
+import { calcCommission, calcTax, resolveLimitBuyFill, resolveMarketSellFill } from './paperTradeMath'
+import { matchPaperOrderAgainstAuthoritativeDepth } from './paperOrderBookMatcher'
 import { buildSellOrderNote } from './paperOrderAccounting'
 import { forceDayTradeClose, pollIntradayStopLoss } from './paperExitTasks'
 import {
@@ -1917,8 +1918,14 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             ask: currentOhlc.ask ?? null,
             bidVolume: currentOhlc.bidVolume ?? null,
             askVolume: currentOhlc.askVolume ?? null,
+            bidPrices: currentOhlc.bidPrices ?? [],
+            askPrices: currentOhlc.askPrices ?? [],
+            bidVolumes: currentOhlc.bidVolumes ?? [],
+            askVolumes: currentOhlc.askVolumes ?? [],
+            volumeUnit: currentOhlc.volumeUnit,
             sourceTime: currentOhlc.quoteTime ?? null,
             ageMs: quoteAgeMs(currentOhlc.quoteTime),
+            sessionEpoch: currentOhlc.sessionEpoch ?? null,
           }
           : null,
         finLabL5Quote
@@ -1929,6 +1936,11 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
             ask: finLabL5Quote.bestAsk ?? null,
             bidVolume: finLabL5Quote.bidVolumes[0] ?? null,
             askVolume: finLabL5Quote.askVolumes[0] ?? null,
+            bidPrices: finLabL5Quote.bidPrices,
+            askPrices: finLabL5Quote.askPrices,
+            bidVolumes: finLabL5Quote.bidVolumes,
+            askVolumes: finLabL5Quote.askVolumes,
+            volumeUnit: finLabL5Quote.lotType === 'board_lot' ? 'lots' : 'shares',
             sourceTime: finLabL5Quote.sourceTime ?? null,
             receivedAt: finLabL5Quote.receivedAt ?? null,
             ageMs: finLabL5Quote.quoteAgeMs ?? null,
@@ -2057,7 +2069,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       continue
     }
 
-    const fillPrice = fillPriceOverride
+    let fillPrice = fillPriceOverride
     const fullLots = Math.floor(budget / (fillPrice * 1000))
     let shares: number
     let isOddLot = false
@@ -2086,6 +2098,33 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       )
       continue
     }
+    if (authoritativeSnapshot.lotType !== lotType) {
+      recordActiveExecutionStatus(
+        pending.symbol,
+        'quote_unavailable',
+        'authoritative_lot_book_mismatch',
+        `required=${lotType};snapshot=${authoritativeSnapshot.lotType}`,
+      )
+      continue
+    }
+    const depthMatch = matchPaperOrderAgainstAuthoritativeDepth({
+      snapshot: authoritativeSnapshot,
+      requestedShares,
+      limitPrice,
+    })
+    if (!['filled', 'partial'].includes(depthMatch.status) || depthMatch.averageFillPrice == null) {
+      recordActiveExecutionStatus(
+        pending.symbol,
+        'submitted',
+        depthMatch.reason,
+        JSON.stringify(depthMatch),
+      )
+      continue
+    }
+    shares = depthMatch.filledShares
+    fillPrice = depthMatch.averageFillPrice
+    const isPartialFill = depthMatch.status === 'partial'
+    const filledOrderLegs = buildTwOrderLegs(shares)
     const orderIntent = buildStockVisionOrderIntent({
       accountId: ACCOUNT_ID,
       tradeDate: today,
@@ -2171,28 +2210,6 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     }
     const intradayExecutableVolume = Number(currentOhlc?.totalVolume ?? 0)
     const liquidityBaseVolume = Number(avgVolume20dMap.get(pending.symbol) ?? intradayExecutableVolume)
-    const volumeModelFilledShares = applyPartialFill(shares, fillPrice, liquidityBaseVolume, cfg)
-    const visibleAskShares = authoritativeSnapshot.askVolume == null
-      ? null
-      : lotType === 'board_lot'
-        ? Math.max(0, Math.floor(authoritativeSnapshot.askVolume)) * 1000
-        : Math.max(0, Math.floor(authoritativeSnapshot.askVolume))
-    const rawFilledShares = visibleAskShares == null
-      ? volumeModelFilledShares
-      : Math.min(volumeModelFilledShares, visibleAskShares)
-    shares = normalizeTwFilledSharesForRequestedOrder(requestedShares, rawFilledShares)
-    if (shares <= 0) {
-      recordActiveExecutionStatus(
-        pending.symbol,
-        'submitted',
-        'paper_partial_fill_below_tradeable_lot',
-        `requested=${requestedShares};raw_filled=${rawFilledShares}`,
-      )
-      continue
-    }
-    const isPartialFill = shares < requestedShares
-    const filledOrderLegs = buildTwOrderLegs(shares)
-
     const txValue = fillPrice * shares
     if (txValue < minPosVal) {
       console.log('[Intraday] txValue below minimum', pending.symbol, txValue, minPosVal)
@@ -2227,6 +2244,7 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
       detail: {
         ...brokerReconciliation.detail,
         authoritative_execution_snapshot: authoritativeSnapshot,
+        paper_depth_match: depthMatch,
         expected_slippage_pct: brokerReconciliation.expectedSlippagePct,
         mismatches: brokerReconciliation.mismatches,
         live_submit_enabled: false,

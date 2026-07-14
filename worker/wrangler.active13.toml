@@ -1,0 +1,11 @@
+name = "stockvision-active13-local-e2e"
+main = "src/active13AttackHarness.ts"
+compatibility_date = "2024-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+[ai]
+binding = "AI"
+remote = true
+
+[vars]
+ENVIRONMENT = "local"

@@ -14,6 +14,7 @@ const SchedulerPage = lazy(() => import('./pages/SchedulerPage'))
 const ModelPoolPage = lazy(() => import('./pages/ModelPoolPage'))
 const DataQualityPage = lazy(() => import('./pages/DataQualityPage'))
 const StrategyLabPage = lazy(() => import('./pages/StrategyLabPage'))
+const StrategyDiscoveryPage = lazy(() => import('./pages/StrategyDiscoveryPage'))
 const ObservabilityPage = lazy(() => import('./pages/ObservabilityPage'))
 
 function PageLoader({ label }: { label: string }) {
@@ -91,6 +92,14 @@ export default function App() {
           <AdminOnly label="Strategy Lab">
             <Suspense fallback={<PageLoader label="Strategy Lab" />}>
               <StrategyLabPage />
+            </Suspense>
+          </AdminOnly>
+        </Route>
+
+        <Route path="/strategy-discovery">
+          <AdminOnly label="Strategy Discovery">
+            <Suspense fallback={<PageLoader label="Strategy Discovery" />}>
+              <StrategyDiscoveryPage />
             </Suspense>
           </AdminOnly>
         </Route>

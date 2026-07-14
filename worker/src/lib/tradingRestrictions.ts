@@ -123,14 +123,13 @@ async function loadGovernanceRestrictions(db: D1Database, tradeDate: string): Pr
   }
 }
 
-async function upsertOfficialRestrictions(
+async function reconcileOfficialRestrictions(
   env: Bindings,
   tradeDate: string,
   type: 'attention' | 'disposition',
   symbols: string[],
   market: 'LISTED' | 'OTC' = 'LISTED',
 ): Promise<void> {
-  if (!symbols.length) return
   const isTpex = market === 'OTC'
   const source = type === 'attention'
     ? (isTpex ? 'official.tpex_notice' : 'official.twse_notice')
@@ -142,7 +141,15 @@ async function upsertOfficialRestrictions(
     : (isTpex
         ? 'https://www.tpex.org.tw/openapi/v1/tpex_disposal_information'
         : 'https://www.twse.com.tw/rwd/zh/announcement/punish?response=json')
-  const statements = symbols.map((symbol) => env.DB.prepare(`
+  const statements = [env.DB.prepare(`
+    UPDATE canonical_trading_restrictions
+       SET active = 0,
+           end_date = date(?, '-1 day'),
+           updated_at = CURRENT_TIMESTAMP
+     WHERE source = ?
+       AND COALESCE(active, 1) = 1
+       AND date(source_date) < date(?)
+  `).bind(tradeDate, source, tradeDate), ...symbols.map((symbol) => env.DB.prepare(`
     INSERT INTO canonical_trading_restrictions (
       symbol, restriction_type, market_segment, start_date, end_date, source,
       source_date, title, source_url, lineage_json, active, updated_at
@@ -165,7 +172,7 @@ async function upsertOfficialRestrictions(
     `${type}:${symbol}`,
     sourceUrl,
     JSON.stringify({ schema_version: 'canonical-trading-restrictions-v1', source, fetch_mode: 'official_fallback' }),
-  ))
+  ))]
   for (let i = 0; i < statements.length; i += 50) {
     await env.DB.batch(statements.slice(i, i + 50))
   }
@@ -178,29 +185,58 @@ export async function refreshOfficialTradingRestrictions(env: Bindings, tradeDat
     fetchTpexPunishedStocks(),
     fetchTpexAttentionStocks(),
   ])
+  const outcomes = [
+    ['official.twse_punish', punishedResult],
+    ['official.twse_notice', attentionResult],
+    ['official.tpex_punish', tpexPunishedResult],
+    ['official.tpex_notice', tpexAttentionResult],
+  ] as const
+  const failedSources = outcomes
+    .filter(([, result]) => result.status === 'rejected')
+    .map(([source, result]) => ({
+      source,
+      error: result.status === 'rejected' ? String(result.reason) : null,
+    }))
+  if (failedSources.length > 0) {
+    await env.KV.put('market:trading_restrictions:refresh_status', JSON.stringify({
+      status: 'error',
+      trade_date: tradeDate,
+      failed_sources: failedSources,
+      checked_at: new Date().toISOString(),
+    }), { expirationTtl: 86400 })
+    throw new Error(`official_trading_restrictions_incomplete:${failedSources.map((row) => row.source).join(',')}`)
+  }
+
   const counts: Record<string, number> = {}
-  if (punishedResult.status === 'fulfilled' && punishedResult.value.length > 0) {
+  if (punishedResult.status === 'fulfilled') {
     await env.KV.put('market:punished_stocks', JSON.stringify(punishedResult.value), { expirationTtl: 86400 })
-    await upsertOfficialRestrictions(env, tradeDate, 'disposition', punishedResult.value, 'LISTED')
     counts['official.twse_punish'] = punishedResult.value.length
+    await reconcileOfficialRestrictions(env, tradeDate, 'disposition', punishedResult.value, 'LISTED')
   }
-  if (attentionResult.status === 'fulfilled' && attentionResult.value.length > 0) {
+  if (attentionResult.status === 'fulfilled') {
     await env.KV.put('market:attention_stocks', JSON.stringify(attentionResult.value), { expirationTtl: 86400 })
-    await upsertOfficialRestrictions(env, tradeDate, 'attention', attentionResult.value, 'LISTED')
     counts['official.twse_notice'] = attentionResult.value.length
+    await reconcileOfficialRestrictions(env, tradeDate, 'attention', attentionResult.value, 'LISTED')
   }
-  if (tpexPunishedResult.status === 'fulfilled' && tpexPunishedResult.value.length > 0) {
+  if (tpexPunishedResult.status === 'fulfilled') {
     await env.KV.put('market:tpex_punished_stocks', JSON.stringify(tpexPunishedResult.value), { expirationTtl: 86400 })
-    await upsertOfficialRestrictions(env, tradeDate, 'disposition', tpexPunishedResult.value, 'OTC')
     counts['official.tpex_punish'] = tpexPunishedResult.value.length
+    await reconcileOfficialRestrictions(env, tradeDate, 'disposition', tpexPunishedResult.value, 'OTC')
   }
-  if (tpexAttentionResult.status === 'fulfilled' && tpexAttentionResult.value.length > 0) {
+  if (tpexAttentionResult.status === 'fulfilled') {
     await env.KV.put('market:tpex_attention_stocks', JSON.stringify(tpexAttentionResult.value), { expirationTtl: 86400 })
-    await upsertOfficialRestrictions(env, tradeDate, 'attention', tpexAttentionResult.value, 'OTC')
     counts['official.tpex_notice'] = tpexAttentionResult.value.length
+    await reconcileOfficialRestrictions(env, tradeDate, 'attention', tpexAttentionResult.value, 'OTC')
   }
+  const checkedAt = new Date().toISOString()
+  await env.KV.put('market:trading_restrictions:refresh_status', JSON.stringify({
+    status: 'success',
+    trade_date: tradeDate,
+    source_counts: counts,
+    checked_at: checkedAt,
+  }), { expirationTtl: 86400 })
   await env.KV.put('market:restricted_execution_checked_at', new Date().toISOString(), { expirationTtl: 3600 })
-  await env.KV.put('market:trading_restrictions:checked_at', new Date().toISOString(), { expirationTtl: 86400 })
+  await env.KV.put('market:trading_restrictions:checked_at', checkedAt, { expirationTtl: 86400 })
   return counts
 }
 

@@ -1,6 +1,6 @@
 {
   "schema_version": "stockvision-finlab-strategy-spec-backtest-v1",
-  "generated_at": "2026-07-02T04:41:33.826937+00:00",
+  "generated_at": "2026-07-14T04:01:59.438946+00:00",
   "allowed_use": "research_only",
   "decision_effect": "none",
   "sdk": {
@@ -32,6 +32,7 @@
     "broker": "finlab etl:broker_transactions top15_buy/top15_sell/balance_index proxy; full broker_transactions was not used",
     "sector_flow": "reconstructed from FinLab security_categories + OHLCV relative strength proxy",
     "smc": "reconstructed OHLCV price-action proxy; not a byte-identical production SMC replay",
+    "vwap": "daily OHLCV proxy: typical-price VWAP bias and 5d volume-weighted typical price; not intraday VWAP",
     "alpha_miner": null
   },
   "results": [
@@ -41,7 +42,7 @@
       "family_id": "ALPHA223_CASH_GAP_BROKER_FLOW",
       "alpha_bucket": "smart_money_accumulation",
       "status": "ok",
-      "elapsed_s": 8.276,
+      "elapsed_s": 11.499,
       "cagr": 0.16847595068818788,
       "benchmark_alpha": 0.23787693417935918,
       "benchmark_beta": 1.553385401547041,
@@ -90,7 +91,7 @@
       "family_id": "ALPHA223_QUALITY_TURNOVER",
       "alpha_bucket": "trend_following",
       "status": "ok",
-      "elapsed_s": 2.663,
+      "elapsed_s": 2.626,
       "cagr": 0.2582772015639223,
       "benchmark_alpha": 0.3455790884541995,
       "benchmark_beta": 1.9540569859520656,
@@ -139,7 +140,7 @@
       "family_id": "ALPHA223_EXPENSE_PROFIT_THRUST",
       "alpha_bucket": "trend_following",
       "status": "ok",
-      "elapsed_s": 1.745,
+      "elapsed_s": 1.679,
       "cagr": 0.21317975154839197,
       "benchmark_alpha": 0.2854423975779114,
       "benchmark_beta": 1.617437300923796,
@@ -188,7 +189,7 @@
       "family_id": "ALPHA223_BREAKOUT_CASH_FLOW",
       "alpha_bucket": "breakout_vol_expansion",
       "status": "ok",
-      "elapsed_s": 2.763,
+      "elapsed_s": 2.373,
       "cagr": 0.31062554670928866,
       "benchmark_alpha": 0.39604759151559543,
       "benchmark_beta": 1.9119809359660556,
@@ -237,7 +238,7 @@
       "family_id": "ALPHA223_CASHFLOW_ASSET_TURNOVER",
       "alpha_bucket": "breakout_vol_expansion",
       "status": "ok",
-      "elapsed_s": 1.83,
+      "elapsed_s": 1.885,
       "cagr": 0.2117498667647526,
       "benchmark_alpha": 0.2906173876050523,
       "benchmark_beta": 1.7652726138256125,
@@ -291,7 +292,7 @@
         "factorSignals.margin_balance",
         "factorSignals.us_sentiment_score"
       ],
-      "elapsed_s": 0.874,
+      "elapsed_s": 1.119,
       "match_days": 0,
       "avg_daily_matches": 0.0,
       "max_daily_matches": 0,
@@ -326,7 +327,7 @@
       "family_id": "SMART_MONEY_ACCUMULATION",
       "alpha_bucket": "defensive_accumulation",
       "status": "ok",
-      "elapsed_s": 0.68,
+      "elapsed_s": 0.723,
       "cagr": 0.15820406140434295,
       "benchmark_alpha": 0.22240236085544082,
       "benchmark_beta": 1.436934984994376,
@@ -418,7 +419,7 @@
       "missing_feature_keys": [
         "technicalIndicators.stockTechS02Admission"
       ],
-      "elapsed_s": 0.143,
+      "elapsed_s": 0.14,
       "match_days": 0,
       "avg_daily_matches": 0.0,
       "max_daily_matches": 0,
@@ -457,7 +458,7 @@
       "missing_feature_keys": [
         "technicalIndicators.stockTechS04Admission"
       ],
-      "elapsed_s": 0.139,
+      "elapsed_s": 0.149,
       "match_days": 0,
       "avg_daily_matches": 0.0,
       "max_daily_matches": 0,
@@ -496,7 +497,7 @@
       "missing_feature_keys": [
         "technicalIndicators.stockTechS06Admission"
       ],
-      "elapsed_s": 0.132,
+      "elapsed_s": 0.139,
       "match_days": 0,
       "avg_daily_matches": 0.0,
       "max_daily_matches": 0,
@@ -531,33 +532,33 @@
       "family_id": "TREND_QUALITY_BREAKOUT_FUSED",
       "alpha_bucket": "trend_following",
       "status": "ok",
-      "elapsed_s": 2.15,
-      "cagr": 0.24391163304360952,
-      "benchmark_alpha": 0.316403551607438,
-      "benchmark_beta": 1.6225690525194487,
-      "total_return": 1.0681203997009168,
+      "elapsed_s": 2.316,
+      "cagr": 0.2436142974908817,
+      "benchmark_alpha": 0.3160690756656739,
+      "benchmark_beta": 1.6217377481886672,
+      "total_return": 1.0664750599979556,
       "max_drawdown": -0.17231298142476592,
-      "monthly_sharpe": 1.3313084144062317,
-      "monthly_sortino": 3.882399953344121,
-      "calmar": 1.4154329911596748,
-      "win_ratio": 0.44853775213295854,
-      "avg_n_stock": 514.547619047619,
+      "monthly_sharpe": 1.331373911406839,
+      "monthly_sortino": 3.8774147400627497,
+      "calmar": 1.4137075361433475,
+      "win_ratio": 0.44854790197722005,
+      "avg_n_stock": 514.6666666666666,
       "max_n_stock": 609.0,
-      "trade_count": 21093,
-      "avg_trade_return": 0.019381157658293995,
-      "median_trade_return": -0.008373354185750803,
+      "trade_count": 21098,
+      "avg_trade_return": 0.019363962511484586,
+      "median_trade_return": -0.008366716618567083,
       "match_days": 830,
-      "avg_daily_matches": 511.86746987951807,
-      "max_daily_matches": 705,
-      "latest_matches": 589,
+      "avg_daily_matches": 511.9710843373494,
+      "max_daily_matches": 708,
+      "latest_matches": 590,
       "recent5_match_counts": [
         {
           "date": "2026-06-09",
-          "strict_match_count": 580
+          "strict_match_count": 579
         },
         {
           "date": "2026-06-10",
-          "strict_match_count": 585
+          "strict_match_count": 586
         },
         {
           "date": "2026-06-11",
@@ -565,11 +566,11 @@
         },
         {
           "date": "2026-06-12",
-          "strict_match_count": 585
+          "strict_match_count": 586
         },
         {
           "date": "2026-06-15",
-          "strict_match_count": 589
+          "strict_match_count": 590
         }
       ],
       "recent5_all_positive": true

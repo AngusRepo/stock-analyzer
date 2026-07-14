@@ -591,12 +591,16 @@ export async function listStrategyThresholdCalibrationEvidenceRows(
              ELSE NULL
            END AS weighted_score,
            CASE
+             WHEN json_valid(c.raw_signals_json)
+             THEN c.raw_signals_json
              WHEN json_valid(l.context_json)
              THEN json_extract(l.context_json, '$.candidate.raw_signals')
              ELSE NULL
            END AS raw_signals_json,
            COALESCE(p.trade_pnl_pct, p.actual_return_pct) AS reward_pct
       FROM strategy_decision_log l
+      LEFT JOIN strategy_candidate_contexts c
+        ON c.context_id = l.context_id
       LEFT JOIN stocks s
         ON s.symbol = l.symbol
       LEFT JOIN predictions p
@@ -798,7 +802,7 @@ export async function persistStrategyThresholdAutoCalibrationResult(
       safeJson(metrics),
       safeJson([
         'strategy_decision_log',
-        'strategy_decision_log.context_json.candidate.raw_signals',
+        'strategy_candidate_contexts.raw_signals_json',
         'predictions:ensemble',
         'strategy_threshold_auto_calibration',
       ]),

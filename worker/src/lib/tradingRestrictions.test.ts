@@ -47,3 +47,16 @@ assert(
     twseApi.includes('SecuritiesCompanyCode'),
   'TPEX official restriction fetchers must use official openapi endpoints and parse SecuritiesCompanyCode',
 )
+assert(
+  source.includes('official_trading_restrictions_incomplete:') &&
+    source.includes("status: 'error'") &&
+    source.includes("status: 'success'"),
+  'official restriction readiness must fail closed unless all four sources complete',
+)
+assert(
+  source.includes('async function reconcileOfficialRestrictions') &&
+    source.includes("end_date = date(?, '-1 day')") &&
+    source.includes('await reconcileOfficialRestrictions') &&
+    !source.includes('if (!symbols.length) return'),
+  'daily official snapshots must expire prior active rows even when the current source list is empty',
+)

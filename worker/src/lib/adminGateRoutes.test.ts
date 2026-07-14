@@ -19,6 +19,18 @@ class FakeStatement {
 
   async first<T = unknown>(): Promise<T | null> {
     const sql = this.sql
+    if (sql.includes('FROM canonical_market_index_daily')) return { latest_date: '2026-04-30', rows_on_latest: 1 } as T
+    if (sql.includes('FROM canonical_futures_daily')) return { latest_date: '2026-04-30', rows_on_latest: 1 } as T
+    if (sql.includes('FROM canonical_market_daily')) {
+      return { latest_date: '2026-04-30', rows_on_latest: 1800, market_breadth_rows: 1800, turnover_rows: 1800 } as T
+    }
+    if (sql.includes('FROM canonical_market_summary_daily')) {
+      return { latest_date: '2026-04-30', rows_on_latest: 2, market_breadth_rows: 2, turnover_rows: 2, margin_rows: 2, short_rows: 2 } as T
+    }
+    if (sql.includes('FROM canonical_institutional_amount_daily')) return { latest_date: '2026-04-30', rows_on_latest: 3 } as T
+    if (sql.includes('FROM canonical_regime_context_daily')) return { latest_date: '2026-04-30', rows_on_latest: 1 } as T
+    if (sql.includes('FROM external_evidence_items')) return { latest_date: '2026-04-30', rows_on_latest: 5 } as T
+    if (sql.includes('FROM source_quality_metrics')) return { freshness_status: 'fresh', latest_materialization: '2026-04-30', root_cause: null } as T
     if (sql.includes('MAX(date) AS latest_date')) return { latest_date: '2026-04-30' } as T
     if (sql.includes('COUNT(*) AS count FROM stock_prices')) return { count: 2300 } as T
     if (sql.includes('COUNT(*) AS count FROM chip_data')) return { count: 2300 } as T
@@ -290,7 +302,10 @@ void (async () => {
     }, env)
     assert(res.status === 200, 'data-quality route should allow service token')
     const body = await res.json() as any
-    assert(body.overall === 'ok', 'data-quality route should return ok for clean fake dataset')
+    assert(
+      body.overall === 'ok',
+      `data-quality route should return ok for clean fake dataset: ${JSON.stringify(body.checks?.filter((check: any) => check.status !== 'ok'))}`,
+    )
     assert(body.checks.some((check: any) => check.id === 'screener_score_distribution'), 'data-quality route should include screener score gate')
   }
 

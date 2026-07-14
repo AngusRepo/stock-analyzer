@@ -44,6 +44,24 @@ def test_walk_forward_router_exposes_active8_coverage():
     assert "5 models" not in source
 
 
+def test_walk_forward_train_payload_declares_five_day_label_horizon():
+    from services.walk_forward_retrain import WalkForwardWindow, build_walk_forward_train_payload
+
+    window = WalkForwardWindow(
+        window_id=7,
+        train_start="2026-01-02",
+        train_end="2026-03-31",
+        test_start="2026-04-01",
+        test_end="2026-04-30",
+    )
+
+    payload = build_walk_forward_train_payload(window, batch_count=5)
+
+    assert payload["label_horizon_days"] == 5
+    assert payload["train_end"] == "2026-03-31"
+    assert payload["test_start"] == "2026-04-01"
+
+
 def test_modal_walk_forward_orchestrator_no_longer_defaults_tree_only():
     source = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
 

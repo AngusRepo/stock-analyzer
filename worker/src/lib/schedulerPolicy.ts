@@ -45,6 +45,8 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'obsidian-sync': { kind: 'trading_day', holidayGated: true, description: 'daily trading-note sync' },
   'obsidian-daily': { kind: 'trading_day', holidayGated: true, description: 'daily trading-note sync' },
   'regime-compute': { kind: 'trading_day', holidayGated: true, description: 'daily market regime compute' },
+  'allocator-ev-readiness': { kind: 'trading_day', holidayGated: true, description: 'in-chain L4 alpha and allocator EV readiness before pipeline allocation' },
+  'allocator-ev-feature-snapshot-backfill': { kind: 'trading_day', holidayGated: true, description: 'post-pipeline point-in-time allocator feature snapshot before verify' },
   'verify-v2': { kind: 'trading_day', holidayGated: true, description: 'daily verify and IC refresh' },
   'us-leading': { kind: 'trading_day', holidayGated: true, description: 'pre-market US leading signal' },
   'news-analyst': { kind: 'trading_day', holidayGated: true, description: 'pre-market news analyst' },
@@ -59,6 +61,15 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
 
   'debate-memory-retention': { kind: 'maintenance', holidayGated: false, description: 'daily debate memory retention' },
   'audit-json-retention': { kind: 'maintenance', holidayGated: false, description: 'archive old D1 audit JSON blobs to R2 and scrub D1 pointers' },
+  'artifact-reconcile': { kind: 'maintenance', holidayGated: false, description: 'reconcile interrupted R2 artifact manifests and checksum verification' },
+  'legacy-evidence-migration': { kind: 'maintenance', holidayGated: false, description: 'cursor-safe R2 migration of noncanonical legacy D1 evidence' },
+  'd1-evidence-scrub': { kind: 'maintenance', holidayGated: false, description: 'scrub only explicitly queued D1 blobs backed by verified R2 artifacts' },
+  'r2-retention-sweep': { kind: 'maintenance', holidayGated: false, description: 'apply lineage-aware R2 retention policies' },
+  'orphan-reachability-gc': { kind: 'maintenance', holidayGated: false, description: 'remove unreachable staging objects after grace period' },
+  'cleanup-dlq-replay': { kind: 'maintenance', holidayGated: false, description: 'replay blocked artifact cleanup work' },
+  'storage-health-gate': { kind: 'maintenance', holidayGated: false, description: 'fail-close storage integrity, backlog and capacity gate' },
+  'storage-integrity-audit': { kind: 'maintenance', holidayGated: false, description: 'manifest to R2 checksum and lineage audit' },
+  'storage-capacity-report': { kind: 'maintenance', holidayGated: false, description: 'monthly D1 and R2 retention capacity report' },
   'weekly-cleanup': { kind: 'maintenance', holidayGated: false, description: 'weekly cleanup and lifecycle check; no retrain' },
   'weekly-backtest': { kind: 'research', holidayGated: false, description: 'weekly lightweight backtest, Monte Carlo, PBO validation' },
   'alpha-quality': { kind: 'research', holidayGated: false, description: 'weekly alpha quality research' },
@@ -216,7 +227,32 @@ export function getSchedulerTaskPolicy(task: string): SchedulerTaskPolicy {
 }
 
 export async function isTwHoliday(kv: KVNamespace, twDate: string): Promise<boolean> {
-  return Boolean(await kv.get(`holiday:${twDate}`))
+  if (await kv.get(`holiday:${twDate}`)) return true
+  const year = Number(twDate.slice(0, 4))
+  const cacheKey = `market:twse_holiday_schedule:${year}`
+  let cached = await kv.get(cacheKey, 'json') as { dates?: string[] } | null
+  if (!cached && typeof kv.put === 'function') {
+    try {
+      const response = await fetch('https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule', {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!response.ok) throw new Error(`twse_holiday_http_${response.status}`)
+      const rows = await response.json() as Array<{ Name?: string; Date?: string; Description?: string }>
+      const dates = rows.flatMap((row) => {
+        const raw = String(row.Date ?? '').trim()
+        const text = `${row.Name ?? ''} ${row.Description ?? ''}`
+        if (!/^\d{7}$/.test(raw) || /開始交易/.test(text)) return []
+        const gregorianYear = Number(raw.slice(0, 3)) + 1911
+        return [`${gregorianYear}-${raw.slice(3, 5)}-${raw.slice(5, 7)}`]
+      })
+      cached = { dates }
+      await kv.put(cacheKey, JSON.stringify(cached), { expirationTtl: 7 * 86400 })
+    } catch (error) {
+      console.warn(`[schedulerPolicy] TWSE holiday schedule unavailable for ${twDate}:`, error)
+    }
+  }
+  return Boolean(cached?.dates?.includes(twDate))
 }
 
 export async function shouldRunScheduledTask(input: {

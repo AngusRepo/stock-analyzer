@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+from datetime import datetime, timezone
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,8 +28,11 @@ class Response:
                     "quote_age_ms": self.age_ms,
                     "bid_prices": [self.bid],
                     "ask_prices": [self.ask],
-                    "source_time": "2026-07-13T09:01:00+08:00",
-                    "received_at": "2026-07-13T09:01:00.100+08:00",
+                    "bid_volumes": [10],
+                    "ask_volumes": [10],
+                    "source_time": datetime.now(timezone.utc).isoformat(),
+                    "received_at": datetime.now(timezone.utc).isoformat(),
+                    "session_epoch": 7,
                 }
             },
         }

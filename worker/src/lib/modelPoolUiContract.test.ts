@@ -31,9 +31,12 @@ assert(page.includes('Promise.allSettled'), 'Model Pool refresh must refetch all
 assert(page.includes('modelPoolSnapshotReady'), 'Model Pool must guard the cockpit until the evidence snapshot is ready')
 assert(page.includes('Loading complete model-pool evidence snapshot'), 'Model Pool loading copy must make snapshot hydration explicit')
 assert(!page.includes('refetchInterval: 60_000'), 'Model Pool must not let independent query intervals create staggered UI updates')
-assert(page.includes('ArtifactDeltaGrid'), 'Promotion governance must show candidate/champion metric deltas per artifact row')
-assert(page.includes('Candidate OOS') && page.includes('Champion OOS') && page.includes('Delta'), 'Promotion governance must expose numeric OOS IC comparison')
-assert(page.includes('live shadow not started'), 'Promotion governance must surface live_shadow_not_started as an operator-visible root cause')
+assert(
+  page.includes("label: 'OOS IC'") && page.includes('candidate: governanceMetric') && page.includes('champion: governanceMetric') && page.includes('delta: signedGovernanceMetric'),
+  'Promotion governance must show candidate/champion metric deltas per artifact row',
+)
+assert(page.includes('candidate minus current champion') && page.includes('OOS IC'), 'Promotion governance must expose numeric OOS IC comparison')
+assert(page.includes('live comparison missing'), 'Promotion governance must surface missing live comparison as an operator-visible root cause')
 assert(page.includes('Suppressed versions'), 'Promotion governance must expose hidden/superseded artifact versions with reasons')
 
 assert(!workbench.includes("from 'lightweight-charts'"), 'Model Pool cockpit must not use the unclear fake timeline chart')

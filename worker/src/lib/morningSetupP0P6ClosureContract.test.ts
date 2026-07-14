@@ -19,6 +19,16 @@ const morningBriefing = fs.readFileSync('src/lib/morningBriefing.ts', 'utf8')
 const rrgCalculator = fs.readFileSync('../ml-controller/services/_rrg_calculator.py', 'utf8')
 const sectorFlowService = fs.readFileSync('../ml-controller/services/sector_flow_service.py', 'utf8')
 const sectorFlowRotationMigration = fs.readFileSync('migration_sector_flow_rotation_model_2026_06_23.sql', 'utf8')
+const adminTriggerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
+
+assert(
+  pendingBuyOrchestrator.includes('withD1Retry') &&
+    pendingBuyOrchestrator.includes('preserve_last_valid_state') &&
+    !pendingBuyOrchestrator.includes("persistPendingBuys(env, pendingDate, [], { status: 'error'") &&
+    adminTriggerTasks.includes('morning_setup_repair') &&
+    adminTriggerTasks.includes('paper:pending_buys_setup_error:'),
+  'Morning Setup transient failures must preserve the last valid state and pre-market warmup must self-heal the failed setup',
+)
 
 assert(
     migration.includes('CREATE TABLE IF NOT EXISTS pending_buy_filter_audit') &&

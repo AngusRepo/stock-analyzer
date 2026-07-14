@@ -49,12 +49,15 @@ function twText(ms: number): string {
 {
   const mixedWindow = [
     bar('2026-06-30T01:01:00.000Z'),
+    bar('2026-07-01T00:30:00.000Z'),
     bar('2026-07-01T01:01:00.000Z'),
     bar('2026-07-01T02:01:00.000Z'),
+    bar('2026-07-01T13:30:00.000Z'),
     bar('2026-07-02T01:01:00.000Z'),
   ]
   const filtered = filterS12KbarsToTradeDate(mixedWindow, '2026-07-01')
-  assert(filtered.bars.length === 2, 'S12 must keep only target trade-date kbars before intraday aggregation')
+  assert(filtered.bars.length === 2, 'S12 must keep only target-date TW cash-session kbars before aggregation')
   assert(filtered.outsideTradeDateCount === 2, 'S12 diagnostics should expose kbars filtered out by trade date')
+  assert(filtered.outsideSessionCount === 2, 'S12 diagnostics should expose target-date after-hours kbars')
   assert(filtered.bars.every((item) => twText(item.startMs).startsWith('2026-07-01')), 'filtered S12 kbars should all be target TW date')
 }

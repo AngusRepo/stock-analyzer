@@ -86,6 +86,12 @@ assert(
   'evening-chain must refresh all FinLab daily source lanes first, then continue through queue callback only after full canonical readiness is verified',
 )
 assert(
+  updateOrchestrator.includes('ensureTradingRestrictionsDailyReadiness') &&
+    updateOrchestrator.includes("refreshOfficialTradingRestrictions(env, targetDate)") &&
+    updateOrchestrator.includes('readiness.ok || isHistoricalReplayDate(targetDate)'),
+  'current-day restriction fallback must refresh before downstream readiness while historical replay cannot use current official lists',
+)
+assert(
   updateOrchestrator.includes('runFinLabBackfillWatchdog') &&
     updateOrchestrator.includes('FINLAB_PENDING_WATCHDOG_STALE_MS') &&
     updateOrchestrator.includes('supersedeFunctionCallId') &&

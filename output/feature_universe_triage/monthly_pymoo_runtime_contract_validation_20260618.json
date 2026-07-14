@@ -30,52 +30,52 @@
   },
   "source_fingerprint": {
     "algorithm": "sha256",
-    "digest": "37dc2cb6eab4f68f0fb1e8e8213ed45dd9fad53e53b1556db9f2bfb72aa6b84f",
+    "digest": "dc0aa8a22f571ab12cc9e81056c3242bd475c7f787650ec32312e5122ec2aa1d",
     "inputs": [
       {
         "path": "infra/gcp-scheduler-jobs.json",
-        "sha256": "244ea142b445b88cac976b412c96422b2397064da00f1b1165cab65aa4424a0c",
-        "size_bytes": 5864
+        "sha256": "e447944a6dcdeb6f8d6e668592017787decab3b1096014588b524ee06c552b82",
+        "size_bytes": 9429
       },
       {
         "path": "worker/src/lib/adminTriggerGcpTasks.ts",
-        "sha256": "343b53e4ad19a05eb1e4cad45cdce9c52bf0d6bdb1b302c9b1ba0c8f0e4249af",
-        "size_bytes": 2792
+        "sha256": "adf71c467d0053dda107c27b831bbfe43c04caaf3aa4d2b8aedea35483c06de6",
+        "size_bytes": 4198
       },
       {
         "path": "worker/src/routes/adminTriggerRoutes.ts",
-        "sha256": "a708c59663d99d4fa6171b07c284c890d2a18901f5b79dac0a1daf375c041978",
-        "size_bytes": 7593
+        "sha256": "44e10abae1d8bcb0ad5ae4b95c864a5c8c69ba9a2b2548ec95044d4086755897",
+        "size_bytes": 8657
       },
       {
         "path": "worker/src/lib/schedulerPolicy.ts",
-        "sha256": "f60165f8001e00c1784ec290176905043553520164aa6b25eea0dc348e6f26c1",
-        "size_bytes": 15481
+        "sha256": "fc8c96e4b6562a56d606e0e510a79e262178657bea9b28bd2afec2a957b9ff45",
+        "size_bytes": 19277
       },
       {
         "path": "worker/src/lib/schedulerStatus.ts",
-        "sha256": "10a498a7cbd2f223ec092ea38bca017fe70fd3f1677cb7590d065b647f8e8314",
-        "size_bytes": 22299
+        "sha256": "1729b124cb10d19f18ac21cf4cd71bcc11812e84a0071de5d4bb55bfc526de46",
+        "size_bytes": 24719
       },
       {
         "path": "worker/src/lib/schedulerRunLogger.ts",
-        "sha256": "dd02b0e6cdd5a62e274e7c009c305840a809133e3e2af0c068c1e1993d45cdb0",
-        "size_bytes": 9524
+        "sha256": "f982e3b21b97f7cdf453a67e197b83b77988494aa65f4bea7f6c11a5ec6b7649",
+        "size_bytes": 11256
       },
       {
         "path": "worker/src/routes/scheduleReadRoutes.ts",
-        "sha256": "79313c898ed2cb0192308248f268483af1d8b37fbe645e3f3c9b35eb43965fae",
-        "size_bytes": 8402
+        "sha256": "cf8ea2652780319fca95d89a73d6d2891691be26980edf2ad8fe04d3f170cab4",
+        "size_bytes": 9970
       },
       {
         "path": "worker/src/lib/schedulerDependencyMap.ts",
-        "sha256": "ffc4cbf7a3c88fc780422e48cbed03a220b56111703d9e6da7eff818c3780828",
-        "size_bytes": 11654
+        "sha256": "d37b5f641ccc9d638a0e21bd7e7201363ddbacc3ceb9aa4fb60a22fd09164ed7",
+        "size_bytes": 13256
       },
       {
         "path": "ml-controller/main.py",
-        "sha256": "90c234b22c19b7562bd69d46d7e8f64c3f64170d463c1ed442e7f5fb81111138",
-        "size_bytes": 13124
+        "sha256": "af78c2f8a531fa51fea744bea841c3ea3cfe684adcd288f8b0b160b58cffa0a1",
+        "size_bytes": 13456
       },
       {
         "path": "ml-controller/routers/strategy_mining.py",
@@ -84,13 +84,13 @@
       },
       {
         "path": "ml-controller/services/modal_client.py",
-        "sha256": "bb6aa4ae932bc054190c88d1d4ada23f93dbd6a74d6864b339b9573c509c9d26",
-        "size_bytes": 52549
+        "sha256": "e403651199444ea5b45c3ce149f2e3ed28d6136f2d4544ac6082d89e36c35cd4",
+        "size_bytes": 53892
       },
       {
         "path": "ml-service/modal_app.py",
-        "sha256": "ae64fd3c9480c5e10a96409b239439ee2f34c1f0a32ab1e1645772cf2e2119cf",
-        "size_bytes": 114032
+        "sha256": "cc57e27e2b1375ebb0cca697e51b3c065db07c3d0ace1dae1f10d980844a15c8",
+        "size_bytes": 129233
       },
       {
         "path": "worker/migration_strategy_mining_ledger_2026_06_18.sql",

@@ -35,6 +35,7 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     owner: 'worker_chain',
     consolidationClass: 'merge_into_chain',
     currentFunction: 'Refreshes L4 alpha EV and attempts fusion refresh before recommendation allocation.',
+    replacementOwner: 'evening-chain/updateOrchestrator pre-pipeline stage',
     upstream: ['screener', 'regime-compute', 's12-structure-snapshot'],
     downstream: ['pipeline'],
     requiredBeforeDisable: [
@@ -49,6 +50,7 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     owner: 'worker_chain',
     consolidationClass: 'merge_into_chain',
     currentFunction: 'Materializes same-date point-in-time allocator features after pipeline recommendation output and before verify.',
+    replacementOwner: 'post-pipeline-chain callback stage',
     upstream: ['pipeline'],
     downstream: ['verify-v2', 'post-verify-chain'],
     requiredBeforeDisable: [

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stockvision://strategy-discovery/feature-v1",
+  "type": "object",
+  "required": ["feature_id", "name", "family", "definition", "data_source", "availability_lag", "earliest_execution", "lookback_days", "missing_rate", "outlier_rate", "turnover_proxy", "correlation_cluster", "ic_summary", "regime_summary", "factor_exposure", "used_by_strategies", "known_risks", "governance"],
+  "properties": {
+    "feature_id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "family": { "type": "string", "minLength": 1 },
+    "definition": { "type": "string", "minLength": 1 },
+    "data_source": { "type": "array", "items": { "type": "string" } },
+    "availability_lag": { "type": "string" },
+    "earliest_execution": { "type": "string" },
+    "lookback_days": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "const": "UNKNOWN" }] },
+    "missing_rate": { "$ref": "#/$defs/knownNumber" },
+    "outlier_rate": { "$ref": "#/$defs/knownNumber" },
+    "turnover_proxy": { "$ref": "#/$defs/knownNumber" },
+    "correlation_cluster": { "type": "string" },
+    "ic_summary": { "type": "object", "additionalProperties": { "$ref": "#/$defs/knownNumber" } },
+    "regime_summary": { "type": "object" },
+    "factor_exposure": { "type": "object" },
+    "used_by_strategies": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "known_risks": { "type": "array", "items": { "type": "string" } },
+    "governance": {
+      "type": "object",
+      "required": ["selector_role", "promotion_state", "materializer_status", "eligible_for_strategy"],
+      "properties": {
+        "selector_role": { "type": "string" },
+        "promotion_state": { "type": "string" },
+        "materializer_status": { "type": "string" },
+        "eligible_for_strategy": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": { "knownNumber": { "oneOf": [{ "type": "number" }, { "const": "UNKNOWN" }] } },
+  "additionalProperties": false
+}

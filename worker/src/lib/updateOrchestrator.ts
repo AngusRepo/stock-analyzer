@@ -254,7 +254,7 @@ async function tradingRestrictionsDailyReadinessCheck(
 ): Promise<ReadinessCheck> {
   const key = 'canonical_trading_restrictions:daily_micro_lane'
   try {
-    const [quality, canonical, checkedAt] = await Promise.all([
+    const [quality, canonical, checkedAt, officialRefresh] = await Promise.all([
       env.DB.prepare(`
         SELECT freshness_status, missing_rate, latest_materialization, metrics_json
           FROM source_quality_metrics
@@ -271,6 +271,7 @@ async function tradingRestrictionsDailyReadinessCheck(
       }>(),
       env.DB.prepare(`
         SELECT COUNT(*) AS count,
+               MAX(source_date) AS latest_source_date,
                MAX(updated_at) AS latest_materialization
           FROM canonical_trading_restrictions
          WHERE source = 'finlab.trading_attention'
@@ -278,9 +279,16 @@ async function tradingRestrictionsDailyReadinessCheck(
            AND (end_date IS NULL OR end_date >= ?)
       `).bind(targetDate, targetDate).first<{
         count: number | null
+        latest_source_date: string | null
         latest_materialization: string | null
       }>(),
       env.KV.get('market:trading_restrictions:checked_at'),
+      env.KV.get('market:trading_restrictions:refresh_status', 'json') as Promise<{
+        status?: string
+        trade_date?: string
+        checked_at?: string
+        source_counts?: Record<string, number>
+      } | null>,
     ])
     const freshness = String(quality?.freshness_status ?? '').trim().toLowerCase()
     const finlabFresh = Boolean(quality) && !/empty|missing|failed|stale|disabled|error/i.test(freshness)
@@ -291,28 +299,23 @@ async function tradingRestrictionsDailyReadinessCheck(
         summary: `${key} finlab=${quality?.freshness_status ?? 'ok'} materialized=${quality?.latest_materialization ?? 'n/a'}`,
       }
     }
-    const canonicalRows = Number(canonical?.count ?? 0)
-    if (canonicalRows > 0) {
-      return {
-        key,
-        ok: true,
-        summary: `${key} canonical_active_rows=${canonicalRows} materialized=${canonical?.latest_materialization ?? 'n/a'}`,
-      }
-    }
-
     const checkedDate = taipeiDateFromIso(checkedAt)
-    if (checkedDate && checkedDate >= targetDate) {
+    const refreshComplete = officialRefresh?.status === 'success'
+      && officialRefresh.trade_date === targetDate
+      && checkedDate === targetDate
+    if (refreshComplete) {
       return {
         key,
         ok: true,
-        summary: `${key} official_checked_at=${checkedAt}`,
+        summary: `${key} official_complete checked_at=${checkedAt} sources=${JSON.stringify(officialRefresh?.source_counts ?? {})}`,
       }
     }
 
+    const canonicalRows = Number(canonical?.count ?? 0)
     return {
       key,
       ok: false,
-      summary: `${key} waiting: finlab=${quality?.freshness_status ?? 'missing'} checked_at=${checkedAt ?? 'missing'}`,
+      summary: `${key} waiting: finlab=${quality?.freshness_status ?? 'missing'} official=${officialRefresh?.status ?? 'missing'} checked_at=${checkedAt ?? 'missing'} canonical_active_rows=${canonicalRows} canonical_latest_source_date=${canonical?.latest_source_date ?? 'missing'} canonical_materialized=${canonical?.latest_materialization ?? 'missing'}`,
     }
   } catch (e) {
     return {
@@ -321,6 +324,21 @@ async function tradingRestrictionsDailyReadinessCheck(
       summary: `${key} query failed: ${e instanceof Error ? e.message : String(e)}`,
     }
   }
+}
+
+async function ensureTradingRestrictionsDailyReadiness(
+  env: Bindings,
+  targetDate: string,
+): Promise<ReadinessCheck> {
+  let readiness = await tradingRestrictionsDailyReadinessCheck(env, targetDate)
+  if (readiness.ok || isHistoricalReplayDate(targetDate)) return readiness
+  const { refreshOfficialTradingRestrictions } = await import('./tradingRestrictions')
+  await refreshOfficialTradingRestrictions(env, targetDate)
+  readiness = await tradingRestrictionsDailyReadinessCheck(env, targetDate)
+  if (!readiness.ok) {
+    throw new Error(`official trading restrictions refresh did not satisfy readiness: ${readiness.summary}`)
+  }
+  return readiness
 }
 
 async function checkEveningChainSourceReadiness(
@@ -1835,6 +1853,9 @@ async function runDailyAllocatorEvReadiness(
       champion.expected_return_owner === 'l4_alpha_ev' &&
       champion.promotion_state === 'production_approved' &&
       championDecision === 'PASS' &&
+      champion.artifact_contract_version === 'l4-alpha-ev-contract-v2' &&
+      champion.feature_semantic_version === 'l4-directional-score-components-v1' &&
+      champion.label_schema_version === 'next-session-adjusted-open-to-fifth-session-adjusted-close-net-v1' &&
       typeof champion.model_version === 'string' &&
       champion.model_version.length > 0
     await logSchedulerResult(env.KV, 'l4-alpha-ev-refresh', {
@@ -1913,6 +1934,7 @@ async function continuePostScreenerPipeline(
         status: 'error',
         summary: `event-driven chain stopped: regime-compute did not update KV before pipeline for ${triggerTime}; ${regimeSummary}`,
         duration_ms: 0,
+        run_id: runId,
         run_date: triggerTime,
       })
       return
@@ -1924,6 +1946,7 @@ async function continuePostScreenerPipeline(
       summary: `event-driven chain stopped: regime-compute failed before pipeline for ${triggerTime}`,
       duration_ms: 0,
       error: String(e),
+      run_id: runId,
       run_date: triggerTime,
     })
     await logSchedulerResult(env.KV, 'regime-compute', {
@@ -1942,23 +1965,47 @@ async function continuePostScreenerPipeline(
     const { runS12CandidateStructureSnapshots } = await import('./s12CandidateStructureSnapshots')
     const snapshotSummary = await runS12CandidateStructureSnapshots(env, triggerTime)
     const summary = `pre-pipeline S12 snapshots persisted=${snapshotSummary.persisted}/${snapshotSummary.attempted} ready=${snapshotSummary.ready} setup=${snapshotSummary.setup_only} skipped=${snapshotSummary.skipped} errors=${snapshotSummary.errors}`
+    const snapshotComplete = snapshotSummary.attempted > 0
+      && snapshotSummary.persisted === snapshotSummary.attempted
+      && snapshotSummary.errors === 0
     await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-      status: snapshotSummary.errors > 0 && snapshotSummary.persisted === 0 ? 'error' : 'success',
+      status: snapshotComplete ? 'success' : 'error',
       summary,
       duration_ms: Date.now() - startedAt,
+      run_id: runId,
       run_date: triggerTime,
     })
+    if (!snapshotComplete) {
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'error',
+        summary: `event-driven chain stopped: incomplete S12 structure snapshots for ${triggerTime}; ${summary}`,
+        duration_ms: Date.now() - startedAt,
+        run_id: runId,
+        run_date: triggerTime,
+      })
+      return
+    }
     console.log(`[Queue] Event-driven: ${summary}`)
   } catch (e) {
-    const summary = `pre-pipeline S12 snapshots failed open for ${triggerTime}`
+    const summary = `pre-pipeline S12 snapshots failed closed for ${triggerTime}`
     await logSchedulerResult(env.KV, 's12-structure-snapshot', {
       status: 'error',
       summary,
       duration_ms: 0,
       error: e instanceof Error ? e.message : String(e),
+      run_id: runId,
       run_date: triggerTime,
     })
-    console.warn('[Queue] Event-driven S12 snapshot failed open:', e)
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'error',
+      summary: `event-driven chain stopped: ${summary}`,
+      duration_ms: 0,
+      error: e instanceof Error ? e.message : String(e),
+      run_id: runId,
+      run_date: triggerTime,
+    })
+    console.warn('[Queue] Event-driven S12 snapshot failed closed:', e)
+    return
   }
 
   const evReadiness = await runDailyAllocatorEvReadiness(env, triggerTime)
@@ -1968,6 +2015,7 @@ async function continuePostScreenerPipeline(
       summary: `event-driven chain stopped: allocator EV readiness failed before pipeline for ${triggerTime}; ${evReadiness.summary}`,
       duration_ms: 0,
       error: evReadiness.summary,
+      run_id: runId,
       run_date: triggerTime,
     })
     return
@@ -1987,6 +2035,7 @@ async function continuePostScreenerPipeline(
         status: 'triggered',
         summary: `event-driven chain reached pipeline trigger for ${triggerTime}; ${lockedSummary}`,
         duration_ms: 0,
+        run_id: runId,
         run_date: triggerTime,
       })
       console.log(`[Queue] Event-driven: ${lockedSummary}`)
@@ -2002,6 +2051,7 @@ async function continuePostScreenerPipeline(
       status: 'triggered',
       summary: `event-driven chain reached pipeline trigger for ${triggerTime}; ${summary}`,
       duration_ms: 0,
+      run_id: runId,
       run_date: triggerTime,
     })
     console.log(`[Queue] Event-driven: triggered runMLAndRiskV2 after update complete for ${triggerTime}`)
@@ -2011,6 +2061,7 @@ async function continuePostScreenerPipeline(
       summary: `event-driven chain stopped: pipeline trigger failed for ${triggerTime}`,
       duration_ms: 0,
       error: String(e),
+      run_id: runId,
       run_date: triggerTime,
     })
     await logSchedulerResult(env.KV, 'pipeline', {
@@ -2073,6 +2124,7 @@ async function continueAfterFinLabBackfill(
     return `source waiting; queued official market summary retry for ${twDate}; ${officialMarketSummary}`
   }
   const canonicalSummary = await assertFinLabCanonicalReadinessReady(env, twDate)
+  await ensureTradingRestrictionsDailyReadiness(env, twDate)
   let bulkSummary: string
   try {
     bulkSummary = await runBulkFetch(env, force, twDate)
@@ -2750,6 +2802,8 @@ export async function processUpdateBatch(
       offset,
       limit: STRATEGY_LEARNING_QUEUE_CHUNK_SIZE,
       dryRun: false,
+      artifactEnv: env,
+      producerRunId: `${runId}:offset=${offset}`,
     })
 
     if (chunk.has_more) {

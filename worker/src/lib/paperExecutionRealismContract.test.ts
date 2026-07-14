@@ -73,11 +73,11 @@ assert(
   'auto buy execution must require executable best ask instead of low/high-only inference',
 )
 assert(
-  exitTasks.includes('requireBestBid: !options.allowLastPriceFallback') &&
-    exitTasks.includes('allowLastPriceFallback: true') &&
+  exitTasks.includes('requireBestBid: true') &&
+    exitTasks.includes('resolvePositionExitSellFill(requestedSellShares') &&
     workerTasks.includes('requireBestBid: true') &&
     entryTasks.includes('requireBestBid: true'),
-  'automatic sell execution paths must require executable best bid except explicit intraday TP1 fallback',
+  'automatic sell execution paths must require executable best bid and intraday TP1 must consume authoritative depth',
 )
 assert(
   readFileSync('src/lib/paperTradeMath.ts', 'utf8').includes('input.requireBestBid ?? true') &&

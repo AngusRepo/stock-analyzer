@@ -41,6 +41,7 @@ connected = False
 last_ticks: dict[str, dict] = {}   # symbol → latest tick data
 last_bidasks: dict[str, dict] = {}
 last_odd_bidasks: dict[str, dict] = {}
+minute_bars: dict[str, deque] = defaultdict(lambda: deque(maxlen=360))
 bidask_stats: dict[str, dict] = {}
 odd_bidask_stats: dict[str, dict] = {}
 subscribed: set[str] = set()
@@ -55,6 +56,12 @@ _broker_query_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="s
 _broker_query_capacity = threading.BoundedSemaphore(1)
 _watchdog_stop = threading.Event()
 _watchdog_thread: threading.Thread | None = None
+_session_epoch = 0
+_process_poisoned = False
+_process_poison_reason: str | None = None
+_process_poisoned_at: str | None = None
+_process_exit_scheduled = False
+_broker_query_timeout_count = 0
 _last_reconnect_attempt_at = 0.0
 _reconnect_count = 0
 _last_reconnect_reason: str | None = None
@@ -124,9 +131,9 @@ def _normalize_kbar_datetime(value) -> datetime | None:
 
 def orderbook_max_age_ms() -> int:
     try:
-        value = int(os.environ.get("SHIOAJI_ORDERBOOK_MAX_AGE_MS", "3000"))
+        value = int(os.environ.get("SHIOAJI_ORDERBOOK_MAX_AGE_MS", "1500"))
     except ValueError:
-        return 3000
+        return 1500
     return max(500, min(value, 60_000))
 
 
@@ -207,8 +214,115 @@ def broker_query_timeout_seconds() -> float:
     return _env_float("SHIOAJI_BROKER_QUERY_TIMEOUT_SECONDS", 2.0, 0.25, 5.0)
 
 
+def tick_max_age_ms() -> int:
+    return _env_int("SHIOAJI_TICK_MAX_AGE_MS", 1500, 500, 60_000)
+
+
+def tick_age_ms(tick: dict | None) -> int | None:
+    if not tick:
+        return None
+    received_at = parse_quote_time(tick.get("updated_at"))
+    if received_at is None:
+        return None
+    return int(max(0, (get_tw_now() - received_at).total_seconds() * 1000))
+
+
+def tick_is_fresh(tick: dict | None) -> bool:
+    age = tick_age_ms(tick)
+    return age is not None and age <= tick_max_age_ms()
+
+
+def _tick_event_datetime(value) -> datetime:
+    dt = parse_quote_time(value)
+    return dt if dt is not None else get_tw_now()
+
+
+def update_minute_bar(symbol: str, tick: dict) -> None:
+    price = tick.get("price")
+    if price is None:
+        return
+    event_time = _tick_event_datetime(tick.get("timestamp"))
+    if not _regular_session_wall_clock(event_time):
+        return
+    bucket = event_time.replace(second=0, microsecond=0)
+    volume = int(tick.get("volume") or 0)
+    bars = minute_bars[symbol]
+    if bars and bars[-1]["ts"] == bucket.isoformat():
+        bar = bars[-1]
+        bar["high"] = max(float(bar["high"]), float(price))
+        bar["low"] = min(float(bar["low"]), float(price))
+        bar["close"] = float(price)
+        bar["volume"] = int(bar.get("volume") or 0) + volume
+        bar["last_event_at"] = tick.get("updated_at")
+        bar["session_epoch"] = tick.get("session_epoch")
+        return
+    bars.append({
+        "ts": bucket.isoformat(),
+        "open": float(price),
+        "high": float(price),
+        "low": float(price),
+        "close": float(price),
+        "volume": volume,
+        "last_event_at": tick.get("updated_at"),
+        "session_epoch": tick.get("session_epoch"),
+        "source": "streaming_tick_accumulator",
+    })
+
+
+def completed_streaming_bars(symbol: str, start: str, end: str, limit: int) -> list[dict]:
+    now_bucket = get_tw_now().replace(second=0, microsecond=0)
+    with _state_lock:
+        rows = [dict(row) for row in minute_bars.get(symbol, ())]
+    completed = []
+    for row in rows:
+        dt = parse_quote_time(row.get("ts"))
+        if dt is None or dt >= now_bucket:
+            continue
+        trade_date = dt.date().isoformat()
+        if start <= trade_date <= end:
+            completed.append({**row, "completed": True})
+    return completed[-max(1, min(int(limit), 5000)):]
+
+
+def market_risk_proxy_symbol() -> str:
+    return os.environ.get("SHIOAJI_MARKET_RISK_SYMBOL", "0050").strip().upper() or "0050"
+
+
+def _terminate_poisoned_process() -> None:
+    os._exit(70)
+
+
+def poison_process(reason: str, *, exit_delay_seconds: float = 0.25) -> None:
+    """Fail the whole broker owner after an uninterruptible SDK call times out.
+
+    Python cannot safely cancel a running Shioaji SDK thread. Keeping the
+    process alive would leave the single broker session lock/executor occupied
+    forever, so Cloud Run must replace the poisoned instance.
+    """
+    global connected, _process_poisoned, _process_poison_reason
+    global _process_poisoned_at, _process_exit_scheduled
+    with _state_lock:
+        if _process_poisoned:
+            return
+        _process_poisoned = True
+        _process_poison_reason = reason
+        _process_poisoned_at = get_tw_now().isoformat()
+        connected = False
+        if _process_exit_scheduled:
+            return
+        _process_exit_scheduled = True
+    print(f"[Shioaji] Process poisoned; requesting replacement: {reason}", flush=True)
+    timer = threading.Timer(max(0.0, exit_delay_seconds), _terminate_poisoned_process)
+    timer.daemon = True
+    timer.start()
+
+
 def run_broker_query(callable_, label: str):
     """Run one blocking request-type SDK call with bounded queueing and fail-fast timeout."""
+    global _broker_query_timeout_count
+    if _process_poisoned:
+        print(f"[Shioaji] Broker process poisoned; reject: {label}")
+        return None
     if not _broker_query_capacity.acquire(blocking=False):
         print(f"[Shioaji] Broker query busy; reject: {label}")
         return None
@@ -226,7 +340,10 @@ def run_broker_query(callable_, label: str):
     try:
         return future.result(timeout=broker_query_timeout_seconds())
     except FutureTimeoutError:
-        print(f"[Shioaji] Broker query timeout: {label}")
+        _broker_query_timeout_count += 1
+        future.cancel()
+        print(f"[Shioaji] Broker query timeout: {label}", flush=True)
+        poison_process(f"broker_query_timeout:{label}")
         return None
 
 
@@ -384,7 +501,10 @@ def orderbook_health_summary(symbols: list[str] | None = None, lot_type: str = "
 
 
 def init_shioaji():
-    global api, connected
+    global api, connected, _session_epoch
+    if _process_poisoned:
+        print("[Shioaji] Refusing init in poisoned process")
+        return
     if not API_KEY or not SECRET_KEY:
         print("[Shioaji] Missing API_KEY or SECRET_KEY, skipping init")
         return
@@ -397,24 +517,37 @@ def init_shioaji():
             api_key=API_KEY,
             secret_key=SECRET_KEY,
         )
-        connected = True
-        print(f"[Shioaji] Connected. Accounts: {len(accounts)}")
+        with _state_lock:
+            _session_epoch += 1
+            callback_epoch = _session_epoch
+            connected = True
+        print(f"[Shioaji] Connected. Accounts: {len(accounts)} epoch={callback_epoch}")
 
         # 設定 tick callback
         @api.on_tick_stk_v1()
         def on_tick(exchange, tick):
             symbol = tick.code
             with _state_lock:
-                last_ticks[symbol] = {
+                if callback_epoch != _session_epoch or _process_poisoned:
+                    return
+                normalized_tick = {
                     "symbol": symbol,
                     "price": tick.close,
                     "volume": tick.volume,
                     "total_volume": tick.total_volume,
                     "bid": tick.bid_price,
                     "ask": tick.ask_price,
+                    "open": getattr(tick, "open", None),
+                    "high": getattr(tick, "high", None),
+                    "low": getattr(tick, "low", None),
+                    "price_chg": getattr(tick, "price_chg", None),
+                    "change_rate": getattr(tick, "pct_chg", None),
                     "timestamp": tick.datetime.isoformat() if hasattr(tick, 'datetime') else None,
                     "updated_at": datetime.now(TW_TZ).isoformat(),
+                    "session_epoch": callback_epoch,
                 }
+                last_ticks[symbol] = normalized_tick
+                update_minute_bar(symbol, normalized_tick)
                 # F4: Append to rolling buffer (deduped to ~1 entry per minute)
                 buf = _price_buffer[symbol]
                 now_ts = time.time()
@@ -444,6 +577,8 @@ def init_shioaji():
             mid = (bid1 + ask1) / 2 if bid1 and ask1 else None
 
             with _state_lock:
+                if callback_epoch != _session_epoch or _process_poisoned:
+                    return
                 depth_store[symbol] = {
                     "symbol": symbol,
                     "bid_prices": bid_prices,
@@ -456,6 +591,7 @@ def init_shioaji():
                     "simtrade": bool(getattr(bidask, "simtrade", False)),
                     "intraday_odd": intraday_odd,
                     "lot_type": lot_type,
+                    "session_epoch": callback_epoch,
                 }
                 stat = stats_store.setdefault(symbol, {"event_count": 0})
                 stat["event_count"] = int(stat.get("event_count") or 0) + 1
@@ -492,15 +628,13 @@ def subscribe_symbol(
     symbol = symbol.upper().strip()
     lot_type = normalize_lot_type(lot_type)
     odd_lot = lot_type == "odd_lot"
-    if not symbol or not api or not connected:
+    if not symbol or not api or not connected or _process_poisoned:
         return False
-    if not _session_call_lock.acquire(timeout=session_call_lock_timeout_seconds()):
-        print(f"[Shioaji] Session busy; defer subscribe: {symbol} lot={lot_type}")
-        return False
-    try:
+
+    def subscribe_operation():
         import shioaji as sj
         current_api = api
-        if not current_api or not connected:
+        if not current_api or not connected or _process_poisoned:
             return False
         contract = current_api.Contracts.Stocks.get(symbol)
         if not contract:
@@ -547,11 +681,15 @@ def subscribe_symbol(
                 subscription_store.add(symbol)
             print(f"[Shioaji] BidAsk subscribed: {symbol} lot={lot_type}")
         return True
+
+    try:
+        return bool(run_broker_query(
+            subscribe_operation,
+            f"subscribe:{lot_type}:{symbol}:force={int(force_bidask)}",
+        ))
     except Exception as exc:
         print(f"[Shioaji] Subscribe {symbol} lot={lot_type} failed: {exc}")
         return False
-    finally:
-        _session_call_lock.release()
 
 
 def _mark_orderbook_recovery(symbol: str, reason: str, lot_type: str = "board_lot") -> tuple[int, bool]:
@@ -574,6 +712,8 @@ def _mark_orderbook_recovery(symbol: str, reason: str, lot_type: str = "board_lo
 
 def reset_shioaji_connection(reason: str) -> bool:
     global api, connected, _last_reconnect_attempt_at, _reconnect_count, _last_reconnect_reason, _last_reconnect_at
+    if _process_poisoned:
+        return False
     now = time.time()
     with _state_lock:
         if now - _last_reconnect_attempt_at < reconnect_cooldown_seconds():
@@ -585,6 +725,12 @@ def reset_shioaji_connection(reason: str) -> bool:
         subscribed.clear()
         bidask_subscribed.clear()
         odd_bidask_subscribed.clear()
+        last_ticks.clear()
+        last_bidasks.clear()
+        last_odd_bidasks.clear()
+        bidask_stats.clear()
+        odd_bidask_stats.clear()
+        _price_buffer.clear()
 
     if old_api:
         try:
@@ -599,6 +745,7 @@ def reset_shioaji_connection(reason: str) -> bool:
             _reconnect_count += 1
             _last_reconnect_reason = reason
             _last_reconnect_at = get_tw_now().isoformat()
+    watch_orderbook_symbols([market_risk_proxy_symbol()], ttl_seconds=86_400)
     for symbol in active_orderbook_watch_symbols():
         subscribe_symbol(symbol)
     for symbol in active_orderbook_watch_symbols("odd_lot"):
@@ -689,43 +836,27 @@ def stop_watchdog() -> None:
 
 
 def get_snapshot(symbol: str) -> dict | None:
-    """用 snapshots API 取得最新報價（不需要預先訂閱）"""
-    if not api or not connected:
+    """Return a fresh streaming tick snapshot without request-time SDK I/O."""
+    if not connected or _process_poisoned:
         return None
-    try:
-        contract = api.Contracts.Stocks.get(symbol)
-        if not contract:
-            return None
-        snapshots = run_broker_query(lambda: api.snapshots([contract]), f"snapshot:{symbol}")
-        if snapshots and len(snapshots) > 0:
-            s = snapshots[0]
-            return {
-                "symbol": symbol,
-                "price": s.close,
-                "last": s.close,
-                "close": s.close,
-                "open": s.open,
-                "high": s.high,
-                "low": s.low,
-                "volume": s.volume,
-                "total_volume": s.total_volume,
-                "change_price": s.change_price,
-                "change_rate": s.change_rate,
-                "updated_at": datetime.now(TW_TZ).isoformat(),
-            }
+    with _state_lock:
+        tick = dict(last_ticks.get(symbol) or {})
+    if not tick_is_fresh(tick):
         return None
-    except Exception as e:
-        print(f"[Shioaji] Snapshot {symbol} failed: {e}")
-        return None
-
-
-def _series_value(container, *names):
-    for name in names:
-        if isinstance(container, dict) and name in container:
-            return container[name]
-        if hasattr(container, name):
-            return getattr(container, name)
-    return None
+    price = tick.get("price")
+    return {
+        **tick,
+        "symbol": symbol,
+        "price": price,
+        "last": price,
+        "close": price,
+        "source": "streaming_tick_cache",
+        "source_time": tick.get("timestamp"),
+        "received_at": tick.get("updated_at"),
+        "quote_age_ms": tick_age_ms(tick),
+        "max_quote_age_ms": tick_max_age_ms(),
+        "session_epoch": tick.get("session_epoch"),
+    }
 
 
 def _iso_kbar_ts(value) -> str:
@@ -735,65 +866,12 @@ def _iso_kbar_ts(value) -> str:
     return str(value)
 
 
-def _float_at(values, index: int) -> float | None:
-    try:
-        value = values[index]
-        return float(value)
-    except Exception:
-        return None
-
-
-def get_kbars(symbol: str, start: str, end: str, limit: int = 3000) -> list[dict]:
-    """Return historical 1-minute kbars from Shioaji for S12 intraday structure replay."""
-    if not api or not connected:
-        return []
-    try:
-        contract = api.Contracts.Stocks.get(symbol)
-        if not contract:
-            return []
-        kbars = run_broker_query(
-            lambda: api.kbars(contract, start=start, end=end),
-            f"kbars:{symbol}:{start}:{end}",
-        )
-        if kbars is None:
-            return []
-        ts = _series_value(kbars, "ts", "Time", "time")
-        opens = _series_value(kbars, "Open", "open")
-        highs = _series_value(kbars, "High", "high")
-        lows = _series_value(kbars, "Low", "low")
-        closes = _series_value(kbars, "Close", "close")
-        volumes = _series_value(kbars, "Volume", "volume")
-        if ts is None or opens is None or highs is None or lows is None or closes is None:
-            return []
-
-        count = min(len(ts), len(opens), len(highs), len(lows), len(closes), max(1, int(limit)))
-        rows: list[dict] = []
-        for index in range(count):
-            open_px = _float_at(opens, index)
-            high_px = _float_at(highs, index)
-            low_px = _float_at(lows, index)
-            close_px = _float_at(closes, index)
-            if open_px is None or high_px is None or low_px is None or close_px is None:
-                continue
-            rows.append({
-                "ts": _iso_kbar_ts(ts[index]),
-                "open": open_px,
-                "high": high_px,
-                "low": low_px,
-                "close": close_px,
-                "volume": _float_at(volumes, index) if volumes is not None else 0,
-            })
-        return rows
-    except Exception as e:
-        print(f"[Shioaji] Kbars {symbol} failed: {e}")
-        return []
-
-
 # ── FastAPI App ─────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: connect to Shioaji
     init_shioaji()
+    watch_orderbook_symbols([market_risk_proxy_symbol()], ttl_seconds=86_400)
     static_symbols = active_orderbook_watch_symbols()
     for symbol in static_symbols:
         subscribe_symbol(symbol)
@@ -823,9 +901,15 @@ def verify_token(authorization: str | None):
 @app.get("/health")
 def health():
     orderbook_health = orderbook_health_summary()
+    subscription_healthy = bool(connected and not _process_poisoned and _watchdog_thread and _watchdog_thread.is_alive())
     return {
-        "status": "ok" if connected else "disconnected",
+        "status": "poisoned" if _process_poisoned else "ok" if connected else "disconnected",
         "connected": connected,
+        "process_poisoned": _process_poisoned,
+        "process_poison_reason": _process_poison_reason,
+        "process_poisoned_at": _process_poisoned_at,
+        "broker_query_timeout_count": _broker_query_timeout_count,
+        "session_epoch": _session_epoch,
         "subscribed_count": len(subscribed),
         "bidask_subscribed_count": len(bidask_subscribed),
         "cached_ticks": len(last_ticks),
@@ -836,6 +920,8 @@ def health():
         "watchdog_enabled": watchdog_enabled(),
         "watchdog_alive": bool(_watchdog_thread and _watchdog_thread.is_alive()),
         "orderbook_watch": orderbook_health,
+        "subscription_healthy": subscription_healthy,
+        "execution_ready": bool(subscription_healthy and _session_epoch > 0),
         "reconnect_count": _reconnect_count,
         "last_reconnect_at": _last_reconnect_at,
         "last_reconnect_reason": _last_reconnect_reason,
@@ -845,23 +931,24 @@ def health():
 
 @app.get("/quote/{symbol}")
 def quote(symbol: str, authorization: str | None = Header(default=None)):
-    """單支即時報價 — 先查 tick cache，沒有就用 snapshot"""
+    """單支 execution 報價；只讀 streaming tick cache。"""
     verify_token(authorization)
     symbol = symbol.upper().strip()
-
-    # 先查已訂閱的 tick cache
-    if symbol in last_ticks:
-        return {"status": "ok", "source": "tick", "data": last_ticks[symbol]}
-
-    # 自動訂閱（下次 tick 進來就有 cache）
-    subscribe_symbol(symbol)
-
-    # 用 snapshot 取即時值（不需要等 tick）
     snap = get_snapshot(symbol)
     if snap:
-        return {"status": "ok", "source": "snapshot", "data": snap}
+        return {"status": "ok", "source": "streaming_tick_cache", "data": snap}
 
-    raise HTTPException(404, f"No quote available for {symbol}")
+    watch_orderbook_symbols([symbol])
+    recover_orderbook_symbol_async(symbol, "quote_cache_miss")
+    tick = last_ticks.get(symbol)
+    raise HTTPException(503, {
+        "status": "stale_tick" if tick else "no_tick",
+        "symbol": symbol,
+        "quote_age_ms": tick_age_ms(tick),
+        "max_quote_age_ms": tick_max_age_ms(),
+        "session_epoch": _session_epoch,
+        "process_poisoned": _process_poisoned,
+    })
 
 
 class BatchRequest(BaseModel):
@@ -871,38 +958,42 @@ class BatchRequest(BaseModel):
 
 @app.post("/quotes")
 def batch_quotes(req: BatchRequest, authorization: str | None = Header(default=None)):
-    """批次即時報價"""
+    """批次 execution 報價；只讀 streaming tick cache。"""
     verify_token(authorization)
     results: dict[str, dict] = {}
+    errors: dict[str, dict] = {}
 
     for symbol in req.symbols:
         symbol = symbol.upper().strip()
-        # 先查 tick cache
-        if symbol in last_ticks:
-            results[symbol] = last_ticks[symbol]
-            continue
-        # 訂閱 + snapshot
-        subscribe_symbol(symbol)
         snap = get_snapshot(symbol)
         if snap:
             results[symbol] = snap
+        else:
+            watch_orderbook_symbols([symbol])
+            recover_orderbook_symbol_async(symbol, "batch_quote_cache_miss")
+            tick = last_ticks.get(symbol)
+            errors[symbol] = {
+                "status": "stale_tick" if tick else "no_tick",
+                "quote_age_ms": tick_age_ms(tick),
+                "max_quote_age_ms": tick_max_age_ms(),
+                "session_epoch": _session_epoch,
+            }
 
-    return {"status": "ok", "count": len(results), "data": results}
+    return {
+        "status": "ok" if not errors else "partial" if results else "empty",
+        "count": len(results),
+        "error_count": len(errors),
+        "data": results,
+        "errors": errors,
+        "source": "streaming_tick_cache",
+        "session_epoch": _session_epoch,
+    }
 
 
 @app.post("/snapshots")
 def batch_snapshots(req: BatchRequest, authorization: str | None = Header(default=None)):
-    """Batch snapshot endpoint used by the Worker execution core."""
-    verify_token(authorization)
-    results: dict[str, dict] = {}
-
-    for symbol in req.symbols:
-        symbol = symbol.upper().strip()
-        snap = get_snapshot(symbol)
-        if snap:
-            results[symbol] = snap
-
-    return {"status": "ok", "count": len(results), "data": results}
+    """相容 alias；execution snapshot 同樣只讀 streaming tick cache。"""
+    return batch_quotes(req, authorization)
 
 
 @app.get("/snapshot/{symbol}")
@@ -924,20 +1015,36 @@ def kbars_endpoint(
     limit: int = 3000,
     authorization: str | None = Header(default=None),
 ):
-    """Historical 1-minute kbars for intraday structure replay."""
+    """Completed 1-minute bars from streaming cache during execution hours."""
     verify_token(authorization)
     symbol = symbol.upper().strip()
     end_date = end or get_tw_now().date().isoformat()
     start_date = start or (get_tw_now() - timedelta(days=7)).date().isoformat()
-    rows = get_kbars(symbol, start_date, end_date, limit=max(1, min(int(limit), 5000)))
-    return {
-        "status": "ok",
+    today = get_tw_now().date().isoformat()
+    if start_date == today and end_date == today:
+        rows = completed_streaming_bars(symbol, start_date, end_date, limit)
+        if not rows:
+            watch_orderbook_symbols([symbol])
+            recover_orderbook_symbol_async(symbol, "streaming_bar_cache_miss")
+        return {
+            "status": "ok" if rows else "empty",
+            "symbol": symbol,
+            "start": start_date,
+            "end": end_date,
+            "count": len(rows),
+            "data": rows,
+            "source": "streaming_tick_accumulator",
+            "completed_only": True,
+            "session_epoch": _session_epoch,
+        }
+    raise HTTPException(503, {
+        "status": "research_service_required",
+        "message": "Historical kbars are isolated from the execution broker session",
         "symbol": symbol,
         "start": start_date,
         "end": end_date,
-        "count": len(rows),
-        "data": rows,
-    }
+        "session_epoch": _session_epoch,
+    })
 
 
 # ── F4: Trend endpoint（買入二次確認用）────────────────────────────────────
@@ -977,75 +1084,57 @@ _market_risk_ts: float = 0
 @app.get("/market-risk")
 def market_risk(authorization: str | None = Header(default=None)):
     """
-    即時大盤風險評估（快取 60 秒）
-    基於加權指數即時跌幅 + 量比 判斷 risk_level: low / medium / high
+    Execution-safe market risk. Reads a subscribed ETF proxy tick only and
+    never performs a request-time Shioaji SDK call.
     """
     verify_token(authorization)
     global _market_risk_cache, _market_risk_ts
 
-    # 60 秒快取
-    if time.time() - _market_risk_ts < 60 and _market_risk_cache:
-        return _market_risk_cache
-
-    if not api or not connected:
-        return {"status": "error", "message": "Shioaji not connected", "risk_level": "unknown"}
-
-    try:
-        # 取加權指數 snapshot（001 = TAIEX）
-        tse_contract = api.Contracts.Indexs.TSE.get("001")
-        if not tse_contract:
-            return {"status": "error", "message": "Cannot find TAIEX contract", "risk_level": "unknown"}
-
-        snapshots = api.snapshots([tse_contract])
-        if not snapshots or len(snapshots) == 0:
-            return {"status": "error", "message": "No TAIEX snapshot", "risk_level": "unknown"}
-
-        s = snapshots[0]
-        close = s.close
-        change_rate = s.change_rate  # 漲跌幅 %
-        total_volume = s.total_volume  # 成交量（張）
-
-        # 計算 risk_level
-        # 規則引擎（Phase 1，後續可升級為 LightGBM）
-        risk_level = "low"
-        risk_reasons = []
-
-        # 1. 跌幅判斷（絕對值 + 相對值）
-        if change_rate <= -2.0:
-            risk_level = "high"
-            risk_reasons.append(f"大盤跌 {change_rate:.1f}%（急跌）")
-        elif change_rate <= -1.0:
-            risk_level = "medium" if risk_level == "low" else risk_level
-            risk_reasons.append(f"大盤跌 {change_rate:.1f}%")
-
-        # 2. 量能判斷（相對於時間比例的預期量）
-        now = get_tw_now()
-        market_minutes = (now.hour * 60 + now.minute) - 9 * 60  # 09:00 開始
-        if market_minutes > 0:
-            # 台股日均量約 3000~5000 億，用 total_volume 相對時間比例判斷
-            expected_pct = min(market_minutes / 270, 1.0)  # 270 分鐘 = 4.5 小時
-            # 量能過低 = 空頭信號（市場觀望或恐慌性低量）
-            # 這裡用簡化判斷，後續可改為 vs 20 日均量
-            if expected_pct > 0.2 and total_volume < 100_000:  # 粗估：<10 萬張 = 極低量
-                risk_level = "medium" if risk_level == "low" else risk_level
-                risk_reasons.append("量能偏低")
-
-        result = {
-            "status": "ok",
-            "risk_level": risk_level,
-            "index_price": close,
-            "change_rate": round(change_rate, 2),
-            "total_volume": total_volume,
-            "risk_reasons": risk_reasons,
-            "updated_at": datetime.now(TW_TZ).isoformat(),
+    symbol = market_risk_proxy_symbol()
+    with _state_lock:
+        tick = dict(last_ticks.get(symbol) or {})
+    if not connected or _process_poisoned or not tick_is_fresh(tick):
+        watch_orderbook_symbols([symbol], ttl_seconds=86_400)
+        recover_orderbook_symbol_async(symbol, "market_risk_cache_miss")
+        return {
+            "status": "error",
+            "message": "market_risk_stream_unavailable",
+            "risk_level": "unknown",
+            "source": "streaming_tick_cache",
+            "proxy_symbol": symbol,
+            "quote_age_ms": tick_age_ms(tick),
+            "session_epoch": _session_epoch,
         }
-        _market_risk_cache = result
-        _market_risk_ts = time.time()
-        return result
 
-    except Exception as e:
-        print(f"[MarketRisk] Failed: {e}")
-        return {"status": "error", "message": str(e), "risk_level": "unknown"}
+    close = float(tick.get("price") or 0)
+    change_rate = float(tick.get("change_rate") or 0)
+    total_volume = int(tick.get("total_volume") or 0)
+    risk_level = "low"
+    risk_reasons = []
+    if change_rate <= -2.0:
+        risk_level = "high"
+        risk_reasons.append(f"市場代理跌 {change_rate:.1f}%（急跌）")
+    elif change_rate <= -1.0:
+        risk_level = "medium"
+        risk_reasons.append(f"市場代理跌 {change_rate:.1f}%")
+
+    result = {
+        "status": "ok",
+        "risk_level": risk_level,
+        "index_price": close,
+        "change_rate": round(change_rate, 2),
+        "total_volume": total_volume,
+        "risk_reasons": risk_reasons,
+        "updated_at": tick.get("updated_at"),
+        "source_time": tick.get("timestamp"),
+        "quote_age_ms": tick_age_ms(tick),
+        "source": "streaming_tick_cache",
+        "proxy_symbol": symbol,
+        "session_epoch": tick.get("session_epoch"),
+    }
+    _market_risk_cache = result
+    _market_risk_ts = time.time()
+    return result
 
 
 # ── 五檔報價 + Orderbook Features ─────────────────────────────────────────
@@ -1078,6 +1167,8 @@ def _orderbook_diagnostic(
         "bidask_event_count": int(stat.get("event_count") or 0),
         "last_bidask_event_at": stat.get("last_event_at"),
         "last_bidask_source_time": stat.get("last_source_time"),
+        "session_epoch": _session_epoch,
+        "process_poisoned": _process_poisoned,
     }
 
 

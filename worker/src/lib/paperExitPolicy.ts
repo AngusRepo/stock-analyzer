@@ -21,6 +21,7 @@ export interface ExitPosition {
 export interface ExitDecision {
   action: 'full_sell' | 'partial_sell' | 'hold'
   reason: string
+  exitIntentKind?: 'risk_stop' | 'take_profit' | 'model_exit' | 'time_stop' | 'forced_close'
   sellShares?: number
   newTrailingStop?: number
   newHighest?: number
@@ -72,6 +73,7 @@ export function checkExitConditions(
     return {
       action: 'full_sell',
       reason: `Hard stop ${(pnlPct * 100).toFixed(1)}%${useRegime ? ` [regime=${regime} x${mHardStop}]` : ''}`,
+      exitIntentKind: 'risk_stop',
     }
   }
 
@@ -81,11 +83,12 @@ export function checkExitConditions(
     return {
       action: 'full_sell',
       reason: `ATR 初始停損 @ ${effInitStop.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%${useRegime ? ` [regime=${regime} x${mAtrTrail}]` : ''}`,
+      exitIntentKind: 'risk_stop',
     }
   }
 
   if (isEOD && hasMlSell) {
-    return { action: 'full_sell', reason: 'ML SELL' }
+    return { action: 'full_sell', reason: 'ML SELL', exitIntentKind: 'model_exit' }
   }
 
   const trailingStopRaw = pos.trailing_stop ?? initStopRaw
@@ -94,6 +97,7 @@ export function checkExitConditions(
     return {
       action: 'full_sell',
       reason: `Trailing Stop @ ${effTrailingStop.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%${useRegime ? ` [regime=${regime} x${mAtrTrail}]` : ''}`,
+      exitIntentKind: 'risk_stop',
     }
   }
 
@@ -107,12 +111,13 @@ export function checkExitConditions(
       return {
         action: 'partial_sell',
         reason: `TP1 take profit @ ${currentPrice.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%`,
+        exitIntentKind: 'take_profit',
         sellShares,
         moveStopToEntry: true,
       }
     }
 
-    return { action: 'full_sell', reason: `TP1 full exit @ ${currentPrice.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%` }
+    return { action: 'full_sell', reason: `TP1 full exit @ ${currentPrice.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%`, exitIntentKind: 'take_profit' }
   }
 
   const highestSoFar = Math.max(pos.highest_since_entry ?? entryPrice, currentPrice)
@@ -128,13 +133,13 @@ export function checkExitConditions(
   const previousHighest = pos.highest_since_entry ?? entryPrice
 
   if (currentPrice >= tp2 && pos.tp1_hit) {
-    return { action: 'full_sell', reason: `TP2 take profit @ ${currentPrice.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%` }
+    return { action: 'full_sell', reason: `TP2 take profit @ ${currentPrice.toFixed(1)} ${(pnlPct * 100).toFixed(1)}%`, exitIntentKind: 'take_profit' }
   }
 
   if (isEOD && pos.entry_date) {
     const daysSinceEntry = Math.floor((Date.now() - new Date(pos.entry_date).getTime()) / 86400000)
     if (daysSinceEntry > ex.timeStopDays && pnlPct > ex.timeStopMinProfit) {
-      return { action: 'full_sell', reason: `Time stop ${daysSinceEntry}d +${(pnlPct * 100).toFixed(1)}%` }
+      return { action: 'full_sell', reason: `Time stop ${daysSinceEntry}d +${(pnlPct * 100).toFixed(1)}%`, exitIntentKind: 'time_stop' }
     }
   }
 

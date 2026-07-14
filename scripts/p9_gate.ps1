@@ -16,48 +16,28 @@ npm run type-check
 if ($LASTEXITCODE -ne 0) { throw "worker type-check failed" }
 
 Write-Host '[P9 gate] worker contract tests'
-$TestOut = Join-Path (Get-Location) '.tmp-test-run'
-if (Test-Path $TestOut) {
-  $ResolvedTestOut = (Resolve-Path $TestOut).Path
-  $ResolvedWorker = (Resolve-Path (Get-Location)).Path
-  if (-not $ResolvedTestOut.StartsWith($ResolvedWorker)) {
-    throw "Refusing to clean test output outside worker: $ResolvedTestOut"
-  }
-  Remove-Item -LiteralPath $ResolvedTestOut -Recurse -Force
-}
+$RuntimeE2ETests = @(
+  'strategyDiscoveryLocalE2E.test.ts',
+  'strategyDiscoveryRealModelE2E.test.ts'
+)
 $WorkerTestSources = Get-ChildItem -Path (Join-Path (Get-Location) 'src\lib') -Filter '*.test.ts' |
   Sort-Object Name |
+  Where-Object { $RuntimeE2ETests -notcontains $_.Name } |
   ForEach-Object { "src/lib/$($_.Name)" }
-
-$TscArgs = @(
-  '--target', 'ES2020',
-  '--module', 'commonjs',
-  '--moduleResolution', 'node',
-  '--strict', 'false',
-  '--skipLibCheck',
-  '--rootDir', 'src',
-  '--outDir', '.tmp-test-run',
-  '--noEmit', 'false',
-  'src/cf-types.d.ts'
-) + $WorkerTestSources
-
-npx tsc @TscArgs
-if ($LASTEXITCODE -ne 0) { throw "worker contract test compile failed" }
 foreach ($testSource in $WorkerTestSources) {
-  $testName = [System.IO.Path]::GetFileNameWithoutExtension($testSource)
-  $testJs = Join-Path $TestOut (Join-Path 'lib' "$testName.js")
-  node $testJs
-  if ($LASTEXITCODE -ne 0) { throw "$testName failed" }
+  npx tsx $testSource
+  if ($LASTEXITCODE -ne 0) { throw "$testSource failed" }
 }
-if (Test-Path $TestOut) {
-  Remove-Item -LiteralPath $TestOut -Recurse -Force
-}
+Write-Host '[P9 gate] runtime E2E tests are gated separately with an explicit local server/model runtime'
 Pop-Location
 
 Write-Host '[P9 gate] ml-controller contract tests'
 $ControllerPython = Join-Path $Root 'ml-controller\.venv\Scripts\python.exe'
 if (-not (Test-Path $ControllerPython)) {
-  throw "ml-controller venv python not found: $ControllerPython"
+  $ControllerPython = Join-Path $Root 'ml-service\.venv\Scripts\python.exe'
+}
+if (-not (Test-Path $ControllerPython)) {
+  throw "controller python not found in ml-controller/.venv or ml-service/.venv"
 }
 Push-Location (Join-Path $Root 'ml-controller')
 & $ControllerPython -m pytest tests\test_verify_pipeline_graph.py tests\test_p6_emerging_ml_contract.py tests\test_p7_model_upgrade_research_track.py tests\test_p8_adaptive_meta_contract.py tests\test_market_segment_policy.py tests\test_model_ic_tracker.py tests\test_train_serve_parity_contract.py tests\test_sector_flow_proxy.py tests\test_pipeline_callback_contract.py tests\test_retrain_followup_telemetry.py -q

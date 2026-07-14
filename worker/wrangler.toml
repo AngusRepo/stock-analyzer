@@ -45,6 +45,12 @@ dead_letter_queue = "stockvision-news-queue-dlq"
 
 [ai]
 binding = "AI"
+remote = true
+
+[[workflows]]
+name = "strategy-discovery-analysis"
+binding = "STRATEGY_DISCOVERY_WORKFLOW"
+class_name = "StrategyDiscoveryWorkflow"
 
 [vars]
 ENVIRONMENT = "production"
@@ -57,6 +63,8 @@ FINLAB_BACKFILL_CANONICAL_WINDOW_DAYS = "7"
 SHIOAJI_L5_PROXY_FALLBACK_ENABLED = "0"
 LIVE_EXECUTION_SHADOW_CLIENT_ENABLED = "0"
 LIVE_EXECUTION_SHADOW_GUARD_ENABLED = "0"
+LIVE_EXECUTION_CLIENT_ENABLED = "0"
+LIVE_EXECUTION_SUBMIT_GUARD_ENABLED = "0"
 LIVE_EXECUTION_SHADOW_SCOPE = "paper-parity-v1"
 S12_INTRADAY_ASSIST_ENABLED = "1"
 S12_INTRADAY_GATE_MODE = "assist_entry"

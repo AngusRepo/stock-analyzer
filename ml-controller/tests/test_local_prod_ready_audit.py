@@ -234,6 +234,95 @@ def _write_formal137_repair_validator_fixture(root: Path) -> None:
     )
 
 
+def _write_realtime_trading_local_closure_fixture(root: Path) -> None:
+    fixtures = {
+        "worker/src/lib/authoritativeExecutionSnapshot.ts": " ".join([
+            "authoritative_execution_snapshot_v2", "snapshotId", "sessionEpoch", "sourceAgreement",
+            "buy_fill_below_fresh_best_ask", "sell_fill_above_fresh_best_bid",
+        ]),
+        "worker/src/lib/paperOrderBookMatcher.ts": " ".join([
+            "paper_depth_match_v1", "visible_depth_partial_fill_remaining_resting",
+            "selected_depth_observation_missing", "normalizeTwFilledSharesForRequestedOrder",
+        ]),
+        "worker/src/lib/paperEntryTasks.ts": " ".join([
+            "resolveS12UnifiedDecision", "matchPaperOrderAgainstAuthoritativeDepth",
+            "paper_depth_match", "authoritative_lot_book_mismatch",
+        ]),
+        "worker/src/lib/paperExitTasks.ts": " ".join([
+            "buildExitIntentKey", "exit_intent_key", "matchPaperOrderAgainstAuthoritativeDepth",
+            "intraday_exit_partial_depth", "tw_equity_odd_lot_book_required",
+        ]),
+        "worker/src/lib/paperBrokerReconciliation.ts": (
+            "buy_fill_below_fresh_best_ask sell_fill_above_fresh_best_bid"
+        ),
+        "shioaji-proxy/main.py": " ".join([
+            "poison_process", "streaming_tick_cache", "streaming_tick_accumulator", "session_epoch",
+            "execution_ready", 'SHIOAJI_ORDERBOOK_MAX_AGE_MS", "1500"',
+        ]),
+        "ml-controller/services/execution_snapshot_revalidator.py": " ".join([
+            "authoritative_hub_session_epoch_changed", "authoritative_hub_source_time_invalid",
+            "authoritative_hub_book_stale", "authoritative_hub_ask_above_limit",
+            "authoritative_hub_bid_below_limit",
+        ]),
+        "worker/src/lib/liveExecutionGatewayClient.ts": " ".join([
+            "LIVE_EXECUTION_CLIENT_ENABLED", "LIVE_EXECUTION_SUBMIT_GUARD_ENABLED",
+            "LIVE_TRADING_APPROVAL_SCOPE", "submitOrReconcileSignedLiveExecutionPacket",
+            "submit_response_unknown_no_automatic_resubmit",
+        ]),
+        "worker/wrangler.toml": "\n".join([
+            'LIVE_EXECUTION_CLIENT_ENABLED = "0"',
+            'LIVE_EXECUTION_SUBMIT_GUARD_ENABLED = "0"',
+            'LIVE_EXECUTION_SHADOW_CLIENT_ENABLED = "0"',
+        ]),
+        "worker/src/lib/paperExecutionEvents.ts": (
+            "canonical_execution writeEvidenceArtifact evidence_pointer checksum_verified_at"
+        ),
+        "worker/src/lib/artifactLifecycle.ts": " ".join([
+            "canonical_execution", "canonical_model_evidence", "paper_shadow", "hard_ref_count",
+            "legal_hold", "STORAGE_LIFECYCLE_SCHEDULE",
+        ]),
+        "worker/migration_artifact_lifecycle_2026_07_14.sql": " ".join([
+            "pipeline_runs", "canonical_run_heads", "run_artifacts", "artifact_d1_scrub_queue",
+            "artifact_cleanup_dlq",
+        ]),
+        "worker/src/lib/localMaintenance.ts": (
+            "tdcc_shareholding_http_ drift_check_http_ throw e MaintenanceRunResult"
+        ),
+        "worker/src/lib/pendingBuyOrchestrator.ts": (
+            "withD1Retry isTransientD1Error morning_setup_failure"
+        ),
+        "worker/src/lib/s12IntradayStructure.ts": " ".join([
+            "completed_15m_current_session_bars", "completed_15m_seeded_context_bars",
+            "completed_1h_bars", "completed_1h_fallback_bars", "waiting_1h_completed_bar",
+        ]),
+        "ml-controller/services/finlab_live_submit_service.py": " ".join([
+            "FINLAB_LIVE_SUBMIT_ENABLED", "allow_live_submit", "reserve_intent",
+            "mark_submit_unknown", "snapshot_revalidator",
+        ]),
+        "ml-controller/services/broker_execution_repository.py": " ".join([
+            "ON CONFLICT(idempotency_key) DO NOTHING", "recoverable_legs",
+            "record_broker_event", "SUBMIT_UNKNOWN",
+        ]),
+    }
+    for rel_path, contents in fixtures.items():
+        path = root / rel_path
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        _write(path, f"{existing}\n{contents}".strip())
+
+    scheduler_path = root / "infra/gcp-scheduler-jobs.json"
+    scheduler = json.loads(scheduler_path.read_text(encoding="utf-8"))
+    jobs = scheduler.setdefault("jobs", [])
+    existing = {str(job.get("id")) for job in jobs if isinstance(job, dict)}
+    for job_id in (
+        "artifact-reconcile", "d1-evidence-scrub", "r2-retention-sweep",
+        "orphan-reachability-gc", "cleanup-dlq-replay", "storage-health-gate",
+        "storage-integrity-audit", "weekly-cleanup", "storage-capacity-report",
+    ):
+        if job_id not in existing:
+            jobs.append({"id": job_id})
+    _write(scheduler_path, json.dumps(scheduler))
+
+
 def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path):
     _write(
         tmp_path / "infra/gcp-scheduler-jobs.json",
@@ -1023,6 +1112,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
     _write_production_cutover_packet_fixture(tmp_path)
     _write_artifact_lifecycle_repair_packet_fixture(tmp_path)
     _write_formal137_repair_validator_fixture(tmp_path)
+    _write_realtime_trading_local_closure_fixture(tmp_path)
     _write(
         tmp_path / "output/feature_universe_triage/monthly_pymoo_runtime_contract_validation_20260618.json",
         json.dumps({

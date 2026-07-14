@@ -19,6 +19,7 @@ import { resolveTwEquityPriceBand } from './twEquityMarketContract'
 import { buildTwOrderLegs } from './twMarketRules'
 import { resolveAuthoritativeSellExecutionSnapshot, type AuthoritativeExecutionSnapshot } from './authoritativeExecutionSnapshot'
 import { runLiveExecutionShadow } from './liveExecutionShadow'
+import { matchPaperOrderAgainstAuthoritativeDepth } from './paperOrderBookMatcher'
 import { resolveTwEquitySessionPhase } from './twEquityMarketContract'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
 import {
@@ -318,7 +319,6 @@ async function persistExitPositionUpdate(
 
 function resolveExitSellFill(
   quote: IntradayOHLC,
-  options: { allowLastPriceFallback?: boolean } = {},
 ): { fillable: boolean; price?: number; reason: string; detail: Record<string, unknown> } {
   const fill = resolveMarketSellFill({
     currentPrice: quote.last,
@@ -327,7 +327,7 @@ function resolveExitSellFill(
     intradayLow: quote.low,
     intradayHigh: quote.high,
     slippageTicks: 1,
-    requireBestBid: !options.allowLastPriceFallback,
+    requireBestBid: true,
   })
   return {
     fillable: fill.fillable,
@@ -370,8 +370,14 @@ function buildSellShadowSnapshots(
             ask: quote.ask ?? null,
             bidVolume: quote.bidVolume ?? null,
             askVolume: quote.askVolume ?? null,
+            bidPrices: quote.bidPrices ?? [],
+            askPrices: quote.askPrices ?? [],
+            bidVolumes: quote.bidVolumes ?? [],
+            askVolumes: quote.askVolumes ?? [],
+            volumeUnit: quote.volumeUnit,
             sourceTime: quote.quoteTime ?? null,
             ageMs: quote.quoteTime ? Math.max(0, Date.now() - (parseTimeMs(quote.quoteTime) ?? Date.now())) : null,
+            sessionEpoch: quote.sessionEpoch ?? null,
           }]
         : [],
     })
@@ -382,38 +388,60 @@ function buildSellShadowSnapshots(
 export function resolvePositionExitSellFill(
   shares: number,
   books: { boardLot?: IntradayOHLC | null; oddLot?: IntradayOHLC | null },
-): { fillable: boolean; price?: number; reason: string; detail: Record<string, unknown> } {
+): { fillable: boolean; price?: number; filledShares?: number; complete?: boolean; reason: string; detail: Record<string, unknown> } {
   const legs = buildTwOrderLegs(shares)
   if (legs.length === 0) return { fillable: false, reason: 'invalid_exit_shares', detail: { shares } }
 
-  const fills: Array<{ lot_type: 'board_lot' | 'odd_lot'; shares: number; price: number; reason: string }> = []
+  const fills: Array<{ lot_type: 'board_lot' | 'odd_lot'; shares: number; price: number; reason: string; match: unknown }> = []
+  const unfilled: Array<{ lot_type: 'board_lot' | 'odd_lot'; shares: number; reason: string }> = []
   for (const leg of legs) {
     const quote = leg.lotType === 'odd_lot' ? books.oddLot : books.boardLot
     if (!quote || quote.lotType !== leg.lotType) {
-      return {
-        fillable: false,
+      unfilled.push({
+        lot_type: leg.lotType,
+        shares: leg.shares,
         reason: leg.lotType === 'odd_lot' ? 'tw_equity_odd_lot_book_required' : 'tw_equity_board_lot_book_required',
-        detail: { shares, missing_lot_type: leg.lotType, order_legs: legs },
-      }
+      })
+      continue
     }
-    const fill = resolveExitSellFill(quote)
-    if (!fill.fillable || fill.price == null) {
-      return {
-        fillable: false,
-        reason: `${leg.lotType}_${fill.reason}`,
-        detail: { shares, failed_lot_type: leg.lotType, order_legs: legs, ...fill.detail },
-      }
+    const visibleBidPrices = [...(quote.bidPrices ?? []), quote.bid ?? 0].filter((price) => price > 0)
+    const limitPrice = visibleBidPrices.length > 0 ? Math.min(...visibleBidPrices) : 0
+    const snapshot = resolveAuthoritativeSellExecutionSnapshot({
+      limitPrice,
+      lotType: leg.lotType,
+      observations: [{
+        source: 'shioaji_hub', lotType: quote.lotType ?? leg.lotType,
+        bid: quote.bid ?? null, ask: quote.ask ?? null,
+        bidVolume: quote.bidVolume ?? null, askVolume: quote.askVolume ?? null,
+        bidPrices: quote.bidPrices ?? [], askPrices: quote.askPrices ?? [],
+        bidVolumes: quote.bidVolumes ?? [], askVolumes: quote.askVolumes ?? [],
+        volumeUnit: quote.volumeUnit, sourceTime: quote.quoteTime ?? null,
+        ageMs: quote.quoteTime ? Math.max(0, Date.now() - (parseTimeMs(quote.quoteTime) ?? Date.now())) : null,
+        sessionEpoch: quote.sessionEpoch ?? null,
+      }],
+    })
+    const match = matchPaperOrderAgainstAuthoritativeDepth({ snapshot, requestedShares: leg.shares, limitPrice })
+    if (!['filled', 'partial'].includes(match.status) || match.averageFillPrice == null || match.filledShares <= 0) {
+      unfilled.push({ lot_type: leg.lotType, shares: leg.shares, reason: match.reason })
+      continue
     }
-    fills.push({ lot_type: leg.lotType, shares: leg.shares, price: fill.price, reason: fill.reason })
+    fills.push({ lot_type: leg.lotType, shares: match.filledShares, price: match.averageFillPrice, reason: match.reason, match })
+    if (match.restingShares > 0) unfilled.push({ lot_type: leg.lotType, shares: match.restingShares, reason: match.reason })
   }
 
   const totalShares = fills.reduce((sum, fill) => sum + fill.shares, 0)
+  if (totalShares <= 0) {
+    return { fillable: false, reason: unfilled[0]?.reason ?? 'no_visible_exit_depth', detail: { shares, order_legs: legs, unfilled_legs: unfilled } }
+  }
   const weightedPrice = fills.reduce((sum, fill) => sum + fill.price * fill.shares, 0) / totalShares
+  const complete = totalShares >= shares
   return {
     fillable: true,
+    filledShares: totalShares,
+    complete,
     price: weightedPrice,
-    reason: fills.length > 1 ? 'tw_equity_split_lot_sell_fill' : `${fills[0].lot_type}_sell_fill`,
-    detail: { shares: totalShares, order_legs: legs, leg_fills: fills },
+    reason: complete ? (fills.length > 1 ? 'tw_equity_split_lot_sell_fill' : `${fills[0].lot_type}_sell_fill`) : 'tw_equity_visible_depth_partial_exit',
+    detail: { requested_shares: shares, filled_shares: totalShares, remaining_shares: shares - totalShares, order_legs: legs, leg_fills: fills, unfilled_legs: unfilled },
   }
 }
 
@@ -424,6 +452,7 @@ async function recordPendingExitOnce(
     symbol: string
     reason: string
     source: string
+    intentKey: string
     detail: Record<string, unknown>
   },
 ): Promise<boolean> {
@@ -435,12 +464,10 @@ async function recordPendingExitOnce(
        AND side = 'sell'
        AND event_type = 'paper_order'
        AND status = 'pending'
-       AND reason = ?
-       AND source = ?
-       AND created_at >= datetime('now', '-10 minutes')
+       AND json_extract(detail_json, '$.exit_intent_key') = ?
      ORDER BY id DESC
      LIMIT 1
-  `).bind(input.tradeDate, input.symbol, input.reason, input.source).first<{ id: number }>()
+  `).bind(input.tradeDate, input.symbol, input.intentKey).first<{ id: number }>()
   if (existing?.id) return false
   await recordPaperExecutionEvent(env, {
     tradeDate: input.tradeDate,
@@ -449,10 +476,22 @@ async function recordPendingExitOnce(
     eventType: 'paper_order',
     status: 'pending',
     reason: input.reason,
-    detail: input.detail,
+    detail: { ...input.detail, exit_intent_key: input.intentKey },
     source: input.source,
   })
   return true
+}
+
+export function buildExitIntentKey(input: {
+  accountId: number
+  symbol: string
+  entryDate: string
+  shares: number
+  stopVersion: number | null
+  action: string
+}): string {
+  const stop = input.stopVersion == null ? 'none' : Number(input.stopVersion).toFixed(4)
+  return [input.accountId, input.symbol, input.entryDate, input.shares, stop, input.action].join(':')
 }
 
 export function resolveS12HoldingDefenseUpdate(params: {
@@ -511,6 +550,7 @@ function s12PositionDecisionToExitDecision(
       return {
         action: 'partial_sell',
         reason: `S12 ${decision.reason} @ ${currentPrice.toFixed(2)}`,
+        exitIntentKind: 'take_profit',
         sellShares,
         moveStopToEntry: true,
         newHighest: highest,
@@ -520,6 +560,7 @@ function s12PositionDecisionToExitDecision(
       return {
         action: 'full_sell',
         reason: `S12 ${decision.reason} @ ${currentPrice.toFixed(2)}`,
+        exitIntentKind: 'take_profit',
         newHighest: highest,
       }
     }
@@ -528,6 +569,7 @@ function s12PositionDecisionToExitDecision(
     return {
       action: 'full_sell',
       reason: `S12 ${decision.reason} @ ${currentPrice.toFixed(2)}`,
+      exitIntentKind: 'risk_stop',
       newHighest: highest,
     }
   }
@@ -965,8 +1007,21 @@ export async function forceDayTradeClose(env: Bindings, cfg: TradingConfig, toda
     if (regime) logRegimeShadow('forceDayTradeClose', pos.symbol, regime, decision.action, decision.reason, env.DB)
     if (decision.action === 'hold') continue
 
-    const dtCheck = await isDayTradeAllowed(pos.symbol, pos.shares, decision.reason, env.KV)
-    if (!dtCheck.allowed) continue
+    const exitIntentKind = decision.exitIntentKind ?? 'forced_close'
+    const dtCheck = await isDayTradeAllowed(pos.symbol, pos.shares, exitIntentKind, env.KV)
+    if (!dtCheck.allowed) {
+      await recordPaperExecutionEvent(env, {
+        tradeDate: today,
+        symbol: pos.symbol,
+        side: 'sell',
+        eventType: 'paper_order',
+        status: 'blocked',
+        reason: dtCheck.reason,
+        detail: { shares: pos.shares, exit_reason: decision.reason, exit_intent_kind: exitIntentKind },
+        source: 'force_day_trade_close',
+      })
+      continue
+    }
 
     const shares = pos.shares
     if (Math.max(0, Math.floor(Number(shares))) % 1000 !== 0) {
@@ -1140,9 +1195,20 @@ export async function runEODExit(env: Bindings): Promise<void> {
 
     let dayTradeSell = false
     if (pos.entry_date === eodToday && decision.action !== 'hold') {
-      const dtCheck = await isDayTradeAllowed(pos.symbol, pos.shares, decision.reason, env.KV)
+      const exitIntentKind = decision.exitIntentKind ?? 'risk_stop'
+      const dtCheck = await isDayTradeAllowed(pos.symbol, pos.shares, exitIntentKind, env.KV)
       if (!dtCheck.allowed) {
         console.log(`[EODExit] daytrade blocked ${pos.symbol}: ${dtCheck.reason}`)
+        await recordPaperExecutionEvent(env, {
+          tradeDate: eodToday,
+          symbol: pos.symbol,
+          side: 'sell',
+          eventType: 'paper_order',
+          status: 'blocked',
+          reason: dtCheck.reason,
+          detail: { shares: pos.shares, exit_reason: decision.reason, exit_intent_kind: exitIntentKind },
+          source: 'run_eod_exit',
+        })
         continue
       }
       console.log(`[EODExit] daytrade sell ${pos.symbol}: ${dtCheck.reason}`)
@@ -1441,19 +1507,30 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
 
     let dayTradeSell = false
     if (pos.entry_date === intradayToday && decision.action !== 'hold') {
-      const dtCheck = await isDayTradeAllowed(pos.symbol, pos.shares, decision.reason, env.KV)
+      const exitIntentKind = decision.exitIntentKind ?? 'risk_stop'
+      const dtCheck = await isDayTradeAllowed(pos.symbol, pos.shares, exitIntentKind, env.KV)
       if (!dtCheck.allowed) {
         if (new Date().getUTCMinutes() % 10 === 0) {
           console.log(`[Intraday] daytrade blocked ${pos.symbol}: ${dtCheck.reason}`)
         }
+        await recordPaperExecutionEvent(env, {
+          tradeDate: intradayToday,
+          symbol: pos.symbol,
+          side: 'sell',
+          eventType: 'paper_order',
+          status: 'blocked',
+          reason: dtCheck.reason,
+          detail: { shares: pos.shares, exit_reason: decision.reason, exit_intent_kind: exitIntentKind },
+          source: 'poll_intraday_stop_loss',
+        })
         continue
       }
       dayTradeSell = true
     }
 
     if (decision.action === 'full_sell') {
-      const shares = pos.shares
-      const sellFill = resolvePositionExitSellFill(shares, {
+      const requestedExitShares = pos.shares
+      const sellFill = resolvePositionExitSellFill(requestedExitShares, {
         boardLot: boardLotQuoteMap.get(pos.symbol) ?? null,
         oddLot: oddLotQuoteMap.get(pos.symbol) ?? null,
       })
@@ -1462,11 +1539,21 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
           tradeDate: intradayToday,
           symbol: pos.symbol,
           reason: sellFill.reason,
-          detail: { shares, exit_reason: decision.reason, ...sellFill.detail },
+          intentKey: buildExitIntentKey({
+            accountId: ACCOUNT_ID,
+            symbol: pos.symbol,
+            entryDate: pos.entry_date,
+            shares: requestedExitShares,
+            stopVersion: resolveEffectiveS12PositionStop(pos, pos.entry_price ?? pos.avg_cost),
+            action: decision.action,
+          }),
+          detail: { shares: requestedExitShares, exit_reason: decision.reason, ...sellFill.detail },
           source: 'intraday_exit',
         })
         continue
       }
+      const shares = Math.max(0, Math.floor(sellFill.filledShares ?? requestedExitShares))
+      const remainingExitShares = Math.max(0, requestedExitShares - shares)
       const sellFillPrice = sellFill.price
       const sellOrderIntent = buildPaperSellOrderIntent({
         tradeDate: intradayToday,
@@ -1514,7 +1601,10 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
       }, { entryPrice: entryPx, exitPrice: sellFillPrice, shares, commission, tax })
 
       await env.DB.batch([
-        env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, pos.symbol),
+        remainingExitShares === 0
+          ? env.DB.prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(ACCOUNT_ID, pos.symbol)
+          : env.DB.prepare(`UPDATE paper_positions SET shares=?, updated_at=datetime('now') WHERE account_id=? AND symbol=?`)
+            .bind(remainingExitShares, ACCOUNT_ID, pos.symbol),
         env.DB.prepare(`
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
@@ -1538,9 +1628,9 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         symbol: pos.symbol,
         side: 'sell',
         eventType: 'paper_order',
-        status: 'filled',
-        reason: 'intraday_exit',
-        detail: { shares, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, fill_price: sellFillPrice, market_price: currentPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
+        status: remainingExitShares === 0 ? 'filled' : 'partial',
+        reason: remainingExitShares === 0 ? 'intraday_exit' : 'intraday_exit_partial_depth',
+        detail: { shares, requested_shares: requestedExitShares, remaining_shares: remainingExitShares, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, fill_price: sellFillPrice, market_price: currentPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
         source: 'intraday_exit',
       })
@@ -1550,23 +1640,36 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         env.DISCORD_WEBHOOK_URL,
         formatTradeNotification('sell', pos.symbol, pos.name, shares, sellFillPrice, `盤中賣出: ${decision.reason}`, intradayPnl),
       )
-      await runPostExitDiscipline(env, cfg, pos.symbol, decision.reason, 'full_sell', 'Intraday')
+      if (remainingExitShares === 0) {
+        await runPostExitDiscipline(env, cfg, pos.symbol, decision.reason, 'full_sell', 'Intraday')
+      }
     } else if (decision.action === 'partial_sell' && decision.sellShares) {
-      const sellShares = decision.sellShares
-      const sellFill = resolveExitSellFill(quote)
+      const requestedSellShares = Math.min(pos.shares, decision.sellShares)
+      const sellFill = resolvePositionExitSellFill(requestedSellShares, {
+        boardLot: boardLotQuoteMap.get(pos.symbol) ?? null,
+        oddLot: oddLotQuoteMap.get(pos.symbol) ?? null,
+      })
       if (!sellFill.fillable || sellFill.price == null) {
-        await recordPaperExecutionEvent(env, {
+        await recordPendingExitOnce(env, {
           tradeDate: intradayToday,
           symbol: pos.symbol,
-          side: 'sell',
-          eventType: 'paper_order',
-          status: 'skipped',
-          reason: 'intraday_tp1_unfillable',
-          detail: { shares: sellShares, exit_reason: decision.reason, ...sellFill.detail },
+          reason: sellFill.reason,
+          intentKey: buildExitIntentKey({
+            accountId: ACCOUNT_ID,
+            symbol: pos.symbol,
+            entryDate: pos.entry_date,
+            shares: requestedSellShares,
+            stopVersion: resolveEffectiveS12PositionStop(pos, pos.entry_price ?? pos.avg_cost),
+            action: decision.action,
+          }),
+          detail: { shares: requestedSellShares, exit_reason: decision.reason, ...sellFill.detail },
           source: 'intraday_tp1',
         })
         continue
       }
+      const sellShares = Math.max(0, Math.floor(sellFill.filledShares ?? requestedSellShares))
+      if (sellShares <= 0) continue
+      const tp1Complete = sellShares >= requestedSellShares
       const fillPrice = sellFill.price
       const sellOrderIntent = buildPaperSellOrderIntent({
         tradeDate: intradayToday,
@@ -1618,12 +1721,12 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
 
       await env.DB.batch([
         env.DB.prepare(`
-          UPDATE paper_positions SET shares=?, tp1_hit=1,
+          UPDATE paper_positions SET shares=?, tp1_hit=?,
             trailing_stop=CASE WHEN ? > COALESCE(trailing_stop, 0) THEN ? ELSE trailing_stop END,
             trade_lifecycle_json=COALESCE(?, trade_lifecycle_json),
             updated_at=datetime('now')
           WHERE account_id=? AND symbol=?
-        `).bind(remainingShares, partialTrailingStop, partialTrailingStop, partialLifecycleJson, ACCOUNT_ID, pos.symbol),
+        `).bind(remainingShares, tp1Complete ? 1 : (pos.tp1_hit ?? 0), partialTrailingStop, partialTrailingStop, partialLifecycleJson, ACCOUNT_ID, pos.symbol),
         env.DB.prepare(`
           INSERT INTO paper_orders
             (account_id, symbol, name, side, shares, price, commission, tax, total_cost, source, signal, confidence, note)
@@ -1647,9 +1750,9 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
         symbol: pos.symbol,
         side: 'sell',
         eventType: 'paper_order',
-        status: 'filled',
-        reason: 'intraday_tp1',
-        detail: { shares: sellShares, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, remaining_shares: remainingShares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
+        status: tp1Complete ? 'filled' : 'partial',
+        reason: tp1Complete ? 'intraday_tp1' : 'intraday_tp1_partial_depth',
+        detail: { shares: sellShares, requested_shares: requestedSellShares, order_intent: sellOrderIntent, order_legs: sellOrderIntent.orderLegs, remaining_shares: remainingShares, price: fillPrice, proceeds, exit_reason: decision.reason, ...sellFill.detail },
         orderId,
         source: 'intraday_tp1',
       })

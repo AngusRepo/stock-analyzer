@@ -182,7 +182,7 @@ function rawScalarEvidenceRows(): StrategyThresholdCalibrationEvidenceRow[] {
     validation_end: '2026-07-07',
     guardrails_json: '{}',
     metrics_json: JSON.stringify({ completeScoreRows: 240, matchedRows: 120, currentMatchedRows: 160, avgDailyMatches: 3 }),
-    source_refs_json: JSON.stringify(['strategy_decision_log.context_json.candidate.raw_signals', 'predictions:ensemble']),
+    source_refs_json: JSON.stringify(['strategy_candidate_contexts.raw_signals_json', 'predictions:ensemble']),
     created_at: '2026-07-07T00:00:00.000Z',
     approved_at: '2026-07-07T00:00:00.000Z',
     superseded_at: null,

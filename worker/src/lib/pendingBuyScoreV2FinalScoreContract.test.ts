@@ -43,7 +43,7 @@ const paperRoute = readFileSync('src/routes/paper.ts', 'utf8')
 }
 
 {
-  const morningSetupQueryStart = pendingBuyOrchestrator.indexOf('const { results } = await env.DB.prepare')
+  const morningSetupQueryStart = pendingBuyOrchestrator.indexOf("withD1Retry('buy_recommendations'")
   const morningSetupQueryEnd = pendingBuyOrchestrator.indexOf(').bind(sourceRecoDate', morningSetupQueryStart)
   assert(
     morningSetupQueryStart >= 0 && morningSetupQueryEnd > morningSetupQueryStart,

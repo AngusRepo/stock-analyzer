@@ -72,7 +72,7 @@ async function testComputeAndStoreIndicatorsAsOfDate(): Promise<void> {
   assert(executed[0].sql.includes('volume_momentum_divergence_13_27_10'), 'indicator write should persist volume momentum divergence')
   assert(executed[0].args[1] === '2026-04-25', 'indicator date must use latest price <= asOfDate')
   assert(executed[0].args[4] === 114.5, 'ma20 must not use future 2026-05-04 price')
-  assert(executed[0].args.length === 21, 'indicator write should bind every technical factor column')
+  assert(executed[0].args.length === 30, 'indicator write should bind every technical factor column')
 }
 
 void testComputeAndStoreIndicatorsAsOfDate()

@@ -1,0 +1,4846 @@
+{
+  "schema_version": "strategy-discovery-feature-registry-v1",
+  "source_schema_version": "stockvision-unified-feature-registry-v1",
+  "source_path": "data/feature_registry/unified_feature_registry_v1.json",
+  "source_sha256": "c0b8531d1c75ec271be4de6ab2ca5eb6979f3fe28c9d842110567755ea4e8d80",
+  "pit_overlay_path": "data/feature_registry/strategy_discovery_pit_overlay_v1.json",
+  "pit_overlay_sha256": "76cf6030c9a5a9c043b87be5c80299b1a53347d0adfc0a4dde54d46e4fe87ab8",
+  "pit_verified_feature_count": 3,
+  "feature_count": 137,
+  "features": [
+    {
+      "feature_id": "advance_ratio",
+      "name": "advance_ratio",
+      "family": "market_regime",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "active_mined_strategy_dependency",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "BETA_60",
+      "name": "BETA_60",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "chip_5d",
+      "name": "chip_5d",
+      "family": "chip_margin_flow",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "CNTD_20",
+      "name": "CNTD_20",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "CNTD_5",
+      "name": "CNTD_5",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "CNTN_20",
+      "name": "CNTN_20",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "CNTN_5",
+      "name": "CNTN_5",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "CNTP_20",
+      "name": "CNTP_20",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "CNTP_5",
+      "name": "CNTP_5",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "CORD_10",
+      "name": "CORD_10",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "CORR_10",
+      "name": "CORR_10",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "dealer_ratio_5d",
+      "name": "dealer_ratio_5d",
+      "family": "chip_margin_flow",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "foreign_5d",
+      "name": "foreign_5d",
+      "family": "chip_margin_flow",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "IMIN_20",
+      "name": "IMIN_20",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "IMXD_20",
+      "name": "IMXD_20",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "institutional_net",
+      "name": "institutional_net",
+      "family": "chip_margin_flow",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "KLEN",
+      "name": "KLEN",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "KLOW",
+      "name": "KLOW",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "KLOW2",
+      "name": "KLOW2",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "KMID",
+      "name": "KMID",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "KSFT",
+      "name": "KSFT",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "KSFT2",
+      "name": "KSFT2",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "active_mined_strategy_dependency",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "KUP",
+      "name": "KUP",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "KUP2",
+      "name": "KUP2",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_bbBandwidthPct",
+      "name": "l1_bbBandwidthPct",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.028956061523209484
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_bestFvgStrength",
+      "name": "l1_bestFvgStrength",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.017576255853314408
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_bestOrderBlockStrength",
+      "name": "l1_bestOrderBlockStrength",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.02856489232809008
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_bosBullish",
+      "name": "l1_bosBullish",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.005600198944839038
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_brokerConcentration",
+      "name": "l1_brokerConcentration",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.0032956692587014958
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_brokerNetAmount5d",
+      "name": "l1_brokerNetAmount5d",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.007521262249676595
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_closeAboveMa60Pct",
+      "name": "l1_closeAboveMa60Pct",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.017697676680799728
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_dealerNet5d",
+      "name": "l1_dealerNet5d",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.011429904564612464
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_displacementPct",
+      "name": "l1_displacementPct",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.028612316377270106
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_diTrend",
+      "name": "l1_diTrend",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.027199473141347547
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_eps",
+      "name": "l1_eps",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.04367495258230366
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_foreignTrustNet5d",
+      "name": "l1_foreignTrustNet5d",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.00019532907842735887
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_macdHist",
+      "name": "l1_macdHist",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.021495125567087565
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_monthlyRevenueMoM",
+      "name": "l1_monthlyRevenueMoM",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.005117606036915116
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_monthlyRevenueYoY",
+      "name": "l1_monthlyRevenueYoY",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.024659111490249887
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_return20d",
+      "name": "l1_return20d",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.022857431844817755
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_revenueGrowthYoY",
+      "name": "l1_revenueGrowthYoY",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.009590999114419211
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_roe",
+      "name": "l1_roe",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.0426630777786274
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_sectorFlowCore",
+      "name": "l1_sectorFlowCore",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.0032061329011344878
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_sectorRsRatio",
+      "name": "l1_sectorRsRatio",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.0019576140875787957
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_sectorTurnoverShareDelta",
+      "name": "l1_sectorTurnoverShareDelta",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.0022011811953322777
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_smcBullishScore",
+      "name": "l1_smcBullishScore",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.024958347213680725
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_smcNetScore",
+      "name": "l1_smcNetScore",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.02608234682513816
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_squeezeMomentum",
+      "name": "l1_squeezeMomentum",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.026841176628363144
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_squeezeRelease",
+      "name": "l1_squeezeRelease",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.003538213802032142
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_volumeExpansion20",
+      "name": "l1_volumeExpansion20",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.016374917308569815
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "l1_volumeMomentumDivergence132710",
+      "name": "l1_volumeMomentumDivergence132710",
+      "family": "l1_signal",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_l1"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.015034067710406388
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "linear_factor",
+      "name": "linear_factor",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "liq_amihud_21d",
+      "name": "liq_amihud_21d",
+      "family": "volatility",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.017234238980589386
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "ma10_bias",
+      "name": "ma10_bias",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "active_mined_strategy_dependency",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "ma60_bias",
+      "name": "ma60_bias",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "margin_balance",
+      "name": "margin_balance",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "margin_change_5d_ts",
+      "name": "margin_change_5d_ts",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "margin_ratio",
+      "name": "margin_ratio",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "mom_12m_1m",
+      "name": "mom_12m_1m",
+      "family": "momentum",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.012758555552196243
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "mom_9m",
+      "name": "mom_9m",
+      "family": "momentum",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.0007287269651931009
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "mom_close_to_52w_high",
+      "name": "mom_close_to_52w_high",
+      "family": "momentum",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.029051965857742987
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "mom_hl52",
+      "name": "mom_hl52",
+      "family": "momentum",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.008560041936923373
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "mom_ma50_200_ratio",
+      "name": "mom_ma50_200_ratio",
+      "family": "momentum",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.009398449083652049
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "mom_macd_trend_10",
+      "name": "mom_macd_trend_10",
+      "family": "momentum",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.004295178043695222
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "mom_reversal_1m",
+      "name": "mom_reversal_1m",
+      "family": "momentum",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.02252116697656678
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "mom_reversal_6m",
+      "name": "mom_reversal_6m",
+      "family": "momentum",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.004860795599460537
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "mom_rsi_14",
+      "name": "mom_rsi_14",
+      "family": "momentum",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.016680265262073793
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "mom_vol_adj_12m",
+      "name": "mom_vol_adj_12m",
+      "family": "momentum",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.008617848802879415
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "RESI_10",
+      "name": "RESI_10",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "RESI_20",
+      "name": "RESI_20",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "RESI_5",
+      "name": "RESI_5",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "RESI_60",
+      "name": "RESI_60",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "return_3d",
+      "name": "return_3d",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "return_5d",
+      "name": "return_5d",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "active_mined_strategy_dependency",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "rsi5_dulling",
+      "name": "rsi5_dulling",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "RSQR_10",
+      "name": "RSQR_10",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "RSQR_20",
+      "name": "RSQR_20",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "RSQR_60",
+      "name": "RSQR_60",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "short_squeeze_proxy",
+      "name": "short_squeeze_proxy",
+      "family": "chip_margin_flow",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "size_log_mktcap",
+      "name": "size_log_mktcap",
+      "family": "size",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.02933103388932737
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_adx_14",
+      "name": "tech_adx_14",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.0011158948052711773
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_atr_14",
+      "name": "tech_atr_14",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.01032094364570334
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_bbands_pctb_20",
+      "name": "tech_bbands_pctb_20",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.025125465225420657
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_bbi",
+      "name": "tech_bbi",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.039384848132628644
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_bias_20",
+      "name": "tech_bias_20",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.03349804841805848
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_bullish_streak_5",
+      "name": "tech_bullish_streak_5",
+      "family": "event",
+      "definition": "Five-trading-day rolling count of close[T] > close[T-1].",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "T+0_AFTER_DAILY_BAR_CLOSE",
+      "earliest_execution": "T+1_MARKET_OPEN",
+      "lookback_days": 5,
+      "point_in_time": {
+        "status": "VERIFIED",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": [
+          "ml-service/app/features/__init__.py:strategy95_feature_exprs:tech_bullish_streak_5"
+        ]
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.013881285033494234
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_cmo_14",
+      "name": "tech_cmo_14",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.016679944600498108
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_disposal_active",
+      "name": "tech_disposal_active",
+      "family": "event",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.003577431567739164
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_dma_10_50",
+      "name": "tech_dma_10_50",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.005591782171573579
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_donchian_pos_20",
+      "name": "tech_donchian_pos_20",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.018193219221246136
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_ema_12_pos",
+      "name": "tech_ema_12_pos",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.03928779210510085
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_emv_14",
+      "name": "tech_emv_14",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.0002660509499571099
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_gap_down",
+      "name": "tech_gap_down",
+      "family": "event",
+      "definition": "Negative component of (open[T] - close[T-1]) / close[T-1].",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "T+0_AFTER_DAILY_BAR_CLOSE",
+      "earliest_execution": "T+1_MARKET_OPEN",
+      "lookback_days": 1,
+      "point_in_time": {
+        "status": "VERIFIED",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": [
+          "ml-service/app/features/__init__.py:strategy95_feature_exprs:tech_gap_down"
+        ]
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.0059718123397527936
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_gap_up",
+      "name": "tech_gap_up",
+      "family": "event",
+      "definition": "Positive component of (open[T] - close[T-1]) / close[T-1].",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "T+0_AFTER_DAILY_BAR_CLOSE",
+      "earliest_execution": "T+1_MARKET_OPEN",
+      "lookback_days": 1,
+      "point_in_time": {
+        "status": "VERIFIED",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": [
+          "ml-service/app/features/__init__.py:strategy95_feature_exprs:tech_gap_up"
+        ]
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.0070815097748843535
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_granville_score",
+      "name": "tech_granville_score",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.008200300223862988
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_kd9_k",
+      "name": "tech_kd9_k",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.012073761323824895
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_kdj_j_9",
+      "name": "tech_kdj_j_9",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.022252550501434633
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_keltner_pos_20",
+      "name": "tech_keltner_pos_20",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.028257118209128525
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_limit_down_count_10",
+      "name": "tech_limit_down_count_10",
+      "family": "event",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.0075002017321804445
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_limit_up_streak_10",
+      "name": "tech_limit_up_streak_10",
+      "family": "event",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.026331679708559236
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_locked_open_down_10",
+      "name": "tech_locked_open_down_10",
+      "family": "event",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.007954923747138052
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_locked_open_up_10",
+      "name": "tech_locked_open_up_10",
+      "family": "event",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.00483954471717201
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_ma_convergence",
+      "name": "tech_ma_convergence",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.01772603473902206
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_mfi_14",
+      "name": "tech_mfi_14",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.021913024991509725
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_mtm_10",
+      "name": "tech_mtm_10",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.023668102696947795
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_obv",
+      "name": "tech_obv",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.01642460306377414
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_psy_12",
+      "name": "tech_psy_12",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.008930668763483758
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_roc_10",
+      "name": "tech_roc_10",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.02591106281862681
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_sar",
+      "name": "tech_sar",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.02242895186482997
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_slow_kd_14",
+      "name": "tech_slow_kd_14",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.008466635073151298
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_sma_20_pos",
+      "name": "tech_sma_20_pos",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.0334980484653778
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_tower_3",
+      "name": "tech_tower_3",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.02050347039087278
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_trix_12",
+      "name": "tech_trix_12",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.007334643418841766
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_volume_ratio_5",
+      "name": "tech_volume_ratio_5",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.009415586814862003
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_vr_26",
+      "name": "tech_vr_26",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.01171049680086905
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_williams_r_14",
+      "name": "tech_williams_r_14",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.01955197803203668
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "tech_wma_10_pos",
+      "name": "tech_wma_10_pos",
+      "family": "technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.041090535300176596
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "us_sentiment_score",
+      "name": "us_sentiment_score",
+      "family": "market_regime",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "active_mined_strategy_dependency",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "val_bp",
+      "name": "val_bp",
+      "family": "valuation",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.014565206117043691
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "val_dp",
+      "name": "val_dp",
+      "family": "valuation",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.04901782818173527
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "val_ep",
+      "name": "val_ep",
+      "family": "valuation",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.042830602459496964
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "val_sp",
+      "name": "val_sp",
+      "family": "valuation",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.016807278206852
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "vol_chg_turnover_1y",
+      "name": "vol_chg_turnover_1y",
+      "family": "volume",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.025691648014846292
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "vol_cv_volprice_20d",
+      "name": "vol_cv_volprice_20d",
+      "family": "volume",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.03506245844812996
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "vol_money_flow_5d",
+      "name": "vol_money_flow_5d",
+      "family": "volume",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.02842568873514042
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed",
+        "high_duplicate_overlap"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "vol_ratio_20d",
+      "name": "vol_ratio_20d",
+      "family": "other",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "vol_share_turnover_21d",
+      "name": "vol_share_turnover_21d",
+      "family": "volume",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.022877627495641394
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "vol_signal_5d",
+      "name": "vol_signal_5d",
+      "family": "volume",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": -0.012562317341180292
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "vola_cv_90d",
+      "name": "vola_cv_90d",
+      "family": "volatility",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.02387624343868334
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "vola_min_130d",
+      "name": "vola_min_130d",
+      "family": "volatility",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.022921307608739734
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "vola_realized_12m",
+      "name": "vola_realized_12m",
+      "family": "volatility",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.042281460175741956
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "vola_realized_1m",
+      "name": "vola_realized_1m",
+      "family": "volatility",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "alphabuilderstw"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": 0.0394532361551591
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "volatility_20d",
+      "name": "volatility_20d",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "volatility_5d",
+      "name": "volatility_5d",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [],
+      "governance": {
+        "selector_role": "core_prior",
+        "promotion_state": "core_prior",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "VSTD_10",
+      "name": "VSTD_10",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "VSTD_20",
+      "name": "VSTD_20",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    },
+    {
+      "feature_id": "vwap_bias",
+      "name": "vwap_bias",
+      "family": "price_technical",
+      "definition": "UNKNOWN",
+      "data_source": [
+        "stockvision_ml106"
+      ],
+      "availability_lag": "UNKNOWN",
+      "earliest_execution": "UNKNOWN",
+      "lookback_days": "UNKNOWN",
+      "point_in_time": {
+        "status": "UNKNOWN",
+        "policy_version": "strategy-discovery-pit-overlay-v1",
+        "evidence_refs": []
+      },
+      "missing_rate": "UNKNOWN",
+      "outlier_rate": "UNKNOWN",
+      "turnover_proxy": "UNKNOWN",
+      "correlation_cluster": "UNKNOWN",
+      "ic_summary": {
+        "5d": "UNKNOWN"
+      },
+      "regime_summary": {},
+      "factor_exposure": {},
+      "used_by_strategies": [],
+      "known_risks": [
+        "evidence_watch_not_direct_challenger_seed"
+      ],
+      "governance": {
+        "selector_role": "evidence_watch",
+        "promotion_state": "research_evidence_watch",
+        "materializer_status": "materialized",
+        "eligible_for_strategy": true
+      }
+    }
+  ]
+}

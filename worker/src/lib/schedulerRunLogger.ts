@@ -64,6 +64,15 @@ const TASK_NAMES: Record<string, string> = {
   'verify-v2': 'Verify (V2 LangGraph)',
   'debate-memory-retention': 'Debate Memory Retention',
   'audit-json-retention': 'Audit JSON Retention',
+  'artifact-reconcile': 'Artifact Reconcile',
+  'legacy-evidence-migration': 'Legacy Evidence Migration',
+  'd1-evidence-scrub': 'D1 Evidence Scrub',
+  'r2-retention-sweep': 'R2 Retention Sweep',
+  'orphan-reachability-gc': 'Orphan Reachability GC',
+  'cleanup-dlq-replay': 'Cleanup DLQ Replay',
+  'storage-health-gate': 'Storage Health Gate',
+  'storage-integrity-audit': 'Storage Integrity Audit',
+  'storage-capacity-report': 'Storage Capacity Report',
   'intraday-check': 'Limit Buy + SL/TP',
   'intraday-rescore': 'Intraday Re-score',
   'eod-exit': 'EOD Exit',
@@ -151,6 +160,18 @@ export function classifySchedulerRunSummary(summary: string): SchedulerRunStatus
   return 'success'
 }
 
+export function resolveMonotonicSchedulerEntry(
+  previous: SchedulerRunLogEntry | null,
+  incoming: SchedulerRunLogEntry,
+): SchedulerRunLogEntry {
+  if (!previous || previous.run_date !== incoming.run_date) return incoming
+  const explicitNewRun = Boolean(incoming.run_id) && previous.run_id !== incoming.run_id
+  if (explicitNewRun) return incoming
+  if (previous.status === 'error' && incoming.status !== 'error') return previous
+  if (previous.status === 'success' && ['running', 'triggered'].includes(incoming.status)) return previous
+  return incoming
+}
+
 export async function logSchedulerRunResult(
   kv: KVNamespace,
   task: string,
@@ -161,7 +182,7 @@ export async function logSchedulerRunResult(
   const today = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)
     ? requestedDate
     : new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  const entry: SchedulerRunLogEntry = {
+  const incoming: SchedulerRunLogEntry = {
     task,
     status: result.status,
     summary: result.summary,
@@ -174,6 +195,8 @@ export async function logSchedulerRunResult(
   }
 
   try {
+    const previous = await kv.get(`scheduler:run:${task}:${today}`, 'json') as SchedulerRunLogEntry | null
+    const entry = resolveMonotonicSchedulerEntry(previous, incoming)
     const payload = JSON.stringify(entry)
     await Promise.all([
       kv.put(`scheduler:run:${task}:${today}`, payload, { expirationTtl: DAILY_RUN_LOG_TTL_SECONDS }),

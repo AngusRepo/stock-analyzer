@@ -19,9 +19,11 @@ assert(
 
 assert(
   gateScript.includes('foreach ($testSource in $WorkerTestSources)') &&
-    gateScript.includes('node $testJs') &&
-    gateScript.includes('throw "$testName failed"'),
-  'P12 release gate must execute every discovered worker test and fail on the exact broken test',
+    gateScript.includes('npx tsx $testSource') &&
+    gateScript.includes('throw "$testSource failed"') &&
+    gateScript.includes('strategyDiscoveryLocalE2E.test.ts') &&
+    gateScript.includes('strategyDiscoveryRealModelE2E.test.ts'),
+  'P12 release gate must execute every offline worker test, explicitly separate runtime E2E, and fail on the exact broken test',
 )
 
 assert(

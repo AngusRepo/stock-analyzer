@@ -516,6 +516,8 @@ adminWriteRoutes.post('/api/admin/strategy/decision-log/materialize', async (c) 
     date: body.date ?? c.req.query('date') ?? twToday(),
     limit: body.limit,
     dryRun,
+    artifactEnv: c.env,
+    producerRunId: `manual-strategy-learning-${body.date ?? c.req.query('date') ?? twToday()}-${Date.now().toString(36)}`,
   })
   return c.json({
     ...report,

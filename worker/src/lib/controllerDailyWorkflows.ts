@@ -51,7 +51,14 @@ export async function runModelIcTrackerChain(env: Bindings) {
 
   const icData = await controllerJson<any>(env, '/model_pool/compute_weekly_ic', {
     method: 'POST',
-    jsonBody: { lookback_days: 7, history_max: 26, min_samples: 50, update_pool: true, append_history: true },
+    jsonBody: {
+      lookback_days: 35,
+      history_max: 26,
+      min_samples: 50,
+      min_dates: 10,
+      update_pool: true,
+      append_history: true,
+    },
     timeoutMs: 120_000,
   })
 
@@ -112,9 +119,10 @@ export async function runModelIcRollingRefresh(env: Bindings, runDate?: string) 
   const icData = await controllerJson<any>(env, '/model_pool/compute_weekly_ic', {
     method: 'POST',
     jsonBody: {
-      lookback_days: 7,
+      lookback_days: 35,
       history_max: 26,
       min_samples: 50,
+      min_dates: 10,
       update_pool: true,
       append_history: false,
       run_date: runDate || undefined,

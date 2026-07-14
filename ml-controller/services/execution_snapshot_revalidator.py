@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 try:
@@ -46,6 +47,7 @@ def revalidate_authoritative_snapshots(
 
     errors: list[str] = []
     observations: dict[str, Any] = {}
+    packet_snapshots = packet.get("execution_snapshots") if isinstance(packet.get("execution_snapshots"), Mapping) else {}
     for current_lot in lot_types:
         try:
             response = post_fn(
@@ -83,10 +85,35 @@ def revalidate_authoritative_snapshots(
             "age_ms": age_ms,
             "source_time": observation.get("source_time"),
             "received_at": observation.get("received_at"),
+            "session_epoch": observation.get("session_epoch"),
+            "bid_prices": bid_prices[:5],
+            "ask_prices": ask_prices[:5],
+            "bid_volumes": (observation.get("bid_volumes") or [])[:5],
+            "ask_volumes": (observation.get("ask_volumes") or [])[:5],
         }
         observations[current_lot] = normalized
         if age_ms is None or age_ms > max_age_ms:
             errors.append(f"authoritative_hub_book_stale:{current_lot}")
+        source_time = str(observation.get("source_time") or "").strip()
+        try:
+            parsed_time = datetime.fromisoformat(source_time.replace("Z", "+00:00"))
+            if parsed_time.tzinfo is None:
+                parsed_time = parsed_time.replace(tzinfo=timezone.utc)
+            if abs((datetime.now(timezone.utc) - parsed_time).total_seconds() * 1000) > max_age_ms + 1000:
+                errors.append(f"authoritative_hub_source_time_stale:{current_lot}")
+        except (TypeError, ValueError):
+            errors.append(f"authoritative_hub_source_time_invalid:{current_lot}")
+        try:
+            current_epoch = int(observation.get("session_epoch"))
+            if current_epoch <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            current_epoch = None
+            errors.append(f"authoritative_hub_session_epoch_invalid:{current_lot}")
+        packet_snapshot = packet_snapshots.get(current_lot) if isinstance(packet_snapshots, Mapping) else None
+        packet_epoch = packet_snapshot.get("session_epoch") if isinstance(packet_snapshot, Mapping) else None
+        if packet_epoch is not None and current_epoch is not None and int(packet_epoch) != current_epoch:
+            errors.append(f"authoritative_hub_session_epoch_changed:{current_lot}")
         if bid <= 0 or ask <= 0 or bid > ask:
             errors.append(f"authoritative_hub_book_invalid:{current_lot}")
         elif side == "buy" and ask > price:

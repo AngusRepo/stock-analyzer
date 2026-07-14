@@ -1,0 +1,4 @@
+interface:
+  display_name: "Strategy Discovery Jury"
+  short_description: "Verify strategy bundles with repository evidence"
+  default_prompt: "Use $strategy-discovery-jury to audit this jury bundle and package an evidence-backed verdict."

@@ -20,6 +20,8 @@ const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const schedulerStatus = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
 const morningBriefing = fs.readFileSync('src/lib/morningBriefing.ts', 'utf8')
 const sectorCorrelation = fs.readFileSync('src/lib/sectorCorrelation.ts', 'utf8')
+const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
 const combinedHandlers = `${workerTasks}\n${gcpTasks}\n${cronWorker}\n${cronGcp}`
 
 function hasHandler(task: string): boolean {
@@ -52,7 +54,10 @@ function assertSafeConsolidationSpec(spec: SchedulerDependencySpec): void {
 
 for (const spec of Object.values(SCHEDULER_DEPENDENCY_MAP)) {
   assertSafeConsolidationSpec(spec)
-  assert(hasHandler(spec.task), `${spec.task} must keep a scheduled/manual handler during consolidation`)
+  const hasInternalChainOwner =
+    (spec.task === 'allocator-ev-readiness' && updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-readiness'")) ||
+    (spec.task === 'allocator-ev-feature-snapshot-backfill' && postMarketChain.includes("task: 'allocator-ev-feature-snapshot-backfill'"))
+  assert(hasHandler(spec.task) || hasInternalChainOwner, `${spec.task} must keep a scheduled/manual handler or explicit internal chain owner during consolidation`)
 }
 
 for (const required of [

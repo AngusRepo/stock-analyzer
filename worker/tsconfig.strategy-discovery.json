@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": [
+    "src/cf-types.d.ts",
+    "src/types.ts",
+    "src/routes/strategyDiscoveryRoutes.ts",
+    "src/strategy-discovery/**/*.ts",
+    "src/strategy-discovery/**/*.json",
+    "src/lib/strategyDiscovery*.test.ts"
+  ],
+  "exclude": []
+}

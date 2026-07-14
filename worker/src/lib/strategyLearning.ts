@@ -2,6 +2,7 @@ import {
   DEFAULT_STRATEGY_SPECS,
   assessCandidateAgainstStrategySpecs,
   deriveStrategyRawSignals,
+  deriveStrategyThresholdScores,
   explainFeatureRefDsl,
   normalizeStrategySpecGovernance,
   validateStrategySpec,
@@ -18,6 +19,9 @@ import { assertOwnerCanOwn } from './strategyOwnerFreeze'
 import { materializeFormal137FeatureAliases } from './formal137FeatureMaterialization'
 import { buildPriceActionStructure } from './priceActionStructure'
 import type { OhlcvRow } from './ohlcvTradePlanLevels'
+import type { Bindings } from '../types'
+import { writeEvidenceArtifact } from './artifactLifecycle'
+import { sha256Text } from './datasetSnapshots'
 import {
   applyStrategyThresholdCalibrationArtifacts,
   buildStrategyThresholdAutoDecisions,
@@ -831,11 +835,21 @@ export function buildStrategyDecisionRows(
         ),
       }
       const rawSignals = deriveStrategyRawSignals(candidate)
+      const thresholdScores = deriveStrategyThresholdScores(candidate)
       const context = {
         candidate: {
           raw_signals: rawSignals,
           current_price: finiteNumber(candidate.current_price),
           industry: candidate.industry ?? candidate.sector ?? null,
+        },
+        score_v2: {
+          finalScore: thresholdScores.seedScore,
+          components: {
+            chipFlow: thresholdScores.chipFlow,
+            technicalStructure: thresholdScores.technicalStructure,
+            momentumProxy: thresholdScores.momentumScore,
+          },
+          source: thresholdScores.source,
         },
         learning_version: STRATEGY_LEARNING_VERSION,
       }
@@ -870,11 +884,22 @@ export async function listStrategyLearningCandidates(
   const safeOffset = Math.max(0, Math.floor(offset))
   const { results } = await db.prepare(`
     WITH latest_run AS (
-      SELECT run_id
-        FROM screener_funnel_runs
-       WHERE date = ?
-       ORDER BY created_at DESC
-       LIMIT 1
+      SELECT COALESCE(
+        (
+          SELECT h.run_id
+            FROM canonical_run_heads h
+            JOIN pipeline_runs p ON p.run_id = h.run_id AND p.status = 'canonical'
+           WHERE h.logical_run_key = ?
+           LIMIT 1
+        ),
+        (
+          SELECT run_id
+            FROM screener_funnel_runs
+           WHERE date = ? AND status = 'success'
+           ORDER BY created_at DESC
+           LIMIT 1
+        )
+      ) AS run_id
     ),
     funnel_candidates AS (
       SELECT symbol, name, stage, evidence, score_after, rank,
@@ -923,7 +948,7 @@ export async function listStrategyLearningCandidates(
        fc.symbol ASC
      LIMIT ?
      OFFSET ?
-  `).bind(date, date, safeLimit, safeOffset).all<StrategyCandidateInput & {
+  `).bind(`screener:${date}:TW:production:market_screener`, date, date, safeLimit, safeOffset).all<StrategyCandidateInput & {
     score_components?: unknown
     funnel_evidence?: string | null
     funnel_score?: number | null
@@ -1029,16 +1054,109 @@ export async function hydrateStrategyCandidateDailyFeatures(
   }
 }
 
-export async function persistStrategyDecisionRows(db: D1Database, rows: StrategyDecisionLogRow[]): Promise<number> {
+export async function persistStrategyDecisionRows(
+  db: D1Database,
+  rows: StrategyDecisionLogRow[],
+  artifactEnv?: Pick<Bindings, 'DB' | 'ARTIFACTS'>,
+  producerRunId = `strategy-learning-${rows[0]?.date ?? 'unknown'}`,
+): Promise<number> {
   await ensureStrategyLearningTables(db)
   if (rows.length === 0) return 0
-  const statements = rows.map((row) => db.prepare(`
+  let persistedRows = rows
+  let contextStatements: D1PreparedStatement[] = []
+  if (artifactEnv?.ARTIFACTS) {
+    const artifact = await writeEvidenceArtifact(artifactEnv, {
+      domain: 'strategy_decision_evidence',
+      businessDate: rows[0].date,
+      producerRunId,
+      retentionClass: 'canonical_model_evidence',
+      schemaVersion: 'strategy-decision-evidence-v2',
+      payload: {
+        contexts: [...new Map(rows.map((row) => [`${row.date}:${row.symbol}`, {
+          date: row.date,
+          symbol: row.symbol,
+          context: JSON.parse(row.context_json),
+        }])).values()],
+        decisions: rows.map((row) => ({
+          decision_id: row.decision_id,
+          strategy_id: row.strategy_id,
+          strategy_version: row.strategy_version,
+          evidence: JSON.parse(row.evidence_json),
+        })),
+      },
+      rowCount: rows.length,
+      metadata: { symbols: [...new Set(rows.map((row) => row.symbol))].length },
+    })
+    const contextBySymbol = new Map<string, { contextId: string; compactContext: string }>()
+    for (const row of rows) {
+      const key = `${row.date}:${row.symbol}`
+      if (contextBySymbol.has(key)) continue
+      const parsed = JSON.parse(row.context_json) as any
+      const contextHash = await sha256Text(row.context_json)
+      const contextId = `strategy-context:${row.date}:${row.symbol}:${contextHash.replace(/^sha256:/, '').slice(0, 16)}`
+      const rawSignals = {
+        ...(parsed?.candidate?.raw_signals ?? {}),
+        score_v2: parsed?.score_v2 ?? null,
+      }
+      contextBySymbol.set(key, {
+        contextId,
+        compactContext: JSON.stringify({
+          schema_version: 'strategy-context-pointer-v1',
+          context_id: contextId,
+          artifact_id: artifact.artifact_id,
+          r2_key: artifact.r2_key,
+          checksum: artifact.checksum,
+        }),
+      })
+      contextStatements.push(db.prepare(`
+        INSERT OR IGNORE INTO strategy_candidate_contexts (
+          context_id, date, symbol, context_hash, raw_signals_json,
+          current_price, industry, artifact_id, r2_key, checksum, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        contextId,
+        row.date,
+        row.symbol,
+        contextHash,
+        JSON.stringify(rawSignals),
+        parsed?.candidate?.current_price ?? null,
+        parsed?.candidate?.industry ?? null,
+        artifact.artifact_id,
+        artifact.r2_key,
+        artifact.checksum,
+        row.created_at,
+      ))
+    }
+    persistedRows = rows.map((row) => {
+      const context = contextBySymbol.get(`${row.date}:${row.symbol}`)!
+      const evidence = JSON.parse(row.evidence_json) as any
+      return {
+        ...row,
+        context_json: context.compactContext,
+        evidence_json: JSON.stringify({
+          schema_version: 'strategy-evidence-pointer-v1',
+          artifact_id: artifact.artifact_id,
+          r2_key: artifact.r2_key,
+          checksum: artifact.checksum,
+          feature_ref_diagnostics: {
+            weighted_score: evidence?.feature_ref_diagnostics?.weighted_score ?? null,
+          },
+        }),
+        context_id: context.contextId,
+        evidence_artifact_id: artifact.artifact_id,
+      } as StrategyDecisionLogRow & { context_id: string; evidence_artifact_id: string }
+    })
+  }
+  for (let i = 0; i < contextStatements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
+    await db.batch(contextStatements.slice(i, i + STRATEGY_LEARNING_D1_BATCH_SIZE))
+  }
+  const statements = persistedRows.map((row) => db.prepare(`
     INSERT OR REPLACE INTO strategy_decision_log (
       decision_id, date, symbol, name, strategy_id, strategy_version,
       strategy_status, alpha_bucket, matched, match_score, reason_code,
-      context_json, evidence_json, created_at
+      context_json, evidence_json, created_at, context_id, evidence_artifact_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     row.decision_id,
     row.date,
@@ -1054,6 +1172,8 @@ export async function persistStrategyDecisionRows(db: D1Database, rows: Strategy
     row.context_json,
     row.evidence_json,
     row.created_at,
+    (row as any).context_id ?? null,
+    (row as any).evidence_artifact_id ?? null,
   ))
   let persisted = 0
   for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
@@ -1066,7 +1186,13 @@ export async function persistStrategyDecisionRows(db: D1Database, rows: Strategy
 
 export async function materializeStrategyDecisionLog(
   db: D1Database,
-  options: { date: string; limit?: number; dryRun?: boolean },
+  options: {
+    date: string
+    limit?: number
+    dryRun?: boolean
+    artifactEnv?: Pick<Bindings, 'DB' | 'ARTIFACTS'>
+    producerRunId?: string
+  },
 ): Promise<{
   success: boolean
   mode: 'dry_run' | 'persisted'
@@ -1081,7 +1207,7 @@ export async function materializeStrategyDecisionLog(
   const candidates = await listStrategyLearningCandidates(db, options.date, options.limit)
   const rows = buildStrategyDecisionRows(options.date, candidates, specs)
   const dryRun = options.dryRun !== false
-  const persisted = dryRun ? 0 : await persistStrategyDecisionRows(db, rows)
+  const persisted = dryRun ? 0 : await persistStrategyDecisionRows(db, rows, options.artifactEnv, options.producerRunId)
   return {
     success: true,
     mode: dryRun ? 'dry_run' : 'persisted',
@@ -1273,7 +1399,14 @@ export async function persistStrategyRewardLedgerRows(db: D1Database, rows: Stra
 
 export async function materializeStrategyDecisionLogChunk(
   db: D1Database,
-  options: { date: string; offset?: number; limit?: number; dryRun?: boolean },
+  options: {
+    date: string
+    offset?: number
+    limit?: number
+    dryRun?: boolean
+    artifactEnv?: Pick<Bindings, 'DB' | 'ARTIFACTS'>
+    producerRunId?: string
+  },
 ): Promise<{
   success: boolean
   mode: 'dry_run' | 'persisted'
@@ -1294,7 +1427,7 @@ export async function materializeStrategyDecisionLogChunk(
   const candidates = await listStrategyLearningCandidates(db, options.date, limit, offset)
   const rows = buildStrategyDecisionRows(options.date, candidates, specs)
   const dryRun = options.dryRun !== false
-  const persisted = dryRun ? 0 : await persistStrategyDecisionRows(db, rows)
+  const persisted = dryRun ? 0 : await persistStrategyDecisionRows(db, rows, options.artifactEnv, options.producerRunId)
   return {
     success: true,
     mode: dryRun ? 'dry_run' : 'persisted',
@@ -1677,8 +1810,10 @@ export async function buildStrategyLearningSummary(
       SELECT strategy_id,
              strategy_version,
              SUM(samples) AS samples,
-             AVG(hit_rate) AS hit_rate,
-             AVG(avg_return_pct) AS avg_return_pct,
+             SUM(hit_rate * samples) /
+               NULLIF(SUM(CASE WHEN hit_rate IS NOT NULL THEN samples ELSE 0 END), 0) AS hit_rate,
+             SUM(avg_return_pct * samples) /
+               NULLIF(SUM(CASE WHEN avg_return_pct IS NOT NULL THEN samples ELSE 0 END), 0) AS avg_return_pct,
              MIN(max_drawdown_pct) AS max_drawdown_pct
         FROM strategy_reward_ledger
        GROUP BY strategy_id, strategy_version

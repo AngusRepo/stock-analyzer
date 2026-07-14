@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stockvision://strategy-discovery/candidate-v1",
+  "type": "object",
+  "required": ["candidate_id", "run_id", "search_mode", "parent_strategy_id", "mutation_type", "hypothesis", "economic_mechanism", "portfolio_gap", "preferred_regimes", "minimum_regime_samples", "dsl", "candidate_hash", "source_model", "source_type"],
+  "properties": {
+    "candidate_id": { "type": "string", "pattern": "^CAND-[0-9]{3}$" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "search_mode": { "enum": ["MODE_B_PARENT_MUTATION", "MODE_C_PORTFOLIO_GAP", "MODE_D_REGIME_SPECIALIST"] },
+    "parent_strategy_id": { "type": ["string", "null"] },
+    "mutation_type": { "oneOf": [{ "enum": ["ADD_GATE", "REPLACE_FEATURE", "SIMPLIFY_RULE", "MODIFY_EXIT", "REDUCE_TURNOVER", "NEUTRALIZE_EXPOSURE"] }, { "type": "null" }] },
+    "hypothesis": { "type": "string", "minLength": 1 },
+    "economic_mechanism": { "type": "string", "minLength": 1 },
+    "portfolio_gap": { "type": "string", "minLength": 1 },
+    "preferred_regimes": { "type": "array", "items": { "type": "string" } },
+    "minimum_regime_samples": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "const": "UNKNOWN" }] },
+    "dsl": {
+      "type": "object",
+      "required": ["feature_ids", "parameters", "regime_gate", "entry_rules", "exit_rules", "signal_time", "execution_time", "falsification_condition", "lags"],
+      "properties": {
+        "feature_ids": { "type": "array", "minItems": 1, "maxItems": 3, "items": { "type": "string" }, "uniqueItems": true },
+        "parameters": { "type": "object", "maxProperties": 3 },
+        "regime_gate": { "type": ["object", "null"] },
+        "entry_rules": { "type": "array", "minItems": 1 },
+        "exit_rules": { "type": "array", "minItems": 1 },
+        "signal_time": { "type": "string", "minLength": 1 },
+        "execution_time": { "type": "string", "minLength": 1 },
+        "falsification_condition": { "type": "string", "minLength": 1 },
+        "lags": { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+      },
+      "additionalProperties": false
+    },
+    "candidate_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "source_model": { "type": "string" },
+    "source_type": { "enum": ["REAL", "FIXTURE"] }
+  },
+  "additionalProperties": false
+}

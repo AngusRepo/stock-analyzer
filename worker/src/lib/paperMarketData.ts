@@ -93,29 +93,26 @@ export async function recordSellSettlement(
   return lastOrder?.id ?? null
 }
 
+export type DayTradeExitIntentKind = 'risk_stop' | 'take_profit' | 'model_exit' | 'time_stop' | 'forced_close'
+
 export async function isDayTradeAllowed(
   symbol: string,
   shares: number,
-  exitReason: string,
+  exitIntentKind: DayTradeExitIntentKind,
   kv: KVNamespace,
 ): Promise<{ allowed: boolean; reason: string }> {
-  if (shares % 1000 !== 0) return { allowed: false, reason: '僅允許整股當沖' }
+  if (shares % 1000 !== 0) return { allowed: false, reason: 'board_lot_required_for_day_trade_exit' }
 
   const raw = await kv.get('market:daytrade_eligible')
-  if (!raw) return { allowed: false, reason: '缺少當沖白名單資料（KV 未就緒）' }
+  if (!raw) return { allowed: false, reason: 'daytrade_eligibility_registry_missing' }
   try {
     const eligible = JSON.parse(raw) as string[]
-    if (!eligible.includes(symbol)) return { allowed: false, reason: `${symbol} 不在當沖白名單` }
+    if (!eligible.includes(symbol)) return { allowed: false, reason: `${symbol}_not_daytrade_eligible` }
   } catch {
-    return { allowed: false, reason: '當沖白名單 KV 解析失敗' }
+    return { allowed: false, reason: 'daytrade_eligibility_registry_invalid' }
   }
 
-  const allowedTriggers = ['硬停損', 'ATR 初始停損', 'Trailing Stop', 'TP1', 'TP2']
-  if (!allowedTriggers.some((trigger) => exitReason.includes(trigger))) {
-    return { allowed: false, reason: `不允許的當沖觸發原因: ${exitReason}` }
-  }
-
-  return { allowed: true, reason: '當沖條件檢查通過' }
+  return { allowed: true, reason: `daytrade_exit_allowed:${exitIntentKind}` }
 }
 
 export async function getLatestPrice(db: D1Database, symbol: string): Promise<number | null> {

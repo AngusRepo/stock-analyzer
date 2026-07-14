@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { twToday } from './dateUtils'
+import { writeEvidenceArtifact } from './artifactLifecycle'
 
 export interface PaperExecutionEventInput {
   accountId?: number
@@ -36,10 +37,56 @@ function isMissingTableError(error: unknown): boolean {
 }
 
 export async function recordPaperExecutionEvent(
-  env: Pick<Bindings, 'DB'>,
+  env: Pick<Bindings, 'DB'> & Partial<Pick<Bindings, 'ARTIFACTS'>>,
   input: PaperExecutionEventInput,
 ): Promise<void> {
   const event = normalizePaperExecutionEvent(input)
+  const executionCritical = (
+    event.eventType === 'paper_broker_reconciliation' ||
+    event.eventType === 'live_execution_shadow' ||
+    (event.eventType === 'paper_order' && ['filled', 'partial'].includes(event.status))
+  )
+  let detail = event.detail
+  if (executionCritical && env.ARTIFACTS && event.detail) {
+    const producerRunId = `paper-execution:${event.tradeDate}:${event.symbol ?? 'market'}:${event.eventType}:${crypto.randomUUID()}`
+    const manifest = await writeEvidenceArtifact(env as Pick<Bindings, 'DB' | 'ARTIFACTS'>, {
+      domain: 'paper_execution',
+      businessDate: event.tradeDate,
+      producerRunId,
+      canonicalRunId: producerRunId,
+      retentionClass: 'canonical_execution',
+      schemaVersion: 'paper_execution_evidence_v1',
+      rowCount: 1,
+      payload: {
+        account_id: event.accountId,
+        symbol: event.symbol,
+        side: event.side,
+        event_type: event.eventType,
+        status: event.status,
+        reason: event.reason,
+        order_id: event.orderId,
+        pending_run_id: event.pendingRunId,
+        source: event.source,
+        detail: event.detail,
+      },
+      metadata: { symbol: event.symbol, side: event.side, event_type: event.eventType, status: event.status },
+    })
+    detail = {
+      evidence_pointer: {
+        artifact_id: manifest.artifact_id,
+        r2_key: manifest.r2_key,
+        checksum: manifest.checksum,
+        checksum_verified_at: manifest.checksum_verified_at,
+        retention_class: manifest.retention_class,
+      },
+      summary: {
+        source: event.source,
+        order_id: event.orderId,
+        pending_run_id: event.pendingRunId,
+        reason: event.reason,
+      },
+    }
+  }
   try {
     await env.DB.prepare(`
       INSERT INTO paper_execution_events
@@ -54,20 +101,21 @@ export async function recordPaperExecutionEvent(
       event.eventType,
       event.status,
       event.reason,
-      event.detail ? JSON.stringify(event.detail) : null,
+      detail ? JSON.stringify(detail) : null,
       event.orderId,
       event.pendingRunId,
       event.source,
     ).run()
   } catch (error) {
-    if (!isMissingTableError(error)) {
+    if (executionCritical || !isMissingTableError(error)) {
       console.warn(`[PaperExecutionEvents] insert failed: ${error instanceof Error ? error.message : String(error)}`)
     }
+    if (executionCritical) throw error
   }
 }
 
 export async function recordPaperExecutionEvents(
-  env: Pick<Bindings, 'DB'>,
+  env: Pick<Bindings, 'DB'> & Partial<Pick<Bindings, 'ARTIFACTS'>>,
   events: PaperExecutionEventInput[],
 ): Promise<void> {
   for (const event of events) {

@@ -1,10 +1,14 @@
 import fs from 'node:fs'
+import path from 'node:path'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
 }
 
-const preflight = fs.readFileSync('worker/preflight_p0_p3_readonly_2026_06_22.sql', 'utf8')
+const workerRoot = fs.existsSync(path.join(process.cwd(), 'preflight_p0_p3_readonly_2026_06_22.sql'))
+  ? process.cwd()
+  : path.join(process.cwd(), 'worker')
+const preflight = fs.readFileSync(path.join(workerRoot, 'preflight_p0_p3_readonly_2026_06_22.sql'), 'utf8')
 const withoutComments = preflight
   .split(/\r?\n/)
   .filter((line) => !line.trim().startsWith('--'))

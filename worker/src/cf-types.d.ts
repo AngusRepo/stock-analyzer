@@ -52,6 +52,33 @@ declare interface ExportedHandler<Env = unknown> {
   queue?<T = unknown>(batch: MessageBatch<T>, env: Env, ctx: ExecutionContext): Promise<void>
 }
 
+declare interface WorkflowInstance {
+  id: string
+  status(): Promise<{ status: string; output?: unknown; error?: unknown }>
+  pause?(): Promise<void>
+  resume?(): Promise<void>
+  restart?(): Promise<void>
+  terminate?(): Promise<void>
+}
+
+declare interface WorkflowBinding<Params = unknown> {
+  create(options?: { id?: string; params?: Params }): Promise<WorkflowInstance>
+  get(id: string): Promise<WorkflowInstance>
+}
+
+declare module 'cloudflare:workers' {
+  export interface WorkflowEvent<Params = unknown> { payload: Params; instanceId: string; timestamp: Date }
+  export interface WorkflowStep {
+    do<T>(name: string, callback: () => Promise<T>): Promise<T>
+    do<T>(name: string, config: { retries?: { limit: number; delay: string; backoff?: 'constant' | 'linear' | 'exponential' }; timeout?: string }, callback: () => Promise<T>): Promise<T>
+  }
+  export abstract class WorkflowEntrypoint<Env = unknown, Params = unknown> {
+    protected env: Env
+    protected ctx: ExecutionContext
+    abstract run(event: WorkflowEvent<Params>, step: WorkflowStep): Promise<unknown>
+  }
+}
+
 // ─── Queue Types ─────────────────────────────────────────────────────────────
 
 declare interface Queue<T = unknown> {

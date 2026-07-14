@@ -21,21 +21,27 @@ assert(!appShell.includes("href: '/data-quality'"), 'Data Quality must be remove
 
 assert(!obs.includes('Incident Inbox'), 'OBS must not render the old incident inbox; root cause belongs on scheduler rows')
 assert(!obs.includes('Selected Incident Detail'), 'OBS must not render the old selected incident detail pane')
-const removedDependencyMapLabel = ['Dependency', ' Map'].join('')
-const removedDependencyMapZhLabel = ['依賴', '地圖'].join('')
-assert(!obs.includes(removedDependencyMapLabel) && !obs.includes(removedDependencyMapZhLabel), 'OBS must not render the removed dependency map block')
+assert(!obs.includes('Dependency Map') && !obs.includes('依賴關係圖'), 'OBS must not render the removed dependency map block')
 assert(!obs.includes('Reliability Map'), 'OBS must not render the low-signal reliability map')
 assert(obs.includes('computeDataQualityScore'), 'OBS Data Quality percentage must be computed from checks, not hardcoded fail=35')
-assert(obs.includes('schedulerStatusLogLabel') && obs.includes('執行摘要'), 'OBS scheduler rows must label success rows as execution summaries and reserve root cause for abnormal jobs')
-assert(obs.includes('發生 {job.lastRun') || obs.includes('發生 '), 'Scheduler rows must expose occurrence time')
-assert(obs.includes('schedulerHasRootCause') && obs.includes('Root cause：') && obs.includes('可能影響：'), 'OBS scheduler rows must expose root cause and impact only for abnormal jobs')
+assert(
+  obs.includes('function schedulerStatusLog') &&
+    obs.includes("if (job.lastStatus === 'success') return '已完成，產物可供後續流程使用。'") &&
+    obs.includes('.filter((job) => schedulerHasRootCause(job))'),
+  'OBS must render success as an execution summary and reserve the critical root-cause deck for abnormal jobs',
+)
+assert(obs.includes("發生 {job.lastRun || '-'}"), 'Scheduler error rows must expose occurrence time')
+assert(
+  obs.includes('function schedulerHasRootCause') && obs.includes('Root cause：') && obs.includes('可能影響：'),
+  'OBS abnormal scheduler rows must expose root cause and impact',
+)
 assert(!obs.includes('setActiveTab'), 'OBS must not expose fake tabs when Scheduler and Data Quality are both visible')
-assert(obs.includes('SchedulerExecutionMap'), 'OBS must show chain progress instead of an incident selector')
-assert(obs.includes('Scheduler Runs'), 'OBS must include Scheduler as a compact drilldown panel')
+assert(obs.includes('ReadinessFlowMap') && obs.includes('Readiness Flow / 放行路徑'), 'OBS must show chain progress instead of an incident selector')
+assert(obs.includes('SchedulerReadinessGroupBoard'), 'OBS must include Scheduler as a compact drilldown panel')
 assert(obs.includes('Data Quality'), 'OBS must include Data Quality as a compact drilldown panel')
 assert(!obs.includes('Model Health Snapshot'), 'OBS must not duplicate Model Pool health when the dedicated page owns it')
 assert(!obs.includes('Cost / Resource'), 'OBS must not render low-signal resource blocks without actionable data')
-assert(obs.includes('目前沒有 scheduler payload'), 'OBS scheduler empty state must be useful when data is sparse')
+assert(obs.includes('Runtime 狀態等待 `/api/scheduler/status`'), 'OBS scheduler empty state must be useful when data is sparse')
 assert(obs.includes('Data Quality / 資料品質'), 'OBS labels should be bilingual for readability')
 assert(obs.includes('/scheduler') && obs.includes('/data-quality'), 'OBS must keep deep links to specialist routes')
 
@@ -49,3 +55,5 @@ assert(dataQuality.includes('Data Quality Drilldown'), 'Data Quality deep link p
 assert(dataQuality.includes('freshness') && dataQuality.includes('schema') && dataQuality.includes('parity'), 'Data Quality drilldown should focus on freshness/schema/parity')
 assert(!dataQuality.includes('deployGateApi'), 'Data Quality drilldown must not duplicate Deploy Gate ownership')
 assert(!dataQuality.includes('Deploy Gate'), 'Data Quality drilldown must not render Deploy Gate summary panels')
+
+console.log('obsInformationArchitectureContract.test.ts passed')

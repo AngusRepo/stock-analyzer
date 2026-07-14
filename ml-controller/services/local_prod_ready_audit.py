@@ -21,8 +21,8 @@ from services.production_cutover_packet import (
     REQUIRED_EVIDENCE_FILES,
 )
 
-SCHEMA_VERSION = "stockvision-local-prod-ready-audit-v2"
-ROADMAP_SCOPE_VERSION = "planscope-full-session-root-2026-06-14"
+SCHEMA_VERSION = "stockvision-local-prod-ready-audit-v3"
+ROADMAP_SCOPE_VERSION = "planscope-full-session-root-realtime-readiness-2026-07-14"
 
 ACTIVE_8_DIRECT_ALPHA = (
     "LightGBM",
@@ -1847,6 +1847,129 @@ def _formal137_repair_roadmap_checks(root: Path) -> list[dict[str, Any]]:
     )]
 
 
+def _realtime_trading_local_closure_checks(root: Path) -> list[dict[str, Any]]:
+    return [
+        _check_text_contains(
+            root, "worker/src/lib/authoritativeExecutionSnapshot.ts",
+            ("authoritative_execution_snapshot_v2", "snapshotId", "sessionEpoch", "sourceAgreement", "buy_fill_below_fresh_best_ask", "sell_fill_above_fresh_best_bid"),
+            "realtime:p0:authoritative_execution_snapshot_v2",
+            "single authoritative execution snapshot carries identity, epoch, freshness, agreement and impossible-fill hard mismatches",
+        ),
+        _check_text_contains(
+            root, "worker/src/lib/paperOrderBookMatcher.ts",
+            ("paper_depth_match_v1", "visible_depth_partial_fill_remaining_resting", "selected_depth_observation_missing", "normalizeTwFilledSharesForRequestedOrder"),
+            "realtime:p0:l5_depth_matching_partial_resting",
+            "paper matching consumes authoritative visible L5 depth and leaves unmatched quantity resting",
+        ),
+        _check_text_contains(
+            root, "worker/src/lib/paperEntryTasks.ts",
+            ("resolveS12UnifiedDecision", "matchPaperOrderAgainstAuthoritativeDepth", "paper_depth_match", "authoritative_lot_book_mismatch"),
+            "realtime:p0:s12_single_owner_entry_depth_execution",
+            "S12 remains the decision owner while execution is owned by authoritative lot-specific depth matching",
+        ),
+        _check_text_regex_absent(
+            root, "worker/src/lib/paperEntryTasks.ts", r"applyPartialFill\(",
+            "realtime:p0:no_daily_volume_as_execution_truth",
+            "daily volume models do not authorize paper fills",
+        ),
+        _check_text_contains(
+            root, "worker/src/lib/paperExitTasks.ts",
+            ("buildExitIntentKey", "exit_intent_key", "matchPaperOrderAgainstAuthoritativeDepth", "intraday_exit_partial_depth", "tw_equity_odd_lot_book_required"),
+            "realtime:p0:stop_exit_idempotent_split_lot_depth",
+            "stop exits have durable idempotency and independent board/odd-lot depth lanes with partial remainder retry",
+        ),
+        _check_text_contains(
+            root, "worker/src/lib/paperBrokerReconciliation.ts",
+            ("buy_fill_below_fresh_best_ask", "sell_fill_above_fresh_best_bid"),
+            "realtime:p0:paper_broker_impossible_fill_parity",
+            "paper/broker reconciliation rejects impossible BUY and SELL prices symmetrically",
+        ),
+        _check_text_contains(
+            root, "shioaji-proxy/main.py",
+            ("poison_process", "streaming_tick_cache", "streaming_tick_accumulator", "session_epoch", "execution_ready", 'SHIOAJI_ORDERBOOK_MAX_AGE_MS", "1500"'),
+            "realtime:p0:shioaji_single_owner_streaming_cache",
+            "Shioaji execution hub is cache-only, epoch-aware, fail-fast and supervisor-replaceable",
+        ),
+        _check_text_regex_absent(
+            root, "shioaji-proxy/main.py", r"api\.kbars\(",
+            "realtime:p0:shioaji_research_isolation",
+            "historical SDK kbars cannot block the execution broker session",
+        ),
+        _check_text_contains(
+            root, "ml-controller/services/execution_snapshot_revalidator.py",
+            ("authoritative_hub_session_epoch_changed", "authoritative_hub_source_time_invalid", "authoritative_hub_book_stale", "authoritative_hub_ask_above_limit", "authoritative_hub_bid_below_limit"),
+            "realtime:p0:gateway_last_moment_revalidation",
+            "gateway revalidates clock, freshness, epoch and marketability immediately before submit",
+        ),
+        _check_text_contains(
+            root, "worker/src/lib/liveExecutionGatewayClient.ts",
+            ("LIVE_EXECUTION_CLIENT_ENABLED", "LIVE_EXECUTION_SUBMIT_GUARD_ENABLED", "LIVE_TRADING_APPROVAL_SCOPE", "submitOrReconcileSignedLiveExecutionPacket", "submit_response_unknown_no_automatic_resubmit"),
+            "realtime:p0:worker_live_submit_triple_guard_reconcile",
+            "Worker live client requires three explicit controls and reconciles unknown submit without automatic retry",
+        ),
+        _check_text_contains(
+            root, "worker/wrangler.toml",
+            ('LIVE_EXECUTION_CLIENT_ENABLED = "0"', 'LIVE_EXECUTION_SUBMIT_GUARD_ENABLED = "0"', 'LIVE_EXECUTION_SHADOW_CLIENT_ENABLED = "0"'),
+            "realtime:p0:live_submit_disabled_local_baseline",
+            "all live execution and shadow client gates remain disabled in the committed runtime baseline",
+        ),
+        _check_text_contains(
+            root, "worker/src/lib/paperExecutionEvents.ts",
+            ("canonical_execution", "writeEvidenceArtifact", "evidence_pointer", "checksum_verified_at"),
+            "realtime:p1:canonical_execution_r2_first",
+            "execution-critical evidence is R2-first and D1 stores a checksum-verified skinny pointer",
+        ),
+        _check_text_contains(
+            root, "worker/src/lib/artifactLifecycle.ts",
+            ("canonical_execution", "canonical_model_evidence", "paper_shadow", "hard_ref_count", "legal_hold", "STORAGE_LIFECYCLE_SCHEDULE"),
+            "realtime:p1:lineage_aware_retention",
+            "retention is ownership/lineage-aware rather than an age-only capacity patch",
+        ),
+        _check_text_contains(
+            root, "worker/migration_artifact_lifecycle_2026_07_14.sql",
+            ("pipeline_runs", "canonical_run_heads", "run_artifacts", "artifact_d1_scrub_queue", "artifact_cleanup_dlq"),
+            "realtime:p1:canonical_run_registry_schema",
+            "canonical rerun, artifact and resumable cleanup state have local compatibility schema",
+        ),
+        _check_text_contains(
+            root, "infra/gcp-scheduler-jobs.json",
+            ("artifact-reconcile", "d1-evidence-scrub", "r2-retention-sweep", "orphan-reachability-gc", "cleanup-dlq-replay", "storage-health-gate", "storage-integrity-audit", "weekly-cleanup", "storage-capacity-report"),
+            "realtime:p1:automatic_storage_lifecycle_schedule",
+            "all automatic R2/D1 reconciliation, scrub, retention, integrity and reporting schedules are defined",
+        ),
+        _check_text_contains(
+            root, "worker/src/lib/localMaintenance.ts",
+            ("tdcc_shareholding_http_", "drift_check_http_", "throw e", "MaintenanceRunResult"),
+            "realtime:p1:scheduler_no_false_green",
+            "weekly maintenance propagates core task failures instead of returning false-green HTTP success",
+        ),
+        _check_text_contains(
+            root, "worker/src/lib/pendingBuyOrchestrator.ts",
+            ("withD1Retry", "isTransientD1Error", "morning_setup_failure"),
+            "realtime:p1:morning_intraday_bounded_d1_retry",
+            "morning/intraday orchestration uses bounded D1 retry and classified run state",
+        ),
+        _check_text_contains(
+            root, "worker/src/lib/s12IntradayStructure.ts",
+            ("completed_15m_current_session_bars", "completed_15m_seeded_context_bars", "completed_1h_bars", "completed_1h_fallback_bars", "waiting_1h_completed_bar"),
+            "realtime:p1:s12_completed_bar_diagnostics",
+            "S12 completed bars expose subscription/freshness/gap diagnostics for 15M and 1H lineage",
+        ),
+        _check_text_contains(
+            root, "ml-controller/services/finlab_live_submit_service.py",
+            ("FINLAB_LIVE_SUBMIT_ENABLED", "allow_live_submit", "reserve_intent", "mark_submit_unknown", "snapshot_revalidator"),
+            "realtime:p2:private_gateway_fail_close_state_machine",
+            "private gateway requires explicit enablement, durable idempotency and authoritative revalidation",
+        ),
+        _check_text_contains(
+            root, "ml-controller/services/broker_execution_repository.py",
+            ("ON CONFLICT(idempotency_key) DO NOTHING", "recoverable_legs", "record_broker_event", "SUBMIT_UNKNOWN"),
+            "realtime:p2:broker_reconciliation_durable",
+            "broker intent, leg, callback and unknown-submit reconciliation are durable and idempotent",
+        ),
+    ]
+
+
 def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any]:
     root = repo_root or _repo_root()
     checks = [
@@ -1870,6 +1993,7 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
         *_production_cutover_packet_checks(root),
         *_artifact_lifecycle_repair_packet_checks(root),
         *_formal137_repair_roadmap_checks(root),
+        *_realtime_trading_local_closure_checks(root),
     ]
     failed = [row for row in checks if row["status"] != "pass"]
     local_done = not failed
@@ -1891,6 +2015,7 @@ def build_local_prod_ready_audit(repo_root: Path | None = None) -> dict[str, Any
             "formal137_p0_p10_repair_no_partial_local_closure",
             "artifact_lifecycle_p0_p8_repair_no_partial_local_closure",
             "p12_production_cutover_preflight_packet_and_remote_readonly_audit",
+            "realtime_trading_p0_p2_no_partial_local_closure",
         ],
         "local_closure": "done" if local_done else "blocked",
         "local_prod_ready": "done" if local_done else "blocked",

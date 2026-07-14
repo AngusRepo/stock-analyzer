@@ -1,0 +1,36 @@
+{
+  "rules": [
+    {
+      "id": "stockvision-staging-uncommitted-7d",
+      "enabled": true,
+      "conditions": { "prefix": "staging/uncommitted/" },
+      "deleteObjectsTransition": {
+        "condition": { "type": "Age", "maxAge": 604800 }
+      }
+    },
+    {
+      "id": "stockvision-request-debug-30d",
+      "enabled": true,
+      "conditions": { "prefix": "ops/request-debug/" },
+      "deleteObjectsTransition": {
+        "condition": { "type": "Age", "maxAge": 2592000 }
+      }
+    },
+    {
+      "id": "stockvision-failed-debug-90d",
+      "enabled": true,
+      "conditions": { "prefix": "ops/failed-debug/" },
+      "deleteObjectsTransition": {
+        "condition": { "type": "Age", "maxAge": 7776000 }
+      }
+    },
+    {
+      "id": "stockvision-raw-market-unreferenced-90d",
+      "enabled": true,
+      "conditions": { "prefix": "raw-market/unreferenced/" },
+      "deleteObjectsTransition": {
+        "condition": { "type": "Age", "maxAge": 7776000 }
+      }
+    }
+  ]
+}

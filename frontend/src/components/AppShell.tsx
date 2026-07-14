@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { useLocation } from 'wouter'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   Bot,
@@ -11,11 +12,13 @@ import {
   LogIn,
   LogOut,
   Menu,
+  ScanSearch,
   type LucideIcon,
 } from 'lucide-react'
 import { Sheet, SheetContent } from '@/components/ui/sheet'
 import { isPrimaryAdminUser } from '@/lib/adminAccess'
 import { useAuth } from '@/_core/hooks/useAuth'
+import { prefetchWorkstationRoute } from '@/lib/queryPolicy'
 
 type NavItem = {
   label: string
@@ -28,6 +31,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: '首頁', icon: LayoutDashboard, href: '/' },
   { label: '模擬交易室', icon: Bot, href: '/bot', adminOnly: true },
   { label: '策略實驗室', icon: FlaskConical, href: '/strategy-lab', adminOnly: true },
+  { label: '策略審判室', icon: ScanSearch, href: '/strategy-discovery', adminOnly: true },
   { label: 'OBS', icon: Activity, href: '/obs', adminOnly: true },
   { label: '流程追蹤', icon: GitBranch, href: '/pipeline', adminOnly: true },
   { label: '模型池', icon: Boxes, href: '/model-pool', adminOnly: true },
@@ -130,10 +134,13 @@ function AuthButton() {
 export default function AppShell({ children }: { children: ReactNode }) {
   const [location, setLocation] = useLocation()
   const [mobileOpen, setMobileOpen] = useState(false)
-  const { user } = useAuth()
-  const items = visibleNavItems(isPrimaryAdminUser(user))
+  const { user, isAuthenticated } = useAuth()
+  const queryClient = useQueryClient()
+  const isAdmin = isPrimaryAdminUser(user)
+  const items = visibleNavItems(isAdmin)
 
   const navigate = (href: string) => {
+    prefetchWorkstationRoute(queryClient, href, { isAuthenticated, isAdmin })
     setLocation(href)
     setMobileOpen(false)
   }
@@ -160,6 +167,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 <button
                   key={item.href}
                   type="button"
+                  onMouseEnter={() => prefetchWorkstationRoute(queryClient, item.href, { isAuthenticated, isAdmin })}
+                  onFocus={() => prefetchWorkstationRoute(queryClient, item.href, { isAuthenticated, isAdmin })}
                   onClick={() => navigate(item.href)}
                   className={`relative px-1 py-4 text-[14px] font-semibold transition-colors ${
                     active ? 'text-white' : 'text-slate-400 hover:text-slate-100'

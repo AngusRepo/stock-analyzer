@@ -22,6 +22,6 @@ assert(
 assert(
   otherRoutes.includes('buildMarketOptimisticOutlook') &&
     otherRoutes.includes('marketOutlook') &&
-    otherRoutes.includes('market:risk:latest:v7-market-outlook'),
-  '/market/risk must expose a versioned marketOutlook optimistic TWII target and bypass stale v6 cache payloads',
+    otherRoutes.includes('market:risk:latest:v20-finlab-risk-detail-oi-delta'),
+  '/market/risk must expose marketOutlook under the current versioned FinLab risk-detail cache contract',
 )

@@ -28,6 +28,16 @@ order API. The general `ml-controller` live-submit route remains fail-closed.
 - `LIVE_EXECUTION_RECONCILE_SECONDS=30` (callback-first; polling is only for ambiguous `SUBMITTING/UNKNOWN` recovery)
 - `LIVE_EXECUTION_HUB_TIMEOUT_SECONDS=0.75`
 
+Worker live-submit also remains fail-closed unless all three values are enabled
+for the same bounded approval window:
+
+- `LIVE_EXECUTION_CLIENT_ENABLED=1`
+- `LIVE_EXECUTION_SUBMIT_GUARD_ENABLED=1`
+- `LIVE_TRADING_APPROVAL_SCOPE=<Wei-approved bounded scope>`
+
+An unknown submit response must query `/v1/intents/{idempotency_key}` and return
+`reconciliation_required`; it must never resend the same broker order.
+
 ## Paper-to-live shadow bridge
 
 The Worker must not call this IAM-private service directly. The supported path

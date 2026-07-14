@@ -6,7 +6,7 @@ import {
   resolveAdaptiveParamsForRegime,
   setAdaptiveParams,
 } from './adaptiveConfig'
-import { ALPHA_PREDICTION_MODEL_NAMES } from './recommendationContext'
+import { DIRECT_ALPHA_VOTE_MODEL_NAMES } from './recommendationContext'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -77,7 +77,7 @@ const volatile = resolveAdaptiveParamsForRegime({
 assert(volatile.bandit_max_mult === 1.5, 'volatile regime must be able to tighten LinUCB max multiplier')
 
 assert(
-  JSON.stringify(ADAPTIVE_META_LAYER_GOVERNANCE.alpha_vote_models) === JSON.stringify(ALPHA_PREDICTION_MODEL_NAMES),
+  JSON.stringify(ADAPTIVE_META_LAYER_GOVERNANCE.alpha_vote_models) === JSON.stringify(DIRECT_ALPHA_VOTE_MODEL_NAMES),
   'meta governance alpha vote models must match recommendation voting contract',
 )
 assert(

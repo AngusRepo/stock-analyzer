@@ -17,11 +17,11 @@ The service must not be deployed with the observed unsafe settings
 `containerConcurrency=80`, `maxScale=2`, `timeoutSeconds=300`, or without a
 trading-hours minimum instance.
 
-Orderbook routes are execution-critical and read only the streaming cache.
-Subscription recovery runs outside the request path. Request-type snapshot and
-kbar SDK calls share a single bounded broker-query lane and fail fast when that
-lane is busy. Historical kbar traffic should move to a separate research
-service before real-trading unlock.
+Quote, snapshot, orderbook and current-session completed-kbar routes are
+execution-critical and read only the streaming Tick/BidAsk cache. Subscription
+recovery runs outside the request path. No request handler may call
+`api.snapshots()` or `api.kbars()`. Historical kbar and research traffic belongs
+to a separate research service/job and cannot share this broker session.
 
 Example update command (requires explicit deployment approval; do not run from
 tests):

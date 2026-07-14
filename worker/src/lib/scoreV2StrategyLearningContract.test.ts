@@ -17,7 +17,7 @@ assert(
   contextBlock.includes('technicalStructure: thresholdScores.technicalStructure'),
   'strategy decision context should name technicalStructure explicitly',
 )
-assert(contextBlock.includes('momentumProxy: thresholdScores.momentumProxy'), 'strategy decision context should name momentumProxy explicitly')
+assert(contextBlock.includes('momentumProxy: thresholdScores.momentumScore'), 'strategy decision context should name momentumProxy explicitly')
 assert(contextBlock.includes('source: thresholdScores.source'), 'strategy decision context should preserve Score V2 source')
 assert(!contextBlock.includes('chip_score'), 'strategy decision context must not write legacy chip_score')
 assert(!contextBlock.includes('tech_score'), 'strategy decision context must not write legacy tech_score')

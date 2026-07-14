@@ -7,17 +7,33 @@ export interface ExecutionBookObservation {
   ask: number | null
   bidVolume?: number | null
   askVolume?: number | null
+  bidPrices?: number[]
+  askPrices?: number[]
+  bidVolumes?: number[]
+  askVolumes?: number[]
+  volumeUnit?: 'lots' | 'shares'
   sourceTime?: string | null
   receivedAt?: string | null
   ageMs?: number | null
+  sessionEpoch?: number | null
 }
 
 export interface AuthoritativeExecutionSnapshot {
-  schemaVersion: 'authoritative_execution_snapshot_v1'
+  schemaVersion: 'authoritative_execution_snapshot_v2'
+  snapshotId: string
+  createdAt: string
+  side: 'buy' | 'sell'
   status: 'ready' | 'blocked'
   reason: string
   lotType: TwOrderLotType
+  normalizedLimitPrice: number
+  tickSize: number
+  maxAgeMs: number
   selectedSource: ExecutionBookObservation['source'] | null
+  selectedSourceTime: string | null
+  selectedReceivedAt: string | null
+  sessionEpoch: number | null
+  sourceAgreement: 'none' | 'single_source' | 'agreed' | 'disagreed'
   bid: number | null
   ask: number | null
   bidVolume: number | null
@@ -26,6 +42,83 @@ export interface AuthoritativeExecutionSnapshot {
   disagreementTicks: number | null
   hardMismatch: boolean
   observations: ExecutionBookObservation[]
+}
+
+function stableSnapshotId(parts: Array<string | number | null | undefined>): string {
+  const text = parts.map((part) => String(part ?? '')).join('|')
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return `aes-${(hash >>> 0).toString(16).padStart(8, '0')}`
+}
+
+function normalizeObservation(observation: ExecutionBookObservation, nowMs: number): ExecutionBookObservation {
+  const normalizePrices = (values: number[] | undefined): number[] => (values ?? [])
+    .map((value) => positive(value))
+    .filter((value): value is number => value != null)
+    .slice(0, 5)
+  const normalizeVolumes = (values: number[] | undefined): number[] => (values ?? [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .slice(0, 5)
+  const bidPrices = normalizePrices(observation.bidPrices)
+  const askPrices = normalizePrices(observation.askPrices)
+  const bidVolumes = normalizeVolumes(observation.bidVolumes)
+  const askVolumes = normalizeVolumes(observation.askVolumes)
+  const bid = positive(observation.bid) ?? bidPrices[0] ?? null
+  const ask = positive(observation.ask) ?? askPrices[0] ?? null
+  const bidVolume = positive(observation.bidVolume) ?? bidVolumes[0] ?? null
+  const askVolume = positive(observation.askVolume) ?? askVolumes[0] ?? null
+  return {
+    ...observation,
+    bid,
+    ask,
+    bidVolume,
+    askVolume,
+    bidPrices: bidPrices.length > 0 ? bidPrices : bid == null ? [] : [bid],
+    askPrices: askPrices.length > 0 ? askPrices : ask == null ? [] : [ask],
+    bidVolumes: bidVolumes.length > 0 ? bidVolumes : bidVolume == null ? [] : [bidVolume],
+    askVolumes: askVolumes.length > 0 ? askVolumes : askVolume == null ? [] : [askVolume],
+    volumeUnit: observation.volumeUnit ?? (observation.lotType === 'board_lot' ? 'lots' : 'shares'),
+    ageMs: normalizedAge(observation, nowMs),
+  }
+}
+
+function snapshotBase(input: {
+  side: 'buy' | 'sell'
+  lotType: TwOrderLotType
+  limitPrice: number
+  maxAgeMs: number
+  nowMs: number
+  observations: ExecutionBookObservation[]
+  fresh: ExecutionBookObservation[]
+}) {
+  const selected = [...input.fresh].sort((left, right) => Number(left.ageMs) - Number(right.ageMs))[0] ?? null
+  const createdAt = new Date(input.nowMs).toISOString()
+  return {
+    schemaVersion: 'authoritative_execution_snapshot_v2' as const,
+    snapshotId: stableSnapshotId([
+      input.side,
+      input.lotType,
+      input.limitPrice,
+      createdAt,
+      selected?.source,
+      selected?.sourceTime,
+      selected?.sessionEpoch,
+    ]),
+    createdAt,
+    side: input.side,
+    lotType: input.lotType,
+    normalizedLimitPrice: input.limitPrice,
+    tickSize: getTwTickSize(input.limitPrice),
+    maxAgeMs: input.maxAgeMs,
+    selectedSourceTime: selected?.sourceTime ?? null,
+    selectedReceivedAt: selected?.receivedAt ?? null,
+    sessionEpoch: selected?.sessionEpoch ?? null,
+    observations: input.observations,
+  }
 }
 
 function positive(value: unknown): number | null {
@@ -56,7 +149,7 @@ export function resolveAuthoritativeBuyExecutionSnapshot(input: {
   const limitPrice = normalizeTwLimitPrice(input.limitPrice, 'buy')
   const observations = input.observations
     .filter((observation): observation is ExecutionBookObservation => observation != null)
-    .map((observation) => ({ ...observation, ageMs: normalizedAge(observation, nowMs) }))
+    .map((observation) => normalizeObservation(observation, nowMs))
   const matchingLot = observations.filter((observation) => observation.lotType === input.lotType)
   const fresh = matchingLot.filter((observation) => {
     const bid = positive(observation.bid)
@@ -64,17 +157,17 @@ export function resolveAuthoritativeBuyExecutionSnapshot(input: {
     return bid != null && ask != null && observation.ageMs != null && observation.ageMs <= maxAgeMs
   })
 
-  const base = {
-    schemaVersion: 'authoritative_execution_snapshot_v1' as const,
-    lotType: input.lotType,
-    observations,
-  }
+  const base = snapshotBase({ side: 'buy', lotType: input.lotType, limitPrice, maxAgeMs, nowMs, observations, fresh })
   if (fresh.length === 0) {
     return {
       ...base,
       status: 'blocked',
       reason: matchingLot.length === 0 ? 'execution_book_unavailable' : 'execution_book_stale_or_incomplete',
+      sourceAgreement: 'none',
       selectedSource: null,
+      selectedSourceTime: null,
+      selectedReceivedAt: null,
+      sessionEpoch: null,
       bid: null,
       ask: null,
       bidVolume: null,
@@ -97,12 +190,14 @@ export function resolveAuthoritativeBuyExecutionSnapshot(input: {
   const oneSourceMarketable = fresh.some((observation) => positive(observation.ask)! <= limitPrice)
   const oneSourceNotMarketable = fresh.some((observation) => positive(observation.ask)! > limitPrice)
   const hardMismatch = oneSourceMarketable && oneSourceNotMarketable
+  const sourceAgreement = fresh.length === 1 ? 'single_source' : disagreementTicks === 0 ? 'agreed' : 'disagreed'
 
   if (hardMismatch || disagreementTicks > maxDisagreementTicks) {
     return {
       ...base,
       status: 'blocked',
       reason: hardMismatch ? 'buy_fill_below_fresh_best_ask' : 'execution_source_disagreement',
+      sourceAgreement: 'disagreed',
       selectedSource: selected.source,
       bid: selectedBid,
       ask: selectedAsk,
@@ -119,6 +214,7 @@ export function resolveAuthoritativeBuyExecutionSnapshot(input: {
       ...base,
       status: 'blocked',
       reason: `authoritative_ask_above_limit:${selectedAsk.toFixed(2)}_gt_${limitPrice.toFixed(2)}`,
+      sourceAgreement,
       selectedSource: selected.source,
       bid: selectedBid,
       ask: selectedAsk,
@@ -134,6 +230,7 @@ export function resolveAuthoritativeBuyExecutionSnapshot(input: {
     ...base,
     status: 'ready',
     reason: 'authoritative_execution_book_ready',
+    sourceAgreement,
     selectedSource: selected.source,
     bid: selectedBid,
     ask: selectedAsk,
@@ -159,24 +256,24 @@ export function resolveAuthoritativeSellExecutionSnapshot(input: {
   const limitPrice = normalizeTwLimitPrice(input.limitPrice, 'sell')
   const observations = input.observations
     .filter((observation): observation is ExecutionBookObservation => observation != null)
-    .map((observation) => ({ ...observation, ageMs: normalizedAge(observation, nowMs) }))
+    .map((observation) => normalizeObservation(observation, nowMs))
   const matchingLot = observations.filter((observation) => observation.lotType === input.lotType)
   const fresh = matchingLot.filter((observation) => {
     const bid = positive(observation.bid)
     const ask = positive(observation.ask)
     return bid != null && ask != null && observation.ageMs != null && observation.ageMs <= maxAgeMs
   })
-  const base = {
-    schemaVersion: 'authoritative_execution_snapshot_v1' as const,
-    lotType: input.lotType,
-    observations,
-  }
+  const base = snapshotBase({ side: 'sell', lotType: input.lotType, limitPrice, maxAgeMs, nowMs, observations, fresh })
   if (fresh.length === 0) {
     return {
       ...base,
       status: 'blocked',
       reason: matchingLot.length === 0 ? 'execution_book_unavailable' : 'execution_book_stale_or_incomplete',
+      sourceAgreement: 'none',
       selectedSource: null,
+      selectedSourceTime: null,
+      selectedReceivedAt: null,
+      sessionEpoch: null,
       bid: null,
       ask: null,
       bidVolume: null,
@@ -198,6 +295,7 @@ export function resolveAuthoritativeSellExecutionSnapshot(input: {
   const oneSourceMarketable = fresh.some((observation) => positive(observation.bid)! >= limitPrice)
   const oneSourceNotMarketable = fresh.some((observation) => positive(observation.bid)! < limitPrice)
   const hardMismatch = oneSourceMarketable && oneSourceNotMarketable
+  const sourceAgreement = fresh.length === 1 ? 'single_source' : disagreementTicks === 0 ? 'agreed' : 'disagreed'
   const result = {
     ...base,
     selectedSource: selected.source,
@@ -213,6 +311,7 @@ export function resolveAuthoritativeSellExecutionSnapshot(input: {
       ...result,
       status: 'blocked',
       reason: hardMismatch ? 'sell_fill_above_fresh_best_bid' : 'execution_source_disagreement',
+      sourceAgreement: 'disagreed',
       hardMismatch,
     }
   }
@@ -221,6 +320,7 @@ export function resolveAuthoritativeSellExecutionSnapshot(input: {
       ...result,
       status: 'blocked',
       reason: `authoritative_bid_below_limit:${selectedBid.toFixed(2)}_lt_${limitPrice.toFixed(2)}`,
+      sourceAgreement,
       hardMismatch: false,
     }
   }
@@ -228,6 +328,7 @@ export function resolveAuthoritativeSellExecutionSnapshot(input: {
     ...result,
     status: 'ready',
     reason: 'authoritative_execution_book_ready',
+    sourceAgreement,
     hardMismatch: false,
   }
 }

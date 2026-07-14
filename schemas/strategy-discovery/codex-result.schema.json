@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stockvision://strategy-discovery/codex-result-v1",
+  "type": "object",
+  "required": ["schema_version", "run_id", "bundle_hash", "candidate_hashes", "generated_at", "final_verdict", "required_files", "files", "result_hash"],
+  "properties": {
+    "schema_version": { "const": "codex-result-v1" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "bundle_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "candidate_hashes": { "type": "object", "additionalProperties": { "type": "string", "pattern": "^[a-f0-9]{64}$" } },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "final_verdict": { "type": "object" },
+    "required_files": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "files": { "type": "object", "additionalProperties": { "type": "string", "pattern": "^[a-f0-9]{64}$" } },
+    "result_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  },
+  "additionalProperties": false
+}

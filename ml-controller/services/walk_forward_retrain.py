@@ -335,6 +335,31 @@ def clear_hmm_cache():
     _WINDOW_INDEX = None
 
 
+DEFAULT_LABEL_HORIZON_DAYS = 5
+
+
+def build_walk_forward_train_payload(
+    window: WalkForwardWindow,
+    *,
+    batch_count: int,
+    label_horizon_days: int = DEFAULT_LABEL_HORIZON_DAYS,
+) -> dict[str, object]:
+    """Build the explicit split contract consumed by universal training."""
+
+    if label_horizon_days < 1:
+        raise ValueError("label_horizon_days_must_be_positive")
+    return {
+        "window_id": window.window_id,
+        "train_start": window.train_start,
+        "train_end": window.train_end,
+        "test_start": window.test_start,
+        "test_end": window.test_end,
+        "label_horizon_days": label_horizon_days,
+        "batch_count": batch_count,
+        "skip_feature_pool": False,
+    }
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Walk-forward orchestrator (real — triggers Modal jobs)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -375,15 +400,7 @@ async def _train_one_window(
 
     # Step 2 & 3: active-8 coverage. Tree models have native per-window retrain;
     # non-tree active-8 artifacts remain governed by artifact lifecycle evidence.
-    train_payload = {
-        "window_id": window.window_id,
-        "train_start": window.train_start,
-        "train_end": window.train_end,
-        "test_start": window.test_start,
-        "test_end": window.test_end,
-        "batch_count": batch_count,
-        "skip_feature_pool": False,
-    }
+    train_payload = build_walk_forward_train_payload(window, batch_count=batch_count)
 
     coverage = walk_forward_model_coverage(models)
     for model_name in coverage["artifact_lifecycle_required_models"]:

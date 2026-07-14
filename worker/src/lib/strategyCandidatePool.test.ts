@@ -718,7 +718,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   }
   const pools = buildStrategyCandidatePools([scoreV2TotalOnly], [legacyScoreV2Spec], { regime: 'bull' })
   assert(pools[0].candidates.length === 1, 'legacy registry specs can still use Score V2 total when finalScore is absent')
-  assert(pools[0].candidates[0].raw_score === 70, 'candidate pool must not use stale scalar score when Score V2 total is canonical')
+  assert(pools[0].candidates[0].raw_score === 68, 'candidate pool must recompute canonical Score V2 total from weighted components instead of stale scalar score')
 }
 
 {

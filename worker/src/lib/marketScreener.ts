@@ -48,9 +48,12 @@ import {
   upsertThemeSignals,
   type FinLabTaxonomyTagRow,
 } from './v41DataRuntime'
+import { promoteCanonicalRun, registerPipelineRun, writeEvidenceArtifact } from './artifactLifecycle'
+import { sha256Text } from './datasetSnapshots'
 
 const D1_IN_CHUNK_SIZE = 40
 const SCREENER_FUNNEL_MAX_ITEMS = 5000
+const SCREENER_PIPELINE_CODE_VERSION = 'market-screener-r2-canonical-v1'
 const STOCK_TECHNICAL_HISTORY_PRICE_DAYS = 280
 const SCREENER_FUNNEL_PIPELINE_SEED_STAGES = new Set([
   'l1_candidate_seed_after_overlay',
@@ -463,6 +466,52 @@ async function writeScreenerFunnel(
     items: ScreenerFunnelItemInput[]
   },
 ): Promise<void> {
+  if (!env.ARTIFACTS) throw new Error('screener_r2_artifact_binding_missing')
+  const artifactPayload = {
+    metadata: input.metadata,
+    debug_log: input.debugLog,
+    items: input.items,
+  }
+  const inputFingerprint = await sha256Text(JSON.stringify({
+    date: input.date,
+    status: input.status,
+    universe_count: input.universeCount,
+    candidate_count: input.candidateCount,
+    final_count: input.finalCount,
+    emerging_count: input.emergingCount,
+    payload: artifactPayload,
+  }))
+  const logicalRunKey = `screener:${input.date}:TW:production:market_screener`
+  const artifact = await writeEvidenceArtifact(env, {
+    domain: 'screener_funnel',
+    businessDate: input.date,
+    producerRunId: input.runId,
+    retentionClass: input.status === 'success' ? 'canonical_model_evidence' : 'failed_debug',
+    schemaVersion: 'screener-funnel-evidence-v2',
+    payload: artifactPayload,
+    rowCount: input.items.length,
+    metadata: {
+      status: input.status,
+      universe_count: input.universeCount,
+      candidate_count: input.candidateCount,
+      final_count: input.finalCount,
+    },
+  })
+  const registry = await registerPipelineRun(env.DB, {
+    runId: input.runId,
+    logicalRunKey,
+    domain: 'screener',
+    businessDate: input.date,
+    stage: 'market_screener',
+    status: input.status === 'success' ? 'writing' : 'failed',
+    inputFingerprint,
+    codeVersion: SCREENER_PIPELINE_CODE_VERSION,
+    configVersion: String((input.metadata as any)?.config_version ?? 'runtime-config'),
+  })
+  if (registry.status === 'reused') {
+    console.log(`[ScreenerFunnel] reused canonical run=${registry.reused_from_run_id} requested_run=${input.runId}`)
+    return
+  }
   const metadata = JSON.stringify(input.metadata)
   const debugLog = JSON.stringify(input.debugLog.slice(-80))
   const initialStatus = input.status === 'success' ? 'error' : input.status
@@ -557,6 +606,14 @@ async function writeScreenerFunnel(
       metadata,
       debugLog,
     ).run()
+    if (input.status === 'success') {
+      await env.DB.prepare(`
+        UPDATE pipeline_runs
+           SET status='ready', artifact_id=?, updated_at=CURRENT_TIMESTAMP
+         WHERE run_id=? AND status='writing'
+      `).bind(artifact.artifact_id, input.runId).run()
+      await promoteCanonicalRun(env.DB, logicalRunKey, input.runId, artifact.artifact_id)
+    }
   } catch (error) {
     await env.DB.prepare(`
       INSERT INTO screener_funnel_runs
@@ -583,6 +640,11 @@ async function writeScreenerFunnel(
         `funnel persistence failed: ${error instanceof Error ? error.message : String(error)}`,
       ]),
     ).run().catch(() => {})
+    await env.DB.prepare(`
+      UPDATE pipeline_runs
+         SET status='failed', error_code=?, updated_at=CURRENT_TIMESTAMP
+       WHERE run_id=?
+    `).bind(error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500), input.runId).run().catch(() => {})
     throw error
   }
 }

@@ -171,6 +171,12 @@ def build_research_benchmark_manifest(created_at: str) -> dict[str, dict[str, An
                 "Benchmark-only candidate; not a model_pool challenger and never votes "
                 "until promoted by a separate reviewed lifecycle path."
             )
+        elif entry["status"] == "l2_feature_sidecar_member":
+            entry["approval_gate"] = "timesfm_l175_l2_feature_release_required"
+            entry["note"] = (
+                f"{name} is an L2 feature sidecar. It cannot vote as direct alpha and "
+                "may change serving only through the TimesFM L1.75 feature-release lifecycle."
+            )
         else:
             entry["approval_gate"] = "model_pool_lifecycle_required"
             entry["note"] = (

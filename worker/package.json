@@ -6,6 +6,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.tests.json",
+    "test:strategy-discovery": "node ../tools/run_strategy_discovery_tests.mjs",
     "db:init": "wrangler d1 execute stockvision-db --file=./schema.sql",
     "db:init:remote": "wrangler d1 execute stockvision-db --remote --file=./schema.sql"
   },
@@ -14,6 +15,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
+    "tsx": "^4.21.0",
     "typescript": "6.0.3",
     "wrangler": "4.100.0"
   }

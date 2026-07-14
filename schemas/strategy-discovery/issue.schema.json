@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stockvision://strategy-discovery/issue-v1",
+  "type": "object",
+  "required": ["issue_id", "run_id", "target_type", "target_ids", "category", "claim", "attack_mechanism", "observed_evidence", "missing_evidence", "severity_if_true", "evidence_level", "critic_model", "critic_confidence", "falsification_test", "blocks_if_confirmed", "cross_exam_status", "duplicate_of"],
+  "properties": {
+    "issue_id": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "target_type": { "enum": ["STRATEGY", "CANDIDATE", "SYSTEM"] },
+    "target_ids": { "type": "array", "minItems": 1, "items": { "type": "string" }, "uniqueItems": true },
+    "category": { "type": "string", "minLength": 1 },
+    "claim": { "type": "string", "minLength": 1 },
+    "attack_mechanism": { "type": "string", "minLength": 1 },
+    "observed_evidence": { "type": "array" },
+    "missing_evidence": { "type": "array", "items": { "type": "string" } },
+    "severity_if_true": { "enum": ["FATAL", "MAJOR", "MINOR", "INFO"] },
+    "evidence_level": { "enum": ["E0", "E1"] },
+    "critic_model": { "type": "string" },
+    "critic_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "falsification_test": { "type": "object" },
+    "blocks_if_confirmed": { "type": "boolean" },
+    "cross_exam_status": { "enum": ["VALID_CLAIM", "POSSIBLE_BUT_UNVERIFIED", "OVERSTATED", "DUPLICATE", "NOT_APPLICABLE", "UNSUBSTANTIATED"] },
+    "duplicate_of": { "type": ["string", "null"] }
+  },
+  "additionalProperties": false
+}

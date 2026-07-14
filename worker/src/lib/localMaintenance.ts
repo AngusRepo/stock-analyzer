@@ -67,8 +67,7 @@ export async function runWeeklyICAudit(env: Bindings) {
   })
 
   if (!res.ok) {
-    console.warn(`[IC Audit] HTTP ${res.status}`)
-    return
+    throw new Error(`ic_audit_http_${res.status}`)
   }
 
   const data = await res.json() as any
@@ -122,8 +121,7 @@ export async function runWeeklyDriftCheck(env: Bindings) {
   })
 
   if (!res.ok) {
-    console.warn(`[Drift Check] HTTP ${res.status}`)
-    return
+    throw new Error(`drift_check_http_${res.status}`)
   }
 
   const data = await res.json() as any
@@ -132,39 +130,42 @@ export async function runWeeklyDriftCheck(env: Bindings) {
   console.log(`[Drift Check] ${data.drifted_count}/${data.total_features} features drifted, needs_retrain=${data.needs_retrain}`)
 }
 
-export async function runWeeklyCleanup(env: Bindings) {
-  console.log('[Cleanup] Starting weekly D1 cleanup...')
-  const results: string[] = []
+export type MaintenanceTaskResult = {
+  task: string
+  ok: boolean
+  changed: number
+  error?: string
+}
 
-  const run = async (label: string, sql: string) => {
+export type MaintenanceRunResult = {
+  ok: boolean
+  tasks: MaintenanceTaskResult[]
+}
+
+export async function runWeeklyCleanup(env: Bindings): Promise<MaintenanceRunResult> {
+  console.log('[CleanupV2] Starting ownership-safe weekly cleanup...')
+  const tasks: MaintenanceTaskResult[] = []
+  const run = async (task: string, sql: string): Promise<void> => {
     try {
       const result = await env.DB.prepare(sql).run()
-      const msg = `${label}: 刪除 ${result.meta?.changes ?? 0} 筆`
-      results.push(msg)
-      console.log(`[Cleanup] ${msg}`)
-    } catch (e) {
-      console.error(`[Cleanup] ${label} failed:`, e)
+      tasks.push({ task, ok: true, changed: Number(result.meta?.changes ?? 0) })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      tasks.push({ task, ok: false, changed: 0, error: message })
+      console.error(`[CleanupV2] ${task} failed:`, error)
     }
   }
 
-  await run('news', "DELETE FROM news WHERE published_at < datetime('now', '-90 days')")
-  await run('alert_notifications', "DELETE FROM alert_notifications WHERE created_at < datetime('now', '-30 days')")
-  await run('predictions', "DELETE FROM predictions WHERE generated_at < datetime('now', '-1 year')")
-  await run('market_risk', "DELETE FROM market_risk WHERE date < date('now', '-2 years')")
-  await run('factor_scores', "DELETE FROM factor_scores WHERE date < date('now', '-1 year')")
-  await run('technical_indicators', "DELETE FROM technical_indicators WHERE date < date('now', '-3 years')")
-  await run('stock_prices', "DELETE FROM stock_prices WHERE date < date('now', '-5 years')")
-  await run('chip_data', "DELETE FROM chip_data WHERE date < date('now', '-2 years')")
+  // Canonical price/chip/history, predictions, factors and technical rows are
+  // excluded. Producers must archive and verify R2 before enqueueing a scrub.
+  await run(
+    'alert_notifications_ephemeral',
+    "DELETE FROM alert_notifications WHERE created_at < datetime('now', '-1 year')",
+  )
 
-  try {
-    await env.DB.prepare('VACUUM').run()
-    results.push('VACUUM 完成')
-    console.log('[Cleanup] VACUUM done')
-  } catch (e) {
-    console.warn('[Cleanup] VACUUM failed (non-critical):', e)
-  }
-
-  console.log(`[Cleanup] Done. ${results.length} tasks completed.`)
+  const result = { ok: tasks.every((task) => task.ok), tasks }
+  console.log(`[CleanupV2] completed ok=${result.ok} tasks=${tasks.length}`)
+  return result
 }
 
 export async function checkAlerts(env: Bindings) {
@@ -225,14 +226,12 @@ export async function fetchWeeklyShareholding(env: Bindings): Promise<void> {
       signal: AbortSignal.timeout(60_000),
     })
     if (!res.ok) {
-      console.warn(`[Wave3] TDCC opendata HTTP ${res.status}`)
-      return
+      throw new Error(`tdcc_shareholding_http_${res.status}`)
     }
 
     const body = await res.json() as any[]
     if (!Array.isArray(body) || !body.length) {
-      console.warn('[Wave3] TDCC empty response')
-      return
+      throw new Error('tdcc_shareholding_empty_response')
     }
 
     const { results: dbStocks } = await env.DB.prepare(
@@ -302,6 +301,7 @@ export async function fetchWeeklyShareholding(env: Bindings): Promise<void> {
     console.log(`[Wave3] Shareholding (TDCC): ${statements.length} stocks written`)
   } catch (e) {
     console.warn('[Wave3] TDCC shareholding failed:', e)
+    throw e
   }
 }
 
@@ -316,15 +316,28 @@ async function backupD1Snapshot(env: Bindings) {
     console.log(`[Backup] D1 snapshot saved to KV (${tables.length} tables)`)
   } catch (e) {
     console.warn('[Backup] D1 snapshot failed:', e)
+    throw e
   }
 }
 
-export async function runWeeklyLocalMaintenance(env: Bindings) {
-  await fetchWeeklyShareholding(env).catch((e) => console.warn('[Wave3] Shareholding failed:', e))
-  await runWeeklyICAudit(env).catch((e) => console.warn('[IC Audit] failed:', e))
-  await runWeeklyDriftCheck(env).catch((e) => console.warn('[Drift Check] failed:', e))
+export async function runWeeklyLocalMaintenance(env: Bindings): Promise<MaintenanceRunResult> {
+  const tasks: MaintenanceTaskResult[] = []
+  const run = async (task: string, operation: () => Promise<unknown>): Promise<void> => {
+    try {
+      await operation()
+      tasks.push({ task, ok: true, changed: 0 })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      tasks.push({ task, ok: false, changed: 0, error: message })
+      console.error(`[Maintenance] ${task} failed:`, error)
+    }
+  }
 
+  await run('weekly_shareholding', () => fetchWeeklyShareholding(env))
+  await run('weekly_ic_audit', () => runWeeklyICAudit(env))
+  await run('weekly_drift_check', () => runWeeklyDriftCheck(env))
   const { syncTimeverse } = await import('./timeverse')
-  await syncTimeverse(env).catch((e) => console.warn('[Timeverse] sync failed:', e))
-  await backupD1Snapshot(env)
+  await run('timeverse_sync', () => syncTimeverse(env))
+  await run('d1_snapshot_backup', () => backupD1Snapshot(env))
+  return { ok: tasks.every((task) => task.ok), tasks }
 }

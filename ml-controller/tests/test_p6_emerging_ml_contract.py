@@ -98,7 +98,8 @@ def test_stock_meta_exposes_market_segment_for_train_serve_parity():
     assert meta["train_serve_parity_required"] is True
 
 
-def test_emerging_ml_result_is_kept_as_research_only_and_never_promoted():
+def test_emerging_ml_result_is_kept_as_research_only_and_never_promoted(monkeypatch):
+    monkeypatch.setattr("services.recommendation_service._is_use_ensemble_v2", lambda: False)
     screener_recs = [
         {
             "date": "2026-04-30",

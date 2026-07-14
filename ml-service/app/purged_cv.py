@@ -289,3 +289,89 @@ def purged_train_test_split(
         y[test_mask],
         dates[test_mask],
     )
+
+
+def purged_explicit_walk_forward_split(
+    X: np.ndarray,
+    y: np.ndarray,
+    dates: np.ndarray,
+    *,
+    train_start: str,
+    train_end: str,
+    test_start: str,
+    test_end: str,
+    label_horizon_days: int,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[str, object],
+]:
+    """Split explicit walk-forward ranges and purge train labels crossing test start.
+
+    ``label_horizon_days`` is counted in observed trading dates. A train row at
+    position ``t`` is retained only when its label end ``t + horizon`` is before
+    the first test date. This prevents a forward-return label from reading prices
+    inside the test window.
+    """
+
+    if len(X) != len(y) or len(X) != len(dates):
+        raise ValueError("X_y_dates_length_mismatch")
+    if label_horizon_days < 1:
+        raise ValueError("label_horizon_days_must_be_positive")
+    if train_start > train_end:
+        raise ValueError("train_range_invalid")
+    if test_start > test_end:
+        raise ValueError("test_range_invalid")
+    if train_end >= test_start:
+        raise ValueError("walk_forward_ranges_overlap_or_unsorted")
+
+    dates_str = np.asarray(dates).astype(str)
+    unique_dates = np.sort(np.unique(dates_str))
+    date_position = {date: position for position, date in enumerate(unique_dates)}
+
+    requested_train_mask = (dates_str >= train_start) & (dates_str <= train_end)
+    test_mask = (dates_str >= test_start) & (dates_str <= test_end)
+    requested_train_dates = np.sort(np.unique(dates_str[requested_train_mask]))
+    test_dates = np.sort(np.unique(dates_str[test_mask]))
+    if not len(requested_train_dates):
+        raise ValueError("walk_forward_train_range_empty")
+    if not len(test_dates):
+        raise ValueError("walk_forward_test_range_empty")
+
+    first_test_date = str(test_dates[0])
+    first_test_position = date_position[first_test_date]
+    safe_train_dates = {
+        str(date)
+        for date in requested_train_dates
+        if date_position[str(date)] + label_horizon_days < first_test_position
+    }
+    train_mask = requested_train_mask & np.isin(dates_str, list(safe_train_dates))
+    effective_train_dates = np.sort(np.unique(dates_str[train_mask]))
+    if not len(effective_train_dates):
+        raise ValueError("walk_forward_train_empty_after_label_purge")
+
+    purged_mask = requested_train_mask & ~train_mask
+    metadata: dict[str, object] = {
+        "method": "walk_forward_explicit_label_purged",
+        "purged": True,
+        "label_horizon_days": int(label_horizon_days),
+        "requested_train_range": [train_start, train_end],
+        "effective_train_range": [str(effective_train_dates[0]), str(effective_train_dates[-1])],
+        "test_range": [str(test_dates[0]), str(test_dates[-1])],
+        "purged_date_count": int(len(requested_train_dates) - len(effective_train_dates)),
+        "purged_row_count": int(purged_mask.sum()),
+    }
+
+    return (
+        X[train_mask],
+        y[train_mask],
+        dates[train_mask],
+        X[test_mask],
+        y[test_mask],
+        dates[test_mask],
+        metadata,
+    )

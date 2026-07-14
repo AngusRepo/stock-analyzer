@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 from types import SimpleNamespace
 from datetime import datetime
 from pathlib import Path
@@ -200,3 +201,119 @@ def test_request_type_broker_query_fails_fast_when_capacity_is_busy():
         assert proxy.run_broker_query(lambda: "should-not-run", "test") is None
     finally:
         proxy._broker_query_capacity.release()
+
+
+def test_broker_query_timeout_poison_marks_process_for_replacement(monkeypatch):
+    proxy = _load_proxy_main()
+    poisoned: list[str] = []
+    monkeypatch.setenv("SHIOAJI_BROKER_QUERY_TIMEOUT_SECONDS", "0.25")
+    monkeypatch.setattr(proxy, "poison_process", lambda reason, **_kwargs: poisoned.append(reason))
+
+    result = proxy.run_broker_query(lambda: (time.sleep(0.35), "late")[1], "hung-sdk-call")
+
+    assert result is None
+    assert poisoned == ["broker_query_timeout:hung-sdk-call"]
+    time.sleep(0.15)
+
+
+def test_execution_snapshot_reads_fresh_tick_cache_without_sdk_call(monkeypatch):
+    proxy = _load_proxy_main()
+    now = datetime.now(proxy.TW_TZ).isoformat()
+    proxy.connected = True
+    proxy._process_poisoned = False
+    proxy.last_ticks["2330"] = {
+        "symbol": "2330",
+        "price": 100.5,
+        "volume": 10,
+        "total_volume": 1000,
+        "timestamp": now,
+        "updated_at": now,
+        "session_epoch": 7,
+    }
+    monkeypatch.setattr(proxy, "run_broker_query", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("SDK I/O forbidden")))
+
+    snapshot = proxy.get_snapshot("2330")
+
+    assert snapshot is not None
+    assert snapshot["last"] == 100.5
+    assert snapshot["source"] == "streaming_tick_cache"
+    assert snapshot["session_epoch"] == 7
+
+
+def test_batch_quotes_reports_stale_or_missing_cache_without_blocking_sdk(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy.connected = True
+    proxy.last_ticks.clear()
+    monkeypatch.setattr(proxy, "recover_orderbook_symbol_async", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(proxy, "subscribe_symbol", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("request path SDK subscribe forbidden")))
+
+    result = proxy.batch_quotes(proxy.BatchRequest(symbols=["2330"]))
+
+    assert result["status"] == "empty"
+    assert result["errors"]["2330"]["status"] == "no_tick"
+
+
+def test_streaming_bar_accumulator_returns_completed_minutes_only(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy.minute_bars.clear()
+    symbol = "6712"
+    now = datetime(2026, 7, 14, 9, 5, 20, tzinfo=proxy.TW_TZ)
+    monkeypatch.setattr(proxy, "get_tw_now", lambda: now)
+
+    proxy.update_minute_bar(symbol, {
+        "price": 88.0,
+        "volume": 2,
+        "timestamp": "2026-07-14T09:04:01+08:00",
+        "updated_at": "2026-07-14T09:04:01+08:00",
+        "session_epoch": 3,
+    })
+    proxy.update_minute_bar(symbol, {
+        "price": 89.0,
+        "volume": 3,
+        "timestamp": "2026-07-14T09:04:45+08:00",
+        "updated_at": "2026-07-14T09:04:45+08:00",
+        "session_epoch": 3,
+    })
+    proxy.update_minute_bar(symbol, {
+        "price": 90.0,
+        "volume": 1,
+        "timestamp": "2026-07-14T09:05:05+08:00",
+        "updated_at": "2026-07-14T09:05:05+08:00",
+        "session_epoch": 3,
+    })
+
+    bars = proxy.completed_streaming_bars(symbol, "2026-07-14", "2026-07-14", 100)
+
+    assert len(bars) == 1
+    assert bars[0]["ts"] == "2026-07-14T09:04:00+08:00"
+    assert bars[0]["open"] == 88.0
+    assert bars[0]["high"] == 89.0
+    assert bars[0]["close"] == 89.0
+    assert bars[0]["volume"] == 5
+    assert bars[0]["completed"] is True
+
+
+def test_market_risk_reads_streaming_proxy_tick_without_sdk(monkeypatch):
+    proxy = _load_proxy_main()
+    now = datetime.now(proxy.TW_TZ).isoformat()
+    proxy.connected = True
+    proxy._process_poisoned = False
+    proxy.last_ticks["0050"] = {
+        "symbol": "0050",
+        "price": 200.0,
+        "change_rate": -2.1,
+        "total_volume": 100_000,
+        "timestamp": now,
+        "updated_at": now,
+        "session_epoch": 9,
+    }
+    proxy.api = SimpleNamespace(
+        snapshots=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("SDK snapshot forbidden")),
+    )
+
+    result = proxy.market_risk()
+
+    assert result["status"] == "ok"
+    assert result["risk_level"] == "high"
+    assert result["proxy_symbol"] == "0050"
+    assert result["source"] == "streaming_tick_cache"

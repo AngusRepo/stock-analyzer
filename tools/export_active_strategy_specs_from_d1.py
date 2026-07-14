@@ -150,6 +150,7 @@ def _strategy_spec(row: dict[str, Any]) -> dict[str, Any]:
         "thresholds": _as_dict(row.get("thresholds_json")),
         "candidatePolicy": _as_dict(row.get("candidate_policy_json")),
         "riskNotes": _as_list(row.get("risk_notes_json")),
+        "sourceRefs": _as_list(row.get("source_refs_json")),
         "createdBy": str(row.get("created_by") or "").strip(),
     }
 
@@ -177,6 +178,8 @@ def _validate_specs(specs: list[dict[str, Any]], *, status_scope: str) -> list[s
             errors.append(f"{sid}:supported_regimes_not_array")
         if not isinstance(spec.get("riskNotes"), list):
             errors.append(f"{sid}:risk_notes_not_array")
+        if not isinstance(spec.get("sourceRefs"), list):
+            errors.append(f"{sid}:source_refs_not_array")
         if not isinstance(spec.get("thresholds"), dict):
             errors.append(f"{sid}:thresholds_not_object")
         if not isinstance(spec.get("candidatePolicy"), dict):

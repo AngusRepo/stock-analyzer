@@ -1,0 +1,33 @@
+{
+  "schema_version": "strategy-discovery-pit-overlay-v1",
+  "policy": "Only repository-proven timing may replace UNKNOWN; all other features remain fail-closed.",
+  "features": {
+    "tech_bullish_streak_5": {
+      "definition": "Five-trading-day rolling count of close[T] > close[T-1].",
+      "availability_lag": "T+0_AFTER_DAILY_BAR_CLOSE",
+      "earliest_execution": "T+1_MARKET_OPEN",
+      "lookback_days": 5,
+      "evidence_refs": [
+        "ml-service/app/features/__init__.py:strategy95_feature_exprs:tech_bullish_streak_5"
+      ]
+    },
+    "tech_gap_down": {
+      "definition": "Negative component of (open[T] - close[T-1]) / close[T-1].",
+      "availability_lag": "T+0_AFTER_DAILY_BAR_CLOSE",
+      "earliest_execution": "T+1_MARKET_OPEN",
+      "lookback_days": 1,
+      "evidence_refs": [
+        "ml-service/app/features/__init__.py:strategy95_feature_exprs:tech_gap_down"
+      ]
+    },
+    "tech_gap_up": {
+      "definition": "Positive component of (open[T] - close[T-1]) / close[T-1].",
+      "availability_lag": "T+0_AFTER_DAILY_BAR_CLOSE",
+      "earliest_execution": "T+1_MARKET_OPEN",
+      "lookback_days": 1,
+      "evidence_refs": [
+        "ml-service/app/features/__init__.py:strategy95_feature_exprs:tech_gap_up"
+      ]
+    }
+  }
+}

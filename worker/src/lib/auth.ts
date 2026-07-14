@@ -4,14 +4,9 @@ import type { Bindings, Variables } from '../types'
 type AppContext = Context<{ Bindings: Bindings; Variables: Variables }>
 
 function isLocalAuthBypass(c: AppContext): boolean {
-  if ((c.env as any).LOCAL_AUTH_BYPASS === '1') return true
-  try {
-    const host = new URL(c.req.url).hostname.toLowerCase()
-    return host === 'localhost' || host === '127.0.0.1' || host === '::1'
-  } catch {
-    const host = String(c.req.header('Host') ?? '').split(':')[0].toLowerCase()
-    return host === 'localhost' || host === '127.0.0.1' || host === '::1'
-  }
+  const enabled = String((c.env as any).LOCAL_AUTH_BYPASS ?? '').trim() === '1'
+  const environment = String((c.env as any).ENVIRONMENT ?? 'development').trim().toLowerCase()
+  return enabled && environment !== 'production'
 }
 
 function localDevPayload(): Record<string, unknown> {
@@ -140,6 +135,7 @@ export const authMiddleware = async (c: Context<{ Bindings: Bindings; Variables:
         name: 'Local Dev',
         avatar: null,
         role: 'admin',
+        is_primary_admin: true,
         approval_status: 'approved',
         created_at: new Date().toISOString(),
       })

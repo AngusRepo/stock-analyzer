@@ -4,7 +4,7 @@ function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
 }
 
-const migration = fs.readFileSync('worker/migration_direction_correct_skipped_null_2026_06_22.sql', 'utf8')
+const migration = fs.readFileSync('migration_direction_correct_skipped_null_2026_06_22.sql', 'utf8')
 const normalized = migration.replace(/\s+/g, ' ').trim()
 
 assert(

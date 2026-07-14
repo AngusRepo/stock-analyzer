@@ -8,6 +8,7 @@ import {
   fetchLiveExecutionIntentStatus,
   signExecutionPacket,
   submitSignedLiveExecutionPacket,
+  submitOrReconcileSignedLiveExecutionPacket,
   submitSignedExecutionShadowPacket,
 } from './liveExecutionGatewayClient'
 
@@ -65,7 +66,8 @@ const packet = buildLiveExecutionPacket({
 })
 
 async function main(): Promise<void> {
-  assert.equal(packet.execution_snapshots.board_lot?.schema_version, 'authoritative_execution_snapshot_v1')
+  assert.equal(packet.execution_snapshots.board_lot?.schema_version, 'authoritative_execution_snapshot_v2')
+  assert.equal(packet.execution_snapshots.board_lot?.snapshot_id, snapshot.snapshotId)
   assert.equal(packet.controls.kill_switch_active, false)
   assert.equal(canonicalExecutionPacketJson(packet), canonicalExecutionPacketJson(packet), 'canonical packet JSON must be deterministic')
   const signature = await signExecutionPacket(packet, 'test-secret')
@@ -87,10 +89,17 @@ async function main(): Promise<void> {
   assert.equal(disabled.reason, 'live_execution_client_disabled')
   assert.equal(called, false)
 
+  const guardDisabled = await submitSignedLiveExecutionPacket({ LIVE_EXECUTION_CLIENT_ENABLED: '1' }, packet, async () => {
+    called = true
+    return new Response('{}')
+  })
+  assert.equal(guardDisabled.reason, 'live_execution_submit_guard_disabled')
+
   let capturedHeaders = new Headers()
   let capturedBody: any = null
   const submitted = await submitSignedLiveExecutionPacket({
     LIVE_EXECUTION_CLIENT_ENABLED: '1',
+    LIVE_EXECUTION_SUBMIT_GUARD_ENABLED: '1',
     EXECUTION_GATEWAY_URL: 'https://gateway.invalid/',
     EXECUTION_GATEWAY_SERVICE_TOKEN: 'service-token',
     LIVE_EXECUTION_HMAC_SECRET: 'test-secret',
@@ -108,6 +117,24 @@ async function main(): Promise<void> {
   assert.equal(capturedBody.packet.idempotency_key, packet.idempotency_key)
   assert.equal(capturedBody.allow_live_submit, true)
   assert.equal(submitted.status, 'submitted')
+
+  let reconciliationCalls = 0
+  const reconciled = await submitOrReconcileSignedLiveExecutionPacket({
+    LIVE_EXECUTION_CLIENT_ENABLED: '1',
+    LIVE_EXECUTION_SUBMIT_GUARD_ENABLED: '1',
+    EXECUTION_GATEWAY_URL: 'https://gateway.invalid',
+    EXECUTION_GATEWAY_SERVICE_TOKEN: 'service-token',
+    LIVE_EXECUTION_HMAC_SECRET: 'test-secret',
+    LIVE_TRADING_APPROVAL_SCOPE: 'pilot-scope',
+  }, packet, async (_input, init) => {
+    reconciliationCalls += 1
+    if (init?.method === 'POST') throw new DOMException('timeout', 'TimeoutError')
+    return new Response(JSON.stringify({ status: 'ok', intent: { status: 'ACKNOWLEDGED' } }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    })
+  })
+  assert.equal(reconciled.status, 'reconciliation_required')
+  assert.equal(reconciliationCalls, 2, 'unknown submit must reconcile once and never resubmit')
 
   const shadowPacket = buildExecutionShadowPacket({
     intent,

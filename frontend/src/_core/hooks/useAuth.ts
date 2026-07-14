@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 
 export function useAuth() {
   const qc = useQueryClient()
+  const localBypass = typeof window !== 'undefined' && ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname)
 
   // If auth code arrives in URL (after Google OAuth redirect), exchange for JWT
   useEffect(() => {
@@ -39,7 +40,7 @@ export function useAuth() {
   const meQuery = useQuery({
     queryKey: ['auth', 'me'],
     queryFn: () => authApi.me(),
-    enabled: !!getToken(),
+    enabled: !!getToken() || localBypass,
     retry: false,
     staleTime: 5 * 60 * 1000,
   })
@@ -55,8 +56,8 @@ export function useAuth() {
 
   return {
     user: meQuery.data ?? null,
-    loading: !!getToken() && meQuery.isLoading,
-    isAuthenticated: !!getToken() && !!meQuery.data,
+    loading: (!!getToken() || localBypass) && meQuery.isLoading,
+    isAuthenticated: (!!getToken() || localBypass) && !!meQuery.data,
     error: meQuery.error,
     login: () => { window.location.href = authApi.loginUrl() },
     logout: () => { logoutMutation.mutate() },

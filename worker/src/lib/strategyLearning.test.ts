@@ -199,8 +199,16 @@ class FakeCandidateFeatureD1 {
       source.includes("stage = 'final_selection' AND decision = 'selected'") &&
       source.includes('raw_signals') &&
       source.includes('funnel_candidates') &&
-      source.includes('fc.evidence AS funnel_evidence'),
-    'strategy learning candidates must restore raw L0 scoring/pass strategy evidence from the latest screener funnel, not Score V2-only recommendations or L2 owner stages',
+      source.includes('fc.evidence AS funnel_evidence') &&
+      source.includes('canonical_run_heads') &&
+      source.includes("p.status = 'canonical'"),
+    'strategy learning candidates must restore raw L0 evidence from the canonical successful screener run, not an arbitrary latest or failed rerun',
+  )
+  assert(
+    source.includes('writeEvidenceArtifact') &&
+      source.includes('strategy_candidate_contexts') &&
+      source.includes('strategy-evidence-pointer-v1'),
+    'strategy decision evidence must be R2-first with one normalized date/symbol D1 context and pointer-only repeated strategy rows',
   )
   assert(
     source.includes('retireGeneratedDiscoveryStrategySpecs') &&

@@ -7,6 +7,7 @@ from app.purged_cv import (
     PurgedTimeSeriesCV,
     cpcv_split_count,
     dynamic_embargo_days,
+    purged_explicit_walk_forward_split,
     purged_train_test_split,
 )
 
@@ -39,6 +40,75 @@ def test_purged_train_test_split_excludes_embargo_window():
     test_start = sorted(set(dates_test))[0]
     assert train_end == "D024"
     assert test_start == "D028"
+
+
+def test_explicit_walk_forward_purges_five_label_horizon_dates():
+    dates = np.array([f"D{(i // 2) + 1:03d}" for i in range(40)])
+    X = np.arange(40).reshape(40, 1)
+    y = np.arange(40)
+
+    _, _, dates_train, _, _, dates_test, metadata = purged_explicit_walk_forward_split(
+        X,
+        y,
+        dates,
+        train_start="D001",
+        train_end="D010",
+        test_start="D011",
+        test_end="D015",
+        label_horizon_days=5,
+    )
+
+    assert sorted(set(dates_train))[-1] == "D005"
+    assert sorted(set(dates_test))[0] == "D011"
+    assert metadata == {
+        "method": "walk_forward_explicit_label_purged",
+        "purged": True,
+        "label_horizon_days": 5,
+        "requested_train_range": ["D001", "D010"],
+        "effective_train_range": ["D001", "D005"],
+        "test_range": ["D011", "D015"],
+        "purged_date_count": 5,
+        "purged_row_count": 10,
+    }
+
+
+def test_explicit_walk_forward_keeps_existing_five_day_gap():
+    dates = np.array([f"D{i + 1:03d}" for i in range(20)])
+    X = np.arange(20).reshape(20, 1)
+    y = np.arange(20)
+
+    _, _, dates_train, _, _, _, metadata = purged_explicit_walk_forward_split(
+        X,
+        y,
+        dates,
+        train_start="D001",
+        train_end="D005",
+        test_start="D011",
+        test_end="D015",
+        label_horizon_days=5,
+    )
+
+    assert sorted(set(dates_train))[-1] == "D005"
+    assert metadata["purged_date_count"] == 0
+    assert metadata["purged_row_count"] == 0
+
+
+def test_explicit_walk_forward_rejects_overlapping_ranges():
+    dates = np.array([f"D{i + 1:03d}" for i in range(20)])
+    X = np.arange(20).reshape(20, 1)
+    y = np.arange(20)
+
+    with np.testing.assert_raises_regex(ValueError, "walk_forward_ranges_overlap_or_unsorted"):
+        purged_explicit_walk_forward_split(
+            X,
+            y,
+            dates,
+            train_start="D001",
+            train_end="D010",
+            test_start="D010",
+            test_end="D015",
+            label_horizon_days=5,
+        )
 
 
 def test_purged_cv_keeps_train_before_test():

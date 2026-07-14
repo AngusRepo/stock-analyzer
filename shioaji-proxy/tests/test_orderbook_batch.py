@@ -130,6 +130,7 @@ def test_force_bidask_refresh_unsubscribes_before_resubscribe(monkeypatch):
     proxy = _load_proxy_main()
     calls: list[tuple[str, str]] = []
     contract = object()
+    monkeypatch.setattr(proxy, "is_market_hours", lambda: True)
 
     class Quote:
         def subscribe(self, contract_arg, quote_type, version, intraday_odd=False):
@@ -160,6 +161,20 @@ def test_force_bidask_refresh_unsubscribes_before_resubscribe(monkeypatch):
 
     assert proxy.subscribe_symbol("2330", force_bidask=True) is True
     assert calls == [("unsubscribe", "bidask"), ("subscribe", "bidask")]
+
+
+def test_subscribe_symbol_defers_sdk_call_outside_market_hours(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy.api = object()
+    proxy.connected = True
+    monkeypatch.setattr(proxy, "is_market_hours", lambda: False)
+    monkeypatch.setattr(
+        proxy,
+        "run_broker_query",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("off-hours SDK call forbidden")),
+    )
+
+    assert proxy.subscribe_symbol("0050") is False
 
 
 def test_odd_lot_orderbook_uses_dedicated_stream_cache():

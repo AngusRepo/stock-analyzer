@@ -630,6 +630,9 @@ def subscribe_symbol(
     odd_lot = lot_type == "odd_lot"
     if not symbol or not api or not connected or _process_poisoned:
         return False
+    if not is_market_hours():
+        print(f"[Shioaji] Subscription deferred outside market hours: {symbol} lot={lot_type}")
+        return False
 
     def subscribe_operation():
         import shioaji as sj
@@ -805,7 +808,7 @@ def _watchdog_once() -> None:
 
 def _watchdog_loop() -> None:
     while not _watchdog_stop.wait(watchdog_interval_seconds()):
-        if not is_market_hours() and not static_watchlist_symbols():
+        if not is_market_hours():
             continue
         try:
             _watchdog_once()

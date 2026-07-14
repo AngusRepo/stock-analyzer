@@ -162,15 +162,18 @@ assert(
 assert(
   updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh'") &&
     updateOrchestrator.includes('fusion_degraded=') &&
-    updateOrchestrator.includes('pipeline continues with L4 alpha EV'),
-  'allocator EV fusion validation failure must be visible but degrade to L4 instead of stopping the evening-chain pipeline',
+    updateOrchestrator.includes('pipeline continues with validated L4 alpha EV or S12 trade EV') &&
+    updateOrchestrator.includes('BUY/allocation remain fail closed when expected return is unavailable'),
+  'allocator EV fusion validation failure must remain visible while expected-return action gates stay fail closed',
 )
 assert(
   updateOrchestrator.includes('l4_challenger_rejected=') &&
     updateOrchestrator.includes('l4_champion_retained=') &&
+    updateOrchestrator.includes('l4_unavailable=') &&
+    updateOrchestrator.includes('expected_return_action_gate=validated_s12_only') &&
     updateOrchestrator.includes("champion.promotion_state === 'production_approved'") &&
     updateOrchestrator.includes("championDecision === 'PASS'"),
-  'a rejected L4 challenger must retain a validated production champion and must not stop the evening chain',
+  'L4 readiness must retain a compatible champion or continue observation with BUY/allocation fail closed',
 )
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')

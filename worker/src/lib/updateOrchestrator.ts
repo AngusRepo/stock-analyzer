@@ -13,6 +13,7 @@ import {
 import { runOfficialMarketSummaryRefresh } from './officialMarketSummaryRefresh'
 import { enqueuePostScreenerPipelineContinuation } from './postScreenerContinuation'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
+import { L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
 import { fetchPunishedStocks } from './twseApi'
 import {
   finLabCanonicalDatasetsForLane,
@@ -1828,11 +1829,39 @@ async function runDailyAllocatorEvReadiness(
 ): Promise<{ ok: boolean; summary: string }> {
   const started = Date.now()
   const parts: string[] = []
+  let l4ChampionAvailable = false
+
+  const loadApprovedL4Champion = async (): Promise<Record<string, any> | null> => {
+    const rawConfig = await env.KV.get('trading:config', 'json').catch(() => null) as Record<string, any> | null
+    const ensembleV2 = rawConfig?.ensemble_v2 && typeof rawConfig.ensemble_v2 === 'object'
+      ? rawConfig.ensemble_v2 as Record<string, any>
+      : {}
+    const champion = ensembleV2.l4AlphaEv ?? ensembleV2.l4_alpha_ev
+    const championDecision = String(champion?.validation_packet?.decision ?? '').toUpperCase()
+    const approved =
+      champion &&
+      typeof champion === 'object' &&
+      champion.expected_return_owner === 'l4_alpha_ev' &&
+      champion.promotion_state === 'production_approved' &&
+      championDecision === 'PASS' &&
+      champion.artifact_contract_version === L4_ALPHA_EV_CONTRACT.artifactContractVersion &&
+      champion.feature_semantic_version === L4_ALPHA_EV_CONTRACT.featureSemanticVersion &&
+      champion.label_schema_version === L4_ALPHA_EV_CONTRACT.labelSchemaVersion &&
+      typeof champion.model_version === 'string' &&
+      champion.model_version.length > 0
+    return approved ? champion as Record<string, any> : null
+  }
 
   try {
     const l4Started = Date.now()
     const l4Summary = await runL4AlphaEvRefresh(env, triggerTime, 'weekly')
     parts.push(`l4=${l4Summary}`)
+    const champion = await loadApprovedL4Champion()
+    l4ChampionAvailable = champion !== null
+    if (!l4ChampionAvailable) {
+      parts.push('l4_unavailable=refresh completed without a production-approved contract-compatible champion')
+      parts.push('expected_return_action_gate=validated_s12_only')
+    }
     await logSchedulerResult(env.KV, 'l4-alpha-ev-refresh', {
       status: 'success',
       summary: `daily-chain ${l4Summary}`,
@@ -1841,37 +1870,24 @@ async function runDailyAllocatorEvReadiness(
     })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
-    const rawConfig = await env.KV.get('trading:config', 'json').catch(() => null) as Record<string, any> | null
-    const ensembleV2 = rawConfig?.ensemble_v2 && typeof rawConfig.ensemble_v2 === 'object'
-      ? rawConfig.ensemble_v2 as Record<string, any>
-      : {}
-    const champion = ensembleV2.l4AlphaEv ?? ensembleV2.l4_alpha_ev
-    const championDecision = String(champion?.validation_packet?.decision ?? '').toUpperCase()
-    const championApproved =
-      champion &&
-      typeof champion === 'object' &&
-      champion.expected_return_owner === 'l4_alpha_ev' &&
-      champion.promotion_state === 'production_approved' &&
-      championDecision === 'PASS' &&
-      champion.artifact_contract_version === 'l4-alpha-ev-contract-v2' &&
-      champion.feature_semantic_version === 'l4-directional-score-components-v1' &&
-      champion.label_schema_version === 'next-session-adjusted-open-to-fifth-session-adjusted-close-net-v1' &&
-      typeof champion.model_version === 'string' &&
-      champion.model_version.length > 0
+    const champion = await loadApprovedL4Champion()
+    l4ChampionAvailable = champion !== null
     await logSchedulerResult(env.KV, 'l4-alpha-ev-refresh', {
       status: 'error',
-      summary: championApproved
+      summary: l4ChampionAvailable
         ? `daily-chain L4 alpha EV challenger rejected for ${triggerTime}; retained champion=${champion.model_version}`
         : `daily-chain L4 alpha EV refresh failed for ${triggerTime}; no production-approved champion available`,
       duration_ms: Date.now() - started,
       error: message,
       run_date: triggerTime,
     })
-    if (!championApproved) {
-      return { ok: false, summary: `L4 alpha EV refresh failed without an active champion: ${message}` }
+    if (l4ChampionAvailable) {
+      parts.push(`l4_challenger_rejected=${message}`)
+      parts.push(`l4_champion_retained=${champion.model_version}`)
+    } else {
+      parts.push(`l4_unavailable=${message}`)
+      parts.push('expected_return_action_gate=validated_s12_only')
     }
-    parts.push(`l4_challenger_rejected=${message}`)
-    parts.push(`l4_champion_retained=${champion.model_version}`)
   }
 
   try {
@@ -1889,7 +1905,9 @@ async function runDailyAllocatorEvReadiness(
     parts.push(`fusion_degraded=${message}`)
     await logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh', {
       status: 'error',
-      summary: `daily-chain allocator EV fusion degraded; stale config cleared by controller when available; pipeline continues with L4 alpha EV for ${triggerTime}`,
+      summary: l4ChampionAvailable
+        ? `daily-chain allocator EV fusion degraded; stale config cleared by controller when available; pipeline continues with validated L4 alpha EV or S12 trade EV for ${triggerTime}`
+        : `daily-chain allocator EV fusion degraded; pipeline continues in observation mode with validated S12 trade EV only; BUY/allocation remain fail closed when expected return is unavailable for ${triggerTime}`,
       duration_ms: Date.now() - started,
       error: message,
       run_date: triggerTime,

@@ -108,21 +108,20 @@ async function runBehaviorTests(): Promise<void> {
       },
     },
   } as any
-  const summary = await runS12CandidateStructureSnapshots(fakeEnv, '2026-07-07', {
-    symbols,
-    loadBars: async () => ({
-      bars: [],
-      fallback15mBars: [],
-      fallback1hBars: [],
-      fallback4hBars: [],
-      diagnostics: {},
-    } as any),
-  })
-  assert.equal(summary.schema_version, 's12-candidate-structure-snapshot-summary-v1')
-  assert.equal(summary.candidate_count, 1)
-  assert.equal(summary.attempted, 1)
-  assert.equal(summary.persisted, 0)
-  assert.equal(summary.skipped, 1)
+  await assert.rejects(
+    runS12CandidateStructureSnapshots(fakeEnv, '2026-07-07', {
+      symbols,
+      loadBars: async () => ({
+        bars: [],
+        fallback15mBars: [],
+        fallback1hBars: [],
+        fallback4hBars: [],
+        diagnostics: {},
+      } as any),
+    }),
+    /s12_candidate_snapshot_source_unavailable:missing_intraday_bars=1/,
+    'selected candidates without usable intraday bars must fail closed',
+  )
   assert.equal(writeCount, 0)
 }
 

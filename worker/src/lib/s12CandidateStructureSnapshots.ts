@@ -34,6 +34,7 @@ export interface S12CandidateSnapshotSummary {
   skipped: number
   errors: number
   limit: number
+  skip_reasons: Record<string, number>
 }
 
 function positiveLimit(value: unknown, fallback: number): number {
@@ -130,12 +131,18 @@ export async function runS12CandidateStructureSnapshots(
   let setupOnly = 0
   let skipped = 0
   let errors = 0
+  const skipReasons: Record<string, number> = {}
+  const recordSkipReason = (reason: unknown) => {
+    const key = String(reason ?? 'unknown').trim().replace(/\s+/g, '_').slice(0, 160) || 'unknown'
+    skipReasons[key] = (skipReasons[key] ?? 0) + 1
+  }
 
   for (const row of selected) {
     try {
       const loaded = await loadBars(env, row.symbol, tradeDate)
       if (!loaded.bars.length) {
         skipped += 1
+        recordSkipReason(loaded.diagnostics.kbars_error ?? loaded.diagnostics.kbars_unusable_reason ?? 'missing_intraday_bars')
         continue
       }
       const stockRow = await env.DB.prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(row.symbol).first<{ market?: string | null }>()
@@ -177,8 +184,18 @@ export async function runS12CandidateStructureSnapshots(
       else skipped += 1
     } catch (error) {
       errors += 1
+      recordSkipReason(error instanceof Error ? error.message : String(error))
       console.warn(`[S12CandidateSnapshot] ${row.symbol} skipped:`, error instanceof Error ? error.message : String(error))
     }
+  }
+
+  if (selected.length > 0 && persisted === 0 && (skipped > 0 || errors > 0)) {
+    const reasons = Object.entries(skipReasons)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 5)
+      .map(([reason, count]) => `${reason}=${count}`)
+      .join(',')
+    throw new Error(`s12_candidate_snapshot_source_unavailable:${reasons || 'unknown'}`)
   }
 
   return {
@@ -193,5 +210,6 @@ export async function runS12CandidateStructureSnapshots(
     skipped,
     errors,
     limit,
+    skip_reasons: skipReasons,
   }
 }

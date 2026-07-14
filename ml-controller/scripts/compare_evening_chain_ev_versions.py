@@ -467,7 +467,7 @@ def _run_variant(
     }
 
 
-def _historical_actual_variant(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _historical_actual_variant(rows: list[dict[str, Any]], *, run_date: str) -> dict[str, Any]:
     selected = []
     potential = []
     for row in rows:
@@ -499,7 +499,7 @@ def _historical_actual_variant(rows: list[dict[str, Any]]) -> dict[str, Any]:
             key=lambda item: (item.get("expected_return") or -99.0, item.get("score_v2") or 0.0),
             reverse=True,
         )[:15],
-        "source": "persisted_2026-07-09_daily_recommendations",
+        "source": f"persisted_{run_date}_daily_recommendations",
     }
 
 
@@ -608,7 +608,7 @@ def main(argv: list[str] | None = None) -> int:
             },
         },
         "variants": [
-            _historical_actual_variant(rows),
+            _historical_actual_variant(rows, run_date=args.run_date),
             _run_variant("current_prod_guarded", rows, ranking=ranking, policy=prod_policy, return_history=return_history, reward_ledger=reward_ledger),
             _run_variant("canonical_l4_guarded", rows, ranking=ranking, policy=canonical_policy, return_history=return_history, reward_ledger=reward_ledger),
             _run_variant("canonical_l4_math_shadow", rows, ranking=ranking, policy=canonical_shadow_policy, return_history=return_history, reward_ledger=reward_ledger),

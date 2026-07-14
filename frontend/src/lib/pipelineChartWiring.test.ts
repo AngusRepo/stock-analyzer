@@ -26,7 +26,10 @@ for (const text of [
   'recData?.funnel_summary',
   'recData?.strategy_summary',
   'recommendationRows',
-  'candidateCount={recommendationRows.length}',
+  'candidateCount={l4BuyCount}',
+  '<RecommendationSummaryColumn rows={recommendationRows} />',
+  'isError: recIsError',
+  '選股推薦資料讀取失敗',
 ]) {
   assert(page.includes(text), `PipelinePage should render the four-column flow-tracking rebuild: ${text}`)
 }

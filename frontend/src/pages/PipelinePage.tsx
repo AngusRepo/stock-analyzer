@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import AppShell from '@/components/AppShell'
 import {
-  Filter, ChevronDown, ChevronUp,
+  AlertTriangle, Filter, ChevronDown, ChevronUp, RefreshCw,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '@/_core/hooks/useAuth'
@@ -718,6 +718,28 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Re
   )
 }
 
+function RecommendationSummaryColumn({ rows }: { rows: any[] }) {
+  return (
+    <PipelineColumn
+      className="xl:col-span-4"
+      title="今日推薦股票"
+      subtitle="包含 BUY 與 HOLD；按 Score V2 最終分排序。"
+    >
+      {rows.length ? (
+        <div className="grid max-h-[640px] gap-2 overflow-y-auto pr-1 lg:grid-cols-2">
+          {rows.map((rec: any, index: number) => (
+            <StockRow key={rec.stock_id ?? rec.symbol ?? index} rec={rec} rank={index + 1} />
+          ))}
+        </div>
+      ) : (
+        <p className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-4 text-sm text-[#9aa4b7]">
+          今日沒有 BUY/HOLD 推薦列。
+        </p>
+      )}
+    </PipelineColumn>
+  )
+}
+
 function ExecutionFlowColumn({
   pendingBuys,
   pbDate,
@@ -796,7 +818,13 @@ export default function PipelinePage() {
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
   // Stage 1+2+3: Daily recommendations (screener → ML → filtered)
-  const { data: recData, isLoading: recLoading } = useQuery({
+  const {
+    data: recData,
+    isLoading: recLoading,
+    isError: recIsError,
+    error: recError,
+    refetch: refetchRecommendations,
+  } = useQuery({
     queryKey: ['recommendations', 'daily', today],
     queryFn: () => recommendationsApi.daily(),
     staleTime: 10 * 60_000,
@@ -878,7 +906,29 @@ export default function PipelinePage() {
           </div>
         </div>
 
-        {isLoading ? (
+        {recIsError ? (
+          <div role="alert" className="rounded-xl border border-amber-400/25 bg-amber-400/[0.07] p-4 text-amber-100">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 items-start gap-3">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-300" />
+                <div className="min-w-0">
+                  <p className="font-semibold">選股推薦資料讀取失敗</p>
+                  <p className="mt-1 break-words text-xs leading-5 text-amber-100/70">
+                    {String((recError as Error | null)?.message ?? 'recommendations/daily API error')}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => refetchRecommendations()}
+                className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-xs font-semibold text-amber-100 hover:bg-amber-300/15"
+              >
+                <RefreshCw className="h-4 w-4" />
+                重新載入
+              </button>
+            </div>
+          </div>
+        ) : isLoading ? (
           <div className="space-y-3">
             {[1, 2, 3, 4].map(i => <div key={i} className="h-24 rounded-xl bg-muted/40 animate-pulse" />)}
           </div>
@@ -893,6 +943,7 @@ export default function PipelinePage() {
               qfList={qfList}
               candidateCount={l4BuyCount}
             />
+            <RecommendationSummaryColumn rows={recommendationRows} />
           </div>
         )}
       </div>

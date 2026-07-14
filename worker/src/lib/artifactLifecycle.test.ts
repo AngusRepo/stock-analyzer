@@ -3,6 +3,7 @@ import {
   promoteCanonicalRun,
   registerPipelineRun,
   runR2RetentionSweep,
+  runStorageHealthGate,
   STORAGE_LIFECYCLE_SCHEDULE,
   writeEvidenceArtifact,
 } from './artifactLifecycle'
@@ -12,7 +13,9 @@ class Statement {
   constructor(private readonly db: MockDb, readonly sql: string) {}
   bind(...values: unknown[]) { this.values = values; return this }
   async first<T>(): Promise<T | null> { return this.db.first(this) as T | null }
-  async all<T>(): Promise<{ results: T[] }> { return { results: this.db.all(this) as T[] } }
+  async all<T>(): Promise<{ results: T[]; meta: Record<string, unknown> }> {
+    return { results: this.db.all(this) as T[], meta: this.db.queryMeta }
+  }
   async run(): Promise<{ success: true }> { this.db.runs.push(this); return { success: true } }
 }
 
@@ -21,6 +24,7 @@ class MockDb {
   batches: Statement[][] = []
   firstHandler: (statement: Statement) => unknown = () => null
   allHandler: (statement: Statement) => unknown[] = () => []
+  queryMeta: Record<string, unknown> = { size_after: 1 }
   prepare(sql: string) { return new Statement(this, sql) }
   first(statement: Statement) { return this.firstHandler(statement) }
   all(statement: Statement) { return this.allHandler(statement) }
@@ -138,6 +142,31 @@ async function testRetentionSweepPreservesMetadataAfterPayloadDelete(): Promise<
   assert.doesNotMatch(db.runs[0].sql, /DELETE FROM run_artifacts/)
 }
 
+async function testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown(): Promise<void> {
+  const healthyDb = new MockDb()
+  healthyDb.queryMeta = { size_after: 7_000_000_000 }
+  healthyDb.firstHandler = (statement) => statement.sql.includes('artifact_cleanup_dlq')
+    ? { count: 0 }
+    : { integrity_blocked: 0, cleanup_backlog_over_24h: 0 }
+  const healthy = await runStorageHealthGate({ DB: healthyDb as any })
+  assert.equal(healthy.healthy, true)
+  assert.equal(healthy.d1_bytes, 7_000_000_000)
+
+  const overCapacityDb = new MockDb()
+  overCapacityDb.queryMeta = { size_after: 8_864_489_472 }
+  overCapacityDb.firstHandler = healthyDb.firstHandler
+  const overCapacity = await runStorageHealthGate({ DB: overCapacityDb as any })
+  assert.equal(overCapacity.healthy, false)
+  assert.equal(overCapacity.d1_utilization, 0.8864489472)
+
+  const unknownDb = new MockDb()
+  unknownDb.queryMeta = {}
+  unknownDb.firstHandler = healthyDb.firstHandler
+  const unknown = await runStorageHealthGate({ DB: unknownDb as any })
+  assert.equal(unknown.healthy, false)
+  assert.equal(unknown.d1_bytes, null)
+}
+
 async function main(): Promise<void> {
   assert.equal(STORAGE_LIFECYCLE_SCHEDULE.some((row) => row.task === 'storage-health-gate'), true)
   await testR2FirstWriteVerifiesBeforeManifest()
@@ -145,6 +174,7 @@ async function main(): Promise<void> {
   await testContentAddressDoesNotDuplicateAcrossRunIds()
   await testCanonicalPromotionSupersedesOnlyAfterVerifiedArtifact()
   await testRetentionSweepPreservesMetadataAfterPayloadDelete()
+  await testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown()
   console.log('artifact lifecycle tests passed')
 }
 

@@ -516,11 +516,12 @@ export async function runStorageHealthGate(
   `).first<any>()
   let d1Bytes: number | null = null
   try {
-    const pageCount = await env.DB.prepare('PRAGMA page_count').first<any>()
-    const pageSize = await env.DB.prepare('PRAGMA page_size').first<any>()
-    const pages = Number(pageCount?.page_count)
-    const bytes = Number(pageSize?.page_size)
-    if (Number.isFinite(pages) && Number.isFinite(bytes)) d1Bytes = pages * bytes
+    // D1's Worker binding does not expose PRAGMA page_count/page_size through
+    // prepared statements. Every query result carries the authoritative
+    // database size in meta.size_after, so use that runtime source instead.
+    const sizeProbe = await env.DB.prepare('SELECT 1 AS storage_health_probe').all()
+    const sizeAfter = Number(sizeProbe.meta?.size_after)
+    if (Number.isFinite(sizeAfter) && sizeAfter >= 0) d1Bytes = sizeAfter
   } catch {
     d1Bytes = null
   }
@@ -530,7 +531,7 @@ export async function runStorageHealthGate(
   const backlog = Number(counts?.cleanup_backlog_over_24h ?? 0)
   const dlqPending = Number(dlq?.count ?? 0)
   return {
-    healthy: integrityBlocked === 0 && backlog === 0 && dlqPending === 0 && (utilization == null || utilization < 0.8),
+    healthy: integrityBlocked === 0 && backlog === 0 && dlqPending === 0 && utilization != null && utilization < 0.8,
     integrity_blocked: integrityBlocked,
     cleanup_backlog_over_24h: backlog,
     dlq_pending: dlqPending,

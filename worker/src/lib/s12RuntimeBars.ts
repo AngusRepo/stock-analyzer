@@ -21,15 +21,6 @@ interface S12KbarRow {
   volume?: number | string | null
 }
 
-interface FinMindTickRow {
-  date?: string | null
-  stock_id?: string | null
-  deal_price?: number | string | null
-  volume?: number | string | null
-  Time?: string | null
-  time?: string | null
-}
-
 export type S12BaseBarSource =
   | 'shioaji_kbars_usable'
   | 'shioaji_kbars_unusable_fallback_event_history'
@@ -75,9 +66,9 @@ const H1_MS = 60 * 60_000
 const TW_OFFSET_MS = 8 * H1_MS
 const TW_SESSION_OPEN_MINUTE = 9 * 60
 const TW_SESSION_CLOSE_MINUTE = 13 * 60 + 30
-const FINMIND_RESEARCH_READY_MINUTE = 15 * 60 + 30
+const S12_RESEARCH_READY_MINUTE = 15 * 60 + 30
 const S12_RESEARCH_ARTIFACT_DOMAIN = 's12_research_minute_bars'
-const S12_RESEARCH_ARTIFACT_SCHEMA = 's12-research-minute-bars-v1'
+const S12_RESEARCH_ARTIFACT_SCHEMA = 's12-research-minute-bars-v2'
 
 function finiteNumber(value: unknown): number | null {
   const n = Number(value)
@@ -271,44 +262,8 @@ function samplesToRollingBars(samples: IntradaySnapshotSample[], intervalMs: num
   return bars
 }
 
-function finMindTickStartMs(row: FinMindTickRow): number | null {
-  const date = String(row.date ?? '').slice(0, 10)
-  const time = String(row.Time ?? row.time ?? '').trim()
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}:\d{2}/.test(time)) return null
-  return parseTwKbarTimeMs(`${date} ${time}`)
-}
-
-export function aggregateFinMindTicksToMinuteBars(rows: FinMindTickRow[], tradeDate: string): IntradayRollingBar[] {
-  const buckets = new Map<number, IntradayRollingBar>()
-  for (const row of rows) {
-    if (String(row.date ?? '').slice(0, 10) !== tradeDate) continue
-    const startMs = finMindTickStartMs(row)
-    const price = finiteNumber(row.deal_price)
-    if (startMs == null || price == null || price <= 0 || !isTwSessionTime(startMs)) continue
-    const minuteMs = Math.floor(startMs / 60_000) * 60_000
-    const volume = Math.max(0, finiteNumber(row.volume) ?? 0)
-    const bucket = buckets.get(minuteMs)
-    if (!bucket) {
-      buckets.set(minuteMs, {
-        startMs: minuteMs,
-        open: price,
-        high: price,
-        low: price,
-        close: price,
-        volume,
-      })
-      continue
-    }
-    bucket.high = Math.max(bucket.high, price)
-    bucket.low = Math.min(bucket.low, price)
-    bucket.close = price
-    bucket.volume += volume
-  }
-  return [...buckets.values()].sort((left, right) => left.startMs - right.startMs)
-}
-
 function s12ResearchProducerRunId(tradeDate: string, symbol: string): string {
-  return `finmind-tick:${tradeDate}:${symbol}`
+  return `shioaji-research:${tradeDate}:${symbol}`
 }
 
 function isResearchWindow(tradeDate: string, nowMs = Date.now()): boolean {
@@ -316,7 +271,7 @@ function isResearchWindow(tradeDate: string, nowMs = Date.now()): boolean {
   const currentDate = tw.toISOString().slice(0, 10)
   if (tradeDate < currentDate) return true
   if (tradeDate > currentDate) return false
-  return tw.getUTCHours() * 60 + tw.getUTCMinutes() >= FINMIND_RESEARCH_READY_MINUTE
+  return tw.getUTCHours() * 60 + tw.getUTCMinutes() >= S12_RESEARCH_READY_MINUTE
 }
 
 async function loadCachedS12ResearchBars(
@@ -366,14 +321,20 @@ async function loadCachedS12ResearchBars(
       Number.isFinite(bar?.high) &&
       Number.isFinite(bar?.low) &&
       Number.isFinite(bar?.close) &&
-      twDateText(bar.startMs) === tradeDate &&
+      twDateText(bar.startMs) <= tradeDate &&
       isTwSessionTime(bar.startMs)
     ))
     .sort((left, right) => left.startMs - right.startMs)
   return bars.length ? bars : null
 }
 
-async function fetchFinMindResearchBars(
+function dateDaysBefore(date: string, days: number): string {
+  const parsed = Date.parse(`${date}T00:00:00.000Z`)
+  if (!Number.isFinite(parsed)) throw new Error(`invalid_trade_date:${date}`)
+  return new Date(parsed - Math.max(0, days) * 86_400_000).toISOString().slice(0, 10)
+}
+
+async function fetchS12ResearchKbars(
   env: Bindings,
   symbol: string,
   tradeDate: string,
@@ -381,35 +342,36 @@ async function fetchFinMindResearchBars(
   const cached = await loadCachedS12ResearchBars(env, symbol, tradeDate)
   if (cached) return { bars: cached, cacheHit: true }
 
-  const token = String(env.FINMIND_TOKEN ?? '').trim()
-  if (!token) throw new Error('s12_research_finmind_token_missing')
-  const params = new URLSearchParams({
-    dataset: 'TaiwanStockPriceTick',
-    data_id: symbol,
-    start_date: tradeDate,
-  })
-  const url = `https://api.finmindtrade.com/api/v4/data?${params.toString()}`
+  const researchUrl = String(env.S12_RESEARCH_KBARS_URL ?? '').replace(/\/+$/, '')
+  const token = String(env.PROXY_SERVICE_TOKEN ?? '').trim()
+  if (!researchUrl) throw new Error('s12_research_service_url_missing')
+  if (!token) throw new Error('s12_research_service_token_missing')
+  const startDate = dateDaysBefore(tradeDate, 7)
+  const url = `${researchUrl}/kbars/${encodeURIComponent(symbol)}?start=${encodeURIComponent(startDate)}&end=${encodeURIComponent(tradeDate)}&limit=5000`
   let lastError = 'unknown'
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       const response = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(60_000),
       })
       const document = await response.json().catch(() => null) as {
-        status?: number
-        msg?: string
-        data?: FinMindTickRow[]
+        status?: string
+        detail?: string
+        data?: S12KbarRow[]
       } | null
-      const providerStatus = Number(document?.status ?? response.status)
-      if (!response.ok || providerStatus !== 200) {
-        const message = String(document?.msg ?? `http_${response.status}`).replace(/\s+/g, ' ').slice(0, 180)
-        lastError = `s12_research_finmind_${providerStatus}:${message}`
-        if (providerStatus !== 429 && providerStatus < 500) throw new Error(lastError)
+      if (!response.ok) {
+        const message = String(document?.detail ?? `http_${response.status}`).replace(/\s+/g, ' ').slice(0, 180)
+        lastError = `s12_research_service_${response.status}:${message}`
+        if (response.status !== 429 && response.status < 500) throw new Error(lastError)
       } else {
         const sourceRows = Array.isArray(document?.data) ? document.data : []
-        const bars = aggregateFinMindTicksToMinuteBars(sourceRows, tradeDate)
-        if (!bars.length) throw new Error(`s12_research_finmind_empty:${symbol}:${tradeDate}`)
+        const bars = sourceRows
+          .map(s12KbarRowToBar)
+          .filter((bar): bar is IntradayRollingBar => bar != null)
+          .filter((bar) => twDateText(bar.startMs) <= tradeDate && isTwSessionTime(bar.startMs))
+          .sort((left, right) => left.startMs - right.startMs)
+        if (!bars.length) throw new Error(`s12_research_service_empty:${symbol}:${tradeDate}`)
         await writeEvidenceArtifact(env, {
           domain: S12_RESEARCH_ARTIFACT_DOMAIN,
           businessDate: tradeDate,
@@ -418,14 +380,16 @@ async function fetchFinMindResearchBars(
           schemaVersion: S12_RESEARCH_ARTIFACT_SCHEMA,
           payload: {
             symbol,
-            provider: 'finmind_taiwan_stock_price_tick',
+            provider: 'shioaji_research_service',
             bars,
           },
           rowCount: bars.length,
           metadata: {
             symbol,
-            source_dataset: 'TaiwanStockPriceTick',
-            source_tick_rows: sourceRows.length,
+            source_service: 'shioaji-research',
+            source_start_date: startDate,
+            source_end_date: tradeDate,
+            source_kbar_rows: sourceRows.length,
           },
         })
         return { bars, cacheHit: false }
@@ -433,11 +397,12 @@ async function fetchFinMindResearchBars(
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
       if (
+        lastError.includes('url_missing') ||
         lastError.includes('token_missing') ||
-        lastError.includes('finmind_400') ||
-        lastError.includes('finmind_401') ||
-        lastError.includes('finmind_403') ||
-        lastError.includes('finmind_empty')
+        lastError.includes('service_400') ||
+        lastError.includes('service_401') ||
+        lastError.includes('service_403') ||
+        lastError.includes('service_empty')
       ) throw error
     }
     if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 500))
@@ -566,10 +531,10 @@ async function fetchS12ShioajiKbars(
   let provider = 'shioaji_streaming_tick_accumulator'
   let cacheHit = false
   if (useResearchSource) {
-    const research = await fetchFinMindResearchBars(env, symbol, tradeDate)
+    const research = await fetchS12ResearchKbars(env, symbol, tradeDate)
     rawBars = research.bars
     rawRowCount = rawBars.length
-    provider = 'finmind_taiwan_stock_price_tick'
+    provider = 'shioaji_research_service'
     cacheHit = research.cacheHit
   } else {
     const url = `${proxyUrl}/kbars/${encodeURIComponent(symbol)}?start=${encodeURIComponent(tradeDate)}&end=${encodeURIComponent(tradeDate)}&limit=${limit}`

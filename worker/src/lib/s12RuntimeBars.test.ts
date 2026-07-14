@@ -1,5 +1,4 @@
 import {
-  aggregateFinMindTicksToMinuteBars,
   filterS12KbarsToTradeDate,
   normalizeS12KbarSessionTimeSkew,
 } from './s12RuntimeBars'
@@ -27,24 +26,11 @@ function twText(ms: number): string {
 
 {
   const source = readFileSync(new URL('./s12RuntimeBars.ts', import.meta.url), 'utf8')
-  assert(source.includes("dataset: 'TaiwanStockPriceTick'"), 'historical S12 bars must use the research-data owner')
+  assert(source.includes('env.S12_RESEARCH_KBARS_URL'), 'historical S12 bars must use the isolated research service')
+  assert(source.includes("provider: 'shioaji_research_service'"), 'research artifact must identify its canonical owner')
   assert(source.includes('writeEvidenceArtifact(env'), 'research bars must be cached as checksum-verified R2 evidence')
   assert(source.includes('start=${encodeURIComponent(tradeDate)}&end=${encodeURIComponent(tradeDate)}'), 'execution proxy may only receive current-session kbar requests')
   assert(!source.includes('s12KbarStartDate'), 'execution proxy must not receive historical date ranges')
-}
-
-{
-  const bars = aggregateFinMindTicksToMinuteBars([
-    { date: '2026-07-14', stock_id: '2441', deal_price: 143, volume: 2, Time: '09:00:01.000' },
-    { date: '2026-07-14', stock_id: '2441', deal_price: 144, volume: 3, Time: '09:00:45.000' },
-    { date: '2026-07-14', stock_id: '2441', deal_price: 142, volume: 4, Time: '09:01:05.000' },
-    { date: '2026-07-13', stock_id: '2441', deal_price: 999, volume: 1, Time: '09:00:00.000' },
-    { date: '2026-07-14', stock_id: '2441', deal_price: 999, volume: 1, Time: '14:00:00.000' },
-  ], '2026-07-14')
-  assert(bars.length === 2, 'FinMind research ticks should aggregate into target-date regular-session minute bars')
-  assert(bars[0].open === 143 && bars[0].high === 144 && bars[0].low === 143 && bars[0].close === 144, 'minute OHLC must preserve tick order')
-  assert(bars[0].volume === 5, 'minute volume must sum source tick volume')
-  assert(twText(bars[0].startMs) === '2026-07-14 09:00', 'FinMind TW-local tick time must map to the TW session')
 }
 
 {

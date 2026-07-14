@@ -13,6 +13,10 @@ from services.allocator_ev_fusion_artifact_builder import (
     load_allocator_ev_fusion_training_rows,
 )
 from services.allocator_ev_feature_snapshot_backfill import backfill_allocator_ev_feature_snapshots
+from services.l4_alpha_ev_resolver import (
+    SNAPSHOT_BACKFILL_AS_OF_GUARD,
+    SNAPSHOT_BACKFILL_SOURCE,
+)
 from services.model_artifact_registry import upsert_artifact_record
 from services.worker_config_client import worker_fetch
 
@@ -66,12 +70,18 @@ def _latest_mature_feature_date(max_date: str | None) -> str:
         JOIN price_horizons ph
           ON ph.stock_id = fs.stock_id
          AND ph.price_date = date(fs.snapshot_date)
-        WHERE fs.snapshot_source = 'allocator_ev_asof_backfill_v1'
-          AND fs.as_of_guard = 'trained_until_strictly_before_snapshot_date'
+        WHERE fs.snapshot_source = ?
+          AND fs.as_of_guard = ?
           AND date(fs.snapshot_date) <= date(?)
           AND date(ph.exit_date) <= date(?)
         """,
-        [cutoff, cutoff, cutoff],
+        [
+            cutoff,
+            SNAPSHOT_BACKFILL_SOURCE,
+            SNAPSHOT_BACKFILL_AS_OF_GUARD,
+            cutoff,
+            cutoff,
+        ],
     )
     end_date = str((rows[0] if rows else {}).get("end_date") or "").strip()
     if not end_date:

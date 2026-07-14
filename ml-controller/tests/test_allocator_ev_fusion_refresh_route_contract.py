@@ -66,3 +66,9 @@ def test_allocator_ev_fusion_registry_maps_promotion_to_lifecycle_states() -> No
     }
     assert {"production", "approval_required", "offline_passed", "offline_failed"} <= constants
     assert "shadow" not in constants
+
+
+def test_mature_snapshot_query_uses_canonical_writer_contract() -> None:
+    assert "SNAPSHOT_BACKFILL_SOURCE" in SOURCE
+    assert "SNAPSHOT_BACKFILL_AS_OF_GUARD" in SOURCE
+    assert "trained_until_strictly_before_snapshot_date'" not in SOURCE

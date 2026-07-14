@@ -9,6 +9,11 @@
 .idea/
 .github/
 .claude/
+.agents/
+.bug-hunter/
+.playwright-cli/
+audits/
+lightning_logs/
 
 # Node / worker
 frontend/
@@ -33,21 +38,25 @@ worker/.tmp/
 **/.ruff_cache/
 
 # Large dirs not needed in image
-data/*
+/data/*
 !data/finlab_source_contract.json
 !data/finlab_research/
-data/finlab_research/*
+/data/finlab_research/*
 !data/finlab_research/dagster_asset_graph.json
 !data/feature_registry/
-data/feature_registry/*
+/data/feature_registry/*
 !data/feature_registry/*.json
 !output/
-output/*
+/output/*
 !output/feature_universe_triage/
-output/feature_universe_triage/*
+/output/feature_universe_triage/*
 !output/feature_universe_triage/feature_registry_local_closure_20260617.json
 !output/feature_universe_triage/formal137_pairwise_similarity_long_20260617.csv
 ml-service/benchmark_results/
+ml-service/.test_tmp/
+ml-service/lightning_logs/
+ml-controller/.tmp/
+ml-controller/pytest-cache-files-*/
 .tmp/
 .wrangler/
 _external/

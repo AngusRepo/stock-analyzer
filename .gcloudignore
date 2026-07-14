@@ -9,6 +9,11 @@
 .idea/
 .github/
 .claude/
+.agents/
+.bug-hunter/
+.playwright-cli/
+audits/
+lightning_logs/
 
 node_modules/
 **/node_modules/
@@ -42,6 +47,10 @@ worker/*
 
 .tmp/
 worker/.tmp/
+ml-controller/.tmp/
+ml-controller/pytest-cache-files-*/
+ml-service/.test_tmp/
+ml-service/lightning_logs/
 .wrangler/
 _external/
 freqtrade/
@@ -53,26 +62,26 @@ scripts/
 !ml-service/scripts/**
 screen_*.png
 /*.json
-data/*
+/data/*
 !data/finlab_source_contract.json
 !data/finlab_research/
-data/finlab_research/*
+/data/finlab_research/*
 !data/finlab_research/dagster_asset_graph.json
 !data/feature_registry/
-data/feature_registry/*
+/data/feature_registry/*
 !data/feature_registry/*.json
 !output/
-output/*
+/output/*
 !output/feature_universe_triage/
-output/feature_universe_triage/*
+/output/feature_universe_triage/*
 !output/feature_universe_triage/feature_registry_local_closure_20260617.json
 !output/feature_universe_triage/formal137_pairwise_similarity_long_20260617.csv
 !output/feature_universe_triage/strategy95_vs_ml106_full_mapping.csv
 !output/finlab_ml_feature_backtests/
-output/finlab_ml_feature_backtests/*
+/output/finlab_ml_feature_backtests/*
 !output/finlab_ml_feature_backtests/ml106_features_sii_20230101_20260615_top10_bothdir_best.csv
 !output/finlab_strategy95_backtests/
-output/finlab_strategy95_backtests/*
+/output/finlab_strategy95_backtests/*
 !output/finlab_strategy95_backtests/strategy95_factors_sii_20230101_20260615_top10_bothdir_best.csv
 
 tools/*

@@ -1424,7 +1424,9 @@ export async function materializeStrategyDecisionLogChunk(
   const offset = Math.max(0, Math.floor(options.offset ?? 0))
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 80), 250))
   const { specs, source } = await listStrategySpecsForLearning(db)
-  const candidates = await listStrategyLearningCandidates(db, options.date, limit, offset)
+  const candidatePage = await listStrategyLearningCandidates(db, options.date, limit + 1, offset)
+  const hasMore = candidatePage.length > limit
+  const candidates = candidatePage.slice(0, limit)
   const rows = buildStrategyDecisionRows(options.date, candidates, specs)
   const dryRun = options.dryRun !== false
   const persisted = dryRun ? 0 : await persistStrategyDecisionRows(db, rows, options.artifactEnv, options.producerRunId)
@@ -1438,7 +1440,7 @@ export async function materializeStrategyDecisionLogChunk(
     candidate_count: candidates.length,
     decision_rows: rows.length,
     persisted_rows: persisted,
-    has_more: candidates.length === limit,
+    has_more: hasMore,
     next_offset: offset + candidates.length,
     preview: rows.slice(0, 20),
   }

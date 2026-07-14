@@ -203,6 +203,7 @@ async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): P
       runId,
       replayScope: 'fusion_snapshot_missing',
       maturityAsOfDate: runDate,
+      statusRunDate: runDate,
     } as any)
   }
   return signalDates.length

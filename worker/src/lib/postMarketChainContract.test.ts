@@ -7,6 +7,7 @@ function assert(condition: unknown, message: string): void {
 const callbackRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const strategyLearning = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
 const logger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
 const controllerDailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
 const pipelineCallbackBlock = callbackRoutes.slice(
@@ -90,8 +91,17 @@ assert(
 )
 assert(
   postMarketChain.includes("type: 's12_replay_backfill_chunk'") &&
-    postMarketChain.includes("'s12-replay-backfill', () => enqueueS12ReplayBackfillTask"),
+    postMarketChain.includes("'s12-replay-backfill', () => enqueueS12ReplayBackfillTask") &&
+    postMarketChain.includes('statusRunDate: runDate') &&
+    updateOrchestrator.includes('run_date: statusRunDate'),
   'post-verify chain must enqueue S12 replay backfill after daily recommendations are available',
+)
+assert(
+  strategyLearning.includes('listStrategyLearningCandidates(db, options.date, limit + 1, offset)') &&
+    strategyLearning.includes('const hasMore = candidatePage.length > limit') &&
+    strategyLearning.includes('const candidates = candidatePage.slice(0, limit)') &&
+    strategyLearning.includes('has_more: hasMore'),
+  'strategy-learning pagination must use limit+1 lookahead so exact-multiple pages close without an empty terminal message',
 )
 assert(
   postMarketChain.indexOf("runPostPipelineCallbackChain") < postMarketChain.indexOf("runPostVerifyCallbackChain"),

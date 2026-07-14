@@ -2981,6 +2981,10 @@ export async function processUpdateBatch(
     const maturityAsOfDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedMaturityDate)
       ? requestedMaturityDate
       : new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+    const requestedStatusRunDate = String((msg as any).statusRunDate ?? '').slice(0, 10)
+    const statusRunDate = /^\d{4}-\d{2}-\d{2}$/.test(requestedStatusRunDate)
+      ? requestedStatusRunDate
+      : triggerTime
     const replayScope = requestedScope === 'fusion_snapshot_missing'
       ? 'fusion_snapshot_missing'
       : requestedScope === 'fusion_snapshot_structure'
@@ -3018,6 +3022,7 @@ export async function processUpdateBatch(
           triggerTime,
           runId,
           replayScope,
+          statusRunDate,
         } as any)
       }
       return
@@ -3058,7 +3063,7 @@ export async function processUpdateBatch(
       summary,
       duration_ms: 0,
       run_id: runId,
-      run_date: triggerTime,
+      run_date: statusRunDate,
     }, env)
     if (hasMore) {
       await env.UPDATE_QUEUE.send({
@@ -3068,6 +3073,7 @@ export async function processUpdateBatch(
         runId,
         replayScope,
         maturityAsOfDate,
+        statusRunDate,
       } as any)
     }
     return

@@ -272,7 +272,8 @@ def _write_realtime_trading_local_closure_fixture(root: Path) -> None:
         "worker/wrangler.toml": "\n".join([
             'LIVE_EXECUTION_CLIENT_ENABLED = "0"',
             'LIVE_EXECUTION_SUBMIT_GUARD_ENABLED = "0"',
-            'LIVE_EXECUTION_SHADOW_CLIENT_ENABLED = "0"',
+            'LIVE_EXECUTION_SHADOW_CLIENT_ENABLED = "1"',
+            'LIVE_EXECUTION_SHADOW_GUARD_ENABLED = "0"',
         ]),
         "worker/src/lib/paperExecutionEvents.ts": (
             "canonical_execution writeEvidenceArtifact evidence_pointer checksum_verified_at"

@@ -1909,9 +1909,9 @@ def _realtime_trading_local_closure_checks(root: Path) -> list[dict[str, Any]]:
         ),
         _check_text_contains(
             root, "worker/wrangler.toml",
-            ('LIVE_EXECUTION_CLIENT_ENABLED = "0"', 'LIVE_EXECUTION_SUBMIT_GUARD_ENABLED = "0"', 'LIVE_EXECUTION_SHADOW_CLIENT_ENABLED = "0"'),
+            ('LIVE_EXECUTION_CLIENT_ENABLED = "0"', 'LIVE_EXECUTION_SUBMIT_GUARD_ENABLED = "0"', 'LIVE_EXECUTION_SHADOW_CLIENT_ENABLED = "1"', 'LIVE_EXECUTION_SHADOW_GUARD_ENABLED = "0"'),
             "realtime:p0:live_submit_disabled_local_baseline",
-            "all live execution and shadow client gates remain disabled in the committed runtime baseline",
+            "live execution remains disabled while the non-blocking shadow parity client is enabled",
         ),
         _check_text_contains(
             root, "worker/src/lib/paperExecutionEvents.ts",

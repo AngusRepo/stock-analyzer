@@ -11,7 +11,7 @@
 
 import type { Bindings } from '../types'
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
-import { buildScreenerSeedPruneSql, buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
+import { buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
 import { computeAndStoreIndicators, computeTechnicalIndicators } from './technicalIndicators'
 import { loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice } from './screenerMarketData'
 import {
@@ -466,7 +466,9 @@ async function writeScreenerFunnel(
     items: ScreenerFunnelItemInput[]
   },
 ): Promise<void> {
-  if (!env.ARTIFACTS) throw new Error('screener_r2_artifact_binding_missing')
+  if (!env.ARTIFACTS && !env.EVIDENCE_ARTIFACT_WRITER) {
+    throw new Error('screener_r2_artifact_transport_missing')
+  }
   const artifactPayload = {
     metadata: input.metadata,
     debug_log: input.debugLog,
@@ -647,6 +649,37 @@ async function writeScreenerFunnel(
     `).bind(error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500), input.runId).run().catch(() => {})
     throw error
   }
+}
+
+export async function pruneScreenerSeedRows(
+  db: D1Database,
+  date: string,
+  symbols: string[],
+): Promise<number> {
+  const keep = new Set(symbols.map(symbol => String(symbol || '').trim()).filter(Boolean))
+  if (!keep.size) {
+    const result = await db.prepare('DELETE FROM daily_recommendations WHERE date = ?').bind(date).run()
+    return Number(result.meta?.changes ?? result.meta?.rows_written ?? 0)
+  }
+
+  const { results } = await db.prepare(
+    'SELECT symbol FROM daily_recommendations WHERE date = ?',
+  ).bind(date).all<{ symbol: string }>()
+  const stale = (results ?? [])
+    .map(row => String(row.symbol || '').trim())
+    .filter(symbol => symbol && !keep.has(symbol))
+  let deleted = 0
+  for (const chunk of chunkArray(stale, D1_IN_CHUNK_SIZE)) {
+    const batch = chunk.map(symbol => db.prepare(
+      'DELETE FROM daily_recommendations WHERE date = ? AND symbol = ?',
+    ).bind(date, symbol))
+    const batchResults = await db.batch(batch)
+    deleted += batchResults.reduce(
+      (sum, result) => sum + Number(result.meta?.changes ?? result.meta?.rows_written ?? 0),
+      0,
+    )
+  }
+  return deleted
 }
 
 /** Clamp value to [min, max] */
@@ -2353,13 +2386,18 @@ async function updateScreenerWatchlist(db: D1Database, candidates: ScreenerCandi
     return
   }
 
-  if (candidateSymbols.length > 900) {
-    await db.prepare("UPDATE stocks SET in_current_watchlist=0 WHERE source='screener' AND COALESCE(pinned,0)=0").run()
-  } else {
-    const placeholders = candidateSymbols.map(() => '?').join(',')
-    await db.prepare(
-      `UPDATE stocks SET in_current_watchlist=0 WHERE source='screener' AND COALESCE(pinned,0)=0 AND symbol NOT IN (${placeholders})`
-    ).bind(...candidateSymbols).run()
+  const keep = new Set(candidateSymbols)
+  const { results: currentRows } = await db.prepare(
+    "SELECT symbol FROM stocks WHERE source='screener' AND COALESCE(pinned,0)=0 AND in_current_watchlist=1",
+  ).all<{ symbol: string }>()
+  const staleSymbols = (currentRows ?? [])
+    .map(row => String(row.symbol || '').trim())
+    .filter(symbol => symbol && !keep.has(symbol))
+  for (const chunk of chunkArray(staleSymbols, D1_IN_CHUNK_SIZE)) {
+    const batch = chunk.map(symbol => db.prepare(
+      "UPDATE stocks SET in_current_watchlist=0 WHERE source='screener' AND COALESCE(pinned,0)=0 AND symbol=?",
+    ).bind(symbol))
+    await db.batch(batch)
   }
 
   // ?? Step 2: Upsert ??∠巨 ????????????????????????????????????????????
@@ -4055,18 +4093,22 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   try {
     const policyPoolSymbols = [...overlayEligibleSymbols]
     if (policyPoolSymbols.length > 0) {
-      const ph = policyPoolSymbols.map(() => '?').join(',')
+      const histRows: Array<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number }> = []
+      for (const chunk of chunkArray(policyPoolSymbols, D1_IN_CHUNK_SIZE)) {
+        const ph = chunk.map(() => '?').join(',')
       // ??60 憭?OHLCV嚗DX ?閬?high/low嚗?
-      const { results: histRows } = await env.DB.prepare(`
+        const { results } = await env.DB.prepare(`
         SELECT s.symbol, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume
         FROM stock_prices sp JOIN stocks s ON sp.stock_id = s.id
         WHERE s.symbol IN (${ph}) AND sp.date >= date('now', '-90 days')
         ORDER BY s.symbol, sp.date
-      `).bind(...policyPoolSymbols).all<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number }>()
+        `).bind(...chunk).all<{ symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number }>()
+        histRows.push(...(results ?? []))
+      }
 
       // ??symbol ??
       const histBySymbol = new Map<string, { close: number; high: number; low: number; volume: number }[]>()
-      for (const r of (histRows ?? [])) {
+      for (const r of histRows) {
         if (!histBySymbol.has(r.symbol)) histBySymbol.set(r.symbol, [])
         histBySymbol.get(r.symbol)!.push({ close: r.close, high: r.high ?? r.close, low: r.low ?? r.close, volume: r.volume ?? 0 })
       }
@@ -4452,16 +4494,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   try {
     const candSymbols = finalCandidates.map(c => c.symbol)
     if (candSymbols.length > 0) {
-      const ph = candSymbols.map(() => '?').join(',')
-      const { results: recentRows } = await env.DB.prepare(`
-        SELECT s.symbol, COUNT(sp.date) as days_count
-        FROM stocks s
-        LEFT JOIN stock_prices sp ON sp.stock_id = s.id AND sp.date >= date('now', '-7 days')
-        WHERE s.symbol IN (${ph})
-        GROUP BY s.symbol
-      `).bind(...candSymbols).all<{ symbol: string; days_count: number }>()
+      const recentRows: Array<{ symbol: string; days_count: number }> = []
+      for (const chunk of chunkArray(candSymbols, D1_IN_CHUNK_SIZE)) {
+        const ph = chunk.map(() => '?').join(',')
+        const { results } = await env.DB.prepare(`
+          SELECT s.symbol, COUNT(sp.date) as days_count
+          FROM stocks s
+          LEFT JOIN stock_prices sp ON sp.stock_id = s.id AND sp.date >= date('now', '-7 days')
+          WHERE s.symbol IN (${ph})
+          GROUP BY s.symbol
+        `).bind(...chunk).all<{ symbol: string; days_count: number }>()
+        recentRows.push(...(results ?? []))
+      }
       const delistRisk = new Set<string>()
-      for (const r of (recentRows ?? [])) {
+      for (const r of recentRows) {
         if (r.days_count <= 2) delistRisk.add(r.symbol)
       }
       if (delistRisk.size > 0) {
@@ -4804,16 +4850,16 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       ...finalCandidates.map(c => c.symbol),
       ...emergingResearchCandidates.map(c => c.symbol),
     ].map(s => String(s || '').trim()).filter(Boolean)
-    await env.DB.prepare(buildScreenerSeedPruneSql(seedSymbols.length))
-      .bind(endDate, ...seedSymbols)
-      .run()
+    await pruneScreenerSeedRows(env.DB, endDate, seedSymbols)
 
     // 靽?????in_current_watchlist=1嚗甇?updateScreenerWatchlist batch 憭望?????瘜?
     if (finalCandidates.length > 0) {
-      const ph = finalCandidates.map(() => '?').join(',')
-      await env.DB.prepare(
-        `UPDATE stocks SET in_current_watchlist=1 WHERE symbol IN (${ph})`
-      ).bind(...finalCandidates.map(c => c.symbol)).run()
+      for (const chunk of chunkArray(finalCandidates.map(c => c.symbol), D1_IN_CHUNK_SIZE)) {
+        const ph = chunk.map(() => '?').join(',')
+        await env.DB.prepare(
+          `UPDATE stocks SET in_current_watchlist=1 WHERE symbol IN (${ph})`
+        ).bind(...chunk).run()
+      }
     }
 
     debugLog.push(
@@ -4877,18 +4923,22 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       if (!seedSymbolsForIndicators.length) {
         debugLog.push('[DB] skipped technical_indicators seed backfill: no seed symbols')
       } else {
-        const ph = seedSymbolsForIndicators.map(() => '?').join(',')
-        const { results: noTiStocks } = await env.DB.prepare(`
-        SELECT s.id, s.symbol FROM stocks s
-        WHERE s.symbol IN (${ph})
-          AND NOT EXISTS (
-            SELECT 1 FROM technical_indicators ti
-             WHERE ti.stock_id = s.id
-               AND ti.date >= date(?, '-3 days')
-               AND ti.date <= ?
-          )
-          AND EXISTS (SELECT 1 FROM stock_prices sp WHERE sp.stock_id = s.id LIMIT 1)
-      `).bind(...seedSymbolsForIndicators, endDate, endDate).all<{ id: number; symbol: string }>()
+        const noTiStocks: Array<{ id: number; symbol: string }> = []
+        for (const chunk of chunkArray(seedSymbolsForIndicators, D1_IN_CHUNK_SIZE)) {
+          const ph = chunk.map(() => '?').join(',')
+          const { results } = await env.DB.prepare(`
+            SELECT s.id, s.symbol FROM stocks s
+            WHERE s.symbol IN (${ph})
+              AND NOT EXISTS (
+                SELECT 1 FROM technical_indicators ti
+                 WHERE ti.stock_id = s.id
+                   AND ti.date >= date(?, '-3 days')
+                   AND ti.date <= ?
+              )
+              AND EXISTS (SELECT 1 FROM stock_prices sp WHERE sp.stock_id = s.id LIMIT 1)
+          `).bind(...chunk, endDate, endDate).all<{ id: number; symbol: string }>()
+          noTiStocks.push(...(results ?? []))
+        }
 
         if (noTiStocks?.length) {
           let computed = 0

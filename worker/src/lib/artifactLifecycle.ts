@@ -1,16 +1,16 @@
 import type { Bindings } from '../types'
 import { sha256Text } from './datasetSnapshots'
+import type {
+  EvidenceArtifactManifest,
+  EvidenceArtifactWriteInput,
+  RetentionClass,
+} from './evidenceArtifactContract'
 
-export type RetentionClass =
-  | 'canonical_execution'
-  | 'canonical_model_evidence'
-  | 'paper_shadow'
-  | 'superseded_run'
-  | 'failed_debug'
-  | 'request_debug'
-  | 'raw_market_unreferenced'
-  | 'staging_orphan'
-  | 'incident_pinned'
+export type {
+  EvidenceArtifactManifest,
+  EvidenceArtifactWriteInput,
+  RetentionClass,
+} from './evidenceArtifactContract'
 
 export type PipelineRunStatus =
   | 'writing'
@@ -20,25 +20,6 @@ export type PipelineRunStatus =
   | 'superseded'
   | 'failed'
   | 'reused'
-
-export type EvidenceArtifactManifest = {
-  artifact_id: string
-  retention_class: RetentionClass
-  status: 'ready'
-  domain: string
-  business_date: string
-  producer_run_id: string
-  canonical_run_id: string | null
-  r2_key: string
-  checksum: string
-  schema_version: string
-  row_count: number
-  byte_size: number
-  created_at: string
-  retain_until: string | null
-  checksum_verified_at: string
-  metadata_json: string
-}
 
 const RETENTION_DAYS: Record<RetentionClass, number | null> = {
   canonical_execution: 7 * 365,
@@ -54,7 +35,7 @@ const RETENTION_DAYS: Record<RetentionClass, number | null> = {
 
 export const STORAGE_LIFECYCLE_SCHEDULE = [
   { task: 'artifact-reconcile', cron: '5 2 * * *', timezone: 'Asia/Taipei' },
-  { task: 'd1-evidence-scrub', cron: '20 2 * * *', timezone: 'Asia/Taipei' },
+  { task: 'd1-evidence-scrub', cron: '*/20 2-6 * * *', timezone: 'Asia/Taipei' },
   { task: 'r2-retention-sweep', cron: '40 2 * * *', timezone: 'Asia/Taipei' },
   { task: 'orphan-reachability-gc', cron: '0 3 * * *', timezone: 'Asia/Taipei' },
   { task: 'cleanup-dlq-replay', cron: '20 3 * * *', timezone: 'Asia/Taipei' },
@@ -79,22 +60,16 @@ function byteLength(value: string): number {
 }
 
 export async function writeEvidenceArtifact(
-  env: Pick<Bindings, 'DB' | 'ARTIFACTS'>,
-  input: {
-    domain: string
-    businessDate: string
-    producerRunId: string
-    retentionClass: RetentionClass
-    schemaVersion: string
-    payload: Record<string, unknown>
-    rowCount: number
-    canonicalRunId?: string | null
-    metadata?: Record<string, unknown>
-    createdAt?: string
-  },
+  env: Pick<Bindings, 'DB' | 'ARTIFACTS' | 'EVIDENCE_ARTIFACT_WRITER'>,
+  input: EvidenceArtifactWriteInput,
 ): Promise<EvidenceArtifactManifest> {
-  if (!env.ARTIFACTS) throw new Error('artifact_r2_binding_missing')
   const createdAt = input.createdAt ?? new Date().toISOString()
+  if (!env.ARTIFACTS) {
+    if (env.EVIDENCE_ARTIFACT_WRITER) {
+      return env.EVIDENCE_ARTIFACT_WRITER.write({ ...input, createdAt })
+    }
+    throw new Error('artifact_r2_binding_missing')
+  }
   const body = JSON.stringify({
     schema_version: input.schemaVersion,
     domain: input.domain,
@@ -434,6 +409,7 @@ export async function runD1EvidenceScrub(
   let failed = 0
   let blocked = 0
   const errors: string[] = []
+  const readyRows: any[] = []
   for (const row of results ?? []) {
     const targetKey = `${row.target_table}:${row.target_pk_column}:${row.target_column}`
     if (row.artifact_status !== 'ready' || !row.checksum_verified_at || !SCRUB_TARGETS.has(targetKey)) {
@@ -445,26 +421,48 @@ export async function runD1EvidenceScrub(
       blocked += 1
       continue
     }
+    readyRows.push(row)
+  }
+
+  const atomicStatements = (row: any): D1PreparedStatement[] => [
+    env.DB.prepare(`UPDATE ${row.target_table} SET ${row.target_column}=? WHERE ${row.target_pk_column}=?`)
+      .bind(row.replacement_json, row.target_pk_value),
+    env.DB.prepare(`
+      UPDATE artifact_d1_scrub_queue
+         SET status='complete', last_error=NULL, attempts=attempts+1, updated_at=CURRENT_TIMESTAMP
+       WHERE scrub_id=?
+    `).bind(row.scrub_id),
+  ]
+  const assertBatchSuccess = (batchResults: D1Result[]) => {
+    const failedResult = batchResults.find(result => result.success === false)
+    if (failedResult) throw new Error(String(failedResult.error ?? 'D1 scrub batch failed'))
+  }
+
+  for (let index = 0; index < readyRows.length; index += 25) {
+    const chunk = readyRows.slice(index, index + 25)
     try {
-      await env.DB.prepare(`UPDATE ${row.target_table} SET ${row.target_column}=? WHERE ${row.target_pk_column}=?`)
-        .bind(row.replacement_json, row.target_pk_value).run()
-      await env.DB.prepare(`
-        UPDATE artifact_d1_scrub_queue
-           SET status='complete', last_error=NULL, attempts=attempts+1, updated_at=CURRENT_TIMESTAMP
-         WHERE scrub_id=?
-      `).bind(row.scrub_id).run()
-      scrubbed += 1
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      await env.DB.prepare(`
-        UPDATE artifact_d1_scrub_queue
-           SET status='failed', last_error=?, attempts=attempts+1,
-               next_attempt_at=datetime('now', '+' || MIN(60, 1 << MIN(attempts, 5)) || ' minutes'),
-               updated_at=CURRENT_TIMESTAMP
-         WHERE scrub_id=?
-      `).bind(message.slice(0, 1000), row.scrub_id).run()
-      failed += 1
-      errors.push(`${row.scrub_id}:${message}`)
+      assertBatchSuccess(await env.DB.batch(chunk.flatMap(atomicStatements)))
+      scrubbed += chunk.length
+      continue
+    } catch {
+      // Retry each row atomically so one malformed legacy row cannot block the batch.
+    }
+    for (const row of chunk) {
+      try {
+        assertBatchSuccess(await env.DB.batch(atomicStatements(row)))
+        scrubbed += 1
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        await env.DB.prepare(`
+          UPDATE artifact_d1_scrub_queue
+             SET status='failed', last_error=?, attempts=attempts+1,
+                 next_attempt_at=datetime('now', '+' || MIN(60, 1 << MIN(attempts, 5)) || ' minutes'),
+                 updated_at=CURRENT_TIMESTAMP
+           WHERE scrub_id=?
+        `).bind(message.slice(0, 1000), row.scrub_id).run()
+        failed += 1
+        errors.push(`${row.scrub_id}:${message}`)
+      }
     }
   }
   return { candidates: (results ?? []).length, scrubbed, failed, blocked, errors }

@@ -217,6 +217,9 @@ export function buildScreenerSeedPruneSql(symbolCount: number): string {
   if (count <= 0) {
     return 'DELETE FROM daily_recommendations WHERE date = ?'
   }
+  if (count > 40) {
+    throw new Error('buildScreenerSeedPruneSql supports at most 40 symbols; use pruneScreenerSeedRows for larger sets')
+  }
   const placeholders = Array.from({ length: count }, () => '?').join(',')
   return `DELETE FROM daily_recommendations WHERE date = ? AND symbol NOT IN (${placeholders})`
 }

@@ -2,6 +2,8 @@ import { Hono } from 'hono'
 import type { Bindings, Variables } from '../types'
 import { requireAdminOrServiceToken } from '../lib/auth'
 import { resolveFinLabDispatchFence } from '../lib/finLabDispatchFence'
+import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
+import type { EvidenceArtifactWriteInput } from '../lib/evidenceArtifactContract'
 
 export const adminControlRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -83,6 +85,62 @@ adminControlRoutes.post('/api/internal/d1/batch', async (c) => {
     duration_ms: Date.now() - t0,
     mode: 'worker_d1_batch',
   })
+})
+
+function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
+  if (!body || typeof body !== 'object') throw new Error('JSON object body is required')
+  if (body.domain !== 'screener_funnel') throw new Error('domain must be screener_funnel')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(body.businessDate ?? ''))) {
+    throw new Error('businessDate must use YYYY-MM-DD')
+  }
+  if (typeof body.producerRunId !== 'string' || !body.producerRunId.trim() || body.producerRunId.length > 200) {
+    throw new Error('producerRunId is required and must be <= 200 characters')
+  }
+  if (!['canonical_model_evidence', 'failed_debug'].includes(body.retentionClass)) {
+    throw new Error('invalid screener retentionClass')
+  }
+  if (body.schemaVersion !== 'screener-funnel-evidence-v2') {
+    throw new Error('invalid screener schemaVersion')
+  }
+  if (!body.payload || typeof body.payload !== 'object' || Array.isArray(body.payload)) {
+    throw new Error('payload must be an object')
+  }
+  const rowCount = Number(body.rowCount)
+  if (!Number.isInteger(rowCount) || rowCount < 0 || rowCount > 5000) {
+    throw new Error('rowCount must be an integer between 0 and 5000')
+  }
+  if (body.metadata != null && (typeof body.metadata !== 'object' || Array.isArray(body.metadata))) {
+    throw new Error('metadata must be an object')
+  }
+  return {
+    domain: body.domain,
+    businessDate: body.businessDate,
+    producerRunId: body.producerRunId.trim(),
+    retentionClass: body.retentionClass,
+    schemaVersion: body.schemaVersion,
+    payload: body.payload,
+    rowCount,
+    canonicalRunId: typeof body.canonicalRunId === 'string' ? body.canonicalRunId : null,
+    metadata: body.metadata ?? {},
+    createdAt: typeof body.createdAt === 'string' ? body.createdAt : undefined,
+  }
+}
+
+adminControlRoutes.post('/api/internal/evidence-artifacts/screener-funnel', async (c) => {
+  const authError = requireServiceToken(c)
+  if (authError) return authError
+  if (!c.env.ARTIFACTS) return c.json({ error: 'artifact_r2_binding_missing' }, 503)
+
+  const body = await c.req.json().catch(() => null)
+  let input: EvidenceArtifactWriteInput
+  try {
+    input = parseScreenerArtifactInput(body)
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : 'invalid artifact input' }, 400)
+  }
+
+  const manifest = await writeEvidenceArtifact(c.env, input)
+  return c.json({ ok: true, manifest })
 })
 
 function nullableText(value: unknown): string | null {

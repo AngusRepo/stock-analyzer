@@ -1,4 +1,9 @@
 import { allocatorContractGuardEnabled } from './allocatorContractGuard'
+import type {
+  EvidenceArtifactManifest,
+  EvidenceArtifactWriteInput,
+  EvidenceArtifactWriter,
+} from '../lib/evidenceArtifactContract'
 
 type D1RestResponse = {
   success?: boolean
@@ -25,6 +30,12 @@ type KVRestConfig = {
   maxRetries: number
 }
 
+type EvidenceArtifactWriterConfig = {
+  workerUrl: string
+  serviceToken: string
+  maxRetries: number
+}
+
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
 
 function requiredEnv(name: string): string {
@@ -36,6 +47,19 @@ function requiredEnv(name: string): string {
 function optionalIntEnv(name: string, fallback: number): number {
   const parsed = Number.parseInt(process.env[name] ?? '', 10)
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
+}
+
+function requiredWorkerUrl(name: string): string {
+  const raw = requiredEnv(name)
+  const parsed = new URL(raw)
+  const local = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1'
+  if (parsed.protocol !== 'https:' && !(local && parsed.protocol === 'http:')) {
+    throw new Error(`${name} must use HTTPS outside localhost`)
+  }
+  parsed.pathname = parsed.pathname.replace(/\/+$/, '')
+  parsed.search = ''
+  parsed.hash = ''
+  return parsed.toString().replace(/\/$/, '')
 }
 
 function sleep(ms: number): Promise<void> {
@@ -87,6 +111,43 @@ async function fetchWithRetry(
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'fetch failed'))
+}
+
+export class RestEvidenceArtifactWriter implements EvidenceArtifactWriter {
+  constructor(private readonly config: EvidenceArtifactWriterConfig) {}
+
+  static fromEnv(): RestEvidenceArtifactWriter {
+    return new RestEvidenceArtifactWriter({
+      workerUrl: requiredWorkerUrl('STOCKVISION_WORKER_URL'),
+      serviceToken: requiredEnv('STOCKVISION_AUTH_TOKEN'),
+      maxRetries: optionalIntEnv('ARTIFACT_WRITER_MAX_RETRIES', 3),
+    })
+  }
+
+  async write(input: EvidenceArtifactWriteInput): Promise<EvidenceArtifactManifest> {
+    const response = await fetchWithRetry(
+      `${this.config.workerUrl}/api/internal/evidence-artifacts/screener-funnel`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.serviceToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(input),
+      },
+      this.config.maxRetries,
+    )
+    const text = await response.text()
+    if (!response.ok) {
+      throw new Error(`Evidence artifact writer HTTP ${response.status}: ${text.slice(0, 300)}`)
+    }
+    const payload = JSON.parse(text) as { ok?: boolean; manifest?: EvidenceArtifactManifest }
+    const manifest = payload.manifest
+    if (!payload.ok || !manifest || manifest.status !== 'ready' || manifest.domain !== input.domain) {
+      throw new Error(`Evidence artifact writer returned invalid manifest: ${text.slice(0, 300)}`)
+    }
+    return manifest
+  }
 }
 
 class RestD1PreparedStatement implements D1PreparedStatement {

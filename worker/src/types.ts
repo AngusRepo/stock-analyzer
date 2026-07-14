@@ -1,9 +1,12 @@
+import type { EvidenceArtifactWriter } from './lib/evidenceArtifactContract'
+
 export type R2Bucket = any
 
 export type Bindings = {
   DB: D1Database
   KV: KVNamespace
   ARTIFACTS?: R2Bucket
+  EVIDENCE_ARTIFACT_WRITER?: EvidenceArtifactWriter
   JWT_SECRET: string
   GOOGLE_CLIENT_ID: string
   GOOGLE_CLIENT_SECRET: string

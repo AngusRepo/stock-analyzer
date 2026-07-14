@@ -1,7 +1,12 @@
 import type { Bindings } from '../types'
 import { runBottomUpScreener } from '../lib/marketScreener'
 import { assertAllocatorContractRunDate } from './allocatorContractGuard'
-import { RestD1Database, RestKVNamespace, createNoopQueue } from './cloudflareRestBindings'
+import {
+  RestD1Database,
+  RestEvidenceArtifactWriter,
+  RestKVNamespace,
+  createNoopQueue,
+} from './cloudflareRestBindings'
 
 type Args = {
   date?: string
@@ -38,6 +43,7 @@ function buildBindings(): Bindings {
   return {
     DB: RestD1Database.fromEnv(),
     KV: RestKVNamespace.fromEnv(),
+    EVIDENCE_ARTIFACT_WRITER: RestEvidenceArtifactWriter.fromEnv(),
     UPDATE_QUEUE: createNoopQueue(),
     NEWS_QUEUE: createNoopQueue(),
     JWT_SECRET: env.JWT_SECRET ?? '',

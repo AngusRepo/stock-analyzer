@@ -15,6 +15,13 @@
 
 const LOOKBACK_DAYS_TURNOVER = 60
 const LOOKBACK_DAYS_CORR = 60
+const D1_IN_CHUNK_SIZE = 40
+
+function chunks<T>(items: T[], size = D1_IN_CHUNK_SIZE): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
+}
 
 /**
  * Compute top-3 stocks per sector by 60d avg turnover (close*volume).
@@ -73,14 +80,18 @@ async function loadSectorLeaderRows(
   sectors: string[],
 ): Promise<Array<{ sector: string; symbol: string }>> {
   if (!sectors.length) return []
-  const sectorPh = sectors.map(() => '?').join(',')
-  const { results } = await db.prepare(
-    `SELECT sector, symbol
-       FROM sector_leaders
-      WHERE sector IN (${sectorPh})
-      ORDER BY sector, rank`
-  ).bind(...sectors).all<{ sector: string; symbol: string }>()
-  return results ?? []
+  const rows: Array<{ sector: string; symbol: string }> = []
+  for (const chunk of chunks([...new Set(sectors.filter(Boolean))])) {
+    const sectorPh = chunk.map(() => '?').join(',')
+    const { results } = await db.prepare(
+      `SELECT sector, symbol
+         FROM sector_leaders
+        WHERE sector IN (${sectorPh})
+        ORDER BY sector, rank`
+    ).bind(...chunk).all<{ sector: string; symbol: string }>()
+    rows.push(...(results ?? []))
+  }
+  return rows
 }
 
 export async function ensureSectorLeadersForScreener(
@@ -229,19 +240,23 @@ export async function sectorLeaderBonusBatch(
   const allSymbols = [...symbols]
   if (!allSymbols.length) return output
 
-  const symbolPh = allSymbols.map(() => '?').join(',')
-  const { results: priceRows } = await db.prepare(
-    `SELECT s.symbol, sp.date, sp.close
-       FROM stock_prices sp
-       JOIN stocks s ON sp.stock_id = s.id
-      WHERE s.symbol IN (${symbolPh})
-        AND sp.date >= date('now', '-${LOOKBACK_DAYS_CORR * 2} days')
-        AND sp.close IS NOT NULL
-      ORDER BY s.symbol, sp.date`
-  ).bind(...allSymbols).all<{ symbol: string; date: string; close: number }>()
+  const priceRows: Array<{ symbol: string; date: string; close: number }> = []
+  for (const chunk of chunks(allSymbols)) {
+    const symbolPh = chunk.map(() => '?').join(',')
+    const { results } = await db.prepare(
+      `SELECT s.symbol, sp.date, sp.close
+         FROM stock_prices sp
+         JOIN stocks s ON sp.stock_id = s.id
+        WHERE s.symbol IN (${symbolPh})
+          AND sp.date >= date('now', '-${LOOKBACK_DAYS_CORR * 2} days')
+          AND sp.close IS NOT NULL
+        ORDER BY s.symbol, sp.date`
+    ).bind(...chunk).all<{ symbol: string; date: string; close: number }>()
+    priceRows.push(...(results ?? []))
+  }
 
   const seriesBySymbol = new Map<string, { date: string; close: number }[]>()
-  for (const row of priceRows ?? []) {
+  for (const row of priceRows) {
     if (!seriesBySymbol.has(row.symbol)) seriesBySymbol.set(row.symbol, [])
     seriesBySymbol.get(row.symbol)!.push({ date: row.date, close: row.close })
   }

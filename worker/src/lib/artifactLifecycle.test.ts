@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {
   promoteCanonicalRun,
   registerPipelineRun,
+  runD1EvidenceScrub,
   runR2RetentionSweep,
   runStorageHealthGate,
   STORAGE_LIFECYCLE_SCHEDULE,
@@ -142,6 +143,27 @@ async function testRetentionSweepPreservesMetadataAfterPayloadDelete(): Promise<
   assert.doesNotMatch(db.runs[0].sql, /DELETE FROM run_artifacts/)
 }
 
+async function testD1EvidenceScrubBatchesVerifiedRowsAtomically(): Promise<void> {
+  const db = new MockDb()
+  db.allHandler = () => Array.from({ length: 60 }, (_, index) => ({
+    scrub_id: `scrub-${index}`,
+    artifact_id: `artifact-${index}`,
+    target_table: 'screener_funnel_items',
+    target_pk_column: 'id',
+    target_pk_value: String(index + 1),
+    target_column: 'evidence',
+    replacement_json: JSON.stringify({ artifact_id: `artifact-${index}` }),
+    artifact_status: 'ready',
+    checksum_verified_at: '2026-07-14T01:00:00Z',
+  }))
+
+  const result = await runD1EvidenceScrub({ DB: db as any }, { limit: 1000 })
+
+  assert.deepEqual(result, { candidates: 60, scrubbed: 60, failed: 0, blocked: 0, errors: [] })
+  assert.deepEqual(db.batches.map(batch => batch.length), [50, 50, 20])
+  assert.equal(db.runs.length, 0)
+}
+
 async function testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown(): Promise<void> {
   const healthyDb = new MockDb()
   healthyDb.queryMeta = { size_after: 7_000_000_000 }
@@ -169,11 +191,16 @@ async function testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown():
 
 async function main(): Promise<void> {
   assert.equal(STORAGE_LIFECYCLE_SCHEDULE.some((row) => row.task === 'storage-health-gate'), true)
+  assert.equal(
+    STORAGE_LIFECYCLE_SCHEDULE.some((row) => row.task === 'd1-evidence-scrub' && row.cron === '*/20 2-6 * * *'),
+    true,
+  )
   await testR2FirstWriteVerifiesBeforeManifest()
   await testIdenticalRunBecomesReused()
   await testContentAddressDoesNotDuplicateAcrossRunIds()
   await testCanonicalPromotionSupersedesOnlyAfterVerifiedArtifact()
   await testRetentionSweepPreservesMetadataAfterPayloadDelete()
+  await testD1EvidenceScrubBatchesVerifiedRowsAtomically()
   await testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown()
   console.log('artifact lifecycle tests passed')
 }

@@ -79,6 +79,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'alpha-quality': { kind: 'research', holidayGated: false, description: 'weekly alpha quality research' },
   'weekly-optuna': { kind: 'research', holidayGated: false, description: 'weekly lightweight Optuna/GA calibration' },
   's12-smcvwap-calibration': { kind: 'research', holidayGated: false, description: 'weekly/monthly walk-forward S12 Taiwan-equity calibration and automatic promotion' },
+  's12-research-recovery': { kind: 'maintenance', holidayGated: false, description: 'one-shot Shioaji quota preflight and point-in-time S12 reconstruction repair' },
   'l4-alpha-ev-refresh': { kind: 'research', holidayGated: false, description: 'weekly production-gated L4 alpha EV artifact refresh' },
   'allocator-ev-fusion-refresh': { kind: 'research', holidayGated: false, description: 'weekly production-gated allocator EV fusion artifact refresh' },
   'monthly-opb-arm-prior-refresh': { kind: 'research', holidayGated: false, description: 'monthly production-gated OPB counterfactual arm-prior refresh' },

@@ -292,6 +292,22 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       })
       return result.summary
     },
+    's12-research-recovery': async () => {
+      const runDate = assertRunDate(requestedRunDate())
+      const rawScheduleAt = String(c.req.query('schedule_at') ?? '').trim()
+      const scheduleAtMs = rawScheduleAt ? Date.parse(rawScheduleAt) : Date.now()
+      if (!Number.isFinite(scheduleAtMs)) throw new Error('invalid s12 recovery schedule_at')
+      const delaySeconds = Math.max(0, Math.ceil((scheduleAtMs - Date.now()) / 1000))
+      if (delaySeconds > 43_200) throw new Error('s12 recovery schedule exceeds Cloudflare Queue 12 hour delay limit')
+      const runId = `s12-research-recovery-${runDate}-${Date.now().toString(36)}`
+      await c.env.UPDATE_QUEUE.send({
+        type: 's12_research_recovery',
+        cursor: 0,
+        triggerTime: runDate,
+        runId,
+      }, delaySeconds > 0 ? { delaySeconds } : undefined)
+      return `scheduled s12 research recovery date=${runDate} schedule_at=${new Date(scheduleAtMs).toISOString()} delay_seconds=${delaySeconds} run_id=${runId}`
+    },
     's12-replay-backfill': async () => {
       const runDate = assertRunDate(requestedRunDate())
       const requestedScope = c.req.query('scope')

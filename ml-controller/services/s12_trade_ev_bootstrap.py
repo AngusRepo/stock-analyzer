@@ -1184,11 +1184,13 @@ def load_s12_structure_snapshots(
               FROM s12_structure_snapshots
              WHERE date(trade_date) = date(?)
              ORDER BY symbol,
+                      CASE WHEN state = 'data_unavailable' THEN 1 ELSE 0 END,
                       CASE source
                         WHEN 's12_candidate_snapshot' THEN 0
-                        WHEN 's12_intraday_structure' THEN 1
-                        WHEN 's12_holding_defense' THEN 2
-                        ELSE 3
+                        WHEN 's12_candidate_snapshot_reconstruction' THEN 1
+                        WHEN 's12_intraday_structure' THEN 2
+                        WHEN 's12_holding_defense' THEN 3
+                        ELSE 4
                       END,
                       datetime(updated_at) DESC,
                       id DESC

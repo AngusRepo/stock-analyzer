@@ -962,8 +962,10 @@ def test_s12_structure_snapshots_merge_into_cold_start_ev():
 
     assert any("FROM s12_structure_snapshots" in sql for sql in calls)
     snapshot_sql = next(sql for sql in calls if "FROM s12_structure_snapshots" in sql)
+    assert "CASE WHEN state = 'data_unavailable' THEN 1 ELSE 0 END" in snapshot_sql
     assert "WHEN 's12_candidate_snapshot' THEN 0" in snapshot_sql
-    assert "WHEN 's12_intraday_structure' THEN 1" in snapshot_sql
+    assert "WHEN 's12_candidate_snapshot_reconstruction' THEN 1" in snapshot_sql
+    assert "WHEN 's12_intraday_structure' THEN 2" in snapshot_sql
     assert snapshots["8091"]["s12_structure_stop"] == 96
     assert provider.summary()["structure_snapshots"] == 1
     assert ev["status"] == "loaded"

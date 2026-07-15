@@ -4,7 +4,10 @@ import {
   type S12IntradayAssessment,
   type S12TimingPolicy,
 } from './s12IntradayStructure'
-import { loadS12HistoricalReplayLifecycleBars } from './s12RuntimeBars'
+import {
+  loadS12HistoricalReplayLifecycleBars,
+  s12ResearchTerminalDataSourceReason,
+} from './s12RuntimeBars'
 import type { Bindings } from '../types'
 import {
   S12_REPLAY_ENGINE_SIGNATURE,
@@ -22,6 +25,7 @@ import {
 } from './s12TwEquityCalibration'
 import type { S12TwExitCalibration } from './s12TwEquityCalibration'
 import { normalizeTwEquityTargetPrice } from './twEquityMarketContract'
+import { acquireS12ResearchLease, releaseS12ResearchLease } from './s12ResearchLease'
 
 export type S12ReplayOutcomeStatus = 'executed' | 'setup_only' | 'skipped'
 
@@ -127,6 +131,7 @@ export interface S12HistoricalReplayRunSummary {
   setup_only: number
   skipped: number
   persisted: number
+  terminal_data_source_reason: string | null
   outcomes: S12ReplayOutcome[]
 }
 
@@ -911,6 +916,14 @@ export async function runS12HistoricalReplayForDate(
   signalDate: string,
   options: S12HistoricalReplayRunOptions = {},
 ): Promise<S12HistoricalReplayRunSummary> {
+  const leaseRunId = `s12-replay:${signalDate}:${crypto.randomUUID()}`
+  const leaseAcquired = options.loadBars
+    ? false
+    : await acquireS12ResearchLease(env.DB, leaseRunId, signalDate)
+  if (!options.loadBars && !leaseAcquired) {
+    throw new Error(`s12_research_lease_busy:${signalDate}`)
+  }
+  try {
   const l0 = options.symbols ?? await loadL0PassedSymbolsByHistoricalDate(env.DB, signalDate)
   const requestedLimit = options.limit ?? (l0.length || 1)
   const limit = Math.max(1, Math.min(5000, Math.floor(Number(requestedLimit))))
@@ -919,9 +932,12 @@ export async function runS12HistoricalReplayForDate(
   const outcomes: S12ReplayOutcome[] = []
   const calibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(env.DB, { includeSuperseded: true }).catch(() => [])
   let persisted = 0
+  let attempted = 0
   let unresolvedExecutionDates = 0
+  let terminalDataSourceReason: string | null = null
   const executionDates = new Set<string>()
   for (const row of selected) {
+    attempted += 1
     const executionDate = await (
       options.resolveExecutionDate
         ? options.resolveExecutionDate(row.symbol, signalDate)
@@ -953,8 +969,10 @@ export async function runS12HistoricalReplayForDate(
       }
     })
     const loaded = await loadBars(row.symbol, executionDate)
+    terminalDataSourceReason = s12ResearchTerminalDataSourceReason(loaded.diagnostics as any)
     if (loaded.horizonComplete === false) {
       unresolvedExecutionDates += 1
+      if (terminalDataSourceReason) break
       continue
     }
     const alphaContext = parseJsonRecord(row.alpha_context)
@@ -1014,11 +1032,15 @@ export async function runS12HistoricalReplayForDate(
     execution_dates: [...executionDates].sort(),
     unresolved_execution_dates: unresolvedExecutionDates,
     l0_symbols: l0.length,
-    attempted: selected.length,
+    attempted,
     executed: outcomes.filter((outcome) => outcome.status === 'executed').length,
     setup_only: outcomes.filter((outcome) => outcome.status === 'setup_only').length,
     skipped: outcomes.filter((outcome) => outcome.status === 'skipped').length,
     persisted,
+    terminal_data_source_reason: terminalDataSourceReason,
     outcomes,
+  }
+  } finally {
+    if (leaseAcquired) await releaseS12ResearchLease(env.DB, leaseRunId)
   }
 }

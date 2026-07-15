@@ -42,6 +42,15 @@ class FakeApi:
             "Volume": [1000],
         }
 
+    @staticmethod
+    def usage():
+        return type("Usage", (), {
+            "connections": 1,
+            "bytes": 1000,
+            "limit_bytes": 500_000_000,
+            "remaining_bytes": 499_999_000,
+        })()
+
 
 def test_kbars_are_normalized_without_execution_routes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(research, "api", FakeApi())
@@ -65,3 +74,24 @@ def test_auth_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(HTTPException) as exc:
         research.verify_token(None)
     assert exc.value.status_code == 503
+
+
+def test_kbars_fail_with_explicit_bandwidth_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    class ExhaustedApi(FakeApi):
+        @staticmethod
+        def usage():
+            return type("Usage", (), {
+                "connections": 1,
+                "bytes": 600_000_000,
+                "limit_bytes": 500_000_000,
+                "remaining_bytes": -100_000_000,
+            })()
+
+    monkeypatch.setattr(research, "api", ExhaustedApi())
+    monkeypatch.setattr(research, "connected", True)
+    monkeypatch.setattr(research, "_usage_cache", None)
+    monkeypatch.setattr(research, "_usage_cache_at", 0.0)
+    with pytest.raises(HTTPException) as exc:
+        research.get_kbars("2441", "2026-07-07", "2026-07-14")
+    assert exc.value.status_code == 429
+    assert "bandwidth_exhausted" in str(exc.value.detail)

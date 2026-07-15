@@ -696,6 +696,14 @@ def build_allocator_ev_feature_snapshots_for_date(
             "as_of_guard": AS_OF_GUARD,
             "snapshot_l4_usage_mode": l4_usage_mode,
             "snapshot_l4_available": l4_payload is not None,
+            "l4_alpha_ev_diagnostic": {
+                "status": "loaded" if l4_payload is not None else "unavailable",
+                "usage_mode": l4_usage_mode,
+                "trained_until": l4_result.get("trained_until"),
+                "decision": l4_result.get("decision"),
+                "failed_gates": l4_result.get("failed_gates") or [],
+                "policy": "missing_expert_is_an_availability_feature_not_a_synthetic_ev",
+            },
             "ev_lineage_status": lineage_status,
             "ev_lineage_audit": lineage_result.get("audit"),
         }

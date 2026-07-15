@@ -11,6 +11,7 @@ import { assertMarketDataReady, loadMarketDataReadinessStats } from './marketDat
 import { runRegimeCompute } from './controllerDailyWorkflows'
 import {
   runAllocatorEvFusionRefresh,
+  runAllocatorEvFeatureSnapshotBackfill,
   runFinLabV4Backfill,
   runL4AlphaEvRefresh,
   runOpbArmPriorRefresh,
@@ -2826,6 +2827,69 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 's12_research_recovery') {
+    const triggerTime = msg.triggerTime
+    const runId = msg.runId || `s12-research-recovery-${triggerTime}-${Date.now()}`
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid S12 research recovery date ${triggerTime}, skipping.`)
+      return
+    }
+    const { loadS12ResearchUsageStatus } = await import('./s12RuntimeBars')
+    const usage = await loadS12ResearchUsageStatus(env)
+    if (usage.status !== 'ok') {
+      await logSchedulerResult(env.KV, 's12-research-recovery', {
+        status: 'error',
+        summary: `quota preflight failed date=${triggerTime} bytes=${usage.bytes} limit=${usage.limit_bytes} remaining=${usage.remaining_bytes}; reconstruction=0`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: triggerTime,
+      }, env)
+      return
+    }
+
+    const { runS12CandidateStructureSnapshots } = await import('./s12CandidateStructureSnapshots')
+    const reconstruction = await runS12CandidateStructureSnapshots(env, triggerTime, {
+      source: 's12_candidate_snapshot_reconstruction',
+    })
+    const terminalSourceFailure = Object.keys(reconstruction.skip_reasons).some((reason) => (
+      reason.includes('shioaji_research_bandwidth_exhausted')
+      || reason.includes('s12_research_service_')
+      || reason.includes('missing_intraday_bars')
+      || reason.includes('empty_kbars')
+    ))
+    const complete = reconstruction.attempted > 0
+      && reconstruction.persisted === reconstruction.attempted
+      && reconstruction.errors === 0
+      && !terminalSourceFailure
+    if (!complete) {
+      await logSchedulerResult(env.KV, 's12-research-recovery', {
+        status: 'error',
+        summary: `reconstruction incomplete date=${triggerTime} attempted=${reconstruction.attempted} persisted=${reconstruction.persisted} skipped=${reconstruction.skipped} errors=${reconstruction.errors} source_failure=${terminalSourceFailure ? 1 : 0}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: triggerTime,
+      }, env)
+      return
+    }
+
+    const snapshotSummary = await runAllocatorEvFeatureSnapshotBackfill(env, {
+      startDate: triggerTime,
+      endDate: triggerTime,
+      dryRun: false,
+      candidateLimit: 1000,
+      l4MinSamples: 500,
+      l4MinDates: 20,
+    })
+    await logSchedulerResult(env.KV, 's12-research-recovery', {
+      status: 'success',
+      summary: `quota_ok remaining=${usage.remaining_bytes} reconstruction=${reconstruction.persisted}/${reconstruction.attempted} ready=${reconstruction.ready} snapshot=${JSON.stringify(snapshotSummary).slice(0, 500)}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: triggerTime,
+    }, env)
+    return
+  }
+
   if (msg.type === 'post_pipeline_chain') {
     const triggerTime = msg.triggerTime
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
@@ -3167,9 +3231,41 @@ export async function processUpdateBatch(
       : replayScope === 'signed_eligible_repair'
         ? await loadSignedEligibleRepairSymbolsByHistoricalDate(env.DB, triggerTime)
         : []
-    const hasMore = dynamicCohortScope
-      ? remainingReplaySymbols.length > 0 && Number(result.attempted ?? 0) > 0
+    const terminalDataSourceReason = String(result.terminal_data_source_reason ?? '').trim()
+    const dynamicCohortStalled = dynamicCohortScope
+      && !terminalDataSourceReason
+      && Number(cohortSymbols?.length ?? 0) > 0
+      && Number(result.persisted ?? 0) === 0
+      && remainingReplaySymbols.length >= Number(cohortSymbols?.length ?? 0)
+    const hasMore = terminalDataSourceReason || dynamicCohortStalled
+      ? false
+      : dynamicCohortScope
+      ? remainingReplaySymbols.length > 0 && Number(result.persisted ?? 0) > 0
       : nextOffset < Number(result.l0_symbols ?? 0) && Number(result.attempted ?? 0) > 0
+    if (terminalDataSourceReason || dynamicCohortStalled) {
+      const failureReason = terminalDataSourceReason
+        ? `terminal market-data source error: ${terminalDataSourceReason}`
+        : `dynamic replay made no persistence progress remaining=${remainingReplaySymbols.length}`
+      await logSchedulerResult(env.KV, 's12-replay-backfill', {
+        status: 'error',
+        summary: `date=${triggerTime} scope=${replayScope} offset=${offset} ${failureReason}; requeue=0`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: statusRunDate,
+      }, env)
+      if (replayScope === 'fusion_snapshot_missing') {
+        const { recordAllocatorEvLifecycle } = await import('./allocatorEvDailyLifecycle')
+        await recordAllocatorEvLifecycle(env.DB, {
+          businessDate: triggerTime,
+          state: 'error',
+          replayRows: Math.max(0, Number(result.persisted ?? 0)),
+          replayMaturityAsOfDate: maturityAsOfDate,
+          upstreamRunId: runId,
+          lastError: failureReason,
+        })
+      }
+      return
+    }
     const replayCoverage = replayScope === 'fusion_snapshot_missing' && !hasMore
       ? await loadFusionSnapshotReplayCoverage(env.DB, triggerTime, maturityAsOfDate)
       : null

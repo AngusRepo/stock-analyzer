@@ -18,7 +18,8 @@ assert(helper.includes('ON CONFLICT(trade_date, symbol, source) DO UPDATE SET'),
 assert(entryTasks.includes("source: 's12_intraday_structure'"), 'entry sidecar must persist S12 structure snapshots')
 assert(exitTasks.includes("source: 's12_holding_defense'"), 'holding defense must persist S12 structure snapshots')
 assert(candidateProducer.includes("sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected'"), 'candidate snapshot producer must use L1.5 production slate')
-assert(candidateProducer.includes("source: 's12_candidate_snapshot'"), 'candidate snapshot producer must persist a distinct source')
+assert(candidateProducer.includes("options.source ?? 's12_candidate_snapshot'"), 'candidate snapshot producer must default to the native distinct source')
+assert(candidateProducer.includes("'s12_candidate_snapshot_reconstruction'"), 'historical reconstruction must preserve a distinct source')
 assert(candidateProducer.includes('S12_PREPIPELINE_SNAPSHOT_LIMIT'), 'candidate snapshot producer must expose a bounded pre-pipeline limit')
 assert(updateOrchestrator.includes("await import('./s12CandidateStructureSnapshots')"), 'event-driven chain must load the S12 snapshot producer before pipeline')
 assert(

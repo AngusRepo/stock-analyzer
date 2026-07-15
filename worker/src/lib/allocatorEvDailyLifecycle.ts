@@ -25,6 +25,7 @@ export interface AllocatorEvLifecycleRow {
 
 export interface AllocatorSnapshotClosure {
   businessDate: string
+  recommendationRows: number
   nativeLineageRows: number
   runNativeLineageRows: number
   reconstructedLineageRows: number
@@ -126,19 +127,35 @@ export async function inspectAllocatorSnapshotClosure(
   if (!validDate(businessDate)) throw new Error(`invalid allocator snapshot date: ${businessDate}`)
   const [lineage, run, actual] = await Promise.all([
     db.prepare(`
-      SELECT COUNT(*) AS row_count
+      WITH next_executable_session AS (
+        SELECT MIN(date(c.date)) AS session_date
+          FROM canonical_market_daily c
+         WHERE c.stock_id = '0050'
+           AND c.source = 'finlab.price'
+           AND date(c.date) > date(?)
+      )
+      SELECT
+        COUNT(*) AS recommendation_rows,
+        COALESCE(SUM(CASE WHEN EXISTS (
+          SELECT 1
+            FROM predictions p
+            CROSS JOIN next_executable_session next_session
+           WHERE p.stock_id = dr.stock_id
+             AND p.prediction_date >= dr.date
+             AND p.prediction_date < date(dr.date, '+1 day')
+             AND p.model_name = 'ensemble'
+             AND p.forecast_data IS NOT NULL
+             AND next_session.session_date IS NOT NULL
+             AND (
+               date(datetime(p.generated_at, '+8 hours')) <= substr(p.prediction_date, 1, 10)
+               OR datetime(p.generated_at) < datetime(next_session.session_date || ' 01:00:00')
+             )
+        ) THEN 1 ELSE 0 END), 0) AS row_count
         FROM daily_recommendations dr
        WHERE dr.date = ?
          AND dr.score_components IS NOT NULL
          AND json_extract(dr.score_components, '$.version') = 'score_v2'
-         AND EXISTS (
-           SELECT 1
-             FROM predictions p
-            WHERE p.stock_id = dr.stock_id
-              AND p.prediction_date = dr.date
-              AND p.model_name = 'ensemble'
-         )
-    `).bind(businessDate).first<{ row_count?: number }>(),
+    `).bind(businessDate, businessDate).first<{ recommendation_rows?: number; row_count?: number }>(),
     db.prepare(`
       SELECT run_id, expected_rows, published_rows, status,
              native_lineage_rows, reconstructed_lineage_rows, rejected_lineage_rows
@@ -171,6 +188,7 @@ export async function inspectAllocatorSnapshotClosure(
   const rejectedLineageRows = Number(run?.rejected_lineage_rows ?? 0)
   return {
     businessDate,
+    recommendationRows: Number(lineage?.recommendation_rows ?? 0),
     nativeLineageRows: Number(lineage?.row_count ?? 0),
     runNativeLineageRows,
     reconstructedLineageRows,
@@ -201,6 +219,17 @@ async function resolveLifecycleBusinessDate(db: D1Database, requestedDate?: stri
     if (!validDate(requestedDate)) throw new Error(`invalid allocator EV lifecycle date: ${requestedDate}`)
     return requestedDate
   }
+  const recoverableSourceError = await db.prepare(`
+    SELECT business_date
+      FROM allocator_ev_daily_lifecycle
+     WHERE state = 'error'
+       AND last_error LIKE 'terminal market-data source error:%'
+       AND datetime(updated_at) <= datetime('now', '-12 hours')
+     ORDER BY business_date ASC
+     LIMIT 1
+  `).first<{ business_date?: string | null }>()
+  const recoverableDate = String(recoverableSourceError?.business_date ?? '').trim().slice(0, 10)
+  if (validDate(recoverableDate)) return recoverableDate
   const pending = await db.prepare(`
     SELECT business_date
       FROM allocator_ev_daily_lifecycle
@@ -237,7 +266,18 @@ export async function runAllocatorEvLifecycleWatchdog(
   const businessDate = await resolveLifecycleBusinessDate(env.DB, requestedDate)
   const snapshot = await inspectAllocatorSnapshotClosure(env.DB, businessDate)
   if (snapshot.nativeLineageRows <= 0) {
-    return `skipped: allocator EV lifecycle has no native lineage for ${businessDate}`
+    if (snapshot.recommendationRows <= 0) {
+      return `skipped: allocator EV lifecycle has no Score V2 recommendations for ${businessDate}`
+    }
+    const reason = `missing point-in-time ensemble lineage before next executable session open recommendations=${snapshot.recommendationRows}`
+    await recordAllocatorEvLifecycle(env.DB, {
+      businessDate,
+      state: 'error',
+      nativeLineageRows: 0,
+      lastError: reason,
+      incrementAttempt: true,
+    })
+    throw new Error(`allocator_ev_missing_point_in_time_lineage:${businessDate}:${reason}`)
   }
   const lifecycle = await readAllocatorEvLifecycle(env.DB, businessDate)
   const postVerifyReached = lifecycle && ['replay_pending_maturity', 'replay_enqueued', 'replay_complete'].includes(lifecycle.state)

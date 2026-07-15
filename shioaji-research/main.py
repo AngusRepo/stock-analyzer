@@ -5,6 +5,7 @@ import math
 import os
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,44 @@ api = None
 connected = False
 _query_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shioaji-research")
 _query_capacity = threading.BoundedSemaphore(1)
+_usage_lock = threading.Lock()
+_usage_cache: dict | None = None
+_usage_cache_at = 0.0
+
+
+def _usage_status(*, force: bool = False) -> dict | None:
+    global _usage_cache, _usage_cache_at
+    client = api
+    if client is None or not connected or not hasattr(client, "usage"):
+        return None
+    now = time.monotonic()
+    with _usage_lock:
+        if not force and _usage_cache is not None and now - _usage_cache_at < 30.0:
+            return dict(_usage_cache)
+        usage = client.usage()
+        payload = {
+            "connections": int(getattr(usage, "connections", 0) or 0),
+            "bytes": int(getattr(usage, "bytes", 0) or 0),
+            "limit_bytes": int(getattr(usage, "limit_bytes", 0) or 0),
+            "remaining_bytes": int(getattr(usage, "remaining_bytes", 0) or 0),
+        }
+        _usage_cache = payload
+        _usage_cache_at = now
+        return dict(payload)
+
+
+def _bandwidth_exhausted(usage: dict | None) -> bool:
+    return bool(usage and usage.get("limit_bytes", 0) > 0 and usage.get("remaining_bytes", 0) <= 0)
+
+
+def _raise_bandwidth_exhausted(usage: dict) -> None:
+    raise HTTPException(
+        429,
+        "shioaji_research_bandwidth_exhausted:"
+        f"bytes={usage['bytes']}:limit_bytes={usage['limit_bytes']}:"
+        f"remaining_bytes={usage['remaining_bytes']}",
+        headers={"Retry-After": "3600"},
+    )
 
 
 def query_timeout_seconds() -> float:
@@ -132,6 +171,9 @@ def _query_kbars(symbol: str, start: str, end: str):
 
 
 def get_kbars(symbol: str, start: str, end: str, limit: int = 5000) -> list[dict]:
+    usage = _usage_status()
+    if _bandwidth_exhausted(usage):
+        _raise_bandwidth_exhausted(usage)
     if not _query_capacity.acquire(blocking=False):
         raise HTTPException(429, "Research query already in progress")
     try:
@@ -171,6 +213,10 @@ def get_kbars(symbol: str, start: str, end: str, limit: int = 5000) -> list[dict
             "close": close_px,
             "volume": _float_at(volumes, index) if volumes is not None else 0.0,
         })
+    if not rows:
+        usage = _usage_status(force=True)
+        if _bandwidth_exhausted(usage):
+            _raise_bandwidth_exhausted(usage)
     return rows
 
 
@@ -193,10 +239,28 @@ app = FastAPI(
 
 @app.get("/health")
 def health():
+    try:
+        usage = _usage_status()
+    except Exception:
+        usage = None
     return {
-        "status": "ok" if connected else "disconnected",
+        "status": "degraded" if _bandwidth_exhausted(usage) else "ok" if connected else "disconnected",
         "connected": connected,
         "owner": "historical_market_research",
+        "market_data_available": connected and not _bandwidth_exhausted(usage),
+        "usage": usage,
+    }
+
+
+@app.get("/usage")
+def usage_endpoint(authorization: str | None = Header(default=None)):
+    verify_token(authorization)
+    usage = _usage_status(force=True)
+    if usage is None:
+        raise HTTPException(503, "shioaji_research_usage_unavailable")
+    return {
+        "status": "exhausted" if _bandwidth_exhausted(usage) else "ok",
+        **usage,
     }
 
 

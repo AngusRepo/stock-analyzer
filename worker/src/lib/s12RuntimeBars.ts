@@ -81,6 +81,56 @@ const S12_RESEARCH_READY_MINUTE = 15 * 60 + 30
 const S12_RESEARCH_ARTIFACT_DOMAIN = 's12_research_minute_bars'
 const S12_RESEARCH_ARTIFACT_SCHEMA = 's12-research-minute-bars-v2'
 
+export interface S12ResearchUsageStatus {
+  status: 'ok' | 'exhausted'
+  connections: number
+  bytes: number
+  limit_bytes: number
+  remaining_bytes: number
+}
+
+export async function loadS12ResearchUsageStatus(env: Bindings): Promise<S12ResearchUsageStatus> {
+  const researchUrl = String(env.S12_RESEARCH_KBARS_URL ?? '').replace(/\/+$/, '')
+  const token = String(env.PROXY_SERVICE_TOKEN ?? '').trim()
+  if (!researchUrl) throw new Error('s12_research_service_url_missing')
+  if (!token) throw new Error('s12_research_service_token_missing')
+  const response = await fetch(`${researchUrl}/usage`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(15_000),
+  })
+  const payload = await response.json().catch(() => null) as Partial<S12ResearchUsageStatus> & { detail?: string } | null
+  if (!response.ok) {
+    const detail = String(payload?.detail ?? `http_${response.status}`).replace(/\s+/g, ' ').slice(0, 180)
+    throw new Error(`s12_research_usage_${response.status}:${detail}`)
+  }
+  const limitBytes = Number(payload?.limit_bytes ?? 0)
+  const remainingBytes = Number(payload?.remaining_bytes ?? 0)
+  if (!Number.isFinite(limitBytes) || limitBytes <= 0 || !Number.isFinite(remainingBytes)) {
+    throw new Error('s12_research_usage_invalid_payload')
+  }
+  return {
+    status: remainingBytes > 0 ? 'ok' : 'exhausted',
+    connections: Math.max(0, Number(payload?.connections ?? 0) || 0),
+    bytes: Math.max(0, Number(payload?.bytes ?? 0) || 0),
+    limit_bytes: limitBytes,
+    remaining_bytes: remainingBytes,
+  }
+}
+
+export function s12ResearchTerminalDataSourceReason(
+  diagnostics: Pick<S12BaseBarDiagnostics, 'kbars_error' | 'kbars_research_fallback_reason'> | null | undefined,
+): string | null {
+  const reasons = [diagnostics?.kbars_error, diagnostics?.kbars_research_fallback_reason]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)
+  return reasons.find((reason) => (
+    reason.includes('shioaji_research_bandwidth_exhausted')
+    || reason.includes('s12_research_service_token_missing')
+    || reason.includes('s12_research_service_401')
+    || reason.includes('s12_research_service_403')
+  )) ?? null
+}
+
 function finiteNumber(value: unknown): number | null {
   const n = Number(value)
   return Number.isFinite(n) ? n : null
@@ -378,7 +428,10 @@ async function fetchS12ResearchKbars(
       if (!response.ok) {
         const message = String(document?.detail ?? `http_${response.status}`).replace(/\s+/g, ' ').slice(0, 180)
         lastError = `s12_research_service_${response.status}:${message}`
-        if (response.status !== 429 && response.status < 500) throw new Error(lastError)
+        if (
+          (response.status !== 429 && response.status < 500)
+          || lastError.includes('shioaji_research_bandwidth_exhausted')
+        ) throw new Error(lastError)
       } else {
         const sourceRows = Array.isArray(document?.data) ? document.data : []
         const bars = sourceRows
@@ -417,7 +470,8 @@ async function fetchS12ResearchKbars(
         lastError.includes('service_400') ||
         lastError.includes('service_401') ||
         lastError.includes('service_403') ||
-        lastError.includes('service_empty')
+        lastError.includes('service_empty') ||
+        lastError.includes('shioaji_research_bandwidth_exhausted')
       ) throw error
     }
     if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 500))
@@ -1074,15 +1128,28 @@ export async function loadS12HistoricalReplayLifecycleBars(
     .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
   if (!sessionDates.includes(entryDate)) sessionDates.unshift(entryDate)
 
-  const loadedSessions = await Promise.all(
-    sessionDates.slice(0, sessionLimit).map(async (sessionDate) => ({
-      sessionDate,
-      loaded: await loadS12HistoricalReplayBars(env, symbol, sessionDate),
-    })),
-  )
+  const requestedSessionDates = sessionDates.slice(0, sessionLimit)
+  const loadedByDate = new Map<string, Awaited<ReturnType<typeof loadS12HistoricalReplayBars>>>()
+  let terminalDataSourceReason: string | null = null
+  // Load newest first and sequentially. A successful research artifact contains
+  // the preceding seven calendar days, so older sessions can reuse R2 instead
+  // of issuing five concurrent broker queries for one replay candidate.
+  for (const sessionDate of [...requestedSessionDates].reverse()) {
+    const loaded = await loadS12HistoricalReplayBars(env, symbol, sessionDate)
+    loadedByDate.set(sessionDate, loaded)
+    terminalDataSourceReason = terminalDataSourceReason
+      ?? s12ResearchTerminalDataSourceReason(loaded.diagnostics)
+    if (terminalDataSourceReason) break
+  }
+  const loadedSessions = requestedSessionDates
+    .filter((sessionDate) => loadedByDate.has(sessionDate))
+    .map((sessionDate) => ({ sessionDate, loaded: loadedByDate.get(sessionDate)! }))
   const first = loadedSessions[0]?.loaded ?? await loadS12HistoricalReplayBars(env, symbol, entryDate)
   const barsByStart = new Map<number, IntradayRollingBar>()
+  const completeSessionDates: string[] = []
   for (const session of loadedSessions) {
+    const sessionBars = session.loaded.bars.filter((bar) => twDateText(bar.startMs) === session.sessionDate)
+    if (sessionBars.length > 0) completeSessionDates.push(session.sessionDate)
     for (const bar of session.loaded.bars) barsByStart.set(bar.startMs, bar)
   }
   const bars = [...barsByStart.values()].sort((left, right) => left.startMs - right.startMs)
@@ -1094,9 +1161,15 @@ export async function loadS12HistoricalReplayLifecycleBars(
     fallbackDailyBars: first.fallbackDailyBars,
     diagnostics: {
       ...first.diagnostics,
+      kbars_error: terminalDataSourceReason ?? first.diagnostics.kbars_error,
       base_bars_count: bars.length,
-      lifecycle_session_dates: loadedSessions.map((session) => session.sessionDate).join(','),
-      lifecycle_session_count: loadedSessions.length,
+      lifecycle_requested_session_dates: requestedSessionDates.join(','),
+      lifecycle_requested_session_count: requestedSessionDates.length,
+      lifecycle_session_dates: completeSessionDates.join(','),
+      lifecycle_session_count: completeSessionDates.length,
+      lifecycle_missing_session_dates: requestedSessionDates
+        .filter((sessionDate) => !completeSessionDates.includes(sessionDate))
+        .join(','),
       lifecycle_horizon_sessions: sessionLimit,
       lifecycle_contract: 'next_session_entry_then_multisession_canonical_exit',
     },

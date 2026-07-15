@@ -561,6 +561,27 @@ def orderbook_health_summary(symbols: list[str] | None = None, lot_type: str = "
     }
 
 
+def normalize_stock_tick(tick, callback_epoch: int) -> dict:
+    """Normalize TickSTKv1 without assuming legacy bid/ask fields exist."""
+    tick_datetime = getattr(tick, "datetime", None)
+    return {
+        "symbol": tick.code,
+        "price": tick.close,
+        "volume": tick.volume,
+        "total_volume": tick.total_volume,
+        "bid": getattr(tick, "bid_price", None),
+        "ask": getattr(tick, "ask_price", None),
+        "open": getattr(tick, "open", None),
+        "high": getattr(tick, "high", None),
+        "low": getattr(tick, "low", None),
+        "price_chg": getattr(tick, "price_chg", None),
+        "change_rate": getattr(tick, "pct_chg", None),
+        "timestamp": tick_datetime.isoformat() if tick_datetime is not None else None,
+        "updated_at": datetime.now(TW_TZ).isoformat(),
+        "session_epoch": callback_epoch,
+    }
+
+
 def init_shioaji():
     global api, connected, _session_epoch
     if _process_poisoned:
@@ -591,29 +612,14 @@ def init_shioaji():
             with _state_lock:
                 if callback_epoch != _session_epoch or _process_poisoned:
                     return
-                normalized_tick = {
-                    "symbol": symbol,
-                    "price": tick.close,
-                    "volume": tick.volume,
-                    "total_volume": tick.total_volume,
-                    "bid": tick.bid_price,
-                    "ask": tick.ask_price,
-                    "open": getattr(tick, "open", None),
-                    "high": getattr(tick, "high", None),
-                    "low": getattr(tick, "low", None),
-                    "price_chg": getattr(tick, "price_chg", None),
-                    "change_rate": getattr(tick, "pct_chg", None),
-                    "timestamp": tick.datetime.isoformat() if hasattr(tick, 'datetime') else None,
-                    "updated_at": datetime.now(TW_TZ).isoformat(),
-                    "session_epoch": callback_epoch,
-                }
+                normalized_tick = normalize_stock_tick(tick, callback_epoch)
                 last_ticks[symbol] = normalized_tick
                 update_minute_bar(symbol, normalized_tick)
                 # F4: Append to rolling buffer (deduped to ~1 entry per minute)
                 buf = _price_buffer[symbol]
                 now_ts = time.time()
                 if not buf or now_ts - buf[-1][0] >= 30:  # at most 1 entry per 30 sec
-                    buf.append((now_ts, tick.close))
+                    buf.append((now_ts, normalized_tick["price"]))
 
         @api.on_bidask_stk_v1()
         def on_bidask(exchange, bidask):

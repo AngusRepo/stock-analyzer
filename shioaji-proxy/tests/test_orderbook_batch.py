@@ -412,3 +412,29 @@ def test_market_risk_reads_streaming_proxy_tick_without_sdk(monkeypatch):
     assert result["risk_level"] == "high"
     assert result["proxy_symbol"] == "0050"
     assert result["source"] == "streaming_tick_cache"
+
+
+def test_tick_normalization_accepts_current_tickstkv1_without_bid_ask_fields():
+    proxy = _load_proxy_main()
+    tick_time = datetime(2026, 7, 15, 10, 45, 1, tzinfo=proxy.TW_TZ)
+    tick = SimpleNamespace(
+        code="4123",
+        close=37.7,
+        volume=1,
+        total_volume=1234,
+        open=37.5,
+        high=37.8,
+        low=37.4,
+        price_chg=0.3,
+        pct_chg=0.8,
+        datetime=tick_time,
+    )
+
+    normalized = proxy.normalize_stock_tick(tick, 7)
+
+    assert normalized["symbol"] == "4123"
+    assert normalized["price"] == 37.7
+    assert normalized["bid"] is None
+    assert normalized["ask"] is None
+    assert normalized["timestamp"] == tick_time.isoformat()
+    assert normalized["session_epoch"] == 7

@@ -22,6 +22,20 @@ assert(
   'GCP Scheduler must run the FinLab pending watchdog after the evening-chain root',
 )
 assert(
+  jobs.some((job) => job.id === 'allocator-ev-lifecycle-watchdog' && job.task === 'allocator-ev-lifecycle-watchdog' && job.query === 'sync=1' && job.schedule === '*/10 13-17 * * 1-5'),
+  'GCP Scheduler must recover interrupted allocator EV daily lifecycle stages',
+)
+assert(
+  jobs.some((job) => job.id === 'opb-arm-prior-refresh' && job.task === 'opb-arm-prior-refresh'
+    && job.query === 'sync=1&expected_return_owner=auto' && job.schedule === '15 23 * * 6'),
+  'GCP Scheduler must refresh OPB priors after weekly L4/Fusion owner refresh',
+)
+assert(
+  jobs.some((job) => job.id === 'monthly-opb-arm-prior-refresh' && job.task === 'monthly-opb-arm-prior-refresh'
+    && job.query === 'sync=1&expected_return_owner=auto'),
+  'GCP Scheduler must include monthly OPB prior refresh with automatic production owner resolution',
+)
+assert(
   !jobs.some((job) => job.task === 'source-readiness-probe' || job.id.startsWith('source-readiness-probe')),
   'GCP Scheduler must not run source-readiness-probe jobs',
 )
@@ -34,9 +48,14 @@ for (const removed of ['update', 'screener', 'pipeline', 'ml-warmup', 'adapt', '
 }
 
 const workerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
+const gcpTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 assert(workerTasks.includes("'evening-chain'"), 'admin trigger map must expose evening-chain')
 assert(workerTasks.includes("'market-close-refresh'"), 'admin trigger map must expose market-close-refresh')
 assert(!workerTasks.includes("'source-readiness-probe'"), 'admin trigger map must not expose source-readiness-probe')
+assert(
+  gcpTasks.includes("'opb-arm-prior-refresh'") && gcpTasks.includes("'monthly-opb-arm-prior-refresh'"),
+  'admin trigger map must expose weekly and monthly OPB prior refresh tasks',
+)
 assert(
   workerTasks.includes("'post-screener-pipeline'") &&
     workerTasks.includes('enqueuePostScreenerPipelineContinuation') &&
@@ -155,6 +174,7 @@ assert(
   updateOrchestrator.includes('runDailyAllocatorEvReadiness') &&
     updateOrchestrator.includes('runL4AlphaEvRefresh') &&
     updateOrchestrator.includes('runAllocatorEvFusionRefresh') &&
+    updateOrchestrator.includes('runOpbArmPriorRefresh') &&
     updateOrchestrator.indexOf('const evReadiness = await runDailyAllocatorEvReadiness') <
       updateOrchestrator.indexOf('const summary = await deps.runMLAndRiskV2'),
   'evening-chain must refresh L4/fusion model readiness before triggering pipeline',

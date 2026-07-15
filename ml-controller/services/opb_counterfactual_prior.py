@@ -51,10 +51,7 @@ def _counterfactual_expected_return(
         if not isinstance(payload, dict):
             return None, None, None
         value = _finite(payload.get("expected_return"))
-        allowed = bool(
-            payload.get("primary_expected_return_allowed")
-            or payload.get("assistive_expected_return_allowed")
-        )
+        allowed = payload.get("primary_expected_return_allowed") is True
         if value is None or not allowed:
             return None, None, None
         return (
@@ -266,6 +263,18 @@ def load_opb_counterfactual_inputs(
         lookback_days=lookback_days,
         limit=limit,
     )
+    normalized_rows = [
+        {
+            **row,
+            "snapshot_date": row.get("snapshot_date") or row.get("prediction_date"),
+            "actual_return_pct": (
+                row.get("actual_return_pct")
+                if row.get("actual_return_pct") is not None
+                else row.get("l4_executable_return_pct")
+            ),
+        }
+        for row in rows
+    ]
     price_rows = query_fn(
         """
         SELECT s.symbol, date(sp.date) AS price_date, sp.close
@@ -283,4 +292,4 @@ def load_opb_counterfactual_inputs(
         """,
         [end_date, end_date, f"-{max(lookback_days + 100, 220)} days", end_date, end_date, f"-{lookback_days} days"],
     )
-    return rows, price_rows
+    return normalized_rows, price_rows

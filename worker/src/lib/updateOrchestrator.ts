@@ -1,4 +1,8 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
+import {
+  historicalLearningLineageBlockedMessage,
+  historicalLearningLineageDecision,
+} from './historicalLearningLineageGuard'
 import { checkAlerts } from './localMaintenance'
 import { crawlAndStoreNews } from './news'
 import { computeAndStoreIndicators } from './technicalIndicators'
@@ -9,11 +13,12 @@ import {
   runAllocatorEvFusionRefresh,
   runFinLabV4Backfill,
   runL4AlphaEvRefresh,
+  runOpbArmPriorRefresh,
 } from './controllerResearchWorkflows'
 import { runOfficialMarketSummaryRefresh } from './officialMarketSummaryRefresh'
 import { enqueuePostScreenerPipelineContinuation } from './postScreenerContinuation'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
-import { L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
+import { ALLOCATOR_EV_FUSION_CONTRACT, L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
 import { fetchPunishedStocks } from './twseApi'
 import {
   finLabCanonicalDatasetsForLane,
@@ -1830,6 +1835,7 @@ async function runDailyAllocatorEvReadiness(
   const started = Date.now()
   const parts: string[] = []
   let l4ChampionAvailable = false
+  let fusionChampionAvailable = false
 
   const loadApprovedL4Champion = async (): Promise<Record<string, any> | null> => {
     const rawConfig = await env.KV.get('trading:config', 'json').catch(() => null) as Record<string, any> | null
@@ -1847,6 +1853,28 @@ async function runDailyAllocatorEvReadiness(
       champion.artifact_contract_version === L4_ALPHA_EV_CONTRACT.artifactContractVersion &&
       champion.feature_semantic_version === L4_ALPHA_EV_CONTRACT.featureSemanticVersion &&
       champion.label_schema_version === L4_ALPHA_EV_CONTRACT.labelSchemaVersion &&
+      typeof champion.model_version === 'string' &&
+      champion.model_version.length > 0
+    return approved ? champion as Record<string, any> : null
+  }
+
+  const loadApprovedFusionChampion = async (): Promise<Record<string, any> | null> => {
+    const rawConfig = await env.KV.get('trading:config', 'json').catch(() => null) as Record<string, any> | null
+    const ensembleV2 = rawConfig?.ensemble_v2 && typeof rawConfig.ensemble_v2 === 'object'
+      ? rawConfig.ensemble_v2 as Record<string, any>
+      : {}
+    const champion = ensembleV2.allocatorEvFusion ?? ensembleV2.allocator_ev_fusion
+    const championDecision = String(champion?.validation_packet?.decision ?? '').toUpperCase()
+    const approved =
+      champion &&
+      typeof champion === 'object' &&
+      champion.expected_return_owner === 'allocator_ev_fusion' &&
+      champion.promotion_state === 'production_primary' &&
+      champion.primary_expected_return_allowed === true &&
+      championDecision === 'PASS' &&
+      champion.artifact_contract_version === ALLOCATOR_EV_FUSION_CONTRACT.artifactContractVersion &&
+      champion.feature_semantic_version === ALLOCATOR_EV_FUSION_CONTRACT.featureSemanticVersion &&
+      champion.label_schema_version === ALLOCATOR_EV_FUSION_CONTRACT.labelSchemaVersion &&
       typeof champion.model_version === 'string' &&
       champion.model_version.length > 0
     return approved ? champion as Record<string, any> : null
@@ -1894,6 +1922,7 @@ async function runDailyAllocatorEvReadiness(
     const fusionStarted = Date.now()
     const fusionSummary = await runAllocatorEvFusionRefresh(env, triggerTime, 'weekly')
     parts.push(`fusion=${fusionSummary}`)
+    fusionChampionAvailable = (await loadApprovedFusionChampion()) !== null
     await logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh', {
       status: 'success',
       summary: `daily-chain ${fusionSummary}`,
@@ -1902,6 +1931,7 @@ async function runDailyAllocatorEvReadiness(
     })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
+    fusionChampionAvailable = (await loadApprovedFusionChampion()) !== null
     parts.push(`fusion_degraded=${message}`)
     await logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh', {
       status: 'error',
@@ -1910,6 +1940,43 @@ async function runDailyAllocatorEvReadiness(
         : `daily-chain allocator EV fusion degraded; pipeline continues in observation mode with validated S12 trade EV only; BUY/allocation remain fail closed when expected return is unavailable for ${triggerTime}`,
       duration_ms: Date.now() - started,
       error: message,
+      run_date: triggerTime,
+    })
+  }
+
+  const priorOwner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null = fusionChampionAvailable
+    ? 'allocator_ev_fusion'
+    : l4ChampionAvailable
+      ? 'l4_alpha_ev'
+      : null
+  if (priorOwner) {
+    const opbStarted = Date.now()
+    try {
+      const opbSummary = await runOpbArmPriorRefresh(env, triggerTime, priorOwner)
+      parts.push(`opb_prior=${opbSummary}`)
+      await logSchedulerResult(env.KV, 'opb-arm-prior-refresh', {
+        status: 'success',
+        summary: `daily-chain ${opbSummary}`,
+        duration_ms: Date.now() - opbStarted,
+        run_date: triggerTime,
+      })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      parts.push(`opb_prior_not_ready=${message}`)
+      await logSchedulerResult(env.KV, 'opb-arm-prior-refresh', {
+        status: 'skipped',
+        summary: `daily-chain OPB prior retained; challenger not ready owner=${priorOwner}`,
+        duration_ms: Date.now() - opbStarted,
+        error: message,
+        run_date: triggerTime,
+      })
+    }
+  } else {
+    parts.push('opb_prior_not_ready=no_production_expected_return_owner')
+    await logSchedulerResult(env.KV, 'opb-arm-prior-refresh', {
+      status: 'skipped',
+      summary: 'daily-chain OPB prior retained; no production L4/Fusion expected-return owner',
+      duration_ms: 0,
       run_date: triggerTime,
     })
   }
@@ -2261,6 +2328,10 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
 
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
+  if (runDate && isHistoricalReplayDate(twDate)) {
+    const lineageBoundary = await historicalLearningLineageDecision(env.DB, 'evening-chain', twDate)
+    if (!lineageBoundary.allowed) throw new Error(historicalLearningLineageBlockedMessage(lineageBoundary))
+  }
   if (!force && await hasEveningChainSucceeded(env, twDate)) {
     return `full evening chain already succeeded for ${twDate}; 21:00 root suppressed`
   }
@@ -2755,6 +2826,21 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 'allocator_ev_lifecycle_recovery') {
+    const triggerTime = msg.triggerTime
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid allocator EV lifecycle recovery date ${triggerTime}, skipping.`)
+      return
+    }
+    const { runPostPipelineCallbackChain } = await import('./postMarketChain')
+    await runPostPipelineCallbackChain(env, {
+      runDate: triggerTime,
+      upstreamRunId: msg.runId || `allocator-ev-lifecycle-recovery-${triggerTime}`,
+      recoveryAttempt: Math.max(1, Number(msg.attempt ?? 1)),
+    })
+    return
+  }
+
   if (msg.type === 'finlab_backfill_complete') {
     const triggerTime = msg.triggerTime
     const attempt = Number.isFinite(msg.attempt) ? Number(msg.attempt) : 1
@@ -2996,6 +3082,7 @@ export async function processUpdateBatch(
     }
     const {
       loadFusionSnapshotMissingReplaySymbols,
+      loadFusionSnapshotReplayCoverage,
       loadFusionSnapshotSymbols,
       runS12HistoricalReplayForDate,
     } = await import('./s12ReplayTradeOutcome')
@@ -3043,6 +3130,23 @@ export async function processUpdateBatch(
     const hasMore = replayScope === 'fusion_snapshot_missing'
       ? Number(result.l0_symbols ?? 0) > Number(result.attempted ?? 0) && Number(result.attempted ?? 0) > 0
       : nextOffset < Number(result.l0_symbols ?? 0) && Number(result.attempted ?? 0) > 0
+    const remainingReplaySymbols = replayScope === 'fusion_snapshot_missing' && !hasMore
+      ? await loadFusionSnapshotMissingReplaySymbols(env.DB, triggerTime, maturityAsOfDate)
+      : []
+    const replayCoverage = replayScope === 'fusion_snapshot_missing' && !hasMore
+      ? await loadFusionSnapshotReplayCoverage(env.DB, triggerTime, maturityAsOfDate)
+      : null
+    const replayClosed = !hasMore && (
+      replayScope !== 'fusion_snapshot_missing'
+      || (
+        remainingReplaySymbols.length === 0
+        && replayCoverage !== null
+        && replayCoverage.totalSnapshotRows > 0
+        && replayCoverage.replayRows === replayCoverage.totalSnapshotRows
+        && replayCoverage.matureMissingRows === 0
+        && replayCoverage.pendingMaturityRows === 0
+      )
+    )
     const summary = [
       `s12_replay_backfill signal_date=${result.signal_date}`,
       `execution_dates=${result.execution_dates.join(',') || 'none'}`,
@@ -3056,10 +3160,21 @@ export async function processUpdateBatch(
       `setup_only=${result.setup_only}`,
       `skipped=${result.skipped}`,
       `persisted=${result.persisted}`,
-      hasMore ? 'queued_next=1' : 'complete=1',
+      replayCoverage
+        ? `coverage=${replayCoverage.replayRows}/${replayCoverage.totalSnapshotRows}`
+          + ` mature_missing=${replayCoverage.matureMissingRows}`
+          + ` pending_maturity=${replayCoverage.pendingMaturityRows}`
+        : 'coverage=not_applicable',
+      hasMore
+        ? 'queued_next=1'
+        : replayClosed
+          ? 'complete=1'
+          : replayCoverage && replayCoverage.pendingMaturityRows > 0
+            ? `waiting_for_replay_maturity=${replayCoverage.pendingMaturityRows}`
+            : `waiting_for_replay_data=${remainingReplaySymbols.length}`,
     ].join(' ')
     await logSchedulerResult(env.KV, 's12-replay-backfill', {
-      status: hasMore ? 'running' : 'success',
+      status: hasMore || !replayClosed ? 'running' : 'success',
       summary,
       duration_ms: 0,
       run_id: runId,
@@ -3075,6 +3190,29 @@ export async function processUpdateBatch(
         maturityAsOfDate,
         statusRunDate,
       } as any)
+    } else if (replayClosed) {
+      const { recordAllocatorEvLifecycle } = await import('./allocatorEvDailyLifecycle')
+      await recordAllocatorEvLifecycle(env.DB, {
+        businessDate: triggerTime,
+        state: 'replay_complete',
+        replayRows: replayCoverage?.replayRows ?? 0,
+        replayMaturityAsOfDate: maturityAsOfDate,
+        upstreamRunId: runId,
+      })
+    } else {
+      const { recordAllocatorEvLifecycle } = await import('./allocatorEvDailyLifecycle')
+      await recordAllocatorEvLifecycle(env.DB, {
+        businessDate: triggerTime,
+        state: replayCoverage && replayCoverage.pendingMaturityRows > 0
+          ? 'replay_pending_maturity'
+          : 'replay_enqueued',
+        replayRows: replayCoverage?.replayRows ?? 0,
+        replayMaturityAsOfDate: maturityAsOfDate,
+        upstreamRunId: runId,
+        lastError: replayCoverage && replayCoverage.pendingMaturityRows > 0
+          ? `waiting for stock-specific five-session maturity symbols=${replayCoverage.pendingMaturityRows}`
+          : `waiting for complete five-session replay data symbols=${remainingReplaySymbols.length}`,
+      })
     }
     return
   }

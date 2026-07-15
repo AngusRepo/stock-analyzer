@@ -1,6 +1,8 @@
 import type { Bindings } from '../types'
 import { controllerFetch, controllerJson, controllerPostJson } from './controllerClient'
 import { invalidateModelPoolReadCache } from './modelPoolReadCache'
+import { ALLOCATOR_EV_FUSION_CONTRACT, L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
+import { nextTwTradingDate } from './schedulerPolicy'
 
 function requireController(env: Bindings): void {
   if (!env.ML_CONTROLLER_URL) {
@@ -272,6 +274,82 @@ export async function runAllocatorEvFusionRefresh(env: Bindings, runDate?: strin
   return summary
 }
 
+export async function runOpbArmPriorRefresh(
+  env: Bindings,
+  runDate: string,
+  expectedReturnOwner: 'auto' | 'l4_alpha_ev' | 'allocator_ev_fusion' = 'auto',
+) {
+  requireController(env)
+
+  let resolvedOwner: 'l4_alpha_ev' | 'allocator_ev_fusion'
+  if (expectedReturnOwner === 'auto') {
+    const rawConfig = await env.KV.get('trading:config', 'json').catch(() => null) as Record<string, any> | null
+    const ensembleV2 = rawConfig?.ensemble_v2 && typeof rawConfig.ensemble_v2 === 'object'
+      ? rawConfig.ensemble_v2 as Record<string, any>
+      : {}
+    const fusion = ensembleV2.allocatorEvFusion ?? ensembleV2.allocator_ev_fusion
+    const l4 = ensembleV2.l4AlphaEv ?? ensembleV2.l4_alpha_ev
+    const fusionApproved =
+      fusion?.expected_return_owner === 'allocator_ev_fusion' &&
+      fusion?.promotion_state === 'production_primary' &&
+      fusion?.primary_expected_return_allowed === true &&
+      String(fusion?.validation_packet?.decision ?? '').toUpperCase() === 'PASS' &&
+      fusion?.artifact_contract_version === ALLOCATOR_EV_FUSION_CONTRACT.artifactContractVersion &&
+      fusion?.feature_semantic_version === ALLOCATOR_EV_FUSION_CONTRACT.featureSemanticVersion &&
+      fusion?.label_schema_version === ALLOCATOR_EV_FUSION_CONTRACT.labelSchemaVersion
+    const l4Approved =
+      l4?.expected_return_owner === 'l4_alpha_ev' &&
+      l4?.promotion_state === 'production_approved' &&
+      String(l4?.validation_packet?.decision ?? '').toUpperCase() === 'PASS' &&
+      l4?.artifact_contract_version === L4_ALPHA_EV_CONTRACT.artifactContractVersion &&
+      l4?.feature_semantic_version === L4_ALPHA_EV_CONTRACT.featureSemanticVersion &&
+      l4?.label_schema_version === L4_ALPHA_EV_CONTRACT.labelSchemaVersion
+    if (fusionApproved) resolvedOwner = 'allocator_ev_fusion'
+    else if (l4Approved) resolvedOwner = 'l4_alpha_ev'
+    else throw new Error('OPB arm prior refresh has no production-approved expected-return owner')
+  } else {
+    resolvedOwner = expectedReturnOwner
+  }
+
+  const resp = await controllerFetch(env, '/opb_arm_prior/refresh', {
+    method: 'POST',
+    jsonBody: {
+      end_date: runDate,
+      expected_return_owner: resolvedOwner,
+      lookback_days: 120,
+      min_dates: 20,
+      limit: 10000,
+      roundtrip_cost_bps: 18.0,
+      promote: true,
+      dry_run: false,
+      trigger_source: 'worker_scheduler',
+    },
+    timeoutMs: 120_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    throw new Error(`OPB arm prior refresh HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
+  }
+  const data = text ? JSON.parse(text) as Record<string, any> : {}
+  const status = String(data.status ?? '').toLowerCase()
+  const validation = data.artifact?.validation && typeof data.artifact.validation === 'object'
+    ? data.artifact.validation as Record<string, any>
+    : {}
+  const failedChecks = Array.isArray(validation.failed_checks) ? validation.failed_checks.join(',') : ''
+  const summary = [
+    `opb_arm_prior_refresh status=${status || 'unknown'}`,
+    `owner=${resolvedOwner}`,
+    `rows=${Number(data.rows_loaded ?? 0)}`,
+    `price_rows=${Number(data.price_rows_loaded ?? 0)}`,
+    `promoted=${data.promoted === true ? 1 : 0}`,
+    failedChecks ? `failed_checks=${failedChecks}` : '',
+  ].filter(Boolean).join(' ')
+  if (status !== 'validated' || data.promoted !== true) {
+    throw new Error(summary)
+  }
+  return summary
+}
+
 export async function runAllocatorEvFeatureSnapshotBackfill(
   env: Bindings,
   params: {
@@ -284,12 +362,16 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
   },
 ) {
   requireController(env)
+  const nextSessionDate = params.startDate === params.endDate
+    ? await nextTwTradingDate(env.KV, params.endDate)
+    : undefined
 
   const resp = await controllerFetch(env, '/allocator_ev_fusion/feature_snapshots/backfill', {
     method: 'POST',
     jsonBody: {
       start_date: params.startDate,
       end_date: params.endDate,
+      next_session_date: nextSessionDate,
       dry_run: params.dryRun ?? false,
       candidate_limit: params.candidateLimit,
       l4_min_samples: params.l4MinSamples,

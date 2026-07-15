@@ -21,6 +21,7 @@ export const GCP_DOMAIN_ORCHESTRATION_TASKS = [
   'allocator-ev-feature-snapshot-backfill',
   'finlab-v4-backfill',
   'finlab-backfill-watchdog',
+  'allocator-ev-lifecycle-watchdog',
   'retrain',
   'monthly-retrain',
 ] as const
@@ -46,6 +47,7 @@ export {
   runWeeklyLifecycleCheck,
   runL4AlphaEvRefresh,
   runAllocatorEvFusionRefresh,
+  runOpbArmPriorRefresh,
   runAllocatorEvFeatureSnapshotBackfill,
   runWeeklyModelArtifactCandidateValidation,
   runMonthlyOptunaResearch,

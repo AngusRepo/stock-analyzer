@@ -418,6 +418,7 @@ def attach_same_run_model_version_evidence(
 def attach_next_session_open_evidence(
     query_fn: Callable[[str, list[Any] | None], list[dict[str, Any]]],
     rows: list[dict[str, Any]],
+    supplied_next_session_dates: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     delayed_dates: set[str] = set()
     for row in rows:
@@ -435,9 +436,16 @@ def attach_next_session_open_evidence(
         if generated_at is not None and (generated_at + TAIPEI_UTC_OFFSET).date() > signal_date:
             delayed_dates.add(signal_text)
 
-    next_dates: dict[str, str] = {}
-    if delayed_dates:
-        ordered_dates = sorted(delayed_dates)
+    supplied = {
+        str(signal_date)[:10]: str(next_date)[:10]
+        for signal_date, next_date in (supplied_next_session_dates or {}).items()
+        if str(signal_date)[:10] in delayed_dates
+        and str(next_date)[:10] > str(signal_date)[:10]
+    }
+    next_dates: dict[str, str] = dict(supplied)
+    unresolved_dates = delayed_dates - set(next_dates)
+    if unresolved_dates:
+        ordered_dates = sorted(unresolved_dates)
         values_sql = ", ".join("(?)" for _ in ordered_dates)
         session_rows = query_fn(
             f"""
@@ -455,11 +463,11 @@ def attach_next_session_open_evidence(
             """,
             ordered_dates,
         )
-        next_dates = {
+        next_dates.update({
             str(item.get("signal_date") or "")[:10]: str(item.get("next_session_date") or "")[:10]
             for item in session_rows or []
             if item.get("next_session_date")
-        }
+        })
 
     enriched: list[dict[str, Any]] = []
     for row in rows:
@@ -476,7 +484,11 @@ def attach_next_session_open_evidence(
         enriched.append(candidate)
     return enriched, {
         "schema_version": "next-session-open-evidence-audit-v1",
-        "source": "canonical_market_daily:0050:finlab.price",
+        "source": (
+            "worker_twse_calendar+canonical_market_daily:0050:finlab.price"
+            if supplied else "canonical_market_daily:0050:finlab.price"
+        ),
+        "calendar_supplied_signal_dates": sorted(supplied),
         "delayed_signal_dates": sorted(delayed_dates),
         "resolved_signal_dates": sorted(next_dates),
         "unresolved_signal_dates": sorted(delayed_dates - set(next_dates)),

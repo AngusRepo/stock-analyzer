@@ -1,0 +1,33 @@
+const fs = require('fs')
+
+export {}
+
+function assert(condition: unknown, message: string): void {
+  if (!condition) throw new Error(message)
+}
+
+const migration = fs.readFileSync('migrations/0063_allocator_ev_daily_lifecycle.sql', 'utf8')
+const lifecycle = fs.readFileSync('src/lib/allocatorEvDailyLifecycle.ts', 'utf8')
+const postMarket = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
+const orchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+
+assert(migration.includes('allocator_ev_daily_lifecycle'), 'daily allocator EV lifecycle must be durable in D1')
+assert(lifecycle.includes('inspectAllocatorSnapshotClosure'), 'watchdog must verify snapshot readback')
+assert(lifecycle.includes('runNativeLineageRows === expectedRows'), 'native daily snapshot closure must reject silently skipped lineage rows')
+assert(lifecycle.includes("json_extract(dr.score_components, '$.version') = 'score_v2'"), 'filtered audit placeholders must stay outside the learning snapshot cohort')
+assert(lifecycle.includes('reconstructedLineageRows === 0'), 'native daily snapshot closure must not accept reconstructed lineage')
+assert(lifecycle.includes('rejectedLineageRows === 0'), 'native daily snapshot closure must not accept rejected lineage')
+assert(lifecycle.includes("state !== 'verify_triggered'"), 'watchdog must detect stale verify callbacks')
+assert(lifecycle.includes("excluded.state = 'replay_pending_maturity'"), 'replay queue must be able to return to stock-specific maturity waiting')
+assert(lifecycle.includes('MAX(prediction_date) AS business_date'), 'cross-midnight watchdog must follow the latest native lineage date')
+assert(postMarket.includes("state: 'lineage_ready'"), 'native lineage must open the lifecycle')
+assert(postMarket.includes("state: 'snapshot_ready'"), 'snapshot readback must precede verify')
+assert(postMarket.indexOf("state: 'snapshot_ready'") < postMarket.indexOf("state: 'verify_triggered'"), 'snapshot must precede verify')
+assert(postMarket.includes("state: 'replay_pending_maturity'"), 'daily lifecycle must wait for five-session replay maturity')
+assert(postMarket.includes("type: 'allocator_ev_lifecycle_recovery'"), 'snapshot failure must enqueue bounded recovery')
+assert(orchestrator.includes("state: 'replay_complete'"), 'final replay chunk must close the signal-date lifecycle')
+assert(orchestrator.includes('remainingReplaySymbols.length === 0'), 'replay lifecycle must verify no cohort symbols remain before closure')
+assert(orchestrator.includes('replayCoverage.replayRows === replayCoverage.totalSnapshotRows'), 'replay lifecycle must require full snapshot cohort outcome coverage')
+assert(orchestrator.includes('replayCoverage.pendingMaturityRows === 0'), 'replay lifecycle must not close while stock-specific sessions are immature')
+assert(orchestrator.includes('waiting_for_replay_maturity='), 'stock-specific replay maturity must remain observable')
+assert(orchestrator.includes('waiting_for_replay_data='), 'incomplete replay data must remain observable and retryable')

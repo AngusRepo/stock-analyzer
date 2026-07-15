@@ -303,3 +303,23 @@ def test_delayed_rows_load_next_actual_session_once_for_all_candidates():
     assert calls[0][1] == ["2026-06-18"]
     assert {row["next_session_open_at"] for row in enriched} == {"2026-06-22T01:00:00Z"}
     assert audit["unresolved_signal_dates"] == []
+
+
+def test_delayed_rows_accept_worker_calendar_session_without_future_close_row():
+    calls = []
+    rows = [{
+        "stock_id": 1,
+        "prediction_date": "2026-07-14",
+        "prediction_generated_at": "2026-07-14T17:08:46Z",
+    }]
+
+    enriched, audit = attach_next_session_open_evidence(
+        lambda sql, params: calls.append((sql, params)) or [],
+        rows,
+        supplied_next_session_dates={"2026-07-14": "2026-07-15"},
+    )
+
+    assert calls == []
+    assert enriched[0]["next_session_open_at"] == "2026-07-15T01:00:00Z"
+    assert audit["calendar_supplied_signal_dates"] == ["2026-07-14"]
+    assert audit["unresolved_signal_dates"] == []

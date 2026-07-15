@@ -82,12 +82,47 @@ def load_allocator_ev_snapshot_candidate_rows(
     query_fn: QueryFn,
     *,
     snapshot_date: str,
+    next_session_date: str | None = None,
     limit: int = 1000,
 ) -> list[dict[str, Any]]:
     next_date = (date.fromisoformat(snapshot_date) + timedelta(days=1)).isoformat()
+    supplied_next_session = str(next_session_date or "").strip()[:10] or None
+    if supplied_next_session is not None and (
+        not _date_lte(next_date, supplied_next_session)
+        or not _date_lte(supplied_next_session, (date.fromisoformat(snapshot_date) + timedelta(days=15)).isoformat())
+    ):
+        raise ValueError("next_session_date_outside_snapshot_window")
     return query_fn(
         """
-        WITH ranked_prediction_ids AS (
+        WITH next_executable_session AS (
+            SELECT COALESCE(
+                (
+                    SELECT MIN(date(c.date))
+                      FROM canonical_market_daily c
+                     WHERE c.stock_id = '0050'
+                       AND c.source = 'finlab.price'
+                       AND date(c.date) > date(?)
+                ),
+                date(?)
+            ) AS session_date
+        ),
+        eligible_prediction_ids AS (
+            SELECT p.id, p.stock_id, p.generated_at
+              FROM predictions p
+              CROSS JOIN next_executable_session next_session
+             WHERE p.prediction_date >= ?
+               AND p.prediction_date < ?
+               AND p.model_name = 'ensemble'
+               AND p.forecast_data IS NOT NULL
+               AND (
+                 date(datetime(p.generated_at, '+8 hours')) <= substr(p.prediction_date, 1, 10)
+                 OR (
+                   next_session.session_date IS NOT NULL
+                   AND datetime(p.generated_at) < datetime(next_session.session_date || ' 01:00:00')
+                 )
+               )
+        ),
+        ranked_prediction_ids AS (
             SELECT
                 p.id,
                 p.stock_id,
@@ -95,11 +130,7 @@ def load_allocator_ev_snapshot_candidate_rows(
                     PARTITION BY p.stock_id
                     ORDER BY p.generated_at DESC, p.id DESC
                 ) AS prediction_rank
-            FROM predictions p
-            WHERE p.prediction_date >= ?
-              AND p.prediction_date < ?
-              AND p.model_name = 'ensemble'
-              AND p.forecast_data IS NOT NULL
+            FROM eligible_prediction_ids p
         )
         SELECT
             dr.stock_id,
@@ -128,10 +159,11 @@ def load_allocator_ev_snapshot_candidate_rows(
         WHERE dr.date >= ?
           AND dr.date < ?
           AND dr.score_components IS NOT NULL
+          AND json_extract(dr.score_components, '$.version') = 'score_v2'
         ORDER BY dr.rank ASC, dr.score DESC
         LIMIT ?
         """,
-        [snapshot_date, next_date, snapshot_date, next_date, int(limit)],
+        [snapshot_date, supplied_next_session, snapshot_date, next_date, snapshot_date, next_date, int(limit)],
     )
 
 
@@ -241,10 +273,24 @@ def _build_l4_asof_artifact(
     validation = result.get("validation_packet") if isinstance(result, dict) else {}
     if isinstance(artifact, dict):
         training_data = artifact.get("training_data") if isinstance(artifact.get("training_data"), dict) else {}
+        sample_count = int(training_data.get("sample_count") or 0)
+        date_count = int(training_data.get("date_count") or 0)
+        artifact["point_in_time_prediction_lineage"] = {
+            "schema_version": "l4-point-in-time-prediction-lineage-v1",
+            "generation_mode": "expanding_asof_reconstruction",
+            "prediction_date": snapshot_date,
+            "trained_until": trained_until,
+            "knowledge_cutoff_date": trained_until,
+            "training_sample_count": sample_count,
+            "training_date_count": date_count,
+            "label_purge_date_groups": 5,
+            "production_serving_eligible": False,
+        }
         artifact["training_data"] = {
             **training_data,
             "lineage_reconstruction": lineage_audit,
             "champion_history_load": history_load,
+            "point_in_time_prediction_ledger": artifact["point_in_time_prediction_lineage"],
         }
     return {
         "trained_until": trained_until,
@@ -496,6 +542,7 @@ def _assert_complete_write(result: dict[str, Any], expected: int, *, phase: str)
 def build_allocator_ev_feature_snapshots_for_date(
     *,
     snapshot_date: str,
+    next_session_date: str | None = None,
     query_fn: QueryFn = d1_client.query,
     write_fn: Callable[[list[tuple[str, list[Any]]]], dict[str, Any]] | None = None,
     dry_run: bool = True,
@@ -528,6 +575,7 @@ def build_allocator_ev_feature_snapshots_for_date(
     raw_candidates = load_allocator_ev_snapshot_candidate_rows(
         query_fn,
         snapshot_date=snapshot_date,
+        next_session_date=next_session_date,
         limit=candidate_limit,
     )
     candidate_total = max(
@@ -542,6 +590,10 @@ def build_allocator_ev_feature_snapshots_for_date(
     timed_candidates, next_session_evidence_load = attach_next_session_open_evidence(
         query_fn,
         raw_candidates,
+        supplied_next_session_dates=(
+            {snapshot_date: next_session_date}
+            if next_session_date else None
+        ),
     )
     candidates, row_version_evidence_load = attach_same_run_model_version_evidence(
         query_fn,
@@ -759,6 +811,7 @@ def backfill_allocator_ev_feature_snapshots(
     *,
     start_date: str,
     end_date: str,
+    next_session_date: str | None = None,
     query_fn: QueryFn = d1_client.query,
     dry_run: bool = True,
     candidate_limit: int = 1000,
@@ -771,10 +824,13 @@ def backfill_allocator_ev_feature_snapshots(
     s12_min_samples: int = 30,
     s12_min_sample_dates: int = 8,
 ) -> dict[str, Any]:
+    if next_session_date and start_date != end_date:
+        raise ValueError("next_session_date_requires_single_snapshot_date")
     rows = []
     for snapshot_date in _date_range(start_date, end_date):
         rows.append(build_allocator_ev_feature_snapshots_for_date(
             snapshot_date=snapshot_date,
+            next_session_date=next_session_date,
             query_fn=query_fn,
             dry_run=dry_run,
             candidate_limit=candidate_limit,

@@ -29,6 +29,18 @@ from services.l4_alpha_ev_producer import materialize_l4_alpha_ev  # noqa: E402
 from services.ensemble_v2 import attach_ensemble_v2, build_formal_model_input_contract  # noqa: E402
 from services.model_lifecycle_policy import resolve_degraded_dampening  # noqa: E402
 from services.model_ic_tracker import compute_weekly_ic_from_rows  # noqa: E402
+from services.opb_counterfactual_prior import (  # noqa: E402
+    build_opb_arm_prior_artifact,
+    load_opb_counterfactual_inputs,
+)
+from services.allocator_ev_feature_snapshot_backfill import (  # noqa: E402
+    build_allocator_ev_feature_snapshots_for_date,
+)
+from services.ev_lineage_contract import (  # noqa: E402
+    load_model_champion_history,
+    prediction_timing_blockers,
+    reconstruct_rows_with_point_in_time_lineage,
+)
 from services.recommendation_service import (  # noqa: E402
     apply_sparse_tangent_allocation,
     load_online_portfolio_bandit_reward_ledger,
@@ -56,10 +68,11 @@ def _finite(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _load_candidate_rows(run_date: str) -> list[dict[str, Any]]:
+def _load_candidate_rows(run_date: str, *, next_session_date: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     rows = d1_client.query(
         """
-        SELECT dr.*, s.symbol, s.name, p.forecast_data
+        SELECT dr.*, s.symbol, s.name, p.forecast_data,
+               p.generated_at AS prediction_generated_at
         FROM daily_recommendations dr
         JOIN stocks s ON s.id = dr.stock_id
         JOIN predictions p
@@ -72,7 +85,21 @@ def _load_candidate_rows(run_date: str) -> list[dict[str, Any]]:
         [run_date],
     )
     normalized: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
     for raw in rows:
+        timing_row = {
+            "prediction_date": run_date,
+            "prediction_generated_at": raw.get("prediction_generated_at"),
+            "next_session_open_at": f"{next_session_date}T01:00:00Z" if next_session_date else None,
+        }
+        blockers = prediction_timing_blockers(timing_row)
+        if blockers:
+            rejected.append({
+                "symbol": str(raw.get("symbol") or ""),
+                "prediction_generated_at": raw.get("prediction_generated_at"),
+                "blockers": blockers,
+            })
+            continue
         allocation = _loads(raw.get("alpha_allocation"))
         forecast = _loads(raw.get("forecast_data"))
         score_components = _loads(raw.get("score_components"))
@@ -102,7 +129,17 @@ def _load_candidate_rows(run_date: str) -> list[dict[str, Any]]:
                 row["ensemble_v2"].pop(key, None)
             row["forecast_data"].pop(key, None)
         normalized.append(row)
-    return normalized
+    return normalized, {
+        "schema_version": "local-frozen-upstream-lineage-audit-v1",
+        "run_date": run_date,
+        "next_session_date": next_session_date,
+        "next_session_evidence": "actual_next_session_verified_not_model_input" if next_session_date else "missing",
+        "next_session_evidence_role": "event_time_audit_only_not_feature_or_label",
+        "source_rows": len(rows),
+        "eligible_rows": len(normalized),
+        "rejected_rows": len(rejected),
+        "rejected": rejected,
+    }
 
 
 def _load_active_model_outputs(run_date: str) -> dict[str, dict[str, Any]]:
@@ -399,7 +436,13 @@ def _allocation_detail(row: dict[str, Any]) -> dict[str, Any]:
         "expected_return_owner": allocation.get("expected_return_owner"),
         "expected_return_source": allocation.get("expected_return_source"),
         "l4_expected_return": _finite(l4.get("expected_return")),
+        "l4_status": l4.get("status"),
+        "l4_model_version": l4.get("model_version"),
+        "l4_blockers": l4.get("blockers") if isinstance(l4.get("blockers"), list) else [],
         "fusion_selection_ev": _finite(fusion.get("selection_expected_return")),
+        "fusion_status": fusion.get("status"),
+        "fusion_model_version": fusion.get("model_version"),
+        "fusion_blockers": fusion.get("blockers") if isinstance(fusion.get("blockers"), list) else [],
         "fusion_execution_probability": _finite(fusion.get("execution_probability")),
         "fusion_execution_adjustment": _finite(fusion.get("execution_residual_adjustment")),
         "s12_execution_model_applied": fusion.get("s12_execution_model_applied"),
@@ -453,6 +496,41 @@ def _run_variant(
     potential.sort(key=lambda item: (item.get("expected_return") or -99.0, item.get("score_v2") or 0.0), reverse=True)
     positive_unselected.sort(key=lambda item: (item.get("expected_return") or -99.0, item.get("score_v2") or 0.0), reverse=True)
     owners = Counter(str(detail.get("expected_return_owner") or "missing") for detail in details)
+    finite_expected_returns = [
+        float(detail["expected_return"])
+        for detail in details
+        if detail.get("expected_return") is not None
+    ]
+    expected_return_counts = Counter(
+        "missing"
+        if detail.get("expected_return") is None
+        else "positive"
+        if float(detail["expected_return"]) > 0.0
+        else "negative"
+        if float(detail["expected_return"]) < 0.0
+        else "zero"
+        for detail in details
+    )
+    eligibility_counts = Counter(
+        "eligible"
+        if detail.get("eligible_for_sparse") is True
+        else "ineligible"
+        if detail.get("eligible_for_sparse") is False
+        else "missing"
+        for detail in details
+    )
+    signal_counts = Counter(str(detail.get("signal") or "missing") for detail in details)
+    selection_reason_counts = Counter(str(detail.get("selection_reason") or "missing") for detail in details)
+    top_by_expected_return = sorted(
+        (detail for detail in details if detail.get("expected_return") is not None),
+        key=lambda item: (float(item["expected_return"]), item.get("score_v2") or 0.0),
+        reverse=True,
+    )[:15]
+    top_by_score_v2 = sorted(
+        details,
+        key=lambda item: (item.get("score_v2") or -99.0, item.get("expected_return") or -99.0),
+        reverse=True,
+    )[:15]
     return {
         "label": label,
         "row_count": len(output),
@@ -464,6 +542,21 @@ def _run_variant(
         "positive_ev_eligible_zero_weight_count": len(positive_unselected),
         "top_positive_ev_eligible_zero_weight": positive_unselected[:15],
         "owner_counts": dict(owners),
+        "expected_return_counts": dict(expected_return_counts),
+        "expected_return_summary": {
+            "minimum": min(finite_expected_returns) if finite_expected_returns else None,
+            "maximum": max(finite_expected_returns) if finite_expected_returns else None,
+            "mean": (
+                sum(finite_expected_returns) / len(finite_expected_returns)
+                if finite_expected_returns
+                else None
+            ),
+        },
+        "eligibility_counts": dict(eligibility_counts),
+        "signal_counts": dict(signal_counts),
+        "selection_reason_counts": dict(selection_reason_counts),
+        "top_by_expected_return": top_by_expected_return,
+        "top_by_score_v2": top_by_score_v2,
     }
 
 
@@ -503,24 +596,167 @@ def _historical_actual_variant(rows: list[dict[str, Any]], *, run_date: str) -> 
     }
 
 
+def _closure_audit(
+    *,
+    candidate_count: int,
+    active8_count: int,
+    l4_lineage_audit: dict[str, Any],
+    l4_result: dict[str, Any],
+    fusion_result: dict[str, Any],
+    opb_prior_results: dict[str, dict[str, Any]],
+    opb_samples: int,
+    variants: list[dict[str, Any]],
+    snapshot_dry_run: dict[str, Any],
+) -> dict[str, Any]:
+    l4_validation = l4_result.get("validation_packet") if isinstance(l4_result.get("validation_packet"), dict) else {}
+    l4_samples = l4_validation.get("sample_audit") if isinstance(l4_validation.get("sample_audit"), dict) else {}
+    fusion_validation = (
+        fusion_result.get("validation_packet")
+        if isinstance(fusion_result.get("validation_packet"), dict)
+        else {}
+    )
+    fusion_samples = (
+        fusion_validation.get("sample_audit")
+        if isinstance(fusion_validation.get("sample_audit"), dict)
+        else {}
+    )
+    lineage_accepted = int(l4_lineage_audit.get("accepted_rows") or 0)
+    data_contract_closed = all((
+        candidate_count > 0,
+        active8_count > 0,
+        lineage_accepted > 0,
+        int(l4_samples.get("sample_count") or 0) > 0,
+        int(fusion_samples.get("sample_count") or 0) > 0,
+        int(fusion_samples.get("invalid_rows") or 0) == 0,
+    ))
+    l4_ready = str(l4_validation.get("decision") or "").upper() == "PASS"
+    fusion_ready = str(fusion_validation.get("decision") or "").upper() == "PASS"
+    active_owner = "allocator_ev_fusion" if fusion_ready else "l4_alpha_ev"
+    active_opb_prior = opb_prior_results.get(active_owner) or {}
+    active_opb_artifact = (
+        active_opb_prior.get("artifact")
+        if isinstance(active_opb_prior.get("artifact"), dict)
+        else {}
+    )
+    active_opb_validation = (
+        active_opb_artifact.get("validation")
+        if isinstance(active_opb_artifact.get("validation"), dict)
+        else {}
+    )
+    opb_prior_ready = str(active_opb_validation.get("decision") or "").upper() == "PASS"
+    adaptive_learning_closed = opb_samples > 0 or opb_prior_ready
+    snapshot_candidates = int(snapshot_dry_run.get("candidate_rows") or 0)
+    snapshot_built = int(snapshot_dry_run.get("snapshots_built") or 0)
+    snapshot_rejected = int(snapshot_dry_run.get("rejected_lineage_rows") or 0)
+    snapshot_reconstructed = int(snapshot_dry_run.get("reconstructed_lineage_rows") or 0)
+    native_snapshot_closed = (
+        snapshot_candidates > 0
+        and snapshot_built == snapshot_candidates
+        and snapshot_rejected == 0
+        and snapshot_reconstructed == 0
+    )
+    guarded_variants = {
+        str(item.get("label")): {
+            "buy_count": int(item.get("buy_count") or 0),
+            "buy_symbols": list(item.get("buy_symbols") or []),
+            "potential_buy_count": int(item.get("potential_buy_count") or 0),
+        }
+        for item in variants
+        if str(item.get("label") or "").endswith("_guarded")
+    }
+    blockers: list[str] = []
+    blockers.extend(f"l4:{value}" for value in (l4_validation.get("failed_gates") or []))
+    blockers.extend(f"fusion:{value}" for value in (fusion_validation.get("failed_gates") or []))
+    if not native_snapshot_closed:
+        blockers.append(
+            "snapshot:native_cohort_incomplete:"
+            f"built={snapshot_built}:candidates={snapshot_candidates}:"
+            f"reconstructed={snapshot_reconstructed}:rejected={snapshot_rejected}"
+        )
+    if not adaptive_learning_closed:
+        blockers.append("opb:live_reward_ledger_empty_as_of_run_date")
+        blockers.extend(
+            f"opb_prior:{value}"
+            for value in (active_opb_validation.get("failed_checks") or [])
+        )
+    return {
+        "schema_version": "local-evening-chain-closure-audit-v1",
+        "data_contract_closed": data_contract_closed,
+        "l4_production_ready": l4_ready,
+        "fusion_production_ready": fusion_ready,
+        "adaptive_learning_closed": adaptive_learning_closed,
+        "native_snapshot_closed": native_snapshot_closed,
+        "active_expected_return_owner_for_opb": active_owner,
+        "opb_counterfactual_prior_ready": opb_prior_ready,
+        "production_learning_chain_closed": (
+            data_contract_closed and l4_ready and fusion_ready and adaptive_learning_closed
+        ),
+        "guarded_recommendations": guarded_variants,
+        "blockers": list(dict.fromkeys(blockers)),
+        "stage_counts": {
+            "source_candidates": candidate_count,
+            "active8_complete": active8_count,
+            "snapshot_candidates": snapshot_candidates,
+            "snapshot_built": snapshot_built,
+            "snapshot_reconstructed": snapshot_reconstructed,
+            "snapshot_rejected": snapshot_rejected,
+            "l4_lineage_input": int(l4_lineage_audit.get("input_rows") or 0),
+            "l4_lineage_accepted": lineage_accepted,
+            "l4_training_samples": int(l4_samples.get("sample_count") or 0),
+            "l4_training_dates": int(l4_samples.get("date_count") or 0),
+            "fusion_training_samples": int(fusion_samples.get("sample_count") or 0),
+            "fusion_training_dates": int(fusion_samples.get("date_count") or 0),
+            "fusion_execution_samples": int(fusion_samples.get("execution_sample_count") or 0),
+            "fusion_execution_dates": int(fusion_samples.get("execution_date_count") or 0),
+            "fusion_l4_available_samples": int(fusion_samples.get("l4_available_count") or 0),
+            "fusion_s12_available_samples": int(fusion_samples.get("s12_available_count") or 0),
+            "opb_live_reward_samples": opb_samples,
+            "opb_counterfactual_input_rows": int(active_opb_prior.get("rows_loaded") or 0),
+            "opb_counterfactual_price_rows": int(active_opb_prior.get("price_rows_loaded") or 0),
+            "opb_counterfactual_missing_owner_rows": int(active_opb_artifact.get("missing_owner_rows") or 0),
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-date", default="2026-07-09")
     parser.add_argument("--training-end-date", default="2026-07-02")
+    parser.add_argument("--next-session-date")
+    parser.add_argument("--upstream-mode", choices=("frozen", "current-reensemble"), default="frozen")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
 
     config = load_merged_trading_config(prefer_worker=True, allow_offline_defaults=False)
-    all_rows = _load_candidate_rows(args.run_date)
+    all_rows, frozen_lineage_audit = _load_candidate_rows(
+        args.run_date,
+        next_session_date=args.next_session_date,
+    )
     if not all_rows:
         raise RuntimeError(f"no recommendations for {args.run_date}")
     active_model_outputs = _load_active_model_outputs(args.run_date)
-    ensemble_replay = _attach_current_active8_ensemble(all_rows, active_model_outputs, config, args.run_date)
+    ensemble_replay = (
+        _attach_current_active8_ensemble(all_rows, active_model_outputs, config, args.run_date)
+        if args.upstream_mode == "current-reensemble"
+        else {
+            "source": "frozen_same_run_ensemble_v2",
+            "used_pool": False,
+            "counterfactual_reensemble": False,
+        }
+    )
     rows, active8_excluded = _active8_eligible_rows(all_rows, active_model_outputs)
     if not rows:
         raise RuntimeError(f"no Active-8-complete recommendations for {args.run_date}")
     return_history = _load_return_history(args.run_date, [str(row.get("symbol")) for row in rows])
     reward_ledger = load_online_portfolio_bandit_reward_ledger(as_of_date=args.run_date)
+    snapshot_dry_run = build_allocator_ev_feature_snapshots_for_date(
+        snapshot_date=args.run_date,
+        next_session_date=args.next_session_date,
+        dry_run=True,
+        candidate_limit=1000,
+        l4_min_samples=500,
+        l4_min_dates=20,
+    )
     ranking = copy.deepcopy(config.get("ranking") or {"enabled": True})
 
     l4_training = load_l4_alpha_ev_training_rows(
@@ -530,8 +766,32 @@ def main(argv: list[str] | None = None) -> int:
         lookback_days=90,
         limit=6000,
     )
-    l4_result = build_l4_alpha_ev_artifact_from_rows(
+    l4_generated_values = sorted(
+        str(row.get("prediction_generated_at") or "").strip()
+        for row in l4_training
+        if str(row.get("prediction_generated_at") or "").strip()
+    )
+    l4_history_start = (
+        l4_generated_values[0]
+        if l4_generated_values
+        else f"{args.training_end_date}T00:00:00Z"
+    )
+    l4_history_end = (
+        l4_generated_values[-1]
+        if l4_generated_values
+        else f"{args.training_end_date}T23:59:59Z"
+    )
+    l4_champion_events, l4_champion_history_load = load_model_champion_history(
+        d1_client.query,
+        start_at=l4_history_start,
+        end_at=l4_history_end,
+    )
+    l4_lineage_training, l4_lineage_audit = reconstruct_rows_with_point_in_time_lineage(
         l4_training,
+        champion_events=l4_champion_events,
+    )
+    l4_result = build_l4_alpha_ev_artifact_from_rows(
+        l4_lineage_training,
         trained_until=args.training_end_date,
         lookback_days=90,
         min_samples=500,
@@ -555,6 +815,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     fusion_shadow = fusion_result.get("artifact") or {}
 
+    opb_counterfactual_rows, opb_price_rows = load_opb_counterfactual_inputs(
+        end_date=args.training_end_date,
+        lookback_days=120,
+        limit=10000,
+    )
+    opb_prior_results: dict[str, dict[str, Any]] = {}
+    for owner in ("l4_alpha_ev", "allocator_ev_fusion"):
+        prior_result = build_opb_arm_prior_artifact(
+            opb_counterfactual_rows,
+            opb_price_rows,
+            expected_return_owner=owner,
+            trained_until=args.training_end_date,
+            min_dates=20,
+        )
+        opb_prior_results[owner] = {
+            **prior_result,
+            "rows_loaded": len(opb_counterfactual_rows),
+            "price_rows_loaded": len(opb_price_rows),
+        }
+
     prod_policy = _base_policy(config)
     prod_artifact = _prod_l4(config)
     if not isinstance(prod_artifact, dict):
@@ -571,8 +851,22 @@ def main(argv: list[str] | None = None) -> int:
     fusion_policy["l4_alpha_ev"] = _force_shadow_l4_for_scoring(canonical_l4)
     fusion_policy["allocator_ev_fusion"] = _force_shadow_fusion_for_scoring(fusion_shadow)
 
+    guarded_fusion_policy = _base_policy(config)
+    guarded_fusion_policy["l4_alpha_ev"] = prod_artifact
+    guarded_fusion_policy["allocator_ev_fusion"] = fusion_shadow
+
+    variants = [
+        _historical_actual_variant(rows, run_date=args.run_date),
+        _run_variant("current_prod_guarded", rows, ranking=ranking, policy=prod_policy, return_history=return_history, reward_ledger=reward_ledger),
+        _run_variant("fusion_v11_guarded", rows, ranking=ranking, policy=guarded_fusion_policy, return_history=return_history, reward_ledger=reward_ledger),
+        _run_variant("canonical_l4_guarded", rows, ranking=ranking, policy=canonical_policy, return_history=return_history, reward_ledger=reward_ledger),
+        _run_variant("canonical_l4_math_shadow", rows, ranking=ranking, policy=canonical_shadow_policy, return_history=return_history, reward_ledger=reward_ledger),
+        _run_variant("fusion_v11_math_shadow", rows, ranking=ranking, policy=fusion_policy, return_history=return_history, reward_ledger=reward_ledger),
+    ]
+    opb_samples = sum(int(row.get("samples") or 0) for row in reward_ledger)
+
     report = {
-        "schema_version": "evening-chain-ev-version-comparison-v1",
+        "schema_version": "evening-chain-ev-version-comparison-v2",
         "run_date": args.run_date,
         "training_end_date": args.training_end_date,
         "common_input": {
@@ -582,9 +876,10 @@ def main(argv: list[str] | None = None) -> int:
             "active8_excluded_count": len(active8_excluded),
             "active8_excluded": active8_excluded,
             "return_history_symbols": len(return_history),
-            "opb_live_ledger_samples": sum(int(row.get("samples") or 0) for row in reward_ledger),
+            "opb_live_ledger_samples": opb_samples,
             "allocator": "OnlinePortfolioBandit+sparse_tangent_inverse_risk",
             "ensemble_replay": ensemble_replay,
+            "frozen_lineage_audit": frozen_lineage_audit,
             "ensemble_rank_comparison": _ensemble_rank_comparison(rows),
         },
         "artifacts": {
@@ -597,23 +892,33 @@ def main(argv: list[str] | None = None) -> int:
                 "model_version": canonical_l4.get("model_version"),
                 "validation": (l4_result.get("validation_packet") or {}).get("decision"),
                 "validation_packet": l4_result.get("validation_packet"),
-                "rows": len(l4_training),
+                "raw_rows": len(l4_training),
+                "lineage_rows": len(l4_lineage_training),
+                "lineage_reconstruction": l4_lineage_audit,
+                "champion_history_load": l4_champion_history_load,
             },
-            "fusion_v8": {
+            "fusion_v11": {
                 "model_version": fusion_shadow.get("model_version"),
                 "validation": (fusion_result.get("validation_packet") or {}).get("decision"),
                 "validation_packet": fusion_result.get("validation_packet"),
                 "rows": len(fusion_training),
                 "scoring_mode": "forced_shadow_math_only_not_promotion_eligible",
             },
+            "opb_counterfactual_priors": opb_prior_results,
+            "native_snapshot_dry_run": snapshot_dry_run,
         },
-        "variants": [
-            _historical_actual_variant(rows, run_date=args.run_date),
-            _run_variant("current_prod_guarded", rows, ranking=ranking, policy=prod_policy, return_history=return_history, reward_ledger=reward_ledger),
-            _run_variant("canonical_l4_guarded", rows, ranking=ranking, policy=canonical_policy, return_history=return_history, reward_ledger=reward_ledger),
-            _run_variant("canonical_l4_math_shadow", rows, ranking=ranking, policy=canonical_shadow_policy, return_history=return_history, reward_ledger=reward_ledger),
-            _run_variant("fusion_v8_math_shadow", rows, ranking=ranking, policy=fusion_policy, return_history=return_history, reward_ledger=reward_ledger),
-        ],
+        "variants": variants,
+        "closure_audit": _closure_audit(
+            candidate_count=len(all_rows),
+            active8_count=len(rows),
+            l4_lineage_audit=l4_lineage_audit,
+            l4_result=l4_result,
+            fusion_result=fusion_result,
+            opb_prior_results=opb_prior_results,
+            opb_samples=opb_samples,
+            variants=variants,
+            snapshot_dry_run=snapshot_dry_run,
+        ),
     }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

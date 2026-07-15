@@ -202,6 +202,71 @@ export async function loadFusionSnapshotMissingReplaySymbols(
   })).filter((row) => row.symbol)
 }
 
+export interface FusionSnapshotReplayCoverage {
+  totalSnapshotRows: number
+  replayRows: number
+  matureMissingRows: number
+  pendingMaturityRows: number
+}
+
+export async function loadFusionSnapshotReplayCoverage(
+  db: D1Database,
+  signalDate: string,
+  maturityAsOfDate: string,
+): Promise<FusionSnapshotReplayCoverage> {
+  const row = await db.prepare(`
+    WITH cohort AS (
+      SELECT fs.symbol
+        FROM allocator_ev_feature_snapshots fs
+       WHERE fs.snapshot_date = ?
+         AND fs.snapshot_source = 'allocator_ev_asof_backfill_v2'
+         AND fs.as_of_guard = '${ALLOCATOR_EV_SNAPSHOT_AS_OF_GUARD}'
+         AND json_extract(fs.score_components, '$.version') = 'score_v2'
+       GROUP BY fs.symbol
+    ), coverage AS (
+      SELECT
+        cohort.symbol,
+        EXISTS (
+          SELECT 1
+            FROM s12_replay_trade_outcomes replay
+           WHERE replay.signal_date = ?
+             AND replay.symbol = cohort.symbol
+             AND replay.source = 's12_multisession_structure_replay_v3'
+        ) AS has_replay,
+        (
+          SELECT COUNT(DISTINCT date(sp.date))
+            FROM stock_prices sp
+            JOIN stocks st ON st.id = sp.stock_id
+           WHERE st.symbol = cohort.symbol
+             AND date(sp.date) > date(?)
+             AND date(sp.date) <= date(?)
+             AND sp.open IS NOT NULL
+             AND sp.high IS NOT NULL
+             AND sp.low IS NOT NULL
+             AND sp.close IS NOT NULL
+        ) AS completed_sessions
+      FROM cohort
+    )
+    SELECT
+      COUNT(*) AS total_snapshot_rows,
+      COALESCE(SUM(CASE WHEN has_replay = 1 THEN 1 ELSE 0 END), 0) AS replay_rows,
+      COALESCE(SUM(CASE WHEN has_replay = 0 AND completed_sessions >= 5 THEN 1 ELSE 0 END), 0) AS mature_missing_rows,
+      COALESCE(SUM(CASE WHEN has_replay = 0 AND completed_sessions < 5 THEN 1 ELSE 0 END), 0) AS pending_maturity_rows
+    FROM coverage
+  `).bind(signalDate, signalDate, signalDate, maturityAsOfDate).first<{
+    total_snapshot_rows?: number
+    replay_rows?: number
+    mature_missing_rows?: number
+    pending_maturity_rows?: number
+  }>()
+  return {
+    totalSnapshotRows: Number(row?.total_snapshot_rows ?? 0),
+    replayRows: Number(row?.replay_rows ?? 0),
+    matureMissingRows: Number(row?.mature_missing_rows ?? 0),
+    pendingMaturityRows: Number(row?.pending_maturity_rows ?? 0),
+  }
+}
+
 export async function loadFusionSnapshotSymbols(
   db: D1Database,
   signalDate: string,

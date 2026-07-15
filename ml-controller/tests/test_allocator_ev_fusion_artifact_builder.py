@@ -26,6 +26,7 @@ from services.l4_alpha_ev_resolver import (  # noqa: E402
     SNAPSHOT_BACKFILL_SOURCE,
     SNAPSHOT_BACKFILL_USAGE_SCOPE,
 )
+from services.ev_lineage_contract import prediction_timing_blockers  # noqa: E402
 
 
 def _l4_payload(value: float) -> dict:
@@ -42,7 +43,7 @@ def _l4_payload(value: float) -> dict:
         "resolver_method": "test_meta_calibrator",
         "model_version": "l4-test",
         "feature_snapshot_version": "l4-features-test",
-        "trained_until": "2026-07-01",
+        "trained_until": "2026-01-01",
         "horizon_days": 5,
         "cost_model_bps": 18.0,
     }
@@ -160,8 +161,8 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["validation_packet"]["sample_audit"]["l4_available_count"] > 0
     assert artifact["validation_packet"]["sample_audit"]["s12_structure_available_count"] > 0
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
-    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v10"
-    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v10"
+    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v11"
+    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v11"
     assert artifact["validation_packet"]["validation_scope"]["selection_target"] == (
         "next_session_raw_open_to_fifth_session_raw_close_factor_stable_net_of_costs"
     )
@@ -224,6 +225,32 @@ def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_sampl
     assert artifact["primary_expected_return_allowed"] is False
     assert artifact["validation_packet"]["decision"] == "FAIL"
     assert "selection:insufficient_samples" in artifact["validation_packet"]["failed_gates"]
+
+
+def test_allocator_ev_fusion_assistive_learning_tier_is_reachable_without_ev_ownership():
+    rows = [
+        _row(f"2026-06-{day_idx + 1:02d}", symbol_idx)
+        for day_idx in range(10)
+        for symbol_idx in range(64)
+    ]
+
+    out = build_allocator_ev_fusion_artifact_from_rows(
+        rows,
+        trained_until="2026-07-14",
+        min_samples=500,
+        min_dates=20,
+        l2=0.15,
+    )
+
+    artifact = out["artifact"]
+    assert out["status"] == "ok"
+    assert artifact["promotion_tier"] == "assistive"
+    assert artifact["promotion_state"] == "production_assistive"
+    assert artifact["assistive_learning_signal_allowed"] is True
+    assert artifact["assistive_expected_return_allowed"] is False
+    assert artifact["primary_expected_return_allowed"] is False
+    assert artifact["validation_packet"]["decision"] == "PASS"
+    assert "primary_insufficient_dates" in artifact["promotion_blockers"]
 
 
 def test_allocator_ev_fusion_artifact_builder_rejects_assistive_without_replay_execution_labels():
@@ -334,14 +361,54 @@ def test_snapshot_candidate_query_avoids_correlated_evidence_lookups():
     assert "SELECT MIN(date(sp.date))" not in captured["sql"]
     assert "date(p.prediction_date)" not in captured["sql"]
     assert "date(dr.date)" not in captured["sql"]
+    assert "eligible_prediction_ids" in captured["sql"]
+    assert "datetime(p.generated_at, '+8 hours')" in captured["sql"]
+    assert "datetime(next_session.session_date || ' 01:00:00')" in captured["sql"]
     assert "ROW_NUMBER() OVER" in captured["sql"]
+    assert "json_extract(dr.score_components, '$.version') = 'score_v2'" in captured["sql"]
     assert captured["params"] == [
+        "2026-06-18",
+        None,
         "2026-06-18",
         "2026-06-19",
         "2026-06-18",
         "2026-06-19",
         200,
     ]
+
+
+def test_snapshot_candidate_query_accepts_calendar_next_session_without_future_close_row():
+    captured = {}
+
+    def query_fn(sql: str, params: list[object]) -> list[dict]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    load_allocator_ev_snapshot_candidate_rows(
+        query_fn,
+        snapshot_date="2026-07-14",
+        next_session_date="2026-07-15",
+        limit=200,
+    )
+
+    assert "COALESCE" in captured["sql"]
+    assert captured["params"][:2] == ["2026-07-14", "2026-07-15"]
+
+
+def test_20260714_prediction_timestamp_is_before_20260715_market_open():
+    base = {
+        "prediction_date": "2026-07-14",
+        "next_session_open_at": "2026-07-15T01:00:00Z",
+    }
+    assert prediction_timing_blockers({
+        **base,
+        "prediction_generated_at": "2026-07-14 17:08:52",
+    }) == []
+    assert prediction_timing_blockers({
+        **base,
+        "prediction_generated_at": "2026-07-15 01:08:52",
+    }) == ["prediction_generated_at_not_before_next_session_open"]
 
 
 def test_allocator_fusion_rejects_unproven_adjustment_factor_lineage():
@@ -423,6 +490,11 @@ def test_allocator_ev_fusion_feature_vector_accepts_backfill_only_l4_under_canon
             "fitted": True,
             "fit_blockers": [],
             "trained_until": "2026-07-06",
+            "point_in_time_prediction_lineage": {
+                "schema_version": "l4-point-in-time-prediction-lineage-v1",
+                "prediction_date": "2026-07-07",
+                "trained_until": "2026-07-06",
+            },
     }
     row = {
         "symbol": "2330",
@@ -466,7 +538,9 @@ def test_allocator_ev_fusion_feature_vector_accepts_backfill_only_l4_under_canon
             "s12_trade_ev": _s12_payload(0.01),
         }),
     }
-    assert _feature_vector(future_row) is None
+    future_features = _feature_vector(future_row)
+    assert future_features is not None
+    assert future_features["l4_available"] == 0.0
 
 
 def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_for_training():

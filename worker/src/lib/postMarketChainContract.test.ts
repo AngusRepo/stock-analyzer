@@ -65,7 +65,7 @@ assert(
   'same-date allocator feature snapshots must be materialized after pipeline output and before verify',
 )
 assert(
-  postMarketChain.includes("if (snapshotTask.status === 'error')") &&
+  postMarketChain.includes("snapshotTask.status === 'error' || !snapshotClosure.ready") &&
     postMarketChain.includes("await logChainSummary(env, ctx, 'post-pipeline-chain'"),
   'post-pipeline chain must stop before verify when canonical allocator snapshots are missing',
 )

@@ -28,6 +28,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'market-close-refresh': { kind: 'trading_day', holidayGated: true, description: '18:10 market-close data refresh before evening chain' },
   'evening-chain': { kind: 'trading_day', holidayGated: true, description: 'post-market event-driven chain root' },
   'finlab-backfill-watchdog': { kind: 'trading_day', holidayGated: true, description: 'reclaim orphaned FinLab Modal pending dispatches' },
+  'allocator-ev-lifecycle-watchdog': { kind: 'trading_day', holidayGated: true, description: 'recover incomplete allocator EV lineage, snapshot, verify, and replay stages' },
   update: { kind: 'trading_day', holidayGated: true, description: 'post-market TWSE/TPEX market data update' },
   'indicator-queue': { kind: 'trading_day', holidayGated: true, description: 'post-market full-market technical indicator queue' },
   'ml-warmup': { kind: 'trading_day', holidayGated: true, description: 'post-market ML control-plane warmup' },
@@ -46,6 +47,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'obsidian-daily': { kind: 'trading_day', holidayGated: true, description: 'daily trading-note sync' },
   'regime-compute': { kind: 'trading_day', holidayGated: true, description: 'daily market regime compute' },
   'allocator-ev-readiness': { kind: 'trading_day', holidayGated: true, description: 'in-chain L4 alpha and allocator EV readiness before pipeline allocation' },
+  'opb-arm-prior-refresh': { kind: 'research', holidayGated: false, description: 'production-gated OPB counterfactual arm-prior refresh' },
   'allocator-ev-feature-snapshot-backfill': { kind: 'trading_day', holidayGated: true, description: 'post-pipeline point-in-time allocator feature snapshot before verify' },
   'verify-v2': { kind: 'trading_day', holidayGated: true, description: 'daily verify and IC refresh' },
   'us-leading': { kind: 'trading_day', holidayGated: true, description: 'pre-market US leading signal' },
@@ -79,6 +81,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   's12-smcvwap-calibration': { kind: 'research', holidayGated: false, description: 'weekly/monthly walk-forward S12 Taiwan-equity calibration and automatic promotion' },
   'l4-alpha-ev-refresh': { kind: 'research', holidayGated: false, description: 'weekly production-gated L4 alpha EV artifact refresh' },
   'allocator-ev-fusion-refresh': { kind: 'research', holidayGated: false, description: 'weekly production-gated allocator EV fusion artifact refresh' },
+  'monthly-opb-arm-prior-refresh': { kind: 'research', holidayGated: false, description: 'monthly production-gated OPB counterfactual arm-prior refresh' },
   'adaptive-meta-policy-replay': { kind: 'research', holidayGated: false, description: 'weekly evidence-only active-8 adaptive meta-policy replay' },
   'linucb-multiplier-replay': { kind: 'research', holidayGated: false, description: 'weekly evidence-only LinUCB bandit multiplier replay' },
   'weekly-drift-retrain': { kind: 'research', holidayGated: false, description: 'approval-gated weekly drift hotfix candidate; not weekly cleanup' },
@@ -255,6 +258,20 @@ export async function isTwHoliday(kv: KVNamespace, twDate: string): Promise<bool
     }
   }
   return Boolean(cached?.dates?.includes(twDate))
+}
+
+export async function nextTwTradingDate(kv: KVNamespace, afterDate: string): Promise<string> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(afterDate)) throw new Error(`invalid trading calendar date: ${afterDate}`)
+  let candidate = new Date(`${afterDate}T00:00:00.000Z`)
+  for (let offset = 1; offset <= 15; offset += 1) {
+    candidate = new Date(candidate.getTime() + 86400_000)
+    const date = candidate.toISOString().slice(0, 10)
+    const weekday = candidate.getUTCDay()
+    if (weekday === 0 || weekday === 6) continue
+    if (await isTwHoliday(kv, date)) continue
+    return date
+  }
+  throw new Error(`next TWSE trading session unresolved after ${afterDate}`)
 }
 
 export async function shouldRunScheduledTask(input: {

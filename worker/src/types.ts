@@ -308,6 +308,7 @@ export interface UpdateQueueMsg {
     | 'finlab_backfill_complete'
     | 'strategy_learning_materialize'
     | 's12_replay_backfill_chunk'
+    | 'allocator_ev_lifecycle_recovery'
   newsStocks?: Array<{
     id: number
     symbol: string

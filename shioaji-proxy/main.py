@@ -145,9 +145,9 @@ def orderbook_max_age_ms() -> int:
 
 def orderbook_refresh_wait_seconds() -> float:
     try:
-        value = float(os.environ.get("SHIOAJI_ORDERBOOK_REFRESH_WAIT_SECONDS", "0.6"))
+        value = float(os.environ.get("SHIOAJI_ORDERBOOK_REFRESH_WAIT_SECONDS", "2.0"))
     except ValueError:
-        return 0.6
+        return 2.0
     return max(0.1, min(value, 3.0))
 
 

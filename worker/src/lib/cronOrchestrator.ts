@@ -187,8 +187,9 @@ async function runIntradayHeartbeat(env: Bindings, ctx: ExecutionContext, twToda
     }
 
     await env.KV.put('cron:intraday-lock', '1', { expirationTtl: 120 })
+    let holdingPoll: Awaited<ReturnType<typeof runIntradayCheck>>
     try {
-      await runIntradayCheck(env)
+      holdingPoll = await runIntradayCheck(env)
     } finally {
       await env.KV.delete('cron:intraday-lock')
     }
@@ -200,12 +201,17 @@ async function runIntradayHeartbeat(env: Bindings, ctx: ExecutionContext, twToda
     const pendingAfter = await loadPendingBuySnapshot(env, twTodayStr, { allowFallbackRecent: false })
     const pendingAfterState = buildPendingBuyStateSummary(pendingAfter.pendingBuys, pendingAfter.meta)
     const buys = after - before
+    const holdingResult = holdingPoll ?? null
+    const holdingPartial = holdingResult != null && holdingResult.status === 'partial'
     await logCronResult(env.KV, 'intraday-check', {
-      status: buys > 0 ? 'success' : pendingAfter.pendingBuys.length > 0 ? 'running' : 'skipped',
-      summary: formatPendingBuyCronSummary('heartbeat ok', pendingAfterState, {
+      status: holdingPartial ? 'running' : buys > 0 ? 'success' : pendingAfter.pendingBuys.length > 0 ? 'running' : 'skipped',
+      summary: formatPendingBuyCronSummary(holdingPartial ? 'heartbeat partial holding coverage' : 'heartbeat ok', pendingAfterState, {
         before_active: pendingBeforeState.active_count,
         buys: Math.max(0, buys),
         total_buys: after,
+        holding_positions: holdingResult?.positions ?? 0,
+        holding_quoted: holdingResult?.quoted ?? 0,
+        holding_missing: holdingResult?.missing_symbols.join(',') ?? '',
       }),
       duration_ms: Date.now() - started,
     })

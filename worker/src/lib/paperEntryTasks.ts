@@ -12,7 +12,7 @@ import {
 import { calcCommission, calcTax, resolveLimitBuyFill, resolveMarketSellFill } from './paperTradeMath'
 import { matchPaperOrderAgainstAuthoritativeDepth } from './paperOrderBookMatcher'
 import { buildSellOrderNote } from './paperOrderAccounting'
-import { forceDayTradeClose, pollIntradayStopLoss } from './paperExitTasks'
+import { forceDayTradeClose, pollIntradayStopLoss, type IntradayStopLossPollResult } from './paperExitTasks'
 import {
   loadPendingBuySnapshot,
   markPendingBuyExecutionEvents,
@@ -476,13 +476,13 @@ function shouldPersistActiveExecutionStatus(status: PendingBuyActiveExecutionSta
     status === 'quote_unavailable'
 }
 
-export async function runIntradayCheck(env: Bindings): Promise<void> {
+export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossPollResult> {
   const cfg = await getTradingConfig(env.KV)
   const { hour: twHour, minute: twMin } = getTwClockParts()
   const minutesSinceOpen = minutesSinceTwMarketOpen(twHour, twMin)
   const isMarketOpen = isTwIntradayTradingMinute()
 
-  if (!isMarketOpen) return
+  if (!isMarketOpen) return { status: 'healthy_empty', positions: 0, quoted: 0, missing_symbols: [] }
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   await reconcilePendingBuyDebates(env, today).catch((e) =>
     console.warn('[Intraday] pending debate reconcile failed:', e),
@@ -513,12 +513,12 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
     }
   }
 
-  await pollIntradayStopLoss(env)
+  let holdingPoll = await pollIntradayStopLoss(env)
 
   const riskRaw = await env.KV.get('market:risk_level')
   if (riskRaw && ['orange', 'red', 'black'].includes(riskRaw)) {
     await new Promise((r) => setTimeout(r, 30_000))
-    await pollIntradayStopLoss(env)
+    holdingPoll = await pollIntradayStopLoss(env)
   }
 
   if (twHour === 13 && twMin >= 25) {
@@ -541,12 +541,12 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
         { stage: 'intraday_close', reason: 'rod_cancelled' },
       )
     }
-    return
+    return holdingPoll
   }
 
   const pendingSnapshot = await loadPendingBuySnapshot(env, today, { allowFallbackRecent: false })
   let pendingBuys: PendingBuy[] = pendingSnapshot.pendingBuys
-  if (pendingBuys.length === 0) return
+  if (pendingBuys.length === 0) return holdingPoll
   const pendingRunId = pendingRunIdFromMeta(pendingSnapshot.meta)
 
   const pendingSymbols = pendingBuys.map((b) => b.symbol)
@@ -610,12 +610,12 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   }
 
   const acc = await env.DB.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
-  if (!acc) return
+  if (!acc) return holdingPoll
   const settledCash = Number(acc.cash ?? 0)
   const { getAvailableCash: getAvailCash } = await import('./dateUtils')
   const availableCash = await getAvailCash(env.DB, ACCOUNT_ID)
   ;(acc as any).cash = availableCash
-  if (availableCash < cfg.position.minCashToTrade) return
+  if (availableCash < cfg.position.minCashToTrade) return holdingPoll
 
   const { results: positions } = await env.DB.prepare(
     'SELECT symbol, shares FROM paper_positions WHERE account_id=? AND shares>0',
@@ -2597,4 +2597,5 @@ export async function runIntradayCheck(env: Bindings): Promise<void> {
   } else if (executionAuditEvents.length > 0) {
     await recordPendingBuyAuditOnly(env, today, pendingRunId, 'intraday_check', executionAuditEvents)
   }
+  return holdingPoll
 }

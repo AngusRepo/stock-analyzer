@@ -1,6 +1,7 @@
 import {
   clearOpenPositionIntradayPriceCache,
   getFreshIntradayPriceMap,
+  getIntradayPriceMap,
   getPostClosePriceMap,
   putIntradayPrice,
   putPostClosePrice,
@@ -76,6 +77,13 @@ class FakeDB {
     Date.parse(intradaySnapshot.updated_at) + 91_000,
   )
   assert(staleIntraday.size === 0, 'stale intraday snapshots must not be presented as realtime')
+  const displayIntraday = await getIntradayPriceMap(
+    writeKv as unknown as KVNamespace,
+    ['4953'],
+    10 * 60_000,
+    Date.parse(intradaySnapshot.updated_at) + 91_000,
+  )
+  assert(displayIntraday.get('4953')?.price === 134.5, 'timestamped intraday last-known price should remain available for display with stale status')
 
   await putPostClosePrice(writeKv as unknown as KVNamespace, {
     symbol: '4953',

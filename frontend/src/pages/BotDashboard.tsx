@@ -1005,7 +1005,13 @@ function PositionsTable() {
                     </td>
                     <td className="p-2 text-right sv-num text-foreground/80">{lots}</td>
                     <td className="p-2 text-right sv-num text-foreground/80">${fmt(entry, 1)}</td>
-                    <td className="p-2 text-right sv-num text-foreground/80">${fmt(current, 1)}</td>
+                    <td className="p-2 text-right">
+                      <div className="sv-num text-foreground/80">${fmt(current, 1)}</div>
+                      <div className={`mt-0.5 text-[10px] ${p.quote_status === 'fresh' ? 'text-emerald-300' : p.quote_status === 'stale' ? 'text-amber-300' : 'text-red-300'}`}>
+                        {p.quote_status === 'fresh' ? '即時' : p.quote_status === 'stale' ? '盤中末筆' : '即時報價不可用'}
+                        {p.quote_as_of ? ` · ${formatTwDateTimeShort(p.quote_as_of)}` : ''}
+                      </div>
+                    </td>
                     <td className="p-2 text-right">
                       {riskPlan.stop ? (
                         <div>

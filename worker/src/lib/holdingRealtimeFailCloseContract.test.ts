@@ -18,8 +18,9 @@ assert(
   'all-position quote failure must fail the intraday scheduler instead of returning green',
 )
 assert(
-  exitTasks.includes('holding_authoritative_market_data_unavailable_partial:'),
-  'partial holding quote coverage must fail after processing covered positions',
+  exitTasks.includes('partial holding quote coverage: missing=') &&
+    exitTasks.includes("status: missingQuotePositions.length > 0 ? 'partial' : 'ok'"),
+  'partial holding quote coverage must remain observable without failing covered positions',
 )
 assert(
   exitTasks.includes('contract_bypass_allowed: false'),
@@ -34,6 +35,7 @@ assert(
   'positions API must not present EOD fallback as a normal realtime price during market hours',
 )
 assert(
-  paperRoute.includes("quote_status:     intradayMap.has(pos.symbol) ? 'fresh' as const : isMarketOpen ? 'unavailable'"),
-  'positions API must expose explicit realtime quote availability',
+  paperRoute.includes("'intraday_stale'") &&
+    paperRoute.includes("intradayQuoteFresh ? 'fresh' as const : 'stale' as const"),
+  'positions API must separate fresh execution quotes from timestamped stale display prices',
 )

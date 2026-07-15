@@ -85,6 +85,15 @@ export async function getFreshIntradayPriceMap(
   maxAgeMs = INTRADAY_PRICE_DISPLAY_MAX_AGE_MS,
   nowMs = Date.now(),
 ): Promise<Map<string, IntradayPriceSnapshot>> {
+  return getIntradayPriceMap(kv, symbols, maxAgeMs, nowMs)
+}
+
+export async function getIntradayPriceMap(
+  kv: KVNamespace,
+  symbols: string[],
+  maxAgeMs = INTRADAY_PRICE_TTL_SECONDS * 1000,
+  nowMs = Date.now(),
+): Promise<Map<string, IntradayPriceSnapshot>> {
   const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol ?? '').trim()).filter(Boolean))]
   const rows = await Promise.all(uniqueSymbols.map((symbol) => kv.get(`${INTRADAY_PRICE_PREFIX}${symbol}`)))
   const out = new Map<string, IntradayPriceSnapshot>()

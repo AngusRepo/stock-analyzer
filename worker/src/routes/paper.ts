@@ -24,7 +24,11 @@ import {
   calcTax,
 } from '../lib/paperTradeMath'
 import { batchGetIntradayOHLC } from '../lib/paperIntradayData'
-import { getFreshIntradayPriceMap, getPostClosePriceMap } from '../lib/paperIntradayPriceCache'
+import {
+  getIntradayPriceMap,
+  getPostClosePriceMap,
+  INTRADAY_PRICE_DISPLAY_MAX_AGE_MS,
+} from '../lib/paperIntradayPriceCache'
 import { buildSellOrderNote, estimateSellOrderRealizedPnl, parseSellOrderNote } from '../lib/paperOrderAccounting'
 import { recordPaperExecutionEvent } from '../lib/paperExecutionEvents'
 import { runDailySnapshot, type RescoreSellParams } from '../lib/paperWorkerTasks'
@@ -692,7 +696,7 @@ paper.get('/positions', async (c) => {
 // Tier 1: KV intraday snapshots populated by `pollIntradayStopLoss`.
   const intradayMap = new Map<string, number>()
   const intradaySnapshotMap = isMarketOpen && positionSymbols.length
-    ? await getFreshIntradayPriceMap(c.env.KV, positionSymbols)
+    ? await getIntradayPriceMap(c.env.KV, positionSymbols)
     : new Map()
   if (isMarketOpen && positions?.length) {
     for (const pos of positions ?? []) {
@@ -785,7 +789,12 @@ paper.get('/positions', async (c) => {
   }
   const enriched = await Promise.all((positions ?? []).map(async (pos: any) => {
     const postClosePrice = postCloseMap.get(pos.symbol)
-    const currentPrice = intradayMap.get(pos.symbol) ?? postClosePrice?.price ?? await getLatestPrice(c.env.DB, pos.symbol)
+    const intradaySnapshot = intradaySnapshotMap.get(pos.symbol)
+    const intradayQuoteAgeMs = intradaySnapshot
+      ? Math.max(0, Date.now() - Date.parse(intradaySnapshot.updated_at))
+      : null
+    const intradayQuoteFresh = intradayQuoteAgeMs != null && intradayQuoteAgeMs <= INTRADAY_PRICE_DISPLAY_MAX_AGE_MS
+    const currentPrice = intradaySnapshot?.price ?? postClosePrice?.price ?? await getLatestPrice(c.env.DB, pos.symbol)
     const marketValue  = currentPrice ? currentPrice * pos.shares : 0
     const costBasis    = pos.avg_cost * pos.shares
     const unrealizedPnl    = marketValue - costBasis
@@ -816,16 +825,18 @@ paper.get('/positions', async (c) => {
       market_value:     Math.round(marketValue),
       unrealized_pnl:   Math.round(unrealizedPnl),
       unrealized_pnl_pct: Math.round(unrealizedPnlPct * 100) / 100,
-      price_source:     intradayMap.has(pos.symbol)
-        ? 'intraday' as const
+      price_source:     intradaySnapshot
+        ? intradayQuoteFresh ? 'intraday' as const : 'intraday_stale' as const
         : postClosePrice
           ? postClosePrice.source
           : isMarketOpen
             ? 'realtime_unavailable_eod_reference' as const
             : 'eod' as const,
-      quote_status:     intradayMap.has(pos.symbol) ? 'fresh' as const : isMarketOpen ? 'unavailable' as const : 'reference' as const,
-      quote_is_fresh:   intradayMap.has(pos.symbol),
-      quote_as_of:      intradaySnapshotMap.get(pos.symbol)?.updated_at ?? null,
+      quote_status:     intradaySnapshot ? intradayQuoteFresh ? 'fresh' as const : 'stale' as const : isMarketOpen ? 'unavailable' as const : 'reference' as const,
+      quote_is_fresh:   intradayQuoteFresh,
+      quote_as_of:      intradaySnapshot?.updated_at ?? null,
+      quote_source_time: intradaySnapshot?.quote_time ?? null,
+      quote_age_ms:     intradayQuoteAgeMs,
 // Refresh stop-loss / take-profit state when a fresher price arrives.
       initial_stop:     pos.initial_stop ? Math.round(pos.initial_stop * 10) / 10 : null,
       trailing_stop:    pos.trailing_stop ? Math.round(pos.trailing_stop * 10) / 10 : null,

@@ -1389,7 +1389,14 @@ export async function runEODExit(env: Bindings): Promise<void> {
   console.log('[EODExit] Done.')
 }
 
-export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
+export type IntradayStopLossPollResult = {
+  status: 'healthy_empty' | 'ok' | 'partial'
+  positions: number
+  quoted: number
+  missing_symbols: string[]
+}
+
+export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopLossPollResult> {
   const cfg = await getTradingConfig(env.KV)
   const { results: positions } = await env.DB.prepare(
     `SELECT symbol, shares, avg_cost, name, entry_price, entry_date,
@@ -1402,7 +1409,9 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
      FROM paper_positions WHERE account_id=? AND shares>0`,
   ).bind(ACCOUNT_ID).all<any>()
 
-  if (!positions || positions.length === 0) return
+  if (!positions || positions.length === 0) {
+    return { status: 'healthy_empty', positions: 0, quoted: 0, missing_symbols: [] }
+  }
 
   const symbols = positions.map((p: any) => p.symbol)
   const boardLotSymbols = positions
@@ -1801,8 +1810,14 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
 
   if (missingQuotePositions.length > 0) {
     await Promise.all(missingQuotePositions.map(recordMissingHoldingQuote))
-    throw new Error(`holding_authoritative_market_data_unavailable_partial:${missingQuotePositions.map((pos: any) => pos.symbol).join(',')}`)
+    console.warn(`[Intraday] partial holding quote coverage: missing=${missingQuotePositions.map((pos: any) => pos.symbol).join(',')}`)
   }
 
   console.log(`[Intraday] checked ${positions.length} positions with ${quoteMap.size} quotes`)
+  return {
+    status: missingQuotePositions.length > 0 ? 'partial' : 'ok',
+    positions: positions.length,
+    quoted: quoteMap.size,
+    missing_symbols: missingQuotePositions.map((pos: any) => String(pos.symbol)),
+  }
 }

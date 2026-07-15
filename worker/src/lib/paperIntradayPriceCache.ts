@@ -3,7 +3,9 @@ import { batchGetIntradayOHLC } from './paperIntradayData'
 
 const ACCOUNT_ID = 1
 export const INTRADAY_PRICE_PREFIX = 'intraday:price:'
-export const INTRADAY_PRICE_TTL_SECONDS = 600
+// Storage lifetime for the last observed intraday trade. Execution callers
+// still enforce their short freshness window through getFreshIntradayPriceMap.
+export const INTRADAY_PRICE_TTL_SECONDS = 18 * 60 * 60
 export const INTRADAY_PRICE_DISPLAY_MAX_AGE_MS = 90_000
 export const POST_CLOSE_PRICE_PREFIX = 'postclose:price:'
 export const POST_CLOSE_PRICE_TTL_SECONDS = 18 * 60 * 60
@@ -22,6 +24,7 @@ export type IntradayPriceSnapshot = {
   source: string
   quote_time: string | null
   updated_at: string
+  as_of: string
 }
 
 export type PostClosePriceRefreshResult = {
@@ -40,6 +43,12 @@ function twToday(): string {
 function finitePositive(value: unknown): number | null {
   const n = typeof value === 'number' ? value : Number(value)
   return Number.isFinite(n) && n > 0 ? n : null
+}
+
+function snapshotAsOfMs(snapshot: Pick<IntradayPriceSnapshot, 'quote_time' | 'updated_at'>): number {
+  const sourceTimeMs = snapshot.quote_time ? Date.parse(snapshot.quote_time) : Number.NaN
+  if (Number.isFinite(sourceTimeMs)) return sourceTimeMs
+  return Date.parse(snapshot.updated_at)
 }
 
 function parsePostCloseSnapshot(raw: unknown): PostClosePriceSnapshot | null {
@@ -69,12 +78,16 @@ export async function putIntradayPrice(
   ttlSeconds = INTRADAY_PRICE_TTL_SECONDS,
   metadata: { source?: string; quoteTime?: string | null; updatedAt?: string } = {},
 ): Promise<void> {
+  const updatedAt = metadata.updatedAt ?? new Date().toISOString()
+  const quoteTime = metadata.quoteTime ?? null
+  const asOfMs = snapshotAsOfMs({ quote_time: quoteTime, updated_at: updatedAt })
   const snapshot: IntradayPriceSnapshot = {
     symbol,
     price,
     source: metadata.source ?? 'shioaji',
-    quote_time: metadata.quoteTime ?? null,
-    updated_at: metadata.updatedAt ?? new Date().toISOString(),
+    quote_time: quoteTime,
+    updated_at: updatedAt,
+    as_of: new Date(asOfMs).toISOString(),
   }
   await kv.put(`${INTRADAY_PRICE_PREFIX}${symbol}`, JSON.stringify(snapshot), { expirationTtl: ttlSeconds })
 }
@@ -104,13 +117,16 @@ export async function getIntradayPriceMap(
       const parsed = JSON.parse(raw) as Partial<IntradayPriceSnapshot>
       const price = finitePositive(parsed.price)
       const updatedAtMs = Date.parse(String(parsed.updated_at ?? ''))
-      if (price == null || !Number.isFinite(updatedAtMs) || nowMs - updatedAtMs > maxAgeMs || updatedAtMs > nowMs + 5_000) continue
+      const quoteTime = parsed.quote_time ? String(parsed.quote_time) : null
+      const asOfMs = snapshotAsOfMs({ quote_time: quoteTime, updated_at: String(parsed.updated_at ?? '') })
+      if (price == null || !Number.isFinite(updatedAtMs) || !Number.isFinite(asOfMs) || nowMs - asOfMs > maxAgeMs || asOfMs > nowMs + 5_000) continue
       out.set(uniqueSymbols[i], {
         symbol: uniqueSymbols[i],
         price,
         source: String(parsed.source ?? 'shioaji'),
-        quote_time: parsed.quote_time ? String(parsed.quote_time) : null,
+        quote_time: quoteTime,
         updated_at: new Date(updatedAtMs).toISOString(),
+        as_of: new Date(asOfMs).toISOString(),
       })
     } catch {
       // Legacy scalar values have no as-of timestamp and are never realtime-authoritative.

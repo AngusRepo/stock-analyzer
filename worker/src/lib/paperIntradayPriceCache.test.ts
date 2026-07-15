@@ -62,6 +62,7 @@ class FakeDB {
   const intradaySnapshot = JSON.parse(writeKv.putCalls[0]?.value ?? '{}')
   assert(intradaySnapshot.price === 134.5, 'intraday price cache should persist the price')
   assert(Boolean(intradaySnapshot.updated_at), 'intraday price cache must persist an as-of timestamp')
+  assert(Boolean(intradaySnapshot.as_of), 'intraday price cache must persist the effective source timestamp')
   assert(writeKv.putCalls[0]?.ttl === 123, 'intraday price cache should preserve ttl')
   const freshIntraday = await getFreshIntradayPriceMap(
     writeKv as unknown as KVNamespace,
@@ -84,6 +85,29 @@ class FakeDB {
     Date.parse(intradaySnapshot.updated_at) + 91_000,
   )
   assert(displayIntraday.get('4953')?.price === 134.5, 'timestamped intraday last-known price should remain available for display with stale status')
+
+  const delayedKv = new FakeKV()
+  const receivedAt = '2026-07-15T03:20:00.000Z'
+  const sourceTime = '2026-07-15T03:00:00.000Z'
+  await putIntradayPrice(delayedKv as unknown as KVNamespace, '4123', 37.75, undefined, {
+    quoteTime: sourceTime,
+    updatedAt: receivedAt,
+  })
+  assert(delayedKv.putCalls[0]?.ttl === 18 * 60 * 60, 'intraday last-known storage should survive the full trading session')
+  const delayedFresh = await getFreshIntradayPriceMap(
+    delayedKv as unknown as KVNamespace,
+    ['4123'],
+    90_000,
+    Date.parse(receivedAt),
+  )
+  assert(delayedFresh.size === 0, 'freshness must use broker source time instead of cache receipt time')
+  const delayedDisplay = await getIntradayPriceMap(
+    delayedKv as unknown as KVNamespace,
+    ['4123'],
+    18 * 60 * 60_000,
+    Date.parse(receivedAt),
+  )
+  assert(delayedDisplay.get('4123')?.as_of === sourceTime, 'display should preserve the broker source timestamp')
 
   await putPostClosePrice(writeKv as unknown as KVNamespace, {
     symbol: '4953',

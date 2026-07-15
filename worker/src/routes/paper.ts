@@ -791,7 +791,7 @@ paper.get('/positions', async (c) => {
     const postClosePrice = postCloseMap.get(pos.symbol)
     const intradaySnapshot = intradaySnapshotMap.get(pos.symbol)
     const intradayQuoteAgeMs = intradaySnapshot
-      ? Math.max(0, Date.now() - Date.parse(intradaySnapshot.updated_at))
+      ? Math.max(0, Date.now() - Date.parse(intradaySnapshot.as_of))
       : null
     const intradayQuoteFresh = intradayQuoteAgeMs != null && intradayQuoteAgeMs <= INTRADAY_PRICE_DISPLAY_MAX_AGE_MS
     const currentPrice = intradaySnapshot?.price ?? postClosePrice?.price ?? await getLatestPrice(c.env.DB, pos.symbol)
@@ -834,7 +834,7 @@ paper.get('/positions', async (c) => {
             : 'eod' as const,
       quote_status:     intradaySnapshot ? intradayQuoteFresh ? 'fresh' as const : 'stale' as const : isMarketOpen ? 'unavailable' as const : 'reference' as const,
       quote_is_fresh:   intradayQuoteFresh,
-      quote_as_of:      intradaySnapshot?.updated_at ?? null,
+      quote_as_of:      intradaySnapshot?.as_of ?? null,
       quote_source_time: intradaySnapshot?.quote_time ?? null,
       quote_age_ms:     intradayQuoteAgeMs,
 // Refresh stop-loss / take-profit state when a fresher price arrives.

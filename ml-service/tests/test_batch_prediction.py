@@ -474,7 +474,7 @@ def test_shadow_challenger_batch_overrides_vectorize_residual_mlp(monkeypatch):
 
 
 def test_predict_stock_v2_batch_attaches_true_batch_overrides(monkeypatch):
-    from app.prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY
+    from app.prediction_runtime import _BATCH_FEATURE_CONTEXT_KEY, _BATCH_FEATURE_RANK_SCORES_KEY
 
     class Request:
         __module__ = "app.schemas"
@@ -493,8 +493,14 @@ def test_predict_stock_v2_batch_attaches_true_batch_overrides(monkeypatch):
     def fake_overrides(reqs):
         assert [req.symbol for req in reqs] == ["2330", "2317"]
         return [
-            {_BATCH_FEATURE_RANK_SCORES_KEY: {"XGBoost": 0.7}},
-            {_BATCH_FEATURE_RANK_SCORES_KEY: {"XGBoost": 0.3}},
+            {
+                _BATCH_FEATURE_CONTEXT_KEY: {"x_latest": np.array([[1.0]]), "feature_names": ["f1"]},
+                _BATCH_FEATURE_RANK_SCORES_KEY: {"XGBoost": 0.7},
+            },
+            {
+                _BATCH_FEATURE_CONTEXT_KEY: {"x_latest": np.array([[2.0]]), "feature_names": ["f1"]},
+                _BATCH_FEATURE_RANK_SCORES_KEY: {"XGBoost": 0.3},
+            },
         ]
 
     monkeypatch.setattr(batch_prediction, "PredictRequest", Request)
@@ -509,6 +515,8 @@ def test_predict_stock_v2_batch_attaches_true_batch_overrides(monkeypatch):
     assert [r["symbol"] for r in results] == ["2330", "2317"]
     assert observed_runtime_options[0][_BATCH_FEATURE_RANK_SCORES_KEY] == {"XGBoost": 0.7}
     assert observed_runtime_options[1][_BATCH_FEATURE_RANK_SCORES_KEY] == {"XGBoost": 0.3}
+    assert observed_runtime_options[0][_BATCH_FEATURE_CONTEXT_KEY]["feature_names"]
+    assert observed_runtime_options[0][_BATCH_FEATURE_CONTEXT_KEY]["x_latest"].shape[0] == 1
 
 
 def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypatch):
@@ -516,6 +524,7 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
     from app.prediction_runtime import (
         _BATCH_CHALLENGER_MODEL_ERRORS_KEY,
         _BATCH_CHALLENGER_RANK_SCORES_KEY,
+        _BATCH_FEATURE_CONTEXT_KEY,
         _BATCH_FEATURE_MODEL_ERRORS_KEY,
         _BATCH_FEATURE_RANK_SCORES_KEY,
     )
@@ -528,10 +537,20 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
     monkeypatch.setattr(model_pool, "load_pool", lambda: _full_model_pool({"XGBoost": "active"}))
     monkeypatch.setattr(ensemble, "load_ic_weights", lambda market_segment=None: {"XGBoost": 1.0})
     monkeypatch.setattr(stacking, "load_meta_learner", lambda stock_id: None)
+    monkeypatch.setattr(
+        prediction_runtime,
+        "build_feature_matrix",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("batch feature context should skip rebuild")),
+    )
 
     payload = _predict_payload("2330", 2330, 100.0)
+    feature_names = [f"f{idx}" for idx in range(3)]
     payload["runtime_options"] = {
         **payload["runtime_options"],
+        _BATCH_FEATURE_CONTEXT_KEY: {
+            "x_latest": np.array([[0.1, 0.2, 0.3]], dtype=np.float32),
+            "feature_names": feature_names,
+        },
         _BATCH_FEATURE_RANK_SCORES_KEY: {"XGBoost": 0.82},
         _BATCH_FEATURE_MODEL_ERRORS_KEY: ["LightGBM: not found in GCS"],
         _BATCH_CHALLENGER_RANK_SCORES_KEY: {"ResidualMLP": 0.64},
@@ -544,6 +563,8 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
     assert result["challenger_rank_scores"]["ResidualMLP"] == pytest.approx(0.64)
     assert "LightGBM: not found in GCS" in result["model_errors"]
     assert _BATCH_FEATURE_RANK_SCORES_KEY not in result["runtime_options"]
+    assert _BATCH_FEATURE_CONTEXT_KEY not in result["runtime_options"]
+    assert result["features_used"] == feature_names
     assert result["runtime_options"]["owner"] == "daily_pipeline_v2.batch_predict"
 
 

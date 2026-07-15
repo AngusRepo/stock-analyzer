@@ -34,7 +34,11 @@ assert(
   'duplicate pipeline callbacks must reuse an active verify execution instead of failing the root chain',
 )
 assert(callbackRoutes.includes('lock:ml-predict'), 'pipeline terminal callback must clear the ML predict lock')
-assert(callbackRoutes.includes('runPostPipelineCallbackChain'), 'pipeline success callback must launch post-pipeline chain')
+assert(
+  callbackRoutes.includes("type: 'post_pipeline_chain'") &&
+    callbackRoutes.includes('callback:post-pipeline-enqueued:'),
+  'pipeline success callback must durably and idempotently queue the post-pipeline chain',
+)
 assert(callbackRoutes.includes('runPostVerifyCallbackChain'), 'verify terminal callback must launch post-verify chain')
 assert(
   callbackRoutes.includes("['success', 'skipped'].includes(String(body.status))"),
@@ -42,7 +46,7 @@ assert(
 )
 assert(
   !pipelineCallbackBlock.includes('executionCtx.waitUntil'),
-  'pipeline terminal callback must await post-pipeline chain before returning; waitUntil can silently drop verify trigger evidence',
+  'pipeline terminal callback must use the durable queue instead of waitUntil for post-pipeline closure',
 )
 assert(
   verifyCallbackBlock.includes('executionCtx.waitUntil') &&

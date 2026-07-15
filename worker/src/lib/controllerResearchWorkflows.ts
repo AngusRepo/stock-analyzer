@@ -377,7 +377,7 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
       l4_min_samples: params.l4MinSamples,
       l4_min_dates: params.l4MinDates,
     },
-    timeoutMs: 120_000,
+    timeoutMs: 180_000,
   })
   const text = await resp.text().catch(() => '')
   if (!resp.ok) {

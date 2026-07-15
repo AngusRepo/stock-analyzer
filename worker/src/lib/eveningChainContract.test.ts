@@ -244,8 +244,9 @@ assert(
   'FinLab callback must preserve manual force rerun through the async queue continuation',
 )
 assert(
-  callbackRoutes.includes('runPostPipelineCallbackChain'),
-  'pipeline callback must advance post-market dependent tasks instead of fixed-time Scheduler jobs',
+  callbackRoutes.includes("type: 'post_pipeline_chain'") &&
+    callbackRoutes.includes('callback:post-pipeline-enqueued:'),
+  'pipeline callback must durably queue post-market dependent tasks instead of fixed-time Scheduler jobs',
 )
 assert(
   callbackRoutes.includes('runPostVerifyCallbackChain'),

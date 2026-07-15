@@ -497,6 +497,7 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
     from .prediction_runtime import (
         _BATCH_CHALLENGER_MODEL_ERRORS_KEY,
         _BATCH_CHALLENGER_RANK_SCORES_KEY,
+        _BATCH_FEATURE_CONTEXT_KEY,
         _BATCH_FEATURE_MODEL_ERRORS_KEY,
         _BATCH_FEATURE_RANK_SCORES_KEY,
         _FEATURE_MODEL_NAMES_V2,
@@ -562,6 +563,10 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
 
     return [
         {
+            _BATCH_FEATURE_CONTEXT_KEY: {
+                "x_latest": ctx.x_latest,
+                "feature_names": list(ctx.feature_names),
+            },
             _BATCH_FEATURE_RANK_SCORES_KEY: dict(ctx.rank_scores),
             _BATCH_FEATURE_MODEL_ERRORS_KEY: list(ctx.model_errors),
             _BATCH_CHALLENGER_RANK_SCORES_KEY: dict(ctx.challenger_rank_scores),
@@ -760,11 +765,20 @@ def predict_stock_v2_batch(payloads: list[dict]) -> list[dict]:
             # artifact/schema drift. Per-symbol error wrapping still applies.
             valid_requests = [requests_by_position[idx] for idx in valid_positions]
 
-        for idx, req in zip(valid_positions, valid_requests):
+        finalize_started = time.time()
+        finalize_total = len(valid_requests)
+        print(f"[BatchPrediction] finalize_start count={finalize_total}", flush=True)
+        for completed, (idx, req) in enumerate(zip(valid_positions, valid_requests), start=1):
             try:
                 results[idx] = predict_fn(req)
             except Exception as exc:  # noqa: BLE001
                 results[idx] = _error_result(payloads[idx], exc)
+            if completed == finalize_total or completed % 16 == 0:
+                print(
+                    f"[BatchPrediction] finalize_progress completed={completed}/{finalize_total} "
+                    f"elapsed_s={time.time() - finalize_started:.3f}",
+                    flush=True,
+                )
 
     return [result for result in results if result is not None]
 
@@ -789,7 +803,8 @@ def predict_stock_v2_batch_with_metrics(payloads: list[dict]) -> dict:
             "batch": {
                 "n_input": len(payloads or []),
                 "n_error": sum(1 for r in results if r.get("error")),
-                "contract": "modal_predict_batch_v2_true_batch",
+                "contract": "modal_predict_batch_v2_shared_feature_context_v2",
+                "finalize_mode": "serial_shared_feature_context",
             },
             "preload": preload,
             "timing": {

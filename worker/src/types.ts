@@ -309,6 +309,7 @@ export interface UpdateQueueMsg {
     | 'strategy_learning_materialize'
     | 's12_replay_backfill_chunk'
     | 'allocator_ev_lifecycle_recovery'
+    | 'post_pipeline_chain'
   newsStocks?: Array<{
     id: number
     symbol: string

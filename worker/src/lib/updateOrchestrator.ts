@@ -2826,6 +2826,21 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 'post_pipeline_chain') {
+    const triggerTime = msg.triggerTime
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid post-pipeline chain date ${triggerTime}, skipping.`)
+      return
+    }
+    const { runPostPipelineCallbackChain } = await import('./postMarketChain')
+    await runPostPipelineCallbackChain(env, {
+      runDate: triggerTime,
+      upstreamRunId: msg.runId || `post-pipeline-chain-${triggerTime}`,
+      recoveryAttempt: 0,
+    })
+    return
+  }
+
   if (msg.type === 'allocator_ev_lifecycle_recovery') {
     const triggerTime = msg.triggerTime
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {

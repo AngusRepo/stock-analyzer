@@ -301,7 +301,7 @@ export async function runPostPipelineCallbackChain(env: Bindings, ctx: ChainCont
         l4MinSamples: 500,
         l4MinDates: 20,
       }),
-    { timeoutMs: 190_000 },
+    { timeoutMs: 330_000 },
   )
   results.push(snapshotTask)
   snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate)

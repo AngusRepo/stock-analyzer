@@ -391,6 +391,28 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
       `allocator EV feature snapshot incomplete range=${params.startDate}..${params.endDate} built=${built} written=${written}`,
     )
   }
+  if (!(params.dryRun ?? false) && params.startDate === params.endDate) {
+    const {
+      inspectAllocatorSnapshotClosure,
+      recordAllocatorEvLifecycle,
+    } = await import('./allocatorEvDailyLifecycle')
+    const closure = await inspectAllocatorSnapshotClosure(env.DB, params.startDate)
+    if (!closure.ready) {
+      throw new Error(
+        `allocator EV feature snapshot readback incomplete date=${params.startDate} `
+        + `native=${closure.nativeLineageRows} run_native=${closure.runNativeLineageRows} `
+        + `reconstructed=${closure.reconstructedLineageRows} rejected=${closure.rejectedLineageRows} `
+        + `expected=${closure.expectedRows} published=${closure.publishedRows} actual=${closure.actualRows}`,
+      )
+    }
+    await recordAllocatorEvLifecycle(env.DB, {
+      businessDate: params.startDate,
+      state: 'snapshot_ready',
+      nativeLineageRows: closure.nativeLineageRows,
+      snapshotRunId: closure.snapshotRunId,
+      snapshotRows: closure.actualRows,
+    })
+  }
   return String(data.summary ?? `allocator_ev_feature_snapshot_backfill status=${data.status ?? 'unknown'}`)
 }
 

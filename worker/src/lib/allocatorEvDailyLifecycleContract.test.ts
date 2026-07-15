@@ -10,6 +10,7 @@ const migration = fs.readFileSync('migrations/0063_allocator_ev_daily_lifecycle.
 const lifecycle = fs.readFileSync('src/lib/allocatorEvDailyLifecycle.ts', 'utf8')
 const postMarket = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
 const orchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const controllerResearch = fs.readFileSync('src/lib/controllerResearchWorkflows.ts', 'utf8')
 
 assert(migration.includes('allocator_ev_daily_lifecycle'), 'daily allocator EV lifecycle must be durable in D1')
 assert(lifecycle.includes('inspectAllocatorSnapshotClosure'), 'watchdog must verify snapshot readback')
@@ -25,6 +26,8 @@ assert(postMarket.includes("state: 'snapshot_ready'"), 'snapshot readback must p
 assert(postMarket.indexOf("state: 'snapshot_ready'") < postMarket.indexOf("state: 'verify_triggered'"), 'snapshot must precede verify')
 assert(postMarket.includes("state: 'replay_pending_maturity'"), 'daily lifecycle must wait for five-session replay maturity')
 assert(postMarket.includes("type: 'allocator_ev_lifecycle_recovery'"), 'snapshot failure must enqueue bounded recovery')
+assert(controllerResearch.includes('allocator EV feature snapshot readback incomplete'), 'all persisted snapshot callers must fail incomplete readback')
+assert(controllerResearch.includes("state: 'snapshot_ready'"), 'manual and scheduled snapshot callers must durably advance lifecycle state')
 assert(orchestrator.includes("state: 'replay_complete'"), 'final replay chunk must close the signal-date lifecycle')
 assert(orchestrator.includes('remainingReplaySymbols.length === 0'), 'replay lifecycle must verify no cohort symbols remain before closure')
 assert(orchestrator.includes('replayCoverage.replayRows === replayCoverage.totalSnapshotRows'), 'replay lifecycle must require full snapshot cohort outcome coverage')

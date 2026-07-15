@@ -65,6 +65,7 @@ export interface S12BaseBarDiagnostics {
   kbars_cache_hit?: boolean
   kbars_cache_business_date?: string | null
   kbars_point_in_time_reconstruction?: boolean
+  kbars_research_fallback_reason?: string | null
 }
 
 export interface S12DailyPriceDomainValidation {
@@ -476,7 +477,8 @@ async function fetchS12ShioajiKbars(
     'kbars_filtered_count' | 'kbars_filtered_outside_trade_date_count' | 'kbars_filtered_outside_session_count' |
     'previous_session_kbars_count' | 'previous_session_kbars_date' |
     'previous_session_kbars_first_tw' | 'previous_session_kbars_last_tw' |
-    'kbars_provider' | 'kbars_cache_hit' | 'kbars_cache_business_date' | 'kbars_point_in_time_reconstruction'
+    'kbars_provider' | 'kbars_cache_hit' | 'kbars_cache_business_date' | 'kbars_point_in_time_reconstruction' |
+    'kbars_research_fallback_reason'
   >
 }> {
   if (!enabledFlag((env as any).S12_INTRADAY_KBARS_ENABLED, true)) {
@@ -545,14 +547,24 @@ async function fetchS12ShioajiKbars(
   let provider = 'shioaji_streaming_tick_accumulator'
   let cacheHit = false
   let cacheBusinessDate: string | null = null
+  let researchFallbackReason: string | null = null
+  let loadCurrentSessionProxy = !useResearchSource
   if (useResearchSource) {
-    const research = await fetchS12ResearchKbars(env, symbol, tradeDate)
-    rawBars = research.bars
-    rawRowCount = rawBars.length
-    provider = 'shioaji_research_service'
-    cacheHit = research.cacheHit
-    cacheBusinessDate = research.cacheBusinessDate
-  } else {
+    try {
+      const research = await fetchS12ResearchKbars(env, symbol, tradeDate)
+      rawBars = research.bars
+      rawRowCount = rawBars.length
+      provider = 'shioaji_research_service'
+      cacheHit = research.cacheHit
+      cacheBusinessDate = research.cacheBusinessDate
+    } catch (error) {
+      if (tradeDate !== twDateText(Date.now()) || !proxyUrl) throw error
+      researchFallbackReason = error instanceof Error ? error.message : String(error)
+      provider = 'shioaji_streaming_tick_accumulator_same_session_fallback'
+      loadCurrentSessionProxy = true
+    }
+  }
+  if (loadCurrentSessionProxy) {
     const url = `${proxyUrl}/kbars/${encodeURIComponent(symbol)}?start=${encodeURIComponent(tradeDate)}&end=${encodeURIComponent(tradeDate)}&limit=${limit}`
     const res = await fetch(url, {
       headers: (env as any).PROXY_SERVICE_TOKEN ? { Authorization: `Bearer ${(env as any).PROXY_SERVICE_TOKEN}` } : {},
@@ -603,6 +615,7 @@ async function fetchS12ShioajiKbars(
       kbars_cache_hit: cacheHit,
       kbars_cache_business_date: cacheBusinessDate,
       kbars_point_in_time_reconstruction: cacheBusinessDate != null && cacheBusinessDate !== tradeDate,
+      kbars_research_fallback_reason: researchFallbackReason,
     },
   }
 }

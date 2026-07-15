@@ -16,6 +16,8 @@ const source = readFileSync('src/lib/s12TwEquityCalibration.ts', 'utf8')
 assert(schema.includes('CREATE TABLE IF NOT EXISTS s12_tw_calibration_artifacts'), 'base schema must include calibration artifacts')
 assert(migration.includes('idx_s12_tw_calibration_active'), 'production migration must include the active-artifact resolver index')
 assert(source.includes('LEFT JOIN stocks s ON s.symbol = o.symbol'), 'calibration evidence must recover missing historical market segments from stocks')
+assert(source.includes("replay_diagnostics.replay_engine_signature"), 'calibration must reject replay rows from incompatible engines')
+assert(source.includes('S12_REPLAY_ENGINE_SIGNATURE'), 'calibration and replay must share one engine-signature owner')
 
 function artifact(
   id: string,

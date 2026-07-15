@@ -53,6 +53,9 @@ export interface S12BaseBarDiagnostics {
   previous_daily_context_loaded: boolean
   previous_daily_context_date: string | null
   previous_daily_raw_close: number | null
+  previous_daily_context_row_count?: number
+  previous_daily_context_rejected_reason?: string | null
+  previous_daily_context_source?: string
   previous_session_kbars_count: number
   previous_session_kbars_date: string | null
   previous_session_kbars_first_tw: string | null
@@ -60,6 +63,11 @@ export interface S12BaseBarDiagnostics {
   kbars_error: string | null
   kbars_provider?: string | null
   kbars_cache_hit?: boolean
+}
+
+export interface S12DailyPriceDomainValidation {
+  bars: IntradayRollingBar[]
+  rejectedReason: string | null
 }
 
 const H1_MS = 60 * 60_000
@@ -593,7 +601,12 @@ async function loadPreviousTradingDayContext(
   env: Bindings,
   symbol: string,
   tradeDate: string,
-): Promise<{ bars: IntradayRollingBar[]; referenceDate: string | null; referenceClose: number | null }> {
+): Promise<{
+  bars: IntradayRollingBar[]
+  referenceDate: string | null
+  referenceClose: number | null
+  rejectedReason: string | null
+}> {
   type DailyRow = {
     date: string
     open: number | string | null
@@ -606,7 +619,13 @@ async function loadPreviousTradingDayContext(
   let dailyRows: DailyRow[] = []
   try {
     const { results } = await env.DB.prepare(`
-      WITH ranked AS (
+      WITH requested_stock AS (
+        SELECT id, symbol
+          FROM stocks
+         WHERE symbol = ?
+         LIMIT 1
+      ),
+      candidate_rows AS (
         SELECT cmd.date,
                cmd.open AS open,
                cmd.high AS high,
@@ -614,24 +633,56 @@ async function loadPreviousTradingDayContext(
                cmd.close AS close,
                cmd.close AS raw_close,
                cmd.volume,
-               ROW_NUMBER() OVER (
-                 PARTITION BY cmd.date
-                 ORDER BY CASE WHEN cmd.source LIKE 'finlab%' THEN 0 ELSE 1 END, cmd.created_at DESC
-               ) AS source_rank
+               cmd.source,
+               cmd.created_at,
+               0 AS identifier_namespace_rank
           FROM canonical_market_daily cmd
-         WHERE (CAST(cmd.stock_id AS TEXT) = ? OR CAST(cmd.stock_id AS TEXT) = CAST((SELECT id FROM stocks WHERE symbol = ? LIMIT 1) AS TEXT))
-           AND cmd.date < ?
-            AND cmd.open IS NOT NULL
-            AND cmd.high IS NOT NULL
-            AND cmd.low IS NOT NULL
-            AND cmd.close IS NOT NULL
+          JOIN requested_stock ON cmd.stock_id = requested_stock.symbol
+         WHERE cmd.date < ?
+           AND cmd.open IS NOT NULL
+           AND cmd.high IS NOT NULL
+           AND cmd.low IS NOT NULL
+           AND cmd.close IS NOT NULL
+        UNION ALL
+        SELECT cmd.date,
+               cmd.open AS open,
+               cmd.high AS high,
+               cmd.low AS low,
+               cmd.close AS close,
+               cmd.close AS raw_close,
+               cmd.volume,
+               cmd.source,
+               cmd.created_at,
+               1 AS identifier_namespace_rank
+          FROM canonical_market_daily cmd
+          JOIN requested_stock ON cmd.stock_id = CAST(requested_stock.id AS TEXT)
+         WHERE cmd.date < ?
+           AND cmd.open IS NOT NULL
+           AND cmd.high IS NOT NULL
+           AND cmd.low IS NOT NULL
+           AND cmd.close IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1
+               FROM stocks namespace_collision
+              WHERE namespace_collision.symbol = CAST(requested_stock.id AS TEXT)
+           )
+      ),
+      ranked AS (
+        SELECT date, open, high, low, close, raw_close, volume, identifier_namespace_rank,
+               ROW_NUMBER() OVER (
+                 PARTITION BY date
+                 ORDER BY identifier_namespace_rank,
+                          CASE WHEN source LIKE 'finlab%' THEN 0 ELSE 1 END,
+                          created_at DESC
+               ) AS source_rank
+          FROM candidate_rows
       )
       SELECT date, open, high, low, close, raw_close, volume
         FROM ranked
        WHERE source_rank = 1
        ORDER BY date DESC
        LIMIT 120
-    `).bind(symbol, symbol, tradeDate).all<DailyRow>()
+    `).bind(symbol, tradeDate, tradeDate).all<DailyRow>()
     dailyRows = results ?? []
   } catch {
     dailyRows = []
@@ -665,10 +716,52 @@ async function loadPreviousTradingDayContext(
     .filter((bar): bar is IntradayRollingBar => bar != null)
     .sort((a, b) => a.startMs - b.startMs)
   const latestDaily = dailyRows[0]
+  const referenceDate = String(rawReference?.date ?? latestDaily?.date ?? '').trim() || null
+  const referenceClose = finiteNumber(rawReference?.close) ?? finiteNumber(latestDaily?.raw_close)
+  const validated = validateS12DailyPriceDomain(bars, referenceDate, referenceClose)
   return {
-    bars,
-    referenceDate: String(rawReference?.date ?? latestDaily?.date ?? '').trim() || null,
-    referenceClose: finiteNumber(rawReference?.close) ?? finiteNumber(latestDaily?.raw_close),
+    bars: validated.bars,
+    referenceDate,
+    referenceClose,
+    rejectedReason: validated.rejectedReason,
+  }
+}
+
+export function validateS12DailyPriceDomain(
+  barsInput: IntradayRollingBar[],
+  referenceDate: string | null,
+  referenceClose: number | null,
+): S12DailyPriceDomainValidation {
+  const bars = [...barsInput].sort((a, b) => a.startMs - b.startMs)
+  if (!bars.length) return { bars: [], rejectedReason: 'missing_canonical_daily_rows' }
+  if (!referenceDate || referenceClose == null || !Number.isFinite(referenceClose) || referenceClose <= 0) {
+    return { bars: [], rejectedReason: 'missing_independent_reference_close' }
+  }
+
+  const latest = bars[bars.length - 1]
+  if (twDateText(latest.startMs) !== referenceDate) {
+    return { bars: [], rejectedReason: 'latest_daily_date_reference_mismatch' }
+  }
+  const latestRatio = latest.close / referenceClose
+  if (latestRatio < 0.8 || latestRatio > 1.2) {
+    return { bars: [], rejectedReason: 'latest_daily_close_reference_mismatch' }
+  }
+
+  const contiguous: IntradayRollingBar[] = [latest]
+  for (let index = bars.length - 2; index >= 0; index -= 1) {
+    const current = bars[index]
+    const newer = contiguous[0]
+    const closeRatio = current.close / newer.close
+    const ohlcInDomain = [current.open, current.high, current.low].every((value) => {
+      const ratio = value / current.close
+      return ratio >= 0.8 && ratio <= 1.2
+    })
+    if (!ohlcInDomain || closeRatio < 0.8 || closeRatio > 1.2) break
+    contiguous.unshift(current)
+  }
+  return {
+    bars: contiguous,
+    rejectedReason: contiguous.length < bars.length ? 'older_daily_price_domain_boundary_trimmed' : null,
   }
 }
 
@@ -789,6 +882,9 @@ export async function loadS12IntradayBaseBars(
     previous_daily_context_loaded: previousDaily.bars.length > 0,
     previous_daily_context_date: previousDaily.referenceDate,
     previous_daily_raw_close: previousDaily.referenceClose,
+    previous_daily_context_row_count: previousDaily.bars.length,
+    previous_daily_context_rejected_reason: previousDaily.rejectedReason,
+    previous_daily_context_source: 'canonical_market_daily.raw_ohlcv.namespace_safe_v1',
     previous_session_kbars_count: 0,
     previous_session_kbars_date: null,
     previous_session_kbars_first_tw: null,
@@ -881,6 +977,9 @@ export async function loadS12HistoricalReplayBars(
     previous_daily_context_loaded: previousDaily.bars.length > 0,
     previous_daily_context_date: previousDaily.referenceDate,
     previous_daily_raw_close: previousDaily.referenceClose,
+    previous_daily_context_row_count: previousDaily.bars.length,
+    previous_daily_context_rejected_reason: previousDaily.rejectedReason,
+    previous_daily_context_source: 'canonical_market_daily.raw_ohlcv.namespace_safe_v1',
     previous_session_kbars_count: 0,
     previous_session_kbars_date: null,
     previous_session_kbars_first_tw: null,

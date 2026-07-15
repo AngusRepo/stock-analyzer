@@ -3,6 +3,7 @@ import {
   normalizeS12TimingPolicy,
   type S12TimingPolicy,
 } from './s12IntradayStructure'
+import { S12_REPLAY_ENGINE_SIGNATURE } from './s12ReplayContract'
 
 export type S12TwCalibrationCadence = 'weekly' | 'monthly' | 'regime_shift'
 
@@ -297,9 +298,11 @@ async function loadEvidence(db: D1Database, startDate: string, endDate: string):
        AND o.trade_date <= ?
        AND o.sample_eligible = 1
        AND o.trade_pnl_r IS NOT NULL
+       AND json_extract(o.detail_json, '$.replay_diagnostics.replay_engine_signature') = ?
+       AND json_extract(o.detail_json, '$.replay_diagnostics.replay_cohort_signature') IS NOT NULL
      ORDER BY o.trade_date ASC, o.symbol ASC
      LIMIT 100000
-  `).bind(startDate, endDate).all<Record<string, unknown>>()
+  `).bind(startDate, endDate, S12_REPLAY_ENGINE_SIGNATURE).all<Record<string, unknown>>()
   const evidence: CalibrationEvidence[] = []
   for (const row of results ?? []) {
     const payload = parseJson<Record<string, unknown>>(row.detail_json, {})

@@ -1,4 +1,5 @@
 import {
+  S12_REPLAY_ENGINE_SIGNATURE,
   loadL0PassedSymbolsByHistoricalDate,
   persistS12ReplayOutcome,
   resolveNextExecutableSessionDate,
@@ -125,6 +126,34 @@ function assessment(overrides: Partial<S12IntradayAssessment> = {}): S12Intraday
   const sample = s12ReplayOutcomeToEvSample(outcome)
   assert(sample?.exit_reason === 'tp2', 'EV sample should preserve the formal TP2 exit reason')
   assert(sample?.return_pct === outcome.pnl_pct, 'EV sample should expose return_pct')
+  assert(outcome.replay_diagnostics?.replay_engine_signature === S12_REPLAY_ENGINE_SIGNATURE, 'replay must persist the exact engine signature')
+  assert(String(outcome.replay_diagnostics?.replay_cohort_signature).includes('entry=reaction_ready'), 'replay cohort must preserve entry policy state')
+}
+
+{
+  const contaminatedTargets = assessment({
+    execution: {
+      ...assessment().execution,
+      target1: 104,
+      target2: 857,
+      target3: 865,
+    },
+    exitPlan: {
+      ...assessment().exitPlan,
+      mainExit: { price: 857, zoneLow: null, zoneHigh: null, source: 'vwap_fair_value', action: 'main_take_profit' },
+      tp3: { price: 865, source: 'vwap_fair_value', action: 'extended_take_profit' },
+    },
+  })
+  const bars = [
+    ...[0, 1, 2, 3, 4].map((i) => bar(i, 99, 101, 98, 100)),
+    bar(5, 100, 102, 99, 101),
+  ]
+  const outcome = simulateS12ReplayTradeOutcome(
+    { symbol: '2634', tradeDate: '2026-07-02', baseBars: bars },
+    { entryAssessment: contaminatedTargets, assessmentProvider: () => contaminatedTargets },
+  )
+  assert(outcome.target1_price == null, 'targets outside the legal five-session TW price domain must not enter replay')
+  assert(outcome.replay_diagnostics?.targets_rejected_outside_five_session_price_domain === 2, 'rejected target count must be observable')
 }
 
 {

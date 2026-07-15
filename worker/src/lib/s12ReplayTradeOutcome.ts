@@ -6,6 +6,12 @@ import {
 } from './s12IntradayStructure'
 import { loadS12HistoricalReplayLifecycleBars } from './s12RuntimeBars'
 import type { Bindings } from '../types'
+import {
+  S12_REPLAY_ENGINE_SIGNATURE,
+  S12_REPLAY_FIVE_SESSION_UPPER_MULTIPLIER,
+  S12_REPLAY_TARGET_PRICE_DOMAIN_CONTRACT,
+} from './s12ReplayContract'
+export { S12_REPLAY_ENGINE_SIGNATURE } from './s12ReplayContract'
 
 export const ALLOCATOR_EV_SNAPSHOT_AS_OF_GUARD =
   'prediction_before_next_executable_session_open;exact_active8_artifact_lineage;l4_trained_before_snapshot;s12_samples_before_run'
@@ -564,7 +570,12 @@ function findEntryAssessment(
   return latestSetup ?? null
 }
 
-function targetLadder(assessment: S12IntradayAssessment, calibration?: S12TwExitCalibration | null): number[] {
+interface S12ReplayTargetLadder {
+  targets: number[]
+  rejectedOutsideFiveSessionPriceDomain: number
+}
+
+function targetLadder(assessment: S12IntradayAssessment, calibration?: S12TwExitCalibration | null): S12ReplayTargetLadder {
   const entry = finitePositive(assessment.execution.entryPrice)
   const raw = [
     assessment.exitPlan.tp1.source === '15m_previous_high'
@@ -580,13 +591,19 @@ function targetLadder(assessment: S12IntradayAssessment, calibration?: S12TwExit
     finitePositive(assessment.execution.target3) ?? finitePositive(assessment.exitPlan.tp3.price),
   ]
   const out: number[] = []
+  let rejectedOutsideFiveSessionPriceDomain = 0
+  const fiveSessionUpperBound = entry == null ? null : entry * S12_REPLAY_FIVE_SESSION_UPPER_MULTIPLIER
   for (const target of raw) {
     const normalized = target == null ? null : normalizeTwEquityTargetPrice(target)
+    if (entry != null && normalized != null && fiveSessionUpperBound != null && normalized > fiveSessionUpperBound) {
+      rejectedOutsideFiveSessionPriceDomain += 1
+      continue
+    }
     if (entry != null && normalized != null && normalized > entry && !out.some((x) => Math.abs(x - normalized) < 0.000001)) {
       out.push(normalized)
     }
   }
-  return out
+  return { targets: out, rejectedOutsideFiveSessionPriceDomain }
 }
 
 export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S12ReplayOptions = {}): S12ReplayOutcome {
@@ -618,7 +635,8 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
   const futureBars = bars.slice(entryIndex + 1, entryIndex + 1 + maxExitBars)
   if (futureBars.length === 0) return emptyOutcome(input, 'skipped', 'missing_post_entry_bars', assessment)
 
-  const targets = targetLadder(assessment, input.exitCalibration)
+  const targetResult = targetLadder(assessment, input.exitCalibration)
+  const targets = targetResult.targets
   const tranches = targets.map((price, index) => ({
     price,
     ratio: index === targets.length - 1 ? 1 : 1 / Math.max(1, targets.length),
@@ -721,7 +739,19 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
     conservative_intrabar_order: 'stop_before_target',
     ...assessmentSnapshot(assessment),
     ...alphaReplayMetadata(input),
-    replay_diagnostics: input.replayDiagnostics ?? null,
+    replay_diagnostics: {
+      ...(input.replayDiagnostics ?? {}),
+      replay_engine_signature: S12_REPLAY_ENGINE_SIGNATURE,
+      entry_policy_signature: assessment.state,
+      exit_calibration_signature: String(input.replayDiagnostics?.calibration_artifact_id ?? 'uncalibrated'),
+      replay_cohort_signature: [
+        S12_REPLAY_ENGINE_SIGNATURE,
+        `entry=${assessment.state}`,
+        `calibration=${String(input.replayDiagnostics?.calibration_artifact_id ?? 'uncalibrated')}`,
+      ].join('|'),
+      target_price_domain_contract: S12_REPLAY_TARGET_PRICE_DOMAIN_CONTRACT,
+      targets_rejected_outside_five_session_price_domain: targetResult.rejectedOutsideFiveSessionPriceDomain,
+    },
   }
 }
 

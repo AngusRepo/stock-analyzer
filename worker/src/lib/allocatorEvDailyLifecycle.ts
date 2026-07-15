@@ -201,6 +201,19 @@ async function resolveLifecycleBusinessDate(db: D1Database, requestedDate?: stri
     if (!validDate(requestedDate)) throw new Error(`invalid allocator EV lifecycle date: ${requestedDate}`)
     return requestedDate
   }
+  const pending = await db.prepare(`
+    SELECT business_date
+      FROM allocator_ev_daily_lifecycle
+     WHERE state = 'replay_pending_maturity'
+     ORDER BY business_date ASC
+     LIMIT 1
+  `).first<{ business_date?: string | null }>()
+  const pendingDate = String(pending?.business_date ?? '').trim().slice(0, 10)
+  if (validDate(pendingDate)) {
+    const { loadFusionSnapshotReplayCoverage } = await import('./s12ReplayTradeOutcome')
+    const coverage = await loadFusionSnapshotReplayCoverage(db, pendingDate, twTodayDate())
+    if (coverage.matureMissingRows > 0) return pendingDate
+  }
   const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const latest = await db.prepare(`
     SELECT MAX(prediction_date) AS business_date
@@ -211,6 +224,10 @@ async function resolveLifecycleBusinessDate(db: D1Database, requestedDate?: stri
   const businessDate = String(latest?.business_date ?? '').trim().slice(0, 10)
   if (!validDate(businessDate)) throw new Error(`allocator EV lifecycle has no ensemble prediction date through ${twToday}`)
   return businessDate
+}
+
+function twTodayDate(): string {
+  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 }
 
 export async function runAllocatorEvLifecycleWatchdog(
@@ -224,7 +241,37 @@ export async function runAllocatorEvLifecycleWatchdog(
   }
   const lifecycle = await readAllocatorEvLifecycle(env.DB, businessDate)
   const postVerifyReached = lifecycle && ['replay_pending_maturity', 'replay_enqueued', 'replay_complete'].includes(lifecycle.state)
-  if (snapshot.ready && (postVerifyReached || (lifecycle?.state === 'verify_triggered' && !staleVerifyTrigger(lifecycle)))) {
+  let matureReplayMissingRows = 0
+  if (lifecycle?.state === 'replay_pending_maturity') {
+    const { loadFusionSnapshotReplayCoverage } = await import('./s12ReplayTradeOutcome')
+    const coverage = await loadFusionSnapshotReplayCoverage(env.DB, businessDate, twTodayDate())
+    matureReplayMissingRows = coverage.matureMissingRows
+  }
+  if (snapshot.ready && lifecycle?.state === 'replay_pending_maturity' && matureReplayMissingRows > 0) {
+    const maturityAsOfDate = twTodayDate()
+    const runId = `allocator-ev-lifecycle-mature-replay-${businessDate}-${Date.now()}`
+    await env.UPDATE_QUEUE.send({
+      type: 's12_replay_backfill_chunk',
+      cursor: 0,
+      triggerTime: businessDate,
+      runId,
+      replayScope: 'fusion_snapshot_missing',
+      maturityAsOfDate,
+      statusRunDate: businessDate,
+    } as any)
+    await recordAllocatorEvLifecycle(env.DB, {
+      businessDate,
+      state: 'replay_enqueued',
+      replayMaturityAsOfDate: maturityAsOfDate,
+      upstreamRunId: runId,
+      incrementAttempt: true,
+    })
+    return `allocator EV lifecycle replay enqueued date=${businessDate} mature_missing=${matureReplayMissingRows} as_of=${maturityAsOfDate}`
+  }
+  if (snapshot.ready && (
+    (postVerifyReached && matureReplayMissingRows === 0)
+    || (lifecycle?.state === 'verify_triggered' && !staleVerifyTrigger(lifecycle))
+  )) {
     return `allocator EV lifecycle current date=${businessDate} state=${lifecycle?.state} snapshot_rows=${snapshot.actualRows}`
   }
 

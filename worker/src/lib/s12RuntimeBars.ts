@@ -63,6 +63,8 @@ export interface S12BaseBarDiagnostics {
   kbars_error: string | null
   kbars_provider?: string | null
   kbars_cache_hit?: boolean
+  kbars_cache_business_date?: string | null
+  kbars_point_in_time_reconstruction?: boolean
 }
 
 export interface S12DailyPriceDomainValidation {
@@ -286,22 +288,24 @@ async function loadCachedS12ResearchBars(
   env: Bindings,
   symbol: string,
   tradeDate: string,
-): Promise<IntradayRollingBar[] | null> {
+): Promise<{ bars: IntradayRollingBar[]; artifactBusinessDate: string } | null> {
   if (!env.ARTIFACTS) return null
   const manifest = await env.DB.prepare(`
-    SELECT r2_key, checksum, schema_version
+    SELECT r2_key, checksum, schema_version, business_date
       FROM run_artifacts
      WHERE domain = ?
-       AND business_date = ?
-       AND producer_run_id = ?
+       AND business_date >= ?
+       AND business_date <= date(?, '+7 days')
+       AND producer_run_id LIKE ?
        AND status = 'ready'
-     ORDER BY created_at DESC
+     ORDER BY business_date ASC, created_at DESC
      LIMIT 1
   `).bind(
     S12_RESEARCH_ARTIFACT_DOMAIN,
     tradeDate,
-    s12ResearchProducerRunId(tradeDate, symbol),
-  ).first<{ r2_key?: string | null; checksum?: string | null; schema_version?: string | null }>()
+    tradeDate,
+    `shioaji-research:%:${symbol}`,
+  ).first<{ r2_key?: string | null; checksum?: string | null; schema_version?: string | null; business_date?: string | null }>()
   if (!manifest?.r2_key || manifest.schema_version !== S12_RESEARCH_ARTIFACT_SCHEMA) return null
   const object = await env.ARTIFACTS.get(manifest.r2_key)
   if (!object) return null
@@ -316,7 +320,7 @@ async function loadCachedS12ResearchBars(
   }
   if (
     document.schema_version !== S12_RESEARCH_ARTIFACT_SCHEMA ||
-    document.business_date !== tradeDate ||
+    document.business_date !== manifest.business_date ||
     document.payload?.symbol !== symbol ||
     !Array.isArray(document.payload?.bars)
   ) {
@@ -333,7 +337,9 @@ async function loadCachedS12ResearchBars(
       isTwSessionTime(bar.startMs)
     ))
     .sort((left, right) => left.startMs - right.startMs)
-  return bars.length ? bars : null
+  return bars.length && manifest.business_date
+    ? { bars, artifactBusinessDate: manifest.business_date }
+    : null
 }
 
 function dateDaysBefore(date: string, days: number): string {
@@ -346,9 +352,9 @@ async function fetchS12ResearchKbars(
   env: Bindings,
   symbol: string,
   tradeDate: string,
-): Promise<{ bars: IntradayRollingBar[]; cacheHit: boolean }> {
+): Promise<{ bars: IntradayRollingBar[]; cacheHit: boolean; cacheBusinessDate: string | null }> {
   const cached = await loadCachedS12ResearchBars(env, symbol, tradeDate)
-  if (cached) return { bars: cached, cacheHit: true }
+  if (cached) return { bars: cached.bars, cacheHit: true, cacheBusinessDate: cached.artifactBusinessDate }
 
   const researchUrl = String(env.S12_RESEARCH_KBARS_URL ?? '').replace(/\/+$/, '')
   const token = String(env.PROXY_SERVICE_TOKEN ?? '').trim()
@@ -400,7 +406,7 @@ async function fetchS12ResearchKbars(
             source_kbar_rows: sourceRows.length,
           },
         })
-        return { bars, cacheHit: false }
+        return { bars, cacheHit: false, cacheBusinessDate: null }
       }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
@@ -470,7 +476,7 @@ async function fetchS12ShioajiKbars(
     'kbars_filtered_count' | 'kbars_filtered_outside_trade_date_count' | 'kbars_filtered_outside_session_count' |
     'previous_session_kbars_count' | 'previous_session_kbars_date' |
     'previous_session_kbars_first_tw' | 'previous_session_kbars_last_tw' |
-    'kbars_provider' | 'kbars_cache_hit'
+    'kbars_provider' | 'kbars_cache_hit' | 'kbars_cache_business_date' | 'kbars_point_in_time_reconstruction'
   >
 }> {
   if (!enabledFlag((env as any).S12_INTRADAY_KBARS_ENABLED, true)) {
@@ -538,12 +544,14 @@ async function fetchS12ShioajiKbars(
   let rawBars: IntradayRollingBar[] = []
   let provider = 'shioaji_streaming_tick_accumulator'
   let cacheHit = false
+  let cacheBusinessDate: string | null = null
   if (useResearchSource) {
     const research = await fetchS12ResearchKbars(env, symbol, tradeDate)
     rawBars = research.bars
     rawRowCount = rawBars.length
     provider = 'shioaji_research_service'
     cacheHit = research.cacheHit
+    cacheBusinessDate = research.cacheBusinessDate
   } else {
     const url = `${proxyUrl}/kbars/${encodeURIComponent(symbol)}?start=${encodeURIComponent(tradeDate)}&end=${encodeURIComponent(tradeDate)}&limit=${limit}`
     const res = await fetch(url, {
@@ -593,6 +601,8 @@ async function fetchS12ShioajiKbars(
       previous_session_kbars_last_tw: twTimeText(previousSession.bars[previousSession.bars.length - 1]?.startMs),
       kbars_provider: provider,
       kbars_cache_hit: cacheHit,
+      kbars_cache_business_date: cacheBusinessDate,
+      kbars_point_in_time_reconstruction: cacheBusinessDate != null && cacheBusinessDate !== tradeDate,
     },
   }
 }

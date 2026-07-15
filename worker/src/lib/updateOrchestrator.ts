@@ -3075,6 +3075,8 @@ export async function processUpdateBatch(
       ? 'fusion_snapshot_missing'
       : requestedScope === 'fusion_snapshot_structure'
         ? 'fusion_snapshot_structure'
+        : requestedScope === 'signed_eligible_repair'
+          ? 'signed_eligible_repair'
         : 'l0'
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
       console.log(`[Queue] Invalid S12 replay backfill date ${triggerTime}, skipping.`)
@@ -3084,6 +3086,7 @@ export async function processUpdateBatch(
       loadFusionSnapshotMissingReplaySymbols,
       loadFusionSnapshotReplayCoverage,
       loadFusionSnapshotSymbols,
+      loadSignedEligibleRepairSymbolsByHistoricalDate,
       runS12HistoricalReplayForDate,
     } = await import('./s12ReplayTradeOutcome')
     if (replayScope === 'fusion_snapshot_structure') {
@@ -3114,38 +3117,44 @@ export async function processUpdateBatch(
       }
       return
     }
+    const dynamicCohortScope = replayScope === 'fusion_snapshot_missing' || replayScope === 'signed_eligible_repair'
     const cohortSymbols = replayScope === 'fusion_snapshot_missing'
       ? await loadFusionSnapshotMissingReplaySymbols(env.DB, triggerTime, maturityAsOfDate)
-      : undefined
+      : replayScope === 'signed_eligible_repair'
+        ? await loadSignedEligibleRepairSymbolsByHistoricalDate(env.DB, triggerTime)
+        : undefined
     const result = await runS12HistoricalReplayForDate(env, triggerTime, {
       limit: S12_REPLAY_QUEUE_CHUNK_SIZE,
-      offset: replayScope === 'fusion_snapshot_missing' ? 0 : offset,
+      offset: dynamicCohortScope ? 0 : offset,
       persist: true,
       symbols: cohortSymbols,
       maturityAsOfDate,
     })
-    const nextOffset = replayScope === 'fusion_snapshot_missing'
+    const nextOffset = dynamicCohortScope
       ? 0
       : offset + Math.max(0, Number(result.attempted ?? 0))
-    const hasMore = replayScope === 'fusion_snapshot_missing'
-      ? Number(result.l0_symbols ?? 0) > Number(result.attempted ?? 0) && Number(result.attempted ?? 0) > 0
-      : nextOffset < Number(result.l0_symbols ?? 0) && Number(result.attempted ?? 0) > 0
-    const remainingReplaySymbols = replayScope === 'fusion_snapshot_missing' && !hasMore
+    const remainingReplaySymbols = replayScope === 'fusion_snapshot_missing'
       ? await loadFusionSnapshotMissingReplaySymbols(env.DB, triggerTime, maturityAsOfDate)
-      : []
+      : replayScope === 'signed_eligible_repair'
+        ? await loadSignedEligibleRepairSymbolsByHistoricalDate(env.DB, triggerTime)
+        : []
+    const hasMore = dynamicCohortScope
+      ? remainingReplaySymbols.length > 0 && Number(result.attempted ?? 0) > 0
+      : nextOffset < Number(result.l0_symbols ?? 0) && Number(result.attempted ?? 0) > 0
     const replayCoverage = replayScope === 'fusion_snapshot_missing' && !hasMore
       ? await loadFusionSnapshotReplayCoverage(env.DB, triggerTime, maturityAsOfDate)
       : null
     const replayClosed = !hasMore && (
-      replayScope !== 'fusion_snapshot_missing'
-      || (
-        remainingReplaySymbols.length === 0
-        && replayCoverage !== null
-        && replayCoverage.totalSnapshotRows > 0
-        && replayCoverage.replayRows === replayCoverage.totalSnapshotRows
-        && replayCoverage.matureMissingRows === 0
-        && replayCoverage.pendingMaturityRows === 0
-      )
+      replayScope === 'signed_eligible_repair'
+        ? remainingReplaySymbols.length === 0
+        : replayScope !== 'fusion_snapshot_missing' || (
+          remainingReplaySymbols.length === 0
+          && replayCoverage !== null
+          && replayCoverage.totalSnapshotRows > 0
+          && replayCoverage.replayRows === replayCoverage.totalSnapshotRows
+          && replayCoverage.matureMissingRows === 0
+          && replayCoverage.pendingMaturityRows === 0
+        )
     )
     const summary = [
       `s12_replay_backfill signal_date=${result.signal_date}`,

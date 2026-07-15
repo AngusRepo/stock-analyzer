@@ -549,7 +549,11 @@ function emptyOutcome(input: S12ReplayInput, status: S12ReplayOutcomeStatus, rea
     conservative_intrabar_order: 'stop_before_target',
     ...assessmentSnapshot(assessment),
     ...alphaReplayMetadata(input),
-    replay_diagnostics: input.replayDiagnostics ?? null,
+    replay_diagnostics: {
+      ...(input.replayDiagnostics ?? {}),
+      replay_engine_signature: S12_REPLAY_ENGINE_SIGNATURE,
+      target_price_domain_contract: S12_REPLAY_TARGET_PRICE_DOMAIN_CONTRACT,
+    },
   }
 }
 
@@ -814,6 +818,30 @@ export async function loadL0PassedSymbolsByHistoricalDate(
     alpha_context: row.alpha_context ?? null,
     alpha_allocation: row.alpha_allocation ?? null,
   })).filter((row) => row.symbol)
+}
+
+export async function loadSignedEligibleRepairSymbolsByHistoricalDate(
+  db: D1Database,
+  signalDate: string,
+): Promise<S12L0PassedSymbol[]> {
+  const { results } = await db.prepare(`
+    SELECT DISTINCT legacy.symbol
+      FROM s12_replay_trade_outcomes legacy
+     WHERE legacy.signal_date = ?
+       AND legacy.sample_eligible = 1
+       AND NOT EXISTS (
+         SELECT 1
+           FROM s12_replay_trade_outcomes current
+          WHERE current.signal_date = legacy.signal_date
+            AND current.symbol = legacy.symbol
+            AND json_extract(current.detail_json, '$.replay_diagnostics.replay_engine_signature') = ?
+       )
+     ORDER BY legacy.symbol
+  `).bind(signalDate, S12_REPLAY_ENGINE_SIGNATURE).all<{ symbol: string }>()
+  const pending = new Set((results ?? []).map((row) => String(row.symbol ?? '').trim()).filter(Boolean))
+  if (pending.size === 0) return []
+  const l0 = await loadL0PassedSymbolsByHistoricalDate(db, signalDate)
+  return l0.filter((row) => pending.has(row.symbol))
 }
 
 export async function persistS12ReplayOutcome(

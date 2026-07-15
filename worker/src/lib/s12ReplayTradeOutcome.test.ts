@@ -1,6 +1,7 @@
 import {
   S12_REPLAY_ENGINE_SIGNATURE,
   loadL0PassedSymbolsByHistoricalDate,
+  loadSignedEligibleRepairSymbolsByHistoricalDate,
   persistS12ReplayOutcome,
   resolveNextExecutableSessionDate,
   runS12HistoricalReplayForDate,
@@ -321,6 +322,31 @@ async function runAsyncTests(): Promise<void> {
   assert(rows[0].market_segment === 'LISTED', 'L0 loader should preserve market segment metadata')
   assert(String(rows[0].alpha_context).includes('breakout_vol_expansion'), 'L0 loader should preserve alpha context metadata')
 
+  const repairDb = {
+    prepare(sql: string) {
+      return {
+        bind(..._params: unknown[]) {
+          if (sql.includes('SELECT DISTINCT legacy.symbol')) {
+            return { async all() { return { results: [{ symbol: '8091' }, { symbol: '2330' }] } } }
+          }
+          if (sql.includes('FROM screener_funnel_runs')) {
+            return { async first() { return { run_id: 'run-1' } } }
+          }
+          return {
+            async all() {
+              return { results: [{ symbol: '8091' }, { symbol: '9999' }] }
+            },
+          }
+        },
+      }
+    },
+  } as any
+  const repairRows = await loadSignedEligibleRepairSymbolsByHistoricalDate(repairDb, '2026-07-02')
+  assert(
+    repairRows.length === 1 && repairRows[0].symbol === '8091',
+    'signed repair loader should intersect pending legacy-eligible samples with the canonical L0 universe',
+  )
+
   const executionDateDb = {
     prepare(sql: string) {
       assert(sql.includes('date(sp.date) > date(?)'), 'execution date resolver must require a session after the signal date')
@@ -450,6 +476,10 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
   assert(
     summary.outcomes[0].replay_diagnostics?.outcome_known_date === '2026-07-09',
     'every executed or non-executed V3 label must persist a point-in-time outcome-known date',
+  )
+  assert(
+    summary.outcomes[0].replay_diagnostics?.replay_engine_signature === S12_REPLAY_ENGINE_SIGNATURE,
+    'non-eligible repair attempts must still persist the engine signature so the queue can close idempotently',
   )
   assert(summary.skipped === 2, 'empty bars should produce skipped replay outcomes')
   assert(summary.persisted === 2 && writes === 2, 'runner should persist every replay outcome by default')

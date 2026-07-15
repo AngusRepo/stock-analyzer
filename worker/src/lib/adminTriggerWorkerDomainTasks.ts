@@ -299,6 +299,8 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         ? 'fusion_snapshot_missing'
         : requestedScope === 'fusion_snapshot_structure'
           ? 'fusion_snapshot_structure'
+          : requestedScope === 'signed_eligible_repair'
+            ? 'signed_eligible_repair'
           : 'l0'
       if (replayScope !== 'l0') {
         const runId = `manual-fusion-cohort-replay-${runDate}-${Date.now().toString(36)}`

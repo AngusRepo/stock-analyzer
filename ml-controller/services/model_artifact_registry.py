@@ -1160,48 +1160,22 @@ def backfill_champion_pointers_from_model_pool(
         artifact = artifact_by_model_version.get((model_name, champion_version))
         created_this_artifact = False
         if not artifact and create_missing_artifacts:
-            artifact = {
-                "artifact_id": f"{model_name}:{champion_version}:production_backfill",
-                "model_name": model_name,
-                "version": champion_version,
-                "candidate_type": "unknown",
-                "state": "production",
-                "artifact_path": model_artifact_path(model_name, champion_version),
-                "metadata_path": model_metadata_path(model_name, champion_version),
-                "training_run_id": reason,
-                "training_manifest_path": None,
-                "trained_from_snapshot": None,
-                "evaluation_baseline_version": None,
-                "final_compared_to": champion_version,
-                "feature_policy_version": None,
-                "checksum": None,
-                "source_run_date": None,
-                "is_monthly": 0,
-                "offline_gate_status": "backfilled_production",
-                "offline_gate_decision": "PRODUCTION_BACKFILL",
-                "offline_gate_failed_gates": "[]",
-                "offline_evidence_json": _json_dumps({
-                    "schema_version": "production-artifact-backfill-v1",
-                    "reason": reason,
-                    "source": "model_pool.json",
-                    "backfilled_at": now,
-                    "note": "Current serving artifact was registered to make champion_artifact_id explicit; this is not a promotion.",
-                }),
-                "live_gate_status": "not_applicable",
-                "live_evidence_json": "{}",
-                "promotion_decision": "current_production",
-                "approval_state": "not_required",
-                "created_at": now,
-            }
-            try:
-                upsert_artifact_record(artifact)
-                artifact_by_model_version[(model_name, champion_version)] = artifact
-                created_artifacts += 1
-                created_this_artifact = True
-            except Exception as exc:  # noqa: BLE001 - keep pointer migration partial and visible.
-                errors.append(f"{model_name}:{champion_version}:artifact_backfill:{exc}")
-                artifact = None
-        artifact_available = bool(artifact)
+            errors.append(
+                f"{model_name}:{champion_version}:artifact_backfill:"
+                "verified_sha256_registry_record_required"
+            )
+            continue
+        artifact_available = bool(
+            artifact
+            and str(artifact.get("checksum") or "").startswith("sha256:")
+            and str(artifact.get("artifact_path") or "").strip()
+        )
+        if not artifact_available:
+            errors.append(
+                f"{model_name}:{champion_version}:artifact_backfill:"
+                "verified_sha256_registry_record_required"
+            )
+            continue
         evidence = {
             "schema_version": "champion-pointer-backfill-v1",
             "reason": reason,
@@ -3373,13 +3347,34 @@ def build_model_champion_history_backfill_plan(model_pool: dict[str, Any]) -> di
                 ),
             })
             previous_retired_at = str(item.get("retired_at") or "").strip() or None
+        promotion_controller = (
+            raw_entry.get("promotion_controller")
+            if isinstance(raw_entry.get("promotion_controller"), dict)
+            else {}
+        )
+        serving_path = str(raw_entry.get("gcs_path") or "").strip()
+        promoted_path = str(promotion_controller.get("artifact_path") or "").strip()
+        serving_artifact_id = str(raw_entry.get("serving_artifact_id") or "").strip()
+        promoted_artifact_id = str(promotion_controller.get("artifact_id") or "").strip()
+        contradictory_current_evidence = bool(
+            (serving_path and promoted_path and serving_path != promoted_path)
+            or (
+                serving_artifact_id
+                and promoted_artifact_id
+                and serving_artifact_id != promoted_artifact_id
+            )
+        )
         candidates.append({
             "version": raw_entry.get("version"),
             "artifact_id": raw_entry.get("serving_artifact_id"),
-            "promoted_at": raw_entry.get("promoted_at"),
+            "promoted_at": None if contradictory_current_evidence else raw_entry.get("promoted_at"),
             "retired_at": None,
             "position": "current",
-            "promotion_evidence": "explicit_promoted_at",
+            "promotion_evidence": (
+                "contradictory_current_promotion_evidence"
+                if contradictory_current_evidence
+                else "explicit_promoted_at"
+            ),
         })
         for candidate in candidates:
             version = str(candidate.get("version") or "").strip()
@@ -3391,7 +3386,11 @@ def build_model_champion_history_backfill_plan(model_pool: dict[str, Any]) -> di
                 excluded.append({
                     "model_name": model_name,
                     "version": version,
-                    "reason": "exact_promoted_at_missing",
+                    "reason": (
+                        "current_promotion_evidence_mismatch"
+                        if candidate.get("promotion_evidence") == "contradictory_current_promotion_evidence"
+                        else "exact_promoted_at_missing"
+                    ),
                     "known_upper_bound": retired_at,
                 })
                 continue

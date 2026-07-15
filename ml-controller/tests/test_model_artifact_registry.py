@@ -2501,6 +2501,32 @@ def test_model_champion_history_backfill_uses_exact_intervals_only():
     }]
 
 
+def test_model_champion_history_backfill_rejects_stale_current_promotion_evidence():
+    plan = registry.build_model_champion_history_backfill_plan({
+        "models": {
+            "iTransformer": {
+                "version": "vOld",
+                "gcs_path": "universal/itransformer/vOld.zip",
+                "serving_artifact_id": "iTransformer:vOld:production_backfill",
+                "promoted_at": "2026-06-21T16:25:07Z",
+                "promotion_controller": {
+                    "artifact_id": "iTransformer:vNew:monthly_release",
+                    "artifact_path": "universal/itransformer/vNew.zip",
+                },
+                "retired_versions": [],
+            },
+        },
+    })
+
+    assert plan["exact_row_count"] == 0
+    assert plan["excluded"] == [{
+        "model_name": "iTransformer",
+        "version": "vOld",
+        "reason": "current_promotion_evidence_mismatch",
+        "known_upper_bound": None,
+    }]
+
+
 def test_backfill_champion_pointers_from_model_pool_writes_current_serving_versions(monkeypatch):
     executed: list[dict[str, object]] = []
 
@@ -2516,6 +2542,8 @@ def test_backfill_champion_pointers_from_model_pool_writes_current_serving_versi
             "artifact_id": "XGBoost:vServing:monthly_release",
             "model_name": "XGBoost",
             "version": "vServing",
+            "artifact_path": "universal/xgboost/vServing.joblib",
+            "checksum": "sha256:verified",
         }],
         reason="test_backfill",
     )
@@ -2535,7 +2563,7 @@ def test_backfill_champion_pointers_from_model_pool_writes_current_serving_versi
     assert evidence["artifact_id"] == "XGBoost:vServing:monthly_release"
 
 
-def test_backfill_champion_pointers_can_register_current_production_artifact(monkeypatch):
+def test_backfill_champion_pointers_rejects_checksumless_synthetic_artifact(monkeypatch):
     executed: list[dict[str, object]] = []
 
     def fake_execute(sql, params=None, timeout=60.0):
@@ -2551,20 +2579,10 @@ def test_backfill_champion_pointers_can_register_current_production_artifact(mon
         create_missing_artifacts=True,
     )
 
-    assert result["status"] == "ok"
-    assert result["written"] == 1
-    assert result["created_artifacts"] == 1
-    artifact_params = executed[0]["params"]
-    pointer_params = executed[1]["params"]
-    assert artifact_params[0] == "LightGBM:v1:production_backfill"
-    assert artifact_params[3] == "unknown"
-    assert artifact_params[4] == "production"
-    assert pointer_params[0] == "LightGBM"
-    assert pointer_params[1] == "v1"
-    assert pointer_params[2] == "LightGBM:v1:production_backfill"
-    evidence = json.loads(str(pointer_params[4]))
-    assert evidence["registry_artifact_found"] is True
-    assert evidence["production_artifact_available"] is True
-    assert evidence["production_artifact_created"] is True
-    assert evidence["created_this_backfill"] is True
-    assert evidence["artifact_id"] == "LightGBM:v1:production_backfill"
+    assert result["status"] == "partial_error"
+    assert result["written"] == 0
+    assert result["created_artifacts"] == 0
+    assert result["errors"] == [
+        "LightGBM:v1:artifact_backfill:verified_sha256_registry_record_required"
+    ]
+    assert executed == []

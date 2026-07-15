@@ -17,7 +17,10 @@ QueryFn = Callable[[str, list[Any] | None], list[dict[str, Any]]]
 
 S12_TRADE_EV_BOOTSTRAP_DEFAULT_LOOKBACK_DAYS = 120
 S12_TRADE_EV_BOOTSTRAP_MAX_LOOKBACK_DAYS = 120
-S12_REPLAY_ENGINE_SIGNATURE = "s12_replay_v3:tw_equity_raw_daily_namespace_safe:five_session_price_domain:v1"
+S12_REPLAY_ENGINE_SIGNATURE = (
+    "s12_replay_v3:tw_equity_raw_daily_namespace_safe:"
+    "overlapping_r2_pit:five_session_price_domain:v2"
+)
 
 
 def _replay_cohort_signature(entry_state: Any, calibration_artifact_id: Any) -> str:

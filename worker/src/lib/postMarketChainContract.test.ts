@@ -39,7 +39,11 @@ assert(
     callbackRoutes.includes('callback:post-pipeline-enqueued:'),
   'pipeline success callback must durably and idempotently queue the post-pipeline chain',
 )
-assert(callbackRoutes.includes('runPostVerifyCallbackChain'), 'verify terminal callback must launch post-verify chain')
+assert(
+  callbackRoutes.includes("type: 'post_verify_chain'") &&
+    callbackRoutes.includes('callback:post-verify-enqueued:'),
+  'verify terminal callback must durably and idempotently queue the post-verify chain',
+)
 assert(
   callbackRoutes.includes("['success', 'skipped'].includes(String(body.status))"),
   'verify-v2 skipped callback must continue post-verify chain for replay dates with no matured prediction window',
@@ -49,9 +53,9 @@ assert(
   'pipeline terminal callback must use the durable queue instead of waitUntil for post-pipeline closure',
 )
 assert(
-  verifyCallbackBlock.includes('executionCtx.waitUntil') &&
-    verifyCallbackBlock.includes('post-verify chain accepted by verify-v2 callback'),
-  'verify terminal callback must accept post-verify closure and continue it in waitUntil so Cloud Run callback is not blocked by the long chain',
+  !verifyCallbackBlock.includes('executionCtx.waitUntil') &&
+    verifyCallbackBlock.includes("type: 'post_verify_chain'"),
+  'verify terminal callback must use the durable queue instead of a bounded waitUntil continuation',
 )
 
 assert(
@@ -199,9 +203,8 @@ assert(
 assert(
   callbackRoutes.includes('root chain stopped at pipeline callback') &&
     callbackRoutes.includes('root chain stopped at verify-v2 callback') &&
-    callbackRoutes.includes('root chain stopped in post-pipeline callback chain') &&
-    callbackRoutes.includes('root chain stopped in post-verify callback chain'),
-  'terminal pipeline/verify callback failures must close evening-chain as error instead of leaving it triggered',
+    callbackRoutes.includes('root chain stopped in post-pipeline callback chain'),
+  'terminal pipeline/verify callback failures must close evening-chain as error instead of leaving it triggered; durable continuation failures retry in queue',
 )
 assert(logger.includes("'post-pipeline-chain'"), 'post-pipeline-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visible in scheduler/OBS logs')

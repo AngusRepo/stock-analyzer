@@ -527,39 +527,36 @@ async function handleSchedulerCallback(c: any) {
     ['success', 'skipped'].includes(String(body.status)) &&
     c.env.ML_CONTROLLER_URL
   if (verifyCanContinue) {
+    if (!callbackRunDate || !callbackRunId) {
+      return c.json({ error: 'verify callback missing run_date or run_id for post-verify continuation' }, 400)
+    }
+    const continuationKey = `callback:post-verify-enqueued:${callbackRunDate}:${callbackRunId}`
+    const existing = await c.env.KV.get(continuationKey)
+    if (!existing) {
+      await c.env.KV.put(continuationKey, 'pending', { expirationTtl: 7 * 86400 })
+      try {
+        await c.env.UPDATE_QUEUE.send({
+          type: 'post_verify_chain',
+          cursor: 0,
+          triggerTime: callbackRunDate,
+          runId: callbackRunId,
+          attempt: 0,
+        })
+        await c.env.KV.put(continuationKey, 'queued', { expirationTtl: 7 * 86400 })
+      } catch (error) {
+        await c.env.KV.delete(continuationKey).catch(() => {})
+        throw error
+      }
+    }
     await logSchedulerResult(c.env.KV, 'post-verify-chain', {
       status: 'triggered',
-      summary: 'post-verify chain accepted by verify-v2 callback',
+      summary: existing
+        ? `post-verify continuation already queued run_id=${callbackRunId}`
+        : `post-verify continuation durably queued run_id=${callbackRunId}`,
       duration_ms: 0,
       run_id: callbackRunId,
       run_date: callbackRunDate,
     }, c.env as any)
-    c.executionCtx.waitUntil((async () => {
-      try {
-        const { runPostVerifyCallbackChain } = await import('../lib/postMarketChain')
-        await runPostVerifyCallbackChain(c.env, {
-          runDate: callbackRunDate,
-          upstreamRunId: callbackRunId,
-        })
-      } catch (e: any) {
-        await logSchedulerResult(c.env.KV, 'post-verify-chain', {
-          status: 'error',
-          summary: e?.message ?? 'post-verify callback chain failed',
-          duration_ms: 0,
-          error: String(e),
-          run_id: callbackRunId,
-          run_date: callbackRunDate,
-        }, c.env as any)
-        await logSchedulerResult(c.env.KV, 'evening-chain', {
-          status: 'error',
-          summary: e?.message ?? 'root chain stopped in post-verify callback chain',
-          duration_ms: 0,
-          error: String(e),
-          run_id: callbackRunId,
-          run_date: callbackRunDate,
-        }, c.env as any)
-      }
-    })())
   }
 
   if (body.task === 'verify-v2' && String(body.status) === 'error') {

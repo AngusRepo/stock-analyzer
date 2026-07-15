@@ -2841,6 +2841,20 @@ export async function processUpdateBatch(
     return
   }
 
+  if (msg.type === 'post_verify_chain') {
+    const triggerTime = msg.triggerTime
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid post-verify chain date ${triggerTime}, skipping.`)
+      return
+    }
+    const { runPostVerifyCallbackChain } = await import('./postMarketChain')
+    await runPostVerifyCallbackChain(env, {
+      runDate: triggerTime,
+      upstreamRunId: msg.runId || `post-verify-chain-${triggerTime}`,
+    })
+    return
+  }
+
   if (msg.type === 'allocator_ev_lifecycle_recovery') {
     const triggerTime = msg.triggerTime
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {

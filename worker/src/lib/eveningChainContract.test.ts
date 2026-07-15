@@ -249,8 +249,9 @@ assert(
   'pipeline callback must durably queue post-market dependent tasks instead of fixed-time Scheduler jobs',
 )
 assert(
-  callbackRoutes.includes('runPostVerifyCallbackChain'),
-  'verify callback must advance IC/adapt/report/obsidian instead of fixed-time Scheduler jobs',
+  callbackRoutes.includes("type: 'post_verify_chain'") &&
+    callbackRoutes.includes('callback:post-verify-enqueued:'),
+  'verify callback must durably queue IC/adapt/report/obsidian instead of fixed-time Scheduler jobs',
 )
 
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')

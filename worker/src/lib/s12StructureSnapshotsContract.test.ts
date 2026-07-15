@@ -92,9 +92,11 @@ async function runBehaviorTests(): Promise<void> {
   assert.equal(queries[0].binds[1], 160)
 
   let writeCount = 0
+  let writeSql = ''
   const fakeEnv = {
     DB: {
-      prepare() {
+      prepare(sql: string) {
+        writeSql = sql
         return {
           bind() {
             return {
@@ -108,21 +110,23 @@ async function runBehaviorTests(): Promise<void> {
       },
     },
   } as any
-  await assert.rejects(
-    runS12CandidateStructureSnapshots(fakeEnv, '2026-07-07', {
-      symbols,
-      loadBars: async () => ({
-        bars: [],
-        fallback15mBars: [],
-        fallback1hBars: [],
-        fallback4hBars: [],
-        diagnostics: {},
-      } as any),
-    }),
-    /s12_candidate_snapshot_source_unavailable:missing_intraday_bars=1/,
-    'selected candidates without usable intraday bars must fail closed',
-  )
-  assert.equal(writeCount, 0)
+  const summary = await runS12CandidateStructureSnapshots(fakeEnv, '2026-07-07', {
+    symbols,
+    loadBars: async () => ({
+      bars: [],
+      fallback15mBars: [],
+      fallback1hBars: [],
+      fallback4hBars: [],
+      diagnostics: {},
+    } as any),
+  })
+  assert.equal(summary.persisted, 1)
+  assert.equal(summary.ready, 0)
+  assert.equal(summary.skipped, 1)
+  assert.equal(summary.errors, 0)
+  assert.equal(writeCount, 1)
+  assert.match(writeSql, /state, ready, invalidated/)
+  assert.match(writeSql, /'data_unavailable', 0, 0/)
 }
 
 void runBehaviorTests().catch((error) => {

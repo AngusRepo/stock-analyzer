@@ -1032,6 +1032,54 @@ def test_s12_waiting_structure_snapshot_is_setup_only_not_missing_structure():
     assert ev["execution_blocked_reason"] == "s12_state_waiting_4h_long_bias"
 
 
+def test_s12_unavailable_structure_snapshot_never_emits_trade_ev():
+    def fake_query(sql, params=None, **_kwargs):
+        if "FROM s12_structure_snapshots" in sql:
+            return [
+                {
+                    "id": 1,
+                    "trade_date": "2026-07-15",
+                    "symbol": "8091",
+                    "source": "s12_candidate_snapshot",
+                    "side": "buy",
+                    "state": "data_unavailable",
+                    "ready": 0,
+                    "invalidated": 0,
+                    "detail": "data_available=false;unavailable_reason=missing_intraday_bars",
+                    "entry_context_json": json.dumps({
+                        "schema_version": "s12-equity-mutation-context-v1",
+                        "state": "data_unavailable",
+                        "ready": False,
+                        "data_available": False,
+                        "unavailable_reason": "missing_intraday_bars",
+                    }),
+                    "exit_plan_json": "{}",
+                    "raw_json": "{}",
+                    "updated_at": "2026-07-15 14:00:00",
+                }
+            ]
+        return []
+
+    provider = S12TradeEvBootstrapProvider.for_run_date(
+        "2026-07-15",
+        query_fn=fake_query,
+        min_samples=30,
+        roundtrip_cost_bps=0,
+    )
+    ev = provider.build_for_row({
+        "symbol": "8091",
+        "current_price": 100,
+        "market_segment": "LISTED",
+        "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
+    })
+
+    assert ev["status"] == "setup_only"
+    assert ev["trade_expected_return_net_pct"] is None
+    assert ev["expected_R"] is None
+    assert ev["execution_ready"] is False
+    assert ev["execution_blocked_reason"] == "s12_state_data_unavailable"
+
+
 def test_extract_s12_trade_ev_treats_setup_only_as_unavailable():
     value, source, payload = extract_s12_trade_ev({
         "s12_trade_ev": {

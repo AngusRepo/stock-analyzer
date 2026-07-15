@@ -195,6 +195,11 @@ assert(
     updateOrchestrator.includes("championDecision === 'PASS'"),
   'L4 readiness must retain a compatible champion or continue observation with BUY/allocation fail closed',
 )
+assert(
+  updateOrchestrator.includes('analysis_continues=1 execution_fail_closed=1') &&
+    updateOrchestrator.includes('snapshotComplete && snapshotSummary.skipped === 0'),
+  'missing S12 bars must remain an observable scheduler error while analysis continues under fail-closed execution gates',
+)
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')
 const marketDataReadiness = fs.readFileSync('src/lib/marketDataReadiness.ts', 'utf8')

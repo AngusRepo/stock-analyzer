@@ -5,7 +5,10 @@ import {
   type S12IntradayAssessment,
 } from './s12IntradayStructure'
 import { loadS12HistoricalReplayBars } from './s12RuntimeBars'
-import { persistS12StructureSnapshot } from './s12StructureSnapshots'
+import {
+  persistS12StructureSnapshot,
+  persistS12UnavailableStructureSnapshot,
+} from './s12StructureSnapshots'
 import {
   applyS12TwCalibrationArtifact,
   listApprovedS12TwCalibrationArtifacts,
@@ -141,8 +144,22 @@ export async function runS12CandidateStructureSnapshots(
     try {
       const loaded = await loadBars(env, row.symbol, tradeDate)
       if (!loaded.bars.length) {
+        const reason = loaded.diagnostics.kbars_error ?? loaded.diagnostics.kbars_unusable_reason ?? 'missing_intraday_bars'
+        const ok = await persistS12UnavailableStructureSnapshot(env, {
+          tradeDate,
+          symbol: row.symbol,
+          source: 's12_candidate_snapshot',
+          side: 'buy',
+          reason,
+          metadata: {
+            diagnostics: loaded.diagnostics,
+            snapshot_policy: 'persist_unavailable_continue_analysis_fail_closed_execution',
+          },
+        })
+        if (ok) persisted += 1
+        else errors += 1
         skipped += 1
-        recordSkipReason(loaded.diagnostics.kbars_error ?? loaded.diagnostics.kbars_unusable_reason ?? 'missing_intraday_bars')
+        recordSkipReason(reason)
         continue
       }
       const stockRow = await env.DB.prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(row.symbol).first<{ market?: string | null }>()
@@ -187,15 +204,6 @@ export async function runS12CandidateStructureSnapshots(
       recordSkipReason(error instanceof Error ? error.message : String(error))
       console.warn(`[S12CandidateSnapshot] ${row.symbol} skipped:`, error instanceof Error ? error.message : String(error))
     }
-  }
-
-  if (selected.length > 0 && persisted === 0 && (skipped > 0 || errors > 0)) {
-    const reasons = Object.entries(skipReasons)
-      .sort((left, right) => right[1] - left[1])
-      .slice(0, 5)
-      .map(([reason, count]) => `${reason}=${count}`)
-      .join(',')
-    throw new Error(`s12_candidate_snapshot_source_unavailable:${reasons || 'unknown'}`)
   }
 
   return {

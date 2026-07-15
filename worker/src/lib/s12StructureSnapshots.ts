@@ -148,3 +148,57 @@ export async function persistS12StructureSnapshot(
     return false
   }
 }
+
+export async function persistS12UnavailableStructureSnapshot(
+  env: { DB: D1Database },
+  params: {
+    tradeDate: string
+    symbol: string
+    source?: string
+    side?: string | null
+    reason: string
+    metadata?: Record<string, unknown> | null
+  },
+): Promise<boolean> {
+  const source = String(params.source || 's12_intraday_structure_v1')
+  const reason = String(params.reason || 'missing_intraday_bars').trim() || 'missing_intraday_bars'
+  const entryContext = {
+    schema_version: 's12-equity-mutation-context-v1',
+    source: 's12_structure_snapshots',
+    state: 'data_unavailable',
+    ready: false,
+    data_available: false,
+    unavailable_reason: reason,
+  }
+  const raw = {
+    schema_version: 's12-structure-unavailable-v1',
+    state: 'data_unavailable',
+    ready: false,
+    invalidated: false,
+    reason,
+    runtimeMetadata: params.metadata ?? null,
+  }
+
+  try {
+    await env.DB.prepare(`
+      INSERT INTO s12_structure_snapshots (
+        trade_date, symbol, source, side, state, ready, invalidated,
+        detail, entry_context_json, raw_json, updated_at
+      )
+      VALUES (?, ?, ?, ?, 'data_unavailable', 0, 0, ?, ?, ?, datetime('now'))
+      ON CONFLICT(trade_date, symbol, source) DO NOTHING
+    `).bind(
+      params.tradeDate,
+      params.symbol,
+      source,
+      params.side ?? null,
+      `data_available=false;unavailable_reason=${reason}`,
+      JSON.stringify(entryContext),
+      JSON.stringify(raw),
+    ).run()
+    return true
+  } catch (error) {
+    console.warn('[S12StructureSnapshot] unavailable marker persist failed:', error instanceof Error ? error.message : String(error))
+    return false
+  }
+}

@@ -89,7 +89,7 @@ assert(
   'broker snapshots missing bid/ask must be enriched from Shioaji orderbook before execution',
 )
 assert(
-  exitTasks.includes('putIntradayPrice(env.KV, symbol, quote.last)') &&
+  exitTasks.includes('putIntradayPrice(env.KV, symbol, quote.last, undefined') &&
     intradayPriceCache.includes("INTRADAY_PRICE_PREFIX = 'intraday:price:'") &&
     intradayPriceCache.includes('clearOpenPositionIntradayPriceCache'),
   'intraday price cache must have explicit write/clear ownership instead of ad hoc quote.last KV writes',

@@ -170,7 +170,7 @@ def test_subscribe_symbol_defers_sdk_call_outside_market_hours(monkeypatch):
     monkeypatch.setattr(proxy, "is_market_hours", lambda: False)
     monkeypatch.setattr(
         proxy,
-        "run_broker_query",
+        "run_streaming_control",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("off-hours SDK call forbidden")),
     )
 
@@ -229,6 +229,39 @@ def test_broker_query_timeout_poison_marks_process_for_replacement(monkeypatch):
     assert result is None
     assert poisoned == ["broker_query_timeout:hung-sdk-call"]
     time.sleep(0.15)
+
+
+def test_streaming_control_timeout_does_not_poison_broker_owner(monkeypatch):
+    proxy = _load_proxy_main()
+    poisoned: list[str] = []
+    monkeypatch.setenv("SHIOAJI_STREAMING_CONTROL_TIMEOUT_SECONDS", "0.25")
+    monkeypatch.setattr(proxy, "poison_process", lambda reason, **_kwargs: poisoned.append(reason))
+
+    result = proxy.run_streaming_control(lambda: (time.sleep(0.35), "late")[1], "slow-subscribe")
+
+    assert result is None
+    assert poisoned == []
+    assert proxy._streaming_control_timeout_count == 1
+    assert proxy._last_streaming_control_timeout_label == "slow-subscribe"
+    assert proxy.streaming_control_busy() is True
+    time.sleep(0.15)
+    assert proxy.streaming_control_busy() is False
+
+
+def test_recovery_does_not_count_or_reconnect_while_streaming_control_is_active(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy.subscription_recovery.clear()
+    proxy._streaming_control_inflight = True
+    reset_calls: list[str] = []
+    subscribe_calls: list[str] = []
+    monkeypatch.setattr(proxy, "reset_shioaji_connection", lambda reason: reset_calls.append(reason) or True)
+    monkeypatch.setattr(proxy, "subscribe_symbol", lambda symbol, **_kwargs: subscribe_calls.append(symbol) or True)
+
+    proxy.recover_orderbook_symbol("2330", "watchdog_waiting_callback")
+
+    assert proxy.subscription_recovery == {}
+    assert reset_calls == []
+    assert subscribe_calls == []
 
 
 def test_execution_snapshot_reads_fresh_tick_cache_without_sdk_call(monkeypatch):

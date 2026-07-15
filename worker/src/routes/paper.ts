@@ -24,7 +24,7 @@ import {
   calcTax,
 } from '../lib/paperTradeMath'
 import { batchGetIntradayOHLC } from '../lib/paperIntradayData'
-import { getPostClosePriceMap } from '../lib/paperIntradayPriceCache'
+import { getFreshIntradayPriceMap, getPostClosePriceMap } from '../lib/paperIntradayPriceCache'
 import { buildSellOrderNote, estimateSellOrderRealizedPnl, parseSellOrderNote } from '../lib/paperOrderAccounting'
 import { recordPaperExecutionEvent } from '../lib/paperExecutionEvents'
 import { runDailySnapshot, type RescoreSellParams } from '../lib/paperWorkerTasks'
@@ -691,13 +691,13 @@ paper.get('/positions', async (c) => {
 
 // Tier 1: KV intraday snapshots populated by `pollIntradayStopLoss`.
   const intradayMap = new Map<string, number>()
+  const intradaySnapshotMap = isMarketOpen && positionSymbols.length
+    ? await getFreshIntradayPriceMap(c.env.KV, positionSymbols)
+    : new Map()
   if (isMarketOpen && positions?.length) {
-    const kvResults = await Promise.all(
-      (positions ?? []).map((p: any) => c.env.KV.get(`intraday:price:${p.symbol}`))
-    )
-    for (let i = 0; i < (positions ?? []).length; i++) {
-      const v = kvResults[i]
-      if (v != null) intradayMap.set(positions![i].symbol, parseFloat(v))
+    for (const pos of positions ?? []) {
+      const snapshot = intradaySnapshotMap.get(pos.symbol)
+      if (snapshot) intradayMap.set(pos.symbol, snapshot.price)
     }
   }
 
@@ -816,7 +816,16 @@ paper.get('/positions', async (c) => {
       market_value:     Math.round(marketValue),
       unrealized_pnl:   Math.round(unrealizedPnl),
       unrealized_pnl_pct: Math.round(unrealizedPnlPct * 100) / 100,
-      price_source:     intradayMap.has(pos.symbol) ? 'intraday' as const : postClosePrice ? postClosePrice.source : 'eod' as const,
+      price_source:     intradayMap.has(pos.symbol)
+        ? 'intraday' as const
+        : postClosePrice
+          ? postClosePrice.source
+          : isMarketOpen
+            ? 'realtime_unavailable_eod_reference' as const
+            : 'eod' as const,
+      quote_status:     intradayMap.has(pos.symbol) ? 'fresh' as const : isMarketOpen ? 'unavailable' as const : 'reference' as const,
+      quote_is_fresh:   intradayMap.has(pos.symbol),
+      quote_as_of:      intradaySnapshotMap.get(pos.symbol)?.updated_at ?? null,
 // Refresh stop-loss / take-profit state when a fresher price arrives.
       initial_stop:     pos.initial_stop ? Math.round(pos.initial_stop * 10) / 10 : null,
       trailing_stop:    pos.trailing_stop ? Math.round(pos.trailing_stop * 10) / 10 : null,

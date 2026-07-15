@@ -4,6 +4,7 @@ import { batchGetIntradayOHLC } from './paperIntradayData'
 const ACCOUNT_ID = 1
 export const INTRADAY_PRICE_PREFIX = 'intraday:price:'
 export const INTRADAY_PRICE_TTL_SECONDS = 600
+export const INTRADAY_PRICE_DISPLAY_MAX_AGE_MS = 90_000
 export const POST_CLOSE_PRICE_PREFIX = 'postclose:price:'
 export const POST_CLOSE_PRICE_TTL_SECONDS = 18 * 60 * 60
 
@@ -12,6 +13,14 @@ export type PostClosePriceSnapshot = {
   price: number
   source: string
   trade_date: string
+  updated_at: string
+}
+
+export type IntradayPriceSnapshot = {
+  symbol: string
+  price: number
+  source: string
+  quote_time: string | null
   updated_at: string
 }
 
@@ -58,8 +67,47 @@ export async function putIntradayPrice(
   symbol: string,
   price: number,
   ttlSeconds = INTRADAY_PRICE_TTL_SECONDS,
+  metadata: { source?: string; quoteTime?: string | null; updatedAt?: string } = {},
 ): Promise<void> {
-  await kv.put(`${INTRADAY_PRICE_PREFIX}${symbol}`, String(price), { expirationTtl: ttlSeconds })
+  const snapshot: IntradayPriceSnapshot = {
+    symbol,
+    price,
+    source: metadata.source ?? 'shioaji',
+    quote_time: metadata.quoteTime ?? null,
+    updated_at: metadata.updatedAt ?? new Date().toISOString(),
+  }
+  await kv.put(`${INTRADAY_PRICE_PREFIX}${symbol}`, JSON.stringify(snapshot), { expirationTtl: ttlSeconds })
+}
+
+export async function getFreshIntradayPriceMap(
+  kv: KVNamespace,
+  symbols: string[],
+  maxAgeMs = INTRADAY_PRICE_DISPLAY_MAX_AGE_MS,
+  nowMs = Date.now(),
+): Promise<Map<string, IntradayPriceSnapshot>> {
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol ?? '').trim()).filter(Boolean))]
+  const rows = await Promise.all(uniqueSymbols.map((symbol) => kv.get(`${INTRADAY_PRICE_PREFIX}${symbol}`)))
+  const out = new Map<string, IntradayPriceSnapshot>()
+  for (let i = 0; i < uniqueSymbols.length; i += 1) {
+    const raw = rows[i]
+    if (!raw) continue
+    try {
+      const parsed = JSON.parse(raw) as Partial<IntradayPriceSnapshot>
+      const price = finitePositive(parsed.price)
+      const updatedAtMs = Date.parse(String(parsed.updated_at ?? ''))
+      if (price == null || !Number.isFinite(updatedAtMs) || nowMs - updatedAtMs > maxAgeMs || updatedAtMs > nowMs + 5_000) continue
+      out.set(uniqueSymbols[i], {
+        symbol: uniqueSymbols[i],
+        price,
+        source: String(parsed.source ?? 'shioaji'),
+        quote_time: parsed.quote_time ? String(parsed.quote_time) : null,
+        updated_at: new Date(updatedAtMs).toISOString(),
+      })
+    } catch {
+      // Legacy scalar values have no as-of timestamp and are never realtime-authoritative.
+    }
+  }
+  return out
 }
 
 export async function putPostClosePrice(

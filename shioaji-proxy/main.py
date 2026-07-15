@@ -54,6 +54,8 @@ _state_lock = threading.RLock()
 _session_call_lock = threading.Lock()
 _broker_query_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shioaji-broker-query")
 _broker_query_capacity = threading.BoundedSemaphore(1)
+_streaming_control_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shioaji-streaming-control")
+_streaming_control_capacity = threading.BoundedSemaphore(1)
 _watchdog_stop = threading.Event()
 _watchdog_thread: threading.Thread | None = None
 _session_epoch = 0
@@ -62,6 +64,10 @@ _process_poison_reason: str | None = None
 _process_poisoned_at: str | None = None
 _process_exit_scheduled = False
 _broker_query_timeout_count = 0
+_streaming_control_timeout_count = 0
+_streaming_control_inflight = False
+_last_streaming_control_timeout_label: str | None = None
+_last_streaming_control_timeout_at: str | None = None
 _last_reconnect_attempt_at = 0.0
 _reconnect_count = 0
 _last_reconnect_reason: str | None = None
@@ -214,6 +220,10 @@ def broker_query_timeout_seconds() -> float:
     return _env_float("SHIOAJI_BROKER_QUERY_TIMEOUT_SECONDS", 2.0, 0.25, 5.0)
 
 
+def streaming_control_timeout_seconds() -> float:
+    return _env_float("SHIOAJI_STREAMING_CONTROL_TIMEOUT_SECONDS", 12.0, 0.25, 30.0)
+
+
 def tick_max_age_ms() -> int:
     return _env_int("SHIOAJI_TICK_MAX_AGE_MS", 1500, 500, 60_000)
 
@@ -344,6 +354,57 @@ def run_broker_query(callable_, label: str):
         future.cancel()
         print(f"[Shioaji] Broker query timeout: {label}", flush=True)
         poison_process(f"broker_query_timeout:{label}")
+        return None
+
+
+def streaming_control_busy() -> bool:
+    with _state_lock:
+        return _streaming_control_inflight
+
+
+def run_streaming_control(callable_, label: str):
+    """Serialize streaming subscribe operations without poisoning the broker owner.
+
+    Shioaji subscribe can legitimately take longer than request-style snapshot
+    calls while the quote channel is warming. A timed-out subscribe remains the
+    owner of this lane until it actually returns; watchdog recovery must not
+    start another session operation meanwhile.
+    """
+    global _streaming_control_inflight, _streaming_control_timeout_count
+    global _last_streaming_control_timeout_label, _last_streaming_control_timeout_at
+    if _process_poisoned:
+        return None
+    if not _streaming_control_capacity.acquire(blocking=False):
+        print(f"[Shioaji] Streaming control busy; defer: {label}")
+        return None
+
+    with _state_lock:
+        _streaming_control_inflight = True
+
+    def invoke():
+        if not _session_call_lock.acquire(timeout=session_call_lock_timeout_seconds()):
+            return None
+        try:
+            return callable_()
+        finally:
+            _session_call_lock.release()
+
+    def release_lane(_future) -> None:
+        global _streaming_control_inflight
+        with _state_lock:
+            _streaming_control_inflight = False
+        _streaming_control_capacity.release()
+
+    future = _streaming_control_executor.submit(invoke)
+    future.add_done_callback(release_lane)
+    try:
+        return future.result(timeout=streaming_control_timeout_seconds())
+    except FutureTimeoutError:
+        with _state_lock:
+            _streaming_control_timeout_count += 1
+            _last_streaming_control_timeout_label = label
+            _last_streaming_control_timeout_at = get_tw_now().isoformat()
+        print(f"[Shioaji] Streaming control still pending after timeout: {label}", flush=True)
         return None
 
 
@@ -686,7 +747,7 @@ def subscribe_symbol(
         return True
 
     try:
-        return bool(run_broker_query(
+        return bool(run_streaming_control(
             subscribe_operation,
             f"subscribe:{lot_type}:{symbol}:force={int(force_bidask)}",
         ))
@@ -704,11 +765,11 @@ def _mark_orderbook_recovery(symbol: str, reason: str, lot_type: str = "board_lo
             "last_attempt_at": 0.0,
             "last_reason": None,
         })
-        state["consecutive_failures"] = int(state.get("consecutive_failures") or 0) + 1
-        state["last_reason"] = reason
         last_attempt_at = float(state.get("last_attempt_at") or 0.0)
         if now - last_attempt_at < orderbook_recovery_cooldown_seconds():
-            return int(state["consecutive_failures"]), False
+            return int(state.get("consecutive_failures") or 0), False
+        state["consecutive_failures"] = int(state.get("consecutive_failures") or 0) + 1
+        state["last_reason"] = reason
         state["last_attempt_at"] = now
         return int(state["consecutive_failures"]), True
 
@@ -716,6 +777,9 @@ def _mark_orderbook_recovery(symbol: str, reason: str, lot_type: str = "board_lo
 def reset_shioaji_connection(reason: str) -> bool:
     global api, connected, _last_reconnect_attempt_at, _reconnect_count, _last_reconnect_reason, _last_reconnect_at
     if _process_poisoned:
+        return False
+    if streaming_control_busy():
+        print(f"[Shioaji] Reconnect deferred while streaming control is active: {reason}")
         return False
     now = time.time()
     with _state_lock:
@@ -750,9 +814,9 @@ def reset_shioaji_connection(reason: str) -> bool:
             _last_reconnect_at = get_tw_now().isoformat()
     watch_orderbook_symbols([market_risk_proxy_symbol()], ttl_seconds=86_400)
     for symbol in active_orderbook_watch_symbols():
-        subscribe_symbol(symbol)
+        recover_orderbook_symbol_async(symbol, "post_reconnect_warmup")
     for symbol in active_orderbook_watch_symbols("odd_lot"):
-        subscribe_symbol(symbol, lot_type="odd_lot")
+        recover_orderbook_symbol_async(symbol, "post_reconnect_warmup", "odd_lot")
     return connected
 
 
@@ -762,6 +826,8 @@ def recover_orderbook_symbol(symbol: str, reason: str, lot_type: str = "board_lo
     if not symbol:
         return
     watch_orderbook_symbols([symbol], lot_type=lot_type)
+    if streaming_control_busy():
+        return
     failures, should_attempt = _mark_orderbook_recovery(symbol, reason, lot_type)
     if not should_attempt:
         return
@@ -876,9 +942,9 @@ async def lifespan(app: FastAPI):
     init_shioaji()
     watch_orderbook_symbols([market_risk_proxy_symbol()], ttl_seconds=86_400)
     static_symbols = active_orderbook_watch_symbols()
-    for symbol in static_symbols:
-        subscribe_symbol(symbol)
     start_watchdog()
+    for symbol in static_symbols:
+        recover_orderbook_symbol_async(symbol, "startup_warmup")
     yield
     # Shutdown: disconnect
     stop_watchdog()
@@ -904,7 +970,25 @@ def verify_token(authorization: str | None):
 @app.get("/health")
 def health():
     orderbook_health = orderbook_health_summary()
-    subscription_healthy = bool(connected and not _process_poisoned and _watchdog_thread and _watchdog_thread.is_alive())
+    market_hours = is_market_hours()
+    watchdog_alive = bool(_watchdog_thread and _watchdog_thread.is_alive())
+    subscription_healthy = bool(
+        connected
+        and not _process_poisoned
+        and watchdog_alive
+        and (
+            not market_hours
+            or (len(subscribed) > 0 and len(bidask_subscribed) > 0)
+        )
+    )
+    execution_ready = bool(
+        subscription_healthy
+        and _session_epoch > 0
+        and (
+            not market_hours
+            or (len(last_ticks) > 0 and int(orderbook_health.get("fresh_bidasks") or 0) > 0)
+        )
+    )
     return {
         "status": "poisoned" if _process_poisoned else "ok" if connected else "disconnected",
         "connected": connected,
@@ -912,6 +996,10 @@ def health():
         "process_poison_reason": _process_poison_reason,
         "process_poisoned_at": _process_poisoned_at,
         "broker_query_timeout_count": _broker_query_timeout_count,
+        "streaming_control_busy": streaming_control_busy(),
+        "streaming_control_timeout_count": _streaming_control_timeout_count,
+        "last_streaming_control_timeout_label": _last_streaming_control_timeout_label,
+        "last_streaming_control_timeout_at": _last_streaming_control_timeout_at,
         "session_epoch": _session_epoch,
         "subscribed_count": len(subscribed),
         "bidask_subscribed_count": len(bidask_subscribed),
@@ -919,12 +1007,12 @@ def health():
         "cached_bidasks": len(last_bidasks),
         "bidask_event_symbols": len(bidask_stats),
         "auth_configured": bool(SERVICE_TOKEN),
-        "market_hours": is_market_hours(),
+        "market_hours": market_hours,
         "watchdog_enabled": watchdog_enabled(),
-        "watchdog_alive": bool(_watchdog_thread and _watchdog_thread.is_alive()),
+        "watchdog_alive": watchdog_alive,
         "orderbook_watch": orderbook_health,
         "subscription_healthy": subscription_healthy,
-        "execution_ready": bool(subscription_healthy and _session_epoch > 0),
+        "execution_ready": execution_ready,
         "reconnect_count": _reconnect_count,
         "last_reconnect_at": _last_reconnect_at,
         "last_reconnect_reason": _last_reconnect_reason,

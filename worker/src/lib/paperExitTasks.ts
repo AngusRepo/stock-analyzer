@@ -1426,19 +1426,51 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
     const quote = shares >= 1000 ? boardLotQuoteMap.get(pos.symbol) : oddLotQuoteMap.get(pos.symbol)
     if (quote) quoteMap.set(pos.symbol, quote)
   }
+  const intradayToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const missingQuotePositions = positions.filter((pos: any) => !quoteMap.has(pos.symbol))
+  const recordMissingHoldingQuote = async (pos: any): Promise<void> => {
+    const shares = Math.max(0, Math.floor(Number(pos.shares ?? 0)))
+    const recent = await env.DB.prepare(`
+      SELECT id FROM paper_execution_events
+      WHERE account_id=? AND trade_date=? AND symbol=?
+        AND event_type='s12_intraday_structure'
+        AND reason='holding_authoritative_market_data_unavailable'
+        AND created_at >= datetime('now', '-10 minutes')
+      LIMIT 1
+    `).bind(ACCOUNT_ID, intradayToday, pos.symbol).first<{ id: number }>()
+    if (recent) return
+    await recordPaperExecutionEvent(env, {
+      tradeDate: intradayToday,
+      symbol: pos.symbol,
+      side: 'sell',
+      eventType: 's12_intraday_structure',
+      status: 'blocked',
+      reason: 'holding_authoritative_market_data_unavailable',
+      detail: {
+        stage: 'authoritative_holding_market_data',
+        shares,
+        required_lot_type: shares >= 1000 ? 'board_lot' : 'odd_lot',
+        broker_quote_required: true,
+        contract_bypass_allowed: false,
+      },
+      source: 's12_holding_defense',
+    })
+  }
   const atrMap = await batchGetATR(env.DB, symbols)
   const intraRegime = await getCurrentRegime(env.KV)
 
   if (quoteMap.size === 0) {
-    console.log('[Intraday] no intraday prices available')
-    return
+    await Promise.all(missingQuotePositions.map(recordMissingHoldingQuote))
+    throw new Error('holding_authoritative_market_data_unavailable_all_positions')
   }
 
   await Promise.allSettled(
-    [...quoteMap].map(([symbol, quote]) => putIntradayPrice(env.KV, symbol, quote.last)),
+    [...quoteMap].map(([symbol, quote]) => putIntradayPrice(env.KV, symbol, quote.last, undefined, {
+      source: quote.source ?? 'shioaji',
+      quoteTime: quote.quoteTime ?? null,
+    })),
   )
 
-  const intradayToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const prevCloseMapSell = new Map<string, number>()
   if (symbols.length > 0) {
     const ph = symbols.map(() => '?').join(',')
@@ -1765,6 +1797,11 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<void> {
     } else if (decision.action === 'hold') {
       await persistExitPositionUpdate(env, intradayToday, pos, decision, 'intraday_exit_hold_update')
     }
+  }
+
+  if (missingQuotePositions.length > 0) {
+    await Promise.all(missingQuotePositions.map(recordMissingHoldingQuote))
+    throw new Error(`holding_authoritative_market_data_unavailable_partial:${missingQuotePositions.map((pos: any) => pos.symbol).join(',')}`)
   }
 
   console.log(`[Intraday] checked ${positions.length} positions with ${quoteMap.size} quotes`)

@@ -1,5 +1,6 @@
 import {
   clearOpenPositionIntradayPriceCache,
+  getFreshIntradayPriceMap,
   getPostClosePriceMap,
   putIntradayPrice,
   putPostClosePrice,
@@ -57,8 +58,24 @@ class FakeDB {
   await putIntradayPrice(writeKv as unknown as KVNamespace, '4953', 134.5, 123)
   assert(writeKv.putCalls.length === 1, 'intraday price cache should write one key')
   assert(writeKv.putCalls[0]?.key === 'intraday:price:4953', 'intraday price cache key should be stable')
-  assert(writeKv.putCalls[0]?.value === '134.5', 'intraday price cache value should be stringified')
+  const intradaySnapshot = JSON.parse(writeKv.putCalls[0]?.value ?? '{}')
+  assert(intradaySnapshot.price === 134.5, 'intraday price cache should persist the price')
+  assert(Boolean(intradaySnapshot.updated_at), 'intraday price cache must persist an as-of timestamp')
   assert(writeKv.putCalls[0]?.ttl === 123, 'intraday price cache should preserve ttl')
+  const freshIntraday = await getFreshIntradayPriceMap(
+    writeKv as unknown as KVNamespace,
+    ['4953'],
+    90_000,
+    Date.parse(intradaySnapshot.updated_at) + 1_000,
+  )
+  assert(freshIntraday.get('4953')?.price === 134.5, 'fresh timestamped intraday snapshots should be readable')
+  const staleIntraday = await getFreshIntradayPriceMap(
+    writeKv as unknown as KVNamespace,
+    ['4953'],
+    90_000,
+    Date.parse(intradaySnapshot.updated_at) + 91_000,
+  )
+  assert(staleIntraday.size === 0, 'stale intraday snapshots must not be presented as realtime')
 
   await putPostClosePrice(writeKv as unknown as KVNamespace, {
     symbol: '4953',

@@ -10,6 +10,7 @@ Required Cloud Run settings:
 - CPU throttling: disabled (CPU always allocated)
 - request timeout: `15s`
 - `SHIOAJI_BROKER_QUERY_TIMEOUT_SECONDS=2`
+- `SHIOAJI_STREAMING_CONTROL_TIMEOUT_SECONDS=12`
 - `SHIOAJI_SESSION_CALL_LOCK_TIMEOUT_SECONDS=0.25`
 - `SHIOAJI_ORDERBOOK_MAX_AGE_MS<=1500`
 
@@ -19,7 +20,10 @@ trading-hours minimum instance.
 
 Quote, snapshot, orderbook and current-session completed-kbar routes are
 execution-critical and read only the streaming Tick/BidAsk cache. Subscription
-recovery runs outside the request path. No request handler may call
+recovery runs outside the request path on a dedicated single-owner streaming
+control lane. A slow subscribe must remain serialized and observable, but must
+not poison/restart the broker process; request-style SDK calls retain the hard
+timeout/process-replacement policy. No request handler may call
 `api.snapshots()` or `api.kbars()`. Historical kbar and research traffic belongs
 to a separate research service/job and cannot share this broker session.
 
@@ -35,7 +39,7 @@ gcloud run services update shioaji-proxy `
   --concurrency 4 `
   --no-cpu-throttling `
   --timeout 15s `
-  --update-env-vars SHIOAJI_BROKER_QUERY_TIMEOUT_SECONDS=2,SHIOAJI_SESSION_CALL_LOCK_TIMEOUT_SECONDS=0.25,SHIOAJI_ORDERBOOK_MAX_AGE_MS=1500
+  --update-env-vars SHIOAJI_BROKER_QUERY_TIMEOUT_SECONDS=2,SHIOAJI_STREAMING_CONTROL_TIMEOUT_SECONDS=12,SHIOAJI_SESSION_CALL_LOCK_TIMEOUT_SECONDS=0.25,SHIOAJI_ORDERBOOK_MAX_AGE_MS=1500
 ```
 
 After deployment, verify service metadata and require orderbook quote-age,

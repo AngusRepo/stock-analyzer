@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import recommendation_service  # noqa: E402
-from services.l4_alpha_ev_producer import materialize_l4_alpha_ev  # noqa: E402
+from services.l4_alpha_ev_producer import assess_l4_artifact_cutover, materialize_l4_alpha_ev  # noqa: E402
 from services.l4_alpha_ev_resolver import SNAPSHOT_BACKFILL_USAGE_SCOPE  # noqa: E402
 from services.recommendation_service import (  # noqa: E402
     apply_sparse_tangent_allocation,
@@ -19,14 +19,14 @@ from services.recommendation_service import (  # noqa: E402
 def _artifact(**overrides):
     base = {
         "schema_version": "l4-alpha-ev-artifact-v2",
-        "artifact_contract_version": "l4-alpha-ev-contract-v2",
+        "artifact_contract_version": "l4-alpha-ev-contract-v4",
         "promotion_state": "production_approved",
         "validation_packet": {"decision": "PASS", "failed_gates": []},
         "resolver_method": "regularized_meta_calibrator",
         "model_version": "l4-alpha-ev-20260707",
         "feature_snapshot_version": "l4-alpha-feature-snapshot-v4-directional-components",
         "feature_semantic_version": "l4-directional-score-components-v2-lineage-bound",
-        "label_schema_version": "next-session-adjusted-open-to-fifth-session-adjusted-close-net-v1",
+        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "trained_until": "2026-07-06",
         "horizon_days": 3,
         "cost_model_bps": 18.0,
@@ -118,6 +118,38 @@ def test_materialize_l4_alpha_ev_uses_production_learned_artifact():
     assert payload["approval_state"] == "production_approved"
     assert payload["expected_return"] == pytest.approx(0.01824)
     assert payload["feature_values"]["fundamental_quality_norm"] == pytest.approx(0.72)
+
+
+def test_l4_serving_migration_accepts_only_exact_legacy_contract_pair():
+    legacy = _artifact(
+        artifact_contract_version="l4-alpha-ev-contract-v3",
+        label_schema_version="next-session-raw-open-to-fifth-session-raw-close-canonical-finlab-factor-net-v3",
+    )
+    accepted = materialize_l4_alpha_ev(
+        _row(), prediction=_prediction(), policy={"l4_alpha_ev": legacy}
+    )
+    hybrid = materialize_l4_alpha_ev(
+        _row(),
+        prediction=_prediction(),
+        policy={"l4_alpha_ev": {**legacy, "label_schema_version": _artifact()["label_schema_version"]}},
+    )
+
+    assert accepted["status"] == "loaded"
+    assert hybrid["status"] == "rejected"
+    assert "artifact_label_contract_pair_incompatible" in hybrid["blockers"]
+
+
+def test_l4_cutover_requires_current_producer_contract_before_promotion():
+    assert assess_l4_artifact_cutover(_artifact())["ready"] is True
+
+    legacy = _artifact(
+        artifact_contract_version="l4-alpha-ev-contract-v1",
+        feature_semantic_version="legacy-score-total-v1",
+    )
+    readiness = assess_l4_artifact_cutover(legacy)
+    assert readiness["ready"] is False
+    assert "artifact_contract_version_incompatible" in readiness["blockers"]
+    assert "feature_semantic_version_incompatible" in readiness["blockers"]
 
 
 def test_materialize_l4_alpha_ev_rejects_legacy_unsigned_confidence_artifact():

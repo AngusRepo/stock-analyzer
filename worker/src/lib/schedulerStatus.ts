@@ -60,6 +60,8 @@ const JOB_DEFS: JobDef[] = [
   { id: 'debate-memory-retention', name: 'Debate Memory Retention', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },
   { id: 'artifact-reconcile', name: 'Artifact Reconcile', schedule: 'Daily 02:05', cron: '5 18 * * *', group: 'daily' },
   { id: 'legacy-evidence-migration', name: 'Legacy Evidence Migration', schedule: 'Daily 01:40–05:40 hourly', cron: '40 17-21 * * *', group: 'daily' },
+  { id: 'legacy-strategy-evidence-migration', name: 'Legacy Strategy Evidence Migration', schedule: 'Daily 01:50–05:50 hourly', cron: '50 17-21 * * *', group: 'daily' },
+  { id: 'legacy-hot-data-retirement', name: 'Legacy Hot Data Retirement', schedule: 'Daily 01:10–05:10 hourly', cron: '10 17-21 * * *', group: 'daily' },
   { id: 'd1-evidence-scrub', name: 'D1 Evidence Scrub', schedule: 'Daily 02:20', cron: '20 18 * * *', group: 'daily' },
   { id: 'r2-retention-sweep', name: 'R2 Retention Sweep', schedule: 'Daily 02:40', cron: '40 18 * * *', group: 'daily' },
   { id: 'orphan-reachability-gc', name: 'Orphan Reachability GC', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },

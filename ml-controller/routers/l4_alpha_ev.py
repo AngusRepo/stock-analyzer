@@ -13,6 +13,11 @@ from services.l4_alpha_ev_artifact_builder import (
     build_l4_alpha_ev_artifact_from_rows,
     load_l4_alpha_ev_training_rows,
 )
+from services.l4_alpha_ev_producer import assess_l4_artifact_cutover
+from services.ev_lineage_contract import (
+    load_model_champion_history,
+    reconstruct_rows_with_point_in_time_lineage,
+)
 from services.model_artifact_registry import upsert_artifact_record
 from services.worker_config_client import worker_fetch
 
@@ -154,8 +159,9 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
 
     This is intentionally separate from universal retrain and Optuna research:
     L4 alpha EV is a downstream selection expected-return calibrator. The route
-    promotes only a production-approved PASS artifact and otherwise preserves
-    the existing trading config.
+    promotes only a production-approved PASS artifact that matches the active
+    producer contract. A failed candidate leaves config untouched but does not
+    claim that an older config remains compatible with the current producer.
     """
 
     defaults = _defaults_for_cadence(req.cadence)
@@ -172,8 +178,24 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
         lookback_days=lookback_days,
         limit=req.limit,
     )
-    result = build_l4_alpha_ev_artifact_from_rows(
+    generated_values = sorted(
+        str(row.get("prediction_generated_at") or "").strip()
+        for row in rows
+        if str(row.get("prediction_generated_at") or "").strip()
+    )
+    history_start = generated_values[0] if generated_values else f"{end_date}T00:00:00Z"
+    history_end = generated_values[-1] if generated_values else f"{end_date}T23:59:59Z"
+    champion_events, champion_history_load = load_model_champion_history(
+        d1_client.query,
+        start_at=history_start,
+        end_at=history_end,
+    )
+    lineage_rows, lineage_audit = reconstruct_rows_with_point_in_time_lineage(
         rows,
+        champion_events=champion_events,
+    )
+    result = build_l4_alpha_ev_artifact_from_rows(
+        lineage_rows,
         trained_until=end_date,
         lookback_days=lookback_days,
         min_samples=min_samples,
@@ -181,6 +203,14 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
     )
     artifact = result.get("artifact") if isinstance(result, dict) else None
     validation = result.get("validation_packet") if isinstance(result, dict) else None
+    if isinstance(artifact, dict):
+        training_data = artifact.get("training_data") if isinstance(artifact.get("training_data"), dict) else {}
+        artifact["training_data"] = {
+            **training_data,
+            "lineage_reconstruction": lineage_audit,
+            "champion_history_load": champion_history_load,
+        }
+    cutover_readiness = assess_l4_artifact_cutover(artifact if isinstance(artifact, dict) else None)
     decision = str((validation or {}).get("decision") or "").upper()
     promotion_state = str((artifact or {}).get("promotion_state") or "")
     registry_error: str | None = None
@@ -202,13 +232,20 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
     promoted = False
     promotion_error: str | None = None
     if req.promote and not req.dry_run:
-        if not isinstance(artifact, dict) or promotion_state != "production_approved" or decision != "PASS":
+        if (
+            not isinstance(artifact, dict)
+            or promotion_state != "production_approved"
+            or decision != "PASS"
+            or cutover_readiness["ready"] is not True
+        ):
             return {
                 **result,
                 "status": "failed_validation",
                 "promoted": False,
                 "registry_error": registry_error,
                 "production_mutation_allowed": False,
+                "cutover_readiness": cutover_readiness,
+                "existing_config_preserved_but_compatibility_not_assumed": True,
                 "summary": (
                     "l4_alpha_ev_refresh failed_validation "
                     f"cadence={req.cadence} end_date={end_date} decision={decision or 'UNKNOWN'}"
@@ -263,13 +300,21 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
         "min_samples": min_samples,
         "min_dates": min_dates,
         "rows_loaded": len(rows),
+        "lineage_rows_accepted": len(lineage_rows),
+        "lineage_rows_rejected": max(0, len(rows) - len(lineage_rows)),
+        "lineage_reconstruction": lineage_audit,
+        "champion_history_load": champion_history_load,
         "promoted": promoted,
         "promotion_error": promotion_error,
         "registry_error": registry_error,
-        "production_mutation_allowed": bool(req.promote and not req.dry_run and decision == "PASS"),
+        "cutover_readiness": cutover_readiness,
+        "production_mutation_allowed": bool(
+            req.promote and not req.dry_run and decision == "PASS" and cutover_readiness["ready"]
+        ),
         "summary": (
             f"l4_alpha_ev_refresh status={status} cadence={req.cadence} "
             f"end_date={end_date} model_version={(artifact or {}).get('model_version', 'unknown')} "
-            f"decision={decision or 'UNKNOWN'} promoted={1 if promoted else 0}"
+            f"decision={decision or 'UNKNOWN'} lineage={len(lineage_rows)}/{len(rows)} "
+            f"promoted={1 if promoted else 0}"
         ),
     }

@@ -61,6 +61,19 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _iso_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _json_safe(value: Any) -> Any:
     if isinstance(value, float):
         return value if math.isfinite(value) else None
@@ -3086,6 +3099,35 @@ def run_promotion_controller(
             )
         except Exception as exc:  # noqa: BLE001
             errors.append(f"champion_pointer_update:{exc}")
+        if not any(error.startswith("champion_pointer_update:") for error in errors):
+            try:
+                d1_client.execute(
+                    """
+                    UPDATE model_champion_history
+                    SET retired_at = ?
+                    WHERE model_name = ? AND retired_at IS NULL
+                    """,
+                    [now, model_name],
+                )
+                d1_client.execute(
+                    """
+                    INSERT INTO model_champion_history (
+                      event_id, model_name, version, artifact_id, effective_at,
+                      retired_at, source, evidence_grade, evidence_json
+                    ) VALUES (?, ?, ?, ?, ?, NULL, 'model_champion_history', 'exact', ?)
+                    ON CONFLICT(model_name, version, effective_at) DO NOTHING
+                    """,
+                    [
+                        f"champion:{model_name}:{artifact.get('version')}:{now}",
+                        model_name,
+                        artifact.get("version"),
+                        artifact_id,
+                        now,
+                        _json_dumps(evidence),
+                    ],
+                )
+            except Exception as exc:  # noqa: BLE001 - lineage history is part of promotion closure.
+                errors.append(f"champion_history_update:{exc}")
 
     return {
         "status": "ok" if not errors else "partial_error",
@@ -3185,6 +3227,7 @@ def run_feature_release_promotion_controller(
             "model_decisions": decisions,
         }
 
+    promotion_time = _now_iso()
     statements: list[tuple[str, list[Any]]] = []
     for model_name in sorted(TIMESFM_L175_RELEASE_COHORT):
         artifact = artifacts_by_model[model_name]
@@ -3250,10 +3293,35 @@ def run_feature_release_promotion_controller(
                     _json_dumps(evidence),
                 ],
             ),
+            (
+                """
+                UPDATE model_champion_history
+                SET retired_at = ?
+                WHERE model_name = ? AND retired_at IS NULL
+                """,
+                [promotion_time, model_name],
+            ),
+            (
+                """
+                INSERT INTO model_champion_history (
+                  event_id, model_name, version, artifact_id, effective_at,
+                  retired_at, source, evidence_grade, evidence_json
+                ) VALUES (?, ?, ?, ?, ?, NULL, 'model_champion_history', 'exact', ?)
+                ON CONFLICT(model_name, version, effective_at) DO NOTHING
+                """,
+                [
+                    f"champion:{model_name}:{artifact.get('version')}:{training_run_id}",
+                    model_name,
+                    artifact.get("version"),
+                    artifact_id,
+                    promotion_time,
+                    _json_dumps(evidence),
+                ],
+            ),
         ])
 
     batch_result = d1_client.atomic_batch_execute(statements, timeout=60.0)
-    now = _now_iso()
+    now = promotion_time
     return {
         "status": "ok",
         "decision": "promoted_atomic_feature_release",
@@ -3265,4 +3333,164 @@ def run_feature_release_promotion_controller(
         "d1_batch": batch_result,
         "model_decisions": decisions,
         "serving_reader": "model_pool.json",
+    }
+
+
+def build_model_champion_history_backfill_plan(model_pool: dict[str, Any]) -> dict[str, Any]:
+    """Build exact-only champion intervals from model_pool promotion evidence.
+
+    An entry's own promoted_at is exact. For an ordered atomic transition
+    chain, the previous version's retired_at is also the next version's exact
+    effective_at. The oldest entry remains bounded and is excluded.
+    """
+    planned: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    models = model_pool.get("models") if isinstance(model_pool.get("models"), dict) else {}
+    for model_name, raw_entry in sorted(models.items()):
+        if model_name not in PRODUCTION_ARTIFACT_MODEL_NAMES or not isinstance(raw_entry, dict):
+            continue
+        retired = sorted(
+            [item for item in (raw_entry.get("retired_versions") or []) if isinstance(item, dict)],
+            key=lambda item: str(item.get("retired_at") or ""),
+        )
+        candidates: list[dict[str, Any]] = []
+        previous_retired_at: str | None = None
+        for item in retired:
+            explicit_promoted_at = str(item.get("promoted_at") or "").strip() or None
+            transition_promoted_at = previous_retired_at if previous_retired_at else None
+            candidates.append({
+                "version": item.get("version"),
+                "artifact_id": item.get("artifact_id"),
+                "promoted_at": explicit_promoted_at or transition_promoted_at,
+                "retired_at": item.get("retired_at"),
+                "position": "retired",
+                "promotion_evidence": (
+                    "explicit_promoted_at"
+                    if explicit_promoted_at
+                    else "previous_atomic_transition_retired_at"
+                    if transition_promoted_at
+                    else "bounded_oldest_entry"
+                ),
+            })
+            previous_retired_at = str(item.get("retired_at") or "").strip() or None
+        candidates.append({
+            "version": raw_entry.get("version"),
+            "artifact_id": raw_entry.get("serving_artifact_id"),
+            "promoted_at": raw_entry.get("promoted_at"),
+            "retired_at": None,
+            "position": "current",
+            "promotion_evidence": "explicit_promoted_at",
+        })
+        for candidate in candidates:
+            version = str(candidate.get("version") or "").strip()
+            promoted_at = str(candidate.get("promoted_at") or "").strip()
+            retired_at = str(candidate.get("retired_at") or "").strip() or None
+            if not version:
+                continue
+            if not promoted_at:
+                excluded.append({
+                    "model_name": model_name,
+                    "version": version,
+                    "reason": "exact_promoted_at_missing",
+                    "known_upper_bound": retired_at,
+                })
+                continue
+            if _iso_datetime(promoted_at) is None or (retired_at and _iso_datetime(retired_at) is None):
+                excluded.append({
+                    "model_name": model_name,
+                    "version": version,
+                    "reason": "promotion_interval_timestamp_invalid",
+                })
+                continue
+            if retired_at and _iso_datetime(promoted_at) >= _iso_datetime(retired_at):
+                excluded.append({
+                    "model_name": model_name,
+                    "version": version,
+                    "reason": "promotion_interval_not_positive",
+                })
+                continue
+            planned.append({
+                "event_id": f"champion-backfill:{model_name}:{version}:{promoted_at}",
+                "model_name": model_name,
+                "version": version,
+                "artifact_id": candidate.get("artifact_id"),
+                "effective_at": promoted_at,
+                "retired_at": retired_at,
+                "source": "model_champion_history",
+                "evidence_grade": "exact",
+                "evidence": {
+                    "source": "universal/model_pool.json",
+                    "position": candidate.get("position"),
+                    "promotion_evidence": candidate.get("promotion_evidence"),
+                    "backfill_policy": "exact_explicit_or_atomic_transition_boundary_no_oldest_interval_inference",
+                },
+            })
+
+    overlaps: list[dict[str, Any]] = []
+    by_model: dict[str, list[dict[str, Any]]] = {}
+    for row in planned:
+        by_model.setdefault(str(row["model_name"]), []).append(row)
+    for model_name, rows in by_model.items():
+        ordered = sorted(rows, key=lambda row: str(row["effective_at"]))
+        for previous, current in zip(ordered, ordered[1:]):
+            previous_end = _iso_datetime(previous.get("retired_at"))
+            current_start = _iso_datetime(current.get("effective_at"))
+            if previous_end is None or (current_start is not None and previous_end > current_start):
+                overlaps.append({
+                    "model_name": model_name,
+                    "previous_version": previous.get("version"),
+                    "current_version": current.get("version"),
+                    "reason": "champion_intervals_overlap_or_open_before_next",
+                })
+    return {
+        "schema_version": "model-champion-history-backfill-plan-v1",
+        "status": "blocked" if overlaps else "ready",
+        "exact_rows": planned,
+        "exact_row_count": len(planned),
+        "excluded": excluded,
+        "excluded_count": len(excluded),
+        "overlaps": overlaps,
+        "earliest_exact_effective_at": min((str(row["effective_at"]) for row in planned), default=None),
+    }
+
+
+def backfill_model_champion_history_from_model_pool(
+    model_pool: dict[str, Any],
+    *,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    plan = build_model_champion_history_backfill_plan(model_pool)
+    if not confirm or plan["status"] != "ready":
+        return {**plan, "mode": "dry_run", "written": 0}
+    statements = [
+        (
+            """
+            INSERT INTO model_champion_history (
+              event_id, model_name, version, artifact_id, effective_at,
+              retired_at, source, evidence_grade, evidence_json
+            ) VALUES (?, ?, ?, ?, ?, ?, 'model_champion_history', 'exact', ?)
+            ON CONFLICT(model_name, version, effective_at) DO UPDATE SET
+              artifact_id = excluded.artifact_id,
+              retired_at = excluded.retired_at,
+              evidence_json = excluded.evidence_json
+            """,
+            [
+                row["event_id"],
+                row["model_name"],
+                row["version"],
+                row.get("artifact_id"),
+                row["effective_at"],
+                row.get("retired_at"),
+                _json_dumps(row["evidence"]),
+            ],
+        )
+        for row in plan["exact_rows"]
+    ]
+    result = d1_client.atomic_batch_execute(statements, timeout=60.0) if statements else {"total": 0}
+    return {
+        **plan,
+        "status": "ok",
+        "mode": "confirmed",
+        "written": len(statements),
+        "d1_batch": result,
     }

@@ -17,10 +17,16 @@ export type AuditJsonArchiveTargetId =
   | 'paper_execution_events'
   | 'strategy_decision_log'
   | 'screener_funnel_items'
+  | 'canonical_screener_funnel_items'
+
+type AuditJsonArchiveTable =
+  | 'paper_execution_events'
+  | 'strategy_decision_log'
+  | 'screener_funnel_items'
 
 type AuditJsonTargetConfig = {
   id: AuditJsonArchiveTargetId
-  table: AuditJsonArchiveTargetId
+  table: AuditJsonArchiveTable
   dateColumn: string
   keyColumn: string
   selectedColumns: string[]
@@ -28,7 +34,8 @@ type AuditJsonTargetConfig = {
 }
 
 export type AuditJsonRetentionPlanTable = {
-  table: AuditJsonArchiveTargetId
+  target: AuditJsonArchiveTargetId
+  table: AuditJsonArchiveTable
   date_column: string
   cutoff_date: string
   retention_days: number
@@ -63,7 +70,8 @@ export type AuditJsonArchiveRunResult = {
   cutoff_date: string
   limit_per_table: number
   tables: Array<{
-    table: AuditJsonArchiveTargetId
+    target: AuditJsonArchiveTargetId
+    table: AuditJsonArchiveTable
     candidate_rows: number
     archived_rows: number
     scrubbed_rows: number
@@ -105,6 +113,28 @@ const AUDIT_JSON_TARGETS: AuditJsonTargetConfig[] = [
   },
   {
     id: 'screener_funnel_items',
+    table: 'screener_funnel_items',
+    dateColumn: 'date',
+    keyColumn: 'id',
+    selectedColumns: [
+      'id',
+      'run_id',
+      'date',
+      'symbol',
+      'name',
+      'stage',
+      'decision',
+      'reason_code',
+      'score_before',
+      'score_after',
+      'rank',
+      'evidence',
+      'created_at',
+    ],
+    blobColumns: ['evidence'],
+  },
+  {
+    id: 'canonical_screener_funnel_items',
     table: 'screener_funnel_items',
     dateColumn: 'date',
     keyColumn: 'id',
@@ -197,6 +227,41 @@ function archiveableBinds(target: AuditJsonTargetConfig, minBlobBytes: number): 
   return target.blobColumns.map(() => minBlobBytes)
 }
 
+function retentionEligibilityWhere(target: AuditJsonTargetConfig): string {
+  if (target.id === 'strategy_decision_log') {
+    return `strategy_decision_log.context_id IS NOT NULL
+         AND strategy_decision_log.evidence_artifact_id IS NOT NULL`
+  }
+  if (target.id === 'canonical_screener_funnel_items') {
+    return `(EXISTS (
+             SELECT 1
+               FROM canonical_run_heads h
+              WHERE h.run_id = screener_funnel_items.run_id
+           ) OR screener_funnel_items.run_id = COALESCE((
+             SELECT latest.run_id
+               FROM screener_funnel_runs latest
+              WHERE latest.date = screener_funnel_items.date
+                AND latest.status = 'success'
+              ORDER BY latest.created_at DESC
+              LIMIT 1
+           ), ''))`
+  }
+  if (target.id !== 'screener_funnel_items') return '1=1'
+  return `NOT EXISTS (
+           SELECT 1
+             FROM canonical_run_heads h
+            WHERE h.run_id = screener_funnel_items.run_id
+         )
+         AND screener_funnel_items.run_id <> COALESCE((
+           SELECT latest.run_id
+             FROM screener_funnel_runs latest
+            WHERE latest.date = screener_funnel_items.date
+              AND latest.status = 'success'
+            ORDER BY latest.created_at DESC
+            LIMIT 1
+         ), '')`
+}
+
 function cleanRunPart(value: string): string {
   return value.replace(/[^A-Za-z0-9_.=-]+/g, '_').slice(0, 160)
 }
@@ -254,6 +319,7 @@ async function loadCandidateRows(
       FROM ${target.table}
      WHERE ${target.dateColumn} IS NOT NULL
        AND ${target.dateColumn} < ?
+       AND (${retentionEligibilityWhere(target)})
        AND (${archiveableWhere(target)})
      ORDER BY ${target.dateColumn} ASC, ${target.keyColumn} ASC
      LIMIT ?
@@ -318,9 +384,10 @@ export async function buildAuditJsonRetentionPlan(
              MIN(${target.dateColumn}) AS min_date,
              MAX(${target.dateColumn}) AS max_date,
              SUM(CASE WHEN ${archiveableWhere(target)} THEN (${blobLengthExpr(target)}) ELSE 0 END) AS archiveable_blob_bytes
-        FROM ${target.table}
+       FROM ${target.table}
        WHERE ${target.dateColumn} IS NOT NULL
          AND ${target.dateColumn} < ?
+         AND (${retentionEligibilityWhere(target)})
     `).bind(
       ...archiveableBinds(target, minBlobBytes),
       ...archiveableBinds(target, minBlobBytes),
@@ -334,6 +401,7 @@ export async function buildAuditJsonRetentionPlan(
     }>()
 
     tables.push({
+      target: target.id,
       table: target.table,
       date_column: target.dateColumn,
       cutoff_date: cutoffDate,
@@ -417,6 +485,7 @@ export async function runAuditJsonArchiveRetention(
     const archivedBlobBytes = rows.reduce((sum, row) => sum + rowBlobBytes(row, target), 0)
     if (dryRun || rows.length === 0) {
       result.tables.push({
+        target: target.id,
         table: target.table,
         candidate_rows: rows.length,
         archived_rows: 0,
@@ -435,7 +504,7 @@ export async function runAuditJsonArchiveRetention(
       const r2Key = [
         'archives',
         AUDIT_JSON_ARCHIVE_KIND,
-        `table=${target.table}`,
+        `target=${target.id}`,
         `business_date=${businessDate}`,
         `run_id=${runId}`,
         `cutoff_date=${cutoffDate}`,
@@ -444,6 +513,7 @@ export async function runAuditJsonArchiveRetention(
       const payload = {
         schema_version: 'd1-audit-json-archive-v1',
         archive_kind: AUDIT_JSON_ARCHIVE_KIND,
+        target: target.id,
         table: target.table,
         date_column: target.dateColumn,
         key_column: target.keyColumn,
@@ -462,7 +532,7 @@ export async function runAuditJsonArchiveRetention(
       }
       const body = JSON.stringify(payload)
       const checksum = await sha256Text(body)
-      const snapshotId = `${AUDIT_JSON_ARCHIVE_KIND}:${target.table}:${businessDate}:${runId}:${chunkId}`
+      const snapshotId = `${AUDIT_JSON_ARCHIVE_KIND}:${target.id}:${businessDate}:${runId}:${chunkId}`
 
       await (env.ARTIFACTS as any).put(r2Key, body, {
         httpMetadata: { contentType: 'application/json; charset=utf-8' },
@@ -484,6 +554,7 @@ export async function runAuditJsonArchiveRetention(
         status: 'ready',
         metadata_json: JSON.stringify({
           role: 'd1_audit_json_r2_archive',
+          target: target.id,
           table: target.table,
           date_column: target.dateColumn,
           key_column: target.keyColumn,
@@ -511,6 +582,7 @@ export async function runAuditJsonArchiveRetention(
       }))
 
       result.tables.push({
+        target: target.id,
         table: target.table,
         candidate_rows: rows.length,
         archived_rows: rows.length,
@@ -526,6 +598,7 @@ export async function runAuditJsonArchiveRetention(
       result.total_archived_blob_bytes += archivedBlobBytes
     } catch (error) {
       result.tables.push({
+        target: target.id,
         table: target.table,
         candidate_rows: rows.length,
         archived_rows: 0,
@@ -546,7 +619,7 @@ export async function runAuditJsonArchiveRetention(
 export function summarizeAuditJsonArchiveRun(result: AuditJsonArchiveRunResult): string {
   const mode = result.dry_run ? 'dry_run' : 'confirmed'
   const tableSummary = result.tables
-    .map((table) => `${table.table}:${table.status}:candidates=${table.candidate_rows}:archived=${table.archived_rows}:scrubbed=${table.scrubbed_rows}`)
+    .map((table) => `${table.target}:${table.status}:candidates=${table.candidate_rows}:archived=${table.archived_rows}:scrubbed=${table.scrubbed_rows}`)
     .join(' ')
   return `audit-json-retention ${mode} date=${result.business_date} cutoff=${result.cutoff_date} retention_days=${result.retention_days} total_archived=${result.total_archived_rows} total_scrubbed=${result.total_scrubbed_rows} bytes=${result.total_archived_blob_bytes}; ${tableSummary}`
 }

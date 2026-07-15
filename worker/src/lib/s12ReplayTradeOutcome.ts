@@ -6,6 +6,9 @@ import {
 } from './s12IntradayStructure'
 import { loadS12HistoricalReplayLifecycleBars } from './s12RuntimeBars'
 import type { Bindings } from '../types'
+
+export const ALLOCATOR_EV_SNAPSHOT_AS_OF_GUARD =
+  'prediction_before_next_executable_session_open;exact_active8_artifact_lineage;l4_trained_before_snapshot;s12_samples_before_run'
 import {
   applyS12TwCalibrationArtifact,
   listApprovedS12TwCalibrationArtifacts,
@@ -148,8 +151,8 @@ export async function loadFusionSnapshotMissingReplaySymbols(
         FROM allocator_ev_feature_snapshots fs
        WHERE fs.snapshot_date = ?
          AND json_extract(fs.score_components, '$.version') = 'score_v2'
-         AND fs.snapshot_source = 'allocator_ev_asof_backfill_v1'
-         AND fs.as_of_guard = 'l4_trained_until_strictly_before_snapshot_date_and_s12_samples_before_run_date'
+         AND fs.snapshot_source = 'allocator_ev_asof_backfill_v2'
+         AND fs.as_of_guard = '${ALLOCATOR_EV_SNAPSHOT_AS_OF_GUARD}'
     )
     SELECT fs.symbol,
            st.name,
@@ -217,8 +220,8 @@ export async function loadFusionSnapshotSymbols(
         FROM allocator_ev_feature_snapshots fs
        WHERE fs.snapshot_date = ?
          AND json_extract(fs.score_components, '$.version') = 'score_v2'
-         AND fs.snapshot_source = 'allocator_ev_asof_backfill_v1'
-         AND fs.as_of_guard = 'l4_trained_until_strictly_before_snapshot_date_and_s12_samples_before_run_date'
+         AND fs.snapshot_source = 'allocator_ev_asof_backfill_v2'
+         AND fs.as_of_guard = '${ALLOCATOR_EV_SNAPSHOT_AS_OF_GUARD}'
     )
     SELECT fs.symbol,
            st.name,
@@ -282,8 +285,8 @@ export async function loadReplayReadySignalDates(
     SELECT fs.snapshot_date AS signal_date
       FROM allocator_ev_feature_snapshots fs
      WHERE date(fs.snapshot_date) < date(?)
-       AND fs.snapshot_source = 'allocator_ev_asof_backfill_v1'
-       AND fs.as_of_guard = 'l4_trained_until_strictly_before_snapshot_date_and_s12_samples_before_run_date'
+       AND fs.snapshot_source = 'allocator_ev_asof_backfill_v2'
+       AND fs.as_of_guard = '${ALLOCATOR_EV_SNAPSHOT_AS_OF_GUARD}'
        AND json_extract(fs.score_components, '$.version') = 'score_v2'
        AND EXISTS (
          SELECT 1

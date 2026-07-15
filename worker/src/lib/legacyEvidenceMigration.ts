@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { writeEvidenceArtifact } from './artifactLifecycle'
+import { retainArtifactHardReference, writeEvidenceArtifact } from './artifactLifecycle'
 
 type LegacyScreenerEvidenceRow = {
   id: number
@@ -95,6 +95,11 @@ export async function runLegacyEvidenceMigration(
       metadata: { migration: 'legacy_noncanonical_screener' },
     })
     artifacts += 1
+    await retainArtifactHardReference(env.DB, {
+      artifactId: artifact.artifact_id,
+      ownerType: 'legacy_screener_run',
+      ownerId: runId,
+    })
     const statements = runRows.map((row) => env.DB.prepare(`
       INSERT OR IGNORE INTO artifact_d1_scrub_queue (
         scrub_id, artifact_id, target_table, target_pk_column, target_pk_value,

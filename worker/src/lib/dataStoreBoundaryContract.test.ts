@@ -120,6 +120,8 @@ assert(
   datasetSnapshots.includes('D1_HOT_WINDOW_DAYS = 504') &&
     datasetSnapshots.includes('D1_COLD_ARCHIVE_KIND') &&
     datasetSnapshots.includes('findColdArchiveCoverage') &&
+    datasetSnapshots.includes('canonical_fundamental_features') &&
+    datasetSnapshots.includes("dateColumn: 'available_date'") &&
     datasetSnapshots.includes('safe_to_delete') &&
     datasetSnapshots.includes('delete_blocker'),
   'D1 retention must use the approved 504-day hot window and require GCS archive coverage before deletion is allowed',

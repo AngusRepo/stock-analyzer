@@ -2,6 +2,7 @@ import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
 import { runVerifyV2 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
 import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
+import type { LegacyHotDataTarget } from './legacyHotDataRetirement'
 
 const RESCORE_CRONS = new Set(['0 2 * * 1-5', '0 3 * * 1-5', '0 4 * * 1-5', '30 4 * * 1-5'])
 
@@ -458,6 +459,68 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         if (!backlogRemaining || result.candidates === 0) break
       }
       return `legacy_evidence_migration candidates=${candidates} artifacts=${artifacts} queued_scrubs=${queuedScrubs} backlog_remaining=${backlogRemaining}`
+    },
+    'legacy-strategy-evidence-migration': async () => {
+      const { runLegacyStrategyEvidenceMigration } = await import('./legacyStrategyEvidenceMigration')
+      const symbolLimit = parseBoundedPositiveInt(c.req.query('symbol_limit'), 20, 40)
+      const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 5, 10)
+      let contexts = 0
+      let decisions = 0
+      let artifacts = 0
+      let originalBytes = 0
+      let compactBytes = 0
+      let backlogRemaining = false
+      for (let chunk = 0; chunk < maxChunks; chunk += 1) {
+        const result = await runLegacyStrategyEvidenceMigration(c.env, { symbolLimit })
+        contexts += result.candidate_contexts
+        decisions += result.migrated_decisions
+        artifacts += result.artifacts
+        originalBytes += result.original_blob_bytes
+        compactBytes += result.compact_blob_bytes
+        backlogRemaining = result.backlog_remaining
+        if (!backlogRemaining || result.migrated_decisions === 0) break
+      }
+      return `legacy_strategy_evidence_migration contexts=${contexts} decisions=${decisions} artifacts=${artifacts} original_bytes=${originalBytes} compact_bytes=${compactBytes} backlog_remaining=${backlogRemaining}`
+    },
+    'legacy-hot-data-retirement': async () => {
+      const {
+        LEGACY_HOT_DATA_RETIREMENT_CONFIRM_PHRASE,
+        runLegacyHotDataRetirement,
+      } = await import('./legacyHotDataRetirement')
+      const allowedTargets: LegacyHotDataTarget[] = [
+        'obsolete_screener_items',
+        'superseded_pending_items',
+        'superseded_pending_events',
+        'null_date_predictions',
+        'intraday_report_manifests',
+        'retired_state_space_shadow',
+        'allocator_snapshot_staging_orphans',
+      ]
+      const requestedTargets = String(c.req.query('targets') ?? '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter((value): value is LegacyHotDataTarget => allowedTargets.includes(value as LegacyHotDataTarget))
+      const targets = requestedTargets.length ? requestedTargets : allowedTargets
+      const limit = parseBoundedPositiveInt(c.req.query('limit'), 250, 500)
+      const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 2, 5)
+      const dryRun = c.req.query('confirm_retirement') !== LEGACY_HOT_DATA_RETIREMENT_CONFIRM_PHRASE
+      const summaries: string[] = []
+      for (const target of targets) {
+        let archived = 0
+        let deleted = 0
+        let artifacts = 0
+        let backlogRemaining = false
+        for (let chunk = 0; chunk < (dryRun ? 1 : maxChunks); chunk += 1) {
+          const result = await runLegacyHotDataRetirement(c.env, { target, limit, dryRun })
+          archived += result.archived
+          deleted += result.deleted
+          artifacts += result.artifacts
+          backlogRemaining = result.backlog_remaining
+          if (!backlogRemaining || result.candidates === 0) break
+        }
+        summaries.push(`${target}:archived=${archived},deleted=${deleted},artifacts=${artifacts},backlog=${backlogRemaining}`)
+      }
+      return `legacy_hot_data_retirement dry_run=${dryRun} ${summaries.join(' ')}`
     },
     'd1-evidence-scrub': async () => {
       const { runD1EvidenceScrub } = await import('./artifactLifecycle')

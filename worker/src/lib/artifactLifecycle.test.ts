@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import {
   promoteCanonicalRun,
+  retainArtifactHardReference,
+  releaseArtifactHardReferencesByOwner,
   registerPipelineRun,
   runD1EvidenceScrub,
   runR2RetentionSweep,
@@ -61,7 +63,9 @@ async function testR2FirstWriteVerifiesBeforeManifest(): Promise<void> {
   assert.match(manifest.checksum, /^sha256:/)
   assert.equal(r2.objects.has(manifest.r2_key), true)
   assert.equal(db.runs.length, 1)
-  assert.match(db.runs[0].sql, /INSERT OR REPLACE INTO run_artifacts/)
+  assert.match(db.runs[0].sql, /INSERT INTO run_artifacts/)
+  assert.match(db.runs[0].sql, /ON CONFLICT\(artifact_id\) DO UPDATE/)
+  assert.doesNotMatch(db.runs[0].sql, /hard_ref_count=excluded/)
 }
 
 async function testIdenticalRunBecomesReused(): Promise<void> {
@@ -122,9 +126,32 @@ async function testCanonicalPromotionSupersedesOnlyAfterVerifiedArtifact(): Prom
 
   assert.equal(result.previous_run_id, 'old-run')
   assert.equal(db.batches.length, 1)
-  assert.equal(db.batches[0].length, 3)
+  assert.equal(db.batches[0].length, 5)
   assert.match(db.batches[0][0].sql, /status='superseded'/)
   assert.match(db.batches[0][1].sql, /status='canonical'/)
+  assert.match(db.batches[0][3].sql, /artifact_hard_references/)
+  assert.match(db.batches[0][4].sql, /hard_ref_count=/)
+}
+
+async function testHardReferenceEdgesAreReachabilitySourceOfTruth(): Promise<void> {
+  const db = new MockDb()
+  await retainArtifactHardReference(db as any, {
+    artifactId: 'artifact-1',
+    ownerType: 'strategy_decision_evidence_batch',
+    ownerId: 'batch-1',
+  })
+  assert.equal(db.batches.length, 1)
+  assert.match(db.batches[0][0].sql, /INSERT INTO artifact_hard_references/)
+  assert.match(db.batches[0][1].sql, /SELECT COUNT\(\*\) FROM artifact_hard_references/)
+
+  db.allHandler = () => [{ artifact_id: 'artifact-1' }]
+  const released = await releaseArtifactHardReferencesByOwner(db as any, {
+    ownerType: 'strategy_decision_evidence_batch',
+    ownerId: 'batch-1',
+  })
+  assert.equal(released, 1)
+  assert.equal(db.batches.length, 2)
+  assert.match(db.batches[1][0].sql, /SET active=0/)
 }
 
 async function testRetentionSweepPreservesMetadataAfterPayloadDelete(): Promise<void> {
@@ -167,12 +194,17 @@ async function testD1EvidenceScrubBatchesVerifiedRowsAtomically(): Promise<void>
 async function testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown(): Promise<void> {
   const healthyDb = new MockDb()
   healthyDb.queryMeta = { size_after: 7_000_000_000 }
-  healthyDb.firstHandler = (statement) => statement.sql.includes('artifact_cleanup_dlq')
-    ? { count: 0 }
-    : { integrity_blocked: 0, cleanup_backlog_over_24h: 0 }
+  healthyDb.firstHandler = (statement) => {
+    if (statement.sql.includes('artifact_cleanup_dlq')) return { count: 0 }
+    if (statement.sql.includes('FROM allocator_ev_feature_snapshots')) return { row_count: 1600, date_count: 10 }
+    if (statement.sql.includes('AS backlog_cohorts')) return { backlog_cohorts: 7, progress_24h: 10 }
+    return { integrity_blocked: 0, cleanup_backlog_over_24h: 0 }
+  }
   const healthy = await runStorageHealthGate({ DB: healthyDb as any })
   assert.equal(healthy.healthy, true)
   assert.equal(healthy.d1_bytes, 7_000_000_000)
+  assert.equal(healthy.allocator_ev_snapshot_dates, 10)
+  assert.equal(healthy.legacy_retention_stalled, false)
 
   const overCapacityDb = new MockDb()
   overCapacityDb.queryMeta = { size_after: 8_864_489_472 }
@@ -180,6 +212,18 @@ async function testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown():
   const overCapacity = await runStorageHealthGate({ DB: overCapacityDb as any })
   assert.equal(overCapacity.healthy, false)
   assert.equal(overCapacity.d1_utilization, 0.8864489472)
+
+  const missingAllocatorDb = new MockDb()
+  missingAllocatorDb.queryMeta = { size_after: 7_000_000_000 }
+  missingAllocatorDb.firstHandler = (statement) => {
+    if (statement.sql.includes('artifact_cleanup_dlq')) return { count: 0 }
+    if (statement.sql.includes('FROM allocator_ev_feature_snapshots')) return { row_count: 0, date_count: 0 }
+    if (statement.sql.includes('AS backlog_cohorts')) return { backlog_cohorts: 0, progress_24h: 0 }
+    return { integrity_blocked: 0, cleanup_backlog_over_24h: 0 }
+  }
+  const missingAllocator = await runStorageHealthGate({ DB: missingAllocatorDb as any })
+  assert.equal(missingAllocator.healthy, false)
+  assert.equal(missingAllocator.allocator_ev_snapshot_rows, 0)
 
   const unknownDb = new MockDb()
   unknownDb.queryMeta = {}
@@ -199,6 +243,7 @@ async function main(): Promise<void> {
   await testIdenticalRunBecomesReused()
   await testContentAddressDoesNotDuplicateAcrossRunIds()
   await testCanonicalPromotionSupersedesOnlyAfterVerifiedArtifact()
+  await testHardReferenceEdgesAreReachabilitySourceOfTruth()
   await testRetentionSweepPreservesMetadataAfterPayloadDelete()
   await testD1EvidenceScrubBatchesVerifiedRowsAtomically()
   await testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown()

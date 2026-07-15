@@ -10,6 +10,13 @@ import json
 import math
 from typing import Any
 
+from services.evidence_contracts import (
+    ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
+    ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
+    LABEL_SCHEMA_VERSION,
+    SUPPORTED_ALLOCATOR_EV_SERVING_CONTRACT_PAIRS,
+)
+
 
 SCHEMA_VERSION = "allocator-ev-fusion-v1"
 OWNER = "allocator_ev_fusion"
@@ -32,9 +39,9 @@ REQUIRED_FEATURE_PREFIXES = {
     "l4": ("l4_expected_return", "l4_"),
     "s12": ("s12_trade_expected_return", "s12_"),
 }
-REQUIRED_ARTIFACT_CONTRACT_VERSION = "allocator-ev-fusion-contract-v8"
-REQUIRED_FEATURE_SEMANTIC_VERSION = "allocator-ev-fusion-directional-components-v2-lineage-bound"
-REQUIRED_LABEL_SCHEMA_VERSION = "next-session-adjusted-open-to-fifth-session-adjusted-close-net-v1"
+REQUIRED_ARTIFACT_CONTRACT_VERSION = ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION
+REQUIRED_FEATURE_SEMANTIC_VERSION = ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION
+REQUIRED_LABEL_SCHEMA_VERSION = LABEL_SCHEMA_VERSION
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -343,12 +350,22 @@ def materialize_allocator_ev_fusion(
         return None
 
     blockers: list[str] = []
-    if str(artifact.get("artifact_contract_version") or "").strip() != REQUIRED_ARTIFACT_CONTRACT_VERSION:
+    contract_version = str(artifact.get("artifact_contract_version") or "").strip()
+    label_version = str(artifact.get("label_schema_version") or "").strip()
+    supported_contract_versions = {pair[0] for pair in SUPPORTED_ALLOCATOR_EV_SERVING_CONTRACT_PAIRS}
+    supported_label_versions = {pair[1] for pair in SUPPORTED_ALLOCATOR_EV_SERVING_CONTRACT_PAIRS}
+    if contract_version not in supported_contract_versions:
         blockers.append("artifact_contract_version_incompatible")
+    if label_version not in supported_label_versions:
+        blockers.append("label_schema_version_incompatible")
+    if (
+        contract_version in supported_contract_versions
+        and label_version in supported_label_versions
+        and (contract_version, label_version) not in SUPPORTED_ALLOCATOR_EV_SERVING_CONTRACT_PAIRS
+    ):
+        blockers.append("artifact_label_contract_pair_incompatible")
     if str(artifact.get("feature_semantic_version") or "").strip() != REQUIRED_FEATURE_SEMANTIC_VERSION:
         blockers.append("feature_semantic_version_incompatible")
-    if str(artifact.get("label_schema_version") or "").strip() != REQUIRED_LABEL_SCHEMA_VERSION:
-        blockers.append("label_schema_version_incompatible")
     method = _resolver_method(artifact)
     if _validation_decision(artifact) not in PASS_STATES:
         blockers.append("validation_packet_not_pass")

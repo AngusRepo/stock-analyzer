@@ -34,6 +34,10 @@ const RETENTION_DAYS: Record<RetentionClass, number | null> = {
 }
 
 export const STORAGE_LIFECYCLE_SCHEDULE = [
+  { task: 'legacy-hot-data-retirement', cron: '10 1-5 * * *', timezone: 'Asia/Taipei' },
+  { task: 'legacy-evidence-migration', cron: '40 1-5 * * *', timezone: 'Asia/Taipei' },
+  { task: 'legacy-strategy-evidence-migration', cron: '50 1-5 * * *', timezone: 'Asia/Taipei' },
+  { task: 'audit-json-retention', cron: '0 2-6 * * *', timezone: 'Asia/Taipei' },
   { task: 'artifact-reconcile', cron: '5 2 * * *', timezone: 'Asia/Taipei' },
   { task: 'd1-evidence-scrub', cron: '*/20 2-6 * * *', timezone: 'Asia/Taipei' },
   { task: 'r2-retention-sweep', cron: '40 2 * * *', timezone: 'Asia/Taipei' },
@@ -57,6 +61,69 @@ function retainUntil(retentionClass: RetentionClass, createdAt: string): string 
 
 function byteLength(value: string): number {
   return new TextEncoder().encode(value).length
+}
+
+function artifactReferenceId(ownerType: string, ownerId: string, artifactId: string): string {
+  return `artifact-ref:${cleanPart(ownerType)}:${cleanPart(ownerId)}:${cleanPart(artifactId)}`
+}
+
+export async function retainArtifactHardReference(
+  db: D1Database,
+  input: { artifactId: string; ownerType: string; ownerId: string },
+): Promise<void> {
+  const referenceId = artifactReferenceId(input.ownerType, input.ownerId, input.artifactId)
+  await db.batch([
+    db.prepare(`
+      INSERT INTO artifact_hard_references (
+        reference_id, artifact_id, owner_type, owner_id, active,
+        created_at, released_at, updated_at
+      ) VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP, NULL, CURRENT_TIMESTAMP)
+      ON CONFLICT(owner_type, owner_id, artifact_id) DO UPDATE SET
+        active=1, released_at=NULL, updated_at=CURRENT_TIMESTAMP
+    `).bind(referenceId, input.artifactId, input.ownerType, input.ownerId),
+    db.prepare(`
+      UPDATE run_artifacts
+         SET hard_ref_count=(
+               SELECT COUNT(*) FROM artifact_hard_references r
+                WHERE r.artifact_id=run_artifacts.artifact_id AND r.active=1
+             ),
+             updated_at=CURRENT_TIMESTAMP
+       WHERE artifact_id=?
+    `).bind(input.artifactId),
+  ])
+}
+
+export async function releaseArtifactHardReferencesByOwner(
+  db: D1Database,
+  input: { ownerType: string; ownerId: string },
+): Promise<number> {
+  const { results } = await db.prepare(`
+    SELECT DISTINCT artifact_id
+      FROM artifact_hard_references
+     WHERE owner_type=? AND owner_id=? AND active=1
+  `).bind(input.ownerType, input.ownerId).all<{ artifact_id: string }>()
+  const artifactIds = (results ?? []).map((row) => row.artifact_id)
+  if (!artifactIds.length) return 0
+  const statements: D1PreparedStatement[] = [
+    db.prepare(`
+      UPDATE artifact_hard_references
+         SET active=0, released_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+       WHERE owner_type=? AND owner_id=? AND active=1
+    `).bind(input.ownerType, input.ownerId),
+  ]
+  for (const artifactId of artifactIds) {
+    statements.push(db.prepare(`
+      UPDATE run_artifacts
+         SET hard_ref_count=(
+               SELECT COUNT(*) FROM artifact_hard_references r
+                WHERE r.artifact_id=run_artifacts.artifact_id AND r.active=1
+             ),
+             updated_at=CURRENT_TIMESTAMP
+       WHERE artifact_id=?
+    `).bind(artifactId))
+  }
+  await db.batch(statements)
+  return artifactIds.length
 }
 
 export async function writeEvidenceArtifact(
@@ -119,12 +186,29 @@ export async function writeEvidenceArtifact(
     metadata_json: JSON.stringify(input.metadata ?? {}),
   }
   await env.DB.prepare(`
-    INSERT OR REPLACE INTO run_artifacts (
+    INSERT INTO run_artifacts (
       artifact_id, retention_class, status, domain, business_date,
       producer_run_id, canonical_run_id, r2_key, checksum, schema_version,
       row_count, byte_size, created_at, retain_until, pinned, legal_hold,
       hard_ref_count, checksum_verified_at, metadata_json, updated_at
     ) VALUES (?, ?, 'ready', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(artifact_id) DO UPDATE SET
+      retention_class=excluded.retention_class,
+      status='ready',
+      domain=excluded.domain,
+      business_date=excluded.business_date,
+      producer_run_id=excluded.producer_run_id,
+      canonical_run_id=COALESCE(excluded.canonical_run_id, run_artifacts.canonical_run_id),
+      r2_key=excluded.r2_key,
+      checksum=excluded.checksum,
+      schema_version=excluded.schema_version,
+      row_count=excluded.row_count,
+      byte_size=excluded.byte_size,
+      retain_until=excluded.retain_until,
+      checksum_verified_at=excluded.checksum_verified_at,
+      payload_deleted_at=NULL,
+      metadata_json=excluded.metadata_json,
+      updated_at=CURRENT_TIMESTAMP
   `).bind(
     manifest.artifact_id,
     manifest.retention_class,
@@ -220,9 +304,14 @@ export async function promoteCanonicalRun(
     throw new Error(`canonical_promotion_artifact_not_verified:${artifactId}`)
   }
   const head = await db.prepare(`
-    SELECT run_id FROM canonical_run_heads WHERE logical_run_key = ? LIMIT 1
-  `).bind(logicalRunKey).first<{ run_id?: string }>()
+    SELECT h.run_id, p.artifact_id
+      FROM canonical_run_heads h
+      LEFT JOIN pipeline_runs p ON p.run_id=h.run_id
+     WHERE h.logical_run_key = ?
+     LIMIT 1
+  `).bind(logicalRunKey).first<{ run_id?: string; artifact_id?: string | null }>()
   const previousRunId = head?.run_id && head.run_id !== runId ? head.run_id : null
+  const previousArtifactId = previousRunId ? String(head?.artifact_id ?? '').trim() || null : null
   const statements: D1PreparedStatement[] = []
   if (previousRunId) {
     statements.push(db.prepare(`
@@ -246,7 +335,47 @@ export async function promoteCanonicalRun(
         promoted_at=excluded.promoted_at,
         updated_at=CURRENT_TIMESTAMP
     `).bind(logicalRunKey, runId, previousRunId, promotedAt),
+    db.prepare(`
+      INSERT INTO artifact_hard_references (
+        reference_id, artifact_id, owner_type, owner_id, active,
+        created_at, released_at, updated_at
+      ) VALUES (?, ?, 'canonical_run_head', ?, 1, CURRENT_TIMESTAMP, NULL, CURRENT_TIMESTAMP)
+      ON CONFLICT(owner_type, owner_id, artifact_id) DO UPDATE SET
+        active=1, released_at=NULL, updated_at=CURRENT_TIMESTAMP
+    `).bind(
+      artifactReferenceId('canonical_run_head', logicalRunKey, artifactId),
+      artifactId,
+      logicalRunKey,
+    ),
+    db.prepare(`
+      UPDATE run_artifacts
+         SET hard_ref_count=(
+               SELECT COUNT(*) FROM artifact_hard_references r
+                WHERE r.artifact_id=run_artifacts.artifact_id AND r.active=1
+             ),
+             updated_at=CURRENT_TIMESTAMP
+       WHERE artifact_id=?
+    `).bind(artifactId),
   )
+  if (previousArtifactId && previousArtifactId !== artifactId) {
+    statements.push(
+      db.prepare(`
+        UPDATE artifact_hard_references
+           SET active=0, released_at=?, updated_at=CURRENT_TIMESTAMP
+         WHERE owner_type='canonical_run_head' AND owner_id=?
+           AND artifact_id=? AND active=1
+      `).bind(promotedAt, logicalRunKey, previousArtifactId),
+      db.prepare(`
+        UPDATE run_artifacts
+           SET hard_ref_count=(
+                 SELECT COUNT(*) FROM artifact_hard_references r
+                  WHERE r.artifact_id=run_artifacts.artifact_id AND r.active=1
+               ),
+               updated_at=CURRENT_TIMESTAMP
+         WHERE artifact_id=?
+      `).bind(previousArtifactId),
+    )
+  }
   await db.batch(statements)
   return { previous_run_id: previousRunId }
 }
@@ -268,6 +397,10 @@ export async function runR2RetentionSweep(
        AND pinned = 0
        AND legal_hold = 0
        AND hard_ref_count = 0
+       AND NOT EXISTS (
+         SELECT 1 FROM artifact_hard_references r
+          WHERE r.artifact_id=run_artifacts.artifact_id AND r.active=1
+       )
        AND checksum_verified_at IS NOT NULL
      ORDER BY retain_until, artifact_id
      LIMIT ?
@@ -500,6 +633,14 @@ export async function runStorageHealthGate(
   integrity_blocked: number
   cleanup_backlog_over_24h: number
   dlq_pending: number
+  allocator_ev_snapshot_rows: number
+  allocator_ev_snapshot_dates: number
+  allocator_snapshot_incomplete_runs: number
+  allocator_snapshot_staging_orphans: number
+  artifact_hard_ref_drift: number
+  legacy_retention_backlog_cohorts: number
+  legacy_retention_progress_24h: number
+  legacy_retention_stalled: boolean
   d1_bytes: number | null
   d1_utilization: number | null
 }> {
@@ -511,6 +652,102 @@ export async function runStorageHealthGate(
   `).first<any>()
   const dlq = await env.DB.prepare(`
     SELECT COUNT(*) AS count FROM artifact_cleanup_dlq WHERE status IN ('pending','running','blocked')
+  `).first<any>()
+  const allocatorSnapshots = await env.DB.prepare(`
+    SELECT COUNT(*) AS row_count, COUNT(DISTINCT snapshot_date) AS date_count
+      FROM allocator_ev_feature_snapshots
+     WHERE snapshot_source='allocator_ev_asof_backfill_v2'
+       AND as_of_guard IS NOT NULL
+       AND LENGTH(TRIM(as_of_guard)) > 0
+  `).first<any>()
+  const allocatorSnapshotLifecycle = await env.DB.prepare(`
+    SELECT
+      SUM(CASE WHEN status='writing' AND updated_at < datetime('now','-2 hours') THEN 1 ELSE 0 END) AS incomplete_runs,
+      (SELECT COUNT(*)
+         FROM allocator_ev_feature_snapshot_staging s
+         JOIN allocator_ev_snapshot_runs r ON r.run_id=s.run_id
+        WHERE r.status IN ('writing','failed')
+          AND r.updated_at < datetime('now','-7 days')) AS staging_orphans
+      FROM allocator_ev_snapshot_runs
+  `).first<any>()
+  const hardReferences = await env.DB.prepare(`
+    SELECT COUNT(*) AS drift_count
+      FROM run_artifacts a
+     WHERE a.hard_ref_count <> (
+       SELECT COUNT(*) FROM artifact_hard_references r
+        WHERE r.artifact_id=a.artifact_id AND r.active=1
+     )
+  `).first<any>()
+  const legacyRetention = await env.DB.prepare(`
+    SELECT
+      (
+        CASE WHEN EXISTS (SELECT 1 FROM strategy_decision_log WHERE context_id IS NULL LIMIT 1) THEN 1 ELSE 0 END +
+        CASE WHEN EXISTS (
+          SELECT 1 FROM screener_funnel_runs r
+           WHERE NOT EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.run_id=r.run_id)
+             AND r.run_id <> COALESCE((
+               SELECT latest.run_id FROM screener_funnel_runs latest
+                WHERE latest.date=r.date AND latest.status='success'
+                ORDER BY latest.created_at DESC LIMIT 1
+             ), '')
+           LIMIT 1
+        ) THEN 1 ELSE 0 END +
+        CASE WHEN EXISTS (
+          SELECT 1 FROM pending_buy_items i JOIN pending_buy_runs r ON r.id=i.run_id
+           WHERE r.status='superseded' LIMIT 1
+        ) THEN 1 ELSE 0 END +
+        CASE WHEN EXISTS (
+          SELECT 1 FROM paper_execution_events e JOIN pending_buy_runs r ON r.id=e.pending_run_id
+           WHERE r.status='superseded'
+             AND e.event_type IN ('pending_buy','debate','snapshot_audit','finlab_preview','finlab_execution_preview')
+           LIMIT 1
+        ) THEN 1 ELSE 0 END +
+        CASE WHEN EXISTS (SELECT 1 FROM predictions WHERE prediction_date IS NULL LIMIT 1) THEN 1 ELSE 0 END +
+        CASE WHEN EXISTS (SELECT 1 FROM dataset_snapshots WHERE kind='intraday_check_run_report' LIMIT 1) THEN 1 ELSE 0 END +
+        CASE WHEN EXISTS (
+          SELECT 1 FROM state_space_shadow_results WHERE run_date < date('now','-30 days') LIMIT 1
+        ) THEN 1 ELSE 0 END +
+        CASE WHEN EXISTS (
+          SELECT 1
+            FROM allocator_ev_snapshot_runs
+           WHERE status IN ('writing','failed')
+             AND updated_at < datetime('now','-7 days')
+           LIMIT 1
+        ) THEN 1 ELSE 0 END +
+        CASE WHEN EXISTS (
+          SELECT 1 FROM strategy_decision_log
+           WHERE date < date('now','-90 days')
+             AND context_id IS NOT NULL AND evidence_artifact_id IS NOT NULL
+             AND (
+               (LENGTH(COALESCE(context_json,'')) > 64 AND context_json NOT LIKE '%"archived_to_r2":true%') OR
+               (LENGTH(COALESCE(evidence_json,'')) > 64 AND evidence_json NOT LIKE '%"archived_to_r2":true%')
+             )
+           LIMIT 1
+        ) THEN 1 ELSE 0 END +
+        CASE WHEN EXISTS (
+          SELECT 1 FROM screener_funnel_items
+           WHERE date < date('now','-90 days')
+             AND LENGTH(COALESCE(evidence,'')) > 64
+             AND evidence NOT LIKE '%"archived_to_r2":true%'
+           LIMIT 1
+        ) THEN 1 ELSE 0 END +
+        CASE WHEN EXISTS (
+          SELECT 1 FROM paper_execution_events
+           WHERE trade_date < date('now','-90 days')
+             AND LENGTH(COALESCE(detail_json,'')) > 64
+             AND detail_json NOT LIKE '%"archived_to_r2":true%'
+           LIMIT 1
+        ) THEN 1 ELSE 0 END
+      ) AS backlog_cohorts,
+      ((SELECT COUNT(*) FROM run_artifacts
+         WHERE domain LIKE 'legacy_%'
+           AND status='ready'
+           AND checksum_verified_at IS NOT NULL
+           AND created_at >= datetime('now','-24 hours')) +
+       (SELECT COUNT(*) FROM dataset_snapshots
+         WHERE kind='d1_audit_json_archive'
+           AND status='ready'
+           AND created_at >= datetime('now','-24 hours'))) AS progress_24h
   `).first<any>()
   let d1Bytes: number | null = null
   try {
@@ -528,11 +765,31 @@ export async function runStorageHealthGate(
   const integrityBlocked = Number(counts?.integrity_blocked ?? 0)
   const backlog = Number(counts?.cleanup_backlog_over_24h ?? 0)
   const dlqPending = Number(dlq?.count ?? 0)
+  const allocatorSnapshotRows = Number(allocatorSnapshots?.row_count ?? 0)
+  const allocatorSnapshotDates = Number(allocatorSnapshots?.date_count ?? 0)
+  const allocatorSnapshotIncompleteRuns = Number(allocatorSnapshotLifecycle?.incomplete_runs ?? 0)
+  const allocatorSnapshotStagingOrphans = Number(allocatorSnapshotLifecycle?.staging_orphans ?? 0)
+  const artifactHardRefDrift = Number(hardReferences?.drift_count ?? 0)
+  const legacyRetentionBacklog = Number(legacyRetention?.backlog_cohorts ?? 0)
+  const legacyRetentionProgress24h = Number(legacyRetention?.progress_24h ?? 0)
+  const legacyRetentionStalled = legacyRetentionBacklog > 0 && legacyRetentionProgress24h === 0
   return {
-    healthy: integrityBlocked === 0 && backlog === 0 && dlqPending === 0 && utilization != null && utilization < 0.8,
+    healthy: integrityBlocked === 0 && backlog === 0 && dlqPending === 0 &&
+      allocatorSnapshotRows > 0 && allocatorSnapshotDates > 0 &&
+      allocatorSnapshotIncompleteRuns === 0 && allocatorSnapshotStagingOrphans === 0 &&
+      artifactHardRefDrift === 0 && !legacyRetentionStalled &&
+      utilization != null && utilization < 0.8,
     integrity_blocked: integrityBlocked,
     cleanup_backlog_over_24h: backlog,
     dlq_pending: dlqPending,
+    allocator_ev_snapshot_rows: allocatorSnapshotRows,
+    allocator_ev_snapshot_dates: allocatorSnapshotDates,
+    allocator_snapshot_incomplete_runs: allocatorSnapshotIncompleteRuns,
+    allocator_snapshot_staging_orphans: allocatorSnapshotStagingOrphans,
+    artifact_hard_ref_drift: artifactHardRefDrift,
+    legacy_retention_backlog_cohorts: legacyRetentionBacklog,
+    legacy_retention_progress_24h: legacyRetentionProgress24h,
+    legacy_retention_stalled: legacyRetentionStalled,
     d1_bytes: d1Bytes,
     d1_utilization: utilization,
   }

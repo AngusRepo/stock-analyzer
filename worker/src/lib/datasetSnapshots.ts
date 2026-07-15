@@ -212,6 +212,7 @@ const D1_RETENTION_TABLES: D1ManifestSpec[] = [
   { kind: 'chip_hot_window', table: 'chip_data', dateColumn: 'date', archiveRequired: true },
   { kind: 'margin_hot_window', table: 'margin_data', dateColumn: 'date', archiveRequired: true },
   { kind: 'prediction_hot_window', table: 'predictions', dateColumn: 'prediction_date', archiveRequired: true },
+  { kind: 'fundamental_pit_hot_window', table: 'canonical_fundamental_features', dateColumn: 'available_date', archiveRequired: true },
 ]
 
 function d1ServingChecksum(kind: string, businessDate: string, rowCount: number, maxDate: string | null): string {

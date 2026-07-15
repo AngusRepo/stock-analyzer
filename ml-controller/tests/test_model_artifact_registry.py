@@ -319,7 +319,8 @@ def test_feature_release_bundle_controller_commits_one_atomic_batch(monkeypatch)
     assert result["decision"] == "promoted_atomic_feature_release"
     assert result["release_models"] == sorted(registry.TIMESFM_L175_RELEASE_COHORT)
     assert len(captured) == 1
-    assert len(captured[0]) == 15
+    assert len(captured[0]) == 25
+    assert sum("model_champion_history" in sql for sql, _params in captured[0]) == 10
 
 
 def test_model_pool_release_writer_syncs_artifact_metadata_evidence():
@@ -2070,7 +2071,8 @@ def test_promotion_controller_confirm_updates_champion_pointer(monkeypatch):
     assert result["status"] == "ok"
     assert result["decision"] == "promote"
     assert result["can_promote"] is True
-    assert len(executed) == 3
+    assert len(executed) == 5
+    assert sum("model_champion_history" in str(item["sql"]) for item in executed) == 2
     pointer_params = executed[2]["params"]
     assert pointer_params[0] == "LightGBM"
     assert pointer_params[1] == "vM"
@@ -2120,7 +2122,8 @@ def test_promotion_controller_allows_approved_offline_monthly_release_cutover(mo
     assert result["evidence"]["offline_monthly_release_cutover"] is True
     assert result["evidence"]["allow_offline_monthly_release"] is True
     assert "live_gate_not_passed" not in result["evidence"]["blockers"]
-    assert len(executed) == 3
+    assert len(executed) == 5
+    assert sum("model_champion_history" in str(item["sql"]) for item in executed) == 2
 
 
 def test_promotion_controller_dry_run_offline_monthly_release_requires_wei_approval():
@@ -2465,6 +2468,37 @@ def test_model_pool_release_writer_confirm_mutates_pool():
     assert result["model_pool_updated"] is True
     assert pool["models"]["DLinear"]["version"] == "vNew"
     assert pool["models"]["DLinear"]["promotion_controller"]["artifact_id"] == "DLinear:vNew:monthly_release"
+
+
+def test_model_champion_history_backfill_uses_exact_intervals_only():
+    plan = registry.build_model_champion_history_backfill_plan({
+        "models": {
+            "LightGBM": {
+                "version": "v3",
+                "promoted_at": "2026-06-20T00:00:00Z",
+                "retired_versions": [
+                    {
+                        "version": "v2",
+                        "retired_at": "2026-06-20T00:00:00Z",
+                    },
+                    {
+                        "version": "v1",
+                        "retired_at": "2026-06-10T00:00:00Z",
+                    },
+                ],
+            },
+        },
+    })
+
+    assert plan["status"] == "ready"
+    assert plan["exact_row_count"] == 2
+    assert plan["earliest_exact_effective_at"] == "2026-06-10T00:00:00Z"
+    assert plan["excluded"] == [{
+        "model_name": "LightGBM",
+        "version": "v1",
+        "reason": "exact_promoted_at_missing",
+        "known_upper_bound": "2026-06-10T00:00:00Z",
+    }]
 
 
 def test_backfill_champion_pointers_from_model_pool_writes_current_serving_versions(monkeypatch):

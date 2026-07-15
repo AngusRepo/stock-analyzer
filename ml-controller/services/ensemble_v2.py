@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 from services.active_model_policy import ACTIVE_ALPHA_MODELS
+from services.ev_lineage_contract import build_model_set_signature, is_known_artifact_version
 
 
 _SRC_KEY_MODEL = (
@@ -27,17 +28,20 @@ def _ensemble_lineage_fields(
     configured_versions = (ev2_cfg or {}).get("activeArtifactVersions") or {}
     versions = configured_versions if isinstance(configured_versions, dict) else {}
     artifact_versions = {
-        name: str(versions.get(name) or "unknown")
+        name: str(versions.get(name) or "").strip()
         for name in contributing
+        if is_known_artifact_version(versions.get(name))
     }
+    missing_versions = [name for name in contributing if name not in artifact_versions]
+    signature = build_model_set_signature(artifact_versions, contributing)
     return {
         "schema_version": ENSEMBLE_V2_SCHEMA_VERSION,
         "semantic_version": ENSEMBLE_V2_SEMANTIC_VERSION,
         "input_contract_version": formal_contract.get("schema_version"),
         "artifact_versions": artifact_versions,
-        "model_set_signature": "|".join(
-            f"{name}@{artifact_versions[name]}" for name in contributing
-        ),
+        "model_set_signature": signature,
+        "lineage_status": "complete" if signature else "incomplete",
+        "lineage_blockers": [f"artifact_version_missing:{name}" for name in missing_versions],
     }
 
 

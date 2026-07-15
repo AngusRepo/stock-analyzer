@@ -35,6 +35,7 @@ class ExportColdArchiveRequest(BaseModel):
         "chip_data",
         "margin_data",
         "predictions",
+        "canonical_fundamental_features",
     ])
     gcs_prefix: str | None = None
     producer_run_id: str | None = None

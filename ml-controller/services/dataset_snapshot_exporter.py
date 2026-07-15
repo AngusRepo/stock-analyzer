@@ -106,6 +106,7 @@ class D1ColdArchiveExportRequest:
         "chip_data",
         "margin_data",
         "predictions",
+        "canonical_fundamental_features",
     )
     gcs_prefix: str | None = None
     producer_run_id: str | None = None
@@ -127,6 +128,10 @@ D1_COLD_ARCHIVE_TABLE_SPECS: dict[str, dict[str, str]] = {
     "chip_data": {"date_column": "date", "order_by": "date, symbol"},
     "margin_data": {"date_column": "date", "order_by": "date, stock_id"},
     "predictions": {"date_column": "prediction_date", "order_by": "prediction_date, stock_id"},
+    "canonical_fundamental_features": {
+        "date_column": "available_date",
+        "order_by": "available_date, stock_id, period, source",
+    },
 }
 
 
@@ -563,8 +568,8 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
                    forecast_data
             FROM predictions
             WHERE model_name = 'ensemble'
-              AND COALESCE(prediction_date, substr(generated_at, 1, 10)) >= ?
-              AND COALESCE(prediction_date, substr(generated_at, 1, 10)) <= ?
+              AND prediction_date >= ?
+              AND prediction_date <= ?
             ORDER BY stock_id, generated_at
             """,
             req.start_date,

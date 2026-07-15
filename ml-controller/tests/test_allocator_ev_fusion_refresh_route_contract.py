@@ -2,7 +2,7 @@ import ast
 from pathlib import Path
 
 
-SOURCE = Path("ml-controller/routers/allocator_ev_fusion.py").read_text(encoding="utf-8")
+SOURCE = (Path(__file__).resolve().parents[1] / "routers/allocator_ev_fusion.py").read_text(encoding="utf-8")
 
 
 def test_allocator_ev_fusion_refresh_route_accepts_v2_promotion_states() -> None:

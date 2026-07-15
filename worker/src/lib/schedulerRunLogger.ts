@@ -66,6 +66,8 @@ const TASK_NAMES: Record<string, string> = {
   'audit-json-retention': 'Audit JSON Retention',
   'artifact-reconcile': 'Artifact Reconcile',
   'legacy-evidence-migration': 'Legacy Evidence Migration',
+  'legacy-strategy-evidence-migration': 'Legacy Strategy Evidence Migration',
+  'legacy-hot-data-retirement': 'Legacy Hot Data Retirement',
   'd1-evidence-scrub': 'D1 Evidence Scrub',
   'r2-retention-sweep': 'R2 Retention Sweep',
   'orphan-reachability-gc': 'Orphan Reachability GC',

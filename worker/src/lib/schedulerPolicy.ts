@@ -63,6 +63,8 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'audit-json-retention': { kind: 'maintenance', holidayGated: false, description: 'archive old D1 audit JSON blobs to R2 and scrub D1 pointers' },
   'artifact-reconcile': { kind: 'maintenance', holidayGated: false, description: 'reconcile interrupted R2 artifact manifests and checksum verification' },
   'legacy-evidence-migration': { kind: 'maintenance', holidayGated: false, description: 'cursor-safe R2 migration of noncanonical legacy D1 evidence' },
+  'legacy-strategy-evidence-migration': { kind: 'maintenance', holidayGated: false, description: 'checksum-verified R2 migration of legacy strategy decision JSON while preserving scalar learning rows' },
+  'legacy-hot-data-retirement': { kind: 'maintenance', holidayGated: false, description: 'archive checksum-verified obsolete D1 cohorts before deletion while preserving execution ledgers' },
   'd1-evidence-scrub': { kind: 'maintenance', holidayGated: false, description: 'scrub only explicitly queued D1 blobs backed by verified R2 artifacts' },
   'r2-retention-sweep': { kind: 'maintenance', holidayGated: false, description: 'apply lineage-aware R2 retention policies' },
   'orphan-reachability-gc': { kind: 'maintenance', holidayGated: false, description: 'remove unreachable staging objects after grace period' },

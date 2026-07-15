@@ -18,6 +18,7 @@ from services.allocator_ev_fusion_artifact_builder import (  # noqa: E402
 from services.allocator_ev_feature_snapshot_backfill import (  # noqa: E402
     _existing_s12_payload,
     build_allocator_ev_feature_snapshots_for_date,
+    load_allocator_ev_snapshot_candidate_rows,
 )
 
 from services.l4_alpha_ev_resolver import (  # noqa: E402
@@ -30,9 +31,9 @@ from services.l4_alpha_ev_resolver import (  # noqa: E402
 def _l4_payload(value: float) -> dict:
     return {
         "schema_version": "l4-alpha-ev-v1",
-        "artifact_contract_version": "l4-alpha-ev-contract-v2",
+        "artifact_contract_version": "l4-alpha-ev-contract-v4",
         "feature_semantic_version": "l4-directional-score-components-v2-lineage-bound",
-        "label_schema_version": "next-session-adjusted-open-to-fifth-session-adjusted-close-net-v1",
+        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "expected_return_owner": "l4_alpha_ev",
         "expected_return_mean": value,
         "expected_return_source": "l4_alpha_ev:test",
@@ -51,11 +52,29 @@ def _ensemble_forecast(avg_rank: float = 0.65, confidence: float = 0.72) -> str:
     return json.dumps({
         "ensemble_v2": {
             "semantic_version": "active8-ic-weighted-rank-v3",
+            "contributing_models": ["LightGBM", "XGBoost"],
+            "artifact_versions": {"LightGBM": "vTest", "XGBoost": "vTest"},
             "model_set_signature": "LightGBM@vTest|XGBoost@vTest",
             "avg_rank": avg_rank,
             "confidence": confidence,
         },
     })
+
+
+def _champion_history_rows() -> list[dict]:
+    return [
+        {
+            "model_name": model_name,
+            "version": "vTest",
+            "artifact_id": f"{model_name}:vTest",
+            "effective_at": "2026-01-01T00:00:00Z",
+            "retired_at": None,
+            "source": "model_champion_history",
+            "evidence_grade": "exact",
+            "evidence_json": "{}",
+        }
+        for model_name in ("LightGBM", "XGBoost")
+    ]
 
 
 def _s12_payload(value: float, *, ready: bool = True) -> dict:
@@ -90,6 +109,7 @@ def _row(day: str, idx: int) -> dict:
     return {
         "symbol": f"{idx:04d}",
         "prediction_date": day,
+        "label_adjustment_source": "canonical_market_daily:finlab.price",
         "score_components": json.dumps({
             "version": "score_v2",
             "semanticVersion": "score-v2-active8-components-v3",
@@ -140,8 +160,8 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["validation_packet"]["sample_audit"]["l4_available_count"] > 0
     assert artifact["validation_packet"]["sample_audit"]["s12_structure_available_count"] > 0
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
-    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v8"
-    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v8"
+    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v10"
+    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v10"
     assert artifact["validation_packet"]["validation_scope"]["selection_target"] == (
         "next_session_raw_open_to_fifth_session_raw_close_factor_stable_net_of_costs"
     )
@@ -219,6 +239,13 @@ def test_allocator_ev_fusion_artifact_builder_rejects_assistive_without_replay_e
                 "score_components": json.dumps({
                     "version": "score_v2",
                     "semanticVersion": "score-v2-active8-components-v3",
+                    "finalScore": 60,
+                    "components": {
+                        "mlEdge": 15,
+                        "fundamentalQuality": 15,
+                        "chipFlow": 15,
+                        "technicalStructure": 15,
+                    },
                 }),
                 "forecast_data": _ensemble_forecast(),
                 "actual_return_pct": 0.25,
@@ -264,6 +291,13 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     assert "fs.as_of_guard = ?" in observed[0]["sql"]
     assert "replay_diagnostics.outcome_known_date" in observed[0]["sql"]
     assert "AS l4_executable_return_pct" in observed[0]["sql"]
+    assert "canonical_market_daily cmd" in observed[0]["sql"]
+    assert "cmd.adj_close / cmd.close" in observed[0]["sql"]
+    assert "ph.exit_raw_close * ph.exit_adjustment_factor" in observed[0]["sql"]
+    assert "ph.entry_raw_open * ph.entry_adjustment_factor" in observed[0]["sql"]
+    assert "ph.exit_raw_close / ph.entry_raw_open" not in observed[0]["sql"]
+    assert "ABS((ph.exit_adjustment_factor / ph.entry_adjustment_factor)" not in observed[0]["sql"]
+    assert "sp.adj_close / sp.close" not in observed[0]["sql"]
     assert "p.verified_at IS NOT NULL" not in observed[0]["sql"]
     assert observed[0]["params"] == [
         "2026-07-07",
@@ -282,6 +316,35 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     ]
 
 
+def test_snapshot_candidate_query_avoids_correlated_evidence_lookups():
+    captured = {}
+
+    def query_fn(sql: str, params: list[object]) -> list[dict]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    load_allocator_ev_snapshot_candidate_rows(
+        query_fn,
+        snapshot_date="2026-06-18",
+        limit=200,
+    )
+
+    assert "json_group_object" not in captured["sql"]
+    assert "SELECT MIN(date(sp.date))" not in captured["sql"]
+    assert captured["params"] == ["2026-06-18", 200]
+
+
+def test_allocator_fusion_rejects_unproven_adjustment_factor_lineage():
+    row = _row("2026-07-01", 1)
+    row.pop("label_adjustment_source")
+
+    samples, audit = _samples([row], min_cross_section_samples_per_date=1)
+
+    assert samples == []
+    assert audit["adjustment_lineage_counts"] == {"missing": 1}
+
+
 def test_load_allocator_ev_fusion_training_rows_prefers_asof_snapshot_rows():
     snapshot_row = {
         "stock_id": 1,
@@ -292,7 +355,7 @@ def test_load_allocator_ev_fusion_training_rows_prefers_asof_snapshot_rows():
             "l4_alpha_ev": _l4_payload(0.02),
             "s12_trade_ev": _s12_payload(0.01),
         }),
-        "allocator_ev_feature_snapshot_source": "allocator_ev_asof_backfill_v1",
+        "allocator_ev_feature_snapshot_source": SNAPSHOT_BACKFILL_SOURCE,
     }
     duplicate_daily_row = {
         **snapshot_row,
@@ -358,6 +421,13 @@ def test_allocator_ev_fusion_feature_vector_accepts_backfill_only_l4_under_canon
         "score_components": json.dumps({
             "version": "score_v2",
             "semanticVersion": "score-v2-active8-components-v3",
+            "finalScore": 70,
+            "components": {
+                "mlEdge": 18,
+                "fundamentalQuality": 19,
+                "chipFlow": 20,
+                "technicalStructure": 13,
+            },
         }),
         "forecast_data": _ensemble_forecast(),
         "actual_return_pct": 0.01,
@@ -412,6 +482,8 @@ def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_f
                 "stock_id": symbol_idx,
                 "symbol": f"{symbol_idx:04d}",
                 "prediction_date": day,
+                "prediction_generated_at": f"{day}T12:00:00Z",
+                "label_adjustment_source": "canonical_market_daily:finlab.price",
                 "forecast_data": _ensemble_forecast(
                     0.25 + (symbol_idx % 10) * 0.04,
                     0.55 + (symbol_idx % 8) * 0.03,
@@ -435,6 +507,7 @@ def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_f
         "stock_id": 1,
         "symbol": "2330",
         "recommendation_date": "2026-07-07",
+        "prediction_generated_at": "2026-07-07T12:00:00Z",
         "forecast_data": _ensemble_forecast(0.35, 0.72),
         "score": 70,
         "score_components": json.dumps({
@@ -473,6 +546,10 @@ def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_f
                 "ready": 1,
                 "state": "reaction_ready",
             }]
+        if "FROM model_champion_history" in sql:
+            return _champion_history_rows()
+        if "FROM allocator_ev_feature_snapshot_staging" in sql:
+            return [{"row_count": 1}]
         if "FROM daily_recommendations dr" in sql and "JOIN predictions p" in sql:
             return [candidate]
         return []
@@ -529,9 +606,12 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
         "stock_id": 1,
         "symbol": "2330",
         "recommendation_date": "2026-07-07",
+        "prediction_generated_at": "2026-07-07T12:00:00Z",
         "forecast_data": _ensemble_forecast(0.35, 0.72),
         "score": 70,
         "score_components": json.dumps({
+            "version": "score_v2",
+            "semanticVersion": "score-v2-active8-components-v3",
             "finalScore": 70,
             "components": {
                 "mlEdge": 18,
@@ -553,8 +633,14 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
             return []
         if "FROM s12_structure_snapshots" in sql:
             return []
+        if "FROM model_champion_history" in sql:
+            return _champion_history_rows()
         if "FROM daily_recommendations dr" in sql and "JOIN predictions p" in sql:
             return [candidate]
+        if "FROM allocator_ev_feature_snapshot_staging" in sql:
+            return [{"row_count": 1}]
+        if "SELECT status, published_rows FROM allocator_ev_snapshot_runs" in sql:
+            return [{"status": "ready", "published_rows": 1}]
         return []
 
     result = build_allocator_ev_feature_snapshots_for_date(
@@ -577,9 +663,12 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
         "stock_id": 1,
         "symbol": "2330",
         "recommendation_date": "2026-06-08",
+        "prediction_generated_at": "2026-06-08T12:00:00Z",
         "forecast_data": _ensemble_forecast(0.35, 0.72),
         "score": 70,
         "score_components": json.dumps({
+            "version": "score_v2",
+            "semanticVersion": "score-v2-active8-components-v3",
             "finalScore": 70,
             "components": {
                 "mlEdge": 18,
@@ -603,8 +692,14 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
             return []
         if "FROM s12_structure_snapshots" in sql:
             return []
+        if "FROM model_champion_history" in sql:
+            return _champion_history_rows()
         if "FROM daily_recommendations dr" in sql and "JOIN predictions p" in sql:
             return [candidate]
+        if "FROM allocator_ev_feature_snapshot_staging" in sql:
+            return [{"row_count": 1}]
+        if "SELECT status, published_rows FROM allocator_ev_snapshot_runs" in sql:
+            return [{"status": "ready", "published_rows": 1}]
         return []
 
     result = build_allocator_ev_feature_snapshots_for_date(
@@ -620,9 +715,63 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
     assert result["l4_usage_mode"] == "not_fit_eligible"
     assert result["snapshots_built"] == 1
     assert result["snapshots_without_l4"] == 1
-    allocation = json.loads(written[0][1][7])
+    allocation = json.loads(written[1][1][8])
     assert "l4_alpha_ev" not in allocation
     assert allocation["snapshot_l4_available"] is False
+    assert "allocator_ev_feature_snapshot_staging" in written[1][0]
+    assert "INSERT OR REPLACE INTO allocator_ev_feature_snapshots" in written[2][0]
+    assert "ORDER BY datetime(latest.created_at) DESC, latest.run_id DESC" in written[2][0]
+    assert "DELETE FROM allocator_ev_feature_snapshots" in written[3][0]
+
+
+def test_allocator_ev_feature_snapshot_backfill_does_not_cleanup_after_partial_write():
+    candidate = {
+        "stock_id": 1,
+        "symbol": "2330",
+        "recommendation_date": "2026-07-07",
+        "prediction_generated_at": "2026-07-07T12:00:00Z",
+        "forecast_data": _ensemble_forecast(0.35, 0.72),
+        "score": 70,
+        "score_components": json.dumps({
+            "version": "score_v2",
+            "semanticVersion": "score-v2-active8-components-v3",
+            "finalScore": 70,
+            "components": {
+                "mlEdge": 18,
+                "fundamentalQuality": 19,
+                "chipFlow": 20,
+                "technicalStructure": 21,
+            },
+        }),
+        "alpha_context": json.dumps({"market_heat_expected_return": 0.003}),
+        "existing_alpha_allocation": json.dumps({}),
+        "current_price": 100,
+    }
+    calls: list[list[tuple[str, list[object]]]] = []
+
+    def query_fn(sql: str, _params: list[object] | None = None) -> list[dict]:
+        if "FROM model_champion_history" in sql:
+            return _champion_history_rows()
+        if "FROM daily_recommendations dr" in sql and "JOIN predictions p" in sql:
+            return [candidate]
+        return []
+
+    def partial_writer(statements: list[tuple[str, list[object]]]) -> dict:
+        calls.append(statements)
+        return {"success_count": 0, "error_count": 1, "changes_total": 0, "first_error": "test"}
+
+    with pytest.raises(RuntimeError, match="allocator_snapshot_staging_partial_failure"):
+        build_allocator_ev_feature_snapshots_for_date(
+            snapshot_date="2026-07-07",
+            query_fn=query_fn,
+            write_fn=partial_writer,
+            dry_run=False,
+        )
+
+    assert len(calls) == 2
+    assert "INSERT INTO allocator_ev_snapshot_runs" in calls[0][0][0]
+    assert "allocator_ev_feature_snapshot_staging" in calls[0][1][0]
+    assert "status='failed'" in calls[1][0][0]
 
 
 def test_allocator_ev_feature_snapshot_backfill_does_not_reuse_invalid_s12_payload():
@@ -638,13 +787,14 @@ def test_allocator_ev_feature_snapshot_backfill_does_not_reuse_invalid_s12_paylo
 
 def test_allocator_ev_feature_snapshot_backfill_recomputes_prior_backfill_s12_payload():
     existing = {
-        "snapshot_source": "allocator_ev_asof_backfill_v1",
+        "snapshot_source": SNAPSHOT_BACKFILL_SOURCE,
         "s12_trade_ev": _s12_payload(0.009),
     }
     candidate = {
         "stock_id": 1,
         "symbol": "2330",
         "recommendation_date": "2026-07-02",
+        "prediction_generated_at": "2026-07-02T12:00:00Z",
         "forecast_data": json.dumps({"ensemble_v2": {"avg_rank": 0.35, "confidence": 0.72}}),
         "score": 70,
         "score_components": json.dumps({
@@ -693,9 +843,17 @@ def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload
             rows.append({
                 "symbol": f"{symbol_idx:04d}",
                 "prediction_date": day,
+                "label_adjustment_source": "canonical_market_daily:finlab.price",
                 "score_components": json.dumps({
                     "version": "score_v2",
                     "semanticVersion": "score-v2-active8-components-v3",
+                    "finalScore": 60,
+                    "components": {
+                        "mlEdge": 15,
+                        "fundamentalQuality": 15,
+                        "chipFlow": 15,
+                        "technicalStructure": 15,
+                    },
                 }),
                 "forecast_data": _ensemble_forecast(),
                 "actual_return_pct": 0.25,
@@ -723,6 +881,7 @@ def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_miss
     row = {
         "symbol": "2330",
         "prediction_date": "2026-07-02",
+        "label_adjustment_source": "canonical_market_daily:finlab.price",
         "actual_return_pct": -0.30,
         "l4_executable_return_pct": 0.02,
         "score": 70,
@@ -791,6 +950,7 @@ def test_execution_replay_label_is_kept_when_prior_s12_ev_was_unavailable():
     row = {
         "symbol": "2330",
         "prediction_date": "2026-07-02",
+        "label_adjustment_source": "canonical_market_daily:finlab.price",
         "actual_return_pct": -0.30,
         "l4_executable_return_pct": 0.02,
         "s12_replay_pnl_pct": 0.015,

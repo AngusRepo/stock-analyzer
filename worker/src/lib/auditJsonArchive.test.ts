@@ -61,8 +61,10 @@ class FakeD1 {
   manifestWrites = 0
   manifestParams: unknown[][] = []
   batchParams: unknown[][] = []
+  preparedSql: string[] = []
 
   prepare(sql: string) {
+    this.preparedSql.push(sql)
     return new FakeStatement(this, sql)
   }
 
@@ -117,17 +119,37 @@ async function main() {
   assert.equal(confirmed.total_archived_rows, 1)
   assert.equal(confirmed.total_scrubbed_rows, 1)
   assert.equal(r2.puts.length, 1)
-  assert.match(r2.puts[0].key, /archives\/d1_audit_json_archive\/table=screener_funnel_items/)
+  assert.match(r2.puts[0].key, /archives\/d1_audit_json_archive\/target=screener_funnel_items/)
   assert.match(r2.puts[0].body, /"screener_funnel_items"/)
   assert.match(r2.puts[0].body, /\\"large\\":true/)
   assert.equal(db.manifestWrites, 1)
   assert.equal(db.batchParams.length, 1)
+  const candidateSql = db.preparedSql.find((sql) => sql.includes('FROM screener_funnel_items')) ?? ''
+  assert.match(candidateSql, /canonical_run_heads/)
+  assert.match(candidateSql, /latest\.status = 'success'/)
 
   const pointer = JSON.parse(String(db.batchParams[0][0]))
   assert.equal(pointer.archived_to_r2, true)
   assert.equal(pointer.archive_kind, 'd1_audit_json_archive')
   assert.equal(pointer.table, 'screener_funnel_items')
   assert.equal(pointer.blob_column, 'evidence')
+
+  const canonicalDb = new FakeD1()
+  const canonicalR2 = new FakeR2()
+  const canonical = await runAuditJsonArchiveRetention({
+    DB: canonicalDb as any,
+    ARTIFACTS: canonicalR2 as any,
+  }, {
+    businessDate: '2026-06-30',
+    runId: 'canonical-run',
+    targets: ['canonical_screener_funnel_items'],
+    dryRun: true,
+  })
+  assert.equal(canonical.tables[0]?.target, 'canonical_screener_funnel_items')
+  const canonicalSql = canonicalDb.preparedSql.find((sql) => sql.includes('FROM screener_funnel_items')) ?? ''
+  assert.match(canonicalSql, /EXISTS/)
+  assert.match(canonicalSql, /canonical_run_heads/)
+  assert.match(canonicalSql, /latest\.status = 'success'/)
 }
 
 main().catch((error) => {

@@ -8,6 +8,16 @@ from typing import Any, Callable
 
 from scipy.stats import t as student_t
 
+from services.evidence_contracts import (
+    L4_ARTIFACT_CONTRACT_VERSION,
+    L4_FEATURE_SEMANTIC_VERSION,
+    LABEL_SCHEMA_VERSION,
+)
+from services.ev_lineage_contract import (
+    attach_same_run_model_version_evidence,
+    ev_feature_lineage_blockers,
+)
+
 
 FEATURE_NAMES = [
     "ml_edge_norm",
@@ -19,10 +29,10 @@ FEATURE_NAMES = [
 CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
 CANONICAL_SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
 CANONICAL_ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v3"
-FEATURE_SEMANTIC_VERSION = "l4-directional-score-components-v2-lineage-bound"
-LABEL_SCHEMA_VERSION = "next-session-raw-open-to-fifth-session-raw-close-factor-stable-net-v2"
+CANONICAL_ADJUSTMENT_FACTOR_SOURCE = "canonical_market_daily:finlab.price"
+FEATURE_SEMANTIC_VERSION = L4_FEATURE_SEMANTIC_VERSION
 LABEL_PURGE_DATE_GROUPS = 5
-ARTIFACT_CONTRACT_VERSION = "l4-alpha-ev-contract-v2"
+ARTIFACT_CONTRACT_VERSION = L4_ARTIFACT_CONTRACT_VERSION
 MIN_CROSS_SECTION_SAMPLES_PER_DATE = 20
 
 
@@ -57,13 +67,9 @@ def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
     score_components = _loads(row.get("score_components"))
     if str(score_components.get("version") or "").strip().lower() != CANONICAL_SCORE_FEATURE_VERSION:
         return None
-    if str(score_components.get("semanticVersion") or "").strip() != CANONICAL_SCORE_SEMANTIC_VERSION:
-        return None
     forecast_data = _loads(row.get("forecast_data"))
     ev2 = forecast_data.get("ensemble_v2") if isinstance(forecast_data.get("ensemble_v2"), dict) else {}
-    if str(ev2.get("semantic_version") or "").strip() != CANONICAL_ENSEMBLE_SEMANTIC_VERSION:
-        return None
-    if not str(ev2.get("model_set_signature") or "").strip():
+    if ev_feature_lineage_blockers(row):
         return None
     final_score = _float_or_none(score_components.get("finalScore") or score_components.get("total") or row.get("score"))
     ml_edge = _component(score_components, "mlEdge")
@@ -105,6 +111,8 @@ def _samples(
     score_semantic_counts: dict[str, int] = {}
     ensemble_semantic_counts: dict[str, int] = {}
     model_set_signature_counts: dict[str, int] = {}
+    lineage_blocker_counts: dict[str, int] = {}
+    adjustment_lineage_counts: dict[str, int] = {}
     for row in rows:
         score_payload = _loads(row.get("score_components"))
         forecast_payload = _loads(row.get("forecast_data"))
@@ -117,10 +125,19 @@ def _samples(
         score_semantic_counts[score_semantic] = score_semantic_counts.get(score_semantic, 0) + 1
         ensemble_semantic_counts[ensemble_semantic] = ensemble_semantic_counts.get(ensemble_semantic, 0) + 1
         model_set_signature_counts[model_set_signature] = model_set_signature_counts.get(model_set_signature, 0) + 1
+        adjustment_source = str(row.get("label_adjustment_source") or "missing")
+        adjustment_lineage_counts[adjustment_source] = adjustment_lineage_counts.get(adjustment_source, 0) + 1
         if era != CANONICAL_SCORE_FEATURE_VERSION:
             rejected_feature_era_rows += 1
+        lineage_blockers = ev_feature_lineage_blockers(row)
+        for blocker in lineage_blockers:
+            lineage_blocker_counts[blocker] = lineage_blocker_counts.get(blocker, 0) + 1
         features = _feature_vector(row)
-        target = _target(row, cost_model_bps=cost_model_bps)
+        target = (
+            _target(row, cost_model_bps=cost_model_bps)
+            if adjustment_source == CANONICAL_ADJUSTMENT_FACTOR_SOURCE
+            else None
+        )
         if features is None or target is None:
             invalid += 1
             continue
@@ -162,6 +179,9 @@ def _samples(
         "required_ensemble_semantic_version": CANONICAL_ENSEMBLE_SEMANTIC_VERSION,
         "ensemble_semantic_counts": dict(sorted(ensemble_semantic_counts.items())),
         "model_set_signature_counts": dict(sorted(model_set_signature_counts.items())),
+        "lineage_blocker_counts": dict(sorted(lineage_blocker_counts.items())),
+        "required_adjustment_factor_source": CANONICAL_ADJUSTMENT_FACTOR_SOURCE,
+        "adjustment_lineage_counts": dict(sorted(adjustment_lineage_counts.items())),
         "rejected_feature_era_rows": rejected_feature_era_rows,
         "min_cross_section_samples_per_date": minimum_day_samples,
         "sparse_dates_rejected": sparse_dates,
@@ -454,7 +474,7 @@ def build_l4_alpha_ev_artifact_from_rows(
 
     blockers.extend(value for value in fit_blockers if value not in blockers)
     decision = "PASS" if not blockers else "FAIL"
-    model_version = f"l4-alpha-ev-ridge-v2-{trained_until.replace('-', '')}"
+    model_version = f"l4-alpha-ev-ridge-v4-{trained_until.replace('-', '')}"
     validation_packet = {
         "schema_version": "l4-alpha-ev-validation-packet-v1",
         "decision": decision,
@@ -525,7 +545,7 @@ def load_l4_alpha_ev_training_rows(
     limit: int = 6000,
 ) -> list[dict[str, Any]]:
     outcome_cutoff = knowledge_cutoff_date or end_date
-    return query_fn(
+    rows = query_fn(
         """
         WITH price_horizons AS (
             SELECT
@@ -534,16 +554,22 @@ def load_l4_alpha_ev_training_rows(
                 LEAD(date(sp.date), 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_date,
                 LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_raw_open,
                 LEAD(
-                    CASE WHEN sp.close > 0 AND sp.adj_close > 0 THEN sp.adj_close / sp.close END,
+                    CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
                     1
                 ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_adjustment_factor,
                 LEAD(date(sp.date), 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_date,
                 LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_raw_close,
                 LEAD(
-                    CASE WHEN sp.close > 0 AND sp.adj_close > 0 THEN sp.adj_close / sp.close END,
+                    CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
                     5
                 ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_adjustment_factor
             FROM stock_prices sp
+            JOIN stocks factor_stock
+              ON factor_stock.id = sp.stock_id
+            LEFT JOIN canonical_market_daily cmd
+              ON cmd.stock_id = factor_stock.symbol
+             AND cmd.date = date(sp.date)
+             AND cmd.source = 'finlab.price'
             WHERE date(sp.date) >= date(?, ?, '-10 days')
               AND date(sp.date) <= date(?)
         )
@@ -551,8 +577,12 @@ def load_l4_alpha_ev_training_rows(
             p.stock_id,
             s.symbol,
             date(p.prediction_date) AS prediction_date,
+            p.generated_at AS prediction_generated_at,
+            datetime(ph.entry_date, '+1 hour') AS next_session_open_at,
             p.forecast_data,
-            (ph.exit_raw_close / ph.entry_raw_open) - 1.0 AS l4_executable_return_pct,
+            'canonical_market_daily:finlab.price' AS label_adjustment_source,
+            ((ph.exit_raw_close * ph.exit_adjustment_factor)
+              / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 AS l4_executable_return_pct,
             ph.entry_date AS l4_entry_date,
             ph.exit_date AS l4_exit_date,
             ph.entry_raw_open AS l4_entry_raw_open,
@@ -578,7 +608,6 @@ def load_l4_alpha_ev_training_rows(
           AND ph.exit_raw_close > 0
           AND ph.entry_adjustment_factor > 0
           AND ph.exit_adjustment_factor > 0
-          AND ABS((ph.exit_adjustment_factor / ph.entry_adjustment_factor) - 1.0) <= 0.02
           AND date(ph.exit_date) <= date(?)
           AND p.forecast_data IS NOT NULL
           AND dr.score_components IS NOT NULL
@@ -598,3 +627,5 @@ def load_l4_alpha_ev_training_rows(
             int(limit),
         ],
     )
+    enriched, _ = attach_same_run_model_version_evidence(query_fn, rows)
+    return enriched

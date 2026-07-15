@@ -76,9 +76,13 @@ def test_ensemble_v2_uses_equal_weight_only_when_explicitly_enabled():
     assert ev2["signal"] == "BUY"
     assert ev2["schema_version"] == "ensemble-v2-payload-v3"
     assert ev2["semantic_version"] == "active8-ic-weighted-rank-v3"
-    assert ev2["model_set_signature"] == (
-        "ExtraTrees@unknown|LightGBM@unknown|XGBoost@unknown"
-    )
+    assert ev2["model_set_signature"] is None
+    assert ev2["lineage_status"] == "incomplete"
+    assert ev2["lineage_blockers"] == [
+        "artifact_version_missing:ExtraTrees",
+        "artifact_version_missing:LightGBM",
+        "artifact_version_missing:XGBoost",
+    ]
 
 
 def test_ensemble_v2_missing_lifecycle_status_stays_zero_weight_even_with_cold_start():

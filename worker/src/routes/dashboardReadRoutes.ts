@@ -53,8 +53,8 @@ dashboardReadRoutes.get('/api/dashboard/v4/stocks/:id/chart', async (c) => {
     c.env.DB.prepare(`
       SELECT prediction_date, generated_at, model_name, trade_signal, direction_accuracy
       FROM predictions
-      WHERE stock_id=?
-      ORDER BY COALESCE(prediction_date, substr(generated_at, 1, 10)) DESC, generated_at DESC
+      WHERE stock_id=? AND prediction_date IS NOT NULL
+      ORDER BY prediction_date DESC, generated_at DESC
       LIMIT ?
     `).bind(id, signalLimit).all<any>().then((r) => r.results ?? []),
     readMarketRegimeState(c.env.KV).catch(() => null),

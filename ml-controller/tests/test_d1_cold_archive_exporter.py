@@ -83,6 +83,32 @@ def test_export_d1_cold_archive_registers_gcs_archive_manifest(monkeypatch):
     assert all(row["coverage_end"] == "2024-12-31" for row in metadata["table_coverage"])
 
 
+def test_cold_archive_supports_point_in_time_fundamentals(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_query_date_range(sql: str, start_date: str, end_date: str, chunk_days: int):
+        captured["sql"] = sql
+        return pl.DataFrame([{
+            "stock_id": "2330",
+            "period": "2024-Q1",
+            "available_date": "2024-05-15",
+            "source": "finlab",
+        }]), 1
+
+    monkeypatch.setattr(exporter, "_query_date_range", fake_query_date_range)
+    frame, query_count = exporter._query_cold_archive_table(
+        "canonical_fundamental_features",
+        "2024-01-01",
+        "2024-12-31",
+        10,
+    )
+
+    assert query_count == 1
+    assert len(frame) == 1
+    assert "WHERE available_date >= ? AND available_date <= ?" in str(captured["sql"])
+    assert "ORDER BY available_date, stock_id, period, source" in str(captured["sql"])
+
+
 def test_build_finlab_5y_raw_archive_metadata_uses_existing_manifest():
     manifest_dir = Path(".tmp") / "pytest-finlab-raw-archive"
     manifest_dir.mkdir(parents=True, exist_ok=True)

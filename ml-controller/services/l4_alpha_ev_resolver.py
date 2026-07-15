@@ -16,9 +16,10 @@ OWNER = "l4_alpha_ev"
 APPROVED_STATES = {"production_approved", "approved_for_production", "live"}
 PASS_STATES = {"PASS", "PASSED", "PRODUCTION_APPROVED"}
 SNAPSHOT_BACKFILL_USAGE_SCOPE = "allocator_ev_feature_snapshot_backfill"
-SNAPSHOT_BACKFILL_SOURCE = "allocator_ev_asof_backfill_v1"
+SNAPSHOT_BACKFILL_SOURCE = "allocator_ev_asof_backfill_v2"
 SNAPSHOT_BACKFILL_AS_OF_GUARD = (
-    "l4_trained_until_strictly_before_snapshot_date_and_s12_samples_before_run_date"
+    "prediction_before_next_executable_session_open;exact_active8_artifact_lineage;"
+    "l4_trained_before_snapshot;s12_samples_before_run"
 )
 SNAPSHOT_BACKFILL_APPROVAL_STATE = "snapshot_backfill_only"
 EMPIRICAL_ONLY_METHODS = {

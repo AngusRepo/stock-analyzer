@@ -8,6 +8,13 @@ from typing import Any, Callable
 
 from scipy.stats import t as student_t
 
+from services.evidence_contracts import (
+    ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
+    ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
+    LABEL_SCHEMA_VERSION,
+)
+from services.ev_lineage_contract import ev_feature_lineage_blockers
+
 from services.allocator_ev_fusion import (
     _s12_execution_ready,
     _s12_multiplier,
@@ -71,11 +78,11 @@ ASSISTIVE_MIN_EXPERT_DATES = 5
 CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
 CANONICAL_SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
 CANONICAL_ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v3"
+CANONICAL_ADJUSTMENT_FACTOR_SOURCE = "canonical_market_daily:finlab.price"
 MIN_CROSS_SECTION_SAMPLES_PER_DATE = 20
 LABEL_PURGE_DATE_GROUPS = 5
-ARTIFACT_CONTRACT_VERSION = "allocator-ev-fusion-contract-v8"
-FEATURE_SEMANTIC_VERSION = "allocator-ev-fusion-directional-components-v2-lineage-bound"
-LABEL_SCHEMA_VERSION = "next-session-raw-open-to-fifth-session-raw-close-factor-stable-net-v2"
+ARTIFACT_CONTRACT_VERSION = ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION
+FEATURE_SEMANTIC_VERSION = ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -211,11 +218,7 @@ def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
     score_payload = _loads(row.get("score_components"))
     forecast_payload = _loads(row.get("forecast_data"))
     ensemble_payload = forecast_payload.get("ensemble_v2") if isinstance(forecast_payload.get("ensemble_v2"), dict) else {}
-    if str(score_payload.get("semanticVersion") or "").strip() != CANONICAL_SCORE_SEMANTIC_VERSION:
-        return None
-    if str(ensemble_payload.get("semantic_version") or "").strip() != CANONICAL_ENSEMBLE_SEMANTIC_VERSION:
-        return None
-    if not str(ensemble_payload.get("model_set_signature") or "").strip():
+    if ev_feature_lineage_blockers(row):
         return None
     extractor_row = _row_for_extractors(row)
     usage_scope = _l4_usage_scope(row)
@@ -269,13 +272,24 @@ def _samples(
     missing_features = 0
     rejected_feature_era_rows = 0
     feature_era_counts: dict[str, int] = {}
+    lineage_blocker_counts: dict[str, int] = {}
+    adjustment_lineage_counts: dict[str, int] = {}
     for row in rows:
         feature_era = _score_feature_era(row)
         feature_era_counts[feature_era] = feature_era_counts.get(feature_era, 0) + 1
         if feature_era != CANONICAL_SCORE_FEATURE_VERSION:
             rejected_feature_era_rows += 1
+        lineage_blockers = ev_feature_lineage_blockers(row)
+        for blocker in lineage_blockers:
+            lineage_blocker_counts[blocker] = lineage_blocker_counts.get(blocker, 0) + 1
+        adjustment_source = str(row.get("label_adjustment_source") or "missing")
+        adjustment_lineage_counts[adjustment_source] = adjustment_lineage_counts.get(adjustment_source, 0) + 1
         features = _feature_vector(row)
-        selection_gross_target = _bounded_return(row, "l4_executable_return_pct")
+        selection_gross_target = (
+            _bounded_return(row, "l4_executable_return_pct")
+            if adjustment_source == CANONICAL_ADJUSTMENT_FACTOR_SOURCE
+            else None
+        )
         selection_target = (
             selection_gross_target - max(0.0, execution_cost_bps) / 10000.0
             if selection_gross_target is not None
@@ -406,6 +420,9 @@ def _samples(
         "accepted_feature_era": CANONICAL_SCORE_FEATURE_VERSION,
         "feature_era_counts": dict(sorted(feature_era_counts.items())),
         "rejected_feature_era_rows": rejected_feature_era_rows,
+        "lineage_blocker_counts": dict(sorted(lineage_blocker_counts.items())),
+        "required_adjustment_factor_source": CANONICAL_ADJUSTMENT_FACTOR_SOURCE,
+        "adjustment_lineage_counts": dict(sorted(adjustment_lineage_counts.items())),
         "feature_era_policy": {
             "mode": "strict_canonical_only",
             "accepted_versions": [CANONICAL_SCORE_FEATURE_VERSION],
@@ -751,7 +768,7 @@ def _paired_canonical_l4_comparison(
     return {
         "schema_version": "allocator-ev-fusion-champion-comparison-v1",
         "champion": "canonical_l4",
-        "challenger": "allocator_ev_fusion_v8_selection_model",
+        "challenger": "allocator_ev_fusion_v10_selection_model",
         "comparison_unit": "paired_prediction_date_same_candidates",
         "decision": "PASS" if not blockers else "FAIL",
         "failed_gates": blockers,
@@ -781,7 +798,7 @@ def _paired_final_trade_ev_comparison(
         return {
             "schema_version": "allocator-ev-fusion-final-champion-comparison-v1",
             "champion": "canonical_l4",
-            "challenger": "allocator_ev_fusion_v8_final_trade_ev",
+            "challenger": "allocator_ev_fusion_v10_final_trade_ev",
             "comparison_target": "realized_multisession_trade_ev_net_of_costs",
             "decision": "FAIL",
             "failed_gates": blockers,
@@ -876,7 +893,7 @@ def _paired_final_trade_ev_comparison(
     return {
         "schema_version": "allocator-ev-fusion-final-champion-comparison-v1",
         "champion": "canonical_l4",
-        "challenger": "allocator_ev_fusion_v8_final_trade_ev",
+        "challenger": "allocator_ev_fusion_v10_final_trade_ev",
         "comparison_target": "realized_multisession_trade_ev_net_of_costs",
         "comparison_unit": "paired_prediction_date_same_candidates",
         "decision": "PASS" if not blockers else "FAIL",
@@ -1423,7 +1440,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
     if decision != "PASS":
         promotion_blockers = failed_gates
     validation_packet = {
-        "schema_version": "allocator-ev-fusion-validation-packet-v8",
+        "schema_version": "allocator-ev-fusion-validation-packet-v10",
         "decision": decision,
         "failed_gates": failed_gates,
         "validation_scope": {
@@ -1474,7 +1491,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
         },
     }
     artifact = {
-        "schema_version": "allocator-ev-fusion-artifact-v8",
+        "schema_version": "allocator-ev-fusion-artifact-v10",
         "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
         "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
         "label_schema_version": LABEL_SCHEMA_VERSION,
@@ -1490,8 +1507,8 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "promotion_blockers": promotion_blockers,
         "validation_packet": validation_packet,
         "resolver_method": "cross_fitted_rank_two_part_trade_ev_fusion",
-        "model_version": f"allocator-ev-fusion-cross-fit-v8-{trained_until.replace('-', '')}",
-        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v9-directional-executable-label",
+        "model_version": f"allocator-ev-fusion-cross-fit-v10-{trained_until.replace('-', '')}",
+        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v10-canonical-adjusted-label",
         "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
         "trained_until": trained_until,
         "horizon_days": 5,
@@ -1542,16 +1559,22 @@ def load_allocator_ev_fusion_training_rows(
                     date(sp.date) AS price_date,
                     LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_raw_open,
                     LEAD(
-                        CASE WHEN sp.close > 0 AND sp.adj_close > 0 THEN sp.adj_close / sp.close END,
+                        CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
                         1
                     ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_adjustment_factor,
                     LEAD(date(sp.date), 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_date,
                     LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_raw_close,
                     LEAD(
-                        CASE WHEN sp.close > 0 AND sp.adj_close > 0 THEN sp.adj_close / sp.close END,
+                        CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
                         5
                     ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_adjustment_factor
                 FROM stock_prices sp
+                JOIN stocks factor_stock
+                  ON factor_stock.id = sp.stock_id
+                LEFT JOIN canonical_market_daily cmd
+                  ON cmd.stock_id = factor_stock.symbol
+                 AND cmd.date = date(sp.date)
+                 AND cmd.source = 'finlab.price'
                 WHERE date(sp.date) >= date(?, ?, '-10 days')
                   AND date(sp.date) <= date(?)
             )
@@ -1560,7 +1583,9 @@ def load_allocator_ev_fusion_training_rows(
                 fs.symbol,
                 date(p.prediction_date) AS prediction_date,
                 fs.forecast_data,
-                (ph.exit_raw_close / ph.entry_raw_open) - 1.0 AS l4_executable_return_pct,
+                'canonical_market_daily:finlab.price' AS label_adjustment_source,
+                ((ph.exit_raw_close * ph.exit_adjustment_factor)
+                  / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 AS l4_executable_return_pct,
                 p.trade_pnl_pct,
                 (
                     SELECT o.pnl_pct
@@ -1618,7 +1643,6 @@ def load_allocator_ev_fusion_training_rows(
               AND ph.exit_raw_close > 0
               AND ph.entry_adjustment_factor > 0
               AND ph.exit_adjustment_factor > 0
-              AND ABS((ph.exit_adjustment_factor / ph.entry_adjustment_factor) - 1.0) <= 0.02
               AND date(ph.exit_date) <= date(?)
               AND fs.snapshot_source = ?
               AND fs.as_of_guard = ?
@@ -1660,16 +1684,22 @@ def load_allocator_ev_fusion_training_rows(
                 date(sp.date) AS price_date,
                 LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_raw_open,
                 LEAD(
-                    CASE WHEN sp.close > 0 AND sp.adj_close > 0 THEN sp.adj_close / sp.close END,
+                    CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
                     1
                 ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_adjustment_factor,
                 LEAD(date(sp.date), 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_date,
                 LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_raw_close,
                 LEAD(
-                    CASE WHEN sp.close > 0 AND sp.adj_close > 0 THEN sp.adj_close / sp.close END,
+                    CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
                     5
                 ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_adjustment_factor
             FROM stock_prices sp
+            JOIN stocks factor_stock
+              ON factor_stock.id = sp.stock_id
+            LEFT JOIN canonical_market_daily cmd
+              ON cmd.stock_id = factor_stock.symbol
+             AND cmd.date = date(sp.date)
+             AND cmd.source = 'finlab.price'
             WHERE date(sp.date) >= date(?, ?, '-10 days')
               AND date(sp.date) <= date(?)
         )
@@ -1678,7 +1708,9 @@ def load_allocator_ev_fusion_training_rows(
             s.symbol,
             date(p.prediction_date) AS prediction_date,
             p.forecast_data,
-            (ph.exit_raw_close / ph.entry_raw_open) - 1.0 AS l4_executable_return_pct,
+            'canonical_market_daily:finlab.price' AS label_adjustment_source,
+            ((ph.exit_raw_close * ph.exit_adjustment_factor)
+              / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 AS l4_executable_return_pct,
             p.trade_pnl_pct,
             (
                 SELECT o.pnl_pct
@@ -1734,7 +1766,6 @@ def load_allocator_ev_fusion_training_rows(
           AND ph.exit_raw_close > 0
           AND ph.entry_adjustment_factor > 0
           AND ph.exit_adjustment_factor > 0
-          AND ABS((ph.exit_adjustment_factor / ph.entry_adjustment_factor) - 1.0) <= 0.02
           AND date(ph.exit_date) <= date(?)
           AND dr.alpha_allocation IS NOT NULL
           AND date(p.prediction_date) <= date(?)

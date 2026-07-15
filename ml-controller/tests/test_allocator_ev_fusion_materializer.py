@@ -11,9 +11,9 @@ from services.allocator_ev_fusion import materialize_allocator_ev_fusion  # noqa
 def _artifact() -> dict:
     return {
         "schema_version": "allocator-ev-fusion-artifact-v1",
-        "artifact_contract_version": "allocator-ev-fusion-contract-v8",
+        "artifact_contract_version": "allocator-ev-fusion-contract-v10",
         "feature_semantic_version": "allocator-ev-fusion-directional-components-v2-lineage-bound",
-        "label_schema_version": "next-session-adjusted-open-to-fifth-session-adjusted-close-net-v1",
+        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "expected_return_owner": "allocator_ev_fusion",
         "promotion_state": "production_approved",
         "validation_packet": {"decision": "PASS"},
@@ -55,6 +55,35 @@ def test_allocator_ev_fusion_materializer_serves_edge_agreement_feature():
     assert payload["status"] == "loaded"
     assert payload["feature_values"]["l4_s12_edge_agreement"] == pytest.approx(1.0)
     assert payload["expected_return"] == pytest.approx(0.04)
+
+
+def test_allocator_fusion_serving_migration_accepts_only_exact_legacy_contract_pair():
+    legacy = {
+        **_artifact(),
+        "artifact_contract_version": "allocator-ev-fusion-contract-v9",
+        "label_schema_version": "next-session-raw-open-to-fifth-session-raw-close-canonical-finlab-factor-net-v3",
+    }
+    kwargs = {
+        "l4_value": 0.02,
+        "l4_source": "l4:test",
+        "l4_payload": {},
+        "s12_value": 0.01,
+        "s12_source": "s12:test",
+        "s12_payload": {"status": "loaded"},
+        "market_heat_expected_return": 0.0,
+    }
+    accepted = materialize_allocator_ev_fusion(
+        {}, policy={"allocatorEvFusion": legacy}, **kwargs
+    )
+    hybrid = materialize_allocator_ev_fusion(
+        {},
+        policy={"allocatorEvFusion": {**legacy, "label_schema_version": _artifact()["label_schema_version"]}},
+        **kwargs,
+    )
+
+    assert accepted["status"] == "loaded"
+    assert hybrid["status"] == "rejected"
+    assert "artifact_label_contract_pair_incompatible" in hybrid["blockers"]
 
 
 def test_allocator_ev_fusion_materializer_marks_edge_disagreement_zero():

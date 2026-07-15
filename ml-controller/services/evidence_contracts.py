@@ -1,0 +1,18 @@
+"""Canonical cross-layer versions for production expected-return artifacts."""
+
+LABEL_SCHEMA_VERSION = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+LEGACY_LABEL_SCHEMA_VERSION = "next-session-raw-open-to-fifth-session-raw-close-canonical-finlab-factor-net-v3"
+
+L4_ARTIFACT_CONTRACT_VERSION = "l4-alpha-ev-contract-v4"
+L4_FEATURE_SEMANTIC_VERSION = "l4-directional-score-components-v2-lineage-bound"
+SUPPORTED_L4_SERVING_CONTRACT_PAIRS = frozenset({
+    ("l4-alpha-ev-contract-v3", LEGACY_LABEL_SCHEMA_VERSION),
+    (L4_ARTIFACT_CONTRACT_VERSION, LABEL_SCHEMA_VERSION),
+})
+
+ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION = "allocator-ev-fusion-contract-v10"
+ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION = "allocator-ev-fusion-directional-components-v2-lineage-bound"
+SUPPORTED_ALLOCATOR_EV_SERVING_CONTRACT_PAIRS = frozenset({
+    ("allocator-ev-fusion-contract-v9", LEGACY_LABEL_SCHEMA_VERSION),
+    (ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION, LABEL_SCHEMA_VERSION),
+})

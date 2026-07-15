@@ -17,12 +17,18 @@ from services.l4_alpha_ev_resolver import (
     SNAPSHOT_BACKFILL_USAGE_SCOPE,
     resolve_l4_alpha_ev,
 )
+from services.evidence_contracts import (
+    L4_ARTIFACT_CONTRACT_VERSION,
+    L4_FEATURE_SEMANTIC_VERSION,
+    LABEL_SCHEMA_VERSION,
+    SUPPORTED_L4_SERVING_CONTRACT_PAIRS,
+)
 
 
 PRODUCER_SCHEMA_VERSION = "l4-alpha-ev-producer-v2"
-REQUIRED_ARTIFACT_CONTRACT_VERSION = "l4-alpha-ev-contract-v2"
-REQUIRED_FEATURE_SEMANTIC_VERSION = "l4-directional-score-components-v2-lineage-bound"
-REQUIRED_LABEL_SCHEMA_VERSION = "next-session-adjusted-open-to-fifth-session-adjusted-close-net-v1"
+REQUIRED_ARTIFACT_CONTRACT_VERSION = L4_ARTIFACT_CONTRACT_VERSION
+REQUIRED_FEATURE_SEMANTIC_VERSION = L4_FEATURE_SEMANTIC_VERSION
+REQUIRED_LABEL_SCHEMA_VERSION = LABEL_SCHEMA_VERSION
 CANONICAL_FEATURE_NAMES = {
     "ml_edge_norm",
     "fundamental_quality_norm",
@@ -259,12 +265,22 @@ def _rejected_payload(artifact: dict[str, Any], blockers: list[str]) -> dict[str
 
 def _semantic_contract_blockers(artifact: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
-    if str(artifact.get("artifact_contract_version") or "").strip() != REQUIRED_ARTIFACT_CONTRACT_VERSION:
+    contract_version = str(artifact.get("artifact_contract_version") or "").strip()
+    label_version = str(artifact.get("label_schema_version") or "").strip()
+    supported_contract_versions = {pair[0] for pair in SUPPORTED_L4_SERVING_CONTRACT_PAIRS}
+    supported_label_versions = {pair[1] for pair in SUPPORTED_L4_SERVING_CONTRACT_PAIRS}
+    if contract_version not in supported_contract_versions:
         blockers.append("artifact_contract_version_incompatible")
+    if label_version not in supported_label_versions:
+        blockers.append("label_schema_version_incompatible")
+    if (
+        contract_version in supported_contract_versions
+        and label_version in supported_label_versions
+        and (contract_version, label_version) not in SUPPORTED_L4_SERVING_CONTRACT_PAIRS
+    ):
+        blockers.append("artifact_label_contract_pair_incompatible")
     if str(artifact.get("feature_semantic_version") or "").strip() != REQUIRED_FEATURE_SEMANTIC_VERSION:
         blockers.append("feature_semantic_version_incompatible")
-    if str(artifact.get("label_schema_version") or "").strip() != REQUIRED_LABEL_SCHEMA_VERSION:
-        blockers.append("label_schema_version_incompatible")
     feature_names = {
         str(value).strip()
         for value in (artifact.get("feature_names") or [])
@@ -276,6 +292,37 @@ def _semantic_contract_blockers(artifact: dict[str, Any]) -> list[str]:
     if set(coefficients) != CANONICAL_FEATURE_NAMES:
         blockers.append("canonical_coefficient_set_mismatch")
     return blockers
+
+
+def assess_l4_artifact_cutover(artifact: dict[str, Any] | None) -> dict[str, Any]:
+    """Report whether an artifact can serve the current V2-only producer contract."""
+    payload = artifact if isinstance(artifact, dict) else {}
+    blockers = _semantic_contract_blockers(payload)
+    method = _resolver_method(payload)
+    if method in EMPIRICAL_ONLY_METHODS:
+        blockers.append("empirical_bucket_not_production_alpha_ev_owner")
+    if _validation_decision(payload) not in PASS_STATES:
+        blockers.append("validation_packet_not_pass")
+    if _approval_state(payload) not in {"production_approved", "approved_for_production", "live"}:
+        blockers.append("production_approval_missing")
+    required_families = {"score_v2_components", "formal_ml_direction"}
+    blockers.extend(
+        f"feature_family_missing:{family}"
+        for family in sorted(required_families - _feature_families(payload))
+    )
+    if not _coefficients(payload):
+        blockers.append("learned_coefficients_missing")
+    for key in ("model_version", "feature_snapshot_version", "trained_until"):
+        if not str(payload.get(key) or "").strip():
+            blockers.append(f"{key}_missing")
+    blockers = list(dict.fromkeys(blockers))
+    return {
+        "schema_version": "l4-alpha-ev-cutover-readiness-v1",
+        "ready": not blockers,
+        "producer_schema_version": PRODUCER_SCHEMA_VERSION,
+        "artifact_model_version": payload.get("model_version"),
+        "blockers": blockers,
+    }
 
 
 def materialize_l4_alpha_ev(

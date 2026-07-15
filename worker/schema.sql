@@ -794,6 +794,22 @@ CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_candidate_type
 CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_run
   ON model_artifact_registry(training_run_id, source_run_date);
 
+CREATE TABLE IF NOT EXISTS model_champion_history (
+  event_id       TEXT PRIMARY KEY,
+  model_name     TEXT NOT NULL,
+  version        TEXT NOT NULL,
+  artifact_id    TEXT,
+  effective_at   TEXT NOT NULL,
+  retired_at     TEXT,
+  source         TEXT NOT NULL CHECK(source = 'model_champion_history'),
+  evidence_grade TEXT NOT NULL CHECK(evidence_grade IN ('exact','bounded','unknown')),
+  evidence_json  TEXT NOT NULL DEFAULT '{}',
+  created_at     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(model_name, version, effective_at)
+);
+CREATE INDEX IF NOT EXISTS idx_model_champion_history_asof
+  ON model_champion_history(model_name, effective_at, retired_at);
+
 CREATE TABLE IF NOT EXISTS model_champion_pointers (
   model_name                  TEXT PRIMARY KEY,
   champion_version            TEXT NOT NULL,
@@ -820,7 +836,7 @@ CREATE TABLE IF NOT EXISTS allocator_ev_feature_snapshots (
   market_heat_expected_return REAL,
   market_segment              TEXT,
   recommendation_lane         TEXT,
-  snapshot_source             TEXT NOT NULL DEFAULT 'allocator_ev_asof_backfill_v1',
+  snapshot_source             TEXT NOT NULL DEFAULT 'allocator_ev_asof_backfill_v2',
   l4_model_version            TEXT,
   s12_source                  TEXT,
   as_of_guard                 TEXT NOT NULL,
@@ -834,6 +850,51 @@ CREATE INDEX IF NOT EXISTS idx_allocator_ev_snapshots_date
 
 CREATE INDEX IF NOT EXISTS idx_allocator_ev_snapshots_symbol
   ON allocator_ev_feature_snapshots(symbol, snapshot_date DESC);
+
+CREATE TABLE IF NOT EXISTS allocator_ev_snapshot_runs (
+  run_id TEXT PRIMARY KEY,
+  snapshot_date TEXT NOT NULL,
+  snapshot_source TEXT NOT NULL,
+  as_of_guard TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('writing','ready','failed')),
+  expected_rows INTEGER NOT NULL DEFAULT 0,
+  staged_rows INTEGER NOT NULL DEFAULT 0,
+  published_rows INTEGER NOT NULL DEFAULT 0,
+  native_lineage_rows INTEGER NOT NULL DEFAULT 0,
+  reconstructed_lineage_rows INTEGER NOT NULL DEFAULT 0,
+  rejected_lineage_rows INTEGER NOT NULL DEFAULT 0,
+  error_code TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  published_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_allocator_ev_snapshot_runs_date_status
+  ON allocator_ev_snapshot_runs(snapshot_date DESC, snapshot_source, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS allocator_ev_feature_snapshot_staging (
+  run_id TEXT NOT NULL,
+  snapshot_date TEXT NOT NULL,
+  stock_id INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  forecast_data TEXT,
+  score REAL,
+  score_components TEXT,
+  alpha_context TEXT,
+  alpha_allocation TEXT NOT NULL,
+  market_heat_expected_return REAL,
+  market_segment TEXT,
+  recommendation_lane TEXT,
+  snapshot_source TEXT NOT NULL,
+  l4_model_version TEXT,
+  s12_source TEXT,
+  as_of_guard TEXT NOT NULL,
+  source_recommendation_date TEXT,
+  generated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, stock_id),
+  FOREIGN KEY (run_id) REFERENCES allocator_ev_snapshot_runs(run_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_allocator_ev_snapshot_staging_run
+  ON allocator_ev_feature_snapshot_staging(run_id, snapshot_date, stock_id);
 
 CREATE TABLE IF NOT EXISTS strategy_spec_registry (
   strategy_id              TEXT NOT NULL,
@@ -1401,6 +1462,22 @@ CREATE TABLE IF NOT EXISTS broker_execution_events (
 CREATE INDEX IF NOT EXISTS idx_broker_events_order_time ON broker_execution_events(broker_order_id, event_time);
 CREATE INDEX IF NOT EXISTS idx_broker_events_client_tag ON broker_execution_events(client_tag, event_time);
 CREATE INDEX IF NOT EXISTS idx_broker_events_unmatched ON broker_execution_events(broker_order_id, leg_id);
+
+CREATE TABLE IF NOT EXISTS artifact_hard_references (
+  reference_id TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL,
+  owner_type TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  released_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(owner_type, owner_id, artifact_id)
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_hard_references_artifact_active
+  ON artifact_hard_references(artifact_id, active);
+CREATE INDEX IF NOT EXISTS idx_artifact_hard_references_owner_active
+  ON artifact_hard_references(owner_type, owner_id, active);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 注意：增量 Schema 變更請使用獨立 migration 檔案執行，不要放在這裡

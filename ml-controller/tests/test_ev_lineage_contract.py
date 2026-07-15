@@ -273,7 +273,8 @@ def test_same_run_versions_are_loaded_once_per_signal_date_and_matched_in_memory
     }])
 
     assert len(calls) == 2
-    assert calls[0][1] == ["2026-06-16"]
+    assert calls[0][1] == ["2026-06-16", "2026-06-17"]
+    assert "date(prediction_date)" not in calls[0][0]
     assert enriched[0]["row_model_version_evidence"]["DLinear"]["version"] == "v1"
     assert enriched[0]["row_model_version_evidence"]["DLinear"]["artifact_registry"]["artifact_id"] == "DLinear:v1"
     assert audit["query_count"] == 2

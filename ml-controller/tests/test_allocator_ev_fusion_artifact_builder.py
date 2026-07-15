@@ -332,7 +332,16 @@ def test_snapshot_candidate_query_avoids_correlated_evidence_lookups():
 
     assert "json_group_object" not in captured["sql"]
     assert "SELECT MIN(date(sp.date))" not in captured["sql"]
-    assert captured["params"] == ["2026-06-18", 200]
+    assert "date(p.prediction_date)" not in captured["sql"]
+    assert "date(dr.date)" not in captured["sql"]
+    assert "ROW_NUMBER() OVER" in captured["sql"]
+    assert captured["params"] == [
+        "2026-06-18",
+        "2026-06-19",
+        "2026-06-18",
+        "2026-06-19",
+        200,
+    ]
 
 
 def test_allocator_fusion_rejects_unproven_adjustment_factor_lineage():

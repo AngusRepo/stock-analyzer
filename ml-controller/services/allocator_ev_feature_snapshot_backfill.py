@@ -84,12 +84,27 @@ def load_allocator_ev_snapshot_candidate_rows(
     snapshot_date: str,
     limit: int = 1000,
 ) -> list[dict[str, Any]]:
+    next_date = (date.fromisoformat(snapshot_date) + timedelta(days=1)).isoformat()
     return query_fn(
         """
+        WITH ranked_prediction_ids AS (
+            SELECT
+                p.id,
+                p.stock_id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY p.stock_id
+                    ORDER BY p.generated_at DESC, p.id DESC
+                ) AS prediction_rank
+            FROM predictions p
+            WHERE p.prediction_date >= ?
+              AND p.prediction_date < ?
+              AND p.model_name = 'ensemble'
+              AND p.forecast_data IS NOT NULL
+        )
         SELECT
             dr.stock_id,
             dr.symbol,
-            date(dr.date) AS recommendation_date,
+            dr.date AS recommendation_date,
             p.generated_at AS prediction_generated_at,
             p.forecast_data,
             dr.score,
@@ -105,26 +120,18 @@ def load_allocator_ev_snapshot_candidate_rows(
             dr.ml_score,
             COUNT(*) OVER () AS candidate_total_count
         FROM daily_recommendations dr
+        JOIN ranked_prediction_ids rp
+          ON rp.stock_id = dr.stock_id
+         AND rp.prediction_rank = 1
         JOIN predictions p
-          ON p.stock_id = dr.stock_id
-         AND date(p.prediction_date) = date(dr.date)
-         AND p.model_name = 'ensemble'
-         AND p.id = (
-             SELECT p2.id
-               FROM predictions p2
-              WHERE p2.stock_id=p.stock_id
-                AND p2.model_name='ensemble'
-                AND date(p2.prediction_date)=date(p.prediction_date)
-              ORDER BY datetime(p2.generated_at) DESC, p2.id DESC
-              LIMIT 1
-         )
-        WHERE date(dr.date) = date(?)
+          ON p.id = rp.id
+        WHERE dr.date >= ?
+          AND dr.date < ?
           AND dr.score_components IS NOT NULL
-          AND p.forecast_data IS NOT NULL
         ORDER BY dr.rank ASC, dr.score DESC
         LIMIT ?
         """,
-        [snapshot_date, int(limit)],
+        [snapshot_date, next_date, snapshot_date, next_date, int(limit)],
     )
 
 

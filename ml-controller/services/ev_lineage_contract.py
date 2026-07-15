@@ -289,15 +289,17 @@ def attach_same_run_model_version_evidence(
     evidence_by_key: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     loaded_rows = 0
     for signal_date in dates:
+        next_date = (date.fromisoformat(signal_date) + timedelta(days=1)).isoformat()
         evidence_rows = query_fn(
             """
             SELECT stock_id,
-                   date(prediction_date) AS prediction_date,
+                   prediction_date,
                    model_name,
                    generated_at,
                    json_extract(forecast_data, '$.model_signal.model_version') AS model_version
               FROM predictions
-             WHERE date(prediction_date) = date(?)
+             WHERE prediction_date >= ?
+               AND prediction_date < ?
                AND model_name IN (
                    'LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN',
                    'DLinear', 'PatchTST', 'iTransformer'
@@ -305,7 +307,7 @@ def attach_same_run_model_version_evidence(
                AND json_extract(forecast_data, '$.model_signal.model_version') IS NOT NULL
              ORDER BY stock_id, model_name, datetime(generated_at) ASC, id ASC
             """,
-            [signal_date],
+            [signal_date, next_date],
         )
         loaded_rows += len(evidence_rows or [])
         for evidence in evidence_rows or []:

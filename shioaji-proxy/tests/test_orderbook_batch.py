@@ -264,6 +264,53 @@ def test_recovery_does_not_count_or_reconnect_while_streaming_control_is_active(
     assert subscribe_calls == []
 
 
+def test_symbol_recovery_never_reconnects_whole_session_for_one_stale_symbol(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy._streaming_control_inflight = False
+    subscribe_calls: list[str] = []
+    monkeypatch.setattr(proxy, "_mark_orderbook_recovery", lambda *_args: (99, True))
+    monkeypatch.setattr(
+        proxy,
+        "reset_shioaji_connection",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("single-symbol staleness must not reset session")),
+    )
+    monkeypatch.setattr(proxy, "subscribe_symbol", lambda symbol, **_kwargs: subscribe_calls.append(symbol) or True)
+
+    proxy.recover_orderbook_symbol("4123", "watchdog_stale_depth")
+
+    assert subscribe_calls == ["4123"]
+
+
+def test_stale_orderbook_request_waits_for_active_refresh(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy.api = object()
+    proxy.connected = True
+    symbol = "4123"
+    proxy.last_bidasks[symbol] = {
+        "symbol": symbol,
+        "bid_prices": [37.3],
+        "bid_volumes": [10],
+        "ask_prices": [37.4],
+        "ask_volumes": [10],
+        "updated_at": "2026-07-15T09:00:00+08:00",
+    }
+    monkeypatch.setattr(proxy, "orderbook_refresh_wait_seconds", lambda: 0.1)
+
+    def refresh(symbol_arg: str, _reason: str, _lot_type: str = "board_lot"):
+        assert symbol_arg == symbol
+        now = datetime.now(proxy.TW_TZ).isoformat()
+        proxy.last_bidasks[symbol]["timestamp"] = now
+        proxy.last_bidasks[symbol]["updated_at"] = now
+
+    monkeypatch.setattr(proxy, "recover_orderbook_symbol_async", refresh)
+
+    status_code, payload = proxy._orderbook_payload(symbol)
+
+    assert status_code == 200
+    assert payload["status"] == "ok"
+    assert payload["bid_prices"][0] == 37.3
+
+
 def test_execution_snapshot_reads_fresh_tick_cache_without_sdk_call(monkeypatch):
     proxy = _load_proxy_main()
     now = datetime.now(proxy.TW_TZ).isoformat()

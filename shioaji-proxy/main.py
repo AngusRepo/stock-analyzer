@@ -832,8 +832,10 @@ def recover_orderbook_symbol(symbol: str, reason: str, lot_type: str = "board_lo
     if not should_attempt:
         return
     if failures >= reconnect_after_consecutive_failures():
-        if reset_shioaji_connection(f"{reason}:{lot_type}:{symbol}:failures={failures}"):
-            return
+        print(
+            f"[Shioaji] Symbol refresh remains stale; keep session and retry symbol only: "
+            f"{lot_type}:{symbol} failures={failures} reason={reason}"
+        )
     subscribe_symbol(symbol, force_bidask=True, lot_type=lot_type)
 
 
@@ -1263,6 +1265,20 @@ def _orderbook_diagnostic(
     }
 
 
+def _wait_for_fresh_orderbook(symbol: str, lot_type: str) -> dict | None:
+    deadline = time.monotonic() + orderbook_refresh_wait_seconds()
+    depth_store = _depth_store(lot_type)
+    while time.monotonic() < deadline:
+        with _state_lock:
+            depth = dict(depth_store.get(symbol) or {})
+        if depth and orderbook_is_fresh(depth):
+            return depth
+        time.sleep(0.05)
+    with _state_lock:
+        depth = dict(depth_store.get(symbol) or {})
+    return depth or None
+
+
 def _orderbook_payload(
     symbol: str,
     *,
@@ -1279,9 +1295,15 @@ def _orderbook_payload(
 
         watch_orderbook_symbols([symbol], lot_type=lot_type)
         depth = depth_store.get(symbol)
+        if refresh and (not depth or not orderbook_is_fresh(depth)):
+            recover_orderbook_symbol_async(
+                symbol,
+                "request_waiting_callback" if not depth else "request_stale_depth",
+                lot_type,
+            )
+            depth = _wait_for_fresh_orderbook(symbol, lot_type)
+
         if not depth:
-            if refresh:
-                recover_orderbook_symbol_async(symbol, "request_waiting_callback", lot_type)
             return 503, _orderbook_diagnostic(
                 symbol,
                 "waiting_callback",
@@ -1290,8 +1312,6 @@ def _orderbook_payload(
             )
 
         if not orderbook_is_fresh(depth):
-            if refresh:
-                recover_orderbook_symbol_async(symbol, "request_stale_depth", lot_type)
             return 503, _orderbook_diagnostic(symbol, "stale_depth", depth=depth, lot_type=lot_type)
 
         bid_prices = list(depth.get("bid_prices") or [])[:5]

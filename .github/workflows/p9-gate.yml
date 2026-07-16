@@ -170,6 +170,24 @@ jobs:
                   return platform[kind]
               raise ValueError(f"{kind} attestation is absent; top-level keys={sorted(document)}")
 
+          def verify_max_provenance(provenance):
+              build_type = provenance.get("buildType")
+              if build_type:
+                  build_config = provenance.get("buildConfig")
+                  llb = build_config.get("llbDefinition") if isinstance(build_config, dict) else None
+                  if not isinstance(llb, list) or not llb:
+                      raise ValueError("SLSA v0.2 provenance lacks max-mode LLB definition")
+                  return
+
+              build_definition = provenance.get("buildDefinition")
+              if not isinstance(build_definition, dict) or not build_definition.get("buildType"):
+                  raise ValueError("provenance is neither valid SLSA v0.2 nor v1")
+              internal = build_definition.get("internalParameters")
+              build_config = internal.get("buildConfig") if isinstance(internal, dict) else None
+              llb = build_config.get("llbDefinition") if isinstance(build_config, dict) else None
+              if not isinstance(llb, list) or not llb:
+                  raise ValueError("SLSA v1 provenance lacks max-mode LLB definition")
+
           with open("sbom.json", encoding="utf-8") as handle:
               sbom_document = json.load(handle)
           with open("provenance.json", encoding="utf-8") as handle:
@@ -180,11 +198,7 @@ jobs:
               provenance = select_attestation(provenance_document, "SLSA")
               if not sbom.get("packages"):
                   raise ValueError("SBOM contains no packages")
-              if not provenance.get("buildType"):
-                  raise ValueError("SLSA provenance has no buildType")
-              invocation = provenance.get("invocation")
-              if not isinstance(invocation, dict) or not invocation.get("parameters"):
-                  raise ValueError("provenance lacks max-mode invocation parameters")
+              verify_max_provenance(provenance)
           except (TypeError, ValueError) as error:
               print(f"::error title=Container attestation contract::{error}")
               raise SystemExit(1) from error

@@ -74,6 +74,8 @@ assert(workflow.includes('provenance: mode=max'), 'P9 workflow must attach max-m
 assert(workflow.includes("--format '{{ json .SBOM }}'"), 'P9 workflow must read back the complete registry SBOM document')
 assert(workflow.includes("--format '{{ json .Provenance }}'"), 'P9 workflow must read back the complete registry provenance document')
 assert(workflow.includes('document.get("linux/amd64")'), 'P9 attestation verification must support platform-indexed registry output')
+assert(workflow.includes('provenance.get("buildDefinition")'), 'P9 attestation verification must accept and validate SLSA v1 provenance')
+assert(workflow.includes('build_config.get("llbDefinition")'), 'P9 must prove max-mode provenance contains the LLB build definition')
 assert(workflow.includes('::error title=Container attestation contract::'), 'attestation failures must emit a machine-readable GitHub annotation')
 assert(workflow.includes('@${{ steps.build.outputs.digest }}'), 'P9 workflow must scan the immutable build digest')
 assert(workflow.includes('dockerfile: ml-service/Dockerfile'), 'P9 workflow must build the ML service image independently')

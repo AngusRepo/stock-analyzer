@@ -74,3 +74,16 @@ def test_oof_automatic_promotion_requires_primary_fusion_and_operational_parity(
     assert 'parity.get("decision") == "PASS"' in source
     assert "archive_ev_candidate_artifacts" in source
     assert "purged OOF quality PASS and native operational parity PASS" in source
+
+
+def test_walk_forward_routes_long_sequence_v3_prep_into_every_oof_fold():
+    router_source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
+    modal_source = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
+
+    assert 'sequence_gcs_prefix: str = "universal/sequence_long"' in router_source
+    assert '"sequence_gcs_prefix": req.sequence_gcs_prefix' in router_source
+    assert '"sequence_batch_count": req.sequence_batch_count' in router_source
+    assert "active8_oof_sequence_v3_prep_batch_missing" in modal_source
+    assert 'raw.get("target_semantic_version") == "next-session-open-to-fifth-session-close-v2"' in modal_source
+    assert '"version": f"{cohort_id}-w{wid}"' in modal_source
+    assert 'version = payload.get("output_model_version") or payload.get("version", "v1")' in modal_source

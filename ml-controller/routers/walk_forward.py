@@ -32,6 +32,10 @@ class WalkForwardRequest(BaseModel):
     # 2026-04-19 N2: per-window feature selection controls
     fs_max_rounds: int = 60          # lighter than production 100; trade speed for slight precision loss
     fs_force_refresh: bool = False   # True = re-run FS even if walk_forward/w{id}/feature_pool.json exists
+    cohort_id: str | None = None
+    prep_gcs_prefix: str = "universal"
+    sequence_gcs_prefix: str = "universal/sequence_long"
+    sequence_batch_count: int = 5
 
 
 @router.post("/walk_forward/dry-run")
@@ -69,6 +73,13 @@ async def walk_forward_dry_run(req: WalkForwardRequest):
         "estimated_tree_wall_clock_hours": run.aggregate.get("estimated_tree_wall_clock_hours"),
         "model_coverage": run.aggregate.get("model_coverage") or walk_forward_model_coverage(req.models or MODELS_ALL),
         "data_access": data_access,
+        "cohort_id": req.cohort_id or (
+            f"active8-oof-{req.start_date}-{req.end_date}-"
+            f"tr{req.train_window_days}-te{req.test_window_days}"
+        ),
+        "prep_gcs_prefix": req.prep_gcs_prefix,
+        "sequence_gcs_prefix": req.sequence_gcs_prefix,
+        "sequence_batch_count": req.sequence_batch_count,
         "windows": [
             {
                 "window_id": w.window_id,
@@ -146,6 +157,10 @@ async def walk_forward_run(req: WalkForwardRequest):
         }
         for w in windows
     ]
+    cohort_id = req.cohort_id or (
+        f"active8-oof-{req.start_date}-{req.end_date}-"
+        f"tr{req.train_window_days}-te{req.test_window_days}"
+    )
 
     # Spawn Modal orchestrator (fire-and-forget)
     try:
@@ -159,6 +174,10 @@ async def walk_forward_run(req: WalkForwardRequest):
             "end_date": req.end_date,
             "train_window_days": req.train_window_days,
             "test_window_days": req.test_window_days,
+            "cohort_id": cohort_id,
+            "prep_gcs_prefix": req.prep_gcs_prefix,
+            "sequence_gcs_prefix": req.sequence_gcs_prefix,
+            "sequence_batch_count": req.sequence_batch_count,
             # 2026-04-19 N2: per-window FS to eliminate look-ahead bias
             "fs_max_rounds": req.fs_max_rounds,
             "fs_force_refresh": req.fs_force_refresh,
@@ -180,7 +199,8 @@ async def walk_forward_run(req: WalkForwardRequest):
         "models": req.models or MODELS_ALL,
         "model_coverage": walk_forward_model_coverage(req.models or MODELS_ALL),
         "data_access": data_access,
-        "gcs_result_path": f"walk_forward/oof_cohorts/active8-oof-{req.start_date}-{req.end_date}/manifest.json",
+        "cohort_id": cohort_id,
+        "gcs_result_path": f"walk_forward/oof_cohorts/{cohort_id}/manifest.json",
         "poll_endpoint": f"/walk_forward/report/{req.start_date}/{req.end_date}",
         "poll_hint": (
             "Orchestrator runs up to 4 hrs inside Modal. Poll the GET /walk_forward/report "

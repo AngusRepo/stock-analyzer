@@ -1898,17 +1898,29 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         prep_npz = _np.load(_io.BytesIO(prep_blob.download_as_bytes()), allow_pickle=True)
         required_arrays = {
             "X", "y", "target_returns", "dates", "symbols", "markets",
-            "label_known_dates", "sequence_records",
+            "label_known_dates",
         }
         missing_arrays = sorted(required_arrays - set(prep_npz.files))
         if missing_arrays:
             raise ValueError(f"active8_oof_prep_lineage_missing:{','.join(missing_arrays)}")
-        records = list(prep_npz["sequence_records"])
+        sequence_prefix = str(
+            payload.get("sequence_gcs_prefix") or "universal/sequence_long"
+        ).strip().rstrip("/")
+        sequence_blob = prep_bucket.blob(f"{sequence_prefix}/prep/batch_0.npz")
+        if not sequence_blob.exists():
+            raise ValueError("active8_oof_sequence_v3_prep_batch_missing")
+        sequence_npz = _np.load(
+            _io.BytesIO(sequence_blob.download_as_bytes()), allow_pickle=True
+        )
+        if "sequence_records" not in sequence_npz.files:
+            raise ValueError("active8_oof_sequence_v3_records_missing")
+        records = list(sequence_npz["sequence_records"])
         valid_sequence_records = sum(
             1 for raw in records
             if isinstance(raw, dict)
             and raw.get("symbol")
             and len(raw.get("dates") or []) == len(raw.get("open") or []) == len(raw.get("close") or [])
+            and raw.get("target_semantic_version") == "next-session-open-to-fifth-session-close-v2"
         )
         if valid_sequence_records < 10:
             raise ValueError("active8_oof_sequence_records_v3_insufficient")
@@ -2005,9 +2017,11 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "cohort_id": cohort_id,
             "fold_id": f"w{wid}",
             "output_model_version": f"{cohort_id}-w{wid}",
+            "version": f"{cohort_id}-w{wid}",
             "prep_gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal"),
             "gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal"),
             "sequence_gcs_prefix": str(payload.get("sequence_gcs_prefix") or payload.get("prep_gcs_prefix") or "universal"),
+            "sequence_batch_count": int(payload.get("sequence_batch_count") or 5),
             "validation_folds": int(payload.get("sequence_validation_folds") or 8),
             "promote_to_active": False,
             "register_challengers": False,
@@ -2206,6 +2220,11 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "target_semantic_version": "next-session-open-to-fifth-session-close-v2",
             "score_semantic_version": "same-market-same-date-percentile-rank-v1",
             "model_set": models,
+            "prep_gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal"),
+            "sequence_gcs_prefix": str(
+                payload.get("sequence_gcs_prefix") or "universal/sequence_long"
+            ),
+            "sequence_batch_count": int(payload.get("sequence_batch_count") or 5),
             "model_set_signature": hashlib.sha256("|".join(models).encode("utf-8")).hexdigest(),
             "windows": all_results,
             "aggregate": aggregate,
@@ -2408,7 +2427,7 @@ def train_dlinear_universal(payload: dict) -> dict:
         )
         if result.get("error"):
             return result
-        version = payload.get("version", "v1")
+        version = payload.get("output_model_version") or payload.get("version", "v1")
         result["metadata"]["version"] = version
         result["metadata"]["model_pool_version"] = version
         saved = save_to_gcs(result["_state_dict_torch"], result["metadata"], version=version)

@@ -42,7 +42,7 @@ def test_stacker_never_uses_current_fold_targets_for_its_weights():
     by_fold = {row["fold_id"]: row for row in evidence["folds"]}
     assert by_fold["w1"]["source"] == "warmup_equal_weight_baseline"
     assert by_fold["w1"]["train_rows"] == 0
-    assert by_fold["w2"]["source"] == "chronological_prior_oof_ridge"
+    assert by_fold["w2"]["source"] == "chronological_resolved_oof_ridge"
     assert by_fold["w2"]["train_rows"] == 520
     assert all(0.0 <= row["ensemble_rank"] <= 1.0 for row in output)
 
@@ -69,4 +69,19 @@ def test_stacker_rejects_duplicate_model_lineage():
     rows = _rows()
     rows.append(dict(rows[0]))
     with pytest.raises(ValueError, match="active8_oof_duplicate_model_rows"):
+        build_chronological_oof_stack(rows)
+
+
+def test_stacker_accepts_float32_target_noise_but_rejects_material_drift():
+    import pytest
+
+    from services.active8_oof_stacker import build_chronological_oof_stack
+
+    rows = _rows()
+    rows[0]["target_return"] += 1e-7
+    _output, evidence = build_chronological_oof_stack(rows)
+    assert 0 < evidence["max_target_lineage_drift"] < evidence["target_agreement_tolerance"]
+
+    rows[0]["target_return"] += 1e-4
+    with pytest.raises(ValueError, match="active8_oof_target_lineage_disagreement"):
         build_chronological_oof_stack(rows)

@@ -22,6 +22,7 @@ STACKER_SEMANTIC_VERSION = "active8-purged-oof-chronological-ridge-v2"
 MIN_STACKER_TRAIN_ROWS = 500
 MIN_STACKER_TRAIN_DATES = 5
 RIDGE_CANDIDATES = (0.01, 0.1, 1.0, 10.0)
+TARGET_AGREEMENT_TOLERANCE = 1e-6
 
 
 def _spearman(left: np.ndarray, right: np.ndarray) -> float:
@@ -128,6 +129,7 @@ def build_chronological_oof_stack(
     complete: list[dict[str, Any]] = []
     incomplete = 0
     missing_by_model: dict[str, int] = defaultdict(int)
+    max_target_lineage_drift = 0.0
     for (fold_id, prediction_date, symbol, market), models in grouped.items():
         if set(models) != set(ACTIVE8_MODELS):
             incomplete += 1
@@ -135,9 +137,11 @@ def build_chronological_oof_stack(
                 if model_name not in models:
                     missing_by_model[model_name] += 1
             continue
-        targets = {round(float(row["target_return"]), 12) for row in models.values()}
+        target_values = [float(row["target_return"]) for row in models.values()]
+        target_drift = max(target_values) - min(target_values)
+        max_target_lineage_drift = max(max_target_lineage_drift, target_drift)
         known_dates = {str(row["label_known_date"])[:10] for row in models.values()}
-        if len(targets) != 1 or len(known_dates) != 1:
+        if target_drift > TARGET_AGREEMENT_TOLERANCE or len(known_dates) != 1:
             raise ValueError("active8_oof_target_lineage_disagreement")
         label_known_date = next(iter(known_dates))
         if label_known_date <= prediction_date:
@@ -154,7 +158,7 @@ def build_chronological_oof_stack(
             "symbol": symbol,
             "market_segment": market,
             "label_known_date": label_known_date,
-            "target_return": next(iter(targets)),
+            "target_return": float(np.mean(target_values)),
             "x": np.empty(len(ACTIVE8_MODELS), dtype=float),
             "raw_by_model": {
                 name: float(models[name].get("raw_score", models[name]["rank_score"]))
@@ -174,47 +178,60 @@ def build_chronological_oof_stack(
         current = [row for row in complete if row["fold_id"] == fold_id]
         if not current:
             continue
-        first_test_date = min(row["prediction_date"] for row in current)
-        prior = [
-            row for row in complete
-            if row["fold_id"] != fold_id
-            and fold_ranges[row["fold_id"]][0] < fold_ranges[fold_id][0]
-            and row["label_known_date"] < first_test_date
-        ]
-        train_dates = sorted({row["prediction_date"] for row in prior})
-        ready = len(prior) >= MIN_STACKER_TRAIN_ROWS and len(train_dates) >= MIN_STACKER_TRAIN_DATES
-        if ready:
-            x_train = np.vstack([row["x"] for row in prior])
-            y_train = np.asarray([row["target_return"] for row in prior], dtype=float)
-            dates_train = np.asarray([row["prediction_date"] for row in prior], dtype=object)
-            regularization = _select_regularization(x_train, y_train, dates_train)
-            weights, intercept = _fit_ridge(x_train, y_train, regularization)
-            source = "chronological_prior_oof_ridge"
-        else:
-            regularization = None
-            weights = np.full(len(ACTIVE8_MODELS), 1.0 / len(ACTIVE8_MODELS), dtype=float)
-            intercept = 0.0
-            source = "warmup_equal_weight_baseline"
         fold_rows = []
-        for row in current:
-            fold_rows.append({
-                **{key: value for key, value in row.items() if key not in {"x", "raw_by_model"}},
-                "ensemble_raw": float(row["x"] @ weights + intercept),
-                "stacker_source": source,
+        date_states: list[dict[str, Any]] = []
+        for prediction_date in sorted({row["prediction_date"] for row in current}):
+            current_date_rows = [row for row in current if row["prediction_date"] == prediction_date]
+            prior = [
+                row for row in complete
+                if row["prediction_date"] < prediction_date
+                and row["label_known_date"] < prediction_date
+            ]
+            train_dates = sorted({row["prediction_date"] for row in prior})
+            ready = len(prior) >= MIN_STACKER_TRAIN_ROWS and len(train_dates) >= MIN_STACKER_TRAIN_DATES
+            if ready:
+                x_train = np.vstack([row["x"] for row in prior])
+                y_train = np.asarray([row["target_return"] for row in prior], dtype=float)
+                dates_train = np.asarray([row["prediction_date"] for row in prior], dtype=object)
+                regularization = _select_regularization(x_train, y_train, dates_train)
+                weights, intercept = _fit_ridge(x_train, y_train, regularization)
+                source = "chronological_resolved_oof_ridge"
+            else:
+                regularization = None
+                weights = np.full(len(ACTIVE8_MODELS), 1.0 / len(ACTIVE8_MODELS), dtype=float)
+                intercept = 0.0
+                source = "warmup_equal_weight_baseline"
+            for row in current_date_rows:
+                fold_rows.append({
+                    **{key: value for key, value in row.items() if key not in {"x", "raw_by_model"}},
+                    "ensemble_raw": float(row["x"] @ weights + intercept),
+                    "stacker_source": source,
+                    "eligible_for_efficacy": ready,
+                    "stacker_semantic_version": STACKER_SEMANTIC_VERSION,
+                })
+            date_states.append({
+                "prediction_date": prediction_date,
+                "train_rows": len(prior),
+                "train_dates": len(train_dates),
                 "eligible_for_efficacy": ready,
-                "stacker_semantic_version": STACKER_SEMANTIC_VERSION,
+                "regularization": regularization,
+                "intercept": intercept,
+                "weights": dict(zip(ACTIVE8_MODELS, weights.tolist())),
+                "source": source,
             })
         _rank_by_date_market(fold_rows)
         output.extend(fold_rows)
+        ready_states = [state for state in date_states if state["eligible_for_efficacy"]]
+        latest_state = date_states[-1]
+        sources = {state["source"] for state in date_states}
         fold_evidence.append({
             "fold_id": fold_id,
-            "train_rows": len(prior),
-            "train_dates": len(train_dates),
-            "eligible_for_efficacy": ready,
-            "regularization": regularization,
-            "intercept": intercept,
-            "weights": dict(zip(ACTIVE8_MODELS, weights.tolist())),
-            "source": source,
+            "train_rows": latest_state["train_rows"],
+            "train_dates": latest_state["train_dates"],
+            "eligible_for_efficacy": bool(ready_states),
+            "eligible_dates": len(ready_states),
+            "source": next(iter(sources)) if len(sources) == 1 else "mixed_chronological_states",
+            "date_states": date_states,
         })
     return output, {
         "schema_version": "active8-oof-stacker-evidence-v1",
@@ -224,6 +241,8 @@ def build_chronological_oof_stack(
         "incomplete_candidate_rows": incomplete,
         "complete_candidate_coverage": round(len(complete) / max(1, len(grouped)), 6),
         "missing_by_model": dict(sorted(missing_by_model.items())),
+        "target_agreement_tolerance": TARGET_AGREEMENT_TOLERANCE,
+        "max_target_lineage_drift": max_target_lineage_drift,
         "common_universe_rank_semantic": "same-date-market-complete-active8-percentile-v2",
         "output_rows": len(output),
         "efficacy_rows": sum(1 for row in output if row["eligible_for_efficacy"]),

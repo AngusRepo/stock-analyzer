@@ -63,6 +63,7 @@ def test_orderbook_payload_returns_fresh_depth_with_callback_telemetry():
     proxy = _load_proxy_main()
     proxy.api = object()
     proxy.connected = True
+    proxy._quote_session_up = True
     symbol = "2330"
     proxy.bidask_subscribed.add(symbol)
     now = datetime.now(proxy.TW_TZ).isoformat()
@@ -92,6 +93,7 @@ def test_orderbook_payload_rejects_one_sided_depth():
     proxy = _load_proxy_main()
     proxy.api = object()
     proxy.connected = True
+    proxy._quote_session_up = True
     symbol = "2330"
     proxy.bidask_subscribed.add(symbol)
     now = datetime.now(proxy.TW_TZ).isoformat()
@@ -151,6 +153,7 @@ def test_force_bidask_refresh_unsubscribes_before_resubscribe(monkeypatch):
         quote=Quote(),
     )
     proxy.connected = True
+    proxy._quote_session_up = True
     proxy.subscribed.add("2330")
     proxy.bidask_subscribed.add("2330")
     monkeypatch.setitem(
@@ -186,6 +189,7 @@ def test_odd_lot_orderbook_uses_dedicated_stream_cache():
     proxy = _load_proxy_main()
     proxy.api = object()
     proxy.connected = True
+    proxy._quote_session_up = True
     symbol = "2441"
     proxy.odd_bidask_subscribed.add(symbol)
     now = datetime.now(proxy.TW_TZ).isoformat()
@@ -274,6 +278,7 @@ def test_recovery_does_not_count_or_reconnect_while_streaming_control_is_active(
 def test_symbol_recovery_never_reconnects_whole_session_for_one_stale_symbol(monkeypatch):
     proxy = _load_proxy_main()
     proxy._streaming_control_inflight = False
+    proxy._quote_session_up = True
     subscribe_calls: list[str] = []
     monkeypatch.setattr(proxy, "_mark_orderbook_recovery", lambda *_args: (99, True))
     monkeypatch.setattr(
@@ -292,6 +297,7 @@ def test_stale_orderbook_request_waits_for_active_refresh(monkeypatch):
     proxy = _load_proxy_main()
     proxy.api = object()
     proxy.connected = True
+    proxy._quote_session_up = True
     symbol = "4123"
     proxy.bidask_subscribed.add(symbol)
     proxy.last_bidasks[symbol] = {
@@ -324,6 +330,7 @@ def test_active_confirmation_accepts_static_book_without_rewriting_source_time(m
     proxy = _load_proxy_main()
     proxy.api = object()
     proxy.connected = True
+    proxy._quote_session_up = True
     symbol = "4123"
     proxy.bidask_subscribed.add(symbol)
     now = datetime.now(proxy.TW_TZ)
@@ -351,17 +358,17 @@ def test_active_confirmation_accepts_static_book_without_rewriting_source_time(m
     assert payload["source_age_ms"] > payload["quote_age_ms"]
 
 
-def test_live_channel_heartbeat_confirms_unchanged_book_in_same_session(monkeypatch):
+def test_live_quote_session_confirms_unchanged_book_in_same_session(monkeypatch):
     proxy = _load_proxy_main()
     proxy.api = object()
     proxy.connected = True
+    proxy._quote_session_up = True
     proxy._session_epoch = 7
     symbol = "4123"
     now = datetime(2026, 7, 16, 10, 30, 0, tzinfo=proxy.TW_TZ)
     stale_symbol_time = (now - proxy.timedelta(seconds=30)).isoformat()
-    channel_time = (now - proxy.timedelta(milliseconds=200)).isoformat()
     monkeypatch.setattr(proxy, "get_tw_now", lambda: now)
-    proxy.bidask_subscribed.update({symbol, "0050"})
+    proxy.bidask_subscribed.add(symbol)
     proxy.last_bidasks[symbol] = {
         "symbol": symbol,
         "bid_prices": [38.0, 37.95, 37.9, 37.85, 37.8],
@@ -374,23 +381,22 @@ def test_live_channel_heartbeat_confirms_unchanged_book_in_same_session(monkeypa
         "confirmed_at": stale_symbol_time,
         "session_epoch": 7,
     }
-    proxy.bidask_stats["0050"] = {"event_count": 99, "last_event_at": channel_time}
-
     status_code, payload = proxy._orderbook_payload(symbol, refresh=False)
 
     assert status_code == 200
-    assert payload["confirmation_mode"] == "channel_heartbeat_static_book"
-    assert payload["confirmed_at"] == channel_time
+    assert payload["confirmation_mode"] == "quote_session_static_book"
+    assert payload["confirmed_at"] == now.isoformat()
     assert payload["symbol_confirmed_at"] == stale_symbol_time
-    assert payload["quote_age_ms"] == 200
+    assert payload["quote_age_ms"] == 0
     assert payload["symbol_confirmation_age_ms"] == 30_000
     assert payload["source_age_ms"] == 30_000
 
 
-def test_channel_heartbeat_cannot_confirm_book_from_prior_session(monkeypatch):
+def test_quote_session_cannot_confirm_book_from_prior_session(monkeypatch):
     proxy = _load_proxy_main()
     proxy.api = object()
     proxy.connected = True
+    proxy._quote_session_up = True
     proxy._session_epoch = 8
     symbol = "4123"
     now = datetime(2026, 7, 16, 10, 30, 0, tzinfo=proxy.TW_TZ)
@@ -406,8 +412,6 @@ def test_channel_heartbeat_cannot_confirm_book_from_prior_session(monkeypatch):
         "confirmed_at": stale_symbol_time,
         "session_epoch": 7,
     }
-    proxy.bidask_stats["0050"] = {"last_event_at": now.isoformat()}
-
     status_code, payload = proxy._orderbook_payload(symbol, refresh=False)
 
     assert status_code == 503
@@ -415,15 +419,32 @@ def test_channel_heartbeat_cannot_confirm_book_from_prior_session(monkeypatch):
     assert payload["confirmation_mode"] == "stale_symbol_event"
 
 
-def test_static_book_remains_stale_without_live_channel_heartbeat(monkeypatch):
+def test_quote_session_events_fail_close_during_reconnect_and_recover_after_up(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy._session_epoch = 7
+    proxy._quote_session_up = True
+    monkeypatch.setattr(proxy, "active_orderbook_watch_symbols", lambda *_args: [])
+
+    proxy._handle_quote_session_event(200, 12, "MKT", "Reconnecting", 7)
+
+    assert proxy._quote_session_up is False
+    assert proxy._quote_session_event_code == 12
+
+    proxy._handle_quote_session_event(200, 13, "MKT", "Reconnected", 7)
+
+    assert proxy._quote_session_up is True
+    assert proxy._quote_session_event_code == 13
+
+
+def test_static_book_remains_stale_while_quote_session_is_down(monkeypatch):
     proxy = _load_proxy_main()
     proxy.api = object()
     proxy.connected = True
+    proxy._quote_session_up = False
     proxy._session_epoch = 7
     symbol = "4123"
     now = datetime(2026, 7, 16, 10, 30, 0, tzinfo=proxy.TW_TZ)
     stale_symbol_time = (now - proxy.timedelta(seconds=30)).isoformat()
-    stale_channel_time = (now - proxy.timedelta(seconds=5)).isoformat()
     monkeypatch.setattr(proxy, "get_tw_now", lambda: now)
     proxy.bidask_subscribed.add(symbol)
     proxy.last_bidasks[symbol] = {
@@ -435,18 +456,17 @@ def test_static_book_remains_stale_without_live_channel_heartbeat(monkeypatch):
         "confirmed_at": stale_symbol_time,
         "session_epoch": 7,
     }
-    proxy.bidask_stats["0050"] = {"last_event_at": stale_channel_time}
-
     status_code, payload = proxy._orderbook_payload(symbol, refresh=False)
 
     assert status_code == 503
     assert payload["status"] == "stale_depth"
-    assert payload["confirmation_mode"] == "stale_channel"
+    assert payload["confirmation_mode"] == "stale_symbol_event"
 
 
 def test_watchdog_does_not_recover_unchanged_book_at_execution_freshness_boundary(monkeypatch):
     proxy = _load_proxy_main()
     proxy.connected = True
+    proxy._quote_session_up = True
     symbol = "4123"
     now = datetime.now(proxy.TW_TZ)
     thirty_seconds_ago = (now - proxy.timedelta(seconds=30)).isoformat()
@@ -491,6 +511,7 @@ def test_async_recovery_is_singleflight_per_symbol(monkeypatch):
     proxy = _load_proxy_main()
     proxy.subscription_recovery.clear()
     proxy._streaming_control_inflight = False
+    proxy._quote_session_up = True
     entered = threading.Event()
     release = threading.Event()
     calls: list[str] = []

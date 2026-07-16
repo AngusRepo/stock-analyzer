@@ -72,6 +72,10 @@ _last_reconnect_attempt_at = 0.0
 _reconnect_count = 0
 _last_reconnect_reason: str | None = None
 _last_reconnect_at: str | None = None
+_quote_session_up = False
+_quote_session_event_code: int | None = None
+_quote_session_event_at: str | None = None
+_quote_session_event: str | None = None
 # F4: Rolling price buffer for momentum confirmation (30 entries ≈ 30 min at 1 tick/min)
 _price_buffer: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
 
@@ -181,18 +185,6 @@ def orderbook_symbol_confirmation_time(depth: dict | None) -> datetime | None:
     return parse_quote_time(depth.get("confirmed_at") or depth.get("updated_at") or depth.get("timestamp"))
 
 
-def orderbook_channel_confirmation_time(lot_type: str = "board_lot") -> datetime | None:
-    stats_store = _stats_store(lot_type)
-    with _state_lock:
-        candidates = [
-            parse_quote_time(stat.get("last_event_at"))
-            for stat in stats_store.values()
-            if stat.get("last_event_at")
-        ]
-    valid = [candidate for candidate in candidates if candidate is not None]
-    return max(valid) if valid else None
-
-
 def orderbook_effective_confirmation(
     depth: dict | None,
     symbol: str | None = None,
@@ -211,7 +203,7 @@ def orderbook_effective_confirmation(
         session_epoch = int(depth.get("session_epoch") or 0)
     except (TypeError, ValueError):
         session_epoch = 0
-    if symbol not in subscription_store or session_epoch != _session_epoch:
+    if symbol not in subscription_store or session_epoch != _session_epoch or not _quote_session_up:
         return direct, "stale_symbol_event" if direct else "unconfirmed"
 
     direct_age_ms = (now - direct).total_seconds() * 1000 if direct is not None else None
@@ -220,11 +212,7 @@ def orderbook_effective_confirmation(
     if not bid_prices or not ask_prices:
         return direct, "stale_symbol_event" if direct else "unconfirmed"
 
-    channel = orderbook_channel_confirmation_time(lot_type)
-    channel_age_ms = (now - channel).total_seconds() * 1000 if channel is not None else None
-    if channel_age_ms is not None and -5_000 <= channel_age_ms <= orderbook_max_age_ms():
-        return channel, "channel_heartbeat_static_book"
-    return direct, "stale_channel" if direct else "unconfirmed"
+    return now, "quote_session_static_book"
 
 
 def orderbook_age_ms(depth: dict | None, symbol: str | None = None, lot_type: str = "board_lot") -> int | None:
@@ -518,6 +506,10 @@ def reconnect_after_global_stale_seconds() -> float:
     return _env_float("SHIOAJI_RECONNECT_AFTER_GLOBAL_STALE_SECONDS", 45.0, 10.0, 300.0)
 
 
+def quote_session_reconnect_grace_seconds() -> float:
+    return _env_float("SHIOAJI_QUOTE_SESSION_RECONNECT_GRACE_SECONDS", 15.0, 5.0, 120.0)
+
+
 def static_watchlist_symbols() -> list[str]:
     raw = os.environ.get("SHIOAJI_ORDERBOOK_WATCHLIST", "")
     symbols = []
@@ -658,8 +650,38 @@ def normalize_stock_tick(tick, callback_epoch: int) -> dict:
     }
 
 
+def _handle_quote_session_event(
+    resp_code: int,
+    event_code: int,
+    info: str,
+    event: str,
+    callback_epoch: int,
+) -> None:
+    global _quote_session_up, _quote_session_event_code, _quote_session_event_at, _quote_session_event
+    now = get_tw_now().isoformat()
+    with _state_lock:
+        if callback_epoch != _session_epoch or _process_poisoned:
+            return
+        _quote_session_event_code = int(event_code)
+        _quote_session_event_at = now
+        _quote_session_event = str(event)
+        if int(event_code) in {0, 13}:
+            _quote_session_up = True
+        elif int(event_code) in {1, 2, 12}:
+            _quote_session_up = False
+    print(
+        f"[Shioaji] Quote session event resp={resp_code} code={event_code} "
+        f"up={int(_quote_session_up)} info={info} event={event}"
+    )
+    if int(event_code) == 13:
+        for symbol in active_orderbook_watch_symbols():
+            recover_orderbook_symbol_async(symbol, "quote_session_reconnected")
+        for symbol in active_orderbook_watch_symbols("odd_lot"):
+            recover_orderbook_symbol_async(symbol, "quote_session_reconnected", "odd_lot")
+
+
 def init_shioaji():
-    global api, connected, _session_epoch
+    global api, connected, _session_epoch, _quote_session_up
     if _process_poisoned:
         print("[Shioaji] Refusing init in poisoned process")
         return
@@ -679,7 +701,12 @@ def init_shioaji():
             _session_epoch += 1
             callback_epoch = _session_epoch
             connected = True
+            _quote_session_up = True
         print(f"[Shioaji] Connected. Accounts: {len(accounts)} epoch={callback_epoch}")
+
+        @api.on_event
+        def on_quote_session_event(resp_code, event_code, info, event):
+            _handle_quote_session_event(resp_code, event_code, info, event, callback_epoch)
 
         # 設定 tick callback
         @api.on_tick_stk_v1()
@@ -749,17 +776,19 @@ def init_shioaji():
     except Exception as e:
         print(f"[Shioaji] Init failed: {e}")
         connected = False
+        _quote_session_up = False
 
 
 def shutdown_shioaji():
-    global api, connected
+    global api, connected, _quote_session_up
     if api and connected:
         try:
             api.logout()
             print("[Shioaji] Logged out")
         except Exception as e:
             print(f"[Shioaji] Logout error: {e}")
-        connected = False
+    connected = False
+    _quote_session_up = False
 
 
 def subscribe_symbol(
@@ -773,7 +802,7 @@ def subscribe_symbol(
     symbol = symbol.upper().strip()
     lot_type = normalize_lot_type(lot_type)
     odd_lot = lot_type == "odd_lot"
-    if not symbol or not api or not connected or _process_poisoned:
+    if not symbol or not api or not connected or not _quote_session_up or _process_poisoned:
         return False
     if not is_market_hours():
         print(f"[Shioaji] Subscription deferred outside market hours: {symbol} lot={lot_type}")
@@ -889,7 +918,7 @@ def _confirm_orderbook_recovery(symbol: str, depth: dict, lot_type: str = "board
 
 
 def reset_shioaji_connection(reason: str) -> bool:
-    global api, connected, _last_reconnect_attempt_at, _reconnect_count, _last_reconnect_reason, _last_reconnect_at
+    global api, connected, _quote_session_up, _last_reconnect_attempt_at, _reconnect_count, _last_reconnect_reason, _last_reconnect_at
     if _process_poisoned:
         return False
     if streaming_control_busy():
@@ -903,6 +932,7 @@ def reset_shioaji_connection(reason: str) -> bool:
         old_api = api
         api = None
         connected = False
+        _quote_session_up = False
         subscribed.clear()
         bidask_subscribed.clear()
         odd_bidask_subscribed.clear()
@@ -950,7 +980,7 @@ def _execute_orderbook_recovery(symbol: str, reason: str, lot_type: str, failure
 def recover_orderbook_symbol(symbol: str, reason: str, lot_type: str = "board_lot") -> None:
     symbol = symbol.upper().strip()
     lot_type = normalize_lot_type(lot_type)
-    if not symbol:
+    if not symbol or not _quote_session_up:
         return
     watch_orderbook_symbols([symbol], lot_type=lot_type)
     if streaming_control_busy():
@@ -964,7 +994,7 @@ def recover_orderbook_symbol(symbol: str, reason: str, lot_type: str = "board_lo
 def recover_orderbook_symbol_async(symbol: str, reason: str, lot_type: str = "board_lot") -> None:
     symbol = symbol.upper().strip()
     lot_type = normalize_lot_type(lot_type)
-    if not symbol:
+    if not symbol or not _quote_session_up:
         return
     watch_orderbook_symbols([symbol], lot_type=lot_type)
     if streaming_control_busy():
@@ -993,6 +1023,11 @@ def _watchdog_once() -> None:
         return
     if not connected:
         reset_shioaji_connection("watchdog_disconnected")
+        return
+    if not _quote_session_up:
+        event_age = _parse_iso_age_seconds(_quote_session_event_at)
+        if event_age is not None and event_age > quote_session_reconnect_grace_seconds():
+            reset_shioaji_connection(f"watchdog_quote_session_down:{event_age:.1f}s")
         return
 
     latest_event_age = latest_bidask_event_age_seconds(symbols)
@@ -1144,6 +1179,7 @@ def health():
     watchdog_alive = bool(_watchdog_thread and _watchdog_thread.is_alive())
     subscription_healthy = bool(
         connected
+        and _quote_session_up
         and not _process_poisoned
         and watchdog_alive
         and (
@@ -1160,8 +1196,17 @@ def health():
         )
     )
     return {
-        "status": "poisoned" if _process_poisoned else "ok" if connected else "disconnected",
+        "status": (
+            "poisoned" if _process_poisoned
+            else "disconnected" if not connected
+            else "reconnecting" if not _quote_session_up
+            else "ok"
+        ),
         "connected": connected,
+        "quote_session_up": _quote_session_up,
+        "quote_session_event_code": _quote_session_event_code,
+        "quote_session_event_at": _quote_session_event_at,
+        "quote_session_event": _quote_session_event,
         "process_poisoned": _process_poisoned,
         "process_poison_reason": _process_poison_reason,
         "process_poisoned_at": _process_poisoned_at,

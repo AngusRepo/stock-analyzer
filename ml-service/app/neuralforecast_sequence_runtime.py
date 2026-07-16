@@ -12,6 +12,8 @@ import tempfile
 import time
 import warnings
 import zipfile
+from bisect import bisect_right
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -39,6 +41,7 @@ DEFAULT_MAX_STEPS = 30
 DEFAULT_BATCH_SIZE = 128
 DEFAULT_MAX_SERIES = 1024
 DEFAULT_BATCH_COUNT = 5
+OOF_MIN_PANEL_OBSERVED_RATIO = 0.95
 _RUNTIME_CONFIGURED = False
 MODEL_CONFIG: dict[str, dict[str, str]] = {
     "PatchTST": {
@@ -220,6 +223,281 @@ def _filter_panel_to_eval_rows(
 ) -> list[dict[str, Any]]:
     eval_ids = {str(row.get("unique_id")) for row in eval_rows if row.get("unique_id") is not None}
     return [row for row in train_rows if str(row.get("unique_id")) in eval_ids]
+
+
+def _canonical_sequence_calendar(records: list[dict[str, Any]]) -> list[str]:
+    counts: Counter[str] = Counter()
+    for record in records:
+        counts.update({str(value) for value in (record.get("dates") or []) if value})
+    if not counts:
+        return []
+    threshold = max(10, int(max(counts.values()) * 0.20))
+    return sorted(date for date, count in counts.items() if count >= threshold)
+
+
+def _aligned_close_values(record: dict[str, Any], dates: list[str]) -> tuple[list[float], float]:
+    source_dates = [str(value) for value in (record.get("dates") or [])]
+    source_close = _coerce_close(record)
+    if len(source_dates) != len(source_close) or not dates:
+        return [], 0.0
+    values: list[float] = []
+    observed = 0
+    exact = dict(zip(source_dates, source_close))
+    for date in dates:
+        idx = bisect_right(source_dates, date) - 1
+        if idx < 0:
+            return [], 0.0
+        values.append(float(source_close[idx]))
+        observed += int(date in exact)
+    return values, observed / len(dates)
+
+
+def _build_fixed_oof_panel(
+    records: list[dict[str, Any]],
+    *,
+    calendar: list[str],
+    train_end: str,
+    seq_len: int,
+    pred_len: int,
+    max_series: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    train_dates = [date for date in calendar if date <= train_end][-(seq_len + pred_len):]
+    if len(train_dates) < seq_len + pred_len:
+        raise ValueError("oof_sequence_train_calendar_insufficient")
+    candidates: list[tuple[float, str, dict[str, Any], list[float]]] = []
+    for record in records:
+        values, observed_ratio = _aligned_close_values(record, train_dates)
+        if not values or observed_ratio < OOF_MIN_PANEL_OBSERVED_RATIO:
+            continue
+        symbol = str(record.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        candidates.append((observed_ratio, symbol, record, values))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    selected = candidates[:max(1, max_series)]
+    train_rows = [
+        {"unique_id": symbol, "ds": idx, "y": float(value)}
+        for _ratio, symbol, _record, values in selected
+        for idx, value in enumerate(values)
+    ]
+    selected_records = [record for _ratio, _symbol, record, _values in selected]
+    return train_rows, selected_records, {
+        "calendar_start": train_dates[0],
+        "calendar_end": train_dates[-1],
+        "calendar_rows": len(train_dates),
+        "eligible_series": len(candidates),
+        "selected_series": len(selected),
+        "min_observed_ratio": OOF_MIN_PANEL_OBSERVED_RATIO,
+    }
+
+
+def _dense_oof_eval_panel(
+    records: list[dict[str, Any]],
+    *,
+    calendar: list[str],
+    signal_date: str,
+    seq_len: int,
+    pred_len: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    signal_idx = calendar.index(signal_date)
+    if signal_idx < seq_len - 1 or signal_idx + pred_len >= len(calendar):
+        return [], []
+    context_dates = calendar[signal_idx - seq_len + 1:signal_idx + 1]
+    entry_date = calendar[signal_idx + 1]
+    outcome_date = calendar[signal_idx + pred_len]
+    context_rows: list[dict[str, Any]] = []
+    labels: list[dict[str, Any]] = []
+    for record in records:
+        symbol = str(record.get("symbol") or "").strip()
+        values, _observed_ratio = _aligned_close_values(record, context_dates)
+        if len(values) != seq_len:
+            continue
+        for idx, value in enumerate(values):
+            context_rows.append({"unique_id": symbol, "ds": idx, "y": float(value)})
+        source_dates = [str(value) for value in (record.get("dates") or [])]
+        source_open = _coerce_open(record)
+        source_close = _coerce_close(record)
+        if len(source_dates) != len(source_open) or len(source_dates) != len(source_close):
+            continue
+        date_index = {date: idx for idx, date in enumerate(source_dates)}
+        if entry_date not in date_index or outcome_date not in date_index:
+            continue
+        entry_open = float(source_open[date_index[entry_date]])
+        outcome_close = float(source_close[date_index[outcome_date]])
+        labels.append({
+            "unique_id": symbol,
+            "market": str(record.get("market") or record.get("market_type") or "TW").upper(),
+            "entry_open": entry_open,
+            "actual_last": outcome_close,
+            "signal_date": signal_date,
+            "outcome_date": outcome_date,
+        })
+    return context_rows, labels
+
+
+def _train_dense_purged_oof(
+    payload: dict[str, Any],
+    *,
+    model_name: str,
+    cfg: dict[str, str],
+    bucket: Any,
+    records: list[dict[str, Any]],
+    version: str,
+    seq_len: int,
+    pred_len: int,
+    max_steps: int,
+    batch_size: int,
+    seed: int,
+    max_series: int,
+    gcs_prefix: str,
+) -> dict[str, Any]:
+    train_end = str(payload.get("train_end") or "").strip()
+    test_start = str(payload.get("test_start") or "").strip()
+    test_end = str(payload.get("test_end") or "").strip()
+    if not train_end or not test_start or not test_end:
+        raise ValueError("oof_sequence_split_range_missing")
+    calendar = _canonical_sequence_calendar(records)
+    train_rows, panel_records, panel_report = _build_fixed_oof_panel(
+        records,
+        calendar=calendar,
+        train_end=train_end,
+        seq_len=seq_len,
+        pred_len=pred_len,
+        max_series=max_series,
+    )
+    if len(panel_records) < 10:
+        raise ValueError(f"oof_sequence_panel_requires_10_series:{len(panel_records)}")
+    nf, _train_df = _train_nf(
+        train_rows,
+        model_name=cfg["nf_model_name"],
+        pred_len=pred_len,
+        seq_len=seq_len,
+        max_steps=max_steps,
+        batch_size=batch_size,
+        seed=seed,
+        n_series=len(panel_records),
+    )
+    test_dates = [date for date in calendar if test_start <= date <= test_end]
+    all_rows: list[dict[str, Any]] = []
+    daily_metrics: list[dict[str, Any]] = []
+    import pandas as pd
+
+    for signal_date in test_dates:
+        context_rows, labels = _dense_oof_eval_panel(
+            panel_records,
+            calendar=calendar,
+            signal_date=signal_date,
+            seq_len=seq_len,
+            pred_len=pred_len,
+        )
+        if len(labels) < 10 or not context_rows:
+            continue
+        pred_by_id, _pred_col = _predict_horizon_by_id_with_column(
+            nf,
+            pd.DataFrame(context_rows),
+            horizon_idx=pred_len,
+            model_name=model_name,
+        )
+        pred_return: list[float] = []
+        actual_return: list[float] = []
+        for label in labels:
+            uid = str(label["unique_id"])
+            if uid not in pred_by_id:
+                continue
+            entry_open = float(label["entry_open"])
+            predicted = (float(pred_by_id[uid]) - entry_open) / max(entry_open, 1e-9)
+            actual = (float(label["actual_last"]) - entry_open) / max(entry_open, 1e-9)
+            pred_return.append(predicted)
+            actual_return.append(actual)
+            all_rows.append({
+                "raw_score": predicted,
+                "target": actual,
+                "date": signal_date,
+                "symbol": uid,
+                "market": str(label["market"]),
+                "label_known_date": str(label["outcome_date"]),
+            })
+        daily_metrics.append({
+            "fold_id": f"outer_test_{signal_date}",
+            "oos_ic": rank_ic(np.asarray(pred_return), np.asarray(actual_return)),
+            "direction_accuracy": direction_accuracy(np.asarray(pred_return), np.asarray(actual_return)),
+            "test_rows": len(actual_return),
+            "coverage": len(actual_return) / max(1, len(panel_records)),
+        })
+    if not all_rows:
+        raise ValueError("oof_sequence_dense_predictions_empty")
+    non_overlapping_metrics = daily_metrics[::max(1, pred_len)]
+    model_cpcv = build_model_cpcv_evidence(
+        model=model_name,
+        fold_metrics=non_overlapping_metrics,
+        policy=payload.get("model_cpcv_policy") or None,
+        family="learned_sequence",
+        coverage_mode="sequence_window",
+        method="outer_train_fixed_dense_test_purged_rank_ic",
+    )
+    model_cpcv["validation_design"] = {
+        "split_owner": "outer_walk_forward_train_end",
+        "refit_each_outer_fold": True,
+        "refit_inside_test": False,
+        "dense_daily_predictions": True,
+        "quality_folds_non_overlapping": True,
+        "purge_horizon": pred_len,
+    }
+    from .oof_lineage import save_oof_prediction_artifact
+
+    oof_artifact = save_oof_prediction_artifact(
+        bucket=bucket,
+        gcs_prefix=gcs_prefix,
+        cohort_id=str(payload.get("cohort_id") or ""),
+        fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
+        model_name=model_name,
+        artifact_version=version,
+        raw_scores=np.asarray([row["raw_score"] for row in all_rows]),
+        targets=np.asarray([row["target"] for row in all_rows]),
+        dates=np.asarray([row["date"] for row in all_rows], dtype=object),
+        symbols=np.asarray([row["symbol"] for row in all_rows], dtype=object),
+        markets=np.asarray([row["market"] for row in all_rows], dtype=object),
+        label_known_dates=np.asarray([row["label_known_date"] for row in all_rows], dtype=object),
+        split_metadata={
+            "method": "outer_train_fixed_dense_test_purged_rank_ic",
+            "train_start": payload.get("train_start"),
+            "train_end": train_end,
+            "test_start": test_start,
+            "test_end": test_end,
+            "purge_horizon": pred_len,
+            "refit_inside_test": False,
+        },
+    )
+    oos_ic = float(np.mean([metric["oos_ic"] for metric in daily_metrics]))
+    return {
+        "metadata": {
+            "version": version,
+            "model_name": model_name,
+            "generation_mode": "purged_oof",
+            "panel_report": panel_report,
+            "validation_design": model_cpcv["validation_design"],
+            "model_cpcv": model_cpcv,
+        },
+        "ic_tracking": {
+            model_name: {
+                "oos_ic": round(oos_ic, 6),
+                "oos_samples": len(all_rows),
+                "passed": bool(model_cpcv.get("passed")),
+                "source": "outer_train_fixed_dense_test_purged_rank_ic",
+                "model_cpcv": model_cpcv,
+            }
+        },
+        "metrics": {
+            "oos_ic": round(oos_ic, 6),
+            "oos_samples": len(all_rows),
+            "oos_dates": len({row["date"] for row in all_rows}),
+            "daily_metrics": daily_metrics,
+            "model_cpcv_decision": model_cpcv.get("decision"),
+        },
+        "version": version,
+        "type": f"{model_name.lower()}_purged_oof",
+        "oof_artifact": oof_artifact,
+    }
 
 
 def _series_list_to_df_rows(series_list: list[dict[str, Any]], *, seq_len: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -560,21 +838,23 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
     explicit_test_start = str(payload.get("test_start") or "").strip()
     explicit_test_end = str(payload.get("test_end") or "").strip()
     if generation_mode == "purged_oof":
-        if not explicit_test_start or not explicit_test_end:
-            raise ValueError("oof_sequence_test_range_missing")
-        truncated_records = []
-        for record in dataset_source.records:
-            dates = [str(value) for value in (record.get("dates") or [])]
-            end_idx = next((idx for idx, date in enumerate(dates) if date > explicit_test_end), len(dates))
-            if end_idx <= 0:
-                continue
-            truncated = dict(record)
-            for field in ("dates", "open", "high", "low", "close", "volume"):
-                values = list(record.get(field) or [])
-                if values:
-                    truncated[field] = values[:end_idx]
-            truncated_records.append(truncated)
-        dataset_source.records = truncated_records
+        result = _train_dense_purged_oof(
+            payload,
+            model_name=model_name,
+            cfg=cfg,
+            bucket=bucket,
+            records=dataset_source.records,
+            version=version,
+            seq_len=seq_len,
+            pred_len=pred_len,
+            max_steps=max_steps,
+            batch_size=batch_size,
+            seed=seed,
+            max_series=max_series,
+            gcs_prefix=gcs_prefix,
+        )
+        result["elapsed_s"] = round(time.time() - started_at, 3)
+        return result
     validation_folds = max(3, int(payload.get("validation_folds") or 5))
     folds: list[dict[str, Any]] = []
     all_pred_return: list[float] = []

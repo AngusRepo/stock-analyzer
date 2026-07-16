@@ -47,15 +47,18 @@ def test_stacker_never_uses_current_fold_targets_for_its_weights():
     assert all(0.0 <= row["ensemble_rank"] <= 1.0 for row in output)
 
 
-def test_stacker_rejects_partial_active8_candidate_instead_of_silently_dropping_it():
-    import pytest
-
+def test_stacker_excludes_partial_candidate_and_reports_coverage():
     from services.active8_oof_stacker import build_chronological_oof_stack
 
     rows = _rows()
     rows.pop()
-    with pytest.raises(ValueError, match="active8_oof_incomplete_active8_rows"):
-        build_chronological_oof_stack(rows)
+    output, evidence = build_chronological_oof_stack(rows)
+
+    assert len(output) == 1039
+    assert evidence["incomplete_candidate_rows"] == 1
+    assert evidence["missing_by_model"] == {"iTransformer": 1}
+    assert evidence["complete_candidate_coverage"] < 1.0
+    assert all(row["symbol"] != "S0519" for row in output if row["fold_id"] == "w2")
 
 
 def test_stacker_rejects_duplicate_model_lineage():

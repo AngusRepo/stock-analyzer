@@ -3,6 +3,8 @@ import pandas as pd
 
 from app.model_validation import build_model_cpcv_evidence
 from app.neuralforecast_sequence_runtime import (
+    _build_fixed_oof_panel,
+    _dense_oof_eval_panel,
     _fold_metrics,
     _filter_panel_to_eval_rows,
     _make_nf_model,
@@ -103,6 +105,43 @@ def test_purged_oof_filter_keeps_training_and_eval_series_atomic():
     filtered = _filter_panel_to_eval_rows(train_rows, eval_rows)
 
     assert filtered == train_rows[:2]
+
+
+def test_dense_oof_panel_fits_at_train_end_and_labels_each_signal_date():
+    calendar = [f"2026-01-{day:02d}" for day in range(1, 11)]
+    records = [
+        {
+            "symbol": f"S{idx:02d}",
+            "market_type": "LISTED",
+            "dates": calendar,
+            "close": [100.0 + idx + day for day in range(10)],
+            "open": [99.5 + idx + day for day in range(10)],
+        }
+        for idx in range(12)
+    ]
+
+    train_rows, selected, report = _build_fixed_oof_panel(
+        records,
+        calendar=calendar,
+        train_end="2026-01-06",
+        seq_len=4,
+        pred_len=2,
+        max_series=20,
+    )
+    context_rows, labels = _dense_oof_eval_panel(
+        selected,
+        calendar=calendar,
+        signal_date="2026-01-06",
+        seq_len=4,
+        pred_len=2,
+    )
+
+    assert len(train_rows) == 12 * 6
+    assert report["calendar_end"] == "2026-01-06"
+    assert len(context_rows) == 12 * 4
+    assert len(labels) == 12
+    assert {row["outcome_date"] for row in labels} == {"2026-01-08"}
+    assert labels[0]["entry_open"] == 105.5
 
 
 def test_panel_train_eval_rows_scans_past_short_records_until_max_series_valid():

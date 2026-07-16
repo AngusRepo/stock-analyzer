@@ -18,7 +18,7 @@ ACTIVE8_MODELS = (
     "PatchTST",
     "iTransformer",
 )
-STACKER_SEMANTIC_VERSION = "active8-purged-oof-chronological-ridge-v1"
+STACKER_SEMANTIC_VERSION = "active8-purged-oof-chronological-ridge-v2"
 MIN_STACKER_TRAIN_ROWS = 500
 MIN_STACKER_TRAIN_DATES = 5
 RIDGE_CANDIDATES = (0.01, 0.1, 1.0, 10.0)
@@ -81,6 +81,21 @@ def _rank_by_date_market(rows: list[dict[str, Any]]) -> None:
             rows[idx]["ensemble_rank"] = 0.5 if len(ordered) == 1 else rank / denominator
 
 
+def _rerank_models_on_complete_universe(rows: list[dict[str, Any]]) -> None:
+    groups: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for idx, row in enumerate(rows):
+        groups[(row["prediction_date"], row["market_segment"])].append(idx)
+    for indices in groups.values():
+        denominator = max(1, len(indices) - 1)
+        for model_idx, model_name in enumerate(ACTIVE8_MODELS):
+            ordered = sorted(
+                indices,
+                key=lambda idx: (rows[idx]["raw_by_model"][model_name], rows[idx]["symbol"]),
+            )
+            for rank, idx in enumerate(ordered):
+                rows[idx]["x"][model_idx] = 0.5 if len(ordered) == 1 else rank / denominator
+
+
 def build_chronological_oof_stack(
     prediction_rows: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -112,9 +127,13 @@ def build_chronological_oof_stack(
 
     complete: list[dict[str, Any]] = []
     incomplete = 0
+    missing_by_model: dict[str, int] = defaultdict(int)
     for (fold_id, prediction_date, symbol, market), models in grouped.items():
         if set(models) != set(ACTIVE8_MODELS):
             incomplete += 1
+            for model_name in ACTIVE8_MODELS:
+                if model_name not in models:
+                    missing_by_model[model_name] += 1
             continue
         targets = {round(float(row["target_return"]), 12) for row in models.values()}
         known_dates = {str(row["label_known_date"])[:10] for row in models.values()}
@@ -136,14 +155,17 @@ def build_chronological_oof_stack(
             "market_segment": market,
             "label_known_date": label_known_date,
             "target_return": next(iter(targets)),
-            "x": np.asarray([float(models[name]["rank_score"]) for name in ACTIVE8_MODELS], dtype=float),
+            "x": np.empty(len(ACTIVE8_MODELS), dtype=float),
+            "raw_by_model": {
+                name: float(models[name].get("raw_score", models[name]["rank_score"]))
+                for name in ACTIVE8_MODELS
+            },
             "artifact_versions": artifact_versions,
         })
 
     if duplicate_rows:
         raise ValueError(f"active8_oof_duplicate_model_rows:{duplicate_rows}")
-    if incomplete:
-        raise ValueError(f"active8_oof_incomplete_active8_rows:{incomplete}")
+    _rerank_models_on_complete_universe(complete)
 
     fold_order = sorted(fold_ranges, key=lambda fold: (fold_ranges[fold][0], fold))
     output: list[dict[str, Any]] = []
@@ -176,7 +198,7 @@ def build_chronological_oof_stack(
         fold_rows = []
         for row in current:
             fold_rows.append({
-                **{key: value for key, value in row.items() if key != "x"},
+                **{key: value for key, value in row.items() if key not in {"x", "raw_by_model"}},
                 "ensemble_raw": float(row["x"] @ weights + intercept),
                 "stacker_source": source,
                 "eligible_for_efficacy": ready,
@@ -200,6 +222,9 @@ def build_chronological_oof_stack(
         "input_rows": len(prediction_rows),
         "complete_candidate_rows": len(complete),
         "incomplete_candidate_rows": incomplete,
+        "complete_candidate_coverage": round(len(complete) / max(1, len(grouped)), 6),
+        "missing_by_model": dict(sorted(missing_by_model.items())),
+        "common_universe_rank_semantic": "same-date-market-complete-active8-percentile-v2",
         "output_rows": len(output),
         "efficacy_rows": sum(1 for row in output if row["eligible_for_efficacy"]),
         "folds": fold_evidence,

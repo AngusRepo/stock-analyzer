@@ -42,7 +42,8 @@ const FINLAB_PENDING_WATCHDOG_STALE_MS = 15 * 60_000
 const FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS = 3
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
 const S12_REPLAY_QUEUE_CHUNK_SIZE = 250
-const S12_REPLAY_LEASE_RETRY_DELAY_SECONDS = 60
+const S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS = 60
+const S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS = 900
 const S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS = 20
 const FINLAB_CANONICAL_DAILY_CHECKS = [
   {
@@ -3242,13 +3243,17 @@ export async function processUpdateBatch(
         }, env)
         return
       }
+      const delaySeconds = Math.min(
+        S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS,
+        S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS * (leaseRetryAttempt + 1),
+      )
       await env.UPDATE_QUEUE.send({
         ...(msg as any),
         leaseRetryAttempt: leaseRetryAttempt + 1,
-      }, { delaySeconds: S12_REPLAY_LEASE_RETRY_DELAY_SECONDS } as any)
+      }, { delaySeconds } as any)
       await logSchedulerResult(env.KV, 's12-replay-backfill', {
         status: 'running',
-        summary: `date=${triggerTime} scope=${replayScope} research lease busy; deferred_attempt=${leaseRetryAttempt + 1}/${S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS} delay_seconds=${S12_REPLAY_LEASE_RETRY_DELAY_SECONDS}`,
+        summary: `date=${triggerTime} scope=${replayScope} research lease busy; deferred_attempt=${leaseRetryAttempt + 1}/${S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS} delay_seconds=${delaySeconds}`,
         duration_ms: 0,
         run_id: runId,
         run_date: statusRunDate,

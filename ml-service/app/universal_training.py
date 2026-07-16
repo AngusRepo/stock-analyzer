@@ -572,6 +572,18 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         feature_cols=available,
         required_target_cols=required_targets,
     )
+    missing_lineage = {
+        column: int(
+            df_clean.select(
+                pl.col(column).is_null()
+                | (pl.col(column).cast(pl.Utf8).str.strip_chars() == "")
+            ).to_series().sum()
+        )
+        for column in ("_date", "_symbol", "_market", "_label_known_date")
+    }
+    missing_lineage = {key: value for key, value in missing_lineage.items() if value > 0}
+    if missing_lineage:
+        raise ValueError(f"active8_oof_prep_lineage_missing:{missing_lineage}")
     if cleaning_report.get("features") or cleaning_report.get("target_rows_dropped"):
         print(f"[PrepBatch] Feature cleaning report: {cleaning_report}")
     X = df_clean.select(available).to_numpy()

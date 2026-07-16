@@ -329,6 +329,7 @@ async function runAsyncTests(): Promise<void> {
         bind(..._params: unknown[]) {
           if (sql.includes('SELECT DISTINCT legacy.symbol')) {
             assert(sql.includes('lineage_validation.previous_sample_eligible'), 'signed repair must retain quarantined legacy samples as repair candidates')
+            assert(sql.includes('legacy.sample_eligible != 1'), 'signed repair must retain non-eligible repair attempts as pending')
             assert(sql.includes('replay_cohort_signature'), 'signed repair must require complete persisted replay cohort lineage')
             return { async all() { return { results: [{ symbol: '8091' }, { symbol: '2330' }] } } }
           }
@@ -477,6 +478,7 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
     ],
     resolveExecutionDate: async () => '2026-07-03',
     maturityAsOfDate: '2026-07-09',
+    signedEligibleRepair: true,
     loadBars: async (_symbol, executionDate) => {
       assert(executionDate === '2026-07-03', 'runner should load bars from the next executable session')
       return { bars: [] }
@@ -498,6 +500,10 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
     'non-eligible repair attempts must still persist the engine signature so the queue can close idempotently',
   )
   assert(summary.skipped === 2, 'empty bars should produce skipped replay outcomes')
+  assert(
+    summary.outcomes[0].lineage_validation?.previous_sample_eligible === 1,
+    'non-eligible signed repair attempts must preserve the durable repair marker',
+  )
   assert(summary.persisted === 2 && writes === 2, 'runner should persist every replay outcome by default')
 
   const offsetSummary = await runS12HistoricalReplayForDate(fakeEnv, '2026-07-02', {

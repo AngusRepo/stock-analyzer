@@ -3222,6 +3222,7 @@ export async function processUpdateBatch(
       persist: true,
       symbols: cohortSymbols,
       maturityAsOfDate,
+      signedEligibleRepair: replayScope === 'signed_eligible_repair',
     })
     const nextOffset = dynamicCohortScope
       ? 0
@@ -3235,8 +3236,11 @@ export async function processUpdateBatch(
     const dynamicCohortStalled = dynamicCohortScope
       && !terminalDataSourceReason
       && Number(cohortSymbols?.length ?? 0) > 0
-      && Number(result.persisted ?? 0) === 0
       && remainingReplaySymbols.length >= Number(cohortSymbols?.length ?? 0)
+      && (
+        replayScope === 'signed_eligible_repair'
+        || Number(result.persisted ?? 0) === 0
+      )
     const hasMore = terminalDataSourceReason || dynamicCohortStalled
       ? false
       : dynamicCohortScope
@@ -3245,7 +3249,9 @@ export async function processUpdateBatch(
     if (terminalDataSourceReason || dynamicCohortStalled) {
       const failureReason = terminalDataSourceReason
         ? `terminal market-data source error: ${terminalDataSourceReason}`
-        : `dynamic replay made no persistence progress remaining=${remainingReplaySymbols.length}`
+        : replayScope === 'signed_eligible_repair'
+          ? `signed replay made no strict-eligible lineage progress remaining=${remainingReplaySymbols.length}`
+          : `dynamic replay made no persistence progress remaining=${remainingReplaySymbols.length}`
       await logSchedulerResult(env.KV, 's12-replay-backfill', {
         status: 'error',
         summary: `date=${triggerTime} scope=${replayScope} offset=${offset} ${failureReason}; requeue=0`,

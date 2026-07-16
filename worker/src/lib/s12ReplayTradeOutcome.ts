@@ -68,6 +68,7 @@ export interface S12ReplayOutcome {
   alpha_context?: Record<string, unknown> | null
   alpha_allocation?: Record<string, unknown> | null
   replay_diagnostics?: Record<string, unknown> | null
+  lineage_validation?: Record<string, unknown> | null
   market?: string | null
 }
 
@@ -118,6 +119,7 @@ export interface S12HistoricalReplayRunOptions {
   loadBars?: (symbol: string, tradeDate: string) => Promise<S12ReplayBars>
   resolveExecutionDate?: (symbol: string, signalDate: string) => Promise<string | null>
   maturityAsOfDate?: string
+  signedEligibleRepair?: boolean
 }
 
 export interface S12HistoricalReplayRunSummary {
@@ -838,6 +840,8 @@ export async function loadSignedEligibleRepairSymbolsByHistoricalDate(
          OR json_extract(legacy.detail_json, '$.lineage_validation.previous_sample_eligible') = 1
        )
        AND (
+         legacy.sample_eligible != 1
+         OR
          COALESCE(json_extract(legacy.detail_json, '$.replay_diagnostics.replay_engine_signature'), '') != ?
          OR COALESCE(json_extract(legacy.detail_json, '$.replay_diagnostics.entry_policy_signature'), '') = ''
          OR COALESCE(json_extract(legacy.detail_json, '$.replay_diagnostics.exit_calibration_signature'), '') = ''
@@ -1069,6 +1073,16 @@ export async function runS12HistoricalReplayForDate(
         calibration_scope: calibration?.scope ?? null,
       },
     })
+    if (options.signedEligibleRepair && !outcome.sample_eligible) {
+      outcome.lineage_validation = {
+        status: 'signed_repair_incomplete',
+        previous_sample_eligible: 1,
+        contract: 'persisted_engine_entry_calibration_cohort_required_v1',
+        attempted_at: new Date().toISOString(),
+        replay_status: outcome.status,
+        status_reason: outcome.status_reason,
+      }
+    }
     outcomes.push(outcome)
     if (options.persist !== false) {
       await persistS12ReplayOutcome(env.DB, outcome)

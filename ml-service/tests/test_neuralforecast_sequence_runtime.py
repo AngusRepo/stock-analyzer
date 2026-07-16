@@ -4,6 +4,7 @@ import pandas as pd
 from app.model_validation import build_model_cpcv_evidence
 from app.neuralforecast_sequence_runtime import (
     _fold_metrics,
+    _filter_panel_to_eval_rows,
     _make_nf_model,
     _panel_full_train_rows,
     _panel_train_eval_rows,
@@ -89,6 +90,19 @@ def test_itransformer_full_refit_keeps_context_plus_training_horizon():
     assert valid_series == 1
     assert len(rows) == 25
     assert {row["unique_id"] for row in rows} == {"valid"}
+
+
+def test_purged_oof_filter_keeps_training_and_eval_series_atomic():
+    train_rows = [
+        {"unique_id": "A", "ds": 0, "y": 1.0},
+        {"unique_id": "A", "ds": 1, "y": 2.0},
+        {"unique_id": "B", "ds": 0, "y": 3.0},
+    ]
+    eval_rows = [{"unique_id": "A", "signal_date": "2026-05-01"}]
+
+    filtered = _filter_panel_to_eval_rows(train_rows, eval_rows)
+
+    assert filtered == train_rows[:2]
 
 
 def test_panel_train_eval_rows_scans_past_short_records_until_max_series_valid():

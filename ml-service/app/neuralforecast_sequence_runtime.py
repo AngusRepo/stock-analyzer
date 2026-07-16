@@ -214,6 +214,14 @@ def _panel_full_train_rows(
     return rows, valid_series
 
 
+def _filter_panel_to_eval_rows(
+    train_rows: list[dict[str, Any]],
+    eval_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    eval_ids = {str(row.get("unique_id")) for row in eval_rows if row.get("unique_id") is not None}
+    return [row for row in train_rows if str(row.get("unique_id")) in eval_ids]
+
+
 def _series_list_to_df_rows(series_list: list[dict[str, Any]], *, seq_len: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     eval_rows: list[dict[str, Any]] = []
@@ -596,6 +604,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             ]
             if len(eval_rows) < 10:
                 continue
+            fold_train_rows = _filter_panel_to_eval_rows(fold_train_rows, eval_rows)
         fold_nf, fold_df = _train_nf(
             fold_train_rows,
             model_name=cfg["nf_model_name"],

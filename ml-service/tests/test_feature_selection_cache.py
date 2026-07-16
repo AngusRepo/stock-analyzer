@@ -98,6 +98,25 @@ def test_feature_selection_cache_key_changes_when_policy_changes():
     assert key1 != key2
 
 
+def test_feature_selection_cache_key_binds_immutable_prep_owner():
+    common = {
+        "prep_blobs": [_Blob("prep/batch_0.npz", "1")],
+        "feature_blob": _Blob("prep/feature_names.json", "1"),
+        "feature_names": ["a"],
+        "selection_params": {"max_rounds": 60},
+        "train_end_date": "2026-05-12",
+        "gcs_prefix": "walk_forward/cohort/w0",
+    }
+
+    legacy = build_feature_selection_cache_key(**common, prep_gcs_prefix="universal")
+    canonical = build_feature_selection_cache_key(
+        **common,
+        prep_gcs_prefix="universal/canonical_adjusted_v4/run1",
+    )
+
+    assert legacy != canonical
+
+
 def test_feature_selection_stage_checkpoint_round_trips_json_safe_payload():
     bucket = _StoreBucket()
 

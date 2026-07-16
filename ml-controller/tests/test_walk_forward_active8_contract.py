@@ -83,6 +83,9 @@ def test_walk_forward_routes_long_sequence_v3_prep_into_every_oof_fold():
 
     assert 'sequence_gcs_prefix: str = "universal/sequence_long/latest"' in router_source
     assert '"sequence_gcs_prefix": req.sequence_gcs_prefix' in router_source
+    assert '"prep_gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal")' in modal_source
+    assert "prep_gcs_prefix=prep_gcs_prefix" in modal_source
+    assert 'gcs_prefix = f"walk_forward/oof_cohorts/{cohort_id}/w{wid}"' in modal_source
     assert '"sequence_batch_count": req.sequence_batch_count' in router_source
     assert "active8_oof_sequence_v3_prep_batch_missing" in modal_source
     assert "canonical-adjusted-close-net-v4" in modal_source

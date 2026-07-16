@@ -1947,7 +1947,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     async def _run_one(window: dict) -> dict:
         """Run feature selection, HMM, and tree training for one window."""
         wid = window["window_id"]
-        gcs_prefix = f"walk_forward/w{wid}"
+        gcs_prefix = f"walk_forward/oof_cohorts/{cohort_id}/w{wid}"
         result = {
             "window_id": wid,
             "train_range": [window["train_start"], window["train_end"]],
@@ -1971,6 +1971,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 "window_id": wid,
                 "train_end_date": window["train_end"],
                 "gcs_prefix": gcs_prefix,
+                "prep_gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal"),
                 "max_rounds": fs_max_rounds,
                 "force_refresh": fs_force_refresh,
             }
@@ -2830,6 +2831,7 @@ def feature_selection_per_window(payload: dict) -> dict:
     window_id = payload.get("window_id")
     train_end_date = payload["train_end_date"]
     gcs_prefix = payload["gcs_prefix"].rstrip("/")
+    prep_gcs_prefix = str(payload.get("prep_gcs_prefix") or "universal").strip().rstrip("/")
     force = bool(payload.get("force_refresh", False))
     from app.training_policy import FeatureSelectionPolicy, build_feature_selection_run_kwargs
     selection_params = FeatureSelectionPolicy.from_env().to_window_selection_params(payload)
@@ -2863,6 +2865,7 @@ def feature_selection_per_window(payload: dict) -> dict:
             **build_feature_selection_run_kwargs(selection_params),
             train_end_date=train_end_date,
             gcs_prefix=gcs_prefix,
+            prep_gcs_prefix=prep_gcs_prefix,
         )
         # Annotate for orchestrator aggregate
         result["window_id"] = window_id

@@ -145,6 +145,18 @@ def train_patchtst(
         },
         model_name=MODEL_NAME,
     )
+    generation_mode = str(kwargs.get("generation_mode") or "native").strip().lower()
+    if generation_mode == "purged_oof":
+        model_cpcv = (
+            result.get("model_cpcv")
+            or (result.get("metadata") or {}).get("model_cpcv")
+            or (result.get("metrics") or {}).get("model_cpcv")
+        )
+        return {
+            **result,
+            "model_cpcv": model_cpcv,
+            "pool_update": None,
+        }
     pool_update = None
     if promote_to_active:
         assert promotion_reason is not None

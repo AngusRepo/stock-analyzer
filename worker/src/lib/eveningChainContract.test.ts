@@ -64,6 +64,10 @@ assert(
 )
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const expectedReturnServingState = fs.readFileSync('src/lib/expectedReturnServingState.ts', 'utf8')
+assert(updateOrchestrator.includes('refreshExpectedReturnServingState'), 'daily readiness must persist canonical expected-return serving state')
+assert(expectedReturnServingState.includes("'retired_incompatible'"), 'stale promoted artifacts must be explicitly retired from serving without rewriting evidence')
+assert(expectedReturnServingState.includes("'validated_s12_only'"), 'no-owner production behavior must remain explicit and fail closed')
 const schedulerLockMigration = fs.readFileSync('migration_scheduler_locks.sql', 'utf8')
 const runBulkFetchStart = updateOrchestrator.indexOf('export async function runBulkFetch')
 const runBulkFetchEnd = updateOrchestrator.indexOf('export async function runQueueUpdate', runBulkFetchStart)
@@ -190,9 +194,10 @@ assert(
   updateOrchestrator.includes('l4_challenger_rejected=') &&
     updateOrchestrator.includes('l4_champion_retained=') &&
     updateOrchestrator.includes('l4_unavailable=') &&
-    updateOrchestrator.includes('expected_return_action_gate=validated_s12_only') &&
-    updateOrchestrator.includes("champion.promotion_state === 'production_approved'") &&
-    updateOrchestrator.includes("championDecision === 'PASS'"),
+    updateOrchestrator.includes('refreshExpectedReturnServingState') &&
+    expectedReturnServingState.includes("artifact.promotion_state !== requiredPromotionState") &&
+    expectedReturnServingState.includes("String(artifact.validation_packet?.decision ?? '').toUpperCase() !== 'PASS'") &&
+    expectedReturnServingState.includes("action_gate: owner ? 'expected_return_owner' : 'validated_s12_only'"),
   'L4 readiness must retain a compatible champion or continue observation with BUY/allocation fail closed',
 )
 assert(

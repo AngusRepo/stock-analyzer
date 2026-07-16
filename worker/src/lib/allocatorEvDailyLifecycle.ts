@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
 
 export type AllocatorEvLifecycleState =
   | 'lineage_ready'
@@ -37,8 +38,83 @@ export interface AllocatorSnapshotClosure {
   ready: boolean
 }
 
+export interface AllocatorEvMaturityCoverage {
+  asOfDate: string
+  snapshotRows: number
+  snapshotDates: number
+  strictL4PitRows: number
+  strictL4PitDates: number
+  incompatibleOrLegacyL4Rows: number
+  latestSnapshotDate: string | null
+  state: 'awaiting_first_point_in_time_l4' | 'accumulating_point_in_time_l4'
+}
+
 function validDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value)
+}
+
+export async function inspectAllocatorEvMaturityCoverage(
+  db: D1Database,
+  asOfDate: string,
+): Promise<AllocatorEvMaturityCoverage> {
+  if (!validDate(asOfDate)) throw new Error(`invalid allocator EV maturity date: ${asOfDate}`)
+  const row = await db.prepare(`
+    WITH classified AS (
+      SELECT snapshot_date,
+             l4_model_version,
+             CASE WHEN
+               l4_model_version IS NOT NULL
+               AND json_extract(alpha_allocation, '$.snapshot_l4_available') = 1
+               AND date(json_extract(alpha_allocation, '$.l4_alpha_ev.trained_until')) < date(snapshot_date)
+               AND json_extract(alpha_allocation, '$.l4_alpha_ev.artifact_contract_version') = ?
+               AND json_extract(alpha_allocation, '$.l4_alpha_ev.feature_semantic_version') = ?
+               AND json_extract(alpha_allocation, '$.l4_alpha_ev.label_schema_version') = ?
+               AND json_extract(alpha_allocation, '$.l4_alpha_ev.point_in_time_prediction_lineage.schema_version') = 'l4-point-in-time-prediction-lineage-v1'
+               AND date(json_extract(alpha_allocation, '$.l4_alpha_ev.point_in_time_prediction_lineage.prediction_date')) = date(snapshot_date)
+               AND date(json_extract(alpha_allocation, '$.l4_alpha_ev.point_in_time_prediction_lineage.trained_until')) < date(snapshot_date)
+             THEN 1 ELSE 0 END AS strict_l4_pit
+        FROM allocator_ev_feature_snapshots
+       WHERE snapshot_source = 'allocator_ev_asof_backfill_v2'
+         AND date(snapshot_date) <= date(?)
+    )
+    SELECT COUNT(*) AS snapshot_rows,
+           COUNT(DISTINCT snapshot_date) AS snapshot_dates,
+           COALESCE(SUM(strict_l4_pit), 0) AS strict_l4_pit_rows,
+           COUNT(DISTINCT CASE WHEN strict_l4_pit = 1 THEN snapshot_date END) AS strict_l4_pit_dates,
+           COALESCE(SUM(CASE WHEN l4_model_version IS NOT NULL AND strict_l4_pit = 0 THEN 1 ELSE 0 END), 0) AS incompatible_or_legacy_l4_rows,
+           MAX(snapshot_date) AS latest_snapshot_date
+      FROM classified
+  `).bind(
+    L4_ALPHA_EV_CONTRACT.artifactContractVersion,
+    L4_ALPHA_EV_CONTRACT.featureSemanticVersion,
+    L4_ALPHA_EV_CONTRACT.labelSchemaVersion,
+    asOfDate,
+  ).first<{
+    snapshot_rows?: number
+    snapshot_dates?: number
+    strict_l4_pit_rows?: number
+    strict_l4_pit_dates?: number
+    incompatible_or_legacy_l4_rows?: number
+    latest_snapshot_date?: string | null
+  }>()
+  const strictL4PitRows = Number(row?.strict_l4_pit_rows ?? 0)
+  return {
+    asOfDate,
+    snapshotRows: Number(row?.snapshot_rows ?? 0),
+    snapshotDates: Number(row?.snapshot_dates ?? 0),
+    strictL4PitRows,
+    strictL4PitDates: Number(row?.strict_l4_pit_dates ?? 0),
+    incompatibleOrLegacyL4Rows: Number(row?.incompatible_or_legacy_l4_rows ?? 0),
+    latestSnapshotDate: row?.latest_snapshot_date ?? null,
+    state: strictL4PitRows > 0
+      ? 'accumulating_point_in_time_l4'
+      : 'awaiting_first_point_in_time_l4',
+  }
+}
+
+function maturitySummary(coverage: AllocatorEvMaturityCoverage): string {
+  return `l4_pit_state=${coverage.state} l4_pit_rows=${coverage.strictL4PitRows} `
+    + `l4_pit_dates=${coverage.strictL4PitDates} legacy_l4_rows=${coverage.incompatibleOrLegacyL4Rows}`
 }
 
 export async function readAllocatorEvLifecycle(
@@ -272,12 +348,16 @@ export async function runAllocatorEvLifecycleWatchdog(
   requestedDate?: string,
 ): Promise<string> {
   const businessDate = await resolveLifecycleBusinessDate(env.DB, requestedDate)
-  const snapshot = await inspectAllocatorSnapshotClosure(env.DB, businessDate)
+  const [snapshot, maturity] = await Promise.all([
+    inspectAllocatorSnapshotClosure(env.DB, businessDate),
+    inspectAllocatorEvMaturityCoverage(env.DB, businessDate),
+  ])
   if (snapshot.nativeLineageRows <= 0) {
     if (snapshot.recommendationRows <= 0) {
-      return `skipped: allocator EV lifecycle has no Score V2 recommendations for ${businessDate}`
+      return `skipped: allocator EV lifecycle has no Score V2 recommendations for ${businessDate}; ${maturitySummary(maturity)}`
     }
-    const reason = `missing point-in-time ensemble lineage before next executable session open recommendations=${snapshot.recommendationRows}`
+    const reason = `missing point-in-time ensemble lineage before next executable session open `
+      + `recommendations=${snapshot.recommendationRows}; ${maturitySummary(maturity)}`
     await recordAllocatorEvLifecycle(env.DB, {
       businessDate,
       state: 'error',
@@ -314,13 +394,13 @@ export async function runAllocatorEvLifecycleWatchdog(
       upstreamRunId: runId,
       incrementAttempt: true,
     })
-    return `allocator EV lifecycle replay enqueued date=${businessDate} mature_missing=${matureReplayMissingRows} as_of=${maturityAsOfDate}`
+    return `allocator EV lifecycle replay enqueued date=${businessDate} mature_missing=${matureReplayMissingRows} as_of=${maturityAsOfDate}; ${maturitySummary(maturity)}`
   }
   if (snapshot.ready && (
     (postVerifyReached && matureReplayMissingRows === 0)
     || (lifecycle?.state === 'verify_triggered' && !staleVerifyTrigger(lifecycle))
   )) {
-    return `allocator EV lifecycle current date=${businessDate} state=${lifecycle?.state} snapshot_rows=${snapshot.actualRows}`
+    return `allocator EV lifecycle current date=${businessDate} state=${lifecycle?.state} snapshot_rows=${snapshot.actualRows}; ${maturitySummary(maturity)}`
   }
 
   const { runPostPipelineCallbackChain } = await import('./postMarketChain')
@@ -335,8 +415,9 @@ export async function runAllocatorEvLifecycleWatchdog(
       `allocator EV lifecycle repair incomplete date=${businessDate} lineage=${repaired.nativeLineageRows} `
       + `run_native=${repaired.runNativeLineageRows} reconstructed=${repaired.reconstructedLineageRows} `
       + `rejected=${repaired.rejectedLineageRows} expected=${repaired.expectedRows} `
-      + `published=${repaired.publishedRows} actual=${repaired.actualRows}`,
+      + `published=${repaired.publishedRows} actual=${repaired.actualRows}; ${maturitySummary(maturity)}`,
     )
   }
-  return `allocator EV lifecycle repaired date=${businessDate} snapshot_rows=${repaired.actualRows}`
+  const repairedMaturity = await inspectAllocatorEvMaturityCoverage(env.DB, businessDate)
+  return `allocator EV lifecycle repaired date=${businessDate} snapshot_rows=${repaired.actualRows}; ${maturitySummary(repairedMaturity)}`
 }

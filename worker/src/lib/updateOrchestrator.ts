@@ -19,7 +19,10 @@ import {
 import { runOfficialMarketSummaryRefresh } from './officialMarketSummaryRefresh'
 import { enqueuePostScreenerPipelineContinuation } from './postScreenerContinuation'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
-import { ALLOCATOR_EV_FUSION_CONTRACT, L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
+import {
+  readCurrentExpectedReturnServingState,
+  refreshExpectedReturnServingState,
+} from './expectedReturnServingState'
 import { fetchPunishedStocks } from './twseApi'
 import {
   finLabCanonicalDatasetsForLane,
@@ -1850,46 +1853,23 @@ async function runDailyAllocatorEvReadiness(
   let fusionChampionAvailable = false
 
   const loadApprovedL4Champion = async (): Promise<Record<string, any> | null> => {
-    const rawConfig = await env.KV.get('trading:config', 'json').catch(() => null) as Record<string, any> | null
+    const rawConfig = await env.KV.get('trading:config', 'json') as Record<string, any> | null
     const ensembleV2 = rawConfig?.ensemble_v2 && typeof rawConfig.ensemble_v2 === 'object'
       ? rawConfig.ensemble_v2 as Record<string, any>
       : {}
     const champion = ensembleV2.l4AlphaEv ?? ensembleV2.l4_alpha_ev
-    const championDecision = String(champion?.validation_packet?.decision ?? '').toUpperCase()
-    const approved =
-      champion &&
-      typeof champion === 'object' &&
-      champion.expected_return_owner === 'l4_alpha_ev' &&
-      champion.promotion_state === 'production_approved' &&
-      championDecision === 'PASS' &&
-      champion.artifact_contract_version === L4_ALPHA_EV_CONTRACT.artifactContractVersion &&
-      champion.feature_semantic_version === L4_ALPHA_EV_CONTRACT.featureSemanticVersion &&
-      champion.label_schema_version === L4_ALPHA_EV_CONTRACT.labelSchemaVersion &&
-      typeof champion.model_version === 'string' &&
-      champion.model_version.length > 0
-    return approved ? champion as Record<string, any> : null
+    const state = await readCurrentExpectedReturnServingState(env, triggerTime)
+    return state.artifacts.l4_alpha_ev.eligible ? champion as Record<string, any> : null
   }
 
   const loadApprovedFusionChampion = async (): Promise<Record<string, any> | null> => {
-    const rawConfig = await env.KV.get('trading:config', 'json').catch(() => null) as Record<string, any> | null
+    const rawConfig = await env.KV.get('trading:config', 'json') as Record<string, any> | null
     const ensembleV2 = rawConfig?.ensemble_v2 && typeof rawConfig.ensemble_v2 === 'object'
       ? rawConfig.ensemble_v2 as Record<string, any>
       : {}
     const champion = ensembleV2.allocatorEvFusion ?? ensembleV2.allocator_ev_fusion
-    const championDecision = String(champion?.validation_packet?.decision ?? '').toUpperCase()
-    const approved =
-      champion &&
-      typeof champion === 'object' &&
-      champion.expected_return_owner === 'allocator_ev_fusion' &&
-      champion.promotion_state === 'production_primary' &&
-      champion.primary_expected_return_allowed === true &&
-      championDecision === 'PASS' &&
-      champion.artifact_contract_version === ALLOCATOR_EV_FUSION_CONTRACT.artifactContractVersion &&
-      champion.feature_semantic_version === ALLOCATOR_EV_FUSION_CONTRACT.featureSemanticVersion &&
-      champion.label_schema_version === ALLOCATOR_EV_FUSION_CONTRACT.labelSchemaVersion &&
-      typeof champion.model_version === 'string' &&
-      champion.model_version.length > 0
-    return approved ? champion as Record<string, any> : null
+    const state = await readCurrentExpectedReturnServingState(env, triggerTime)
+    return state.artifacts.allocator_ev_fusion.eligible ? champion as Record<string, any> : null
   }
 
   try {
@@ -1956,11 +1936,10 @@ async function runDailyAllocatorEvReadiness(
     })
   }
 
-  const priorOwner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null = fusionChampionAvailable
-    ? 'allocator_ev_fusion'
-    : l4ChampionAvailable
-      ? 'l4_alpha_ev'
-      : null
+  const servingState = await refreshExpectedReturnServingState(env, triggerTime)
+  const priorOwner = servingState.expected_return_owner
+  parts.push(`expected_return_serving_state=${servingState.state}`)
+  parts.push(`expected_return_action_gate=${servingState.action_gate}`)
   if (priorOwner) {
     const opbStarted = Date.now()
     try {

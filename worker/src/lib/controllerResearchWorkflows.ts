@@ -1,7 +1,7 @@
 import type { Bindings } from '../types'
 import { controllerFetch, controllerJson, controllerPostJson } from './controllerClient'
 import { invalidateModelPoolReadCache } from './modelPoolReadCache'
-import { ALLOCATOR_EV_FUSION_CONTRACT, L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
+import { readCurrentExpectedReturnServingState } from './expectedReturnServingState'
 import { nextTwTradingDate } from './schedulerPolicy'
 
 function requireController(env: Bindings): void {
@@ -283,30 +283,17 @@ export async function runOpbArmPriorRefresh(
 
   let resolvedOwner: 'l4_alpha_ev' | 'allocator_ev_fusion'
   if (expectedReturnOwner === 'auto') {
-    const rawConfig = await env.KV.get('trading:config', 'json').catch(() => null) as Record<string, any> | null
-    const ensembleV2 = rawConfig?.ensemble_v2 && typeof rawConfig.ensemble_v2 === 'object'
-      ? rawConfig.ensemble_v2 as Record<string, any>
-      : {}
-    const fusion = ensembleV2.allocatorEvFusion ?? ensembleV2.allocator_ev_fusion
-    const l4 = ensembleV2.l4AlphaEv ?? ensembleV2.l4_alpha_ev
-    const fusionApproved =
-      fusion?.expected_return_owner === 'allocator_ev_fusion' &&
-      fusion?.promotion_state === 'production_primary' &&
-      fusion?.primary_expected_return_allowed === true &&
-      String(fusion?.validation_packet?.decision ?? '').toUpperCase() === 'PASS' &&
-      fusion?.artifact_contract_version === ALLOCATOR_EV_FUSION_CONTRACT.artifactContractVersion &&
-      fusion?.feature_semantic_version === ALLOCATOR_EV_FUSION_CONTRACT.featureSemanticVersion &&
-      fusion?.label_schema_version === ALLOCATOR_EV_FUSION_CONTRACT.labelSchemaVersion
-    const l4Approved =
-      l4?.expected_return_owner === 'l4_alpha_ev' &&
-      l4?.promotion_state === 'production_approved' &&
-      String(l4?.validation_packet?.decision ?? '').toUpperCase() === 'PASS' &&
-      l4?.artifact_contract_version === L4_ALPHA_EV_CONTRACT.artifactContractVersion &&
-      l4?.feature_semantic_version === L4_ALPHA_EV_CONTRACT.featureSemanticVersion &&
-      l4?.label_schema_version === L4_ALPHA_EV_CONTRACT.labelSchemaVersion
-    if (fusionApproved) resolvedOwner = 'allocator_ev_fusion'
-    else if (l4Approved) resolvedOwner = 'l4_alpha_ev'
-    else throw new Error('OPB arm prior refresh has no production-approved expected-return owner')
+    const servingState = await readCurrentExpectedReturnServingState(env, runDate)
+    if (!servingState.expected_return_owner) {
+      const l4State = servingState.artifacts.l4_alpha_ev
+      const fusionState = servingState.artifacts.allocator_ev_fusion
+      throw new Error(
+        'OPB arm prior refresh has no contract-compatible production expected-return owner; '
+        + `l4=${l4State.artifact_state}[${l4State.blockers.join(',')}] `
+        + `fusion=${fusionState.artifact_state}[${fusionState.blockers.join(',')}]`,
+      )
+    }
+    resolvedOwner = servingState.expected_return_owner
   } else {
     resolvedOwner = expectedReturnOwner
   }

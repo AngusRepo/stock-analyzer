@@ -31,7 +31,12 @@ function artifact(
     status: 'approved',
     cadence: 'weekly',
     scope: { marketSegment, alphaBucket, entryTimeBucket },
-    policy: { limitedMutationMinScore: 5, maxStopRiskPct: 0.035 },
+    policy: {
+      limitedMutationMinScore: 5,
+      maxStopRiskPct: 0.035,
+      sessionAcceptanceMinMoveAtr: 0.42,
+      sessionAcceptanceMinClosePosition: 0.78,
+    },
     exit: { tp1MfeQuantile: 0.04, tp2MfeQuantile: 0.08, stopMaeQuantile: 0.02, minNetProfitR: 0.25 },
     validationStart: '2026-04-01',
     validationEnd: '2026-07-07',
@@ -77,6 +82,8 @@ assert(resolveS12TwCalibrationArtifact(artifacts, {
 const policy = applyS12TwCalibrationArtifact(DEFAULT_S12_TIMING_POLICY, artifacts[0])
 assert(policy.limitedMutationMinScore === 5, 'approved policy must override the static baseline')
 assert(policy.maxStopRiskPct === 0.035, 'approved stop-risk calibration must be active')
+assert(policy.sessionAcceptanceMinMoveAtr === 0.42, 'approved whole-session move calibration must be active')
+assert(policy.sessionAcceptanceMinClosePosition === 0.78, 'approved whole-session close-position calibration must be active')
 assert(policy.fullCoverageSession60Bars === 3, 'calibration must preserve the TW 60M session contract')
 
 console.log('s12TwEquityCalibration tests passed')

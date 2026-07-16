@@ -51,6 +51,8 @@ interface CalibrationEvidence {
   fastVwapBlockers: number | null
   stopRiskPct: number | null
   stopRiskAtr: number | null
+  sessionMoveAtr: number | null
+  sessionClosePosition: number | null
 }
 
 interface ArtifactRow {
@@ -326,6 +328,8 @@ async function loadEvidence(db: D1Database, startDate: string, endDate: string):
       fastVwapBlockers: countPipeValues(detailValue(assessmentDetail, 'vwap_fast_blockers')),
       stopRiskPct: entry != null && stop != null && entry > stop ? (entry - stop) / entry : null,
       stopRiskAtr: entry != null && stop != null && atr != null && atr > 0 && entry > stop ? (entry - stop) / atr : null,
+      sessionMoveAtr: finite(detailValue(assessmentDetail, 'session_60m_move_atr')),
+      sessionClosePosition: finite(detailValue(assessmentDetail, 'session_60m_close_position')),
     })
   }
   return evidence
@@ -352,11 +356,47 @@ function buildArtifactCandidate(
   const stopRiskAtr = profitable.map((row) => row.stopRiskAtr).filter((value): value is number => value != null)
   const fastSignals = profitable.map((row) => row.fastVwapSignals).filter((value): value is number => value != null)
   const baselineValidationMean = mean(validation.map((row) => row.pnlR)) ?? -Infinity
+  const baselineValidationHitRate = validation.length
+    ? validation.filter((row) => row.pnlR > 0).length / validation.length
+    : 0
   const limitedMutationMinScore = Math.max(3, Math.min(6, Math.round(quantile(scores, 0.25) ?? DEFAULT_S12_TIMING_POLICY.limitedMutationMinScore)))
   const strictMutationMinScore = Math.max(limitedMutationMinScore + 1, Math.min(8, Math.round(quantile(scores, 0.55) ?? DEFAULT_S12_TIMING_POLICY.strictMutationMinScore)))
   const maxStopRiskPct = Math.max(0.02, Math.min(0.08, quantile(stopRiskPct, 0.85) ?? DEFAULT_S12_TIMING_POLICY.maxStopRiskPct))
   const maxStopRiskAtr = Math.max(1, Math.min(5, quantile(stopRiskAtr, 0.85) ?? DEFAULT_S12_TIMING_POLICY.maxStopRiskAtr))
   const minFastVwapSignals = Math.max(1, Math.min(4, Math.floor(quantile(fastSignals, 0.25) ?? DEFAULT_S12_TIMING_POLICY.minFastVwapSignals)))
+  const trainSessionRows = train.filter((row) => row.sessionMoveAtr != null && row.sessionClosePosition != null)
+  const profitableSessionRows = trainSessionRows.filter((row) => row.pnlR > 0)
+  const validationSessionRows = validation.filter((row) => row.sessionMoveAtr != null && row.sessionClosePosition != null)
+  const sessionFeatureCoverage = trainSessionRows.length / train.length
+  const validationSessionFeatureCoverage = validationSessionRows.length / validation.length
+  const proposedSessionMoveAtr = Math.max(0.1, Math.min(1.5,
+    quantile(profitableSessionRows.map((row) => row.sessionMoveAtr as number), 0.25)
+      ?? DEFAULT_S12_TIMING_POLICY.sessionAcceptanceMinMoveAtr,
+  ))
+  const proposedSessionClosePosition = Math.max(0.55, Math.min(0.95,
+    quantile(profitableSessionRows.map((row) => row.sessionClosePosition as number), 0.25)
+      ?? DEFAULT_S12_TIMING_POLICY.sessionAcceptanceMinClosePosition,
+  ))
+  const selectedSessionValidation = validationSessionRows.filter((row) => (
+    (row.sessionMoveAtr as number) >= proposedSessionMoveAtr
+    && (row.sessionClosePosition as number) >= proposedSessionClosePosition
+  ))
+  const sessionValidationMean = mean(selectedSessionValidation.map((row) => row.pnlR))
+  const sessionValidationHitRate = selectedSessionValidation.length
+    ? selectedSessionValidation.filter((row) => row.pnlR > 0).length / selectedSessionValidation.length
+    : 0
+  const sessionValidationCoverage = selectedSessionValidation.length / validation.length
+  const sessionPolicyApproved = (
+    sessionFeatureCoverage >= 0.7
+    && validationSessionFeatureCoverage >= 0.7
+    && profitableSessionRows.length >= 10
+    && selectedSessionValidation.length >= 10
+    && sessionValidationCoverage >= 0.35
+    && sessionValidationMean != null
+    && sessionValidationMean >= baselineValidationMean
+    && sessionValidationHitRate >= baselineValidationHitRate
+    && maxDrawdownR(selectedSessionValidation) >= maxDrawdownR(validation)
+  )
   const selectedValidation = validation.filter((row) => (
     (row.mutationScore == null || row.mutationScore >= limitedMutationMinScore) &&
     (row.fastVwapSignals == null || row.fastVwapSignals >= minFastVwapSignals) &&
@@ -387,6 +427,12 @@ function buildArtifactCandidate(
       strictMutationMinScore,
       maxStopRiskPct: round(maxStopRiskPct),
       maxStopRiskAtr: round(maxStopRiskAtr),
+      ...(sessionPolicyApproved
+        ? {
+            sessionAcceptanceMinMoveAtr: round(proposedSessionMoveAtr),
+            sessionAcceptanceMinClosePosition: round(proposedSessionClosePosition),
+          }
+        : {}),
     },
     exit: {
       tp1MfeQuantile: round(tp1Mfe),
@@ -408,6 +454,21 @@ function buildArtifactCandidate(
       selected_validation_hit_rate: round(validationHitRate),
       baseline_validation_max_drawdown_r: round(baselineDrawdown),
       selected_validation_max_drawdown_r: round(selectedDrawdown),
+      session_acceptance_threshold_selection: {
+        status: sessionPolicyApproved ? 'selected' : 'insufficient_oos_evidence',
+        train_feature_coverage: round(sessionFeatureCoverage),
+        validation_feature_coverage: round(validationSessionFeatureCoverage),
+        profitable_train_samples: profitableSessionRows.length,
+        proposed_min_move_atr: round(proposedSessionMoveAtr),
+        proposed_min_close_position: round(proposedSessionClosePosition),
+        selected_validation_samples: selectedSessionValidation.length,
+        selected_validation_coverage: round(sessionValidationCoverage),
+        baseline_validation_mean_r: round(baselineValidationMean),
+        selected_validation_mean_r: sessionValidationMean == null ? null : round(sessionValidationMean),
+        baseline_validation_hit_rate: round(baselineValidationHitRate),
+        selected_validation_hit_rate: round(sessionValidationHitRate),
+        selection_contract: 'train_profitable_q25_then_chronological_oos_non_degradation',
+      },
       split_date: splitDate,
       no_global_fallback: true,
     },

@@ -154,8 +154,8 @@ jobs:
         env:
           IMAGE_REF: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
         run: |
-          docker buildx imagetools inspect "$IMAGE_REF" --format '{{ json .SBOM.SPDX }}' > sbom.json
-          docker buildx imagetools inspect "$IMAGE_REF" --format '{{ json .Provenance.SLSA }}' > provenance.json
+          docker buildx imagetools inspect "$IMAGE_REF" --format '{{ json (index .SBOM "linux/amd64").SPDX }}' > sbom.json
+          docker buildx imagetools inspect "$IMAGE_REF" --format '{{ json (index .Provenance "linux/amd64").SLSA }}' > provenance.json
           python - <<'PY'
           import json
 

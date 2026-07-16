@@ -53,7 +53,7 @@ MODEL_CONFIG: dict[str, dict[str, str]] = {
         "gcs_prefix": "universal/itransformer",
         "artifact_schema": "neuralforecast_itransformer_universal_v1",
         "model_type": "time_series_transformer_neuralforecast_itransformer",
-        "default_seq_len": "1024",
+        "default_seq_len": "512",
     },
 }
 

@@ -2544,6 +2544,14 @@ def train_patchtst_universal(payload: dict) -> dict:
             max_prep_stale_days=payload.get("max_prep_stale_days"),
             run_date=payload.get("run_date"),
             as_of_date=payload.get("as_of_date"),
+            generation_mode=payload.get("generation_mode"),
+            cohort_id=payload.get("cohort_id"),
+            fold_id=payload.get("fold_id") or payload.get("window_id"),
+            train_start=payload.get("train_start"),
+            train_end=payload.get("train_end"),
+            test_start=payload.get("test_start"),
+            test_end=payload.get("test_end"),
+            label_horizon_days=payload.get("label_horizon_days") or 5,
         )
         if result.get("error"):
             return result

@@ -7,6 +7,7 @@ from app.sequence_training import (
     build_sequence_window_dataset,
     mean_daily_spearman_ic,
 )
+from app.neuralforecast_sequence_runtime import default_seq_len_for_model
 
 
 def test_sequence_record_requires_symbol_dates_and_positive_close():
@@ -137,3 +138,8 @@ def test_sequence_cpcv_policy_requires_explicit_enable():
         {"family_adapters": {"DLinear": {"enabled": True}}},
         "PatchTST",
     ) is False
+
+
+def test_sequence_model_default_context_fits_finlab_three_year_artifact():
+    assert default_seq_len_for_model("PatchTST") == 512
+    assert default_seq_len_for_model("iTransformer") == 512

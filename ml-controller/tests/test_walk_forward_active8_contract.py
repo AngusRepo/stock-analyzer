@@ -88,6 +88,9 @@ def test_walk_forward_routes_long_sequence_v3_prep_into_every_oof_fold():
     assert 'raw.get("target_semantic_version") == "next-session-open-to-fifth-session-close-v2"' in modal_source
     assert '"version": f"{cohort_id}-w{wid}"' in modal_source
     assert 'version = payload.get("output_model_version") or payload.get("version", "v1")' in modal_source
+    assert 'generation_mode=payload.get("generation_mode")' in modal_source
+    assert 'cohort_id=payload.get("cohort_id")' in modal_source
+    assert 'test_start=payload.get("test_start")' in modal_source
 
 
 def test_walk_forward_calendar_reader_does_not_hydrate_backtest_dataset(monkeypatch):

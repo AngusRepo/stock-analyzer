@@ -52,6 +52,10 @@ Push-Location (Join-Path $Root 'ml-controller')
 if ($LASTEXITCODE -ne 0) { throw "ml-controller contract tests failed" }
 Pop-Location
 
+Write-Host '[P9 gate] GHCR retention contract tests'
+& $ControllerPython (Join-Path $Root 'scripts\test_cleanup_ghcr_ci_images.py')
+if ($LASTEXITCODE -ne 0) { throw "GHCR retention contract tests failed" }
+
 if (-not $SkipFrontendBuild) {
   Write-Host '[P9 gate] frontend build'
   Push-Location (Join-Path $Root 'frontend')

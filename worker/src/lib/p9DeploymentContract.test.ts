@@ -93,6 +93,7 @@ assert(workflow.includes('aquasec/trivy@sha256:'), 'P9 workflow must pin the ima
 assert(workflow.includes('--severity HIGH,CRITICAL --ignore-unfixed=false'), 'Trivy must include all fixed and unfixed high/critical findings')
 assert(workflow.includes('for item in result.get("Vulnerabilities") or []'), 'P9 must parse the complete Trivy vulnerability report')
 assert(workflow.includes('::error title=Trivy HIGH/CRITICAL findings::'), 'Trivy findings must emit a machine-readable error annotation')
+assert(workflow.includes('::error title=Linux TypeScript emit::'), 'Linux-only Worker emit failures must expose actionable diagnostics')
 assert(workflow.includes('raise SystemExit(1)'), 'attestation or vulnerability findings must fail the container gate')
 assert(retentionWorkflow.includes("cron: '37 18 * * *'"), 'GHCR retention must run once daily off-hours')
 assert(retentionWorkflow.includes('--max-deletes-per-package 25'), 'retention deletion blast radius must be capped per run')
@@ -102,16 +103,19 @@ assert(retentionScript.includes('"candidate-": 30'), 'fully-passed main candidat
 assert(retentionScript.includes('PROTECTED_PREFIXES = ("release-", "prod-")'), 'production and release tags must be protected from automatic deletion')
 assert(p9Gate.includes('GHCR retention contract tests'), 'P9 must execute the GHCR retention contract tests')
 
-const pinnedPythonBase = 'python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba'
+const pinnedWolfiBase = 'cgr.dev/chainguard/wolfi-base@sha256:02dab76bd852a70556b5b2002195c8a5fdab77d323c433bf6642aab080489795'
 for (const [name, dockerfile] of [
   ['controller', controllerDockerfile],
   ['execution gateway', executionDockerfile],
   ['ML service', mlDockerfile],
 ] as const) {
-  assert(dockerfile.includes(pinnedPythonBase), `${name} runtime must pin the reviewed Python Bookworm image digest`)
+  assert(dockerfile.includes(pinnedWolfiBase), `${name} runtime must pin the reviewed Wolfi image digest`)
+  assert(dockerfile.includes('python-3.11=3.11.15-r8'), `${name} runtime must preserve and pin the Python 3.11 contract`)
   assert(dockerfile.includes(' AS runtime'), `${name} image must isolate dependencies in a multi-stage build`)
+  assert(!dockerfile.split(' AS runtime')[1].includes('apt-get'), `${name} runtime must not reintroduce the vulnerable Debian package set`)
 }
-assert(controllerDockerfile.includes('node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3'), 'Worker compiler image must use an immutable Node digest')
+assert(controllerDockerfile.includes('node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d'), 'Worker compiler image must use an immutable Node 24 digest')
+assert(controllerDockerfile.includes('nodejs-24=24.18.0-r2'), 'controller runtime must pin the reviewed Wolfi Node package')
 assert(!controllerDockerfile.split(' AS runtime')[1].includes('npm'), 'controller runtime must not ship npm or the TypeScript toolchain')
 assert(!mlDockerfile.split(' AS runtime')[1].includes('gcc g++'), 'ML runtime must not ship C/C++ compilers')
 assert(!executionDockerfile.split(' AS runtime')[1].includes('pip install'), 'execution runtime must not install packages or retain a build step')

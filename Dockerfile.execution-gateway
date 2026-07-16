@@ -1,16 +1,21 @@
-FROM python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba AS dependencies
+ARG WOLFI_BASE=cgr.dev/chainguard/wolfi-base@sha256:02dab76bd852a70556b5b2002195c8a5fdab77d323c433bf6642aab080489795
+
+FROM ${WOLFI_BASE} AS dependencies
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN python -m venv /opt/venv \
+RUN apk add --no-cache \
+        python-3.11=3.11.15-r8 \
+        py3.11-pip=26.1.2-r1 \
+    && python3.11 -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --no-cache-dir --upgrade pip==26.1.2 setuptools==83.0.0
 
 COPY ml-controller/requirements-execution-gateway.txt /tmp/requirements.txt
 RUN /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt \
     && rm -f /tmp/requirements.txt
 
-FROM python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba AS runtime
+FROM ${WOLFI_BASE} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -20,24 +25,25 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN groupadd --system stockvision \
-    && useradd --system --gid stockvision --home-dir /app stockvision
+RUN apk add --no-cache python-3.11=3.11.15-r8 \
+    && addgroup -S -g 10001 stockvision \
+    && adduser -S -D -H -u 10001 -G stockvision stockvision
 
 COPY --from=dependencies /opt/venv /opt/venv
 
-COPY --chown=stockvision:stockvision ml-controller/execution_gateway_app.py /app/execution_gateway_app.py
-COPY --chown=stockvision:stockvision ml-controller/services/__init__.py /app/services/__init__.py
-COPY --chown=stockvision:stockvision ml-controller/services/broker_execution_contract.py /app/services/broker_execution_contract.py
-COPY --chown=stockvision:stockvision ml-controller/services/broker_execution_repository.py /app/services/broker_execution_repository.py
-COPY --chown=stockvision:stockvision ml-controller/services/execution_d1_client.py /app/services/execution_d1_client.py
-COPY --chown=stockvision:stockvision ml-controller/services/execution_snapshot_revalidator.py /app/services/execution_snapshot_revalidator.py
-COPY --chown=stockvision:stockvision ml-controller/services/finlab_execution_adapter.py /app/services/finlab_execution_adapter.py
-COPY --chown=stockvision:stockvision ml-controller/services/finlab_execution_gateway.py /app/services/finlab_execution_gateway.py
-COPY --chown=stockvision:stockvision ml-controller/services/finlab_execution_shadow_service.py /app/services/finlab_execution_shadow_service.py
-COPY --chown=stockvision:stockvision ml-controller/services/finlab_execution_preview_service.py /app/services/finlab_execution_preview_service.py
-COPY --chown=stockvision:stockvision ml-controller/services/finlab_live_submit_service.py /app/services/finlab_live_submit_service.py
-COPY --chown=stockvision:stockvision ml-controller/services/finlab_sinopac_l5_market_data.py /app/services/finlab_sinopac_l5_market_data.py
-COPY --chown=stockvision:stockvision ml-controller/services/kv_client.py /app/services/kv_client.py
+COPY --chown=10001:10001 ml-controller/execution_gateway_app.py /app/execution_gateway_app.py
+COPY --chown=10001:10001 ml-controller/services/__init__.py /app/services/__init__.py
+COPY --chown=10001:10001 ml-controller/services/broker_execution_contract.py /app/services/broker_execution_contract.py
+COPY --chown=10001:10001 ml-controller/services/broker_execution_repository.py /app/services/broker_execution_repository.py
+COPY --chown=10001:10001 ml-controller/services/execution_d1_client.py /app/services/execution_d1_client.py
+COPY --chown=10001:10001 ml-controller/services/execution_snapshot_revalidator.py /app/services/execution_snapshot_revalidator.py
+COPY --chown=10001:10001 ml-controller/services/finlab_execution_adapter.py /app/services/finlab_execution_adapter.py
+COPY --chown=10001:10001 ml-controller/services/finlab_execution_gateway.py /app/services/finlab_execution_gateway.py
+COPY --chown=10001:10001 ml-controller/services/finlab_execution_shadow_service.py /app/services/finlab_execution_shadow_service.py
+COPY --chown=10001:10001 ml-controller/services/finlab_execution_preview_service.py /app/services/finlab_execution_preview_service.py
+COPY --chown=10001:10001 ml-controller/services/finlab_live_submit_service.py /app/services/finlab_live_submit_service.py
+COPY --chown=10001:10001 ml-controller/services/finlab_sinopac_l5_market_data.py /app/services/finlab_sinopac_l5_market_data.py
+COPY --chown=10001:10001 ml-controller/services/kv_client.py /app/services/kv_client.py
 
 RUN python -c "import fastapi, finlab, shioaji, uvicorn"
 

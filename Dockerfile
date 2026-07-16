@@ -19,11 +19,18 @@
 #
 # Size impact: ~few MB (ml-service/app/*.py source only, no ml-service deps).
 
-FROM python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba AS python-dependencies
+ARG WOLFI_BASE=cgr.dev/chainguard/wolfi-base@sha256:02dab76bd852a70556b5b2002195c8a5fdab77d323c433bf6642aab080489795
+
+FROM ${WOLFI_BASE} AS python-dependencies
 
 WORKDIR /app
 
-RUN python -m venv /opt/venv \
+RUN apk add --no-cache \
+        python-3.11=3.11.15-r8 \
+        python-3.11-dev=3.11.15-r8 \
+        py3.11-pip=26.1.2-r1 \
+        build-base=1-r9 \
+    && python3.11 -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --no-cache-dir --upgrade pip==26.1.2 setuptools==83.0.0
 
 COPY ml-controller/requirements.txt /tmp/requirements.txt
@@ -32,7 +39,7 @@ RUN /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt \
 
 # Worker screener job runtime. The Cloud Run Job compiles and runs the same
 # TypeScript screener code with D1/KV REST adapters instead of Worker bindings.
-FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS worker-build
+FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS worker-build
 
 WORKDIR /app/worker
 COPY worker/package.json worker/package-lock.json ./
@@ -40,7 +47,7 @@ RUN npm ci
 COPY worker/ ./
 RUN ./node_modules/.bin/tsc -p tsconfig.json --noEmit false --rootDir src --outDir /app/worker-dist --module commonjs --moduleResolution node --ignoreDeprecations 6.0
 
-FROM python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba AS runtime
+FROM ${WOLFI_BASE} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -50,8 +57,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN apk add --no-cache \
+        python-3.11=3.11.15-r8 \
+        nodejs-24=24.18.0-r2 \
+        libstdc++=16.1.0-r4
+
 COPY --from=python-dependencies /opt/venv /opt/venv
-COPY --from=worker-build /usr/local/bin/node /usr/local/bin/node
 COPY --from=worker-build /app/worker-dist /app/worker-dist
 
 RUN node --version \
@@ -82,8 +93,9 @@ COPY tools/feature_strategy_overlap_numeric.py /app/tools/feature_strategy_overl
 
 # Runtime containers never need root. Keep application-owned output paths
 # writable for Cloud Run Jobs while preserving read-only source semantics.
-RUN useradd --create-home --uid 10001 stockvision \
-    && chown -R stockvision:stockvision /app
+RUN addgroup -S -g 10001 stockvision \
+    && adduser -S -D -H -u 10001 -G stockvision stockvision \
+    && chown -R 10001:10001 /app
 USER stockvision
 
 EXPOSE 8080

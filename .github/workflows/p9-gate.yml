@@ -107,6 +107,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Verify controller Worker emit on Linux
+        if: matrix.component == 'controller'
+        working-directory: worker
+        shell: bash
+        run: |
+          npm ci
+          set +e
+          output=$(./node_modules/.bin/tsc -p tsconfig.json --noEmit false --rootDir src --outDir /tmp/worker-dist --module commonjs --moduleResolution node --ignoreDeprecations 6.0 --pretty false 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [[ $status -ne 0 ]]; then
+            while IFS= read -r line; do
+              if [[ "$line" == *"error TS"* ]]; then
+                escaped=${line//'%'/'%25'}
+                escaped=${escaped//$'\r'/'%0D'}
+                escaped=${escaped//$'\n'/'%0A'}
+                echo "::error title=Linux TypeScript emit::$escaped"
+              fi
+            done <<< "$output"
+            exit "$status"
+          fi
+
       - name: Resolve immutable image coordinates
         id: image
         shell: bash

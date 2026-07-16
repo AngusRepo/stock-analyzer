@@ -325,6 +325,7 @@ export interface UpdateQueueMsg {
   shardIndex?: number // 多 shard 平行更新時的 shard index
   shardCount?: number // 多 shard 平行更新時的總 shard 數
   attempt?: number    // finalize watchdog retry count
+  leaseRetryAttempt?: number // bounded deferred retry for serialized S12 research traffic
   force?: boolean
 }
 

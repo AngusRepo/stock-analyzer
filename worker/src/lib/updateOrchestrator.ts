@@ -42,6 +42,8 @@ const FINLAB_PENDING_WATCHDOG_STALE_MS = 15 * 60_000
 const FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS = 3
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
 const S12_REPLAY_QUEUE_CHUNK_SIZE = 250
+const S12_REPLAY_LEASE_RETRY_DELAY_SECONDS = 60
+const S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS = 20
 const FINLAB_CANONICAL_DAILY_CHECKS = [
   {
     key: 'canonical_market_daily:listed_otc',
@@ -3216,14 +3218,43 @@ export async function processUpdateBatch(
       : replayScope === 'signed_eligible_repair'
         ? await loadSignedEligibleRepairSymbolsByHistoricalDate(env.DB, triggerTime)
         : undefined
-    const result = await runS12HistoricalReplayForDate(env, triggerTime, {
-      limit: S12_REPLAY_QUEUE_CHUNK_SIZE,
-      offset: dynamicCohortScope ? 0 : offset,
-      persist: true,
-      symbols: cohortSymbols,
-      maturityAsOfDate,
-      signedEligibleRepair: replayScope === 'signed_eligible_repair',
-    })
+    let result
+    try {
+      result = await runS12HistoricalReplayForDate(env, triggerTime, {
+        limit: S12_REPLAY_QUEUE_CHUNK_SIZE,
+        offset: dynamicCohortScope ? 0 : offset,
+        persist: true,
+        symbols: cohortSymbols,
+        maturityAsOfDate,
+        signedEligibleRepair: replayScope === 'signed_eligible_repair',
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.startsWith('s12_research_lease_busy:')) throw error
+      const leaseRetryAttempt = Math.max(0, Number((msg as any).leaseRetryAttempt ?? 0))
+      if (leaseRetryAttempt >= S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS) {
+        await logSchedulerResult(env.KV, 's12-replay-backfill', {
+          status: 'error',
+          summary: `date=${triggerTime} scope=${replayScope} research lease remained busy after ${leaseRetryAttempt} deferred attempts`,
+          duration_ms: 0,
+          run_id: runId,
+          run_date: statusRunDate,
+        }, env)
+        return
+      }
+      await env.UPDATE_QUEUE.send({
+        ...(msg as any),
+        leaseRetryAttempt: leaseRetryAttempt + 1,
+      }, { delaySeconds: S12_REPLAY_LEASE_RETRY_DELAY_SECONDS } as any)
+      await logSchedulerResult(env.KV, 's12-replay-backfill', {
+        status: 'running',
+        summary: `date=${triggerTime} scope=${replayScope} research lease busy; deferred_attempt=${leaseRetryAttempt + 1}/${S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS} delay_seconds=${S12_REPLAY_LEASE_RETRY_DELAY_SECONDS}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: statusRunDate,
+      }, env)
+      return
+    }
     const nextOffset = dynamicCohortScope
       ? 0
       : offset + Math.max(0, Number(result.attempted ?? 0))

@@ -13,7 +13,10 @@ from typing import Callable, Iterable
 import numpy as np
 
 
-SEQUENCE_RETURN_SEMANTIC_VERSION = "next-session-open-to-fifth-session-close-v2"
+SEQUENCE_RETURN_SEMANTIC_VERSION = (
+    "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+)
+CANONICAL_ROUNDTRIP_COST_BPS = 18.0
 
 
 @dataclass(frozen=True)
@@ -157,7 +160,10 @@ def build_sequence_window_dataset(
                 "last_close": last_close,
                 "entry_open": entry_open,
                 "target_close": target_close,
-                "forward_return": (target_close - entry_open) / max(entry_open, 1e-9),
+                "forward_return": (
+                    (target_close - entry_open) / max(entry_open, 1e-9)
+                    - CANONICAL_ROUNDTRIP_COST_BPS / 10000.0
+                ),
                 "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
             })
 

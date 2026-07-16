@@ -9,8 +9,21 @@ from typing import Any
 
 import numpy as np
 
+from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
+
 OOF_PREDICTION_SCHEMA_VERSION = "active8-oof-predictions-v1"
-OOF_TARGET_SEMANTIC_VERSION = "next-session-open-to-fifth-session-close-v2"
+OOF_TARGET_SEMANTIC_VERSION = SEQUENCE_RETURN_SEMANTIC_VERSION
+
+
+def canonical_market_segment(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"TWSE", "LISTED", "TW_LISTED"}:
+        return "LISTED"
+    if text in {"TPEX", "OTC", "TPEx".upper(), "TW_OTC"}:
+        return "OTC"
+    if text in {"EMERGING", "TW_EMERGING"}:
+        return "EMERGING"
+    return text
 
 
 def _clean_text_array(values: np.ndarray, *, name: str, expected: int) -> np.ndarray:
@@ -75,7 +88,12 @@ def save_oof_prediction_artifact(
         raise ValueError("oof_prediction_target_length_mismatch")
     date_values = _clean_text_array(dates, name="dates", expected=len(raw))
     symbol_values = _clean_text_array(symbols, name="symbols", expected=len(raw))
-    market_values = _clean_text_array(markets, name="markets", expected=len(raw))
+    market_values = np.asarray([
+        canonical_market_segment(value)
+        for value in _clean_text_array(markets, name="markets", expected=len(raw))
+    ], dtype=object)
+    if any(value in {"", "TW", "TW_LISTED_OTC"} for value in market_values):
+        raise ValueError("oof_market_segment_ambiguous")
     known_values = _clean_text_array(
         label_known_dates,
         name="label_known_dates",

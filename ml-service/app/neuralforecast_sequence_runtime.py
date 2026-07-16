@@ -28,7 +28,11 @@ from .prep_lineage import (
 )
 from .training_promotion_policy import resolve_training_promotion_intent
 from .research_benchmarks.common import cpcv_proxy_pbo, data_slice_report, direction_accuracy, load_sequence_dataset, rank_ic
-from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION, build_sequence_window_dataset
+from .sequence_training import (
+    CANONICAL_ROUNDTRIP_COST_BPS,
+    SEQUENCE_RETURN_SEMANTIC_VERSION,
+    build_sequence_window_dataset,
+)
 from .model_validation import build_model_cpcv_evidence
 from .artifact_contract import ArtifactValidationError, verify_artifact_bytes
 from .training_policy import build_model_feature_policy_metadata
@@ -356,6 +360,18 @@ def _train_dense_purged_oof(
     test_end = str(payload.get("test_end") or "").strip()
     if not train_end or not test_start or not test_end:
         raise ValueError("oof_sequence_split_range_missing")
+    market_map_blob = bucket.blob(f"{gcs_prefix.rstrip('/')}/prep/symbol_market.json")
+    if not market_map_blob.exists():
+        raise ValueError("oof_sequence_canonical_market_map_missing")
+    market_by_symbol = json.loads(market_map_blob.download_as_text())
+    records = [
+        {
+            **record,
+            "market_type": market_by_symbol.get(str(record.get("symbol") or "")),
+        }
+        for record in records
+        if market_by_symbol.get(str(record.get("symbol") or "")) in {"LISTED", "OTC", "EMERGING"}
+    ]
     calendar = _canonical_sequence_calendar(records)
     train_rows, panel_records, panel_report = _build_fixed_oof_panel(
         records,
@@ -405,8 +421,9 @@ def _train_dense_purged_oof(
             if uid not in pred_by_id:
                 continue
             entry_open = float(label["entry_open"])
-            predicted = (float(pred_by_id[uid]) - entry_open) / max(entry_open, 1e-9)
-            actual = (float(label["actual_last"]) - entry_open) / max(entry_open, 1e-9)
+            cost = CANONICAL_ROUNDTRIP_COST_BPS / 10000.0
+            predicted = (float(pred_by_id[uid]) - entry_open) / max(entry_open, 1e-9) - cost
+            actual = (float(label["actual_last"]) - entry_open) / max(entry_open, 1e-9) - cost
             pred_return.append(predicted)
             actual_return.append(actual)
             all_rows.append({

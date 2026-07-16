@@ -18,6 +18,7 @@ import numpy as np
 import polars as pl
 
 from .model_store import _get_bucket
+from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
 
 SCHEMA_VERSION = "finlab-long-history-sequence-prep-v2"
@@ -31,7 +32,7 @@ LANE_PRICE_FIELDS = {
     "daily_price": ("adj_close", "adj_open"),
     "emerging_price_diversity": ("close", "open"),
 }
-TARGET_SEMANTIC_VERSION = "next-session-open-to-fifth-session-close-v2"
+TARGET_SEMANTIC_VERSION = SEQUENCE_RETURN_SEMANTIC_VERSION
 
 
 class SequenceSourceMissingError(RuntimeError):

@@ -62,7 +62,7 @@ def test_oof_rank_is_same_date_same_market_and_artifact_is_immutable_payload():
         targets=np.asarray([0.03, -0.01, 0.02]),
         dates=np.asarray(["2026-06-01"] * 3),
         symbols=np.asarray(["A", "B", "C"]),
-        markets=np.asarray(["TW", "TW", "TPEX"]),
+        markets=np.asarray(["TWSE", "TWSE", "TPEX"]),
         label_known_dates=np.asarray(["2026-06-08"] * 3),
         split_metadata={"method": "test"},
     )
@@ -87,4 +87,3 @@ def test_purged_indices_use_actual_per_symbol_label_known_date():
     assert train_idx.tolist() == [0]
     assert test_idx.tolist() == [2]
     assert metadata["purge_method"] == "actual_label_known_date"
-

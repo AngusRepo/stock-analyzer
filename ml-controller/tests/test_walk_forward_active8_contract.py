@@ -85,7 +85,7 @@ def test_walk_forward_routes_long_sequence_v3_prep_into_every_oof_fold():
     assert '"sequence_gcs_prefix": req.sequence_gcs_prefix' in router_source
     assert '"sequence_batch_count": req.sequence_batch_count' in router_source
     assert "active8_oof_sequence_v3_prep_batch_missing" in modal_source
-    assert 'raw.get("target_semantic_version") == "next-session-open-to-fifth-session-close-v2"' in modal_source
+    assert "canonical-adjusted-close-net-v4" in modal_source
     assert '"version": f"{cohort_id}-w{wid}"' in modal_source
     assert 'version = payload.get("output_model_version") or payload.get("version", "v1")' in modal_source
     assert 'generation_mode=payload.get("generation_mode")' in modal_source

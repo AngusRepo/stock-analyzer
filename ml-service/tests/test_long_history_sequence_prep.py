@@ -82,7 +82,7 @@ def test_build_finlab_long_history_sequence_prep_from_local_artifact(tmp_path):
     assert result["manifest"]["summary"]["date_min"] == "2024-01-01"
     assert result["records"][0]["symbol"] == "2317"
     assert result["records"][0]["sequence_source"] == "finlab_long_history"
-    assert result["records"][0]["target_semantic_version"] == "next-session-open-to-fifth-session-close-v2"
+    assert result["records"][0]["target_semantic_version"].endswith("canonical-adjusted-close-net-v4")
 
 
 def test_build_finlab_long_history_sequence_prep_uploads_sequence_only_npz(tmp_path):

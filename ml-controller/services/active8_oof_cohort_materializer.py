@@ -19,8 +19,9 @@ from services.active8_oof_stacker import (
 from services.ev_lineage_contract import build_model_set_signature
 from services.s12_trade_ev_bootstrap import S12TradeEvBootstrapProvider
 from services.model_artifact_registry import upsert_artifact_record
+from services.evidence_contracts import LABEL_SCHEMA_VERSION
 
-TARGET_SEMANTIC_VERSION = "next-session-open-to-fifth-session-close-v2"
+TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
 
 

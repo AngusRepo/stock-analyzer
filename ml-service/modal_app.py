@@ -1920,7 +1920,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             if isinstance(raw, dict)
             and raw.get("symbol")
             and len(raw.get("dates") or []) == len(raw.get("open") or []) == len(raw.get("close") or [])
-            and raw.get("target_semantic_version") == "next-session-open-to-fifth-session-close-v2"
+            and raw.get("target_semantic_version") == "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
         )
         if valid_sequence_records < 10:
             raise ValueError("active8_oof_sequence_records_v3_insufficient")
@@ -2217,7 +2217,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "train_window_days": payload.get("train_window_days", 60),
             "test_window_days": payload.get("test_window_days", 30),
             "generation_mode": generation_mode,
-            "target_semantic_version": "next-session-open-to-fifth-session-close-v2",
+            "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
             "score_semantic_version": "same-market-same-date-percentile-rank-v1",
             "model_set": models,
             "prep_gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal"),
@@ -2374,6 +2374,29 @@ def build_finlab_long_sequence_prep(payload: dict) -> dict:
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "finlab_long_sequence_prep"}
 
 
+@app.function(
+    cpu=4,
+    memory=8192,
+    timeout=1800,
+    scaledown_window=60,
+    max_containers=1,
+)
+def rebuild_canonical_adjusted_prep(payload: dict) -> dict:
+    """Rewrite immutable Active-8 labels/ranks from canonical adjusted FinLab bars."""
+    _setup_env()
+    from app.canonical_adjusted_prep import rebuild_canonical_adjusted_prep as _rebuild
+
+    try:
+        return _rebuild(payload or {})
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "trace": traceback.format_exc()[:4000],
+            "type": "canonical_adjusted_prep",
+        }
+
+
 # 2026-04-19 ML_POOL Stage 0.2: DLinear universal training (one-shot)
 @app.function(
     gpu="L4",
@@ -2404,6 +2427,20 @@ def train_dlinear_universal(payload: dict) -> dict:
             from app.research_benchmarks.common import load_sequence_dataset
 
             sequence_records = load_sequence_dataset(payload or {}).records
+        if str(payload.get("generation_mode") or "native").strip().lower() == "purged_oof":
+            import json
+            from app.model_store import _get_bucket
+
+            prep_prefix = str(payload.get("gcs_prefix") or "").strip().rstrip("/")
+            market_blob = _get_bucket().blob(f"{prep_prefix}/prep/symbol_market.json")
+            if not market_blob.exists():
+                raise ValueError("dlinear_oof_canonical_market_map_missing")
+            market_by_symbol = json.loads(market_blob.download_as_text())
+            sequence_records = [
+                {**record, "market_type": market_by_symbol.get(str(record.get("symbol") or ""))}
+                for record in sequence_records
+                if market_by_symbol.get(str(record.get("symbol") or "")) in {"LISTED", "OTC", "EMERGING"}
+            ]
         print(
             f"[DLinearTrain] starting series={len(sequence_records)} "
             f"seq_len={payload.get('seq_len', 512)} device={device}"

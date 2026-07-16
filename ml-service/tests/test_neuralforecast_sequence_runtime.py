@@ -72,7 +72,7 @@ def test_panel_train_eval_rows_filters_short_series_before_neuralforecast_fit():
     assert stats["skipped_short_history"] == 1
     assert stats["valid_series"] == 1
     assert eval_rows[0]["entry_open"] == 136.0
-    assert eval_rows[0]["target_semantic_version"] == "next-session-open-to-fifth-session-close-v2"
+    assert eval_rows[0]["target_semantic_version"].endswith("canonical-adjusted-close-net-v4")
 
 
 def test_itransformer_full_refit_keeps_context_plus_training_horizon():

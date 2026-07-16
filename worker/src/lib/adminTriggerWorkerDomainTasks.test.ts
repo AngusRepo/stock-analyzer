@@ -54,7 +54,7 @@ const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8'
 assert.match(triggerRoutes, /'audit-json-retention'/)
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
-assert.match(updateOrchestrator, /S12_REPLAY_QUEUE_CHUNK_SIZE = 250/)
+assert.match(updateOrchestrator, /S12_REPLAY_QUEUE_CHUNK_SIZE = 20/)
 assert.match(updateOrchestrator, /msg\.type === 's12_replay_backfill_chunk'/)
 assert.match(updateOrchestrator, /runS12HistoricalReplayForDate\(env, triggerTime/)
 assert.match(updateOrchestrator, /type: 's12_replay_backfill_chunk'/)

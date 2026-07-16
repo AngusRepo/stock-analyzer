@@ -363,7 +363,7 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
 ) {
   requireController(env)
   const nextSessionDate = params.startDate === params.endDate
-    ? await nextTwTradingDate(env.KV, params.endDate)
+    ? await nextTwTradingDate(env.KV, params.endDate, env.DB)
     : undefined
 
   const resp = await controllerFetch(env, '/allocator_ev_fusion/feature_snapshots/backfill', {

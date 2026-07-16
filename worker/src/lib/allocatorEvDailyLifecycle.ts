@@ -146,10 +146,12 @@ export async function inspectAllocatorSnapshotClosure(
              AND p.prediction_date < date(dr.date, '+1 day')
              AND p.model_name = 'ensemble'
              AND p.forecast_data IS NOT NULL
-             AND next_session.session_date IS NOT NULL
              AND (
                date(datetime(p.generated_at, '+8 hours')) <= substr(p.prediction_date, 1, 10)
-               OR datetime(p.generated_at) < datetime(next_session.session_date || ' 01:00:00')
+               OR (
+                 next_session.session_date IS NOT NULL
+                 AND datetime(p.generated_at) < datetime(next_session.session_date || ' 01:00:00')
+               )
              )
         ) THEN 1 ELSE 0 END), 0) AS row_count
         FROM daily_recommendations dr

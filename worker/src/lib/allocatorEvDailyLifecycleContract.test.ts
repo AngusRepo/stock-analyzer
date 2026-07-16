@@ -17,6 +17,7 @@ assert(lifecycle.includes('inspectAllocatorSnapshotClosure'), 'watchdog must ver
 assert(lifecycle.includes('runNativeLineageRows === expectedRows'), 'native daily snapshot closure must reject silently skipped lineage rows')
 assert(lifecycle.includes("json_extract(dr.score_components, '$.version') = 'score_v2'"), 'filtered audit placeholders must stay outside the learning snapshot cohort')
 assert(lifecycle.includes("datetime(p.generated_at) < datetime(next_session.session_date || ' 01:00:00')"), 'native lineage readback must enforce prediction creation before next-session open')
+assert(!lifecycle.includes("AND next_session.session_date IS NOT NULL\n             AND ("), 'same-signal-day native lineage must not require a future close row')
 assert(lifecycle.includes('allocator_ev_missing_point_in_time_lineage'), 'recommendations without legal immutable prediction lineage must fail visibly')
 assert(lifecycle.includes('reconstructedLineageRows === 0'), 'native daily snapshot closure must not accept reconstructed lineage')
 assert(lifecycle.includes('rejectedLineageRows === 0'), 'native daily snapshot closure must not accept rejected lineage')

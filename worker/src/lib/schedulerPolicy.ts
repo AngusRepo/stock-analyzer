@@ -261,8 +261,13 @@ export async function isTwHoliday(kv: KVNamespace, twDate: string): Promise<bool
   return Boolean(cached?.dates?.includes(twDate))
 }
 
-export async function nextTwTradingDate(kv: KVNamespace, afterDate: string): Promise<string> {
+export async function nextTwTradingDate(
+  kv: KVNamespace,
+  afterDate: string,
+  db?: D1Database,
+): Promise<string> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(afterDate)) throw new Error(`invalid trading calendar date: ${afterDate}`)
+  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   let candidate = new Date(`${afterDate}T00:00:00.000Z`)
   for (let offset = 1; offset <= 15; offset += 1) {
     candidate = new Date(candidate.getTime() + 86400_000)
@@ -270,6 +275,17 @@ export async function nextTwTradingDate(kv: KVNamespace, afterDate: string): Pro
     const weekday = candidate.getUTCDay()
     if (weekday === 0 || weekday === 6) continue
     if (await isTwHoliday(kv, date)) continue
+    if (db && date < today) {
+      const actualSession = await db.prepare(`
+        SELECT 1 AS present
+          FROM canonical_market_daily
+         WHERE stock_id = '0050'
+           AND source = 'finlab.price'
+           AND date(date) = date(?)
+         LIMIT 1
+      `).bind(date).first<{ present?: number }>()
+      if (Number(actualSession?.present ?? 0) !== 1) continue
+    }
     return date
   }
   throw new Error(`next TWSE trading session unresolved after ${afterDate}`)

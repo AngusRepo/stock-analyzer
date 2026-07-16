@@ -69,7 +69,7 @@ assert.match(updateOrchestrator, /loadSignedEligibleRepairSymbolsByHistoricalDat
 assert.match(updateOrchestrator, /signedEligibleRepair: replayScope === 'signed_eligible_repair'/)
 assert.match(updateOrchestrator, /signed replay made no strict-eligible lineage progress/)
 assert.match(updateOrchestrator, /S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS = 60/)
-assert.match(updateOrchestrator, /S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS = 900/)
+assert.match(updateOrchestrator, /S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS = 180/)
 assert.match(updateOrchestrator, /S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS = 60/)
 assert.match(updateOrchestrator, /s12ReplayLeaseRetryDelaySeconds/)
 assert.match(updateOrchestrator, /s12_research_lease_busy:/)

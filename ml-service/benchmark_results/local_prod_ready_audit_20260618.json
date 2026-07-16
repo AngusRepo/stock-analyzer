@@ -56,7 +56,12 @@
     {
       "id": "scheduler_sync:dry_run_uses_remote_state",
       "status": "pass",
-      "detail": "GCP Scheduler dry-run reads remote job state and does not require production scheduler secrets"
+      "detail": "GCP Scheduler dry-run reads remote job state and uses a non-secret OIDC identity placeholder"
+    },
+    {
+      "id": "scheduler_sync:no_static_auth_token",
+      "status": "pass",
+      "detail": "GCP Scheduler sync must not persist a shared bearer token in job configuration"
     },
     {
       "id": "scheduler_sync:no_dryrun_exists_shortcut",
@@ -89,12 +94,17 @@
       "detail": "reviewed official/stable runtime pin is present"
     },
     {
-      "id": "runtime_pin:torch==2.12.0",
+      "id": "runtime_pin:torch==2.13.0",
       "status": "pass",
       "detail": "reviewed official/stable runtime pin is present"
     },
     {
       "id": "runtime_pin:torch-geometric==2.8.0",
+      "status": "pass",
+      "detail": "reviewed official/stable runtime pin is present"
+    },
+    {
+      "id": "runtime_pin:pytorch-lightning==2.6.1",
       "status": "pass",
       "detail": "reviewed official/stable runtime pin is present"
     },
@@ -149,9 +159,9 @@
       "detail": "reviewed Worker/meta runtime pin is present (actual=4.12.25)"
     },
     {
-      "id": "worker_runtime_pin:wrangler==4.100.0",
+      "id": "worker_runtime_pin:wrangler==4.110.0",
       "status": "pass",
-      "detail": "reviewed Worker/meta runtime pin is present (actual=4.100.0)"
+      "detail": "reviewed Worker/meta runtime pin is present (actual=4.110.0)"
     },
     {
       "id": "worker_runtime_pin:typescript==6.0.3",
@@ -821,7 +831,7 @@
     {
       "id": "roadmap:p12:cutover_remote_summary_present",
       "status": "pass",
-      "detail": "P12 packet carries remote preflight summary separately from local readiness"
+      "detail": "P12-scoped packet carries remote preflight summary separately from local and real-trading readiness"
     },
     {
       "id": "roadmap:p12:remote_preflight_non_mutating",
@@ -916,7 +926,17 @@
     {
       "id": "realtime:p0:worker_live_submit_triple_guard_reconcile",
       "status": "pass",
-      "detail": "Worker live client requires three explicit controls and reconciles unknown submit without automatic retry"
+      "detail": "Worker live client requires three explicit controls, uses the controller relay and reconciles unknown submit without automatic retry"
+    },
+    {
+      "id": "realtime:p0:worker_cannot_bypass_iam_relay",
+      "status": "pass",
+      "detail": "Worker has no direct private Gateway URL or application token path"
+    },
+    {
+      "id": "realtime:p0:controller_live_relay_google_iam_single_attempt",
+      "status": "pass",
+      "detail": "general controller adds Google IAM and never retries an ambiguous broker submit"
     },
     {
       "id": "realtime:p0:live_submit_disabled_local_baseline",

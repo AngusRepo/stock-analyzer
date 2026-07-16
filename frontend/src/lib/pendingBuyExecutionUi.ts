@@ -20,6 +20,14 @@ export interface S12HoldingDefenseContext {
   trailing_stop_after?: unknown
   created_at?: unknown
   detail?: any
+  execution?: {
+    status?: unknown
+    reason?: unknown
+    attempt_count?: unknown
+    first_attempted_at?: unknown
+    last_attempted_at?: unknown
+    required_lot_types?: unknown
+  } | null
 }
 
 export interface CanonicalTradeLifecycleContext {
@@ -483,15 +491,24 @@ export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionB
   const waitingOddLotBook = action === 'quote_unavailable' &&
     requiredLotTypes.includes('odd_lot') &&
     item.detail?.holding_defense?.odd_lot_book_available === false
+  const exitExecutionPending = item.execution?.status === 'pending' && ['full_exit', 'take_profit'].includes(action)
+  const exitExecutionReason = String(item.execution?.reason ?? '').trim()
+  const exitAttemptCount = Math.max(1, Math.floor(Number(item.execution?.attempt_count ?? 1)))
   const before = item.trailing_stop_before ?? item.detail?.holding_defense?.trailing_stop_before ?? null
   const after = item.trailing_stop_after ?? item.detail?.holding_defense?.trailing_stop_after ?? null
-  const detail = item.detail?.detail ? formatS12Detail(String(item.detail.detail)) : ''
+  // Entry/structure maturity remains useful context for monitoring, but it must
+  // never look like a prerequisite after a position exit has already fired.
+  const detail = ['full_exit', 'take_profit'].includes(action)
+    ? ''
+    : item.detail?.detail ? formatS12Detail(String(item.detail.detail)) : ''
   const completedBars = item.detail?.completedBars ?? {}
   const hasNoCompletedBars = Number(completedBars.m15 ?? 0) <= 0 && Number(completedBars.h1 ?? 0) <= 0 && Number(completedBars.h4 ?? 0) <= 0
   const h4Source = String(item.detail?.h4Source ?? item.detail?.h4_source ?? '').trim()
   const insufficientData = reason === 's12_holding_defense_unavailable' || hasNoCompletedBars || reason === 's12_waiting_15m_completed_bars'
   const label = active
-    ? action === 'take_profit'
+    ? exitExecutionPending
+      ? action === 'full_exit' ? 'S12 出場已觸發，等待成交' : 'S12 停利已觸發，等待成交'
+      : action === 'take_profit'
       ? decisionReason.includes('tp2') || decisionReason.includes('full')
         ? 'S12 持倉主出場'
         : 'S12 持倉部分停利'
@@ -515,12 +532,21 @@ export function formatS12HoldingDefenseBadge(raw: unknown): PendingBuyExecutionB
     : action
     ? `動作：${S12_DEFENSE_ACTION_LABELS[action] ?? action}`
     : null
+  const executionText = exitExecutionPending
+    ? exitExecutionReason.includes('odd_lot')
+      ? `執行：等待盤中零股 BidAsk，自動重試中（第 ${exitAttemptCount} 次）`
+      : exitExecutionReason.includes('stale') || exitExecutionReason.includes('snapshot_not_ready')
+        ? `執行：等待新鮮五檔，自動重試中（第 ${exitAttemptCount} 次）`
+        : `執行：等待可成交五檔，自動重試中（第 ${exitAttemptCount} 次）`
+    : action === 'full_exit'
+      ? '執行：出場決策已成立，等待 execution layer 確認'
+      : null
   return {
     label,
     tone: active
       ? action === 'quote_unavailable' ? 'error' : 'warn'
       : insufficientData ? 'warn' : s12Tone(reason || status),
-    description: [actionText, stopText, detail].filter(Boolean).join('；') || humanizeExecutionReason(reason || status || 's12_structure_advisory_waiting'),
+    description: [actionText, executionText, stopText, detail].filter(Boolean).join('；') || humanizeExecutionReason(reason || status || 's12_structure_advisory_waiting'),
   }
 }
 

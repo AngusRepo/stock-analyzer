@@ -28,6 +28,12 @@ timeout/process-replacement policy. No request handler may call
 `api.snapshots()` or `api.kbars()`. Historical kbar and research traffic belongs
 to a separate research service/job and cannot share this broker session.
 
+The in-process completed 1-minute bar cache is intentionally ephemeral. The
+Worker incrementally checkpoints completed OHLCV bars into the skinny
+`intraday_minute_bars` D1 table and merges that canonical current-session
+lineage after a Cloud Run revision restart. The execution Hub must not perform
+D1/R2 writes or restore historical research bars into the broker session.
+
 An unchanged orderbook is execution-confirmed only when its subscription and
 session epoch still match the active Shioaji quote session. Shioaji system event
 codes `1`, `2`, and `12` immediately fail-close quote execution; codes `0` and

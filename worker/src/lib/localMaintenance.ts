@@ -162,6 +162,10 @@ export async function runWeeklyCleanup(env: Bindings): Promise<MaintenanceRunRes
     'alert_notifications_ephemeral',
     "DELETE FROM alert_notifications WHERE created_at < datetime('now', '-1 year')",
   )
+  await run(
+    'intraday_minute_bar_continuity_90d',
+    "DELETE FROM intraday_minute_bars WHERE trade_date < date('now', '-90 days')",
+  )
 
   const result = { ok: tasks.every((task) => task.ok), tasks }
   console.log(`[CleanupV2] completed ok=${result.ok} tasks=${tasks.length}`)

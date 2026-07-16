@@ -1,5 +1,6 @@
 import {
   filterS12KbarsToTradeDate,
+  mergeS12CurrentSessionBars,
   normalizeS12KbarSessionTimeSkew,
 } from './s12RuntimeBars'
 import type { IntradayRollingBar } from './intradayTechnicalSnapshot'
@@ -7,6 +8,26 @@ import { readFileSync } from 'node:fs'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
+}
+
+{
+  const canonical = [
+    bar('2026-07-16T01:00:00.000Z'),
+    bar('2026-07-16T01:01:00.000Z'),
+    bar('2026-07-16T05:15:00.000Z'),
+  ]
+  const postRestartHub = [
+    bar('2026-07-16T05:16:00.000Z'),
+    bar('2026-07-16T05:17:00.000Z'),
+  ]
+  const currentEvent = [
+    bar('2026-07-16T05:17:00.000Z'),
+    bar('2026-07-16T05:18:00.000Z'),
+  ]
+  const merged = mergeS12CurrentSessionBars(canonical, postRestartHub, currentEvent)
+  assert(merged.length === 6, 'canonical minute bars must bridge a Hub revision restart without duplicate buckets')
+  assert(merged[0].startMs === canonical[0].startMs, 'restart continuity must preserve the market-open lineage')
+  assert(merged[merged.length - 1].startMs === currentEvent[1].startMs, 'current incomplete event bar may extend the completed canonical lineage')
 }
 
 function bar(iso: string): IntradayRollingBar {

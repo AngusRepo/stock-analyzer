@@ -713,6 +713,7 @@ paper.get('/positions', async (c) => {
 // Tier 2: DB end-of-day OHLCV fallback by symbol.
   let totalPositionValue = 0
   const s12HoldingDefenseMap = new Map<string, any>()
+  const pendingExitExecutionMap = new Map<string, any>()
   const canonicalLifecycleMap = new Map<string, any>()
   const buyOrderNoteMap = new Map<string, unknown>()
   const marketBySymbol = new Map<string, string>()
@@ -756,6 +757,41 @@ paper.get('/positions', async (c) => {
           action: detail?.holding_defense?.action ?? null,
           trailing_stop_before: detail?.holding_defense?.trailing_stop_before ?? null,
           trailing_stop_after: detail?.holding_defense?.trailing_stop_after ?? null,
+        })
+      }
+
+      const { results: pendingExitEvents } = await c.env.DB.prepare(`
+        SELECT symbol, status, reason, detail_json, created_at
+          FROM paper_execution_events
+         WHERE account_id = ?
+           AND symbol IN (${placeholders})
+           AND side = 'sell'
+           AND event_type = 'paper_order'
+           AND status = 'pending'
+           AND source IN ('intraday_exit', 'intraday_tp1')
+         ORDER BY id DESC
+         LIMIT 80
+      `).bind(ACCOUNT_ID, ...symbols).all<any>()
+      for (const event of pendingExitEvents ?? []) {
+        const symbol = String(event.symbol ?? '').trim()
+        if (!symbol || pendingExitExecutionMap.has(symbol)) continue
+        let detail: any = null
+        try {
+          detail = event.detail_json ? JSON.parse(event.detail_json) : null
+        } catch {
+          detail = null
+        }
+        pendingExitExecutionMap.set(symbol, {
+          status: event.status ?? 'pending',
+          reason: event.reason ?? null,
+          created_at: event.created_at ?? null,
+          attempt_count: Number(detail?.attempt_count ?? 1),
+          first_attempted_at: detail?.first_attempted_at ?? event.created_at ?? null,
+          last_attempted_at: detail?.last_attempted_at ?? event.created_at ?? null,
+          latest_attempt: detail?.latest_attempt ?? null,
+          required_lot_types: Array.isArray(detail?.order_legs)
+            ? detail.order_legs.map((leg: any) => String(leg?.lotType ?? leg?.lot_type ?? '')).filter(Boolean)
+            : [],
         })
       }
 
@@ -848,7 +884,12 @@ paper.get('/positions', async (c) => {
       s12_near_pressure_price: fusionTargets.nearPressureTp1 ? Math.round(fusionTargets.nearPressureTp1 * 10) / 10 : null,
       s12_near_pressure_source: fusionTargets.nearPressureTp1Source,
       tp1_hit:          !!pos.tp1_hit,
-      s12_holding_defense: s12HoldingDefenseMap.get(pos.symbol) ?? null,
+      s12_holding_defense: s12HoldingDefenseMap.has(pos.symbol)
+        ? {
+            ...s12HoldingDefenseMap.get(pos.symbol),
+            execution: pendingExitExecutionMap.get(pos.symbol) ?? null,
+          }
+        : null,
       canonical_trade_lifecycle: canonicalLifecycle,
     }
   }))

@@ -23,6 +23,7 @@ interface S12KbarRow {
 
 export type S12BaseBarSource =
   | 'shioaji_kbars_usable'
+  | 'canonical_minute_bar_continuity'
   | 'shioaji_kbars_unusable_fallback_event_history'
   | 'event_history_only'
 
@@ -60,6 +61,11 @@ export interface S12BaseBarDiagnostics {
   kbars_error: string | null
   kbars_provider?: string | null
   kbars_cache_hit?: boolean
+  canonical_minute_bars_count?: number
+  canonical_minute_bars_latest_tw?: string | null
+  canonical_minute_bars_appended?: number
+  canonical_minute_bar_continuity_restored?: boolean
+  canonical_minute_bar_error?: string | null
 }
 
 const H1_MS = 60 * 60_000
@@ -168,6 +174,102 @@ export function normalizeS12KbarSessionTimeSkew(bars: IntradayRollingBar[]): {
 
 function twDateText(ms: number): string {
   return new Date(ms + TW_OFFSET_MS).toISOString().slice(0, 10)
+}
+
+function mergeMinuteBars(...sources: IntradayRollingBar[][]): IntradayRollingBar[] {
+  const byStart = new Map<number, IntradayRollingBar>()
+  for (const bars of sources) {
+    for (const bar of bars) {
+      if (!Number.isFinite(bar.startMs)) continue
+      byStart.set(bar.startMs, bar)
+    }
+  }
+  return [...byStart.values()].sort((left, right) => left.startMs - right.startMs)
+}
+
+export function mergeS12CurrentSessionBars(
+  canonicalBars: IntradayRollingBar[],
+  hubBars: IntradayRollingBar[],
+  eventBars: IntradayRollingBar[],
+): IntradayRollingBar[] {
+  const completedBars = mergeMinuteBars(canonicalBars, hubBars)
+  const latestCompletedMs = completedBars[completedBars.length - 1]?.startMs ?? Number.NEGATIVE_INFINITY
+  return mergeMinuteBars(completedBars, eventBars.filter((bar) => bar.startMs > latestCompletedMs))
+}
+
+async function loadCanonicalIntradayMinuteBars(
+  env: Pick<Bindings, 'DB'>,
+  symbol: string,
+  tradeDate: string,
+): Promise<{ bars: IntradayRollingBar[]; error: string | null }> {
+  try {
+    const { results } = await env.DB.prepare(`
+      SELECT minute_start, open, high, low, close, volume
+        FROM intraday_minute_bars
+       WHERE trade_date = ? AND symbol = ?
+       ORDER BY minute_start ASC
+    `).bind(tradeDate, symbol).all<{
+      minute_start: string
+      open: number
+      high: number
+      low: number
+      close: number
+      volume: number
+    }>()
+    const bars = (results ?? []).map((row) => ({
+      startMs: Date.parse(row.minute_start),
+      open: Number(row.open),
+      high: Number(row.high),
+      low: Number(row.low),
+      close: Number(row.close),
+      volume: Math.max(0, Number(row.volume ?? 0)),
+    })).filter((bar) => (
+      Number.isFinite(bar.startMs) &&
+      [bar.open, bar.high, bar.low, bar.close].every((value) => Number.isFinite(value) && value > 0)
+    ))
+    return { bars, error: null }
+  } catch (error) {
+    return { bars: [], error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+async function appendCanonicalIntradayMinuteBars(
+  env: Pick<Bindings, 'DB'>,
+  symbol: string,
+  tradeDate: string,
+  bars: IntradayRollingBar[],
+  latestPersistedMs: number | null,
+): Promise<{ appended: number; error: string | null }> {
+  const completed = bars.filter((bar) => (
+    twDateText(bar.startMs) === tradeDate &&
+    isTwSessionTime(bar.startMs) &&
+    (latestPersistedMs == null || bar.startMs > latestPersistedMs)
+  ))
+  if (completed.length === 0) return { appended: 0, error: null }
+  let appended = 0
+  try {
+    for (let offset = 0; offset < completed.length; offset += 50) {
+      const chunk = completed.slice(offset, offset + 50)
+      const results = await env.DB.batch(chunk.map((bar) => env.DB.prepare(`
+        INSERT OR IGNORE INTO intraday_minute_bars
+          (trade_date, symbol, minute_start, open, high, low, close, volume, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'shioaji_streaming_tick_accumulator')
+      `).bind(
+        tradeDate,
+        symbol,
+        new Date(bar.startMs).toISOString(),
+        bar.open,
+        bar.high,
+        bar.low,
+        bar.close,
+        Math.max(0, Math.floor(Number(bar.volume ?? 0))),
+      )))
+      appended += results.reduce((sum, result) => sum + Number(result.meta?.changes ?? 0), 0)
+    }
+    return { appended, error: null }
+  } catch (error) {
+    return { appended, error: error instanceof Error ? error.message : String(error) }
+  }
 }
 
 export function filterS12KbarsToTradeDate(bars: IntradayRollingBar[], tradeDate: string): {
@@ -751,18 +853,21 @@ export async function loadS12IntradayBaseBars(
   source: S12BaseBarSource
   diagnostics: S12BaseBarDiagnostics
 }> {
-  const eventBars = await loadIntradayTechnicalRollingBars(
-    env,
-    symbol,
-    tradeDate,
-    currentPrice,
-    currentTotalVolume,
-    {
-      intervalMs: optionalPositiveNumber((env as any).S12_INTRADAY_BASE_BAR_INTERVAL_MS, 60_000),
-      lookback: optionalPositiveNumber((env as any).S12_INTRADAY_BAR_LOOKBACK, 720),
-    },
-  )
-  const previousDaily = await loadPreviousTradingDayContext(env, symbol, tradeDate)
+  const [eventBars, previousDaily, canonicalMinuteBars] = await Promise.all([
+    loadIntradayTechnicalRollingBars(
+      env,
+      symbol,
+      tradeDate,
+      currentPrice,
+      currentTotalVolume,
+      {
+        intervalMs: optionalPositiveNumber((env as any).S12_INTRADAY_BASE_BAR_INTERVAL_MS, 60_000),
+        lookback: optionalPositiveNumber((env as any).S12_INTRADAY_BAR_LOOKBACK, 720),
+      },
+    ),
+    loadPreviousTradingDayContext(env, symbol, tradeDate),
+    loadCanonicalIntradayMinuteBars(env, symbol, tradeDate),
+  ])
   let diagnostics: S12BaseBarDiagnostics = {
     raw_kbars_count: 0,
     parsed_kbars_count: 0,
@@ -794,6 +899,11 @@ export async function loadS12IntradayBaseBars(
     previous_session_kbars_first_tw: null,
     previous_session_kbars_last_tw: null,
     kbars_error: null,
+    canonical_minute_bars_count: canonicalMinuteBars.bars.length,
+    canonical_minute_bars_latest_tw: twTimeText(canonicalMinuteBars.bars[canonicalMinuteBars.bars.length - 1]?.startMs),
+    canonical_minute_bars_appended: 0,
+    canonical_minute_bar_continuity_restored: false,
+    canonical_minute_bar_error: canonicalMinuteBars.error,
   }
   let previousSessionBars: IntradayRollingBar[] = []
   try {
@@ -804,7 +914,12 @@ export async function loadS12IntradayBaseBars(
       ...kbars.diagnostics,
     }
     if (kbars.bars.length > 0 && diagnostics.kbars_unusable_reason == null) {
-      const bars = [...kbars.bars, ...eventBars].sort((a, b) => a.startMs - b.startMs)
+      const latestPersistedMs = canonicalMinuteBars.bars[canonicalMinuteBars.bars.length - 1]?.startMs ?? null
+      const persistence = await appendCanonicalIntradayMinuteBars(env, symbol, tradeDate, kbars.bars, latestPersistedMs)
+      const bars = mergeS12CurrentSessionBars(canonicalMinuteBars.bars, kbars.bars, eventBars)
+      const continuityRestored = canonicalMinuteBars.bars.some((bar) => (
+        kbars.bars.length === 0 || bar.startMs < kbars.bars[0].startMs
+      ))
       return {
         bars,
         fallback15mBars: previousSessionBars,
@@ -815,6 +930,9 @@ export async function loadS12IntradayBaseBars(
         diagnostics: {
           ...diagnostics,
           base_bars_count: bars.length,
+          canonical_minute_bars_appended: persistence.appended,
+          canonical_minute_bar_continuity_restored: continuityRestored,
+          canonical_minute_bar_error: persistence.error ?? canonicalMinuteBars.error,
         },
       }
     }
@@ -825,6 +943,22 @@ export async function loadS12IntradayBaseBars(
       kbars_unusable_reason: 'kbars_fetch_error',
     }
     console.warn(`[S12] kbars unavailable for ${symbol}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (canonicalMinuteBars.bars.length > 0) {
+    const bars = mergeS12CurrentSessionBars(canonicalMinuteBars.bars, [], eventBars)
+    return {
+      bars,
+      fallback15mBars: previousSessionBars,
+      fallback4hBars: [],
+      fallback1hBars: previousSessionBars,
+      fallbackDailyBars: previousDaily.bars,
+      source: 'canonical_minute_bar_continuity',
+      diagnostics: {
+        ...diagnostics,
+        base_bars_count: bars.length,
+        canonical_minute_bar_continuity_restored: true,
+      },
+    }
   }
   return {
     bars: eventBars,

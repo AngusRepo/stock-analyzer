@@ -1,4 +1,4 @@
-import { resolvePositionExitSellFill } from './paperExitTasks'
+import { mergePendingExitAttemptDetail, resolvePositionExitSellFill } from './paperExitTasks'
 
 const quoteTime = new Date().toISOString()
 
@@ -90,5 +90,40 @@ assert(depthLimitedExit.fillable, 'visible odd-lot depth must allow a partial ex
 assert(depthLimitedExit.filledShares === 200, 'partial exit must not fill more shares than visible depth')
 assert(depthLimitedExit.complete === false, 'depth-limited exit must remain incomplete for retry')
 assert(depthLimitedExit.reason === 'tw_equity_visible_depth_partial_exit', 'partial exit reason must preserve depth evidence')
+
+const staleConfirmationTime = new Date(Date.now() - 5_000).toISOString()
+const staleBook = resolvePositionExitSellFill(1000, {
+  boardLot: {
+    last: 71.7,
+    bid: 71.7,
+    ask: 71.8,
+    lotType: 'board_lot',
+    source: 'shioaji',
+    quoteTime: staleConfirmationTime,
+    confirmationTime: staleConfirmationTime,
+    bidPrices: [71.7],
+    askPrices: [71.8],
+    bidVolumes: [2],
+    askVolumes: [2],
+    volumeUnit: 'lots',
+  },
+}, { maxAgeMs: 1500 })
+assert(!staleBook.fillable, 'execution matcher must fail closed on a stale refreshed book')
+assert(staleBook.reason.includes('execution_book_stale_or_incomplete'), 'stale execution reason must remain diagnostic')
+
+const firstAttempt = mergePendingExitAttemptDetail(null, {
+  reason: staleBook.reason,
+  attemptedAt: '2026-07-16T05:17:08.000Z',
+  detail: { exit_intent_key: '1:4541:2026-07-13:2000:72.8000:full_sell' },
+})
+const secondAttempt = mergePendingExitAttemptDetail(firstAttempt, {
+  reason: 'authoritative_depth_missing',
+  attemptedAt: '2026-07-16T05:18:08.000Z',
+  detail: { snapshot_id: 'aes-retry' },
+})
+assert(secondAttempt.attempt_count === 2, 'same exit intent must accumulate retry attempts')
+assert(secondAttempt.first_attempted_at === '2026-07-16T05:17:08.000Z', 'retry must preserve the first attempt time')
+assert(secondAttempt.last_attempted_at === '2026-07-16T05:18:08.000Z', 'retry must expose the latest attempt time')
+assert(Array.isArray(secondAttempt.attempt_history) && secondAttempt.attempt_history.length === 2, 'retry history must preserve execution evidence')
 
 console.log('paperExitTasks odd-lot execution tests passed')

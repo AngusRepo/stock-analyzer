@@ -31,6 +31,8 @@ type IntradayEnv = {
   requireBrokerQuote?: boolean
   marketDataLotType?: 'board_lot' | 'odd_lot'
 }
+
+export type ExecutionOrderbookEnv = Pick<IntradayEnv, 'SHIOAJI_PROXY_URL' | 'PROXY_SERVICE_TOKEN' | 'marketDataLotType'>
 type NormalizeSnapshotOptions = { includeExecutableBook?: boolean }
 
 function proxyHeaders(env?: IntradayEnv, json = false): Record<string, string> {
@@ -410,6 +412,21 @@ async function fetchFreshOrderbookQuotes(
   }
 
   return fetchSingleOrderbookQuotes(symbols, env)
+}
+
+/**
+ * Execution-only market-data path.
+ *
+ * This intentionally returns immediately after the streaming orderbook read.
+ * Do not add monitoring snapshot fallback or OHLC enrichment here: both can
+ * make an otherwise fresh execution book expire before order matching.
+ */
+export async function batchGetExecutionOrderbooks(
+  symbols: string[],
+  env?: ExecutionOrderbookEnv,
+): Promise<Map<string, IntradayOHLC>> {
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol ?? '').trim()).filter(Boolean))]
+  return fetchFreshOrderbookQuotes(uniqueSymbols, env)
 }
 
 async function enrichMissingOrderbookQuotes(

@@ -1,4 +1,4 @@
-import { batchGetIntradayOHLC, normalizeShioajiSnapshot } from './paperIntradayData'
+import { batchGetExecutionOrderbooks, batchGetIntradayOHLC, normalizeShioajiSnapshot } from './paperIntradayData'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -76,6 +76,50 @@ function assert(condition: unknown, message: string): void {
 }
 
 async function runAsyncTests(): Promise<void> {
+  {
+    const originalFetch = globalThis.fetch
+    const calls: string[] = []
+    globalThis.fetch = (async (input: any) => {
+      const url = String(input)
+      calls.push(url)
+      if (url.endsWith('/orderbooks')) {
+        const now = new Date().toISOString()
+        return {
+          ok: true,
+          json: async () => ({
+            data: {
+              '4541': {
+                status: 'ok',
+                last: 71.7,
+                bid: 71.7,
+                ask: 71.8,
+                bid_prices: [71.7],
+                ask_prices: [71.8],
+                bid_volumes: [2],
+                ask_volumes: [2],
+                confirmed_at: now,
+                source_time: now,
+                lot_type: 'board_lot',
+              },
+            },
+          }),
+        } as Response
+      }
+      throw new Error(`execution-only path must not call ${url}`)
+    }) as any
+
+    try {
+      const books = await batchGetExecutionOrderbooks(['4541'], {
+        SHIOAJI_PROXY_URL: 'https://shioaji.local',
+        marketDataLotType: 'board_lot',
+      })
+      assert(books.get('4541')?.bid === 71.7, 'execution-only path must return the fresh orderbook')
+      assert(calls.length === 1 && calls[0].endsWith('/orderbooks'), 'execution-only path must skip slow snapshot enrichment and monitoring fallbacks')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+
   {
     const originalFetch = globalThis.fetch
     const calls: string[] = []

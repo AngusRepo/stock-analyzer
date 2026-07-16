@@ -154,23 +154,40 @@ jobs:
         env:
           IMAGE_REF: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
         run: |
-          docker buildx imagetools inspect "$IMAGE_REF" --format '{{ json (index .SBOM "linux/amd64").SPDX }}' > sbom.json
-          docker buildx imagetools inspect "$IMAGE_REF" --format '{{ json (index .Provenance "linux/amd64").SLSA }}' > provenance.json
+          docker buildx imagetools inspect "$IMAGE_REF" --format '{{ json .SBOM }}' > sbom.json
+          docker buildx imagetools inspect "$IMAGE_REF" --format '{{ json .Provenance }}' > provenance.json
           python - <<'PY'
           import json
 
-          with open("sbom.json", encoding="utf-8") as handle:
-              sbom = json.load(handle)
-          with open("provenance.json", encoding="utf-8") as handle:
-              provenance = json.load(handle)
+          def select_attestation(document, kind):
+              if not isinstance(document, dict):
+                  raise ValueError(f"{kind} document is not an object")
+              direct = document.get(kind)
+              if isinstance(direct, dict):
+                  return direct
+              platform = document.get("linux/amd64")
+              if isinstance(platform, dict) and isinstance(platform.get(kind), dict):
+                  return platform[kind]
+              raise ValueError(f"{kind} attestation is absent; top-level keys={sorted(document)}")
 
-          if not isinstance(sbom, dict) or not sbom.get("packages"):
-              raise SystemExit("SBOM attestation is missing or contains no packages")
-          if not isinstance(provenance, dict) or not provenance.get("buildType"):
-              raise SystemExit("SLSA provenance attestation is missing")
-          invocation = provenance.get("invocation")
-          if not isinstance(invocation, dict) or not invocation.get("parameters"):
-              raise SystemExit("Provenance does not contain max-mode invocation parameters")
+          with open("sbom.json", encoding="utf-8") as handle:
+              sbom_document = json.load(handle)
+          with open("provenance.json", encoding="utf-8") as handle:
+              provenance_document = json.load(handle)
+
+          try:
+              sbom = select_attestation(sbom_document, "SPDX")
+              provenance = select_attestation(provenance_document, "SLSA")
+              if not sbom.get("packages"):
+                  raise ValueError("SBOM contains no packages")
+              if not provenance.get("buildType"):
+                  raise ValueError("SLSA provenance has no buildType")
+              invocation = provenance.get("invocation")
+              if not isinstance(invocation, dict) or not invocation.get("parameters"):
+                  raise ValueError("provenance lacks max-mode invocation parameters")
+          except (TypeError, ValueError) as error:
+              print(f"::error title=Container attestation contract::{error}")
+              raise SystemExit(1) from error
           PY
 
       - name: Scan immutable ${{ matrix.component }} digest for known vulnerabilities

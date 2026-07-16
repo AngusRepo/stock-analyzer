@@ -29,8 +29,9 @@ lightgbm==4.6.0
 # 2.13 removes the former setuptools<82 resolver conflict and supports the
 # restricted weights-only deserialization policy enforced by this service.
 torch==2.13.0
-# Security floors for neuralforecast transitive runtime dependencies.
-ray==2.56.0
+# NeuralForecast auto-tuning is intentionally outside this production image.
+# The service uses explicit DLinear/PatchTST/iTransformer classes only; keeping
+# Ray would ship its unused shaded Java runtime and vulnerable Jackson classes.
 # 2.6.1 is the official safe release for CVE-2026-31221 and predates the
 # compromised 2.6.2/2.6.3 releases. NeuralForecast's stale <2.6 metadata is
 # overridden by installing its reviewed wheel with --no-deps after this base.

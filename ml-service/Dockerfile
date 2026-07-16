@@ -16,7 +16,7 @@ COPY requirements.txt requirements-neuralforecast.txt ./
 # Prefer binary wheels to keep Cloud Run source builds deterministic.
 RUN /opt/venv/bin/pip install --no-cache-dir --prefer-binary -r requirements.txt \
     && /opt/venv/bin/pip install --no-cache-dir --prefer-binary --no-deps -r requirements-neuralforecast.txt \
-    && /opt/venv/bin/python -c "import neuralforecast, pytorch_lightning; from neuralforecast.models import DLinear, PatchTST, iTransformer; assert pytorch_lightning.__version__ == '2.6.1'"
+    && /opt/venv/bin/python -c "import importlib.util, neuralforecast, pytorch_lightning; from neuralforecast.models import DLinear, PatchTST, iTransformer; assert pytorch_lightning.__version__ == '2.6.1'; assert importlib.util.find_spec('ray') is None"
 
 FROM ${WOLFI_BASE} AS runtime
 
@@ -40,7 +40,7 @@ COPY app/ ./app/
 RUN addgroup -S -g 10001 stockvision \
     && adduser -S -D -H -u 10001 -G stockvision stockvision \
     && chown -R 10001:10001 /app \
-    && python -c "import lightgbm, neuralforecast, torch, xgboost; from neuralforecast.models import DLinear, PatchTST, iTransformer"
+    && python -c "import importlib.util, lightgbm, neuralforecast, torch, xgboost; from neuralforecast.models import DLinear, PatchTST, iTransformer; assert importlib.util.find_spec('ray') is None"
 USER stockvision
 
 EXPOSE 8080

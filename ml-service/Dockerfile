@@ -16,7 +16,8 @@ COPY requirements.txt requirements-neuralforecast.txt ./
 # Prefer binary wheels to keep Cloud Run source builds deterministic.
 RUN /opt/venv/bin/pip install --no-cache-dir --prefer-binary -r requirements.txt \
     && /opt/venv/bin/pip install --no-cache-dir --prefer-binary --no-deps -r requirements-neuralforecast.txt \
-    && /opt/venv/bin/python -c "import importlib.util, neuralforecast, pytorch_lightning; from neuralforecast.models import DLinear, PatchTST, iTransformer; assert pytorch_lightning.__version__ == '2.6.1'; assert importlib.util.find_spec('ray') is None"
+    && /opt/venv/bin/python -c "from pathlib import Path; import hashlib; jar=Path('/opt/venv/lib/python3.11/site-packages/ray/jars/ray_dist.jar'); assert hashlib.sha256(jar.read_bytes()).hexdigest() == '18e8dc31664dea28d607a015184b3d4543f586c9dd41d16330e73e80b3a11e43'; jar.unlink()" \
+    && /opt/venv/bin/python -c "from pathlib import Path; import neuralforecast, pytorch_lightning, ray; from neuralforecast.models import DLinear, PatchTST, iTransformer; assert pytorch_lightning.__version__ == '2.6.1'; assert not Path(ray.__file__).with_name('jars').joinpath('ray_dist.jar').exists()"
 
 FROM ${WOLFI_BASE} AS runtime
 
@@ -40,7 +41,7 @@ COPY app/ ./app/
 RUN addgroup -S -g 10001 stockvision \
     && adduser -S -D -H -u 10001 -G stockvision stockvision \
     && chown -R 10001:10001 /app \
-    && python -c "import importlib.util, lightgbm, neuralforecast, torch, xgboost; from neuralforecast.models import DLinear, PatchTST, iTransformer; assert importlib.util.find_spec('ray') is None"
+    && python -c "from pathlib import Path; import lightgbm, neuralforecast, ray, torch, xgboost; from neuralforecast.models import DLinear, PatchTST, iTransformer; assert not Path(ray.__file__).with_name('jars').joinpath('ray_dist.jar').exists()"
 USER stockvision
 
 EXPOSE 8080

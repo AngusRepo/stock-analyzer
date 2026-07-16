@@ -396,7 +396,9 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
       inspectAllocatorSnapshotClosure,
       recordAllocatorEvLifecycle,
     } = await import('./allocatorEvDailyLifecycle')
-    const closure = await inspectAllocatorSnapshotClosure(env.DB, params.startDate)
+    const closure = await inspectAllocatorSnapshotClosure(env.DB, params.startDate, {
+      allowPointInTimeReconstruction: true,
+    })
     if (!closure.ready) {
       throw new Error(
         `allocator EV feature snapshot readback incomplete date=${params.startDate} `

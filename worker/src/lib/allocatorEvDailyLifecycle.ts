@@ -123,6 +123,7 @@ export async function recordAllocatorEvLifecycle(
 export async function inspectAllocatorSnapshotClosure(
   db: D1Database,
   businessDate: string,
+  options: { allowPointInTimeReconstruction?: boolean } = {},
 ): Promise<AllocatorSnapshotClosure> {
   if (!validDate(businessDate)) throw new Error(`invalid allocator snapshot date: ${businessDate}`)
   const [lineage, run, actual] = await Promise.all([
@@ -186,6 +187,18 @@ export async function inspectAllocatorSnapshotClosure(
   const runNativeLineageRows = Number(run?.native_lineage_rows ?? 0)
   const reconstructedLineageRows = Number(run?.reconstructed_lineage_rows ?? 0)
   const rejectedLineageRows = Number(run?.rejected_lineage_rows ?? 0)
+  const commonReady = run?.status === 'ready'
+    && expectedRows > 0
+    && publishedRows === expectedRows
+    && actualRows === expectedRows
+  const nativeReady = Number(lineage?.row_count ?? 0) === expectedRows
+    && runNativeLineageRows === expectedRows
+    && reconstructedLineageRows === 0
+    && rejectedLineageRows === 0
+  const reconstructedReady = options.allowPointInTimeReconstruction === true
+    && Number(lineage?.row_count ?? 0) >= expectedRows
+    && reconstructedLineageRows > 0
+    && runNativeLineageRows + reconstructedLineageRows === expectedRows
   return {
     businessDate,
     recommendationRows: Number(lineage?.recommendation_rows ?? 0),
@@ -197,14 +210,7 @@ export async function inspectAllocatorSnapshotClosure(
     expectedRows,
     publishedRows,
     actualRows,
-    ready: run?.status === 'ready'
-      && expectedRows > 0
-      && publishedRows === expectedRows
-      && actualRows === expectedRows
-      && Number(lineage?.row_count ?? 0) === expectedRows
-      && runNativeLineageRows === expectedRows
-      && reconstructedLineageRows === 0
-      && rejectedLineageRows === 0,
+    ready: commonReady && (nativeReady || reconstructedReady),
   }
 }
 

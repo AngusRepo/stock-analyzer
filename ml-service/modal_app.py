@@ -1904,7 +1904,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         if missing_arrays:
             raise ValueError(f"active8_oof_prep_lineage_missing:{','.join(missing_arrays)}")
         sequence_prefix = str(
-            payload.get("sequence_gcs_prefix") or "universal/sequence_long"
+            payload.get("sequence_gcs_prefix") or "universal/sequence_long/latest"
         ).strip().rstrip("/")
         sequence_blob = prep_bucket.blob(f"{sequence_prefix}/prep/batch_0.npz")
         if not sequence_blob.exists():
@@ -2222,7 +2222,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "model_set": models,
             "prep_gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal"),
             "sequence_gcs_prefix": str(
-                payload.get("sequence_gcs_prefix") or "universal/sequence_long"
+                payload.get("sequence_gcs_prefix") or "universal/sequence_long/latest"
             ),
             "sequence_batch_count": int(payload.get("sequence_batch_count") or 5),
             "model_set_signature": hashlib.sha256("|".join(models).encode("utf-8")).hexdigest(),

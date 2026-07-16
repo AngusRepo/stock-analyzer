@@ -80,7 +80,7 @@ def test_walk_forward_routes_long_sequence_v3_prep_into_every_oof_fold():
     router_source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
     modal_source = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
 
-    assert 'sequence_gcs_prefix: str = "universal/sequence_long"' in router_source
+    assert 'sequence_gcs_prefix: str = "universal/sequence_long/latest"' in router_source
     assert '"sequence_gcs_prefix": req.sequence_gcs_prefix' in router_source
     assert '"sequence_batch_count": req.sequence_batch_count' in router_source
     assert "active8_oof_sequence_v3_prep_batch_missing" in modal_source

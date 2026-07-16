@@ -34,7 +34,7 @@ class WalkForwardRequest(BaseModel):
     fs_force_refresh: bool = False   # True = re-run FS even if walk_forward/w{id}/feature_pool.json exists
     cohort_id: str | None = None
     prep_gcs_prefix: str = "universal"
-    sequence_gcs_prefix: str = "universal/sequence_long"
+    sequence_gcs_prefix: str = "universal/sequence_long/latest"
     sequence_batch_count: int = 5
 
 

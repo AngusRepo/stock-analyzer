@@ -513,6 +513,31 @@ async function recordPendingExitAttempt(
     detail: Record<string, unknown>
   },
 ): Promise<boolean> {
+  const supersededAt = new Date().toISOString()
+  await env.DB.prepare(`
+    UPDATE paper_execution_events
+       SET status = 'superseded',
+           reason = 'exit_intent_superseded_by_new_stop_version',
+           detail_json = json_set(
+             COALESCE(detail_json, '{}'),
+             '$.resolved_at', ?,
+             '$.resolution_status', 'superseded',
+             '$.superseded_by_exit_intent_key', ?
+           )
+     WHERE trade_date = ?
+       AND symbol = ?
+       AND side = 'sell'
+       AND event_type = 'paper_order'
+       AND status = 'pending'
+       AND source IN ('intraday_exit', 'intraday_tp1')
+       AND json_extract(detail_json, '$.exit_intent_key') <> ?
+  `).bind(
+    supersededAt,
+    input.intentKey,
+    input.tradeDate,
+    input.symbol,
+    input.intentKey,
+  ).run()
   const existing = await env.DB.prepare(`
     SELECT id, detail_json
       FROM paper_execution_events
@@ -584,6 +609,30 @@ async function resolvePendingExitIntent(
     new Date().toISOString(),
     input.status,
     input.orderId,
+    input.tradeDate,
+    input.symbol,
+    input.intentKey,
+  ).run()
+  await env.DB.prepare(`
+    UPDATE paper_execution_events
+       SET status = 'superseded',
+           reason = 'exit_intent_superseded_by_position_resolution',
+           detail_json = json_set(
+             COALESCE(detail_json, '{}'),
+             '$.resolved_at', ?,
+             '$.resolution_status', 'superseded',
+             '$.superseded_by_exit_intent_key', ?
+           )
+     WHERE trade_date = ?
+       AND symbol = ?
+       AND side = 'sell'
+       AND event_type = 'paper_order'
+       AND status = 'pending'
+       AND source IN ('intraday_exit', 'intraday_tp1')
+       AND json_extract(detail_json, '$.exit_intent_key') <> ?
+  `).bind(
+    new Date().toISOString(),
+    input.intentKey,
     input.tradeDate,
     input.symbol,
     input.intentKey,

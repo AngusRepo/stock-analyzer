@@ -75,9 +75,15 @@ assert(
 assert(
   exitTasks.includes('requireBestBid: true') &&
     exitTasks.includes('resolvePositionExitSellFill(requestedSellShares') &&
+    exitTasks.includes('batchGetExecutionOrderbooks') &&
     workerTasks.includes('requireBestBid: true') &&
     entryTasks.includes('requireBestBid: true'),
-  'automatic sell execution paths must require executable best bid and intraday TP1 must consume authoritative depth',
+  'automatic sell execution paths must refresh the execution-only best bid and consume authoritative depth',
+)
+assert(
+  exitTasks.includes('exit_intent_superseded_by_new_stop_version') &&
+    exitTasks.includes('exit_intent_superseded_by_position_resolution'),
+  'a newer stop-version intent or a completed position resolution must close older pending exit intents',
 )
 assert(
   readFileSync('src/lib/paperTradeMath.ts', 'utf8').includes('input.requireBestBid ?? true') &&

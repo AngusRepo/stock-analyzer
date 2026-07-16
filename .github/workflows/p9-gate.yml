@@ -210,13 +210,50 @@ jobs:
           IMAGE_REF: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          docker run --rm
-          -e TRIVY_USERNAME
-          -e TRIVY_PASSWORD
-          aquasec/trivy@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c
-          image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed=false
-          "$IMAGE_REF"
+        run: |
+          mkdir -p trivy-output
+          if ! docker run --rm \
+            -e TRIVY_USERNAME \
+            -e TRIVY_PASSWORD \
+            -v "$PWD/trivy-output:/output" \
+            aquasec/trivy@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c \
+            image --exit-code 0 --format json --output /output/trivy.json \
+            --severity HIGH,CRITICAL --ignore-unfixed=false "$IMAGE_REF"; then
+            echo "::error title=Trivy execution::scanner failed before producing a vulnerability report"
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+
+          with open("trivy-output/trivy.json", encoding="utf-8") as handle:
+              report = json.load(handle)
+
+          findings = []
+          for result in report.get("Results") or []:
+              target = result.get("Target") or "unknown-target"
+              for item in result.get("Vulnerabilities") or []:
+                  findings.append({
+                      "target": target,
+                      "id": item.get("VulnerabilityID") or "unknown-cve",
+                      "package": item.get("PkgName") or "unknown-package",
+                      "installed": item.get("InstalledVersion") or "unknown",
+                      "fixed": item.get("FixedVersion") or "unfixed",
+                      "severity": item.get("Severity") or "UNKNOWN",
+                  })
+
+          if findings:
+              preview = "; ".join(
+                  f"{item['severity']} {item['id']} {item['package']} "
+                  f"{item['installed']} -> {item['fixed']} ({item['target']})"
+                  for item in findings[:10]
+              )
+              if len(findings) > 10:
+                  preview += f"; plus {len(findings) - 10} more"
+              print(f"::error title=Trivy HIGH/CRITICAL findings::{preview}")
+              raise SystemExit(1)
+
+          print("Trivy HIGH/CRITICAL digest scan passed")
+          PY
 
   promote-container-candidates:
     if: github.ref == 'refs/heads/main'

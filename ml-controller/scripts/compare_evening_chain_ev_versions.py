@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 from services import d1_client  # noqa: E402
 from services.active_model_policy import ACTIVE_ALPHA_MODELS  # noqa: E402
+from services.active8_score_semantics import normalize_active8_cross_sectional_scores  # noqa: E402
 from services.allocator_ev_fusion_artifact_builder import (  # noqa: E402
     build_allocator_ev_fusion_artifact_from_rows,
     load_allocator_ev_fusion_training_rows,
@@ -45,6 +46,11 @@ from services.recommendation_service import (  # noqa: E402
     apply_sparse_tangent_allocation,
     load_online_portfolio_bandit_reward_ledger,
 )
+from services.s12_trade_ev_bootstrap import (  # noqa: E402
+    S12_REPLAY_ENGINE_SIGNATURE,
+    S12TradeEvBootstrapProvider,
+    _replay_cohort_signature,
+)
 from services.trading_config_loader import load_merged_trading_config  # noqa: E402
 
 
@@ -68,6 +74,103 @@ def _finite(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _apply_s12_structure_overlay(
+    rows: list[dict[str, Any]],
+    *,
+    run_date: str,
+    overlay_path: str,
+) -> dict[str, Any]:
+    document = json.loads(Path(overlay_path).read_text(encoding="utf-8"))
+    assessments = document.get("rows") if isinstance(document, dict) else None
+    if not isinstance(assessments, list):
+        raise ValueError("S12 structure overlay requires a rows array")
+
+    snapshots: dict[str, dict[str, Any]] = {}
+    for raw in assessments:
+        if not isinstance(raw, dict):
+            continue
+        symbol = str(raw.get("symbol") or "").strip()
+        state = str(raw.get("state") or "").strip()
+        if not symbol or not state:
+            continue
+        execution = raw.get("execution") if isinstance(raw.get("execution"), dict) else {}
+        exit_plan = raw.get("exitPlan") if isinstance(raw.get("exitPlan"), dict) else {}
+        ready = bool(raw.get("ready"))
+        calibration = "uncalibrated"
+        snapshots[symbol] = {
+            "symbol": symbol,
+            "entry_price": _finite(execution.get("entryPrice")),
+            "s12_structure_stop": _finite(execution.get("stopLoss")),
+            "s12_target1": _finite(execution.get("target1")),
+            "s12_target2": _finite(execution.get("target2")),
+            "s12_state": state,
+            "s12_ready": ready,
+            "s12_detail": raw.get("detail"),
+            "s12_structure_snapshot": {
+                "trade_date": run_date,
+                "source": "local_frozen_s12_structure_overlay",
+            },
+            "s12_replay_lineage": {
+                "replay_engine_signature": S12_REPLAY_ENGINE_SIGNATURE,
+                "entry_policy_signature": state.lower(),
+                "exit_calibration_signature": calibration,
+                "replay_cohort_signature": _replay_cohort_signature(state, calibration),
+            },
+            "s12_structure": {
+                "state": state,
+                "ready": ready,
+                "detail": raw.get("detail"),
+                "exitPlan": exit_plan,
+            },
+            "canonical_trade_lifecycle": {
+                "entry": {
+                    "s12": {
+                        "state": state,
+                        "ready": ready,
+                        "detail": raw.get("detail"),
+                        "structureStop": _finite(execution.get("stopLoss")),
+                        "exitPlan": {
+                            "tp1": _finite(execution.get("target1")),
+                            "mainExit": _finite(execution.get("target2")),
+                            "trailingInitial": _finite(execution.get("stopLoss")),
+                        },
+                    }
+                }
+            },
+        }
+
+    provider = S12TradeEvBootstrapProvider.for_run_date(run_date)
+    provider.structure_snapshots = snapshots
+    status_counts: Counter[str] = Counter()
+    source_counts: Counter[str] = Counter()
+    positive = 0
+    for row in rows:
+        prediction = {
+            "ensemble_v2": row.get("ensemble_v2"),
+            "alpha_context": row.get("alpha_context"),
+            "forecast_data": row.get("forecast_data"),
+        }
+        payload = provider.build_for_row(row, prediction=prediction)
+        row["s12_trade_ev"] = payload
+        row["trade_expected_return_net_pct"] = payload.get("trade_expected_return_net_pct")
+        row["trade_expected_return_source"] = payload.get("trade_expected_return_source")
+        status_counts[str(payload.get("status") or "missing")] += 1
+        source_counts[str(payload.get("trade_expected_return_source") or payload.get("source") or "missing")] += 1
+        expected_return = _finite(payload.get("trade_expected_return_net_pct"))
+        if expected_return is not None and expected_return > 0:
+            positive += 1
+    return {
+        "schema_version": "local-s12-structure-overlay-audit-v1",
+        "path": str(Path(overlay_path)),
+        "assessment_rows": len(assessments),
+        "snapshot_rows": len(snapshots),
+        "provider": provider.summary(),
+        "status_counts": dict(status_counts),
+        "source_counts": dict(source_counts),
+        "positive_expected_return_rows": positive,
+    }
+
+
 def _load_candidate_rows(run_date: str, *, next_session_date: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     rows = d1_client.query(
         """
@@ -87,6 +190,16 @@ def _load_candidate_rows(run_date: str, *, next_session_date: str | None = None)
     normalized: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     for raw in rows:
+        score_components = _loads(raw.get("score_components"))
+        score_version = str(score_components.get("version") or "").strip()
+        if int(raw.get("eligible_for_ml") or 0) != 1 or score_version != "score_v2":
+            rejected.append({
+                "symbol": str(raw.get("symbol") or ""),
+                "blockers": ["not_canonical_score_v2_candidate"],
+                "eligible_for_ml": int(raw.get("eligible_for_ml") or 0),
+                "score_version": score_version or None,
+            })
+            continue
         timing_row = {
             "prediction_date": run_date,
             "prediction_generated_at": raw.get("prediction_generated_at"),
@@ -102,7 +215,6 @@ def _load_candidate_rows(run_date: str, *, next_session_date: str | None = None)
             continue
         allocation = _loads(raw.get("alpha_allocation"))
         forecast = _loads(raw.get("forecast_data"))
-        score_components = _loads(raw.get("score_components"))
         alpha_context = _loads(raw.get("alpha_context"))
         s12 = allocation.get("s12_trade_ev") if isinstance(allocation.get("s12_trade_ev"), dict) else None
         row = {
@@ -193,8 +305,36 @@ def _active8_eligible_rows(
         if contract["complete"]:
             eligible.append(row)
         else:
-            excluded.append({"symbol": symbol, "missing_models": contract["missing_models"]})
+            excluded.append({
+                "symbol": symbol,
+                "missing_models": contract["missing_models"],
+                "lineage_blockers": contract.get("lineage_blockers") or [],
+            })
     return eligible, excluded
+
+
+def _rank_distribution(outputs: dict[str, dict[str, Any]]) -> dict[str, dict[str, float | int | None]]:
+    summary: dict[str, dict[str, float | int | None]] = {}
+    for model_name in ACTIVE_ALPHA_MODELS:
+        values = [
+            rank
+            for prediction in outputs.values()
+            if (rank := _finite((prediction.get("rank_scores") or {}).get(model_name))) is not None
+        ]
+        mean = sum(values) / len(values) if values else None
+        variance = (
+            sum((value - mean) ** 2 for value in values) / len(values)
+            if values and mean is not None
+            else None
+        )
+        summary[model_name] = {
+            "rows": len(values),
+            "minimum": min(values) if values else None,
+            "maximum": max(values) if values else None,
+            "mean": mean,
+            "stddev": math.sqrt(variance) if variance is not None else None,
+        }
+    return summary
 
 
 def _attach_current_active8_ensemble(
@@ -214,9 +354,35 @@ def _attach_current_active8_ensemble(
         raise RuntimeError("universal/model_pool.json missing")
     pool = json.loads(blob.download_as_text().lstrip("\ufeff"))
     model_status: dict[str, str] = {}
+    artifact_versions: dict[str, str] = {}
+    artifact_target_semantics: dict[str, str] = {}
     for model_name in ACTIVE_ALPHA_MODELS:
         entry = (pool.get("models") or {}).get(model_name) or {}
         model_status[model_name] = str(entry.get("status") or "retired")
+        artifact_versions[model_name] = str(
+            entry.get("version")
+            or entry.get("model_version")
+            or (entry.get("last_artifact_evidence") or {}).get("model_version")
+            or ""
+        ).strip()
+        artifact_target_semantics[model_name] = str(
+            entry.get("target_semantic_version")
+            or (entry.get("last_artifact_evidence") or {}).get("target_semantic_version")
+            or ""
+        ).strip()
+    candidate_by_symbol = {str(row.get("symbol") or ""): row for row in rows}
+    for symbol, prediction in outputs.items():
+        candidate = candidate_by_symbol.get(symbol) or {}
+        forecast = candidate.get("forecast_data") if isinstance(candidate.get("forecast_data"), dict) else {}
+        prediction["stock_meta"] = dict(forecast.get("stock_meta") or {})
+    rank_distribution_before = _rank_distribution(outputs)
+    rank_normalization = normalize_active8_cross_sectional_scores(
+        outputs,
+        artifact_versions=artifact_versions,
+        artifact_target_semantics=artifact_target_semantics,
+        run_date=run_date,
+    )
+    rank_distribution_after = _rank_distribution(outputs)
     dampening = resolve_degraded_dampening(config)
     ev2_cfg = copy.deepcopy(config.get("ensemble_v2") or {})
     start_date = (date.fromisoformat(run_date) - timedelta(days=35)).isoformat()
@@ -294,6 +460,11 @@ def _attach_current_active8_ensemble(
         "used_pool": True,
         "model_pool_last_updated": (pool or {}).get("last_updated"),
         "model_status": model_status,
+        "artifact_versions": artifact_versions,
+        "artifact_target_semantics": artifact_target_semantics,
+        "rank_normalization": rank_normalization,
+        "rank_distribution_before": rank_distribution_before,
+        "rank_distribution_after": rank_distribution_after,
         "ic_window": {"start_date": start_date, "end_date": run_date, "min_dates": 10},
         "ic_results": ic_result,
         "ic_weights_by_segment": weights_by_segment,
@@ -724,6 +895,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--training-end-date", default="2026-07-02")
     parser.add_argument("--next-session-date")
     parser.add_argument("--upstream-mode", choices=("frozen", "current-reensemble"), default="frozen")
+    parser.add_argument("--s12-structure-overlay")
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
 
@@ -734,6 +906,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if not all_rows:
         raise RuntimeError(f"no recommendations for {args.run_date}")
+    historical_rows = copy.deepcopy(all_rows)
     active_model_outputs = _load_active_model_outputs(args.run_date)
     ensemble_replay = (
         _attach_current_active8_ensemble(all_rows, active_model_outputs, config, args.run_date)
@@ -746,7 +919,59 @@ def main(argv: list[str] | None = None) -> int:
     )
     rows, active8_excluded = _active8_eligible_rows(all_rows, active_model_outputs)
     if not rows:
-        raise RuntimeError(f"no Active-8-complete recommendations for {args.run_date}")
+        blocker_counts = Counter(
+            blocker
+            for item in active8_excluded
+            for blocker in item.get("lineage_blockers") or []
+        )
+        missing_model_counts = Counter(
+            model
+            for item in active8_excluded
+            for model in item.get("missing_models") or []
+        )
+        report = {
+            "schema_version": "evening-chain-ev-version-comparison-v2",
+            "run_date": args.run_date,
+            "training_end_date": args.training_end_date,
+            "common_input": {
+                "candidate_count": len(all_rows),
+                "active8_complete_candidate_count": 0,
+                "active8_excluded_count": len(active8_excluded),
+                "active8_lineage_blocker_counts": dict(blocker_counts),
+                "active8_missing_model_counts": dict(missing_model_counts),
+                "active8_excluded": active8_excluded,
+                "ensemble_replay": ensemble_replay,
+                "frozen_lineage_audit": frozen_lineage_audit,
+                "ensemble_rank_comparison": _ensemble_rank_comparison(all_rows),
+            },
+            "variants": [_historical_actual_variant(historical_rows, run_date=args.run_date)],
+            "closure_audit": {
+                "status": "blocked",
+                "reason": "no_contract_complete_active8_candidates",
+                "production_cutover_allowed": False,
+            },
+        }
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps({
+            "output": str(output),
+            "status": "blocked",
+            "candidate_count": len(all_rows),
+            "active8_complete_candidate_count": 0,
+            "active8_lineage_blocker_counts": dict(blocker_counts),
+            "historical_actual": report["variants"][0],
+        }, ensure_ascii=False, indent=2))
+        return 0
+    s12_overlay_audit = (
+        _apply_s12_structure_overlay(
+            rows,
+            run_date=args.run_date,
+            overlay_path=args.s12_structure_overlay,
+        )
+        if args.s12_structure_overlay
+        else None
+    )
     return_history = _load_return_history(args.run_date, [str(row.get("symbol")) for row in rows])
     reward_ledger = load_online_portfolio_bandit_reward_ledger(as_of_date=args.run_date)
     snapshot_dry_run = build_allocator_ev_feature_snapshots_for_date(
@@ -880,6 +1105,7 @@ def main(argv: list[str] | None = None) -> int:
             "allocator": "OnlinePortfolioBandit+sparse_tangent_inverse_risk",
             "ensemble_replay": ensemble_replay,
             "frozen_lineage_audit": frozen_lineage_audit,
+            "s12_structure_overlay": s12_overlay_audit,
             "ensemble_rank_comparison": _ensemble_rank_comparison(rows),
         },
         "artifacts": {

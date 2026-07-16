@@ -11,6 +11,7 @@ from services import model_artifact_registry as registry  # noqa: E402
 
 PROMOTION_GRADE_OFFLINE_EVIDENCE = (
     '{"gate":{"decision":"STRONG_PASS","metrics":{"model_cpcv_decision":"PASS"}},'
+    '"registration":{"metadata":{"target_semantic_version":"next-session-open-to-fifth-session-close-v2"}},'
     '"validation_packet":{"pbo":0.12,"deflated_sharpe":1.21,"monte_carlo":{"decision":"PASS"}}}'
 )
 
@@ -217,7 +218,7 @@ def test_timesfm_l175_l2_feature_release_candidate_type_is_preserved():
     assert records[0]["candidate_type"] == "timesfm_l175_l2_feature_release"
     queue = registry.build_promotion_queue(records, champion_versions={"LightGBM": "vOld"})
     assert queue["count"] == 1
-    assert queue["queue"][0]["approval_required"] is True
+    assert queue["queue"][0]["approval_required"] is False
     assert queue["queue"][0]["promotion_decision"] == "blocked_multi_evidence_gate"
     decision = registry.run_promotion_controller(
         artifact_id=records[0]["artifact_id"],
@@ -228,7 +229,7 @@ def test_timesfm_l175_l2_feature_release_candidate_type_is_preserved():
         approved=False,
     )
     assert decision["decision"] == "blocked"
-    assert decision["approval_required"] is True
+    assert decision["approval_required"] is False
     assert "feature_release_cohort_incomplete" in decision["evidence"]["blockers"]
 
 
@@ -248,14 +249,14 @@ def _complete_feature_release_rows() -> list[dict[str, object]]:
             "version": "vFeatureRelease",
             "training_run_id": "feature-release-run-1",
             "candidate_type": "timesfm_l175_l2_feature_release",
-            "state": "offline_strong_pass",
+            "state": "live_gate_passed",
             "offline_gate_decision": "STRONG_PASS",
             "offline_gate_status": "strong_pass",
-            "live_gate_status": "not_started",
+            "live_gate_status": "multi_evidence_passed",
             "artifact_path": f"universal/{model_name.lower()}/vFeatureRelease.{extension}",
             "checksum": f"sha256:{model_name.lower()}",
             "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE,
-            "live_evidence_json": "{}",
+            "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
             "metadata": {
                 "feature_policy_schema_version": "model-feature-policy-v2",
                 "artifact_checksum": f"sha256:{model_name.lower()}",
@@ -1469,9 +1470,33 @@ def test_promotion_queue_includes_backend_owned_action_context():
     )
 
     row = queue["queue"][0]
-    assert row["promotion_decision"] == "approval_required"
+    assert row["promotion_decision"] == "auto_promote_candidate"
     assert row["action_context"]["root_cause"] == "live_gate_passed"
     assert "promotion_controller" in row["action_context"]["affected_downstream"]
+
+
+def test_promotion_queue_rejects_artifact_without_executable_target_lineage():
+    row = {
+        "artifact_id": "XGBoost:vOldTarget:weekly_drift",
+        "model_name": "XGBoost",
+        "version": "vOldTarget",
+        "artifact_path": "universal/xgboost/vOldTarget.joblib",
+        "candidate_type": "weekly_drift",
+        "state": "live_gate_passed",
+        "offline_gate_decision": "STRONG_PASS",
+        "live_gate_status": "passed",
+        "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE.replace(
+            "next-session-open-to-fifth-session-close-v2",
+            "signal-close-to-fifth-session-close-v1",
+        ),
+        "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
+    }
+
+    queue = registry.build_promotion_queue([row], champion_versions={"XGBoost": "vCurrent"})
+
+    candidate = queue["queue"][0]
+    assert candidate["promotion_decision"] == "blocked_multi_evidence_gate"
+    assert "artifact_target_semantic_mismatch" in candidate["blocker_codes"]
 
 
 def test_promotion_queue_exposes_artifact_compare_delta_for_offline_release():
@@ -1766,11 +1791,11 @@ def test_build_promotion_queue_requires_approval_for_weekly_drift_and_monthly_re
     )
 
     by_model = {row["model_name"]: row for row in queue["queue"]}
-    assert by_model["XGBoost"]["promotion_decision"] == "approval_required"
+    assert by_model["XGBoost"]["promotion_decision"] == "auto_promote_candidate"
     assert by_model["XGBoost"]["final_compared_to"] is None
     assert by_model["XGBoost"]["current_champion_version"] == "vOld"
-    assert by_model["LightGBM"]["promotion_decision"] == "eligible_pending_approval"
-    assert by_model["LightGBM"]["approval_required"] is True
+    assert by_model["LightGBM"]["promotion_decision"] == "auto_promote_candidate"
+    assert by_model["LightGBM"]["approval_required"] is False
 
 
 def test_build_promotion_queue_includes_offline_monthly_release_pending_approval():
@@ -1794,8 +1819,8 @@ def test_build_promotion_queue_includes_offline_monthly_release_pending_approval
 
     row = queue["queue"][0]
     assert row["artifact_id"] == "DLinear:vMonthly:monthly_release"
-    assert row["promotion_decision"] == "eligible_pending_approval"
-    assert row["approval_required"] is True
+    assert row["promotion_decision"] == "blocked_live_evidence_required"
+    assert row["approval_required"] is False
     assert row["blocker_codes"] == []
 
 
@@ -2029,8 +2054,8 @@ def test_promotion_controller_dry_run_requires_weekly_approval():
     )
 
     assert result["status"] == "dry_run"
-    assert result["decision"] == "approval_required"
-    assert result["can_promote"] is False
+    assert result["decision"] == "promote"
+    assert result["can_promote"] is True
     assert result["final_compared_to"] == "vOld"
 
 
@@ -2081,7 +2106,7 @@ def test_promotion_controller_confirm_updates_champion_pointer(monkeypatch):
     assert pointer_params[4] == "LightGBM:vOld:monthly_release"
 
 
-def test_promotion_controller_allows_approved_offline_monthly_release_cutover(monkeypatch):
+def test_promotion_controller_blocks_approved_offline_monthly_release_without_live_evidence(monkeypatch):
     executed: list[dict[str, object]] = []
 
     def fake_execute(sql, params=None, timeout=60.0):
@@ -2116,14 +2141,13 @@ def test_promotion_controller_allows_approved_offline_monthly_release_cutover(mo
         allow_offline_monthly_release=True,
     )
 
-    assert result["status"] == "ok"
-    assert result["decision"] == "promote"
-    assert result["can_promote"] is True
+    assert result["status"] == "blocked"
+    assert result["decision"] == "blocked"
+    assert result["can_promote"] is False
     assert result["evidence"]["offline_monthly_release_cutover"] is True
     assert result["evidence"]["allow_offline_monthly_release"] is True
-    assert "live_gate_not_passed" not in result["evidence"]["blockers"]
-    assert len(executed) == 5
-    assert sum("model_champion_history" in str(item["sql"]) for item in executed) == 2
+    assert "live_gate_not_passed" in result["evidence"]["blockers"]
+    assert len(executed) == 1
 
 
 def test_promotion_controller_dry_run_offline_monthly_release_requires_wei_approval():
@@ -2154,11 +2178,11 @@ def test_promotion_controller_dry_run_offline_monthly_release_requires_wei_appro
     )
 
     assert result["status"] == "dry_run"
-    assert result["decision"] == "approval_required"
+    assert result["decision"] == "blocked"
     assert result["can_promote"] is False
-    assert result["approval_required"] is True
+    assert result["approval_required"] is False
     assert result["evidence"]["offline_monthly_release_candidate"] is True
-    assert "live_gate_not_passed" not in result["evidence"]["blockers"]
+    assert "live_gate_not_passed" in result["evidence"]["blockers"]
 
 
 def test_promotion_controller_allows_approved_weekly_manual_override(monkeypatch):

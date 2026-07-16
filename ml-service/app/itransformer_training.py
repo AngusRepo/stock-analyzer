@@ -101,6 +101,8 @@ def _update_model_pool_active(bucket, *, version: str, artifact_path: str, metad
 def train_itransformer_universal(payload: dict | None = None) -> dict[str, Any]:
     payload = dict(payload or {})
     promote_to_active, promotion_reason = resolve_training_promotion_intent(payload, model_name=MODEL_NAME)
+    if str(payload.get("generation_mode") or "native").strip().lower() == "purged_oof" and promote_to_active:
+        raise ValueError("oof_fold_artifact_cannot_be_promoted_to_production")
     payload["promote_to_active"] = promote_to_active
     result = train_neuralforecast_sequence_artifact(payload, model_name=MODEL_NAME)
     pool_update = None

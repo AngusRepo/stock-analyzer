@@ -26,7 +26,7 @@ from .prep_lineage import (
 )
 from .training_promotion_policy import resolve_training_promotion_intent
 from .research_benchmarks.common import cpcv_proxy_pbo, data_slice_report, direction_accuracy, load_sequence_dataset, rank_ic
-from .sequence_training import build_sequence_window_dataset
+from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION, build_sequence_window_dataset
 from .model_validation import build_model_cpcv_evidence
 from .artifact_contract import ArtifactValidationError, verify_artifact_bytes
 from .training_policy import build_model_feature_policy_metadata
@@ -106,6 +106,19 @@ def _coerce_close(row: dict[str, Any]) -> list[float]:
     return close
 
 
+def _coerce_open(row: dict[str, Any]) -> list[float]:
+    open_prices: list[float] = []
+    for value in row.get("open") or row.get("series_open") or []:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return []
+        if not np.isfinite(parsed) or parsed <= 0:
+            return []
+        open_prices.append(parsed)
+    return open_prices
+
+
 def _panel_train_eval_rows(
     records: list[dict[str, Any]],
     *,
@@ -118,19 +131,25 @@ def _panel_train_eval_rows(
     eval_rows: list[dict[str, Any]] = []
     min_history = int(seq_len) + int(pred_len)
     skipped_short_history = 0
+    skipped_label_contract = 0
     considered = 0
     for record in records:
         considered += 1
         if len(eval_rows) >= max(1, max_series):
             break
         close = _coerce_close(record)
+        open_prices = _coerce_open(record)
         dates = [str(value) for value in (record.get("dates") or [])]
         end = len(close) - max(0, int(holdout_offset))
         close = close[:end]
+        open_prices = open_prices[:end]
         if dates and len(dates) >= end:
             dates = dates[:end]
         if len(close) < min_history:
             skipped_short_history += 1
+            continue
+        if len(open_prices) != len(close) or len(dates) != len(close):
+            skipped_label_contract += 1
             continue
         symbol = str(record.get("symbol") or f"series_{len(eval_rows)}")
         train_close = close[:-pred_len]
@@ -141,16 +160,20 @@ def _panel_train_eval_rows(
             train_rows.append({"unique_id": symbol, "ds": int(ds_idx), "y": float(y_value)})
         eval_rows.append({
             "unique_id": symbol,
+            "market": str(record.get("market") or record.get("market_type") or "TW").upper(),
             "last_close": float(train_close[-1]),
+            "entry_open": float(open_prices[-pred_len]),
             "actual_last": float(actual_close[-1]),
             "history_len": int(len(close)),
             "signal_date": dates[-pred_len - 1] if len(dates) == len(close) else None,
             "outcome_date": dates[-1] if len(dates) == len(close) else None,
+            "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
         })
     return train_rows, eval_rows, {
         "considered_series": int(considered),
         "valid_series": int(len(eval_rows)),
         "skipped_short_history": int(skipped_short_history),
+        "skipped_label_contract": int(skipped_label_contract),
         "min_history": int(min_history),
         "seq_len": int(seq_len),
         "pred_len": int(pred_len),
@@ -509,13 +532,35 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         or DEFAULT_BATCH_COUNT
     )
     promote_to_active, _promotion_reason = resolve_training_promotion_intent(payload, model_name=model_name)
+    generation_mode = str(payload.get("generation_mode") or "native").strip().lower()
+    if generation_mode == "purged_oof" and promote_to_active:
+        raise ValueError("oof_fold_artifact_cannot_be_promoted_to_production")
     payload.setdefault("batch_count", int(payload.get("batch_count") or DEFAULT_BATCH_COUNT))
 
     dataset_source = load_sequence_dataset(payload)
+    explicit_test_start = str(payload.get("test_start") or "").strip()
+    explicit_test_end = str(payload.get("test_end") or "").strip()
+    if generation_mode == "purged_oof":
+        if not explicit_test_start or not explicit_test_end:
+            raise ValueError("oof_sequence_test_range_missing")
+        truncated_records = []
+        for record in dataset_source.records:
+            dates = [str(value) for value in (record.get("dates") or [])]
+            end_idx = next((idx for idx, date in enumerate(dates) if date > explicit_test_end), len(dates))
+            if end_idx <= 0:
+                continue
+            truncated = dict(record)
+            for field in ("dates", "open", "high", "low", "close", "volume"):
+                values = list(record.get(field) or [])
+                if values:
+                    truncated[field] = values[:end_idx]
+            truncated_records.append(truncated)
+        dataset_source.records = truncated_records
     validation_folds = max(3, int(payload.get("validation_folds") or 5))
     folds: list[dict[str, Any]] = []
     all_pred_return: list[float] = []
     all_actual_return: list[float] = []
+    all_oof_rows: list[dict[str, Any]] = []
     pred_col = model_name
     series_filter: dict[str, Any] = {}
     for fold_index in range(validation_folds):
@@ -531,6 +576,13 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             series_filter = fold_filter
         if len(eval_rows) < 10:
             continue
+        if generation_mode == "purged_oof":
+            eval_rows = [
+                row for row in eval_rows
+                if explicit_test_start <= str(row.get("signal_date") or "") <= explicit_test_end
+            ]
+            if len(eval_rows) < 10:
+                continue
         fold_nf, fold_df = _train_nf(
             fold_train_rows,
             model_name=cfg["nf_model_name"],
@@ -553,9 +605,17 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             uid = str(row["unique_id"])
             if uid not in pred_by_id:
                 continue
-            last_close = float(row["last_close"])
-            pred_return.append((float(pred_by_id[uid]) - last_close) / max(last_close, 1e-9))
-            actual_return.append((float(row["actual_last"]) - last_close) / max(last_close, 1e-9))
+            entry_open = float(row["entry_open"])
+            pred_return.append((float(pred_by_id[uid]) - entry_open) / max(entry_open, 1e-9))
+            actual_return.append((float(row["actual_last"]) - entry_open) / max(entry_open, 1e-9))
+            all_oof_rows.append({
+                "raw_score": pred_return[-1],
+                "target": actual_return[-1],
+                "date": str(row.get("signal_date") or ""),
+                "symbol": uid,
+                "market": str(row.get("market") or "TW"),
+                "label_known_date": str(row.get("outcome_date") or ""),
+            })
         pred_array = np.asarray(pred_return, dtype=float)
         actual_array = np.asarray(actual_return, dtype=float)
         all_pred_return.extend(pred_return)
@@ -607,6 +667,33 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         "fold_metrics": folds,
         "model_cpcv_decision": model_cpcv.get("decision"),
     }
+    oof_artifact = None
+    if generation_mode == "purged_oof":
+        from .oof_lineage import save_oof_prediction_artifact
+
+        oof_artifact = save_oof_prediction_artifact(
+            bucket=bucket,
+            gcs_prefix=gcs_prefix,
+            cohort_id=str(payload.get("cohort_id") or ""),
+            fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
+            model_name=model_name,
+            artifact_version=version,
+            raw_scores=np.asarray([row["raw_score"] for row in all_oof_rows], dtype=float),
+            targets=np.asarray([row["target"] for row in all_oof_rows], dtype=float),
+            dates=np.asarray([row["date"] for row in all_oof_rows], dtype=object),
+            symbols=np.asarray([row["symbol"] for row in all_oof_rows], dtype=object),
+            markets=np.asarray([row["market"] for row in all_oof_rows], dtype=object),
+            label_known_dates=np.asarray([row["label_known_date"] for row in all_oof_rows], dtype=object),
+            split_metadata={
+                "method": "purged_walk_forward_retrain_rank_ic",
+                "train_start": payload.get("train_start"),
+                "train_end": payload.get("train_end"),
+                "test_start": explicit_test_start,
+                "test_end": explicit_test_end,
+                "purge_horizon": pred_len,
+                "refit_each_fold": True,
+            },
+        )
 
     # Validation models are discarded. The serving artifact is refit once on all
     # point-in-time data known at training time.
@@ -674,6 +761,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         "metrics": metrics,
         "model_cpcv": model_cpcv,
         "validation_design": model_cpcv["validation_design"],
+        "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
         "deployment_fit": {
             "method": "full_known_history_refit_after_chronological_validation",
             "performed": True,
@@ -700,7 +788,8 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             ["close"],
             selection_evidence={
                 "selection_method": "production_artifact",
-                "sequence_contract": "sequence_records_v2",
+                "sequence_contract": "sequence_records_v3",
+                "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
             },
         ),
     }, prep_lineage)
@@ -708,6 +797,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
     return {
         "status": "ok",
         "model": model_name,
+        "oof_artifact": oof_artifact,
         "version": version,
         "artifact_path": saved["artifact_path"],
         "metadata_path": saved["metadata_path"],

@@ -88,6 +88,9 @@ class UniversalTrainRequest(BaseModel):
     max_prep_stale_days: int | None = None
     label_horizon_days: int | None = None
     disable_stale_prep_guard: bool = False
+    generation_mode: str = "native"
+    cohort_id: str | None = None
+    fold_id: str | None = None
 
 
 def _ic_summary_value(metrics: dict) -> float | None:
@@ -377,6 +380,9 @@ def _save_oos_rank_artifact(
     oos_rank_predictions: dict[str, np.ndarray],
     y_test: np.ndarray,
     dates_test: np.ndarray,
+    symbols_test: np.ndarray,
+    markets_test: np.ndarray,
+    label_known_dates_test: np.ndarray,
     feature_names: list[str],
 ) -> dict | None:
     """Persist split-job OOS predictions for the final rank-stacking reducer."""
@@ -401,16 +407,45 @@ def _save_oos_rank_artifact(
         pred_matrix=pred_matrix,
         y_test=np.asarray(y_test, dtype=float).reshape(-1),
         dates_test=np.asarray(dates_test).reshape(-1),
+        symbols_test=np.asarray(symbols_test).reshape(-1),
+        markets_test=np.asarray(markets_test).reshape(-1),
+        label_known_dates_test=np.asarray(label_known_dates_test).reshape(-1),
         feature_names=np.asarray(feature_names, dtype=object),
     )
     buf.seek(0)
     bucket.blob(path).upload_from_file(buf, content_type="application/octet-stream")
+    individual_artifacts = []
+    if req.generation_mode == "purged_oof":
+        from .oof_lineage import save_oof_prediction_artifact
+
+        for model_name in model_names:
+            individual_artifacts.append(save_oof_prediction_artifact(
+                bucket=bucket,
+                gcs_prefix=req.gcs_prefix or "universal",
+                cohort_id=str(req.cohort_id or ""),
+                fold_id=str(req.fold_id or req.window_id or ""),
+                model_name=model_name,
+                artifact_version=str(req.output_model_version),
+                raw_scores=oos_rank_predictions[model_name],
+                targets=y_test,
+                dates=dates_test,
+                symbols=symbols_test,
+                markets=markets_test,
+                label_known_dates=label_known_dates_test,
+                split_metadata={
+                    "window_id": req.window_id,
+                    "train_range": [req.train_start, req.train_end],
+                    "test_range": [req.test_start, req.test_end],
+                    "method": "walk_forward_explicit_label_purged",
+                },
+            ))
     return {
         "path": path,
         "group": group,
         "version": req.output_model_version,
         "models": model_names,
         "samples": int(len(y_test)),
+        "individual_artifacts": individual_artifacts,
     }
 
 
@@ -468,6 +503,13 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
                 df = df.with_columns(pl.col("date").cast(pl.Utf8).alias("_date"))
             else:
                 df = df.with_columns(pl.lit("").alias("_date"))
+            symbol = str(payload.get("symbol") or payload.get("stock_id") or "").strip()
+            market = str(payload.get("market") or "TW").strip().upper()
+            df = df.with_columns(
+                pl.lit(symbol).alias("_symbol"),
+                pl.lit(market).alias("_market"),
+                pl.col("_date").shift(-5).alias("_label_known_date"),
+            )
             all_dfs.append(df)
             seq_record = build_sequence_record(
                 symbol=str(payload.get("symbol") or payload.get("stock_id") or ""),
@@ -504,7 +546,13 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         c for c in TIMESFM_L175_FEATURE_COLS if c not in FEATURE_COLS
     ]
     available = [c for c in candidate_feature_cols if c in pooled.columns]
-    select_cols = available + ["target_rank", "_date"]
+    select_cols = available + [
+        "target_rank",
+        "_date",
+        "_symbol",
+        "_market",
+        "_label_known_date",
+    ]
     if "target_5d" in pooled.columns:
         select_cols.append("target_5d")
     if "target_dir" in pooled.columns:
@@ -528,7 +576,11 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         print(f"[PrepBatch] Feature cleaning report: {cleaning_report}")
     X = df_clean.select(available).to_numpy()
     y = df_clean["target_rank"].to_numpy()
+    target_returns_arr = df_clean["target_5d"].to_numpy()
     dates_arr = df_clean["_date"].to_numpy()
+    symbols_arr = df_clean["_symbol"].to_numpy()
+    markets_arr = df_clean["_market"].to_numpy()
+    label_known_dates_arr = df_clean["_label_known_date"].to_numpy()
     sectors_arr = (
         df_clean["sector_encoded"].to_numpy()
         if "sector_encoded" in df_clean.columns
@@ -536,8 +588,10 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
     )
     missingness_rates_arr = np.array([missingness_by_feature.get(name, 0.0) for name in available], dtype=float)
     feature_names = available
-    assert len(X) == len(y) == len(dates_arr) == len(sectors_arr), (
-        f"prep alignment broken: X={len(X)} y={len(y)} dates={len(dates_arr)} sectors={len(sectors_arr)}"
+    assert len(X) == len(y) == len(target_returns_arr) == len(dates_arr) == len(sectors_arr) == len(symbols_arr) == len(label_known_dates_arr), (
+        "prep alignment broken: "
+        f"X={len(X)} y={len(y)} dates={len(dates_arr)} sectors={len(sectors_arr)} "
+        f"symbols={len(symbols_arr)} label_known_dates={len(label_known_dates_arr)}"
     )
 
     bucket = _get_bucket()
@@ -550,7 +604,11 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         buf,
         X=X,
         y=y,
+        target_returns=target_returns_arr,
         dates=dates_arr,
+        symbols=symbols_arr,
+        markets=markets_arr,
+        label_known_dates=label_known_dates_arr,
         sectors=sectors_arr,
         missingness_rates=missingness_rates_arr,
         series_close=np.array(sequence_series, dtype=object),
@@ -597,7 +655,8 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         raise RuntimeError("GCS bucket not available")
 
     gcs_prefix = (req.gcs_prefix or "universal").rstrip("/")
-    all_X, all_y, all_dates, all_missingness_rates = [], [], [], []
+    all_X, all_y, all_target_returns, all_dates, all_missingness_rates = [], [], [], [], []
+    all_symbols, all_markets, all_label_known_dates = [], [], []
     gcs_io = {"prep_objects": 0, "prep_bytes": 0, "download_elapsed_s": 0.0}
     gcs_t0 = time.time()
     batch_keys = [f"{gcs_prefix}/prep/batch_{i}.npz" for i in range(req.batch_count)]
@@ -611,7 +670,15 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         data = np.load(buf, allow_pickle=True)
         all_X.append(data["X"])
         all_y.append(data["y"])
+        if "target_returns" in data.files:
+            all_target_returns.append(data["target_returns"])
         all_dates.append(data["dates"])
+        if "symbols" in data.files:
+            all_symbols.append(data["symbols"])
+        if "markets" in data.files:
+            all_markets.append(data["markets"])
+        if "label_known_dates" in data.files:
+            all_label_known_dates.append(data["label_known_dates"])
         if "missingness_rates" in data.files:
             all_missingness_rates.append(np.asarray(data["missingness_rates"], dtype=float))
         print(f"[TrainUniversal] {key.split('/')[-1]}: {len(data['X'])} rows loaded")
@@ -622,7 +689,27 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
 
     X = np.concatenate(all_X, axis=0)
     y = np.concatenate(all_y, axis=0)
+    target_returns_arr = (
+        np.concatenate(all_target_returns, axis=0)
+        if len(all_target_returns) == len(all_X)
+        else np.asarray([], dtype=float)
+    )
     dates_arr = np.concatenate(all_dates, axis=0)
+    symbols_arr = (
+        np.concatenate(all_symbols, axis=0)
+        if len(all_symbols) == len(all_X)
+        else np.asarray([], dtype=object)
+    )
+    markets_arr = (
+        np.concatenate(all_markets, axis=0)
+        if len(all_markets) == len(all_X)
+        else np.asarray([], dtype=object)
+    )
+    label_known_dates_arr = (
+        np.concatenate(all_label_known_dates, axis=0)
+        if len(all_label_known_dates) == len(all_X)
+        else np.asarray([], dtype=object)
+    )
 
     fn_blob = bucket.blob(f"{gcs_prefix}/prep/feature_names.json")
     feature_names = json.loads(fn_blob.download_as_text()) if fn_blob.exists() else [f"f{i}" for i in range(X.shape[1])]
@@ -712,27 +799,26 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             f"[TrainUniversal] Walk-forward mode: train={req.train_start}..{req.train_end} "
             f"test={req.test_start}..{req.test_end} window_id={req.window_id}"
         )
-        from .purged_cv import purged_explicit_walk_forward_split
+        from .purged_cv import purged_explicit_walk_forward_indices
 
         label_horizon_days = req.label_horizon_days or 5
-        (
-            X_train,
-            y_train,
-            dates_train,
-            X_test,
-            y_test,
-            dates_test,
-            walk_forward_split_metadata,
-        ) = purged_explicit_walk_forward_split(
-            X,
-            y,
+        if len(target_returns_arr) != len(X) or len(symbols_arr) != len(X) or len(markets_arr) != len(X) or len(label_known_dates_arr) != len(X):
+            raise ValueError("walk_forward_prep_missing_target_return_symbol_market_or_label_known_date_lineage")
+        train_idx, test_idx, walk_forward_split_metadata = purged_explicit_walk_forward_indices(
             dates_arr,
             train_start=req.train_start,
             train_end=req.train_end,
             test_start=req.test_start,
             test_end=req.test_end,
             label_horizon_days=label_horizon_days,
+            label_known_dates=label_known_dates_arr,
         )
+        X_train, y_train, dates_train = X[train_idx], y[train_idx], dates_arr[train_idx]
+        X_test, y_test, dates_test = X[test_idx], y[test_idx], dates_arr[test_idx]
+        symbols_test = symbols_arr[test_idx]
+        markets_test = markets_arr[test_idx]
+        label_known_dates_test = label_known_dates_arr[test_idx]
+        target_returns_test = target_returns_arr[test_idx]
         print(
             f"[TrainUniversal] Walk-forward split: train={len(X_train)}, test={len(X_test)}, "
             f"purged={walk_forward_split_metadata['purged_row_count']} rows/"
@@ -780,6 +866,10 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             test_ratio=0.2,
             embargo_days=embargo_days,
         )
+        symbols_test = np.asarray([""] * len(y_test), dtype=object)
+        markets_test = np.asarray([""] * len(y_test), dtype=object)
+        label_known_dates_test = np.asarray([""] * len(y_test), dtype=object)
+        target_returns_test = y_test
         print(f"[TrainUniversal] Purged split: train={len(X_train)}, test={len(X_test)}, embargo={embargo_days}d")
         validation_split_metadata = {
             **validation_split_metadata,
@@ -1140,8 +1230,11 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 bucket=bucket,
                 req=req,
                 oos_rank_predictions=oos_rank_predictions,
-                y_test=y_test,
+                y_test=target_returns_test,
                 dates_test=dates_test,
+                symbols_test=symbols_test,
+                markets_test=markets_test,
+                label_known_dates_test=label_known_dates_test,
                 feature_names=feature_names,
             )
             if oos_artifact:
@@ -1267,6 +1360,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     extra_meta = attach_prep_lineage_aliases({
         "training_run_id": training_run_id,
         "training_manifest_path": manifest_path,
+        "target_semantic_version": "next-session-open-to-fifth-session-close-v2",
         "validation_split": validation_split_metadata,
         "model_cpcv_enabled": bool(req.enable_model_cpcv),
         "prep_freshness": prep_freshness,

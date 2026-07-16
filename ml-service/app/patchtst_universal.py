@@ -128,6 +128,8 @@ def train_patchtst(
         for idx, close in enumerate(series_close or [])
     ]
     promote_to_active, promotion_reason = resolve_training_promotion_intent(kwargs, model_name=MODEL_NAME)
+    if str(kwargs.get("generation_mode") or "native").strip().lower() == "purged_oof" and promote_to_active:
+        raise ValueError("oof_fold_artifact_cannot_be_promoted_to_production")
     result = train_neuralforecast_sequence_artifact(
         {
             **kwargs,
@@ -183,6 +185,7 @@ def train_patchtst(
         "elapsed_s": result["elapsed_s"],
         "type": "neuralforecast_patchtst_universal",
         "pool_update": pool_update,
+        "oof_artifact": result.get("oof_artifact"),
     }
 
 

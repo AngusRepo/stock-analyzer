@@ -3,7 +3,31 @@ from __future__ import annotations
 import pytest
 
 from services.ensemble_v2 import attach_ensemble_v2
+from services.active_model_policy import ACTIVE_ALPHA_MODELS
+from services.active8_score_semantics import (
+    MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
+    MODEL_SCORE_SEMANTIC_VERSION,
+    MODEL_TARGET_SEMANTIC_VERSION,
+)
 from services.ml_threshold_policy import resolve_ml_threshold_policy
+
+
+def _formal_pred(scores: dict[str, float], *, market_segment: str = "LISTED") -> dict:
+    ranks = {name: 0.5 for name in ACTIVE_ALPHA_MODELS}
+    ranks.update(scores)
+    versions = {name: f"{name}-test-v1" for name in ACTIVE_ALPHA_MODELS}
+    return {
+        "stock_meta": {"market_segment": market_segment},
+        "rank_scores": ranks,
+        "model_score_lineage": {
+            "schema_version": MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
+            "semantic_version": MODEL_SCORE_SEMANTIC_VERSION,
+            "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
+            "complete": True,
+            "blockers": [],
+            "artifact_versions": versions,
+        },
+    }
 
 
 def _full_trading_config() -> dict:
@@ -66,12 +90,8 @@ def test_attach_ensemble_v2_holds_when_all_lifecycle_weights_are_zero():
         degraded_dampening=0.5,
     )
 
-    ev2 = pred["ensemble_v2"]
-    assert ev2["signal"] == "HOLD"
-    assert ev2["avg_rank"] == 0.5
-    assert ev2["contributing_models"] == []
-    assert ev2["weight_total"] == 0.0
-    assert ev2["reason"] == "no_positive_lifecycle_weight"
+    assert "ensemble_v2" not in pred
+    assert pred["ensemble_v2_error"] == "formal_layer3_contract_incomplete"
 
 
 def test_attach_ensemble_v2_can_use_alpha_alternate_models_when_feature_models_fail():
@@ -88,10 +108,8 @@ def test_attach_ensemble_v2_can_use_alpha_alternate_models_when_feature_models_f
         degraded_dampening=1.0,
     )
 
-    ev2 = pred["ensemble_v2"]
-    assert ev2["avg_rank"] > 0.5
-    assert ev2["contributing_models"] == ["DLinear"]
-    assert ev2["weight_total"] > 0
+    assert "ensemble_v2" not in pred
+    assert pred["ensemble_v2_error"] == "formal_layer3_contract_incomplete"
 
 
 def test_attach_ensemble_v2_keeps_timesfm_as_sidecar_not_direct_alpha():
@@ -108,10 +126,8 @@ def test_attach_ensemble_v2_keeps_timesfm_as_sidecar_not_direct_alpha():
         degraded_dampening=1.0,
     )
 
-    ev2 = pred["ensemble_v2"]
-    assert ev2["contributing_models"] == ["DLinear"]
-    assert "TimesFM" not in ev2["weights"]
-    assert ev2["avg_rank"] < 0.55
+    assert "ensemble_v2" not in pred
+    assert pred["ensemble_v2_error"] == "formal_layer3_contract_incomplete"
 
 
 def test_attach_ensemble_v2_does_not_count_state_space_overlays_as_alpha_votes():
@@ -614,10 +630,7 @@ def test_daily_pipeline_requires_regime_before_recommendation(monkeypatch):
 
 def test_daily_pipeline_applies_resolved_threshold_policy_to_ensemble(monkeypatch):
     daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
-    pred = {
-        "stock_meta": {"market_segment": "LISTED"},
-        "rank_scores": {"XGBoost": 0.69, "ExtraTrees": 0.69},
-    }
+    pred = _formal_pred({"XGBoost": 0.69, "ExtraTrees": 0.69})
     pool = {
         "models": {
             "XGBoost": {"status": "active", "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2", "last_ic_by_segment": {"LISTED": {"ic": 0.10}}},
@@ -773,10 +786,7 @@ def test_daily_pipeline_blocks_confirmed_negative_segment_ic_without_pooled_fall
 
 def test_daily_pipeline_empty_segment_weights_do_not_cold_start_or_global_fallback(monkeypatch):
     daily_pipeline_v2 = _import_daily_pipeline_with_stubs(monkeypatch)
-    pred = {
-        "stock_meta": {"market_segment": "EMERGING"},
-        "rank_scores": {"DLinear": 0.95},
-    }
+    pred = _formal_pred({"DLinear": 0.95}, market_segment="EMERGING")
     pool = {
         "models": {
             "DLinear": {

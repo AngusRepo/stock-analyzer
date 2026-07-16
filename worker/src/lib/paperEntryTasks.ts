@@ -63,6 +63,7 @@ import {
 } from './s12IntradayStructure'
 import { buildCanonicalTradeLifecycle, serializeCanonicalTradeLifecycle } from './canonicalTradeLifecycle'
 import { persistS12StructureSnapshot } from './s12StructureSnapshots'
+import { runS12IntradaySetupWatch } from './s12IntradaySetupWatch'
 import { loadIntradayTechnicalRollingBars, loadS12IntradayBaseBars, rollingBarsToOhlcvRows, type S12BaseBarSource } from './s12RuntimeBars'
 import {
   applyS12TwCalibrationArtifact,
@@ -484,6 +485,11 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
 
   if (!isMarketOpen) return { status: 'healthy_empty', positions: 0, quoted: 0, missing_symbols: [] }
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const setupWatch = await runS12IntradaySetupWatch(env, today).catch((error) => {
+    console.warn('[Intraday] S12 setup watch failed:', error instanceof Error ? error.message : String(error))
+    return null
+  })
+  if (setupWatch) console.log('[Intraday] S12 setup watch:', setupWatch)
   await reconcilePendingBuyDebates(env, today).catch((e) =>
     console.warn('[Intraday] pending debate reconcile failed:', e),
   )

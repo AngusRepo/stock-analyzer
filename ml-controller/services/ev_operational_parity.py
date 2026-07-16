@@ -1,0 +1,136 @@
+"""Serving-parity gate for OOF-trained L4 and Fusion candidates."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from services.allocator_ev_fusion import materialize_allocator_ev_fusion
+from services.l4_alpha_ev_resolver import extract_l4_alpha_ev
+from services.s12_trade_ev import extract_s12_trade_ev
+from services.l4_alpha_ev_artifact_builder import FEATURE_NAMES, _feature_vector
+from services.l4_alpha_ev_producer import _feature_value, materialize_l4_alpha_ev
+
+MIN_PARITY_ROWS = 20
+MIN_SERVING_COVERAGE = 0.98
+
+
+def _loads(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    parsed = json.loads(value)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def assess_ev_operational_parity(
+    *,
+    l4_artifact: dict[str, Any],
+    fusion_artifact: dict[str, Any],
+    native_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Require identical feature semantics and successful production materializers."""
+
+    l4_candidate = {
+        **l4_artifact,
+        "promotion_state": "production_approved",
+        "approval_state": "production_approved",
+    }
+    fusion_candidate = {
+        **fusion_artifact,
+        "promotion_state": "production_primary",
+        "promotion_tier": "primary",
+        "primary_expected_return_allowed": True,
+        "operational_parity_required": False,
+    }
+    comparable = 0
+    feature_mismatches: list[dict[str, Any]] = []
+    l4_loaded = 0
+    fusion_loaded = 0
+    for row in native_rows:
+        prediction = _loads(row.get("forecast_data"))
+        for key in ("l4_alpha_ev", "alpha_ev", "alpha_ev_prediction"):
+            prediction.pop(key, None)
+        ensemble = prediction.get("ensemble_v2") if isinstance(prediction.get("ensemble_v2"), dict) else {}
+        for key in ("l4_alpha_ev", "alpha_ev", "alpha_ev_prediction"):
+            ensemble.pop(key, None)
+        parsed_row = {
+            **row,
+            "score_components": _loads(row.get("score_components")),
+            "alpha_context": _loads(row.get("alpha_context")),
+            "alpha_allocation": _loads(row.get("alpha_allocation")),
+        }
+        for key in ("l4_alpha_ev", "alpha_ev", "alpha_ev_prediction"):
+            parsed_row.pop(key, None)
+        allocation = parsed_row["alpha_allocation"]
+        if isinstance(allocation.get("s12_trade_ev"), dict):
+            parsed_row["s12_trade_ev"] = allocation["s12_trade_ev"]
+        elif isinstance(prediction.get("s12_trade_ev"), dict):
+            parsed_row["s12_trade_ev"] = prediction["s12_trade_ev"]
+        builder_features = _feature_vector(parsed_row)
+        if builder_features is None:
+            continue
+        comparable += 1
+        for name in FEATURE_NAMES:
+            serving_value = _feature_value(name, parsed_row, prediction)
+            if serving_value is None or abs(float(serving_value) - float(builder_features[name])) > 1e-9:
+                feature_mismatches.append({
+                    "symbol": row.get("symbol"),
+                    "date": row.get("prediction_date") or row.get("date"),
+                    "feature": name,
+                    "builder": builder_features[name],
+                    "serving": serving_value,
+                })
+        l4_payload = materialize_l4_alpha_ev(
+            parsed_row,
+            prediction=prediction,
+            policy=l4_candidate,
+        )
+        if isinstance(l4_payload, dict) and l4_payload.get("status") == "loaded":
+            l4_loaded += 1
+            parsed_row["l4_alpha_ev"] = l4_payload
+        l4_value, l4_source, resolved_l4_payload = extract_l4_alpha_ev(parsed_row)
+        s12_value, s12_source, s12_payload = extract_s12_trade_ev(parsed_row)
+        alpha_context = parsed_row.get("alpha_context") or {}
+        fusion_payload = materialize_allocator_ev_fusion(
+            parsed_row,
+            l4_value=l4_value,
+            l4_source=l4_source,
+            l4_payload=resolved_l4_payload,
+            s12_value=s12_value,
+            s12_source=s12_source,
+            s12_payload=s12_payload,
+            market_heat_expected_return=float(alpha_context.get("market_heat_expected_return") or 0.0),
+            policy=fusion_candidate,
+        )
+        if isinstance(fusion_payload, dict) and fusion_payload.get("status") == "loaded":
+            fusion_loaded += 1
+
+    denominator = max(1, comparable)
+    l4_coverage = l4_loaded / denominator
+    fusion_coverage = fusion_loaded / denominator
+    blockers = []
+    if comparable < MIN_PARITY_ROWS:
+        blockers.append("insufficient_complete_native_parity_rows")
+    if feature_mismatches:
+        blockers.append("training_serving_feature_mismatch")
+    if l4_coverage < MIN_SERVING_COVERAGE:
+        blockers.append("l4_serving_coverage_below_98pct")
+    if fusion_coverage < MIN_SERVING_COVERAGE:
+        blockers.append("fusion_serving_coverage_below_98pct")
+    return {
+        "schema_version": "ev-operational-parity-v1",
+        "decision": "PASS" if not blockers else "FAIL",
+        "failed_gates": blockers,
+        "native_rows": len(native_rows),
+        "comparable_rows": comparable,
+        "feature_mismatch_count": len(feature_mismatches),
+        "feature_mismatch_examples": feature_mismatches[:20],
+        "l4_serving_coverage": l4_coverage,
+        "fusion_serving_coverage": fusion_coverage,
+        "minimum_rows": MIN_PARITY_ROWS,
+        "minimum_serving_coverage": MIN_SERVING_COVERAGE,
+        "labels_required": False,
+        "purpose": "training_serving_contract_and_materializer_parity_only",
+    }

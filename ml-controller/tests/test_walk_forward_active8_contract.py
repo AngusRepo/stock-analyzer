@@ -23,15 +23,9 @@ def test_walk_forward_defaults_to_active8_contract():
 
     coverage = walk_forward_model_coverage()
     assert coverage["requested_models"] == expected
-    assert coverage["native_retrain_models"] == ["LightGBM", "XGBoost", "ExtraTrees"]
-    assert coverage["artifact_lifecycle_required_models"] == [
-        "TabM",
-        "GNN",
-        "DLinear",
-        "PatchTST",
-        "iTransformer",
-    ]
-    assert coverage["coverage_mode"] == "active8_with_artifact_lifecycle_gaps"
+    assert coverage["native_retrain_models"] == expected
+    assert coverage["artifact_lifecycle_required_models"] == []
+    assert coverage["coverage_mode"] == "active8_purged_oof_retrain"
 
 
 def test_walk_forward_router_exposes_active8_coverage():
@@ -67,6 +61,16 @@ def test_modal_walk_forward_orchestrator_no_longer_defaults_tree_only():
 
     assert "from app.model_pool import ALPHA_PREDICTION_MODELS" in source
     assert "active8_models = list(ALPHA_PREDICTION_MODELS)" in source
-    assert "\"artifact_lifecycle_required_models\"" in source
+    assert "family_tasks" in source
+    assert "oof_fold_ready" in source
     assert "payload.get(\"models\") or active8_models" in source
     assert "payload.get(\"models\") or [\"XGBoost\", \"ExtraTrees\", \"LightGBM\"]" not in source
+
+
+def test_oof_automatic_promotion_requires_primary_fusion_and_operational_parity():
+    source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
+
+    assert 'fusion_tier == "primary"' in source
+    assert 'parity.get("decision") == "PASS"' in source
+    assert "archive_ev_candidate_artifacts" in source
+    assert "purged OOF quality PASS and native operational parity PASS" in source

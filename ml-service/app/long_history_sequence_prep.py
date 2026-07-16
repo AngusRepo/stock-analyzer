@@ -1,7 +1,7 @@
 """Build sequence-only prep artifacts from existing FinLab long-history output.
 
 This module deliberately does not call the FinLab API. It hydrates already
-materialized backfill artifacts into the `sequence_records_v2` contract consumed
+materialized backfill artifacts into the `sequence_records_v3` contract consumed
 by DLinear, PatchTST, iTransformer, and the TimesFM L2 sidecar.
 """
 
@@ -20,13 +20,18 @@ import polars as pl
 from .model_store import _get_bucket
 
 
-SCHEMA_VERSION = "finlab-long-history-sequence-prep-v1"
+SCHEMA_VERSION = "finlab-long-history-sequence-prep-v2"
 DEFAULT_OUTPUT_GCS_PREFIX = "universal/sequence_long"
-DEFAULT_LANES = ("daily_price", "emerging_price_diversity")
+DEFAULT_LANES = ("daily_price",)
 LANE_MARKET_TYPE = {
     "daily_price": "TW_LISTED_OTC",
     "emerging_price_diversity": "TW_EMERGING",
 }
+LANE_PRICE_FIELDS = {
+    "daily_price": ("adj_close", "adj_open"),
+    "emerging_price_diversity": ("close", "open"),
+}
+TARGET_SEMANTIC_VERSION = "next-session-open-to-fifth-session-close-v2"
 
 
 class SequenceSourceMissingError(RuntimeError):
@@ -64,14 +69,15 @@ def _read_parquet_source(
     source_artifact_root: str | None,
     source_gcs_prefix: str | None,
     bucket: Any | None,
+    field: str,
 ) -> tuple[pl.DataFrame, str]:
-    rel = f"raw/{lane}/close.parquet"
+    rel = f"raw/{lane}/{field}.parquet"
     if source_artifact_root:
         path = Path(source_artifact_root) / rel
         if not path.exists():
             raise SequenceSourceMissingError(f"missing source parquet: {path}")
         source_uri = str(path)
-        return _validate_close_source(pl.read_parquet(path), source_uri), source_uri
+        return _validate_price_source(pl.read_parquet(path), source_uri), source_uri
 
     if not source_gcs_prefix:
         raise ValueError("source_artifact_root or source_gcs_prefix is required")
@@ -84,10 +90,10 @@ def _read_parquet_source(
     if not blob.exists():
         raise SequenceSourceMissingError(f"missing source parquet: gs://{bucket_name or '*'}/{key}")
     source_uri = f"gs://{bucket_name or '*'}/{key}"
-    return _validate_close_source(pl.read_parquet(io.BytesIO(blob.download_as_bytes())), source_uri), source_uri
+    return _validate_price_source(pl.read_parquet(io.BytesIO(blob.download_as_bytes())), source_uri), source_uri
 
 
-def _validate_close_source(frame: pl.DataFrame, source_uri: str) -> pl.DataFrame:
+def _validate_price_source(frame: pl.DataFrame, source_uri: str) -> pl.DataFrame:
     if frame.is_empty():
         raise SequenceSourceInvalidError(f"empty source parquet: {source_uri}")
     if "date" not in frame.columns:
@@ -108,7 +114,7 @@ def _parse_source_gcs_prefixes(payload: dict[str, Any]) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def _combine_wide_close_frames(frames: list[pl.DataFrame]) -> pl.DataFrame:
+def _combine_wide_price_frames(frames: list[pl.DataFrame]) -> pl.DataFrame:
     valid = [frame for frame in frames if not frame.is_empty() and "date" in frame.columns]
     if not valid:
         raise SequenceSourceInvalidError("no valid source frames to combine")
@@ -162,8 +168,9 @@ def _filter_dates(df: pl.DataFrame, *, start_date: str | None, end_date: str | N
     return out.sort("date")
 
 
-def _records_from_wide_close(
-    df: pl.DataFrame,
+def _records_from_wide_prices(
+    close_df: pl.DataFrame,
+    open_df: pl.DataFrame,
     *,
     lane: str,
     market_type: str,
@@ -172,32 +179,49 @@ def _records_from_wide_close(
     end_date: str | None,
     source_uri: Any,
 ) -> list[dict[str, Any]]:
-    df = _filter_dates(df, start_date=start_date, end_date=end_date)
-    if df.is_empty() or "date" not in df.columns:
+    close_df = _filter_dates(close_df, start_date=start_date, end_date=end_date)
+    open_df = _filter_dates(open_df, start_date=start_date, end_date=end_date)
+    if close_df.is_empty() or open_df.is_empty() or "date" not in close_df.columns or "date" not in open_df.columns:
         return []
 
     records: list[dict[str, Any]] = []
-    for column in [name for name in df.columns if name != "date"]:
+    for column in sorted((set(close_df.columns) & set(open_df.columns)) - {"date"}):
         symbol = _normalize_symbol(column)
         if not symbol:
             continue
         series = (
-            df.select([
+            close_df.select([
                 pl.col("date").cast(pl.Utf8),
                 pl.col(column).cast(pl.Float64, strict=False).alias("close"),
             ])
-            .drop_nulls()
-            .filter(pl.col("close").is_finite() & (pl.col("close") > 0))
+            .join(
+                open_df.select([
+                    pl.col("date").cast(pl.Utf8),
+                    pl.col(column).cast(pl.Float64, strict=False).alias("open"),
+                ]),
+                on="date",
+                how="inner",
+            )
+            .drop_nulls(["close", "open"])
+            .filter(
+                pl.col("close").is_finite()
+                & (pl.col("close") > 0)
+                & pl.col("open").is_finite()
+                & (pl.col("open") > 0)
+            )
+            .sort("date")
         )
         if series.height < min_len:
             continue
         rows = series.to_dicts()
         dates = [str(row["date"])[:10] for row in rows]
         close = [float(row["close"]) for row in rows]
+        open_prices = [float(row["open"]) for row in rows]
         records.append({
             "symbol": symbol,
             "market_type": market_type,
             "close": close,
+            "open": open_prices,
             "dates": dates,
             "sequence_source": "finlab_long_history",
             "source_lane": lane,
@@ -205,6 +229,7 @@ def _records_from_wide_close(
             "history_points": len(close),
             "date_min": dates[0],
             "date_max": dates[-1],
+            "target_semantic_version": TARGET_SEMANTIC_VERSION,
         })
     return records
 
@@ -245,6 +270,7 @@ def _upload_sequence_batches(
             buf,
             sequence_records=np.asarray(batch, dtype=object),
             series_close=np.asarray([row["close"] for row in batch], dtype=object),
+            series_open=np.asarray([row["open"] for row in batch], dtype=object),
         )
         key = f"{prefix}/prep/batch_{batch_index}.npz"
         bucket.blob(key).upload_from_string(buf.getvalue(), content_type="application/octet-stream")
@@ -279,29 +305,56 @@ def build_finlab_long_history_sequence_prep(payload: dict[str, Any], *, bucket: 
     all_records: list[dict[str, Any]] = []
     lane_reports: list[dict[str, Any]] = []
     for lane in lanes:
+        if lane not in LANE_PRICE_FIELDS:
+            raise SequenceSourceInvalidError(f"unsupported sequence lane: {lane}")
+        close_field, open_field = LANE_PRICE_FIELDS[lane]
         if len(source_gcs_prefixes) > 1 and not source_artifact_root:
-            frames: list[pl.DataFrame] = []
-            source_uris: list[str] = []
+            close_frames: list[pl.DataFrame] = []
+            open_frames: list[pl.DataFrame] = []
+            close_uris: list[str] = []
+            open_uris: list[str] = []
             for prefix in source_gcs_prefixes:
-                frame_part, source_uri_part = _read_parquet_source(
+                close_part, close_uri = _read_parquet_source(
                     lane=lane,
                     source_artifact_root=None,
                     source_gcs_prefix=prefix,
                     bucket=bucket,
+                    field=close_field,
                 )
-                frames.append(frame_part)
-                source_uris.append(source_uri_part)
-            frame = _combine_wide_close_frames(frames)
-            source_uri: Any = source_uris
+                open_part, open_uri = _read_parquet_source(
+                    lane=lane,
+                    source_artifact_root=None,
+                    source_gcs_prefix=prefix,
+                    bucket=bucket,
+                    field=open_field,
+                )
+                close_frames.append(close_part)
+                open_frames.append(open_part)
+                close_uris.append(close_uri)
+                open_uris.append(open_uri)
+            close_frame = _combine_wide_price_frames(close_frames)
+            open_frame = _combine_wide_price_frames(open_frames)
+            source_uri: Any = {"close": close_uris, "open": open_uris}
         else:
-            frame, source_uri = _read_parquet_source(
+            prefix = source_gcs_prefix or (source_gcs_prefixes[0] if source_gcs_prefixes else None)
+            close_frame, close_uri = _read_parquet_source(
                 lane=lane,
                 source_artifact_root=source_artifact_root,
-                source_gcs_prefix=source_gcs_prefix or (source_gcs_prefixes[0] if source_gcs_prefixes else None),
+                source_gcs_prefix=prefix,
                 bucket=bucket,
+                field=close_field,
             )
-        records = _records_from_wide_close(
-            frame,
+            open_frame, open_uri = _read_parquet_source(
+                lane=lane,
+                source_artifact_root=source_artifact_root,
+                source_gcs_prefix=prefix,
+                bucket=bucket,
+                field=open_field,
+            )
+            source_uri = {"close": close_uri, "open": open_uri}
+        records = _records_from_wide_prices(
+            close_frame,
+            open_frame,
             lane=lane,
             market_type=LANE_MARKET_TYPE.get(lane, lane),
             min_len=min_len,
@@ -312,9 +365,11 @@ def build_finlab_long_history_sequence_prep(payload: dict[str, Any], *, bucket: 
         lane_reports.append({
             "lane": lane,
             "source_uri": source_uri,
-            "source_rows": int(frame.height) if not frame.is_empty() else 0,
-            "source_columns": int(len(frame.columns)) if not frame.is_empty() else 0,
+            "source_rows": int(close_frame.height) if not close_frame.is_empty() else 0,
+            "source_columns": int(len(close_frame.columns)) if not close_frame.is_empty() else 0,
             "sequence_records": int(len(records)),
+            "close_field": close_field,
+            "open_field": open_field,
         })
         all_records.extend(records)
 
@@ -326,7 +381,8 @@ def build_finlab_long_history_sequence_prep(payload: dict[str, Any], *, bucket: 
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "created_at": _utc_now(),
-        "contract": "sequence_records_v2",
+        "contract": "sequence_records_v3",
+        "target_semantic_version": TARGET_SEMANTIC_VERSION,
         "source": {
             "type": "finlab_existing_backfill_artifact",
             "source_artifact_root": source_artifact_root,

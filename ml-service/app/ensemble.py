@@ -579,8 +579,10 @@ def time_series_to_rank(forecast_pct: float, scale: float = 12.0) -> float:
     Time-series models output absolute %; sigmoid keeps them in (0,1) so
     they're directly comparable to feature-model cross-sectional ranks.
     """
-    import math
-    return 1.0 / (1.0 + math.exp(-forecast_pct * scale))
+    raise ValueError(
+        "single_stock_sequence_forecast_cannot_be_ranked; "
+        "use same-run market cross-sectional percentile calibration"
+    )
 
 
 def merge_with_time_series(
@@ -618,9 +620,12 @@ def merge_with_time_series(
     """
     merged: dict[str, float] = dict(feature_rank_scores)
     for name, ts in (time_series_signals or {}).items():
-        if not ts or ts.get("forecast_pct") is None:
+        if not ts or ts.get("rank_score") is None:
             continue
-        merged[name] = time_series_to_rank(float(ts["forecast_pct"]), scale=forecast_to_rank_scale)
+        rank_score = float(ts["rank_score"])
+        if not np.isfinite(rank_score) or not 0.0 <= rank_score <= 1.0:
+            continue
+        merged[name] = rank_score
 
     weights: dict[str, float] = {}
     status_filter_map = {"active": 1.0, "degraded": 1.0, "challenger": 0.0, "retired": 0.0}

@@ -176,6 +176,9 @@ def _trade_ev(value: float, source: str = "s12_trade_ev_test") -> dict:
 def _l4_alpha_ev(value: float, *, method: str = "stacked_meta_calibrator") -> dict:
     return {
         "schema_version": "l4-alpha-ev-v1",
+        "artifact_contract_version": "l4-alpha-ev-contract-v4",
+        "feature_semantic_version": "l4-directional-score-components-v2-lineage-bound",
+        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "expected_return_owner": "l4_alpha_ev",
         "expected_return_mean": value,
         "expected_return_source": "l4_alpha_ev:stacked_meta_calibrator",
@@ -188,12 +191,29 @@ def _l4_alpha_ev(value: float, *, method: str = "stacked_meta_calibrator") -> di
         "horizon_days": 3,
         "cost_model_bps": 18.0,
         "feature_families": ["fundamental", "formal_ml", "chip", "technical", "regime", "s12_context"],
+        "feature_names": [
+            "ml_edge_norm",
+            "fundamental_quality_norm",
+            "chip_flow_norm",
+            "technical_structure_norm",
+            "ensemble_directional_margin",
+        ],
+        "coefficients": {
+            "ml_edge_norm": 0.01,
+            "fundamental_quality_norm": 0.01,
+            "chip_flow_norm": 0.01,
+            "technical_structure_norm": 0.01,
+            "ensemble_directional_margin": 0.01,
+        },
     }
 
 
 def _allocator_ev_fusion_artifact(**overrides) -> dict:
     artifact = {
-        "schema_version": "allocator-ev-fusion-artifact-v2",
+        "schema_version": "allocator-ev-fusion-artifact-v11",
+        "artifact_contract_version": "allocator-ev-fusion-contract-v11",
+        "feature_semantic_version": "allocator-ev-fusion-directional-components-v2-lineage-bound",
+        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "promotion_state": "production_primary",
         "promotion_tier": "primary",
         "primary_expected_return_allowed": True,
@@ -1727,7 +1747,7 @@ def test_fusion_v5_candidate_without_direct_s12_uses_two_part_model_availability
         "score_components": _score_components(final_score=82.0, ml_edge=20.0),
     }]
     fusion_v5 = _allocator_ev_fusion_artifact(
-        schema_version="allocator-ev-fusion-artifact-v5",
+        schema_version="allocator-ev-fusion-artifact-v11",
         expected_return_semantic="execution_probability_times_conditional_replay_net_return",
         selection_model={
             "status": "fitted",
@@ -1878,6 +1898,9 @@ def test_ml_vote_summary_counts_weight_gated_models_as_reported():
                 "ExtraTrees": 0.52,
                 "TabM": 0.56,
                 "GNN": 0.47,
+                "DLinear": 0.40,
+                "PatchTST": 0.60,
+                "iTransformer": 0.65,
             },
             "dlinear": {"forecast_pct": -0.01},
             "patchtst": {"forecast_pct": 0.015},
@@ -1917,6 +1940,9 @@ def test_core_family_vote_deduplicates_exact_same_model_scores_within_family():
                 "ExtraTrees": 0.63,
                 "TabM": 0.61,
                 "GNN": 0.58,
+                "DLinear": 0.40,
+                "PatchTST": 0.60,
+                "iTransformer": 0.60,
             },
             "patchtst": {"forecast_pct": 0.01},
             "itransformer": {"forecast_pct": 0.01},

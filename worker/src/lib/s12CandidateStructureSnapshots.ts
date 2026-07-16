@@ -61,6 +61,8 @@ function isSetupOnly(assessment: S12IntradayAssessment): boolean {
     'waiting_bos',
     'waiting_retest',
     'waiting_reaction',
+    'waiting_1h_demand_zone',
+    'waiting_15m_zone_touch',
   ].includes(String(assessment.state ?? ''))
 }
 

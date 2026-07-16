@@ -28,7 +28,7 @@ FEATURE_NAMES = [
 ]
 CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
 CANONICAL_SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
-CANONICAL_ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v3"
+CANONICAL_ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v4"
 CANONICAL_ADJUSTMENT_FACTOR_SOURCE = "canonical_market_daily:finlab.price"
 FEATURE_SEMANTIC_VERSION = L4_FEATURE_SEMANTIC_VERSION
 LABEL_PURGE_DATE_GROUPS = 5
@@ -147,6 +147,8 @@ def _samples(
             "symbol": row.get("symbol"),
             "features": features,
             "target": target,
+            "label_known_date": str(row.get("l4_exit_date") or row.get("label_known_date") or "")[:10],
+            "source_row": row,
         })
 
     excluded_zero_dates: list[str] = []
@@ -409,7 +411,21 @@ def build_l4_alpha_ev_artifact_from_rows(
     cost_model_bps: float = 18.0,
     fit_min_samples: int | None = None,
     fit_min_dates: int | None = None,
+    generation_mode: str = "native",
+    cohort_id: str | None = None,
 ) -> dict[str, Any]:
+    if generation_mode not in {"native", "purged_oof"}:
+        raise ValueError("l4_generation_mode_invalid")
+    if generation_mode == "purged_oof":
+        if not cohort_id:
+            raise ValueError("l4_oof_cohort_id_missing")
+        invalid_modes = [
+            row for row in rows
+            if str(row.get("generation_mode") or "") != "purged_oof"
+            or str(row.get("cohort_id") or "") != cohort_id
+        ]
+        if invalid_modes:
+            raise ValueError("l4_oof_mixed_or_missing_cohort_lineage")
     samples, diagnostics = _samples(rows, cost_model_bps=cost_model_bps)
     dates = sorted({sample["date"] for sample in samples})
     split_idx = max(1, round(len(dates) * 0.8)) if dates else 0
@@ -504,7 +520,13 @@ def build_l4_alpha_ev_artifact_from_rows(
         "schema_version": "l4-alpha-ev-artifact-v2",
         "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
         "expected_return_owner": "l4_alpha_ev",
-        "promotion_state": "production_approved" if decision == "PASS" else "approval_required",
+        "promotion_state": (
+            "offline_quality_passed_operational_parity_required"
+            if decision == "PASS" and generation_mode == "purged_oof"
+            else "production_approved"
+            if decision == "PASS"
+            else "approval_required"
+        ),
         "validation_packet": validation_packet,
         "resolver_method": "ridge_meta_calibrator",
         "fitted": fitted,
@@ -527,6 +549,9 @@ def build_l4_alpha_ev_artifact_from_rows(
             "trained_until": trained_until,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             **diagnostics,
+            "generation_mode": generation_mode,
+            "cohort_id": cohort_id,
+            "efficacy_evidence_mode": "purged_oof" if generation_mode == "purged_oof" else "native",
         },
     }
     return {
@@ -534,6 +559,173 @@ def build_l4_alpha_ev_artifact_from_rows(
         "artifact": artifact,
         "validation_packet": validation_packet,
     }
+
+
+def build_l4_chronological_oof_predictions(
+    rows: list[dict[str, Any]],
+    *,
+    cohort_id: str,
+    l2: float = 0.25,
+    cost_model_bps: float = 18.0,
+    min_train_samples: int = 500,
+    min_train_dates: int = 5,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Cross-fit L4 on resolved prior OOF dates for downstream Fusion training."""
+
+    if any(
+        str(row.get("generation_mode") or "") != "purged_oof"
+        or str(row.get("cohort_id") or "") != cohort_id
+        for row in rows
+    ):
+        raise ValueError("l4_oof_mixed_or_missing_cohort_lineage")
+    samples, diagnostics = _samples(rows, cost_model_bps=cost_model_bps)
+    dates = sorted({sample["date"] for sample in samples})
+    predictions: list[dict[str, Any]] = []
+    date_evidence: list[dict[str, Any]] = []
+    for prediction_date in dates:
+        current = [sample for sample in samples if sample["date"] == prediction_date]
+        prior = [
+            sample for sample in samples
+            if sample["date"] < prediction_date
+            and sample.get("label_known_date")
+            and sample["label_known_date"] < prediction_date
+        ]
+        prior_dates = sorted({sample["date"] for sample in prior})
+        ready = len(prior) >= min_train_samples and len(prior_dates) >= min_train_dates
+        if not ready:
+            date_evidence.append({
+                "prediction_date": prediction_date,
+                "train_samples": len(prior),
+                "train_dates": len(prior_dates),
+                "eligible_for_efficacy": False,
+            })
+            continue
+        intercept, coefficients = _fit_ridge(prior, l2=l2)
+        trained_until = max(sample["label_known_date"] for sample in prior)
+        model_version = f"l4-oof-cross-fit-v4-{cohort_id}-{prediction_date.replace('-', '')}"
+        for sample in current:
+            expected_return = intercept + sum(
+                coefficients[name] * sample["features"][name]
+                for name in FEATURE_NAMES
+            )
+            expected_return = max(-0.08, min(0.08, float(expected_return)))
+            source = sample["source_row"]
+            payload = {
+                "status": "loaded",
+                "source": "l4_purged_oof_chronological_cross_fit",
+                "expected_return": expected_return,
+                "trained_until": trained_until,
+                "model_version": model_version,
+                "generation_mode": "purged_oof",
+                "cohort_id": cohort_id,
+                "fold_id": source.get("fold_id"),
+                "point_in_time_prediction_lineage": {
+                    "as_of_guard": "label_known_date_strictly_before_prediction_date",
+                    "train_samples": len(prior),
+                    "train_dates": len(prior_dates),
+                    "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+                },
+            }
+            predictions.append({
+                "cohort_id": cohort_id,
+                "fold_id": source.get("fold_id"),
+                "prediction_date": prediction_date,
+                "symbol": sample.get("symbol"),
+                "market_segment": source.get("market_segment") or "UNKNOWN",
+                "expected_return": expected_return,
+                "prediction_json": json.dumps(payload, sort_keys=True),
+                "trained_until": trained_until,
+                "model_version": model_version,
+                "eligible_for_efficacy": 1,
+            })
+        date_evidence.append({
+            "prediction_date": prediction_date,
+            "train_samples": len(prior),
+            "train_dates": len(prior_dates),
+            "eligible_for_efficacy": True,
+            "model_version": model_version,
+        })
+    return predictions, {
+        "schema_version": "l4-chronological-oof-prediction-evidence-v1",
+        "cohort_id": cohort_id,
+        "input_audit": diagnostics,
+        "prediction_rows": len(predictions),
+        "prediction_dates": len({row["prediction_date"] for row in predictions}),
+        "dates": date_evidence,
+    }
+
+
+def load_l4_alpha_ev_oof_training_rows(
+    query_fn: Callable[[str, list[Any]], list[dict[str, Any]]],
+    *,
+    cohort_id: str,
+    knowledge_cutoff_date: str,
+    limit: int = 12000,
+) -> list[dict[str, Any]]:
+    """Load one immutable OOF cohort with executable point-in-time labels."""
+
+    return query_fn(
+        """
+        WITH price_horizons AS (
+          SELECT
+            sp.stock_id,
+            date(sp.date) price_date,
+            LEAD(date(sp.date), 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) entry_date,
+            LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) entry_raw_open,
+            LEAD(CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END, 1)
+              OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) entry_adjustment_factor,
+            LEAD(date(sp.date), 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) exit_date,
+            LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) exit_raw_close,
+            LEAD(CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END, 5)
+              OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) exit_adjustment_factor
+          FROM stock_prices sp
+          JOIN stocks s ON s.id = sp.stock_id
+          LEFT JOIN canonical_market_daily cmd
+            ON cmd.stock_id = s.symbol
+           AND cmd.date = date(sp.date)
+           AND cmd.source = 'finlab.price'
+        )
+        SELECT
+          fs.cohort_id,
+          fs.fold_id,
+          fs.generation_mode,
+          fs.stock_id,
+          fs.symbol,
+          fs.snapshot_date prediction_date,
+          fs.generated_at prediction_generated_at,
+          fs.forecast_data,
+          fs.score,
+          fs.score_components,
+          fs.alpha_context,
+          fs.market_segment,
+          fs.recommendation_lane,
+          fs.label_known_date,
+          fs.model_set_signature,
+          'canonical_market_daily:finlab.price' label_adjustment_source,
+          ((ph.exit_raw_close * ph.exit_adjustment_factor)
+            / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 l4_executable_return_pct,
+          ph.entry_date l4_entry_date,
+          ph.exit_date l4_exit_date
+        FROM allocator_ev_oof_snapshots fs
+        JOIN active8_oof_cohorts cohort
+          ON cohort.cohort_id = fs.cohort_id
+         AND cohort.status = 'ready'
+        JOIN price_horizons ph
+          ON ph.stock_id = fs.stock_id
+         AND ph.price_date = fs.snapshot_date
+        WHERE fs.cohort_id = ?
+          AND fs.generation_mode = 'purged_oof'
+          AND ph.entry_raw_open > 0
+          AND ph.exit_raw_close > 0
+          AND ph.entry_adjustment_factor > 0
+          AND ph.exit_adjustment_factor > 0
+          AND date(ph.exit_date) <= date(?)
+          AND date(fs.label_known_date) <= date(?)
+        ORDER BY fs.snapshot_date, fs.symbol
+        LIMIT ?
+        """,
+        [cohort_id, knowledge_cutoff_date, knowledge_cutoff_date, int(limit)],
+    )
 
 
 def load_l4_alpha_ev_training_rows(

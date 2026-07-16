@@ -255,13 +255,18 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
     tail_prefix = f"gs://{bucket_name}/{_finlab_backfill_prefix()}/{run_id}"
     lanes = _csv_env("FINLAB_LONG_SEQUENCE_LANES", "daily_price")
     if "daily_price" in lanes:
-        tail_close_uri = f"{tail_prefix}/raw/daily_price/close.parquet"
-        if not _gcs_object_exists(tail_close_uri):
+        required_uris = [
+            f"{tail_prefix}/raw/daily_price/adj_close.parquet",
+            f"{tail_prefix}/raw/daily_price/adj_open.parquet",
+        ]
+        missing_uris = [uri for uri in required_uris if not _gcs_object_exists(uri)]
+        if missing_uris:
             return {
                 "status": "skipped",
-                "reason": "tail_daily_price_close_missing",
+                "reason": "tail_daily_price_adjusted_ohlc_label_contract_missing",
                 "run_id": run_id,
-                "required_uri": tail_close_uri,
+                "required_uris": required_uris,
+                "missing_uris": missing_uris,
             }
 
     payload = {

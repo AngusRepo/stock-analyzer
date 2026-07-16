@@ -49,7 +49,9 @@ PRODUCTION_ARTIFACT_EXTENSIONS: dict[str, str] = {
     "TimesFM": "json",
 }
 PRODUCTION_ARTIFACT_MODEL_NAMES = frozenset(PRODUCTION_ARTIFACT_EXTENSIONS)
+ACTIVE8_ARTIFACT_MODEL_NAMES = PRODUCTION_ARTIFACT_MODEL_NAMES - {"TimesFM"}
 ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v3"
+ACTIVE8_TARGET_SEMANTIC_VERSION = "next-session-open-to-fifth-session-close-v2"
 TIMESFM_L175_RELEASE_COHORT = frozenset({"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"})
 PROMOTION_GRADE_SEQUENCE_METHODS = frozenset({
     "purged_cpcv_sequence_rank_ic",
@@ -1736,6 +1738,13 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
 
     registration = _artifact_registration(row)
     metadata = _artifact_registration_metadata(row)
+    target_semantic = str(metadata.get("target_semantic_version") or "").strip()
+    if model_name in ACTIVE8_ARTIFACT_MODEL_NAMES and target_semantic != ACTIVE8_TARGET_SEMANTIC_VERSION:
+        add(
+            "artifact_target_semantic_mismatch",
+            "Artifact target does not match the executable Active-8 return target",
+            "Retrain with next-session open to fifth-session close labels; metadata cannot be patched after training.",
+        )
     contract_required = (
         str(row.get("feature_policy_version") or registration.get("feature_policy_version") or metadata.get("feature_policy_schema_version") or "")
         == "model-feature-policy-v2"
@@ -2409,8 +2418,9 @@ def build_promotion_queue(
     for row in rows:
         state = str(row.get("state") or "")
         live_status = str(row.get("live_gate_status") or "")
-        offline_monthly_candidate = _offline_monthly_release_candidate(row)
-        offline_timesfm_l175_candidate = _offline_timesfm_l175_feature_release_candidate(row)
+        live_evidence_ready = live_status in {"passed", "multi_evidence_passed", "rolling_ic_passed"}
+        offline_monthly_candidate = _offline_monthly_release_candidate(row) and not live_evidence_ready
+        offline_timesfm_l175_candidate = _offline_timesfm_l175_feature_release_candidate(row) and not live_evidence_ready
         if state in {"production", "archived", "rejected"}:
             continue
         if (
@@ -2454,12 +2464,10 @@ def build_promotion_queue(
             })
             continue
         offline_decision = str(row.get("offline_gate_decision") or "")
-        approval_required = (
-            candidate_type in {"weekly_drift", "manual_hotfix", "timesfm_l175_l2_feature_release"}
-            or str(row.get("approval_state") or "") == "required"
-            or offline_monthly_candidate
-            or offline_timesfm_l175_candidate
-        )
+        # Scheduled artifacts are machine-promoted only after every evidence
+        # gate and champion comparison passes. Human approval is reserved for
+        # an explicitly manual hotfix, not used as a substitute for evidence.
+        approval_required = candidate_type == "manual_hotfix"
         blockers = artifact_promotion_blockers(row, champion_version=champion_version)
         if offline_monthly_candidate or offline_timesfm_l175_candidate:
             blockers = _offline_monthly_release_blockers(blockers)
@@ -2477,11 +2485,11 @@ def build_promotion_queue(
             decision = "blocked_multi_evidence_gate"
             next_action = "Resolve blockers before final comparison: " + ", ".join(blocker_codes)
         elif offline_monthly_candidate:
-            decision = "eligible_pending_approval"
-            next_action = "Run promotion-controller dry-run with allow_offline_monthly_release=true, then request Wei approval before release."
+            decision = "blocked_live_evidence_required"
+            next_action = "Keep the candidate in shadow until live multi-evidence and final champion comparison pass."
         elif offline_timesfm_l175_candidate:
-            decision = "eligible_pending_approval"
-            next_action = "Run promotion-controller dry-run, then request Wei approval before enabling TimesFM L1.75 L2 feature release."
+            decision = "blocked_live_evidence_required"
+            next_action = "Run the complete feature cohort in shadow and collect live evidence before atomic promotion."
         elif approval_required:
             decision = "approval_required"
             next_action = "Run final comparison against current champion, then request Wei approval before promotion."
@@ -2565,6 +2573,11 @@ def apply_promoted_artifact_to_model_pool(
     entry["status"] = "active"
     entry["version"] = candidate_version
     entry["gcs_path"] = candidate_path
+    entry["metadata_path"] = artifact.get("metadata_path") or entry.get("metadata_path")
+    entry["serving_owner"] = "model_champion_pointers"
+    entry["serving_artifact_id"] = artifact.get("artifact_id")
+    entry["offline_gate_decision"] = artifact.get("offline_gate_decision")
+    entry["live_gate_status"] = artifact.get("live_gate_status")
     entry["promoted_at"] = promoted_at
     entry.pop("degraded_since", None)
     entry.pop("retired_at", None)
@@ -2589,6 +2602,9 @@ def apply_promoted_artifact_to_model_pool(
         entry.pop("challenger", None)
 
     metadata = _nested_dict(artifact.get("metadata"))
+    if not metadata:
+        metadata = _artifact_registration_metadata(artifact)
+    entry["target_semantic_version"] = metadata.get("target_semantic_version")
     offline_evidence = _json_loads(artifact.get("offline_evidence_json"))
     registration = _nested_dict(offline_evidence.get("registration"))
     gate = _nested_dict(offline_evidence.get("gate"))
@@ -2613,6 +2629,7 @@ def apply_promoted_artifact_to_model_pool(
         "feature_policy": metadata.get("feature_policy"),
         "feature_policy_schema_version": metadata.get("feature_policy_schema_version"),
         "family_feature_contract": metadata.get("family_feature_contract"),
+        "target_semantic_version": metadata.get("target_semantic_version"),
     }
     entry["last_artifact_evidence"] = {
         key: value
@@ -2669,7 +2686,7 @@ def run_model_pool_release_writer(
         "can_release": True,
         "serving_update": serving_update,
         "planned_entry": entry,
-        "requires_wei_approval": True,
+        "requires_wei_approval": str(artifact.get("candidate_type") or "") == "manual_hotfix",
         "production_mutation_allowed": bool(confirm),
     }
 
@@ -2703,7 +2720,10 @@ def run_model_pool_release_bundle_writer(
         "can_release": True,
         "serving_updates": updates,
         "release_models": sorted(update["model_name"] for update in updates),
-        "requires_wei_approval": True,
+        "requires_wei_approval": any(
+            str(artifact.get("candidate_type") or "") == "manual_hotfix"
+            for artifact in artifacts
+        ),
         "production_mutation_allowed": bool(confirm),
     }
 
@@ -2791,18 +2811,11 @@ def _promotion_row_decision(
         candidate_type == "timesfm_l175_l2_feature_release"
         and offline_decision in {"STRONG_PASS", "PASS"}
     )
-    approval_required = (
-        candidate_type in {"weekly_drift", "manual_hotfix", "timesfm_l175_l2_feature_release"}
-        or str(artifact.get("approval_state") or "") == "required"
-        or offline_monthly_release_candidate
-        or offline_timesfm_l175_feature_release_candidate
-    )
+    approval_required = candidate_type == "manual_hotfix"
     blockers: list[str] = []
     offline_monthly_release_cutover = offline_monthly_release_candidate and approved
     promotion_blockers = artifact_promotion_blockers(artifact, champion_version=champion_version)
     promotion_blockers.extend(cohort_blockers or [])
-    if offline_monthly_release_candidate or offline_timesfm_l175_feature_release_candidate:
-        promotion_blockers = _offline_monthly_release_blockers(promotion_blockers)
     manual_override_requested = bool(manual_override)
     manual_override_allowed = bool(
         manual_override_requested
@@ -2830,10 +2843,7 @@ def _promotion_row_decision(
         blockers.extend(_blocker_codes(effective_promotion_blockers))
     if (
         not manual_override_allowed
-        and not offline_monthly_release_candidate
-        and not offline_timesfm_l175_feature_release_candidate
         and live_status not in {"passed", "multi_evidence_passed"}
-        and state not in {"approval_required", "approved"}
     ):
         blockers.append("live_gate_not_passed")
     if not champion_version:
@@ -2889,7 +2899,7 @@ def _promotion_row_decision(
             "approval_required": True,
             "target_state": "approval_required",
             "approval_state": "required",
-            "next_action": "Wei approval required before updating champion pointer.",
+            "next_action": "Manual hotfix approval required before updating champion pointer.",
             "final_compared_to": champion_version,
             "evidence": evidence,
         }
@@ -3104,7 +3114,7 @@ def run_promotion_controller(
                 errors.append(f"champion_history_update:{exc}")
 
     return {
-        "status": "ok" if not errors else "partial_error",
+        "status": "blocked" if not decision["can_promote"] else "ok" if not errors else "partial_error",
         "source_of_truth": "model_artifact_registry",
         "promotion_owner": "promotion-controller",
         "artifact_id": artifact_id,

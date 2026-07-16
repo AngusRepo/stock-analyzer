@@ -9,6 +9,7 @@ GET  /walk_forward/report/{start}/{end}  fetch persisted run
 All endpoints require X-Controller-Token via main.py verify_token dependency.
 """
 from __future__ import annotations
+import asyncio
 import logging
 import os
 from fastapi import APIRouter, HTTPException, Response
@@ -179,7 +180,7 @@ async def walk_forward_run(req: WalkForwardRequest):
         "models": req.models or MODELS_ALL,
         "model_coverage": walk_forward_model_coverage(req.models or MODELS_ALL),
         "data_access": data_access,
-        "gcs_result_path": f"walk_forward/runs/{req.start_date}_{req.end_date}.json",
+        "gcs_result_path": f"walk_forward/oof_cohorts/active8-oof-{req.start_date}-{req.end_date}/manifest.json",
         "poll_endpoint": f"/walk_forward/report/{req.start_date}/{req.end_date}",
         "poll_hint": (
             "Orchestrator runs up to 4 hrs inside Modal. Poll the GET /walk_forward/report "
@@ -191,6 +192,247 @@ async def walk_forward_run(req: WalkForwardRequest):
 class AnalyzeRequest(BaseModel):
     start_date: str
     end_date: str
+
+
+class OofMaterializeRequest(BaseModel):
+    cohort_id: str
+    knowledge_cutoff_date: str
+    manifest_path: str | None = None
+    dry_run: bool = True
+    confirm: bool = False
+    promote: bool = True
+
+
+@router.post("/walk_forward/oof/materialize")
+async def materialize_walk_forward_oof(req: OofMaterializeRequest):
+    """Verify one OOF manifest and build the L4/Fusion offline evidence chain."""
+
+    if not req.dry_run and not req.confirm:
+        raise HTTPException(status_code=400, detail="non-dry OOF materialization requires confirm=true")
+    from services.walk_forward_retrain import _get_bucket
+    from services.active8_oof_cohort_materializer import (
+        build_oof_snapshot_rows,
+        build_fusion_oof_rows,
+        archive_ev_candidate_artifacts,
+        load_native_pit_component_rows,
+        load_oof_prediction_rows,
+        load_verified_oof_manifest,
+        persist_oof_cohort,
+    )
+    from services.l4_alpha_ev_artifact_builder import (
+        build_l4_alpha_ev_artifact_from_rows,
+        build_l4_chronological_oof_predictions,
+    )
+    from services.allocator_ev_fusion_artifact_builder import (
+        build_allocator_ev_fusion_artifact_from_rows,
+    )
+    from services import d1_client
+
+    bucket = _get_bucket()
+    if bucket is None:
+        raise HTTPException(status_code=500, detail="GCS unavailable")
+    path = req.manifest_path or f"walk_forward/oof_cohorts/{req.cohort_id}/manifest.json"
+    try:
+        manifest, _raw = load_verified_oof_manifest(path, bucket=bucket)
+        if manifest["cohort_id"] != req.cohort_id:
+            raise ValueError("requested_cohort_manifest_mismatch")
+        prediction_rows = load_oof_prediction_rows(manifest, bucket=bucket)
+        native_rows = load_native_pit_component_rows(prediction_rows)
+        snapshot_rows, snapshot_evidence = build_oof_snapshot_rows(
+            prediction_rows,
+            native_rows,
+            cohort_id=req.cohort_id,
+            source_manifest_checksum=manifest["manifest_checksum"],
+        )
+        l4_result = build_l4_alpha_ev_artifact_from_rows(
+            snapshot_rows,
+            trained_until=req.knowledge_cutoff_date,
+            generation_mode="purged_oof",
+            cohort_id=req.cohort_id,
+        )
+        l4_predictions, l4_prediction_evidence = build_l4_chronological_oof_predictions(
+            snapshot_rows,
+            cohort_id=req.cohort_id,
+        )
+        fusion_rows = build_fusion_oof_rows(
+            snapshot_rows,
+            l4_predictions,
+            knowledge_cutoff_date=req.knowledge_cutoff_date,
+        )
+        fusion_result = build_allocator_ev_fusion_artifact_from_rows(
+            fusion_rows,
+            trained_until=req.knowledge_cutoff_date,
+            knowledge_cutoff_date=req.knowledge_cutoff_date,
+            generation_mode="purged_oof",
+            cohort_id=req.cohort_id,
+        )
+        persistence = persist_oof_cohort(
+            manifest=manifest,
+            prediction_rows=prediction_rows,
+            snapshot_rows=snapshot_rows,
+            l4_predictions=l4_predictions,
+            dry_run=req.dry_run,
+        )
+        parity = None
+        promoted = False
+        promotion_error = None
+        candidate_artifacts = None
+        promotion_receipts = None
+        promotion_receipt_error = None
+        notification_sent = False
+        l4_artifact = l4_result.get("artifact") if isinstance(l4_result, dict) else None
+        fusion_artifact = fusion_result.get("artifact") if isinstance(fusion_result, dict) else None
+        l4_decision = str((l4_result.get("validation_packet") or {}).get("decision") or "")
+        fusion_decision = str((fusion_result.get("validation_packet") or {}).get("decision") or "")
+        fusion_tier = str(
+            ((fusion_result.get("validation_packet") or {}).get("promotion") or {}).get("tier")
+            or (fusion_artifact or {}).get("promotion_tier")
+            or ""
+        )
+        if (
+            not req.dry_run
+            and l4_decision == "PASS"
+            and fusion_decision == "PASS"
+            and fusion_tier == "primary"
+        ):
+            from services.ev_operational_parity import assess_ev_operational_parity
+            from services.worker_config_client import worker_fetch
+
+            latest = d1_client.query(
+                """
+                SELECT MAX(date) prediction_date
+                FROM daily_recommendations
+                WHERE json_extract(score_components, '$.semanticVersion') = ?
+                """,
+                ["score-v2-active8-components-v3"],
+            )
+            latest_date = str((latest[0] if latest else {}).get("prediction_date") or "")
+            parity_rows = load_native_pit_component_rows([{"prediction_date": latest_date}]) if latest_date else []
+            parity = assess_ev_operational_parity(
+                l4_artifact=l4_artifact,
+                fusion_artifact=fusion_artifact,
+                native_rows=parity_rows,
+            )
+            candidate_artifacts = archive_ev_candidate_artifacts(
+                bucket=bucket,
+                cohort_id=req.cohort_id,
+                source_run_date=req.knowledge_cutoff_date,
+                manifest_path=path,
+                l4_result=l4_result,
+                fusion_result=fusion_result,
+                parity=parity,
+                promoted=False,
+            )
+            if req.promote and parity.get("decision") == "PASS":
+                serving_l4 = {
+                    **l4_artifact,
+                    "promotion_state": "production_approved",
+                    "approval_state": "production_approved",
+                    "operational_parity": parity,
+                }
+                serving_fusion = {
+                    **fusion_artifact,
+                    "promotion_state": "production_primary",
+                    "promotion_tier": "primary",
+                    "primary_expected_return_allowed": True,
+                    "operational_parity_required": False,
+                    "operational_parity": parity,
+                }
+                try:
+                    await worker_fetch(
+                        "/api/admin/config",
+                        method="PUT",
+                        json_body={
+                            "ensemble_v2": {
+                                "l4AlphaEv": serving_l4,
+                                "l4_alpha_ev": serving_l4,
+                                "allocatorEvFusion": serving_fusion,
+                                "allocator_ev_fusion": serving_fusion,
+                            },
+                            "meta": {
+                                "source": "active8_oof_automatic_promotion",
+                                "push_id": f"active8_oof:{req.cohort_id}:{req.knowledge_cutoff_date}",
+                                "promotion_reason": "offline_oof_quality_pass_and_native_operational_parity_pass",
+                            },
+                        },
+                        timeout=30.0,
+                    )
+                    promoted = True
+                    try:
+                        from services.discord_alert import alert_lifecycle
+
+                        notification_sent = await asyncio.to_thread(
+                            alert_lifecycle,
+                            event="promote",
+                            model_name="L4+Fusion OOF",
+                            from_status="offline_candidate",
+                            to_status="production",
+                            reason="purged OOF quality PASS and native operational parity PASS",
+                            metrics={
+                                "cohort_id": req.cohort_id,
+                                "knowledge_cutoff_date": req.knowledge_cutoff_date,
+                                "l4_serving_coverage": parity.get("l4_serving_coverage"),
+                                "fusion_serving_coverage": parity.get("fusion_serving_coverage"),
+                                "feature_mismatch_count": parity.get("feature_mismatch_count"),
+                            },
+                        )
+                    except Exception:  # noqa: BLE001 - alert is non-blocking after durable promotion evidence.
+                        notification_sent = False
+                except Exception as exc:  # noqa: BLE001
+                    promotion_error = str(exc)
+            if promoted:
+                try:
+                    promotion_receipts = archive_ev_candidate_artifacts(
+                        bucket=bucket,
+                        cohort_id=req.cohort_id,
+                        source_run_date=req.knowledge_cutoff_date,
+                        manifest_path=path,
+                        l4_result=l4_result,
+                        fusion_result=fusion_result,
+                        parity=parity,
+                        promoted=True,
+                    )
+                except Exception as exc:  # noqa: BLE001 - config mutation already has Worker audit snapshot.
+                    promotion_receipt_error = str(exc)
+        if not req.dry_run and candidate_artifacts is None:
+            candidate_artifacts = archive_ev_candidate_artifacts(
+                bucket=bucket,
+                cohort_id=req.cohort_id,
+                source_run_date=req.knowledge_cutoff_date,
+                manifest_path=path,
+                l4_result=l4_result,
+                fusion_result=fusion_result,
+                parity=parity,
+                promoted=False,
+            )
+        return {
+            "status": "dry_run" if req.dry_run else "materialized",
+            "cohort_id": req.cohort_id,
+            "prediction_rows": len(prediction_rows),
+            "native_pit_rows": len(native_rows),
+            "snapshot_evidence": snapshot_evidence,
+            "l4_result": l4_result,
+            "l4_prediction_evidence": l4_prediction_evidence,
+            "fusion_result": fusion_result,
+            "fusion_rows": len(fusion_rows),
+            "persistence": persistence,
+            "operational_parity": parity,
+            "promoted": promoted,
+            "promotion_error": promotion_error,
+            "candidate_artifacts": candidate_artifacts,
+            "promotion_receipts": promotion_receipts,
+            "promotion_receipt_error": promotion_receipt_error,
+            "notification_sent": notification_sent,
+            "promotion_allowed": bool(parity and parity.get("decision") == "PASS"),
+            "fusion_promotion_tier": fusion_tier,
+            "promotion_reason": (
+                "offline_oof_quality_pass_and_native_operational_parity_pass"
+                if promoted
+                else "quality_or_operational_parity_not_passed"
+            ),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/walk_forward/analyze")
@@ -208,11 +450,12 @@ async def walk_forward_analyze(req: AnalyzeRequest):
     bucket = _get_bucket()
     if bucket is None:
         raise HTTPException(status_code=500, detail="GCS unavailable")
-    blob = bucket.blob(f"walk_forward/runs/{req.start_date}_{req.end_date}.json")
+    cohort_id = f"active8-oof-{req.start_date}-{req.end_date}"
+    blob = bucket.blob(f"walk_forward/oof_cohorts/{cohort_id}/manifest.json")
     if not blob.exists():
         raise HTTPException(
             status_code=404,
-            detail=f"No persisted run at walk_forward/runs/{req.start_date}_{req.end_date}.json",
+            detail=f"No persisted OOF cohort manifest for {cohort_id}",
         )
 
     data = json.loads(blob.download_as_text())
@@ -245,7 +488,8 @@ async def walk_forward_report(start_date: str, end_date: str):
     bucket = _get_bucket()
     if bucket is None:
         raise HTTPException(status_code=500, detail="GCS unavailable")
-    blob = bucket.blob(f"walk_forward/runs/{start_date}_{end_date}.json")
+    cohort_id = f"active8-oof-{start_date}-{end_date}"
+    blob = bucket.blob(f"walk_forward/oof_cohorts/{cohort_id}/manifest.json")
     if not blob.exists():
         raise HTTPException(status_code=404, detail="run not found")
     import json

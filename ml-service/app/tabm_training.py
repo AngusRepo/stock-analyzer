@@ -285,14 +285,21 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         else DEFAULT_STANDARDIZATION_CLIP
     )
     promote_to_active, promotion_reason = resolve_training_promotion_intent(payload, model_name=MODEL_NAME)
+    generation_mode = str(payload.get("generation_mode") or "native").strip().lower()
+    if generation_mode == "purged_oof" and promote_to_active:
+        raise ValueError("oof_fold_artifact_cannot_be_promoted_to_production")
     payload.setdefault("batch_count", int(payload.get("batch_count") or DEFAULT_BATCH_COUNT))
 
     dataset = load_tabular_dataset(payload)
-    finite_mask = np.isfinite(dataset.y) & np.isfinite(dataset.X).all(axis=1)
+    finite_mask = np.isfinite(dataset.y) & np.isfinite(dataset.target_returns) & np.isfinite(dataset.X).all(axis=1)
     x_raw = np.asarray(dataset.X[finite_mask], dtype=np.float32)
     y = np.clip(np.asarray(dataset.y[finite_mask], dtype=np.float32).reshape(-1), 0.0, 1.0)
+    target_returns = np.asarray(dataset.target_returns[finite_mask], dtype=np.float32).reshape(-1)
     dates = np.asarray(dataset.dates[finite_mask]).astype(str)
     sectors = np.asarray(dataset.sectors[finite_mask]).astype(str)
+    symbols = np.asarray(dataset.symbols[finite_mask]).astype(str)
+    markets = np.asarray(dataset.markets[finite_mask]).astype(str)
+    label_known_dates = np.asarray(dataset.label_known_dates[finite_mask]).astype(str)
     if len(y) < 1000:
         raise ValueError(f"TabM training requires at least 1000 finite rows, got {len(y)}")
     gcs_prefix = str(payload.get("gcs_prefix") or payload.get("data_slice", {}).get("gcs_prefix") or "universal").strip().rstrip("/")
@@ -318,11 +325,30 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         else {"status": "skipped"}
     )
 
-    train_idx, test_idx, split_meta = _date_split(
-        dates,
-        test_ratio=float(payload.get("test_ratio") or 0.2),
-        embargo_dates=int(payload.get("embargo_dates") or 10),
-    )
+    explicit_ranges = all(payload.get(key) for key in ("train_start", "train_end", "test_start", "test_end"))
+    if explicit_ranges:
+        from .purged_cv import purged_explicit_walk_forward_indices
+
+        train_idx, test_idx, split_meta = purged_explicit_walk_forward_indices(
+            dates,
+            train_start=str(payload["train_start"]),
+            train_end=str(payload["train_end"]),
+            test_start=str(payload["test_start"]),
+            test_end=str(payload["test_end"]),
+            label_horizon_days=int(payload.get("label_horizon_days") or 5),
+            label_known_dates=label_known_dates,
+        )
+        split_meta = {
+            **split_meta,
+            "train_range": split_meta["effective_train_range"],
+            "validation_range": split_meta["test_range"],
+        }
+    else:
+        train_idx, test_idx, split_meta = _date_split(
+            dates,
+            test_ratio=float(payload.get("test_ratio") or 0.2),
+            embargo_dates=int(payload.get("embargo_dates") or 10),
+        )
     train_fit_idx = _subsample_indices(train_idx, max_rows=max_rows)
     x, medians, scales = _robust_standardize(x_raw[train_fit_idx], x_raw, clip_value=standardization_clip)
 
@@ -387,6 +413,7 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "model_name": MODEL_NAME,
         "model_type": "tabular_neural_tabm",
         "family": "tabular_neural",
+        "target_semantic_version": "next-session-open-to-fifth-session-close-v2",
         "trained_at": trained_at,
         "feature_names": dataset.feature_names,
         "feature_count": len(dataset.feature_names),
@@ -432,6 +459,25 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "market_lanes": sorted({str(value) for value in sectors.tolist()})[:20],
     }, prep_lineage)
     saved = _save_artifact(bucket=bucket, model=model.cpu(), version=version, metadata=metadata)
+    oof_artifact = None
+    if generation_mode == "purged_oof":
+        from .oof_lineage import save_oof_prediction_artifact
+
+        oof_artifact = save_oof_prediction_artifact(
+            bucket=bucket,
+            gcs_prefix=gcs_prefix,
+            cohort_id=str(payload.get("cohort_id") or ""),
+            fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
+            model_name=MODEL_NAME,
+            artifact_version=version,
+            raw_scores=pred,
+            targets=target_returns[test_idx],
+            dates=dates[test_idx],
+            symbols=symbols[test_idx],
+            markets=markets[test_idx],
+            label_known_dates=label_known_dates[test_idx],
+            split_metadata=split_meta,
+        )
     pool_update = None
     if promote_to_active:
         assert promotion_reason is not None
@@ -466,5 +512,6 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "validation_samples": int(len(test_idx)),
         "feature_count": len(dataset.feature_names),
         "pool_update": pool_update,
+        "oof_artifact": oof_artifact,
         "elapsed_s": round(time.time() - t0, 3),
     }

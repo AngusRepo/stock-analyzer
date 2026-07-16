@@ -20,7 +20,12 @@ def test_neuralforecast_sequence_defaults_follow_model_core_windows():
 def test_panel_train_eval_rows_filters_short_series_before_neuralforecast_fit():
     records = [
         {"symbol": "short", "close": [float(i) for i in range(60)]},
-        {"symbol": "long", "close": [float(i) for i in range(140)]},
+        {
+            "symbol": "long",
+            "close": [float(i) for i in range(140)],
+            "open": [float(i + 1) for i in range(140)],
+            "dates": [f"d{i:03d}" for i in range(140)],
+        },
     ]
 
     train_rows, eval_rows, stats = _panel_train_eval_rows(
@@ -35,14 +40,26 @@ def test_panel_train_eval_rows_filters_short_series_before_neuralforecast_fit():
     assert stats["min_history"] == 133
     assert stats["skipped_short_history"] == 1
     assert stats["valid_series"] == 1
+    assert eval_rows[0]["entry_open"] == 136.0
+    assert eval_rows[0]["target_semantic_version"] == "next-session-open-to-fifth-session-close-v2"
 
 
 def test_panel_train_eval_rows_scans_past_short_records_until_max_series_valid():
     records = [
         {"symbol": "short_a", "close": [float(i) for i in range(60)]},
         {"symbol": "short_b", "close": [float(i) for i in range(80)]},
-        {"symbol": "long_a", "close": [float(i) for i in range(140)]},
-        {"symbol": "long_b", "close": [float(i) for i in range(150)]},
+        {
+            "symbol": "long_a",
+            "close": [float(i) for i in range(140)],
+            "open": [float(i + 1) for i in range(140)],
+            "dates": [f"a{i:03d}" for i in range(140)],
+        },
+        {
+            "symbol": "long_b",
+            "close": [float(i) for i in range(150)],
+            "open": [float(i + 1) for i in range(150)],
+            "dates": [f"b{i:03d}" for i in range(150)],
+        },
     ]
 
     _train_rows, eval_rows, stats = _panel_train_eval_rows(
@@ -56,6 +73,25 @@ def test_panel_train_eval_rows_scans_past_short_records_until_max_series_valid()
     assert stats["considered_series"] == 4
     assert stats["skipped_short_history"] == 2
     assert stats["valid_series"] == 2
+
+
+def test_panel_train_eval_rows_rejects_legacy_close_only_label_contract():
+    records = [{
+        "symbol": "legacy",
+        "close": [float(i) for i in range(140)],
+        "dates": [f"d{i:03d}" for i in range(140)],
+    }]
+
+    train_rows, eval_rows, stats = _panel_train_eval_rows(
+        records,
+        seq_len=128,
+        pred_len=5,
+        max_series=10,
+    )
+
+    assert train_rows == []
+    assert eval_rows == []
+    assert stats["skipped_label_contract"] == 1
 
 
 def test_neuralforecast_model_runtime_suppresses_known_trainer_warnings():

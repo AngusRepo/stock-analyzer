@@ -12,7 +12,8 @@ from services.active_model_policy import ACTIVE_ALPHA_MODELS
 
 SCORE_FEATURE_VERSION = "score_v2"
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
-ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v3"
+ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v4"
+OOF_ENSEMBLE_SEMANTIC_VERSION = "active8-purged-oof-chronological-ridge-v1"
 RECONSTRUCTION_VERSION = "ev-point-in-time-lineage-reconstruction-v1"
 CHAMPION_HISTORY_SOURCE = "model_champion_history"
 ROW_MODEL_VERSION_SOURCE = "predictions.model_signal"
@@ -115,7 +116,13 @@ def parse_model_set_signature(value: Any) -> dict[str, str] | None:
 
 def ensemble_lineage_blockers(payload: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
-    if str(payload.get("semantic_version") or "").strip() != ENSEMBLE_SEMANTIC_VERSION:
+    generation_mode = str(payload.get("generation_mode") or "native").strip().lower()
+    expected_semantic = (
+        OOF_ENSEMBLE_SEMANTIC_VERSION
+        if generation_mode == "purged_oof"
+        else ENSEMBLE_SEMANTIC_VERSION
+    )
+    if str(payload.get("semantic_version") or "").strip() != expected_semantic:
         blockers.append("ensemble_semantic_version_incompatible")
     versions = payload.get("artifact_versions") if isinstance(payload.get("artifact_versions"), dict) else {}
     contributors = payload.get("contributing_models") if isinstance(payload.get("contributing_models"), list) else []

@@ -1150,8 +1150,8 @@ export async function runWeeklyDriftDetection(env: Bindings) {
     `retrain_groups=${trainModelGroups.join(',') || 'none'}`,
     `retrain_targets=${retrainTargets.map((target) => target.name).join(',') || 'none'}`,
     `artifact_lifecycle_targets=${artifactLifecycleTargets.map((target) => `${target.name}:${target.artifactLifecycle}`).join(',') || 'none'}`,
-    'approval_required=confirm=weekly_drift',
-    'production_effect=none',
+    'promotion=automatic_after_pass_strong_pass_live_multi_evidence_and_final_champion_comparison',
+    'production_effect=none_until_serving_readback_verified',
   ].join('; ')
 }
 

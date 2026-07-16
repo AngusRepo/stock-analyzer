@@ -18,7 +18,7 @@ DIRECT_ALPHA_MODELS = (
 )
 L2_SIDECARS = ("TimesFM",)
 SERVING_OK_STATES = {"production"}
-SERVING_OK_OFFLINE_DECISIONS = {"STRONG_PASS", "PASS", "PRODUCTION_BACKFILL", "NOT_EVALUATED"}
+SERVING_OK_OFFLINE_DECISIONS = {"STRONG_PASS", "PASS"}
 SERVING_BAD_LIVE_STATUSES = {"failed", "rolling_ic_failed", "live_gate_failed"}
 
 ARTIFACT_EXTENSIONS = {
@@ -56,6 +56,16 @@ def _json_obj(value: Any) -> dict[str, Any]:
         except json.JSONDecodeError:
             return {}
     return {}
+
+
+def _artifact_metadata(artifact: dict[str, Any] | None) -> dict[str, Any]:
+    source = artifact or {}
+    direct = _json_obj(source.get("metadata"))
+    if direct:
+        return direct
+    offline = _json_obj(source.get("offline_evidence_json"))
+    registration = _json_obj(offline.get("registration"))
+    return _json_obj(registration.get("metadata"))
 
 
 def _folder(model_name: str) -> str:
@@ -193,11 +203,13 @@ def build_pool_from_champion_pointers(
         entry["serving_artifact_id"] = artifact_id
         entry["serving_block_reason"] = block_reason
         if artifact:
+            artifact_metadata = _artifact_metadata(artifact)
             entry["gcs_path"] = str(artifact.get("artifact_path") or _default_artifact_path(model_name, version))
             entry["metadata_path"] = str(artifact.get("metadata_path") or _default_metadata_path(model_name, version))
             entry["candidate_type"] = artifact.get("candidate_type")
             entry["offline_gate_decision"] = artifact.get("offline_gate_decision")
             entry["live_gate_status"] = artifact.get("live_gate_status")
+            entry["target_semantic_version"] = artifact_metadata.get("target_semantic_version")
         elif version:
             entry.setdefault("gcs_path", _default_artifact_path(model_name, version))
             entry.setdefault("metadata_path", _default_metadata_path(model_name, version))
@@ -254,12 +266,42 @@ def build_model_pool_reconcile_plan(
             continue
         block_reason = str(champion.get("serving_block_reason") or "").strip()
         if str(champion.get("status") or "").strip().lower() != "active" or block_reason:
-            blocked.append({
-                "model_name": model_name,
-                "reason": block_reason or f"champion_status_{champion.get('status') or 'missing'}",
-                "section": champion_section,
-                "champion_version": champion.get("version"),
-            })
+            current = current or {}
+            retirement_patch = {
+                key: champion.get(key)
+                for key in (
+                    "version",
+                    "status",
+                    "gcs_path",
+                    "metadata_path",
+                    "serving_owner",
+                    "serving_artifact_id",
+                    "serving_block_reason",
+                    "offline_gate_decision",
+                    "live_gate_status",
+                    "target_semantic_version",
+                )
+                if champion.get(key) is not None
+            }
+            retirement_patch["status"] = "retired"
+            retirement_patch["production_weight"] = 0.0
+            retirement_patch["serving_owner"] = None
+            retirement_patch["serving_artifact_id"] = None
+            diff = {
+                key: {"from": current.get(key), "to": value}
+                for key, value in retirement_patch.items()
+                if current.get(key) != value
+            }
+            if diff:
+                actions.append({
+                    "action": "retire_invalid_model_pool_pointer",
+                    "model_name": model_name,
+                    "section": section,
+                    "champion_section": champion_section,
+                    "reason": block_reason or f"champion_status_{champion.get('status') or 'missing'}",
+                    "diff": diff,
+                    "patch": retirement_patch,
+                })
             continue
 
         current = current or {}
@@ -274,6 +316,7 @@ def build_model_pool_reconcile_plan(
                 "serving_artifact_id",
                 "offline_gate_decision",
                 "live_gate_status",
+                "target_semantic_version",
             )
             if champion.get(key) is not None
         }
@@ -296,7 +339,7 @@ def build_model_pool_reconcile_plan(
         "schema_version": "model-pool-reconcile-plan-v1",
         "source": "model_champion_pointers/model_artifact_registry",
         "mode": "dry_run",
-        "apply_allowed": False,
+        "apply_allowed": not blocked,
         "has_changes": bool(actions),
         "action_count": len(actions),
         "blocked_count": len(blocked),
@@ -312,8 +355,9 @@ def apply_model_pool_reconcile_plan(
 ) -> dict[str, Any]:
     """Return a compat model_pool projection with D1 champion pointer patches applied.
 
-    This function is pure and performs no GCS/D1 writes. Callers must still
-    require explicit operator approval before uploading the returned JSON.
+    This function is pure and performs no GCS/D1 writes. It projects the
+    authoritative D1 champion state and may be applied automatically only when
+    the plan has no blocked entries.
     """
 
     if plan.get("blocked"):
@@ -323,7 +367,10 @@ def apply_model_pool_reconcile_plan(
     updated["l2_feature_sidecars"] = dict(updated.get("l2_feature_sidecars") or {})
     applied: list[dict[str, Any]] = []
     for action in plan.get("actions") or []:
-        if not isinstance(action, dict) or action.get("action") != "update_model_pool_pointer":
+        if not isinstance(action, dict) or action.get("action") not in {
+            "update_model_pool_pointer",
+            "retire_invalid_model_pool_pointer",
+        }:
             continue
         model_name = str(action.get("model_name") or "").strip()
         section = str(action.get("section") or "models").strip()

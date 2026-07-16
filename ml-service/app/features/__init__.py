@@ -1070,8 +1070,11 @@ def build_feature_matrix(
         df = df.with_columns(median_fills)
 
     # ── 15. Target variables ─────────────────────────────────────────────────
+    # Production verification enters at the next observable session open and
+    # marks the outcome at the fifth session close. Training must learn that
+    # same executable outcome; today's close remains an input, not the entry.
     df = df.with_columns(
-        (_safe_div(pl.col("close").shift(-5), pl.col("close")) - 1.0).alias("target_5d")
+        (_safe_div(pl.col("close").shift(-5), pl.col("open").shift(-1)) - 1.0).alias("target_5d")
     )
 
     # Triple Barrier Label (using raw ATR, not Z-scored)

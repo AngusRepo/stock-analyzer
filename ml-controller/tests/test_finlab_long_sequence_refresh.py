@@ -127,7 +127,7 @@ def test_long_sequence_refresh_skips_non_tail_backfill(monkeypatch):
 
 def test_long_sequence_refresh_skips_daily_run_without_price_tail(monkeypatch):
     async def fake_build_finlab_long_sequence_prep(payload: dict, fire_and_forget: bool = False) -> dict:
-        raise AssertionError("long sequence refresh should not spawn without daily_price close")
+        raise AssertionError("long sequence refresh should not spawn without adjusted OHLC label fields")
 
     monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models")
     monkeypatch.setenv("FINLAB_LONG_SEQUENCE_REFRESH_ENABLED", "1")
@@ -146,9 +146,16 @@ def test_long_sequence_refresh_skips_daily_run_without_price_tail(monkeypatch):
 
     assert result == {
         "status": "skipped",
-        "reason": "tail_daily_price_close_missing",
+        "reason": "tail_daily_price_adjusted_ohlc_label_contract_missing",
         "run_id": "finlab-v4-daily-20260702-chip-only",
-        "required_uri": "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/close.parquet",
+        "required_uris": [
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/adj_close.parquet",
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/adj_open.parquet",
+        ],
+        "missing_uris": [
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/adj_close.parquet",
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/adj_open.parquet",
+        ],
     }
 
 

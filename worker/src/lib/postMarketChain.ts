@@ -1,6 +1,6 @@
 import type { Bindings } from '../types'
 import { runAdaptiveUpdate, runLinUcbRewardLedgerRefresh } from './adaptiveEngine'
-import { runModelIcRollingRefresh, runObsidianDaily, runPaperActivePostmarketPromotion, runVerifyV2 } from './controllerWorkflows'
+import { runArtifactAutoPromotion, runModelIcRollingRefresh, runObsidianDaily, runPaperActivePostmarketPromotion, runVerifyV2 } from './controllerWorkflows'
 import { generateDailyReport } from './dailyReport'
 import { ensureMetaLearningResearchRegistry } from './metaLearningResearchTrack'
 import { runNeuralMetaShadow } from './metaLearningShadowRunner'
@@ -361,6 +361,11 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
   const results: ChainedTask[] = []
 
   results.push(await logChainedTask(env, ctx, 'model-ic-tracker', () => runModelIcRollingRefresh(env, ctx.runDate)))
+  if (isCurrentBusinessDate(ctx.runDate)) {
+    results.push(await logChainedTask(env, ctx, 'artifact-auto-promotion', () => runArtifactAutoPromotion(env), { critical: false }))
+  } else {
+    results.push(await logSkippedHistoricalTask(env, ctx, 'artifact-auto-promotion'))
+  }
   results.push(await logChainedTask(env, ctx, 's12-replay-backfill', () => enqueueS12ReplayBackfillTask(env, ctx), {
     timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
   }))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import asyncio
+import inspect
 import types
 from datetime import date, timedelta
 from pathlib import Path
@@ -27,6 +28,22 @@ class _StateGraph:
 
     def compile(self, *_args, **_kwargs):
         return self
+
+    async def ainvoke(self, initial_state):
+        state = dict(initial_state)
+        for args, _kwargs in self.nodes:
+            node = args[1]
+            update = node(state)
+            if inspect.isawaitable(update):
+                update = await update
+            if not update:
+                continue
+            for key, value in update.items():
+                if key == "errors" and key in state:
+                    state[key] = [*state[key], *value]
+                else:
+                    state[key] = value
+        return state
 
 
 graph_mod.StateGraph = _StateGraph
@@ -262,7 +279,9 @@ def test_gnn_full_universe_scores_attach_to_rank_scores(monkeypatch):
 
     pred = result["predictions"]["2330"]
     assert pred["gnn"]["graph_context"]["n_nodes"] == 1
-    assert pred["rank_scores"]["GNN"] == 0.81
+    assert pred["raw_model_scores"]["GNN"] == 0.81
+    assert "GNN" not in pred["rank_scores"]
+    assert "rank_missing:GNN" in pred["model_score_lineage"]["blockers"]
     assert result["modal_wait_telemetry"]["stage_timings"]["gnn_graphsage_universal_predict"]["required_alpha"] is True
 
 

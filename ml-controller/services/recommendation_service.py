@@ -2319,27 +2319,9 @@ def _finite_rank_score(value: Any) -> float | None:
     return max(0.0, min(1.0, numeric))
 
 
-def _forecast_pct_to_rank_score(value: Any) -> float | None:
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(numeric):
-        return None
-    try:
-        return 1.0 / (1.0 + math.exp(-numeric * 12.0))
-    except OverflowError:
-        return 1.0 if numeric > 0 else 0.0
-
-
 def _model_rank_score(prediction: dict, model_name: str) -> float | None:
     if model_name in _DIRECT_ALPHA_BLOCKED_MODELS:
         return None
-    if model_name in _SEQUENCE_MODEL_SOURCE_KEYS:
-        signal = prediction.get(_SEQUENCE_MODEL_SOURCE_KEYS[model_name])
-        if not isinstance(signal, dict):
-            return None
-        return _forecast_pct_to_rank_score(signal.get("forecast_pct"))
     rank_scores = prediction.get("rank_scores")
     score = _finite_rank_score(rank_scores.get(model_name)) if isinstance(rank_scores, dict) else None
     if score is not None:
@@ -4670,11 +4652,7 @@ def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
         "PatchTST": "patchtst",
         "iTransformer": "itransformer",
     }.get(model_name)
-    if not source_key:
-        return {}
-    signal = pred.get(source_key)
-    if not isinstance(signal, dict):
-        return {}
+    signal = pred.get(source_key) if source_key and isinstance(pred.get(source_key), dict) else {}
     payload: dict[str, Any] = {}
     for key in (
         "forecast_pct",
@@ -4690,8 +4668,22 @@ def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
     ):
         if signal.get(key) is not None:
             payload[key] = signal.get(key)
-    if payload:
+    if payload and source_key:
         payload["source_key"] = source_key
+    lineage = pred.get("model_score_lineage") if isinstance(pred.get("model_score_lineage"), dict) else {}
+    versions = lineage.get("artifact_versions") if isinstance(lineage.get("artifact_versions"), dict) else {}
+    raw_scores = lineage.get("raw_scores") if isinstance(lineage.get("raw_scores"), dict) else {}
+    rank_scores = pred.get("rank_scores") if isinstance(pred.get("rank_scores"), dict) else {}
+    if model_name in rank_scores:
+        payload.update({
+            "artifact_version": versions.get(model_name),
+            "raw_score": raw_scores.get(model_name),
+            "rank_score": rank_scores.get(model_name),
+            "score_semantic_version": lineage.get("semantic_version"),
+            "target_semantic_version": lineage.get("target_semantic_version"),
+            "model_set_signature": lineage.get("model_set_signature"),
+            "market_segment": lineage.get("market_segment"),
+        })
     return payload
 
 

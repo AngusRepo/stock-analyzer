@@ -232,7 +232,14 @@ def test_load_pending_predictions_uses_bounded_run_date_window(monkeypatch):
     assert "UPPER(COALESCE" not in str(captured["sql"])
     assert "p.prediction_date BETWEEN ? AND ?" in str(captured["sql"])
     assert "s.market IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')" in str(captured["sql"])
-    assert captured["pending_params"] == ["2026-04-14", "2026-04-24", 600]
+    assert captured["pending_params"] == [
+        verify_service.VERIFICATION_RETURN_SEMANTIC_VERSION,
+        "2026-04-14",
+        "2026-04-24",
+        600,
+    ]
+    assert "verification_label_schema_version" in str(captured["sql"])
+    assert "ORDER BY p.prediction_date ASC" in str(captured["sql"])
 
 
 def test_verification_window_does_not_use_calendar_days_across_holidays(monkeypatch):

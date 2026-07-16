@@ -417,7 +417,7 @@ def active8_family_feature_contract(
                 if model == "iTransformer"
                 else "independent_close_series"
             ),
-            "release_id": "sequence_records_v2",
+            "release_id": "sequence_records_v3",
             "release_cohort": [model],
             "atomic_cohort_required": False,
             "timesfm_l175_sidecar_required": False,

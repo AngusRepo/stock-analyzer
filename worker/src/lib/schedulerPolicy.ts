@@ -60,6 +60,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
 
   'weekly-audit': { kind: 'trading_week', holidayGated: true, description: 'weekly trading audit' },
   'model-ic-tracker': { kind: 'trading_week', holidayGated: true, description: 'weekly model IC tracker' },
+  'artifact-auto-promotion': { kind: 'research', holidayGated: false, description: 'evidence-complete artifact auto-promotion and serving projection readback' },
 
   'debate-memory-retention': { kind: 'maintenance', holidayGated: false, description: 'daily debate memory retention' },
   'audit-json-retention': { kind: 'maintenance', holidayGated: false, description: 'archive old D1 audit JSON blobs to R2 and scrub D1 pointers' },
@@ -85,7 +86,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'monthly-opb-arm-prior-refresh': { kind: 'research', holidayGated: false, description: 'monthly production-gated OPB counterfactual arm-prior refresh' },
   'adaptive-meta-policy-replay': { kind: 'research', holidayGated: false, description: 'weekly evidence-only active-8 adaptive meta-policy replay' },
   'linucb-multiplier-replay': { kind: 'research', holidayGated: false, description: 'weekly evidence-only LinUCB bandit multiplier replay' },
-  'weekly-drift-retrain': { kind: 'research', holidayGated: false, description: 'approval-gated weekly drift hotfix candidate; not weekly cleanup' },
+  'weekly-drift-retrain': { kind: 'research', holidayGated: false, description: 'evidence-gated weekly drift candidate; automatic promotion only after full serving gates pass' },
   'sector-leaders': { kind: 'research', holidayGated: false, description: 'weekly sector leader refresh' },
   'monthly-optuna': { kind: 'research', holidayGated: false, description: 'monthly Optuna research sweep' },
   'monthly-l4-alpha-ev-refresh': { kind: 'research', holidayGated: false, description: 'monthly production-gated L4 alpha EV artifact refresh' },

@@ -10,6 +10,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from services.active8_score_semantics import (  # noqa: E402
+    MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
+    MODEL_SCORE_SEMANTIC_VERSION,
+    MODEL_TARGET_SEMANTIC_VERSION,
+)
+
 
 def _install_daily_pipeline_import_stubs():
     graph_mod = types.ModuleType("langgraph.graph")
@@ -177,10 +183,17 @@ def test_core_family_evidence_strict_active8_rejects_missing_ensemble_output():
             "ExtraTrees": 0.53,
             "TabM": 0.54,
             "GNN": 0.55,
+            "DLinear": 0.56,
+            "PatchTST": 0.57,
+            "iTransformer": 0.58,
         },
-        "dlinear": {"forecast_pct": 0.01},
-        "patchtst": {"forecast_pct": 0.02},
-        "itransformer": {"forecast_pct": 0.03},
+        "model_score_lineage": {
+            "schema_version": MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
+            "semantic_version": MODEL_SCORE_SEMANTIC_VERSION,
+            "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
+            "complete": True,
+            "blockers": [],
+        },
     }
 
     result = apply_core_family_evidence(

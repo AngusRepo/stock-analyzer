@@ -37,6 +37,11 @@ from services.model_artifact_registry import (
     run_model_pool_release_writer,
     run_promotion_controller,
 )
+from services.model_serving_resolver import (
+    apply_model_pool_reconcile_plan,
+    build_model_pool_reconcile_plan,
+    build_pool_from_champion_pointers,
+)
 from services.model_upgrade_research_track import build_research_benchmark_manifest
 
 logger = logging.getLogger(__name__)
@@ -449,6 +454,12 @@ class PromotionControllerRequest(BaseModel):
     reason: str = "promotion_controller"
     allow_offline_monthly_release: bool = False
     manual_override: bool = False
+
+
+class AutoPromotionRequest(BaseModel):
+    confirm: bool = True
+    max_candidates: int = 16
+    reason: str = "scheduled_evidence_based_auto_promotion"
 
 
 class FeatureReleasePromotionControllerRequest(BaseModel):
@@ -1673,6 +1684,153 @@ async def artifact_registry_promotion_controller(req: PromotionControllerRequest
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry promotion controller failed: {e}")
+
+
+@router.post("/artifact_registry/auto_promote")
+async def artifact_registry_auto_promote(req: AutoPromotionRequest = AutoPromotionRequest()):
+    """Promote evidence-complete scheduled candidates and reconcile serving metadata."""
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="auto_promote requires confirm=true; use promotion_queue for dry-run")
+    try:
+        import json as _json
+        from google.cloud import storage
+
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if not pool_blob.exists():
+            raise RuntimeError("universal/model_pool.json not found")
+        pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
+        champion_versions = {
+            str(name): str(entry.get("version"))
+            for name, entry in (pool.get("models") or {}).items()
+            if isinstance(entry, dict) and entry.get("version")
+        }
+        rows = list_artifact_registry(limit=1000)
+        pointers = list_champion_pointers()
+        queue = build_promotion_queue(rows, champion_versions=champion_versions)
+        eligible = [
+            row for row in queue.get("queue") or []
+            if row.get("promotion_decision") == "auto_promote_candidate"
+            and row.get("approval_required") is not True
+        ][:max(1, min(int(req.max_candidates), 64))]
+        by_id = {str(row.get("artifact_id")): dict(row) for row in rows}
+        results: list[dict] = []
+        promoted_artifacts: list[dict] = []
+
+        feature_runs = sorted({
+            str(by_id.get(str(item.get("artifact_id")), {}).get("training_run_id") or "")
+            for item in eligible
+            if str(item.get("candidate_type") or "") == "timesfm_l175_l2_feature_release"
+        } - {""})
+        for training_run_id in feature_runs:
+            result = run_feature_release_promotion_controller(
+                training_run_id=training_run_id,
+                registry_rows=rows,
+                d1_pointers=pointers,
+                model_pool_versions=champion_versions,
+                confirm=True,
+                approved=False,
+                approved_by="artifact_auto_promotion",
+                reason=req.reason,
+            )
+            artifacts = [dict(row) for row in result.pop("artifacts", [])]
+            results.append(result)
+            if result.get("can_promote") is True:
+                promoted_artifacts.extend(artifacts)
+                run_model_pool_release_bundle_writer(
+                    pool,
+                    artifacts,
+                    reason=req.reason,
+                    promoted_at=result.get("confirmed_at"),
+                    confirm=True,
+                )
+
+        seen_models: set[str] = set()
+        for item in eligible:
+            if str(item.get("candidate_type") or "") == "timesfm_l175_l2_feature_release":
+                continue
+            model_name = str(item.get("model_name") or "")
+            if not model_name or model_name in seen_models:
+                continue
+            seen_models.add(model_name)
+            artifact_id = str(item.get("artifact_id") or "")
+            result = run_promotion_controller(
+                artifact_id=artifact_id,
+                registry_rows=rows,
+                d1_pointers=pointers,
+                model_pool_versions=champion_versions,
+                confirm=True,
+                approved=False,
+                approved_by="artifact_auto_promotion",
+                reason=req.reason,
+            )
+            results.append(result)
+            if result.get("can_promote") is not True:
+                continue
+            artifact = by_id[artifact_id]
+            promoted_artifacts.append(artifact)
+            run_model_pool_release_writer(
+                pool,
+                artifact,
+                reason=req.reason,
+                promoted_at=result.get("confirmed_at"),
+                confirm=True,
+            )
+
+        refreshed_rows = list_artifact_registry(limit=1000)
+        refreshed_pointers = list_champion_pointers()
+        champion_pool = build_pool_from_champion_pointers(
+            pointers=refreshed_pointers,
+            artifacts=refreshed_rows,
+            fallback_pool=pool,
+        )
+        reconcile_plan = build_model_pool_reconcile_plan(model_pool=pool, champion_pool=champion_pool)
+        if reconcile_plan.get("blocked"):
+            raise RuntimeError(f"model_pool_reconcile_blocked:{reconcile_plan['blocked']}")
+        pool = apply_model_pool_reconcile_plan(model_pool=pool, plan=reconcile_plan)
+        pool_blob.upload_from_string(
+            _json.dumps(pool, ensure_ascii=False, indent=2, sort_keys=True),
+            content_type="application/json",
+        )
+
+        projected = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
+        readback_errors: list[str] = []
+        for artifact in promoted_artifacts:
+            model_name = str(artifact.get("model_name") or "")
+            entry = (projected.get("models") or {}).get(model_name) or {}
+            if str(entry.get("version") or "") != str(artifact.get("version") or ""):
+                readback_errors.append(f"version_mismatch:{model_name}")
+            if str(entry.get("serving_artifact_id") or "") != str(artifact.get("artifact_id") or ""):
+                readback_errors.append(f"artifact_id_mismatch:{model_name}")
+        if readback_errors:
+            raise RuntimeError("model_pool_readback_failed:" + ",".join(readback_errors))
+
+        for artifact in promoted_artifacts:
+            discord_alert.alert_lifecycle(
+                "promote",
+                str(artifact.get("model_name") or "unknown"),
+                from_status="candidate",
+                to_status="active",
+                reason=req.reason,
+                metrics={
+                    "artifact_id": artifact.get("artifact_id"),
+                    "version": artifact.get("version"),
+                    "offline_gate": artifact.get("offline_gate_decision"),
+                    "live_gate": artifact.get("live_gate_status"),
+                    "promotion_basis": "all_evidence_gates_and_final_champion_comparison_passed",
+                },
+            )
+        return {
+            "status": "ok",
+            "eligible": len(eligible),
+            "promoted": len(promoted_artifacts),
+            "results": results,
+            "model_pool_reconcile": reconcile_plan,
+            "readback_verified": not readback_errors,
+        }
+    except Exception as e:
+        logger.exception("artifact auto promotion failed")
+        raise HTTPException(status_code=500, detail=f"artifact_registry auto promotion failed: {e}")
 
 
 @router.post("/artifact_registry/feature_release_promotion_controller")

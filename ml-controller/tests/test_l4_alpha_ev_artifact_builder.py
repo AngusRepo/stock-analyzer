@@ -41,7 +41,7 @@ def _row(day: str, idx: int, *, target: float) -> dict:
         }),
         "forecast_data": json.dumps({
             "ensemble_v2": {
-                "semantic_version": "active8-ic-weighted-rank-v3",
+                "semantic_version": "active8-ic-weighted-rank-v4",
                 "contributing_models": ["LightGBM", "XGBoost"],
                 "artifact_versions": {"LightGBM": "vTest", "XGBoost": "vTest"},
                 "model_set_signature": "LightGBM@vTest|XGBoost@vTest",

@@ -77,7 +77,7 @@ ASSISTIVE_MIN_EXPERT_SAMPLES = 100
 ASSISTIVE_MIN_EXPERT_DATES = 10
 CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
 CANONICAL_SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
-CANONICAL_ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v3"
+CANONICAL_ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v4"
 CANONICAL_ADJUSTMENT_FACTOR_SOURCE = "canonical_market_daily:finlab.price"
 MIN_CROSS_SECTION_SAMPLES_PER_DATE = 20
 LABEL_PURGE_DATE_GROUPS = 5
@@ -196,6 +196,8 @@ def _selection_raw_features(row: dict[str, Any]) -> dict[str, float]:
 
 
 def _l4_usage_scope(row: dict[str, Any]) -> str:
+    if str(row.get("generation_mode") or "").strip() == "purged_oof":
+        return SNAPSHOT_BACKFILL_USAGE_SCOPE
     if (
         str(row.get("allocator_ev_feature_snapshot_source") or "").strip() == SNAPSHOT_BACKFILL_SOURCE
         and str(row.get("allocator_ev_feature_snapshot_guard") or "").strip()
@@ -1437,7 +1439,20 @@ def build_allocator_ev_fusion_artifact_from_rows(
     l2: float = 0.25,
     cost_model_bps: float = 18.0,
     knowledge_cutoff_date: str | None = None,
+    generation_mode: str = "native",
+    cohort_id: str | None = None,
 ) -> dict[str, Any]:
+    if generation_mode not in {"native", "purged_oof"}:
+        raise ValueError("fusion_generation_mode_invalid")
+    if generation_mode == "purged_oof":
+        if not cohort_id:
+            raise ValueError("fusion_oof_cohort_id_missing")
+        if any(
+            str(row.get("generation_mode") or "") != "purged_oof"
+            or str(row.get("cohort_id") or "") != cohort_id
+            for row in rows
+        ):
+            raise ValueError("fusion_oof_mixed_or_missing_cohort_lineage")
     samples, diagnostics = _samples(rows, execution_cost_bps=cost_model_bps)
     selection_model = _fit_expert(
         samples,
@@ -1496,6 +1511,17 @@ def build_allocator_ev_fusion_artifact_from_rows(
         execution_model=execution_model,
         execution_probability_model=execution_probability_model,
     )
+    failed_gates = [
+        f"{component}:{gate}"
+        for component, model in (
+            ("selection", selection_model),
+            ("execution", execution_model),
+            ("execution_probability", execution_probability_model),
+            ("selection_champion", selection_champion_comparison),
+            ("final_champion", champion_comparison),
+        )
+        for gate in (model.get("failed_gates") or [])
+    ]
     assistive_failed_gates = [
         f"{component}:{gate}"
         for component, model in (
@@ -1522,7 +1548,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
     validation_packet = {
         "schema_version": "allocator-ev-fusion-validation-packet-v11",
         "decision": decision,
-        "failed_gates": assistive_failed_gates,
+        "failed_gates": failed_gates,
         "primary_champion_failed_gates": champion_comparison.get("failed_gates") or [],
         "validation_scope": {
             "owner": "allocator_ev_fusion",
@@ -1578,14 +1604,17 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "label_schema_version": LABEL_SCHEMA_VERSION,
         "expected_return_owner": "allocator_ev_fusion",
         "promotion_state": (
-            "production_primary" if promotion_tier == "primary"
+            "offline_quality_passed_operational_parity_required"
+            if generation_mode == "purged_oof" and promotion_tier in {"primary", "assistive"}
+            else "production_primary" if promotion_tier == "primary"
             else "production_assistive" if promotion_tier == "assistive"
             else "shadow"
         ),
         "promotion_tier": promotion_tier,
-        "primary_expected_return_allowed": promotion_tier == "primary",
+        "primary_expected_return_allowed": promotion_tier == "primary" and generation_mode == "native",
         "assistive_expected_return_allowed": False,
         "assistive_learning_signal_allowed": promotion_tier in {"assistive", "primary"},
+        "operational_parity_required": generation_mode == "purged_oof",
         "promotion_blockers": promotion_blockers,
         "validation_packet": validation_packet,
         "resolver_method": "cross_fitted_rank_two_part_trade_ev_fusion",
@@ -1612,6 +1641,9 @@ def build_allocator_ev_fusion_artifact_from_rows(
             "knowledge_cutoff_date": knowledge_cutoff_date or trained_until,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             **diagnostics,
+            "generation_mode": generation_mode,
+            "cohort_id": cohort_id,
+            "efficacy_evidence_mode": "purged_oof" if generation_mode == "purged_oof" else "native",
         },
     }
     return {
@@ -1619,6 +1651,132 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "artifact": artifact,
         "validation_packet": validation_packet,
     }
+
+
+def load_allocator_ev_fusion_oof_training_rows(
+    query_fn: Callable[[str, list[Any]], list[dict[str, Any]]],
+    *,
+    cohort_id: str,
+    knowledge_cutoff_date: str,
+    limit: int = 12000,
+) -> list[dict[str, Any]]:
+    """Load one homogeneous OOF cohort with cross-fitted L4 and S12 labels."""
+
+    rows = query_fn(
+        """
+        WITH price_horizons AS (
+          SELECT
+            sp.stock_id,
+            date(sp.date) price_date,
+            LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) entry_raw_open,
+            LEAD(CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END, 1)
+              OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) entry_adjustment_factor,
+            LEAD(date(sp.date), 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) exit_date,
+            LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) exit_raw_close,
+            LEAD(CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END, 5)
+              OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) exit_adjustment_factor
+          FROM stock_prices sp
+          JOIN stocks s ON s.id = sp.stock_id
+          LEFT JOIN canonical_market_daily cmd
+            ON cmd.stock_id = s.symbol
+           AND cmd.date = date(sp.date)
+           AND cmd.source = 'finlab.price'
+        )
+        SELECT
+          fs.cohort_id,
+          fs.fold_id,
+          fs.generation_mode,
+          fs.stock_id,
+          fs.symbol,
+          fs.snapshot_date prediction_date,
+          fs.forecast_data,
+          fs.score,
+          fs.score_components,
+          fs.alpha_context,
+          fs.alpha_allocation,
+          fs.market_heat_expected_return,
+          fs.market_segment,
+          st.sector,
+          fs.recommendation_lane,
+          fs.label_known_date,
+          'allocator_ev_oof_snapshots' allocator_ev_feature_snapshot_source,
+          'purged_oof_label_known_date_strict' allocator_ev_feature_snapshot_guard,
+          'canonical_market_daily:finlab.price' label_adjustment_source,
+          ((ph.exit_raw_close * ph.exit_adjustment_factor)
+            / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 l4_executable_return_pct,
+          NULL trade_pnl_pct,
+          l4.prediction_json l4_prediction_json,
+          (
+            SELECT o.pnl_pct
+            FROM s12_replay_trade_outcomes o
+            WHERE o.symbol = fs.symbol
+              AND date(o.signal_date) = date(fs.snapshot_date)
+              AND o.source = 's12_multisession_structure_replay_v3'
+              AND date(json_extract(o.detail_json, '$.replay_diagnostics.outcome_known_date')) <= date(?)
+              AND o.sample_eligible = 1
+              AND o.pnl_pct IS NOT NULL
+            ORDER BY o.created_at DESC, o.id DESC LIMIT 1
+          ) s12_replay_pnl_pct,
+          (
+            SELECT json_extract(o.detail_json, '$.status')
+            FROM s12_replay_trade_outcomes o
+            WHERE o.symbol = fs.symbol
+              AND date(o.signal_date) = date(fs.snapshot_date)
+              AND o.source = 's12_multisession_structure_replay_v3'
+              AND date(json_extract(o.detail_json, '$.replay_diagnostics.outcome_known_date')) <= date(?)
+            ORDER BY o.sample_eligible DESC, o.created_at DESC, o.id DESC LIMIT 1
+          ) s12_replay_status,
+          (
+            SELECT json_extract(o.detail_json, '$.status_reason')
+            FROM s12_replay_trade_outcomes o
+            WHERE o.symbol = fs.symbol
+              AND date(o.signal_date) = date(fs.snapshot_date)
+              AND o.source = 's12_multisession_structure_replay_v3'
+              AND date(json_extract(o.detail_json, '$.replay_diagnostics.outcome_known_date')) <= date(?)
+            ORDER BY o.sample_eligible DESC, o.created_at DESC, o.id DESC LIMIT 1
+          ) s12_replay_archetype
+        FROM allocator_ev_oof_snapshots fs
+        JOIN active8_oof_cohorts cohort
+          ON cohort.cohort_id = fs.cohort_id
+         AND cohort.status = 'ready'
+        JOIN l4_oof_predictions l4
+          ON l4.cohort_id = fs.cohort_id
+         AND l4.fold_id = fs.fold_id
+         AND l4.prediction_date = fs.snapshot_date
+         AND l4.symbol = fs.symbol
+         AND l4.market_segment = fs.market_segment
+         AND l4.eligible_for_efficacy = 1
+         AND l4.trained_until < fs.snapshot_date
+        JOIN stocks st ON st.id = fs.stock_id
+        JOIN price_horizons ph
+          ON ph.stock_id = fs.stock_id
+         AND ph.price_date = fs.snapshot_date
+        WHERE fs.cohort_id = ?
+          AND fs.generation_mode = 'purged_oof'
+          AND ph.entry_raw_open > 0
+          AND ph.exit_raw_close > 0
+          AND ph.entry_adjustment_factor > 0
+          AND ph.exit_adjustment_factor > 0
+          AND date(ph.exit_date) <= date(?)
+          AND date(fs.label_known_date) <= date(?)
+        ORDER BY fs.snapshot_date, fs.symbol
+        LIMIT ?
+        """,
+        [
+            knowledge_cutoff_date,
+            knowledge_cutoff_date,
+            knowledge_cutoff_date,
+            cohort_id,
+            knowledge_cutoff_date,
+            knowledge_cutoff_date,
+            int(limit),
+        ],
+    )
+    for row in rows:
+        payload = _loads(row.pop("l4_prediction_json", None))
+        if payload:
+            row["l4_alpha_ev"] = payload
+    return rows
 
 
 def load_allocator_ev_fusion_training_rows(

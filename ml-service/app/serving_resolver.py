@@ -18,7 +18,7 @@ DIRECT_ALPHA_MODELS = (
 )
 L2_SIDECARS = ("TimesFM",)
 SERVING_OK_STATES = {"production"}
-SERVING_OK_OFFLINE_DECISIONS = {"STRONG_PASS", "PASS", "PRODUCTION_BACKFILL", "NOT_EVALUATED"}
+SERVING_OK_OFFLINE_DECISIONS = {"STRONG_PASS", "PASS"}
 SERVING_BAD_LIVE_STATUSES = {"failed", "rolling_ic_failed", "live_gate_failed"}
 ARTIFACT_EXTENSIONS = {
     "LightGBM": "joblib",
@@ -52,6 +52,16 @@ def _json_obj(value: Any) -> dict[str, Any]:
         except json.JSONDecodeError:
             return {}
     return {}
+
+
+def _artifact_metadata(artifact: dict[str, Any] | None) -> dict[str, Any]:
+    source = artifact or {}
+    direct = _json_obj(source.get("metadata"))
+    if direct:
+        return direct
+    offline = _json_obj(source.get("offline_evidence_json"))
+    registration = _json_obj(offline.get("registration"))
+    return _json_obj(registration.get("metadata"))
 
 
 def _folder(model_name: str) -> str:
@@ -164,11 +174,13 @@ def build_pool_from_champion_pointers(
         entry["serving_artifact_id"] = artifact_id
         entry["serving_block_reason"] = block_reason
         if artifact:
+            artifact_metadata = _artifact_metadata(artifact)
             entry["gcs_path"] = str(artifact.get("artifact_path") or _default_artifact_path(model_name, version))
             entry["metadata_path"] = str(artifact.get("metadata_path") or _default_metadata_path(model_name, version))
             entry["candidate_type"] = artifact.get("candidate_type")
             entry["offline_gate_decision"] = artifact.get("offline_gate_decision")
             entry["live_gate_status"] = artifact.get("live_gate_status")
+            entry["target_semantic_version"] = artifact_metadata.get("target_semantic_version")
         elif version:
             entry.setdefault("gcs_path", _default_artifact_path(model_name, version))
             entry.setdefault("metadata_path", _default_metadata_path(model_name, version))

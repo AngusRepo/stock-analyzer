@@ -52,7 +52,7 @@ def _l4_payload(value: float) -> dict:
 def _ensemble_forecast(avg_rank: float = 0.65, confidence: float = 0.72) -> str:
     return json.dumps({
         "ensemble_v2": {
-            "semantic_version": "active8-ic-weighted-rank-v3",
+            "semantic_version": "active8-ic-weighted-rank-v4",
             "contributing_models": ["LightGBM", "XGBoost"],
             "artifact_versions": {"LightGBM": "vTest", "XGBoost": "vTest"},
             "model_set_signature": "LightGBM@vTest|XGBoost@vTest",

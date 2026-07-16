@@ -80,7 +80,7 @@ def _row_version_evidence(model_name: str, version: str, generated_at: str) -> d
 
 def test_unknown_model_version_cannot_form_valid_lineage_signature():
     blockers = ensemble_lineage_blockers({
-        "semantic_version": "active8-ic-weighted-rank-v3",
+        "semantic_version": "active8-ic-weighted-rank-v4",
         "contributing_models": ["LightGBM"],
         "artifact_versions": {"LightGBM": "unknown"},
         "model_set_signature": "LightGBM@unknown",

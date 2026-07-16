@@ -164,6 +164,10 @@ def train_dlinear(
     val_ratio: float = 0.15,
     device: str = "cpu",
     model_cpcv_policy: dict | None = None,
+    train_start: str | None = None,
+    train_end: str | None = None,
+    test_start: str | None = None,
+    test_end: str | None = None,
 ) -> dict:
     """Train universal DLinear on pooled (stock, window) samples.
 
@@ -182,6 +186,7 @@ def train_dlinear(
     import torch.nn as nn
     from torch.utils.data import DataLoader, TensorDataset
     from .sequence_training import (
+        SEQUENCE_RETURN_SEMANTIC_VERSION,
         build_sequence_oos_fold_evidence,
         build_sequence_window_dataset,
         sequence_oos_ic_from_forecast,
@@ -198,6 +203,10 @@ def train_dlinear(
             seq_len=seq_len,
             pred_len=pred_len,
             oos_ratio=val_ratio,
+            train_start=train_start,
+            train_end=train_end,
+            test_start=test_start,
+            test_end=test_end,
         )
         if not sequence_dataset.report.get("lifecycle_ready"):
             return {"error": f"sequence_records not lifecycle-ready: {sequence_dataset.report}"}
@@ -339,12 +348,25 @@ def train_dlinear(
     )
 
     input_series_count = _sequence_input_series_count(series_close, sequence_report)
+    oof_predictions = None
+    if sequence_dataset is not None and all((train_start, train_end, test_start, test_end)):
+        oos_meta = [sequence_dataset.meta[int(idx)] for idx in sequence_dataset.oos_index]
+        entry_open = np.asarray([row["entry_open"] for row in oos_meta], dtype=float)
+        oof_predictions = {
+            "raw_scores": ((pred_5d - entry_open) / np.maximum(entry_open, 1e-9)).tolist(),
+            "targets": [float(row["forward_return"]) for row in oos_meta],
+            "dates": [str(row["asof_date"]) for row in oos_meta],
+            "symbols": [str(row["symbol"]) for row in oos_meta],
+            "markets": [str(row["market_type"]) for row in oos_meta],
+            "label_known_dates": [str(row["target_date"]) for row in oos_meta],
+        }
 
     return {
         "state_dict": {k: v.numpy().tolist() for k, v in best_state.items()},  # JSON-friendly for sanity, will save as torch
         "_state_dict_torch": best_state,  # for direct save
         "metadata": {
             "version": "v1",
+            "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
             **feature_policy_meta,
             "seq_len": seq_len,
             "pred_len": pred_len,
@@ -372,6 +394,7 @@ def train_dlinear(
                 "source": "sequence_oos",
             },
         },
+        "oof_predictions": oof_predictions,
     }
 
 

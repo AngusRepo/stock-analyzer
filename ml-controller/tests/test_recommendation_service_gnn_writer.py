@@ -44,6 +44,7 @@ def test_extract_per_model_scores_keeps_timesfm_out_of_direct_alpha_rows():
                 "forecast_pct": 0.05,
                 "confidence": 0.7,
             },
+            "rank_scores": {"DLinear": 0.7},
             "dlinear": {"forecast_pct": 0.02},
         }
     )

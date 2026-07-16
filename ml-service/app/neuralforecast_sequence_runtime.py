@@ -130,7 +130,9 @@ def _panel_train_eval_rows(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     train_rows: list[dict[str, Any]] = []
     eval_rows: list[dict[str, Any]] = []
-    min_history = int(seq_len) + int(pred_len)
+    # Reserve one forecast horizon for the point-in-time outcome and another
+    # inside the training panel so NeuralForecast can form a supervised window.
+    min_history = int(seq_len) + (2 * int(pred_len))
     skipped_short_history = 0
     skipped_label_contract = 0
     considered = 0
@@ -158,7 +160,7 @@ def _panel_train_eval_rows(
         if not train_close or not actual_close:
             continue
         if fixed_panel_history:
-            train_close = train_close[-seq_len:]
+            train_close = train_close[-(seq_len + pred_len):]
         for ds_idx, y_value in enumerate(train_close):
             train_rows.append({"unique_id": symbol, "ds": int(ds_idx), "y": float(y_value)})
         eval_rows.append({
@@ -190,6 +192,7 @@ def _panel_full_train_rows(
     records: list[dict[str, Any]],
     *,
     seq_len: int,
+    pred_len: int,
     max_series: int,
     fixed_panel_history: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -199,10 +202,11 @@ def _panel_full_train_rows(
         if valid_series >= max(1, max_series):
             break
         close = _coerce_close(record)
-        if len(close) < seq_len:
+        min_history = int(seq_len) + int(pred_len)
+        if len(close) < min_history:
             continue
         if fixed_panel_history:
-            close = close[-seq_len:]
+            close = close[-min_history:]
         symbol = str(record.get("symbol") or f"series_{valid_series}")
         for ds_idx, y_value in enumerate(close):
             rows.append({"unique_id": symbol, "ds": int(ds_idx), "y": float(y_value)})
@@ -709,6 +713,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
     train_rows, deployment_series = _panel_full_train_rows(
         dataset_source.records,
         seq_len=seq_len,
+        pred_len=pred_len,
         max_series=max_series,
         fixed_panel_history=fixed_panel_history,
     )

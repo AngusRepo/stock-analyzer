@@ -5,6 +5,7 @@ from app.model_validation import build_model_cpcv_evidence
 from app.neuralforecast_sequence_runtime import (
     _fold_metrics,
     _make_nf_model,
+    _panel_full_train_rows,
     _panel_train_eval_rows,
     _predict_horizon_by_id_with_column,
     _prediction_column,
@@ -39,7 +40,7 @@ def test_itransformer_panel_builder_aligns_ragged_series_to_fixed_context():
     counts = {}
     for row in rows:
         counts[row["unique_id"]] = counts.get(row["unique_id"], 0) + 1
-    assert counts == {"S0": 20, "S1": 20, "S2": 20}
+    assert counts == {"S0": 25, "S1": 25, "S2": 25}
     assert len(eval_rows) == 3
     assert report["fixed_panel_history"] is True
 
@@ -64,11 +65,30 @@ def test_panel_train_eval_rows_filters_short_series_before_neuralforecast_fit():
 
     assert [row["unique_id"] for row in eval_rows] == ["long"]
     assert len(train_rows) == 135
-    assert stats["min_history"] == 133
+    assert stats["min_history"] == 138
     assert stats["skipped_short_history"] == 1
     assert stats["valid_series"] == 1
     assert eval_rows[0]["entry_open"] == 136.0
     assert eval_rows[0]["target_semantic_version"] == "next-session-open-to-fifth-session-close-v2"
+
+
+def test_itransformer_full_refit_keeps_context_plus_training_horizon():
+    records = [
+        {"symbol": "short", "close": [float(i) for i in range(24)]},
+        {"symbol": "valid", "close": [float(i) for i in range(40)]},
+    ]
+
+    rows, valid_series = _panel_full_train_rows(
+        records,
+        seq_len=20,
+        pred_len=5,
+        max_series=10,
+        fixed_panel_history=True,
+    )
+
+    assert valid_series == 1
+    assert len(rows) == 25
+    assert {row["unique_id"] for row in rows} == {"valid"}
 
 
 def test_panel_train_eval_rows_scans_past_short_records_until_max_series_valid():

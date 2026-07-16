@@ -852,18 +852,29 @@ export async function loadSignedEligibleRepairSymbolsByHistoricalDate(
            FROM s12_replay_trade_outcomes current
           WHERE current.signal_date = legacy.signal_date
             AND current.symbol = legacy.symbol
-            AND current.sample_eligible = 1
-            AND json_extract(current.detail_json, '$.replay_diagnostics.replay_engine_signature') = ?
-            AND COALESCE(json_extract(current.detail_json, '$.replay_diagnostics.entry_policy_signature'), '') != ''
-            AND COALESCE(json_extract(current.detail_json, '$.replay_diagnostics.exit_calibration_signature'), '') != ''
-            AND json_extract(current.detail_json, '$.replay_diagnostics.replay_cohort_signature') = (
-              ? || '|entry=' || lower(json_extract(current.detail_json, '$.replay_diagnostics.entry_policy_signature'))
-              || '|calibration=' || json_extract(current.detail_json, '$.replay_diagnostics.exit_calibration_signature')
+            AND (
+              (
+                current.sample_eligible = 1
+                AND json_extract(current.detail_json, '$.replay_diagnostics.replay_engine_signature') = ?
+                AND COALESCE(json_extract(current.detail_json, '$.replay_diagnostics.entry_policy_signature'), '') != ''
+                AND COALESCE(json_extract(current.detail_json, '$.replay_diagnostics.exit_calibration_signature'), '') != ''
+                AND json_extract(current.detail_json, '$.replay_diagnostics.replay_cohort_signature') = (
+                  ? || '|entry=' || lower(json_extract(current.detail_json, '$.replay_diagnostics.entry_policy_signature'))
+                  || '|calibration=' || json_extract(current.detail_json, '$.replay_diagnostics.exit_calibration_signature')
+                )
+              )
+              OR (
+                current.sample_eligible = 0
+                AND json_extract(current.detail_json, '$.lineage_validation.status') = 'signed_repair_terminal_noneligible'
+                AND json_extract(current.detail_json, '$.replay_diagnostics.replay_engine_signature') = ?
+                AND date(json_extract(current.detail_json, '$.replay_diagnostics.outcome_known_date')) IS NOT NULL
+              )
             )
        )
      ORDER BY legacy.symbol
   `).bind(
     signalDate,
+    S12_REPLAY_ENGINE_SIGNATURE,
     S12_REPLAY_ENGINE_SIGNATURE,
     S12_REPLAY_ENGINE_SIGNATURE,
     S12_REPLAY_ENGINE_SIGNATURE,
@@ -1075,9 +1086,9 @@ export async function runS12HistoricalReplayForDate(
     })
     if (options.signedEligibleRepair && !outcome.sample_eligible) {
       outcome.lineage_validation = {
-        status: 'signed_repair_incomplete',
+        status: 'signed_repair_terminal_noneligible',
         previous_sample_eligible: 1,
-        contract: 'persisted_engine_entry_calibration_cohort_required_v1',
+        contract: 'signed_historical_eligibility_reconstruction_v1',
         attempted_at: new Date().toISOString(),
         replay_status: outcome.status,
         status_reason: outcome.status_reason,

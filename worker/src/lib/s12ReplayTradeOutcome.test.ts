@@ -330,6 +330,7 @@ async function runAsyncTests(): Promise<void> {
           if (sql.includes('SELECT DISTINCT legacy.symbol')) {
             assert(sql.includes('lineage_validation.previous_sample_eligible'), 'signed repair must retain quarantined legacy samples as repair candidates')
             assert(sql.includes('legacy.sample_eligible != 1'), 'signed repair must retain non-eligible repair attempts as pending')
+            assert(sql.includes('signed_repair_terminal_noneligible'), 'signed repair must accept verified terminal non-trade reconstruction')
             assert(sql.includes('replay_cohort_signature'), 'signed repair must require complete persisted replay cohort lineage')
             return { async all() { return { results: [{ symbol: '8091' }, { symbol: '2330' }] } } }
           }
@@ -503,6 +504,10 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
   assert(
     summary.outcomes[0].lineage_validation?.previous_sample_eligible === 1,
     'non-eligible signed repair attempts must preserve the durable repair marker',
+  )
+  assert(
+    summary.outcomes[0].lineage_validation?.status === 'signed_repair_terminal_noneligible',
+    'complete-horizon non-trades must close repair without becoming EV-eligible trades',
   )
   assert(summary.persisted === 2 && writes === 2, 'runner should persist every replay outcome by default')
 

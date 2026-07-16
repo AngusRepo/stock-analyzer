@@ -17,6 +17,33 @@ def test_neuralforecast_sequence_defaults_follow_model_core_windows():
     assert default_seq_len_for_model("iTransformer") == 512
 
 
+def test_itransformer_panel_builder_aligns_ragged_series_to_fixed_context():
+    records = []
+    for idx, length in enumerate((30, 35, 40)):
+        records.append({
+            "symbol": f"S{idx}",
+            "market_type": "TWSE",
+            "close": [100.0 + day for day in range(length)],
+            "open": [99.5 + day for day in range(length)],
+            "dates": [f"d{day:03d}" for day in range(length)],
+        })
+
+    rows, eval_rows, report = _panel_train_eval_rows(
+        records,
+        seq_len=20,
+        pred_len=5,
+        max_series=10,
+        fixed_panel_history=True,
+    )
+
+    counts = {}
+    for row in rows:
+        counts[row["unique_id"]] = counts.get(row["unique_id"], 0) + 1
+    assert counts == {"S0": 20, "S1": 20, "S2": 20}
+    assert len(eval_rows) == 3
+    assert report["fixed_panel_history"] is True
+
+
 def test_panel_train_eval_rows_filters_short_series_before_neuralforecast_fit():
     records = [
         {"symbol": "short", "close": [float(i) for i in range(60)]},

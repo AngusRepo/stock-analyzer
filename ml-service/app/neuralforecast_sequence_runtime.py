@@ -126,6 +126,7 @@ def _panel_train_eval_rows(
     pred_len: int,
     max_series: int,
     holdout_offset: int = 0,
+    fixed_panel_history: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     train_rows: list[dict[str, Any]] = []
     eval_rows: list[dict[str, Any]] = []
@@ -156,6 +157,8 @@ def _panel_train_eval_rows(
         actual_close = close[-pred_len:]
         if not train_close or not actual_close:
             continue
+        if fixed_panel_history:
+            train_close = train_close[-seq_len:]
         for ds_idx, y_value in enumerate(train_close):
             train_rows.append({"unique_id": symbol, "ds": int(ds_idx), "y": float(y_value)})
         eval_rows.append({
@@ -179,6 +182,7 @@ def _panel_train_eval_rows(
         "pred_len": int(pred_len),
         "max_series": int(max_series),
         "holdout_offset": int(max(0, holdout_offset)),
+        "fixed_panel_history": bool(fixed_panel_history),
     }
 
 
@@ -187,6 +191,7 @@ def _panel_full_train_rows(
     *,
     seq_len: int,
     max_series: int,
+    fixed_panel_history: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
     rows: list[dict[str, Any]] = []
     valid_series = 0
@@ -196,6 +201,8 @@ def _panel_full_train_rows(
         close = _coerce_close(record)
         if len(close) < seq_len:
             continue
+        if fixed_panel_history:
+            close = close[-seq_len:]
         symbol = str(record.get("symbol") or f"series_{valid_series}")
         for ds_idx, y_value in enumerate(close):
             rows.append({"unique_id": symbol, "ds": int(ds_idx), "y": float(y_value)})
@@ -563,6 +570,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
     all_oof_rows: list[dict[str, Any]] = []
     pred_col = model_name
     series_filter: dict[str, Any] = {}
+    fixed_panel_history = model_name == "iTransformer"
     for fold_index in range(validation_folds):
         holdout_offset = fold_index * pred_len
         fold_train_rows, eval_rows, fold_filter = _panel_train_eval_rows(
@@ -571,6 +579,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
             pred_len=pred_len,
             max_series=max_series,
             holdout_offset=holdout_offset,
+            fixed_panel_history=fixed_panel_history,
         )
         if fold_index == 0:
             series_filter = fold_filter
@@ -701,6 +710,7 @@ def train_neuralforecast_sequence_artifact(payload: dict[str, Any], *, model_nam
         dataset_source.records,
         seq_len=seq_len,
         max_series=max_series,
+        fixed_panel_history=fixed_panel_history,
     )
     if deployment_series < 10:
         raise ValueError(f"{model_name} deployment refit requires >=10 valid series, got {deployment_series}")

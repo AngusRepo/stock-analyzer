@@ -38,40 +38,74 @@ class WalkForwardRequest(BaseModel):
     sequence_batch_count: int = 5
 
 
+def _load_trading_calendar(start_date: str, end_date: str) -> tuple[list[str], dict]:
+    """Load only observed market dates; OOF training data stays in immutable GCS prep."""
+    from services import d1_client
+
+    rows = d1_client.query(
+        """
+        SELECT substr(date, 1, 10) AS trading_date, COUNT(*) AS price_rows
+        FROM stock_prices
+        WHERE substr(date, 1, 10) BETWEEN ? AND ?
+        GROUP BY substr(date, 1, 10)
+        ORDER BY trading_date
+        """,
+        [start_date, end_date],
+    )
+    trading_days = sorted({
+        str(row.get("trading_date") or "")[:10]
+        for row in rows
+        if str(row.get("trading_date") or "").strip()
+    })
+    if not trading_days:
+        raise HTTPException(
+            status_code=400,
+            detail=f"no observed stock-price trading dates for {start_date}..{end_date}",
+        )
+    return trading_days, {
+        "lane": "walk_forward.calendar",
+        "kind": "observed_trading_calendar",
+        "mode": "d1_stock_prices_grouped",
+        "source": "stock_prices",
+        "required_start_date": start_date,
+        "required_end_date": end_date,
+        "observed_dates": len(trading_days),
+        "observed_price_rows": sum(int(row.get("price_rows") or 0) for row in rows),
+        "date_min": trading_days[0],
+        "date_max": trading_days[-1],
+        "training_data_source": "immutable_gcs_prep",
+    }
+
+
 @router.post("/walk_forward/dry-run")
 async def walk_forward_dry_run(req: WalkForwardRequest):
     """Preview window plan + compute budget without triggering retrains."""
-    from services.walk_forward_retrain import MODELS_ALL, run_walk_forward, walk_forward_model_coverage
-    from services.backtest_engine import BacktestDataset
-    from services.stratified_subset import select_stratified_subset
+    from services.walk_forward_retrain import MODELS_ALL, walk_forward_model_coverage
+    from services.backtest_engine import walk_forward_windows
 
-    symbols = select_stratified_subset(
-        target_size=min(req.subset_size, 200), end_date=req.end_date,
-    )
-    if not symbols:
-        raise HTTPException(status_code=400, detail="no symbols from stratified_subset")
-    dataset, data_access = BacktestDataset.load_for_research(
-        lane="walk_forward.dry_run",
-        start_date=req.start_date, end_date=req.end_date, symbols=symbols,
-    )
-    run = await run_walk_forward(
-        dataset=dataset,
-        start_date=req.start_date,
-        end_date=req.end_date,
+    trading_days, data_access = _load_trading_calendar(req.start_date, req.end_date)
+    windows = walk_forward_windows(
+        trading_days=trading_days,
         train_window_days=req.train_window_days,
         test_window_days=req.test_window_days,
-        models=req.models or MODELS_ALL,
-        batch_count=req.batch_count,
-        dry_run=True,
-        concurrent_windows=req.concurrent_windows,
     )
+    if not windows:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No windows generated. trading_days={len(trading_days)}, "
+                f"need >= {req.train_window_days + req.test_window_days}"
+            ),
+        )
+    models = req.models or MODELS_ALL
+    coverage = walk_forward_model_coverage(models)
     return {
         "dry_run": True,
-        "windows_count": len(run.windows),
-        "planned_retrains": run.aggregate.get("planned_retrains"),
-        "planned_model_evaluations": run.aggregate.get("planned_model_evaluations"),
-        "estimated_tree_wall_clock_hours": run.aggregate.get("estimated_tree_wall_clock_hours"),
-        "model_coverage": run.aggregate.get("model_coverage") or walk_forward_model_coverage(req.models or MODELS_ALL),
+        "windows_count": len(windows),
+        "planned_retrains": len(windows) * len(coverage["native_retrain_models"]),
+        "planned_model_evaluations": len(windows) * len(models),
+        "estimated_tree_wall_clock_hours": len(windows) * 15 / 60 / max(1, req.concurrent_windows),
+        "model_coverage": coverage,
         "data_access": data_access,
         "cohort_id": req.cohort_id or (
             f"active8-oof-{req.start_date}-{req.end_date}-"
@@ -83,10 +117,10 @@ async def walk_forward_dry_run(req: WalkForwardRequest):
         "windows": [
             {
                 "window_id": w.window_id,
-                "train_range": w.train_range,
-                "test_range": w.test_range,
+                "train_range": (w.train_start, w.train_end),
+                "test_range": (w.test_start, w.test_end),
             }
-            for w in run.windows
+            for w in windows
         ],
     }
 
@@ -112,25 +146,13 @@ async def walk_forward_run(req: WalkForwardRequest):
         )
 
     from services.walk_forward_retrain import MODELS_ALL, walk_forward_model_coverage
-    from services.backtest_engine import BacktestDataset, walk_forward_windows
-    from services.stratified_subset import select_stratified_subset
+    from services.backtest_engine import walk_forward_windows
     from services.payload_builder import load_market_env
     from services import modal_client
     from dataclasses import asdict
     from datetime import datetime, timezone, timedelta
 
-    # Build the window index from a proper dataset (needs the trading_days list)
-    symbols = select_stratified_subset(
-        target_size=req.subset_size, end_date=req.end_date,
-    )
-    if not symbols:
-        raise HTTPException(status_code=400, detail="no symbols from stratified_subset")
-    dataset, data_access = BacktestDataset.load_for_research(
-        lane="walk_forward.run",
-        start_date=req.start_date, end_date=req.end_date, symbols=symbols,
-    )
-
-    trading_days = [d for d in dataset.trading_days if req.start_date <= d <= req.end_date]
+    trading_days, data_access = _load_trading_calendar(req.start_date, req.end_date)
     windows = walk_forward_windows(
         trading_days=trading_days,
         train_window_days=req.train_window_days,

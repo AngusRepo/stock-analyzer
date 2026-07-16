@@ -1,4 +1,5 @@
 from pathlib import Path
+import asyncio
 import sys
 
 
@@ -87,3 +88,55 @@ def test_walk_forward_routes_long_sequence_v3_prep_into_every_oof_fold():
     assert 'raw.get("target_semantic_version") == "next-session-open-to-fifth-session-close-v2"' in modal_source
     assert '"version": f"{cohort_id}-w{wid}"' in modal_source
     assert 'version = payload.get("output_model_version") or payload.get("version", "v1")' in modal_source
+
+
+def test_walk_forward_calendar_reader_does_not_hydrate_backtest_dataset(monkeypatch):
+    from routers import walk_forward
+    from services import d1_client
+
+    captured = {}
+
+    def fake_query(sql, params=None):
+        captured["sql"] = sql
+        captured["params"] = params
+        return [
+            {"trading_date": "2026-07-06", "price_rows": 2300},
+            {"trading_date": "2026-07-07", "price_rows": 2310},
+        ]
+
+    monkeypatch.setattr(d1_client, "query", fake_query)
+
+    days, access = walk_forward._load_trading_calendar("2026-07-01", "2026-07-07")
+
+    assert days == ["2026-07-06", "2026-07-07"]
+    assert captured["params"] == ["2026-07-01", "2026-07-07"]
+    assert "GROUP BY substr(date, 1, 10)" in captured["sql"]
+    assert access["mode"] == "d1_stock_prices_grouped"
+    assert access["observed_price_rows"] == 4610
+    assert access["training_data_source"] == "immutable_gcs_prep"
+
+    source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
+    assert "BacktestDataset.load_for_research" not in source
+
+
+def test_walk_forward_dry_run_builds_windows_from_lightweight_calendar(monkeypatch):
+    from routers import walk_forward
+
+    trading_days = [f"2026-01-{day:02d}" for day in range(1, 21)]
+    monkeypatch.setattr(
+        walk_forward,
+        "_load_trading_calendar",
+        lambda _start, _end: (trading_days, {"mode": "d1_stock_prices_grouped"}),
+    )
+
+    result = asyncio.run(walk_forward.walk_forward_dry_run(walk_forward.WalkForwardRequest(
+        start_date="2026-01-01",
+        end_date="2026-01-20",
+        train_window_days=10,
+        test_window_days=5,
+    )))
+
+    assert result["windows_count"] == 2
+    assert result["windows"][0]["train_range"] == ("2026-01-01", "2026-01-10")
+    assert result["windows"][0]["test_range"] == ("2026-01-11", "2026-01-15")
+    assert result["data_access"]["mode"] == "d1_stock_prices_grouped"

@@ -833,26 +833,75 @@ export async function loadSignedEligibleRepairSymbolsByHistoricalDate(
     SELECT DISTINCT legacy.symbol
       FROM s12_replay_trade_outcomes legacy
      WHERE legacy.signal_date = ?
-       AND legacy.sample_eligible = 1
+       AND (
+         legacy.sample_eligible = 1
+         OR json_extract(legacy.detail_json, '$.lineage_validation.previous_sample_eligible') = 1
+       )
+       AND (
+         COALESCE(json_extract(legacy.detail_json, '$.replay_diagnostics.replay_engine_signature'), '') != ?
+         OR COALESCE(json_extract(legacy.detail_json, '$.replay_diagnostics.entry_policy_signature'), '') = ''
+         OR COALESCE(json_extract(legacy.detail_json, '$.replay_diagnostics.exit_calibration_signature'), '') = ''
+         OR COALESCE(json_extract(legacy.detail_json, '$.replay_diagnostics.replay_cohort_signature'), '') = ''
+       )
        AND NOT EXISTS (
          SELECT 1
            FROM s12_replay_trade_outcomes current
           WHERE current.signal_date = legacy.signal_date
             AND current.symbol = legacy.symbol
+            AND current.sample_eligible = 1
             AND json_extract(current.detail_json, '$.replay_diagnostics.replay_engine_signature') = ?
+            AND COALESCE(json_extract(current.detail_json, '$.replay_diagnostics.entry_policy_signature'), '') != ''
+            AND COALESCE(json_extract(current.detail_json, '$.replay_diagnostics.exit_calibration_signature'), '') != ''
+            AND json_extract(current.detail_json, '$.replay_diagnostics.replay_cohort_signature') = (
+              ? || '|entry=' || lower(json_extract(current.detail_json, '$.replay_diagnostics.entry_policy_signature'))
+              || '|calibration=' || json_extract(current.detail_json, '$.replay_diagnostics.exit_calibration_signature')
+            )
        )
      ORDER BY legacy.symbol
-  `).bind(signalDate, S12_REPLAY_ENGINE_SIGNATURE).all<{ symbol: string }>()
+  `).bind(
+    signalDate,
+    S12_REPLAY_ENGINE_SIGNATURE,
+    S12_REPLAY_ENGINE_SIGNATURE,
+    S12_REPLAY_ENGINE_SIGNATURE,
+  ).all<{ symbol: string }>()
   const pending = new Set((results ?? []).map((row) => String(row.symbol ?? '').trim()).filter(Boolean))
   if (pending.size === 0) return []
   const l0 = await loadL0PassedSymbolsByHistoricalDate(db, signalDate)
   return l0.filter((row) => pending.has(row.symbol))
 }
 
+export function s12ReplayEligibleLineageBlockers(outcome: S12ReplayOutcome): string[] {
+  if (!outcome.sample_eligible) return []
+  const blockers: string[] = []
+  const diagnostics = outcome.replay_diagnostics ?? {}
+  const entryPolicy = String(diagnostics.entry_policy_signature ?? '').trim().toLowerCase()
+  const calibration = String(diagnostics.exit_calibration_signature ?? '').trim()
+  const cohort = String(diagnostics.replay_cohort_signature ?? '').trim()
+  const expectedCohort = [
+    S12_REPLAY_ENGINE_SIGNATURE,
+    `entry=${entryPolicy}`,
+    `calibration=${calibration}`,
+  ].join('|')
+  if (outcome.schema_version !== 's12-replay-trade-outcome-v3') blockers.push('schema_version')
+  if (outcome.source !== 's12_multisession_structure_replay_v3') blockers.push('source')
+  if (outcome.status !== 'executed') blockers.push('status')
+  if (!Number.isFinite(outcome.pnl_pct)) blockers.push('pnl_pct')
+  if (String(diagnostics.replay_engine_signature ?? '').trim() !== S12_REPLAY_ENGINE_SIGNATURE) blockers.push('replay_engine_signature')
+  if (!entryPolicy) blockers.push('entry_policy_signature')
+  if (!calibration) blockers.push('exit_calibration_signature')
+  if (!cohort || cohort !== expectedCohort) blockers.push('replay_cohort_signature')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(diagnostics.outcome_known_date ?? '').slice(0, 10))) blockers.push('outcome_known_date')
+  return blockers
+}
+
 export async function persistS12ReplayOutcome(
   db: D1Database,
   outcome: S12ReplayOutcome,
 ): Promise<void> {
+  const lineageBlockers = s12ReplayEligibleLineageBlockers(outcome)
+  if (lineageBlockers.length > 0) {
+    throw new Error(`s12_replay_eligible_lineage_invalid:${outcome.symbol}:${outcome.signal_date}:${lineageBlockers.join('|')}`)
+  }
   const rawSetupId = outcome.setup_id ?? `${outcome.symbol}:${outcome.trade_date}:${outcome.status_reason}`
   const setupId = `${outcome.signal_date}:${rawSetupId}`
   await db.prepare(`

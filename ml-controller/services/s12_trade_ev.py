@@ -12,27 +12,35 @@ def _to_float(value: Any) -> float | None:
     return number if number == number and number not in (float("inf"), float("-inf")) else None
 
 
+def _first_float(*values: Any) -> float | None:
+    for value in values:
+        number = _to_float(value)
+        if number is not None:
+            return number
+    return None
+
+
 def _pct_from_exit(entry_price: float | None, sample: dict[str, Any]) -> float | None:
-    direct = _to_float(
-        sample.get("return_pct")
-        or sample.get("trade_return_pct")
-        or sample.get("exit_return_pct")
-        or sample.get("pnl_pct")
+    direct = _first_float(
+        sample.get("return_pct"),
+        sample.get("trade_return_pct"),
+        sample.get("exit_return_pct"),
+        sample.get("pnl_pct"),
     )
     if direct is not None:
         return direct
-    exit_price = _to_float(sample.get("exit_price") or sample.get("exitPrice"))
+    exit_price = _first_float(sample.get("exit_price"), sample.get("exitPrice"))
     if entry_price is None or entry_price <= 0 or exit_price is None:
         return None
     return (exit_price - entry_price) / entry_price
 
 
 def _r_from_sample(sample: dict[str, Any]) -> float | None:
-    return _to_float(
-        sample.get("trade_pnl_r")
-        or sample.get("pnl_r")
-        or sample.get("return_r")
-        or sample.get("realized_pnl_r")
+    return _first_float(
+        sample.get("trade_pnl_r"),
+        sample.get("pnl_r"),
+        sample.get("return_r"),
+        sample.get("realized_pnl_r"),
     )
 
 
@@ -247,7 +255,12 @@ def build_s12_trade_ev_from_structure(
     target1_gain = (valid_targets[0] - entry) / entry
     target2_gain = (valid_targets[-1] - entry) / entry
     blended_reward_pct = (0.65 * target1_gain) + (0.35 * target2_gain)
-    base_reward_confidence = _clamp(_to_float(reward_confidence_multiplier) or 1.0, 0.25, 1.0)
+    parsed_reward_confidence = _to_float(reward_confidence_multiplier)
+    base_reward_confidence = _clamp(
+        parsed_reward_confidence if parsed_reward_confidence is not None else 1.0,
+        0.25,
+        1.0,
+    )
     reward_confidence = _clamp(base_reward_confidence * context_multiplier, 0.25, 1.0)
     confidence_adjusted_reward_pct = blended_reward_pct * reward_confidence
     reward_r = confidence_adjusted_reward_pct / risk_pct if risk_pct > 0 else None
@@ -393,17 +406,17 @@ def build_s12_trade_ev_from_replay(
             r_values.append(direct_r)
         elif risk_pct and risk_pct > 0:
             r_values.append(ret / risk_pct)
-        mfe = _to_float(
-            sample.get("mfe_pct")
-            or sample.get("max_favorable_excursion_pct")
-            or sample.get("max_favorable_pct")
+        mfe = _first_float(
+            sample.get("mfe_pct"),
+            sample.get("max_favorable_excursion_pct"),
+            sample.get("max_favorable_pct"),
         )
-        mae = _to_float(
-            sample.get("mae_pct")
-            or sample.get("max_adverse_excursion_pct")
-            or sample.get("max_adverse_pct")
+        mae = _first_float(
+            sample.get("mae_pct"),
+            sample.get("max_adverse_excursion_pct"),
+            sample.get("max_adverse_pct"),
         )
-        bars = _to_float(sample.get("bars_to_exit") or sample.get("holding_bars"))
+        bars = _first_float(sample.get("bars_to_exit"), sample.get("holding_bars"))
         if mfe is not None:
             mfe_values.append(mfe)
         if mae is not None:

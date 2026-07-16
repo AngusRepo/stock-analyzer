@@ -223,6 +223,27 @@ def test_s12_trade_ev_bootstrap_retires_cold_with_dedicated_replay_min_samples()
     assert ev["sampleCount"] == 30
     assert ev.get("cold_start") is None
     assert "replay_bootstrap" not in ev
+    assert ev["sample_replay_engine_signature"] == S12_REPLAY_ENGINE_SIGNATURE
+    assert ev["sample_replay_cohort_signature"].endswith("entry=unknown|calibration=uncalibrated")
+    assert ev["sample_lineage_contract"] == "persisted_engine_entry_calibration_cohort_required_v1"
+
+
+def test_s12_trade_ev_bootstrap_rejects_missing_persisted_replay_cohort_lineage():
+    row = _row("8091", "2026-07-01", 0.02)
+    forecast_data = json.loads(row["forecast_data"])
+    del forecast_data["s12_replay_outcome"]["replay_cohort_signature"]
+    row["forecast_data"] = json.dumps(forecast_data)
+
+    provider = S12TradeEvBootstrapProvider(
+        [row] * 30,
+        run_date="2026-07-03",
+        min_samples=30,
+        min_sample_dates=1,
+        roundtrip_cost_bps=0,
+    )
+
+    assert provider.summary()["comparable_sample_rows"] == 0
+    assert provider.summary()["excluded_incompatible_lineage_rows"] == 30
 
 
 def test_s12_trade_ev_bootstrap_prefers_market_bucket_before_global():

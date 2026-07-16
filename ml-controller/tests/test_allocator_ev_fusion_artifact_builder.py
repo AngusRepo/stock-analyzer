@@ -16,7 +16,7 @@ from services.allocator_ev_fusion_artifact_builder import (  # noqa: E402
     load_allocator_ev_fusion_training_rows,
 )
 from services.allocator_ev_feature_snapshot_backfill import (  # noqa: E402
-    _existing_s12_payload,
+    _s12_ev_materialization_kind,
     build_allocator_ev_feature_snapshots_for_date,
     load_allocator_ev_snapshot_candidate_rows,
 )
@@ -411,6 +411,12 @@ def test_20260714_prediction_timestamp_is_before_20260715_market_open():
     }) == ["prediction_generated_at_not_before_next_session_open"]
 
 
+def test_s12_ev_materialization_kind_does_not_report_cold_as_direct():
+    assert _s12_ev_materialization_kind(0.01, "s12_replay_trade_outcomes:market_segment") == "replay_direct"
+    assert _s12_ev_materialization_kind(-0.01, "s12_structural_cold_start_ev") == "structural_cold"
+    assert _s12_ev_materialization_kind(None, "s12_replay_trade_outcomes:symbol") == "unavailable"
+
+
 def test_allocator_fusion_rejects_unproven_adjustment_factor_lineage():
     row = _row("2026-07-01", 1)
     row.pop("label_adjustment_source")
@@ -737,7 +743,7 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
     assert result["snapshots_built"] == 1
     assert result["l4_usage_mode"] == "not_fit_eligible"
     assert result["reused_l4_payloads"] == 1
-    assert result["reused_s12_payloads"] == 1
+    assert result["reused_s12_payloads"] == 0
     assert result["skip_reasons"] == {}
 
 
@@ -857,18 +863,7 @@ def test_allocator_ev_feature_snapshot_backfill_does_not_cleanup_after_partial_w
     assert "status='failed'" in calls[1][0][0]
 
 
-def test_allocator_ev_feature_snapshot_backfill_does_not_reuse_invalid_s12_payload():
-    invalid = {
-        "s12_trade_ev": {
-            "status": "invalid_structure",
-            "trade_expected_return_net_pct": None,
-        }
-    }
-
-    assert _existing_s12_payload(invalid) is None
-
-
-def test_allocator_ev_feature_snapshot_backfill_recomputes_prior_backfill_s12_payload():
+def test_allocator_ev_feature_snapshot_backfill_recomputes_opaque_s12_payload():
     existing = {
         "snapshot_source": SNAPSHOT_BACKFILL_SOURCE,
         "s12_trade_ev": _s12_payload(0.009),

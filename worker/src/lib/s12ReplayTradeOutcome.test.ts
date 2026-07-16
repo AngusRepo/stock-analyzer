@@ -5,6 +5,7 @@ import {
   persistS12ReplayOutcome,
   resolveNextExecutableSessionDate,
   runS12HistoricalReplayForDate,
+  s12ReplayEligibleLineageBlockers,
   s12ReplayOutcomeToEvSample,
   simulateS12ReplayTradeOutcome,
 } from './s12ReplayTradeOutcome'
@@ -327,6 +328,8 @@ async function runAsyncTests(): Promise<void> {
       return {
         bind(..._params: unknown[]) {
           if (sql.includes('SELECT DISTINCT legacy.symbol')) {
+            assert(sql.includes('lineage_validation.previous_sample_eligible'), 'signed repair must retain quarantined legacy samples as repair candidates')
+            assert(sql.includes('replay_cohort_signature'), 'signed repair must require complete persisted replay cohort lineage')
             return { async all() { return { results: [{ symbol: '8091' }, { symbol: '2330' }] } } }
           }
           if (sql.includes('FROM screener_funnel_runs')) {
@@ -413,7 +416,14 @@ async function runPersistenceTests(): Promise<void> {
     alpha_bucket: 'breakout_vol_expansion',
     alpha_context: { edge_bucket: 'breakout_vol_expansion', regime: 'bull' },
     alpha_allocation: { bucket: 'breakout_vol_expansion' },
-    replay_diagnostics: { source: 'historical_asof' },
+    replay_diagnostics: {
+      source: 'historical_asof',
+      outcome_known_date: '2026-07-08',
+      replay_engine_signature: S12_REPLAY_ENGINE_SIGNATURE,
+      entry_policy_signature: 'reaction_ready',
+      exit_calibration_signature: 'uncalibrated',
+      replay_cohort_signature: `${S12_REPLAY_ENGINE_SIGNATURE}|entry=reaction_ready|calibration=uncalibrated`,
+    },
   })
   assert(binds.length === 1, 'persist should execute one upsert')
   assert(binds[0][0] === '8091' && binds[0][1] === 'OTC', 'persist should bind symbol and market')
@@ -424,6 +434,12 @@ async function runPersistenceTests(): Promise<void> {
   assert(detail.alpha_bucket === 'breakout_vol_expansion', 'persisted detail should retain alpha bucket metadata')
   assert((detail.alpha_context as Record<string, unknown>).edge_bucket === 'breakout_vol_expansion', 'persisted detail should retain alpha context metadata')
   assert((detail.replay_diagnostics as Record<string, unknown>).source === 'historical_asof', 'persisted detail should retain replay loader diagnostics')
+  assert((detail.replay_diagnostics as Record<string, unknown>).replay_engine_signature === S12_REPLAY_ENGINE_SIGNATURE, 'eligible persistence must retain exact replay engine lineage')
+  assert((detail.replay_diagnostics as Record<string, unknown>).outcome_known_date === '2026-07-08', 'eligible persistence must retain outcome-known cutoff')
+  assert(s12ReplayEligibleLineageBlockers({
+    ...JSON.parse(String(binds[0][22])),
+    replay_diagnostics: { source: 'historical_asof' },
+  } as any).includes('replay_engine_signature'), 'eligible rows without persisted signatures must fail closed')
 }
 
 void runPersistenceTests().catch((error) => {

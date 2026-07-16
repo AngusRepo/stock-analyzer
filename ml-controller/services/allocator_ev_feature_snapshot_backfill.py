@@ -204,28 +204,15 @@ def _existing_l4_payload(allocation: dict[str, Any], *, snapshot_date: str) -> d
     return payload
 
 
-def _existing_s12_payload(allocation: dict[str, Any]) -> dict[str, Any] | None:
-    raw = allocation.get("s12_trade_ev")
-    if not isinstance(raw, dict):
-        return None
-    value, _source, payload = extract_s12_trade_ev({"s12_trade_ev": raw})
-    context = payload.get("candidate_s12_entry_context") if isinstance(payload, dict) else None
-    targets = payload.get("s12_structural_targets") if isinstance(payload, dict) else None
-    structure_ready = (
-        isinstance(context, dict)
-        and context.get("detail_available") is True
-        and isinstance(targets, dict)
-        and str(targets.get("structure_stop_source") or "") != "missing_s12_structure_stop"
-    )
-    if (
-        value is not None
-        and isinstance(payload, dict)
-        and str(payload.get("status") or "loaded").lower() == "loaded"
-        and structure_ready
-    ):
-        payload["snapshot_reuse_policy"] = "persisted_candidate_time_s12_payload"
-        return payload
-    return None
+def _s12_ev_materialization_kind(value: float | None, source: str) -> str:
+    if value is None:
+        return "unavailable"
+    normalized = str(source or "").strip()
+    if normalized.startswith("s12_replay_trade_outcomes:"):
+        return "replay_direct"
+    if normalized == "s12_structural_cold_start_ev":
+        return "structural_cold"
+    return "other_trade_ev"
 
 
 def _build_l4_asof_artifact(
@@ -624,7 +611,9 @@ def build_allocator_ev_feature_snapshots_for_date(
     reused_l4 = 0
     reused_s12 = 0
     snapshots_without_l4 = 0
+    snapshots_with_s12_trade_ev = 0
     snapshots_with_s12_direct_ev = 0
+    snapshots_with_s12_cold_ev = 0
     snapshots_with_s12_structure = 0
     snapshots_with_s12_limited_takeover = 0
     snapshots_with_s12_full_reaction = 0
@@ -666,20 +655,23 @@ def build_allocator_ev_feature_snapshots_for_date(
         if not isinstance(l4_payload, dict) or l4_payload.get("status") != "loaded":
             l4_payload = None
             snapshots_without_l4 += 1
-        existing_is_backfill_snapshot = str(existing.get("snapshot_source") or "") == SNAPSHOT_SOURCE
-        s12_payload = None if existing_is_backfill_snapshot else _existing_s12_payload(existing)
-        if isinstance(s12_payload, dict):
-            reused_s12 += 1
-        else:
-            s12_payload = provider.build_for_row(row, prediction=prediction)
+        # Replay EV is cheap to recompute and its validity depends on the
+        # snapshot-date cutoff. Reusing an opaque recommendation payload can
+        # silently retain samples that no longer satisfy the active lineage contract.
+        s12_payload = provider.build_for_row(row, prediction=prediction)
         if not isinstance(s12_payload, dict):
             skipped += 1
             skip_reasons["s12_payload_missing"] = skip_reasons.get("s12_payload_missing", 0) + 1
             continue
-        s12_value, _s12_source, _ = extract_s12_trade_ev({"s12_trade_ev": s12_payload})
+        s12_value, s12_source, _ = extract_s12_trade_ev({"s12_trade_ev": s12_payload})
+        s12_kind = _s12_ev_materialization_kind(s12_value, s12_source)
         s12_features = _s12_structure_features(s12_payload)
         if s12_value is not None:
+            snapshots_with_s12_trade_ev += 1
+        if s12_kind == "replay_direct":
             snapshots_with_s12_direct_ev += 1
+        elif s12_kind == "structural_cold":
+            snapshots_with_s12_cold_ev += 1
         if s12_features["s12_structure_available"] > 0.0:
             snapshots_with_s12_structure += 1
         if s12_features["s12_limited_takeover_ready"] > 0.0:
@@ -696,6 +688,7 @@ def build_allocator_ev_feature_snapshots_for_date(
             "as_of_guard": AS_OF_GUARD,
             "snapshot_l4_usage_mode": l4_usage_mode,
             "snapshot_l4_available": l4_payload is not None,
+            "s12_snapshot_materialization_policy": "strict_pit_recompute_no_opaque_payload_reuse",
             "l4_alpha_ev_diagnostic": {
                 "status": "loaded" if l4_payload is not None else "unavailable",
                 "usage_mode": l4_usage_mode,
@@ -796,7 +789,9 @@ def build_allocator_ev_feature_snapshots_for_date(
         "reused_l4_payloads": reused_l4,
         "reused_s12_payloads": reused_s12,
         "snapshots_without_l4": snapshots_without_l4,
+        "snapshots_with_s12_trade_ev": snapshots_with_s12_trade_ev,
         "snapshots_with_s12_direct_ev": snapshots_with_s12_direct_ev,
+        "snapshots_with_s12_cold_ev": snapshots_with_s12_cold_ev,
         "snapshots_with_s12_structure": snapshots_with_s12_structure,
         "snapshots_with_s12_limited_takeover": snapshots_with_s12_limited_takeover,
         "snapshots_with_s12_full_reaction": snapshots_with_s12_full_reaction,
@@ -874,7 +869,9 @@ def backfill_allocator_ev_feature_snapshots(
             1 for row in rows if row.get("l4_usage_mode") == "snapshot_backfill_only"
         ),
         "snapshots_without_l4": sum(int(row.get("snapshots_without_l4") or 0) for row in rows),
+        "snapshots_with_s12_trade_ev": sum(int(row.get("snapshots_with_s12_trade_ev") or 0) for row in rows),
         "snapshots_with_s12_direct_ev": sum(int(row.get("snapshots_with_s12_direct_ev") or 0) for row in rows),
+        "snapshots_with_s12_cold_ev": sum(int(row.get("snapshots_with_s12_cold_ev") or 0) for row in rows),
         "snapshots_with_s12_structure": sum(int(row.get("snapshots_with_s12_structure") or 0) for row in rows),
         "snapshots_with_s12_limited_takeover": sum(int(row.get("snapshots_with_s12_limited_takeover") or 0) for row in rows),
         "snapshots_with_s12_full_reaction": sum(int(row.get("snapshots_with_s12_full_reaction") or 0) for row in rows),

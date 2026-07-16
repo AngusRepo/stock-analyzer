@@ -29,19 +29,17 @@ def _replay_cohort_signature(entry_state: Any, calibration_artifact_id: Any) -> 
     return f"{S12_REPLAY_ENGINE_SIGNATURE}|entry={state}|calibration={calibration}"
 
 
-def _replay_lineage_from_detail(detail: dict[str, Any], assessment_state: Any = None) -> dict[str, str]:
+def _replay_lineage_from_detail(detail: dict[str, Any]) -> dict[str, str]:
     diagnostics = detail.get("replay_diagnostics") if isinstance(detail.get("replay_diagnostics"), dict) else {}
     engine = str(diagnostics.get("replay_engine_signature") or "").strip()
     if engine != S12_REPLAY_ENGINE_SIGNATURE:
         return {}
-    entry_state = str(diagnostics.get("entry_policy_signature") or assessment_state or "unknown").strip().lower() or "unknown"
-    calibration = str(
-        diagnostics.get("exit_calibration_signature")
-        or diagnostics.get("calibration_artifact_id")
-        or "uncalibrated"
-    ).strip() or "uncalibrated"
+    entry_state = str(diagnostics.get("entry_policy_signature") or "").strip().lower()
+    calibration = str(diagnostics.get("exit_calibration_signature") or "").strip()
+    persisted = str(diagnostics.get("replay_cohort_signature") or "").strip()
+    if not entry_state or not calibration or not persisted:
+        return {}
     expected = _replay_cohort_signature(entry_state, calibration)
-    persisted = str(diagnostics.get("replay_cohort_signature") or expected).strip()
     if persisted != expected:
         return {}
     return {
@@ -103,7 +101,7 @@ def _with_alpha_replay_metadata(row: dict[str, Any], detail: dict[str, Any]) -> 
         row["alpha_context"] = alpha_context
     if alpha_allocation:
         row["alpha_allocation"] = alpha_allocation
-    replay_lineage = _replay_lineage_from_detail(detail, row.get("assessment_state"))
+    replay_lineage = _replay_lineage_from_detail(detail)
     if replay_lineage:
         row["s12_replay_lineage"] = replay_lineage
 
@@ -1431,6 +1429,10 @@ class S12TradeEvBootstrapProvider:
             "candidate_market_segment": _market_segment_from_payloads(row, prediction or {}),
             "candidate_alpha_bucket": _alpha_bucket_from_payloads(row, prediction or {}),
             "candidate_replay_cohort_signature": _candidate_replay_cohort(row, prediction),
+            "sample_replay_engine_signature": S12_REPLAY_ENGINE_SIGNATURE if bucket.rows else None,
+            "sample_replay_cohort_signature": _candidate_replay_cohort(row, prediction) if bucket.rows else None,
+            "sample_lineage_contract": "persisted_engine_entry_calibration_cohort_required_v1",
+            "sample_date_semantic": "outcome_known_date",
             "global_direct_ev_owner_allowed": False,
             "global_sample_count": len(global_bucket.rows) if global_bucket is not None else 0,
         }

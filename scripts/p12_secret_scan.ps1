@@ -22,7 +22,8 @@ try {
     @{ Name = 'github_pat'; Pattern = 'github_pat_[0-9A-Za-z_]+' },
     @{ Name = 'cloudflare_user_token'; Pattern = 'cfut_[0-9A-Za-z]+' },
     @{ Name = 'google_api_key'; Pattern = 'AIza[0-9A-Za-z_\-]{20,}' },
-    @{ Name = 'modal_token_secret'; Pattern = 'as-[0-9A-Za-z]{20,}' }
+    @{ Name = 'modal_token_secret'; Pattern = 'as-[0-9A-Za-z]{20,}' },
+    @{ Name = 'stockvision_service_token'; Pattern = '(?i)(?:STOCKVISION(?:_AUTH)?_TOKEN\s*=\s*|Bearer\s+)sv-[0-9A-Za-z][0-9A-Za-z_\-]{12,}' }
   )
 
   $allowlistFragments = @(

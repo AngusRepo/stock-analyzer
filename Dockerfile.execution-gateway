@@ -6,6 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+RUN python -m pip install --no-cache-dir --upgrade pip==26.1.2 setuptools==83.0.0
+
 RUN groupadd --system stockvision \
     && useradd --system --gid stockvision --home-dir /app stockvision
 
@@ -15,10 +17,9 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt \
 
 COPY --chown=stockvision:stockvision ml-controller/execution_gateway_app.py /app/execution_gateway_app.py
 COPY --chown=stockvision:stockvision ml-controller/services/__init__.py /app/services/__init__.py
-COPY --chown=stockvision:stockvision ml-controller/services/allocator_contract_guard.py /app/services/allocator_contract_guard.py
 COPY --chown=stockvision:stockvision ml-controller/services/broker_execution_contract.py /app/services/broker_execution_contract.py
 COPY --chown=stockvision:stockvision ml-controller/services/broker_execution_repository.py /app/services/broker_execution_repository.py
-COPY --chown=stockvision:stockvision ml-controller/services/d1_client.py /app/services/d1_client.py
+COPY --chown=stockvision:stockvision ml-controller/services/execution_d1_client.py /app/services/execution_d1_client.py
 COPY --chown=stockvision:stockvision ml-controller/services/execution_snapshot_revalidator.py /app/services/execution_snapshot_revalidator.py
 COPY --chown=stockvision:stockvision ml-controller/services/finlab_execution_adapter.py /app/services/finlab_execution_adapter.py
 COPY --chown=stockvision:stockvision ml-controller/services/finlab_execution_gateway.py /app/services/finlab_execution_gateway.py

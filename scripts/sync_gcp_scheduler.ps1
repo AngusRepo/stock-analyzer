@@ -3,7 +3,8 @@ param(
   [string]$Location = 'asia-east1',
   [string]$ManifestPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'infra/gcp-scheduler-jobs.json'),
   [string]$WorkerBaseUrl = $env:STOCKVISION_WORKER_BASE_URL,
-  [string]$AuthToken = $env:SCHEDULER_AUTH_TOKEN,
+  [string]$SchedulerServiceAccount = $env:GOOGLE_SCHEDULER_SERVICE_ACCOUNT,
+  [string]$OidcAudience = $env:GOOGLE_SCHEDULER_AUDIENCE,
   [switch]$DryRun,
   [switch]$DeleteStale
 )
@@ -17,14 +18,19 @@ if (-not $Project) { throw 'Missing GCP project. Set GOOGLE_CLOUD_PROJECT or gcl
 if ($DryRun -and -not $WorkerBaseUrl) {
   $WorkerBaseUrl = 'https://dry-run-worker-base-url.invalid'
 }
-if ($DryRun -and -not $AuthToken) {
-  $AuthToken = 'DRY_RUN_AUTH_TOKEN_PLACEHOLDER'
+if ($DryRun -and -not $SchedulerServiceAccount) {
+  $SchedulerServiceAccount = "stockvision-scheduler@$Project.iam.gserviceaccount.com"
 }
 if (-not $WorkerBaseUrl) { throw 'Missing STOCKVISION_WORKER_BASE_URL.' }
-if (-not $AuthToken) { throw 'Missing SCHEDULER_AUTH_TOKEN.' }
+if (-not $SchedulerServiceAccount) { throw 'Missing GOOGLE_SCHEDULER_SERVICE_ACCOUNT.' }
+if ($SchedulerServiceAccount -notmatch "^[^@]+@$([regex]::Escape($Project))\.iam\.gserviceaccount\.com$") {
+  throw 'GOOGLE_SCHEDULER_SERVICE_ACCOUNT must be a dedicated service account in the scheduler project.'
+}
 
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
 $base = $WorkerBaseUrl.TrimEnd('/')
+if (-not $OidcAudience) { $OidcAudience = $base }
+if ($OidcAudience -ne $base) { throw 'GOOGLE_SCHEDULER_AUDIENCE must equal STOCKVISION_WORKER_BASE_URL without query parameters.' }
 $managedIds = [System.Collections.Generic.HashSet[string]]::new()
 $currentIds = [System.Collections.Generic.HashSet[string]]::new()
 
@@ -32,8 +38,6 @@ function New-SchedulerHeaderArg {
   param([object]$Job)
 
   $pairs = [System.Collections.Generic.List[string]]::new()
-  [void]$pairs.Add("Authorization=Bearer $AuthToken")
-
   if ($Job.headers) {
     foreach ($prop in $Job.headers.PSObject.Properties) {
       $name = [string]$prop.Name
@@ -76,7 +80,8 @@ foreach ($job in $manifest.jobs) {
       '--time-zone', $timeZone,
       '--uri', $uri,
       '--http-method', 'POST',
-      '--update-headers', $headers,
+      '--oidc-service-account-email', $SchedulerServiceAccount,
+      '--oidc-token-audience', $OidcAudience,
       '--attempt-deadline', '300s',
       '--description', $description,
       '--format', 'none'
@@ -90,11 +95,19 @@ foreach ($job in $manifest.jobs) {
       '--time-zone', $timeZone,
       '--uri', $uri,
       '--http-method', 'POST',
-      '--headers', $headers,
+      '--oidc-service-account-email', $SchedulerServiceAccount,
+      '--oidc-token-audience', $OidcAudience,
       '--attempt-deadline', '300s',
       '--description', $description,
       '--format', 'none'
     )
+  }
+
+  if ($headers) {
+    $headerFlag = if ($exists) { '--update-headers' } else { '--headers' }
+    $args += @($headerFlag, $headers)
+  } elseif ($exists) {
+    $args += '--clear-headers'
   }
 
   $action = if ($exists) { 'update' } else { 'create' }

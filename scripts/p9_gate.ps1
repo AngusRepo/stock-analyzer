@@ -2,6 +2,7 @@ param(
   [switch]$SkipFrontendBuild,
   [switch]$SkipBugHunter,
   [int]$BugHunterMaxAgeHours = 48,
+  [string]$ControllerPython = $env:CONTROLLER_PYTHON,
   [switch]$LiveSmoke,
   [string]$ApiBase = $env:STOCKVISION_API_BASE,
   [string]$AuthToken = $env:STOCKVISION_AUTH_TOKEN
@@ -32,15 +33,22 @@ Write-Host '[P9 gate] runtime E2E tests are gated separately with an explicit lo
 Pop-Location
 
 Write-Host '[P9 gate] ml-controller contract tests'
-$ControllerPython = Join-Path $Root 'ml-controller\.venv\Scripts\python.exe'
-if (-not (Test-Path $ControllerPython)) {
-  $ControllerPython = Join-Path $Root 'ml-service\.venv\Scripts\python.exe'
+if (-not $ControllerPython) {
+  $ControllerPython = Join-Path $Root 'ml-controller\.venv\Scripts\python.exe'
+  if (-not (Test-Path $ControllerPython)) {
+    $ControllerPython = Join-Path $Root 'ml-service\.venv\Scripts\python.exe'
+  }
+  if (-not (Test-Path $ControllerPython)) {
+    $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if ($PythonCommand) { $ControllerPython = $PythonCommand.Source }
+  }
 }
-if (-not (Test-Path $ControllerPython)) {
-  throw "controller python not found in ml-controller/.venv or ml-service/.venv"
+if (-not $ControllerPython -or -not (Test-Path $ControllerPython)) {
+  throw "controller python not found via -ControllerPython, project virtualenvs, or PATH"
 }
+$ControllerPython = (Resolve-Path -LiteralPath $ControllerPython).Path
 Push-Location (Join-Path $Root 'ml-controller')
-& $ControllerPython -m pytest tests\test_verify_pipeline_graph.py tests\test_p6_emerging_ml_contract.py tests\test_p7_model_upgrade_research_track.py tests\test_p8_adaptive_meta_contract.py tests\test_market_segment_policy.py tests\test_model_ic_tracker.py tests\test_train_serve_parity_contract.py tests\test_sector_flow_proxy.py tests\test_pipeline_callback_contract.py tests\test_retrain_followup_telemetry.py -q
+& $ControllerPython -m pytest tests\test_controller_auth.py tests\test_admin_access_policy.py tests\test_verify_pipeline_graph.py tests\test_p6_emerging_ml_contract.py tests\test_p7_model_upgrade_research_track.py tests\test_p8_adaptive_meta_contract.py tests\test_market_segment_policy.py tests\test_model_ic_tracker.py tests\test_train_serve_parity_contract.py tests\test_sector_flow_proxy.py tests\test_pipeline_callback_contract.py tests\test_retrain_followup_telemetry.py -q
 if ($LASTEXITCODE -ne 0) { throw "ml-controller contract tests failed" }
 Pop-Location
 
@@ -71,6 +79,23 @@ if ($LiveSmoke) {
   if (-not $ApiBase) { throw 'LiveSmoke requires -ApiBase or STOCKVISION_API_BASE' }
   if (-not $AuthToken) { throw 'LiveSmoke requires -AuthToken or STOCKVISION_AUTH_TOKEN' }
 
+  Write-Host '[P9 gate] Worker production secret bindings'
+  $NpxCommand = Get-Command npx.cmd -ErrorAction SilentlyContinue
+  if (-not $NpxCommand) { $NpxCommand = Get-Command npx -ErrorAction Stop }
+  Push-Location (Join-Path $Root 'worker')
+  try {
+    $WorkerSecretsJson = & $NpxCommand.Source wrangler secret list --format json
+    if ($LASTEXITCODE -ne 0) { throw 'wrangler secret list failed' }
+  } finally {
+    Pop-Location
+  }
+  $WorkerSecretNames = @($WorkerSecretsJson | ConvertFrom-Json | ForEach-Object { $_.name })
+  foreach ($RequiredSecret in @('STOCKVISION_AUTH_TOKEN', 'ML_CONTROLLER_SECRET', 'ML_SERVICE_SECRET')) {
+    if ($WorkerSecretNames -notcontains $RequiredSecret) {
+      throw "Worker production secret binding missing: $RequiredSecret"
+    }
+  }
+
   $Base = $ApiBase.TrimEnd('/')
   $Health = Invoke-RestMethod -Method GET -Uri "$Base/api/health"
   if ($Health.status -ne 'ok') {
@@ -79,8 +104,8 @@ if ($LiveSmoke) {
 
   $Headers = @{ Authorization = "Bearer $AuthToken" }
   $Gate = Invoke-RestMethod -Method GET -Uri "$Base/api/admin/gate/predeploy?live=1" -Headers $Headers
-  if ($Gate.decision -eq 'BLOCK') {
-    throw "live predeploy gate blocked: $($Gate | ConvertTo-Json -Compress -Depth 6)"
+  if ($Gate.decision -ne 'PASS') {
+    throw "live predeploy gate must PASS: $($Gate | ConvertTo-Json -Compress -Depth 6)"
   }
   Write-Host "[P9 gate] live smoke passed decision=$($Gate.decision) status=$($Gate.status)"
 }

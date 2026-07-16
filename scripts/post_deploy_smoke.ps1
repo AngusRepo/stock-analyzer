@@ -5,8 +5,13 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$ControllerUrl,
 
+  [string]$MlServiceUrl = $env:ML_SERVICE_URL,
   [string]$WorkerToken = $env:STOCKVISION_AUTH_TOKEN,
   [string]$ControllerToken = $env:ML_CONTROLLER_TOKEN,
+  [string]$MlServiceToken = $env:ML_SERVICE_SECRET,
+  [string]$GcpProject = $env:GOOGLE_CLOUD_PROJECT,
+  [string]$SchedulerLocation = 'asia-east1',
+  [string]$SchedulerServiceAccount = $env:GOOGLE_SCHEDULER_SERVICE_ACCOUNT,
   [string]$Date = (Get-Date -Format 'yyyy-MM-dd'),
   [switch]$RunTriggers,
   [switch]$WaitCallback,
@@ -44,8 +49,27 @@ function Assert-True {
   }
 }
 
+function Invoke-HttpStatus {
+  param(
+    [Parameter(Mandatory = $true)][string]$Url,
+    [hashtable]$Headers = @{},
+    [int]$TimeoutSec = 60
+  )
+
+  try {
+    $response = Invoke-WebRequest -Method GET -Uri $Url -Headers $Headers -TimeoutSec $TimeoutSec -UseBasicParsing
+    return [int]$response.StatusCode
+  } catch {
+    if ($null -ne $_.Exception.Response) {
+      return [int]$_.Exception.Response.StatusCode
+    }
+    throw
+  }
+}
+
 $workerBase = $WorkerUrl.TrimEnd('/')
 $controllerBase = $ControllerUrl.TrimEnd('/')
+$mlServiceBase = ([string]$MlServiceUrl).TrimEnd('/')
 $workerHeaders = @{}
 $controllerHeaders = @{}
 if ($WorkerToken) { $workerHeaders.Authorization = "Bearer $WorkerToken" }
@@ -54,6 +78,14 @@ if ($ControllerToken) { $controllerHeaders['X-Controller-Token'] = $ControllerTo
 Write-Host "== Post-deploy smoke =="
 Write-Host "Worker     : $workerBase"
 Write-Host "Controller : $controllerBase"
+Write-Host "ML service : $mlServiceBase"
+
+& (Join-Path $PSScriptRoot 'verify_scheduler_oidc.ps1') `
+  -Project $GcpProject `
+  -Location $SchedulerLocation `
+  -WorkerBaseUrl $workerBase `
+  -SchedulerServiceAccount $SchedulerServiceAccount
+if ($LASTEXITCODE -ne 0) { throw 'Scheduler OIDC drift gate failed' }
 
 $workerHealth = Invoke-Json -Method GET -Url "$workerBase/api/health" -Headers $workerHeaders
 Assert-True ($null -ne $workerHealth) 'Worker /api/health returned empty payload'
@@ -62,12 +94,28 @@ Write-Host "[OK] Worker /api/health"
 $controllerHealth = Invoke-Json -Method GET -Url "$controllerBase/health" -Headers $controllerHeaders
 Assert-True ($controllerHealth.status -eq 'ok') "Controller /health status is not ok: $($controllerHealth.status)"
 Assert-True ([bool]$controllerHealth.callbackConfigured) 'Controller callbackConfigured=false'
+Assert-True ([bool]$controllerHealth.mlServiceAuthConfigured) 'Controller mlServiceAuthConfigured=false'
 Assert-True ([bool]$controllerHealth.pipelineJobConfigured) 'Controller pipelineJobConfigured=false'
 Assert-True ([bool]$controllerHealth.verifyJobConfigured) 'Controller verifyJobConfigured=false'
-Write-Host "[OK] Controller /health + callback/job config"
+Write-Host "[OK] Controller /health + callback/auth/job config"
+
+Assert-True (-not [string]::IsNullOrWhiteSpace($MlServiceUrl)) 'MlServiceUrl/ML_SERVICE_URL is required for ML auth smoke'
+Assert-True (-not [string]::IsNullOrWhiteSpace($MlServiceToken)) 'MlServiceToken/ML_SERVICE_SECRET is required for ML auth smoke'
+$mlHealth = Invoke-Json -Method GET -Url "$mlServiceBase/health"
+Assert-True ($mlHealth.status -eq 'ok') "ML service /health status is not ok: $($mlHealth.status)"
+$invalidMlStatus = Invoke-HttpStatus -Url "$mlServiceBase/bandit/stats" -Headers @{ 'X-Service-Token' = "$MlServiceToken-invalid" }
+Assert-True ($invalidMlStatus -eq 401) "ML service invalid token must return 401; got $invalidMlStatus"
+$validMlStatus = Invoke-HttpStatus -Url "$mlServiceBase/bandit/stats" -Headers @{ 'X-Service-Token' = $MlServiceToken }
+Assert-True ($validMlStatus -eq 200) "ML service valid token smoke failed; got $validMlStatus"
+Write-Host '[OK] ML service fail-closed auth contract'
+
+Assert-True (-not [string]::IsNullOrWhiteSpace($WorkerToken)) 'WorkerToken/STOCKVISION_AUTH_TOKEN is required for the live deployment gate'
+$gate = Invoke-Json -Method GET -Url "$workerBase/api/admin/gate/predeploy?live=1&date=$Date" -Headers $workerHeaders -TimeoutSec 120
+Assert-True ($gate.decision -eq 'PASS') "Live predeploy gate must PASS: $($gate | ConvertTo-Json -Compress -Depth 8)"
+Write-Host "[OK] Live deployment gate PASS for $Date"
 
 if (-not $RunTriggers) {
-  Write-Host "[SKIP] Trigger smoke disabled. Add -RunTriggers to trigger pipeline/verify jobs."
+  Write-Host "[SKIP] Trigger smoke disabled after mandatory live deployment gate. Add -RunTriggers to trigger pipeline/verify jobs."
   exit 0
 }
 

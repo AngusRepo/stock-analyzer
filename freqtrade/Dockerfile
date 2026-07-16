@@ -1,5 +1,7 @@
 FROM freqtradeorg/freqtrade:stable
 
+RUN python -m pip install --no-cache-dir --upgrade pip==26.1.2 setuptools==83.0.0
+
 # D1 API client + result import
 RUN pip install --no-cache-dir requests
 

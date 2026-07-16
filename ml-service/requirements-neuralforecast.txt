@@ -1,0 +1,5 @@
+# Installed with --no-deps only after requirements.txt. The upstream 3.1.9
+# metadata pins pytorch-lightning<2.6.0, whose entire allowed range is affected
+# by CVE-2026-31221. StockVision verifies 2.6.1 compatibility through imports,
+# the full ml-service suite, and production image build gates.
+neuralforecast==3.1.9

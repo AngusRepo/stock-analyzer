@@ -23,6 +23,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+RUN python -m pip install --no-cache-dir --upgrade pip==26.1.2 setuptools==83.0.0
+
 # System deps for subprocess modal CLI + git (audit, future needs).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -63,6 +65,12 @@ COPY tools/finlab_alpha_miner_bakeoff.py /app/tools/finlab_alpha_miner_bakeoff.p
 COPY tools/finlab_alphabuilders_factor_backtest.py /app/tools/finlab_alphabuilders_factor_backtest.py
 COPY tools/finlab_strategy_spec_backtest.py /app/tools/finlab_strategy_spec_backtest.py
 COPY tools/feature_strategy_overlap_numeric.py /app/tools/feature_strategy_overlap_numeric.py
+
+# Runtime containers never need root. Keep application-owned output paths
+# writable for Cloud Run Jobs while preserving read-only source semantics.
+RUN useradd --create-home --uid 10001 stockvision \
+    && chown -R stockvision:stockvision /app
+USER stockvision
 
 ENV PORT=8080
 EXPOSE 8080

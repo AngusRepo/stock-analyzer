@@ -44,6 +44,7 @@ FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9
 WORKDIR /app/worker
 COPY worker/package.json worker/package-lock.json ./
 RUN npm ci
+COPY data/finlab_source_contract.json /app/data/finlab_source_contract.json
 COPY worker/ ./
 RUN ./node_modules/.bin/tsc -p tsconfig.json --noEmit false --rootDir src --outDir /app/worker-dist --module commonjs --moduleResolution node --ignoreDeprecations 6.0
 

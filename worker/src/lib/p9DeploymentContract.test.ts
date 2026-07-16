@@ -115,6 +115,7 @@ for (const [name, dockerfile] of [
   assert(!dockerfile.split(' AS runtime')[1].includes('apt-get'), `${name} runtime must not reintroduce the vulnerable Debian package set`)
 }
 assert(controllerDockerfile.includes('node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d'), 'Worker compiler image must use an immutable Node 24 digest')
+assert(controllerDockerfile.includes('COPY data/finlab_source_contract.json /app/data/finlab_source_contract.json'), 'Worker compiler stage must include the canonical FinLab source contract at its imported path')
 assert(controllerDockerfile.includes('nodejs-24=24.18.0-r2'), 'controller runtime must pin the reviewed Wolfi Node package')
 assert(!controllerDockerfile.split(' AS runtime')[1].includes('npm'), 'controller runtime must not ship npm or the TypeScript toolchain')
 assert(!mlDockerfile.split(' AS runtime')[1].includes('gcc g++'), 'ML runtime must not ship C/C++ compilers')

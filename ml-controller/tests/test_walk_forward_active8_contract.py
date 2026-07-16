@@ -100,6 +100,7 @@ def test_walk_forward_calendar_reader_does_not_hydrate_backtest_dataset(monkeypa
         captured["sql"] = sql
         captured["params"] = params
         return [
+            {"trading_date": "2026-07-04", "price_rows": 1},
             {"trading_date": "2026-07-06", "price_rows": 2300},
             {"trading_date": "2026-07-07", "price_rows": 2310},
         ]
@@ -112,7 +113,12 @@ def test_walk_forward_calendar_reader_does_not_hydrate_backtest_dataset(monkeypa
     assert captured["params"] == ["2026-07-01", "2026-07-07"]
     assert "GROUP BY substr(date, 1, 10)" in captured["sql"]
     assert access["mode"] == "d1_stock_prices_grouped"
-    assert access["observed_price_rows"] == 4610
+    assert access["observed_price_rows"] == 4611
+    assert access["coverage_reference_rows"] == 2300.0
+    assert access["coverage_threshold_rows"] == 460
+    assert access["excluded_low_coverage_dates"] == [
+        {"date": "2026-07-04", "price_rows": 1}
+    ]
     assert access["training_data_source"] == "immutable_gcs_prep"
 
     source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")

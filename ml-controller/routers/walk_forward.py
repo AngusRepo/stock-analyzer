@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import statistics
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
@@ -52,10 +53,23 @@ def _load_trading_calendar(start_date: str, end_date: str) -> tuple[list[str], d
         """,
         [start_date, end_date],
     )
-    trading_days = sorted({
-        str(row.get("trading_date") or "")[:10]
+    observed = [
+        (
+            str(row.get("trading_date") or "")[:10],
+            max(0, int(row.get("price_rows") or 0)),
+        )
         for row in rows
         if str(row.get("trading_date") or "").strip()
+    ]
+    coverage_reference = float(statistics.median(count for _, count in observed)) if observed else 0.0
+    coverage_threshold = max(1, int(coverage_reference * 0.20))
+    excluded = [
+        {"date": date, "price_rows": count}
+        for date, count in observed
+        if count < coverage_threshold
+    ]
+    trading_days = sorted({
+        date for date, count in observed if count >= coverage_threshold
     })
     if not trading_days:
         raise HTTPException(
@@ -71,6 +85,9 @@ def _load_trading_calendar(start_date: str, end_date: str) -> tuple[list[str], d
         "required_end_date": end_date,
         "observed_dates": len(trading_days),
         "observed_price_rows": sum(int(row.get("price_rows") or 0) for row in rows),
+        "coverage_reference_rows": coverage_reference,
+        "coverage_threshold_rows": coverage_threshold,
+        "excluded_low_coverage_dates": excluded,
         "date_min": trading_days[0],
         "date_max": trading_days[-1],
         "training_data_source": "immutable_gcs_prep",

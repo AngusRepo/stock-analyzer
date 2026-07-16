@@ -44,6 +44,9 @@ assert(!adminControlRoutes.includes('const authError = requireServiceToken(c)'),
 const workflowPath = '../.github/workflows/p9-gate.yml'
 const retentionWorkflowPath = '../.github/workflows/ghcr-retention.yml'
 const retentionScriptPath = '../scripts/cleanup_ghcr_ci_images.py'
+const controllerDockerfilePath = '../Dockerfile'
+const executionDockerfilePath = '../Dockerfile.execution-gateway'
+const mlDockerfilePath = '../ml-service/Dockerfile'
 assert(fs.existsSync(workflowPath), 'P9 GitHub Actions workflow should exist')
 assert(fs.existsSync(retentionWorkflowPath), 'GHCR retention workflow should exist')
 assert(fs.existsSync(retentionScriptPath), 'GHCR retention policy implementation should exist')
@@ -51,6 +54,9 @@ assert(fs.existsSync(retentionScriptPath), 'GHCR retention policy implementation
 const workflow = fs.readFileSync(workflowPath, 'utf8')
 const retentionWorkflow = fs.readFileSync(retentionWorkflowPath, 'utf8')
 const retentionScript = fs.readFileSync(retentionScriptPath, 'utf8')
+const controllerDockerfile = fs.readFileSync(controllerDockerfilePath, 'utf8')
+const executionDockerfile = fs.readFileSync(executionDockerfilePath, 'utf8')
+const mlDockerfile = fs.readFileSync(mlDockerfilePath, 'utf8')
 assert(workflow.includes('scripts/p9_gate.ps1'), 'P9 workflow should run the same gate script')
 assert(workflow.includes('working-directory: worker'), 'P9 workflow should install worker dependencies')
 assert(workflow.includes('working-directory: frontend'), 'P9 workflow should install frontend dependencies')
@@ -95,3 +101,17 @@ assert(retentionScript.includes('"quarantine-": 7'), 'failed or incomplete main 
 assert(retentionScript.includes('"candidate-": 30'), 'fully-passed main candidates must expire after thirty days')
 assert(retentionScript.includes('PROTECTED_PREFIXES = ("release-", "prod-")'), 'production and release tags must be protected from automatic deletion')
 assert(p9Gate.includes('GHCR retention contract tests'), 'P9 must execute the GHCR retention contract tests')
+
+const pinnedPythonBase = 'python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba'
+for (const [name, dockerfile] of [
+  ['controller', controllerDockerfile],
+  ['execution gateway', executionDockerfile],
+  ['ML service', mlDockerfile],
+] as const) {
+  assert(dockerfile.includes(pinnedPythonBase), `${name} runtime must pin the reviewed Python Bookworm image digest`)
+  assert(dockerfile.includes(' AS runtime'), `${name} image must isolate dependencies in a multi-stage build`)
+}
+assert(controllerDockerfile.includes('node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3'), 'Worker compiler image must use an immutable Node digest')
+assert(!controllerDockerfile.split(' AS runtime')[1].includes('npm'), 'controller runtime must not ship npm or the TypeScript toolchain')
+assert(!mlDockerfile.split(' AS runtime')[1].includes('gcc g++'), 'ML runtime must not ship C/C++ compilers')
+assert(!executionDockerfile.split(' AS runtime')[1].includes('pip install'), 'execution runtime must not install packages or retain a build step')

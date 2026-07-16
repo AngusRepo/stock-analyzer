@@ -1,19 +1,29 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba AS dependencies
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/python -m pip install --no-cache-dir --upgrade pip==26.1.2 setuptools==83.0.0
+
+COPY ml-controller/requirements-execution-gateway.txt /tmp/requirements.txt
+RUN /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt \
+    && rm -f /tmp/requirements.txt
+
+FROM python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH" \
     PORT=8080
 
 WORKDIR /app
 
-RUN python -m pip install --no-cache-dir --upgrade pip==26.1.2 setuptools==83.0.0
-
 RUN groupadd --system stockvision \
     && useradd --system --gid stockvision --home-dir /app stockvision
 
-COPY ml-controller/requirements-execution-gateway.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt \
-    && rm -f /tmp/requirements.txt
+COPY --from=dependencies /opt/venv /opt/venv
 
 COPY --chown=stockvision:stockvision ml-controller/execution_gateway_app.py /app/execution_gateway_app.py
 COPY --chown=stockvision:stockvision ml-controller/services/__init__.py /app/services/__init__.py
@@ -28,6 +38,8 @@ COPY --chown=stockvision:stockvision ml-controller/services/finlab_execution_pre
 COPY --chown=stockvision:stockvision ml-controller/services/finlab_live_submit_service.py /app/services/finlab_live_submit_service.py
 COPY --chown=stockvision:stockvision ml-controller/services/finlab_sinopac_l5_market_data.py /app/services/finlab_sinopac_l5_market_data.py
 COPY --chown=stockvision:stockvision ml-controller/services/kv_client.py /app/services/kv_client.py
+
+RUN python -c "import fastapi, finlab, shioaji, uvicorn"
 
 USER stockvision
 EXPOSE 8080

@@ -94,6 +94,8 @@ assert(workflow.includes('--severity HIGH,CRITICAL --ignore-unfixed=false'), 'Tr
 assert(workflow.includes('for item in result.get("Vulnerabilities") or []'), 'P9 must parse the complete Trivy vulnerability report')
 assert(workflow.includes('::error title=Trivy HIGH/CRITICAL findings::'), 'Trivy findings must emit a machine-readable error annotation')
 assert(workflow.includes('::error title=Linux TypeScript emit::'), 'Linux-only Worker emit failures must expose actionable diagnostics')
+assert(workflow.includes('group: p9-gate-${{ github.ref }}'), 'P9 must serialize image builds by ref')
+assert(workflow.includes('cancel-in-progress: true'), 'P9 must cancel superseded image builds on the same ref')
 assert(workflow.includes('raise SystemExit(1)'), 'attestation or vulnerability findings must fail the container gate')
 assert(retentionWorkflow.includes("cron: '37 18 * * *'"), 'GHCR retention must run once daily off-hours')
 assert(retentionWorkflow.includes('--max-deletes-per-package 25'), 'retention deletion blast radius must be capped per run')

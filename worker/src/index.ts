@@ -55,8 +55,10 @@ import { market, llm, watchlist, alerts, news, ml, notifications, system, recomm
 import { paper } from './routes/paper'
 import { runIntradayCheck } from './lib/paperEntryTasks'
 import { setupMorningPendingBuys } from './lib/pendingBuyOrchestrator'
+import { routePolicyMiddleware } from './lib/routePolicy'
+import { EgressPolicyError, validateEgressEnvironment } from './lib/egressPolicy'
 
-const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+export const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 const adminTriggerRoutes = createAdminTriggerRoutes({
   buildTaskMap: (c: any) => buildAdminTriggerTaskMap(c, {
     runMarketScreener: (runDate?: string) => runMarketScreener(c.env, runDate),
@@ -113,7 +115,7 @@ app.use('/api/*', cors({
     ])
     return allowed.has(origin) ? origin : null
   },
-  allowHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
+  allowHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key', 'X-CSRF-Token'],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true,
 }))
@@ -130,6 +132,21 @@ app.use('*', async (c, next) => {
     c.res.headers.set('Content-Security-Policy', "default-src 'none'")
   }
 })
+
+// Deny-by-default access registry for every current and future /api route.
+app.use('/api/*', async (c, next) => {
+  if (c.req.path !== '/api/health') {
+    try {
+      validateEgressEnvironment(c.env)
+    } catch (error) {
+      if (!(error instanceof EgressPolicyError)) throw error
+      console.error('[egress-policy] invalid runtime configuration:', error.message)
+      return c.json({ error: 'Outbound service configuration is invalid' }, 503)
+    }
+  }
+  await next()
+})
+app.use('/api/*', routePolicyMiddleware)
 
 app.route('/api/auth',      auth)
 app.route('/api/stocks',    stocks)
@@ -167,6 +184,7 @@ export default {
       console.warn(`[Cron] Cloudflare scheduled trigger ignored (${event.cron}); GCP Scheduler is the production owner.`)
       return
     }
+    validateEgressEnvironment(env)
     await handleScheduledCron(event, env, ctx)
   },
 
@@ -176,6 +194,7 @@ export default {
     ctx: ExecutionContext,
   ): Promise<void> {
     void ctx
+    validateEgressEnvironment(env)
     await Promise.all(batch.messages.map(async (msg) => {
       try {
         await processUpdateBatch(msg.body, env, {

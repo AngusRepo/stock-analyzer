@@ -1,6 +1,15 @@
 import { Hono } from 'hono'
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import type { Bindings, Variables } from '../types'
-import { signJWT, verifyJWT, revokeJWT, authMiddleware, adminMiddleware } from '../lib/auth'
+import {
+  CSRF_COOKIE_NAME,
+  SESSION_COOKIE_NAME,
+  signJWT,
+  verifyJWT,
+  revokeJWT,
+  authMiddleware,
+  adminMiddleware,
+} from '../lib/auth'
 
 const auth = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -254,10 +263,45 @@ auth.post('/exchange', async (c) => {
 
   // 用後即刪，確保 one-time use
   await c.env.KV.delete(`auth:code:${code}`)
-  return c.json({ token })
+  const secure = new URL(c.req.url).protocol === 'https:'
+  const csrfToken = crypto.randomUUID()
+  setCookie(c, SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure,
+    sameSite: secure ? 'None' : 'Lax',
+    partitioned: secure,
+    path: '/',
+    maxAge: JWT_EXP,
+  })
+  setCookie(c, CSRF_COOKIE_NAME, csrfToken, {
+    httpOnly: false,
+    secure,
+    sameSite: secure ? 'None' : 'Lax',
+    partitioned: secure,
+    path: '/',
+    maxAge: JWT_EXP,
+  })
+  return c.json({ authenticated: true, csrfToken })
 })
 
 // ─── GET /api/auth/me ─────────────────────────────────────────────────────────
+auth.get('/csrf', authMiddleware, async (c) => {
+  const existing = getCookie(c, CSRF_COOKIE_NAME)
+  const csrfToken = existing || crypto.randomUUID()
+  if (!existing) {
+    const secure = new URL(c.req.url).protocol === 'https:'
+    setCookie(c, CSRF_COOKIE_NAME, csrfToken, {
+      httpOnly: false,
+      secure,
+      sameSite: secure ? 'None' : 'Lax',
+      partitioned: secure,
+      path: '/',
+      maxAge: JWT_EXP,
+    })
+  }
+  return c.json({ csrfToken })
+})
+
 auth.get('/me', authMiddleware, async (c) => {
   const host = new URL(c.req.url).hostname.toLowerCase()
   if ((host === 'localhost' || host === '127.0.0.1' || host === '::1') && c.get('userId') === 1) {
@@ -281,11 +325,22 @@ auth.get('/me', authMiddleware, async (c) => {
 // ─── POST /api/auth/logout — 撤銷 JWT（加入 KV blacklist）─────────────────────
 auth.post('/logout', async (c) => {
   const authHeader = c.req.header('Authorization')
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
+  const token = authHeader?.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : getCookie(c, SESSION_COOKIE_NAME) ?? null
   if (token) {
     const payload = await verifyJWT(token, c.env.JWT_SECRET)
     if (payload) await revokeJWT(payload, c.env.KV)
   }
+  const secure = new URL(c.req.url).protocol === 'https:'
+  const cookieScope = {
+    path: '/',
+    secure,
+    sameSite: secure ? 'None' as const : 'Lax' as const,
+    partitioned: secure,
+  }
+  deleteCookie(c, SESSION_COOKIE_NAME, cookieScope)
+  deleteCookie(c, CSRF_COOKIE_NAME, cookieScope)
   return c.json({ success: true })
 })
 

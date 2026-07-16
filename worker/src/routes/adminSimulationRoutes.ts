@@ -1,18 +1,11 @@
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../types'
+import { requireServiceToken } from '../lib/auth'
 
 export const adminSimulationRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
-function requireServiceToken(c: any) {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  return null
-}
-
 adminSimulationRoutes.post('/api/admin/test/simulate-trade', async (c) => {
-  const authError = requireServiceToken(c)
+  const authError = await requireServiceToken(c)
   if (authError) return authError
 
   const body = await c.req.json<any>().catch(() => null)
@@ -40,7 +33,7 @@ adminSimulationRoutes.post('/api/admin/test/simulate-trade', async (c) => {
 })
 
 adminSimulationRoutes.post('/api/admin/test/score-multi-factor', async (c) => {
-  const authError = requireServiceToken(c)
+  const authError = await requireServiceToken(c)
   if (authError) return authError
 
   const body = await c.req.json<any>().catch(() => null)

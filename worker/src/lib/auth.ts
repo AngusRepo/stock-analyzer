@@ -1,7 +1,10 @@
 ﻿import type { Context, Next } from 'hono'
 import type { Bindings, Variables } from '../types'
+import { getCookie } from 'hono/cookie'
 
 type AppContext = Context<{ Bindings: Bindings; Variables: Variables }>
+export const SESSION_COOKIE_NAME = 'sv_session'
+export const CSRF_COOKIE_NAME = 'sv_csrf'
 
 function isLocalAuthBypass(c: AppContext): boolean {
   const enabled = String((c.env as any).LOCAL_AUTH_BYPASS ?? '').trim() === '1'
@@ -66,7 +69,7 @@ export async function verifyJWT(token: string, secret: string): Promise<Record<s
     const valid = await crypto.subtle.verify('HMAC', key, b64urlDecode(sig), new TextEncoder().encode(`${header}.${body}`))
     if (!valid) return null
     const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(body)))
-    if (payload.exp && payload.exp < Math.floor(Date.now()/1000)) return null
+    if (typeof payload.exp !== 'number' || payload.exp <= Math.floor(Date.now()/1000)) return null
     return payload
   } catch { return null }
 }
@@ -79,26 +82,127 @@ export function getBearerToken(authHeader?: string | null): string | null {
 }
 
 export function hasServiceToken(token: string | null | undefined, serviceToken?: string): boolean {
-  return Boolean(token && serviceToken && token === serviceToken)
+  return Boolean(token && serviceToken && constantTimeEqual(token, serviceToken))
+}
+
+type GoogleJwk = JsonWebKey & { kid?: string; alg?: string; use?: string }
+let googleJwksCache: { keys: GoogleJwk[]; expiresAtMs: number } | null = null
+const GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs'
+
+function cacheMaxAgeMs(cacheControl: string | null): number {
+  const match = cacheControl?.match(/(?:^|,)\s*max-age=(\d+)/i)
+  const seconds = match ? Number(match[1]) : 300
+  return Math.max(60, Math.min(Number.isFinite(seconds) ? seconds : 300, 3600)) * 1000
+}
+
+async function loadGoogleJwks(forceRefresh = false): Promise<GoogleJwk[]> {
+  const now = Date.now()
+  if (!forceRefresh && googleJwksCache && googleJwksCache.expiresAtMs > now) return googleJwksCache.keys
+  const response = await fetch(GOOGLE_JWKS_URL, { headers: { Accept: 'application/json' } })
+  if (!response.ok) throw new Error(`google_jwks_fetch_failed:${response.status}`)
+  const body = await response.json() as { keys?: GoogleJwk[] }
+  const keys = Array.isArray(body.keys) ? body.keys.filter((key) => key.kty === 'RSA' && key.kid) : []
+  if (!keys.length) throw new Error('google_jwks_empty')
+  googleJwksCache = { keys, expiresAtMs: now + cacheMaxAgeMs(response.headers.get('Cache-Control')) }
+  return keys
+}
+
+async function googleSigningKey(kid: string): Promise<CryptoKey | null> {
+  let keys = await loadGoogleJwks()
+  let jwk = keys.find((candidate) => candidate.kid === kid)
+  if (!jwk) {
+    keys = await loadGoogleJwks(true)
+    jwk = keys.find((candidate) => candidate.kid === kid)
+  }
+  if (!jwk || (jwk.alg && jwk.alg !== 'RS256') || (jwk.use && jwk.use !== 'sig')) return null
+  return crypto.subtle.importKey(
+    'jwk', jwk,
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify'],
+  )
+}
+
+export async function verifyGoogleSchedulerOIDC(
+  token: string,
+  expectedAudience?: string,
+  expectedServiceAccount?: string,
+): Promise<Record<string, unknown> | null> {
+  const audience = String(expectedAudience ?? '').trim()
+  const serviceAccount = String(expectedServiceAccount ?? '').trim().toLowerCase()
+  if (!audience || !serviceAccount) return null
+  try {
+    const [headerSegment, payloadSegment, signatureSegment, extra] = token.split('.')
+    if (!headerSegment || !payloadSegment || !signatureSegment || extra) return null
+    const header = JSON.parse(new TextDecoder().decode(b64urlDecode(headerSegment))) as Record<string, unknown>
+    if (header.alg !== 'RS256' || typeof header.kid !== 'string' || !header.kid) return null
+    const key = await googleSigningKey(header.kid)
+    if (!key) return null
+    const valid = await crypto.subtle.verify(
+      'RSASSA-PKCS1-v1_5', key, b64urlDecode(signatureSegment),
+      new TextEncoder().encode(`${headerSegment}.${payloadSegment}`),
+    )
+    if (!valid) return null
+    const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(payloadSegment))) as Record<string, unknown>
+    const now = Math.floor(Date.now() / 1000)
+    if (payload.iss !== 'https://accounts.google.com' && payload.iss !== 'accounts.google.com') return null
+    if (payload.aud !== audience) return null
+    if (typeof payload.exp !== 'number' || payload.exp <= now) return null
+    if (typeof payload.iat !== 'number' || payload.iat > now + 60) return null
+    if (payload.email_verified !== true) return null
+    if (String(payload.email ?? '').trim().toLowerCase() !== serviceAccount) return null
+    if (typeof payload.sub !== 'string' || !payload.sub) return null
+    return payload
+  } catch {
+    return null
+  }
 }
 
 async function getJwtOrServicePayload(c: AppContext): Promise<Record<string, unknown> | null> {
-  const token = getBearerToken(c.req.header('Authorization'))
+  const token = getBearerToken(c.req.header('Authorization')) ?? getCookie(c, SESSION_COOKIE_NAME) ?? null
   if (!token) return isLocalAuthBypass(c) ? localDevPayload() : null
   if (hasServiceToken(token, c.env.STOCKVISION_AUTH_TOKEN)) {
     return { role: 'service', sub: 'service' }
   }
-  return verifyJWT(token, c.env.JWT_SECRET)
+  const schedulerPayload = await verifyGoogleSchedulerOIDC(
+    token, c.env.GOOGLE_SCHEDULER_AUDIENCE, c.env.GOOGLE_SCHEDULER_SERVICE_ACCOUNT,
+  )
+  if (schedulerPayload) return { ...schedulerPayload, role: 'service' }
+  const payload = await verifyJWT(token, c.env.JWT_SECRET)
+  if (!payload) return null
+  const jti = payload.jti as string | undefined
+  if (jti && await c.env.KV.get(`jwt_blacklist:${jti}`) !== null) return null
+  return payload
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) return false
+  let diff = 0
+  for (let i = 0; i < left.length; i += 1) diff |= left.charCodeAt(i) ^ right.charCodeAt(i)
+  return diff === 0
+}
+
+function csrfErrorForCookieMutation(c: AppContext): Response | null {
+  if (getBearerToken(c.req.header('Authorization'))) return null
+  if (!getCookie(c, SESSION_COOKIE_NAME)) return null
+  if (['GET', 'HEAD', 'OPTIONS'].includes(c.req.method.toUpperCase())) return null
+  const cookieToken = getCookie(c, CSRF_COOKIE_NAME) ?? ''
+  const headerToken = c.req.header('X-CSRF-Token') ?? ''
+  if (cookieToken && headerToken && constantTimeEqual(cookieToken, headerToken)) return null
+  return c.json({ error: 'CSRF validation failed' }, 403)
 }
 
 export async function requireServiceToken(c: AppContext): Promise<Response | null> {
   if (isLocalAuthBypass(c)) return null
   const token = getBearerToken(c.req.header('Authorization'))
   if (hasServiceToken(token, c.env.STOCKVISION_AUTH_TOKEN)) return null
+  if (token && await verifyGoogleSchedulerOIDC(
+    token, c.env.GOOGLE_SCHEDULER_AUDIENCE, c.env.GOOGLE_SCHEDULER_SERVICE_ACCOUNT,
+  )) return null
   return c.json({ error: 'Unauthorized' }, 401)
 }
 
 export async function requireValidToken(c: AppContext): Promise<Response | null> {
+  const csrfError = csrfErrorForCookieMutation(c)
+  if (csrfError) return csrfError
   const payload = await getJwtOrServicePayload(c)
   if (!payload) return c.json({ error: 'Unauthorized' }, 401)
   return null
@@ -106,15 +210,23 @@ export async function requireValidToken(c: AppContext): Promise<Response | null>
 
 export async function requireAdminJWT(c: AppContext): Promise<Response | null> {
   if (isLocalAuthBypass(c)) return null
-  const token = getBearerToken(c.req.header('Authorization'))
+  const csrfError = csrfErrorForCookieMutation(c)
+  if (csrfError) return csrfError
+  const token = getBearerToken(c.req.header('Authorization')) ?? getCookie(c, SESSION_COOKIE_NAME) ?? null
   if (!token) return c.json({ error: 'Unauthorized' }, 401)
   const payload = await verifyJWT(token, c.env.JWT_SECRET)
   if (!payload) return c.json({ error: 'Unauthorized' }, 401)
+  const jti = payload.jti as string | undefined
+  if (jti && await c.env.KV.get(`jwt_blacklist:${jti}`) !== null) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
   if (payload.role !== 'admin') return c.json({ error: 'Admin only' }, 403)
   return null
 }
 
 export async function requireAdminOrServiceToken(c: AppContext): Promise<Response | null> {
+  const csrfError = csrfErrorForCookieMutation(c)
+  if (csrfError) return csrfError
   const payload = await getJwtOrServicePayload(c)
   if (!payload) return c.json({ error: 'Unauthorized' }, 401)
   if (payload.role === 'service' || payload.role === 'admin') return null
@@ -123,8 +235,13 @@ export async function requireAdminOrServiceToken(c: AppContext): Promise<Respons
 
 // ─── Auth Middleware ─────────────────────────────────────────────────────────
 export const authMiddleware = async (c: Context<{ Bindings: Bindings; Variables: Variables }>, next: Next) => {
-  const authHeader = c.req.header('Authorization')
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
+  if (c.get('userId') !== undefined && c.get('userRole')) {
+    await next()
+    return
+  }
+  const csrfError = csrfErrorForCookieMutation(c)
+  if (csrfError) return csrfError
+  const token = getBearerToken(c.req.header('Authorization')) ?? getCookie(c, SESSION_COOKIE_NAME) ?? null
 
   if (!token && isLocalAuthBypass(c)) {
     setLocalDevUser(c)

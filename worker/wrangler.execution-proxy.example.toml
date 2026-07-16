@@ -1,0 +1,17 @@
+name = "stockvision-execution-ledger"
+main = "src/executionLedgerProxy.ts"
+compatibility_date = "2026-07-01"
+
+# Copy to a local, untracked wrangler.execution-proxy.toml and replace the id.
+# EXECUTION_LEDGER_TOKEN must be configured with `wrangler secret put`; never
+# place it in this file.
+[[d1_databases]]
+binding = "EXECUTION_DB"
+database_name = "stockvision-execution-db"
+database_id = "REPLACE_WITH_EXECUTION_D1_DATABASE_ID"
+migrations_dir = "migrations-execution"
+
+[vars]
+# Set this to a generated UUID and write the same value to
+# execution_database_identity.instance_id before any runtime query is allowed.
+EXECUTION_LEDGER_INSTANCE_ID = "UNPROVISIONED"

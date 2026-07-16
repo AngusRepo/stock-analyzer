@@ -3,7 +3,7 @@ import { resolveApiBase } from '../const'
 const BASE = resolveApiBase()
 export const AUTH_TOKEN_EVENT = 'stockvision:auth-token'
 
-let _token: string | null = sessionStorage.getItem('sv_token')
+let _csrfToken: string | null = sessionStorage.getItem('sv_csrf')
 
 function formatApiError(path: string, status: number, statusText: string, payload: any): string {
   const serverMessage = typeof payload?.error === 'string' && payload.error.trim()
@@ -22,30 +22,38 @@ function emitAuthTokenEvent(authenticated: boolean) {
   window.dispatchEvent(new CustomEvent(AUTH_TOKEN_EVENT, { detail: { authenticated } }))
 }
 
-export function setToken(t: string) {
-  _token = t
-  sessionStorage.setItem('sv_token', t)
+export function setSession(csrfToken: string) {
+  _csrfToken = csrfToken
+  sessionStorage.setItem('sv_csrf', csrfToken)
   emitAuthTokenEvent(true)
 }
 
-export function clearToken() {
-  _token = null
-  sessionStorage.removeItem('sv_token')
+export function restoreSession(csrfToken: string) {
+  _csrfToken = csrfToken
+  sessionStorage.setItem('sv_csrf', csrfToken)
+}
+
+export function clearSession() {
+  _csrfToken = null
+  sessionStorage.removeItem('sv_csrf')
   emitAuthTokenEvent(false)
 }
-export function getToken() { return _token }
+export function getCsrfToken() { return _csrfToken }
 
 async function req<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
   const headers: Record<string,string> = { 'Content-Type': 'application/json' }
-  if (_token) headers['Authorization'] = `Bearer ${_token}`
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && _csrfToken) {
+    headers['X-CSRF-Token'] = _csrfToken
+  }
   Object.assign(headers, extraHeaders)
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
     cache: method === 'GET' ? 'no-store' : undefined,
+    credentials: 'include',
   })
-  if (res.status === 401) { clearToken(); throw new Error('Unauthorized') }
+  if (res.status === 401) { clearSession(); throw new Error('Unauthorized') }
   if (!res.ok) {
     const e = await res.json().catch(() => ({})) as any
     throw new Error(formatApiError(path, res.status, res.statusText, e))
@@ -58,10 +66,15 @@ const put  = <T>(p: string, b?: unknown) => req<T>('PUT',    p, b)
 const del  = <T>(p: string)            => req<T>('DELETE', p)
 
 export const authApi = {
-  me: () => get<any>('/auth/me'),
+  csrf: () => get<{ csrfToken: string }>('/auth/csrf'),
+  me: async () => {
+    const { csrfToken } = await get<{ csrfToken: string }>('/auth/csrf')
+    restoreSession(csrfToken)
+    return get<any>('/auth/me')
+  },
   loginUrl: () => `${BASE}/auth/google`,
   logout: () => post<any>('/auth/logout'),
-  exchange: (code: string) => post<{ token: string }>('/auth/exchange', { code }),
+  exchange: (code: string) => post<{ authenticated: true; csrfToken: string }>('/auth/exchange', { code }),
 }
 export const stocksApi = {
   list:        () => get<any[]>('/stocks'),

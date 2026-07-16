@@ -14,6 +14,7 @@ import {
   type ScoreV2SnapshotSummary,
   type ScoreV2StorageRow,
 } from './scoreV2Taxonomy'
+import { sha256Text } from './datasetSnapshots'
 
 export type PendingBuyRunStatus =
   | 'ready'
@@ -73,6 +74,9 @@ interface PendingBuyRunRow {
   error_message: string | null
   created_at: string
   updated_at: string
+  canonical_key?: string | null
+  state_fingerprint?: string | null
+  state_revision?: number | null
 }
 
 interface PendingBuyItemRow {
@@ -156,7 +160,6 @@ interface ReplacePendingBuyStateParams {
   meta?: Record<string, unknown>
 }
 
-const ACTIVE_RUN_STATUSES: PendingBuyRunStatus[] = ['ready', 'empty', 'halted', 'error']
 const D1_IN_CHUNK_SIZE = 40
 const PENDING_BUY_BASE_COLUMNS = `
   symbol, name, signal, confidence, ml_entry_price, ml_stop_loss, ml_target1, ml_target2,
@@ -176,6 +179,56 @@ function isMissingColumnError(error: unknown): boolean {
 
 function toWatchPointsJson(points: string[] | null | undefined): string {
   return JSON.stringify(Array.isArray(points) ? points : [])
+}
+
+function canonicalPendingBuyKey(tradeDate: string): string {
+  return `pending-buy:${tradeDate}`
+}
+
+export async function pendingBuyStateFingerprint(input: {
+  tradeDate: string
+  sourceRecoDate?: string | null
+  status: PendingBuyRunStatus
+  debateStatus: PendingBuyDebateStatus
+  errorMessage?: string | null
+  pendingBuys: PendingBuy[]
+}): Promise<string> {
+  const rows = [...input.pendingBuys]
+    .sort((left, right) => left.symbol.localeCompare(right.symbol))
+    .map((row) => ({
+      symbol: row.symbol,
+      name: row.name,
+      signal: row.signal,
+      confidence: row.confidence,
+      ml_entry_price: row.ml_entry_price,
+      ml_stop_loss: row.ml_stop_loss ?? null,
+      ml_target1: row.ml_target1 ?? null,
+      ml_target2: row.ml_target2 ?? null,
+      reason: row.reason ?? '',
+      watch_points: Array.isArray(row.watch_points) ? row.watch_points : [],
+      debate_verdict: row.debate_verdict ?? 'PENDING',
+      debate_status: row.debate_status ?? input.debateStatus,
+      execution_status: row.execution_status ?? 'pending',
+      risk_pct: row.risk_pct ?? 0,
+      kelly_pct: row.kelly_pct ?? null,
+      chip_score: row.chip_score ?? null,
+      tech_score: row.tech_score ?? null,
+      ml_score: row.ml_score ?? null,
+      score: row.score ?? null,
+      source: row.source ?? 'morning_setup',
+      original_entry: row.original_entry ?? null,
+      retry_count: row.retry_count ?? 0,
+      debate_turns: row.debate_turns ?? [],
+    }))
+  return sha256Text(JSON.stringify({
+    schema_version: 'pending-buy-state-v2',
+    trade_date: input.tradeDate,
+    source_reco_date: input.sourceRecoDate ?? null,
+    status: input.status,
+    debate_status: input.debateStatus,
+    error_message: input.errorMessage ?? null,
+    rows,
+  }))
 }
 
 function fromWatchPointsJson(raw: string | null): string[] {
@@ -737,109 +790,176 @@ export async function replacePendingBuyState(
     ...(params.meta ?? {}),
   }
   let runId: number | null = null
-  try {
-    await env.DB.prepare(
-      `UPDATE pending_buy_runs
-          SET status='superseded', updated_at=datetime('now')
-        WHERE trade_date=? AND status IN (${ACTIVE_RUN_STATUSES.map(() => '?').join(',')})`
-    ).bind(params.tradeDate, ...ACTIVE_RUN_STATUSES).run()
+  const canonicalKey = canonicalPendingBuyKey(params.tradeDate)
+  const stateFingerprint = await pendingBuyStateFingerprint({
+    tradeDate: params.tradeDate,
+    sourceRecoDate: params.sourceRecoDate,
+    status: params.status,
+    debateStatus,
+    errorMessage: params.errorMessage,
+    pendingBuys,
+  })
+  let runRow = await env.DB.prepare(`
+    SELECT id, trade_date, source_reco_date, status, debate_status, candidate_count,
+           error_message, created_at, updated_at, canonical_key, state_fingerprint, state_revision
+      FROM pending_buy_runs
+     WHERE canonical_key = ?
+     LIMIT 1
+  `).bind(canonicalKey).first<PendingBuyRunRow>()
 
-    const runRow = await env.DB.prepare(
-      `INSERT INTO pending_buy_runs
-        (trade_date, source_reco_date, status, debate_status, candidate_count, error_message, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-       RETURNING id`
-    ).bind(
-      params.tradeDate,
+  if (!runRow) {
+    const legacyRow = await env.DB.prepare(`
+      SELECT id, trade_date, source_reco_date, status, debate_status, candidate_count,
+             error_message, created_at, updated_at, canonical_key, state_fingerprint, state_revision
+        FROM pending_buy_runs
+       WHERE trade_date = ? AND status <> 'superseded'
+       ORDER BY id DESC
+       LIMIT 1
+    `).bind(params.tradeDate).first<PendingBuyRunRow>()
+    if (legacyRow) {
+      try {
+        await env.DB.prepare(`
+          UPDATE pending_buy_runs
+             SET canonical_key = ?, updated_at = datetime('now')
+           WHERE id = ? AND canonical_key IS NULL
+        `).bind(canonicalKey, legacyRow.id).run()
+      } catch (error) {
+        if (!/unique constraint/i.test(String(error))) throw error
+      }
+    } else {
+      await env.DB.prepare(`
+        INSERT OR IGNORE INTO pending_buy_runs (
+          trade_date, source_reco_date, status, debate_status, candidate_count, error_message,
+          canonical_key, state_fingerprint, state_revision, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 0, ?, ?, NULL, 0, datetime('now'), datetime('now'))
+      `).bind(
+        params.tradeDate,
+        params.sourceRecoDate ?? null,
+        params.status,
+        debateStatus,
+        params.errorMessage ?? null,
+        canonicalKey,
+      ).run()
+    }
+    runRow = await env.DB.prepare(`
+      SELECT id, trade_date, source_reco_date, status, debate_status, candidate_count,
+             error_message, created_at, updated_at, canonical_key, state_fingerprint, state_revision
+        FROM pending_buy_runs
+       WHERE canonical_key = ?
+       LIMIT 1
+    `).bind(canonicalKey).first<PendingBuyRunRow>()
+  }
+
+  runId = Number(runRow?.id ?? 0)
+  if (!Number.isFinite(runId) || runId <= 0) {
+    throw new Error(`pending_buy_runs canonical row unavailable for ${params.tradeDate}`)
+  }
+  if (runRow?.state_fingerprint === stateFingerprint) {
+    await syncKvSnapshot(env, params.tradeDate, kvPendingBuys, { ...baseMeta, run_id: runId })
+    return runId
+  }
+
+  const existingRows = await env.DB.prepare(
+    'SELECT symbol FROM pending_buy_items WHERE run_id = ?',
+  ).bind(runId).all<{ symbol: string }>()
+  const desiredSymbols = new Set(pendingBuys.map((item) => item.symbol))
+  const staleSymbols = (existingRows.results ?? [])
+    .map((row) => String(row.symbol))
+    .filter((symbol) => !desiredSymbols.has(symbol))
+
+  const buildStatements = (withDebateTurns: boolean): D1PreparedStatement[] => {
+    const statements: D1PreparedStatement[] = pendingBuys.map((item) => {
+      const baseValues = [
+        runId,
+        item.symbol,
+        item.name,
+        item.signal,
+        item.confidence,
+        item.ml_entry_price,
+        item.ml_stop_loss ?? null,
+        item.ml_target1 ?? null,
+        item.ml_target2 ?? null,
+        item.reason ?? '',
+        toWatchPointsJson(item.watch_points),
+        item.debate_verdict ?? 'PENDING',
+        item.debate_status ?? debateStatus,
+        item.execution_status ?? 'pending',
+        item.risk_pct ?? 0,
+        item.kelly_pct ?? null,
+        item.chip_score ?? null,
+        item.tech_score ?? null,
+        item.ml_score ?? null,
+        item.score ?? null,
+        item.source ?? 'morning_setup',
+        item.original_entry ?? null,
+        item.retry_count ?? 0,
+      ]
+      const turnsColumn = withDebateTurns ? ', debate_turns_json' : ''
+      const turnsValue = withDebateTurns ? ', ?' : ''
+      const turnsUpdate = withDebateTurns ? ', debate_turns_json=excluded.debate_turns_json' : ''
+      return env.DB.prepare(`
+        INSERT INTO pending_buy_items (
+          run_id, symbol, name, signal, confidence, ml_entry_price, ml_stop_loss, ml_target1, ml_target2,
+          reason, watch_points_json, debate_verdict, debate_status, execution_status, risk_pct, kelly_pct,
+          chip_score, tech_score, ml_score, score, source, original_entry, retry_count${turnsColumn}, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${turnsValue}, datetime('now'), datetime('now'))
+        ON CONFLICT(run_id, symbol) DO UPDATE SET
+          name=excluded.name, signal=excluded.signal, confidence=excluded.confidence,
+          ml_entry_price=excluded.ml_entry_price, ml_stop_loss=excluded.ml_stop_loss,
+          ml_target1=excluded.ml_target1, ml_target2=excluded.ml_target2, reason=excluded.reason,
+          watch_points_json=excluded.watch_points_json, debate_verdict=excluded.debate_verdict,
+          debate_status=excluded.debate_status, execution_status=excluded.execution_status,
+          risk_pct=excluded.risk_pct, kelly_pct=excluded.kelly_pct, chip_score=excluded.chip_score,
+          tech_score=excluded.tech_score, ml_score=excluded.ml_score, score=excluded.score,
+          source=excluded.source, original_entry=excluded.original_entry, retry_count=excluded.retry_count${turnsUpdate},
+          updated_at=datetime('now')
+      `).bind(...baseValues, ...(withDebateTurns ? [toDebateTurnsJson(item.debate_turns)] : []))
+    })
+    for (let i = 0; i < staleSymbols.length; i += D1_IN_CHUNK_SIZE) {
+      const chunk = staleSymbols.slice(i, i + D1_IN_CHUNK_SIZE)
+      statements.push(env.DB.prepare(`
+        DELETE FROM pending_buy_items
+         WHERE run_id = ? AND symbol IN (${chunk.map(() => '?').join(',')})
+      `).bind(runId, ...chunk))
+    }
+    statements.push(env.DB.prepare(`
+      UPDATE pending_buy_runs
+         SET source_reco_date = ?, status = ?, debate_status = ?, candidate_count = ?,
+             error_message = ?, state_fingerprint = ?, state_revision = state_revision + 1,
+             updated_at = datetime('now')
+       WHERE id = ? AND canonical_key = ?
+    `).bind(
       params.sourceRecoDate ?? null,
       params.status,
       debateStatus,
       pendingBuys.length,
       params.errorMessage ?? null,
-    ).first<{ id: number }>()
-
-    const insertedRunId = Number(runRow?.id ?? 0)
-    runId = Number.isFinite(insertedRunId) && insertedRunId > 0 ? insertedRunId : null
-    if (!runId) {
-      throw new Error(`pending_buy_runs insert did not return id for ${params.tradeDate}`)
-    }
-    const withDebateTurns = runId != null ? await hasDebateTurnsColumn(env.DB) : false
-    if (runId != null && pendingBuys.length > 0) {
-      for (const item of pendingBuys) {
-        const baseValues = [
-          runId,
-          item.symbol,
-          item.name,
-          item.signal,
-          item.confidence,
-          item.ml_entry_price,
-          item.ml_stop_loss ?? null,
-          item.ml_target1 ?? null,
-          item.ml_target2 ?? null,
-          item.reason ?? '',
-          toWatchPointsJson(item.watch_points),
-          item.debate_verdict ?? 'PENDING',
-          item.debate_status ?? debateStatus,
-          item.execution_status ?? 'pending',
-          item.risk_pct ?? 0,
-          item.kelly_pct ?? null,
-          item.chip_score ?? null,
-          item.tech_score ?? null,
-          item.ml_score ?? null,
-          item.score ?? null,
-          item.source ?? 'morning_setup',
-          item.original_entry ?? null,
-          item.retry_count ?? 0,
-        ]
-        try {
-          if (withDebateTurns) {
-            await env.DB.prepare(
-              `INSERT INTO pending_buy_items
-                (run_id, symbol, name, signal, confidence, ml_entry_price, ml_stop_loss, ml_target1, ml_target2,
-                 reason, watch_points_json, debate_verdict, debate_status, execution_status, risk_pct, kelly_pct,
-                 chip_score, tech_score, ml_score, score, source, original_entry, retry_count, debate_turns_json, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
-            ).bind(
-              ...baseValues,
-              toDebateTurnsJson(item.debate_turns),
-            ).run()
-          } else {
-            await env.DB.prepare(
-              `INSERT INTO pending_buy_items
-                (run_id, symbol, name, signal, confidence, ml_entry_price, ml_stop_loss, ml_target1, ml_target2,
-                 reason, watch_points_json, debate_verdict, debate_status, execution_status, risk_pct, kelly_pct,
-                 chip_score, tech_score, ml_score, score, source, original_entry, retry_count, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
-            ).bind(...baseValues).run()
-          }
-        } catch (error) {
-          if (!withDebateTurns || !isMissingColumnError(error)) throw error
-          debateTurnsColumnCache = false
-          await env.DB.prepare(
-            `INSERT INTO pending_buy_items
-              (run_id, symbol, name, signal, confidence, ml_entry_price, ml_stop_loss, ml_target1, ml_target2,
-               reason, watch_points_json, debate_verdict, debate_status, execution_status, risk_pct, kelly_pct,
-               chip_score, tech_score, ml_score, score, source, original_entry, retry_count, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
-          ).bind(...baseValues).run()
-        }
-      }
-
-      const inserted = await env.DB.prepare(
-        'SELECT COUNT(*) AS count FROM pending_buy_items WHERE run_id = ?',
-      ).bind(runId).first<{ count: number }>()
-      if (Number(inserted?.count ?? 0) !== pendingBuys.length) {
-        throw new Error(
-          `pending_buy_items insert mismatch for run ${runId}: expected ${pendingBuys.length}, got ${inserted?.count ?? 0}`,
-        )
-      }
-    }
-  } catch (error) {
-    throw error
+      stateFingerprint,
+      runId,
+      canonicalKey,
+    ))
+    return statements
   }
 
-  const meta = runId != null ? { ...baseMeta, run_id: runId } : baseMeta
-  await syncKvSnapshot(env, params.tradeDate, kvPendingBuys, meta)
+  const withDebateTurns = await hasDebateTurnsColumn(env.DB)
+  try {
+    await env.DB.batch(buildStatements(withDebateTurns))
+  } catch (error) {
+    if (!withDebateTurns || !isMissingColumnError(error)) throw error
+    debateTurnsColumnCache = false
+    await env.DB.batch(buildStatements(false))
+  }
+
+  const persisted = await env.DB.prepare(
+    'SELECT COUNT(*) AS count FROM pending_buy_items WHERE run_id = ?',
+  ).bind(runId).first<{ count: number }>()
+  if (Number(persisted?.count ?? 0) !== pendingBuys.length) {
+    throw new Error(
+      `pending_buy_items canonical sync mismatch for run ${runId}: expected ${pendingBuys.length}, got ${persisted?.count ?? 0}`,
+    )
+  }
+
+  await syncKvSnapshot(env, params.tradeDate, kvPendingBuys, { ...baseMeta, run_id: runId })
   return runId
 }
 

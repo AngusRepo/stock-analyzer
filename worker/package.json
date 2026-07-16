@@ -7,8 +7,11 @@
     "deploy": "wrangler deploy",
     "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.tests.json",
     "test:strategy-discovery": "node ../tools/run_strategy_discovery_tests.mjs",
-    "db:init": "wrangler d1 execute stockvision-db --file=./schema.sql",
-    "db:init:remote": "wrangler d1 execute stockvision-db --remote --file=./schema.sql"
+    "db:init": "wrangler d1 execute stockvision-db --file=./schema.production.snapshot.sql",
+    "db:init:remote": "wrangler d1 execute stockvision-db --remote --file=./schema.production.snapshot.sql",
+    "db:migrations:list": "wrangler d1 migrations list stockvision-db",
+    "db:migrations:apply": "wrangler d1 migrations apply stockvision-db",
+    "db:migrations:apply:remote": "wrangler d1 migrations apply stockvision-db --remote"
   },
   "dependencies": {
     "hono": "4.12.25"
@@ -17,6 +20,9 @@
     "@types/node": "^25.9.3",
     "tsx": "^4.21.0",
     "typescript": "6.0.3",
-    "wrangler": "4.100.0"
+    "wrangler": "4.110.0"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
   }
 }

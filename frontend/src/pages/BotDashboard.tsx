@@ -749,7 +749,9 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
             L1.25 {strategyPortfolioHealth.portfolio_metric_status ?? 'unknown'} metrics {strategyPortfolioHealth.metric_count_max ?? 0}
           </Badge>
         )}
-        <span className="text-muted-foreground/70">以 daily recommendations 的正式 BUY SIGNAL 為準；pending buys 仍由 L4 / debate / quote sanity 決定。</span>
+        <span className="text-muted-foreground/70">
+          Daily recommendations are evidence only. L4 selected rows can enter pending buys. Debate and quote sanity remain mandatory.
+        </span>
       </div>
 
       <div className="grid gap-3 xl:grid-cols-2">

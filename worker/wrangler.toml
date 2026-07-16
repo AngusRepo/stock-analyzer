@@ -1,6 +1,6 @@
 name = "stockvision-worker"
 main = "src/index.ts"
-compatibility_date = "2024-07-01"
+compatibility_date = "2026-07-01"
 compatibility_flags = ["nodejs_compat"]
 
 [triggers]
@@ -10,6 +10,7 @@ crons = []
 binding = "DB"
 database_name = "stockvision-db"
 database_id = "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79"
+migrations_dir = "migrations"
 
 [[kv_namespaces]]
 binding = "KV"
@@ -55,6 +56,8 @@ class_name = "StrategyDiscoveryWorkflow"
 [vars]
 ENVIRONMENT = "production"
 PAGES_ORIGIN = "https://stockvision-frontend.pages.dev"
+GOOGLE_SCHEDULER_SERVICE_ACCOUNT = "stockvision-scheduler@gen-lang-client-0602998820.iam.gserviceaccount.com"
+GOOGLE_SCHEDULER_AUDIENCE = "https://stockvision-worker.angus-solo-dev.workers.dev"
 FINLAB_L5_MARKET_DATA_ENABLED = "1"
 FINLAB_L5_MARKET_DATA_ALLOW_BROKER_LOGIN = "0"
 FINLAB_BACKFILL_MODAL_TRIGGER_ENABLED = "1"

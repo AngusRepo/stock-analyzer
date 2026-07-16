@@ -71,7 +71,7 @@ async function run(): Promise<void> {
         status: 'empty',
         pendingBuys: [],
       }),
-      /pending_buy_runs insert did not return id/,
+      /pending_buy_runs canonical row unavailable/,
       'pending-buy run id must be durable even for empty runs',
     )
     assert.equal(kv.writes.length, 0, 'KV must not be written when D1 run id is missing')

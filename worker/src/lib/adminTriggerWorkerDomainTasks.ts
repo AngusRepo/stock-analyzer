@@ -416,15 +416,15 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const {
         AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE,
         AUDIT_JSON_ARCHIVE_DEFAULT_LIMIT_PER_TABLE,
-        AUDIT_JSON_RETENTION_DEFAULT_DAYS,
         runAuditJsonArchiveRetention,
         summarizeAuditJsonArchiveRun,
       } = await import('./auditJsonArchive')
       const confirmPhrase = c.req.query('confirm_archive') ?? c.req.query('confirm')
       const dryRun = confirmPhrase !== AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE
+      const retentionRaw = c.req.query('retention_days')
       const result = await runAuditJsonArchiveRetention(c.env, {
         businessDate: requestedRunDate(),
-        retentionDays: Number.parseInt(c.req.query('retention_days') ?? `${AUDIT_JSON_RETENTION_DEFAULT_DAYS}`, 10),
+        retentionDays: retentionRaw == null ? undefined : Number.parseInt(retentionRaw, 10),
         limitPerTable: Number.parseInt(c.req.query('limit_per_table') ?? `${AUDIT_JSON_ARCHIVE_DEFAULT_LIMIT_PER_TABLE}`, 10),
         targets: c.req.queries('target') ?? (c.req.query('targets') ? [c.req.query('targets')] : null),
         dryRun,

@@ -1046,7 +1046,7 @@ async function readLatestMlThresholdPolicyEvidence(env: Bindings, date: string):
     const { results } = await env.DB.prepare(`
       SELECT forecast_data
         FROM predictions
-       WHERE COALESCE(prediction_date, substr(generated_at, 1, 10)) = ?
+       WHERE prediction_date = ?
          AND lower(model_name) IN ('ensemble', 'ensemble_v2')
          AND forecast_data IS NOT NULL
          AND forecast_data LIKE '%ml_threshold_policy%'

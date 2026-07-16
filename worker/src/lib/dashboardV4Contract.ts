@@ -113,7 +113,7 @@ function buildVolume(rows: Array<Record<string, unknown>>): LightweightPoint[] {
 function buildModelMarkers(rows: Array<Record<string, unknown>>): LightweightMarker[] {
   const markers: LightweightMarker[] = []
   for (const row of rows) {
-    const time = day(row.prediction_date ?? row.date ?? row.generated_at)
+    const time = day(row.prediction_date ?? row.date)
     const signal = String(row.trade_signal ?? row.signal ?? '').toLowerCase()
     if (!time || !['buy', 'strong_buy', 'sell', 'strong_sell'].includes(signal)) continue
     const isBuy = signal.includes('buy')

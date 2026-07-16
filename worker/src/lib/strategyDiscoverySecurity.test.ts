@@ -10,10 +10,11 @@ async function main() {
   const env: any = { JWT_SECRET: 'test-secret', KV: kv }
   const anonymous = await app.request('https://stockvision.invalid/api/dashboard-state', {}, env)
   assert.equal(anonymous.status, 401)
-  const userToken = await signJWT({ sub: '2', email: 'user@example.com', role: 'user', name: 'User' }, env.JWT_SECRET)
+  const exp = Math.floor(Date.now() / 1000) + 300
+  const userToken = await signJWT({ sub: '2', email: 'user@example.com', role: 'user', name: 'User', exp }, env.JWT_SECRET)
   const forbidden = await app.request('https://stockvision.invalid/api/dashboard-state', { headers: { Authorization: `Bearer ${userToken}` } }, env)
   assert.equal(forbidden.status, 403)
-  const adminToken = await signJWT({ sub: '1', email: 'admin@example.com', role: 'admin', name: 'Admin' }, env.JWT_SECRET)
+  const adminToken = await signJWT({ sub: '1', email: 'admin@example.com', role: 'admin', name: 'Admin', exp }, env.JWT_SECRET)
   const wrongMime = await app.request('https://stockvision.invalid/api/runs/RUN-1/codex-result', { method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Idempotency-Key': 'security-test-1', 'Content-Type': 'text/plain' }, body: 'x' }, env)
   assert.equal(wrongMime.status, 415)
   const tooLarge = await app.request('https://stockvision.invalid/api/runs/RUN-1/codex-result', { method: 'POST', headers: { Authorization: `Bearer ${adminToken}`, 'Idempotency-Key': 'security-test-2', 'Content-Type': 'application/zip', 'Content-Length': String(21 * 1024 * 1024) }, body: 'x' }, env)

@@ -21,10 +21,8 @@ export type Bindings = {
   // ML Controller (Cloud Run) — Phase 3 MVC
   ML_CONTROLLER_URL?: string
   ML_CONTROLLER_SECRET?: string
-  // Dedicated private broker execution gateway. Secrets must be configured as
-  // Cloudflare secrets, never plaintext wrangler vars.
-  EXECUTION_GATEWAY_URL?: string
-  EXECUTION_GATEWAY_SERVICE_TOKEN?: string
+  // Worker reaches the private execution gateway only through the
+  // Google-IAM-authenticated ml-controller relay.
   LIVE_EXECUTION_HMAC_SECRET?: string
   LIVE_EXECUTION_CLIENT_ENABLED?: string
   LIVE_TRADING_APPROVAL_SCOPE?: string
@@ -38,6 +36,8 @@ export type Bindings = {
   PAGES_ORIGIN?: string
   // AI Team 服務間共享 token（Paper Trading auth）
   STOCKVISION_AUTH_TOKEN?: string
+  GOOGLE_SCHEDULER_SERVICE_ACCOUNT?: string
+  GOOGLE_SCHEDULER_AUDIENCE?: string
   // Discord Webhook URL（Paper Trading 事件推送）
   DISCORD_WEBHOOK_URL?: string
   LINE_CHANNEL_ACCESS_TOKEN?: string

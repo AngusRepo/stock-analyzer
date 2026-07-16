@@ -57,8 +57,8 @@ export interface ExecutionShadowPacket {
 }
 
 export interface LiveExecutionClientEnv {
-  EXECUTION_GATEWAY_URL?: string
-  EXECUTION_GATEWAY_SERVICE_TOKEN?: string
+  ML_CONTROLLER_URL?: string
+  ML_CONTROLLER_SECRET?: string
   LIVE_EXECUTION_HMAC_SECRET?: string
   LIVE_EXECUTION_CLIENT_ENABLED?: string
   LIVE_EXECUTION_SUBMIT_GUARD_ENABLED?: string
@@ -309,10 +309,10 @@ export async function submitSignedLiveExecutionPacket(
   if (!truthy(env.LIVE_EXECUTION_SUBMIT_GUARD_ENABLED)) {
     return { status: 'blocked', reason: 'live_execution_submit_guard_disabled', live_submit_enabled: false }
   }
-  const gatewayUrl = env.EXECUTION_GATEWAY_URL?.trim().replace(/\/$/, '')
-  const serviceToken = env.EXECUTION_GATEWAY_SERVICE_TOKEN?.trim()
+  const controllerUrl = env.ML_CONTROLLER_URL?.trim().replace(/\/$/, '')
+  const controllerToken = env.ML_CONTROLLER_SECRET?.trim()
   const hmacSecret = env.LIVE_EXECUTION_HMAC_SECRET?.trim()
-  if (!gatewayUrl || !serviceToken || !hmacSecret) {
+  if (!controllerUrl || !controllerToken || !hmacSecret) {
     return { status: 'blocked', reason: 'live_execution_client_config_incomplete', live_submit_enabled: false }
   }
   if (packet.approval.scope !== env.LIVE_TRADING_APPROVAL_SCOPE?.trim()) {
@@ -320,11 +320,11 @@ export async function submitSignedLiveExecutionPacket(
   }
   const signature = await signExecutionPacket(packet, hmacSecret)
   try {
-    const response = await fetchFn(`${gatewayUrl}/v1/execute`, {
+    const response = await fetchFn(`${controllerUrl}/finlab/execution/live-submit`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${serviceToken}`,
+        'X-Controller-Token': controllerToken,
         'X-Execution-Signature': signature,
       },
       body: JSON.stringify({ packet, allow_live_submit: true }),
@@ -332,7 +332,12 @@ export async function submitSignedLiveExecutionPacket(
     })
     const payload = await response.json() as Record<string, unknown>
     if (!response.ok) {
-      return { status: 'error', reason: `execution_gateway_http_${response.status}`, payload, live_submit_enabled: false }
+      return {
+        status: 'unknown',
+        reason: `execution_gateway_http_${response.status}_reconciliation_required`,
+        payload,
+        live_submit_enabled: true,
+      }
     }
     return payload
   } catch (error) {
@@ -367,14 +372,14 @@ export async function fetchLiveExecutionIntentStatus(
   idempotencyKey: string,
   fetchFn: typeof fetch = fetch,
 ): Promise<Record<string, unknown>> {
-  const gatewayUrl = env.EXECUTION_GATEWAY_URL?.trim().replace(/\/$/, '')
-  const serviceToken = env.EXECUTION_GATEWAY_SERVICE_TOKEN?.trim()
-  if (!gatewayUrl || !serviceToken || idempotencyKey.trim().length < 16) {
+  const controllerUrl = env.ML_CONTROLLER_URL?.trim().replace(/\/$/, '')
+  const controllerToken = env.ML_CONTROLLER_SECRET?.trim()
+  if (!controllerUrl || !controllerToken || idempotencyKey.trim().length < 16) {
     return { status: 'blocked', reason: 'live_execution_status_config_incomplete' }
   }
   try {
-    const response = await fetchFn(`${gatewayUrl}/v1/intents/${encodeURIComponent(idempotencyKey.trim())}`, {
-      headers: { Authorization: `Bearer ${serviceToken}` },
+    const response = await fetchFn(`${controllerUrl}/finlab/execution/intents/${encodeURIComponent(idempotencyKey.trim())}`, {
+      headers: { 'X-Controller-Token': controllerToken },
       signal: AbortSignal.timeout(3000),
     })
     const payload = await response.json() as Record<string, unknown>

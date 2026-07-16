@@ -1,19 +1,27 @@
 import { resolveApiBase } from '../const'
-import { clearToken, getToken } from './api'
+import { clearSession, getCsrfToken } from './api'
 import type { AnalysisRun, DashboardState, FinalConclusion } from './strategyDiscoveryViewModel'
 
 const BASE = resolveApiBase()
 
 function headers(extra?: Record<string, string>): Headers {
   const value = new Headers(extra)
-  const token = getToken()
-  if (token) value.set('Authorization', `Bearer ${token}`)
   return value
 }
 
 async function checked(path: string, init?: RequestInit): Promise<Response> {
-  const response = await fetch(`${BASE}${path}`, { ...init, headers: headers(init?.headers as Record<string, string>), cache: 'no-store' })
-  if (response.status === 401) clearToken()
+  const requestHeaders = headers(init?.headers as Record<string, string>)
+  const csrfToken = getCsrfToken()
+  if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes(String(init?.method ?? 'GET').toUpperCase())) {
+    requestHeaders.set('X-CSRF-Token', csrfToken)
+  }
+  const response = await fetch(`${BASE}${path}`, {
+    ...init,
+    headers: requestHeaders,
+    cache: 'no-store',
+    credentials: 'include',
+  })
+  if (response.status === 401) clearSession()
   if (!response.ok) {
     const payload = await response.json().catch(() => null) as { error?: string; blockers?: string[] } | null
     const detail = payload?.blockers?.length ? `：${payload.blockers.join('；')}` : ''

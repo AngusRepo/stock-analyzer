@@ -157,7 +157,7 @@ export async function syncTimeverse(env: Bindings): Promise<string> {
 
       for (const file of files) {
         try {
-          const mdRes = await fetch(file.download_url, {
+          const mdRes = await fetch(assertGithubDownloadUrl(file.download_url), {
             headers: { 'User-Agent': 'StockVision-Sync' },
             signal: AbortSignal.timeout(10_000),
           })
@@ -199,3 +199,4 @@ export async function syncTimeverse(env: Bindings): Promise<string> {
   console.log(`[Timeverse] Done: ${synced} synced, ${failed} failed`)
   return `Timeverse 同步完成：${synced} 筆成功、${failed} 筆失敗`
 }
+import { assertGithubDownloadUrl } from './egressPolicy'

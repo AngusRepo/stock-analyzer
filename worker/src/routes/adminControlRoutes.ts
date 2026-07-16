@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../types'
-import { requireAdminOrServiceToken } from '../lib/auth'
+import { requireAdminOrServiceToken, requireServiceToken } from '../lib/auth'
+import { normalizeD1BatchStatement } from '../lib/d1BatchStatement'
 import { resolveFinLabDispatchFence } from '../lib/finLabDispatchFence'
 import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
 import type { EvidenceArtifactWriteInput } from '../lib/evidenceArtifactContract'
@@ -25,32 +26,8 @@ const REPORT_ARTIFACT_TASKS = new Set([
   'external-evidence',
 ])
 
-function requireServiceToken(c: any) {
-  const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN) {
-    return c.json({ error: 'Unauthorized' }, 401)
-  }
-  return null
-}
-
-const D1_BATCH_ALLOWED_DML = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE'])
-
-function normalizeD1BatchStatement(raw: any, index: number) {
-  const sql = typeof raw?.sql === 'string' ? raw.sql.trim() : ''
-  if (!sql) throw new Error(`statement ${index}: sql is required`)
-  if (sql.includes(';')) throw new Error(`statement ${index}: multiple SQL statements are not allowed`)
-
-  const verb = sql.split(/\s+/, 1)[0]?.toUpperCase()
-  if (!D1_BATCH_ALLOWED_DML.has(verb)) {
-    throw new Error(`statement ${index}: only INSERT/UPDATE/DELETE/REPLACE are allowed`)
-  }
-
-  const params = Array.isArray(raw?.params) ? raw.params : []
-  return { sql, params }
-}
-
 adminControlRoutes.post('/api/internal/d1/batch', async (c) => {
-  const authError = requireServiceToken(c)
+  const authError = await requireServiceToken(c)
   if (authError) return authError
 
   const body = await c.req.json().catch(() => null) as any
@@ -127,7 +104,7 @@ function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
 }
 
 adminControlRoutes.post('/api/internal/evidence-artifacts/screener-funnel', async (c) => {
-  const authError = requireServiceToken(c)
+  const authError = await requireServiceToken(c)
   if (authError) return authError
   if (!c.env.ARTIFACTS) return c.json({ error: 'artifact_r2_binding_missing' }, 503)
 
@@ -174,7 +151,7 @@ function stateSpaceSeriesMetaBySymbol(body: any): Map<string, any> {
 }
 
 adminControlRoutes.post('/api/internal/state-space-shadow/callback', async (c) => {
-  const authError = requireServiceToken(c)
+  const authError = await requireServiceToken(c)
   if (authError) return authError
 
   const body = await c.req.json().catch(() => null) as any
@@ -302,7 +279,7 @@ adminControlRoutes.post('/api/admin/adaptive-params', async (c) => {
 })
 
 async function handleSchedulerCallback(c: any) {
-  const authError = requireServiceToken(c)
+  const authError = await requireServiceToken(c)
   if (authError) return authError
 
   const body = await c.req.json().catch(() => null) as any

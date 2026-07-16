@@ -7,7 +7,7 @@ import {
 
 export const AUDIT_JSON_ARCHIVE_KIND = 'd1_audit_json_archive'
 export const AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE = 'ARCHIVE_D1_AUDIT_JSON_TO_R2'
-export const AUDIT_JSON_RETENTION_DEFAULT_DAYS = 90
+export const AUDIT_JSON_RETENTION_DEFAULT_DAYS = 180
 export const AUDIT_JSON_RETENTION_MIN_DAYS = 30
 export const AUDIT_JSON_RETENTION_MAX_DAYS = 3650
 export const AUDIT_JSON_ARCHIVE_DEFAULT_LIMIT_PER_TABLE = 250
@@ -31,6 +31,7 @@ type AuditJsonTargetConfig = {
   keyColumn: string
   selectedColumns: string[]
   blobColumns: string[]
+  defaultRetentionDays: number
 }
 
 export type AuditJsonRetentionPlanTable = {
@@ -53,6 +54,7 @@ export type AuditJsonRetentionPlan = {
   archive_kind: typeof AUDIT_JSON_ARCHIVE_KIND
   business_date: string
   retention_days: number
+  retention_policy: 'target_defaults' | 'explicit_override'
   cutoff_date: string
   min_blob_bytes: number
   tables: AuditJsonRetentionPlanTable[]
@@ -67,11 +69,14 @@ export type AuditJsonArchiveRunResult = {
   business_date: string
   run_id: string
   retention_days: number
+  retention_policy: 'target_defaults' | 'explicit_override'
   cutoff_date: string
   limit_per_table: number
   tables: Array<{
     target: AuditJsonArchiveTargetId
     table: AuditJsonArchiveTable
+    retention_days: number
+    cutoff_date: string
     candidate_rows: number
     archived_rows: number
     scrubbed_rows: number
@@ -110,6 +115,7 @@ const AUDIT_JSON_TARGETS: AuditJsonTargetConfig[] = [
       'created_at',
     ],
     blobColumns: ['context_json', 'evidence_json'],
+    defaultRetentionDays: 180,
   },
   {
     id: 'screener_funnel_items',
@@ -132,6 +138,7 @@ const AUDIT_JSON_TARGETS: AuditJsonTargetConfig[] = [
       'created_at',
     ],
     blobColumns: ['evidence'],
+    defaultRetentionDays: 30,
   },
   {
     id: 'canonical_screener_funnel_items',
@@ -154,6 +161,7 @@ const AUDIT_JSON_TARGETS: AuditJsonTargetConfig[] = [
       'created_at',
     ],
     blobColumns: ['evidence'],
+    defaultRetentionDays: 180,
   },
   {
     id: 'paper_execution_events',
@@ -176,6 +184,7 @@ const AUDIT_JSON_TARGETS: AuditJsonTargetConfig[] = [
       'created_at',
     ],
     blobColumns: ['detail_json'],
+    defaultRetentionDays: 730,
   },
 ]
 
@@ -343,16 +352,18 @@ async function scrubArchivedRows(
         UPDATE ${target.table}
            SET ${setClause}
          WHERE ${target.keyColumn} = ?
+           AND ${target.blobColumns.map((column) => `${column} = ?`).join(' AND ')}
       `).bind(
         ...target.blobColumns.map((column) => pointerFor(row, column)),
         key,
+        ...target.blobColumns.map((column) => row[column]),
       ),
     )
   }
   let updated = 0
   for (let i = 0; i < statements.length; i += 50) {
-    await env.DB.batch(statements.slice(i, i + 50))
-    updated += statements.slice(i, i + 50).length
+    const results = await env.DB.batch(statements.slice(i, i + 50))
+    updated += results.reduce((sum, result) => sum + Number(result.meta?.changes ?? 0), 0)
   }
   return updated
 }
@@ -373,11 +384,14 @@ export async function buildAuditJsonRetentionPlan(
     AUDIT_JSON_RETENTION_MIN_DAYS,
     AUDIT_JSON_RETENTION_MAX_DAYS,
   )
-  const cutoffDate = isoDateOffset(businessDate, -retentionDays)
   const minBlobBytes = clampInt(options.minBlobBytes, 64, 1, 1_000_000)
   const tables: AuditJsonRetentionPlanTable[] = []
 
   for (const target of selectedTargets(options.targets)) {
+    const targetRetentionDays = options.retentionDays == null
+      ? target.defaultRetentionDays
+      : retentionDays
+    const cutoffDate = isoDateOffset(businessDate, -targetRetentionDays)
     const row = await env.DB.prepare(`
       SELECT COUNT(*) AS cold_rows,
              SUM(CASE WHEN ${archiveableWhere(target)} THEN 1 ELSE 0 END) AS archiveable_rows,
@@ -405,7 +419,7 @@ export async function buildAuditJsonRetentionPlan(
       table: target.table,
       date_column: target.dateColumn,
       cutoff_date: cutoffDate,
-      retention_days: retentionDays,
+      retention_days: targetRetentionDays,
       cold_rows: Number(row?.cold_rows ?? 0),
       archiveable_rows: Number(row?.archiveable_rows ?? 0),
       min_date: row?.min_date ?? null,
@@ -421,7 +435,8 @@ export async function buildAuditJsonRetentionPlan(
     archive_kind: AUDIT_JSON_ARCHIVE_KIND,
     business_date: businessDate,
     retention_days: retentionDays,
-    cutoff_date: cutoffDate,
+    retention_policy: options.retentionDays == null ? 'target_defaults' : 'explicit_override',
+    cutoff_date: isoDateOffset(businessDate, -retentionDays),
     min_blob_bytes: minBlobBytes,
     tables,
     total_archiveable_rows: tables.reduce((sum, table) => sum + table.archiveable_rows, 0),
@@ -468,6 +483,7 @@ export async function runAuditJsonArchiveRetention(
     business_date: businessDate,
     run_id: runId,
     retention_days: retentionDays,
+    retention_policy: options.retentionDays == null ? 'target_defaults' : 'explicit_override',
     cutoff_date: cutoffDate,
     limit_per_table: limitPerTable,
     tables: [],
@@ -481,12 +497,18 @@ export async function runAuditJsonArchiveRetention(
   }
 
   for (const target of selectedTargets(options.targets)) {
-    const rows = await loadCandidateRows(env, target, cutoffDate, limitPerTable, minBlobBytes)
+    const targetRetentionDays = options.retentionDays == null
+      ? target.defaultRetentionDays
+      : retentionDays
+    const targetCutoffDate = isoDateOffset(businessDate, -targetRetentionDays)
+    const rows = await loadCandidateRows(env, target, targetCutoffDate, limitPerTable, minBlobBytes)
     const archivedBlobBytes = rows.reduce((sum, row) => sum + rowBlobBytes(row, target), 0)
     if (dryRun || rows.length === 0) {
       result.tables.push({
         target: target.id,
         table: target.table,
+        retention_days: targetRetentionDays,
+        cutoff_date: targetCutoffDate,
         candidate_rows: rows.length,
         archived_rows: 0,
         scrubbed_rows: 0,
@@ -499,6 +521,11 @@ export async function runAuditJsonArchiveRetention(
       continue
     }
 
+    let committedArchiveRows = 0
+    let committedScrubRows = 0
+    let committedR2Key: string | null = null
+    let committedSnapshotId: string | null = null
+    let committedChecksum: string | null = null
     try {
       const chunkId = cleanRunPart(`${rows[0]?.[target.keyColumn] ?? 'start'}-${rows[rows.length - 1]?.[target.keyColumn] ?? 'end'}`)
       const r2Key = [
@@ -507,7 +534,7 @@ export async function runAuditJsonArchiveRetention(
         `target=${target.id}`,
         `business_date=${businessDate}`,
         `run_id=${runId}`,
-        `cutoff_date=${cutoffDate}`,
+        `cutoff_date=${targetCutoffDate}`,
         `chunk=${chunkId}.json`,
       ].join('/')
       const payload = {
@@ -519,8 +546,8 @@ export async function runAuditJsonArchiveRetention(
         key_column: target.keyColumn,
         blob_columns: target.blobColumns,
         business_date: businessDate,
-        retention_days: retentionDays,
-        cutoff_date: cutoffDate,
+        retention_days: targetRetentionDays,
+        cutoff_date: targetCutoffDate,
         archived_at: archivedAt,
         row_count: rows.length,
         blob_bytes: archivedBlobBytes,
@@ -536,7 +563,19 @@ export async function runAuditJsonArchiveRetention(
 
       await (env.ARTIFACTS as any).put(r2Key, body, {
         httpMetadata: { contentType: 'application/json; charset=utf-8' },
+        customMetadata: { checksum, schema_version: 'd1-audit-json-archive-v1' },
       })
+      const readback = await (env.ARTIFACTS as any).get(r2Key)
+      if (!readback) throw new Error(`audit_json_archive_r2_readback_missing:${r2Key}`)
+      const readbackBody = await readback.text()
+      const readbackChecksum = await sha256Text(readbackBody)
+      if (readbackChecksum !== checksum) {
+        throw new Error(`audit_json_archive_r2_checksum_mismatch:${r2Key}`)
+      }
+      committedArchiveRows = rows.length
+      committedR2Key = r2Key
+      committedSnapshotId = snapshotId
+      committedChecksum = checksum
 
       const manifest: DatasetSnapshotManifest = {
         snapshot_id: snapshotId,
@@ -559,8 +598,8 @@ export async function runAuditJsonArchiveRetention(
           date_column: target.dateColumn,
           key_column: target.keyColumn,
           blob_columns: target.blobColumns,
-          retention_days: retentionDays,
-          cutoff_date: cutoffDate,
+          retention_days: targetRetentionDays,
+          cutoff_date: targetCutoffDate,
           coverage_start: rows[0]?.[target.dateColumn] ?? null,
           coverage_end: rows[rows.length - 1]?.[target.dateColumn] ?? null,
           archived_blob_bytes: archivedBlobBytes,
@@ -580,10 +619,16 @@ export async function runAuditJsonArchiveRetention(
         archivedAt,
         originalByteLength: byteLength(row[blobColumn]),
       }))
+      committedScrubRows = scrubbed
+      if (scrubbed !== rows.length) {
+        throw new Error(`audit_json_archive_scrub_conflict:${target.id}:${scrubbed}/${rows.length}`)
+      }
 
       result.tables.push({
         target: target.id,
         table: target.table,
+        retention_days: targetRetentionDays,
+        cutoff_date: targetCutoffDate,
         candidate_rows: rows.length,
         archived_rows: rows.length,
         scrubbed_rows: scrubbed,
@@ -600,16 +645,21 @@ export async function runAuditJsonArchiveRetention(
       result.tables.push({
         target: target.id,
         table: target.table,
+        retention_days: targetRetentionDays,
+        cutoff_date: targetCutoffDate,
         candidate_rows: rows.length,
-        archived_rows: 0,
-        scrubbed_rows: 0,
+        archived_rows: committedArchiveRows,
+        scrubbed_rows: committedScrubRows,
         archived_blob_bytes: archivedBlobBytes,
-        r2_key: null,
-        snapshot_id: null,
-        checksum: null,
+        r2_key: committedR2Key,
+        snapshot_id: committedSnapshotId,
+        checksum: committedChecksum,
         status: 'failed',
         error: error instanceof Error ? error.message : String(error),
       })
+      result.total_archived_rows += committedArchiveRows
+      result.total_scrubbed_rows += committedScrubRows
+      if (committedArchiveRows > 0) result.total_archived_blob_bytes += archivedBlobBytes
     }
   }
 
@@ -619,9 +669,9 @@ export async function runAuditJsonArchiveRetention(
 export function summarizeAuditJsonArchiveRun(result: AuditJsonArchiveRunResult): string {
   const mode = result.dry_run ? 'dry_run' : 'confirmed'
   const tableSummary = result.tables
-    .map((table) => `${table.target}:${table.status}:candidates=${table.candidate_rows}:archived=${table.archived_rows}:scrubbed=${table.scrubbed_rows}`)
+    .map((table) => `${table.target}:${table.status}:retention=${table.retention_days}:cutoff=${table.cutoff_date}:candidates=${table.candidate_rows}:archived=${table.archived_rows}:scrubbed=${table.scrubbed_rows}`)
     .join(' ')
-  return `audit-json-retention ${mode} date=${result.business_date} cutoff=${result.cutoff_date} retention_days=${result.retention_days} total_archived=${result.total_archived_rows} total_scrubbed=${result.total_scrubbed_rows} bytes=${result.total_archived_blob_bytes}; ${tableSummary}`
+  return `audit-json-retention ${mode} date=${result.business_date} policy=${result.retention_policy} total_archived=${result.total_archived_rows} total_scrubbed=${result.total_scrubbed_rows} bytes=${result.total_archived_blob_bytes}; ${tableSummary}`
 }
 
 export function isAuditJsonArchiveTarget(value: string): value is AuditJsonArchiveTargetId {

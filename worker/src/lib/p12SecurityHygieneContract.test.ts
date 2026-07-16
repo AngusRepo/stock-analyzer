@@ -17,7 +17,7 @@ assert(fs.existsSync(secretScanPath), 'P12 secret scan script must exist')
 
 const secretScan = fs.existsSync(secretScanPath) ? fs.readFileSync(secretScanPath, 'utf8') : ''
 
-for (const pattern of ['sk-ant-api', 'github_pat_', 'cfut_', 'AIza', 'MODAL_TOKEN_SECRET']) {
+for (const pattern of ['sk-ant-api', 'github_pat_', 'cfut_', 'AIza', 'MODAL_TOKEN_SECRET', 'stockvision_service_token']) {
   assert(secretScan.includes(pattern), `P12 secret scan must block ${pattern}`)
 }
 

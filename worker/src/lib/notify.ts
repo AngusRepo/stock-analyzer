@@ -10,6 +10,7 @@
 
 import { resolveReportDeliveryChannel } from './reportDeliveryChannel'
 import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
+import { assertDiscordWebhookUrl } from './egressPolicy'
 
 interface Env {
   DB: any
@@ -66,7 +67,8 @@ export async function sendDiscordNotification(
 ): Promise<void> {
   if (!webhookUrl) return
   try {
-    await fetch(webhookUrl, {
+    const target = assertDiscordWebhookUrl(webhookUrl)
+    await fetch(target, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: message }),
@@ -177,10 +179,11 @@ export async function sendDiscordEmbeds(
 ): Promise<void> {
   if (!webhookUrl) return
   try {
+    const target = assertDiscordWebhookUrl(webhookUrl)
     // Discord 一次最多 10 embeds，超過分批
     for (let i = 0; i < embeds.length; i += 10) {
       const batch = embeds.slice(i, i + 10)
-      await fetch(webhookUrl, {
+      await fetch(target, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

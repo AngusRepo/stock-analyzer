@@ -25,6 +25,9 @@ const predictionServingOwners = [
   'ml-controller/routers/model_pool.py',
   'ml-controller/services/shadow_ab_service.py',
   'ml-controller/services/backtest_engine.py',
+  'ml-controller/services/dataset_snapshot_exporter.py',
+  'worker/src/lib/observabilityEvents.ts',
+  'worker/src/routes/dashboardReadRoutes.ts',
 ]
 
 const forbiddenFallbacks = [
@@ -88,6 +91,19 @@ assert(
 assert(
   /WHERE dr\.date = \?[\s\S]*\.bind\(\s*sourceRecoDate,\s*sourceRecoDate,?\s*\)/.test(pendingBuyOrchestrator),
   'morning setup must bind sourceRecoDate for daily_recommendations.date and prediction_date instead of pendingDate',
+)
+
+const verifyService = readRepoFile('ml-controller/services/verify_service.py')
+assert(
+  verifyService.includes('prediction_date_required_for_verification') &&
+    !verifyService.includes('business_date = datetime.fromisoformat(generated_at.replace'),
+  'verification must fail closed when prediction_date is missing instead of deriving it from generated_at',
+)
+
+const dashboardV4Contract = readRepoFile('worker/src/lib/dashboardV4Contract.ts')
+assert(
+  !dashboardV4Contract.includes('row.prediction_date ?? row.date ?? row.generated_at'),
+  'dashboard markers must not project generated_at into a prediction business date',
 )
 assert(
   !/\.bind\(\s*prevDay,\s*pendingDate,\s*cb\.buyConfThreshold,\s*candidateLimit\s*\)/.test(pendingBuyOrchestrator),

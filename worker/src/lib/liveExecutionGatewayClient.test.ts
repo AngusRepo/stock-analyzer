@@ -97,14 +97,16 @@ async function main(): Promise<void> {
 
   let capturedHeaders = new Headers()
   let capturedBody: any = null
+  let capturedLiveUrl = ''
   const submitted = await submitSignedLiveExecutionPacket({
     LIVE_EXECUTION_CLIENT_ENABLED: '1',
     LIVE_EXECUTION_SUBMIT_GUARD_ENABLED: '1',
-    EXECUTION_GATEWAY_URL: 'https://gateway.invalid/',
-    EXECUTION_GATEWAY_SERVICE_TOKEN: 'service-token',
+    ML_CONTROLLER_URL: 'https://controller.invalid/',
+    ML_CONTROLLER_SECRET: 'controller-token',
     LIVE_EXECUTION_HMAC_SECRET: 'test-secret',
     LIVE_TRADING_APPROVAL_SCOPE: 'pilot-scope',
-  }, packet, async (_input, init) => {
+  }, packet, async (input, init) => {
+    capturedLiveUrl = String(input)
     capturedHeaders = new Headers(init?.headers)
     capturedBody = JSON.parse(String(init?.body))
     return new Response(JSON.stringify({ status: 'submitted', intent_id: 'intent-1' }), {
@@ -112,7 +114,8 @@ async function main(): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
     })
   })
-  assert.equal(capturedHeaders.get('Authorization'), 'Bearer service-token')
+  assert.equal(capturedLiveUrl, 'https://controller.invalid/finlab/execution/live-submit')
+  assert.equal(capturedHeaders.get('X-Controller-Token'), 'controller-token')
   assert.equal(capturedHeaders.get('X-Execution-Signature'), signature)
   assert.equal(capturedBody.packet.idempotency_key, packet.idempotency_key)
   assert.equal(capturedBody.allow_live_submit, true)
@@ -122,8 +125,8 @@ async function main(): Promise<void> {
   const reconciled = await submitOrReconcileSignedLiveExecutionPacket({
     LIVE_EXECUTION_CLIENT_ENABLED: '1',
     LIVE_EXECUTION_SUBMIT_GUARD_ENABLED: '1',
-    EXECUTION_GATEWAY_URL: 'https://gateway.invalid',
-    EXECUTION_GATEWAY_SERVICE_TOKEN: 'service-token',
+    ML_CONTROLLER_URL: 'https://controller.invalid',
+    ML_CONTROLLER_SECRET: 'controller-token',
     LIVE_EXECUTION_HMAC_SECRET: 'test-secret',
     LIVE_TRADING_APPROVAL_SCOPE: 'pilot-scope',
   }, packet, async (_input, init) => {
@@ -135,6 +138,30 @@ async function main(): Promise<void> {
   })
   assert.equal(reconciled.status, 'reconciliation_required')
   assert.equal(reconciliationCalls, 2, 'unknown submit must reconcile once and never resubmit')
+
+  let serverErrorCalls = 0
+  const reconciledServerError = await submitOrReconcileSignedLiveExecutionPacket({
+    LIVE_EXECUTION_CLIENT_ENABLED: '1',
+    LIVE_EXECUTION_SUBMIT_GUARD_ENABLED: '1',
+    ML_CONTROLLER_URL: 'https://controller.invalid',
+    ML_CONTROLLER_SECRET: 'controller-token',
+    LIVE_EXECUTION_HMAC_SECRET: 'test-secret',
+    LIVE_TRADING_APPROVAL_SCOPE: 'pilot-scope',
+  }, packet, async (_input, init) => {
+    serverErrorCalls += 1
+    if (init?.method === 'POST') {
+      return new Response(JSON.stringify({ detail: 'persistence unavailable' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    return new Response(JSON.stringify({ status: 'ok', intent: { status: 'UNKNOWN' } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+  assert.equal(reconciledServerError.status, 'reconciliation_required')
+  assert.equal(serverErrorCalls, 2, 'non-2xx submit response must reconcile and never resubmit')
 
   const shadowPacket = buildExecutionShadowPacket({
     intent,
@@ -196,11 +223,11 @@ async function main(): Promise<void> {
   assert.match(blockedSellSnapshot.reason, /authoritative_bid_below_limit/)
 
   const lifecycle = await fetchLiveExecutionIntentStatus({
-    EXECUTION_GATEWAY_URL: 'https://gateway.invalid',
-    EXECUTION_GATEWAY_SERVICE_TOKEN: 'service-token',
+    ML_CONTROLLER_URL: 'https://controller.invalid',
+    ML_CONTROLLER_SECRET: 'controller-token',
   }, packet.idempotency_key, async (input, init) => {
-    assert.match(String(input), /\/v1\/intents\/live-client-4953-buy-20260713-001$/)
-    assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer service-token')
+    assert.match(String(input), /\/finlab\/execution\/intents\/live-client-4953-buy-20260713-001$/)
+    assert.equal(new Headers(init?.headers).get('X-Controller-Token'), 'controller-token')
     return new Response(JSON.stringify({ status: 'ok', legs: [{ status: 'ACKNOWLEDGED' }] }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },

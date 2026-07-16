@@ -3320,10 +3320,12 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
   const latestRun = await db.prepare(`
     SELECT run_id, date, status, universe_count, candidate_count, final_count, emerging_count, created_at
       FROM screener_funnel_runs
-     WHERE date = ?
-     ORDER BY created_at DESC
+     WHERE date = ? AND status = 'success'
+     ORDER BY CASE WHEN run_id = (
+       SELECT run_id FROM canonical_run_heads WHERE logical_run_key = ? LIMIT 1
+     ) THEN 0 ELSE 1 END, created_at DESC
      LIMIT 1
-  `).bind(date).first<any>()
+  `).bind(date, `screener:${date}:TW:production:market_screener`).first<any>()
   if (!latestRun?.run_id) {
     return {
       funnel_summary: null,
@@ -3875,8 +3877,10 @@ recommendations.get('/daily', async (c) => {
         WITH latest_screener_run AS (
           SELECT run_id
             FROM screener_funnel_runs
-           WHERE date = ?
-           ORDER BY created_at DESC
+           WHERE date = ? AND status = 'success'
+           ORDER BY CASE WHEN run_id = (
+             SELECT run_id FROM canonical_run_heads WHERE logical_run_key = ? LIMIT 1
+           ) THEN 0 ELSE 1 END, created_at DESC
            LIMIT 1
         )
         SELECT symbol, stage, decision, reason_code, score_before, score_after, rank, evidence
@@ -3900,7 +3904,7 @@ recommendations.get('/daily', async (c) => {
              'final_selection'
            )
          ORDER BY symbol ASC, created_at ASC
-      `).bind(date, ...resultSymbols).all<any>()
+      `).bind(date, `screener:${date}:TW:production:market_screener`, ...resultSymbols).all<any>()
       for (const [symbol, summary] of summarizeScreenerFunnelRows(funnelRows ?? [])) {
         screenerFunnelBySymbol.set(symbol, summary)
       }

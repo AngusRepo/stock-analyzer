@@ -1,0 +1,10 @@
+name = "stockvision-execution-schema"
+main = "src/index.ts"
+compatibility_date = "2026-07-01"
+
+# Migration-only example. Do not deploy this config as a public Worker.
+[[d1_databases]]
+binding = "EXECUTION_DB"
+database_name = "stockvision-execution-db"
+database_id = "REPLACE_WITH_EXECUTION_D1_DATABASE_ID"
+migrations_dir = "migrations-execution"

@@ -15,7 +15,11 @@ async function json(path: string, init?: RequestInit): Promise<any> {
 
 async function main() {
   const state = await json('/dashboard-state')
-  assert.equal(state.analysis_button.state, resumeIdempotencyKey ? 'FAILED_RECOVERABLE' : 'READY', JSON.stringify(state.blockers))
+  if (resumeIdempotencyKey) {
+    assert.equal(state.analysis_button.state, 'FAILED_RECOVERABLE', JSON.stringify(state.blockers))
+  } else {
+    assert.ok(['READY', 'COMPLETED'].includes(state.analysis_button.state), JSON.stringify(state.blockers))
+  }
   const key = resumeIdempotencyKey ?? `real-e2e:${crypto.randomUUID()}`
   const start = await json('/full-analysis', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify({ fixture_mode: false }) })
   if (resumeIdempotencyKey) {

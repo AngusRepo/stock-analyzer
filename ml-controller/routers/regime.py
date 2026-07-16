@@ -254,7 +254,8 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
         market_env = _fetch_market_env_via_payload_builder(req.run_date)
     except Exception as e:
         logger.error(f"[Regime] load_market_env failed: {e}")
-        raise HTTPException(status_code=502, detail=f"load_market_env failed: {e}")
+        logger.exception("[Regime] market environment load failed")
+        raise HTTPException(status_code=502, detail="Market environment unavailable") from e
 
     if not market_env.get("history"):
         raise HTTPException(status_code=404, detail="market_env has empty history")

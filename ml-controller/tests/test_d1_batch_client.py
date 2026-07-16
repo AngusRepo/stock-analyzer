@@ -149,6 +149,94 @@ def test_atomic_batch_execute_uses_exactly_one_worker_batch(monkeypatch):
     assert captured == [(statements, 60.0, 2)]
 
 
+def test_strict_batch_execute_rejects_partial_result(monkeypatch):
+    monkeypatch.setattr(
+        d1_client,
+        "atomic_batch_execute",
+        lambda statements, timeout=30.0: {
+            "total": len(statements),
+            "success_count": len(statements) - 1,
+            "error_count": 1,
+            "partial_failure": True,
+            "mode": "worker_d1_batch",
+            "atomic": True,
+        },
+    )
+    try:
+        d1_client.strict_batch_execute(
+            [("UPDATE predictions SET direction_correct=? WHERE id=?", [1, 10])],
+            operation="prediction_write",
+        )
+    except d1_client.D1BatchContractError as exc:
+        assert "prediction_write did not fully persist" in str(exc)
+    else:
+        raise AssertionError("strict batch must reject partial persistence")
+
+
+def test_allocator_guard_never_reports_noop_as_persisted_success(monkeypatch):
+    monkeypatch.setattr(d1_client, "allocator_contract_guard_enabled", lambda: True)
+    result = d1_client.batch_execute(
+        [("UPDATE predictions SET direction_correct=? WHERE id=?", [1, 10])]
+    )
+    assert result["persisted"] is False
+    assert result["success_count"] == 0
+    assert result["error_count"] == 1
+    assert result["changes_total"] == 0
+
+
+def test_atomic_write_cohort_commits_all_staged_writes_once(monkeypatch):
+    commits = []
+
+    def fake_atomic(statements, timeout=30.0):
+        commits.append((list(statements), timeout))
+        return {
+            "total": len(statements),
+            "success_count": len(statements),
+            "error_count": 0,
+            "changes_total": len(statements),
+            "partial_failure": False,
+            "mode": "worker_d1_batch",
+            "atomic": True,
+        }
+
+    monkeypatch.setattr(d1_client, "atomic_batch_execute", fake_atomic)
+    with d1_client.atomic_write_cohort("daily_pipeline", timeout=90.0) as cohort:
+        d1_client.strict_batch_execute(
+            [("INSERT INTO predictions(id) VALUES (?)", [1])],
+            operation="predictions",
+        )
+        d1_client.strict_batch_execute(
+            [("UPDATE daily_recommendations SET rank=? WHERE stock_id=?", [1, 1])],
+            operation="recommendations",
+        )
+
+    assert len(commits) == 1
+    assert len(commits[0][0]) == 2
+    assert commits[0][1] == 90.0
+    assert cohort.result["atomic"] is True
+
+
+def test_atomic_write_cohort_does_not_commit_after_domain_error(monkeypatch):
+    commits = []
+    monkeypatch.setattr(
+        d1_client,
+        "atomic_batch_execute",
+        lambda statements, timeout=30.0: commits.append(statements),
+    )
+
+    try:
+        with d1_client.atomic_write_cohort("daily_pipeline"):
+            d1_client.strict_batch_execute(
+                [("INSERT INTO predictions(id) VALUES (?)", [1])],
+                operation="predictions",
+            )
+            raise ValueError("recommendation closure failed")
+    except ValueError:
+        pass
+
+    assert commits == []
+
+
 def test_raw_batch_execute_uses_d1_raw_batch_endpoint(monkeypatch):
     calls: list[dict] = []
 

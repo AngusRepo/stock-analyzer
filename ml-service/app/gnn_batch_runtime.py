@@ -152,7 +152,7 @@ def load_graphsage_artifact(pool: dict | None = None) -> GraphSAGEArtifact:
     except ArtifactValidationError as exc:
         raise RuntimeError(f"GNN artifact integrity failed: {exc.report}") from exc
     buf.seek(0)
-    payload = torch.load(buf, map_location="cpu", weights_only=False)
+    payload = torch.load(buf, map_location="cpu", weights_only=True)
     if not isinstance(payload, dict):
         raise RuntimeError("GNN GraphSAGE artifact payload must be a dict")
 

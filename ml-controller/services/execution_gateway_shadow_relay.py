@@ -19,12 +19,44 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "enabled", "on"}
 
 
-def _safe_gateway_url(value: str) -> str:
+def _safe_gateway_url(
+    value: str,
+    *,
+    allowed_hosts: set[str] | None = None,
+    require_allowlist: bool = False,
+) -> str:
     base = value.strip().rstrip("/")
     parsed = urlparse(base)
-    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+    hostname = str(parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or not hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    hosts = {host.strip().lower() for host in (allowed_hosts or set()) if host.strip()}
+    if require_allowlist and (not hosts or hostname not in hosts):
         return ""
     return base
+
+
+def _gateway_url_from_env(values: Mapping[str, str]) -> str:
+    allowed_hosts = {
+        host.strip().lower()
+        for host in str(values.get("EXECUTION_GATEWAY_RELAY_ALLOWED_HOSTS") or "").split(",")
+        if host.strip()
+    }
+    production = str(values.get("ENVIRONMENT") or "development").strip().lower() == "production"
+    return _safe_gateway_url(
+        str(values.get("EXECUTION_GATEWAY_URL") or ""),
+        allowed_hosts=allowed_hosts,
+        require_allowlist=production,
+    )
 
 
 def fetch_google_identity_token(
@@ -61,7 +93,7 @@ def relay_execution_shadow(
             "can_submit_real_order": False,
             "live_submit_enabled": False,
         }
-    gateway_url = _safe_gateway_url(str(values.get("EXECUTION_GATEWAY_URL") or ""))
+    gateway_url = _gateway_url_from_env(values)
     service_token = str(values.get("EXECUTION_GATEWAY_SERVICE_TOKEN") or "").strip()
     if not gateway_url or not service_token or not signature:
         return {

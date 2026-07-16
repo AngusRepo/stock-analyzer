@@ -171,6 +171,13 @@ def build_score_v2_route_candidate(stock: dict[str, Any]) -> ScoreV2Recommendati
         "current_price": price,
         "rsi14": rsi14,
         "macd_hist": macd_hist,
+        "score_seed_inputs": {
+            "chipFlowSeed40": chip_score,
+            "technicalSeed30": tech_score,
+            "screenerMomentumSeed20": momentum_score,
+            "mlEdgeSeed30": ml_score,
+            "personaAlphaSeed": 0.0,
+        },
     }
     score_components = build_score_components(
         score_row,

@@ -128,6 +128,7 @@ def _write_production_cutover_packet_fixture(root: Path) -> None:
     _write(
         root / "ml-service/benchmark_results/production_cutover_packet_20260618.json",
         json.dumps({
+            "scope": "p12_feature_registry_strategy_mining",
             "cutover_ready_for_review": True,
             "production_mutation_allowed": False,
             "actions_allowed_without_wei_approval": [],
@@ -195,6 +196,7 @@ def _write_cutover_tool_sources(root: Path) -> None:
         "\n".join([
             "local_prod_ready_audit_20260618.json",
             "production_cutover_remote_preflight_20260618.json",
+            "p12_feature_registry_strategy_mining",
             "remote_cutover_complete",
             "deploy_ml_controller_strategy_mining_route",
             "apply_strategy_mining_ledger_migration",
@@ -267,7 +269,13 @@ def _write_realtime_trading_local_closure_fixture(root: Path) -> None:
         "worker/src/lib/liveExecutionGatewayClient.ts": " ".join([
             "LIVE_EXECUTION_CLIENT_ENABLED", "LIVE_EXECUTION_SUBMIT_GUARD_ENABLED",
             "LIVE_TRADING_APPROVAL_SCOPE", "submitOrReconcileSignedLiveExecutionPacket",
-            "submit_response_unknown_no_automatic_resubmit",
+            "submit_response_unknown_no_automatic_resubmit", "ML_CONTROLLER_URL",
+            "/finlab/execution/live-submit",
+        ]),
+        "ml-controller/services/execution_gateway_live_relay.py": " ".join([
+            "X-Serverless-Authorization", "EXECUTION_GATEWAY_LIVE_RELAY_ENABLED",
+            "relay_execution_live_submit", "relay_execution_intent_status",
+            "reconciliation_required", '"relay_attempts": 1',
         ]),
         "worker/wrangler.toml": "\n".join([
             'LIVE_EXECUTION_CLIENT_ENABLED = "0"',
@@ -344,7 +352,9 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "$currentJobs = gcloud scheduler jobs list --project $Project --location $Location --format 'value(name.basename())'",
             "$exists = $currentIds.Contains([string]$job.id)",
             "if ($DeleteStale) {",
-            "DRY_RUN_AUTH_TOKEN_PLACEHOLDER",
+                "stockvision-scheduler@$Project.iam.gserviceaccount.com",
+                "--oidc-service-account-email",
+                "--oidc-token-audience",
             "https://dry-run-worker-base-url.invalid",
             "scheduler jobs delete",
         ]),
@@ -357,8 +367,9 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
             "scikit-learn-extra==0.3.0",
             "xgboost==3.2.0",
             "lightgbm==4.6.0",
-            "torch==2.12.0",
+            "torch==2.13.0",
             "torch-geometric==2.8.0",
+            "pytorch-lightning==2.6.1",
             "neuralforecast==3.1.9",
             "tabm==0.0.3",
             "timesfm[torch]==2.0.1",
@@ -379,7 +390,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         json.dumps({
             "dependencies": {"hono": "4.12.25"},
             "devDependencies": {
-                "wrangler": "4.100.0",
+                "wrangler": "4.110.0",
                 "typescript": "6.0.3",
             },
         }),
@@ -1038,10 +1049,11 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         )
     _write(
         tmp_path / "ml-controller/services/production_cutover_packet.py",
-        "\n".join([
-            "local_prod_ready_audit_20260618.json",
-            "production_cutover_remote_preflight_20260618.json",
-            "remote_cutover_complete",
+            "\n".join([
+                "local_prod_ready_audit_20260618.json",
+                "production_cutover_remote_preflight_20260618.json",
+                "p12_feature_registry_strategy_mining",
+                "remote_cutover_complete",
             "deploy_ml_controller_strategy_mining_route",
             "apply_strategy_mining_ledger_migration",
             "enable_strategy_mining_execution_env",
@@ -1063,9 +1075,10 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         ]),
     )
     _write(
-        tmp_path / "ml-service/benchmark_results/production_cutover_packet_20260618.json",
-        json.dumps({
-            "cutover_ready_for_review": True,
+            tmp_path / "ml-service/benchmark_results/production_cutover_packet_20260618.json",
+            json.dumps({
+                "scope": "p12_feature_registry_strategy_mining",
+                "cutover_ready_for_review": True,
             "production_mutation_allowed": False,
             "actions_allowed_without_wei_approval": [],
             "remote_cutover_complete": False,

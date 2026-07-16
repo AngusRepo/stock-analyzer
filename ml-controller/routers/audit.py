@@ -6,7 +6,7 @@ POST /audit/shap   → Trigger SHAP feature importance audit (Modal GPU)
 """
 import logging
 from typing import Optional
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from graphs.weekly_audit_graph import generate_weekly_audit
@@ -27,7 +27,7 @@ async def trigger_weekly_audit():
         return await generate_weekly_audit()
     except Exception as e:
         logger.exception("[Audit] Failed")
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail="Weekly audit failed") from e
 
 
 class ShapRequest(BaseModel):
@@ -42,9 +42,12 @@ async def trigger_shap_audit(req: Optional[ShapRequest] = None):
     try:
         result = await shap_audit(payload)
         if "error" in result:
-            return {"status": "error", "error": result["error"]}
+            logger.error("[Audit/SHAP] Modal returned an error result")
+            raise HTTPException(status_code=502, detail="SHAP audit provider failed")
         logger.info(f"[Audit/SHAP] Done: {len(result.get('features', []))} features ranked")
         return result
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise
         logger.exception("[Audit/SHAP] Failed")
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail="SHAP audit failed") from e

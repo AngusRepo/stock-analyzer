@@ -128,6 +128,8 @@ class MemoryRepository:
         self.intents: dict[str, dict[str, Any]] = {}
         self.legs: dict[str, list[dict[str, Any]]] = {}
         self.events: list[tuple[str, dict[str, Any], str]] = []
+        self.risk_decisions: dict[str, dict[str, Any]] = {}
+        self.kill_switch_active = False
 
     def find_intent(self, key: str):
         return self.intents.get(key)
@@ -135,7 +137,19 @@ class MemoryRepository:
     def daily_side_order_count(self, trade_date: str, side: str) -> int:
         return len([row for row in self.intents.values() if row["trade_date"] == trade_date and row["side"] == side])
 
-    def reserve_intent(self, packet: Mapping[str, Any]) -> dict[str, Any]:
+    def execution_control_state(self):
+        return {
+            "control_key": "live_trading",
+            "kill_switch_active": 1 if self.kill_switch_active else 0,
+            "version": 1,
+        }
+
+    def reserve_intent(
+        self,
+        packet: Mapping[str, Any],
+        *,
+        risk_decision: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         key = str(packet["idempotency_key"])
         digest = packet_hash(packet)
         existing = self.intents.get(key)
@@ -153,6 +167,8 @@ class MemoryRepository:
             "status": "RESERVED",
         }
         self.intents[key] = row
+        if risk_decision is not None:
+            self.risk_decisions[intent_id] = dict(risk_decision)
         self.legs[intent_id] = [
             {
                 "leg_id": f"{intent_id}-leg-{index}",
@@ -173,6 +189,8 @@ class MemoryRepository:
         return [dict(row) for row in self.legs[intent_id]]
 
     def claim_leg(self, intent_id: str, leg_key: str):
+        if self.kill_switch_active or intent_id not in self.risk_decisions:
+            return None
         row = next(row for row in self.legs[intent_id] if row["leg_key"] == leg_key)
         if row["status"] != "RESERVED":
             return None
@@ -285,6 +303,7 @@ def test_valid_packet_splits_board_and_odd_lot_once(tmp_path: Path) -> None:
     assert all(call["exchange"] == "TSE" for call in gateway.calls)
     assert [call["client_tag"] for call in gateway.calls] == ["TST000", "TST001"]
     assert [row["broker_order_id"] for row in result["legs"]] == ["order-1", "order-2"]
+    assert list(repo.risk_decisions) == ["intent-1"]
 
 
 def test_second_leg_timeout_preserves_first_ack_and_blocks_resubmit(tmp_path: Path) -> None:
@@ -314,6 +333,61 @@ def test_runtime_kill_switch_blocks_even_when_signed_packet_says_false(tmp_path:
     )
     assert result["status"] == "blocked"
     assert "runtime_kill_switch_active_or_unknown" in result["blocked_reasons"]
+
+
+def test_execution_d1_kill_switch_blocks_before_broker_access(tmp_path: Path) -> None:
+    repo = MemoryRepository()
+    repo.kill_switch_active = True
+    gateway = FakeGateway()
+    result = _run(tmp_path, repo, gateway, _packet())
+    assert result["status"] == "blocked"
+    assert result["reason"] == "execution_d1_kill_switch_active_or_unknown"
+    assert gateway.calls == []
+    assert repo.intents == {}
+
+
+def test_unpersisted_leg_claim_cannot_be_reported_as_submitted(tmp_path: Path) -> None:
+    class ClaimFailRepository(MemoryRepository):
+        def claim_leg(self, intent_id: str, leg_key: str):
+            return None
+
+    repo = ClaimFailRepository()
+    gateway = FakeGateway()
+    result = _run(tmp_path, repo, gateway, _packet())
+    assert result["status"] == "blocked"
+    assert result["reason"] == "execution_leg_claim_incomplete_no_automatic_resubmit"
+    assert gateway.calls == []
+
+
+def test_ack_persistence_failure_becomes_unknown_without_resubmit(tmp_path: Path) -> None:
+    class AckFailRepository(MemoryRepository):
+        def mark_submit_ack(self, leg_id: str, broker_order_id: str, payload: Mapping[str, Any]):
+            raise RuntimeError("ack_not_persisted")
+
+    repo = AckFailRepository()
+    gateway = FakeGateway()
+    result = _run(tmp_path, repo, gateway, _packet())
+    assert result["status"] == "unknown"
+    assert result["reason"] == "broker_submit_outcome_unknown_reconciliation_required"
+    assert len(gateway.calls) == 1
+    assert repo.list_legs("intent-1")[0]["status"] == "UNKNOWN"
+
+
+def test_unknown_ledger_persistence_failure_still_returns_reconciliation_contract(tmp_path: Path) -> None:
+    class LedgerUnavailableRepository(MemoryRepository):
+        def mark_submit_ack(self, leg_id: str, broker_order_id: str, payload: Mapping[str, Any]):
+            raise RuntimeError("ack_not_persisted")
+
+        def mark_submit_unknown(self, leg_id: str, error: str, payload: Mapping[str, Any]):
+            raise RuntimeError("unknown_not_persisted")
+
+    repo = LedgerUnavailableRepository()
+    gateway = FakeGateway()
+    result = _run(tmp_path, repo, gateway, _packet())
+    assert result["status"] == "unknown"
+    assert result["reason"] == "broker_submit_and_ledger_outcome_unknown_reconciliation_required"
+    assert result["ledger_error_type"] == "RuntimeError"
+    assert len(gateway.calls) == 1
 
 
 def test_general_ml_controller_role_cannot_submit(tmp_path: Path) -> None:

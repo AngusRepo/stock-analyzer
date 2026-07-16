@@ -236,12 +236,11 @@ def _state_space_overlay_soft_deadline_seconds() -> float | None:
     return value if value > 0 else None
 
 
-def _state_space_shadow_callback_config() -> tuple[str | None, str | None]:
+def _state_space_shadow_callback_url() -> str | None:
     worker_url = os.environ.get("STOCKVISION_WORKER_URL", "").strip().rstrip("/")
-    token = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
-    if not worker_url or not token:
-        return None, None
-    return f"{worker_url}/api/internal/state-space-shadow/callback", token
+    if not worker_url:
+        return None
+    return f"{worker_url}/api/internal/state-space-shadow/callback"
 
 
 def _state_space_overlay_block_reason(row: dict[str, Any]) -> str | None:
@@ -890,7 +889,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             return {"error": "state-space overlays disabled by overlay mode", "results": []}
         if state_space_mode == "shadow":
             try:
-                callback_url, callback_token = _state_space_shadow_callback_config()
+                callback_url = _state_space_shadow_callback_url()
                 spawn_info = await asyncio.to_thread(
                     modal_client.spawn_state_space_overlays_batch_predict,
                     sequence_series,
@@ -899,7 +898,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                     run_date=state.get("run_date"),
                     run_id=state.get("producer_run_id") or state.get("run_id"),
                     callback_url=callback_url,
-                    callback_token=callback_token,
                 )
                 logger.info(f"[Pipeline V2] State-space overlays shadow spawned: {spawn_info}")
                 return {"error": "state-space overlays shadow spawned; not blocking prediction", "results": [], "shadow": spawn_info}
@@ -2779,60 +2777,68 @@ async def node_llm_reasons(state: PipelineStateV2) -> dict:
 
 async def node_write_d1(state: PipelineStateV2) -> dict:
     """
-    Write predictions + update recommendations + delete SELL-filtered + re-rank.
-    All in D1 batch_execute for atomicity.
+    Write the complete prediction/recommendation cohort as one D1 transaction.
     """
     logger.info("[Pipeline V2] node_write_d1")
     run_date = state["run_date"]
 
-    # 1. Predictions
     stock_id_map = {s["symbol"]: s["id"] for s in state["active_stocks"]}
-    stale_predictions_deleted = prune_predictions_outside_universe(list(stock_id_map.values()), run_date)
-    predictions_written = write_predictions_to_d1(state["predictions"], stock_id_map, run_date)
-    layer2_audit_rows = write_layer2_timesfm_enrichment_audit(
-        predictions=state["predictions"],
-        screener_recs=state.get("screener_recs") or [],
-        run_date=run_date,
-        screener_run_id=state.get("screener_run_id"),
-        l2_summary=state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary"),
-    )
-    layer3_audit_rows = write_layer3_formal_gate_audit(
-        predictions=state["predictions"],
-        recommendations=state.get("final_recommendations") or [],
-        layer2_symbols=[
-            str(row.get("symbol") or "")
-            for row in (state.get("screener_recs") or [])
-            if str(row.get("symbol") or "").strip()
-        ],
-        run_date=run_date,
-        screener_run_id=state.get("screener_run_id"),
-        target_size=state.get("layer3_formal_gate_target_size"),
-    )
-
-    # 2. Merge LLM reasons into recommendations (overwrite template)
     final = state["final_recommendations"]
     merge_llm_reasons_into_recommendations(final, state.get("llm_reasons") or {})
     merge_breeze2_reason_shadow_into_score_components(final, state.get("breeze2_reason_shadow") or {})
 
-    # 3. Update daily_recommendations
-    rec_updated = update_recommendations_in_d1(final, run_date)
-
-    # 4. Preserve screener seed rows while marking SELL/NO_SIGNAL outputs as non-buy.
-    sell_marked_non_buy = delete_filtered_recommendations(
-        state.get("sell_filtered_symbols") or [],
-        run_date,
-        filtered_diagnostics=state.get("sell_filtered_diagnostics") or {},
-    )
-    seed_rows = len(state.get("screener_recs") or [])
-    closed_rows = rec_updated + sell_marked_non_buy
-    if seed_rows <= 0 or closed_rows != seed_rows:
-        raise RuntimeError(
-            "recommendation_row_closure_failed: "
-            f"updated={rec_updated} filtered={sell_marked_non_buy} seed_rows={seed_rows}"
+    with d1_client.atomic_write_cohort(
+        f"daily_pipeline_v2:{run_date}",
+        timeout=120.0,
+    ) as write_cohort:
+        stale_predictions_deleted = prune_predictions_outside_universe(
+            list(stock_id_map.values()),
+            run_date,
         )
+        predictions_written = write_predictions_to_d1(
+            state["predictions"],
+            stock_id_map,
+            run_date,
+        )
+        layer2_audit_rows = write_layer2_timesfm_enrichment_audit(
+            predictions=state["predictions"],
+            screener_recs=state.get("screener_recs") or [],
+            run_date=run_date,
+            screener_run_id=state.get("screener_run_id"),
+            l2_summary=state.get("timesfm_l2_summary") or state.get("timesfm_l175_summary"),
+        )
+        layer3_audit_rows = write_layer3_formal_gate_audit(
+            predictions=state["predictions"],
+            recommendations=final,
+            layer2_symbols=[
+                str(row.get("symbol") or "")
+                for row in (state.get("screener_recs") or [])
+                if str(row.get("symbol") or "").strip()
+            ],
+            run_date=run_date,
+            screener_run_id=state.get("screener_run_id"),
+            target_size=state.get("layer3_formal_gate_target_size"),
+        )
+        rec_updated = update_recommendations_in_d1(final, run_date)
+        sell_marked_non_buy = delete_filtered_recommendations(
+            state.get("sell_filtered_symbols") or [],
+            run_date,
+            filtered_diagnostics=state.get("sell_filtered_diagnostics") or {},
+        )
+        seed_rows = len(state.get("screener_recs") or [])
+        closed_rows = rec_updated + sell_marked_non_buy
+        if seed_rows <= 0 or closed_rows != seed_rows:
+            raise RuntimeError(
+                "recommendation_row_closure_failed: "
+                f"updated={rec_updated} filtered={sell_marked_non_buy} seed_rows={seed_rows}"
+            )
+        re_rank_recommendations(run_date)
 
-    # 5. Re-rank
-    re_rank_recommendations(run_date)
+    logger.info(
+        "[Pipeline V2] committed atomic D1 cohort statements=%s changes=%s",
+        len(write_cohort.statements),
+        int((write_cohort.result or {}).get("changes_total") or 0),
+    )
     alpha_bucket_counts: dict[str, int] = {}
     alpha_selected_bucket_counts: dict[str, int] = {}
     alpha_skip_count = 0
@@ -3052,18 +3058,6 @@ def _pipeline_modal_prediction_callback_url() -> str:
     return f"{base}/pipeline/v2/modal-prediction/callback"
 
 
-def _pipeline_modal_prediction_callback_token() -> str:
-    token = (
-        os.environ.get("ML_CONTROLLER_SECRET", "")
-        or os.environ.get("ML_CONTROLLER_TOKEN", "")
-        or os.environ.get("INTERNAL_TOKEN", "")
-        or os.environ.get("STOCKVISION_AUTH_TOKEN", "")
-    ).strip()
-    if not token:
-        raise RuntimeError("ML_CONTROLLER_SECRET/ML_CONTROLLER_TOKEN is required for async pipeline Modal callback")
-    return token
-
-
 def _pipeline_async_bucket_and_blob(*, run_date: str, producer_run_id: str) -> tuple[str, str]:
     bucket = os.environ.get("GCS_BUCKET_NAME", "").strip()
     if not bucket:
@@ -3189,7 +3183,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "state_space_soft_deadline_sec": _state_space_overlay_soft_deadline_seconds(),
         "state_space_models": state_space_models,
         "callback_url": _pipeline_modal_prediction_callback_url(),
-        "callback_token": _pipeline_modal_prediction_callback_token(),
+        "callback_capability": "pipeline_prediction",
     }
 
 
@@ -3402,6 +3396,20 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
     state = _read_pipeline_async_state_artifact(state_gcs_uri)
     state["modal_prediction_state_gcs_uri"] = state_gcs_uri
     state["modal_prediction_bundle"] = result
+    feature_batch = result.get("predict_batch_v2_raw") or {}
+    if isinstance(feature_batch, dict) and feature_batch.get("batch_contract_passed") is False:
+        fallback_reasons = feature_batch.get("fallback_reasons") or []
+        contract_error = (
+            "modal_predict_batch_v2_true_batch_contract_failed: "
+            + ("; ".join(str(reason) for reason in fallback_reasons) or "unknown_fallback")
+        )
+        state["errors"] = list(state.get("errors") or []) + [contract_error]
+        state.setdefault("metrics", {})["modal_true_batch_contract"] = {
+            "passed": False,
+            "execution_modes": feature_batch.get("execution_modes") or [],
+            "fallback_reasons": fallback_reasons,
+        }
+        logger.error("[Pipeline V2] %s", contract_error)
     if callback_payload.get("run_id"):
         state["producer_run_id"] = str(callback_payload.get("run_id"))
     if callback_payload.get("run_date"):

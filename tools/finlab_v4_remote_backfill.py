@@ -2907,6 +2907,9 @@ def parse_canonical_datasets(raw: str | None) -> list[str]:
     values = [item.strip() for item in raw.split(",") if item.strip()]
     if not values:
         return list(DEFAULT_CANONICAL_DATASETS)
+    unknown = sorted(set(values) - set(DEFAULT_CANONICAL_DATASETS))
+    if unknown:
+        raise ValueError(f"unknown canonical datasets: {','.join(unknown)}")
     if "canonical_broker_flow_daily" in values and "canonical_broker_rank_daily" not in values:
         values.append("canonical_broker_rank_daily")
     return values

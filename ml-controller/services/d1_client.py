@@ -13,6 +13,9 @@ import os
 import logging
 import random
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from services.allocator_contract_guard import allocator_contract_guard_enabled
@@ -23,6 +26,31 @@ except ModuleNotFoundError:  # allow pure domain tests to import services withou
     httpx = None
 
 logger = logging.getLogger(__name__)
+
+
+class D1BatchContractError(RuntimeError):
+    """Raised when a write cohort cannot be proven fully committed."""
+
+
+@dataclass
+class AtomicWriteCohort:
+    operation: str
+    statements: list[tuple[str, list[Any]]] = field(default_factory=list)
+    result: dict | None = None
+
+    def stage(self, statements: list[tuple[str, list[Any]]], *, operation: str) -> None:
+        next_total = len(self.statements) + len(statements)
+        if next_total > 500:
+            raise D1BatchContractError(
+                f"{self.operation} atomic cohort exceeds 500 statements after {operation}: {next_total}"
+            )
+        self.statements.extend(statements)
+
+
+_ACTIVE_ATOMIC_COHORT: ContextVar[AtomicWriteCohort | None] = ContextVar(
+    "d1_active_atomic_cohort",
+    default=None,
+)
 
 CF_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
@@ -265,13 +293,15 @@ def batch_execute(
         logger.warning("[AllocatorContractGuard] D1 batch_execute() no-op statements=%s", total)
         return {
             "total": total,
-            "success_count": total,
-            "error_count": 0,
-            "changes_total": total,
-            "first_error": None,
+            "success_count": 0,
+            "error_count": total,
+            "changes_total": 0,
+            "first_error": "allocator_contract_guard_prevented_persistence",
             "partial_failure": False,
             "mode": "allocator_contract_noop",
-            "rows_written_total": total,
+            "rows_written_total": 0,
+            "simulated_count": total,
+            "persisted": False,
             "sql_duration_ms_total": 0,
         }
 
@@ -358,6 +388,75 @@ def atomic_batch_execute(
     ):
         raise RuntimeError(f"Atomic D1 batch did not fully commit: {result}")
     return {**result, "atomic": True}
+
+
+def require_full_batch_result(
+    result: dict,
+    *,
+    expected: int,
+    operation: str,
+) -> dict:
+    """Validate a batch result without treating partial/no-op writes as success."""
+    total = int((result or {}).get("total") or 0)
+    success_count = int((result or {}).get("success_count") or 0)
+    error_count = int((result or {}).get("error_count") or 0)
+    persisted = (result or {}).get("persisted")
+    if (
+        total != expected
+        or success_count != expected
+        or error_count != 0
+        or bool((result or {}).get("partial_failure"))
+        or persisted is False
+    ):
+        raise D1BatchContractError(
+            f"{operation} did not fully persist: "
+            f"expected={expected} total={total} success={success_count} "
+            f"errors={error_count} mode={(result or {}).get('mode')}"
+        )
+    return result
+
+
+def strict_batch_execute(
+    statements: list[tuple[str, list[Any]]],
+    *,
+    operation: str,
+    timeout: float = 30.0,
+) -> dict:
+    """Commit one canonical cohort atomically and fail closed on any ambiguity."""
+    cohort = _ACTIVE_ATOMIC_COHORT.get()
+    if cohort is not None:
+        cohort.stage(statements, operation=operation)
+        return {
+            "total": len(statements),
+            "success_count": len(statements),
+            "error_count": 0,
+            "changes_total": len(statements),
+            "partial_failure": False,
+            "mode": "atomic_cohort_staged",
+            "atomic": True,
+            "committed": False,
+        }
+    result = atomic_batch_execute(statements, timeout=timeout)
+    return require_full_batch_result(result, expected=len(statements), operation=operation)
+
+
+@contextmanager
+def atomic_write_cohort(operation: str, *, timeout: float = 60.0):
+    """Collect canonical writes and commit them as one D1 transaction."""
+    if _ACTIVE_ATOMIC_COHORT.get() is not None:
+        raise D1BatchContractError("nested atomic D1 cohorts are not supported")
+    cohort = AtomicWriteCohort(operation=operation)
+    token = _ACTIVE_ATOMIC_COHORT.set(cohort)
+    try:
+        yield cohort
+        result = atomic_batch_execute(cohort.statements, timeout=timeout)
+        cohort.result = require_full_batch_result(
+            result,
+            expected=len(cohort.statements),
+            operation=operation,
+        )
+    finally:
+        _ACTIVE_ATOMIC_COHORT.reset(token)
 
 
 def _raw_batch_execute(
@@ -464,8 +563,10 @@ def _worker_batch_execute(
         data = resp.json()
         if not data.get("ok"):
             raise RuntimeError(f"Worker D1 batch unsuccessful: {data}")
-        total += int(data.get("total") or len(part))
-        success_count += int(data.get("success_count") or len(part))
+        part_total = data.get("total")
+        part_success = data.get("success_count")
+        total += int(len(part) if part_total is None else part_total)
+        success_count += int(len(part) if part_success is None else part_success)
         error_count += int(data.get("error_count") or 0)
         changes_total += int(data.get("changes_total") or 0)
         if data.get("first_error") and first_error is None:

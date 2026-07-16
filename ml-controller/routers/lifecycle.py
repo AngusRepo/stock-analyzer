@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from routers.model_pool import PromoteCheckRequest, promote_check
 
@@ -34,4 +34,4 @@ async def trigger_lifecycle_check(
         return result
     except Exception as e:
         logger.exception("[Lifecycle] Check failed")
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail="Lifecycle check failed") from e

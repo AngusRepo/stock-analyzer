@@ -108,7 +108,7 @@ def materialize_external_evidence(req: ExternalEvidenceMaterializeRequest = Body
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+        raise HTTPException(status_code=500, detail="External evidence materialization failed") from exc
     finally:
         if old_target is None:
             os.environ.pop("TARGET_DATE", None)

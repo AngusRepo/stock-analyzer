@@ -12,13 +12,13 @@ router = APIRouter(prefix="/meta-learning", tags=["meta-learning"])
 
 class NeuralShadowTrainRequest(BaseModel):
     policy_id: Literal["NeuralUCB", "NeuralTS", "NeuCB"]
-    contexts: list[list[float]] = Field(default_factory=list, max_items=20000)
-    arms: list[int] = Field(default_factory=list, max_items=20000)
-    rewards: list[float] = Field(default_factory=list, max_items=20000)
-    arm_names: list[str] = Field(default_factory=list, max_items=20)
+    contexts: list[list[float]] = Field(default_factory=list, max_length=20000)
+    arms: list[int] = Field(default_factory=list, max_length=20000)
+    rewards: list[float] = Field(default_factory=list, max_length=20000)
+    arm_names: list[str] = Field(default_factory=list, max_length=20)
     business_date: str
-    symbols: list[str] = Field(default_factory=list, max_items=20000)
-    baseline_actions: list[str] = Field(default_factory=list, max_items=20000)
+    symbols: list[str] = Field(default_factory=list, max_length=20000)
+    baseline_actions: list[str] = Field(default_factory=list, max_length=20000)
 
 
 def _seed(policy_id: str, arm_names: list[str], width: int) -> int:

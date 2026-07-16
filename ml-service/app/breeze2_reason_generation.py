@@ -10,6 +10,8 @@ import re
 
 REPORT_SCHEMA_VERSION = "breeze2-reason-generation-v1"
 DEFAULT_MODEL_ID = "MediaTek-Research/Llama-Breeze2-3B-Instruct-v0_1"
+DEFAULT_MODEL_REVISION = "a9d4378c730fd8719de42dceab265355603cf710"
+APPROVED_MODEL_IDS = frozenset({DEFAULT_MODEL_ID})
 REQUIRED_TRADE_PLAN_FIELDS = (
     "bias",
     "entry",
@@ -276,7 +278,17 @@ def _breeze2_prompt(prompt: str) -> tuple[str, Any, Any]:
     return str(built), None, prompt_engine
 
 
-def _load_breeze2_model(model_id: str):
+def _approved_model_identity(payload: dict[str, Any]) -> tuple[str, str]:
+    requested = str(payload.get("model_id") or os.environ.get("BREEZE2_REASON_MODEL_ID") or DEFAULT_MODEL_ID).strip()
+    if requested not in APPROVED_MODEL_IDS:
+        raise ValueError("breeze2_model_id_not_approved")
+    revision = str(os.environ.get("BREEZE2_REASON_MODEL_REVISION") or DEFAULT_MODEL_REVISION).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("breeze2_model_revision_invalid")
+    return requested, revision
+
+
+def _load_breeze2_model(model_id: str, revision: str):
     from transformers import AutoModel  # type: ignore
     import torch
 
@@ -286,6 +298,7 @@ def _load_breeze2_model(model_id: str):
         "low_cpu_mem_usage": True,
         "device_map": "auto",
         "trust_remote_code": True,
+        "revision": revision,
         "img_context_token_id": 128212,
     }
     try:
@@ -307,13 +320,23 @@ def _decode_breeze2_output(raw_text: str, prompt_engine: Any) -> str:
     return raw_text
 
 
-def _generate_with_transformers(payload: dict[str, Any], model_id: str, prompt: str) -> dict[str, dict[str, Any]]:
+def _generate_with_transformers(
+    payload: dict[str, Any],
+    model_id: str,
+    revision: str,
+    prompt: str,
+) -> dict[str, dict[str, Any]]:
     from transformers import AutoTokenizer, GenerationConfig  # type: ignore
     import torch
 
     prompt_text, pixel_values, prompt_engine = _breeze2_prompt(prompt)
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, use_fast=False)
-    model = _load_breeze2_model(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_id,
+        revision=revision,
+        trust_remote_code=True,
+        use_fast=False,
+    )
+    model = _load_breeze2_model(model_id, revision)
     inputs = tokenizer(prompt_text, return_tensors="pt").to(model.device)
     generation_config = GenerationConfig(
         max_new_tokens=int(payload.get("max_new_tokens") or 900),
@@ -338,18 +361,22 @@ def _generate_with_transformers(payload: dict[str, Any], model_id: str, prompt: 
 
 
 def generate_breeze2_reason_generation(payload: dict[str, Any]) -> dict[str, Any]:
-    model_id = str(payload.get("model_id") or os.environ.get("BREEZE2_REASON_MODEL_ID") or DEFAULT_MODEL_ID)
+    try:
+        model_id, model_revision = _approved_model_identity(payload)
+    except ValueError as exc:
+        return build_fallback_breeze2_reason_generation(payload, model_id=DEFAULT_MODEL_ID, error=str(exc))
     prompt = build_breeze2_reason_generation_prompt(payload)
     if payload.get("execute_model") is False:
         return build_fallback_breeze2_reason_generation(payload, model_id=model_id, error="execute_model_false")
     try:
-        reasons = _generate_with_transformers(payload, model_id, prompt)
+        reasons = _generate_with_transformers(payload, model_id, model_revision, prompt)
     except Exception as exc:  # noqa: BLE001 - shadow provider must fail open to fallback.
         return build_fallback_breeze2_reason_generation(payload, model_id=model_id, error=f"{type(exc).__name__}: {exc}")
     report = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "generated_at": _utc_now(),
         "model_id": model_id,
+        "model_revision": model_revision,
         "allowed_use": "reason_shadow_only",
         "decision_effect": "advisory_only",
         "primary_candidate_source_allowed": False,

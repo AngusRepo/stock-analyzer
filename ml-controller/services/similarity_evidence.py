@@ -514,7 +514,7 @@ def hdbscan_research_audit(
             "reason": "invalid_feature_matrix",
             "production_decision_path": False,
         }
-    model = HDBSCAN(min_cluster_size=max(2, int(min_cluster_size)), min_samples=min_samples)
+    model = HDBSCAN(min_cluster_size=max(2, int(min_cluster_size)), min_samples=min_samples, copy=True)
     model.fit(matrix)
     cluster_ids = np.asarray(model.labels_, dtype=int)
     probabilities = np.asarray(getattr(model, "probabilities_", np.zeros(len(clean_labels))), dtype=float)

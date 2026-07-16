@@ -4,7 +4,7 @@ adversarial.py — Red-Blue Army Testing endpoints (P2#17-18)
 POST /adversarial/run → Run crisis replay + synthetic stress tests
 """
 import logging
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from graphs.adversarial_graph import run_adversarial_test
 
@@ -22,4 +22,4 @@ def trigger_adversarial(
         return run_adversarial_test(scenarios)
     except Exception as e:
         logger.exception("[Adversarial] Failed")
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail="Adversarial evaluation failed") from e

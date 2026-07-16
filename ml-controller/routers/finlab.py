@@ -8,7 +8,10 @@ from pydantic import BaseModel, Field
 
 from services.finlab_execution_smoke import run_finlab_execution_smoke
 from services.finlab_execution_preview_service import run_finlab_execution_preview
-from services.finlab_live_submit_service import run_finlab_live_submit
+from services.execution_gateway_live_relay import (
+    relay_execution_intent_status,
+    relay_execution_live_submit,
+)
 from services.execution_gateway_shadow_relay import relay_execution_shadow
 from services.finlab_production_simulated_loop import (
     build_execution_loop_plan as build_production_simulated_loop_plan,
@@ -149,9 +152,12 @@ def _sql_verb(sql: str) -> str:
     cleaned = (sql or "").strip()
     if not cleaned:
         raise ValueError("sql is required")
-    if ";" in cleaned:
+    normalized = cleaned.rstrip(";").rstrip()
+    if not normalized:
+        raise ValueError("sql is required")
+    if ";" in normalized:
         raise ValueError("multiple SQL statements are not allowed")
-    return cleaned.split(None, 1)[0].upper()
+    return normalized.split(None, 1)[0].upper()
 
 
 def _validate_d1_proxy_sql(sql: str, *, allow_read: bool, allow_dml: bool) -> str:
@@ -180,16 +186,13 @@ def build_finlab_backfill_modal_payload(req: FinLabBackfillRunRequest) -> dict[s
     worker_token = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
     if worker_url:
         payload["callback_url"] = f"{worker_url}/api/admin/scheduler-callback"
-    if worker_token:
-        payload["callback_token"] = worker_token
     controller_base_url = _controller_base_url()
     controller_token = _controller_token()
     if controller_base_url:
         payload["controller_callback_url"] = f"{controller_base_url}/finlab/backfill/callback"
         payload["controller_d1_query_url"] = f"{controller_base_url}/finlab/backfill/d1/query"
         payload["controller_d1_batch_url"] = f"{controller_base_url}/finlab/backfill/d1/batch"
-    if controller_token:
-        payload["controller_token"] = controller_token
+    payload["callback_credential_source"] = "modal_environment"
     return payload
 
 
@@ -300,17 +303,16 @@ async def run_finlab_backfill(req: FinLabBackfillRunRequest) -> dict:
 
     executor = os.environ.get("FINLAB_BACKFILL_EXECUTOR", "").strip().lower()
     if req.dry_run:
-        safe_payload = {
-            **payload,
-            "callback_token": "***" if payload.get("callback_token") else "",
-            "controller_token": "***" if payload.get("controller_token") else "",
-        }
         return {
             "status": "dry_run",
             "executor": executor or "not_configured",
-            "payload": safe_payload,
+            "payload": payload,
         }
-    if req.continue_evening_chain and not (payload.get("callback_url") and payload.get("callback_token")):
+    worker_callback_ready = bool(
+        payload.get("callback_url")
+        and os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
+    )
+    if req.continue_evening_chain and not worker_callback_ready:
         raise HTTPException(
             status_code=409,
             detail="STOCKVISION_WORKER_URL and STOCKVISION_AUTH_TOKEN are required for FinLab evening-chain callback",
@@ -319,7 +321,7 @@ async def run_finlab_backfill(req: FinLabBackfillRunRequest) -> dict:
         payload.get("controller_callback_url")
         and payload.get("controller_d1_query_url")
         and payload.get("controller_d1_batch_url")
-        and payload.get("controller_token")
+        and _controller_token()
     ):
         raise HTTPException(
             status_code=409,
@@ -458,16 +460,27 @@ async def run_finlab_live_submit_route(
 ) -> dict:
     """Submit a validated StockVision order intent through FinLab/Sinopac.
 
-    The route is installed before real trading so the execution contract is
-    production-shaped, but it stays blocked unless FINLAB_LIVE_SUBMIT_ENABLED
-    and request allow_live_submit are both explicit.
+    This general controller route cannot submit locally. It adds Google IAM
+    authentication and relays once to the private dedicated gateway.
     """
-    return run_finlab_live_submit(
-        packet=req.packet or None,
-        intent=req.intent,
+    if req.intent is not None:
+        return {
+            "status": "blocked",
+            "reason": "legacy_live_submit_intent_not_allowed",
+            "can_submit_real_order": False,
+            "live_submit_enabled": False,
+        }
+    return relay_execution_live_submit(
+        packet=req.packet,
         signature=x_execution_signature,
         allow_live_submit=req.allow_live_submit,
     )
+
+
+@router.get("/execution/intents/{idempotency_key}")
+def relay_finlab_execution_intent_status_route(idempotency_key: str) -> dict:
+    """Read the private execution ledger lifecycle through the IAM relay."""
+    return relay_execution_intent_status(idempotency_key=idempotency_key)
 
 
 @router.post("/execution/shadow-relay")

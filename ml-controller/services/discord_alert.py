@@ -24,6 +24,8 @@ from typing import Optional
 
 import httpx
 
+from services.service_endpoint_policy import validate_discord_webhook_url
+
 logger = logging.getLogger(__name__)
 
 _DISCORD_TIMEOUT = 10.0
@@ -45,7 +47,8 @@ _COLOR = {
 
 def _webhook_url() -> Optional[str]:
     """Read webhook from env. Returns None if unset (caller should no-op)."""
-    return os.environ.get("DISCORD_WEBHOOK_URL") or None
+    raw = os.environ.get("DISCORD_WEBHOOK_URL") or ""
+    return validate_discord_webhook_url(raw) if raw.strip() else None
 
 
 def _twd_now_iso() -> str:

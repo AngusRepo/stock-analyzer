@@ -23,10 +23,9 @@ instance, we short-circuit without hitting GCS. The GCS layer is the
 source of truth when instances disagree.
 
 Design notes:
-  - All I/O is wrapped in try/except; lock-acquire failures default to
-    "allow the call to proceed", to preserve availability. The production
-    tradeoff here is: duplicate retrain (wasted $) < blocked retrain
-    (stale model). Make this explicit.
+  - Distributed-lock failures fail closed. Proceeding without the shared
+    lock violates the exactly-one retrain contract across Cloud Run instances.
+    An explicit non-cloud local fallback exists only for development.
 
   - TTL is checked at read time by comparing `acquired_at + ttl_seconds`
     against wall clock. Expired locks are silently overwritten on the
@@ -61,6 +60,12 @@ LOCK_PREFIX = "locks/retrain/"
 _INSTANCE_ID = os.environ.get("K_REVISION") or os.environ.get("HOSTNAME") or f"pid{os.getpid()}"
 # In-memory fast-path cache: {lock_key: acquired_at_epoch}
 _LOCAL_LOCKS: dict[str, float] = {}
+ALLOW_LOCAL_FALLBACK = (
+    os.environ.get("RETRAIN_LOCK_ALLOW_LOCAL_FALLBACK", "").strip() == "1"
+    and not (os.environ.get("K_SERVICE") or os.environ.get("K_REVISION"))
+    and os.environ.get("ENVIRONMENT", "development").strip().lower()
+    in {"development", "dev", "local", "test"}
+)
 
 
 # ── Result types ─────────────────────────────────────────────────────────────
@@ -100,6 +105,19 @@ class _LockRecord:
             instance_id=str(d.get("instance_id", "?")),
             metadata=dict(d.get("metadata", {})),
         )
+
+
+def _backend_unavailable(lock_key: str, now: float, reason: str) -> LockAcquireResult:
+    if ALLOW_LOCAL_FALLBACK:
+        _LOCAL_LOCKS[lock_key] = now
+        logger.warning("[retrain_lock] %s; explicit local fallback enabled", reason)
+        return LockAcquireResult(
+            acquired=True,
+            reason=f"local_fallback ({reason})",
+            backend="memory",
+        )
+    logger.error("[retrain_lock] %s; acquisition denied", reason)
+    return LockAcquireResult(acquired=False, reason=reason, backend="unavailable")
 
 
 # ── GCS client (lazy) ────────────────────────────────────────────────────────
@@ -166,13 +184,7 @@ def acquire(
     # ── Slow path: GCS CAS ──────────────────────────────────────────────────
     bucket = _get_bucket(bucket_name)
     if bucket is None:
-        # GCS unavailable: degrade to in-memory only (log the risk)
-        _LOCAL_LOCKS[lock_key] = now
-        return LockAcquireResult(
-            acquired=True,
-            reason="GCS unavailable; in-memory lock only (cross-instance at risk)",
-            backend="disabled",
-        )
+        return _backend_unavailable(lock_key, now, "gcs_backend_unavailable")
 
     blob_path = f"{LOCK_PREFIX}{lock_key}.json"
     blob = bucket.blob(blob_path)
@@ -195,13 +207,10 @@ def acquire(
     except Exception as e:
         # Distinguish "blob exists" from "real error" via the GCS precondition class
         if "412" not in str(e) and "Precondition" not in e.__class__.__name__:
-            # Unexpected error: fail open (allow the call to proceed)
-            logger.warning(f"[retrain_lock] acquire CAS failed unexpectedly: {e}; failing open")
-            _LOCAL_LOCKS[lock_key] = now
-            return LockAcquireResult(
-                acquired=True,
-                reason=f"acquire_error_fail_open ({str(e)[:80]})",
-                backend="disabled",
+            return _backend_unavailable(
+                lock_key,
+                now,
+                f"gcs_cas_error ({type(e).__name__}: {str(e)[:80]})",
             )
         # else: precondition failed → blob exists, need to inspect it
 
@@ -232,12 +241,24 @@ def acquire(
             reason=f"took_over_expired (prev_instance={existing.instance_id}, elapsed={elapsed:.0f}s)",
         )
     except Exception as e:
-        logger.warning(f"[retrain_lock] acquire take-over path failed: {e}; failing open")
-        _LOCAL_LOCKS[lock_key] = now
-        return LockAcquireResult(
-            acquired=True,
-            reason=f"takeover_error_fail_open ({str(e)[:80]})",
-            backend="disabled",
+        # The previous owner can release between our initial 412 and reload.
+        # Retry one atomic create; never treat the race as permission to run
+        # without a distributed lock.
+        if "404" in str(e) or "Not Found" in str(e):
+            try:
+                blob.upload_from_string(
+                    record.to_json(),
+                    content_type="application/json",
+                    if_generation_match=0,
+                )
+                _LOCAL_LOCKS[lock_key] = now
+                return LockAcquireResult(acquired=True, reason="acquired_after_release_race")
+            except Exception as retry_error:
+                e = retry_error
+        return _backend_unavailable(
+            lock_key,
+            now,
+            f"gcs_takeover_error ({type(e).__name__}: {str(e)[:80]})",
         )
 
 

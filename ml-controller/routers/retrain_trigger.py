@@ -87,7 +87,7 @@ class UniversalRetrainTriggerRequest(BaseModel):
     artifact_lifecycle_contracts: dict[str, str] = Field(default_factory=dict)
     artifact_lifecycle_only: bool = False
     require_exact_dataset_snapshot: bool = Field(
-        default=False,
+        default=True,
         description="Fail closed unless the compute snapshot business date exactly matches run_date.",
     )
     sequence_gcs_prefix: str | None = Field(default=None, description="GCS prefix for sequence_records_v2 batches.")
@@ -128,16 +128,6 @@ def _exact_dataset_snapshot_rejection(
             "snapshot_id": snapshot_info.get("snapshot_id"),
         }
     return None
-
-
-def _force_https(url: str) -> str:
-    parsed = urlsplit(url.strip())
-    if parsed.scheme != "http":
-        return url.rstrip("/")
-    host = (parsed.hostname or "").lower()
-    if host in {"localhost", "127.0.0.1"}:
-        return url.rstrip("/")
-    return urlunsplit(("https", parsed.netloc, parsed.path, parsed.query, parsed.fragment)).rstrip("/")
 
 
 def _universal_prep_concurrency() -> int:
@@ -577,14 +567,19 @@ def _build_followup_webhook_url(request: Request | None) -> str:
         or os.environ.get("ML_CONTROLLER_PUBLIC_URL", "").strip()
     )
     if explicit:
-        explicit = _force_https(explicit)
-        if explicit.rstrip("/").endswith("/retrain/followup"):
-            return explicit.rstrip("/")
-        return f"{explicit.rstrip('/')}/retrain/followup"
-    if request is not None:
-        base = _force_https(str(request.base_url).rstrip("/"))
-        return f"{base}/retrain/followup"
-    return "http://localhost/retrain/followup"
+        parsed = urlsplit(explicit)
+        path = parsed.path.rstrip("/")
+        if path not in {"", "/retrain/followup"} or parsed.query or parsed.fragment:
+            raise ValueError("RETRAIN_FOLLOWUP_URL must be an origin or the canonical /retrain/followup URL")
+        origin = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+        return service_url(origin, "/retrain/followup", name="ML_CONTROLLER_PUBLIC_URL")
+
+    environment = os.environ.get("ENVIRONMENT", "").strip().lower()
+    cloud_runtime = bool(os.environ.get("K_SERVICE") or os.environ.get("K_REVISION"))
+    if request is not None and environment in {"development", "dev", "local", "test"} and not cloud_runtime:
+        base = validate_service_base_url(str(request.base_url), name="LOCAL_CONTROLLER_URL")
+        return service_url(base, "/retrain/followup", name="LOCAL_CONTROLLER_URL")
+    raise RuntimeError("ML_CONTROLLER_PUBLIC_URL is required for retrain followup callbacks")
 
 
 def _upsert_retrain_status(
@@ -1414,3 +1409,4 @@ async def trigger_universal_retrain(
         "lock_key": lock_key,
         "followup_webhook_url": followup_webhook_url,
     }
+from services.service_endpoint_policy import service_url, validate_service_base_url

@@ -497,11 +497,21 @@ _BATCH_FEATURE_RANK_SCORES_KEY = "__batch_feature_rank_scores"
 _BATCH_FEATURE_MODEL_ERRORS_KEY = "__batch_feature_model_errors"
 _BATCH_CHALLENGER_RANK_SCORES_KEY = "__batch_challenger_rank_scores"
 _BATCH_CHALLENGER_MODEL_ERRORS_KEY = "__batch_challenger_model_errors"
+_BATCH_LATEST_FEATURES_KEY = "__batch_latest_features"
+_BATCH_FEATURE_NAMES_KEY = "__batch_feature_names"
+_BATCH_IC_WEIGHTS_KEY = "__batch_ic_weights"
+_BATCH_MODEL_POOL_KEY = "__batch_model_pool"
+_BATCH_RANK_STACKER_KEY = "__batch_rank_stacker"
 _BATCH_RUNTIME_OPTION_KEYS = {
     _BATCH_FEATURE_RANK_SCORES_KEY,
     _BATCH_FEATURE_MODEL_ERRORS_KEY,
     _BATCH_CHALLENGER_RANK_SCORES_KEY,
     _BATCH_CHALLENGER_MODEL_ERRORS_KEY,
+    _BATCH_LATEST_FEATURES_KEY,
+    _BATCH_FEATURE_NAMES_KEY,
+    _BATCH_IC_WEIGHTS_KEY,
+    _BATCH_MODEL_POOL_KEY,
+    _BATCH_RANK_STACKER_KEY,
 }
 _MODEL_POOL_ALLOWED_STATUSES = {"active", "degraded", "challenger", "retired"}
 
@@ -627,29 +637,48 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         raise ValueError("至少需要 60 筆價格資料")
     _require_predict_v2_config_contract(req)
 
-    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
-    df = build_feature_matrix(
-        req.prices,
-        req.indicators,
-        chips_input,
-        req.sentiment_scores,
-        req.market_env,
-        barrier_params=req.barrier_params or None,
-        stock_meta=getattr(req, "stock_meta", None),
-    )
+    runtime_options = getattr(req, "runtime_options", {}) or {}
+    precomputed_latest = runtime_options.get(_BATCH_LATEST_FEATURES_KEY)
+    precomputed_feature_names = runtime_options.get(_BATCH_FEATURE_NAMES_KEY)
+
+    if isinstance(precomputed_latest, np.ndarray) and isinstance(precomputed_feature_names, list):
+        x_latest = precomputed_latest
+        feature_names = [str(name) for name in precomputed_feature_names]
+        if x_latest.ndim != 2 or x_latest.shape != (1, len(feature_names)):
+            raise ValueError(
+                f"invalid batch feature context for {req.symbol}: "
+                f"shape={x_latest.shape}, names={len(feature_names)}"
+            )
+    else:
+        chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
+        df = build_feature_matrix(
+            req.prices,
+            req.indicators,
+            chips_input,
+            req.sentiment_scores,
+            req.market_env,
+            barrier_params=req.barrier_params or None,
+            stock_meta=getattr(req, "stock_meta", None),
+        )
+        x, _y, feature_names = get_features(df, target_col="target_rank", allow_missing_target=True)
+        if len(x) == 0:
+            raise ValueError(f"Feature matrix empty for {req.symbol}")
+        x_latest = x[-1].reshape(1, -1)
 
     prices_arr = np.array([close_price(p) for p in req.prices])
     adj_prices_arr = np.array([close_or_adjusted(p) for p in req.prices])
     current_price = float(prices_arr[-1])
     atr = float((req.indicators[-1].get("atr14") or 0)) if req.indicators else current_price * 0.02
 
-    x, y, feature_names = get_features(df, target_col="target_rank", allow_missing_target=True)
-    if len(x) == 0:
-        raise ValueError(f"Feature matrix empty for {req.symbol}")
-    x_latest = x[-1].reshape(1, -1)
     market_segment = _normalize_market_segment_for_serving(req)
-    ic_weights = load_ic_weights(market_segment=market_segment)
-    pool_snapshot = _load_pool()
+    precomputed_ic_weights = runtime_options.get(_BATCH_IC_WEIGHTS_KEY)
+    ic_weights = (
+        dict(precomputed_ic_weights)
+        if isinstance(precomputed_ic_weights, dict)
+        else load_ic_weights(market_segment=market_segment)
+    )
+    precomputed_pool = runtime_options.get(_BATCH_MODEL_POOL_KEY)
+    pool_snapshot = precomputed_pool if isinstance(precomputed_pool, dict) else _load_pool()
     pool_models, formal_slots = _require_model_pool_contract(pool_snapshot, stage="predict_v2")
 
     def _resolve_model_pool_status(name: str) -> str:
@@ -681,7 +710,6 @@ def predict_stock_v2(req: PredictRequest) -> dict:
 
     rank_scores: dict[str, float] = {}
     model_errors: list[str] = []
-    runtime_options = getattr(req, "runtime_options", {}) or {}
     run_embedded_time_series = bool(runtime_options.get("embedded_time_series", True))
     run_embedded_state_space = bool(runtime_options.get("embedded_state_space", True))
 
@@ -844,7 +872,11 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     try:
         from .stacking import apply_rank_stacker, load_meta_learner
 
-        rank_bundle = load_meta_learner(0)
+        rank_bundle = (
+            runtime_options.get(_BATCH_RANK_STACKER_KEY)
+            if _BATCH_RANK_STACKER_KEY in runtime_options
+            else load_meta_learner(0)
+        )
         rank_scores, effective_ic_weights, rank_stacker_info = apply_rank_stacker(
             rank_scores,
             rank_bundle,

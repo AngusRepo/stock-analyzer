@@ -52,7 +52,7 @@ def test_strategy_similarity_router_fails_closed_when_modal_unavailable(monkeypa
         asyncio.run(strategy_similarity.build_strategy_similarity_evidence({"strategies": []}))
 
     assert exc_info.value.status_code == 503
-    assert "strategy_similarity_evidence_unavailable" in str(exc_info.value.detail)
+    assert exc_info.value.detail == "Strategy similarity evidence unavailable"
 
 
 def test_hdbscan_research_audit_router_is_shadow_only(monkeypatch):

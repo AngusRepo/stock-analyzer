@@ -71,6 +71,23 @@ def test_relay_rejects_non_https_gateway() -> None:
     assert result["reason"] == "execution_gateway_shadow_relay_config_incomplete"
 
 
+def test_production_relay_requires_exact_gateway_host_allowlist() -> None:
+    base = {
+        "ENVIRONMENT": "production",
+        "EXECUTION_GATEWAY_SHADOW_RELAY_ENABLED": "1",
+        "EXECUTION_GATEWAY_URL": "https://gateway.invalid",
+        "EXECUTION_GATEWAY_SERVICE_TOKEN": "token",
+    }
+    missing = relay_execution_shadow(packet={}, signature="x", env=base)
+    assert missing["reason"] == "execution_gateway_shadow_relay_config_incomplete"
+    wrong = relay_execution_shadow(
+        packet={},
+        signature="x",
+        env={**base, "EXECUTION_GATEWAY_RELAY_ALLOWED_HOSTS": "other.invalid"},
+    )
+    assert wrong["reason"] == "execution_gateway_shadow_relay_config_incomplete"
+
+
 def test_relay_retries_one_transient_failure() -> None:
     calls = 0
 

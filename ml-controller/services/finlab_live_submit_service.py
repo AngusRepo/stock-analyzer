@@ -131,9 +131,12 @@ def run_finlab_live_submit(
         daily_count = repo.daily_side_order_count(trade_date, side)
         if existing is not None:
             daily_count = max(0, daily_count - 1)
+        execution_control = repo.execution_control_state()
         risk_config = (risk_loader or _default_risk_loader)()
     except Exception as exc:
         return _blocked(packet, f"execution_control_plane_unavailable:{exc.__class__.__name__}", env_status=env_status)
+    if not execution_control or int(execution_control.get("kill_switch_active", 1)) != 0:
+        return _blocked(packet, "execution_d1_kill_switch_active_or_unknown", env_status=env_status)
 
     packet_errors = validate_execution_packet(
         packet,
@@ -178,7 +181,34 @@ def run_finlab_live_submit(
 
     with _SUBMIT_LOCK:
         try:
-            reservation = repo.reserve_intent(packet)
+            latest_existing = repo.find_intent(str(packet.get("idempotency_key") or ""))
+            latest_daily_count = repo.daily_side_order_count(trade_date, side)
+            if latest_existing is not None:
+                latest_daily_count = max(0, latest_daily_count - 1)
+            latest_control = repo.execution_control_state()
+            latest_risk_config = (risk_loader or _default_risk_loader)()
+            if not latest_control or int(latest_control.get("kill_switch_active", 1)) != 0:
+                return _blocked(packet, "execution_d1_kill_switch_active_or_unknown", env_status=env_status)
+            latest_packet_errors = validate_execution_packet(
+                packet,
+                signature=signature,
+                env=values,
+                risk_config=latest_risk_config,
+                daily_side_order_count=latest_daily_count,
+                now=now,
+            )
+            if latest_packet_errors:
+                return _blocked(packet, latest_packet_errors, env_status=env_status)
+            reservation = repo.reserve_intent(
+                packet,
+                risk_decision={
+                    "schema_version": "stockvision-execution-risk-decision-v1",
+                    "risk_config": latest_risk_config,
+                    "broker_truth": actual_broker_truth,
+                    "execution_snapshots": packet.get("execution_snapshots") or {},
+                    "hub_observations": hub_revalidation.get("observations") or {},
+                },
+            )
         except Exception as exc:
             return _blocked(packet, f"execution_reservation_failed:{exc.__class__.__name__}", env_status=env_status)
         if reservation.get("status") == "conflict":
@@ -249,27 +279,57 @@ def run_finlab_live_submit(
                 )
             except Exception as exc:
                 error = _sanitize(f"{exc.__class__.__name__}:{exc}", values)
-                repo.mark_submit_unknown(
-                    str(claimed.get("leg_id") or ""),
-                    error,
-                    {"intent_id": intent_id, "leg_key": leg_key},
-                )
+                unknown_persistence_error: str | None = None
+                try:
+                    repo.mark_submit_unknown(
+                        str(claimed.get("leg_id") or ""),
+                        error,
+                        {"intent_id": intent_id, "leg_key": leg_key},
+                    )
+                except Exception as persistence_exc:
+                    unknown_persistence_error = persistence_exc.__class__.__name__
+                try:
+                    lifecycle_legs = repo.list_legs(intent_id)
+                except Exception:
+                    lifecycle_legs = []
                 return {
                     "schema_version": SCHEMA_VERSION,
                     "status": "unknown",
-                    "reason": "broker_submit_outcome_unknown_reconciliation_required",
+                    "reason": (
+                        "broker_submit_and_ledger_outcome_unknown_reconciliation_required"
+                        if unknown_persistence_error
+                        else "broker_submit_outcome_unknown_reconciliation_required"
+                    ),
                     "symbol": symbol,
                     "side": side,
                     "intent_id": intent_id,
                     "submitted_orders": submitted,
-                    "legs": repo.list_legs(intent_id),
+                    "legs": lifecycle_legs,
                     "can_submit_real_order": True,
                     "live_submit_enabled": True,
                     "env_status": env_status,
                     "error_type": exc.__class__.__name__,
                     "error": error,
+                    "ledger_error_type": unknown_persistence_error,
                     "trace_tail": _sanitize(traceback.format_exc(limit=2), values),
                 }
+
+        final_legs = repo.list_legs(intent_id)
+        reserved_legs = [leg for leg in final_legs if str(leg.get("status") or "") == "RESERVED"]
+        if reserved_legs:
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "status": "partial" if submitted else "blocked",
+                "reason": "execution_leg_claim_incomplete_no_automatic_resubmit",
+                "symbol": symbol,
+                "side": side,
+                "intent_id": intent_id,
+                "submitted_orders": submitted,
+                "legs": final_legs,
+                "can_submit_real_order": False,
+                "live_submit_enabled": bool(submitted),
+                "env_status": env_status,
+            }
 
         return {
             "schema_version": SCHEMA_VERSION,
@@ -280,7 +340,7 @@ def run_finlab_live_submit(
             "price": price,
             "intent_id": intent_id,
             "submitted_orders": submitted,
-            "legs": repo.list_legs(intent_id),
+            "legs": final_legs,
             "can_submit_real_order": True,
             "live_submit_enabled": True,
             "env_status": env_status,

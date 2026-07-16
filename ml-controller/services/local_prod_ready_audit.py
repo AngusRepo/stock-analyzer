@@ -63,8 +63,9 @@ REQUIRED_RUNTIME_PINS = (
     "scikit-learn-extra==0.3.0",
     "xgboost==3.2.0",
     "lightgbm==4.6.0",
-    "torch==2.12.0",
+    "torch==2.13.0",
     "torch-geometric==2.8.0",
+    "pytorch-lightning==2.6.1",
     "neuralforecast==3.1.9",
     "tabm==0.0.3",
     "timesfm[torch]==2.0.1",
@@ -79,7 +80,7 @@ REQUIRED_CONTROLLER_RUNTIME_PINS = (
 
 REQUIRED_WORKER_RUNTIME_PINS = {
     "dependencies.hono": "4.12.25",
-    "devDependencies.wrangler": "4.100.0",
+    "devDependencies.wrangler": "4.110.0",
     "devDependencies.typescript": "6.0.3",
 }
 
@@ -231,11 +232,20 @@ def _scheduler_checks(root: Path) -> list[dict[str, Any]]:
                 "$currentJobs = gcloud scheduler jobs list",
                 "$exists = $currentIds.Contains([string]$job.id)",
                 "if ($DeleteStale)",
-                "DRY_RUN_AUTH_TOKEN_PLACEHOLDER",
+                "stockvision-scheduler@$Project.iam.gserviceaccount.com",
+                "--oidc-service-account-email",
+                "--oidc-token-audience",
                 "https://dry-run-worker-base-url.invalid",
             ),
             "scheduler_sync:dry_run_uses_remote_state",
-            "GCP Scheduler dry-run reads remote job state and does not require production scheduler secrets",
+            "GCP Scheduler dry-run reads remote job state and uses a non-secret OIDC identity placeholder",
+        ),
+        _check_text_regex_absent(
+            root,
+            "scripts/sync_gcp_scheduler.ps1",
+            r"SCHEDULER_AUTH_TOKEN",
+            "scheduler_sync:no_static_auth_token",
+            "GCP Scheduler sync must not persist a shared bearer token in job configuration",
         ),
         _check_text_regex_absent(
             root,
@@ -249,7 +259,13 @@ def _scheduler_checks(root: Path) -> list[dict[str, Any]]:
 
 
 def _runtime_pin_checks(root: Path) -> list[dict[str, Any]]:
-    requirements = _read_text(root, "ml-service/requirements.txt")
+    neuralforecast_requirements_path = root / "ml-service/requirements-neuralforecast.txt"
+    requirements = "\n".join((
+        _read_text(root, "ml-service/requirements.txt"),
+        neuralforecast_requirements_path.read_text(encoding="utf-8", errors="ignore")
+        if neuralforecast_requirements_path.exists()
+        else "",
+    ))
     controller_requirements = _read_text(root, "ml-controller/requirements.txt")
     ml_service_dockerfile = _read_text(root, "ml-service/Dockerfile")
     checks = [
@@ -1615,6 +1631,7 @@ def _production_cutover_packet_checks(root: Path) -> list[dict[str, Any]]:
             (
                 "local_prod_ready_audit_20260618.json",
                 "production_cutover_remote_preflight_20260618.json",
+                "p12_feature_registry_strategy_mining",
                 "remote_cutover_complete",
                 "deploy_ml_controller_strategy_mining_route",
                 "apply_strategy_mining_ledger_migration",
@@ -1729,9 +1746,11 @@ def _production_cutover_packet_checks(root: Path) -> list[dict[str, Any]]:
                 "P12 packet exposes the full approval-required action set",
             ),
             _check(
-                "remote_cutover_complete" in packet and isinstance(packet.get("remote_preflight_summary"), dict),
+                packet.get("scope") == "p12_feature_registry_strategy_mining"
+                and "remote_cutover_complete" in packet
+                and isinstance(packet.get("remote_preflight_summary"), dict),
                 "roadmap:p12:cutover_remote_summary_present",
-                "P12 packet carries remote preflight summary separately from local readiness",
+                "P12-scoped packet carries remote preflight summary separately from local and real-trading readiness",
             ),
         ])
 
@@ -1903,9 +1922,20 @@ def _realtime_trading_local_closure_checks(root: Path) -> list[dict[str, Any]]:
         ),
         _check_text_contains(
             root, "worker/src/lib/liveExecutionGatewayClient.ts",
-            ("LIVE_EXECUTION_CLIENT_ENABLED", "LIVE_EXECUTION_SUBMIT_GUARD_ENABLED", "LIVE_TRADING_APPROVAL_SCOPE", "submitOrReconcileSignedLiveExecutionPacket", "submit_response_unknown_no_automatic_resubmit"),
+            ("LIVE_EXECUTION_CLIENT_ENABLED", "LIVE_EXECUTION_SUBMIT_GUARD_ENABLED", "LIVE_TRADING_APPROVAL_SCOPE", "submitOrReconcileSignedLiveExecutionPacket", "submit_response_unknown_no_automatic_resubmit", "ML_CONTROLLER_URL", "/finlab/execution/live-submit"),
             "realtime:p0:worker_live_submit_triple_guard_reconcile",
-            "Worker live client requires three explicit controls and reconciles unknown submit without automatic retry",
+            "Worker live client requires three explicit controls, uses the controller relay and reconciles unknown submit without automatic retry",
+        ),
+        _check_text_regex_absent(
+            root, "worker/src/lib/liveExecutionGatewayClient.ts", r"EXECUTION_GATEWAY_(?:URL|SERVICE_TOKEN)",
+            "realtime:p0:worker_cannot_bypass_iam_relay",
+            "Worker has no direct private Gateway URL or application token path",
+        ),
+        _check_text_contains(
+            root, "ml-controller/services/execution_gateway_live_relay.py",
+            ("X-Serverless-Authorization", "EXECUTION_GATEWAY_LIVE_RELAY_ENABLED", "relay_execution_live_submit", "relay_execution_intent_status", "reconciliation_required", '"relay_attempts": 1'),
+            "realtime:p0:controller_live_relay_google_iam_single_attempt",
+            "general controller adds Google IAM and never retries an ambiguous broker submit",
         ),
         _check_text_contains(
             root, "worker/wrangler.toml",

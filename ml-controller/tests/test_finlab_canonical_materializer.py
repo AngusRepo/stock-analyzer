@@ -60,6 +60,8 @@ def test_remote_backfill_canonical_defaults_are_incremental() -> None:
         "canonical_broker_flow_daily",
         "canonical_broker_rank_daily",
     ]
+    with pytest.raises(ValueError, match="unknown canonical datasets: market"):
+        parse_canonical_datasets("market")
     assert parse_lanes("daily_price, chip_diversity") == ["daily_price", "chip_diversity"]
 
 

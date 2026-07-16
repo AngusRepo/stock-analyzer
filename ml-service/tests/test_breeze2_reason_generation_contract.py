@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from app.breeze2_reason_generation import (
+    DEFAULT_MODEL_ID,
+    DEFAULT_MODEL_REVISION,
+    _approved_model_identity,
     build_breeze2_reason_generation_prompt,
     build_fallback_breeze2_reason_generation,
     parse_breeze2_reason_generation_text,
@@ -79,3 +82,24 @@ def test_fallback_report_is_shadow_only_and_validates():
     assert "2330" in report["reasons"]
     assert report["reasons"]["2330"]["tradePlan"]["entry"]
     assert validate_breeze2_reason_generation_report(report) == []
+
+
+def test_breeze2_remote_code_is_locked_to_reviewed_model_and_revision(monkeypatch):
+    monkeypatch.delenv("BREEZE2_REASON_MODEL_ID", raising=False)
+    monkeypatch.delenv("BREEZE2_REASON_MODEL_REVISION", raising=False)
+    assert _approved_model_identity({}) == (DEFAULT_MODEL_ID, DEFAULT_MODEL_REVISION)
+
+    try:
+        _approved_model_identity({"model_id": "attacker/arbitrary-code"})
+    except ValueError as exc:
+        assert str(exc) == "breeze2_model_id_not_approved"
+    else:
+        raise AssertionError("arbitrary remote-code model was accepted")
+
+    monkeypatch.setenv("BREEZE2_REASON_MODEL_REVISION", "main")
+    try:
+        _approved_model_identity({})
+    except ValueError as exc:
+        assert str(exc) == "breeze2_model_revision_invalid"
+    else:
+        raise AssertionError("mutable model revision was accepted")

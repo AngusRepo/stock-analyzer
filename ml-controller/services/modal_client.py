@@ -391,6 +391,9 @@ def _aggregate_predict_batch_metrics(batch_responses: list[dict]) -> dict:
     cache = {"hits": 0, "misses": 0, "gcs_downloads": 0}
     chunks_reported = 0
     batch_counts = {"n_input": 0, "n_error": 0}
+    execution_mode_counts: dict[str, int] = {}
+    contract_results: list[bool] = []
+    fallback_reasons: list[str] = []
     for response in batch_responses or []:
         if not isinstance(response, dict):
             continue
@@ -399,6 +402,12 @@ def _aggregate_predict_batch_metrics(batch_responses: list[dict]) -> dict:
         if batch:
             batch_counts["n_input"] += _int(batch.get("n_input"))
             batch_counts["n_error"] += _int(batch.get("n_error"))
+            mode = str(batch.get("execution_mode") or "unknown")
+            execution_mode_counts[mode] = execution_mode_counts.get(mode, 0) + 1
+            if batch.get("contract_passed") is not None:
+                contract_results.append(bool(batch.get("contract_passed")))
+            if batch.get("fallback_reason"):
+                fallback_reasons.append(str(batch["fallback_reason"]))
         model_cache = metrics.get("model_cache") if isinstance(metrics.get("model_cache"), dict) else {}
         if not model_cache:
             continue
@@ -412,6 +421,9 @@ def _aggregate_predict_batch_metrics(batch_responses: list[dict]) -> dict:
     return {
         "chunks_reported": chunks_reported,
         "batch": batch_counts,
+        "true_batch_contract_passed": all(contract_results) if contract_results else None,
+        "execution_mode_counts": execution_mode_counts,
+        "fallback_reasons": fallback_reasons,
         "batch_error_rate": (
             round(batch_counts["n_error"] / batch_counts["n_input"], 6)
             if batch_counts["n_input"]
@@ -586,6 +598,9 @@ async def _modal_batch_predict_v2(payloads: list[dict]) -> list[dict]:
                 "result_error_count": result_error_count,
                 "result_error_rate": round(result_error_count / result_count, 6) if result_count else None,
                 "batch_error_rate": batch_metrics.get("batch_error_rate"),
+                "true_batch_contract_passed": batch_metrics.get("true_batch_contract_passed"),
+                "execution_mode_counts": batch_metrics.get("execution_mode_counts"),
+                "fallback_reasons": batch_metrics.get("fallback_reasons"),
                 "model_cache_hit_ratio": batch_metrics.get("model_cache_hit_ratio"),
                 "batch_metrics": batch_metrics,
             },
@@ -882,7 +897,8 @@ async def spawn_finlab_v4_backfill(payload: dict) -> dict:
         "run_date": payload.get("run_date"),
         "dispatch_attempt": int(payload.get("dispatch_attempt") or 1),
         "continue_evening_chain": bool(payload.get("continue_evening_chain")),
-        "callback_configured": bool(payload.get("callback_url") and payload.get("callback_token")),
+        "callback_configured": bool(payload.get("callback_url")),
+        "callback_credential_source": "modal_environment",
     }
 
 
@@ -950,7 +966,6 @@ def spawn_state_space_overlays_batch_predict(
     run_date: str | None = None,
     run_id: str | None = None,
     callback_url: str | None = None,
-    callback_token: str | None = None,
 ) -> dict:
     """Spawn Kalman + Markov overlays without blocking the daily graph."""
     fn = _lookup("state_space_universal_predict")
@@ -966,8 +981,6 @@ def spawn_state_space_overlays_batch_predict(
         spawn_payload["run_id"] = run_id
     if callback_url:
         spawn_payload["callback_url"] = callback_url
-    if callback_token:
-        spawn_payload["callback_token"] = callback_token
     call = fn.spawn(spawn_payload)
     call_id = (
         getattr(call, "object_id", None)
@@ -982,7 +995,8 @@ def spawn_state_space_overlays_batch_predict(
         "version_by_model": version_by_model or {},
         "run_date": run_date,
         "run_id": run_id,
-        "callback_configured": bool(callback_url and callback_token),
+        "callback_configured": bool(callback_url),
+        "callback_credential_source": "modal_environment",
     }
 
 
@@ -1003,7 +1017,8 @@ def spawn_pipeline_prediction_bundle(payload: dict) -> dict:
         "run_date": payload.get("run_date"),
         "n_input": len(payload.get("payloads") or []),
         "state_gcs_uri": payload.get("state_gcs_uri"),
-        "callback_configured": bool(payload.get("callback_url") and payload.get("callback_token")),
+        "callback_configured": bool(payload.get("callback_url")),
+        "callback_credential_source": "modal_environment",
     }
 
 

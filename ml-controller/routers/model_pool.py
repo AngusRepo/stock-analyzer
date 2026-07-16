@@ -26,6 +26,7 @@ from services.d1_client import query as d1_query
 from services import discord_alert  # 2026-04-19 Stage 5
 from services.lifecycle_promotion_gate import apply_promotion_gate_to_actions
 from services.model_artifact_registry import (
+    backfill_model_champion_history_from_model_pool,
     backfill_champion_pointers_from_model_pool,
     build_candidate_selection,
     build_champion_pointer_projection,
@@ -457,6 +458,10 @@ class FeatureReleasePromotionControllerRequest(BaseModel):
     approved: bool = False
     approved_by: str | None = None
     reason: str = "feature_release_bundle_controller"
+
+
+class ChampionHistoryBackfillRequest(BaseModel):
+    confirm: bool = False
 
 
 @router.post("/train_patchtst")
@@ -1819,6 +1824,25 @@ async def artifact_registry_champion_pointers_backfill(req: BackfillChampionPoin
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry champion pointer backfill failed: {e}")
+
+
+@router.post("/artifact_registry/champion_history/backfill")
+async def artifact_registry_champion_history_backfill(req: ChampionHistoryBackfillRequest):
+    """Import only exact model_pool promotion intervals into immutable history."""
+    try:
+        import json as _json
+        from google.cloud import storage
+
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if not pool_blob.exists():
+            raise HTTPException(status_code=404, detail="model_pool.json not found")
+        pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
+        return backfill_model_champion_history_from_model_pool(pool, confirm=req.confirm)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"artifact_registry champion history backfill failed: {e}")
 
 
 @router.get("/lineage")

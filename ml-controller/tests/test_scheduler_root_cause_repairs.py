@@ -15,10 +15,10 @@ from services.recommendation_service import write_predictions_to_d1  # noqa: E40
 def test_prediction_writer_requires_feature_version(monkeypatch):
     monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
 
-    def _fake_batch_execute(_statements):
+    def _fake_batch_execute(_statements, **_kwargs):
         raise AssertionError("writer must fail before D1 write when feature_version is missing")
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "strict_batch_execute", _fake_batch_execute)
 
     with pytest.raises(ValueError, match="missing_feature_version_contract"):
         write_predictions_to_d1(
@@ -41,11 +41,11 @@ def test_prediction_writer_requires_feature_version(monkeypatch):
 def test_filtered_recommendations_preserve_screener_seed_rows(monkeypatch):
     captured = {}
 
-    def _fake_batch_execute(statements):
+    def _fake_batch_execute(statements, **_kwargs):
         captured["statements"] = statements
         return {"success_count": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "strict_batch_execute", _fake_batch_execute)
 
     written = recommendation_service.delete_filtered_recommendations(
         ["2330", "2317"],

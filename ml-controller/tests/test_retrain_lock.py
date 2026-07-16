@@ -59,6 +59,9 @@ class _FakeBlob:
         if self._data is None:
             raise Exception("404 Not Found")
         self._data = None
+        # GCS if_generation_match=0 targets object absence, not the deleted
+        # generation number. Model that create-after-delete contract.
+        self._generation = 0
 
 
 class _FakeBucket:
@@ -129,15 +132,20 @@ class TestAcquire:
         assert r2.acquired is True
         assert "took_over_expired" in r2.reason
 
-    def test_gcs_unavailable_degrades_to_memory_fail_open(self, monkeypatch):
+    def test_gcs_unavailable_fails_closed(self, monkeypatch):
         monkeypatch.setattr(retrain_lock, "_get_bucket", lambda name=None: None)
+        monkeypatch.setattr(retrain_lock, "ALLOW_LOCAL_FALLBACK", False)
         r1 = retrain_lock.acquire("test:no_gcs", ttl_seconds=600)
+        assert r1.acquired is False
+        assert r1.backend == "unavailable"
+
+    def test_explicit_non_cloud_local_fallback_is_visible(self, monkeypatch):
+        monkeypatch.setattr(retrain_lock, "_get_bucket", lambda name=None: None)
+        monkeypatch.setattr(retrain_lock, "ALLOW_LOCAL_FALLBACK", True)
+        r1 = retrain_lock.acquire("test:no_gcs_local", ttl_seconds=600)
         assert r1.acquired is True
-        assert r1.backend == "disabled"
-        # Second call within TTL should still be blocked by in-memory cache
-        r2 = retrain_lock.acquire("test:no_gcs", ttl_seconds=600)
-        assert r2.acquired is False
-        assert r2.backend == "memory"
+        assert r1.backend == "memory"
+        assert "local_fallback" in r1.reason
 
     def test_metadata_preserved_in_blob(self, fake_bucket):
         retrain_lock.acquire(

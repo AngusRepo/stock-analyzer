@@ -302,6 +302,7 @@ def test_production_cutover_packet_is_ready_for_review_but_non_mutating(tmp_path
 
     packet = build_production_cutover_packet(tmp_path)
 
+    assert packet["scope"] == "p12_feature_registry_strategy_mining"
     assert packet["cutover_ready_for_review"] is True
     assert packet["production_mutation_allowed"] is False
     assert packet["actions_allowed_without_wei_approval"] == []

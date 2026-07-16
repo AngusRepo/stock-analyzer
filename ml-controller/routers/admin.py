@@ -38,12 +38,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from services.admin_access_policy import require_admin_access, require_admin_mutation_scope
 from services.design_review_client import call_gemini_design_review
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin"],
+    dependencies=[Depends(require_admin_access)],
+)
 logger = logging.getLogger(__name__)
 
 _MODAL_STABLE_MTIME = 1767225600  # 2026-01-01 UTC
@@ -137,9 +142,9 @@ class DesignReviewArtifact(BaseModel):
 
 class DesignReviewRequest(BaseModel):
     objective: str = Field(..., min_length=1, max_length=1_000)
-    focus: list[str] = Field(default_factory=list, max_items=10)
+    focus: list[str] = Field(default_factory=list, max_length=10)
     current_notes: Optional[str] = Field(default=None, max_length=4_000)
-    artifacts: list[DesignReviewArtifact] = Field(default_factory=list, max_items=8)
+    artifacts: list[DesignReviewArtifact] = Field(default_factory=list, max_length=8)
     temperature: float = Field(default=0.35, ge=0.0, le=0.8)
     max_output_tokens: int = Field(default=2048, ge=512, le=3072)
 
@@ -161,7 +166,7 @@ async def design_review(req: DesignReviewRequest):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("[admin/design-review] unexpected failure")
-        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Design review failed") from exc
     return {
         "ok": True,
         "artifact_count": len(req.artifacts),
@@ -169,7 +174,10 @@ async def design_review(req: DesignReviewRequest):
     }
 
 
-@router.post("/modal-deploy")
+@router.post(
+    "/modal-deploy",
+    dependencies=[Depends(require_admin_mutation_scope("modal_deploy"))],
+)
 def modal_deploy(req: ModalDeployRequest = Body(default=ModalDeployRequest())):
     """Synchronous `modal deploy <app_path>` subprocess invocation.
 
@@ -182,6 +190,8 @@ def modal_deploy(req: ModalDeployRequest = Body(default=ModalDeployRequest())):
     Returns: status, duration, modal CLI stdout/stderr, exit code.
     """
     app_path = req.app_path
+    if Path(app_path).resolve() != Path(_DEFAULT_MODAL_APP_PATH).resolve():
+        raise HTTPException(status_code=403, detail="modal_deploy_app_path_not_approved")
     if not Path(app_path).is_file():
         raise HTTPException(
             status_code=400,
@@ -267,7 +277,10 @@ class QuantaAlphaBootstrapReq(BaseModel):
     timeout_sec: int = Field(default=900, ge=60, le=3600)
 
 
-@router.post("/quantaalpha-bootstrap")
+@router.post(
+    "/quantaalpha-bootstrap",
+    dependencies=[Depends(require_admin_mutation_scope("quantaalpha_bootstrap"))],
+)
 def quantaalpha_bootstrap(req: QuantaAlphaBootstrapReq = Body(default=QuantaAlphaBootstrapReq())):
     """One-shot: (1) create/update modal secret quantaalpha-llm from ml-controller
     env GEMINI_API_KEY, (2) modal deploy modal_app_quantaalpha.py.
@@ -361,7 +374,10 @@ class QuantaAlphaRunReq(BaseModel):
                              description="Subprocess timeout for spawn/status; actual Modal jobs run asynchronously")
 
 
-@router.post("/quantaalpha-run")
+@router.post(
+    "/quantaalpha-run",
+    dependencies=[Depends(require_admin_mutation_scope("quantaalpha_run"))],
+)
 def quantaalpha_run(req: QuantaAlphaRunReq = Body(default=QuantaAlphaRunReq())):
     """Trigger QuantaAlpha Modal functions. step='build_qlib' builds Qlib binary
     from D1; step='mine' runs 1 mining cycle; step='full' chains both (build
@@ -462,7 +478,10 @@ class QuantaAlphaCancelReq(BaseModel):
     call_id: str
 
 
-@router.post("/quantaalpha-cancel")
+@router.post(
+    "/quantaalpha-cancel",
+    dependencies=[Depends(require_admin_mutation_scope("quantaalpha_cancel"))],
+)
 def quantaalpha_cancel(req: QuantaAlphaCancelReq = Body(...)):
     """Cancel a running Modal FunctionCall."""
     try:

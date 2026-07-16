@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-SOURCE = Path("ml-controller/scripts/compare_evening_chain_ev_versions.py").read_text(
+SOURCE = (Path(__file__).resolve().parents[1] / "scripts/compare_evening_chain_ev_versions.py").read_text(
     encoding="utf-8"
 )
 

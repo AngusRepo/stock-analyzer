@@ -35,7 +35,7 @@ def test_decision_logs_persist_score_v2_payload_for_audit() -> None:
     paper_entry_tasks = read("worker/src/lib/paperEntryTasks.ts")
 
     assert "ALTER TABLE decision_logs ADD COLUMN score_components TEXT" in migration
-    assert "date, symbol, action, score_components, chip_score" in paper_entry_tasks
+    assert "date, symbol, action, score_components, ml_signal" in paper_entry_tasks
     assert "decisionScoreComponents" in paper_entry_tasks
     assert "finalScore: scoreV2.finalScore" in paper_entry_tasks
     assert "alphaAdjustment: scoreV2.alphaAdjustment" in paper_entry_tasks

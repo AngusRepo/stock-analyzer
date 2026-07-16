@@ -9,11 +9,11 @@ from services.recommendation_service import write_layer3_formal_gate_audit
 def test_write_layer3_formal_gate_audit_persists_pass_and_drop(monkeypatch):
     captured = []
 
-    def fake_batch_execute(statements):
+    def fake_batch_execute(statements, **_kwargs):
         captured.extend(statements)
         return {"success": True}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "strict_batch_execute", fake_batch_execute)
 
     inserted = write_layer3_formal_gate_audit(
         predictions={
@@ -82,8 +82,8 @@ def test_write_layer3_formal_gate_audit_distinguishes_universe_ineligible(monkey
     captured = []
     monkeypatch.setattr(
         recommendation_service.d1_client,
-        "batch_execute",
-        lambda statements: captured.extend(statements) or {"success": True},
+        "strict_batch_execute",
+        lambda statements, **_kwargs: captured.extend(statements) or {"success": True},
     )
 
     write_layer3_formal_gate_audit(

@@ -15,10 +15,16 @@ Auth: X-Controller-Token header (set ML_CONTROLLER_SECRET env var)
 """
 import os
 import asyncio
+import logging
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from services.modal_client import batch_predict_contract
 from services.trading_config_loader import DEFAULT_REQUIRED_CONFIG
+from services.controller_auth import controller_auth_middleware, verify_controller_token
+from services.http_error_policy import install_http_error_policy
+from services.service_endpoint_policy import validate_configured_service_endpoints
+
+logger = logging.getLogger(__name__)
 
 from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2, finlab, external_evidence, strategy_similarity, strategy_mining, screener, l4_alpha_ev, allocator_ev_fusion, opb_arm_prior
 # 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
@@ -33,7 +39,20 @@ VERSION = "12.3.0"
 RUNTIME_VERSION = "ml-controller-mvc-refactor-2026-04-25"
 CONTROL_PLANE_VERSION = "control-plane-cutover-2026-04-25"
 
-app = FastAPI(title="StockVision ML Controller", version=VERSION)
+_IS_PRODUCTION = (
+    os.environ.get("ENVIRONMENT", "").strip().lower() == "production"
+    or bool(os.environ.get("K_SERVICE", "").strip())
+)
+app = FastAPI(
+    title="StockVision ML Controller",
+    version=VERSION,
+    docs_url=None if _IS_PRODUCTION else "/docs",
+    redoc_url=None if _IS_PRODUCTION else "/redoc",
+    openapi_url=None if _IS_PRODUCTION else "/openapi.json",
+)
+validate_configured_service_endpoints()
+install_http_error_policy(app)
+app.middleware("http")(controller_auth_middleware)
 
 
 def _cors_origins() -> list[str]:
@@ -58,19 +77,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_CONTROLLER_TOKEN = os.environ.get("ML_CONTROLLER_SECRET", "")
-_ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
-
-
-async def verify_token(request: Request) -> None:
+async def _legacy_verify_token_removed(request: Request) -> None:
     """Worker → Controller 服務間驗證。ML_CONTROLLER_SECRET 未設定時跳過（開發環境）。"""
-    if not _CONTROLLER_TOKEN:
-        if _ENVIRONMENT == "production":
-            raise HTTPException(status_code=500, detail="ML_CONTROLLER_SECRET not configured")
-        return  # dev mode: skip auth
-    token = request.headers.get("X-Controller-Token", "")
-    if token != _CONTROLLER_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid controller token")
+    await verify_controller_token(request)
+
+
+verify_token = verify_controller_token
 
 
 # ── 注入 auth dependency 到所有 router ────────────────────────────────────────
@@ -140,6 +152,7 @@ def health():
         "runtimeVersion": RUNTIME_VERSION,
         "controlPlaneVersion": CONTROL_PLANE_VERSION,
         "callbackConfigured": bool(worker_url),
+        "mlServiceAuthConfigured": bool(os.environ.get("ML_SERVICE_SECRET", "").strip()),
         "pipelineJobConfigured": all([pipeline_job_name, gcp_project_id, gcp_region]),
         "verifyJobConfigured": all([verify_job_name, gcp_project_id, gcp_region]),
         "screenerJobConfigured": all([screener_job_name, gcp_project_id, gcp_region]),
@@ -257,5 +270,6 @@ async def warmup():
                 "error": result.get("error") if isinstance(result, dict) else None,
             }
         except Exception as exc:  # noqa: BLE001 - warmup must never be a production gate.
-            results[name] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+            logger.exception("[warmup] target failed: %s", name)
+            results[name] = {"status": "error", "error_type": type(exc).__name__}
     return {"status": "warmup_complete", "targets": results}

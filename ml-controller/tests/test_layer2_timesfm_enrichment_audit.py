@@ -9,11 +9,11 @@ from services.recommendation_service import write_layer2_timesfm_enrichment_audi
 def test_write_layer2_timesfm_enrichment_audit_persists_feature_sidecar_evidence(monkeypatch):
     captured = []
 
-    def fake_batch_execute(statements):
+    def fake_batch_execute(statements, **_kwargs):
         captured.extend(statements)
         return {"success": True}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "strict_batch_execute", fake_batch_execute)
 
     inserted = write_layer2_timesfm_enrichment_audit(
         predictions={

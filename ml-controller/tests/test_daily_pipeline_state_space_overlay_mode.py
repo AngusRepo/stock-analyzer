@@ -2,50 +2,10 @@ from __future__ import annotations
 
 import sys
 import asyncio
-import types
 from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
-
-graph_mod = types.ModuleType("langgraph.graph")
-graph_mod.END = "__END__"
-
-
-class _StateGraph:
-    def __init__(self, *_args, **_kwargs):
-        self.nodes = []
-
-    def add_node(self, *args, **kwargs):
-        self.nodes.append((args, kwargs))
-
-    def set_entry_point(self, *_args, **_kwargs):
-        return None
-
-    def add_edge(self, *_args, **_kwargs):
-        return None
-
-    def compile(self, *_args, **_kwargs):
-        return self
-
-
-graph_mod.StateGraph = _StateGraph
-types_mod = types.ModuleType("langgraph.types")
-
-
-class _RetryPolicy:
-    def __init__(self, **kwargs):
-        self.kwargs = kwargs
-
-
-types_mod.RetryPolicy = _RetryPolicy
-httpx_mod = types.ModuleType("httpx")
-httpx_mod.AsyncClient = object
-httpx_mod.RequestError = Exception
-httpx_mod.Timeout = lambda *_args, **_kwargs: None
-sys.modules.setdefault("langgraph.graph", graph_mod)
-sys.modules.setdefault("langgraph.types", types_mod)
-sys.modules.setdefault("httpx", httpx_mod)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -153,7 +113,6 @@ def test_state_space_shadow_mode_spawns_without_blocking_prediction(monkeypatch)
         run_date=None,
         run_id=None,
         callback_url=None,
-        callback_token=None,
     ):
         spawn_calls.append({
             "n": len(series_list),
@@ -162,7 +121,6 @@ def test_state_space_shadow_mode_spawns_without_blocking_prediction(monkeypatch)
             "run_date": run_date,
             "run_id": run_id,
             "callback_url": callback_url,
-            "callback_token": callback_token,
         })
         return {"spawned": True, "function_call_id": "fc-123", "n_input": len(series_list)}
 
@@ -182,7 +140,6 @@ def test_state_space_shadow_mode_spawns_without_blocking_prediction(monkeypatch)
         "run_date": None,
         "run_id": None,
         "callback_url": "https://worker.example.test/api/internal/state-space-shadow/callback",
-        "callback_token": "service-token",
     }]
 
 

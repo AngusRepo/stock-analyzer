@@ -1,13 +1,17 @@
 from pathlib import Path
 import sys
 
+import pytest
+from starlette.requests import Request
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+CONTROLLER_ROOT = Path(__file__).resolve().parent.parent
 
 from routers import retrain_trigger  # noqa: E402
 
 
 def test_universal_retrain_request_forwards_artifact_lifecycle_fields():
-    source = Path("routers/retrain_trigger.py").read_text(encoding="utf-8")
+    source = (CONTROLLER_ROOT / "routers" / "retrain_trigger.py").read_text(encoding="utf-8")
 
     assert "artifact_lifecycle_targets: list[str] = Field(default_factory=list)" in source
     assert "artifact_lifecycle_contracts: dict[str, str] = Field(default_factory=dict)" in source
@@ -22,6 +26,27 @@ def test_universal_retrain_request_forwards_artifact_lifecycle_fields():
     assert '"sequence_gcs_prefix"] = sequence_gcs_prefix' in source
     assert "**sequence_contract" in source
     assert '@router.post("/universal/run")' in source
+
+
+def test_universal_retrain_requires_exact_snapshot_by_default():
+    request = retrain_trigger.UniversalRetrainTriggerRequest()
+    assert request.require_exact_dataset_snapshot is True
+
+
+def test_followup_callback_is_server_owned_in_production(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("RETRAIN_FOLLOWUP_URL", raising=False)
+    monkeypatch.delenv("ML_CONTROLLER_PUBLIC_URL", raising=False)
+    request = Request({"type": "http", "method": "POST", "path": "/", "headers": [(b"host", b"attacker.example")], "scheme": "https"})
+    with pytest.raises(RuntimeError, match="ML_CONTROLLER_PUBLIC_URL"):
+        retrain_trigger._build_followup_webhook_url(request)
+
+    monkeypatch.setenv("ML_CONTROLLER_PUBLIC_URL", "https://controller.example")
+    assert retrain_trigger._build_followup_webhook_url(request) == "https://controller.example/retrain/followup"
+
+    monkeypatch.setenv("RETRAIN_FOLLOWUP_URL", "https://controller.example/other")
+    with pytest.raises(ValueError, match="canonical"):
+        retrain_trigger._build_followup_webhook_url(request)
 
 
 def test_sequence_batch_count_from_long_history_manifest():

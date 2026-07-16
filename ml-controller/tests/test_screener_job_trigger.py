@@ -51,7 +51,7 @@ def test_screener_v2_trigger_passes_run_context_to_cloud_run_job(monkeypatch):
 
 
 def test_screener_job_main_callbacks_with_chain_metadata():
-    source = Path("ml-controller/screener_job_main.py").read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[1] / "screener_job_main.py").read_text(encoding="utf-8")
 
     assert '"task": callback_task' in source
     assert '"continue_post_screener_pipeline": bool(chain_run_id)' in source

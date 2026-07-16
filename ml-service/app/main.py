@@ -9,6 +9,7 @@ Current ensemble groups:
   - State-space overlays: KalmanFilter / MarkovSwitching
 """
 import os
+import logging
 import numpy as np
 import polars as pl
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -38,8 +39,24 @@ from .universal_training import (
     UniversalTrainRequest as CentralUniversalTrainRequest,
 )
 from .schemas import NightSessionData, PredictRequest
+from .service_auth import service_auth_middleware, verify_service_token
+from .http_error_policy import install_http_error_policy
 
-app = FastAPI(title="StockVision ML Service", version="2.0.0")
+logger = logging.getLogger(__name__)
+
+_IS_PRODUCTION = (
+    os.environ.get("ENVIRONMENT", "").strip().lower() == "production"
+    or bool(os.environ.get("K_SERVICE", "").strip())
+)
+app = FastAPI(
+    title="StockVision ML Service",
+    version="2.0.0",
+    docs_url=None if _IS_PRODUCTION else "/docs",
+    redoc_url=None if _IS_PRODUCTION else "/redoc",
+    openapi_url=None if _IS_PRODUCTION else "/openapi.json",
+)
+app.middleware("http")(service_auth_middleware)
+install_http_error_policy(app)
 
 
 def _cors_origins() -> list[str]:
@@ -72,18 +89,6 @@ try:
 except Exception as _e:  # noqa: BLE001
     import logging
     logging.getLogger(__name__).warning(f"[main] optuna_routes not loaded: {_e}")
-
-# Service token shared by Worker, Cloud Run, and other internal callers.
-_SERVICE_TOKEN = os.environ.get("ML_SERVICE_SECRET", "")
-
-async def verify_service_token(request: Request) -> None:
-    """Verify `X-Service-Token` against `ML_SERVICE_SECRET`."""
-    if not _SERVICE_TOKEN:
-        return
-    token = request.headers.get("X-Service-Token", "")
-    if token != _SERVICE_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid service token")
-
 
 @app.get("/health")
 def health():
@@ -755,12 +760,14 @@ async def bandit_stats(request: Request):
         _bandit = load_bandit("/tmp/linucb_bandit")
         out["linucb"] = _bandit.stats_summary()
     except Exception as e:
-        out["linucb"] = {"error": str(e)}
+        logger.exception("[bandit/stats] LinUCB state unavailable")
+        out["linucb"] = {"status": "unavailable", "error_type": type(e).__name__}
     try:
         _arf = load_arf(ARF_STATE_DIR)
         out["arf"] = _arf.stats_summary()
     except Exception as e:
-        out["arf"] = {"error": str(e)}
+        logger.exception("[bandit/stats] ARF state unavailable")
+        out["arf"] = {"status": "unavailable", "error_type": type(e).__name__}
     return out
 
 

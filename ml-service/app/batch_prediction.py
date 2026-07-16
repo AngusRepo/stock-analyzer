@@ -6,7 +6,9 @@ the single-stock runtime owner. It preserves the same error envelope as
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+import logging
 import os
 import time
 from typing import Any
@@ -15,6 +17,7 @@ import numpy as np
 
 PredictRequest: Any = None
 predict_stock_v2: Any = None
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -498,7 +501,9 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
         _BATCH_CHALLENGER_MODEL_ERRORS_KEY,
         _BATCH_CHALLENGER_RANK_SCORES_KEY,
         _BATCH_FEATURE_MODEL_ERRORS_KEY,
+        _BATCH_FEATURE_NAMES_KEY,
         _BATCH_FEATURE_RANK_SCORES_KEY,
+        _BATCH_LATEST_FEATURES_KEY,
         _FEATURE_MODEL_NAMES_V2,
     )
 
@@ -566,6 +571,8 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
             _BATCH_FEATURE_MODEL_ERRORS_KEY: list(ctx.model_errors),
             _BATCH_CHALLENGER_RANK_SCORES_KEY: dict(ctx.challenger_rank_scores),
             _BATCH_CHALLENGER_MODEL_ERRORS_KEY: list(ctx.challenger_errors),
+            _BATCH_LATEST_FEATURES_KEY: ctx.x_latest,
+            _BATCH_FEATURE_NAMES_KEY: list(ctx.feature_names),
         }
         for ctx in contexts
     ]
@@ -642,6 +649,38 @@ def _copy_request_with_runtime_overrides(req: Any, overrides: dict) -> Any:
     copied = req.__class__(**getattr(req, "__dict__", {}))
     copied.runtime_options = runtime_options
     return copied
+
+
+def _attach_shared_composition_runtime(requests: list[Any], predict_fn: Any) -> list[Any]:
+    if getattr(predict_fn, "__name__", "") != "predict_stock_v2":
+        return requests
+
+    from .ensemble import load_ic_weights
+    from .model_pool import load_pool
+    from .prediction_runtime import (
+        _BATCH_IC_WEIGHTS_KEY,
+        _BATCH_MODEL_POOL_KEY,
+        _BATCH_RANK_STACKER_KEY,
+        _normalize_market_segment_for_serving,
+    )
+    from .stacking import load_meta_learner
+
+    pool = load_pool()
+    rank_stacker = load_meta_learner(0)
+    weights_by_segment: dict[str, dict[str, float]] = {}
+    output: list[Any] = []
+    for req in requests:
+        segment = _normalize_market_segment_for_serving(req) or "GLOBAL"
+        if segment not in weights_by_segment:
+            weights_by_segment[segment] = load_ic_weights(
+                market_segment=None if segment == "GLOBAL" else segment
+            )
+        output.append(_copy_request_with_runtime_overrides(req, {
+            _BATCH_IC_WEIGHTS_KEY: weights_by_segment[segment],
+            _BATCH_MODEL_POOL_KEY: pool,
+            _BATCH_RANK_STACKER_KEY: rank_stacker,
+        }))
+    return output
 
 
 def _error_result(payload: dict, exc: Exception) -> dict:
@@ -731,12 +770,29 @@ def preload_batch_artifacts(payloads: list[dict]) -> dict:
     }
 
 
-def predict_stock_v2_batch(payloads: list[dict]) -> list[dict]:
+def _predict_stock_v2_batch_with_diagnostics(payloads: list[dict]) -> tuple[list[dict], dict]:
     request_cls, predict_fn = _runtime()
     if not payloads:
-        return []
+        return [], {
+            "execution_mode": "empty",
+            "contract_passed": True,
+            "fallback_reason": None,
+            "n_valid": 0,
+            "composition_workers": 0,
+        }
     if not _true_batch_enabled() or not _is_real_runtime(request_cls, predict_fn):
-        return _predict_serial(payloads, request_cls, predict_fn)
+        reason = (
+            "true_batch_disabled_by_configuration"
+            if not _true_batch_enabled()
+            else "non_production_runtime"
+        )
+        return _predict_serial(payloads, request_cls, predict_fn), {
+            "execution_mode": "serial",
+            "contract_passed": False,
+            "fallback_reason": reason,
+            "n_valid": len(payloads),
+            "composition_workers": 1,
+        }
 
     requests_by_position: dict[int, Any] = {}
     results: list[dict | None] = [None] * len(payloads)
@@ -747,6 +803,10 @@ def predict_stock_v2_batch(payloads: list[dict]) -> list[dict]:
             results[idx] = _error_result(payload, exc)
 
     valid_positions = list(requests_by_position)
+    execution_mode = "true_batch"
+    contract_passed = True
+    fallback_reason: str | None = None
+    composition_workers = 0
     if valid_positions:
         valid_requests = [requests_by_position[idx] for idx in valid_positions]
         try:
@@ -755,18 +815,111 @@ def predict_stock_v2_batch(payloads: list[dict]) -> list[dict]:
                 _copy_request_with_runtime_overrides(req, overrides)
                 for req, overrides in zip(valid_requests, overrides_by_request)
             ]
-        except Exception:
+            valid_requests = _attach_shared_composition_runtime(valid_requests, predict_fn)
+        except Exception as exc:  # noqa: BLE001 - preserve output, expose contract failure.
             # The serial owner remains the correctness retry path for unexpected
             # artifact/schema drift. Per-symbol error wrapping still applies.
+            execution_mode = "serial_fallback"
+            contract_passed = False
+            fallback_reason = f"{type(exc).__name__}: {exc}"
+            logger.exception(
+                "[batch_prediction] true-batch override build failed; using serial correctness path"
+            )
             valid_requests = [requests_by_position[idx] for idx in valid_positions]
 
-        for idx, req in zip(valid_positions, valid_requests):
-            try:
-                results[idx] = predict_fn(req)
-            except Exception as exc:  # noqa: BLE001
-                results[idx] = _error_result(payloads[idx], exc)
+        if execution_mode == "true_batch":
+            composition_workers = _predict_composed_requests(
+                positions=valid_positions,
+                requests=valid_requests,
+                payloads=payloads,
+                predict_fn=predict_fn,
+                results=results,
+            )
+        else:
+            composition_workers = 1
+            for idx, req in zip(valid_positions, valid_requests):
+                try:
+                    results[idx] = predict_fn(req)
+                except Exception as exc:  # noqa: BLE001
+                    results[idx] = _error_result(payloads[idx], exc)
 
-    return [result for result in results if result is not None]
+    return [result for result in results if result is not None], {
+        "execution_mode": execution_mode,
+        "contract_passed": contract_passed,
+        "fallback_reason": fallback_reason,
+        "n_valid": len(valid_positions),
+        "composition_workers": composition_workers,
+    }
+
+
+def predict_stock_v2_batch(payloads: list[dict]) -> list[dict]:
+    results, _diagnostics = _predict_stock_v2_batch_with_diagnostics(payloads)
+    return results
+
+
+def _composition_worker_count(n_requests: int) -> int:
+    try:
+        configured = int(os.environ.get("PREDICT_BATCH_V2_COMPOSE_WORKERS", "4"))
+    except (TypeError, ValueError):
+        configured = 4
+    return max(1, min(n_requests, configured, 16))
+
+
+def _predict_composed_requests(
+    *,
+    positions: list[int],
+    requests: list[Any],
+    payloads: list[dict],
+    predict_fn: Any,
+    results: list[dict | None],
+) -> int:
+    workers = _composition_worker_count(len(requests))
+    total = len(requests)
+    progress_every = max(1, min(16, total))
+    logger.info(
+        "[batch_prediction] composition_start n_requests=%d workers=%d",
+        total,
+        workers,
+    )
+
+    def run_one(position: int, req: Any) -> tuple[int, dict]:
+        try:
+            return position, predict_fn(req)
+        except Exception as exc:  # noqa: BLE001 - isolate one-symbol failures.
+            return position, _error_result(payloads[position], exc)
+
+    completed = 0
+    if workers == 1:
+        for position, req in zip(positions, requests):
+            result_position, result = run_one(position, req)
+            results[result_position] = result
+            completed += 1
+            if completed % progress_every == 0 or completed == total:
+                logger.info(
+                    "[batch_prediction] composition_progress completed=%d total=%d",
+                    completed,
+                    total,
+                )
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="predict-compose") as executor:
+            futures = [executor.submit(run_one, position, req) for position, req in zip(positions, requests)]
+            for future in as_completed(futures):
+                result_position, result = future.result()
+                results[result_position] = result
+                completed += 1
+                if completed % progress_every == 0 or completed == total:
+                    logger.info(
+                        "[batch_prediction] composition_progress completed=%d total=%d",
+                        completed,
+                        total,
+                    )
+
+    logger.info(
+        "[batch_prediction] composition_end n_requests=%d workers=%d",
+        total,
+        workers,
+    )
+    return workers
 
 
 def predict_stock_v2_batch_with_metrics(payloads: list[dict]) -> dict:
@@ -778,7 +931,7 @@ def predict_stock_v2_batch_with_metrics(payloads: list[dict]) -> dict:
     preload_elapsed_s = round(time.time() - preload_t0, 3)
     after_preload = _get_model_cache_stats()
     predict_t0 = time.time()
-    results = predict_stock_v2_batch(payloads)
+    results, execution = _predict_stock_v2_batch_with_diagnostics(payloads)
     predict_elapsed_s = round(time.time() - predict_t0, 3)
     after = _get_model_cache_stats()
     ft_after = _get_ft_runtime_cache_stats()
@@ -790,6 +943,11 @@ def predict_stock_v2_batch_with_metrics(payloads: list[dict]) -> dict:
                 "n_input": len(payloads or []),
                 "n_error": sum(1 for r in results if r.get("error")),
                 "contract": "modal_predict_batch_v2_true_batch",
+                "contract_passed": execution["contract_passed"],
+                "execution_mode": execution["execution_mode"],
+                "fallback_reason": execution["fallback_reason"],
+                "n_valid": execution["n_valid"],
+                "composition_workers": execution["composition_workers"],
             },
             "preload": preload,
             "timing": {

@@ -11,19 +11,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
-def _install_daily_pipeline_import_stubs():
-    graph_mod = types.ModuleType("langgraph.graph")
-    graph_mod.END = object()
-    graph_mod.StateGraph = object
-    types_mod = types.ModuleType("langgraph.types")
-    types_mod.RetryPolicy = object
-    sys.modules.setdefault("langgraph.graph", graph_mod)
-    sys.modules.setdefault("langgraph.types", types_mod)
-    httpx_mod = types.ModuleType("httpx")
-    httpx_mod.AsyncClient = object
-    sys.modules.setdefault("httpx", httpx_mod)
-
-
 def test_daily_pipeline_refuses_watchlist_screener_fallback():
     source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
 
@@ -199,7 +186,6 @@ def test_core_family_evidence_strict_active8_rejects_missing_ensemble_output():
 
 
 def test_l3_formal_predict_uses_full_post_l2_timesfm_slate(monkeypatch):
-    _install_daily_pipeline_import_stubs()
     from graphs import daily_pipeline_v2  # noqa: E402
 
     observed_payload_symbols = []
@@ -267,7 +253,6 @@ def test_daily_pipeline_does_not_create_alternate_only_prediction_fallback():
 
 
 def test_daily_pipeline_blocks_degraded_state_space_overlay_rows():
-    _install_daily_pipeline_import_stubs()
     from graphs.daily_pipeline_v2 import _state_space_overlay_block_reason  # noqa: E402
 
     assert _state_space_overlay_block_reason({
@@ -287,7 +272,6 @@ def test_daily_pipeline_blocks_degraded_state_space_overlay_rows():
 
 
 def test_daily_pipeline_fails_closed_on_degraded_trading_config_contract():
-    _install_daily_pipeline_import_stubs()
     from graphs.daily_pipeline_v2 import _require_trading_config_contract  # noqa: E402
 
     ok = types.SimpleNamespace(

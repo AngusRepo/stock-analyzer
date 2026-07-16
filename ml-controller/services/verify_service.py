@@ -189,10 +189,9 @@ def load_bars_for_prediction(stock_id: int, generated_at: str, prediction_date: 
     Do not impose a calendar-day ceiling: exchange holidays and stock-specific
     suspensions can push the fifth observable session beyond ten calendar days.
     """
-    if prediction_date:
-        business_date = datetime.fromisoformat(prediction_date).date()
-    else:
-        business_date = datetime.fromisoformat(generated_at.replace("Z", "+00:00")).date()
+    if not prediction_date:
+        raise ValueError("prediction_date_required_for_verification")
+    business_date = datetime.fromisoformat(prediction_date).date()
     look_from = business_date.isoformat()
 
     sql = """
@@ -211,10 +210,9 @@ def load_bars_for_predictions(predictions: list[dict], chunk_size: int = 80) -> 
 
     windows: list[tuple[int, str]] = []
     for pred in predictions:
-        if pred.get("prediction_date"):
-            business_date = datetime.fromisoformat(str(pred["prediction_date"])).date()
-        else:
-            business_date = datetime.fromisoformat(str(pred["generated_at"]).replace("Z", "+00:00")).date()
+        if not pred.get("prediction_date"):
+            raise ValueError("prediction_date_required_for_verification")
+        business_date = datetime.fromisoformat(str(pred["prediction_date"])).date()
         windows.append((
             int(pred["stock_id"]),
             business_date.isoformat(),
@@ -244,10 +242,9 @@ def load_bars_for_predictions(predictions: list[dict], chunk_size: int = 80) -> 
 
 
 def _prediction_bar_start(pred: dict) -> str:
-    if pred.get("prediction_date"):
-        business_date = datetime.fromisoformat(str(pred["prediction_date"])).date()
-    else:
-        business_date = datetime.fromisoformat(str(pred["generated_at"]).replace("Z", "+00:00")).date()
+    if not pred.get("prediction_date"):
+        raise ValueError("prediction_date_required_for_verification")
+    business_date = datetime.fromisoformat(str(pred["prediction_date"])).date()
     return business_date.isoformat()
 
 

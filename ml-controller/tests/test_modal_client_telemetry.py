@@ -76,14 +76,14 @@ def test_state_space_shadow_spawn_passes_callback_context(monkeypatch):
         run_date="2026-06-04",
         run_id="pipeline-v2:2026-06-04",
         callback_url="https://worker.example/api/internal/state-space-shadow/callback",
-        callback_token="service-token",
     )
 
     assert observed["payload"]["run_date"] == "2026-06-04"
     assert observed["payload"]["run_id"] == "pipeline-v2:2026-06-04"
     assert observed["payload"]["callback_url"].endswith("/api/internal/state-space-shadow/callback")
-    assert observed["payload"]["callback_token"] == "service-token"
+    assert "callback_token" not in observed["payload"]
     assert result["callback_configured"] is True
+    assert result["callback_credential_source"] == "modal_environment"
     assert result["function_call_id"] == "fc-state-space"
 
 
@@ -217,13 +217,16 @@ def test_compute_profile_event_row_parses_chunk_observation():
 
 def test_modal_predict_batch_metrics_aggregate_chunk_cache_stats():
     metrics = modal_client._aggregate_predict_batch_metrics([
-        {"metrics": {"batch": {"n_input": 10, "n_error": 1}, "model_cache": {"hits": 5, "misses": 3, "gcs_downloads": 3}}},
-        {"metrics": {"batch": {"n_input": 10, "n_error": 0}, "model_cache": {"hits": 7, "misses": 0, "gcs_downloads": 0}}},
+        {"metrics": {"batch": {"n_input": 10, "n_error": 1, "execution_mode": "true_batch", "contract_passed": True}, "model_cache": {"hits": 5, "misses": 3, "gcs_downloads": 3}}},
+        {"metrics": {"batch": {"n_input": 10, "n_error": 0, "execution_mode": "serial_fallback", "contract_passed": False, "fallback_reason": "schema drift"}, "model_cache": {"hits": 7, "misses": 0, "gcs_downloads": 0}}},
         {"results": []},
     ])
 
     assert metrics["chunks_reported"] == 2
     assert metrics["batch"] == {"n_input": 20, "n_error": 1}
     assert metrics["batch_error_rate"] == 0.05
+    assert metrics["true_batch_contract_passed"] is False
+    assert metrics["execution_mode_counts"] == {"true_batch": 1, "serial_fallback": 1}
+    assert metrics["fallback_reasons"] == ["schema drift"]
     assert metrics["model_cache"] == {"hits": 12, "misses": 3, "gcs_downloads": 3}
     assert metrics["model_cache_hit_ratio"] == 0.8

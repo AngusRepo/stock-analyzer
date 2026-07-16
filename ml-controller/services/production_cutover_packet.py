@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = "stockvision-production-cutover-packet-v1"
+CUTOVER_SCOPE = "p12_feature_registry_strategy_mining"
 
 DEFAULT_LOCAL_AUDIT_PATH = "ml-service/benchmark_results/local_prod_ready_audit_20260618.json"
 
@@ -656,6 +657,7 @@ def build_production_cutover_packet(
 
     return {
         "schema_version": SCHEMA_VERSION,
+        "scope": CUTOVER_SCOPE,
         "cutover_ready_for_review": ready_for_review,
         "production_mutation_allowed": False,
         "actions_allowed_without_wei_approval": [],
@@ -692,6 +694,7 @@ def main(argv: list[str] | None = None) -> int:
     output_path.write_text(json.dumps(packet, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({
         "output": str(output_path),
+        "scope": packet.get("scope"),
         "cutover_ready_for_review": packet.get("cutover_ready_for_review"),
         "remote_cutover_complete": packet.get("remote_cutover_complete"),
         "production_mutation_allowed": packet.get("production_mutation_allowed"),

@@ -42,6 +42,7 @@ from .training_policy import (
 )
 from .training_finalizer import build_oos_artifact_path, derive_oos_artifact_group
 from .gcs_batch_io import download_existing_blobs
+from .callback_policy import post_json_callback
 
 
 class UniversalPrepRequest(BaseModel):
@@ -97,16 +98,6 @@ def _ic_summary_value(metrics: dict) -> float | None:
     if value is None:
         value = metrics.get("ic_4w_avg")
     return value
-
-
-def _controller_callback_token() -> str:
-    return (
-        os.environ.get("ML_CONTROLLER_TOKEN")
-        or os.environ.get("INTERNAL_TOKEN")
-        or os.environ.get("ML_CONTROLLER_SECRET")
-        or os.environ.get("STOCKVISION_AUTH_TOKEN")
-        or ""
-    )
 
 
 def _date_min_max_for_manifest(dates: np.ndarray) -> tuple[str | None, str | None]:
@@ -1399,20 +1390,16 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 "training_manifest_path": manifest_path,
                 "challenger_registrations": challenger_registrations,
             }
-            _headers = {"Content-Type": "application/json"}
-            _token = _controller_callback_token()
-            if _token:
-                _headers["X-Service-Token"] = _token
-            _resp = _httpx.post(
-                req.followup_webhook_url,
-                json=_followup_payload,
-                headers=_headers,
-                timeout=_httpx.Timeout(120.0, connect=15.0),
-                follow_redirects=True,
+            _callback_result = post_json_callback(
+                "retrain_followup",
+                _followup_payload,
+                supplied_url=req.followup_webhook_url,
+                timeout_seconds=120.0,
             )
-            if _resp.status_code < 200 or _resp.status_code >= 300:
-                raise RuntimeError(f"followup webhook returned HTTP {_resp.status_code}")
-            print(f"[TrainUniversal] followup webhook POST {req.followup_webhook_url} -> HTTP {_resp.status_code}")
+            print(
+                "[TrainUniversal] retrain_followup callback "
+                f"-> HTTP {_callback_result['status_code']}"
+            )
         except Exception as webhook_err:
             print(f"[TrainUniversal] followup webhook failed (safety-net cron will catch): {webhook_err}")
 

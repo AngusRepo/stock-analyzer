@@ -19,6 +19,7 @@ order API. The general `ml-controller` live-submit route remains fail-closed.
 
 - `ENVIRONMENT=production`
 - `EXECUTION_GATEWAY_SERVICE_ROLE=dedicated_execution_gateway`
+- `EXECUTION_GATEWAY_ALLOWED_HOSTS=<exact Cloud Run hostnames, comma-separated>`
 - `LIVE_EXECUTION_GATEWAY_MODE=persistent_singleton`
 - `LIVE_EXECUTION_SINGLE_INSTANCE_CONFIRMED=1`
 - `LIVE_EXECUTION_CONTINUOUS_CPU_CONFIRMED=1`
@@ -27,6 +28,31 @@ order API. The general `ml-controller` live-submit route remains fail-closed.
 - `LIVE_EXECUTION_MAX_BROKER_TRUTH_AGE_SECONDS=5`
 - `LIVE_EXECUTION_RECONCILE_SECONDS=30` (callback-first; polling is only for ambiguous `SUBMITTING/UNKNOWN` recovery)
 - `LIVE_EXECUTION_HUB_TIMEOUT_SECONDS=0.75`
+- `CF_EXECUTION_D1_DB_ID=<dedicated stockvision-execution-db id>`
+- `CF_EXECUTION_D1_INSTANCE_ID=<provisioned execution ledger UUID>`
+- `EXECUTION_D1_PROXY_URL=<dedicated Execution Ledger Proxy /v1/d1/query URL>`
+- `EXECUTION_D1_PROXY_ALLOWED_HOSTS=<exact proxy hostname>`
+- `EXECUTION_D1_REQUIRE_PRIMARY=1`
+
+The Gateway must not use `CF_D1_DB_ID` for broker ledger access. In
+production, `CF_EXECUTION_D1_DB_ID` must differ from `CF_D1_DB_ID`; otherwise
+startup fails closed. Keep read replication disabled for this ledger unless a
+future implementation carries D1 session bookmarks through every execution
+lifecycle read.
+
+Production Gateway access must go through the dedicated Execution Ledger Proxy
+Worker. Direct Cloudflare D1 REST credentials are administrative fallback only
+and are rejected by the production client contract.
+
+Before the Proxy can serve traffic, generate a unique instance UUID, update
+`execution_database_identity.instance_id` in the dedicated execution D1, and
+set the exact same value as the Proxy Worker's
+`EXECUTION_LEDGER_INSTANCE_ID` and the Gateway's
+`CF_EXECUTION_D1_INSTANCE_ID`. The migration deliberately writes
+`UNPROVISIONED`; leaving either side at that value keeps all queries disabled.
+The Gateway token cannot mutate `execution_database_identity` or
+`execution_control_state`; kill-switch changes require a separate audited
+administrative path.
 
 Worker live-submit also remains fail-closed unless all three values are enabled
 for the same bounded approval window:
@@ -37,6 +63,17 @@ for the same bounded approval window:
 
 An unknown submit response must query `/v1/intents/{idempotency_key}` and return
 `reconciliation_required`; it must never resend the same broker order.
+
+The Worker must not call the IAM-private Gateway directly. Live execution uses
+Worker -> authenticated general ml-controller -> Google-IAM-authenticated
+Gateway. Configure the Worker with `ML_CONTROLLER_URL` and secret-bound
+`ML_CONTROLLER_SECRET`; do not place `EXECUTION_GATEWAY_SERVICE_TOKEN` or a
+Google service-account private key in the Worker. Configure the general
+controller with disabled-by-default `EXECUTION_GATEWAY_LIVE_RELAY_ENABLED=0`,
+`EXECUTION_GATEWAY_URL`, `EXECUTION_GATEWAY_IAM_AUDIENCE`,
+`EXECUTION_GATEWAY_RELAY_ALLOWED_HOSTS=<exact Gateway hostname>`, and secret-bound
+`EXECUTION_GATEWAY_SERVICE_TOKEN`. The live relay makes exactly one POST; any
+lost/non-200 response is reconciled by idempotency key and is never retried.
 
 ## Paper-to-live shadow bridge
 
@@ -80,6 +117,8 @@ explicit approval because it starts a broker session, but still cannot submit.
 - `EXECUTION_GATEWAY_SERVICE_TOKEN`
 - `LIVE_EXECUTION_HMAC_SECRET`
 - Cloudflare D1/KV credentials
+- `EXECUTION_D1_PROXY_TOKEN`, shared only by the Gateway and the dedicated
+  Execution Ledger Proxy Worker
 - `PROXY_SERVICE_TOKEN`
 
 The certificate PFX must be mounted as a Secret Manager file and

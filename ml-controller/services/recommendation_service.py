@@ -115,32 +115,43 @@ def prune_predictions_outside_universe(stock_ids: list[int], run_date: str) -> i
     """Remove same-date prediction rows that no longer belong to the current V2 universe."""
     safe_ids = {int(stock_id) for stock_id in stock_ids if stock_id}
     if not safe_ids:
-        result = d1_client.execute(
-            f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ?",
+        rows = d1_client.query(
+            f"SELECT COUNT(*) AS row_count FROM predictions WHERE {COL_PREDICTION_DATE} = ?",
             [run_date],
             timeout=60,
         )
-        return int(((result or {}).get("meta") or {}).get("changes") or 0)
+        expected = int((rows[0] if rows else {}).get("row_count") or 0)
+        d1_client.strict_batch_execute(
+            [(f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ?", [run_date])],
+            operation="prune_all_predictions_outside_empty_universe",
+            timeout=60.0,
+        )
+        return expected
 
     existing_rows = d1_client.query(
-        f"SELECT DISTINCT {COL_STOCK_ID} AS stock_id FROM predictions WHERE {COL_PREDICTION_DATE} = ?",
+        f"SELECT {COL_STOCK_ID} AS stock_id, COUNT(*) AS row_count "
+        f"FROM predictions WHERE {COL_PREDICTION_DATE} = ? GROUP BY {COL_STOCK_ID}",
         [run_date],
         timeout=60,
     )
-    stale_ids = sorted({
-        int(row["stock_id"])
+    stale_rows = [
+        row
         for row in existing_rows or []
         if row.get("stock_id") is not None and int(row["stock_id"]) not in safe_ids
-    })
-    deleted = 0
+    ]
+    stale_ids = sorted({int(row["stock_id"]) for row in stale_rows})
+    deleted = sum(int(row.get("row_count") or 0) for row in stale_rows)
     for chunk in _chunked(stale_ids):
         placeholders = ",".join("?" for _ in chunk)
-        result = d1_client.execute(
-            f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ? AND {COL_STOCK_ID} IN ({placeholders})",
-            [run_date, *chunk],
-            timeout=60,
+        d1_client.strict_batch_execute(
+            [(
+                f"DELETE FROM predictions WHERE {COL_PREDICTION_DATE} = ? "
+                f"AND {COL_STOCK_ID} IN ({placeholders})",
+                [run_date, *chunk],
+            )],
+            operation="prune_predictions_outside_universe",
+            timeout=60.0,
         )
-        deleted += int(((result or {}).get("meta") or {}).get("changes") or 0)
     return deleted
 
 
@@ -4287,7 +4298,11 @@ def write_predictions_to_d1(
 
     if not statements:
         return 0
-    d1_client.batch_execute(statements)
+    d1_client.strict_batch_execute(
+        statements,
+        operation="daily_predictions",
+        timeout=60.0,
+    )
     # Count inserted rows explicitly because cleanup adds delete-only statements.
     logger.info(f"[recommendation_service] Wrote {inserted_rows} prediction rows to D1 (incl. per-model)")
     return inserted_rows
@@ -4356,7 +4371,11 @@ def write_layer2_timesfm_enrichment_audit(
             ],
         ))
 
-    d1_client.batch_execute(statements)
+    d1_client.strict_batch_execute(
+        statements,
+        operation="layer2_timesfm_enrichment_audit",
+        timeout=60.0,
+    )
     inserted = len(statements) - 1
     logger.info(
         "[recommendation_service] Wrote %s L2 TimesFM enrichment audit rows run_id=%s date=%s",
@@ -4491,7 +4510,11 @@ def write_layer3_formal_gate_audit(
             ],
         ))
 
-    d1_client.batch_execute(statements)
+    d1_client.strict_batch_execute(
+        statements,
+        operation="layer3_formal_gate_audit",
+        timeout=60.0,
+    )
     inserted = len(statements) - 1
     logger.info(
         "[recommendation_service] Wrote %s L3 formal gate audit rows run_id=%s date=%s",
@@ -4720,12 +4743,15 @@ def _delete_stale_recommendation_rows(recommendations: list[dict], run_date: str
     changes = 0
     for chunk in _chunked(stale_ids):
         placeholders = ",".join("?" for _ in chunk)
-        result = d1_client.execute(
-            f"DELETE FROM daily_recommendations WHERE date = ? AND stock_id IN ({placeholders})",
-            [run_date, *chunk],
-            timeout=60,
+        d1_client.strict_batch_execute(
+            [(
+                f"DELETE FROM daily_recommendations WHERE date = ? AND stock_id IN ({placeholders})",
+                [run_date, *chunk],
+            )],
+            operation="delete_stale_recommendation_rows",
+            timeout=60.0,
         )
-        changes += int(((result or {}).get("meta") or {}).get("changes") or 0)
+        changes += len(chunk)
     if changes:
         logger.warning(
             "[recommendation_service] Deleted %s daily_recommendations rows outside latest screener candidate seed for run_date=%s",
@@ -4885,7 +4911,11 @@ def update_recommendations_in_d1(
 
     if not statements:
         return 0
-    result = d1_client.batch_execute(statements)
+    result = d1_client.strict_batch_execute(
+        statements,
+        operation="daily_recommendation_updates",
+        timeout=60.0,
+    )
     changes = int(result if isinstance(result, int) else (result or {}).get("changes_total") or 0)
     if changes < len(statements):
         raise RuntimeError(
@@ -4982,7 +5012,11 @@ def delete_filtered_recommendations(
         )
         for sym in filtered_symbols
     ]
-    d1_client.batch_execute(statements)
+    d1_client.strict_batch_execute(
+        statements,
+        operation="filtered_recommendation_closure",
+        timeout=60.0,
+    )
     logger.info(f"[recommendation_service] Preserved {len(filtered_symbols)} ML-filtered screener seed rows")
     return len(filtered_symbols)
 
@@ -4993,21 +5027,37 @@ def re_rank_recommendations(run_date: str) -> None:
     The pipeline writes rows in allocation order. Keep that rank as the primary
     ordering so slate diversification does not need to inflate predictive score.
     """
-    rows = d1_client.query(
-        "SELECT symbol FROM daily_recommendations WHERE date = ? "
-        "ORDER BY rank ASC, CASE WHEN json_valid(score_components) THEN "
-        "COALESCE(CAST(json_extract(score_components, '$.finalScore') AS REAL), "
-        "CAST(json_extract(score_components, '$.total') AS REAL), 0) ELSE 0 END DESC",
-        [run_date],
+    statements = [(
+        """
+        WITH ranked AS (
+            SELECT stock_id,
+                   ROW_NUMBER() OVER (
+                       ORDER BY rank ASC,
+                                CASE WHEN json_valid(score_components) THEN
+                                  COALESCE(
+                                    CAST(json_extract(score_components, '$.finalScore') AS REAL),
+                                    CAST(json_extract(score_components, '$.total') AS REAL),
+                                    0
+                                  )
+                                ELSE 0 END DESC,
+                                stock_id ASC
+                   ) AS new_rank
+              FROM daily_recommendations
+             WHERE date = ?
+        )
+        UPDATE daily_recommendations
+           SET rank = (SELECT new_rank FROM ranked WHERE ranked.stock_id = daily_recommendations.stock_id)
+         WHERE date = ?
+           AND stock_id IN (SELECT stock_id FROM ranked)
+        """.strip(),
+        [run_date, run_date],
+    )]
+    d1_client.strict_batch_execute(
+        statements,
+        operation="daily_recommendation_rerank",
+        timeout=60.0,
     )
-    statements = [
-        ("UPDATE daily_recommendations SET rank = ? WHERE date = ? AND symbol = ?",
-         [i + 1, run_date, r["symbol"]])
-        for i, r in enumerate(rows)
-    ]
-    if statements:
-        d1_client.batch_execute(statements)
-    logger.info(f"[recommendation_service] Re-ranked {len(statements)} rows")
+    logger.info("[recommendation_service] Re-ranked recommendations for %s", run_date)
 
 
 def _clean_reason_variant_trade_plan(entry: dict[str, Any]) -> dict[str, str]:

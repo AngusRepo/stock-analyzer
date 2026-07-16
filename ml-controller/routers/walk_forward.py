@@ -165,7 +165,8 @@ async def walk_forward_run(req: WalkForwardRequest):
         fn_call_id = getattr(fn_call, "object_id", None) or str(fn_call)
     except Exception as e:
         logger.error(f"[WalkForward] spawn failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Modal spawn failed: {e}")
+        logger.exception("[WalkForward] Modal spawn failed")
+        raise HTTPException(status_code=502, detail="Walk-forward compute provider failed") from e
 
     logger.info(
         f"[WalkForward] spawned orchestrator: {len(windows)} windows, "

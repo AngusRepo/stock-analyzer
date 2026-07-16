@@ -18,7 +18,6 @@ import logging
 import os
 import time
 import uuid
-import hmac
 from typing import Any
 
 import httpx
@@ -48,32 +47,8 @@ def _env_truthy(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-_ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").strip().lower()
-
-
-def _valid_service_tokens() -> list[str]:
-    tokens = [
-        os.environ.get("INTERNAL_TOKEN", ""),
-        os.environ.get("ML_CONTROLLER_TOKEN", ""),
-        os.environ.get("ML_CONTROLLER_SECRET", ""),
-        os.environ.get("STOCKVISION_AUTH_TOKEN", ""),
-    ]
-    return list(dict.fromkeys(token.strip() for token in tokens if token and token.strip()))
-
-
 def _check_service_token(request: Request) -> None:
-    tokens = _valid_service_tokens()
-    if not tokens:
-        if _ENVIRONMENT == "production":
-            raise HTTPException(status_code=500, detail="pipeline callback token not configured")
-        return
-    provided = (
-        request.headers.get("X-Service-Token", "")
-        or request.headers.get("X-Controller-Token", "")
-        or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    )
-    if not any(hmac.compare_digest(provided, token) for token in tokens):
-        raise HTTPException(status_code=401, detail="invalid service token")
+    enforce_controller_token(request)
 
 
 # ─── Worker callback helpers (imported by pipeline_job_main too) ─────────────
@@ -105,7 +80,11 @@ async def _callback_worker(
         raise CallbackWorkerError(
             f"STOCKVISION_AUTH_TOKEN missing; cannot close scheduler callback for task={payload.get('task')}"
         )
-    url = f"{WORKER_URL.rstrip('/')}/api/admin/scheduler-callback"
+    url = service_url(
+        WORKER_URL,
+        "/api/admin/scheduler-callback",
+        name="STOCKVISION_WORKER_URL",
+    )
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {WORKER_AUTH}"}
 
     async def _post(c: httpx.AsyncClient) -> None:
@@ -385,3 +364,5 @@ async def trigger_pipeline_v2(
             ),
         },
     )
+from services.controller_auth import enforce_controller_token
+from services.service_endpoint_policy import service_url

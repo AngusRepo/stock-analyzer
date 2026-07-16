@@ -126,7 +126,7 @@ def load_tabm_artifact(pool: dict | None = None) -> TabMArtifact:
     except ArtifactValidationError as exc:
         raise RuntimeError(f"TabM artifact integrity failed: {exc.report}") from exc
     buf.seek(0)
-    payload = torch.load(buf, map_location="cpu", weights_only=False)
+    payload = torch.load(buf, map_location="cpu", weights_only=True)
     if not isinstance(payload, dict):
         raise RuntimeError("TabM artifact payload must be a dict")
 

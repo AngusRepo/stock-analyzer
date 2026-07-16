@@ -7,7 +7,7 @@ POST /backtest/pbo         → Probability of Backtest Overfitting (CPCV)
 POST /backtest/replay      → Sprint 6 parameterized Mode A replay (Optuna objective)
 """
 import logging
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -55,7 +55,7 @@ async def trigger_backtest():
         return await run_full_backtest()
     except Exception as e:
         logger.exception("[Backtest] Pipeline failed")
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail="Backtest pipeline failed") from e
 
 
 @router.post("/monte-carlo")
@@ -86,7 +86,7 @@ async def trigger_monte_carlo(
         )
     except Exception as e:
         logger.exception("[MonteCarlo] Pipeline failed")
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail="Monte Carlo pipeline failed") from e
 
 
 class ReplayRequest(BaseModel):
@@ -211,7 +211,7 @@ def post_alpha_evidence(req: AlphaEvidenceRequest = Body(...)):
         }
     except Exception as e:
         logger.exception("[AlphaEvidence] Evaluation failed")
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail="Alpha evidence evaluation failed") from e
 
 
 @router.post("/replay")
@@ -370,7 +370,7 @@ async def trigger_replay(req: ReplayRequest = Body(...)):
         }
     except Exception as e:
         logger.exception("[Replay] Failed")
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail="Replay failed") from e
 
 
 class DiagnoseRequest(BaseModel):
@@ -454,7 +454,7 @@ async def trigger_diagnose(req: DiagnoseRequest = Body(...)):
         return {"status": "ok", "data_access": data_access, **result}
     except Exception as e:
         logger.exception("[Diagnose] Failed")
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail="Backtest diagnosis failed") from e
 
 
 @router.post("/pbo")
@@ -475,7 +475,7 @@ async def trigger_pbo(
         return await run_pbo_analysis(n_partitions=partitions, source=source)
     except Exception as e:
         logger.exception("[PBO] Pipeline failed")
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail="PBO pipeline failed") from e
 
 
 @router.get("/promotion-gate")
@@ -496,7 +496,7 @@ async def get_promotion_gate(
         return {"status": "ok", **evaluate_latest_promotion_gate(source=source, pbo_source=pbo_source)}
     except Exception as e:
         logger.exception("[PromotionGate] Evaluation failed")
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail="Promotion gate evaluation failed") from e
 
 
 @router.post("/alpha-promotion-gate")
@@ -524,4 +524,4 @@ async def post_alpha_promotion_gate(req: AlphaPromotionGateRequest = Body(...)):
         }
     except Exception as e:
         logger.exception("[AlphaPromotionGate] Evaluation failed")
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail="Alpha promotion gate evaluation failed") from e

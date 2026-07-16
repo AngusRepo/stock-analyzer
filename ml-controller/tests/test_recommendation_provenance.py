@@ -176,6 +176,9 @@ def _trade_ev(value: float, source: str = "s12_trade_ev_test") -> dict:
 def _l4_alpha_ev(value: float, *, method: str = "stacked_meta_calibrator") -> dict:
     return {
         "schema_version": "l4-alpha-ev-v1",
+        "artifact_contract_version": "l4-alpha-ev-contract-v4",
+        "feature_semantic_version": "l4-directional-score-components-v2-lineage-bound",
+        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "expected_return_owner": "l4_alpha_ev",
         "expected_return_mean": value,
         "expected_return_source": "l4_alpha_ev:stacked_meta_calibrator",
@@ -188,12 +191,29 @@ def _l4_alpha_ev(value: float, *, method: str = "stacked_meta_calibrator") -> di
         "horizon_days": 3,
         "cost_model_bps": 18.0,
         "feature_families": ["fundamental", "formal_ml", "chip", "technical", "regime", "s12_context"],
+        "feature_names": [
+            "ml_edge_norm",
+            "fundamental_quality_norm",
+            "chip_flow_norm",
+            "technical_structure_norm",
+            "ensemble_directional_margin",
+        ],
+        "coefficients": {
+            "ml_edge_norm": 0.01,
+            "fundamental_quality_norm": 0.01,
+            "chip_flow_norm": 0.01,
+            "technical_structure_norm": 0.01,
+            "ensemble_directional_margin": 0.01,
+        },
     }
 
 
 def _allocator_ev_fusion_artifact(**overrides) -> dict:
     artifact = {
-        "schema_version": "allocator-ev-fusion-artifact-v2",
+        "schema_version": "allocator-ev-fusion-artifact-v10",
+        "artifact_contract_version": "allocator-ev-fusion-contract-v10",
+        "feature_semantic_version": "allocator-ev-fusion-directional-components-v2-lineage-bound",
+        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "promotion_state": "production_primary",
         "promotion_tier": "primary",
         "primary_expected_return_allowed": True,
@@ -533,7 +553,11 @@ def test_recommendation_preserves_upstream_screener_chip_evidence(monkeypatch):
 def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
     captured = {}
 
-    def _fake_batch_execute(statements):
+    def _fake_batch_execute(statements, **_kwargs):
+        if _kwargs.get("operation") == "delete_stale_recommendation_rows":
+            captured["cleanup_sql"], captured["cleanup_params"] = statements[0]
+            captured["cleanup_timeout"] = _kwargs.get("timeout")
+            return {"success_count": len(statements), "changes_total": 2}
         captured["statements"] = statements
         return {"success_count": len(statements), "changes_total": len(statements)}
 
@@ -543,7 +567,7 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
         captured["cleanup_timeout"] = timeout
         return {"meta": {"changes": 2}}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "strict_batch_execute", _fake_batch_execute)
     monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
     monkeypatch.setattr(
         recommendation_service.d1_client,
@@ -586,7 +610,10 @@ def test_update_recommendations_in_d1_upserts_seed_rows(monkeypatch):
 def test_update_recommendations_in_d1_skips_partial_ml_only_rows(monkeypatch):
     captured = {}
 
-    def _fake_batch_execute(statements):
+    def _fake_batch_execute(statements, **_kwargs):
+        if _kwargs.get("operation") == "delete_stale_recommendation_rows":
+            captured["cleanup_params"] = statements[0][1]
+            return {"success_count": len(statements), "changes_total": 0}
         captured["statements"] = statements
         return {"success_count": len(statements), "changes_total": len(statements)}
 
@@ -594,7 +621,7 @@ def test_update_recommendations_in_d1_skips_partial_ml_only_rows(monkeypatch):
         captured["cleanup_params"] = params
         return {"meta": {"changes": 0}}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "strict_batch_execute", _fake_batch_execute)
     monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
     monkeypatch.setattr(
         recommendation_service.d1_client,
@@ -654,11 +681,11 @@ def test_update_recommendations_in_d1_skips_partial_ml_only_rows(monkeypatch):
 def test_update_recommendations_clears_stale_alpha_selected_for_non_buy(monkeypatch):
     captured = {}
 
-    def _fake_batch_execute(statements):
+    def _fake_batch_execute(statements, **_kwargs):
         captured["statements"] = statements
         return {"success_count": len(statements), "changes_total": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "strict_batch_execute", _fake_batch_execute)
     monkeypatch.setattr(
         recommendation_service.d1_client,
         "execute",
@@ -1836,11 +1863,11 @@ def test_write_predictions_to_d1_preserves_policy_signal_source(monkeypatch):
 
     captured = {}
 
-    def _fake_batch_execute(statements):
+    def _fake_batch_execute(statements, **_kwargs):
         captured["statements"] = statements
         return {"success_count": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "strict_batch_execute", _fake_batch_execute)
 
     predictions = {
         "2330": {
@@ -1948,11 +1975,11 @@ def test_write_predictions_to_d1_clears_stale_per_model_rows(monkeypatch):
 
     captured = {}
 
-    def _fake_batch_execute(statements):
+    def _fake_batch_execute(statements, **_kwargs):
         captured["statements"] = statements
         return {"success_count": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "strict_batch_execute", _fake_batch_execute)
 
     written = write_predictions_to_d1(
         {
@@ -1984,11 +2011,11 @@ def test_write_predictions_to_d1_persists_active8_challenger_rows(monkeypatch):
 
     captured = {}
 
-    def _fake_batch_execute(statements):
+    def _fake_batch_execute(statements, **_kwargs):
         captured["statements"] = statements
         return {"success_count": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "strict_batch_execute", _fake_batch_execute)
 
     written = write_predictions_to_d1(
         {
@@ -2033,11 +2060,11 @@ def test_write_predictions_to_d1_keeps_timesfm_sidecar_out_of_alpha_rows(monkeyp
 
     captured = {}
 
-    def _fake_batch_execute(statements):
+    def _fake_batch_execute(statements, **_kwargs):
         captured["statements"] = statements
         return {"success_count": len(statements)}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "batch_execute", _fake_batch_execute)
+    monkeypatch.setattr(recommendation_service.d1_client, "strict_batch_execute", _fake_batch_execute)
 
     written = write_predictions_to_d1(
         {
@@ -2083,14 +2110,17 @@ def test_write_predictions_to_d1_keeps_timesfm_sidecar_out_of_alpha_rows(monkeyp
 def test_prune_predictions_outside_universe_deletes_same_date_non_universe(monkeypatch):
     captured = {}
 
-    def _fake_execute(sql, params, timeout=60):
-        captured["sql"] = sql
-        captured["params"] = params
-        captured["timeout"] = timeout
-        return {"meta": {"changes": 12}}
+    def _fake_strict(statements, **kwargs):
+        captured["sql"], captured["params"] = statements[0]
+        captured["timeout"] = kwargs.get("timeout")
+        return {"total": 1, "success_count": 1, "changes_total": 12}
 
-    monkeypatch.setattr(recommendation_service.d1_client, "execute", _fake_execute)
-    monkeypatch.setattr(recommendation_service.d1_client, "query", lambda *_args, **_kwargs: [{"stock_id": 9}])
+    monkeypatch.setattr(recommendation_service.d1_client, "strict_batch_execute", _fake_strict)
+    monkeypatch.setattr(
+        recommendation_service.d1_client,
+        "query",
+        lambda *_args, **_kwargs: [{"stock_id": 9, "row_count": 12}],
+    )
 
     deleted = prune_predictions_outside_universe([1, 2, 3], "2026-04-30")
 

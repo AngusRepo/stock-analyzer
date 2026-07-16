@@ -26,7 +26,7 @@ async def build_strategy_similarity_evidence(
     except Exception as exc:  # noqa: BLE001 - HTTP surface should fail closed.
         raise HTTPException(
             status_code=503,
-            detail=f"strategy_similarity_evidence_unavailable: {type(exc).__name__}: {exc}",
+            detail="Strategy similarity evidence unavailable",
         ) from exc
 
 

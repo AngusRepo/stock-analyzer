@@ -14,11 +14,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import hmac
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+from services.service_endpoint_policy import service_url
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -75,33 +75,8 @@ class RetrainFollowupRegistryBackfillRequest(BaseModel):
     dry_run: bool = True
 
 
-_ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").strip().lower()
-
-
-def _valid_service_tokens() -> list[str]:
-    tokens = [
-        os.environ.get("INTERNAL_TOKEN", ""),
-        os.environ.get("ML_CONTROLLER_TOKEN", ""),
-        os.environ.get("ML_CONTROLLER_SECRET", ""),
-        # Backward compatibility for currently deployed Modal secrets.
-        os.environ.get("STOCKVISION_AUTH_TOKEN", ""),
-    ]
-    return list(dict.fromkeys(token.strip() for token in tokens if token and token.strip()))
-
-
 def _check_token(request: Request) -> None:
-    tokens = _valid_service_tokens()
-    if not tokens:
-        if _ENVIRONMENT == "production":
-            raise HTTPException(status_code=500, detail="retrain followup token not configured")
-        return
-    provided = (
-        request.headers.get("X-Service-Token", "")
-        or request.headers.get("X-Controller-Token", "")
-        or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    )
-    if not any(hmac.compare_digest(provided, token) for token in tokens):
-        raise HTTPException(status_code=401, detail="invalid service token")
+    enforce_controller_token(request)
 
 
 def _scheduler_status(status: str) -> str:
@@ -148,7 +123,7 @@ async def _callback_worker_scheduler(payload: RetrainFollowupPayload) -> dict[st
         return {"attempted": False, "ok": False, "reason": "STOCKVISION_WORKER_URL missing"}
 
     callback_payload = _build_scheduler_callback_payload(payload)
-    url = f"{WORKER_URL.rstrip('/')}/api/admin/scheduler-callback"
+    url = service_url(WORKER_URL, "/api/admin/scheduler-callback", name="STOCKVISION_WORKER_URL")
     headers = {"Content-Type": "application/json"}
     if WORKER_AUTH:
         headers["Authorization"] = f"Bearer {WORKER_AUTH}"
@@ -554,3 +529,4 @@ async def retrain_followup_registry_backfill(req: RetrainFollowupRegistryBackfil
             for row in artifact_records
         ],
     }
+from services.controller_auth import enforce_controller_token

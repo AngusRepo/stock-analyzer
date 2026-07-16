@@ -13,11 +13,17 @@ import modal
 from datetime import datetime, timezone
 from pathlib import Path
 from app.runtime_env import get_gcs_bucket_name, setup_modal_container_env
+from app.callback_policy import (
+    CallbackPolicyError,
+    post_json_callback,
+    resolve_callback_target,
+)
 
 # Local code mounted into the Modal image during deploy.
 _LOCAL_APP_DIR     = Path(__file__).parent / "app"
 _LOCAL_SCRIPTS_DIR = Path(__file__).parent / "scripts"  # optuna routes import scripts/optuna_*.py
 _LOCAL_REQ         = Path(__file__).parent / "requirements.txt"
+_LOCAL_NEURALFORECAST_REQ = Path(__file__).parent / "requirements-neuralforecast.txt"
 _LOCAL_SOURCE_ROOT = Path(__file__).resolve().parent
 
 
@@ -62,20 +68,17 @@ _LOCAL_CONTROLLER_SERVICES_DIR = (
 )
 
 
-def _controller_callback_token() -> str:
-    return (
-        os.environ.get("ML_CONTROLLER_TOKEN")
-        or os.environ.get("INTERNAL_TOKEN")
-        or os.environ.get("ML_CONTROLLER_SECRET")
-        or os.environ.get("STOCKVISION_AUTH_TOKEN")
-        or ""
-    )
-
 # Modal image built with the v1.x API.
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("libgomp1", "ocl-icd-libopencl1")  # OpenMP + OpenCL ICD loader (NVIDIA driver provides libOpenCL at runtime)
     .pip_install_from_requirements(str(_LOCAL_REQ))
+    .pip_install_from_requirements(str(_LOCAL_NEURALFORECAST_REQ), extra_options="--no-deps")
+    .run_commands(
+        "python -c \"import neuralforecast, pytorch_lightning; "
+        "from neuralforecast.models import DLinear, PatchTST, iTransformer; "
+        "assert pytorch_lightning.__version__ == '2.6.1'\""
+    )
     .add_local_dir(str(_LOCAL_SCRIPTS_DIR), remote_path="/root/scripts")
     .add_local_dir(str(_LOCAL_TOOLS_DIR), remote_path="/root/tools")
     .add_local_dir(str(_LOCAL_CONTROLLER_SERVICES_DIR), remote_path="/root/services")
@@ -96,6 +99,7 @@ finlab_secret = modal.Secret.from_name("stockvision-finlab")
 #     CF_ACCOUNT_ID=<cloudflare-account-id> \
 #     CF_D1_DB_ID=<cloudflare-d1-db-id> \
 #     STOCKVISION_AUTH_TOKEN=<stockvision-auth-token> \
+#     ML_SERVICE_SECRET=<ml-service-auth-token> \
 #     STOCKVISION_WORKER_URL=<stockvision-worker-url>
 # If the secret is missing, keep deploy importable but Optuna routes will fail.
 try:
@@ -109,6 +113,11 @@ runtime_env_secret = modal.Secret.from_dict({
     for key, value in {
         "GCS_BUCKET_NAME": os.environ.get("GCS_BUCKET_NAME", "stockvision-models").strip(),
         "FINLAB_API_KEY": os.environ.get("FINLAB_API_KEY", "").strip(),
+        "ML_CONTROLLER_PUBLIC_URL": os.environ.get("ML_CONTROLLER_PUBLIC_URL", "").strip(),
+        "STOCKVISION_WORKER_URL": os.environ.get("STOCKVISION_WORKER_URL", "").strip(),
+        "ML_CONTROLLER_SECRET": os.environ.get("ML_CONTROLLER_SECRET", "").strip(),
+        "ML_SERVICE_SECRET": os.environ.get("ML_SERVICE_SECRET", "").strip(),
+        "STOCKVISION_AUTH_TOKEN": os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip(),
     }.items()
     if value
 })
@@ -124,6 +133,19 @@ app = modal.App(
 def _setup_env():
     """Set up Modal container environment."""
     return setup_modal_container_env()
+
+
+def _failure_payload(operation: str, exc: BaseException, **context) -> dict:
+    """Log full diagnostics inside Modal and return a non-sensitive contract."""
+    import traceback
+
+    print(f"[{operation}] {type(exc).__name__}: {exc}", flush=True)
+    print(traceback.format_exc(), flush=True)
+    return {
+        "error": f"{operation}_failed",
+        "error_type": type(exc).__name__,
+        **context,
+    }
 
 
 def _get_gcs_bucket_name() -> str | None:
@@ -1076,27 +1098,19 @@ def retrain_orchestrator(payload: dict) -> dict:
                 elapsed_s=elapsed,
                 candidate_type=payload.get("candidate_type"),
             )
-            headers = {"Content-Type": "application/json"}
-            token = _controller_callback_token()
-            if token:
-                headers["X-Service-Token"] = token
-            resp = httpx.post(
-                followup_webhook_url,
-                json=payload_out,
-                headers=headers,
-                timeout=httpx.Timeout(120.0, connect=15.0),
-                follow_redirects=True,
+            callback_result = post_json_callback(
+                "retrain_followup",
+                payload_out,
+                supplied_url=followup_webhook_url,
+                timeout_seconds=120.0,
             )
-            if resp.status_code < 200 or resp.status_code >= 300:
-                raise RuntimeError(f"followup webhook returned HTTP {resp.status_code}")
             result["followup"] = {
-                "status_code": resp.status_code,
-                "url": str(resp.url),
+                **callback_result,
                 "payload_status": payload_out["status"],
             }
-            print(f"[Orchestrator] followup webhook POST {resp.request.url} -> HTTP {resp.status_code}")
+            print(f"[Orchestrator] retrain_followup callback -> HTTP {callback_result['status_code']}")
         except Exception as e:
-            result["followup"] = {"error": str(e), "url": followup_webhook_url}
+            result["followup"] = {"status": "error", "error": f"{type(e).__name__}: {e}"}
             print(f"[Orchestrator] followup webhook failed: {e}")
     print(f"[Orchestrator] Flow B complete in {elapsed}s")
     return result
@@ -1223,15 +1237,6 @@ def predict_batch_v2(payload: dict) -> dict:
 
 
 def _post_pipeline_prediction_callback(input_payload: dict, bundle: dict, elapsed_s: float) -> dict:
-    import json
-    import time
-    import urllib.error
-    import urllib.request
-
-    callback_url = str(input_payload.get("callback_url") or "").strip()
-    token = str(input_payload.get("callback_token") or _controller_callback_token()).strip()
-    if not callback_url or not token:
-        return {"status": "skipped", "reason": "callback_url_or_token_missing"}
     body = {
         "schema_version": "pipeline-modal-prediction-callback-v1",
         "run_date": input_payload.get("run_date"),
@@ -1240,33 +1245,15 @@ def _post_pipeline_prediction_callback(input_payload: dict, bundle: dict, elapse
         "elapsed_s": elapsed_s,
         "result": bundle,
     }
-    req = urllib.request.Request(
-        callback_url,
-        data=json.dumps(body, ensure_ascii=False, default=str).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}",
-            "X-Service-Token": token,
-        },
-        method="POST",
-    )
-    last_error: dict | None = None
-    for attempt in range(1, 4):
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                text = resp.read().decode("utf-8", errors="replace")
-                return {"status": "ok", "code": resp.status, "attempt": attempt, "text": text[:500]}
-        except urllib.error.HTTPError as exc:
-            last_error = {
-                "status": "error",
-                "code": exc.code,
-                "attempt": attempt,
-                "text": exc.read().decode("utf-8", errors="replace")[:500],
-            }
-        except Exception as exc:
-            last_error = {"status": "error", "attempt": attempt, "error": f"{type(exc).__name__}: {exc}"}
-        time.sleep(min(attempt * 2, 5))
-    return last_error or {"status": "error", "error": "unknown_callback_failure"}
+    try:
+        return post_json_callback(
+            "pipeline_prediction",
+            body,
+            supplied_url=input_payload.get("callback_url"),
+            timeout_seconds=60.0,
+        )
+    except CallbackPolicyError as exc:
+        return {"status": "error", "error": f"CallbackPolicyError: {exc}"}
 
 
 @app.function(
@@ -1340,6 +1327,15 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
             except Exception as exc:  # noqa: BLE001
                 reason = f"predict_batch_v2 chunk error: {type(exc).__name__}: {exc}"
                 results.extend(_chunk_error_rows(chunk, reason))
+        batch_contracts = [
+            ((batch.get("metrics") or {}).get("batch") or {})
+            for batch in batch_responses
+            if isinstance(batch, dict)
+        ]
+        contract_passed = bool(batch_contracts) and all(
+            contract.get("contract_passed") is True
+            for contract in batch_contracts
+        )
         return {
             "results": results,
             "n_input": len(payloads),
@@ -1347,6 +1343,13 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
             "chunk_count": len(chunks),
             "chunk_size": chunk_size,
             "batch_contract": payload.get("predict_batch_v2_contract") or {},
+            "batch_contract_passed": contract_passed,
+            "execution_modes": [contract.get("execution_mode") for contract in batch_contracts],
+            "fallback_reasons": [
+                contract.get("fallback_reason")
+                for contract in batch_contracts
+                if contract.get("fallback_reason")
+            ],
             "batch_metrics": [batch.get("metrics") or {} for batch in batch_responses],
         }
 
@@ -1441,7 +1444,7 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
                 f"wall_sec={timing['wall_sec']} error={timing['error']}",
                 flush=True,
             )
-            return name, {"error": f"{type(exc).__name__}: {exc}", "trace": traceback.format_exc()[:2000], "results": []}, timing
+            return name, _failure_payload(name, exc, results=[]), timing
 
     for name, (fn, required_alpha) in stages.items():
         stage_name, result, timing = _run_stage(name, fn, required_alpha)
@@ -1535,8 +1538,7 @@ def train_tabm_universal(payload: dict) -> dict:
     try:
         return _train_tabm_universal(payload or {})
     except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_tabm_universal"}
+        return _failure_payload("train_tabm_universal", e, type="train_tabm_universal")
 
 
 @app.function(
@@ -1758,13 +1760,7 @@ def train_wf_tree_window(payload: dict) -> dict:
         )
         return _train(req)
     except Exception as e:
-        import traceback
-        return {
-            "error": str(e),
-            "trace": traceback.format_exc()[:2000],
-            "window_id": payload.get("window_id"),
-            "type": "wf_tree",
-        }
+        return _failure_payload("wf_tree", e, window_id=payload.get("window_id"), type="wf_tree")
 
 
 @app.function(
@@ -1811,8 +1807,7 @@ def train_wf_hmm_window(payload: dict) -> dict:
             "saved": saved,
         }
     except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "window_id": payload.get("window_id")}
+        return _failure_payload("wf_hmm", e, window_id=payload.get("window_id"))
 
 
 @app.function(
@@ -2158,8 +2153,7 @@ def feature_selection_pipeline(payload: dict) -> dict:
             gcs_prefix=payload.get("gcs_prefix"),
         )
     except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc(), "type": "feature_selection"}
+        return _failure_payload("feature_selection", e, type="feature_selection")
 
 
 @app.function(
@@ -2234,8 +2228,7 @@ def build_finlab_long_sequence_prep(payload: dict) -> dict:
     try:
         return build_finlab_long_history_sequence_prep(payload or {})
     except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "finlab_long_sequence_prep"}
+        return _failure_payload("finlab_long_sequence_prep", e, type="finlab_long_sequence_prep")
 
 
 # 2026-04-19 ML_POOL Stage 0.2: DLinear universal training (one-shot)
@@ -2300,9 +2293,7 @@ def train_dlinear_universal(payload: dict) -> dict:
             "type": "dlinear_universal",
         }
     except Exception as e:
-        import traceback
-        print(f"[DLinearTrain] failed: {e}")
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_dlinear_universal"}
+        return _failure_payload("train_dlinear_universal", e, type="train_dlinear_universal")
 
 
 # 2026-04-19 ML_POOL Stage 0.2: DLinear batch predict
@@ -2336,8 +2327,7 @@ def dlinear_universal_predict(payload: dict) -> dict:
         return {"results": results, "n_input": len(payload.get("series_list") or []),
                 "n_success": sum(1 for r in results if not r.get("error"))}
     except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "dlinear_universal_predict"}
+        return _failure_payload("dlinear_universal_predict", e, type="dlinear_universal_predict")
 
 
 # 2026-04-19 ML_POOL Stage 0.3: PatchTST universal training
@@ -2386,8 +2376,7 @@ def train_patchtst_universal(payload: dict) -> dict:
             "pool_update": result.get("pool_update"),
         }
     except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_patchtst_universal"}
+        return _failure_payload("train_patchtst_universal", e, type="train_patchtst_universal")
 
 
 # 2026-04-19 ML_POOL Stage 0.3: PatchTST batch predict
@@ -2411,8 +2400,7 @@ def patchtst_universal_predict(payload: dict) -> dict:
         return {"results": results, "n_input": len(payload.get("series_list") or []),
                 "n_success": sum(1 for r in results if not r.get("error"))}
     except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "patchtst_universal_predict"}
+        return _failure_payload("patchtst_universal_predict", e, type="patchtst_universal_predict")
 
 
 # L3 sequence family: iTransformer artifact-backed batch predict.
@@ -2436,8 +2424,7 @@ def itransformer_universal_predict(payload: dict) -> dict:
         return {"results": results, "n_input": len(payload.get("series_list") or []),
                 "n_success": sum(1 for r in results if not r.get("error"))}
     except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "itransformer_universal_predict"}
+        return _failure_payload("itransformer_universal_predict", e, type="itransformer_universal_predict")
 
 
 @app.function(
@@ -2455,8 +2442,7 @@ def train_itransformer_universal(payload: dict) -> dict:
     try:
         return _train_itransformer_universal(payload or {})
     except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_itransformer_universal"}
+        return _failure_payload("train_itransformer_universal", e, type="train_itransformer_universal")
 
 
 # L2 feature sidecar: TimesFM config-backed batch predict.
@@ -2482,22 +2468,15 @@ def timesfm_universal_predict(payload: dict) -> dict:
                 "n_success": sum(1 for r in results if not r.get("error")),
                 "n_error": sum(1 for r in results if r.get("error"))}
     except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "timesfm_universal_predict"}
+        return _failure_payload("timesfm_universal_predict", e, type="timesfm_universal_predict")
 
 
 # 2026-04-20 ML_POOL Stage 6.2: state-space batch predict (KalmanFilter + MarkovSwitching)
 def _post_state_space_shadow_callback(input_payload: dict, result: dict, elapsed_s: float) -> dict | None:
     callback_url = str(input_payload.get("callback_url") or "").strip()
-    if not callback_url:
+    if not callback_url and not os.environ.get("STOCKVISION_WORKER_URL", "").strip():
         return None
     try:
-        import httpx
-
-        headers = {"Content-Type": "application/json"}
-        token = str(input_payload.get("callback_token") or "").strip()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
         payload_out = {
             "schema_version": "state-space-shadow-callback-v1",
             "run_date": input_payload.get("run_date"),
@@ -2518,19 +2497,16 @@ def _post_state_space_shadow_callback(input_payload: dict, result: dict, elapsed
             ],
             "result": result,
         }
-        resp = httpx.post(
-            callback_url,
-            json=payload_out,
-            headers=headers,
-            timeout=20,
-            follow_redirects=True,
+        callback_result = post_json_callback(
+            "state_space_shadow",
+            payload_out,
+            supplied_url=callback_url,
+            timeout_seconds=20.0,
         )
-        if resp.status_code < 200 or resp.status_code >= 300:
-            raise RuntimeError(f"shadow callback returned HTTP {resp.status_code}: {resp.text[:300]}")
-        return {"ok": True, "status_code": resp.status_code, "url": str(resp.url)}
+        return {"ok": True, **callback_result}
     except Exception as exc:  # noqa: BLE001 - shadow callback must never hide compute output.
         print(f"[StateSpaceUniversal] shadow callback failed: {exc}")
-        return {"ok": False, "error": str(exc), "url": callback_url}
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 @app.function(
@@ -2574,8 +2550,7 @@ def state_space_universal_predict(payload: dict) -> dict:
             result = {"results": results, "n_input": len(payload.get("series_list") or []),
                       "n_success": sum(1 for r in results if not r.get("error"))}
     except Exception as e:
-        import traceback
-        result = {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "state_space_universal_predict"}
+        result = _failure_payload("state_space_universal_predict", e, type="state_space_universal_predict")
     elapsed_s = round(time.time() - t0, 3)
     result["elapsed_s"] = elapsed_s
     callback_status = _post_state_space_shadow_callback(payload, result, elapsed_s)
@@ -2653,14 +2628,13 @@ def feature_selection_per_window(payload: dict) -> dict:
         result["elapsed_s"] = round(time.time() - t0, 1)
         return result
     except Exception as e:
-        import traceback
-        return {
-            "error": str(e),
-            "trace": traceback.format_exc()[:2000],
-            "window_id": window_id,
-            "gcs_prefix": gcs_prefix,
-            "type": "feature_selection_per_window",
-        }
+        return _failure_payload(
+            "feature_selection_per_window",
+            e,
+            window_id=window_id,
+            gcs_prefix=gcs_prefix,
+            type="feature_selection_per_window",
+        )
 
 
 @app.function(
@@ -2682,24 +2656,10 @@ def update_arf_reward(payload: dict) -> dict:
 
 
 def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, summary: str, duration_ms: int, error: str | None = None) -> dict:
-    import json
-    import os
-    import time
-    import urllib.error
-    import urllib.request
-
     controller_callback_url = str(payload.get("controller_callback_url") or "").strip()
-    controller_token = str(payload.get("controller_token") or os.environ.get("ML_CONTROLLER_TOKEN") or os.environ.get("ML_CONTROLLER_SECRET") or "").strip()
-    callback_url = controller_callback_url or str(payload.get("callback_url") or "").strip()
-    use_controller_callback = bool(controller_callback_url and controller_token)
-    if not callback_url:
-        worker_url = str(os.environ.get("STOCKVISION_WORKER_URL") or "").strip().rstrip("/")
-        if worker_url:
-            callback_url = f"{worker_url}/api/admin/scheduler-callback"
-    callback_token = str(payload.get("callback_token") or os.environ.get("STOCKVISION_AUTH_TOKEN") or "").strip()
-    if not callback_url or not callback_token:
-        if not use_controller_callback:
-            return {"status": "skipped", "reason": "callback_url_or_token_missing"}
+    worker_callback_url = str(payload.get("callback_url") or "").strip()
+    capability = "finlab_controller" if controller_callback_url else "finlab_worker"
+    supplied_url = controller_callback_url or worker_callback_url or None
 
     body = {
         "task": str(payload.get("callback_task") or "finlab-v4-backfill"),
@@ -2733,34 +2693,19 @@ def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, su
     }
     if error:
         body["error"] = error
-    req = urllib.request.Request(
-        callback_url,
-        data=json.dumps(body, ensure_ascii=False, default=str).encode("utf-8"),
-        headers=(
-            {
-                "X-Controller-Token": controller_token,
-                "Content-Type": "application/json",
-            }
-            if use_controller_callback
-            else {
-                "Authorization": f"Bearer {callback_token}",
-                "Content-Type": "application/json",
-            }
-        ),
-        method="POST",
-    )
-    last_error: dict | None = None
-    for attempt in range(1, 4):
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                text = resp.read().decode("utf-8", errors="replace")
-                return {"status": "ok", "code": resp.status, "attempt": attempt, "text": text[:500]}
-        except urllib.error.HTTPError as exc:
-            last_error = {"status": "error", "code": exc.code, "attempt": attempt, "text": exc.read().decode("utf-8", errors="replace")[:500]}
-        except Exception as exc:
-            last_error = {"status": "error", "attempt": attempt, "error": f"{type(exc).__name__}: {exc}"}
-        time.sleep(min(attempt * 2, 5))
-    return last_error or {"status": "error", "error": "unknown_callback_failure"}
+    try:
+        return post_json_callback(
+            capability,
+            body,
+            supplied_url=supplied_url,
+            timeout_seconds=30.0,
+        )
+    except CallbackPolicyError as exc:
+        return {
+            "status": "error",
+            "capability": capability,
+            "error": f"CallbackPolicyError: {exc}",
+        }
 
 
 def _write_finlab_macro_context_to_d1() -> dict:
@@ -2821,7 +2766,7 @@ def _write_external_evidence_to_d1(payload: dict, result: dict | None = None) ->
         "target_date": materialize_external_evidence_once.TARGET_DATE,
         "as_of_date": materialize_external_evidence_once.AS_OF_DATE,
         "summary": parsed,
-        "stdout_tail": output[-4000:],
+        "captured_output_bytes": len(output.encode("utf-8")),
     }
 
 
@@ -2849,11 +2794,20 @@ def finlab_v4_backfill(payload: dict) -> dict:
     started = time.time()
     run_id = str(payload.get("run_id") or "auto")
     dispatch_attempt = int(payload.get("dispatch_attempt") or 1)
+    query_target = resolve_callback_target(
+        "finlab_d1_query",
+        supplied_url=payload.get("controller_d1_query_url"),
+    )
+    batch_target = resolve_callback_target(
+        "finlab_d1_batch",
+        supplied_url=payload.get("controller_d1_batch_url"),
+    )
+    controller_token = query_target.headers["X-Controller-Token"]
     controller_env = {
-        "FINLAB_CONTROLLER_D1_QUERY_URL": payload.get("controller_d1_query_url"),
-        "FINLAB_CONTROLLER_D1_BATCH_URL": payload.get("controller_d1_batch_url"),
-        "FINLAB_CONTROLLER_TOKEN": payload.get("controller_token"),
-        "ML_CONTROLLER_TOKEN": payload.get("controller_token"),
+        "FINLAB_CONTROLLER_D1_QUERY_URL": query_target.url,
+        "FINLAB_CONTROLLER_D1_BATCH_URL": batch_target.url,
+        "FINLAB_CONTROLLER_TOKEN": controller_token,
+        "ML_CONTROLLER_TOKEN": controller_token,
     }
     for key, value in controller_env.items():
         if value:
@@ -2861,8 +2815,7 @@ def finlab_v4_backfill(payload: dict) -> dict:
     print(
         f"[finlab_v4_backfill] start run_id={run_id} "
         f"dispatch_attempt={dispatch_attempt} "
-        f"controller_proxy={bool(payload.get('controller_d1_query_url') and payload.get('controller_token'))} "
-        f"controller_callback={bool(payload.get('controller_callback_url') and payload.get('controller_token'))}",
+        "controller_proxy=True controller_callback=True",
         flush=True,
     )
     start_callback = _post_worker_scheduler_callback(
@@ -2921,7 +2874,7 @@ def finlab_v4_backfill(payload: dict) -> dict:
         with contextlib.redirect_stdout(stdout):
             exit_code = finlab_v4_remote_backfill.main()
         output = stdout.getvalue()
-        result = {"exit_code": exit_code, "stdout_tail": output[-4000:]}
+        result = {"exit_code": exit_code, "captured_output_bytes": len(output.encode("utf-8"))}
         for line in reversed([line.strip() for line in output.splitlines() if line.strip()]):
             try:
                 parsed = json.loads(line)
@@ -2933,11 +2886,17 @@ def finlab_v4_backfill(payload: dict) -> dict:
         try:
             result["macro_context_writeback"] = _write_finlab_macro_context_to_d1()
         except Exception as exc:
-            result["macro_context_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+            result["macro_context_writeback"] = {
+                "status": "error",
+                **_failure_payload("macro_context_writeback", exc),
+            }
         try:
             result["external_evidence_writeback"] = _write_external_evidence_to_d1(payload, result)
         except Exception as exc:
-            result["external_evidence_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+            result["external_evidence_writeback"] = {
+                "status": "error",
+                **_failure_payload("external_evidence_writeback", exc),
+            }
         result["continue_evening_chain"] = bool(payload.get("continue_evening_chain"))
         result["dispatch_attempt"] = dispatch_attempt
         result["start_callback"] = start_callback
@@ -2962,13 +2921,11 @@ def finlab_v4_backfill(payload: dict) -> dict:
         return result
     except (Exception, SystemExit) as exc:
         duration_ms = int((time.time() - started) * 1000)
-        error = f"{type(exc).__name__}: {exc}"
         result = {
             "status": "error",
             "run_id": run_id,
-            "error": error,
-            "trace": traceback.format_exc()[-4000:],
-            "stdout_tail": stdout.getvalue()[-4000:],
+            "error": "strategy_mining_failed",
+            "error_type": type(exc).__name__,
             "continue_evening_chain": bool(payload.get("continue_evening_chain")),
             "duration_ms": duration_ms,
             "dispatch_attempt": dispatch_attempt,

@@ -157,7 +157,7 @@ async def run_monthly_pymoo_strategy_mining(req: MonthlyPymooRunReq):
             }, fire_and_forget=True)
         except Exception as exc:
             if backend in {"modal", "modal_only"}:
-                raise HTTPException(status_code=503, detail=f"strategy_mining_modal_trigger_failed:{exc}") from exc
+                raise HTTPException(status_code=503, detail="Strategy mining compute trigger failed") from exc
             packet["modal_trigger_error"] = str(exc)
         else:
             function_call_id = spawned.get("function_call_id")
@@ -192,7 +192,7 @@ async def run_monthly_pymoo_strategy_mining(req: MonthlyPymooRunReq):
             "summary": f"monthly_pymoo_strategy_mining already running execution_id={exc.execution.execution_id}",
         }
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"strategy_mining_job_trigger_failed:{exc}") from exc
+        raise HTTPException(status_code=503, detail="Strategy mining job trigger failed") from exc
 
     return {
         **packet,

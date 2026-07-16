@@ -166,6 +166,8 @@ def test_predict_stock_v2_batch_metrics_report_preload_and_cache_delta(monkeypat
 
     assert [r["symbol"] for r in batch["results"]] == ["2330", "2317"]
     assert batch["metrics"]["batch"]["n_input"] == 2
+    assert batch["metrics"]["batch"]["execution_mode"] == "serial"
+    assert batch["metrics"]["batch"]["contract_passed"] is False
     assert batch["metrics"]["preload"]["active_loaded"] == 5
     assert batch["metrics"]["model_cache"]["preload_delta"] == {"hits": 0, "misses": 5, "gcs_downloads": 5}
     assert batch["metrics"]["model_cache"]["total_delta"] == {"hits": 10, "misses": 5, "gcs_downloads": 5}
@@ -500,6 +502,7 @@ def test_predict_stock_v2_batch_attaches_true_batch_overrides(monkeypatch):
     monkeypatch.setattr(batch_prediction, "PredictRequest", Request)
     monkeypatch.setattr(batch_prediction, "predict_stock_v2", fake_predict)
     monkeypatch.setattr(batch_prediction, "_build_feature_model_batch_runtime_overrides", fake_overrides)
+    monkeypatch.setenv("PREDICT_BATCH_V2_COMPOSE_WORKERS", "1")
 
     results = batch_prediction.predict_stock_v2_batch([
         {"symbol": "2330", "stock_id": 2330, "prices": [{"close": 1}], "indicators": []},
@@ -511,6 +514,136 @@ def test_predict_stock_v2_batch_attaches_true_batch_overrides(monkeypatch):
     assert observed_runtime_options[1][_BATCH_FEATURE_RANK_SCORES_KEY] == {"XGBoost": 0.3}
 
 
+def test_true_batch_reuses_feature_context_and_parallelizes_composition(monkeypatch):
+    from app.prediction_runtime import _BATCH_FEATURE_NAMES_KEY, _BATCH_LATEST_FEATURES_KEY
+
+    class Request:
+        __module__ = "app.schemas"
+
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    seen = []
+
+    def fake_predict(req):
+        seen.append(req.symbol)
+        assert req.runtime_options[_BATCH_LATEST_FEATURES_KEY].shape == (1, 2)
+        assert req.runtime_options[_BATCH_FEATURE_NAMES_KEY] == ["a", "b"]
+        return {"symbol": req.symbol, "stock_id": req.stock_id, "signal": "HOLD"}
+
+    fake_predict.__module__ = "app.prediction_runtime"
+
+    def fake_overrides(reqs):
+        return [
+            {
+                _BATCH_LATEST_FEATURES_KEY: np.array([[idx, idx + 1]], dtype=np.float32),
+                _BATCH_FEATURE_NAMES_KEY: ["a", "b"],
+            }
+            for idx, _req in enumerate(reqs)
+        ]
+
+    monkeypatch.setattr(batch_prediction, "PredictRequest", Request)
+    monkeypatch.setattr(batch_prediction, "predict_stock_v2", fake_predict)
+    monkeypatch.setattr(batch_prediction, "_build_feature_model_batch_runtime_overrides", fake_overrides)
+    monkeypatch.setattr(batch_prediction, "preload_batch_artifacts", lambda _payloads: {})
+    monkeypatch.setenv("PREDICT_BATCH_V2_COMPOSE_WORKERS", "2")
+
+    batch = batch_prediction.predict_stock_v2_batch_with_metrics([
+        {"symbol": "2330", "stock_id": 2330, "runtime_options": {}},
+        {"symbol": "2317", "stock_id": 2317, "runtime_options": {}},
+    ])
+
+    assert [result["symbol"] for result in batch["results"]] == ["2330", "2317"]
+    assert sorted(seen) == ["2317", "2330"]
+    assert batch["metrics"]["batch"]["composition_workers"] == 2
+
+
+def test_shared_composition_runtime_loads_global_artifacts_once(monkeypatch):
+    from app import ensemble, model_pool, stacking
+    from app.prediction_runtime import (
+        _BATCH_IC_WEIGHTS_KEY,
+        _BATCH_MODEL_POOL_KEY,
+        _BATCH_RANK_STACKER_KEY,
+    )
+
+    class Request:
+        def __init__(self, market_segment):
+            self.market = "TW"
+            self.stock_meta = {"market_segment": market_segment}
+            self.runtime_options = {}
+
+        def model_copy(self, *, update):
+            copied = Request(self.stock_meta["market_segment"])
+            copied.runtime_options = update["runtime_options"]
+            return copied
+
+    calls = {"pool": 0, "stacker": 0, "weights": []}
+    pool = {"models": {}}
+    stacker = {"model": object()}
+
+    def load_pool():
+        calls["pool"] += 1
+        return pool
+
+    def load_stacker(_stock_id):
+        calls["stacker"] += 1
+        return stacker
+
+    def load_weights(market_segment=None):
+        calls["weights"].append(market_segment)
+        return {"XGBoost": 1.0}
+
+    monkeypatch.setattr(model_pool, "load_pool", load_pool)
+    monkeypatch.setattr(stacking, "load_meta_learner", load_stacker)
+    monkeypatch.setattr(ensemble, "load_ic_weights", load_weights)
+
+    def predict_stock_v2(_req):
+        return None
+
+    requests = [Request("LISTED"), Request("LISTED"), Request("OTC")]
+    output = batch_prediction._attach_shared_composition_runtime(requests, predict_stock_v2)
+
+    assert calls == {"pool": 1, "stacker": 1, "weights": ["LISTED", "OTC"]}
+    assert all(req.runtime_options[_BATCH_MODEL_POOL_KEY] is pool for req in output)
+    assert all(req.runtime_options[_BATCH_RANK_STACKER_KEY] is stacker for req in output)
+    assert all(req.runtime_options[_BATCH_IC_WEIGHTS_KEY] == {"XGBoost": 1.0} for req in output)
+
+
+def test_true_batch_failure_is_visible_while_serial_results_are_preserved(monkeypatch):
+    class Request:
+        __module__ = "app.schemas"
+
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    def fake_predict(req):
+        return {"symbol": req.symbol, "stock_id": req.stock_id, "signal": "HOLD"}
+
+    fake_predict.__module__ = "app.prediction_runtime"
+
+    monkeypatch.setattr(batch_prediction, "PredictRequest", Request)
+    monkeypatch.setattr(batch_prediction, "predict_stock_v2", fake_predict)
+    monkeypatch.setattr(
+        batch_prediction,
+        "_build_feature_model_batch_runtime_overrides",
+        lambda _requests: (_ for _ in ()).throw(RuntimeError("artifact schema drift")),
+    )
+    monkeypatch.setattr(
+        batch_prediction,
+        "preload_batch_artifacts",
+        lambda _payloads: {"active_attempted": 0, "active_loaded": 0, "errors": []},
+    )
+
+    batch = batch_prediction.predict_stock_v2_batch_with_metrics([
+        {"symbol": "2330", "stock_id": 2330, "prices": [{"close": 1}], "indicators": []},
+    ])
+
+    assert batch["results"][0]["symbol"] == "2330"
+    assert batch["metrics"]["batch"]["execution_mode"] == "serial_fallback"
+    assert batch["metrics"]["batch"]["contract_passed"] is False
+    assert "artifact schema drift" in batch["metrics"]["batch"]["fallback_reason"]
+
+
 def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypatch):
     from app import ensemble, model_pool, model_store, prediction_runtime, stacking
     from app.prediction_runtime import (
@@ -518,6 +651,9 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
         _BATCH_CHALLENGER_RANK_SCORES_KEY,
         _BATCH_FEATURE_MODEL_ERRORS_KEY,
         _BATCH_FEATURE_RANK_SCORES_KEY,
+        _BATCH_IC_WEIGHTS_KEY,
+        _BATCH_MODEL_POOL_KEY,
+        _BATCH_RANK_STACKER_KEY,
     )
     from app.schemas import PredictRequest
 
@@ -525,9 +661,9 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
         raise AssertionError("serial model load should be skipped")
 
     monkeypatch.setattr(model_store, "load_model", fail_load_model)
-    monkeypatch.setattr(model_pool, "load_pool", lambda: _full_model_pool({"XGBoost": "active"}))
-    monkeypatch.setattr(ensemble, "load_ic_weights", lambda market_segment=None: {"XGBoost": 1.0})
-    monkeypatch.setattr(stacking, "load_meta_learner", lambda stock_id: None)
+    monkeypatch.setattr(model_pool, "load_pool", lambda: (_ for _ in ()).throw(AssertionError("pool should be shared")))
+    monkeypatch.setattr(ensemble, "load_ic_weights", lambda market_segment=None: (_ for _ in ()).throw(AssertionError("IC weights should be shared")))
+    monkeypatch.setattr(stacking, "load_meta_learner", lambda stock_id: (_ for _ in ()).throw(AssertionError("rank stacker should be shared")))
 
     payload = _predict_payload("2330", 2330, 100.0)
     payload["runtime_options"] = {
@@ -536,6 +672,9 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
         _BATCH_FEATURE_MODEL_ERRORS_KEY: ["LightGBM: not found in GCS"],
         _BATCH_CHALLENGER_RANK_SCORES_KEY: {"ResidualMLP": 0.64},
         _BATCH_CHALLENGER_MODEL_ERRORS_KEY: [],
+        _BATCH_IC_WEIGHTS_KEY: {"XGBoost": 1.0},
+        _BATCH_MODEL_POOL_KEY: _full_model_pool({"XGBoost": "active"}),
+        _BATCH_RANK_STACKER_KEY: None,
     }
 
     result = prediction_runtime.predict_stock_v2(PredictRequest(**payload))

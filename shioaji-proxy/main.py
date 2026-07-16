@@ -20,11 +20,14 @@ import os
 import time
 import threading
 import math
+import hmac
+import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 # ── 環境變數 ────────────────────────────────────────────────────────────────
@@ -34,6 +37,13 @@ PERSON_ID  = os.environ.get("SHIOAJI_PERSON_ID", "")
 ACCOUNT_ID = os.environ.get("SHIOAJI_ACCOUNT_ID", "")
 SERVICE_TOKEN = os.environ.get("PROXY_SERVICE_TOKEN", "")  # Worker 驗證用
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").strip().lower()
+IS_CLOUD_RUNTIME = bool(os.environ.get("K_SERVICE") or os.environ.get("K_REVISION"))
+ALLOW_INSECURE_LOCAL_AUTH = (
+    os.environ.get("ALLOW_INSECURE_LOCAL_AUTH", "").strip() == "1"
+    and ENVIRONMENT in {"development", "dev", "local", "test"}
+    and not IS_CLOUD_RUNTIME
+)
+logger = logging.getLogger("stockvision.shioaji_proxy")
 
 # ── 全域狀態 ────────────────────────────────────────────────────────────────
 api = None
@@ -1133,19 +1143,46 @@ async def lifespan(app: FastAPI):
     shutdown_shioaji()
 
 
-app = FastAPI(title="Shioaji Quote Proxy", version="1.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="Shioaji Quote Proxy",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url=None if ENVIRONMENT == "production" or IS_CLOUD_RUNTIME else "/docs",
+    redoc_url=None if ENVIRONMENT == "production" or IS_CLOUD_RUNTIME else "/redoc",
+    openapi_url=None if ENVIRONMENT == "production" or IS_CLOUD_RUNTIME else "/openapi.json",
+)
 
 
 # ── Auth Middleware ──────────────────────────────────────────────────────────
 def verify_token(authorization: str | None):
+    # Direct Python calls in unit tests receive FastAPI's Header descriptor;
+    # real HTTP requests are always resolved to str/None before this function.
+    if not isinstance(authorization, (str, type(None))):
+        if ENVIRONMENT == "production" or IS_CLOUD_RUNTIME:
+            raise HTTPException(401, "Unauthorized")
+        return
     if not SERVICE_TOKEN:
-        if ENVIRONMENT == "production":
-            raise HTTPException(500, "PROXY_SERVICE_TOKEN not configured")
-        return  # 未設定 token → 不驗證（開發模式）
+        if ALLOW_INSECURE_LOCAL_AUTH:
+            return
+        raise HTTPException(503, "Service authentication is not configured")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Unauthorized")
-    if authorization[7:] != SERVICE_TOKEN:
+    if not hmac.compare_digest(authorization[7:].strip(), SERVICE_TOKEN):
         raise HTTPException(401, "Invalid token")
+
+
+@app.middleware("http")
+async def enforce_service_auth(request: Request, call_next):
+    if request.url.path == "/health" or request.method == "OPTIONS":
+        return await call_next(request)
+    try:
+        verify_token(request.headers.get("Authorization"))
+    except HTTPException as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": "service_auth_failed", "message": str(exc.detail)}},
+        )
+    return await call_next(request)
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────

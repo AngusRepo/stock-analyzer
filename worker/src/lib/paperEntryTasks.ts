@@ -1829,7 +1829,7 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
       originalEntry: s12AssistEntryOverlay?.entryPrice ?? effectiveOhlcvTradePlan?.entryPrice ?? (pending as any).original_entry ?? pending.ml_entry_price,
       retryCount: (pending as any).retry_count ?? 0,
       previousClose: currentOhlc?.referencePrice ?? prevCloseMap.get(pending.symbol) ?? null,
-      quoteAgeMs: quoteAgeMs(currentOhlc?.quoteTime),
+      quoteAgeMs: quoteAgeMs(currentOhlc?.confirmationTime) ?? currentOhlc?.quoteAgeMs ?? null,
       quoteSource: currentOhlc?.source === 'shioaji' ? 'shioaji' : currentOhlc?.source === 'yahoo' ? 'yahoo' : 'none',
       marketRiskLevel: marketRisk.risk_level,
       momentum: {
@@ -1924,7 +1924,8 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
             askVolumes: currentOhlc.askVolumes ?? [],
             volumeUnit: currentOhlc.volumeUnit,
             sourceTime: currentOhlc.quoteTime ?? null,
-            ageMs: quoteAgeMs(currentOhlc.quoteTime),
+            receivedAt: currentOhlc.confirmationTime ?? null,
+            ageMs: quoteAgeMs(currentOhlc.confirmationTime) ?? currentOhlc.quoteAgeMs ?? null,
             sessionEpoch: currentOhlc.sessionEpoch ?? null,
           }
           : null,

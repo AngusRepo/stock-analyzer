@@ -175,7 +175,20 @@ def orderbook_source_time(depth: dict | None) -> datetime | None:
     return parse_quote_time(depth.get("timestamp") or depth.get("source_time") or depth.get("updated_at"))
 
 
+def orderbook_confirmation_time(depth: dict | None) -> datetime | None:
+    if not depth:
+        return None
+    return parse_quote_time(depth.get("confirmed_at") or depth.get("updated_at") or depth.get("timestamp"))
+
+
 def orderbook_age_ms(depth: dict | None) -> int | None:
+    confirmation_time = orderbook_confirmation_time(depth)
+    if confirmation_time is None:
+        return None
+    return int(max(0, (get_tw_now() - confirmation_time).total_seconds() * 1000))
+
+
+def orderbook_source_age_ms(depth: dict | None) -> int | None:
     source_time = orderbook_source_time(depth)
     if source_time is None:
         return None
@@ -436,6 +449,10 @@ def orderbook_recovery_cooldown_seconds() -> float:
     return _env_float("SHIOAJI_ORDERBOOK_RECOVERY_COOLDOWN_SECONDS", 8.0, 1.0, 120.0)
 
 
+def orderbook_symbol_recovery_after_ms() -> int:
+    return _env_int("SHIOAJI_ORDERBOOK_SYMBOL_RECOVERY_AFTER_MS", 120_000, 10_000, 600_000)
+
+
 def reconnect_cooldown_seconds() -> float:
     return _env_float("SHIOAJI_RECONNECT_COOLDOWN_SECONDS", 60.0, 10.0, 600.0)
 
@@ -546,6 +563,8 @@ def orderbook_health_summary(symbols: list[str] | None = None, lot_type: str = "
                     "symbol": symbol,
                     "status": status,
                     "quote_age_ms": orderbook_age_ms(depth),
+                    "source_age_ms": orderbook_source_age_ms(depth),
+                    "confirmed_at": (depth or {}).get("confirmed_at") or (depth or {}).get("updated_at"),
                     "bidask_event_count": int(stat.get("event_count") or 0),
                     "last_bidask_event_at": stat.get("last_event_at"),
                     "bid_levels": len((depth or {}).get("bid_prices") or []),
@@ -642,6 +661,7 @@ def init_shioaji():
             bid1 = bid_prices[0] if bid_prices else None
             ask1 = ask_prices[0] if ask_prices else None
             mid = (bid1 + ask1) / 2 if bid1 and ask1 else None
+            received_at = datetime.now(TW_TZ).isoformat()
 
             with _state_lock:
                 if callback_epoch != _session_epoch or _process_poisoned:
@@ -654,7 +674,8 @@ def init_shioaji():
                     "ask_volumes": ask_volumes,
                     "price": mid,
                     "timestamp": bidask.datetime.isoformat() if hasattr(bidask, "datetime") else None,
-                    "updated_at": datetime.now(TW_TZ).isoformat(),
+                    "updated_at": received_at,
+                    "confirmed_at": received_at,
                     "simtrade": bool(getattr(bidask, "simtrade", False)),
                     "intraday_odd": intraday_odd,
                     "lot_type": lot_type,
@@ -662,11 +683,11 @@ def init_shioaji():
                 }
                 stat = stats_store.setdefault(symbol, {"event_count": 0})
                 stat["event_count"] = int(stat.get("event_count") or 0) + 1
-                stat["last_event_at"] = datetime.now(TW_TZ).isoformat()
+                stat["last_event_at"] = received_at
                 stat["last_source_time"] = depth_store[symbol]["timestamp"]
                 stat["bid_levels"] = len(bid_prices)
                 stat["ask_levels"] = len(ask_prices)
-                subscription_recovery.pop(f"{lot_type}:{symbol}", None)
+                _confirm_orderbook_recovery(symbol, depth_store[symbol], lot_type)
 
     except Exception as e:
         print(f"[Shioaji] Init failed: {e}")
@@ -769,15 +790,45 @@ def _mark_orderbook_recovery(symbol: str, reason: str, lot_type: str = "board_lo
         state = subscription_recovery.setdefault(recovery_key, {
             "consecutive_failures": 0,
             "last_attempt_at": 0.0,
+            "next_attempt_at": 0.0,
             "last_reason": None,
+            "inflight": False,
+            "last_confirmed_at": None,
         })
-        last_attempt_at = float(state.get("last_attempt_at") or 0.0)
-        if now - last_attempt_at < orderbook_recovery_cooldown_seconds():
+        if bool(state.get("inflight")) or now < float(state.get("next_attempt_at") or 0.0):
             return int(state.get("consecutive_failures") or 0), False
         state["consecutive_failures"] = int(state.get("consecutive_failures") or 0) + 1
         state["last_reason"] = reason
         state["last_attempt_at"] = now
+        backoff_seconds = min(
+            120.0,
+            orderbook_recovery_cooldown_seconds() * (2 ** max(0, int(state["consecutive_failures"]) - 1)),
+        )
+        state["next_attempt_at"] = now + backoff_seconds
+        state["inflight"] = True
         return int(state["consecutive_failures"]), True
+
+
+def _finish_orderbook_recovery(symbol: str, lot_type: str = "board_lot") -> None:
+    recovery_key = f"{normalize_lot_type(lot_type)}:{symbol}"
+    with _state_lock:
+        state = subscription_recovery.get(recovery_key)
+        if state:
+            state["inflight"] = False
+
+
+def _confirm_orderbook_recovery(symbol: str, depth: dict, lot_type: str = "board_lot") -> None:
+    bid_prices = list(depth.get("bid_prices") or [])
+    ask_prices = list(depth.get("ask_prices") or [])
+    if not bid_prices or not ask_prices:
+        return
+    recovery_key = f"{normalize_lot_type(lot_type)}:{symbol}"
+    with _state_lock:
+        state = subscription_recovery.setdefault(recovery_key, {})
+        state["consecutive_failures"] = 0
+        state["next_attempt_at"] = 0.0
+        state["last_reason"] = None
+        state["last_confirmed_at"] = depth.get("confirmed_at") or depth.get("updated_at")
 
 
 def reset_shioaji_connection(reason: str) -> bool:
@@ -803,6 +854,7 @@ def reset_shioaji_connection(reason: str) -> bool:
         last_odd_bidasks.clear()
         bidask_stats.clear()
         odd_bidask_stats.clear()
+        subscription_recovery.clear()
         _price_buffer.clear()
 
     if old_api:
@@ -826,6 +878,18 @@ def reset_shioaji_connection(reason: str) -> bool:
     return connected
 
 
+def _execute_orderbook_recovery(symbol: str, reason: str, lot_type: str, failures: int) -> None:
+    try:
+        if failures >= reconnect_after_consecutive_failures():
+            print(
+                f"[Shioaji] Symbol refresh remains stale; keep session and retry symbol only: "
+                f"{lot_type}:{symbol} failures={failures} reason={reason}"
+            )
+        subscribe_symbol(symbol, force_bidask=True, lot_type=lot_type)
+    finally:
+        _finish_orderbook_recovery(symbol, lot_type)
+
+
 def recover_orderbook_symbol(symbol: str, reason: str, lot_type: str = "board_lot") -> None:
     symbol = symbol.upper().strip()
     lot_type = normalize_lot_type(lot_type)
@@ -837,22 +901,31 @@ def recover_orderbook_symbol(symbol: str, reason: str, lot_type: str = "board_lo
     failures, should_attempt = _mark_orderbook_recovery(symbol, reason, lot_type)
     if not should_attempt:
         return
-    if failures >= reconnect_after_consecutive_failures():
-        print(
-            f"[Shioaji] Symbol refresh remains stale; keep session and retry symbol only: "
-            f"{lot_type}:{symbol} failures={failures} reason={reason}"
-        )
-    subscribe_symbol(symbol, force_bidask=True, lot_type=lot_type)
+    _execute_orderbook_recovery(symbol, reason, lot_type, failures)
 
 
 def recover_orderbook_symbol_async(symbol: str, reason: str, lot_type: str = "board_lot") -> None:
+    symbol = symbol.upper().strip()
+    lot_type = normalize_lot_type(lot_type)
+    if not symbol:
+        return
+    watch_orderbook_symbols([symbol], lot_type=lot_type)
+    if streaming_control_busy():
+        return
+    failures, should_attempt = _mark_orderbook_recovery(symbol, reason, lot_type)
+    if not should_attempt:
+        return
     thread = threading.Thread(
-        target=recover_orderbook_symbol,
-        args=(symbol, reason, lot_type),
+        target=_execute_orderbook_recovery,
+        args=(symbol, reason, lot_type, failures),
         name=f"shioaji-recover-{normalize_lot_type(lot_type)}-{symbol}",
         daemon=True,
     )
-    thread.start()
+    try:
+        thread.start()
+    except Exception:
+        _finish_orderbook_recovery(symbol, lot_type)
+        raise
 
 
 def _watchdog_once() -> None:
@@ -874,9 +947,18 @@ def _watchdog_once() -> None:
         depth_store = _depth_store(lot_type)
         for symbol in target_symbols:
             depth = depth_store.get(symbol)
-            if depth and orderbook_is_fresh(depth):
+            bid_prices = list((depth or {}).get("bid_prices") or [])
+            ask_prices = list((depth or {}).get("ask_prices") or [])
+            confirmation_age_ms = orderbook_age_ms(depth)
+            if (
+                depth
+                and bid_prices
+                and ask_prices
+                and confirmation_age_ms is not None
+                and confirmation_age_ms <= orderbook_symbol_recovery_after_ms()
+            ):
                 continue
-            reason = "watchdog_waiting_callback" if not depth else "watchdog_stale_depth"
+            reason = "watchdog_waiting_callback" if not depth else "watchdog_subscription_unconfirmed"
             recover_orderbook_symbol(symbol, reason, lot_type)
 
 
@@ -975,6 +1057,29 @@ def verify_token(authorization: str | None):
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
+def orderbook_recovery_health_summary() -> dict:
+    now = time.time()
+    with _state_lock:
+        rows = [
+            {
+                "key": key,
+                "consecutive_failures": int(state.get("consecutive_failures") or 0),
+                "inflight": bool(state.get("inflight")),
+                "retry_in_ms": max(0, int((float(state.get("next_attempt_at") or 0.0) - now) * 1000)),
+                "last_reason": state.get("last_reason"),
+                "last_confirmed_at": state.get("last_confirmed_at"),
+            }
+            for key, state in subscription_recovery.items()
+        ]
+    active = [row for row in rows if row["inflight"] or row["consecutive_failures"] > 0]
+    return {
+        "tracked_symbols": len(rows),
+        "active_recoveries": sum(1 for row in active if row["inflight"]),
+        "backoff_symbols": sum(1 for row in active if row["retry_in_ms"] > 0),
+        "samples": active[:12],
+    }
+
+
 @app.get("/health")
 def health():
     orderbook_health = orderbook_health_summary()
@@ -1019,6 +1124,7 @@ def health():
         "watchdog_enabled": watchdog_enabled(),
         "watchdog_alive": watchdog_alive,
         "orderbook_watch": orderbook_health,
+        "orderbook_recovery": orderbook_recovery_health_summary(),
         "subscription_healthy": subscription_healthy,
         "execution_ready": execution_ready,
         "reconnect_count": _reconnect_count,
@@ -1256,7 +1362,9 @@ def _orderbook_diagnostic(
         "message": message,
         "source_time": source_time.isoformat() if source_time else None,
         "received_at": depth.get("updated_at") if depth else None,
+        "confirmed_at": (depth or {}).get("confirmed_at") or (depth or {}).get("updated_at"),
         "quote_age_ms": orderbook_age_ms(depth),
+        "source_age_ms": orderbook_source_age_ms(depth),
         "max_quote_age_ms": orderbook_max_age_ms(),
         "refresh_wait_seconds": orderbook_refresh_wait_seconds(),
         "subscribed": symbol in subscribed,
@@ -1369,7 +1477,9 @@ def _orderbook_payload(
             },
             "source_time": source_time.isoformat() if source_time else None,
             "received_at": depth.get("updated_at"),
+            "confirmed_at": depth.get("confirmed_at") or depth.get("updated_at"),
             "quote_age_ms": orderbook_age_ms(depth),
+            "source_age_ms": orderbook_source_age_ms(depth),
             "max_quote_age_ms": orderbook_max_age_ms(),
             "updated_at": depth.get("updated_at"),
             "bidask_event_count": int(stat.get("event_count") or 0),
@@ -1405,8 +1515,35 @@ def batch_orderbooks(req: BatchRequest, authorization: str | None = Header(defau
 
     lot_type = normalize_lot_type(req.lot_type)
     watch_orderbook_symbols(clean_symbols, lot_type=lot_type)
+    depth_store = _depth_store(lot_type)
+    refresh_symbols: list[str] = []
+    with _state_lock:
+        for symbol in clean_symbols:
+            depth = dict(depth_store.get(symbol) or {})
+            if not depth or not orderbook_is_fresh(depth):
+                refresh_symbols.append(symbol)
+
+    for symbol in refresh_symbols:
+        recover_orderbook_symbol_async(
+            symbol,
+            "request_waiting_callback" if not depth_store.get(symbol) else "request_stale_depth",
+            lot_type,
+        )
+
+    if refresh_symbols:
+        deadline = time.monotonic() + orderbook_refresh_wait_seconds()
+        while time.monotonic() < deadline:
+            with _state_lock:
+                pending = [
+                    symbol for symbol in refresh_symbols
+                    if not orderbook_is_fresh(depth_store.get(symbol))
+                ]
+            if not pending:
+                break
+            time.sleep(0.05)
+
     for symbol in clean_symbols:
-        status_code, payload = _orderbook_payload(symbol, lot_type=lot_type)
+        status_code, payload = _orderbook_payload(symbol, refresh=False, lot_type=lot_type)
         if status_code == 200:
             data[symbol] = payload
         else:

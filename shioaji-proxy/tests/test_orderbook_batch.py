@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import threading
 import time
 from types import SimpleNamespace
 from datetime import datetime
@@ -309,6 +310,126 @@ def test_stale_orderbook_request_waits_for_active_refresh(monkeypatch):
     assert status_code == 200
     assert payload["status"] == "ok"
     assert payload["bid_prices"][0] == 37.3
+
+
+def test_active_confirmation_accepts_static_book_without_rewriting_source_time(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy.api = object()
+    proxy.connected = True
+    symbol = "4123"
+    now = datetime.now(proxy.TW_TZ)
+    source_time = (now - proxy.timedelta(hours=1)).isoformat()
+    confirmed_at = now.isoformat()
+    proxy.last_bidasks[symbol] = {
+        "symbol": symbol,
+        "bid_prices": [38.0],
+        "bid_volumes": [10],
+        "ask_prices": [38.1],
+        "ask_volumes": [10],
+        "price": 38.05,
+        "timestamp": source_time,
+        "updated_at": confirmed_at,
+        "confirmed_at": confirmed_at,
+    }
+
+    status_code, payload = proxy._orderbook_payload(symbol, refresh=False)
+
+    assert status_code == 200
+    assert payload["source_time"] == source_time
+    assert payload["confirmed_at"] == confirmed_at
+    assert payload["quote_age_ms"] <= proxy.orderbook_max_age_ms()
+    assert payload["source_age_ms"] > payload["quote_age_ms"]
+
+
+def test_watchdog_does_not_recover_unchanged_book_at_execution_freshness_boundary(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy.connected = True
+    symbol = "4123"
+    now = datetime.now(proxy.TW_TZ)
+    thirty_seconds_ago = (now - proxy.timedelta(seconds=30)).isoformat()
+    proxy.watched_orderbook_symbols[symbol] = time.time() + 60
+    proxy.last_bidasks[symbol] = {
+        "bid_prices": [38.0],
+        "bid_volumes": [10],
+        "ask_prices": [38.1],
+        "ask_volumes": [10],
+        "timestamp": thirty_seconds_ago,
+        "updated_at": thirty_seconds_ago,
+        "confirmed_at": thirty_seconds_ago,
+    }
+    proxy.bidask_stats[symbol] = {"last_event_at": now.isoformat()}
+    calls: list[str] = []
+    monkeypatch.setattr(proxy, "recover_orderbook_symbol", lambda symbol_arg, *_args: calls.append(symbol_arg))
+    monkeypatch.setattr(proxy, "reset_shioaji_connection", lambda *_args: (_ for _ in ()).throw(AssertionError("healthy channel must not reconnect")))
+
+    proxy._watchdog_once()
+
+    assert calls == []
+
+
+def test_batch_orderbook_refresh_uses_one_shared_deadline(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy.api = object()
+    proxy.connected = True
+    proxy.last_bidasks.clear()
+    monkeypatch.setattr(proxy, "orderbook_refresh_wait_seconds", lambda: 0.1)
+    monkeypatch.setattr(proxy, "recover_orderbook_symbol_async", lambda *_args, **_kwargs: None)
+
+    started = time.monotonic()
+    result = proxy.batch_orderbooks(proxy.BatchRequest(symbols=["4123", "4541"]))
+    elapsed = time.monotonic() - started
+
+    assert result["status"] == "empty"
+    assert result["error_count"] == 2
+    assert elapsed < 0.18
+
+
+def test_async_recovery_is_singleflight_per_symbol(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy.subscription_recovery.clear()
+    proxy._streaming_control_inflight = False
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[str] = []
+
+    def blocking_subscribe(symbol: str, **_kwargs):
+        calls.append(symbol)
+        entered.set()
+        release.wait(timeout=1)
+        return False
+
+    monkeypatch.setattr(proxy, "subscribe_symbol", blocking_subscribe)
+    proxy.recover_orderbook_symbol_async("4123", "request_stale_depth")
+    assert entered.wait(timeout=1)
+    proxy.recover_orderbook_symbol_async("4123", "request_stale_depth")
+    time.sleep(0.02)
+    release.set()
+    time.sleep(0.02)
+
+    assert calls == ["4123"]
+
+
+def test_confirmation_resets_backoff_without_dropping_singleflight_state():
+    proxy = _load_proxy_main()
+    key = "board_lot:4123"
+    proxy.subscription_recovery[key] = {
+        "consecutive_failures": 4,
+        "next_attempt_at": time.time() + 120,
+        "inflight": True,
+    }
+    confirmed_at = datetime.now(proxy.TW_TZ).isoformat()
+
+    proxy._confirm_orderbook_recovery("4123", {
+        "bid_prices": [38.0],
+        "ask_prices": [38.1],
+        "confirmed_at": confirmed_at,
+    })
+
+    state = proxy.subscription_recovery[key]
+    assert state["consecutive_failures"] == 0
+    assert state["next_attempt_at"] == 0.0
+    assert state["inflight"] is True
+    assert state["last_confirmed_at"] == confirmed_at
 
 
 def test_execution_snapshot_reads_fresh_tick_cache_without_sdk_call(monkeypatch):

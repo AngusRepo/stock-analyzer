@@ -18,6 +18,9 @@ export interface IntradayOHLC {
   sessionEpoch?: number
   totalVolume?: number
   quoteTime?: string
+  confirmationTime?: string
+  quoteAgeMs?: number
+  sourceAgeMs?: number
   source?: 'shioaji' | 'yahoo'
   lotType?: 'board_lot' | 'odd_lot'
 }
@@ -44,9 +47,11 @@ function compactOrderbookDiagnostic(symbol: string, payload: any, fallbackStatus
     `${symbol}:${status}`,
     detail?.message ? `message=${String(detail.message).slice(0, 80).replace(/\s+/g, '_')}` : null,
     detail?.quote_age_ms != null ? `age=${detail.quote_age_ms}` : null,
+    detail?.source_age_ms != null ? `source_age=${detail.source_age_ms}` : null,
     detail?.max_quote_age_ms != null ? `max=${detail.max_quote_age_ms}` : null,
     detail?.refresh_wait_seconds != null ? `wait=${detail.refresh_wait_seconds}s` : null,
     detail?.source_time ? `source_time=${String(detail.source_time)}` : null,
+    detail?.confirmed_at ? `confirmed_at=${String(detail.confirmed_at)}` : null,
     detail?.bid_levels != null ? `bid_levels=${detail.bid_levels}` : null,
     detail?.ask_levels != null ? `ask_levels=${detail.ask_levels}` : null,
     detail?.bidask_event_count != null ? `events=${detail.bidask_event_count}` : null,
@@ -221,6 +226,15 @@ function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
         : typeof payload?.updated_at === 'string'
           ? payload.updated_at
           : undefined
+  const confirmationTime = typeof payload?.confirmed_at === 'string'
+    ? payload.confirmed_at
+    : typeof payload?.received_at === 'string'
+      ? payload.received_at
+      : typeof payload?.updated_at === 'string'
+        ? payload.updated_at
+        : undefined
+  const quoteAgeMs = Number.isFinite(Number(payload?.quote_age_ms)) ? Math.max(0, Number(payload.quote_age_ms)) : undefined
+  const sourceAgeMs = Number.isFinite(Number(payload?.source_age_ms)) ? Math.max(0, Number(payload.source_age_ms)) : undefined
 
   const lotType = String(payload?.lot_type ?? '').toLowerCase() === 'odd_lot' ? 'odd_lot' : 'board_lot'
   const sessionEpoch = Number.isFinite(Number(payload?.session_epoch)) ? Number(payload.session_epoch) : undefined
@@ -231,7 +245,8 @@ function normalizeShioajiOrderbook(payload: any): IntradayOHLC | null {
     bidVolumes: bidVolumes.length > 0 ? bidVolumes : bidVolume == null ? [] : [bidVolume],
     askVolumes: askVolumes.length > 0 ? askVolumes : askVolume == null ? [] : [askVolume],
     volumeUnit: lotType === 'board_lot' ? 'lots' : 'shares',
-    quoteTime, source: 'shioaji', lotType, sessionEpoch,
+    quoteTime, confirmationTime, quoteAgeMs, sourceAgeMs,
+    source: 'shioaji', lotType, sessionEpoch,
   }
 }
 

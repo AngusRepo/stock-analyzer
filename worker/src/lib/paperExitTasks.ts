@@ -376,7 +376,8 @@ function buildSellShadowSnapshots(
             askVolumes: quote.askVolumes ?? [],
             volumeUnit: quote.volumeUnit,
             sourceTime: quote.quoteTime ?? null,
-            ageMs: quote.quoteTime ? Math.max(0, Date.now() - (parseTimeMs(quote.quoteTime) ?? Date.now())) : null,
+            receivedAt: quote.confirmationTime ?? null,
+            ageMs: quote.confirmationTime ? Math.max(0, Date.now() - (parseTimeMs(quote.confirmationTime) ?? Date.now())) : quote.quoteAgeMs ?? null,
             sessionEpoch: quote.sessionEpoch ?? null,
           }]
         : [],
@@ -416,7 +417,8 @@ export function resolvePositionExitSellFill(
         bidPrices: quote.bidPrices ?? [], askPrices: quote.askPrices ?? [],
         bidVolumes: quote.bidVolumes ?? [], askVolumes: quote.askVolumes ?? [],
         volumeUnit: quote.volumeUnit, sourceTime: quote.quoteTime ?? null,
-        ageMs: quote.quoteTime ? Math.max(0, Date.now() - (parseTimeMs(quote.quoteTime) ?? Date.now())) : null,
+        receivedAt: quote.confirmationTime ?? null,
+        ageMs: quote.confirmationTime ? Math.max(0, Date.now() - (parseTimeMs(quote.confirmationTime) ?? Date.now())) : quote.quoteAgeMs ?? null,
         sessionEpoch: quote.sessionEpoch ?? null,
       }],
     })

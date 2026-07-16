@@ -175,14 +175,67 @@ def orderbook_source_time(depth: dict | None) -> datetime | None:
     return parse_quote_time(depth.get("timestamp") or depth.get("source_time") or depth.get("updated_at"))
 
 
-def orderbook_confirmation_time(depth: dict | None) -> datetime | None:
+def orderbook_symbol_confirmation_time(depth: dict | None) -> datetime | None:
     if not depth:
         return None
     return parse_quote_time(depth.get("confirmed_at") or depth.get("updated_at") or depth.get("timestamp"))
 
 
-def orderbook_age_ms(depth: dict | None) -> int | None:
-    confirmation_time = orderbook_confirmation_time(depth)
+def orderbook_channel_confirmation_time(lot_type: str = "board_lot") -> datetime | None:
+    stats_store = _stats_store(lot_type)
+    with _state_lock:
+        candidates = [
+            parse_quote_time(stat.get("last_event_at"))
+            for stat in stats_store.values()
+            if stat.get("last_event_at")
+        ]
+    valid = [candidate for candidate in candidates if candidate is not None]
+    return max(valid) if valid else None
+
+
+def orderbook_effective_confirmation(
+    depth: dict | None,
+    symbol: str | None = None,
+    lot_type: str = "board_lot",
+) -> tuple[datetime | None, str]:
+    direct = orderbook_symbol_confirmation_time(depth)
+    now = get_tw_now()
+    if not depth or not symbol:
+        return direct, "stale_symbol_event" if direct else "unconfirmed"
+
+    lot_type = normalize_lot_type(lot_type)
+    subscription_store = odd_bidask_subscribed if lot_type == "odd_lot" else bidask_subscribed
+    bid_prices = list(depth.get("bid_prices") or [])
+    ask_prices = list(depth.get("ask_prices") or [])
+    try:
+        session_epoch = int(depth.get("session_epoch") or 0)
+    except (TypeError, ValueError):
+        session_epoch = 0
+    if symbol not in subscription_store or session_epoch != _session_epoch:
+        return direct, "stale_symbol_event" if direct else "unconfirmed"
+
+    direct_age_ms = (now - direct).total_seconds() * 1000 if direct is not None else None
+    if direct_age_ms is not None and -5_000 <= direct_age_ms <= orderbook_max_age_ms():
+        return direct, "symbol_event"
+    if not bid_prices or not ask_prices:
+        return direct, "stale_symbol_event" if direct else "unconfirmed"
+
+    channel = orderbook_channel_confirmation_time(lot_type)
+    channel_age_ms = (now - channel).total_seconds() * 1000 if channel is not None else None
+    if channel_age_ms is not None and -5_000 <= channel_age_ms <= orderbook_max_age_ms():
+        return channel, "channel_heartbeat_static_book"
+    return direct, "stale_channel" if direct else "unconfirmed"
+
+
+def orderbook_age_ms(depth: dict | None, symbol: str | None = None, lot_type: str = "board_lot") -> int | None:
+    confirmation_time, _ = orderbook_effective_confirmation(depth, symbol, lot_type)
+    if confirmation_time is None:
+        return None
+    return int(max(0, (get_tw_now() - confirmation_time).total_seconds() * 1000))
+
+
+def orderbook_symbol_confirmation_age_ms(depth: dict | None) -> int | None:
+    confirmation_time = orderbook_symbol_confirmation_time(depth)
     if confirmation_time is None:
         return None
     return int(max(0, (get_tw_now() - confirmation_time).total_seconds() * 1000))
@@ -195,8 +248,8 @@ def orderbook_source_age_ms(depth: dict | None) -> int | None:
     return int(max(0, (get_tw_now() - source_time).total_seconds() * 1000))
 
 
-def orderbook_is_fresh(depth: dict | None) -> bool:
-    age = orderbook_age_ms(depth)
+def orderbook_is_fresh(depth: dict | None, symbol: str | None = None, lot_type: str = "board_lot") -> bool:
+    age = orderbook_age_ms(depth, symbol, lot_type)
     return age is not None and age <= orderbook_max_age_ms()
 
 
@@ -549,7 +602,7 @@ def orderbook_health_summary(symbols: list[str] | None = None, lot_type: str = "
         for symbol in target_symbols:
             depth = depth_store.get(symbol)
             stat = stats_store.get(symbol) or {}
-            if depth and orderbook_is_fresh(depth):
+            if depth and orderbook_is_fresh(depth, symbol, lot_type):
                 fresh += 1
                 status = "fresh"
             elif depth:
@@ -559,12 +612,16 @@ def orderbook_health_summary(symbols: list[str] | None = None, lot_type: str = "
                 waiting += 1
                 status = "waiting_callback"
             if len(samples) < 12:
+                confirmation_time, confirmation_mode = orderbook_effective_confirmation(depth, symbol, lot_type)
                 samples.append({
                     "symbol": symbol,
                     "status": status,
-                    "quote_age_ms": orderbook_age_ms(depth),
+                    "quote_age_ms": orderbook_age_ms(depth, symbol, lot_type),
+                    "symbol_confirmation_age_ms": orderbook_symbol_confirmation_age_ms(depth),
                     "source_age_ms": orderbook_source_age_ms(depth),
-                    "confirmed_at": (depth or {}).get("confirmed_at") or (depth or {}).get("updated_at"),
+                    "confirmed_at": confirmation_time.isoformat() if confirmation_time else None,
+                    "symbol_confirmed_at": (depth or {}).get("confirmed_at") or (depth or {}).get("updated_at"),
+                    "confirmation_mode": confirmation_mode,
                     "bidask_event_count": int(stat.get("event_count") or 0),
                     "last_bidask_event_at": stat.get("last_event_at"),
                     "bid_levels": len((depth or {}).get("bid_prices") or []),
@@ -949,7 +1006,7 @@ def _watchdog_once() -> None:
             depth = depth_store.get(symbol)
             bid_prices = list((depth or {}).get("bid_prices") or [])
             ask_prices = list((depth or {}).get("ask_prices") or [])
-            confirmation_age_ms = orderbook_age_ms(depth)
+            confirmation_age_ms = orderbook_symbol_confirmation_age_ms(depth)
             if (
                 depth
                 and bid_prices
@@ -1354,6 +1411,7 @@ def _orderbook_diagnostic(
     stat = _stats_store(lot_type).get(symbol, {})
     subscription_store = odd_bidask_subscribed if lot_type == "odd_lot" else bidask_subscribed
     source_time = orderbook_source_time(depth)
+    confirmation_time, confirmation_mode = orderbook_effective_confirmation(depth, symbol, lot_type)
     return {
         "status": status,
         "symbol": symbol,
@@ -1362,8 +1420,11 @@ def _orderbook_diagnostic(
         "message": message,
         "source_time": source_time.isoformat() if source_time else None,
         "received_at": depth.get("updated_at") if depth else None,
-        "confirmed_at": (depth or {}).get("confirmed_at") or (depth or {}).get("updated_at"),
-        "quote_age_ms": orderbook_age_ms(depth),
+        "confirmed_at": confirmation_time.isoformat() if confirmation_time else None,
+        "symbol_confirmed_at": (depth or {}).get("confirmed_at") or (depth or {}).get("updated_at"),
+        "confirmation_mode": confirmation_mode,
+        "quote_age_ms": orderbook_age_ms(depth, symbol, lot_type),
+        "symbol_confirmation_age_ms": orderbook_symbol_confirmation_age_ms(depth),
         "source_age_ms": orderbook_source_age_ms(depth),
         "max_quote_age_ms": orderbook_max_age_ms(),
         "refresh_wait_seconds": orderbook_refresh_wait_seconds(),
@@ -1385,7 +1446,7 @@ def _wait_for_fresh_orderbook(symbol: str, lot_type: str) -> dict | None:
     while time.monotonic() < deadline:
         with _state_lock:
             depth = dict(depth_store.get(symbol) or {})
-        if depth and orderbook_is_fresh(depth):
+        if depth and orderbook_is_fresh(depth, symbol, lot_type):
             return depth
         time.sleep(0.05)
     with _state_lock:
@@ -1409,7 +1470,7 @@ def _orderbook_payload(
 
         watch_orderbook_symbols([symbol], lot_type=lot_type)
         depth = depth_store.get(symbol)
-        if refresh and (not depth or not orderbook_is_fresh(depth)):
+        if refresh and (not depth or not orderbook_is_fresh(depth, symbol, lot_type)):
             recover_orderbook_symbol_async(
                 symbol,
                 "request_waiting_callback" if not depth else "request_stale_depth",
@@ -1425,7 +1486,7 @@ def _orderbook_payload(
                 lot_type=lot_type,
             )
 
-        if not orderbook_is_fresh(depth):
+        if not orderbook_is_fresh(depth, symbol, lot_type):
             return 503, _orderbook_diagnostic(symbol, "stale_depth", depth=depth, lot_type=lot_type)
 
         bid_prices = list(depth.get("bid_prices") or [])[:5]
@@ -1458,6 +1519,7 @@ def _orderbook_payload(
         spread_pct = ((ask1 - bid1) / mid * 100) if mid > 0 and bid1 and ask1 else 0
         bid_concentration = (bid_volumes[0] / total_bid_vol) if total_bid_vol > 0 and bid_volumes else 0
         source_time = orderbook_source_time(depth)
+        confirmation_time, confirmation_mode = orderbook_effective_confirmation(depth, symbol, lot_type)
         stat = stats_store.get(symbol, {})
 
         return 200, {
@@ -1477,8 +1539,11 @@ def _orderbook_payload(
             },
             "source_time": source_time.isoformat() if source_time else None,
             "received_at": depth.get("updated_at"),
-            "confirmed_at": depth.get("confirmed_at") or depth.get("updated_at"),
-            "quote_age_ms": orderbook_age_ms(depth),
+            "confirmed_at": confirmation_time.isoformat() if confirmation_time else None,
+            "symbol_confirmed_at": depth.get("confirmed_at") or depth.get("updated_at"),
+            "confirmation_mode": confirmation_mode,
+            "quote_age_ms": orderbook_age_ms(depth, symbol, lot_type),
+            "symbol_confirmation_age_ms": orderbook_symbol_confirmation_age_ms(depth),
             "source_age_ms": orderbook_source_age_ms(depth),
             "max_quote_age_ms": orderbook_max_age_ms(),
             "updated_at": depth.get("updated_at"),
@@ -1520,7 +1585,7 @@ def batch_orderbooks(req: BatchRequest, authorization: str | None = Header(defau
     with _state_lock:
         for symbol in clean_symbols:
             depth = dict(depth_store.get(symbol) or {})
-            if not depth or not orderbook_is_fresh(depth):
+            if not depth or not orderbook_is_fresh(depth, symbol, lot_type):
                 refresh_symbols.append(symbol)
 
     for symbol in refresh_symbols:
@@ -1536,7 +1601,7 @@ def batch_orderbooks(req: BatchRequest, authorization: str | None = Header(defau
             with _state_lock:
                 pending = [
                     symbol for symbol in refresh_symbols
-                    if not orderbook_is_fresh(depth_store.get(symbol))
+                    if not orderbook_is_fresh(depth_store.get(symbol), symbol, lot_type)
                 ]
             if not pending:
                 break

@@ -64,6 +64,7 @@ def test_orderbook_payload_returns_fresh_depth_with_callback_telemetry():
     proxy.api = object()
     proxy.connected = True
     symbol = "2330"
+    proxy.bidask_subscribed.add(symbol)
     now = datetime.now(proxy.TW_TZ).isoformat()
     proxy.last_bidasks[symbol] = {
         "symbol": symbol,
@@ -74,6 +75,7 @@ def test_orderbook_payload_returns_fresh_depth_with_callback_telemetry():
         "price": 100.25,
         "timestamp": now,
         "updated_at": now,
+        "session_epoch": proxy._session_epoch,
     }
     proxy.bidask_stats[symbol] = {"event_count": 3, "last_event_at": now, "last_source_time": now}
 
@@ -91,6 +93,7 @@ def test_orderbook_payload_rejects_one_sided_depth():
     proxy.api = object()
     proxy.connected = True
     symbol = "2330"
+    proxy.bidask_subscribed.add(symbol)
     now = datetime.now(proxy.TW_TZ).isoformat()
     proxy.last_bidasks[symbol] = {
         "symbol": symbol,
@@ -101,6 +104,7 @@ def test_orderbook_payload_rejects_one_sided_depth():
         "price": 100.0,
         "timestamp": now,
         "updated_at": now,
+        "session_epoch": proxy._session_epoch,
     }
 
     status_code, payload = proxy._orderbook_payload(symbol)
@@ -183,6 +187,7 @@ def test_odd_lot_orderbook_uses_dedicated_stream_cache():
     proxy.api = object()
     proxy.connected = True
     symbol = "2441"
+    proxy.odd_bidask_subscribed.add(symbol)
     now = datetime.now(proxy.TW_TZ).isoformat()
     proxy.last_bidasks[symbol] = {
         "bid_prices": [143.0],
@@ -200,6 +205,7 @@ def test_odd_lot_orderbook_uses_dedicated_stream_cache():
         "timestamp": now,
         "updated_at": now,
         "intraday_odd": True,
+        "session_epoch": proxy._session_epoch,
     }
 
     status_code, payload = proxy._orderbook_payload(symbol, lot_type="odd_lot")
@@ -287,6 +293,7 @@ def test_stale_orderbook_request_waits_for_active_refresh(monkeypatch):
     proxy.api = object()
     proxy.connected = True
     symbol = "4123"
+    proxy.bidask_subscribed.add(symbol)
     proxy.last_bidasks[symbol] = {
         "symbol": symbol,
         "bid_prices": [37.3],
@@ -294,6 +301,7 @@ def test_stale_orderbook_request_waits_for_active_refresh(monkeypatch):
         "ask_prices": [37.4],
         "ask_volumes": [10],
         "updated_at": "2026-07-15T09:00:00+08:00",
+        "session_epoch": proxy._session_epoch,
     }
     monkeypatch.setattr(proxy, "orderbook_refresh_wait_seconds", lambda: 0.1)
 
@@ -317,6 +325,7 @@ def test_active_confirmation_accepts_static_book_without_rewriting_source_time(m
     proxy.api = object()
     proxy.connected = True
     symbol = "4123"
+    proxy.bidask_subscribed.add(symbol)
     now = datetime.now(proxy.TW_TZ)
     source_time = (now - proxy.timedelta(hours=1)).isoformat()
     confirmed_at = now.isoformat()
@@ -330,6 +339,7 @@ def test_active_confirmation_accepts_static_book_without_rewriting_source_time(m
         "timestamp": source_time,
         "updated_at": confirmed_at,
         "confirmed_at": confirmed_at,
+        "session_epoch": proxy._session_epoch,
     }
 
     status_code, payload = proxy._orderbook_payload(symbol, refresh=False)
@@ -339,6 +349,99 @@ def test_active_confirmation_accepts_static_book_without_rewriting_source_time(m
     assert payload["confirmed_at"] == confirmed_at
     assert payload["quote_age_ms"] <= proxy.orderbook_max_age_ms()
     assert payload["source_age_ms"] > payload["quote_age_ms"]
+
+
+def test_live_channel_heartbeat_confirms_unchanged_book_in_same_session(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy.api = object()
+    proxy.connected = True
+    proxy._session_epoch = 7
+    symbol = "4123"
+    now = datetime(2026, 7, 16, 10, 30, 0, tzinfo=proxy.TW_TZ)
+    stale_symbol_time = (now - proxy.timedelta(seconds=30)).isoformat()
+    channel_time = (now - proxy.timedelta(milliseconds=200)).isoformat()
+    monkeypatch.setattr(proxy, "get_tw_now", lambda: now)
+    proxy.bidask_subscribed.update({symbol, "0050"})
+    proxy.last_bidasks[symbol] = {
+        "symbol": symbol,
+        "bid_prices": [38.0, 37.95, 37.9, 37.85, 37.8],
+        "bid_volumes": [10, 9, 8, 7, 6],
+        "ask_prices": [38.1, 38.15, 38.2, 38.25, 38.3],
+        "ask_volumes": [11, 10, 9, 8, 7],
+        "price": 38.05,
+        "timestamp": stale_symbol_time,
+        "updated_at": stale_symbol_time,
+        "confirmed_at": stale_symbol_time,
+        "session_epoch": 7,
+    }
+    proxy.bidask_stats["0050"] = {"event_count": 99, "last_event_at": channel_time}
+
+    status_code, payload = proxy._orderbook_payload(symbol, refresh=False)
+
+    assert status_code == 200
+    assert payload["confirmation_mode"] == "channel_heartbeat_static_book"
+    assert payload["confirmed_at"] == channel_time
+    assert payload["symbol_confirmed_at"] == stale_symbol_time
+    assert payload["quote_age_ms"] == 200
+    assert payload["symbol_confirmation_age_ms"] == 30_000
+    assert payload["source_age_ms"] == 30_000
+
+
+def test_channel_heartbeat_cannot_confirm_book_from_prior_session(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy.api = object()
+    proxy.connected = True
+    proxy._session_epoch = 8
+    symbol = "4123"
+    now = datetime(2026, 7, 16, 10, 30, 0, tzinfo=proxy.TW_TZ)
+    stale_symbol_time = (now - proxy.timedelta(seconds=30)).isoformat()
+    monkeypatch.setattr(proxy, "get_tw_now", lambda: now)
+    proxy.bidask_subscribed.add(symbol)
+    proxy.last_bidasks[symbol] = {
+        "bid_prices": [38.0],
+        "bid_volumes": [10],
+        "ask_prices": [38.1],
+        "ask_volumes": [10],
+        "timestamp": stale_symbol_time,
+        "confirmed_at": stale_symbol_time,
+        "session_epoch": 7,
+    }
+    proxy.bidask_stats["0050"] = {"last_event_at": now.isoformat()}
+
+    status_code, payload = proxy._orderbook_payload(symbol, refresh=False)
+
+    assert status_code == 503
+    assert payload["status"] == "stale_depth"
+    assert payload["confirmation_mode"] == "stale_symbol_event"
+
+
+def test_static_book_remains_stale_without_live_channel_heartbeat(monkeypatch):
+    proxy = _load_proxy_main()
+    proxy.api = object()
+    proxy.connected = True
+    proxy._session_epoch = 7
+    symbol = "4123"
+    now = datetime(2026, 7, 16, 10, 30, 0, tzinfo=proxy.TW_TZ)
+    stale_symbol_time = (now - proxy.timedelta(seconds=30)).isoformat()
+    stale_channel_time = (now - proxy.timedelta(seconds=5)).isoformat()
+    monkeypatch.setattr(proxy, "get_tw_now", lambda: now)
+    proxy.bidask_subscribed.add(symbol)
+    proxy.last_bidasks[symbol] = {
+        "bid_prices": [38.0],
+        "bid_volumes": [10],
+        "ask_prices": [38.1],
+        "ask_volumes": [10],
+        "timestamp": stale_symbol_time,
+        "confirmed_at": stale_symbol_time,
+        "session_epoch": 7,
+    }
+    proxy.bidask_stats["0050"] = {"last_event_at": stale_channel_time}
+
+    status_code, payload = proxy._orderbook_payload(symbol, refresh=False)
+
+    assert status_code == 503
+    assert payload["status"] == "stale_depth"
+    assert payload["confirmation_mode"] == "stale_channel"
 
 
 def test_watchdog_does_not_recover_unchanged_book_at_execution_freshness_boundary(monkeypatch):

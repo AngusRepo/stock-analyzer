@@ -44,7 +44,15 @@ const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
 const S12_REPLAY_QUEUE_CHUNK_SIZE = 20
 const S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS = 60
 const S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS = 900
-const S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS = 20
+const S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS = 60
+
+function s12ReplayLeaseRetryDelaySeconds(signalDate: string, attempt: number): number {
+  const seed = `${signalDate}:${attempt}`
+    .split('')
+    .reduce((hash, char) => ((hash * 33) ^ char.charCodeAt(0)) >>> 0, 5381)
+  const jitterWindow = S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS - S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS
+  return S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS + (seed % (jitterWindow + 1))
+}
 const FINLAB_CANONICAL_DAILY_CHECKS = [
   {
     key: 'canonical_market_daily:listed_otc',
@@ -3243,10 +3251,7 @@ export async function processUpdateBatch(
         }, env)
         return
       }
-      const delaySeconds = Math.min(
-        S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS,
-        S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS * (leaseRetryAttempt + 1),
-      )
+      const delaySeconds = s12ReplayLeaseRetryDelaySeconds(triggerTime, leaseRetryAttempt + 1)
       await env.UPDATE_QUEUE.send({
         ...(msg as any),
         leaseRetryAttempt: leaseRetryAttempt + 1,

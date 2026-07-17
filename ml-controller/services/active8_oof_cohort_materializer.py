@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import statistics
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import numpy as np
@@ -155,10 +157,22 @@ def load_oof_prediction_rows(
     return rows
 
 
-def _counterfactual_score_v2(native_payload: dict[str, Any], ensemble_rank: float) -> dict[str, Any]:
+RECORDED_PIT_COMPONENT_SOURCE = "screener_funnel_scoring_recorded_pit_v1"
+
+
+def _counterfactual_score_v2(
+    native_payload: dict[str, Any],
+    ensemble_rank: float,
+    *,
+    native_component_source: str = "daily_recommendations_score_v2_v3",
+) -> dict[str, Any]:
     if native_payload.get("version") != "score_v2":
         raise ValueError("oof_native_score_v2_missing")
-    if native_payload.get("semanticVersion") != SCORE_SEMANTIC_VERSION:
+    source_semantic = native_payload.get("semanticVersion")
+    recorded_pit = native_component_source == RECORDED_PIT_COMPONENT_SOURCE
+    if source_semantic != SCORE_SEMANTIC_VERSION and not (
+        recorded_pit and source_semantic in {None, ""}
+    ):
         raise ValueError("oof_native_score_semantic_mismatch")
     components = dict(native_payload.get("components") or {})
     required = {"chipFlow", "technicalStructure", "fundamentalQuality"}
@@ -179,7 +193,9 @@ def _counterfactual_score_v2(native_payload: dict[str, Any], ensemble_rank: floa
         "counterfactualLineage": {
             "generationMode": "purged_oof",
             "mlEdgeOwner": STACKER_SEMANTIC_VERSION,
-            "nonMlComponentsOwner": "same_day_native_score_v2_point_in_time",
+            "nonMlComponentsOwner": native_component_source,
+            "sourceSemanticVersion": source_semantic,
+            "sourceWasRecordedPointInTime": recorded_pit,
             "nativeAlphaAdjustmentExcluded": True,
         },
     }
@@ -220,6 +236,10 @@ def build_oof_snapshot_rows(
             score_payload = _counterfactual_score_v2(
                 _loads(native.get("score_components")),
                 stacked["ensemble_rank"],
+                native_component_source=str(
+                    native.get("native_component_source")
+                    or "daily_recommendations_score_v2_v3"
+                ),
             )
         except ValueError as exc:
             rejected[str(exc)] += 1
@@ -298,11 +318,17 @@ def load_native_pit_component_rows(
     """Load same-day non-ML ScoreV2/S12 inputs without reconstructing future data."""
 
     dates = sorted({row["prediction_date"] for row in prediction_rows})
-    rows: list[dict[str, Any]] = []
+    if not dates:
+        return []
+    symbols = {str(row.get("symbol") or "") for row in prediction_rows}
+    rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+
+    # Native v3 rows remain authoritative whenever the historical producer
+    # persisted the complete semantic contract.
     for offset in range(0, len(dates), 20):
         chunk = dates[offset:offset + 20]
         placeholders = ",".join("?" for _ in chunk)
-        rows.extend(query_fn(
+        native_rows = query_fn(
             f"""
             SELECT
               dr.stock_id,
@@ -315,7 +341,10 @@ def load_native_pit_component_rows(
               dr.market_segment,
               dr.recommendation_lane,
               p.forecast_data,
-              json_extract(dr.alpha_context, '$.market_heat_expected_return') market_heat_expected_return
+              json_extract(dr.alpha_context, '$.market_heat_expected_return') market_heat_expected_return,
+              'daily_recommendations_score_v2_v3' native_component_source,
+              NULL native_run_id,
+              dr.created_at native_created_at
             FROM daily_recommendations dr
             JOIN stocks s ON s.id = dr.stock_id
             LEFT JOIN predictions p
@@ -334,8 +363,147 @@ def load_native_pit_component_rows(
               AND json_extract(dr.score_components, '$.semanticVersion') = ?
             """,
             [*chunk, SCORE_SEMANTIC_VERSION],
-        ))
-    return rows
+        )
+        for row in native_rows:
+            key = (str(row.get("prediction_date") or "")[:10], str(row.get("symbol") or ""))
+            if key[0] and key[1] in symbols:
+                rows_by_key[key] = row
+
+    # Older ScoreV2 producers omitted semanticVersion from daily outputs, but
+    # their canonical screener scoring stage retained the actual non-ML
+    # components. Resolve only runs completed before the next market open.
+    calendar_rows = query_fn(
+        """
+        SELECT substr(date, 1, 10) trading_date, COUNT(*) price_rows
+        FROM stock_prices
+        WHERE substr(date, 1, 10) BETWEEN date(?, '-30 days') AND date(?, '+14 days')
+        GROUP BY substr(date, 1, 10)
+        ORDER BY trading_date
+        """,
+        [dates[0], dates[-1]],
+    )
+    observed_counts = [
+        max(0, int(row.get("price_rows") or 0))
+        for row in calendar_rows
+        if str(row.get("trading_date") or "")
+    ]
+    coverage_reference = statistics.median(observed_counts) if observed_counts else 0.0
+    coverage_threshold = max(1, int(coverage_reference * 0.20))
+    market_sessions = sorted({
+        str(row.get("trading_date") or "")[:10]
+        for row in calendar_rows
+        if int(row.get("price_rows") or 0) >= coverage_threshold
+    })
+    next_session: dict[str, str] = {}
+    for date in dates:
+        later = [session for session in market_sessions if session > date]
+        if later:
+            next_session[date] = later[0]
+
+    for offset in range(0, len(dates), 20):
+        chunk = dates[offset:offset + 20]
+        placeholders = ",".join("?" for _ in chunk)
+        run_rows = query_fn(
+            f"""
+            SELECT
+              r.date,
+              r.run_id,
+              r.created_at,
+              COUNT(i.id) component_rows
+            FROM screener_funnel_runs r
+            JOIN screener_funnel_items i
+              ON i.run_id = r.run_id
+             AND i.stage = 'scoring'
+            WHERE r.date IN ({placeholders})
+              AND r.status = 'success'
+              AND json_extract(i.evidence, '$.score_components') IS NOT NULL
+            GROUP BY r.date, r.run_id, r.created_at
+            ORDER BY r.date, r.created_at, r.run_id
+            """,
+            chunk,
+        )
+        selected_runs: dict[str, dict[str, Any]] = {}
+        for run in run_rows:
+            date = str(run.get("date") or "")[:10]
+            cutoff_date = next_session.get(date)
+            created_at = str(run.get("created_at") or "").strip()
+            if not cutoff_date or not created_at:
+                continue
+            try:
+                created = datetime.fromisoformat(created_at.replace(" ", "T")).replace(
+                    tzinfo=timezone.utc
+                )
+                execution_cutoff = datetime.fromisoformat(
+                    f"{cutoff_date}T01:00:00+00:00"
+                )
+            except ValueError:
+                continue
+            if created >= execution_cutoff or int(run.get("component_rows") or 0) <= 0:
+                continue
+            selected_runs.setdefault(date, run)
+        if not selected_runs:
+            continue
+
+        run_ids = [str(run["run_id"]) for run in selected_runs.values()]
+        run_placeholders = ",".join("?" for _ in run_ids)
+        evidence_rows = query_fn(
+            f"""
+            SELECT
+              s.id stock_id,
+              i.symbol,
+              r.date prediction_date,
+              i.score_after score,
+              i.evidence,
+              s.market market_segment,
+              r.run_id native_run_id,
+              r.created_at native_created_at
+            FROM screener_funnel_items i
+            JOIN screener_funnel_runs r ON r.run_id = i.run_id
+            JOIN stocks s ON s.symbol = i.symbol
+            WHERE i.run_id IN ({run_placeholders})
+              AND i.stage = 'scoring'
+              AND json_extract(i.evidence, '$.score_components') IS NOT NULL
+            """,
+            run_ids,
+        )
+        for row in evidence_rows:
+            date = str(row.get("prediction_date") or "")[:10]
+            symbol = str(row.get("symbol") or "")
+            selected = selected_runs.get(date)
+            if not selected or str(row.get("native_run_id") or "") != str(selected["run_id"]):
+                continue
+            if symbol not in symbols or (date, symbol) in rows_by_key:
+                continue
+            evidence = _loads(row.get("evidence"))
+            score_payload = _loads(evidence.get("score_components"))
+            components = score_payload.get("components")
+            if (
+                score_payload.get("version") != "score_v2"
+                or not isinstance(components, dict)
+                or not {"chipFlow", "technicalStructure", "fundamentalQuality"}.issubset(components)
+            ):
+                continue
+            alpha_context = {
+                "version": "oof-recorded-pit-context-v1",
+                "taxonomy": evidence.get("taxonomy") or {},
+                "raw_signals": evidence.get("raw_signals") or {},
+                "native_component_source": RECORDED_PIT_COMPONENT_SOURCE,
+                "native_run_id": row.get("native_run_id"),
+                "native_created_at": row.get("native_created_at"),
+                "execution_cutoff_utc": f"{next_session[date]}T01:00:00+00:00",
+            }
+            rows_by_key[(date, symbol)] = {
+                **row,
+                "score": score_payload.get("total", row.get("score")),
+                "score_components": json.dumps(score_payload, sort_keys=True),
+                "alpha_context": json.dumps(alpha_context, sort_keys=True),
+                "alpha_allocation": "{}",
+                "recommendation_lane": "oof_recorded_pit_screener_scoring",
+                "forecast_data": "{}",
+                "market_heat_expected_return": None,
+                "native_component_source": RECORDED_PIT_COMPONENT_SOURCE,
+            }
+    return list(rows_by_key.values())
 
 
 def persist_l4_oof_predictions(

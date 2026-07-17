@@ -26,6 +26,7 @@ from services.fundamental_quality import score_fundamental_quality
 
 TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
+D1_IN_CLAUSE_CHUNK_SIZE = 80
 
 
 def _loads(value: Any) -> dict[str, Any]:
@@ -362,8 +363,8 @@ def load_fundamental_quality_pit_by_key(
     max_date = max(date for date, _symbol in keys)
     revenue_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
     financial_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for offset in range(0, len(symbols), 200):
-        chunk = symbols[offset:offset + 200]
+    for offset in range(0, len(symbols), D1_IN_CLAUSE_CHUNK_SIZE):
+        chunk = symbols[offset:offset + D1_IN_CLAUSE_CHUNK_SIZE]
         placeholders = ",".join("?" for _ in chunk)
         revenue_rows = query_fn(
             f"""

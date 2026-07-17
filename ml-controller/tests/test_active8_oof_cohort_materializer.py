@@ -247,6 +247,31 @@ def test_fundamental_pit_loader_drops_future_rows_and_reuses_formal_owner():
     assert payload["sourceRowCounts"]["available"] == 2
 
 
+def test_fundamental_pit_loader_chunks_below_d1_variable_limit():
+    from services.active8_oof_cohort_materializer import load_fundamental_quality_pit_by_key
+
+    calls = []
+
+    def query(sql, params):
+        calls.append((sql, list(params)))
+        assert len(params) <= 100
+        return []
+
+    result = load_fundamental_quality_pit_by_key(
+        [
+            {"prediction_date": "2026-06-25", "symbol": f"{index:04d}"}
+            for index in range(205)
+        ],
+        query_fn=query,
+    )
+
+    assert result == {}
+    assert len(calls) == 6
+    revenue_param_counts = [len(params) for sql, params in calls if "canonical_revenue_monthly" in sql]
+    financial_param_counts = [len(params) for sql, params in calls if "canonical_fundamental_features" in sql]
+    assert revenue_param_counts == [80, 80, 45]
+    assert financial_param_counts == [82, 82, 47]
+
 def test_counterfactual_score_uses_formal_pit_fundamental_owner_when_available():
     from services.active8_oof_cohort_materializer import _counterfactual_score_v2
 

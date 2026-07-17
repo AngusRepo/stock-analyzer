@@ -499,12 +499,21 @@ def controller_d1_batch_execute(
             raise RuntimeError(exc.read().decode("utf-8")[:800]) from exc
         if not payload.get("ok"):
             raise RuntimeError(str(payload)[:800])
-        total += int(payload.get("total") or len(part))
-        success_count += int(payload.get("success_count") or len(part))
-        error_count += int(payload.get("error_count") or 0)
+        part_total = int(payload["total"]) if payload.get("total") is not None else len(part)
+        part_success = int(payload["success_count"]) if payload.get("success_count") is not None else len(part)
+        part_errors = int(payload.get("error_count") or 0)
+        total += part_total
+        success_count += part_success
+        error_count += part_errors
         changes_total += int(payload.get("changes_total") or 0)
         if payload.get("first_error") and first_error is None:
             first_error = str(payload["first_error"])
+        if part_errors > 0:
+            raise RuntimeError(
+                f"controller_d1_batch failed chunk={chunk_no}/{chunk_count} "
+                f"success_count={part_success} error_count={part_errors} "
+                f"first_error={payload.get('first_error')}"
+            )
         if chunk_no == 1 or chunk_no == chunk_count or chunk_no % 10 == 0:
             print(
                 f"[finlab-backfill] controller_d1_batch done={chunk_no}/{chunk_count} success={success_count} errors={error_count}",

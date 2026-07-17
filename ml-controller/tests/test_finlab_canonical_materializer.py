@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import json
+import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -1241,6 +1242,35 @@ def test_fundamental_d1_upserts_pack_ten_rows_per_statement() -> None:
     ]
 
     assert len(statements) == 2
-    assert len(statements[0][1]) == 750
-    assert len(statements[1][1]) == 75
-    assert statements[0][0].count("(") > statements[1][0].count("(")
+    assert len(statements[0][1]) == 1
+    assert len(statements[1][1]) == 1
+    assert len(json.loads(statements[0][1][0])) == 10
+    assert len(json.loads(statements[1][1][0])) == 1
+    assert "FROM json_each(?) WHERE 1" in statements[0][0]
+
+
+def test_json_multi_row_upsert_executes_and_updates_in_sqlite() -> None:
+    from services.finlab_canonical_materializer import _row_statements
+
+    rows = [
+        {"stock_id": "2330", "period": "2026-06-01", "value": 1.0},
+        {"stock_id": "2317", "period": "2026-06-01", "value": 2.0},
+    ]
+    sql, params = _row_statements(
+        "sample_fundamentals",
+        rows,
+        ["stock_id", "period", "value"],
+        ["stock_id", "period"],
+        ["value"],
+        required_columns=["stock_id", "period"],
+        rows_per_statement=10,
+    )[0]
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE sample_fundamentals (stock_id TEXT, period TEXT, value REAL, PRIMARY KEY(stock_id, period))")
+    db.execute(sql, params)
+    db.execute(sql, [json.dumps([["2330", "2026-06-01", 3.0]])])
+
+    assert db.execute("SELECT stock_id, value FROM sample_fundamentals ORDER BY stock_id").fetchall() == [
+        ("2317", 2.0),
+        ("2330", 3.0),
+    ]

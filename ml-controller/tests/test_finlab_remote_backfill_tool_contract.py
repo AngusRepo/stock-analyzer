@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -167,6 +168,33 @@ def test_fundamental_canonical_apply_caps_multi_row_requests_at_ten_statements()
     tool = _load_tool_module()
 
     assert tool.canonical_dataset_chunk_size("canonical_fundamental_features", 500) == 10
+
+
+def test_controller_d1_batch_preserves_zero_success_and_fails_fast(monkeypatch):
+    tool = _load_tool_module()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "ok": True,
+                "total": 1,
+                "success_count": 0,
+                "error_count": 1,
+                "first_error": "too many SQL variables",
+            }).encode("utf-8")
+
+    monkeypatch.setattr(tool, "controller_d1_batch_url", lambda: "https://controller.example/d1/batch")
+    monkeypatch.setattr(tool, "controller_proxy_token", lambda: "token")
+    monkeypatch.setattr(tool.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+
+    with pytest.raises(RuntimeError, match="success_count=0.*too many SQL variables"):
+        tool.controller_d1_batch_execute([("INSERT INTO sample VALUES (?)", [1])])
 
 
 def test_finlab_fundamental_fields_fail_closed_without_deadline_owner():

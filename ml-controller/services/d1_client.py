@@ -474,8 +474,8 @@ def _worker_batch_execute(
         data = resp.json()
         if not data.get("ok"):
             raise RuntimeError(f"Worker D1 batch unsuccessful: {data}")
-        total += int(data.get("total") or len(part))
-        success_count += int(data.get("success_count") or len(part))
+        total += int(data["total"]) if data.get("total") is not None else len(part)
+        success_count += int(data["success_count"]) if data.get("success_count") is not None else len(part)
         error_count += int(data.get("error_count") or 0)
         changes_total += int(data.get("changes_total") or 0)
         if data.get("first_error") and first_error is None:

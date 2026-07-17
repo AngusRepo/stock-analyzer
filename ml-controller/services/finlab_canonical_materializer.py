@@ -2291,14 +2291,24 @@ def _upsert_statement(
     conflict_columns: list[str],
     update_columns: list[str],
     rows_per_statement: int = 1,
+    json_rows: bool = False,
 ) -> str:
-    placeholders = "(" + ", ".join("?" for _ in columns) + ")"
-    values_sql = ", ".join(placeholders for _ in range(max(1, rows_per_statement)))
     column_sql = ", ".join(columns)
     conflict_sql = ", ".join(conflict_columns)
     update_sql = ", ".join(f"{column}=excluded.{column}" for column in update_columns)
+    if json_rows:
+        select_sql = ", ".join(
+            f"json_extract(value, '$[{index}]')"
+            for index in range(len(columns))
+        )
+        values_clause = f"SELECT {select_sql} FROM json_each(?) WHERE 1"
+    else:
+        placeholders = "(" + ", ".join("?" for _ in columns) + ")"
+        values_clause = "VALUES " + ", ".join(
+            placeholders for _ in range(max(1, rows_per_statement))
+        )
     return (
-        f"INSERT INTO {table} ({column_sql}) VALUES {values_sql} "
+        f"INSERT INTO {table} ({column_sql}) {values_clause} "
         f"ON CONFLICT({conflict_sql}) DO UPDATE SET {update_sql}"
     )
 
@@ -2326,18 +2336,24 @@ def _row_statements(
     statements: list[tuple[str, list[Any]]] = []
     for start in range(0, len(rows), batch_size):
         batch = rows[start:start + batch_size]
+        use_json_rows = batch_size > 1
         sql = _upsert_statement(
             table,
             columns,
             conflict_columns,
             update_columns,
             rows_per_statement=len(batch),
+            json_rows=use_json_rows,
         )
-        params = [
-            _d1_param(row.get(column))
+        matrix = [
+            [_d1_param(row.get(column)) for column in columns]
             for row in batch
-            for column in columns
         ]
+        params = (
+            [json.dumps(matrix, ensure_ascii=False, separators=(",", ":"))]
+            if use_json_rows
+            else matrix[0]
+        )
         statements.append((sql, params))
     return statements
 

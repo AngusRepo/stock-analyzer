@@ -6,21 +6,42 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.ensemble_v2 import attach_ensemble_v2, build_formal_model_input_contract  # noqa: E402
+from services.active_model_policy import ACTIVE_ALPHA_MODELS  # noqa: E402
+from services.active8_score_semantics import (  # noqa: E402
+    MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
+    MODEL_SCORE_SEMANTIC_VERSION,
+    MODEL_TARGET_SEMANTIC_VERSION,
+)
+
+
+def _formal_pred(scores: dict[str, float], *, missing: set[str] | None = None) -> dict:
+    missing = missing or set()
+    ranks = {name: 0.5 for name in ACTIVE_ALPHA_MODELS if name not in missing}
+    ranks.update({name: value for name, value in scores.items() if name not in missing})
+    versions = {name: f"{name}-test-v1" for name in ACTIVE_ALPHA_MODELS}
+    blockers = [f"rank_missing:{name}" for name in ACTIVE_ALPHA_MODELS if name in missing]
+    return {
+        "rank_scores": ranks,
+        "model_score_lineage": {
+            "schema_version": MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
+            "semantic_version": MODEL_SCORE_SEMANTIC_VERSION,
+            "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
+            "complete": not blockers,
+            "blockers": blockers,
+            "artifact_versions": versions,
+            "model_set_signature": "|".join(f"{name}@{versions[name]}" for name in sorted(versions)),
+        },
+    }
 
 
 def test_formal_active8_contract_requires_finite_outputs_from_every_model():
-    pred = {
-        "rank_scores": {
+    pred = _formal_pred({
             "LightGBM": 0.51,
             "XGBoost": 0.52,
             "ExtraTrees": 0.53,
             "TabM": 0.54,
             "GNN": float("nan"),
-        },
-        "dlinear": {"forecast_pct": 0.01},
-        "patchtst": {"forecast_pct": 0.02},
-        "itransformer": {"forecast_pct": 0.03},
-    }
+    }, missing={"GNN"})
 
     contract = build_formal_model_input_contract(pred)
 
@@ -30,13 +51,11 @@ def test_formal_active8_contract_requires_finite_outputs_from_every_model():
 
 
 def test_ensemble_v2_blocks_equal_weight_when_ic_is_cold_start_by_default():
-    pred = {
-        "rank_scores": {
+    pred = _formal_pred({
             "XGBoost": 0.74,
             "LightGBM": 0.70,
             "ExtraTrees": 0.66,
-        }
-    }
+    })
 
     attach_ensemble_v2(
         pred,
@@ -54,13 +73,11 @@ def test_ensemble_v2_blocks_equal_weight_when_ic_is_cold_start_by_default():
 
 
 def test_ensemble_v2_uses_equal_weight_only_when_explicitly_enabled():
-    pred = {
-        "rank_scores": {
+    pred = _formal_pred({
             "XGBoost": 0.74,
             "LightGBM": 0.70,
             "ExtraTrees": 0.66,
-        }
-    }
+    })
 
     attach_ensemble_v2(
         pred,
@@ -75,7 +92,7 @@ def test_ensemble_v2_uses_equal_weight_only_when_explicitly_enabled():
     assert ev2["weight_total"] == 3.0
     assert ev2["signal"] == "BUY"
     assert ev2["schema_version"] == "ensemble-v2-payload-v3"
-    assert ev2["semantic_version"] == "active8-ic-weighted-rank-v3"
+    assert ev2["semantic_version"] == "active8-ic-weighted-rank-v4"
     assert ev2["model_set_signature"] is None
     assert ev2["lineage_status"] == "incomplete"
     assert ev2["lineage_blockers"] == [
@@ -86,7 +103,7 @@ def test_ensemble_v2_uses_equal_weight_only_when_explicitly_enabled():
 
 
 def test_ensemble_v2_missing_lifecycle_status_stays_zero_weight_even_with_cold_start():
-    pred = {"rank_scores": {"XGBoost": 0.95}}
+    pred = _formal_pred({"XGBoost": 0.95})
 
     attach_ensemble_v2(
         pred,
@@ -98,12 +115,13 @@ def test_ensemble_v2_missing_lifecycle_status_stays_zero_weight_even_with_cold_s
 
     ev2 = pred["ensemble_v2"]
     assert ev2["reason"] == "no_positive_lifecycle_weight"
-    assert ev2["weights"] == {"XGBoost": 0.0}
+    assert ev2["weights"]["XGBoost"] == 0.0
+    assert all(weight == 0.0 for weight in ev2["weights"].values())
     assert ev2["contributing_models"] == []
 
 
 def test_ensemble_v2_keeps_no_positive_weight_when_ic_is_negative():
-    pred = {"rank_scores": {"XGBoost": 0.9, "LightGBM": 0.8}}
+    pred = _formal_pred({"XGBoost": 0.9, "LightGBM": 0.8})
 
     attach_ensemble_v2(
         pred,
@@ -122,7 +140,7 @@ def test_ensemble_v2_keeps_no_positive_weight_when_ic_is_negative():
 
 
 def test_ensemble_v2_uses_negative_ic_only_with_approved_contrarian_policy():
-    pred = {"rank_scores": {"XGBoost": 0.10, "LightGBM": 0.20}}
+    pred = _formal_pred({"XGBoost": 0.10, "LightGBM": 0.20})
 
     attach_ensemble_v2(
         pred,
@@ -153,7 +171,8 @@ def test_ensemble_v2_uses_negative_ic_only_with_approved_contrarian_policy():
     ev2 = pred["ensemble_v2"]
     assert ev2["signal"] == "BUY"
     assert ev2["avg_rank"] == 0.9
-    assert ev2["weights"] == {"LightGBM": 0.0, "XGBoost": 0.06}
+    assert {name: weight for name, weight in ev2["weights"].items() if weight > 0} == {"XGBoost": 0.06}
+    assert ev2["weights"]["LightGBM"] == 0.0
     assert ev2["contrarian_policy_effect"]["inverted_models"] == ["XGBoost"]
     assert ev2["contrarian_policy_effect"]["rejected_inverse_models"] == ["LightGBM"]
     assert ev2["forecast_return_5bar"] == 0.04
@@ -164,12 +183,10 @@ def test_ensemble_v2_uses_negative_ic_only_with_approved_contrarian_policy():
 
 
 def test_attach_ensemble_v2_uses_calibrated_5bar_forecast_not_trade_ev():
-    pred = {
-        "rank_scores": {
+    pred = _formal_pred({
             "XGBoost": 0.95,
             "LightGBM": 0.90,
-        }
-    }
+    })
 
     attach_ensemble_v2(
         pred,
@@ -199,7 +216,7 @@ def test_attach_ensemble_v2_uses_calibrated_5bar_forecast_not_trade_ev():
 
 
 def test_attach_ensemble_v2_marks_uncalibrated_forecast_as_none():
-    pred = {"rank_scores": {"XGBoost": 0.95}}
+    pred = _formal_pred({"XGBoost": 0.95})
 
     attach_ensemble_v2(
         pred,
@@ -214,7 +231,7 @@ def test_attach_ensemble_v2_marks_uncalibrated_forecast_as_none():
 
 
 def test_attach_ensemble_v2_tail_clamps_out_of_support_calibration():
-    pred = {"rank_scores": {"XGBoost": 0.95}}
+    pred = _formal_pred({"XGBoost": 0.95})
 
     attach_ensemble_v2(
         pred,
@@ -243,7 +260,7 @@ def test_attach_ensemble_v2_tail_clamps_out_of_support_calibration():
 
 
 def test_attach_ensemble_v2_lower_tail_never_invents_positive_edge():
-    pred = {"rank_scores": {"XGBoost": 0.10}}
+    pred = _formal_pred({"XGBoost": 0.10})
 
     attach_ensemble_v2(
         pred,
@@ -268,7 +285,7 @@ def test_attach_ensemble_v2_lower_tail_never_invents_positive_edge():
 
 
 def test_attach_ensemble_v2_applies_only_capped_approved_allocator_policy():
-    pred = {"rank_scores": {"XGBoost": 0.9, "LightGBM": 0.6}}
+    pred = _formal_pred({"XGBoost": 0.9, "LightGBM": 0.6})
 
     attach_ensemble_v2(
         pred,
@@ -289,17 +306,15 @@ def test_attach_ensemble_v2_applies_only_capped_approved_allocator_policy():
     ev2 = pred["ensemble_v2"]
     assert ev2["allocator_policy_effect"]["applied"] is True
     assert ev2["allocator_policy_effect"]["multipliers"] == {"XGBoost": 1.15, "LightGBM": 0.85}
-    assert ev2["weights"] == {"LightGBM": 0.085, "XGBoost": 0.115}
+    assert {name: weight for name, weight in ev2["weights"].items() if weight > 0} == {"LightGBM": 0.085, "XGBoost": 0.115}
 
 
 def test_attach_ensemble_v2_emits_full_allocator_learning_ledger():
-    pred = {
-        "rank_scores": {
+    pred = _formal_pred({
             "XGBoost": 0.9,
             "LightGBM": 0.6,
             "TimesFM": 0.99,
-        }
-    }
+    })
 
     attach_ensemble_v2(
         pred,
@@ -318,7 +333,8 @@ def test_attach_ensemble_v2_emits_full_allocator_learning_ledger():
     ev2 = pred["ensemble_v2"]
     ledger = ev2["allocator_learning_ledger"]
     assert ledger["schema_version"] == "model-allocator-learning-ledger-v1"
-    assert ev2["weights"] == {"XGBoost": 0.1, "LightGBM": 0.0}
+    assert {name: weight for name, weight in ev2["weights"].items() if weight > 0} == {"XGBoost": 0.1}
+    assert ev2["weights"]["LightGBM"] == 0.0
     assert ledger["model_states"]["XGBoost"]["state"] == "production"
     assert ledger["model_states"]["XGBoost"]["production_weight"] == 0.1
     assert ledger["model_states"]["LightGBM"]["state"] == "learning_only"

@@ -1,17 +1,19 @@
 import numpy as np
 
 from app.sequence_training import (
+    CANONICAL_ROUNDTRIP_COST_BPS,
     build_sequence_cpcv_evidence,
     sequence_cpcv_policy_enabled,
     build_sequence_record,
     build_sequence_window_dataset,
     mean_daily_spearman_ic,
 )
+from app.neuralforecast_sequence_runtime import default_seq_len_for_model
 
 
 def test_sequence_record_requires_symbol_dates_and_positive_close():
     prices = [
-        {"date": f"2026-04-{day:02d}", "close": 100 + day}
+        {"date": f"2026-04-{day:02d}", "open": 99 + day, "close": 100 + day}
         for day in range(1, 71)
     ]
     record = build_sequence_record(
@@ -22,7 +24,7 @@ def test_sequence_record_requires_symbol_dates_and_positive_close():
     )
     assert record is not None
     assert record["symbol"] == "2330"
-    assert len(record["close"]) == len(record["dates"]) == 70
+    assert len(record["close"]) == len(record["open"]) == len(record["dates"]) == 70
 
 
 def test_sequence_window_dataset_carries_lifecycle_metadata():
@@ -32,6 +34,7 @@ def test_sequence_window_dataset_carries_lifecycle_metadata():
             "symbol": symbol,
             "market_type": "TWSE",
             "close": [100 + idx + day * 0.5 for day in range(80)],
+            "open": [99.5 + idx + day * 0.5 for day in range(80)],
             "dates": [f"2026-03-{(day % 28) + 1:02d}" for day in range(80)],
         })
 
@@ -39,11 +42,41 @@ def test_sequence_window_dataset_carries_lifecycle_metadata():
 
     assert dataset.report["lifecycle_ready"] is True
     assert dataset.report["oos_windows"] > 0
-    assert {"symbol", "asof_date", "target_date", "forward_return"} <= set(dataset.meta[0].keys())
+    assert {"symbol", "asof_date", "target_date", "entry_open", "forward_return", "target_semantic_version"} <= set(dataset.meta[0].keys())
+    assert dataset.meta[0]["forward_return"] == (
+        dataset.meta[0]["target_close"] - dataset.meta[0]["entry_open"]
+    ) / dataset.meta[0]["entry_open"] - CANONICAL_ROUNDTRIP_COST_BPS / 10000.0
     assert dataset.X_train.shape[1] == 20
     assert dataset.y_oos.shape[1] == 5
     assert dataset.X_all.shape[1] == 20
     assert dataset.y_all.shape[1] == 5
+
+
+def test_sequence_window_dataset_does_not_shift_across_missing_market_session():
+    calendar = [f"2026-06-{day:02d}" for day in range(1, 31)]
+    records = [
+        {
+            "symbol": "2330",
+            "market_type": "TWSE",
+            "close": [100.0 + day for day in range(30)],
+            "open": [99.5 + day for day in range(30)],
+            "dates": calendar,
+        },
+        {
+            "symbol": "3665",
+            "market_type": "TWSE",
+            "close": [200.0 + day for day in range(29)],
+            "open": [199.5 + day for day in range(29)],
+            "dates": [date for date in calendar if date != "2026-06-22"],
+        },
+    ]
+
+    dataset = build_sequence_window_dataset(records, seq_len=20, pred_len=5, oos_ratio=0.25)
+    rows = {(row["symbol"], row["asof_date"]): row for row in dataset.meta}
+
+    assert ("2330", "2026-06-21") in rows
+    assert ("3665", "2026-06-21") not in rows
+    assert dataset.report["dropped_session_gap"] > 0
 
 
 def test_daily_sequence_ic_uses_cross_sectional_dates():
@@ -64,6 +97,7 @@ def test_sequence_cpcv_evidence_uses_target_date_purged_splits():
             "symbol": symbol,
             "market_type": "TWSE",
             "close": [100 + idx * 5 + day * (0.2 + idx * 0.03) for day in range(120)],
+            "open": [99.8 + idx * 5 + day * (0.2 + idx * 0.03) for day in range(120)],
             "dates": [f"2026-04-{(day % 30) + 1:02d}" for day in range(120)],
         })
     dataset = build_sequence_window_dataset(records, seq_len=20, pred_len=5, oos_ratio=0.25)
@@ -98,6 +132,7 @@ def test_sequence_cpcv_evidence_can_describe_existing_oos_fold_without_retrainin
             "symbol": symbol,
             "market_type": "TWSE",
             "close": [100 + idx + day * 0.5 for day in range(80)],
+            "open": [99.5 + idx + day * 0.5 for day in range(80)],
             "dates": [f"2026-05-{(day % 28) + 1:02d}" for day in range(80)],
         })
     dataset = build_sequence_window_dataset(records, seq_len=20, pred_len=5, oos_ratio=0.25)
@@ -131,3 +166,8 @@ def test_sequence_cpcv_policy_requires_explicit_enable():
         {"family_adapters": {"DLinear": {"enabled": True}}},
         "PatchTST",
     ) is False
+
+
+def test_sequence_model_default_context_fits_finlab_three_year_artifact():
+    assert default_seq_len_for_model("PatchTST") == 512
+    assert default_seq_len_for_model("iTransformer") == 512

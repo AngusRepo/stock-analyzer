@@ -16,7 +16,7 @@ from services.allocator_ev_fusion_artifact_builder import (  # noqa: E402
     load_allocator_ev_fusion_training_rows,
 )
 from services.allocator_ev_feature_snapshot_backfill import (  # noqa: E402
-    _existing_s12_payload,
+    _s12_ev_materialization_kind,
     build_allocator_ev_feature_snapshots_for_date,
     load_allocator_ev_snapshot_candidate_rows,
 )
@@ -26,6 +26,7 @@ from services.l4_alpha_ev_resolver import (  # noqa: E402
     SNAPSHOT_BACKFILL_SOURCE,
     SNAPSHOT_BACKFILL_USAGE_SCOPE,
 )
+from services.ev_lineage_contract import prediction_timing_blockers  # noqa: E402
 
 
 def _l4_payload(value: float) -> dict:
@@ -42,7 +43,7 @@ def _l4_payload(value: float) -> dict:
         "resolver_method": "test_meta_calibrator",
         "model_version": "l4-test",
         "feature_snapshot_version": "l4-features-test",
-        "trained_until": "2026-07-01",
+        "trained_until": "2026-01-01",
         "horizon_days": 5,
         "cost_model_bps": 18.0,
     }
@@ -51,7 +52,7 @@ def _l4_payload(value: float) -> dict:
 def _ensemble_forecast(avg_rank: float = 0.65, confidence: float = 0.72) -> str:
     return json.dumps({
         "ensemble_v2": {
-            "semantic_version": "active8-ic-weighted-rank-v3",
+            "semantic_version": "active8-ic-weighted-rank-v4",
             "contributing_models": ["LightGBM", "XGBoost"],
             "artifact_versions": {"LightGBM": "vTest", "XGBoost": "vTest"},
             "model_set_signature": "LightGBM@vTest|XGBoost@vTest",
@@ -160,8 +161,8 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["validation_packet"]["sample_audit"]["l4_available_count"] > 0
     assert artifact["validation_packet"]["sample_audit"]["s12_structure_available_count"] > 0
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
-    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v10"
-    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v10"
+    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v11"
+    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v11"
     assert artifact["validation_packet"]["validation_scope"]["selection_target"] == (
         "next_session_raw_open_to_fifth_session_raw_close_factor_stable_net_of_costs"
     )
@@ -224,6 +225,32 @@ def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_sampl
     assert artifact["primary_expected_return_allowed"] is False
     assert artifact["validation_packet"]["decision"] == "FAIL"
     assert "selection:insufficient_samples" in artifact["validation_packet"]["failed_gates"]
+
+
+def test_allocator_ev_fusion_assistive_learning_tier_is_reachable_without_ev_ownership():
+    rows = [
+        _row(f"2026-06-{day_idx + 1:02d}", symbol_idx)
+        for day_idx in range(10)
+        for symbol_idx in range(64)
+    ]
+
+    out = build_allocator_ev_fusion_artifact_from_rows(
+        rows,
+        trained_until="2026-07-14",
+        min_samples=500,
+        min_dates=20,
+        l2=0.15,
+    )
+
+    artifact = out["artifact"]
+    assert out["status"] == "ok"
+    assert artifact["promotion_tier"] == "assistive"
+    assert artifact["promotion_state"] == "production_assistive"
+    assert artifact["assistive_learning_signal_allowed"] is True
+    assert artifact["assistive_expected_return_allowed"] is False
+    assert artifact["primary_expected_return_allowed"] is False
+    assert artifact["validation_packet"]["decision"] == "PASS"
+    assert "primary_insufficient_dates" in artifact["promotion_blockers"]
 
 
 def test_allocator_ev_fusion_artifact_builder_rejects_assistive_without_replay_execution_labels():
@@ -334,14 +361,60 @@ def test_snapshot_candidate_query_avoids_correlated_evidence_lookups():
     assert "SELECT MIN(date(sp.date))" not in captured["sql"]
     assert "date(p.prediction_date)" not in captured["sql"]
     assert "date(dr.date)" not in captured["sql"]
+    assert "eligible_prediction_ids" in captured["sql"]
+    assert "datetime(p.generated_at, '+8 hours')" in captured["sql"]
+    assert "datetime(next_session.session_date || ' 01:00:00')" in captured["sql"]
     assert "ROW_NUMBER() OVER" in captured["sql"]
+    assert "json_extract(dr.score_components, '$.version') = 'score_v2'" in captured["sql"]
     assert captured["params"] == [
+        "2026-06-18",
+        None,
         "2026-06-18",
         "2026-06-19",
         "2026-06-18",
         "2026-06-19",
         200,
     ]
+
+
+def test_snapshot_candidate_query_accepts_calendar_next_session_without_future_close_row():
+    captured = {}
+
+    def query_fn(sql: str, params: list[object]) -> list[dict]:
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    load_allocator_ev_snapshot_candidate_rows(
+        query_fn,
+        snapshot_date="2026-07-14",
+        next_session_date="2026-07-15",
+        limit=200,
+    )
+
+    assert "COALESCE" in captured["sql"]
+    assert captured["params"][:2] == ["2026-07-14", "2026-07-15"]
+
+
+def test_20260714_prediction_timestamp_is_before_20260715_market_open():
+    base = {
+        "prediction_date": "2026-07-14",
+        "next_session_open_at": "2026-07-15T01:00:00Z",
+    }
+    assert prediction_timing_blockers({
+        **base,
+        "prediction_generated_at": "2026-07-14 17:08:52",
+    }) == []
+    assert prediction_timing_blockers({
+        **base,
+        "prediction_generated_at": "2026-07-15 01:08:52",
+    }) == ["prediction_generated_at_not_before_next_session_open"]
+
+
+def test_s12_ev_materialization_kind_does_not_report_cold_as_direct():
+    assert _s12_ev_materialization_kind(0.01, "s12_replay_trade_outcomes:market_segment") == "replay_direct"
+    assert _s12_ev_materialization_kind(-0.01, "s12_structural_cold_start_ev") == "structural_cold"
+    assert _s12_ev_materialization_kind(None, "s12_replay_trade_outcomes:symbol") == "unavailable"
 
 
 def test_allocator_fusion_rejects_unproven_adjustment_factor_lineage():
@@ -423,6 +496,11 @@ def test_allocator_ev_fusion_feature_vector_accepts_backfill_only_l4_under_canon
             "fitted": True,
             "fit_blockers": [],
             "trained_until": "2026-07-06",
+            "point_in_time_prediction_lineage": {
+                "schema_version": "l4-point-in-time-prediction-lineage-v1",
+                "prediction_date": "2026-07-07",
+                "trained_until": "2026-07-06",
+            },
     }
     row = {
         "symbol": "2330",
@@ -466,7 +544,9 @@ def test_allocator_ev_fusion_feature_vector_accepts_backfill_only_l4_under_canon
             "s12_trade_ev": _s12_payload(0.01),
         }),
     }
-    assert _feature_vector(future_row) is None
+    future_features = _feature_vector(future_row)
+    assert future_features is not None
+    assert future_features["l4_available"] == 0.0
 
 
 def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_for_training():
@@ -663,7 +743,7 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
     assert result["snapshots_built"] == 1
     assert result["l4_usage_mode"] == "not_fit_eligible"
     assert result["reused_l4_payloads"] == 1
-    assert result["reused_s12_payloads"] == 1
+    assert result["reused_s12_payloads"] == 0
     assert result["skip_reasons"] == {}
 
 
@@ -783,18 +863,7 @@ def test_allocator_ev_feature_snapshot_backfill_does_not_cleanup_after_partial_w
     assert "status='failed'" in calls[1][0][0]
 
 
-def test_allocator_ev_feature_snapshot_backfill_does_not_reuse_invalid_s12_payload():
-    invalid = {
-        "s12_trade_ev": {
-            "status": "invalid_structure",
-            "trade_expected_return_net_pct": None,
-        }
-    }
-
-    assert _existing_s12_payload(invalid) is None
-
-
-def test_allocator_ev_feature_snapshot_backfill_recomputes_prior_backfill_s12_payload():
+def test_allocator_ev_feature_snapshot_backfill_recomputes_opaque_s12_payload():
     existing = {
         "snapshot_source": SNAPSHOT_BACKFILL_SOURCE,
         "s12_trade_ev": _s12_payload(0.009),

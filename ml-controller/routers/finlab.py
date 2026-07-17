@@ -253,22 +253,34 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
 
     output_prefix = os.environ.get("FINLAB_LONG_SEQUENCE_OUTPUT_PREFIX", "universal/sequence_long/latest").strip().strip("/")
     tail_prefix = f"gs://{bucket_name}/{_finlab_backfill_prefix()}/{run_id}"
+    base_prefix = _long_sequence_base_5y_prefix(bucket_name)
+    source_prefixes = [tail_prefix]
+    base_missing_uris: list[str] = []
     lanes = _csv_env("FINLAB_LONG_SEQUENCE_LANES", "daily_price")
     if "daily_price" in lanes:
-        tail_close_uri = f"{tail_prefix}/raw/daily_price/close.parquet"
-        if not _gcs_object_exists(tail_close_uri):
+        required_uris = [
+            f"{tail_prefix}/raw/daily_price/adj_close.parquet",
+            f"{tail_prefix}/raw/daily_price/adj_open.parquet",
+        ]
+        missing_uris = [uri for uri in required_uris if not _gcs_object_exists(uri)]
+        if missing_uris:
             return {
                 "status": "skipped",
-                "reason": "tail_daily_price_close_missing",
+                "reason": "tail_daily_price_adjusted_ohlc_label_contract_missing",
                 "run_id": run_id,
-                "required_uri": tail_close_uri,
+                "required_uris": required_uris,
+                "missing_uris": missing_uris,
             }
+        base_required_uris = [
+            f"{base_prefix}/raw/daily_price/adj_close.parquet",
+            f"{base_prefix}/raw/daily_price/adj_open.parquet",
+        ]
+        base_missing_uris = [uri for uri in base_required_uris if not _gcs_object_exists(uri)]
+        if not base_missing_uris:
+            source_prefixes.insert(0, base_prefix)
 
     payload = {
-        "source_gcs_prefixes": [
-            _long_sequence_base_5y_prefix(bucket_name),
-            tail_prefix,
-        ],
+        "source_gcs_prefixes": source_prefixes,
         "output_gcs_prefix": output_prefix,
         "lanes": lanes,
         "min_len": _int_env("FINLAB_LONG_SEQUENCE_MIN_LEN", 65),
@@ -286,6 +298,8 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
         "function": "build_finlab_long_sequence_prep",
         "output_gcs_prefix": output_prefix,
         "source_gcs_prefixes": payload["source_gcs_prefixes"],
+        "base_source_status": "included" if not base_missing_uris else "excluded_missing_adjusted_ohlc",
+        "base_missing_uris": base_missing_uris,
         "trigger_run_id": run_id,
     }
 

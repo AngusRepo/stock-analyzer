@@ -41,7 +41,7 @@ def _row(day: str, idx: int, *, target: float) -> dict:
         }),
         "forecast_data": json.dumps({
             "ensemble_v2": {
-                "semantic_version": "active8-ic-weighted-rank-v3",
+                "semantic_version": "active8-ic-weighted-rank-v4",
                 "contributing_models": ["LightGBM", "XGBoost"],
                 "artifact_versions": {"LightGBM": "vTest", "XGBoost": "vTest"},
                 "model_set_signature": "LightGBM@vTest|XGBoost@vTest",
@@ -99,6 +99,97 @@ def test_l4_alpha_ev_artifact_builder_fails_closed_on_insufficient_samples():
     assert artifact["promotion_state"] == "approval_required"
     assert artifact["validation_packet"]["decision"] == "FAIL"
     assert "insufficient_samples" in artifact["validation_packet"]["failed_gates"]
+
+
+def test_l4_alpha_ev_artifact_builder_uses_snapshot_date_for_oof_rows():
+    rows = []
+    for day_idx in range(5):
+        day = f"2026-06-{day_idx + 1:02d}"
+        for symbol_idx in range(20):
+            row = _row(day, symbol_idx, target=0.001 * symbol_idx)
+            row["snapshot_date"] = row.pop("prediction_date")
+            rows.append(row)
+
+    out = build_l4_alpha_ev_artifact_from_rows(
+        rows,
+        trained_until="2026-06-30",
+        min_samples=200,
+        min_dates=20,
+        fit_min_samples=50,
+        fit_min_dates=3,
+    )
+
+    audit = out["artifact"]["validation_packet"]["sample_audit"]
+    assert audit["sample_count"] == 100
+    assert audit["date_count"] == 5
+
+
+def test_l4_alpha_ev_artifact_builder_reports_oof_semantic_by_generation_mode():
+    rows = []
+    for day_idx in range(5):
+        day = f"2026-06-{day_idx + 1:02d}"
+        for symbol_idx in range(20):
+            row = _row(day, symbol_idx, target=0.001 * symbol_idx)
+            forecast = json.loads(row["forecast_data"])
+            forecast["ensemble_v2"]["generation_mode"] = "purged_oof"
+            forecast["ensemble_v2"]["semantic_version"] = (
+                "active8-purged-oof-chronological-ridge-v3"
+            )
+            row["forecast_data"] = json.dumps(forecast)
+            rows.append(row)
+
+    out = build_l4_alpha_ev_artifact_from_rows(
+        rows,
+        trained_until="2026-06-30",
+        min_samples=200,
+        min_dates=20,
+        fit_min_samples=50,
+        fit_min_dates=3,
+    )
+
+    audit = out["artifact"]["validation_packet"]["sample_audit"]
+    assert audit["ensemble_generation_mode_counts"] == {"purged_oof": 100}
+    assert audit["required_ensemble_semantic_version"] == (
+        "active8-purged-oof-chronological-ridge-v3"
+    )
+    assert audit["lineage_blocker_counts"] == {}
+    assert audit["feature_profile"]["fundamental_quality_norm"]["nonzero_samples"] == 100
+    assert audit["feature_profile"]["fundamental_quality_norm"]["degenerate"] is False
+
+
+def test_l4_alpha_ev_artifact_builder_reports_degenerate_feature_without_forcing_gate():
+    rows = []
+    for day_idx in range(10):
+        day = f"2026-06-{day_idx + 1:02d}"
+        for symbol_idx in range(20):
+            row = _row(day, symbol_idx, target=0.001 * symbol_idx)
+            score = json.loads(row["score_components"])
+            score["components"]["fundamentalQuality"] = 0.0
+            row["score_components"] = json.dumps(score)
+            rows.append(row)
+
+    out = build_l4_alpha_ev_artifact_from_rows(
+        rows,
+        trained_until="2026-06-30",
+        min_samples=500,
+        min_dates=20,
+        fit_min_samples=50,
+        fit_min_dates=3,
+    )
+
+    packet = out["artifact"]["validation_packet"]
+    audit = packet["sample_audit"]
+    assert audit["degenerate_features"] == ["fundamental_quality_norm"]
+    assert audit["feature_profile"]["fundamental_quality_norm"] == {
+        "samples": 200,
+        "nonzero_samples": 0,
+        "minimum": 0.0,
+        "maximum": 0.0,
+        "mean": 0.0,
+        "standard_deviation": 0.0,
+        "degenerate": True,
+    }
+    assert "degenerate_features" not in packet["failed_gates"]
 
 
 def test_l4_alpha_ev_artifact_builder_can_fit_strict_asof_oof_without_promotion():

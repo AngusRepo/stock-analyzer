@@ -66,7 +66,10 @@ def normalize_symbol(value: Any) -> str:
 def _read_parquet(path: Path) -> pl.DataFrame:
     if not path.exists():
         return pl.DataFrame()
-    return pl.read_parquet(path)
+    frame = pl.read_parquet(path)
+    if "date" not in frame.columns and "__index_level_0__" in frame.columns:
+        frame = frame.rename({"__index_level_0__": "date"})
+    return frame
 
 
 def _filter_dates(df: pl.DataFrame, *, start_date: str | None, end_date: str | None, date_col: str = "date") -> pl.DataFrame:
@@ -231,15 +234,24 @@ def _table_has_any(df: pl.DataFrame, names: Iterable[str]) -> bool:
     return any(name.lower() in lowered for name in names)
 
 
-def _lineage(run_id: str, lane: str, fields: list[str], artifact_root: Path) -> str:
-    return _json({
+def _lineage(
+    run_id: str,
+    lane: str,
+    fields: list[str],
+    artifact_root: Path,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> str:
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "dataset_lane": lane,
         "fields": fields,
         "artifact_root": str(artifact_root),
         "source": "finlab",
-    })
+    }
+    payload.update(extra or {})
+    return _json(payload)
 
 
 def build_market_rows(
@@ -1633,9 +1645,6 @@ def build_fundamental_rows(
         "operating_margin",
         "roe",
         "eps",
-        "pe",
-        "pb",
-        "dividend_yield",
         "debt_ratio",
         "current_ratio",
         "operating_cash_flow",
@@ -1695,23 +1704,11 @@ def build_fundamental_rows(
         "total_liabilities",
         "equity_parent",
     ]
-    valuation_only_fields = {"pe", "pb", "dividend_yield"}
-    canonical_presence_fields = [field for field in fields if field not in valuation_only_fields]
-    single_day_snapshot = bool(start_date and end_date and start_date == end_date)
-    presence_fields = canonical_presence_fields if not single_day_snapshot else [*canonical_presence_fields, "pe", "pb"]
-    df = (
-        _join_wide_fields_asof_snapshot(
-            artifact_root / "raw" / "fundamental_factor_diversity",
-            fields,
-            end_date=end_date or start_date or generated_at[:10],
-        )
-        if single_day_snapshot
-        else _join_wide_fields(
-            artifact_root / "raw" / "fundamental_factor_diversity",
-            fields,
-            start_date=start_date,
-            end_date=end_date,
-        )
+    df = _join_wide_fields(
+        artifact_root / "raw" / "fundamental_factor_diversity",
+        fields,
+        start_date=start_date,
+        end_date=end_date,
     )
     if df.is_empty():
         return []
@@ -1720,7 +1717,7 @@ def build_fundamental_rows(
         df = df.with_columns([pl.lit(None, dtype=pl.Float64).alias(field) for field in missing_fields])
     df = df.filter(pl.any_horizontal([
         pl.col(field).is_not_null() & ~pl.col(field).is_nan()
-        for field in presence_fields
+        for field in fields
     ]))
     if df.is_empty():
         return []
@@ -1750,41 +1747,21 @@ def build_fundamental_rows(
         if field in df.columns
     ])
 
-    lineage = _lineage(run_id, "fundamental_factor_diversity", fields, artifact_root)
-    period_preference_fields = [
-        "eps",
-        "roe",
-        "gross_margin",
-        "operating_margin",
-        "revenue_growth_yoy",
-        "revenue",
-        "operating_income",
-        "net_income",
-        "total_assets",
-        "capital_amount",
-        "pe",
-        "pb",
-        "dividend_yield",
-    ]
-    if single_day_snapshot:
-        date_exprs = [
-            pl.col(f"{field}__date")
-            for field in period_preference_fields
-            if f"{field}__date" in df.columns
-        ]
-        snapshot_date = end_date or start_date or generated_at[:10]
-        period_expr = pl.coalesce([*date_exprs, pl.lit(snapshot_date)])
-        df = df.with_columns(
-            period_expr.alias("period"),
-            period_expr.alias("report_date"),
-            pl.lit(end_date or generated_at[:10]).alias("available_date"),
-        )
-    else:
-        df = df.with_columns(
-            pl.col("date").alias("period"),
-            pl.col("date").alias("report_date"),
-            pl.col("date").alias("available_date"),
-        )
+    lineage = _lineage(
+        run_id,
+        "fundamental_factor_diversity",
+        fields,
+        artifact_root,
+        extra={"date_alignment": "finlab_deadline", "row_owner": "financial_statement"},
+    )
+    df = df.with_columns(
+        pl.col("date").alias("period"),
+        pl.col("date").alias("report_date"),
+        pl.col("date").alias("available_date"),
+        pl.lit(None, dtype=pl.Float64).alias("pe"),
+        pl.lit(None, dtype=pl.Float64).alias("pb"),
+        pl.lit(None, dtype=pl.Float64).alias("dividend_yield"),
+    )
     df = df.with_columns(
         pl.lit("LISTED_OTC").alias("market_segment"),
         pl.lit("finlab.fundamental_factor_diversity").alias("source"),
@@ -1863,6 +1840,64 @@ def build_fundamental_rows(
         "total_assets",
         "total_liabilities",
         "equity_parent",
+        "source",
+        "lineage_json",
+        "as_of_date",
+    ])
+    return _rows(df, limit)
+
+
+def build_valuation_rows(
+    artifact_root: Path,
+    *,
+    run_id: str,
+    generated_at: str,
+    end_date: str | None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    fields = ["pe", "pb", "dividend_yield"]
+    valuation_date = end_date or generated_at[:10]
+    df = _join_wide_fields(
+        artifact_root / "raw" / "fundamental_factor_diversity",
+        fields,
+        start_date=valuation_date,
+        end_date=valuation_date,
+    )
+    if df.is_empty():
+        return []
+    missing_fields = [field for field in fields if field not in df.columns]
+    if missing_fields:
+        df = df.with_columns([pl.lit(None, dtype=pl.Float64).alias(field) for field in missing_fields])
+    df = df.filter(pl.any_horizontal([
+        pl.col(field).is_not_null() & ~pl.col(field).is_nan()
+        for field in fields
+    ]))
+    if df.is_empty():
+        return []
+    lineage = _lineage(
+        run_id,
+        "fundamental_factor_diversity",
+        fields,
+        artifact_root,
+        extra={"date_alignment": "source_observation_date", "row_owner": "daily_valuation"},
+    )
+    df = df.with_columns(
+        pl.col("date").alias("period"),
+        pl.lit("LISTED_OTC").alias("market_segment"),
+        pl.col("date").alias("report_date"),
+        pl.col("date").alias("available_date"),
+        pl.lit("finlab.daily_valuation").alias("source"),
+        pl.lit(lineage).alias("lineage_json"),
+        pl.lit(generated_at[:10]).alias("as_of_date"),
+    ).select([
+        "stock_id",
+        "period",
+        "market_segment",
+        "report_date",
+        "available_date",
+        "pe",
+        "pb",
+        "dividend_yield",
         "source",
         "lineage_json",
         "as_of_date",
@@ -2176,6 +2211,13 @@ def materialize_finlab_canonical_outputs(
         end_date=end_date,
         limit=limit_per_dataset,
     ) if wants("canonical_fundamental_features") else []
+    valuations = build_valuation_rows(
+        root,
+        run_id=rid,
+        generated_at=timestamp,
+        end_date=end_date,
+        limit=limit_per_dataset,
+    ) if wants("canonical_fundamental_features") else []
     taxonomy = build_taxonomy_rows(root, generated_at=timestamp, limit=limit_per_dataset) if wants("finlab_taxonomy_tags") else []
 
     output_rows: dict[str, list[dict[str, Any]]] = {}
@@ -2196,7 +2238,7 @@ def materialize_finlab_canonical_outputs(
     if wants("canonical_revenue_monthly"):
         output_rows["canonical_revenue_monthly"] = listed_revenue + emerging_revenue
     if wants("canonical_fundamental_features"):
-        output_rows["canonical_fundamental_features"] = fundamentals
+        output_rows["canonical_fundamental_features"] = fundamentals + valuations
     if wants("canonical_broker_flow_daily"):
         output_rows["canonical_broker_flow_daily"] = broker_flow
     if wants("canonical_broker_rank_daily"):
@@ -2248,13 +2290,25 @@ def _upsert_statement(
     columns: list[str],
     conflict_columns: list[str],
     update_columns: list[str],
+    rows_per_statement: int = 1,
+    json_rows: bool = False,
 ) -> str:
-    placeholders = ", ".join("?" for _ in columns)
     column_sql = ", ".join(columns)
     conflict_sql = ", ".join(conflict_columns)
     update_sql = ", ".join(f"{column}=excluded.{column}" for column in update_columns)
+    if json_rows:
+        select_sql = ", ".join(
+            f"json_extract(value, '$[{index}]')"
+            for index in range(len(columns))
+        )
+        values_clause = f"SELECT {select_sql} FROM json_each(?) WHERE 1"
+    else:
+        placeholders = "(" + ", ".join("?" for _ in columns) + ")"
+        values_clause = "VALUES " + ", ".join(
+            placeholders for _ in range(max(1, rows_per_statement))
+        )
     return (
-        f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders}) "
+        f"INSERT INTO {table} ({column_sql}) {values_clause} "
         f"ON CONFLICT({conflict_sql}) DO UPDATE SET {update_sql}"
     )
 
@@ -2266,6 +2320,7 @@ def _row_statements(
     conflict_columns: list[str],
     update_columns: list[str],
     required_columns: list[str] | None = None,
+    rows_per_statement: int = 1,
 ) -> list[tuple[str, list[Any]]]:
     for index, row in enumerate(rows):
         missing = [
@@ -2277,8 +2332,30 @@ def _row_statements(
             raise ValueError(
                 f"{table} row {index} missing required D1 columns: {', '.join(missing)}"
             )
-    sql = _upsert_statement(table, columns, conflict_columns, update_columns)
-    return [(sql, [_d1_param(row.get(column)) for column in columns]) for row in rows]
+    batch_size = max(1, int(rows_per_statement or 1))
+    statements: list[tuple[str, list[Any]]] = []
+    for start in range(0, len(rows), batch_size):
+        batch = rows[start:start + batch_size]
+        use_json_rows = batch_size > 1
+        sql = _upsert_statement(
+            table,
+            columns,
+            conflict_columns,
+            update_columns,
+            rows_per_statement=len(batch),
+            json_rows=use_json_rows,
+        )
+        matrix = [
+            [_d1_param(row.get(column)) for column in columns]
+            for row in batch
+        ]
+        params = (
+            [json.dumps(matrix, ensure_ascii=False, separators=(",", ":"))]
+            if use_json_rows
+            else matrix[0]
+        )
+        statements.append((sql, params))
+    return statements
 
 
 def _d1_param(value: Any) -> Any:
@@ -2734,6 +2811,7 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
             "as_of_date",
         ],
         required_columns=["stock_id", "period", "source"],
+        rows_per_statement=10,
     ))
     statements.extend(_row_statements(
         "canonical_broker_flow_daily",

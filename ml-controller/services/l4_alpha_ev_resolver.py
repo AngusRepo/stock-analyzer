@@ -22,6 +22,15 @@ SNAPSHOT_BACKFILL_AS_OF_GUARD = (
     "l4_trained_before_snapshot;s12_samples_before_run"
 )
 SNAPSHOT_BACKFILL_APPROVAL_STATE = "snapshot_backfill_only"
+PURGED_OOF_USAGE_SCOPE = "purged_oof_evidence"
+PURGED_OOF_APPROVAL_STATE = "purged_oof_evidence_only"
+PURGED_OOF_LINEAGE_SCHEMA_VERSION = "l4-point-in-time-prediction-lineage-v1"
+PURGED_OOF_AS_OF_GUARD = "label_known_date_strictly_before_prediction_date"
+PURGED_OOF_ARTIFACT_CONTRACT_VERSION = "l4-alpha-ev-contract-v4"
+PURGED_OOF_FEATURE_SEMANTIC_VERSION = "l4-directional-score-components-v2-lineage-bound"
+PURGED_OOF_LABEL_SCHEMA_VERSION = (
+    "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+)
 EMPIRICAL_ONLY_METHODS = {
     "empirical",
     "empirical_bucket",
@@ -112,6 +121,45 @@ def _snapshot_backfill_allowed(payload: dict[str, Any], usage_scope: str) -> boo
     )
 
 
+def _purged_oof_allowed(payload: dict[str, Any], usage_scope: str) -> bool:
+    if usage_scope != PURGED_OOF_USAGE_SCOPE:
+        return False
+    lineage = (
+        payload.get("point_in_time_prediction_lineage")
+        if isinstance(payload.get("point_in_time_prediction_lineage"), dict)
+        else {}
+    )
+    prediction_date = str(lineage.get("prediction_date") or "")[:10]
+    lineage_trained_until = str(lineage.get("trained_until") or "")[:10]
+    payload_trained_until = str(payload.get("trained_until") or "")[:10]
+    return (
+        str(payload.get("generation_mode") or "").strip() == "purged_oof"
+        and payload.get("schema_version") == SCHEMA_VERSION
+        and payload.get("artifact_contract_version") == PURGED_OOF_ARTIFACT_CONTRACT_VERSION
+        and payload.get("feature_snapshot_version") == PURGED_OOF_FEATURE_SEMANTIC_VERSION
+        and payload.get("label_schema_version") == PURGED_OOF_LABEL_SCHEMA_VERSION
+        and payload.get("output_is_net_of_costs") is True
+        and int(payload.get("horizon_days") or 0) == 5
+        and _float_or_none(payload.get("cost_model_bps")) is not None
+        and _approval_state(payload) == PURGED_OOF_APPROVAL_STATE
+        and payload.get("purged_oof_evidence_only") is True
+        and str(payload.get("cohort_id") or "").strip() != ""
+        and str(payload.get("fold_id") or "").strip() != ""
+        and str(payload.get("source_manifest_checksum") or "").strip() != ""
+        and lineage.get("schema_version") == PURGED_OOF_LINEAGE_SCHEMA_VERSION
+        and lineage.get("as_of_guard") == PURGED_OOF_AS_OF_GUARD
+        and str(lineage.get("cohort_id") or "").strip() == str(payload.get("cohort_id") or "").strip()
+        and str(lineage.get("fold_id") or "").strip() == str(payload.get("fold_id") or "").strip()
+        and str(lineage.get("source_manifest_checksum") or "").strip()
+        == str(payload.get("source_manifest_checksum") or "").strip()
+        and lineage.get("feature_semantic_version") == PURGED_OOF_FEATURE_SEMANTIC_VERSION
+        and lineage_trained_until == payload_trained_until
+        and len(str(payload.get("source_manifest_checksum") or "").strip()) == 64
+        and bool(prediction_date)
+        and bool(lineage_trained_until)
+        and lineage_trained_until < prediction_date
+    )
+
 def _expected_return_value(payload: dict[str, Any]) -> float | None:
     for key in (
         "expected_return_mean",
@@ -155,12 +203,21 @@ def resolve_l4_alpha_ev(
         blockers.append("forecast_source_not_selection_alpha_ev")
 
     snapshot_backfill_allowed = _snapshot_backfill_allowed(payload, usage_scope)
+    purged_oof_allowed = _purged_oof_allowed(payload, usage_scope)
     approval_state = _approval_state(payload)
-    if approval_state not in APPROVED_STATES and not snapshot_backfill_allowed:
+    if (
+        approval_state not in APPROVED_STATES
+        and not snapshot_backfill_allowed
+        and not purged_oof_allowed
+    ):
         blockers.append("production_approval_missing")
 
     validation_decision = _validation_decision(payload)
-    if validation_decision not in PASS_STATES and not snapshot_backfill_allowed:
+    if (
+        validation_decision not in PASS_STATES
+        and not snapshot_backfill_allowed
+        and not purged_oof_allowed
+    ):
         blockers.append("validation_packet_not_pass")
 
     method = _resolver_method(payload)
@@ -194,8 +251,13 @@ def resolve_l4_alpha_ev(
         "validation_decision": validation_decision or None,
         "resolver_method": method or None,
         "usage_scope": usage_scope,
-        "production_eligible": status == "loaded" and not snapshot_backfill_allowed,
+        "production_eligible": (
+            status == "loaded"
+            and not snapshot_backfill_allowed
+            and not purged_oof_allowed
+        ),
         "snapshot_backfill_eligible": status == "loaded" and snapshot_backfill_allowed,
+        "purged_oof_evidence_eligible": status == "loaded" and purged_oof_allowed,
         "blockers": blockers,
     }
     return normalized

@@ -128,10 +128,11 @@ function buildCanonicalQuery(db: D1Database, symbol: string, asOfDate: string | 
   `
   if (asOfDate) {
     return db.prepare(`${base}
-         AND (available_date IS NULL OR available_date <= ?)
+         AND available_date <= ?
+         AND as_of_date <= ?
        ORDER BY available_date DESC, period DESC, as_of_date DESC
        LIMIT 180
-    `).bind(symbol, asOfDate)
+    `).bind(symbol, asOfDate, asOfDate)
   }
   return db.prepare(`${base}
        ORDER BY available_date DESC, period DESC, as_of_date DESC

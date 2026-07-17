@@ -4,6 +4,7 @@ import { requireAdminOrServiceToken } from '../lib/auth'
 import { resolveFinLabDispatchFence } from '../lib/finLabDispatchFence'
 import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
 import type { EvidenceArtifactWriteInput } from '../lib/evidenceArtifactContract'
+import { normalizeSingleD1BatchStatement } from '../lib/d1BatchStatement'
 
 export const adminControlRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -33,18 +34,8 @@ function requireServiceToken(c: any) {
   return null
 }
 
-const D1_BATCH_ALLOWED_DML = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE'])
-
 function normalizeD1BatchStatement(raw: any, index: number) {
-  const sql = typeof raw?.sql === 'string' ? raw.sql.trim() : ''
-  if (!sql) throw new Error(`statement ${index}: sql is required`)
-  if (sql.includes(';')) throw new Error(`statement ${index}: multiple SQL statements are not allowed`)
-
-  const verb = sql.split(/\s+/, 1)[0]?.toUpperCase()
-  if (!D1_BATCH_ALLOWED_DML.has(verb)) {
-    throw new Error(`statement ${index}: only INSERT/UPDATE/DELETE/REPLACE are allowed`)
-  }
-
+  const sql = normalizeSingleD1BatchStatement(raw?.sql, index)
   const params = Array.isArray(raw?.params) ? raw.params : []
   return { sql, params }
 }
@@ -471,11 +462,36 @@ async function handleSchedulerCallback(c: any) {
         await c.env.KV.delete(`lock:ml-predict:${callbackRunDate}`).catch(() => {})
       }
       if (body.status === 'success') {
-        const { runPostPipelineCallbackChain } = await import('../lib/postMarketChain')
-        await runPostPipelineCallbackChain(c.env, {
-          runDate: callbackRunDate,
-          upstreamRunId: callbackRunId,
-        })
+        if (!callbackRunDate || !callbackRunId) {
+          throw new Error('pipeline callback missing run_date or run_id for post-pipeline continuation')
+        }
+        const continuationKey = `callback:post-pipeline-enqueued:${callbackRunDate}:${callbackRunId}`
+        const existing = await c.env.KV.get(continuationKey)
+        if (!existing) {
+          await c.env.KV.put(continuationKey, 'pending', { expirationTtl: 7 * 86400 })
+          try {
+            await c.env.UPDATE_QUEUE.send({
+              type: 'post_pipeline_chain',
+              cursor: 0,
+              triggerTime: callbackRunDate,
+              runId: callbackRunId,
+              attempt: 0,
+            })
+            await c.env.KV.put(continuationKey, 'queued', { expirationTtl: 7 * 86400 })
+          } catch (error) {
+            await c.env.KV.delete(continuationKey).catch(() => {})
+            throw error
+          }
+        }
+        await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
+          status: 'triggered',
+          summary: existing
+            ? `post-pipeline continuation already queued run_id=${callbackRunId}`
+            : `post-pipeline continuation durably queued run_id=${callbackRunId}`,
+          duration_ms: 0,
+          run_id: callbackRunId,
+          run_date: callbackRunDate,
+        }, c.env as any)
       } else {
         await logSchedulerResult(c.env.KV, 'evening-chain', {
           status: body.status === 'skipped' ? 'skipped' : 'error',
@@ -511,39 +527,36 @@ async function handleSchedulerCallback(c: any) {
     ['success', 'skipped'].includes(String(body.status)) &&
     c.env.ML_CONTROLLER_URL
   if (verifyCanContinue) {
+    if (!callbackRunDate || !callbackRunId) {
+      return c.json({ error: 'verify callback missing run_date or run_id for post-verify continuation' }, 400)
+    }
+    const continuationKey = `callback:post-verify-enqueued:${callbackRunDate}:${callbackRunId}`
+    const existing = await c.env.KV.get(continuationKey)
+    if (!existing) {
+      await c.env.KV.put(continuationKey, 'pending', { expirationTtl: 7 * 86400 })
+      try {
+        await c.env.UPDATE_QUEUE.send({
+          type: 'post_verify_chain',
+          cursor: 0,
+          triggerTime: callbackRunDate,
+          runId: callbackRunId,
+          attempt: 0,
+        })
+        await c.env.KV.put(continuationKey, 'queued', { expirationTtl: 7 * 86400 })
+      } catch (error) {
+        await c.env.KV.delete(continuationKey).catch(() => {})
+        throw error
+      }
+    }
     await logSchedulerResult(c.env.KV, 'post-verify-chain', {
       status: 'triggered',
-      summary: 'post-verify chain accepted by verify-v2 callback',
+      summary: existing
+        ? `post-verify continuation already queued run_id=${callbackRunId}`
+        : `post-verify continuation durably queued run_id=${callbackRunId}`,
       duration_ms: 0,
       run_id: callbackRunId,
       run_date: callbackRunDate,
     }, c.env as any)
-    c.executionCtx.waitUntil((async () => {
-      try {
-        const { runPostVerifyCallbackChain } = await import('../lib/postMarketChain')
-        await runPostVerifyCallbackChain(c.env, {
-          runDate: callbackRunDate,
-          upstreamRunId: callbackRunId,
-        })
-      } catch (e: any) {
-        await logSchedulerResult(c.env.KV, 'post-verify-chain', {
-          status: 'error',
-          summary: e?.message ?? 'post-verify callback chain failed',
-          duration_ms: 0,
-          error: String(e),
-          run_id: callbackRunId,
-          run_date: callbackRunDate,
-        }, c.env as any)
-        await logSchedulerResult(c.env.KV, 'evening-chain', {
-          status: 'error',
-          summary: e?.message ?? 'root chain stopped in post-verify callback chain',
-          duration_ms: 0,
-          error: String(e),
-          run_id: callbackRunId,
-          run_date: callbackRunDate,
-        }, c.env as any)
-      }
-    })())
   }
 
   if (body.task === 'verify-v2' && String(body.status) === 'error') {

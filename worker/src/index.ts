@@ -29,6 +29,7 @@ import {
   runMonthlyOptunaResearch as runMonthlyOptunaResearchWorkflow,
   runL4AlphaEvRefresh as runL4AlphaEvRefreshWorkflow,
   runAllocatorEvFusionRefresh as runAllocatorEvFusionRefreshWorkflow,
+  runOpbArmPriorRefresh as runOpbArmPriorRefreshWorkflow,
   runAllocatorEvFeatureSnapshotBackfill as runAllocatorEvFeatureSnapshotBackfillWorkflow,
   runOptunaQueueProcessor as runOptunaQueueProcessorWorkflow,
 } from './lib/controllerWorkflows'
@@ -83,6 +84,10 @@ const adminTriggerRoutes = createAdminTriggerRoutes({
     runMonthlyOptunaResearch: (runDate?: string) => runMonthlyOptunaResearchWorkflow(c.env, runDate),
     runL4AlphaEvRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => runL4AlphaEvRefreshWorkflow(c.env, runDate, cadence),
     runAllocatorEvFusionRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => runAllocatorEvFusionRefreshWorkflow(c.env, runDate, cadence),
+    runOpbArmPriorRefresh: (
+      runDate: string,
+      expectedReturnOwner: 'auto' | 'l4_alpha_ev' | 'allocator_ev_fusion',
+    ) => runOpbArmPriorRefreshWorkflow(c.env, runDate, expectedReturnOwner),
     runAllocatorEvFeatureSnapshotBackfill: (params) => runAllocatorEvFeatureSnapshotBackfillWorkflow(c.env, params),
     runOptunaQueueProcessor: () => runOptunaQueueProcessorWorkflow(c.env),
   }),

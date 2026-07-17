@@ -142,7 +142,12 @@ async def post_verify_dry_run(req: VerifyRunRequest = VerifyRunRequest()):
         req.limit,
         req.run_date,
     )
-    pending = verify_service.load_pending_predictions(req.lookback_days, req.limit, req.run_date)
+    workset = verify_service.load_pending_prediction_workset(
+        lookback_days=req.lookback_days,
+        page_size=req.limit,
+        run_date=req.run_date,
+    )
+    pending = workset["rows"]
     market_risk = verify_service.load_market_risk()
     prepared = verify_service.prepare_verification_updates(pending, market_risk)
     updates = prepared.get("verify_updates") or []
@@ -154,6 +159,9 @@ async def post_verify_dry_run(req: VerifyRunRequest = VerifyRunRequest()):
         **summary,
         "arf_feedback_planned": len(prepared.get("arf_feedback_items") or []),
         "errors": prepared.get("errors") or [],
+        "verification_pages": workset["pages"],
+        "verification_workset_exhausted": workset["exhausted"],
+        "verification_workset_truncated": workset["truncated"],
         "mutations_skipped": [
             "write_verified_predictions",
             "update_model_accuracy",

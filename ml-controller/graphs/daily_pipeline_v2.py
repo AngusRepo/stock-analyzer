@@ -49,6 +49,7 @@ from services.model_lifecycle_policy import (
     resolve_degraded_dampening,
 )
 from services.model_score_quality import drop_degenerate_rank_scores
+from services.active8_score_semantics import normalize_active8_cross_sectional_scores
 from services.model_ic_tracker import IC_EVALUATION_SEMANTIC_VERSION
 from services.market_regime_state import (
     build_market_regime_contract_from_market_env,
@@ -708,6 +709,7 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
         adaptive_params=state.get("adaptive_params") or {},
         barrier_params=state.get("barrier_params") or {},
         lifecycle_weights=state.get("lifecycle_weights") or {},
+        decision_date=state["run_date"],
         trading_config=state.get("trading_config") or {},
     )
     payloads_dict = [_to_dict(p) for p in payloads]
@@ -722,7 +724,8 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     2026-06-24 ML_POOL L3 family:
     - Parallel batch: tree/tabular/graph alpha predictors + DLinear/PatchTST/iTransformer.
     - TimesFM is owned by L2 feature enrichment and must not run as an L3 direct alpha voter.
-    - Per-stock merged signal: time_series ??rank via sigmoid, weighted by
+    - Per-stock merged signal: all Active-8 outputs receive same-run market
+      cross-sectional percentile ranks, weighted by
       ic_weights ? lifecycle_weights from model_pool.json.
     - Original signal preserved as r["signal"] for backward compat;
       merged exposed as r["ensemble_v2"] = {avg_rank, signal, contributing_models}.
@@ -1263,6 +1266,33 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             }
         _attach_alt_sources(row, sym)
         pred_map[sym] = row
+
+    rank_run_date = str(state.get("run_date") or "").strip()
+    if not rank_run_date:
+        payload_dates = [
+            str(price.get("date") or "")
+            for payload in payloads
+            if isinstance(payload, dict)
+            for price in ((payload.get("prices") or [])[-1:])
+            if isinstance(price, dict) and price.get("date")
+        ]
+        rank_run_date = max(payload_dates, default="")
+    if not rank_run_date:
+        raise RuntimeError("active8_rank_run_date_missing")
+    rank_normalization = normalize_active8_cross_sectional_scores(
+        pred_map,
+        artifact_versions=active_versions,
+        artifact_target_semantics={
+            model_name: str(
+                ((serving_pool.get("models") or {}).get(model_name) or {}).get("target_semantic_version")
+                or (((serving_pool.get("models") or {}).get(model_name) or {}).get("last_artifact_evidence") or {}).get("target_semantic_version")
+                or ""
+            )
+            for model_name in ACTIVE_ALPHA_MODELS
+        },
+        run_date=rank_run_date,
+    )
+    logger.info("[Pipeline V2] Active-8 rank normalization: %s", rank_normalization)
 
     degenerate_scores = drop_degenerate_rank_scores(pred_map, score_field="rank_scores")
     degenerate_challengers = drop_degenerate_rank_scores(pred_map, score_field="challenger_rank_scores")

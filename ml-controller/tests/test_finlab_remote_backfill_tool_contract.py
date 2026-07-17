@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -131,6 +132,109 @@ def test_remote_backfill_tool_supports_daily_source_window_contract():
     assert "validate_official_market_summary_frames(frames, target_date=source_end_date)" in source
     assert "controller_d1_batch chunk=" in source
     assert list(tool.filter_date_range(frame, start_date="2026-07-01", end_date="2026-07-01")["close"]) == [12]
+
+
+def test_finlab_fundamental_fields_require_deadline_alignment():
+    tool = _load_tool_module()
+
+    class DeadlineFrame(pd.DataFrame):
+        _metadata = ["deadline_called"]
+
+        @property
+        def _constructor(self):
+            return DeadlineFrame
+
+        def deadline(self):
+            self.deadline_called = True
+            out = self.copy()
+            out.index = pd.to_datetime(["2026-03-31"])
+            return out
+
+    raw = DeadlineFrame(
+        {"2330": [66.2]},
+        index=pd.to_datetime(["2026-01-01"]),
+    )
+    aligned = tool.normalize_finlab_wide_field(
+        raw,
+        api_key_name="fundamental_features:gross_margin",
+    )
+
+    assert raw.deadline_called is True
+    assert list(aligned.index) == [pd.Timestamp("2026-03-31")]
+    assert aligned.index.name == "date"
+
+
+def test_fundamental_canonical_apply_caps_multi_row_requests_at_ten_statements():
+    tool = _load_tool_module()
+
+    assert tool.canonical_dataset_chunk_size("canonical_fundamental_features", 500) == 10
+
+
+def test_controller_d1_batch_preserves_zero_success_and_fails_fast(monkeypatch):
+    tool = _load_tool_module()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "ok": True,
+                "total": 1,
+                "success_count": 0,
+                "error_count": 1,
+                "first_error": "too many SQL variables",
+            }).encode("utf-8")
+
+    monkeypatch.setattr(tool, "controller_d1_batch_url", lambda: "https://controller.example/d1/batch")
+    monkeypatch.setattr(tool, "controller_proxy_token", lambda: "token")
+    monkeypatch.setattr(tool.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+
+    with pytest.raises(RuntimeError, match="success_count=0.*too many SQL variables"):
+        tool.controller_d1_batch_execute([("INSERT INTO sample VALUES (?)", [1])])
+
+
+def test_finlab_fundamental_fields_fail_closed_without_deadline_owner():
+    import pytest
+
+    tool = _load_tool_module()
+    raw = pd.DataFrame({"2330": [66.2]}, index=pd.to_datetime(["2026-01-01"]))
+
+    with pytest.raises(ValueError, match="finlab_deadline_alignment_unavailable"):
+        tool.normalize_finlab_wide_field(
+            raw,
+            api_key_name="financial_statement:revenue",
+        )
+
+
+def test_finlab_daily_valuation_fields_keep_source_observation_dates():
+    tool = _load_tool_module()
+    raw = pd.DataFrame({"2330": [18.5]}, index=pd.to_datetime(["2026-07-16"]))
+
+    aligned = tool.normalize_finlab_wide_field(
+        raw,
+        api_key_name="price_earning_ratio:pe",
+    )
+
+    assert list(aligned.index) == [pd.Timestamp("2026-07-16")]
+
+
+def test_key_scoped_repair_validates_only_requested_required_fields():
+    tool = _load_tool_module()
+    gross = pd.DataFrame({"2330": [66.2]}, index=pd.to_datetime(["2026-06-01"]))
+
+    assert tool.required_wide_field_errors(
+        "fundamental_factor_diversity",
+        {"gross_margin": gross},
+        requested_fields={"gross_margin"},
+    ) == []
+    assert tool.required_wide_field_errors(
+        "fundamental_factor_diversity",
+        {"gross_margin": gross},
+    ) == ["pb=missing", "pe=missing"]
 
 
 def test_source_quality_zero_finlab_rows_is_empty_not_ok(monkeypatch):
@@ -734,9 +838,9 @@ def test_materialize_canonical_plan_caps_wide_fundamental_chunk_size(monkeypatch
 
     assert calls == [
         ("canonical_market_daily", 250),
-        ("canonical_fundamental_features", 50),
+        ("canonical_fundamental_features", 10),
     ]
-    assert result["per_dataset"]["canonical_fundamental_features"]["chunk_size"] == 50
+    assert result["per_dataset"]["canonical_fundamental_features"]["chunk_size"] == 10
     assert result["per_dataset"]["canonical_market_daily"]["chunk_size"] == 250
 
 

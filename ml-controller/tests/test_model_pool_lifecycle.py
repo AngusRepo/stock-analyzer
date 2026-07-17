@@ -87,6 +87,113 @@ def test_promote_check_apply_requires_confirm():
     assert "confirm=true" in exc.value.detail
 
 
+def test_artifact_auto_promote_requires_confirm():
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            model_pool.artifact_registry_auto_promote(
+                model_pool.AutoPromotionRequest(confirm=False)
+            )
+        )
+
+    assert exc.value.status_code == 400
+    assert "confirm=true" in exc.value.detail
+
+
+def test_artifact_auto_promote_reconciles_readback_and_notifies(monkeypatch):
+    import services.model_serving_resolver as serving_resolver
+
+    pool = {
+        "schema_version": "1.0",
+        "models": {
+            "XGBoost": {
+                "status": "active",
+                "version": "vOld",
+                "serving_artifact_id": "XGBoost:vOld:weekly_drift",
+            }
+        },
+    }
+    bucket = _install_fake_gcs(monkeypatch, pool)
+    artifact = {
+        "artifact_id": "XGBoost:vNext:weekly_drift",
+        "model_name": "XGBoost",
+        "version": "vNext",
+        "candidate_type": "weekly_drift",
+        "state": "live_gate_passed",
+        "offline_gate_decision": "STRONG_PASS",
+        "live_gate_status": "passed",
+        "artifact_path": "universal/xgboost/vNext.joblib",
+        "metadata_path": "universal/xgboost/metadata_vNext.json",
+    }
+    monkeypatch.setattr(model_pool, "list_artifact_registry", lambda limit=1000: [artifact])
+    monkeypatch.setattr(model_pool, "list_champion_pointers", lambda: [])
+    monkeypatch.setattr(
+        model_pool,
+        "build_promotion_queue",
+        lambda rows, champion_versions: {
+            "queue": [{**artifact, "promotion_decision": "auto_promote_candidate", "approval_required": False}]
+        },
+    )
+    monkeypatch.setattr(
+        model_pool,
+        "run_promotion_controller",
+        lambda **_: {"can_promote": True, "confirmed_at": "2026-07-16T00:00:00Z"},
+    )
+
+    def release_writer(target_pool, candidate, **_):
+        target_pool["models"]["XGBoost"].update({
+            "status": "active",
+            "version": candidate["version"],
+            "gcs_path": candidate["artifact_path"],
+            "metadata_path": candidate["metadata_path"],
+            "serving_owner": "model_champion_pointers",
+            "serving_artifact_id": candidate["artifact_id"],
+        })
+        return {"model_pool_updated": True}
+
+    monkeypatch.setattr(model_pool, "run_model_pool_release_writer", release_writer)
+    monkeypatch.setattr(
+        model_pool,
+        "build_pool_from_champion_pointers",
+        lambda **_: {
+            "models": {
+                "XGBoost": {
+                    "status": "active",
+                    "version": "vNext",
+                    "gcs_path": artifact["artifact_path"],
+                    "metadata_path": artifact["metadata_path"],
+                    "serving_owner": "model_champion_pointers",
+                    "serving_artifact_id": artifact["artifact_id"],
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        model_pool,
+        "build_model_pool_reconcile_plan",
+        lambda **kwargs: serving_resolver.build_model_pool_reconcile_plan(
+            **kwargs,
+            model_names=("XGBoost",),
+        ),
+    )
+    notifications: list[dict] = []
+    monkeypatch.setattr(
+        model_pool.discord_alert,
+        "alert_lifecycle",
+        lambda *args, **kwargs: notifications.append({"args": args, "kwargs": kwargs}),
+    )
+
+    result = asyncio.run(model_pool.artifact_registry_auto_promote())
+
+    assert result["promoted"] == 1
+    assert result["readback_verified"] is True
+    saved = json.loads(bucket.pool_blob.download_as_text())
+    assert saved["models"]["XGBoost"]["version"] == "vNext"
+    assert saved["models"]["XGBoost"]["serving_artifact_id"] == artifact["artifact_id"]
+    assert notifications[0]["kwargs"]["metrics"]["promotion_basis"] == (
+        "all_evidence_gates_and_final_champion_comparison_passed"
+    )
+
+
 def test_register_challenger_blocks_active8_legacy_slot():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(

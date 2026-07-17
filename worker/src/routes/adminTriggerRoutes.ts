@@ -1,4 +1,4 @@
-﻿import { Hono } from 'hono'
+import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireServiceToken } from '../lib/auth'
 import type { Bindings, Variables } from '../types'
@@ -17,15 +17,18 @@ const SYNC_REQUIRED_TASKS = new Set([
   'alpha-quality', 'sector-leaders', 'optuna-queue',
   'weekly-cleanup', 'weekly-backtest',
   'weekly-optuna', 'adaptive-meta-policy-replay', 'linucb-multiplier-replay',
-  'l4-alpha-ev-refresh', 'allocator-ev-fusion-refresh',
+  'l4-alpha-ev-refresh', 'allocator-ev-fusion-refresh', 'opb-arm-prior-refresh',
   'allocator-ev-feature-snapshot-backfill',
-  'monthly-optuna', 'monthly-l4-alpha-ev-refresh', 'monthly-allocator-ev-fusion-refresh', 'monthly-strategy-mining', 'weekly-drift-retrain',
+  'monthly-optuna', 'monthly-l4-alpha-ev-refresh', 'monthly-allocator-ev-fusion-refresh', 'monthly-opb-arm-prior-refresh', 'monthly-strategy-mining', 'weekly-drift-retrain',
   'finlab-v4-backfill',
   'finlab-backfill-watchdog',
+  'allocator-ev-lifecycle-watchdog',
+  'active8-oof-lifecycle', 'active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly',
   'external-evidence',
   'strategy-learning',
   'strategy-threshold-calibration',
   's12-smcvwap-calibration',
+  's12-research-recovery',
   's12-replay-backfill',
   'audit-json-retention',
   'legacy-evidence-migration', 'legacy-strategy-evidence-migration', 'legacy-hot-data-retirement', 'artifact-reconcile', 'd1-evidence-scrub', 'r2-retention-sweep',
@@ -75,6 +78,21 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     const fn = taskMap[task]
     if (!fn) return c.json({ error: `Unknown task: ${task}`, available: Object.keys(taskMap) }, 400)
 
+    if (requestedRunDate) {
+      const {
+        historicalLearningLineageBlockedMessage,
+        historicalLearningLineageDecision,
+      } = await import('../lib/historicalLearningLineageGuard')
+      const lineageBoundary = await historicalLearningLineageDecision(c.env.DB, task, requestedRunDate)
+      if (!lineageBoundary.allowed) {
+        return c.json({
+          success: false,
+          error: historicalLearningLineageBlockedMessage(lineageBoundary),
+          boundary: lineageBoundary,
+        }, 409)
+      }
+    }
+
     const { classifySchedulerSummary, logSchedulerResult } = await import('../lib/schedulerRunLogger')
     if (!c.req.query('force')) {
       const decision = await shouldRunScheduledTask({ task, kv: c.env.KV })
@@ -118,9 +136,12 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'alpha-quality',
       'finlab-v4-backfill',
       'finlab-backfill-watchdog',
+      'allocator-ev-lifecycle-watchdog',
+  'active8-oof-lifecycle', 'active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly',
       'strategy-learning',
       'strategy-threshold-calibration',
       's12-smcvwap-calibration',
+      's12-research-recovery',
       's12-replay-backfill',
       'audit-json-retention',
       'artifact-reconcile',
@@ -137,11 +158,13 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'weekly-optuna',
       'l4-alpha-ev-refresh',
       'allocator-ev-fusion-refresh',
+      'opb-arm-prior-refresh',
       'allocator-ev-feature-snapshot-backfill',
       'weekly-drift-retrain',
       'monthly-optuna',
       'monthly-l4-alpha-ev-refresh',
       'monthly-allocator-ev-fusion-refresh',
+      'monthly-opb-arm-prior-refresh',
       'monthly-strategy-mining',
       'weekly-cleanup',
       'optuna-queue',

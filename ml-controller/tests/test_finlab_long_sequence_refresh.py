@@ -127,7 +127,7 @@ def test_long_sequence_refresh_skips_non_tail_backfill(monkeypatch):
 
 def test_long_sequence_refresh_skips_daily_run_without_price_tail(monkeypatch):
     async def fake_build_finlab_long_sequence_prep(payload: dict, fire_and_forget: bool = False) -> dict:
-        raise AssertionError("long sequence refresh should not spawn without daily_price close")
+        raise AssertionError("long sequence refresh should not spawn without adjusted OHLC label fields")
 
     monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models")
     monkeypatch.setenv("FINLAB_LONG_SEQUENCE_REFRESH_ENABLED", "1")
@@ -146,10 +146,46 @@ def test_long_sequence_refresh_skips_daily_run_without_price_tail(monkeypatch):
 
     assert result == {
         "status": "skipped",
-        "reason": "tail_daily_price_close_missing",
+        "reason": "tail_daily_price_adjusted_ohlc_label_contract_missing",
         "run_id": "finlab-v4-daily-20260702-chip-only",
-        "required_uri": "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/close.parquet",
+        "required_uris": [
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/adj_close.parquet",
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/adj_open.parquet",
+        ],
+        "missing_uris": [
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/adj_close.parquet",
+            "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-chip-only/raw/daily_price/adj_open.parquet",
+        ],
     }
+
+
+def test_long_sequence_refresh_excludes_legacy_base_without_adjusted_ohlc(monkeypatch):
+    captured: dict = {}
+
+    async def fake_build_finlab_long_sequence_prep(payload: dict, fire_and_forget: bool = False) -> dict:
+        captured["payload"] = payload
+        return {"status": "spawned"}
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models")
+    monkeypatch.setenv("FINLAB_LONG_SEQUENCE_REFRESH_ENABLED", "1")
+    monkeypatch.setenv("FINLAB_LONG_SEQUENCE_5Y_BASE_RUN_ID", "finlab-v4-5y-base")
+    monkeypatch.setattr(
+        finlab,
+        "_gcs_object_exists",
+        lambda uri: "finlab-v4-5y-base" not in uri,
+    )
+    monkeypatch.setattr(modal_client, "build_finlab_long_sequence_prep", fake_build_finlab_long_sequence_prep)
+
+    result = asyncio.run(finlab._maybe_spawn_long_sequence_refresh({
+        "status": "success",
+        "run_date": "2026-07-15",
+        "result": {"run_id": "finlab-v4-daily-20260715-tail"},
+    }))
+
+    tail_prefix = "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260715-tail"
+    assert captured["payload"]["source_gcs_prefixes"] == [tail_prefix]
+    assert result["base_source_status"] == "excluded_missing_adjusted_ohlc"
+    assert len(result["base_missing_uris"]) == 2
 
 
 def test_long_sequence_refresh_can_be_disabled(monkeypatch):

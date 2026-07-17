@@ -1154,10 +1154,11 @@ async function loadStrategyRawFundamentalSignals(
           FROM canonical_fundamental_features
          WHERE stock_id IN (${placeholders})
            AND available_date <= ?
-           AND source = 'finlab.fundamental_factor_diversity'
+           AND as_of_date <= ?
+           AND source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation')
            AND (${nonNullPredicate})
          ORDER BY stock_id, available_date DESC, period DESC
-      `).bind(...chunk, endDate).all<{
+      `).bind(...chunk, endDate, endDate).all<{
         symbol: string
         available_date: string | null
         period: string | null

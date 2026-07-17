@@ -10,7 +10,7 @@ SUPPORTED_L4_SERVING_CONTRACT_PAIRS = frozenset({
     (L4_ARTIFACT_CONTRACT_VERSION, LABEL_SCHEMA_VERSION),
 })
 
-ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION = "allocator-ev-fusion-contract-v10"
+ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION = "allocator-ev-fusion-contract-v11"
 ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION = "allocator-ev-fusion-directional-components-v2-lineage-bound"
 SUPPORTED_ALLOCATOR_EV_SERVING_CONTRACT_PAIRS = frozenset({
     ("allocator-ev-fusion-contract-v9", LEGACY_LABEL_SCHEMA_VERSION),

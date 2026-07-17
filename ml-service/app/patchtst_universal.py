@@ -30,6 +30,15 @@ STALE_PROMOTION_FIELDS = (
 )
 
 
+def _sequence_input_series_count(
+    series_close: list[list[float]],
+    sequence_report: dict | None,
+) -> int:
+    if sequence_report and int(sequence_report.get("input_series") or 0) > 0:
+        return int(sequence_report["input_series"])
+    return len(series_close)
+
+
 def _update_model_pool_active(bucket, *, version: str, artifact_path: str, metadata: dict, reason: str) -> dict:
     pool_blob = bucket.blob("universal/model_pool.json")
     if not pool_blob.exists():
@@ -116,6 +125,7 @@ def train_patchtst(
     batch_size: int = DEFAULT_BATCH_SIZE,
     val_ratio: float = 0.2,
     version: str = "v1",
+    model_cpcv_policy: dict | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
     """Train NeuralForecast PatchTST and return artifact metadata.
@@ -128,6 +138,8 @@ def train_patchtst(
         for idx, close in enumerate(series_close or [])
     ]
     promote_to_active, promotion_reason = resolve_training_promotion_intent(kwargs, model_name=MODEL_NAME)
+    if str(kwargs.get("generation_mode") or "native").strip().lower() == "purged_oof" and promote_to_active:
+        raise ValueError("oof_fold_artifact_cannot_be_promoted_to_production")
     result = train_neuralforecast_sequence_artifact(
         {
             **kwargs,
@@ -139,10 +151,23 @@ def train_patchtst(
             "max_steps": int(kwargs.get("max_steps") or n_epochs),
             "batch_size": batch_size,
             "oos_ratio": val_ratio,
+            "model_cpcv_policy": model_cpcv_policy or {},
             "promote_to_active": promote_to_active,
         },
         model_name=MODEL_NAME,
     )
+    generation_mode = str(kwargs.get("generation_mode") or "native").strip().lower()
+    if generation_mode == "purged_oof":
+        model_cpcv = (
+            result.get("model_cpcv")
+            or (result.get("metadata") or {}).get("model_cpcv")
+            or (result.get("metrics") or {}).get("model_cpcv")
+        )
+        return {
+            **result,
+            "model_cpcv": model_cpcv,
+            "pool_update": None,
+        }
     pool_update = None
     if promote_to_active:
         assert promotion_reason is not None
@@ -183,6 +208,7 @@ def train_patchtst(
         "elapsed_s": result["elapsed_s"],
         "type": "neuralforecast_patchtst_universal",
         "pool_update": pool_update,
+        "oof_artifact": result.get("oof_artifact"),
     }
 
 

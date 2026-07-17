@@ -1,6 +1,6 @@
 import type { Bindings } from '../types'
 import { runAdaptiveUpdate, runLinUcbRewardLedgerRefresh } from './adaptiveEngine'
-import { runModelIcRollingRefresh, runObsidianDaily, runPaperActivePostmarketPromotion, runVerifyV2 } from './controllerWorkflows'
+import { runArtifactAutoPromotion, runModelIcRollingRefresh, runObsidianDaily, runPaperActivePostmarketPromotion, runVerifyV2 } from './controllerWorkflows'
 import { generateDailyReport } from './dailyReport'
 import { ensureMetaLearningResearchRegistry } from './metaLearningResearchTrack'
 import { runNeuralMetaShadow } from './metaLearningShadowRunner'
@@ -8,10 +8,15 @@ import { clearOpenPositionIntradayPriceCache } from './paperIntradayPriceCache'
 import { classifySchedulerSummary, logSchedulerResult, type SchedulerRunStatus } from './schedulerRunLogger'
 import { recordWorkerTaskComputeProfile } from './computeProfileEvents'
 import { runAllocatorEvFeatureSnapshotBackfill } from './controllerResearchWorkflows'
+import {
+  inspectAllocatorSnapshotClosure,
+  recordAllocatorEvLifecycle,
+} from './allocatorEvDailyLifecycle'
 
-type ChainContext = {
+export type ChainContext = {
   runDate?: string
   upstreamRunId?: string
+  recoveryAttempt?: number
 }
 
 type ChainedTask = {
@@ -205,7 +210,18 @@ async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): P
       maturityAsOfDate: runDate,
       statusRunDate: runDate,
     } as any)
+    await recordAllocatorEvLifecycle(env.DB, {
+      businessDate: signalDate,
+      state: 'replay_enqueued',
+      replayMaturityAsOfDate: runDate,
+      upstreamRunId: runId,
+    })
   }
+  await recordAllocatorEvLifecycle(env.DB, {
+    businessDate: runDate,
+    state: 'replay_pending_maturity',
+    upstreamRunId: ctx.upstreamRunId,
+  })
   return signalDates.length
     ? `triggered next-session S12 replay signal_dates=${signalDates.join(',')} as_of=${runDate}`
     : `next-session S12 replay current as_of=${runDate}`
@@ -263,26 +279,80 @@ export async function runPostPipelineCallbackChain(env: Bindings, ctx: ChainCont
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return
   }
+  let snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate)
+  await recordAllocatorEvLifecycle(env.DB, {
+    businessDate: ctx.runDate,
+    state: 'lineage_ready',
+    nativeLineageRows: snapshotClosure.nativeLineageRows,
+    upstreamRunId: ctx.upstreamRunId,
+    incrementAttempt: true,
+  })
   const snapshotTask = await logChainedTask(
     env,
     ctx,
     'allocator-ev-feature-snapshot-backfill',
-    () => runAllocatorEvFeatureSnapshotBackfill(env, {
-      startDate: ctx.runDate!,
-      endDate: ctx.runDate!,
-      dryRun: false,
-      candidateLimit: 1000,
-      l4MinSamples: 500,
-      l4MinDates: 20,
-    }),
-    { timeoutMs: 130_000 },
+    () => snapshotClosure.ready
+      ? Promise.resolve(`allocator snapshot already ready date=${ctx.runDate} rows=${snapshotClosure.actualRows}`)
+      : runAllocatorEvFeatureSnapshotBackfill(env, {
+        startDate: ctx.runDate!,
+        endDate: ctx.runDate!,
+        dryRun: false,
+        candidateLimit: 1000,
+        l4MinSamples: 500,
+        l4MinDates: 20,
+      }),
+    { timeoutMs: 330_000 },
   )
   results.push(snapshotTask)
-  if (snapshotTask.status === 'error') {
+  snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate)
+  if (snapshotTask.status === 'error' || !snapshotClosure.ready) {
+    const error = snapshotTask.status === 'error'
+      ? snapshotTask.summary
+      : `snapshot readback incomplete native=${snapshotClosure.runNativeLineageRows} `
+        + `reconstructed=${snapshotClosure.reconstructedLineageRows} rejected=${snapshotClosure.rejectedLineageRows} `
+        + `expected=${snapshotClosure.expectedRows} published=${snapshotClosure.publishedRows} actual=${snapshotClosure.actualRows}`
+    await recordAllocatorEvLifecycle(env.DB, {
+      businessDate: ctx.runDate,
+      state: 'error',
+      nativeLineageRows: snapshotClosure.nativeLineageRows,
+      snapshotRunId: snapshotClosure.snapshotRunId,
+      snapshotRows: snapshotClosure.actualRows,
+      upstreamRunId: ctx.upstreamRunId,
+      lastError: error,
+    })
+    const attempt = Math.max(0, Number(ctx.recoveryAttempt ?? 0))
+    if (attempt < 3) {
+      await (env.UPDATE_QUEUE as any).send({
+        type: 'allocator_ev_lifecycle_recovery',
+        cursor: 0,
+        triggerTime: ctx.runDate,
+        runId: ctx.upstreamRunId,
+        attempt: attempt + 1,
+      }, { delaySeconds: Math.min(900, 60 * (2 ** attempt)) })
+    }
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return
   }
-  results.push(await logChainedTask(env, ctx, 'verify-v2', () => runVerifyV2(env, ctx.runDate)))
+  await recordAllocatorEvLifecycle(env.DB, {
+    businessDate: ctx.runDate,
+    state: 'snapshot_ready',
+    nativeLineageRows: snapshotClosure.nativeLineageRows,
+    snapshotRunId: snapshotClosure.snapshotRunId,
+    snapshotRows: snapshotClosure.actualRows,
+    upstreamRunId: ctx.upstreamRunId,
+  })
+  const verifyTask = await logChainedTask(env, ctx, 'verify-v2', () => runVerifyV2(env, ctx.runDate))
+  results.push(verifyTask)
+  if (verifyTask.status !== 'error') {
+    await recordAllocatorEvLifecycle(env.DB, {
+      businessDate: ctx.runDate,
+      state: 'verify_triggered',
+      nativeLineageRows: snapshotClosure.nativeLineageRows,
+      snapshotRunId: snapshotClosure.snapshotRunId,
+      snapshotRows: snapshotClosure.actualRows,
+      upstreamRunId: ctx.upstreamRunId,
+    })
+  }
   await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
 }
 
@@ -291,6 +361,11 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
   const results: ChainedTask[] = []
 
   results.push(await logChainedTask(env, ctx, 'model-ic-tracker', () => runModelIcRollingRefresh(env, ctx.runDate)))
+  if (isCurrentBusinessDate(ctx.runDate)) {
+    results.push(await logChainedTask(env, ctx, 'artifact-auto-promotion', () => runArtifactAutoPromotion(env), { critical: false }))
+  } else {
+    results.push(await logSkippedHistoricalTask(env, ctx, 'artifact-auto-promotion'))
+  }
   results.push(await logChainedTask(env, ctx, 's12-replay-backfill', () => enqueueS12ReplayBackfillTask(env, ctx), {
     timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
   }))

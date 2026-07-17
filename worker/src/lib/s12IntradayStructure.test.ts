@@ -331,6 +331,99 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
 }
 
 {
+  const productionLockedHighFixtures = [
+    {
+      symbol: '8046',
+      expectedChannelAlign: false,
+      session60: [
+        bar(0, 1350, 1415, 1305, 1415, 14970),
+        bar(H1, 1415, 1415, 1415, 1415, 2649),
+        bar(2 * H1, 1415, 1415, 1415, 1415, 1012),
+        bar(3 * H1, 1415, 1415, 1415, 1415, 210),
+      ],
+    },
+    {
+      symbol: '8150',
+      expectedChannelAlign: true,
+      session60: [
+        bar(0, 107, 113.5, 105, 113.5, 37017),
+        bar(H1, 113, 114, 112.5, 114, 17827),
+        bar(2 * H1, 114, 114, 114, 114, 496),
+        bar(3 * H1, 114, 114, 114, 114, 358),
+      ],
+    },
+  ]
+  for (const fixture of productionLockedHighFixtures) {
+    const lockedPrice = fixture.session60[fixture.session60.length - 1].close
+    const bars15m = Array.from({ length: 8 }, (_, index) => (
+      index < 2
+        ? bar(index * M15, fixture.session60[0].open, fixture.session60[0].high, fixture.session60[0].low, lockedPrice, 1000)
+        : bar(index * M15, lockedPrice, lockedPrice, lockedPrice, lockedPrice, 100)
+    ))
+    const assessment = assessS12IntradayStructure({
+      symbol: fixture.symbol,
+      bars15m,
+      bars1h: fixture.session60,
+      bars4h: fixture.session60,
+    })
+    assert(assessment.biasSession60?.direction === 'long', `${fixture.symbol} locked-session-high production fixture must retain long session acceptance`)
+    assert(assessment.biasSession60?.channelAlign === fixture.expectedChannelAlign, `${fixture.symbol} channel alignment must retain its independent slope meaning`)
+    assert(assessment.state !== 'waiting_session_60m_long_bias', `${fixture.symbol} must not be blocked by the retired long-bias gate`)
+    assert(assessment.detail.includes('session_60m_bias_method=whole_session_acceptance_v2'), `${fixture.symbol} must expose the whole-session bias method`)
+    assert(assessment.detail.includes('session_60m_locked_at_high=true'), `${fixture.symbol} must expose the locked-session-high evidence`)
+    assert(assessment.detail.includes('session_60m_latest_close_position=1'), `${fixture.symbol} flat high-lock bars must not be scored as close-position zero`)
+  }
+}
+
+{
+  const session60 = [
+    bar(0, 100, 100.6, 99, 100.6, 1000),
+    bar(H1, 100.6, 100.6, 100.6, 100.6, 100),
+  ]
+  const bars15m = Array.from({ length: 4 }, (_, index) => (
+    bar(index * M15, 100.6, 100.6, 100.6, 100.6, 100)
+  ))
+  const baseline = assessS12IntradayStructure({
+    symbol: 'POLICY',
+    bars15m,
+    bars1h: session60,
+    bars4h: session60,
+  })
+  const calibrated = assessS12IntradayStructure({
+    symbol: 'POLICY',
+    bars15m,
+    bars1h: session60,
+    bars4h: session60,
+    policy: { sessionAcceptanceMinMoveAtr: 1.5 },
+  })
+  assert(baseline.biasSession60?.direction === 'long', 'default policy must accept a constructive whole-session close')
+  assert(calibrated.biasSession60?.direction === 'neutral', 'artifact policy must be able to override whole-session acceptance')
+  assert(calibrated.state !== 'waiting_session_60m_long_bias', 'a calibrated neutral session must remain context rather than a long-entry hard gate')
+}
+
+{
+  const session60 = [
+    bar(0, 110, 111, 104, 105, 1000),
+    bar(H1, 105, 106, 100, 101, 1100),
+  ]
+  const bars15m = [
+    bar(0, 106, 106.5, 105, 105.5, 200),
+    bar(M15, 105.5, 106, 104.5, 105, 180),
+    bar(2 * M15, 105, 105.2, 103.5, 104, 220),
+    bar(3 * M15, 104, 104.2, 101, 101.5, 400),
+  ]
+  const assessment = assessS12IntradayStructure({
+    symbol: 'BEARISH',
+    bars15m,
+    bars1h: session60,
+    bars4h: session60,
+  })
+  assert(assessment.biasSession60?.direction === 'short', 'confirmed whole-session weakness must remain short risk evidence')
+  assert(assessment.state === 'waiting_session_60m_bearish_risk', 'confirmed current-session short risk must still fail closed')
+  assert(assessment.detail.includes('session_60m_bias_gate=confirmed_short_only'), 'bearish block must expose the narrowed gate contract')
+}
+
+{
   const bars4h = [
     bar(0, 100, 110, 98, 108, 1000),
   ]
@@ -506,7 +599,8 @@ function bar(startOffsetMs: number, open: number, high: number, low: number, clo
     bars1h: [],
     bars4h,
   })
-  assert(assessment.state === 'waiting_session_60m_long_bias' || assessment.state === 'waiting_1h_completed_bar', 'non-mutation individual stocks should still wait inside S12 context gates')
+  assert(assessment.state === 'waiting_1h_completed_bar', 'neutral session context must continue to the next structural data gate')
+  assert(assessment.state !== 'waiting_session_60m_long_bias', 'neutral individual-stock session bias must not be a hard gate')
   assert(assessment.maturity.takeoverRole === 'none', 'weak/no-volume context must not become a hidden buy path')
   assert(assessment.detail.includes('equity_mutation_context=false'), 'S12 detail should expose why equity mutation did not activate')
 }

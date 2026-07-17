@@ -104,6 +104,22 @@ dashboardReadRoutes.get('/api/dashboard/v4/data-runtime/status', async (c) => {
   return c.json(await readV41DataRuntimeStatus(c.env.DB, date))
 })
 
+dashboardReadRoutes.get('/api/dashboard/v4/expected-return/status', async (c) => {
+  const authError = await requireValidToken(c)
+  if (authError) return authError
+
+  const date = c.req.query('date') ?? twToday()
+  const [{ readCurrentExpectedReturnServingState }, { inspectAllocatorEvMaturityCoverage }] = await Promise.all([
+    import('../lib/expectedReturnServingState'),
+    import('../lib/allocatorEvDailyLifecycle'),
+  ])
+  const [serving, maturity] = await Promise.all([
+    readCurrentExpectedReturnServingState(c.env, date),
+    inspectAllocatorEvMaturityCoverage(c.env.DB, date),
+  ])
+  return c.json({ date, serving, maturity })
+})
+
 dashboardReadRoutes.get('/api/backtest/latest', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError

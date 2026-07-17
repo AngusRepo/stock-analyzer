@@ -1,8 +1,11 @@
 import {
+  S12_REPLAY_ENGINE_SIGNATURE,
   loadL0PassedSymbolsByHistoricalDate,
+  loadSignedEligibleRepairSymbolsByHistoricalDate,
   persistS12ReplayOutcome,
   resolveNextExecutableSessionDate,
   runS12HistoricalReplayForDate,
+  s12ReplayEligibleLineageBlockers,
   s12ReplayOutcomeToEvSample,
   simulateS12ReplayTradeOutcome,
 } from './s12ReplayTradeOutcome'
@@ -125,6 +128,34 @@ function assessment(overrides: Partial<S12IntradayAssessment> = {}): S12Intraday
   const sample = s12ReplayOutcomeToEvSample(outcome)
   assert(sample?.exit_reason === 'tp2', 'EV sample should preserve the formal TP2 exit reason')
   assert(sample?.return_pct === outcome.pnl_pct, 'EV sample should expose return_pct')
+  assert(outcome.replay_diagnostics?.replay_engine_signature === S12_REPLAY_ENGINE_SIGNATURE, 'replay must persist the exact engine signature')
+  assert(String(outcome.replay_diagnostics?.replay_cohort_signature).includes('entry=reaction_ready'), 'replay cohort must preserve entry policy state')
+}
+
+{
+  const contaminatedTargets = assessment({
+    execution: {
+      ...assessment().execution,
+      target1: 104,
+      target2: 857,
+      target3: 865,
+    },
+    exitPlan: {
+      ...assessment().exitPlan,
+      mainExit: { price: 857, zoneLow: null, zoneHigh: null, source: 'vwap_fair_value', action: 'main_take_profit' },
+      tp3: { price: 865, source: 'vwap_fair_value', action: 'extended_take_profit' },
+    },
+  })
+  const bars = [
+    ...[0, 1, 2, 3, 4].map((i) => bar(i, 99, 101, 98, 100)),
+    bar(5, 100, 102, 99, 101),
+  ]
+  const outcome = simulateS12ReplayTradeOutcome(
+    { symbol: '2634', tradeDate: '2026-07-02', baseBars: bars },
+    { entryAssessment: contaminatedTargets, assessmentProvider: () => contaminatedTargets },
+  )
+  assert(outcome.target1_price == null, 'targets outside the legal five-session TW price domain must not enter replay')
+  assert(outcome.replay_diagnostics?.targets_rejected_outside_five_session_price_domain === 2, 'rejected target count must be observable')
 }
 
 {
@@ -292,6 +323,35 @@ async function runAsyncTests(): Promise<void> {
   assert(rows[0].market_segment === 'LISTED', 'L0 loader should preserve market segment metadata')
   assert(String(rows[0].alpha_context).includes('breakout_vol_expansion'), 'L0 loader should preserve alpha context metadata')
 
+  const repairDb = {
+    prepare(sql: string) {
+      return {
+        bind(..._params: unknown[]) {
+          if (sql.includes('SELECT DISTINCT legacy.symbol')) {
+            assert(sql.includes('lineage_validation.previous_sample_eligible'), 'signed repair must retain quarantined legacy samples as repair candidates')
+            assert(sql.includes('legacy.sample_eligible != 1'), 'signed repair must retain non-eligible repair attempts as pending')
+            assert(sql.includes('signed_repair_terminal_noneligible'), 'signed repair must accept verified terminal non-trade reconstruction')
+            assert(sql.includes('replay_cohort_signature'), 'signed repair must require complete persisted replay cohort lineage')
+            return { async all() { return { results: [{ symbol: '8091' }, { symbol: '2330' }] } } }
+          }
+          if (sql.includes('FROM screener_funnel_runs')) {
+            return { async first() { return { run_id: 'run-1' } } }
+          }
+          return {
+            async all() {
+              return { results: [{ symbol: '8091' }, { symbol: '9999' }] }
+            },
+          }
+        },
+      }
+    },
+  } as any
+  const repairRows = await loadSignedEligibleRepairSymbolsByHistoricalDate(repairDb, '2026-07-02')
+  assert(
+    repairRows.length === 1 && repairRows[0].symbol === '8091',
+    'signed repair loader should intersect pending legacy-eligible samples with the canonical L0 universe',
+  )
+
   const executionDateDb = {
     prepare(sql: string) {
       assert(sql.includes('date(sp.date) > date(?)'), 'execution date resolver must require a session after the signal date')
@@ -358,7 +418,14 @@ async function runPersistenceTests(): Promise<void> {
     alpha_bucket: 'breakout_vol_expansion',
     alpha_context: { edge_bucket: 'breakout_vol_expansion', regime: 'bull' },
     alpha_allocation: { bucket: 'breakout_vol_expansion' },
-    replay_diagnostics: { source: 'historical_asof' },
+    replay_diagnostics: {
+      source: 'historical_asof',
+      outcome_known_date: '2026-07-08',
+      replay_engine_signature: S12_REPLAY_ENGINE_SIGNATURE,
+      entry_policy_signature: 'reaction_ready',
+      exit_calibration_signature: 'uncalibrated',
+      replay_cohort_signature: `${S12_REPLAY_ENGINE_SIGNATURE}|entry=reaction_ready|calibration=uncalibrated`,
+    },
   })
   assert(binds.length === 1, 'persist should execute one upsert')
   assert(binds[0][0] === '8091' && binds[0][1] === 'OTC', 'persist should bind symbol and market')
@@ -369,6 +436,12 @@ async function runPersistenceTests(): Promise<void> {
   assert(detail.alpha_bucket === 'breakout_vol_expansion', 'persisted detail should retain alpha bucket metadata')
   assert((detail.alpha_context as Record<string, unknown>).edge_bucket === 'breakout_vol_expansion', 'persisted detail should retain alpha context metadata')
   assert((detail.replay_diagnostics as Record<string, unknown>).source === 'historical_asof', 'persisted detail should retain replay loader diagnostics')
+  assert((detail.replay_diagnostics as Record<string, unknown>).replay_engine_signature === S12_REPLAY_ENGINE_SIGNATURE, 'eligible persistence must retain exact replay engine lineage')
+  assert((detail.replay_diagnostics as Record<string, unknown>).outcome_known_date === '2026-07-08', 'eligible persistence must retain outcome-known cutoff')
+  assert(s12ReplayEligibleLineageBlockers({
+    ...JSON.parse(String(binds[0][22])),
+    replay_diagnostics: { source: 'historical_asof' },
+  } as any).includes('replay_engine_signature'), 'eligible rows without persisted signatures must fail closed')
 }
 
 void runPersistenceTests().catch((error) => {
@@ -406,6 +479,7 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
     ],
     resolveExecutionDate: async () => '2026-07-03',
     maturityAsOfDate: '2026-07-09',
+    signedEligibleRepair: true,
     loadBars: async (_symbol, executionDate) => {
       assert(executionDate === '2026-07-03', 'runner should load bars from the next executable session')
       return { bars: [] }
@@ -422,7 +496,19 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
     summary.outcomes[0].replay_diagnostics?.outcome_known_date === '2026-07-09',
     'every executed or non-executed V3 label must persist a point-in-time outcome-known date',
   )
+  assert(
+    summary.outcomes[0].replay_diagnostics?.replay_engine_signature === S12_REPLAY_ENGINE_SIGNATURE,
+    'non-eligible repair attempts must still persist the engine signature so the queue can close idempotently',
+  )
   assert(summary.skipped === 2, 'empty bars should produce skipped replay outcomes')
+  assert(
+    summary.outcomes[0].lineage_validation?.previous_sample_eligible === 1,
+    'non-eligible signed repair attempts must preserve the durable repair marker',
+  )
+  assert(
+    summary.outcomes[0].lineage_validation?.status === 'signed_repair_terminal_noneligible',
+    'complete-horizon non-trades must close repair without becoming EV-eligible trades',
+  )
   assert(summary.persisted === 2 && writes === 2, 'runner should persist every replay outcome by default')
 
   const offsetSummary = await runS12HistoricalReplayForDate(fakeEnv, '2026-07-02', {

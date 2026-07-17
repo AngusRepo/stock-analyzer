@@ -45,6 +45,42 @@ def test_build_s12_trade_ev_from_replay_outputs_full_trade_ev_contract():
     assert ev["exit_reason_distribution"] == {"structure_stop": 10, "tp1": 10, "tp2": 10}
 
 
+def test_build_s12_trade_ev_from_replay_keeps_zero_return_samples():
+    ev = build_s12_trade_ev_from_replay(
+        symbol="8091",
+        entry_price=100,
+        stop_price=96,
+        samples=[
+            {
+                "return_pct": 0.0,
+                "trade_pnl_r": 0.0,
+                "mfe_pct": 0.0,
+                "mae_pct": 0.0,
+                "bars_to_exit": 0.0,
+                "sample_date": "2026-07-01",
+                "exit_reason": "time_exit",
+            },
+            {
+                "return_pct": 0.02,
+                "trade_pnl_r": 0.5,
+                "sample_date": "2026-07-02",
+                "exit_reason": "tp1",
+            },
+        ],
+        min_samples=2,
+        min_sample_dates=2,
+        roundtrip_cost_bps=0,
+    )
+
+    assert ev["status"] == "loaded"
+    assert ev["sampleCount"] == 2
+    assert ev["trade_expected_return_gross_pct"] == pytest.approx(0.01)
+    assert ev["expected_R"] == pytest.approx(0.25)
+    assert ev["avg_mfe_pct"] == pytest.approx(0.0)
+    assert ev["avg_mae_pct"] == pytest.approx(0.0)
+    assert ev["avg_bars_to_exit"] == pytest.approx(0.0)
+
+
 def test_extract_s12_trade_ev_accepts_nested_forecast_payload():
     payload = {
         "s12_trade_ev": {

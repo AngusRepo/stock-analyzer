@@ -89,6 +89,7 @@ def load_pending_predictions(
     limit: int = 200,
     run_date: str | None = None,
     stale_grace_days: int = 10,
+    cursor: tuple[str, str, int] | None = None,
 ) -> list[dict]:
     """
     Load predictions that need verification.
@@ -106,20 +107,103 @@ def load_pending_predictions(
         lookback_days,
         stale_grace_days,
     )
-    sql = """
+    cursor_sql = ""
+    params: list[Any] = [
+        VERIFICATION_RETURN_SEMANTIC_VERSION,
+        min_prediction_date,
+        max_prediction_date,
+    ]
+    if cursor is not None:
+        cursor_date, cursor_generated_at, cursor_id = cursor
+        cursor_sql = """
+          AND (
+               p.prediction_date > ?
+            OR (p.prediction_date = ? AND COALESCE(p.generated_at, '') > ?)
+            OR (p.prediction_date = ? AND COALESCE(p.generated_at, '') = ? AND p.id > ?)
+          )
+        """
+        params.extend([
+            cursor_date,
+            cursor_date,
+            cursor_generated_at,
+            cursor_date,
+            cursor_generated_at,
+            cursor_id,
+        ])
+    sql = f"""
         SELECT p.*, s.symbol, s.market
         FROM predictions p
         JOIN stocks s ON p.stock_id = s.id
-        WHERE (p.verified_at IS NULL OR p.actual_return_pct IS NULL)
+        WHERE (
+               p.verified_at IS NULL
+            OR p.actual_return_pct IS NULL
+            OR COALESCE(p.verification_label_schema_version, '') != ?
+            OR p.verification_label_entry_price IS NULL
+            OR p.verification_label_end_date IS NULL
+            OR p.verification_label_known_date IS NULL
+        )
           AND p.prediction_date BETWEEN ? AND ?
           AND s.market IN ('TWSE', 'OTC', 'TPEX', 'EMERGING')
           AND p.forecast_data IS NOT NULL
-        ORDER BY p.prediction_date DESC, p.generated_at ASC
+          {cursor_sql}
+        ORDER BY p.prediction_date ASC, COALESCE(p.generated_at, '') ASC, p.id ASC
         LIMIT ?
     """
-    rows = d1_client.query(sql, params=[min_prediction_date, max_prediction_date, limit])
+    params.append(limit)
+    rows = d1_client.query(sql, params=params)
     logger.info(f"[verify] Loaded {len(rows)} pending predictions")
     return rows
+
+
+def load_pending_prediction_workset(
+    *,
+    lookback_days: int = 5,
+    page_size: int = 600,
+    run_date: str | None = None,
+    stale_grace_days: int = 10,
+    max_rows: int = 12_000,
+) -> dict[str, Any]:
+    """Drain one deterministic verification workset with cursor pagination."""
+    size = max(1, min(int(page_size), 1_000))
+    cap = max(size, min(int(max_rows), 50_000))
+    rows: list[dict] = []
+    cursor: tuple[str, str, int] | None = None
+    pages = 0
+    exhausted = False
+    while len(rows) < cap:
+        page = load_pending_predictions(
+            lookback_days=lookback_days,
+            limit=min(size, cap - len(rows)),
+            run_date=run_date,
+            stale_grace_days=stale_grace_days,
+            cursor=cursor,
+        )
+        pages += 1
+        if not page:
+            exhausted = True
+            break
+        rows.extend(page)
+        last = page[-1]
+        next_cursor = (
+            str(last.get("prediction_date") or ""),
+            str(last.get("generated_at") or ""),
+            int(last["id"]),
+        )
+        if next_cursor == cursor:
+            raise RuntimeError("verification_cursor_did_not_advance")
+        cursor = next_cursor
+        if len(page) < size:
+            exhausted = True
+            break
+    return {
+        "rows": rows,
+        "pages": pages,
+        "page_size": size,
+        "max_rows": cap,
+        "exhausted": exhausted,
+        "truncated": not exhausted,
+        "cursor": cursor,
+    }
 
 
 def load_predictions_for_verification_repair(
@@ -799,13 +883,19 @@ def run_verify_pipeline(lookback_days: int = 5, limit: int = 200) -> dict:
           'arf_feedback_items': list[dict],
         }
     """
-    pending = load_pending_predictions(lookback_days=lookback_days, limit=limit)
+    workset = load_pending_prediction_workset(
+        lookback_days=lookback_days,
+        page_size=limit,
+    )
+    pending = workset["rows"]
     if not pending:
         logger.info("[verify] No pending predictions to verify")
         return {
             "pending": 0, "verified": 0, "correct": 0, "total_pnl_pct": 0.0,
             "model_accuracy_groups": 0, "trade_performance_groups": 0,
             "arf_feedback_items": [],
+            "verification_pages": workset["pages"],
+            "verification_workset_truncated": workset["truncated"],
         }
 
     prepared = prepare_verification_updates(pending, load_market_risk())
@@ -830,4 +920,6 @@ def run_verify_pipeline(lookback_days: int = 5, limit: int = 200) -> dict:
         "model_accuracy_groups": ma_count,
         "trade_performance_groups": tp_count,
         "arf_feedback_items": prepared["arf_feedback_items"],
+        "verification_pages": workset["pages"],
+        "verification_workset_truncated": workset["truncated"],
     }

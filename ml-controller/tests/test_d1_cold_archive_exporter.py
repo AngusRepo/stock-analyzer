@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -13,6 +14,24 @@ from services import dataset_snapshot_exporter as exporter  # noqa: E402
 
 class FakeBucket:
     name = "stockvision-models"
+
+
+class CapturingBlob:
+    def __init__(self):
+        self.payload = b""
+
+    def upload_from_filename(self, path: str, content_type: str):
+        self.payload = Path(path).read_bytes()
+
+
+class CapturingBucket:
+    name = "stockvision-models"
+
+    def __init__(self):
+        self.upload = CapturingBlob()
+
+    def blob(self, object_name: str):
+        return self.upload
 
 
 class DummyTempDir:
@@ -46,6 +65,7 @@ def test_export_d1_cold_archive_registers_gcs_archive_manifest(monkeypatch):
             "gcs_uri": f"gs://{bucket.name}/{prefix}/{name}.parquet",
             "columns": list(df.columns),
             "bytes": 128,
+            "content_checksum": "sha256:test",
         }
 
     def fake_upsert(manifest: dict):
@@ -81,6 +101,17 @@ def test_export_d1_cold_archive_registers_gcs_archive_manifest(monkeypatch):
     assert {row["table"] for row in metadata["table_coverage"]} == {"stock_prices", "margin_data"}
     assert all(row["coverage_start"] == "2024-01-01" for row in metadata["table_coverage"])
     assert all(row["coverage_end"] == "2024-12-31" for row in metadata["table_coverage"])
+    assert all(row["content_checksum"] == "sha256:test" for row in metadata["table_coverage"])
+
+
+def test_component_upload_records_parquet_content_checksum(tmp_path):
+    bucket = CapturingBucket()
+    frame = pl.DataFrame([{"stock_id": "2330", "available_date": "2026-06-01"}])
+
+    meta = exporter._write_component_to_gcs(bucket, "archive/test", "fundamentals", frame, tmp_path)
+
+    assert meta["bytes"] == len(bucket.upload.payload)
+    assert meta["content_checksum"] == f"sha256:{hashlib.sha256(bucket.upload.payload).hexdigest()}"
 
 
 def test_cold_archive_supports_point_in_time_fundamentals(monkeypatch):

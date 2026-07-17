@@ -54,6 +54,9 @@ export interface S12BaseBarDiagnostics {
   previous_daily_context_loaded: boolean
   previous_daily_context_date: string | null
   previous_daily_raw_close: number | null
+  previous_daily_context_row_count?: number
+  previous_daily_context_rejected_reason?: string | null
+  previous_daily_context_source?: string
   previous_session_kbars_count: number
   previous_session_kbars_date: string | null
   previous_session_kbars_first_tw: string | null
@@ -66,6 +69,14 @@ export interface S12BaseBarDiagnostics {
   canonical_minute_bars_appended?: number
   canonical_minute_bar_continuity_restored?: boolean
   canonical_minute_bar_error?: string | null
+  kbars_cache_business_date?: string | null
+  kbars_point_in_time_reconstruction?: boolean
+  kbars_research_fallback_reason?: string | null
+}
+
+export interface S12DailyPriceDomainValidation {
+  bars: IntradayRollingBar[]
+  rejectedReason: string | null
 }
 
 const H1_MS = 60 * 60_000
@@ -75,6 +86,56 @@ const TW_SESSION_CLOSE_MINUTE = 13 * 60 + 30
 const S12_RESEARCH_READY_MINUTE = 15 * 60 + 30
 const S12_RESEARCH_ARTIFACT_DOMAIN = 's12_research_minute_bars'
 const S12_RESEARCH_ARTIFACT_SCHEMA = 's12-research-minute-bars-v2'
+
+export interface S12ResearchUsageStatus {
+  status: 'ok' | 'exhausted'
+  connections: number
+  bytes: number
+  limit_bytes: number
+  remaining_bytes: number
+}
+
+export async function loadS12ResearchUsageStatus(env: Bindings): Promise<S12ResearchUsageStatus> {
+  const researchUrl = String(env.S12_RESEARCH_KBARS_URL ?? '').replace(/\/+$/, '')
+  const token = String(env.PROXY_SERVICE_TOKEN ?? '').trim()
+  if (!researchUrl) throw new Error('s12_research_service_url_missing')
+  if (!token) throw new Error('s12_research_service_token_missing')
+  const response = await fetch(`${researchUrl}/usage`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(15_000),
+  })
+  const payload = await response.json().catch(() => null) as Partial<S12ResearchUsageStatus> & { detail?: string } | null
+  if (!response.ok) {
+    const detail = String(payload?.detail ?? `http_${response.status}`).replace(/\s+/g, ' ').slice(0, 180)
+    throw new Error(`s12_research_usage_${response.status}:${detail}`)
+  }
+  const limitBytes = Number(payload?.limit_bytes ?? 0)
+  const remainingBytes = Number(payload?.remaining_bytes ?? 0)
+  if (!Number.isFinite(limitBytes) || limitBytes <= 0 || !Number.isFinite(remainingBytes)) {
+    throw new Error('s12_research_usage_invalid_payload')
+  }
+  return {
+    status: remainingBytes > 0 ? 'ok' : 'exhausted',
+    connections: Math.max(0, Number(payload?.connections ?? 0) || 0),
+    bytes: Math.max(0, Number(payload?.bytes ?? 0) || 0),
+    limit_bytes: limitBytes,
+    remaining_bytes: remainingBytes,
+  }
+}
+
+export function s12ResearchTerminalDataSourceReason(
+  diagnostics: Pick<S12BaseBarDiagnostics, 'kbars_error' | 'kbars_research_fallback_reason'> | null | undefined,
+): string | null {
+  const reasons = [diagnostics?.kbars_error, diagnostics?.kbars_research_fallback_reason]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)
+  return reasons.find((reason) => (
+    reason.includes('shioaji_research_bandwidth_exhausted')
+    || reason.includes('s12_research_service_token_missing')
+    || reason.includes('s12_research_service_401')
+    || reason.includes('s12_research_service_403')
+  )) ?? null
+}
 
 function finiteNumber(value: unknown): number | null {
   const n = Number(value)
@@ -380,22 +441,24 @@ async function loadCachedS12ResearchBars(
   env: Bindings,
   symbol: string,
   tradeDate: string,
-): Promise<IntradayRollingBar[] | null> {
+): Promise<{ bars: IntradayRollingBar[]; artifactBusinessDate: string } | null> {
   if (!env.ARTIFACTS) return null
   const manifest = await env.DB.prepare(`
-    SELECT r2_key, checksum, schema_version
+    SELECT r2_key, checksum, schema_version, business_date
       FROM run_artifacts
      WHERE domain = ?
-       AND business_date = ?
-       AND producer_run_id = ?
+       AND business_date >= ?
+       AND business_date <= date(?, '+7 days')
+       AND producer_run_id LIKE ?
        AND status = 'ready'
-     ORDER BY created_at DESC
+     ORDER BY business_date ASC, created_at DESC
      LIMIT 1
   `).bind(
     S12_RESEARCH_ARTIFACT_DOMAIN,
     tradeDate,
-    s12ResearchProducerRunId(tradeDate, symbol),
-  ).first<{ r2_key?: string | null; checksum?: string | null; schema_version?: string | null }>()
+    tradeDate,
+    `shioaji-research:%:${symbol}`,
+  ).first<{ r2_key?: string | null; checksum?: string | null; schema_version?: string | null; business_date?: string | null }>()
   if (!manifest?.r2_key || manifest.schema_version !== S12_RESEARCH_ARTIFACT_SCHEMA) return null
   const object = await env.ARTIFACTS.get(manifest.r2_key)
   if (!object) return null
@@ -410,7 +473,7 @@ async function loadCachedS12ResearchBars(
   }
   if (
     document.schema_version !== S12_RESEARCH_ARTIFACT_SCHEMA ||
-    document.business_date !== tradeDate ||
+    document.business_date !== manifest.business_date ||
     document.payload?.symbol !== symbol ||
     !Array.isArray(document.payload?.bars)
   ) {
@@ -427,7 +490,9 @@ async function loadCachedS12ResearchBars(
       isTwSessionTime(bar.startMs)
     ))
     .sort((left, right) => left.startMs - right.startMs)
-  return bars.length ? bars : null
+  return bars.length && manifest.business_date
+    ? { bars, artifactBusinessDate: manifest.business_date }
+    : null
 }
 
 function dateDaysBefore(date: string, days: number): string {
@@ -440,9 +505,9 @@ async function fetchS12ResearchKbars(
   env: Bindings,
   symbol: string,
   tradeDate: string,
-): Promise<{ bars: IntradayRollingBar[]; cacheHit: boolean }> {
+): Promise<{ bars: IntradayRollingBar[]; cacheHit: boolean; cacheBusinessDate: string | null }> {
   const cached = await loadCachedS12ResearchBars(env, symbol, tradeDate)
-  if (cached) return { bars: cached, cacheHit: true }
+  if (cached) return { bars: cached.bars, cacheHit: true, cacheBusinessDate: cached.artifactBusinessDate }
 
   const researchUrl = String(env.S12_RESEARCH_KBARS_URL ?? '').replace(/\/+$/, '')
   const token = String(env.PROXY_SERVICE_TOKEN ?? '').trim()
@@ -465,7 +530,10 @@ async function fetchS12ResearchKbars(
       if (!response.ok) {
         const message = String(document?.detail ?? `http_${response.status}`).replace(/\s+/g, ' ').slice(0, 180)
         lastError = `s12_research_service_${response.status}:${message}`
-        if (response.status !== 429 && response.status < 500) throw new Error(lastError)
+        if (
+          (response.status !== 429 && response.status < 500)
+          || lastError.includes('shioaji_research_bandwidth_exhausted')
+        ) throw new Error(lastError)
       } else {
         const sourceRows = Array.isArray(document?.data) ? document.data : []
         const bars = sourceRows
@@ -494,7 +562,7 @@ async function fetchS12ResearchKbars(
             source_kbar_rows: sourceRows.length,
           },
         })
-        return { bars, cacheHit: false }
+        return { bars, cacheHit: false, cacheBusinessDate: null }
       }
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
@@ -504,7 +572,8 @@ async function fetchS12ResearchKbars(
         lastError.includes('service_400') ||
         lastError.includes('service_401') ||
         lastError.includes('service_403') ||
-        lastError.includes('service_empty')
+        lastError.includes('service_empty') ||
+        lastError.includes('shioaji_research_bandwidth_exhausted')
       ) throw error
     }
     if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 500))
@@ -564,7 +633,8 @@ async function fetchS12ShioajiKbars(
     'kbars_filtered_count' | 'kbars_filtered_outside_trade_date_count' | 'kbars_filtered_outside_session_count' |
     'previous_session_kbars_count' | 'previous_session_kbars_date' |
     'previous_session_kbars_first_tw' | 'previous_session_kbars_last_tw' |
-    'kbars_provider' | 'kbars_cache_hit'
+    'kbars_provider' | 'kbars_cache_hit' | 'kbars_cache_business_date' | 'kbars_point_in_time_reconstruction' |
+    'kbars_research_fallback_reason'
   >
 }> {
   if (!enabledFlag((env as any).S12_INTRADAY_KBARS_ENABLED, true)) {
@@ -632,13 +702,25 @@ async function fetchS12ShioajiKbars(
   let rawBars: IntradayRollingBar[] = []
   let provider = 'shioaji_streaming_tick_accumulator'
   let cacheHit = false
+  let cacheBusinessDate: string | null = null
+  let researchFallbackReason: string | null = null
+  let loadCurrentSessionProxy = !useResearchSource
   if (useResearchSource) {
-    const research = await fetchS12ResearchKbars(env, symbol, tradeDate)
-    rawBars = research.bars
-    rawRowCount = rawBars.length
-    provider = 'shioaji_research_service'
-    cacheHit = research.cacheHit
-  } else {
+    try {
+      const research = await fetchS12ResearchKbars(env, symbol, tradeDate)
+      rawBars = research.bars
+      rawRowCount = rawBars.length
+      provider = 'shioaji_research_service'
+      cacheHit = research.cacheHit
+      cacheBusinessDate = research.cacheBusinessDate
+    } catch (error) {
+      if (tradeDate !== twDateText(Date.now()) || !proxyUrl) throw error
+      researchFallbackReason = error instanceof Error ? error.message : String(error)
+      provider = 'shioaji_streaming_tick_accumulator_same_session_fallback'
+      loadCurrentSessionProxy = true
+    }
+  }
+  if (loadCurrentSessionProxy) {
     const url = `${proxyUrl}/kbars/${encodeURIComponent(symbol)}?start=${encodeURIComponent(tradeDate)}&end=${encodeURIComponent(tradeDate)}&limit=${limit}`
     const res = await fetch(url, {
       headers: (env as any).PROXY_SERVICE_TOKEN ? { Authorization: `Bearer ${(env as any).PROXY_SERVICE_TOKEN}` } : {},
@@ -687,6 +769,9 @@ async function fetchS12ShioajiKbars(
       previous_session_kbars_last_tw: twTimeText(previousSession.bars[previousSession.bars.length - 1]?.startMs),
       kbars_provider: provider,
       kbars_cache_hit: cacheHit,
+      kbars_cache_business_date: cacheBusinessDate,
+      kbars_point_in_time_reconstruction: cacheBusinessDate != null && cacheBusinessDate !== tradeDate,
+      kbars_research_fallback_reason: researchFallbackReason,
     },
   }
 }
@@ -695,7 +780,12 @@ async function loadPreviousTradingDayContext(
   env: Bindings,
   symbol: string,
   tradeDate: string,
-): Promise<{ bars: IntradayRollingBar[]; referenceDate: string | null; referenceClose: number | null }> {
+): Promise<{
+  bars: IntradayRollingBar[]
+  referenceDate: string | null
+  referenceClose: number | null
+  rejectedReason: string | null
+}> {
   type DailyRow = {
     date: string
     open: number | string | null
@@ -708,7 +798,13 @@ async function loadPreviousTradingDayContext(
   let dailyRows: DailyRow[] = []
   try {
     const { results } = await env.DB.prepare(`
-      WITH ranked AS (
+      WITH requested_stock AS (
+        SELECT id, symbol
+          FROM stocks
+         WHERE symbol = ?
+         LIMIT 1
+      ),
+      candidate_rows AS (
         SELECT cmd.date,
                cmd.open AS open,
                cmd.high AS high,
@@ -716,24 +812,56 @@ async function loadPreviousTradingDayContext(
                cmd.close AS close,
                cmd.close AS raw_close,
                cmd.volume,
-               ROW_NUMBER() OVER (
-                 PARTITION BY cmd.date
-                 ORDER BY CASE WHEN cmd.source LIKE 'finlab%' THEN 0 ELSE 1 END, cmd.created_at DESC
-               ) AS source_rank
+               cmd.source,
+               cmd.created_at,
+               0 AS identifier_namespace_rank
           FROM canonical_market_daily cmd
-         WHERE (CAST(cmd.stock_id AS TEXT) = ? OR CAST(cmd.stock_id AS TEXT) = CAST((SELECT id FROM stocks WHERE symbol = ? LIMIT 1) AS TEXT))
-           AND cmd.date < ?
-            AND cmd.open IS NOT NULL
-            AND cmd.high IS NOT NULL
-            AND cmd.low IS NOT NULL
-            AND cmd.close IS NOT NULL
+          JOIN requested_stock ON cmd.stock_id = requested_stock.symbol
+         WHERE cmd.date < ?
+           AND cmd.open IS NOT NULL
+           AND cmd.high IS NOT NULL
+           AND cmd.low IS NOT NULL
+           AND cmd.close IS NOT NULL
+        UNION ALL
+        SELECT cmd.date,
+               cmd.open AS open,
+               cmd.high AS high,
+               cmd.low AS low,
+               cmd.close AS close,
+               cmd.close AS raw_close,
+               cmd.volume,
+               cmd.source,
+               cmd.created_at,
+               1 AS identifier_namespace_rank
+          FROM canonical_market_daily cmd
+          JOIN requested_stock ON cmd.stock_id = CAST(requested_stock.id AS TEXT)
+         WHERE cmd.date < ?
+           AND cmd.open IS NOT NULL
+           AND cmd.high IS NOT NULL
+           AND cmd.low IS NOT NULL
+           AND cmd.close IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1
+               FROM stocks namespace_collision
+              WHERE namespace_collision.symbol = CAST(requested_stock.id AS TEXT)
+           )
+      ),
+      ranked AS (
+        SELECT date, open, high, low, close, raw_close, volume, identifier_namespace_rank,
+               ROW_NUMBER() OVER (
+                 PARTITION BY date
+                 ORDER BY identifier_namespace_rank,
+                          CASE WHEN source LIKE 'finlab%' THEN 0 ELSE 1 END,
+                          created_at DESC
+               ) AS source_rank
+          FROM candidate_rows
       )
       SELECT date, open, high, low, close, raw_close, volume
         FROM ranked
        WHERE source_rank = 1
        ORDER BY date DESC
        LIMIT 120
-    `).bind(symbol, symbol, tradeDate).all<DailyRow>()
+    `).bind(symbol, tradeDate, tradeDate).all<DailyRow>()
     dailyRows = results ?? []
   } catch {
     dailyRows = []
@@ -767,10 +895,52 @@ async function loadPreviousTradingDayContext(
     .filter((bar): bar is IntradayRollingBar => bar != null)
     .sort((a, b) => a.startMs - b.startMs)
   const latestDaily = dailyRows[0]
+  const referenceDate = String(rawReference?.date ?? latestDaily?.date ?? '').trim() || null
+  const referenceClose = finiteNumber(rawReference?.close) ?? finiteNumber(latestDaily?.raw_close)
+  const validated = validateS12DailyPriceDomain(bars, referenceDate, referenceClose)
   return {
-    bars,
-    referenceDate: String(rawReference?.date ?? latestDaily?.date ?? '').trim() || null,
-    referenceClose: finiteNumber(rawReference?.close) ?? finiteNumber(latestDaily?.raw_close),
+    bars: validated.bars,
+    referenceDate,
+    referenceClose,
+    rejectedReason: validated.rejectedReason,
+  }
+}
+
+export function validateS12DailyPriceDomain(
+  barsInput: IntradayRollingBar[],
+  referenceDate: string | null,
+  referenceClose: number | null,
+): S12DailyPriceDomainValidation {
+  const bars = [...barsInput].sort((a, b) => a.startMs - b.startMs)
+  if (!bars.length) return { bars: [], rejectedReason: 'missing_canonical_daily_rows' }
+  if (!referenceDate || referenceClose == null || !Number.isFinite(referenceClose) || referenceClose <= 0) {
+    return { bars: [], rejectedReason: 'missing_independent_reference_close' }
+  }
+
+  const latest = bars[bars.length - 1]
+  if (twDateText(latest.startMs) !== referenceDate) {
+    return { bars: [], rejectedReason: 'latest_daily_date_reference_mismatch' }
+  }
+  const latestRatio = latest.close / referenceClose
+  if (latestRatio < 0.8 || latestRatio > 1.2) {
+    return { bars: [], rejectedReason: 'latest_daily_close_reference_mismatch' }
+  }
+
+  const contiguous: IntradayRollingBar[] = [latest]
+  for (let index = bars.length - 2; index >= 0; index -= 1) {
+    const current = bars[index]
+    const newer = contiguous[0]
+    const closeRatio = current.close / newer.close
+    const ohlcInDomain = [current.open, current.high, current.low].every((value) => {
+      const ratio = value / current.close
+      return ratio >= 0.8 && ratio <= 1.2
+    })
+    if (!ohlcInDomain || closeRatio < 0.8 || closeRatio > 1.2) break
+    contiguous.unshift(current)
+  }
+  return {
+    bars: contiguous,
+    rejectedReason: contiguous.length < bars.length ? 'older_daily_price_domain_boundary_trimmed' : null,
   }
 }
 
@@ -894,6 +1064,9 @@ export async function loadS12IntradayBaseBars(
     previous_daily_context_loaded: previousDaily.bars.length > 0,
     previous_daily_context_date: previousDaily.referenceDate,
     previous_daily_raw_close: previousDaily.referenceClose,
+    previous_daily_context_row_count: previousDaily.bars.length,
+    previous_daily_context_rejected_reason: previousDaily.rejectedReason,
+    previous_daily_context_source: 'canonical_market_daily.raw_ohlcv.namespace_safe_v1',
     previous_session_kbars_count: 0,
     previous_session_kbars_date: null,
     previous_session_kbars_first_tw: null,
@@ -1015,6 +1188,9 @@ export async function loadS12HistoricalReplayBars(
     previous_daily_context_loaded: previousDaily.bars.length > 0,
     previous_daily_context_date: previousDaily.referenceDate,
     previous_daily_raw_close: previousDaily.referenceClose,
+    previous_daily_context_row_count: previousDaily.bars.length,
+    previous_daily_context_rejected_reason: previousDaily.rejectedReason,
+    previous_daily_context_source: 'canonical_market_daily.raw_ohlcv.namespace_safe_v1',
     previous_session_kbars_count: 0,
     previous_session_kbars_date: null,
     previous_session_kbars_first_tw: null,
@@ -1086,15 +1262,28 @@ export async function loadS12HistoricalReplayLifecycleBars(
     .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
   if (!sessionDates.includes(entryDate)) sessionDates.unshift(entryDate)
 
-  const loadedSessions = await Promise.all(
-    sessionDates.slice(0, sessionLimit).map(async (sessionDate) => ({
-      sessionDate,
-      loaded: await loadS12HistoricalReplayBars(env, symbol, sessionDate),
-    })),
-  )
+  const requestedSessionDates = sessionDates.slice(0, sessionLimit)
+  const loadedByDate = new Map<string, Awaited<ReturnType<typeof loadS12HistoricalReplayBars>>>()
+  let terminalDataSourceReason: string | null = null
+  // Load newest first and sequentially. A successful research artifact contains
+  // the preceding seven calendar days, so older sessions can reuse R2 instead
+  // of issuing five concurrent broker queries for one replay candidate.
+  for (const sessionDate of [...requestedSessionDates].reverse()) {
+    const loaded = await loadS12HistoricalReplayBars(env, symbol, sessionDate)
+    loadedByDate.set(sessionDate, loaded)
+    terminalDataSourceReason = terminalDataSourceReason
+      ?? s12ResearchTerminalDataSourceReason(loaded.diagnostics)
+    if (terminalDataSourceReason) break
+  }
+  const loadedSessions = requestedSessionDates
+    .filter((sessionDate) => loadedByDate.has(sessionDate))
+    .map((sessionDate) => ({ sessionDate, loaded: loadedByDate.get(sessionDate)! }))
   const first = loadedSessions[0]?.loaded ?? await loadS12HistoricalReplayBars(env, symbol, entryDate)
   const barsByStart = new Map<number, IntradayRollingBar>()
+  const completeSessionDates: string[] = []
   for (const session of loadedSessions) {
+    const sessionBars = session.loaded.bars.filter((bar) => twDateText(bar.startMs) === session.sessionDate)
+    if (sessionBars.length > 0) completeSessionDates.push(session.sessionDate)
     for (const bar of session.loaded.bars) barsByStart.set(bar.startMs, bar)
   }
   const bars = [...barsByStart.values()].sort((left, right) => left.startMs - right.startMs)
@@ -1106,9 +1295,15 @@ export async function loadS12HistoricalReplayLifecycleBars(
     fallbackDailyBars: first.fallbackDailyBars,
     diagnostics: {
       ...first.diagnostics,
+      kbars_error: terminalDataSourceReason ?? first.diagnostics.kbars_error,
       base_bars_count: bars.length,
-      lifecycle_session_dates: loadedSessions.map((session) => session.sessionDate).join(','),
-      lifecycle_session_count: loadedSessions.length,
+      lifecycle_requested_session_dates: requestedSessionDates.join(','),
+      lifecycle_requested_session_count: requestedSessionDates.length,
+      lifecycle_session_dates: completeSessionDates.join(','),
+      lifecycle_session_count: completeSessionDates.length,
+      lifecycle_missing_session_dates: requestedSessionDates
+        .filter((sessionDate) => !completeSessionDates.includes(sessionDate))
+        .join(','),
       lifecycle_horizon_sessions: sessionLimit,
       lifecycle_contract: 'next_session_entry_then_multisession_canonical_exit',
     },

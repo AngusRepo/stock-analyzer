@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import math
+import json
+import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import polars as pl
@@ -16,6 +19,7 @@ from services.finlab_canonical_materializer import (
     build_broker_rank_rows,
     build_emerging_broker_rows,
     build_fundamental_rows,
+    build_valuation_rows,
     build_listed_broker_flow_rows,
     build_market_summary_rows,
     build_taxonomy_rows,
@@ -225,7 +229,7 @@ def test_taxonomy_rows_build_four_layer_finlab_tags() -> None:
     assert ("industry_theme", "CoWoS") in tags
 
 
-def test_fundamental_rows_single_day_snapshot_carries_latest_quarterly_fields() -> None:
+def test_single_day_materialization_does_not_carry_prior_financial_fields() -> None:
     root = _root("fundamental_single_day_snapshot")
     lane = root / "raw" / "fundamental_factor_diversity"
     for field, (date, value) in {
@@ -242,7 +246,7 @@ def test_fundamental_rows_single_day_snapshot_carries_latest_quarterly_fields() 
     }.items():
         _write(lane / f"{field}.parquet", pl.DataFrame({"date": [date], "2330": [value]}))
 
-    rows = build_fundamental_rows(
+    financial_rows = build_fundamental_rows(
         root,
         run_id="finlab-v4-test",
         generated_at="2026-06-30T00:00:00+00:00",
@@ -250,20 +254,23 @@ def test_fundamental_rows_single_day_snapshot_carries_latest_quarterly_fields() 
         end_date="2026-06-29",
     )
 
-    row = next(item for item in rows if item["stock_id"] == "2330")
+    valuation_rows = build_valuation_rows(
+        root,
+        run_id="finlab-v4-test",
+        generated_at="2026-06-30T00:00:00+00:00",
+        end_date="2026-06-29",
+    )
+
+    assert financial_rows == []
+    row = next(item for item in valuation_rows if item["stock_id"] == "2330")
     assert row["available_date"] == "2026-06-29"
-    assert row["period"] == "2026-01-01"
-    assert row["report_date"] == "2026-01-01"
+    assert row["period"] == "2026-06-29"
+    assert row["report_date"] == "2026-06-29"
+    assert row["source"] == "finlab.daily_valuation"
     assert row["pe"] == 17.8
     assert row["pb"] == 4.2
-    assert row["eps"] == 16.2
-    assert row["roe"] == 18.4
-    assert row["ebitda"] == 123456.0
-    assert row["financial_cost"] == 88000.0
-    assert row["operating_expenses"] == 777000.0
-    assert row["revenue"] == 9999000.0
-    assert row["operating_income"] == 1200000.0
-    assert row["net_income"] == 1000000.0
+    assert row.get("eps") is None
+    assert row.get("roe") is None
 
 
 def test_materialize_outputs_report_nonzero_canonical_rows() -> None:
@@ -1009,13 +1016,23 @@ def test_materialize_outputs_include_finlab_fundamental_capital_fields() -> None
         datasets=["canonical_fundamental_features"],
     )
 
-    assert outputs.manifest["row_counts"] == {"canonical_fundamental_features": 1}
-    row = outputs.canonical_fundamental_features[0]
+    assert outputs.manifest["row_counts"] == {"canonical_fundamental_features": 2}
+    row = next(
+        item for item in outputs.canonical_fundamental_features
+        if item["source"] == "finlab.fundamental_factor_diversity"
+    )
+    valuation = next(
+        item for item in outputs.canonical_fundamental_features
+        if item["source"] == "finlab.daily_valuation"
+    )
     assert row["stock_id"] == "2330"
     assert row["gross_margin"] == 53.2
-    assert row["pe"] == 18.5
-    assert row["pb"] == 4.2
-    assert row["dividend_yield"] == 2.1
+    assert row["pe"] is None
+    assert row["pb"] is None
+    assert row["dividend_yield"] is None
+    assert valuation["pe"] == 18.5
+    assert valuation["pb"] == 4.2
+    assert valuation["dividend_yield"] == 2.1
     assert row["revenue"] == 9_900_000_000.0
     assert row["operating_income"] == 4_100_000_000.0
     assert row["net_income"] == 3_300_000_000.0
@@ -1032,6 +1049,8 @@ def test_materialize_outputs_include_finlab_fundamental_capital_fields() -> None
     assert row["operating_cash_flow_statement"] == 1_100_000_000.0
     assert row["capital_amount"] == 259_303_800_000.0
     assert row["source"] == "finlab.fundamental_factor_diversity"
+    assert json.loads(row["lineage_json"])["date_alignment"] == "finlab_deadline"
+    assert json.loads(valuation["lineage_json"])["row_owner"] == "daily_valuation"
     statements = build_d1_upsert_statements(outputs)
     assert any("INSERT INTO canonical_fundamental_features" in sql for sql, _ in statements)
     fundamental_sql = next(sql for sql, _ in statements if "INSERT INTO canonical_fundamental_features" in sql)
@@ -1102,7 +1121,8 @@ def test_fundamental_materialization_keeps_single_day_valuation_snapshot() -> No
     assert row["available_date"] == "2026-06-29"
     assert row["pe"] == 18.5
     assert row["pb"] == 4.2
-    assert row["gross_margin"] is None
+    assert row.get("gross_margin") is None
+    assert row["source"] == "finlab.daily_valuation"
 
 
 def test_fundamental_materialization_keeps_pb_only_snapshot_with_owned_period() -> None:
@@ -1117,11 +1137,10 @@ def test_fundamental_materialization_keeps_pb_only_snapshot_with_owned_period() 
         pl.DataFrame({"date": ["2026-07-09"], "1101": [0.72], "2330": [4.2]}),
     )
 
-    rows = build_fundamental_rows(
+    rows = build_valuation_rows(
         root,
         run_id="finlab-v4-pb-only-test",
         generated_at="2026-07-10T13:00:00+00:00",
-        start_date="2026-07-09",
         end_date="2026-07-09",
     )
 
@@ -1131,6 +1150,7 @@ def test_fundamental_materialization_keeps_pb_only_snapshot_with_owned_period() 
     assert pb_only["period"] == "2026-07-09"
     assert pb_only["report_date"] == "2026-07-09"
     assert pb_only["available_date"] == "2026-07-09"
+    assert pb_only["source"] == "finlab.daily_valuation"
 
 
 def test_fundamental_d1_statement_preflight_rejects_null_period() -> None:
@@ -1171,3 +1191,86 @@ def test_fundamental_materialization_drops_all_null_sparse_dates() -> None:
     assert outputs.manifest["row_counts"] == {"canonical_fundamental_features": 1}
     assert outputs.canonical_fundamental_features[0]["available_date"] == "2026-01-01"
     assert outputs.canonical_fundamental_features[0]["capital_amount"] == 259_303_800_000.0
+
+
+def test_fundamental_materialization_accepts_finlab_deadline_datetime_index() -> None:
+    root = _root("fundamental_deadline_datetime_index")
+    lane = root / "raw" / "fundamental_factor_diversity"
+    _write(
+        lane / "gross_margin.parquet",
+        pl.DataFrame({
+            "2330": [53.2],
+            "__index_level_0__": [datetime(2026, 6, 1)],
+        }),
+    )
+
+    rows = build_fundamental_rows(
+        root,
+        run_id="finlab-deadline-datetime-index-test",
+        generated_at="2026-07-17T00:00:00+00:00",
+        start_date="2026-06-01",
+        end_date="2026-06-01",
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["stock_id"] == "2330"
+    assert rows[0]["gross_margin"] == 53.2
+    assert rows[0]["available_date"] == "2026-06-01"
+    assert json.loads(rows[0]["lineage_json"])["date_alignment"] == "finlab_deadline"
+
+
+def test_fundamental_d1_upserts_pack_ten_rows_per_statement() -> None:
+    root = _root("fundamental_multi_row_upsert")
+    lane = root / "raw" / "fundamental_factor_diversity"
+    symbols = [str(2300 + offset) for offset in range(11)]
+    _write(
+        lane / "gross_margin.parquet",
+        pl.DataFrame({"date": ["2026-06-01"], **{symbol: [50.0 + index] for index, symbol in enumerate(symbols)}}),
+    )
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-07-17T00:00:00+00:00",
+        start_date="2026-06-01",
+        end_date="2026-06-01",
+        datasets=["canonical_fundamental_features"],
+    )
+
+    statements = [
+        (sql, params)
+        for sql, params in build_d1_upsert_statements(outputs)
+        if sql.startswith("INSERT INTO canonical_fundamental_features")
+    ]
+
+    assert len(statements) == 2
+    assert len(statements[0][1]) == 1
+    assert len(statements[1][1]) == 1
+    assert len(json.loads(statements[0][1][0])) == 10
+    assert len(json.loads(statements[1][1][0])) == 1
+    assert "FROM json_each(?) WHERE 1" in statements[0][0]
+
+
+def test_json_multi_row_upsert_executes_and_updates_in_sqlite() -> None:
+    from services.finlab_canonical_materializer import _row_statements
+
+    rows = [
+        {"stock_id": "2330", "period": "2026-06-01", "value": 1.0},
+        {"stock_id": "2317", "period": "2026-06-01", "value": 2.0},
+    ]
+    sql, params = _row_statements(
+        "sample_fundamentals",
+        rows,
+        ["stock_id", "period", "value"],
+        ["stock_id", "period"],
+        ["value"],
+        required_columns=["stock_id", "period"],
+        rows_per_statement=10,
+    )[0]
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE sample_fundamentals (stock_id TEXT, period TEXT, value REAL, PRIMARY KEY(stock_id, period))")
+    db.execute(sql, params)
+    db.execute(sql, [json.dumps([["2330", "2026-06-01", 3.0]])])
+
+    assert db.execute("SELECT stock_id, value FROM sample_fundamentals ORDER BY stock_id").fetchall() == [
+        ("2317", 2.0),
+        ("2330", 3.0),
+    ]

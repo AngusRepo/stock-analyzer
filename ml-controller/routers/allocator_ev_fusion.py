@@ -39,6 +39,7 @@ class AllocatorEvFusionRefreshReq(BaseModel):
 class AllocatorEvFeatureSnapshotBackfillReq(BaseModel):
     start_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     end_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    next_session_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     dry_run: bool = True
     candidate_limit: int = Field(default=1000, ge=1, le=5000)
     l4_lookback_days: int = Field(default=90, ge=30, le=365)
@@ -108,7 +109,7 @@ def _promotion_config_allowed(artifact: dict[str, Any] | None, decision: str) ->
     if state == "production_primary" and tier == "primary":
         return artifact.get("primary_expected_return_allowed") is True
     if state == "production_assistive" and tier == "assistive":
-        return artifact.get("assistive_expected_return_allowed") is True
+        return artifact.get("assistive_learning_signal_allowed") is True
     return False
 
 
@@ -144,6 +145,7 @@ def _registry_record(
         "promotion_tier": artifact.get("promotion_tier"),
         "primary_expected_return_allowed": artifact.get("primary_expected_return_allowed"),
         "assistive_expected_return_allowed": artifact.get("assistive_expected_return_allowed"),
+        "assistive_learning_signal_allowed": artifact.get("assistive_learning_signal_allowed"),
         "validation_packet": validation,
         "training_data": artifact.get("training_data"),
         "promoted_to_trading_config": promoted,
@@ -330,6 +332,7 @@ async def backfill_allocator_ev_feature_snapshots_route(req: AllocatorEvFeatureS
     result = backfill_allocator_ev_feature_snapshots(
         start_date=req.start_date,
         end_date=req.end_date,
+        next_session_date=req.next_session_date,
         dry_run=req.dry_run,
         candidate_limit=req.candidate_limit,
         l4_lookback_days=req.l4_lookback_days,

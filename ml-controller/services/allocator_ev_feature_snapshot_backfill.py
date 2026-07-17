@@ -82,12 +82,47 @@ def load_allocator_ev_snapshot_candidate_rows(
     query_fn: QueryFn,
     *,
     snapshot_date: str,
+    next_session_date: str | None = None,
     limit: int = 1000,
 ) -> list[dict[str, Any]]:
     next_date = (date.fromisoformat(snapshot_date) + timedelta(days=1)).isoformat()
+    supplied_next_session = str(next_session_date or "").strip()[:10] or None
+    if supplied_next_session is not None and (
+        not _date_lte(next_date, supplied_next_session)
+        or not _date_lte(supplied_next_session, (date.fromisoformat(snapshot_date) + timedelta(days=15)).isoformat())
+    ):
+        raise ValueError("next_session_date_outside_snapshot_window")
     return query_fn(
         """
-        WITH ranked_prediction_ids AS (
+        WITH next_executable_session AS (
+            SELECT COALESCE(
+                (
+                    SELECT MIN(date(c.date))
+                      FROM canonical_market_daily c
+                     WHERE c.stock_id = '0050'
+                       AND c.source = 'finlab.price'
+                       AND date(c.date) > date(?)
+                ),
+                date(?)
+            ) AS session_date
+        ),
+        eligible_prediction_ids AS (
+            SELECT p.id, p.stock_id, p.generated_at
+              FROM predictions p
+              CROSS JOIN next_executable_session next_session
+             WHERE p.prediction_date >= ?
+               AND p.prediction_date < ?
+               AND p.model_name = 'ensemble'
+               AND p.forecast_data IS NOT NULL
+               AND (
+                 date(datetime(p.generated_at, '+8 hours')) <= substr(p.prediction_date, 1, 10)
+                 OR (
+                   next_session.session_date IS NOT NULL
+                   AND datetime(p.generated_at) < datetime(next_session.session_date || ' 01:00:00')
+                 )
+               )
+        ),
+        ranked_prediction_ids AS (
             SELECT
                 p.id,
                 p.stock_id,
@@ -95,11 +130,7 @@ def load_allocator_ev_snapshot_candidate_rows(
                     PARTITION BY p.stock_id
                     ORDER BY p.generated_at DESC, p.id DESC
                 ) AS prediction_rank
-            FROM predictions p
-            WHERE p.prediction_date >= ?
-              AND p.prediction_date < ?
-              AND p.model_name = 'ensemble'
-              AND p.forecast_data IS NOT NULL
+            FROM eligible_prediction_ids p
         )
         SELECT
             dr.stock_id,
@@ -128,10 +159,11 @@ def load_allocator_ev_snapshot_candidate_rows(
         WHERE dr.date >= ?
           AND dr.date < ?
           AND dr.score_components IS NOT NULL
+          AND json_extract(dr.score_components, '$.version') = 'score_v2'
         ORDER BY dr.rank ASC, dr.score DESC
         LIMIT ?
         """,
-        [snapshot_date, next_date, snapshot_date, next_date, int(limit)],
+        [snapshot_date, supplied_next_session, snapshot_date, next_date, snapshot_date, next_date, int(limit)],
     )
 
 
@@ -172,28 +204,15 @@ def _existing_l4_payload(allocation: dict[str, Any], *, snapshot_date: str) -> d
     return payload
 
 
-def _existing_s12_payload(allocation: dict[str, Any]) -> dict[str, Any] | None:
-    raw = allocation.get("s12_trade_ev")
-    if not isinstance(raw, dict):
-        return None
-    value, _source, payload = extract_s12_trade_ev({"s12_trade_ev": raw})
-    context = payload.get("candidate_s12_entry_context") if isinstance(payload, dict) else None
-    targets = payload.get("s12_structural_targets") if isinstance(payload, dict) else None
-    structure_ready = (
-        isinstance(context, dict)
-        and context.get("detail_available") is True
-        and isinstance(targets, dict)
-        and str(targets.get("structure_stop_source") or "") != "missing_s12_structure_stop"
-    )
-    if (
-        value is not None
-        and isinstance(payload, dict)
-        and str(payload.get("status") or "loaded").lower() == "loaded"
-        and structure_ready
-    ):
-        payload["snapshot_reuse_policy"] = "persisted_candidate_time_s12_payload"
-        return payload
-    return None
+def _s12_ev_materialization_kind(value: float | None, source: str) -> str:
+    if value is None:
+        return "unavailable"
+    normalized = str(source or "").strip()
+    if normalized.startswith("s12_replay_trade_outcomes:"):
+        return "replay_direct"
+    if normalized == "s12_structural_cold_start_ev":
+        return "structural_cold"
+    return "other_trade_ev"
 
 
 def _build_l4_asof_artifact(
@@ -241,10 +260,24 @@ def _build_l4_asof_artifact(
     validation = result.get("validation_packet") if isinstance(result, dict) else {}
     if isinstance(artifact, dict):
         training_data = artifact.get("training_data") if isinstance(artifact.get("training_data"), dict) else {}
+        sample_count = int(training_data.get("sample_count") or 0)
+        date_count = int(training_data.get("date_count") or 0)
+        artifact["point_in_time_prediction_lineage"] = {
+            "schema_version": "l4-point-in-time-prediction-lineage-v1",
+            "generation_mode": "expanding_asof_reconstruction",
+            "prediction_date": snapshot_date,
+            "trained_until": trained_until,
+            "knowledge_cutoff_date": trained_until,
+            "training_sample_count": sample_count,
+            "training_date_count": date_count,
+            "label_purge_date_groups": 5,
+            "production_serving_eligible": False,
+        }
         artifact["training_data"] = {
             **training_data,
             "lineage_reconstruction": lineage_audit,
             "champion_history_load": history_load,
+            "point_in_time_prediction_ledger": artifact["point_in_time_prediction_lineage"],
         }
     return {
         "trained_until": trained_until,
@@ -496,6 +529,7 @@ def _assert_complete_write(result: dict[str, Any], expected: int, *, phase: str)
 def build_allocator_ev_feature_snapshots_for_date(
     *,
     snapshot_date: str,
+    next_session_date: str | None = None,
     query_fn: QueryFn = d1_client.query,
     write_fn: Callable[[list[tuple[str, list[Any]]]], dict[str, Any]] | None = None,
     dry_run: bool = True,
@@ -528,6 +562,7 @@ def build_allocator_ev_feature_snapshots_for_date(
     raw_candidates = load_allocator_ev_snapshot_candidate_rows(
         query_fn,
         snapshot_date=snapshot_date,
+        next_session_date=next_session_date,
         limit=candidate_limit,
     )
     candidate_total = max(
@@ -542,6 +577,10 @@ def build_allocator_ev_feature_snapshots_for_date(
     timed_candidates, next_session_evidence_load = attach_next_session_open_evidence(
         query_fn,
         raw_candidates,
+        supplied_next_session_dates=(
+            {snapshot_date: next_session_date}
+            if next_session_date else None
+        ),
     )
     candidates, row_version_evidence_load = attach_same_run_model_version_evidence(
         query_fn,
@@ -572,7 +611,9 @@ def build_allocator_ev_feature_snapshots_for_date(
     reused_l4 = 0
     reused_s12 = 0
     snapshots_without_l4 = 0
+    snapshots_with_s12_trade_ev = 0
     snapshots_with_s12_direct_ev = 0
+    snapshots_with_s12_cold_ev = 0
     snapshots_with_s12_structure = 0
     snapshots_with_s12_limited_takeover = 0
     snapshots_with_s12_full_reaction = 0
@@ -614,20 +655,23 @@ def build_allocator_ev_feature_snapshots_for_date(
         if not isinstance(l4_payload, dict) or l4_payload.get("status") != "loaded":
             l4_payload = None
             snapshots_without_l4 += 1
-        existing_is_backfill_snapshot = str(existing.get("snapshot_source") or "") == SNAPSHOT_SOURCE
-        s12_payload = None if existing_is_backfill_snapshot else _existing_s12_payload(existing)
-        if isinstance(s12_payload, dict):
-            reused_s12 += 1
-        else:
-            s12_payload = provider.build_for_row(row, prediction=prediction)
+        # Replay EV is cheap to recompute and its validity depends on the
+        # snapshot-date cutoff. Reusing an opaque recommendation payload can
+        # silently retain samples that no longer satisfy the active lineage contract.
+        s12_payload = provider.build_for_row(row, prediction=prediction)
         if not isinstance(s12_payload, dict):
             skipped += 1
             skip_reasons["s12_payload_missing"] = skip_reasons.get("s12_payload_missing", 0) + 1
             continue
-        s12_value, _s12_source, _ = extract_s12_trade_ev({"s12_trade_ev": s12_payload})
+        s12_value, s12_source, _ = extract_s12_trade_ev({"s12_trade_ev": s12_payload})
+        s12_kind = _s12_ev_materialization_kind(s12_value, s12_source)
         s12_features = _s12_structure_features(s12_payload)
         if s12_value is not None:
+            snapshots_with_s12_trade_ev += 1
+        if s12_kind == "replay_direct":
             snapshots_with_s12_direct_ev += 1
+        elif s12_kind == "structural_cold":
+            snapshots_with_s12_cold_ev += 1
         if s12_features["s12_structure_available"] > 0.0:
             snapshots_with_s12_structure += 1
         if s12_features["s12_limited_takeover_ready"] > 0.0:
@@ -644,6 +688,15 @@ def build_allocator_ev_feature_snapshots_for_date(
             "as_of_guard": AS_OF_GUARD,
             "snapshot_l4_usage_mode": l4_usage_mode,
             "snapshot_l4_available": l4_payload is not None,
+            "s12_snapshot_materialization_policy": "strict_pit_recompute_no_opaque_payload_reuse",
+            "l4_alpha_ev_diagnostic": {
+                "status": "loaded" if l4_payload is not None else "unavailable",
+                "usage_mode": l4_usage_mode,
+                "trained_until": l4_result.get("trained_until"),
+                "decision": l4_result.get("decision"),
+                "failed_gates": l4_result.get("failed_gates") or [],
+                "policy": "missing_expert_is_an_availability_feature_not_a_synthetic_ev",
+            },
             "ev_lineage_status": lineage_status,
             "ev_lineage_audit": lineage_result.get("audit"),
         }
@@ -736,7 +789,9 @@ def build_allocator_ev_feature_snapshots_for_date(
         "reused_l4_payloads": reused_l4,
         "reused_s12_payloads": reused_s12,
         "snapshots_without_l4": snapshots_without_l4,
+        "snapshots_with_s12_trade_ev": snapshots_with_s12_trade_ev,
         "snapshots_with_s12_direct_ev": snapshots_with_s12_direct_ev,
+        "snapshots_with_s12_cold_ev": snapshots_with_s12_cold_ev,
         "snapshots_with_s12_structure": snapshots_with_s12_structure,
         "snapshots_with_s12_limited_takeover": snapshots_with_s12_limited_takeover,
         "snapshots_with_s12_full_reaction": snapshots_with_s12_full_reaction,
@@ -759,6 +814,7 @@ def backfill_allocator_ev_feature_snapshots(
     *,
     start_date: str,
     end_date: str,
+    next_session_date: str | None = None,
     query_fn: QueryFn = d1_client.query,
     dry_run: bool = True,
     candidate_limit: int = 1000,
@@ -771,10 +827,13 @@ def backfill_allocator_ev_feature_snapshots(
     s12_min_samples: int = 30,
     s12_min_sample_dates: int = 8,
 ) -> dict[str, Any]:
+    if next_session_date and start_date != end_date:
+        raise ValueError("next_session_date_requires_single_snapshot_date")
     rows = []
     for snapshot_date in _date_range(start_date, end_date):
         rows.append(build_allocator_ev_feature_snapshots_for_date(
             snapshot_date=snapshot_date,
+            next_session_date=next_session_date,
             query_fn=query_fn,
             dry_run=dry_run,
             candidate_limit=candidate_limit,
@@ -810,7 +869,9 @@ def backfill_allocator_ev_feature_snapshots(
             1 for row in rows if row.get("l4_usage_mode") == "snapshot_backfill_only"
         ),
         "snapshots_without_l4": sum(int(row.get("snapshots_without_l4") or 0) for row in rows),
+        "snapshots_with_s12_trade_ev": sum(int(row.get("snapshots_with_s12_trade_ev") or 0) for row in rows),
         "snapshots_with_s12_direct_ev": sum(int(row.get("snapshots_with_s12_direct_ev") or 0) for row in rows),
+        "snapshots_with_s12_cold_ev": sum(int(row.get("snapshots_with_s12_cold_ev") or 0) for row in rows),
         "snapshots_with_s12_structure": sum(int(row.get("snapshots_with_s12_structure") or 0) for row in rows),
         "snapshots_with_s12_limited_takeover": sum(int(row.get("snapshots_with_s12_limited_takeover") or 0) for row in rows),
         "snapshots_with_s12_full_reaction": sum(int(row.get("snapshots_with_s12_full_reaction") or 0) for row in rows),

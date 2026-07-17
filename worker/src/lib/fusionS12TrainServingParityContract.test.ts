@@ -43,6 +43,6 @@ assert(
 )
 assert(
   postMarketChain.indexOf("'allocator-ev-feature-snapshot-backfill'") < postMarketChain.indexOf("'verify-v2'") &&
-    postMarketChain.includes("if (snapshotTask.status === 'error')"),
+    postMarketChain.includes("if (snapshotTask.status === 'error' || !snapshotClosure.ready)"),
   'same-date feature snapshots must be materialized after pipeline and fail closed before verify',
 )

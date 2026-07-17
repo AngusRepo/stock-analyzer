@@ -39,17 +39,24 @@ async def node_load_pending(state: VerifyStateV2) -> dict:
     logger.info("[Verify V2] node_load_pending")
     lookback_days = int(state.get("lookback_days") or 5)
     limit = int(state.get("limit") or 200)
-    pending = await asyncio.to_thread(
-        verify_service.load_pending_predictions,
-        lookback_days,
-        limit,
-        state.get("run_date") or "",
+    workset = await asyncio.to_thread(
+        verify_service.load_pending_prediction_workset,
+        lookback_days=lookback_days,
+        page_size=limit,
+        run_date=state.get("run_date") or "",
     )
+    pending = workset["rows"]
     market_risk = await asyncio.to_thread(verify_service.load_market_risk)
     return {
         "pending_predictions": pending,
         "market_risk": market_risk,
         "pending": len(pending),
+        "metrics": {
+            **(state.get("metrics") or {}),
+            "verification_pages": workset["pages"],
+            "verification_workset_exhausted": workset["exhausted"],
+            "verification_workset_truncated": workset["truncated"],
+        },
     }
 
 
@@ -81,6 +88,7 @@ async def node_simulate_predictions(state: VerifyStateV2) -> dict:
         "metrics": {
             **(state.get("metrics") or {}),
             **(prepared.get("metrics") or {}),
+            "verification_unresolved_rows": len(pending) - len(prepared.get("verify_updates") or []),
         },
         **summary,
     }

@@ -1009,10 +1009,11 @@ def load_fundamental_quality_by_symbol(screener_recs: list[dict], decision_date:
                     FROM canonical_fundamental_features
                     WHERE stock_id IN ({placeholders})
                       AND available_date <= ?
-                      AND source = 'finlab.fundamental_factor_diversity'
+                      AND as_of_date <= ?
+                      AND source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation')
                     ORDER BY stock_id, available_date, period
                     """,
-                    [*chunk, decision_date],
+                    [*chunk, decision_date, decision_date],
                     timeout=60,
                 )
                 for row in rows or []:
@@ -2319,27 +2320,9 @@ def _finite_rank_score(value: Any) -> float | None:
     return max(0.0, min(1.0, numeric))
 
 
-def _forecast_pct_to_rank_score(value: Any) -> float | None:
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(numeric):
-        return None
-    try:
-        return 1.0 / (1.0 + math.exp(-numeric * 12.0))
-    except OverflowError:
-        return 1.0 if numeric > 0 else 0.0
-
-
 def _model_rank_score(prediction: dict, model_name: str) -> float | None:
     if model_name in _DIRECT_ALPHA_BLOCKED_MODELS:
         return None
-    if model_name in _SEQUENCE_MODEL_SOURCE_KEYS:
-        signal = prediction.get(_SEQUENCE_MODEL_SOURCE_KEYS[model_name])
-        if not isinstance(signal, dict):
-            return None
-        return _forecast_pct_to_rank_score(signal.get("forecast_pct"))
     rank_scores = prediction.get("rank_scores")
     score = _finite_rank_score(rank_scores.get(model_name)) if isinstance(rank_scores, dict) else None
     if score is not None:
@@ -3149,9 +3132,13 @@ def _opb_trade_ev_payload(allocation: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+OPB_CANONICAL_SELECTION_ROUNDTRIP_COST_BPS = 18.0
+
+
 def _opb_reward_from_row(row: dict[str, Any], allocation: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
     trade_pnl_pct = _float_or_none(row.get("trade_pnl_pct"))
     trade_pnl_r = _float_or_none(row.get("trade_pnl_r"))
+    canonical_selection_return_pct = _float_or_none(row.get("canonical_selection_return_pct"))
     trade_ev = _opb_trade_ev_payload(allocation)
     risk_pct = _float_or_none(trade_ev.get("risk_pct"))
     source = "missing"
@@ -3162,8 +3149,11 @@ def _opb_reward_from_row(row: dict[str, Any], allocation: dict[str, Any]) -> tup
         scale = risk_pct if risk_pct is not None and risk_pct > 0 else 0.01
         reward = trade_pnl_r * scale
         source = "trade_pnl_r_scaled_by_s12_risk_pct" if risk_pct else "trade_pnl_r_scaled_default_1pct_risk"
+    elif canonical_selection_return_pct is not None:
+        reward = canonical_selection_return_pct - OPB_CANONICAL_SELECTION_ROUNDTRIP_COST_BPS / 10000.0
+        source = "canonical_adjusted_five_session_selection_return_net_cost"
     else:
-        return None, {"reward_source": "censored_no_executed_trade_outcome"}
+        return None, {"reward_source": "censored_no_mature_trade_or_selection_outcome"}
     clamped = max(-0.20, min(0.20, reward))
     return clamped, {
         "reward_source": source,
@@ -3171,6 +3161,14 @@ def _opb_reward_from_row(row: dict[str, Any], allocation: dict[str, Any]) -> tup
         "reward": round(clamped, 10),
         "trade_pnl_pct": None if trade_pnl_pct is None else round(trade_pnl_pct, 10),
         "trade_pnl_r": None if trade_pnl_r is None else round(trade_pnl_r, 6),
+        "canonical_selection_return_pct": (
+            None if canonical_selection_return_pct is None else round(canonical_selection_return_pct, 10)
+        ),
+        "roundtrip_cost_bps": (
+            OPB_CANONICAL_SELECTION_ROUNDTRIP_COST_BPS
+            if source == "canonical_adjusted_five_session_selection_return_net_cost"
+            else None
+        ),
         "risk_pct": None if risk_pct is None else round(risk_pct, 10),
     }
 
@@ -3211,30 +3209,131 @@ def load_online_portfolio_bandit_reward_ledger(
     try:
         rows = query(
             """
+            WITH price_horizons AS (
+                SELECT
+                    sp.stock_id,
+                    date(sp.date) AS price_date,
+                    LEAD(date(sp.date), 1) OVER (
+                        PARTITION BY sp.stock_id ORDER BY date(sp.date)
+                    ) AS entry_date,
+                    LEAD(sp.open, 1) OVER (
+                        PARTITION BY sp.stock_id ORDER BY date(sp.date)
+                    ) AS entry_raw_open,
+                    LEAD(
+                        CASE WHEN cmd.close > 0 AND cmd.adj_close > 0
+                             THEN cmd.adj_close / cmd.close END,
+                        1
+                    ) OVER (
+                        PARTITION BY sp.stock_id ORDER BY date(sp.date)
+                    ) AS entry_adjustment_factor,
+                    LEAD(date(sp.date), 5) OVER (
+                        PARTITION BY sp.stock_id ORDER BY date(sp.date)
+                    ) AS exit_date,
+                    LEAD(sp.close, 5) OVER (
+                        PARTITION BY sp.stock_id ORDER BY date(sp.date)
+                    ) AS exit_raw_close,
+                    LEAD(
+                        CASE WHEN cmd.close > 0 AND cmd.adj_close > 0
+                             THEN cmd.adj_close / cmd.close END,
+                        5
+                    ) OVER (
+                        PARTITION BY sp.stock_id ORDER BY date(sp.date)
+                    ) AS exit_adjustment_factor
+                FROM stock_prices sp
+                JOIN stocks factor_stock
+                  ON factor_stock.id = sp.stock_id
+                LEFT JOIN canonical_market_daily cmd
+                  ON cmd.stock_id = factor_stock.symbol
+                 AND cmd.date = date(sp.date)
+                 AND cmd.source = 'finlab.price'
+                WHERE date(sp.date) >= date(?, '-10 days')
+                  AND date(sp.date) <= date(?)
+            ),
+            latest_ensemble_prediction AS (
+                SELECT *
+                FROM (
+                    SELECT
+                        p.stock_id,
+                        date(p.prediction_date) AS prediction_date,
+                        p.trade_pnl_pct,
+                        p.trade_pnl_r,
+                        p.verified_at,
+                        p.verification_label_known_date,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY p.stock_id, date(p.prediction_date)
+                            ORDER BY datetime(p.generated_at) DESC, p.id DESC
+                        ) AS row_number
+                    FROM predictions p
+                    JOIN price_horizons timing
+                      ON timing.stock_id = p.stock_id
+                     AND timing.price_date = date(p.prediction_date)
+                    WHERE p.model_name = 'ensemble'
+                      AND date(p.prediction_date) >= date(?)
+                      AND date(p.prediction_date) < date(?)
+                      AND timing.entry_date IS NOT NULL
+                      AND datetime(p.generated_at) < datetime(timing.entry_date || ' 01:00:00')
+                ) ranked
+                WHERE row_number = 1
+            )
             SELECT dr.date,
                    dr.stock_id,
                    dr.symbol,
                    dr.alpha_allocation,
                    p.trade_pnl_pct,
-                   p.trade_pnl_r
+                   p.trade_pnl_r,
+                   ph.exit_date AS canonical_selection_outcome_known_date,
+                   CASE
+                     WHEN ph.entry_raw_open > 0
+                      AND ph.exit_raw_close > 0
+                      AND ph.entry_adjustment_factor > 0
+                      AND ph.exit_adjustment_factor > 0
+                      AND date(ph.exit_date) <= date(?)
+                     THEN ((ph.exit_raw_close * ph.exit_adjustment_factor)
+                           / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0
+                   END AS canonical_selection_return_pct
               FROM daily_recommendations dr
-              JOIN predictions p
+              LEFT JOIN latest_ensemble_prediction p
                 ON p.stock_id = dr.stock_id
                AND p.prediction_date = dr.date
+              LEFT JOIN price_horizons ph
+                ON ph.stock_id = dr.stock_id
+               AND ph.price_date = date(dr.date)
                WHERE dr.date >= ?
                  AND dr.date < ?
                  AND dr.alpha_allocation IS NOT NULL
                AND json_valid(dr.alpha_allocation)
-               AND json_extract(dr.alpha_allocation, '$.selected') = 1
+                 AND json_extract(dr.alpha_allocation, '$.selected') = 1
                  AND json_extract(dr.alpha_allocation, '$.opb_controller.enabled') = 1
-                 AND p.model_name = 'ensemble'
-                 AND (p.trade_pnl_pct IS NOT NULL OR p.trade_pnl_r IS NOT NULL)
-                 AND p.verified_at IS NOT NULL
-                 AND date(p.verified_at) <= date(?)
+                 AND (
+                   (
+                     (p.trade_pnl_pct IS NOT NULL OR p.trade_pnl_r IS NOT NULL)
+                     AND p.verified_at IS NOT NULL
+                     AND date(COALESCE(p.verification_label_known_date, p.verified_at)) <= date(?)
+                   )
+                   OR (
+                     p.stock_id IS NOT NULL
+                     AND ph.entry_raw_open > 0
+                     AND ph.exit_raw_close > 0
+                     AND ph.entry_adjustment_factor > 0
+                     AND ph.exit_adjustment_factor > 0
+                     AND date(ph.exit_date) <= date(?)
+                   )
+                 )
              ORDER BY dr.date DESC, dr.rank ASC
              LIMIT ?
             """,
-              [cutoff, knowledge_date.isoformat(), knowledge_date.isoformat(), max_rows],
+              [
+                  cutoff,
+                  knowledge_date.isoformat(),
+                  cutoff,
+                  knowledge_date.isoformat(),
+                  knowledge_date.isoformat(),
+                  cutoff,
+                  knowledge_date.isoformat(),
+                  knowledge_date.isoformat(),
+                  knowledge_date.isoformat(),
+                  max_rows,
+              ],
             timeout=30.0,
         )
     except Exception as exc:  # noqa: BLE001 - OPB learning must not block serving.
@@ -3328,8 +3427,11 @@ def load_online_portfolio_bandit_reward_ledger(
             },
             "risk_pct_rows": int(stats.get("risk_pct_rows") or 0),
             "reward_history": sorted(stats.get("reward_history") or [], key=lambda row: row["date"]),
-            "source": "daily_recommendations.alpha_allocation+predictions.trade_outcome",
-            "reward_policy": "executed_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_censored_otherwise",
+            "source": "daily_recommendations.alpha_allocation+verified_trade_or_canonical_adjusted_selection_outcome",
+            "reward_policy": (
+                "verified_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_then_"
+                "canonical_adjusted_five_session_selection_return_net_18bps"
+            ),
         })
     return ledger
 
@@ -4551,11 +4653,7 @@ def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
         "PatchTST": "patchtst",
         "iTransformer": "itransformer",
     }.get(model_name)
-    if not source_key:
-        return {}
-    signal = pred.get(source_key)
-    if not isinstance(signal, dict):
-        return {}
+    signal = pred.get(source_key) if source_key and isinstance(pred.get(source_key), dict) else {}
     payload: dict[str, Any] = {}
     for key in (
         "forecast_pct",
@@ -4571,8 +4669,22 @@ def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
     ):
         if signal.get(key) is not None:
             payload[key] = signal.get(key)
-    if payload:
+    if payload and source_key:
         payload["source_key"] = source_key
+    lineage = pred.get("model_score_lineage") if isinstance(pred.get("model_score_lineage"), dict) else {}
+    versions = lineage.get("artifact_versions") if isinstance(lineage.get("artifact_versions"), dict) else {}
+    raw_scores = lineage.get("raw_scores") if isinstance(lineage.get("raw_scores"), dict) else {}
+    rank_scores = pred.get("rank_scores") if isinstance(pred.get("rank_scores"), dict) else {}
+    if model_name in rank_scores:
+        payload.update({
+            "artifact_version": versions.get(model_name),
+            "raw_score": raw_scores.get(model_name),
+            "rank_score": rank_scores.get(model_name),
+            "score_semantic_version": lineage.get("semantic_version"),
+            "target_semantic_version": lineage.get("target_semantic_version"),
+            "model_set_signature": lineage.get("model_set_signature"),
+            "market_segment": lineage.get("market_segment"),
+        })
     return payload
 
 

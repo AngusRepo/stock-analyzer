@@ -11,7 +11,7 @@ from services.allocator_ev_fusion import materialize_allocator_ev_fusion  # noqa
 def _artifact() -> dict:
     return {
         "schema_version": "allocator-ev-fusion-artifact-v1",
-        "artifact_contract_version": "allocator-ev-fusion-contract-v10",
+        "artifact_contract_version": "allocator-ev-fusion-contract-v11",
         "feature_semantic_version": "allocator-ev-fusion-directional-components-v2-lineage-bound",
         "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "expected_return_owner": "allocator_ev_fusion",

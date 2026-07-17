@@ -308,6 +308,10 @@ export interface UpdateQueueMsg {
     | 'finlab_backfill_complete'
     | 'strategy_learning_materialize'
     | 's12_replay_backfill_chunk'
+    | 's12_research_recovery'
+    | 'allocator_ev_lifecycle_recovery'
+    | 'post_pipeline_chain'
+    | 'post_verify_chain'
   newsStocks?: Array<{
     id: number
     symbol: string
@@ -321,6 +325,7 @@ export interface UpdateQueueMsg {
   shardIndex?: number // 多 shard 平行更新時的 shard index
   shardCount?: number // 多 shard 平行更新時的總 shard 數
   attempt?: number    // finalize watchdog retry count
+  leaseRetryAttempt?: number // bounded deferred retry for serialized S12 research traffic
   force?: boolean
 }
 

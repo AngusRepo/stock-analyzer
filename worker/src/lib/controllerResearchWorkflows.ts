@@ -1,6 +1,8 @@
 import type { Bindings } from '../types'
 import { controllerFetch, controllerJson, controllerPostJson } from './controllerClient'
 import { invalidateModelPoolReadCache } from './modelPoolReadCache'
+import { readCurrentExpectedReturnServingState } from './expectedReturnServingState'
+import { nextTwTradingDate } from './schedulerPolicy'
 
 function requireController(env: Bindings): void {
   if (!env.ML_CONTROLLER_URL) {
@@ -218,6 +220,41 @@ export async function runMonthlyOptunaResearch(env: Bindings, runDate?: string) 
   })
 }
 
+export async function runActive8OofLifecycle(
+  env: Bindings,
+  runDate?: string,
+  cadence: 'daily' | 'weekly' | 'monthly' = 'daily',
+) {
+  requireController(env)
+
+  const resp = await controllerFetch(env, '/walk_forward/oof/lifecycle', {
+    method: 'POST',
+    jsonBody: {
+      cadence,
+      end_date: runDate,
+      dry_run: false,
+      promote: true,
+    },
+    timeoutMs: 180_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    throw new Error(`Active-8 OOF lifecycle HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
+  }
+  const data = text ? JSON.parse(text) as Record<string, any> : {}
+  const status = String(data.status ?? '').toLowerCase()
+  if (!['skipped', 'pending', 'spawned', 'materialized', 'idempotent_complete'].includes(status)) {
+    throw new Error(`Active-8 OOF lifecycle unexpected status=${status || 'unknown'}`)
+  }
+  return [
+    `active8_oof_lifecycle status=${status}`,
+    `cadence=${cadence}`,
+    `cohort=${data.cohort_id ?? 'none'}`,
+    `promoted=${Boolean(data.promoted)}`,
+    `reason=${data.promotion_reason ?? data.reason ?? 'none'}`,
+  ].join(' ')
+}
+
 export async function runL4AlphaEvRefresh(env: Bindings, runDate?: string, cadence: 'weekly' | 'monthly' = 'weekly') {
   requireController(env)
 
@@ -272,6 +309,69 @@ export async function runAllocatorEvFusionRefresh(env: Bindings, runDate?: strin
   return summary
 }
 
+export async function runOpbArmPriorRefresh(
+  env: Bindings,
+  runDate: string,
+  expectedReturnOwner: 'auto' | 'l4_alpha_ev' | 'allocator_ev_fusion' = 'auto',
+) {
+  requireController(env)
+
+  let resolvedOwner: 'l4_alpha_ev' | 'allocator_ev_fusion'
+  if (expectedReturnOwner === 'auto') {
+    const servingState = await readCurrentExpectedReturnServingState(env, runDate)
+    if (!servingState.expected_return_owner) {
+      const l4State = servingState.artifacts.l4_alpha_ev
+      const fusionState = servingState.artifacts.allocator_ev_fusion
+      throw new Error(
+        'OPB arm prior refresh has no contract-compatible production expected-return owner; '
+        + `l4=${l4State.artifact_state}[${l4State.blockers.join(',')}] `
+        + `fusion=${fusionState.artifact_state}[${fusionState.blockers.join(',')}]`,
+      )
+    }
+    resolvedOwner = servingState.expected_return_owner
+  } else {
+    resolvedOwner = expectedReturnOwner
+  }
+
+  const resp = await controllerFetch(env, '/opb_arm_prior/refresh', {
+    method: 'POST',
+    jsonBody: {
+      end_date: runDate,
+      expected_return_owner: resolvedOwner,
+      lookback_days: 120,
+      min_dates: 20,
+      limit: 10000,
+      roundtrip_cost_bps: 18.0,
+      promote: true,
+      dry_run: false,
+      trigger_source: 'worker_scheduler',
+    },
+    timeoutMs: 120_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    throw new Error(`OPB arm prior refresh HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
+  }
+  const data = text ? JSON.parse(text) as Record<string, any> : {}
+  const status = String(data.status ?? '').toLowerCase()
+  const validation = data.artifact?.validation && typeof data.artifact.validation === 'object'
+    ? data.artifact.validation as Record<string, any>
+    : {}
+  const failedChecks = Array.isArray(validation.failed_checks) ? validation.failed_checks.join(',') : ''
+  const summary = [
+    `opb_arm_prior_refresh status=${status || 'unknown'}`,
+    `owner=${resolvedOwner}`,
+    `rows=${Number(data.rows_loaded ?? 0)}`,
+    `price_rows=${Number(data.price_rows_loaded ?? 0)}`,
+    `promoted=${data.promoted === true ? 1 : 0}`,
+    failedChecks ? `failed_checks=${failedChecks}` : '',
+  ].filter(Boolean).join(' ')
+  if (status !== 'validated' || data.promoted !== true) {
+    throw new Error(summary)
+  }
+  return summary
+}
+
 export async function runAllocatorEvFeatureSnapshotBackfill(
   env: Bindings,
   params: {
@@ -284,18 +384,22 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
   },
 ) {
   requireController(env)
+  const nextSessionDate = params.startDate === params.endDate
+    ? await nextTwTradingDate(env.KV, params.endDate, env.DB)
+    : undefined
 
   const resp = await controllerFetch(env, '/allocator_ev_fusion/feature_snapshots/backfill', {
     method: 'POST',
     jsonBody: {
       start_date: params.startDate,
       end_date: params.endDate,
+      next_session_date: nextSessionDate,
       dry_run: params.dryRun ?? false,
       candidate_limit: params.candidateLimit,
       l4_min_samples: params.l4MinSamples,
       l4_min_dates: params.l4MinDates,
     },
-    timeoutMs: 120_000,
+    timeoutMs: 300_000,
   })
   const text = await resp.text().catch(() => '')
   if (!resp.ok) {
@@ -308,6 +412,30 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
     throw new Error(
       `allocator EV feature snapshot incomplete range=${params.startDate}..${params.endDate} built=${built} written=${written}`,
     )
+  }
+  if (!(params.dryRun ?? false) && params.startDate === params.endDate) {
+    const {
+      inspectAllocatorSnapshotClosure,
+      recordAllocatorEvLifecycle,
+    } = await import('./allocatorEvDailyLifecycle')
+    const closure = await inspectAllocatorSnapshotClosure(env.DB, params.startDate, {
+      allowPointInTimeReconstruction: true,
+    })
+    if (!closure.ready) {
+      throw new Error(
+        `allocator EV feature snapshot readback incomplete date=${params.startDate} `
+        + `native=${closure.nativeLineageRows} run_native=${closure.runNativeLineageRows} `
+        + `reconstructed=${closure.reconstructedLineageRows} rejected=${closure.rejectedLineageRows} `
+        + `expected=${closure.expectedRows} published=${closure.publishedRows} actual=${closure.actualRows}`,
+      )
+    }
+    await recordAllocatorEvLifecycle(env.DB, {
+      businessDate: params.startDate,
+      state: 'snapshot_ready',
+      nativeLineageRows: closure.nativeLineageRows,
+      snapshotRunId: closure.snapshotRunId,
+      snapshotRows: closure.actualRows,
+    })
   }
   return String(data.summary ?? `allocator_ev_feature_snapshot_backfill status=${data.status ?? 'unknown'}`)
 }
@@ -1057,8 +1185,8 @@ export async function runWeeklyDriftDetection(env: Bindings) {
     `retrain_groups=${trainModelGroups.join(',') || 'none'}`,
     `retrain_targets=${retrainTargets.map((target) => target.name).join(',') || 'none'}`,
     `artifact_lifecycle_targets=${artifactLifecycleTargets.map((target) => `${target.name}:${target.artifactLifecycle}`).join(',') || 'none'}`,
-    'approval_required=confirm=weekly_drift',
-    'production_effect=none',
+    'promotion=automatic_after_pass_strong_pass_live_multi_evidence_and_final_champion_comparison',
+    'production_effect=none_until_serving_readback_verified',
   ].join('; ')
 }
 

@@ -4,8 +4,17 @@ import {
   type S12IntradayAssessment,
   type S12TimingPolicy,
 } from './s12IntradayStructure'
-import { loadS12HistoricalReplayLifecycleBars } from './s12RuntimeBars'
+import {
+  loadS12HistoricalReplayLifecycleBars,
+  s12ResearchTerminalDataSourceReason,
+} from './s12RuntimeBars'
 import type { Bindings } from '../types'
+import {
+  S12_REPLAY_ENGINE_SIGNATURE,
+  S12_REPLAY_FIVE_SESSION_UPPER_MULTIPLIER,
+  S12_REPLAY_TARGET_PRICE_DOMAIN_CONTRACT,
+} from './s12ReplayContract'
+export { S12_REPLAY_ENGINE_SIGNATURE } from './s12ReplayContract'
 
 export const ALLOCATOR_EV_SNAPSHOT_AS_OF_GUARD =
   'prediction_before_next_executable_session_open;exact_active8_artifact_lineage;l4_trained_before_snapshot;s12_samples_before_run'
@@ -16,6 +25,7 @@ import {
 } from './s12TwEquityCalibration'
 import type { S12TwExitCalibration } from './s12TwEquityCalibration'
 import { normalizeTwEquityTargetPrice } from './twEquityMarketContract'
+import { acquireS12ResearchLease, releaseS12ResearchLease } from './s12ResearchLease'
 
 export type S12ReplayOutcomeStatus = 'executed' | 'setup_only' | 'skipped'
 
@@ -58,6 +68,7 @@ export interface S12ReplayOutcome {
   alpha_context?: Record<string, unknown> | null
   alpha_allocation?: Record<string, unknown> | null
   replay_diagnostics?: Record<string, unknown> | null
+  lineage_validation?: Record<string, unknown> | null
   market?: string | null
 }
 
@@ -108,6 +119,7 @@ export interface S12HistoricalReplayRunOptions {
   loadBars?: (symbol: string, tradeDate: string) => Promise<S12ReplayBars>
   resolveExecutionDate?: (symbol: string, signalDate: string) => Promise<string | null>
   maturityAsOfDate?: string
+  signedEligibleRepair?: boolean
 }
 
 export interface S12HistoricalReplayRunSummary {
@@ -121,6 +133,7 @@ export interface S12HistoricalReplayRunSummary {
   setup_only: number
   skipped: number
   persisted: number
+  terminal_data_source_reason: string | null
   outcomes: S12ReplayOutcome[]
 }
 
@@ -200,6 +213,71 @@ export async function loadFusionSnapshotMissingReplaySymbols(
     alpha_context: row.alpha_context ?? null,
     alpha_allocation: row.alpha_allocation ?? null,
   })).filter((row) => row.symbol)
+}
+
+export interface FusionSnapshotReplayCoverage {
+  totalSnapshotRows: number
+  replayRows: number
+  matureMissingRows: number
+  pendingMaturityRows: number
+}
+
+export async function loadFusionSnapshotReplayCoverage(
+  db: D1Database,
+  signalDate: string,
+  maturityAsOfDate: string,
+): Promise<FusionSnapshotReplayCoverage> {
+  const row = await db.prepare(`
+    WITH cohort AS (
+      SELECT fs.symbol
+        FROM allocator_ev_feature_snapshots fs
+       WHERE fs.snapshot_date = ?
+         AND fs.snapshot_source = 'allocator_ev_asof_backfill_v2'
+         AND fs.as_of_guard = '${ALLOCATOR_EV_SNAPSHOT_AS_OF_GUARD}'
+         AND json_extract(fs.score_components, '$.version') = 'score_v2'
+       GROUP BY fs.symbol
+    ), coverage AS (
+      SELECT
+        cohort.symbol,
+        EXISTS (
+          SELECT 1
+            FROM s12_replay_trade_outcomes replay
+           WHERE replay.signal_date = ?
+             AND replay.symbol = cohort.symbol
+             AND replay.source = 's12_multisession_structure_replay_v3'
+        ) AS has_replay,
+        (
+          SELECT COUNT(DISTINCT date(sp.date))
+            FROM stock_prices sp
+            JOIN stocks st ON st.id = sp.stock_id
+           WHERE st.symbol = cohort.symbol
+             AND date(sp.date) > date(?)
+             AND date(sp.date) <= date(?)
+             AND sp.open IS NOT NULL
+             AND sp.high IS NOT NULL
+             AND sp.low IS NOT NULL
+             AND sp.close IS NOT NULL
+        ) AS completed_sessions
+      FROM cohort
+    )
+    SELECT
+      COUNT(*) AS total_snapshot_rows,
+      COALESCE(SUM(CASE WHEN has_replay = 1 THEN 1 ELSE 0 END), 0) AS replay_rows,
+      COALESCE(SUM(CASE WHEN has_replay = 0 AND completed_sessions >= 5 THEN 1 ELSE 0 END), 0) AS mature_missing_rows,
+      COALESCE(SUM(CASE WHEN has_replay = 0 AND completed_sessions < 5 THEN 1 ELSE 0 END), 0) AS pending_maturity_rows
+    FROM coverage
+  `).bind(signalDate, signalDate, signalDate, maturityAsOfDate).first<{
+    total_snapshot_rows?: number
+    replay_rows?: number
+    mature_missing_rows?: number
+    pending_maturity_rows?: number
+  }>()
+  return {
+    totalSnapshotRows: Number(row?.total_snapshot_rows ?? 0),
+    replayRows: Number(row?.replay_rows ?? 0),
+    matureMissingRows: Number(row?.mature_missing_rows ?? 0),
+    pendingMaturityRows: Number(row?.pending_maturity_rows ?? 0),
+  }
 }
 
 export async function loadFusionSnapshotSymbols(
@@ -478,7 +556,11 @@ function emptyOutcome(input: S12ReplayInput, status: S12ReplayOutcomeStatus, rea
     conservative_intrabar_order: 'stop_before_target',
     ...assessmentSnapshot(assessment),
     ...alphaReplayMetadata(input),
-    replay_diagnostics: input.replayDiagnostics ?? null,
+    replay_diagnostics: {
+      ...(input.replayDiagnostics ?? {}),
+      replay_engine_signature: S12_REPLAY_ENGINE_SIGNATURE,
+      target_price_domain_contract: S12_REPLAY_TARGET_PRICE_DOMAIN_CONTRACT,
+    },
   }
 }
 
@@ -499,7 +581,12 @@ function findEntryAssessment(
   return latestSetup ?? null
 }
 
-function targetLadder(assessment: S12IntradayAssessment, calibration?: S12TwExitCalibration | null): number[] {
+interface S12ReplayTargetLadder {
+  targets: number[]
+  rejectedOutsideFiveSessionPriceDomain: number
+}
+
+function targetLadder(assessment: S12IntradayAssessment, calibration?: S12TwExitCalibration | null): S12ReplayTargetLadder {
   const entry = finitePositive(assessment.execution.entryPrice)
   const raw = [
     assessment.exitPlan.tp1.source === '15m_previous_high'
@@ -515,13 +602,19 @@ function targetLadder(assessment: S12IntradayAssessment, calibration?: S12TwExit
     finitePositive(assessment.execution.target3) ?? finitePositive(assessment.exitPlan.tp3.price),
   ]
   const out: number[] = []
+  let rejectedOutsideFiveSessionPriceDomain = 0
+  const fiveSessionUpperBound = entry == null ? null : entry * S12_REPLAY_FIVE_SESSION_UPPER_MULTIPLIER
   for (const target of raw) {
     const normalized = target == null ? null : normalizeTwEquityTargetPrice(target)
+    if (entry != null && normalized != null && fiveSessionUpperBound != null && normalized > fiveSessionUpperBound) {
+      rejectedOutsideFiveSessionPriceDomain += 1
+      continue
+    }
     if (entry != null && normalized != null && normalized > entry && !out.some((x) => Math.abs(x - normalized) < 0.000001)) {
       out.push(normalized)
     }
   }
-  return out
+  return { targets: out, rejectedOutsideFiveSessionPriceDomain }
 }
 
 export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S12ReplayOptions = {}): S12ReplayOutcome {
@@ -553,7 +646,8 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
   const futureBars = bars.slice(entryIndex + 1, entryIndex + 1 + maxExitBars)
   if (futureBars.length === 0) return emptyOutcome(input, 'skipped', 'missing_post_entry_bars', assessment)
 
-  const targets = targetLadder(assessment, input.exitCalibration)
+  const targetResult = targetLadder(assessment, input.exitCalibration)
+  const targets = targetResult.targets
   const tranches = targets.map((price, index) => ({
     price,
     ratio: index === targets.length - 1 ? 1 : 1 / Math.max(1, targets.length),
@@ -656,7 +750,19 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
     conservative_intrabar_order: 'stop_before_target',
     ...assessmentSnapshot(assessment),
     ...alphaReplayMetadata(input),
-    replay_diagnostics: input.replayDiagnostics ?? null,
+    replay_diagnostics: {
+      ...(input.replayDiagnostics ?? {}),
+      replay_engine_signature: S12_REPLAY_ENGINE_SIGNATURE,
+      entry_policy_signature: assessment.state,
+      exit_calibration_signature: String(input.replayDiagnostics?.calibration_artifact_id ?? 'uncalibrated'),
+      replay_cohort_signature: [
+        S12_REPLAY_ENGINE_SIGNATURE,
+        `entry=${assessment.state}`,
+        `calibration=${String(input.replayDiagnostics?.calibration_artifact_id ?? 'uncalibrated')}`,
+      ].join('|'),
+      target_price_domain_contract: S12_REPLAY_TARGET_PRICE_DOMAIN_CONTRACT,
+      targets_rejected_outside_five_session_price_domain: targetResult.rejectedOutsideFiveSessionPriceDomain,
+    },
   }
 }
 
@@ -721,10 +827,96 @@ export async function loadL0PassedSymbolsByHistoricalDate(
   })).filter((row) => row.symbol)
 }
 
+export async function loadSignedEligibleRepairSymbolsByHistoricalDate(
+  db: D1Database,
+  signalDate: string,
+): Promise<S12L0PassedSymbol[]> {
+  const { results } = await db.prepare(`
+    SELECT DISTINCT legacy.symbol
+      FROM s12_replay_trade_outcomes legacy
+     WHERE legacy.signal_date = ?
+       AND (
+         legacy.sample_eligible = 1
+         OR json_extract(legacy.detail_json, '$.lineage_validation.previous_sample_eligible') = 1
+       )
+       AND (
+         legacy.sample_eligible != 1
+         OR
+         COALESCE(json_extract(legacy.detail_json, '$.replay_diagnostics.replay_engine_signature'), '') != ?
+         OR COALESCE(json_extract(legacy.detail_json, '$.replay_diagnostics.entry_policy_signature'), '') = ''
+         OR COALESCE(json_extract(legacy.detail_json, '$.replay_diagnostics.exit_calibration_signature'), '') = ''
+         OR COALESCE(json_extract(legacy.detail_json, '$.replay_diagnostics.replay_cohort_signature'), '') = ''
+       )
+       AND NOT EXISTS (
+         SELECT 1
+           FROM s12_replay_trade_outcomes current
+          WHERE current.signal_date = legacy.signal_date
+            AND current.symbol = legacy.symbol
+            AND (
+              (
+                current.sample_eligible = 1
+                AND json_extract(current.detail_json, '$.replay_diagnostics.replay_engine_signature') = ?
+                AND COALESCE(json_extract(current.detail_json, '$.replay_diagnostics.entry_policy_signature'), '') != ''
+                AND COALESCE(json_extract(current.detail_json, '$.replay_diagnostics.exit_calibration_signature'), '') != ''
+                AND json_extract(current.detail_json, '$.replay_diagnostics.replay_cohort_signature') = (
+                  ? || '|entry=' || lower(json_extract(current.detail_json, '$.replay_diagnostics.entry_policy_signature'))
+                  || '|calibration=' || json_extract(current.detail_json, '$.replay_diagnostics.exit_calibration_signature')
+                )
+              )
+              OR (
+                current.sample_eligible = 0
+                AND json_extract(current.detail_json, '$.lineage_validation.status') = 'signed_repair_terminal_noneligible'
+                AND json_extract(current.detail_json, '$.replay_diagnostics.replay_engine_signature') = ?
+                AND date(json_extract(current.detail_json, '$.replay_diagnostics.outcome_known_date')) IS NOT NULL
+              )
+            )
+       )
+     ORDER BY legacy.symbol
+  `).bind(
+    signalDate,
+    S12_REPLAY_ENGINE_SIGNATURE,
+    S12_REPLAY_ENGINE_SIGNATURE,
+    S12_REPLAY_ENGINE_SIGNATURE,
+    S12_REPLAY_ENGINE_SIGNATURE,
+  ).all<{ symbol: string }>()
+  const pending = new Set((results ?? []).map((row) => String(row.symbol ?? '').trim()).filter(Boolean))
+  if (pending.size === 0) return []
+  const l0 = await loadL0PassedSymbolsByHistoricalDate(db, signalDate)
+  return l0.filter((row) => pending.has(row.symbol))
+}
+
+export function s12ReplayEligibleLineageBlockers(outcome: S12ReplayOutcome): string[] {
+  if (!outcome.sample_eligible) return []
+  const blockers: string[] = []
+  const diagnostics = outcome.replay_diagnostics ?? {}
+  const entryPolicy = String(diagnostics.entry_policy_signature ?? '').trim().toLowerCase()
+  const calibration = String(diagnostics.exit_calibration_signature ?? '').trim()
+  const cohort = String(diagnostics.replay_cohort_signature ?? '').trim()
+  const expectedCohort = [
+    S12_REPLAY_ENGINE_SIGNATURE,
+    `entry=${entryPolicy}`,
+    `calibration=${calibration}`,
+  ].join('|')
+  if (outcome.schema_version !== 's12-replay-trade-outcome-v3') blockers.push('schema_version')
+  if (outcome.source !== 's12_multisession_structure_replay_v3') blockers.push('source')
+  if (outcome.status !== 'executed') blockers.push('status')
+  if (!Number.isFinite(outcome.pnl_pct)) blockers.push('pnl_pct')
+  if (String(diagnostics.replay_engine_signature ?? '').trim() !== S12_REPLAY_ENGINE_SIGNATURE) blockers.push('replay_engine_signature')
+  if (!entryPolicy) blockers.push('entry_policy_signature')
+  if (!calibration) blockers.push('exit_calibration_signature')
+  if (!cohort || cohort !== expectedCohort) blockers.push('replay_cohort_signature')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(diagnostics.outcome_known_date ?? '').slice(0, 10))) blockers.push('outcome_known_date')
+  return blockers
+}
+
 export async function persistS12ReplayOutcome(
   db: D1Database,
   outcome: S12ReplayOutcome,
 ): Promise<void> {
+  const lineageBlockers = s12ReplayEligibleLineageBlockers(outcome)
+  if (lineageBlockers.length > 0) {
+    throw new Error(`s12_replay_eligible_lineage_invalid:${outcome.symbol}:${outcome.signal_date}:${lineageBlockers.join('|')}`)
+  }
   const rawSetupId = outcome.setup_id ?? `${outcome.symbol}:${outcome.trade_date}:${outcome.status_reason}`
   const setupId = `${outcome.signal_date}:${rawSetupId}`
   await db.prepare(`
@@ -788,6 +980,14 @@ export async function runS12HistoricalReplayForDate(
   signalDate: string,
   options: S12HistoricalReplayRunOptions = {},
 ): Promise<S12HistoricalReplayRunSummary> {
+  const leaseRunId = `s12-replay:${signalDate}:${crypto.randomUUID()}`
+  const leaseAcquired = options.loadBars
+    ? false
+    : await acquireS12ResearchLease(env.DB, leaseRunId, signalDate)
+  if (!options.loadBars && !leaseAcquired) {
+    throw new Error(`s12_research_lease_busy:${signalDate}`)
+  }
+  try {
   const l0 = options.symbols ?? await loadL0PassedSymbolsByHistoricalDate(env.DB, signalDate)
   const requestedLimit = options.limit ?? (l0.length || 1)
   const limit = Math.max(1, Math.min(5000, Math.floor(Number(requestedLimit))))
@@ -796,9 +996,12 @@ export async function runS12HistoricalReplayForDate(
   const outcomes: S12ReplayOutcome[] = []
   const calibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(env.DB, { includeSuperseded: true }).catch(() => [])
   let persisted = 0
+  let attempted = 0
   let unresolvedExecutionDates = 0
+  let terminalDataSourceReason: string | null = null
   const executionDates = new Set<string>()
   for (const row of selected) {
+    attempted += 1
     const executionDate = await (
       options.resolveExecutionDate
         ? options.resolveExecutionDate(row.symbol, signalDate)
@@ -830,8 +1033,10 @@ export async function runS12HistoricalReplayForDate(
       }
     })
     const loaded = await loadBars(row.symbol, executionDate)
+    terminalDataSourceReason = s12ResearchTerminalDataSourceReason(loaded.diagnostics as any)
     if (loaded.horizonComplete === false) {
       unresolvedExecutionDates += 1
+      if (terminalDataSourceReason) break
       continue
     }
     const alphaContext = parseJsonRecord(row.alpha_context)
@@ -879,6 +1084,16 @@ export async function runS12HistoricalReplayForDate(
         calibration_scope: calibration?.scope ?? null,
       },
     })
+    if (options.signedEligibleRepair && !outcome.sample_eligible) {
+      outcome.lineage_validation = {
+        status: 'signed_repair_terminal_noneligible',
+        previous_sample_eligible: 1,
+        contract: 'signed_historical_eligibility_reconstruction_v1',
+        attempted_at: new Date().toISOString(),
+        replay_status: outcome.status,
+        status_reason: outcome.status_reason,
+      }
+    }
     outcomes.push(outcome)
     if (options.persist !== false) {
       await persistS12ReplayOutcome(env.DB, outcome)
@@ -891,11 +1106,15 @@ export async function runS12HistoricalReplayForDate(
     execution_dates: [...executionDates].sort(),
     unresolved_execution_dates: unresolvedExecutionDates,
     l0_symbols: l0.length,
-    attempted: selected.length,
+    attempted,
     executed: outcomes.filter((outcome) => outcome.status === 'executed').length,
     setup_only: outcomes.filter((outcome) => outcome.status === 'setup_only').length,
     skipped: outcomes.filter((outcome) => outcome.status === 'skipped').length,
     persisted,
+    terminal_data_source_reason: terminalDataSourceReason,
     outcomes,
+  }
+  } finally {
+    if (leaseAcquired) await releaseS12ResearchLease(env.DB, leaseRunId)
   }
 }

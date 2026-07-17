@@ -64,11 +64,17 @@ def _spearman(x: np.ndarray, y: np.ndarray) -> float:
     return 0.0 if not math.isfinite(value) else value
 
 
-def _load_npz_batches(bucket, *, gcs_prefix: str, batch_count: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
+def _load_npz_batches(bucket, *, gcs_prefix: str, batch_count: int) -> tuple[
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict
+]:
     all_x: list[np.ndarray] = []
     all_y: list[np.ndarray] = []
+    all_target_returns: list[np.ndarray] = []
     all_dates: list[np.ndarray] = []
     all_sectors: list[np.ndarray] = []
+    all_symbols: list[np.ndarray] = []
+    all_markets: list[np.ndarray] = []
+    all_label_known_dates: list[np.ndarray] = []
     io_report = {"prep_objects": 0, "prep_bytes": 0}
     for idx in range(max(1, int(batch_count))):
         key = f"{gcs_prefix}/prep/batch_{idx}.npz"
@@ -81,18 +87,26 @@ def _load_npz_batches(bucket, *, gcs_prefix: str, batch_count: int) -> tuple[np.
         data = np.load(io.BytesIO(raw), allow_pickle=True)
         all_x.append(np.asarray(data["X"], dtype=np.float32))
         all_y.append(np.asarray(data["y"], dtype=np.float32).reshape(-1))
+        all_target_returns.append(np.asarray(data["target_returns"] if "target_returns" in data.files else data["y"], dtype=np.float32).reshape(-1))
         all_dates.append(np.asarray(data["dates"]).astype(str).reshape(-1))
         sectors = data["sectors"] if "sectors" in data.files else np.array(["unknown"] * len(data["X"]), dtype=object)
         all_sectors.append(np.asarray(sectors).astype(str).reshape(-1))
+        all_symbols.append(np.asarray(data["symbols"] if "symbols" in data.files else [""] * len(data["X"])).astype(str).reshape(-1))
+        all_markets.append(np.asarray(data["markets"] if "markets" in data.files else ["TW"] * len(data["X"])).astype(str).reshape(-1))
+        all_label_known_dates.append(np.asarray(data["label_known_dates"] if "label_known_dates" in data.files else [""] * len(data["X"])).astype(str).reshape(-1))
     if not all_x:
         raise ValueError(f"No prep batches found at {gcs_prefix}/prep/batch_*.npz")
     x = np.concatenate(all_x, axis=0)
     y = np.concatenate(all_y, axis=0)
+    target_returns = np.concatenate(all_target_returns, axis=0)
     dates = np.concatenate(all_dates, axis=0)
     sectors = np.concatenate(all_sectors, axis=0)
-    if not (len(x) == len(y) == len(dates) == len(sectors)):
+    symbols = np.concatenate(all_symbols, axis=0)
+    markets = np.concatenate(all_markets, axis=0)
+    label_known_dates = np.concatenate(all_label_known_dates, axis=0)
+    if not (len(x) == len(y) == len(target_returns) == len(dates) == len(sectors) == len(symbols) == len(markets) == len(label_known_dates)):
         raise ValueError("GNN prep arrays are not aligned")
-    return x, y, dates, sectors, io_report
+    return x, y, target_returns, dates, sectors, symbols, markets, label_known_dates, io_report
 
 
 def _load_feature_names(bucket, *, gcs_prefix: str, n_features: int) -> list[str]:
@@ -241,6 +255,7 @@ def _evaluate(
     top_k: int,
     threshold: float,
     graph_snapshots: list[tuple[np.ndarray, np.ndarray]] | None = None,
+    include_predictions: bool = False,
 ) -> dict:
     import torch
 
@@ -249,6 +264,7 @@ def _evaluate(
     all_y: list[np.ndarray] = []
     daily_ics: list[float] = []
     fold_metrics: list[dict[str, Any]] = []
+    all_indices: list[np.ndarray] = []
     with torch.no_grad():
         snapshots = graph_snapshots
         if snapshots is None:
@@ -266,6 +282,7 @@ def _evaluate(
             pred = torch.sigmoid(model(xb, edge)).detach().cpu().numpy().reshape(-1)
             all_pred.append(pred)
             all_y.append(np.asarray(yb, dtype=np.float32).reshape(-1))
+            all_indices.append(np.asarray(idx, dtype=np.int64).reshape(-1))
             ic = _spearman(pred, yb)
             daily_ics.append(ic)
             fold_metrics.append({
@@ -278,7 +295,7 @@ def _evaluate(
             })
     pred_all = np.concatenate(all_pred) if all_pred else np.asarray([], dtype=float)
     y_all = np.concatenate(all_y) if all_y else np.asarray([], dtype=float)
-    return {
+    result = {
         "oos_ic": round(_spearman(pred_all, y_all), 6),
         "daily_ic_mean": round(float(np.mean(daily_ics)), 6) if daily_ics else 0.0,
         "daily_ic_count": len(daily_ics),
@@ -286,6 +303,10 @@ def _evaluate(
         "pred_std": round(float(np.std(pred_all)), 6) if len(pred_all) else 0.0,
         "fold_metrics": fold_metrics,
     }
+    if include_predictions:
+        result["_predictions"] = pred_all
+        result["_indices"] = np.concatenate(all_indices) if all_indices else np.asarray([], dtype=np.int64)
+    return result
 
 
 def _save_artifact(
@@ -406,10 +427,17 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         else DEFAULT_STANDARDIZATION_CLIP
     )
     promote_to_active, promotion_reason = resolve_training_promotion_intent(payload, model_name=MODEL_NAME)
+    generation_mode = str(payload.get("generation_mode") or "native").strip().lower()
+    if generation_mode == "purged_oof" and promote_to_active:
+        raise ValueError("oof_fold_artifact_cannot_be_promoted_to_production")
 
     stage_timings: dict[str, float] = {}
     stage_t0 = time.time()
-    x_raw, y, dates, sectors, io_report = _load_npz_batches(bucket, gcs_prefix=gcs_prefix, batch_count=batch_count)
+    x_raw, y, target_returns, dates, sectors, symbols, markets, label_known_dates, io_report = _load_npz_batches(
+        bucket,
+        gcs_prefix=gcs_prefix,
+        batch_count=batch_count,
+    )
     stage_timings["load_batches_s"] = round(time.time() - stage_t0, 3)
     print(
         f"[GNNTrain] loaded rows={len(y)} features={x_raw.shape[1]} "
@@ -417,11 +445,15 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         flush=True,
     )
     feature_names = _load_feature_names(bucket, gcs_prefix=gcs_prefix, n_features=x_raw.shape[1])
-    finite_mask = np.isfinite(y)
+    finite_mask = np.isfinite(y) & np.isfinite(target_returns)
     x_raw = x_raw[finite_mask]
     y = np.clip(y[finite_mask], 0.0, 1.0).astype(np.float32)
+    target_returns = target_returns[finite_mask]
     dates = dates[finite_mask]
     sectors = sectors[finite_mask]
+    symbols = symbols[finite_mask]
+    markets = markets[finite_mask]
+    label_known_dates = label_known_dates[finite_mask]
     prep_lineage = collect_prep_lineage(
         bucket,
         gcs_prefix=gcs_prefix,
@@ -441,11 +473,30 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         else {"status": "skipped"}
     )
 
-    train_idx, test_idx, split_meta = _date_split(
-        dates,
-        test_ratio=float(payload.get("test_ratio") or 0.2),
-        embargo_dates=int(payload.get("embargo_dates") or 10),
-    )
+    explicit_ranges = all(payload.get(key) for key in ("train_start", "train_end", "test_start", "test_end"))
+    if explicit_ranges:
+        from .purged_cv import purged_explicit_walk_forward_indices
+
+        train_idx, test_idx, split_meta = purged_explicit_walk_forward_indices(
+            dates,
+            train_start=str(payload["train_start"]),
+            train_end=str(payload["train_end"]),
+            test_start=str(payload["test_start"]),
+            test_end=str(payload["test_end"]),
+            label_horizon_days=int(payload.get("label_horizon_days") or 5),
+            label_known_dates=label_known_dates,
+        )
+        split_meta = {
+            **split_meta,
+            "train_range": split_meta["effective_train_range"],
+            "validation_range": split_meta["test_range"],
+        }
+    else:
+        train_idx, test_idx, split_meta = _date_split(
+            dates,
+            test_ratio=float(payload.get("test_ratio") or 0.2),
+            embargo_dates=int(payload.get("embargo_dates") or 10),
+        )
     stage_t0 = time.time()
     x, medians, scales = _robust_standardize(x_raw[train_idx], x_raw, clip_value=standardization_clip)
     stage_timings["standardize_s"] = round(time.time() - stage_t0, 3)
@@ -529,7 +580,10 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         top_k=edge_top_k,
         threshold=edge_threshold,
         graph_snapshots=test_graphs,
+        include_predictions=generation_mode == "purged_oof",
     )
+    oof_predictions = np.asarray(eval_metrics.pop("_predictions", []), dtype=float)
+    oof_indices = np.asarray(eval_metrics.pop("_indices", []), dtype=np.int64)
     recent_train_graphs = train_graphs[-min(60, len(train_graphs)):]
     train_eval = _evaluate(
         model,
@@ -571,6 +625,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "model_name": MODEL_NAME,
         "model_type": "graphsage",
         "family": "cross_stock_graph",
+        "target_semantic_version": "next-session-open-to-fifth-session-close-v2",
         "trained_at": trained_at,
         "feature_names": feature_names,
         "feature_count": len(feature_names),
@@ -640,6 +695,25 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
     }, prep_lineage)
     stage_t0 = time.time()
     saved = _save_artifact(bucket=bucket, model=model.cpu(), version=version, metadata=metadata)
+    oof_artifact = None
+    if generation_mode == "purged_oof":
+        from .oof_lineage import save_oof_prediction_artifact
+
+        oof_artifact = save_oof_prediction_artifact(
+            bucket=bucket,
+            gcs_prefix=gcs_prefix,
+            cohort_id=str(payload.get("cohort_id") or ""),
+            fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
+            model_name=MODEL_NAME,
+            artifact_version=version,
+            raw_scores=oof_predictions,
+            targets=target_returns[oof_indices],
+            dates=dates[oof_indices],
+            symbols=symbols[oof_indices],
+            markets=markets[oof_indices],
+            label_known_dates=label_known_dates[oof_indices],
+            split_metadata=split_meta,
+        )
     stage_timings["upload_s"] = round(time.time() - stage_t0, 3)
     print(
         f"[GNNTrain] artifact saved path={saved['artifact_path']} "
@@ -682,5 +756,6 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "feature_count": len(feature_names),
         "stage_timings": stage_timings,
         "pool_update": pool_update,
+        "oof_artifact": oof_artifact,
         "elapsed_s": round(time.time() - t0, 3),
     }

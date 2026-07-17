@@ -98,6 +98,28 @@ def test_build_feature_matrix_materializes_formal137_contract():
     assert df["val_bp"][-1] == 0.5
 
 
+def test_build_feature_matrix_keeps_unmatured_executable_targets_null():
+    start = date(2025, 1, 1)
+    prices = []
+    for idx in range(80):
+        close = 100 + idx
+        prices.append({
+            "date": (start + timedelta(days=idx)).isoformat(),
+            "open": close - 0.5,
+            "high": close + 1,
+            "low": close - 1,
+            "close": close,
+            "adj_close": close,
+            "volume": 1_000_000,
+        })
+
+    df = build_feature_matrix(prices, [], [], [], market_env={}, stock_meta={})
+
+    assert df["target_5d"].tail(5).null_count() == 5
+    expected = prices[-1]["close"] / prices[-5]["open"] - 1.0
+    assert np.isclose(df["target_5d"][-6], expected)
+
+
 def test_fundamentals_are_point_in_time_instead_of_latest_value_leakage():
     start = date(2025, 1, 1)
     prices = []

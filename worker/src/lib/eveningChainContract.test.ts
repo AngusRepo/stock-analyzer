@@ -8,6 +8,7 @@ function assert(condition: unknown, message: string): void {
 
 const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8'))
 const jobs = manifest.jobs as Array<{ id: string; task: string; schedule: string; query?: string }>
+const walkForward = fs.readFileSync('../ml-controller/routers/walk_forward.py', 'utf8')
 
 assert(
   jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.query === 'sync=1' && job.schedule === '0 13 * * 1-5'),
@@ -22,6 +23,19 @@ assert(
   'GCP Scheduler must run the FinLab pending watchdog after the evening-chain root',
 )
 assert(
+  jobs.some((job) => job.id === 'allocator-ev-lifecycle-watchdog' && job.task === 'allocator-ev-lifecycle-watchdog' && job.query === 'sync=1' && job.schedule === '*/10 13-17 * * 1-5'),
+  'GCP Scheduler must recover interrupted allocator EV daily lifecycle stages',
+)
+assert(
+  !jobs.some((job) => job.id === 'opb-arm-prior-refresh' || job.id === 'monthly-opb-arm-prior-refresh'),
+  'fixed-time OPB refresh must not race OOF quality/parity promotion',
+)
+assert(
+  walkForward.includes('/api/admin/trigger/opb-arm-prior-refresh') &&
+    walkForward.indexOf('promoted = True') < walkForward.indexOf('/api/admin/trigger/opb-arm-prior-refresh'),
+  'OPB priors must refresh event-driven only after OOF L4/Fusion promotion succeeds',
+)
+assert(
   !jobs.some((job) => job.task === 'source-readiness-probe' || job.id.startsWith('source-readiness-probe')),
   'GCP Scheduler must not run source-readiness-probe jobs',
 )
@@ -34,9 +48,14 @@ for (const removed of ['update', 'screener', 'pipeline', 'ml-warmup', 'adapt', '
 }
 
 const workerTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
+const gcpTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 assert(workerTasks.includes("'evening-chain'"), 'admin trigger map must expose evening-chain')
 assert(workerTasks.includes("'market-close-refresh'"), 'admin trigger map must expose market-close-refresh')
 assert(!workerTasks.includes("'source-readiness-probe'"), 'admin trigger map must not expose source-readiness-probe')
+assert(
+  gcpTasks.includes("'opb-arm-prior-refresh'") && gcpTasks.includes("'monthly-opb-arm-prior-refresh'"),
+  'admin trigger map must expose weekly and monthly OPB prior refresh tasks',
+)
 assert(
   workerTasks.includes("'post-screener-pipeline'") &&
     workerTasks.includes('enqueuePostScreenerPipelineContinuation') &&
@@ -45,6 +64,10 @@ assert(
 )
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const expectedReturnServingState = fs.readFileSync('src/lib/expectedReturnServingState.ts', 'utf8')
+assert(updateOrchestrator.includes('refreshExpectedReturnServingState'), 'daily readiness must persist canonical expected-return serving state')
+assert(expectedReturnServingState.includes("'retired_incompatible'"), 'stale promoted artifacts must be explicitly retired from serving without rewriting evidence')
+assert(expectedReturnServingState.includes("'validated_s12_only'"), 'no-owner production behavior must remain explicit and fail closed')
 const schedulerLockMigration = fs.readFileSync('migration_scheduler_locks.sql', 'utf8')
 const runBulkFetchStart = updateOrchestrator.indexOf('export async function runBulkFetch')
 const runBulkFetchEnd = updateOrchestrator.indexOf('export async function runQueueUpdate', runBulkFetchStart)
@@ -155,6 +178,7 @@ assert(
   updateOrchestrator.includes('runDailyAllocatorEvReadiness') &&
     updateOrchestrator.includes('runL4AlphaEvRefresh') &&
     updateOrchestrator.includes('runAllocatorEvFusionRefresh') &&
+    updateOrchestrator.includes('runOpbArmPriorRefresh') &&
     updateOrchestrator.indexOf('const evReadiness = await runDailyAllocatorEvReadiness') <
       updateOrchestrator.indexOf('const summary = await deps.runMLAndRiskV2'),
   'evening-chain must refresh L4/fusion model readiness before triggering pipeline',
@@ -170,10 +194,16 @@ assert(
   updateOrchestrator.includes('l4_challenger_rejected=') &&
     updateOrchestrator.includes('l4_champion_retained=') &&
     updateOrchestrator.includes('l4_unavailable=') &&
-    updateOrchestrator.includes('expected_return_action_gate=validated_s12_only') &&
-    updateOrchestrator.includes("champion.promotion_state === 'production_approved'") &&
-    updateOrchestrator.includes("championDecision === 'PASS'"),
+    updateOrchestrator.includes('refreshExpectedReturnServingState') &&
+    expectedReturnServingState.includes("artifact.promotion_state !== requiredPromotionState") &&
+    expectedReturnServingState.includes("String(artifact.validation_packet?.decision ?? '').toUpperCase() !== 'PASS'") &&
+    expectedReturnServingState.includes("action_gate: owner ? 'expected_return_owner' : 'validated_s12_only'"),
   'L4 readiness must retain a compatible champion or continue observation with BUY/allocation fail closed',
+)
+assert(
+  updateOrchestrator.includes('analysis_continues=1 execution_fail_closed=1') &&
+    updateOrchestrator.includes('snapshotComplete && snapshotSummary.skipped === 0'),
+  'missing S12 bars must remain an observable scheduler error while analysis continues under fail-closed execution gates',
 )
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')
@@ -219,12 +249,14 @@ assert(
   'FinLab callback must preserve manual force rerun through the async queue continuation',
 )
 assert(
-  callbackRoutes.includes('runPostPipelineCallbackChain'),
-  'pipeline callback must advance post-market dependent tasks instead of fixed-time Scheduler jobs',
+  callbackRoutes.includes("type: 'post_pipeline_chain'") &&
+    callbackRoutes.includes('callback:post-pipeline-enqueued:'),
+  'pipeline callback must durably queue post-market dependent tasks instead of fixed-time Scheduler jobs',
 )
 assert(
-  callbackRoutes.includes('runPostVerifyCallbackChain'),
-  'verify callback must advance IC/adapt/report/obsidian instead of fixed-time Scheduler jobs',
+  callbackRoutes.includes("type: 'post_verify_chain'") &&
+    callbackRoutes.includes('callback:post-verify-enqueued:'),
+  'verify callback must durably queue IC/adapt/report/obsidian instead of fixed-time Scheduler jobs',
 )
 
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')

@@ -80,7 +80,7 @@ def _row_version_evidence(model_name: str, version: str, generated_at: str) -> d
 
 def test_unknown_model_version_cannot_form_valid_lineage_signature():
     blockers = ensemble_lineage_blockers({
-        "semantic_version": "active8-ic-weighted-rank-v3",
+        "semantic_version": "active8-ic-weighted-rank-v4",
         "contributing_models": ["LightGBM"],
         "artifact_versions": {"LightGBM": "unknown"},
         "model_set_signature": "LightGBM@unknown",
@@ -88,6 +88,36 @@ def test_unknown_model_version_cannot_form_valid_lineage_signature():
 
     assert "artifact_version_missing:LightGBM" in blockers
     assert "model_set_signature_invalid" in blockers
+
+
+def test_ensemble_semantic_isolated_by_generation_mode():
+    versions = {"LightGBM": "lgb-v3"}
+    common = {
+        "contributing_models": ["LightGBM"],
+        "artifact_versions": versions,
+        "model_set_signature": "LightGBM@lgb-v3",
+    }
+
+    assert not ensemble_lineage_blockers({
+        **common,
+        "generation_mode": "native",
+        "semantic_version": "active8-ic-weighted-rank-v4",
+    })
+    assert not ensemble_lineage_blockers({
+        **common,
+        "generation_mode": "purged_oof",
+        "semantic_version": "active8-purged-oof-chronological-ridge-v3",
+    })
+    assert "ensemble_semantic_version_incompatible" in ensemble_lineage_blockers({
+        **common,
+        "generation_mode": "native",
+        "semantic_version": "active8-purged-oof-chronological-ridge-v2",
+    })
+    assert "ensemble_semantic_version_incompatible" in ensemble_lineage_blockers({
+        **common,
+        "generation_mode": "purged_oof",
+        "semantic_version": "active8-ic-weighted-rank-v4",
+    })
 
 
 def test_historical_row_is_recomputed_only_with_exact_asof_champion_history():
@@ -302,4 +332,24 @@ def test_delayed_rows_load_next_actual_session_once_for_all_candidates():
     assert len(calls) == 1
     assert calls[0][1] == ["2026-06-18"]
     assert {row["next_session_open_at"] for row in enriched} == {"2026-06-22T01:00:00Z"}
+    assert audit["unresolved_signal_dates"] == []
+
+
+def test_delayed_rows_accept_worker_calendar_session_without_future_close_row():
+    calls = []
+    rows = [{
+        "stock_id": 1,
+        "prediction_date": "2026-07-14",
+        "prediction_generated_at": "2026-07-14T17:08:46Z",
+    }]
+
+    enriched, audit = attach_next_session_open_evidence(
+        lambda sql, params: calls.append((sql, params)) or [],
+        rows,
+        supplied_next_session_dates={"2026-07-14": "2026-07-15"},
+    )
+
+    assert calls == []
+    assert enriched[0]["next_session_open_at"] == "2026-07-15T01:00:00Z"
+    assert audit["calendar_supplied_signal_dates"] == ["2026-07-14"]
     assert audit["unresolved_signal_dates"] == []

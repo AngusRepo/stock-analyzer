@@ -25,8 +25,28 @@ assert(
   'fundamental raw-signal loader should scan newest canonical rows first and merge latest non-null values per field',
 )
 assert(
-  block.includes("source = 'finlab.fundamental_factor_diversity'") && block.includes('AND (${nonNullPredicate})'),
-  'fundamental raw-signal loader should read FinLab canonical fundamentals with non-null field pruning',
+  block.includes("source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation')") &&
+    block.includes('AND (${nonNullPredicate})'),
+  'fundamental raw-signal loader should merge deadline financials and daily valuation with non-null field pruning',
+)
+assert(
+  block.includes('AND available_date <= ?') &&
+    block.includes('AND as_of_date <= ?') &&
+    block.includes('bind(...chunk, endDate, endDate)'),
+  'historical screener fundamentals must enforce available and materialization time at the decision date',
+)
+
+const updateOrchestrator = readFileSync(join(process.cwd(), 'src/lib/updateOrchestrator.ts'), 'utf8')
+assert(
+  updateOrchestrator.includes("source = 'finlab.daily_valuation' AND (pe IS NOT NULL OR pb IS NOT NULL)") &&
+    updateOrchestrator.includes("source = 'finlab.daily_valuation' AND pe IS NOT NULL") &&
+    updateOrchestrator.includes("source = 'finlab.daily_valuation' AND pb IS NOT NULL"),
+  'daily valuation readiness must be owned only by finlab.daily_valuation rows',
+)
+assert(
+  updateOrchestrator.includes('available_date = ? AND as_of_date <= ?') &&
+    updateOrchestrator.includes('AND f.as_of_date <= ?'),
+  'FinLab readiness and legacy mirror must not admit rows materialized after the target date',
 )
 
 for (const field of [

@@ -9,9 +9,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services import online_portfolio_bandit  # noqa: E402
+from services import online_portfolio_bandit, opb_counterfactual_prior  # noqa: E402
 from services.online_portfolio_bandit import resolve_portfolio_bandit_arms  # noqa: E402
-from services.opb_counterfactual_prior import build_opb_arm_prior_artifact  # noqa: E402
+from services.opb_counterfactual_prior import (  # noqa: E402
+    build_opb_arm_prior_artifact,
+    load_opb_counterfactual_inputs,
+)
 from routers import opb_arm_prior as opb_route  # noqa: E402
 
 
@@ -69,6 +72,27 @@ def test_counterfactual_prior_replays_every_arm_and_discount_overlapping_dates(m
     assert len(artifact["arm_priors"]) == 5
     assert {row["dates"] for row in artifact["arm_priors"]} == {20}
     assert {row["prior_samples"] for row in artifact["arm_priors"]} == {4}
+
+
+def test_counterfactual_input_loader_maps_canonical_executable_return(monkeypatch):
+    monkeypatch.setattr(
+        opb_counterfactual_prior,
+        "load_allocator_ev_fusion_training_rows",
+        lambda *_, **__: [{
+            "prediction_date": "2026-06-24",
+            "symbol": "AAA",
+            "l4_executable_return_pct": 0.025,
+        }],
+    )
+
+    rows, price_rows = load_opb_counterfactual_inputs(
+        end_date="2026-06-30",
+        query_fn=lambda *_args, **_kwargs: [{"symbol": "AAA", "price_date": "2026-06-24", "close": 100.0}],
+    )
+
+    assert rows[0]["snapshot_date"] == "2026-06-24"
+    assert rows[0]["actual_return_pct"] == pytest.approx(0.025)
+    assert price_rows[0]["symbol"] == "AAA"
 
 
 def test_prior_resolver_requires_owner_match_and_preserves_arm_knobs():

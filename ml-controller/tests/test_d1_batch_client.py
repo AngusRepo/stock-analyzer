@@ -4,6 +4,8 @@ import sys
 from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import d1_client  # noqa: E402
@@ -52,6 +54,27 @@ def test_batch_execute_prefers_worker_true_batch(monkeypatch):
     assert calls[0]["json"]["statements"][0]["sql"].startswith("UPDATE predictions")
 
 
+def test_worker_batch_preserves_explicit_zero_success(monkeypatch):
+    def fake_post(url, headers, json, timeout):
+        return _FakeResponse({
+            "ok": True,
+            "total": 1,
+            "success_count": 0,
+            "error_count": 1,
+            "changes_total": 0,
+            "first_error": "rejected",
+        })
+
+    monkeypatch.setattr(d1_client, "WORKER_URL", "https://worker.example")
+    monkeypatch.setattr(d1_client, "WORKER_AUTH", "token")
+    monkeypatch.setattr(d1_client, "httpx", SimpleNamespace(post=fake_post, RequestError=Exception))
+
+    result = d1_client._worker_batch_execute([("INSERT INTO sample VALUES (?)", [1])])
+
+    assert result["success_count"] == 0
+    assert result["error_count"] == 1
+
+
 def test_batch_execute_falls_back_to_raw_batch_when_worker_unavailable(monkeypatch):
     raw_calls: list[tuple[list[tuple[str, list]], float, int]] = []
 
@@ -80,6 +103,26 @@ def test_batch_execute_falls_back_to_raw_batch_when_worker_unavailable(monkeypat
     assert result["mode"] == "d1_raw_batch"
     assert result["success_count"] == 1
     assert raw_calls[0][0] == [("UPDATE predictions SET direction_correct=? WHERE id=?", [1, 10])]
+
+
+def test_batch_execute_does_not_bypass_worker_validation_with_raw_batch(monkeypatch):
+    monkeypatch.setattr(d1_client, "WORKER_URL", "https://worker.example")
+    monkeypatch.setattr(d1_client, "WORKER_AUTH", "token")
+    monkeypatch.setattr(
+        d1_client,
+        "_worker_batch_execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            d1_client.WorkerD1BatchValidationError("multiple SQL statements")
+        ),
+    )
+    monkeypatch.setattr(
+        d1_client,
+        "_raw_batch_execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("raw bypass must not run")),
+    )
+
+    with pytest.raises(d1_client.WorkerD1BatchValidationError, match="multiple SQL statements"):
+        d1_client.batch_execute([("UPDATE predictions SET direction_correct=? WHERE id=?", [1, 10])])
 
 
 def test_batch_execute_only_uses_rest_loop_after_raw_batch_failure(monkeypatch):

@@ -38,6 +38,13 @@ def test_build_pool_from_d1_champion_pointer_serves_production_artifact():
             "metadata_path": "universal/patchtst/metadata_vGood.json",
             "offline_gate_decision": "STRONG_PASS",
             "live_gate_status": "passed",
+            "offline_evidence_json": {
+                "registration": {
+                    "metadata": {
+                        "target_semantic_version": "next-session-open-to-fifth-session-close-v2",
+                    }
+                }
+            },
         }],
         fallback_pool=_fallback_pool(),
         required_models=("PatchTST",),
@@ -50,6 +57,7 @@ def test_build_pool_from_d1_champion_pointer_serves_production_artifact():
     assert entry["version"] == "vGood"
     assert entry["gcs_path"] == "universal/patchtst/vGood.zip"
     assert entry["rolling_ic"] == 0.12
+    assert entry["target_semantic_version"] == "next-session-open-to-fifth-session-close-v2"
 
 
 def test_build_pool_from_d1_champion_pointer_retires_archived_or_failed_artifact():
@@ -139,7 +147,7 @@ def test_model_pool_reconcile_plan_updates_patchtst_to_d1_champion():
     )
 
     assert plan["mode"] == "dry_run"
-    assert plan["apply_allowed"] is False
+    assert plan["apply_allowed"] is True
     assert plan["action_count"] == 1
     action = plan["actions"][0]
     assert action["action"] == "update_model_pool_pointer"
@@ -148,7 +156,7 @@ def test_model_pool_reconcile_plan_updates_patchtst_to_d1_champion():
     assert action["patch"]["gcs_path"] == "universal/patchtst/vGood.zip"
 
 
-def test_model_pool_reconcile_plan_blocks_archived_d1_champion():
+def test_model_pool_reconcile_plan_retires_archived_d1_champion_pointer():
     plan = resolver.build_model_pool_reconcile_plan(
         model_pool={"models": {"PatchTST": {"status": "active", "version": "vBad"}}},
         champion_pool={
@@ -163,13 +171,26 @@ def test_model_pool_reconcile_plan_blocks_archived_d1_champion():
         model_names=("PatchTST",),
     )
 
-    assert plan["action_count"] == 0
-    assert plan["blocked"] == [{
-        "model_name": "PatchTST",
-        "reason": "artifact_state_archived",
-        "section": "models",
-        "champion_version": "vBad",
-    }]
+    assert plan["apply_allowed"] is True
+    assert plan["blocked"] == []
+    assert plan["action_count"] == 1
+    assert plan["actions"][0]["action"] == "retire_invalid_model_pool_pointer"
+    assert plan["actions"][0]["patch"] == {
+        "version": "vBad",
+        "status": "retired",
+        "production_weight": 0.0,
+        "serving_owner": None,
+        "serving_artifact_id": None,
+        "serving_block_reason": "artifact_state_archived",
+    }
+
+    patched = resolver.apply_model_pool_reconcile_plan(
+        model_pool={"models": {"PatchTST": {"status": "active", "version": "vBad"}}},
+        plan=plan,
+    )
+    assert patched["models"]["PatchTST"]["status"] == "retired"
+    assert patched["models"]["PatchTST"]["production_weight"] == 0.0
+    assert patched["models"]["PatchTST"]["serving_block_reason"] == "artifact_state_archived"
 
 
 def test_apply_model_pool_reconcile_plan_updates_stale_compat_artifact_id():

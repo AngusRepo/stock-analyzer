@@ -4,6 +4,11 @@ import math
 
 from services.active_model_policy import ACTIVE_ALPHA_MODELS
 from services.ev_lineage_contract import build_model_set_signature, is_known_artifact_version
+from services.active8_score_semantics import (
+    MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
+    MODEL_SCORE_SEMANTIC_VERSION,
+    MODEL_TARGET_SEMANTIC_VERSION,
+)
 
 
 _SRC_KEY_MODEL = (
@@ -15,7 +20,7 @@ _FORMAL_ALPHA_MODELS = ACTIVE_ALPHA_MODELS
 _DIRECT_ALPHA_BLOCKED_MODELS = {"TimesFM"}
 _MODEL_STATUS_ALLOWED = {"active", "degraded", "challenger", "retired"}
 ENSEMBLE_V2_SCHEMA_VERSION = "ensemble-v2-payload-v3"
-ENSEMBLE_V2_SEMANTIC_VERSION = "active8-ic-weighted-rank-v3"
+ENSEMBLE_V2_SEMANTIC_VERSION = "active8-ic-weighted-rank-v4"
 
 
 def _ensemble_lineage_fields(
@@ -70,12 +75,6 @@ def _formal_model_scores(pred: dict) -> dict[str, float]:
         rank = _finite_rank(rank_scores.get(model_name))
         if rank is not None:
             scores[model_name] = rank
-    for source_key, model_name in _SRC_KEY_MODEL:
-        signal = pred.get(source_key) if isinstance(pred.get(source_key), dict) else {}
-        raw_forecast = _finite_number(signal.get("forecast_pct"))
-        if raw_forecast is None:
-            continue
-        scores[model_name] = _ts_to_rank(raw_forecast)
     return scores
 
 
@@ -83,21 +82,29 @@ def build_formal_model_input_contract(pred: dict | None) -> dict:
     """Describe whether one symbol has a usable output from every Active-8 model."""
     prediction = pred if isinstance(pred, dict) else {}
     scores = _formal_model_scores(prediction)
+    lineage = prediction.get("model_score_lineage") if isinstance(prediction.get("model_score_lineage"), dict) else {}
     available = [name for name in ACTIVE_ALPHA_MODELS if name in scores]
     missing = [name for name in ACTIVE_ALPHA_MODELS if name not in scores]
+    lineage_blockers: list[str] = []
+    if lineage.get("schema_version") != MODEL_SCORE_LINEAGE_SCHEMA_VERSION:
+        lineage_blockers.append("score_lineage_schema_mismatch")
+    if lineage.get("semantic_version") != MODEL_SCORE_SEMANTIC_VERSION:
+        lineage_blockers.append("score_semantic_mismatch")
+    if lineage.get("target_semantic_version") != MODEL_TARGET_SEMANTIC_VERSION:
+        lineage_blockers.append("target_semantic_mismatch")
+    if lineage.get("complete") is not True:
+        lineage_blockers.extend(str(value) for value in (lineage.get("blockers") or []))
     return {
-        "schema_version": "formal-layer3-active8-input-contract-v1",
+        "schema_version": "formal-layer3-active8-input-contract-v2",
         "required_models": list(ACTIVE_ALPHA_MODELS),
         "available_models": available,
         "missing_models": missing,
-        "complete": not missing,
+        "complete": not missing and not lineage_blockers,
         "finite_scores_required": True,
+        "score_semantic_version": lineage.get("semantic_version"),
+        "target_semantic_version": lineage.get("target_semantic_version"),
+        "lineage_blockers": list(dict.fromkeys(lineage_blockers)),
     }
-
-
-def _ts_to_rank(forecast_pct: float, scale: float = 12.0) -> float:
-    x = max(-50.0, min(50.0, forecast_pct * scale))
-    return 1.0 / (1.0 + math.exp(-x))
 
 
 def _rank_confidence(avg_rank: float) -> float:
@@ -560,6 +567,9 @@ def attach_ensemble_v2(
 ) -> None:
     formal_contract = build_formal_model_input_contract(pred)
     pred["formal_layer3_contract"] = formal_contract
+    if not formal_contract["complete"]:
+        pred["ensemble_v2_error"] = "formal_layer3_contract_incomplete"
+        return
     merged = _formal_model_scores(pred)
     if not merged:
         return

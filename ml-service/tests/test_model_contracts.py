@@ -2,6 +2,7 @@ import sys
 import types
 
 import numpy as np
+import pytest
 
 
 def test_markov_switching_accepts_ndarray_params_without_fallback(monkeypatch):
@@ -106,3 +107,26 @@ def test_degraded_model_pool_status_defaults_to_low_weight():
         model_status={"LightGBM": "degraded"},
     )
     assert weights["LightGBM"] == 0.05
+
+
+def test_single_stock_sequence_forecast_cannot_impersonate_cross_sectional_rank():
+    from app.ensemble import merge_with_time_series, time_series_to_rank
+
+    with pytest.raises(ValueError, match="same-run market cross-sectional percentile"):
+        time_series_to_rank(0.05)
+
+    merged, _weights = merge_with_time_series(
+        {"XGBoost": 0.8},
+        {"DLinear": {"forecast_pct": 0.20}},
+        ic_weights={"XGBoost": 0.1, "DLinear": 0.1},
+        model_status={"XGBoost": "active", "DLinear": "active"},
+    )
+    assert "DLinear" not in merged
+
+    merged, _weights = merge_with_time_series(
+        {"XGBoost": 0.8},
+        {"DLinear": {"forecast_pct": 0.20, "rank_score": 0.75}},
+        ic_weights={"XGBoost": 0.1, "DLinear": 0.1},
+        model_status={"XGBoost": "active", "DLinear": "active"},
+    )
+    assert merged["DLinear"] == 0.75

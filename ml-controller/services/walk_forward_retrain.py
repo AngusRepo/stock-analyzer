@@ -55,10 +55,8 @@ ML_SERVICE_URL    = os.environ.get("ML_SERVICE_URL", "")
 ML_SERVICE_SECRET = os.environ.get("ML_SERVICE_SECRET", "")
 
 MODELS_ALL = list(ACTIVE_ALPHA_MODELS)
-WALK_FORWARD_NATIVE_RETRAIN_MODELS = ("LightGBM", "XGBoost", "ExtraTrees")
-WALK_FORWARD_ARTIFACT_LIFECYCLE_MODELS = tuple(
-    model for model in MODELS_ALL if model not in WALK_FORWARD_NATIVE_RETRAIN_MODELS
-)
+WALK_FORWARD_NATIVE_RETRAIN_MODELS = tuple(MODELS_ALL)
+WALK_FORWARD_ARTIFACT_LIFECYCLE_MODELS: tuple[str, ...] = ()
 
 
 def _normalize_requested_models(models: Optional[list[str]]) -> list[str]:
@@ -77,10 +75,8 @@ def _normalize_requested_models(models: Optional[list[str]]) -> list[str]:
 def walk_forward_model_coverage(models: Optional[list[str]] = None) -> dict[str, Any]:
     """Return the active-8 walk-forward coverage contract.
 
-    Tree models have a native per-window retrain implementation today. The
-    remaining active-8 formal artifacts are governed by artifact lifecycle /
-    model-CPCV evidence and must be validated there until family-specific
-    per-window retrain adapters are wired into this route.
+    Every Active-8 family must retrain and emit immutable OOF predictions for
+    each fold. Artifact lifecycle metadata cannot substitute for fold evidence.
     """
 
     requested = _normalize_requested_models(models)
@@ -95,9 +91,9 @@ def walk_forward_model_coverage(models: Optional[list[str]] = None) -> dict[str,
         "artifact_lifecycle_required_models": artifact_required,
         "unsupported_models": unsupported,
         "coverage_mode": (
-            "active8_with_artifact_lifecycle_gaps"
-            if artifact_required or unsupported
-            else "native_walk_forward_retrain"
+            "unsupported_models_requested"
+            if unsupported
+            else "active8_purged_oof_retrain"
         ),
         "native_retrain_count": len(native),
         "artifact_lifecycle_required_count": len(artifact_required),
@@ -112,6 +108,7 @@ class WalkForwardWindowResult:
     test_range: tuple[str, str]
     hmm_result: Optional[dict] = None
     tree_result: Optional[dict] = None
+    model_results: dict[str, dict] = field(default_factory=dict)
     model_metrics: dict[str, dict] = field(default_factory=dict)
     error: Optional[str] = None
 
@@ -357,6 +354,11 @@ def build_walk_forward_train_payload(
         "label_horizon_days": label_horizon_days,
         "batch_count": batch_count,
         "skip_feature_pool": False,
+        "generation_mode": "purged_oof",
+        "fold_id": f"w{window.window_id}",
+        "prep_gcs_prefix": "universal",
+        "gcs_prefix": "universal",
+        "promote_to_active": False,
     }
 
 
@@ -369,6 +371,7 @@ async def _train_one_window(
     market_env: dict,
     models: list[str],
     batch_count: int,
+    cohort_id: str,
 ) -> WalkForwardWindowResult:
     """Execute full pipeline for one window: HMM → active tree train.
 
@@ -398,17 +401,15 @@ async def _train_one_window(
         result.error = f"hmm: {e}"
         return result
 
-    # Step 2 & 3: active-8 coverage. Tree models have native per-window retrain;
-    # non-tree active-8 artifacts remain governed by artifact lifecycle evidence.
+    # Step 2 & 3: all Active-8 families retrain inside the same purged fold.
     train_payload = build_walk_forward_train_payload(window, batch_count=batch_count)
+    train_payload.update({
+        "cohort_id": cohort_id,
+        "output_model_version": f"{cohort_id}-w{window.window_id}",
+        "register_challengers": False,
+    })
 
     coverage = walk_forward_model_coverage(models)
-    for model_name in coverage["artifact_lifecycle_required_models"]:
-        result.model_metrics[model_name] = {
-            "status": "artifact_lifecycle_required",
-            "oos_ic": None,
-            "reason": "active8_non_tree_family_requires_artifact_lifecycle_or_family_specific_walk_forward_adapter",
-        }
     for model_name in coverage["unsupported_models"]:
         result.model_metrics[model_name] = {
             "status": "unsupported",
@@ -420,6 +421,16 @@ async def _train_one_window(
     tasks = []
     if need_tree:
         tasks.append(("tree", modal_client._modal_train_wf_tree_window(dict(train_payload))))
+    family_calls = {
+        "TabM": modal_client._modal_train_tabm_universal,
+        "GNN": modal_client._modal_train_gnn_graphsage_universal,
+        "DLinear": modal_client._modal_train_dlinear_universal,
+        "PatchTST": modal_client._modal_train_patchtst_universal,
+        "iTransformer": modal_client._modal_train_itransformer_universal,
+    }
+    for model_name, call in family_calls.items():
+        if model_name in models:
+            tasks.append((model_name, call(dict(train_payload))))
 
     if tasks:
         raw_results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
@@ -428,7 +439,10 @@ async def _train_one_window(
                 logger.error(f"[WalkForward] w{window.window_id} {kind} crashed: {r}")
                 result.tree_result = {"error": f"exception: {r}"}
             else:
-                result.tree_result = r
+                if kind == "tree":
+                    result.tree_result = r
+                else:
+                    result.model_results[kind] = r
 
     # Consolidate per-model metrics
     for partial in (result.tree_result or {},):
@@ -438,10 +452,22 @@ async def _train_one_window(
             if model_info.get("skipped") or model_info.get("error"):
                 continue
             result.model_metrics[model_name] = {
+                "status": "ready" if (partial.get("oos_artifact") or {}).get("individual_artifacts") else "failed",
                 "oos_ic": model_info.get("oos_ic"),
                 "train_samples": model_info.get("train"),
                 "test_samples": model_info.get("test"),
             }
+    for model_name, partial in result.model_results.items():
+        tracking = (partial.get("ic_tracking") or {}).get(model_name) or {}
+        oof_artifact = partial.get("oof_artifact") or {}
+        result.model_metrics[model_name] = {
+            "status": "ready" if oof_artifact.get("path") else "failed",
+            "oos_ic": tracking.get("oos_ic"),
+            "test_samples": tracking.get("oos_samples"),
+            "oof_artifact": oof_artifact.get("path"),
+            "artifact_checksum": oof_artifact.get("payload_checksum"),
+            "reason": partial.get("error") if partial.get("error") else None,
+        }
 
     return result
 
@@ -521,7 +547,8 @@ async def run_walk_forward(
 
     async def _bounded(w: WalkForwardWindow):
         async with semaphore:
-            return await _train_one_window(w, market_env, models, batch_count)
+            cohort_id = f"active8-oof-{start_date}-{end_date}"
+            return await _train_one_window(w, market_env, models, batch_count, cohort_id)
 
     results = await asyncio.gather(
         *[_bounded(w) for w in windows],

@@ -775,7 +775,12 @@ def _bulk_load_accuracies(
     return real_acc, model_stats
 
 
-def _bulk_load_per_stock_misc(stock_ids: list[int], symbol_by_id: dict[int, str] | None = None) -> dict[int, dict]:
+def _bulk_load_per_stock_misc(
+    stock_ids: list[int],
+    symbol_by_id: dict[int, str] | None = None,
+    *,
+    decision_date: str,
+) -> dict[int, dict]:
     """
     Per-stock margin / shareholding / revenue / fundamentals (latest 1 row each).
     Returns: {stock_id: {margin_balance, short_ratio, retail_pct, revenue_yoy, revenue_mom, eps, roe, pe, pb, dividend_yield}}
@@ -829,19 +834,23 @@ def _bulk_load_per_stock_misc(stock_ids: list[int], symbol_by_id: dict[int, str]
         if sid in out:
             out[sid]["retail_pct"] = r.get("retail_pct")
 
-    # canonical_revenue_monthly: latest revenue_yoy/revenue_mom
+    # canonical_revenue_monthly: latest row known by the decision date.
     rev_rows: list[dict] = []
     symbols = [symbol_by_id.get(sid) for sid in stock_ids if symbol_by_id.get(sid)]
     for chunk in _d1_bind_chunks(symbols):
         placeholders = ",".join("?" * len(chunk))
         rev_rows.extend(d1_client.query(
-            f"SELECT r1.stock_id AS symbol, r1.yoy AS revenue_yoy, r1.mom AS revenue_mom, r1.revenue "
-            f"FROM canonical_revenue_monthly r1 "
-            f"INNER JOIN ("
-            f"  SELECT stock_id, MAX(revenue_month) as max_month "
-            f"  FROM canonical_revenue_monthly WHERE stock_id IN ({placeholders}) GROUP BY stock_id"
-            f") r2 ON r1.stock_id = r2.stock_id AND r1.revenue_month = r2.max_month",
-            list(chunk),
+            f"SELECT stock_id AS symbol, yoy AS revenue_yoy, mom AS revenue_mom, revenue "
+            f"FROM ("
+            f"  SELECT r.*, ROW_NUMBER() OVER ("
+            f"    PARTITION BY r.stock_id ORDER BY r.revenue_month DESC, r.as_of_date DESC"
+            f"  ) AS rn "
+            f"  FROM canonical_revenue_monthly r "
+            f"  WHERE r.stock_id IN ({placeholders}) "
+            f"    AND r.revenue_month <= substr(?, 1, 7) "
+            f"    AND r.as_of_date <= ?"
+            f") WHERE rn = 1",
+            [*chunk, decision_date, decision_date],
             timeout=60.0,
         ))
     for r in rev_rows:
@@ -851,7 +860,7 @@ def _bulk_load_per_stock_misc(stock_ids: list[int], symbol_by_id: dict[int, str]
             out[sid]["revenue_mom"] = r.get("revenue_mom")
             out[sid]["revenue"] = r.get("revenue")
 
-    # canonical_fundamental_features: latest point-in-time snapshot.
+    # canonical_fundamental_features: latest point-in-time value per field owner.
     fin_rows: list[dict] = []
     try:
         for chunk in _d1_bind_chunks(symbols):
@@ -859,27 +868,29 @@ def _bulk_load_per_stock_misc(stock_ids: list[int], symbol_by_id: dict[int, str]
             fin_rows.extend(d1_client.query(
                 f"SELECT f.stock_id AS symbol, f.eps, f.roe, f.pe, f.pb, f.dividend_yield "
                 f"FROM canonical_fundamental_features f "
-                f"INNER JOIN ("
-                f"  SELECT stock_id, MAX(available_date) as max_date "
-                f"  FROM canonical_fundamental_features "
-                f"  WHERE stock_id IN ({placeholders}) AND source = 'finlab.fundamental_factor_diversity' "
-                f"  GROUP BY stock_id"
-                f") latest ON f.stock_id = latest.stock_id AND f.available_date = latest.max_date",
-                list(chunk),
+                f"WHERE f.stock_id IN ({placeholders}) "
+                f"  AND f.available_date <= ? "
+                f"  AND f.as_of_date <= ? "
+                f"  AND f.source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation') "
+                f"ORDER BY f.stock_id, f.available_date DESC, f.period DESC",
+                [*chunk, decision_date, decision_date],
                 timeout=60.0,
             ))
     except Exception:
         fin_rows = []
+    canonical_by_stock: dict[int, dict[str, Any]] = {}
     for r in fin_rows:
         sid = r.get("stock_id")
         if sid is None and r.get("symbol") is not None:
             sid = id_by_symbol.get(str(r.get("symbol")))
-        if sid in out:
-            out[sid]["eps"] = r.get("eps")
-            out[sid]["roe"] = r.get("roe")
-            out[sid]["pe"] = r.get("pe")
-            out[sid]["pb"] = r.get("pb")
-            out[sid]["dividend_yield"] = r.get("dividend_yield")
+        if sid not in out:
+            continue
+        resolved = canonical_by_stock.setdefault(sid, {})
+        for field in ("eps", "roe", "pe", "pb", "dividend_yield"):
+            if field not in resolved and r.get(field) is not None:
+                resolved[field] = r.get(field)
+    for sid, values in canonical_by_stock.items():
+        out[sid].update(values)
 
     return out
 
@@ -1071,6 +1082,7 @@ def build_payloads(
     adaptive_params: dict,
     barrier_params: dict,
     lifecycle_weights: dict[str, float],
+    decision_date: str,
     trading_config: dict | None = None,
 ) -> list[PredictPayload]:
     """
@@ -1082,6 +1094,11 @@ def build_payloads(
     if not active_stocks:
         return []
 
+    try:
+        date.fromisoformat(decision_date)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("build_payloads requires an ISO decision_date") from exc
+
     stock_ids = [s["id"] for s in active_stocks]
     symbols = [s["symbol"] for s in active_stocks]
     logger.info(f"[payload_builder] Building payloads for {len(stock_ids)} active stocks")
@@ -1092,7 +1109,11 @@ def build_payloads(
     chips_by_sym = _bulk_load_chips(symbols)
     sentiment_by_id = _bulk_load_sentiment(stock_ids)
     real_acc_by_id, model_stats_by_id = _bulk_load_accuracies(stock_ids)
-    misc_by_id = _bulk_load_per_stock_misc(stock_ids, {int(s["id"]): str(s["symbol"]) for s in active_stocks})
+    misc_by_id = _bulk_load_per_stock_misc(
+        stock_ids,
+        {int(s["id"]): str(s["symbol"]) for s in active_stocks},
+        decision_date=decision_date,
+    )
 
     # ?? Stock meta: sector encoding + cross-sectional features ??????????????
     # Sector tags

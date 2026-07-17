@@ -18,7 +18,8 @@ assert(helper.includes('ON CONFLICT(trade_date, symbol, source) DO UPDATE SET'),
 assert(entryTasks.includes("source: 's12_intraday_structure'"), 'entry sidecar must persist S12 structure snapshots')
 assert(exitTasks.includes("source: 's12_holding_defense'"), 'holding defense must persist S12 structure snapshots')
 assert(candidateProducer.includes("sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected'"), 'candidate snapshot producer must use L1.5 production slate')
-assert(candidateProducer.includes("source: 's12_candidate_snapshot'"), 'candidate snapshot producer must persist a distinct source')
+assert(candidateProducer.includes("options.source ?? 's12_candidate_snapshot'"), 'candidate snapshot producer must default to the native distinct source')
+assert(candidateProducer.includes("'s12_candidate_snapshot_reconstruction'"), 'historical reconstruction must preserve a distinct source')
 assert(candidateProducer.includes('S12_PREPIPELINE_SNAPSHOT_LIMIT'), 'candidate snapshot producer must expose a bounded pre-pipeline limit')
 assert(updateOrchestrator.includes("await import('./s12CandidateStructureSnapshots')"), 'event-driven chain must load the S12 snapshot producer before pipeline')
 assert(
@@ -92,9 +93,11 @@ async function runBehaviorTests(): Promise<void> {
   assert.equal(queries[0].binds[1], 160)
 
   let writeCount = 0
+  let writeSql = ''
   const fakeEnv = {
     DB: {
-      prepare() {
+      prepare(sql: string) {
+        writeSql = sql
         return {
           bind() {
             return {
@@ -108,21 +111,23 @@ async function runBehaviorTests(): Promise<void> {
       },
     },
   } as any
-  await assert.rejects(
-    runS12CandidateStructureSnapshots(fakeEnv, '2026-07-07', {
-      symbols,
-      loadBars: async () => ({
-        bars: [],
-        fallback15mBars: [],
-        fallback1hBars: [],
-        fallback4hBars: [],
-        diagnostics: {},
-      } as any),
-    }),
-    /s12_candidate_snapshot_source_unavailable:missing_intraday_bars=1/,
-    'selected candidates without usable intraday bars must fail closed',
-  )
-  assert.equal(writeCount, 0)
+  const summary = await runS12CandidateStructureSnapshots(fakeEnv, '2026-07-07', {
+    symbols,
+    loadBars: async () => ({
+      bars: [],
+      fallback15mBars: [],
+      fallback1hBars: [],
+      fallback4hBars: [],
+      diagnostics: {},
+    } as any),
+  })
+  assert.equal(summary.persisted, 1)
+  assert.equal(summary.ready, 0)
+  assert.equal(summary.skipped, 1)
+  assert.equal(summary.errors, 0)
+  assert.equal(writeCount, 1)
+  assert.match(writeSql, /state, ready, invalidated/)
+  assert.match(writeSql, /'data_unavailable', 0, 0/)
 }
 
 void runBehaviorTests().catch((error) => {

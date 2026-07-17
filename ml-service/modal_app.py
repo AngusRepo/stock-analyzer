@@ -483,7 +483,7 @@ def retrain_orchestrator(payload: dict) -> dict:
             and len(row.get("dates") or []) == len(row.get("close") or [])
         ),
         "min_len": training_policy.sequence_min_length(payload),
-        "contract": "sequence_records_v2",
+        "contract": "sequence_records_v3",
         "source_gcs_prefix": sequence_gcs_prefix,
         "batch_count": sequence_batch_count,
     }
@@ -1739,7 +1739,7 @@ def train_wf_tree_window(payload: dict) -> dict:
     _setup_env()
     from app.use_cases import train_universal_from_gcs as _train, UniversalTrainRequest
     try:
-        gcs_prefix = f"walk_forward/w{payload['window_id']}"
+        gcs_prefix = str(payload.get("prep_gcs_prefix") or "universal").strip().rstrip("/")
         # 2026-04-19 N2: default to per-window pool path; orchestrator now writes
         # {gcs_prefix}/feature_pool.json before calling this fn.
         feature_pool_path = payload.get("feature_pool_path") or f"{gcs_prefix}/feature_pool.json"
@@ -1755,6 +1755,10 @@ def train_wf_tree_window(payload: dict) -> dict:
             window_id=payload["window_id"],
             skip_weekly_backup=True,
             feature_pool_path=feature_pool_path,
+            generation_mode=str(payload.get("generation_mode") or "native"),
+            cohort_id=payload.get("cohort_id"),
+            fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
+            output_model_version=payload.get("output_model_version"),
         )
         return _train(req)
     except Exception as e:
@@ -1827,9 +1831,8 @@ def train_wf_hmm_window(payload: dict) -> dict:
 def walk_forward_orchestrator(payload: dict) -> dict:
     """Walk-forward orchestrator for active-8 coverage across windows.
 
-    Tree active models run native per-window retrain. Non-tree active-8 models
-    are reported as artifact-lifecycle-required until family-specific
-    walk-forward adapters are wired into this route.
+    Every Active-8 model is retrained inside each purged fold and must publish
+    immutable OOF predictions with symbol/date/label-known lineage.
 
     payload:
         windows: list of {window_id, train_start, train_end, test_start, test_end}
@@ -1854,8 +1857,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     market_env = payload["market_env"]
     batch_count = payload.get("batch_count", 5)
     active8_models = list(ALPHA_PREDICTION_MODELS)
-    native_retrain_models = ["LightGBM", "XGBoost", "ExtraTrees"]
-    artifact_lifecycle_models = [m for m in active8_models if m not in native_retrain_models]
+    native_retrain_models = list(active8_models)
     raw_models = payload.get("models") or active8_models
     models = []
     for model in raw_models:
@@ -1867,17 +1869,68 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         "requested_models": models,
         "active8_models": active8_models,
         "native_retrain_models": [m for m in models if m in native_retrain_models],
-        "artifact_lifecycle_required_models": [m for m in models if m in artifact_lifecycle_models],
+        "artifact_lifecycle_required_models": [],
         "unsupported_models": [m for m in models if m not in active8_models],
         "coverage_mode": (
-            "active8_with_artifact_lifecycle_gaps"
-            if any(m in artifact_lifecycle_models or m not in active8_models for m in models)
-            else "native_walk_forward_retrain"
+            "unsupported_models_requested"
+            if any(m not in active8_models for m in models)
+            else "active8_purged_oof_retrain"
         ),
     }
     concurrent = int(payload.get("concurrent_windows", 2))
     start_date = payload["start_date"]
     end_date = payload["end_date"]
+    generation_mode = "purged_oof"
+    cohort_id = str(payload.get("cohort_id") or f"active8-oof-{start_date}-{end_date}")
+
+    # Fail before spawning expensive fold jobs when the shared prep artifact is
+    # from the legacy era and cannot identify executable OOF outcomes.
+    try:
+        import io as _io
+        import numpy as _np
+        from google.cloud import storage as _storage
+
+        prep_prefix = str(payload.get("prep_gcs_prefix") or "universal").strip().rstrip("/")
+        prep_bucket = _storage.Client().bucket(_get_gcs_bucket_name())
+        prep_blob = prep_bucket.blob(f"{prep_prefix}/prep/batch_0.npz")
+        if not prep_blob.exists():
+            raise ValueError("active8_oof_prep_batch_missing")
+        prep_npz = _np.load(_io.BytesIO(prep_blob.download_as_bytes()), allow_pickle=True)
+        required_arrays = {
+            "X", "y", "target_returns", "dates", "symbols", "markets",
+            "label_known_dates",
+        }
+        missing_arrays = sorted(required_arrays - set(prep_npz.files))
+        if missing_arrays:
+            raise ValueError(f"active8_oof_prep_lineage_missing:{','.join(missing_arrays)}")
+        sequence_prefix = str(
+            payload.get("sequence_gcs_prefix") or "universal/sequence_long/latest"
+        ).strip().rstrip("/")
+        sequence_blob = prep_bucket.blob(f"{sequence_prefix}/prep/batch_0.npz")
+        if not sequence_blob.exists():
+            raise ValueError("active8_oof_sequence_v3_prep_batch_missing")
+        sequence_npz = _np.load(
+            _io.BytesIO(sequence_blob.download_as_bytes()), allow_pickle=True
+        )
+        if "sequence_records" not in sequence_npz.files:
+            raise ValueError("active8_oof_sequence_v3_records_missing")
+        records = list(sequence_npz["sequence_records"])
+        valid_sequence_records = sum(
+            1 for raw in records
+            if isinstance(raw, dict)
+            and raw.get("symbol")
+            and len(raw.get("dates") or []) == len(raw.get("open") or []) == len(raw.get("close") or [])
+            and raw.get("target_semantic_version") == "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+        )
+        if valid_sequence_records < 10:
+            raise ValueError("active8_oof_sequence_records_v3_insufficient")
+    except Exception as exc:
+        return {
+            "status": "failed_preflight",
+            "error": str(exc),
+            "cohort_id": cohort_id,
+            "required_action": "rebuild_universal_prep_with_active8_oof_lineage_v1",
+        }
 
     def _filter_env(end_str: str) -> dict:
         hist = market_env.get("history", {})
@@ -1894,7 +1947,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     async def _run_one(window: dict) -> dict:
         """Run feature selection, HMM, and tree training for one window."""
         wid = window["window_id"]
-        gcs_prefix = f"walk_forward/w{wid}"
+        gcs_prefix = f"walk_forward/oof_cohorts/{cohort_id}/w{wid}"
         result = {
             "window_id": wid,
             "train_range": [window["train_start"], window["train_end"]],
@@ -1903,12 +1956,6 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "model_coverage": model_coverage,
         }
 
-        for model_name in model_coverage["artifact_lifecycle_required_models"]:
-            result["model_metrics"][model_name] = {
-                "status": "artifact_lifecycle_required",
-                "oos_ic": None,
-                "reason": "active8_non_tree_family_requires_artifact_lifecycle_or_family_specific_walk_forward_adapter",
-            }
         for model_name in model_coverage["unsupported_models"]:
             result["model_metrics"][model_name] = {
                 "status": "unsupported",
@@ -1924,6 +1971,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 "window_id": wid,
                 "train_end_date": window["train_end"],
                 "gcs_prefix": gcs_prefix,
+                "prep_gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal"),
                 "max_rounds": fs_max_rounds,
                 "force_refresh": fs_force_refresh,
             }
@@ -1966,9 +2014,22 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "test_end": window["test_end"],
             "batch_count": batch_count,
             "skip_feature_pool": False,
+            "generation_mode": generation_mode,
+            "cohort_id": cohort_id,
+            "fold_id": f"w{wid}",
+            "output_model_version": f"{cohort_id}-w{wid}",
+            "version": f"{cohort_id}-w{wid}",
+            "prep_gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal"),
+            "gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal"),
+            "sequence_gcs_prefix": str(payload.get("sequence_gcs_prefix") or payload.get("prep_gcs_prefix") or "universal"),
+            "sequence_batch_count": int(payload.get("sequence_batch_count") or 5),
+            "validation_folds": int(payload.get("sequence_validation_folds") or 8),
+            "promote_to_active": False,
+            "register_challengers": False,
         }
 
-        need_tree = bool(model_coverage["native_retrain_models"])
+        requested = set(models)
+        need_tree = bool(requested.intersection({"LightGBM", "XGBoost", "ExtraTrees"}))
         tasks = []
         if need_tree:
             if fs_ok:
@@ -1983,6 +2044,16 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                     "reason": "per-window feature selection failed or produced no valid pool",
                     "fs_result": result.get("fs_result"),
                 }
+        family_tasks = (
+            ("TabM", train_tabm_universal),
+            ("GNN", train_gnn_graphsage_universal),
+            ("DLinear", train_dlinear_universal),
+            ("PatchTST", train_patchtst_universal),
+            ("iTransformer", train_itransformer_universal),
+        )
+        for model_name, fn in family_tasks:
+            if model_name in requested:
+                tasks.append((model_name, fn.remote.aio(dict(train_payload))))
         if tasks:
             raw = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
             for (kind, _), r in zip(tasks, raw):
@@ -1996,14 +2067,50 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         for partial in [result.get("tree_result") or {}]:
             if not partial or partial.get("error"):
                 continue
+            tree_oof = {
+                row.get("model_name"): row
+                for row in ((partial.get("oos_artifact") or {}).get("individual_artifacts") or [])
+            }
             for model_name, m in (partial.get("results") or {}).items():
                 if m.get("skipped") or m.get("error"):
                     continue
+                artifact = tree_oof.get(model_name) or {}
                 result["model_metrics"][model_name] = {
+                    "status": "ready" if artifact.get("path") else "failed",
                     "oos_ic": m.get("oos_ic"),
                     "train_samples": m.get("train"),
                     "test_samples": m.get("test"),
+                    "oof_artifact": artifact.get("path"),
+                    "artifact_checksum": artifact.get("payload_checksum"),
+                    "reason": None if artifact.get("path") else "oof_artifact_missing",
                 }
+        for model_name, _fn in family_tasks:
+            if model_name not in requested:
+                continue
+            partial = result.get(f"{model_name}_result") or {}
+            tracking = (partial.get("ic_tracking") or {}).get(model_name) or {}
+            oof_artifact = partial.get("oof_artifact") or {}
+            if partial.get("error") or not oof_artifact.get("path"):
+                result["model_metrics"][model_name] = {
+                    "status": "failed",
+                    "oos_ic": tracking.get("oos_ic"),
+                    "reason": partial.get("error") or "oof_artifact_missing",
+                }
+                continue
+            result["model_metrics"][model_name] = {
+                "status": "ready",
+                "oos_ic": tracking.get("oos_ic"),
+                "test_samples": tracking.get("oos_samples"),
+                "oof_artifact": oof_artifact.get("path"),
+                "artifact_checksum": oof_artifact.get("payload_checksum"),
+            }
+        missing_models = [
+            model_name for model_name in models
+            if (result["model_metrics"].get(model_name) or {}).get("status") != "ready"
+            or model_name not in result["model_metrics"]
+        ]
+        result["oof_fold_ready"] = not missing_models
+        result["missing_oof_models"] = missing_models
         return result
 
     async def _orchestrate() -> list[dict]:
@@ -2080,7 +2187,19 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         "model_coverage": model_coverage,
         "fs_stats": fs_stats,
         "elapsed_s": round(time.time() - t0, 1),
+        "cohort_id": cohort_id,
+        "generation_mode": generation_mode,
+        "oof_ready_folds": sum(1 for row in all_results if row.get("oof_fold_ready")),
+        "oof_failed_folds": [
+            row.get("window_id") for row in all_results if not row.get("oof_fold_ready")
+        ],
     }
+    aggregate["oof_cohort_ready"] = (
+        aggregate["oof_ready_folds"] == len(all_results)
+        and not aggregate["oof_failed_folds"]
+        and not model_coverage["unsupported_models"]
+        and list(models) == list(active8_models)
+    )
 
     # Persist to GCS
     try:
@@ -2089,16 +2208,34 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         if not bucket_name:
             raise RuntimeError("GCS bucket not configured")
         bucket = storage.Client().bucket(bucket_name)
-        gcs_path = f"walk_forward/runs/{start_date}_{end_date}.json"
+        import hashlib
+
+        manifest = {
+            "schema_version": "active8-oof-cohort-manifest-v1",
+            "cohort_id": cohort_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            "train_window_days": payload.get("train_window_days", 60),
+            "test_window_days": payload.get("test_window_days", 30),
+            "generation_mode": generation_mode,
+            "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+            "score_semantic_version": "same-market-same-date-percentile-rank-v1",
+            "model_set": models,
+            "prep_gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal"),
+            "sequence_gcs_prefix": str(
+                payload.get("sequence_gcs_prefix") or "universal/sequence_long/latest"
+            ),
+            "sequence_batch_count": int(payload.get("sequence_batch_count") or 5),
+            "model_set_signature": hashlib.sha256("|".join(models).encode("utf-8")).hexdigest(),
+            "windows": all_results,
+            "aggregate": aggregate,
+            "status": "ready" if aggregate["oof_cohort_ready"] else "failed",
+        }
+        manifest_bytes = json.dumps(manifest, sort_keys=True, default=str).encode("utf-8")
+        manifest["manifest_checksum"] = hashlib.sha256(manifest_bytes).hexdigest()
+        gcs_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
         bucket.blob(gcs_path).upload_from_string(
-            json.dumps({
-                "start_date": start_date,
-                "end_date": end_date,
-                "train_window_days": payload.get("train_window_days", 60),
-                "test_window_days": payload.get("test_window_days", 30),
-                "windows": all_results,
-                "aggregate": aggregate,
-            }, indent=2, default=str),
+            json.dumps(manifest, indent=2, default=str),
             content_type="application/json",
         )
         print(f"[WF-Orchestrator] Persisted gs://{bucket.name}/{gcs_path}")
@@ -2238,6 +2375,29 @@ def build_finlab_long_sequence_prep(payload: dict) -> dict:
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "finlab_long_sequence_prep"}
 
 
+@app.function(
+    cpu=4,
+    memory=8192,
+    timeout=1800,
+    scaledown_window=60,
+    max_containers=1,
+)
+def rebuild_canonical_adjusted_prep(payload: dict) -> dict:
+    """Rewrite immutable Active-8 labels/ranks from canonical adjusted FinLab bars."""
+    _setup_env()
+    from app.canonical_adjusted_prep import rebuild_canonical_adjusted_prep as _rebuild
+
+    try:
+        return _rebuild(payload or {})
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "trace": traceback.format_exc()[:4000],
+            "type": "canonical_adjusted_prep",
+        }
+
+
 # 2026-04-19 ML_POOL Stage 0.2: DLinear universal training (one-shot)
 @app.function(
     gpu="L4",
@@ -2264,6 +2424,24 @@ def train_dlinear_universal(payload: dict) -> dict:
         import torch
         device = payload.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
         sequence_records = payload.get("sequence_records") or []
+        if not sequence_records:
+            from app.research_benchmarks.common import load_sequence_dataset
+
+            sequence_records = load_sequence_dataset(payload or {}).records
+        if str(payload.get("generation_mode") or "native").strip().lower() == "purged_oof":
+            import json
+            from app.model_store import _get_bucket
+
+            prep_prefix = str(payload.get("gcs_prefix") or "").strip().rstrip("/")
+            market_blob = _get_bucket().blob(f"{prep_prefix}/prep/symbol_market.json")
+            if not market_blob.exists():
+                raise ValueError("dlinear_oof_canonical_market_map_missing")
+            market_by_symbol = json.loads(market_blob.download_as_text())
+            sequence_records = [
+                {**record, "market_type": market_by_symbol.get(str(record.get("symbol") or ""))}
+                for record in sequence_records
+                if market_by_symbol.get(str(record.get("symbol") or "")) in {"LISTED", "OTC", "EMERGING"}
+            ]
         print(
             f"[DLinearTrain] starting series={len(sequence_records)} "
             f"seq_len={payload.get('seq_len', 512)} device={device}"
@@ -2280,13 +2458,43 @@ def train_dlinear_universal(payload: dict) -> dict:
             val_ratio=payload.get("val_ratio", 0.15),
             device=device,
             model_cpcv_policy=payload.get("model_cpcv_policy") or None,
+            train_start=payload.get("train_start"),
+            train_end=payload.get("train_end"),
+            test_start=payload.get("test_start"),
+            test_end=payload.get("test_end"),
         )
         if result.get("error"):
             return result
-        version = payload.get("version", "v1")
+        version = payload.get("output_model_version") or payload.get("version", "v1")
         result["metadata"]["version"] = version
         result["metadata"]["model_pool_version"] = version
         saved = save_to_gcs(result["_state_dict_torch"], result["metadata"], version=version)
+        oof_artifact = None
+        if str(payload.get("generation_mode") or "native").strip().lower() == "purged_oof":
+            import numpy as np
+            from app.model_store import _get_bucket
+            from app.oof_lineage import save_oof_prediction_artifact
+
+            oof = result.get("oof_predictions") or {}
+            oof_artifact = save_oof_prediction_artifact(
+                bucket=_get_bucket(),
+                gcs_prefix=str(payload.get("gcs_prefix") or "universal"),
+                cohort_id=str(payload.get("cohort_id") or ""),
+                fold_id=str(payload.get("fold_id") or payload.get("window_id") or ""),
+                model_name="DLinear",
+                artifact_version=str(version),
+                raw_scores=np.asarray(oof.get("raw_scores") or [], dtype=float),
+                targets=np.asarray(oof.get("targets") or [], dtype=float),
+                dates=np.asarray(oof.get("dates") or [], dtype=object),
+                symbols=np.asarray(oof.get("symbols") or [], dtype=object),
+                markets=np.asarray(oof.get("markets") or [], dtype=object),
+                label_known_dates=np.asarray(oof.get("label_known_dates") or [], dtype=object),
+                split_metadata={
+                    "method": "explicit_signal_date_with_actual_label_purge",
+                    "train_range": [payload.get("train_start"), payload.get("train_end")],
+                    "test_range": [payload.get("test_start"), payload.get("test_end")],
+                },
+            )
         print(
             f"[DLinearTrain] done version={version} "
             f"oos_ic={result.get('ic_tracking', {}).get('DLinear', {}).get('oos_ic')}"
@@ -2298,6 +2506,7 @@ def train_dlinear_universal(payload: dict) -> dict:
             "version": version,
             "elapsed_s": result["metadata"].get("elapsed_s"),
             "type": "dlinear_universal",
+            "oof_artifact": oof_artifact,
         }
     except Exception as e:
         import traceback
@@ -2373,6 +2582,14 @@ def train_patchtst_universal(payload: dict) -> dict:
             max_prep_stale_days=payload.get("max_prep_stale_days"),
             run_date=payload.get("run_date"),
             as_of_date=payload.get("as_of_date"),
+            generation_mode=payload.get("generation_mode"),
+            cohort_id=payload.get("cohort_id"),
+            fold_id=payload.get("fold_id") or payload.get("window_id"),
+            train_start=payload.get("train_start"),
+            train_end=payload.get("train_end"),
+            test_start=payload.get("test_start"),
+            test_end=payload.get("test_end"),
+            label_horizon_days=payload.get("label_horizon_days") or 5,
         )
         if result.get("error"):
             return result
@@ -2384,6 +2601,7 @@ def train_patchtst_universal(payload: dict) -> dict:
             "elapsed_s": result.get("elapsed_s"),
             "type": result.get("type", "neuralforecast_patchtst_universal"),
             "pool_update": result.get("pool_update"),
+            "oof_artifact": result.get("oof_artifact"),
         }
     except Exception as e:
         import traceback
@@ -2613,6 +2831,7 @@ def feature_selection_per_window(payload: dict) -> dict:
     window_id = payload.get("window_id")
     train_end_date = payload["train_end_date"]
     gcs_prefix = payload["gcs_prefix"].rstrip("/")
+    prep_gcs_prefix = str(payload.get("prep_gcs_prefix") or "universal").strip().rstrip("/")
     force = bool(payload.get("force_refresh", False))
     from app.training_policy import FeatureSelectionPolicy, build_feature_selection_run_kwargs
     selection_params = FeatureSelectionPolicy.from_env().to_window_selection_params(payload)
@@ -2646,6 +2865,7 @@ def feature_selection_per_window(payload: dict) -> dict:
             **build_feature_selection_run_kwargs(selection_params),
             train_end_date=train_end_date,
             gcs_prefix=gcs_prefix,
+            prep_gcs_prefix=prep_gcs_prefix,
         )
         # Annotate for orchestrator aggregate
         result["window_id"] = window_id
@@ -2930,14 +3150,18 @@ def finlab_v4_backfill(payload: dict) -> dict:
             if isinstance(parsed, dict):
                 result.update(parsed)
                 break
-        try:
-            result["macro_context_writeback"] = _write_finlab_macro_context_to_d1()
-        except Exception as exc:
-            result["macro_context_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
-        try:
-            result["external_evidence_writeback"] = _write_external_evidence_to_d1(payload, result)
-        except Exception as exc:
-            result["external_evidence_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        if payload.get("write_d1", True):
+            try:
+                result["macro_context_writeback"] = _write_finlab_macro_context_to_d1()
+            except Exception as exc:
+                result["macro_context_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+            try:
+                result["external_evidence_writeback"] = _write_external_evidence_to_d1(payload, result)
+            except Exception as exc:
+                result["external_evidence_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        else:
+            result["macro_context_writeback"] = {"status": "skipped", "reason": "write_d1_false"}
+            result["external_evidence_writeback"] = {"status": "skipped", "reason": "write_d1_false"}
         result["continue_evening_chain"] = bool(payload.get("continue_evening_chain"))
         result["dispatch_attempt"] = dispatch_attempt
         result["start_callback"] = start_callback
@@ -2946,7 +3170,8 @@ def finlab_v4_backfill(payload: dict) -> dict:
         external_error = isinstance(result.get("external_evidence_writeback"), dict) and result["external_evidence_writeback"].get("status") == "error"
         # External evidence is supplemental to the FinLab canonical refresh; do not
         # block the evening-chain callback after canonical D1 apply succeeds.
-        status = "success" if int(exit_code or 0) == 0 and not macro_error else "error"
+        backfill_ready = str(result.get("backfill_status") or "").strip().lower() == "ready"
+        status = "success" if int(exit_code or 0) == 0 and backfill_ready and not macro_error else "error"
         summary = (
             f"FinLab V4 backfill run_id={result.get('run_id', run_id)} "
             f"status={result.get('backfill_status', 'ready')} "

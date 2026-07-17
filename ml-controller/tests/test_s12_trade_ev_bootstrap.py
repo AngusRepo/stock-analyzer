@@ -9,11 +9,23 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.s12_trade_ev_bootstrap import (  # noqa: E402
+    S12_REPLAY_ENGINE_SIGNATURE,
     S12TradeEvBootstrapProvider,
     load_s12_replay_trade_rows,
     load_s12_structure_snapshots,
 )
 from services.s12_trade_ev import extract_s12_trade_ev  # noqa: E402
+
+
+def test_s12_replay_engine_signature_matches_worker_contract():
+    contract = (
+        Path(__file__).resolve().parents[2]
+        / "worker"
+        / "src"
+        / "lib"
+        / "s12ReplayContract.ts"
+    ).read_text(encoding="utf-8")
+    assert S12_REPLAY_ENGINE_SIGNATURE in contract
 
 
 def _row(
@@ -38,6 +50,14 @@ def _row(
             "trade_expected_return_net_pct": pnl,
             "trade_expected_return_source": "s12_structural_exit_verified",
         }
+        forecast_data["s12_replay_outcome"] = {
+            "replay_engine_signature": S12_REPLAY_ENGINE_SIGNATURE,
+            "entry_policy_signature": "unknown",
+            "exit_calibration_signature": "uncalibrated",
+            "replay_cohort_signature": (
+                f"{S12_REPLAY_ENGINE_SIGNATURE}|entry=unknown|calibration=uncalibrated"
+            ),
+        }
     return {
         "symbol": symbol,
         "market": market,
@@ -50,6 +70,21 @@ def _row(
         "max_adverse_pct": min(pnl, 0.0),
         "forecast_data": json.dumps(forecast_data),
     }
+
+
+def _with_replay_state(row: dict, state: str, calibration: str = "uncalibrated") -> dict:
+    out = dict(row)
+    forecast_data = json.loads(out["forecast_data"])
+    forecast_data["s12_replay_outcome"] = {
+        "replay_engine_signature": S12_REPLAY_ENGINE_SIGNATURE,
+        "entry_policy_signature": state,
+        "exit_calibration_signature": calibration,
+        "replay_cohort_signature": (
+            f"{S12_REPLAY_ENGINE_SIGNATURE}|entry={state}|calibration={calibration}"
+        ),
+    }
+    out["forecast_data"] = json.dumps(forecast_data)
+    return out
 
 
 def test_load_s12_replay_trade_rows_enforces_strict_pre_run_date_query():
@@ -112,6 +147,14 @@ def test_load_s12_replay_trade_rows_accepts_dedicated_replay_outcomes():
                         "alpha_bucket": "breakout_vol_expansion",
                         "alpha_context": {"edge_bucket": "breakout_vol_expansion", "regime": "bull"},
                         "alpha_allocation": {"bucket": "breakout_vol_expansion"},
+                        "replay_diagnostics": {
+                            "replay_engine_signature": S12_REPLAY_ENGINE_SIGNATURE,
+                            "entry_policy_signature": "reaction_ready",
+                            "exit_calibration_signature": "uncalibrated",
+                            "replay_cohort_signature": (
+                                f"{S12_REPLAY_ENGINE_SIGNATURE}|entry=reaction_ready|calibration=uncalibrated"
+                            ),
+                        },
                     }),
                 }
             ]
@@ -128,6 +171,7 @@ def test_load_s12_replay_trade_rows_accepts_dedicated_replay_outcomes():
     assert json.loads(rows[0]["forecast_data"])["alpha_context"]["edge_bucket"] == "breakout_vol_expansion"
     assert rows[0]["trade_pnl_pct"] == pytest.approx(0.04)
     assert json.loads(rows[0]["forecast_data"])["s12_trade_ev"]["status"] == "loaded"
+    assert rows[0]["s12_replay_lineage"]["entry_policy_signature"] == "reaction_ready"
 
 
 def test_s12_trade_ev_bootstrap_retires_cold_with_dedicated_replay_min_samples():
@@ -153,6 +197,14 @@ def test_s12_trade_ev_bootstrap_retires_cold_with_dedicated_replay_min_samples()
                     "trade_expected_return_net_pct": 0.04,
                     "trade_expected_return_source": "s12_intraday_structure_replay_v1",
                 },
+                "s12_replay_outcome": {
+                    "replay_engine_signature": S12_REPLAY_ENGINE_SIGNATURE,
+                    "entry_policy_signature": "unknown",
+                    "exit_calibration_signature": "uncalibrated",
+                    "replay_cohort_signature": (
+                        f"{S12_REPLAY_ENGINE_SIGNATURE}|entry=unknown|calibration=uncalibrated"
+                    ),
+                },
             }),
         })
     provider = S12TradeEvBootstrapProvider(rows, run_date="2026-07-03", min_samples=30, roundtrip_cost_bps=0)
@@ -171,6 +223,27 @@ def test_s12_trade_ev_bootstrap_retires_cold_with_dedicated_replay_min_samples()
     assert ev["sampleCount"] == 30
     assert ev.get("cold_start") is None
     assert "replay_bootstrap" not in ev
+    assert ev["sample_replay_engine_signature"] == S12_REPLAY_ENGINE_SIGNATURE
+    assert ev["sample_replay_cohort_signature"].endswith("entry=unknown|calibration=uncalibrated")
+    assert ev["sample_lineage_contract"] == "persisted_engine_entry_calibration_cohort_required_v1"
+
+
+def test_s12_trade_ev_bootstrap_rejects_missing_persisted_replay_cohort_lineage():
+    row = _row("8091", "2026-07-01", 0.02)
+    forecast_data = json.loads(row["forecast_data"])
+    del forecast_data["s12_replay_outcome"]["replay_cohort_signature"]
+    row["forecast_data"] = json.dumps(forecast_data)
+
+    provider = S12TradeEvBootstrapProvider(
+        [row] * 30,
+        run_date="2026-07-03",
+        min_samples=30,
+        min_sample_dates=1,
+        roundtrip_cost_bps=0,
+    )
+
+    assert provider.summary()["comparable_sample_rows"] == 0
+    assert provider.summary()["excluded_incompatible_lineage_rows"] == 30
 
 
 def test_s12_trade_ev_bootstrap_prefers_market_bucket_before_global():
@@ -260,6 +333,80 @@ def test_s12_trade_ev_bootstrap_requires_date_breadth_before_peer_replay_takes_o
     assert ev["replay_bootstrap"]["trade_expected_return_source"].endswith("_insufficient_sample_dates")
 
 
+def test_s12_trade_ev_bootstrap_does_not_apply_limited_takeover_peer_ev_to_reaction_ready_candidate():
+    rows = [
+        _with_replay_state(
+            _row(f"{2000 + i}", f"2026-06-{(i % 10) + 1:02d}", -0.02),
+            "limited_takeover_ready",
+        )
+        for i in range(40)
+    ]
+    provider = S12TradeEvBootstrapProvider(
+        rows,
+        run_date="2026-07-03",
+        min_samples=30,
+        min_sample_dates=8,
+        roundtrip_cost_bps=0,
+    )
+
+    ev = provider.build_for_row({
+        "symbol": "8091",
+        "current_price": 100,
+        "s12_structure_stop": 96,
+        "s12_target1": 106,
+        "s12_target2": 112,
+        "market_segment": "LISTED",
+        "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
+        "score": 72,
+        "s12_entry_context": {
+            "state": "reaction_ready",
+            "ready": True,
+            "detail_available": True,
+            "htf_hard_block": False,
+        },
+    })
+
+    assert ev["source"] == "s12_structural_cold_start_ev"
+    assert ev["trade_expected_return_net_pct"] > 0
+    assert ev["replay_bootstrap"]["sampleCount"] == 0
+    assert "entry=reaction_ready" in ev["replay_bootstrap"]["candidate_replay_cohort_signature"]
+
+
+def test_s12_trade_ev_bootstrap_applies_peer_ev_only_to_matching_entry_policy_cohort():
+    rows = [
+        _with_replay_state(
+            _row(f"{2000 + i}", f"2026-06-{(i % 10) + 1:02d}", -0.02),
+            "limited_takeover_ready",
+        )
+        for i in range(40)
+    ]
+    provider = S12TradeEvBootstrapProvider(
+        rows,
+        run_date="2026-07-03",
+        min_samples=30,
+        min_sample_dates=8,
+        roundtrip_cost_bps=0,
+    )
+
+    ev = provider.build_for_row({
+        "symbol": "8091",
+        "current_price": 100,
+        "s12_structure_stop": 96,
+        "market_segment": "LISTED",
+        "alpha_context": {"edge_bucket": "breakout"},
+        "s12_entry_context": {
+            "state": "limited_takeover_ready",
+            "ready": True,
+            "detail_available": True,
+            "htf_hard_block": False,
+        },
+    })
+
+    assert ev["source"] == "s12_replay_trade_outcomes:market_segment_alpha_bucket"
+    assert ev["trade_expected_return_net_pct"] == pytest.approx(-0.02)
+    assert "entry=limited_takeover_ready" in ev["candidate_replay_cohort_signature"]
+
+
 def test_s12_trade_ev_bootstrap_filters_same_day_rows():
     provider = S12TradeEvBootstrapProvider(
         [
@@ -302,6 +449,39 @@ def test_s12_trade_ev_bootstrap_excludes_legacy_non_s12_outcomes():
     assert ev["s12_structural_targets"]["target2_source"] == "s12_structure_exit_plan.r_multiple_fallback_2r"
     assert ev["replay_bootstrap"]["sampleCount"] == 4
     assert ev["replay_bootstrap"]["trade_expected_return_source"].endswith("_insufficient_samples")
+
+
+def test_s12_trade_ev_bootstrap_excludes_unsigned_replay_lineage_from_learning():
+    unsigned_rows = []
+    for i in range(40):
+        row = _row(f"{3000 + i}", f"2026-06-{(i % 10) + 1:02d}", 0.05)
+        forecast_data = json.loads(row["forecast_data"])
+        forecast_data.pop("s12_replay_outcome", None)
+        row["forecast_data"] = json.dumps(forecast_data)
+        unsigned_rows.append(row)
+    provider = S12TradeEvBootstrapProvider(
+        unsigned_rows,
+        run_date="2026-07-03",
+        min_samples=30,
+        min_sample_dates=8,
+        roundtrip_cost_bps=0,
+    )
+
+    ev = provider.build_for_row({
+        "symbol": "8091",
+        "current_price": 100,
+        "s12_structure_stop": 96,
+        "s12_target1": 106,
+        "s12_target2": 112,
+        "market_segment": "LISTED",
+        "alpha_context": {"edge_bucket": "breakout"},
+        "s12_entry_context": {"state": "reaction_ready", "ready": True, "detail_available": True},
+    })
+
+    assert provider.summary()["excluded_incompatible_lineage_rows"] == 40
+    assert provider.summary()["comparable_sample_rows"] == 0
+    assert ev["source"] == "s12_structural_cold_start_ev"
+    assert ev["replay_bootstrap"]["sampleCount"] == 0
 
 
 def test_s12_trade_ev_bootstrap_uses_structural_cold_start_when_verified_samples_are_sparse():
@@ -803,8 +983,10 @@ def test_s12_structure_snapshots_merge_into_cold_start_ev():
 
     assert any("FROM s12_structure_snapshots" in sql for sql in calls)
     snapshot_sql = next(sql for sql in calls if "FROM s12_structure_snapshots" in sql)
+    assert "CASE WHEN state = 'data_unavailable' THEN 1 ELSE 0 END" in snapshot_sql
     assert "WHEN 's12_candidate_snapshot' THEN 0" in snapshot_sql
-    assert "WHEN 's12_intraday_structure' THEN 1" in snapshot_sql
+    assert "WHEN 's12_candidate_snapshot_reconstruction' THEN 1" in snapshot_sql
+    assert "WHEN 's12_intraday_structure' THEN 2" in snapshot_sql
     assert snapshots["8091"]["s12_structure_stop"] == 96
     assert provider.summary()["structure_snapshots"] == 1
     assert ev["status"] == "loaded"
@@ -871,6 +1053,54 @@ def test_s12_waiting_structure_snapshot_is_setup_only_not_missing_structure():
     assert ev["trade_expected_return_net_pct"] is None
     assert ev["execution_ready"] is False
     assert ev["execution_blocked_reason"] == "s12_state_waiting_4h_long_bias"
+
+
+def test_s12_unavailable_structure_snapshot_never_emits_trade_ev():
+    def fake_query(sql, params=None, **_kwargs):
+        if "FROM s12_structure_snapshots" in sql:
+            return [
+                {
+                    "id": 1,
+                    "trade_date": "2026-07-15",
+                    "symbol": "8091",
+                    "source": "s12_candidate_snapshot",
+                    "side": "buy",
+                    "state": "data_unavailable",
+                    "ready": 0,
+                    "invalidated": 0,
+                    "detail": "data_available=false;unavailable_reason=missing_intraday_bars",
+                    "entry_context_json": json.dumps({
+                        "schema_version": "s12-equity-mutation-context-v1",
+                        "state": "data_unavailable",
+                        "ready": False,
+                        "data_available": False,
+                        "unavailable_reason": "missing_intraday_bars",
+                    }),
+                    "exit_plan_json": "{}",
+                    "raw_json": "{}",
+                    "updated_at": "2026-07-15 14:00:00",
+                }
+            ]
+        return []
+
+    provider = S12TradeEvBootstrapProvider.for_run_date(
+        "2026-07-15",
+        query_fn=fake_query,
+        min_samples=30,
+        roundtrip_cost_bps=0,
+    )
+    ev = provider.build_for_row({
+        "symbol": "8091",
+        "current_price": 100,
+        "market_segment": "LISTED",
+        "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
+    })
+
+    assert ev["status"] == "setup_only"
+    assert ev["trade_expected_return_net_pct"] is None
+    assert ev["expected_R"] is None
+    assert ev["execution_ready"] is False
+    assert ev["execution_blocked_reason"] == "s12_state_data_unavailable"
 
 
 def test_extract_s12_trade_ev_treats_setup_only_as_unavailable():

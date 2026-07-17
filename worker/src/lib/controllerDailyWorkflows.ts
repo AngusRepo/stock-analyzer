@@ -138,6 +138,20 @@ export async function runModelIcRollingRefresh(env: Bindings, runDate?: string) 
   return `rolling_ic run_date=${runDate ?? 'latest'} n_rows=${icData.n_rows_total} | ${computed}`
 }
 
+export async function runArtifactAutoPromotion(env: Bindings) {
+  requireController(env)
+  const result = await controllerJson<any>(env, '/model_pool/artifact_registry/auto_promote', {
+    method: 'POST',
+    jsonBody: {
+      confirm: true,
+      max_candidates: 16,
+      reason: 'scheduled_post_verify_evidence_based_auto_promotion',
+    },
+    timeoutMs: 120_000,
+  })
+  return `artifact auto-promotion eligible=${result.eligible ?? 0} promoted=${result.promoted ?? 0} readback=${result.readback_verified === true ? 'verified' : 'failed'}`
+}
+
 export async function runVerifyV2(env: Bindings, runDate?: string) {
   requireController(env)
 
@@ -147,7 +161,7 @@ export async function runVerifyV2(env: Bindings, runDate?: string) {
       method: 'POST',
       jsonBody: {
         lookback_days: 5,
-        limit: 600,
+        limit: 600, // page size; controller cursor-pagination drains the mature workset
         run_date: runDate || undefined,
         async_mode: true,
         callback_task: 'verify-v2',

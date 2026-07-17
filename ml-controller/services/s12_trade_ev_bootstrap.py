@@ -17,6 +17,37 @@ QueryFn = Callable[[str, list[Any] | None], list[dict[str, Any]]]
 
 S12_TRADE_EV_BOOTSTRAP_DEFAULT_LOOKBACK_DAYS = 120
 S12_TRADE_EV_BOOTSTRAP_MAX_LOOKBACK_DAYS = 120
+S12_REPLAY_ENGINE_SIGNATURE = (
+    "s12_replay_v3:tw_equity_raw_daily_namespace_safe:"
+    "overlapping_r2_pit:five_session_price_domain:v2"
+)
+
+
+def _replay_cohort_signature(entry_state: Any, calibration_artifact_id: Any) -> str:
+    state = str(entry_state or "unknown").strip().lower() or "unknown"
+    calibration = str(calibration_artifact_id or "uncalibrated").strip() or "uncalibrated"
+    return f"{S12_REPLAY_ENGINE_SIGNATURE}|entry={state}|calibration={calibration}"
+
+
+def _replay_lineage_from_detail(detail: dict[str, Any]) -> dict[str, str]:
+    diagnostics = detail.get("replay_diagnostics") if isinstance(detail.get("replay_diagnostics"), dict) else {}
+    engine = str(diagnostics.get("replay_engine_signature") or "").strip()
+    if engine != S12_REPLAY_ENGINE_SIGNATURE:
+        return {}
+    entry_state = str(diagnostics.get("entry_policy_signature") or "").strip().lower()
+    calibration = str(diagnostics.get("exit_calibration_signature") or "").strip()
+    persisted = str(diagnostics.get("replay_cohort_signature") or "").strip()
+    if not entry_state or not calibration or not persisted:
+        return {}
+    expected = _replay_cohort_signature(entry_state, calibration)
+    if persisted != expected:
+        return {}
+    return {
+        "replay_engine_signature": engine,
+        "entry_policy_signature": entry_state,
+        "exit_calibration_signature": calibration,
+        "replay_cohort_signature": expected,
+    }
 
 
 def _to_float(value: Any) -> float | None:
@@ -70,6 +101,9 @@ def _with_alpha_replay_metadata(row: dict[str, Any], detail: dict[str, Any]) -> 
         row["alpha_context"] = alpha_context
     if alpha_allocation:
         row["alpha_allocation"] = alpha_allocation
+    replay_lineage = _replay_lineage_from_detail(detail)
+    if replay_lineage:
+        row["s12_replay_lineage"] = replay_lineage
 
     forecast_data = _json_obj(row.get("forecast_data"))
     changed = False
@@ -78,6 +112,10 @@ def _with_alpha_replay_metadata(row: dict[str, Any], detail: dict[str, Any]) -> 
         changed = True
     if alpha_allocation and not isinstance(forecast_data.get("alpha_allocation"), dict):
         forecast_data["alpha_allocation"] = alpha_allocation
+        changed = True
+    if replay_lineage:
+        replay_outcome = forecast_data.get("s12_replay_outcome") if isinstance(forecast_data.get("s12_replay_outcome"), dict) else {}
+        forecast_data["s12_replay_outcome"] = {**replay_outcome, **replay_lineage}
         changed = True
     if changed:
         row["forecast_data"] = json.dumps(forecast_data, separators=(",", ":"))
@@ -158,6 +196,13 @@ def _snapshot_payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
     structure_stop = _first_number(row.get("structure_stop"), _nested(exit_plan, "trailingStop", "initial"), _nested(raw, "execution", "stopLoss"))
     target1 = _first_number(row.get("target1_price"), _nested(exit_plan, "tp1", "price"), _nested(raw, "execution", "target1"))
     target2 = _first_number(row.get("target2_price"), _nested(exit_plan, "mainExit", "price"), _nested(raw, "execution", "target2"))
+    calibration_artifact_id = str(
+        _nested(raw, "barDiagnostics", "calibrationArtifactId")
+        or _nested(raw, "barDiagnostics", "calibration_artifact_id")
+        or _nested(raw, "replay_diagnostics", "calibration_artifact_id")
+        or "uncalibrated"
+    ).strip() or "uncalibrated"
+    entry_policy_state = str(state or "unknown").strip().lower() or "unknown"
     payload: dict[str, Any] = {
         "symbol": symbol,
         "entry_price": _first_number(row.get("entry_price"), _nested(raw, "execution", "entryPrice")),
@@ -172,6 +217,12 @@ def _snapshot_payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
             "trade_date": row.get("trade_date"),
             "source": row.get("source") or "s12_structure_snapshots",
             "updated_at": row.get("updated_at"),
+        },
+        "s12_replay_lineage": {
+            "replay_engine_signature": S12_REPLAY_ENGINE_SIGNATURE,
+            "entry_policy_signature": entry_policy_state,
+            "exit_calibration_signature": calibration_artifact_id,
+            "replay_cohort_signature": _replay_cohort_signature(entry_policy_state, calibration_artifact_id),
         },
         "s12_structure": {
             "state": state,
@@ -224,6 +275,9 @@ def _merge_snapshot_payload(row: dict[str, Any], snapshot: dict[str, Any] | None
     out = dict(row)
     for key, value in snapshot.items():
         if value in (None, ""):
+            continue
+        if key == "s12_replay_lineage":
+            out[key] = value
             continue
         if key not in out or out.get(key) in (None, ""):
             out[key] = value
@@ -444,6 +498,7 @@ def _s12_entry_context_from_row(row: dict[str, Any], prediction: dict[str, Any] 
                 ("s12", "state"),
                 ("s12_structure", "state"),
                 ("s12Structure", "state"),
+                ("s12_entry_context", "state"),
                 ("s12_state",),
             ])
             or parsed.get("state")
@@ -455,6 +510,7 @@ def _s12_entry_context_from_row(row: dict[str, Any], prediction: dict[str, Any] 
                 ("s12", "ready"),
                 ("s12_structure", "ready"),
                 ("s12Structure", "ready"),
+                ("s12_entry_context", "ready"),
                 ("s12_ready",),
             ])
             if _value_from_paths(payloads, [
@@ -463,6 +519,7 @@ def _s12_entry_context_from_row(row: dict[str, Any], prediction: dict[str, Any] 
                 ("s12", "ready"),
                 ("s12_structure", "ready"),
                 ("s12Structure", "ready"),
+                ("s12_entry_context", "ready"),
                 ("s12_ready",),
             ]) is not None
             else parsed.get("ready")
@@ -1076,6 +1133,7 @@ def _load_dedicated_s12_replay_trade_rows(
         if converted is not None:
             converted["prediction_date"] = raw.get("outcome_known_date")
             converted["outcome_known_date"] = raw.get("outcome_known_date")
+            converted["assessment_state"] = raw.get("assessment_state")
             market = raw.get("market")
             if market:
                 converted["market"] = market
@@ -1124,11 +1182,13 @@ def load_s12_structure_snapshots(
               FROM s12_structure_snapshots
              WHERE date(trade_date) = date(?)
              ORDER BY symbol,
+                      CASE WHEN state = 'data_unavailable' THEN 1 ELSE 0 END,
                       CASE source
                         WHEN 's12_candidate_snapshot' THEN 0
-                        WHEN 's12_intraday_structure' THEN 1
-                        WHEN 's12_holding_defense' THEN 2
-                        ELSE 3
+                        WHEN 's12_candidate_snapshot_reconstruction' THEN 1
+                        WHEN 's12_intraday_structure' THEN 2
+                        WHEN 's12_holding_defense' THEN 3
+                        ELSE 4
                       END,
                       datetime(updated_at) DESC,
                       id DESC
@@ -1148,6 +1208,41 @@ def load_s12_structure_snapshots(
         if payload:
             snapshots[symbol] = payload
     return snapshots
+
+
+def _explicit_replay_lineage(*payloads: dict[str, Any]) -> dict[str, Any]:
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        direct = payload.get("s12_replay_lineage")
+        if isinstance(direct, dict):
+            return direct
+        forecast_data = _json_obj(payload.get("forecast_data"))
+        replay_outcome = forecast_data.get("s12_replay_outcome")
+        if isinstance(replay_outcome, dict):
+            return replay_outcome
+    return {}
+
+
+def _historical_replay_cohort(row: dict[str, Any]) -> str | None:
+    lineage = _explicit_replay_lineage(row)
+    if str(lineage.get("replay_engine_signature") or "").strip() != S12_REPLAY_ENGINE_SIGNATURE:
+        return None
+    entry_state = str(lineage.get("entry_policy_signature") or "").strip().lower()
+    calibration = str(lineage.get("exit_calibration_signature") or "").strip()
+    if not entry_state or not calibration:
+        return None
+    expected = _replay_cohort_signature(entry_state, calibration)
+    return expected if str(lineage.get("replay_cohort_signature") or "").strip() == expected else None
+
+
+def _candidate_replay_cohort(row: dict[str, Any], prediction: dict[str, Any] | None) -> str:
+    pred = prediction if isinstance(prediction, dict) else {}
+    lineage = _explicit_replay_lineage(row, pred)
+    context = _s12_entry_context_from_row(row, pred)
+    entry_state = str(context.get("state") or lineage.get("entry_policy_signature") or "unknown").strip().lower() or "unknown"
+    calibration = str(lineage.get("exit_calibration_signature") or "uncalibrated").strip() or "uncalibrated"
+    return _replay_cohort_signature(entry_state, calibration)
 
 
 @dataclass(frozen=True)
@@ -1183,9 +1278,12 @@ class S12TradeEvBootstrapProvider:
         self.input_rows = len(raw_rows)
         self.rows = [row for row in raw_rows if _has_verified_s12_trade_ev_provenance(row)]
         self.excluded_non_s12_rows = self.input_rows - len(self.rows)
-        self.by_symbol: dict[str, list[dict[str, Any]]] = {}
-        self.by_market_bucket: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        self.by_market: dict[str, list[dict[str, Any]]] = {}
+        self.comparable_rows = [row for row in self.rows if _historical_replay_cohort(row) is not None]
+        self.excluded_incompatible_lineage_rows = len(self.rows) - len(self.comparable_rows)
+        self.by_symbol: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self.by_market_bucket: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        self.by_market: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self.by_cohort: dict[str, list[dict[str, Any]]] = {}
         self._index_rows()
 
     @classmethod
@@ -1223,17 +1321,21 @@ class S12TradeEvBootstrapProvider:
         )
 
     def _index_rows(self) -> None:
-        for row in self.rows:
+        for row in self.comparable_rows:
             symbol = _symbol_from_row(row)
             fd = _json_obj(row.get("forecast_data"))
             segment = _market_segment_from_payloads(row, fd)
             bucket = _alpha_bucket_from_payloads(row, fd)
+            cohort = _historical_replay_cohort(row)
+            if cohort is None:
+                continue
+            self.by_cohort.setdefault(cohort, []).append(row)
             if symbol:
-                self.by_symbol.setdefault(symbol, []).append(row)
+                self.by_symbol.setdefault((symbol, cohort), []).append(row)
             if segment != "UNKNOWN" and bucket != "UNKNOWN":
-                self.by_market_bucket.setdefault((segment, bucket), []).append(row)
+                self.by_market_bucket.setdefault((segment, bucket, cohort), []).append(row)
             if segment != "UNKNOWN":
-                self.by_market.setdefault(segment, []).append(row)
+                self.by_market.setdefault((segment, cohort), []).append(row)
 
     def _candidate_buckets(
         self,
@@ -1244,14 +1346,15 @@ class S12TradeEvBootstrapProvider:
         symbol = _symbol_from_row(row) or _symbol_from_row(pred)
         segment = _market_segment_from_payloads(row, pred)
         bucket = _alpha_bucket_from_payloads(row, pred)
+        cohort = _candidate_replay_cohort(row, pred)
         buckets: list[_ReplayBucket] = []
         if symbol:
-            buckets.append(_ReplayBucket("symbol", symbol, self.by_symbol.get(symbol) or []))
+            buckets.append(_ReplayBucket("symbol", f"{symbol}|{cohort}", self.by_symbol.get((symbol, cohort)) or []))
         if segment != "UNKNOWN" and bucket != "UNKNOWN":
-            buckets.append(_ReplayBucket("market_segment_alpha_bucket", f"{segment}:{bucket}", self.by_market_bucket.get((segment, bucket)) or []))
+            buckets.append(_ReplayBucket("market_segment_alpha_bucket", f"{segment}:{bucket}|{cohort}", self.by_market_bucket.get((segment, bucket, cohort)) or []))
         if segment != "UNKNOWN":
-            buckets.append(_ReplayBucket("market_segment", segment, self.by_market.get(segment) or []))
-        buckets.append(_ReplayBucket("global", "ALL", self.rows))
+            buckets.append(_ReplayBucket("market_segment", f"{segment}|{cohort}", self.by_market.get((segment, cohort)) or []))
+        buckets.append(_ReplayBucket("global", f"ALL|{cohort}", self.by_cohort.get(cohort) or []))
         return buckets
 
     def _select_bucket(
@@ -1325,6 +1428,11 @@ class S12TradeEvBootstrapProvider:
             "sample_date_max": dates[-1] if dates else None,
             "candidate_market_segment": _market_segment_from_payloads(row, prediction or {}),
             "candidate_alpha_bucket": _alpha_bucket_from_payloads(row, prediction or {}),
+            "candidate_replay_cohort_signature": _candidate_replay_cohort(row, prediction),
+            "sample_replay_engine_signature": S12_REPLAY_ENGINE_SIGNATURE if bucket.rows else None,
+            "sample_replay_cohort_signature": _candidate_replay_cohort(row, prediction) if bucket.rows else None,
+            "sample_lineage_contract": "persisted_engine_entry_calibration_cohort_required_v1",
+            "sample_date_semantic": "outcome_known_date",
             "global_direct_ev_owner_allowed": False,
             "global_sample_count": len(global_bucket.rows) if global_bucket is not None else 0,
         }
@@ -1398,8 +1506,10 @@ class S12TradeEvBootstrapProvider:
             "schema_version": "s12-trade-ev-bootstrap-summary-v1",
             "run_date": self.run_date,
             "sample_rows": len(self.rows),
+            "comparable_sample_rows": len(self.comparable_rows),
             "input_rows": self.input_rows,
             "excluded_non_s12_rows": self.excluded_non_s12_rows,
+            "excluded_incompatible_lineage_rows": self.excluded_incompatible_lineage_rows,
             "min_samples": self.min_samples,
             "min_sample_dates": self.min_sample_dates,
             "sample_policy": "verified_s12_buy_trade_outcomes_only",
@@ -1407,4 +1517,5 @@ class S12TradeEvBootstrapProvider:
             "symbol_buckets": len(self.by_symbol),
             "market_segment_buckets": len(self.by_market),
             "market_segment_alpha_buckets": len(self.by_market_bucket),
+            "replay_cohorts": {key: len(value) for key, value in sorted(self.by_cohort.items())},
         }

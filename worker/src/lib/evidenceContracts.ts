@@ -8,7 +8,7 @@ export const L4_ALPHA_EV_CONTRACT = Object.freeze({
 })
 
 export const ALLOCATOR_EV_FUSION_CONTRACT = Object.freeze({
-  artifactContractVersion: 'allocator-ev-fusion-contract-v10',
+  artifactContractVersion: 'allocator-ev-fusion-contract-v11',
   featureSemanticVersion: 'allocator-ev-fusion-directional-components-v2-lineage-bound',
   labelSchemaVersion: EVIDENCE_LABEL_SCHEMA_VERSION,
 })

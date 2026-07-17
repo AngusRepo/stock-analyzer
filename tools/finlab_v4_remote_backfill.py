@@ -499,12 +499,21 @@ def controller_d1_batch_execute(
             raise RuntimeError(exc.read().decode("utf-8")[:800]) from exc
         if not payload.get("ok"):
             raise RuntimeError(str(payload)[:800])
-        total += int(payload.get("total") or len(part))
-        success_count += int(payload.get("success_count") or len(part))
-        error_count += int(payload.get("error_count") or 0)
+        part_total = int(payload["total"]) if payload.get("total") is not None else len(part)
+        part_success = int(payload["success_count"]) if payload.get("success_count") is not None else len(part)
+        part_errors = int(payload.get("error_count") or 0)
+        total += part_total
+        success_count += part_success
+        error_count += part_errors
         changes_total += int(payload.get("changes_total") or 0)
         if payload.get("first_error") and first_error is None:
             first_error = str(payload["first_error"])
+        if part_errors > 0:
+            raise RuntimeError(
+                f"controller_d1_batch failed chunk={chunk_no}/{chunk_count} "
+                f"success_count={part_success} error_count={part_errors} "
+                f"first_error={payload.get('first_error')}"
+            )
         if chunk_no == 1 or chunk_no == chunk_count or chunk_no % 10 == 0:
             print(
                 f"[finlab-backfill] controller_d1_batch done={chunk_no}/{chunk_count} success={success_count} errors={error_count}",
@@ -525,10 +534,10 @@ def controller_d1_batch_execute(
 
 
 DATASET_D1_CHUNK_SIZE_CAPS = {
-    # Fundamental rows are much wider than price/chip rows. Keeping them at the
-    # default 250 can create ~1.8MB controller requests and exceed the Modal
-    # client timeout while Cloud Run eventually succeeds.
-    "canonical_fundamental_features": 50,
+    # Fundamental SQL packs ten 75-column rows per statement. Ten statements
+    # keep each controller request near 100 rows and below the prior timeout
+    # payload while removing row-at-a-time network round trips.
+    "canonical_fundamental_features": 10,
 }
 
 
@@ -567,8 +576,24 @@ def normalize_wide_index(df: pd.DataFrame) -> pd.DataFrame:
     out.index = pd.to_datetime(out.index, errors="coerce")
     out = out[~out.index.isna()]
     out = out.sort_index()
+    out.index.name = "date"
     out.columns = [str(col).strip() for col in out.columns]
     return out
+
+
+PIT_DEADLINE_NAMESPACES = ("fundamental_features:", "financial_statement:")
+
+
+def normalize_finlab_wide_field(df: pd.DataFrame, *, api_key_name: str) -> pd.DataFrame:
+    """Normalize one FinLab field after applying its point-in-time date owner."""
+
+    requires_deadline = str(api_key_name or "").startswith(PIT_DEADLINE_NAMESPACES)
+    if requires_deadline:
+        deadline = getattr(df, "deadline", None)
+        if not callable(deadline):
+            raise ValueError(f"finlab_deadline_alignment_unavailable:{api_key_name}")
+        df = deadline()
+    return normalize_wide_index(df)
 
 
 def normalize_context_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -1020,10 +1045,13 @@ def required_wide_field_errors(
     field_frames: dict[str, pd.DataFrame],
     *,
     target_date: str | None = None,
+    requested_fields: set[str] | None = None,
 ) -> list[str]:
     required = REQUIRED_ATOMIC_WIDE_FIELDS.get(lane)
     if not required:
         return []
+    if requested_fields is not None:
+        required = set(required) & set(requested_fields)
 
     errors: list[str] = []
     for field in sorted(required):
@@ -1723,7 +1751,10 @@ def materialize_specs(
                 path = lane_dir / f"{field}.parquet"
                 try:
                     frame = filter_date_range(
-                        normalize_wide_index(data.get(api_key_name)),
+                        normalize_finlab_wide_field(
+                            data.get(api_key_name),
+                            api_key_name=api_key_name,
+                        ),
                         start_date=start,
                         end_date=source_end_date,
                     )
@@ -1767,9 +1798,26 @@ def materialize_specs(
                     run_dir=run_dir,
                     gcs_bucket=gcs_bucket,
                     gcs_prefix=gcs_prefix,
-                    metadata={"kind": spec.kind, "shape": list(frame.shape)},
+                    metadata={
+                        "kind": spec.kind,
+                        "shape": list(frame.shape),
+                        "date_alignment": (
+                            "finlab_deadline"
+                            if api_key_name.startswith(PIT_DEADLINE_NAMESPACES)
+                            else "source_observation_date"
+                        ),
+                    },
                 ))
-            field_errors = required_wide_field_errors(spec.lane, field_frames, target_date=target_date)
+            field_errors = required_wide_field_errors(
+                spec.lane,
+                field_frames,
+                target_date=target_date,
+                requested_fields=(
+                    set(spec_keys)
+                    if key_scope and spec.lane in key_scope
+                    else None
+                ),
+            )
             if field_errors:
                 source_key_blockers.append({
                     "lane": spec.lane,
@@ -3289,7 +3337,7 @@ def main() -> int:
         "runtime_table_writeback": manifest.get("runtime_table_writeback"),
         "canonical_d1_apply": manifest.get("canonical_d1_apply"),
     }, ensure_ascii=False, sort_keys=True))
-    return 0
+    return 0 if manifest.get("backfill_status") == "ready" else 2
 
 
 if __name__ == "__main__":

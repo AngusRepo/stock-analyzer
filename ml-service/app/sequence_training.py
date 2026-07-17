@@ -1,4 +1,4 @@
-"""Sequence-model training contract for DLinear/PatchTST.
+"""Sequence-model training contract for DLinear/PatchTST/iTransformer.
 
 The sequence families are first-class lifecycle models only when their windows
 carry symbol/date metadata. Raw close arrays can still train a fallback model,
@@ -8,9 +8,30 @@ but they cannot produce auditable cross-sectional OOS IC.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from collections import Counter
+from typing import Any, Callable, Iterable
 
 import numpy as np
+
+
+SEQUENCE_RETURN_SEMANTIC_VERSION = (
+    "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+)
+CANONICAL_ROUNDTRIP_COST_BPS = 18.0
+
+
+def canonical_session_calendar(records: list[dict[str, Any]]) -> list[str]:
+    """Return the shared exchange-session calendar represented by the panel."""
+
+    counts: Counter[str] = Counter()
+    for record in records or []:
+        counts.update({str(value)[:10] for value in (record.get("dates") or []) if value})
+    if not counts:
+        return []
+    max_coverage = max(counts.values())
+    minimum_observations = 1 if len(records) < 10 else 10
+    threshold = max(minimum_observations, int(max_coverage * 0.20))
+    return sorted(date for date, count in counts.items() if count >= threshold)
 
 
 @dataclass(frozen=True)
@@ -35,19 +56,23 @@ def build_sequence_record(
     min_len: int,
 ) -> dict | None:
     closes: list[float] = []
+    opens: list[float] = []
     dates: list[str] = []
     for row in prices_data or []:
         close_val = row.get("close")
+        open_val = row.get("open")
         date_val = row.get("date")
-        if close_val is None or not date_val:
+        if close_val is None or open_val is None or not date_val:
             return None
         try:
             close = float(close_val)
+            open_price = float(open_val)
         except Exception:
             return None
-        if not np.isfinite(close) or close <= 0:
+        if not np.isfinite(close) or close <= 0 or not np.isfinite(open_price) or open_price <= 0:
             return None
         closes.append(close)
+        opens.append(open_price)
         dates.append(str(date_val))
     if len(closes) < min_len:
         return None
@@ -55,7 +80,9 @@ def build_sequence_record(
         "symbol": str(symbol or ""),
         "market_type": str(market_type or "TW"),
         "close": closes,
+        "open": opens,
         "dates": dates,
+        "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
     }
 
 
@@ -104,40 +131,71 @@ def build_sequence_window_dataset(
     seq_len: int,
     pred_len: int,
     oos_ratio: float = 0.2,
+    train_start: str | None = None,
+    train_end: str | None = None,
+    test_start: str | None = None,
+    test_end: str | None = None,
 ) -> SequenceWindowDataset:
     Xs: list[np.ndarray] = []
     ys: list[np.ndarray] = []
     meta: list[dict] = []
     dropped_short = 0
     dropped_bad = 0
+    dropped_session_gap = 0
+    session_calendar = canonical_session_calendar(records)
+    session_index = {date: idx for idx, date in enumerate(session_calendar)}
 
     for record in records or []:
         closes = np.asarray(record.get("close") or record.get("series_close") or [], dtype=np.float32)
+        opens = np.asarray(record.get("open") or record.get("series_open") or [], dtype=np.float32)
         dates = [str(d) for d in (record.get("dates") or [])]
         symbol = str(record.get("symbol") or "")
         market_type = str(record.get("market_type") or record.get("market") or "TW")
-        if len(closes) < seq_len + pred_len or len(dates) != len(closes):
+        if (
+            len(closes) < seq_len + pred_len
+            or len(dates) != len(closes)
+            or len(opens) != len(closes)
+        ):
             dropped_short += 1
             continue
-        if not np.isfinite(closes).all():
+        if not np.isfinite(closes).all() or not np.isfinite(opens).all() or np.any(opens <= 0):
             dropped_bad += 1
             continue
         n_win = len(closes) - seq_len - pred_len + 1
         for start in range(n_win):
             x = closes[start:start + seq_len]
             y = closes[start + seq_len:start + seq_len + pred_len]
+            signal_date = dates[start + seq_len - 1][:10]
+            signal_idx = session_index.get(signal_date)
+            if signal_idx is None or signal_idx + pred_len >= len(session_calendar):
+                dropped_session_gap += 1
+                continue
+            expected_entry_date = session_calendar[signal_idx + 1]
+            expected_outcome_date = session_calendar[signal_idx + pred_len]
+            if (
+                dates[start + seq_len][:10] != expected_entry_date
+                or dates[start + seq_len + pred_len - 1][:10] != expected_outcome_date
+            ):
+                dropped_session_gap += 1
+                continue
             last_close = float(x[-1])
+            entry_open = float(opens[start + seq_len])
             target_close = float(y[-1])
             Xs.append(x)
             ys.append(y)
             meta.append({
                 "symbol": symbol,
                 "market_type": market_type,
-                "asof_date": dates[start + seq_len - 1],
-                "target_date": dates[start + seq_len + pred_len - 1],
+                "asof_date": signal_date,
+                "target_date": expected_outcome_date,
                 "last_close": last_close,
+                "entry_open": entry_open,
                 "target_close": target_close,
-                "forward_return": (target_close - last_close) / max(last_close, 1e-9),
+                "forward_return": (
+                    (target_close - entry_open) / max(entry_open, 1e-9)
+                    - CANONICAL_ROUNDTRIP_COST_BPS / 10000.0
+                ),
+                "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
             })
 
     if not Xs:
@@ -157,6 +215,7 @@ def build_sequence_window_dataset(
                 "windows": 0,
                 "dropped_short": dropped_short,
                 "dropped_bad": dropped_bad,
+                "dropped_session_gap": dropped_session_gap,
                 "lifecycle_ready": False,
                 "reason": "no_valid_windows",
             },
@@ -167,9 +226,23 @@ def build_sequence_window_dataset(
     target_dates = np.asarray([row["target_date"] for row in meta], dtype=str)
     order = np.argsort(target_dates, kind="stable")
     n_total = len(order)
-    n_oos = max(1, int(n_total * oos_ratio))
-    train_index = order[:-n_oos]
-    oos_index = order[-n_oos:]
+    explicit_ranges = all((train_start, train_end, test_start, test_end))
+    if explicit_ranges:
+        asof_dates = np.asarray([row["asof_date"] for row in meta], dtype=str)
+        train_index = np.flatnonzero(
+            (asof_dates >= str(train_start))
+            & (asof_dates <= str(train_end))
+            & (target_dates < str(test_start))
+        )
+        oos_index = np.flatnonzero(
+            (asof_dates >= str(test_start)) & (asof_dates <= str(test_end))
+        )
+        split_method = "explicit_signal_date_with_actual_label_purge"
+    else:
+        n_oos = max(1, int(n_total * oos_ratio))
+        train_index = order[:-n_oos]
+        oos_index = order[-n_oos:]
+        split_method = "chronological_ratio_holdout"
     report = {
         "input_series": len(records or []),
         "windows": int(n_total),
@@ -178,7 +251,12 @@ def build_sequence_window_dataset(
         "oos_dates": int(len(set(target_dates[oos_index].tolist()))),
         "dropped_short": dropped_short,
         "dropped_bad": dropped_bad,
+        "dropped_session_gap": dropped_session_gap,
         "lifecycle_ready": bool(len(train_index) > 0 and len(oos_index) > 0),
+        "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
+        "split_method": split_method,
+        "train_range": [train_start, train_end] if explicit_ranges else None,
+        "test_range": [test_start, test_end] if explicit_ranges else None,
     }
     return SequenceWindowDataset(
         X_all=X,
@@ -202,8 +280,8 @@ def sequence_oos_ic_from_forecast(
     forecast = np.asarray(forecast_prices, dtype=float).reshape(-1)
     oos_meta = [dataset.meta[int(idx)] for idx in dataset.oos_index]
     actual_returns = np.asarray([row["forward_return"] for row in oos_meta], dtype=float)
-    last_close = np.asarray([row["last_close"] for row in oos_meta], dtype=float)
-    pred_returns = (forecast - last_close) / np.maximum(last_close, 1e-9)
+    entry_open = np.asarray([row["entry_open"] for row in oos_meta], dtype=float)
+    pred_returns = (forecast - entry_open) / np.maximum(entry_open, 1e-9)
     target_dates = [row["target_date"] for row in oos_meta]
     ic = mean_daily_spearman_ic(
         predictions=pred_returns,
@@ -239,7 +317,8 @@ def build_sequence_oos_fold_evidence(
         "coverage_mean": 1.0 if ic.get("oos_samples", 0) else 0.0,
         "family": "sequence_model",
         "date_field": "target_date",
-        "input_contract": "SequenceWindowDataset(symbol,target_date,last_close,forward_return)",
+        "input_contract": "SequenceWindowDataset(symbol,target_date,entry_open,forward_return)",
+        "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
         "oos_dates": ic.get("oos_dates", 0),
         "daily_ic_count": ic.get("daily_ic_count", 0),
         "validation_design": {

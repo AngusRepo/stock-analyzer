@@ -24,6 +24,10 @@ except ModuleNotFoundError:  # allow pure domain tests to import services withou
 
 logger = logging.getLogger(__name__)
 
+
+class WorkerD1BatchValidationError(RuntimeError):
+    """Worker rejected the batch contract; raw REST must not bypass it."""
+
 CF_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
 CF_D1_DB_ID   = os.environ.get("CF_D1_DB_ID", "")
@@ -278,6 +282,8 @@ def batch_execute(
     if WORKER_URL and WORKER_AUTH:
         try:
             return _worker_batch_execute(statements, timeout=timeout, chunk_size=chunk_size)
+        except WorkerD1BatchValidationError:
+            raise
         except RuntimeError as e:
             logger.warning("[d1_client] worker batch failed, falling back to D1 raw batch: %s", e)
 
@@ -459,13 +465,17 @@ def _worker_batch_execute(
             resp = httpx.post(url, headers=headers, json=body, timeout=timeout)
         except httpx.RequestError as e:
             raise RuntimeError(f"Worker D1 batch failed: network error: {e}") from e
+        if resp.status_code in {400, 422}:
+            raise WorkerD1BatchValidationError(
+                f"Worker D1 batch validation failed: HTTP {resp.status_code}: {resp.text[:300]}"
+            )
         if resp.status_code != 200:
             raise RuntimeError(f"Worker D1 batch failed: HTTP {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
         if not data.get("ok"):
             raise RuntimeError(f"Worker D1 batch unsuccessful: {data}")
-        total += int(data.get("total") or len(part))
-        success_count += int(data.get("success_count") or len(part))
+        total += int(data["total"]) if data.get("total") is not None else len(part)
+        success_count += int(data["success_count"]) if data.get("success_count") is not None else len(part)
         error_count += int(data.get("error_count") or 0)
         changes_total += int(data.get("changes_total") or 0)
         if data.get("first_error") and first_error is None:

@@ -51,6 +51,22 @@ adminReadRoutes.get('/api/admin/data-quality/status', async (c) => {
   return c.json(await buildDataQualityReport(c.env, { date: c.req.query('date') }))
 })
 
+adminReadRoutes.get('/api/admin/expected-return/serving-state', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const date = c.req.query('date') || twToday()
+  const [{ readCurrentExpectedReturnServingState }, { inspectAllocatorEvMaturityCoverage }] = await Promise.all([
+    import('../lib/expectedReturnServingState'),
+    import('../lib/allocatorEvDailyLifecycle'),
+  ])
+  const [serving, maturity] = await Promise.all([
+    readCurrentExpectedReturnServingState(c.env, date),
+    inspectAllocatorEvMaturityCoverage(c.env.DB, date),
+  ])
+  return c.json({ success: true, date, serving, maturity })
+})
+
 async function handleDatasetSnapshotList(c: any) {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

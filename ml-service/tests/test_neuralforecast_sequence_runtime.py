@@ -3,8 +3,12 @@ import pandas as pd
 
 from app.model_validation import build_model_cpcv_evidence
 from app.neuralforecast_sequence_runtime import (
+    _build_fixed_oof_panel,
+    _dense_oof_eval_panel,
     _fold_metrics,
+    _filter_panel_to_eval_rows,
     _make_nf_model,
+    _panel_full_train_rows,
     _panel_train_eval_rows,
     _predict_horizon_by_id_with_column,
     _prediction_column,
@@ -14,13 +18,45 @@ from app.neuralforecast_sequence_runtime import (
 
 def test_neuralforecast_sequence_defaults_follow_model_core_windows():
     assert default_seq_len_for_model("PatchTST") == 512
-    assert default_seq_len_for_model("iTransformer") == 1024
+    assert default_seq_len_for_model("iTransformer") == 512
+
+
+def test_itransformer_panel_builder_aligns_ragged_series_to_fixed_context():
+    records = []
+    for idx, length in enumerate((30, 35, 40)):
+        records.append({
+            "symbol": f"S{idx}",
+            "market_type": "TWSE",
+            "close": [100.0 + day for day in range(length)],
+            "open": [99.5 + day for day in range(length)],
+            "dates": [f"d{day:03d}" for day in range(length)],
+        })
+
+    rows, eval_rows, report = _panel_train_eval_rows(
+        records,
+        seq_len=20,
+        pred_len=5,
+        max_series=10,
+        fixed_panel_history=True,
+    )
+
+    counts = {}
+    for row in rows:
+        counts[row["unique_id"]] = counts.get(row["unique_id"], 0) + 1
+    assert counts == {"S0": 25, "S1": 25, "S2": 25}
+    assert len(eval_rows) == 3
+    assert report["fixed_panel_history"] is True
 
 
 def test_panel_train_eval_rows_filters_short_series_before_neuralforecast_fit():
     records = [
         {"symbol": "short", "close": [float(i) for i in range(60)]},
-        {"symbol": "long", "close": [float(i) for i in range(140)]},
+        {
+            "symbol": "long",
+            "close": [float(i) for i in range(140)],
+            "open": [float(i + 1) for i in range(140)],
+            "dates": [f"d{i:03d}" for i in range(140)],
+        },
     ]
 
     train_rows, eval_rows, stats = _panel_train_eval_rows(
@@ -32,17 +68,98 @@ def test_panel_train_eval_rows_filters_short_series_before_neuralforecast_fit():
 
     assert [row["unique_id"] for row in eval_rows] == ["long"]
     assert len(train_rows) == 135
-    assert stats["min_history"] == 133
+    assert stats["min_history"] == 138
     assert stats["skipped_short_history"] == 1
     assert stats["valid_series"] == 1
+    assert eval_rows[0]["entry_open"] == 136.0
+    assert eval_rows[0]["target_semantic_version"].endswith("canonical-adjusted-close-net-v4")
+
+
+def test_itransformer_full_refit_keeps_context_plus_training_horizon():
+    records = [
+        {"symbol": "short", "close": [float(i) for i in range(24)]},
+        {"symbol": "valid", "close": [float(i) for i in range(40)]},
+    ]
+
+    rows, valid_series = _panel_full_train_rows(
+        records,
+        seq_len=20,
+        pred_len=5,
+        max_series=10,
+        fixed_panel_history=True,
+    )
+
+    assert valid_series == 1
+    assert len(rows) == 25
+    assert {row["unique_id"] for row in rows} == {"valid"}
+
+
+def test_purged_oof_filter_keeps_training_and_eval_series_atomic():
+    train_rows = [
+        {"unique_id": "A", "ds": 0, "y": 1.0},
+        {"unique_id": "A", "ds": 1, "y": 2.0},
+        {"unique_id": "B", "ds": 0, "y": 3.0},
+    ]
+    eval_rows = [{"unique_id": "A", "signal_date": "2026-05-01"}]
+
+    filtered = _filter_panel_to_eval_rows(train_rows, eval_rows)
+
+    assert filtered == train_rows[:2]
+
+
+def test_dense_oof_panel_fits_at_train_end_and_labels_each_signal_date():
+    calendar = [f"2026-01-{day:02d}" for day in range(1, 11)]
+    records = [
+        {
+            "symbol": f"S{idx:02d}",
+            "market_type": "LISTED",
+            "dates": calendar,
+            "close": [100.0 + idx + day for day in range(10)],
+            "open": [99.5 + idx + day for day in range(10)],
+        }
+        for idx in range(12)
+    ]
+
+    train_rows, selected, report = _build_fixed_oof_panel(
+        records,
+        calendar=calendar,
+        train_end="2026-01-06",
+        seq_len=4,
+        pred_len=2,
+        max_series=20,
+    )
+    context_rows, labels = _dense_oof_eval_panel(
+        selected,
+        calendar=calendar,
+        signal_date="2026-01-06",
+        seq_len=4,
+        pred_len=2,
+    )
+
+    assert len(train_rows) == 12 * 6
+    assert report["calendar_end"] == "2026-01-06"
+    assert len(context_rows) == 12 * 4
+    assert len(labels) == 12
+    assert {row["outcome_date"] for row in labels} == {"2026-01-08"}
+    assert labels[0]["entry_open"] == 105.5
 
 
 def test_panel_train_eval_rows_scans_past_short_records_until_max_series_valid():
     records = [
         {"symbol": "short_a", "close": [float(i) for i in range(60)]},
         {"symbol": "short_b", "close": [float(i) for i in range(80)]},
-        {"symbol": "long_a", "close": [float(i) for i in range(140)]},
-        {"symbol": "long_b", "close": [float(i) for i in range(150)]},
+        {
+            "symbol": "long_a",
+            "close": [float(i) for i in range(140)],
+            "open": [float(i + 1) for i in range(140)],
+            "dates": [f"a{i:03d}" for i in range(140)],
+        },
+        {
+            "symbol": "long_b",
+            "close": [float(i) for i in range(150)],
+            "open": [float(i + 1) for i in range(150)],
+            "dates": [f"b{i:03d}" for i in range(150)],
+        },
     ]
 
     _train_rows, eval_rows, stats = _panel_train_eval_rows(
@@ -56,6 +173,25 @@ def test_panel_train_eval_rows_scans_past_short_records_until_max_series_valid()
     assert stats["considered_series"] == 4
     assert stats["skipped_short_history"] == 2
     assert stats["valid_series"] == 2
+
+
+def test_panel_train_eval_rows_rejects_legacy_close_only_label_contract():
+    records = [{
+        "symbol": "legacy",
+        "close": [float(i) for i in range(140)],
+        "dates": [f"d{i:03d}" for i in range(140)],
+    }]
+
+    train_rows, eval_rows, stats = _panel_train_eval_rows(
+        records,
+        seq_len=128,
+        pred_len=5,
+        max_series=10,
+    )
+
+    assert train_rows == []
+    assert eval_rows == []
+    assert stats["skipped_label_contract"] == 1
 
 
 def test_neuralforecast_model_runtime_suppresses_known_trainer_warnings():
@@ -127,3 +263,16 @@ def test_predict_horizon_uses_named_model_column_not_index_column():
 
     assert pred_col == "PatchTST"
     assert pred_by_id == {"2330": 101.0, "2317": 202.0}
+
+
+def test_dense_oof_training_cap_does_not_cap_inference_universe():
+    import inspect
+    from app.neuralforecast_sequence_runtime import _train_dense_purged_oof
+
+    source = inspect.getsource(_train_dense_purged_oof)
+    call = source.split("context_rows, labels = _dense_oof_eval_panel(", 1)[1].split(")", 1)[0]
+
+    assert "records," in call
+    assert "panel_records," not in call
+    assert '"training_series_cap_applied"' in source
+    assert 'len(actual_return) / max(1, len(labels))' in source

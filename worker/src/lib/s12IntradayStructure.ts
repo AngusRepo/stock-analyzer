@@ -16,7 +16,9 @@ export interface S12Bar {
 export type S12IntradayState =
   | 'waiting_15m_completed_bars'
   | 'waiting_session_60m_completed_bar'
+  /** @deprecated Historical snapshot compatibility. Runtime no longer requires a long session bias. */
   | 'waiting_session_60m_long_bias'
+  | 'waiting_session_60m_bearish_risk'
   | 'waiting_4h_completed_bar'
   | 'waiting_4h_long_bias'
   | 'waiting_1h_completed_bar'
@@ -316,6 +318,11 @@ export interface S12TimingPolicy {
   slowVwapOverheadRatio: number
   volumeExpansionMin: number
   repricingBreakoutAtr: number
+  sessionAcceptanceMinMoveAtr: number
+  sessionAcceptanceMinClosePosition: number
+  sessionLockToleranceAtr: number
+  sessionLockTolerancePct: number
+  sessionLockMinBars: number
   strongClosePosition: number
   strongBodyPct: number
   higherLowAtrTolerance: number
@@ -368,6 +375,11 @@ export const DEFAULT_S12_TIMING_POLICY: S12TimingPolicy = {
   slowVwapOverheadRatio: 0.25,
   volumeExpansionMin: 1.25,
   repricingBreakoutAtr: 0.05,
+  sessionAcceptanceMinMoveAtr: 0.35,
+  sessionAcceptanceMinClosePosition: 0.75,
+  sessionLockToleranceAtr: 0.03,
+  sessionLockTolerancePct: 0.0005,
+  sessionLockMinBars: 2,
   strongClosePosition: 0.62,
   strongBodyPct: 0.22,
   higherLowAtrTolerance: 0.15,
@@ -647,6 +659,11 @@ export function normalizeS12TimingPolicy(policy: Partial<S12TimingPolicy> | null
     slowVwapOverheadRatio: Math.max(0.05, Math.min(0.4, Number(policy?.slowVwapOverheadRatio ?? DEFAULT_S12_TIMING_POLICY.slowVwapOverheadRatio))),
     volumeExpansionMin: Math.max(1, Math.min(3, Number(policy?.volumeExpansionMin ?? DEFAULT_S12_TIMING_POLICY.volumeExpansionMin))),
     repricingBreakoutAtr: Math.max(0, Math.min(0.5, Number(policy?.repricingBreakoutAtr ?? DEFAULT_S12_TIMING_POLICY.repricingBreakoutAtr))),
+    sessionAcceptanceMinMoveAtr: Math.max(0.1, Math.min(1.5, Number(policy?.sessionAcceptanceMinMoveAtr ?? DEFAULT_S12_TIMING_POLICY.sessionAcceptanceMinMoveAtr))),
+    sessionAcceptanceMinClosePosition: Math.max(0.55, Math.min(0.95, Number(policy?.sessionAcceptanceMinClosePosition ?? DEFAULT_S12_TIMING_POLICY.sessionAcceptanceMinClosePosition))),
+    sessionLockToleranceAtr: Math.max(0.005, Math.min(0.15, Number(policy?.sessionLockToleranceAtr ?? DEFAULT_S12_TIMING_POLICY.sessionLockToleranceAtr))),
+    sessionLockTolerancePct: Math.max(0.0001, Math.min(0.005, Number(policy?.sessionLockTolerancePct ?? DEFAULT_S12_TIMING_POLICY.sessionLockTolerancePct))),
+    sessionLockMinBars: boundedInt(policy?.sessionLockMinBars, DEFAULT_S12_TIMING_POLICY.sessionLockMinBars, 2, 4),
     strongClosePosition: Math.max(0.5, Math.min(0.9, Number(policy?.strongClosePosition ?? DEFAULT_S12_TIMING_POLICY.strongClosePosition))),
     strongBodyPct: Math.max(0.1, Math.min(0.8, Number(policy?.strongBodyPct ?? DEFAULT_S12_TIMING_POLICY.strongBodyPct))),
     higherLowAtrTolerance: Math.max(0, Math.min(0.5, Number(policy?.higherLowAtrTolerance ?? DEFAULT_S12_TIMING_POLICY.higherLowAtrTolerance))),
@@ -699,6 +716,11 @@ export function s12TimingPolicyFromEnv(env: Record<string, unknown> | null | und
     slowVwapOverheadRatio: env?.S12_TW_SLOW_VWAP_OVERHEAD_RATIO as number | undefined,
     volumeExpansionMin: env?.S12_TW_VOLUME_EXPANSION_MIN as number | undefined,
     repricingBreakoutAtr: env?.S12_TW_REPRICING_BREAKOUT_ATR as number | undefined,
+    sessionAcceptanceMinMoveAtr: env?.S12_TW_SESSION_ACCEPTANCE_MIN_MOVE_ATR as number | undefined,
+    sessionAcceptanceMinClosePosition: env?.S12_TW_SESSION_ACCEPTANCE_MIN_CLOSE_POSITION as number | undefined,
+    sessionLockToleranceAtr: env?.S12_TW_SESSION_LOCK_TOLERANCE_ATR as number | undefined,
+    sessionLockTolerancePct: env?.S12_TW_SESSION_LOCK_TOLERANCE_PCT as number | undefined,
+    sessionLockMinBars: env?.S12_TW_SESSION_LOCK_MIN_BARS as number | undefined,
     strongClosePosition: env?.S12_TW_STRONG_CLOSE_POSITION as number | undefined,
     strongBodyPct: env?.S12_TW_STRONG_BODY_PCT as number | undefined,
     higherLowAtrTolerance: env?.S12_TW_HIGHER_LOW_ATR_TOLERANCE as number | undefined,
@@ -753,6 +775,11 @@ function timingPolicyDetail(policy: S12TimingPolicy): Record<string, unknown> {
     policy_full_coverage_session_60m_bars: policy.fullCoverageSession60Bars,
     policy_min_fast_vwap_signals: policy.minFastVwapSignals,
     policy_max_fast_vwap_blockers: policy.maxFastVwapBlockers,
+    policy_session_acceptance_min_move_atr: policy.sessionAcceptanceMinMoveAtr,
+    policy_session_acceptance_min_close_position: policy.sessionAcceptanceMinClosePosition,
+    policy_session_lock_tolerance_atr: policy.sessionLockToleranceAtr,
+    policy_session_lock_tolerance_pct: policy.sessionLockTolerancePct,
+    policy_session_lock_min_bars: policy.sessionLockMinBars,
     policy_max_stop_risk_pct: policy.maxStopRiskPct,
     policy_max_stop_risk_atr: policy.maxStopRiskAtr,
     policy_strict_mutation_min_score: policy.strictMutationMinScore,
@@ -765,9 +792,13 @@ function effectiveMin15mBarsForSeed(policy: S12TimingPolicy, hasPreviousSession1
   return Math.min(policy.min15mBars, policy.seededMin15mBars)
 }
 
-function shouldBlockOnSession60Bias(source: S12IntradayAssessment['sessionContextSource'], bias: S12HtfBias): boolean {
-  if (bias.direction === 'long' && bias.channelAlign) return false
+function shouldBlockOnSession60BearishRisk(
+  source: S12IntradayAssessment['sessionContextSource'],
+  bias: S12HtfBias,
+): boolean {
   return source === 'current_session_60m'
+    && bias.direction === 'short'
+    && bias.confidence === 'confirmed'
 }
 
 function finitePositive(value: unknown): number | null {
@@ -1156,6 +1187,7 @@ function maturityStage(state: S12IntradayState): S12IntradayAssessment['maturity
     case 'waiting_1h_completed_bar':
       return 'data'
     case 'waiting_session_60m_long_bias':
+    case 'waiting_session_60m_bearish_risk':
     case 'waiting_4h_long_bias':
       return 'higher_timeframe_bias'
     case 'waiting_1h_demand_zone':
@@ -1749,6 +1781,7 @@ function zoneLifecycleDiagnostics(params: {
   const zoneOverlap = params.demandZone1h != null && params.supplyZone1h != null && zonesOverlap(params.demandZone1h, params.supplyZone1h)
   const roleFlipDemand = params.demandZone1h?.type === 'support'
   const roleFlipSupply = params.supplyZone1h?.type === 'resistance'
+  const sessionAcceptance = resolveSessionAcceptance(params.bars4h, params.policy)
   return {
     pine_v7_parity_contract: 'tp1_tp4_auto_trailing_stop_source_role_flip_channel_idm_eqh_eql',
     zone_overlap_detected: zoneOverlap ? 'true' : 'false',
@@ -1756,7 +1789,13 @@ function zoneLifecycleDiagnostics(params: {
     role_flip_detected: roleFlipDemand || roleFlipSupply ? 'true' : 'false',
     role_flip_side: roleFlipDemand && roleFlipSupply ? 'both' : roleFlipDemand ? 'demand' : roleFlipSupply ? 'supply' : null,
     channel_1h_direction: channelDirection(params.bars1h),
-    channel_session_60m_direction: channelDirection(params.bars4h),
+    channel_session_60m_direction: sessionAcceptance.channelDirection,
+    session_60m_bias_method: 'whole_session_acceptance_v2',
+    session_60m_locked_at_high: sessionAcceptance.lockedAtSessionHigh ? 'true' : 'false',
+    session_60m_locked_at_low: sessionAcceptance.lockedAtSessionLow ? 'true' : 'false',
+    session_60m_close_position: sessionAcceptance.sessionClosePosition,
+    session_60m_latest_close_position: sessionAcceptance.latestClosePosition,
+    session_60m_move_atr: sessionAcceptance.sessionMoveAtr,
     channel_1d_direction: channelDirection(params.bars1d),
     idm_price: equalLevels.idmPrice,
     eqh_detected: equalLevels.eqh ? 'true' : 'false',
@@ -1850,31 +1889,125 @@ function emptyAssessment(
   }
 }
 
-function resolve4hBias(bars4h: S12Bar[]): S12Bias4h {
-  const bars = normalizeBars(bars4h)
-  if (bars.length === 0) return { direction: 'neutral', confidence: 'none', channelAlign: false }
-  const latest = bars[bars.length - 1]
-  const previous = bars[bars.length - 2] ?? null
-  const range = Math.max(0.0001, latest.high - latest.low)
-  const closePosition = (latest.close - latest.low) / range
-  const bullishCandle = latest.close > latest.open && closePosition >= 0.55
-  const confirmedStructure = previous != null && latest.close > previous.close && latest.low >= previous.low * 0.995
-  const bearishStructure = previous != null && latest.close < previous.close && latest.high <= previous.high * 1.005
-  if (bullishCandle && (confirmedStructure || previous == null)) {
-    return {
-      direction: 'long',
-      confidence: confirmedStructure ? 'confirmed' : 'provisional',
-      channelAlign: closePosition >= 0.55,
-    }
-  }
-  if (!bullishCandle && bearishStructure) {
-    return { direction: 'short', confidence: 'confirmed', channelAlign: false }
-  }
-  return { direction: 'neutral', confidence: previous == null ? 'provisional' : 'confirmed', channelAlign: closePosition >= 0.5 }
+interface S12SessionAcceptance {
+  direction: S12HtfBias['direction']
+  confidence: S12HtfBias['confidence']
+  channelAlign: boolean
+  channelDirection: 'long' | 'short' | 'neutral' | 'unavailable'
+  lockedAtSessionHigh: boolean
+  lockedAtSessionLow: boolean
+  sessionClosePosition: number | null
+  latestClosePosition: number | null
+  sessionMoveAtr: number | null
 }
 
-function resolve1hBias(bars1h: S12Bar[]): S12HtfBias {
-  return resolve4hBias(bars1h)
+function resolveSessionAcceptance(barsInput: S12Bar[], policy: S12TimingPolicy): S12SessionAcceptance {
+  const normalized = normalizeBars(barsInput)
+  if (normalized.length === 0) {
+    return {
+      direction: 'neutral',
+      confidence: 'none',
+      channelAlign: false,
+      channelDirection: 'unavailable',
+      lockedAtSessionHigh: false,
+      lockedAtSessionLow: false,
+      sessionClosePosition: null,
+      latestClosePosition: null,
+      sessionMoveAtr: null,
+    }
+  }
+  const latestSessionDate = new Date(
+    normalized[normalized.length - 1].startMs + TW_OFFSET_MS,
+  ).toISOString().slice(0, 10)
+  const bars = normalized.filter((bar) => (
+    new Date(bar.startMs + TW_OFFSET_MS).toISOString().slice(0, 10) === latestSessionDate
+  ))
+
+  const first = bars[0]
+  const latest = bars[bars.length - 1]
+  const previous = bars[bars.length - 2] ?? null
+  const atr = averageTrueRange(bars, Math.min(14, bars.length))
+    ?? Math.max(0.0001, latest.high - latest.low)
+  const sessionHigh = Math.max(...bars.map((bar) => bar.high))
+  const sessionLow = Math.min(...bars.map((bar) => bar.low))
+  const sessionRange = Math.max(0.0001, sessionHigh - sessionLow)
+  const tolerance = Math.max(
+    0.0001,
+    atr * policy.sessionLockToleranceAtr,
+    Math.abs(latest.close) * policy.sessionLockTolerancePct,
+  )
+  const lastBars = bars.slice(-Math.min(policy.sessionLockMinBars, bars.length))
+  const sessionMoveAtr = atr > 0 ? (latest.close - first.open) / atr : 0
+  const lockedAtSessionHigh = bars.length >= policy.sessionLockMinBars
+    && sessionMoveAtr >= policy.sessionAcceptanceMinMoveAtr
+    && lastBars.every((bar) => (
+      bar.high - bar.low <= tolerance
+      && Math.abs(bar.close - sessionHigh) <= tolerance
+    ))
+  const lockedAtSessionLow = bars.length >= policy.sessionLockMinBars
+    && sessionMoveAtr <= -policy.sessionAcceptanceMinMoveAtr
+    && lastBars.every((bar) => (
+      bar.high - bar.low <= tolerance
+      && Math.abs(bar.close - sessionLow) <= tolerance
+    ))
+  const latestRange = latest.high - latest.low
+  const latestClosePosition = latestRange > tolerance
+    ? (latest.close - latest.low) / latestRange
+    : lockedAtSessionHigh
+      ? 1
+      : lockedAtSessionLow
+        ? 0
+        : 0.5
+  const sessionClosePosition = (latest.close - sessionLow) / sessionRange
+  const bullishCandle = latest.close > latest.open && latestClosePosition >= 0.55
+  const confirmedStructure = previous != null && latest.close > previous.close && latest.low >= previous.low * 0.995
+  const bearishCandle = latest.close < latest.open && latestClosePosition <= 0.45
+  const bearishStructure = previous != null && latest.close < previous.close && latest.high <= previous.high * 1.005
+  const channel = channelDirection(bars)
+  const wholeSessionLong = sessionMoveAtr >= policy.sessionAcceptanceMinMoveAtr
+    && sessionClosePosition >= policy.sessionAcceptanceMinClosePosition
+    && channel !== 'short'
+  const wholeSessionShort = sessionMoveAtr <= -policy.sessionAcceptanceMinMoveAtr
+    && sessionClosePosition <= 1 - policy.sessionAcceptanceMinClosePosition
+    && channel !== 'long'
+  const direction: S12HtfBias['direction'] = (
+    (bullishCandle && (confirmedStructure || previous == null))
+    || wholeSessionLong
+    || lockedAtSessionHigh
+  )
+    ? 'long'
+    : (
+        (bearishCandle && (bearishStructure || previous == null))
+        || wholeSessionShort
+        || lockedAtSessionLow
+      )
+      ? 'short'
+      : 'neutral'
+
+  return {
+    direction,
+    confidence: bars.length >= 2 ? 'confirmed' : 'provisional',
+    channelAlign: direction === 'long' && channel === 'long',
+    channelDirection: channel,
+    lockedAtSessionHigh,
+    lockedAtSessionLow,
+    sessionClosePosition: round(sessionClosePosition, 4),
+    latestClosePosition: round(latestClosePosition, 4),
+    sessionMoveAtr: round(sessionMoveAtr, 4),
+  }
+}
+
+function resolve4hBias(bars4h: S12Bar[], policy: S12TimingPolicy): S12Bias4h {
+  const acceptance = resolveSessionAcceptance(bars4h, policy)
+  return {
+    direction: acceptance.direction,
+    confidence: acceptance.confidence,
+    channelAlign: acceptance.channelAlign,
+  }
+}
+
+function resolve1hBias(bars1h: S12Bar[], policy: S12TimingPolicy): S12HtfBias {
+  return resolve4hBias(bars1h, policy)
 }
 
 function latestBullishFvg1h(bars: S12Bar[], atr: number, policy: S12TimingPolicy): S12IntradayZone | null {
@@ -2243,6 +2376,8 @@ function buildEquityMutationContext(params: {
   const repricingBreakout = priorHigh != null && latest.close > priorHigh + atr15m * params.policy.repricingBreakoutAtr
   const reclaimBreakout = priorClose != null && priorHigh != null && priorClose <= priorHigh && latest.close > priorHigh
   const strongClose = latest.close > latest.open && closePosition >= params.policy.strongClosePosition && bodyPct >= params.policy.strongBodyPct
+  const sessionAcceptance = resolveSessionAcceptance(bars, params.policy)
+  const acceptedStrongClose = strongClose || sessionAcceptance.lockedAtSessionHigh
   const higherLow = previous != null && latest.low >= previous.low - atr15m * params.policy.higherLowAtrTolerance
   const htfHardBlock = params.bias4h.direction === 'short' && params.bias1h.direction === 'short'
   const riskHaircuts = [
@@ -2253,7 +2388,7 @@ function buildEquityMutationContext(params: {
   const positiveReasons = [
     repricingBreakout ? '15m_repricing_breakout' : null,
     reclaimBreakout ? '15m_prior_high_reclaim' : null,
-    strongClose ? '15m_strong_close' : null,
+    acceptedStrongClose ? (sessionAcceptance.lockedAtSessionHigh ? 'session_high_lock_acceptance' : '15m_strong_close') : null,
     higherLow ? '15m_higher_low_acceptance' : null,
     vwapFastAcceptance ? 'vwap_fast_acceptance' : null,
     volumeConstructive ? 'volume_participation' : null,
@@ -2293,7 +2428,7 @@ function buildEquityMutationContext(params: {
     tightStopRisk &&
     vwapFastAcceptance &&
     volumeConstructive &&
-    strongClose &&
+    acceptedStrongClose &&
     (repricingBreakout || reclaimBreakout) &&
     score >= params.policy.strictMutationMinScore,
   )
@@ -2304,7 +2439,7 @@ function buildEquityMutationContext(params: {
     zoneResult.stopPlan != null &&
     !htfHardBlock &&
     tightStopRisk &&
-    strongClose &&
+    acceptedStrongClose &&
     higherLow &&
     score >= params.policy.limitedMutationMinScore &&
     (vwapFastAcceptance || supportiveSlowVwap) &&
@@ -2537,6 +2672,7 @@ function stateReason(state: S12IntradayState, extra?: string): string {
     case 'waiting_15m_completed_bars': return 's12_waiting_15m_completed_bars'
     case 'waiting_session_60m_completed_bar': return 's12_waiting_session_60m_completed_bar'
     case 'waiting_session_60m_long_bias': return 's12_waiting_session_60m_long_bias'
+    case 'waiting_session_60m_bearish_risk': return 's12_waiting_session_60m_bearish_risk'
     case 'waiting_4h_completed_bar': return 's12_waiting_4h_completed_bar'
     case 'waiting_4h_long_bias': return 's12_waiting_4h_long_bias'
     case 'waiting_1h_completed_bar': return 's12_waiting_1h_completed_bar'
@@ -3953,9 +4089,9 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
   if (barsSession60.length < 1) {
     return emptyAssessment(input, 'waiting_session_60m_completed_bar', 's12_waiting_session_60m_completed_bar', completedBars, completedBars)
   }
-  const bias4h = resolve4hBias(barsSession60)
+  const bias4h = resolve4hBias(barsSession60, policy)
   const neutral1hBias: S12HtfBias = { direction: 'neutral', confidence: 'none', channelAlign: false }
-  const bias1h = bars1h.length > 0 ? resolve1hBias(bars1h) : neutral1hBias
+  const bias1h = bars1h.length > 0 ? resolve1hBias(bars1h, policy) : neutral1hBias
   const supplyZone1h = currentSupplyZone1h ?? fallbackSupplyZone1h
   const demandZone1h = currentDemandZone1h ?? fallbackDemandZone1h
   const parityDiagnostics = zoneLifecycleDiagnostics({ demandZone1h, supplyZone1h, bars15m: context15mBars, bars1h, bars4h: barsSession60, bars1d, policy })
@@ -4014,10 +4150,10 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
         ? 'current_session_60m'
         : 'unavailable'
   )
-  if (shouldBlockOnSession60Bias(sessionContextSource, bias4h) && !equityMutation.active) {
+  if (shouldBlockOnSession60BearishRisk(sessionContextSource, bias4h)) {
     return completeAssessment({
       input: inputWithZoneDiagnostics,
-      state: 'waiting_session_60m_long_bias',
+      state: 'waiting_session_60m_bearish_risk',
       completedBars,
       bias4h,
       bias1h,
@@ -4028,8 +4164,8 @@ export function assessS12IntradayStructure(input: S12IntradayInput): S12Intraday
       sequence: {},
       extraDetail: {
         latest_session_60m_close: price(barsSession60[barsSession60.length - 1]?.close),
-        required: 'session_60m_long_channel_align',
-        session_60m_bias_gate: 'current_session_only',
+        required: 'session_60m_not_confirmed_short',
+        session_60m_bias_gate: 'confirmed_short_only',
         equity_mutation_context: 'false',
         equity_mutation_score: equityMutation.score,
         equity_mutation_reasons: equityMutation.reasons.join('|'),

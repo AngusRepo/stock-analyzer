@@ -168,6 +168,7 @@ def build_feature_selection_cache_key(
     selection_params: dict,
     train_end_date: str | None,
     gcs_prefix: str | None,
+    prep_gcs_prefix: str | None = None,
 ) -> str:
     """Exact-cache key for monthly feature selection evidence."""
 
@@ -181,6 +182,7 @@ def build_feature_selection_cache_key(
         "selection_params": selection_params,
         "train_end_date": train_end_date,
         "gcs_prefix": gcs_prefix or "universal",
+        "prep_gcs_prefix": prep_gcs_prefix or "universal",
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
@@ -1948,6 +1950,7 @@ def run_feature_selection_pipeline(
     icir_weight: float | None = None,
     train_end_date: str | None = None,  # 2026-04-19 N2: walk-forward — filter dates ≤ this (no future leak)
     gcs_prefix: str | None = None,       # 2026-04-19 N2: walk-forward — write to {prefix}/feature_pool.json
+    prep_gcs_prefix: str | None = None,
     **_kwargs,  # absorb deprecated params kept in old scheduler payloads
 ) -> dict:
     """Full 2.0 pipeline:
@@ -2006,16 +2009,17 @@ def run_feature_selection_pipeline(
         return {"error": "GCS_BUCKET_NAME not configured or bucket unavailable"}
 
     # ── 1. Load prep data ────────────────────────────────────────────────────
+    prep_input_prefix = str(prep_gcs_prefix or "universal").strip().rstrip("/")
     prep_blobs = sorted(
-        [b for b in bucket.list_blobs(prefix="universal/prep/") if b.name.endswith(".npz")],
+        [b for b in bucket.list_blobs(prefix=f"{prep_input_prefix}/prep/") if b.name.endswith(".npz")],
         key=lambda b: b.name,
     )
     if not prep_blobs:
-        return {"error": "No prep data in GCS. Run retrain first."}
+        return {"error": f"No prep data in GCS prefix={prep_input_prefix}. Run retrain first."}
 
     # Feature names + exact evidence cache. A cache hit means the GCS prep
     # objects, feature schema, and selection policy are byte-for-byte the same.
-    fn_blob = bucket.blob("universal/prep/feature_names.json")
+    fn_blob = bucket.blob(f"{prep_input_prefix}/prep/feature_names.json")
     feature_names = json.loads(fn_blob.download_as_text())
     cache_key = build_feature_selection_cache_key(
         prep_blobs=prep_blobs,
@@ -2024,6 +2028,7 @@ def run_feature_selection_pipeline(
         selection_params=selection_params,
         train_end_date=train_end_date,
         gcs_prefix=gcs_prefix,
+        prep_gcs_prefix=prep_input_prefix,
     )
     cached = load_feature_selection_cache(bucket, cache_key)
     if cached is not None:

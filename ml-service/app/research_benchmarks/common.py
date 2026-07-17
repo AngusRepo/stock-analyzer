@@ -13,8 +13,12 @@ import numpy as np
 class TabularBenchmarkDataset:
     X: np.ndarray
     y: np.ndarray
+    target_returns: np.ndarray
     dates: np.ndarray
     sectors: np.ndarray
+    symbols: np.ndarray
+    markets: np.ndarray
+    label_known_dates: np.ndarray
     feature_names: list[str]
     source: str
 
@@ -135,10 +139,25 @@ def load_tabular_dataset(payload: dict[str, Any]) -> TabularBenchmarkDataset:
     if isinstance(data, dict) and "X" in data and "y" in data:
         X = np.asarray(data["X"], dtype=np.float32)
         y = np.asarray(data["y"], dtype=np.float32).reshape(-1)
+        target_returns = np.asarray(data.get("target_returns", data["y"]), dtype=np.float32).reshape(-1)
         dates = np.asarray(data.get("dates", np.arange(len(y))), dtype=object)
         sectors = np.asarray(data.get("sectors", ["unknown"] * len(y)), dtype=object)
+        symbols = np.asarray(data.get("symbols", [""] * len(y)), dtype=object)
+        markets = np.asarray(data.get("markets", ["TW"] * len(y)), dtype=object)
+        label_known_dates = np.asarray(data.get("label_known_dates", [""] * len(y)), dtype=object)
         names = [str(v) for v in data.get("feature_names", [])] or [f"f{i}" for i in range(X.shape[1])]
-        return TabularBenchmarkDataset(X=X, y=y, dates=dates, sectors=sectors, feature_names=names, source="payload.tabular_dataset")
+        return TabularBenchmarkDataset(
+            X=X,
+            y=y,
+            target_returns=target_returns,
+            dates=dates,
+            sectors=sectors,
+            symbols=symbols,
+            markets=markets,
+            label_known_dates=label_known_dates,
+            feature_names=names,
+            source="payload.tabular_dataset",
+        )
 
     gcs_prefix = str(payload.get("gcs_prefix") or payload.get("data_slice", {}).get("gcs_prefix") or "universal").strip().rstrip("/")
     batch_count = int(payload.get("batch_count") or payload.get("data_slice", {}).get("batch_count") or 5)
@@ -148,8 +167,12 @@ def load_tabular_dataset(payload: dict[str, Any]) -> TabularBenchmarkDataset:
 
     all_X: list[np.ndarray] = []
     all_y: list[np.ndarray] = []
+    all_target_returns: list[np.ndarray] = []
     all_dates: list[np.ndarray] = []
     all_sectors: list[np.ndarray] = []
+    all_symbols: list[np.ndarray] = []
+    all_markets: list[np.ndarray] = []
+    all_label_known_dates: list[np.ndarray] = []
     for _, raw in download_existing_blobs(bucket, keys, max_workers=4):
         if raw is None:
             continue
@@ -158,15 +181,23 @@ def load_tabular_dataset(payload: dict[str, Any]) -> TabularBenchmarkDataset:
             continue
         all_X.append(np.asarray(npz["X"], dtype=np.float32))
         all_y.append(np.asarray(npz["y"], dtype=np.float32).reshape(-1))
+        all_target_returns.append(np.asarray(npz["target_returns"] if "target_returns" in npz.files else npz["y"], dtype=np.float32).reshape(-1))
         all_dates.append(np.asarray(npz["dates"] if "dates" in npz.files else np.arange(len(all_y[-1])), dtype=object))
         all_sectors.append(np.asarray(npz["sectors"] if "sectors" in npz.files else ["unknown"] * len(all_y[-1]), dtype=object))
+        all_symbols.append(np.asarray(npz["symbols"] if "symbols" in npz.files else [""] * len(all_y[-1]), dtype=object))
+        all_markets.append(np.asarray(npz["markets"] if "markets" in npz.files else ["TW"] * len(all_y[-1]), dtype=object))
+        all_label_known_dates.append(np.asarray(npz["label_known_dates"] if "label_known_dates" in npz.files else [""] * len(all_y[-1]), dtype=object))
     if not all_X:
         raise RuntimeError(f"no tabular prep batches found under {gcs_prefix}/prep")
 
     X = np.vstack(all_X)
     y = np.concatenate(all_y)
+    target_returns = np.concatenate(all_target_returns)
     dates = np.concatenate(all_dates)
     sectors = np.concatenate(all_sectors)
+    symbols = np.concatenate(all_symbols)
+    markets = np.concatenate(all_markets)
+    label_known_dates = np.concatenate(all_label_known_dates)
     feature_blob = bucket.blob(f"{gcs_prefix}/prep/feature_names.json")
     if feature_blob.exists():
         import json
@@ -178,8 +209,12 @@ def load_tabular_dataset(payload: dict[str, Any]) -> TabularBenchmarkDataset:
     return TabularBenchmarkDataset(
         X=X[order],
         y=y[order],
+        target_returns=target_returns[order],
         dates=dates[order],
         sectors=sectors[order],
+        symbols=symbols[order],
+        markets=markets[order],
+        label_known_dates=label_known_dates[order],
         feature_names=feature_names,
         source=f"gs://*/{gcs_prefix}/prep/*.npz",
     )

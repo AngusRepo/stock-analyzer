@@ -90,8 +90,8 @@ class UniversalRetrainTriggerRequest(BaseModel):
         default=False,
         description="Fail closed unless the compute snapshot business date exactly matches run_date.",
     )
-    sequence_gcs_prefix: str | None = Field(default=None, description="GCS prefix for sequence_records_v2 batches.")
-    sequence_batch_count: int | None = Field(default=None, description="Number of sequence_records_v2 batches.")
+    sequence_gcs_prefix: str | None = Field(default=None, description="GCS prefix for sequence_records_v3 batches.")
+    sequence_batch_count: int | None = Field(default=None, description="Number of sequence_records_v3 batches.")
     sequence_seq_len: int | None = Field(default=None, description="Shared L3 sequence context override.")
     dlinear_seq_len: int | None = Field(default=None, description="DLinear sequence context override.")
     patchtst_seq_len: int | None = Field(default=None, description="PatchTST sequence context override.")

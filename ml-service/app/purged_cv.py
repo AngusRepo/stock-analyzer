@@ -291,9 +291,7 @@ def purged_train_test_split(
     )
 
 
-def purged_explicit_walk_forward_split(
-    X: np.ndarray,
-    y: np.ndarray,
+def purged_explicit_walk_forward_indices(
     dates: np.ndarray,
     *,
     train_start: str,
@@ -301,25 +299,15 @@ def purged_explicit_walk_forward_split(
     test_start: str,
     test_end: str,
     label_horizon_days: int,
-) -> tuple[
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    np.ndarray,
-    dict[str, object],
-]:
-    """Split explicit walk-forward ranges and purge train labels crossing test start.
+    label_known_dates: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
+    """Build explicit walk-forward indices without leaking unresolved labels.
 
-    ``label_horizon_days`` is counted in observed trading dates. A train row at
-    position ``t`` is retained only when its label end ``t + horizon`` is before
-    the first test date. This prevents a forward-return label from reading prices
-    inside the test window.
+    New prep artifacts provide the actual per-symbol ``label_known_dates``. Legacy
+    artifacts can only use the observed-trading-date horizon approximation and are
+    explicitly marked as such in metadata.
     """
 
-    if len(X) != len(y) or len(X) != len(dates):
-        raise ValueError("X_y_dates_length_mismatch")
     if label_horizon_days < 1:
         raise ValueError("label_horizon_days_must_be_positive")
     if train_start > train_end:
@@ -344,12 +332,21 @@ def purged_explicit_walk_forward_split(
 
     first_test_date = str(test_dates[0])
     first_test_position = date_position[first_test_date]
-    safe_train_dates = {
-        str(date)
-        for date in requested_train_dates
-        if date_position[str(date)] + label_horizon_days < first_test_position
-    }
-    train_mask = requested_train_mask & np.isin(dates_str, list(safe_train_dates))
+    if label_known_dates is not None:
+        if len(label_known_dates) != len(dates_str):
+            raise ValueError("dates_label_known_dates_length_mismatch")
+        label_known_str = np.asarray(label_known_dates).astype(str)
+        label_known_valid = ~np.isin(label_known_str, ["", "None", "nan", "NaT"])
+        train_mask = requested_train_mask & label_known_valid & (label_known_str < first_test_date)
+        purge_method = "actual_label_known_date"
+    else:
+        safe_train_dates = {
+            str(date)
+            for date in requested_train_dates
+            if date_position[str(date)] + label_horizon_days < first_test_position
+        }
+        train_mask = requested_train_mask & np.isin(dates_str, list(safe_train_dates))
+        purge_method = "observed_date_horizon_approximation"
     effective_train_dates = np.sort(np.unique(dates_str[train_mask]))
     if not len(effective_train_dates):
         raise ValueError("walk_forward_train_empty_after_label_purge")
@@ -358,6 +355,8 @@ def purged_explicit_walk_forward_split(
     metadata: dict[str, object] = {
         "method": "walk_forward_explicit_label_purged",
         "purged": True,
+        "purge_method": purge_method,
+        "actual_label_known_date_required": label_known_dates is not None,
         "label_horizon_days": int(label_horizon_days),
         "requested_train_range": [train_start, train_end],
         "effective_train_range": [str(effective_train_dates[0]), str(effective_train_dates[-1])],
@@ -366,12 +365,48 @@ def purged_explicit_walk_forward_split(
         "purged_row_count": int(purged_mask.sum()),
     }
 
+    return np.flatnonzero(train_mask), np.flatnonzero(test_mask), metadata
+
+
+def purged_explicit_walk_forward_split(
+    X: np.ndarray,
+    y: np.ndarray,
+    dates: np.ndarray,
+    *,
+    train_start: str,
+    train_end: str,
+    test_start: str,
+    test_end: str,
+    label_horizon_days: int,
+    label_known_dates: np.ndarray | None = None,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[str, object],
+]:
+    """Split arrays using the shared point-in-time walk-forward contract."""
+
+    if len(X) != len(y) or len(X) != len(dates):
+        raise ValueError("X_y_dates_length_mismatch")
+    train_idx, test_idx, metadata = purged_explicit_walk_forward_indices(
+        dates,
+        train_start=train_start,
+        train_end=train_end,
+        test_start=test_start,
+        test_end=test_end,
+        label_horizon_days=label_horizon_days,
+        label_known_dates=label_known_dates,
+    )
     return (
-        X[train_mask],
-        y[train_mask],
-        dates[train_mask],
-        X[test_mask],
-        y[test_mask],
-        dates[test_mask],
+        X[train_idx],
+        y[train_idx],
+        dates[train_idx],
+        X[test_idx],
+        y[test_idx],
+        dates[test_idx],
         metadata,
     )

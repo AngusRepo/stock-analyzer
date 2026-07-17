@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -337,7 +338,7 @@ def test_opb_reward_ledger_aggregates_daily_portfolio_reward_by_arm():
             "alpha_allocation": _allocation("diversified_alpha", 0.50),
             "trade_pnl_pct": None,
             "trade_pnl_r": None,
-            "actual_return_pct": 0.04,
+            "canonical_selection_return_pct": 0.04,
         },
     ]
 
@@ -347,16 +348,25 @@ def test_opb_reward_ledger_aggregates_daily_portfolio_reward_by_arm():
 
     assert len(ledger) == 1
     assert ledger[0]["arm_id"] == "diversified_alpha"
-    assert ledger[0]["samples"] == 1
-    assert ledger[0]["reward_mean"] == pytest.approx(0.60 * 0.02 + 0.40 * -0.01)
+    assert ledger[0]["samples"] == 2
+    first_day_reward = 0.60 * 0.02 + 0.40 * -0.01
+    second_day_reward = 0.04 - 0.0018
+    assert ledger[0]["reward_mean"] == pytest.approx((first_day_reward + second_day_reward) / 2.0)
     assert ledger[0]["reward_mean_r"] == pytest.approx((0.60 * 0.50 + 0.40 * -0.25) / 1.0)
     assert ledger[0]["reward_r_samples"] == 1
-    assert ledger[0]["reward_source_counts"] == {"trade_pnl_pct": 2}
-    assert ledger[0]["risk_pct_rows"] == 2
+    assert ledger[0]["reward_source_counts"] == {
+        "canonical_adjusted_five_session_selection_return_net_cost": 1,
+        "trade_pnl_pct": 2,
+    }
+    assert ledger[0]["risk_pct_rows"] == 3
     assert ledger[0]["reward_history"] == [
         {"date": "2026-07-01", "reward": pytest.approx(0.008), "reward_r": pytest.approx(0.2)},
+        {"date": "2026-07-02", "reward": pytest.approx(0.0382), "reward_r": None},
     ]
-    assert ledger[0]["reward_policy"] == "executed_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_censored_otherwise"
+    assert ledger[0]["reward_policy"] == (
+        "verified_trade_pnl_pct_then_trade_pnl_r_scaled_by_s12_risk_then_"
+        "canonical_adjusted_five_session_selection_return_net_18bps"
+    )
 
 
 def test_opb_reward_ledger_uses_trade_pnl_r_scaled_by_s12_risk_when_pct_missing():
@@ -409,5 +419,78 @@ def test_opb_reward_ledger_query_is_point_in_time_bounded():
     assert ledger == []
     assert "dr.date < ?" in str(observed["sql"])
     assert "p.model_name = 'ensemble'" in str(observed["sql"])
-    assert "date(p.verified_at) <= date(?)" in str(observed["sql"])
-    assert observed["params"][:3] == ["2026-06-09", "2026-07-09", "2026-07-09"]
+    assert "date(ph.exit_date) <= date(?)" in str(observed["sql"])
+    assert "canonical_market_daily" in str(observed["sql"])
+    assert "ROW_NUMBER() OVER" in str(observed["sql"])
+    assert "datetime(p.generated_at) < datetime(timing.entry_date || ' 01:00:00')" in str(observed["sql"])
+    assert observed["params"][:4] == ["2026-06-09", "2026-07-09", "2026-06-09", "2026-07-09"]
+
+
+def test_opb_reward_ledger_sql_materializes_canonical_adjusted_selection_outcome():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE stocks (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL);
+        CREATE TABLE stock_prices (stock_id INTEGER, date TEXT, open REAL, close REAL);
+        CREATE TABLE canonical_market_daily (
+          stock_id TEXT, date TEXT, source TEXT, close REAL, adj_close REAL
+        );
+        CREATE TABLE daily_recommendations (
+          date TEXT, stock_id INTEGER, symbol TEXT, rank INTEGER, alpha_allocation TEXT
+        );
+        CREATE TABLE predictions (
+          id INTEGER PRIMARY KEY, stock_id INTEGER, prediction_date TEXT, model_name TEXT,
+          generated_at TEXT, trade_pnl_pct REAL, trade_pnl_r REAL, verified_at TEXT,
+          verification_label_known_date TEXT
+        );
+        """
+    )
+    conn.execute("INSERT INTO stocks VALUES (1, 'AAA')")
+    prices = [
+        ("2026-07-01", 99.0, 100.0),
+        ("2026-07-02", 100.0, 101.0),
+        ("2026-07-03", 102.0, 103.0),
+        ("2026-07-06", 104.0, 105.0),
+        ("2026-07-07", 106.0, 107.0),
+        ("2026-07-08", 109.0, 110.0),
+    ]
+    for day, open_price, close_price in prices:
+        conn.execute("INSERT INTO stock_prices VALUES (1, ?, ?, ?)", (day, open_price, close_price))
+        conn.execute(
+            "INSERT INTO canonical_market_daily VALUES ('AAA', ?, 'finlab.price', ?, ?)",
+            (day, close_price, close_price),
+        )
+    allocation = json.dumps({
+        "selected": True,
+        "allocation_weight": 1.0,
+        "opb_controller": {"enabled": True, "selected_arm": {"arm_id": "risk_on"}},
+    })
+    conn.execute(
+        "INSERT INTO daily_recommendations VALUES ('2026-07-01', 1, 'AAA', 1, ?)",
+        (allocation,),
+    )
+    conn.execute(
+        """
+        INSERT INTO predictions (
+          id, stock_id, prediction_date, model_name, generated_at,
+          trade_pnl_pct, trade_pnl_r, verified_at, verification_label_known_date
+        ) VALUES (1, 1, '2026-07-01', 'ensemble', '2026-07-01 13:00:00', NULL, NULL, NULL, NULL)
+        """
+    )
+
+    def query_fn(sql: str, params: list[object], timeout: float = 30.0) -> list[dict]:
+        return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+    ledger = load_online_portfolio_bandit_reward_ledger(
+        as_of_date="2026-07-09",
+        lookback_days=30,
+        query_fn=query_fn,
+    )
+
+    assert len(ledger) == 1
+    assert ledger[0]["samples"] == 1
+    assert ledger[0]["reward_mean"] == pytest.approx(0.0982)
+    assert ledger[0]["reward_source_counts"] == {
+        "canonical_adjusted_five_session_selection_return_net_cost": 1,
+    }

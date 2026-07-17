@@ -1,4 +1,8 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
+import {
+  historicalLearningLineageBlockedMessage,
+  historicalLearningLineageDecision,
+} from './historicalLearningLineageGuard'
 import { checkAlerts } from './localMaintenance'
 import { crawlAndStoreNews } from './news'
 import { computeAndStoreIndicators } from './technicalIndicators'
@@ -7,13 +11,18 @@ import { assertMarketDataReady, loadMarketDataReadinessStats } from './marketDat
 import { runRegimeCompute } from './controllerDailyWorkflows'
 import {
   runAllocatorEvFusionRefresh,
+  runAllocatorEvFeatureSnapshotBackfill,
   runFinLabV4Backfill,
   runL4AlphaEvRefresh,
+  runOpbArmPriorRefresh,
 } from './controllerResearchWorkflows'
 import { runOfficialMarketSummaryRefresh } from './officialMarketSummaryRefresh'
 import { enqueuePostScreenerPipelineContinuation } from './postScreenerContinuation'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
-import { L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
+import {
+  readCurrentExpectedReturnServingState,
+  refreshExpectedReturnServingState,
+} from './expectedReturnServingState'
 import { fetchPunishedStocks } from './twseApi'
 import {
   finLabCanonicalDatasetsForLane,
@@ -35,7 +44,18 @@ const SOURCE_READINESS_FINLAB_REFRESH_COOLDOWN_SECONDS = 45 * 60
 const FINLAB_PENDING_WATCHDOG_STALE_MS = 15 * 60_000
 const FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS = 3
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
-const S12_REPLAY_QUEUE_CHUNK_SIZE = 250
+const S12_REPLAY_QUEUE_CHUNK_SIZE = 20
+const S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS = 60
+const S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS = 180
+const S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS = 60
+
+function s12ReplayLeaseRetryDelaySeconds(signalDate: string, attempt: number): number {
+  const seed = `${signalDate}:${attempt}`
+    .split('')
+    .reduce((hash, char) => ((hash * 33) ^ char.charCodeAt(0)) >>> 0, 5381)
+  const jitterWindow = S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS - S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS
+  return S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS + (seed % (jitterWindow + 1))
+}
 const FINLAB_CANONICAL_DAILY_CHECKS = [
   {
     key: 'canonical_market_daily:listed_otc',
@@ -422,22 +442,22 @@ async function checkEveningChainSourceReadiness(
     countReadinessRows(
       env.DB,
       'canonical_fundamental_features:valuation_daily_union',
-      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND source = 'finlab.fundamental_factor_diversity' AND (pe IS NOT NULL OR pb IS NOT NULL)",
-      [targetDate],
+      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND as_of_date <= ? AND source = 'finlab.daily_valuation' AND (pe IS NOT NULL OR pb IS NOT NULL)",
+      [targetDate, targetDate],
       1500,
     ),
     countReadinessRows(
       env.DB,
       'canonical_fundamental_features:valuation_daily_pe',
-      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND source = 'finlab.fundamental_factor_diversity' AND pe IS NOT NULL",
-      [targetDate],
+      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND as_of_date <= ? AND source = 'finlab.daily_valuation' AND pe IS NOT NULL",
+      [targetDate, targetDate],
       1000,
     ),
     countReadinessRows(
       env.DB,
       'canonical_fundamental_features:valuation_daily_pb',
-      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND source = 'finlab.fundamental_factor_diversity' AND pb IS NOT NULL",
-      [targetDate],
+      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND as_of_date <= ? AND source = 'finlab.daily_valuation' AND pb IS NOT NULL",
+      [targetDate, targetDate],
       1500,
     ),
   ])
@@ -1295,6 +1315,7 @@ export async function syncLegacyFinancialsFromFinLabCanonical(
       JOIN stocks s ON s.symbol = f.stock_id
       WHERE f.source LIKE 'finlab.%'
         AND COALESCE(f.available_date, f.report_date, f.period) <= ?
+        AND f.as_of_date <= ?
         AND COALESCE(f.available_date, f.report_date, f.period) >= date(?, '-3 years')
         AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
         AND (
@@ -1337,7 +1358,7 @@ export async function syncLegacyFinancialsFromFinLabCanonical(
       net_income=COALESCE(excluded.net_income, financials.net_income),
       total_assets=COALESCE(excluded.total_assets, financials.total_assets),
       total_liabilities=COALESCE(excluded.total_liabilities, financials.total_liabilities)
-  `).bind(targetDate, targetDate).run()
+  `).bind(targetDate, targetDate, targetDate).run()
 
   const currentQuarter = quarterFromIsoDate(targetDate)
   const valuationResult = await db.prepare(`
@@ -1356,6 +1377,7 @@ export async function syncLegacyFinancialsFromFinLabCanonical(
       JOIN stocks s ON s.symbol = f.stock_id
       WHERE f.source LIKE 'finlab.%'
         AND COALESCE(f.available_date, f.report_date, f.period) <= ?
+        AND f.as_of_date <= ?
         AND (f.pe IS NOT NULL OR f.pb IS NOT NULL OR f.dividend_yield IS NOT NULL)
         AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
     )
@@ -1378,7 +1400,7 @@ export async function syncLegacyFinancialsFromFinLabCanonical(
       pe=COALESCE(excluded.pe, financials.pe),
       pb=COALESCE(excluded.pb, financials.pb),
       dividend_yield=COALESCE(excluded.dividend_yield, financials.dividend_yield)
-  `).bind(targetDate, currentQuarter).run()
+  `).bind(targetDate, targetDate, currentQuarter).run()
 
   return {
     financialRows: d1ChangeCount(factResult),
@@ -1830,26 +1852,26 @@ async function runDailyAllocatorEvReadiness(
   const started = Date.now()
   const parts: string[] = []
   let l4ChampionAvailable = false
+  let fusionChampionAvailable = false
 
   const loadApprovedL4Champion = async (): Promise<Record<string, any> | null> => {
-    const rawConfig = await env.KV.get('trading:config', 'json').catch(() => null) as Record<string, any> | null
+    const rawConfig = await env.KV.get('trading:config', 'json') as Record<string, any> | null
     const ensembleV2 = rawConfig?.ensemble_v2 && typeof rawConfig.ensemble_v2 === 'object'
       ? rawConfig.ensemble_v2 as Record<string, any>
       : {}
     const champion = ensembleV2.l4AlphaEv ?? ensembleV2.l4_alpha_ev
-    const championDecision = String(champion?.validation_packet?.decision ?? '').toUpperCase()
-    const approved =
-      champion &&
-      typeof champion === 'object' &&
-      champion.expected_return_owner === 'l4_alpha_ev' &&
-      champion.promotion_state === 'production_approved' &&
-      championDecision === 'PASS' &&
-      champion.artifact_contract_version === L4_ALPHA_EV_CONTRACT.artifactContractVersion &&
-      champion.feature_semantic_version === L4_ALPHA_EV_CONTRACT.featureSemanticVersion &&
-      champion.label_schema_version === L4_ALPHA_EV_CONTRACT.labelSchemaVersion &&
-      typeof champion.model_version === 'string' &&
-      champion.model_version.length > 0
-    return approved ? champion as Record<string, any> : null
+    const state = await readCurrentExpectedReturnServingState(env, triggerTime)
+    return state.artifacts.l4_alpha_ev.eligible ? champion as Record<string, any> : null
+  }
+
+  const loadApprovedFusionChampion = async (): Promise<Record<string, any> | null> => {
+    const rawConfig = await env.KV.get('trading:config', 'json') as Record<string, any> | null
+    const ensembleV2 = rawConfig?.ensemble_v2 && typeof rawConfig.ensemble_v2 === 'object'
+      ? rawConfig.ensemble_v2 as Record<string, any>
+      : {}
+    const champion = ensembleV2.allocatorEvFusion ?? ensembleV2.allocator_ev_fusion
+    const state = await readCurrentExpectedReturnServingState(env, triggerTime)
+    return state.artifacts.allocator_ev_fusion.eligible ? champion as Record<string, any> : null
   }
 
   try {
@@ -1894,6 +1916,7 @@ async function runDailyAllocatorEvReadiness(
     const fusionStarted = Date.now()
     const fusionSummary = await runAllocatorEvFusionRefresh(env, triggerTime, 'weekly')
     parts.push(`fusion=${fusionSummary}`)
+    fusionChampionAvailable = (await loadApprovedFusionChampion()) !== null
     await logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh', {
       status: 'success',
       summary: `daily-chain ${fusionSummary}`,
@@ -1902,6 +1925,7 @@ async function runDailyAllocatorEvReadiness(
     })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
+    fusionChampionAvailable = (await loadApprovedFusionChampion()) !== null
     parts.push(`fusion_degraded=${message}`)
     await logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh', {
       status: 'error',
@@ -1910,6 +1934,42 @@ async function runDailyAllocatorEvReadiness(
         : `daily-chain allocator EV fusion degraded; pipeline continues in observation mode with validated S12 trade EV only; BUY/allocation remain fail closed when expected return is unavailable for ${triggerTime}`,
       duration_ms: Date.now() - started,
       error: message,
+      run_date: triggerTime,
+    })
+  }
+
+  const servingState = await refreshExpectedReturnServingState(env, triggerTime)
+  const priorOwner = servingState.expected_return_owner
+  parts.push(`expected_return_serving_state=${servingState.state}`)
+  parts.push(`expected_return_action_gate=${servingState.action_gate}`)
+  if (priorOwner) {
+    const opbStarted = Date.now()
+    try {
+      const opbSummary = await runOpbArmPriorRefresh(env, triggerTime, priorOwner)
+      parts.push(`opb_prior=${opbSummary}`)
+      await logSchedulerResult(env.KV, 'opb-arm-prior-refresh', {
+        status: 'success',
+        summary: `daily-chain ${opbSummary}`,
+        duration_ms: Date.now() - opbStarted,
+        run_date: triggerTime,
+      })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      parts.push(`opb_prior_not_ready=${message}`)
+      await logSchedulerResult(env.KV, 'opb-arm-prior-refresh', {
+        status: 'skipped',
+        summary: `daily-chain OPB prior retained; challenger not ready owner=${priorOwner}`,
+        duration_ms: Date.now() - opbStarted,
+        error: message,
+        run_date: triggerTime,
+      })
+    }
+  } else {
+    parts.push('opb_prior_not_ready=no_production_expected_return_owner')
+    await logSchedulerResult(env.KV, 'opb-arm-prior-refresh', {
+      status: 'skipped',
+      summary: 'daily-chain OPB prior retained; no production L4/Fusion expected-return owner',
+      duration_ms: 0,
       run_date: triggerTime,
     })
   }
@@ -1982,12 +2042,12 @@ async function continuePostScreenerPipeline(
     const startedAt = Date.now()
     const { runS12CandidateStructureSnapshots } = await import('./s12CandidateStructureSnapshots')
     const snapshotSummary = await runS12CandidateStructureSnapshots(env, triggerTime)
-    const summary = `pre-pipeline S12 snapshots persisted=${snapshotSummary.persisted}/${snapshotSummary.attempted} ready=${snapshotSummary.ready} setup=${snapshotSummary.setup_only} skipped=${snapshotSummary.skipped} errors=${snapshotSummary.errors}`
+    const summary = `pre-pipeline S12 snapshots persisted=${snapshotSummary.persisted}/${snapshotSummary.attempted} ready=${snapshotSummary.ready} setup=${snapshotSummary.setup_only} unavailable=${snapshotSummary.skipped} errors=${snapshotSummary.errors}${snapshotSummary.skipped > 0 ? ' analysis_continues=1 execution_fail_closed=1' : ''}`
     const snapshotComplete = snapshotSummary.attempted > 0
       && snapshotSummary.persisted === snapshotSummary.attempted
       && snapshotSummary.errors === 0
     await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-      status: snapshotComplete ? 'success' : 'error',
+      status: snapshotComplete && snapshotSummary.skipped === 0 ? 'success' : 'error',
       summary,
       duration_ms: Date.now() - startedAt,
       run_id: runId,
@@ -2261,6 +2321,10 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
 
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
+  if (runDate && isHistoricalReplayDate(twDate)) {
+    const lineageBoundary = await historicalLearningLineageDecision(env.DB, 'evening-chain', twDate)
+    if (!lineageBoundary.allowed) throw new Error(historicalLearningLineageBlockedMessage(lineageBoundary))
+  }
   if (!force && await hasEveningChainSucceeded(env, twDate)) {
     return `full evening chain already succeeded for ${twDate}; 21:00 root suppressed`
   }
@@ -2755,6 +2819,113 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 's12_research_recovery') {
+    const triggerTime = msg.triggerTime
+    const runId = msg.runId || `s12-research-recovery-${triggerTime}-${Date.now()}`
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid S12 research recovery date ${triggerTime}, skipping.`)
+      return
+    }
+    const { loadS12ResearchUsageStatus } = await import('./s12RuntimeBars')
+    const usage = await loadS12ResearchUsageStatus(env)
+    if (usage.status !== 'ok') {
+      await logSchedulerResult(env.KV, 's12-research-recovery', {
+        status: 'error',
+        summary: `quota preflight failed date=${triggerTime} bytes=${usage.bytes} limit=${usage.limit_bytes} remaining=${usage.remaining_bytes}; reconstruction=0`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: triggerTime,
+      }, env)
+      return
+    }
+
+    const { runS12CandidateStructureSnapshots } = await import('./s12CandidateStructureSnapshots')
+    const reconstruction = await runS12CandidateStructureSnapshots(env, triggerTime, {
+      source: 's12_candidate_snapshot_reconstruction',
+    })
+    const terminalSourceFailure = Object.keys(reconstruction.skip_reasons).some((reason) => (
+      reason.includes('shioaji_research_bandwidth_exhausted')
+      || reason.includes('s12_research_service_')
+      || reason.includes('missing_intraday_bars')
+      || reason.includes('empty_kbars')
+    ))
+    const complete = reconstruction.attempted > 0
+      && reconstruction.persisted === reconstruction.attempted
+      && reconstruction.errors === 0
+      && !terminalSourceFailure
+    if (!complete) {
+      await logSchedulerResult(env.KV, 's12-research-recovery', {
+        status: 'error',
+        summary: `reconstruction incomplete date=${triggerTime} attempted=${reconstruction.attempted} persisted=${reconstruction.persisted} skipped=${reconstruction.skipped} errors=${reconstruction.errors} source_failure=${terminalSourceFailure ? 1 : 0}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: triggerTime,
+      }, env)
+      return
+    }
+
+    const snapshotSummary = await runAllocatorEvFeatureSnapshotBackfill(env, {
+      startDate: triggerTime,
+      endDate: triggerTime,
+      dryRun: false,
+      candidateLimit: 1000,
+      l4MinSamples: 500,
+      l4MinDates: 20,
+    })
+    await logSchedulerResult(env.KV, 's12-research-recovery', {
+      status: 'success',
+      summary: `quota_ok remaining=${usage.remaining_bytes} reconstruction=${reconstruction.persisted}/${reconstruction.attempted} ready=${reconstruction.ready} snapshot=${JSON.stringify(snapshotSummary).slice(0, 500)}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: triggerTime,
+    }, env)
+    return
+  }
+
+  if (msg.type === 'post_pipeline_chain') {
+    const triggerTime = msg.triggerTime
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid post-pipeline chain date ${triggerTime}, skipping.`)
+      return
+    }
+    const { runPostPipelineCallbackChain } = await import('./postMarketChain')
+    await runPostPipelineCallbackChain(env, {
+      runDate: triggerTime,
+      upstreamRunId: msg.runId || `post-pipeline-chain-${triggerTime}`,
+      recoveryAttempt: 0,
+    })
+    return
+  }
+
+  if (msg.type === 'post_verify_chain') {
+    const triggerTime = msg.triggerTime
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid post-verify chain date ${triggerTime}, skipping.`)
+      return
+    }
+    const { runPostVerifyCallbackChain } = await import('./postMarketChain')
+    await runPostVerifyCallbackChain(env, {
+      runDate: triggerTime,
+      upstreamRunId: msg.runId || `post-verify-chain-${triggerTime}`,
+    })
+    return
+  }
+
+  if (msg.type === 'allocator_ev_lifecycle_recovery') {
+    const triggerTime = msg.triggerTime
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid allocator EV lifecycle recovery date ${triggerTime}, skipping.`)
+      return
+    }
+    const { runPostPipelineCallbackChain } = await import('./postMarketChain')
+    await runPostPipelineCallbackChain(env, {
+      runDate: triggerTime,
+      upstreamRunId: msg.runId || `allocator-ev-lifecycle-recovery-${triggerTime}`,
+      recoveryAttempt: Math.max(1, Number(msg.attempt ?? 1)),
+    })
+    return
+  }
+
   if (msg.type === 'finlab_backfill_complete') {
     const triggerTime = msg.triggerTime
     const attempt = Number.isFinite(msg.attempt) ? Number(msg.attempt) : 1
@@ -2989,6 +3160,8 @@ export async function processUpdateBatch(
       ? 'fusion_snapshot_missing'
       : requestedScope === 'fusion_snapshot_structure'
         ? 'fusion_snapshot_structure'
+        : requestedScope === 'signed_eligible_repair'
+          ? 'signed_eligible_repair'
         : 'l0'
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
       console.log(`[Queue] Invalid S12 replay backfill date ${triggerTime}, skipping.`)
@@ -2996,7 +3169,9 @@ export async function processUpdateBatch(
     }
     const {
       loadFusionSnapshotMissingReplaySymbols,
+      loadFusionSnapshotReplayCoverage,
       loadFusionSnapshotSymbols,
+      loadSignedEligibleRepairSymbolsByHistoricalDate,
       runS12HistoricalReplayForDate,
     } = await import('./s12ReplayTradeOutcome')
     if (replayScope === 'fusion_snapshot_structure') {
@@ -3027,22 +3202,113 @@ export async function processUpdateBatch(
       }
       return
     }
+    const dynamicCohortScope = replayScope === 'fusion_snapshot_missing' || replayScope === 'signed_eligible_repair'
     const cohortSymbols = replayScope === 'fusion_snapshot_missing'
       ? await loadFusionSnapshotMissingReplaySymbols(env.DB, triggerTime, maturityAsOfDate)
-      : undefined
-    const result = await runS12HistoricalReplayForDate(env, triggerTime, {
-      limit: S12_REPLAY_QUEUE_CHUNK_SIZE,
-      offset: replayScope === 'fusion_snapshot_missing' ? 0 : offset,
-      persist: true,
-      symbols: cohortSymbols,
-      maturityAsOfDate,
-    })
-    const nextOffset = replayScope === 'fusion_snapshot_missing'
+      : replayScope === 'signed_eligible_repair'
+        ? await loadSignedEligibleRepairSymbolsByHistoricalDate(env.DB, triggerTime)
+        : undefined
+    let result
+    try {
+      result = await runS12HistoricalReplayForDate(env, triggerTime, {
+        limit: S12_REPLAY_QUEUE_CHUNK_SIZE,
+        offset: dynamicCohortScope ? 0 : offset,
+        persist: true,
+        symbols: cohortSymbols,
+        maturityAsOfDate,
+        signedEligibleRepair: replayScope === 'signed_eligible_repair',
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.startsWith('s12_research_lease_busy:')) throw error
+      const leaseRetryAttempt = Math.max(0, Number((msg as any).leaseRetryAttempt ?? 0))
+      if (leaseRetryAttempt >= S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS) {
+        await logSchedulerResult(env.KV, 's12-replay-backfill', {
+          status: 'error',
+          summary: `date=${triggerTime} scope=${replayScope} research lease remained busy after ${leaseRetryAttempt} deferred attempts`,
+          duration_ms: 0,
+          run_id: runId,
+          run_date: statusRunDate,
+        }, env)
+        return
+      }
+      const delaySeconds = s12ReplayLeaseRetryDelaySeconds(triggerTime, leaseRetryAttempt + 1)
+      await env.UPDATE_QUEUE.send({
+        ...(msg as any),
+        leaseRetryAttempt: leaseRetryAttempt + 1,
+      }, { delaySeconds } as any)
+      await logSchedulerResult(env.KV, 's12-replay-backfill', {
+        status: 'running',
+        summary: `date=${triggerTime} scope=${replayScope} research lease busy; deferred_attempt=${leaseRetryAttempt + 1}/${S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS} delay_seconds=${delaySeconds}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: statusRunDate,
+      }, env)
+      return
+    }
+    const nextOffset = dynamicCohortScope
       ? 0
       : offset + Math.max(0, Number(result.attempted ?? 0))
-    const hasMore = replayScope === 'fusion_snapshot_missing'
-      ? Number(result.l0_symbols ?? 0) > Number(result.attempted ?? 0) && Number(result.attempted ?? 0) > 0
+    const remainingReplaySymbols = replayScope === 'fusion_snapshot_missing'
+      ? await loadFusionSnapshotMissingReplaySymbols(env.DB, triggerTime, maturityAsOfDate)
+      : replayScope === 'signed_eligible_repair'
+        ? await loadSignedEligibleRepairSymbolsByHistoricalDate(env.DB, triggerTime)
+        : []
+    const terminalDataSourceReason = String(result.terminal_data_source_reason ?? '').trim()
+    const dynamicCohortStalled = dynamicCohortScope
+      && !terminalDataSourceReason
+      && Number(cohortSymbols?.length ?? 0) > 0
+      && remainingReplaySymbols.length >= Number(cohortSymbols?.length ?? 0)
+      && (
+        replayScope === 'signed_eligible_repair'
+        || Number(result.persisted ?? 0) === 0
+      )
+    const hasMore = terminalDataSourceReason || dynamicCohortStalled
+      ? false
+      : dynamicCohortScope
+      ? remainingReplaySymbols.length > 0 && Number(result.persisted ?? 0) > 0
       : nextOffset < Number(result.l0_symbols ?? 0) && Number(result.attempted ?? 0) > 0
+    if (terminalDataSourceReason || dynamicCohortStalled) {
+      const failureReason = terminalDataSourceReason
+        ? `terminal market-data source error: ${terminalDataSourceReason}`
+        : replayScope === 'signed_eligible_repair'
+          ? `signed replay made no strict-eligible lineage progress remaining=${remainingReplaySymbols.length}`
+          : `dynamic replay made no persistence progress remaining=${remainingReplaySymbols.length}`
+      await logSchedulerResult(env.KV, 's12-replay-backfill', {
+        status: 'error',
+        summary: `date=${triggerTime} scope=${replayScope} offset=${offset} ${failureReason}; requeue=0`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: statusRunDate,
+      }, env)
+      if (replayScope === 'fusion_snapshot_missing') {
+        const { recordAllocatorEvLifecycle } = await import('./allocatorEvDailyLifecycle')
+        await recordAllocatorEvLifecycle(env.DB, {
+          businessDate: triggerTime,
+          state: 'error',
+          replayRows: Math.max(0, Number(result.persisted ?? 0)),
+          replayMaturityAsOfDate: maturityAsOfDate,
+          upstreamRunId: runId,
+          lastError: failureReason,
+        })
+      }
+      return
+    }
+    const replayCoverage = replayScope === 'fusion_snapshot_missing' && !hasMore
+      ? await loadFusionSnapshotReplayCoverage(env.DB, triggerTime, maturityAsOfDate)
+      : null
+    const replayClosed = !hasMore && (
+      replayScope === 'signed_eligible_repair'
+        ? remainingReplaySymbols.length === 0
+        : replayScope !== 'fusion_snapshot_missing' || (
+          remainingReplaySymbols.length === 0
+          && replayCoverage !== null
+          && replayCoverage.totalSnapshotRows > 0
+          && replayCoverage.replayRows === replayCoverage.totalSnapshotRows
+          && replayCoverage.matureMissingRows === 0
+          && replayCoverage.pendingMaturityRows === 0
+        )
+    )
     const summary = [
       `s12_replay_backfill signal_date=${result.signal_date}`,
       `execution_dates=${result.execution_dates.join(',') || 'none'}`,
@@ -3056,10 +3322,21 @@ export async function processUpdateBatch(
       `setup_only=${result.setup_only}`,
       `skipped=${result.skipped}`,
       `persisted=${result.persisted}`,
-      hasMore ? 'queued_next=1' : 'complete=1',
+      replayCoverage
+        ? `coverage=${replayCoverage.replayRows}/${replayCoverage.totalSnapshotRows}`
+          + ` mature_missing=${replayCoverage.matureMissingRows}`
+          + ` pending_maturity=${replayCoverage.pendingMaturityRows}`
+        : 'coverage=not_applicable',
+      hasMore
+        ? 'queued_next=1'
+        : replayClosed
+          ? 'complete=1'
+          : replayCoverage && replayCoverage.pendingMaturityRows > 0
+            ? `waiting_for_replay_maturity=${replayCoverage.pendingMaturityRows}`
+            : `waiting_for_replay_data=${remainingReplaySymbols.length}`,
     ].join(' ')
     await logSchedulerResult(env.KV, 's12-replay-backfill', {
-      status: hasMore ? 'running' : 'success',
+      status: hasMore || !replayClosed ? 'running' : 'success',
       summary,
       duration_ms: 0,
       run_id: runId,
@@ -3075,6 +3352,29 @@ export async function processUpdateBatch(
         maturityAsOfDate,
         statusRunDate,
       } as any)
+    } else if (replayClosed) {
+      const { recordAllocatorEvLifecycle } = await import('./allocatorEvDailyLifecycle')
+      await recordAllocatorEvLifecycle(env.DB, {
+        businessDate: triggerTime,
+        state: 'replay_complete',
+        replayRows: replayCoverage?.replayRows ?? 0,
+        replayMaturityAsOfDate: maturityAsOfDate,
+        upstreamRunId: runId,
+      })
+    } else {
+      const { recordAllocatorEvLifecycle } = await import('./allocatorEvDailyLifecycle')
+      await recordAllocatorEvLifecycle(env.DB, {
+        businessDate: triggerTime,
+        state: replayCoverage && replayCoverage.pendingMaturityRows > 0
+          ? 'replay_pending_maturity'
+          : 'replay_enqueued',
+        replayRows: replayCoverage?.replayRows ?? 0,
+        replayMaturityAsOfDate: maturityAsOfDate,
+        upstreamRunId: runId,
+        lastError: replayCoverage && replayCoverage.pendingMaturityRows > 0
+          ? `waiting for stock-specific five-session maturity symbols=${replayCoverage.pendingMaturityRows}`
+          : `waiting for complete five-session replay data symbols=${remainingReplaySymbols.length}`,
+      })
     }
     return
   }

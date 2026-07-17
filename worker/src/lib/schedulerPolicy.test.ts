@@ -1,6 +1,7 @@
 import {
   getSchedulerTaskPolicy,
   getNextRunApproxWithPolicy,
+  nextTwTradingDate,
   shouldRunScheduledTask,
 } from './schedulerPolicy'
 
@@ -47,6 +48,20 @@ void (async () => {
       nowTw: new Date('2026-05-01T08:00:00.000Z'),
     })
     assert(next === '5/4 10:00', `composite intraday cron should skip holiday/weekend and choose earliest leg, got ${next}`)
+  }
+
+  {
+    const historicalSessionDb = {
+      prepare() {
+        return {
+          bind(date: string) {
+            return { async first() { return date === '2026-07-13' ? { present: 1 } : null } }
+          },
+        }
+      },
+    } as unknown as D1Database
+    const next = await nextTwTradingDate(kvWithHolidays([]), '2026-07-09', historicalSessionDb)
+    assert(next === '2026-07-13', `historical emergency closure must use actual session evidence, got ${next}`)
   }
 
   {

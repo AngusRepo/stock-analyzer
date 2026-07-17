@@ -495,11 +495,13 @@ _SHADOW_CHALLENGER_MODEL_NAMES = ["ResidualMLP"]
 _MODEL_NAMES_V2 = _FEATURE_MODEL_NAMES_V2 + _TIME_SERIES_MODEL_NAMES_V2
 _BATCH_FEATURE_RANK_SCORES_KEY = "__batch_feature_rank_scores"
 _BATCH_FEATURE_MODEL_ERRORS_KEY = "__batch_feature_model_errors"
+_BATCH_FEATURE_CONTEXT_KEY = "__batch_feature_context"
 _BATCH_CHALLENGER_RANK_SCORES_KEY = "__batch_challenger_rank_scores"
 _BATCH_CHALLENGER_MODEL_ERRORS_KEY = "__batch_challenger_model_errors"
 _BATCH_RUNTIME_OPTION_KEYS = {
     _BATCH_FEATURE_RANK_SCORES_KEY,
     _BATCH_FEATURE_MODEL_ERRORS_KEY,
+    _BATCH_FEATURE_CONTEXT_KEY,
     _BATCH_CHALLENGER_RANK_SCORES_KEY,
     _BATCH_CHALLENGER_MODEL_ERRORS_KEY,
 }
@@ -627,26 +629,41 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         raise ValueError("至少需要 60 筆價格資料")
     _require_predict_v2_config_contract(req)
 
-    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
-    df = build_feature_matrix(
-        req.prices,
-        req.indicators,
-        chips_input,
-        req.sentiment_scores,
-        req.market_env,
-        barrier_params=req.barrier_params or None,
-        stock_meta=getattr(req, "stock_meta", None),
-    )
-
     prices_arr = np.array([close_price(p) for p in req.prices])
     adj_prices_arr = np.array([close_or_adjusted(p) for p in req.prices])
     current_price = float(prices_arr[-1])
     atr = float((req.indicators[-1].get("atr14") or 0)) if req.indicators else current_price * 0.02
-
-    x, y, feature_names = get_features(df, target_col="target_rank", allow_missing_target=True)
-    if len(x) == 0:
-        raise ValueError(f"Feature matrix empty for {req.symbol}")
-    x_latest = x[-1].reshape(1, -1)
+    runtime_options = getattr(req, "runtime_options", {}) or {}
+    batch_feature_context = runtime_options.get(_BATCH_FEATURE_CONTEXT_KEY)
+    x_latest: np.ndarray | None = None
+    feature_names: list[str] = []
+    if isinstance(batch_feature_context, dict):
+        raw_x_latest = batch_feature_context.get("x_latest")
+        raw_feature_names = batch_feature_context.get("feature_names")
+        try:
+            candidate = np.asarray(raw_x_latest, dtype=np.float32).reshape(1, -1)
+            names = [str(name) for name in raw_feature_names] if isinstance(raw_feature_names, list) else []
+            if candidate.shape[1] == len(names) and names and np.isfinite(candidate).all():
+                x_latest = candidate
+                feature_names = names
+        except (TypeError, ValueError):
+            x_latest = None
+            feature_names = []
+    if x_latest is None:
+        chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
+        df = build_feature_matrix(
+            req.prices,
+            req.indicators,
+            chips_input,
+            req.sentiment_scores,
+            req.market_env,
+            barrier_params=req.barrier_params or None,
+            stock_meta=getattr(req, "stock_meta", None),
+        )
+        x, _y, feature_names = get_features(df, target_col="target_rank", allow_missing_target=True)
+        if len(x) == 0:
+            raise ValueError(f"Feature matrix empty for {req.symbol}")
+        x_latest = x[-1].reshape(1, -1)
     market_segment = _normalize_market_segment_for_serving(req)
     ic_weights = load_ic_weights(market_segment=market_segment)
     pool_snapshot = _load_pool()
@@ -681,7 +698,6 @@ def predict_stock_v2(req: PredictRequest) -> dict:
 
     rank_scores: dict[str, float] = {}
     model_errors: list[str] = []
-    runtime_options = getattr(req, "runtime_options", {}) or {}
     run_embedded_time_series = bool(runtime_options.get("embedded_time_series", True))
     run_embedded_state_space = bool(runtime_options.get("embedded_state_space", True))
 

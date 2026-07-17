@@ -4,13 +4,20 @@ import {
   s12TimingPolicyFromEnv,
   type S12IntradayAssessment,
 } from './s12IntradayStructure'
-import { loadS12HistoricalReplayBars } from './s12RuntimeBars'
-import { persistS12StructureSnapshot } from './s12StructureSnapshots'
+import {
+  loadS12HistoricalReplayBars,
+  s12ResearchTerminalDataSourceReason,
+} from './s12RuntimeBars'
+import {
+  persistS12StructureSnapshot,
+  persistS12UnavailableStructureSnapshot,
+} from './s12StructureSnapshots'
 import {
   applyS12TwCalibrationArtifact,
   listApprovedS12TwCalibrationArtifacts,
   resolveS12TwCalibrationArtifact,
 } from './s12TwEquityCalibration'
+import { acquireS12ResearchLease, releaseS12ResearchLease } from './s12ResearchLease'
 
 const M15_MS = 15 * 60_000
 
@@ -25,7 +32,7 @@ export interface S12PipelineSeedSymbol {
 export interface S12CandidateSnapshotSummary {
   schema_version: 's12-candidate-structure-snapshot-summary-v1'
   trade_date: string
-  source: 's12_candidate_snapshot'
+  source: string
   candidate_count: number
   attempted: number
   persisted: number
@@ -54,6 +61,8 @@ function isSetupOnly(assessment: S12IntradayAssessment): boolean {
     'waiting_bos',
     'waiting_retest',
     'waiting_reaction',
+    'waiting_1h_demand_zone',
+    'waiting_15m_zone_touch',
   ].includes(String(assessment.state ?? ''))
 }
 
@@ -118,8 +127,18 @@ export async function runS12CandidateStructureSnapshots(
     limit?: number
     symbols?: S12PipelineSeedSymbol[]
     loadBars?: typeof loadS12HistoricalReplayBars
+    source?: 's12_candidate_snapshot' | 's12_candidate_snapshot_reconstruction'
   } = {},
 ): Promise<S12CandidateSnapshotSummary> {
+  const snapshotSource = options.source ?? 's12_candidate_snapshot'
+  const leaseRunId = `s12-candidate:${snapshotSource}:${tradeDate}:${crypto.randomUUID()}`
+  const leaseAcquired = options.loadBars
+    ? false
+    : await acquireS12ResearchLease(env.DB, leaseRunId, tradeDate)
+  if (!options.loadBars && !leaseAcquired) {
+    throw new Error(`s12_research_lease_busy:${tradeDate}`)
+  }
+  try {
   const limit = positiveLimit(options.limit ?? (env as any).S12_PREPIPELINE_SNAPSHOT_LIMIT, 160)
   const candidates = options.symbols ?? await loadS12PipelineSeedSymbolsByDate(env.DB, tradeDate, limit)
   const selected = candidates.slice(0, limit)
@@ -132,6 +151,7 @@ export async function runS12CandidateStructureSnapshots(
   let skipped = 0
   let errors = 0
   const skipReasons: Record<string, number> = {}
+  let terminalDataSourceReason: string | null = null
   const recordSkipReason = (reason: unknown) => {
     const key = String(reason ?? 'unknown').trim().replace(/\s+/g, '_').slice(0, 160) || 'unknown'
     skipReasons[key] = (skipReasons[key] ?? 0) + 1
@@ -139,10 +159,43 @@ export async function runS12CandidateStructureSnapshots(
 
   for (const row of selected) {
     try {
+      if (terminalDataSourceReason) {
+        const ok = await persistS12UnavailableStructureSnapshot(env, {
+          tradeDate,
+          symbol: row.symbol,
+          source: snapshotSource,
+          side: 'buy',
+          reason: terminalDataSourceReason,
+          metadata: {
+            snapshot_policy: 'persist_unavailable_continue_analysis_fail_closed_execution',
+            source_circuit_open: true,
+          },
+        })
+        if (ok) persisted += 1
+        else errors += 1
+        skipped += 1
+        recordSkipReason(terminalDataSourceReason)
+        continue
+      }
       const loaded = await loadBars(env, row.symbol, tradeDate)
       if (!loaded.bars.length) {
+        const reason = loaded.diagnostics.kbars_error ?? loaded.diagnostics.kbars_unusable_reason ?? 'missing_intraday_bars'
+        terminalDataSourceReason = s12ResearchTerminalDataSourceReason(loaded.diagnostics)
+        const ok = await persistS12UnavailableStructureSnapshot(env, {
+          tradeDate,
+          symbol: row.symbol,
+          source: snapshotSource,
+          side: 'buy',
+          reason: terminalDataSourceReason ?? reason,
+          metadata: {
+            diagnostics: loaded.diagnostics,
+            snapshot_policy: 'persist_unavailable_continue_analysis_fail_closed_execution',
+          },
+        })
+        if (ok) persisted += 1
+        else errors += 1
         skipped += 1
-        recordSkipReason(loaded.diagnostics.kbars_error ?? loaded.diagnostics.kbars_unusable_reason ?? 'missing_intraday_bars')
+        recordSkipReason(terminalDataSourceReason ?? reason)
         continue
       }
       const stockRow = await env.DB.prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(row.symbol).first<{ market?: string | null }>()
@@ -171,7 +224,7 @@ export async function runS12CandidateStructureSnapshots(
         tradeDate,
         symbol: row.symbol,
         assessment,
-        source: 's12_candidate_snapshot',
+        source: snapshotSource,
         side: 'buy',
         metadata: {
           calibration_artifact_id: calibration?.artifactId ?? null,
@@ -189,19 +242,10 @@ export async function runS12CandidateStructureSnapshots(
     }
   }
 
-  if (selected.length > 0 && persisted === 0 && (skipped > 0 || errors > 0)) {
-    const reasons = Object.entries(skipReasons)
-      .sort((left, right) => right[1] - left[1])
-      .slice(0, 5)
-      .map(([reason, count]) => `${reason}=${count}`)
-      .join(',')
-    throw new Error(`s12_candidate_snapshot_source_unavailable:${reasons || 'unknown'}`)
-  }
-
   return {
     schema_version: 's12-candidate-structure-snapshot-summary-v1',
     trade_date: tradeDate,
-    source: 's12_candidate_snapshot',
+    source: snapshotSource,
     candidate_count: candidates.length,
     attempted: selected.length,
     persisted,
@@ -211,5 +255,8 @@ export async function runS12CandidateStructureSnapshots(
     errors,
     limit,
     skip_reasons: skipReasons,
+  }
+  } finally {
+    if (leaseAcquired) await releaseS12ResearchLease(env.DB, leaseRunId)
   }
 }

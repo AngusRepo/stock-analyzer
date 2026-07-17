@@ -94,3 +94,16 @@ def test_finlab_external_evidence_writeback_does_not_block_evening_chain_callbac
     assert "External evidence is supplemental" in status_block
     assert "and not macro_error else" in status_block
     assert "and not external_error" not in status_block
+
+
+def test_finlab_modal_no_write_and_partial_failure_contracts() -> None:
+    modal_app = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
+    tool = (ROOT / "tools" / "finlab_v4_remote_backfill.py").read_text(encoding="utf-8")
+    start = modal_app.index('if payload.get("write_d1", True):', modal_app.index("def finlab_v4_backfill"))
+    end = modal_app.index('result["continue_evening_chain"]', start)
+    writeback_block = modal_app[start:end]
+
+    assert '"reason": "write_d1_false"' in writeback_block
+    assert 'backfill_ready = str(result.get("backfill_status")' in modal_app
+    assert "and backfill_ready and not macro_error" in modal_app
+    assert 'return 0 if manifest.get("backfill_status") == "ready" else 2' in tool

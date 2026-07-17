@@ -51,7 +51,10 @@ def load_verified_oof_manifest(
 ) -> tuple[dict[str, Any], bytes]:
     raw = bucket.blob(manifest_path).download_as_bytes()
     manifest = json.loads(raw.decode("utf-8"))
-    if manifest.get("schema_version") != "active8-oof-cohort-manifest-v1":
+    if manifest.get("schema_version") not in {
+        "active8-oof-cohort-manifest-v1",
+        "active8-oof-cohort-manifest-v2",
+    }:
         raise ValueError("active8_oof_manifest_schema_invalid")
     if manifest.get("generation_mode") != "purged_oof":
         raise ValueError("active8_oof_manifest_generation_mode_invalid")
@@ -61,6 +64,15 @@ def load_verified_oof_manifest(
         raise ValueError("active8_oof_manifest_model_set_invalid")
     if manifest.get("manifest_checksum") != _manifest_checksum(manifest):
         raise ValueError("active8_oof_manifest_checksum_mismatch")
+    if manifest.get("schema_version") == "active8-oof-cohort-manifest-v2":
+        parent = manifest.get("parent_manifest") or {}
+        reused = [window for window in manifest.get("windows") or [] if window.get("source_cohort_id")]
+        if reused and (
+            not str(parent.get("path") or "").strip()
+            or len(str(parent.get("checksum") or "")) != 64
+            or not str(parent.get("cohort_id") or "").strip()
+        ):
+            raise ValueError("active8_oof_parent_manifest_lineage_missing")
     return manifest, raw
 
 
@@ -69,7 +81,8 @@ def _load_prediction_artifact(
     bucket: Any,
     path: str,
     expected_checksum: str,
-    expected_cohort: str,
+    expected_artifact_cohort: str,
+    materialized_cohort: str,
     expected_fold: str,
     expected_model: str,
     split: dict[str, str],
@@ -82,7 +95,7 @@ def _load_prediction_artifact(
     expected = {
         "schema_version": "active8-oof-predictions-v1",
         "generation_mode": "purged_oof",
-        "cohort_id": expected_cohort,
+        "cohort_id": expected_artifact_cohort,
         "fold_id": expected_fold,
         "model_name": expected_model,
         "target_semantic_version": TARGET_SEMANTIC_VERSION,
@@ -107,7 +120,8 @@ def _load_prediction_artifact(
         raise ValueError(f"active8_oof_artifact_array_length_mismatch:{expected_model}:{expected_fold}")
     return [
         {
-            "cohort_id": expected_cohort,
+            "cohort_id": materialized_cohort,
+            "source_cohort_id": expected_artifact_cohort,
             "fold_id": expected_fold,
             "prediction_date": str(arrays["dates"][idx])[:10],
             "symbol": str(arrays["symbols"][idx]),
@@ -136,6 +150,7 @@ def load_oof_prediction_rows(
     rows: list[dict[str, Any]] = []
     for window in manifest.get("windows") or []:
         fold_id = f"w{window['window_id']}"
+        source_cohort_id = str(window.get("source_cohort_id") or cohort_id)
         split = {
             "train_start": str((window.get("train_range") or [None, None])[0]),
             "train_end": str((window.get("train_range") or [None, None])[1]),
@@ -151,12 +166,67 @@ def load_oof_prediction_rows(
                 bucket=bucket,
                 path=str(model["oof_artifact"]),
                 expected_checksum=str(model.get("artifact_checksum") or ""),
-                expected_cohort=cohort_id,
+                expected_artifact_cohort=source_cohort_id,
+                materialized_cohort=cohort_id,
                 expected_fold=fold_id,
                 expected_model=model_name,
                 split=split,
             ))
     return rows
+
+
+def build_oof_fold_artifact_rows(
+    manifest: dict[str, Any],
+    prediction_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    counts: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+        lambda: {"rows": 0, "dates": set()}
+    )
+    for row in prediction_rows:
+        key = (str(row["fold_id"]), str(row["model_name"]))
+        counts[key]["rows"] += 1
+        counts[key]["dates"].add(str(row["prediction_date"])[:10])
+
+    cohort_id = str(manifest["cohort_id"])
+    parent = manifest.get("parent_manifest") or {}
+    output: list[dict[str, Any]] = []
+    for window in manifest.get("windows") or []:
+        fold_id = f"w{window['window_id']}"
+        source_cohort_id = str(window.get("source_cohort_id") or cohort_id)
+        source_manifest_checksum = str(
+            window.get("source_manifest_checksum")
+            or (
+                parent.get("checksum")
+                if source_cohort_id != cohort_id
+                else manifest["manifest_checksum"]
+            )
+            or ""
+        )
+        if len(source_manifest_checksum) != 64:
+            raise ValueError(f"active8_oof_fold_source_manifest_checksum_invalid:{fold_id}")
+        train_range = list(window.get("train_range") or [None, None])
+        test_range = list(window.get("test_range") or [None, None])
+        for model_name in ACTIVE8_MODELS:
+            model = (window.get("model_metrics") or {}).get(model_name) or {}
+            count = counts[(fold_id, model_name)]
+            output.append({
+                "cohort_id": cohort_id,
+                "fold_id": fold_id,
+                "source_cohort_id": source_cohort_id,
+                "source_manifest_checksum": source_manifest_checksum,
+                "model_name": model_name,
+                "artifact_path": str(model.get("oof_artifact") or ""),
+                "artifact_checksum": str(model.get("artifact_checksum") or ""),
+                "artifact_rows": int(count["rows"]),
+                "prediction_dates": len(count["dates"]),
+                "train_start": str(train_range[0]),
+                "train_end": str(train_range[1]),
+                "test_start": str(test_range[0]),
+                "test_end": str(test_range[1]),
+                "target_semantic_version": TARGET_SEMANTIC_VERSION,
+                "score_semantic_version": "same-market-same-date-percentile-rank-v1",
+            })
+    return output
 
 
 RECORDED_PIT_COMPONENT_SOURCE = "screener_funnel_scoring_recorded_pit_v1"
@@ -781,17 +851,25 @@ def persist_oof_cohort(
     snapshot_rows: list[dict[str, Any]],
     l4_predictions: list[dict[str, Any]] | None = None,
     dry_run: bool = True,
+    prediction_storage_mode: str = "gcs_indexed_v1",
     query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
     batch_fn: Callable[..., dict[str, Any]] = d1_client.batch_execute,
 ) -> dict[str, Any]:
     cohort_id = str(manifest["cohort_id"])
+    if prediction_storage_mode not in {"gcs_indexed_v1", "d1_full_v1"}:
+        raise ValueError("active8_oof_prediction_storage_mode_invalid")
+    fold_artifact_rows = build_oof_fold_artifact_rows(manifest, prediction_rows)
+    prediction_dates = len({str(row["prediction_date"])[:10] for row in prediction_rows})
     if dry_run:
         return {
             "status": "dry_run",
             "cohort_id": cohort_id,
             "prediction_rows": len(prediction_rows),
+            "prediction_dates": prediction_dates,
             "snapshot_rows": len(snapshot_rows),
             "l4_prediction_rows": len(l4_predictions or []),
+            "fold_artifact_rows": len(fold_artifact_rows),
+            "prediction_storage_mode": prediction_storage_mode,
         }
     existing = query_fn(
         "SELECT status, artifact_manifest_checksum FROM active8_oof_cohorts WHERE cohort_id = ?",
@@ -807,13 +885,15 @@ def persist_oof_cohort(
         {name: f"cohort:{cohort_id}" for name in ACTIVE8_MODELS},
         list(ACTIVE8_MODELS),
     )
+    parent = manifest.get("parent_manifest") or {}
     d1_client.execute(
         """
         INSERT INTO active8_oof_cohorts (
           cohort_id, generation_mode, status, target_semantic_version,
           score_semantic_version, model_set_signature, expected_models,
-          expected_folds, artifact_manifest_path, artifact_manifest_checksum
-        ) VALUES (?, 'purged_oof', 'building', ?, ?, ?, 8, ?, ?, ?)
+          expected_folds, artifact_manifest_path, artifact_manifest_checksum,
+          prediction_storage_mode, parent_cohort_id, parent_manifest_checksum
+        ) VALUES (?, 'purged_oof', 'building', ?, ?, ?, 8, ?, ?, ?, ?, ?, ?)
         """,
         [
             cohort_id,
@@ -823,6 +903,9 @@ def persist_oof_cohort(
             len(manifest.get("windows") or []),
             f"walk_forward/oof_cohorts/{cohort_id}/manifest.json",
             manifest["manifest_checksum"],
+            prediction_storage_mode,
+            parent.get("cohort_id"),
+            parent.get("checksum"),
         ],
     )
     prediction_sql = """
@@ -841,9 +924,34 @@ def persist_oof_cohort(
         row["train_end"], row["test_start"], row["test_end"],
         row["target_semantic_version"], row["score_semantic_version"],
     ]) for row in prediction_rows]
-    prediction_result = batch_fn(statements, timeout=60.0, chunk_size=200)
+    prediction_result = (
+        batch_fn(statements, timeout=60.0, chunk_size=200)
+        if prediction_storage_mode == "d1_full_v1"
+        else {"success_count": 0, "error_count": 0, "storage_mode": "gcs_indexed_v1"}
+    )
     if prediction_result.get("error_count"):
         raise RuntimeError(f"active8_oof_prediction_materialization_failed:{prediction_result}")
+
+    fold_artifact_sql = """
+        INSERT INTO active8_oof_fold_artifacts (
+          cohort_id, fold_id, source_cohort_id, source_manifest_checksum,
+          model_name, artifact_path, artifact_checksum, artifact_rows,
+          prediction_dates, train_start, train_end, test_start, test_end,
+          target_semantic_version, score_semantic_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    fold_artifact_statements = [(fold_artifact_sql, [
+        row["cohort_id"], row["fold_id"], row["source_cohort_id"],
+        row["source_manifest_checksum"], row["model_name"], row["artifact_path"],
+        row["artifact_checksum"], row["artifact_rows"], row["prediction_dates"],
+        row["train_start"], row["train_end"], row["test_start"], row["test_end"],
+        row["target_semantic_version"], row["score_semantic_version"],
+    ]) for row in fold_artifact_rows]
+    fold_artifact_result = batch_fn(
+        fold_artifact_statements, timeout=60.0, chunk_size=100
+    )
+    if fold_artifact_result.get("error_count"):
+        raise RuntimeError(f"active8_oof_fold_artifact_index_failed:{fold_artifact_result}")
 
     snapshot_sql = """
         INSERT INTO allocator_ev_oof_snapshots (
@@ -875,14 +983,18 @@ def persist_oof_cohort(
         """
         SELECT
           (SELECT COUNT(*) FROM active8_oof_predictions WHERE cohort_id = ?) prediction_rows,
+          (SELECT COUNT(*) FROM active8_oof_fold_artifacts WHERE cohort_id = ?) fold_artifact_rows,
           (SELECT COUNT(*) FROM allocator_ev_oof_snapshots WHERE cohort_id = ?) snapshot_rows,
-          (SELECT COUNT(*) FROM l4_oof_predictions WHERE cohort_id = ?) l4_prediction_rows,
-          (SELECT COUNT(DISTINCT prediction_date) FROM active8_oof_predictions WHERE cohort_id = ?) prediction_dates
+          (SELECT COUNT(*) FROM l4_oof_predictions WHERE cohort_id = ?) l4_prediction_rows
         """,
         [cohort_id, cohort_id, cohort_id, cohort_id],
     )[0]
     if (
-        int(counts.get("prediction_rows") or 0) != len(prediction_rows)
+        (
+            prediction_storage_mode == "d1_full_v1"
+            and int(counts.get("prediction_rows") or 0) != len(prediction_rows)
+        )
+        or int(counts.get("fold_artifact_rows") or 0) != len(fold_artifact_rows)
         or int(counts.get("snapshot_rows") or 0) != len(snapshot_rows)
         or int(counts.get("l4_prediction_rows") or 0) != len(l4_predictions or [])
     ):
@@ -895,12 +1007,14 @@ def persist_oof_cohort(
             updated_at = CURRENT_TIMESTAMP
         WHERE cohort_id = ? AND status = 'building'
         """,
-        [len(prediction_rows), int(counts.get("prediction_dates") or 0), cohort_id],
+        [len(prediction_rows), prediction_dates, cohort_id],
     )
     return {
         "status": "ready",
         "cohort_id": cohort_id,
+        "prediction_storage_mode": prediction_storage_mode,
         "prediction_result": prediction_result,
+        "fold_artifact_result": fold_artifact_result,
         "snapshot_result": snapshot_result,
         "l4_result": l4_result,
         "counts": counts,

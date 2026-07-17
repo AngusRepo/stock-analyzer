@@ -298,3 +298,115 @@ def test_counterfactual_score_uses_formal_pit_fundamental_owner_when_available()
     assert rebuilt["components"]["fundamentalQuality"] == 12.5
     assert rebuilt["counterfactualLineage"]["fundamentalQualityOwner"] == "fundamental_quality_v1_pit"
     assert rebuilt["counterfactualLineage"]["fundamentalQualityNoLookahead"]["decisionDate"] == "2026-06-25"
+
+
+def test_v2_manifest_reuses_verified_parent_artifacts():
+    import hashlib
+    import io
+    import json
+    import numpy as np
+    from services.active8_oof_cohort_materializer import (
+        ACTIVE8_MODELS,
+        TARGET_SEMANTIC_VERSION,
+        _manifest_checksum,
+        build_oof_fold_artifact_rows,
+        load_oof_prediction_rows,
+        load_verified_oof_manifest,
+        persist_oof_cohort,
+    )
+
+    parent_cohort = "parent-cohort"
+    child_cohort = "child-cohort"
+    parent_checksum = "a" * 64
+    blobs = {}
+    metrics = {}
+    for model_name in ACTIVE8_MODELS:
+        metadata = {
+            "schema_version": "active8-oof-predictions-v1",
+            "generation_mode": "purged_oof",
+            "cohort_id": parent_cohort,
+            "fold_id": "w0",
+            "model_name": model_name,
+            "target_semantic_version": TARGET_SEMANTIC_VERSION,
+            "artifact_version": f"{parent_cohort}-w0-{model_name}",
+            "score_semantic": "same-market-same-date-percentile-rank-v1",
+            "rows": 1,
+        }
+        buffer = io.BytesIO()
+        np.savez_compressed(
+            buffer,
+            metadata=np.asarray(json.dumps(metadata), dtype=object),
+            raw_scores=np.asarray([0.2]),
+            rank_scores=np.asarray([0.7]),
+            targets=np.asarray([0.03]),
+            dates=np.asarray(["2026-06-26"]),
+            symbols=np.asarray(["2330"]),
+            markets=np.asarray(["LISTED"]),
+            label_known_dates=np.asarray(["2026-07-03"]),
+        )
+        payload = buffer.getvalue()
+        artifact_path = f"oof/{model_name}.npz"
+        blobs[artifact_path] = payload
+        metrics[model_name] = {
+            "status": "ready",
+            "oof_artifact": artifact_path,
+            "artifact_checksum": hashlib.sha256(payload).hexdigest(),
+        }
+
+    manifest = {
+        "schema_version": "active8-oof-cohort-manifest-v2",
+        "cohort_id": child_cohort,
+        "generation_mode": "purged_oof",
+        "status": "ready",
+        "model_set": list(ACTIVE8_MODELS),
+        "parent_manifest": {
+            "path": "parent/manifest.json",
+            "cohort_id": parent_cohort,
+            "checksum": parent_checksum,
+        },
+        "windows": [{
+            "window_id": 0,
+            "train_range": ["2026-03-01", "2026-06-25"],
+            "test_range": ["2026-06-26", "2026-07-09"],
+            "source_cohort_id": parent_cohort,
+            "source_manifest_checksum": parent_checksum,
+            "model_metrics": metrics,
+        }],
+    }
+    manifest["manifest_checksum"] = _manifest_checksum(manifest)
+    blobs["child/manifest.json"] = json.dumps(manifest).encode()
+
+    class Blob:
+        def __init__(self, value):
+            self.value = value
+        def download_as_bytes(self):
+            return self.value
+    class Bucket:
+        def blob(self, path):
+            return Blob(blobs[path])
+
+    loaded, _ = load_verified_oof_manifest("child/manifest.json", bucket=Bucket())
+    rows = load_oof_prediction_rows(loaded, bucket=Bucket())
+    index_rows = build_oof_fold_artifact_rows(loaded, rows)
+    dry_run = persist_oof_cohort(
+        manifest=loaded,
+        prediction_rows=rows,
+        snapshot_rows=[],
+        dry_run=True,
+    )
+
+    assert len(rows) == 8
+    assert {row["cohort_id"] for row in rows} == {child_cohort}
+    assert {row["source_cohort_id"] for row in rows} == {parent_cohort}
+    assert len(index_rows) == 8
+    assert {row["source_manifest_checksum"] for row in index_rows} == {parent_checksum}
+    assert dry_run["prediction_storage_mode"] == "gcs_indexed_v1"
+    assert dry_run["fold_artifact_rows"] == 8
+
+
+def test_compact_oof_migration_preserves_raw_artifact_lineage():
+    migration = (ROOT / "worker" / "migrations" / "0067_active8_oof_compact_fold_lineage.sql").read_text()
+    assert "CREATE TABLE IF NOT EXISTS active8_oof_fold_artifacts" in migration
+    assert "source_manifest_checksum TEXT NOT NULL" in migration
+    assert "CHECK(length(artifact_checksum) = 64)" in migration
+    assert "prediction_storage_mode TEXT NOT NULL DEFAULT 'd1_full_v1'" in migration

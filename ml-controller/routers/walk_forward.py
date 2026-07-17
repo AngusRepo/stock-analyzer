@@ -37,6 +37,67 @@ class WalkForwardRequest(BaseModel):
     prep_gcs_prefix: str = "universal"
     sequence_gcs_prefix: str = "universal/sequence_long/latest"
     sequence_batch_count: int = 5
+    resume_manifest_path: str | None = None
+
+
+def _window_split_key(window) -> tuple[str, str, str, str]:
+    train_range = getattr(window, "train_range", None) or [
+        getattr(window, "train_start", None), getattr(window, "train_end", None)
+    ]
+    test_range = getattr(window, "test_range", None) or [
+        getattr(window, "test_start", None), getattr(window, "test_end", None)
+    ]
+    if isinstance(window, dict):
+        train_range = window.get("train_range") or [window.get("train_start"), window.get("train_end")]
+        test_range = window.get("test_range") or [window.get("test_start"), window.get("test_end")]
+    return tuple(str(value or "")[:10] for value in (*train_range, *test_range))
+
+
+def _load_resume_plan(
+    manifest_path: str | None,
+    windows: list,
+    *,
+    models: list[str],
+    prep_gcs_prefix: str,
+    sequence_gcs_prefix: str,
+) -> dict:
+    if not manifest_path:
+        return {"manifest_path": None, "reused_window_ids": [], "new_window_ids": [w.window_id for w in windows]}
+    from services.walk_forward_retrain import _get_bucket
+    from services.active8_oof_cohort_materializer import load_verified_oof_manifest
+
+    bucket = _get_bucket()
+    if bucket is None:
+        raise HTTPException(status_code=500, detail="GCS unavailable for OOF resume planning")
+    try:
+        manifest, _raw = load_verified_oof_manifest(manifest_path, bucket=bucket)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid OOF resume manifest: {exc}") from exc
+    if list(manifest.get("model_set") or []) != list(models):
+        raise HTTPException(status_code=400, detail="resume model set does not match requested Active-8 set")
+    if str(manifest.get("prep_gcs_prefix") or "").rstrip("/") != prep_gcs_prefix.rstrip("/"):
+        raise HTTPException(status_code=400, detail="resume prep prefix does not match requested V3 prep")
+    if str(manifest.get("sequence_gcs_prefix") or "").rstrip("/") != sequence_gcs_prefix.rstrip("/"):
+        raise HTTPException(status_code=400, detail="resume sequence prefix does not match requested V3 sequence prep")
+    requested = {_window_split_key(window): window.window_id for window in windows}
+    reused = []
+    for parent_window in manifest.get("windows") or []:
+        key = _window_split_key(parent_window)
+        if key not in requested:
+            raise HTTPException(status_code=400, detail=f"resume fold split not present in requested plan: {key}")
+        requested_window_id = requested[key]
+        if int(parent_window.get("window_id", -1)) != int(requested_window_id):
+            raise HTTPException(status_code=400, detail=f"resume fold id does not match requested plan: {key}")
+        reused.append(requested_window_id)
+    reused_set = set(reused)
+    return {
+        "manifest_path": manifest_path,
+        "parent_cohort_id": manifest["cohort_id"],
+        "parent_manifest_checksum": manifest["manifest_checksum"],
+        "reused_window_ids": sorted(reused_set),
+        "new_window_ids": [w.window_id for w in windows if w.window_id not in reused_set],
+        "artifact_preflight": "modal_sha256_metadata_before_retrain",
+    }
 
 
 def _load_trading_calendar(start_date: str, end_date: str) -> tuple[list[str], dict]:
@@ -116,12 +177,22 @@ async def walk_forward_dry_run(req: WalkForwardRequest):
         )
     models = req.models or MODELS_ALL
     coverage = walk_forward_model_coverage(models)
+    resume_plan = _load_resume_plan(
+        req.resume_manifest_path,
+        windows,
+        models=models,
+        prep_gcs_prefix=req.prep_gcs_prefix,
+        sequence_gcs_prefix=req.sequence_gcs_prefix,
+    )
+    planned_windows = len(resume_plan["new_window_ids"])
     return {
         "dry_run": True,
         "windows_count": len(windows),
-        "planned_retrains": len(windows) * len(coverage["native_retrain_models"]),
+        "planned_retrains": planned_windows * len(coverage["native_retrain_models"]),
+        "planned_new_windows": planned_windows,
+        "resume_plan": resume_plan,
         "planned_model_evaluations": len(windows) * len(models),
-        "estimated_tree_wall_clock_hours": len(windows) * 15 / 60 / max(1, req.concurrent_windows),
+        "estimated_tree_wall_clock_hours": planned_windows * 15 / 60 / max(1, req.concurrent_windows),
         "model_coverage": coverage,
         "data_access": data_access,
         "cohort_id": req.cohort_id or (
@@ -196,9 +267,17 @@ async def walk_forward_run(req: WalkForwardRequest):
         }
         for w in windows
     ]
+    models = req.models or MODELS_ALL
     cohort_id = req.cohort_id or (
         f"active8-oof-{req.start_date}-{req.end_date}-"
         f"tr{req.train_window_days}-te{req.test_window_days}"
+    )
+    resume_plan = _load_resume_plan(
+        req.resume_manifest_path,
+        windows,
+        models=models,
+        prep_gcs_prefix=req.prep_gcs_prefix,
+        sequence_gcs_prefix=req.sequence_gcs_prefix,
     )
 
     # Spawn Modal orchestrator (fire-and-forget)
@@ -207,7 +286,7 @@ async def walk_forward_run(req: WalkForwardRequest):
             "windows": windows_payload,
             "market_env": market_env,
             "batch_count": req.batch_count,
-            "models": req.models or MODELS_ALL,
+            "models": models,
             "concurrent_windows": req.concurrent_windows,
             "start_date": req.start_date,
             "end_date": req.end_date,
@@ -217,6 +296,7 @@ async def walk_forward_run(req: WalkForwardRequest):
             "prep_gcs_prefix": req.prep_gcs_prefix,
             "sequence_gcs_prefix": req.sequence_gcs_prefix,
             "sequence_batch_count": req.sequence_batch_count,
+            "resume_manifest_path": req.resume_manifest_path,
             # 2026-04-19 N2: per-window FS to eliminate look-ahead bias
             "fs_max_rounds": req.fs_max_rounds,
             "fs_force_refresh": req.fs_force_refresh,
@@ -235,9 +315,10 @@ async def walk_forward_run(req: WalkForwardRequest):
         "status": "spawned",
         "fn_call_id": fn_call_id,
         "windows_planned": len(windows),
-        "models": req.models or MODELS_ALL,
-        "model_coverage": walk_forward_model_coverage(req.models or MODELS_ALL),
+        "models": models,
+        "model_coverage": walk_forward_model_coverage(models),
         "data_access": data_access,
+        "resume_plan": resume_plan,
         "cohort_id": cohort_id,
         "gcs_result_path": f"walk_forward/oof_cohorts/{cohort_id}/manifest.json",
         "poll_endpoint": f"/walk_forward/report/{req.start_date}/{req.end_date}",
@@ -260,6 +341,7 @@ class OofMaterializeRequest(BaseModel):
     dry_run: bool = True
     confirm: bool = False
     promote: bool = True
+    prediction_storage_mode: str = "gcs_indexed_v1"
 
 
 @router.post("/walk_forward/oof/materialize")
@@ -334,6 +416,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             snapshot_rows=snapshot_rows,
             l4_predictions=l4_predictions,
             dry_run=req.dry_run,
+            prediction_storage_mode=req.prediction_storage_mode,
         )
         parity = None
         promoted = False
@@ -607,14 +690,49 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 "calendar": calendar_evidence,
             }
     else:
+        from services.backtest_engine import walk_forward_windows
+
         mature_dates = dates[:-5]
-        cohort_dates = mature_dates[-90:]
-        start_date = cohort_dates[0]
-        signal_end_date = cohort_dates[-1]
-        cohort_id = (
-            f"active8-oof-v3-{start_date}-{signal_end_date}-tr60-te10"
-        )
-        manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
+        parent = _latest_ready_oof_manifest(bucket)
+        resume_manifest_path = None
+        prep_gcs_prefix = "universal"
+        sequence_gcs_prefix = "universal/sequence_long/latest"
+        if parent is not None:
+            parent_path, parent_manifest = parent
+            parent_start = str(parent_manifest.get("start_date") or "")[:10]
+            compatible_parent = (
+                parent_start in mature_dates
+                and int(parent_manifest.get("train_window_days") or 0) == 60
+                and int(parent_manifest.get("test_window_days") or 0) == 10
+                and parent_manifest.get("target_semantic_version")
+                == "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+            )
+        else:
+            parent_path, parent_manifest, parent_start, compatible_parent = None, {}, "", False
+
+        if compatible_parent:
+            cohort_dates = [date for date in mature_dates if date >= parent_start]
+            planned_windows = walk_forward_windows(cohort_dates, train_window_days=60, test_window_days=10)
+            parent_fold_count = len(parent_manifest.get("windows") or [])
+            if len(planned_windows) <= parent_fold_count:
+                cohort_id = str(parent_manifest["cohort_id"])
+                manifest_path = str(parent_path)
+                start_date = parent_start
+                signal_end_date = str(parent_manifest.get("end_date") or cohort_dates[-1])[:10]
+            else:
+                start_date = parent_start
+                signal_end_date = planned_windows[-1].test_end
+                cohort_id = f"active8-oof-v4-{start_date}-{signal_end_date}-tr60-te10"
+                manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
+                resume_manifest_path = str(parent_path)
+                prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "")
+                sequence_gcs_prefix = str(parent_manifest.get("sequence_gcs_prefix") or "")
+        else:
+            cohort_dates = mature_dates[-90:]
+            start_date = cohort_dates[0]
+            signal_end_date = cohort_dates[-1]
+            cohort_id = f"active8-oof-v3-{start_date}-{signal_end_date}-tr60-te10"
+            manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
         manifest_blob = bucket.blob(manifest_path)
         if manifest_blob.exists():
             manifest = json.loads(manifest_blob.download_as_text())
@@ -657,8 +775,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 cohort_id=cohort_id,
                 confirm=not req.dry_run,
                 concurrent_windows=2,
-                prep_gcs_prefix="universal",
-                sequence_gcs_prefix="universal/sequence_long/latest",
+                prep_gcs_prefix=prep_gcs_prefix,
+                sequence_gcs_prefix=sequence_gcs_prefix,
+                resume_manifest_path=resume_manifest_path,
             )
             if req.dry_run:
                 preview = await walk_forward_dry_run(plan)

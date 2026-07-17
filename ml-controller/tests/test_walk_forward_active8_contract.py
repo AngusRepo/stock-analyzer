@@ -152,3 +152,60 @@ def test_walk_forward_dry_run_builds_windows_from_lightweight_calendar(monkeypat
     assert result["windows"][0]["train_range"] == ("2026-01-01", "2026-01-10")
     assert result["windows"][0]["test_range"] == ("2026-01-11", "2026-01-15")
     assert result["data_access"]["mode"] == "d1_stock_prices_grouped"
+
+
+def test_resume_plan_reuses_only_exact_parent_splits(monkeypatch):
+    from services import active8_oof_cohort_materializer
+    from services import walk_forward_retrain
+    from services.backtest_engine import WalkForwardWindow
+    from routers import walk_forward
+
+    manifest = {
+        "cohort_id": "parent",
+        "manifest_checksum": "a" * 64,
+        "model_set": [
+            "LightGBM", "XGBoost", "ExtraTrees", "TabM",
+            "GNN", "DLinear", "PatchTST", "iTransformer",
+        ],
+        "prep_gcs_prefix": "prep-v3",
+        "sequence_gcs_prefix": "sequence-v3",
+        "windows": [{
+            "window_id": 0,
+            "train_range": ["2026-01-01", "2026-03-31"],
+            "test_range": ["2026-04-01", "2026-04-14"],
+        }],
+    }
+    monkeypatch.setattr(walk_forward_retrain, "_get_bucket", lambda: object())
+    monkeypatch.setattr(
+        active8_oof_cohort_materializer,
+        "load_verified_oof_manifest",
+        lambda _path, bucket: (manifest, b"{}"),
+    )
+    windows = [
+        WalkForwardWindow(0, "2026-01-01", "2026-03-31", "2026-04-01", "2026-04-14"),
+        WalkForwardWindow(1, "2026-01-15", "2026-04-14", "2026-04-15", "2026-04-28"),
+    ]
+
+    plan = walk_forward._load_resume_plan(
+        "parent/manifest.json",
+        windows,
+        models=manifest["model_set"],
+        prep_gcs_prefix="prep-v3",
+        sequence_gcs_prefix="sequence-v3",
+    )
+
+    assert plan["reused_window_ids"] == [0]
+    assert plan["new_window_ids"] == [1]
+    assert plan["parent_manifest_checksum"] == "a" * 64
+
+
+def test_modal_resume_contract_verifies_artifacts_before_pending_fold_training():
+    source = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
+    assert "active8_oof_resume_artifact_checksum_mismatch" in source
+    assert "active8_oof_resume_artifact_metadata_mismatch" in source
+    assert "pending_windows = [" in source
+    assert "asyncio.gather(*[_bounded(w) for w in pending_windows])" in source
+    assert '"active8-oof-cohort-manifest-v2"' in source
+    assert 'method="outer_purged_walk_forward_rank_ic"' in source
+    assert '"full_fit_eligible_models"' in source
+    assert 'stage="promotion"' in source

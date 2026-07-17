@@ -1819,6 +1819,117 @@ def train_wf_hmm_window(payload: dict) -> dict:
         return {"error": str(e), "trace": traceback.format_exc()[:2000], "window_id": payload.get("window_id")}
 
 
+def _load_verified_oof_resume_windows(
+    payload: dict,
+    *,
+    bucket,
+    requested_windows: list[dict],
+    models: list[str],
+) -> tuple[dict[int, dict], dict | None]:
+    """Verify parent fold artifacts before any retraining is spawned."""
+    resume_path = str(payload.get("resume_manifest_path") or "").strip()
+    if not resume_path:
+        return {}, None
+
+    import hashlib
+    import io
+    import json
+    import numpy as np
+
+    parent_raw = bucket.blob(resume_path).download_as_bytes()
+    parent = json.loads(parent_raw.decode("utf-8"))
+    unsigned = {key: value for key, value in parent.items() if key != "manifest_checksum"}
+    expected_manifest_checksum = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    if parent.get("schema_version") not in {
+        "active8-oof-cohort-manifest-v1",
+        "active8-oof-cohort-manifest-v2",
+    }:
+        raise ValueError("active8_oof_resume_manifest_schema_invalid")
+    if parent.get("manifest_checksum") != expected_manifest_checksum:
+        raise ValueError("active8_oof_resume_manifest_checksum_mismatch")
+    if parent.get("status") != "ready" or parent.get("generation_mode") != "purged_oof":
+        raise ValueError("active8_oof_resume_manifest_not_ready")
+    if list(parent.get("model_set") or []) != list(models):
+        raise ValueError("active8_oof_resume_model_set_mismatch")
+    expected_target = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+    if parent.get("target_semantic_version") != expected_target:
+        raise ValueError("active8_oof_resume_target_semantic_mismatch")
+    if parent.get("score_semantic_version") != "same-market-same-date-percentile-rank-v1":
+        raise ValueError("active8_oof_resume_score_semantic_mismatch")
+    if str(parent.get("prep_gcs_prefix") or "").rstrip("/") != str(
+        payload.get("prep_gcs_prefix") or "universal"
+    ).rstrip("/"):
+        raise ValueError("active8_oof_resume_prep_prefix_mismatch")
+    if str(parent.get("sequence_gcs_prefix") or "").rstrip("/") != str(
+        payload.get("sequence_gcs_prefix") or "universal/sequence_long/latest"
+    ).rstrip("/"):
+        raise ValueError("active8_oof_resume_sequence_prefix_mismatch")
+
+    requested_by_split = {
+        (
+            str(window["train_start"]), str(window["train_end"]),
+            str(window["test_start"]), str(window["test_end"]),
+        ): window
+        for window in requested_windows
+    }
+    reused: dict[int, dict] = {}
+    parent_cohort_id = str(parent.get("cohort_id") or "")
+    parent_manifest_checksum = str(parent["manifest_checksum"])
+    for parent_window in parent.get("windows") or []:
+        train_range = list(parent_window.get("train_range") or [None, None])
+        test_range = list(parent_window.get("test_range") or [None, None])
+        split = tuple(str(value or "") for value in (*train_range, *test_range))
+        requested = requested_by_split.get(split)
+        if requested is None or int(requested["window_id"]) != int(parent_window["window_id"]):
+            raise ValueError(f"active8_oof_resume_fold_split_mismatch:{split}")
+        window_id = int(requested["window_id"])
+        fold_id = f"w{window_id}"
+        source_cohort_id = str(parent_window.get("source_cohort_id") or parent_cohort_id)
+        source_manifest_checksum = str(
+            parent_window.get("source_manifest_checksum") or parent_manifest_checksum
+        )
+        metrics = parent_window.get("model_metrics") or {}
+        for model_name in models:
+            model = metrics.get(model_name) or {}
+            artifact_path = str(model.get("oof_artifact") or "")
+            artifact_checksum = str(model.get("artifact_checksum") or "")
+            if model.get("status") != "ready" or not artifact_path or len(artifact_checksum) != 64:
+                raise ValueError(f"active8_oof_resume_model_missing:{fold_id}:{model_name}")
+            artifact_raw = bucket.blob(artifact_path).download_as_bytes()
+            if hashlib.sha256(artifact_raw).hexdigest() != artifact_checksum:
+                raise ValueError(f"active8_oof_resume_artifact_checksum_mismatch:{fold_id}:{model_name}")
+            artifact = np.load(io.BytesIO(artifact_raw), allow_pickle=True)
+            metadata = json.loads(str(artifact["metadata"].item()))
+            expected_metadata = {
+                "schema_version": "active8-oof-predictions-v1",
+                "generation_mode": "purged_oof",
+                "cohort_id": source_cohort_id,
+                "fold_id": fold_id,
+                "model_name": model_name,
+                "target_semantic_version": expected_target,
+            }
+            for key, value in expected_metadata.items():
+                if metadata.get(key) != value:
+                    raise ValueError(
+                        f"active8_oof_resume_artifact_metadata_mismatch:{fold_id}:{model_name}:{key}"
+                    )
+        reused_window = json.loads(json.dumps(parent_window, default=str))
+        reused_window["source_cohort_id"] = source_cohort_id
+        reused_window["source_manifest_checksum"] = source_manifest_checksum
+        reused_window["reused_from_parent"] = True
+        reused[window_id] = reused_window
+
+    return reused, {
+        "path": resume_path,
+        "cohort_id": parent_cohort_id,
+        "checksum": parent_manifest_checksum,
+        "verified_fold_ids": sorted(reused),
+        "verification": "split_model_semantic_artifact_sha256_metadata_v1",
+    }
+
+
 @app.function(
     cpu=1,
     memory=2048,
@@ -1931,6 +2042,24 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "cohort_id": cohort_id,
             "required_action": "rebuild_universal_prep_with_active8_oof_lineage_v1",
         }
+
+    try:
+        reused_windows, parent_manifest = _load_verified_oof_resume_windows(
+            payload,
+            bucket=prep_bucket,
+            requested_windows=windows,
+            models=models,
+        )
+    except Exception as exc:
+        return {
+            "status": "failed_preflight",
+            "error": str(exc),
+            "cohort_id": cohort_id,
+            "required_action": "repair_or_remove_invalid_resume_manifest",
+        }
+    pending_windows = [
+        window for window in windows if int(window["window_id"]) not in reused_windows
+    ]
 
     def _filter_env(end_str: str) -> dict:
         hist = market_env.get("history", {})
@@ -2124,9 +2253,15 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                       f"(ic={[(k, v.get('oos_ic')) for k, v in r.get('model_metrics',{}).items()]})")
                 return r
 
-        return await asyncio.gather(*[_bounded(w) for w in windows])
+        return await asyncio.gather(*[_bounded(w) for w in pending_windows])
 
-    all_results = asyncio.run(_orchestrate())
+    new_results = asyncio.run(_orchestrate())
+    new_by_id = {int(row["window_id"]): row for row in new_results}
+    all_results = [
+        reused_windows.get(int(window["window_id"]))
+        or new_by_id[int(window["window_id"])]
+        for window in windows
+    ]
 
     # Aggregate
     per_model = {}
@@ -2154,6 +2289,28 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "positive_share": sum(1 for ic in ics if ic > 0) / len(ics),
             "ic_per_window": ics,
         }
+
+    from app.model_validation import build_model_cpcv_evidence
+
+    per_model_promotion_evidence = {}
+    for model_name in active8_models:
+        fold_metrics = []
+        for window_result in all_results:
+            metrics = (window_result.get("model_metrics") or {}).get(model_name) or {}
+            if metrics.get("oos_ic") is None:
+                continue
+            fold_metrics.append({
+                "fold_id": f"w{window_result['window_id']}",
+                "oos_ic": metrics.get("oos_ic"),
+                "test_rows": int(metrics.get("test_samples") or 0),
+                "coverage": 1.0 if int(metrics.get("test_samples") or 0) > 0 else 0.0,
+            })
+        per_model_promotion_evidence[model_name] = build_model_cpcv_evidence(
+            model=model_name,
+            fold_metrics=fold_metrics,
+            stage="promotion",
+            method="outer_purged_walk_forward_rank_ic",
+        )
 
     # 2026-04-19 N2: aggregate per-window FS stats
     fs_stats = []
@@ -2193,6 +2350,21 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         "oof_failed_folds": [
             row.get("window_id") for row in all_results if not row.get("oof_fold_ready")
         ],
+        "reused_fold_ids": sorted(reused_windows),
+        "new_fold_ids": sorted(new_by_id),
+        "reused_folds": len(reused_windows),
+        "new_folds": len(new_by_id),
+        "per_model_promotion_evidence": per_model_promotion_evidence,
+        "full_fit_eligible_models": [
+            model_name
+            for model_name, evidence in per_model_promotion_evidence.items()
+            if evidence.get("decision") == "PASS"
+        ],
+        "full_fit_blocked_models": {
+            model_name: evidence.get("failed_gates") or []
+            for model_name, evidence in per_model_promotion_evidence.items()
+            if evidence.get("decision") != "PASS"
+        },
     }
     aggregate["oof_cohort_ready"] = (
         aggregate["oof_ready_folds"] == len(all_results)
@@ -2211,7 +2383,11 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         import hashlib
 
         manifest = {
-            "schema_version": "active8-oof-cohort-manifest-v1",
+            "schema_version": (
+                "active8-oof-cohort-manifest-v2"
+                if parent_manifest
+                else "active8-oof-cohort-manifest-v1"
+            ),
             "cohort_id": cohort_id,
             "start_date": start_date,
             "end_date": end_date,
@@ -2228,6 +2404,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "sequence_batch_count": int(payload.get("sequence_batch_count") or 5),
             "model_set_signature": hashlib.sha256("|".join(models).encode("utf-8")).hexdigest(),
             "windows": all_results,
+            "parent_manifest": parent_manifest,
             "aggregate": aggregate,
             "status": "ready" if aggregate["oof_cohort_ready"] else "failed",
         }

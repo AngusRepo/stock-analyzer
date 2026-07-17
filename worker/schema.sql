@@ -918,10 +918,39 @@ CREATE TABLE IF NOT EXISTS active8_oof_cohorts (
   prediction_dates INTEGER NOT NULL DEFAULT 0,
   artifact_manifest_path TEXT,
   artifact_manifest_checksum TEXT,
+  prediction_storage_mode TEXT NOT NULL DEFAULT 'd1_full_v1',
+  parent_cohort_id TEXT,
+  parent_manifest_checksum TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   ready_at TEXT,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS active8_oof_fold_artifacts (
+  cohort_id TEXT NOT NULL,
+  fold_id TEXT NOT NULL,
+  source_cohort_id TEXT NOT NULL,
+  source_manifest_checksum TEXT NOT NULL,
+  model_name TEXT NOT NULL,
+  artifact_path TEXT NOT NULL,
+  artifact_checksum TEXT NOT NULL,
+  artifact_rows INTEGER NOT NULL DEFAULT 0,
+  prediction_dates INTEGER NOT NULL DEFAULT 0,
+  train_start TEXT NOT NULL,
+  train_end TEXT NOT NULL,
+  test_start TEXT NOT NULL,
+  test_end TEXT NOT NULL,
+  target_semantic_version TEXT NOT NULL,
+  score_semantic_version TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (cohort_id, fold_id, model_name),
+  FOREIGN KEY (cohort_id) REFERENCES active8_oof_cohorts(cohort_id) ON DELETE RESTRICT,
+  CHECK(length(artifact_checksum) = 64),
+  CHECK(length(source_manifest_checksum) = 64),
+  CHECK(train_end < test_start)
+);
+CREATE INDEX IF NOT EXISTS idx_active8_oof_fold_artifacts_source
+  ON active8_oof_fold_artifacts(source_cohort_id, fold_id, model_name);
 
 CREATE TABLE IF NOT EXISTS active8_oof_predictions (
   cohort_id TEXT NOT NULL,

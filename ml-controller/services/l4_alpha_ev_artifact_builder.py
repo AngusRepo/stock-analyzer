@@ -817,33 +817,33 @@ def load_l4_alpha_ev_training_rows(
         WITH price_horizons AS (
             SELECT
                 sp.stock_id,
-                date(sp.date) AS price_date,
-                LEAD(date(sp.date), 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_date,
-                LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_raw_open,
+                sp.date AS price_date,
+                LEAD(sp.date, 1) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) AS entry_date,
+                LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) AS entry_raw_open,
                 LEAD(
                     CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
                     1
-                ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_adjustment_factor,
-                LEAD(date(sp.date), 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_date,
-                LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_raw_close,
+                ) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) AS entry_adjustment_factor,
+                LEAD(sp.date, 5) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) AS exit_date,
+                LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) AS exit_raw_close,
                 LEAD(
                     CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
                     5
-                ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_adjustment_factor
+                ) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) AS exit_adjustment_factor
             FROM stock_prices sp
             JOIN stocks factor_stock
               ON factor_stock.id = sp.stock_id
             LEFT JOIN canonical_market_daily cmd
               ON cmd.stock_id = factor_stock.symbol
-             AND cmd.date = date(sp.date)
+             AND cmd.date = sp.date
              AND cmd.source = 'finlab.price'
-            WHERE date(sp.date) >= date(?, ?, '-10 days')
-              AND date(sp.date) <= date(?)
+            WHERE sp.date >= date(?, ?, '-10 days')
+              AND sp.date < date(?, '+1 day')
         )
         SELECT
             p.stock_id,
             s.symbol,
-            date(p.prediction_date) AS prediction_date,
+            p.prediction_date AS prediction_date,
             p.generated_at AS prediction_generated_at,
             datetime(ph.entry_date, '+1 hour') AS next_session_open_at,
             p.forecast_data,
@@ -861,7 +861,7 @@ def load_l4_alpha_ev_training_rows(
             dr.alpha_context,
             dr.market_segment,
             dr.recommendation_lane
-        FROM predictions p
+        FROM predictions p INDEXED BY idx_pred_date_model_stock
         JOIN daily_recommendations dr
           ON dr.stock_id = p.stock_id
          AND dr.date = p.prediction_date
@@ -869,28 +869,32 @@ def load_l4_alpha_ev_training_rows(
           ON s.id = p.stock_id
         JOIN price_horizons ph
           ON ph.stock_id = p.stock_id
-         AND ph.price_date = date(p.prediction_date)
+         AND ph.price_date = p.prediction_date
         WHERE p.model_name = 'ensemble'
+          AND p.prediction_date >= date(?, ?)
+          AND p.prediction_date < date(?, '+1 day')
           AND ph.entry_raw_open > 0
           AND ph.exit_raw_close > 0
           AND ph.entry_adjustment_factor > 0
           AND ph.exit_adjustment_factor > 0
-          AND date(ph.exit_date) <= date(?)
+          AND ph.exit_date < date(?, '+1 day')
+          AND (
+            date(datetime(p.generated_at, '+8 hours')) <= p.prediction_date
+            OR datetime(p.generated_at) < datetime(ph.entry_date || ' 01:00:00')
+          )
           AND p.forecast_data IS NOT NULL
           AND dr.score_components IS NOT NULL
-          AND date(p.prediction_date) <= date(?)
-          AND date(p.prediction_date) >= date(?, ?)
-        ORDER BY date(p.prediction_date) ASC, s.symbol ASC
+        ORDER BY p.prediction_date ASC, s.symbol ASC
         LIMIT ?
         """,
         [
             end_date,
             f"-{max(1, int(lookback_days))} days",
             outcome_cutoff,
-            outcome_cutoff,
-            end_date,
             end_date,
             f"-{max(1, int(lookback_days))} days",
+            end_date,
+            outcome_cutoff,
             int(limit),
         ],
     )

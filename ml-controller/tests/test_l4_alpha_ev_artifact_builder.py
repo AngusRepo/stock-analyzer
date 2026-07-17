@@ -234,8 +234,9 @@ def test_l4_training_query_uses_outcome_knowledge_cutoff_after_signal_end_date()
     )
 
     assert captured["params"][2] == "2026-07-09"
-    assert captured["params"][3] == "2026-07-09"
-    assert captured["params"][4] == "2026-07-02"
+    assert captured["params"][3] == "2026-07-02"
+    assert captured["params"][5] == "2026-07-02"
+    assert captured["params"][6] == "2026-07-09"
     assert "canonical_market_daily cmd" in captured["sql"]
     assert "cmd.adj_close / cmd.close" in captured["sql"]
     assert "ph.exit_raw_close * ph.exit_adjustment_factor" in captured["sql"]
@@ -243,6 +244,11 @@ def test_l4_training_query_uses_outcome_knowledge_cutoff_after_signal_end_date()
     assert "ph.exit_raw_close / ph.entry_raw_open" not in captured["sql"]
     assert "ABS((ph.exit_adjustment_factor / ph.entry_adjustment_factor)" not in captured["sql"]
     assert "sp.adj_close / sp.close" not in captured["sql"]
+    assert "predictions p INDEXED BY idx_pred_date_model_stock" in captured["sql"]
+    assert "date(sp.date)" not in captured["sql"]
+    assert "date(p.prediction_date)" not in captured["sql"]
+    assert "datetime(p.generated_at, '+8 hours')" in captured["sql"]
+    assert "datetime(ph.entry_date || ' 01:00:00')" in captured["sql"]
 
 
 def test_l4_builder_rejects_unproven_adjustment_factor_lineage():

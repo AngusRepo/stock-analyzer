@@ -78,6 +78,10 @@ def _temporary_directory(prefix: str):
 def _write_component_to_gcs(bucket, prefix: str, name: str, df: pl.DataFrame, tmp_dir: Path) -> dict[str, Any]:
     local_path = tmp_dir / f"{name}.parquet"
     df.write_parquet(local_path)
+    digest = hashlib.sha256()
+    with local_path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
     object_name = f"{prefix.rstrip('/')}/{name}.parquet"
     blob = bucket.blob(object_name)
     blob.upload_from_filename(str(local_path), content_type="application/octet-stream")
@@ -87,6 +91,7 @@ def _write_component_to_gcs(bucket, prefix: str, name: str, df: pl.DataFrame, tm
         "gcs_uri": f"gs://{bucket.name}/{object_name}",
         "columns": list(df.columns),
         "bytes": int(local_path.stat().st_size),
+        "content_checksum": f"sha256:{digest.hexdigest()}",
     }
 
 
@@ -194,6 +199,7 @@ def export_d1_cold_archive_snapshot(req: D1ColdArchiveExportRequest) -> dict[str
             "source": "stockvision_d1_exact",
             "component_gcs_uri": meta["gcs_uri"],
             "row_count": meta["row_count"],
+            "content_checksum": meta["content_checksum"],
         })
 
     row_count = sum(int(meta["row_count"]) for meta in component_meta.values())

@@ -571,6 +571,21 @@ def normalize_wide_index(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+PIT_DEADLINE_NAMESPACES = ("fundamental_features:", "financial_statement:")
+
+
+def normalize_finlab_wide_field(df: pd.DataFrame, *, api_key_name: str) -> pd.DataFrame:
+    """Normalize one FinLab field after applying its point-in-time date owner."""
+
+    requires_deadline = str(api_key_name or "").startswith(PIT_DEADLINE_NAMESPACES)
+    if requires_deadline:
+        deadline = getattr(df, "deadline", None)
+        if not callable(deadline):
+            raise ValueError(f"finlab_deadline_alignment_unavailable:{api_key_name}")
+        df = deadline()
+    return normalize_wide_index(df)
+
+
 def normalize_context_frame(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(df).copy()
     out.columns = [str(col).strip() for col in out.columns]
@@ -1723,7 +1738,10 @@ def materialize_specs(
                 path = lane_dir / f"{field}.parquet"
                 try:
                     frame = filter_date_range(
-                        normalize_wide_index(data.get(api_key_name)),
+                        normalize_finlab_wide_field(
+                            data.get(api_key_name),
+                            api_key_name=api_key_name,
+                        ),
                         start_date=start,
                         end_date=source_end_date,
                     )
@@ -1767,7 +1785,15 @@ def materialize_specs(
                     run_dir=run_dir,
                     gcs_bucket=gcs_bucket,
                     gcs_prefix=gcs_prefix,
-                    metadata={"kind": spec.kind, "shape": list(frame.shape)},
+                    metadata={
+                        "kind": spec.kind,
+                        "shape": list(frame.shape),
+                        "date_alignment": (
+                            "finlab_deadline"
+                            if api_key_name.startswith(PIT_DEADLINE_NAMESPACES)
+                            else "source_observation_date"
+                        ),
+                    },
                 ))
             field_errors = required_wide_field_errors(spec.lane, field_frames, target_date=target_date)
             if field_errors:

@@ -133,6 +133,60 @@ def test_remote_backfill_tool_supports_daily_source_window_contract():
     assert list(tool.filter_date_range(frame, start_date="2026-07-01", end_date="2026-07-01")["close"]) == [12]
 
 
+def test_finlab_fundamental_fields_require_deadline_alignment():
+    tool = _load_tool_module()
+
+    class DeadlineFrame(pd.DataFrame):
+        _metadata = ["deadline_called"]
+
+        @property
+        def _constructor(self):
+            return DeadlineFrame
+
+        def deadline(self):
+            self.deadline_called = True
+            out = self.copy()
+            out.index = pd.to_datetime(["2026-03-31"])
+            return out
+
+    raw = DeadlineFrame(
+        {"2330": [66.2]},
+        index=pd.to_datetime(["2026-01-01"]),
+    )
+    aligned = tool.normalize_finlab_wide_field(
+        raw,
+        api_key_name="fundamental_features:gross_margin",
+    )
+
+    assert raw.deadline_called is True
+    assert list(aligned.index) == [pd.Timestamp("2026-03-31")]
+
+
+def test_finlab_fundamental_fields_fail_closed_without_deadline_owner():
+    import pytest
+
+    tool = _load_tool_module()
+    raw = pd.DataFrame({"2330": [66.2]}, index=pd.to_datetime(["2026-01-01"]))
+
+    with pytest.raises(ValueError, match="finlab_deadline_alignment_unavailable"):
+        tool.normalize_finlab_wide_field(
+            raw,
+            api_key_name="financial_statement:revenue",
+        )
+
+
+def test_finlab_daily_valuation_fields_keep_source_observation_dates():
+    tool = _load_tool_module()
+    raw = pd.DataFrame({"2330": [18.5]}, index=pd.to_datetime(["2026-07-16"]))
+
+    aligned = tool.normalize_finlab_wide_field(
+        raw,
+        api_key_name="price_earning_ratio:pe",
+    )
+
+    assert list(aligned.index) == [pd.Timestamp("2026-07-16")]
+
+
 def test_source_quality_zero_finlab_rows_is_empty_not_ok(monkeypatch):
     tool = _load_tool_module()
     calls: list[tuple[str, list]] = []

@@ -14,6 +14,8 @@ from services.evidence_contracts import (
     LABEL_SCHEMA_VERSION,
 )
 from services.ev_lineage_contract import (
+    ENSEMBLE_SEMANTIC_VERSION,
+    OOF_ENSEMBLE_SEMANTIC_VERSION,
     attach_same_run_model_version_evidence,
     ev_feature_lineage_blockers,
 )
@@ -28,7 +30,7 @@ FEATURE_NAMES = [
 ]
 CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
 CANONICAL_SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
-CANONICAL_ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v4"
+CANONICAL_ENSEMBLE_SEMANTIC_VERSION = ENSEMBLE_SEMANTIC_VERSION
 CANONICAL_ADJUSTMENT_FACTOR_SOURCE = "canonical_market_daily:finlab.price"
 FEATURE_SEMANTIC_VERSION = L4_FEATURE_SEMANTIC_VERSION
 LABEL_PURGE_DATE_GROUPS = 5
@@ -110,6 +112,7 @@ def _samples(
     feature_era_counts: dict[str, int] = {}
     score_semantic_counts: dict[str, int] = {}
     ensemble_semantic_counts: dict[str, int] = {}
+    ensemble_generation_mode_counts: dict[str, int] = {}
     model_set_signature_counts: dict[str, int] = {}
     lineage_blocker_counts: dict[str, int] = {}
     adjustment_lineage_counts: dict[str, int] = {}
@@ -120,10 +123,16 @@ def _samples(
         era = str(score_payload.get("version") or "legacy_unversioned").strip().lower()
         score_semantic = str(score_payload.get("semanticVersion") or "missing")
         ensemble_semantic = str(ensemble_payload.get("semantic_version") or "missing")
+        ensemble_generation_mode = str(
+            ensemble_payload.get("generation_mode") or "native"
+        ).strip().lower()
         model_set_signature = str(ensemble_payload.get("model_set_signature") or "missing")
         feature_era_counts[era] = feature_era_counts.get(era, 0) + 1
         score_semantic_counts[score_semantic] = score_semantic_counts.get(score_semantic, 0) + 1
         ensemble_semantic_counts[ensemble_semantic] = ensemble_semantic_counts.get(ensemble_semantic, 0) + 1
+        ensemble_generation_mode_counts[ensemble_generation_mode] = (
+            ensemble_generation_mode_counts.get(ensemble_generation_mode, 0) + 1
+        )
         model_set_signature_counts[model_set_signature] = model_set_signature_counts.get(model_set_signature, 0) + 1
         adjustment_source = str(row.get("label_adjustment_source") or "missing")
         adjustment_lineage_counts[adjustment_source] = adjustment_lineage_counts.get(adjustment_source, 0) + 1
@@ -175,6 +184,31 @@ def _samples(
             excluded_zero_dates.append(day)
             continue
         out.extend(day_rows)
+    feature_profile: dict[str, dict[str, Any]] = {}
+    for name in FEATURE_NAMES:
+        values = [float(row["features"][name]) for row in out]
+        mean = _mean(values)
+        variance = (
+            sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+            if len(values) > 1
+            else 0.0
+        )
+        feature_profile[name] = {
+            "samples": len(values),
+            "nonzero_samples": sum(abs(value) > 1e-12 for value in values),
+            "minimum": None if not values else round(min(values), 10),
+            "maximum": None if not values else round(max(values), 10),
+            "mean": None if not values else round(mean, 10),
+            "standard_deviation": None if not values else round(math.sqrt(variance), 10),
+            "degenerate": not values or variance <= 1e-16,
+        }
+    generation_modes = set(ensemble_generation_mode_counts)
+    if generation_modes == {"purged_oof"}:
+        required_ensemble_semantic = OOF_ENSEMBLE_SEMANTIC_VERSION
+    elif generation_modes == {"native"}:
+        required_ensemble_semantic = ENSEMBLE_SEMANTIC_VERSION
+    else:
+        required_ensemble_semantic = "generation-mode-dependent"
     diagnostics = {
         "input_rows": len(rows),
         "sample_count": len(out),
@@ -183,7 +217,12 @@ def _samples(
         "feature_era_counts": dict(sorted(feature_era_counts.items())),
         "required_score_semantic_version": CANONICAL_SCORE_SEMANTIC_VERSION,
         "score_semantic_counts": dict(sorted(score_semantic_counts.items())),
-        "required_ensemble_semantic_version": CANONICAL_ENSEMBLE_SEMANTIC_VERSION,
+        "required_ensemble_semantic_version": required_ensemble_semantic,
+        "required_ensemble_semantic_versions": {
+            "native": ENSEMBLE_SEMANTIC_VERSION,
+            "purged_oof": OOF_ENSEMBLE_SEMANTIC_VERSION,
+        },
+        "ensemble_generation_mode_counts": dict(sorted(ensemble_generation_mode_counts.items())),
         "ensemble_semantic_counts": dict(sorted(ensemble_semantic_counts.items())),
         "model_set_signature_counts": dict(sorted(model_set_signature_counts.items())),
         "lineage_blocker_counts": dict(sorted(lineage_blocker_counts.items())),
@@ -194,6 +233,10 @@ def _samples(
         "sparse_dates_rejected": sparse_dates,
         "sparse_date_rows_rejected": sparse_date_rows_rejected,
         "date_count": len({row["date"] for row in out}),
+        "feature_profile": feature_profile,
+        "degenerate_features": sorted(
+            name for name, profile in feature_profile.items() if profile["degenerate"]
+        ),
         "excluded_zero_return_dates": excluded_zero_dates,
     }
     return out, diagnostics

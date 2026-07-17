@@ -90,6 +90,36 @@ def test_unknown_model_version_cannot_form_valid_lineage_signature():
     assert "model_set_signature_invalid" in blockers
 
 
+def test_ensemble_semantic_isolated_by_generation_mode():
+    versions = {"LightGBM": "lgb-v3"}
+    common = {
+        "contributing_models": ["LightGBM"],
+        "artifact_versions": versions,
+        "model_set_signature": "LightGBM@lgb-v3",
+    }
+
+    assert not ensemble_lineage_blockers({
+        **common,
+        "generation_mode": "native",
+        "semantic_version": "active8-ic-weighted-rank-v4",
+    })
+    assert not ensemble_lineage_blockers({
+        **common,
+        "generation_mode": "purged_oof",
+        "semantic_version": "active8-purged-oof-chronological-ridge-v2",
+    })
+    assert "ensemble_semantic_version_incompatible" in ensemble_lineage_blockers({
+        **common,
+        "generation_mode": "native",
+        "semantic_version": "active8-purged-oof-chronological-ridge-v2",
+    })
+    assert "ensemble_semantic_version_incompatible" in ensemble_lineage_blockers({
+        **common,
+        "generation_mode": "purged_oof",
+        "semantic_version": "active8-ic-weighted-rank-v4",
+    })
+
+
 def test_historical_row_is_recomputed_only_with_exact_asof_champion_history():
     result = reconstruct_point_in_time_ev_lineage(_legacy_row(), champion_events=_events())
 

@@ -8,6 +8,8 @@ from typing import Any
 
 import numpy as np
 
+from services.ev_lineage_contract import OOF_ENSEMBLE_SEMANTIC_VERSION
+
 ACTIVE8_MODELS = (
     "LightGBM",
     "XGBoost",
@@ -18,7 +20,7 @@ ACTIVE8_MODELS = (
     "PatchTST",
     "iTransformer",
 )
-STACKER_SEMANTIC_VERSION = "active8-purged-oof-chronological-ridge-v2"
+STACKER_SEMANTIC_VERSION = OOF_ENSEMBLE_SEMANTIC_VERSION
 MIN_STACKER_TRAIN_ROWS = 500
 MIN_STACKER_TRAIN_DATES = 5
 RIDGE_CANDIDATES = (0.01, 0.1, 1.0, 10.0)

@@ -1,6 +1,8 @@
 from pathlib import Path
 import sys
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ml-controller"))
@@ -152,6 +154,36 @@ def test_native_pit_loader_bounds_d1_evidence_payload_by_date_chunk():
         "for offset in range(0, len(dates), query_date_chunk_size):"
     ) == 2
 
+
+def test_oof_persistence_rejects_duplicate_snapshot_identity_before_writes():
+    from services.active8_oof_cohort_materializer import persist_oof_cohort
+
+    duplicate = {
+        "cohort_id": "cohort",
+        "fold_id": "w0",
+        "snapshot_date": "2026-07-01",
+        "symbol": "2330",
+        "market_segment": "LISTED",
+    }
+    with pytest.raises(ValueError, match="active8_oof_snapshot_identity_duplicate"):
+        persist_oof_cohort(
+            manifest={"cohort_id": "cohort", "windows": []},
+            prediction_rows=[],
+            snapshot_rows=[duplicate, dict(duplicate)],
+            dry_run=True,
+        )
+
+
+def test_oof_persistence_is_resumable_and_uses_deterministic_upserts():
+    source = (
+        ROOT / "ml-controller" / "services" / "active8_oof_cohort_materializer.py"
+    ).read_text()
+
+    assert 'row.get("status") != "building"' in source
+    assert "ON CONFLICT(cohort_id, fold_id, prediction_date, symbol, market_segment, model_name)" in source
+    assert "ON CONFLICT(cohort_id, fold_id, model_name)" in source
+    assert "ON CONFLICT(cohort_id, fold_id, snapshot_date, symbol, market_segment)" in source
+    assert "ON CONFLICT(cohort_id, fold_id, prediction_date, symbol, market_segment)" in source
 
 def test_oof_migration_enforces_immutable_keys_and_point_in_time_labels():
     migration = (ROOT / "worker" / "migrations" / "0066_active8_oof_stacking_cohorts.sql").read_text()
@@ -315,6 +347,7 @@ def test_v2_manifest_reuses_verified_parent_artifacts():
     import hashlib
     import io
     import json
+
     import numpy as np
     from services.active8_oof_cohort_materializer import (
         ACTIVE8_MODELS,

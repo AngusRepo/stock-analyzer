@@ -708,7 +708,13 @@ def persist_l4_oof_predictions(
           expected_return, prediction_json, trained_until, model_version,
           eligible_for_efficacy
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """
+        ON CONFLICT(cohort_id, fold_id, prediction_date, symbol, market_segment)
+        DO UPDATE SET
+          expected_return=excluded.expected_return,
+          prediction_json=excluded.prediction_json,
+          trained_until=excluded.trained_until,
+          model_version=excluded.model_version,
+          eligible_for_efficacy=excluded.eligible_for_efficacy    """
     result = batch_fn([(sql, [
         row["cohort_id"], row["fold_id"], row["prediction_date"], row["symbol"],
         row["market_segment"], row["expected_return"], row["prediction_json"],
@@ -861,6 +867,16 @@ def persist_oof_cohort(
         raise ValueError("active8_oof_prediction_storage_mode_invalid")
     fold_artifact_rows = build_oof_fold_artifact_rows(manifest, prediction_rows)
     prediction_dates = len({str(row["prediction_date"])[:10] for row in prediction_rows})
+    identity_specs = (
+        ("prediction", prediction_rows, ("cohort_id", "fold_id", "prediction_date", "symbol", "market_segment", "model_name")),
+        ("fold_artifact", fold_artifact_rows, ("cohort_id", "fold_id", "model_name")),
+        ("snapshot", snapshot_rows, ("cohort_id", "fold_id", "snapshot_date", "symbol", "market_segment")),
+        ("l4_prediction", list(l4_predictions or []), ("cohort_id", "fold_id", "prediction_date", "symbol", "market_segment")),
+    )
+    for identity_name, rows, fields in identity_specs:
+        identities = {tuple(str(row.get(field) or "") for field in fields) for row in rows}
+        if len(identities) != len(rows):
+            raise ValueError(f"active8_oof_{identity_name}_identity_duplicate")
     if dry_run:
         return {
             "status": "dry_run",
@@ -873,42 +889,46 @@ def persist_oof_cohort(
             "prediction_storage_mode": prediction_storage_mode,
         }
     existing = query_fn(
-        "SELECT status, artifact_manifest_checksum FROM active8_oof_cohorts WHERE cohort_id = ?",
+        "SELECT status, artifact_manifest_checksum, prediction_storage_mode FROM active8_oof_cohorts WHERE cohort_id = ?",
         [cohort_id],
     )
     if existing:
         row = existing[0]
-        if row.get("status") == "ready" and row.get("artifact_manifest_checksum") == manifest["manifest_checksum"]:
+        same_lineage = row.get("artifact_manifest_checksum") == manifest["manifest_checksum"]
+        same_storage = row.get("prediction_storage_mode") == prediction_storage_mode
+        if row.get("status") == "ready" and same_lineage and same_storage:
             return {"status": "idempotent_ready", "cohort_id": cohort_id}
-        raise ValueError("active8_oof_cohort_id_collision")
+        if row.get("status") != "building" or not same_lineage or not same_storage:
+            raise ValueError("active8_oof_cohort_id_collision")
 
     model_signature = build_model_set_signature(
         {name: f"cohort:{cohort_id}" for name in ACTIVE8_MODELS},
         list(ACTIVE8_MODELS),
     )
     parent = manifest.get("parent_manifest") or {}
-    d1_client.execute(
-        """
-        INSERT INTO active8_oof_cohorts (
+    if not existing:
+        d1_client.execute(
+            """
+            INSERT INTO active8_oof_cohorts (
           cohort_id, generation_mode, status, target_semantic_version,
           score_semantic_version, model_set_signature, expected_models,
           expected_folds, artifact_manifest_path, artifact_manifest_checksum,
           prediction_storage_mode, parent_cohort_id, parent_manifest_checksum
         ) VALUES (?, 'purged_oof', 'building', ?, ?, ?, 8, ?, ?, ?, ?, ?, ?)
         """,
-        [
-            cohort_id,
-            TARGET_SEMANTIC_VERSION,
-            "same-market-same-date-percentile-rank-v1",
-            model_signature,
-            len(manifest.get("windows") or []),
-            f"walk_forward/oof_cohorts/{cohort_id}/manifest.json",
-            manifest["manifest_checksum"],
-            prediction_storage_mode,
-            parent.get("cohort_id"),
-            parent.get("checksum"),
-        ],
-    )
+            [
+                cohort_id,
+                TARGET_SEMANTIC_VERSION,
+                "same-market-same-date-percentile-rank-v1",
+                model_signature,
+                len(manifest.get("windows") or []),
+                f"walk_forward/oof_cohorts/{cohort_id}/manifest.json",
+                manifest["manifest_checksum"],
+                prediction_storage_mode,
+                parent.get("cohort_id"),
+                parent.get("checksum"),
+            ],
+        )
     prediction_sql = """
         INSERT INTO active8_oof_predictions (
           cohort_id, fold_id, prediction_date, stock_id, symbol, market_segment,
@@ -916,7 +936,17 @@ def persist_oof_cohort(
           artifact_version, artifact_checksum, train_start, train_end, test_start,
           test_end, target_semantic_version, score_semantic_version
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """
+        ON CONFLICT(cohort_id, fold_id, prediction_date, symbol, market_segment, model_name)
+        DO UPDATE SET
+          stock_id=excluded.stock_id, raw_score=excluded.raw_score,
+          rank_score=excluded.rank_score, target_return=excluded.target_return,
+          label_known_date=excluded.label_known_date,
+          artifact_version=excluded.artifact_version,
+          artifact_checksum=excluded.artifact_checksum,
+          train_start=excluded.train_start, train_end=excluded.train_end,
+          test_start=excluded.test_start, test_end=excluded.test_end,
+          target_semantic_version=excluded.target_semantic_version,
+          score_semantic_version=excluded.score_semantic_version    """
     statements = [(prediction_sql, [
         row["cohort_id"], row["fold_id"], row["prediction_date"], row.get("stock_id"),
         row["symbol"], row["market_segment"], row["model_name"], row["raw_score"],
@@ -940,7 +970,18 @@ def persist_oof_cohort(
           prediction_dates, train_start, train_end, test_start, test_end,
           target_semantic_version, score_semantic_version
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """
+        ON CONFLICT(cohort_id, fold_id, model_name)
+        DO UPDATE SET
+          source_cohort_id=excluded.source_cohort_id,
+          source_manifest_checksum=excluded.source_manifest_checksum,
+          artifact_path=excluded.artifact_path,
+          artifact_checksum=excluded.artifact_checksum,
+          artifact_rows=excluded.artifact_rows,
+          prediction_dates=excluded.prediction_dates,
+          train_start=excluded.train_start, train_end=excluded.train_end,
+          test_start=excluded.test_start, test_end=excluded.test_end,
+          target_semantic_version=excluded.target_semantic_version,
+          score_semantic_version=excluded.score_semantic_version    """
     fold_artifact_statements = [(fold_artifact_sql, [
         row["cohort_id"], row["fold_id"], row["source_cohort_id"],
         row["source_manifest_checksum"], row["model_name"], row["artifact_path"],
@@ -962,7 +1003,20 @@ def persist_oof_cohort(
           s12_source, s12_asof_date, label_known_date, model_set_signature,
           target_semantic_version, generation_mode, source_manifest_checksum
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'purged_oof', ?)
-    """
+        ON CONFLICT(cohort_id, fold_id, snapshot_date, symbol, market_segment)
+        DO UPDATE SET
+          stock_id=excluded.stock_id, forecast_data=excluded.forecast_data,
+          score=excluded.score, score_components=excluded.score_components,
+          alpha_context=excluded.alpha_context, alpha_allocation=excluded.alpha_allocation,
+          market_heat_expected_return=excluded.market_heat_expected_return,
+          recommendation_lane=excluded.recommendation_lane,
+          l4_model_version=excluded.l4_model_version,
+          s12_source=excluded.s12_source, s12_asof_date=excluded.s12_asof_date,
+          label_known_date=excluded.label_known_date,
+          model_set_signature=excluded.model_set_signature,
+          target_semantic_version=excluded.target_semantic_version,
+          generation_mode=excluded.generation_mode,
+          source_manifest_checksum=excluded.source_manifest_checksum    """
     snapshot_statements = [(snapshot_sql, [
         row["cohort_id"], row["fold_id"], row["snapshot_date"], row.get("stock_id"),
         row["symbol"], row["market_segment"], row["forecast_data"], row.get("score"),

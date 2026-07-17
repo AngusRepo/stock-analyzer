@@ -14,7 +14,11 @@ import numpy as np
 from .model_store import _get_bucket
 from .oof_lineage import canonical_market_segment, percentile_rank_by_date_market
 from .research_benchmarks.common import load_sequence_dataset
-from .sequence_training import CANONICAL_ROUNDTRIP_COST_BPS, SEQUENCE_RETURN_SEMANTIC_VERSION
+from .sequence_training import (
+    CANONICAL_ROUNDTRIP_COST_BPS,
+    SEQUENCE_RETURN_SEMANTIC_VERSION,
+    canonical_session_calendar,
+)
 
 
 SCHEMA_VERSION = "active8-canonical-adjusted-prep-v1"
@@ -23,6 +27,8 @@ SCHEMA_VERSION = "active8-canonical-adjusted-prep-v1"
 def build_adjusted_target_lookup(records: list[dict[str, Any]]) -> dict[str, dict[str, tuple[float, str]]]:
     output: dict[str, dict[str, tuple[float, str]]] = {}
     cost = CANONICAL_ROUNDTRIP_COST_BPS / 10000.0
+    calendar = canonical_session_calendar(records)
+    calendar_index = {date: idx for idx, date in enumerate(calendar)}
     for record in records:
         symbol = str(record.get("symbol") or "").strip()
         dates = [str(value)[:10] for value in (record.get("dates") or [])]
@@ -30,13 +36,21 @@ def build_adjusted_target_lookup(records: list[dict[str, Any]]) -> dict[str, dic
         closes = np.asarray(record.get("close") or [], dtype=float)
         if not symbol or len(dates) != len(opens) or len(dates) != len(closes):
             continue
+        row_index = {date: idx for idx, date in enumerate(dates)}
         targets: dict[str, tuple[float, str]] = {}
-        for idx in range(0, len(dates) - 5):
-            entry_open = float(opens[idx + 1])
-            outcome_close = float(closes[idx + 5])
+        for signal_date in dates:
+            signal_idx = calendar_index.get(signal_date)
+            if signal_idx is None or signal_idx + 5 >= len(calendar):
+                continue
+            entry_date = calendar[signal_idx + 1]
+            outcome_date = calendar[signal_idx + 5]
+            if entry_date not in row_index or outcome_date not in row_index:
+                continue
+            entry_open = float(opens[row_index[entry_date]])
+            outcome_close = float(closes[row_index[outcome_date]])
             if not np.isfinite(entry_open) or entry_open <= 0 or not np.isfinite(outcome_close):
                 continue
-            targets[dates[idx]] = (outcome_close / entry_open - 1.0 - cost, dates[idx + 5])
+            targets[signal_date] = (outcome_close / entry_open - 1.0 - cost, outcome_date)
         if targets:
             output[symbol] = targets
     return output
@@ -200,4 +214,3 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
         content_type="application/json",
     )
     return manifest
-

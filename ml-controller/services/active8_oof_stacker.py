@@ -142,7 +142,11 @@ def build_chronological_oof_stack(
         max_target_lineage_drift = max(max_target_lineage_drift, target_drift)
         known_dates = {str(row["label_known_date"])[:10] for row in models.values()}
         if target_drift > TARGET_AGREEMENT_TOLERANCE or len(known_dates) != 1:
-            raise ValueError("active8_oof_target_lineage_disagreement")
+            raise ValueError(
+                "active8_oof_target_lineage_disagreement:"
+                f"{fold_id}:{prediction_date}:{symbol}:"
+                f"drift={target_drift:.12g}:known={','.join(sorted(known_dates))}"
+            )
         label_known_date = next(iter(known_dates))
         if label_known_date <= prediction_date:
             raise ValueError("active8_oof_label_known_date_not_after_prediction")

@@ -13,7 +13,6 @@ import time
 import warnings
 import zipfile
 from bisect import bisect_right
-from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +31,7 @@ from .sequence_training import (
     CANONICAL_ROUNDTRIP_COST_BPS,
     SEQUENCE_RETURN_SEMANTIC_VERSION,
     build_sequence_window_dataset,
+    canonical_session_calendar,
 )
 from .model_validation import build_model_cpcv_evidence
 from .artifact_contract import ArtifactValidationError, verify_artifact_bytes
@@ -230,13 +230,7 @@ def _filter_panel_to_eval_rows(
 
 
 def _canonical_sequence_calendar(records: list[dict[str, Any]]) -> list[str]:
-    counts: Counter[str] = Counter()
-    for record in records:
-        counts.update({str(value) for value in (record.get("dates") or []) if value})
-    if not counts:
-        return []
-    threshold = max(10, int(max(counts.values()) * 0.20))
-    return sorted(date for date, count in counts.items() if count >= threshold)
+    return canonical_session_calendar(records)
 
 
 def _aligned_close_values(record: dict[str, Any], dates: list[str]) -> tuple[list[float], float]:

@@ -8,7 +8,8 @@ but they cannot produce auditable cross-sectional OOS IC.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from collections import Counter
+from typing import Any, Callable, Iterable
 
 import numpy as np
 
@@ -17,6 +18,20 @@ SEQUENCE_RETURN_SEMANTIC_VERSION = (
     "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
 )
 CANONICAL_ROUNDTRIP_COST_BPS = 18.0
+
+
+def canonical_session_calendar(records: list[dict[str, Any]]) -> list[str]:
+    """Return the shared exchange-session calendar represented by the panel."""
+
+    counts: Counter[str] = Counter()
+    for record in records or []:
+        counts.update({str(value)[:10] for value in (record.get("dates") or []) if value})
+    if not counts:
+        return []
+    max_coverage = max(counts.values())
+    minimum_observations = 1 if len(records) < 10 else 10
+    threshold = max(minimum_observations, int(max_coverage * 0.20))
+    return sorted(date for date, count in counts.items() if count >= threshold)
 
 
 @dataclass(frozen=True)
@@ -126,6 +141,9 @@ def build_sequence_window_dataset(
     meta: list[dict] = []
     dropped_short = 0
     dropped_bad = 0
+    dropped_session_gap = 0
+    session_calendar = canonical_session_calendar(records)
+    session_index = {date: idx for idx, date in enumerate(session_calendar)}
 
     for record in records or []:
         closes = np.asarray(record.get("close") or record.get("series_close") or [], dtype=np.float32)
@@ -147,6 +165,19 @@ def build_sequence_window_dataset(
         for start in range(n_win):
             x = closes[start:start + seq_len]
             y = closes[start + seq_len:start + seq_len + pred_len]
+            signal_date = dates[start + seq_len - 1][:10]
+            signal_idx = session_index.get(signal_date)
+            if signal_idx is None or signal_idx + pred_len >= len(session_calendar):
+                dropped_session_gap += 1
+                continue
+            expected_entry_date = session_calendar[signal_idx + 1]
+            expected_outcome_date = session_calendar[signal_idx + pred_len]
+            if (
+                dates[start + seq_len][:10] != expected_entry_date
+                or dates[start + seq_len + pred_len - 1][:10] != expected_outcome_date
+            ):
+                dropped_session_gap += 1
+                continue
             last_close = float(x[-1])
             entry_open = float(opens[start + seq_len])
             target_close = float(y[-1])
@@ -155,8 +186,8 @@ def build_sequence_window_dataset(
             meta.append({
                 "symbol": symbol,
                 "market_type": market_type,
-                "asof_date": dates[start + seq_len - 1],
-                "target_date": dates[start + seq_len + pred_len - 1],
+                "asof_date": signal_date,
+                "target_date": expected_outcome_date,
                 "last_close": last_close,
                 "entry_open": entry_open,
                 "target_close": target_close,
@@ -184,6 +215,7 @@ def build_sequence_window_dataset(
                 "windows": 0,
                 "dropped_short": dropped_short,
                 "dropped_bad": dropped_bad,
+                "dropped_session_gap": dropped_session_gap,
                 "lifecycle_ready": False,
                 "reason": "no_valid_windows",
             },
@@ -219,6 +251,7 @@ def build_sequence_window_dataset(
         "oos_dates": int(len(set(target_dates[oos_index].tolist()))),
         "dropped_short": dropped_short,
         "dropped_bad": dropped_bad,
+        "dropped_session_gap": dropped_session_gap,
         "lifecycle_ready": bool(len(train_index) > 0 and len(oos_index) > 0),
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
         "split_method": split_method,

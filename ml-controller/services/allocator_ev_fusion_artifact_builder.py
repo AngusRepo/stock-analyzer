@@ -23,6 +23,7 @@ from services.allocator_ev_fusion import (
     _target_quality_state,
 )
 from services.l4_alpha_ev_resolver import (
+    PURGED_OOF_USAGE_SCOPE,
     SNAPSHOT_BACKFILL_AS_OF_GUARD,
     SNAPSHOT_BACKFILL_SOURCE,
     SNAPSHOT_BACKFILL_USAGE_SCOPE,
@@ -197,7 +198,7 @@ def _selection_raw_features(row: dict[str, Any]) -> dict[str, float]:
 
 def _l4_usage_scope(row: dict[str, Any]) -> str:
     if str(row.get("generation_mode") or "").strip() == "purged_oof":
-        return SNAPSHOT_BACKFILL_USAGE_SCOPE
+        return PURGED_OOF_USAGE_SCOPE
     if (
         str(row.get("allocator_ev_feature_snapshot_source") or "").strip() == SNAPSHOT_BACKFILL_SOURCE
         and str(row.get("allocator_ev_feature_snapshot_guard") or "").strip()
@@ -234,7 +235,7 @@ def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
             _l4_payload.get("trained_until"),
             row.get("prediction_date"),
         )
-        if usage_scope == SNAPSHOT_BACKFILL_USAGE_SCOPE:
+        if usage_scope in {SNAPSHOT_BACKFILL_USAGE_SCOPE, PURGED_OOF_USAGE_SCOPE}:
             lineage = (
                 _l4_payload.get("point_in_time_prediction_lineage")
                 if isinstance(_l4_payload.get("point_in_time_prediction_lineage"), dict)

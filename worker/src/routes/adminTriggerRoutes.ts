@@ -1,4 +1,4 @@
-﻿import { Hono } from 'hono'
+import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireServiceToken } from '../lib/auth'
 import type { Bindings, Variables } from '../types'
@@ -23,6 +23,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'finlab-v4-backfill',
   'finlab-backfill-watchdog',
   'allocator-ev-lifecycle-watchdog',
+  'active8-oof-lifecycle', 'active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly',
   'external-evidence',
   'strategy-learning',
   'strategy-threshold-calibration',
@@ -136,6 +137,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'finlab-v4-backfill',
       'finlab-backfill-watchdog',
       'allocator-ev-lifecycle-watchdog',
+  'active8-oof-lifecycle', 'active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly',
       'strategy-learning',
       'strategy-threshold-calibration',
       's12-smcvwap-calibration',

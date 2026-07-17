@@ -197,3 +197,79 @@ def test_candidate_and_promotion_packets_are_checksum_addressed(monkeypatch):
     assert candidate["l4_alpha_ev"]["path"] != receipt["l4_alpha_ev"]["path"]
     assert all(record["checksum"] in record["artifact_path"] for record in registry)
     assert len(uploaded) == 4
+
+
+def test_fundamental_pit_loader_drops_future_rows_and_reuses_formal_owner():
+    from services.active8_oof_cohort_materializer import load_fundamental_quality_pit_by_key
+
+    def query(sql, params):
+        if "FROM canonical_revenue_monthly" in sql:
+            return [{
+                "stock_id": "2330",
+                "revenue_month": "2026-05",
+                "yoy": 20.0,
+                "mom": 5.0,
+                "source": "finlab.monthly_revenue",
+                "as_of_date": "2026-06-10",
+            }]
+        if "FROM canonical_fundamental_features" in sql:
+            return [
+                {
+                    "stock_id": "2330",
+                    "period": "2026Q1",
+                    "available_date": "2026-05-15",
+                    "as_of_date": "2026-05-15",
+                    "roe": 18.0,
+                    "pe": 15.0,
+                    "source": "finlab.fundamental_factor_diversity",
+                },
+                {
+                    "stock_id": "2330",
+                    "period": "2026Q2",
+                    "available_date": "2026-07-20",
+                    "as_of_date": "2026-07-20",
+                    "roe": 99.0,
+                    "source": "finlab.fundamental_factor_diversity",
+                },
+            ]
+        raise AssertionError(sql)
+
+    result = load_fundamental_quality_pit_by_key(
+        [{"prediction_date": "2026-06-25", "symbol": "2330"}],
+        query_fn=query,
+    )
+    payload = result[("2026-06-25", "2330")]
+
+    assert payload["version"] == "fundamental_quality_v1"
+    assert payload["score"] > 0
+    assert payload["noLookahead"]["decisionDate"] == "2026-06-25"
+    assert payload["noLookahead"]["droppedFutureFinancialRows"] == 1
+    assert payload["sourceRowCounts"]["available"] == 2
+
+
+def test_counterfactual_score_uses_formal_pit_fundamental_owner_when_available():
+    from services.active8_oof_cohort_materializer import _counterfactual_score_v2
+
+    native = {
+        "version": "score_v2",
+        "semanticVersion": "score-v2-active8-components-v3",
+        "components": {
+            "mlEdge": 0.0,
+            "chipFlow": 10.0,
+            "technicalStructure": 10.0,
+            "fundamentalQuality": 0.0,
+            "newsTheme": 0.0,
+        },
+    }
+    formal = {
+        "version": "fundamental_quality_v1",
+        "score": 12.5,
+        "dataIssues": [],
+        "noLookahead": {"decisionDate": "2026-06-25"},
+    }
+
+    rebuilt = _counterfactual_score_v2(native, 0.8, fundamental_quality=formal)
+
+    assert rebuilt["components"]["fundamentalQuality"] == 12.5
+    assert rebuilt["counterfactualLineage"]["fundamentalQualityOwner"] == "fundamental_quality_v1_pit"
+    assert rebuilt["counterfactualLineage"]["fundamentalQualityNoLookahead"]["decisionDate"] == "2026-06-25"

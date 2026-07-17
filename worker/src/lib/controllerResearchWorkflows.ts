@@ -220,6 +220,41 @@ export async function runMonthlyOptunaResearch(env: Bindings, runDate?: string) 
   })
 }
 
+export async function runActive8OofLifecycle(
+  env: Bindings,
+  runDate?: string,
+  cadence: 'daily' | 'weekly' | 'monthly' = 'daily',
+) {
+  requireController(env)
+
+  const resp = await controllerFetch(env, '/walk_forward/oof/lifecycle', {
+    method: 'POST',
+    jsonBody: {
+      cadence,
+      end_date: runDate,
+      dry_run: false,
+      promote: true,
+    },
+    timeoutMs: 180_000,
+  })
+  const text = await resp.text().catch(() => '')
+  if (!resp.ok) {
+    throw new Error(`Active-8 OOF lifecycle HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
+  }
+  const data = text ? JSON.parse(text) as Record<string, any> : {}
+  const status = String(data.status ?? '').toLowerCase()
+  if (!['skipped', 'pending', 'spawned', 'materialized', 'idempotent_complete'].includes(status)) {
+    throw new Error(`Active-8 OOF lifecycle unexpected status=${status || 'unknown'}`)
+  }
+  return [
+    `active8_oof_lifecycle status=${status}`,
+    `cadence=${cadence}`,
+    `cohort=${data.cohort_id ?? 'none'}`,
+    `promoted=${Boolean(data.promoted)}`,
+    `reason=${data.promotion_reason ?? data.reason ?? 'none'}`,
+  ].join(' ')
+}
+
 export async function runL4AlphaEvRefresh(env: Bindings, runDate?: string, cadence: 'weekly' | 'monthly' = 'weekly') {
   requireController(env)
 

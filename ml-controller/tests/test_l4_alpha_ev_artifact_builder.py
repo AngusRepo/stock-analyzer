@@ -133,7 +133,7 @@ def test_l4_alpha_ev_artifact_builder_reports_oof_semantic_by_generation_mode():
             forecast = json.loads(row["forecast_data"])
             forecast["ensemble_v2"]["generation_mode"] = "purged_oof"
             forecast["ensemble_v2"]["semantic_version"] = (
-                "active8-purged-oof-chronological-ridge-v2"
+                "active8-purged-oof-chronological-ridge-v3"
             )
             row["forecast_data"] = json.dumps(forecast)
             rows.append(row)
@@ -150,7 +150,7 @@ def test_l4_alpha_ev_artifact_builder_reports_oof_semantic_by_generation_mode():
     audit = out["artifact"]["validation_packet"]["sample_audit"]
     assert audit["ensemble_generation_mode_counts"] == {"purged_oof": 100}
     assert audit["required_ensemble_semantic_version"] == (
-        "active8-purged-oof-chronological-ridge-v2"
+        "active8-purged-oof-chronological-ridge-v3"
     )
     assert audit["lineage_blocker_counts"] == {}
     assert audit["feature_profile"]["fundamental_quality_norm"]["nonzero_samples"] == 100

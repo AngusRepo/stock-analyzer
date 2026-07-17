@@ -8,6 +8,7 @@ function assert(condition: unknown, message: string): void {
 
 const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8'))
 const jobs = manifest.jobs as Array<{ id: string; task: string; schedule: string; query?: string }>
+const walkForward = fs.readFileSync('../ml-controller/routers/walk_forward.py', 'utf8')
 
 assert(
   jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.query === 'sync=1' && job.schedule === '0 13 * * 1-5'),
@@ -26,14 +27,13 @@ assert(
   'GCP Scheduler must recover interrupted allocator EV daily lifecycle stages',
 )
 assert(
-  jobs.some((job) => job.id === 'opb-arm-prior-refresh' && job.task === 'opb-arm-prior-refresh'
-    && job.query === 'sync=1&expected_return_owner=auto' && job.schedule === '15 23 * * 6'),
-  'GCP Scheduler must refresh OPB priors after weekly L4/Fusion owner refresh',
+  !jobs.some((job) => job.id === 'opb-arm-prior-refresh' || job.id === 'monthly-opb-arm-prior-refresh'),
+  'fixed-time OPB refresh must not race OOF quality/parity promotion',
 )
 assert(
-  jobs.some((job) => job.id === 'monthly-opb-arm-prior-refresh' && job.task === 'monthly-opb-arm-prior-refresh'
-    && job.query === 'sync=1&expected_return_owner=auto'),
-  'GCP Scheduler must include monthly OPB prior refresh with automatic production owner resolution',
+  walkForward.includes('/api/admin/trigger/opb-arm-prior-refresh') &&
+    walkForward.indexOf('promoted = True') < walkForward.indexOf('/api/admin/trigger/opb-arm-prior-refresh'),
+  'OPB priors must refresh event-driven only after OOF L4/Fusion promotion succeeds',
 )
 assert(
   !jobs.some((job) => job.task === 'source-readiness-probe' || job.id.startsWith('source-readiness-probe')),

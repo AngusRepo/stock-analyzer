@@ -263,3 +263,16 @@ def test_predict_horizon_uses_named_model_column_not_index_column():
 
     assert pred_col == "PatchTST"
     assert pred_by_id == {"2330": 101.0, "2317": 202.0}
+
+
+def test_dense_oof_training_cap_does_not_cap_inference_universe():
+    import inspect
+    from app.neuralforecast_sequence_runtime import _train_dense_purged_oof
+
+    source = inspect.getsource(_train_dense_purged_oof)
+    call = source.split("context_rows, labels = _dense_oof_eval_panel(", 1)[1].split(")", 1)[0]
+
+    assert "records," in call
+    assert "panel_records," not in call
+    assert '"training_series_cap_applied"' in source
+    assert 'len(actual_return) / max(1, len(labels))' in source

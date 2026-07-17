@@ -17,6 +17,14 @@ class _Request:
         self.headers = headers or {}
 
 
+@pytest.fixture(autouse=True)
+def _mock_monthly_oof_handoff(monkeypatch):
+    async def fake_handoff(run_date: str | None):
+        return {"status": "spawned", "cadence": "monthly", "end_date": run_date}
+
+    monkeypatch.setattr(followup_router, "_run_monthly_oof_lifecycle", fake_handoff)
+
+
 def test_retrain_followup_records_modal_runtime_telemetry(monkeypatch):
     calls: list[dict] = []
     registry_records: list[dict] = []

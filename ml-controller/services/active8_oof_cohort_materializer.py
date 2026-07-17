@@ -22,6 +22,7 @@ from services.ev_lineage_contract import build_model_set_signature
 from services.s12_trade_ev_bootstrap import S12TradeEvBootstrapProvider
 from services.model_artifact_registry import upsert_artifact_record
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
+from services.fundamental_quality import score_fundamental_quality
 
 TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
@@ -165,6 +166,7 @@ def _counterfactual_score_v2(
     ensemble_rank: float,
     *,
     native_component_source: str = "daily_recommendations_score_v2_v3",
+    fundamental_quality: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if native_payload.get("version") != "score_v2":
         raise ValueError("oof_native_score_v2_missing")
@@ -179,6 +181,17 @@ def _counterfactual_score_v2(
     if not required.issubset(components):
         raise ValueError("oof_native_non_ml_score_components_missing")
     components["mlEdge"] = round(max(0.0, min(1.0, float(ensemble_rank))) * 25.0, 6)
+    formal_fundamental = (
+        fundamental_quality
+        if isinstance(fundamental_quality, dict)
+        and fundamental_quality.get("version") == "fundamental_quality_v1"
+        else None
+    )
+    if formal_fundamental is not None:
+        components["fundamentalQuality"] = round(
+            max(0.0, min(25.0, float(formal_fundamental.get("score") or 0.0))),
+            6,
+        )
     components["newsTheme"] = 0.0
     total = round(sum(float(components[name]) for name in (
         "mlEdge", "chipFlow", "technicalStructure", "fundamentalQuality", "newsTheme"
@@ -197,6 +210,21 @@ def _counterfactual_score_v2(
             "sourceSemanticVersion": source_semantic,
             "sourceWasRecordedPointInTime": recorded_pit,
             "nativeAlphaAdjustmentExcluded": True,
+            "fundamentalQualityOwner": (
+                "fundamental_quality_v1_pit"
+                if formal_fundamental is not None
+                else native_component_source
+            ),
+            "fundamentalQualityNoLookahead": (
+                formal_fundamental.get("noLookahead")
+                if formal_fundamental is not None
+                else None
+            ),
+            "fundamentalQualityDataIssues": (
+                formal_fundamental.get("dataIssues")
+                if formal_fundamental is not None
+                else None
+            ),
         },
     }
 
@@ -208,20 +236,19 @@ def build_oof_snapshot_rows(
     cohort_id: str,
     source_manifest_checksum: str,
     s12_provider_factory: Callable[[str], S12TradeEvBootstrapProvider] | None = None,
+    fundamental_quality_by_key: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     stack_rows, stack_evidence = build_chronological_oof_stack(prediction_rows)
     native_by_key = {
         (str(row.get("prediction_date") or row.get("date") or "")[:10], str(row.get("symbol") or "")): row
         for row in native_rows
     }
-    versions_by_key = {
-        (row["fold_id"], row["prediction_date"], row["symbol"], row["market_segment"]): row["artifact_versions"]
-        for row in stack_rows
-    }
     provider_factory = s12_provider_factory or (
         lambda run_date: S12TradeEvBootstrapProvider.for_run_date(run_date)
     )
     providers: dict[str, S12TradeEvBootstrapProvider] = {}
+    fundamental_quality_by_key = fundamental_quality_by_key or {}
+    fundamental_pit_rows = 0
     snapshots: list[dict[str, Any]] = []
     rejected = defaultdict(int)
     for stacked in stack_rows:
@@ -236,18 +263,22 @@ def build_oof_snapshot_rows(
             score_payload = _counterfactual_score_v2(
                 _loads(native.get("score_components")),
                 stacked["ensemble_rank"],
+                fundamental_quality=fundamental_quality_by_key.get((
+                    stacked["prediction_date"], stacked["symbol"]
+                )),
                 native_component_source=str(
                     native.get("native_component_source")
                     or "daily_recommendations_score_v2_v3"
                 ),
             )
+            if score_payload["counterfactualLineage"].get("fundamentalQualityOwner") == "fundamental_quality_v1_pit":
+                fundamental_pit_rows += 1
         except ValueError as exc:
             rejected[str(exc)] += 1
             continue
-        versions = versions_by_key[(
-            stacked["fold_id"], stacked["prediction_date"], stacked["symbol"], stacked["market_segment"]
-        )]
-        signature = build_model_set_signature(versions, list(ACTIVE8_MODELS))
+        versions = dict(stacked["artifact_versions"])
+        contributors = [name for name in ACTIVE8_MODELS if name in versions]
+        signature = build_model_set_signature(versions, contributors)
         if signature is None:
             rejected["model_set_signature_invalid"] += 1
             continue
@@ -257,7 +288,8 @@ def build_oof_snapshot_rows(
             "semantic_version": STACKER_SEMANTIC_VERSION,
             "generation_mode": "purged_oof",
             "artifact_versions": versions,
-            "contributing_models": list(ACTIVE8_MODELS),
+            "contributing_models": contributors,
+            "model_availability": stacked["model_availability"],
             "model_set_signature": signature,
             "stacker_source": stacked["stacker_source"],
         }
@@ -306,9 +338,93 @@ def build_oof_snapshot_rows(
         "stacker": stack_evidence,
         "snapshot_rows": len(snapshots),
         "snapshot_dates": len({row["snapshot_date"] for row in snapshots}),
+        "fundamental_pit_rows": fundamental_pit_rows,
+        "fundamental_pit_coverage": round(fundamental_pit_rows / max(1, len(snapshots)), 6),
         "rejected": dict(sorted(rejected.items())),
     }
 
+
+def load_fundamental_quality_pit_by_key(
+    prediction_rows: list[dict[str, Any]],
+    *,
+    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Resolve formal fundamental scores using only rows available on each prediction date."""
+
+    keys = sorted({
+        (str(row.get("prediction_date") or "")[:10], str(row.get("symbol") or "").strip())
+        for row in prediction_rows
+        if row.get("prediction_date") and row.get("symbol")
+    })
+    if not keys:
+        return {}
+    symbols = sorted({symbol for _date, symbol in keys})
+    max_date = max(date for date, _symbol in keys)
+    revenue_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    financial_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for offset in range(0, len(symbols), 200):
+        chunk = symbols[offset:offset + 200]
+        placeholders = ",".join("?" for _ in chunk)
+        revenue_rows = query_fn(
+            f"""
+            SELECT stock_id, revenue_month, market_segment, revenue, mom, yoy,
+                   source, as_of_date
+            FROM canonical_revenue_monthly
+            WHERE stock_id IN ({placeholders})
+            ORDER BY stock_id, revenue_month
+            """,
+            chunk,
+        )
+        for row in revenue_rows or []:
+            revenue_by_symbol[str(row.get("stock_id") or "")].append(dict(row))
+        financial_rows = query_fn(
+            f"""
+            SELECT stock_id, period, market_segment, report_date, available_date,
+                   revenue_growth_yoy, gross_margin, operating_margin, roe, eps,
+                   pe, pb, dividend_yield, debt_ratio, current_ratio,
+                   operating_cash_flow, industry_quality_percentile,
+                   roa, roa_comprehensive, roe_comprehensive, free_cash_flow,
+                   net_margin, quick_ratio, cash_flow_ratio, equity_to_assets,
+                   liabilities_to_equity, gross_margin_growth,
+                   operating_income_growth, net_income_growth,
+                   recurring_income_growth, total_asset_turnover,
+                   receivables_turnover, inventory_turnover,
+                   interest_expense_ratio, source, as_of_date
+            FROM canonical_fundamental_features
+            WHERE stock_id IN ({placeholders})
+              AND date(available_date) <= date(?)
+              AND date(as_of_date) <= date(?)
+              AND source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation')
+            ORDER BY stock_id, available_date, period
+            """,
+            [*chunk, max_date, max_date],
+        )
+        for row in financial_rows or []:
+            financial_by_symbol[str(row.get("stock_id") or "")].append(dict(row))
+
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for prediction_date, symbol in keys:
+        revenue_rows = revenue_by_symbol.get(symbol, [])
+        financial_rows = financial_by_symbol.get(symbol, [])
+        payload = score_fundamental_quality(
+            decision_date=prediction_date,
+            revenue_rows=revenue_rows,
+            financial_rows=financial_rows,
+        )
+        no_lookahead = payload.get("noLookahead") or {}
+        available_rows = (
+            len(revenue_rows) - int(no_lookahead.get("droppedFutureRevenueRows") or 0)
+            + len(financial_rows) - int(no_lookahead.get("droppedFutureFinancialRows") or 0)
+        )
+        if available_rows <= 0:
+            continue
+        payload["sourceRowCounts"] = {
+            "available": available_rows,
+            "loadedRevenue": len(revenue_rows),
+            "loadedFinancial": len(financial_rows),
+        }
+        out[(prediction_date, symbol)] = payload
+    return out
 
 def load_native_pit_component_rows(
     prediction_rows: list[dict[str, Any]],

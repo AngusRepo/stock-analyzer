@@ -1,5 +1,5 @@
 """
-walk_forward.py — Sprint 6b walk-forward real orchestrator endpoints
+walk_forward.py ??Sprint 6b walk-forward real orchestrator endpoints
 
 POST /walk_forward/dry-run   preview plan
 POST /walk_forward/run       execute full pipeline (requires confirm=true)
@@ -144,7 +144,7 @@ async def walk_forward_dry_run(req: WalkForwardRequest):
 
 @router.post("/walk_forward/run")
 async def walk_forward_run(req: WalkForwardRequest):
-    """Execute full walk-forward — fire-and-forget via Modal orchestrator.
+    """Execute full walk-forward ??fire-and-forget via Modal orchestrator.
 
     Returns 202-style response immediately with the spawn's fn_call_id. The
     orchestrator runs inside Modal for up to 4 hours and persists the
@@ -156,7 +156,7 @@ async def walk_forward_run(req: WalkForwardRequest):
         raise HTTPException(
             status_code=400,
             detail=(
-                "walk_forward/run requires confirm=true — triggers Modal walk-forward jobs "
+                "walk_forward/run requires confirm=true ??triggers Modal walk-forward jobs "
                 "(active-8 coverage: tree native retrain + non-tree artifact lifecycle evidence). "
                 "Use /walk_forward/dry-run first."
             ),
@@ -181,7 +181,7 @@ async def walk_forward_run(req: WalkForwardRequest):
             detail=f"No windows generated. trading_days={len(trading_days)}, need >= {req.train_window_days + req.test_window_days}",
         )
 
-    # Load market_env once — orchestrator filters per-window
+    # Load market_env once ??orchestrator filters per-window
     run_date = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
     me, _, _, _, _ = load_market_env(run_date)
     market_env = asdict(me)
@@ -274,6 +274,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         build_fusion_oof_rows,
         archive_ev_candidate_artifacts,
         load_native_pit_component_rows,
+        load_fundamental_quality_pit_by_key,
         load_oof_prediction_rows,
         load_verified_oof_manifest,
         persist_oof_cohort,
@@ -297,11 +298,13 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             raise ValueError("requested_cohort_manifest_mismatch")
         prediction_rows = load_oof_prediction_rows(manifest, bucket=bucket)
         native_rows = load_native_pit_component_rows(prediction_rows)
+        fundamental_quality_by_key = load_fundamental_quality_pit_by_key(prediction_rows)
         snapshot_rows, snapshot_evidence = build_oof_snapshot_rows(
             prediction_rows,
             native_rows,
             cohort_id=req.cohort_id,
             source_manifest_checksum=manifest["manifest_checksum"],
+            fundamental_quality_by_key=fundamental_quality_by_key,
         )
         l4_result = build_l4_alpha_ev_artifact_from_rows(
             snapshot_rows,
@@ -339,6 +342,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         promotion_receipts = None
         promotion_receipt_error = None
         notification_sent = False
+        opb_refresh: dict[str, Any] | None = None
         l4_artifact = l4_result.get("artifact") if isinstance(l4_result, dict) else None
         fusion_artifact = fusion_result.get("artifact") if isinstance(fusion_result, dict) else None
         l4_decision = str((l4_result.get("validation_packet") or {}).get("decision") or "")
@@ -418,6 +422,16 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                     )
                     promoted = True
                     try:
+                        opb_refresh = await worker_fetch(
+                            "/api/admin/trigger/opb-arm-prior-refresh"
+                            f"?sync=1&date={req.knowledge_cutoff_date}"
+                            "&expected_return_owner=allocator_ev_fusion",
+                            method="POST",
+                            timeout=120.0,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - EV promotion is durable; daily lifecycle retries OPB.
+                        opb_refresh = {"status": "failed", "error": str(exc)}
+                    try:
                         from services.discord_alert import alert_lifecycle
 
                         notification_sent = await asyncio.to_thread(
@@ -469,6 +483,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "cohort_id": req.cohort_id,
             "prediction_rows": len(prediction_rows),
             "native_pit_rows": len(native_rows),
+            "fundamental_pit_rows": len(fundamental_quality_by_key),
             "snapshot_evidence": snapshot_evidence,
             "l4_result": l4_result,
             "l4_prediction_evidence": l4_prediction_evidence,
@@ -482,6 +497,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "promotion_receipts": promotion_receipts,
             "promotion_receipt_error": promotion_receipt_error,
             "notification_sent": notification_sent,
+            "opb_refresh": opb_refresh,
             "promotion_allowed": bool(parity and parity.get("decision") == "PASS"),
             "fusion_promotion_tier": fusion_tier,
             "promotion_reason": (
@@ -493,6 +509,242 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+
+class OofLifecycleRequest(BaseModel):
+    cadence: str = "daily"
+    end_date: str | None = None
+    dry_run: bool = False
+    promote: bool = True
+
+
+def _oof_lifecycle_calendar(end_date: str | None) -> tuple[list[str], dict[str, object]]:
+    from services import d1_client
+    from datetime import datetime, timezone, timedelta
+
+    cutoff = end_date or datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    rows = d1_client.query(
+        """
+        SELECT substr(date, 1, 10) trading_date, COUNT(*) price_rows
+        FROM stock_prices
+        WHERE substr(date, 1, 10) <= ?
+        GROUP BY substr(date, 1, 10)
+        ORDER BY trading_date DESC
+        LIMIT 160
+        """,
+        [cutoff],
+    )
+    observed = [
+        (str(row.get("trading_date") or "")[:10], max(0, int(row.get("price_rows") or 0)))
+        for row in rows
+        if row.get("trading_date")
+    ]
+    reference = float(statistics.median(count for _date, count in observed)) if observed else 0.0
+    threshold = max(1, int(reference * 0.20))
+    dates = sorted(date for date, count in observed if count >= threshold)
+    return dates, {
+        "cutoff": cutoff,
+        "observed_dates": len(dates),
+        "coverage_reference_rows": reference,
+        "coverage_threshold_rows": threshold,
+    }
+
+
+def _latest_ready_oof_manifest(bucket: object) -> tuple[str, dict] | None:
+    import json
+
+    ready: list[tuple[str, dict]] = []
+    for blob in bucket.list_blobs(prefix="walk_forward/oof_cohorts/"):
+        if not str(blob.name).endswith("/manifest.json"):
+            continue
+        try:
+            manifest = json.loads(blob.download_as_text())
+        except Exception:  # noqa: BLE001 - corrupt candidates are ignored, never promoted.
+            continue
+        if manifest.get("status") == "ready" and manifest.get("generation_mode") == "purged_oof":
+            ready.append((str(blob.name), manifest))
+    if not ready:
+        return None
+    return max(
+        ready,
+        key=lambda item: (
+            str(item[1].get("end_date") or ""),
+            str(item[1].get("generated_at") or item[1].get("completed_at") or ""),
+            item[0],
+        ),
+    )
+
+
+@router.post("/walk_forward/oof/lifecycle")
+async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
+    """Idempotent cadence owner for OOF generation, materialization and promotion."""
+
+    import json
+    from datetime import datetime, timezone
+    from services.walk_forward_retrain import _get_bucket
+
+    cadence = str(req.cadence or "daily").strip().lower()
+    if cadence not in {"daily", "weekly", "monthly"}:
+        raise HTTPException(status_code=400, detail="OOF lifecycle cadence must be daily, weekly, or monthly")
+    bucket = _get_bucket()
+    if bucket is None:
+        raise HTTPException(status_code=500, detail="GCS unavailable")
+    dates, calendar_evidence = _oof_lifecycle_calendar(req.end_date)
+    if len(dates) < 95:
+        raise HTTPException(
+            status_code=422,
+            detail=f"OOF lifecycle requires 95 covered sessions, found {len(dates)}",
+        )
+    knowledge_cutoff_date = dates[-1]
+
+    selected: tuple[str, dict] | None = None
+    if cadence == "daily":
+        selected = _latest_ready_oof_manifest(bucket)
+        if selected is None:
+            return {
+                "status": "skipped",
+                "reason": "no_ready_purged_oof_manifest",
+                "cadence": cadence,
+                "calendar": calendar_evidence,
+            }
+    else:
+        mature_dates = dates[:-5]
+        cohort_dates = mature_dates[-90:]
+        start_date = cohort_dates[0]
+        signal_end_date = cohort_dates[-1]
+        cohort_id = (
+            f"active8-oof-v3-{start_date}-{signal_end_date}-tr60-te10"
+        )
+        manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
+        manifest_blob = bucket.blob(manifest_path)
+        if manifest_blob.exists():
+            manifest = json.loads(manifest_blob.download_as_text())
+            if manifest.get("status") == "ready":
+                selected = (manifest_path, manifest)
+            else:
+                return {
+                    "status": "pending",
+                    "reason": "cohort_manifest_not_ready",
+                    "cadence": cadence,
+                    "cohort_id": cohort_id,
+                    "manifest_status": manifest.get("status"),
+                }
+        else:
+            dispatch_path = f"walk_forward/oof_cohorts/{cohort_id}/dispatch.json"
+            dispatch_blob = bucket.blob(dispatch_path)
+            if dispatch_blob.exists():
+                dispatch = json.loads(dispatch_blob.download_as_text())
+                spawned_at = str(dispatch.get("spawned_at") or "")
+                try:
+                    age_seconds = (
+                        datetime.now(timezone.utc)
+                        - datetime.fromisoformat(spawned_at.replace("Z", "+00:00"))
+                    ).total_seconds()
+                except ValueError:
+                    age_seconds = 24 * 3600
+                if dispatch.get("status") == "spawned" and age_seconds < 6 * 3600:
+                    return {
+                        "status": "pending",
+                        "reason": "cohort_orchestrator_active",
+                        "cadence": cadence,
+                        "cohort_id": cohort_id,
+                        "function_call_id": dispatch.get("function_call_id"),
+                    }
+            plan = WalkForwardRequest(
+                start_date=start_date,
+                end_date=signal_end_date,
+                train_window_days=60,
+                test_window_days=10,
+                cohort_id=cohort_id,
+                confirm=not req.dry_run,
+                concurrent_windows=2,
+                prep_gcs_prefix="universal",
+                sequence_gcs_prefix="universal/sequence_long/latest",
+            )
+            if req.dry_run:
+                preview = await walk_forward_dry_run(plan)
+                return {"status": "dry_run", "cadence": cadence, "plan": preview}
+            dispatch_blob.upload_from_string(
+                json.dumps({
+                    "schema_version": "active8-oof-dispatch-v1",
+                    "status": "dispatching",
+                    "cohort_id": cohort_id,
+                    "cadence": cadence,
+                    "spawned_at": datetime.now(timezone.utc).isoformat(),
+                }, sort_keys=True),
+                content_type="application/json",
+            )
+            try:
+                spawned = await walk_forward_run(plan)
+            except Exception as exc:
+                dispatch_blob.upload_from_string(
+                    json.dumps({
+                        "schema_version": "active8-oof-dispatch-v1",
+                        "status": "failed",
+                        "cohort_id": cohort_id,
+                        "cadence": cadence,
+                        "error": str(exc),
+                        "spawned_at": datetime.now(timezone.utc).isoformat(),
+                    }, sort_keys=True),
+                    content_type="application/json",
+                )
+                raise
+            dispatch_blob.upload_from_string(
+                json.dumps({
+                    "schema_version": "active8-oof-dispatch-v1",
+                    "status": "spawned",
+                    "cohort_id": cohort_id,
+                    "cadence": cadence,
+                    "function_call_id": spawned.get("fn_call_id"),
+                    "spawned_at": datetime.now(timezone.utc).isoformat(),
+                }, sort_keys=True),
+                content_type="application/json",
+            )
+            return {"status": "spawned", "cadence": cadence, **spawned}
+
+    manifest_path, manifest = selected
+    cohort_id = str(manifest.get("cohort_id") or "")
+    lifecycle_path = (
+        f"walk_forward/oof_cohorts/{cohort_id}/lifecycle/"
+        f"{knowledge_cutoff_date}.json"
+    )
+    lifecycle_blob = bucket.blob(lifecycle_path)
+    if lifecycle_blob.exists():
+        receipt = json.loads(lifecycle_blob.download_as_text())
+        return {
+            "status": "idempotent_complete",
+            "cadence": cadence,
+            "cohort_id": cohort_id,
+            "knowledge_cutoff_date": knowledge_cutoff_date,
+            "receipt": receipt,
+        }
+    result = await materialize_walk_forward_oof(OofMaterializeRequest(
+        cohort_id=cohort_id,
+        knowledge_cutoff_date=knowledge_cutoff_date,
+        manifest_path=manifest_path,
+        dry_run=req.dry_run,
+        confirm=not req.dry_run,
+        promote=req.promote,
+    ))
+    opb_failed = (
+        isinstance(result.get("opb_refresh"), dict)
+        and result["opb_refresh"].get("status") == "failed"
+    )
+    if not req.dry_run and not opb_failed:
+        lifecycle_blob.upload_from_string(
+            json.dumps({
+                "schema_version": "active8-oof-lifecycle-receipt-v1",
+                "status": result.get("status"),
+                "cohort_id": cohort_id,
+                "cadence": cadence,
+                "knowledge_cutoff_date": knowledge_cutoff_date,
+                "promoted": bool(result.get("promoted")),
+                "promotion_reason": result.get("promotion_reason"),
+                "opb_refresh": result.get("opb_refresh"),
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }, sort_keys=True),
+            content_type="application/json",
+        )
+    return {"cadence": cadence, "dependency_retry_required": opb_failed, **result}
 
 @router.post("/walk_forward/analyze")
 async def walk_forward_analyze(req: AnalyzeRequest):

@@ -626,6 +626,14 @@ def build_l4_chronological_oof_predictions(
         for row in rows
     ):
         raise ValueError("l4_oof_mixed_or_missing_cohort_lineage")
+    manifest_checksums = {
+        str(row.get("source_manifest_checksum") or "").strip()
+        for row in rows
+        if str(row.get("source_manifest_checksum") or "").strip()
+    }
+    if len(manifest_checksums) != 1:
+        raise ValueError("l4_oof_source_manifest_checksum_missing_or_mixed")
+    source_manifest_checksum = next(iter(manifest_checksums))
     samples, diagnostics = _samples(rows, cost_model_bps=cost_model_bps)
     dates = sorted({sample["date"] for sample in samples})
     predictions: list[dict[str, Any]] = []
@@ -659,16 +667,35 @@ def build_l4_chronological_oof_predictions(
             expected_return = max(-0.08, min(0.08, float(expected_return)))
             source = sample["source_row"]
             payload = {
-                "status": "loaded",
+                "schema_version": "l4-alpha-ev-v1",
+                "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
+                "feature_snapshot_version": FEATURE_SEMANTIC_VERSION,
+                "label_schema_version": LABEL_SCHEMA_VERSION,
+                "status": "purged_oof_evidence",
+                "approval_state": "purged_oof_evidence_only",
+                "purged_oof_evidence_only": True,
+                "expected_return_owner": "l4_alpha_ev",
                 "source": "l4_purged_oof_chronological_cross_fit",
+                "expected_return_source": "l4_purged_oof_chronological_cross_fit",
                 "expected_return": expected_return,
                 "trained_until": trained_until,
                 "model_version": model_version,
+                "resolver_method": "ridge_chronological_cross_fit",
+                "horizon_days": 5,
+                "cost_model_bps": cost_model_bps,
+                "output_is_net_of_costs": True,
                 "generation_mode": "purged_oof",
                 "cohort_id": cohort_id,
                 "fold_id": source.get("fold_id"),
+                "source_manifest_checksum": source_manifest_checksum,
                 "point_in_time_prediction_lineage": {
+                    "schema_version": "l4-point-in-time-prediction-lineage-v1",
                     "as_of_guard": "label_known_date_strictly_before_prediction_date",
+                    "cohort_id": cohort_id,
+                    "fold_id": source.get("fold_id"),
+                    "prediction_date": prediction_date,
+                    "trained_until": trained_until,
+                    "source_manifest_checksum": source_manifest_checksum,
                     "train_samples": len(prior),
                     "train_dates": len(prior_dates),
                     "feature_semantic_version": FEATURE_SEMANTIC_VERSION,

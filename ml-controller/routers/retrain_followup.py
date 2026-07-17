@@ -44,6 +44,16 @@ WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
 WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "")
 
 
+async def _run_monthly_oof_lifecycle(run_date: str | None) -> dict[str, Any]:
+    from routers.walk_forward import OofLifecycleRequest, run_walk_forward_oof_lifecycle
+
+    return await run_walk_forward_oof_lifecycle(OofLifecycleRequest(
+        cadence="monthly",
+        end_date=run_date,
+        dry_run=False,
+        promote=True,
+    ))
+
 class RetrainFollowupPayload(BaseModel):
     run_id: str | None = None
     trained_at: str | None = Field(default=None, description="ISO8601 UTC fallback idempotency key")
@@ -414,6 +424,17 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
         artifact_records=artifact_records,
         reason=f"retrain_followup_artifact_lifecycle:{idem_key}",
     )
+    monthly_oof_lifecycle: dict[str, Any] | None = None
+    if payload.is_monthly and payload.status == "completed" and not payload.error:
+        try:
+            monthly_oof_lifecycle = await _run_monthly_oof_lifecycle(payload.run_date)
+
+        except Exception as exc:  # noqa: BLE001 - callback must retry until OOF handoff is durable.
+            logger.exception("[RetrainFollowup] monthly OOF lifecycle handoff failed")
+            raise HTTPException(
+                status_code=502,
+                detail=f"monthly retrain completed but OOF lifecycle handoff failed: {exc}",
+            ) from exc
     scheduler_callback = await _callback_worker_scheduler(payload)
     logger.info(
         f"[RetrainFollowup] {idem_key} status={payload.status} write={write_status} "
@@ -436,6 +457,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
         "artifact_registry": artifact_registry,
         "champion_pointer_reconcile": champion_pointer_reconcile,
         "scheduler_callback": scheduler_callback,
+        "monthly_oof_lifecycle": monthly_oof_lifecycle,
         "summary": {
             "run_id": payload.run_id,
             "trained_at": payload.trained_at,

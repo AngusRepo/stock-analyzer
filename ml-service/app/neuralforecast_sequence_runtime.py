@@ -394,7 +394,7 @@ def _train_dense_purged_oof(
 
     for signal_date in test_dates:
         context_rows, labels = _dense_oof_eval_panel(
-            panel_records,
+            records,
             calendar=calendar,
             signal_date=signal_date,
             seq_len=seq_len,
@@ -433,8 +433,11 @@ def _train_dense_purged_oof(
             "oos_ic": rank_ic(np.asarray(pred_return), np.asarray(actual_return)),
             "direction_accuracy": direction_accuracy(np.asarray(pred_return), np.asarray(actual_return)),
             "test_rows": len(actual_return),
-            "coverage": len(actual_return) / max(1, len(panel_records)),
+            "coverage": len(actual_return) / max(1, len(labels)),
         })
+    panel_report["evaluation_universe_series"] = len(records)
+    panel_report["evaluation_prediction_rows"] = len(all_rows)
+    panel_report["training_series_cap_applied"] = len(panel_records) < len(records)
     if not all_rows:
         raise ValueError("oof_sequence_dense_predictions_empty")
     non_overlapping_metrics = daily_metrics[::max(1, pred_len)]

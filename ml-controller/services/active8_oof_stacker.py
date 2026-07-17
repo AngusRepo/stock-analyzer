@@ -25,6 +25,11 @@ MIN_STACKER_TRAIN_ROWS = 500
 MIN_STACKER_TRAIN_DATES = 5
 RIDGE_CANDIDATES = (0.01, 0.1, 1.0, 10.0)
 TARGET_AGREEMENT_TOLERANCE = 1e-6
+CORE_CROSS_SECTIONAL_MODELS = ACTIVE8_MODELS[:5]
+STACKER_FEATURE_NAMES = tuple(
+    [f"{model}.rank" for model in ACTIVE8_MODELS]
+    + [f"{model}.available" for model in ACTIVE8_MODELS]
+)
 
 
 def _spearman(left: np.ndarray, right: np.ndarray) -> float:
@@ -84,25 +89,29 @@ def _rank_by_date_market(rows: list[dict[str, Any]]) -> None:
             rows[idx]["ensemble_rank"] = 0.5 if len(ordered) == 1 else rank / denominator
 
 
-def _rerank_models_on_complete_universe(rows: list[dict[str, Any]]) -> None:
+def _rerank_models_on_available_universe(rows: list[dict[str, Any]]) -> None:
     groups: dict[tuple[str, str], list[int]] = defaultdict(list)
     for idx, row in enumerate(rows):
         groups[(row["prediction_date"], row["market_segment"])].append(idx)
     for indices in groups.values():
-        denominator = max(1, len(indices) - 1)
         for model_idx, model_name in enumerate(ACTIVE8_MODELS):
+            available = [idx for idx in indices if row_model_available(rows[idx], model_name)]
+            denominator = max(1, len(available) - 1)
             ordered = sorted(
-                indices,
+                available,
                 key=lambda idx: (rows[idx]["raw_by_model"][model_name], rows[idx]["symbol"]),
             )
             for rank, idx in enumerate(ordered):
                 rows[idx]["x"][model_idx] = 0.5 if len(ordered) == 1 else rank / denominator
 
 
+def row_model_available(row: dict[str, Any], model_name: str) -> bool:
+    return bool(row.get("model_availability", {}).get(model_name))
+
 def build_chronological_oof_stack(
     prediction_rows: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Stack complete Active-8 rows while fitting only on resolved prior folds."""
+    """Stack PIT model ranks with explicit availability and resolved prior folds."""
 
     grouped: dict[tuple[str, str, str, str], dict[str, dict[str, Any]]] = defaultdict(dict)
     fold_ranges: dict[str, tuple[str, str]] = {}
@@ -128,21 +137,28 @@ def build_chronological_oof_stack(
             str(row.get("test_end") or key[1])[:10],
         )
 
-    complete: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     incomplete = 0
+    partial_used = 0
+    rejected_core_model_rows = 0
     missing_by_model: dict[str, int] = defaultdict(int)
     max_target_lineage_drift = 0.0
     for (fold_id, prediction_date, symbol, market), models in grouped.items():
-        if set(models) != set(ACTIVE8_MODELS):
+        available_models = [name for name in ACTIVE8_MODELS if name in models]
+        missing_models = [name for name in ACTIVE8_MODELS if name not in models]
+        if missing_models:
             incomplete += 1
-            for model_name in ACTIVE8_MODELS:
-                if model_name not in models:
-                    missing_by_model[model_name] += 1
+            for model_name in missing_models:
+                missing_by_model[model_name] += 1
+        if any(model_name not in models for model_name in CORE_CROSS_SECTIONAL_MODELS):
+            rejected_core_model_rows += 1
             continue
-        target_values = [float(row["target_return"]) for row in models.values()]
+        if missing_models:
+            partial_used += 1
+        target_values = [float(models[name]["target_return"]) for name in available_models]
         target_drift = max(target_values) - min(target_values)
         max_target_lineage_drift = max(max_target_lineage_drift, target_drift)
-        known_dates = {str(row["label_known_date"])[:10] for row in models.values()}
+        known_dates = {str(models[name]["label_known_date"])[:10] for name in available_models}
         if target_drift > TARGET_AGREEMENT_TOLERANCE or len(known_dates) != 1:
             raise ValueError(
                 "active8_oof_target_lineage_disagreement:"
@@ -154,34 +170,38 @@ def build_chronological_oof_stack(
             raise ValueError("active8_oof_label_known_date_not_after_prediction")
         artifact_versions = {
             name: str(models[name].get("artifact_version") or "").strip()
-            for name in ACTIVE8_MODELS
+            for name in available_models
         }
         if any(not version for version in artifact_versions.values()):
             raise ValueError("active8_oof_artifact_version_missing")
-        complete.append({
+        availability = {name: name in models for name in ACTIVE8_MODELS}
+        candidates.append({
             "fold_id": fold_id,
             "prediction_date": prediction_date,
             "symbol": symbol,
             "market_segment": market,
             "label_known_date": label_known_date,
             "target_return": float(np.mean(target_values)),
-            "x": np.empty(len(ACTIVE8_MODELS), dtype=float),
+            "x": np.concatenate([
+                np.full(len(ACTIVE8_MODELS), 0.5, dtype=float),
+                np.asarray([1.0 if availability[name] else 0.0 for name in ACTIVE8_MODELS]),
+            ]),
             "raw_by_model": {
                 name: float(models[name].get("raw_score", models[name]["rank_score"]))
-                for name in ACTIVE8_MODELS
+                for name in available_models
             },
             "artifact_versions": artifact_versions,
+            "model_availability": availability,
         })
 
     if duplicate_rows:
         raise ValueError(f"active8_oof_duplicate_model_rows:{duplicate_rows}")
-    _rerank_models_on_complete_universe(complete)
-
+    _rerank_models_on_available_universe(candidates)
     fold_order = sorted(fold_ranges, key=lambda fold: (fold_ranges[fold][0], fold))
     output: list[dict[str, Any]] = []
     fold_evidence: list[dict[str, Any]] = []
     for fold_id in fold_order:
-        current = [row for row in complete if row["fold_id"] == fold_id]
+        current = [row for row in candidates if row["fold_id"] == fold_id]
         if not current:
             continue
         fold_rows = []
@@ -189,7 +209,7 @@ def build_chronological_oof_stack(
         for prediction_date in sorted({row["prediction_date"] for row in current}):
             current_date_rows = [row for row in current if row["prediction_date"] == prediction_date]
             prior = [
-                row for row in complete
+                row for row in candidates
                 if row["prediction_date"] < prediction_date
                 and row["label_known_date"] < prediction_date
             ]
@@ -204,7 +224,10 @@ def build_chronological_oof_stack(
                 source = "chronological_resolved_oof_ridge"
             else:
                 regularization = None
-                weights = np.full(len(ACTIVE8_MODELS), 1.0 / len(ACTIVE8_MODELS), dtype=float)
+                weights = np.concatenate([
+                    np.full(len(ACTIVE8_MODELS), 1.0 / len(ACTIVE8_MODELS), dtype=float),
+                    np.zeros(len(ACTIVE8_MODELS), dtype=float),
+                ])
                 intercept = 0.0
                 source = "warmup_equal_weight_baseline"
             for row in current_date_rows:
@@ -222,7 +245,7 @@ def build_chronological_oof_stack(
                 "eligible_for_efficacy": ready,
                 "regularization": regularization,
                 "intercept": intercept,
-                "weights": dict(zip(ACTIVE8_MODELS, weights.tolist())),
+                "weights": dict(zip(STACKER_FEATURE_NAMES, weights.tolist())),
                 "source": source,
             })
         _rank_by_date_market(fold_rows)
@@ -243,13 +266,23 @@ def build_chronological_oof_stack(
         "schema_version": "active8-oof-stacker-evidence-v1",
         "stacker_semantic_version": STACKER_SEMANTIC_VERSION,
         "input_rows": len(prediction_rows),
-        "complete_candidate_rows": len(complete),
+        "complete_candidate_rows": sum(
+            1 for row in candidates if all(row["model_availability"].values())
+        ),
+        "eligible_candidate_rows": len(candidates),
+        "partial_candidate_rows_used": partial_used,
+        "rejected_core_model_rows": rejected_core_model_rows,
         "incomplete_candidate_rows": incomplete,
-        "complete_candidate_coverage": round(len(complete) / max(1, len(grouped)), 6),
+        "complete_candidate_coverage": round(
+            sum(1 for row in candidates if all(row["model_availability"].values()))
+            / max(1, len(grouped)),
+            6,
+        ),
+        "eligible_candidate_coverage": round(len(candidates) / max(1, len(grouped)), 6),
         "missing_by_model": dict(sorted(missing_by_model.items())),
         "target_agreement_tolerance": TARGET_AGREEMENT_TOLERANCE,
         "max_target_lineage_drift": max_target_lineage_drift,
-        "common_universe_rank_semantic": "same-date-market-complete-active8-percentile-v2",
+        "common_universe_rank_semantic": "same-date-market-available-model-percentile-with-missingness-v3",
         "output_rows": len(output),
         "efficacy_rows": sum(1 for row in output if row["eligible_for_efficacy"]),
         "folds": fold_evidence,

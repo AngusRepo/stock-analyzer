@@ -47,18 +47,22 @@ def test_stacker_never_uses_current_fold_targets_for_its_weights():
     assert all(0.0 <= row["ensemble_rank"] <= 1.0 for row in output)
 
 
-def test_stacker_excludes_partial_candidate_and_reports_coverage():
+def test_stacker_keeps_partial_sequence_candidate_and_reports_availability():
     from services.active8_oof_stacker import build_chronological_oof_stack
 
     rows = _rows()
     rows.pop()
     output, evidence = build_chronological_oof_stack(rows)
 
-    assert len(output) == 1039
+    assert len(output) == 1040
     assert evidence["incomplete_candidate_rows"] == 1
+    assert evidence["partial_candidate_rows_used"] == 1
+    assert evidence["rejected_core_model_rows"] == 0
     assert evidence["missing_by_model"] == {"iTransformer": 1}
     assert evidence["complete_candidate_coverage"] < 1.0
-    assert all(row["symbol"] != "S0519" for row in output if row["fold_id"] == "w2")
+    partial = next(row for row in output if row["fold_id"] == "w2" and row["symbol"] == "S0519")
+    assert partial["model_availability"]["iTransformer"] is False
+    assert "iTransformer" not in partial["artifact_versions"]
 
 
 def test_stacker_rejects_duplicate_model_lineage():
@@ -85,3 +89,22 @@ def test_stacker_accepts_float32_target_noise_but_rejects_material_drift():
     rows[0]["target_return"] += 1e-4
     with pytest.raises(ValueError, match="active8_oof_target_lineage_disagreement"):
         build_chronological_oof_stack(rows)
+
+
+def test_stacker_rejects_candidate_missing_core_cross_sectional_model():
+    from services.active8_oof_stacker import build_chronological_oof_stack
+
+    rows = _rows()
+    rows = [
+        row for row in rows
+        if not (
+            row["fold_id"] == "w2"
+            and row["symbol"] == "S0519"
+            and row["model_name"] == "LightGBM"
+        )
+    ]
+    output, evidence = build_chronological_oof_stack(rows)
+
+    assert len(output) == 1039
+    assert evidence["rejected_core_model_rows"] == 1
+    assert all(row["symbol"] != "S0519" for row in output if row["fold_id"] == "w2")

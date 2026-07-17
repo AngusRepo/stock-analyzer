@@ -160,6 +160,7 @@ def test_finlab_fundamental_fields_require_deadline_alignment():
 
     assert raw.deadline_called is True
     assert list(aligned.index) == [pd.Timestamp("2026-03-31")]
+    assert aligned.index.name == "date"
 
 
 def test_finlab_fundamental_fields_fail_closed_without_deadline_owner():

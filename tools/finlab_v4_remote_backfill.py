@@ -567,6 +567,7 @@ def normalize_wide_index(df: pd.DataFrame) -> pd.DataFrame:
     out.index = pd.to_datetime(out.index, errors="coerce")
     out = out[~out.index.isna()]
     out = out.sort_index()
+    out.index.name = "date"
     out.columns = [str(col).strip() for col in out.columns]
     return out
 

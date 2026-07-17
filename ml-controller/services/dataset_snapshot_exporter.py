@@ -352,7 +352,7 @@ def _query_canonical_fundamentals(end_date: str) -> pl.DataFrame:
                dividend_yield, revenue_growth_yoy, source
         FROM canonical_fundamental_features
         WHERE available_date <= ?
-          AND source = 'finlab.fundamental_factor_diversity'
+          AND source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation')
         ORDER BY stock_id, available_date, period
         """,
         [end_date],

@@ -851,7 +851,7 @@ def _bulk_load_per_stock_misc(stock_ids: list[int], symbol_by_id: dict[int, str]
             out[sid]["revenue_mom"] = r.get("revenue_mom")
             out[sid]["revenue"] = r.get("revenue")
 
-    # canonical_fundamental_features: latest point-in-time snapshot.
+    # canonical_fundamental_features: latest point-in-time value per field owner.
     fin_rows: list[dict] = []
     try:
         for chunk in _d1_bind_chunks(symbols):
@@ -859,27 +859,27 @@ def _bulk_load_per_stock_misc(stock_ids: list[int], symbol_by_id: dict[int, str]
             fin_rows.extend(d1_client.query(
                 f"SELECT f.stock_id AS symbol, f.eps, f.roe, f.pe, f.pb, f.dividend_yield "
                 f"FROM canonical_fundamental_features f "
-                f"INNER JOIN ("
-                f"  SELECT stock_id, MAX(available_date) as max_date "
-                f"  FROM canonical_fundamental_features "
-                f"  WHERE stock_id IN ({placeholders}) AND source = 'finlab.fundamental_factor_diversity' "
-                f"  GROUP BY stock_id"
-                f") latest ON f.stock_id = latest.stock_id AND f.available_date = latest.max_date",
+                f"WHERE f.stock_id IN ({placeholders}) "
+                f"  AND f.source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation') "
+                f"ORDER BY f.stock_id, f.available_date DESC, f.period DESC",
                 list(chunk),
                 timeout=60.0,
             ))
     except Exception:
         fin_rows = []
+    canonical_by_stock: dict[int, dict[str, Any]] = {}
     for r in fin_rows:
         sid = r.get("stock_id")
         if sid is None and r.get("symbol") is not None:
             sid = id_by_symbol.get(str(r.get("symbol")))
-        if sid in out:
-            out[sid]["eps"] = r.get("eps")
-            out[sid]["roe"] = r.get("roe")
-            out[sid]["pe"] = r.get("pe")
-            out[sid]["pb"] = r.get("pb")
-            out[sid]["dividend_yield"] = r.get("dividend_yield")
+        if sid not in out:
+            continue
+        resolved = canonical_by_stock.setdefault(sid, {})
+        for field in ("eps", "roe", "pe", "pb", "dividend_yield"):
+            if field not in resolved and r.get(field) is not None:
+                resolved[field] = r.get(field)
+    for sid, values in canonical_by_stock.items():
+        out[sid].update(values)
 
     return out
 

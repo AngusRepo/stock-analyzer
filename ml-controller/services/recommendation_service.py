@@ -1009,7 +1009,7 @@ def load_fundamental_quality_by_symbol(screener_recs: list[dict], decision_date:
                     FROM canonical_fundamental_features
                     WHERE stock_id IN ({placeholders})
                       AND available_date <= ?
-                      AND source = 'finlab.fundamental_factor_diversity'
+                      AND source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation')
                     ORDER BY stock_id, available_date, period
                     """,
                     [*chunk, decision_date],

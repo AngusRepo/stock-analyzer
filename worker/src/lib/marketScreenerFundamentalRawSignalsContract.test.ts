@@ -25,8 +25,17 @@ assert(
   'fundamental raw-signal loader should scan newest canonical rows first and merge latest non-null values per field',
 )
 assert(
-  block.includes("source = 'finlab.fundamental_factor_diversity'") && block.includes('AND (${nonNullPredicate})'),
-  'fundamental raw-signal loader should read FinLab canonical fundamentals with non-null field pruning',
+  block.includes("source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation')") &&
+    block.includes('AND (${nonNullPredicate})'),
+  'fundamental raw-signal loader should merge deadline financials and daily valuation with non-null field pruning',
+)
+
+const updateOrchestrator = readFileSync(join(process.cwd(), 'src/lib/updateOrchestrator.ts'), 'utf8')
+assert(
+  updateOrchestrator.includes("source = 'finlab.daily_valuation' AND (pe IS NOT NULL OR pb IS NOT NULL)") &&
+    updateOrchestrator.includes("source = 'finlab.daily_valuation' AND pe IS NOT NULL") &&
+    updateOrchestrator.includes("source = 'finlab.daily_valuation' AND pb IS NOT NULL"),
+  'daily valuation readiness must be owned only by finlab.daily_valuation rows',
 )
 
 for (const field of [

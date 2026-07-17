@@ -4,7 +4,8 @@ Production execution must use one persistent broker-session owner.
 
 Required Cloud Run settings:
 
-- minimum instances: `1`
+- service-level minimum instances: `1` only during the TWSE/TPEX trading window
+  (`08:30-13:31 Asia/Taipei` on an official trading day); otherwise `0`
 - maximum instances: `1`
 - container concurrency: `4`
 - CPU throttling: disabled (CPU always allocated)
@@ -42,13 +43,14 @@ exchange source time remains unchanged and is stored separately from the
 derived confirmation time.
 
 Example update command (requires explicit deployment approval; do not run from
-tests):
+tests). Deployment must preserve the current service-level minimum; the
+`realtime-runtime-min-1` and `realtime-runtime-min-0` Jobs are the only owners
+allowed to change it:
 
 ```powershell
 gcloud run services update shioaji-proxy `
   --project gen-lang-client-0602998820 `
   --region asia-east1 `
-  --min 1 `
   --max 1 `
   --concurrency 4 `
   --no-cpu-throttling `

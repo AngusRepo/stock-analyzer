@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import type { Bindings, Variables, UpdateQueueMsg } from './types'
+import type { Bindings, Variables, UpdateQueueMsg, PaperExitQueueMsg } from './types'
 import {
   runDailyUpdate as runDailyUpdateWorkflow,
   runMarketCloseRefresh,
@@ -14,7 +14,7 @@ import {
 import { runMLAndRiskV2 } from './lib/mlPipelineTrigger'
 import { runScreenerV2 } from './lib/screenerJobTrigger'
 import { runDailySnapshot, runPaperAutoTrade } from './lib/paperWorkerTasks'
-import { runEODExit } from './lib/paperExitTasks'
+import { pollIntradayStopLoss, runEODExit } from './lib/paperExitTasks'
 import { handleScheduledCron } from './lib/cronOrchestrator'
 import {
   runWeeklyAudit as runWeeklyAuditWorkflow,
@@ -54,6 +54,7 @@ import { buildWorkerHealthPayload } from './lib/runtimeVersion'
 import { stocks } from './routes/stocks'
 import { market, llm, watchlist, alerts, news, ml, notifications, system, recommendations, chat } from './routes/other'
 import { paper } from './routes/paper'
+import { executionCallbackRoutes } from './routes/executionCallbackRoutes'
 import { runIntradayCheck } from './lib/paperEntryTasks'
 import { setupMorningPendingBuys } from './lib/pendingBuyOrchestrator'
 
@@ -149,6 +150,7 @@ app.route('/api/system',        system)
 app.route('/api/recommendations', recommendations)
 app.route('/api/chat',            chat)
 app.route('/api/paper',           paper)
+app.route('/',                    executionCallbackRoutes)
 app.route('/',                    adminReadRoutes)
 app.route('/',                    dashboardReadRoutes)
 app.route('/',                    scheduleReadRoutes)
@@ -163,7 +165,7 @@ app.route('/',                    adminOptunaRoutes)
 app.route('/',                    finlabExecutionLoopRoutes)
 app.route('/',                    adminTriggerRoutes)
 app.route('/',                    strategyDiscoveryRoutes)
-app.get('/api/health', (c) => c.json(buildWorkerHealthPayload()))
+app.get('/api/health', (c) => c.json(buildWorkerHealthPayload(c.env.CF_VERSION_METADATA)))
 export default {
   fetch: app.fetch,
 
@@ -176,18 +178,34 @@ export default {
   },
 
   async queue(
-    batch: MessageBatch<UpdateQueueMsg>,
+    batch: MessageBatch<UpdateQueueMsg | PaperExitQueueMsg>,
     env: Bindings,
     ctx: ExecutionContext,
   ): Promise<void> {
     void ctx
     await Promise.all(batch.messages.map(async (msg) => {
       try {
-        await processUpdateBatch(msg.body, env, {
-          runMarketScreener,
-          runMarketScreenerAsync: runScreenerV2,
-          runMLAndRiskV2,
-        })
+        if (msg.body.type === 'paper_exit_intent') {
+          const body = msg.body
+          const result = await pollIntradayStopLoss(env, {
+            symbols: [body.symbol],
+            retryIntentKey: body.intentKey,
+          })
+          if (result.pending_exit_symbols.includes(body.symbol) && body.attempt < 480) {
+            const delaySeconds = Math.min(60, Math.max(5, 5 * 2 ** Math.min(body.attempt, 4)))
+            await env.PAPER_EXIT_QUEUE.send({
+              ...body,
+              attempt: body.attempt + 1,
+              triggerTime: new Date().toISOString(),
+            }, { delaySeconds } as any)
+          }
+        } else {
+          await processUpdateBatch(msg.body, env, {
+            runMarketScreener,
+            runMarketScreenerAsync: runScreenerV2,
+            runMLAndRiskV2,
+          })
+        }
         msg.ack()
       } catch (e) {
         console.error(`[Queue] Message failed, will retry:`, e)

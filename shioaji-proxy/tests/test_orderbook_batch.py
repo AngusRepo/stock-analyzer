@@ -275,22 +275,21 @@ def test_recovery_does_not_count_or_reconnect_while_streaming_control_is_active(
     assert subscribe_calls == []
 
 
-def test_symbol_recovery_never_reconnects_whole_session_for_one_stale_symbol(monkeypatch):
+def test_symbol_recovery_rebuilds_poisoned_session_after_threshold(monkeypatch):
     proxy = _load_proxy_main()
     proxy._streaming_control_inflight = False
     proxy._quote_session_up = True
     subscribe_calls: list[str] = []
+    reset_calls: list[str] = []
     monkeypatch.setattr(proxy, "_mark_orderbook_recovery", lambda *_args: (99, True))
-    monkeypatch.setattr(
-        proxy,
-        "reset_shioaji_connection",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("single-symbol staleness must not reset session")),
-    )
+    monkeypatch.setattr(proxy, "reset_shioaji_connection", lambda reason: reset_calls.append(reason) or True)
     monkeypatch.setattr(proxy, "subscribe_symbol", lambda symbol, **_kwargs: subscribe_calls.append(symbol) or True)
 
     proxy.recover_orderbook_symbol("4123", "watchdog_stale_depth")
 
-    assert subscribe_calls == ["4123"]
+    assert subscribe_calls == []
+    assert len(reset_calls) == 1
+    assert "symbol_callback_stale:board_lot:4123" in reset_calls[0]
 
 
 def test_stale_orderbook_request_waits_for_active_refresh(monkeypatch):
@@ -499,11 +498,14 @@ def test_batch_orderbook_refresh_uses_one_shared_deadline(monkeypatch):
     monkeypatch.setattr(proxy, "recover_orderbook_symbol_async", lambda *_args, **_kwargs: None)
 
     started = time.monotonic()
-    result = proxy.batch_orderbooks(proxy.BatchRequest(symbols=["4123", "4541"]))
+    try:
+        proxy.batch_orderbooks(proxy.BatchRequest(symbols=["4123", "4541"]))
+        raise AssertionError("execution-critical empty batch must fail closed")
+    except proxy.HTTPException as exc:
+        assert exc.status_code == 503
+        assert exc.detail["status"] == "empty"
+        assert exc.detail["error_count"] == 2
     elapsed = time.monotonic() - started
-
-    assert result["status"] == "empty"
-    assert result["error_count"] == 2
     assert elapsed < 0.18
 
 

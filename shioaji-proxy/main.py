@@ -20,6 +20,8 @@ import os
 import time
 import threading
 import math
+import json
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
@@ -34,6 +36,8 @@ PERSON_ID  = os.environ.get("SHIOAJI_PERSON_ID", "")
 ACCOUNT_ID = os.environ.get("SHIOAJI_ACCOUNT_ID", "")
 SERVICE_TOKEN = os.environ.get("PROXY_SERVICE_TOKEN", "")  # Worker 驗證用
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").strip().lower()
+STOP_BREACH_WEBHOOK_URL = os.environ.get("STOP_BREACH_WEBHOOK_URL", "").strip()
+STOP_BREACH_WEBHOOK_TOKEN = os.environ.get("STOP_BREACH_WEBHOOK_TOKEN", SERVICE_TOKEN).strip()
 
 # ── 全域狀態 ────────────────────────────────────────────────────────────────
 api = None
@@ -50,6 +54,8 @@ odd_bidask_subscribed: set[str] = set()
 watched_orderbook_symbols: dict[str, float] = {}
 watched_odd_orderbook_symbols: dict[str, float] = {}
 subscription_recovery: dict[str, dict] = {}
+stop_watches: dict[str, dict] = {}
+stop_breaches: dict[str, dict] = {}
 _state_lock = threading.RLock()
 _session_call_lock = threading.Lock()
 _broker_query_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shioaji-broker-query")
@@ -78,6 +84,7 @@ _quote_session_event_at: str | None = None
 _quote_session_event: str | None = None
 # F4: Rolling price buffer for momentum confirmation (30 entries ≈ 30 min at 1 tick/min)
 _price_buffer: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
+_stop_breach_dispatch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stop-breach-dispatch")
 
 TW_TZ = timezone(timedelta(hours=8))
 TW_SESSION_OPEN_MINUTE = 9 * 60
@@ -650,6 +657,87 @@ def normalize_stock_tick(tick, callback_epoch: int) -> dict:
     }
 
 
+def _active_stop_watch(symbol: str, now: float | None = None) -> dict | None:
+    current = time.time() if now is None else now
+    watch = stop_watches.get(symbol)
+    if not watch:
+        return None
+    if float(watch.get("expires_at_epoch") or 0) <= current:
+        stop_watches.pop(symbol, None)
+        return None
+    return watch
+
+
+def _dispatch_stop_breach(payload: dict) -> None:
+    if not STOP_BREACH_WEBHOOK_URL:
+        return
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if STOP_BREACH_WEBHOOK_TOKEN:
+        headers["Authorization"] = f"Bearer {STOP_BREACH_WEBHOOK_TOKEN}"
+    request = urllib.request.Request(
+        STOP_BREACH_WEBHOOK_URL,
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2.0) as response:
+            if int(response.status) < 200 or int(response.status) >= 300:
+                raise RuntimeError(f"stop_breach_webhook_http_{response.status}")
+        with _state_lock:
+            current = stop_breaches.get(str(payload.get("intent_key") or ""))
+            if current:
+                current["webhook_delivered_at"] = get_tw_now().isoformat()
+                current["webhook_error"] = None
+    except Exception as exc:
+        with _state_lock:
+            current = stop_breaches.get(str(payload.get("intent_key") or ""))
+            if current:
+                current["webhook_error"] = str(exc)[:240]
+        print(f"[StopBreach] webhook failed intent={payload.get('intent_key')}: {exc}")
+
+
+def _latch_stop_breach(symbol: str, tick: dict) -> dict | None:
+    watch = _active_stop_watch(symbol)
+    if not watch:
+        return None
+    trigger_price = float(tick.get("price") or 0)
+    stop_price = float(watch.get("stop_price") or 0)
+    if trigger_price <= 0 or stop_price <= 0 or trigger_price > stop_price:
+        return None
+    intent_key = str(watch.get("intent_key") or "").strip()
+    if not intent_key or intent_key in stop_breaches:
+        return None
+    payload = {
+        "schema_version": "paper-stop-breach-v1",
+        "intent_key": intent_key,
+        "account_id": int(watch.get("account_id") or 1),
+        "symbol": symbol,
+        "entry_date": watch.get("entry_date"),
+        "requested_shares": int(watch.get("requested_shares") or 0),
+        "stop_price": stop_price,
+        "stop_version": str(watch.get("stop_version") or ""),
+        "trigger_price": trigger_price,
+        "trigger_time": tick.get("timestamp"),
+        "received_at": tick.get("updated_at") or get_tw_now().isoformat(),
+        "session_epoch": int(tick.get("session_epoch") or _session_epoch),
+        "source": "shioaji_tick_callback",
+        "webhook_delivered_at": None,
+        "webhook_error": None,
+    }
+    stop_breaches[intent_key] = payload
+    print(
+        f"[StopBreach] latched {symbol} price={trigger_price} stop={stop_price} "
+        f"epoch={payload['session_epoch']} intent={intent_key}"
+    )
+    try:
+        _stop_breach_dispatch_executor.submit(_dispatch_stop_breach, dict(payload))
+    except Exception as exc:
+        payload["webhook_error"] = str(exc)[:240]
+    return payload
+
+
 def _handle_quote_session_event(
     resp_code: int,
     event_code: int,
@@ -723,6 +811,7 @@ def init_shioaji():
                 now_ts = time.time()
                 if not buf or now_ts - buf[-1][0] >= 30:  # at most 1 entry per 30 sec
                     buf.append((now_ts, normalized_tick["price"]))
+                _latch_stop_breach(symbol, normalized_tick)
 
         @api.on_bidask_stk_v1()
         def on_bidask(exchange, bidask):
@@ -969,9 +1058,13 @@ def _execute_orderbook_recovery(symbol: str, reason: str, lot_type: str, failure
     try:
         if failures >= reconnect_after_consecutive_failures():
             print(
-                f"[Shioaji] Symbol refresh remains stale; keep session and retry symbol only: "
+                f"[Shioaji] Symbol refresh remained stale; rebuild session: "
                 f"{lot_type}:{symbol} failures={failures} reason={reason}"
             )
+            reset_shioaji_connection(
+                f"symbol_callback_stale:{lot_type}:{symbol}:failures={failures}:{reason}"
+            )
+            return
         subscribe_symbol(symbol, force_bidask=True, lot_type=lot_type)
     finally:
         _finish_orderbook_recovery(symbol, lot_type)
@@ -1262,6 +1355,25 @@ class BatchRequest(BaseModel):
     symbols: list[str]
     lot_type: str = "board_lot"
 
+class StopWatchItem(BaseModel):
+    intent_key: str
+    account_id: int = 1
+    symbol: str
+    entry_date: str | None = None
+    requested_shares: int
+    stop_price: float
+    stop_version: str
+
+
+class StopWatchRequest(BaseModel):
+    watches: list[StopWatchItem]
+    ttl_seconds: int = 180
+
+
+class StopBreachRequest(BaseModel):
+    intent_keys: list[str] | None = None
+
+
 
 @app.post("/quotes")
 def batch_quotes(req: BatchRequest, authorization: str | None = Header(default=None)):
@@ -1301,6 +1413,65 @@ def batch_quotes(req: BatchRequest, authorization: str | None = Header(default=N
 def batch_snapshots(req: BatchRequest, authorization: str | None = Header(default=None)):
     """相容 alias；execution snapshot 同樣只讀 streaming tick cache。"""
     return batch_quotes(req, authorization)
+
+@app.post("/execution/stop-watches")
+def register_stop_watches(req: StopWatchRequest, authorization: str | None = Header(default=None)):
+    """Register position stops evaluated synchronously inside the Tick callback."""
+    verify_token(authorization)
+    now = time.time()
+    ttl_seconds = max(30, min(int(req.ttl_seconds), 900))
+    registered: list[str] = []
+    with _state_lock:
+        for item in req.watches:
+            symbol = item.symbol.upper().strip()
+            intent_key = item.intent_key.strip()
+            if not symbol or not intent_key or item.stop_price <= 0 or item.requested_shares <= 0:
+                continue
+            stop_watches[symbol] = {
+                "intent_key": intent_key,
+                "account_id": item.account_id,
+                "symbol": symbol,
+                "entry_date": item.entry_date,
+                "requested_shares": item.requested_shares,
+                "stop_price": item.stop_price,
+                "stop_version": item.stop_version,
+                "expires_at_epoch": now + ttl_seconds,
+                "registered_at": get_tw_now().isoformat(),
+                "session_epoch": _session_epoch,
+            }
+            registered.append(symbol)
+            watch_orderbook_symbols([symbol], ttl_seconds=ttl_seconds)
+    for symbol in registered:
+        recover_orderbook_symbol_async(symbol, "position_stop_watch")
+    return {
+        "status": "ok",
+        "registered": len(registered),
+        "symbols": registered,
+        "ttl_seconds": ttl_seconds,
+        "session_epoch": _session_epoch,
+        "tw_time": get_tw_now().isoformat(),
+    }
+
+
+@app.post("/execution/stop-breaches")
+def read_stop_breaches(req: StopBreachRequest, authorization: str | None = Header(default=None)):
+    """Return latched breaches without consuming them; Worker D1 is the durable owner."""
+    verify_token(authorization)
+    keys = {key.strip() for key in (req.intent_keys or []) if key.strip()}
+    with _state_lock:
+        data = [
+            dict(payload)
+            for key, payload in stop_breaches.items()
+            if not keys or key in keys
+        ]
+    return {
+        "status": "ok",
+        "count": len(data),
+        "data": data,
+        "session_epoch": _session_epoch,
+        "tw_time": get_tw_now().isoformat(),
+    }
+
 
 
 @app.get("/snapshot/{symbol}")
@@ -1659,7 +1830,7 @@ def batch_orderbooks(req: BatchRequest, authorization: str | None = Header(defau
         else:
             errors[symbol] = payload
 
-    return {
+    payload = {
         "status": "ok" if not errors else "partial" if data else "empty",
         "count": len(data),
         "error_count": len(errors),
@@ -1671,6 +1842,9 @@ def batch_orderbooks(req: BatchRequest, authorization: str | None = Header(defau
         "orderbook_watch": orderbook_health_summary(clean_symbols, lot_type),
         "tw_time": get_tw_now().isoformat(),
     }
+    if clean_symbols and not data:
+        raise HTTPException(503, payload)
+    return payload
 
 
 # ── TWSE/TPEX Chips Proxy（CF Workers IP 被擋，透過 GCP proxy）────────────────

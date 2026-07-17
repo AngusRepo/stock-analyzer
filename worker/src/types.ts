@@ -6,6 +6,7 @@ export type Bindings = {
   DB: D1Database
   KV: KVNamespace
   ARTIFACTS?: R2Bucket
+  CF_VERSION_METADATA?: { id: string; tag: string; timestamp: string }
   EVIDENCE_ARTIFACT_WRITER?: EvidenceArtifactWriter
   JWT_SECRET: string
   GOOGLE_CLIENT_ID: string
@@ -16,6 +17,7 @@ export type Bindings = {
   ML_SERVICE_URL: string
   UPDATE_QUEUE: Queue<UpdateQueueMsg>
   NEWS_QUEUE: Queue<UpdateQueueMsg>
+  PAPER_EXIT_QUEUE: Queue<PaperExitQueueMsg>
   ML_QUEUE?:    Queue<any>       // Phase 4 移除（Phase 3 保留 UPDATE_QUEUE 使用）
   ENVIRONMENT: string
   // ML Controller (Cloud Run) — Phase 3 MVC
@@ -328,5 +330,14 @@ export interface UpdateQueueMsg {
   leaseRetryAttempt?: number // bounded deferred retry for serialized S12 research traffic
   force?: boolean
 }
+
+export interface PaperExitQueueMsg {
+  type: 'paper_exit_intent'
+  intentKey: string
+  symbol: string
+  attempt: number
+  triggerTime: string
+}
+
 
 // MLQueueMsg removed in Phase 3 — ML batch predict now goes through Controller

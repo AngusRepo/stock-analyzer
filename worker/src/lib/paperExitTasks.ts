@@ -13,6 +13,16 @@ import {
 import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath'
 import { buildSellOrderNote, calcRealizedPnlSnapshot } from './paperOrderAccounting'
 import { putIntradayPrice } from './paperIntradayPriceCache'
+import {
+  applyLatchedPaperExitIntent,
+  loadActivePaperExitIntent,
+  markPaperExitIntentAttempt,
+  persistPaperStopBreach,
+  resolvePaperExitIntent,
+  syncHubStopWatchesAndBreaches,
+  type HubStopWatch,
+  type PaperExitIntentRow,
+} from './paperExitIntent'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
 import { resolveTwEquityPriceBand } from './twEquityMarketContract'
@@ -164,7 +174,7 @@ function withLifecycleS12ExitInputs<T extends Record<string, any>>(pos: T): T {
   }
 }
 
-function resolveEffectiveS12PositionStop(pos: Record<string, any>, minimumStop?: number | null): number | null {
+export function resolveEffectiveS12PositionStop(pos: Record<string, any>, minimumStop?: number | null): number | null {
   const enriched = withLifecycleS12ExitInputs(pos)
   const candidates = [
     positiveNumber(enriched.s12_position_stop_price),
@@ -1571,11 +1581,15 @@ export type IntradayStopLossPollResult = {
   positions: number
   quoted: number
   missing_symbols: string[]
+  pending_exit_symbols: string[]
 }
 
-export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopLossPollResult> {
+export async function pollIntradayStopLoss(
+  env: Bindings,
+  options: { symbols?: string[]; retryIntentKey?: string } = {},
+): Promise<IntradayStopLossPollResult> {
   const cfg = await getTradingConfig(env.KV)
-  const { results: positions } = await env.DB.prepare(
+  const { results: loadedPositions } = await env.DB.prepare(
     `SELECT symbol, shares, avg_cost, name, entry_price, entry_date,
             initial_stop, trailing_stop, highest_since_entry, stop_multiplier,
             tp1_price, tp2_price, tp1_hit, original_shares, trade_lifecycle_json,
@@ -1586,10 +1600,15 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
      FROM paper_positions WHERE account_id=? AND shares>0`,
   ).bind(ACCOUNT_ID).all<any>()
 
+  const requestedSymbols = new Set((options.symbols ?? []).map((symbol) => symbol.trim().toUpperCase()))
+  const positions = (loadedPositions ?? []).filter(
+    (position: any) => requestedSymbols.size === 0 || requestedSymbols.has(String(position.symbol).toUpperCase()),
+  )
   if (!positions || positions.length === 0) {
-    return { status: 'healthy_empty', positions: 0, quoted: 0, missing_symbols: [] }
+    return { status: 'healthy_empty', positions: 0, quoted: 0, missing_symbols: [], pending_exit_symbols: [] }
   }
 
+  const pendingExitSymbols = new Set<string>()
   const symbols = positions.map((p: any) => p.symbol)
   const boardLotSymbols = positions
     .filter((p: any) => Math.max(0, Math.floor(Number(p.shares ?? 0))) >= 1000)
@@ -1601,6 +1620,30 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
     requireBrokerQuote: true,
+  }
+  const stopWatches = positions.map((pos: any): HubStopWatch | null => {
+    const stopPrice = resolveEffectiveS12PositionStop(pos, pos.entry_price ?? pos.avg_cost)
+    if (stopPrice == null) return null
+    return {
+      intent_key: buildExitIntentKey({
+        accountId: ACCOUNT_ID,
+        symbol: pos.symbol,
+        entryDate: pos.entry_date,
+        shares: pos.shares,
+        stopVersion: stopPrice,
+        action: 'full_sell',
+      }),
+      account_id: ACCOUNT_ID,
+      symbol: pos.symbol,
+      entry_date: pos.entry_date ?? null,
+      requested_shares: Math.max(0, Math.floor(Number(pos.shares ?? 0))),
+      stop_price: stopPrice,
+      stop_version: Number(stopPrice).toFixed(4),
+    }
+  }).filter((watch: HubStopWatch | null): watch is HubStopWatch => watch != null)
+  const stopSync = await syncHubStopWatchesAndBreaches(env, stopWatches)
+  if (stopSync.errors.length > 0) {
+    console.warn(`[Intraday] stop watch sync degraded: ${stopSync.errors.join(',')}`)
   }
   const executionMaxAgeMs = positiveNumber((env as any).EXECUTION_BOOK_MAX_AGE_MS) ?? 1500
   const [boardLotQuoteMap, oddLotQuoteMap] = await Promise.all([
@@ -1643,11 +1686,24 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
       source: 's12_holding_defense',
     })
   }
+  await Promise.all(missingQuotePositions.map(async (pos: any) => {
+    const activeIntent = await loadActivePaperExitIntent(env.DB, ACCOUNT_ID, pos.symbol, pos.entry_date)
+    if (!activeIntent) return
+    pendingExitSymbols.add(String(pos.symbol))
+    await markPaperExitIntentAttempt(env.DB, activeIntent.intent_key, 'EXIT_TRIGGERED_WAITING_BOOK', {
+      remainingShares: pos.shares,
+      error: 'holding_authoritative_market_data_unavailable',
+      retryAfterSeconds: 10,
+    })
+  }))
   const atrMap = await batchGetATR(env.DB, symbols)
   const intraRegime = await getCurrentRegime(env.KV)
 
   if (quoteMap.size === 0) {
     await Promise.all(missingQuotePositions.map(recordMissingHoldingQuote))
+    if (options.retryIntentKey) {
+      return { status: 'partial', positions: positions.length, quoted: 0, missing_symbols: missingQuotePositions.map((pos: any) => String(pos.symbol)), pending_exit_symbols: [...pendingExitSymbols] }
+    }
     throw new Error('holding_authoritative_market_data_unavailable_all_positions')
   }
 
@@ -1676,6 +1732,40 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
     const quote = quoteMap.get(pos.symbol)
     if (!quote) continue
     const currentPrice = quote.last
+    const effectiveStop = resolveEffectiveS12PositionStop(pos, pos.entry_price ?? pos.avg_cost)
+    const stopIntentKey = effectiveStop == null ? null : buildExitIntentKey({
+      accountId: ACCOUNT_ID,
+      symbol: pos.symbol,
+      entryDate: pos.entry_date,
+      shares: pos.shares,
+      stopVersion: effectiveStop,
+      action: 'full_sell',
+    })
+    if (
+      effectiveStop != null &&
+      stopIntentKey != null &&
+      quote.low != null &&
+      Number(quote.low) <= effectiveStop
+    ) {
+      await persistPaperStopBreach(env, {
+        schema_version: 'paper-stop-breach-v1',
+        intent_key: stopIntentKey,
+        account_id: ACCOUNT_ID,
+        symbol: pos.symbol,
+        entry_date: pos.entry_date ?? null,
+        requested_shares: Math.max(0, Math.floor(Number(pos.shares ?? 0))),
+        stop_price: effectiveStop,
+        stop_version: Number(effectiveStop).toFixed(4),
+        trigger_price: Number(quote.low),
+        trigger_time: null,
+        received_at: quote.confirmationTime ?? new Date().toISOString(),
+        session_epoch: quote.sessionEpoch ?? null,
+        source: 'shioaji_session_low_recovery',
+      })
+    }
+    let activeExitIntent: PaperExitIntentRow | null = await loadActivePaperExitIntent(
+      env.DB, ACCOUNT_ID, pos.symbol, pos.entry_date,
+    )
 
     const atr14 = atrMap.get(pos.symbol) ?? currentPrice * cfg.exit.fallbackAtrPct
     const s12ExitDecision = await evaluateS12HoldingDefense(
@@ -1701,6 +1791,25 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
       intraRegime ?? undefined,
     )
     let decision = resolveS12PrimaryExitDecision(s12ExitDecision, fallbackDecision)
+    if (activeExitIntent) {
+      decision = applyLatchedPaperExitIntent(decision, activeExitIntent) as ExitDecision
+    } else if (decision.action === 'full_sell' && effectiveStop != null && stopIntentKey != null) {
+      await persistPaperStopBreach(env, {
+        intent_key: stopIntentKey,
+        account_id: ACCOUNT_ID,
+        symbol: pos.symbol,
+        entry_date: pos.entry_date ?? null,
+        requested_shares: Math.max(0, Math.floor(Number(pos.shares ?? 0))),
+        stop_price: effectiveStop,
+        stop_version: Number(effectiveStop).toFixed(4),
+        trigger_price: currentPrice,
+        trigger_time: quote.quoteTime ?? null,
+        received_at: quote.confirmationTime ?? new Date().toISOString(),
+        session_epoch: quote.sessionEpoch ?? null,
+        source: 's12_position_decision',
+      })
+      activeExitIntent = await loadActivePaperExitIntent(env.DB, ACCOUNT_ID, pos.symbol, pos.entry_date)
+    }
     if (intraRegime) logRegimeShadow('pollIntradayStopLoss', pos.symbol, intraRegime, decision.action, decision.reason, env.DB)
 
     if (decision.action !== 'hold') {
@@ -1719,6 +1828,14 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
             detail: { current_price: currentPrice, reference_price: referencePrice, limit_down: priceBand.limitDown },
             source: 'poll_intraday_stop_loss',
           })
+          if (activeExitIntent) {
+            pendingExitSymbols.add(pos.symbol)
+            await markPaperExitIntentAttempt(env.DB, activeExitIntent.intent_key, 'EXIT_TRIGGERED_WAITING_BOOK', {
+              remainingShares: pos.shares,
+              error: 'tw_equity_limit_down_unfilled',
+              retryAfterSeconds: 30,
+            })
+          }
           continue
         }
       }
@@ -1742,6 +1859,14 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
           detail: { shares: pos.shares, exit_reason: decision.reason, exit_intent_kind: exitIntentKind },
           source: 'poll_intraday_stop_loss',
         })
+        if (activeExitIntent) {
+          pendingExitSymbols.add(pos.symbol)
+          await markPaperExitIntentAttempt(env.DB, activeExitIntent.intent_key, 'EXIT_TRIGGERED_WAITING_BOOK', {
+            remainingShares: pos.shares,
+            error: dtCheck.reason,
+            retryAfterSeconds: 60,
+          })
+        }
         continue
       }
       dayTradeSell = true
@@ -1749,14 +1874,7 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
 
     if (decision.action === 'full_sell') {
       const requestedExitShares = pos.shares
-      const exitIntentKey = buildExitIntentKey({
-        accountId: ACCOUNT_ID,
-        symbol: pos.symbol,
-        entryDate: pos.entry_date,
-        shares: requestedExitShares,
-        stopVersion: resolveEffectiveS12PositionStop(pos, pos.entry_price ?? pos.avg_cost),
-        action: decision.action,
-      })
+      const exitIntentKey = activeExitIntent?.intent_key ?? stopIntentKey ?? options.retryIntentKey ?? buildExitIntentKey({ accountId: ACCOUNT_ID, symbol: pos.symbol, entryDate: pos.entry_date, shares: requestedExitShares, stopVersion: effectiveStop, action: decision.action })
       const freshExecutionBooks = await fetchFreshPositionExitBooks(pos.symbol, requestedExitShares, quoteEnv)
       const executionSnapshotAtMs = Date.now()
       const sellFill = resolvePositionExitSellFill(requestedExitShares, freshExecutionBooks, {
@@ -1772,6 +1890,14 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
           detail: { shares: requestedExitShares, exit_reason: decision.reason, ...sellFill.detail },
           source: 'intraday_exit',
         })
+        pendingExitSymbols.add(pos.symbol)
+        if (activeExitIntent) {
+          await markPaperExitIntentAttempt(env.DB, exitIntentKey, 'EXIT_TRIGGERED_WAITING_BOOK', {
+            remainingShares: requestedExitShares,
+            error: sellFill.reason,
+            retryAfterSeconds: 10,
+          })
+        }
         continue
       }
       const shares = Math.max(0, Math.floor(sellFill.filledShares ?? requestedExitShares))
@@ -1864,6 +1990,14 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
         status: remainingExitShares === 0 ? 'filled' : 'partial',
         orderId,
       })
+      if (activeExitIntent) {
+        await resolvePaperExitIntent(env.DB, exitIntentKey, {
+          state: remainingExitShares === 0 ? 'FILLED' : 'PARTIAL',
+          remainingShares: remainingExitShares,
+          orderId,
+        })
+        if (remainingExitShares > 0) pendingExitSymbols.add(pos.symbol)
+      }
       console.warn(`[Intraday] full sell ${pos.symbol} ${shares} @ ${sellFillPrice} (mkt ${currentPrice}) ${decision.reason}`)
       const intradayPnl = calcRealizedPnlSnapshot({ entryPrice: entryPx, exitPrice: sellFillPrice, shares, commission, tax }).realized_pnl_pct / 100
       void sendDiscordNotification(
@@ -2019,5 +2153,6 @@ export async function pollIntradayStopLoss(env: Bindings): Promise<IntradayStopL
     positions: positions.length,
     quoted: quoteMap.size,
     missing_symbols: missingQuotePositions.map((pos: any) => String(pos.symbol)),
+    pending_exit_symbols: [...pendingExitSymbols],
   }
 }

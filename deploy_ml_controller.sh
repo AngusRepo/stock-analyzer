@@ -232,6 +232,7 @@ load_live_runtime_settings() {
   LIVE_SERVICE_CONCURRENCY=""
   LIVE_SERVICE_MIN_SCALE=""
   LIVE_SERVICE_MAX_SCALE=""
+  LIVE_REVISION_MIN_SCALE=""
   if [ -z "$service_json" ]; then
     return 0
   fi
@@ -245,6 +246,7 @@ load_live_runtime_settings() {
       CONCURRENCY) LIVE_SERVICE_CONCURRENCY="$value" ;;
       MIN_SCALE) LIVE_SERVICE_MIN_SCALE="$value" ;;
       MAX_SCALE) LIVE_SERVICE_MAX_SCALE="$value" ;;
+      REVISION_MIN_SCALE) LIVE_REVISION_MIN_SCALE="$value" ;;
     esac
   done < <(SERVICE_JSON="$service_json" "$PYTHON_BIN" - <<'PY'
 import json
@@ -255,6 +257,7 @@ if not raw.strip():
     raise SystemExit(0)
 
 doc = json.loads(raw)
+service_annotations = doc.get("metadata", {}).get("annotations", {}) or {}
 template = doc.get("spec", {}).get("template", {}) or {}
 metadata = template.get("metadata", {}) or {}
 annotations = metadata.get("annotations", {}) or {}
@@ -267,8 +270,9 @@ print(f'CPU_THROTTLING={annotations.get("run.googleapis.com/cpu-throttling", "de
 print(f'CPU={limits.get("cpu", "")}')
 print(f'MEMORY={limits.get("memory", "")}')
 print(f'CONCURRENCY={spec.get("containerConcurrency", "")}')
-print(f'MIN_SCALE={annotations.get("autoscaling.knative.dev/minScale", "")}')
-print(f'MAX_SCALE={annotations.get("autoscaling.knative.dev/maxScale", "")}')
+print(f'MIN_SCALE={service_annotations.get("run.googleapis.com/minScale", "0")}')
+print(f'MAX_SCALE={service_annotations.get("run.googleapis.com/maxScale", "5")}')
+print(f'REVISION_MIN_SCALE={annotations.get("autoscaling.knative.dev/minScale", "")}')
 PY
 )
 }
@@ -729,6 +733,8 @@ if ! gcloud run deploy "$SERVICE" \
     --source . \
     --region="$REGION" \
     --timeout=3600 \
+    --min="${LIVE_SERVICE_MIN_SCALE:-0}" \
+    --max="${LIVE_SERVICE_MAX_SCALE:-5}" \
     --update-env-vars="$RUNTIME_ENV_VARS" \
     --update-secrets="$RUN_SECRET_BINDINGS" \
     --quiet; then

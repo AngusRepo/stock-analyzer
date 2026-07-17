@@ -483,7 +483,7 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
   const minutesSinceOpen = minutesSinceTwMarketOpen(twHour, twMin)
   const isMarketOpen = isTwIntradayTradingMinute()
 
-  if (!isMarketOpen) return { status: 'healthy_empty', positions: 0, quoted: 0, missing_symbols: [] }
+  if (!isMarketOpen) return { status: 'healthy_empty', positions: 0, quoted: 0, missing_symbols: [], pending_exit_symbols: [] }
   const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const setupWatch = await runS12IntradaySetupWatch(env, today).catch((error) => {
     console.warn('[Intraday] S12 setup watch failed:', error instanceof Error ? error.message : String(error))

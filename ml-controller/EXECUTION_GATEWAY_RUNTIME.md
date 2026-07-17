@@ -7,13 +7,18 @@ order API. The general `ml-controller` live-submit route remains fail-closed.
 
 - distinct Cloud Run service and dedicated least-privilege service account
 - private ingress / authenticated invoker only; never `allUsers`
-- minimum instances: `1`
+- service-level minimum instances: `1` only during the TWSE/TPEX trading window
+  (`08:30-13:31 Asia/Taipei` on an official trading day); otherwise `0`
 - maximum instances: `1`
 - container concurrency: `1`
 - CPU throttling: disabled
 - request timeout: `10s`
 - startup probe must not place an order or force broker login
 - build with repo-root `Dockerfile.execution-gateway`; the image is minimal, non-root, and runs one uvicorn worker
+
+Revision-level minimum instances and traffic tags are forbidden. The
+`realtime-runtime-min-1` and `realtime-runtime-min-0` Jobs are the only owners
+allowed to change the service-level minimum.
 
 ## Required non-secret environment contract
 

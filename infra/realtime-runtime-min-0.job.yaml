@@ -1,0 +1,83 @@
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: realtime-runtime-min-0
+  labels:
+    stockvision-owner: realtime-runtime-scaler-v2
+spec:
+  template:
+    spec:
+      taskCount: 1
+      parallelism: 1
+      template:
+        spec:
+          serviceAccountName: 530028717113-compute@developer.gserviceaccount.com
+          maxRetries: 1
+          timeoutSeconds: "300"
+          containers:
+            - image: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+              command: ["bash"]
+              args:
+                - "-c"
+                - |
+                  set -euo pipefail
+                  desired=0
+                  for service in shioaji-proxy stockvision-execution-gateway; do
+                    gcloud run services update "$service" --project=gen-lang-client-0602998820 --region=asia-east1 --min=0 --max=1 --quiet
+                  done
+                  for service in shioaji-proxy stockvision-execution-gateway; do
+                    service_json="$(gcloud run services describe "$service" --project=gen-lang-client-0602998820 --region=asia-east1 --format=json)"
+                    revision="$(SERVICE_JSON="$service_json" python3 -c 'import json,os; d=json.loads(os.environ["SERVICE_JSON"]); t=d.get("status",{}).get("traffic",[]); print(next((x.get("revisionName","") for x in t if int(x.get("percent",0))==100),""))')"
+                    test -n "$revision"
+                    revision_json="$(gcloud run revisions describe "$revision" --project=gen-lang-client-0602998820 --region=asia-east1 --format=json)"
+                    SERVICE="$service" SERVICE_JSON="$service_json" REVISION_JSON="$revision_json" DESIRED="$desired" python3 - <<'PY'
+                  import json, os, sys
+                  service = os.environ["SERVICE"]
+                  desired = int(os.environ["DESIRED"])
+                  doc = json.loads(os.environ["SERVICE_JSON"])
+                  rev = json.loads(os.environ["REVISION_JSON"])
+                  annotations = doc.get("metadata", {}).get("annotations", {})
+                  status = doc.get("status", {})
+                  spec_traffic = doc.get("spec", {}).get("traffic", [])
+                  status_traffic = status.get("traffic", [])
+                  serving = next((row.get("revisionName") for row in status_traffic if int(row.get("percent", 0)) == 100), None)
+                  errors = []
+                  if int(annotations.get("run.googleapis.com/minScale", "0")) != desired:
+                      errors.append("service_min_mismatch")
+                  if int(annotations.get("run.googleapis.com/maxScale", "0")) != 1:
+                      errors.append("service_max_mismatch")
+                  if len(spec_traffic) != 1 or len(status_traffic) != 1:
+                      errors.append("traffic_not_single_owner")
+                  if any(row.get("tag") for row in spec_traffic + status_traffic):
+                      errors.append("traffic_tag_present")
+                  if not serving or status.get("latestCreatedRevisionName") != serving or status.get("latestReadyRevisionName") != serving:
+                      errors.append("latest_revision_parity_failed")
+                  rev_annotations = rev.get("metadata", {}).get("annotations", {})
+                  if "autoscaling.knative.dev/minScale" in rev_annotations:
+                      errors.append("revision_level_min_present")
+                  if int(rev_annotations.get("autoscaling.knative.dev/maxScale", "0")) != 1:
+                      errors.append("revision_max_mismatch")
+                  template = doc.get("spec", {}).get("template", {})
+                  template_annotations = template.get("metadata", {}).get("annotations", {})
+                  template_spec = template.get("spec", {})
+                  expected = {"shioaji-proxy": (4, 15), "stockvision-execution-gateway": (1, 10)}[service]
+                  if int(template_spec.get("containerConcurrency", 0)) != expected[0]:
+                      errors.append("concurrency_mismatch")
+                  if int(template_spec.get("timeoutSeconds", 0)) != expected[1]:
+                      errors.append("timeout_mismatch")
+                  if template_annotations.get("run.googleapis.com/cpu-throttling") != "false":
+                      errors.append("continuous_cpu_disabled")
+                  if service == "stockvision-execution-gateway":
+                      env = {row.get("name"): row.get("value") for row in template_spec.get("containers", [{}])[0].get("env", [])}
+                      if env.get("FINLAB_LIVE_SUBMIT_ENABLED") != "0":
+                          errors.append("live_submit_not_disabled")
+                  if errors:
+                      print(json.dumps({"service": service, "desired": desired, "errors": errors}), file=sys.stderr)
+                      raise SystemExit(21)
+                  print(json.dumps({"service": service, "desired": desired, "serving_revision": serving, "status": "verified"}))
+                  PY
+                  done
+              resources:
+                limits:
+                  cpu: 1000m
+                  memory: 512Mi

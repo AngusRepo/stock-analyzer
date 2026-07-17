@@ -9,6 +9,9 @@ cpu_ms = 300_000
 [triggers]
 crons = []
 
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "stockvision-db"
@@ -31,6 +34,10 @@ queue = "stockvision-update-queue"
 [[queues.producers]]
 binding = "NEWS_QUEUE"
 queue = "stockvision-news-queue"
+[[queues.producers]]
+binding = "PAPER_EXIT_QUEUE"
+queue = "stockvision-paper-exit-queue"
+
 
 [[queues.consumers]]
 queue = "stockvision-update-queue"
@@ -45,6 +52,13 @@ max_batch_size = 2
 max_batch_timeout = 10
 max_retries = 2
 dead_letter_queue = "stockvision-news-queue-dlq"
+
+[[queues.consumers]]
+queue = "stockvision-paper-exit-queue"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 5
+dead_letter_queue = "stockvision-paper-exit-queue-dlq"
 
 [ai]
 binding = "AI"

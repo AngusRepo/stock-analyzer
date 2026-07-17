@@ -145,6 +145,18 @@ export async function runPreMarketWarmup(env: Bindings) {
     }
   }
 
+  if (proxyUrl && (env as any).DB) {
+    try {
+      const { prewarmHoldingStopWatches } = await import('./preMarketHoldingStopWatches')
+      const warmup = await prewarmHoldingStopWatches(env)
+      const state = warmup.status === 'partial' ? 'fail' : 'ok'
+      const detail = `positions=${warmup.positions};registered=${warmup.registered};breaches=${warmup.recoveredBreaches}`
+      results.push(`HoldingStops:${state}(${detail}${warmup.errors.length ? `;errors=${warmup.errors.join('|')}` : ''})`)
+    } catch (e: any) {
+      results.push(`HoldingStops:error(${e.message ?? String(e)})`)
+    }
+  }
+
   const summary = results.join(', ') || 'no warm targets'
   const hasDrift = results.some((item) => item.includes(':fail(') || item.includes(':error(') || item.includes('=missing'))
   return hasDrift ? `ERROR: control-plane drift ${summary}` : summary

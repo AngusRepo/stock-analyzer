@@ -163,6 +163,12 @@ def test_finlab_fundamental_fields_require_deadline_alignment():
     assert aligned.index.name == "date"
 
 
+def test_fundamental_canonical_apply_caps_multi_row_requests_at_ten_statements():
+    tool = _load_tool_module()
+
+    assert tool.canonical_dataset_chunk_size("canonical_fundamental_features", 500) == 10
+
+
 def test_finlab_fundamental_fields_fail_closed_without_deadline_owner():
     import pytest
 
@@ -804,9 +810,9 @@ def test_materialize_canonical_plan_caps_wide_fundamental_chunk_size(monkeypatch
 
     assert calls == [
         ("canonical_market_daily", 250),
-        ("canonical_fundamental_features", 50),
+        ("canonical_fundamental_features", 10),
     ]
-    assert result["per_dataset"]["canonical_fundamental_features"]["chunk_size"] == 50
+    assert result["per_dataset"]["canonical_fundamental_features"]["chunk_size"] == 10
     assert result["per_dataset"]["canonical_market_daily"]["chunk_size"] == 250
 
 

@@ -525,10 +525,10 @@ def controller_d1_batch_execute(
 
 
 DATASET_D1_CHUNK_SIZE_CAPS = {
-    # Fundamental rows are much wider than price/chip rows. Keeping them at the
-    # default 250 can create ~1.8MB controller requests and exceed the Modal
-    # client timeout while Cloud Run eventually succeeds.
-    "canonical_fundamental_features": 50,
+    # Fundamental SQL packs ten 75-column rows per statement. Ten statements
+    # keep each controller request near 100 rows and below the prior timeout
+    # payload while removing row-at-a-time network round trips.
+    "canonical_fundamental_features": 10,
 }
 
 

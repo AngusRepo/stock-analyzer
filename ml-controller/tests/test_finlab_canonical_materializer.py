@@ -1216,3 +1216,31 @@ def test_fundamental_materialization_accepts_finlab_deadline_datetime_index() ->
     assert rows[0]["gross_margin"] == 53.2
     assert rows[0]["available_date"] == "2026-06-01"
     assert json.loads(rows[0]["lineage_json"])["date_alignment"] == "finlab_deadline"
+
+
+def test_fundamental_d1_upserts_pack_ten_rows_per_statement() -> None:
+    root = _root("fundamental_multi_row_upsert")
+    lane = root / "raw" / "fundamental_factor_diversity"
+    symbols = [str(2300 + offset) for offset in range(11)]
+    _write(
+        lane / "gross_margin.parquet",
+        pl.DataFrame({"date": ["2026-06-01"], **{symbol: [50.0 + index] for index, symbol in enumerate(symbols)}}),
+    )
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-07-17T00:00:00+00:00",
+        start_date="2026-06-01",
+        end_date="2026-06-01",
+        datasets=["canonical_fundamental_features"],
+    )
+
+    statements = [
+        (sql, params)
+        for sql, params in build_d1_upsert_statements(outputs)
+        if sql.startswith("INSERT INTO canonical_fundamental_features")
+    ]
+
+    assert len(statements) == 2
+    assert len(statements[0][1]) == 750
+    assert len(statements[1][1]) == 75
+    assert statements[0][0].count("(") > statements[1][0].count("(")

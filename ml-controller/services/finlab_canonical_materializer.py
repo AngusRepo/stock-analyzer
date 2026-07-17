@@ -2290,13 +2290,15 @@ def _upsert_statement(
     columns: list[str],
     conflict_columns: list[str],
     update_columns: list[str],
+    rows_per_statement: int = 1,
 ) -> str:
-    placeholders = ", ".join("?" for _ in columns)
+    placeholders = "(" + ", ".join("?" for _ in columns) + ")"
+    values_sql = ", ".join(placeholders for _ in range(max(1, rows_per_statement)))
     column_sql = ", ".join(columns)
     conflict_sql = ", ".join(conflict_columns)
     update_sql = ", ".join(f"{column}=excluded.{column}" for column in update_columns)
     return (
-        f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders}) "
+        f"INSERT INTO {table} ({column_sql}) VALUES {values_sql} "
         f"ON CONFLICT({conflict_sql}) DO UPDATE SET {update_sql}"
     )
 
@@ -2308,6 +2310,7 @@ def _row_statements(
     conflict_columns: list[str],
     update_columns: list[str],
     required_columns: list[str] | None = None,
+    rows_per_statement: int = 1,
 ) -> list[tuple[str, list[Any]]]:
     for index, row in enumerate(rows):
         missing = [
@@ -2319,8 +2322,24 @@ def _row_statements(
             raise ValueError(
                 f"{table} row {index} missing required D1 columns: {', '.join(missing)}"
             )
-    sql = _upsert_statement(table, columns, conflict_columns, update_columns)
-    return [(sql, [_d1_param(row.get(column)) for column in columns]) for row in rows]
+    batch_size = max(1, int(rows_per_statement or 1))
+    statements: list[tuple[str, list[Any]]] = []
+    for start in range(0, len(rows), batch_size):
+        batch = rows[start:start + batch_size]
+        sql = _upsert_statement(
+            table,
+            columns,
+            conflict_columns,
+            update_columns,
+            rows_per_statement=len(batch),
+        )
+        params = [
+            _d1_param(row.get(column))
+            for row in batch
+            for column in columns
+        ]
+        statements.append((sql, params))
+    return statements
 
 
 def _d1_param(value: Any) -> Any:
@@ -2776,6 +2795,7 @@ def build_d1_upsert_statements(outputs: FinLabCanonicalOutputs) -> list[tuple[st
             "as_of_date",
         ],
         required_columns=["stock_id", "period", "source"],
+        rows_per_statement=10,
     ))
     statements.extend(_row_statements(
         "canonical_broker_flow_daily",

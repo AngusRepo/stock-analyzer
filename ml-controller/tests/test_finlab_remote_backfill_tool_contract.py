@@ -187,6 +187,21 @@ def test_finlab_daily_valuation_fields_keep_source_observation_dates():
     assert list(aligned.index) == [pd.Timestamp("2026-07-16")]
 
 
+def test_key_scoped_repair_validates_only_requested_required_fields():
+    tool = _load_tool_module()
+    gross = pd.DataFrame({"2330": [66.2]}, index=pd.to_datetime(["2026-06-01"]))
+
+    assert tool.required_wide_field_errors(
+        "fundamental_factor_diversity",
+        {"gross_margin": gross},
+        requested_fields={"gross_margin"},
+    ) == []
+    assert tool.required_wide_field_errors(
+        "fundamental_factor_diversity",
+        {"gross_margin": gross},
+    ) == ["pb=missing", "pe=missing"]
+
+
 def test_source_quality_zero_finlab_rows_is_empty_not_ok(monkeypatch):
     tool = _load_tool_module()
     calls: list[tuple[str, list]] = []

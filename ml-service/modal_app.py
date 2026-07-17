@@ -3150,14 +3150,18 @@ def finlab_v4_backfill(payload: dict) -> dict:
             if isinstance(parsed, dict):
                 result.update(parsed)
                 break
-        try:
-            result["macro_context_writeback"] = _write_finlab_macro_context_to_d1()
-        except Exception as exc:
-            result["macro_context_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
-        try:
-            result["external_evidence_writeback"] = _write_external_evidence_to_d1(payload, result)
-        except Exception as exc:
-            result["external_evidence_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        if payload.get("write_d1", True):
+            try:
+                result["macro_context_writeback"] = _write_finlab_macro_context_to_d1()
+            except Exception as exc:
+                result["macro_context_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+            try:
+                result["external_evidence_writeback"] = _write_external_evidence_to_d1(payload, result)
+            except Exception as exc:
+                result["external_evidence_writeback"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        else:
+            result["macro_context_writeback"] = {"status": "skipped", "reason": "write_d1_false"}
+            result["external_evidence_writeback"] = {"status": "skipped", "reason": "write_d1_false"}
         result["continue_evening_chain"] = bool(payload.get("continue_evening_chain"))
         result["dispatch_attempt"] = dispatch_attempt
         result["start_callback"] = start_callback
@@ -3166,7 +3170,8 @@ def finlab_v4_backfill(payload: dict) -> dict:
         external_error = isinstance(result.get("external_evidence_writeback"), dict) and result["external_evidence_writeback"].get("status") == "error"
         # External evidence is supplemental to the FinLab canonical refresh; do not
         # block the evening-chain callback after canonical D1 apply succeeds.
-        status = "success" if int(exit_code or 0) == 0 and not macro_error else "error"
+        backfill_ready = str(result.get("backfill_status") or "").strip().lower() == "ready"
+        status = "success" if int(exit_code or 0) == 0 and backfill_ready and not macro_error else "error"
         summary = (
             f"FinLab V4 backfill run_id={result.get('run_id', run_id)} "
             f"status={result.get('backfill_status', 'ready')} "

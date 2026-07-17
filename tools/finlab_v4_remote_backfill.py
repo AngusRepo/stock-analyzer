@@ -1035,10 +1035,13 @@ def required_wide_field_errors(
     field_frames: dict[str, pd.DataFrame],
     *,
     target_date: str | None = None,
+    requested_fields: set[str] | None = None,
 ) -> list[str]:
     required = REQUIRED_ATOMIC_WIDE_FIELDS.get(lane)
     if not required:
         return []
+    if requested_fields is not None:
+        required = set(required) & set(requested_fields)
 
     errors: list[str] = []
     for field in sorted(required):
@@ -1795,7 +1798,16 @@ def materialize_specs(
                         ),
                     },
                 ))
-            field_errors = required_wide_field_errors(spec.lane, field_frames, target_date=target_date)
+            field_errors = required_wide_field_errors(
+                spec.lane,
+                field_frames,
+                target_date=target_date,
+                requested_fields=(
+                    set(spec_keys)
+                    if key_scope and spec.lane in key_scope
+                    else None
+                ),
+            )
             if field_errors:
                 source_key_blockers.append({
                     "lane": spec.lane,
@@ -3315,7 +3327,7 @@ def main() -> int:
         "runtime_table_writeback": manifest.get("runtime_table_writeback"),
         "canonical_d1_apply": manifest.get("canonical_d1_apply"),
     }, ensure_ascii=False, sort_keys=True))
-    return 0
+    return 0 if manifest.get("backfill_status") == "ready" else 2
 
 
 if __name__ == "__main__":

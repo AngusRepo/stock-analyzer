@@ -442,22 +442,22 @@ async function checkEveningChainSourceReadiness(
     countReadinessRows(
       env.DB,
       'canonical_fundamental_features:valuation_daily_union',
-      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND source = 'finlab.daily_valuation' AND (pe IS NOT NULL OR pb IS NOT NULL)",
-      [targetDate],
+      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND as_of_date <= ? AND source = 'finlab.daily_valuation' AND (pe IS NOT NULL OR pb IS NOT NULL)",
+      [targetDate, targetDate],
       1500,
     ),
     countReadinessRows(
       env.DB,
       'canonical_fundamental_features:valuation_daily_pe',
-      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND source = 'finlab.daily_valuation' AND pe IS NOT NULL",
-      [targetDate],
+      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND as_of_date <= ? AND source = 'finlab.daily_valuation' AND pe IS NOT NULL",
+      [targetDate, targetDate],
       1000,
     ),
     countReadinessRows(
       env.DB,
       'canonical_fundamental_features:valuation_daily_pb',
-      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND source = 'finlab.daily_valuation' AND pb IS NOT NULL",
-      [targetDate],
+      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND as_of_date <= ? AND source = 'finlab.daily_valuation' AND pb IS NOT NULL",
+      [targetDate, targetDate],
       1500,
     ),
   ])
@@ -1315,6 +1315,7 @@ export async function syncLegacyFinancialsFromFinLabCanonical(
       JOIN stocks s ON s.symbol = f.stock_id
       WHERE f.source LIKE 'finlab.%'
         AND COALESCE(f.available_date, f.report_date, f.period) <= ?
+        AND f.as_of_date <= ?
         AND COALESCE(f.available_date, f.report_date, f.period) >= date(?, '-3 years')
         AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
         AND (
@@ -1357,7 +1358,7 @@ export async function syncLegacyFinancialsFromFinLabCanonical(
       net_income=COALESCE(excluded.net_income, financials.net_income),
       total_assets=COALESCE(excluded.total_assets, financials.total_assets),
       total_liabilities=COALESCE(excluded.total_liabilities, financials.total_liabilities)
-  `).bind(targetDate, targetDate).run()
+  `).bind(targetDate, targetDate, targetDate).run()
 
   const currentQuarter = quarterFromIsoDate(targetDate)
   const valuationResult = await db.prepare(`
@@ -1376,6 +1377,7 @@ export async function syncLegacyFinancialsFromFinLabCanonical(
       JOIN stocks s ON s.symbol = f.stock_id
       WHERE f.source LIKE 'finlab.%'
         AND COALESCE(f.available_date, f.report_date, f.period) <= ?
+        AND f.as_of_date <= ?
         AND (f.pe IS NOT NULL OR f.pb IS NOT NULL OR f.dividend_yield IS NOT NULL)
         AND COALESCE(UPPER(s.market), '') IN ('TWSE', 'OTC')
     )
@@ -1398,7 +1400,7 @@ export async function syncLegacyFinancialsFromFinLabCanonical(
       pe=COALESCE(excluded.pe, financials.pe),
       pb=COALESCE(excluded.pb, financials.pb),
       dividend_yield=COALESCE(excluded.dividend_yield, financials.dividend_yield)
-  `).bind(targetDate, currentQuarter).run()
+  `).bind(targetDate, targetDate, currentQuarter).run()
 
   return {
     financialRows: d1ChangeCount(factResult),

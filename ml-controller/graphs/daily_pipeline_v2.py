@@ -709,6 +709,7 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
         adaptive_params=state.get("adaptive_params") or {},
         barrier_params=state.get("barrier_params") or {},
         lifecycle_weights=state.get("lifecycle_weights") or {},
+        decision_date=state["run_date"],
         trading_config=state.get("trading_config") or {},
     )
     payloads_dict = [_to_dict(p) for p in payloads]

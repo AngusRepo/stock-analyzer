@@ -283,6 +283,7 @@ def load_daily_state_space_series_export(
         adaptive_params=adaptive,
         barrier_params=barrier,
         lifecycle_weights=lifecycle,
+        decision_date=run_date,
         trading_config=trading_cfg,
     )
     export = build_state_space_series_export(

@@ -55,12 +55,12 @@ assert(
   'financials EPS should win over canonical EPS when both are present for the card headline',
 )
 assert(
-  /available_date IS NULL OR available_date <= \?/.test(fundamentalData),
-  'canonical fundamental asOf filter must use available_date, not materialization as_of_date',
+  /AND available_date <= \?[\s\S]*AND as_of_date <= \?/.test(fundamentalData),
+  'historical canonical fundamental reads must enforce both event and materialization time',
 )
 assert(
-  !/as_of_date IS NULL OR as_of_date <= \?/.test(fundamentalData),
-  'canonical fundamental asOf filter must not exclude next-day materialized snapshots',
+  /bind\(symbol, asOfDate, asOfDate\)/.test(fundamentalData),
+  'historical canonical fundamental query must bind the same decision date to both clocks',
 )
 assert(
   /eps == null \|\| eps === 0/.test(fundamentalData),

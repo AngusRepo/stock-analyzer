@@ -141,7 +141,12 @@ def _samples(
         if features is None or target is None:
             invalid += 1
             continue
-        day = str(row.get("prediction_date") or row.get("date") or "")[:10] or "unknown"
+        day = str(
+            row.get("prediction_date")
+            or row.get("snapshot_date")
+            or row.get("date")
+            or ""
+        )[:10] or "unknown"
         by_date.setdefault(day, []).append({
             "date": day,
             "symbol": row.get("symbol"),

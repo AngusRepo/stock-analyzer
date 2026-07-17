@@ -101,6 +101,29 @@ def test_l4_alpha_ev_artifact_builder_fails_closed_on_insufficient_samples():
     assert "insufficient_samples" in artifact["validation_packet"]["failed_gates"]
 
 
+def test_l4_alpha_ev_artifact_builder_uses_snapshot_date_for_oof_rows():
+    rows = []
+    for day_idx in range(5):
+        day = f"2026-06-{day_idx + 1:02d}"
+        for symbol_idx in range(20):
+            row = _row(day, symbol_idx, target=0.001 * symbol_idx)
+            row["snapshot_date"] = row.pop("prediction_date")
+            rows.append(row)
+
+    out = build_l4_alpha_ev_artifact_from_rows(
+        rows,
+        trained_until="2026-06-30",
+        min_samples=200,
+        min_dates=20,
+        fit_min_samples=50,
+        fit_min_dates=3,
+    )
+
+    audit = out["artifact"]["validation_packet"]["sample_audit"]
+    assert audit["sample_count"] == 100
+    assert audit["date_count"] == 5
+
+
 def test_l4_alpha_ev_artifact_builder_can_fit_strict_asof_oof_without_promotion():
     rows = []
     for day_idx in range(12):

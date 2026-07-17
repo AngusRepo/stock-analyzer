@@ -5,6 +5,7 @@ from app.model_validation import build_model_cpcv_evidence
 from app.neuralforecast_sequence_runtime import (
     _build_fixed_oof_panel,
     _dense_oof_eval_panel,
+    _dense_oof_evaluation_records,
     _fold_metrics,
     _filter_panel_to_eval_rows,
     _make_nf_model,
@@ -265,14 +266,9 @@ def test_predict_horizon_uses_named_model_column_not_index_column():
     assert pred_by_id == {"2330": 101.0, "2317": 202.0}
 
 
-def test_dense_oof_training_cap_does_not_cap_inference_universe():
-    import inspect
-    from app.neuralforecast_sequence_runtime import _train_dense_purged_oof
+def test_dense_oof_evaluation_universe_is_model_aware():
+    records = [{"symbol": "all"}]
+    panel_records = [{"symbol": "selected"}]
 
-    source = inspect.getsource(_train_dense_purged_oof)
-    call = source.split("context_rows, labels = _dense_oof_eval_panel(", 1)[1].split(")", 1)[0]
-
-    assert "records," in call
-    assert "panel_records," not in call
-    assert '"training_series_cap_applied"' in source
-    assert 'len(actual_return) / max(1, len(labels))' in source
+    assert _dense_oof_evaluation_records("iTransformer", records, panel_records) is panel_records
+    assert _dense_oof_evaluation_records("PatchTST", records, panel_records) is records

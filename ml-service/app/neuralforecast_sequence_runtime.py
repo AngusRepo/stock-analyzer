@@ -333,6 +333,16 @@ def _dense_oof_eval_panel(
     return context_rows, labels
 
 
+def _dense_oof_evaluation_records(
+    model_name: str,
+    records: list[dict[str, Any]],
+    panel_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    # iTransformer encodes n_series in its learned projection. Its inference
+    # panel must therefore match the point-in-time training panel exactly.
+    return panel_records if model_name == "iTransformer" else records
+
+
 def _train_dense_purged_oof(
     payload: dict[str, Any],
     *,
@@ -388,13 +398,14 @@ def _train_dense_purged_oof(
         n_series=len(panel_records),
     )
     test_dates = [date for date in calendar if test_start <= date <= test_end]
+    evaluation_records = _dense_oof_evaluation_records(model_name, records, panel_records)
     all_rows: list[dict[str, Any]] = []
     daily_metrics: list[dict[str, Any]] = []
     import pandas as pd
 
     for signal_date in test_dates:
         context_rows, labels = _dense_oof_eval_panel(
-            records,
+            evaluation_records,
             calendar=calendar,
             signal_date=signal_date,
             seq_len=seq_len,
@@ -435,7 +446,7 @@ def _train_dense_purged_oof(
             "test_rows": len(actual_return),
             "coverage": len(actual_return) / max(1, len(labels)),
         })
-    panel_report["evaluation_universe_series"] = len(records)
+    panel_report["evaluation_universe_series"] = len(evaluation_records)
     panel_report["evaluation_prediction_rows"] = len(all_rows)
     panel_report["training_series_cap_applied"] = len(panel_records) < len(records)
     if not all_rows:

@@ -21,7 +21,7 @@ spec:
                 - "-c"
                 - |
                   set -euo pipefail
-                  status="$(python3 -c 'import datetime,json,urllib.request; now=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).date(); roc=f"{now.year-1911:03d}{now:%m%d}"; rows=json.load(urllib.request.urlopen("https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule",timeout=5)); closed=any(str(r.get("Date","")).strip()==roc and any(k in (str(r.get("Name",""))+" "+str(r.get("Description",""))) for k in ["放假","補假","無交易","休市"]) for r in rows); print("closed" if closed else "open")')"
+                  status="$(python3 -c 'import datetime,json,urllib.request; now=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).date(); roc=f"{now.year-1911:03d}{now:%m%d}"; rows=json.load(urllib.request.urlopen("https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule",timeout=5)); valid=isinstance(rows,list) and len(rows)>10 and all(isinstance(r,dict) and "Date" in r for r in rows); print("unknown" if not valid else ("closed" if any(str(r.get("Date","")).strip()==roc for r in rows) else "open"))')"
                   case "$status" in
                     open) desired=1 ;;
                     closed) desired=0 ;;

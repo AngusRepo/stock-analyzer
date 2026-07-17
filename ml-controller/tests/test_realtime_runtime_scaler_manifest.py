@@ -18,6 +18,14 @@ def test_realtime_scaler_manifests_are_single_owner_and_fail_closed():
         assert "--tag" not in source
 
 
+def test_open_scaler_uses_official_date_and_fails_closed_on_invalid_calendar():
+    source = (ROOT / "infra" / "realtime-runtime-min-1.job.yaml").read_text(encoding="utf-8")
+    assert 'str(r.get("Date","")).strip()==roc' in source
+    assert "len(rows)>10" in source
+    assert 'print("unknown" if not valid' in source
+    assert '*) echo "TWSE calendar unavailable or invalid' in source
+
+
 def test_ml_controller_deploy_preserves_service_level_scaling_only():
     source = (ROOT / "deploy_ml_controller.sh").read_text(encoding="utf-8")
     assert 'service_annotations.get("run.googleapis.com/minScale", "0")' in source

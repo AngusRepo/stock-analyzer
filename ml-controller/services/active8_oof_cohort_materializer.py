@@ -509,11 +509,12 @@ def load_native_pit_component_rows(
         return []
     symbols = {str(row.get("symbol") or "") for row in prediction_rows}
     rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    query_date_chunk_size = 4  # Bounds large screener evidence JSON returned by each D1 request.
 
     # Native v3 rows remain authoritative whenever the historical producer
     # persisted the complete semantic contract.
-    for offset in range(0, len(dates), 20):
-        chunk = dates[offset:offset + 20]
+    for offset in range(0, len(dates), query_date_chunk_size):
+        chunk = dates[offset:offset + query_date_chunk_size]
         placeholders = ",".join("?" for _ in chunk)
         native_rows = query_fn(
             f"""
@@ -587,8 +588,8 @@ def load_native_pit_component_rows(
         if later:
             next_session[date] = later[0]
 
-    for offset in range(0, len(dates), 20):
-        chunk = dates[offset:offset + 20]
+    for offset in range(0, len(dates), query_date_chunk_size):
+        chunk = dates[offset:offset + query_date_chunk_size]
         placeholders = ",".join("?" for _ in chunk)
         run_rows = query_fn(
             f"""

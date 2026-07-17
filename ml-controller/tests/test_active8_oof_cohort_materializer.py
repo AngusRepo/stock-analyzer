@@ -142,6 +142,17 @@ def test_native_pit_loader_uses_earliest_complete_run_before_next_open():
     assert "after-open" not in str(calls[-1][1])
 
 
+def test_native_pit_loader_bounds_d1_evidence_payload_by_date_chunk():
+    source = (
+        ROOT / "ml-controller" / "services" / "active8_oof_cohort_materializer.py"
+    ).read_text()
+
+    assert "query_date_chunk_size = 4" in source
+    assert source.count(
+        "for offset in range(0, len(dates), query_date_chunk_size):"
+    ) == 2
+
+
 def test_oof_migration_enforces_immutable_keys_and_point_in_time_labels():
     migration = (ROOT / "worker" / "migrations" / "0066_active8_oof_stacking_cohorts.sql").read_text()
 

@@ -25,6 +25,17 @@ def _truthy(value: str) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"invalid integer {name}={raw}") from exc
+    if not minimum <= value <= maximum:
+        raise RuntimeError(f"{name} outside [{minimum},{maximum}]: {value}")
+    return value
+
+
 async def _execute_lifecycle(
     *,
     cadence: str,
@@ -41,7 +52,38 @@ async def _execute_lifecycle(
     ))
 
 
-def _summary(run_id: str, result: dict[str, Any]) -> str:
+async def _execute_allocator_snapshot(*, start_date: str, end_date: str) -> dict[str, Any]:
+    from services.allocator_ev_feature_snapshot_backfill import (
+        backfill_allocator_ev_feature_snapshots,
+    )
+
+    return await asyncio.to_thread(
+        backfill_allocator_ev_feature_snapshots,
+        start_date=start_date,
+        end_date=end_date,
+        next_session_date=os.environ.get("OOF_MATERIALIZE_NEXT_SESSION_DATE", "").strip() or None,
+        dry_run=False,
+        candidate_limit=_bounded_int("OOF_MATERIALIZE_CANDIDATE_LIMIT", 1000, 1, 5000),
+        l4_lookback_days=_bounded_int("OOF_MATERIALIZE_L4_LOOKBACK_DAYS", 90, 30, 365),
+        l4_min_samples=_bounded_int("OOF_MATERIALIZE_L4_MIN_SAMPLES", 500, 50, 10000),
+        l4_min_dates=_bounded_int("OOF_MATERIALIZE_L4_MIN_DATES", 20, 5, 252),
+        l4_training_limit=_bounded_int("OOF_MATERIALIZE_L4_TRAINING_LIMIT", 6000, 500, 20000),
+        s12_lookback_days=_bounded_int("OOF_MATERIALIZE_S12_LOOKBACK_DAYS", 120, 30, 365),
+        s12_limit=_bounded_int("OOF_MATERIALIZE_S12_LIMIT", 5000, 500, 20000),
+        s12_min_samples=_bounded_int("OOF_MATERIALIZE_S12_MIN_SAMPLES", 30, 5, 1000),
+        s12_min_sample_dates=_bounded_int("OOF_MATERIALIZE_S12_MIN_SAMPLE_DATES", 8, 2, 252),
+    )
+
+
+def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
+    if mode == "allocator_snapshot":
+        return " ".join([
+            f"run_id={run_id}",
+            f"status={result.get('status', 'unknown')}",
+            f"built={result.get('snapshots_built', 0)}",
+            f"written={result.get('written', 0)}",
+            f"skipped_days={result.get('skipped_days', 0)}",
+        ])
     return " ".join([
         f"run_id={run_id}",
         f"status={result.get('status', 'unknown')}",
@@ -52,7 +94,9 @@ def _summary(run_id: str, result: dict[str, Any]) -> str:
 
 
 async def _run() -> int:
+    mode = os.environ.get("OOF_MATERIALIZE_MODE", "oof_lifecycle").strip().lower()
     cadence = os.environ.get("OOF_MATERIALIZE_CADENCE", "daily").strip().lower()
+    start_date = os.environ.get("OOF_MATERIALIZE_START_DATE", "").strip() or None
     end_date = os.environ.get("OOF_MATERIALIZE_END_DATE", "").strip() or None
     promote = _truthy(os.environ.get("OOF_MATERIALIZE_PROMOTE", "1"))
     callback_task = os.environ.get(
@@ -70,27 +114,47 @@ async def _run() -> int:
     result: dict[str, Any] = {}
 
     try:
-        if cadence not in {"daily", "weekly", "monthly"}:
-            raise RuntimeError(f"invalid OOF materialize cadence: {cadence}")
-        result = await _execute_lifecycle(
-            cadence=cadence,
-            end_date=end_date,
-            promote=promote,
-        )
-        status = str(result.get("status") or "").lower()
-        if result.get("dependency_retry_required"):
-            raise RuntimeError("OOF materialization completed but OPB refresh requires retry")
-        if status in {"materialized", "idempotent_complete"}:
-            callback_status = "success"
-        elif status in {"skipped", "pending"}:
-            callback_status = "skipped"
+        if mode == "allocator_snapshot":
+            if not start_date or not end_date:
+                raise RuntimeError("allocator snapshot mode requires start and end dates")
+            result = await _execute_allocator_snapshot(start_date=start_date, end_date=end_date)
+            status = str(result.get("status") or "").lower()
+            if (
+                status == "ok"
+                and int(result.get("snapshots_built") or 0) > 0
+                and int(result.get("written") or 0) > 0
+            ):
+                callback_status = "success"
+            else:
+                raise RuntimeError(
+                    "allocator snapshot incomplete "
+                    f"status={status or 'unknown'} built={result.get('snapshots_built')} "
+                    f"written={result.get('written')}"
+                )
         else:
-            raise RuntimeError(f"unexpected OOF materialization status: {status or 'unknown'}")
+            if mode != "oof_lifecycle":
+                raise RuntimeError(f"invalid OOF materialize mode: {mode}")
+            if cadence not in {"daily", "weekly", "monthly"}:
+                raise RuntimeError(f"invalid OOF materialize cadence: {cadence}")
+            result = await _execute_lifecycle(
+                cadence=cadence,
+                end_date=end_date,
+                promote=promote,
+            )
+            status = str(result.get("status") or "").lower()
+            if result.get("dependency_retry_required"):
+                raise RuntimeError("OOF materialization completed but a downstream dependency requires retry")
+            if status in {"materialized", "idempotent_complete"}:
+                callback_status = "success"
+            elif status in {"skipped", "pending"}:
+                callback_status = "skipped"
+            else:
+                raise RuntimeError(f"unexpected OOF materialization status: {status or 'unknown'}")
     except Exception as exc:  # noqa: BLE001 - callback must close every terminal job state.
         logger.exception("[OofMaterializeJob] Failed")
         error = f"{type(exc).__name__}: {exc}"
 
-    summary = _summary(run_id, result)
+    summary = _summary(run_id, result, mode=mode)
     if error:
         summary = f"{summary} error={error[:180]}"
     payload: dict[str, Any] = {

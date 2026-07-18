@@ -383,6 +383,7 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
     candidateLimit?: number
     l4MinSamples?: number
     l4MinDates?: number
+    runId?: string
   },
 ) {
   requireController(env)
@@ -400,6 +401,8 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
       candidate_limit: params.candidateLimit,
       l4_min_samples: params.l4MinSamples,
       l4_min_dates: params.l4MinDates,
+      durable: !(params.dryRun ?? false),
+      upstream_run_id: params.runId,
     },
     timeoutMs: 300_000,
   })
@@ -408,6 +411,12 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
     throw new Error(`allocator EV feature snapshot backfill HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
   }
   const data = text ? JSON.parse(text) as Record<string, any> : {}
+  if (data.status === 'spawned' || data.status === 'pending') {
+    return String(
+      data.summary
+      ?? `allocator_ev_feature_snapshot_backfill status=${data.status} range=${params.startDate}..${params.endDate}`,
+    )
+  }
   const built = Number(data.snapshots_built ?? 0)
   const written = Number(data.written ?? 0)
   if (built <= 0 || (!(params.dryRun ?? false) && written <= 0)) {

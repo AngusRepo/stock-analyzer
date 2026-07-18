@@ -67,6 +67,8 @@ class RetrainFollowupPayload(BaseModel):
     training_run_id: str | None = None
     training_manifest_path: str | None = None
     challenger_registrations: dict[str, Any] = Field(default_factory=dict)
+    promotion_allowed_models: list[str] = Field(default_factory=list)
+    oof_promotion_evidence: dict[str, dict] = Field(default_factory=dict)
     window_id: int | None = None
     total_samples: int = 0
     train_samples: int = 0
@@ -355,6 +357,8 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
             "gcs_prefix": payload.gcs_prefix,
             "candidate_version": payload.candidate_version,
             "challenger_registrations": payload.challenger_registrations,
+            "promotion_allowed_models": payload.promotion_allowed_models,
+            "oof_promotion_evidence": payload.oof_promotion_evidence,
             "window_id": payload.window_id,
             "total_samples": payload.total_samples,
             "train_samples": payload.train_samples,

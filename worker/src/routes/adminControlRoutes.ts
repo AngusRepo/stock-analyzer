@@ -456,6 +456,53 @@ async function handleSchedulerCallback(c: any) {
     }
   }
 
+  if (
+    body.task === 'allocator-ev-feature-snapshot-backfill'
+    && ['success', 'error', 'skipped'].includes(String(body.status))
+  ) {
+    if (!callbackRunDate || !callbackRunId) {
+      return c.json({ error: 'allocator snapshot callback missing run_date or run_id' }, 400)
+    }
+    if (body.status === 'success') {
+      const continuationKey = `callback:post-pipeline-enqueued:snapshot:${callbackRunDate}:${callbackRunId}`
+      const existing = await c.env.KV.get(continuationKey)
+      if (!existing) {
+        await c.env.KV.put(continuationKey, 'pending', { expirationTtl: 7 * 86400 })
+        try {
+          await c.env.UPDATE_QUEUE.send({
+            type: 'post_pipeline_chain',
+            cursor: 0,
+            triggerTime: callbackRunDate,
+            runId: callbackRunId,
+            attempt: 0,
+          })
+          await c.env.KV.put(continuationKey, 'queued', { expirationTtl: 7 * 86400 })
+        } catch (error) {
+          await c.env.KV.delete(continuationKey).catch(() => {})
+          throw error
+        }
+      }
+      await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
+        status: 'triggered',
+        summary: existing
+          ? `snapshot callback continuation already queued run_id=${callbackRunId}`
+          : `snapshot callback continuation durably queued run_id=${callbackRunId}`,
+        duration_ms: 0,
+        run_id: callbackRunId,
+        run_date: callbackRunDate,
+      }, c.env as any)
+    } else {
+      await logSchedulerResult(c.env.KV, 'evening-chain', {
+        status: body.status === 'skipped' ? 'skipped' : 'error',
+        summary: `root chain stopped at allocator snapshot callback: ${String(body.summary ?? body.status)}`,
+        duration_ms: 0,
+        error: body.error != null ? String(body.error) : undefined,
+        run_id: callbackRunId,
+        run_date: callbackRunDate,
+      }, c.env as any)
+    }
+  }
+
   if (body.task === 'pipeline' && ['success', 'error', 'skipped'].includes(String(body.status))) {
     try {
       if (callbackRunDate) {

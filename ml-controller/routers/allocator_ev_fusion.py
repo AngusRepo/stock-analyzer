@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
@@ -50,6 +52,8 @@ class AllocatorEvFeatureSnapshotBackfillReq(BaseModel):
     s12_limit: int = Field(default=5000, ge=500, le=20000)
     s12_min_samples: int = Field(default=30, ge=5, le=1000)
     s12_min_sample_dates: int = Field(default=8, ge=2, le=252)
+    durable: bool = False
+    upstream_run_id: str | None = None
 
 
 def _latest_mature_feature_date(max_date: str | None) -> str:
@@ -328,6 +332,52 @@ async def backfill_allocator_ev_feature_snapshots_route(req: AllocatorEvFeatureS
     This route writes an independent training snapshot table only. It never
     mutates historical daily_recommendations rows.
     """
+
+    if (
+        req.durable
+        and not req.dry_run
+        and os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1"
+    ):
+        from services.cloud_run_jobs_client import CloudRunJobsClient
+
+        job_name = os.environ.get("OOF_MATERIALIZE_JOB_NAME", "active8-oof-materialize").strip()
+        run_id = req.upstream_run_id or (
+            "allocator-ev-feature-snapshot-backfill:"
+            f"{req.start_date}:{req.end_date}:{int(time.time())}"
+        )
+        execution = CloudRunJobsClient(job_name=job_name).run_job(
+            env_overrides={
+                "OOF_MATERIALIZE_MODE": "allocator_snapshot",
+                "OOF_MATERIALIZE_START_DATE": req.start_date,
+                "OOF_MATERIALIZE_END_DATE": req.end_date,
+                "OOF_MATERIALIZE_NEXT_SESSION_DATE": req.next_session_date or "",
+                "OOF_MATERIALIZE_CANDIDATE_LIMIT": str(req.candidate_limit),
+                "OOF_MATERIALIZE_L4_LOOKBACK_DAYS": str(req.l4_lookback_days),
+                "OOF_MATERIALIZE_L4_MIN_SAMPLES": str(req.l4_min_samples),
+                "OOF_MATERIALIZE_L4_MIN_DATES": str(req.l4_min_dates),
+                "OOF_MATERIALIZE_L4_TRAINING_LIMIT": str(req.l4_training_limit),
+                "OOF_MATERIALIZE_S12_LOOKBACK_DAYS": str(req.s12_lookback_days),
+                "OOF_MATERIALIZE_S12_LIMIT": str(req.s12_limit),
+                "OOF_MATERIALIZE_S12_MIN_SAMPLES": str(req.s12_min_samples),
+                "OOF_MATERIALIZE_S12_MIN_SAMPLE_DATES": str(req.s12_min_sample_dates),
+                "OOF_MATERIALIZE_RUN_ID": run_id,
+                "OOF_MATERIALIZE_CALLBACK_TASK": "allocator-ev-feature-snapshot-backfill",
+            },
+            reject_if_running=False,
+        )
+        return {
+            "status": "spawned",
+            "reason": "durable_snapshot_job_dispatched",
+            "start_date": req.start_date,
+            "end_date": req.end_date,
+            "execution_id": execution.execution_id,
+            "execution_name": execution.execution_name,
+            "run_id": run_id,
+            "summary": (
+                "allocator_ev_feature_snapshot_backfill status=spawned "
+                f"range={req.start_date}..{req.end_date} execution_id={execution.execution_id}"
+            ),
+        }
 
     result = backfill_allocator_ev_feature_snapshots(
         start_date=req.start_date,

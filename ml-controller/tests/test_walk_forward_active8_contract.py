@@ -29,6 +29,31 @@ def test_walk_forward_defaults_to_active8_contract():
     assert coverage["coverage_mode"] == "active8_purged_oof_retrain"
 
 
+def test_oof_full_fit_plan_only_dispatches_models_with_pass_evidence():
+    from routers.walk_forward import build_oof_full_fit_dispatch_plan
+
+    manifest = {
+        "aggregate": {
+            "oof_ready_folds": 5,
+            "full_fit_eligible_models": ["XGBoost", "PatchTST", "GNN"],
+            "per_model_promotion_evidence": {
+                "XGBoost": {"decision": "PASS", "failed_gates": []},
+                "PatchTST": {"decision": "PASS", "failed_gates": []},
+                "GNN": {"decision": "FAIL", "failed_gates": ["oos_ic_lcb"]},
+            },
+            "full_fit_blocked_models": {"GNN": ["oos_ic_lcb"]},
+        },
+    }
+
+    plan = build_oof_full_fit_dispatch_plan(manifest)
+
+    assert plan["status"] == "ready"
+    assert plan["eligible_models"] == ["XGBoost", "PatchTST"]
+    assert plan["train_model_groups"] == ["tree"]
+    assert plan["artifact_lifecycle_targets"] == ["PatchTST"]
+    assert plan["evidence_missing_or_failed"] == ["GNN"]
+
+
 def test_walk_forward_router_exposes_active8_coverage():
     source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
 

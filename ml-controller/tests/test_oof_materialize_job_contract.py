@@ -37,6 +37,40 @@ def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
     assert "cohort=cohort-1" in callback["summary"]
 
 
+def test_allocator_snapshot_mode_closes_scheduler_callback(monkeypatch):
+    callbacks = []
+
+    async def fake_execute_allocator_snapshot(**_kwargs):
+        return {"status": "ok", "snapshots_built": 135, "written": 135, "skipped_days": 0}
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(
+        oof_materialize_job_main,
+        "_execute_allocator_snapshot",
+        fake_execute_allocator_snapshot,
+    )
+    monkeypatch.setattr(oof_materialize_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OOF_MATERIALIZE_MODE", "allocator_snapshot")
+    monkeypatch.setenv("OOF_MATERIALIZE_START_DATE", "2026-07-16")
+    monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-07-16")
+    monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "evening-chain-20260716")
+    monkeypatch.setenv(
+        "OOF_MATERIALIZE_CALLBACK_TASK",
+        "allocator-ev-feature-snapshot-backfill",
+    )
+
+    assert asyncio.run(oof_materialize_job_main._run()) == 0
+    assert len(callbacks) == 1
+    callback = callbacks[0]
+    assert callback["task"] == "allocator-ev-feature-snapshot-backfill"
+    assert callback["status"] == "success"
+    assert callback["run_id"] == "evening-chain-20260716"
+    assert callback["run_date"] == "2026-07-16"
+    assert "built=135 written=135" in callback["summary"]
+
+
 def test_oof_materialize_job_contract_is_durable_and_deployed():
     router = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text()
     worker = (ROOT / "worker" / "src" / "lib" / "controllerResearchWorkflows.ts").read_text()

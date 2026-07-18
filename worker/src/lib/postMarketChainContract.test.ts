@@ -6,6 +6,7 @@ function assert(condition: unknown, message: string): void {
 
 const callbackRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
+const researchWorkflows = fs.readFileSync('src/lib/controllerResearchWorkflows.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const strategyLearning = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
 const logger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
@@ -76,6 +77,14 @@ assert(
   postMarketChain.includes("snapshotTask.status === 'error' || !snapshotClosure.ready") &&
     postMarketChain.includes("await logChainSummary(env, ctx, 'post-pipeline-chain'"),
   'post-pipeline chain must stop before verify when canonical allocator snapshots are missing',
+)
+assert(
+  researchWorkflows.includes('durable: !(params.dryRun ?? false)') &&
+    researchWorkflows.includes('upstream_run_id: params.runId') &&
+    postMarketChain.includes("/\\bstatus=(?:spawned|pending)\\b/i") &&
+    callbackRoutes.includes("body.task === 'allocator-ev-feature-snapshot-backfill'") &&
+    callbackRoutes.includes('callback:post-pipeline-enqueued:snapshot:'),
+  'allocator snapshots must use a durable job and resume the same post-pipeline chain from its callback',
 )
 assert(
   postScreenerContinuationBlock.indexOf('runRegimeCompute(env, triggerTime)') > 0 &&

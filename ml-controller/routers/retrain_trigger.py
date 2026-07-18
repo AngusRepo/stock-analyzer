@@ -86,6 +86,9 @@ class UniversalRetrainTriggerRequest(BaseModel):
     artifact_lifecycle_targets: list[str] = Field(default_factory=list)
     artifact_lifecycle_contracts: dict[str, str] = Field(default_factory=dict)
     artifact_lifecycle_only: bool = False
+    register_challengers: bool = False
+    promotion_allowed_models: list[str] = Field(default_factory=list)
+    oof_promotion_evidence: dict[str, dict] = Field(default_factory=dict)
     require_exact_dataset_snapshot: bool = Field(
         default=False,
         description="Fail closed unless the compute snapshot business date exactly matches run_date.",
@@ -797,6 +800,8 @@ async def trigger_universal_retrain(
             "run_date": run_date,
             "limit": req.limit,
             "force_monthly": req.force_monthly,
+            "candidate_type": req.candidate_type,
+            "promotion_allowed_models": req.promotion_allowed_models,
             "tw_now": tw_now.isoformat(),
         },
     )
@@ -1335,6 +1340,9 @@ async def trigger_universal_retrain(
                 "artifact_lifecycle_targets": req.artifact_lifecycle_targets,
                 "artifact_lifecycle_contracts": req.artifact_lifecycle_contracts,
                 "artifact_lifecycle_only": req.artifact_lifecycle_only,
+                "register_challengers": req.register_challengers,
+                "promotion_allowed_models": req.promotion_allowed_models,
+                "oof_promotion_evidence": req.oof_promotion_evidence,
                 "selection_params": training_policy.feature_selection_params(),
                 "training_policy": training_policy.to_dict(),
                 "dataset_snapshot": dataset_snapshot_info,

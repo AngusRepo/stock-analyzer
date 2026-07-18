@@ -411,10 +411,20 @@ def _model_training_evidence(payload_dict: dict[str, Any], model_name: str) -> d
     aux_metadata = _nested_dict(aux.get("metadata"))
 
     evidence: dict[str, Any] = {}
-    if model_ic.get("model_cpcv") is not None:
-        evidence["model_cpcv"] = model_ic.get("model_cpcv")
-    elif aux_metadata.get("model_cpcv") is not None:
-        evidence["model_cpcv"] = aux_metadata.get("model_cpcv")
+    inner_model_cpcv = (
+        model_ic.get("model_cpcv")
+        if model_ic.get("model_cpcv") is not None
+        else aux_metadata.get("model_cpcv")
+    )
+    oof_evidence_by_model = _nested_dict(payload_dict.get("oof_promotion_evidence"))
+    outer_oof_evidence = _nested_dict(oof_evidence_by_model.get(model_name))
+    if outer_oof_evidence:
+        evidence["model_cpcv"] = outer_oof_evidence
+        evidence["oof_promotion_evidence"] = outer_oof_evidence
+        if inner_model_cpcv is not None:
+            evidence["full_fit_internal_model_cpcv"] = inner_model_cpcv
+    elif inner_model_cpcv is not None:
+        evidence["model_cpcv"] = inner_model_cpcv
 
     if aux_metadata.get("feature_policy") is not None:
         evidence["feature_policy"] = aux_metadata.get("feature_policy")
@@ -640,7 +650,10 @@ def _artifact_record_from_registration(
 
     ic_summary = payload_dict.get("ic_summary") if isinstance(payload_dict.get("ic_summary"), dict) else {}
     local_ic_summary = dict(ic_summary)
-    if model_name not in local_ic_summary and raw_registration.get("oos_ic") is not None:
+    outer_oof_evidence = _nested_dict(enriched_registration.get("oof_promotion_evidence"))
+    if outer_oof_evidence.get("oos_ic_mean") is not None:
+        local_ic_summary[model_name] = outer_oof_evidence.get("oos_ic_mean")
+    elif model_name not in local_ic_summary and raw_registration.get("oos_ic") is not None:
         local_ic_summary[model_name] = raw_registration.get("oos_ic")
 
     offline_gate = evaluate_offline_gate(
@@ -820,6 +833,21 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
     train_stage_registrations = _train_stage_registrations(payload_dict)
     lifecycle_registrations = _lifecycle_registrations(payload_dict)
     timesfm_l2_feature_release_registrations = _timesfm_l2_feature_release_registrations(payload_dict)
+    allowed_models = {
+        str(model_name)
+        for model_name in (payload_dict.get("promotion_allowed_models") or [])
+        if str(model_name)
+    }
+    if allowed_models:
+        registrations = {
+            name: row for name, row in registrations.items() if str(name) in allowed_models
+        }
+        train_stage_registrations = {
+            name: row for name, row in train_stage_registrations.items() if str(name) in allowed_models
+        }
+        lifecycle_registrations = {
+            name: row for name, row in lifecycle_registrations.items() if str(name) in allowed_models
+        }
     if not version or (
         (not isinstance(registrations, dict) or not registrations)
         and not train_stage_registrations

@@ -1404,6 +1404,47 @@ def test_build_artifact_records_enriches_cpcv_from_followup_train_stage():
     assert by_model["DLinear"]["feature_policy_version"] == "model-feature-policy-v1"
 
 
+def test_full_fit_registry_enforces_allowlist_and_outer_oof_evidence():
+    outer_oof = {
+        "decision": "PASS",
+        "failed_gates": [],
+        "method": "outer_purged_walk_forward_rank_ic",
+        "fold_count": 5,
+        "oos_ic_mean": 0.08,
+    }
+    payload = {
+        "run_id": "active8-oof-full-fit-20260717",
+        "run_date": "2026-07-17",
+        "is_monthly": False,
+        "candidate_type": "weekly_drift",
+        "candidate_version": "v20260717",
+        "status": "completed",
+        "promotion_allowed_models": ["XGBoost"],
+        "oof_promotion_evidence": {"XGBoost": outer_oof},
+        "ic_summary": {"XGBoost": 0.08, "ExtraTrees": 0.12},
+        "challenger_registrations": {
+            "XGBoost": {"status": "registered", "version": "v20260717"},
+            "ExtraTrees": {"status": "registered", "version": "v20260717"},
+        },
+        "stages": {
+            "train": {
+                "ic_tracking": {
+                    "XGBoost": {"model_cpcv": {"decision": "FAIL"}},
+                    "ExtraTrees": {"model_cpcv": {"decision": "PASS"}},
+                },
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    assert [row["model_name"] for row in records] == ["XGBoost"]
+    evidence = json.loads(records[0]["offline_evidence_json"])
+    assert evidence["registration"]["model_cpcv"] == outer_oof
+    assert evidence["registration"]["full_fit_internal_model_cpcv"] == {"decision": "FAIL"}
+    assert evidence["gate"]["metrics"]["oos_ic"] == 0.08
+
+
 def test_update_live_gate_from_ic_marks_selected_candidate_not_enough_data(monkeypatch):
     executed: list[dict[str, object]] = []
 

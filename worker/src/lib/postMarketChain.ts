@@ -300,10 +300,23 @@ export async function runPostPipelineCallbackChain(env: Bindings, ctx: ChainCont
         candidateLimit: 1000,
         l4MinSamples: 500,
         l4MinDates: 20,
+        runId: ctx.upstreamRunId,
       }),
     { timeoutMs: 330_000 },
   )
   results.push(snapshotTask)
+  const snapshotPending = snapshotTask.status !== 'error'
+    && /\bstatus=(?:spawned|pending)\b/i.test(snapshotTask.summary)
+  if (snapshotPending) {
+    await recordAllocatorEvLifecycle(env.DB, {
+      businessDate: ctx.runDate,
+      state: 'lineage_ready',
+      nativeLineageRows: snapshotClosure.nativeLineageRows,
+      upstreamRunId: ctx.upstreamRunId,
+    })
+    await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
+    return
+  }
   snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate)
   if (snapshotTask.status === 'error' || !snapshotClosure.ready) {
     const error = snapshotTask.status === 'error'

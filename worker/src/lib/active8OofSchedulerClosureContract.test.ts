@@ -32,7 +32,17 @@ assert(walkForward.includes('cohort_dates = mature_dates[-90:]'), 'weekly/monthl
 assert(walkForward.includes('train_window_days=60') && walkForward.includes('test_window_days=10'), 'OOF cohort must use the canonical 60/10 purged walk-forward windows')
 assert(walkForward.includes('active8-oof-dispatch-v1') && walkForward.includes('cohort_orchestrator_active'), 'OOF generation must have a durable idempotent dispatch fence')
 assert(walkForward.includes('active8-oof-lifecycle-receipt-v1'), 'materialization/promotion must write a durable per-cutoff receipt')
-assert(walkForward.includes('if not req.dry_run and not opb_failed'), 'failed post-promotion OPB refresh must leave lifecycle retryable instead of writing false closure')
+assert(
+  walkForward.includes('active8-oof-full-fit-receipt-v1') &&
+    walkForward.includes('FROM model_artifact_registry') &&
+    walkForward.includes('full_fit_retry_limit_reached'),
+  'full-fit dispatch must remain retryable until every eligible artifact reaches registry closure',
+)
+assert(
+  walkForward.includes('dependency_retry_required = opb_failed or full_fit_retry_required') &&
+    walkForward.includes('if not req.dry_run and not dependency_retry_required'),
+  'failed OPB refresh or full-fit dispatch must leave lifecycle retryable instead of writing false closure',
+)
 assert(walkForward.indexOf('promoted = True') < walkForward.indexOf('/api/admin/trigger/opb-arm-prior-refresh'), 'OPB refresh must be event-driven only after successful EV promotion')
 
 const monthlyHandoff = retrainFollowup.indexOf('run_walk_forward_oof_lifecycle')

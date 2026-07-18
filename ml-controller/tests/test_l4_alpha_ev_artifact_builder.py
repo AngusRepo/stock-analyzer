@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.l4_alpha_ev_artifact_builder import (  # noqa: E402
+    _date_cluster_metrics,
     build_l4_alpha_ev_artifact_from_rows,
     load_l4_alpha_ev_training_rows,
 )
@@ -50,6 +51,23 @@ def _row(day: str, idx: int, *, target: float) -> dict:
             },
         }),
     }
+
+
+def test_l4_date_cluster_metrics_equal_weight_trading_dates():
+    samples = []
+    pairs = []
+    for day, top_return in (("2026-06-01", 0.03), ("2026-06-02", -0.02), ("2026-06-03", -0.02)):
+        for idx in range(10):
+            prediction = float(idx)
+            target = top_return if idx >= 8 else (-0.01 + idx * 0.001)
+            samples.append({"date": day})
+            pairs.append((prediction, target))
+
+    metrics = _date_cluster_metrics(samples, pairs)
+
+    assert metrics["date_count"] == 3
+    assert metrics["date_mean_top_quintile_return"] < 0.0
+    assert metrics["date_mean_top_quintile_return_lcb90"] < 0.0
 
 
 def test_l4_alpha_ev_artifact_builder_emits_production_artifact_when_oos_passes():

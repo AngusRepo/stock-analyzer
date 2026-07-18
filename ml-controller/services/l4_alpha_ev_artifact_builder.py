@@ -312,6 +312,7 @@ def _date_cluster_metrics(
 
     daily_corrs: list[float] = []
     daily_spreads: list[float] = []
+    daily_top_quintile_returns: list[float] = []
     for day_pairs in by_date.values():
         if len(day_pairs) < 5:
             continue
@@ -322,6 +323,9 @@ def _date_cluster_metrics(
             daily_corrs.append(corr)
         ranked = sorted(day_pairs, key=lambda item: item[0])
         bucket = max(1, len(ranked) // 5)
+        daily_top_quintile_returns.append(
+            _mean([target for _, target in ranked[-bucket:]])
+        )
         daily_spreads.append(
             _mean([target for _, target in ranked[-bucket:]])
             - _mean([target for _, target in ranked[:bucket]])
@@ -337,6 +341,7 @@ def _date_cluster_metrics(
 
     corr_mean, corr_lcb = clustered_summary(daily_corrs)
     spread_mean, spread_lcb = clustered_summary(daily_spreads)
+    top_return_mean, top_return_lcb = clustered_summary(daily_top_quintile_returns)
     return {
         "date_count": len(by_date),
         "date_corr_samples": len(daily_corrs),
@@ -345,6 +350,12 @@ def _date_cluster_metrics(
         "date_mean_cross_section_corr_lcb90": None if corr_lcb is None else round(corr_lcb, 8),
         "date_mean_top_bottom_spread": None if spread_mean is None else round(spread_mean, 8),
         "date_mean_top_bottom_spread_lcb90": None if spread_lcb is None else round(spread_lcb, 8),
+        "date_mean_top_quintile_return": (
+            None if top_return_mean is None else round(top_return_mean, 8)
+        ),
+        "date_mean_top_quintile_return_lcb90": (
+            None if top_return_lcb is None else round(top_return_lcb, 8)
+        ),
     }
 
 
@@ -525,6 +536,8 @@ def build_l4_alpha_ev_artifact_from_rows(
             blockers.append("oos_date_cluster_spread_lcb90_not_above_cost")
         if float(oos_metrics.get("top_quintile_mean_return") or 0.0) <= 0.0:
             blockers.append("oos_top_quintile_return_not_positive")
+        if float(oos_metrics.get("date_mean_top_quintile_return_lcb90") or 0.0) <= 0.0:
+            blockers.append("oos_date_cluster_top_quintile_return_lcb90_not_positive")
         if not walk_forward.get("passed"):
             blockers.append("walk_forward_not_stable")
         serving_intercept, serving_coefs = _fit_ridge(samples, l2=l2)

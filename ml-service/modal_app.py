@@ -1075,6 +1075,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                 partial_results=partial_results,
                 elapsed_s=elapsed,
                 candidate_type=payload.get("candidate_type"),
+                promotion_allowed_models=payload.get("promotion_allowed_models"),
+                oof_promotion_evidence=payload.get("oof_promotion_evidence"),
             )
             headers = {"Content-Type": "application/json"}
             token = _controller_callback_token()

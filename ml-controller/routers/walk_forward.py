@@ -10,6 +10,7 @@ All endpoints require X-Controller-Token via main.py verify_token dependency.
 """
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import os
 import statistics
@@ -345,6 +346,199 @@ class OofMaterializeRequest(BaseModel):
     prediction_storage_mode: str = "gcs_indexed_v1"
 
 
+_ACTIVE8_TREE_MODELS = {"LightGBM", "XGBoost", "ExtraTrees"}
+_ACTIVE8_LIFECYCLE_MODELS = {"GNN", "TabM", "PatchTST", "iTransformer"}
+_ACTIVE8_FULL_FIT_MODELS = _ACTIVE8_TREE_MODELS | _ACTIVE8_LIFECYCLE_MODELS | {"DLinear"}
+
+
+def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]:
+    aggregate = manifest.get("aggregate") if isinstance(manifest.get("aggregate"), dict) else {}
+    evidence_by_model = (
+        aggregate.get("per_model_promotion_evidence")
+        if isinstance(aggregate.get("per_model_promotion_evidence"), dict)
+        else {}
+    )
+    requested = [str(name) for name in (aggregate.get("full_fit_eligible_models") or [])]
+    unknown = sorted(set(requested) - _ACTIVE8_FULL_FIT_MODELS)
+    eligible = [
+        name for name in requested
+        if name in _ACTIVE8_FULL_FIT_MODELS
+        and isinstance(evidence_by_model.get(name), dict)
+        and evidence_by_model[name].get("decision") == "PASS"
+    ]
+    evidence_missing_or_failed = sorted(set(requested) - set(eligible) - set(unknown))
+    tree_models = [name for name in eligible if name in _ACTIVE8_TREE_MODELS]
+    train_groups = []
+    if tree_models:
+        train_groups.append("tree")
+    if "DLinear" in eligible:
+        train_groups.append("dlinear")
+    lifecycle_targets = [name for name in eligible if name in _ACTIVE8_LIFECYCLE_MODELS]
+    return {
+        "status": "ready" if eligible else "blocked",
+        "reason": "eligible_models_ready" if eligible else "no_full_fit_eligible_models",
+        "eligible_models": eligible,
+        "tree_models": tree_models,
+        "train_model_groups": train_groups,
+        "artifact_lifecycle_targets": lifecycle_targets,
+        "promotion_evidence": {name: evidence_by_model[name] for name in eligible},
+        "blocked_models": aggregate.get("full_fit_blocked_models") or {},
+        "unknown_models": unknown,
+        "evidence_missing_or_failed": evidence_missing_or_failed,
+        "folds": int(aggregate.get("oof_ready_folds") or 0),
+    }
+
+
+async def dispatch_oof_full_fit_training(
+    *,
+    manifest: dict[str, Any],
+    knowledge_cutoff_date: str,
+    bucket: Any,
+) -> dict[str, Any]:
+    from services import d1_client
+
+    plan = build_oof_full_fit_dispatch_plan(manifest)
+    if plan["status"] != "ready":
+        return plan
+
+    cohort_id = str(manifest.get("cohort_id") or "")
+    receipt_path = (
+        f"walk_forward/oof_cohorts/{cohort_id}/full_fit/"
+        f"{knowledge_cutoff_date}.json"
+    )
+    receipt_blob = bucket.blob(receipt_path)
+    receipt: dict[str, Any] = {}
+    if receipt_blob.exists():
+        receipt = json.loads(receipt_blob.download_as_text())
+
+    attempt = int(receipt.get("attempt") or 0)
+    prior_run_id = str(receipt.get("run_id") or "")
+    if prior_run_id:
+        rows = d1_client.query(
+            """
+            SELECT model_name, state
+            FROM model_artifact_registry
+            WHERE training_run_id = ?
+            """,
+            [prior_run_id],
+        )
+        by_model = {str(row.get("model_name") or ""): str(row.get("state") or "") for row in rows}
+        missing = sorted(set(plan["eligible_models"]) - set(by_model))
+        failed = sorted(
+            model_name for model_name, state in by_model.items()
+            if model_name in plan["eligible_models"]
+            and state in {"registration_failed", "offline_failed", "rejected"}
+        )
+        if not missing and not failed:
+            completed = {
+                **receipt,
+                "schema_version": "active8-oof-full-fit-receipt-v1",
+                "status": "completed",
+                "eligible_models": plan["eligible_models"],
+                "artifact_states": by_model,
+            }
+            receipt_blob.upload_from_string(
+                json.dumps(completed, sort_keys=True),
+                content_type="application/json",
+            )
+            return {**plan, **completed, "retry_required": False, "receipt_path": receipt_path}
+
+        webhook = d1_client.query(
+            "SELECT status, payload_summary FROM webhook_log WHERE idempotency_key = ? LIMIT 1",
+            [prior_run_id],
+        )
+        webhook_status = str((webhook[0] if webhook else {}).get("status") or "").lower()
+        terminal_failure = webhook_status == "error" or bool(failed) or (
+            webhook_status == "completed" and bool(missing)
+        )
+        if not terminal_failure:
+            return {
+                **plan,
+                **receipt,
+                "status": "pending",
+                "missing_models": missing,
+                "retry_required": True,
+                "receipt_path": receipt_path,
+            }
+        if attempt >= 3:
+            blocked = {
+                **receipt,
+                "status": "blocked",
+                "reason": "full_fit_retry_limit_reached",
+                "missing_models": missing,
+                "failed_models": failed,
+                "webhook_status": webhook_status,
+                "retry_required": True,
+                "receipt_path": receipt_path,
+            }
+            receipt_blob.upload_from_string(
+                json.dumps(blocked, sort_keys=True),
+                content_type="application/json",
+            )
+            return {**plan, **blocked}
+
+    from routers.retrain_trigger import UniversalRetrainTriggerRequest, trigger_universal_retrain
+
+    target_semantic = str(manifest.get("target_semantic_version") or "")
+    lifecycle_contracts = {
+        name: target_semantic for name in plan["artifact_lifecycle_targets"]
+    }
+    request = UniversalRetrainTriggerRequest(
+        limit=2500,
+        force_monthly=False,
+        run_date=knowledge_cutoff_date,
+        candidate_type="weekly_drift",
+        drift_target_models=plan["eligible_models"],
+        train_model_groups=plan["train_model_groups"],
+        artifact_lifecycle_targets=plan["artifact_lifecycle_targets"],
+        artifact_lifecycle_contracts=lifecycle_contracts,
+        artifact_lifecycle_only=not plan["train_model_groups"],
+        require_exact_dataset_snapshot=True,
+        sequence_gcs_prefix=str(manifest.get("sequence_gcs_prefix") or "") or None,
+        register_challengers=bool(plan["tree_models"]),
+        promotion_allowed_models=plan["eligible_models"],
+        oof_promotion_evidence=plan["promotion_evidence"],
+    )
+    result = await trigger_universal_retrain(request, request=None)
+    if not isinstance(result, dict):
+        raise RuntimeError("oof_full_fit_dispatch_invalid_response")
+    if result.get("error"):
+        raise RuntimeError(f"oof_full_fit_dispatch_failed:{result['error']}")
+    if str(result.get("status") or "").lower() == "skipped":
+        return {
+            **plan,
+            "status": "pending",
+            "reason": result.get("reason") or "universal_retrain_lock_active",
+            "retry_required": True,
+            "dispatch": result,
+            "receipt_path": receipt_path,
+        }
+
+    run_id = str(result.get("run_id") or "")
+    if not run_id:
+        raise RuntimeError("oof_full_fit_dispatch_run_id_missing")
+    dispatched = {
+        "schema_version": "active8-oof-full-fit-receipt-v1",
+        "status": "dispatched",
+        "cohort_id": cohort_id,
+        "knowledge_cutoff_date": knowledge_cutoff_date,
+        "run_id": run_id,
+        "attempt": attempt + 1,
+        "eligible_models": plan["eligible_models"],
+        "dispatch": result,
+    }
+    receipt_blob.upload_from_string(
+        json.dumps(dispatched, sort_keys=True),
+        content_type="application/json",
+    )
+    return {
+        **plan,
+        **dispatched,
+        "retry_required": True,
+        "receipt_path": receipt_path,
+    }
+
+
 @router.post("/walk_forward/oof/materialize")
 async def materialize_walk_forward_oof(req: OofMaterializeRequest):
     """Verify one OOF manifest and build the L4/Fusion offline evidence chain."""
@@ -411,6 +605,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             generation_mode="purged_oof",
             cohort_id=req.cohort_id,
         )
+        full_fit_plan = build_oof_full_fit_dispatch_plan(manifest)
         persistence = persist_oof_cohort(
             manifest=manifest,
             prediction_rows=prediction_rows,
@@ -552,6 +747,13 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                     )
                 except Exception as exc:  # noqa: BLE001 - config mutation already has Worker audit snapshot.
                     promotion_receipt_error = str(exc)
+        full_fit_dispatch = full_fit_plan
+        if not req.dry_run and req.promote:
+            full_fit_dispatch = await dispatch_oof_full_fit_training(
+                manifest=manifest,
+                knowledge_cutoff_date=req.knowledge_cutoff_date,
+                bucket=bucket,
+            )
         if not req.dry_run and candidate_artifacts is None:
             candidate_artifacts = archive_ev_candidate_artifacts(
                 bucket=bucket,
@@ -583,6 +785,8 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "promotion_receipt_error": promotion_receipt_error,
             "notification_sent": notification_sent,
             "opb_refresh": opb_refresh,
+            "full_fit_dispatch": full_fit_dispatch,
+            "full_fit_retry_required": bool(full_fit_dispatch.get("retry_required")),
             "promotion_allowed": bool(parity and parity.get("decision") == "PASS"),
             "fusion_promotion_tier": fusion_tier,
             "promotion_reason": (
@@ -891,7 +1095,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         isinstance(result.get("opb_refresh"), dict)
         and result["opb_refresh"].get("status") == "failed"
     )
-    if not req.dry_run and not opb_failed:
+    full_fit_retry_required = bool(result.get("full_fit_retry_required"))
+    dependency_retry_required = opb_failed or full_fit_retry_required
+    if not req.dry_run and not dependency_retry_required:
         lifecycle_blob.upload_from_string(
             json.dumps({
                 "schema_version": "active8-oof-lifecycle-receipt-v1",
@@ -902,11 +1108,12 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 "promoted": bool(result.get("promoted")),
                 "promotion_reason": result.get("promotion_reason"),
                 "opb_refresh": result.get("opb_refresh"),
+                "full_fit_dispatch": result.get("full_fit_dispatch"),
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             }, sort_keys=True),
             content_type="application/json",
         )
-    return {"cadence": cadence, "dependency_retry_required": opb_failed, **result}
+    return {"cadence": cadence, "dependency_retry_required": dependency_retry_required, **result}
 
 @router.post("/walk_forward/analyze")
 async def walk_forward_analyze(req: AnalyzeRequest):

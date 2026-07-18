@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import math
 
-from services.active_model_policy import ACTIVE_ALPHA_MODELS
+from services.active_model_policy import (
+    ACTIVE_ALPHA_MODELS,
+    CORE_CROSS_SECTIONAL_ALPHA_MODELS,
+    OPTIONAL_SEQUENCE_ALPHA_MODELS,
+)
 from services.ev_lineage_contract import build_model_set_signature, is_known_artifact_version
 from services.active8_score_semantics import (
     MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
@@ -79,12 +83,19 @@ def _formal_model_scores(pred: dict) -> dict[str, float]:
 
 
 def build_formal_model_input_contract(pred: dict | None) -> dict:
-    """Describe whether one symbol has a usable output from every Active-8 model."""
+    """Require the five cross-sectional models and mask unavailable sequence outputs.
+
+    This matches the chronological OOF stacker: sequence models contribute when
+    point-in-time history and artifact evidence exist, while their absence is an
+    observed feature rather than a reason to discard the symbol.
+    """
     prediction = pred if isinstance(pred, dict) else {}
     scores = _formal_model_scores(prediction)
     lineage = prediction.get("model_score_lineage") if isinstance(prediction.get("model_score_lineage"), dict) else {}
     available = [name for name in ACTIVE_ALPHA_MODELS if name in scores]
     missing = [name for name in ACTIVE_ALPHA_MODELS if name not in scores]
+    missing_core = [name for name in CORE_CROSS_SECTIONAL_ALPHA_MODELS if name not in scores]
+    missing_optional = [name for name in OPTIONAL_SEQUENCE_ALPHA_MODELS if name not in scores]
     lineage_blockers: list[str] = []
     if lineage.get("schema_version") != MODEL_SCORE_LINEAGE_SCHEMA_VERSION:
         lineage_blockers.append("score_lineage_schema_mismatch")
@@ -95,17 +106,23 @@ def build_formal_model_input_contract(pred: dict | None) -> dict:
     if lineage.get("complete") is not True:
         lineage_blockers.extend(str(value) for value in (lineage.get("blockers") or []))
     return {
-        "schema_version": "formal-layer3-active8-input-contract-v2",
-        "required_models": list(ACTIVE_ALPHA_MODELS),
+        "schema_version": "formal-layer3-active8-input-contract-v3",
+        "active_models": list(ACTIVE_ALPHA_MODELS),
+        "required_models": list(CORE_CROSS_SECTIONAL_ALPHA_MODELS),
+        "optional_sequence_models": list(OPTIONAL_SEQUENCE_ALPHA_MODELS),
         "available_models": available,
         "missing_models": missing,
-        "complete": not missing and not lineage_blockers,
+        "missing_core_models": missing_core,
+        "missing_optional_models": missing_optional,
+        "model_availability": {name: name in scores for name in ACTIVE_ALPHA_MODELS},
+        "full_active8_coverage": not missing,
+        "complete": not missing_core and not lineage_blockers,
+        "coverage_policy": "core5-required_sequence-missingness-aware-oof-parity-v1",
         "finite_scores_required": True,
         "score_semantic_version": lineage.get("semantic_version"),
         "target_semantic_version": lineage.get("target_semantic_version"),
         "lineage_blockers": list(dict.fromkeys(lineage_blockers)),
     }
-
 
 def _rank_confidence(avg_rank: float) -> float:
     return round(0.5 + abs(avg_rank - 0.5), 4)

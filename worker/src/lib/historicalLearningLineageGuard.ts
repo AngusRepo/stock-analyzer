@@ -1,3 +1,5 @@
+import { nextTwTradingDate } from './schedulerPolicy'
+
 export const HISTORICAL_CANONICAL_LINEAGE_WRITER_TASKS = new Set([
   'evening-chain',
   'update',
@@ -80,6 +82,7 @@ export function evaluateHistoricalLearningLineageBoundary(input: {
 
 export async function historicalLearningLineageDecision(
   db: D1Database,
+  kv: KVNamespace,
   task: string,
   signalDate: string,
   nowMs = Date.now(),
@@ -94,10 +97,22 @@ export async function historicalLearningLineageDecision(
        AND c.source = 'finlab.price'
        AND c.date > ?
   `).bind(signalDate).first<{ next_session_date?: string | null }>()
+  let nextSessionDate = String(row?.next_session_date ?? '').slice(0, 10) || null
+  if (!nextSessionDate) {
+    try {
+      nextSessionDate = await nextTwTradingDate(kv, signalDate, db, {
+        requireOfficialFutureCalendar: true,
+        nowMs,
+      })
+    } catch (error) {
+      console.warn(`[historicalLearningLineageGuard] next session unresolved for ${signalDate}:`, error)
+      nextSessionDate = null
+    }
+  }
   return evaluateHistoricalLearningLineageBoundary({
     task,
     signalDate,
-    nextSessionDate: String(row?.next_session_date ?? '').slice(0, 10) || null,
+    nextSessionDate,
     nowMs,
   })
 }

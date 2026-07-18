@@ -769,7 +769,11 @@ def build_allocator_ev_feature_snapshots_for_date(
             raise
 
     day_status = "ok" if statements else "skipped"
-    day_reason = None if statements else "no_feature_snapshots_built"
+    day_reason = None if statements else (
+        "no_eligible_score_v2_candidates"
+        if not candidates
+        else "all_candidates_rejected_by_lineage_or_feature_contract"
+    )
     return {
         "date": snapshot_date,
         "status": day_status,

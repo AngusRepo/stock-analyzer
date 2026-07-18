@@ -2322,7 +2322,7 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
 export async function runDailyUpdate(env: Bindings, force = false, runDate?: string): Promise<string> {
   const twDate = resolveUpdateDate(runDate)
   if (runDate && isHistoricalReplayDate(twDate)) {
-    const lineageBoundary = await historicalLearningLineageDecision(env.DB, 'evening-chain', twDate)
+    const lineageBoundary = await historicalLearningLineageDecision(env.DB, env.KV, 'evening-chain', twDate)
     if (!lineageBoundary.allowed) throw new Error(historicalLearningLineageBlockedMessage(lineageBoundary))
   }
   if (!force && await hasEveningChainSucceeded(env, twDate)) {

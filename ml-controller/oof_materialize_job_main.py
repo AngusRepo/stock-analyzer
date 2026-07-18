@@ -129,7 +129,8 @@ async def _run() -> int:
                 raise RuntimeError(
                     "allocator snapshot incomplete "
                     f"status={status or 'unknown'} built={result.get('snapshots_built')} "
-                    f"written={result.get('written')}"
+                    f"written={result.get('written')} "
+                    f"skip_reasons={result.get('skip_reasons') or {}}"
                 )
         else:
             if mode != "oof_lifecycle":

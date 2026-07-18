@@ -1,6 +1,7 @@
 import {
   evaluateHistoricalLearningLineageBoundary,
   historicalLearningLineageBlockedMessage,
+  historicalLearningLineageDecision,
 } from './historicalLearningLineageGuard'
 import fs from 'node:fs'
 
@@ -47,10 +48,46 @@ assert(!missingCalendarEvidence.allowed, 'historical canonical writes require an
 const adminTriggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 assert(
-  adminTriggerRoutes.includes('historicalLearningLineageDecision(c.env.DB, task, requestedRunDate)'),
+  adminTriggerRoutes.includes('historicalLearningLineageDecision(c.env.DB, c.env.KV, task, requestedRunDate)'),
   'all manual canonical writers must pass the historical event-time boundary',
 )
 assert(
-  updateOrchestrator.includes("historicalLearningLineageDecision(env.DB, 'evening-chain', twDate)"),
+  updateOrchestrator.includes("historicalLearningLineageDecision(env.DB, env.KV, 'evening-chain', twDate)"),
   'direct evening-chain calls must pass the historical event-time boundary',
 )
+
+void (async () => {
+  const nowMs = Date.parse('2026-07-18T04:00:00Z')
+  const db = {
+    prepare() {
+      return {
+        bind() {
+          return { first: async () => null }
+        },
+      }
+    },
+  } as unknown as D1Database
+  const kv = {
+    get: async (key: string) => key === 'market:twse_holiday_schedule:v2:2026'
+      ? {
+          schemaVersion: 'twse-holiday-schedule-v2',
+          dates: [],
+          loadedAt: '2026-07-18T00:00:00Z',
+          source: 'twse.openapi.holidaySchedule',
+        }
+      : null,
+  } as unknown as KVNamespace
+
+  const decision = await historicalLearningLineageDecision(
+    db,
+    kv,
+    'evening-chain',
+    '2026-07-17',
+    nowMs,
+  )
+  assert(decision.allowed, 'weekend rerun before Monday open must remain legal')
+  assert(decision.nextSessionDate === '2026-07-20', `expected 7/20 next session, got ${decision.nextSessionDate}`)
+})().catch((error) => {
+  console.error(error)
+  process.exit(1)
+})

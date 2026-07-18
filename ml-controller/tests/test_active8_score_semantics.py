@@ -96,3 +96,37 @@ def test_active8_lineage_rejects_unproven_artifact_target_semantic():
     assert "artifact_target_semantic_mismatch:PatchTST:missing" in (
         predictions["A"]["model_score_lineage"]["blockers"]
     )
+
+
+def test_active8_lineage_masks_unavailable_sequence_outputs_but_requires_core_models():
+    predictions = {"A": _prediction(0.2), "B": _prediction(0.5), "C": _prediction(0.8)}
+    for prediction in predictions.values():
+        prediction.pop("itransformer")
+    versions = {name: f"{name}-v1" for name in ACTIVE_ALPHA_MODELS}
+    target_semantics = {name: MODEL_TARGET_SEMANTIC_VERSION for name in ACTIVE_ALPHA_MODELS}
+
+    summary = normalize_active8_cross_sectional_scores(
+        predictions,
+        artifact_versions=versions,
+        artifact_target_semantics=target_semantics,
+        run_date="2026-07-16",
+    )
+
+    assert summary["complete_symbols"] == 3
+    lineage = predictions["A"]["model_score_lineage"]
+    assert lineage["complete"] is True
+    assert lineage["full_active8_coverage"] is False
+    assert lineage["optional_missing_models"] == ["iTransformer"]
+    assert lineage["model_availability"]["iTransformer"] is False
+
+    for prediction in predictions.values():
+        prediction["rank_scores"].pop("GNN", None)
+        prediction["stock_meta"] = {"market": "TWSE"}
+    blocked = normalize_active8_cross_sectional_scores(
+        predictions,
+        artifact_versions=versions,
+        artifact_target_semantics=target_semantics,
+        run_date="2026-07-16",
+    )
+    assert blocked["complete_symbols"] == 0
+    assert "rank_missing:GNN" in predictions["A"]["model_score_lineage"]["blockers"]

@@ -2,6 +2,7 @@ import {
   getSchedulerTaskPolicy,
   getNextRunApproxWithPolicy,
   nextTwTradingDate,
+  parseTwseHolidayDates,
   shouldRunScheduledTask,
 } from './schedulerPolicy'
 
@@ -16,6 +17,13 @@ function kvWithHolidays(holidays: string[]): KVNamespace {
   } as unknown as KVNamespace
 }
 
+const parsedHolidays = parseTwseHolidayDates([
+  { Name: "\u570b\u66c6\u65b0\u5e74\u958b\u59cb\u4ea4\u6613\u65e5", Date: "1150102", Description: "\u958b\u59cb\u4ea4\u6613" },
+  { Name: "\u8fb2\u66c6\u6625\u7bc0\u524d\u6700\u5f8c\u4ea4\u6613\u65e5", Date: "1150211", Description: "" },
+  { Name: "\u5e02\u5834\u7121\u4ea4\u6613", Date: "1150212", Description: "" },
+  { Name: "\u52de\u52d5\u7bc0", Date: "1150501", Description: "\u4f9d\u898f\u5b9a\u653e\u50471\u65e5" },
+], 2026)
+assert(parsedHolidays.join(',') === '2026-02-12,2026-05-01', `TWSE holiday parser misclassified trading markers: ${parsedHolidays}`)
 void (async () => {
   {
     const policy = getSchedulerTaskPolicy('update')

@@ -237,49 +237,94 @@ export function getSchedulerTaskPolicy(task: string): SchedulerTaskPolicy {
   return TASK_POLICIES[task] ?? DEFAULT_POLICY
 }
 
+interface TwseHolidayScheduleCache {
+  schemaVersion: 'twse-holiday-schedule-v2'
+  dates: string[]
+  loadedAt: string
+  source: 'twse.openapi.holidaySchedule'
+}
+
+export function parseTwseHolidayDates(
+  rows: Array<{ Name?: string; Date?: string; Description?: string }>,
+  year: number,
+): string[] {
+  return [...new Set(rows.flatMap((row) => {
+    const raw = String(row.Date ?? '').trim()
+    const text = `${row.Name ?? ''} ${row.Description ?? ''}`
+    if (!/^\d{7}$/.test(raw)) return []
+    const gregorianYear = Number(raw.slice(0, 3)) + 1911
+    if (gregorianYear !== year) return []
+    if (/\u958b\u59cb\u4ea4\u6613|\u6700\u5f8c\u4ea4\u6613\u65e5/.test(text)) return []
+    if (!/\u653e\u5047|\u7121\u4ea4\u6613|\u505c\u6b62\u4ea4\u6613/.test(text)) return []
+    return [`${gregorianYear}-${raw.slice(3, 5)}-${raw.slice(5, 7)}`]
+  }))].sort()
+}
+
+async function loadTwseHolidaySchedule(
+  kv: KVNamespace,
+  year: number,
+): Promise<TwseHolidayScheduleCache | null> {
+  const cacheKey = `market:twse_holiday_schedule:v2:${year}`
+  const cached = await kv.get(cacheKey, 'json') as TwseHolidayScheduleCache | null
+  if (
+    cached?.schemaVersion === 'twse-holiday-schedule-v2' &&
+    Array.isArray(cached.dates)
+  ) {
+    return cached
+  }
+  if (typeof kv.put !== 'function') return null
+  try {
+    const response = await fetch('https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule', {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!response.ok) throw new Error(`twse_holiday_http_${response.status}`)
+    const rows = await response.json() as Array<{ Name?: string; Date?: string; Description?: string }>
+    if (!Array.isArray(rows) || rows.length === 0) throw new Error('twse_holiday_payload_empty')
+    const dates = parseTwseHolidayDates(rows, year)
+    const schedule: TwseHolidayScheduleCache = {
+      schemaVersion: 'twse-holiday-schedule-v2',
+      dates: [...new Set(dates)].sort(),
+      loadedAt: new Date().toISOString(),
+      source: 'twse.openapi.holidaySchedule',
+    }
+    await kv.put(cacheKey, JSON.stringify(schedule), { expirationTtl: 7 * 86400 })
+    return schedule
+  } catch (error) {
+    console.warn(`[schedulerPolicy] TWSE holiday schedule unavailable for year=${year}:`, error)
+    return null
+  }
+}
+
 export async function isTwHoliday(kv: KVNamespace, twDate: string): Promise<boolean> {
   if (await kv.get(`holiday:${twDate}`)) return true
   const year = Number(twDate.slice(0, 4))
-  const cacheKey = `market:twse_holiday_schedule:${year}`
-  let cached = await kv.get(cacheKey, 'json') as { dates?: string[] } | null
-  if (!cached && typeof kv.put === 'function') {
-    try {
-      const response = await fetch('https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule', {
-        headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(5000),
-      })
-      if (!response.ok) throw new Error(`twse_holiday_http_${response.status}`)
-      const rows = await response.json() as Array<{ Name?: string; Date?: string; Description?: string }>
-      const dates = rows.flatMap((row) => {
-        const raw = String(row.Date ?? '').trim()
-        const text = `${row.Name ?? ''} ${row.Description ?? ''}`
-        if (!/^\d{7}$/.test(raw) || /開始交易/.test(text)) return []
-        const gregorianYear = Number(raw.slice(0, 3)) + 1911
-        return [`${gregorianYear}-${raw.slice(3, 5)}-${raw.slice(5, 7)}`]
-      })
-      cached = { dates }
-      await kv.put(cacheKey, JSON.stringify(cached), { expirationTtl: 7 * 86400 })
-    } catch (error) {
-      console.warn(`[schedulerPolicy] TWSE holiday schedule unavailable for ${twDate}:`, error)
-    }
-  }
-  return Boolean(cached?.dates?.includes(twDate))
+  const schedule = await loadTwseHolidaySchedule(kv, year)
+  return Boolean(schedule?.dates.includes(twDate))
 }
 
 export async function nextTwTradingDate(
   kv: KVNamespace,
   afterDate: string,
   db?: D1Database,
+  options: { requireOfficialFutureCalendar?: boolean; nowMs?: number } = {},
 ): Promise<string> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(afterDate)) throw new Error(`invalid trading calendar date: ${afterDate}`)
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const today = new Date((options.nowMs ?? Date.now()) + 8 * 3600_000).toISOString().slice(0, 10)
   let candidate = new Date(`${afterDate}T00:00:00.000Z`)
   for (let offset = 1; offset <= 15; offset += 1) {
     candidate = new Date(candidate.getTime() + 86400_000)
     const date = candidate.toISOString().slice(0, 10)
     const weekday = candidate.getUTCDay()
     if (weekday === 0 || weekday === 6) continue
-    if (await isTwHoliday(kv, date)) continue
+    if (await kv.get(`holiday:${date}`)) continue
+    if (date >= today && options.requireOfficialFutureCalendar) {
+      const schedule = await loadTwseHolidaySchedule(kv, Number(date.slice(0, 4)))
+      if (!schedule) throw new Error(`official TWSE future calendar unavailable for ${date}`)
+      if (schedule.dates.includes(date)) continue
+    } else if (await isTwHoliday(kv, date)) {
+      continue
+    }
     if (db && date < today) {
       const actualSession = await db.prepare(`
         SELECT 1 AS present

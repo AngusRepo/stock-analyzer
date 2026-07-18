@@ -1248,22 +1248,26 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             continue
         if isinstance(payload, dict):
             row["stock_meta"] = payload.get("stock_meta") or {}
-        if sym in sequence_eligible_symbols:
-            row["l3_model_eligibility"] = {
-                "schema_version": "l3-active8-universe-eligibility-v1",
-                "eligible": True,
-                "reason": "active8_sequence_history_contract_met",
-                "required_sequence_points": sequence_contract_points,
-            }
-        else:
-            exclusion = sequence_excluded_by_symbol.get(sym) or {}
-            row["l3_model_eligibility"] = {
-                "schema_version": "l3-active8-universe-eligibility-v1",
-                "eligible": False,
-                "reason": "active8_sequence_history_contract_unmet",
-                "required_sequence_points": sequence_contract_points,
-                "available_sequence_points": exclusion.get("point_count"),
-            }
+        sequence_eligible = sym in sequence_eligible_symbols
+        exclusion = sequence_excluded_by_symbol.get(sym) or {}
+        row["l3_model_eligibility"] = {
+            "schema_version": "l3-active8-universe-eligibility-v2",
+            "eligible": True,
+            "reason": "active8_core_cross_sectional_contract",
+            "sequence_eligible": sequence_eligible,
+            "sequence_reason": (
+                "active8_sequence_history_contract_met"
+                if sequence_eligible
+                else "active8_sequence_history_contract_unmet_optional_masked"
+            ),
+            "required_sequence_points": sequence_contract_points,
+            "available_sequence_points": (
+                sequence_contract_points
+                if sequence_eligible
+                else exclusion.get("point_count")
+            ),
+            "coverage_policy": "core5-required_sequence-missingness-aware-oof-parity-v1",
+        }
         _attach_alt_sources(row, sym)
         pred_map[sym] = row
 

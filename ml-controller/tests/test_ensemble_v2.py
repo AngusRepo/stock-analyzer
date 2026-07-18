@@ -6,7 +6,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.ensemble_v2 import attach_ensemble_v2, build_formal_model_input_contract  # noqa: E402
-from services.active_model_policy import ACTIVE_ALPHA_MODELS  # noqa: E402
+from services.active_model_policy import (  # noqa: E402
+    ACTIVE_ALPHA_MODELS,
+    CORE_CROSS_SECTIONAL_ALPHA_MODELS,
+)
 from services.active8_score_semantics import (  # noqa: E402
     MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
     MODEL_SCORE_SEMANTIC_VERSION,
@@ -19,7 +22,7 @@ def _formal_pred(scores: dict[str, float], *, missing: set[str] | None = None) -
     ranks = {name: 0.5 for name in ACTIVE_ALPHA_MODELS if name not in missing}
     ranks.update({name: value for name, value in scores.items() if name not in missing})
     versions = {name: f"{name}-test-v1" for name in ACTIVE_ALPHA_MODELS}
-    blockers = [f"rank_missing:{name}" for name in ACTIVE_ALPHA_MODELS if name in missing]
+    blockers = [f"rank_missing:{name}" for name in CORE_CROSS_SECTIONAL_ALPHA_MODELS if name in missing]
     return {
         "rank_scores": ranks,
         "model_score_lineage": {
@@ -49,6 +52,30 @@ def test_formal_active8_contract_requires_finite_outputs_from_every_model():
     assert contract["missing_models"] == ["GNN"]
     assert contract["finite_scores_required"] is True
 
+
+def test_formal_active8_contract_masks_missing_sequence_model_with_lineage():
+    pred = _formal_pred({"LightGBM": 0.61}, missing={"iTransformer"})
+
+    contract = build_formal_model_input_contract(pred)
+
+    assert contract["complete"] is True
+    assert contract["full_active8_coverage"] is False
+    assert contract["missing_core_models"] == []
+    assert contract["missing_optional_models"] == ["iTransformer"]
+
+    versions = {name: f"{name}-test-v1" for name in ACTIVE_ALPHA_MODELS}
+    attach_ensemble_v2(
+        pred,
+        model_status={name: "active" for name in ACTIVE_ALPHA_MODELS},
+        ic_weights={name: 0.05 for name in ACTIVE_ALPHA_MODELS},
+        degraded_dampening=1.0,
+        ev2_cfg={"activeArtifactVersions": versions},
+    )
+
+    ev2 = pred["ensemble_v2"]
+    assert "iTransformer" not in ev2["contributing_models"]
+    assert ev2["formal_model_input_contract"]["model_availability"]["iTransformer"] is False
+    assert ev2["lineage_status"] == "complete"
 
 def test_ensemble_v2_blocks_equal_weight_when_ic_is_cold_start_by_default():
     pred = _formal_pred({

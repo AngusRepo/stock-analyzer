@@ -2535,19 +2535,26 @@ def apply_core_family_evidence(
         formal_contract = build_formal_model_input_contract(pred)
         available_models = set(formal_contract["available_models"])
         missing_active_models = list(formal_contract["missing_models"])
+        missing_core_models = list(formal_contract.get("missing_core_models") or [])
+        missing_optional_models = list(formal_contract.get("missing_optional_models") or [])
         ensemble_available = isinstance((pred or {}).get("ensemble_v2"), dict) and bool((pred or {}).get("ensemble_v2"))
         formal_contract_passed = bool(formal_contract["complete"] and ensemble_available)
         evidence["active_model_contract"] = list(ACTIVE_ALPHA_MODELS)
         evidence["available_active_models"] = sorted(set(ACTIVE_ALPHA_MODELS) & available_models)
         evidence["missing_active_models"] = missing_active_models
+        evidence["missing_core_models"] = missing_core_models
+        evidence["missing_optional_models"] = missing_optional_models
+        evidence["model_availability"] = formal_contract.get("model_availability") or {}
         evidence["formal_model_coverage_complete"] = bool(formal_contract["complete"])
+        evidence["full_active8_coverage_complete"] = bool(formal_contract.get("full_active8_coverage"))
         evidence["formal_model_contract_passed"] = formal_contract_passed
         evidence["ensemble_v2_available"] = ensemble_available
         evidence["formal_model_contract_blockers"] = [
-            *(["active_model_output_incomplete"] if missing_active_models else []),
+            *(["core_model_output_incomplete"] if missing_core_models else []),
             *(["ensemble_v2_missing"] if not ensemble_available else []),
+            *[f"lineage:{value}" for value in (formal_contract.get("lineage_blockers") or [])],
         ]
-        evidence["coverage_policy"] = "complete_active_model_set_no_missingness_calibrator"
+        evidence["coverage_policy"] = formal_contract.get("coverage_policy")
         evidence["min_active_families"] = int(min_active_families)
         evidence["evidence_status"] = (
             "sufficient_family_breadth"

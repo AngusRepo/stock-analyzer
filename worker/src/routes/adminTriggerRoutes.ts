@@ -83,7 +83,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         historicalLearningLineageBlockedMessage,
         historicalLearningLineageDecision,
       } = await import('../lib/historicalLearningLineageGuard')
-      const lineageBoundary = await historicalLearningLineageDecision(c.env.DB, task, requestedRunDate)
+      const lineageBoundary = await historicalLearningLineageDecision(c.env.DB, c.env.KV, task, requestedRunDate)
       if (!lineageBoundary.allowed) {
         return c.json({
           success: false,

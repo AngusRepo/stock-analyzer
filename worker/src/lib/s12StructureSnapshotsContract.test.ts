@@ -123,6 +123,8 @@ async function runBehaviorTests(): Promise<void> {
   })
   assert.equal(summary.persisted, 1)
   assert.equal(summary.ready, 0)
+  assert.equal(summary.unavailable, 1)
+  assert.equal(summary.blocked, 0)
   assert.equal(summary.skipped, 1)
   assert.equal(summary.errors, 0)
   assert.equal(writeCount, 1)

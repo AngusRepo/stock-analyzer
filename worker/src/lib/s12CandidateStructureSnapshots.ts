@@ -30,7 +30,7 @@ export interface S12PipelineSeedSymbol {
 }
 
 export interface S12CandidateSnapshotSummary {
-  schema_version: 's12-candidate-structure-snapshot-summary-v1'
+  schema_version: 's12-candidate-structure-snapshot-summary-v2'
   trade_date: string
   source: string
   candidate_count: number
@@ -38,6 +38,8 @@ export interface S12CandidateSnapshotSummary {
   persisted: number
   ready: number
   setup_only: number
+  unavailable: number
+  blocked: number
   skipped: number
   errors: number
   limit: number
@@ -148,6 +150,8 @@ export async function runS12CandidateStructureSnapshots(
   let persisted = 0
   let ready = 0
   let setupOnly = 0
+  let unavailable = 0
+  let blocked = 0
   let skipped = 0
   let errors = 0
   const skipReasons: Record<string, number> = {}
@@ -173,6 +177,7 @@ export async function runS12CandidateStructureSnapshots(
         })
         if (ok) persisted += 1
         else errors += 1
+        unavailable += 1
         skipped += 1
         recordSkipReason(terminalDataSourceReason)
         continue
@@ -194,6 +199,7 @@ export async function runS12CandidateStructureSnapshots(
         })
         if (ok) persisted += 1
         else errors += 1
+        unavailable += 1
         skipped += 1
         recordSkipReason(terminalDataSourceReason ?? reason)
         continue
@@ -234,7 +240,10 @@ export async function runS12CandidateStructureSnapshots(
       if (ok) persisted += 1
       if (assessment.ready) ready += 1
       else if (isSetupOnly(assessment)) setupOnly += 1
-      else skipped += 1
+      else {
+        blocked += 1
+        skipped += 1
+      }
     } catch (error) {
       errors += 1
       recordSkipReason(error instanceof Error ? error.message : String(error))
@@ -243,7 +252,7 @@ export async function runS12CandidateStructureSnapshots(
   }
 
   return {
-    schema_version: 's12-candidate-structure-snapshot-summary-v1',
+    schema_version: 's12-candidate-structure-snapshot-summary-v2',
     trade_date: tradeDate,
     source: snapshotSource,
     candidate_count: candidates.length,
@@ -251,6 +260,8 @@ export async function runS12CandidateStructureSnapshots(
     persisted,
     ready,
     setup_only: setupOnly,
+    unavailable,
+    blocked,
     skipped,
     errors,
     limit,

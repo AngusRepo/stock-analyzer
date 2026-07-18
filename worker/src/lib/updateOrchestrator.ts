@@ -2042,12 +2042,12 @@ async function continuePostScreenerPipeline(
     const startedAt = Date.now()
     const { runS12CandidateStructureSnapshots } = await import('./s12CandidateStructureSnapshots')
     const snapshotSummary = await runS12CandidateStructureSnapshots(env, triggerTime)
-    const summary = `pre-pipeline S12 snapshots persisted=${snapshotSummary.persisted}/${snapshotSummary.attempted} ready=${snapshotSummary.ready} setup=${snapshotSummary.setup_only} unavailable=${snapshotSummary.skipped} errors=${snapshotSummary.errors}${snapshotSummary.skipped > 0 ? ' analysis_continues=1 execution_fail_closed=1' : ''}`
+    const summary = `pre-pipeline S12 snapshots persisted=${snapshotSummary.persisted}/${snapshotSummary.attempted} ready=${snapshotSummary.ready} setup=${snapshotSummary.setup_only} blocked=${snapshotSummary.blocked} unavailable=${snapshotSummary.unavailable} errors=${snapshotSummary.errors}${snapshotSummary.unavailable > 0 ? ' analysis_continues=1 execution_fail_closed=1' : snapshotSummary.blocked > 0 ? ' execution_fail_closed=1' : ''}`
     const snapshotComplete = snapshotSummary.attempted > 0
       && snapshotSummary.persisted === snapshotSummary.attempted
       && snapshotSummary.errors === 0
     await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-      status: snapshotComplete && snapshotSummary.skipped === 0 ? 'success' : 'error',
+      status: snapshotComplete && snapshotSummary.unavailable === 0 ? 'success' : 'error',
       summary,
       duration_ms: Date.now() - startedAt,
       run_id: runId,

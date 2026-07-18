@@ -202,8 +202,9 @@ assert(
 )
 assert(
   updateOrchestrator.includes('analysis_continues=1 execution_fail_closed=1') &&
-    updateOrchestrator.includes('snapshotComplete && snapshotSummary.skipped === 0'),
-  'missing S12 bars must remain an observable scheduler error while analysis continues under fail-closed execution gates',
+    updateOrchestrator.includes('snapshotComplete && snapshotSummary.unavailable === 0') &&
+    updateOrchestrator.includes('blocked=${snapshotSummary.blocked}'),
+  'missing S12 bars must remain an observable error while data-backed blocked states stay fail-closed without becoming lifecycle failures',
 )
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')

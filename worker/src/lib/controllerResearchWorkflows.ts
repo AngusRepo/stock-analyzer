@@ -235,7 +235,9 @@ export async function runActive8OofLifecycle(
       dry_run: false,
       promote: true,
     },
-    timeoutMs: 180_000,
+    // The controller only dispatches a durable Cloud Run Job. The terminal
+    // result arrives through /api/admin/scheduler-callback.
+    timeoutMs: 60_000,
   })
   const text = await resp.text().catch(() => '')
   if (!resp.ok) {

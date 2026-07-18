@@ -454,3 +454,73 @@ def test_compact_oof_migration_preserves_raw_artifact_lineage():
     assert "source_manifest_checksum TEXT NOT NULL" in migration
     assert "CHECK(length(artifact_checksum) = 64)" in migration
     assert "prediction_storage_mode TEXT NOT NULL DEFAULT 'd1_full_v1'" in migration
+
+
+def test_gcs_indexed_materialized_artifact_round_trip_and_checksum():
+    from services.active8_oof_cohort_materializer import (
+        archive_oof_materialized_rows,
+        load_oof_materialized_rows,
+    )
+
+    blobs = {}
+
+    class Blob:
+        def __init__(self, path):
+            self.path = path
+
+        def upload_from_string(self, payload, content_type=None):
+            blobs[self.path] = bytes(payload)
+
+        def download_as_bytes(self):
+            return blobs[self.path]
+
+    class Bucket:
+        def blob(self, path):
+            return Blob(path)
+
+    rows = [{
+        "cohort_id": "cohort-1",
+        "fold_id": "w1",
+        "snapshot_date": "2026-07-01",
+        "symbol": "2330",
+        "market_segment": "LISTED",
+        "score": 51.0,
+    }]
+    artifact = archive_oof_materialized_rows(
+        bucket=Bucket(),
+        cohort_id="cohort-1",
+        artifact_kind="allocator_ev_snapshots",
+        rows=rows,
+        source_manifest_checksum="a" * 64,
+    )
+
+    loaded = load_oof_materialized_rows(
+        bucket=Bucket(),
+        cohort_id="cohort-1",
+        artifact_kind="allocator_ev_snapshots",
+        query_fn=lambda _sql, _params: [artifact],
+    )
+
+    assert loaded == rows
+    assert artifact["row_count"] == 1
+    assert artifact["date_count"] == 1
+    assert artifact["artifact_checksum"] in artifact["artifact_path"]
+    assert artifact["compressed_bytes"] > 0
+    assert artifact["uncompressed_bytes"] > 0
+
+
+def test_gcs_indexed_materialization_never_writes_large_oof_tables():
+    source = (
+        ROOT / "ml-controller" / "services" / "active8_oof_cohort_materializer.py"
+    ).read_text()
+    migration = (
+        ROOT / "worker" / "migrations" / "0068_active8_oof_materialized_artifact_index.sql"
+    ).read_text()
+
+    assert 'if prediction_storage_mode == "gcs_indexed_v1":' in source
+    assert 'artifact_kind="allocator_ev_snapshots"' in source
+    assert 'artifact_kind="l4_predictions"' in source
+    assert "indexed_snapshot_rows" in source
+    assert "indexed_l4_prediction_rows" in source
+    assert "CREATE TABLE IF NOT EXISTS active8_oof_materialized_artifacts" in migration
+    assert "active8-oof-materialized-jsonl-gzip-v1" in migration

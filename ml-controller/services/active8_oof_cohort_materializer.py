@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
 import json
@@ -27,6 +28,11 @@ from services.fundamental_quality import score_fundamental_quality
 TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
 D1_IN_CLAUSE_CHUNK_SIZE = 80
+OOF_MATERIALIZED_ARTIFACT_SCHEMA_VERSION = "active8-oof-materialized-jsonl-gzip-v1"
+OOF_MATERIALIZED_ARTIFACT_KINDS = {
+    "allocator_ev_snapshots": "snapshot_date",
+    "l4_predictions": "prediction_date",
+}
 
 
 def _loads(value: Any) -> dict[str, Any]:
@@ -43,6 +49,178 @@ def _manifest_checksum(manifest: dict[str, Any]) -> str:
     payload = json.dumps(unsigned, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(f"active8_oof_json_type_unsupported:{type(value).__name__}")
+
+
+def archive_oof_materialized_rows(
+    *,
+    bucket: Any,
+    cohort_id: str,
+    artifact_kind: str,
+    rows: list[dict[str, Any]],
+    source_manifest_checksum: str,
+) -> dict[str, Any]:
+    """Archive large offline evidence while keeping only a compact D1 index."""
+
+    date_field = OOF_MATERIALIZED_ARTIFACT_KINDS.get(artifact_kind)
+    if date_field is None:
+        raise ValueError("active8_oof_materialized_artifact_kind_invalid")
+    row_dates = [str(row.get(date_field) or "")[:10] for row in rows]
+    if any(not value for value in row_dates):
+        raise ValueError("active8_oof_materialized_artifact_date_missing")
+    dates = sorted(set(row_dates))
+    if len(source_manifest_checksum) != 64:
+        raise ValueError("active8_oof_materialized_artifact_manifest_checksum_invalid")
+    if any(str(row.get("cohort_id") or "") != cohort_id for row in rows):
+        raise ValueError("active8_oof_materialized_artifact_cohort_mismatch")
+    metadata = {
+        "schema_version": OOF_MATERIALIZED_ARTIFACT_SCHEMA_VERSION,
+        "cohort_id": cohort_id,
+        "artifact_kind": artifact_kind,
+        "source_manifest_checksum": source_manifest_checksum,
+        "row_count": len(rows),
+        "date_count": len(dates),
+        "min_date": dates[0] if dates else None,
+        "max_date": dates[-1] if dates else None,
+    }
+    ordered_rows = sorted(
+        rows,
+        key=lambda row: (
+            str(row.get(date_field) or ""),
+            str(row.get("fold_id") or ""),
+            str(row.get("symbol") or ""),
+            str(row.get("market_segment") or ""),
+        ),
+    )
+    lines = [json.dumps({"_metadata": metadata}, sort_keys=True, separators=(",", ":"))]
+    lines.extend(
+        json.dumps(row, sort_keys=True, separators=(",", ":"), default=_json_default)
+        for row in ordered_rows
+    )
+    uncompressed = ("\n".join(lines) + "\n").encode("utf-8")
+    encoded = gzip.compress(uncompressed, compresslevel=6, mtime=0)
+    checksum = hashlib.sha256(encoded).hexdigest()
+    path = (
+        f"walk_forward/oof_cohorts/{cohort_id}/materialized/"
+        f"{artifact_kind}/{checksum}.jsonl.gz"
+    )
+    bucket.blob(path).upload_from_string(encoded, content_type="application/gzip")
+    return {
+        **metadata,
+        "artifact_path": path,
+        "artifact_checksum": checksum,
+        "format_version": OOF_MATERIALIZED_ARTIFACT_SCHEMA_VERSION,
+        "compressed_bytes": len(encoded),
+        "uncompressed_bytes": len(uncompressed),
+    }
+
+
+def load_oof_materialized_rows(
+    *,
+    bucket: Any,
+    cohort_id: str,
+    artifact_kind: str,
+    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
+) -> list[dict[str, Any]]:
+    """Resolve and verify one compact-indexed OOF evidence artifact."""
+
+    index_rows = query_fn(
+        """
+        SELECT artifact_path, artifact_checksum, format_version, row_count,
+               date_count, min_date, max_date, source_manifest_checksum
+        FROM active8_oof_materialized_artifacts
+        WHERE cohort_id = ? AND artifact_kind = ?
+        """,
+        [cohort_id, artifact_kind],
+    )
+    if len(index_rows) != 1:
+        raise ValueError("active8_oof_materialized_artifact_index_missing")
+    index = index_rows[0]
+    if str(index.get("format_version") or "") != OOF_MATERIALIZED_ARTIFACT_SCHEMA_VERSION:
+        raise ValueError("active8_oof_materialized_artifact_format_mismatch")
+    encoded = bucket.blob(str(index["artifact_path"])).download_as_bytes()
+    if hashlib.sha256(encoded).hexdigest() != str(index["artifact_checksum"]):
+        raise ValueError("active8_oof_materialized_artifact_checksum_mismatch")
+    lines = gzip.decompress(encoded).decode("utf-8").splitlines()
+    if not lines:
+        raise ValueError("active8_oof_materialized_artifact_empty")
+    metadata = _loads(json.loads(lines[0]).get("_metadata"))
+    expected = {
+        "schema_version": OOF_MATERIALIZED_ARTIFACT_SCHEMA_VERSION,
+        "cohort_id": cohort_id,
+        "artifact_kind": artifact_kind,
+        "source_manifest_checksum": str(index["source_manifest_checksum"]),
+        "row_count": int(index["row_count"]),
+        "date_count": int(index["date_count"]),
+        "min_date": index.get("min_date"),
+        "max_date": index.get("max_date"),
+    }
+    for key, value in expected.items():
+        if metadata.get(key) != value:
+            raise ValueError(f"active8_oof_materialized_artifact_metadata_mismatch:{key}")
+    rows = [json.loads(line) for line in lines[1:]]
+    if len(rows) != int(index["row_count"]):
+        raise ValueError("active8_oof_materialized_artifact_row_count_mismatch")
+    if any(str(row.get("cohort_id") or "") != cohort_id for row in rows):
+        raise ValueError("active8_oof_materialized_artifact_row_cohort_mismatch")
+    date_field = OOF_MATERIALIZED_ARTIFACT_KINDS[artifact_kind]
+    dates = sorted({str(row.get(date_field) or "")[:10] for row in rows})
+    if (
+        len(dates) != int(index["date_count"])
+        or (dates[0] if dates else None) != index.get("min_date")
+        or (dates[-1] if dates else None) != index.get("max_date")
+    ):
+        raise ValueError("active8_oof_materialized_artifact_date_range_mismatch")
+    return rows
+
+
+def persist_oof_materialized_artifact_indexes(
+    artifacts: list[dict[str, Any]],
+    *,
+    batch_fn: Callable[..., dict[str, Any]] = d1_client.batch_execute,
+) -> dict[str, Any]:
+    sql = """
+        INSERT INTO active8_oof_materialized_artifacts (
+          cohort_id, artifact_kind, artifact_path, artifact_checksum,
+          format_version, row_count, date_count, min_date, max_date,
+          compressed_bytes, uncompressed_bytes, source_manifest_checksum
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(cohort_id, artifact_kind) DO UPDATE SET
+          artifact_path=excluded.artifact_path,
+          artifact_checksum=excluded.artifact_checksum,
+          format_version=excluded.format_version,
+          row_count=excluded.row_count,
+          date_count=excluded.date_count,
+          min_date=excluded.min_date,
+          max_date=excluded.max_date,
+          compressed_bytes=excluded.compressed_bytes,
+          uncompressed_bytes=excluded.uncompressed_bytes,
+          source_manifest_checksum=excluded.source_manifest_checksum
+        WHERE active8_oof_materialized_artifacts.artifact_checksum = excluded.artifact_checksum
+          AND active8_oof_materialized_artifacts.source_manifest_checksum = excluded.source_manifest_checksum
+    """
+    result = batch_fn(
+        [(sql, [
+            row["cohort_id"], row["artifact_kind"], row["artifact_path"],
+            row["artifact_checksum"], row["format_version"], row["row_count"],
+            row["date_count"], row["min_date"], row["max_date"],
+            row["compressed_bytes"], row["uncompressed_bytes"],
+            row["source_manifest_checksum"],
+        ]) for row in artifacts],
+        timeout=60.0,
+        chunk_size=10,
+    )
+    if result.get("error_count"):
+        raise RuntimeError(f"active8_oof_materialized_artifact_index_failed:{result}")
+    return result
 
 def load_verified_oof_manifest(
     manifest_path: str,
@@ -857,6 +1035,7 @@ def persist_oof_cohort(
     prediction_rows: list[dict[str, Any]],
     snapshot_rows: list[dict[str, Any]],
     l4_predictions: list[dict[str, Any]] | None = None,
+    bucket: Any | None = None,
     dry_run: bool = True,
     prediction_storage_mode: str = "gcs_indexed_v1",
     query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
@@ -1026,23 +1205,100 @@ def persist_oof_cohort(
         row["label_known_date"], row["model_set_signature"], row["target_semantic_version"],
         row["source_manifest_checksum"],
     ]) for row in snapshot_rows]
-    snapshot_result = batch_fn(snapshot_statements, timeout=60.0, chunk_size=200)
-    if snapshot_result.get("error_count"):
-        raise RuntimeError(f"allocator_ev_oof_snapshot_materialization_failed:{snapshot_result}")
-    l4_result = persist_l4_oof_predictions(
-        list(l4_predictions or []),
-        dry_run=False,
-        batch_fn=batch_fn,
-    )
+    materialized_artifacts: list[dict[str, Any]] = []
+    if prediction_storage_mode == "gcs_indexed_v1":
+        if bucket is None:
+            raise ValueError("active8_oof_gcs_indexed_bucket_missing")
+        materialized_artifacts = [
+            archive_oof_materialized_rows(
+                bucket=bucket,
+                cohort_id=cohort_id,
+                artifact_kind="allocator_ev_snapshots",
+                rows=snapshot_rows,
+                source_manifest_checksum=manifest["manifest_checksum"],
+            ),
+            archive_oof_materialized_rows(
+                bucket=bucket,
+                cohort_id=cohort_id,
+                artifact_kind="l4_predictions",
+                rows=list(l4_predictions or []),
+                source_manifest_checksum=manifest["manifest_checksum"],
+            ),
+        ]
+        index_result = persist_oof_materialized_artifact_indexes(
+            materialized_artifacts,
+            batch_fn=batch_fn,
+        )
+        persisted_indexes = query_fn(
+            """
+            SELECT artifact_kind, artifact_path, artifact_checksum, row_count,
+                   source_manifest_checksum
+            FROM active8_oof_materialized_artifacts
+            WHERE cohort_id = ?
+            """,
+            [cohort_id],
+        )
+        persisted_by_kind = {
+            str(row.get("artifact_kind") or ""): row for row in persisted_indexes
+        }
+        if len(persisted_by_kind) != len(materialized_artifacts):
+            raise RuntimeError("active8_oof_materialized_artifact_index_count_mismatch")
+        for artifact in materialized_artifacts:
+            persisted = persisted_by_kind.get(artifact["artifact_kind"]) or {}
+            expected_identity = (
+                artifact["artifact_path"],
+                artifact["artifact_checksum"],
+                int(artifact["row_count"]),
+                artifact["source_manifest_checksum"],
+            )
+            actual_identity = (
+                persisted.get("artifact_path"),
+                persisted.get("artifact_checksum"),
+                int(persisted.get("row_count") or -1),
+                persisted.get("source_manifest_checksum"),
+            )
+            if actual_identity != expected_identity:
+                raise RuntimeError(
+                    f"active8_oof_materialized_artifact_index_identity_mismatch:"
+                    f"{artifact['artifact_kind']}"
+                )
+        snapshot_result = {
+            "status": "ready",
+            "rows": len(snapshot_rows),
+            "storage_mode": "gcs_indexed_v1",
+            "artifact": materialized_artifacts[0],
+            "index_result": index_result,
+        }
+        l4_result = {
+            "status": "ready",
+            "rows": len(l4_predictions or []),
+            "storage_mode": "gcs_indexed_v1",
+            "artifact": materialized_artifacts[1],
+            "index_result": index_result,
+        }
+    else:
+        snapshot_result = batch_fn(snapshot_statements, timeout=60.0, chunk_size=200)
+        if snapshot_result.get("error_count"):
+            raise RuntimeError(f"allocator_ev_oof_snapshot_materialization_failed:{snapshot_result}")
+        l4_result = persist_l4_oof_predictions(
+            list(l4_predictions or []),
+            dry_run=False,
+            batch_fn=batch_fn,
+        )
     counts = query_fn(
         """
         SELECT
           (SELECT COUNT(*) FROM active8_oof_predictions WHERE cohort_id = ?) prediction_rows,
           (SELECT COUNT(*) FROM active8_oof_fold_artifacts WHERE cohort_id = ?) fold_artifact_rows,
           (SELECT COUNT(*) FROM allocator_ev_oof_snapshots WHERE cohort_id = ?) snapshot_rows,
-          (SELECT COUNT(*) FROM l4_oof_predictions WHERE cohort_id = ?) l4_prediction_rows
+          (SELECT COUNT(*) FROM l4_oof_predictions WHERE cohort_id = ?) l4_prediction_rows,
+          (SELECT COUNT(*) FROM active8_oof_materialized_artifacts WHERE cohort_id = ?) materialized_artifact_rows,
+          (SELECT COALESCE(SUM(row_count), 0) FROM active8_oof_materialized_artifacts
+            WHERE cohort_id = ? AND artifact_kind = 'allocator_ev_snapshots') indexed_snapshot_rows,
+          (SELECT COALESCE(SUM(row_count), 0) FROM active8_oof_materialized_artifacts
+            WHERE cohort_id = ? AND artifact_kind = 'l4_predictions') indexed_l4_prediction_rows
         """,
-        [cohort_id, cohort_id, cohort_id, cohort_id],
+        [cohort_id, cohort_id, cohort_id, cohort_id, cohort_id, cohort_id, cohort_id],
     )[0]
     if (
         (
@@ -1050,8 +1306,21 @@ def persist_oof_cohort(
             and int(counts.get("prediction_rows") or 0) != len(prediction_rows)
         )
         or int(counts.get("fold_artifact_rows") or 0) != len(fold_artifact_rows)
-        or int(counts.get("snapshot_rows") or 0) != len(snapshot_rows)
-        or int(counts.get("l4_prediction_rows") or 0) != len(l4_predictions or [])
+        or (
+            prediction_storage_mode == "d1_full_v1"
+            and (
+                int(counts.get("snapshot_rows") or 0) != len(snapshot_rows)
+                or int(counts.get("l4_prediction_rows") or 0) != len(l4_predictions or [])
+            )
+        )
+        or (
+            prediction_storage_mode == "gcs_indexed_v1"
+            and (
+                int(counts.get("materialized_artifact_rows") or 0) != 2
+                or int(counts.get("indexed_snapshot_rows") or 0) != len(snapshot_rows)
+                or int(counts.get("indexed_l4_prediction_rows") or 0) != len(l4_predictions or [])
+            )
+        )
     ):
         raise RuntimeError("active8_oof_materialization_count_mismatch")
     d1_client.execute(

@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import statistics
+from typing import Any
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
@@ -415,6 +416,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             prediction_rows=prediction_rows,
             snapshot_rows=snapshot_rows,
             l4_predictions=l4_predictions,
+            bucket=bucket,
             dry_run=req.dry_run,
             prediction_storage_mode=req.prediction_storage_mode,
         )
@@ -835,6 +837,47 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             "cohort_id": cohort_id,
             "knowledge_cutoff_date": knowledge_cutoff_date,
             "receipt": receipt,
+        }
+    if not req.dry_run and os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1":
+        from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
+
+        job_name = os.environ.get("OOF_MATERIALIZE_JOB_NAME", "active8-oof-materialize").strip()
+        callback_task = f"active8-oof-{cadence}"
+        run_id = f"{callback_task}:{knowledge_cutoff_date}:{cohort_id}"
+        try:
+            execution = CloudRunJobsClient(job_name=job_name).run_job(
+                env_overrides={
+                    "OOF_MATERIALIZE_CADENCE": cadence,
+                    "OOF_MATERIALIZE_END_DATE": req.end_date or knowledge_cutoff_date,
+                    "OOF_MATERIALIZE_PROMOTE": "1" if req.promote else "0",
+                    "OOF_MATERIALIZE_RUN_ID": run_id,
+                    "OOF_MATERIALIZE_CALLBACK_TASK": callback_task,
+                },
+            )
+        except JobAlreadyRunningError as exc:
+            return {
+                "status": "pending",
+                "reason": "materialization_job_active",
+                "cadence": cadence,
+                "cohort_id": cohort_id,
+                "knowledge_cutoff_date": knowledge_cutoff_date,
+                "execution_id": exc.execution.execution_id,
+                "execution_name": exc.execution.execution_name,
+            }
+        except Exception as exc:  # noqa: BLE001 - dispatch errors must remain visible to scheduler.
+            raise HTTPException(
+                status_code=502,
+                detail=f"OOF materialization job dispatch failed: {type(exc).__name__}: {exc}",
+            ) from exc
+        return {
+            "status": "spawned",
+            "reason": "durable_materialization_job_dispatched",
+            "cadence": cadence,
+            "cohort_id": cohort_id,
+            "knowledge_cutoff_date": knowledge_cutoff_date,
+            "execution_id": execution.execution_id,
+            "execution_name": execution.execution_name,
+            "run_id": run_id,
         }
     result = await materialize_walk_forward_oof(OofMaterializeRequest(
         cohort_id=cohort_id,

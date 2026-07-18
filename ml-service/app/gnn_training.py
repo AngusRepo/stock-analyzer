@@ -27,6 +27,7 @@ from .prep_lineage import (
 from .model_validation import build_model_cpcv_evidence
 from .training_promotion_policy import resolve_training_promotion_intent
 from .training_policy import build_model_feature_policy_metadata
+from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
 MODEL_NAME = "GNN"
 DEFAULT_BATCH_COUNT = 5
@@ -625,7 +626,7 @@ def train_graphsage_universal(payload: dict | None = None) -> dict[str, Any]:
         "model_name": MODEL_NAME,
         "model_type": "graphsage",
         "family": "cross_stock_graph",
-        "target_semantic_version": "next-session-open-to-fifth-session-close-v2",
+        "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
         "trained_at": trained_at,
         "feature_names": feature_names,
         "feature_count": len(feature_names),

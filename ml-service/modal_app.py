@@ -1224,6 +1224,43 @@ def predict_batch_v2(payload: dict) -> dict:
     }
 
 
+def _persist_pipeline_prediction_bundle(input_payload: dict, bundle: dict) -> dict:
+    import hashlib
+    import json
+    import re
+    from google.api_core.exceptions import PreconditionFailed
+    from google.cloud import storage
+
+    bucket_name = _get_gcs_bucket_name()
+    if not bucket_name:
+        raise RuntimeError("pipeline_modal_result_bucket_missing")
+    run_date = str(input_payload.get("run_date") or bundle.get("run_date") or "unknown")[:10]
+    run_id = re.sub(
+        r"[^A-Za-z0-9._-]+",
+        "-",
+        str(input_payload.get("run_id") or bundle.get("run_id") or "unknown"),
+    ).strip("-")[:160]
+    encoded = json.dumps(bundle, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+    checksum = hashlib.sha256(encoded).hexdigest()
+    path = f"pipeline-v2/modal-results/{run_date}/{run_id}-{checksum[:16]}.json"
+    blob = storage.Client().bucket(bucket_name).blob(path)
+    try:
+        blob.upload_from_string(
+            encoded,
+            content_type="application/json",
+            if_generation_match=0,
+        )
+    except PreconditionFailed:
+        existing = blob.download_as_bytes()
+        if hashlib.sha256(existing).hexdigest() != checksum:
+            raise ValueError("pipeline_modal_result_idempotency_checksum_mismatch")
+    return {
+        "schema_version": "pipeline-modal-result-reference-v1",
+        "result_gcs_uri": f"gs://{bucket_name}/{path}",
+        "result_checksum": checksum,
+        "result_bytes": len(encoded),
+    }
+
 def _post_pipeline_prediction_callback(input_payload: dict, bundle: dict, elapsed_s: float) -> dict:
     import json
     import time
@@ -1235,12 +1272,17 @@ def _post_pipeline_prediction_callback(input_payload: dict, bundle: dict, elapse
     if not callback_url or not token:
         return {"status": "skipped", "reason": "callback_url_or_token_missing"}
     body = {
-        "schema_version": "pipeline-modal-prediction-callback-v1",
+        "schema_version": "pipeline-modal-prediction-callback-v2",
         "run_date": input_payload.get("run_date"),
         "run_id": input_payload.get("run_id"),
         "state_gcs_uri": input_payload.get("state_gcs_uri"),
         "elapsed_s": elapsed_s,
-        "result": bundle,
+        "result_gcs_uri": bundle["durable_handoff"]["result_gcs_uri"],
+        "result_checksum": bundle["durable_handoff"]["result_checksum"],
+        "result_summary": {
+            "n_input": bundle.get("n_input"),
+            "stage_timings": bundle.get("stage_timings") or {},
+        },
     }
     req = urllib.request.Request(
         callback_url,
@@ -1468,6 +1510,7 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
         "sequence_dataset": payload.get("sequence_dataset_meta") or {},
         "n_input": len(payloads),
     }
+    bundle["durable_handoff"] = _persist_pipeline_prediction_bundle(payload, bundle)
     callback_status = _post_pipeline_prediction_callback(payload, bundle, elapsed_s)
     bundle["callback_status"] = callback_status
     return bundle
@@ -1847,6 +1890,7 @@ def _load_verified_oof_resume_windows(
     if parent.get("schema_version") not in {
         "active8-oof-cohort-manifest-v1",
         "active8-oof-cohort-manifest-v2",
+        "active8-oof-cohort-manifest-v3",
     }:
         raise ValueError("active8_oof_resume_manifest_schema_invalid")
     if parent.get("manifest_checksum") != expected_manifest_checksum:
@@ -1884,10 +1928,13 @@ def _load_verified_oof_resume_windows(
         test_range = list(parent_window.get("test_range") or [None, None])
         split = tuple(str(value or "") for value in (*train_range, *test_range))
         requested = requested_by_split.get(split)
-        if requested is None or int(requested["window_id"]) != int(parent_window["window_id"]):
+        if requested is None:
             raise ValueError(f"active8_oof_resume_fold_split_mismatch:{split}")
         window_id = int(requested["window_id"])
         fold_id = f"w{window_id}"
+        source_fold_id = str(
+            parent_window.get("source_fold_id") or f"w{int(parent_window['window_id'])}"
+        )
         source_cohort_id = str(parent_window.get("source_cohort_id") or parent_cohort_id)
         source_manifest_checksum = str(
             parent_window.get("source_manifest_checksum") or parent_manifest_checksum
@@ -1908,7 +1955,7 @@ def _load_verified_oof_resume_windows(
                 "schema_version": "active8-oof-predictions-v1",
                 "generation_mode": "purged_oof",
                 "cohort_id": source_cohort_id,
-                "fold_id": fold_id,
+                "fold_id": source_fold_id,
                 "model_name": model_name,
                 "target_semantic_version": expected_target,
             }
@@ -1918,6 +1965,8 @@ def _load_verified_oof_resume_windows(
                         f"active8_oof_resume_artifact_metadata_mismatch:{fold_id}:{model_name}:{key}"
                     )
         reused_window = json.loads(json.dumps(parent_window, default=str))
+        reused_window["window_id"] = window_id
+        reused_window["source_fold_id"] = source_fold_id
         reused_window["source_cohort_id"] = source_cohort_id
         reused_window["source_manifest_checksum"] = source_manifest_checksum
         reused_window["reused_from_parent"] = True
@@ -2005,6 +2054,52 @@ def walk_forward_orchestrator(payload: dict) -> dict:
 
         prep_prefix = str(payload.get("prep_gcs_prefix") or "universal").strip().rstrip("/")
         prep_bucket = _storage.Client().bucket(_get_gcs_bucket_name())
+        import hashlib as _hashlib
+
+        prep_manifest_path = f"{prep_prefix}/prep/manifest.json"
+        prep_manifest = json.loads(
+            prep_bucket.blob(prep_manifest_path).download_as_text().lstrip("\ufeff")
+        )
+        prep_unsigned = {
+            key: value for key, value in prep_manifest.items() if key != "manifest_checksum"
+        }
+        prep_manifest_checksum = _hashlib.sha256(
+            json.dumps(prep_unsigned, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        if (
+            prep_manifest.get("schema_version") != "active8-canonical-adjusted-prep-v1"
+            or prep_manifest.get("status") != "ready"
+            or prep_manifest.get("output_gcs_prefix") != prep_prefix
+            or prep_manifest.get("manifest_checksum") != prep_manifest_checksum
+            or prep_manifest.get("target_semantic_version")
+            != "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+            or float(prep_manifest.get("roundtrip_cost_bps") or 0.0) != 18.0
+        ):
+            raise ValueError("active8_oof_prep_manifest_contract_invalid")
+        batch_rows = [int(value) for value in (prep_manifest.get("batch_rows") or [])]
+        output_checksums = dict(prep_manifest.get("output_checksums") or {})
+        expected_paths = [f"{prep_prefix}/prep/batch_{idx}.npz" for idx in range(len(batch_rows))]
+        if (
+            not batch_rows
+            or len(batch_rows) != int(batch_count)
+            or sum(batch_rows) != int(prep_manifest.get("output_rows") or 0)
+            or sorted(output_checksums) != sorted(expected_paths)
+        ):
+            raise ValueError("active8_oof_prep_batch_inventory_invalid")
+        for path in expected_paths:
+            raw = prep_bucket.blob(path).download_as_bytes()
+            if _hashlib.sha256(raw).hexdigest() != str(output_checksums.get(path) or ""):
+                raise ValueError(f"active8_oof_prep_batch_checksum_mismatch:{path}")
+        prep_manifest_evidence = {
+            "path": prep_manifest_path,
+            "manifest_checksum": prep_manifest_checksum,
+            "schema_version": prep_manifest["schema_version"],
+            "output_rows": int(prep_manifest.get("output_rows") or 0),
+            "batch_count": len(batch_rows),
+            "target_semantic_version": prep_manifest["target_semantic_version"],
+            "roundtrip_cost_bps": float(prep_manifest["roundtrip_cost_bps"]),
+            "verification": "manifest_and_all_batch_sha256_v1",
+        }
         prep_blob = prep_bucket.blob(f"{prep_prefix}/prep/batch_0.npz")
         if not prep_blob.exists():
             raise ValueError("active8_oof_prep_batch_missing")
@@ -2019,24 +2114,51 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         sequence_prefix = str(
             payload.get("sequence_gcs_prefix") or "universal/sequence_long/latest"
         ).strip().rstrip("/")
-        sequence_blob = prep_bucket.blob(f"{sequence_prefix}/prep/batch_0.npz")
-        if not sequence_blob.exists():
-            raise ValueError("active8_oof_sequence_v3_prep_batch_missing")
-        sequence_npz = _np.load(
-            _io.BytesIO(sequence_blob.download_as_bytes()), allow_pickle=True
-        )
-        if "sequence_records" not in sequence_npz.files:
-            raise ValueError("active8_oof_sequence_v3_records_missing")
-        records = list(sequence_npz["sequence_records"])
-        valid_sequence_records = sum(
-            1 for raw in records
-            if isinstance(raw, dict)
-            and raw.get("symbol")
-            and len(raw.get("dates") or []) == len(raw.get("open") or []) == len(raw.get("close") or [])
-            and raw.get("target_semantic_version") == "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
-        )
+        sequence_batch_count = int(payload.get("sequence_batch_count") or 0)
+        sequence_manifest_path = f"{sequence_prefix}/prep/sequence_manifest.json"
+        sequence_manifest_raw = prep_bucket.blob(sequence_manifest_path).download_as_bytes()
+        sequence_manifest = json.loads(sequence_manifest_raw.decode("utf-8").lstrip("\ufeff"))
+        if (
+            sequence_batch_count < 1
+            or sequence_manifest.get("contract") != "sequence_records_v3"
+            or sequence_manifest.get("target_semantic_version")
+            != "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+            or str(sequence_manifest.get("output_gcs_prefix") or "").rstrip("/")
+            != sequence_prefix
+        ):
+            raise ValueError("active8_oof_sequence_manifest_contract_invalid")
+        sequence_batch_checksums = {}
+        valid_sequence_records = 0
+        for index in range(sequence_batch_count):
+            path = f"{sequence_prefix}/prep/batch_{index}.npz"
+            raw = prep_bucket.blob(path).download_as_bytes()
+            sequence_batch_checksums[path] = _hashlib.sha256(raw).hexdigest()
+            sequence_npz = _np.load(_io.BytesIO(raw), allow_pickle=True)
+            if "sequence_records" not in sequence_npz.files:
+                raise ValueError(f"active8_oof_sequence_v3_records_missing:{path}")
+            valid_sequence_records += sum(
+                1 for record in list(sequence_npz["sequence_records"])
+                if isinstance(record, dict)
+                and record.get("symbol")
+                and len(record.get("dates") or [])
+                == len(record.get("open") or [])
+                == len(record.get("close") or [])
+                and record.get("target_semantic_version")
+                == "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+            )
         if valid_sequence_records < 10:
             raise ValueError("active8_oof_sequence_records_v3_insufficient")
+        sequence_manifest_evidence = {
+            "path": sequence_manifest_path,
+            "artifact_checksum": _hashlib.sha256(sequence_manifest_raw).hexdigest(),
+            "schema_version": sequence_manifest.get("schema_version"),
+            "contract": sequence_manifest["contract"],
+            "target_semantic_version": sequence_manifest["target_semantic_version"],
+            "batch_count": sequence_batch_count,
+            "batch_checksums": sequence_batch_checksums,
+            "valid_records": valid_sequence_records,
+            "verification": "manifest_bytes_and_all_batch_sha256_v1",
+        }
     except Exception as exc:
         return {
             "status": "failed_preflight",
@@ -2385,11 +2507,8 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         import hashlib
 
         manifest = {
-            "schema_version": (
-                "active8-oof-cohort-manifest-v2"
-                if parent_manifest
-                else "active8-oof-cohort-manifest-v1"
-            ),
+            "schema_version": "active8-oof-cohort-manifest-v3",
+
             "cohort_id": cohort_id,
             "start_date": start_date,
             "end_date": end_date,
@@ -2400,10 +2519,12 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "score_semantic_version": "same-market-same-date-percentile-rank-v1",
             "model_set": models,
             "prep_gcs_prefix": str(payload.get("prep_gcs_prefix") or "universal"),
+            "prep_manifest": prep_manifest_evidence,
             "sequence_gcs_prefix": str(
                 payload.get("sequence_gcs_prefix") or "universal/sequence_long/latest"
             ),
             "sequence_batch_count": int(payload.get("sequence_batch_count") or 5),
+            "sequence_manifest": sequence_manifest_evidence,
             "model_set_signature": hashlib.sha256("|".join(models).encode("utf-8")).hexdigest(),
             "windows": all_results,
             "parent_manifest": parent_manifest,
@@ -2420,7 +2541,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         print(f"[WF-Orchestrator] Persisted gs://{bucket.name}/{gcs_path}")
     except Exception as e:
         print(f"[WF-Orchestrator] Persist failed: {e}")
-        gcs_path = None
+        raise RuntimeError(f"active8_oof_manifest_persist_failed:{e}") from e
 
     return {
         "gcs_path": gcs_path,

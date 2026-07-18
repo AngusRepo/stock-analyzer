@@ -197,6 +197,7 @@ async def _run() -> int:
     """Execute run_pipeline_v2, callback Worker, return process exit code."""
     from graphs.daily_pipeline_v2 import (
         run_pipeline_v2,
+        run_pipeline_v2_from_modal_prediction_callback,
         run_pipeline_v2_until_modal_prediction_spawn,
     )
 
@@ -205,6 +206,8 @@ async def _run() -> int:
         "CLOUD_RUN_EXECUTION",
         f"job-{int(time.time())}-{uuid.uuid4().hex[:8]}",
     )
+    run_id = os.environ.get("PIPELINE_PARENT_RUN_ID", "").strip() or run_id
+    continuation_mode = _truthy_env("PIPELINE_MODAL_CONTINUATION_MODE")
     from services.allocator_contract_guard import assert_allocator_contract_run_date
 
     assert_allocator_contract_run_date(run_date, label="pipeline-v2")
@@ -219,8 +222,32 @@ async def _run() -> int:
     emit_subtasks = True
 
     try:
-        if _truthy_env("PIPELINE_MODAL_PREDICTION_CALLBACK_ENABLED"):
-            result = await run_pipeline_v2_until_modal_prediction_spawn(run_date=run_date, producer_run_id=run_id)
+        if continuation_mode:
+            from services.pipeline_modal_handoff import load_verified_modal_prediction_bundle
+
+            result_gcs_uri = os.environ.get("PIPELINE_MODAL_RESULT_GCS_URI", "").strip()
+            result_checksum = os.environ.get("PIPELINE_MODAL_RESULT_CHECKSUM", "").strip()
+            state_gcs_uri = os.environ.get("PIPELINE_STATE_GCS_URI", "").strip()
+            bundle = await asyncio.to_thread(
+                load_verified_modal_prediction_bundle,
+                result_gcs_uri=result_gcs_uri,
+                expected_checksum=result_checksum,
+            )
+            result = await run_pipeline_v2_from_modal_prediction_callback({
+                "schema_version": "pipeline-modal-prediction-callback-v2",
+                "run_date": run_date,
+                "run_id": run_id,
+                "state_gcs_uri": state_gcs_uri,
+                "elapsed_s": os.environ.get("PIPELINE_MODAL_ELAPSED_S", ""),
+                "result_gcs_uri": result_gcs_uri,
+                "result_checksum": result_checksum,
+                "result": bundle,
+            })
+        elif _truthy_env("PIPELINE_MODAL_PREDICTION_CALLBACK_ENABLED"):
+            result = await run_pipeline_v2_until_modal_prediction_spawn(
+                run_date=run_date,
+                producer_run_id=run_id,
+            )
         else:
             result = await run_pipeline_v2(run_date=run_date, producer_run_id=run_id)
         if isinstance(result, dict) and result.get("status") == "completed":

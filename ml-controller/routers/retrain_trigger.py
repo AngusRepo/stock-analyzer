@@ -94,6 +94,13 @@ class UniversalRetrainTriggerRequest(BaseModel):
         description="Fail closed unless the compute snapshot business date exactly matches run_date.",
     )
     sequence_gcs_prefix: str | None = Field(default=None, description="GCS prefix for sequence_records_v3 batches.")
+    prebuilt_prep_gcs_prefix: str | None = Field(default=None, description="Immutable canonical prep prefix validated before OOF full-fit.")
+    prebuilt_prep_manifest_checksum: str | None = None
+    prebuilt_prep_target_semantic_version: str | None = None
+    prebuilt_prep_source_cohort_id: str | None = None
+    prebuilt_prep_source_manifest_checksum: str | None = None
+    prebuilt_sequence_manifest_checksum: str | None = None
+    prebuilt_sequence_batch_checksums: dict[str, str] = Field(default_factory=dict)
     sequence_batch_count: int | None = Field(default=None, description="Number of sequence_records_v3 batches.")
     sequence_seq_len: int | None = Field(default=None, description="Shared L3 sequence context override.")
     dlinear_seq_len: int | None = Field(default=None, description="DLinear sequence context override.")
@@ -204,6 +211,112 @@ def _infer_sequence_batch_count(sequence_gcs_prefix: str, fallback: int) -> int:
         logger.warning("[retrain/universal] sequence manifest read failed: %s", exc)
         return max(1, int(fallback))
 
+
+def _verify_prebuilt_canonical_prep(
+    *,
+    bucket: object,
+    prefix: str,
+    expected_manifest_checksum: str,
+    expected_target_semantic_version: str,
+) -> dict[str, object]:
+    import hashlib
+
+    normalized_prefix = str(prefix or "").strip().rstrip("/")
+    if not normalized_prefix or normalized_prefix == "universal":
+        raise ValueError("prebuilt_canonical_prep_prefix_invalid")
+    if len(str(expected_manifest_checksum or "")) != 64:
+        raise ValueError("prebuilt_canonical_prep_manifest_checksum_missing")
+    if not str(expected_target_semantic_version or "").strip():
+        raise ValueError("prebuilt_canonical_prep_target_missing")
+
+    manifest_path = f"{normalized_prefix}/prep/manifest.json"
+    manifest = json.loads(bucket.blob(manifest_path).download_as_text().lstrip("\ufeff"))
+    unsigned = {key: value for key, value in manifest.items() if key != "manifest_checksum"}
+    actual_manifest_checksum = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    required = {
+        "schema_version": "active8-canonical-adjusted-prep-v1",
+        "status": "ready",
+        "output_gcs_prefix": normalized_prefix,
+        "target_semantic_version": expected_target_semantic_version,
+        "roundtrip_cost_bps": 18.0,
+    }
+    for key, value in required.items():
+        if manifest.get(key) != value:
+            raise ValueError(f"prebuilt_canonical_prep_manifest_mismatch:{key}")
+    if (
+        manifest.get("manifest_checksum") != actual_manifest_checksum
+        or actual_manifest_checksum != expected_manifest_checksum
+    ):
+        raise ValueError("prebuilt_canonical_prep_manifest_checksum_mismatch")
+
+    batch_rows = [int(value) for value in (manifest.get("batch_rows") or [])]
+    output_checksums = dict(manifest.get("output_checksums") or {})
+    expected_paths = [f"{normalized_prefix}/prep/batch_{idx}.npz" for idx in range(len(batch_rows))]
+    if not batch_rows or sorted(output_checksums) != sorted(expected_paths):
+        raise ValueError("prebuilt_canonical_prep_batch_inventory_mismatch")
+    if sum(batch_rows) != int(manifest.get("output_rows") or 0):
+        raise ValueError("prebuilt_canonical_prep_row_count_mismatch")
+    if int(manifest.get("output_rows") or 0) < 10000:
+        raise ValueError("prebuilt_canonical_prep_rows_below_minimum")
+    for path in expected_paths:
+        raw = bucket.blob(path).download_as_bytes()
+        if hashlib.sha256(raw).hexdigest() != str(output_checksums.get(path) or ""):
+            raise ValueError(f"prebuilt_canonical_prep_batch_checksum_mismatch:{path}")
+
+    sequence_prefix = str(manifest.get("sequence_gcs_prefix") or "").strip().rstrip("/")
+    if not sequence_prefix:
+        raise ValueError("prebuilt_canonical_prep_sequence_prefix_missing")
+    return {
+        "manifest_path": manifest_path,
+        "manifest_checksum": actual_manifest_checksum,
+        "gcs_prefix": normalized_prefix,
+        "batch_count": len(batch_rows),
+        "total_rows": int(manifest["output_rows"]),
+        "sequence_gcs_prefix": sequence_prefix,
+        "target_semantic_version": expected_target_semantic_version,
+        "roundtrip_cost_bps": 18.0,
+    }
+
+def _verify_prebuilt_sequence_prep(
+    *,
+    bucket: object,
+    prefix: str,
+    expected_manifest_checksum: str,
+    expected_batch_checksums: dict[str, str],
+    expected_target_semantic_version: str,
+) -> dict[str, object]:
+    import hashlib
+
+    normalized_prefix = str(prefix or "").strip().rstrip("/")
+    manifest_path = f"{normalized_prefix}/prep/sequence_manifest.json"
+    manifest_raw = bucket.blob(manifest_path).download_as_bytes()
+    if hashlib.sha256(manifest_raw).hexdigest() != str(expected_manifest_checksum or ""):
+        raise ValueError("prebuilt_sequence_manifest_checksum_mismatch")
+    manifest = json.loads(manifest_raw.decode("utf-8").lstrip("\ufeff"))
+    if (
+        manifest.get("contract") != "sequence_records_v3"
+        or manifest.get("target_semantic_version") != expected_target_semantic_version
+        or str(manifest.get("output_gcs_prefix") or "").rstrip("/") != normalized_prefix
+    ):
+        raise ValueError("prebuilt_sequence_manifest_contract_invalid")
+    checksums = dict(expected_batch_checksums or {})
+    expected_paths = [f"{normalized_prefix}/prep/batch_{idx}.npz" for idx in range(len(checksums))]
+    if not checksums or sorted(checksums) != sorted(expected_paths):
+        raise ValueError("prebuilt_sequence_batch_inventory_mismatch")
+    for path in expected_paths:
+        raw = bucket.blob(path).download_as_bytes()
+        if hashlib.sha256(raw).hexdigest() != str(checksums.get(path) or ""):
+            raise ValueError(f"prebuilt_sequence_batch_checksum_mismatch:{path}")
+    return {
+        "manifest_path": manifest_path,
+        "manifest_checksum": expected_manifest_checksum,
+        "gcs_prefix": normalized_prefix,
+        "batch_count": len(checksums),
+        "batch_checksums": checksums,
+        "target_semantic_version": expected_target_semantic_version,
+    }
 
 def _snapshot_component_uris(snapshot: dict) -> dict[str, str]:
     try:
@@ -771,6 +884,119 @@ def _volume_bucket(prices: list[dict]) -> int:
     return 0
 
 
+async def _dispatch_prebuilt_oof_full_fit(
+    *,
+    req: UniversalRetrainTriggerRequest,
+    request: Request | None,
+    run_id: str,
+    run_date: str,
+    lock_key: str,
+) -> dict[str, object]:
+    from google.cloud import storage
+    from services.modal_client import retrain_orchestrator
+
+    bucket_name = os.environ.get("GCS_BUCKET_NAME") or os.environ.get("RETRAIN_LOCK_BUCKET")
+    if not bucket_name:
+        raise RuntimeError("prebuilt_canonical_prep_bucket_missing")
+    bucket = storage.Client().bucket(bucket_name)
+    verified = _verify_prebuilt_canonical_prep(
+        bucket=bucket,
+        prefix=str(req.prebuilt_prep_gcs_prefix or ""),
+        expected_manifest_checksum=str(req.prebuilt_prep_manifest_checksum or ""),
+        expected_target_semantic_version=str(req.prebuilt_prep_target_semantic_version or ""),
+    )
+    sequence_verified = _verify_prebuilt_sequence_prep(
+        bucket=bucket,
+        prefix=str(req.sequence_gcs_prefix or ""),
+        expected_manifest_checksum=str(req.prebuilt_sequence_manifest_checksum or ""),
+        expected_batch_checksums=req.prebuilt_sequence_batch_checksums,
+        expected_target_semantic_version=str(req.prebuilt_prep_target_semantic_version or ""),
+    )
+    if req.sequence_gcs_prefix and (
+        str(req.sequence_gcs_prefix).strip().rstrip("/") != verified["sequence_gcs_prefix"]
+    ):
+        raise ValueError("prebuilt_canonical_prep_sequence_prefix_mismatch")
+    if len(str(req.prebuilt_prep_source_manifest_checksum or "")) != 64:
+        raise ValueError("prebuilt_canonical_prep_source_manifest_checksum_missing")
+    if not str(req.prebuilt_prep_source_cohort_id or "").strip():
+        raise ValueError("prebuilt_canonical_prep_source_cohort_missing")
+
+    training_policy = TrainingPolicy.from_env()
+    tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
+    is_monthly = training_policy.is_monthly(
+        force_monthly=req.force_monthly,
+        tw_day=tw_now.day,
+    )
+    sequence_batch_count = int(sequence_verified["batch_count"])
+    if req.sequence_batch_count and int(req.sequence_batch_count) != sequence_batch_count:
+        raise ValueError("prebuilt_sequence_batch_count_mismatch")
+    sequence_contract: dict[str, object] = {
+        "sequence_gcs_prefix": sequence_verified["gcs_prefix"],
+        "sequence_batch_count": sequence_batch_count,
+    }
+    for key in ("sequence_seq_len", "dlinear_seq_len", "patchtst_seq_len", "itransformer_seq_len"):
+        value = getattr(req, key, None)
+        if value:
+            sequence_contract[key] = int(value)
+
+    followup_webhook_url = _build_followup_webhook_url(request)
+    payload = {
+        "batch_count": verified["batch_count"],
+        "is_monthly": is_monthly,
+        "candidate_type": req.candidate_type,
+        "drift_target_models": req.drift_target_models,
+        "drift_target_families": req.drift_target_families,
+        "train_model_groups": req.train_model_groups,
+        "artifact_lifecycle_targets": req.artifact_lifecycle_targets,
+        "artifact_lifecycle_contracts": req.artifact_lifecycle_contracts,
+        "artifact_lifecycle_only": req.artifact_lifecycle_only,
+        "register_challengers": req.register_challengers,
+        "promotion_allowed_models": req.promotion_allowed_models,
+        "oof_promotion_evidence": req.oof_promotion_evidence,
+        "selection_params": training_policy.feature_selection_params(),
+        "training_policy": training_policy.to_dict(),
+        "dataset_snapshot": {
+            "schema_version": "active8-oof-full-fit-prep-lineage-v1",
+            "source_cohort_id": req.prebuilt_prep_source_cohort_id,
+            "source_manifest_checksum": req.prebuilt_prep_source_manifest_checksum,
+            **verified,
+            "sequence": sequence_verified,
+        },
+        "timesfm_l175_feature_release": {"requested": False},
+        "followup_webhook_url": followup_webhook_url,
+        "gcs_prefix": verified["gcs_prefix"],
+        "run_id": run_id,
+        "lock_key": lock_key,
+        "run_date": run_date,
+        **sequence_contract,
+    }
+    orchestrator_result = await retrain_orchestrator(payload=payload, fire_and_forget=True)
+    _upsert_retrain_status(
+        run_id,
+        status="orchestrator_dispatched",
+        summary={
+            "lock_key": lock_key,
+            "run_date": run_date,
+            "prebuilt_oof_full_fit": True,
+            "verified_prep": verified,
+            "source_cohort_id": req.prebuilt_prep_source_cohort_id,
+            "source_manifest_checksum": req.prebuilt_prep_source_manifest_checksum,
+            "sequence_contract": sequence_contract,
+            "orchestrator_result": orchestrator_result,
+        },
+        downstream_notes="await_modal_followup",
+    )
+    return {
+        "status": "dispatched",
+        "prebuilt_oof_full_fit": True,
+        "run_id": run_id,
+        "lock_key": lock_key,
+        "verified_prep": verified,
+        "sequence_contract": sequence_contract,
+        "orchestrator_result": orchestrator_result,
+        "followup_webhook_url": followup_webhook_url,
+    }
+
 @router.post("/universal/run")
 @router.post("/universal")
 async def trigger_universal_retrain(
@@ -837,6 +1063,37 @@ async def trigger_universal_retrain(
     )
 
     # ?? 1. All stocks (universal covers inactive too for training diversity) ??
+    if req.prebuilt_prep_gcs_prefix:
+        try:
+            return await _dispatch_prebuilt_oof_full_fit(
+                req=req,
+                request=request,
+                run_id=run_id,
+                run_date=run_date,
+                lock_key=lock_key,
+            )
+        except Exception as exc:
+            retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
+            _upsert_retrain_status(
+                run_id,
+                status="prep_failed",
+                summary={
+                    "lock_key": lock_key,
+                    "run_date": run_date,
+                    "reason": "prebuilt_oof_full_fit_validation_or_dispatch_failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "prebuilt_prep_gcs_prefix": req.prebuilt_prep_gcs_prefix,
+                    "source_cohort_id": req.prebuilt_prep_source_cohort_id,
+                },
+                downstream_notes="prebuilt_oof_full_fit_rejected_before_training",
+            )
+            return {
+                "status": "rejected",
+                "error": "prebuilt_oof_full_fit_validation_or_dispatch_failed",
+                "detail": f"{type(exc).__name__}: {exc}",
+                "run_id": run_id,
+                "lock_key": lock_key,
+            }
     stock_rows = d1_client.query(
         "SELECT id, symbol, market FROM stocks "
         "WHERE market IN ('TW','TWO','TWSE','OTC') "

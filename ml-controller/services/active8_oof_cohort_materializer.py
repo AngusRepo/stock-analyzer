@@ -232,6 +232,7 @@ def load_verified_oof_manifest(
     if manifest.get("schema_version") not in {
         "active8-oof-cohort-manifest-v1",
         "active8-oof-cohort-manifest-v2",
+        "active8-oof-cohort-manifest-v3",
     }:
         raise ValueError("active8_oof_manifest_schema_invalid")
     if manifest.get("generation_mode") != "purged_oof":
@@ -242,7 +243,10 @@ def load_verified_oof_manifest(
         raise ValueError("active8_oof_manifest_model_set_invalid")
     if manifest.get("manifest_checksum") != _manifest_checksum(manifest):
         raise ValueError("active8_oof_manifest_checksum_mismatch")
-    if manifest.get("schema_version") == "active8-oof-cohort-manifest-v2":
+    if manifest.get("schema_version") in {
+        "active8-oof-cohort-manifest-v2",
+        "active8-oof-cohort-manifest-v3",
+    }:
         parent = manifest.get("parent_manifest") or {}
         reused = [window for window in manifest.get("windows") or [] if window.get("source_cohort_id")]
         if reused and (
@@ -251,6 +255,26 @@ def load_verified_oof_manifest(
             or not str(parent.get("cohort_id") or "").strip()
         ):
             raise ValueError("active8_oof_parent_manifest_lineage_missing")
+    if manifest.get("schema_version") == "active8-oof-cohort-manifest-v3":
+        prep = manifest.get("prep_manifest") or {}
+        if (
+            len(str(prep.get("manifest_checksum") or "")) != 64
+            or prep.get("target_semantic_version") != TARGET_SEMANTIC_VERSION
+            or float(prep.get("roundtrip_cost_bps") or 0.0) != 18.0
+            or int(prep.get("batch_count") or 0) < 1
+        ):
+            raise ValueError("active8_oof_prep_manifest_lineage_invalid")
+        sequence = manifest.get("sequence_manifest") or {}
+        batch_checksums = sequence.get("batch_checksums") or {}
+        if (
+            len(str(sequence.get("artifact_checksum") or "")) != 64
+            or sequence.get("contract") != "sequence_records_v3"
+            or sequence.get("target_semantic_version") != TARGET_SEMANTIC_VERSION
+            or int(sequence.get("batch_count") or 0) < 1
+            or len(batch_checksums) != int(sequence.get("batch_count") or 0)
+            or any(len(str(value or "")) != 64 for value in batch_checksums.values())
+        ):
+            raise ValueError("active8_oof_sequence_manifest_lineage_invalid")
     return manifest, raw
 
 
@@ -261,26 +285,27 @@ def _load_prediction_artifact(
     expected_checksum: str,
     expected_artifact_cohort: str,
     materialized_cohort: str,
-    expected_fold: str,
+    expected_artifact_fold: str,
+    materialized_fold: str,
     expected_model: str,
     split: dict[str, str],
 ) -> list[dict[str, Any]]:
     raw = bucket.blob(path).download_as_bytes()
     if hashlib.sha256(raw).hexdigest() != expected_checksum:
-        raise ValueError(f"active8_oof_artifact_checksum_mismatch:{expected_model}:{expected_fold}")
+        raise ValueError(f"active8_oof_artifact_checksum_mismatch:{expected_model}:{expected_artifact_fold}")
     data = np.load(io.BytesIO(raw), allow_pickle=True)
     metadata = json.loads(str(data["metadata"].item()))
     expected = {
         "schema_version": "active8-oof-predictions-v1",
         "generation_mode": "purged_oof",
         "cohort_id": expected_artifact_cohort,
-        "fold_id": expected_fold,
+        "fold_id": expected_artifact_fold,
         "model_name": expected_model,
         "target_semantic_version": TARGET_SEMANTIC_VERSION,
     }
     for key, value in expected.items():
         if metadata.get(key) != value:
-            raise ValueError(f"active8_oof_artifact_metadata_mismatch:{key}:{expected_model}:{expected_fold}")
+            raise ValueError(f"active8_oof_artifact_metadata_mismatch:{key}:{expected_model}:{expected_artifact_fold}")
     arrays = {
         name: np.asarray(data[name]).reshape(-1)
         for name in (
@@ -295,12 +320,12 @@ def _load_prediction_artifact(
     }
     lengths = {len(values) for values in arrays.values()}
     if lengths != {int(metadata.get("rows") or 0)}:
-        raise ValueError(f"active8_oof_artifact_array_length_mismatch:{expected_model}:{expected_fold}")
+        raise ValueError(f"active8_oof_artifact_array_length_mismatch:{expected_model}:{expected_artifact_fold}")
     return [
         {
             "cohort_id": materialized_cohort,
             "source_cohort_id": expected_artifact_cohort,
-            "fold_id": expected_fold,
+            "fold_id": materialized_fold,
             "prediction_date": str(arrays["dates"][idx])[:10],
             "symbol": str(arrays["symbols"][idx]),
             "market_segment": str(arrays["markets"][idx]),
@@ -328,6 +353,7 @@ def load_oof_prediction_rows(
     rows: list[dict[str, Any]] = []
     for window in manifest.get("windows") or []:
         fold_id = f"w{window['window_id']}"
+        source_fold_id = str(window.get("source_fold_id") or fold_id)
         source_cohort_id = str(window.get("source_cohort_id") or cohort_id)
         split = {
             "train_start": str((window.get("train_range") or [None, None])[0]),
@@ -346,7 +372,8 @@ def load_oof_prediction_rows(
                 expected_checksum=str(model.get("artifact_checksum") or ""),
                 expected_artifact_cohort=source_cohort_id,
                 materialized_cohort=cohort_id,
-                expected_fold=fold_id,
+                expected_artifact_fold=source_fold_id,
+                materialized_fold=fold_id,
                 expected_model=model_name,
                 split=split,
             ))

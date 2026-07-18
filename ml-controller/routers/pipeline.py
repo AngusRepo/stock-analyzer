@@ -14,6 +14,7 @@ History:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -221,7 +222,12 @@ async def _emit_subtask_callbacks(
 
 
 async def _record_pipeline_modal_bundle_telemetry(payload: dict[str, Any]) -> None:
-    bundle = payload.get("result") or payload.get("modal_prediction_bundle") or {}
+    bundle = (
+        payload.get("result")
+        or payload.get("modal_prediction_bundle")
+        or payload.get("result_summary")
+        or {}
+    )
     if not isinstance(bundle, dict):
         return
     elapsed_s = bundle.get("elapsed_s") or payload.get("elapsed_s")
@@ -255,78 +261,42 @@ async def _record_pipeline_modal_bundle_telemetry(payload: dict[str, Any]) -> No
 
 
 @callback_router.post("/v2/modal-prediction/callback")
-async def pipeline_modal_prediction_callback(request: Request) -> dict[str, Any]:
-    """Resume pipeline-v2 after Modal completes the raw L3 prediction bundle."""
+async def pipeline_modal_prediction_callback(request: Request) -> JSONResponse:
+    """Durably hand Modal results to a checksum-verified Cloud Run continuation Job."""
     _check_service_token(request)
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="callback payload must be an object")
 
-    from graphs.daily_pipeline_v2 import run_pipeline_v2_from_modal_prediction_callback
-    from services.pipeline_snapshot_followup import run_deferred_snapshot_followup
+    from services.pipeline_modal_handoff import dispatch_modal_prediction_continuation
 
-    run_id = str(payload.get("run_id") or "")
-    run_date = str(payload.get("run_date") or "")
     await _record_pipeline_modal_bundle_telemetry(payload)
-    started = time.time()
-    status = "error"
-    summary = ""
-    error: str | None = None
-    result: dict | None = None
-
     try:
-        result = await run_pipeline_v2_from_modal_prediction_callback(payload)
-        if isinstance(result, dict) and result.get("status") == "completed":
-            status = "success"
-            metrics = result.get("metrics") or {}
-            snapshot_status = (metrics.get("dataset_snapshot_export") or {}).get("status", "n/a")
-            error_count = len(result.get("errors") or [])
-            summary = (
-                f"run_id={run_id} "
-                f"preds={metrics.get('predictions_written', 0)} "
-                f"recos_updated={metrics.get('recommendations_updated', 0)} "
-                f"seed_rows={metrics.get('recommendation_seed_rows', 0)} "
-                f"llm_reasons={metrics.get('llm_reasons_count', 0)} "
-                f"snapshot={snapshot_status} "
-                f"errors={error_count}"
-            )
-        else:
-            err_detail = result.get("error") if isinstance(result, dict) else str(result)
-            error = str(err_detail or "pipeline continuation returned non-completed status")
-            summary = f"run_id={run_id} {error[:120]}"
+        dispatch = await asyncio.to_thread(
+            dispatch_modal_prediction_continuation,
+            payload,
+            jobs_client=_jobs_client,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception("[Pipeline V2] Modal prediction callback continuation failed")
-        error = f"{type(exc).__name__}: {exc}"
-        summary = f"run_id={run_id} {error[:120]}"
+        logger.exception("[Pipeline V2] Durable Modal continuation dispatch failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Modal continuation dispatch failed: {type(exc).__name__}: {exc}",
+        ) from exc
 
-    elapsed_ms = int((time.time() - started) * 1000)
-    overall_payload: dict[str, Any] = {
-        "task": "pipeline",
-        "status": status,
-        "summary": summary,
-        "duration_ms": elapsed_ms,
-        "run_id": run_id,
-    }
-    if run_date:
-        overall_payload["run_date"] = run_date
-    if error:
-        overall_payload["error"] = error
-
-    await _callback_worker(overall_payload)
-    await _emit_subtask_callbacks(run_id, result, status, error, elapsed_ms, run_date=run_date or None)
-
-    snapshot_state = ((result or {}).get("metrics") or {}).get("dataset_snapshot_export") or {}
-    if status == "success" and snapshot_state.get("status") == "deferred":
-        await run_deferred_snapshot_followup(run_date=run_date, run_id=run_id, callback_worker=_callback_worker)
-
-    return {
-        "status": status,
-        "run_id": run_id,
-        "run_date": run_date,
-        "summary": summary,
-        "duration_ms": elapsed_ms,
-    }
-
+    return JSONResponse(
+        status_code=202,
+        content={
+            "status": "accepted",
+            "run_id": dispatch["run_id"],
+            "run_date": dispatch["run_date"],
+            "execution_id": dispatch.get("execution_id"),
+            "idempotent": bool(dispatch.get("idempotent")),
+            "receipt_path": dispatch["receipt_path"],
+        },
+    )
 
 @router.post("/v2/run")
 async def trigger_pipeline_v2(

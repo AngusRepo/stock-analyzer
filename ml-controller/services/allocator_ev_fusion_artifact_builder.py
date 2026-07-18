@@ -10,6 +10,7 @@ from scipy.stats import t as student_t
 
 from services.evidence_contracts import (
     ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
+    CANONICAL_ROUNDTRIP_COST_RATE,
     ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
     LABEL_SCHEMA_VERSION,
 )
@@ -1664,7 +1665,7 @@ def load_allocator_ev_fusion_oof_training_rows(
     """Load one homogeneous OOF cohort with cross-fitted L4 and S12 labels."""
 
     rows = query_fn(
-        """
+        f"""
         WITH price_horizons AS (
           SELECT
             sp.stock_id,
@@ -1704,7 +1705,7 @@ def load_allocator_ev_fusion_oof_training_rows(
           'purged_oof_label_known_date_strict' allocator_ev_feature_snapshot_guard,
           'canonical_market_daily:finlab.price' label_adjustment_source,
           ((ph.exit_raw_close * ph.exit_adjustment_factor)
-            / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 l4_executable_return_pct,
+            / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} l4_executable_return_pct,
           NULL trade_pnl_pct,
           l4.prediction_json l4_prediction_json,
           (
@@ -1793,7 +1794,7 @@ def load_allocator_ev_fusion_training_rows(
     snapshot_available = False
     try:
         snapshot_rows = query_fn(
-            """
+            f"""
             WITH price_horizons AS (
                 SELECT
                     sp.stock_id,
@@ -1826,7 +1827,7 @@ def load_allocator_ev_fusion_training_rows(
                 fs.forecast_data,
                 'canonical_market_daily:finlab.price' AS label_adjustment_source,
                 ((ph.exit_raw_close * ph.exit_adjustment_factor)
-                  / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 AS l4_executable_return_pct,
+                  / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} AS l4_executable_return_pct,
                 p.trade_pnl_pct,
                 (
                     SELECT o.pnl_pct
@@ -1918,7 +1919,7 @@ def load_allocator_ev_fusion_training_rows(
         return snapshot_rows
 
     return query_fn(
-        """
+        f"""
         WITH price_horizons AS (
             SELECT
                 sp.stock_id,
@@ -1951,7 +1952,7 @@ def load_allocator_ev_fusion_training_rows(
             p.forecast_data,
             'canonical_market_daily:finlab.price' AS label_adjustment_source,
             ((ph.exit_raw_close * ph.exit_adjustment_factor)
-              / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 AS l4_executable_return_pct,
+              / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} AS l4_executable_return_pct,
             p.trade_pnl_pct,
             (
                 SELECT o.pnl_pct

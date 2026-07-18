@@ -19,6 +19,10 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from . import d1_client
+from .evidence_contracts import (
+    CANONICAL_ROUNDTRIP_COST_RATE,
+    LABEL_SCHEMA_VERSION,
+)
 from ._predictions_schema import (
     UPDATE_VERIFY_SQL,
     TradeSimulationResult,
@@ -29,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 VERIFIABLE_MARKETS = {"TWSE", "OTC", "TPEX", "EMERGING"}
 VERIFICATION_HORIZON_SESSIONS = 5
-VERIFICATION_RETURN_SEMANTIC_VERSION = "next-session-open-to-fifth-session-close-v2"
+VERIFICATION_RETURN_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -55,7 +59,8 @@ def _resolve_verification_prediction_window(
     unscheduled closures.
     """
     latest_rows = d1_client.query(
-        "SELECT MAX(date) AS latest_date FROM stock_prices WHERE date <= ?",
+        "SELECT MAX(date) AS latest_date FROM canonical_market_daily "
+        "WHERE stock_id = '0050' AND source = 'finlab.price' AND date <= ?",
         params=[as_of.isoformat()],
     )
     latest_price_date = latest_rows[0].get("latest_date") if latest_rows else None
@@ -63,7 +68,10 @@ def _resolve_verification_prediction_window(
         mature_rows = d1_client.query(
             """
             SELECT date AS mature_prediction_date
-            FROM (SELECT DISTINCT date FROM stock_prices WHERE date <= ?)
+            FROM (
+              SELECT DISTINCT date FROM canonical_market_daily
+              WHERE stock_id = '0050' AND source = 'finlab.price' AND date <= ?
+            )
             ORDER BY date DESC
             LIMIT 1 OFFSET ?
             """,
@@ -280,10 +288,16 @@ def load_bars_for_prediction(stock_id: int, generated_at: str, prediction_date: 
     look_from = business_date.isoformat()
 
     sql = """
-        SELECT date, open, high, low, close
-        FROM stock_prices
-        WHERE stock_id=? AND date > ?
-        ORDER BY date ASC LIMIT 7
+        SELECT c.date, c.open, c.high, c.low, c.close,
+               c.adj_open, c.adj_high, c.adj_low, c.adj_close
+        FROM stocks s
+        JOIN canonical_market_daily c
+          ON c.stock_id = s.symbol
+         AND c.source = 'finlab.price'
+        WHERE s.id = ? AND c.date > ?
+          AND c.open > 0 AND c.high > 0 AND c.low > 0 AND c.close > 0
+          AND c.adj_open > 0 AND c.adj_high > 0 AND c.adj_low > 0 AND c.adj_close > 0
+        ORDER BY c.date ASC LIMIT 7
     """
     return d1_client.query(sql, params=[stock_id, look_from])
 
@@ -313,11 +327,17 @@ def load_bars_for_predictions(predictions: list[dict], chunk_size: int = 80) -> 
         placeholders = ",".join("?" for _ in chunk)
         rows = d1_client.query(
             f"""
-            SELECT stock_id, date, open, high, low, close
-            FROM stock_prices
-            WHERE stock_id IN ({placeholders})
-              AND date > ?
-            ORDER BY stock_id ASC, date ASC
+            SELECT s.id AS stock_id, c.date, c.open, c.high, c.low, c.close,
+                   c.adj_open, c.adj_high, c.adj_low, c.adj_close
+            FROM stocks s
+            JOIN canonical_market_daily c
+              ON c.stock_id = s.symbol
+             AND c.source = 'finlab.price'
+            WHERE s.id IN ({placeholders})
+              AND c.date > ?
+              AND c.open > 0 AND c.high > 0 AND c.low > 0 AND c.close > 0
+              AND c.adj_open > 0 AND c.adj_high > 0 AND c.adj_low > 0 AND c.adj_close > 0
+            ORDER BY s.id ASC, c.date ASC
             """,
             params=[*chunk, min_date],
         )
@@ -381,10 +401,11 @@ def verify_single_prediction(
     # ── Derive entry/stop/targets (fall back to defaults if null) ────────────
     actual_bar = horizon_bars[-1]
     actual_price = actual_bar["close"]
+    label_end_price = actual_bar.get("adj_close")
     label_end_date = str(actual_bar.get("date") or "").strip()
-    if not label_end_date:
+    if not label_end_date or not label_end_price or label_end_price <= 0:
         return None
-    label_entry_price = horizon_bars[0].get("open")
+    label_entry_price = horizon_bars[0].get("adj_open")
     if not label_entry_price or label_entry_price <= 0:
         return None
     # Cross-sectional model evaluation requires one stock/date outcome shared by
@@ -395,12 +416,12 @@ def verify_single_prediction(
     target1 = pred.get("target1") or (entry_price * (1.05 if is_long else 0.95))
     target2 = pred.get("target2") or (entry_price * (1.08 if is_long else 0.92))
 
-    actual_return_pct = (actual_price - label_entry_price) / label_entry_price
+    actual_return_pct = (label_end_price - label_entry_price) / label_entry_price - CANONICAL_ROUNDTRIP_COST_RATE
 
     # Actual direction with noise band (matches worker 1.001/0.999 bands)
-    if actual_price > label_entry_price * 1.001:
+    if actual_return_pct > 0.001:
         actual_direction = "up"
-    elif actual_price < label_entry_price * 0.999:
+    elif actual_return_pct < -0.001:
         actual_direction = "down"
     else:
         actual_direction = "neutral"

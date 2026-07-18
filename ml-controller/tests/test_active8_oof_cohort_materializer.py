@@ -409,10 +409,11 @@ def test_v2_manifest_reuses_verified_parent_artifacts():
             "checksum": parent_checksum,
         },
         "windows": [{
-            "window_id": 0,
+            "window_id": 1,
             "train_range": ["2026-03-01", "2026-06-25"],
             "test_range": ["2026-06-26", "2026-07-09"],
             "source_cohort_id": parent_cohort,
+            "source_fold_id": "w0",
             "source_manifest_checksum": parent_checksum,
             "model_metrics": metrics,
         }],
@@ -442,6 +443,7 @@ def test_v2_manifest_reuses_verified_parent_artifacts():
     assert len(rows) == 8
     assert {row["cohort_id"] for row in rows} == {child_cohort}
     assert {row["source_cohort_id"] for row in rows} == {parent_cohort}
+    assert {row["fold_id"] for row in rows} == {"w1"}
     assert len(index_rows) == 8
     assert {row["source_manifest_checksum"] for row in index_rows} == {parent_checksum}
     assert dry_run["prediction_storage_mode"] == "gcs_indexed_v1"

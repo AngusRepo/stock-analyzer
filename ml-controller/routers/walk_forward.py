@@ -88,8 +88,6 @@ def _load_resume_plan(
         if key not in requested:
             raise HTTPException(status_code=400, detail=f"resume fold split not present in requested plan: {key}")
         requested_window_id = requested[key]
-        if int(parent_window.get("window_id", -1)) != int(requested_window_id):
-            raise HTTPException(status_code=400, detail=f"resume fold id does not match requested plan: {key}")
         reused.append(requested_window_id)
     reused_set = set(reused)
     return {
@@ -374,9 +372,46 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
     if "DLinear" in eligible:
         train_groups.append("dlinear")
     lifecycle_targets = [name for name in eligible if name in _ACTIVE8_LIFECYCLE_MODELS]
+    prep = manifest.get("prep_manifest") if isinstance(manifest.get("prep_manifest"), dict) else {}
+    prep_lineage_ready = (
+        manifest.get("schema_version") == "active8-oof-cohort-manifest-v3"
+        and len(str(prep.get("manifest_checksum") or "")) == 64
+        and prep.get("target_semantic_version") == manifest.get("target_semantic_version")
+        and float(prep.get("roundtrip_cost_bps") or 0.0) == 18.0
+        and int(prep.get("batch_count") or 0) > 0
+    )
+    sequence = (
+        manifest.get("sequence_manifest")
+        if isinstance(manifest.get("sequence_manifest"), dict)
+        else {}
+    )
+    sequence_checksums = sequence.get("batch_checksums") or {}
+    sequence_lineage_ready = (
+        len(str(sequence.get("artifact_checksum") or "")) == 64
+        and sequence.get("contract") == "sequence_records_v3"
+        and sequence.get("target_semantic_version") == manifest.get("target_semantic_version")
+        and int(sequence.get("batch_count") or 0) > 0
+        and len(sequence_checksums) == int(sequence.get("batch_count") or 0)
+        and all(len(str(value or "")) == 64 for value in sequence_checksums.values())
+    )
+    status = (
+        "ready"
+        if eligible and prep_lineage_ready and sequence_lineage_ready
+        else "blocked"
+    )
+    if not eligible:
+        reason = "no_full_fit_eligible_models"
+    elif not prep_lineage_ready or not sequence_lineage_ready:
+        reason = "immutable_oof_input_lineage_missing"
+    else:
+        reason = "eligible_models_ready"
     return {
-        "status": "ready" if eligible else "blocked",
-        "reason": "eligible_models_ready" if eligible else "no_full_fit_eligible_models",
+        "status": status,
+        "reason": reason,
+        "prep_lineage_ready": prep_lineage_ready,
+        "sequence_lineage_ready": sequence_lineage_ready,
+        "sequence_manifest": sequence,
+        "prep_manifest": prep,
         "eligible_models": eligible,
         "tree_models": tree_models,
         "train_model_groups": train_groups,
@@ -494,7 +529,15 @@ async def dispatch_oof_full_fit_training(
         artifact_lifecycle_contracts=lifecycle_contracts,
         artifact_lifecycle_only=not plan["train_model_groups"],
         require_exact_dataset_snapshot=True,
+        prebuilt_prep_gcs_prefix=str(manifest.get("prep_gcs_prefix") or "") or None,
+        prebuilt_prep_manifest_checksum=str((manifest.get("prep_manifest") or {}).get("manifest_checksum") or "") or None,
+        prebuilt_prep_target_semantic_version=target_semantic or None,
+        prebuilt_prep_source_cohort_id=cohort_id,
+        prebuilt_prep_source_manifest_checksum=str(manifest.get("manifest_checksum") or "") or None,
+        prebuilt_sequence_manifest_checksum=str((manifest.get("sequence_manifest") or {}).get("artifact_checksum") or "") or None,
+        prebuilt_sequence_batch_checksums=dict((manifest.get("sequence_manifest") or {}).get("batch_checksums") or {}),
         sequence_gcs_prefix=str(manifest.get("sequence_gcs_prefix") or "") or None,
+        sequence_batch_count=int(manifest.get("sequence_batch_count") or 0) or None,
         register_challengers=bool(plan["tree_models"]),
         promotion_allowed_models=plan["eligible_models"],
         oof_promotion_evidence=plan["promotion_evidence"],
@@ -806,6 +849,16 @@ class OofLifecycleRequest(BaseModel):
     promote: bool = True
 
 
+OOF_TRAIN_SESSIONS = 60
+OOF_TEST_SESSIONS = 10
+OOF_PROMOTION_MIN_FOLDS = 5
+OOF_LABEL_PURGE_SESSIONS = 5
+OOF_MIN_MATURE_SESSIONS = (
+    OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
+)
+OOF_LIFECYCLE_MIN_SESSIONS = OOF_MIN_MATURE_SESSIONS + OOF_LABEL_PURGE_SESSIONS
+
+
 def _oof_lifecycle_calendar(end_date: str | None) -> tuple[list[str], dict[str, object]]:
     from services import d1_client
     from datetime import datetime, timezone, timedelta
@@ -813,10 +866,14 @@ def _oof_lifecycle_calendar(end_date: str | None) -> tuple[list[str], dict[str, 
     cutoff = end_date or datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
     rows = d1_client.query(
         """
-        SELECT substr(date, 1, 10) trading_date, COUNT(*) price_rows
-        FROM stock_prices
-        WHERE substr(date, 1, 10) <= ?
-        GROUP BY substr(date, 1, 10)
+        SELECT date trading_date, COUNT(*) price_rows
+        FROM canonical_market_daily
+        WHERE symbol = '0050'
+          AND source = 'finlab.price'
+          AND date <= ?
+          AND adj_open IS NOT NULL
+          AND adj_close IS NOT NULL
+        GROUP BY date
         ORDER BY trading_date DESC
         LIMIT 160
         """,
@@ -878,10 +935,13 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     if bucket is None:
         raise HTTPException(status_code=500, detail="GCS unavailable")
     dates, calendar_evidence = _oof_lifecycle_calendar(req.end_date)
-    if len(dates) < 95:
+    if len(dates) < OOF_LIFECYCLE_MIN_SESSIONS:
         raise HTTPException(
             status_code=422,
-            detail=f"OOF lifecycle requires 95 covered sessions, found {len(dates)}",
+            detail=(
+                f"OOF lifecycle requires {OOF_LIFECYCLE_MIN_SESSIONS} covered sessions "
+                f"for {OOF_PROMOTION_MIN_FOLDS} purged folds, found {len(dates)}"
+            ),
         )
     knowledge_cutoff_date = dates[-1]
 
@@ -898,7 +958,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     else:
         from services.backtest_engine import walk_forward_windows
 
-        mature_dates = dates[:-5]
+        mature_dates = dates[:-OOF_LABEL_PURGE_SESSIONS]
         parent = _latest_ready_oof_manifest(bucket)
         resume_manifest_path = None
         prep_gcs_prefix = "universal"
@@ -917,27 +977,58 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             parent_path, parent_manifest, parent_start, compatible_parent = None, {}, "", False
 
         if compatible_parent:
-            cohort_dates = [date for date in mature_dates if date >= parent_start]
-            planned_windows = walk_forward_windows(cohort_dates, train_window_days=60, test_window_days=10)
-            parent_fold_count = len(parent_manifest.get("windows") or [])
-            if len(planned_windows) <= parent_fold_count:
+            parent_windows = list(parent_manifest.get("windows") or [])
+            parent_fold_count = len(parent_windows)
+            parent_start_index = mature_dates.index(parent_start)
+            cohort_start_index = parent_start_index
+            if parent_fold_count < OOF_PROMOTION_MIN_FOLDS:
+                cohort_start_index = max(0, parent_start_index - OOF_TEST_SESSIONS)
+            cohort_dates = mature_dates[cohort_start_index:]
+            planned_windows = walk_forward_windows(
+                cohort_dates,
+                train_window_days=OOF_TRAIN_SESSIONS,
+                test_window_days=OOF_TEST_SESSIONS,
+            )
+            parent_splits = {
+                tuple(str(value or "") for value in (
+                    *(window.get("train_range") or [None, None]),
+                    *(window.get("test_range") or [None, None]),
+                ))
+                for window in parent_windows
+            }
+            planned_splits = {
+                (window.train_start, window.train_end, window.test_start, window.test_end)
+                for window in planned_windows
+            }
+            if not parent_splits.issubset(planned_splits):
+                raise HTTPException(
+                    status_code=409,
+                    detail="OOF parent folds are not a subset of the expanded chronological plan",
+                )
+            if len(planned_windows) <= parent_fold_count and cohort_dates[0] == parent_start:
                 cohort_id = str(parent_manifest["cohort_id"])
                 manifest_path = str(parent_path)
                 start_date = parent_start
                 signal_end_date = str(parent_manifest.get("end_date") or cohort_dates[-1])[:10]
             else:
-                start_date = parent_start
+                start_date = cohort_dates[0]
                 signal_end_date = planned_windows[-1].test_end
-                cohort_id = f"active8-oof-v4-{start_date}-{signal_end_date}-tr60-te10"
+                cohort_id = (
+                    f"active8-oof-v5-{start_date}-{signal_end_date}-"
+                    f"tr{OOF_TRAIN_SESSIONS}-te{OOF_TEST_SESSIONS}"
+                )
                 manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
                 resume_manifest_path = str(parent_path)
                 prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "")
                 sequence_gcs_prefix = str(parent_manifest.get("sequence_gcs_prefix") or "")
         else:
-            cohort_dates = mature_dates[-90:]
+            cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSIONS:]
             start_date = cohort_dates[0]
             signal_end_date = cohort_dates[-1]
-            cohort_id = f"active8-oof-v3-{start_date}-{signal_end_date}-tr60-te10"
+            cohort_id = (
+                f"active8-oof-v5-{start_date}-{signal_end_date}-"
+                f"tr{OOF_TRAIN_SESSIONS}-te{OOF_TEST_SESSIONS}"
+            )
             manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
         manifest_blob = bucket.blob(manifest_path)
         if manifest_blob.exists():
@@ -976,8 +1067,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             plan = WalkForwardRequest(
                 start_date=start_date,
                 end_date=signal_end_date,
-                train_window_days=60,
-                test_window_days=10,
+                train_window_days=OOF_TRAIN_SESSIONS,
+                test_window_days=OOF_TEST_SESSIONS,
                 cohort_id=cohort_id,
                 confirm=not req.dry_run,
                 concurrent_windows=2,

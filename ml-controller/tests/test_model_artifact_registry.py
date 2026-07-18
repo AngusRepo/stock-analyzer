@@ -11,7 +11,7 @@ from services import model_artifact_registry as registry  # noqa: E402
 
 PROMOTION_GRADE_OFFLINE_EVIDENCE = (
     '{"gate":{"decision":"STRONG_PASS","metrics":{"model_cpcv_decision":"PASS"}},'
-    '"registration":{"metadata":{"target_semantic_version":"next-session-open-to-fifth-session-close-v2"}},'
+    f'"registration":{{"metadata":{{"target_semantic_version":"{registry.ACTIVE8_TARGET_SEMANTIC_VERSION}"}}}},'
     '"validation_packet":{"pbo":0.12,"deflated_sharpe":1.21,"monte_carlo":{"decision":"PASS"}}}'
 )
 
@@ -1527,7 +1527,7 @@ def test_promotion_queue_rejects_artifact_without_executable_target_lineage():
         "offline_gate_decision": "STRONG_PASS",
         "live_gate_status": "passed",
         "offline_evidence_json": PROMOTION_GRADE_OFFLINE_EVIDENCE.replace(
-            "next-session-open-to-fifth-session-close-v2",
+            registry.ACTIVE8_TARGET_SEMANTIC_VERSION,
             "signal-close-to-fifth-session-close-v1",
         ),
         "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,

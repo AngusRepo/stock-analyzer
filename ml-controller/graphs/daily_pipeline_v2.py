@@ -1375,10 +1375,24 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             except Exception as e:
                 r["ensemble_v2_error"] = f"{type(e).__name__}: {e}"
                 logger.warning("[Pipeline V2] ensemble_v2 merge failed for %s: %s", sym, e)
+        merged_count = sum(1 for value in pred_map.values() if isinstance(value.get("ensemble_v2"), dict))
         logger.info(
-            f"[Pipeline V2] Ensemble V2 merged: {sum(1 for v in pred_map.values() if 'ensemble_v2' in v)}/{len(pred_map)} stocks "
+            f"[Pipeline V2] Ensemble V2 merged: {merged_count}/{len(pred_map)} stocks "
             f"(degraded_dampening={degraded_dampening})"
         )
+        if pred_map and merged_count == 0:
+            blocker_counts: dict[str, int] = {}
+            for value in pred_map.values():
+                lineage = value.get("model_score_lineage") if isinstance(value.get("model_score_lineage"), dict) else {}
+                blockers = list(lineage.get("blockers") or []) or [
+                    str(value.get("ensemble_v2_error") or "ensemble_v2_missing")
+                ]
+                for blocker in blockers:
+                    blocker_counts[str(blocker)] = blocker_counts.get(str(blocker), 0) + 1
+            raise RuntimeError(
+                "formal_layer3_ensemble_unavailable: "
+                + json.dumps(dict(sorted(blocker_counts.items())), ensure_ascii=False)
+            )
 
         # #B Option 1 Top-K override (2026-04-21): regression-on-rank predictions
         # compress to [0.43, 0.58] under realistic R蝪?0.02-0.05, never hitting
@@ -1397,7 +1411,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 "but sparse allocator is the final owner and forced BUY is disabled"
             )
     else:
-        logger.info("[Pipeline V2] Ensemble V2 skip (model_pool.json not initialized)")
+        raise RuntimeError("formal_layer3_model_pool_unavailable")
 
     dispersion = build_prediction_dispersion_report(pred_map)
     logger.info(
@@ -3434,12 +3448,27 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
         raise ValueError("pipeline Modal prediction callback result must be an object")
 
     state = _read_pipeline_async_state_artifact(state_gcs_uri)
+    expected_lineage = {
+        "run_id": str(state.get("producer_run_id") or "").strip(),
+        "run_date": str(state.get("run_date") or "")[:10],
+        "state_gcs_uri": state_gcs_uri,
+    }
+    callback_lineage = {
+        "run_id": str(callback_payload.get("run_id") or "").strip(),
+        "run_date": str(callback_payload.get("run_date") or "")[:10],
+        "state_gcs_uri": state_gcs_uri,
+    }
+    bundle_lineage = {
+        "run_id": str(result.get("run_id") or "").strip(),
+        "run_date": str(result.get("run_date") or "")[:10],
+        "state_gcs_uri": str(result.get("state_gcs_uri") or "").strip(),
+    }
+    for key, expected in expected_lineage.items():
+        if not expected or callback_lineage[key] != expected or bundle_lineage[key] != expected:
+            raise ValueError(f"pipeline Modal prediction lineage mismatch: {key}")
+
     state["modal_prediction_state_gcs_uri"] = state_gcs_uri
     state["modal_prediction_bundle"] = result
-    if callback_payload.get("run_id"):
-        state["producer_run_id"] = str(callback_payload.get("run_id"))
-    if callback_payload.get("run_date"):
-        state["run_date"] = str(callback_payload.get("run_date"))
 
     t0 = asyncio.get_event_loop().time()
     try:

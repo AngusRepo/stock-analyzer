@@ -22,6 +22,7 @@ from .model_validation import build_model_cpcv_evidence
 from .research_benchmarks.common import direction_accuracy, load_tabular_dataset, rank_ic
 from .training_promotion_policy import resolve_training_promotion_intent
 from .training_policy import build_model_feature_policy_metadata
+from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
 MODEL_NAME = "TabM"
 DEFAULT_BATCH_COUNT = 5
@@ -413,7 +414,7 @@ def train_tabm_universal(payload: dict | None = None) -> dict[str, Any]:
         "model_name": MODEL_NAME,
         "model_type": "tabular_neural_tabm",
         "family": "tabular_neural",
-        "target_semantic_version": "next-session-open-to-fifth-session-close-v2",
+        "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
         "trained_at": trained_at,
         "feature_names": dataset.feature_names,
         "feature_count": len(dataset.feature_names),

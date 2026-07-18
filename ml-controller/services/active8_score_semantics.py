@@ -10,10 +10,11 @@ from services.active_model_policy import (
     OPTIONAL_SEQUENCE_ALPHA_MODELS,
 )
 from services.ev_lineage_contract import build_model_set_signature, is_known_artifact_version
+from services.evidence_contracts import LABEL_SCHEMA_VERSION
 
 
 MODEL_SCORE_SEMANTIC_VERSION = "active8-daily-market-cross-sectional-percentile-v1"
-MODEL_TARGET_SEMANTIC_VERSION = "next-session-open-to-fifth-session-close-v2"
+MODEL_TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 MODEL_SCORE_LINEAGE_SCHEMA_VERSION = "active8-model-score-lineage-v2"
 
 _SEQUENCE_SOURCE_KEYS = {

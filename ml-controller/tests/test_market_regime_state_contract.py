@@ -71,7 +71,7 @@ def test_daily_pipeline_recommendation_path_uses_market_regime_state_contract():
     assert "build_market_regime_contract_from_market_env" in source
     assert 'kv_client.get("ml:regime")' not in source
     assert 'kv_client.get_json("ml:regime:meta"' not in source
-    assert "market_regime_state missing before recommendation" in source
+    assert "market_regime_state missing before {scope}" in source
 
 
 def test_market_env_fallback_builds_dated_regime_contract_when_kv_missing():

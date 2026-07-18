@@ -26,11 +26,11 @@ def test_verify_feedback_keeps_return_pct_and_pnl_r_separate(monkeypatch):
         verify_service,
         "load_bars_for_prediction",
         lambda stock_id, generated_at, prediction_date=None: [
-            {"date": "2026-04-21", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
-            {"date": "2026-04-22", "open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0},
-            {"date": "2026-04-23", "open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0},
-            {"date": "2026-04-24", "open": 103.0, "high": 105.0, "low": 102.0, "close": 104.0},
-            {"date": "2026-04-27", "open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0},
+            {"date": "2026-04-21", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "adj_open": 100.0, "adj_high": 101.0, "adj_low": 99.0, "adj_close": 100.0},
+            {"date": "2026-04-22", "open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0, "adj_open": 100.0, "adj_high": 103.0, "adj_low": 99.5, "adj_close": 102.0},
+            {"date": "2026-04-23", "open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0, "adj_open": 102.0, "adj_high": 104.0, "adj_low": 101.0, "adj_close": 103.0},
+            {"date": "2026-04-24", "open": 103.0, "high": 105.0, "low": 102.0, "close": 104.0, "adj_open": 103.0, "adj_high": 105.0, "adj_low": 102.0, "adj_close": 104.0},
+            {"date": "2026-04-27", "open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0, "adj_open": 104.0, "adj_high": 106.0, "adj_low": 103.0, "adj_close": 105.0},
         ],
     )
 
@@ -57,11 +57,11 @@ def test_verify_feedback_keeps_return_pct_and_pnl_r_separate(monkeypatch):
 
     assert result is not None
     feedback = result["arf"]
-    assert feedback["actual_return_pct"] == pytest.approx(0.05)
+    assert feedback["actual_return_pct"] == pytest.approx(0.0482)
     assert feedback["realized_pnl_r"] == pytest.approx(1.0)
     assert feedback["forecast_pct"] == pytest.approx(0.03)
     assert "actual_return" not in feedback
-    assert result["bind"][14] == "next-session-open-to-fifth-session-close-v2"
+    assert result["bind"][14] == verify_service.VERIFICATION_RETURN_SEMANTIC_VERSION
     assert result["bind"][15] == pytest.approx(100.0)
     assert result["bind"][16] == "2026-04-27"
     assert result["bind"][17] == "2026-04-27"
@@ -72,11 +72,11 @@ def test_verify_neutral_rows_still_write_actual_return_for_ic(monkeypatch):
         verify_service,
         "load_bars_for_prediction",
         lambda stock_id, generated_at, prediction_date=None: [
-            {"date": "2026-04-21", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
-            {"date": "2026-04-22", "open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0},
-            {"date": "2026-04-23", "open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0},
-            {"date": "2026-04-24", "open": 103.0, "high": 105.0, "low": 102.0, "close": 104.0},
-            {"date": "2026-04-27", "open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0},
+            {"date": "2026-04-21", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "adj_open": 100.0, "adj_high": 101.0, "adj_low": 99.0, "adj_close": 100.0},
+            {"date": "2026-04-22", "open": 100.0, "high": 103.0, "low": 99.5, "close": 102.0, "adj_open": 100.0, "adj_high": 103.0, "adj_low": 99.5, "adj_close": 102.0},
+            {"date": "2026-04-23", "open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0, "adj_open": 102.0, "adj_high": 104.0, "adj_low": 101.0, "adj_close": 103.0},
+            {"date": "2026-04-24", "open": 103.0, "high": 105.0, "low": 102.0, "close": 104.0, "adj_open": 103.0, "adj_high": 105.0, "adj_low": 102.0, "adj_close": 104.0},
+            {"date": "2026-04-27", "open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0, "adj_open": 104.0, "adj_high": 106.0, "adj_low": 103.0, "adj_close": 105.0},
         ],
     )
 
@@ -95,7 +95,7 @@ def test_verify_neutral_rows_still_write_actual_return_for_ic(monkeypatch):
     assert result is not None
     assert result["bind"][0] == "neutral"
     assert result["bind"][4] is None
-    assert result["bind"][8] == pytest.approx(0.05)
+    assert result["bind"][8] == pytest.approx(0.0482)
     assert result["arf"] is None
 
 
@@ -117,17 +117,17 @@ def test_verify_ic_label_uses_shared_next_open_not_planned_entry():
         },
         market_risk={},
         bars_override=[
-            {"date": "2026-07-02", "open": 100.0, "high": 101.0, "low": 96.0, "close": 100.0},
-            {"date": "2026-07-03", "open": 101.0, "high": 103.0, "low": 99.0, "close": 102.0},
-            {"date": "2026-07-06", "open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0},
-            {"date": "2026-07-07", "open": 103.0, "high": 105.0, "low": 102.0, "close": 104.0},
-            {"date": "2026-07-08", "open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0},
+            {"date": "2026-07-02", "open": 100.0, "high": 101.0, "low": 96.0, "close": 100.0, "adj_open": 100.0, "adj_high": 101.0, "adj_low": 96.0, "adj_close": 100.0},
+            {"date": "2026-07-03", "open": 101.0, "high": 103.0, "low": 99.0, "close": 102.0, "adj_open": 101.0, "adj_high": 103.0, "adj_low": 99.0, "adj_close": 102.0},
+            {"date": "2026-07-06", "open": 102.0, "high": 104.0, "low": 101.0, "close": 103.0, "adj_open": 102.0, "adj_high": 104.0, "adj_low": 101.0, "adj_close": 103.0},
+            {"date": "2026-07-07", "open": 103.0, "high": 105.0, "low": 102.0, "close": 104.0, "adj_open": 103.0, "adj_high": 105.0, "adj_low": 102.0, "adj_close": 104.0},
+            {"date": "2026-07-08", "open": 104.0, "high": 106.0, "low": 103.0, "close": 105.0, "adj_open": 104.0, "adj_high": 106.0, "adj_low": 103.0, "adj_close": 105.0},
         ],
     )
 
     assert result is not None
-    assert result["bind"][8] == pytest.approx(0.05)
-    assert result["arf"]["actual_return_pct"] == pytest.approx(0.05)
+    assert result["bind"][8] == pytest.approx(0.0482)
+    assert result["arf"]["actual_return_pct"] == pytest.approx(0.0482)
 
 
 def test_verify_does_not_write_immature_five_session_label():
@@ -141,7 +141,7 @@ def test_verify_does_not_write_immature_five_session_label():
         },
         market_risk={},
         bars_override=[
-            {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0}
+            {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "adj_open": 100.0, "adj_high": 101.0, "adj_low": 99.0, "adj_close": 100.0}
             for _ in range(4)
         ],
     )
@@ -274,11 +274,11 @@ def test_prepare_verification_updates_batches_bars(monkeypatch):
         "load_bars_for_predictions",
         lambda pending: calls.__setitem__("bulk", calls["bulk"] + 1) or {
             1: [
-                {"date": "2026-05-01", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
-                {"date": "2026-05-04", "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0},
-                {"date": "2026-05-05", "open": 101.0, "high": 102.0, "low": 100.0, "close": 101.0},
-                {"date": "2026-05-06", "open": 101.0, "high": 103.0, "low": 100.0, "close": 102.0},
-                {"date": "2026-05-07", "open": 102.0, "high": 103.0, "low": 101.0, "close": 102.0},
+                {"date": "2026-05-01", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "adj_open": 100.0, "adj_high": 101.0, "adj_low": 99.0, "adj_close": 100.0},
+                {"date": "2026-05-04", "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0, "adj_open": 100.0, "adj_high": 102.0, "adj_low": 99.0, "adj_close": 101.0},
+                {"date": "2026-05-05", "open": 101.0, "high": 102.0, "low": 100.0, "close": 101.0, "adj_open": 101.0, "adj_high": 102.0, "adj_low": 100.0, "adj_close": 101.0},
+                {"date": "2026-05-06", "open": 101.0, "high": 103.0, "low": 100.0, "close": 102.0, "adj_open": 101.0, "adj_high": 103.0, "adj_low": 100.0, "adj_close": 102.0},
+                {"date": "2026-05-07", "open": 102.0, "high": 103.0, "low": 101.0, "close": 102.0, "adj_open": 102.0, "adj_high": 103.0, "adj_low": 101.0, "adj_close": 102.0},
             ]
         },
     )

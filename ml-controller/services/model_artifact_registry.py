@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Literal
 
 from services import d1_client
+from services.evidence_contracts import LABEL_SCHEMA_VERSION
 from services.model_validation_policy import resolve_model_validation_policy
 
 CandidateType = Literal[
@@ -51,7 +52,7 @@ PRODUCTION_ARTIFACT_EXTENSIONS: dict[str, str] = {
 PRODUCTION_ARTIFACT_MODEL_NAMES = frozenset(PRODUCTION_ARTIFACT_EXTENSIONS)
 ACTIVE8_ARTIFACT_MODEL_NAMES = PRODUCTION_ARTIFACT_MODEL_NAMES - {"TimesFM"}
 ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v3"
-ACTIVE8_TARGET_SEMANTIC_VERSION = "next-session-open-to-fifth-session-close-v2"
+ACTIVE8_TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 TIMESFM_L175_RELEASE_COHORT = frozenset({"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"})
 PROMOTION_GRADE_SEQUENCE_METHODS = frozenset({
     "purged_cpcv_sequence_rank_ic",

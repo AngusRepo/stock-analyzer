@@ -152,8 +152,50 @@ def _patch_common(monkeypatch, *, state_space_result: dict | None = None, state_
     monkeypatch.setattr(
         daily_pipeline_v2,
         "_load_pool_and_ic",
-        lambda: ({}, {}, 1.0, {}, False, {}),
+        lambda: (
+            {"XGBoost": "active"},
+            {},
+            1.0,
+            {},
+            True,
+            {
+                "models": {
+                    "XGBoost": {
+                        "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                    },
+                },
+            },
+        ),
     )
+    monkeypatch.setattr(
+        daily_pipeline_v2,
+        "_resolve_runtime_regime_contract",
+        lambda *_args, **_kwargs: {"regime": "sideways", "source": "test"},
+    )
+    monkeypatch.setattr(
+        daily_pipeline_v2,
+        "load_threshold_policy_snapshot",
+        lambda **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        daily_pipeline_v2,
+        "resolve_ml_threshold_policy",
+        lambda **_kwargs: types.SimpleNamespace(
+            policy_id="test-policy",
+            version="v1",
+            selected_regime="sideways",
+            evidence_hash="test-hash",
+        ),
+    )
+
+    def fake_attach(row, *_args, **_kwargs):
+        row["ensemble_v2"] = {
+            "avg_rank": 0.7,
+            "signal": row.get("signal", "HOLD"),
+            "contributing_models": ["XGBoost"],
+        }
+
+    monkeypatch.setattr(daily_pipeline_v2, "_attach_ensemble_v2", fake_attach)
 
 
 def test_state_space_shadow_mode_spawns_without_blocking_prediction(monkeypatch):
@@ -186,7 +228,7 @@ def test_state_space_shadow_mode_spawns_without_blocking_prediction(monkeypatch)
     _patch_common(monkeypatch)
     monkeypatch.setattr(modal_client, "spawn_state_space_overlays_batch_predict", fake_spawn)
 
-    result = _run(daily_pipeline_v2.node_ml_predict({"payloads": [_payload()]}))
+    result = _run(daily_pipeline_v2.node_ml_predict({"run_date": "2026-03-06", "payloads": [_payload()]}))
 
     pred = result["predictions"]["2330"]
     assert pred["signal"] == "BUY"
@@ -196,7 +238,7 @@ def test_state_space_shadow_mode_spawns_without_blocking_prediction(monkeypatch)
         "n": 1,
         "horizon": 5,
         "version_by_model": {"KalmanFilter": "v1", "MarkovSwitching": "v1"},
-        "run_date": None,
+        "run_date": "2026-03-06",
         "run_id": None,
         "callback_url": "https://worker.example.test/api/internal/state-space-shadow/callback",
         "callback_token": "service-token",
@@ -218,7 +260,7 @@ def test_state_space_blocking_mode_preserves_overlay_attachment(monkeypatch):
     }
     _patch_common(monkeypatch, state_space_result=state_space_result)
 
-    result = _run(daily_pipeline_v2.node_ml_predict({"payloads": [_payload()]}))
+    result = _run(daily_pipeline_v2.node_ml_predict({"run_date": "2026-03-06", "payloads": [_payload()]}))
 
     pred = result["predictions"]["2330"]
     assert pred["kalman_filter"]["forecast_pct"] == 0.01
@@ -243,7 +285,7 @@ def test_state_space_soft_deadline_continues_without_overlay(monkeypatch):
 
     _patch_common(monkeypatch, state_space_fn=slow_state_space)
 
-    result = _run(daily_pipeline_v2.node_ml_predict({"payloads": [_payload()]}))
+    result = _run(daily_pipeline_v2.node_ml_predict({"run_date": "2026-03-06", "payloads": [_payload()]}))
 
     pred = result["predictions"]["2330"]
     assert pred["signal"] == "BUY"
@@ -275,7 +317,7 @@ def test_gnn_full_universe_scores_attach_to_rank_scores(monkeypatch):
         ),
     )
 
-    result = _run(daily_pipeline_v2.node_ml_predict({"payloads": [_payload()]}))
+    result = _run(daily_pipeline_v2.node_ml_predict({"run_date": "2026-03-06", "payloads": [_payload()]}))
 
     pred = result["predictions"]["2330"]
     assert pred["gnn"]["graph_context"]["n_nodes"] == 1
@@ -430,6 +472,7 @@ def test_timesfm_modal_call_uses_sequence_contract_subset(monkeypatch):
     )
 
     result = _run(daily_pipeline_v2.node_l2_timesfm_enrich({
+        "run_date": "2026-03-06",
         "payloads": [
             _payload("2330", price_count=65),
             _payload("2317", price_count=20),
@@ -472,6 +515,7 @@ def test_sequence_family_models_use_sequence_contract_subset(monkeypatch):
     )
 
     result = _run(daily_pipeline_v2.node_ml_predict({
+        "run_date": "2026-03-06",
         "payloads": [
             _payload("2330", price_count=1030),
             _payload("2317", price_count=20),

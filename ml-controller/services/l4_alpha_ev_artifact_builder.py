@@ -9,6 +9,7 @@ from typing import Any, Callable
 from scipy.stats import t as student_t
 
 from services.evidence_contracts import (
+    CANONICAL_ROUNDTRIP_COST_RATE,
     L4_ARTIFACT_CONTRACT_VERSION,
     L4_FEATURE_SEMANTIC_VERSION,
     LABEL_SCHEMA_VERSION,
@@ -753,7 +754,7 @@ def load_l4_alpha_ev_oof_training_rows(
     """Load one immutable OOF cohort with executable point-in-time labels."""
 
     return query_fn(
-        """
+        f"""
         WITH price_horizons AS (
           SELECT
             sp.stock_id,
@@ -791,7 +792,7 @@ def load_l4_alpha_ev_oof_training_rows(
           fs.model_set_signature,
           'canonical_market_daily:finlab.price' label_adjustment_source,
           ((ph.exit_raw_close * ph.exit_adjustment_factor)
-            / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 l4_executable_return_pct,
+            / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} l4_executable_return_pct,
           ph.entry_date l4_entry_date,
           ph.exit_date l4_exit_date
         FROM allocator_ev_oof_snapshots fs
@@ -826,7 +827,7 @@ def load_l4_alpha_ev_training_rows(
 ) -> list[dict[str, Any]]:
     outcome_cutoff = knowledge_cutoff_date or end_date
     rows = query_fn(
-        """
+        f"""
         WITH price_horizons AS (
             SELECT
                 sp.stock_id,
@@ -862,7 +863,7 @@ def load_l4_alpha_ev_training_rows(
             p.forecast_data,
             'canonical_market_daily:finlab.price' AS label_adjustment_source,
             ((ph.exit_raw_close * ph.exit_adjustment_factor)
-              / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 AS l4_executable_return_pct,
+              / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} AS l4_executable_return_pct,
             ph.entry_date AS l4_entry_date,
             ph.exit_date AS l4_exit_date,
             ph.entry_raw_open AS l4_entry_raw_open,

@@ -69,6 +69,8 @@ def test_explicit_walk_forward_purges_five_label_horizon_dates():
         "test_range": ["D011", "D015"],
         "purged_date_count": 5,
         "purged_row_count": 10,
+        "actual_label_known_date_required": False,
+        "purge_method": "observed_date_horizon_approximation",
     }
 
 

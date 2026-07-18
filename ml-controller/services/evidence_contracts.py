@@ -2,6 +2,8 @@
 
 LABEL_SCHEMA_VERSION = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
 LEGACY_LABEL_SCHEMA_VERSION = "next-session-raw-open-to-fifth-session-raw-close-canonical-finlab-factor-net-v3"
+CANONICAL_ROUNDTRIP_COST_BPS = 18.0
+CANONICAL_ROUNDTRIP_COST_RATE = CANONICAL_ROUNDTRIP_COST_BPS / 10_000.0
 
 L4_ARTIFACT_CONTRACT_VERSION = "l4-alpha-ev-contract-v4"
 L4_FEATURE_SEMANTIC_VERSION = "l4-directional-score-components-v2-lineage-bound"

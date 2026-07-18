@@ -11,6 +11,8 @@ import math
 import statistics
 from typing import Any
 
+from services.evidence_contracts import LABEL_SCHEMA_VERSION
+
 ALPHA_PREDICTION_MODELS = (
     "LightGBM",
     "XGBoost",
@@ -30,7 +32,7 @@ ACTIVE_ARTIFACT_CHALLENGER_MODELS = ALPHA_PREDICTION_MODELS
 
 PRODUCTION_IC_SEGMENTS = {"LISTED", "OTC", "UNKNOWN"}
 IC_EVALUATION_SEMANTIC_VERSION = "daily-cross-sectional-equal-date-v2"
-IC_TARGET_SEMANTIC_VERSION = "next-session-open-to-fifth-session-close-v2"
+IC_TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 
 
 def tracked_model_names() -> tuple[str, ...]:

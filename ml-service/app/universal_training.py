@@ -42,6 +42,7 @@ from .training_policy import (
 )
 from .training_finalizer import build_oos_artifact_path, derive_oos_artifact_group
 from .gcs_batch_io import download_existing_blobs
+from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
 
 class UniversalPrepRequest(BaseModel):
@@ -1372,7 +1373,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
     extra_meta = attach_prep_lineage_aliases({
         "training_run_id": training_run_id,
         "training_manifest_path": manifest_path,
-        "target_semantic_version": "next-session-open-to-fifth-session-close-v2",
+        "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
         "validation_split": validation_split_metadata,
         "model_cpcv_enabled": bool(req.enable_model_cpcv),
         "prep_freshness": prep_freshness,

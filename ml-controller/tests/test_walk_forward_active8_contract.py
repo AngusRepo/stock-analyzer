@@ -33,6 +33,21 @@ def test_oof_full_fit_plan_only_dispatches_models_with_pass_evidence():
     from routers.walk_forward import build_oof_full_fit_dispatch_plan
 
     manifest = {
+        "schema_version": "active8-oof-cohort-manifest-v3",
+        "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+        "prep_manifest": {
+            "manifest_checksum": "a" * 64,
+            "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+            "roundtrip_cost_bps": 18.0,
+            "batch_count": 5,
+        },
+        "sequence_manifest": {
+            "artifact_checksum": "b" * 64,
+            "contract": "sequence_records_v3",
+            "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+            "batch_count": 1,
+            "batch_checksums": {"sequence/prep/batch_0.npz": "c" * 64},
+        },
         "aggregate": {
             "oof_ready_folds": 5,
             "full_fit_eligible_models": ["XGBoost", "PatchTST", "GNN"],
@@ -112,7 +127,10 @@ def test_walk_forward_routes_long_sequence_v3_prep_into_every_oof_fold():
     assert "prep_gcs_prefix=prep_gcs_prefix" in modal_source
     assert 'gcs_prefix = f"walk_forward/oof_cohorts/{cohort_id}/w{wid}"' in modal_source
     assert '"sequence_batch_count": req.sequence_batch_count' in router_source
-    assert "active8_oof_sequence_v3_prep_batch_missing" in modal_source
+    assert "active8_oof_sequence_manifest_contract_invalid" in modal_source
+    assert "active8_oof_sequence_v3_records_missing" in modal_source
+    assert '"verification": "manifest_bytes_and_all_batch_sha256_v1"' in modal_source
+    assert '"schema_version": "active8-oof-cohort-manifest-v3"' in modal_source
     assert "canonical-adjusted-close-net-v4" in modal_source
     assert '"version": f"{cohort_id}-w{wid}"' in modal_source
     assert 'version = payload.get("output_model_version") or payload.get("version", "v1")' in modal_source
@@ -207,8 +225,8 @@ def test_resume_plan_reuses_only_exact_parent_splits(monkeypatch):
         lambda _path, bucket: (manifest, b"{}"),
     )
     windows = [
-        WalkForwardWindow(0, "2026-01-01", "2026-03-31", "2026-04-01", "2026-04-14"),
-        WalkForwardWindow(1, "2026-01-15", "2026-04-14", "2026-04-15", "2026-04-28"),
+        WalkForwardWindow(0, "2025-12-15", "2026-03-14", "2026-03-15", "2026-03-31"),
+        WalkForwardWindow(1, "2026-01-01", "2026-03-31", "2026-04-01", "2026-04-14"),
     ]
 
     plan = walk_forward._load_resume_plan(
@@ -219,8 +237,8 @@ def test_resume_plan_reuses_only_exact_parent_splits(monkeypatch):
         sequence_gcs_prefix="sequence-v3",
     )
 
-    assert plan["reused_window_ids"] == [0]
-    assert plan["new_window_ids"] == [1]
+    assert plan["reused_window_ids"] == [1]
+    assert plan["new_window_ids"] == [0]
     assert plan["parent_manifest_checksum"] == "a" * 64
 
 
@@ -228,9 +246,66 @@ def test_modal_resume_contract_verifies_artifacts_before_pending_fold_training()
     source = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
     assert "active8_oof_resume_artifact_checksum_mismatch" in source
     assert "active8_oof_resume_artifact_metadata_mismatch" in source
+    assert "parent_window.get(\"source_fold_id\") or f\"w{int(parent_window['window_id'])}\"" in source
+    assert 'reused_window["source_fold_id"] = source_fold_id' in source
     assert "pending_windows = [" in source
     assert "asyncio.gather(*[_bounded(w) for w in pending_windows])" in source
     assert '"active8-oof-cohort-manifest-v2"' in source
     assert 'method="outer_purged_walk_forward_rank_ic"' in source
     assert '"full_fit_eligible_models"' in source
     assert 'stage="promotion"' in source
+
+def test_oof_lifecycle_capacity_matches_five_purged_folds():
+    from routers import walk_forward
+    from services.backtest_engine import walk_forward_windows
+
+    mature_dates = [f"2026-{index // 28 + 1:02d}-{index % 28 + 1:02d}" for index in range(110)]
+    windows = walk_forward_windows(
+        mature_dates,
+        train_window_days=walk_forward.OOF_TRAIN_SESSIONS,
+        test_window_days=walk_forward.OOF_TEST_SESSIONS,
+    )
+
+    assert len(windows) == walk_forward.OOF_PROMOTION_MIN_FOLDS == 5
+    assert walk_forward.OOF_LIFECYCLE_MIN_SESSIONS == 115
+
+
+def test_oof_lifecycle_calendar_uses_canonical_finlab_adjusted_source(monkeypatch):
+    from routers import walk_forward
+    from services import d1_client
+
+    captured = {}
+
+    def fake_query(sql, params):
+        captured["sql"] = sql
+        captured["params"] = params
+        return [{"trading_date": "2026-07-17", "price_rows": 1}]
+
+    monkeypatch.setattr(d1_client, "query", fake_query)
+    dates, evidence = walk_forward._oof_lifecycle_calendar("2026-07-17")
+
+    assert dates == ["2026-07-17"]
+    assert "FROM canonical_market_daily" in captured["sql"]
+    assert "symbol = '0050'" in captured["sql"]
+    assert "source = 'finlab.price'" in captured["sql"]
+    assert "adj_open IS NOT NULL" in captured["sql"]
+    assert evidence["observed_dates"] == 1
+
+
+def test_full_fit_plan_blocks_legacy_manifest_without_immutable_prep():
+    from routers.walk_forward import build_oof_full_fit_dispatch_plan
+
+    plan = build_oof_full_fit_dispatch_plan({
+        "schema_version": "active8-oof-cohort-manifest-v2",
+        "aggregate": {
+            "oof_ready_folds": 5,
+            "full_fit_eligible_models": ["DLinear"],
+            "per_model_promotion_evidence": {
+                "DLinear": {"decision": "PASS", "failed_gates": []},
+            },
+        },
+    })
+
+    assert plan["status"] == "blocked"
+    assert plan["reason"] == "immutable_oof_input_lineage_missing"
+    assert plan["prep_lineage_ready"] is False

@@ -4,6 +4,7 @@ import type {
   EvidenceArtifactWriteInput,
   EvidenceArtifactWriter,
 } from '../lib/evidenceArtifactContract'
+import { sha256Text } from '../lib/datasetSnapshots'
 
 type D1RestResponse = {
   success?: boolean
@@ -37,6 +38,15 @@ type EvidenceArtifactWriterConfig = {
 }
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
+const SCREENER_ARTIFACT_DIRECT_WRITE_MAX_BYTES = 2 * 1024 * 1024
+const SCREENER_ARTIFACT_CHUNK_TARGET_BYTES = 1536 * 1024
+const SCREENER_ARTIFACT_CHUNK_SCHEMA = 'screener-funnel-evidence-chunk-v1'
+const SCREENER_ARTIFACT_INDEX_SCHEMA = 'screener-funnel-evidence-index-v1'
+const SCREENER_ARTIFACT_CHUNK_DOMAIN = 'screener_funnel_chunk'
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength
+}
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim()
@@ -124,7 +134,7 @@ export class RestEvidenceArtifactWriter implements EvidenceArtifactWriter {
     })
   }
 
-  async write(input: EvidenceArtifactWriteInput): Promise<EvidenceArtifactManifest> {
+  private async post(input: EvidenceArtifactWriteInput): Promise<EvidenceArtifactManifest> {
     const response = await fetchWithRetry(
       `${this.config.workerUrl}/api/internal/evidence-artifacts/screener-funnel`,
       {
@@ -143,10 +153,134 @@ export class RestEvidenceArtifactWriter implements EvidenceArtifactWriter {
     }
     const payload = JSON.parse(text) as { ok?: boolean; manifest?: EvidenceArtifactManifest }
     const manifest = payload.manifest
-    if (!payload.ok || !manifest || manifest.status !== 'ready' || manifest.domain !== input.domain) {
+    if (
+      !payload.ok
+      || !manifest
+      || manifest.status !== 'ready'
+      || manifest.domain !== input.domain
+      || manifest.schema_version !== input.schemaVersion
+      || manifest.row_count !== input.rowCount
+      || !manifest.artifact_id
+      || !manifest.r2_key
+      || !/^sha256:[a-f0-9]{64}$/i.test(manifest.checksum)
+    ) {
       throw new Error(`Evidence artifact writer returned invalid manifest: ${text.slice(0, 300)}`)
     }
     return manifest
+  }
+
+  private partitionScreenerItems(items: unknown[]): unknown[][] {
+    const chunks: unknown[][] = []
+    let current: unknown[] = []
+    let currentBytes = 0
+    for (const item of items) {
+      const itemBytes = utf8ByteLength(JSON.stringify(item)) + 1
+      if (itemBytes > SCREENER_ARTIFACT_CHUNK_TARGET_BYTES) {
+        throw new Error(`screener_funnel_item_exceeds_transport_limit:${itemBytes}`)
+      }
+      if (current.length && currentBytes + itemBytes > SCREENER_ARTIFACT_CHUNK_TARGET_BYTES) {
+        chunks.push(current)
+        current = []
+        currentBytes = 0
+      }
+      current.push(item)
+      currentBytes += itemBytes
+    }
+    if (current.length) chunks.push(current)
+    return chunks
+  }
+
+  private async writeChunkedScreener(
+    input: EvidenceArtifactWriteInput,
+    items: unknown[],
+  ): Promise<EvidenceArtifactManifest> {
+    const chunks = this.partitionScreenerItems(items)
+    const chunkManifests: Array<Record<string, unknown>> = []
+    let rowOffset = 0
+    for (let index = 0; index < chunks.length; index++) {
+      const chunkItems = chunks[index]
+      const chunkInput: EvidenceArtifactWriteInput = {
+        ...input,
+        domain: SCREENER_ARTIFACT_CHUNK_DOMAIN,
+        schemaVersion: SCREENER_ARTIFACT_CHUNK_SCHEMA,
+        payload: {
+          storage_mode: 'chunked_r2_child_v1',
+          logical_domain: input.domain,
+          logical_schema_version: input.schemaVersion,
+          chunk_index: index,
+          chunk_count: chunks.length,
+          row_start: rowOffset,
+          row_end_exclusive: rowOffset + chunkItems.length,
+          items: chunkItems,
+        },
+        rowCount: chunkItems.length,
+        metadata: {
+          ...(input.metadata ?? {}),
+          parent_producer_run_id: input.producerRunId,
+          chunk_index: index,
+          chunk_count: chunks.length,
+        },
+      }
+      const serializedBytes = utf8ByteLength(JSON.stringify(chunkInput))
+      if (serializedBytes > SCREENER_ARTIFACT_DIRECT_WRITE_MAX_BYTES) {
+        throw new Error(`screener_funnel_chunk_exceeds_transport_limit:${serializedBytes}`)
+      }
+      const manifest = await this.post(chunkInput)
+      chunkManifests.push({
+        chunk_index: index,
+        row_start: rowOffset,
+        row_end_exclusive: rowOffset + chunkItems.length,
+        artifact_id: manifest.artifact_id,
+        r2_key: manifest.r2_key,
+        checksum: manifest.checksum,
+        row_count: manifest.row_count,
+        byte_size: manifest.byte_size,
+        schema_version: manifest.schema_version,
+      })
+      rowOffset += chunkItems.length
+    }
+    if (rowOffset !== items.length) {
+      throw new Error(`screener_funnel_chunk_row_count_mismatch:${rowOffset}:${items.length}`)
+    }
+
+    const { items: _items, ...payloadHeader } = input.payload as Record<string, unknown> & { items: unknown[] }
+    const logicalPayloadChecksum = await sha256Text(JSON.stringify(input.payload))
+    return this.post({
+      ...input,
+      schemaVersion: SCREENER_ARTIFACT_INDEX_SCHEMA,
+      payload: {
+        storage_mode: 'chunked_r2_manifest_v1',
+        logical_schema_version: input.schemaVersion,
+        logical_payload_checksum: logicalPayloadChecksum,
+        payload_header: payloadHeader,
+        item_count: items.length,
+        chunks: chunkManifests,
+      },
+      metadata: {
+        ...(input.metadata ?? {}),
+        artifact_transport: {
+          mode: 'chunked_r2_manifest_v1',
+          chunk_count: chunkManifests.length,
+          logical_schema_version: input.schemaVersion,
+        },
+      },
+    })
+  }
+
+  async write(input: EvidenceArtifactWriteInput): Promise<EvidenceArtifactManifest> {
+    const items = input.domain === 'screener_funnel'
+      && input.schemaVersion === 'screener-funnel-evidence-v2'
+      && Array.isArray(input.payload?.items)
+      ? input.payload.items
+      : null
+    if (items && input.rowCount !== items.length) {
+      throw new Error(`screener_funnel_row_count_mismatch:${input.rowCount}:${items.length}`)
+    }
+    const serializedBytes = utf8ByteLength(JSON.stringify(input))
+    if (items && serializedBytes > SCREENER_ARTIFACT_DIRECT_WRITE_MAX_BYTES) {
+      return this.writeChunkedScreener(input, items)
+    }
+    return this.post(input)
   }
 }
 

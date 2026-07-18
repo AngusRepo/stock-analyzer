@@ -80,7 +80,15 @@ adminControlRoutes.post('/api/internal/d1/batch', async (c) => {
 
 function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
   if (!body || typeof body !== 'object') throw new Error('JSON object body is required')
-  if (body.domain !== 'screener_funnel') throw new Error('domain must be screener_funnel')
+  const schemaByDomain = new Map<string, Set<string>>([
+    ['screener_funnel', new Set([
+      'screener-funnel-evidence-v2',
+      'screener-funnel-evidence-index-v1',
+    ])],
+    ['screener_funnel_chunk', new Set(['screener-funnel-evidence-chunk-v1'])],
+  ])
+  const allowedSchemas = schemaByDomain.get(body.domain)
+  if (!allowedSchemas) throw new Error('domain must be screener_funnel or screener_funnel_chunk')
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(body.businessDate ?? ''))) {
     throw new Error('businessDate must use YYYY-MM-DD')
   }
@@ -90,9 +98,7 @@ function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
   if (!['canonical_model_evidence', 'failed_debug'].includes(body.retentionClass)) {
     throw new Error('invalid screener retentionClass')
   }
-  if (body.schemaVersion !== 'screener-funnel-evidence-v2') {
-    throw new Error('invalid screener schemaVersion')
-  }
+  if (!allowedSchemas.has(body.schemaVersion)) throw new Error('invalid screener schemaVersion')
   if (!body.payload || typeof body.payload !== 'object' || Array.isArray(body.payload)) {
     throw new Error('payload must be an object')
   }
@@ -102,6 +108,70 @@ function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
   }
   if (body.metadata != null && (typeof body.metadata !== 'object' || Array.isArray(body.metadata))) {
     throw new Error('metadata must be an object')
+  }
+  if (body.domain === 'screener_funnel_chunk') {
+    const chunkIndex = Number(body.payload.chunk_index)
+    const chunkCount = Number(body.payload.chunk_count)
+    const rowStart = Number(body.payload.row_start)
+    const rowEnd = Number(body.payload.row_end_exclusive)
+    if (
+      body.payload.storage_mode !== 'chunked_r2_child_v1'
+      || body.payload.logical_domain !== 'screener_funnel'
+      || body.payload.logical_schema_version !== 'screener-funnel-evidence-v2'
+      || !Array.isArray(body.payload.items)
+      || body.payload.items.length !== rowCount
+      || !Number.isInteger(chunkIndex)
+      || !Number.isInteger(chunkCount)
+      || chunkIndex < 0
+      || chunkCount <= chunkIndex
+      || !Number.isInteger(rowStart)
+      || !Number.isInteger(rowEnd)
+      || rowStart < 0
+      || rowEnd - rowStart !== rowCount
+    ) {
+      throw new Error('invalid screener chunk payload')
+    }
+  }
+  if (body.schemaVersion === 'screener-funnel-evidence-index-v1') {
+    const chunks = body.payload.chunks
+    if (
+      body.payload.storage_mode !== 'chunked_r2_manifest_v1'
+      || body.payload.logical_schema_version !== 'screener-funnel-evidence-v2'
+      || !/^sha256:[a-f0-9]{64}$/i.test(String(body.payload.logical_payload_checksum ?? ''))
+      || !body.payload.payload_header
+      || typeof body.payload.payload_header !== 'object'
+      || Array.isArray(body.payload.payload_header)
+      || !Array.isArray(chunks)
+      || Number(body.payload.item_count) !== rowCount
+      || !chunks.length
+    ) {
+      throw new Error('invalid screener chunk manifest payload')
+    }
+    let expectedRowStart = 0
+    for (let index = 0; index < chunks.length; index++) {
+      const chunk = chunks[index]
+      const rowStart = Number(chunk?.row_start)
+      const rowEnd = Number(chunk?.row_end_exclusive)
+      if (
+        !chunk
+        || typeof chunk !== 'object'
+        || Number(chunk.chunk_index) !== index
+        || rowStart !== expectedRowStart
+        || !Number.isInteger(rowEnd)
+        || rowEnd < rowStart
+        || Number(chunk.row_count) !== rowEnd - rowStart
+        || typeof chunk.artifact_id !== 'string'
+        || !chunk.artifact_id.startsWith('artifact:screener_funnel_chunk:')
+        || typeof chunk.r2_key !== 'string'
+        || !chunk.r2_key.includes('/domain=screener_funnel_chunk/')
+        || !/^sha256:[a-f0-9]{64}$/i.test(String(chunk.checksum ?? ''))
+        || chunk.schema_version !== 'screener-funnel-evidence-chunk-v1'
+      ) {
+        throw new Error(`invalid screener chunk manifest entry:${index}`)
+      }
+      expectedRowStart = rowEnd
+    }
+    if (expectedRowStart !== rowCount) throw new Error('screener chunk manifest row coverage mismatch')
   }
   return {
     domain: body.domain,
@@ -116,7 +186,6 @@ function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
     createdAt: typeof body.createdAt === 'string' ? body.createdAt : undefined,
   }
 }
-
 adminControlRoutes.post('/api/internal/evidence-artifacts/screener-funnel', async (c) => {
   const authError = requireServiceToken(c)
   if (authError) return authError

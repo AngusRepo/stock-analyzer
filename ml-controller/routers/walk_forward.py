@@ -1062,40 +1062,32 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         if compatible_parent:
             parent_windows = list(parent_manifest.get("windows") or [])
             parent_fold_count = len(parent_windows)
-            parent_start_index = mature_dates.index(parent_start)
-            cohort_start_index = parent_start_index
+            parent_end = str(parent_manifest.get("end_date") or "")[:10]
+            new_mature_dates = [date for date in mature_dates if date > parent_end]
             if parent_fold_count < OOF_PROMOTION_MIN_FOLDS:
-                cohort_start_index = max(0, parent_start_index - OOF_TEST_SESSIONS)
-            cohort_dates = mature_dates[cohort_start_index:]
-            planned_windows = walk_forward_windows(
-                cohort_dates,
-                train_window_days=OOF_TRAIN_SESSIONS,
-                test_window_days=OOF_TEST_SESSIONS,
-            )
-            parent_splits = {
-                tuple(str(value or "") for value in (
-                    *(window.get("train_range") or [None, None]),
-                    *(window.get("test_range") or [None, None]),
-                ))
-                for window in parent_windows
-            }
-            planned_splits = {
-                (window.train_start, window.train_end, window.test_start, window.test_end)
-                for window in planned_windows
-            }
-            if not parent_splits.issubset(planned_splits):
-                raise HTTPException(
-                    status_code=409,
-                    detail="OOF parent folds are not a subset of the expanded chronological plan",
+                parent_start_index = mature_dates.index(parent_start)
+                prepend_sessions = OOF_TEST_SESSIONS * (
+                    OOF_PROMOTION_MIN_FOLDS - parent_fold_count
                 )
-            if len(planned_windows) <= parent_fold_count and cohort_dates[0] == parent_start:
+                cohort_start_index = parent_start_index - prepend_sessions
+                if cohort_start_index < 0:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="OOF immutable prep lacks enough earlier mature sessions",
+                    )
+                start_date = mature_dates[cohort_start_index]
+                signal_end_date = parent_end
+            elif len(new_mature_dates) >= OOF_TEST_SESSIONS:
+                start_date = parent_start
+                signal_end_date = new_mature_dates[OOF_TEST_SESSIONS - 1]
+            else:
+                start_date = parent_start
+                signal_end_date = parent_end
+
+            if start_date == parent_start and signal_end_date == parent_end:
                 cohort_id = str(parent_manifest["cohort_id"])
                 manifest_path = str(parent_path)
-                start_date = parent_start
-                signal_end_date = str(parent_manifest.get("end_date") or cohort_dates[-1])[:10]
             else:
-                start_date = cohort_dates[0]
-                signal_end_date = planned_windows[-1].test_end
                 cohort_id = (
                     f"active8-oof-v5-{start_date}-{signal_end_date}-"
                     f"tr{OOF_TRAIN_SESSIONS}-te{OOF_TEST_SESSIONS}"

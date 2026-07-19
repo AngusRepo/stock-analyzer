@@ -41,7 +41,7 @@ def test_build_pool_from_d1_champion_pointer_serves_production_artifact():
             "offline_evidence_json": {
                 "registration": {
                     "metadata": {
-                        "target_semantic_version": "next-session-open-to-fifth-session-close-v2",
+                        "target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
                     }
                 }
             },
@@ -57,7 +57,41 @@ def test_build_pool_from_d1_champion_pointer_serves_production_artifact():
     assert entry["version"] == "vGood"
     assert entry["gcs_path"] == "universal/patchtst/vGood.zip"
     assert entry["rolling_ic"] == 0.12
-    assert entry["target_semantic_version"] == "next-session-open-to-fifth-session-close-v2"
+    assert entry["target_semantic_version"] == resolver.LABEL_SCHEMA_VERSION
+
+
+def test_d1_champion_retires_artifact_with_legacy_target_semantic():
+    pool = resolver.build_pool_from_champion_pointers(
+        pointers=[{
+            "model_name": "XGBoost",
+            "champion_version": "vLegacy",
+            "champion_artifact_id": "XGBoost:vLegacy:weekly_drift",
+        }],
+        artifacts=[{
+            "artifact_id": "XGBoost:vLegacy:weekly_drift",
+            "model_name": "XGBoost",
+            "version": "vLegacy",
+            "candidate_type": "weekly_drift",
+            "state": "production",
+            "artifact_path": "universal/xgboost/vLegacy.joblib",
+            "offline_gate_decision": "STRONG_PASS",
+            "live_gate_status": "passed",
+            "offline_evidence_json": {
+                "registration": {
+                    "metadata": {
+                        "target_semantic_version": "next-session-open-to-fifth-session-close-v2",
+                    }
+                }
+            },
+        }],
+        fallback_pool=_fallback_pool(),
+        required_models=("XGBoost",),
+        sidecar_models=(),
+    )
+
+    entry = pool["models"]["XGBoost"]
+    assert entry["status"] == "retired"
+    assert entry["serving_block_reason"].startswith("artifact_target_semantic_")
 
 
 def test_build_pool_from_d1_champion_pointer_retires_archived_or_failed_artifact():

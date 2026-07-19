@@ -6,6 +6,8 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from services.evidence_contracts import LABEL_SCHEMA_VERSION
+
 DIRECT_ALPHA_MODELS = (
     "LightGBM",
     "XGBoost",
@@ -122,6 +124,10 @@ def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str) 
     actual_ext = artifact_path.rsplit(".", 1)[-1].lower() if "." in artifact_path else ""
     if expected_ext and actual_ext != expected_ext:
         return f"artifact_extension_{actual_ext or 'missing'}_expected_{expected_ext}"
+    if model_name in DIRECT_ALPHA_MODELS:
+        target_semantic = str(_artifact_metadata(artifact).get("target_semantic_version") or "").strip()
+        if target_semantic != LABEL_SCHEMA_VERSION:
+            return f"artifact_target_semantic_{target_semantic or 'missing'}_expected_{LABEL_SCHEMA_VERSION}"
     return None
 
 

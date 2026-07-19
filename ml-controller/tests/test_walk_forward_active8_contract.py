@@ -51,6 +51,11 @@ def test_oof_full_fit_plan_only_dispatches_models_with_pass_evidence():
         "windows": [
             {
                 "window_id": idx,
+                "train_range": ["2026-01-01", f"2026-04-{10 + idx:02d}"],
+                "test_range": [
+                    f"2026-04-{11 + idx * 2:02d}",
+                    f"2026-04-{12 + idx * 2:02d}",
+                ],
                 "fs_result": {
                     "feature_pool": {
                         "tree_active": [f"feature_{feature_idx}" for feature_idx in range(12)]
@@ -77,6 +82,8 @@ def test_oof_full_fit_plan_only_dispatches_models_with_pass_evidence():
     assert plan["train_model_groups"] == ["tree"]
     assert plan["artifact_lifecycle_targets"] == ["PatchTST"]
     assert plan["evidence_missing_or_failed"] == ["GNN"]
+    assert plan["promotion_evidence"]["XGBoost"]["validation_design"]["refit_each_fold"] is True
+    assert plan["promotion_evidence"]["XGBoost"]["validation_design"]["chronological"] is True
 
 
 def test_walk_forward_router_exposes_active8_coverage():
@@ -565,6 +572,15 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
         },
     )
     monkeypatch.setattr(d1_client, "query", fake_query)
+    monkeypatch.setattr(
+        walk_forward,
+        "_materialize_completed_oof_release_aliases",
+        lambda **_kwargs: {
+            "status": "materialized",
+            "candidate_type": "oof_full_fit_release",
+            "written": 1,
+        },
+    )
 
     result = asyncio.run(walk_forward.dispatch_oof_full_fit_training(
         manifest={"cohort_id": "cohort-v3", "manifest_checksum": "a" * 64},
@@ -577,7 +593,87 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
     assert result["retry_required"] is False
     assert result["artifact_states"] == {"DLinear": "offline_strong_pass"}
     assert result["registry_repair"]["status"] == "repaired"
+    assert result["release_registry"]["candidate_type"] == "oof_full_fit_release"
     assert uploaded[-1]["value"]["status"] == "completed"
     assert uploaded[-1]["value"]["retry_required"] is False
     assert uploaded[-1]["value"]["missing_models"] == []
     assert uploaded[-1]["value"]["reason"] == "artifact_registry_complete"
+
+
+
+def test_completed_oof_release_alias_preserves_immutable_lineage(monkeypatch):
+    import json
+    from routers import walk_forward
+    from services import model_artifact_registry as registry
+
+    written = []
+    monkeypatch.setattr(registry, "upsert_artifact_record", lambda row: written.append(row))
+    windows = [
+        {
+            "window_id": idx,
+            "train_range": ["2026-01-01", f"2026-04-{10 + idx:02d}"],
+            "test_range": [
+                f"2026-04-{11 + idx * 2:02d}",
+                f"2026-04-{12 + idx * 2:02d}",
+            ],
+        }
+        for idx in range(5)
+    ]
+    evidence = {
+        "schema_version": "model-cpcv-evidence-v1",
+        "method": "outer_purged_walk_forward_rank_ic",
+        "decision": "PASS",
+        "passed": True,
+        "failed_gates": [],
+        "folds": 5,
+        "min_test_rows": 100,
+        "coverage_mean": 1.0,
+    }
+    result = walk_forward._materialize_completed_oof_release_aliases(
+        manifest={
+            "schema_version": "active8-oof-cohort-manifest-v3",
+            "cohort_id": "active8-oof-v5",
+            "manifest_checksum": "a" * 64,
+            "target_semantic_version": registry.ACTIVE8_TARGET_SEMANTIC_VERSION,
+            "windows": windows,
+        },
+        registry_rows=[{
+            "artifact_id": "XGBoost:vOOF:weekly_drift",
+            "model_name": "XGBoost",
+            "version": "vOOF",
+            "candidate_type": "weekly_drift",
+            "state": "offline_strong_pass",
+            "artifact_path": "universal/xgboost/vOOF.joblib",
+            "checksum": "sha256:verified",
+            "training_run_id": "oof-owner",
+            "offline_gate_decision": "PASS",
+            "offline_evidence_json": json.dumps({
+                "registration": {
+                    "metadata": {
+                        "target_semantic_version": registry.ACTIVE8_TARGET_SEMANTIC_VERSION,
+                    },
+                    "oof_promotion_evidence": evidence,
+                },
+            }),
+        }],
+        expected_run_id="oof-owner",
+        knowledge_cutoff_date="2026-07-09",
+        lifecycle_cadence="weekly",
+        eligible_models=["XGBoost"],
+    )
+
+    assert result["status"] == "materialized"
+    assert result["written"] == 1
+    row = written[0]
+    assert row["candidate_type"] == "oof_full_fit_release"
+    assert row["artifact_id"] == "XGBoost:vOOF:oof_full_fit_release"
+    offline = json.loads(row["offline_evidence_json"])
+    registration = offline["registration"]
+    assert registration["oof_promotion_evidence"]["validation_design"]["chronological"] is True
+    assert registration["oof_lifecycle_resume"] == {
+        "schema_version": "active8-oof-lifecycle-resume-v1",
+        "cohort_id": "active8-oof-v5",
+        "source_manifest_checksum": "a" * 64,
+        "knowledge_cutoff_date": "2026-07-09",
+        "cadence": "weekly",
+    }

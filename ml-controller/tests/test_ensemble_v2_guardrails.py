@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from services.ensemble_v2 import attach_ensemble_v2
-from services.active_model_policy import ACTIVE_ALPHA_MODELS
+from services.active_model_policy import ACTIVE_ALPHA_MODELS, CORE_CROSS_SECTIONAL_ALPHA_MODELS
 from services.active8_score_semantics import (
     MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
     MODEL_SCORE_SEMANTIC_VERSION,
@@ -25,6 +25,7 @@ def _formal_pred(scores: dict[str, float], *, market_segment: str = "LISTED") ->
             "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
             "complete": True,
             "blockers": [],
+            "required_core_models": list(CORE_CROSS_SECTIONAL_ALPHA_MODELS),
             "artifact_versions": versions,
         },
     }

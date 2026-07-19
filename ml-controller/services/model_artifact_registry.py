@@ -15,6 +15,7 @@ from services.model_validation_policy import resolve_model_validation_policy
 CandidateType = Literal[
     "monthly_release",
     "weekly_drift",
+    "oof_full_fit_release",
     "manual_hotfix",
     "model_family_shadow",
     "research_benchmark",
@@ -57,6 +58,7 @@ TIMESFM_L175_RELEASE_COHORT = frozenset({"LightGBM", "XGBoost", "ExtraTrees", "T
 PROMOTION_GRADE_SEQUENCE_METHODS = frozenset({
     "purged_cpcv_sequence_rank_ic",
     "purged_walk_forward_retrain_rank_ic",
+    "outer_purged_walk_forward_rank_ic",
 })
 
 
@@ -232,6 +234,7 @@ def candidate_type_from_retrain(*, is_monthly: bool | None, explicit: str | None
     if explicit in {
         "monthly_release",
         "weekly_drift",
+        "oof_full_fit_release",
         "manual_hotfix",
         "model_family_shadow",
         "research_benchmark",
@@ -653,6 +656,7 @@ def _artifact_record_from_registration(
         and bool(lifecycle_run_id)
     )
     if owns_oof_lifecycle:
+        enriched_registration["oof_lifecycle_resume"] = lifecycle_resume
         if child_training_run_id and child_training_run_id != lifecycle_run_id:
             enriched_registration["artifact_training_run_id"] = child_training_run_id
         enriched_registration["training_run_id"] = lifecycle_run_id
@@ -1327,7 +1331,11 @@ def _promotion_ready(row: dict[str, Any] | None) -> bool:
         return False
     state = str(row.get("state") or "")
     live_status = str(row.get("live_gate_status") or "")
-    if _offline_monthly_release_candidate(row) or _offline_timesfm_l175_feature_release_candidate(row):
+    if (
+        _offline_monthly_release_candidate(row)
+        or _offline_oof_full_fit_release_candidate(row)
+        or _offline_timesfm_l175_feature_release_candidate(row)
+    ):
         return True
     return state in {"live_gate_passed", "approval_required", "approved", "production"} or live_status in {
         "passed",
@@ -1350,6 +1358,89 @@ def _offline_monthly_release_candidate(row: dict[str, Any] | None) -> bool:
             "approved",
         }
     )
+
+
+def _offline_oof_full_fit_release_candidate(row: dict[str, Any] | None) -> bool:
+    if not row:
+        return False
+    registration = _artifact_registration(row)
+    evidence = _nested_dict(registration.get("oof_promotion_evidence"))
+    resume = _nested_dict(registration.get("oof_lifecycle_resume"))
+    metadata = _artifact_registration_metadata(row)
+    validation_design = _nested_dict(evidence.get("validation_design"))
+    failed_gates = evidence.get("failed_gates")
+    return (
+        str(row.get("candidate_type") or "") == "oof_full_fit_release"
+        and str(row.get("offline_gate_decision") or "") in {"STRONG_PASS", "PASS"}
+        and str(row.get("state") or "") in {
+            "offline_passed",
+            "offline_strong_pass",
+            "live_gate_passed",
+            "approval_required",
+            "approved",
+        }
+        and evidence.get("schema_version") == "model-cpcv-evidence-v1"
+        and evidence.get("method") == "outer_purged_walk_forward_rank_ic"
+        and evidence.get("decision") == "PASS"
+        and evidence.get("passed") is True
+        and not failed_gates
+        and int(_as_float(evidence.get("folds")) or 0) >= 5
+        and int(_as_float(evidence.get("min_test_rows")) or 0) >= 90
+        and float(_as_float(evidence.get("coverage_mean")) or 0.0) >= 0.8
+        and validation_design.get("refit_each_fold") is True
+        and validation_design.get("chronological") is True
+        and int(_as_float(validation_design.get("purge_horizon_sessions")) or 0) >= 5
+        and resume.get("schema_version") == "active8-oof-lifecycle-resume-v1"
+        and bool(str(resume.get("cohort_id") or "").strip())
+        and len(str(resume.get("source_manifest_checksum") or "")) == 64
+        and bool(str(resume.get("knowledge_cutoff_date") or "").strip())
+        and str(metadata.get("target_semantic_version") or "") == ACTIVE8_TARGET_SEMANTIC_VERSION
+    )
+
+
+def _offline_oof_full_fit_release_blockers(
+    row: dict[str, Any],
+    *,
+    champion_artifact: dict[str, Any] | None,
+    blockers: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    filtered = [
+        blocker
+        for blocker in blockers
+        if str(blocker.get("code") or "") not in {
+            "live_ic_not_ready",
+            "rolling_ic_only",
+            "candidate_sample_window_too_short",
+            "champion_sample_window_too_short",
+        }
+    ]
+    if not _offline_oof_full_fit_release_candidate(row):
+        filtered.append({
+            "code": "oof_release_contract_invalid",
+            "label": "OOF full-fit release lacks immutable chronological evidence",
+            "next_action": "Rebuild the OOF cohort; do not patch model metadata or bypass the release contract.",
+            "severity": "blocker",
+        })
+        return filtered
+    if not champion_artifact:
+        filtered.append({
+            "code": "oof_release_champion_artifact_missing",
+            "label": "Current champion artifact is unavailable for target-semantic comparison",
+            "next_action": "Restore the champion registry pointer before attempting the target-semantic bootstrap.",
+            "severity": "blocker",
+        })
+        return filtered
+    champion_target = str(
+        _artifact_registration_metadata(champion_artifact).get("target_semantic_version") or ""
+    ).strip()
+    if champion_target == ACTIVE8_TARGET_SEMANTIC_VERSION:
+        filtered.append({
+            "code": "oof_release_requires_semantic_bootstrap",
+            "label": "OOF offline bootstrap is only valid when no comparable target-semantic champion exists",
+            "next_action": "Use the normal live challenger comparison for subsequent artifacts in the same target era.",
+            "severity": "blocker",
+        })
+    return filtered
 
 
 def _offline_timesfm_l175_feature_release_candidate(row: dict[str, Any] | None) -> bool:
@@ -2466,11 +2557,13 @@ def build_promotion_queue(
         live_status = str(row.get("live_gate_status") or "")
         live_evidence_ready = live_status in {"passed", "multi_evidence_passed", "rolling_ic_passed"}
         offline_monthly_candidate = _offline_monthly_release_candidate(row) and not live_evidence_ready
+        offline_oof_candidate = _offline_oof_full_fit_release_candidate(row) and not live_evidence_ready
         offline_timesfm_l175_candidate = _offline_timesfm_l175_feature_release_candidate(row) and not live_evidence_ready
         if state in {"production", "archived", "rejected"}:
             continue
         if (
             not offline_monthly_candidate
+            and not offline_oof_candidate
             and not offline_timesfm_l175_candidate
             and state not in {"live_gate_passed", "approval_required", "approved"}
             and live_status not in {
@@ -2515,10 +2608,16 @@ def build_promotion_queue(
         # an explicitly manual hotfix, not used as a substitute for evidence.
         approval_required = candidate_type == "manual_hotfix"
         blockers = artifact_promotion_blockers(row, champion_version=champion_version)
+        champion_artifact = artifact_by_model_version.get((model_name, champion_version or ""))
         if offline_monthly_candidate or offline_timesfm_l175_candidate:
             blockers = _offline_monthly_release_blockers(blockers)
+        if offline_oof_candidate:
+            blockers = _offline_oof_full_fit_release_blockers(
+                row,
+                champion_artifact=champion_artifact,
+                blockers=blockers,
+            )
         blocker_codes = _blocker_codes(blockers)
-        champion_artifact = artifact_by_model_version.get((model_name, champion_version or ""))
         artifact_compare = _artifact_compare(
             row,
             champion_version=champion_version,
@@ -2530,6 +2629,9 @@ def build_promotion_queue(
         elif blockers:
             decision = "blocked_multi_evidence_gate"
             next_action = "Resolve blockers before final comparison: " + ", ".join(blocker_codes)
+        elif offline_oof_candidate:
+            decision = "auto_promote_candidate"
+            next_action = "Promote the immutable OOF release as the first valid target-semantic champion."
         elif offline_monthly_candidate:
             decision = "blocked_live_evidence_required"
             next_action = "Keep the candidate in shadow until live multi-evidence and final champion comparison pass."
@@ -2836,6 +2938,7 @@ def _promotion_row_decision(
     approved: bool,
     manual_override: bool = False,
     allow_offline_monthly_release: bool = False,
+    champion_artifact: dict[str, Any] | None = None,
     cohort_blockers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Evaluate the final promotion step against the current champion pointer.
@@ -2853,6 +2956,10 @@ def _promotion_row_decision(
         and candidate_type == "monthly_release"
         and offline_decision in {"STRONG_PASS", "PASS"}
     )
+    offline_oof_full_fit_release_candidate = bool(
+        candidate_type == "oof_full_fit_release"
+        and _offline_oof_full_fit_release_candidate(artifact)
+    )
     offline_timesfm_l175_feature_release_candidate = bool(
         candidate_type == "timesfm_l175_l2_feature_release"
         and offline_decision in {"STRONG_PASS", "PASS"}
@@ -2861,6 +2968,12 @@ def _promotion_row_decision(
     blockers: list[str] = []
     offline_monthly_release_cutover = offline_monthly_release_candidate and approved
     promotion_blockers = artifact_promotion_blockers(artifact, champion_version=champion_version)
+    if offline_oof_full_fit_release_candidate:
+        promotion_blockers = _offline_oof_full_fit_release_blockers(
+            artifact,
+            champion_artifact=champion_artifact,
+            blockers=promotion_blockers,
+        )
     promotion_blockers.extend(cohort_blockers or [])
     manual_override_requested = bool(manual_override)
     manual_override_allowed = bool(
@@ -2889,6 +3002,7 @@ def _promotion_row_decision(
         blockers.extend(_blocker_codes(effective_promotion_blockers))
     if (
         not manual_override_allowed
+        and not offline_oof_full_fit_release_candidate
         and live_status not in {"passed", "multi_evidence_passed"}
     ):
         blockers.append("live_gate_not_passed")
@@ -2921,6 +3035,7 @@ def _promotion_row_decision(
         "manual_override_overridden_blockers": overridden_blockers,
         "allow_offline_monthly_release": allow_offline_monthly_release,
         "offline_monthly_release_candidate": offline_monthly_release_candidate,
+        "offline_oof_full_fit_release_candidate": offline_oof_full_fit_release_candidate,
         "offline_timesfm_l175_feature_release_candidate": offline_timesfm_l175_feature_release_candidate,
         "offline_monthly_release_cutover": offline_monthly_release_cutover,
         "blockers": blockers,
@@ -3021,6 +3136,15 @@ def run_promotion_controller(
             "serving_reader": "model_pool.json",
             "note": "Idempotent promotion-controller guard prevented rollback overwrite.",
         }
+    champion_artifact = next(
+        (
+            row
+            for row in registry_rows
+            if str(row.get("model_name") or "") == model_name
+            and str(row.get("version") or "") == str(champion_version or "")
+        ),
+        None,
+    )
     cohort_blockers = feature_release_cohort_blockers(artifact, registry_rows)
     if str(artifact.get("candidate_type") or "") == "timesfm_l175_l2_feature_release":
         cohort_blockers.append({
@@ -3036,6 +3160,7 @@ def run_promotion_controller(
         approved=approved,
         manual_override=manual_override,
         allow_offline_monthly_release=allow_offline_monthly_release,
+        champion_artifact=champion_artifact,
         cohort_blockers=cohort_blockers,
     )
     evidence = {

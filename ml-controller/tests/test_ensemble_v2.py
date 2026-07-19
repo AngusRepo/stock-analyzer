@@ -31,6 +31,7 @@ def _formal_pred(scores: dict[str, float], *, missing: set[str] | None = None) -
             "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
             "complete": not blockers,
             "blockers": blockers,
+            "required_core_models": list(CORE_CROSS_SECTIONAL_ALPHA_MODELS),
             "artifact_versions": versions,
             "model_set_signature": "|".join(f"{name}@{versions[name]}" for name in sorted(versions)),
         },

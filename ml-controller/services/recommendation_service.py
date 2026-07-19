@@ -4282,6 +4282,8 @@ def write_predictions_to_d1(
             "timesfm_sidecar": _timesfm_sidecar_payload(data),
             "state_space_overlays": _state_space_overlay_payload(data),
             "formal_layer3_blockers": data.get("formal_layer3_blockers"),
+            "formal_layer3_contract": data.get("formal_layer3_contract"),
+            "model_score_lineage": data.get("model_score_lineage"),
             "feature_schema": data.get("feature_schema"),
             "feature_count": data.get("feature_count"),
             "feature_version": data.get("feature_version"),
@@ -4655,11 +4657,12 @@ def _extract_per_model_scores_for_d1(pred: dict) -> dict[str, float]:
 
 
 def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
+    base_model_name = str(model_name).replace("::challenger", "")
     source_key = {
         "DLinear": "dlinear",
         "PatchTST": "patchtst",
         "iTransformer": "itransformer",
-    }.get(model_name)
+    }.get(base_model_name)
     signal = pred.get(source_key) if source_key and isinstance(pred.get(source_key), dict) else {}
     payload: dict[str, Any] = {}
     for key in (
@@ -4682,15 +4685,33 @@ def _per_model_signal_payload(pred: dict, model_name: str) -> dict[str, Any]:
     versions = lineage.get("artifact_versions") if isinstance(lineage.get("artifact_versions"), dict) else {}
     raw_scores = lineage.get("raw_scores") if isinstance(lineage.get("raw_scores"), dict) else {}
     rank_scores = pred.get("rank_scores") if isinstance(pred.get("rank_scores"), dict) else {}
-    if model_name in rank_scores:
+    if base_model_name in rank_scores and not model_name.endswith("::challenger"):
         payload.update({
-            "artifact_version": versions.get(model_name),
-            "raw_score": raw_scores.get(model_name),
-            "rank_score": rank_scores.get(model_name),
+            "artifact_version": versions.get(base_model_name),
+            "raw_score": raw_scores.get(base_model_name),
+            "rank_score": rank_scores.get(base_model_name),
             "score_semantic_version": lineage.get("semantic_version"),
             "target_semantic_version": lineage.get("target_semantic_version"),
             "model_set_signature": lineage.get("model_set_signature"),
             "market_segment": lineage.get("market_segment"),
+        })
+    if model_name.endswith("::challenger"):
+        challenger_lineage = (
+            pred.get("challenger_model_score_lineage")
+            if isinstance(pred.get("challenger_model_score_lineage"), dict)
+            else {}
+        )
+        challenger_versions = (
+            challenger_lineage.get("artifact_versions")
+            if isinstance(challenger_lineage.get("artifact_versions"), dict)
+            else {}
+        )
+        payload.update({
+            "artifact_version": challenger_versions.get(base_model_name),
+            "score_semantic_version": challenger_lineage.get("semantic_version"),
+            "target_semantic_version": challenger_lineage.get("target_semantic_version"),
+            "model_set_signature": challenger_lineage.get("model_set_signature"),
+            "market_segment": challenger_lineage.get("market_segment"),
         })
     return payload
 

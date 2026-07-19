@@ -2701,3 +2701,172 @@ def test_oof_full_fit_registry_uses_lifecycle_owner_and_preserves_child_run_id()
     evidence = json.loads(records[0]["offline_evidence_json"])
     assert evidence["registration"]["training_run_id"] == "universal-oof-owner"
     assert evidence["registration"]["artifact_training_run_id"] == "v20260717-xgboost"
+
+
+def _oof_full_fit_release_row(*, decision: str = "PASS") -> dict[str, object]:
+    failed_gates = [] if decision == "PASS" else ["oos_ic_lcb"]
+    evidence = {
+        "schema_version": "model-cpcv-evidence-v1",
+        "method": "outer_purged_walk_forward_rank_ic",
+        "decision": decision,
+        "passed": decision == "PASS",
+        "failed_gates": failed_gates,
+        "folds": 5,
+        "min_test_rows": 100,
+        "coverage_mean": 1.0,
+        "validation_design": {
+            "chronological": True,
+            "refit_each_fold": True,
+            "purge_horizon_sessions": 5,
+        },
+    }
+    offline = {
+        "registration": {
+            "metadata": {
+                "target_semantic_version": registry.ACTIVE8_TARGET_SEMANTIC_VERSION,
+            },
+            "oof_promotion_evidence": evidence,
+            "oof_lifecycle_resume": {
+                "schema_version": "active8-oof-lifecycle-resume-v1",
+                "cohort_id": "active8-oof-v5",
+                "source_manifest_checksum": "a" * 64,
+                "knowledge_cutoff_date": "2026-07-09",
+            },
+        },
+        "validation_packet": {
+            "pbo": 0.12,
+            "deflated_sharpe": 1.21,
+            "monte_carlo": {"decision": "PASS"},
+        },
+    }
+    return {
+        "artifact_id": "XGBoost:vOOF:oof_full_fit_release",
+        "model_name": "XGBoost",
+        "version": "vOOF",
+        "candidate_type": "oof_full_fit_release",
+        "state": "offline_strong_pass" if decision == "PASS" else "offline_failed",
+        "artifact_path": "universal/xgboost/vOOF.joblib",
+        "checksum": "sha256:verified",
+        "offline_gate_status": "passed" if decision == "PASS" else "failed",
+        "offline_gate_decision": decision,
+        "offline_gate_failed_gates": json.dumps(failed_gates),
+        "offline_evidence_json": json.dumps(offline),
+        "live_gate_status": "pending",
+    }
+
+
+def _champion_row(*, target_semantic_version: str | None) -> dict[str, object]:
+    metadata = {}
+    if target_semantic_version is not None:
+        metadata["target_semantic_version"] = target_semantic_version
+    return {
+        "artifact_id": "XGBoost:vOld:production",
+        "model_name": "XGBoost",
+        "version": "vOld",
+        "candidate_type": "production",
+        "state": "production",
+        "artifact_path": "universal/xgboost/vOld.joblib",
+        "checksum": "sha256:old",
+        "offline_evidence_json": json.dumps({
+            "registration": {"metadata": metadata},
+        }),
+    }
+
+
+def test_oof_full_fit_release_bootstraps_only_missing_target_semantic(monkeypatch):
+    monkeypatch.setattr(registry, "artifact_promotion_blockers", lambda *args, **kwargs: [])
+    result = registry.build_promotion_queue(
+        [
+            _champion_row(target_semantic_version=None),
+            _oof_full_fit_release_row(),
+        ],
+        champion_versions={"XGBoost": "vOld"},
+    )
+
+    assert result["count"] == 1
+    assert result["queue"][0]["promotion_decision"] == "auto_promote_candidate"
+    assert result["queue"][0]["blocker_codes"] == []
+
+
+def test_oof_full_fit_release_cannot_bypass_same_semantic_champion(monkeypatch):
+    monkeypatch.setattr(registry, "artifact_promotion_blockers", lambda *args, **kwargs: [])
+    result = registry.build_promotion_queue(
+        [
+            _champion_row(
+                target_semantic_version=registry.ACTIVE8_TARGET_SEMANTIC_VERSION,
+            ),
+            _oof_full_fit_release_row(),
+        ],
+        champion_versions={"XGBoost": "vOld"},
+    )
+
+    assert result["count"] == 1
+    assert result["queue"][0]["promotion_decision"] == "blocked_multi_evidence_gate"
+    assert result["queue"][0]["blocker_codes"] == [
+        "oof_release_requires_semantic_bootstrap",
+    ]
+
+
+def test_oof_full_fit_release_rejects_failed_outer_evidence(monkeypatch):
+    monkeypatch.setattr(registry, "artifact_promotion_blockers", lambda *args, **kwargs: [])
+    result = registry.build_promotion_queue(
+        [
+            _champion_row(target_semantic_version=None),
+            _oof_full_fit_release_row(decision="FAIL"),
+        ],
+        champion_versions={"XGBoost": "vOld"},
+    )
+
+    assert result["count"] == 0
+
+
+
+def test_promotion_controller_allows_strict_oof_semantic_bootstrap(monkeypatch):
+    monkeypatch.setattr(registry, "artifact_promotion_blockers", lambda *args, **kwargs: [])
+    result = registry.run_promotion_controller(
+        artifact_id="XGBoost:vOOF:oof_full_fit_release",
+        registry_rows=[
+            _champion_row(target_semantic_version=None),
+            _oof_full_fit_release_row(),
+        ],
+        d1_pointers=[{
+            "model_name": "XGBoost",
+            "champion_version": "vOld",
+            "champion_artifact_id": "XGBoost:vOld:production",
+        }],
+        model_pool_versions={"XGBoost": "vOld"},
+        confirm=False,
+        approved=False,
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["decision"] == "promote"
+    assert result["can_promote"] is True
+    assert result["evidence"]["offline_oof_full_fit_release_candidate"] is True
+    assert "live_gate_not_passed" not in result["evidence"]["blockers"]
+
+
+def test_promotion_controller_blocks_oof_bootstrap_after_semantic_cutover(monkeypatch):
+    monkeypatch.setattr(registry, "artifact_promotion_blockers", lambda *args, **kwargs: [])
+    result = registry.run_promotion_controller(
+        artifact_id="XGBoost:vOOF:oof_full_fit_release",
+        registry_rows=[
+            _champion_row(
+                target_semantic_version=registry.ACTIVE8_TARGET_SEMANTIC_VERSION,
+            ),
+            _oof_full_fit_release_row(),
+        ],
+        d1_pointers=[{
+            "model_name": "XGBoost",
+            "champion_version": "vOld",
+            "champion_artifact_id": "XGBoost:vOld:production",
+        }],
+        model_pool_versions={"XGBoost": "vOld"},
+        confirm=False,
+        approved=False,
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["decision"] == "blocked"
+    assert result["can_promote"] is False
+    assert "oof_release_requires_semantic_bootstrap" in result["evidence"]["blockers"]

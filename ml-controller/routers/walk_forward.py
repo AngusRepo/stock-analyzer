@@ -411,6 +411,38 @@ def build_oof_full_fit_feature_consensus(manifest: dict[str, Any]) -> dict[str, 
         json.dumps(artifact, sort_keys=True).encode("utf-8")
     ).hexdigest()
     return artifact
+def _chronological_oof_windows(windows: Any) -> bool:
+    if not isinstance(windows, list) or len(windows) < 5:
+        return False
+    prior_test_end = ""
+    seen_ids: set[str] = set()
+    for window in windows:
+        if not isinstance(window, dict):
+            return False
+        train_range = window.get("train_range")
+        test_range = window.get("test_range")
+        raw_window_id = window.get("window_id")
+        window_id = "" if raw_window_id is None else str(raw_window_id)
+        if (
+            not window_id
+            or window_id in seen_ids
+            or not isinstance(train_range, list)
+            or len(train_range) != 2
+            or not isinstance(test_range, list)
+            or len(test_range) != 2
+        ):
+            return False
+        train_start, train_end = map(str, train_range)
+        test_start, test_end = map(str, test_range)
+        if not (train_start <= train_end < test_start <= test_end):
+            return False
+        if prior_test_end and prior_test_end >= test_start:
+            return False
+        seen_ids.add(window_id)
+        prior_test_end = test_end
+    return True
+
+
 def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     aggregate = manifest.get("aggregate") if isinstance(manifest.get("aggregate"), dict) else {}
     evidence_by_model = (
@@ -427,6 +459,21 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         and evidence_by_model[name].get("decision") == "PASS"
     ]
     evidence_missing_or_failed = sorted(set(requested) - set(eligible) - set(unknown))
+    window_rows = manifest.get("windows") if isinstance(manifest.get("windows"), list) else []
+    chronological_windows = _chronological_oof_windows(window_rows)
+    promotion_evidence = {}
+    for name in eligible:
+        evidence = dict(evidence_by_model[name])
+        evidence["validation_design"] = {
+            "schema_version": "active8-oof-validation-design-v1",
+            "chronological": chronological_windows,
+            "refit_each_fold": True,
+            "refit_inside_test": False,
+            "purge_horizon_sessions": 5,
+            "fold_count": len(window_rows),
+            "window_ids": [str(window.get("window_id")) for window in window_rows],
+        }
+        promotion_evidence[name] = evidence
     tree_models = [name for name in eligible if name in _ACTIVE8_TREE_MODELS]
     train_groups = []
     if tree_models:
@@ -464,7 +511,13 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
     )
     status = (
         "ready"
-        if eligible and prep_lineage_ready and sequence_lineage_ready and feature_lineage_ready
+        if (
+            eligible
+            and chronological_windows
+            and prep_lineage_ready
+            and sequence_lineage_ready
+            and feature_lineage_ready
+        )
         else "blocked"
     )
     if not eligible:
@@ -473,6 +526,8 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         reason = "immutable_oof_input_lineage_missing"
     elif not feature_lineage_ready:
         reason = "outer_fold_feature_consensus_missing"
+    elif not chronological_windows:
+        reason = "chronological_oof_windows_invalid"
     else:
         reason = "eligible_models_ready"
     return {
@@ -488,10 +543,11 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         "tree_models": tree_models,
         "train_model_groups": train_groups,
         "artifact_lifecycle_targets": lifecycle_targets,
-        "promotion_evidence": {name: evidence_by_model[name] for name in eligible},
+        "promotion_evidence": promotion_evidence,
         "blocked_models": aggregate.get("full_fit_blocked_models") or {},
         "unknown_models": unknown,
         "evidence_missing_or_failed": evidence_missing_or_failed,
+        "chronological_windows": chronological_windows,
         "folds": int(aggregate.get("oof_ready_folds") or 0),
     }
 
@@ -588,6 +644,108 @@ def _repair_completed_oof_registry_owner(
         "written": int(write_result.get("written") or 0),
     }
 
+def _materialize_completed_oof_release_aliases(
+    *,
+    manifest: dict[str, Any],
+    registry_rows: list[dict[str, Any]],
+    expected_run_id: str,
+    knowledge_cutoff_date: str,
+    lifecycle_cadence: str,
+    eligible_models: list[str],
+) -> dict[str, Any]:
+    from services.model_artifact_registry import (
+        ACTIVE8_TARGET_SEMANTIC_VERSION,
+        upsert_artifact_record,
+    )
+
+    windows = manifest.get("windows") if isinstance(manifest.get("windows"), list) else []
+    checksum = str(manifest.get("manifest_checksum") or "")
+    cohort_id = str(manifest.get("cohort_id") or "")
+    target_semantic = str(manifest.get("target_semantic_version") or "")
+    chronological = (
+        manifest.get("schema_version") == "active8-oof-cohort-manifest-v3"
+        and len(checksum) == 64
+        and bool(cohort_id)
+        and target_semantic == ACTIVE8_TARGET_SEMANTIC_VERSION
+        and _chronological_oof_windows(windows)
+    )
+    if not chronological:
+        raise RuntimeError("oof_release_alias_manifest_contract_invalid")
+
+    eligible = set(eligible_models)
+    written: list[str] = []
+    errors: list[str] = []
+    for source_row in registry_rows:
+        model_name = str(source_row.get("model_name") or "")
+        if model_name not in eligible:
+            continue
+        row = dict(source_row)
+        offline = row.get("offline_evidence_json")
+        if isinstance(offline, str):
+            offline = json.loads(offline)
+        offline = dict(offline or {})
+        registration = dict(offline.get("registration") or {})
+        evidence = dict(registration.get("oof_promotion_evidence") or {})
+        metadata = dict(registration.get("metadata") or {})
+        failed_gates = evidence.get("failed_gates")
+        checksum_value = str(row.get("checksum") or registration.get("checksum") or "")
+        valid = (
+            str(row.get("training_run_id") or "") == expected_run_id
+            and str(row.get("state") or "") in {"offline_passed", "offline_strong_pass"}
+            and str(row.get("offline_gate_decision") or "") in {"PASS", "STRONG_PASS"}
+            and evidence.get("schema_version") == "model-cpcv-evidence-v1"
+            and evidence.get("method") == "outer_purged_walk_forward_rank_ic"
+            and evidence.get("decision") == "PASS"
+            and evidence.get("passed") is True
+            and not failed_gates
+            and int(evidence.get("folds") or 0) >= 5
+            and str(metadata.get("target_semantic_version") or "") == target_semantic
+            and checksum_value.startswith("sha256:")
+        )
+        if not valid:
+            errors.append(f"{model_name}:oof_release_alias_source_invalid")
+            continue
+        evidence["validation_design"] = {
+            "schema_version": "active8-oof-validation-design-v1",
+            "chronological": True,
+            "refit_each_fold": True,
+            "refit_inside_test": False,
+            "purge_horizon_sessions": 5,
+            "fold_count": len(windows),
+            "window_ids": [str(window.get("window_id")) for window in windows],
+        }
+        registration["oof_promotion_evidence"] = evidence
+        registration["model_cpcv"] = evidence
+        registration["oof_lifecycle_resume"] = {
+            "schema_version": "active8-oof-lifecycle-resume-v1",
+            "cohort_id": cohort_id,
+            "source_manifest_checksum": checksum,
+            "knowledge_cutoff_date": knowledge_cutoff_date,
+            "cadence": lifecycle_cadence,
+        }
+        offline["registration"] = registration
+        row["candidate_type"] = "oof_full_fit_release"
+        row["artifact_id"] = f"{model_name}:{row.get('version')}:oof_full_fit_release"
+        row["offline_evidence_json"] = json.dumps(offline, sort_keys=True)
+        row["promotion_decision"] = "not_evaluated"
+        row["approval_state"] = "not_required"
+        upsert_artifact_record(row)
+        written.append(row["artifact_id"])
+    if errors or len(written) != len(eligible):
+        raise RuntimeError(
+            "oof_release_alias_incomplete:"
+            + ",".join(errors or [f"written={len(written)} expected={len(eligible)}"])
+        )
+    return {
+        "status": "materialized",
+        "candidate_type": "oof_full_fit_release",
+        "written": len(written),
+        "artifact_ids": written,
+        "cohort_id": cohort_id,
+        "manifest_checksum": checksum,
+    }
+
+
 async def dispatch_oof_full_fit_training(
     *,
     manifest: dict[str, Any],
@@ -633,7 +791,7 @@ async def dispatch_oof_full_fit_training(
     if prior_run_id:
         rows = d1_client.query(
             """
-            SELECT model_name, state
+            SELECT *
             FROM model_artifact_registry
             WHERE training_run_id = ?
             """,
@@ -647,8 +805,17 @@ async def dispatch_oof_full_fit_training(
             and state in {"registration_failed", "offline_failed", "rejected"}
         )
         if not missing and not failed:
+            release_registry = _materialize_completed_oof_release_aliases(
+                manifest=manifest,
+                registry_rows=rows,
+                expected_run_id=prior_run_id,
+                knowledge_cutoff_date=knowledge_cutoff_date,
+                lifecycle_cadence=lifecycle_cadence,
+                eligible_models=plan["eligible_models"],
+            )
             completed = {
                 **receipt,
+                "release_registry": release_registry,
                 "schema_version": "active8-oof-full-fit-receipt-v1",
                 "status": "completed",
                 "eligible_models": plan["eligible_models"],
@@ -683,7 +850,7 @@ async def dispatch_oof_full_fit_training(
             if registry_repair["status"] == "repaired":
                 rows = d1_client.query(
                     """
-                    SELECT model_name, state
+                    SELECT *
                     FROM model_artifact_registry
                     WHERE training_run_id = ?
                     """,
@@ -700,8 +867,17 @@ async def dispatch_oof_full_fit_training(
                     and state in {"registration_failed", "offline_failed", "rejected"}
                 )
                 if not missing and not failed:
+                    release_registry = _materialize_completed_oof_release_aliases(
+                        manifest=manifest,
+                        registry_rows=rows,
+                        expected_run_id=prior_run_id,
+                        knowledge_cutoff_date=knowledge_cutoff_date,
+                        lifecycle_cadence=lifecycle_cadence,
+                        eligible_models=plan["eligible_models"],
+                    )
                     completed = {
                         **receipt,
+                        "release_registry": release_registry,
                         "schema_version": "active8-oof-full-fit-receipt-v1",
                         "status": "completed",
                         "eligible_models": plan["eligible_models"],
@@ -762,7 +938,7 @@ async def dispatch_oof_full_fit_training(
         limit=2500,
         force_monthly=False,
         run_date=knowledge_cutoff_date,
-        candidate_type="weekly_drift",
+        candidate_type="oof_full_fit_release",
         drift_target_models=plan["eligible_models"],
         train_model_groups=plan["train_model_groups"],
         artifact_lifecycle_targets=plan["artifact_lifecycle_targets"],

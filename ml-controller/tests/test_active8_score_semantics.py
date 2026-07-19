@@ -78,7 +78,7 @@ def test_active8_scores_do_not_rank_across_market_segments():
     assert "rank_missing:XGBoost" in predictions["O1"]["model_score_lineage"]["blockers"]
 
 
-def test_active8_lineage_rejects_unproven_artifact_target_semantic():
+def test_active8_lineage_masks_unproven_optional_artifact_target_semantic():
     predictions = {"A": _prediction(0.2), "B": _prediction(0.5), "C": _prediction(0.8)}
     versions = {name: f"{name}-v1" for name in ACTIVE_ALPHA_MODELS}
     target_semantics = {name: MODEL_TARGET_SEMANTIC_VERSION for name in ACTIVE_ALPHA_MODELS}
@@ -91,10 +91,31 @@ def test_active8_lineage_rejects_unproven_artifact_target_semantic():
         run_date="2026-07-15",
     )
 
+    assert summary["complete_symbols"] == 3
+    lineage = predictions["A"]["model_score_lineage"]
+    assert lineage["complete"] is True
+    assert "PatchTST" in lineage["ineligible_artifact_models"]
+    assert "PatchTST" not in lineage["available_models"]
+
+
+def test_active8_lineage_rejects_when_fewer_than_three_verified_core_artifacts_exist():
+    predictions = {"A": _prediction(0.2), "B": _prediction(0.5), "C": _prediction(0.8)}
+    versions = {name: f"{name}-v1" for name in ACTIVE_ALPHA_MODELS}
+    target_semantics = {name: MODEL_TARGET_SEMANTIC_VERSION for name in ACTIVE_ALPHA_MODELS}
+    for name in ("ExtraTrees", "TabM", "GNN"):
+        target_semantics[name] = ""
+
+    summary = normalize_active8_cross_sectional_scores(
+        predictions,
+        artifact_versions=versions,
+        artifact_target_semantics=target_semantics,
+        run_date="2026-07-15",
+    )
+
     assert summary["complete_symbols"] == 0
-    assert predictions["A"]["model_score_lineage"]["complete"] is False
-    assert "artifact_target_semantic_mismatch:PatchTST:missing" in (
-        predictions["A"]["model_score_lineage"]["blockers"]
+    assert (
+        "verified_cross_sectional_model_count_below_minimum:2<3"
+        in predictions["A"]["model_score_lineage"]["blockers"]
     )
 
 

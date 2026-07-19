@@ -9,6 +9,7 @@ from services.active_model_policy import (
 )
 from services.ev_lineage_contract import build_model_set_signature, is_known_artifact_version
 from services.active8_score_semantics import (
+    MIN_REQUIRED_CROSS_SECTIONAL_MODELS,
     MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
     MODEL_SCORE_SEMANTIC_VERSION,
     MODEL_TARGET_SEMANTIC_VERSION,
@@ -94,7 +95,13 @@ def build_formal_model_input_contract(pred: dict | None) -> dict:
     lineage = prediction.get("model_score_lineage") if isinstance(prediction.get("model_score_lineage"), dict) else {}
     available = [name for name in ACTIVE_ALPHA_MODELS if name in scores]
     missing = [name for name in ACTIVE_ALPHA_MODELS if name not in scores]
-    missing_core = [name for name in CORE_CROSS_SECTIONAL_ALPHA_MODELS if name not in scores]
+    declared_required = lineage.get("required_core_models")
+    required_models = (
+        [str(name) for name in declared_required if str(name) in CORE_CROSS_SECTIONAL_ALPHA_MODELS]
+        if isinstance(declared_required, list)
+        else []
+    )
+    missing_core = [name for name in required_models if name not in scores]
     missing_optional = [name for name in OPTIONAL_SEQUENCE_ALPHA_MODELS if name not in scores]
     lineage_blockers: list[str] = []
     if lineage.get("schema_version") != MODEL_SCORE_LINEAGE_SCHEMA_VERSION:
@@ -105,10 +112,16 @@ def build_formal_model_input_contract(pred: dict | None) -> dict:
         lineage_blockers.append("target_semantic_mismatch")
     if lineage.get("complete") is not True:
         lineage_blockers.extend(str(value) for value in (lineage.get("blockers") or []))
+    if len(required_models) < MIN_REQUIRED_CROSS_SECTIONAL_MODELS:
+        lineage_blockers.append(
+            "required_cross_sectional_model_count_below_minimum:"
+            f"{len(required_models)}<{MIN_REQUIRED_CROSS_SECTIONAL_MODELS}"
+        )
     return {
         "schema_version": "formal-layer3-active8-input-contract-v3",
         "active_models": list(ACTIVE_ALPHA_MODELS),
-        "required_models": list(CORE_CROSS_SECTIONAL_ALPHA_MODELS),
+        "required_models": required_models,
+        "minimum_required_cross_sectional_models": MIN_REQUIRED_CROSS_SECTIONAL_MODELS,
         "optional_sequence_models": list(OPTIONAL_SEQUENCE_ALPHA_MODELS),
         "available_models": available,
         "missing_models": missing,
@@ -117,7 +130,7 @@ def build_formal_model_input_contract(pred: dict | None) -> dict:
         "model_availability": {name: name in scores for name in ACTIVE_ALPHA_MODELS},
         "full_active8_coverage": not missing,
         "complete": not missing_core and not lineage_blockers,
-        "coverage_policy": "core5-required_sequence-missingness-aware-oof-parity-v1",
+        "coverage_policy": "verified-core3-min-sequence-missingness-aware-oof-parity-v1",
         "finite_scores_required": True,
         "score_semantic_version": lineage.get("semantic_version"),
         "target_semantic_version": lineage.get("target_semantic_version"),

@@ -16,6 +16,7 @@ from services.evidence_contracts import LABEL_SCHEMA_VERSION
 MODEL_SCORE_SEMANTIC_VERSION = "active8-daily-market-cross-sectional-percentile-v1"
 MODEL_TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 MODEL_SCORE_LINEAGE_SCHEMA_VERSION = "active8-model-score-lineage-v2"
+MIN_REQUIRED_CROSS_SECTIONAL_MODELS = 3
 
 _SEQUENCE_SOURCE_KEYS = {
     "DLinear": "dlinear",
@@ -86,13 +87,37 @@ def normalize_active8_cross_sectional_scores(
     function only creates the rank used by the ensemble and records enough
     lineage to reproduce that transform.
     """
+    normalized_versions = {
+        model_name: str(artifact_versions.get(model_name) or "").strip()
+        for model_name in ACTIVE_ALPHA_MODELS
+        if is_known_artifact_version(artifact_versions.get(model_name))
+    }
+    normalized_target_semantics = {
+        model_name: str(artifact_target_semantics.get(model_name) or "").strip()
+        for model_name in ACTIVE_ALPHA_MODELS
+    }
+    eligible_models = [
+        model_name
+        for model_name in ACTIVE_ALPHA_MODELS
+        if model_name in normalized_versions
+        and normalized_target_semantics.get(model_name) == MODEL_TARGET_SEMANTIC_VERSION
+    ]
+    required_core_models = [
+        model_name
+        for model_name in CORE_CROSS_SECTIONAL_ALPHA_MODELS
+        if model_name in eligible_models
+    ]
+    ineligible_artifact_models = [
+        model_name for model_name in ACTIVE_ALPHA_MODELS if model_name not in eligible_models
+    ]
+
     raw_by_group: dict[tuple[str, str], list[tuple[str, float]]] = defaultdict(list)
     raw_by_symbol: dict[str, dict[str, float]] = defaultdict(dict)
     for symbol, prediction in predictions.items():
         segment = _market_segment(prediction)
         if not segment:
             continue
-        for model_name in ACTIVE_ALPHA_MODELS:
+        for model_name in eligible_models:
             raw = _raw_model_score(prediction, model_name)
             if raw is None:
                 continue
@@ -110,15 +135,6 @@ def normalize_active8_cross_sectional_scores(
 
     complete = 0
     blockers: dict[str, int] = defaultdict(int)
-    normalized_versions = {
-        model_name: str(artifact_versions.get(model_name) or "").strip()
-        for model_name in ACTIVE_ALPHA_MODELS
-        if is_known_artifact_version(artifact_versions.get(model_name))
-    }
-    normalized_target_semantics = {
-        model_name: str(artifact_target_semantics.get(model_name) or "").strip()
-        for model_name in ACTIVE_ALPHA_MODELS
-    }
     for symbol, prediction in predictions.items():
         segment = _market_segment(prediction)
         ranks = ranks_by_symbol.get(symbol, {})
@@ -126,20 +142,16 @@ def normalize_active8_cross_sectional_scores(
         prediction["rank_scores"] = dict(ranks)
         available_models = [name for name in ACTIVE_ALPHA_MODELS if name in ranks]
         missing_scores = [name for name in ACTIVE_ALPHA_MODELS if name not in ranks]
-        missing_core_scores = [name for name in CORE_CROSS_SECTIONAL_ALPHA_MODELS if name not in ranks]
+        missing_core_scores = [name for name in required_core_models if name not in ranks]
         optional_missing_models = [name for name in OPTIONAL_SEQUENCE_ALPHA_MODELS if name not in ranks]
         missing_versions = [name for name in available_models if name not in normalized_versions]
-        invalid_target_semantics = [
-            name
-            for name in available_models
-            if normalized_target_semantics.get(name) != MODEL_TARGET_SEMANTIC_VERSION
-        ]
         row_blockers = [f"rank_missing:{name}" for name in missing_core_scores]
         row_blockers.extend(f"artifact_version_missing:{name}" for name in missing_versions)
-        row_blockers.extend(
-            f"artifact_target_semantic_mismatch:{name}:{normalized_target_semantics.get(name) or 'missing'}"
-            for name in invalid_target_semantics
-        )
+        if len(required_core_models) < MIN_REQUIRED_CROSS_SECTIONAL_MODELS:
+            row_blockers.append(
+                "verified_cross_sectional_model_count_below_minimum:"
+                f"{len(required_core_models)}<{MIN_REQUIRED_CROSS_SECTIONAL_MODELS}"
+            )
         if not segment:
             row_blockers.append("market_segment_missing")
         signature = build_model_set_signature(normalized_versions, available_models)
@@ -175,11 +187,13 @@ def normalize_active8_cross_sectional_scores(
                 name: name in available_models
                 for name in ACTIVE_ALPHA_MODELS
             },
-            "required_core_models": list(CORE_CROSS_SECTIONAL_ALPHA_MODELS),
+            "required_core_models": list(required_core_models),
+            "minimum_required_cross_sectional_models": MIN_REQUIRED_CROSS_SECTIONAL_MODELS,
+            "ineligible_artifact_models": list(ineligible_artifact_models),
             "optional_sequence_models": list(OPTIONAL_SEQUENCE_ALPHA_MODELS),
             "optional_missing_models": optional_missing_models,
             "full_active8_coverage": not missing_scores,
-            "coverage_policy": "core5-required_sequence-missingness-aware-oof-parity-v1",
+            "coverage_policy": "verified-core3-min-sequence-missingness-aware-oof-parity-v1",
             "model_set_signature": signature,
             "raw_scores": dict(raw_by_symbol.get(symbol, {})),
             "complete": not row_blockers,

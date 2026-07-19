@@ -578,3 +578,6 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
     assert result["artifact_states"] == {"DLinear": "offline_strong_pass"}
     assert result["registry_repair"]["status"] == "repaired"
     assert uploaded[-1]["value"]["status"] == "completed"
+    assert uploaded[-1]["value"]["retry_required"] is False
+    assert uploaded[-1]["value"]["missing_models"] == []
+    assert uploaded[-1]["value"]["reason"] == "artifact_registry_complete"

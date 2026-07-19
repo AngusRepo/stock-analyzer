@@ -653,6 +653,10 @@ async def dispatch_oof_full_fit_training(
                 "status": "completed",
                 "eligible_models": plan["eligible_models"],
                 "artifact_states": by_model,
+                "reason": "artifact_registry_complete",
+                "missing_models": [],
+                "failed_models": [],
+                "retry_required": False,
             }
             receipt_blob.upload_from_string(
                 json.dumps(completed, sort_keys=True),
@@ -702,6 +706,10 @@ async def dispatch_oof_full_fit_training(
                         "status": "completed",
                         "eligible_models": plan["eligible_models"],
                         "artifact_states": by_model,
+                        "reason": "artifact_registry_complete",
+                        "missing_models": [],
+                        "failed_models": [],
+                        "retry_required": False,
                         "registry_repair": registry_repair,
                     }
                     receipt_blob.upload_from_string(

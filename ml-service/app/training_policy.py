@@ -746,7 +746,7 @@ class UniversalTrainingPolicy:
         payload: dict[str, Any] | None,
         *,
         candidate_version: str,
-    ) -> dict[str, float | int | str | bool]:
+    ) -> dict[str, Any]:
         payload = payload or {}
         model_cpcv_policy = payload.get("model_cpcv_policy") or {"family_adapters": {}}
         candidate_type = str(payload.get("candidate_type") or "").strip()
@@ -768,7 +768,14 @@ class UniversalTrainingPolicy:
         if candidate_type == "timesfm_l175_l2_feature_release":
             base_payload["skip_feature_pool"] = True
             base_payload["feature_release_mode"] = "timesfm_l175_l2_feature_release"
-        for key in ("run_date", "as_of_date", "max_prep_stale_days"):
+        for key in (
+            "run_date",
+            "as_of_date",
+            "max_prep_stale_days",
+            "gcs_prefix",
+            "feature_pool_path",
+            "dataset_snapshot",
+        ):
             if payload.get(key) is not None:
                 base_payload[key] = payload[key]
         if payload.get("disable_stale_prep_guard") is not None:

@@ -48,7 +48,17 @@ def test_oof_full_fit_plan_only_dispatches_models_with_pass_evidence():
             "batch_count": 1,
             "batch_checksums": {"sequence/prep/batch_0.npz": "c" * 64},
         },
-        "aggregate": {
+        "windows": [
+            {
+                "window_id": idx,
+                "fs_result": {
+                    "feature_pool": {
+                        "tree_active": [f"feature_{feature_idx}" for feature_idx in range(12)]
+                    }
+                },
+            }
+            for idx in range(5)
+        ],        "aggregate": {
             "oof_ready_folds": 5,
             "full_fit_eligible_models": ["XGBoost", "PatchTST", "GNN"],
             "per_model_promotion_evidence": {
@@ -352,3 +362,73 @@ def test_full_fit_plan_blocks_legacy_manifest_without_immutable_prep():
     assert plan["status"] == "blocked"
     assert plan["reason"] == "immutable_oof_input_lineage_missing"
     assert plan["prep_lineage_ready"] is False
+
+
+def test_oof_full_fit_feature_consensus_uses_outer_fold_majority_vote():
+    from routers.walk_forward import build_oof_full_fit_feature_consensus
+
+    manifest = {
+        "cohort_id": "cohort-1",
+        "manifest_checksum": "a" * 64,
+        "target_semantic_version": "target-v4",
+        "aggregate": {"oof_ready_folds": 5},
+        "windows": [
+            {
+                "window_id": idx,
+                "fs_result": {
+                    "feature_pool": {
+                        "tree_active": [
+                            *[f"stable_{feature_idx}" for feature_idx in range(12)],
+                            f"fold_only_{idx}",
+                        ]
+                    }
+                },
+            }
+            for idx in range(5)
+        ],
+    }
+
+    first = build_oof_full_fit_feature_consensus(manifest)
+    second = build_oof_full_fit_feature_consensus(manifest)
+
+    assert first == second
+    assert first["status"] == "ready"
+    assert first["selection_method"] == "outer_fold_majority_vote"
+    assert first["fold_count"] == 5
+    assert first["min_votes"] == 3
+    assert first["selected_count"] == 12
+    assert first["tree_active"] == sorted(f"stable_{idx}" for idx in range(12))
+    assert len(first["artifact_checksum"]) == 64
+
+
+def test_oof_full_fit_plan_blocks_tree_without_fold_feature_lineage():
+    from routers.walk_forward import build_oof_full_fit_dispatch_plan
+
+    target = "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+    plan = build_oof_full_fit_dispatch_plan({
+        "schema_version": "active8-oof-cohort-manifest-v3",
+        "target_semantic_version": target,
+        "prep_manifest": {
+            "manifest_checksum": "a" * 64,
+            "target_semantic_version": target,
+            "roundtrip_cost_bps": 18.0,
+            "batch_count": 5,
+        },
+        "sequence_manifest": {
+            "artifact_checksum": "b" * 64,
+            "contract": "sequence_records_v3",
+            "target_semantic_version": target,
+            "batch_count": 1,
+            "batch_checksums": {"batch": "c" * 64},
+        },
+        "aggregate": {
+            "oof_ready_folds": 5,
+            "full_fit_eligible_models": ["XGBoost"],
+            "per_model_promotion_evidence": {"XGBoost": {"decision": "PASS"}},
+        },
+        "windows": [],
+    })
+
+    assert plan["status"] == "blocked"
+    assert plan["reason"] == "outer_fold_feature_consensus_missing"
+    assert plan["feature_lineage_ready"] is False

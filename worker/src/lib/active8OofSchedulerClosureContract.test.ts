@@ -11,6 +11,7 @@ const policies = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const walkForward = fs.readFileSync('../ml-controller/routers/walk_forward.py', 'utf8')
 const retrainFollowup = fs.readFileSync('../ml-controller/routers/retrain_followup.py', 'utf8')
+const trainingPolicy = fs.readFileSync('../ml-service/app/training_policy.py', 'utf8')
 
 const daily = manifest.jobs.find((job: any) => job.id === 'active8-oof-daily')
 const weekly = manifest.jobs.find((job: any) => job.id === 'active8-oof-weekly')
@@ -51,3 +52,7 @@ assert(monthlyHandoff >= 0 && monthlyHandoff < monthlyCallback, 'monthly retrain
 assert(retrainFollowup.includes('callback must retry until OOF handoff is durable'), 'failed monthly OOF handoff must keep retrain callback retryable')
 assert(retrainFollowup.includes('_resume_oof_full_fit_lifecycle') && retrainFollowup.includes('oof_lifecycle_resume_manifest_identity_mismatch'), 'completed OOF full-fit must resume only its checksum-bound lifecycle')
 assert(walkForward.includes('OOF_MATERIALIZE_EXPECTED_COHORT_ID'), 'durable materialization resume must remain bound to the originating cohort')
+assert(walkForward.includes('outer_fold_majority_vote') && walkForward.includes('active8-oof-full-fit-feature-consensus-v1'), 'tree full-fit must use checksum-bound majority consensus from outer OOF feature selections')
+for (const field of ['gcs_prefix', 'feature_pool_path', 'dataset_snapshot']) {
+  assert(trainingPolicy.includes(`"${field}"`), `full-fit train payload must preserve ${field} lineage`)
+}

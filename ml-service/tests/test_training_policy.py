@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.training_policy import (  # noqa: E402
@@ -528,3 +530,86 @@ def test_register_challenger_safe_is_disabled_but_preserves_feature_policy_metad
     assert "legacy_model_pool_challenger_disabled" in result["reason"]
     assert result["feature_policy_version"] == "model-feature-policy-v1"
     assert result["feature_policy"]["feature_policy_type"] == "selected_tabular"
+
+
+def test_full_fit_base_payload_preserves_exact_dataset_and_feature_lineage():
+    policy = UniversalTrainingPolicy()
+    snapshot = {
+        "schema_version": "active8-oof-full-fit-prep-lineage-v1",
+        "source_cohort_id": "cohort-1",
+    }
+
+    payload = policy.to_base_train_payload(
+        {
+            "gcs_prefix": "universal/canonical_adjusted_v4/immutable",
+            "feature_pool_path": "walk_forward/cohort/full_fit/feature_pool.json",
+            "dataset_snapshot": snapshot,
+        },
+        candidate_version="v-full-fit",
+    )
+
+    assert payload["gcs_prefix"] == "universal/canonical_adjusted_v4/immutable"
+    assert payload["feature_pool_path"] == "walk_forward/cohort/full_fit/feature_pool.json"
+    assert payload["dataset_snapshot"] == snapshot
+    assert build_group_train_payload(payload, "tree")["gcs_prefix"] == payload["gcs_prefix"]
+
+
+def test_immutable_oof_snapshot_requires_exact_rows_and_known_labels():
+    target = universal_training.SEQUENCE_RETURN_SEMANTIC_VERSION
+    snapshot = {
+        "schema_version": "active8-oof-full-fit-prep-lineage-v1",
+        "gcs_prefix": "universal/canonical_adjusted_v4/immutable",
+        "target_semantic_version": target,
+        "manifest_checksum": "a" * 64,
+        "source_manifest_checksum": "b" * 64,
+        "source_cohort_id": "cohort-1",
+        "total_rows": 2,
+        "feature_pool": {
+            "schema_version": "active8-oof-full-fit-feature-consensus-v1",
+            "path": "walk_forward/cohort/full_fit/feature_pool.json",
+            "artifact_checksum": "c" * 64,
+        },
+    }
+
+    report = universal_training.validate_immutable_oof_snapshot_for_registration(
+        snapshot,
+        gcs_prefix=snapshot["gcs_prefix"],
+        rows=2,
+        dates=np.array(["2026-07-07", "2026-07-08"]),
+        label_known_dates=np.array(["2026-07-15", "2026-07-16"]),
+        run_date="2026-07-17",
+    )
+
+    assert report["status"] == "ok"
+    assert report["mode"] == "immutable_oof_point_in_time"
+    assert report["label_known_date_max"] == "2026-07-16"
+
+
+def test_immutable_oof_snapshot_rejects_future_label_or_row_mismatch():
+    target = universal_training.SEQUENCE_RETURN_SEMANTIC_VERSION
+    snapshot = {
+        "schema_version": "active8-oof-full-fit-prep-lineage-v1",
+        "gcs_prefix": "universal/canonical_adjusted_v4/immutable",
+        "target_semantic_version": target,
+        "manifest_checksum": "a" * 64,
+        "source_manifest_checksum": "b" * 64,
+        "source_cohort_id": "cohort-1",
+        "total_rows": 3,
+        "feature_pool": {
+            "schema_version": "active8-oof-full-fit-feature-consensus-v1",
+            "path": "walk_forward/cohort/full_fit/feature_pool.json",
+            "artifact_checksum": "c" * 64,
+        },
+    }
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="row_count_mismatch|future_label_detected"):
+        universal_training.validate_immutable_oof_snapshot_for_registration(
+            snapshot,
+            gcs_prefix=snapshot["gcs_prefix"],
+            rows=2,
+            dates=np.array(["2026-07-07", "2026-07-08"]),
+            label_known_dates=np.array(["2026-07-15", "2026-07-20"]),
+            run_date="2026-07-17",
+        )

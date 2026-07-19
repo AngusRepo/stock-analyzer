@@ -100,6 +100,8 @@ class UniversalRetrainTriggerRequest(BaseModel):
     prebuilt_prep_target_semantic_version: str | None = None
     prebuilt_prep_source_cohort_id: str | None = None
     prebuilt_prep_source_manifest_checksum: str | None = None
+    prebuilt_feature_pool_path: str | None = None
+    prebuilt_feature_pool_checksum: str | None = None
     prebuilt_sequence_manifest_checksum: str | None = None
     prebuilt_sequence_batch_checksums: dict[str, str] = Field(default_factory=dict)
     sequence_batch_count: int | None = Field(default=None, description="Number of sequence_records_v3 batches.")
@@ -280,6 +282,56 @@ def _verify_prebuilt_canonical_prep(
         "roundtrip_cost_bps": 18.0,
     }
 
+def _verify_prebuilt_feature_pool(
+    *,
+    bucket: object,
+    path: str,
+    expected_checksum: str,
+    expected_cohort_id: str,
+    expected_source_manifest_checksum: str,
+    expected_target_semantic_version: str,
+) -> dict[str, object]:
+    import hashlib
+
+    normalized_path = str(path or "").strip()
+    raw = bucket.blob(normalized_path).download_as_bytes()
+    feature_pool = json.loads(raw.decode("utf-8").lstrip("\ufeff"))
+    unsigned = {key: value for key, value in feature_pool.items() if key != "artifact_checksum"}
+    actual_checksum = hashlib.sha256(json.dumps(unsigned, sort_keys=True).encode("utf-8")).hexdigest()
+    required = {
+        "schema_version": "active8-oof-full-fit-feature-consensus-v1",
+        "status": "ready",
+        "cohort_id": expected_cohort_id,
+        "source_manifest_checksum": expected_source_manifest_checksum,
+        "target_semantic_version": expected_target_semantic_version,
+        "selection_method": "outer_fold_majority_vote",
+    }
+    for key, value in required.items():
+        if feature_pool.get(key) != value:
+            raise ValueError(f"prebuilt_feature_pool_mismatch:{key}")
+    if (
+        feature_pool.get("artifact_checksum") != actual_checksum
+        or actual_checksum != str(expected_checksum or "")
+    ):
+        raise ValueError("prebuilt_feature_pool_checksum_mismatch")
+    if int(feature_pool.get("fold_count") or 0) < 5:
+        raise ValueError("prebuilt_feature_pool_fold_count_insufficient")
+    min_votes = int(feature_pool.get("min_votes") or 0)
+    if min_votes <= int(feature_pool.get("fold_count") or 0) // 2:
+        raise ValueError("prebuilt_feature_pool_majority_threshold_invalid")
+    selected = sorted({str(name) for name in (feature_pool.get("tree_active") or []) if str(name)})
+    if len(selected) < 10 or selected != list(feature_pool.get("tree_active") or []):
+        raise ValueError("prebuilt_feature_pool_selection_invalid")
+    return {
+        "schema_version": feature_pool["schema_version"],
+        "path": normalized_path,
+        "artifact_checksum": actual_checksum,
+        "selection_method": feature_pool["selection_method"],
+        "fold_count": int(feature_pool["fold_count"]),
+        "min_votes": min_votes,
+        "selected_count": len(selected),
+        "source_manifest_checksum": expected_source_manifest_checksum,
+    }
 def _verify_prebuilt_sequence_prep(
     *,
     bucket: object,
@@ -921,6 +973,16 @@ async def _dispatch_prebuilt_oof_full_fit(
         raise ValueError("prebuilt_canonical_prep_source_manifest_checksum_missing")
     if not str(req.prebuilt_prep_source_cohort_id or "").strip():
         raise ValueError("prebuilt_canonical_prep_source_cohort_missing")
+    feature_pool_verified: dict[str, object] = {}
+    if "tree" in {str(group).strip().lower() for group in req.train_model_groups}:
+        feature_pool_verified = _verify_prebuilt_feature_pool(
+            bucket=bucket,
+            path=str(req.prebuilt_feature_pool_path or ""),
+            expected_checksum=str(req.prebuilt_feature_pool_checksum or ""),
+            expected_cohort_id=str(req.prebuilt_prep_source_cohort_id),
+            expected_source_manifest_checksum=str(req.prebuilt_prep_source_manifest_checksum),
+            expected_target_semantic_version=str(req.prebuilt_prep_target_semantic_version),
+        )
 
     training_policy = TrainingPolicy.from_env()
     tw_now = datetime.now(timezone.utc) + timedelta(hours=8)
@@ -962,11 +1024,13 @@ async def _dispatch_prebuilt_oof_full_fit(
             "source_cohort_id": req.prebuilt_prep_source_cohort_id,
             "source_manifest_checksum": req.prebuilt_prep_source_manifest_checksum,
             **verified,
+            "feature_pool": feature_pool_verified,
             "sequence": sequence_verified,
         },
         "timesfm_l175_feature_release": {"requested": False},
         "followup_webhook_url": followup_webhook_url,
         "gcs_prefix": verified["gcs_prefix"],
+        "feature_pool_path": feature_pool_verified.get("path"),
         "run_id": run_id,
         "lock_key": lock_key,
         "run_date": run_date,
@@ -981,6 +1045,7 @@ async def _dispatch_prebuilt_oof_full_fit(
             "run_date": run_date,
             "prebuilt_oof_full_fit": True,
             "verified_prep": verified,
+            "verified_feature_pool": feature_pool_verified,
             "source_cohort_id": req.prebuilt_prep_source_cohort_id,
             "source_manifest_checksum": req.prebuilt_prep_source_manifest_checksum,
             "sequence_contract": sequence_contract,

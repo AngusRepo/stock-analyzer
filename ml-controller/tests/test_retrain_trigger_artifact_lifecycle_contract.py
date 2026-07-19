@@ -199,3 +199,59 @@ def test_prebuilt_sequence_prep_requires_manifest_and_all_batch_checksums():
             expected_batch_checksums=checksums,
             expected_target_semantic_version=target,
         )
+
+
+def test_prebuilt_feature_pool_requires_majority_consensus_and_source_checksum():
+    path = "walk_forward/oof_cohorts/cohort-1/full_fit/feature_pool.json"
+    artifact = {
+        "schema_version": "active8-oof-full-fit-feature-consensus-v1",
+        "status": "ready",
+        "cohort_id": "cohort-1",
+        "source_manifest_checksum": "a" * 64,
+        "target_semantic_version": "target-v4",
+        "selection_method": "outer_fold_majority_vote",
+        "fold_count": 5,
+        "min_votes": 3,
+        "tree_active": [f"feature_{idx:02d}" for idx in range(12)],
+    }
+    artifact["artifact_checksum"] = hashlib.sha256(
+        json.dumps(artifact, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    raw = json.dumps(artifact).encode("utf-8")
+
+    class Blob:
+        def download_as_bytes(self):
+            return raw
+
+    class Bucket:
+        def blob(self, requested_path):
+            assert requested_path == path
+            return Blob()
+
+    verified = retrain_trigger._verify_prebuilt_feature_pool(
+        bucket=Bucket(),
+        path=path,
+        expected_checksum=artifact["artifact_checksum"],
+        expected_cohort_id="cohort-1",
+        expected_source_manifest_checksum="a" * 64,
+        expected_target_semantic_version="target-v4",
+    )
+
+    assert verified["selected_count"] == 12
+    assert verified["min_votes"] == 3
+    assert verified["artifact_checksum"] == artifact["artifact_checksum"]
+
+    artifact["min_votes"] = 2
+    artifact["artifact_checksum"] = hashlib.sha256(
+        json.dumps({key: value for key, value in artifact.items() if key != "artifact_checksum"}, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    raw = json.dumps(artifact).encode("utf-8")
+    with pytest.raises(ValueError, match="majority_threshold_invalid"):
+        retrain_trigger._verify_prebuilt_feature_pool(
+            bucket=Bucket(),
+            path=path,
+            expected_checksum=artifact["artifact_checksum"],
+            expected_cohort_id="cohort-1",
+            expected_source_manifest_checksum="a" * 64,
+            expected_target_semantic_version="target-v4",
+        )

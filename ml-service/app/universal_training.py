@@ -89,6 +89,7 @@ class UniversalTrainRequest(BaseModel):
     max_prep_stale_days: int | None = None
     label_horizon_days: int | None = None
     disable_stale_prep_guard: bool = False
+    dataset_snapshot: dict | None = None
     generation_mode: str = "native"
     cohort_id: str | None = None
     fold_id: str | None = None
@@ -130,6 +131,82 @@ def _date_min_max_for_manifest(dates: np.ndarray) -> tuple[str | None, str | Non
     return values[0], values[-1]
 
 
+def validate_immutable_oof_snapshot_for_registration(
+    snapshot: dict,
+    *,
+    gcs_prefix: str,
+    rows: int,
+    dates: np.ndarray,
+    label_known_dates: np.ndarray,
+    run_date: str | None,
+) -> dict:
+    """Verify exact point-in-time OOF lineage instead of applying native-prep freshness."""
+
+    errors: list[str] = []
+    if snapshot.get("schema_version") != "active8-oof-full-fit-prep-lineage-v1":
+        errors.append("immutable_oof_snapshot_schema_invalid")
+    if str(snapshot.get("gcs_prefix") or "").rstrip("/") != str(gcs_prefix or "").rstrip("/"):
+        errors.append("immutable_oof_snapshot_prefix_mismatch")
+    if snapshot.get("target_semantic_version") != SEQUENCE_RETURN_SEMANTIC_VERSION:
+        errors.append("immutable_oof_snapshot_target_semantic_mismatch")
+    if len(str(snapshot.get("manifest_checksum") or "")) != 64:
+        errors.append("immutable_oof_snapshot_prep_checksum_missing")
+    if len(str(snapshot.get("source_manifest_checksum") or "")) != 64:
+        errors.append("immutable_oof_snapshot_source_checksum_missing")
+    if not str(snapshot.get("source_cohort_id") or "").strip():
+        errors.append("immutable_oof_snapshot_source_cohort_missing")
+    feature_pool = snapshot.get("feature_pool") if isinstance(snapshot.get("feature_pool"), dict) else {}
+    if (
+        feature_pool.get("schema_version") != "active8-oof-full-fit-feature-consensus-v1"
+        or len(str(feature_pool.get("artifact_checksum") or "")) != 64
+        or not str(feature_pool.get("path") or "").strip()
+    ):
+        errors.append("immutable_oof_snapshot_feature_pool_invalid")
+    if int(snapshot.get("total_rows") or 0) != int(rows):
+        errors.append("immutable_oof_snapshot_row_count_mismatch")
+
+    date_values = [str(value) for value in np.asarray(dates).reshape(-1).tolist() if str(value)]
+    label_values = [
+        str(value)
+        for value in np.asarray(label_known_dates).reshape(-1).tolist()
+        if str(value)
+    ]
+    if len(date_values) != int(rows) or len(label_values) != int(rows):
+        errors.append("immutable_oof_snapshot_row_lineage_incomplete")
+    date_max = max(date_values) if date_values else None
+    label_known_date_max = max(label_values) if label_values else None
+    cutoff = str(run_date or "").strip()
+    try:
+        if cutoff:
+            datetime.strptime(cutoff, "%Y-%m-%d")
+        else:
+            raise ValueError("missing cutoff")
+        if label_known_date_max:
+            datetime.strptime(label_known_date_max, "%Y-%m-%d")
+    except ValueError:
+        errors.append("immutable_oof_snapshot_cutoff_or_label_date_invalid")
+    if label_known_date_max and cutoff and label_known_date_max > cutoff:
+        errors.append("immutable_oof_snapshot_future_label_detected")
+    if date_max and label_known_date_max and date_max > label_known_date_max:
+        errors.append("immutable_oof_snapshot_signal_after_label_known_date")
+
+    report = {
+        "status": "ok" if not errors else "error",
+        "mode": "immutable_oof_point_in_time",
+        "source_cohort_id": snapshot.get("source_cohort_id"),
+        "source_manifest_checksum": snapshot.get("source_manifest_checksum"),
+        "prep_manifest_checksum": snapshot.get("manifest_checksum"),
+        "feature_pool_artifact_checksum": feature_pool.get("artifact_checksum"),
+        "knowledge_cutoff_date": cutoff or None,
+        "date_max": date_max,
+        "label_known_date_max": label_known_date_max,
+        "rows": int(rows),
+        "verification": "manifest_batches_feature_consensus_and_label_known_cutoff_v1",
+        "errors": errors,
+    }
+    if errors:
+        raise RuntimeError(f"immutable OOF snapshot blocks artifact registration: {errors}")
+    return report
 def normalize_universal_lifecycle_request(
     req: UniversalTrainRequest,
     *,
@@ -1334,18 +1411,26 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         rows=len(X),
         dates=dates_arr,
     )
-    prep_freshness = (
-        validate_prep_lineage_for_registration(
+    if not walk_forward_mode and req.dataset_snapshot:
+        prep_freshness = validate_immutable_oof_snapshot_for_registration(
+            req.dataset_snapshot,
+            gcs_prefix=gcs_prefix,
+            rows=len(X),
+            dates=dates_arr,
+            label_known_dates=label_known_dates_arr,
+            run_date=req.run_date,
+        )
+    elif not walk_forward_mode and gcs_prefix != "universal":
+        raise RuntimeError("immutable OOF snapshot contract missing for versioned full-fit registration")
+    elif not walk_forward_mode and not req.disable_stale_prep_guard:
+        prep_freshness = validate_prep_lineage_for_registration(
             prep_lineage,
             as_of_date=req.as_of_date or req.run_date,
             max_stale_days=req.max_prep_stale_days,
             label_horizon_days=req.label_horizon_days,
         )
-        if not walk_forward_mode
-        and gcs_prefix == "universal"
-        and not req.disable_stale_prep_guard
-        else {"status": "skipped"}
-    )
+    else:
+        prep_freshness = {"status": "skipped", "reason": "walk_forward_or_explicit_native_research"}
     manifest = build_training_run_manifest(
         run_id=training_run_id,
         model_names=list(trained_models.keys()),

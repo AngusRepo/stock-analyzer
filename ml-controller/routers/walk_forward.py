@@ -10,6 +10,7 @@ All endpoints require X-Controller-Token via main.py verify_token dependency.
 """
 from __future__ import annotations
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -350,6 +351,66 @@ _ACTIVE8_LIFECYCLE_MODELS = {"GNN", "TabM", "PatchTST", "iTransformer"}
 _ACTIVE8_FULL_FIT_MODELS = _ACTIVE8_TREE_MODELS | _ACTIVE8_LIFECYCLE_MODELS | {"DLinear"}
 
 
+def build_oof_full_fit_feature_consensus(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Build a deterministic majority-vote tree feature set from outer OOF folds."""
+
+    aggregate = manifest.get("aggregate") if isinstance(manifest.get("aggregate"), dict) else {}
+    expected_folds = int(aggregate.get("oof_ready_folds") or 0)
+    fold_features: list[tuple[str, list[str]]] = []
+    for window in sorted(
+        (row for row in (manifest.get("windows") or []) if isinstance(row, dict)),
+        key=lambda row: int(row.get("window_id") or 0),
+    ):
+        feature_pool = (
+            (window.get("fs_result") or {}).get("feature_pool")
+            if isinstance(window.get("fs_result"), dict)
+            else {}
+        )
+        active = sorted({str(name) for name in ((feature_pool or {}).get("tree_active") or []) if str(name)})
+        if active:
+            fold_features.append((f"w{int(window.get('window_id') or 0)}", active))
+
+    if expected_folds < OOF_PROMOTION_MIN_FOLDS or len(fold_features) != expected_folds:
+        return {
+            "status": "blocked",
+            "reason": "outer_fold_feature_evidence_incomplete",
+            "expected_folds": expected_folds,
+            "observed_folds": len(fold_features),
+        }
+    min_votes = len(fold_features) // 2 + 1
+    votes: dict[str, int] = {}
+    for _, features in fold_features:
+        for feature in features:
+            votes[feature] = votes.get(feature, 0) + 1
+    selected = sorted(feature for feature, count in votes.items() if count >= min_votes)
+    if len(selected) < 10:
+        return {
+            "status": "blocked",
+            "reason": "outer_fold_feature_consensus_too_small",
+            "expected_folds": expected_folds,
+            "observed_folds": len(fold_features),
+            "selected_count": len(selected),
+        }
+
+    artifact = {
+        "schema_version": "active8-oof-full-fit-feature-consensus-v1",
+        "status": "ready",
+        "cohort_id": str(manifest.get("cohort_id") or ""),
+        "source_manifest_checksum": str(manifest.get("manifest_checksum") or ""),
+        "target_semantic_version": str(manifest.get("target_semantic_version") or ""),
+        "selection_method": "outer_fold_majority_vote",
+        "fold_count": len(fold_features),
+        "min_votes": min_votes,
+        "fold_ids": [fold_id for fold_id, _ in fold_features],
+        "feature_votes": dict(sorted(votes.items())),
+        "tree_active": selected,
+        "active": selected,
+        "selected_count": len(selected),
+    }
+    artifact["artifact_checksum"] = hashlib.sha256(
+        json.dumps(artifact, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return artifact
 def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     aggregate = manifest.get("aggregate") if isinstance(manifest.get("aggregate"), dict) else {}
     evidence_by_model = (
@@ -373,6 +434,12 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
     if "DLinear" in eligible:
         train_groups.append("dlinear")
     lifecycle_targets = [name for name in eligible if name in _ACTIVE8_LIFECYCLE_MODELS]
+    feature_consensus = (
+        build_oof_full_fit_feature_consensus(manifest)
+        if tree_models
+        else {"status": "not_required", "reason": "no_tree_models_eligible"}
+    )
+    feature_lineage_ready = not tree_models or feature_consensus.get("status") == "ready"
     prep = manifest.get("prep_manifest") if isinstance(manifest.get("prep_manifest"), dict) else {}
     prep_lineage_ready = (
         manifest.get("schema_version") == "active8-oof-cohort-manifest-v3"
@@ -397,13 +464,15 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
     )
     status = (
         "ready"
-        if eligible and prep_lineage_ready and sequence_lineage_ready
+        if eligible and prep_lineage_ready and sequence_lineage_ready and feature_lineage_ready
         else "blocked"
     )
     if not eligible:
         reason = "no_full_fit_eligible_models"
     elif not prep_lineage_ready or not sequence_lineage_ready:
         reason = "immutable_oof_input_lineage_missing"
+    elif not feature_lineage_ready:
+        reason = "outer_fold_feature_consensus_missing"
     else:
         reason = "eligible_models_ready"
     return {
@@ -411,6 +480,8 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
         "reason": reason,
         "prep_lineage_ready": prep_lineage_ready,
         "sequence_lineage_ready": sequence_lineage_ready,
+        "feature_lineage_ready": feature_lineage_ready,
+        "feature_consensus": feature_consensus,
         "sequence_manifest": sequence,
         "prep_manifest": prep,
         "eligible_models": eligible,
@@ -439,6 +510,23 @@ async def dispatch_oof_full_fit_training(
         return plan
 
     cohort_id = str(manifest.get("cohort_id") or "")
+    feature_pool_contract: dict[str, Any] = {}
+    if plan["tree_models"]:
+        feature_consensus = dict(plan.get("feature_consensus") or {})
+        feature_pool_path = (
+            f"walk_forward/oof_cohorts/{cohort_id}/full_fit/feature_pool.json"
+        )
+        bucket.blob(feature_pool_path).upload_from_string(
+            json.dumps(feature_consensus, sort_keys=True),
+            content_type="application/json",
+        )
+        feature_pool_contract = {
+            "path": feature_pool_path,
+            "artifact_checksum": feature_consensus["artifact_checksum"],
+            "selected_count": feature_consensus["selected_count"],
+            "fold_count": feature_consensus["fold_count"],
+            "min_votes": feature_consensus["min_votes"],
+        }
     receipt_path = (
         f"walk_forward/oof_cohorts/{cohort_id}/full_fit/"
         f"{knowledge_cutoff_date}.json"
@@ -536,6 +624,8 @@ async def dispatch_oof_full_fit_training(
         prebuilt_prep_target_semantic_version=target_semantic or None,
         prebuilt_prep_source_cohort_id=cohort_id,
         prebuilt_prep_source_manifest_checksum=str(manifest.get("manifest_checksum") or "") or None,
+        prebuilt_feature_pool_path=str(feature_pool_contract.get("path") or "") or None,
+        prebuilt_feature_pool_checksum=str(feature_pool_contract.get("artifact_checksum") or "") or None,
         prebuilt_sequence_manifest_checksum=str((manifest.get("sequence_manifest") or {}).get("artifact_checksum") or "") or None,
         prebuilt_sequence_batch_checksums=dict((manifest.get("sequence_manifest") or {}).get("batch_checksums") or {}),
         oof_lifecycle_resume={
@@ -577,6 +667,7 @@ async def dispatch_oof_full_fit_training(
         "run_id": run_id,
         "attempt": attempt + 1,
         "eligible_models": plan["eligible_models"],
+        "feature_pool": feature_pool_contract,
         "dispatch": result,
     }
     receipt_blob.upload_from_string(

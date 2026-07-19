@@ -27,9 +27,9 @@ for (const task of ['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-mont
 assert(policies.includes("'active8-oof-daily': { kind: 'maintenance', holidayGated: false"), 'post-midnight daily OOF continuation must not be skipped by the next calendar day weekend/holiday gate')
 
 assert(walkForward.includes('@router.post("/walk_forward/oof/lifecycle")'), 'controller must expose the shared OOF lifecycle owner')
-assert(walkForward.includes('mature_dates = dates[:-5]'), 'OOF cohort generation must purge the five-session unresolved label horizon')
-assert(walkForward.includes('cohort_dates = mature_dates[-90:]'), 'weekly/monthly OOF must use the deterministic 90-session three-fold cohort')
-assert(walkForward.includes('train_window_days=60') && walkForward.includes('test_window_days=10'), 'OOF cohort must use the canonical 60/10 purged walk-forward windows')
+assert(walkForward.includes('label_known_dates') && walkForward.includes('known <= cutoff'), 'OOF cohort generation must use row-level immutable label-known dates')
+assert(walkForward.includes('cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSIONS:]'), 'weekly/monthly OOF must use the deterministic mature-session cohort')
+assert(walkForward.includes('train_window_days=OOF_TRAIN_SESSIONS') && walkForward.includes('test_window_days=OOF_TEST_SESSIONS'), 'OOF cohort must use the canonical 60/10 purged walk-forward windows')
 assert(walkForward.includes('active8-oof-dispatch-v1') && walkForward.includes('cohort_orchestrator_active'), 'OOF generation must have a durable idempotent dispatch fence')
 assert(walkForward.includes('active8-oof-lifecycle-receipt-v1'), 'materialization/promotion must write a durable per-cutoff receipt')
 assert(
@@ -49,3 +49,5 @@ const monthlyHandoff = retrainFollowup.indexOf('run_walk_forward_oof_lifecycle')
 const monthlyCallback = retrainFollowup.indexOf('scheduler_callback = await _callback_worker_scheduler(payload)')
 assert(monthlyHandoff >= 0 && monthlyHandoff < monthlyCallback, 'monthly retrain must hand off to OOF lifecycle before reporting callback closure')
 assert(retrainFollowup.includes('callback must retry until OOF handoff is durable'), 'failed monthly OOF handoff must keep retrain callback retryable')
+assert(retrainFollowup.includes('_resume_oof_full_fit_lifecycle') && retrainFollowup.includes('oof_lifecycle_resume_manifest_identity_mismatch'), 'completed OOF full-fit must resume only its checksum-bound lifecycle')
+assert(walkForward.includes('OOF_MATERIALIZE_EXPECTED_COHORT_ID'), 'durable materialization resume must remain bound to the originating cohort')

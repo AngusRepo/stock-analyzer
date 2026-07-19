@@ -89,6 +89,7 @@ class UniversalRetrainTriggerRequest(BaseModel):
     register_challengers: bool = False
     promotion_allowed_models: list[str] = Field(default_factory=list)
     oof_promotion_evidence: dict[str, dict] = Field(default_factory=dict)
+    oof_lifecycle_resume: dict[str, Any] = Field(default_factory=dict)
     require_exact_dataset_snapshot: bool = Field(
         default=False,
         description="Fail closed unless the compute snapshot business date exactly matches run_date.",
@@ -953,6 +954,7 @@ async def _dispatch_prebuilt_oof_full_fit(
         "register_challengers": req.register_challengers,
         "promotion_allowed_models": req.promotion_allowed_models,
         "oof_promotion_evidence": req.oof_promotion_evidence,
+        "oof_lifecycle_resume": req.oof_lifecycle_resume,
         "selection_params": training_policy.feature_selection_params(),
         "training_policy": training_policy.to_dict(),
         "dataset_snapshot": {

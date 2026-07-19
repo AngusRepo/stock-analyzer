@@ -645,7 +645,11 @@ def _artifact_record_from_registration(
         raw_registration = {"status": "unknown", "raw": raw_registration}
     evidence = _model_training_evidence(payload_dict, model_name)
     enriched_registration = {**evidence, **raw_registration}
-    if not isinstance(enriched_registration.get("model_cpcv"), dict) and isinstance(evidence.get("model_cpcv"), dict):
+    outer_oof_owner = evidence.get("oof_promotion_evidence")
+    if isinstance(outer_oof_owner, dict) and outer_oof_owner:
+        enriched_registration["model_cpcv"] = outer_oof_owner
+        enriched_registration["oof_promotion_evidence"] = outer_oof_owner
+    elif not isinstance(enriched_registration.get("model_cpcv"), dict) and isinstance(evidence.get("model_cpcv"), dict):
         enriched_registration["model_cpcv"] = evidence["model_cpcv"]
     record_version = str(raw_registration.get("version") or payload_dict.get("candidate_version"))
 

@@ -82,3 +82,30 @@ def test_oof_materialize_job_contract_is_durable_and_deployed():
     assert "The controller only dispatches a durable Cloud Run Job" in worker
     assert "OOF_MATERIALIZE_JOB_NAME" in deploy
     assert "oof_materialize_job_main" in deploy
+
+
+def test_oof_materialize_job_reports_full_fit_pending_as_running(monkeypatch):
+    callbacks = []
+
+    async def fake_execute_lifecycle(**kwargs):
+        assert kwargs["expected_cohort_id"] == "cohort-1"
+        return {
+            "status": "materialized",
+            "cohort_id": "cohort-1",
+            "dependency_retry_required": True,
+            "full_fit_dispatch": {"status": "dispatched", "retry_required": True},
+        }
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(oof_materialize_job_main, "_execute_lifecycle", fake_execute_lifecycle)
+    monkeypatch.setattr(oof_materialize_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "weekly")
+    monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-07-17")
+    monkeypatch.setenv("OOF_MATERIALIZE_EXPECTED_COHORT_ID", "cohort-1")
+    monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-pending")
+
+    assert asyncio.run(oof_materialize_job_main._run()) == 0
+    assert callbacks[0]["status"] == "running"
+    assert "error" not in callbacks[0]

@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import hmac
+import hashlib
 from datetime import datetime, timezone
 from typing import Any
 
@@ -54,6 +55,48 @@ async def _run_monthly_oof_lifecycle(run_date: str | None) -> dict[str, Any]:
         promote=True,
     ))
 
+async def _resume_oof_full_fit_lifecycle(context: dict[str, Any]) -> dict[str, Any]:
+    if context.get("schema_version") != "active8-oof-lifecycle-resume-v1":
+        raise ValueError("oof_lifecycle_resume_schema_invalid")
+    cohort_id = str(context.get("cohort_id") or "").strip()
+    expected_checksum = str(context.get("source_manifest_checksum") or "").strip()
+    cutoff = str(context.get("knowledge_cutoff_date") or "").strip()
+    cadence = str(context.get("cadence") or "").strip().lower()
+    if not cohort_id or len(expected_checksum) != 64 or len(cutoff) != 10:
+        raise ValueError("oof_lifecycle_resume_identity_incomplete")
+    if cadence not in {"daily", "weekly", "monthly"}:
+        raise ValueError("oof_lifecycle_resume_cadence_invalid")
+
+    from routers.walk_forward import OofLifecycleRequest, run_walk_forward_oof_lifecycle
+    from services.walk_forward_retrain import _get_bucket
+
+    bucket = _get_bucket()
+    manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
+    manifest = json.loads(bucket.blob(manifest_path).download_as_text())
+    unsigned = {key: value for key, value in manifest.items() if key != "manifest_checksum"}
+    actual_checksum = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    if (
+        str(manifest.get("cohort_id") or "") != cohort_id
+        or str(manifest.get("manifest_checksum") or "") != expected_checksum
+        or actual_checksum != expected_checksum
+    ):
+        raise ValueError("oof_lifecycle_resume_manifest_identity_mismatch")
+
+    result = await run_walk_forward_oof_lifecycle(OofLifecycleRequest(
+        cadence=cadence,
+        end_date=cutoff,
+        dry_run=False,
+        promote=True,
+        expected_cohort_id=cohort_id,
+    ))
+    if str(result.get("status") or "") not in {
+        "spawned", "pending", "materialized", "idempotent_complete"
+    }:
+        raise RuntimeError(f"oof_lifecycle_resume_unexpected_status:{result}")
+    return result
+
 class RetrainFollowupPayload(BaseModel):
     run_id: str | None = None
     trained_at: str | None = Field(default=None, description="ISO8601 UTC fallback idempotency key")
@@ -69,6 +112,7 @@ class RetrainFollowupPayload(BaseModel):
     challenger_registrations: dict[str, Any] = Field(default_factory=dict)
     promotion_allowed_models: list[str] = Field(default_factory=list)
     oof_promotion_evidence: dict[str, dict] = Field(default_factory=dict)
+    oof_lifecycle_resume: dict[str, Any] = Field(default_factory=dict)
     window_id: int | None = None
     total_samples: int = 0
     train_samples: int = 0
@@ -359,6 +403,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
             "challenger_registrations": payload.challenger_registrations,
             "promotion_allowed_models": payload.promotion_allowed_models,
             "oof_promotion_evidence": payload.oof_promotion_evidence,
+            "oof_lifecycle_resume": payload.oof_lifecycle_resume,
             "window_id": payload.window_id,
             "total_samples": payload.total_samples,
             "train_samples": payload.train_samples,
@@ -428,6 +473,19 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
         artifact_records=artifact_records,
         reason=f"retrain_followup_artifact_lifecycle:{idem_key}",
     )
+    oof_lifecycle_resume: dict[str, Any] | None = None
+    if payload.status == "completed" and not payload.error and payload.oof_lifecycle_resume:
+        try:
+            oof_lifecycle_resume = await _resume_oof_full_fit_lifecycle(
+                payload.oof_lifecycle_resume
+            )
+        except Exception as exc:  # noqa: BLE001 - full-fit completion must resume its bound lifecycle.
+            logger.exception("[RetrainFollowup] OOF full-fit lifecycle resume failed")
+            raise HTTPException(
+                status_code=502,
+                detail=f"OOF full-fit completed but lifecycle resume failed: {exc}",
+            ) from exc
+
     monthly_oof_lifecycle: dict[str, Any] | None = None
     if payload.is_monthly and payload.status == "completed" and not payload.error:
         try:
@@ -462,6 +520,7 @@ async def retrain_followup(payload: RetrainFollowupPayload, request: Request) ->
         "champion_pointer_reconcile": champion_pointer_reconcile,
         "scheduler_callback": scheduler_callback,
         "monthly_oof_lifecycle": monthly_oof_lifecycle,
+        "oof_lifecycle_resume": oof_lifecycle_resume,
         "summary": {
             "run_id": payload.run_id,
             "trained_at": payload.trained_at,

@@ -1424,7 +1424,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 feature_policy_meta["feature_policy"] = feature_policy
                 model_selection_evidence["feature_release_mode"] = req.feature_release_mode
             model_extra_meta.update(feature_policy_meta)
-            if req.output_model_version and not walk_forward_mode and gcs_prefix == "universal":
+            if req.output_model_version and not walk_forward_mode:
                 saved_artifact = _save_universal_versioned_model(
                     bucket=bucket,
                     model_name=model_name,

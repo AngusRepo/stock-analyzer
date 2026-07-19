@@ -416,3 +416,70 @@ def test_registry_backfill_only_writes_artifact_registry(monkeypatch):
     assert offline["gate"]["policy"]["family"] == "tree"
     assert offline["gate"]["policy"]["pbo"]["max_pbo"] < 0.5
     assert executed == []
+
+
+def test_oof_full_fit_followup_resumes_checksum_bound_lifecycle(monkeypatch):
+    from routers import walk_forward
+    from services import walk_forward_retrain
+    import hashlib
+
+    unsigned = {
+        "cohort_id": "cohort-resume",
+        "schema_version": "active8-oof-cohort-manifest-v3",
+    }
+    checksum = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    manifest = {**unsigned, "manifest_checksum": checksum}
+    calls = []
+
+    class _Blob:
+        def download_as_text(self):
+            return json.dumps(manifest)
+
+    class _Bucket:
+        def blob(self, path):
+            assert path == "walk_forward/oof_cohorts/cohort-resume/manifest.json"
+            return _Blob()
+
+    async def fake_lifecycle(req):
+        calls.append(req)
+        return {"status": "spawned", "cohort_id": req.expected_cohort_id}
+
+    monkeypatch.setattr(walk_forward_retrain, "_get_bucket", lambda: _Bucket())
+    monkeypatch.setattr(walk_forward, "run_walk_forward_oof_lifecycle", fake_lifecycle)
+
+    result = asyncio.run(followup_router._resume_oof_full_fit_lifecycle({
+        "schema_version": "active8-oof-lifecycle-resume-v1",
+        "cohort_id": "cohort-resume",
+        "source_manifest_checksum": checksum,
+        "knowledge_cutoff_date": "2026-07-17",
+        "cadence": "weekly",
+    }))
+
+    assert result["status"] == "spawned"
+    assert calls[0].expected_cohort_id == "cohort-resume"
+    assert calls[0].cadence == "weekly"
+
+
+def test_oof_full_fit_followup_rejects_manifest_identity_mismatch(monkeypatch):
+    from services import walk_forward_retrain
+
+    class _Blob:
+        def download_as_text(self):
+            return json.dumps({"cohort_id": "other", "manifest_checksum": "b" * 64})
+
+    class _Bucket:
+        def blob(self, _path):
+            return _Blob()
+
+    monkeypatch.setattr(walk_forward_retrain, "_get_bucket", lambda: _Bucket())
+
+    with pytest.raises(ValueError, match="manifest_identity_mismatch"):
+        asyncio.run(followup_router._resume_oof_full_fit_lifecycle({
+            "schema_version": "active8-oof-lifecycle-resume-v1",
+            "cohort_id": "cohort-resume",
+            "source_manifest_checksum": "a" * 64,
+            "knowledge_cutoff_date": "2026-07-17",
+            "cadence": "weekly",
+        }))

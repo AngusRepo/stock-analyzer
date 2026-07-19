@@ -342,6 +342,7 @@ class OofMaterializeRequest(BaseModel):
     confirm: bool = False
     promote: bool = True
     prediction_storage_mode: str = "gcs_indexed_v1"
+    lifecycle_cadence: str = "daily"
 
 
 _ACTIVE8_TREE_MODELS = {"LightGBM", "XGBoost", "ExtraTrees"}
@@ -429,6 +430,7 @@ async def dispatch_oof_full_fit_training(
     manifest: dict[str, Any],
     knowledge_cutoff_date: str,
     bucket: Any,
+    lifecycle_cadence: str,
 ) -> dict[str, Any]:
     from services import d1_client
 
@@ -536,6 +538,13 @@ async def dispatch_oof_full_fit_training(
         prebuilt_prep_source_manifest_checksum=str(manifest.get("manifest_checksum") or "") or None,
         prebuilt_sequence_manifest_checksum=str((manifest.get("sequence_manifest") or {}).get("artifact_checksum") or "") or None,
         prebuilt_sequence_batch_checksums=dict((manifest.get("sequence_manifest") or {}).get("batch_checksums") or {}),
+        oof_lifecycle_resume={
+            "schema_version": "active8-oof-lifecycle-resume-v1",
+            "cohort_id": cohort_id,
+            "source_manifest_checksum": str(manifest.get("manifest_checksum") or ""),
+            "knowledge_cutoff_date": knowledge_cutoff_date,
+            "cadence": lifecycle_cadence,
+        },
         sequence_gcs_prefix=str(manifest.get("sequence_gcs_prefix") or "") or None,
         sequence_batch_count=int(manifest.get("sequence_batch_count") or 0) or None,
         register_challengers=bool(plan["tree_models"]),
@@ -796,6 +805,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 manifest=manifest,
                 knowledge_cutoff_date=req.knowledge_cutoff_date,
                 bucket=bucket,
+                lifecycle_cadence=req.lifecycle_cadence,
             )
         if not req.dry_run and candidate_artifacts is None:
             candidate_artifacts = archive_ev_candidate_artifacts(
@@ -847,6 +857,7 @@ class OofLifecycleRequest(BaseModel):
     end_date: str | None = None
     dry_run: bool = False
     promote: bool = True
+    expected_cohort_id: str | None = None
 
 
 OOF_TRAIN_SESSIONS = 60
@@ -1194,6 +1205,14 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
 
     manifest_path, manifest = selected
     cohort_id = str(manifest.get("cohort_id") or "")
+    if req.expected_cohort_id and cohort_id != req.expected_cohort_id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "OOF lifecycle cohort changed before durable resume: "
+                f"expected={req.expected_cohort_id} selected={cohort_id}"
+            ),
+        )
     lifecycle_path = (
         f"walk_forward/oof_cohorts/{cohort_id}/lifecycle/"
         f"{knowledge_cutoff_date}.json"
@@ -1222,6 +1241,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                     "OOF_MATERIALIZE_PROMOTE": "1" if req.promote else "0",
                     "OOF_MATERIALIZE_RUN_ID": run_id,
                     "OOF_MATERIALIZE_CALLBACK_TASK": callback_task,
+                    "OOF_MATERIALIZE_EXPECTED_COHORT_ID": cohort_id,
                 },
             )
         except JobAlreadyRunningError as exc:
@@ -1256,6 +1276,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         dry_run=req.dry_run,
         confirm=not req.dry_run,
         promote=req.promote,
+        lifecycle_cadence=cadence,
     ))
     opb_failed = (
         isinstance(result.get("opb_refresh"), dict)

@@ -593,6 +593,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "elapsed_s": tree_result.get("elapsed_s"),
                 "error": tree_result.get("error"),
                 "gcs_io": tree_result.get("gcs_io"),
+                "child_errors": tree_result.get("child_errors") or [],
             }
         for group in ("dlinear", "patchtst"):
             if handles.get(group) is not None:
@@ -718,9 +719,8 @@ def retrain_orchestrator(payload: dict) -> dict:
                     return int(payload[key])
                 if payload.get("sequence_seq_len"):
                     return int(payload["sequence_seq_len"])
-                if model_name == "iTransformer":
-                    return 1024
-                return 512
+                from app.neuralforecast_sequence_runtime import default_seq_len_for_model
+                return default_seq_len_for_model(model_name)
 
             def _validate_timesfm_config() -> dict:
                 import json
@@ -1077,6 +1077,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                 candidate_type=payload.get("candidate_type"),
                 promotion_allowed_models=payload.get("promotion_allowed_models"),
                 oof_promotion_evidence=payload.get("oof_promotion_evidence"),
+                oof_lifecycle_resume=payload.get("oof_lifecycle_resume"),
             )
             headers = {"Content-Type": "application/json"}
             token = _controller_callback_token()

@@ -348,6 +348,7 @@ def build_retrain_followup_payload(
     candidate_type: str | None = None,
     promotion_allowed_models: list[str] | None = None,
     oof_promotion_evidence: dict[str, dict] | None = None,
+    oof_lifecycle_resume: dict | None = None,
 ) -> dict:
     """Build the controller followup payload for inline or detached finalizers."""
 
@@ -364,6 +365,7 @@ def build_retrain_followup_payload(
         "candidate_type": candidate_type,
         "promotion_allowed_models": list(promotion_allowed_models or []),
         "oof_promotion_evidence": dict(oof_promotion_evidence or {}),
+        "oof_lifecycle_resume": dict(oof_lifecycle_resume or {}),
         "batch_count": int(batch_count),
         "gcs_prefix": gcs_prefix,
         "candidate_version": train_stage.get("candidate_version") or candidate_version,

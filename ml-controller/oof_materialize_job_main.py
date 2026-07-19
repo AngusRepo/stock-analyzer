@@ -41,6 +41,7 @@ async def _execute_lifecycle(
     cadence: str,
     end_date: str | None,
     promote: bool,
+    expected_cohort_id: str | None,
 ) -> dict[str, Any]:
     from routers.walk_forward import OofLifecycleRequest, run_walk_forward_oof_lifecycle
 
@@ -49,6 +50,7 @@ async def _execute_lifecycle(
         end_date=end_date,
         dry_run=False,
         promote=promote,
+        expected_cohort_id=expected_cohort_id,
     ))
 
 
@@ -99,6 +101,9 @@ async def _run() -> int:
     start_date = os.environ.get("OOF_MATERIALIZE_START_DATE", "").strip() or None
     end_date = os.environ.get("OOF_MATERIALIZE_END_DATE", "").strip() or None
     promote = _truthy(os.environ.get("OOF_MATERIALIZE_PROMOTE", "1"))
+    expected_cohort_id = (
+        os.environ.get("OOF_MATERIALIZE_EXPECTED_COHORT_ID", "").strip() or None
+    )
     callback_task = os.environ.get(
         "OOF_MATERIALIZE_CALLBACK_TASK",
         f"active8-oof-{cadence}",
@@ -141,12 +146,14 @@ async def _run() -> int:
                 cadence=cadence,
                 end_date=end_date,
                 promote=promote,
+                expected_cohort_id=expected_cohort_id,
             )
             status = str(result.get("status") or "").lower()
             if result.get("dependency_retry_required"):
-                raise RuntimeError("OOF materialization completed but a downstream dependency requires retry")
+                callback_status = "running"
             if status in {"materialized", "idempotent_complete"}:
-                callback_status = "success"
+                if callback_status != "running":
+                    callback_status = "success"
             elif status in {"skipped", "pending"}:
                 callback_status = "skipped"
             else:
@@ -171,7 +178,7 @@ async def _run() -> int:
         payload["error"] = error
     await _callback_worker(payload)
     logger.info("[OofMaterializeJob] Finished %s", summary)
-    return 0 if callback_status in {"success", "skipped"} else 1
+    return 0 if callback_status in {"success", "skipped", "running"} else 1
 
 
 def main() -> None:

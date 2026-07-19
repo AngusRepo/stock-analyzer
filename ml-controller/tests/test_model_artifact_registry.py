@@ -1423,7 +1423,14 @@ def test_full_fit_registry_enforces_allowlist_and_outer_oof_evidence():
         "oof_promotion_evidence": {"XGBoost": outer_oof},
         "ic_summary": {"XGBoost": 0.08, "ExtraTrees": 0.12},
         "challenger_registrations": {
-            "XGBoost": {"status": "registered", "version": "v20260717"},
+            "XGBoost": {
+                "status": "registered",
+                "version": "v20260717",
+                "model_cpcv": {
+                    "decision": "FAIL",
+                    "failed_gates": ["sequence_temporal_refit_required"],
+                },
+            },
             "ExtraTrees": {"status": "registered", "version": "v20260717"},
         },
         "stages": {
@@ -1441,6 +1448,7 @@ def test_full_fit_registry_enforces_allowlist_and_outer_oof_evidence():
     assert [row["model_name"] for row in records] == ["XGBoost"]
     evidence = json.loads(records[0]["offline_evidence_json"])
     assert evidence["registration"]["model_cpcv"] == outer_oof
+    assert evidence["registration"]["oof_promotion_evidence"] == outer_oof
     assert evidence["registration"]["full_fit_internal_model_cpcv"] == {"decision": "FAIL"}
     assert evidence["gate"]["metrics"]["oos_ic"] == 0.08
 

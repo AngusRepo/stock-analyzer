@@ -2659,3 +2659,45 @@ def test_backfill_champion_pointers_rejects_checksumless_synthetic_artifact(monk
         "LightGBM:v1:artifact_backfill:verified_sha256_registry_record_required"
     ]
     assert executed == []
+
+
+def test_oof_full_fit_registry_uses_lifecycle_owner_and_preserves_child_run_id():
+    outer_oof = {
+        "decision": "PASS",
+        "failed_gates": [],
+        "method": "outer_purged_walk_forward_rank_ic",
+        "fold_count": 5,
+        "oos_ic_mean": 0.08,
+    }
+    payload = {
+        "run_id": "universal-oof-owner",
+        "run_date": "2026-07-17",
+        "candidate_type": "weekly_drift",
+        "candidate_version": "v20260717",
+        "status": "completed",
+        "promotion_allowed_models": ["XGBoost"],
+        "oof_promotion_evidence": {"XGBoost": outer_oof},
+        "oof_lifecycle_resume": {
+            "schema_version": "active8-oof-lifecycle-resume-v1",
+            "cohort_id": "cohort-v3",
+            "source_manifest_checksum": "a" * 64,
+            "knowledge_cutoff_date": "2026-07-17",
+            "cadence": "weekly",
+        },
+        "challenger_registrations": {
+            "XGBoost": {
+                "status": "registered",
+                "version": "v20260717",
+                "training_run_id": "v20260717-xgboost",
+                "model_cpcv": outer_oof,
+            },
+        },
+    }
+
+    records = registry.build_artifact_records_from_retrain_followup(payload)
+
+    assert len(records) == 1
+    assert records[0]["training_run_id"] == "universal-oof-owner"
+    evidence = json.loads(records[0]["offline_evidence_json"])
+    assert evidence["registration"]["training_run_id"] == "universal-oof-owner"
+    assert evidence["registration"]["artifact_training_run_id"] == "v20260717-xgboost"

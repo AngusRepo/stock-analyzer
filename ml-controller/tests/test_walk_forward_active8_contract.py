@@ -432,3 +432,149 @@ def test_oof_full_fit_plan_blocks_tree_without_fold_feature_lineage():
     assert plan["status"] == "blocked"
     assert plan["reason"] == "outer_fold_feature_consensus_missing"
     assert plan["feature_lineage_ready"] is False
+
+def test_completed_oof_registry_owner_repair_requires_exact_bound_identity(monkeypatch):
+    import json
+
+    from routers import walk_forward
+    from services import model_artifact_registry
+
+    writes = []
+    expected_models = ["DLinear", "XGBoost"]
+    payload = {
+        "run_id": "universal-oof-owner",
+        "status": "completed",
+        "candidate_version": "v20260717",
+        "promotion_allowed_models": expected_models,
+        "oof_lifecycle_resume": {
+            "schema_version": "active8-oof-lifecycle-resume-v1",
+            "cohort_id": "cohort-v3",
+            "source_manifest_checksum": "a" * 64,
+            "knowledge_cutoff_date": "2026-07-17",
+        },
+    }
+
+    monkeypatch.setattr(
+        model_artifact_registry,
+        "hydrate_retrain_followup_artifact_metadata",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        model_artifact_registry,
+        "build_artifact_records_from_retrain_followup",
+        lambda _value: [
+            {"model_name": name, "training_run_id": "universal-oof-owner"}
+            for name in expected_models
+        ],
+    )
+    monkeypatch.setattr(
+        model_artifact_registry,
+        "upsert_artifact_records",
+        lambda records: writes.append(records) or {
+            "attempted": len(records),
+            "written": len(records),
+            "errors": [],
+        },
+    )
+
+    result = walk_forward._repair_completed_oof_registry_owner(
+        payload_summary=json.dumps(payload),
+        expected_run_id="universal-oof-owner",
+        expected_cohort_id="cohort-v3",
+        expected_manifest_checksum="a" * 64,
+        expected_knowledge_cutoff_date="2026-07-17",
+        expected_models=expected_models,
+    )
+
+    assert result == {
+        "status": "repaired",
+        "run_id": "universal-oof-owner",
+        "models": expected_models,
+        "written": 2,
+    }
+    assert len(writes) == 1
+
+    rejected = walk_forward._repair_completed_oof_registry_owner(
+        payload_summary=json.dumps(payload),
+        expected_run_id="universal-oof-owner",
+        expected_cohort_id="cohort-v3",
+        expected_manifest_checksum="b" * 64,
+        expected_knowledge_cutoff_date="2026-07-17",
+        expected_models=expected_models,
+    )
+    assert rejected["status"] == "rejected"
+    assert rejected["reason"] == "callback_lifecycle_identity_mismatch"
+    assert len(writes) == 1
+
+
+def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(monkeypatch):
+    from routers import walk_forward
+    from services import d1_client
+
+    receipt = {
+        "status": "blocked",
+        "run_id": "universal-oof-owner",
+        "attempt": 3,
+    }
+    uploaded = []
+
+    class Blob:
+        def exists(self):
+            return True
+
+        def download_as_text(self):
+            import json
+            return json.dumps(receipt)
+
+        def upload_from_string(self, value, content_type=None):
+            import json
+            uploaded.append({"value": json.loads(value), "content_type": content_type})
+
+    class Bucket:
+        def blob(self, path):
+            assert path == "walk_forward/oof_cohorts/cohort-v3/full_fit/2026-07-17.json"
+            return Blob()
+
+    plan = {
+        "status": "ready",
+        "eligible_models": ["DLinear"],
+        "tree_models": [],
+        "feature_consensus": {},
+        "train_model_groups": ["sequence"],
+        "artifact_lifecycle_targets": [],
+        "promotion_evidence": {"DLinear": {"decision": "PASS"}},
+    }
+    queries = []
+
+    def fake_query(sql, params=None):
+        queries.append(sql)
+        if "FROM webhook_log" in sql:
+            return [{"status": "completed", "payload_summary": "{}"}]
+        owner_queries = sum("FROM model_artifact_registry" in query for query in queries)
+        return [] if owner_queries == 1 else [{"model_name": "DLinear", "state": "offline_strong_pass"}]
+
+    monkeypatch.setattr(walk_forward, "build_oof_full_fit_dispatch_plan", lambda _manifest: plan)
+    monkeypatch.setattr(
+        walk_forward,
+        "_repair_completed_oof_registry_owner",
+        lambda **_kwargs: {
+            "status": "repaired",
+            "run_id": "universal-oof-owner",
+            "models": ["DLinear"],
+            "written": 1,
+        },
+    )
+    monkeypatch.setattr(d1_client, "query", fake_query)
+
+    result = asyncio.run(walk_forward.dispatch_oof_full_fit_training(
+        manifest={"cohort_id": "cohort-v3", "manifest_checksum": "a" * 64},
+        knowledge_cutoff_date="2026-07-17",
+        bucket=Bucket(),
+        lifecycle_cadence="weekly",
+    ))
+
+    assert result["status"] == "completed"
+    assert result["retry_required"] is False
+    assert result["artifact_states"] == {"DLinear": "offline_strong_pass"}
+    assert result["registry_repair"]["status"] == "repaired"
+    assert uploaded[-1]["value"]["status"] == "completed"

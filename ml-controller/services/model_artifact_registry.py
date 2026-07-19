@@ -645,6 +645,17 @@ def _artifact_record_from_registration(
         raw_registration = {"status": "unknown", "raw": raw_registration}
     evidence = _model_training_evidence(payload_dict, model_name)
     enriched_registration = {**evidence, **raw_registration}
+    child_training_run_id = str(raw_registration.get("training_run_id") or "").strip()
+    lifecycle_resume = _nested_dict(payload_dict.get("oof_lifecycle_resume"))
+    lifecycle_run_id = str(payload_dict.get("run_id") or "").strip()
+    owns_oof_lifecycle = (
+        lifecycle_resume.get("schema_version") == "active8-oof-lifecycle-resume-v1"
+        and bool(lifecycle_run_id)
+    )
+    if owns_oof_lifecycle:
+        if child_training_run_id and child_training_run_id != lifecycle_run_id:
+            enriched_registration["artifact_training_run_id"] = child_training_run_id
+        enriched_registration["training_run_id"] = lifecycle_run_id
     outer_oof_owner = evidence.get("oof_promotion_evidence")
     if isinstance(outer_oof_owner, dict) and outer_oof_owner:
         enriched_registration["model_cpcv"] = outer_oof_owner
@@ -702,7 +713,9 @@ def _artifact_record_from_registration(
         "artifact_path": raw_registration.get("gcs_path") or model_artifact_path(model_name, record_version),
         "metadata_path": raw_registration.get("metadata_path") or model_metadata_path(model_name, record_version),
         "training_run_id": (
-            raw_registration.get("training_run_id")
+            lifecycle_run_id
+            if owns_oof_lifecycle
+            else raw_registration.get("training_run_id")
             or payload_dict.get("training_run_id")
             or payload_dict.get("run_id")
             or payload_dict.get("trained_at")

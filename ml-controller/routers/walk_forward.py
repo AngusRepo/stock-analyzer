@@ -496,6 +496,98 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def _repair_completed_oof_registry_owner(
+    *,
+    payload_summary: Any,
+    expected_run_id: str,
+    expected_cohort_id: str,
+    expected_manifest_checksum: str,
+    expected_knowledge_cutoff_date: str,
+    expected_models: list[str],
+) -> dict[str, Any]:
+    """Rebind completed OOF artifacts to their checksum-bound lifecycle owner."""
+    from services.model_artifact_registry import (
+        build_artifact_records_from_retrain_followup,
+        hydrate_retrain_followup_artifact_metadata,
+        upsert_artifact_records,
+    )
+
+    try:
+        payload = json.loads(payload_summary) if isinstance(payload_summary, str) else dict(payload_summary or {})
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return {"status": "rejected", "reason": "callback_payload_invalid", "error": str(exc)}
+
+    resume = payload.get("oof_lifecycle_resume")
+    resume = resume if isinstance(resume, dict) else {}
+    identity = {
+        "run_id": str(payload.get("run_id") or ""),
+        "status": str(payload.get("status") or "").lower(),
+        "schema_version": str(resume.get("schema_version") or ""),
+        "cohort_id": str(resume.get("cohort_id") or ""),
+        "source_manifest_checksum": str(resume.get("source_manifest_checksum") or ""),
+        "knowledge_cutoff_date": str(resume.get("knowledge_cutoff_date") or ""),
+    }
+    expected_identity = {
+        "run_id": expected_run_id,
+        "status": "completed",
+        "schema_version": "active8-oof-lifecycle-resume-v1",
+        "cohort_id": expected_cohort_id,
+        "source_manifest_checksum": expected_manifest_checksum,
+        "knowledge_cutoff_date": expected_knowledge_cutoff_date,
+    }
+    mismatches = {
+        key: {"expected": expected, "actual": identity.get(key)}
+        for key, expected in expected_identity.items()
+        if identity.get(key) != expected
+    }
+    allowed_models = sorted({str(name) for name in payload.get("promotion_allowed_models") or [] if str(name)})
+    expected_model_set = sorted({str(name) for name in expected_models if str(name)})
+    if allowed_models != expected_model_set:
+        mismatches["promotion_allowed_models"] = {
+            "expected": expected_model_set,
+            "actual": allowed_models,
+        }
+    if mismatches:
+        return {
+            "status": "rejected",
+            "reason": "callback_lifecycle_identity_mismatch",
+            "mismatches": mismatches,
+        }
+
+    hydrated = hydrate_retrain_followup_artifact_metadata(payload)
+    records = build_artifact_records_from_retrain_followup(hydrated)
+    by_model = {
+        str(record.get("model_name") or ""): record
+        for record in records
+        if str(record.get("model_name") or "") in expected_model_set
+    }
+    missing = sorted(set(expected_model_set) - set(by_model))
+    wrong_owner = sorted(
+        model_name for model_name, record in by_model.items()
+        if str(record.get("training_run_id") or "") != expected_run_id
+    )
+    if missing or wrong_owner:
+        return {
+            "status": "rejected",
+            "reason": "callback_artifact_contract_incomplete",
+            "missing_models": missing,
+            "wrong_owner_models": wrong_owner,
+        }
+
+    write_result = upsert_artifact_records([by_model[name] for name in expected_model_set])
+    if write_result.get("errors") or int(write_result.get("written") or 0) != len(expected_model_set):
+        return {
+            "status": "error",
+            "reason": "registry_owner_repair_write_failed",
+            "write_result": write_result,
+        }
+    return {
+        "status": "repaired",
+        "run_id": expected_run_id,
+        "models": expected_model_set,
+        "written": int(write_result.get("written") or 0),
+    }
+
 async def dispatch_oof_full_fit_training(
     *,
     manifest: dict[str, Any],
@@ -572,7 +664,56 @@ async def dispatch_oof_full_fit_training(
             "SELECT status, payload_summary FROM webhook_log WHERE idempotency_key = ? LIMIT 1",
             [prior_run_id],
         )
-        webhook_status = str((webhook[0] if webhook else {}).get("status") or "").lower()
+        webhook_row = webhook[0] if webhook else {}
+        webhook_status = str(webhook_row.get("status") or "").lower()
+        registry_repair: dict[str, Any] | None = None
+        if webhook_status == "completed" and missing:
+            registry_repair = _repair_completed_oof_registry_owner(
+                payload_summary=webhook_row.get("payload_summary"),
+                expected_run_id=prior_run_id,
+                expected_cohort_id=cohort_id,
+                expected_manifest_checksum=str(manifest.get("manifest_checksum") or ""),
+                expected_knowledge_cutoff_date=knowledge_cutoff_date,
+                expected_models=plan["eligible_models"],
+            )
+            if registry_repair["status"] == "repaired":
+                rows = d1_client.query(
+                    """
+                    SELECT model_name, state
+                    FROM model_artifact_registry
+                    WHERE training_run_id = ?
+                    """,
+                    [prior_run_id],
+                )
+                by_model = {
+                    str(row.get("model_name") or ""): str(row.get("state") or "")
+                    for row in rows
+                }
+                missing = sorted(set(plan["eligible_models"]) - set(by_model))
+                failed = sorted(
+                    model_name for model_name, state in by_model.items()
+                    if model_name in plan["eligible_models"]
+                    and state in {"registration_failed", "offline_failed", "rejected"}
+                )
+                if not missing and not failed:
+                    completed = {
+                        **receipt,
+                        "schema_version": "active8-oof-full-fit-receipt-v1",
+                        "status": "completed",
+                        "eligible_models": plan["eligible_models"],
+                        "artifact_states": by_model,
+                        "registry_repair": registry_repair,
+                    }
+                    receipt_blob.upload_from_string(
+                        json.dumps(completed, sort_keys=True),
+                        content_type="application/json",
+                    )
+                    return {
+                        **plan,
+                        **completed,
+                        "retry_required": False,
+                        "receipt_path": receipt_path,
+                    }
         terminal_failure = webhook_status == "error" or bool(failed) or (
             webhook_status == "completed" and bool(missing)
         )
@@ -593,6 +734,7 @@ async def dispatch_oof_full_fit_training(
                 "missing_models": missing,
                 "failed_models": failed,
                 "webhook_status": webhook_status,
+                "registry_repair": registry_repair,
                 "retry_required": True,
                 "receipt_path": receipt_path,
             }

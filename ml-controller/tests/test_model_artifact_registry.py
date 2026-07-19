@@ -966,30 +966,11 @@ def test_list_artifact_registry_decodes_json_fields(monkeypatch):
     assert rows[0]["offline_evidence_json"]["gate"]["decision"] == "PASS"
 
 
-def test_list_artifact_registry_attaches_latest_validation_bundle(monkeypatch):
+def test_list_artifact_registry_never_injects_global_validation_evidence(monkeypatch):
+    calls = []
+
     def fake_query(sql, params=None, timeout=60.0):
-        if "FROM pbo_results" in sql:
-            return [{
-                "run_date": "2026-05-18",
-                "pbo": 0.12,
-                "go_live_verdict": "PASS",
-                "raw_details": '{"method":"cscv_rank_logit","oos_mean_return":0.02}',
-            }]
-        if "FROM monte_carlo_results" in sql:
-            return [{
-                "run_date": "2026-05-18",
-                "mdd_95th": 0.18,
-                "go_live_verdict": "PASS",
-                "simulation_method": "block_bootstrap",
-            }]
-        if "FROM backtest_results" in sql:
-            return [{
-                "run_date": "2026-05-18",
-                "strategy": "StockVisionStrategy",
-                "sharpe": 3.0,
-                "total_trades": 60,
-                "max_drawdown": 0.2,
-            }]
+        calls.append(sql)
         return [{
             "artifact_id": "ExtraTrees:v20260518:monthly_release",
             "offline_gate_failed_gates": "[]",
@@ -1002,11 +983,10 @@ def test_list_artifact_registry_attaches_latest_validation_bundle(monkeypatch):
     rows = registry.list_artifact_registry(model_name="ExtraTrees", limit=1)
     offline = rows[0]["offline_evidence_json"]
 
-    assert offline["pbo"]["pbo"] == 0.12
-    assert offline["pbo"]["method"] == "cscv_rank_logit"
-    assert offline["monte_carlo"]["mdd_95th"] == 0.18
-    assert offline["deflated_sharpe"]["method"] == "deflated_sharpe_proxy"
-    assert offline["validation_packet"]["root_cause"] == "artifact_registry_missing_validation_pointer"
+    assert len(calls) == 1
+    assert "pbo" not in offline
+    assert "monte_carlo" not in offline
+    assert "deflated_sharpe" not in offline
 
 
 def test_candidate_selection_keeps_weekly_out_unless_strong_pass():
@@ -2726,6 +2706,18 @@ def _oof_full_fit_release_row(*, decision: str = "PASS") -> dict[str, object]:
                 "target_semantic_version": registry.ACTIVE8_TARGET_SEMANTIC_VERSION,
             },
             "oof_promotion_evidence": evidence,
+            "oof_release_validation": {
+                "schema_version": "active8-oof-base-ranker-release-validation-v1",
+                "validation_role": "base_ranker",
+                "decision": "PASS",
+                "pbo": {
+                    "scope": "candidate_oof_cohort",
+                    "method": "cscv_rank_logit",
+                    "go_live_verdict": "PASS",
+                    "pbo": 0.20,
+                    "max_pbo": 0.30,
+                },
+            },
             "oof_lifecycle_resume": {
                 "schema_version": "active8-oof-lifecycle-resume-v1",
                 "cohort_id": "active8-oof-v5",

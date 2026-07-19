@@ -56,7 +56,8 @@ def test_pbo_policy_uses_family_and_model_complexity_priors():
     patchtst = resolve_model_validation_policy(model_name="PatchTST", **common)
     itransformer = resolve_model_validation_policy(model_name="iTransformer", **common)
 
-    assert lightgbm["pbo"]["method"] == "family_model_regime_cscv_rank_logit"
+    assert lightgbm["pbo"]["method"] == "cscv_rank_logit"
+    assert lightgbm["pbo"]["owner"] == "family_model_regime_candidate_scoped_oof"
     assert lightgbm["pbo"]["max_pbo"] > xgboost["pbo"]["max_pbo"]
     assert xgboost["pbo"]["max_pbo"] > tabm["pbo"]["max_pbo"]
     assert tabm["pbo"]["max_pbo"] > gnn["pbo"]["max_pbo"]

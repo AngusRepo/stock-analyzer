@@ -294,7 +294,8 @@ def _resolve_pbo_policy(
     max_pbo = _clamp(model_base - stage_penalty - search_penalty - regime_penalty, family_floor, model_base)
     return {
         "required": True,
-        "method": "family_model_regime_cscv_rank_logit",
+        "method": "cscv_rank_logit",
+        "owner": "family_model_regime_candidate_scoped_oof",
         "max_pbo": round(max_pbo, 6),
         "search_trials": trials,
         "selection_run": selection_run,

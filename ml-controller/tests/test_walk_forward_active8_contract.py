@@ -660,10 +660,26 @@ def test_completed_oof_release_alias_preserves_immutable_lineage(monkeypatch):
         knowledge_cutoff_date="2026-07-09",
         lifecycle_cadence="weekly",
         eligible_models=["XGBoost"],
+        release_validation_by_model={
+            "XGBoost": {
+                "schema_version": "active8-oof-base-ranker-release-validation-v1",
+                "validation_role": "base_ranker",
+                "decision": "PASS",
+                "pbo": {
+                    "scope": "candidate_oof_cohort",
+                    "method": "cscv_rank_logit",
+                    "go_live_verdict": "PASS",
+                    "pbo": 0.2,
+                    "max_pbo": 0.3,
+                },
+            },
+        },
     )
 
     assert result["status"] == "materialized"
     assert result["written"] == 1
+    assert result["passed_models"] == ["XGBoost"]
+    assert result["failed_models"] == []
     row = written[0]
     assert row["candidate_type"] == "oof_full_fit_release"
     assert row["artifact_id"] == "XGBoost:vOOF:oof_full_fit_release"
@@ -677,3 +693,96 @@ def test_completed_oof_release_alias_preserves_immutable_lineage(monkeypatch):
         "knowledge_cutoff_date": "2026-07-09",
         "cadence": "weekly",
     }
+
+
+
+def test_completed_oof_release_alias_marks_candidate_pbo_failure(monkeypatch):
+    import json
+    from routers import walk_forward
+    from services import model_artifact_registry as registry
+
+    written = []
+    monkeypatch.setattr(registry, "upsert_artifact_record", lambda row: written.append(row))
+    windows = [
+        {
+            "window_id": idx,
+            "train_range": ["2026-01-01", f"2026-04-{10 + idx:02d}"],
+            "test_range": [
+                f"2026-04-{11 + idx * 2:02d}",
+                f"2026-04-{12 + idx * 2:02d}",
+            ],
+        }
+        for idx in range(5)
+    ]
+    evidence = {
+        "schema_version": "model-cpcv-evidence-v1",
+        "method": "outer_purged_walk_forward_rank_ic",
+        "decision": "PASS",
+        "passed": True,
+        "failed_gates": [],
+        "folds": 5,
+        "min_test_rows": 100,
+        "coverage_mean": 1.0,
+    }
+    source_row = {
+        "artifact_id": "DLinear:vOOF:weekly_drift",
+        "model_name": "DLinear",
+        "version": "vOOF",
+        "candidate_type": "weekly_drift",
+        "state": "offline_strong_pass",
+        "artifact_path": "universal/dlinear/vOOF.pt",
+        "checksum": "sha256:verified",
+        "training_run_id": "oof-owner",
+        "offline_gate_decision": "PASS",
+        "offline_evidence_json": json.dumps({
+            "registration": {
+                "metadata": {
+                    "target_semantic_version": registry.ACTIVE8_TARGET_SEMANTIC_VERSION,
+                },
+                "oof_promotion_evidence": evidence,
+            },
+        }),
+    }
+    existing_alias = {
+        **source_row,
+        "artifact_id": "DLinear:vOOF:oof_full_fit_release",
+        "candidate_type": "oof_full_fit_release",
+    }
+    result = walk_forward._materialize_completed_oof_release_aliases(
+        manifest={
+            "schema_version": "active8-oof-cohort-manifest-v3",
+            "cohort_id": "active8-oof-v5",
+            "manifest_checksum": "a" * 64,
+            "target_semantic_version": registry.ACTIVE8_TARGET_SEMANTIC_VERSION,
+            "windows": windows,
+        },
+        registry_rows=[source_row, existing_alias],
+        expected_run_id="oof-owner",
+        knowledge_cutoff_date="2026-07-09",
+        lifecycle_cadence="weekly",
+        eligible_models=["DLinear"],
+        release_validation_by_model={
+            "DLinear": {
+                "schema_version": "active8-oof-base-ranker-release-validation-v1",
+                "validation_role": "base_ranker",
+                "decision": "FAIL",
+                "failed_gates": ["candidate_scoped_pbo"],
+                "pbo": {
+                    "scope": "candidate_oof_cohort",
+                    "method": "cscv_rank_logit",
+                    "go_live_verdict": "PASS",
+                    "pbo": 0.25,
+                    "max_pbo": 0.22,
+                },
+            },
+        },
+    )
+
+    assert result["written"] == 1
+    assert result["passed_models"] == []
+    assert result["failed_models"] == ["DLinear"]
+    assert written[0]["state"] == "offline_failed"
+    assert written[0]["offline_gate_decision"] == "FAIL"
+    assert json.loads(written[0]["offline_gate_failed_gates"]) == [
+        "candidate_scoped_pbo"
+    ]

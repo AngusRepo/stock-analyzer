@@ -112,115 +112,6 @@ def _json_loads(value: Any) -> dict[str, Any]:
         return {}
 
 
-def _latest_validation_bundle() -> dict[str, Any]:
-    """Read the latest global validation rows and expose them to artifacts.
-
-    Root cause for UI N/A: PBO/MC rows exist in D1, but model artifacts only
-    carried callback CPCV evidence. This read-time bundle keeps candidate rows
-    immutable while making promotion blockers and UI evidence fail-visible.
-    """
-    try:
-        pbo_rows = d1_client.query(
-            """
-            SELECT *
-            FROM pbo_results
-            ORDER BY run_date DESC, created_at DESC
-            LIMIT 1
-            """,
-            [],
-        )
-    except Exception:  # noqa: BLE001 - validation visibility must degrade, not break model-pool reads.
-        pbo_rows = []
-    try:
-        mc_rows = d1_client.query(
-            """
-            SELECT *
-            FROM monte_carlo_results
-            ORDER BY run_date DESC, created_at DESC
-            LIMIT 1
-            """,
-            [],
-        )
-    except Exception:  # noqa: BLE001
-        mc_rows = []
-    try:
-        backtest_rows = d1_client.query(
-            """
-            SELECT *
-            FROM backtest_results
-            ORDER BY run_date DESC, created_at DESC
-            LIMIT 1
-            """,
-            [],
-        )
-    except Exception:  # noqa: BLE001
-        backtest_rows = []
-
-    pbo = dict(pbo_rows[0]) if pbo_rows else None
-    if pbo:
-        raw_details = _json_loads(pbo.get("raw_details"))
-        if raw_details:
-            pbo["raw_details"] = raw_details
-            pbo["method"] = pbo.get("method") or raw_details.get("method")
-
-    monte_carlo = dict(mc_rows[0]) if mc_rows else None
-    if monte_carlo:
-        raw_details = _json_loads(monte_carlo.get("raw_details"))
-        if raw_details:
-            monte_carlo["raw_details"] = raw_details
-
-    backtest = dict(backtest_rows[0]) if backtest_rows else None
-    dsr = None
-    if backtest:
-        try:
-            from services.validation_governance import deflated_sharpe_evidence
-
-            dsr = deflated_sharpe_evidence(backtest)
-        except Exception as exc:  # noqa: BLE001
-            dsr = {
-                "status": "FAIL",
-                "passed": False,
-                "method": "deflated_sharpe_unavailable",
-                "reason": str(exc),
-            }
-
-    return {
-        "scope": "latest_global_weekly_validation",
-        "root_cause": "artifact_registry_missing_validation_pointer",
-        "pbo": pbo,
-        "monte_carlo": monte_carlo,
-        "deflated_sharpe": dsr,
-        "backtest": backtest,
-    }
-
-
-def _attach_validation_bundle(row: dict[str, Any], bundle: dict[str, Any]) -> None:
-    offline = _json_loads(row.get("offline_evidence_json"))
-    packet = offline.get("validation_packet") if isinstance(offline.get("validation_packet"), dict) else {}
-    changed = False
-    for key in ("pbo", "monte_carlo", "deflated_sharpe"):
-        value = bundle.get(key)
-        if value and key not in offline:
-            offline[key] = value
-            changed = True
-        if value and key not in packet:
-            packet[key] = value
-            changed = True
-    if changed:
-        packet["scope"] = bundle.get("scope")
-        packet["root_cause"] = bundle.get("root_cause")
-        if bundle.get("backtest"):
-            packet["backtest"] = {
-                "run_date": bundle["backtest"].get("run_date"),
-                "strategy": bundle["backtest"].get("strategy"),
-                "sharpe": bundle["backtest"].get("sharpe"),
-                "max_drawdown": bundle["backtest"].get("max_drawdown"),
-                "total_trades": bundle["backtest"].get("total_trades"),
-            }
-        offline["validation_packet"] = packet
-        row["offline_evidence_json"] = offline
-
-
 def _as_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -1031,7 +922,6 @@ def list_artifact_registry(
         where.append("candidate_type = ?")
         params.append(candidate_type)
     sql_where = f"WHERE {' AND '.join(where)}" if where else ""
-    validation_bundle = _latest_validation_bundle()
     rows = d1_client.query(
         f"""
         SELECT *
@@ -1051,8 +941,6 @@ def list_artifact_registry(
                 row[key] = _json_safe(json.loads(raw))
             except json.JSONDecodeError:
                 row[key] = raw
-    for row in rows:
-        _attach_validation_bundle(row, validation_bundle)
     return rows
 
 
@@ -1368,6 +1256,8 @@ def _offline_oof_full_fit_release_candidate(row: dict[str, Any] | None) -> bool:
     resume = _nested_dict(registration.get("oof_lifecycle_resume"))
     metadata = _artifact_registration_metadata(row)
     validation_design = _nested_dict(evidence.get("validation_design"))
+    release_validation = _nested_dict(registration.get("oof_release_validation"))
+    release_pbo = _nested_dict(release_validation.get("pbo"))
     failed_gates = evidence.get("failed_gates")
     return (
         str(row.get("candidate_type") or "") == "oof_full_fit_release"
@@ -1395,6 +1285,16 @@ def _offline_oof_full_fit_release_candidate(row: dict[str, Any] | None) -> bool:
         and len(str(resume.get("source_manifest_checksum") or "")) == 64
         and bool(str(resume.get("knowledge_cutoff_date") or "").strip())
         and str(metadata.get("target_semantic_version") or "") == ACTIVE8_TARGET_SEMANTIC_VERSION
+        and release_validation.get("schema_version") == "active8-oof-base-ranker-release-validation-v1"
+        and release_validation.get("validation_role") == "base_ranker"
+        and release_validation.get("decision") == "PASS"
+        and release_pbo.get("scope") == "candidate_oof_cohort"
+        and release_pbo.get("method") == "cscv_rank_logit"
+        and release_pbo.get("go_live_verdict") == "PASS"
+        and _as_float(release_pbo.get("pbo")) is not None
+        and _as_float(release_pbo.get("max_pbo")) is not None
+        and float(_as_float(release_pbo.get("pbo")))
+        <= float(_as_float(release_pbo.get("max_pbo")))
     )
 
 
@@ -1412,6 +1312,7 @@ def _offline_oof_full_fit_release_blockers(
             "rolling_ic_only",
             "candidate_sample_window_too_short",
             "champion_sample_window_too_short",
+            "dsr_mc_missing",
         }
     ]
     if not _offline_oof_full_fit_release_candidate(row):

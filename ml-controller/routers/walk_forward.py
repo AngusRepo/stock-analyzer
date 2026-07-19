@@ -652,6 +652,8 @@ def _materialize_completed_oof_release_aliases(
     knowledge_cutoff_date: str,
     lifecycle_cadence: str,
     eligible_models: list[str],
+    bucket: object | None = None,
+    release_validation_by_model: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from services.model_artifact_registry import (
         ACTIVE8_TARGET_SEMANTIC_VERSION,
@@ -672,12 +674,30 @@ def _materialize_completed_oof_release_aliases(
     if not chronological:
         raise RuntimeError("oof_release_alias_manifest_contract_invalid")
 
+    if release_validation_by_model is None:
+        if bucket is None:
+            raise RuntimeError("oof_release_validation_bucket_missing")
+        from services.active8_oof_cohort_materializer import load_oof_prediction_rows
+        from services.active8_oof_release_validation import build_active8_oof_release_validation
+
+        release_validation = build_active8_oof_release_validation(
+            load_oof_prediction_rows(manifest, bucket=bucket),
+            eligible_models=eligible_models,
+            cohort_id=cohort_id,
+            source_manifest_checksum=checksum,
+        )
+        release_validation_by_model = release_validation["by_model"]
     eligible = set(eligible_models)
     written: list[str] = []
+    passed_models: list[str] = []
+    failed_models: list[str] = []
     errors: list[str] = []
     for source_row in registry_rows:
         model_name = str(source_row.get("model_name") or "")
-        if model_name not in eligible:
+        if (
+            model_name not in eligible
+            or str(source_row.get("candidate_type") or "") != "weekly_drift"
+        ):
             continue
         row = dict(source_row)
         offline = row.get("offline_evidence_json")
@@ -714,7 +734,14 @@ def _materialize_completed_oof_release_aliases(
             "fold_count": len(windows),
             "window_ids": [str(window.get("window_id")) for window in windows],
         }
+        model_release_validation = dict(
+            (release_validation_by_model or {}).get(model_name) or {}
+        )
+        if not model_release_validation:
+            errors.append(f"{model_name}:oof_release_validation_missing")
+            continue
         registration["oof_promotion_evidence"] = evidence
+        registration["oof_release_validation"] = model_release_validation
         registration["model_cpcv"] = evidence
         registration["oof_lifecycle_resume"] = {
             "schema_version": "active8-oof-lifecycle-resume-v1",
@@ -724,13 +751,25 @@ def _materialize_completed_oof_release_aliases(
             "cadence": lifecycle_cadence,
         }
         offline["registration"] = registration
+        offline["pbo"] = model_release_validation["pbo"]
+        offline["validation_packet"] = model_release_validation
+        release_passed = model_release_validation.get("decision") == "PASS"
         row["candidate_type"] = "oof_full_fit_release"
+        row["state"] = row.get("state") if release_passed else "offline_failed"
+        row["offline_gate_status"] = "passed" if release_passed else "failed"
+        row["offline_gate_decision"] = (
+            row.get("offline_gate_decision") if release_passed else "FAIL"
+        )
+        row["offline_gate_failed_gates"] = json.dumps(
+            [] if release_passed else model_release_validation.get("failed_gates") or []
+        )
         row["artifact_id"] = f"{model_name}:{row.get('version')}:oof_full_fit_release"
         row["offline_evidence_json"] = json.dumps(offline, sort_keys=True)
         row["promotion_decision"] = "not_evaluated"
         row["approval_state"] = "not_required"
         upsert_artifact_record(row)
         written.append(row["artifact_id"])
+        (passed_models if release_passed else failed_models).append(model_name)
     if errors or len(written) != len(eligible):
         raise RuntimeError(
             "oof_release_alias_incomplete:"
@@ -741,6 +780,8 @@ def _materialize_completed_oof_release_aliases(
         "candidate_type": "oof_full_fit_release",
         "written": len(written),
         "artifact_ids": written,
+        "passed_models": sorted(passed_models),
+        "failed_models": sorted(failed_models),
         "cohort_id": cohort_id,
         "manifest_checksum": checksum,
     }
@@ -812,6 +853,8 @@ async def dispatch_oof_full_fit_training(
                 knowledge_cutoff_date=knowledge_cutoff_date,
                 lifecycle_cadence=lifecycle_cadence,
                 eligible_models=plan["eligible_models"],
+
+                bucket=bucket,
             )
             completed = {
                 **receipt,
@@ -874,6 +917,8 @@ async def dispatch_oof_full_fit_training(
                         knowledge_cutoff_date=knowledge_cutoff_date,
                         lifecycle_cadence=lifecycle_cadence,
                         eligible_models=plan["eligible_models"],
+
+                        bucket=bucket,
                     )
                     completed = {
                         **receipt,

@@ -267,30 +267,73 @@ def test_oof_lifecycle_capacity_matches_five_purged_folds():
     )
 
     assert len(windows) == walk_forward.OOF_PROMOTION_MIN_FOLDS == 5
-    assert walk_forward.OOF_LIFECYCLE_MIN_SESSIONS == 115
+    assert walk_forward.OOF_LIFECYCLE_MIN_SESSIONS == 110
 
 
-def test_oof_lifecycle_calendar_uses_canonical_finlab_adjusted_source(monkeypatch):
+def test_oof_lifecycle_calendar_uses_checksum_verified_immutable_prep():
+    import hashlib
+    import io
+    import json
+
+    import numpy as np
+
     from routers import walk_forward
-    from services import d1_client
 
-    captured = {}
+    prefix = "universal/canonical_adjusted_v4/test"
+    batch_path = f"{prefix}/prep/batch_0.npz"
+    buffer = io.BytesIO()
+    np.savez_compressed(
+        buffer,
+        dates=np.asarray(["2026-07-08", "2026-07-09", "2026-07-10"], dtype=object),
+        markets=np.asarray(["LISTED", "OTC", "LISTED"], dtype=object),
+        label_known_dates=np.asarray(["2026-07-15", "2026-07-16", "2026-07-20"], dtype=object),
+    )
+    batch_raw = buffer.getvalue()
+    manifest = {
+        "schema_version": "active8-canonical-adjusted-prep-v1",
+        "status": "ready",
+        "output_gcs_prefix": prefix,
+        "sequence_gcs_prefix": "universal/sequence_long/test",
+        "target_semantic_version": walk_forward._OOF_TARGET_SEMANTIC_VERSION,
+        "roundtrip_cost_bps": 18.0,
+        "batch_rows": [3],
+        "output_checksums": {batch_path: hashlib.sha256(batch_raw).hexdigest()},
+    }
+    manifest["manifest_checksum"] = hashlib.sha256(
+        json.dumps(manifest, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
-    def fake_query(sql, params):
-        captured["sql"] = sql
-        captured["params"] = params
-        return [{"trading_date": "2026-07-17", "price_rows": 1}]
+    class Blob:
+        def __init__(self, raw: bytes):
+            self.raw = raw
 
-    monkeypatch.setattr(d1_client, "query", fake_query)
-    dates, evidence = walk_forward._oof_lifecycle_calendar("2026-07-17")
+        def download_as_bytes(self):
+            return self.raw
 
-    assert dates == ["2026-07-17"]
-    assert "FROM canonical_market_daily" in captured["sql"]
-    assert "symbol = '0050'" in captured["sql"]
-    assert "source = 'finlab.price'" in captured["sql"]
-    assert "adj_open IS NOT NULL" in captured["sql"]
-    assert evidence["observed_dates"] == 1
+        def download_as_text(self):
+            return self.raw.decode("utf-8")
 
+    class Bucket:
+        def __init__(self):
+            self.blobs = {
+                f"{prefix}/prep/manifest.json": Blob(json.dumps(manifest).encode("utf-8")),
+                batch_path: Blob(batch_raw),
+            }
+
+        def blob(self, path):
+            return self.blobs[path]
+
+    dates, evidence = walk_forward._oof_lifecycle_calendar(
+        "2026-07-17",
+        bucket=Bucket(),
+        prep_gcs_prefix=prefix,
+    )
+
+    assert dates == ["2026-07-08", "2026-07-09"]
+    assert evidence["calendar_source"] == "immutable_canonical_adjusted_prep"
+    assert evidence["mature_rows"] == 2
+    assert evidence["prep_manifest_checksum"] == manifest["manifest_checksum"]
+    assert evidence["sequence_gcs_prefix"] == "universal/sequence_long/test"
 
 def test_full_fit_plan_blocks_legacy_manifest_without_immutable_prep():
     from routers.walk_forward import build_oof_full_fit_dispatch_plan

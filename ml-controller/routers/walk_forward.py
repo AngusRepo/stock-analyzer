@@ -856,44 +856,111 @@ OOF_LABEL_PURGE_SESSIONS = 5
 OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
-OOF_LIFECYCLE_MIN_SESSIONS = OOF_MIN_MATURE_SESSIONS + OOF_LABEL_PURGE_SESSIONS
+OOF_LIFECYCLE_MIN_SESSIONS = OOF_MIN_MATURE_SESSIONS
+_OOF_TARGET_SEMANTIC_VERSION = (
+    "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
+)
 
 
-def _oof_lifecycle_calendar(end_date: str | None) -> tuple[list[str], dict[str, object]]:
-    from services import d1_client
-    from datetime import datetime, timezone, timedelta
+def _latest_canonical_prep_prefix(bucket: object) -> str | None:
+    candidates: list[tuple[str, str]] = []
+    for blob in bucket.list_blobs(prefix="universal/canonical_adjusted"):
+        if not str(blob.name).endswith("/prep/manifest.json"):
+            continue
+        try:
+            manifest = json.loads(blob.download_as_text())
+        except Exception:  # noqa: BLE001 - invalid prep candidates are ignored.
+            continue
+        if (
+            manifest.get("schema_version") == "active8-canonical-adjusted-prep-v1"
+            and manifest.get("status") == "ready"
+            and manifest.get("target_semantic_version") == _OOF_TARGET_SEMANTIC_VERSION
+            and float(manifest.get("roundtrip_cost_bps") or 0.0) == 18.0
+        ):
+            candidates.append((str(manifest.get("created_at") or ""), str(manifest.get("output_gcs_prefix") or "")))
+    if not candidates:
+        return None
+    prefix = max(candidates)[1].strip().rstrip("/")
+    return prefix or None
+
+
+def _oof_lifecycle_calendar(
+    end_date: str | None,
+    *,
+    bucket: object,
+    prep_gcs_prefix: str,
+) -> tuple[list[str], dict[str, object]]:
+    import hashlib
+    import io
+    from collections import Counter
+    from datetime import datetime, timedelta, timezone
+
+    import numpy as np
 
     cutoff = end_date or datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
-    rows = d1_client.query(
-        """
-        SELECT date trading_date, COUNT(*) price_rows
-        FROM canonical_market_daily
-        WHERE symbol = '0050'
-          AND source = 'finlab.price'
-          AND date <= ?
-          AND adj_open IS NOT NULL
-          AND adj_close IS NOT NULL
-        GROUP BY date
-        ORDER BY trading_date DESC
-        LIMIT 160
-        """,
-        [cutoff],
-    )
-    observed = [
-        (str(row.get("trading_date") or "")[:10], max(0, int(row.get("price_rows") or 0)))
-        for row in rows
-        if row.get("trading_date")
-    ]
-    reference = float(statistics.median(count for _date, count in observed)) if observed else 0.0
+    prefix = str(prep_gcs_prefix or "").strip().rstrip("/")
+    if not prefix or prefix == "universal":
+        raise ValueError("oof_lifecycle_immutable_prep_prefix_missing")
+    manifest_path = f"{prefix}/prep/manifest.json"
+    manifest = json.loads(bucket.blob(manifest_path).download_as_text())
+    unsigned = {key: value for key, value in manifest.items() if key != "manifest_checksum"}
+    actual_manifest_checksum = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    if (
+        manifest.get("schema_version") != "active8-canonical-adjusted-prep-v1"
+        or manifest.get("status") != "ready"
+        or str(manifest.get("output_gcs_prefix") or "").rstrip("/") != prefix
+        or manifest.get("target_semantic_version") != _OOF_TARGET_SEMANTIC_VERSION
+        or float(manifest.get("roundtrip_cost_bps") or 0.0) != 18.0
+        or manifest.get("manifest_checksum") != actual_manifest_checksum
+    ):
+        raise ValueError("oof_lifecycle_immutable_prep_manifest_invalid")
+
+    output_checksums = dict(manifest.get("output_checksums") or {})
+    batch_rows = [int(value) for value in (manifest.get("batch_rows") or [])]
+    expected_paths = [f"{prefix}/prep/batch_{index}.npz" for index in range(len(batch_rows))]
+    if not batch_rows or sorted(output_checksums) != sorted(expected_paths):
+        raise ValueError("oof_lifecycle_immutable_prep_inventory_invalid")
+
+    coverage_by_date: Counter[str] = Counter()
+    mature_rows = 0
+    for path in expected_paths:
+        raw = bucket.blob(path).download_as_bytes()
+        if hashlib.sha256(raw).hexdigest() != str(output_checksums.get(path) or ""):
+            raise ValueError(f"oof_lifecycle_immutable_prep_checksum_mismatch:{path}")
+        data = np.load(io.BytesIO(raw), allow_pickle=True)
+        required = {"dates", "markets", "label_known_dates"}
+        if not required.issubset(data.files):
+            raise ValueError(f"oof_lifecycle_immutable_prep_lineage_missing:{path}")
+        dates = np.asarray(data["dates"]).astype(str)
+        markets = np.asarray(data["markets"]).astype(str)
+        known_dates = np.asarray(data["label_known_dates"]).astype(str)
+        if len({len(dates), len(markets), len(known_dates)}) != 1:
+            raise ValueError(f"oof_lifecycle_immutable_prep_array_mismatch:{path}")
+        for signal_date, market, known_date in zip(dates, markets, known_dates):
+            signal = str(signal_date)[:10]
+            known = str(known_date)[:10]
+            if signal and market and known and signal <= cutoff and known <= cutoff:
+                coverage_by_date[signal] += 1
+                mature_rows += 1
+
+    counts = list(coverage_by_date.values())
+    reference = float(statistics.median(counts)) if counts else 0.0
     threshold = max(1, int(reference * 0.20))
-    dates = sorted(date for date, count in observed if count >= threshold)
+    dates = sorted(date for date, count in coverage_by_date.items() if count >= threshold)
     return dates, {
         "cutoff": cutoff,
-        "observed_dates": len(dates),
+        "calendar_source": "immutable_canonical_adjusted_prep",
+        "prep_gcs_prefix": prefix,
+        "prep_manifest_checksum": actual_manifest_checksum,
+        "sequence_gcs_prefix": str(manifest.get("sequence_gcs_prefix") or ""),
+        "observed_dates": len(coverage_by_date),
+        "mature_dates": len(dates),
+        "mature_rows": mature_rows,
         "coverage_reference_rows": reference,
         "coverage_threshold_rows": threshold,
     }
-
 
 def _latest_ready_oof_manifest(bucket: object) -> tuple[str, dict] | None:
     import json
@@ -934,20 +1001,34 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     bucket = _get_bucket()
     if bucket is None:
         raise HTTPException(status_code=500, detail="GCS unavailable")
-    dates, calendar_evidence = _oof_lifecycle_calendar(req.end_date)
+    parent = _latest_ready_oof_manifest(bucket)
+    parent_manifest = parent[1] if parent is not None else {}
+    prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
+    if not prep_gcs_prefix or prep_gcs_prefix == "universal":
+        prep_gcs_prefix = _latest_canonical_prep_prefix(bucket) or ""
+    if not prep_gcs_prefix:
+        raise HTTPException(status_code=422, detail="OOF lifecycle immutable canonical prep unavailable")
+    try:
+        dates, calendar_evidence = _oof_lifecycle_calendar(
+            req.end_date,
+            bucket=bucket,
+            prep_gcs_prefix=prep_gcs_prefix,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if len(dates) < OOF_LIFECYCLE_MIN_SESSIONS:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"OOF lifecycle requires {OOF_LIFECYCLE_MIN_SESSIONS} covered sessions "
+                f"OOF lifecycle requires {OOF_LIFECYCLE_MIN_SESSIONS} mature immutable-prep sessions "
                 f"for {OOF_PROMOTION_MIN_FOLDS} purged folds, found {len(dates)}"
             ),
         )
-    knowledge_cutoff_date = dates[-1]
+    knowledge_cutoff_date = str(calendar_evidence["cutoff"])
 
     selected: tuple[str, dict] | None = None
     if cadence == "daily":
-        selected = _latest_ready_oof_manifest(bucket)
+        selected = parent
         if selected is None:
             return {
                 "status": "skipped",
@@ -958,11 +1039,13 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     else:
         from services.backtest_engine import walk_forward_windows
 
-        mature_dates = dates[:-OOF_LABEL_PURGE_SESSIONS]
-        parent = _latest_ready_oof_manifest(bucket)
+        mature_dates = dates
         resume_manifest_path = None
-        prep_gcs_prefix = "universal"
-        sequence_gcs_prefix = "universal/sequence_long/latest"
+        sequence_gcs_prefix = str(
+            parent_manifest.get("sequence_gcs_prefix")
+            or calendar_evidence.get("sequence_gcs_prefix")
+            or "universal/sequence_long/latest"
+        )
         if parent is not None:
             parent_path, parent_manifest = parent
             parent_start = str(parent_manifest.get("start_date") or "")[:10]

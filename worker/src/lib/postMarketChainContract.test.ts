@@ -34,6 +34,10 @@ const metaShadowClosureBlock = postMarketChain.slice(
 
 assert(callbackRoutes.includes("body.task === 'pipeline'"), 'pipeline callback must be explicitly handled')
 assert(
+  callbackRoutes.includes('const authError = await requireServiceToken(c)'),
+  'scheduler callback must await service-token auth before evaluating the result',
+)
+assert(
   controllerDailyWorkflows.includes('verify-v2 already has an active execution') &&
     controllerDailyWorkflows.includes('triggered existing active verify-v2 execution'),
   'duplicate pipeline callbacks must reuse an active verify execution instead of failing the root chain',

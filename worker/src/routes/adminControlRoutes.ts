@@ -362,7 +362,7 @@ adminControlRoutes.post('/api/admin/adaptive-params', async (c) => {
 })
 
 async function handleSchedulerCallback(c: any) {
-  const authError = requireServiceToken(c)
+  const authError = await requireServiceToken(c)
   if (authError) return authError
 
   const body = await c.req.json().catch(() => null) as any

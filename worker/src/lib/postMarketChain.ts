@@ -29,6 +29,7 @@ type ChainedTask = {
 
 const TASK_OBSERVABILITY_TIMEOUT_MS = 5_000
 const TASK_EXECUTION_TIMEOUT_MS = 25_000
+const META_SHADOW_POLICY_TIMEOUT_MS = 180_000
 
 function twDateToday(): string {
   return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -153,33 +154,32 @@ async function logSkippedHistoricalTask(env: Bindings, ctx: ChainContext, task: 
   return { task, summary, status: 'skipped' }
 }
 
-async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): Promise<string> {
+export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): Promise<string> {
   const registry = await ensureMetaLearningResearchRegistry(env.KV)
   const sourceRows = await listLinUcbRewardSourceRows(env.DB, {
     endDate: ctx.runDate,
     limit: 5000,
   })
-  const perPolicyTimeoutMs = TASK_EXECUTION_TIMEOUT_MS - 5_000
   const [neuralUcb, neuralTs, neuCb] = await Promise.all([
     runNeuralMetaShadow(env, {
       policyId: 'NeuralUCB',
       endDate: ctx.runDate,
       dryRun: false,
-      timeoutMs: perPolicyTimeoutMs,
+      timeoutMs: META_SHADOW_POLICY_TIMEOUT_MS,
       sourceRows,
     }),
     runNeuralMetaShadow(env, {
       policyId: 'NeuralTS',
       endDate: ctx.runDate,
       dryRun: false,
-      timeoutMs: perPolicyTimeoutMs,
+      timeoutMs: META_SHADOW_POLICY_TIMEOUT_MS,
       sourceRows,
     }),
     runNeuralMetaShadow(env, {
       policyId: 'NeuCB',
       endDate: ctx.runDate,
       dryRun: false,
-      timeoutMs: perPolicyTimeoutMs,
+      timeoutMs: META_SHADOW_POLICY_TIMEOUT_MS,
       sourceRows,
     }),
   ])
@@ -190,6 +190,19 @@ async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): P
     `neural_ts=${normalizeSummary(neuralTs)}`,
     `neucb=${normalizeSummary(neuCb)}`,
   ].join(' ')
+}
+
+async function enqueueMetaLearningShadowClosureTask(env: Bindings, ctx: ChainContext): Promise<string> {
+  const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const runId = ctx.upstreamRunId || `meta-learning-shadow-${runDate}-${Date.now()}`
+  await env.UPDATE_QUEUE.send({
+    type: 'meta_learning_shadow_closure',
+    cursor: 0,
+    triggerTime: runDate,
+    runId,
+    force: isCurrentBusinessDate(runDate),
+  })
+  return `triggered meta-learning-shadow queue run_date=${runDate} run_id=${runId}`
 }
 
 async function enqueueStrategyLearningClosureTask(env: Bindings, ctx: ChainContext): Promise<string> {
@@ -400,7 +413,7 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
     results.push(await logChainedTask(env, ctx, 'daily-report', () => generateDailyReport(env)))
     results.push(await logChainedTask(env, ctx, 'paper-active-postmarket', () => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
     results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!)))
-    results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => runMetaLearningShadowClosure(env, ctx), {
+    results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask(env, ctx), {
       critical: false,
       timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
     }))

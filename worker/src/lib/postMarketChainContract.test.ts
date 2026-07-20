@@ -24,7 +24,7 @@ const postScreenerContinuationBlock = updateOrchestrator.slice(
   updateOrchestrator.indexOf('async function markShardComplete'),
 )
 const metaShadowBlock = postMarketChain.slice(
-  postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure"),
+  postMarketChain.indexOf("'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask"),
   postMarketChain.indexOf("'strategy-learning', () => enqueueStrategyLearningClosureTask"),
 )
 const metaShadowClosureBlock = postMarketChain.slice(
@@ -147,13 +147,13 @@ assert(
 )
 assert(
   postMarketChain.indexOf("'obsidian-sync', () => runObsidianDaily") <
-    postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure"),
+    postMarketChain.indexOf("'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask"),
   'Neural meta-learning shadow evidence must not block adaptive params, report, or obsidian sync',
 )
 assert(
-  postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure") <
+  postMarketChain.indexOf("'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask") <
     postMarketChain.indexOf("'strategy-learning', () => enqueueStrategyLearningClosureTask"),
-  'Strategy learning reward closure should run after model/meta-learning evidence is available',
+  'Meta-learning evidence must be durably enqueued before strategy-learning closure',
 )
 assert(
   !postMarketChain.includes("logSkippedHistoricalTask(env, ctx, 'strategy-learning')"),
@@ -187,9 +187,14 @@ assert(
   'Neural meta-learning shadow evidence must be non-critical for the production post-verify closure',
 )
 assert(
-  metaShadowBlock.includes("'meta-learning-shadow', () => runMetaLearningShadowClosure") &&
+  metaShadowBlock.includes("'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask") &&
     metaShadowBlock.includes('timeoutMs: TASK_EXECUTION_TIMEOUT_MS'),
-  'Neural meta-learning shadow must be timeout-bounded so it cannot leave post-verify/evening-chain triggered',
+  'Neural meta-learning shadow enqueue must be timeout-bounded so it cannot leave post-verify/evening-chain triggered',
+)
+assert(
+  postMarketChain.includes("type: 'meta_learning_shadow_closure'") &&
+    updateOrchestrator.includes("if (msg.type === 'meta_learning_shadow_closure')"),
+  'Neural meta-learning shadow must run as a durable queue continuation with final scheduler status',
 )
 assert(
   metaShadowClosureBlock.includes('const sourceRows = await listLinUcbRewardSourceRows') &&

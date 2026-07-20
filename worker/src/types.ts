@@ -307,6 +307,7 @@ export interface UpdateQueueMsg {
     | 'source_readiness_retry'
     | 'finlab_backfill_complete'
     | 'strategy_learning_materialize'
+    | 'meta_learning_shadow_closure'
     | 's12_replay_backfill_chunk'
     | 's12_research_recovery'
     | 'allocator_ev_lifecycle_recovery'

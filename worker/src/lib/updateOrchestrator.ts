@@ -2980,6 +2980,43 @@ export async function processUpdateBatch(
     return
   }
 
+  if (msg.type === 'meta_learning_shadow_closure') {
+    const triggerTime = msg.triggerTime
+    const runId = msg.runId || `meta-learning-shadow-${triggerTime}`
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid meta-learning shadow date ${triggerTime}, skipping.`)
+      return
+    }
+
+    const startedAt = Date.now()
+    try {
+      const { runMetaLearningShadowClosure } = await import('./postMarketChain')
+      const summary = await runMetaLearningShadowClosure(env, {
+        runDate: triggerTime,
+        upstreamRunId: runId,
+      })
+      await logSchedulerResult(env.KV, 'meta-learning-shadow', {
+        status: 'success',
+        summary,
+        duration_ms: Date.now() - startedAt,
+        run_id: runId,
+        run_date: triggerTime,
+      }, env)
+    } catch (error: any) {
+      const summary = error?.message ?? String(error)
+      await logSchedulerResult(env.KV, 'meta-learning-shadow', {
+        status: 'error',
+        summary,
+        duration_ms: Date.now() - startedAt,
+        run_id: runId,
+        run_date: triggerTime,
+        error: String(error),
+      }, env)
+      throw error
+    }
+    return
+  }
+
   if (msg.type === 'strategy_learning_materialize') {
     const triggerTime = msg.triggerTime
     const runId = msg.runId || `strategy-learning-${triggerTime}`

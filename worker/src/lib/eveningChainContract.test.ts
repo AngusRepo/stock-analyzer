@@ -129,8 +129,9 @@ assert(
 assert(
   updateOrchestrator.includes('retriablePartialFailure') &&
     updateOrchestrator.includes('/partial_failed/i') &&
+    updateOrchestrator.includes('allowFetchedLaneRefetch: retriablePartialFailure') &&
     updateOrchestrator.includes("retriablePartialFailure ? 'partial failure' : 'pending dispatch'"),
-  'FinLab watchdog must retry source-key-scoped partial failures instead of requiring a manually restored triggered state',
+  'FinLab watchdog must retry source-key-scoped partial failures, including incomplete keys inside a fetched lane',
 )
 assert(
   updateOrchestrator.includes('FinLab watchdog found no source keys eligible for refetch'),

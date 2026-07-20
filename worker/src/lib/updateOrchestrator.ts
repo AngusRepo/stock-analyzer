@@ -730,14 +730,18 @@ async function finLabRetryScopeForReadiness(
 ): Promise<FinLabRetryScope> {
   const sourceScope = finLabRefreshScopeForReadiness(readiness)
   const requestedLanes = csvList(sourceScope.lanes)
-  if (!requestedLanes.length || options.allowFetchedLaneRefetch) {
+  if (!requestedLanes.length) {
     return emptyFinLabRetryScope(sourceScope, requestedLanes)
   }
 
   const laneLevelRetryScope = async (): Promise<FinLabRetryScope> => {
     const fetchedLanes = await fetchedFinLabSourceLanesForTarget(env.DB, targetDate)
-    const retryLanes = requestedLanes.filter((lane) => !fetchedLanes.has(lane))
-    const skippedFetchedLanes = requestedLanes.filter((lane) => fetchedLanes.has(lane))
+    const retryLanes = options.allowFetchedLaneRefetch
+      ? requestedLanes
+      : requestedLanes.filter((lane) => !fetchedLanes.has(lane))
+    const skippedFetchedLanes = options.allowFetchedLaneRefetch
+      ? []
+      : requestedLanes.filter((lane) => fetchedLanes.has(lane))
     return {
       ...emptyFinLabRetryScope({
         lanes: csvJoin(retryLanes),
@@ -2504,7 +2508,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   try {
     const readiness = await checkEveningChainSourceReadiness(env, twDate)
     const refreshScope = await finLabRetryScopeForReadiness(env, twDate, readiness, {
-      allowFetchedLaneRefetch: false,
+      allowFetchedLaneRefetch: retriablePartialFailure,
     })
     if (!refreshScope.lanes) {
       await env.KV.delete(retryKey)

@@ -3066,6 +3066,23 @@ def materialize_canonical_plan_to_d1(
     for dataset in ready:
         effective_chunk_size = canonical_dataset_chunk_size(dataset, chunk_size)
         try:
+            if dataset == "canonical_trading_restrictions":
+                # FinLab's table and ESB wide frames have a dedicated canonical
+                # parser and do not map through FinLabCanonicalOutputs.
+                inserted = 0 if dry_run else insert_finlab_trading_restrictions(manifest)
+                statement_count = 0 if dry_run else max(1, inserted)
+                row_counts[dataset] = inserted
+                totals["total"] += statement_count
+                totals["success_count"] += statement_count
+                totals["changes_total"] += inserted
+                per_dataset[dataset] = {
+                    "status": "ok",
+                    "chunk_size": effective_chunk_size,
+                    "materializer": "finlab_trading_restrictions_direct",
+                    "canonical_rows": inserted,
+                    "empty_is_valid": True,
+                }
+                continue
             result = materialize_canonical_to_d1(
                 manifest,
                 start_date=start_date,

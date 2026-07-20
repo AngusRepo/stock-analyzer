@@ -2454,14 +2454,20 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   if (finlabLog?.status === 'running') {
     return `skipped: FinLab start heartbeat received for ${twDate}`
   }
-  if (finlabLog?.status !== 'triggered' || !finlabLog.timestamp) {
+  const retriablePartialFailure = finlabLog?.status === 'error' && (
+    /partial_failed/i.test(finlabLog.summary ?? '') ||
+    /source_key_blockers/i.test(finlabLog.summary ?? '') ||
+    /required_wide_field_incomplete/i.test(finlabLog.summary ?? '') ||
+    /materializer_(?:blocked|failed)/i.test(finlabLog.summary ?? '')
+  )
+  if ((finlabLog?.status !== 'triggered' && !retriablePartialFailure) || !finlabLog.timestamp) {
     return `skipped: no pending FinLab trigger for ${twDate}`
   }
 
   const triggeredAt = Date.parse(finlabLog.timestamp)
   const ageMs = Number.isFinite(triggeredAt) ? Date.now() - triggeredAt : Number.POSITIVE_INFINITY
   if (ageMs < FINLAB_PENDING_WATCHDOG_STALE_MS) {
-    return `skipped: FinLab trigger age=${Math.max(0, Math.floor(ageMs / 1000))}s below watchdog threshold`
+    return `skipped: FinLab ${retriablePartialFailure ? 'partial failure' : 'trigger'} age=${Math.max(0, Math.floor(ageMs / 1000))}s below watchdog threshold`
   }
 
   const runId = finlabLog.run_id ?? schedulerSummaryField(finlabLog, 'run_id')
@@ -2500,6 +2506,10 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
     const refreshScope = await finLabRetryScopeForReadiness(env, twDate, readiness, {
       allowFetchedLaneRefetch: false,
     })
+    if (!refreshScope.lanes) {
+      await env.KV.delete(retryKey)
+      return `skipped: FinLab watchdog found no source keys eligible for refetch${finLabRetryScopeSuffix(refreshScope)}`
+    }
     const summary = String(await runFinLabV4Backfill(env, twDate, false, {
       continueEveningChain: true,
       dailySourceRefresh: true,
@@ -2522,7 +2532,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
     })
     await logSchedulerResult(env.KV, 'evening-chain', {
       status: 'triggered',
-      summary: `FinLab watchdog retriggered run_id=${runId} dispatch_attempt=${nextAttempt}; awaiting callback`,
+      summary: `FinLab watchdog retriggered ${retriablePartialFailure ? 'partial failure' : 'pending dispatch'} run_id=${runId} dispatch_attempt=${nextAttempt}; awaiting callback`,
       duration_ms: 0,
       run_id: runId,
       run_date: twDate,

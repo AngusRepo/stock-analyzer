@@ -127,6 +127,16 @@ assert(
   'FinLab watchdog must reserve the next attempt before cancellation/spawn so stale callbacks are fenced',
 )
 assert(
+  updateOrchestrator.includes('retriablePartialFailure') &&
+    updateOrchestrator.includes('/partial_failed/i') &&
+    updateOrchestrator.includes("retriablePartialFailure ? 'partial failure' : 'pending dispatch'"),
+  'FinLab watchdog must retry source-key-scoped partial failures instead of requiring a manually restored triggered state',
+)
+assert(
+  updateOrchestrator.includes('FinLab watchdog found no source keys eligible for refetch'),
+  'FinLab watchdog must not turn an empty repair scope into an accidental all-lane refetch',
+)
+assert(
   updateOrchestrator.includes('rowsOnTarget') &&
     updateOrchestrator.includes('stat.latestDate < targetDate') &&
     updateOrchestrator.includes('target_rows='),

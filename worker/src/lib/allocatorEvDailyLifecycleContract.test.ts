@@ -41,6 +41,10 @@ assert(lifecycle.includes("datetime(updated_at) <= datetime('now', '-12 hours')"
 assert(lifecycle.includes('coverage.matureMissingRows > 0'), 'watchdog must distinguish mature replay work from legitimate waiting')
 assert(lifecycle.includes("type: 's12_replay_backfill_chunk'"), 'mature pending lifecycle rows must enqueue replay directly')
 assert(lifecycle.includes('maturityAsOfDate'), 'replayed historical cohorts must use the current maturity knowledge date')
+assert(
+  lifecycle.includes('allocator EV native snapshot repair window closed for historical date='),
+  'watchdog must not repeatedly mutate an incomplete historical native snapshot after its legal repair window closed',
+)
 assert(postMarket.includes("state: 'lineage_ready'"), 'native lineage must open the lifecycle')
 assert(postMarket.includes("state: 'snapshot_ready'"), 'snapshot readback must precede verify')
 assert(postMarket.indexOf("state: 'snapshot_ready'") < postMarket.indexOf("state: 'verify_triggered'"), 'snapshot must precede verify')

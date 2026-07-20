@@ -844,6 +844,17 @@ def test_materialize_canonical_plan_caps_wide_fundamental_chunk_size(monkeypatch
     assert result["per_dataset"]["canonical_market_daily"]["chunk_size"] == 250
 
 
+def test_materialize_canonical_plan_uses_direct_trading_restrictions_owner(monkeypatch):
+    tool = _load_tool_module()
+    monkeypatch.setattr(tool, "materialize_canonical_to_d1", lambda *_args, **_kwargs: pytest.fail("generic owner must not run"))
+    monkeypatch.setattr(tool, "insert_finlab_trading_restrictions", lambda _manifest: 12)
+    manifest = {"run_id": "finlab-v4-daily-20260720-test", "generated_at": "2026-07-20T13:00:00+00:00", "artifact_root": "/tmp/finlab-test"}
+    result = tool.materialize_canonical_plan_to_d1(manifest, start_date="2026-07-20", end_date="2026-07-20", datasets=["canonical_trading_restrictions"], source_key_blockers=[], dry_run=False)
+    assert result["status"] == "ready"
+    assert result["row_counts"]["canonical_trading_restrictions"] == 12
+    assert result["per_dataset"]["canonical_trading_restrictions"]["materializer"] == "finlab_trading_restrictions_direct"
+
+
 def test_materialize_canonical_plan_marks_all_blocked_without_throwing():
     tool = _load_tool_module()
     manifest = {

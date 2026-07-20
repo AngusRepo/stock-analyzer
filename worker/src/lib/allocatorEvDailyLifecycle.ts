@@ -402,6 +402,12 @@ export async function runAllocatorEvLifecycleWatchdog(
   )) {
     return `allocator EV lifecycle current date=${businessDate} state=${lifecycle?.state} snapshot_rows=${snapshot.actualRows}; ${maturitySummary(maturity)}`
   }
+  if (!snapshot.ready && businessDate < twTodayDate()) {
+    return `skipped: allocator EV native snapshot repair window closed for historical date=${businessDate} `
+      + `run_native=${snapshot.runNativeLineageRows} reconstructed=${snapshot.reconstructedLineageRows} `
+      + `rejected=${snapshot.rejectedLineageRows} expected=${snapshot.expectedRows} actual=${snapshot.actualRows}; `
+      + `${maturitySummary(maturity)}`
+  }
 
   const { runPostPipelineCallbackChain } = await import('./postMarketChain')
   await runPostPipelineCallbackChain(env, {

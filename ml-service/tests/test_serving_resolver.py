@@ -14,7 +14,14 @@ def test_d1_champion_pool_serves_only_valid_production_artifact():
             "model_name": "TabM",
             "champion_version": "vGood",
             "champion_artifact_id": "TabM:vGood:monthly_release",
-            "promotion_evidence_json": {"rolling_ic": 0.08},
+            "promotion_evidence_json": {
+                "rolling_ic": 0.08,
+                "last_ic_status": "computed",
+                "last_ic_root_cause": "ok",
+                "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
+                "last_ic_artifact_version": "vGood",
+                "last_ic_target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
+            },
         }],
         artifacts=[{
             "artifact_id": "TabM:vGood:monthly_release",
@@ -26,6 +33,7 @@ def test_d1_champion_pool_serves_only_valid_production_artifact():
             "metadata_path": "universal/tabm/metadata_vGood.json",
             "offline_gate_decision": "STRONG_PASS",
             "live_gate_status": "passed",
+            "metadata": {"target_semantic_version": resolver.LABEL_SCHEMA_VERSION},
         }],
         fallback_pool={"models": {"TabM": {"status": "active", "version": "old"}}},
         required_models=("TabM",),
@@ -112,3 +120,58 @@ def test_patchtst_d1_champion_rejects_legacy_pt_artifact():
     assert entry["version"] == "vLegacy"
     assert entry["gcs_path"] == "universal/patchtst/vLegacy.pt"
     assert entry["serving_block_reason"] == "artifact_extension_pt_expected_zip"
+
+
+def test_oof_champion_projects_version_bound_ic_prior_and_quarantines_stale_live_ic():
+    artifact = {
+        "artifact_id": "XGBoost:v2:oof_full_fit_release",
+        "model_name": "XGBoost",
+        "version": "v2",
+        "candidate_type": "oof_full_fit_release",
+        "state": "production",
+        "artifact_path": "universal/xgboost/v2.joblib",
+        "metadata_path": "universal/xgboost/metadata_v2.json",
+        "offline_gate_decision": "STRONG_PASS",
+        "live_gate_status": "not_started",
+        "metadata": {
+            "target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
+            "sample_count": 1200,
+            "model_cpcv": {
+                "method": "outer_purged_walk_forward_rank_ic",
+                "decision": "PASS",
+                "passed": True,
+                "oos_ic_mean": 0.062,
+                "folds": 5,
+                "positive_fold_ratio": 0.8,
+            },
+        },
+    }
+    pool = resolver.build_pool_from_champion_pointers(
+        pointers=[{
+            "model_name": "XGBoost",
+            "champion_version": "v2",
+            "champion_artifact_id": artifact["artifact_id"],
+        }],
+        artifacts=[artifact],
+        fallback_pool={
+            "models": {
+                "XGBoost": {
+                    "version": "v1",
+                    "rolling_ic": -0.3,
+                    "last_ic_status": "computed",
+                    "last_ic_artifact_version": "v1",
+                    "last_ic_target_semantic_version": "legacy-v2",
+                }
+            }
+        },
+        required_models=("XGBoost",),
+        sidecar_models=(),
+    )
+
+    entry = pool["models"]["XGBoost"]
+    assert entry["status"] == "active"
+    assert entry["rolling_ic"] is None
+    assert entry["weekly_ic"] == []
+    assert entry["serving_ic_prior"]["value"] == 0.062
+    assert entry["serving_ic_prior"]["artifact_version"] == "v2"
+    assert entry["serving_ic_prior"]["target_semantic_version"] == resolver.LABEL_SCHEMA_VERSION

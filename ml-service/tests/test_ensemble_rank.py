@@ -75,9 +75,37 @@ def test_load_ic_weights_uses_model_pool_only(monkeypatch):
             payloads = {
                 "universal/model_pool.json": {
                     "models": {
-                        "XGBoost": {"last_ic_semantic_version": "daily-cross-sectional-equal-date-v2", "rolling_ic": 0.12, "weekly_ic": [0.01]},
-                        "LightGBM": {"last_ic_semantic_version": "daily-cross-sectional-equal-date-v2", "ic_4w_avg": 0.08},
-                        "ExtraTrees": {"last_ic_semantic_version": "daily-cross-sectional-equal-date-v2", "weekly_ic": [0.03, 0.04]},
+                        "XGBoost": {
+                            "version": "v2",
+                            "target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
+                            "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
+                            "last_ic_target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
+                            "last_ic_artifact_version": "v2",
+                            "last_ic_status": "computed",
+                            "last_ic_root_cause": "ok",
+                            "rolling_ic": 0.12,
+                            "weekly_ic": [0.01],
+                        },
+                        "LightGBM": {
+                            "version": "v2",
+                            "target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
+                            "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
+                            "last_ic_target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
+                            "last_ic_artifact_version": "v2",
+                            "last_ic_status": "computed",
+                            "last_ic_root_cause": "ok",
+                            "ic_4w_avg": 0.08,
+                        },
+                        "ExtraTrees": {
+                            "version": "v2",
+                            "target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
+                            "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
+                            "last_ic_target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
+                            "last_ic_artifact_version": "v2",
+                            "last_ic_status": "computed",
+                            "last_ic_root_cause": "ok",
+                            "weekly_ic": [0.03, 0.04],
+                        },
                     }
                 },
                 "universal/ic_tracking.json": {
@@ -129,13 +157,25 @@ def test_load_ic_weights_prefers_market_segment_ic(monkeypatch):
             return json.dumps({
                 "models": {
                     "LightGBM": {
+                        "version": "v2",
+                        "target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
                         "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
+                        "last_ic_target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
+                        "last_ic_artifact_version": "v2",
+                        "last_ic_status": "computed",
+                        "last_ic_root_cause": "ok",
                         "rolling_ic": -0.03,
                         "weekly_ic": [0.06],
                         "last_ic_by_segment": {"LISTED": 0.19, "OTC": -0.48},
                     },
                     "PatchTST": {
+                        "version": "v2",
+                        "target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
                         "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
+                        "last_ic_target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
+                        "last_ic_artifact_version": "v2",
+                        "last_ic_status": "computed",
+                        "last_ic_root_cause": "ok",
                         "rolling_ic": -0.14,
                         "weekly_ic": [0.24],
                         "last_ic_by_segment": {"LISTED": -0.12, "OTC": -0.28},
@@ -176,11 +216,17 @@ def test_load_ic_weights_uses_artifact_oos_prior_while_awaiting_live_ic(monkeypa
                 "models": {
                     "iTransformer": {
                         "status": "active",
+                        "version": "v2",
+                        "target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
                         "last_ic_status": "awaiting_live_ic",
-                        "last_artifact_evidence": {
-                            "oos_ic": 0.04900895,
-                            "oos_samples": 512,
-                            "source": "itransformer_artifact_oos",
+                        "serving_ic_prior": {
+                            "schema_version": ensemble.SERVING_IC_PRIOR_SCHEMA_VERSION,
+                            "source": ensemble.SERVING_IC_PRIOR_SOURCE,
+                            "artifact_id": "iTransformer:v2:oof_full_fit_release",
+                            "artifact_version": "v2",
+                            "target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
+                            "value": 0.04900895,
+                            "sample_count": 512,
                         },
                     }
                 }
@@ -216,11 +262,23 @@ def test_load_ic_weights_ignores_stale_live_weight_when_dates_are_insufficient(m
                 "models": {
                     "PatchTST": {
                         "status": "active",
+                        "version": "v2",
+                        "target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
                         "last_ic_status": "insufficient_dates",
                         "last_ic_root_cause": "date_coverage_low",
+                        "last_ic_artifact_version": "v1",
+                        "last_ic_target_semantic_version": "legacy-v2",
                         "rolling_ic": -0.30,
                         "ic_4w_avg": 0.25,
-                        "last_artifact_evidence": {"oos_ic": 0.04, "oos_samples": 512},
+                        "serving_ic_prior": {
+                            "schema_version": ensemble.SERVING_IC_PRIOR_SCHEMA_VERSION,
+                            "source": ensemble.SERVING_IC_PRIOR_SOURCE,
+                            "artifact_id": "PatchTST:v2:oof_full_fit_release",
+                            "artifact_version": "v2",
+                            "target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
+                            "value": 0.04,
+                            "sample_count": 512,
+                        },
                     }
                 }
             })
@@ -239,3 +297,27 @@ def test_load_ic_weights_ignores_stale_live_weight_when_dates_are_insufficient(m
     weights = ensemble.load_ic_weights()
 
     assert 0.038 < weights["PatchTST"] < 0.040
+
+
+def test_model_pool_ic_rejects_prior_from_different_artifact_version():
+    from app import ensemble
+
+    weights = ensemble._extract_model_pool_ic({
+        "models": {
+            "XGBoost": {
+                "version": "v3",
+                "target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
+                "serving_ic_prior": {
+                    "schema_version": ensemble.SERVING_IC_PRIOR_SCHEMA_VERSION,
+                    "source": ensemble.SERVING_IC_PRIOR_SOURCE,
+                    "artifact_id": "XGBoost:v2:oof_full_fit_release",
+                    "artifact_version": "v2",
+                    "target_semantic_version": ensemble.SEQUENCE_RETURN_SEMANTIC_VERSION,
+                    "value": 0.09,
+                    "sample_count": 1000,
+                },
+            }
+        }
+    })
+
+    assert weights == {}

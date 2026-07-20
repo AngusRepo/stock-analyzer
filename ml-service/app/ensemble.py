@@ -21,11 +21,14 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Literal, Any
 from .models import ModelPrediction
+from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
 logger = logging.getLogger("ensemble")
 _IC_WEIGHTS_CACHE: dict[str, dict[str, float]] | None = None
 _IC_WEIGHTS_CACHE_LOADED_AT: float = 0.0
 IC_EVALUATION_SEMANTIC_VERSION = "daily-cross-sectional-equal-date-v2"
+SERVING_IC_PRIOR_SCHEMA_VERSION = "version-bound-purged-oof-ic-prior-v1"
+SERVING_IC_PRIOR_SOURCE = "candidate_scoped_purged_oof_model_cpcv"
 
 
 def _normalize_market_segment(segment: Any) -> str | None:
@@ -53,17 +56,58 @@ def _coerce_ic_value(value: Any) -> float | None:
     return None
 
 
-def _entry_serving_ic(entry: dict, market_segment: str | None = None) -> float | None:
-    """Choose the IC that matches the prediction lane before using global IC."""
-    semantic_ready = (
-        str(entry.get("last_ic_semantic_version") or "").strip()
+def _live_ic_ready(entry: dict) -> bool:
+    contract = entry.get("last_ic_evaluation_contract")
+    contract = contract if isinstance(contract, dict) else {}
+    artifact_version = str(entry.get("version") or "").strip()
+    target_semantic = str(entry.get("target_semantic_version") or "").strip()
+    return (
+        str(entry.get("last_ic_status") or "").strip().lower() == "computed"
+        and str(entry.get("last_ic_root_cause") or "").strip().lower() in {"", "ok"}
+        and str(entry.get("last_ic_semantic_version") or "").strip()
         == IC_EVALUATION_SEMANTIC_VERSION
+        and str(
+            entry.get("last_ic_target_semantic_version")
+            or contract.get("target_semantic_version")
+            or ""
+        ).strip()
+        == target_semantic
+        == SEQUENCE_RETURN_SEMANTIC_VERSION
+        and str(
+            entry.get("last_ic_artifact_version")
+            or contract.get("artifact_version")
+            or ""
+        ).strip()
+        == artifact_version
+        and bool(artifact_version)
     )
-    live_status = str(entry.get("last_ic_status") or "").strip().lower()
-    live_root_cause = str(entry.get("last_ic_root_cause") or "").strip().lower()
-    live_ready = semantic_ready and (not live_status or (
-        live_status == "computed" and live_root_cause in {"", "ok"}
-    ))
+
+
+def _valid_serving_ic_prior(entry: dict) -> dict | None:
+    prior = entry.get("serving_ic_prior")
+    if not isinstance(prior, dict):
+        return None
+    artifact_version = str(entry.get("version") or "").strip()
+    target_semantic = str(entry.get("target_semantic_version") or "").strip()
+    if (
+        prior.get("schema_version") != SERVING_IC_PRIOR_SCHEMA_VERSION
+        or str(prior.get("source") or "").strip() != SERVING_IC_PRIOR_SOURCE
+        or str(prior.get("artifact_version") or "").strip() != artifact_version
+        or str(prior.get("target_semantic_version") or "").strip()
+        != target_semantic
+        or target_semantic != SEQUENCE_RETURN_SEMANTIC_VERSION
+        or not str(prior.get("artifact_id") or "").strip()
+    ):
+        return None
+    value = _coerce_ic_value(prior.get("value"))
+    if value is None or value <= 0:
+        return None
+    return prior
+
+
+def _entry_serving_ic(entry: dict, market_segment: str | None = None) -> float | None:
+    """Choose exact-version live IC, else the promoted artifact's purged OOF prior."""
+    live_ready = _live_ic_ready(entry)
     segment = _normalize_market_segment(market_segment)
     segment_map = entry.get("last_ic_by_segment")
     if live_ready and segment and isinstance(segment_map, dict):
@@ -80,12 +124,9 @@ def _entry_serving_ic(entry: dict, market_segment: str | None = None) -> float |
             ic_value = _coerce_ic_value(value)
             if ic_value is not None:
                 return ic_value
-    evidence = entry.get("last_artifact_evidence")
-    if not live_ready and isinstance(evidence, dict):
-        artifact_ic = _coerce_ic_value(evidence.get("oos_ic") or evidence.get("after_oos_ic"))
-        if artifact_ic is not None:
-            return artifact_ic
-    return None
+
+    prior = _valid_serving_ic_prior(entry)
+    return _coerce_ic_value(prior.get("value")) if prior else None
 
 
 def _coerce_sample_count(value: Any) -> int | None:
@@ -98,38 +139,29 @@ def _coerce_sample_count(value: Any) -> int | None:
 
 
 def _entry_ic_sample_count(entry: dict, market_segment: str | None = None) -> int:
-    live_status = str(entry.get("last_ic_status") or "").strip().lower()
-    live_root_cause = str(entry.get("last_ic_root_cause") or "").strip().lower()
-    live_ready = not live_status or (
-        live_status == "computed" and live_root_cause in {"", "ok"}
-    )
+    live_ready = _live_ic_ready(entry)
     segment = _normalize_market_segment(market_segment)
     segment_map = entry.get("last_ic_by_segment")
-    if segment and isinstance(segment_map, dict):
+    if live_ready and segment and isinstance(segment_map, dict):
         segment_value = segment_map.get(segment)
         if isinstance(segment_value, dict):
             for key in ("n_samples", "sample_count", "samples", "coverage"):
                 count = _coerce_sample_count(segment_value.get(key))
                 if count is not None:
                     return count
-    evidence = entry.get("last_artifact_evidence")
-    if not live_ready and isinstance(evidence, dict):
-        for key in ("oos_samples", "validation_sample_count", "matched_rows", "sample_count"):
-            count = _coerce_sample_count(evidence.get(key))
+
+    if live_ready:
+        for key in ("last_ic_sample_count", "active_ic_samples", "ic_sample_count"):
+            count = _coerce_sample_count(entry.get(key))
             if count is not None:
                 return count
-        row_alignment = evidence.get("row_alignment")
-        if isinstance(row_alignment, dict):
-            count = _coerce_sample_count(row_alignment.get("matched_rows"))
-            if count is not None:
-                return count
-    for key in ("last_ic_sample_count", "active_ic_samples", "ic_sample_count", "sample_count", "coverage_samples"):
-        count = _coerce_sample_count(entry.get(key))
-        if count is not None:
-            return count
-    history = entry.get("weekly_ic") or []
-    if isinstance(history, list):
-        return len(history)
+        history = entry.get("weekly_ic") or []
+        if isinstance(history, list):
+            return len(history)
+
+    prior = _valid_serving_ic_prior(entry)
+    if prior:
+        return _coerce_sample_count(prior.get("sample_count")) or 0
     return 0
 
 

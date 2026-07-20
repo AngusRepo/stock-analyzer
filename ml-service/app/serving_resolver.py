@@ -6,6 +6,10 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
+
+LABEL_SCHEMA_VERSION = SEQUENCE_RETURN_SEMANTIC_VERSION
+
 DIRECT_ALPHA_MODELS = (
     "LightGBM",
     "XGBoost",
@@ -20,6 +24,28 @@ L2_SIDECARS = ("TimesFM",)
 SERVING_OK_STATES = {"production"}
 SERVING_OK_OFFLINE_DECISIONS = {"STRONG_PASS", "PASS"}
 SERVING_BAD_LIVE_STATUSES = {"failed", "rolling_ic_failed", "live_gate_failed"}
+SERVING_IC_PRIOR_SCHEMA_VERSION = "version-bound-purged-oof-ic-prior-v1"
+SERVING_IC_PRIOR_METHODS = {
+    "outer_purged_walk_forward_rank_ic",
+    "purged_walk_forward_retrain_rank_ic",
+}
+IC_STATE_FIELDS = (
+    "rolling_ic",
+    "ic_4w_avg",
+    "weekly_ic",
+    "consecutive_negative_weeks",
+    "last_ic_status",
+    "last_ic_root_cause",
+    "last_ic_sample_count",
+    "last_ic_score_sources",
+    "last_ic_by_segment",
+    "last_ic_error",
+    "last_ic_diagnostics",
+    "last_ic_evaluation_contract",
+    "last_ic_semantic_version",
+    "last_ic_target_semantic_version",
+    "last_ic_artifact_version",
+)
 ARTIFACT_EXTENSIONS = {
     "LightGBM": "joblib",
     "XGBoost": "joblib",
@@ -95,6 +121,10 @@ def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str) 
     actual_ext = artifact_path.rsplit(".", 1)[-1].lower() if "." in artifact_path else ""
     if expected_ext and actual_ext != expected_ext:
         return f"artifact_extension_{actual_ext or 'missing'}_expected_{expected_ext}"
+    if model_name in DIRECT_ALPHA_MODELS:
+        target_semantic = str(_artifact_metadata(artifact).get("target_semantic_version") or "").strip()
+        if target_semantic != LABEL_SCHEMA_VERSION:
+            return f"artifact_target_semantic_{target_semantic or 'missing'}_expected_{LABEL_SCHEMA_VERSION}"
     return None
 
 
@@ -108,23 +138,102 @@ def _first_number(*values: Any) -> float | None:
     return None
 
 
+def build_serving_ic_prior(artifact: dict[str, Any] | None) -> dict[str, Any] | None:
+    source = artifact or {}
+    if str(source.get("candidate_type") or "").strip() != "oof_full_fit_release":
+        return None
+    if str(source.get("offline_gate_decision") or "").strip().upper() not in SERVING_OK_OFFLINE_DECISIONS:
+        return None
+
+    metadata = _artifact_metadata(source)
+    target_semantic = str(metadata.get("target_semantic_version") or "").strip()
+    if target_semantic != LABEL_SCHEMA_VERSION:
+        return None
+
+    offline = _json_obj(source.get("offline_evidence_json"))
+    registration = _json_obj(offline.get("registration"))
+    cpcv = _json_obj(metadata.get("model_cpcv") or registration.get("model_cpcv"))
+    method = str(cpcv.get("method") or "").strip()
+    decision = str(cpcv.get("decision") or "").strip().upper()
+    if method not in SERVING_IC_PRIOR_METHODS or decision != "PASS" or cpcv.get("passed") is not True:
+        return None
+
+    value = _first_number(cpcv.get("oos_ic_mean"))
+    if value is None or value <= 0:
+        return None
+
+    version = str(source.get("version") or "").strip()
+    artifact_id = str(source.get("artifact_id") or "").strip()
+    if not version or not artifact_id:
+        return None
+
+    return {
+        "schema_version": SERVING_IC_PRIOR_SCHEMA_VERSION,
+        "value": value,
+        "source": "candidate_scoped_purged_oof_model_cpcv",
+        "artifact_id": artifact_id,
+        "artifact_version": version,
+        "target_semantic_version": target_semantic,
+        "method": method,
+        "fold_count": int(cpcv.get("folds") or 0),
+        "positive_fold_ratio": _first_number(cpcv.get("positive_fold_ratio")),
+        "sample_count": int(metadata.get("sample_count") or registration.get("sample_count") or 0),
+    }
+
+
+def _live_ic_source_matches(
+    source: dict[str, Any],
+    *,
+    artifact_version: str,
+    target_semantic_version: str,
+) -> bool:
+    contract = _json_obj(source.get("last_ic_evaluation_contract"))
+    source_version = str(
+        source.get("last_ic_artifact_version")
+        or contract.get("artifact_version")
+        or ""
+    ).strip()
+    source_target = str(
+        source.get("last_ic_target_semantic_version")
+        or contract.get("target_semantic_version")
+        or ""
+    ).strip()
+    return source_version == artifact_version and source_target == target_semantic_version
+
+
 def _copy_ic_fields(entry: dict[str, Any], *, artifact: dict[str, Any] | None, pointer: dict[str, Any] | None, fallback: dict[str, Any]) -> None:
     live = _json_obj((artifact or {}).get("live_evidence_json"))
-    offline = _json_obj((artifact or {}).get("offline_evidence_json"))
     promotion = _json_obj((pointer or {}).get("promotion_evidence_json"))
-    sources = [promotion, live, offline, fallback]
+    artifact_version = str(entry.get("version") or "").strip()
+    target_semantic = str(entry.get("target_semantic_version") or "").strip()
+    sources = [
+        source
+        for source in (promotion, live, fallback)
+        if _live_ic_source_matches(
+            source,
+            artifact_version=artifact_version,
+            target_semantic_version=target_semantic,
+        )
+    ]
+
+    for key in IC_STATE_FIELDS:
+        entry[key] = [] if key == "weekly_ic" else None
+
     rolling_ic = _first_number(*(source.get("rolling_ic") for source in sources), *(source.get("live_ic") for source in sources))
-    ic_4w = _first_number(*(source.get("ic_4w_avg") for source in sources), *(source.get("oos_ic") for source in sources))
+    ic_4w = _first_number(*(source.get("ic_4w_avg") for source in sources))
     if rolling_ic is not None:
         entry["rolling_ic"] = rolling_ic
     if ic_4w is not None:
         entry["ic_4w_avg"] = ic_4w
-    for key in ("weekly_ic", "last_ic_by_segment", "last_ic_status", "last_ic_root_cause", "last_ic_sample_count"):
+    for key in IC_STATE_FIELDS:
+        if key in {"rolling_ic", "ic_4w_avg"}:
+            continue
         for source in sources:
             value = source.get(key)
             if value is not None:
                 entry[key] = value
                 break
+    entry["serving_ic_prior"] = build_serving_ic_prior(artifact)
     entry["serving_ic_source"] = "model_champion_pointers/model_artifact_registry"
 
 

@@ -74,7 +74,18 @@ def test_ic_weights_reuse_model_pool_cache(monkeypatch):
         model_pool,
         "_get_bucket",
         lambda: _FakeBucket(
-            {"universal/model_pool.json": '{"models":{"XGBoost":{"ic_4w_avg":0.2}}}'},
+            {
+                "universal/model_pool.json":
+                    '{"models":{"XGBoost":{'
+                    '"version":"v2",'
+                    '"target_semantic_version":"next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",'
+                    '"last_ic_semantic_version":"daily-cross-sectional-equal-date-v2",'
+                    '"last_ic_target_semantic_version":"next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",'
+                    '"last_ic_artifact_version":"v2",'
+                    '"last_ic_status":"computed",'
+                    '"last_ic_root_cause":"ok",'
+                    '"ic_4w_avg":0.2}}}'
+            },
             calls,
         ),
     )

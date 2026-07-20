@@ -4539,9 +4539,6 @@ def write_layer3_formal_gate_audit(
         elif (vote or {}).get("formal_model_coverage_complete") is False:
             decision = "drop"
             reason_code = "formal_active_model_coverage_incomplete"
-        elif active_family_count < 2:
-            decision = "drop"
-            reason_code = "formal_family_insufficient_active_families"
         elif final_row is None:
             decision = "drop"
             reason_code = "formal_l3_candidate_filtered"

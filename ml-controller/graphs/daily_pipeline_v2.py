@@ -2966,12 +2966,20 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         round(predictions_written / len(successful_prediction_symbols), 3)
         if successful_prediction_symbols else 0
     )
+    formal_evidence_symbols = {
+        str(symbol).strip()
+        for symbol in (state.get("layer2_recommendation_symbols") or [])
+        if str(symbol).strip()
+    }
+    if not formal_evidence_symbols:
+        formal_evidence_symbols = set(successful_prediction_symbols)
+    formal_evidence_prediction_symbols = successful_prediction_symbols & formal_evidence_symbols
     l3_ineligible_symbols = {
         symbol
-        for symbol in successful_prediction_symbols
+        for symbol in formal_evidence_prediction_symbols
         if (((state.get("predictions") or {}).get(symbol) or {}).get("l3_model_eligibility") or {}).get("eligible") is False
     }
-    l3_eligible_prediction_symbols = successful_prediction_symbols - l3_ineligible_symbols
+    l3_eligible_prediction_symbols = formal_evidence_prediction_symbols - l3_ineligible_symbols
     full_active_model_symbols = sum(
         1
         for symbol in l3_eligible_prediction_symbols
@@ -2988,6 +2996,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         "missing_prediction_symbols": missing_prediction_symbols[:20],
         "unexpected_prediction_symbols": unexpected_prediction_symbols[:20],
         "full_active_model_symbols": full_active_model_symbols,
+        "formal_evidence_prediction_symbols": len(formal_evidence_prediction_symbols),
         "incomplete_active_model_symbols": len(l3_eligible_prediction_symbols) - full_active_model_symbols,
         "l3_eligible_prediction_symbols": len(l3_eligible_prediction_symbols),
         "l3_ineligible_symbols": sorted(l3_ineligible_symbols)[:20],

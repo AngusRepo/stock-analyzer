@@ -40,6 +40,14 @@ def test_daily_pipeline_refuses_watchlist_screener_fallback():
     assert "build_ml_universe([], screener_recs)" in source
 
 
+def test_active_model_closure_scope_tracks_formal_evidence_candidates():
+    source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
+
+    assert "formal_evidence_prediction_symbols = successful_prediction_symbols & formal_evidence_symbols" in source
+    assert "l3_eligible_prediction_symbols = formal_evidence_prediction_symbols - l3_ineligible_symbols" in source
+    assert '"formal_evidence_prediction_symbols": len(formal_evidence_prediction_symbols)' in source
+
+
 def test_daily_pipeline_loads_latest_screener_seed_without_recommendation_inner_join():
     source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
 

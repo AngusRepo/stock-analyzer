@@ -67,7 +67,7 @@ def test_write_layer3_formal_gate_audit_persists_pass_and_drop(monkeypatch):
     assert pass_params[8] == 0.81
     assert drop_params[2] == "2317"
     assert drop_params[5] == "drop"
-    assert drop_params[6] == "formal_family_insufficient_active_families"
+    assert drop_params[6] == "formal_l3_candidate_filtered"
 
     evidence = json.loads(pass_params[10])
     assert evidence["schema_version"] == "layer3_formal_ml_gate_audit_v1"
@@ -76,6 +76,47 @@ def test_write_layer3_formal_gate_audit_persists_pass_and_drop(monkeypatch):
     assert evidence["target_size"] == 1
     assert evidence["layer2_count"] == 2
     assert evidence["active_families"] == ["tree", "graph", "time_series"]
+
+
+def test_write_layer3_formal_gate_audit_keeps_family_breadth_advisory(monkeypatch):
+    captured = []
+    monkeypatch.setattr(
+        recommendation_service.d1_client,
+        "batch_execute",
+        lambda statements: captured.extend(statements) or {"success": True},
+    )
+
+    write_layer3_formal_gate_audit(
+        predictions={
+            "2317": {
+                "ensemble_v2": {
+                    "contributing_models": ["LightGBM", "XGBoost", "ExtraTrees"],
+                    "weights": {"LightGBM": 0.3, "XGBoost": 0.3, "ExtraTrees": 0.4},
+                },
+                "core_family_evidence": {
+                    "family_score": 0.55,
+                    "active_family_count": 1,
+                    "active_families": ["tree"],
+                    "formal_model_coverage_complete": True,
+                    "formal_model_contract_passed": True,
+                    "selection_role": "evidence_only_not_capacity_gate",
+                },
+            }
+        },
+        recommendations=[
+            {"symbol": "2317", "name": "Hon Hai", "score": 65.0, "rank": 1},
+        ],
+        layer2_symbols=["2317"],
+        run_date="2026-07-20",
+        screener_run_id="run-20260720",
+    )
+
+    params = captured[1][1]
+    assert params[5] == "pass"
+    assert params[6] == "formal_family_evidence_pass"
+    evidence = json.loads(params[10])
+    assert evidence["active_family_count"] == 1
+    assert evidence["selection_role"] == "evidence_only_not_capacity_gate"
 
 
 def test_write_layer3_formal_gate_audit_distinguishes_universe_ineligible(monkeypatch):

@@ -16,6 +16,7 @@ export interface LinUcbRewardSourceRow {
   ml_vote_summary?: string | null
   alpha_context?: string | null
   alpha_allocation?: string | null
+  alpha_bucket?: string | null
   model_ic?: number | string | null
   coverage?: number | string | null
   prediction_dispersion?: number | string | null
@@ -135,7 +136,7 @@ function pickAlphaBucket(row: LinUcbRewardSourceRow): string {
   const context = parseJsonRecord(row.alpha_context)
   const allocation = parseJsonRecord(row.alpha_allocation)
   return normalizedToken(
-    score.alpha_bucket ?? score.bucket ?? context.bucket ?? context.alpha_bucket ?? allocation.bucket ?? allocation.alpha_bucket,
+    row.alpha_bucket ?? score.alpha_bucket ?? score.bucket ?? context.bucket ?? context.alpha_bucket ?? allocation.bucket ?? allocation.alpha_bucket,
     'unknown',
   )
 }
@@ -313,10 +314,64 @@ export async function listLinUcbRewardSourceRows(
            dr.market_segment,
            dr.recommendation_lane,
            dr.has_buy_signal,
-           dr.score_components,
-           dr.ml_vote_summary,
-           dr.alpha_context,
-           dr.alpha_allocation,
+           COALESCE(
+             CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.alpha_bucket') END,
+             CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.bucket') END,
+             CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.bucket') END,
+             CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.alpha_bucket') END,
+             CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.bucket') END,
+             CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.alpha_bucket') END
+           ) AS alpha_bucket,
+           COALESCE(
+             CASE WHEN json_valid(dr.ml_vote_summary) THEN json_extract(dr.ml_vote_summary, '$.ic_4w_avg') END,
+             CASE WHEN json_valid(dr.ml_vote_summary) THEN json_extract(dr.ml_vote_summary, '$.model_ic') END,
+             CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.model_ic') END
+           ) AS model_ic,
+           COALESCE(
+             CASE WHEN json_valid(dr.ml_vote_summary) THEN json_extract(dr.ml_vote_summary, '$.coverage') END,
+             CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.ml_coverage') END
+           ) AS coverage,
+           COALESCE(
+             CASE WHEN json_valid(dr.ml_vote_summary) THEN json_extract(dr.ml_vote_summary, '$.dispersion.rawRankStd') END,
+             CASE WHEN json_valid(dr.ml_vote_summary) THEN json_extract(dr.ml_vote_summary, '$.raw_rank_std') END,
+             CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.prediction_dispersion') END
+           ) AS prediction_dispersion,
+           COALESCE(
+             CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.data_quality') END,
+             CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.data_quality') END
+           ) AS data_quality,
+           COALESCE(
+             CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.market_breadth') END,
+             CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.market_breadth') END
+           ) AS market_breadth,
+           COALESCE(
+             CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.sector_heat') END,
+             CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.sector_heat') END,
+             CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.sector_heat') END
+           ) AS sector_heat,
+           COALESCE(
+             CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.liquidity') END,
+             CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.liquidity_score') END,
+             CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.liquidity') END
+           ) AS liquidity,
+           COALESCE(
+             CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.fill_quality') END,
+             CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.fill_quality') END
+           ) AS fill_quality,
+           COALESCE(
+             CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.regime') END,
+             CASE WHEN json_valid(dr.alpha_allocation) THEN json_extract(dr.alpha_allocation, '$.regime') END
+           ) AS regime,
+           COALESCE(
+             CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.volatility') END,
+             CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.volatility_score') END,
+             CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.volatility') END
+           ) AS volatility,
+           COALESCE(
+             CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.market_risk') END,
+             CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.market_risk_score') END,
+             CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.market_risk') END
+           ) AS market_risk,
            p.trade_pnl_pct,
            p.actual_return_pct
       FROM daily_recommendations dr

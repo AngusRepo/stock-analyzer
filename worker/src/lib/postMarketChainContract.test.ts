@@ -27,6 +27,10 @@ const metaShadowBlock = postMarketChain.slice(
   postMarketChain.indexOf("'meta-learning-shadow', () => runMetaLearningShadowClosure"),
   postMarketChain.indexOf("'strategy-learning', () => enqueueStrategyLearningClosureTask"),
 )
+const metaShadowClosureBlock = postMarketChain.slice(
+  postMarketChain.indexOf('async function runMetaLearningShadowClosure'),
+  postMarketChain.indexOf('async function enqueueStrategyLearningClosureTask'),
+)
 
 assert(callbackRoutes.includes("body.task === 'pipeline'"), 'pipeline callback must be explicitly handled')
 assert(
@@ -186,6 +190,12 @@ assert(
   metaShadowBlock.includes("'meta-learning-shadow', () => runMetaLearningShadowClosure") &&
     metaShadowBlock.includes('timeoutMs: TASK_EXECUTION_TIMEOUT_MS'),
   'Neural meta-learning shadow must be timeout-bounded so it cannot leave post-verify/evening-chain triggered',
+)
+assert(
+  metaShadowClosureBlock.includes('const sourceRows = await listLinUcbRewardSourceRows') &&
+    metaShadowClosureBlock.includes('Promise.all([') &&
+    metaShadowClosureBlock.match(/sourceRows,/g)?.length === 3,
+  'Neural meta-learning shadows must share one bounded reward cohort and execute in parallel',
 )
 assert(
   postMarketChain.includes('recordWorkerTaskComputeProfile'),

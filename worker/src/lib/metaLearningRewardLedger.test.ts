@@ -85,6 +85,7 @@ function assert(condition: unknown, message: string): void {
       stock_id: '2330',
       model_name: 'XGBoost',
       actual_return_pct: 1,
+      alpha_bucket: 'breakout',
       ml_vote_summary: JSON.stringify({ ic_4w_avg: 0.1, coverage: 0.8 }),
     },
     {
@@ -101,4 +102,21 @@ function assert(condition: unknown, message: string): void {
   assert(payload.contexts[0].length === 12, 'payload should use expanded 12d meta context')
   assert(payload.arm_names.join(',') === 'feature_family,time_series_family,do_nothing', 'payload should use stable meta-family arms')
   assert(payload.arms[0] === 0 && payload.arms[1] === 1, 'payload should map model names to family arms')
+}
+
+{
+  const rows = buildLinUcbRewardLedgerRows([{
+    date: '2026-05-06',
+    stock_id: '2330',
+    market_segment: 'TWSE',
+    recommendation_lane: 'tradable',
+    has_buy_signal: 1,
+    actual_return_pct: 1,
+    alpha_bucket: 'projected_bucket',
+    score_components: JSON.stringify({ alpha_bucket: 'legacy_json_bucket' }),
+  }])
+  assert(
+    rows.some((row) => row.arm_id === 'alpha_bucket:projected_bucket'),
+    'scalar-projected alpha bucket must take precedence over legacy raw JSON',
+  )
 }

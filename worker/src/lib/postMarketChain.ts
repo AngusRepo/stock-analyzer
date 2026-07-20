@@ -4,6 +4,7 @@ import { runArtifactAutoPromotion, runModelIcRollingRefresh, runObsidianDaily, r
 import { generateDailyReport } from './dailyReport'
 import { ensureMetaLearningResearchRegistry } from './metaLearningResearchTrack'
 import { runNeuralMetaShadow } from './metaLearningShadowRunner'
+import { listLinUcbRewardSourceRows } from './metaLearningRewardLedger'
 import { clearOpenPositionIntradayPriceCache } from './paperIntradayPriceCache'
 import { classifySchedulerSummary, logSchedulerResult, type SchedulerRunStatus } from './schedulerRunLogger'
 import { recordWorkerTaskComputeProfile } from './computeProfileEvents'
@@ -154,25 +155,34 @@ async function logSkippedHistoricalTask(env: Bindings, ctx: ChainContext, task: 
 
 async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): Promise<string> {
   const registry = await ensureMetaLearningResearchRegistry(env.KV)
-  const perPolicyTimeoutMs = Math.floor(TASK_EXECUTION_TIMEOUT_MS / 3)
-  const neuralUcb = await runNeuralMetaShadow(env, {
-    policyId: 'NeuralUCB',
+  const sourceRows = await listLinUcbRewardSourceRows(env.DB, {
     endDate: ctx.runDate,
-    dryRun: false,
-    timeoutMs: perPolicyTimeoutMs,
+    limit: 5000,
   })
-  const neuralTs = await runNeuralMetaShadow(env, {
-    policyId: 'NeuralTS',
-    endDate: ctx.runDate,
-    dryRun: false,
-    timeoutMs: perPolicyTimeoutMs,
-  })
-  const neuCb = await runNeuralMetaShadow(env, {
-    policyId: 'NeuCB',
-    endDate: ctx.runDate,
-    dryRun: false,
-    timeoutMs: perPolicyTimeoutMs,
-  })
+  const perPolicyTimeoutMs = TASK_EXECUTION_TIMEOUT_MS - 5_000
+  const [neuralUcb, neuralTs, neuCb] = await Promise.all([
+    runNeuralMetaShadow(env, {
+      policyId: 'NeuralUCB',
+      endDate: ctx.runDate,
+      dryRun: false,
+      timeoutMs: perPolicyTimeoutMs,
+      sourceRows,
+    }),
+    runNeuralMetaShadow(env, {
+      policyId: 'NeuralTS',
+      endDate: ctx.runDate,
+      dryRun: false,
+      timeoutMs: perPolicyTimeoutMs,
+      sourceRows,
+    }),
+    runNeuralMetaShadow(env, {
+      policyId: 'NeuCB',
+      endDate: ctx.runDate,
+      dryRun: false,
+      timeoutMs: perPolicyTimeoutMs,
+      sourceRows,
+    }),
+  ])
   return [
     `registry_created=${registry.created.length}`,
     `registry_total=${registry.total}`,

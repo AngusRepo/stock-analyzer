@@ -2,6 +2,7 @@ import type { Bindings } from '../types'
 import {
   buildNeuralMetaBanditTrainingPayload,
   listLinUcbRewardSourceRows,
+  type LinUcbRewardSourceRow,
 } from './metaLearningRewardLedger'
 import {
   normalizeMetaShadowDecisionInput,
@@ -16,12 +17,13 @@ export interface NeuralShadowRunOptions {
   limit?: number
   dryRun?: boolean
   timeoutMs?: number
+  sourceRows?: LinUcbRewardSourceRow[]
 }
 
 export async function runNeuralMetaShadow(env: Bindings, options: NeuralShadowRunOptions) {
   const mlUrl = env.ML_SERVICE_URL?.trim()?.replace(/\/+$/, '')
   if (!mlUrl) throw new Error('ML_SERVICE_URL not set; cannot run neural meta shadow')
-  const rows = await listLinUcbRewardSourceRows(env.DB, {
+  const rows = options.sourceRows ?? await listLinUcbRewardSourceRows(env.DB, {
     startDate: options.startDate,
     endDate: options.endDate,
     limit: options.limit ?? 5000,

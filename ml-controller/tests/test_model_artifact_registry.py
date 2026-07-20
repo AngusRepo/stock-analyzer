@@ -2405,6 +2405,11 @@ def test_apply_promoted_artifact_to_model_pool_moves_matching_challenger_to_acti
                     "ic_4w_avg": 0.2,
                     "rolling_ic": 0.21,
                     "last_ic_status": "computed",
+                    "last_ic_artifact_version": "vNew",
+                    "last_ic_target_semantic_version": registry.LABEL_SCHEMA_VERSION,
+                    "last_ic_evaluation_contract": {
+                        "target_semantic_version": registry.LABEL_SCHEMA_VERSION,
+                    },
                 },
             }
         }
@@ -2418,6 +2423,7 @@ def test_apply_promoted_artifact_to_model_pool_moves_matching_challenger_to_acti
             "version": "vNew",
             "candidate_type": "weekly_drift",
             "artifact_path": "universal/patchtst/vNew.zip",
+            "metadata": {"target_semantic_version": registry.LABEL_SCHEMA_VERSION},
         },
         reason="wei_approval",
         promoted_at="2026-05-14T17:31:25+00:00",
@@ -2862,3 +2868,52 @@ def test_promotion_controller_blocks_oof_bootstrap_after_semantic_cutover(monkey
     assert result["decision"] == "blocked"
     assert result["can_promote"] is False
     assert "oof_release_requires_semantic_bootstrap" in result["evidence"]["blockers"]
+
+
+def test_oof_promotion_quarantines_previous_version_ic_and_sets_prior():
+    pool = {
+        "models": {
+            "LightGBM": {
+                "status": "active",
+                "version": "vOld",
+                "rolling_ic": -0.08,
+                "ic_4w_avg": -0.07,
+                "weekly_ic": [-0.08],
+                "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
+            }
+        }
+    }
+    artifact = {
+        "artifact_id": "LightGBM:vNew:oof_full_fit_release",
+        "model_name": "LightGBM",
+        "version": "vNew",
+        "candidate_type": "oof_full_fit_release",
+        "artifact_path": "universal/lightgbm/vNew.joblib",
+        "offline_gate_decision": "STRONG_PASS",
+        "offline_evidence_json": {
+            "registration": {
+                "metadata": {
+                    "target_semantic_version": registry.LABEL_SCHEMA_VERSION,
+                    "sample_count": 5000,
+                    "model_cpcv": {
+                        "method": "outer_purged_walk_forward_rank_ic",
+                        "decision": "PASS",
+                        "passed": True,
+                        "oos_ic_mean": 0.072,
+                        "folds": 5,
+                        "positive_fold_ratio": 0.8,
+                    },
+                }
+            }
+        },
+    }
+
+    registry.apply_promoted_artifact_to_model_pool(pool, artifact, reason="test")
+
+    entry = pool["models"]["LightGBM"]
+    assert "rolling_ic" not in entry
+    assert "weekly_ic" not in entry
+    assert entry["serving_ic_prior"]["value"] == 0.072
+    retired = entry["retired_versions"][-1]
+    assert retired["rolling_ic_at_retire"] == -0.08
+    assert retired["weekly_ic_at_retire"] == [-0.08]

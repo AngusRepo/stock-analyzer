@@ -77,6 +77,15 @@ def rank_score_from_prediction_row(row: dict[str, Any]) -> tuple[float | None, s
     return None, "missing"
 
 
+def prediction_artifact_lineage(row: dict[str, Any]) -> tuple[str | None, str | None]:
+    forecast = _safe_json(row.get("forecast_data"))
+    signal = forecast.get("model_signal")
+    signal = signal if isinstance(signal, dict) else {}
+    artifact_version = str(signal.get("artifact_version") or "").strip() or None
+    target_semantic = str(signal.get("target_semantic_version") or "").strip() or None
+    return artifact_version, target_semantic
+
+
 def market_segment_from_prediction_row(row: dict[str, Any]) -> str:
     forecast = _safe_json(row.get("forecast_data"))
     stock_meta = forecast.get("stock_meta")
@@ -192,6 +201,7 @@ def compute_weekly_ic_from_rows(
     min_samples: int,
     min_dates: int = 1,
     all_tracked: tuple[str, ...] | None = None,
+    expected_artifact_versions: dict[str, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     rows, duplicate_rows_dropped = _dedupe_prediction_rows(rows)
     tracked = all_tracked or tracked_model_names()
@@ -216,6 +226,8 @@ def compute_weekly_ic_from_rows(
             "label_semantic_mismatch_rows": 0,
             "label_lineage_invalid_rows": 0,
             "duplicate_rows_dropped": int(duplicate_rows_dropped.get(name, 0)),
+            "artifact_version_mismatch_rows": 0,
+            "prediction_target_semantic_mismatch_rows": 0,
         }
         for name in tracked
     }
@@ -226,6 +238,15 @@ def compute_weekly_ic_from_rows(
             continue
         diag = diagnostics[model_name]
         diag["raw_rows"] += 1
+        artifact_version, prediction_target_semantic = prediction_artifact_lineage(row)
+        expected_version = str((expected_artifact_versions or {}).get(model_name) or "").strip()
+        if expected_artifact_versions is not None:
+            if not expected_version or artifact_version != expected_version:
+                diag["artifact_version_mismatch_rows"] += 1
+                continue
+            if prediction_target_semantic != IC_TARGET_SEMANTIC_VERSION:
+                diag["prediction_target_semantic_mismatch_rows"] += 1
+                continue
         if "verified_at" in row and not row.get("verified_at"):
             diag["unverified_rows"] += 1
             continue
@@ -321,6 +342,8 @@ def compute_weekly_ic_from_rows(
             "dedupe_key": "stock_id+model_name+prediction_date_latest_generated_at",
             "target": "actual_return_pct",
             "target_semantic_version": IC_TARGET_SEMANTIC_VERSION,
+            "artifact_version": (expected_artifact_versions or {}).get(name),
+            "artifact_version_policy": "current_champion_exact_match",
             "min_samples": int(min_samples),
             "min_dates": max(1, int(min_dates)),
             "n_samples": len(pairs),
@@ -413,8 +436,18 @@ def apply_weekly_ic_to_pool(
         previous_semantic = str(target.get("last_ic_semantic_version") or "").strip()
         incoming_contract = info.get("evaluation_contract") or {}
         incoming_semantic = str(incoming_contract.get("semantic_version") or "").strip()
+        incoming_target_semantic = str(incoming_contract.get("target_semantic_version") or "").strip()
+        current_artifact_version = str(entry.get("version") or "").strip()
+        previous_target_semantic = str(
+            target.get("last_ic_target_semantic_version")
+            or (target.get("last_ic_evaluation_contract") or {}).get("target_semantic_version")
+            or ""
+        ).strip()
+        previous_artifact_version = str(target.get("last_ic_artifact_version") or "").strip()
         semantic_migration = bool(
-            incoming_semantic and previous_semantic != incoming_semantic
+            (incoming_semantic and previous_semantic != incoming_semantic)
+            or (incoming_target_semantic and previous_target_semantic != incoming_target_semantic)
+            or (current_artifact_version and previous_artifact_version != current_artifact_version)
         )
         if semantic_migration:
             # A pooled-observation IC and an equal-date cross-sectional IC are
@@ -434,6 +467,8 @@ def apply_weekly_ic_to_pool(
         target["last_ic_semantic_version"] = target["last_ic_evaluation_contract"].get(
             "semantic_version"
         )
+        target["last_ic_target_semantic_version"] = incoming_target_semantic or None
+        target["last_ic_artifact_version"] = current_artifact_version or None
 
         ic = info.get("ic")
         if ic is None:

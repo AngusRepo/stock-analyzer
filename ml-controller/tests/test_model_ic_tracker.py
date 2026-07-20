@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from services.model_ic_tracker import (  # noqa: E402
     ACTIVE_ARTIFACT_CHALLENGER_MODELS,
     ALPHA_PREDICTION_MODELS,
     EXPERIMENTAL_SHADOW_MODELS,
+    IC_TARGET_SEMANTIC_VERSION,
     apply_weekly_ic_to_pool,
     compute_weekly_ic_from_rows,
     market_segment_from_prediction_row,
@@ -452,6 +454,7 @@ def test_apply_weekly_ic_resets_history_when_estimator_semantic_changes():
     pool = {
         "models": {
             "XGBoost": {
+                "version": "vNew",
                 "weekly_ic": [0.2, 0.3],
                 "ic_4w_avg": 0.25,
                 "rolling_ic": 0.25,
@@ -466,7 +469,8 @@ def test_apply_weekly_ic_resets_history_when_estimator_semantic_changes():
             "ic": -0.04,
             "n_samples": 800,
             "evaluation_contract": {
-                "semantic_version": "daily-cross-sectional-equal-date-v2"
+                "semantic_version": "daily-cross-sectional-equal-date-v2",
+                "target_semantic_version": IC_TARGET_SEMANTIC_VERSION,
             },
         }
     }
@@ -482,4 +486,43 @@ def test_apply_weekly_ic_resets_history_when_estimator_semantic_changes():
     assert pool["models"]["XGBoost"]["weekly_ic"] == [-0.04]
     assert pool["models"]["XGBoost"]["ic_4w_avg"] == -0.04
     assert pool["models"]["XGBoost"]["last_ic_semantic_version"] == "daily-cross-sectional-equal-date-v2"
+    assert pool["models"]["XGBoost"]["last_ic_target_semantic_version"] == IC_TARGET_SEMANTIC_VERSION
+    assert pool["models"]["XGBoost"]["last_ic_artifact_version"] == "vNew"
     assert changes["XGBoost"]["semantic_migration"] is True
+
+
+def test_weekly_ic_strictly_filters_to_current_champion_artifact_version():
+    def row(stock_id: int, version: str, rank: float, actual: float) -> dict:
+        return {
+            "stock_id": stock_id,
+            "model_name": "XGBoost",
+            "prediction_date": "2026-07-17",
+            "generated_at": f"2026-07-17T13:00:{stock_id:02d}Z",
+            "actual_return_pct": actual,
+            "forecast_data": json.dumps({
+                "rank_score": rank,
+                "model_signal": {
+                    "artifact_version": version,
+                    "target_semantic_version": IC_TARGET_SEMANTIC_VERSION,
+                },
+            }),
+        }
+
+    result = compute_weekly_ic_from_rows(
+        [
+            row(1, "vCurrent", 0.1, -0.02),
+            row(2, "vCurrent", 0.9, 0.03),
+            row(3, "vOld", 0.9, -0.04),
+            row(4, "vOld", 0.1, 0.05),
+        ],
+        min_samples=2,
+        all_tracked=("XGBoost",),
+        expected_artifact_versions={"XGBoost": "vCurrent"},
+    )
+
+    info = result["XGBoost"]
+    assert info["status"] == "computed"
+    assert info["ic"] == 1.0
+    assert info["n_samples"] == 2
+    assert info["diagnostics"]["artifact_version_mismatch_rows"] == 2
+    assert info["evaluation_contract"]["artifact_version"] == "vCurrent"

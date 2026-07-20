@@ -746,6 +746,29 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
     t0 = time.time()
     all_tracked = tracked_model_names()
 
+    try:
+        bucket = storage.Client().bucket(_bucket_name())
+        pool_blob = bucket.blob("universal/model_pool.json")
+        if not pool_blob.exists():
+            return {"status": "error", "error": "model_pool_missing"}
+        pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
+    except Exception as exc:
+        logger.error("[ModelPool] weekly_ic model_pool load failed: %s", exc)
+        return {"status": "error", "error": f"pool_load_failed: {exc}"}
+
+    expected_artifact_versions: dict[str, str] = {}
+    for name, entry in (pool.get("models") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        version = str(entry.get("version") or "").strip()
+        if version:
+            expected_artifact_versions[str(name)] = version
+        challenger = entry.get("challenger")
+        if isinstance(challenger, dict):
+            challenger_version = str(challenger.get("version") or "").strip()
+            if challenger_version:
+                expected_artifact_versions[f"{name}::challenger"] = challenger_version
+
     # 1. Pull broad per-model rows from D1. The domain service classifies
     # missing verification/outcome/rank-signal root causes instead of letting SQL
     # hide them behind a generic insufficient_samples result.
@@ -787,6 +810,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
         min_samples=req.min_samples,
         min_dates=req.min_dates,
         all_tracked=all_tracked,
+        expected_artifact_versions=expected_artifact_versions,
     )
     for info in per_model_ic.values():
         contract = info.get("evaluation_contract")
@@ -803,22 +827,18 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
     pool_changes: dict[str, dict] = {}
     if req.update_pool:
         try:
-            bucket = storage.Client().bucket(_bucket_name())
-            pool_blob = bucket.blob("universal/model_pool.json")
-            if pool_blob.exists():
-                pool = _json.loads(pool_blob.download_as_text().lstrip("\ufeff"))
-                pool_changes, changed = apply_weekly_ic_to_pool(
-                    pool,
-                    per_model_ic,
-                    history_max=req.history_max,
-                    append_history=req.append_history,
+            pool_changes, changed = apply_weekly_ic_to_pool(
+                pool,
+                per_model_ic,
+                history_max=req.history_max,
+                append_history=req.append_history,
+            )
+            if changed:
+                pool["last_updated"] = datetime.now(timezone.utc).isoformat()
+                pool_blob.upload_from_string(
+                    _json.dumps(pool, indent=2, ensure_ascii=False),
+                    content_type="application/json",
                 )
-                if changed:
-                    pool["last_updated"] = datetime.now(timezone.utc).isoformat()
-                    pool_blob.upload_from_string(
-                        _json.dumps(pool, indent=2, ensure_ascii=False),
-                        content_type="application/json",
-                    )
         except Exception as e:
             logger.error(f"[ModelPool] weekly_ic pool update failed: {e}")
             return {"status": "error", "error": f"pool_update_failed: {e}", "per_model_ic": per_model_ic}

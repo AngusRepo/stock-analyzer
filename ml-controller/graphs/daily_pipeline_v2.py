@@ -29,6 +29,7 @@ from langgraph.types import RetryPolicy
 from services import d1_client, kv_client
 from services.ensemble_v2 import attach_ensemble_v2
 from services.expected_return_calibration import load_expected_return_calibration_report
+from services.evidence_contracts import LABEL_SCHEMA_VERSION
 from services.payload_builder import (
     DAILY_RECOMMENDATION_PIPELINE_COLUMNS,
     PredictPayload,
@@ -2270,29 +2271,63 @@ def _load_pool_and_ic():
             last_status = str(entry.get("last_ic_status") or "").strip()
             last_root_cause = str(entry.get("last_ic_root_cause") or "").strip()
             last_semantic = str(entry.get("last_ic_semantic_version") or "").strip()
-            has_fresh_diagnostics = bool(last_status or last_root_cause)
-            if has_fresh_diagnostics and not (last_status == "computed" and last_root_cause in ("", "ok")):
-                continue
-            if last_semantic != IC_EVALUATION_SEMANTIC_VERSION:
-                logger.warning(
-                    "[Pipeline V2] Ignoring incompatible IC for %s: expected=%s actual=%s",
-                    name,
-                    IC_EVALUATION_SEMANTIC_VERSION,
-                    last_semantic or "<missing>",
+            last_target_semantic = str(
+                entry.get("last_ic_target_semantic_version")
+                or (entry.get("last_ic_evaluation_contract") or {}).get("target_semantic_version")
+                or ""
+            ).strip()
+            last_artifact_version = str(entry.get("last_ic_artifact_version") or "").strip()
+            active_artifact_version = str(entry.get("version") or "").strip()
+            active_target_semantic = str(entry.get("target_semantic_version") or "").strip()
+            live_ic_valid = (
+                last_status == "computed"
+                and last_root_cause in ("", "ok")
+                and last_semantic == IC_EVALUATION_SEMANTIC_VERSION
+                and last_target_semantic == active_target_semantic == LABEL_SCHEMA_VERSION
+                and last_artifact_version == active_artifact_version
+            )
+
+            ic_value = None
+            if live_ic_valid:
+                ic_value = entry.get("rolling_ic")
+                if ic_value is None:
+                    ic_value = entry.get("ic_4w_avg")
+                if ic_value is None:
+                    history = entry.get("weekly_ic") or []
+                    if history:
+                        ic_value = history[-1]
+            else:
+                prior = entry.get("serving_ic_prior")
+                prior = prior if isinstance(prior, dict) else {}
+                prior_valid = (
+                    prior.get("schema_version") == "version-bound-purged-oof-ic-prior-v1"
+                    and str(prior.get("artifact_version") or "") == active_artifact_version
+                    and str(prior.get("target_semantic_version") or "") == active_target_semantic == LABEL_SCHEMA_VERSION
+                    and str(prior.get("source") or "") == "candidate_scoped_purged_oof_model_cpcv"
                 )
-                continue
-            ic_value = entry.get("rolling_ic")
-            if ic_value is None:
-                ic_value = entry.get("ic_4w_avg")
-            if ic_value is None:
-                history = entry.get("weekly_ic") or []
-                if history:
-                    ic_value = history[-1]
+                if prior_valid:
+                    ic_value = prior.get("value")
+                    logger.info(
+                        "[Pipeline V2] Using version-bound purged OOF IC prior for %s version=%s",
+                        name,
+                        active_artifact_version,
+                    )
+                elif last_status or last_root_cause:
+                    logger.warning(
+                        "[Pipeline V2] Ignoring stale/incompatible live IC for %s: "
+                        "eval=%s target=%s artifact=%s active_target=%s active_artifact=%s",
+                        name,
+                        last_semantic or "<missing>",
+                        last_target_semantic or "<missing>",
+                        last_artifact_version or "<missing>",
+                        active_target_semantic or "<missing>",
+                        active_artifact_version or "<missing>",
+                    )
             try:
-                if ic_value is not None:
+                if ic_value is not None and float(ic_value) > 0:
                     ic_weights[name] = float(ic_value)
             except (TypeError, ValueError):
-                logger.debug(f"[Pipeline V2] invalid model_pool IC for {name}: {ic_value}")
+                logger.debug(f"[Pipeline V2] invalid model_pool IC/prior for {name}: {ic_value}")
 
         sidecars = pool.get("l2_feature_sidecars") if isinstance(pool.get("l2_feature_sidecars"), dict) else {}
         models = pool.get("models") if isinstance(pool.get("models"), dict) else {}

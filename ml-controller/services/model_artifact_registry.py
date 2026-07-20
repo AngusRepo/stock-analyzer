@@ -2617,7 +2617,30 @@ def apply_promoted_artifact_to_model_pool(
             "reason": reason,
             "weekly_ic_at_retire": list(entry.get("weekly_ic") or []),
             "ic_4w_avg_at_retire": entry.get("ic_4w_avg"),
+            "rolling_ic_at_retire": entry.get("rolling_ic"),
+            "last_ic_semantic_version_at_retire": entry.get("last_ic_semantic_version"),
+            "last_ic_target_semantic_version_at_retire": entry.get("last_ic_target_semantic_version"),
+            "last_ic_artifact_version_at_retire": entry.get("last_ic_artifact_version"),
         })
+        for key in (
+            "weekly_ic",
+            "ic_4w_avg",
+            "rolling_ic",
+            "consecutive_negative_weeks",
+            "last_ic_status",
+            "last_ic_sample_count",
+            "last_ic_score_sources",
+            "last_ic_by_segment",
+            "last_ic_error",
+            "last_ic_root_cause",
+            "last_ic_diagnostics",
+            "last_ic_evaluation_contract",
+            "last_ic_semantic_version",
+            "last_ic_target_semantic_version",
+            "last_ic_artifact_version",
+            "production_weight",
+        ):
+            entry.pop(key, None)
 
     entry["status"] = "active"
     entry["version"] = candidate_version
@@ -2631,7 +2654,21 @@ def apply_promoted_artifact_to_model_pool(
     entry.pop("degraded_since", None)
     entry.pop("retired_at", None)
 
-    if challenger_matches:
+    candidate_metadata = _nested_dict(artifact.get("metadata"))
+    if not candidate_metadata:
+        candidate_metadata = _artifact_registration_metadata(artifact)
+    candidate_target_semantic = str(candidate_metadata.get("target_semantic_version") or "").strip()
+    challenger_contract = _nested_dict(challenger.get("last_ic_evaluation_contract"))
+    challenger_ic_matches = (
+        challenger_matches
+        and str(challenger.get("last_ic_artifact_version") or "").strip() == candidate_version
+        and str(
+            challenger.get("last_ic_target_semantic_version")
+            or challenger_contract.get("target_semantic_version")
+            or ""
+        ).strip() == candidate_target_semantic
+    )
+    if challenger_ic_matches:
         for key in (
             "weekly_ic",
             "ic_4w_avg",
@@ -2644,13 +2681,18 @@ def apply_promoted_artifact_to_model_pool(
             "last_ic_error",
             "last_ic_root_cause",
             "last_ic_diagnostics",
+            "last_ic_evaluation_contract",
+            "last_ic_semantic_version",
+            "last_ic_target_semantic_version",
+            "last_ic_artifact_version",
             "model_cpcv",
         ):
             if key in challenger:
                 entry[key] = challenger[key]
+    if challenger_matches:
         entry.pop("challenger", None)
 
-    metadata = _nested_dict(artifact.get("metadata"))
+    metadata = candidate_metadata
     if not metadata:
         metadata = _artifact_registration_metadata(artifact)
     entry["target_semantic_version"] = metadata.get("target_semantic_version")
@@ -2685,6 +2727,9 @@ def apply_promoted_artifact_to_model_pool(
         for key, value in artifact_evidence.items()
         if value is not None
     }
+    from services.model_serving_resolver import build_serving_ic_prior
+
+    entry["serving_ic_prior"] = build_serving_ic_prior(artifact)
 
     entry["promotion_controller"] = {
         "artifact_id": artifact.get("artifact_id"),

@@ -500,12 +500,25 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
         _BATCH_FEATURE_CONTEXT_KEY,
         _BATCH_FEATURE_MODEL_ERRORS_KEY,
         _BATCH_FEATURE_RANK_SCORES_KEY,
+        _BATCH_IC_WEIGHTS_KEY,
+        _BATCH_MODEL_POOL_KEY,
+        _BATCH_RANK_STACKER_KEY,
         _FEATURE_MODEL_NAMES_V2,
+        _normalize_market_segment_for_serving,
     )
+    from .ensemble import _extract_model_pool_ic
 
     contexts = [_build_feature_batch_context(req) for req in requests]
     pool = _load_model_pool()
     model_status = _model_pool_status(pool)
+    rank_stacker_bundle = _load_rank_stacker_artifact()
+    ic_weights_by_segment = {
+        segment: _extract_model_pool_ic(pool, market_segment=segment)
+        for segment in {
+            _normalize_market_segment_for_serving(ctx.req)
+            for ctx in contexts
+        }
+    }
 
     for model_name in _FEATURE_MODEL_NAMES_V2:
         if model_name == "GNN":
@@ -571,6 +584,11 @@ def _build_feature_model_batch_runtime_overrides(requests: list[Any]) -> list[di
             _BATCH_FEATURE_MODEL_ERRORS_KEY: list(ctx.model_errors),
             _BATCH_CHALLENGER_RANK_SCORES_KEY: dict(ctx.challenger_rank_scores),
             _BATCH_CHALLENGER_MODEL_ERRORS_KEY: list(ctx.challenger_errors),
+            _BATCH_MODEL_POOL_KEY: pool,
+            _BATCH_IC_WEIGHTS_KEY: dict(
+                ic_weights_by_segment[_normalize_market_segment_for_serving(ctx.req)]
+            ),
+            _BATCH_RANK_STACKER_KEY: rank_stacker_bundle,
         }
         for ctx in contexts
     ]
@@ -647,6 +665,12 @@ def _copy_request_with_runtime_overrides(req: Any, overrides: dict) -> Any:
     copied = req.__class__(**getattr(req, "__dict__", {}))
     copied.runtime_options = runtime_options
     return copied
+
+
+def _load_rank_stacker_artifact() -> dict | None:
+    from .stacking import load_meta_learner
+
+    return load_meta_learner(0)
 
 
 def _error_result(payload: dict, exc: Exception) -> dict:
@@ -803,8 +827,8 @@ def predict_stock_v2_batch_with_metrics(payloads: list[dict]) -> dict:
             "batch": {
                 "n_input": len(payloads or []),
                 "n_error": sum(1 for r in results if r.get("error")),
-                "contract": "modal_predict_batch_v2_shared_feature_context_v2",
-                "finalize_mode": "serial_shared_feature_context",
+                "contract": "modal_predict_batch_v2_shared_serving_context_v3",
+                "finalize_mode": "serial_signal_only_shared_serving_context",
             },
             "preload": preload,
             "timing": {

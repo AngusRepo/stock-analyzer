@@ -26,7 +26,11 @@ def test_build_pool_from_d1_champion_pointer_serves_production_artifact():
             "model_name": "PatchTST",
             "champion_version": "vGood",
             "champion_artifact_id": "PatchTST:vGood:weekly_drift",
-            "promotion_evidence_json": {"rolling_ic": 0.12},
+            "promotion_evidence_json": {
+                "rolling_ic": 0.12,
+                "last_ic_artifact_version": "vGood",
+                "last_ic_target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
+            },
         }],
         artifacts=[{
             "artifact_id": "PatchTST:vGood:weekly_drift",
@@ -263,3 +267,76 @@ def test_apply_model_pool_reconcile_plan_updates_stale_compat_artifact_id():
     assert patched["models"]["PatchTST"]["version"] == "vGood"
     assert patched["source_of_truth"] == "model_champion_pointers"
     assert patched["reconcile_evidence"]["applied_count"] == 1
+
+
+def test_oof_prior_quarantines_stale_fallback_ic_and_reconcile_repairs_pool():
+    artifact = {
+        "artifact_id": "XGBoost:vGood:oof_full_fit_release",
+        "model_name": "XGBoost",
+        "version": "vGood",
+        "candidate_type": "oof_full_fit_release",
+        "state": "production",
+        "artifact_path": "universal/xgboost/vGood.joblib",
+        "offline_gate_decision": "STRONG_PASS",
+        "live_gate_status": "promoted",
+        "offline_evidence_json": {
+            "registration": {
+                "metadata": {
+                    "target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
+                    "sample_count": 1000,
+                    "model_cpcv": {
+                        "method": "outer_purged_walk_forward_rank_ic",
+                        "decision": "PASS",
+                        "passed": True,
+                        "oos_ic_mean": 0.0617,
+                        "folds": 5,
+                        "positive_fold_ratio": 0.6,
+                    },
+                }
+            }
+        },
+    }
+    stale_pool = {
+        "models": {
+            "XGBoost": {
+                "status": "active",
+                "version": "vGood",
+                "rolling_ic": -0.09,
+                "ic_4w_avg": -0.08,
+                "weekly_ic": [-0.09],
+                "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
+                "last_ic_evaluation_contract": {
+                    "target_semantic_version": "next-session-open-to-fifth-session-close-v2",
+                },
+            }
+        }
+    }
+    champion_pool = resolver.build_pool_from_champion_pointers(
+        pointers=[{
+            "model_name": "XGBoost",
+            "champion_version": "vGood",
+            "champion_artifact_id": artifact["artifact_id"],
+        }],
+        artifacts=[artifact],
+        fallback_pool=stale_pool,
+        required_models=("XGBoost",),
+        sidecar_models=(),
+    )
+
+    champion = champion_pool["models"]["XGBoost"]
+    assert champion["rolling_ic"] is None
+    assert champion["weekly_ic"] == []
+    assert champion["serving_ic_prior"]["value"] == 0.0617
+    assert champion["serving_ic_prior"]["artifact_version"] == "vGood"
+
+    plan = resolver.build_model_pool_reconcile_plan(
+        model_pool=stale_pool,
+        champion_pool=champion_pool,
+        model_names=("XGBoost",),
+    )
+    repaired = resolver.apply_model_pool_reconcile_plan(model_pool=stale_pool, plan=plan)
+    entry = repaired["models"]["XGBoost"]
+    assert entry["rolling_ic"] is None
+    assert entry["ic_4w_avg"] is None
+    assert entry["weekly_ic"] == []
+    assert entry["serving_ic_prior"]["source"] == "candidate_scoped_purged_oof_model_cpcv"

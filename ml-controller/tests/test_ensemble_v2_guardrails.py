@@ -48,7 +48,16 @@ def _full_model_pool(overrides: dict[str, dict] | None = None) -> dict:
         name: {
             "status": "retired",
             "version": "v1",
+            "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
             "last_ic_semantic_version": "daily-cross-sectional-equal-date-v2",
+            "last_ic_target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
+            "last_ic_artifact_version": "v1",
+            "last_ic_status": "computed",
+            "last_ic_root_cause": "ok",
+            "last_ic_evaluation_contract": {
+                "semantic_version": "daily-cross-sectional-equal-date-v2",
+                "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
+            },
         }
         for name in (
             "LightGBM",
@@ -876,3 +885,78 @@ def test_daily_pipeline_uses_pooled_floor_only_when_explicitly_enabled(monkeypat
     assert bundle["weights"]["DLinear"] > 0
     assert bundle["diagnostics"]["DLinear"]["ic_shrinkage"]["reason"] == "pooled_segment_floor"
     assert bundle["diagnostics"]["DLinear"]["ic_shrinkage"]["segment_reason"] == "negative_ic_confirmed"
+
+
+def test_daily_pipeline_uses_version_bound_oof_prior_when_live_ic_is_stale(monkeypatch):
+    import json
+    import sys
+    import types
+
+    graph_mod = types.ModuleType("langgraph.graph")
+    graph_mod.END = object()
+    graph_mod.StateGraph = object
+    types_mod = types.ModuleType("langgraph.types")
+    types_mod.RetryPolicy = object
+    monkeypatch.setitem(sys.modules, "langgraph.graph", graph_mod)
+    monkeypatch.setitem(sys.modules, "langgraph.types", types_mod)
+    httpx_mod = types.ModuleType("httpx")
+    httpx_mod.AsyncClient = object
+    monkeypatch.setitem(sys.modules, "httpx", httpx_mod)
+    google_mod = types.ModuleType("google")
+    google_cloud_mod = types.ModuleType("google.cloud")
+    google_storage_mod = types.ModuleType("google.cloud.storage")
+    google_storage_mod.Client = object
+    google_cloud_mod.storage = google_storage_mod
+    google_mod.cloud = google_cloud_mod
+    monkeypatch.setitem(sys.modules, "google", google_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud", google_cloud_mod)
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", google_storage_mod)
+
+    from graphs import daily_pipeline_v2
+
+    pool = _full_model_pool({
+        "LightGBM": {
+            "status": "active",
+            "version": "vNew",
+            "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
+            "rolling_ic": -0.12,
+            "last_ic_status": "computed",
+            "last_ic_root_cause": "ok",
+            "last_ic_artifact_version": "vOld",
+            "last_ic_target_semantic_version": "next-session-open-to-fifth-session-close-v2",
+            "serving_ic_prior": {
+                "schema_version": "version-bound-purged-oof-ic-prior-v1",
+                "value": 0.071,
+                "source": "candidate_scoped_purged_oof_model_cpcv",
+                "artifact_version": "vNew",
+                "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
+            },
+        },
+    })
+
+    class Blob:
+        def exists(self):
+            return True
+
+        def download_as_text(self):
+            return json.dumps(pool)
+
+    class Bucket:
+        def blob(self, path):
+            return Blob()
+
+    class Client:
+        def bucket(self, name):
+            return Bucket()
+
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models-test")
+    monkeypatch.setattr(google_storage_mod, "Client", lambda: Client())
+    monkeypatch.setattr(daily_pipeline_v2.kv_client, "get_json", lambda *_, **__: {})
+    from services import trading_config_loader
+    monkeypatch.setattr(trading_config_loader, "get_raw_trading_config", lambda: _full_trading_config())
+    monkeypatch.setattr(trading_config_loader, "load_active_trading_config", lambda timeout=10.0, allow_offline=False: _full_trading_config())
+
+    status, ic_weights, *_ = daily_pipeline_v2._load_pool_and_ic()
+
+    assert status["LightGBM"] == "active"
+    assert ic_weights["LightGBM"] == 0.071

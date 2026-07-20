@@ -498,12 +498,18 @@ _BATCH_FEATURE_MODEL_ERRORS_KEY = "__batch_feature_model_errors"
 _BATCH_FEATURE_CONTEXT_KEY = "__batch_feature_context"
 _BATCH_CHALLENGER_RANK_SCORES_KEY = "__batch_challenger_rank_scores"
 _BATCH_CHALLENGER_MODEL_ERRORS_KEY = "__batch_challenger_model_errors"
+_BATCH_MODEL_POOL_KEY = "__batch_model_pool"
+_BATCH_IC_WEIGHTS_KEY = "__batch_ic_weights"
+_BATCH_RANK_STACKER_KEY = "__batch_rank_stacker"
 _BATCH_RUNTIME_OPTION_KEYS = {
     _BATCH_FEATURE_RANK_SCORES_KEY,
     _BATCH_FEATURE_MODEL_ERRORS_KEY,
     _BATCH_FEATURE_CONTEXT_KEY,
     _BATCH_CHALLENGER_RANK_SCORES_KEY,
     _BATCH_CHALLENGER_MODEL_ERRORS_KEY,
+    _BATCH_MODEL_POOL_KEY,
+    _BATCH_IC_WEIGHTS_KEY,
+    _BATCH_RANK_STACKER_KEY,
 }
 _MODEL_POOL_ALLOWED_STATUSES = {"active", "degraded", "challenger", "retired"}
 
@@ -665,8 +671,18 @@ def predict_stock_v2(req: PredictRequest) -> dict:
             raise ValueError(f"Feature matrix empty for {req.symbol}")
         x_latest = x[-1].reshape(1, -1)
     market_segment = _normalize_market_segment_for_serving(req)
-    ic_weights = load_ic_weights(market_segment=market_segment)
-    pool_snapshot = _load_pool()
+    batch_ic_weights = runtime_options.get(_BATCH_IC_WEIGHTS_KEY)
+    ic_weights = (
+        dict(batch_ic_weights)
+        if isinstance(batch_ic_weights, dict)
+        else load_ic_weights(market_segment=market_segment)
+    )
+    batch_pool_snapshot = runtime_options.get(_BATCH_MODEL_POOL_KEY)
+    pool_snapshot = (
+        batch_pool_snapshot
+        if isinstance(batch_pool_snapshot, dict)
+        else _load_pool()
+    )
     pool_models, formal_slots = _require_model_pool_contract(pool_snapshot, stage="predict_v2")
 
     def _resolve_model_pool_status(name: str) -> str:
@@ -860,7 +876,11 @@ def predict_stock_v2(req: PredictRequest) -> dict:
     try:
         from .stacking import apply_rank_stacker, load_meta_learner
 
-        rank_bundle = load_meta_learner(0)
+        rank_bundle = (
+            runtime_options.get(_BATCH_RANK_STACKER_KEY)
+            if _BATCH_RANK_STACKER_KEY in runtime_options
+            else load_meta_learner(0)
+        )
         rank_scores, effective_ic_weights, rank_stacker_info = apply_rank_stacker(
             rank_scores,
             rank_bundle,

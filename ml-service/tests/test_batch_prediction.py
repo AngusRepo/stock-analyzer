@@ -221,7 +221,12 @@ def _predict_payload(symbol: str, stock_id: int, base_price: float = 100.0) -> d
 
 
 def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
-    from app.prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY
+    from app.prediction_runtime import (
+        _BATCH_FEATURE_RANK_SCORES_KEY,
+        _BATCH_IC_WEIGHTS_KEY,
+        _BATCH_MODEL_POOL_KEY,
+        _BATCH_RANK_STACKER_KEY,
+    )
     from app.schemas import PredictRequest
 
     class FakeModel:
@@ -239,7 +244,10 @@ def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
             return fake_model, {"feature_names": [], "feature_medians": {}}
         return None, {}
 
-    monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: _full_model_pool({"XGBoost": "active"}))
+    pool = _full_model_pool({"XGBoost": "active"})
+    rank_stacker_bundle = {"target_type": "rank", "eval_ic": 0.04}
+    monkeypatch.setattr(batch_prediction, "_load_model_pool", lambda: pool)
+    monkeypatch.setattr(batch_prediction, "_load_rank_stacker_artifact", lambda: rank_stacker_bundle)
     monkeypatch.setattr(batch_prediction, "_load_feature_artifact", fake_load_artifact)
 
     requests = [
@@ -253,6 +261,11 @@ def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
     assert fake_model.calls[0][0] == 2
     assert overrides[0][_BATCH_FEATURE_RANK_SCORES_KEY]["XGBoost"] == pytest.approx(0.25)
     assert overrides[1][_BATCH_FEATURE_RANK_SCORES_KEY]["XGBoost"] == pytest.approx(0.75)
+    assert overrides[0][_BATCH_MODEL_POOL_KEY] is pool
+    assert overrides[1][_BATCH_MODEL_POOL_KEY] is pool
+    assert overrides[0][_BATCH_RANK_STACKER_KEY] is rank_stacker_bundle
+    assert overrides[1][_BATCH_RANK_STACKER_KEY] is rank_stacker_bundle
+    assert isinstance(overrides[0][_BATCH_IC_WEIGHTS_KEY], dict)
 
 
 def test_l2_tree_batch_predict_api_removed():
@@ -527,6 +540,9 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
         _BATCH_FEATURE_CONTEXT_KEY,
         _BATCH_FEATURE_MODEL_ERRORS_KEY,
         _BATCH_FEATURE_RANK_SCORES_KEY,
+        _BATCH_IC_WEIGHTS_KEY,
+        _BATCH_MODEL_POOL_KEY,
+        _BATCH_RANK_STACKER_KEY,
     )
     from app.schemas import PredictRequest
 
@@ -534,9 +550,23 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
         raise AssertionError("serial model load should be skipped")
 
     monkeypatch.setattr(model_store, "load_model", fail_load_model)
-    monkeypatch.setattr(model_pool, "load_pool", lambda: _full_model_pool({"XGBoost": "active"}))
-    monkeypatch.setattr(ensemble, "load_ic_weights", lambda market_segment=None: {"XGBoost": 1.0})
-    monkeypatch.setattr(stacking, "load_meta_learner", lambda stock_id: None)
+    monkeypatch.setattr(
+        model_pool,
+        "load_pool",
+        lambda: (_ for _ in ()).throw(AssertionError("batch model pool should be reused")),
+    )
+    monkeypatch.setattr(
+        ensemble,
+        "load_ic_weights",
+        lambda market_segment=None: (_ for _ in ()).throw(
+            AssertionError("batch IC weights should be reused")
+        ),
+    )
+    monkeypatch.setattr(
+        stacking,
+        "load_meta_learner",
+        lambda stock_id: (_ for _ in ()).throw(AssertionError("batch rank stacker should be reused")),
+    )
     monkeypatch.setattr(
         prediction_runtime,
         "build_feature_matrix",
@@ -555,6 +585,9 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
         _BATCH_FEATURE_MODEL_ERRORS_KEY: ["LightGBM: not found in GCS"],
         _BATCH_CHALLENGER_RANK_SCORES_KEY: {"ResidualMLP": 0.64},
         _BATCH_CHALLENGER_MODEL_ERRORS_KEY: [],
+        _BATCH_MODEL_POOL_KEY: _full_model_pool({"XGBoost": "active"}),
+        _BATCH_IC_WEIGHTS_KEY: {"XGBoost": 1.0},
+        _BATCH_RANK_STACKER_KEY: None,
     }
 
     result = prediction_runtime.predict_stock_v2(PredictRequest(**payload))
@@ -564,6 +597,9 @@ def test_predict_stock_v2_consumes_batch_scores_without_loading_models(monkeypat
     assert "LightGBM: not found in GCS" in result["model_errors"]
     assert _BATCH_FEATURE_RANK_SCORES_KEY not in result["runtime_options"]
     assert _BATCH_FEATURE_CONTEXT_KEY not in result["runtime_options"]
+    assert _BATCH_MODEL_POOL_KEY not in result["runtime_options"]
+    assert _BATCH_IC_WEIGHTS_KEY not in result["runtime_options"]
+    assert _BATCH_RANK_STACKER_KEY not in result["runtime_options"]
     assert result["features_used"] == feature_names
     assert result["runtime_options"]["owner"] == "daily_pipeline_v2.batch_predict"
 

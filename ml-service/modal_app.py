@@ -2498,7 +2498,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
 
     def _date_cluster_ics(path: str) -> list[dict]:
         if path not in date_ic_cache:
-            raw = bucket.blob(path).download_as_bytes()
+            raw = prep_bucket.blob(path).download_as_bytes()
             evidence = oof_date_cluster_rank_ic_from_bytes(raw)
             date_ic_cache[path] = list(evidence.get("date_cluster_ics") or [])
         return date_ic_cache[path]

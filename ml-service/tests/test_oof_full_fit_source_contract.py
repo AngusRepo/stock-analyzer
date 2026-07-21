@@ -27,3 +27,10 @@ def test_tree_child_failures_are_preserved_in_followup_evidence():
     source = (ROOT / "modal_app.py").read_text(encoding="utf-8")
 
     assert '"child_errors": tree_result.get("child_errors") or []' in source
+
+
+def test_oof_date_cluster_evidence_uses_initialized_prep_bucket():
+    source = (ROOT / "modal_app.py").read_text(encoding="utf-8")
+
+    assert "raw = prep_bucket.blob(path).download_as_bytes()" in source
+    assert "raw = bucket.blob(path).download_as_bytes()" not in source

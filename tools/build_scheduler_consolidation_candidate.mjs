@@ -14,11 +14,7 @@ const groups = [
     schedule: '0 19 * * *',
     sourceJobIds: ['debate-memory-retention', 'orphan-reachability-gc'],
   },
-  {
-    id: 'weekly-2200-validation',
-    schedule: '0 22 * * 6',
-    sourceJobIds: ['weekly-backtest', 'alpha-quality'],
-  },
+
   {
     id: 'weekly-2230-research',
     schedule: '30 22 * * 6',

@@ -136,8 +136,16 @@ if ($DeleteStale) {
     if (-not $managedIds.Contains($jobId) -and $deleteIds.Contains($jobId)) {
       Write-Host "[scheduler-sync] delete stale $jobId"
       if (-not $DryRun) {
-        gcloud scheduler jobs delete $jobId --project $Project --location $Location --quiet *> $null
-        if ($LASTEXITCODE -ne 0) { throw "gcloud scheduler delete failed for $jobId" }
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+          # gcloud.ps1 writes a successful delete confirmation to stderr on Windows.
+          $ErrorActionPreference = 'Continue'
+          & gcloud scheduler jobs delete $jobId --project $Project --location $Location --quiet *> $null
+          $deleteExitCode = $LASTEXITCODE
+        } finally {
+          $ErrorActionPreference = $previousErrorActionPreference
+        }
+        if ($deleteExitCode -ne 0) { throw "gcloud scheduler delete failed for $jobId" }
       }
     } elseif (-not $managedIds.Contains($jobId)) {
       Write-Host "[scheduler-sync] preserve unmanaged $jobId"

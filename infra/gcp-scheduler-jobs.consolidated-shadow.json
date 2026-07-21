@@ -353,18 +353,6 @@
       "query": "dry_run=1"
     },
     {
-      "id": "scheduler-batch-weekly-2200-validation-shadow",
-      "schedule": "0 22 * * 6",
-      "timeZone": "UTC",
-      "uriPath": "/api/admin/scheduler-batch/weekly-2200-validation",
-      "description": "Consolidated parity-preserving dispatcher for weekly-backtest, alpha-quality",
-      "maxRetryAttempts": 3,
-      "minBackoff": "30s",
-      "maxBackoff": "300s",
-      "maxRetryDuration": "1800s",
-      "query": "dry_run=1"
-    },
-    {
       "id": "scheduler-batch-weekly-2230-research-shadow",
       "schedule": "30 22 * * 6",
       "timeZone": "UTC",

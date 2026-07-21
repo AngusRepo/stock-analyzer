@@ -197,6 +197,20 @@
       "description": "Monthly first day TW 04:30 D1/R2 bytes, growth, retention and health report"
     },
     {
+      "id": "weekly-backtest",
+      "schedule": "0 22 * * 6",
+      "task": "weekly-backtest",
+      "query": "sync=1",
+      "description": "Sunday TW 06:00 lightweight validation: backtest, MC, PBO"
+    },
+    {
+      "id": "alpha-quality",
+      "schedule": "0 22 * * 6",
+      "task": "alpha-quality",
+      "query": "sync=1",
+      "description": "Sunday TW 06:00 alpha quality refresh"
+    },
+    {
       "id": "weekly-s12-smcvwap-calibration",
       "schedule": "45 22 * * 6",
       "task": "s12-smcvwap-calibration",
@@ -311,17 +325,6 @@
       "maxRetryDuration": "1800s"
     },
     {
-      "id": "scheduler-batch-weekly-2200-validation",
-      "schedule": "0 22 * * 6",
-      "timeZone": "UTC",
-      "uriPath": "/api/admin/scheduler-batch/weekly-2200-validation",
-      "description": "Consolidated parity-preserving dispatcher for weekly-backtest, alpha-quality",
-      "maxRetryAttempts": 3,
-      "minBackoff": "30s",
-      "maxBackoff": "300s",
-      "maxRetryDuration": "1800s"
-    },
-    {
       "id": "scheduler-batch-weekly-2230-research",
       "schedule": "30 22 * * 6",
       "timeZone": "UTC",
@@ -336,11 +339,9 @@
   "mutationAllowed": false,
   "generatedFrom": "infra/gcp-scheduler-jobs.json",
   "deleteJobIds": [
-    "alpha-quality",
     "debate-memory-retention",
     "orphan-reachability-gc",
     "sector-leaders",
-    "weekly-backtest",
     "weekly-optuna"
   ]
 }

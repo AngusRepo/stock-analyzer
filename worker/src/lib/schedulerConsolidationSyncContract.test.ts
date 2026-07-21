@@ -13,6 +13,8 @@ assert(sync.includes('$job.uriPath'), 'sync must support dedicated scheduler bat
 assert(sync.includes("$uriPath.StartsWith('/api/admin/')"), 'custom scheduler URI paths must stay under admin routes')
 assert(sync.includes('$deleteIds.Contains($jobId)'), 'stale deletion must require an explicit manifest allowlist')
 assert(sync.includes('[scheduler-sync] preserve unmanaged'), 'remote jobs owned by runtime scalers must remain visible and preserved')
+assert(sync.includes("$ErrorActionPreference = 'Continue'"), 'Windows gcloud delete confirmation on stderr must not abort a successful cutover')
+assert(sync.includes('$deleteExitCode = $LASTEXITCODE'), 'Scheduler deletion must still fail closed on native non-zero exit')
 assert(sync.includes('--max-retry-attempts'), 'batch jobs must be able to retry failed constituent tasks')
 assert(sync.includes('--max-retry-duration'), 'batch retry duration must be bounded explicitly')
 assert(!sync.includes('if (-not $managedIds.Contains($jobId)) {\n      Write-Host "[scheduler-sync] delete stale'), 'unscoped stale deletion must never return')

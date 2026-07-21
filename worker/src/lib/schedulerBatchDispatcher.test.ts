@@ -120,11 +120,11 @@ async function main(): Promise<void> {
 
 {
   const leaseStore = new MemoryLeaseStore()
-  const scheduledAt = new Date('2026-07-18T22:00:00Z')
+  const scheduledAt = new Date('2026-07-18T22:30:00Z')
   const scheduledTime = scheduledAt.toISOString()
-  leaseStore.states.set(`weekly-backtest:${scheduledTime}`, 'busy')
+  leaseStore.states.set(`weekly-optuna:${scheduledTime}`, 'busy')
   const result = await dispatchSchedulerBatch({
-    batchId: 'weekly-2200-validation',
+    batchId: 'weekly-2230-research',
     scheduledAt,
     authorization,
     baseUrl,
@@ -134,8 +134,8 @@ async function main(): Promise<void> {
   assert.equal(result.due_count, 2)
   assert.equal(result.success, false)
   assert.equal(result.retryable, true)
-  assert(result.outcomes.some((outcome) => outcome.source_job_id === 'weekly-backtest' && outcome.status === 'busy'))
-  assert(result.outcomes.some((outcome) => outcome.source_job_id === 'alpha-quality' && outcome.status === 'success'))
+  assert(result.outcomes.some((outcome) => outcome.source_job_id === 'weekly-optuna' && outcome.status === 'busy'))
+  assert(result.outcomes.some((outcome) => outcome.source_job_id === 'sector-leaders' && outcome.status === 'success'))
 }
 
 {

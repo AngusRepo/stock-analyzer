@@ -1,0 +1,53 @@
+[
+  {
+    "name": "delete-untagged-after-7d",
+    "action": { "type": "Delete" },
+    "condition": {
+      "tagState": "untagged",
+      "olderThan": "7d"
+    }
+  },
+  {
+    "name": "delete-unprotected-tagged-after-30d",
+    "action": { "type": "Delete" },
+    "condition": {
+      "tagState": "tagged",
+      "olderThan": "30d"
+    }
+  },
+  {
+    "name": "keep-protected-tags",
+    "action": { "type": "Keep" },
+    "condition": {
+      "tagState": "tagged",
+      "packageNamePrefixes": [
+        "ml-controller",
+        "shioaji-proxy",
+        "shioaji-research",
+        "stockvision-execution-gateway"
+      ],
+      "tagPrefixes": [
+        "latest",
+        "prod-",
+        "rollback-",
+        "job-",
+        "canary-",
+        "sizing-canary-",
+        "security-hardening-"
+      ]
+    }
+  },
+  {
+    "name": "keep-latest-10-per-package",
+    "action": { "type": "Keep" },
+    "mostRecentVersions": {
+      "packageNamePrefixes": [
+        "ml-controller",
+        "shioaji-proxy",
+        "shioaji-research",
+        "stockvision-execution-gateway"
+      ],
+      "keepCount": 10
+    }
+  }
+]

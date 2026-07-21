@@ -24,8 +24,17 @@ if (-not $WorkerBaseUrl) { throw 'Missing STOCKVISION_WORKER_BASE_URL.' }
 if (-not $AuthToken) { throw 'Missing SCHEDULER_AUTH_TOKEN.' }
 
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+if (-not $DryRun -and $null -ne $manifest.mutationAllowed -and -not [bool]$manifest.mutationAllowed) {
+  throw "Manifest blocks production mutation: $ManifestPath"
+}
 $base = $WorkerBaseUrl.TrimEnd('/')
 $managedIds = [System.Collections.Generic.HashSet[string]]::new()
+$deleteIds = [System.Collections.Generic.HashSet[string]]::new()
+if ($manifest.deleteJobIds) {
+  foreach ($jobId in $manifest.deleteJobIds) {
+    if ($jobId) { [void]$deleteIds.Add([string]$jobId) }
+  }
+}
 $currentIds = [System.Collections.Generic.HashSet[string]]::new()
 
 function New-SchedulerHeaderArg {
@@ -57,7 +66,11 @@ foreach ($jobId in $currentJobs) {
 
 foreach ($job in $manifest.jobs) {
   [void]$managedIds.Add([string]$job.id)
-  $uri = "$base/api/admin/trigger/$($job.task)"
+  $uriPath = if ($job.uriPath) { [string]$job.uriPath } else { "/api/admin/trigger/$($job.task)" }
+  if (-not $uriPath.StartsWith('/api/admin/')) {
+    throw "Invalid scheduler URI path for job $($job.id): $uriPath"
+  }
+  $uri = "$base$uriPath"
   $query = [string]$job.query
   if ($query) {
     $uri = "$uri`?$query"
@@ -97,6 +110,19 @@ foreach ($job in $manifest.jobs) {
     )
   }
 
+  if ($null -ne $job.maxRetryAttempts) {
+    $args += @('--max-retry-attempts', [string]$job.maxRetryAttempts)
+  }
+  if ($job.minBackoff) {
+    $args += @('--min-backoff', [string]$job.minBackoff)
+  }
+  if ($job.maxBackoff) {
+    $args += @('--max-backoff', [string]$job.maxBackoff)
+  }
+  if ($job.maxRetryDuration) {
+    $args += @('--max-retry-duration', [string]$job.maxRetryDuration)
+  }
+
   $action = if ($exists) { 'update' } else { 'create' }
   Write-Host "[scheduler-sync] $action $($job.id) -> $uri @ $($job.schedule) tz=$timeZone"
   if (-not $DryRun) {
@@ -107,12 +133,14 @@ foreach ($job in $manifest.jobs) {
 
 if ($DeleteStale) {
   foreach ($jobId in $currentJobs) {
-    if (-not $managedIds.Contains($jobId)) {
+    if (-not $managedIds.Contains($jobId) -and $deleteIds.Contains($jobId)) {
       Write-Host "[scheduler-sync] delete stale $jobId"
       if (-not $DryRun) {
         gcloud scheduler jobs delete $jobId --project $Project --location $Location --quiet *> $null
         if ($LASTEXITCODE -ne 0) { throw "gcloud scheduler delete failed for $jobId" }
       }
+    } elseif (-not $managedIds.Contains($jobId)) {
+      Write-Host "[scheduler-sync] preserve unmanaged $jobId"
     }
   }
 }

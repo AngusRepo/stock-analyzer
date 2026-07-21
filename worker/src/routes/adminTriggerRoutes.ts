@@ -4,6 +4,8 @@ import { requireServiceToken } from '../lib/auth'
 import type { Bindings, Variables } from '../types'
 import type { TaskHandler } from '../lib/adminTriggerTaskMap'
 import { shouldRunScheduledTask } from '../lib/schedulerPolicy'
+import { getSchedulerBatch, resolveDueSchedulerBatchJobs } from '../lib/schedulerBatchPlan'
+import { D1SchedulerBatchLeaseStore, dispatchSchedulerBatch } from '../lib/schedulerBatchDispatcher'
 
 interface TriggerRouteDeps {
   buildTaskMap: (c: any) => Record<string, TaskHandler>
@@ -62,6 +64,47 @@ async function putRunLog(
 
 export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
   const routes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
+
+  routes.post('/api/admin/scheduler-batch/:batch', async (c) => {
+    const authError = await requireServiceToken(c)
+    if (authError) return authError
+
+    const batchId = c.req.param('batch')
+    if (!getSchedulerBatch(batchId)) return c.json({ success: false, error: `Unknown scheduler batch: ${batchId}` }, 404)
+
+    const dryRun = c.req.query('dry_run') === '1'
+    const rawScheduledTime = c.req.header('X-CloudScheduler-ScheduleTime') ||
+      (dryRun ? c.req.query('scheduled_time') : undefined)
+    if (!rawScheduledTime) {
+      return c.json({ success: false, error: 'Missing X-CloudScheduler-ScheduleTime' }, 400)
+    }
+    const scheduledAt = new Date(rawScheduledTime)
+    if (Number.isNaN(scheduledAt.getTime())) {
+      return c.json({ success: false, error: 'Invalid X-CloudScheduler-ScheduleTime' }, 400)
+    }
+
+    if (dryRun) {
+      const due = resolveDueSchedulerBatchJobs(batchId, scheduledAt)
+      return c.json({
+        success: true,
+        dry_run: true,
+        batch_id: batchId,
+        scheduled_time: scheduledAt.toISOString(),
+        due: due.map((job) => ({ id: job.id, task: job.task, query: job.query, headers: job.headers })),
+      })
+    }
+
+    const result = await dispatchSchedulerBatch({
+      batchId,
+      scheduledAt,
+      authorization: c.req.header('Authorization') ?? '',
+      baseUrl: new URL(c.req.url).origin,
+      leaseStore: new D1SchedulerBatchLeaseStore(c.env.DB),
+      fetchImpl: async (input, init) => routes.fetch(new Request(input, init), c.env, c.executionCtx),
+    })
+    if (!result.success) return c.json(result, 503)
+    return c.json(result)
+  })
 
   routes.post('/api/admin/trigger/:task', async (c) => {
     const authError = await requireServiceToken(c)

@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "timeZone": "UTC",
+  "batches": [
+    {
+      "id": "daily-1900-maintenance",
+      "schedule": "0 19 * * *",
+      "jobs": [
+        {
+          "id": "debate-memory-retention",
+          "schedule": "0 19 * * *",
+          "task": "debate-memory-retention",
+          "description": "TW 03:00 debate memory retention"
+        },
+        {
+          "id": "orphan-reachability-gc",
+          "schedule": "0 19 * * *",
+          "task": "orphan-reachability-gc",
+          "query": "sync=1&limit=500",
+          "description": "Daily TW 03:00 delete unreachable staging objects older than seven days"
+        }
+      ]
+    },
+    {
+      "id": "weekly-2200-validation",
+      "schedule": "0 22 * * 6",
+      "jobs": [
+        {
+          "id": "weekly-backtest",
+          "schedule": "0 22 * * 6",
+          "task": "weekly-backtest",
+          "query": "sync=1",
+          "description": "Sunday TW 06:00 lightweight validation: backtest, MC, PBO"
+        },
+        {
+          "id": "alpha-quality",
+          "schedule": "0 22 * * 6",
+          "task": "alpha-quality",
+          "query": "sync=1",
+          "description": "Sunday TW 06:00 alpha quality refresh"
+        }
+      ]
+    },
+    {
+      "id": "weekly-2230-research",
+      "schedule": "30 22 * * 6",
+      "jobs": [
+        {
+          "id": "weekly-optuna",
+          "schedule": "30 22 * * 6",
+          "task": "weekly-optuna",
+          "query": "sync=1",
+          "description": "Sunday TW 06:30 lightweight Optuna/GA calibration"
+        },
+        {
+          "id": "sector-leaders",
+          "schedule": "30 22 * * 6",
+          "task": "sector-leaders",
+          "query": "sync=1",
+          "description": "Sunday TW 06:30 sector leader correlation refresh"
+        }
+      ]
+    }
+  ]
+}

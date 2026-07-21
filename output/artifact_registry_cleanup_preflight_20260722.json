@@ -1,0 +1,370 @@
+{
+  "status": "blocked",
+  "generated_at": "2026-07-21T16:58:07.215368+00:00",
+  "repository": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy",
+  "policy": {
+    "delete_untagged_after_days": 7,
+    "delete_tagged_after_days": 30,
+    "keep_latest_per_package": 10,
+    "protected_tag_prefixes": [
+      "latest",
+      "prod-",
+      "rollback-",
+      "job-",
+      "canary-",
+      "sizing-canary-",
+      "security-hardening-"
+    ],
+    "protected_package_prefixes": [
+      "ml-controller",
+      "shioaji-proxy",
+      "shioaji-research",
+      "stockvision-execution-gateway"
+    ]
+  },
+  "summary": {
+    "packages": 6,
+    "versions": 87,
+    "size_bytes": 57476266968,
+    "runtime_references": 14,
+    "unprotected_runtime_references": 4,
+    "deletion_candidate_versions": 6,
+    "deletion_candidate_bytes": 12107179611
+  },
+  "packages": [
+    {
+      "package": "ml-controller",
+      "versions": 69,
+      "size_bytes": 44761247576,
+      "runtime_referenced": true
+    },
+    {
+      "package": "shioaji-proxy",
+      "versions": 8,
+      "size_bytes": 815025567,
+      "runtime_referenced": true
+    },
+    {
+      "package": "shioaji-research",
+      "versions": 3,
+      "size_bytes": 313368250,
+      "runtime_referenced": true
+    },
+    {
+      "package": "stockvision-execution-gateway",
+      "versions": 3,
+      "size_bytes": 793962646,
+      "runtime_referenced": true
+    },
+    {
+      "package": "stockvision-ml",
+      "versions": 3,
+      "size_bytes": 10697564063,
+      "runtime_referenced": false
+    },
+    {
+      "package": "stockvision-ml-controller",
+      "versions": 1,
+      "size_bytes": 95098866,
+      "runtime_referenced": false
+    }
+  ],
+  "runtime_references": [
+    {
+      "source": "service/ml-controller",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "package": "ml-controller",
+      "reference_type": "digest",
+      "reference_value": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "resolved_digest": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "tags": [
+        "latest"
+      ],
+      "protected_by_tag": true,
+      "protected_by_latest_10": true,
+      "protected": true
+    },
+    {
+      "source": "service/shioaji-proxy",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/shioaji-proxy@sha256:1e334bb383fc2c19f69b3a77d0827fbc948549fc6f3df4558ba578d5dd248da6",
+      "package": "shioaji-proxy",
+      "reference_type": "digest",
+      "reference_value": "sha256:1e334bb383fc2c19f69b3a77d0827fbc948549fc6f3df4558ba578d5dd248da6",
+      "resolved_digest": "sha256:1e334bb383fc2c19f69b3a77d0827fbc948549fc6f3df4558ba578d5dd248da6",
+      "tags": [
+        "latest"
+      ],
+      "protected_by_tag": true,
+      "protected_by_latest_10": true,
+      "protected": true
+    },
+    {
+      "source": "service/shioaji-research",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/shioaji-research@sha256:57f3bf78dea888ee4731c827ffe427d1d100dffe2c68c80832bc02dd8977f04f",
+      "package": "shioaji-research",
+      "reference_type": "digest",
+      "reference_value": "sha256:57f3bf78dea888ee4731c827ffe427d1d100dffe2c68c80832bc02dd8977f04f",
+      "resolved_digest": "sha256:57f3bf78dea888ee4731c827ffe427d1d100dffe2c68c80832bc02dd8977f04f",
+      "tags": [
+        "latest"
+      ],
+      "protected_by_tag": true,
+      "protected_by_latest_10": true,
+      "protected": true
+    },
+    {
+      "source": "service/stockvision-execution-gateway",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/stockvision-execution-gateway:ba354467",
+      "package": "stockvision-execution-gateway",
+      "reference_type": "tag",
+      "reference_value": "ba354467",
+      "resolved_digest": "sha256:e7b633af2d5d83cbe934fc4f8339a25905a6559500154a5951b2067055f66fda",
+      "tags": [
+        "ba354467"
+      ],
+      "protected_by_tag": false,
+      "protected_by_latest_10": true,
+      "protected": true
+    },
+    {
+      "source": "job/active8-oof-materialize",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "package": "ml-controller",
+      "reference_type": "digest",
+      "reference_value": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "resolved_digest": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "tags": [
+        "latest"
+      ],
+      "protected_by_tag": true,
+      "protected_by_latest_10": true,
+      "protected": true
+    },
+    {
+      "source": "job/finlab-v4-backfill",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:224d8475d0336e26043f61282e875ad0938ecbaad7f32d7679a7ea8ee9c297b6",
+      "package": "ml-controller",
+      "reference_type": "digest",
+      "reference_value": "sha256:224d8475d0336e26043f61282e875ad0938ecbaad7f32d7679a7ea8ee9c297b6",
+      "resolved_digest": null,
+      "tags": [],
+      "protected_by_tag": false,
+      "protected_by_latest_10": false,
+      "protected": false
+    },
+    {
+      "source": "job/optuna-research-sweep",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "package": "ml-controller",
+      "reference_type": "digest",
+      "reference_value": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "resolved_digest": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "tags": [
+        "latest"
+      ],
+      "protected_by_tag": true,
+      "protected_by_latest_10": true,
+      "protected": true
+    },
+    {
+      "source": "job/pipeline-v2",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "package": "ml-controller",
+      "reference_type": "digest",
+      "reference_value": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "resolved_digest": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "tags": [
+        "latest"
+      ],
+      "protected_by_tag": true,
+      "protected_by_latest_10": true,
+      "protected": true
+    },
+    {
+      "source": "job/pipeline-v2-sizing-canary",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller:sizing-canary-20260703-guard",
+      "package": "ml-controller",
+      "reference_type": "tag",
+      "reference_value": "sizing-canary-20260703-guard",
+      "resolved_digest": null,
+      "tags": [],
+      "protected_by_tag": false,
+      "protected_by_latest_10": false,
+      "protected": false
+    },
+    {
+      "source": "job/screener-v2",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "package": "ml-controller",
+      "reference_type": "digest",
+      "reference_value": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "resolved_digest": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "tags": [
+        "latest"
+      ],
+      "protected_by_tag": true,
+      "protected_by_latest_10": true,
+      "protected": true
+    },
+    {
+      "source": "job/screener-v2-sizing-canary",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:6e3d190615c83b0961f748c53134a6215d179b52a53249059b654bd96e6377dd",
+      "package": "ml-controller",
+      "reference_type": "digest",
+      "reference_value": "sha256:6e3d190615c83b0961f748c53134a6215d179b52a53249059b654bd96e6377dd",
+      "resolved_digest": null,
+      "tags": [],
+      "protected_by_tag": false,
+      "protected_by_latest_10": false,
+      "protected": false
+    },
+    {
+      "source": "job/strategy-mining-research",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "package": "ml-controller",
+      "reference_type": "digest",
+      "reference_value": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "resolved_digest": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "tags": [
+        "latest"
+      ],
+      "protected_by_tag": true,
+      "protected_by_latest_10": true,
+      "protected": true
+    },
+    {
+      "source": "job/verify-v2",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "package": "ml-controller",
+      "reference_type": "digest",
+      "reference_value": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "resolved_digest": "sha256:4c956e8b307eafbfc41eaa867235902480cd5b617819787172ed67f1c3e994af",
+      "tags": [
+        "latest"
+      ],
+      "protected_by_tag": true,
+      "protected_by_latest_10": true,
+      "protected": true
+    },
+    {
+      "source": "job/verify-v2-sizing-canary",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:6e3d190615c83b0961f748c53134a6215d179b52a53249059b654bd96e6377dd",
+      "package": "ml-controller",
+      "reference_type": "digest",
+      "reference_value": "sha256:6e3d190615c83b0961f748c53134a6215d179b52a53249059b654bd96e6377dd",
+      "resolved_digest": null,
+      "tags": [],
+      "protected_by_tag": false,
+      "protected_by_latest_10": false,
+      "protected": false
+    }
+  ],
+  "unprotected_runtime_references": [
+    {
+      "source": "job/finlab-v4-backfill",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:224d8475d0336e26043f61282e875ad0938ecbaad7f32d7679a7ea8ee9c297b6",
+      "package": "ml-controller",
+      "reference_type": "digest",
+      "reference_value": "sha256:224d8475d0336e26043f61282e875ad0938ecbaad7f32d7679a7ea8ee9c297b6",
+      "resolved_digest": null,
+      "tags": [],
+      "protected_by_tag": false,
+      "protected_by_latest_10": false,
+      "protected": false
+    },
+    {
+      "source": "job/pipeline-v2-sizing-canary",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller:sizing-canary-20260703-guard",
+      "package": "ml-controller",
+      "reference_type": "tag",
+      "reference_value": "sizing-canary-20260703-guard",
+      "resolved_digest": null,
+      "tags": [],
+      "protected_by_tag": false,
+      "protected_by_latest_10": false,
+      "protected": false
+    },
+    {
+      "source": "job/screener-v2-sizing-canary",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:6e3d190615c83b0961f748c53134a6215d179b52a53249059b654bd96e6377dd",
+      "package": "ml-controller",
+      "reference_type": "digest",
+      "reference_value": "sha256:6e3d190615c83b0961f748c53134a6215d179b52a53249059b654bd96e6377dd",
+      "resolved_digest": null,
+      "tags": [],
+      "protected_by_tag": false,
+      "protected_by_latest_10": false,
+      "protected": false
+    },
+    {
+      "source": "job/verify-v2-sizing-canary",
+      "image": "asia-east1-docker.pkg.dev/gen-lang-client-0602998820/cloud-run-source-deploy/ml-controller@sha256:6e3d190615c83b0961f748c53134a6215d179b52a53249059b654bd96e6377dd",
+      "package": "ml-controller",
+      "reference_type": "digest",
+      "reference_value": "sha256:6e3d190615c83b0961f748c53134a6215d179b52a53249059b654bd96e6377dd",
+      "resolved_digest": null,
+      "tags": [],
+      "protected_by_tag": false,
+      "protected_by_latest_10": false,
+      "protected": false
+    }
+  ],
+  "unreferenced_packages": [
+    "stockvision-ml",
+    "stockvision-ml-controller"
+  ],
+  "deletion_candidates": [
+    {
+      "package": "ml-controller",
+      "digest": "sha256:47ac0865ca53b806054f435ed21534f16d0b9f00538e3cc96fb96bb6595c3e0c",
+      "tags": [],
+      "create_time": "2026-07-14T15:01:05.215295Z",
+      "size_bytes": 657258604,
+      "age_days": 7.08
+    },
+    {
+      "package": "ml-controller",
+      "digest": "sha256:1a0d64be40a99cdde82735ef23abb883cffeb46cdc2318d81057cd7b54ab5630",
+      "tags": [],
+      "create_time": "2026-07-14T15:08:16.987519Z",
+      "size_bytes": 657258078,
+      "age_days": 7.08
+    },
+    {
+      "package": "stockvision-ml",
+      "digest": "sha256:c6830ecc3a57fd9fc018c3c99c8503448c28b0c33b01414207cf41d51bb915a5",
+      "tags": [],
+      "create_time": "2026-03-29T16:12:39.731583Z",
+      "size_bytes": 3505621522,
+      "age_days": 114.03
+    },
+    {
+      "package": "stockvision-ml",
+      "digest": "sha256:fabad9c9c1ba84d9fdaf4c8baed8b6f2db6f2790abaf231da3c7b0b4624a5d23",
+      "tags": [],
+      "create_time": "2026-03-29T17:54:54.139343Z",
+      "size_bytes": 3505620230,
+      "age_days": 113.96
+    },
+    {
+      "package": "stockvision-ml",
+      "digest": "sha256:8d205d37ff44b3a94a306de1b6fc7106f1b7b1fda6048093160fe77efcfb5b68",
+      "tags": [
+        "latest"
+      ],
+      "create_time": "2026-06-12T12:58:46.107679Z",
+      "size_bytes": 3686322311,
+      "age_days": 39.17
+    },
+    {
+      "package": "stockvision-ml-controller",
+      "digest": "sha256:c923341155e03c7e7be063628e5fd1f58965d8f0ae70da8c41c13550ed949cf3",
+      "tags": [
+        "latest"
+      ],
+      "create_time": "2026-04-03T08:51:52.959519Z",
+      "size_bytes": 95098866,
+      "age_days": 109.34
+    }
+  ]
+}

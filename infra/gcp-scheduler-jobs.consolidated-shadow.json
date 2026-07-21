@@ -1,0 +1,382 @@
+{
+  "owner": "gcp-scheduler-consolidated-shadow",
+  "timeZone": "UTC",
+  "workerBaseUrlEnv": "STOCKVISION_WORKER_BASE_URL",
+  "authTokenEnv": "SCHEDULER_AUTH_TOKEN",
+  "jobs": [
+    {
+      "id": "intraday-check",
+      "schedule": "* 1-5 * * 1-5",
+      "task": "intraday-check",
+      "description": "TW 09:00-13:30 intraday paper trading heartbeat"
+    },
+    {
+      "id": "rescore-10",
+      "schedule": "0 2 * * 1-5",
+      "task": "intraday-rescore",
+      "query": "sync=1",
+      "description": "TW 10:00 intraday ML re-score"
+    },
+    {
+      "id": "rescore-11",
+      "schedule": "0 3 * * 1-5",
+      "task": "intraday-rescore",
+      "query": "sync=1",
+      "description": "TW 11:00 intraday ML re-score"
+    },
+    {
+      "id": "rescore-12",
+      "schedule": "0 4 * * 1-5",
+      "task": "intraday-rescore",
+      "query": "sync=1",
+      "description": "TW 12:00 intraday ML re-score"
+    },
+    {
+      "id": "rescore-1230",
+      "schedule": "30 4 * * 1-5",
+      "task": "intraday-rescore",
+      "query": "sync=1",
+      "description": "TW 12:30 intraday ML re-score"
+    },
+    {
+      "id": "eod-exit",
+      "schedule": "25 5 * * 1-5",
+      "task": "eod-exit",
+      "description": "TW 13:25 EOD exit"
+    },
+    {
+      "id": "post-close-price-refresh",
+      "schedule": "40 5 * * 1-5",
+      "task": "post-close-price-refresh",
+      "query": "sync=1",
+      "description": "TW 13:40 refresh open-position post-close quote cache for holdings and risk readability"
+    },
+    {
+      "id": "daily-snapshot",
+      "schedule": "20 6 * * 1-5",
+      "task": "daily-snapshot",
+      "description": "TW 14:20 paper account snapshot"
+    },
+    {
+      "id": "market-close-refresh",
+      "schedule": "10 10 * * 1-5",
+      "task": "market-close-refresh",
+      "query": "sync=1",
+      "description": "TW 18:10 early post-close refresh for official prices, market breadth, futures snapshot, and close-data cache"
+    },
+    {
+      "id": "evening-chain",
+      "schedule": "0 13 * * 1-5",
+      "task": "evening-chain",
+      "query": "sync=1",
+      "description": "TW 21:00 primary evening-chain root"
+    },
+    {
+      "id": "finlab-backfill-watchdog",
+      "schedule": "*/10 13-15 * * 1-5",
+      "task": "finlab-backfill-watchdog",
+      "query": "sync=1",
+      "description": "TW 21:00-23:50 reclaim FinLab Modal calls that remain pending without a start heartbeat"
+    },
+    {
+      "id": "allocator-ev-lifecycle-watchdog",
+      "schedule": "*/10 13-17 * * 1-5",
+      "task": "allocator-ev-lifecycle-watchdog",
+      "query": "sync=1",
+      "description": "TW 21:00-01:50 recover missing native lineage to snapshot to replay lifecycle stages without bypassing validation"
+    },
+    {
+      "id": "active8-oof-daily",
+      "schedule": "55 17 * * 1-5",
+      "task": "active8-oof-daily",
+      "query": "sync=1",
+      "description": "TW 01:55 materialize latest ready immutable purged-OOF cohort, run L4/Fusion parity gates, and auto-promote only on PASS"
+    },
+    {
+      "id": "external-evidence",
+      "schedule": "15 15 * * 1-5",
+      "task": "external-evidence",
+      "query": "sync=1",
+      "description": "TW 23:15 materialize formal-shadow GDELT/official external evidence for latest available recommendation date"
+    },
+    {
+      "id": "weekly-audit",
+      "schedule": "30 10 * * 5",
+      "task": "weekly-audit",
+      "description": "Friday TW 18:30 weekly audit"
+    },
+    {
+      "id": "model-ic-tracker",
+      "schedule": "30 11 * * 5",
+      "task": "model-ic-tracker",
+      "description": "Friday TW 19:30 model IC tracker"
+    },
+    {
+      "id": "debate-memory-retention",
+      "schedule": "0 19 * * *",
+      "task": "debate-memory-retention",
+      "description": "TW 03:00 debate memory retention"
+    },
+    {
+      "id": "legacy-evidence-migration",
+      "schedule": "40 17-21 * * *",
+      "task": "legacy-evidence-migration",
+      "query": "sync=1&limit=500&max_chunks=5",
+      "description": "TW 01:40-05:40 hourly bootstrap continuation: migrate noncanonical legacy D1 screener evidence to verified R2 artifacts until backlog is zero; never runs during trading hours"
+    },
+    {
+      "id": "legacy-strategy-evidence-migration",
+      "schedule": "50 17-21 * * *",
+      "task": "legacy-strategy-evidence-migration",
+      "query": "sync=1&symbol_limit=20&max_chunks=5",
+      "description": "TW 01:50-05:50 hourly continuation: deduplicate legacy strategy contexts, archive exact JSON to checksum-verified R2, and preserve scalar learning rows in D1"
+    },
+    {
+      "id": "audit-json-retention",
+      "schedule": "0 18-22 * * *",
+      "task": "audit-json-retention",
+      "query": "sync=1&retention_days=90&limit_per_table=1000&confirm_archive=ARCHIVE_D1_AUDIT_JSON_TO_R2",
+      "description": "TW 02:00-06:00 hourly: archive eligible strategy, canonical/noncanonical screener, and execution audit JSON to verified R2 snapshots; preserve scalar rows and replace only JSON with pointers"
+    },
+    {
+      "id": "legacy-hot-data-retirement",
+      "schedule": "10 17-21 * * *",
+      "task": "legacy-hot-data-retirement",
+      "query": "sync=1&limit=500&max_chunks=2&confirm_retirement=RETIRE_VERIFIED_LEGACY_HOT_DATA",
+      "description": "TW 01:10-05:10 hourly continuation: checksum-verified archive then retire only obsolete screener, superseded pending audit, undated prediction, unused intraday report manifest, and aged state-space shadow cohorts"
+    },
+    {
+      "id": "artifact-reconcile",
+      "schedule": "5 18 * * *",
+      "task": "artifact-reconcile",
+      "query": "sync=1&limit=250",
+      "description": "Daily TW 02:05 reconcile R2 objects, manifests and interrupted verification"
+    },
+    {
+      "id": "d1-evidence-scrub",
+      "schedule": "*/20 18-22 * * *",
+      "task": "d1-evidence-scrub",
+      "query": "sync=1&limit=1000",
+      "description": "TW 02:00-06:40 bootstrap drain every 20 minutes; scrub only explicitly queued D1 payloads backed by checksum-verified R2 artifacts"
+    },
+    {
+      "id": "r2-retention-sweep",
+      "schedule": "40 18 * * *",
+      "task": "r2-retention-sweep",
+      "query": "sync=1&limit=250",
+      "description": "Daily TW 02:40 lineage-aware R2 retention sweep"
+    },
+    {
+      "id": "orphan-reachability-gc",
+      "schedule": "0 19 * * *",
+      "task": "orphan-reachability-gc",
+      "query": "sync=1&limit=500",
+      "description": "Daily TW 03:00 delete unreachable staging objects older than seven days"
+    },
+    {
+      "id": "cleanup-dlq-replay",
+      "schedule": "20 19 * * *",
+      "task": "cleanup-dlq-replay",
+      "query": "sync=1&limit=100",
+      "description": "Daily TW 03:20 replay artifact cleanup DLQ and fail if items remain blocked"
+    },
+    {
+      "id": "storage-health-gate",
+      "schedule": "45 22 * * *",
+      "task": "storage-health-gate",
+      "query": "sync=1",
+      "description": "Daily TW 06:45 fail-close integrity, cleanup backlog and D1 headroom gate"
+    },
+    {
+      "id": "storage-integrity-audit",
+      "schedule": "30 19 * * 6",
+      "task": "storage-integrity-audit",
+      "query": "sync=1&limit=500",
+      "description": "Sunday TW 03:30 manifest to R2 checksum and canonical lineage audit"
+    },
+    {
+      "id": "weekly-cleanup",
+      "schedule": "0 20 * * 6",
+      "task": "weekly-cleanup",
+      "query": "sync=1",
+      "description": "Sunday TW 04:00 ownership-safe cleanup v2; no canonical history age deletion and no retrain"
+    },
+    {
+      "id": "storage-capacity-report",
+      "schedule": "30 4 1 * *",
+      "timeZone": "Asia/Taipei",
+      "task": "storage-capacity-report",
+      "query": "sync=1",
+      "description": "Monthly first day TW 04:30 D1/R2 bytes, growth, retention and health report"
+    },
+    {
+      "id": "weekly-backtest",
+      "schedule": "0 22 * * 6",
+      "task": "weekly-backtest",
+      "query": "sync=1",
+      "description": "Sunday TW 06:00 lightweight validation: backtest, MC, PBO"
+    },
+    {
+      "id": "alpha-quality",
+      "schedule": "0 22 * * 6",
+      "task": "alpha-quality",
+      "query": "sync=1",
+      "description": "Sunday TW 06:00 alpha quality refresh"
+    },
+    {
+      "id": "weekly-optuna",
+      "schedule": "30 22 * * 6",
+      "task": "weekly-optuna",
+      "query": "sync=1",
+      "description": "Sunday TW 06:30 lightweight Optuna/GA calibration"
+    },
+    {
+      "id": "weekly-s12-smcvwap-calibration",
+      "schedule": "45 22 * * 6",
+      "task": "s12-smcvwap-calibration",
+      "query": "sync=1&cadence=weekly",
+      "description": "Sunday TW 06:45 S12 Taiwan-equity walk-forward calibration, guarded promotion, and last-known-good freeze"
+    },
+    {
+      "id": "active8-oof-weekly",
+      "schedule": "5 23 * * 6",
+      "task": "active8-oof-weekly",
+      "query": "sync=1",
+      "description": "Sunday TW 07:05 generate one deterministic 60/10 purged-OOF Active-8 cohort; daily owner materializes and promotes after ready"
+    },
+    {
+      "id": "adaptive-meta-policy-replay",
+      "schedule": "40 22 * * 6",
+      "task": "adaptive-meta-policy-replay",
+      "query": "sync=1&persist=1",
+      "headers": {
+        "X-Confirm-Meta-Learning": "true"
+      },
+      "description": "Sunday TW 06:40 persisted evidence-only active-9 replay comparing LinUCB, NeuralUCB, NeuralTS, and NeuCB"
+    },
+    {
+      "id": "linucb-multiplier-replay",
+      "schedule": "50 22 * * 6",
+      "task": "linucb-multiplier-replay",
+      "query": "sync=1&persist=1",
+      "headers": {
+        "X-Confirm-Meta-Learning": "true"
+      },
+      "description": "Sunday TW 06:50 persisted evidence-only active-9 replay for LinUCB bandit_* multiplier constants"
+    },
+    {
+      "id": "sector-leaders",
+      "schedule": "30 22 * * 6",
+      "task": "sector-leaders",
+      "query": "sync=1",
+      "description": "Sunday TW 06:30 sector leader correlation refresh"
+    },
+    {
+      "id": "monthly-optuna",
+      "schedule": "first saturday of month 16:00",
+      "timeZone": "Asia/Taipei",
+      "task": "monthly-optuna",
+      "query": "sync=1",
+      "description": "Monthly first Saturday TW 16:00 Optuna research sweep"
+    },
+    {
+      "id": "monthly-s12-smcvwap-calibration",
+      "schedule": "first saturday of month 16:20",
+      "timeZone": "Asia/Taipei",
+      "task": "s12-smcvwap-calibration",
+      "query": "sync=1&cadence=monthly",
+      "description": "Monthly S12 Taiwan-equity walk-forward calibration, validation, and automatic promotion"
+    },
+    {
+      "id": "monthly-strategy-mining",
+      "schedule": "first saturday of month 10:00",
+      "timeZone": "Asia/Taipei",
+      "task": "monthly-strategy-mining",
+      "query": "sync=1&persist=1",
+      "description": "Monthly first Saturday TW 10:00 pymoo NSGA-III + novelty strategy mining preflight/research ledger"
+    },
+    {
+      "id": "monthly-retrain",
+      "schedule": "first sunday of month 02:00",
+      "timeZone": "Asia/Taipei",
+      "task": "monthly-retrain",
+      "query": "sync=1",
+      "description": "Monthly first Sunday TW 02:00 universal retrain lifecycle"
+    },
+    {
+      "id": "optuna-queue",
+      "schedule": "0 */6 * * *",
+      "task": "optuna-queue",
+      "query": "sync=1",
+      "description": "Every six hours Optuna queue processor"
+    },
+    {
+      "id": "us-leading",
+      "schedule": "30 22 * * 0-4",
+      "task": "us-leading",
+      "description": "TW 06:30 US leading signal"
+    },
+    {
+      "id": "news-analyst",
+      "schedule": "45 22 * * 0-4",
+      "task": "news-analyst",
+      "description": "TW 06:45 news analyst"
+    },
+    {
+      "id": "morning-setup",
+      "schedule": "15 23 * * 0-4",
+      "task": "morning-setup",
+      "description": "TW 07:15 morning setup and debate"
+    },
+    {
+      "id": "morning-briefing",
+      "schedule": "50 23 * * 0-4",
+      "task": "morning-briefing",
+      "description": "TW 07:50 morning briefing"
+    },
+    {
+      "id": "pre-market-warmup",
+      "schedule": "50 0 * * 1-5",
+      "task": "pre-market-warmup",
+      "description": "TW 08:50 control-plane drift and debate reconciliation"
+    },
+    {
+      "id": "scheduler-batch-daily-1900-maintenance-shadow",
+      "schedule": "0 19 * * *",
+      "timeZone": "UTC",
+      "uriPath": "/api/admin/scheduler-batch/daily-1900-maintenance",
+      "description": "Consolidated parity-preserving dispatcher for debate-memory-retention, orphan-reachability-gc",
+      "maxRetryAttempts": 3,
+      "minBackoff": "30s",
+      "maxBackoff": "300s",
+      "maxRetryDuration": "1800s",
+      "query": "dry_run=1"
+    },
+    {
+      "id": "scheduler-batch-weekly-2200-validation-shadow",
+      "schedule": "0 22 * * 6",
+      "timeZone": "UTC",
+      "uriPath": "/api/admin/scheduler-batch/weekly-2200-validation",
+      "description": "Consolidated parity-preserving dispatcher for weekly-backtest, alpha-quality",
+      "maxRetryAttempts": 3,
+      "minBackoff": "30s",
+      "maxBackoff": "300s",
+      "maxRetryDuration": "1800s",
+      "query": "dry_run=1"
+    },
+    {
+      "id": "scheduler-batch-weekly-2230-research-shadow",
+      "schedule": "30 22 * * 6",
+      "timeZone": "UTC",
+      "uriPath": "/api/admin/scheduler-batch/weekly-2230-research",
+      "description": "Consolidated parity-preserving dispatcher for weekly-optuna, sector-leaders",
+      "maxRetryAttempts": 3,
+      "minBackoff": "30s",
+      "maxBackoff": "300s",
+      "maxRetryDuration": "1800s",
+      "query": "dry_run=1"
+    }
+  ],
+  "mutationAllowed": false,
+  "generatedFrom": "infra/gcp-scheduler-jobs.json"
+}

@@ -2595,6 +2595,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             raise RuntimeError("GCS bucket not configured")
         bucket = storage.Client().bucket(bucket_name)
         import hashlib
+        from app.oof_manifest_publisher import publish_oof_manifest
 
         manifest = {
             "schema_version": "active8-oof-cohort-manifest-v3",
@@ -2621,14 +2622,15 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "aggregate": aggregate,
             "status": "ready" if aggregate["oof_cohort_ready"] else "failed",
         }
-        manifest_bytes = json.dumps(manifest, sort_keys=True, default=str).encode("utf-8")
-        manifest["manifest_checksum"] = hashlib.sha256(manifest_bytes).hexdigest()
-        gcs_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
-        bucket.blob(gcs_path).upload_from_string(
-            json.dumps(manifest, indent=2, default=str),
-            content_type="application/json",
+        publication = publish_oof_manifest(bucket, manifest)
+        manifest = publication["manifest"]
+        cohort_id = str(manifest["cohort_id"])
+        aggregate["cohort_id"] = cohort_id
+        gcs_path = str(publication["path"])
+        print(
+            f"[WF-Orchestrator] Published gs://{bucket.name}/{gcs_path} "
+            f"mode={publication['publication_mode']}"
         )
-        print(f"[WF-Orchestrator] Persisted gs://{bucket.name}/{gcs_path}")
     except Exception as e:
         print(f"[WF-Orchestrator] Persist failed: {e}")
         raise RuntimeError(f"active8_oof_manifest_persist_failed:{e}") from e
@@ -2636,6 +2638,8 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     return {
         "gcs_path": gcs_path,
         "aggregate": aggregate,
+        "manifest_checksum": manifest["manifest_checksum"],
+        "publication_mode": publication["publication_mode"],
         "elapsed_s": round(time.time() - t0, 1),
     }
 

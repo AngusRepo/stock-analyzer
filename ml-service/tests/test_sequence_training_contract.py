@@ -154,6 +154,9 @@ def test_sequence_cpcv_evidence_can_describe_existing_oos_fold_without_retrainin
     assert evidence["decision"] == "FAIL"
     assert "sequence_temporal_refit_required" in evidence["failed_gates"]
     assert evidence["validation_design"]["refit_each_fold"] is False
+    assert evidence["coverage_gate_value"] == 1.0
+    assert evidence["coverage_gate_semantics"] == "predicted_rows_over_eligible_oos_windows"
+    assert evidence["policy"]["coverage_mode"] == "sequence_window"
 
 
 def test_sequence_cpcv_policy_requires_explicit_enable():

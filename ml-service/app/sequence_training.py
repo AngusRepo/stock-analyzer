@@ -303,6 +303,11 @@ def build_sequence_oos_fold_evidence(
     policy: dict | None = None,
 ) -> dict:
     ic = sequence_oos_ic_from_forecast(forecast_prices=forecast_prices, dataset=dataset)
+    eligible_rows = int(len(dataset.oos_index))
+    predicted_rows = int(len(np.asarray(forecast_prices).reshape(-1)))
+    prediction_coverage = min(1.0, predicted_rows / max(1, eligible_rows))
+    resolved_policy = dict(policy or {})
+    resolved_policy.setdefault("coverage_mode", "sequence_window")
     return {
         "schema_version": "model-cpcv-evidence-v2",
         "model": model,
@@ -314,7 +319,10 @@ def build_sequence_oos_fold_evidence(
         "folds": 1,
         "oos_ic_mean": ic.get("oos_ic", 0.0),
         "min_test_rows": ic.get("oos_samples", 0),
-        "coverage_mean": 1.0 if ic.get("oos_samples", 0) else 0.0,
+        "coverage_mean": prediction_coverage,
+        "coverage_gate_value": prediction_coverage,
+        "coverage_gate_semantics": "predicted_rows_over_eligible_oos_windows",
+        "coverage_mode": "sequence_window",
         "family": "sequence_model",
         "date_field": "target_date",
         "input_contract": "SequenceWindowDataset(symbol,target_date,entry_open,forward_return)",
@@ -326,7 +334,7 @@ def build_sequence_oos_fold_evidence(
             "refit_each_fold": False,
             "promotion_grade": False,
         },
-        "policy": policy or {},
+        "policy": resolved_policy,
     }
 
 

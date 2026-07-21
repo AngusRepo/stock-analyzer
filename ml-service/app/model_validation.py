@@ -330,13 +330,13 @@ def build_model_cpcv_evidence(
     for fold in fold_metrics or []:
         ic = _as_float(fold.get("oos_ic", fold.get("rank_ic")), math.nan)
         test_rows = _as_int(fold.get("test_rows"), 0)
-        coverage = _as_float(fold.get("coverage"), 1.0 if test_rows > 0 else 0.0)
+        coverage = _as_float(fold.get("coverage"), math.nan)
         if math.isfinite(ic):
             normalized = {
                 "fold_id": fold.get("fold_id"),
                 "oos_ic": ic,
                 "test_rows": test_rows,
-                "coverage": coverage,
+                "coverage": coverage if math.isfinite(coverage) else 0.0,
             }
             for key in (
                 "sampled_coverage",
@@ -599,7 +599,7 @@ def evaluate_model_cpcv_rank_ic(
                 "fold_id": fold_id,
                 "oos_ic": ic,
                 "test_rows": int(len(test_idx)),
-                "coverage": coverage,
+                "coverage": coverage if math.isfinite(coverage) else 0.0,
             }
         )
     return build_model_cpcv_evidence(model=model, fold_metrics=fold_metrics, policy=policy)

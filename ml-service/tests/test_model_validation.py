@@ -263,3 +263,17 @@ def test_fit_predict_ft_transformer_cpcv_is_retired_fail_closed():
 
     with pytest.raises(RuntimeError, match="retired"):
         fit_predict_ft_transformer_cpcv(X, y, train_idx, test_idx, params={})
+
+
+def test_build_model_cpcv_evidence_missing_coverage_fails_closed():
+    evidence = build_model_cpcv_evidence(
+        model="XGBoost",
+        fold_metrics=[
+            {"fold_id": i, "oos_ic": 0.03, "test_rows": 120}
+            for i in range(6)
+        ],
+    )
+
+    assert evidence["coverage_gate_value"] == 0.0
+    assert evidence["decision"] == "FAIL"
+    assert "cpcv_coverage" in evidence["failed_gates"]

@@ -1450,8 +1450,27 @@ def _latest_ready_oof_manifest(bucket: object) -> tuple[str, dict] | None:
             ready.append((str(blob.name), manifest))
     if not ready:
         return None
+    by_path = {path: manifest for path, manifest in ready}
+    superseded_paths: set[str] = set()
+    for _path, manifest in ready:
+        revision = (
+            manifest.get("evidence_revision")
+            if isinstance(manifest.get("evidence_revision"), dict)
+            else {}
+        )
+        base_path = str(revision.get("base_manifest_path") or "").strip()
+        base_checksum = str(revision.get("base_manifest_checksum") or "").strip()
+        base = by_path.get(base_path)
+        if (
+            revision.get("schema_version") == "active8-oof-evidence-revision-v1"
+            and base is not None
+            and len(base_checksum) == 64
+            and str(base.get("manifest_checksum") or "") == base_checksum
+        ):
+            superseded_paths.add(base_path)
+    eligible = [item for item in ready if item[0] not in superseded_paths]
     return max(
-        ready,
+        eligible,
         key=lambda item: (
             str(item[1].get("end_date") or ""),
             str(item[1].get("generated_at") or item[1].get("completed_at") or ""),

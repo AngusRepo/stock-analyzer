@@ -113,7 +113,7 @@ async function main(): Promise<void> {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
-          'X-CloudScheduler-ScheduleTime': '2026-07-19T19:00:00Z',
+          'X-CloudScheduler-ScheduleTime': '2026-07-19T19:00:02.198Z',
         },
       },
       env,
@@ -122,9 +122,12 @@ async function main(): Promise<void> {
     assert.equal(response.status, 200)
     const body = await response.json() as any
     assert.equal(body.success, true)
+    assert.equal(body.scheduled_time, '2026-07-19T19:00:00.000Z')
+    assert.equal(body.received_scheduled_time, '2026-07-19T19:00:02.198Z')
     assert.deepEqual(executed.sort(), ['debate-memory-retention', 'orphan-reachability-gc'])
     assert(body.outcomes.every((outcome: any) => outcome.status === 'success'))
     assert.equal(env.DB.locks.size, 2)
+    assert([...env.DB.locks.keys()].every((key: string) => key.endsWith(':2026-07-19T19:00:00.000Z')))
     assert([...env.DB.locks.values()].every((row: LockRow) => row.owner === 'scheduler_batch_complete'))
   } finally {
     globalThis.fetch = originalFetch

@@ -108,6 +108,7 @@ export interface SchedulerBatchDispatchResult {
   retryable: boolean
   batch_id: string
   scheduled_time: string
+  received_scheduled_time: string
   due_count: number
   outcomes: SchedulerBatchDispatchOutcome[]
 }
@@ -129,6 +130,13 @@ function buildTaskUrl(baseUrl: string, job: SchedulerBatchSourceJob): string {
     for (const [name, value] of params) url.searchParams.append(name, value)
   }
   return url.toString()
+}
+
+export function normalizeSchedulerBatchSlot(scheduledAt: Date): Date {
+  if (Number.isNaN(scheduledAt.getTime())) throw new Error('Invalid scheduler batch scheduled time')
+  const slot = new Date(scheduledAt)
+  slot.setUTCSeconds(0, 0)
+  return slot
 }
 
 async function dispatchSourceJob(
@@ -171,11 +179,13 @@ async function dispatchSourceJob(
 
 export async function dispatchSchedulerBatch(input: DispatchInput): Promise<SchedulerBatchDispatchResult> {
   if (!getSchedulerBatch(input.batchId)) throw new Error(`Unknown scheduler batch: ${input.batchId}`)
-  if (Number.isNaN(input.scheduledAt.getTime())) throw new Error('Invalid scheduler batch scheduled time')
+
   if (!input.authorization) throw new Error('Missing scheduler batch authorization')
 
-  const scheduledTime = input.scheduledAt.toISOString()
-  const due = resolveDueSchedulerBatchJobs(input.batchId, input.scheduledAt)
+  const scheduledSlot = normalizeSchedulerBatchSlot(input.scheduledAt)
+  const receivedScheduledTime = input.scheduledAt.toISOString()
+  const scheduledTime = scheduledSlot.toISOString()
+  const due = resolveDueSchedulerBatchJobs(input.batchId, scheduledSlot)
   const outcomes = await Promise.all(due.map((job) => dispatchSourceJob(input, job, scheduledTime)))
   const retryable = outcomes.some((outcome) => outcome.status === 'busy' || outcome.status === 'error')
   return {
@@ -183,6 +193,7 @@ export async function dispatchSchedulerBatch(input: DispatchInput): Promise<Sche
     retryable,
     batch_id: input.batchId,
     scheduled_time: scheduledTime,
+    received_scheduled_time: receivedScheduledTime,
     due_count: due.length,
     outcomes,
   }

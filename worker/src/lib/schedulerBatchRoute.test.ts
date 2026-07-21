@@ -11,7 +11,7 @@ app.route('/', routes)
 async function main(): Promise<void> {
 {
   const response = await app.request(
-    'https://worker.invalid/api/admin/scheduler-batch/daily-1900-maintenance?dry_run=1&scheduled_time=2026-07-19T19%3A00%3A00Z',
+    'https://worker.invalid/api/admin/scheduler-batch/daily-1900-maintenance?dry_run=1&scheduled_time=2026-07-19T19%3A00%3A02.198Z',
     { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
     env,
   )
@@ -19,6 +19,8 @@ async function main(): Promise<void> {
   const body = await response.json() as any
   assert.equal(body.success, true)
   assert.equal(body.dry_run, true)
+  assert.equal(body.scheduled_time, '2026-07-19T19:00:00.000Z')
+  assert.equal(body.received_scheduled_time, '2026-07-19T19:00:02.198Z')
   assert.deepEqual(body.due.map((job: any) => job.id), ['debate-memory-retention', 'orphan-reachability-gc'])
 }
 

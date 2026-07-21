@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   }
   const input = {
     batchId: 'daily-1900-maintenance',
-    scheduledAt: new Date('2026-07-19T19:00:00Z'),
+    scheduledAt: new Date('2026-07-19T19:00:02.198Z'),
     authorization,
     baseUrl,
     leaseStore,
@@ -56,16 +56,23 @@ async function main(): Promise<void> {
   const first = await dispatchSchedulerBatch(input)
   assert.equal(first.success, true)
   assert.equal(first.due_count, 2)
+  assert.equal(first.scheduled_time, '2026-07-19T19:00:00.000Z')
+  assert.equal(first.received_scheduled_time, '2026-07-19T19:00:02.198Z')
   assert.deepEqual(first.outcomes.map((outcome) => outcome.source_job_id), ['debate-memory-retention', 'orphan-reachability-gc'])
   assert.equal(calls.length, 2)
   assert(calls.some((call) => call.url === `${baseUrl}/api/admin/trigger/debate-memory-retention`))
   assert(calls.every((call) => call.headers.get('Authorization') === authorization))
-  assert(calls.every((call) => call.headers.get('X-CloudScheduler-ScheduleTime') === input.scheduledAt.toISOString()))
+  assert(calls.every((call) => call.headers.get('X-CloudScheduler-ScheduleTime') === first.scheduled_time))
 
-  const duplicate = await dispatchSchedulerBatch(input)
+  const duplicate = await dispatchSchedulerBatch({
+    ...input,
+    scheduledAt: new Date('2026-07-19T19:00:47.999Z'),
+  })
   assert.equal(duplicate.success, true)
   assert(duplicate.outcomes.every((outcome) => outcome.status === 'already_complete'))
-  assert.equal(calls.length, 2, 'completed scheduled slot must never execute twice')
+  assert.equal(duplicate.scheduled_time, '2026-07-19T19:00:00.000Z')
+  assert.equal(duplicate.received_scheduled_time, '2026-07-19T19:00:47.999Z')
+  assert.equal(calls.length, 2, 'different seconds in one cron minute must never execute twice')
 }
 
 {
@@ -155,6 +162,18 @@ async function main(): Promise<void> {
   assert.equal(result.success, true)
   assert.equal(called, false)
 }
+
+await assert.rejects(
+  dispatchSchedulerBatch({
+    batchId: 'daily-1900-maintenance',
+    scheduledAt: new Date('invalid'),
+    authorization,
+    baseUrl,
+    leaseStore: new MemoryLeaseStore(),
+    fetchImpl: async () => Response.json({ success: true }),
+  }),
+  /Invalid scheduler batch scheduled time/,
+)
 
 await assert.rejects(
   dispatchSchedulerBatch({

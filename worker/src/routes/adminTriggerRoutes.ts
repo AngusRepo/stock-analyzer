@@ -5,7 +5,7 @@ import type { Bindings, Variables } from '../types'
 import type { TaskHandler } from '../lib/adminTriggerTaskMap'
 import { shouldRunScheduledTask } from '../lib/schedulerPolicy'
 import { getSchedulerBatch, resolveDueSchedulerBatchJobs } from '../lib/schedulerBatchPlan'
-import { D1SchedulerBatchLeaseStore, dispatchSchedulerBatch } from '../lib/schedulerBatchDispatcher'
+import { D1SchedulerBatchLeaseStore, dispatchSchedulerBatch, normalizeSchedulerBatchSlot } from '../lib/schedulerBatchDispatcher'
 
 interface TriggerRouteDeps {
   buildTaskMap: (c: any) => Record<string, TaskHandler>
@@ -84,12 +84,14 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     }
 
     if (dryRun) {
-      const due = resolveDueSchedulerBatchJobs(batchId, scheduledAt)
+      const scheduledSlot = normalizeSchedulerBatchSlot(scheduledAt)
+      const due = resolveDueSchedulerBatchJobs(batchId, scheduledSlot)
       return c.json({
         success: true,
         dry_run: true,
         batch_id: batchId,
-        scheduled_time: scheduledAt.toISOString(),
+        scheduled_time: scheduledSlot.toISOString(),
+        received_scheduled_time: scheduledAt.toISOString(),
         due: due.map((job) => ({ id: job.id, task: job.task, query: job.query, headers: job.headers })),
       })
     }

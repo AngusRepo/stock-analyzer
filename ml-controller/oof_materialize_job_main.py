@@ -171,6 +171,7 @@ async def _run() -> int:
         "summary": summary,
         "duration_ms": int((time.time() - started) * 1000),
         "run_id": run_id,
+        "attempt_id": execution_id,
     }
     if end_date:
         payload["run_date"] = end_date

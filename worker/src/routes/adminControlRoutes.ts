@@ -381,6 +381,7 @@ async function handleSchedulerCallback(c: any) {
       ? body.date
       : undefined
   const callbackRunId = typeof body.run_id === 'string' ? body.run_id : undefined
+  const callbackAttemptId = typeof body.attempt_id === 'string' ? body.attempt_id : undefined
 
   if (body.task === 'finlab-v4-backfill' && callbackRunDate) {
     const current = await c.env.KV.get(
@@ -412,6 +413,7 @@ async function handleSchedulerCallback(c: any) {
     duration_ms: Number(body.duration_ms ?? 0),
     error: body.error != null ? String(body.error) : undefined,
     run_id: callbackRunId,
+    attempt_id: callbackAttemptId,
     run_date: callbackRunDate,
   })
 

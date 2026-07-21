@@ -4,7 +4,11 @@ function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
 }
 
-function entry(status: SchedulerRunLogEntry['status'], runId = 'run-1'): SchedulerRunLogEntry {
+function entry(
+  status: SchedulerRunLogEntry['status'],
+  runId = 'run-1',
+  attemptId?: string,
+): SchedulerRunLogEntry {
   return {
     task: 'evening-chain',
     status,
@@ -12,6 +16,7 @@ function entry(status: SchedulerRunLogEntry['status'], runId = 'run-1'): Schedul
     duration_ms: 1,
     timestamp: '2026-07-13T13:00:00.000Z',
     run_id: runId,
+    attempt_id: attemptId,
     run_date: '2026-07-13',
   }
 }
@@ -27,6 +32,20 @@ assert(
 assert(
   resolveMonotonicSchedulerEntry(entry('error', 'old-run'), entry('success', 'retry-run')).status === 'success',
   'a new run id must be allowed to recover a prior failed date',
+)
+assert(
+  resolveMonotonicSchedulerEntry(
+    entry('error', 'logical-run', 'execution-1'),
+    entry('success', 'logical-run', 'execution-2'),
+  ).status === 'success',
+  'a new execution attempt must recover a failed logical run',
+)
+assert(
+  resolveMonotonicSchedulerEntry(
+    entry('error', 'logical-run', 'execution-1'),
+    entry('success', 'logical-run', 'execution-1'),
+  ).status === 'error',
+  'the same execution attempt must not overwrite its terminal error',
 )
 
 {

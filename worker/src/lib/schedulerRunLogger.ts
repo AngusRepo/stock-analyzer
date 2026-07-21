@@ -12,6 +12,7 @@ export interface SchedulerRunLogEntry {
   duration_ms: number
   timestamp: string
   run_id?: string
+  attempt_id?: string
   run_date?: string
   error?: string
 }
@@ -174,7 +175,8 @@ export function resolveMonotonicSchedulerEntry(
 ): SchedulerRunLogEntry {
   if (!previous || previous.run_date !== incoming.run_date) return incoming
   const explicitNewRun = Boolean(incoming.run_id) && previous.run_id !== incoming.run_id
-  if (explicitNewRun) return incoming
+  const explicitNewAttempt = Boolean(incoming.attempt_id) && previous.attempt_id !== incoming.attempt_id
+  if (explicitNewRun || explicitNewAttempt) return incoming
   if (previous.status === 'error' && incoming.status !== 'error') return previous
   if (previous.status === 'success' && ['running', 'triggered'].includes(incoming.status)) return previous
   return incoming
@@ -197,6 +199,7 @@ export async function logSchedulerRunResult(
     details: result.details,
     duration_ms: result.duration_ms,
     run_id: result.run_id,
+    attempt_id: result.attempt_id,
     run_date: today,
     error: result.error,
     timestamp: new Date().toISOString(),

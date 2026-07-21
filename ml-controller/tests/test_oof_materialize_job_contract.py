@@ -25,6 +25,7 @@ def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
     monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "daily")
     monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-07-17")
     monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-1")
+    monkeypatch.setenv("CLOUD_RUN_EXECUTION", "execution-1")
 
     assert asyncio.run(oof_materialize_job_main._run()) == 0
     assert len(callbacks) == 1
@@ -32,6 +33,7 @@ def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
     assert callback["task"] == "active8-oof-daily"
     assert callback["status"] == "success"
     assert callback["run_id"] == "run-1"
+    assert callback["attempt_id"] == "execution-1"
     assert callback["run_date"] == "2026-07-17"
     assert "status=materialized" in callback["summary"]
     assert "cohort=cohort-1" in callback["summary"]

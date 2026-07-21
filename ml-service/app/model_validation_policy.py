@@ -1,4 +1,4 @@
-"""Adaptive validation policy resolver for Modal model evidence."""
+"""Adaptive validation policy resolver for Active-8 direct-alpha model evidence gates."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 from typing import Any
 
 
-MODEL_VALIDATION_POLICY_VERSION = "family-regime-adaptive-validation-policy-v2"
+MODEL_VALIDATION_POLICY_VERSION = "family-regime-adaptive-validation-policy-v4"
 
 MODEL_FAMILY_BY_NAME: dict[str, str] = {
     "LightGBM": "tree",
@@ -22,13 +22,39 @@ MODEL_FAMILY_BY_NAME: dict[str, str] = {
     "TimesFM": "l2_feature_sidecar",
 }
 
+_RESEARCH_STAGE_NAMES = {"research", "research_benchmark", "benchmark", "model_upgrade"}
+_PROMOTION_STAGE_NAMES = {"promotion", "final_promotion", "champion_promotion"}
+_KNOWN_REGIMES = {"bull", "bear", "volatile", "sideways", "unknown"}
 
-def _as_int(value: Any, default: int | None = None) -> int | None:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed >= 0 else default
+_FAMILY_PBO_BASE: dict[str, float] = {
+    "tree": 0.50,
+    "tabular_neural": 0.46,
+    "graph": 0.44,
+    "learned_sequence": 0.43,
+    "l2_feature_sidecar": 0.40,
+}
+
+_FAMILY_PBO_FLOOR: dict[str, float] = {
+    "tree": 0.22,
+    "tabular_neural": 0.20,
+    "graph": 0.18,
+    "learned_sequence": 0.18,
+    "l2_feature_sidecar": 0.16,
+}
+
+_MODEL_PBO_COMPLEXITY_ADJUSTMENT: dict[str, float] = {
+    "LightGBM": 0.00,
+    "XGBoost": -0.01,
+    "ExtraTrees": -0.02,
+    "TabM": -0.035,
+    "GNN": -0.045,
+    "DLinear": -0.020,
+    "PatchTST": -0.055,
+    "iTransformer": -0.060,
+    "TimesFM": -0.040,
+}
+
+_FOUNDATION_FORECAST_FAMILIES = {"foundation_sequence", "l2_feature_sidecar"}
 
 
 def _as_float(value: Any, default: float | None = None) -> float | None:
@@ -37,6 +63,14 @@ def _as_float(value: Any, default: float | None = None) -> float | None:
     except (TypeError, ValueError):
         return default
     return parsed if math.isfinite(parsed) else default
+
+
+def _as_int(value: Any, default: int | None = None) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -70,55 +104,211 @@ def _normalize_regime(regime: Any) -> str:
         return "bull"
     if "side" in text or "range" in text:
         return "sideways"
-    return text if text in {"bull", "bear", "volatile", "sideways", "unknown"} else "unknown"
+    return text if text in _KNOWN_REGIMES else "unknown"
 
 
 def _stage_name(stage: str | None) -> str:
     text = str(stage or "lifecycle").strip().lower()
-    if text in {"research", "research_benchmark", "benchmark", "model_upgrade"}:
+    if text in _RESEARCH_STAGE_NAMES:
         return "research_benchmark"
-    if text in {"promotion", "final_promotion", "champion_promotion"}:
+    if text in _PROMOTION_STAGE_NAMES:
         return "promotion"
     return text or "lifecycle"
 
 
-def _risk(regime: str) -> float:
-    return {"bull": 0.95, "sideways": 1.0, "unknown": 1.08, "bear": 1.15, "volatile": 1.25}.get(regime, 1.08)
+def _regime_risk_multiplier(regime: str) -> float:
+    return {
+        "bull": 0.95,
+        "sideways": 1.00,
+        "unknown": 1.08,
+        "bear": 1.15,
+        "volatile": 1.25,
+    }.get(regime, 1.08)
 
 
-def _min_rows(family: str, stage: str, sample_count: int | None) -> int:
+def _family_min_rows(family: str, stage: str, sample_count: int | None) -> int:
     if stage == "research_benchmark":
-        base = {"tree": 40, "tabular_neural": 40, "graph": 30, "learned_sequence": 30, "foundation_sequence": 30}.get(family, 40)
+        base = {
+            "tree": 40,
+            "tabular_neural": 40,
+            "graph": 30,
+            "learned_sequence": 30,
+            "foundation_sequence": 30,
+            "l2_feature_sidecar": 30,
+        }.get(family, 40)
     else:
-        base = {"tree": 100, "tabular_neural": 100, "graph": 60, "learned_sequence": 90, "foundation_sequence": 30}.get(family, 80)
+        base = {
+            "tree": 100,
+            "tabular_neural": 100,
+            "graph": 60,
+            "learned_sequence": 90,
+            "foundation_sequence": 30,
+            "l2_feature_sidecar": 30,
+        }.get(family, 80)
     if not sample_count:
         return base
-    return max(20, min(base, int(math.sqrt(max(1, sample_count)) * 1.5)))
+    sample_scaled = max(20, int(math.sqrt(max(1, sample_count)) * 1.5))
+    return max(20, min(base, sample_scaled))
 
 
-def _coverage(family: str, stage: str, coverage_mode: str | None) -> dict[str, Any]:
+def _family_min_folds(family: str, stage: str, sample_count: int | None) -> int:
+    if family in _FOUNDATION_FORECAST_FAMILIES and stage != "research_benchmark":
+        return 1
+    if stage == "research_benchmark":
+        return 3
+    if sample_count and sample_count < 300:
+        return 3
+    return 5
+
+
+def _coverage_policy(family: str, stage: str, coverage_mode: str | None) -> dict[str, Any]:
     mode = str(coverage_mode or "").strip().lower()
-    if family == "foundation_sequence":
+    if family in _FOUNDATION_FORECAST_FAMILIES:
         if mode in {"sample_complete", "sampled", "sampled_benchmark"} or stage == "research_benchmark":
-            return {"mode": "sample_complete", "min_coverage": 0.80, "dataset_coverage_required": False}
-        return {"mode": "forecast_outcome", "min_coverage": 0.60, "dataset_coverage_required": False}
+            return {
+                "mode": "sample_complete",
+                "min_coverage": 0.80,
+                "dataset_coverage_required": False,
+                "dataset_coverage_metric": "informational",
+            }
+        return {
+            "mode": "forecast_outcome",
+            "min_coverage": 0.60,
+            "dataset_coverage_required": False,
+            "dataset_coverage_metric": "informational",
+        }
     if family == "graph":
-        return {"mode": "graph_snapshot", "min_coverage": 0.70, "node_coverage_required": True, "edge_coverage_required": True}
+        return {
+            "mode": "graph_snapshot",
+            "min_coverage": 0.70,
+            "node_coverage_required": True,
+            "edge_coverage_required": True,
+        }
     if family == "learned_sequence":
-        return {"mode": "sequence_window", "min_coverage": 0.75 if stage == "research_benchmark" else 0.80}
-    return {"mode": "date_symbol_panel", "min_coverage": 0.75 if stage == "research_benchmark" else 0.80}
+        return {
+            "mode": "sequence_window",
+            "min_coverage": 0.75 if stage == "research_benchmark" else 0.80,
+            "dataset_coverage_required": False,
+        }
+    return {
+        "mode": "date_symbol_panel",
+        "min_coverage": 0.75 if stage == "research_benchmark" else 0.80,
+        "date_coverage_required": True,
+        "symbol_coverage_required": True,
+    }
 
 
-def _deep_merge(base: dict[str, Any], overrides: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(overrides, dict):
-        return base
-    merged = dict(base)
-    for key, value in overrides.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
+def _resolve_oos_ic_floor(
+    *,
+    family: str,
+    regime: str,
+    baseline_oos_ic: Any,
+    champion_oos_ic: Any,
+    stage: str,
+) -> dict[str, Any]:
+    baseline = _as_float(baseline_oos_ic)
+    champion = _as_float(champion_oos_ic)
+    reference_values = [value for value in (baseline, champion) if value is not None]
+    reference = max(reference_values) if reference_values else 0.0
+    risk = _regime_risk_multiplier(regime)
+    family_buffer = {
+        "tree": 0.012,
+        "tabular_neural": 0.014,
+        "graph": 0.016,
+        "learned_sequence": 0.014,
+        "foundation_sequence": 0.010,
+        "l2_feature_sidecar": 0.010,
+    }.get(family, 0.012)
+    evidence_buffer = round(family_buffer * risk, 6)
+    if stage == "promotion" and reference > 0:
+        min_oos_ic = reference
+        comparison = "candidate_must_match_or_beat_current_reference"
+    else:
+        min_oos_ic = 0.0
+        comparison = "positive_rank_ic_floor"
+    if family in _FOUNDATION_FORECAST_FAMILIES:
+        comparison = "forecast_validation_rank_ic_floor" if reference <= 0 else comparison
+    return {
+        "comparison": comparison,
+        "min_oos_ic_mean": round(min_oos_ic, 6),
+        "weak_oos_ic_mean": round(min_oos_ic + evidence_buffer, 6),
+        "strong_oos_ic_mean": round(min_oos_ic + evidence_buffer * 2.0, 6),
+        "evidence_buffer": evidence_buffer,
+        "baseline_oos_ic": baseline,
+        "champion_oos_ic": champion,
+        "regime": regime,
+    }
+
+
+def _resolve_live_ic_policy(
+    *,
+    family: str,
+    regime: str,
+    sample_count: int | None,
+    stage: str,
+) -> dict[str, Any]:
+    risk = _regime_risk_multiplier(regime)
+    base_samples = 80 if stage == "research_benchmark" else 150
+    if family in _FOUNDATION_FORECAST_FAMILIES:
+        base_samples = 50 if stage == "research_benchmark" else 120
+    elif family == "graph":
+        base_samples = 100 if stage == "research_benchmark" else 180
+    min_samples = int(math.ceil(base_samples * risk))
+    ready = bool(sample_count and sample_count >= min_samples)
+    return {
+        "mode": "rolling_verified_rank_ic",
+        "min_verified_rows": min_samples,
+        "observed_rows": sample_count,
+        "ready": ready,
+        "windows": ["20d", "60d"],
+        "regime": regime,
+        "family": family,
+    }
+
+
+def _resolve_pbo_policy(
+    *,
+    model_name: str,
+    family: str,
+    regime: str,
+    stage: str,
+    search_trials: int | None,
+) -> dict[str, Any]:
+    trials = max(1, int(search_trials or 1))
+    selection_run = trials > 1
+    if family in _FOUNDATION_FORECAST_FAMILIES and not selection_run:
+        return {
+            "required": False,
+            "reason": "single_config_foundation_forecast_validated_by_forecast_outcome_evidence",
+            "method": "not_required_for_single_official_config",
+            "max_pbo": None,
+            "search_trials": trials,
+        }
+    family_base = _FAMILY_PBO_BASE.get(family, 0.46)
+    family_floor = _FAMILY_PBO_FLOOR.get(family, 0.20)
+    model_adjustment = _MODEL_PBO_COMPLEXITY_ADJUSTMENT.get(model_name, 0.0)
+    model_base = _clamp(family_base + model_adjustment, family_floor, family_base)
+    stage_penalty = 0.08 if stage == "promotion" else 0.0
+    search_penalty = min(0.22, math.log2(max(2, trials)) * 0.035)
+    regime_penalty = 0.03 if regime in {"bear", "volatile"} else 0.0
+    max_pbo = _clamp(model_base - stage_penalty - search_penalty - regime_penalty, family_floor, model_base)
+    return {
+        "required": True,
+        "method": "cscv_rank_logit",
+        "owner": "family_model_regime_candidate_scoped_oof",
+        "max_pbo": round(max_pbo, 6),
+        "search_trials": trials,
+        "selection_run": selection_run,
+        "regime": regime,
+        "family": family,
+        "family_base": round(family_base, 6),
+        "family_floor": round(family_floor, 6),
+        "model_base": round(model_base, 6),
+        "model_complexity_adjustment": round(model_adjustment, 6),
+        "stage_penalty": round(stage_penalty, 6),
+        "search_penalty": round(search_penalty, 6),
+        "regime_penalty": round(regime_penalty, 6),
+    }
 
 
 def _tail_fold_guard(
@@ -136,6 +326,12 @@ def _tail_fold_guard(
         "tail_folds": 3,
         "min_tail_oos_ic_mean": round(min_oos_ic_mean, 6),
         "min_tail_positive_fold_ratio": round(_clamp(min_positive_fold_ratio - 0.05 + risk_buffer, 0.50, 0.70), 6),
+        "decision_mode": "date_cluster_hac_uncertainty_v1",
+        "confidence_level": 0.90,
+        "min_date_clusters": 10,
+        "hac_lag_mode": "newey_west_auto",
+        "hard_fail_rule": "upper_confidence_bound_below_ic_floor",
+        "uncertain_degradation_action": "degraded_warning",
         "required_for_serving_promotion": model_name in {"TabM", "PatchTST"},
     }
 
@@ -161,11 +357,16 @@ def _return_quality_guard(*, model_name: str, family: str) -> dict[str, Any]:
     }
 
 
-def _nested_get(source: dict[str, Any], first: str, second: str) -> Any:
-    value = source.get(first)
-    if isinstance(value, dict):
-        return value.get(second)
-    return None
+def _deep_merge(base: dict[str, Any], overrides: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(overrides, dict):
+        return base
+    merged = dict(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _policy_override_layers(
@@ -204,6 +405,13 @@ def _policy_override_layers(
     return merged or None
 
 
+def _nested_get(source: dict[str, Any], first: str, second: str) -> Any:
+    value = source.get(first)
+    if isinstance(value, dict):
+        return value.get(second)
+    return None
+
+
 def resolve_model_validation_policy(
     *,
     model_name: str,
@@ -218,27 +426,48 @@ def resolve_model_validation_policy(
     champion_oos_ic: Any = None,
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Resolve dynamic model validation policy without hard-coding callsite gates.
+
+    The returned values are adaptive defaults. Production can override any
+    subtree from D1/GCS by passing ``overrides`` while preserving the same schema.
+    """
+
     resolved_family = model_family_for(model_name, family)
     resolved_regime = _normalize_regime(regime)
     resolved_stage = _stage_name(stage)
     samples = _as_int(sample_count, None)
     folds = _as_int(fold_count, None)
-    risk = _risk(resolved_regime)
-    coverage = _coverage(resolved_family, resolved_stage, coverage_mode)
-    min_folds = 1 if resolved_family == "foundation_sequence" and resolved_stage != "research_benchmark" else 3 if resolved_stage == "research_benchmark" or (samples and samples < 300) else 5
-    min_positive = _clamp(0.55 + (0.03 if resolved_regime in {"bear", "volatile"} else 0.0), 0.50, 0.70)
+    risk = _regime_risk_multiplier(resolved_regime)
+    coverage = _coverage_policy(resolved_family, resolved_stage, coverage_mode)
+    min_folds = _family_min_folds(resolved_family, resolved_stage, samples)
+    min_rows = _family_min_rows(resolved_family, resolved_stage, samples)
+    min_positive = _clamp(
+        0.55 + (0.03 if resolved_regime in {"bear", "volatile"} else 0.0),
+        0.50,
+        0.70,
+    )
     if folds and folds <= 3:
         min_positive = min(min_positive, 0.55)
-    max_ic_std = _clamp({"tree": 0.22, "tabular_neural": 0.24, "graph": 0.28, "learned_sequence": 0.26, "foundation_sequence": 0.30}.get(resolved_family, 0.25) * risk, 0.18, 0.40)
-    reference_values = [v for v in (_as_float(baseline_oos_ic), _as_float(champion_oos_ic)) if v is not None]
-    reference = max(reference_values) if reference_values else 0.0
-    min_ic = reference if resolved_stage == "promotion" and reference > 0 else 0.0
-    buffer = round({"tree": 0.012, "tabular_neural": 0.014, "graph": 0.016, "learned_sequence": 0.014, "foundation_sequence": 0.010}.get(resolved_family, 0.012) * risk, 6)
-    trials = max(1, int(search_trials or 1))
-    pbo_required = not (resolved_family == "foundation_sequence" and trials <= 1)
-    max_pbo = None
-    if pbo_required:
-        max_pbo = round(_clamp(0.50 - (0.08 if resolved_stage == "promotion" else 0.0) - min(0.22, math.log2(max(2, trials)) * 0.035) - (0.03 if resolved_regime in {"bear", "volatile"} else 0.0), 0.20, 0.50), 6)
+    max_ic_std = _clamp(
+        {
+            "tree": 0.22,
+            "tabular_neural": 0.24,
+            "graph": 0.28,
+            "learned_sequence": 0.26,
+            "foundation_sequence": 0.30,
+            "l2_feature_sidecar": 0.30,
+        }.get(resolved_family, 0.25)
+        * risk,
+        0.18,
+        0.40,
+    )
+    oos_ic = _resolve_oos_ic_floor(
+        family=resolved_family,
+        regime=resolved_regime,
+        baseline_oos_ic=baseline_oos_ic,
+        champion_oos_ic=champion_oos_ic,
+        stage=resolved_stage,
+    )
     policy = {
         "schema_version": "model-validation-policy-v1",
         "policy_version": MODEL_VALIDATION_POLICY_VERSION,
@@ -247,12 +476,18 @@ def resolve_model_validation_policy(
         "family": resolved_family,
         "regime": resolved_regime,
         "stage": resolved_stage,
+        "sample_count": samples,
+        "fold_count": folds,
         "coverage": coverage,
         "cpcv": {
-            "owner": "foundation_forecast_validation" if resolved_family == "foundation_sequence" and resolved_stage != "research_benchmark" else "family_specific_cpcv",
+            "owner": (
+                "foundation_forecast_validation"
+                if resolved_family in _FOUNDATION_FORECAST_FAMILIES and resolved_stage != "research_benchmark"
+                else "family_specific_cpcv"
+            ),
             "min_folds": min_folds,
-            "min_test_rows": _min_rows(resolved_family, resolved_stage, samples),
-            "min_oos_ic_mean": round(min_ic, 6),
+            "min_test_rows": min_rows,
+            "min_oos_ic_mean": oos_ic["min_oos_ic_mean"],
             "min_positive_fold_ratio": round(min_positive, 6),
             "max_oos_ic_std": round(max_ic_std, 6),
             "min_coverage": coverage["min_coverage"],
@@ -264,25 +499,26 @@ def resolve_model_validation_policy(
                 model_name=model_name,
                 family=resolved_family,
                 regime=resolved_regime,
-                min_oos_ic_mean=min_ic,
+                min_oos_ic_mean=oos_ic["min_oos_ic_mean"],
                 min_positive_fold_ratio=min_positive,
             ),
             "segment_ic_guard": _segment_ic_guard(model_name=model_name, family=resolved_family),
             "return_quality_guard": _return_quality_guard(model_name=model_name, family=resolved_family),
         },
-        "pbo": {
-            "required": pbo_required,
-            "method": "cscv_rank_logit" if pbo_required else "not_required_for_single_official_config",
-            "max_pbo": max_pbo,
-            "search_trials": trials,
-            "regime": resolved_regime,
-        },
-        "oos_ic": {
-            "min_oos_ic_mean": round(min_ic, 6),
-            "weak_oos_ic_mean": round(min_ic + buffer, 6),
-            "strong_oos_ic_mean": round(min_ic + buffer * 2.0, 6),
-            "evidence_buffer": buffer,
-        },
+        "pbo": _resolve_pbo_policy(
+            model_name=model_name,
+            family=resolved_family,
+            regime=resolved_regime,
+            stage=resolved_stage,
+            search_trials=search_trials,
+        ),
+        "oos_ic": oos_ic,
+        "live_ic": _resolve_live_ic_policy(
+            family=resolved_family,
+            regime=resolved_regime,
+            sample_count=samples,
+            stage=resolved_stage,
+        ),
     }
     env_overrides = _policy_override_layers(
         model_name=model_name,

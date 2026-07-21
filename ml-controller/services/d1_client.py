@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 class WorkerD1BatchValidationError(RuntimeError):
     """Worker rejected the batch contract; raw REST must not bypass it."""
 
+class D1DurableBatchRetryRequired(RuntimeError):
+    """Both true batch transports failed; the owning job must retry idempotently."""
+
+
 CF_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
 CF_D1_DB_ID   = os.environ.get("CF_D1_DB_ID", "")
@@ -251,8 +255,9 @@ def batch_execute(
     """Execute multiple INSERT/UPDATE/DELETE statements.
 
     Prefer the Worker internal D1 binding endpoint, which uses `env.DB.batch()`
-    and is a real Cloudflare-side batch. Fall back to the legacy REST loop only
-    when the Worker route is not configured or temporarily fails.
+    and is a real Cloudflare-side batch. The D1 raw batch endpoint is the
+    secondary transport. Both failures are surfaced for durable job retry;
+    production never degrades into per-statement HTTP writes.
 
     Args:
         statements: list of (sql, params) tuples
@@ -279,51 +284,25 @@ def batch_execute(
             "sql_duration_ms_total": 0,
         }
 
+    worker_error: RuntimeError | None = None
     if WORKER_URL and WORKER_AUTH:
         try:
             return _worker_batch_execute(statements, timeout=timeout, chunk_size=chunk_size)
         except WorkerD1BatchValidationError:
             raise
         except RuntimeError as e:
+            worker_error = e
             logger.warning("[d1_client] worker batch failed, falling back to D1 raw batch: %s", e)
 
     try:
         return _raw_batch_execute(statements, timeout=timeout, chunk_size=chunk_size)
     except RuntimeError as e:
-        logger.warning("[d1_client] D1 raw batch failed, falling back to REST loop: %s", e)
-
-    success_count = 0
-    error_count = 0
-    total_changes = 0
-    first_error: Optional[str] = None
-
-    for i, (sql, params) in enumerate(statements):
-        try:
-            r = execute(sql, params, timeout=timeout)
-            success_count += 1
-            total_changes += (r.get("meta") or {}).get("changes", 0) or 0
-        except RuntimeError as e:
-            error_count += 1
-            if first_error is None:
-                first_error = str(e)
-            # Continue on error — don't fail whole batch for one bad row
-            logger.warning(f"[d1_client] batch_execute statement {i} failed: {e}")
-
-    if error_count > 0:
-        logger.warning(
-            f"[d1_client] batch_execute: {error_count}/{len(statements)} failed. "
-            f"First error: {first_error}"
+        detail = (
+            f"worker={worker_error or 'not_configured'}; raw={e}; "
+            f"statements={len(statements)}"
         )
-
-    return {
-        "total": len(statements),
-        "success_count": success_count,
-        "error_count": error_count,
-        "changes_total": total_changes,
-        "first_error": first_error,
-        "partial_failure": error_count > 0 and success_count > 0,
-        "mode": "rest_loop_fallback",
-    }
+        logger.error("[d1_client] durable batch retry required: %s", detail)
+        raise D1DurableBatchRetryRequired(detail) from e
 
 
 def atomic_batch_execute(

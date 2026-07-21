@@ -316,6 +316,25 @@ def test_gnn_full_universe_scores_attach_to_rank_scores(monkeypatch):
             True,
         ),
     )
+    monkeypatch.setattr(
+        daily_pipeline_v2,
+        "_load_pool_and_ic",
+        lambda: (
+            {"XGBoost": "active", "GNN": "active"},
+            {},
+            1.0,
+            {},
+            True,
+            {
+                "models": {
+                    name: {
+                        "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                    }
+                    for name in ("XGBoost", "GNN")
+                },
+            },
+        ),
+    )
 
     result = _run(daily_pipeline_v2.node_ml_predict({"run_date": "2026-03-06", "payloads": [_payload()]}))
 
@@ -513,6 +532,28 @@ def test_sequence_family_models_use_sequence_contract_subset(monkeypatch):
             True,
         ),
     )
+    monkeypatch.setattr(
+        daily_pipeline_v2,
+        "_load_pool_and_ic",
+        lambda: (
+            {"XGBoost": "active", "DLinear": "active"},
+            {},
+            1.0,
+            {},
+            True,
+            {
+                "models": {
+                    "XGBoost": {
+                        "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+                    },
+                    "DLinear": {
+                        "version": "v1",
+                        "seq_len": 512,
+                    },
+                },
+            },
+        ),
+    )
 
     result = _run(daily_pipeline_v2.node_ml_predict({
         "run_date": "2026-03-06",
@@ -526,6 +567,29 @@ def test_sequence_family_models_use_sequence_contract_subset(monkeypatch):
     assert "dlinear" in result["predictions"]["2330"]
     assert "dlinear" not in result["predictions"]["2317"]
     sequence_meta = result["modal_wait_telemetry"]["sequence_dataset"]
-    assert sequence_meta["sequence_model_contract_points"] == 1024
-    assert sequence_meta["sequence_model_usable"] == 1
-    assert sequence_meta["sequence_model_excluded_count"] == 1
+    dlinear = sequence_meta["sequence_model_contracts"]["DLinear"]
+    assert dlinear["seq_len"] == 512
+    assert dlinear["usable"] == 1
+    assert dlinear["excluded_count"] == 1
+
+
+def test_sequence_contract_is_resolved_per_serving_artifact():
+    contracts = daily_pipeline_v2._sequence_model_contracts(
+        pool={
+            "models": {
+                "DLinear": {"version": "d1", "seq_len": 512},
+                "PatchTST": {"version": "p1", "seq_len": 768},
+                "iTransformer": {"version": "i1", "seq_len": 1024},
+            },
+        },
+        model_status={
+            "DLinear": "active",
+            "PatchTST": "active",
+            "iTransformer": "degraded",
+        },
+    )
+    assert {name: row["seq_len"] for name, row in contracts.items()} == {
+        "DLinear": 512,
+        "PatchTST": 768,
+        "iTransformer": 1024,
+    }

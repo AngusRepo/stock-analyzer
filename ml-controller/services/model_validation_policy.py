@@ -8,7 +8,7 @@ import os
 from typing import Any
 
 
-MODEL_VALIDATION_POLICY_VERSION = "family-regime-adaptive-validation-policy-v3"
+MODEL_VALIDATION_POLICY_VERSION = "family-regime-adaptive-validation-policy-v4"
 
 MODEL_FAMILY_BY_NAME: dict[str, str] = {
     "LightGBM": "tree",
@@ -326,6 +326,12 @@ def _tail_fold_guard(
         "tail_folds": 3,
         "min_tail_oos_ic_mean": round(min_oos_ic_mean, 6),
         "min_tail_positive_fold_ratio": round(_clamp(min_positive_fold_ratio - 0.05 + risk_buffer, 0.50, 0.70), 6),
+        "decision_mode": "date_cluster_hac_uncertainty_v1",
+        "confidence_level": 0.90,
+        "min_date_clusters": 10,
+        "hac_lag_mode": "newey_west_auto",
+        "hard_fail_rule": "upper_confidence_bound_below_ic_floor",
+        "uncertain_degradation_action": "degraded_warning",
         "required_for_serving_promotion": model_name in {"TabM", "PatchTST"},
     }
 

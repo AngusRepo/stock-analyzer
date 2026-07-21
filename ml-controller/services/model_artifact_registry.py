@@ -1285,10 +1285,10 @@ def _offline_oof_full_fit_release_candidate(row: dict[str, Any] | None) -> bool:
         and len(str(resume.get("source_manifest_checksum") or "")) == 64
         and bool(str(resume.get("knowledge_cutoff_date") or "").strip())
         and str(metadata.get("target_semantic_version") or "") == ACTIVE8_TARGET_SEMANTIC_VERSION
-        and release_validation.get("schema_version") == "active8-oof-base-ranker-release-validation-v1"
+        and release_validation.get("schema_version") == "active8-oof-base-ranker-release-validation-v2"
         and release_validation.get("validation_role") == "base_ranker"
         and release_validation.get("decision") == "PASS"
-        and release_pbo.get("scope") == "candidate_oof_cohort"
+        and release_pbo.get("scope") == "cohort_model_selection_process"
         and release_pbo.get("method") == "cscv_rank_logit"
         and release_pbo.get("go_live_verdict") == "PASS"
         and _as_float(release_pbo.get("pbo")) is not None
@@ -2606,6 +2606,10 @@ def apply_promoted_artifact_to_model_pool(
     promoted_at = promoted_at or _now_iso()
     old_version = entry.get("version")
     candidate_path = artifact.get("artifact_path") or model_artifact_path(model_name, candidate_version)
+    candidate_registration = _artifact_registration(artifact)
+    oof_promotion_evidence = _nested_dict(candidate_registration.get("oof_promotion_evidence"))
+    serving_disposition = str(oof_promotion_evidence.get("serving_disposition") or "PASS").upper()
+    serving_status = "degraded" if serving_disposition == "DEGRADED" else "active"
     challenger = entry.get("challenger") if isinstance(entry.get("challenger"), dict) else {}
     challenger_matches = str(challenger.get("version") or "") == candidate_version
 
@@ -2642,7 +2646,7 @@ def apply_promoted_artifact_to_model_pool(
         ):
             entry.pop(key, None)
 
-    entry["status"] = "active"
+    entry["status"] = serving_status
     entry["version"] = candidate_version
     entry["gcs_path"] = candidate_path
     entry["metadata_path"] = artifact.get("metadata_path") or entry.get("metadata_path")
@@ -2651,7 +2655,17 @@ def apply_promoted_artifact_to_model_pool(
     entry["offline_gate_decision"] = artifact.get("offline_gate_decision")
     entry["live_gate_status"] = artifact.get("live_gate_status")
     entry["promoted_at"] = promoted_at
-    entry.pop("degraded_since", None)
+    if serving_status == "degraded":
+        entry["degraded_since"] = promoted_at
+        entry["degraded_reason"] = "uncertain_recent_oof_degradation"
+        entry["degraded_evidence"] = {
+            "warning_gates": list(oof_promotion_evidence.get("warning_gates") or []),
+            "tail_fold_stats": _nested_dict(oof_promotion_evidence.get("tail_fold_stats")),
+        }
+    else:
+        entry.pop("degraded_since", None)
+        entry.pop("degraded_reason", None)
+        entry.pop("degraded_evidence", None)
     entry.pop("retired_at", None)
 
     candidate_metadata = _nested_dict(artifact.get("metadata"))
@@ -2743,6 +2757,7 @@ def apply_promoted_artifact_to_model_pool(
         "model_name": model_name,
         "old_version": old_version,
         "new_version": candidate_version,
+        "serving_status": serving_status,
         "challenger_moved": challenger_matches,
     }
 

@@ -8,6 +8,7 @@ import json
 from typing import Any
 
 import numpy as np
+from scipy.stats import spearmanr
 
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
@@ -63,6 +64,43 @@ def percentile_rank_by_date_market(
         else:
             ranks[sorted_idx] = np.arange(len(sorted_idx), dtype=float) / (len(sorted_idx) - 1)
     return ranks
+
+
+def oof_date_cluster_rank_ic_from_bytes(payload: bytes, *, min_cohort_rows: int = 10) -> dict[str, Any]:
+    """Build trading-date clusters from immutable OOF scores and outcomes."""
+    artifact = np.load(io.BytesIO(payload), allow_pickle=True)
+    rank_scores = np.asarray(artifact["rank_scores"], dtype=float).reshape(-1)
+    targets = np.asarray(artifact["targets"], dtype=float).reshape(-1)
+    dates = np.asarray(artifact["dates"], dtype=object).reshape(-1)
+    markets = np.asarray(artifact["markets"], dtype=object).reshape(-1)
+    if not (len(rank_scores) == len(targets) == len(dates) == len(markets)):
+        raise ValueError("oof_date_cluster_length_mismatch")
+    date_rows: list[dict[str, Any]] = []
+    for date in sorted({str(value) for value in dates}):
+        segment_rows: list[tuple[float, int]] = []
+        for market in sorted({str(markets[idx]) for idx in np.flatnonzero(dates == date)}):
+            idx = np.flatnonzero((dates == date) & (markets == market))
+            finite = idx[np.isfinite(rank_scores[idx]) & np.isfinite(targets[idx])]
+            if len(finite) < max(3, int(min_cohort_rows)):
+                continue
+            rho, _ = spearmanr(rank_scores[finite], targets[finite])
+            if np.isfinite(rho):
+                segment_rows.append((float(rho), int(len(finite))))
+        if not segment_rows:
+            continue
+        total_rows = sum(rows for _ic, rows in segment_rows)
+        date_rows.append({
+            "date": date,
+            "rank_ic": sum(ic * rows for ic, rows in segment_rows) / total_rows,
+            "test_rows": total_rows,
+            "segments": len(segment_rows),
+        })
+    return {
+        "schema_version": "oof-date-cluster-rank-ic-v1",
+        "date_cluster_ics": date_rows,
+        "date_cluster_count": len(date_rows),
+        "min_cohort_rows": max(3, int(min_cohort_rows)),
+    }
 
 
 def save_oof_prediction_artifact(

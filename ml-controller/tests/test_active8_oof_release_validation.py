@@ -36,10 +36,15 @@ def test_release_validation_is_candidate_scoped_and_never_fakes_capital_path():
 
     assert result["common_dates"] == 40
     assert result["partition_count"] == 10
+    assert result["schema_version"].endswith("-v2")
+    cohort_pbo = result["cohort_selection_validation"]
+    assert cohort_pbo["scope"] == "cohort_model_selection_process"
+    assert cohort_pbo["policy_owner"] == "active8_oof_cohort_selection"
     for model_name in models[:3]:
         evidence = result["by_model"][model_name]
         assert evidence["validation_role"] == "base_ranker"
-        assert evidence["pbo"]["scope"] == "candidate_oof_cohort"
+        assert evidence["schema_version"].endswith("-v2")
+        assert evidence["pbo"] == cohort_pbo
         assert evidence["pbo"]["method"] == "cscv_rank_logit"
         assert evidence["overlapping_label_policy"]["monte_carlo_mdd"].startswith(
             "owned_by_final"

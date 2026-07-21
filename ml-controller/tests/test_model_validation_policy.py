@@ -134,6 +134,10 @@ def test_tabm_and_patchtst_policy_requires_tail_segment_and_return_quality_guard
         assert cpcv["tail_fold_guard"]["enabled"] is True
         assert cpcv["tail_fold_guard"]["required_for_serving_promotion"] is True
         assert cpcv["tail_fold_guard"]["tail_folds"] == 3
+        assert cpcv["tail_fold_guard"]["decision_mode"] == "date_cluster_hac_uncertainty_v1"
+        assert cpcv["tail_fold_guard"]["confidence_level"] == 0.90
+        assert cpcv["tail_fold_guard"]["min_date_clusters"] == 10
+        assert cpcv["tail_fold_guard"]["hard_fail_rule"] == "upper_confidence_bound_below_ic_floor"
         assert cpcv["segment_ic_guard"]["enabled"] is True
         assert cpcv["segment_ic_guard"]["required_segments"] == ["LISTED", "OTC"]
         assert cpcv["segment_ic_guard"]["required_for_serving_promotion"] is True

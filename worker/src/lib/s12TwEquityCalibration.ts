@@ -410,7 +410,14 @@ function buildArtifactCandidate(
   const baselineDrawdown = maxDrawdownR(validation)
   const selectedDrawdown = maxDrawdownR(selectedValidation)
   const coverage = selectedValidation.length / validation.length
-  const approved = selectedValidation.length >= 10 && coverage >= 0.35 && validationMean >= 0 && validationHitRate >= 0.45 && selectedDrawdown >= baselineDrawdown && validationMean >= baselineValidationMean
+  const failedGates: string[] = []
+  if (selectedValidation.length < 10) failedGates.push('selected_validation_samples')
+  if (coverage < 0.35) failedGates.push('validation_coverage')
+  if (validationMean < 0) failedGates.push('selected_validation_mean_r')
+  if (validationHitRate < 0.45) failedGates.push('selected_validation_hit_rate')
+  if (selectedDrawdown < baselineDrawdown) failedGates.push('validation_drawdown_non_degradation')
+  if (validationMean < baselineValidationMean) failedGates.push('validation_mean_non_degradation')
+  const approved = failedGates.length === 0
   const nowIso = new Date().toISOString()
   const tp1Mfe = Math.max(0, Math.min(0.5, quantile(profitable.map((row) => row.mfePct), 0.5) ?? 0))
   const tp2Mfe = Math.max(tp1Mfe, Math.min(0.8, quantile(profitable.map((row) => row.mfePct), 0.75) ?? tp1Mfe))
@@ -454,6 +461,7 @@ function buildArtifactCandidate(
       selected_validation_hit_rate: round(validationHitRate),
       baseline_validation_max_drawdown_r: round(baselineDrawdown),
       selected_validation_max_drawdown_r: round(selectedDrawdown),
+      failed_gates: failedGates,
       session_acceptance_threshold_selection: {
         status: sessionPolicyApproved ? 'selected' : 'insufficient_oos_evidence',
         train_feature_coverage: round(sessionFeatureCoverage),
@@ -508,10 +516,20 @@ export async function runS12TwCalibration(
     .map((group) => buildArtifactCandidate(group.rows, group.scope, cadence, runId, startDate, options.runDate))
     .filter((artifact): artifact is S12TwCalibrationArtifact => artifact != null)
   const approved = artifacts.filter((artifact) => artifact.status === 'approved')
+  const failedGateDistribution: Record<string, number> = {}
+  for (const artifact of artifacts) {
+    const gates = Array.isArray(artifact.metrics.failed_gates)
+      ? artifact.metrics.failed_gates
+      : []
+    for (const gate of gates) {
+      const key = String(gate)
+      failedGateDistribution[key] = (failedGateDistribution[key] ?? 0) + 1
+    }
+  }
   let written = 0
   if (options.dryRun !== true) {
-    for (const artifact of approved) {
-      await db.prepare(`
+    for (const artifact of artifacts) {
+      if (artifact.status === 'approved') await db.prepare(`
         UPDATE s12_tw_calibration_artifacts
            SET superseded_at = ?
          WHERE status = 'approved'
@@ -557,13 +575,19 @@ export async function runS12TwCalibration(
       approved.length ? 'promoted' : 'frozen',
       grouped.size,
       written,
-      JSON.stringify({ evidence: evidence.length, candidates: artifacts.length, approved: approved.length }),
+      JSON.stringify({
+        evidence: evidence.length,
+        candidates: artifacts.length,
+        approved: approved.length,
+        rejected: artifacts.length - approved.length,
+        failed_gate_distribution: failedGateDistribution,
+      }),
     ).run()
   }
   const status = approved.length ? (options.dryRun ? 'validated' : 'promoted') : 'frozen'
   return {
     status,
-    summary: `s12_tw_calibration cadence=${cadence} status=${status} evidence=${evidence.length} scopes=${grouped.size} candidates=${artifacts.length} approved=${approved.length} written=${written}`,
+    summary: `s12_tw_calibration cadence=${cadence} status=${status} evidence=${evidence.length} scopes=${grouped.size} candidates=${artifacts.length} approved=${approved.length} rejected=${artifacts.length - approved.length} written=${written} failed_gates=${JSON.stringify(failedGateDistribution)}`,
     artifacts,
     written,
   }

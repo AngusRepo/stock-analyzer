@@ -8,6 +8,7 @@ Common local commands:
   cd ml-service && python -m modal deploy modal_app.py
   cd ml-service && python -m modal serve modal_app.py
 """
+import math
 import os
 import modal
 from datetime import datetime, timezone
@@ -1336,7 +1337,8 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
 
     started = time.time()
     payloads = payload.get("payloads") or []
-    sequence_model_series = payload.get("sequence_model_series") or []
+    sequence_model_series_by_model = payload.get("sequence_model_series_by_model") or {}
+    sequence_model_contracts = payload.get("sequence_model_contracts") or {}
     sequence_series = payload.get("sequence_series") or []
     active_versions = payload.get("active_versions") or {}
     model_status = payload.get("model_status") or {}
@@ -1348,6 +1350,19 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
 
     def _skip(reason: str) -> dict:
         return {"error": reason, "results": []}
+
+    def _sequence_input(model_name: str) -> list[dict]:
+        rows = sequence_model_series_by_model.get(model_name) or []
+        return rows if isinstance(rows, list) else []
+
+    def _sequence_skip(model_name: str) -> dict:
+        if not _is_active(model_name):
+            return _skip(f"{model_name} retired by model_pool")
+        contract = sequence_model_contracts.get(model_name) or {}
+        return _skip(
+            f"{model_name} sequence contract unmet "
+            f"(required={contract.get('seq_len') or 'unknown'} usable=0)"
+        )
 
     def _feature() -> list[dict]:
         raw_chunk_size = payload.get("predict_batch_v2_chunk_size")
@@ -1401,34 +1416,37 @@ def pipeline_prediction_bundle(payload: dict) -> dict:
         return predict_gnn_graphsage_batch(payloads)
 
     def _dlinear() -> dict:
-        if not _is_active("DLinear") or not sequence_model_series:
-            return _skip("DLinear sequence contract unmet")
+        series = _sequence_input("DLinear")
+        if not _is_active("DLinear") or not series:
+            return _sequence_skip("DLinear")
         results = dlinear_batch_predict(
-            series_list=sequence_model_series,
+            series_list=series,
             horizon_used=5,
             version=active_versions.get("DLinear", "v1"),
         )
-        return {"results": results, "n_input": len(sequence_model_series), "n_success": sum(1 for r in results if not r.get("error"))}
+        return {"results": results, "n_input": len(series), "n_success": sum(1 for r in results if not r.get("error"))}
 
     def _patchtst() -> dict:
-        if not _is_active("PatchTST") or not sequence_model_series:
-            return _skip("PatchTST sequence contract unmet")
+        series = _sequence_input("PatchTST")
+        if not _is_active("PatchTST") or not series:
+            return _sequence_skip("PatchTST")
         results = patchtst_batch_predict(
-            series_list=sequence_model_series,
+            series_list=series,
             horizon_used=5,
             version=active_versions.get("PatchTST", "v1"),
         )
-        return {"results": results, "n_input": len(sequence_model_series), "n_success": sum(1 for r in results if not r.get("error"))}
+        return {"results": results, "n_input": len(series), "n_success": sum(1 for r in results if not r.get("error"))}
 
     def _itransformer() -> dict:
-        if not _is_active("iTransformer") or not sequence_model_series:
-            return _skip("iTransformer sequence contract unmet")
+        series = _sequence_input("iTransformer")
+        if not _is_active("iTransformer") or not series:
+            return _sequence_skip("iTransformer")
         results = itransformer_batch_predict(
-            series_list=sequence_model_series,
+            series_list=series,
             horizon_used=5,
             version=active_versions.get("iTransformer", "v1"),
         )
-        return {"results": results, "n_input": len(sequence_model_series), "n_success": sum(1 for r in results if not r.get("error"))}
+        return {"results": results, "n_input": len(series), "n_success": sum(1 for r in results if not r.get("error"))}
 
     def _state_space() -> dict:
         if not state_space_models:
@@ -1947,6 +1965,28 @@ def _load_verified_oof_resume_windows(
             artifact_checksum = str(model.get("artifact_checksum") or "")
             if model.get("status") != "ready" or not artifact_path or len(artifact_checksum) != 64:
                 raise ValueError(f"active8_oof_resume_model_missing:{fold_id}:{model_name}")
+            try:
+                coverage = float(model.get("coverage"))
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"active8_oof_resume_coverage_missing:{fold_id}:{model_name}"
+                ) from None
+            if not math.isfinite(coverage) or coverage < 0.0 or coverage > 1.0:
+                raise ValueError(
+                    f"active8_oof_resume_coverage_invalid:{fold_id}:{model_name}"
+                )
+            coverage_semantics = str(
+                model.get("coverage_gate_semantics") or ""
+            ).strip()
+            coverage_mode = str(model.get("coverage_mode") or "").strip()
+            if not coverage_semantics or coverage_semantics == "unspecified":
+                raise ValueError(
+                    f"active8_oof_resume_coverage_semantics_missing:{fold_id}:{model_name}"
+                )
+            if not coverage_mode:
+                raise ValueError(
+                    f"active8_oof_resume_coverage_mode_missing:{fold_id}:{model_name}"
+                )
             artifact_raw = bucket.blob(artifact_path).download_as_bytes()
             if hashlib.sha256(artifact_raw).hexdigest() != artifact_checksum:
                 raise ValueError(f"active8_oof_resume_artifact_checksum_mismatch:{fold_id}:{model_name}")
@@ -1979,6 +2019,31 @@ def _load_verified_oof_resume_windows(
         "checksum": parent_manifest_checksum,
         "verified_fold_ids": sorted(reused),
         "verification": "split_model_semantic_artifact_sha256_metadata_v1",
+    }
+
+def _oof_coverage_contract(model_cpcv: object) -> dict | None:
+    if not isinstance(model_cpcv, dict):
+        return None
+    raw = model_cpcv.get("coverage_gate_value")
+    semantics = str(model_cpcv.get("coverage_gate_semantics") or "").strip()
+    if raw is None:
+        raw = model_cpcv.get("coverage_mean")
+        semantics = semantics or "coverage_mean"
+    try:
+        coverage = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(coverage) or coverage < 0.0 or coverage > 1.0:
+        return None
+    policy = model_cpcv.get("policy")
+    policy = policy if isinstance(policy, dict) else {}
+    coverage_mode = str(policy.get("coverage_mode") or "").strip()
+    if not semantics or semantics == "unspecified" or not coverage_mode:
+        return None
+    return {
+        "coverage": coverage,
+        "coverage_gate_semantics": semantics,
+        "coverage_mode": coverage_mode,
     }
 
 
@@ -2329,14 +2394,20 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 if m.get("skipped") or m.get("error"):
                     continue
                 artifact = tree_oof.get(model_name) or {}
+                coverage = _oof_coverage_contract(m.get("model_cpcv"))
                 result["model_metrics"][model_name] = {
-                    "status": "ready" if artifact.get("path") else "failed",
+                    "status": "ready" if artifact.get("path") and coverage else "failed",
                     "oos_ic": m.get("oos_ic"),
                     "train_samples": m.get("train"),
                     "test_samples": m.get("test"),
                     "oof_artifact": artifact.get("path"),
                     "artifact_checksum": artifact.get("payload_checksum"),
-                    "reason": None if artifact.get("path") else "oof_artifact_missing",
+                    **(coverage or {}),
+                    "reason": (
+                        None if artifact.get("path") and coverage
+                        else "oof_coverage_evidence_missing" if artifact.get("path")
+                        else "oof_artifact_missing"
+                    ),
                 }
         for model_name, _fn in family_tasks:
             if model_name not in requested:
@@ -2344,11 +2415,15 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             partial = result.get(f"{model_name}_result") or {}
             tracking = (partial.get("ic_tracking") or {}).get(model_name) or {}
             oof_artifact = partial.get("oof_artifact") or {}
-            if partial.get("error") or not oof_artifact.get("path"):
+            coverage = _oof_coverage_contract(tracking.get("model_cpcv"))
+            if partial.get("error") or not oof_artifact.get("path") or not coverage:
                 result["model_metrics"][model_name] = {
                     "status": "failed",
                     "oos_ic": tracking.get("oos_ic"),
-                    "reason": partial.get("error") or "oof_artifact_missing",
+                    "reason": (
+                        partial.get("error")
+                        or ("oof_coverage_evidence_missing" if oof_artifact.get("path") else "oof_artifact_missing")
+                    ),
                 }
                 continue
             result["model_metrics"][model_name] = {
@@ -2357,6 +2432,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 "test_samples": tracking.get("oos_samples"),
                 "oof_artifact": oof_artifact.get("path"),
                 "artifact_checksum": oof_artifact.get("payload_checksum"),
+                **coverage,
             }
         missing_models = [
             model_name for model_name in models
@@ -2416,6 +2492,16 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         }
 
     from app.model_validation import build_model_cpcv_evidence
+    from app.oof_lineage import oof_date_cluster_rank_ic_from_bytes
+
+    date_ic_cache: dict[str, list[dict]] = {}
+
+    def _date_cluster_ics(path: str) -> list[dict]:
+        if path not in date_ic_cache:
+            raw = bucket.blob(path).download_as_bytes()
+            evidence = oof_date_cluster_rank_ic_from_bytes(raw)
+            date_ic_cache[path] = list(evidence.get("date_cluster_ics") or [])
+        return date_ic_cache[path]
 
     per_model_promotion_evidence = {}
     for model_name in active8_models:
@@ -2428,7 +2514,10 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 "fold_id": f"w{window_result['window_id']}",
                 "oos_ic": metrics.get("oos_ic"),
                 "test_rows": int(metrics.get("test_samples") or 0),
-                "coverage": 1.0 if int(metrics.get("test_samples") or 0) > 0 else 0.0,
+                "coverage": float(metrics.get("coverage") or 0.0),
+                "coverage_gate_semantics": metrics.get("coverage_gate_semantics"),
+                "coverage_mode": metrics.get("coverage_mode"),
+                "date_cluster_ics": _date_cluster_ics(str(metrics.get("oof_artifact") or "")),
             })
         per_model_promotion_evidence[model_name] = build_model_cpcv_evidence(
             model=model_name,

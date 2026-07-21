@@ -2439,6 +2439,51 @@ def test_apply_promoted_artifact_to_model_pool_moves_matching_challenger_to_acti
     assert entry["promotion_controller"]["artifact_id"] == "PatchTST:vNew:weekly_drift"
 
 
+def test_apply_promoted_oof_uncertain_recency_uses_degraded_serving_weight():
+    pool = {
+        "models": {
+            "PatchTST": {
+                "status": "active",
+                "version": "v1",
+                "gcs_path": "universal/patchtst/v1.zip",
+            }
+        }
+    }
+    artifact = {
+        "artifact_id": "PatchTST:vNew:oof_full_fit_release",
+        "model_name": "PatchTST",
+        "version": "vNew",
+        "candidate_type": "oof_full_fit_release",
+        "artifact_path": "universal/patchtst/vNew.zip",
+        "offline_evidence_json": {
+            "registration": {
+                "oof_promotion_evidence": {
+                    "decision": "PASS",
+                    "serving_disposition": "DEGRADED",
+                    "warning_gates": ["cpcv_tail_oos_ic_uncertain"],
+                    "tail_fold_stats": {"upper_confidence_bound": 0.012},
+                }
+            }
+        },
+    }
+
+    result = registry.apply_promoted_artifact_to_model_pool(
+        pool,
+        artifact,
+        reason="uncertainty_aware_oof_promotion",
+        promoted_at="2026-07-21T12:00:00+00:00",
+    )
+
+    entry = pool["models"]["PatchTST"]
+    assert result["serving_status"] == "degraded"
+    assert entry["status"] == "degraded"
+    assert entry["degraded_since"] == "2026-07-21T12:00:00+00:00"
+    assert entry["degraded_reason"] == "uncertain_recent_oof_degradation"
+    assert entry["degraded_evidence"]["warning_gates"] == [
+        "cpcv_tail_oos_ic_uncertain"
+    ]
+
+
 def test_apply_promoted_artifact_to_model_pool_rejects_non_active8_artifacts():
     pool = {
         "models": {
@@ -2713,11 +2758,11 @@ def _oof_full_fit_release_row(*, decision: str = "PASS") -> dict[str, object]:
             },
             "oof_promotion_evidence": evidence,
             "oof_release_validation": {
-                "schema_version": "active8-oof-base-ranker-release-validation-v1",
+                "schema_version": "active8-oof-base-ranker-release-validation-v2",
                 "validation_role": "base_ranker",
                 "decision": "PASS",
                 "pbo": {
-                    "scope": "candidate_oof_cohort",
+                    "scope": "cohort_model_selection_process",
                     "method": "cscv_rank_logit",
                     "go_live_verdict": "PASS",
                     "pbo": 0.20,

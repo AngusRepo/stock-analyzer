@@ -6,6 +6,7 @@ the single-stock runtime owner. It preserves the same error envelope as
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 import os
 import time
@@ -780,29 +781,60 @@ def predict_stock_v2_batch(payloads: list[dict]) -> list[dict]:
         valid_requests = [requests_by_position[idx] for idx in valid_positions]
         try:
             overrides_by_request = _build_feature_model_batch_runtime_overrides(valid_requests)
+            if len(overrides_by_request) != len(valid_requests):
+                raise RuntimeError(
+                    "batch override cardinality mismatch: "
+                    f"{len(overrides_by_request)} != {len(valid_requests)}"
+                )
             valid_requests = [
                 _copy_request_with_runtime_overrides(req, overrides)
                 for req, overrides in zip(valid_requests, overrides_by_request)
             ]
-        except Exception:
-            # The serial owner remains the correctness retry path for unexpected
-            # artifact/schema drift. Per-symbol error wrapping still applies.
-            valid_requests = [requests_by_position[idx] for idx in valid_positions]
+        except Exception as exc:
+            error = RuntimeError(
+                f"batch_override_build_failed:{type(exc).__name__}:{exc}"
+            )
+            for idx in valid_positions:
+                results[idx] = _error_result(payloads[idx], error)
+            print(
+                f"[BatchPrediction] override_build_failed count={len(valid_positions)} "
+                f"error={type(exc).__name__}:{exc}",
+                flush=True,
+            )
+            return [result for result in results if result is not None]
 
         finalize_started = time.time()
         finalize_total = len(valid_requests)
-        print(f"[BatchPrediction] finalize_start count={finalize_total}", flush=True)
-        for completed, (idx, req) in enumerate(zip(valid_positions, valid_requests), start=1):
-            try:
-                results[idx] = predict_fn(req)
-            except Exception as exc:  # noqa: BLE001
-                results[idx] = _error_result(payloads[idx], exc)
-            if completed == finalize_total or completed % 16 == 0:
-                print(
-                    f"[BatchPrediction] finalize_progress completed={completed}/{finalize_total} "
-                    f"elapsed_s={time.time() - finalize_started:.3f}",
-                    flush=True,
-                )
+        workers = max(
+            1,
+            min(
+                8,
+                finalize_total,
+                int(os.environ.get("PREDICT_BATCH_V2_FINALIZE_WORKERS", "4")),
+            ),
+        )
+        print(
+            f"[BatchPrediction] finalize_start count={finalize_total} "
+            f"mode=parallel_shared_context workers={workers}",
+            flush=True,
+        )
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(predict_fn, req): idx
+                for idx, req in zip(valid_positions, valid_requests)
+            }
+            for completed, future in enumerate(as_completed(futures), start=1):
+                idx = futures[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    results[idx] = _error_result(payloads[idx], exc)
+                if completed == finalize_total or completed % 16 == 0:
+                    print(
+                        f"[BatchPrediction] finalize_progress completed={completed}/{finalize_total} "
+                        f"elapsed_s={time.time() - finalize_started:.3f}",
+                        flush=True,
+                    )
 
     return [result for result in results if result is not None]
 
@@ -827,8 +859,8 @@ def predict_stock_v2_batch_with_metrics(payloads: list[dict]) -> dict:
             "batch": {
                 "n_input": len(payloads or []),
                 "n_error": sum(1 for r in results if r.get("error")),
-                "contract": "modal_predict_batch_v2_shared_serving_context_v3",
-                "finalize_mode": "serial_signal_only_shared_serving_context",
+                "contract": "modal_predict_batch_v2_shared_serving_context_v4",
+                "finalize_mode": "parallel_signal_only_shared_serving_context",
             },
             "preload": preload,
             "timing": {

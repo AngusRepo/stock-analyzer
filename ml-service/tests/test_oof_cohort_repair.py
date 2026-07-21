@@ -64,6 +64,9 @@ def test_repair_failed_oof_manifest_verifies_artifacts_and_rebuilds_evidence():
                     "status": "ready",
                     "oos_ic": 0.1,
                     "test_samples": 100,
+                    "coverage": 0.82,
+                    "coverage_gate_semantics": "sequence_window_coverage",
+                    "coverage_mode": "sequence_window",
                     "oof_artifact": patch["path"],
                     "artifact_checksum": patch["payload_checksum"],
                 },
@@ -81,7 +84,17 @@ def test_repair_failed_oof_manifest_verifies_artifacts_and_rebuilds_evidence():
         fold_id="w0",
         model_name="iTransformer",
         model_result={
-            "ic_tracking": {"iTransformer": {"oos_ic": 0.2, "oos_samples": 100}},
+            "ic_tracking": {
+                "iTransformer": {
+                    "oos_ic": 0.2,
+                    "oos_samples": 100,
+                    "model_cpcv": {
+                        "coverage_gate_value": 0.75,
+                        "coverage_gate_semantics": "sequence_window_coverage",
+                        "policy": {"coverage_mode": "sequence_window"},
+                    },
+                },
+            },
             "oof_artifact": {
                 "path": itransformer["path"],
                 "payload_checksum": itransformer["payload_checksum"],
@@ -118,8 +131,114 @@ def test_repair_rejects_artifact_checksum_mismatch():
             fold_id="w0",
             model_name="iTransformer",
             model_result={
-                "ic_tracking": {"iTransformer": {"oos_ic": 0.2, "oos_samples": 2}},
+                "ic_tracking": {
+                    "iTransformer": {
+                        "oos_ic": 0.2,
+                        "oos_samples": 2,
+                        "model_cpcv": {
+                            "coverage_gate_value": 0.5,
+                            "coverage_gate_semantics": "sequence_window_coverage",
+                            "policy": {"coverage_mode": "sequence_window"},
+                        },
+                    },
+                },
                 "oof_artifact": {"path": "missing.npz", "payload_checksum": "0" * 64},
             },
             bucket=bucket,
         )
+
+
+
+def test_repair_rejects_incomplete_coverage_contract():
+    from app.oof_cohort_repair import manifest_checksum, repair_failed_oof_manifest
+
+    bucket = _Bucket()
+    patch = _artifact(bucket, "cohort", "PatchTST")
+    itransformer = _artifact(bucket, "cohort", "iTransformer")
+    manifest = {
+        "cohort_id": "cohort",
+        "generation_mode": "purged_oof",
+        "model_set": ["PatchTST", "iTransformer"],
+        "windows": [{
+            "window_id": 0,
+            "model_metrics": {
+                "PatchTST": {
+                    "status": "ready",
+                    "oos_ic": 0.1,
+                    "test_samples": 100,
+                    "coverage": 0.82,
+                    "coverage_gate_semantics": "sequence_window_coverage",
+                    "oof_artifact": patch["path"],
+                    "artifact_checksum": patch["payload_checksum"],
+                },
+                "iTransformer": {"status": "failed", "reason": "shape"},
+            },
+        }],
+        "aggregate": {},
+        "status": "failed",
+    }
+    manifest["manifest_checksum"] = manifest_checksum(manifest)
+
+    result = repair_failed_oof_manifest(
+        manifest,
+        fold_id="w0",
+        model_name="iTransformer",
+        model_result={
+            "ic_tracking": {
+                "iTransformer": {
+                    "oos_ic": 0.2,
+                    "oos_samples": 100,
+                    "model_cpcv": {
+                        "coverage_gate_value": 0.8,
+                        "coverage_gate_semantics": "sequence_window_coverage",
+                        "policy": {"coverage_mode": "sequence_window"},
+                    },
+                },
+            },
+            "oof_artifact": {
+                "path": itransformer["path"],
+                "payload_checksum": itransformer["payload_checksum"],
+            },
+        },
+        bucket=bucket,
+    )
+
+    assert result["status"] == "failed"
+    assert result["windows"][0]["model_metrics"]["PatchTST"]["reason"] == (
+        "oof_coverage_contract_incomplete"
+    )
+
+
+def test_oof_artifact_builds_date_market_cluster_rank_ic_evidence():
+    from app.oof_lineage import (
+        oof_date_cluster_rank_ic_from_bytes,
+        save_oof_prediction_artifact,
+    )
+
+    bucket = _Bucket()
+    rows = 20
+    artifact = save_oof_prediction_artifact(
+        bucket=bucket,
+        gcs_prefix="prep",
+        cohort_id="cohort",
+        fold_id="w0",
+        model_name="PatchTST",
+        artifact_version="v1",
+        raw_scores=np.arange(rows, dtype=float),
+        targets=np.arange(rows, dtype=float),
+        dates=np.asarray(["2026-07-01"] * rows),
+        symbols=np.asarray([f"S{index:03d}" for index in range(rows)]),
+        markets=np.asarray(["LISTED"] * rows),
+        label_known_dates=np.asarray(["2026-07-08"] * rows),
+        split_metadata={"method": "test"},
+    )
+
+    evidence = oof_date_cluster_rank_ic_from_bytes(
+        bucket.blob(artifact["path"]).download_as_bytes()
+    )
+
+    assert evidence["schema_version"] == "oof-date-cluster-rank-ic-v1"
+    assert evidence["date_cluster_count"] == 1
+    assert evidence["date_cluster_ics"][0]["date"] == "2026-07-01"
+    assert evidence["date_cluster_ics"][0]["rank_ic"] == pytest.approx(1.0)
+    assert evidence["date_cluster_ics"][0]["test_rows"] == rows

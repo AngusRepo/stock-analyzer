@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 
 from .model_validation import build_model_cpcv_evidence
+from .oof_lineage import oof_date_cluster_rank_ic_from_bytes
 from .oof_lineage import OOF_PREDICTION_SCHEMA_VERSION, OOF_TARGET_SEMANTIC_VERSION
 
 
@@ -50,17 +51,46 @@ def _verify_artifact(
             raise ValueError(f"oof_repair_artifact_metadata_mismatch:{fold_id}:{model_name}:{key}")
 
 
+def _coverage_contract(tracking: dict[str, Any]) -> dict[str, Any]:
+    cpcv = tracking.get("model_cpcv")
+    if not isinstance(cpcv, dict):
+        raise ValueError("oof_repair_coverage_evidence_missing")
+    raw = cpcv.get("coverage_gate_value")
+    semantics = str(cpcv.get("coverage_gate_semantics") or "").strip()
+    if raw is None:
+        raw = cpcv.get("coverage_mean")
+        semantics = semantics or "coverage_mean"
+    try:
+        coverage = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("oof_repair_coverage_evidence_invalid") from exc
+    if not np.isfinite(coverage) or coverage < 0.0 or coverage > 1.0:
+        raise ValueError("oof_repair_coverage_evidence_invalid")
+    policy = cpcv.get("policy")
+    policy = policy if isinstance(policy, dict) else {}
+    coverage_mode = str(policy.get("coverage_mode") or "").strip()
+    if not semantics or semantics == "unspecified" or not coverage_mode:
+        raise ValueError("oof_repair_coverage_contract_incomplete")
+    return {
+        "coverage": coverage,
+        "coverage_gate_semantics": semantics,
+        "coverage_mode": coverage_mode,
+    }
+
+
 def _model_metric(model_name: str, model_result: dict[str, Any]) -> dict[str, Any]:
     tracking = (model_result.get("ic_tracking") or {}).get(model_name) or {}
     artifact = model_result.get("oof_artifact") or {}
     if model_result.get("error") or not artifact.get("path"):
         raise ValueError(f"oof_repair_model_result_failed:{model_name}")
+    coverage = _coverage_contract(tracking)
     return {
         "status": "ready",
         "oos_ic": tracking.get("oos_ic"),
         "test_samples": tracking.get("oos_samples"),
         "oof_artifact": artifact.get("path"),
         "artifact_checksum": artifact.get("payload_checksum"),
+        **coverage,
     }
 
 
@@ -113,6 +143,22 @@ def repair_failed_oof_manifest(
             if row.get("status") != "ready":
                 missing.append(expected_model)
                 continue
+            if row.get("coverage") is None:
+                row["status"] = "failed"
+                row["reason"] = "oof_coverage_evidence_missing"
+                missing.append(expected_model)
+                continue
+            coverage_semantics = str(row.get("coverage_gate_semantics") or "").strip()
+            coverage_mode = str(row.get("coverage_mode") or "").strip()
+            if (
+                not coverage_semantics
+                or coverage_semantics == "unspecified"
+                or not coverage_mode
+            ):
+                row["status"] = "failed"
+                row["reason"] = "oof_coverage_contract_incomplete"
+                missing.append(expected_model)
+                continue
             _verify_artifact(
                 bucket,
                 path=str(row.get("oof_artifact") or ""),
@@ -154,7 +200,15 @@ def repair_failed_oof_manifest(
                 "fold_id": f"w{int(window['window_id'])}",
                 "oos_ic": row["oos_ic"],
                 "test_rows": samples,
-                "coverage": 1.0 if samples > 0 else 0.0,
+                "coverage": float(row.get("coverage") or 0.0),
+                "coverage_gate_semantics": row.get("coverage_gate_semantics"),
+                "coverage_mode": row.get("coverage_mode"),
+                "date_cluster_ics": list(
+                    oof_date_cluster_rank_ic_from_bytes(
+                        bucket.blob(str(row.get("oof_artifact") or "")).download_as_bytes()
+                    ).get("date_cluster_ics")
+                    or []
+                ),
             })
         promotion_evidence[expected_model] = build_model_cpcv_evidence(
             model=expected_model,

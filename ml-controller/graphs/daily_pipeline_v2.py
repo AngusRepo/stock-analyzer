@@ -327,6 +327,65 @@ def _sequence_contract_subset(
     return usable, excluded
 
 
+SEQUENCE_ALPHA_MODELS = ("DLinear", "PatchTST", "iTransformer")
+
+
+def _sequence_model_contracts(
+    *,
+    pool: dict | None,
+    model_status: dict[str, str],
+) -> dict[str, dict[str, Any]]:
+    """Resolve sequence length from each exact serving artifact."""
+    models = (pool or {}).get("models")
+    models = models if isinstance(models, dict) else {}
+    contracts: dict[str, dict[str, Any]] = {}
+    for model_name in SEQUENCE_ALPHA_MODELS:
+        status = str(model_status.get(model_name) or "retired").strip()
+        if status not in {"active", "degraded"}:
+            continue
+        entry = models.get(model_name)
+        entry = entry if isinstance(entry, dict) else {}
+        evidence = entry.get("last_artifact_evidence")
+        evidence = evidence if isinstance(evidence, dict) else {}
+        raw_seq_len = entry.get("seq_len")
+        if raw_seq_len is None:
+            raw_seq_len = evidence.get("seq_len")
+        try:
+            seq_len = int(raw_seq_len)
+        except (TypeError, ValueError):
+            seq_len = 0
+        if seq_len <= 0:
+            raise RuntimeError(
+                f"{model_name} active serving artifact missing valid seq_len"
+            )
+        contracts[model_name] = {
+            "seq_len": seq_len,
+            "version": str(entry.get("version") or "").strip(),
+            "artifact_path": str(
+                entry.get("gcs_path") or entry.get("artifact_path") or ""
+            ).strip(),
+            "source": "serving_pool.models",
+        }
+    return contracts
+
+
+def _sequence_model_subsets(
+    series: list[dict],
+    *,
+    contracts: dict[str, dict[str, Any]],
+) -> tuple[dict[str, list[dict]], dict[str, list[dict[str, Any]]]]:
+    usable_by_model: dict[str, list[dict]] = {}
+    excluded_by_model: dict[str, list[dict[str, Any]]] = {}
+    for model_name, contract in contracts.items():
+        usable, excluded = _sequence_contract_subset(
+            series,
+            min_points=int(contract["seq_len"]),
+        )
+        usable_by_model[model_name] = usable
+        excluded_by_model[model_name] = excluded
+    return usable_by_model, excluded_by_model
+
+
 def _sequence_coverage(series: list[dict], *, min_points: int = 50) -> dict[str, Any]:
     total = len(series or [])
     usable, _excluded = _sequence_contract_subset(series, min_points=min_points)
@@ -750,28 +809,6 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         base_sequence_series,
         target_points=daily_sequence_target_points(),
     )
-    sequence_contract_points = daily_sequence_target_points()
-    sequence_model_series, sequence_model_excluded = _sequence_contract_subset(
-        sequence_series,
-        min_points=sequence_contract_points,
-    )
-    sequence_eligible_symbols = {
-        str(row.get("symbol") or row.get("stock_id") or "")
-        for row in sequence_model_series
-        if isinstance(row, dict) and (row.get("symbol") or row.get("stock_id"))
-    }
-    sequence_excluded_by_symbol = {
-        str(row.get("symbol") or ""): row
-        for row in sequence_model_excluded
-        if isinstance(row, dict) and row.get("symbol")
-    }
-    sequence_dataset_meta = {
-        **sequence_dataset_meta,
-        "sequence_model_contract_points": sequence_contract_points,
-        "sequence_model_usable": len(sequence_model_series),
-        "sequence_model_excluded_count": len(sequence_model_excluded),
-        "sequence_model_excluded_symbols": sequence_model_excluded[:20],
-    }
 
     modal_prediction_bundle = state.get("modal_prediction_bundle") or {}
     use_modal_prediction_bundle = (
@@ -804,13 +841,54 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         if serving_model_status:
             model_status = _merge_model_status_preserving_sidecars(model_status, serving_model_status)
 
+    sequence_contracts = _sequence_model_contracts(
+        pool=serving_pool,
+        model_status=model_status,
+    )
+    sequence_series_by_model, sequence_excluded_by_model = _sequence_model_subsets(
+        sequence_series,
+        contracts=sequence_contracts,
+    )
+    sequence_eligible_by_model = {
+        model_name: {
+            str(row.get("symbol") or row.get("stock_id") or "")
+            for row in rows
+            if isinstance(row, dict) and (row.get("symbol") or row.get("stock_id"))
+        }
+        for model_name, rows in sequence_series_by_model.items()
+    }
+    sequence_excluded_by_model_symbol = {
+        model_name: {
+            str(row.get("symbol") or ""): row
+            for row in rows
+            if isinstance(row, dict) and row.get("symbol")
+        }
+        for model_name, rows in sequence_excluded_by_model.items()
+    }
+    sequence_dataset_meta = {
+        **sequence_dataset_meta,
+        "sequence_model_contracts": {
+            model_name: {
+                **contract,
+                "usable": len(sequence_series_by_model.get(model_name) or []),
+                "excluded_count": len(sequence_excluded_by_model.get(model_name) or []),
+                "excluded_symbols": (sequence_excluded_by_model.get(model_name) or [])[:20],
+            }
+            for model_name, contract in sequence_contracts.items()
+        },
+    }
+
     async def _skip_batch(reason: str) -> dict:
         return {"error": reason, "results": []}
 
     def _sequence_model_skip_reason(model_name: str) -> str:
         if not _is_loaded_serving_model(model_status, model_name, "ml_predict_task_plan"):
             return f"{model_name} retired by model_pool"
-        return f"{model_name} sequence contract unmet"
+        contract = sequence_contracts.get(model_name) or {}
+        return (
+            f"{model_name} sequence contract unmet "
+            f"(required={contract.get('seq_len') or 'unknown'} usable=0)"
+        )
 
     stage_timings: dict[str, dict[str, Any]] = {}
 
@@ -861,29 +939,29 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
         )
         dlinear_task = (
             modal_client.dlinear_batch_predict(
-                sequence_model_series,
+                sequence_series_by_model.get("DLinear") or [],
                 horizon_used=5,
                 version=_require_loaded_serving_version(active_versions, "DLinear", "ml_predict_task_plan"),
             )
-            if _is_loaded_serving_model(model_status, "DLinear", "ml_predict_task_plan") and sequence_model_series
+            if _is_loaded_serving_model(model_status, "DLinear", "ml_predict_task_plan") and sequence_series_by_model.get("DLinear")
             else _skip_batch(_sequence_model_skip_reason("DLinear"))
         )
         patchtst_task = (
             modal_client.patchtst_batch_predict(
-                sequence_model_series,
+                sequence_series_by_model.get("PatchTST") or [],
                 horizon_used=5,
                 version=_require_loaded_serving_version(active_versions, "PatchTST", "ml_predict_task_plan"),
             )
-            if _is_loaded_serving_model(model_status, "PatchTST", "ml_predict_task_plan") and sequence_model_series
+            if _is_loaded_serving_model(model_status, "PatchTST", "ml_predict_task_plan") and sequence_series_by_model.get("PatchTST")
             else _skip_batch(_sequence_model_skip_reason("PatchTST"))
         )
         itransformer_task = (
             modal_client.itransformer_batch_predict(
-                sequence_model_series,
+                sequence_series_by_model.get("iTransformer") or [],
                 horizon_used=5,
                 version=_require_loaded_serving_version(active_versions, "iTransformer", "ml_predict_task_plan"),
             )
-            if _is_loaded_serving_model(model_status, "iTransformer", "ml_predict_task_plan") and sequence_model_series
+            if _is_loaded_serving_model(model_status, "iTransformer", "ml_predict_task_plan") and sequence_series_by_model.get("iTransformer")
             else _skip_batch(_sequence_model_skip_reason("iTransformer"))
         )
 
@@ -1061,7 +1139,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     # Guard against DLinear total failure (Stage 0.2 ??may have no trained weights yet)
     dlinear_map: dict[str, dict] = {}
     if isinstance(dlinear_raw, BaseException):
-        if _active_required_model("DLinear", sequence_model_series):
+        if _active_required_model("DLinear", sequence_series_by_model.get("DLinear") or []):
             raise RuntimeError(f"DLinear active model batch failed entirely: {dlinear_raw}") from dlinear_raw
         logger.warning(f"[Pipeline V2] DLinear batch failed entirely: {dlinear_raw}")
     elif isinstance(dlinear_raw, dict) and not dlinear_raw.get("error"):
@@ -1071,25 +1149,25 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 dlinear_map[sym] = dr
         if dlinear_map:
             logger.info(
-                f"[Pipeline V2] DLinear universal: {len(dlinear_map)}/{len(sequence_series)} succeeded"
+                f"[Pipeline V2] DLinear universal: {len(dlinear_map)}/{len(sequence_series_by_model.get('DLinear') or [])} succeeded"
             )
         else:
-            if _active_required_model("DLinear", sequence_model_series):
+            if _active_required_model("DLinear", sequence_series_by_model.get("DLinear") or []):
                 raise RuntimeError("DLinear active model returned zero usable predictions")
             logger.info("[Pipeline V2] DLinear universal: 0 succeeded (likely no trained weights in GCS yet)")
     elif isinstance(dlinear_raw, dict) and dlinear_raw.get("results") == []:
-        if _active_required_model("DLinear", sequence_model_series):
+        if _active_required_model("DLinear", sequence_series_by_model.get("DLinear") or []):
             raise RuntimeError(f"DLinear active model skipped unexpectedly: {dlinear_raw.get('error')}")
         logger.debug(f"[Pipeline V2] DLinear skipped: {dlinear_raw.get('error')}")
     else:
-        if _active_required_model("DLinear", sequence_model_series):
+        if _active_required_model("DLinear", sequence_series_by_model.get("DLinear") or []):
             raise RuntimeError(f"DLinear active model returned invalid payload: {dlinear_raw}")
         logger.warning(f"[Pipeline V2] DLinear batch returned error: {dlinear_raw}")
 
     # Guard against PatchTST total failure (Stage 0.3 ??may have no trained weights yet)
     patchtst_map: dict[str, dict] = {}
     if isinstance(patchtst_raw, BaseException):
-        if _active_required_model("PatchTST", sequence_model_series):
+        if _active_required_model("PatchTST", sequence_series_by_model.get("PatchTST") or []):
             raise RuntimeError(f"PatchTST active model batch failed entirely: {patchtst_raw}") from patchtst_raw
         logger.warning(f"[Pipeline V2] PatchTST batch failed entirely: {patchtst_raw}")
     elif isinstance(patchtst_raw, dict) and not patchtst_raw.get("error"):
@@ -1099,18 +1177,18 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 patchtst_map[sym] = pr
         if patchtst_map:
             logger.info(
-                f"[Pipeline V2] PatchTST universal: {len(patchtst_map)}/{len(sequence_series)} succeeded"
+                f"[Pipeline V2] PatchTST universal: {len(patchtst_map)}/{len(sequence_series_by_model.get('PatchTST') or [])} succeeded"
             )
         else:
-            if _active_required_model("PatchTST", sequence_model_series):
+            if _active_required_model("PatchTST", sequence_series_by_model.get("PatchTST") or []):
                 raise RuntimeError("PatchTST active model returned zero usable predictions")
             logger.info("[Pipeline V2] PatchTST universal: 0 succeeded (likely no trained weights in GCS yet)")
     elif isinstance(patchtst_raw, dict) and patchtst_raw.get("results") == []:
-        if _active_required_model("PatchTST", sequence_model_series):
+        if _active_required_model("PatchTST", sequence_series_by_model.get("PatchTST") or []):
             raise RuntimeError(f"PatchTST active model skipped unexpectedly: {patchtst_raw.get('error')}")
         logger.debug(f"[Pipeline V2] PatchTST skipped: {patchtst_raw.get('error')}")
     else:
-        if _active_required_model("PatchTST", sequence_model_series):
+        if _active_required_model("PatchTST", sequence_series_by_model.get("PatchTST") or []):
             raise RuntimeError(f"PatchTST active model returned invalid payload: {patchtst_raw}")
         logger.warning(f"[Pipeline V2] PatchTST batch returned error: {patchtst_raw}")
 
@@ -1201,7 +1279,11 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
     markov_raw = state_space_overlays.get("MarkovSwitching", {})
     kalman_map = _drain_state_space(kalman_raw, "KalmanFilter")
     markov_map = _drain_state_space(markov_raw, "MarkovSwitching")
-    itransformer_map = _drain_ts_result(itransformer_raw, "iTransformer", sequence_model_series)
+    itransformer_map = _drain_ts_result(
+        itransformer_raw,
+        "iTransformer",
+        sequence_series_by_model.get("iTransformer") or [],
+    )
     # Guard against feature batch total failure
     if isinstance(results, BaseException):
         logger.error(f"[Pipeline V2] Feature batch_predict failed: {results}")
@@ -1249,10 +1331,29 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
             continue
         if isinstance(payload, dict):
             row["stock_meta"] = payload.get("stock_meta") or {}
-        sequence_eligible = sym in sequence_eligible_symbols
-        exclusion = sequence_excluded_by_symbol.get(sym) or {}
+        sequence_model_eligibility = {}
+        for model_name, contract in sequence_contracts.items():
+            eligible = sym in (sequence_eligible_by_model.get(model_name) or set())
+            exclusion = (sequence_excluded_by_model_symbol.get(model_name) or {}).get(sym) or {}
+            sequence_model_eligibility[model_name] = {
+                "eligible": eligible,
+                "required_sequence_points": int(contract["seq_len"]),
+                "available_sequence_points": (
+                    int(contract["seq_len"])
+                    if eligible
+                    else exclusion.get("points")
+                ),
+                "reason": (
+                    "active8_sequence_history_contract_met"
+                    if eligible
+                    else "active8_sequence_history_contract_unmet_optional_masked"
+                ),
+            }
+        sequence_eligible = any(
+            item["eligible"] for item in sequence_model_eligibility.values()
+        )
         row["l3_model_eligibility"] = {
-            "schema_version": "l3-active8-universe-eligibility-v2",
+            "schema_version": "l3-active8-universe-eligibility-v3",
             "eligible": True,
             "reason": "active8_core_cross_sectional_contract",
             "sequence_eligible": sequence_eligible,
@@ -1261,12 +1362,7 @@ async def node_ml_predict(state: PipelineStateV2) -> dict:
                 if sequence_eligible
                 else "active8_sequence_history_contract_unmet_optional_masked"
             ),
-            "required_sequence_points": sequence_contract_points,
-            "available_sequence_points": (
-                sequence_contract_points
-                if sequence_eligible
-                else exclusion.get("point_count")
-            ),
+            "sequence_models": sequence_model_eligibility,
             "coverage_policy": "core5-required_sequence-missingness-aware-oof-parity-v1",
         }
         _attach_alt_sources(row, sym)
@@ -3236,6 +3332,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         context = await _attach_pipeline_modal_serving_context(state)
     model_status = dict(context.get("model_status") or {})
     active_versions = dict(context.get("active_versions") or {})
+    serving_pool = dict(context.get("serving_pool") or {})
 
     payloads = state.get("l3_payloads") or state.get("payloads") or []
     batch_ab_key = "|".join(sorted(
@@ -3249,9 +3346,13 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         base_sequence_series,
         target_points=daily_sequence_target_points(),
     )
-    sequence_model_series, sequence_model_excluded = _sequence_contract_subset(
+    sequence_contracts = _sequence_model_contracts(
+        pool=serving_pool,
+        model_status=model_status,
+    )
+    sequence_series_by_model, sequence_excluded_by_model = _sequence_model_subsets(
         sequence_series,
-        min_points=daily_sequence_target_points(),
+        contracts=sequence_contracts,
     )
     state_space_models = {
         model_name: _require_loaded_serving_version(active_versions, model_name, "pipeline_modal_prediction_bundle")
@@ -3267,13 +3368,19 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "predict_batch_v2_contract": predict_contract,
         "predict_batch_v2_chunk_size": int(predict_contract.get("chunk_size") or len(payloads) or 1),
         "sequence_series": _json_safe(sequence_series),
-        "sequence_model_series": _json_safe(sequence_model_series),
+        "sequence_model_series_by_model": _json_safe(sequence_series_by_model),
+        "sequence_model_contracts": _json_safe(sequence_contracts),
         "sequence_dataset_meta": {
             **sequence_dataset_meta,
-            "sequence_model_contract_points": daily_sequence_target_points(),
-            "sequence_model_usable": len(sequence_model_series),
-            "sequence_model_excluded_count": len(sequence_model_excluded),
-            "sequence_model_excluded_symbols": sequence_model_excluded[:20],
+            "sequence_model_contracts": {
+                model_name: {
+                    **contract,
+                    "usable": len(sequence_series_by_model.get(model_name) or []),
+                    "excluded_count": len(sequence_excluded_by_model.get(model_name) or []),
+                    "excluded_symbols": (sequence_excluded_by_model.get(model_name) or [])[:20],
+                }
+                for model_name, contract in sequence_contracts.items()
+            },
         },
         "model_status": model_status,
         "active_versions": active_versions,

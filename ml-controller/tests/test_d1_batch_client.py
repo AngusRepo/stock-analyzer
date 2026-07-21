@@ -125,32 +125,29 @@ def test_batch_execute_does_not_bypass_worker_validation_with_raw_batch(monkeypa
         d1_client.batch_execute([("UPDATE predictions SET direction_correct=? WHERE id=?", [1, 10])])
 
 
-def test_batch_execute_only_uses_rest_loop_after_raw_batch_failure(monkeypatch):
-    execute_calls: list[tuple[str, list]] = []
-
+def test_batch_execute_requires_durable_retry_after_both_batch_transports_fail(monkeypatch):
     def fake_worker_batch(*args, **kwargs):
         raise RuntimeError("worker down")
 
     def fake_raw_batch(*args, **kwargs):
         raise RuntimeError("raw down")
 
-    def fake_execute(sql, params, timeout=60.0):
-        execute_calls.append((sql, params))
-        return {"meta": {"changes": 1}}
-
     monkeypatch.setattr(d1_client, "WORKER_URL", "https://worker.example")
     monkeypatch.setattr(d1_client, "WORKER_AUTH", "token")
     monkeypatch.setattr(d1_client, "_worker_batch_execute", fake_worker_batch)
     monkeypatch.setattr(d1_client, "_raw_batch_execute", fake_raw_batch)
-    monkeypatch.setattr(d1_client, "execute", fake_execute)
+    monkeypatch.setattr(
+        d1_client,
+        "execute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("per-statement fallback must never run")
+        ),
+    )
 
-    result = d1_client.batch_execute([
-        ("UPDATE predictions SET direction_correct=? WHERE id=?", [1, 10]),
-    ])
-
-    assert result["mode"] == "rest_loop_fallback"
-    assert result["success_count"] == 1
-    assert execute_calls == [("UPDATE predictions SET direction_correct=? WHERE id=?", [1, 10])]
+    with pytest.raises(d1_client.D1DurableBatchRetryRequired, match="worker down.*raw down"):
+        d1_client.batch_execute([
+            ("UPDATE predictions SET direction_correct=? WHERE id=?", [1, 10]),
+        ])
 
 
 def test_atomic_batch_execute_is_fail_closed_without_worker(monkeypatch):

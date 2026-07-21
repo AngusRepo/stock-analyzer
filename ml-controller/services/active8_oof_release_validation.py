@@ -7,8 +7,9 @@ from collections import defaultdict
 from dataclasses import asdict
 from typing import Any
 
-from services.model_validation_policy import resolve_model_validation_policy
 from services.pbo_service import _run_cscv_rank_logit_pbo
+
+COHORT_SELECTION_MAX_PBO = 0.50
 
 
 def _compound(values: list[float]) -> float:
@@ -83,31 +84,33 @@ def build_active8_oof_release_validation(
         returns_by_partition[model_name] = [_compound(values) for values in buckets]
 
     pbo = asdict(_run_cscv_rank_logit_pbo(returns_by_partition))
+    cohort_decision = (
+        "PASS"
+        if pbo.get("go_live_verdict") == "PASS"
+        and pbo.get("method") == "cscv_rank_logit"
+        and float(pbo.get("pbo") or 1.0) <= COHORT_SELECTION_MAX_PBO
+        else "FAIL"
+    )
+    cohort_selection = {
+        **pbo,
+        "scope": "cohort_model_selection_process",
+        "decision": cohort_decision,
+        "max_pbo": COHORT_SELECTION_MAX_PBO,
+        "policy_version": "active8-cohort-selection-pbo-v1",
+        "policy_owner": "active8_oof_cohort_selection",
+    }
     by_model: dict[str, dict[str, Any]] = {}
     for model_name in eligible_models:
         if model_name not in daily_returns:
             raise ValueError(f"active8_oof_release_model_missing:{model_name}")
-        policy = resolve_model_validation_policy(
-            model_name=model_name,
-            stage="promotion",
-            regime="unknown",
-            search_trials=len(search_models),
-            sample_count=len(prediction_rows),
-        )
-        max_pbo = float(policy["pbo"]["max_pbo"])
-        decision = (
-            "PASS"
-            if pbo.get("go_live_verdict") == "PASS"
-            and pbo.get("method") == "cscv_rank_logit"
-            and float(pbo.get("pbo") or 1.0) <= max_pbo
-            else "FAIL"
-        )
         model_returns = [daily_returns[model_name][date] for date in common_dates]
         by_model[model_name] = {
-            "schema_version": "active8-oof-base-ranker-release-validation-v1",
+            "schema_version": "active8-oof-base-ranker-release-validation-v2",
             "validation_role": "base_ranker",
-            "decision": decision,
-            "failed_gates": [] if decision == "PASS" else ["candidate_scoped_pbo"],
+            "decision": cohort_decision,
+            "failed_gates": (
+                [] if cohort_decision == "PASS" else ["cohort_model_selection_pbo"]
+            ),
             "cohort_id": cohort_id,
             "source_manifest_checksum": source_manifest_checksum,
             "target_portfolio": "same-market-top-quintile-five-session-net-return",
@@ -115,13 +118,7 @@ def build_active8_oof_release_validation(
                 "dsr": "owned_by_final_non_overlapping_portfolio",
                 "monte_carlo_mdd": "owned_by_final_allocator_execution_path",
             },
-            "pbo": {
-                **pbo,
-                "scope": "candidate_oof_cohort",
-                "max_pbo": max_pbo,
-                "policy_version": policy["policy_version"],
-                "policy_owner": policy["pbo"].get("owner"),
-            },
+            "pbo": dict(cohort_selection),
             "diagnostics": {
                 "common_dates": len(common_dates),
                 "partition_count": partitions,
@@ -131,9 +128,10 @@ def build_active8_oof_release_validation(
             },
         }
     return {
-        "schema_version": "active8-oof-base-ranker-release-validation-bundle-v1",
+        "schema_version": "active8-oof-base-ranker-release-validation-bundle-v2",
         "cohort_id": cohort_id,
         "source_manifest_checksum": source_manifest_checksum,
+        "cohort_selection_validation": cohort_selection,
         "search_models": search_models,
         "common_dates": len(common_dates),
         "partition_count": partitions,

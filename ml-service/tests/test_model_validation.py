@@ -78,25 +78,76 @@ def test_learned_sequence_coverage_fix_keeps_itransformer_performance_fail_close
     assert "cpcv_positive_fold_ratio" in evidence["failed_gates"]
 
 
-def test_tabm_tail_decay_fails_closed_even_when_aggregate_ic_is_positive():
+def _date_clusters(start: int, values: list[float]) -> list[dict]:
+    return [
+        {"date": f"2026-07-{start + index:02d}", "rank_ic": value}
+        for index, value in enumerate(values)
+    ]
+
+
+def test_patchtst_small_negative_tail_is_degraded_not_hard_failed_when_uncertain():
+    fold_ics = [0.105105, 0.150474, -0.232570, 0.014276, 0.192840]
+    recent_clusters = [
+        [-0.04, 0.03, -0.03, 0.02],
+        [-0.03, 0.02, -0.02, 0.01],
+        [-0.02, 0.03, -0.04, 0.01],
+    ]
+    folds = []
+    for index, ic in enumerate(fold_ics):
+        row = {"fold_id": index + 1, "oos_ic": ic, "test_rows": 200, "coverage": 1.0}
+        if index >= 2:
+            row["date_cluster_ics"] = _date_clusters(1 + (index - 2) * 4, recent_clusters[index - 2])
+        folds.append(row)
+
     evidence = build_model_cpcv_evidence(
-        model="TabM",
-        family="tabular_neural",
-        fold_metrics=[
-            {"fold_id": 1, "oos_ic": 0.18, "test_rows": 120, "coverage": 1.0},
-            {"fold_id": 2, "oos_ic": 0.14, "test_rows": 120, "coverage": 1.0},
-            {"fold_id": 3, "oos_ic": 0.12, "test_rows": 120, "coverage": 1.0},
-            {"fold_id": 4, "oos_ic": -0.02, "test_rows": 120, "coverage": 1.0},
-            {"fold_id": 5, "oos_ic": -0.03, "test_rows": 120, "coverage": 1.0},
-            {"fold_id": 6, "oos_ic": -0.01, "test_rows": 120, "coverage": 1.0},
-        ],
+        model="PatchTST",
+        family="learned_sequence",
+        fold_metrics=folds,
+        stage="promotion",
         policy={"min_positive_fold_ratio": 0.45},
     )
 
     assert evidence["oos_ic_mean"] > 0
+    assert evidence["tail_fold_stats"]["tail_oos_ic_mean"] == pytest.approx(-0.008485)
+    assert evidence["tail_fold_stats"]["upper_confidence_bound"] > 0
+    assert evidence["decision"] == "PASS"
+    assert evidence["serving_disposition"] == "DEGRADED"
+    assert "cpcv_tail_oos_ic_uncertain" in evidence["warning_gates"]
+
+
+def test_tabm_confident_negative_recent_date_clusters_fail_promotion():
+    folds = [
+        {"fold_id": 1, "oos_ic": 0.18, "test_rows": 120, "coverage": 1.0},
+        {"fold_id": 2, "oos_ic": 0.14, "test_rows": 120, "coverage": 1.0},
+        {"fold_id": 3, "oos_ic": -0.02, "test_rows": 120, "coverage": 1.0, "date_cluster_ics": _date_clusters(1, [-0.04] * 4)},
+        {"fold_id": 4, "oos_ic": -0.03, "test_rows": 120, "coverage": 1.0, "date_cluster_ics": _date_clusters(5, [-0.03] * 4)},
+        {"fold_id": 5, "oos_ic": -0.01, "test_rows": 120, "coverage": 1.0, "date_cluster_ics": _date_clusters(9, [-0.02] * 4)},
+    ]
+    evidence = build_model_cpcv_evidence(
+        model="TabM",
+        family="tabular_neural",
+        fold_metrics=folds,
+        stage="promotion",
+        policy={"min_positive_fold_ratio": 0.40},
+    )
+
     assert evidence["decision"] == "FAIL"
+    assert evidence["tail_fold_stats"]["upper_confidence_bound"] < 0
     assert "cpcv_tail_oos_ic" in evidence["failed_gates"]
-    assert evidence["tail_fold_stats"]["tail_oos_ic_mean"] < 0
+
+
+def test_patchtst_promotion_requires_date_cluster_uncertainty_evidence():
+    evidence = build_model_cpcv_evidence(
+        model="PatchTST",
+        fold_metrics=[
+            {"fold_id": index, "oos_ic": 0.08, "test_rows": 120, "coverage": 1.0}
+            for index in range(5)
+        ],
+        stage="promotion",
+    )
+
+    assert evidence["decision"] == "FAIL"
+    assert "cpcv_tail_uncertainty_evidence" in evidence["failed_gates"]
 
 
 def test_patchtst_segment_inverted_rank_fails_closed():

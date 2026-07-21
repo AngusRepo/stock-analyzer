@@ -263,6 +263,12 @@ def test_modal_resume_contract_verifies_artifacts_before_pending_fold_training()
     source = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
     assert "active8_oof_resume_artifact_checksum_mismatch" in source
     assert "active8_oof_resume_artifact_metadata_mismatch" in source
+    assert "active8_oof_resume_coverage_missing" in source
+    assert "active8_oof_resume_coverage_invalid" in source
+    assert "active8_oof_resume_coverage_semantics_missing" in source
+    assert "active8_oof_resume_coverage_mode_missing" in source
+    assert 'coverage_semantics == "unspecified"' in source
+    assert '"coverage_gate_semantics": metrics.get("coverage_gate_semantics")' in source
     assert "parent_window.get(\"source_fold_id\") or f\"w{int(parent_window['window_id'])}\"" in source
     assert 'reused_window["source_fold_id"] = source_fold_id' in source
     assert "pending_windows = [" in source
@@ -662,11 +668,11 @@ def test_completed_oof_release_alias_preserves_immutable_lineage(monkeypatch):
         eligible_models=["XGBoost"],
         release_validation_by_model={
             "XGBoost": {
-                "schema_version": "active8-oof-base-ranker-release-validation-v1",
+                "schema_version": "active8-oof-base-ranker-release-validation-v2",
                 "validation_role": "base_ranker",
                 "decision": "PASS",
                 "pbo": {
-                    "scope": "candidate_oof_cohort",
+                    "scope": "cohort_model_selection_process",
                     "method": "cscv_rank_logit",
                     "go_live_verdict": "PASS",
                     "pbo": 0.2,
@@ -763,12 +769,12 @@ def test_completed_oof_release_alias_marks_candidate_pbo_failure(monkeypatch):
         eligible_models=["DLinear"],
         release_validation_by_model={
             "DLinear": {
-                "schema_version": "active8-oof-base-ranker-release-validation-v1",
+                "schema_version": "active8-oof-base-ranker-release-validation-v2",
                 "validation_role": "base_ranker",
                 "decision": "FAIL",
-                "failed_gates": ["candidate_scoped_pbo"],
+                "failed_gates": ["cohort_model_selection_pbo"],
                 "pbo": {
-                    "scope": "candidate_oof_cohort",
+                    "scope": "cohort_model_selection_process",
                     "method": "cscv_rank_logit",
                     "go_live_verdict": "PASS",
                     "pbo": 0.25,
@@ -784,5 +790,5 @@ def test_completed_oof_release_alias_marks_candidate_pbo_failure(monkeypatch):
     assert written[0]["state"] == "offline_failed"
     assert written[0]["offline_gate_decision"] == "FAIL"
     assert json.loads(written[0]["offline_gate_failed_gates"]) == [
-        "candidate_scoped_pbo"
+        "cohort_model_selection_pbo"
     ]

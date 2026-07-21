@@ -644,3 +644,40 @@ def test_predict_stock_v2_requires_runtime_config_contract(monkeypatch):
 
     with pytest.raises(ValueError, match="missing trading_config.ensemble_v2"):
         prediction_runtime.predict_stock_v2(PredictRequest(**payload))
+
+def test_true_batch_override_failure_is_fail_closed(monkeypatch):
+    class Request:
+        def __init__(self, **payload):
+            self.__dict__.update(payload)
+
+    Request.__module__ = "app.schemas"
+    predict_calls: list[str] = []
+
+    def fake_predict(req):
+        predict_calls.append(req.symbol)
+        return {"symbol": req.symbol, "signal": "HOLD"}
+
+    fake_predict.__module__ = "app.prediction_runtime"
+
+    def fail_overrides(_requests):
+        raise RuntimeError("artifact schema drift")
+
+    monkeypatch.setattr(batch_prediction, "PredictRequest", Request)
+    monkeypatch.setattr(batch_prediction, "predict_stock_v2", fake_predict)
+    monkeypatch.setattr(
+        batch_prediction,
+        "_build_feature_model_batch_runtime_overrides",
+        fail_overrides,
+    )
+
+    results = batch_prediction.predict_stock_v2_batch([
+        {"symbol": "2330", "stock_id": 2330},
+        {"symbol": "2317", "stock_id": 2317},
+    ])
+
+    assert predict_calls == []
+    assert [row["symbol"] for row in results] == ["2330", "2317"]
+    assert all(
+        "batch_override_build_failed:RuntimeError:artifact schema drift" in row["error"]
+        for row in results
+    )

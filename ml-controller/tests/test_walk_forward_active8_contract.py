@@ -644,10 +644,10 @@ def test_completed_oof_release_alias_preserves_immutable_lineage(monkeypatch):
             "windows": windows,
         },
         registry_rows=[{
-            "artifact_id": "XGBoost:vOOF:weekly_drift",
+            "artifact_id": "XGBoost:vOOF:oof_full_fit_release",
             "model_name": "XGBoost",
             "version": "vOOF",
-            "candidate_type": "weekly_drift",
+            "candidate_type": "oof_full_fit_release",
             "state": "offline_strong_pass",
             "artifact_path": "universal/xgboost/vOOF.joblib",
             "checksum": "sha256:verified",

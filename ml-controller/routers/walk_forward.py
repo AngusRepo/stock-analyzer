@@ -688,16 +688,27 @@ def _materialize_completed_oof_release_aliases(
         )
         release_validation_by_model = release_validation["by_model"]
     eligible = set(eligible_models)
+    source_by_model: dict[str, dict[str, Any]] = {}
+    source_priority = {"weekly_drift": 0, "oof_full_fit_release": 1}
+    for source_row in registry_rows:
+        model_name = str(source_row.get("model_name") or "")
+        candidate_type = str(source_row.get("candidate_type") or "")
+        if model_name not in eligible or candidate_type not in source_priority:
+            continue
+        current = source_by_model.get(model_name)
+        if current is None or source_priority[candidate_type] < source_priority.get(
+            str(current.get("candidate_type") or ""),
+            99,
+        ):
+            source_by_model[model_name] = source_row
     written: list[str] = []
     passed_models: list[str] = []
     failed_models: list[str] = []
     errors: list[str] = []
-    for source_row in registry_rows:
-        model_name = str(source_row.get("model_name") or "")
-        if (
-            model_name not in eligible
-            or str(source_row.get("candidate_type") or "") != "weekly_drift"
-        ):
+    for model_name in eligible_models:
+        source_row = source_by_model.get(model_name)
+        if source_row is None:
+            errors.append(f"{model_name}:oof_release_alias_source_missing")
             continue
         row = dict(source_row)
         offline = row.get("offline_evidence_json")
@@ -709,8 +720,12 @@ def _materialize_completed_oof_release_aliases(
         metadata = dict(registration.get("metadata") or {})
         failed_gates = evidence.get("failed_gates")
         checksum_value = str(row.get("checksum") or registration.get("checksum") or "")
+        candidate_type = str(row.get("candidate_type") or "")
+        version = str(row.get("version") or "")
+        canonical_source_id = f"{model_name}:{version}:{candidate_type}"
         valid = (
             str(row.get("training_run_id") or "") == expected_run_id
+            and str(row.get("artifact_id") or "") == canonical_source_id
             and str(row.get("state") or "") in {"offline_passed", "offline_strong_pass"}
             and str(row.get("offline_gate_decision") or "") in {"PASS", "STRONG_PASS"}
             and evidence.get("schema_version") == "model-cpcv-evidence-v1"

@@ -20,6 +20,10 @@ from services.ev_lineage_contract import (
     attach_same_run_model_version_evidence,
     ev_feature_lineage_blockers,
 )
+from services.price_horizon_projection_contract import (
+    PRICE_HORIZONS_CTE,
+    PRICE_HORIZON_SOURCE,
+)
 
 
 FEATURE_NAMES = [
@@ -32,7 +36,7 @@ FEATURE_NAMES = [
 CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
 CANONICAL_SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
 CANONICAL_ENSEMBLE_SEMANTIC_VERSION = ENSEMBLE_SEMANTIC_VERSION
-CANONICAL_ADJUSTMENT_FACTOR_SOURCE = "canonical_market_daily:finlab.price"
+CANONICAL_ADJUSTMENT_FACTOR_SOURCE = PRICE_HORIZON_SOURCE
 FEATURE_SEMANTIC_VERSION = L4_FEATURE_SEMANTIC_VERSION
 LABEL_PURGE_DATE_GROUPS = 5
 ARTIFACT_CONTRACT_VERSION = L4_ARTIFACT_CONTRACT_VERSION
@@ -755,25 +759,7 @@ def load_l4_alpha_ev_oof_training_rows(
 
     return query_fn(
         f"""
-        WITH price_horizons AS (
-          SELECT
-            sp.stock_id,
-            date(sp.date) price_date,
-            LEAD(date(sp.date), 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) entry_date,
-            LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) entry_raw_open,
-            LEAD(CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END, 1)
-              OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) entry_adjustment_factor,
-            LEAD(date(sp.date), 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) exit_date,
-            LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) exit_raw_close,
-            LEAD(CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END, 5)
-              OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) exit_adjustment_factor
-          FROM stock_prices sp
-          JOIN stocks s ON s.id = sp.stock_id
-          LEFT JOIN canonical_market_daily cmd
-            ON cmd.stock_id = s.symbol
-           AND cmd.date = date(sp.date)
-           AND cmd.source = 'finlab.price'
-        )
+        WITH {PRICE_HORIZONS_CTE}
         SELECT
           fs.cohort_id,
           fs.fold_id,
@@ -790,7 +776,7 @@ def load_l4_alpha_ev_oof_training_rows(
           fs.recommendation_lane,
           fs.label_known_date,
           fs.model_set_signature,
-          'canonical_market_daily:finlab.price' label_adjustment_source,
+          ph.source label_adjustment_source,
           ((ph.exit_raw_close * ph.exit_adjustment_factor)
             / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} l4_executable_return_pct,
           ph.entry_date l4_entry_date,
@@ -828,32 +814,7 @@ def load_l4_alpha_ev_training_rows(
     outcome_cutoff = knowledge_cutoff_date or end_date
     rows = query_fn(
         f"""
-        WITH price_horizons AS (
-            SELECT
-                sp.stock_id,
-                sp.date AS price_date,
-                LEAD(sp.date, 1) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) AS entry_date,
-                LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) AS entry_raw_open,
-                LEAD(
-                    CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
-                    1
-                ) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) AS entry_adjustment_factor,
-                LEAD(sp.date, 5) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) AS exit_date,
-                LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) AS exit_raw_close,
-                LEAD(
-                    CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
-                    5
-                ) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) AS exit_adjustment_factor
-            FROM stock_prices sp
-            JOIN stocks factor_stock
-              ON factor_stock.id = sp.stock_id
-            LEFT JOIN canonical_market_daily cmd
-              ON cmd.stock_id = factor_stock.symbol
-             AND cmd.date = sp.date
-             AND cmd.source = 'finlab.price'
-            WHERE sp.date >= date(?, ?, '-10 days')
-              AND sp.date < date(?, '+1 day')
-        )
+        WITH {PRICE_HORIZONS_CTE}
         SELECT
             p.stock_id,
             s.symbol,
@@ -861,7 +822,7 @@ def load_l4_alpha_ev_training_rows(
             p.generated_at AS prediction_generated_at,
             datetime(ph.entry_date, '+1 hour') AS next_session_open_at,
             p.forecast_data,
-            'canonical_market_daily:finlab.price' AS label_adjustment_source,
+            ph.source AS label_adjustment_source,
             ((ph.exit_raw_close * ph.exit_adjustment_factor)
               / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} AS l4_executable_return_pct,
             ph.entry_date AS l4_entry_date,
@@ -902,9 +863,6 @@ def load_l4_alpha_ev_training_rows(
         LIMIT ?
         """,
         [
-            end_date,
-            f"-{max(1, int(lookback_days))} days",
-            outcome_cutoff,
             end_date,
             f"-{max(1, int(lookback_days))} days",
             end_date,

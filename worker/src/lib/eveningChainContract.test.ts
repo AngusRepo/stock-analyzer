@@ -214,6 +214,7 @@ assert(
 assert(
   updateOrchestrator.includes('analysis_continues=1 execution_fail_closed=1') &&
     updateOrchestrator.includes('snapshotComplete && snapshotSummary.unavailable === 0') &&
+    updateOrchestrator.includes('snapshotSummary.attempted === snapshotSummary.candidate_count') &&
     updateOrchestrator.includes('blocked=${snapshotSummary.blocked}'),
   'missing S12 bars must remain an observable error while data-backed blocked states stay fail-closed without becoming lifecycle failures',
 )
@@ -255,26 +256,27 @@ assert(
 )
 
 const callbackRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
+const pipelineStageLease = fs.readFileSync('src/lib/pipelineStageLease.ts', 'utf8')
 assert(
   callbackRoutes.includes('const forceContinuation = Boolean') &&
     callbackRoutes.includes('force: forceContinuation'),
   'FinLab callback must preserve manual force rerun through the async queue continuation',
 )
 assert(
-  callbackRoutes.includes("type: 'post_pipeline_chain'") &&
-    callbackRoutes.includes('callback:post-pipeline-enqueued:'),
-  'pipeline callback must durably queue post-market dependent tasks instead of fixed-time Scheduler jobs',
+  callbackRoutes.includes('queuePostPipelineStage') &&
+    pipelineStageLease.includes("stage: 'post_pipeline_chain'"),
+  'pipeline callback must durably queue one date-level post-market stage instead of fixed-time Scheduler jobs',
 )
 assert(
-  callbackRoutes.includes("type: 'post_verify_chain'") &&
-    callbackRoutes.includes('callback:post-verify-enqueued:'),
-  'verify callback must durably queue IC/adapt/report/obsidian instead of fixed-time Scheduler jobs',
+  callbackRoutes.includes('queuePostVerifyStage') &&
+    pipelineStageLease.includes("stage: 'post_verify_chain'"),
+  'verify callback must durably queue IC/adapt/report/obsidian through the date-level D1 stage owner',
 )
 
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
 assert(
-  postMarketChain.includes('runVerifyV2(env, ctx.runDate)'),
-  'post-pipeline chain must trigger verify-v2 with the callback business date',
+  postMarketChain.includes('runVerifyV2(env, ctx.runDate, `verify_v2:${ctx.runDate}`)'),
+  'post-pipeline chain must trigger verify-v2 with a deterministic date-level idempotency key',
 )
 assert(
   postMarketChain.indexOf("'model-ic-tracker', () => runModelIcRollingRefresh") <

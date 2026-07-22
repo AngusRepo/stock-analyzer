@@ -420,10 +420,14 @@ def test_opb_reward_ledger_query_is_point_in_time_bounded():
     assert "dr.date < ?" in str(observed["sql"])
     assert "p.model_name = 'ensemble'" in str(observed["sql"])
     assert "date(ph.exit_date) <= date(?)" in str(observed["sql"])
-    assert "canonical_market_daily" in str(observed["sql"])
+    assert "price_horizon_labels_v1" in str(observed["sql"])
+    assert "LEAD(" not in str(observed["sql"])
     assert "ROW_NUMBER() OVER" in str(observed["sql"])
     assert "datetime(p.generated_at) < datetime(timing.entry_date || ' 01:00:00')" in str(observed["sql"])
-    assert observed["params"][:4] == ["2026-06-09", "2026-07-09", "2026-06-09", "2026-07-09"]
+    assert observed["params"] == [
+        "2026-06-09", "2026-07-09", "2026-07-09", "2026-06-09",
+        "2026-07-09", "2026-07-09", "2026-07-09", 5000,
+    ]
 
 
 def test_opb_reward_ledger_sql_materializes_canonical_adjusted_selection_outcome():
@@ -431,10 +435,18 @@ def test_opb_reward_ledger_sql_materializes_canonical_adjusted_selection_outcome
     conn.row_factory = sqlite3.Row
     conn.executescript(
         """
-        CREATE TABLE stocks (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL);
-        CREATE TABLE stock_prices (stock_id INTEGER, date TEXT, open REAL, close REAL);
-        CREATE TABLE canonical_market_daily (
-          stock_id TEXT, date TEXT, source TEXT, close REAL, adj_close REAL
+        CREATE TABLE price_horizon_labels_v1 (
+          stock_id INTEGER,
+          price_date TEXT,
+          entry_date TEXT,
+          entry_raw_open REAL,
+          entry_adjustment_factor REAL,
+          exit_date TEXT,
+          exit_raw_close REAL,
+          exit_adjustment_factor REAL,
+          outcome_known_date TEXT,
+          source TEXT,
+          projection_version TEXT
         );
         CREATE TABLE daily_recommendations (
           date TEXT, stock_id INTEGER, symbol TEXT, rank INTEGER, alpha_allocation TEXT
@@ -446,21 +458,15 @@ def test_opb_reward_ledger_sql_materializes_canonical_adjusted_selection_outcome
         );
         """
     )
-    conn.execute("INSERT INTO stocks VALUES (1, 'AAA')")
-    prices = [
-        ("2026-07-01", 99.0, 100.0),
-        ("2026-07-02", 100.0, 101.0),
-        ("2026-07-03", 102.0, 103.0),
-        ("2026-07-06", 104.0, 105.0),
-        ("2026-07-07", 106.0, 107.0),
-        ("2026-07-08", 109.0, 110.0),
-    ]
-    for day, open_price, close_price in prices:
-        conn.execute("INSERT INTO stock_prices VALUES (1, ?, ?, ?)", (day, open_price, close_price))
-        conn.execute(
-            "INSERT INTO canonical_market_daily VALUES ('AAA', ?, 'finlab.price', ?, ?)",
-            (day, close_price, close_price),
+    conn.execute(
+        """
+        INSERT INTO price_horizon_labels_v1 VALUES (
+          1, '2026-07-01', '2026-07-02', 100.0, 1.0,
+          '2026-07-08', 110.0, 1.0, '2026-07-08',
+          'stock_prices:finlab_primary_canonical_mirror', 'price_horizon_v1'
         )
+        """
+    )
     allocation = json.dumps({
         "selected": True,
         "allocation_weight": 1.0,

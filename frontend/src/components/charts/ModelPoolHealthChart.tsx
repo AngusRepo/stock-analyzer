@@ -26,7 +26,9 @@ type ModelPoolHealthChartProps = {
 const COLORS = ['#7dd3fc', '#facc15', '#a7f3d0', '#fda4af', '#c4b5fd', '#f9a8d4', '#fdba74', '#93c5fd']
 
 function isServingAlpha(model: ModelPoolLineageModel): boolean {
-  return model.status === 'active' || model.status === 'degraded'
+  return (model.status === 'active' || model.status === 'degraded')
+    && !model.serving_block_reason
+    && Boolean(model.serving_owner || model.serving_artifact_id)
 }
 
 function chartOptions(width: number): DeepPartial<ChartOptions> {

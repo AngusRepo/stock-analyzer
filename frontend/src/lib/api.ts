@@ -1065,6 +1065,14 @@ export type ModelPoolLineageModel = {
   metadata_path?: string
   metadata_exists?: boolean
   metadata?: Record<string, unknown> | null
+  serving_owner?: string | null
+  serving_artifact_id?: string | null
+  serving_block_reason?: string | null
+  target_semantic_version?: string | null
+  offline_gate_decision?: string | null
+  live_gate_status?: string | null
+  serving_ic_prior?: number | null
+  serving_ic_source?: string | null
   rolling_ic?: number | null
   weekly_ic?: number[]
   ic_4w_avg?: number | null
@@ -1122,6 +1130,9 @@ export type ModelPoolLineage = {
   status: string
   schema_version?: string
   last_updated?: string
+  source_of_truth?: string
+  compat_shape?: string
+  production_reader?: string
   models: Record<string, ModelPoolLineageModel>
   state_overlays?: Record<string, ModelPoolStateOverlay>
   meta_optimizers?: Record<string, Record<string, unknown>>

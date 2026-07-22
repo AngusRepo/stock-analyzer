@@ -37,6 +37,7 @@ import {
   applyS12TwCalibrationArtifact,
   listApprovedS12TwCalibrationArtifacts,
   resolveS12TwCalibrationArtifact,
+  s12TwEntryCohortFromState,
 } from './s12TwEquityCalibration'
 import { persistS12StructureSnapshot } from './s12StructureSnapshots'
 import {
@@ -95,6 +96,10 @@ function parseJsonObject(value: unknown): Record<string, any> | null {
   } catch {
     return null
   }
+}
+
+function lifecycleS12EntryState(pos: { trade_lifecycle_json?: unknown }): string | null {
+  return String(parseJsonObject(pos.trade_lifecycle_json)?.entry?.s12?.state ?? '').trim() || null
 }
 
 function lifecycleS12ExitPlanFromPosition(pos: { trade_lifecycle_json?: unknown }): Record<string, any> | null {
@@ -860,6 +865,7 @@ async function evaluateS12HoldingDefense(
       listApprovedS12TwCalibrationArtifacts(env.DB).catch(() => []),
     ])
     const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
+      entryCohort: s12TwEntryCohortFromState(lifecycleS12EntryState(pos)),
       marketSegment: stockRow?.market ?? 'UNKNOWN',
       asOfDate: tradeDate,
     })

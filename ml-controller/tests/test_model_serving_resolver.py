@@ -194,6 +194,45 @@ def test_model_pool_reconcile_plan_updates_patchtst_to_d1_champion():
     assert action["patch"]["gcs_path"] == "universal/patchtst/vGood.zip"
 
 
+def test_model_pool_reconcile_plan_clears_stale_serving_block_reason():
+    current_pool = {
+        "models": {
+            "TabM": {
+                "status": "active",
+                "version": "vGood",
+                "serving_owner": "model_champion_pointers",
+                "serving_artifact_id": "TabM:vGood:oof_full_fit_release",
+                "serving_block_reason": "artifact_target_semantic_missing",
+            }
+        }
+    }
+    champion_pool = {
+        "models": {
+            "TabM": {
+                "status": "active",
+                "version": "vGood",
+                "serving_owner": "model_champion_pointers",
+                "serving_artifact_id": "TabM:vGood:oof_full_fit_release",
+                "serving_block_reason": None,
+            }
+        }
+    }
+
+    plan = resolver.build_model_pool_reconcile_plan(
+        model_pool=current_pool,
+        champion_pool=champion_pool,
+        model_names=("TabM",),
+    )
+
+    assert plan["action_count"] == 1
+    assert plan["actions"][0]["diff"]["serving_block_reason"] == {
+        "from": "artifact_target_semantic_missing",
+        "to": None,
+    }
+    patched = resolver.apply_model_pool_reconcile_plan(model_pool=current_pool, plan=plan)
+    assert patched["models"]["TabM"]["serving_block_reason"] is None
+
+
 def test_model_pool_reconcile_plan_retires_archived_d1_champion_pointer():
     plan = resolver.build_model_pool_reconcile_plan(
         model_pool={"models": {"PatchTST": {"status": "active", "version": "vBad"}}},

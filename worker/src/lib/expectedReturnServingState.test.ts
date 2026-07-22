@@ -58,6 +58,28 @@ assert.equal(fusionPrimary.expected_return_owner, 'allocator_ev_fusion')
 assert.equal(fusionPrimary.artifacts.l4_alpha_ev.artifact_state, 'serving')
 assert.equal(fusionPrimary.artifacts.allocator_ev_fusion.artifact_state, 'serving')
 
+const legacyV11Fusion = {
+  ...validFusion(),
+  artifact_contract_version: 'allocator-ev-fusion-contract-v11',
+  feature_semantic_version: 'allocator-ev-fusion-directional-components-v2-lineage-bound',
+  model_version: 'fusion-v11-production',
+}
+const legacyV11StillServes = resolveExpectedReturnServingState({
+  ensemble_v2: { l4AlphaEv: validL4(), allocatorEvFusion: legacyV11Fusion },
+})
+assert.equal(legacyV11StillServes.expected_return_owner, 'allocator_ev_fusion')
+assert.equal(legacyV11StillServes.artifacts.allocator_ev_fusion.artifact_state, 'serving')
+
+const hybridV11V12 = {
+  ...legacyV11Fusion,
+  feature_semantic_version: ALLOCATOR_EV_FUSION_CONTRACT.featureSemanticVersion,
+}
+const hybridRejected = resolveExpectedReturnServingState({
+  ensemble_v2: { l4AlphaEv: validL4(), allocatorEvFusion: hybridV11V12 },
+})
+assert.equal(hybridRejected.expected_return_owner, 'l4_alpha_ev')
+assert(hybridRejected.artifacts.allocator_ev_fusion.blockers.includes('feature_semantic_version_incompatible'))
+
 const blockedFusion = validFusion()
 blockedFusion.validation_packet = { decision: 'FAIL' }
 const l4Fallback = resolveExpectedReturnServingState({

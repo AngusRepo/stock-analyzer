@@ -46,6 +46,7 @@ import {
 import {
   listApprovedS12TwCalibrationArtifacts,
   resolveS12TwCalibrationArtifact,
+  s12TwEntryCohortFromState,
 } from '../lib/s12TwEquityCalibration'
 import {
   appendUniqueWatchPoint,
@@ -54,7 +55,7 @@ import {
   buildMlVoteWatchPoint,
   buildSparseAllocationSummary,
   parsePredictionForecastData,
-  type MlVoteSummary,
+  resolveMlVoteSummary,
 } from '../lib/recommendationContext'
 import { readScoreV2Snapshot, serializeScoreV2Snapshot, type ScoreV2StorageRow } from '../lib/scoreV2Taxonomy'
 import type { Bindings, Variables } from '../types'
@@ -523,12 +524,10 @@ async function enrichPendingBuyContext(
       })
       continue
     }
-    const persistedMlVoteSummary = parsePredictionForecastData(row.ml_vote_summary)
-    const active8PersistedMlVoteSummary = persistedMlVoteSummary
-      && Number(persistedMlVoteSummary.total ?? 0) <= 8
-      ? persistedMlVoteSummary as MlVoteSummary
-      : null
-    const mlVoteSummary = active8PersistedMlVoteSummary ?? buildMlVoteSummary(forecastData, perModelByStock.get(Number(row.stock_id)) ?? [])
+    const mlVoteSummary = resolveMlVoteSummary(
+      row.ml_vote_summary,
+      buildMlVoteSummary(forecastData, perModelByStock.get(Number(row.stock_id)) ?? []),
+    )
     contextBySymbol.set(row.symbol, {
       score_v2: scoreV2,
       stock_id: row.stock_id,
@@ -837,6 +836,7 @@ paper.get('/positions', async (c) => {
     const unrealizedPnlPct = costBasis > 0 ? (unrealizedPnl / costBasis * 100) : 0
     const rawCanonicalLifecycle = normalizeCanonicalTradeLifecycle(pos.trade_lifecycle_json) ?? canonicalLifecycleMap.get(pos.symbol) ?? null
     const calibration = resolveS12TwCalibrationArtifact(s12CalibrationArtifacts, {
+      entryCohort: s12TwEntryCohortFromState(rawCanonicalLifecycle?.entry?.s12?.state),
       marketSegment: marketBySymbol.get(pos.symbol) ?? 'UNKNOWN',
     })
     const fusionTargets = resolveTwEquityExitFusionV2(

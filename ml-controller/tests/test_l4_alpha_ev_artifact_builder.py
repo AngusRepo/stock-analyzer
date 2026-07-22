@@ -25,7 +25,7 @@ def _row(day: str, idx: int, *, target: float) -> dict:
     return {
         "symbol": f"{idx:04d}",
         "prediction_date": day,
-        "label_adjustment_source": "canonical_market_daily:finlab.price",
+        "label_adjustment_source": "stock_prices:finlab_primary_canonical_mirror",
         "l4_executable_return_pct": target,
         "score": score,
         "score_components": json.dumps({
@@ -251,12 +251,16 @@ def test_l4_training_query_uses_outcome_knowledge_cutoff_after_signal_end_date()
         limit=6000,
     )
 
-    assert captured["params"][2] == "2026-07-09"
-    assert captured["params"][3] == "2026-07-02"
-    assert captured["params"][5] == "2026-07-02"
-    assert captured["params"][6] == "2026-07-09"
-    assert "canonical_market_daily cmd" in captured["sql"]
-    assert "cmd.adj_close / cmd.close" in captured["sql"]
+    assert captured["params"] == [
+        "2026-07-02",
+        "-90 days",
+        "2026-07-02",
+        "2026-07-09",
+        6000,
+    ]
+    assert "price_horizon_labels_v1" in captured["sql"]
+    assert "projection_version = 'price_horizon_v1'" in captured["sql"]
+    assert "LEAD(" not in captured["sql"]
     assert "ph.exit_raw_close * ph.exit_adjustment_factor" in captured["sql"]
     assert "ph.entry_raw_open * ph.entry_adjustment_factor" in captured["sql"]
     assert "ph.exit_raw_close / ph.entry_raw_open" not in captured["sql"]

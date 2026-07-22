@@ -5,6 +5,7 @@ import { resolveFinLabDispatchFence } from '../lib/finLabDispatchFence'
 import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
 import type { EvidenceArtifactWriteInput } from '../lib/evidenceArtifactContract'
 import { normalizeSingleD1BatchStatement } from '../lib/d1BatchStatement'
+import { markPipelineStage, queuePostPipelineStage, queuePostVerifyStage } from '../lib/pipelineStageLease'
 
 export const adminControlRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -83,6 +84,7 @@ function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
   const schemaByDomain = new Map<string, Set<string>>([
     ['screener_funnel', new Set([
       'screener-funnel-evidence-v2',
+      'screener-funnel-evidence-v3',
       'screener-funnel-evidence-index-v1',
     ])],
     ['screener_funnel_chunk', new Set(['screener-funnel-evidence-chunk-v1'])],
@@ -117,7 +119,10 @@ function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
     if (
       body.payload.storage_mode !== 'chunked_r2_child_v1'
       || body.payload.logical_domain !== 'screener_funnel'
-      || body.payload.logical_schema_version !== 'screener-funnel-evidence-v2'
+      || ![
+        'screener-funnel-evidence-v2',
+        'screener-funnel-evidence-v3',
+      ].includes(body.payload.logical_schema_version)
       || !Array.isArray(body.payload.items)
       || body.payload.items.length !== rowCount
       || !Number.isInteger(chunkIndex)
@@ -136,7 +141,10 @@ function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
     const chunks = body.payload.chunks
     if (
       body.payload.storage_mode !== 'chunked_r2_manifest_v1'
-      || body.payload.logical_schema_version !== 'screener-funnel-evidence-v2'
+      || ![
+        'screener-funnel-evidence-v2',
+        'screener-funnel-evidence-v3',
+      ].includes(body.payload.logical_schema_version)
       || !/^sha256:[a-f0-9]{64}$/i.test(String(body.payload.logical_payload_checksum ?? ''))
       || !body.payload.payload_header
       || typeof body.payload.payload_header !== 'object'
@@ -535,31 +543,18 @@ async function handleSchedulerCallback(c: any) {
       return c.json({ error: 'allocator snapshot callback missing run_date or run_id' }, 400)
     }
     if (body.status === 'success') {
-      const continuationKey = `callback:post-pipeline-enqueued:snapshot:${callbackRunDate}:${callbackRunId}`
-      const existing = await c.env.KV.get(continuationKey)
-      if (!existing) {
-        await c.env.KV.put(continuationKey, 'pending', { expirationTtl: 7 * 86400 })
-        try {
-          await c.env.UPDATE_QUEUE.send({
-            type: 'post_pipeline_chain',
-            cursor: 0,
-            triggerTime: callbackRunDate,
-            runId: callbackRunId,
-            attempt: 0,
-          })
-          await c.env.KV.put(continuationKey, 'queued', { expirationTtl: 7 * 86400 })
-        } catch (error) {
-          await c.env.KV.delete(continuationKey).catch(() => {})
-          throw error
-        }
-      }
+      const continuation = await queuePostPipelineStage(c.env, {
+        businessDate: callbackRunDate,
+        runId: callbackRunId,
+        resumeWaiting: true,
+      })
       await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
         status: 'triggered',
-        summary: existing
-          ? `snapshot callback continuation already queued run_id=${callbackRunId}`
-          : `snapshot callback continuation durably queued run_id=${callbackRunId}`,
+        summary: continuation.queued
+          ? `snapshot callback resumed canonical stage run_id=${continuation.canonicalRunId}`
+          : `snapshot callback observed canonical stage status=${continuation.status} run_id=${continuation.canonicalRunId}`,
         duration_ms: 0,
-        run_id: callbackRunId,
+        run_id: continuation.canonicalRunId,
         run_date: callbackRunDate,
       }, c.env as any)
     } else {
@@ -583,31 +578,17 @@ async function handleSchedulerCallback(c: any) {
         if (!callbackRunDate || !callbackRunId) {
           throw new Error('pipeline callback missing run_date or run_id for post-pipeline continuation')
         }
-        const continuationKey = `callback:post-pipeline-enqueued:${callbackRunDate}:${callbackRunId}`
-        const existing = await c.env.KV.get(continuationKey)
-        if (!existing) {
-          await c.env.KV.put(continuationKey, 'pending', { expirationTtl: 7 * 86400 })
-          try {
-            await c.env.UPDATE_QUEUE.send({
-              type: 'post_pipeline_chain',
-              cursor: 0,
-              triggerTime: callbackRunDate,
-              runId: callbackRunId,
-              attempt: 0,
-            })
-            await c.env.KV.put(continuationKey, 'queued', { expirationTtl: 7 * 86400 })
-          } catch (error) {
-            await c.env.KV.delete(continuationKey).catch(() => {})
-            throw error
-          }
-        }
+        const continuation = await queuePostPipelineStage(c.env, {
+          businessDate: callbackRunDate,
+          runId: callbackRunId,
+        })
         await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
           status: 'triggered',
-          summary: existing
-            ? `post-pipeline continuation already queued run_id=${callbackRunId}`
-            : `post-pipeline continuation durably queued run_id=${callbackRunId}`,
+          summary: continuation.queued
+            ? `post-pipeline canonical stage durably queued run_id=${continuation.canonicalRunId}`
+            : `post-pipeline canonical stage already status=${continuation.status} run_id=${continuation.canonicalRunId}`,
           duration_ms: 0,
-          run_id: callbackRunId,
+          run_id: continuation.canonicalRunId,
           run_date: callbackRunDate,
         }, c.env as any)
       } else {
@@ -648,29 +629,21 @@ async function handleSchedulerCallback(c: any) {
     if (!callbackRunDate || !callbackRunId) {
       return c.json({ error: 'verify callback missing run_date or run_id for post-verify continuation' }, 400)
     }
-    const continuationKey = `callback:post-verify-enqueued:${callbackRunDate}:${callbackRunId}`
-    const existing = await c.env.KV.get(continuationKey)
-    if (!existing) {
-      await c.env.KV.put(continuationKey, 'pending', { expirationTtl: 7 * 86400 })
-      try {
-        await c.env.UPDATE_QUEUE.send({
-          type: 'post_verify_chain',
-          cursor: 0,
-          triggerTime: callbackRunDate,
-          runId: callbackRunId,
-          attempt: 0,
-        })
-        await c.env.KV.put(continuationKey, 'queued', { expirationTtl: 7 * 86400 })
-      } catch (error) {
-        await c.env.KV.delete(continuationKey).catch(() => {})
-        throw error
-      }
-    }
+    await markPipelineStage(c.env.DB, {
+      businessDate: callbackRunDate,
+      stage: 'verify_v2',
+      status: 'success',
+    })
+    const continuation = await queuePostVerifyStage(c.env, {
+      businessDate: callbackRunDate,
+      runId: callbackRunId,
+      resumeWaiting: true,
+    })
     await logSchedulerResult(c.env.KV, 'post-verify-chain', {
       status: 'triggered',
-      summary: existing
-        ? `post-verify continuation already queued run_id=${callbackRunId}`
-        : `post-verify continuation durably queued run_id=${callbackRunId}`,
+      summary: continuation.queued
+        ? `post-verify continuation durably queued run_id=${continuation.canonicalRunId}`
+        : `post-verify continuation already ${continuation.status} run_id=${continuation.canonicalRunId}`,
       duration_ms: 0,
       run_id: callbackRunId,
       run_date: callbackRunDate,
@@ -678,6 +651,14 @@ async function handleSchedulerCallback(c: any) {
   }
 
   if (body.task === 'verify-v2' && String(body.status) === 'error') {
+    if (callbackRunDate) {
+      await markPipelineStage(c.env.DB, {
+        businessDate: callbackRunDate,
+        stage: 'verify_v2',
+        status: 'error',
+        error: body.error != null ? String(body.error) : String(body.summary ?? 'verify-v2 callback failed'),
+      })
+    }
     await logSchedulerResult(c.env.KV, 'post-verify-chain', {
       status: 'error',
       summary: `post-verify chain blocked by verify-v2 error: ${String(body.summary ?? '')}`,

@@ -428,6 +428,45 @@ export function buildMlVoteSummary(
   }
 }
 
+function mlVoteReportedCount(summary: Record<string, unknown>): number {
+  const reported = Number(summary.reported)
+  if (Number.isFinite(reported) && reported >= 0) return Math.floor(reported)
+  return ['bullish', 'bearish', 'flat']
+    .map((key) => Number(summary[key]))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .reduce((sum, value) => sum + Math.floor(value), 0)
+}
+
+export function resolveMlVoteSummary(
+  persisted: unknown,
+  computed: MlVoteSummary | null,
+): MlVoteSummary | null {
+  const raw = parsePredictionForecastData(persisted)
+  if (!raw) return computed
+
+  const total = Number(raw.total)
+  const reported = mlVoteReportedCount(raw)
+  const validPersisted = Number.isFinite(total)
+    && total > 0
+    && total <= TRACKED_MODEL_NAMES.length
+    && reported >= 0
+    && reported <= total
+  if (!validPersisted) return computed
+
+  const persistedSummary = raw as unknown as MlVoteSummary
+  if (!computed) return persistedSummary
+
+  const computedReported = mlVoteReportedCount(computed as unknown as Record<string, unknown>)
+  if (computedReported > reported) return computed
+  if (computedReported < reported) return persistedSummary
+
+  // Equal evidence counts prefer the current-date reconstruction because it
+  // preserves the canonical Active-8 denominator and explicit missing count.
+  const computedTotal = Number(computed.total)
+  if (Number.isFinite(computedTotal) && computedTotal >= total) return computed
+  return persistedSummary
+}
+
 export function buildMlDiagnostics(forecastData: unknown): MlDiagnosticsSummary | null {
   const data = parsePredictionForecastData(forecastData)
   if (!data) return null

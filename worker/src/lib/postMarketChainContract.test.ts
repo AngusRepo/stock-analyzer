@@ -6,6 +6,7 @@ function assert(condition: unknown, message: string): void {
 
 const callbackRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
+const pipelineStageLease = fs.readFileSync('src/lib/pipelineStageLease.ts', 'utf8')
 const researchWorkflows = fs.readFileSync('src/lib/controllerResearchWorkflows.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const strategyLearning = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
@@ -44,13 +45,14 @@ assert(
 )
 assert(callbackRoutes.includes('lock:ml-predict'), 'pipeline terminal callback must clear the ML predict lock')
 assert(
-  callbackRoutes.includes("type: 'post_pipeline_chain'") &&
-    callbackRoutes.includes('callback:post-pipeline-enqueued:'),
-  'pipeline success callback must durably and idempotently queue the post-pipeline chain',
+  callbackRoutes.includes('queuePostPipelineStage') &&
+    pipelineStageLease.includes('INSERT INTO pipeline_stage_runs') &&
+    pipelineStageLease.includes("stage: 'post_pipeline_chain'"),
+  'pipeline and snapshot callbacks must share the durable date-level post-pipeline stage',
 )
 assert(
-  callbackRoutes.includes("type: 'post_verify_chain'") &&
-    callbackRoutes.includes('callback:post-verify-enqueued:'),
+  callbackRoutes.includes('queuePostVerifyStage') &&
+    pipelineStageLease.includes("stage: 'post_verify_chain'"),
   'verify terminal callback must durably and idempotently queue the post-verify chain',
 )
 assert(
@@ -63,8 +65,8 @@ assert(
 )
 assert(
   !verifyCallbackBlock.includes('executionCtx.waitUntil') &&
-    verifyCallbackBlock.includes("type: 'post_verify_chain'"),
-  'verify terminal callback must use the durable queue instead of a bounded waitUntil continuation',
+    verifyCallbackBlock.includes('queuePostVerifyStage'),
+  'verify terminal callback must use the durable D1-owned queue instead of a bounded waitUntil continuation',
 )
 
 assert(
@@ -72,8 +74,9 @@ assert(
   'current-date-only tasks must be guarded so historical reruns cannot dirty current reports',
 )
 assert(
-  postMarketChain.includes('runVerifyV2(env, ctx.runDate)'),
-  'verify-v2 must receive the callback business date',
+  postMarketChain.includes('runVerifyV2(env, ctx.runDate, `verify_v2:${ctx.runDate}`)') &&
+    postMarketChain.includes("stage: 'verify_v2'"),
+  'verify-v2 must receive the callback business date and deterministic stage idempotency key',
 )
 assert(
   postMarketChain.includes('runAllocatorEvFeatureSnapshotBackfill') &&
@@ -91,8 +94,8 @@ assert(
     researchWorkflows.includes('upstream_run_id: params.runId') &&
     postMarketChain.includes("/\\bstatus=(?:spawned|pending)\\b/i") &&
     callbackRoutes.includes("body.task === 'allocator-ev-feature-snapshot-backfill'") &&
-    callbackRoutes.includes('callback:post-pipeline-enqueued:snapshot:'),
-  'allocator snapshots must use a durable job and resume the same post-pipeline chain from its callback',
+    callbackRoutes.includes('resumeWaiting: true'),
+  'allocator snapshots must use a durable job and resume the same date-level post-pipeline stage from its callback',
 )
 assert(
   postScreenerContinuationBlock.indexOf('runRegimeCompute(env, triggerTime)') > 0 &&
@@ -122,11 +125,12 @@ assert(
   'post-verify chain must enqueue S12 replay backfill after daily recommendations are available',
 )
 assert(
-  strategyLearning.includes('listStrategyLearningCandidates(db, options.date, limit + 1, offset)') &&
+  strategyLearning.includes('listStrategyLearningCandidates(db, options.date, limit + 1, afterSymbol)') &&
     strategyLearning.includes('const hasMore = candidatePage.length > limit') &&
     strategyLearning.includes('const candidates = candidatePage.slice(0, limit)') &&
+    strategyLearning.includes('next_cursor_symbol: nextCursorSymbol') &&
     strategyLearning.includes('has_more: hasMore'),
-  'strategy-learning pagination must use limit+1 lookahead so exact-multiple pages close without an empty terminal message',
+  'strategy-learning must combine limit+1 lookahead with a stable symbol keyset cursor',
 )
 assert(
   postMarketChain.indexOf("runPostPipelineCallbackChain") < postMarketChain.indexOf("runPostVerifyCallbackChain"),

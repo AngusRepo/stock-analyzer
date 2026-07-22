@@ -50,10 +50,17 @@ import {
 } from './v41DataRuntime'
 import { promoteCanonicalRun, registerPipelineRun, writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
+import {
+  buildSelectionEvidenceV4,
+  persistSelectionEvidenceV4,
+  strategyRegistryFingerprintPayload,
+  type SelectionReferenceRowV1,
+  type StrategyLabelMatrixRowV4,
+} from './selectionReferenceEvidence'
 
 const D1_IN_CHUNK_SIZE = 40
 const SCREENER_FUNNEL_MAX_ITEMS = 5000
-const SCREENER_PIPELINE_CODE_VERSION = 'market-screener-r2-canonical-v1'
+const SCREENER_PIPELINE_CODE_VERSION = 'market-screener-selection-reference-v4'
 const STOCK_TECHNICAL_HISTORY_PRICE_DAYS = 280
 const SCREENER_FUNNEL_PIPELINE_SEED_STAGES = new Set([
   'l1_candidate_seed_after_overlay',
@@ -464,6 +471,13 @@ async function writeScreenerFunnel(
     metadata: Record<string, unknown>
     debugLog: string[]
     items: ScreenerFunnelItemInput[]
+    selectionEvidence: {
+      references: SelectionReferenceRowV1[]
+      matrix: StrategyLabelMatrixRowV4[]
+      strategyCount: number
+      strategyRegistryChecksum: string
+      labelerVersion: string
+    }
   },
 ): Promise<void> {
   if (!env.ARTIFACTS && !env.EVIDENCE_ARTIFACT_WRITER) {
@@ -489,7 +503,7 @@ async function writeScreenerFunnel(
     businessDate: input.date,
     producerRunId: input.runId,
     retentionClass: input.status === 'success' ? 'canonical_model_evidence' : 'failed_debug',
-    schemaVersion: 'screener-funnel-evidence-v2',
+    schemaVersion: 'screener-funnel-evidence-v3',
     payload: artifactPayload,
     rowCount: input.items.length,
     metadata: {
@@ -584,6 +598,17 @@ async function writeScreenerFunnel(
         await env.DB.batch(batch.slice(i, i + 50))
       }
     }
+
+    await persistSelectionEvidenceV4(env.DB, {
+      signalDate: input.date,
+      producerRunId: input.runId,
+      references: input.selectionEvidence.references,
+      matrix: input.selectionEvidence.matrix,
+      strategyCount: input.selectionEvidence.strategyCount,
+      strategyRegistryChecksum: input.selectionEvidence.strategyRegistryChecksum,
+      labelerVersion: input.selectionEvidence.labelerVersion,
+      evidenceArtifactId: artifact.artifact_id,
+    })
 
     await env.DB.prepare(`
       INSERT INTO screener_funnel_runs
@@ -3277,6 +3302,13 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   let passesLayer1TopUpQualityGuard: ((candidate: any) => boolean) | null = null
   let runtimeStrategySpecs: StrategySpec[] = []
   let runtimeStrategyRegime: string | null = null
+  let selectionEvidence: {
+    references: SelectionReferenceRowV1[]
+    matrix: StrategyLabelMatrixRowV4[]
+    strategyCount: number
+    strategyRegistryChecksum: string
+    labelerVersion: string
+  } | null = null
   try {
     const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, strategyCandidatePoolModule, strategyPortfolioMetricsModule] = await Promise.all([
       import('./strategyLearning'),
@@ -3293,6 +3325,13 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       getLatestStrategyPolicyState(env.DB).catch(() => null),
     ])
     runtimeStrategySpecs = specs
+    const { loadPromotedStrategyMarginalEdgeWeightsV4 } = await import('./strategyMarginalEdgeV4')
+    const marginalEdgeState = await loadPromotedStrategyMarginalEdgeWeightsV4(
+      env.DB,
+      specs.map((spec: StrategySpec) => spec.id),
+    ).catch(() => null)
+    const activeStrategyWeights = marginalEdgeState?.weights
+      ?? (policyState?.status === 'active' ? policyState.strategy_weights : undefined)
     const strategyPortfolioMetrics = await loadStrategyPortfolioMetricOverrides(env.DB, {
       regime: currentRegime,
       marketSegment: 'all',
@@ -3304,7 +3343,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       specs,
       {
         regime: currentRegime,
-        strategyWeights: policyState?.strategy_weights ?? undefined,
+        strategyWeights: activeStrategyWeights,
       },
     )
     const strategySimilarityEvidence = await loadL125StrategySimilarityGraphEvidence(env, strategySimilarityPayload)
@@ -3324,7 +3363,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         targetSize: screenerPolicy.sizing.candidatePoolSize,
         coarseMlQueueSize: coarseQueueSize,
         regime: currentRegime,
-        strategyWeights: policyState?.strategy_weights ?? undefined,
+        strategyWeights: activeStrategyWeights,
         strategyPortfolioMetrics: strategyPortfolioMetrics.metrics,
         strategyPortfolioMetricSource: strategyPortfolioMetrics.telemetry.source,
         strategySimilarityGraphEvidence: strategySimilarityEvidence.evidence,
@@ -3336,6 +3375,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     layer2CoarseQueueSeed = layer1BreadthPlan.coarseQueue as ScoredCandidate[]
     layer1AdaptiveTargetSize = Number(layer1BreadthPlan.telemetry.adaptive_target_size ?? layer1BreadthPlan.telemetry.target_size ?? screenerPolicy.sizing.candidatePoolSize)
     overlayEligibleSymbols = new Set(layer1BreadthPool.map((candidate) => String(candidate.symbol || '').trim()).filter(Boolean))
+    const strategyRegistryChecksum = await sha256Text(JSON.stringify(strategyRegistryFingerprintPayload(specs)))
+    const builtSelectionEvidence = buildSelectionEvidenceV4({
+      signalDate: endDate,
+      producerRunId: runId,
+      candidates: layer1BreadthPlan.l0Annotated as any[],
+      specs,
+      strategyRegistryChecksum,
+    })
+    selectionEvidence = {
+      ...builtSelectionEvidence,
+      strategyRegistryChecksum,
+      labelerVersion: String(layer1BreadthPlan.telemetry.strategy_labeler_version ?? ''),
+    }
+    if (!selectionEvidence.labelerVersion) throw new Error('strategy_label_matrix_labeler_version_missing')
     strategySelectionTelemetry = {
       version: layer1BreadthPlan.version,
       candidate_pool_version: strategySelectionPlan.version,
@@ -5014,6 +5067,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   try {
+    if (!selectionEvidence) throw new Error('canonical_strategy_selection_evidence_missing')
     await writeScreenerFunnel(env, {
       runId,
       date: endDate,
@@ -5039,6 +5093,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       },
       debugLog,
       items: funnelItems,
+      selectionEvidence,
     })
   } catch (e) {
     console.warn('[Screener v2] funnel write failed:', e)

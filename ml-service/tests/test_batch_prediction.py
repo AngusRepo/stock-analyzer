@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import inspect
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -266,6 +267,41 @@ def test_feature_model_batch_overrides_vectorize_regular_models(monkeypatch):
     assert overrides[0][_BATCH_RANK_STACKER_KEY] is rank_stacker_bundle
     assert overrides[1][_BATCH_RANK_STACKER_KEY] is rank_stacker_bundle
     assert isinstance(overrides[0][_BATCH_IC_WEIGHTS_KEY], dict)
+
+
+def test_artifact_batch_incompatibility_does_not_fall_back_per_symbol(monkeypatch):
+    class RowOnlyModel:
+        def __init__(self):
+            self.calls = []
+
+        def predict(self, values):
+            self.calls.append(tuple(values.shape))
+            if values.shape[0] > 1:
+                raise RuntimeError("row-only artifact")
+            return np.array([0.5], dtype=np.float32)
+
+    contexts = [
+        SimpleNamespace(
+            x_latest=np.array([[float(index), 1.0]], dtype=np.float32),
+            rank_scores={},
+            model_errors=[],
+            challenger_rank_scores={},
+            challenger_errors=[],
+        )
+        for index in range(2)
+    ]
+    model = RowOnlyModel()
+    monkeypatch.setattr(
+        batch_prediction,
+        "_align_latest_features",
+        lambda ctx, _meta: ctx.x_latest,
+    )
+
+    batch_prediction._apply_artifact_batch_predictions(contexts, "XGBoost", model, {})
+
+    assert model.calls == [(2, 2)]
+    assert all(ctx.rank_scores == {} for ctx in contexts)
+    assert all("batch_contract_failed" in ctx.model_errors[0] for ctx in contexts)
 
 
 def test_l2_tree_batch_predict_api_removed():

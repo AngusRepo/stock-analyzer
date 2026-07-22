@@ -1,6 +1,7 @@
 import type { Bindings } from '../types'
 import { retainArtifactHardReference, writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
+import { checkpointLegacyMigration, loadLegacyMigrationCursor } from './legacyMigrationCursor'
 
 type LegacyStrategyDecisionRow = {
   decision_id: string
@@ -73,11 +74,16 @@ export async function runLegacyStrategyEvidenceMigration(
 }> {
   if (!env.ARTIFACTS) throw new Error('artifact_r2_binding_missing')
   const symbolLimit = Math.max(1, Math.min(Math.floor(options.symbolLimit ?? 20), 40))
+  const taskName = 'legacy_strategy_evidence_v2'
+  const cursor = await loadLegacyMigrationCursor(env.DB, taskName)
+  const cursorDate = cursor?.cursor_date ?? ''
+  const cursorSymbol = cursor?.cursor_key ?? ''
   const { results } = await env.DB.prepare(`
     WITH candidate_contexts AS (
       SELECT date, symbol
         FROM strategy_decision_log
        WHERE context_id IS NULL
+         AND (date > ? OR (date = ? AND symbol > ?))
        GROUP BY date, symbol
        ORDER BY date ASC, symbol ASC
        LIMIT ?
@@ -89,8 +95,16 @@ export async function runLegacyStrategyEvidenceMigration(
       JOIN candidate_contexts c ON c.date=d.date AND c.symbol=d.symbol
      WHERE d.context_id IS NULL
      ORDER BY d.date ASC, d.symbol ASC, d.strategy_id ASC, d.decision_id ASC
-  `).bind(symbolLimit).all<LegacyStrategyDecisionRow>()
+  `).bind(cursorDate, cursorDate, cursorSymbol, symbolLimit).all<LegacyStrategyDecisionRow>()
   const rows = results ?? []
+  if (!rows.length) {
+    await checkpointLegacyMigration(env.DB, { taskName, status: 'complete' })
+    return {
+      candidate_contexts: 0, migrated_decisions: 0, artifacts: 0,
+      original_blob_bytes: 0, compact_blob_bytes: 0, backlog_remaining: false,
+    }
+  }
+  const contextKeys = [...new Set(rows.map((row) => `${row.date}:${row.symbol}`))]
   const groupedByDate = new Map<string, LegacyStrategyDecisionRow[]>()
   for (const row of rows) {
     const group = groupedByDate.get(row.date) ?? []
@@ -232,12 +246,22 @@ export async function runLegacyStrategyEvidenceMigration(
     migratedDecisions += dateRows.length
   }
 
+  const lastRow = rows[rows.length - 1]
+  const backlogRemaining = contextKeys.length === symbolLimit
+  await checkpointLegacyMigration(env.DB, {
+    taskName,
+    status: backlogRemaining ? 'running' : 'complete',
+    cursorDate: lastRow.date,
+    cursorKey: lastRow.symbol,
+    scannedRows: rows.length,
+    archivedRows: migratedDecisions,
+  })
   return {
-    candidate_contexts: new Set(rows.map((row) => `${row.date}:${row.symbol}`)).size,
+    candidate_contexts: contextKeys.length,
     migrated_decisions: migratedDecisions,
     artifacts,
     original_blob_bytes: originalBlobBytes,
     compact_blob_bytes: compactBlobBytes,
-    backlog_remaining: rows.length > 0 && new Set(rows.map((row) => `${row.date}:${row.symbol}`)).size === symbolLimit,
+    backlog_remaining: backlogRemaining,
   }
 }

@@ -4,7 +4,7 @@
   "source_path": "data/feature_registry/unified_feature_registry_v1.json",
   "source_sha256": "c0b8531d1c75ec271be4de6ab2ca5eb6979f3fe28c9d842110567755ea4e8d80",
   "pit_overlay_path": "data/feature_registry/strategy_discovery_pit_overlay_v1.json",
-  "pit_overlay_sha256": "76cf6030c9a5a9c043b87be5c80299b1a53347d0adfc0a4dde54d46e4fe87ab8",
+  "pit_overlay_sha256": "99625671e884dcf724eaa22368a78d2d2e65f684663b28a4297a871be2b61003",
   "pit_verified_feature_count": 3,
   "feature_count": 137,
   "features": [

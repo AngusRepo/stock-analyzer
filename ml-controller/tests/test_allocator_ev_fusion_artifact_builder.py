@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -101,6 +102,10 @@ def _s12_payload(value: float, *, ready: bool = True) -> dict:
 
 
 def _row(day: str, idx: int) -> dict:
+    day_number = int(day[-2:])
+    regime = ("bull", "sideways", "bear", "volatile")[day_number % 4]
+    regime_surface = {name: 1.0 if name == regime else 0.0 for name in ("bull", "bear", "volatile", "sideways")}
+    market_return_5d = ((day_number % 9) - 4) * 0.004
     l4 = -0.008 + (idx % 25) * 0.0015
     s12 = -0.004 + (idx % 20) * 0.0012
     ready = idx % 7 != 0
@@ -110,7 +115,7 @@ def _row(day: str, idx: int) -> dict:
     return {
         "symbol": f"{idx:04d}",
         "prediction_date": day,
-        "label_adjustment_source": "canonical_market_daily:finlab.price",
+        "label_adjustment_source": "stock_prices:finlab_primary_canonical_mirror",
         "score_components": json.dumps({
             "version": "score_v2",
             "semanticVersion": "score-v2-active8-components-v3",
@@ -128,7 +133,24 @@ def _row(day: str, idx: int) -> dict:
         "trade_pnl_pct": target + (0.4 * s12) + (0.002 if ready else -0.001),
         "s12_replay_pnl_pct": replay_pnl,
         "s12_replay_status": "executed" if replay_executed else "not_triggered",
-        "alpha_context": json.dumps({"market_heat_expected_return": 0.003 + (idx % 5) * 0.0005}),
+        "alpha_context": json.dumps({
+            "market_heat_expected_return": 0.003 + (idx % 5) * 0.0005,
+            "market_regime_context": {
+                "schema_version": "fusion-market-context-pit-v1",
+                "signal_date": day,
+                "source_date": day,
+                "source": "test_point_in_time_market_context",
+                "market_segment": "LISTED",
+                "market_return_1d": market_return_5d / 5.0,
+                "market_return_5d": market_return_5d,
+                "market_bias_20d": market_return_5d * 1.5,
+                "risk_score": 20.0 + (day_number % 6) * 10.0,
+                "advance_ratio": 0.45 + (day_number % 4) * 0.04,
+                "bull_alignment_pct": 0.40 + (day_number % 3) * 0.08,
+                "regime_surface": regime_surface,
+                "reconstruction": "test_native",
+            },
+        }),
         "alpha_allocation": json.dumps({
             "l4_alpha_ev": _l4_payload(l4),
             "s12_trade_ev": _s12_payload(s12, ready=ready),
@@ -139,7 +161,7 @@ def _row(day: str, idx: int) -> dict:
 def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos_passes():
     rows = []
     for day_idx in range(32):
-        day = f"2026-05-{day_idx + 1:02d}"
+        day = (date(2026, 4, 1) + timedelta(days=day_idx)).isoformat()
         for symbol_idx in range(64):
             rows.append(_row(day, symbol_idx))
 
@@ -161,12 +183,12 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["validation_packet"]["sample_audit"]["l4_available_count"] > 0
     assert artifact["validation_packet"]["sample_audit"]["s12_structure_available_count"] > 0
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
-    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v11"
-    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v11"
+    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v12"
+    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v12"
     assert artifact["validation_packet"]["validation_scope"]["selection_target"] == (
-        "next_session_raw_open_to_fifth_session_raw_close_factor_stable_net_of_costs"
+        "same_date_cross_section_residual_of_five_session_net_return"
     )
-    assert artifact["resolver_method"] == "cross_fitted_rank_two_part_trade_ev_fusion"
+    assert artifact["resolver_method"] == "market_conditioned_cross_fitted_rank_two_part_trade_ev_fusion"
     assert "l4_expected_return" in artifact["coefficients"]
     assert "s12_trade_expected_return" in artifact["coefficients"]
     assert artifact["coefficients"]["l4_expected_return"] != 0
@@ -179,6 +201,10 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["execution_probability_model"]["decision"] == "PASS"
     assert artifact["execution_model"]["coefficients"]["s12_trade_expected_return"] != 0
     assert artifact["validation_packet"]["champion_comparison"]["decision"] == "PASS"
+    assert artifact["validation_packet"]["champion_comparison"]["top_trade_ev_lcb90"] > 0
+    assert artifact["validation_packet"]["sample_audit"]["market_context_available_coverage"] == 1.0
+    assert "market_return_5d" in artifact["feature_names"]
+    assert "l4_defensive_regime_interaction" in artifact["feature_names"]
 
 
 def test_fusion_challenger_must_beat_canonical_l4_on_paired_oos_dates():
@@ -318,8 +344,9 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     assert "fs.as_of_guard = ?" in observed[0]["sql"]
     assert "replay_diagnostics.outcome_known_date" in observed[0]["sql"]
     assert "AS l4_executable_return_pct" in observed[0]["sql"]
-    assert "canonical_market_daily cmd" in observed[0]["sql"]
-    assert "cmd.adj_close / cmd.close" in observed[0]["sql"]
+    assert "price_horizon_labels_v1" in observed[0]["sql"]
+    assert "projection_version = 'price_horizon_v1'" in observed[0]["sql"]
+    assert "LEAD(" not in observed[0]["sql"]
     assert "ph.exit_raw_close * ph.exit_adjustment_factor" in observed[0]["sql"]
     assert "ph.entry_raw_open * ph.entry_adjustment_factor" in observed[0]["sql"]
     assert "ph.exit_raw_close / ph.entry_raw_open" not in observed[0]["sql"]
@@ -327,9 +354,6 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     assert "sp.adj_close / sp.close" not in observed[0]["sql"]
     assert "p.verified_at IS NOT NULL" not in observed[0]["sql"]
     assert observed[0]["params"] == [
-        "2026-07-07",
-        "-45 days",
-        "2026-07-07",
         "2026-07-07",
         "2026-07-07",
         "2026-07-07",
@@ -365,7 +389,11 @@ def test_snapshot_candidate_query_avoids_correlated_evidence_lookups():
     assert "datetime(p.generated_at, '+8 hours')" in captured["sql"]
     assert "datetime(next_session.session_date || ' 01:00:00')" in captured["sql"]
     assert "ROW_NUMBER() OVER" in captured["sql"]
-    assert "json_extract(dr.score_components, '$.version') = 'score_v2'" in captured["sql"]
+    assert "selection_reference_snapshots_v1" in captured["sql"]
+    assert "canonical_run_heads" in captured["sql"]
+    assert "reference_feature_rejection_reason" in captured["sql"]
+    assert "COALESCE(dr.score_components, r.score_components)" in captured["sql"]
+    assert "r.feature_available" in captured["sql"]
     assert captured["params"] == [
         "2026-06-18",
         None,
@@ -572,7 +600,7 @@ def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_f
                 "symbol": f"{symbol_idx:04d}",
                 "prediction_date": day,
                 "prediction_generated_at": f"{day}T12:00:00Z",
-                "label_adjustment_source": "canonical_market_daily:finlab.price",
+                "label_adjustment_source": "stock_prices:finlab_primary_canonical_mirror",
                 "forecast_data": _ensemble_forecast(
                     0.25 + (symbol_idx % 10) * 0.04,
                     0.55 + (symbol_idx % 8) * 0.03,
@@ -619,7 +647,7 @@ def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_f
     }
 
     def query_fn(sql: str, params: list[object] | None = None) -> list[dict]:
-        if "FROM predictions p" in sql and "JOIN daily_recommendations dr" in sql:
+        if "FROM predictions p" in sql and "JOIN daily_recommendations dr" in sql and "canonical_reference_snapshot_candidates_v4" not in sql:
             assert params[0] == "2026-07-06"
             return l4_training_rows
         if "FROM s12_replay_trade_outcomes" in sql:
@@ -639,7 +667,7 @@ def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_f
             return _champion_history_rows()
         if "FROM allocator_ev_feature_snapshot_staging" in sql:
             return [{"row_count": 1}]
-        if "FROM daily_recommendations dr" in sql and "JOIN predictions p" in sql:
+        if "canonical_reference_snapshot_candidates_v4" in sql:
             return [candidate]
         return []
 
@@ -715,7 +743,7 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
     }
 
     def query_fn(sql: str, params: list[object] | None = None) -> list[dict]:
-        if "FROM predictions p" in sql and "JOIN daily_recommendations dr" in sql:
+        if "FROM predictions p" in sql and "JOIN daily_recommendations dr" in sql and "canonical_reference_snapshot_candidates_v4" not in sql:
             assert params[0] == "2026-07-06"
             return []
         if "FROM s12_replay_trade_outcomes" in sql:
@@ -724,7 +752,7 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
             return []
         if "FROM model_champion_history" in sql:
             return _champion_history_rows()
-        if "FROM daily_recommendations dr" in sql and "JOIN predictions p" in sql:
+        if "canonical_reference_snapshot_candidates_v4" in sql:
             return [candidate]
         if "FROM allocator_ev_feature_snapshot_staging" in sql:
             return [{"row_count": 1}]
@@ -775,7 +803,7 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
     written: list[tuple[str, list[object]]] = []
 
     def query_fn(sql: str, params: list[object] | None = None) -> list[dict]:
-        if "FROM predictions p" in sql and "JOIN daily_recommendations dr" in sql:
+        if "FROM predictions p" in sql and "JOIN daily_recommendations dr" in sql and "canonical_reference_snapshot_candidates_v4" not in sql:
             return []
         if "FROM s12_replay_trade_outcomes" in sql:
             return []
@@ -783,7 +811,7 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
             return []
         if "FROM model_champion_history" in sql:
             return _champion_history_rows()
-        if "FROM daily_recommendations dr" in sql and "JOIN predictions p" in sql:
+        if "canonical_reference_snapshot_candidates_v4" in sql:
             return [candidate]
         if "FROM allocator_ev_feature_snapshot_staging" in sql:
             return [{"row_count": 1}]
@@ -808,7 +836,9 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
     assert "l4_alpha_ev" not in allocation
     assert allocation["snapshot_l4_available"] is False
     assert "allocator_ev_feature_snapshot_staging" in written[1][0]
-    assert "INSERT OR REPLACE INTO allocator_ev_feature_snapshots" in written[2][0]
+    assert "INSERT INTO allocator_ev_feature_snapshots" in written[2][0]
+    assert "ON CONFLICT(snapshot_date, stock_id, snapshot_source) DO UPDATE" in written[2][0]
+    assert "INSERT OR REPLACE" not in written[2][0]
     assert "ORDER BY datetime(latest.created_at) DESC, latest.run_id DESC" in written[2][0]
     assert "DELETE FROM allocator_ev_feature_snapshots" in written[3][0]
 
@@ -841,7 +871,7 @@ def test_allocator_ev_feature_snapshot_backfill_does_not_cleanup_after_partial_w
     def query_fn(sql: str, _params: list[object] | None = None) -> list[dict]:
         if "FROM model_champion_history" in sql:
             return _champion_history_rows()
-        if "FROM daily_recommendations dr" in sql and "JOIN predictions p" in sql:
+        if "canonical_reference_snapshot_candidates_v4" in sql:
             return [candidate]
         return []
 
@@ -886,7 +916,7 @@ def test_allocator_ev_feature_snapshot_backfill_recomputes_opaque_s12_payload():
     }
 
     def query_fn(sql: str, _params: list[object] | None = None) -> list[dict]:
-        if "FROM daily_recommendations dr" in sql and "JOIN predictions p" in sql:
+        if "canonical_reference_snapshot_candidates_v4" in sql:
             return [candidate]
         return []
 
@@ -921,7 +951,7 @@ def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload
             rows.append({
                 "symbol": f"{symbol_idx:04d}",
                 "prediction_date": day,
-                "label_adjustment_source": "canonical_market_daily:finlab.price",
+                "label_adjustment_source": "stock_prices:finlab_primary_canonical_mirror",
                 "score_components": json.dumps({
                     "version": "score_v2",
                     "semanticVersion": "score-v2-active8-components-v3",
@@ -959,7 +989,7 @@ def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_miss
     row = {
         "symbol": "2330",
         "prediction_date": "2026-07-02",
-        "label_adjustment_source": "canonical_market_daily:finlab.price",
+        "label_adjustment_source": "stock_prices:finlab_primary_canonical_mirror",
         "actual_return_pct": -0.30,
         "l4_executable_return_pct": 0.02,
         "score": 70,
@@ -1028,7 +1058,7 @@ def test_execution_replay_label_is_kept_when_prior_s12_ev_was_unavailable():
     row = {
         "symbol": "2330",
         "prediction_date": "2026-07-02",
-        "label_adjustment_source": "canonical_market_daily:finlab.price",
+        "label_adjustment_source": "stock_prices:finlab_primary_canonical_mirror",
         "actual_return_pct": -0.30,
         "l4_executable_return_pct": 0.02,
         "s12_replay_pnl_pct": 0.015,
@@ -1079,6 +1109,24 @@ def test_allocator_ev_fusion_uses_executable_selection_label_not_prediction_actu
     assert audit["target_policy"]["actual_trade_outcome_role"] == "audit_only_not_training_label"
 
 
+
+def test_allocator_ev_fusion_does_not_label_unavailable_replay_as_non_execution():
+    row = _row("2026-06-01", 1)
+    row["l4_executable_return_pct"] = 0.03
+    row["s12_replay_pnl_pct"] = None
+    row["s12_replay_status"] = "skipped"
+    row["s12_replay_archetype"] = "missing_intraday_bars"
+
+    samples, audit = _samples([row], min_cross_section_samples_per_date=1)
+
+    assert samples[0]["execution_observation_kind"] == "unavailable"
+    assert samples[0]["execution_probability_target"] is None
+    assert samples[0]["realized_trade_ev_target"] is None
+    assert samples[0]["execution_label_source"] is None
+    assert audit["execution_observation_count"] == 0
+    assert audit["execution_observation_kind_counts"] == {"unavailable": 1}
+    assert "unavailable_excluded" in audit["target_policy"]["full_trade_ev"]
+
 def test_allocator_ev_fusion_prefers_canonical_s12_replay_outcome_label():
     row = _row("2026-06-01", 1)
     row["actual_return_pct"] = -0.30
@@ -1093,3 +1141,32 @@ def test_allocator_ev_fusion_prefers_canonical_s12_replay_outcome_label():
     assert samples[0]["execution_target"] == pytest.approx(0.08)
     assert samples[0]["execution_label_source"] == "s12_replay_trade_outcomes"
     assert audit["execution_label_source_counts"] == {"s12_replay_trade_outcomes": 1}
+
+
+
+def test_allocator_ev_fusion_missing_market_context_cannot_promote():
+    rows = []
+    for day_idx in range(32):
+        day = (date(2026, 4, 1) + timedelta(days=day_idx)).isoformat()
+        for symbol_idx in range(64):
+            row = _row(day, symbol_idx)
+            alpha_context = json.loads(row["alpha_context"])
+            alpha_context.pop("market_regime_context", None)
+            row["alpha_context"] = json.dumps(alpha_context)
+            rows.append(row)
+
+    out = build_allocator_ev_fusion_artifact_from_rows(
+        rows,
+        trained_until="2026-05-31",
+        knowledge_cutoff_date="2026-05-31",
+        min_dates=20,
+        min_samples=1000,
+        l2=0.15,
+    )
+
+    artifact = out["artifact"]
+    assert artifact["promotion_tier"] == "shadow"
+    assert artifact["primary_expected_return_allowed"] is False
+    assert "primary_market_context_samples_low" in artifact["promotion_blockers"]
+    assert "primary_market_context_dates_low" in artifact["promotion_blockers"]
+    assert artifact["validation_packet"]["sample_audit"]["market_context_available_coverage"] == 0.0

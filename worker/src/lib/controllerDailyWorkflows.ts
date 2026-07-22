@@ -152,7 +152,7 @@ export async function runArtifactAutoPromotion(env: Bindings) {
   return `artifact auto-promotion eligible=${result.eligible ?? 0} promoted=${result.promoted ?? 0} readback=${result.readback_verified === true ? 'verified' : 'failed'}`
 }
 
-export async function runVerifyV2(env: Bindings, runDate?: string) {
+export async function runVerifyV2(env: Bindings, runDate?: string, idempotencyKey?: string) {
   requireController(env)
 
   let data: any
@@ -163,6 +163,7 @@ export async function runVerifyV2(env: Bindings, runDate?: string) {
         lookback_days: 5,
         limit: 600, // page size; controller cursor-pagination drains the mature workset
         run_date: runDate || undefined,
+        idempotency_key: idempotencyKey || undefined,
         async_mode: true,
         callback_task: 'verify-v2',
       },

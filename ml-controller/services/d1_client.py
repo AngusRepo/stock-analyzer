@@ -79,11 +79,12 @@ def _noop_write_meta(changes: int = 1) -> dict:
     }
 
 
-def _check_env():
+def _check_env(database_id: str | None = None):
+    resolved_database_id = (database_id or CF_D1_DB_ID).strip()
     missing = [k for k, v in [
         ("CF_API_TOKEN", CF_API_TOKEN),
         ("CF_ACCOUNT_ID", CF_ACCOUNT_ID),
-        ("CF_D1_DB_ID", CF_D1_DB_ID),
+        ("CF_D1_DB_ID", resolved_database_id),
     ] if not v]
     if missing:
         raise RuntimeError(
@@ -103,14 +104,15 @@ def _is_retryable_d1_response(status_code: int, text: str) -> bool:
     return "d1 db is overloaded" in lowered or "requests queued for too long" in lowered
 
 
-def _post(body: dict, timeout: float = 60.0) -> dict:
+def _post(body: dict, timeout: float = 60.0, database_id: str | None = None) -> dict:
     """Internal: POST to D1 /query endpoint, return parsed JSON."""
-    _check_env()
+    resolved_database_id = (database_id or CF_D1_DB_ID).strip()
+    _check_env(resolved_database_id)
     if httpx is None:
         raise RuntimeError("D1 request failed: httpx not installed")
     url = (
         f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
-        f"/d1/database/{CF_D1_DB_ID}/query"
+        f"/d1/database/{resolved_database_id}/query"
     )
     headers = {
         "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -151,18 +153,19 @@ def _post(body: dict, timeout: float = 60.0) -> dict:
     raise last_error or RuntimeError("D1 request failed: exhausted retries")
 
 
-def _post_raw(body: dict, timeout: float = 60.0) -> dict:
+def _post_raw(body: dict, timeout: float = 60.0, database_id: str | None = None) -> dict:
     """Internal: POST to D1 /raw endpoint.
 
     /raw supports a true batch body and avoids the legacy per-statement HTTP
     fallback when the Worker internal batch route is unavailable.
     """
-    _check_env()
+    resolved_database_id = (database_id or CF_D1_DB_ID).strip()
+    _check_env(resolved_database_id)
     if httpx is None:
         raise RuntimeError("D1 raw request failed: httpx not installed")
     url = (
         f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}"
-        f"/d1/database/{CF_D1_DB_ID}/raw"
+        f"/d1/database/{resolved_database_id}/raw"
     )
     headers = {
         "Authorization": f"Bearer {CF_API_TOKEN}",
@@ -312,8 +315,8 @@ def atomic_batch_execute(
     """Execute one fail-closed D1 batch without per-statement fallback.
 
     Promotion pointers must move as one cohort. The ordinary batch helper is
-    intentionally resilient and may fall back to independent REST writes;
-    that behavior is invalid for a release transaction.
+    intentionally resilient across the Worker and raw D1 batch transports,
+    but neither path falls back to independent per-statement REST writes.
     """
     if not statements:
         return {
@@ -349,6 +352,7 @@ def _raw_batch_execute(
     statements: list[tuple[str, list[Any]]],
     timeout: float = 30.0,
     chunk_size: int = 250,
+    database_id: str | None = None,
 ) -> dict:
     if not statements:
         return {"total": 0, "success_count": 0, "error_count": 0, "changes_total": 0, "mode": "d1_raw_batch"}
@@ -373,6 +377,7 @@ def _raw_batch_execute(
                 ]
             },
             timeout=timeout,
+            database_id=database_id,
         )
         results = data.get("result") or []
         total += len(part)

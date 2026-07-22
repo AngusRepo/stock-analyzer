@@ -5,6 +5,7 @@ import {
   buildMlVoteSummary,
   buildSparseAllocationSummary,
   compactRecommendationForCard,
+  resolveMlVoteSummary,
 } from './recommendationContext'
 import { readFileSync } from 'node:fs'
 
@@ -160,6 +161,34 @@ const forecastData = {
   assert(summary?.activeWeightCount === 8, 'active weight count must ignore overlays, shadow models, and TimesFM sidecar')
   assert(summary?.zeroWeightModels?.length === 0, 'all alpha models have positive lifecycle weights in this fixture')
   assert((summary?.allocatorLearningLedger as any)?.schema_version === 'model-allocator-learning-ledger-v1', 'ML vote summary should expose allocator learning ledger')
+}
+
+{
+  const computed = buildMlVoteSummary(null, [
+    { model_name: 'LightGBM', forecast_data: { rank_score: 0.8 } },
+    { model_name: 'XGBoost', forecast_data: { rank_score: 0.7 } },
+    { model_name: 'ExtraTrees', forecast_data: { rank_score: 0.6 } },
+    { model_name: 'TabM', forecast_data: { rank_score: 0.55 } },
+    { model_name: 'DLinear', forecast_data: { rank_score: 0.5 } },
+    { model_name: 'iTransformer', forecast_data: { rank_score: 0.45 } },
+  ])
+  const stalePersisted = {
+    bullish: 1,
+    bearish: 1,
+    flat: 1,
+    reported: 3,
+    missing: 5,
+    total: 8,
+    forecastPct: null,
+    activeWeightCount: 3,
+    reason: null,
+  }
+  const resolved = resolveMlVoteSummary(stalePersisted, computed)
+  assert(resolved?.reported === 6, 'current-date six-model evidence must replace a stale three-model persisted summary')
+  assert(resolved?.total === 8 && resolved?.missing === 2, 'resolved summary must preserve the canonical Active-8 denominator')
+
+  const fullPersisted = { ...stalePersisted, bullish: 4, bearish: 2, flat: 2, reported: 8, missing: 0, activeWeightCount: 8 }
+  assert(resolveMlVoteSummary(fullPersisted, computed) === fullPersisted, 'complete persisted evidence must not be replaced by a partial reconstruction')
 }
 
 {
@@ -348,7 +377,7 @@ const forecastData = {
   )
   assert(
     recommendationsRoute.includes('const computedMlVoteSummary = buildMlVoteSummary(forecastData, perModelRows, tradingConfig.signal)') &&
-      recommendationsRoute.includes('ml_vote_summary: active8PersistedMlVoteSummary ?? computedMlVoteSummary'),
-    'recommendation card API must preserve persisted ml_vote_summary before computed forecast fallback',
+      recommendationsRoute.includes('ml_vote_summary: resolveMlVoteSummary(r.ml_vote_summary, computedMlVoteSummary)'),
+    'recommendation card API must prefer the most complete same-date Active-8 evidence',
   )
 }

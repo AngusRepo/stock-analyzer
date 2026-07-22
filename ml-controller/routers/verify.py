@@ -11,6 +11,7 @@ mirroring the production-safe pipeline-v2 pattern.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 import uuid
@@ -33,6 +34,7 @@ _verify_jobs_client = CloudRunJobsClient(job_name="verify-v2")
 
 class VerifyRunRequest(BaseModel):
     run_date: Optional[str] = None
+    idempotency_key: Optional[str] = None
     lookback_days: int = 5
     limit: int = 200
     async_mode: bool = False
@@ -75,7 +77,12 @@ async def post_verify_run(req: VerifyRunRequest = VerifyRunRequest()):
     )
 
     if req.async_mode:
-        run_id = f"verify-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+        if req.idempotency_key:
+            key_digest = hashlib.sha256(req.idempotency_key.encode("utf-8")).hexdigest()[:12]
+            date_part = (req.run_date or "undated").replace("/", "-")
+            run_id = f"verify-{date_part}-{key_digest}"
+        else:
+            run_id = f"verify-{int(time.time())}-{uuid.uuid4().hex[:8]}"
         try:
             execution = _verify_jobs_client.run_job(
                 env_overrides={
@@ -85,6 +92,7 @@ async def post_verify_run(req: VerifyRunRequest = VerifyRunRequest()):
                     "VERIFY_CALLBACK_TASK": req.callback_task or "verify-v2",
                     "VERIFY_RUN_ID": run_id,
                     "VERIFY_UPDATE_AGGREGATES": "1" if req.update_aggregates else "0",
+                    "VERIFY_IDEMPOTENCY_KEY": req.idempotency_key or "",
                 },
             )
         except JobAlreadyRunningError as e:

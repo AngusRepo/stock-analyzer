@@ -14,8 +14,10 @@ from services.evidence_contracts import (
     ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
     ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
     LABEL_SCHEMA_VERSION,
+    SUPPORTED_ALLOCATOR_EV_FEATURE_SEMANTICS,
     SUPPORTED_ALLOCATOR_EV_SERVING_CONTRACT_PAIRS,
 )
+from services.fusion_market_context import market_context_feature_values
 
 
 SCHEMA_VERSION = "allocator-ev-fusion-v1"
@@ -305,6 +307,11 @@ def _feature_values(
         "score_v2_available": 1.0 if all(value is not None for value in score_values) else 0.0,
         "ensemble_rank_available": 1.0 if avg_rank is not None else 0.0,
         **_s12_structure_features(s12_payload),
+        **market_context_feature_values(
+            row,
+            l4_value=l4_value,
+            s12_value=s12_value,
+        ),
     }
 
 
@@ -364,7 +371,8 @@ def materialize_allocator_ev_fusion(
         and (contract_version, label_version) not in SUPPORTED_ALLOCATOR_EV_SERVING_CONTRACT_PAIRS
     ):
         blockers.append("artifact_label_contract_pair_incompatible")
-    if str(artifact.get("feature_semantic_version") or "").strip() != REQUIRED_FEATURE_SEMANTIC_VERSION:
+    expected_feature_semantic = SUPPORTED_ALLOCATOR_EV_FEATURE_SEMANTICS.get(contract_version)
+    if str(artifact.get("feature_semantic_version") or "").strip() != expected_feature_semantic:
         blockers.append("feature_semantic_version_incompatible")
     method = _resolver_method(artifact)
     if _validation_decision(artifact) not in PASS_STATES:

@@ -1092,6 +1092,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
     from services.allocator_ev_fusion_artifact_builder import (
         build_allocator_ev_fusion_artifact_from_rows,
     )
+    from services.fusion_market_context import load_pit_market_contexts
     from services import d1_client
 
     bucket = _get_bucket()
@@ -1104,6 +1105,11 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             raise ValueError("requested_cohort_manifest_mismatch")
         prediction_rows = load_oof_prediction_rows(manifest, bucket=bucket)
         native_rows = load_native_pit_component_rows(prediction_rows)
+        prediction_dates = sorted({
+            str(row.get("prediction_date") or "")[:10]
+            for row in prediction_rows if row.get("prediction_date")
+        })
+        market_context_by_date = load_pit_market_contexts(d1_client.query, prediction_dates)
         fundamental_quality_by_key = load_fundamental_quality_pit_by_key(prediction_rows)
         snapshot_rows, snapshot_evidence = build_oof_snapshot_rows(
             prediction_rows,
@@ -1111,6 +1117,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             cohort_id=req.cohort_id,
             source_manifest_checksum=manifest["manifest_checksum"],
             fundamental_quality_by_key=fundamental_quality_by_key,
+            market_context_by_date=market_context_by_date,
         )
         l4_result = build_l4_alpha_ev_artifact_from_rows(
             snapshot_rows,

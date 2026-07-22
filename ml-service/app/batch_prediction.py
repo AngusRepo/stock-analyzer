@@ -344,17 +344,15 @@ def _apply_artifact_batch_predictions(
         for (ctx, _row), pred in zip(rows, preds):
             _record_feature_score(ctx, model_name, pred, challenger=challenger)
     except Exception as batch_exc:  # noqa: BLE001
+        # Production artifacts must support matrix inference. Per-symbol retry
+        # hides an incompatible serving contract and creates unbounded CPU work.
         prefix = "challenger " if challenger else ""
-        for ctx, x_row in rows:
-            try:
-                pred = np.asarray(model_obj.predict(x_row)).reshape(-1)[0]
-                _record_feature_score(ctx, model_name, pred, challenger=challenger)
-            except Exception as row_exc:  # noqa: BLE001
-                _record_feature_error(
-                    ctx,
-                    f"{model_name}: {prefix}{type(batch_exc).__name__}: {batch_exc}; row retry failed: {row_exc}",
-                    challenger=challenger,
-                )
+        message = (
+            f"{model_name}: {prefix}batch_contract_failed:"
+            f"{type(batch_exc).__name__}: {batch_exc}"
+        )
+        for ctx, _x_row in rows:
+            _record_feature_error(ctx, message, challenger=challenger)
 
 
 def _apply_gnn_batch_context_predictions(

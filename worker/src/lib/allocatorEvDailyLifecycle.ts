@@ -402,6 +402,25 @@ export async function runAllocatorEvLifecycleWatchdog(
   )) {
     return `allocator EV lifecycle current date=${businessDate} state=${lifecycle?.state} snapshot_rows=${snapshot.actualRows}; ${maturitySummary(maturity)}`
   }
+  if (snapshot.ready && lifecycle?.state === 'verify_triggered') {
+    const verifyStage = await env.DB.prepare(`
+      SELECT status
+        FROM pipeline_stage_runs
+       WHERE business_date=? AND stage='verify_v2'
+    `).bind(businessDate).first<{ status?: string | null }>()
+    if (verifyStage?.status === 'success') {
+      const { queuePostVerifyStage } = await import('./pipelineStageLease')
+      const continuation = await queuePostVerifyStage(env, {
+        businessDate,
+        runId: lifecycle.upstream_run_id || `allocator-ev-lifecycle-watchdog-${businessDate}`,
+        resumeWaiting: true,
+        attempt: Math.max(1, Number(lifecycle.attempt_count ?? 0) + 1),
+      })
+      return continuation.queued
+        ? `allocator EV lifecycle recovered post-verify date=${businessDate} run_id=${continuation.canonicalRunId}`
+        : `allocator EV lifecycle post-verify current date=${businessDate} status=${continuation.status}`
+    }
+  }
   if (!snapshot.ready && businessDate < twTodayDate()) {
     return `skipped: allocator EV native snapshot repair window closed for historical date=${businessDate} `
       + `run_native=${snapshot.runNativeLineageRows} reconstructed=${snapshot.reconstructedLineageRows} `

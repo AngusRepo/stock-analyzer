@@ -185,24 +185,25 @@ class FakeCandidateFeatureD1 {
 {
   const source = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
   assert(
-    source.includes('INSERT OR REPLACE INTO strategy_decision_log'),
-    'strategy decision materialization must be idempotent across historical replay runs',
+    source.includes('INSERT INTO strategy_decision_log') &&
+      source.includes('ON CONFLICT(date, symbol, strategy_id, strategy_version) DO UPDATE SET') &&
+      !source.includes('INSERT OR REPLACE INTO strategy_decision_log'),
+    'strategy decision materialization must use in-place UPSERT without REPLACE delete/insert write amplification',
   )
   assert(source.includes('STRATEGY_LEARNING_D1_BATCH_SIZE'), 'strategy learning replay writes must be chunked for D1 production latency')
   assert(source.includes('STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT = 2000'), 'strategy learning must default to full L0 universe scale, not the old 500-candidate partial cap')
   assert(source.includes('STRATEGY_LEARNING_D1_BATCH_SIZE = 250'), 'strategy learning D1 writes must avoid excessive 50-row round trips that can be killed in callback waitUntil')
   assert(source.includes('await db.batch(chunk)'), 'strategy learning replay must use D1 batch persistence')
   assert(
+    source.includes('selection_reference_snapshots_v1') &&
+      source.includes('r.hard_gate_passed=1') &&
+      source.includes('r.symbol>?') &&
     source.includes('screener_funnel_items') &&
-      source.includes("stage = 'scoring' AND decision = 'pass'") &&
-      source.includes("stage = 'layer1_strategy_breadth_gate' AND decision = 'pass'") &&
-      source.includes("stage = 'final_selection' AND decision = 'selected'") &&
       source.includes('raw_signals') &&
       source.includes('funnel_candidates') &&
       source.includes('fc.evidence AS funnel_evidence') &&
-      source.includes('canonical_run_heads') &&
-      source.includes("p.status = 'canonical'"),
-    'strategy learning candidates must restore raw L0 evidence from the canonical successful screener run, not an arbitrary latest or failed rerun',
+      source.includes('canonical_run_heads'),
+    'strategy learning must keyset-page the complete canonical L0 reference universe and only use funnel rows for evidence hydration',
   )
   assert(
     source.includes('writeEvidenceArtifact') &&
@@ -491,7 +492,8 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
       strategy_status: 'shadow',
       alpha_bucket: 'trend_following',
       market_segment: 'LISTED',
-      actual_return_pct: 0.02,
+      absolute_return_net: 0.02,
+      residual_return_net: 0.02,
     },
     {
       date: '2026-05-16',
@@ -501,7 +503,8 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
       strategy_status: 'shadow',
       alpha_bucket: 'trend_following',
       market_segment: 'LISTED',
-      actual_return_pct: -0.01,
+      absolute_return_net: -0.01,
+      residual_return_net: -0.01,
     },
   ], { nowIso: '2026-05-19T00:00:00.000Z' })
   assert(ledger.length === 1, 'ledger should aggregate rows by strategy/version/segment/regime')
@@ -513,7 +516,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
 {
   const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'shadow' as const }
   const summary = {
-    version: 'strategy-learning-v1',
+    version: 'strategy-learning-v4',
     date: '2026-05-19',
     spec_source: 'registry',
     specs: [{
@@ -633,6 +636,6 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   assert(gate[0].missing_evidence.includes('active_avg_return_not_positive'), 'cooldown should expose weak return evidence')
 
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
-  assert(policy.strategy_weights[spec.id] === 0.2, 'cooldown strategies should be explicitly down-weighted instead of falling back to default weight')
+  assert(policy.strategy_weights[spec.id] === 0, 'negative-edge cooldown strategies must have zero production contribution')
   assert(policy.threshold_deltas[spec.id].minVolumeExpansion20 === 0.12, 'cooldown should tighten raw-signal thresholds')
 }

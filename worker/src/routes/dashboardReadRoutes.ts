@@ -164,6 +164,7 @@ dashboardReadRoutes.get('/api/observability/model-health', async (c) => {
       .map(([modelName, raw]) => {
         const model = raw as Record<string, any>
         const ic = model.ic_4w_avg ?? model.rolling_ic ?? null
+        const sourceOfTruth = lineage?.source_of_truth ?? 'model_pool.json'
         return {
           date,
           model_name: modelName,
@@ -177,14 +178,20 @@ dashboardReadRoutes.get('/api/observability/model-health', async (c) => {
           last_ic_sample_count: model.last_ic_sample_count ?? 0,
           last_ic_error: model.last_ic_error ?? model.lifecycle_diagnosis?.error ?? null,
           lifecycle_diagnosis: model.lifecycle_diagnosis ?? null,
+          serving_owner: model.serving_owner ?? null,
+          serving_artifact_id: model.serving_artifact_id ?? null,
+          serving_block_reason: model.serving_block_reason ?? null,
+          target_semantic_version: model.target_semantic_version ?? null,
+          offline_gate_decision: model.offline_gate_decision ?? null,
+          live_gate_status: model.live_gate_status ?? null,
           weekly_ic_count: Array.isArray(model.weekly_ic) ? model.weekly_ic.length : 0,
           metadata_exists: model.metadata_exists ?? null,
           drift_detected: Number(model.consecutive_negative_weeks ?? 0) > 0 ? 1 : 0,
           created_at: lineage?.last_updated ?? new Date().toISOString(),
-          source_of_truth: 'model_pool.json',
+          source_of_truth: sourceOfTruth,
         }
       })
-    return c.json({ date, models, source_of_truth: 'model_pool.json', last_updated: lineage?.last_updated ?? null })
+    return c.json({ date, models, source_of_truth: lineage?.source_of_truth ?? 'model_pool.json', last_updated: lineage?.last_updated ?? null })
   } catch (e: any) {
     return c.json({
       date,

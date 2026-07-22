@@ -11,6 +11,7 @@ import {
   applyS12TwCalibrationArtifact,
   listApprovedS12TwCalibrationArtifacts,
   resolveS12TwCalibrationArtifact,
+  type S12TwCalibrationArtifact,
 } from './s12TwEquityCalibration'
 
 export const S12_SETUP_WATCH_STATES = new Set([
@@ -131,11 +132,7 @@ export async function runS12IntradaySetupWatch(env: Bindings, today: string): Pr
         loadS12IntradayBaseBars(env, seed.symbol, today, price, Number(quote.totalVolume ?? 0)),
         env.DB.prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(seed.symbol).first<{ market?: string | null }>(),
       ])
-      const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
-        marketSegment: stock?.market ?? 'UNKNOWN',
-        asOfDate: today,
-      })
-      const assessment: S12IntradayAssessment = assessS12IntradayStructureFromBaseBars({
+      const assess = (calibration: S12TwCalibrationArtifact | null): S12IntradayAssessment => assessS12IntradayStructureFromBaseBars({
         symbol: seed.symbol,
         baseBars: bars.bars,
         fallback15mBars: bars.fallback15mBars,
@@ -152,6 +149,13 @@ export async function runS12IntradaySetupWatch(env: Bindings, today: string): Pr
         h4ReferenceDate: bars.diagnostics.previous_daily_context_date,
         h4ReferenceClose: quote.referencePrice ?? bars.diagnostics.previous_daily_raw_close,
       })
+      const preliminary = assess(null)
+      const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
+        entryCohort: preliminary.state === 'limited_takeover_ready' ? 'limited_takeover_ready' : 'reaction_ready',
+        marketSegment: stock?.market ?? 'UNKNOWN',
+        asOfDate: today,
+      })
+      const assessment = calibration ? assess(calibration) : preliminary
       assessed += 1
       if (assessment.ready) ready += 1
       else stillWaiting += 1

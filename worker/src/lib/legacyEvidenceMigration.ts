@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { retainArtifactHardReference, writeEvidenceArtifact } from './artifactLifecycle'
+import { checkpointLegacyMigration, loadLegacyMigrationCursor } from './legacyMigrationCursor'
 
 type LegacyScreenerEvidenceRow = {
   id: number
@@ -31,11 +32,15 @@ export async function runLegacyEvidenceMigration(
 }> {
   if (!env.ARTIFACTS) throw new Error('artifact_r2_binding_missing')
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 200), 500))
+  const taskName = 'legacy_screener_evidence_v2'
+  const cursor = await loadLegacyMigrationCursor(env.DB, taskName)
+  const cursorId = Math.max(0, Number.parseInt(cursor?.cursor_key ?? '0', 10) || 0)
   const { results } = await env.DB.prepare(`
     SELECT sfi.id, sfi.run_id, sfi.date, sfi.symbol, sfi.stage, sfi.evidence
       FROM screener_funnel_items sfi
       JOIN screener_funnel_runs sfr ON sfr.run_id = sfi.run_id
-     WHERE sfi.evidence IS NOT NULL
+     WHERE sfi.id > ?
+       AND sfi.evidence IS NOT NULL
        AND LENGTH(sfi.evidence) > 256
        AND (
          json_valid(sfi.evidence) = 0
@@ -61,11 +66,15 @@ export async function runLegacyEvidenceMigration(
             AND q.target_column='evidence'
             AND q.status IN ('pending','running','complete')
        )
-     ORDER BY sfi.date, sfi.run_id, sfi.id
+     ORDER BY sfi.id
      LIMIT ?
-  `).bind(limit).all<LegacyScreenerEvidenceRow>()
+  `).bind(cursorId, limit).all<LegacyScreenerEvidenceRow>()
 
   const rows = results ?? []
+  if (!rows.length) {
+    await checkpointLegacyMigration(env.DB, { taskName, status: 'complete' })
+    return { candidates: 0, artifacts: 0, queued_scrubs: 0, backlog_remaining: false }
+  }
   const grouped = new Map<string, LegacyScreenerEvidenceRow[]>()
   for (const row of rows) {
     const group = grouped.get(row.run_id) ?? []
@@ -116,10 +125,20 @@ export async function runLegacyEvidenceMigration(
     }
     queuedScrubs += runRows.length
   }
+  const lastRow = rows[rows.length - 1]
+  const backlogRemaining = rows.length === limit
+  await checkpointLegacyMigration(env.DB, {
+    taskName,
+    status: backlogRemaining ? 'running' : 'complete',
+    cursorDate: lastRow.date,
+    cursorKey: String(lastRow.id),
+    scannedRows: rows.length,
+    archivedRows: queuedScrubs,
+  })
   return {
     candidates: rows.length,
     artifacts,
     queued_scrubs: queuedScrubs,
-    backlog_remaining: rows.length === limit,
+    backlog_remaining: backlogRemaining,
   }
 }

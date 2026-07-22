@@ -324,6 +324,7 @@ CREATE TABLE IF NOT EXISTS s12_tw_calibration_artifacts (
   status               TEXT NOT NULL,
   cadence              TEXT NOT NULL,
   market_segment       TEXT NOT NULL,
+  entry_cohort        TEXT NOT NULL DEFAULT 'legacy_mixed',
   alpha_bucket         TEXT,
   entry_time_bucket    TEXT,
   policy_json          TEXT NOT NULL,
@@ -1106,6 +1107,153 @@ CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_symbol
 CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_status
   ON strategy_decision_log(strategy_status, matched, date DESC);
 
+CREATE TABLE IF NOT EXISTS pipeline_stage_runs (
+  business_date TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  canonical_run_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'waiting', 'success', 'error')),
+  cursor_key TEXT,
+  processed_count INTEGER NOT NULL DEFAULT 0,
+  expected_count INTEGER,
+  persisted_count INTEGER NOT NULL DEFAULT 0,
+  lease_owner TEXT,
+  lease_expires_at TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  queued_at TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(business_date, stage)
+);
+CREATE INDEX IF NOT EXISTS idx_pipeline_stage_runs_status
+  ON pipeline_stage_runs(stage, status, business_date DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_learning_runs (
+  business_date TEXT PRIMARY KEY,
+  canonical_run_id TEXT NOT NULL,
+  producer_run_id TEXT,
+  status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'success', 'error')),
+  cursor_symbol TEXT,
+  expected_candidates INTEGER,
+  processed_candidates INTEGER NOT NULL DEFAULT 0,
+  strategy_count INTEGER,
+  expected_decision_rows INTEGER,
+  persisted_decision_rows INTEGER NOT NULL DEFAULT 0,
+  lease_owner TEXT,
+  lease_expires_at TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_learning_runs_status
+  ON strategy_learning_runs(status, business_date DESC);
+
+CREATE TABLE IF NOT EXISTS maintenance_task_leases (
+  lease_group TEXT PRIMARY KEY,
+  task_name TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  lease_expires_at TEXT NOT NULL,
+  acquired_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  heartbeat_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS legacy_migration_cursors (
+  task_name TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'complete', 'error')),
+  cursor_date TEXT,
+  cursor_key TEXT,
+  scanned_rows INTEGER NOT NULL DEFAULT 0,
+  archived_rows INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS selection_reference_snapshots_v1 (
+  signal_date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  producer_run_id TEXT NOT NULL,
+  stock_id INTEGER,
+  name TEXT,
+  market_segment TEXT,
+  sector TEXT,
+  hard_gate_passed INTEGER NOT NULL CHECK(hard_gate_passed IN (0, 1)),
+  hard_gate_reason TEXT NOT NULL,
+  feature_available INTEGER NOT NULL CHECK(feature_available IN (0, 1)),
+  feature_rejection_reason TEXT,
+  strategy_labeled INTEGER NOT NULL CHECK(strategy_labeled IN (0, 1)),
+  strategy_selected INTEGER NOT NULL CHECK(strategy_selected IN (0, 1)),
+  ml_selected INTEGER NOT NULL DEFAULT 0 CHECK(ml_selected IN (0, 1)),
+  l4_selected INTEGER NOT NULL DEFAULT 0 CHECK(l4_selected IN (0, 1)),
+  ev_owner_available INTEGER NOT NULL DEFAULT 0 CHECK(ev_owner_available IN (0, 1)),
+  final_signal TEXT,
+  selection_stage TEXT NOT NULL,
+  rejection_reason TEXT,
+  selection_propensity REAL,
+  score_v2 REAL,
+  score_components TEXT,
+  allocation_selected INTEGER NOT NULL DEFAULT 0 CHECK(allocation_selected IN (0, 1)),
+  decision_evidence_reconciled_at TEXT,
+  strategy_labeler_version TEXT,
+  strategy_router_version TEXT,
+  strategy_registry_checksum TEXT NOT NULL,
+  feature_contract_version TEXT NOT NULL,
+  evidence_artifact_id TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(signal_date, symbol, producer_run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_date
+  ON selection_reference_snapshots_v1(signal_date, hard_gate_passed, strategy_selected);
+CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_symbol
+  ON selection_reference_snapshots_v1(symbol, signal_date DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_label_matrix_v4 (
+  signal_date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  producer_run_id TEXT NOT NULL,
+  strategy_id TEXT NOT NULL,
+  strategy_version TEXT NOT NULL,
+  strategy_status TEXT NOT NULL,
+  alpha_bucket TEXT NOT NULL,
+  family_id TEXT NOT NULL,
+  production_owner INTEGER NOT NULL CHECK(production_owner IN (0, 1)),
+  strategy_hit INTEGER NOT NULL CHECK(strategy_hit IN (0, 1)),
+  weak_label REAL NOT NULL,
+  affinity REAL NOT NULL,
+  position_weight REAL NOT NULL,
+  overlap REAL NOT NULL,
+  label_reason TEXT,
+  labeler_version TEXT NOT NULL,
+  strategy_registry_checksum TEXT NOT NULL,
+  reference_contract_version TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(signal_date, symbol, producer_run_id, strategy_id, strategy_version)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_date
+  ON strategy_label_matrix_v4(signal_date, strategy_id, strategy_hit);
+CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_symbol
+  ON strategy_label_matrix_v4(symbol, signal_date DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_label_matrix_runs_v4 (
+  producer_run_id TEXT PRIMARY KEY,
+  signal_date TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('writing', 'ready', 'failed')),
+  reference_candidate_count INTEGER NOT NULL,
+  strategy_count INTEGER NOT NULL,
+  expected_cell_count INTEGER NOT NULL,
+  persisted_cell_count INTEGER NOT NULL DEFAULT 0,
+  strategy_registry_checksum TEXT NOT NULL,
+  labeler_version TEXT NOT NULL,
+  error_code TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_runs_v4_date
+  ON strategy_label_matrix_runs_v4(signal_date, status, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS strategy_reward_ledger (
   reward_id                TEXT PRIMARY KEY,
   strategy_id              TEXT NOT NULL,
@@ -1641,3 +1789,322 @@ CREATE INDEX IF NOT EXISTS idx_artifact_hard_references_owner_active
 -- 首次部署：wrangler d1 execute stockvision-db --remote --file=./worker/schema.sql
 -- v12 升級：wrangler d1 execute stockvision-db --remote --file=./worker/migration_v12.sql
 -- ─────────────────────────────────────────────────────────────────────────────
+
+-- Selection outcomes are independent from trade execution outcomes. Never
+-- coalesce these labels with predictions.trade_pnl_pct or legacy v2 rewards.
+
+CREATE TABLE IF NOT EXISTS canonical_selection_labels_v4 (
+  signal_date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  label_schema_version TEXT NOT NULL DEFAULT 'canonical-strategy-selection-label-v4',
+  producer_run_id TEXT NOT NULL,
+  market_segment TEXT,
+  sector TEXT,
+  entry_date TEXT NOT NULL,
+  exit_date TEXT NOT NULL,
+  outcome_known_date TEXT NOT NULL,
+  entry_raw_open REAL NOT NULL,
+  exit_raw_close REAL NOT NULL,
+  entry_adjustment_factor REAL NOT NULL,
+  exit_adjustment_factor REAL NOT NULL,
+  gross_return REAL NOT NULL,
+  transaction_cost_bps REAL NOT NULL,
+  absolute_return_net REAL NOT NULL,
+  benchmark_return_net REAL NOT NULL,
+  benchmark_scope TEXT NOT NULL CHECK(benchmark_scope IN ('sector','market_segment','market')),
+  residual_return_net REAL NOT NULL,
+  cross_section_rank REAL NOT NULL,
+  adjustment_source TEXT NOT NULL,
+  reference_contract_version TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(signal_date, symbol, producer_run_id, label_schema_version),
+  CHECK(entry_date > signal_date),
+  CHECK(exit_date >= entry_date),
+  CHECK(outcome_known_date = exit_date)
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_selection_labels_v4_known
+  ON canonical_selection_labels_v4(outcome_known_date, signal_date);
+CREATE INDEX IF NOT EXISTS idx_canonical_selection_labels_v4_symbol
+  ON canonical_selection_labels_v4(symbol, signal_date DESC);
+
+CREATE TABLE IF NOT EXISTS canonical_selection_label_rejections_v4 (
+  signal_date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  producer_run_id TEXT NOT NULL,
+  reason_code TEXT NOT NULL,
+  as_of_date TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(signal_date, symbol, producer_run_id, reason_code)
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_selection_label_rejections_v4_date
+  ON canonical_selection_label_rejections_v4(signal_date, reason_code);
+
+CREATE TABLE IF NOT EXISTS canonical_selection_label_runs_v4 (
+  run_id TEXT PRIMARY KEY,
+  as_of_date TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('ready', 'failed')),
+  reference_rows INTEGER NOT NULL,
+  mature_rows INTEGER NOT NULL,
+  pending_rows INTEGER NOT NULL,
+  unavailable_rows INTEGER NOT NULL,
+  error_code TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_selection_label_runs_v4_date
+  ON canonical_selection_label_runs_v4(as_of_date, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_marginal_edge_runs_v4 (
+  run_id TEXT PRIMARY KEY,
+  as_of_date TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('shadow','promoted','failed')),
+  strategy_count INTEGER NOT NULL,
+  eligible_strategy_count INTEGER NOT NULL,
+  sample_dates INTEGER NOT NULL,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  error_code TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_marginal_edge_runs_v4_date
+  ON strategy_marginal_edge_runs_v4(as_of_date DESC, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_marginal_edge_v4 (
+  run_id TEXT NOT NULL,
+  as_of_date TEXT NOT NULL,
+  strategy_id TEXT NOT NULL,
+  strategy_version TEXT NOT NULL,
+  edge_schema_version TEXT NOT NULL DEFAULT 'strategy-marginal-edge-v4',
+  observation_dates INTEGER NOT NULL,
+  candidate_observations INTEGER NOT NULL,
+  marginal_edge_mean REAL,
+  marginal_edge_lcb90 REAL,
+  positive_date_rate REAL,
+  absolute_hit_return_mean REAL,
+  production_eligible INTEGER NOT NULL DEFAULT 0 CHECK(production_eligible IN (0,1)),
+  production_weight_raw REAL NOT NULL DEFAULT 0,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(run_id, strategy_id, strategy_version),
+  FOREIGN KEY(run_id) REFERENCES strategy_marginal_edge_runs_v4(run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_marginal_edge_v4_latest
+  ON strategy_marginal_edge_v4(as_of_date DESC, production_eligible, strategy_id);
+
+CREATE TABLE IF NOT EXISTS strategy_marginal_edge_dates_v4 (
+  run_id TEXT NOT NULL,
+  signal_date TEXT NOT NULL,
+  candidate_residual_return REAL,
+  candidate_absolute_return REAL,
+  champion_residual_return REAL,
+  champion_absolute_return REAL,
+  paired_residual_delta REAL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(run_id, signal_date),
+  FOREIGN KEY(run_id) REFERENCES strategy_marginal_edge_runs_v4(run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_marginal_edge_dates_v4_date
+  ON strategy_marginal_edge_dates_v4(signal_date, run_id);
+
+CREATE TABLE IF NOT EXISTS strategy_marginal_edge_head_v4 (
+  owner_key TEXT PRIMARY KEY CHECK(owner_key = 'production'),
+  run_id TEXT NOT NULL,
+  previous_run_id TEXT,
+  promoted_at TEXT NOT NULL,
+  FOREIGN KEY(run_id) REFERENCES strategy_marginal_edge_runs_v4(run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_s12_tw_calibration_entry_cohort
+  ON s12_tw_calibration_artifacts(
+    status, superseded_at, entry_cohort, market_segment, alpha_bucket, entry_time_bucket, approved_at DESC
+  );
+
+CREATE TABLE IF NOT EXISTS domain_projection_outbox (
+  event_id TEXT PRIMARY KEY,
+  source_domain TEXT NOT NULL,
+  target_domain TEXT NOT NULL,
+  aggregate_type TEXT NOT NULL,
+  aggregate_id TEXT NOT NULL,
+  business_date TEXT,
+  payload_json TEXT,
+  payload_artifact_id TEXT,
+  checksum TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'publishing', 'published', 'error')),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  published_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_domain_projection_outbox_pending
+  ON domain_projection_outbox(status, available_at, source_domain, target_domain);
+
+CREATE TABLE IF NOT EXISTS domain_projection_inbox (
+  target_domain TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  source_domain TEXT NOT NULL,
+  aggregate_type TEXT NOT NULL,
+  aggregate_id TEXT NOT NULL,
+  checksum TEXT NOT NULL,
+  applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(target_domain, event_id)
+);
+
+CREATE TABLE IF NOT EXISTS data_domain_cutovers (
+  domain TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK(status IN ('legacy', 'shadow', 'read_cutover', 'write_cutover', 'complete', 'rollback')),
+  source_binding TEXT NOT NULL DEFAULT 'DB',
+  target_binding TEXT,
+  source_row_count INTEGER,
+  target_row_count INTEGER,
+  source_checksum TEXT,
+  target_checksum TEXT,
+  parity_checked_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS data_retention_policies (
+  policy_id TEXT PRIMARY KEY, domain TEXT NOT NULL, dataset_pattern TEXT NOT NULL,
+  hot_retention_days INTEGER NOT NULL, cold_retention_days INTEGER,
+  archive_store TEXT NOT NULL CHECK(archive_store IN ('r2', 'gcs', 'none')),
+  action TEXT NOT NULL CHECK(action IN ('archive_scrub', 'archive_delete', 'delete_unreferenced', 'retain')),
+  hard_reference_protected INTEGER NOT NULL DEFAULT 1 CHECK(hard_reference_protected IN (0, 1)),
+  version INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('draft', 'active', 'retired')),
+  approved_reason TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS data_retention_runs (
+  run_id TEXT PRIMARY KEY, policy_id TEXT NOT NULL, business_date TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('running', 'success', 'error', 'skipped')),
+  scanned_rows INTEGER NOT NULL DEFAULT 0, archived_rows INTEGER NOT NULL DEFAULT 0,
+  scrubbed_rows INTEGER NOT NULL DEFAULT 0, deleted_rows INTEGER NOT NULL DEFAULT 0,
+  archived_bytes INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, completed_at TEXT,
+  FOREIGN KEY(policy_id) REFERENCES data_retention_policies(policy_id)
+);
+CREATE INDEX IF NOT EXISTS idx_data_retention_runs_policy_date
+  ON data_retention_runs(policy_id, business_date DESC, status);
+
+CREATE TABLE IF NOT EXISTS storage_capacity_daily (
+  observed_date TEXT NOT NULL, domain TEXT NOT NULL, binding_name TEXT NOT NULL,
+  used_bytes INTEGER NOT NULL, max_bytes INTEGER NOT NULL, utilization_pct REAL NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('healthy', 'warning', 'drain', 'critical')),
+  measurement_source TEXT NOT NULL CHECK(measurement_source = 'd1_result_meta_size_after'),
+  observed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(observed_date, domain, binding_name)
+);
+
+INSERT OR IGNORE INTO data_retention_policies VALUES
+  ('audit_json_r2_v1', 'ops', 'strategy_decision_log,screener_funnel_items,paper_execution_events', 90, 2555, 'r2', 'archive_scrub', 1, 1, 'active', 'Preserve scalar learning/execution rows; move large verified JSON to R2', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('legacy_hot_r2_v1', 'ops', 'obsolete_screener,superseded_pending,null_date_predictions,intraday_manifests,state_space_shadow,staging_orphans', 30, 730, 'r2', 'archive_delete', 1, 1, 'active', 'Only obsolete or superseded cohorts may be deleted after checksum-verified archive', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('canonical_market_hot_v1', 'market', 'canonical_market_and_fundamental_pit', 504, 3650, 'r2', 'archive_delete', 1, 1, 'active', '504-day hot PIT window; active artifact hard references block retirement', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('learning_lineage_v1', 'learning', 'predictions,labels,replay,snapshots,oof', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Keep two years hot; active/champion hard references block archive deletion; retain ten-year verified cold lineage', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('execution_ledger_v1', 'execution', 'orders,fills,positions,reconciliation,execution_events', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Keep two years hot and preserve checksum-verified execution evidence for ten years in cold storage', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('research_runs_v1', 'research', 'backtests,optuna,pbo,discovery', 180, 1825, 'r2', 'archive_delete', 1, 1, 'active', 'Bounded research hot store with five-year reproducibility archive', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+CREATE INDEX IF NOT EXISTS idx_prices_date_stock ON stock_prices(date, stock_id);
+
+CREATE TABLE IF NOT EXISTS market_breadth (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL UNIQUE,
+  advance_count INTEGER,
+  decline_count INTEGER,
+  unchanged_count INTEGER,
+  advance_ratio REAL,
+  bull_alignment_pct REAL,
+  new_high_count INTEGER,
+  new_low_count INTEGER,
+  margin_balance REAL,
+  short_balance REAL,
+  margin_maintenance REAL,
+  sample_size INTEGER,
+  limit_down_count INTEGER,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS market_trading_sessions (
+  session_date TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  sample_size INTEGER NOT NULL,
+  materialized_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK(sample_size > 0)
+);
+
+CREATE TABLE IF NOT EXISTS price_horizon_labels_v1 (
+  stock_id INTEGER NOT NULL,
+  price_date TEXT NOT NULL,
+  entry_date TEXT NOT NULL,
+  entry_raw_open REAL NOT NULL,
+  entry_adjustment_factor REAL NOT NULL,
+  exit_date TEXT NOT NULL,
+  exit_raw_close REAL NOT NULL,
+  exit_adjustment_factor REAL NOT NULL,
+  outcome_known_date TEXT NOT NULL,
+  source TEXT NOT NULL,
+  projection_version TEXT NOT NULL,
+  materialized_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(stock_id, price_date),
+  CHECK(entry_date > price_date),
+  CHECK(exit_date >= entry_date),
+  CHECK(outcome_known_date = exit_date),
+  CHECK(entry_raw_open > 0),
+  CHECK(exit_raw_close > 0),
+  CHECK(entry_adjustment_factor > 0),
+  CHECK(exit_adjustment_factor > 0)
+);
+CREATE INDEX IF NOT EXISTS idx_price_horizon_labels_date ON price_horizon_labels_v1(price_date, stock_id);
+CREATE INDEX IF NOT EXISTS idx_price_horizon_labels_outcome ON price_horizon_labels_v1(outcome_known_date, price_date);
+
+CREATE TABLE IF NOT EXISTS price_horizon_label_rejections_v1 (
+  stock_id INTEGER NOT NULL,
+  price_date TEXT NOT NULL,
+  entry_date TEXT NOT NULL,
+  exit_date TEXT NOT NULL,
+  rejection_reason TEXT NOT NULL,
+  source TEXT NOT NULL,
+  projection_version TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(stock_id, price_date)
+);
+CREATE INDEX IF NOT EXISTS idx_price_horizon_rejections_date
+  ON price_horizon_label_rejections_v1(price_date, rejection_reason);
+
+CREATE TABLE IF NOT EXISTS price_horizon_projection_status (
+  signal_date TEXT PRIMARY KEY,
+  entry_date TEXT NOT NULL,
+  exit_date TEXT NOT NULL,
+  candidate_count INTEGER NOT NULL,
+  materialized_count INTEGER NOT NULL,
+  rejected_count INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('success', 'incomplete', 'empty')),
+  source TEXT NOT NULL,
+  projection_version TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK(candidate_count >= 0),
+  CHECK(materialized_count >= 0),
+  CHECK(rejected_count >= 0),
+  CHECK(materialized_count + rejected_count = candidate_count)
+);
+
+CREATE TABLE IF NOT EXISTS price_horizon_projection_runs (
+  run_id TEXT PRIMARY KEY,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  outcome_as_of_date TEXT NOT NULL,
+  eligible_signal_dates INTEGER NOT NULL DEFAULT 0,
+  processed_signal_dates INTEGER NOT NULL DEFAULT 0,
+  skipped_complete_dates INTEGER NOT NULL DEFAULT 0,
+  candidate_count INTEGER NOT NULL DEFAULT 0,
+  materialized_count INTEGER NOT NULL DEFAULT 0,
+  rejected_count INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK(status IN ('running', 'success', 'complete_with_rejections', 'error')),
+  last_error TEXT,
+  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT
+);
+
+INSERT OR IGNORE INTO data_retention_policies VALUES
+  ('market_sessions_hot_v1', 'market', 'market_trading_sessions', 730, 3650, 'r2', 'archive_delete', 1, 1, 'active', 'Observed exchange sessions remain hot for point-in-time joins and retain a ten-year cold copy', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('price_horizon_learning_v1', 'learning', 'price_horizon_labels_v1,price_horizon_projection_status', 730, NULL, 'r2', 'retain', 1, 1, 'active', 'Executable five-session labels remain protected while referenced by active or champion artifacts', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('price_horizon_rejections_v1', 'learning', 'price_horizon_label_rejections_v1', 90, 730, 'r2', 'archive_delete', 1, 1, 'active', 'Missing price evidence is retained hot for repair and cold for lineage audit', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('price_horizon_ops_v1', 'ops', 'price_horizon_projection_runs', 504, 1825, 'r2', 'archive_delete', 1, 1, 'active', 'Projection run summaries remain available for lifecycle and SLA audits', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);

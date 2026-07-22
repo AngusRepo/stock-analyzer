@@ -141,6 +141,7 @@ void (async () => {
   const largeInput: EvidenceArtifactWriteInput = {
     ...input,
     producerRunId: 'screener-run-chunked',
+    schemaVersion: 'screener-funnel-evidence-v3',
     payload: {
       metadata: { status: 'success' },
       debug_log: ['chunk transport regression'],
@@ -187,6 +188,10 @@ void (async () => {
   assert.equal(parentRequest?.rowCount, largeItems.length)
   assert.equal(chunkedManifest.schema_version, 'screener-funnel-evidence-index-v1')
   assert(transportRequests.every((value) => Buffer.byteLength(JSON.stringify(value), 'utf8') <= 2 * 1024 * 1024))
+  assert(childRequests.every(
+    (value) => value.payload.logical_schema_version === 'screener-funnel-evidence-v3',
+  ))
+  assert.equal(parentRequest?.payload.logical_schema_version, 'screener-funnel-evidence-v3')
   assert.deepEqual(
     childRequests.flatMap((value) => value.payload.items as unknown[]),
     largeItems,

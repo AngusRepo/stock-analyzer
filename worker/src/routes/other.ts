@@ -1,4 +1,4 @@
-﻿import { Hono } from 'hono'
+import { Hono } from 'hono'
 
 import { loadLatestStockFinancialSnapshot, toLlmFinancialContext } from '../lib/fundamentalData'
 import { DEFAULT_STRATEGY_SPECS } from '../lib/strategySpec'
@@ -202,6 +202,7 @@ import {
   compactRecommendationForCard,
   DIRECT_ALPHA_VOTE_MODEL_NAMES,
   parsePredictionForecastData,
+  resolveMlVoteSummary,
 } from '../lib/recommendationContext'
 import { getTradingConfig } from '../lib/tradingConfig'
 import { classifyBoard, resolveRecommendationGovernance } from '../lib/boardTradability'
@@ -2521,7 +2522,7 @@ ml.post('/predict/:stockId', async (c) => {
     const d = data as any
     if (d.signal && d.forecasts) {
       await c.env.DB.prepare(
-        `INSERT OR REPLACE INTO predictions
+        `INSERT INTO predictions
          (stock_id, model_name, horizon, direction_accuracy, forecast_data, trade_signal, entry_price, stop_loss, target1, target2, best_model, created_at)
          VALUES (?, 'Ensemble', 14, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))`
       ).bind(
@@ -3394,27 +3395,67 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
     }
   })
 
-  const { results: strategyRows } = await db.prepare(`
+  const { results: rawMatrixRows } = await db.prepare(`
+    SELECT symbol, strategy_id
+      FROM strategy_label_matrix_v4
+     WHERE producer_run_id = ?
+       AND production_owner = 1
+       AND strategy_hit = 1
+  `).bind(latestRun.run_id).all<any>().catch(() => ({ results: [] as any[] }))
+  const referenceCount = await db.prepare(`
+    SELECT COUNT(*) AS candidate_count
+      FROM selection_reference_snapshots_v1
+     WHERE producer_run_id = ?
+       AND hard_gate_passed = 1
+  `).bind(latestRun.run_id).first<any>().catch(() => null)
+  const matrixRun = await db.prepare(`
+    SELECT status, reference_candidate_count, expected_cell_count, persisted_cell_count
+      FROM strategy_label_matrix_runs_v4
+     WHERE producer_run_id=?
+  `).bind(latestRun.run_id).first<any>().catch(() => null)
+  const loadStageStrategyRows = async (stage: string) => db.prepare(`
     SELECT symbol, evidence
       FROM screener_funnel_items
      WHERE run_id = ?
-       AND stage = 'l1_candidate_seed_after_overlay'
+       AND stage = ?
        AND decision IN ('selected', 'pass', 'observe')
-  `).bind(latestRun.run_id).all<any>()
-  const strategySymbols = new Map<string, Set<string>>()
-  const candidateSymbols = new Set<string>()
-  for (const row of strategyRows ?? []) {
-    const symbol = String(row.symbol ?? '').trim()
-    if (!symbol) continue
-    candidateSymbols.add(symbol)
-    const evidence = parseJsonObject(row.evidence)
-    const strategyIds = uniqueStringList(evidence.strategy_pool_ids ?? evidence.strategy_ids)
-    for (const strategyId of strategyIds) {
-      const set = strategySymbols.get(strategyId) ?? new Set<string>()
-      set.add(symbol)
-      strategySymbols.set(strategyId, set)
+  `).bind(latestRun.run_id, stage).all<any>().catch(() => ({ results: [] as any[] }))
+  const [{ results: routerRows }, { results: finalRows }] = await Promise.all([
+    loadStageStrategyRows('l1_candidate_seed_after_overlay'),
+    loadStageStrategyRows('final_selection'),
+  ])
+  const setsFromEvidence = (rows: any[]): Map<string, Set<string>> => {
+    const out = new Map<string, Set<string>>()
+    for (const row of rows ?? []) {
+      const symbol = String(row.symbol ?? '').trim()
+      if (!symbol) continue
+      const evidence = parseJsonObject(row.evidence)
+      for (const strategyId of uniqueStringList(evidence.strategy_pool_ids ?? evidence.strategy_ids)) {
+        const symbols = out.get(strategyId) ?? new Set<string>()
+        symbols.add(symbol)
+        out.set(strategyId, symbols)
+      }
     }
+    return out
   }
+  const rawStrategySymbols = new Map<string, Set<string>>()
+  for (const row of rawMatrixRows ?? []) {
+    const symbol = String(row.symbol ?? '').trim()
+    const strategyId = String(row.strategy_id ?? '').trim()
+    if (!symbol || !strategyId) continue
+    const symbols = rawStrategySymbols.get(strategyId) ?? new Set<string>()
+    symbols.add(symbol)
+    rawStrategySymbols.set(strategyId, symbols)
+  }
+  const routerStrategySymbols = setsFromEvidence(routerRows ?? [])
+  const finalStrategySymbols = setsFromEvidence(finalRows ?? [])
+  const hasCanonicalRawMatrix = matrixRun?.status === 'ready'
+    && Number(matrixRun.reference_candidate_count ?? -1) === Number(referenceCount?.candidate_count ?? -2)
+    && Number(matrixRun.expected_cell_count ?? -1) === Number(matrixRun.persisted_cell_count ?? -2)
+  const strategySymbols = hasCanonicalRawMatrix ? rawStrategySymbols : routerStrategySymbols
+  const candidateCount = hasCanonicalRawMatrix
+    ? Number(referenceCount?.candidate_count ?? 0)
+    : new Set((routerRows ?? []).map((row: any) => String(row.symbol ?? '').trim()).filter(Boolean)).size
   const registryActiveRows = await db.prepare(`
     SELECT strategy_id
       FROM strategy_spec_registry
@@ -3430,8 +3471,13 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
     .filter((spec) => spec.status === 'active')
     .map((spec) => spec.id)
   const activeStrategyIds = registryActiveIds.size ? registryActiveIds : new Set(defaultActiveIds)
+  for (const strategyId of activeStrategyIds) {
+    if (!strategySymbols.has(strategyId)) strategySymbols.set(strategyId, new Set())
+    if (!routerStrategySymbols.has(strategyId)) routerStrategySymbols.set(strategyId, new Set())
+    if (!finalStrategySymbols.has(strategyId)) finalStrategySymbols.set(strategyId, new Set())
+  }
   const strategyDisplayIds = [...new Set([...activeStrategyIds, ...strategySymbols.keys()])]
-  const strategyUniverseSize = Math.max(candidateSymbols.size, finiteNumber(latestRun.final_count) ?? 0)
+  const strategyUniverseSize = Math.max(candidateCount, finiteNumber(latestRun.final_count) ?? 0)
   const strategyCounts = strategyDisplayIds
     .map((strategy_id) => {
       const symbols = strategySymbols.get(strategy_id) ?? new Set<string>()
@@ -3440,26 +3486,32 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
       selected_count: symbols.size,
       symbols: [...symbols].sort(),
       status: activeStrategyIds.has(strategy_id) ? 'active' : 'observed',
-      source: registryActiveIds.has(strategy_id) ? 'strategy_spec_registry' : activeStrategyIds.has(strategy_id) ? 'default_strategy_specs' : 'screener_evidence',
+      source: registryActiveIds.has(strategy_id) ? 'strategy_spec_registry' : activeStrategyIds.has(strategy_id) ? 'default_strategy_specs' : 'strategy_evidence',
     }
     })
     .sort((a, b) => b.selected_count - a.selected_count || a.strategy_id.localeCompare(b.strategy_id))
-  const pairwise: Array<Record<string, any>> = []
-  const entries = [...strategySymbols.entries()].sort(([a], [b]) => a.localeCompare(b))
-  for (let i = 0; i < entries.length; i += 1) {
-    for (let j = i + 1; j < entries.length; j += 1) {
-      const [leftId, leftSet] = entries[i]
-      const [rightId, rightSet] = entries[j]
-      const overlap = [...leftSet].filter((symbol) => rightSet.has(symbol)).length
-      pairwise.push({
-        left: leftId,
-        right: rightId,
-        overlap,
-        jaccard: roundMetric(jaccard(leftSet, rightSet)),
-        corr: roundMetric(binaryCorr(leftSet, rightSet, strategyUniverseSize)),
-      })
+  const buildPairwise = (sets: Map<string, Set<string>>, universeSize: number): Array<Record<string, any>> => {
+    const rows: Array<Record<string, any>> = []
+    const entries = [...sets.entries()].sort(([a], [b]) => a.localeCompare(b))
+    for (let i = 0; i < entries.length; i += 1) {
+      for (let j = i + 1; j < entries.length; j += 1) {
+        const [leftId, leftSet] = entries[i]
+        const [rightId, rightSet] = entries[j]
+        const overlap = [...leftSet].filter((symbol) => rightSet.has(symbol)).length
+        rows.push({
+          left: leftId,
+          right: rightId,
+          overlap,
+          jaccard: roundMetric(jaccard(leftSet, rightSet)),
+          corr: roundMetric(binaryCorr(leftSet, rightSet, universeSize)),
+        })
+      }
     }
+    return rows
   }
+  const pairwise = buildPairwise(strategySymbols, strategyUniverseSize)
+  const routerPairwise = buildPairwise(routerStrategySymbols, Math.max(1, (routerRows ?? []).length))
+  const finalPairwise = buildPairwise(finalStrategySymbols, Math.max(1, (finalRows ?? []).length))
   const avg = (values: Array<number | null | undefined>) => {
     const clean = values.filter((value): value is number => value != null && Number.isFinite(value))
     return clean.length ? roundMetric(clean.reduce((sum, value) => sum + value, 0) / clean.length) : null
@@ -3484,16 +3536,45 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
       stage_counts: stageRows ?? [],
     },
     strategy_summary: {
-      schema_version: 'daily_active_strategy_summary_v1',
-      source_of_truth: 'strategy_spec_registry active rows + screener_funnel_items.l1_candidate_seed_after_overlay.evidence.strategy_pool_ids',
+      schema_version: 'daily_active_strategy_summary_v2',
+      source_of_truth: hasCanonicalRawMatrix
+        ? 'strategy_label_matrix_v4 + selection_reference_snapshots_v1'
+        : 'legacy_fallback:screener_funnel_items.l1_candidate_seed_after_overlay',
+      raw_matrix_status: hasCanonicalRawMatrix ? 'canonical_v4' : 'legacy_fallback',
+      raw_matrix_coverage: matrixRun ? {
+        status: matrixRun.status,
+        reference_candidates: Number(matrixRun.reference_candidate_count ?? 0),
+        expected_cells: Number(matrixRun.expected_cell_count ?? 0),
+        persisted_cells: Number(matrixRun.persisted_cell_count ?? 0),
+      } : null,
       run_id: latestRun.run_id,
-      candidate_count: candidateSymbols.size,
+      candidate_count: candidateCount,
       active_strategy_count: activeStrategyIds.size,
       observed_strategy_count: strategySymbols.size,
       strategies: strategyCounts,
       pairwise,
       avg_jaccard: avg(pairwise.map((row) => row.jaccard)),
       avg_corr: avg(pairwise.map((row) => row.corr)),
+      overlap_metrics: {
+        l1_raw_strategy_hit: {
+          universe: 'all_l0_hard_gate_survivors',
+          pairwise,
+          avg_jaccard: avg(pairwise.map((row) => row.jaccard)),
+          avg_corr: avg(pairwise.map((row) => row.corr)),
+        },
+        l15_router_slate: {
+          universe: 'post_l15_router_slate',
+          pairwise: routerPairwise,
+          avg_jaccard: avg(routerPairwise.map((row) => row.jaccard)),
+          avg_corr: avg(routerPairwise.map((row) => row.corr)),
+        },
+        final_recommendation: {
+          universe: 'final_selection',
+          pairwise: finalPairwise,
+          avg_jaccard: avg(finalPairwise.map((row) => row.jaccard)),
+          avg_corr: avg(finalPairwise.map((row) => row.corr)),
+        },
+      },
     },
   }
 }
@@ -3938,11 +4019,6 @@ recommendations.get('/daily', async (c) => {
     const persistedAlphaAllocation = parsePredictionForecastData(r.alpha_allocation)
     const alphaAllocation = forecastData?.alpha_allocation ?? persistedAlphaAllocation ?? null
     const l4SparseAllocation = buildSparseAllocationSummary(alphaAllocation)
-    const persistedMlVoteSummary = parsePredictionForecastData(r.ml_vote_summary)
-    const active8PersistedMlVoteSummary = persistedMlVoteSummary
-      && Number(persistedMlVoteSummary.total ?? 0) <= DIRECT_ALPHA_VOTE_MODEL_NAMES.length
-      ? persistedMlVoteSummary
-      : null
     const persistedScoreComponents = parsePredictionForecastData(r.score_components)
     const screenerFunnel = screenerFunnelBySymbol.get(String(r.symbol ?? '').trim()) ?? null
     const screenerFunnelEvidenceBase = screenerFunnel?.evidence
@@ -4011,7 +4087,7 @@ recommendations.get('/daily', async (c) => {
       alpha_context: forecastData?.alpha_context ?? persistedAlphaContext ?? null,
       alpha_allocation: alphaAllocation,
       l4_sparse_allocation: l4SparseAllocation,
-      ml_vote_summary: active8PersistedMlVoteSummary ?? computedMlVoteSummary,
+      ml_vote_summary: resolveMlVoteSummary(r.ml_vote_summary, computedMlVoteSummary),
       ml_diagnostics: buildMlDiagnostics(forecastData),
       score_components: scoreComponents,
       chip_evidence: emergingBrokerEvidence,

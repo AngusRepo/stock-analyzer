@@ -28,6 +28,12 @@ from services.l4_alpha_ev_resolver import (
 )
 from services.s12_trade_ev_bootstrap import S12TradeEvBootstrapProvider
 from services.s12_trade_ev import extract_s12_trade_ev
+from services.fusion_market_context import (
+    context_for_market_segment,
+    load_pit_market_contexts,
+    merge_market_context,
+    recorded_market_context,
+)
 
 
 QueryFn = Callable[[str, list[Any] | None], list[dict[str, Any]]]
@@ -94,78 +100,75 @@ def load_allocator_ev_snapshot_candidate_rows(
         raise ValueError("next_session_date_outside_snapshot_window")
     return query_fn(
         """
+        /* canonical_reference_snapshot_candidates_v4 */
         WITH next_executable_session AS (
             SELECT COALESCE(
-                (
-                    SELECT MIN(date(c.date))
-                      FROM canonical_market_daily c
-                     WHERE c.stock_id = '0050'
-                       AND c.source = 'finlab.price'
-                       AND date(c.date) > date(?)
-                ),
+                (SELECT MIN(date(c.date)) FROM canonical_market_daily c
+                  WHERE c.stock_id='0050' AND c.source='finlab.price' AND date(c.date)>date(?)),
                 date(?)
-            ) AS session_date
-        ),
-        eligible_prediction_ids AS (
+            ) session_date
+        ), eligible_prediction_ids AS (
             SELECT p.id, p.stock_id, p.generated_at
               FROM predictions p
               CROSS JOIN next_executable_session next_session
-             WHERE p.prediction_date >= ?
-               AND p.prediction_date < ?
-               AND p.model_name = 'ensemble'
-               AND p.forecast_data IS NOT NULL
+             WHERE p.prediction_date>=? AND p.prediction_date<?
+               AND p.model_name='ensemble' AND p.forecast_data IS NOT NULL
                AND (
-                 date(datetime(p.generated_at, '+8 hours')) <= substr(p.prediction_date, 1, 10)
-                 OR (
-                   next_session.session_date IS NOT NULL
-                   AND datetime(p.generated_at) < datetime(next_session.session_date || ' 01:00:00')
-                 )
+                 date(datetime(p.generated_at, '+8 hours'))<=substr(p.prediction_date,1,10)
+                 OR (next_session.session_date IS NOT NULL
+                     AND datetime(p.generated_at)<datetime(next_session.session_date || ' 01:00:00'))
                )
-        ),
-        ranked_prediction_ids AS (
-            SELECT
-                p.id,
-                p.stock_id,
-                ROW_NUMBER() OVER (
-                    PARTITION BY p.stock_id
-                    ORDER BY p.generated_at DESC, p.id DESC
-                ) AS prediction_rank
-            FROM eligible_prediction_ids p
+        ), ranked_prediction_ids AS (
+            SELECT p.id, p.stock_id,
+                   ROW_NUMBER() OVER (PARTITION BY p.stock_id ORDER BY p.generated_at DESC, p.id DESC) prediction_rank
+              FROM eligible_prediction_ids p
+        ), canonical_reference AS (
+            SELECT r.*
+              FROM selection_reference_snapshots_v1 r
+             WHERE r.signal_date>=? AND r.signal_date<?
+               AND EXISTS (
+                 SELECT 1 FROM canonical_run_heads h
+                  WHERE h.logical_run_key='screener:' || r.signal_date
+                    AND h.run_id=r.producer_run_id
+               )
         )
         SELECT
-            dr.stock_id,
-            dr.symbol,
-            dr.date AS recommendation_date,
-            p.generated_at AS prediction_generated_at,
+            COALESCE(dr.stock_id, st.id) stock_id,
+            r.symbol,
+            r.signal_date recommendation_date,
+            p.generated_at prediction_generated_at,
             p.forecast_data,
-            dr.score,
-            dr.score_components,
+            COALESCE(dr.score, r.score_v2) score,
+            COALESCE(dr.score_components, r.score_components) score_components,
             dr.alpha_context,
-            dr.alpha_allocation AS existing_alpha_allocation,
-            dr.market_segment,
-            dr.recommendation_lane,
-            dr.current_price,
-            dr.confidence,
-            dr.chip_score,
-            dr.tech_score,
-            dr.ml_score,
-            COUNT(*) OVER () AS candidate_total_count
-        FROM daily_recommendations dr
-        JOIN ranked_prediction_ids rp
-          ON rp.stock_id = dr.stock_id
-         AND rp.prediction_rank = 1
-        JOIN predictions p
-          ON p.id = rp.id
-        WHERE dr.date >= ?
-          AND dr.date < ?
-          AND dr.score_components IS NOT NULL
-          AND json_extract(dr.score_components, '$.version') = 'score_v2'
-        ORDER BY dr.rank ASC, dr.score DESC
+            dr.alpha_allocation existing_alpha_allocation,
+            COALESCE(r.market_segment, dr.market_segment, st.market) market_segment,
+            COALESCE(dr.recommendation_lane, 'REFERENCE') recommendation_lane,
+            dr.current_price, dr.confidence, dr.chip_score, dr.tech_score, dr.ml_score,
+            r.producer_run_id reference_producer_run_id,
+            r.feature_contract_version reference_contract_version,
+            CASE
+              WHEN r.feature_available!=1 THEN COALESCE(r.feature_rejection_reason, 'reference_feature_unavailable')
+              WHEN st.id IS NULL THEN 'missing_stock_identity'
+              WHEN p.id IS NULL THEN 'missing_point_in_time_ensemble_prediction'
+              WHEN COALESCE(dr.score_components, r.score_components) IS NULL THEN 'missing_score_v2_components'
+              WHEN json_valid(COALESCE(dr.score_components, r.score_components))!=1 THEN 'invalid_score_v2_json'
+              WHEN json_extract(COALESCE(dr.score_components, r.score_components), '$.version')!='score_v2' THEN 'invalid_score_v2_semantic'
+              ELSE NULL
+            END reference_feature_rejection_reason,
+            COUNT(*) OVER () candidate_total_count
+        FROM canonical_reference r
+        LEFT JOIN stocks st ON st.symbol=r.symbol
+        LEFT JOIN daily_recommendations dr
+          ON dr.date=r.signal_date AND dr.symbol=r.symbol
+        LEFT JOIN ranked_prediction_ids rp
+          ON rp.stock_id=st.id AND rp.prediction_rank=1
+        LEFT JOIN predictions p ON p.id=rp.id
+        ORDER BY COALESCE(dr.rank, 999999), COALESCE(dr.score, r.score_v2) DESC, r.symbol
         LIMIT ?
         """,
         [snapshot_date, supplied_next_session, snapshot_date, next_date, snapshot_date, next_date, int(limit)],
     )
-
 
 def _parse_candidate_row(row: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     parsed = dict(row)
@@ -342,7 +345,7 @@ def _snapshot_staging_statement(
     s12 = alpha_allocation.get("s12_trade_ev") if isinstance(alpha_allocation.get("s12_trade_ev"), dict) else {}
     return (
         """
-        INSERT OR REPLACE INTO allocator_ev_feature_snapshot_staging (
+        INSERT INTO allocator_ev_feature_snapshot_staging (
             run_id,
             snapshot_date,
             stock_id,
@@ -362,6 +365,23 @@ def _snapshot_staging_statement(
             source_recommendation_date,
             generated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id, stock_id) DO UPDATE SET
+            snapshot_date=excluded.snapshot_date,
+            symbol=excluded.symbol,
+            forecast_data=excluded.forecast_data,
+            score=excluded.score,
+            score_components=excluded.score_components,
+            alpha_context=excluded.alpha_context,
+            alpha_allocation=excluded.alpha_allocation,
+            market_heat_expected_return=excluded.market_heat_expected_return,
+            market_segment=excluded.market_segment,
+            recommendation_lane=excluded.recommendation_lane,
+            snapshot_source=excluded.snapshot_source,
+            l4_model_version=excluded.l4_model_version,
+            s12_source=excluded.s12_source,
+            as_of_guard=excluded.as_of_guard,
+            source_recommendation_date=excluded.source_recommendation_date,
+            generated_at=excluded.generated_at
         """.strip(),
         [
             run_id,
@@ -441,7 +461,7 @@ def _snapshot_publish_statements(
     return [
         (
             f"""
-            INSERT OR REPLACE INTO allocator_ev_feature_snapshots ({columns})
+            INSERT INTO allocator_ev_feature_snapshots ({columns})
             SELECT {columns}
               FROM allocator_ev_feature_snapshot_staging
              WHERE run_id = ?
@@ -454,6 +474,22 @@ def _snapshot_publish_statements(
                     ORDER BY datetime(latest.created_at) DESC, latest.run_id DESC
                     LIMIT 1
                )
+               AND 1 = 1
+            ON CONFLICT(snapshot_date, stock_id, snapshot_source) DO UPDATE SET
+                symbol=excluded.symbol,
+                forecast_data=excluded.forecast_data,
+                score=excluded.score,
+                score_components=excluded.score_components,
+                alpha_context=excluded.alpha_context,
+                alpha_allocation=excluded.alpha_allocation,
+                market_heat_expected_return=excluded.market_heat_expected_return,
+                market_segment=excluded.market_segment,
+                recommendation_lane=excluded.recommendation_lane,
+                l4_model_version=excluded.l4_model_version,
+                s12_source=excluded.s12_source,
+                as_of_guard=excluded.as_of_guard,
+                source_recommendation_date=excluded.source_recommendation_date,
+                generated_at=excluded.generated_at
             """.strip(),
             [run_id, snapshot_date, SNAPSHOT_SOURCE],
         ),
@@ -565,6 +601,12 @@ def build_allocator_ev_feature_snapshots_for_date(
         next_session_date=next_session_date,
         limit=candidate_limit,
     )
+    market_context_load_error: str | None = None
+    try:
+        market_contexts = load_pit_market_contexts(query_fn, [snapshot_date])
+    except Exception as exc:  # noqa: BLE001 - missing context is explicit and blocks V12 promotion coverage.
+        market_contexts = {}
+        market_context_load_error = f"{type(exc).__name__}:{exc}"
     candidate_total = max(
         [int(row.get("candidate_total_count") or 0) for row in raw_candidates] or [0]
     )
@@ -620,8 +662,17 @@ def build_allocator_ev_feature_snapshots_for_date(
     native_lineage_rows = 0
     reconstructed_lineage_rows = 0
     rejected_lineage_rows = 0
+    market_context_rows = 0
+    regime_surface_rows = 0
     for raw in candidates:
         row, prediction = _parse_candidate_row(raw)
+        reference_rejection = str(row.get("reference_feature_rejection_reason") or "").strip()
+        if reference_rejection:
+            rejected_lineage_rows += 1
+            skipped += 1
+            key = f"reference_feature:{reference_rejection}"
+            skip_reasons[key] = skip_reasons.get(key, 0) + 1
+            continue
         lineage_result = reconstruct_point_in_time_ev_lineage(
             row,
             champion_events=champion_events,
@@ -641,6 +692,28 @@ def build_allocator_ev_feature_snapshots_for_date(
             continue
         if isinstance(lineage_result.get("row"), dict):
             row, prediction = _parse_candidate_row(lineage_result["row"])
+        recorded_context = recorded_market_context(row, signal_date=snapshot_date)
+        reconstructed_context = context_for_market_segment(
+            market_contexts,
+            signal_date=snapshot_date,
+            market_segment=row.get("market_segment"),
+        )
+        market_context = merge_market_context(
+            recorded_context,
+            reconstructed_context,
+            signal_date=snapshot_date,
+        )
+        if market_context.get("market_context_available"):
+            market_context_rows += 1
+        if market_context.get("regime_surface_available"):
+            regime_surface_rows += 1
+        alpha_context = (
+            dict(row.get("alpha_context"))
+            if isinstance(row.get("alpha_context"), dict)
+            else {}
+        )
+        alpha_context["market_regime_context"] = market_context
+        row["alpha_context"] = alpha_context
         existing = row.get("existing_alpha_allocation") if isinstance(row.get("existing_alpha_allocation"), dict) else {}
         l4_payload = _existing_l4_payload(existing, snapshot_date=snapshot_date)
         if isinstance(l4_payload, dict):
@@ -805,6 +878,12 @@ def build_allocator_ev_feature_snapshots_for_date(
         "native_lineage_rows": native_lineage_rows,
         "reconstructed_lineage_rows": reconstructed_lineage_rows,
         "rejected_lineage_rows": rejected_lineage_rows,
+        "market_context": {
+            "available_rows": market_context_rows,
+            "regime_surface_rows": regime_surface_rows,
+            "coverage": round(market_context_rows / max(1, len(statements)), 8),
+            "load_error": market_context_load_error,
+        },
         "written": 0 if dry_run else len(statements),
         "stale_rows_deleted": None,
         "snapshot_run_id": run_id,

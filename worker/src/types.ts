@@ -4,6 +4,14 @@ export type R2Bucket = any
 
 export type Bindings = {
   DB: D1Database
+  CORE_DB?: D1Database
+  MARKET_DB?: D1Database
+  LEARNING_DB?: D1Database
+  OPS_DB?: D1Database
+  EXECUTION_DB?: D1Database
+  PAPER_DB?: D1Database
+  RESEARCH_DB?: D1Database
+  MULTI_D1_STRICT?: string
   KV: KVNamespace
   ARTIFACTS?: R2Bucket
   EVIDENCE_ARTIFACT_WRITER?: EvidenceArtifactWriter
@@ -321,6 +329,7 @@ export interface UpdateQueueMsg {
     in_current_watchlist?: number | null
   }>
   cursor: number      // 從哪個 stock_id 繼續；finalize_update 固定 0
+  cursorKey?: string  // durable keyset cursor for symbol/date ordered workflows
   triggerTime: string // 原始觸發時間，防止跨天的 cursor 汙染
   runId?: string      // 同一次 queue fan-out 的識別碼
   shardIndex?: number // 多 shard 平行更新時的 shard index

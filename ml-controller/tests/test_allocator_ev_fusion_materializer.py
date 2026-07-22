@@ -229,3 +229,68 @@ def test_allocator_ev_fusion_v5_uses_execution_probability_times_conditional_tra
     assert payload["execution_probability"] == pytest.approx(0.5)
     assert payload["raw_execution_residual"] == pytest.approx(0.01)
     assert payload["expected_return"] == pytest.approx(0.005)
+
+
+
+def test_allocator_ev_fusion_v12_serves_market_regime_interactions():
+    artifact = {
+        **_artifact(),
+        "schema_version": "allocator-ev-fusion-artifact-v12",
+        "artifact_contract_version": "allocator-ev-fusion-contract-v12",
+        "feature_semantic_version": "allocator-ev-fusion-market-conditioned-components-v3-lineage-bound",
+        "resolver_method": "market_conditioned_cross_fitted_rank_two_part_trade_ev_fusion",
+        "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
+        "selection_model": {
+            "status": "fitted",
+            "intercept": 0.0,
+            "coefficients": {"l4_expected_return": 1.0},
+        },
+        "execution_model": {
+            "status": "fitted",
+            "intercept": 0.0,
+            "coefficients": {
+                "s12_trade_expected_return": 1.0,
+                "l4_defensive_regime_interaction": 2.0,
+            },
+        },
+        "execution_probability_model": {
+            "status": "fitted",
+            "link_function": "logit",
+            "intercept": 0.0,
+            "coefficients": {"s12_trade_expected_return": 0.0},
+        },
+    }
+    row = {
+        "prediction_date": "2026-07-21",
+        "alpha_context": {
+            "market_regime_context": {
+                "schema_version": "fusion-market-context-pit-v1",
+                "signal_date": "2026-07-21",
+                "source_date": "2026-07-21",
+                "market_return_5d": -0.08,
+                "market_bias_20d": -0.05,
+                "risk_score": 80.0,
+                "advance_ratio": 0.20,
+                "regime_surface": {"bull": 0.0, "bear": 0.5, "volatile": 0.25, "sideways": 0.25},
+            },
+        },
+    }
+
+    payload = materialize_allocator_ev_fusion(
+        row,
+        l4_value=0.02,
+        l4_source="l4:test",
+        l4_payload={},
+        s12_value=0.01,
+        s12_source="s12:test",
+        s12_payload={"status": "loaded"},
+        market_heat_expected_return=0.0,
+        policy={"allocatorEvFusion": artifact},
+    )
+
+    assert payload["status"] == "loaded"
+    assert payload["feature_values"]["regime_defensive_probability"] == pytest.approx(0.75)
+    assert payload["feature_values"]["l4_defensive_regime_interaction"] == pytest.approx(0.015)
+    assert payload["raw_execution_residual"] == pytest.approx(0.04)
+    assert payload["execution_probability"] == pytest.approx(0.5)
+    assert payload["expected_return"] == pytest.approx(0.02)

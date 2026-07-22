@@ -165,6 +165,7 @@ export interface MultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCand
   selection_order: 'l1_full_universe_labeler_l125_finlab_portfolio_l15_ple_router'
   source_universe_count: number
   max_slate_size: number
+  l0Annotated: Array<T & MultiStrategyPleAnnotatedCandidate>
   mlSlate: Array<T & MultiStrategyPleAnnotatedCandidate>
   observeOnly: Array<T & MultiStrategyPleAnnotatedCandidate>
   telemetry: {
@@ -1239,6 +1240,7 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
     selection_order: 'l1_full_universe_labeler_l125_finlab_portfolio_l15_ple_router',
     source_universe_count: candidates.length,
     max_slate_size: maxSlateSize,
+    l0Annotated: annotatedWithMarginalEvidence,
     mlSlate,
     observeOnly,
     telemetry: {

@@ -69,6 +69,7 @@ import {
   applyS12TwCalibrationArtifact,
   listApprovedS12TwCalibrationArtifacts,
   resolveS12TwCalibrationArtifact,
+  type S12TwCalibrationArtifact,
   type S12TwExitCalibration,
 } from './s12TwEquityCalibration'
 import { migrateCanonicalLifecycleExitFusionV2, resolveTwEquityExitFusionV2 } from './twEquityExitFusion'
@@ -1282,12 +1283,7 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
       ])
       const twClock = getTwClockParts()
       const minuteOfDay = twClock.hour * 60 + twClock.minute
-      const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
-        marketSegment: stockRow?.market ?? 'UNKNOWN',
-        entryTimeBucket: minuteOfDay < 10 * 60 ? 'opening' : minuteOfDay >= 13 * 60 ? 'close_window' : 'mid_session',
-        asOfDate: today,
-      })
-      const rawAssessment = assessS12IntradayStructureFromBaseBars({
+      const assess = (calibration: S12TwCalibrationArtifact | null) => assessS12IntradayStructureFromBaseBars({
         symbol: pending.symbol,
         baseBars: s12Base.bars,
         fallback15mBars: s12Base.fallback15mBars,
@@ -1304,6 +1300,14 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
         h4ReferenceDate: s12Base.diagnostics.previous_daily_context_date,
         h4ReferenceClose: currentOhlc?.referencePrice ?? s12Base.diagnostics.previous_daily_raw_close,
       })
+      const preliminary = assess(null)
+      const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
+        entryCohort: preliminary.state === 'limited_takeover_ready' ? 'limited_takeover_ready' : 'reaction_ready',
+        marketSegment: stockRow?.market ?? 'UNKNOWN',
+        entryTimeBucket: minuteOfDay < 10 * 60 ? 'opening' : minuteOfDay >= 13 * 60 ? 'close_window' : 'mid_session',
+        asOfDate: today,
+      })
+      const rawAssessment = calibration ? assess(calibration) : preliminary
       const assessment = applyS12TakeoverContinuity(rawAssessment, latestTakeoverEvent?.detail_json)
       const s12PrimaryOwnerEnabled =
         s12Enabled &&
@@ -2555,10 +2559,19 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
             alphaAdjustment: scoreV2.alphaAdjustment,
           })
           await env.DB.prepare(`
-            INSERT OR REPLACE INTO decision_logs
+            INSERT INTO decision_logs
               (date, symbol, action, score_components, ml_signal, ml_confidence,
                debate_verdict, debate_summary, market_risk, sector, entry_price)
             VALUES (?, ?, 'BUY', ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(date, symbol, action) DO UPDATE SET
+              score_components=excluded.score_components,
+              ml_signal=excluded.ml_signal,
+              ml_confidence=excluded.ml_confidence,
+              debate_verdict=excluded.debate_verdict,
+              debate_summary=excluded.debate_summary,
+              market_risk=excluded.market_risk,
+              sector=excluded.sector,
+              entry_price=excluded.entry_price
           `).bind(
             today,
             pending.symbol,

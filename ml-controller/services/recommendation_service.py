@@ -57,6 +57,8 @@ from services.l4_alpha_ev_resolver import extract_l4_alpha_ev
 from services.s12_trade_ev import extract_s12_trade_ev
 from services.allocator_ev_fusion import materialize_allocator_ev_fusion
 from services.timesfm_l175_sidecar import build_timesfm_l175_sidecar
+from services.fusion_market_context import build_runtime_market_context
+from services.price_horizon_projection_contract import PRICE_HORIZONS_CTE
 
 logger = logging.getLogger(__name__)
 
@@ -2026,6 +2028,21 @@ def filter_and_score_recommendations(
         if regime_label:
             alpha_context = build_alpha_context(row, eff_ml, payload, regime_label, regime_surface=regime_surface, policy=alpha_policy)
             apply_alpha_context(row, ml, alpha_context)
+        market_context = build_runtime_market_context(
+            signal_date=str(rec.get("date") or run_date or "")[:10],
+            market_env=payload.get("market_env") if isinstance(payload, dict) else None,
+            regime_label=regime_label,
+            regime_surface=regime_surface,
+            market_segment=market_segment,
+        )
+        row["market_regime_context"] = market_context
+        persisted_alpha_context = (
+            dict(row.get("alpha_context"))
+            if isinstance(row.get("alpha_context"), dict)
+            else {}
+        )
+        persisted_alpha_context["market_regime_context"] = market_context
+        row["alpha_context"] = persisted_alpha_context
         if s12_trade_ev_provider is not None:
             s12_trade_ev = s12_trade_ev_provider.build_for_row(row, prediction=ml)
             row["s12_trade_ev"] = s12_trade_ev
@@ -3215,47 +3232,8 @@ def load_online_portfolio_bandit_reward_ledger(
     query = query_fn or d1_client.query
     try:
         rows = query(
-            """
-            WITH price_horizons AS (
-                SELECT
-                    sp.stock_id,
-                    date(sp.date) AS price_date,
-                    LEAD(date(sp.date), 1) OVER (
-                        PARTITION BY sp.stock_id ORDER BY date(sp.date)
-                    ) AS entry_date,
-                    LEAD(sp.open, 1) OVER (
-                        PARTITION BY sp.stock_id ORDER BY date(sp.date)
-                    ) AS entry_raw_open,
-                    LEAD(
-                        CASE WHEN cmd.close > 0 AND cmd.adj_close > 0
-                             THEN cmd.adj_close / cmd.close END,
-                        1
-                    ) OVER (
-                        PARTITION BY sp.stock_id ORDER BY date(sp.date)
-                    ) AS entry_adjustment_factor,
-                    LEAD(date(sp.date), 5) OVER (
-                        PARTITION BY sp.stock_id ORDER BY date(sp.date)
-                    ) AS exit_date,
-                    LEAD(sp.close, 5) OVER (
-                        PARTITION BY sp.stock_id ORDER BY date(sp.date)
-                    ) AS exit_raw_close,
-                    LEAD(
-                        CASE WHEN cmd.close > 0 AND cmd.adj_close > 0
-                             THEN cmd.adj_close / cmd.close END,
-                        5
-                    ) OVER (
-                        PARTITION BY sp.stock_id ORDER BY date(sp.date)
-                    ) AS exit_adjustment_factor
-                FROM stock_prices sp
-                JOIN stocks factor_stock
-                  ON factor_stock.id = sp.stock_id
-                LEFT JOIN canonical_market_daily cmd
-                  ON cmd.stock_id = factor_stock.symbol
-                 AND cmd.date = date(sp.date)
-                 AND cmd.source = 'finlab.price'
-                WHERE date(sp.date) >= date(?, '-10 days')
-                  AND date(sp.date) <= date(?)
-            ),
+            f"""
+            WITH {PRICE_HORIZONS_CTE},
             latest_ensemble_prediction AS (
                 SELECT *
                 FROM (
@@ -3330,8 +3308,6 @@ def load_online_portfolio_bandit_reward_ledger(
              LIMIT ?
             """,
               [
-                  cutoff,
-                  knowledge_date.isoformat(),
                   cutoff,
                   knowledge_date.isoformat(),
                   knowledge_date.isoformat(),

@@ -217,6 +217,7 @@ function assessment(overrides: Partial<S12IntradayAssessment> = {}): S12Intraday
     { entryAssessment: setup, assessmentProvider: () => setup },
   )
   assert(outcome.status === 'setup_only', 'setup-valid states must not become executed replay samples')
+  assert(outcome.observation_kind === 'not_executed', 'setup-valid states must be explicit non-execution observations')
   assert(outcome.sample_eligible === false, 'setup-only replay must not feed trade EV')
   assert(s12ReplayOutcomeToEvSample(outcome) == null, 'setup-only outcome should not convert to EV sample')
 }
@@ -317,9 +318,9 @@ async function runAsyncTests(): Promise<void> {
   } as any
   const rows = await loadL0PassedSymbolsByHistoricalDate(fakeDb, '2026-07-02')
   assert(rows.length === 1 && rows[0].symbol === '8091', 'L0 loader should return latest pass symbols only')
-  assert(queries[0].sql.includes('FROM screener_funnel_runs'), 'L0 loader should use screener run source of truth')
-  assert(queries[1].sql.includes('LEFT JOIN daily_recommendations'), 'L0 loader should enrich replay symbols with alpha metadata')
-  assert(queries[1].sql.includes("sfi.stage = 'universe'"), 'L0 loader should read universe pass stage')
+  assert(queries[0].sql.includes('selection_reference_snapshots_v1'), 'L0 loader should use canonical reference snapshots')
+  assert(queries[0].sql.includes('canonical_run_heads'), 'L0 loader should require canonical run identity')
+  assert(queries[0].sql.includes('LEFT JOIN daily_recommendations'), 'L0 loader should enrich replay symbols with alpha metadata')
   assert(rows[0].market_segment === 'LISTED', 'L0 loader should preserve market segment metadata')
   assert(String(rows[0].alpha_context).includes('breakout_vol_expansion'), 'L0 loader should preserve alpha context metadata')
 
@@ -393,6 +394,7 @@ async function runPersistenceTests(): Promise<void> {
     market: 'OTC',
     trade_date: '2026-07-03',
     status: 'executed',
+    observation_kind: 'executed',
     sample_eligible: true,
     source: 's12_multisession_structure_replay_v3',
     assessment_state: 'reaction_ready',

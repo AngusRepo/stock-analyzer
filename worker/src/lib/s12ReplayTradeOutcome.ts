@@ -22,12 +22,14 @@ import {
   applyS12TwCalibrationArtifact,
   listApprovedS12TwCalibrationArtifacts,
   resolveS12TwCalibrationArtifact,
+  type S12TwCalibrationArtifact,
 } from './s12TwEquityCalibration'
 import type { S12TwExitCalibration } from './s12TwEquityCalibration'
 import { normalizeTwEquityTargetPrice } from './twEquityMarketContract'
 import { acquireS12ResearchLease, releaseS12ResearchLease } from './s12ResearchLease'
 
 export type S12ReplayOutcomeStatus = 'executed' | 'setup_only' | 'skipped'
+export type S12ReplayObservationKind = 'executed' | 'not_executed' | 'unavailable'
 
 export interface S12ReplayOutcome {
   schema_version: 's12-replay-trade-outcome-v3'
@@ -35,6 +37,7 @@ export interface S12ReplayOutcome {
   signal_date: string
   trade_date: string
   status: S12ReplayOutcomeStatus
+  observation_kind: S12ReplayObservationKind
   sample_eligible: boolean
   source: 's12_multisession_structure_replay_v3'
   assessment_state: string | null
@@ -154,65 +157,26 @@ export async function loadFusionSnapshotMissingReplaySymbols(
   signalDate: string,
   maturityAsOfDate = '9999-12-31',
 ): Promise<S12L0PassedSymbol[]> {
-  const { results } = await db.prepare(`
-    WITH latest_snapshot AS (
-      SELECT fs.*,
-             ROW_NUMBER() OVER (
-               PARTITION BY fs.symbol
-               ORDER BY fs.generated_at DESC, fs.snapshot_source DESC
-             ) AS snapshot_rank
-        FROM allocator_ev_feature_snapshots fs
-       WHERE fs.snapshot_date = ?
-         AND json_extract(fs.score_components, '$.version') = 'score_v2'
-         AND fs.snapshot_source = 'allocator_ev_asof_backfill_v2'
-         AND fs.as_of_guard = '${ALLOCATOR_EV_SNAPSHOT_AS_OF_GUARD}'
-    )
-    SELECT fs.symbol,
-           st.name,
-           dr.score AS score_after,
-           dr.rank,
-           st.market,
-           fs.market_segment,
-           fs.alpha_context,
-           fs.alpha_allocation
-      FROM latest_snapshot fs
-      LEFT JOIN daily_recommendations dr
-        ON dr.date = fs.snapshot_date
-       AND dr.symbol = fs.symbol
-      LEFT JOIN stocks st
-        ON st.symbol = fs.symbol
-     WHERE fs.snapshot_rank = 1
-       AND (
-         SELECT COUNT(DISTINCT date(sp.date))
-           FROM stock_prices sp
-           JOIN stocks price_stock ON price_stock.id = sp.stock_id
-          WHERE price_stock.symbol = fs.symbol
-            AND date(sp.date) > date(fs.snapshot_date)
-            AND date(sp.date) <= date(?)
-            AND sp.open IS NOT NULL
-            AND sp.high IS NOT NULL
-            AND sp.low IS NOT NULL
-            AND sp.close IS NOT NULL
-       ) >= 5
-       AND NOT EXISTS (
-         SELECT 1
-           FROM s12_replay_trade_outcomes replay
-          WHERE replay.signal_date = fs.snapshot_date
-            AND replay.symbol = fs.symbol
-            AND replay.source = 's12_multisession_structure_replay_v3'
+  const all = await loadL0PassedSymbolsByHistoricalDate(db, signalDate)
+  if (!all.length) return []
+  const result = await db.prepare(`
+    SELECT r.symbol
+      FROM selection_reference_snapshots_v1 r
+     WHERE r.signal_date=?
+       AND EXISTS (
+         SELECT 1 FROM canonical_market_daily cmd
+          WHERE cmd.stock_id=r.symbol AND cmd.source='finlab.price'
+            AND date(cmd.date)>date(r.signal_date) AND date(cmd.date)<=date(?)
+          GROUP BY cmd.stock_id HAVING COUNT(DISTINCT date(cmd.date))>=5
        )
-     ORDER BY COALESCE(dr.rank, 999999), fs.symbol
-  `).bind(signalDate, maturityAsOfDate).all<S12L0PassedSymbol>()
-  return (results ?? []).map((row) => ({
-    symbol: String(row.symbol ?? '').trim(),
-    name: row.name ?? null,
-    score_after: row.score_after ?? null,
-    rank: row.rank ?? null,
-    market: row.market ?? null,
-    market_segment: row.market_segment ?? null,
-    alpha_context: row.alpha_context ?? null,
-    alpha_allocation: row.alpha_allocation ?? null,
-  })).filter((row) => row.symbol)
+       AND NOT EXISTS (
+         SELECT 1 FROM s12_replay_trade_outcomes replay
+          WHERE replay.signal_date=r.signal_date AND replay.symbol=r.symbol
+            AND replay.source='s12_multisession_structure_replay_v3'
+       )
+  `).bind(signalDate, maturityAsOfDate).all<{ symbol: string }>()
+  const missing = new Set((result.results ?? []).map((row) => String(row.symbol)))
+  return all.filter((row) => missing.has(row.symbol))
 }
 
 export interface FusionSnapshotReplayCoverage {
@@ -229,48 +193,37 @@ export async function loadFusionSnapshotReplayCoverage(
 ): Promise<FusionSnapshotReplayCoverage> {
   const row = await db.prepare(`
     WITH cohort AS (
-      SELECT fs.symbol
-        FROM allocator_ev_feature_snapshots fs
-       WHERE fs.snapshot_date = ?
-         AND fs.snapshot_source = 'allocator_ev_asof_backfill_v2'
-         AND fs.as_of_guard = '${ALLOCATOR_EV_SNAPSHOT_AS_OF_GUARD}'
-         AND json_extract(fs.score_components, '$.version') = 'score_v2'
-       GROUP BY fs.symbol
+      SELECT r.symbol
+        FROM selection_reference_snapshots_v1 r
+       WHERE r.signal_date=?
+         AND EXISTS (
+           SELECT 1 FROM canonical_run_heads h
+            WHERE h.logical_run_key='screener:' || r.signal_date
+              AND h.run_id=r.producer_run_id
+         )
     ), coverage AS (
-      SELECT
-        cohort.symbol,
+      SELECT cohort.symbol,
         EXISTS (
-          SELECT 1
-            FROM s12_replay_trade_outcomes replay
-           WHERE replay.signal_date = ?
-             AND replay.symbol = cohort.symbol
-             AND replay.source = 's12_multisession_structure_replay_v3'
-        ) AS has_replay,
+          SELECT 1 FROM s12_replay_trade_outcomes replay
+           WHERE replay.signal_date=? AND replay.symbol=cohort.symbol
+             AND replay.source='s12_multisession_structure_replay_v3'
+        ) has_replay,
         (
-          SELECT COUNT(DISTINCT date(sp.date))
-            FROM stock_prices sp
-            JOIN stocks st ON st.id = sp.stock_id
-           WHERE st.symbol = cohort.symbol
-             AND date(sp.date) > date(?)
-             AND date(sp.date) <= date(?)
-             AND sp.open IS NOT NULL
-             AND sp.high IS NOT NULL
-             AND sp.low IS NOT NULL
-             AND sp.close IS NOT NULL
-        ) AS completed_sessions
+          SELECT COUNT(DISTINCT date(cmd.date))
+            FROM canonical_market_daily cmd
+           WHERE cmd.stock_id=cohort.symbol AND cmd.source='finlab.price'
+             AND date(cmd.date)>date(?) AND date(cmd.date)<=date(?)
+             AND cmd.open>0 AND cmd.high>0 AND cmd.low>0 AND cmd.close>0
+        ) completed_sessions
       FROM cohort
     )
-    SELECT
-      COUNT(*) AS total_snapshot_rows,
-      COALESCE(SUM(CASE WHEN has_replay = 1 THEN 1 ELSE 0 END), 0) AS replay_rows,
-      COALESCE(SUM(CASE WHEN has_replay = 0 AND completed_sessions >= 5 THEN 1 ELSE 0 END), 0) AS mature_missing_rows,
-      COALESCE(SUM(CASE WHEN has_replay = 0 AND completed_sessions < 5 THEN 1 ELSE 0 END), 0) AS pending_maturity_rows
+    SELECT COUNT(*) total_snapshot_rows,
+      COALESCE(SUM(CASE WHEN has_replay=1 THEN 1 ELSE 0 END),0) replay_rows,
+      COALESCE(SUM(CASE WHEN has_replay=0 AND completed_sessions>=5 THEN 1 ELSE 0 END),0) mature_missing_rows,
+      COALESCE(SUM(CASE WHEN has_replay=0 AND completed_sessions<5 THEN 1 ELSE 0 END),0) pending_maturity_rows
     FROM coverage
   `).bind(signalDate, signalDate, signalDate, maturityAsOfDate).first<{
-    total_snapshot_rows?: number
-    replay_rows?: number
-    mature_missing_rows?: number
-    pending_maturity_rows?: number
+    total_snapshot_rows?: number; replay_rows?: number; mature_missing_rows?: number; pending_maturity_rows?: number
   }>()
   return {
     totalSnapshotRows: Number(row?.total_snapshot_rows ?? 0),
@@ -360,35 +313,30 @@ export async function loadReplayReadySignalDates(
 ): Promise<string[]> {
   const cappedLimit = Math.max(1, Math.min(20, Math.floor(limit)))
   const { results } = await db.prepare(`
-    SELECT fs.snapshot_date AS signal_date
-      FROM allocator_ev_feature_snapshots fs
-     WHERE date(fs.snapshot_date) < date(?)
-       AND fs.snapshot_source = 'allocator_ev_asof_backfill_v2'
-       AND fs.as_of_guard = '${ALLOCATOR_EV_SNAPSHOT_AS_OF_GUARD}'
-       AND json_extract(fs.score_components, '$.version') = 'score_v2'
+    SELECT r.signal_date
+      FROM selection_reference_snapshots_v1 r
+     WHERE date(r.signal_date) < date(?)
        AND EXISTS (
-         SELECT 1
-           FROM stock_prices sp
-           JOIN stocks st ON st.id = sp.stock_id
-          WHERE st.symbol = fs.symbol
-            AND date(sp.date) > date(fs.snapshot_date)
-            AND date(sp.date) <= date(?)
-          GROUP BY st.symbol
-         HAVING COUNT(DISTINCT date(sp.date)) >= 5
+         SELECT 1 FROM canonical_run_heads h
+          WHERE h.logical_run_key='screener:' || r.signal_date
+            AND h.run_id=r.producer_run_id
+       )
+       AND EXISTS (
+         SELECT 1 FROM canonical_market_daily cmd
+          WHERE cmd.stock_id=r.symbol AND cmd.source='finlab.price'
+            AND date(cmd.date)>date(r.signal_date) AND date(cmd.date)<=date(?)
+          GROUP BY cmd.stock_id HAVING COUNT(DISTINCT date(cmd.date))>=5
        )
        AND NOT EXISTS (
-         SELECT 1
-           FROM s12_replay_trade_outcomes replay
-          WHERE replay.signal_date = fs.snapshot_date
-            AND replay.symbol = fs.symbol
-            AND replay.source = 's12_multisession_structure_replay_v3'
+         SELECT 1 FROM s12_replay_trade_outcomes replay
+          WHERE replay.signal_date=r.signal_date AND replay.symbol=r.symbol
+            AND replay.source='s12_multisession_structure_replay_v3'
        )
-     GROUP BY fs.snapshot_date
-     ORDER BY fs.snapshot_date DESC
+     GROUP BY r.signal_date
+     ORDER BY r.signal_date
      LIMIT ?
   `).bind(asOfDate, asOfDate, cappedLimit).all<{ signal_date?: string | null }>()
-  return (results ?? [])
-    .map((row) => String(row.signal_date ?? '').trim().slice(0, 10))
+  return (results ?? []).map((row) => String(row.signal_date ?? '').slice(0, 10))
     .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
 }
 
@@ -527,6 +475,17 @@ function assessmentSnapshot(assessment?: S12IntradayAssessment | null): Pick<
   }
 }
 
+function replayObservationKind(status: S12ReplayOutcomeStatus, reason: string): S12ReplayObservationKind {
+  if (status === 'executed') return 'executed'
+  if (status === 'setup_only') return 'not_executed'
+  if ([
+    'missing_intraday_bars',
+    'missing_entry_session_bars',
+    'missing_post_entry_bars',
+  ].includes(reason)) return 'unavailable'
+  return 'not_executed'
+}
+
 function emptyOutcome(input: S12ReplayInput, status: S12ReplayOutcomeStatus, reason: string, assessment?: S12IntradayAssessment | null): S12ReplayOutcome {
   return {
     schema_version: 's12-replay-trade-outcome-v3',
@@ -534,6 +493,7 @@ function emptyOutcome(input: S12ReplayInput, status: S12ReplayOutcomeStatus, rea
     signal_date: input.signalDate ?? input.tradeDate,
     trade_date: input.tradeDate,
     status,
+    observation_kind: replayObservationKind(status, reason),
     sample_eligible: false,
     source: 's12_multisession_structure_replay_v3',
     assessment_state: assessment?.state ?? null,
@@ -728,6 +688,7 @@ export function simulateS12ReplayTradeOutcome(input: S12ReplayInput, options: S1
     signal_date: input.signalDate ?? input.tradeDate,
     trade_date: input.tradeDate,
     status: 'executed',
+    observation_kind: 'executed',
     sample_eligible: true,
     source: 's12_multisession_structure_replay_v3',
     assessment_state: assessment.state,
@@ -783,46 +744,27 @@ export async function loadL0PassedSymbolsByHistoricalDate(
   db: D1Database,
   tradeDate: string,
 ): Promise<S12L0PassedSymbol[]> {
-  const run = await db.prepare(`
-    SELECT run_id
-      FROM screener_funnel_runs
-     WHERE date = ?
-       AND status = 'success'
-     ORDER BY created_at DESC
-     LIMIT 1
-  `).bind(tradeDate).first<{ run_id: string }>()
-  if (!run?.run_id) return []
   const { results } = await db.prepare(`
-    SELECT sfi.symbol,
-           sfi.name,
-           sfi.score_after,
-           sfi.rank,
-           sfi.evidence,
-           st.market,
-           dr.market_segment,
-           dr.alpha_context,
-           dr.alpha_allocation
-      FROM screener_funnel_items sfi
+    SELECT r.symbol, r.name, r.score_v2 score_after, NULL rank,
+           r.rejection_reason evidence, st.market, r.market_segment,
+           dr.alpha_context, dr.alpha_allocation
+      FROM selection_reference_snapshots_v1 r
       LEFT JOIN daily_recommendations dr
-        ON dr.date = sfi.date
-       AND dr.symbol = sfi.symbol
-      LEFT JOIN stocks st
-        ON st.symbol = sfi.symbol
-     WHERE sfi.run_id = ?
-       AND sfi.date = ?
-       AND sfi.stage = 'universe'
-       AND sfi.decision = 'pass'
-     ORDER BY COALESCE(sfi.rank, 999999), sfi.symbol
-  `).bind(run.run_id, tradeDate).all<S12L0PassedSymbol>()
+        ON dr.date=r.signal_date AND dr.symbol=r.symbol
+      LEFT JOIN stocks st ON st.symbol=r.symbol
+     WHERE r.signal_date=?
+       AND EXISTS (
+         SELECT 1 FROM canonical_run_heads h
+          WHERE h.logical_run_key='screener:' || r.signal_date
+            AND h.run_id=r.producer_run_id
+       )
+     ORDER BY r.symbol
+  `).bind(tradeDate).all<S12L0PassedSymbol>()
   return (results ?? []).map((row) => ({
     symbol: String(row.symbol ?? '').trim(),
-    name: row.name ?? null,
-    score_after: row.score_after ?? null,
-    rank: row.rank ?? null,
-    evidence: row.evidence ?? null,
-    market: row.market ?? null,
-    market_segment: row.market_segment ?? null,
-    alpha_context: row.alpha_context ?? null,
+    name: row.name ?? null, score_after: row.score_after ?? null, rank: row.rank ?? null,
+    evidence: row.evidence ?? null, market: row.market ?? null,
+    market_segment: row.market_segment ?? null, alpha_context: row.alpha_context ?? null,
     alpha_allocation: row.alpha_allocation ?? null,
   })).filter((row) => row.symbol)
 }
@@ -1042,11 +984,6 @@ export async function runS12HistoricalReplayForDate(
     const alphaContext = parseJsonRecord(row.alpha_context)
     const alphaAllocation = parseJsonRecord(row.alpha_allocation)
     const alphaBucket = alphaBucketFromContext(alphaContext, alphaAllocation)
-    const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
-      marketSegment: row.market_segment ?? 'UNKNOWN',
-      alphaBucket,
-      asOfDate: signalDate,
-    })
     const lifecycleSessionDates = String(loaded.diagnostics?.lifecycle_session_dates ?? '')
       .split(',')
       .map((value) => value.trim())
@@ -1054,7 +991,7 @@ export async function runS12HistoricalReplayForDate(
     const outcomeKnownDate = lifecycleSessionDates[lifecycleSessionDates.length - 1]
       ?? options.maturityAsOfDate
       ?? executionDate
-    const outcome = simulateS12ReplayTradeOutcome({
+    const simulate = (calibration: S12TwCalibrationArtifact | null) => simulateS12ReplayTradeOutcome({
       symbol: row.symbol,
       signalDate,
       tradeDate: executionDate,
@@ -1084,6 +1021,14 @@ export async function runS12HistoricalReplayForDate(
         calibration_scope: calibration?.scope ?? null,
       },
     })
+    const preliminary = simulate(null)
+    const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
+      entryCohort: preliminary.assessment_state === 'limited_takeover_ready' ? 'limited_takeover_ready' : 'reaction_ready',
+      marketSegment: row.market_segment ?? 'UNKNOWN',
+      alphaBucket,
+      asOfDate: signalDate,
+    })
+    const outcome = calibration ? simulate(calibration) : preliminary
     if (options.signedEligibleRepair && !outcome.sample_eligible) {
       outcome.lineage_validation = {
         status: 'signed_repair_terminal_noneligible',

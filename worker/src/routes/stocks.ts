@@ -143,7 +143,7 @@ import {
   buildMlVoteSummary,
   buildMlVoteWatchPoint,
   parsePredictionForecastData,
-  type MlVoteSummary,
+  resolveMlVoteSummary,
 } from '../lib/recommendationContext'
 import { computeAndStoreIndicators } from '../lib/technicalIndicators'
 import { loadLatestStockFinancialSnapshot, loadStockFinancialRows, loadStockMonthlyRevenueRows } from '../lib/fundamentalData'
@@ -486,8 +486,11 @@ async function fetchAndStoreYahoo(db: D1Database, stock: any) {
       const o = q.open?.[i], h = q.high?.[i], l = q.low?.[i], cl = q.close?.[i], v = q.volume?.[i]
       if (cl == null) continue
       batch.push(db.prepare(
-        `INSERT OR REPLACE INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume)
-         VALUES (?,?,?,?,?,?,?,?)`
+        `INSERT INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume)
+         VALUES (?,?,?,?,?,?,?,?)
+         ON CONFLICT(stock_id, date) DO UPDATE SET
+           open=excluded.open, high=excluded.high, low=excluded.low,
+           close=excluded.close, adj_close=excluded.adj_close, volume=excluded.volume`
       ).bind(stock.id, date, o??null, h??null, l??null, cl, cl, v??null))
     }
     if (batch.length) await db.batch(batch)
@@ -569,12 +572,7 @@ stocks.get('/:id/ai-summary', async (c) => {
       `).bind(id, recRow.date).all<any>().then((r) => r.results ?? []).catch(() => []),
     ])
     const forecastData = parsePredictionForecastData(ensembleRow?.forecast_data) ?? {}
-    const persistedMlVoteSummary = parsePredictionForecastData(recRow.ml_vote_summary)
-    const active8PersistedMlVoteSummary = persistedMlVoteSummary
-      && Number(persistedMlVoteSummary.total ?? 0) <= 8
-      ? persistedMlVoteSummary as MlVoteSummary
-      : null
-    const mlVoteSummary = active8PersistedMlVoteSummary ?? buildMlVoteSummary(forecastData, perModelRows)
+    const mlVoteSummary = resolveMlVoteSummary(recRow.ml_vote_summary, buildMlVoteSummary(forecastData, perModelRows))
     const watchPoints = (() => {
       try {
         return JSON.parse(recRow.watch_points ?? '[]')

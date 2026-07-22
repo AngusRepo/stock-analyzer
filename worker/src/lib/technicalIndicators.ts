@@ -473,14 +473,30 @@ export async function computeAndStoreIndicators(db: D1Database, stockId: number,
       rows.map((p) => Number(p.volume ?? 0)).reverse(),
     )
     await db.prepare(
-      `INSERT OR REPLACE INTO technical_indicators
+      `INSERT INTO technical_indicators
          (stock_id, date, ma5, ma10, ma20, ma60, rsi14, macd, macd_signal, macd_hist,
           bb_upper, bb_mid, bb_lower, atr14, plus_di14, minus_di14, adx14, parabolic_sar,
           cci20, volume_weighted_rsi14, volume_momentum_divergence_13_27_10,
           squeeze_on, squeeze_release, squeeze_momentum, obv_temperature_60,
           adaptive_rsi_midline_50, adaptive_rsi_upper_50, adaptive_rsi_lower_50,
           adaptive_rsi_overbought, adaptive_rsi_oversold)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(stock_id, date) DO UPDATE SET
+         ma5=excluded.ma5, ma10=excluded.ma10, ma20=excluded.ma20, ma60=excluded.ma60,
+         rsi14=excluded.rsi14, macd=excluded.macd, macd_signal=excluded.macd_signal,
+         macd_hist=excluded.macd_hist, bb_upper=excluded.bb_upper, bb_mid=excluded.bb_mid,
+         bb_lower=excluded.bb_lower, atr14=excluded.atr14, plus_di14=excluded.plus_di14,
+         minus_di14=excluded.minus_di14, adx14=excluded.adx14,
+         parabolic_sar=excluded.parabolic_sar, cci20=excluded.cci20,
+         volume_weighted_rsi14=excluded.volume_weighted_rsi14,
+         volume_momentum_divergence_13_27_10=excluded.volume_momentum_divergence_13_27_10,
+         squeeze_on=excluded.squeeze_on, squeeze_release=excluded.squeeze_release,
+         squeeze_momentum=excluded.squeeze_momentum, obv_temperature_60=excluded.obv_temperature_60,
+         adaptive_rsi_midline_50=excluded.adaptive_rsi_midline_50,
+         adaptive_rsi_upper_50=excluded.adaptive_rsi_upper_50,
+         adaptive_rsi_lower_50=excluded.adaptive_rsi_lower_50,
+         adaptive_rsi_overbought=excluded.adaptive_rsi_overbought,
+         adaptive_rsi_oversold=excluded.adaptive_rsi_oversold`,
     ).bind(
       stockId,
       latestDate,

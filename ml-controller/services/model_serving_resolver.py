@@ -418,6 +418,7 @@ def build_model_pool_reconcile_plan(
             "metadata_path",
             "serving_owner",
             "serving_artifact_id",
+            "serving_block_reason",
             "offline_gate_decision",
             "live_gate_status",
             "target_semantic_version",

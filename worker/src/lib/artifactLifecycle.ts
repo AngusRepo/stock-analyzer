@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { sha256Text } from './datasetSnapshots'
+import { collectStorageCapacityTelemetry, type StorageCapacityRow } from './storageCapacityTelemetry'
 import type {
   EvidenceArtifactManifest,
   EvidenceArtifactWriteInput,
@@ -261,11 +262,25 @@ export async function registerPipelineRun(
   const reusedFrom = existing?.run_id ?? null
   const status: PipelineRunStatus = reusedFrom ? 'reused' : input.status ?? 'writing'
   await db.prepare(`
-    INSERT OR REPLACE INTO pipeline_runs (
+    INSERT INTO pipeline_runs (
       run_id, logical_run_key, domain, business_date, market, mode, stage,
       status, input_fingerprint, code_version, config_version,
       reused_from_run_id, parent_run_ids_json, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(run_id) DO UPDATE SET
+      logical_run_key=excluded.logical_run_key,
+      domain=excluded.domain,
+      business_date=excluded.business_date,
+      market=excluded.market,
+      mode=excluded.mode,
+      stage=excluded.stage,
+      status=excluded.status,
+      input_fingerprint=excluded.input_fingerprint,
+      code_version=excluded.code_version,
+      config_version=excluded.config_version,
+      reused_from_run_id=excluded.reused_from_run_id,
+      parent_run_ids_json=excluded.parent_run_ids_json,
+      updated_at=CURRENT_TIMESTAMP
   `).bind(
     input.runId,
     input.logicalRunKey,
@@ -570,33 +585,34 @@ export async function runD1EvidenceScrub(
     const failedResult = batchResults.find(result => result.success === false)
     if (failedResult) throw new Error(String(failedResult.error ?? 'D1 scrub batch failed'))
   }
-
-  for (let index = 0; index < readyRows.length; index += 25) {
-    const chunk = readyRows.slice(index, index + 25)
+  const scrubChunk = async (chunk: any[]): Promise<void> => {
     try {
       assertBatchSuccess(await env.DB.batch(chunk.flatMap(atomicStatements)))
       scrubbed += chunk.length
-      continue
-    } catch {
-      // Retry each row atomically so one malformed legacy row cannot block the batch.
-    }
-    for (const row of chunk) {
-      try {
-        assertBatchSuccess(await env.DB.batch(atomicStatements(row)))
-        scrubbed += 1
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        await env.DB.prepare(`
-          UPDATE artifact_d1_scrub_queue
-             SET status='failed', last_error=?, attempts=attempts+1,
-                 next_attempt_at=datetime('now', '+' || MIN(60, 1 << MIN(attempts, 5)) || ' minutes'),
-                 updated_at=CURRENT_TIMESTAMP
-           WHERE scrub_id=?
-        `).bind(message.slice(0, 1000), row.scrub_id).run()
-        failed += 1
-        errors.push(`${row.scrub_id}:${message}`)
+      return
+    } catch (error) {
+      if (chunk.length > 1) {
+        const midpoint = Math.ceil(chunk.length / 2)
+        await scrubChunk(chunk.slice(0, midpoint))
+        await scrubChunk(chunk.slice(midpoint))
+        return
       }
+      const row = chunk[0]
+      const message = error instanceof Error ? error.message : String(error)
+      await env.DB.prepare(`
+        UPDATE artifact_d1_scrub_queue
+           SET status='failed', last_error=?, attempts=attempts+1,
+               next_attempt_at=datetime('now', '+' || MIN(60, 1 << MIN(attempts, 5)) || ' minutes'),
+               updated_at=CURRENT_TIMESTAMP
+         WHERE scrub_id=?
+      `).bind(message.slice(0, 1000), row.scrub_id).run()
+      failed += 1
+      errors.push(`${row.scrub_id}:${message}`)
     }
+  }
+
+  for (let index = 0; index < readyRows.length; index += 25) {
+    await scrubChunk(readyRows.slice(index, index + 25))
   }
   return { candidates: (results ?? []).length, scrubbed, failed, blocked, errors }
 }
@@ -627,7 +643,7 @@ export async function runOrphanReachabilityGc(
 }
 
 export async function runStorageHealthGate(
-  env: Pick<Bindings, 'DB'>,
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
 ): Promise<{
   healthy: boolean
   integrity_blocked: number
@@ -643,7 +659,18 @@ export async function runStorageHealthGate(
   legacy_retention_stalled: boolean
   d1_bytes: number | null
   d1_utilization: number | null
+  capacity_status: StorageCapacityRow['status'] | 'unknown'
+  capacity_error: string | null
+  capacity_domains: Array<{ domain: string; binding_name: string; utilization_pct: number; status: string }>
 }> {
+  let capacityRows: StorageCapacityRow[] = []
+  let capacityError: string | null = null
+  try {
+    const observedDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' })
+    capacityRows = await collectStorageCapacityTelemetry(env, observedDate)
+  } catch (error) {
+    capacityError = error instanceof Error ? error.message : String(error)
+  }
   const counts = await env.DB.prepare(`
     SELECT
       SUM(CASE WHEN status='integrity_blocked' THEN 1 ELSE 0 END) AS integrity_blocked,
@@ -749,19 +776,11 @@ export async function runStorageHealthGate(
            AND status='ready'
            AND created_at >= datetime('now','-24 hours'))) AS progress_24h
   `).first<any>()
-  let d1Bytes: number | null = null
-  try {
-    // D1's Worker binding does not expose PRAGMA page_count/page_size through
-    // prepared statements. Every query result carries the authoritative
-    // database size in meta.size_after, so use that runtime source instead.
-    const sizeProbe = await env.DB.prepare('SELECT 1 AS storage_health_probe').all()
-    const sizeAfter = Number(sizeProbe.meta?.size_after)
-    if (Number.isFinite(sizeAfter) && sizeAfter >= 0) d1Bytes = sizeAfter
-  } catch {
-    d1Bytes = null
-  }
-  const maxBytes = 10_000_000_000
-  const utilization = d1Bytes == null ? null : d1Bytes / maxBytes
+  const legacyCapacity = capacityRows.find((row) => row.domain === 'legacy' && row.binding_name === 'DB')
+  const d1Bytes = legacyCapacity?.used_bytes ?? null
+  const utilization = d1Bytes == null ? null : d1Bytes / 10_000_000_000
+  const capacityStatus = legacyCapacity?.status ?? 'unknown'
+  const capacityDrain = capacityRows.some((row) => row.status === 'drain' || row.status === 'critical')
   const integrityBlocked = Number(counts?.integrity_blocked ?? 0)
   const backlog = Number(counts?.cleanup_backlog_over_24h ?? 0)
   const dlqPending = Number(dlq?.count ?? 0)
@@ -778,7 +797,7 @@ export async function runStorageHealthGate(
       allocatorSnapshotRows > 0 && allocatorSnapshotDates > 0 &&
       allocatorSnapshotIncompleteRuns === 0 && allocatorSnapshotStagingOrphans === 0 &&
       artifactHardRefDrift === 0 && !legacyRetentionStalled &&
-      utilization != null && utilization < 0.8,
+      capacityError == null && capacityRows.length > 0 && !capacityDrain,
     integrity_blocked: integrityBlocked,
     cleanup_backlog_over_24h: backlog,
     dlq_pending: dlqPending,
@@ -792,6 +811,14 @@ export async function runStorageHealthGate(
     legacy_retention_stalled: legacyRetentionStalled,
     d1_bytes: d1Bytes,
     d1_utilization: utilization,
+    capacity_status: capacityStatus,
+    capacity_error: capacityError,
+    capacity_domains: capacityRows.map((row) => ({
+      domain: row.domain,
+      binding_name: row.binding_name,
+      utilization_pct: row.utilization_pct,
+      status: row.status,
+    })),
   }
 }
 

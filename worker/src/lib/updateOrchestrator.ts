@@ -1189,10 +1189,10 @@ export async function syncLegacyMarketDataFromFinLabCanonical(
 export async function syncMarketBreadthFromFinLabCanonical(
   db: D1Database,
   targetDate: string,
-): Promise<{ rows: number; sampleSize: number; advanceCount: number; declineCount: number; unchangedCount: number }> {
+): Promise<{ rows: number; sampleSize: number; advanceCount: number; declineCount: number; unchangedCount: number; limitDownCount: number }> {
   const breadth = await db.prepare(`
     WITH current_prices AS (
-      SELECT c.stock_id, c.date, c.close
+      SELECT c.stock_id, c.date, c.open, c.close
       FROM canonical_market_daily c
       JOIN stocks s ON s.symbol = c.stock_id
       WHERE c.date = ?
@@ -1213,7 +1213,7 @@ export async function syncMarketBreadthFromFinLabCanonical(
       GROUP BY cur.stock_id
     ),
     paired AS (
-      SELECT cur.close AS close, prev.close AS prev_close
+      SELECT cur.open AS open, cur.close AS close, prev.close AS prev_close
       FROM current_prices cur
       JOIN prev_dates pd ON pd.stock_id = cur.stock_id
       JOIN canonical_market_daily prev
@@ -1225,38 +1225,45 @@ export async function syncMarketBreadthFromFinLabCanonical(
       COUNT(*) AS sample_size,
       SUM(CASE WHEN close > prev_close THEN 1 ELSE 0 END) AS advance_count,
       SUM(CASE WHEN close < prev_close THEN 1 ELSE 0 END) AS decline_count,
-      SUM(CASE WHEN close = prev_close THEN 1 ELSE 0 END) AS unchanged_count
+      SUM(CASE WHEN close = prev_close THEN 1 ELSE 0 END) AS unchanged_count,
+      SUM(CASE WHEN open > 0 AND close >= open * 0.9 AND close <= open * 0.905 THEN 1 ELSE 0 END) AS limit_down_count
     FROM paired
   `).bind(targetDate).first<{
     sample_size: number | null
     advance_count: number | null
     decline_count: number | null
     unchanged_count: number | null
+    limit_down_count: number | null
   }>()
 
   const sampleSize = Number(breadth?.sample_size ?? 0)
   const advanceCount = Number(breadth?.advance_count ?? 0)
   const declineCount = Number(breadth?.decline_count ?? 0)
   const unchangedCount = Number(breadth?.unchanged_count ?? 0)
+  const limitDownCount = Number(breadth?.limit_down_count ?? 0)
   if (sampleSize < 1000) {
-    return { rows: 0, sampleSize, advanceCount, declineCount, unchangedCount }
+    return { rows: 0, sampleSize, advanceCount, declineCount, unchangedCount, limitDownCount }
   }
   const ratio = sampleSize > 0 ? advanceCount / sampleSize : null
   const result = await db.prepare(`
-    INSERT INTO market_breadth (date, advance_count, decline_count, unchanged_count, advance_ratio)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO market_breadth (
+      date, advance_count, decline_count, unchanged_count, advance_ratio, sample_size, limit_down_count
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(date) DO UPDATE SET
       advance_count=excluded.advance_count,
       decline_count=excluded.decline_count,
       unchanged_count=excluded.unchanged_count,
-      advance_ratio=excluded.advance_ratio
-  `).bind(targetDate, advanceCount, declineCount, unchangedCount, ratio).run()
+      advance_ratio=excluded.advance_ratio,
+      sample_size=excluded.sample_size,
+      limit_down_count=excluded.limit_down_count
+  `).bind(targetDate, advanceCount, declineCount, unchangedCount, ratio, sampleSize, limitDownCount).run()
   return {
     rows: d1ChangeCount(result),
     sampleSize,
     advanceCount,
     declineCount,
     unchangedCount,
+    limitDownCount,
   }
 }
 
@@ -2046,8 +2053,9 @@ async function continuePostScreenerPipeline(
     const startedAt = Date.now()
     const { runS12CandidateStructureSnapshots } = await import('./s12CandidateStructureSnapshots')
     const snapshotSummary = await runS12CandidateStructureSnapshots(env, triggerTime)
-    const summary = `pre-pipeline S12 snapshots persisted=${snapshotSummary.persisted}/${snapshotSummary.attempted} ready=${snapshotSummary.ready} setup=${snapshotSummary.setup_only} blocked=${snapshotSummary.blocked} unavailable=${snapshotSummary.unavailable} errors=${snapshotSummary.errors}${snapshotSummary.unavailable > 0 ? ' analysis_continues=1 execution_fail_closed=1' : snapshotSummary.blocked > 0 ? ' execution_fail_closed=1' : ''}`
+    const summary = `pre-pipeline S12 snapshots persisted=${snapshotSummary.persisted}/${snapshotSummary.attempted} reference=${snapshotSummary.candidate_count} ready=${snapshotSummary.ready} setup=${snapshotSummary.setup_only} blocked=${snapshotSummary.blocked} unavailable=${snapshotSummary.unavailable} errors=${snapshotSummary.errors}${snapshotSummary.unavailable > 0 ? ' analysis_continues=1 execution_fail_closed=1' : snapshotSummary.blocked > 0 ? ' execution_fail_closed=1' : ''}`
     const snapshotComplete = snapshotSummary.attempted > 0
+      && snapshotSummary.attempted === snapshotSummary.candidate_count
       && snapshotSummary.persisted === snapshotSummary.attempted
       && snapshotSummary.errors === 0
     await logSchedulerResult(env.KV, 's12-structure-snapshot', {
@@ -2898,30 +2906,104 @@ export async function processUpdateBatch(
 
   if (msg.type === 'post_pipeline_chain') {
     const triggerTime = msg.triggerTime
+    const runId = msg.runId || `post-pipeline-chain-${triggerTime}`
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
       console.log(`[Queue] Invalid post-pipeline chain date ${triggerTime}, skipping.`)
       return
     }
-    const { runPostPipelineCallbackChain } = await import('./postMarketChain')
-    await runPostPipelineCallbackChain(env, {
-      runDate: triggerTime,
-      upstreamRunId: msg.runId || `post-pipeline-chain-${triggerTime}`,
-      recoveryAttempt: 0,
+    const {
+      claimPipelineStage,
+      enqueuePipelineStage,
+      markPipelineStage,
+    } = await import('./pipelineStageLease')
+    await enqueuePipelineStage(env.DB, {
+      businessDate: triggerTime,
+      stage: 'post_pipeline_chain',
+      runId,
+      resumeWaiting: true,
     })
+    const claimed = await claimPipelineStage(env.DB, {
+      businessDate: triggerTime,
+      stage: 'post_pipeline_chain',
+      ownerId: runId,
+      leaseSeconds: 900,
+    })
+    if (!claimed) {
+      console.log(`[Queue] post-pipeline stage already claimed/closed date=${triggerTime}`)
+      return
+    }
+    const { runPostPipelineCallbackChain } = await import('./postMarketChain')
+    try {
+      const status = await runPostPipelineCallbackChain(env, {
+        runDate: triggerTime,
+        upstreamRunId: claimed.canonical_run_id,
+        recoveryAttempt: Math.max(0, Number(msg.attempt ?? 0)),
+      })
+      await markPipelineStage(env.DB, {
+        businessDate: triggerTime,
+        stage: 'post_pipeline_chain',
+        status,
+      })
+    } catch (error) {
+      await markPipelineStage(env.DB, {
+        businessDate: triggerTime,
+        stage: 'post_pipeline_chain',
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
     return
   }
 
   if (msg.type === 'post_verify_chain') {
     const triggerTime = msg.triggerTime
+    const runId = msg.runId || `post-verify-chain-${triggerTime}`
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
       console.log(`[Queue] Invalid post-verify chain date ${triggerTime}, skipping.`)
       return
     }
-    const { runPostVerifyCallbackChain } = await import('./postMarketChain')
-    await runPostVerifyCallbackChain(env, {
-      runDate: triggerTime,
-      upstreamRunId: msg.runId || `post-verify-chain-${triggerTime}`,
+    const {
+      claimPipelineStage,
+      enqueuePipelineStage,
+      markPipelineStage,
+    } = await import('./pipelineStageLease')
+    await enqueuePipelineStage(env.DB, {
+      businessDate: triggerTime,
+      stage: 'post_verify_chain',
+      runId,
+      resumeWaiting: true,
     })
+    const claimed = await claimPipelineStage(env.DB, {
+      businessDate: triggerTime,
+      stage: 'post_verify_chain',
+      ownerId: runId,
+      leaseSeconds: 900,
+    })
+    if (!claimed) {
+      console.log(`[Queue] post-verify stage already claimed/closed date=${triggerTime}`)
+      return
+    }
+    const { runPostVerifyCallbackChain } = await import('./postMarketChain')
+    try {
+      const status = await runPostVerifyCallbackChain(env, {
+        runDate: triggerTime,
+        upstreamRunId: claimed.canonical_run_id,
+      })
+      await markPipelineStage(env.DB, {
+        businessDate: triggerTime,
+        stage: 'post_verify_chain',
+        status,
+      })
+    } catch (error) {
+      await markPipelineStage(env.DB, {
+        businessDate: triggerTime,
+        stage: 'post_verify_chain',
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
     return
   }
 
@@ -2931,11 +3013,12 @@ export async function processUpdateBatch(
       console.log(`[Queue] Invalid allocator EV lifecycle recovery date ${triggerTime}, skipping.`)
       return
     }
-    const { runPostPipelineCallbackChain } = await import('./postMarketChain')
-    await runPostPipelineCallbackChain(env, {
-      runDate: triggerTime,
-      upstreamRunId: msg.runId || `allocator-ev-lifecycle-recovery-${triggerTime}`,
-      recoveryAttempt: Math.max(1, Number(msg.attempt ?? 1)),
+    const { queuePostPipelineStage } = await import('./pipelineStageLease')
+    await queuePostPipelineStage(env, {
+      businessDate: triggerTime,
+      runId: msg.runId || `allocator-ev-lifecycle-recovery-${triggerTime}`,
+      resumeWaiting: true,
+      attempt: Math.max(1, Number(msg.attempt ?? 1)),
     })
     return
   }
@@ -3020,85 +3103,146 @@ export async function processUpdateBatch(
   if (msg.type === 'strategy_learning_materialize') {
     const triggerTime = msg.triggerTime
     const runId = msg.runId || `strategy-learning-${triggerTime}`
-    const offset = Math.max(0, Math.floor(Number(msg.cursor ?? 0)))
+    const requestedCursor = String(msg.cursorKey ?? '').trim()
     if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
       console.log(`[Queue] Invalid strategy-learning date ${triggerTime}, skipping.`)
       return
     }
 
     const {
+      listStrategySpecsForLearning,
       materializeStrategyDecisionLogChunk,
       refreshStrategyAdaptivePolicyState,
       refreshStrategyRewardLedger,
       seedDefaultStrategySpecRegistry,
     } = await import('./strategyLearning')
-
-    if (offset === 0) {
+    if (!requestedCursor) {
       await seedDefaultStrategySpecRegistry(env.DB)
     }
-
-    const chunk = await materializeStrategyDecisionLogChunk(env.DB, {
-      date: triggerTime,
-      offset,
-      limit: STRATEGY_LEARNING_QUEUE_CHUNK_SIZE,
-      dryRun: false,
-      artifactEnv: env,
-      producerRunId: `${runId}:offset=${offset}`,
+    const { specs } = await listStrategySpecsForLearning(env.DB)
+    const {
+      checkpointStrategyLearningPage,
+      claimStrategyLearningPage,
+      completeStrategyLearningRun,
+      failStrategyLearningRun,
+      initializeStrategyLearningRun,
+    } = await import('./strategyLearningRunState')
+    const state = await initializeStrategyLearningRun(env.DB, {
+      businessDate: triggerTime,
+      runId,
+      strategyCount: specs.length,
     })
-
-    if (chunk.has_more) {
-      await logSchedulerResult(env.KV, 'strategy-learning', {
-        status: 'running',
-        summary: `materialized chunk offset=${chunk.offset} candidates=${chunk.candidate_count} decision_rows=${chunk.persisted_rows}; next_offset=${chunk.next_offset}`,
-        duration_ms: 0,
-        run_id: runId,
-        run_date: triggerTime,
-      })
-      await env.UPDATE_QUEUE.send({
-        type: 'strategy_learning_materialize',
-        cursor: chunk.next_offset,
-        triggerTime,
-        runId,
-        force: Boolean(msg.force),
-      })
+    if (state.status === 'success') {
+      console.log(`[Queue] strategy-learning already complete date=${triggerTime} run_id=${state.canonical_run_id}`)
+      return
+    }
+    const durableCursor = String(state.cursor_symbol ?? '')
+    if (requestedCursor && requestedCursor !== durableCursor) {
+      console.log(`[Queue] stale strategy-learning cursor ignored date=${triggerTime} requested=${requestedCursor} durable=${durableCursor}`)
+      return
+    }
+    const canonicalRunId = state.canonical_run_id
+    const claimed = await claimStrategyLearningPage(env.DB, {
+      businessDate: triggerTime,
+      runId: canonicalRunId,
+      cursorSymbol: durableCursor,
+      leaseSeconds: 300,
+    })
+    if (!claimed) {
+      console.log(`[Queue] strategy-learning page already claimed date=${triggerTime} cursor=${durableCursor}`)
       return
     }
 
-    const rewards = await refreshStrategyRewardLedger(env.DB, { endDate: triggerTime, dryRun: false })
-    const policy = msg.force
-      ? await refreshStrategyAdaptivePolicyState(env.DB, { date: triggerTime, dryRun: false })
-      : null
-    const summary = [
-      `materialized_complete offset=${chunk.offset}`,
+    try {
+      const chunk = await materializeStrategyDecisionLogChunk(env.DB, {
+        date: triggerTime,
+        afterSymbol: durableCursor,
+        limit: STRATEGY_LEARNING_QUEUE_CHUNK_SIZE,
+        dryRun: false,
+        artifactEnv: env,
+        producerRunId: `${canonicalRunId}:after=${encodeURIComponent(durableCursor || 'start')}`,
+      })
+      if (chunk.has_more && (!chunk.next_cursor_symbol || chunk.next_cursor_symbol === durableCursor)) {
+        throw new Error(`strategy_learning_keyset_stalled:${durableCursor}`)
+      }
+      const checkpointed = await checkpointStrategyLearningPage(env.DB, {
+        businessDate: triggerTime,
+        runId: canonicalRunId,
+        previousCursor: durableCursor,
+        nextCursor: chunk.next_cursor_symbol,
+        processedCandidates: chunk.candidate_count,
+        persistedRows: chunk.persisted_rows,
+      })
+      if (!checkpointed) throw new Error(`strategy_learning_checkpoint_conflict:${durableCursor}`)
+
+      if (chunk.has_more) {
+        await logSchedulerResult(env.KV, 'strategy-learning', {
+          status: 'running',
+          summary: `materialized keyset after=${durableCursor || 'start'} candidates=${chunk.candidate_count} decision_rows=${chunk.persisted_rows}; next=${chunk.next_cursor_symbol}`,
+          duration_ms: 0,
+          run_id: canonicalRunId,
+          run_date: triggerTime,
+        })
+        await env.UPDATE_QUEUE.send({
+          type: 'strategy_learning_materialize',
+          cursor: 0,
+          cursorKey: chunk.next_cursor_symbol,
+          triggerTime,
+          runId: canonicalRunId,
+          force: Boolean(msg.force),
+        })
+        return
+      }
+
+      const coverage = await completeStrategyLearningRun(env.DB, {
+        businessDate: triggerTime,
+        runId: canonicalRunId,
+      })
+
+      const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
+      const { reconcileSelectionDecisionEvidenceV4 } = await import('./selectionReferenceEvidence')
+      const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
+      const decisionEvidence = await reconcileSelectionDecisionEvidenceV4(env.DB, triggerTime)
+      const labels = await materializeCanonicalSelectionLabelsV4(env.DB, { asOfDate: triggerTime })
+      const marginalEdge = await refreshStrategyMarginalEdgeV4(env.DB, triggerTime)
+      const rewards = await refreshStrategyRewardLedger(env.DB, { endDate: triggerTime, dryRun: false })
+      const policy = msg.force
+        ? await refreshStrategyAdaptivePolicyState(env.DB, { date: triggerTime, dryRun: false })
+        : null
+      const summary = [
+      `materialized_complete candidates=${coverage.candidateRows}/${coverage.expectedCandidates} rows=${coverage.decisionRows}/${coverage.expectedRows}`,
       `last_candidates=${chunk.candidate_count}`,
       `last_decision_rows=${chunk.persisted_rows}`,
+      `selection_decisions=${decisionEvidence.finalSignalRows}/${decisionEvidence.referenceRows}`,
+      `selection_ev_owner=${decisionEvidence.evOwnerRows}`,
+      `selection_labels=${labels.persisted_rows}`,
+      `selection_pending=${labels.pending_rows}`,
+      `selection_unavailable=${labels.unavailable_rows}`,
+      `strategy_edge=${marginalEdge.status}:eligible=${marginalEdge.eligibleStrategies}:dates=${marginalEdge.sampleDates}`,
       `reward_source_rows=${rewards.source_rows}`,
       `reward_rows=${rewards.persisted_rows}`,
       `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
-    ].join(' ')
+      ].join(' ')
 
-    await logSchedulerResult(env.KV, 'strategy-learning', {
-      status: 'success',
-      summary,
-      duration_ms: 0,
-      run_id: runId,
-      run_date: triggerTime,
-    })
-    await logSchedulerResult(env.KV, 'post-verify-chain', {
-      status: 'success',
-      summary: `strategy-learning queue closed; ${summary}`,
-      duration_ms: 0,
-      run_id: runId,
-      run_date: triggerTime,
-    })
-    await logSchedulerResult(env.KV, 'evening-chain', {
-      status: 'success',
-      summary: `root chain closed after queued strategy-learning: ${summary}`,
-      duration_ms: 0,
-      run_id: runId,
-      run_date: triggerTime,
-    })
-    return
+      await logSchedulerResult(env.KV, 'strategy-learning', {
+        status: 'success', summary, duration_ms: 0, run_id: canonicalRunId, run_date: triggerTime,
+      })
+      await logSchedulerResult(env.KV, 'post-verify-chain', {
+        status: 'success', summary: `strategy-learning queue closed; ${summary}`,
+        duration_ms: 0, run_id: canonicalRunId, run_date: triggerTime,
+      })
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'success', summary: `root chain closed after queued strategy-learning: ${summary}`,
+        duration_ms: 0, run_id: canonicalRunId, run_date: triggerTime,
+      })
+      return
+    } catch (error) {
+      await failStrategyLearningRun(env.DB, {
+        businessDate: triggerTime,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
   }
 
   if (msg.type === 'source_readiness_retry') {

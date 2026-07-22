@@ -1000,11 +1000,18 @@ export async function bulkFetchAndStoreChipData(
     const stmts = chunk.map(c => {
       const m = marginMap.get(c.symbol)
       return db.prepare(`
-        INSERT OR REPLACE INTO chip_data
+        INSERT INTO chip_data
           (symbol, date, foreign_buy, foreign_sell, foreign_net,
            trust_buy, trust_sell, trust_net, dealer_buy, dealer_sell, dealer_net,
            margin_balance, short_balance)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(symbol, date) DO UPDATE SET
+          foreign_buy=excluded.foreign_buy, foreign_sell=excluded.foreign_sell,
+          foreign_net=excluded.foreign_net, trust_buy=excluded.trust_buy,
+          trust_sell=excluded.trust_sell, trust_net=excluded.trust_net,
+          dealer_buy=excluded.dealer_buy, dealer_sell=excluded.dealer_sell,
+          dealer_net=excluded.dealer_net, margin_balance=excluded.margin_balance,
+          short_balance=excluded.short_balance
       `).bind(
         c.symbol, date,
         c.foreign_buy, c.foreign_sell, c.foreign_net,
@@ -1383,8 +1390,12 @@ export async function bulkFetchAndStorePrices(
     const stmts = validRows.slice(i, i + BATCH)
       .filter(r => idMap.has(r.symbol))
       .map(r => db.prepare(
-        `INSERT OR REPLACE INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume, avg_price)
-         VALUES (?,?,?,?,?,?,?,?,?)`
+        `INSERT INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume, avg_price)
+         VALUES (?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(stock_id, date) DO UPDATE SET
+           open=excluded.open, high=excluded.high, low=excluded.low,
+           close=excluded.close, adj_close=excluded.adj_close,
+           volume=excluded.volume, avg_price=excluded.avg_price`
       ).bind(idMap.get(r.symbol)!, effectiveDate, r.open, r.high, r.low, r.close, r.close, r.volume, r.avg_price ?? null))
     if (stmts.length) {
       await db.batch(stmts)

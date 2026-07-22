@@ -31,12 +31,21 @@ from services.l4_alpha_ev_resolver import (
     extract_l4_alpha_ev,
 )
 from services.s12_trade_ev import extract_s12_trade_ev
+from services.price_horizon_projection_contract import (
+    PRICE_HORIZONS_CTE,
+    PRICE_HORIZON_SOURCE,
+)
+from services.fusion_market_context import (
+    EXECUTION_MARKET_CONTEXT_FEATURE_NAMES,
+    MARKET_CONTEXT_FEATURE_NAMES,
+    market_context_feature_values,
+    market_regime_bucket,
+)
 
 
 SELECTION_FEATURE_NAMES = [
     "l4_expected_return",
     "l4_available",
-    "market_heat_expected_return",
     "ml_edge_norm",
     "fundamental_quality_norm",
     "chip_flow_norm",
@@ -44,6 +53,7 @@ SELECTION_FEATURE_NAMES = [
     "ensemble_directional_margin",
     "score_v2_available",
     "ensemble_rank_available",
+    *MARKET_CONTEXT_FEATURE_NAMES,
 ]
 EXECUTION_FEATURE_NAMES = [
     *SELECTION_FEATURE_NAMES,
@@ -62,6 +72,7 @@ EXECUTION_FEATURE_NAMES = [
     "s12_full_reaction_ready",
     "s12_limited_takeover_ready",
     "l4_s12_edge_agreement",
+    *EXECUTION_MARKET_CONTEXT_FEATURE_NAMES,
 ]
 FEATURE_NAMES = list(dict.fromkeys([*SELECTION_FEATURE_NAMES, *EXECUTION_FEATURE_NAMES]))
 
@@ -73,6 +84,8 @@ PRIMARY_MIN_L4_PIT_SAMPLES = 300
 PRIMARY_MIN_L4_PIT_DATES = 8
 PRIMARY_MIN_S12_STRUCTURE_SAMPLES = 300
 PRIMARY_MIN_S12_STRUCTURE_DATES = 8
+PRIMARY_MIN_MARKET_CONTEXT_SAMPLES = 300
+PRIMARY_MIN_MARKET_CONTEXT_DATES = 8
 ASSISTIVE_MIN_DATES = 10
 ASSISTIVE_MIN_SAMPLES = 500
 ASSISTIVE_MIN_EXPERT_SAMPLES = 100
@@ -80,7 +93,7 @@ ASSISTIVE_MIN_EXPERT_DATES = 10
 CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
 CANONICAL_SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
 CANONICAL_ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v4"
-CANONICAL_ADJUSTMENT_FACTOR_SOURCE = "canonical_market_daily:finlab.price"
+CANONICAL_ADJUSTMENT_FACTOR_SOURCE = PRICE_HORIZON_SOURCE
 MIN_CROSS_SECTION_SAMPLES_PER_DATE = 20
 LABEL_PURGE_DATE_GROUPS = 5
 ARTIFACT_CONTRACT_VERSION = ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION
@@ -276,12 +289,41 @@ def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
         "market_heat_expected_return": _market_heat(row),
         "l4_s12_edge_agreement": 1.0 if (l4_value > 0 and s12_value > 0) or (l4_value <= 0 and s12_value <= 0) else 0.0,
         **_s12_structure_features(s12_payload),
+        **market_context_feature_values(
+            row,
+            l4_value=l4_value,
+            s12_value=s12_value,
+        ),
     }
 
 
 def _bounded_return(row: dict[str, Any], key: str) -> float | None:
     value = _float_or_none(row.get(key))
     return value if value is not None and -1.0 < value < 1.0 else None
+
+
+def _s12_replay_observation_kind(row: dict[str, Any]) -> str:
+    explicit = str(row.get("s12_replay_observation_kind") or "").strip().lower()
+    if explicit in {"executed", "not_executed", "unavailable"}:
+        return explicit
+    status = str(row.get("s12_replay_status") or "").strip().lower()
+    reason = str(row.get("s12_replay_archetype") or "").strip().lower()
+    if status == "executed" or _bounded_return(row, "s12_replay_pnl_pct") is not None:
+        return "executed"
+    if status == "setup_only":
+        return "not_executed"
+    if status == "skipped":
+        if reason in {
+            "missing_intraday_bars",
+            "missing_entry_session_bars",
+            "missing_post_entry_bars",
+        }:
+            return "unavailable"
+        return "not_executed"
+    # Historical rows used "not_triggered" before observation_kind existed.
+    if status == "not_triggered":
+        return "not_executed"
+    return "unavailable"
 
 
 def _samples(
@@ -331,7 +373,8 @@ def _samples(
         trade_target = replay_target
         replay_status = str(row.get("s12_replay_status") or "").strip().lower()
         replay_archetype = str(row.get("s12_replay_archetype") or "").strip().lower()
-        execution_observed = bool(replay_status) or replay_target is not None
+        observation_kind = _s12_replay_observation_kind(row)
+        execution_observed = observation_kind in {"executed", "not_executed"}
         s12_available = float(features.get("s12_available") or 0.0) > 0.0
         execution_target = (
             trade_target - max(0.0, execution_cost_bps) / 10000.0
@@ -350,6 +393,7 @@ def _samples(
             "symbol": row.get("symbol"),
             "market_segment": str(row.get("market_segment") or "UNKNOWN").strip() or "UNKNOWN",
             "sector": str(row.get("sector") or "UNKNOWN").strip() or "UNKNOWN",
+            "regime_bucket": market_regime_bucket(row),
             "features": features,
             "target": selection_target,
             "actual_return_target": selection_target,
@@ -358,13 +402,14 @@ def _samples(
             "execution_target": execution_target,
             "realized_trade_ev_target": realized_trade_ev_target,
             "execution_probability_target": (
-                1.0 if trade_target is not None else 0.0
+                1.0 if observation_kind == "executed" else 0.0
             ) if execution_observed else None,
+            "execution_observation_kind": observation_kind,
             "execution_label_source": (
                 "s12_replay_trade_outcomes"
-                if replay_target is not None
+                if observation_kind == "executed"
                 else "s12_replay_non_execution"
-                if replay_status
+                if observation_kind == "not_executed"
                 else None
             ),
             "execution_archetype": replay_archetype or None,
@@ -435,6 +480,14 @@ def _samples(
     execution_observation_samples = [
         sample for sample in out if sample["execution_probability_target"] is not None
     ]
+    market_context_samples = [
+        sample for sample in out
+        if float(sample["features"].get("market_context_available") or 0.0) > 0.0
+    ]
+    regime_surface_samples = [
+        sample for sample in out
+        if float(sample["features"].get("regime_surface_available") or 0.0) > 0.0
+    ]
     return out, {
         "input_rows": len(rows),
         "sample_count": len(out),
@@ -476,6 +529,20 @@ def _samples(
         "execution_date_count": len({row["date"] for row in execution_samples}),
         "execution_observation_count": len(execution_observation_samples),
         "execution_observation_date_count": len({row["date"] for row in execution_observation_samples}),
+        "market_context_available_count": len(market_context_samples),
+        "market_context_available_date_count": len({row["date"] for row in market_context_samples}),
+        "market_context_available_coverage": round(len(market_context_samples) / len(out), 8) if out else 0.0,
+        "regime_surface_available_count": len(regime_surface_samples),
+        "regime_surface_available_date_count": len({row["date"] for row in regime_surface_samples}),
+        "regime_surface_available_coverage": round(len(regime_surface_samples) / len(out), 8) if out else 0.0,
+        "regime_bucket_counts": {
+            bucket: sum(1 for row in out if row.get("regime_bucket") == bucket)
+            for bucket in sorted({str(row.get("regime_bucket")) for row in out})
+        },
+        "execution_observation_kind_counts": {
+            kind: sum(1 for row in out if row.get("execution_observation_kind") == kind)
+            for kind in sorted({str(row.get("execution_observation_kind")) for row in out if row.get("execution_observation_kind")})
+        },
         "execution_label_source_counts": {
             source: sum(1 for row in out if row.get("execution_label_source") == source)
             for source in sorted({str(row.get("execution_label_source")) for row in out if row.get("execution_label_source")})
@@ -487,10 +554,12 @@ def _samples(
         "s12_ready_coverage": round(s12_ready_count / len(out), 8) if out else 0.0,
         "s12_available_coverage": round(s12_available_count / len(out), 8) if out else 0.0,
         "target_policy": {
-            "selection": "next_session_raw_open_to_fifth_session_raw_close_factor_stable_net_of_costs",
+            "selection": "same_date_sector_or_segment_or_market_cross_section_residual_of_five_session_net_return",
+            "selection_absolute_audit": "next_session_adjusted_open_to_fifth_session_adjusted_close_net_of_costs",
+            "final_trade_ev": "absolute_s12_realized_trade_ev_net_of_costs_not_cross_section_rank",
             "selection_label_schema_version": LABEL_SCHEMA_VERSION,
             "execution_trade_return": "five_session_canonical_s12_lifecycle_pnl_net_of_roundtrip_cost_when_executed",
-            "full_trade_ev": "zero_when_not_executed_else_multisession_canonical_replay_net_pnl",
+            "full_trade_ev": "zero_only_for_observed_non_execution;unavailable_excluded;executed_uses_multisession_canonical_replay_net_pnl",
             "execution_label_availability": "replay_execution_outcome_independent_of_prior_s12_ev_availability",
             "execution_probability": "canonical_s12_replay_execution_indicator",
             "label_known_at": "replay_exit_ms_strictly_before_as_of_date",
@@ -744,6 +813,14 @@ def _date_cluster_lcb90(values: list[float]) -> float | None:
     return _mean(values) - critical_value * standard_error
 
 
+def _date_cluster_ucb90(values: list[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    standard_error = math.sqrt(_sample_variance(values) / len(values))
+    critical_value = float(student_t.ppf(0.95, df=len(values) - 1))
+    return _mean(values) + critical_value * standard_error
+
+
 def _supported_feature_names(
     samples: list[dict[str, Any]],
     feature_names: list[str],
@@ -845,7 +922,7 @@ def _paired_canonical_l4_comparison(
     return {
         "schema_version": "allocator-ev-fusion-champion-comparison-v1",
         "champion": "canonical_l4",
-        "challenger": "allocator_ev_fusion_v11_selection_model",
+        "challenger": "allocator_ev_fusion_v12_selection_model",
         "comparison_unit": "paired_prediction_date_same_candidates",
         "decision": "PASS" if not blockers else "FAIL",
         "failed_gates": blockers,
@@ -875,7 +952,7 @@ def _paired_final_trade_ev_comparison(
         return {
             "schema_version": "allocator-ev-fusion-final-champion-comparison-v1",
             "champion": "canonical_l4",
-            "challenger": "allocator_ev_fusion_v11_final_trade_ev",
+            "challenger": "allocator_ev_fusion_v12_final_trade_ev",
             "comparison_target": "realized_multisession_trade_ev_net_of_costs",
             "decision": "FAIL",
             "failed_gates": blockers,
@@ -919,6 +996,7 @@ def _paired_final_trade_ev_comparison(
         by_date.setdefault(str(sample["date"]), []).append(sample)
     correlation_deltas: list[float] = []
     spread_deltas: list[float] = []
+    daily_top_trade_ev: list[float] = []
     daily: list[dict[str, Any]] = []
 
     def spread(predictions: list[float], targets: list[float]) -> float:
@@ -941,6 +1019,15 @@ def _paired_final_trade_ev_comparison(
         canonical_corr = _corr(canonical_predictions, targets)
         fusion_spread = spread(fusion_predictions, targets)
         canonical_spread = spread(canonical_predictions, targets)
+        ranked_trade_ev = sorted(
+            zip(fusion_predictions, targets, strict=True),
+            key=lambda item: item[0],
+        )
+        top_bucket = max(1, len(ranked_trade_ev) // 5)
+        top_trade_ev = _mean([target for _prediction, target in ranked_trade_ev[-top_bucket:]])
+        daily_top_trade_ev.append(top_trade_ev)
+        regime_buckets = {str(row.get("regime_bucket") or "unclassified") for row in rows}
+        regime_bucket = next(iter(regime_buckets)) if len(regime_buckets) == 1 else "mixed"
         spread_delta = fusion_spread - canonical_spread
         spread_deltas.append(spread_delta)
         correlation_delta = None
@@ -956,21 +1043,50 @@ def _paired_final_trade_ev_comparison(
             "fusion_spread": round(fusion_spread, 8),
             "canonical_l4_spread": round(canonical_spread, 8),
             "spread_delta": round(spread_delta, 8),
+            "fusion_top_trade_ev_mean": round(top_trade_ev, 8),
+            "regime_bucket": regime_bucket,
         })
 
     minimum_oos_dates = max(4, math.ceil(PRIMARY_MIN_DATES * 0.2))
     corr_delta_lcb90 = _date_cluster_lcb90(correlation_deltas)
     spread_delta_lcb90 = _date_cluster_lcb90(spread_deltas)
+    top_trade_ev_lcb90 = _date_cluster_lcb90(daily_top_trade_ev)
+    regime_slices: dict[str, dict[str, Any]] = {}
+    regime_blockers: list[str] = []
+    minimum_supported_regime_dates = 3
+    for regime in sorted({str(row.get("regime_bucket") or "unclassified") for row in daily}):
+        values = [
+            float(row["fusion_top_trade_ev_mean"])
+            for row in daily
+            if row.get("regime_bucket") == regime
+        ]
+        supported = regime not in {"unclassified", "mixed"} and len(values) >= minimum_supported_regime_dates
+        lcb90 = _date_cluster_lcb90(values)
+        ucb90 = _date_cluster_ucb90(values)
+        confidently_negative = bool(supported and ucb90 is not None and ucb90 <= 0.0)
+        if confidently_negative:
+            regime_blockers.append(f"supported_regime_top_trade_ev_confidently_negative:{regime}")
+        regime_slices[regime] = {
+            "date_count": len(values),
+            "supported": supported,
+            "top_trade_ev_mean": round(_mean(values), 8) if values else None,
+            "top_trade_ev_lcb90": None if lcb90 is None else round(lcb90, 8),
+            "top_trade_ev_ucb90": None if ucb90 is None else round(ucb90, 8),
+            "confidently_negative": confidently_negative,
+        }
     if len(daily) < minimum_oos_dates:
         blockers.append("paired_oos_dates_insufficient")
     if corr_delta_lcb90 is None or corr_delta_lcb90 < 0.0:
         blockers.append("fusion_corr_delta_lcb90_inferior_to_canonical_l4")
     if spread_delta_lcb90 is None or spread_delta_lcb90 < 0.0:
         blockers.append("fusion_spread_delta_lcb90_inferior_to_canonical_l4")
+    if top_trade_ev_lcb90 is None or top_trade_ev_lcb90 <= 0.0:
+        blockers.append("fusion_top_trade_ev_lcb90_not_positive")
+    blockers.extend(regime_blockers)
     return {
         "schema_version": "allocator-ev-fusion-final-champion-comparison-v1",
         "champion": "canonical_l4",
-        "challenger": "allocator_ev_fusion_v11_final_trade_ev",
+        "challenger": "allocator_ev_fusion_v12_final_trade_ev",
         "comparison_target": "realized_multisession_trade_ev_net_of_costs",
         "comparison_unit": "paired_prediction_date_same_candidates",
         "decision": "PASS" if not blockers else "FAIL",
@@ -982,6 +1098,16 @@ def _paired_final_trade_ev_comparison(
         "corr_delta_lcb90": None if corr_delta_lcb90 is None else round(corr_delta_lcb90, 8),
         "spread_delta_mean": round(_mean(spread_deltas), 8) if spread_deltas else None,
         "spread_delta_lcb90": None if spread_delta_lcb90 is None else round(spread_delta_lcb90, 8),
+        "top_trade_ev_mean": round(_mean(daily_top_trade_ev), 8) if daily_top_trade_ev else None,
+        "top_trade_ev_lcb90": None if top_trade_ev_lcb90 is None else round(top_trade_ev_lcb90, 8),
+        "regime_stability": {
+            "method": "date_clustered_one_sided_90pct_interval",
+            "minimum_supported_regime_dates": minimum_supported_regime_dates,
+            "unsupported_regimes_are_diagnostic_only": True,
+            "decision": "FAIL" if regime_blockers else "PASS",
+            "failed_gates": regime_blockers,
+            "slices": regime_slices,
+        },
         "daily": daily,
     }
 
@@ -1371,6 +1497,8 @@ def _promotion_tier(
     l4_available_date_count = int(diagnostics.get("l4_point_in_time_available_date_count") or 0)
     structure_count = int(diagnostics.get("s12_structure_available_count") or 0)
     structure_date_count = int(diagnostics.get("s12_structure_available_date_count") or 0)
+    market_context_count = int(diagnostics.get("market_context_available_count") or 0)
+    market_context_date_count = int(diagnostics.get("market_context_available_date_count") or 0)
     top_mean = float(oos_metrics.get("top_quintile_mean_return") or 0.0)
     spread = float(oos_metrics.get("top_bottom_spread") or 0.0)
     corr = float(oos_metrics.get("prediction_target_corr") or 0.0)
@@ -1398,6 +1526,10 @@ def _promotion_tier(
         blockers.append("primary_s12_structure_samples_low")
     if structure_date_count < PRIMARY_MIN_S12_STRUCTURE_DATES:
         blockers.append("primary_s12_structure_dates_low")
+    if market_context_count < PRIMARY_MIN_MARKET_CONTEXT_SAMPLES:
+        blockers.append("primary_market_context_samples_low")
+    if market_context_date_count < PRIMARY_MIN_MARKET_CONTEXT_DATES:
+        blockers.append("primary_market_context_dates_low")
     if champion_comparison.get("decision") != "PASS":
         blockers.append("primary_not_superior_to_canonical_l4")
     if top_mean <= 0.0:
@@ -1423,6 +1555,8 @@ def _promotion_tier(
         and l4_available_date_count >= ASSISTIVE_MIN_EXPERT_DATES
         and structure_count >= ASSISTIVE_MIN_EXPERT_SAMPLES
         and structure_date_count >= ASSISTIVE_MIN_EXPERT_DATES
+        and market_context_count >= ASSISTIVE_MIN_EXPERT_SAMPLES
+        and market_context_date_count >= ASSISTIVE_MIN_EXPERT_DATES
         and execution_model.get("decision") == "PASS"
         and execution_probability_model.get("decision") == "PASS"
     )
@@ -1548,13 +1682,13 @@ def build_allocator_ev_fusion_artifact_from_rows(
     if decision != "PASS":
         promotion_blockers = assistive_failed_gates
     validation_packet = {
-        "schema_version": "allocator-ev-fusion-validation-packet-v11",
+        "schema_version": "allocator-ev-fusion-validation-packet-v12",
         "decision": decision,
         "failed_gates": failed_gates,
         "primary_champion_failed_gates": champion_comparison.get("failed_gates") or [],
         "validation_scope": {
             "owner": "allocator_ev_fusion",
-            "selection_target": "next_session_raw_open_to_fifth_session_raw_close_factor_stable_net_of_costs",
+            "selection_target": "same_date_cross_section_residual_of_five_session_net_return",
             "label_schema_version": LABEL_SCHEMA_VERSION,
             "execution_probability_target": "next_session_canonical_execution_indicator_by_archetype",
             "execution_target": "five_session_canonical_lifecycle_net_pnl_when_executed",
@@ -1589,7 +1723,11 @@ def build_allocator_ev_fusion_artifact_from_rows(
                 "min_l4_point_in_time_dates": PRIMARY_MIN_L4_PIT_DATES,
                 "min_s12_structure_samples": PRIMARY_MIN_S12_STRUCTURE_SAMPLES,
                 "min_s12_structure_dates": PRIMARY_MIN_S12_STRUCTURE_DATES,
+                "min_market_context_samples": PRIMARY_MIN_MARKET_CONTEXT_SAMPLES,
+                "min_market_context_dates": PRIMARY_MIN_MARKET_CONTEXT_DATES,
                 "execution_expert_validation_passed": True,
+                "final_top_trade_ev_lcb90_positive": True,
+                "supported_regime_upper_bound_not_negative": True,
                 "execution_probability_validation_passed": True,
                 "paired_canonical_l4_champion_comparison_passed": True,
                 "top_bucket_return_positive": True,
@@ -1600,7 +1738,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
         },
     }
     artifact = {
-        "schema_version": "allocator-ev-fusion-artifact-v11",
+        "schema_version": "allocator-ev-fusion-artifact-v12",
         "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
         "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
         "label_schema_version": LABEL_SCHEMA_VERSION,
@@ -1619,9 +1757,9 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "operational_parity_required": generation_mode == "purged_oof",
         "promotion_blockers": promotion_blockers,
         "validation_packet": validation_packet,
-        "resolver_method": "cross_fitted_rank_two_part_trade_ev_fusion",
-        "model_version": f"allocator-ev-fusion-cross-fit-v11-{trained_until.replace('-', '')}",
-        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v11-canonical-adjusted-label",
+        "resolver_method": "market_conditioned_cross_fitted_rank_two_part_trade_ev_fusion",
+        "model_version": f"allocator-ev-fusion-cross-fit-v12-{trained_until.replace('-', '')}",
+        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v12-pit-market-context",
         "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
         "trained_until": trained_until,
         "horizon_days": 5,
@@ -1666,24 +1804,7 @@ def load_allocator_ev_fusion_oof_training_rows(
 
     rows = query_fn(
         f"""
-        WITH price_horizons AS (
-          SELECT
-            sp.stock_id,
-            date(sp.date) price_date,
-            LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) entry_raw_open,
-            LEAD(CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END, 1)
-              OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) entry_adjustment_factor,
-            LEAD(date(sp.date), 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) exit_date,
-            LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) exit_raw_close,
-            LEAD(CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END, 5)
-              OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) exit_adjustment_factor
-          FROM stock_prices sp
-          JOIN stocks s ON s.id = sp.stock_id
-          LEFT JOIN canonical_market_daily cmd
-            ON cmd.stock_id = s.symbol
-           AND cmd.date = date(sp.date)
-           AND cmd.source = 'finlab.price'
-        )
+        WITH {PRICE_HORIZONS_CTE}
         SELECT
           fs.cohort_id,
           fs.fold_id,
@@ -1703,7 +1824,7 @@ def load_allocator_ev_fusion_oof_training_rows(
           fs.label_known_date,
           'allocator_ev_oof_snapshots' allocator_ev_feature_snapshot_source,
           'purged_oof_label_known_date_strict' allocator_ev_feature_snapshot_guard,
-          'canonical_market_daily:finlab.price' label_adjustment_source,
+          ph.source label_adjustment_source,
           ((ph.exit_raw_close * ph.exit_adjustment_factor)
             / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} l4_executable_return_pct,
           NULL trade_pnl_pct,
@@ -1795,37 +1916,13 @@ def load_allocator_ev_fusion_training_rows(
     try:
         snapshot_rows = query_fn(
             f"""
-            WITH price_horizons AS (
-                SELECT
-                    sp.stock_id,
-                    date(sp.date) AS price_date,
-                    LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_raw_open,
-                    LEAD(
-                        CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
-                        1
-                    ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_adjustment_factor,
-                    LEAD(date(sp.date), 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_date,
-                    LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_raw_close,
-                    LEAD(
-                        CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
-                        5
-                    ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_adjustment_factor
-                FROM stock_prices sp
-                JOIN stocks factor_stock
-                  ON factor_stock.id = sp.stock_id
-                LEFT JOIN canonical_market_daily cmd
-                  ON cmd.stock_id = factor_stock.symbol
-                 AND cmd.date = date(sp.date)
-                 AND cmd.source = 'finlab.price'
-                WHERE date(sp.date) >= date(?, ?, '-10 days')
-                  AND date(sp.date) <= date(?)
-            )
+            WITH {PRICE_HORIZONS_CTE}
             SELECT
                 p.stock_id,
                 fs.symbol,
                 date(p.prediction_date) AS prediction_date,
                 fs.forecast_data,
-                'canonical_market_daily:finlab.price' AS label_adjustment_source,
+                ph.source AS label_adjustment_source,
                 ((ph.exit_raw_close * ph.exit_adjustment_factor)
                   / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} AS l4_executable_return_pct,
                 p.trade_pnl_pct,
@@ -1895,9 +1992,6 @@ def load_allocator_ev_fusion_training_rows(
             LIMIT ?
             """,
             [
-                end_date,
-                f"-{max(1, int(lookback_days))} days",
-                outcome_cutoff,
                 outcome_cutoff,
                 outcome_cutoff,
                 outcome_cutoff,
@@ -1920,37 +2014,13 @@ def load_allocator_ev_fusion_training_rows(
 
     return query_fn(
         f"""
-        WITH price_horizons AS (
-            SELECT
-                sp.stock_id,
-                date(sp.date) AS price_date,
-                LEAD(sp.open, 1) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_raw_open,
-                LEAD(
-                    CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
-                    1
-                ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS entry_adjustment_factor,
-                LEAD(date(sp.date), 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_date,
-                LEAD(sp.close, 5) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_raw_close,
-                LEAD(
-                    CASE WHEN cmd.close > 0 AND cmd.adj_close > 0 THEN cmd.adj_close / cmd.close END,
-                    5
-                ) OVER (PARTITION BY sp.stock_id ORDER BY date(sp.date)) AS exit_adjustment_factor
-            FROM stock_prices sp
-            JOIN stocks factor_stock
-              ON factor_stock.id = sp.stock_id
-            LEFT JOIN canonical_market_daily cmd
-              ON cmd.stock_id = factor_stock.symbol
-             AND cmd.date = date(sp.date)
-             AND cmd.source = 'finlab.price'
-            WHERE date(sp.date) >= date(?, ?, '-10 days')
-              AND date(sp.date) <= date(?)
-        )
+        WITH {PRICE_HORIZONS_CTE}
         SELECT
             p.stock_id,
             s.symbol,
             date(p.prediction_date) AS prediction_date,
             p.forecast_data,
-            'canonical_market_daily:finlab.price' AS label_adjustment_source,
+            ph.source AS label_adjustment_source,
             ((ph.exit_raw_close * ph.exit_adjustment_factor)
               / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} AS l4_executable_return_pct,
             p.trade_pnl_pct,
@@ -2016,9 +2086,6 @@ def load_allocator_ev_fusion_training_rows(
         LIMIT ?
         """,
         [
-            end_date,
-            f"-{max(1, int(lookback_days))} days",
-            outcome_cutoff,
             outcome_cutoff,
             outcome_cutoff,
             outcome_cutoff,

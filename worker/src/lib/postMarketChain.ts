@@ -13,6 +13,8 @@ import {
   inspectAllocatorSnapshotClosure,
   recordAllocatorEvLifecycle,
 } from './allocatorEvDailyLifecycle'
+import { claimPipelineStage, enqueuePipelineStage, markPipelineStage } from './pipelineStageLease'
+import { materializePriceHorizonLabels } from './priceHorizonProjection'
 
 export type ChainContext = {
   runDate?: string
@@ -211,6 +213,7 @@ async function enqueueStrategyLearningClosureTask(env: Bindings, ctx: ChainConte
   await env.UPDATE_QUEUE.send({
     type: 'strategy_learning_materialize',
     cursor: 0,
+    cursorKey: '',
     triggerTime: runDate,
     runId,
     force: isCurrentBusinessDate(runDate),
@@ -284,7 +287,10 @@ async function logChainSummary(
   }
 }
 
-export async function runPostPipelineCallbackChain(env: Bindings, ctx: ChainContext): Promise<void> {
+export async function runPostPipelineCallbackChain(
+  env: Bindings,
+  ctx: ChainContext,
+): Promise<'waiting' | 'success' | 'error'> {
   const startedAt = Date.now()
   const results: ChainedTask[] = []
 
@@ -300,7 +306,7 @@ export async function runPostPipelineCallbackChain(env: Bindings, ctx: ChainCont
       critical: true,
     })
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
-    return
+    return 'error'
   }
   let snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate)
   await recordAllocatorEvLifecycle(env.DB, {
@@ -338,7 +344,7 @@ export async function runPostPipelineCallbackChain(env: Bindings, ctx: ChainCont
       upstreamRunId: ctx.upstreamRunId,
     })
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
-    return
+    return 'waiting'
   }
   snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate)
   if (snapshotTask.status === 'error' || !snapshotClosure.ready) {
@@ -357,6 +363,7 @@ export async function runPostPipelineCallbackChain(env: Bindings, ctx: ChainCont
       lastError: error,
     })
     const attempt = Math.max(0, Number(ctx.recoveryAttempt ?? 0))
+    const retryScheduled = attempt < 3
     if (attempt < 3) {
       await (env.UPDATE_QUEUE as any).send({
         type: 'allocator_ev_lifecycle_recovery',
@@ -367,7 +374,7 @@ export async function runPostPipelineCallbackChain(env: Bindings, ctx: ChainCont
       }, { delaySeconds: Math.min(900, 60 * (2 ** attempt)) })
     }
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
-    return
+    return retryScheduled ? 'waiting' : 'error'
   }
   await recordAllocatorEvLifecycle(env.DB, {
     businessDate: ctx.runDate,
@@ -377,7 +384,49 @@ export async function runPostPipelineCallbackChain(env: Bindings, ctx: ChainCont
     snapshotRows: snapshotClosure.actualRows,
     upstreamRunId: ctx.upstreamRunId,
   })
-  const verifyTask = await logChainedTask(env, ctx, 'verify-v2', () => runVerifyV2(env, ctx.runDate))
+  const verifyStage = await enqueuePipelineStage(env.DB, {
+    businessDate: ctx.runDate,
+    stage: 'verify_v2',
+    runId: ctx.upstreamRunId || `verify-v2-${ctx.runDate}`,
+    resumeWaiting: true,
+  })
+  let verifyTask: ChainedTask
+  if (!verifyStage.shouldEnqueue) {
+    verifyTask = {
+      task: 'verify-v2',
+      status: 'success',
+      critical: true,
+      summary: `verify stage already status=${verifyStage.row.status} run_id=${verifyStage.row.canonical_run_id}`,
+    }
+  } else {
+    const claimed = await claimPipelineStage(env.DB, {
+      businessDate: ctx.runDate,
+      stage: 'verify_v2',
+      ownerId: verifyStage.row.canonical_run_id,
+      leaseSeconds: 120,
+    })
+    verifyTask = claimed
+      ? await logChainedTask(
+        env,
+        ctx,
+        'verify-v2',
+        () => runVerifyV2(env, ctx.runDate, `verify_v2:${ctx.runDate}`),
+      )
+      : {
+        task: 'verify-v2',
+        status: 'success',
+        critical: true,
+        summary: 'verify stage was claimed by another worker',
+      }
+    if (claimed) {
+      await markPipelineStage(env.DB, {
+        businessDate: ctx.runDate,
+        stage: 'verify_v2',
+        status: verifyTask.status === 'error' ? 'error' : 'waiting',
+        error: verifyTask.status === 'error' ? verifyTask.summary : null,
+      })
+    }
+  }
   results.push(verifyTask)
   if (verifyTask.status !== 'error') {
     await recordAllocatorEvLifecycle(env.DB, {
@@ -390,11 +439,29 @@ export async function runPostPipelineCallbackChain(env: Bindings, ctx: ChainCont
     })
   }
   await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
+  return verifyTask.status === 'error' ? 'error' : 'success'
 }
 
-export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContext): Promise<void> {
+export async function runPostVerifyCallbackChain(
+  env: Bindings,
+  ctx: ChainContext,
+): Promise<'success' | 'error'> {
   const startedAt = Date.now()
   const results: ChainedTask[] = []
+
+  const projectionTask = await logChainedTask(env, ctx, 'price-horizon-projection', async () => {
+    const result = await materializePriceHorizonLabels(env, {
+      endDate: ctx.runDate,
+      outcomeAsOfDate: twDateToday(),
+      maxSignalDates: 60,
+    })
+    return result.summary
+  }, { timeoutMs: 240_000 })
+  results.push(projectionTask)
+  if (projectionTask.status === 'error') {
+    await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
+    return 'error'
+  }
 
   results.push(await logChainedTask(env, ctx, 'model-ic-tracker', () => runModelIcRollingRefresh(env, ctx.runDate)))
   if (isCurrentBusinessDate(ctx.runDate)) {
@@ -436,4 +503,5 @@ export async function runPostVerifyCallbackChain(env: Bindings, ctx: ChainContex
   }))
 
   await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
+  return results.some((row) => row.critical !== false && row.status === 'error') ? 'error' : 'success'
 }

@@ -37,6 +37,11 @@ type ArtifactContract = {
   artifactContractVersion: string
   featureSemanticVersion: string
   labelSchemaVersion: string
+  compatiblePairs?: readonly {
+    artifactContractVersion: string
+    featureSemanticVersion: string
+    labelSchemaVersion: string
+  }[]
 }
 
 function artifactObject(value: unknown): Record<string, any> | null {
@@ -73,13 +78,22 @@ function evaluateArtifact(
   if (String(artifact.validation_packet?.decision ?? '').toUpperCase() !== 'PASS') {
     blockers.push('validation_not_pass')
   }
-  if (artifact.artifact_contract_version !== contract.artifactContractVersion) {
+  const compatiblePairs = contract.compatiblePairs ?? [contract]
+  const exactContractPair = compatiblePairs.some((pair) => (
+    artifact.artifact_contract_version === pair.artifactContractVersion
+    && artifact.feature_semantic_version === pair.featureSemanticVersion
+    && artifact.label_schema_version === pair.labelSchemaVersion
+  ))
+  const knownArtifactVersion = compatiblePairs.some((pair) => (
+    artifact.artifact_contract_version === pair.artifactContractVersion
+  ))
+  if (!knownArtifactVersion) {
     blockers.push('artifact_contract_version_incompatible')
   }
-  if (artifact.feature_semantic_version !== contract.featureSemanticVersion) {
+  if (knownArtifactVersion && !exactContractPair) {
     blockers.push('feature_semantic_version_incompatible')
   }
-  if (artifact.label_schema_version !== contract.labelSchemaVersion) {
+  if (!compatiblePairs.some((pair) => artifact.label_schema_version === pair.labelSchemaVersion)) {
     blockers.push('label_schema_version_incompatible')
   }
   const modelVersion = String(artifact.model_version ?? '').trim()

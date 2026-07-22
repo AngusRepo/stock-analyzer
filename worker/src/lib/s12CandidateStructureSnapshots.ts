@@ -16,6 +16,7 @@ import {
   applyS12TwCalibrationArtifact,
   listApprovedS12TwCalibrationArtifacts,
   resolveS12TwCalibrationArtifact,
+  type S12TwCalibrationArtifact,
 } from './s12TwEquityCalibration'
 import { acquireS12ResearchLease, releaseS12ResearchLease } from './s12ResearchLease'
 
@@ -71,55 +72,28 @@ function isSetupOnly(assessment: S12IntradayAssessment): boolean {
 export async function loadS12PipelineSeedSymbolsByDate(
   db: D1Database,
   tradeDate: string,
-  limit = 160,
+  limit = 1000,
 ): Promise<S12PipelineSeedSymbol[]> {
-  const cappedLimit = Math.max(1, Math.min(500, Math.floor(limit)))
+  const cappedLimit = Math.max(1, Math.min(2000, Math.floor(limit)))
   const { results } = await db.prepare(`
-    WITH latest_screener_run AS (
-      SELECT run_id
-        FROM screener_funnel_runs
-       WHERE date = ?
-         AND status = 'success'
-       ORDER BY created_at DESC
-       LIMIT 1
-    ),
-    candidate_seed AS (
-      SELECT
-          sfi.*,
-          ROW_NUMBER() OVER (
-            PARTITION BY sfi.symbol
-            ORDER BY
-              CASE sfi.stage
-                WHEN 'l1_candidate_seed_after_overlay' THEN 0
-                WHEN 'final_selection' THEN 1
-                ELSE 3
-              END,
-              COALESCE(sfi.rank, 999999),
-              sfi.created_at DESC
-          ) AS stage_preference_rank
-        FROM screener_funnel_items sfi
-       WHERE sfi.run_id = (SELECT run_id FROM latest_screener_run)
-         AND (
-              (sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected')
-           OR (sfi.stage = 'final_selection' AND sfi.decision = 'selected')
-         )
-    )
-    SELECT symbol, name, rank, score_after, stage
-      FROM candidate_seed
-     WHERE stage_preference_rank = 1
-     ORDER BY COALESCE(rank, 999999), symbol
+    SELECT r.symbol, r.name, NULL rank, r.score_v2 score_after, r.selection_stage stage
+      FROM selection_reference_snapshots_v1 r
+     WHERE r.signal_date = ?
+       AND EXISTS (
+         SELECT 1 FROM canonical_run_heads h
+          WHERE h.logical_run_key = 'screener:' || r.signal_date
+            AND h.run_id = r.producer_run_id
+       )
+     ORDER BY r.symbol
      LIMIT ?
-  `).bind(tradeDate, cappedLimit).all<S12PipelineSeedSymbol>()
-
-  return (results ?? [])
-    .map((row) => ({
-      symbol: String(row.symbol ?? '').trim(),
-      name: row.name ?? null,
-      rank: row.rank ?? null,
-      score_after: row.score_after ?? null,
-      stage: row.stage ?? null,
-    }))
-    .filter((row) => row.symbol)
+  `).bind(tradeDate, cappedLimit + 1).all<S12PipelineSeedSymbol>()
+  return (results ?? []).map((row) => ({
+    symbol: String(row.symbol ?? '').trim(),
+    name: row.name ?? null,
+    rank: row.rank ?? null,
+    score_after: row.score_after ?? null,
+    stage: row.stage ?? null,
+  })).filter((row) => row.symbol)
 }
 
 export async function runS12CandidateStructureSnapshots(
@@ -141,7 +115,7 @@ export async function runS12CandidateStructureSnapshots(
     throw new Error(`s12_research_lease_busy:${tradeDate}`)
   }
   try {
-  const limit = positiveLimit(options.limit ?? (env as any).S12_PREPIPELINE_SNAPSHOT_LIMIT, 160)
+  const limit = Math.min(2000, positiveLimit(options.limit ?? (env as any).S12_PREPIPELINE_SNAPSHOT_LIMIT, 1000))
   const candidates = options.symbols ?? await loadS12PipelineSeedSymbolsByDate(env.DB, tradeDate, limit)
   const selected = candidates.slice(0, limit)
   const loadBars = options.loadBars ?? loadS12HistoricalReplayBars
@@ -205,11 +179,7 @@ export async function runS12CandidateStructureSnapshots(
         continue
       }
       const stockRow = await env.DB.prepare('SELECT market FROM stocks WHERE symbol = ? LIMIT 1').bind(row.symbol).first<{ market?: string | null }>()
-      const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
-        marketSegment: stockRow?.market ?? 'UNKNOWN',
-        asOfDate: tradeDate,
-      })
-      const assessment = assessS12IntradayStructureFromBaseBars({
+      const assess = (calibration: S12TwCalibrationArtifact | null) => assessS12IntradayStructureFromBaseBars({
         symbol: row.symbol,
         baseBars: loaded.bars,
         fallback15mBars: loaded.fallback15mBars,
@@ -226,6 +196,13 @@ export async function runS12CandidateStructureSnapshots(
         h4ReferenceDate: loaded.diagnostics.previous_daily_context_date ?? null,
         h4ReferenceClose: Number(loaded.diagnostics.previous_daily_raw_close ?? 0) || null,
       })
+      const preliminary = assess(null)
+      const calibration = resolveS12TwCalibrationArtifact(calibrationArtifacts, {
+        entryCohort: preliminary.state === 'limited_takeover_ready' ? 'limited_takeover_ready' : 'reaction_ready',
+        marketSegment: stockRow?.market ?? 'UNKNOWN',
+        asOfDate: tradeDate,
+      })
+      const assessment = calibration ? assess(calibration) : preliminary
       const ok = await persistS12StructureSnapshot(env, {
         tradeDate,
         symbol: row.symbol,

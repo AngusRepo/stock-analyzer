@@ -27,11 +27,16 @@ class MockDb {
   batches: Statement[][] = []
   firstHandler: (statement: Statement) => unknown = () => null
   allHandler: (statement: Statement) => unknown[] = () => []
+  batchHandler: (statements: Statement[]) => Array<{ success: boolean; error?: string }> =
+    (statements) => statements.map(() => ({ success: true }))
   queryMeta: Record<string, unknown> = { size_after: 1 }
   prepare(sql: string) { return new Statement(this, sql) }
   first(statement: Statement) { return this.firstHandler(statement) }
   all(statement: Statement) { return this.allHandler(statement) }
-  async batch(statements: Statement[]) { this.batches.push(statements); return statements.map(() => ({ success: true })) }
+  async batch(statements: Statement[]) {
+    this.batches.push(statements)
+    return this.batchHandler(statements)
+  }
 }
 
 class MockR2 {
@@ -191,6 +196,41 @@ async function testD1EvidenceScrubBatchesVerifiedRowsAtomically(): Promise<void>
   assert.equal(db.runs.length, 0)
 }
 
+async function testD1EvidenceScrubBisectsFailedBatchInsteadOfRetryingEveryRow(): Promise<void> {
+  const db = new MockDb()
+  db.allHandler = () => Array.from({ length: 25 }, (_, index) => ({
+    scrub_id: `scrub-${index}`,
+    artifact_id: `artifact-${index}`,
+    target_table: 'screener_funnel_items',
+    target_pk_column: 'id',
+    target_pk_value: String(index + 1),
+    target_column: 'evidence',
+    replacement_json: JSON.stringify({ artifact_id: `artifact-${index}` }),
+    artifact_status: 'ready',
+    checksum_verified_at: '2026-07-14T01:00:00Z',
+  }))
+  db.batchHandler = (statements) => {
+    const hasMalformedRow = statements.some(statement => statement.values.includes('13'))
+    if (hasMalformedRow) throw new Error('malformed legacy row')
+    return statements.map(() => ({ success: true }))
+  }
+
+  const result = await runD1EvidenceScrub({ DB: db as any }, { limit: 1000 })
+
+  assert.equal(result.candidates, 25)
+  assert.equal(result.scrubbed, 24)
+  assert.equal(result.failed, 1)
+  assert.equal(result.blocked, 0)
+  assert.match(result.errors[0], /scrub-12:malformed legacy row/)
+  assert.equal(db.runs.length, 1)
+  assert.ok(db.batches.length < 12, `expected binary isolation, got ${db.batches.length} batches`)
+  assert.equal(
+    db.batches.filter(batch => batch.length === 2).length,
+    1,
+    'only the isolated malformed row should require a singleton batch',
+  )
+}
+
 async function testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown(): Promise<void> {
   const healthyDb = new MockDb()
   healthyDb.queryMeta = { size_after: 7_000_000_000 }
@@ -246,6 +286,7 @@ async function main(): Promise<void> {
   await testHardReferenceEdgesAreReachabilitySourceOfTruth()
   await testRetentionSweepPreservesMetadataAfterPayloadDelete()
   await testD1EvidenceScrubBatchesVerifiedRowsAtomically()
+  await testD1EvidenceScrubBisectsFailedBatchInsteadOfRetryingEveryRow()
   await testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown()
   console.log('artifact lifecycle tests passed')
 }

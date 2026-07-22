@@ -276,15 +276,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     # 3c. ADL (Advance/Decline Line) ??瘥銝撞摰嗆 - 銝?摰嗆?敞蝛?
     # 敺撣 stock_prices 蝞?銝?鞈?market_risk 銵?
     adl_rows = d1_client.query(
-        "SELECT date, "
-        "  SUM(CASE WHEN close > prev_close THEN 1 ELSE 0 END) as advances, "
-        "  SUM(CASE WHEN close < prev_close THEN 1 ELSE 0 END) as declines "
-        "FROM ( "
-        "  SELECT sp.date, sp.close, "
-        "    LAG(sp.close) OVER (PARTITION BY sp.stock_id ORDER BY sp.date) as prev_close "
-        "  FROM stock_prices sp "
-        ") WHERE prev_close IS NOT NULL AND date <= ? "
-        "GROUP BY date ORDER BY date ASC",
+        "SELECT date, advance_count AS advances, decline_count AS declines "
+        "FROM market_breadth WHERE date <= ? ORDER BY date ASC",
         [run_date],
     )
     # 蝝舐? ADL + 5d trend + advance_ratio
@@ -315,12 +308,10 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     # bull_alignment = % of stocks where MA5 > MA20 (proxy for MA5>10>20>60 requires more data)
     # limit_down = stocks hitting -10% daily limit
     breadth_rows = d1_client.query(
-        "SELECT sp.date, "
-        "  COUNT(*) as total, "
-        "  SUM(CASE WHEN sp.close >= sp.open * 0.9 AND sp.close <= sp.open * 0.905 THEN 1 ELSE 0 END) as limit_down_count "
-        "FROM stock_prices sp "
-        "WHERE sp.date >= '2023-01-01' AND sp.date <= ? "
-        "GROUP BY sp.date ORDER BY sp.date ASC",
+        "SELECT date, "
+        "  COALESCE(sample_size, advance_count + decline_count + unchanged_count) AS total, "
+        "  COALESCE(limit_down_count, 0) AS limit_down_count "
+        "FROM market_breadth WHERE date >= '2023-01-01' AND date <= ? ORDER BY date ASC",
         [run_date],
     )
     breadth_by_date: dict[str, tuple[float, float]] = {}  # {date: (limit_down_count, limit_down_pct)}

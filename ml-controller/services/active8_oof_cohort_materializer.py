@@ -24,6 +24,11 @@ from services.s12_trade_ev_bootstrap import S12TradeEvBootstrapProvider
 from services.model_artifact_registry import upsert_artifact_record
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
 from services.fundamental_quality import score_fundamental_quality
+from services.fusion_market_context import (
+    context_for_market_segment,
+    merge_market_context,
+    recorded_market_context,
+)
 
 TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
@@ -513,6 +518,7 @@ def build_oof_snapshot_rows(
     source_manifest_checksum: str,
     s12_provider_factory: Callable[[str], S12TradeEvBootstrapProvider] | None = None,
     fundamental_quality_by_key: dict[tuple[str, str], dict[str, Any]] | None = None,
+    market_context_by_date: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     stack_rows, stack_evidence = build_chronological_oof_stack(prediction_rows)
     native_by_key = {
@@ -524,7 +530,9 @@ def build_oof_snapshot_rows(
     )
     providers: dict[str, S12TradeEvBootstrapProvider] = {}
     fundamental_quality_by_key = fundamental_quality_by_key or {}
+    market_context_by_date = market_context_by_date or {}
     fundamental_pit_rows = 0
+    market_context_rows = 0
     snapshots: list[dict[str, Any]] = []
     rejected = defaultdict(int)
     for stacked in stack_rows:
@@ -569,6 +577,22 @@ def build_oof_snapshot_rows(
             "model_set_signature": signature,
             "stacker_source": stacked["stacker_source"],
         }
+        signal_date = stacked["prediction_date"]
+        recorded_context = recorded_market_context(native, signal_date=signal_date)
+        reconstructed_context = context_for_market_segment(
+            market_context_by_date,
+            signal_date=signal_date,
+            market_segment=stacked["market_segment"],
+        )
+        market_context = merge_market_context(
+            recorded_context,
+            reconstructed_context,
+            signal_date=signal_date,
+        )
+        if market_context.get("market_context_available"):
+            market_context_rows += 1
+        alpha_context = _loads(native.get("alpha_context"))
+        alpha_context["market_regime_context"] = market_context
         candidate = {
             **native,
             "symbol": stacked["symbol"],
@@ -576,6 +600,7 @@ def build_oof_snapshot_rows(
             "prediction_date": stacked["prediction_date"],
             "score_components": score_payload,
             "forecast_data": forecast,
+            "alpha_context": alpha_context,
         }
         if stacked["prediction_date"] not in providers:
             providers[stacked["prediction_date"]] = provider_factory(stacked["prediction_date"])
@@ -594,7 +619,7 @@ def build_oof_snapshot_rows(
             "forecast_data": json.dumps(forecast, sort_keys=True),
             "score": score_payload["finalScore"],
             "score_components": json.dumps(score_payload, sort_keys=True),
-            "alpha_context": native.get("alpha_context") or "{}",
+            "alpha_context": json.dumps(alpha_context, sort_keys=True),
             "alpha_allocation": json.dumps(allocation, sort_keys=True),
             "market_heat_expected_return": native.get("market_heat_expected_return"),
             "recommendation_lane": native.get("recommendation_lane"),
@@ -616,6 +641,8 @@ def build_oof_snapshot_rows(
         "snapshot_dates": len({row["snapshot_date"] for row in snapshots}),
         "fundamental_pit_rows": fundamental_pit_rows,
         "fundamental_pit_coverage": round(fundamental_pit_rows / max(1, len(snapshots)), 6),
+        "market_context_rows": market_context_rows,
+        "market_context_coverage": round(market_context_rows / max(1, len(snapshots)), 6),
         "rejected": dict(sorted(rejected.items())),
     }
 

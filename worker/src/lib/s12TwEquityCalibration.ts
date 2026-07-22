@@ -7,8 +7,11 @@ import { S12_REPLAY_ENGINE_SIGNATURE } from './s12ReplayContract'
 
 export type S12TwCalibrationCadence = 'weekly' | 'monthly' | 'regime_shift'
 
+export type S12TwEntryCohort = 'reaction_ready' | 'limited_takeover_ready' | 'legacy_mixed'
+
 export interface S12TwCalibrationScope {
   marketSegment: string
+  entryCohort: S12TwEntryCohort
   alphaBucket: string | null
   entryTimeBucket: 'opening' | 'mid_session' | 'close_window' | null
 }
@@ -41,6 +44,7 @@ interface CalibrationEvidence {
   symbol: string
   tradeDate: string
   marketSegment: string
+  entryCohort: Exclude<S12TwEntryCohort, 'legacy_mixed'>
   alphaBucket: string | null
   entryTimeBucket: S12TwCalibrationScope['entryTimeBucket']
   pnlR: number
@@ -61,6 +65,7 @@ interface ArtifactRow {
   status: string
   cadence: string
   market_segment: string
+  entry_cohort: string
   alpha_bucket: string | null
   entry_time_bucket: string | null
   policy_json: string
@@ -91,6 +96,7 @@ const TABLE_DDL = [
     status TEXT NOT NULL,
     cadence TEXT NOT NULL,
     market_segment TEXT NOT NULL,
+    entry_cohort TEXT NOT NULL DEFAULT 'legacy_mixed',
     alpha_bucket TEXT,
     entry_time_bucket TEXT,
     policy_json TEXT NOT NULL,
@@ -105,7 +111,7 @@ const TABLE_DDL = [
     superseded_at TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_s12_tw_calibration_active
-     ON s12_tw_calibration_artifacts(status, superseded_at, market_segment, alpha_bucket, entry_time_bucket, approved_at DESC)`,
+     ON s12_tw_calibration_artifacts(status, superseded_at, entry_cohort, market_segment, alpha_bucket, entry_time_bucket, approved_at DESC)`,
 ]
 
 function finite(value: unknown): number | null {
@@ -175,7 +181,7 @@ function maxDrawdownR(rows: CalibrationEvidence[]): number {
 }
 
 function scopeKey(scope: S12TwCalibrationScope): string {
-  return [scope.marketSegment, scope.alphaBucket ?? '*', scope.entryTimeBucket ?? '*'].join('|')
+  return [scope.entryCohort, scope.marketSegment, scope.alphaBucket ?? '*', scope.entryTimeBucket ?? '*'].join('|')
 }
 
 function normalizeScope(value: Partial<S12TwCalibrationScope>): S12TwCalibrationScope {
@@ -185,8 +191,13 @@ function normalizeScope(value: Partial<S12TwCalibrationScope>): S12TwCalibration
     : ['TPEX', 'OTC'].includes(rawMarket)
       ? 'OTC'
       : rawMarket || 'UNKNOWN'
+  const rawCohort = String(value.entryCohort ?? '').trim().toLowerCase()
+  const entryCohort: S12TwEntryCohort = rawCohort === 'reaction_ready' || rawCohort === 'limited_takeover_ready'
+    ? rawCohort
+    : 'legacy_mixed'
   return {
     marketSegment,
+    entryCohort,
     alphaBucket: String(value.alphaBucket ?? '').trim() || null,
     entryTimeBucket: ['opening', 'mid_session', 'close_window'].includes(String(value.entryTimeBucket ?? ''))
       ? value.entryTimeBucket as S12TwCalibrationScope['entryTimeBucket']
@@ -202,6 +213,7 @@ function artifactFromRow(row: ArtifactRow): S12TwCalibrationArtifact {
     cadence: row.cadence as S12TwCalibrationCadence,
     scope: normalizeScope({
       marketSegment: row.market_segment,
+      entryCohort: row.entry_cohort as S12TwEntryCohort,
       alphaBucket: row.alpha_bucket,
       entryTimeBucket: row.entry_time_bucket as S12TwCalibrationScope['entryTimeBucket'],
     }),
@@ -232,7 +244,7 @@ export async function listApprovedS12TwCalibrationArtifacts(
 ): Promise<S12TwCalibrationArtifact[]> {
   await ensureS12TwCalibrationTables(db)
   const { results } = await db.prepare(`
-    SELECT artifact_id, run_id, status, cadence, market_segment, alpha_bucket, entry_time_bucket,
+    SELECT artifact_id, run_id, status, cadence, market_segment, entry_cohort, alpha_bucket, entry_time_bucket,
            policy_json, exit_json, validation_start, validation_end, sample_count, date_count,
            metrics_json, created_at, approved_at
      FROM s12_tw_calibration_artifacts
@@ -255,11 +267,13 @@ export function resolveS12TwCalibrationArtifact(
   artifacts: S12TwCalibrationArtifact[],
   requested: Partial<S12TwCalibrationScope> & { asOfDate?: string | null },
 ): S12TwCalibrationArtifact | null {
+  const requestedCohort = String(requested.entryCohort ?? '').trim()
+  if (requestedCohort !== 'reaction_ready' && requestedCohort !== 'limited_takeover_ready') return null
   const scope = normalizeScope(requested)
   const keys = [
     scopeKey(scope),
     scopeKey({ ...scope, entryTimeBucket: null }),
-    scopeKey({ marketSegment: scope.marketSegment, alphaBucket: null, entryTimeBucket: null }),
+    scopeKey({ entryCohort: scope.entryCohort, marketSegment: scope.marketSegment, alphaBucket: null, entryTimeBucket: null }),
   ]
   const asOfDate = String(requested.asOfDate ?? '').trim()
   const eligible = artifacts.filter((row) => (
@@ -278,6 +292,13 @@ export function resolveS12TwCalibrationArtifact(
   return null
 }
 
+export function s12TwEntryCohortFromState(value: unknown): Exclude<S12TwEntryCohort, 'legacy_mixed'> | undefined {
+  const state = String(value ?? '').trim().toLowerCase()
+  if (state === 'limited_takeover_ready') return 'limited_takeover_ready'
+  if (state === 'reaction_ready') return 'reaction_ready'
+  return undefined
+}
+
 export function applyS12TwCalibrationArtifact(
   base: Partial<S12TimingPolicy> | null | undefined,
   artifact: S12TwCalibrationArtifact | null,
@@ -290,7 +311,7 @@ export function applyS12TwCalibrationArtifact(
 
 async function loadEvidence(db: D1Database, startDate: string, endDate: string): Promise<CalibrationEvidence[]> {
   const { results } = await db.prepare(`
-    SELECT o.symbol, o.trade_date,
+    SELECT o.symbol, o.trade_date, o.assessment_state,
            COALESCE(NULLIF(TRIM(o.market), ''), s.market, 'UNKNOWN') AS market,
            o.entry_ms, o.entry_price, o.stop_price, o.trade_pnl_r,
            o.max_favorable_pct, o.max_adverse_pct, o.detail_json
@@ -314,10 +335,13 @@ async function loadEvidence(db: D1Database, startDate: string, endDate: string):
     const atr = finite(detailValue(assessmentDetail, 'atr15m'))
     const pnlR = finite(row.trade_pnl_r)
     if (pnlR == null) continue
+    const entryCohort = String(row.assessment_state ?? payload.assessment_state ?? '').trim().toLowerCase()
+    if (entryCohort !== 'reaction_ready' && entryCohort !== 'limited_takeover_ready') continue
     evidence.push({
       symbol: String(row.symbol ?? ''),
       tradeDate: String(row.trade_date ?? ''),
-      marketSegment: normalizeScope({ marketSegment: String(payload.market_segment ?? row.market ?? 'UNKNOWN') }).marketSegment,
+      marketSegment: normalizeScope({ marketSegment: String(payload.market_segment ?? row.market ?? 'UNKNOWN'), entryCohort }).marketSegment,
+      entryCohort,
       alphaBucket: String(payload.alpha_bucket ?? '').trim() || null,
       entryTimeBucket: timeBucket(row.entry_ms),
       pnlR,
@@ -423,7 +447,7 @@ function buildArtifactCandidate(
   const tp2Mfe = Math.max(tp1Mfe, Math.min(0.8, quantile(profitable.map((row) => row.mfePct), 0.75) ?? tp1Mfe))
   const stopMae = Math.max(0, Math.min(0.25, quantile(train.filter((row) => row.pnlR > 0).map((row) => row.maePct), 0.8) ?? 0))
   return {
-    artifactId: `s12-tw-v2-${cadence}-${scopeKey(scope).replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${validationEnd}`,
+    artifactId: `s12-tw-v3-${cadence}-${scopeKey(scope).replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${validationEnd}`,
     runId,
     status: approved ? 'approved' : 'rejected',
     cadence,
@@ -507,9 +531,9 @@ export async function runS12TwCalibration(
     grouped.set(key, group)
   }
   for (const row of evidence) {
-    append({ marketSegment: row.marketSegment, alphaBucket: null, entryTimeBucket: null }, row)
-    if (row.alphaBucket) append({ marketSegment: row.marketSegment, alphaBucket: row.alphaBucket, entryTimeBucket: null }, row)
-    if (row.alphaBucket && row.entryTimeBucket) append({ marketSegment: row.marketSegment, alphaBucket: row.alphaBucket, entryTimeBucket: row.entryTimeBucket }, row)
+    append({ entryCohort: row.entryCohort, marketSegment: row.marketSegment, alphaBucket: null, entryTimeBucket: null }, row)
+    if (row.alphaBucket) append({ entryCohort: row.entryCohort, marketSegment: row.marketSegment, alphaBucket: row.alphaBucket, entryTimeBucket: null }, row)
+    if (row.alphaBucket && row.entryTimeBucket) append({ entryCohort: row.entryCohort, marketSegment: row.marketSegment, alphaBucket: row.alphaBucket, entryTimeBucket: row.entryTimeBucket }, row)
   }
   const runId = `s12-tw-calibration-${cadence}-${options.runDate}`
   const artifacts = [...grouped.values()]
@@ -535,21 +559,23 @@ export async function runS12TwCalibration(
          WHERE status = 'approved'
            AND superseded_at IS NULL
            AND market_segment = ?
+           AND entry_cohort = ?
            AND COALESCE(alpha_bucket, '') = COALESCE(?, '')
            AND COALESCE(entry_time_bucket, '') = COALESCE(?, '')
-      `).bind(artifact.createdAt, artifact.scope.marketSegment, artifact.scope.alphaBucket, artifact.scope.entryTimeBucket).run()
+      `).bind(artifact.createdAt, artifact.scope.marketSegment, artifact.scope.entryCohort, artifact.scope.alphaBucket, artifact.scope.entryTimeBucket).run()
       await db.prepare(`
         INSERT OR REPLACE INTO s12_tw_calibration_artifacts (
-          artifact_id, run_id, status, cadence, market_segment, alpha_bucket, entry_time_bucket,
+          artifact_id, run_id, status, cadence, market_segment, entry_cohort, alpha_bucket, entry_time_bucket,
           policy_json, exit_json, validation_start, validation_end, sample_count, date_count,
           metrics_json, created_at, approved_at, superseded_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
       `).bind(
         artifact.artifactId,
         artifact.runId,
         artifact.status,
         artifact.cadence,
         artifact.scope.marketSegment,
+        artifact.scope.entryCohort,
         artifact.scope.alphaBucket,
         artifact.scope.entryTimeBucket,
         JSON.stringify(artifact.policy),

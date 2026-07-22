@@ -3,8 +3,16 @@ import { runVerifyV2 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
 import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
 import type { LegacyHotDataTarget } from './legacyHotDataRetirement'
+import { runWithMaintenanceLease, summarizeMaintenanceLeaseResult } from './maintenanceLease'
 
 const RESCORE_CRONS = new Set(['0 2 * * 1-5', '0 3 * * 1-5', '0 4 * * 1-5', '30 4 * * 1-5'])
+const D1_HEAVY_MAINTENANCE_TASKS = new Set([
+  'debate-memory-retention', 'audit-json-retention', 'artifact-reconcile',
+  'legacy-evidence-migration', 'legacy-strategy-evidence-migration',
+  'legacy-hot-data-retirement', 'd1-evidence-scrub', 'r2-retention-sweep',
+  'orphan-reachability-gc', 'cleanup-dlq-replay', 'weekly-cleanup',
+  'price-horizon-projection',
+])
 
 type WarmupSummary = {
   ok: boolean
@@ -247,7 +255,7 @@ async function enqueueStrategyLearningMaterialization(c: any, runDate?: string):
 export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record<string, TaskHandler> {
   const requestedRunDate = () => c.req.query('date') || undefined
 
-  return {
+  const tasks: Record<string, TaskHandler> = {
     'market-close-refresh': () => deps.runMarketCloseRefresh(!!c.req.query('force'), requestedRunDate()),
     'evening-chain': () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     screener: () => deps.runMarketScreener(requestedRunDate()),
@@ -571,6 +579,18 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       if (result.blocked) throw new Error(`cleanup dlq remains blocked ${JSON.stringify(result)}`)
       return `cleanup_dlq_replay candidates=${result.candidates} resolved=${result.resolved}`
     },
+    'price-horizon-projection': async () => {
+      const { materializePriceHorizonLabels } = await import('./priceHorizonProjection')
+      const endDate = c.req.query('end_date') || requestedRunDate() || twToday()
+      const result = await materializePriceHorizonLabels(c.env, {
+        startDate: c.req.query('start_date') || undefined,
+        endDate,
+        outcomeAsOfDate: c.req.query('outcome_as_of_date') || twToday(),
+        maxSignalDates: parseBoundedPositiveInt(c.req.query('max_signal_dates'), 60, 260),
+        force: c.req.query('force') === '1',
+      })
+      return result.summary
+    },
     'storage-health-gate': async () => {
       const { runStorageHealthGate } = await import('./artifactLifecycle')
       const result = await runStorageHealthGate(c.env)
@@ -656,4 +676,17 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     'neural-ts-shadow': () => runNeuralShadowTask(c, 'NeuralTS', requestedRunDate()),
     'neucb-shadow': () => runNeuralShadowTask(c, 'NeuCB', requestedRunDate()),
   }
+  for (const taskName of D1_HEAVY_MAINTENANCE_TASKS) {
+    const handler = tasks[taskName]
+    if (!handler) continue
+    tasks[taskName] = async () => summarizeMaintenanceLeaseResult(
+      await runWithMaintenanceLease(c.env.DB, {
+        taskName,
+        leaseGroup: 'd1_heavy_maintenance',
+        leaseSeconds: 3600,
+        run: handler,
+      }),
+    )
+  }
+  return tasks
 }

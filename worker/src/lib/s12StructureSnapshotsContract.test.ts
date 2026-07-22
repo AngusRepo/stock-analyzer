@@ -17,7 +17,7 @@ assert(migration.includes('idx_s12_structure_snapshots_date_symbol'), 'migration
 assert(helper.includes('ON CONFLICT(trade_date, symbol, source) DO UPDATE SET'), 'snapshot helper must upsert latest structure')
 assert(entryTasks.includes("source: 's12_intraday_structure'"), 'entry sidecar must persist S12 structure snapshots')
 assert(exitTasks.includes("source: 's12_holding_defense'"), 'holding defense must persist S12 structure snapshots')
-assert(candidateProducer.includes("sfi.stage = 'l1_candidate_seed_after_overlay' AND sfi.decision = 'selected'"), 'candidate snapshot producer must use L1.5 production slate')
+assert(candidateProducer.includes('selection_reference_snapshots_v1'), 'candidate snapshot producer must use the canonical L0 reference universe')
 assert(candidateProducer.includes("options.source ?? 's12_candidate_snapshot'"), 'candidate snapshot producer must default to the native distinct source')
 assert(candidateProducer.includes("'s12_candidate_snapshot_reconstruction'"), 'historical reconstruction must preserve a distinct source')
 assert(candidateProducer.includes('S12_PREPIPELINE_SNAPSHOT_LIMIT'), 'candidate snapshot producer must expose a bounded pre-pipeline limit')
@@ -88,9 +88,10 @@ async function runBehaviorTests(): Promise<void> {
   const symbols = await loadS12PipelineSeedSymbolsByDate(fakeDb, '2026-07-07', 160)
   assert.equal(symbols.length, 1)
   assert.equal(symbols[0].symbol, '8091')
-  assert.match(queries[0].sql, /sfi\.stage = 'l1_candidate_seed_after_overlay' AND sfi\.decision = 'selected'/)
+  assert.match(queries[0].sql, /selection_reference_snapshots_v1/)
+  assert.match(queries[0].sql, /canonical_run_heads/)
   assert.equal(queries[0].binds[0], '2026-07-07')
-  assert.equal(queries[0].binds[1], 160)
+  assert.equal(queries[0].binds[1], 161)
 
   let writeCount = 0
   let writeSql = ''

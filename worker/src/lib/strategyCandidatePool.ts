@@ -233,6 +233,7 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
   sourceUniverseCount: number
   breadthPool: T[]
   coarseQueue: T[]
+  l0Annotated: T[]
   researchOnlyQueue: T[]
   selection: StrategyCandidateSelection<T>
   telemetry: {
@@ -1467,6 +1468,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     sourceUniverseCount: featureEnrichedUniverse.length,
     breadthPool,
     coarseQueue: formalCoarseQueue,
+    l0Annotated: routerPlan.l0Annotated,
     researchOnlyQueue: selection.researchOnlyQueue,
     selection,
     telemetry: {

@@ -43,6 +43,10 @@ const SCREENER_ARTIFACT_CHUNK_TARGET_BYTES = 1536 * 1024
 const SCREENER_ARTIFACT_CHUNK_SCHEMA = 'screener-funnel-evidence-chunk-v1'
 const SCREENER_ARTIFACT_INDEX_SCHEMA = 'screener-funnel-evidence-index-v1'
 const SCREENER_ARTIFACT_CHUNK_DOMAIN = 'screener_funnel_chunk'
+const SCREENER_ARTIFACT_LOGICAL_SCHEMAS = new Set([
+  'screener-funnel-evidence-v2',
+  'screener-funnel-evidence-v3',
+])
 
 function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength
@@ -269,7 +273,7 @@ export class RestEvidenceArtifactWriter implements EvidenceArtifactWriter {
 
   async write(input: EvidenceArtifactWriteInput): Promise<EvidenceArtifactManifest> {
     const items = input.domain === 'screener_funnel'
-      && input.schemaVersion === 'screener-funnel-evidence-v2'
+      && SCREENER_ARTIFACT_LOGICAL_SCHEMAS.has(input.schemaVersion)
       && Array.isArray(input.payload?.items)
       ? input.payload.items
       : null

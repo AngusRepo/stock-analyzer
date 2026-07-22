@@ -9,10 +9,12 @@ const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf
 const controllerDailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
 const modelPoolRouter = fs.readFileSync('../ml-controller/routers/model_pool.py', 'utf8')
+const pipelineStageLease = fs.readFileSync('src/lib/pipelineStageLease.ts', 'utf8')
 
 assert(
   adminControlRoutes.includes('const callbackRunDate') &&
-    adminControlRoutes.includes("type: 'post_verify_chain'") &&
+    adminControlRoutes.includes('queuePostVerifyStage') &&
+    pipelineStageLease.includes("stage: 'post_verify_chain'") &&
     updateOrchestrator.includes("if (msg.type === 'post_verify_chain')") &&
     updateOrchestrator.includes('runPostVerifyCallbackChain'),
   'verify-v2 scheduler callback must durably delegate rolling IC refresh to post-verify chain',

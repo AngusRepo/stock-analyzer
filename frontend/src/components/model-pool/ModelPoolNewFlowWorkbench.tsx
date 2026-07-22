@@ -127,7 +127,9 @@ type SelectedArtifactRow = NonNullable<SelectionModelRow['monthly_release_candid
 type PromotionQueueRow = ModelArtifactPromotionQueueResponse['queue'][number]
 
 function isServing(model?: ModelPoolLineageModel): boolean {
-  return model?.status === 'active' || model?.status === 'degraded'
+  return (model?.status === 'active' || model?.status === 'degraded')
+    && !model.serving_block_reason
+    && Boolean(model.serving_owner || model.serving_artifact_id)
 }
 
 function toneFromStatus(status?: string | null): WorkstationTone {
@@ -863,6 +865,7 @@ function buildGrafanaRecord({
   const pointerOk = pointerReady(pointerRow)
   const queueTone = promotionPressureTone(promotionRows)
   const blockers = uniqueTokens([
+    ...(model?.serving_block_reason ? [model.serving_block_reason] : []),
     ...(!artifactOk ? ['artifact_missing'] : []),
     ...(!pointerOk ? ['champion_pointer_not_ready'] : []),
     ...promotionRows.flatMap((row) => (row.blockers ?? []).map((blocker) => (

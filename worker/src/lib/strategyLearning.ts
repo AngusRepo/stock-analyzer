@@ -37,7 +37,7 @@ import {
   type StrategyThresholdCalibrationCadence,
 } from './strategyThresholdCalibration'
 
-export const STRATEGY_LEARNING_VERSION = 'strategy-learning-v1'
+export const STRATEGY_LEARNING_VERSION = 'strategy-learning-v4'
 
 export interface StrategySpecRegistryRow {
   strategy_id: string
@@ -92,8 +92,10 @@ export interface StrategyRewardSourceRow {
   alpha_bucket: string
   market_segment?: string | null
   alpha_context?: string | null
-  trade_pnl_pct?: number | string | null
-  actual_return_pct?: number | string | null
+  absolute_return_net?: number | string | null
+  residual_return_net?: number | string | null
+  cross_section_rank?: number | string | null
+  benchmark_scope?: string | null
 }
 
 export interface StrategyRewardLedgerRow {
@@ -878,77 +880,61 @@ export async function listStrategyLearningCandidates(
   db: D1Database,
   date: string,
   limit = STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT,
-  offset = 0,
+  afterSymbol = '',
 ): Promise<StrategyCandidateInput[]> {
   const safeLimit = Math.max(1, Math.min(Math.floor(limit), 2000))
-  const safeOffset = Math.max(0, Math.floor(offset))
+  const safeAfterSymbol = cleanToken(afterSymbol)
   const { results } = await db.prepare(`
-    WITH latest_run AS (
-      SELECT COALESCE(
-        (
-          SELECT h.run_id
-            FROM canonical_run_heads h
-            JOIN pipeline_runs p ON p.run_id = h.run_id AND p.status = 'canonical'
-           WHERE h.logical_run_key = ?
-           LIMIT 1
-        ),
-        (
-          SELECT run_id
-            FROM screener_funnel_runs
-           WHERE date = ? AND status = 'success'
-           ORDER BY created_at DESC
-           LIMIT 1
-        )
-      ) AS run_id
+    WITH canonical_reference AS (
+      SELECT r.signal_date, r.symbol, r.producer_run_id, r.name, r.sector,
+             r.market_segment, r.score_components
+        FROM selection_reference_snapshots_v1 r
+       WHERE r.signal_date=?
+         AND r.hard_gate_passed=1
+         AND r.symbol>?
+         AND EXISTS (
+           SELECT 1
+             FROM canonical_run_heads h
+            WHERE h.logical_run_key='screener:' || r.signal_date
+              AND h.run_id=r.producer_run_id
+         )
     ),
     funnel_candidates AS (
-      SELECT symbol, name, stage, evidence, score_after, rank,
+      SELECT i.symbol, i.name, i.stage, i.evidence, i.score_after, i.rank,
              ROW_NUMBER() OVER (
-               PARTITION BY symbol
+               PARTITION BY i.symbol
                ORDER BY
-                 CASE stage
+                 CASE i.stage
                    WHEN 'scoring' THEN 1
                    WHEN 'layer1_strategy_breadth_gate' THEN 2
                    WHEN 'l1_candidate_seed_after_overlay' THEN 3
                    WHEN 'final_selection' THEN 4
                    ELSE 4
                  END,
-                 COALESCE(rank, 999999) ASC
+                 COALESCE(i.rank, 999999) ASC
              ) AS row_rank
-       FROM screener_funnel_items
-       WHERE run_id = (SELECT run_id FROM latest_run)
-         AND (
-           (stage = 'scoring' AND decision = 'pass')
-           OR (stage = 'layer1_strategy_breadth_gate' AND decision = 'pass')
-           OR (stage = 'l1_candidate_seed_after_overlay' AND decision = 'selected')
-           OR (stage = 'final_selection' AND decision = 'selected')
-         )
+        FROM screener_funnel_items i
+        JOIN canonical_reference r
+          ON r.producer_run_id=i.run_id AND r.symbol=i.symbol
     )
-    SELECT fc.symbol,
-           COALESCE(dr.name, fc.name) AS name,
-           dr.sector,
+    SELECT r.symbol,
+           COALESCE(dr.name, r.name, fc.name) AS name,
+           COALESCE(dr.sector, r.sector) AS sector,
            dr.industry,
-           dr.score_components,
+           COALESCE(dr.score_components, r.score_components) AS score_components,
            dr.current_price,
            fc.evidence AS funnel_evidence,
            fc.score_after AS funnel_score,
            fc.rank AS funnel_rank
-      FROM funnel_candidates fc
+      FROM canonical_reference r
+      LEFT JOIN funnel_candidates fc
+        ON fc.symbol=r.symbol AND fc.row_rank=1
       LEFT JOIN daily_recommendations dr
         ON dr.date = ?
-       AND dr.symbol = fc.symbol
-     WHERE fc.row_rank = 1
-     ORDER BY COALESCE(fc.rank, 999999) ASC,
-       CASE WHEN json_valid(score_components) THEN
-         COALESCE(
-           CAST(json_extract(score_components, '$.finalScore') AS REAL),
-           CAST(json_extract(score_components, '$.total') AS REAL),
-           0
-         ) ELSE 0 END DESC,
-       fc.symbol ASC
+       AND dr.symbol = r.symbol
+     ORDER BY r.symbol ASC
      LIMIT ?
-     OFFSET ?
-  `).bind(`screener:${date}:TW:production:market_screener`, date, date, safeLimit, safeOffset).all<StrategyCandidateInput & {
+  `).bind(date, safeAfterSymbol, date, safeLimit).all<StrategyCandidateInput & {
     score_components?: unknown
     funnel_evidence?: string | null
     funnel_score?: number | null
@@ -1151,12 +1137,23 @@ export async function persistStrategyDecisionRows(
     await db.batch(contextStatements.slice(i, i + STRATEGY_LEARNING_D1_BATCH_SIZE))
   }
   const statements = persistedRows.map((row) => db.prepare(`
-    INSERT OR REPLACE INTO strategy_decision_log (
+    INSERT INTO strategy_decision_log (
       decision_id, date, symbol, name, strategy_id, strategy_version,
       strategy_status, alpha_bucket, matched, match_score, reason_code,
       context_json, evidence_json, created_at, context_id, evidence_artifact_id
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(date, symbol, strategy_id, strategy_version) DO UPDATE SET
+      name=excluded.name,
+      strategy_status=excluded.strategy_status,
+      alpha_bucket=excluded.alpha_bucket,
+      matched=excluded.matched,
+      match_score=excluded.match_score,
+      reason_code=excluded.reason_code,
+      context_json=excluded.context_json,
+      evidence_json=excluded.evidence_json,
+      context_id=excluded.context_id,
+      evidence_artifact_id=excluded.evidence_artifact_id
   `).bind(
     row.decision_id,
     row.date,
@@ -1221,9 +1218,7 @@ export async function materializeStrategyDecisionLog(
 }
 
 function rewardForRow(row: StrategyRewardSourceRow): number | null {
-  const trade = finiteNumber(row.trade_pnl_pct)
-  if (trade != null) return trade
-  return finiteNumber(row.actual_return_pct)
+  return finiteNumber(row.residual_return_net)
 }
 
 function maxDrawdown(values: number[]): number | null {
@@ -1273,7 +1268,7 @@ export function buildStrategyRewardLedgerRows(
     const avgReturn = rewards.length ? rewardSum / rewards.length : null
     const evidence = {
       version: STRATEGY_LEARNING_VERSION,
-      reward_source: 'prediction_trade_pnl_pct_or_actual_return_pct',
+      reward_source: 'canonical_selection_labels_v4.residual_return_net',
       sample_symbols_preview: [...bucket.symbols].sort().slice(0, 20),
       date_start: dates[0] ?? null,
       date_end: dates.at(-1) ?? null,
@@ -1305,43 +1300,69 @@ export async function listStrategyRewardSourceRows(
   db: D1Database,
   options: { startDate?: string; endDate?: string; limit?: number } = {},
 ): Promise<StrategyRewardSourceRow[]> {
-  const limit = Math.max(1, Math.min(options.limit ?? 5000, 20000))
-  const clauses = ['l.matched = 1', "(p.trade_pnl_pct IS NOT NULL OR p.actual_return_pct IS NOT NULL)", "p.model_name = 'ensemble'"]
-  const binds: unknown[] = []
-  if (options.startDate) {
-    clauses.push('l.date >= ?')
-    binds.push(options.startDate)
+  const pageSize = Math.max(1, Math.min(options.limit ?? 1000, 5000))
+  const rows: StrategyRewardSourceRow[] = []
+  let cursorDate = ''
+  let cursorStrategyId = ''
+  let cursorSymbol = ''
+  let cursorStrategyVersion = ''
+  for (;;) {
+    const clauses = [
+      'm.strategy_hit = 1',
+      "l.label_schema_version = 'canonical-strategy-selection-label-v4'",
+      "EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || m.signal_date AND h.run_id = m.producer_run_id)",
+      `(
+        m.signal_date > ?
+        OR (m.signal_date = ? AND m.strategy_id > ?)
+        OR (m.signal_date = ? AND m.strategy_id = ? AND m.symbol > ?)
+        OR (m.signal_date = ? AND m.strategy_id = ? AND m.symbol = ? AND m.strategy_version > ?)
+      )`,
+    ]
+    const binds: unknown[] = [
+      cursorDate,
+      cursorDate, cursorStrategyId,
+      cursorDate, cursorStrategyId, cursorSymbol,
+      cursorDate, cursorStrategyId, cursorSymbol, cursorStrategyVersion,
+    ]
+    if (options.startDate) { clauses.push('m.signal_date >= ?'); binds.push(options.startDate) }
+    if (options.endDate) { clauses.push('m.signal_date <= ?'); binds.push(options.endDate) }
+    binds.push(pageSize)
+    const page = await db.prepare(`
+      SELECT m.signal_date date,
+             m.symbol,
+             m.strategy_id,
+             m.strategy_version,
+             m.strategy_status,
+             m.alpha_bucket,
+             r.market_segment,
+             NULL alpha_context,
+             l.absolute_return_net,
+             l.residual_return_net,
+             l.cross_section_rank,
+             l.benchmark_scope
+        FROM strategy_label_matrix_v4 m
+        JOIN selection_reference_snapshots_v1 r
+          ON r.signal_date = m.signal_date
+         AND r.symbol = m.symbol
+         AND r.producer_run_id = m.producer_run_id
+        JOIN canonical_selection_labels_v4 l
+          ON l.signal_date = m.signal_date
+         AND l.symbol = m.symbol
+         AND l.producer_run_id = m.producer_run_id
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY m.signal_date, m.strategy_id, m.symbol, m.strategy_version
+       LIMIT ?
+    `).bind(...binds).all<StrategyRewardSourceRow>()
+    const pageRows = page.results ?? []
+    rows.push(...pageRows)
+    if (pageRows.length < pageSize) break
+    const last = pageRows.at(-1)!
+    cursorDate = last.date
+    cursorStrategyId = last.strategy_id
+    cursorSymbol = last.symbol
+    cursorStrategyVersion = last.strategy_version
   }
-  if (options.endDate) {
-    clauses.push('l.date <= ?')
-    binds.push(options.endDate)
-  }
-  binds.push(limit)
-  const { results } = await db.prepare(`
-    SELECT l.date,
-           l.symbol,
-           l.strategy_id,
-           l.strategy_version,
-           l.strategy_status,
-           l.alpha_bucket,
-           dr.market_segment,
-           dr.alpha_context,
-           p.trade_pnl_pct,
-           p.actual_return_pct
-      FROM strategy_decision_log l
-      JOIN daily_recommendations dr
-        ON dr.date = l.date
-       AND dr.symbol = l.symbol
-      JOIN stocks s
-        ON s.symbol = l.symbol
-      JOIN predictions p
-        ON p.stock_id = s.id
-       AND p.prediction_date = l.date
-     WHERE ${clauses.join(' AND ')}
-     ORDER BY l.date DESC, l.strategy_id ASC
-     LIMIT ?
-  `).bind(...binds).all<StrategyRewardSourceRow>()
-  return results ?? []
+  return rows
 }
 
 export async function persistStrategyRewardLedgerRows(db: D1Database, rows: StrategyRewardLedgerRow[]): Promise<number> {
@@ -1401,7 +1422,7 @@ export async function materializeStrategyDecisionLogChunk(
   db: D1Database,
   options: {
     date: string
-    offset?: number
+    afterSymbol?: string
     limit?: number
     dryRun?: boolean
     artifactEnv?: Pick<Bindings, 'DB' | 'ARTIFACTS'>
@@ -1412,21 +1433,23 @@ export async function materializeStrategyDecisionLogChunk(
   mode: 'dry_run' | 'persisted'
   date: string
   spec_source: 'registry'
-  offset: number
+  cursor_symbol: string
   limit: number
+  strategy_count: number
   candidate_count: number
   decision_rows: number
   persisted_rows: number
   has_more: boolean
-  next_offset: number
+  next_cursor_symbol: string
   preview: StrategyDecisionLogRow[]
 }> {
-  const offset = Math.max(0, Math.floor(options.offset ?? 0))
+  const afterSymbol = cleanToken(options.afterSymbol)
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 80), 250))
   const { specs, source } = await listStrategySpecsForLearning(db)
-  const candidatePage = await listStrategyLearningCandidates(db, options.date, limit + 1, offset)
+  const candidatePage = await listStrategyLearningCandidates(db, options.date, limit + 1, afterSymbol)
   const hasMore = candidatePage.length > limit
   const candidates = candidatePage.slice(0, limit)
+  const nextCursorSymbol = cleanToken(candidates[candidates.length - 1]?.symbol) || afterSymbol
   const rows = buildStrategyDecisionRows(options.date, candidates, specs)
   const dryRun = options.dryRun !== false
   const persisted = dryRun ? 0 : await persistStrategyDecisionRows(db, rows, options.artifactEnv, options.producerRunId)
@@ -1435,13 +1458,14 @@ export async function materializeStrategyDecisionLogChunk(
     mode: dryRun ? 'dry_run' : 'persisted',
     date: options.date,
     spec_source: source,
-    offset,
+    cursor_symbol: afterSymbol,
     limit,
+    strategy_count: specs.length,
     candidate_count: candidates.length,
     decision_rows: rows.length,
     persisted_rows: persisted,
     has_more: hasMore,
-    next_offset: offset + candidates.length,
+    next_cursor_symbol: nextCursorSymbol,
     preview: rows.slice(0, 20),
   }
 }
@@ -1599,7 +1623,7 @@ export function buildStrategyAdaptivePolicyState(
         : { minVolumeExpansion20: 0 }
   }
   for (const gate of gates.filter((row) => row.decision === 'active_cooldown')) {
-    strategyWeights[gate.strategy_id] = 0.2
+    strategyWeights[gate.strategy_id] = 0
     thresholdDeltas[gate.strategy_id] = {
       minVolumeExpansion20: 0.12,
       minCloseAboveMa20Pct: 0.015,
@@ -1879,11 +1903,27 @@ export async function runStrategyLearningClosure(
 ): Promise<string> {
   await ensureStrategyLearningTables(db)
   const seeded = await seedDefaultStrategySpecRegistry(db)
-  const decisions = await materializeStrategyDecisionLog(db, {
-    date,
-    limit: STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT,
-    dryRun: false,
-  })
+  let decisionCursor = ''
+  let decisionCandidates = 0
+  let decisionRows = 0
+  let decisionSpecSource: 'registry' = 'registry'
+  for (;;) {
+    const chunk = await materializeStrategyDecisionLogChunk(db, {
+      date, afterSymbol: decisionCursor, limit: STRATEGY_LEARNING_D1_BATCH_SIZE, dryRun: false,
+    })
+    decisionSpecSource = chunk.spec_source
+    decisionCandidates += chunk.candidate_count
+    decisionRows += chunk.persisted_rows
+    if (!chunk.has_more) break
+    if (!chunk.next_cursor_symbol || chunk.next_cursor_symbol === decisionCursor) throw new Error('strategy_learning_pagination_stalled')
+    decisionCursor = chunk.next_cursor_symbol
+  }
+  const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
+  const { reconcileSelectionDecisionEvidenceV4 } = await import('./selectionReferenceEvidence')
+  const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
+  const decisionEvidence = await reconcileSelectionDecisionEvidenceV4(db, date)
+  const labels = await materializeCanonicalSelectionLabelsV4(db, { asOfDate: date })
+  const marginalEdge = await refreshStrategyMarginalEdgeV4(db, date)
   const rewards = await refreshStrategyRewardLedger(db, { endDate: date, dryRun: false })
   const policy = options.persistPolicy === false
     ? null
@@ -1897,9 +1937,13 @@ export async function runStrategyLearningClosure(
     })
   return [
     `seeded=${seeded.seeded}`,
-    `spec_source=${decisions.spec_source}`,
-    `candidates=${decisions.candidate_count}`,
-    `decision_rows=${decisions.persisted_rows}`,
+    `spec_source=${decisionSpecSource}`,
+    `candidates=${decisionCandidates}`,
+    `decision_rows=${decisionRows}`,
+    `selection_decisions=${decisionEvidence.finalSignalRows}/${decisionEvidence.referenceRows}`,
+    `selection_ev_owner=${decisionEvidence.evOwnerRows}`,
+    `selection_labels=${labels.persisted_rows}`,
+    `strategy_edge=${marginalEdge.status}:eligible=${marginalEdge.eligibleStrategies}`,
     `reward_source_rows=${rewards.source_rows}`,
     `reward_rows=${rewards.persisted_rows}`,
     `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,

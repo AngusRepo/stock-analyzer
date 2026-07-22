@@ -475,7 +475,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         const { enqueueMaintenanceBacklogDrain } = await import('./maintenanceBacklogDrain')
         const queued = await enqueueMaintenanceBacklogDrain(c.env, {
           task: 'legacy-evidence-migration',
-          runDate: requestedRunDate(),
+          runDate: requestedRunDate() || twToday(),
           maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 240, 240),
         })
         return `legacy_evidence_migration durable=true queued=${queued.queued} run_id=${queued.runId}`
@@ -504,7 +504,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         const { enqueueMaintenanceBacklogDrain } = await import('./maintenanceBacklogDrain')
         const queued = await enqueueMaintenanceBacklogDrain(c.env, {
           task: 'legacy-strategy-evidence-migration',
-          runDate: requestedRunDate(),
+          runDate: requestedRunDate() || twToday(),
           maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 240, 240),
         })
         return `legacy_strategy_evidence_migration durable=true queued=${queued.queued} run_id=${queued.runId}`
@@ -576,7 +576,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         const { enqueueMaintenanceBacklogDrain } = await import('./maintenanceBacklogDrain')
         const queued = await enqueueMaintenanceBacklogDrain(c.env, {
           task: 'd1-evidence-scrub',
-          runDate: requestedRunDate(),
+          runDate: requestedRunDate() || twToday(),
           maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 240, 240),
         })
         return `d1_evidence_scrub durable=true queued=${queued.queued} run_id=${queued.runId}`

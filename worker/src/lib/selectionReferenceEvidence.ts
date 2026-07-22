@@ -351,7 +351,7 @@ export async function persistSelectionEvidenceV4(
         strategy_labeler_version, strategy_router_version,
         strategy_registry_checksum, feature_contract_version, evidence_artifact_id
       ) VALUES (?, ?, ?, ?, ?, ?, 1, 'hard_filters_passed', ?, ?, 1, ?, 0, 0, 0, NULL,
-                ?, ?, 1.0, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)
+                ?, ?, 1.0, ?, ?, 0, NULL, ?, ?, ?, ?, ?)
     `).bind(
       row.signal_date, row.symbol, row.producer_run_id, row.name,
       row.market_segment, row.sector, row.feature_available, row.feature_rejection_reason,

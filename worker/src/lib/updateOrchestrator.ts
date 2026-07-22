@@ -45,6 +45,7 @@ const FINLAB_PENDING_WATCHDOG_STALE_MS = 15 * 60_000
 const FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS = 3
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
 const S12_REPLAY_QUEUE_CHUNK_SIZE = 20
+const S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE = 20
 const S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS = 60
 const S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS = 180
 const S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS = 60
@@ -2000,101 +2001,69 @@ async function continuePostScreenerPipeline(
   deps: ProcessUpdateBatchDeps,
   triggerTime: string,
   runId?: string,
+  snapshotsReady = false,
 ): Promise<void> {
-  await logSchedulerResult(env.KV, 'regime-compute', {
-    status: 'running',
-    summary: `pre-pipeline regime-compute started for ${triggerTime}; run_id=${runId ?? 'n/a'}`,
-    duration_ms: 0,
-    run_date: triggerTime,
-  })
-
-  try {
-    const startedAt = Date.now()
-    const regimeSummary = String(await runRegimeCompute(env, triggerTime))
-    const regimeStatus = regimeSummary.includes('kv=ok') ? 'success' : 'error'
+  if (!snapshotsReady) {
     await logSchedulerResult(env.KV, 'regime-compute', {
-      status: regimeStatus,
-      summary: `pre-pipeline ${regimeSummary}`,
-      duration_ms: Date.now() - startedAt,
-      run_date: triggerTime,
-    })
-    if (regimeStatus !== 'success') {
-      await logSchedulerResult(env.KV, 'evening-chain', {
-        status: 'error',
-        summary: `event-driven chain stopped: regime-compute did not update KV before pipeline for ${triggerTime}; ${regimeSummary}`,
-        duration_ms: 0,
-        run_id: runId,
-        run_date: triggerTime,
-      })
-      return
-    }
-    console.log(`[Queue] Event-driven: regime-compute completed before pipeline for ${triggerTime}`)
-  } catch (e) {
-    await logSchedulerResult(env.KV, 'evening-chain', {
-      status: 'error',
-      summary: `event-driven chain stopped: regime-compute failed before pipeline for ${triggerTime}`,
+      status: 'running',
+      summary: `pre-pipeline regime-compute started for ${triggerTime}; run_id=${runId ?? 'n/a'}`,
       duration_ms: 0,
-      error: String(e),
-      run_id: runId,
       run_date: triggerTime,
     })
-    await logSchedulerResult(env.KV, 'regime-compute', {
-      status: 'error',
-      summary: e instanceof Error ? e.message : String(e),
-      duration_ms: 0,
-      error: String(e),
-      run_date: triggerTime,
-    })
-    console.warn('[Queue] Event-driven regime-compute failed:', e)
-    return
-  }
 
-  try {
-    const startedAt = Date.now()
-    const { runS12CandidateStructureSnapshots } = await import('./s12CandidateStructureSnapshots')
-    const snapshotSummary = await runS12CandidateStructureSnapshots(env, triggerTime)
-    const summary = `pre-pipeline S12 snapshots persisted=${snapshotSummary.persisted}/${snapshotSummary.attempted} reference=${snapshotSummary.candidate_count} ready=${snapshotSummary.ready} setup=${snapshotSummary.setup_only} blocked=${snapshotSummary.blocked} unavailable=${snapshotSummary.unavailable} errors=${snapshotSummary.errors}${snapshotSummary.unavailable > 0 ? ' analysis_continues=1 execution_fail_closed=1' : snapshotSummary.blocked > 0 ? ' execution_fail_closed=1' : ''}`
-    const snapshotComplete = snapshotSummary.attempted > 0
-      && snapshotSummary.attempted === snapshotSummary.candidate_count
-      && snapshotSummary.persisted === snapshotSummary.attempted
-      && snapshotSummary.errors === 0
-    await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-      status: snapshotComplete && snapshotSummary.unavailable === 0 ? 'success' : 'error',
-      summary,
-      duration_ms: Date.now() - startedAt,
-      run_id: runId,
-      run_date: triggerTime,
-    })
-    if (!snapshotComplete) {
-      await logSchedulerResult(env.KV, 'evening-chain', {
-        status: 'error',
-        summary: `event-driven chain stopped: incomplete S12 structure snapshots for ${triggerTime}; ${summary}`,
+    try {
+      const startedAt = Date.now()
+      const regimeSummary = String(await runRegimeCompute(env, triggerTime))
+      const regimeStatus = regimeSummary.includes('kv=ok') ? 'success' : 'error'
+      await logSchedulerResult(env.KV, 'regime-compute', {
+        status: regimeStatus,
+        summary: `pre-pipeline ${regimeSummary}`,
         duration_ms: Date.now() - startedAt,
+        run_date: triggerTime,
+      })
+      if (regimeStatus !== 'success') {
+        await logSchedulerResult(env.KV, 'evening-chain', {
+          status: 'error',
+          summary: `event-driven chain stopped: regime-compute did not update KV before pipeline for ${triggerTime}; ${regimeSummary}`,
+          duration_ms: 0,
+          run_id: runId,
+          run_date: triggerTime,
+        })
+        return
+      }
+      console.log(`[Queue] Event-driven: regime-compute completed before pipeline for ${triggerTime}`)
+    } catch (e) {
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'error',
+        summary: `event-driven chain stopped: regime-compute failed before pipeline for ${triggerTime}`,
+        duration_ms: 0,
+        error: String(e),
         run_id: runId,
         run_date: triggerTime,
       })
+      await logSchedulerResult(env.KV, 'regime-compute', {
+        status: 'error',
+        summary: e instanceof Error ? e.message : String(e),
+        duration_ms: 0,
+        error: String(e),
+        run_date: triggerTime,
+      })
+      console.warn('[Queue] Event-driven regime-compute failed:', e)
       return
     }
-    console.log(`[Queue] Event-driven: ${summary}`)
-  } catch (e) {
-    const summary = `pre-pipeline S12 snapshots failed closed for ${triggerTime}`
+
+    const snapshotRunId = runId ?? `s12-candidate-snapshot-${triggerTime}-${Date.now().toString(36)}`
     await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-      status: 'error',
-      summary,
+      status: 'running',
+      summary: `pre-pipeline S12 canonical snapshot chunks queued for ${triggerTime}; run_id=${snapshotRunId}`,
       duration_ms: 0,
-      error: e instanceof Error ? e.message : String(e),
-      run_id: runId,
+      run_id: snapshotRunId,
       run_date: triggerTime,
     })
-    await logSchedulerResult(env.KV, 'evening-chain', {
-      status: 'error',
-      summary: `event-driven chain stopped: ${summary}`,
-      duration_ms: 0,
-      error: e instanceof Error ? e.message : String(e),
-      run_id: runId,
-      run_date: triggerTime,
+    await env.UPDATE_QUEUE.send({
+      type: 's12_candidate_snapshot_chunk', cursor: 0, cursorKey: '',
+      triggerTime, runId: snapshotRunId, attempt: 1,
     })
-    console.warn('[Queue] Event-driven S12 snapshot failed closed:', e)
     return
   }
 
@@ -3341,6 +3310,148 @@ export async function processUpdateBatch(
       return
     }
     await continuePostScreenerPipeline(env, deps, triggerTime, runId)
+    return
+  }
+
+  if (msg.type === 's12_candidate_snapshot_chunk') {
+    const triggerTime = msg.triggerTime
+    const runId = msg.runId || `s12-candidate-snapshot-${triggerTime}-${Date.now().toString(36)}`
+    const afterSymbol = String(msg.cursorKey ?? '').trim()
+    const attempt = Math.max(1, Number(msg.attempt ?? 1))
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
+      console.log(`[Queue] Invalid S12 candidate snapshot date ${triggerTime}, skipping.`)
+      return
+    }
+    const {
+      loadS12PipelineSeedSymbolsByDate,
+      runS12CandidateStructureSnapshots,
+    } = await import('./s12CandidateStructureSnapshots')
+    const candidates = await loadS12PipelineSeedSymbolsByDate(
+      env.DB, triggerTime, S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE, afterSymbol,
+    )
+    const symbols = candidates.slice(0, S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE)
+    if (!symbols.length) {
+      await logSchedulerResult(env.KV, 's12-structure-snapshot', {
+        status: 'error',
+        summary: `pre-pipeline S12 canonical reference set empty for ${triggerTime}; run_id=${runId}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: triggerTime,
+      }, env)
+      return
+    }
+    let snapshotResult
+    try {
+      snapshotResult = await runS12CandidateStructureSnapshots(env, triggerTime, {
+        limit: S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE,
+        symbols,
+        pendingRunId: runId,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.startsWith('s12_research_lease_busy:')) throw error
+      const leaseRetryAttempt = Math.max(0, Number(msg.leaseRetryAttempt ?? 0))
+      if (leaseRetryAttempt >= S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS) throw error
+      const delaySeconds = s12ReplayLeaseRetryDelaySeconds(triggerTime, leaseRetryAttempt + 1)
+      await env.UPDATE_QUEUE.send({
+        ...msg,
+        leaseRetryAttempt: leaseRetryAttempt + 1,
+      }, { delaySeconds } as any)
+      await logSchedulerResult(env.KV, 's12-structure-snapshot', {
+        status: 'running',
+        summary: `pre-pipeline S12 research lease busy; date=${triggerTime} after=${afterSymbol || 'start'} deferred_attempt=${leaseRetryAttempt + 1} delay_seconds=${delaySeconds}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: triggerTime,
+      })
+      return
+    }
+    const complete = snapshotResult.attempted === symbols.length
+      && snapshotResult.persisted === symbols.length
+      && snapshotResult.errors === 0
+    if (!complete) {
+      if (attempt < 3) {
+        await env.UPDATE_QUEUE.send({ ...msg, attempt: attempt + 1 }, { delaySeconds: 60 } as any)
+        await logSchedulerResult(env.KV, 's12-structure-snapshot', {
+          status: 'running',
+          summary: `pre-pipeline S12 chunk retry date=${triggerTime} after=${afterSymbol || 'start'} persisted=${snapshotResult.persisted}/${symbols.length} errors=${snapshotResult.errors} attempt=${attempt + 1}/3`,
+          duration_ms: 0,
+          run_id: runId,
+          run_date: triggerTime,
+        })
+        return
+      }
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'error',
+        summary: `event-driven chain stopped: incomplete S12 snapshot chunk date=${triggerTime} after=${afterSymbol || 'start'} persisted=${snapshotResult.persisted}/${symbols.length} errors=${snapshotResult.errors}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: triggerTime,
+      }, env)
+      return
+    }
+    const hasMore = candidates.length > S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE
+    const cursorKey = symbols[symbols.length - 1].symbol
+    if (hasMore) {
+      await env.UPDATE_QUEUE.send({
+        type: 's12_candidate_snapshot_chunk', cursor: 0, cursorKey,
+        triggerTime, runId, attempt: 1,
+      })
+      await logSchedulerResult(env.KV, 's12-structure-snapshot', {
+        status: 'running',
+        summary: `pre-pipeline S12 chunk complete date=${triggerTime} through=${cursorKey} persisted=${snapshotResult.persisted} ready=${snapshotResult.ready} unavailable=${snapshotResult.unavailable}${snapshotResult.unavailable > 0 ? ' analysis_continues=1 execution_fail_closed=1' : ''} queued_next=1`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: triggerTime,
+      })
+      return
+    }
+    const coverage = await env.DB.prepare(`
+      SELECT COUNT(*) reference_rows,
+             SUM(CASE WHEN s.symbol IS NOT NULL THEN 1 ELSE 0 END) persisted_rows
+             ,SUM(CASE WHEN s.ready=1 THEN 1 ELSE 0 END) ready_rows
+             ,SUM(CASE WHEN s.state='data_unavailable' THEN 1 ELSE 0 END) unavailable_rows
+             ,SUM(CASE WHEN s.symbol IS NOT NULL AND s.ready=0 AND s.state<>'data_unavailable' THEN 1 ELSE 0 END) blocked_rows
+        FROM selection_reference_snapshots_v1 r
+        LEFT JOIN s12_structure_snapshots s
+          ON s.trade_date=r.signal_date AND s.symbol=r.symbol
+         AND s.source='s12_candidate_snapshot' AND s.pending_run_id=?
+       WHERE r.signal_date=?
+         AND EXISTS (
+           SELECT 1 FROM canonical_run_heads h
+            WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
+              AND h.run_id=r.producer_run_id
+         )
+    `).bind(runId, triggerTime).first<{
+      reference_rows?: number
+      persisted_rows?: number
+      ready_rows?: number
+      unavailable_rows?: number
+      blocked_rows?: number
+    }>()
+    const referenceRows = Number(coverage?.reference_rows ?? 0)
+    const persistedRows = Number(coverage?.persisted_rows ?? 0)
+    const readyRows = Number(coverage?.ready_rows ?? 0)
+    const unavailableRows = Number(coverage?.unavailable_rows ?? 0)
+    const blockedRows = Number(coverage?.blocked_rows ?? 0)
+    if (referenceRows <= 0 || persistedRows !== referenceRows) {
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'error',
+        summary: `event-driven chain stopped: S12 canonical snapshot coverage=${persistedRows}/${referenceRows} date=${triggerTime} run_id=${runId}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: triggerTime,
+      }, env)
+      return
+    }
+    await logSchedulerResult(env.KV, 's12-structure-snapshot', {
+      status: 'success',
+      summary: `pre-pipeline S12 canonical snapshots complete coverage=${persistedRows}/${referenceRows} ready=${readyRows} blocked=${blockedRows} unavailable=${unavailableRows}${unavailableRows > 0 ? ' analysis_continues=1 execution_fail_closed=1' : ''} date=${triggerTime} run_id=${runId}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: triggerTime,
+    })
+    await continuePostScreenerPipeline(env, deps, triggerTime, runId, true)
     return
   }
 

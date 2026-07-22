@@ -73,12 +73,14 @@ export async function loadS12PipelineSeedSymbolsByDate(
   db: D1Database,
   tradeDate: string,
   limit = 1000,
+  afterSymbol = '',
 ): Promise<S12PipelineSeedSymbol[]> {
   const cappedLimit = Math.max(1, Math.min(2000, Math.floor(limit)))
   const { results } = await db.prepare(`
     SELECT r.symbol, r.name, NULL rank, r.score_v2 score_after, r.selection_stage stage
       FROM selection_reference_snapshots_v1 r
      WHERE r.signal_date = ?
+       AND r.symbol > ?
        AND EXISTS (
          SELECT 1 FROM canonical_run_heads h
           WHERE h.logical_run_key = 'screener:' || r.signal_date || ':TW:production:market_screener'
@@ -86,7 +88,7 @@ export async function loadS12PipelineSeedSymbolsByDate(
        )
      ORDER BY r.symbol
      LIMIT ?
-  `).bind(tradeDate, cappedLimit + 1).all<S12PipelineSeedSymbol>()
+  `).bind(tradeDate, afterSymbol, cappedLimit + 1).all<S12PipelineSeedSymbol>()
   return (results ?? []).map((row) => ({
     symbol: String(row.symbol ?? '').trim(),
     name: row.name ?? null,
@@ -104,6 +106,7 @@ export async function runS12CandidateStructureSnapshots(
     symbols?: S12PipelineSeedSymbol[]
     loadBars?: typeof loadS12HistoricalReplayBars
     source?: 's12_candidate_snapshot' | 's12_candidate_snapshot_reconstruction'
+    pendingRunId?: string
   } = {},
 ): Promise<S12CandidateSnapshotSummary> {
   const snapshotSource = options.source ?? 's12_candidate_snapshot'
@@ -142,6 +145,7 @@ export async function runS12CandidateStructureSnapshots(
           tradeDate,
           symbol: row.symbol,
           source: snapshotSource,
+          pendingRunId: options.pendingRunId,
           side: 'buy',
           reason: terminalDataSourceReason,
           metadata: {
@@ -164,6 +168,7 @@ export async function runS12CandidateStructureSnapshots(
           tradeDate,
           symbol: row.symbol,
           source: snapshotSource,
+          pendingRunId: options.pendingRunId,
           side: 'buy',
           reason: terminalDataSourceReason ?? reason,
           metadata: {
@@ -209,6 +214,7 @@ export async function runS12CandidateStructureSnapshots(
         assessment,
         source: snapshotSource,
         side: 'buy',
+        pendingRunId: options.pendingRunId,
         metadata: {
           calibration_artifact_id: calibration?.artifactId ?? null,
           calibration_scope: calibration?.scope ?? null,

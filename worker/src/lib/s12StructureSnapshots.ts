@@ -156,6 +156,7 @@ export async function persistS12UnavailableStructureSnapshot(
     symbol: string
     source?: string
     side?: string | null
+    pendingRunId?: string | number | null
     reason: string
     metadata?: Record<string, unknown> | null
   },
@@ -183,10 +184,19 @@ export async function persistS12UnavailableStructureSnapshot(
     await env.DB.prepare(`
       INSERT INTO s12_structure_snapshots (
         trade_date, symbol, source, side, state, ready, invalidated,
-        detail, entry_context_json, raw_json, updated_at
+        detail, entry_context_json, raw_json, pending_run_id, updated_at
       )
-      VALUES (?, ?, ?, ?, 'data_unavailable', 0, 0, ?, ?, ?, datetime('now'))
-      ON CONFLICT(trade_date, symbol, source) DO NOTHING
+      VALUES (?, ?, ?, ?, 'data_unavailable', 0, 0, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(trade_date, symbol, source) DO UPDATE SET
+        side=excluded.side,
+        state='data_unavailable',
+        ready=0,
+        invalidated=0,
+        detail=excluded.detail,
+        entry_context_json=excluded.entry_context_json,
+        raw_json=excluded.raw_json,
+        pending_run_id=excluded.pending_run_id,
+        updated_at=datetime('now')
     `).bind(
       params.tradeDate,
       params.symbol,
@@ -195,6 +205,7 @@ export async function persistS12UnavailableStructureSnapshot(
       `data_available=false;unavailable_reason=${reason}`,
       JSON.stringify(entryContext),
       JSON.stringify(raw),
+      params.pendingRunId == null ? null : String(params.pendingRunId),
     ).run()
     return true
   } catch (error) {

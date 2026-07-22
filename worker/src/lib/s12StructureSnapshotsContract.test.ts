@@ -91,7 +91,8 @@ async function runBehaviorTests(): Promise<void> {
   assert.match(queries[0].sql, /selection_reference_snapshots_v1/)
   assert.match(queries[0].sql, /canonical_run_heads/)
   assert.equal(queries[0].binds[0], '2026-07-07')
-  assert.equal(queries[0].binds[1], 161)
+  assert.equal(queries[0].binds[1], '')
+  assert.equal(queries[0].binds[2], 161)
 
   let writeCount = 0
   let writeSql = ''

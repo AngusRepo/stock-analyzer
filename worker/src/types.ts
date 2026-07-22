@@ -311,6 +311,7 @@ export interface UpdateQueueMsg {
     | 'update_batch'
     | 'finalize_update'
     | 'post_screener_pipeline'
+    | 's12_candidate_snapshot_chunk'
     | 'news_batch'
     | 'source_readiness_retry'
     | 'finlab_backfill_complete'

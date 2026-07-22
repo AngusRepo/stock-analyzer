@@ -213,10 +213,11 @@ assert(
 )
 assert(
   updateOrchestrator.includes('analysis_continues=1 execution_fail_closed=1') &&
-    updateOrchestrator.includes('snapshotComplete && snapshotSummary.unavailable === 0') &&
-    updateOrchestrator.includes('snapshotSummary.attempted === snapshotSummary.candidate_count') &&
-    updateOrchestrator.includes('blocked=${snapshotSummary.blocked}'),
-  'missing S12 bars must remain an observable error while data-backed blocked states stay fail-closed without becoming lifecycle failures',
+    updateOrchestrator.includes("s.state='data_unavailable'") &&
+    updateOrchestrator.includes('s.pending_run_id=?') &&
+    updateOrchestrator.includes('persistedRows !== referenceRows') &&
+    updateOrchestrator.includes('blocked=${blockedRows}'),
+  'S12 unavailable observations must stay visible and execution-fail-closed while only incomplete canonical coverage blocks the lifecycle',
 )
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')

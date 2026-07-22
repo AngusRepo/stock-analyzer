@@ -13,6 +13,7 @@ const D1_HEAVY_MAINTENANCE_TASKS = new Set([
   'orphan-reachability-gc', 'cleanup-dlq-replay', 'weekly-cleanup',
   'price-horizon-projection',
 ])
+const D1_MAINTENANCE_REQUEST_BUDGET_MS = 45_000
 
 type WarmupSummary = {
   ok: boolean
@@ -470,8 +471,9 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     },
     'legacy-evidence-migration': async () => {
       const { runLegacyEvidenceMigration } = await import('./legacyEvidenceMigration')
-      const chunkLimit = parseBoundedPositiveInt(c.req.query('limit'), 500, 500)
-      const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 5, 10)
+      const chunkLimit = parseBoundedPositiveInt(c.req.query('limit'), 100, 500)
+      const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 1, 10)
+      const deadline = Date.now() + D1_MAINTENANCE_REQUEST_BUDGET_MS
       let candidates = 0
       let artifacts = 0
       let queuedScrubs = 0
@@ -483,13 +485,15 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         queuedScrubs += result.queued_scrubs
         backlogRemaining = result.backlog_remaining
         if (!backlogRemaining || result.candidates === 0) break
+        if (Date.now() >= deadline) break
       }
       return `legacy_evidence_migration candidates=${candidates} artifacts=${artifacts} queued_scrubs=${queuedScrubs} backlog_remaining=${backlogRemaining}`
     },
     'legacy-strategy-evidence-migration': async () => {
       const { runLegacyStrategyEvidenceMigration } = await import('./legacyStrategyEvidenceMigration')
-      const symbolLimit = parseBoundedPositiveInt(c.req.query('symbol_limit'), 20, 40)
-      const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 5, 10)
+      const symbolLimit = parseBoundedPositiveInt(c.req.query('symbol_limit'), 10, 40)
+      const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 1, 10)
+      const deadline = Date.now() + D1_MAINTENANCE_REQUEST_BUDGET_MS
       let contexts = 0
       let decisions = 0
       let artifacts = 0
@@ -505,6 +509,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         compactBytes += result.compact_blob_bytes
         backlogRemaining = result.backlog_remaining
         if (!backlogRemaining || result.migrated_decisions === 0) break
+        if (Date.now() >= deadline) break
       }
       return `legacy_strategy_evidence_migration contexts=${contexts} decisions=${decisions} artifacts=${artifacts} original_bytes=${originalBytes} compact_bytes=${compactBytes} backlog_remaining=${backlogRemaining}`
     },
@@ -527,8 +532,8 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         .map((value) => value.trim())
         .filter((value): value is LegacyHotDataTarget => allowedTargets.includes(value as LegacyHotDataTarget))
       const targets = requestedTargets.length ? requestedTargets : allowedTargets
-      const limit = parseBoundedPositiveInt(c.req.query('limit'), 250, 500)
-      const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 2, 5)
+      const limit = parseBoundedPositiveInt(c.req.query('limit'), 100, 500)
+      const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 1, 5)
       const dryRun = c.req.query('confirm_retirement') !== LEGACY_HOT_DATA_RETIREMENT_CONFIRM_PHRASE
       const summaries: string[] = []
       for (const target of targets) {
@@ -551,7 +556,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     'd1-evidence-scrub': async () => {
       const { runD1EvidenceScrub } = await import('./artifactLifecycle')
       const result = await runD1EvidenceScrub(c.env, {
-        limit: parseBoundedPositiveInt(c.req.query('limit'), 250, 1000),
+        limit: parseBoundedPositiveInt(c.req.query('limit'), 100, 1000),
       })
       if (result.failed || result.blocked) throw new Error(`d1 evidence scrub failed ${JSON.stringify(result)}`)
       return `d1_evidence_scrub candidates=${result.candidates} scrubbed=${result.scrubbed}`
@@ -559,7 +564,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     'r2-retention-sweep': async () => {
       const { runR2RetentionSweep } = await import('./artifactLifecycle')
       const result = await runR2RetentionSweep(c.env, {
-        limit: parseBoundedPositiveInt(c.req.query('limit'), 250, 1000),
+        limit: parseBoundedPositiveInt(c.req.query('limit'), 100, 1000),
       })
       if (result.failed) throw new Error(`r2 retention sweep failed ${JSON.stringify(result)}`)
       return `r2_retention_sweep candidates=${result.candidates} deleted=${result.deleted}`
@@ -683,7 +688,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       await runWithMaintenanceLease(c.env.DB, {
         taskName,
         leaseGroup: 'd1_heavy_maintenance',
-        leaseSeconds: 3600,
+        leaseSeconds: 300,
         run: handler,
       }),
     )

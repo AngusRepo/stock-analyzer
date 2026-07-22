@@ -895,7 +895,7 @@ export async function listStrategyLearningCandidates(
          AND EXISTS (
            SELECT 1
              FROM canonical_run_heads h
-            WHERE h.logical_run_key='screener:' || r.signal_date
+            WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
               AND h.run_id=r.producer_run_id
          )
     ),
@@ -1310,7 +1310,7 @@ export async function listStrategyRewardSourceRows(
     const clauses = [
       'm.strategy_hit = 1',
       "l.label_schema_version = 'canonical-strategy-selection-label-v4'",
-      "EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || m.signal_date AND h.run_id = m.producer_run_id)",
+      "EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || m.signal_date || ':TW:production:market_screener' AND h.run_id = m.producer_run_id)",
       `(
         m.signal_date > ?
         OR (m.signal_date = ? AND m.strategy_id > ?)

@@ -239,7 +239,7 @@ export async function refreshStrategyMarginalEdgeV4(
        WHERE m.signal_date BETWEEN ? AND ?
          AND EXISTS (
            SELECT 1 FROM canonical_run_heads h
-            WHERE h.logical_run_key='screener:' || m.signal_date
+            WHERE h.logical_run_key='screener:' || m.signal_date || ':TW:production:market_screener'
               AND h.run_id=m.producer_run_id
          )
          AND (

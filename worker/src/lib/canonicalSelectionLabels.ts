@@ -137,7 +137,7 @@ async function listCanonicalReferences(
     const clauses = [
       "r.signal_date <= ?",
       "(r.signal_date > ? OR (r.signal_date = ? AND r.symbol > ?))",
-      "EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || r.signal_date AND h.run_id = r.producer_run_id)",
+      "EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || r.signal_date || ':TW:production:market_screener' AND h.run_id = r.producer_run_id)",
     ]
     const binds: unknown[] = [asOfDate, cursorDate, cursorDate, cursorSymbol]
     if (startDate) { clauses.push('r.signal_date >= ?'); binds.push(startDate) }

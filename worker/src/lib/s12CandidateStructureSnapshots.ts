@@ -81,7 +81,7 @@ export async function loadS12PipelineSeedSymbolsByDate(
      WHERE r.signal_date = ?
        AND EXISTS (
          SELECT 1 FROM canonical_run_heads h
-          WHERE h.logical_run_key = 'screener:' || r.signal_date
+          WHERE h.logical_run_key = 'screener:' || r.signal_date || ':TW:production:market_screener'
             AND h.run_id = r.producer_run_id
        )
      ORDER BY r.symbol

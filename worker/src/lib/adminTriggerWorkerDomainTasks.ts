@@ -471,6 +471,15 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     },
     'legacy-evidence-migration': async () => {
       const { runLegacyEvidenceMigration } = await import('./legacyEvidenceMigration')
+      if (c.req.query('durable') === '1') {
+        const { enqueueMaintenanceBacklogDrain } = await import('./maintenanceBacklogDrain')
+        const queued = await enqueueMaintenanceBacklogDrain(c.env, {
+          task: 'legacy-evidence-migration',
+          runDate: requestedRunDate(),
+          maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 240, 240),
+        })
+        return `legacy_evidence_migration durable=true queued=${queued.queued} run_id=${queued.runId}`
+      }
       const chunkLimit = parseBoundedPositiveInt(c.req.query('limit'), 100, 500)
       const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 1, 10)
       const deadline = Date.now() + D1_MAINTENANCE_REQUEST_BUDGET_MS
@@ -491,6 +500,15 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     },
     'legacy-strategy-evidence-migration': async () => {
       const { runLegacyStrategyEvidenceMigration } = await import('./legacyStrategyEvidenceMigration')
+      if (c.req.query('durable') === '1') {
+        const { enqueueMaintenanceBacklogDrain } = await import('./maintenanceBacklogDrain')
+        const queued = await enqueueMaintenanceBacklogDrain(c.env, {
+          task: 'legacy-strategy-evidence-migration',
+          runDate: requestedRunDate(),
+          maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 240, 240),
+        })
+        return `legacy_strategy_evidence_migration durable=true queued=${queued.queued} run_id=${queued.runId}`
+      }
       const symbolLimit = parseBoundedPositiveInt(c.req.query('symbol_limit'), 10, 40)
       const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 1, 10)
       const deadline = Date.now() + D1_MAINTENANCE_REQUEST_BUDGET_MS
@@ -554,6 +572,15 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       return `legacy_hot_data_retirement dry_run=${dryRun} ${summaries.join(' ')}`
     },
     'd1-evidence-scrub': async () => {
+      if (c.req.query('durable') === '1') {
+        const { enqueueMaintenanceBacklogDrain } = await import('./maintenanceBacklogDrain')
+        const queued = await enqueueMaintenanceBacklogDrain(c.env, {
+          task: 'd1-evidence-scrub',
+          runDate: requestedRunDate(),
+          maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 240, 240),
+        })
+        return `d1_evidence_scrub durable=true queued=${queued.queued} run_id=${queued.runId}`
+      }
       const { runD1EvidenceScrub } = await import('./artifactLifecycle')
       const result = await runD1EvidenceScrub(c.env, {
         limit: parseBoundedPositiveInt(c.req.query('limit'), 100, 1000),

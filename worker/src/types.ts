@@ -321,6 +321,7 @@ export interface UpdateQueueMsg {
     | 'allocator_ev_lifecycle_recovery'
     | 'post_pipeline_chain'
     | 'post_verify_chain'
+    | 'maintenance_backlog_drain'
   newsStocks?: Array<{
     id: number
     symbol: string
@@ -336,6 +337,11 @@ export interface UpdateQueueMsg {
   shardCount?: number // 多 shard 平行更新時的總 shard 數
   attempt?: number    // finalize watchdog retry count
   leaseRetryAttempt?: number // bounded deferred retry for serialized S12 research traffic
+  maintenanceTask?:
+    | 'legacy-evidence-migration'
+    | 'legacy-strategy-evidence-migration'
+    | 'd1-evidence-scrub'
+  maxAttempts?: number
   force?: boolean
 }
 

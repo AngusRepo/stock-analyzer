@@ -2841,6 +2841,12 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 'maintenance_backlog_drain') {
+    const { processMaintenanceBacklogDrain } = await import('./maintenanceBacklogDrain')
+    await processMaintenanceBacklogDrain(env, msg)
+    return
+  }
+
   if (msg.type === 's12_research_recovery') {
     const triggerTime = msg.triggerTime
     const runId = msg.runId || `s12-research-recovery-${triggerTime}-${Date.now()}`

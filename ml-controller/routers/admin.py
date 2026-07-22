@@ -49,11 +49,11 @@ logger = logging.getLogger(__name__)
 _MODAL_STABLE_MTIME = 1767225600  # 2026-01-01 UTC
 
 
-def _prepare_stable_modal_source(app_path: str) -> tuple[str, str]:
+def _prepare_stable_modal_source(app_path: str, *, stable_root: Path | None = None) -> tuple[str, str]:
     """Copy deploy inputs to /tmp with normalized mtimes for Modal CLI."""
     src_file = Path(app_path).resolve()
     src_dir = src_file.parent
-    stable_dir = Path("/tmp/modal_deploy") / src_file.stem
+    stable_dir = (stable_root or Path("/tmp/modal_deploy")) / src_file.stem
     if stable_dir.exists():
         shutil.rmtree(stable_dir)
     stable_dir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +82,12 @@ def _prepare_stable_modal_source(app_path: str) -> tuple[str, str]:
     data_registry = repo_root / "data" / "feature_registry"
     if data_registry.exists():
         shutil.copytree(data_registry, stable_dir / "data" / "feature_registry", dirs_exist_ok=True)
+
+    finlab_source_contract = repo_root / "data" / "finlab_source_contract.json"
+    if finlab_source_contract.exists():
+        target = stable_dir / "data" / finlab_source_contract.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(finlab_source_contract, target)
 
     formal137_pairs = repo_root / "output" / "feature_universe_triage" / "formal137_pairwise_similarity_long_20260617.csv"
     if formal137_pairs.exists():

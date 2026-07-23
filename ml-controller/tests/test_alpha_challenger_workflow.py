@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -228,7 +228,9 @@ async def test_alpha_challenger_can_generate_candidate_specific_evidence_dry_run
 
     assert out["status"] == "dry_run"
     assert out["gate"]["decision"] == "PASS"
-    assert out["evidence"]["candidate_id"] == _sandbox_record()["id"]
+    assert out["evidence"]["candidate_id"] == (
+        "parameter:alpha_framework:alpha_framework:2026-04-26T00:00:00Z:abcd1234"
+    )
     assert runner_calls[0][1]["baseline_config"]["position"]["maxPositions"] == 5
     assert runner_calls[0][1]["start_date"] == "2026-01-01"
     assert all(call[0] != "/api/admin/config/challenger" for call in calls)

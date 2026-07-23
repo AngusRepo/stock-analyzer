@@ -256,6 +256,22 @@ def create_robust_objective(
     return objective
 
 
+def _push_winner(target: str, best_params: dict, result: dict) -> dict | None:
+    if target != "sltp":
+        return None
+    push_response = push_optuna_result(
+        source="sltp",
+        params=best_params,
+        meta={
+            "optuna_source": "per_regime_robust",
+            "robust_sharpe": result["robust_sharpe"],
+            "sharpe_per_regime": result["sharpe_per_regime"],
+        },
+    )
+    result["push"] = push_response
+    result["kv_push_ok"] = bool(push_response.get("success"))
+    return push_response
+
 def run_search(
     target: str = "sltp",
     n_trials: int = 200,
@@ -337,17 +353,7 @@ def run_search(
 
     if push_kv:
         try:
-            if target == "sltp":
-                push_optuna_result(
-                    source="sltp",
-                    params=best.params,
-                    meta={
-                        "optuna_source": "per_regime_robust",
-                        "robust_sharpe": result["robust_sharpe"],
-                        "sharpe_per_regime": result["sharpe_per_regime"],
-                    },
-                )
-                result["kv_push_ok"] = True
+            _push_winner(target, best.params, result)
         except Exception as e:
             logger.error(f"[per-regime-robust] KV push failed: {e}")
             result["kv_push_ok"] = False

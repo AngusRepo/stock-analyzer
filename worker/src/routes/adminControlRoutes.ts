@@ -15,6 +15,7 @@ const REPORT_ARTIFACT_TASKS = new Set([
   'finlab-v4-backfill',
   'backtest',
   'weekly-optuna',
+  'optuna-per-regime',
   'optuna-queue',
   'pbo',
   'monte-carlo',
@@ -22,6 +23,7 @@ const REPORT_ARTIFACT_TASKS = new Set([
   'weekly-audit',
   'lifecycle',
   'monthly-optuna',
+  'parameter-candidate-validation',
   'monthly-strategy-mining',
   'monthly-retrain',
   'external-evidence',
@@ -379,7 +381,7 @@ async function handleSchedulerCallback(c: any) {
       error: 'Body must be { task, status, summary?, duration_ms?, error?, run_id? }',
     }, 400)
   }
-  const { isSchedulerStatus, logSchedulerResult } = await import('../lib/schedulerRunLogger')
+  const { classifySchedulerSummary, isSchedulerStatus, logSchedulerResult } = await import('../lib/schedulerRunLogger')
   if (!isSchedulerStatus(body.status)) {
     return c.json({ error: 'status must be one of success/skipped/error/triggered/running' }, 400)
   }
@@ -390,6 +392,9 @@ async function handleSchedulerCallback(c: any) {
       : undefined
   const callbackRunId = typeof body.run_id === 'string' ? body.run_id : undefined
   const callbackAttemptId = typeof body.attempt_id === 'string' ? body.attempt_id : undefined
+  const callbackMetadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+    ? body.metadata as Record<string, unknown>
+    : undefined
 
   if (body.task === 'finlab-v4-backfill' && callbackRunDate) {
     const current = await c.env.KV.get(
@@ -425,6 +430,69 @@ async function handleSchedulerCallback(c: any) {
     run_date: callbackRunDate,
   })
 
+  if (body.task === 'optuna-per-regime' && ['success', 'error', 'skipped'].includes(String(body.status))) {
+    const queueEntryId = nullableText(body.queue_entry_id ?? body.metadata?.queue_entry_id)
+    if (queueEntryId && callbackRunId) {
+      const { closeOptunaRunD1Lock, settleTriggeredEntry } = await import('../lib/optunaQueue')
+      const settled = await settleTriggeredEntry(c.env.KV, {
+        id: queueEntryId,
+        run_id: callbackRunId,
+        outcome: body.status,
+        sandbox_id: nullableText(body.sandbox_id ?? body.result?.push?.sandbox_id) ?? undefined,
+        note: `callback_${body.status} run_id=${callbackRunId} summary=${String(body.summary ?? '').slice(0, 240)}`,
+        error: body.error != null ? String(body.error) : undefined,
+        max_retries: 3,
+      })
+      if (settled.applied) {
+        await closeOptunaRunD1Lock(c.env.DB, queueEntryId, String(body.status))
+      } else {
+        console.warn(
+          `[scheduler-callback] ignored optuna-per-regime callback queue_entry_id=${queueEntryId} ` +
+          `run_id=${callbackRunId} reason=${settled.reason}`,
+        )
+      }
+    }
+  }
+  if (
+    (String(body.task) === 'weekly-optuna' || String(body.task) === 'monthly-optuna') &&
+    body.status === 'success'
+  ) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const metadataCandidateIds = Array.isArray(callbackMetadata?.candidate_ids)
+          ? callbackMetadata.candidate_ids.map((id: unknown) => String(id)).filter(Boolean)
+          : []
+        const candidateIds = metadataCandidateIds.length > 0
+          ? metadataCandidateIds
+          : (typeof body.candidate_id === 'string' && body.candidate_id ? [body.candidate_id] : [])
+        const { runParameterCandidateValidationChain } = await import('../lib/controllerResearchWorkflows')
+        const summary = await runParameterCandidateValidationChain(c.env, {
+          cadence: String(callbackMetadata?.cadence ?? String(body.task).replace('-optuna', '')),
+          runDate: callbackRunDate,
+          runId: callbackRunId,
+          candidateIds,
+          source: String(body.task),
+          metadata: callbackMetadata,
+        })
+        await logSchedulerResult(c.env.KV, 'parameter-candidate-validation', {
+          status: classifySchedulerSummary(summary),
+          summary,
+          duration_ms: 0,
+          run_id: callbackRunId,
+          run_date: callbackRunDate,
+        })
+      } catch (error: any) {
+        await logSchedulerResult(c.env.KV, 'parameter-candidate-validation', {
+          status: 'error',
+          summary: error?.message ?? 'parameter candidate validation chain failed',
+          duration_ms: 0,
+          error: String(error),
+          run_id: callbackRunId,
+          run_date: callbackRunDate,
+        })
+      }
+    })())
+  }
   if (
     REPORT_ARTIFACT_TASKS.has(String(body.task)) &&
     body.status === 'success' &&

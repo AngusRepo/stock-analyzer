@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -96,8 +97,30 @@ class OptunaResearchSweepReq(BaseModel):
     dry_run: bool = False
 
 
-def _push_live(req) -> bool:
-    return bool(req.push_kv and not req.dry_run)
+def _worker_push_target(push_response: Any) -> str:
+    if not isinstance(push_response, dict) or not push_response.get("success"):
+        return "not_pushed"
+    target = str(push_response.get("target") or "").strip().lower()
+    if target == "prod":
+        return "worker_kv_production"
+    if target == "sandbox" or push_response.get("sandbox_id"):
+        return "worker_kv_sandbox"
+    if target == "production_meta_optimizer_learning_state":
+        return "worker_kv_ga_optimizer_state"
+    return f"worker_kv_{target}" if target else "worker_kv_unknown"
+
+
+def _worker_push_applies_to_production(push_response: Any) -> bool:
+    return _worker_push_target(push_response) == "worker_kv_production"
+
+
+def _worker_push_scope(push_response: Any) -> str:
+    target = _worker_push_target(push_response)
+    if target == "worker_kv_production":
+        return "production_bound"
+    if target == "worker_kv_sandbox":
+        return "sandbox_challenger"
+    return "research_only"
 
 
 def _research_data_mode_for_request(req) -> ResearchDataMode | None:
@@ -404,14 +427,14 @@ def run_barrier(req: OptunaReq = Body(default=OptunaReq())):
 
     contract = _contract_meta(
         source="barrier",
-        scope="production_bound",
+        scope=_worker_push_scope(push_response),
         sample_scope=f"top_{policy.barrier_top_n}_active_stocks_with_>={policy.barrier_min_price_rows}_price_rows",
-        applies_to_production=_push_live(req) and bool(best),
-        push_target="worker_kv_live",
+        applies_to_production=_worker_push_applies_to_production(push_response),
+        push_target=_worker_push_target(push_response),
         effective_fields=list(best.keys()),
         notes=[
             "Barrier Optuna currently optimizes on a top-10 active-stock sample, not the full trading universe.",
-            "If pushed live, these params can affect production barrier behavior immediately.",
+            "Worker writes sandbox by default; production requires a separately confirmed promotion.",
         ],
     )
 
@@ -464,14 +487,14 @@ def run_signal(req: OptunaReq = Body(default=OptunaReq())):
         )
     contract = _contract_meta(
         source="signal",
-        scope="production_bound",
+        scope=_worker_push_scope(push_response),
         sample_scope="recent_sell_orders_plus_recent_ensemble_predictions",
-        applies_to_production=_push_live(req) and bool(best),
-        push_target="worker_kv_live",
+        applies_to_production=_worker_push_applies_to_production(push_response),
+        push_target=_worker_push_target(push_response),
         effective_fields=list(best.keys()),
         notes=[
             "Signal search uses recent paper-order outcomes plus recent ensemble predictions, not a point-in-time full backtest.",
-            "If pushed live, signal thresholds can affect production immediately.",
+            "Worker writes sandbox by default; production requires a separately confirmed promotion.",
         ],
     )
 
@@ -537,14 +560,14 @@ def run_sltp(req: OptunaReq = Body(default=OptunaReq())):
 
     contract = _contract_meta(
         source="sltp",
-        scope="production_bound",
+        scope=_worker_push_scope(push_response),
         sample_scope="paper_backtest_replay_subset",
-        applies_to_production=_push_live(req) and bool(best),
-        push_target="worker_kv_live",
+        applies_to_production=_worker_push_applies_to_production(push_response),
+        push_target=_worker_push_target(push_response),
         effective_fields=list(best.keys()),
         notes=[
             "SLTP search replays a subset/window, so results are sensitive to subset_size and date_window.",
-            "If pushed live, these params affect production exits immediately.",
+            "Worker writes sandbox by default; production requires a separately confirmed promotion.",
         ],
     )
 
@@ -638,10 +661,10 @@ def run_screener(req: OptunaReq = Body(default=OptunaReq())):
 
     contract = _contract_meta(
         source="screener",
-        scope="production_partial",
+        scope=_worker_push_scope(push_response),
         sample_scope="paper_backtest_replay_subset",
-        applies_to_production=_push_live(req) and bool(push_payload),
-        push_target="worker_kv_live_partial",
+        applies_to_production=_worker_push_applies_to_production(push_response),
+        push_target=_worker_push_target(push_response),
         effective_fields=list(push_payload.keys()),
         excluded_fields=excluded_fields,
         notes=[
@@ -1006,6 +1029,13 @@ def _run_optuna_sweep_source(source: str, runner) -> dict[str, Any]:
             "source": source,
             "status": "success",
             "summary": f"{source}:OK",
+            "candidate_params": (
+                result.get("resolved_screener")
+                if source == "screener"
+                else result.get("learning_state")
+                if source == "ga_optimizer"
+                else result.get("best_params")
+            ) if isinstance(result, dict) else None,
             "contract": result.get("contract") if isinstance(result, dict) else None,
             "push": result.get("push") if isinstance(result, dict) else None,
         }
@@ -1031,6 +1061,52 @@ def _run_optuna_sweep_source(source: str, runner) -> dict[str, Any]:
         }
 
 
+def _commit_research_sweep_candidate(
+    req: OptunaResearchSweepReq,
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    source_params = {
+        item["source"]: item.get("candidate_params")
+        for item in results
+        if item.get("source") != "ga_optimizer" and item.get("candidate_params")
+    }
+    ga = next((item for item in results if item.get("source") == "ga_optimizer"), None)
+    run_id = os.environ.get("CLOUD_RUN_EXECUTION") or f"optuna-{req.cadence}-{uuid.uuid4().hex[:12]}"
+    source_names = [item["source"] for item in results]
+    composite = push_optuna_result(
+        source="research_sweep",
+        params={"sources": source_params},
+        meta={
+            "run_id": run_id,
+            "cadence": req.cadence,
+            "run_date": req.run_date,
+            "source_names": source_names,
+            "n_trials": req.n_trials,
+            "subset_size": req.subset_size,
+            "note": "atomic composite Optuna candidate; production unchanged",
+        },
+    )
+    ga_push = None
+    if ga and ga.get("candidate_params"):
+        ga_push = push_optuna_result(
+            source="ga_optimizer",
+            params=ga["candidate_params"],
+            meta={
+                "run_id": run_id,
+                "cadence": req.cadence,
+                "run_date": req.run_date,
+                "source_names": source_names,
+                "note": "committed only after the complete research sweep succeeded",
+            },
+        )
+    return {
+        "status": "staged",
+        "run_id": run_id,
+        "composite": composite,
+        "ga_learning_state": ga_push,
+    }
+
+
 def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
     """Controller-owned weekly/monthly Optuna sweep with per-route evidence.
 
@@ -1041,8 +1117,8 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
     common = {
         "cadence": req.cadence,
         "n_trials": req.n_trials,
-        "push_kv": req.push_kv,
-        "dry_run": req.dry_run,
+        "push_kv": False,
+        "dry_run": True,
         "research_data_source": req.research_data_source,
     }
     sweep_plan: list[tuple[str, Any]] = [
@@ -1058,8 +1134,8 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
             lambda: run_alpha_framework(
                 AlphaFrameworkOptunaReq(
                     n_trials=req.n_trials,
-                    push_kv=req.push_kv,
-                    dry_run=req.dry_run,
+                    push_kv=False,
+                    dry_run=True,
                     subset_size=req.subset_size,
                 )
             ),
@@ -1070,26 +1146,12 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
                 GAOptimizerReq(
                     population_size=req.ga_population_size,
                     generations=req.ga_generations,
-                    push_kv=req.push_kv,
-                    dry_run=req.dry_run,
+                    push_kv=False,
+                    dry_run=True,
                 )
             ),
         ),
     ]
-    if req.cadence == "monthly":
-        sweep_plan.append(
-            (
-                "s12_smcvwap_tw",
-                lambda: run_s12_smcvwap_tw(
-                    OptunaReq(
-                        **common,
-                        subset_size=req.subset_size,
-                        end_date=req.run_date,
-                    )
-                ),
-            )
-        )
-
     max_workers = min(req.max_parallel_sources, len(sweep_plan))
     ordered_results: list[dict[str, Any] | None] = [None] * len(sweep_plan)
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"optuna-{req.cadence}") as executor:
@@ -1102,6 +1164,22 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
 
     results = [item for item in ordered_results if item is not None]
     failures = [item["summary"] for item in results if item.get("status") == "error"]
+    incomplete = [item["summary"] for item in results if item.get("status") == "skipped"]
+    staging: dict[str, Any] = {
+        "status": "not_requested" if not req.push_kv or req.dry_run else "blocked",
+        "reason": None,
+    }
+    if failures:
+        staging["reason"] = "source_failure"
+    elif incomplete:
+        staging["reason"] = "source_incomplete"
+    elif req.push_kv and not req.dry_run:
+        try:
+            staging = _commit_research_sweep_candidate(req, results)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[Optuna/research_sweep] composite staging failed")
+            failures.append(f"composite_staging:ERROR({type(exc).__name__}: {str(exc)[:180]})")
+            staging = {"status": "error", "reason": str(exc)}
     return {
         "status": "error" if failures else "completed",
         "cadence": req.cadence,
@@ -1109,6 +1187,8 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
         "summary": ", ".join(item["summary"] for item in results),
         "results": results,
         "failures": failures,
+        "incomplete": incomplete,
+        "staging": staging,
         "ga": next((item for item in results if item["source"] == "ga_optimizer"), None),
     }
 
@@ -1390,6 +1470,71 @@ class PerRegimeReq(BaseModel):
                           description="Default true — set false to actually push "
                                       "via push_optuna_result (which now routes to "
                                       "sandbox unless ?prod=1 header).")
+    trigger_source: str | None = Field(default=None, max_length=80)
+    trigger_id: str | None = Field(default=None, max_length=240)
+    run_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+@router.post("/per_regime/run")
+def trigger_per_regime_job(req: PerRegimeReq = Body(default=PerRegimeReq())):
+    """Trigger targeted per-regime research in the Optuna Cloud Run Job."""
+    env_overrides = {
+        "OPTUNA_JOB_MODE": "per_regime",
+        "OPTUNA_PER_REGIME_TARGET": req.target,
+        "OPTUNA_N_TRIALS": str(req.n_trials),
+        "OPTUNA_SUBSET_SIZE": str(req.subset_size),
+        "OPTUNA_WINDOW_DAYS": str(req.window_days),
+        "OPTUNA_CADENCE": str(req.cadence or "queue"),
+        "OPTUNA_RESEARCH_DATA_SOURCE": str(req.research_data_source or "snapshot"),
+        "OPTUNA_PUSH_KV": "1" if req.push_kv else "0",
+        "OPTUNA_DRY_RUN": "1" if req.dry_run else "0",
+    }
+    if req.trigger_source:
+        env_overrides["OPTUNA_TRIGGER_SOURCE"] = req.trigger_source
+    if req.trigger_id:
+        env_overrides["OPTUNA_QUEUE_ENTRY_ID"] = req.trigger_id
+    run_date = req.run_date
+    if not run_date and req.trigger_id:
+        match = re.search(r"(\d{4}-\d{2}-\d{2})$", req.trigger_id)
+        run_date = match.group(1) if match else None
+    if run_date:
+        env_overrides["OPTUNA_RUN_DATE"] = run_date
+
+    try:
+        execution = _optuna_jobs_client.run_job(env_overrides=env_overrides)
+    except JobAlreadyRunningError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"{OPTUNA_JOB_NAME} already has an active execution",
+                "execution_id": exc.execution.execution_id,
+                "execution_name": exc.execution.execution_name,
+                "trigger_id": req.trigger_id,
+            },
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[Optuna/per_regime/run] failed to trigger Job")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Cloud Run Optuna Job trigger failed: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    return {
+        "status": "triggered",
+        "job": OPTUNA_JOB_NAME,
+        "task": "optuna-per-regime",
+        "execution_id": execution.execution_id,
+        "execution_name": execution.execution_name,
+        "remote_execution_id": execution.execution_id,
+        "backend": "cloud_run_job",
+        "trigger_source": req.trigger_source,
+        "trigger_id": req.trigger_id,
+        "run_date": run_date,
+        "message": (
+            "optuna per-regime Job triggered "
+            f"backend=cloud_run_job remote_execution_id={execution.execution_id}; callback expected"
+        ),
+    }
 
 
 @router.post("/per_regime")
@@ -1439,10 +1584,10 @@ def run_per_regime(req: PerRegimeReq = Body(default=PerRegimeReq())):
 
     contract = _contract_meta(
         source="per_regime_robust",
-        scope="sandbox_challenger",
+        scope=_worker_push_scope(result.get("push")),
         sample_scope=f"subset_{req.subset_size}_window_{req.window_days}d_regime_robust_replay",
-        applies_to_production=bool(req.push_kv and not req.dry_run and result.get("push")),
-        push_target="sandbox_or_challenger_only",
+        applies_to_production=_worker_push_applies_to_production(result.get("push")),
+        push_target=_worker_push_target(result.get("push")),
         effective_fields=list((result.get("best_params") or {}).keys()),
         notes=[
             "Per-regime Optuna is intended for sandbox/challenger promotion, not direct production overwrite.",

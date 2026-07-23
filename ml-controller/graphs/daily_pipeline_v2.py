@@ -539,6 +539,7 @@ class PipelineStateV2(TypedDict, total=False):
     modal_prediction_bundle: dict            # Raw Modal L3 bundle returned by async callback path
     modal_prediction_state_gcs_uri: str       # Durable partial state URI for async callback continuation
     pipeline_modal_serving_context: dict      # Frozen model_pool/trading context for async Modal split path
+    snapshot_recovery_lineage: dict           # Explicit non-native PIT recovery evidence
     predictions: dict                       # symbol ??ml result
     l3_payloads: list[dict]                  # optional override; default is the full L1.5 slate after L2 TimesFM enrichment
     l3_predictions: dict                     # symbol -> formal L3 merged result
@@ -3366,6 +3367,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         sequence_series,
         contracts=sequence_contracts,
     )
+    recovery_lineage = state.get("snapshot_recovery_lineage") if isinstance(state.get("snapshot_recovery_lineage"), dict) else {}
     state_space_models = {
         model_name: _require_loaded_serving_version(active_versions, model_name, "pipeline_modal_prediction_bundle")
         for model_name in ("KalmanFilter", "MarkovSwitching")
@@ -3393,6 +3395,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
                 }
                 for model_name, contract in sequence_contracts.items()
             },
+            "pit_sequence_artifact_evidence": recovery_lineage.get("sequence_artifact_evidence"),
         },
         "model_status": model_status,
         "active_versions": active_versions,
@@ -3401,6 +3404,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "state_space_models": state_space_models,
         "callback_url": _pipeline_modal_prediction_callback_url(),
         "callback_token": _pipeline_modal_prediction_callback_token(),
+        "snapshot_recovery_lineage": _json_safe(recovery_lineage) if recovery_lineage else None,
     }
 
 
@@ -3601,6 +3605,41 @@ async def run_pipeline_v2_until_modal_prediction_spawn(run_date: str = "", produ
         }
 
 
+async def run_pipeline_v2_from_snapshot_recovery(
+    *,
+    source_gcs_uri: str,
+    run_date: str,
+    producer_run_id: str,
+) -> dict:
+    """Resume only from a checksum-addressed pre-open PIT state."""
+    from services import modal_client
+    from services.pipeline_snapshot_recovery import run_pipeline_snapshot_recovery
+
+    t0 = asyncio.get_event_loop().time()
+    try:
+        result = await run_pipeline_snapshot_recovery(
+            source_gcs_uri=source_gcs_uri,
+            run_date=run_date,
+            producer_run_id=producer_run_id,
+            query_fn=d1_client.query,
+            attach_serving_context=_attach_pipeline_modal_serving_context,
+            write_state_artifact=_write_pipeline_async_state_artifact,
+            build_modal_payload=_build_pipeline_modal_prediction_payload,
+            spawn_prediction_bundle=modal_client.spawn_pipeline_prediction_bundle,
+        )
+        result["elapsed_s"] = round(asyncio.get_event_loop().time() - t0, 1)
+        return result
+    except Exception as exc:  # noqa: BLE001
+        elapsed = asyncio.get_event_loop().time() - t0
+        logger.exception("[Pipeline V2] snapshot recovery failed after %.1fs", elapsed)
+        return {
+            "status": "error",
+            "run_date": run_date,
+            "elapsed_s": round(elapsed, 1),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict) -> dict:
     """Resume pipeline-v2 after Modal posts the raw L3 prediction bundle."""
     state_gcs_uri = str(callback_payload.get("state_gcs_uri") or "").strip()
@@ -3635,8 +3674,15 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
 
     t0 = asyncio.get_event_loop().time()
     try:
+        await _run_pipeline_nodes(state, [node_l3_formal_predict])
+        recovery_lineage = state.get("snapshot_recovery_lineage")
+        if isinstance(recovery_lineage, dict):
+            if recovery_lineage.get("eligible_for_native_learning") is not False:
+                raise ValueError("pipeline snapshot recovery must be non-native learning evidence")
+            for prediction in (state.get("predictions") or {}).values():
+                if isinstance(prediction, dict):
+                    prediction["pipeline_recovery_lineage"] = _json_safe(recovery_lineage)
         await _run_pipeline_nodes(state, [
-            node_l3_formal_predict,
             node_compute_personas,
             node_recommend,
             node_llm_reasons,

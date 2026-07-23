@@ -76,6 +76,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'storage-health-gate': { kind: 'maintenance', holidayGated: false, description: 'fail-close storage integrity, backlog and capacity gate' },
   'storage-integrity-audit': { kind: 'maintenance', holidayGated: false, description: 'manifest to R2 checksum and lineage audit' },
   'storage-capacity-report': { kind: 'maintenance', holidayGated: false, description: 'monthly D1 and R2 retention capacity report' },
+  'strategy-learning-finalize': { kind: 'maintenance', holidayGated: false, description: 'idempotent labels, marginal-edge and reward-ledger finalizer without rematerializing decisions' },
   'data-domain-shadow-backfill': { kind: 'maintenance', holidayGated: false, description: 'bounded keyset copy and checksum parity into an inactive D1 domain shard' },
   'weekly-cleanup': { kind: 'maintenance', holidayGated: false, description: 'weekly cleanup and lifecycle check; no retrain' },
   'weekly-backtest': { kind: 'research', holidayGated: false, description: 'weekly lightweight backtest, Monte Carlo, PBO validation' },

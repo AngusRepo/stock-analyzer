@@ -76,6 +76,7 @@ const TASK_NAMES: Record<string, string> = {
   'storage-health-gate': 'Storage Health Gate',
   'storage-integrity-audit': 'Storage Integrity Audit',
   'storage-capacity-report': 'Storage Capacity Report',
+  'strategy-learning-finalize': 'Strategy Learning Finalizer',
   'data-domain-shadow-backfill': 'Data Domain Shadow Backfill',
   'intraday-check': 'Limit Buy + SL/TP',
   'intraday-rescore': 'Intraday Re-score',

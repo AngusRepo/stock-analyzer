@@ -12,6 +12,7 @@ const D1_HEAVY_MAINTENANCE_TASKS = new Set([
   'legacy-hot-data-retirement', 'd1-evidence-scrub', 'r2-retention-sweep',
   'orphan-reachability-gc', 'cleanup-dlq-replay', 'weekly-cleanup',
   'price-horizon-projection',
+  'strategy-learning-finalize',
   'data-domain-shadow-backfill',
 ])
 const D1_MAINTENANCE_REQUEST_BUDGET_MS = 45_000
@@ -270,6 +271,28 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     recommendation: () => deps.runDailyRecommendation(requestedRunDate()),
     'post-screener-pipeline': () => enqueuePostScreenerPipelineContinuation(c, requestedRunDate()),
     'strategy-learning': () => enqueueStrategyLearningMaterialization(c, requestedRunDate()),
+    'strategy-learning-finalize': async () => {
+      const runDate = assertRunDate(requestedRunDate())
+      const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
+      const { reconcileSelectionDecisionEvidenceV4 } = await import('./selectionReferenceEvidence')
+      const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
+      const { refreshStrategyRewardLedger } = await import('./strategyLearning')
+      const decisionEvidence = await reconcileSelectionDecisionEvidenceV4(c.env.DB, runDate)
+      const labels = await materializeCanonicalSelectionLabelsV4(c.env.DB, { asOfDate: runDate })
+      const marginalEdge = await refreshStrategyMarginalEdgeV4(c.env.DB, runDate)
+      const rewards = await refreshStrategyRewardLedger(c.env.DB, { endDate: runDate, dryRun: false })
+      return [
+        `strategy_learning_finalize date=${runDate}`,
+        `selection_decisions=${decisionEvidence.finalSignalRows}/${decisionEvidence.referenceRows}`,
+        `selection_labels=${labels.persisted_rows}`,
+        `selection_pending=${labels.pending_rows}`,
+        `strategy_edge=${marginalEdge.status}:eligible=${marginalEdge.eligibleStrategies}:dates=${marginalEdge.sampleDates}`,
+        `reward_source_rows=${rewards.source_rows}`,
+        `reward_rows=${rewards.persisted_rows}`,
+        `reward_stale_retired=${rewards.stale_rows_retired}`,
+        `refresh_run_id=${rewards.refresh_run_id ?? 'none'}`,
+      ].join(' ')
+    },
     'strategy-threshold-calibration': async () => {
       const { runStrategyThresholdAutoCalibration } = await import('./strategyLearning')
       const cadence = c.req.query('cadence') === 'monthly'

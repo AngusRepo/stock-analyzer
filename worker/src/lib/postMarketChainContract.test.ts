@@ -70,6 +70,11 @@ assert(
 )
 
 assert(
+  postMarketChain.includes('maxProcessDates: 8') &&
+    postMarketChain.includes('post_verify_chain_failed:'),
+  'post-verify projection must be bounded and propagate the failing task into stage last_error',
+)
+assert(
   postMarketChain.includes('isCurrentBusinessDate'),
   'current-date-only tasks must be guarded so historical reruns cannot dirty current reports',
 )

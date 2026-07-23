@@ -6,7 +6,11 @@ export const PRICE_HORIZON_SOURCE = 'stock_prices:finlab_primary_canonical_mirro
 const MIN_SESSION_SAMPLE_SIZE = 100
 const DEFAULT_LOOKBACK_DAYS = 120
 const DEFAULT_MAX_SIGNAL_DATES = 60
+const DEFAULT_MAX_PROCESS_DATES = 8
+const RECENT_PRIORITY_SIGNAL_DATES = 2
+const INCOMPLETE_RETRY_DAYS = 7
 const UPSERT_ROWS_PER_STATEMENT = 8
+const D1_BATCH_STATEMENTS = 20
 
 type PriceRow = {
   stock_id: number
@@ -39,6 +43,7 @@ export type PriceHorizonProjectionResult = {
   eligibleSignalDates: number
   processedSignalDates: number
   skippedCompleteDates: number
+  deferredSignalDates: number
   candidateCount: number
   materializedCount: number
   rejectedCount: number
@@ -48,6 +53,74 @@ export type PriceHorizonProjectionResult = {
 }
 
 type ObservedSession = { session_date: string; sample_size: number }
+
+export type PriceHorizonRow = {
+  signal_date: string
+  entry_date: string
+  exit_date: string
+}
+
+export type PriceHorizonProjectionStatusRow = PriceHorizonRow & {
+  status: string
+  projection_version: string
+  updated_at: string
+}
+
+export function planPriceHorizonWork(
+  horizons: PriceHorizonRow[],
+  statuses: PriceHorizonProjectionStatusRow[],
+  options: { force?: boolean; maxProcessDates?: number; nowMs?: number } = {},
+): {
+  work: PriceHorizonRow[]
+  skippedCompleteDates: number
+  deferredSignalDates: number
+} {
+  const force = options.force === true
+  const maxProcessDates = Math.max(1, Math.floor(options.maxProcessDates ?? DEFAULT_MAX_PROCESS_DATES))
+  const retryAfterMs = INCOMPLETE_RETRY_DAYS * 86400_000
+  const nowMs = options.nowMs ?? Date.now()
+  const statusByDate = new Map(statuses.map((row) => [row.signal_date, row]))
+  const pending: PriceHorizonRow[] = []
+  let skippedCompleteDates = 0
+  let retryDeferredDates = 0
+
+  for (const horizon of horizons) {
+    const status = statusByDate.get(horizon.signal_date)
+    const sameContract = status
+      && status.entry_date === horizon.entry_date
+      && status.exit_date === horizon.exit_date
+      && status.projection_version === PRICE_HORIZON_PROJECTION_VERSION
+    if (!force && sameContract && ['success', 'empty'].includes(status.status)) {
+      skippedCompleteDates += 1
+      continue
+    }
+    if (!force && sameContract && status.status === 'incomplete') {
+      const normalized = status.updated_at.includes('T')
+        ? status.updated_at
+        : `${status.updated_at.replace(' ', 'T')}Z`
+      const updatedAt = Date.parse(normalized)
+      if (Number.isFinite(updatedAt) && nowMs - updatedAt < retryAfterMs) {
+        retryDeferredDates += 1
+        continue
+      }
+    }
+    pending.push(horizon)
+  }
+
+  const ascending = [...pending].sort((left, right) => left.signal_date.localeCompare(right.signal_date))
+  const recentCount = Math.min(RECENT_PRIORITY_SIGNAL_DATES, maxProcessDates, ascending.length)
+  const recent = recentCount > 0 ? ascending.slice(-recentCount).reverse() : []
+  const recentDates = new Set(recent.map((row) => row.signal_date))
+  const backlog = ascending
+    .filter((row) => !recentDates.has(row.signal_date))
+    .slice(0, Math.max(0, maxProcessDates - recent.length))
+  const work = [...recent, ...backlog]
+  return {
+    work,
+    skippedCompleteDates,
+    deferredSignalDates: retryDeferredDates + pending.length - work.length,
+  }
+}
 
 async function materializeMissingMarketBreadth(
   db: D1Database,
@@ -204,6 +277,30 @@ function chunks<T>(rows: T[], size: number): T[][] {
   return output
 }
 
+async function executeStatementBatches(
+  db: D1Database,
+  statements: D1PreparedStatement[],
+): Promise<void> {
+  for (const group of chunks(statements, D1_BATCH_STATEMENTS)) {
+    if (group.length) await db.batch(group)
+  }
+}
+
+async function loadProjectionStatuses(
+  db: D1Database,
+  horizons: PriceHorizonRow[],
+): Promise<PriceHorizonProjectionStatusRow[]> {
+  if (!horizons.length) return []
+  const dates = [...new Set(horizons.map((row) => row.signal_date))]
+  const placeholders = dates.map(() => '?').join(',')
+  const { results } = await db.prepare(`
+    SELECT signal_date, entry_date, exit_date, status, projection_version, updated_at
+      FROM price_horizon_projection_status
+     WHERE signal_date IN (${placeholders})
+  `).bind(...dates).all<PriceHorizonProjectionStatusRow>()
+  return results ?? []
+}
+
 async function loadPriceRows(db: D1Database, date: string): Promise<PriceRow[]> {
   const { results } = await db.prepare(`
     SELECT stock_id, open, close, adj_close
@@ -240,14 +337,14 @@ async function loadCandidateStockIds(db: D1Database, signalDate: string): Promis
 }
 
 async function upsertLabels(db: D1Database, rows: PriceHorizonLabel[]): Promise<void> {
-  for (const group of chunks(rows, UPSERT_ROWS_PER_STATEMENT)) {
+  const statements = chunks(rows, UPSERT_ROWS_PER_STATEMENT).map((group) => {
     const values = group.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')
     const params = group.flatMap((row) => [
       row.stockId, row.priceDate, row.entryDate, row.entryRawOpen, row.entryAdjustmentFactor,
       row.exitDate, row.exitRawClose, row.exitAdjustmentFactor, row.exitDate,
       PRICE_HORIZON_SOURCE, PRICE_HORIZON_PROJECTION_VERSION,
     ])
-    await db.prepare(`
+    return db.prepare(`
       INSERT INTO price_horizon_labels_v1 (
         stock_id, price_date, entry_date, entry_raw_open, entry_adjustment_factor,
         exit_date, exit_raw_close, exit_adjustment_factor, outcome_known_date,
@@ -264,18 +361,19 @@ async function upsertLabels(db: D1Database, rows: PriceHorizonLabel[]): Promise<
         source=excluded.source,
         projection_version=excluded.projection_version,
         materialized_at=CURRENT_TIMESTAMP
-    `).bind(...params).run()
-  }
+    `).bind(...params)
+  })
+  await executeStatementBatches(db, statements)
 }
 
 async function upsertRejections(db: D1Database, rows: PriceHorizonRejection[]): Promise<void> {
-  for (const group of chunks(rows, UPSERT_ROWS_PER_STATEMENT)) {
+  const statements = chunks(rows, UPSERT_ROWS_PER_STATEMENT).map((group) => {
     const values = group.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')
     const params = group.flatMap((row) => [
       row.stockId, row.priceDate, row.entryDate, row.exitDate, row.reason,
       PRICE_HORIZON_SOURCE, PRICE_HORIZON_PROJECTION_VERSION,
     ])
-    await db.prepare(`
+    return db.prepare(`
       INSERT INTO price_horizon_label_rejections_v1 (
         stock_id, price_date, entry_date, exit_date, rejection_reason, source, projection_version
       ) VALUES ${values}
@@ -286,18 +384,20 @@ async function upsertRejections(db: D1Database, rows: PriceHorizonRejection[]): 
         source=excluded.source,
         projection_version=excluded.projection_version,
         updated_at=CURRENT_TIMESTAMP
-    `).bind(...params).run()
-  }
+    `).bind(...params)
+  })
+  await executeStatementBatches(db, statements)
 }
 
 async function deleteResolvedRejections(db: D1Database, priceDate: string, stockIds: number[]): Promise<void> {
-  for (const group of chunks(stockIds, 80)) {
+  const statements = chunks(stockIds, 80).map((group) => {
     const placeholders = group.map(() => '?').join(',')
-    await db.prepare(`
+    return db.prepare(`
       DELETE FROM price_horizon_label_rejections_v1
        WHERE price_date = ? AND stock_id IN (${placeholders})
-    `).bind(priceDate, ...group).run()
-  }
+    `).bind(priceDate, ...group)
+  })
+  await executeStatementBatches(db, statements)
 }
 
 export async function materializePriceHorizonLabels(
@@ -307,6 +407,7 @@ export async function materializePriceHorizonLabels(
     endDate?: string
     outcomeAsOfDate?: string
     maxSignalDates?: number
+    maxProcessDates?: number
     force?: boolean
   } = {},
 ): Promise<PriceHorizonProjectionResult> {
@@ -316,11 +417,17 @@ export async function materializePriceHorizonLabels(
   const startDate = isoDate(options.startDate ?? shiftDate(endDate, -DEFAULT_LOOKBACK_DAYS), 'start_date')
   if (startDate > endDate || endDate > outcomeAsOfDate) throw new Error('invalid_price_horizon_date_range')
   const maxSignalDates = Math.max(1, Math.min(Number(options.maxSignalDates ?? DEFAULT_MAX_SIGNAL_DATES), 260))
+  const maxProcessDates = Math.max(1, Math.min(Number(options.maxProcessDates ?? DEFAULT_MAX_PROCESS_DATES), 40))
   const runId = `price-horizon-${startDate}-${endDate}-${Date.now().toString(36)}`
   const marketDb = databaseForDataDomain(env, 'market')
   const learningDb = databaseForDataDomain(env, 'learning')
   const opsDb = databaseForDataDomain(env, 'ops')
 
+  await opsDb.prepare(`
+    UPDATE price_horizon_projection_runs
+       SET status='error', last_error='stale_projection_run_superseded', completed_at=CURRENT_TIMESTAMP
+     WHERE status='running' AND started_at < datetime('now', '-15 minutes')
+  `).run()
   await opsDb.prepare(`
     INSERT INTO price_horizon_projection_runs (
       run_id, start_date, end_date, outcome_as_of_date, status
@@ -375,34 +482,21 @@ export async function materializePriceHorizonLabels(
       exit_date: string
     }>()
 
+    const horizons = horizonRows ?? []
+    const existingStatuses = await loadProjectionStatuses(opsDb, horizons)
+    const plan = planPriceHorizonWork(horizons, existingStatuses, {
+      force: options.force,
+      maxProcessDates,
+    })
     let processedSignalDates = 0
-    let skippedCompleteDates = 0
+    const skippedCompleteDates = plan.skippedCompleteDates
+    const deferredSignalDates = plan.deferredSignalDates
     let candidateCount = 0
     let materializedCount = 0
     let rejectedCount = 0
 
-    for (const horizon of horizonRows ?? []) {
+    for (const horizon of plan.work) {
       const candidates = await loadCandidateStockIds(learningDb, horizon.signal_date)
-      const existing = await opsDb.prepare(`
-        SELECT candidate_count, status, entry_date, exit_date, projection_version
-          FROM price_horizon_projection_status
-         WHERE signal_date = ?
-      `).bind(horizon.signal_date).first<{
-        candidate_count: number
-        status: string
-        entry_date: string
-        exit_date: string
-        projection_version: string
-      }>()
-      if (!options.force
-        && existing?.status === 'success'
-        && Number(existing.candidate_count) === candidates.length
-        && existing.entry_date === horizon.entry_date
-        && existing.exit_date === horizon.exit_date
-        && existing.projection_version === PRICE_HORIZON_PROJECTION_VERSION) {
-        skippedCompleteDates += 1
-        continue
-      }
 
       const [entryRows, exitRows] = await Promise.all([
         loadPriceRows(marketDb, horizon.entry_date),
@@ -468,6 +562,7 @@ export async function materializePriceHorizonLabels(
       `eligible_dates=${(horizonRows ?? []).length}`,
       `processed_dates=${processedSignalDates}`,
       `skipped_complete_dates=${skippedCompleteDates}`,
+      `deferred_dates=${deferredSignalDates}`,
       `candidates=${candidateCount}`,
       `materialized=${materializedCount}`,
       `rejected=${rejectedCount}`,
@@ -479,6 +574,7 @@ export async function materializePriceHorizonLabels(
       eligibleSignalDates: (horizonRows ?? []).length,
       processedSignalDates,
       skippedCompleteDates,
+      deferredSignalDates,
       candidateCount,
       materializedCount,
       rejectedCount,

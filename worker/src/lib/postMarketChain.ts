@@ -478,6 +478,7 @@ export async function runPostVerifyCallbackChain(
       endDate: ctx.runDate,
       outcomeAsOfDate: twDateToday(),
       maxSignalDates: 60,
+      maxProcessDates: 8,
     })
     return result.summary
   }, { timeoutMs: 240_000 })
@@ -527,5 +528,9 @@ export async function runPostVerifyCallbackChain(
   }))
 
   await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
-  return results.some((row) => row.critical !== false && row.status === 'error') ? 'error' : 'success'
+  const criticalFailure = results.find((row) => row.critical !== false && row.status === 'error')
+  if (criticalFailure) {
+    throw new Error(`post_verify_chain_failed:${criticalFailure.task}:${criticalFailure.summary}`)
+  }
+  return 'success'
 }

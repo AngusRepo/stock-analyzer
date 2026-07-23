@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
-import { buildPriceHorizonObservations } from './priceHorizonProjection'
+import {
+  PRICE_HORIZON_PROJECTION_VERSION,
+  buildPriceHorizonObservations,
+  planPriceHorizonWork,
+} from './priceHorizonProjection'
 
 const result = buildPriceHorizonObservations(
   [3, 1, 2, 1],
@@ -54,3 +58,43 @@ const factorFailure = buildPriceHorizonObservations(
 )
 assert.equal(factorFailure.labels.length, 0)
 assert.equal(factorFailure.rejections[0]?.reason, 'entry_adjustment_factor_invalid')
+
+const horizons = Array.from({ length: 12 }, (_, index) => ({
+  signal_date: `2026-06-${String(index + 1).padStart(2, '0')}`,
+  entry_date: `2026-06-${String(index + 2).padStart(2, '0')}`,
+  exit_date: `2026-06-${String(index + 6).padStart(2, '0')}`,
+}))
+const statuses = [
+  {
+    ...horizons[0],
+    status: 'success',
+    projection_version: PRICE_HORIZON_PROJECTION_VERSION,
+    updated_at: '2026-07-20 00:00:00',
+  },
+  {
+    ...horizons[1],
+    status: 'incomplete',
+    projection_version: PRICE_HORIZON_PROJECTION_VERSION,
+    updated_at: '2026-07-20 00:00:00',
+  },
+]
+const plan = planPriceHorizonWork(horizons, statuses, {
+  maxProcessDates: 4,
+  nowMs: Date.parse('2026-07-23T00:00:00Z'),
+})
+assert.deepEqual(
+  plan.work.map((row) => row.signal_date),
+  ['2026-06-12', '2026-06-11', '2026-06-03', '2026-06-04'],
+)
+assert.equal(plan.skippedCompleteDates, 1)
+assert.equal(plan.deferredSignalDates, 7)
+
+const forced = planPriceHorizonWork(horizons, statuses, {
+  force: true,
+  maxProcessDates: 3,
+  nowMs: Date.parse('2026-07-23T00:00:00Z'),
+})
+assert.deepEqual(
+  forced.work.map((row) => row.signal_date),
+  ['2026-06-12', '2026-06-11', '2026-06-01'],
+)

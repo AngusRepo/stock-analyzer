@@ -9,7 +9,9 @@ import { importCodexResult } from '../strategy-discovery/codexImport'
 import { recoverableLatestRun } from '../strategy-discovery/buttonState'
 
 const routes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
-routes.use('/api/*', authMiddleware, adminMiddleware)
+routes.use('/api/dashboard-state', authMiddleware, adminMiddleware)
+routes.use('/api/full-analysis', authMiddleware, adminMiddleware)
+routes.use('/api/runs/*', authMiddleware, adminMiddleware)
 
 function idempotencyKey(value: string | undefined): string | null {
   const key = value?.trim() ?? ''

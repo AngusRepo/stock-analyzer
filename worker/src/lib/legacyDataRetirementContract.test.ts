@@ -12,6 +12,11 @@ assert.match(strategy, /retainArtifactHardReference/)
 assert.match(strategy, /strategy_candidate_contexts/)
 assert.match(strategy, /context_id=\?, evidence_artifact_id=\?/)
 assert.match(strategy, /source_rows_preserved: true/)
+assert.match(strategy, /cursor\?\.status === 'complete'/)
+assert.ok(
+  strategy.indexOf("cursor?.status === 'complete'") < strategy.indexOf('WITH candidate_contexts AS'),
+  'completed migration must return before scanning strategy_decision_log',
+)
 assert.ok(
   strategy.indexOf('writeEvidenceArtifact') < strategy.indexOf('UPDATE strategy_decision_log'),
   'verified R2 artifact write must precede D1 strategy JSON compaction',

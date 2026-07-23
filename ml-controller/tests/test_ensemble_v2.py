@@ -77,6 +77,8 @@ def test_formal_active8_contract_masks_missing_sequence_model_with_lineage():
     assert "iTransformer" not in ev2["contributing_models"]
     assert ev2["formal_model_input_contract"]["model_availability"]["iTransformer"] is False
     assert ev2["lineage_status"] == "complete"
+    assert ev2["target_semantic_version"] == MODEL_TARGET_SEMANTIC_VERSION
+
 
 def test_ensemble_v2_blocks_equal_weight_when_ic_is_cold_start_by_default():
     pred = _formal_pred({

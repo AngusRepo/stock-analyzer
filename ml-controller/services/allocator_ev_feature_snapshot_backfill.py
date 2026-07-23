@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from services import d1_client
+from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION
 from services.allocator_ev_fusion import _s12_structure_features
 from services.ev_lineage_contract import (
     attach_next_session_open_evidence,
@@ -157,10 +158,10 @@ def load_allocator_ev_snapshot_candidate_rows(
               ELSE NULL
             END reference_feature_rejection_reason,
             COUNT(*) OVER () candidate_total_count
-        FROM canonical_reference r
-        LEFT JOIN stocks st ON st.symbol=r.symbol
-        LEFT JOIN daily_recommendations dr
-          ON dr.date=r.signal_date AND dr.symbol=r.symbol
+        FROM daily_recommendations dr
+        JOIN canonical_reference r
+          ON r.signal_date=dr.date AND r.symbol=dr.symbol
+        LEFT JOIN stocks st ON st.symbol=dr.symbol
         LEFT JOIN ranked_prediction_ids rp
           ON rp.stock_id=st.id AND rp.prediction_rank=1
         LEFT JOIN predictions p ON p.id=rp.id
@@ -340,6 +341,10 @@ def _snapshot_staging_statement(
     *,
     run_id: str,
     generated_at: str,
+    lineage_cohort_id: str,
+    generation_mode: str,
+    model_set_signature: str,
+    target_semantic_version: str,
 ) -> tuple[str, list[Any]]:
     l4 = alpha_allocation.get("l4_alpha_ev") if isinstance(alpha_allocation.get("l4_alpha_ev"), dict) else {}
     s12 = alpha_allocation.get("s12_trade_ev") if isinstance(alpha_allocation.get("s12_trade_ev"), dict) else {}
@@ -363,8 +368,12 @@ def _snapshot_staging_statement(
             s12_source,
             as_of_guard,
             source_recommendation_date,
-            generated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            generated_at,
+            lineage_cohort_id,
+            generation_mode,
+            model_set_signature,
+            target_semantic_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(run_id, stock_id) DO UPDATE SET
             snapshot_date=excluded.snapshot_date,
             symbol=excluded.symbol,
@@ -381,7 +390,11 @@ def _snapshot_staging_statement(
             s12_source=excluded.s12_source,
             as_of_guard=excluded.as_of_guard,
             source_recommendation_date=excluded.source_recommendation_date,
-            generated_at=excluded.generated_at
+            generated_at=excluded.generated_at,
+            lineage_cohort_id=excluded.lineage_cohort_id,
+            generation_mode=excluded.generation_mode,
+            model_set_signature=excluded.model_set_signature,
+            target_semantic_version=excluded.target_semantic_version
         """.strip(),
         [
             run_id,
@@ -404,6 +417,10 @@ def _snapshot_staging_statement(
             AS_OF_GUARD,
             row.get("recommendation_date") or snapshot_date,
             generated_at,
+            lineage_cohort_id,
+            generation_mode,
+            model_set_signature,
+            target_semantic_version,
         ],
     )
 
@@ -456,7 +473,8 @@ def _snapshot_publish_statements(
         snapshot_date, stock_id, symbol, forecast_data, score, score_components,
         alpha_context, alpha_allocation, market_heat_expected_return,
         market_segment, recommendation_lane, snapshot_source, l4_model_version,
-        s12_source, as_of_guard, source_recommendation_date, generated_at
+        s12_source, as_of_guard, source_recommendation_date, generated_at,
+        lineage_cohort_id, generation_mode, model_set_signature, target_semantic_version
     """.strip()
     return [
         (
@@ -489,7 +507,11 @@ def _snapshot_publish_statements(
                 s12_source=excluded.s12_source,
                 as_of_guard=excluded.as_of_guard,
                 source_recommendation_date=excluded.source_recommendation_date,
-                generated_at=excluded.generated_at
+                generated_at=excluded.generated_at,
+                lineage_cohort_id=excluded.lineage_cohort_id,
+                generation_mode=excluded.generation_mode,
+                model_set_signature=excluded.model_set_signature,
+                target_semantic_version=excluded.target_semantic_version
             """.strip(),
             [run_id, snapshot_date, SNAPSHOT_SOURCE],
         ),
@@ -578,9 +600,13 @@ def build_allocator_ev_feature_snapshots_for_date(
     s12_limit: int = 5000,
     s12_min_samples: int = 30,
     s12_min_sample_dates: int = 8,
+    lineage_cohort_id: str | None = None,
 ) -> dict[str, Any]:
     generated_at = datetime.now(timezone.utc).isoformat()
     run_id = f"allocator-snapshot:{snapshot_date}:{generated_at.replace(':', '').replace('-', '')}"
+    resolved_lineage_cohort_id = str(lineage_cohort_id or run_id).strip()
+    if not resolved_lineage_cohort_id:
+        raise ValueError("allocator_snapshot_lineage_cohort_id_missing")
     l4_result = _build_l4_asof_artifact(
         query_fn,
         snapshot_date=snapshot_date,
@@ -692,6 +718,42 @@ def build_allocator_ev_feature_snapshots_for_date(
             continue
         if isinstance(lineage_result.get("row"), dict):
             row, prediction = _parse_candidate_row(lineage_result["row"])
+        ensemble_payload = (
+            prediction.get("ensemble_v2")
+            if isinstance(prediction.get("ensemble_v2"), dict)
+            else {}
+        )
+        model_set_signature = str(ensemble_payload.get("model_set_signature") or "").strip()
+        if not model_set_signature:
+            rejected_lineage_rows += 1
+            skipped += 1
+            skip_reasons["lineage:model_set_signature_missing"] = (
+                skip_reasons.get("lineage:model_set_signature_missing", 0) + 1
+            )
+            continue
+        model_score_lineage = (
+            prediction.get("model_score_lineage")
+            if isinstance(prediction.get("model_score_lineage"), dict)
+            else {}
+        )
+        target_semantic_version = str(
+            ensemble_payload.get("target_semantic_version")
+            or model_score_lineage.get("target_semantic_version")
+            or ""
+        ).strip()
+        if target_semantic_version != MODEL_TARGET_SEMANTIC_VERSION:
+            rejected_lineage_rows += 1
+            skipped += 1
+            reason = (
+                "lineage:target_semantic_version_missing"
+                if not target_semantic_version
+                else "lineage:target_semantic_version_incompatible"
+            )
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+            continue
+        generation_mode = (
+            "native" if lineage_status == "native" else "counterfactual_reconstruction"
+        )
         recorded_context = recorded_market_context(row, signal_date=snapshot_date)
         reconstructed_context = context_for_market_segment(
             market_contexts,
@@ -782,6 +844,10 @@ def build_allocator_ev_feature_snapshots_for_date(
                 alpha_allocation,
                 run_id=run_id,
                 generated_at=generated_at,
+                lineage_cohort_id=resolved_lineage_cohort_id,
+                generation_mode=generation_mode,
+                model_set_signature=model_set_signature,
+                target_semantic_version=target_semantic_version,
             )
         )
 
@@ -909,6 +975,7 @@ def backfill_allocator_ev_feature_snapshots(
     s12_limit: int = 5000,
     s12_min_samples: int = 30,
     s12_min_sample_dates: int = 8,
+    lineage_cohort_id: str | None = None,
 ) -> dict[str, Any]:
     if next_session_date and start_date != end_date:
         raise ValueError("next_session_date_requires_single_snapshot_date")
@@ -928,6 +995,11 @@ def backfill_allocator_ev_feature_snapshots(
             s12_limit=s12_limit,
             s12_min_samples=s12_min_samples,
             s12_min_sample_dates=s12_min_sample_dates,
+            lineage_cohort_id=(
+                lineage_cohort_id
+                if start_date == end_date or not lineage_cohort_id
+                else f"{lineage_cohort_id}:{snapshot_date}"
+            ),
         ))
     aggregate_skip_reasons: dict[str, int] = {}
     for row in rows:

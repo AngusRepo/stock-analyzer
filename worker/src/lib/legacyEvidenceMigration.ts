@@ -34,6 +34,9 @@ export async function runLegacyEvidenceMigration(
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 200), 500))
   const taskName = 'legacy_screener_evidence_v2'
   const cursor = await loadLegacyMigrationCursor(env.DB, taskName)
+  if (cursor?.status === 'complete') {
+    return { candidates: 0, artifacts: 0, queued_scrubs: 0, backlog_remaining: false }
+  }
   const cursorId = Math.max(0, Number.parseInt(cursor?.cursor_key ?? '0', 10) || 0)
   const { results } = await env.DB.prepare(`
     SELECT sfi.id, sfi.run_id, sfi.date, sfi.symbol, sfi.stage, sfi.evidence

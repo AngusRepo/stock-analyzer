@@ -90,6 +90,13 @@ assert(
   'post-pipeline chain must stop before verify when canonical allocator snapshots are missing',
 )
 assert(
+  pipelineStageLease.includes('attempt_count') &&
+    pipelineStageLease.includes('input.attempt ?? state.row.attempt_count') &&
+    updateOrchestrator.includes('Number(claimed.attempt_count ?? 1) - 1') &&
+    postMarketChain.includes('allocator snapshot retry budget exhausted'),
+  'allocator snapshot retries must use the durable stage attempt counter and stop after a bounded budget',
+)
+assert(
   researchWorkflows.includes('durable: !(params.dryRun ?? false)') &&
     researchWorkflows.includes('upstream_run_id: params.runId') &&
     postMarketChain.includes("/\\bstatus=(?:spawned|pending)\\b/i") &&

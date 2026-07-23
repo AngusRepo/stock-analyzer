@@ -76,6 +76,12 @@ export async function runLegacyStrategyEvidenceMigration(
   const symbolLimit = Math.max(1, Math.min(Math.floor(options.symbolLimit ?? 20), 40))
   const taskName = 'legacy_strategy_evidence_v2'
   const cursor = await loadLegacyMigrationCursor(env.DB, taskName)
+  if (cursor?.status === 'complete') {
+    return {
+      candidate_contexts: 0, migrated_decisions: 0, artifacts: 0,
+      original_blob_bytes: 0, compact_blob_bytes: 0, backlog_remaining: false,
+    }
+  }
   const cursorDate = cursor?.cursor_date ?? ''
   const cursorSymbol = cursor?.cursor_key ?? ''
   const { results } = await env.DB.prepare(`

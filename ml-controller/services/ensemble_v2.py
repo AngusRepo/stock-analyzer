@@ -48,6 +48,7 @@ def _ensemble_lineage_fields(
         "schema_version": ENSEMBLE_V2_SCHEMA_VERSION,
         "semantic_version": ENSEMBLE_V2_SEMANTIC_VERSION,
         "input_contract_version": formal_contract.get("schema_version"),
+        "target_semantic_version": formal_contract.get("target_semantic_version"),
         "artifact_versions": artifact_versions,
         "model_set_signature": signature,
         "lineage_status": "complete" if signature else "incomplete",

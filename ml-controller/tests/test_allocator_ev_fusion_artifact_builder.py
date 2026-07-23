@@ -28,6 +28,7 @@ from services.l4_alpha_ev_resolver import (  # noqa: E402
     SNAPSHOT_BACKFILL_USAGE_SCOPE,
 )
 from services.ev_lineage_contract import prediction_timing_blockers  # noqa: E402
+from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION  # noqa: E402
 
 
 def _l4_payload(value: float) -> dict:
@@ -57,6 +58,7 @@ def _ensemble_forecast(avg_rank: float = 0.65, confidence: float = 0.72) -> str:
             "contributing_models": ["LightGBM", "XGBoost"],
             "artifact_versions": {"LightGBM": "vTest", "XGBoost": "vTest"},
             "model_set_signature": "LightGBM@vTest|XGBoost@vTest",
+            "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
             "avg_rank": avg_rank,
             "confidence": confidence,
         },
@@ -394,6 +396,9 @@ def test_snapshot_candidate_query_avoids_correlated_evidence_lookups():
     assert "reference_feature_rejection_reason" in captured["sql"]
     assert "COALESCE(dr.score_components, r.score_components)" in captured["sql"]
     assert "r.feature_available" in captured["sql"]
+    assert "FROM daily_recommendations dr" in captured["sql"]
+    assert "JOIN canonical_reference r" in captured["sql"]
+    assert "FROM canonical_reference r" not in captured["sql"]
     assert captured["params"] == [
         "2026-06-18",
         None,
@@ -403,6 +408,97 @@ def test_snapshot_candidate_query_avoids_correlated_evidence_lookups():
         "2026-06-19",
         200,
     ]
+
+
+def test_snapshot_builder_rejects_missing_target_semantic_lineage():
+    forecast = json.loads(_ensemble_forecast())
+    forecast["ensemble_v2"].pop("target_semantic_version")
+    candidate = {
+        "stock_id": 1,
+        "symbol": "2330",
+        "recommendation_date": "2026-07-23",
+        "prediction_generated_at": "2026-07-23T12:00:00Z",
+        "forecast_data": json.dumps(forecast),
+        "score": 70,
+        "score_components": json.dumps({
+            "version": "score_v2",
+            "semanticVersion": "score-v2-active8-components-v3",
+            "finalScore": 70,
+            "components": {
+                "mlEdge": 18,
+                "fundamentalQuality": 19,
+                "chipFlow": 20,
+                "technicalStructure": 21,
+            },
+        }),
+        "alpha_context": "{}",
+        "existing_alpha_allocation": "{}",
+        "current_price": 100,
+    }
+
+    def query_fn(sql: str, _params: list[object] | None = None) -> list[dict]:
+        if "canonical_reference_snapshot_candidates_v4" in sql:
+            return [candidate]
+        if "FROM model_champion_history" in sql:
+            return _champion_history_rows()
+        return []
+
+    result = build_allocator_ev_feature_snapshots_for_date(
+        snapshot_date="2026-07-23",
+        query_fn=query_fn,
+        dry_run=True,
+    )
+
+    assert result["snapshots_built"] == 0
+    assert result["rejected_lineage_rows"] == 1
+    assert result["skip_reasons"] == {"lineage:target_semantic_version_missing": 1}
+
+
+def test_snapshot_builder_accepts_target_semantic_from_model_score_lineage():
+    forecast = json.loads(_ensemble_forecast())
+    forecast["ensemble_v2"].pop("target_semantic_version")
+    forecast["model_score_lineage"] = {
+        "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
+    }
+    candidate = {
+        "stock_id": 1,
+        "symbol": "2330",
+        "recommendation_date": "2026-07-23",
+        "prediction_generated_at": "2026-07-23T12:00:00Z",
+        "forecast_data": json.dumps(forecast),
+        "score": 70,
+        "score_components": json.dumps({
+            "version": "score_v2",
+            "semanticVersion": "score-v2-active8-components-v3",
+            "finalScore": 70,
+            "components": {
+                "mlEdge": 18,
+                "fundamentalQuality": 19,
+                "chipFlow": 20,
+                "technicalStructure": 21,
+            },
+        }),
+        "alpha_context": "{}",
+        "existing_alpha_allocation": "{}",
+        "current_price": 100,
+    }
+
+    def query_fn(sql: str, _params: list[object] | None = None) -> list[dict]:
+        if "canonical_reference_snapshot_candidates_v4" in sql:
+            return [candidate]
+        if "FROM model_champion_history" in sql:
+            return _champion_history_rows()
+        return []
+
+    result = build_allocator_ev_feature_snapshots_for_date(
+        snapshot_date="2026-07-23",
+        query_fn=query_fn,
+        dry_run=True,
+    )
+
+    assert result["snapshots_built"] == 1
+    assert result["rejected_lineage_rows"] == 0
+    assert result["skip_reasons"] == {}
 
 
 def test_snapshot_candidate_query_accepts_calendar_next_session_without_future_close_row():
@@ -826,6 +922,7 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
         dry_run=False,
         l4_min_samples=500,
         l4_min_dates=20,
+        lineage_cohort_id="pipeline-v2-test",
     )
 
     assert result["status"] == "ok"
@@ -836,7 +933,15 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
     assert "l4_alpha_ev" not in allocation
     assert allocation["snapshot_l4_available"] is False
     assert "allocator_ev_feature_snapshot_staging" in written[1][0]
+    assert "lineage_cohort_id" in written[1][0]
+    assert written[1][1][18:22] == [
+        "pipeline-v2-test",
+        "native",
+        "LightGBM@vTest|XGBoost@vTest",
+        MODEL_TARGET_SEMANTIC_VERSION,
+    ]
     assert "INSERT INTO allocator_ev_feature_snapshots" in written[2][0]
+    assert "lineage_cohort_id" in written[2][0]
     assert "ON CONFLICT(snapshot_date, stock_id, snapshot_source) DO UPDATE" in written[2][0]
     assert "INSERT OR REPLACE" not in written[2][0]
     assert "ORDER BY datetime(latest.created_at) DESC, latest.run_id DESC" in written[2][0]

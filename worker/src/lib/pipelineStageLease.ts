@@ -11,6 +11,7 @@ export type PipelineStageRow = {
   processed_count: number
   expected_count: number | null
   persisted_count: number
+  attempt_count: number
   lease_owner: string | null
   lease_expires_at: string | null
 }
@@ -27,7 +28,8 @@ export async function enqueuePipelineStage(
     ) VALUES (?, ?, ?, 'queued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     ON CONFLICT(business_date, stage) DO NOTHING
     RETURNING business_date, stage, canonical_run_id, status, cursor_key,
-              processed_count, expected_count, persisted_count, lease_owner, lease_expires_at
+              processed_count, expected_count, persisted_count, attempt_count,
+              lease_owner, lease_expires_at
   `).bind(input.businessDate, input.stage, input.runId).first<PipelineStageRow>()
   if (inserted) return { shouldEnqueue: true, row: inserted }
 
@@ -42,14 +44,16 @@ export async function enqueuePipelineStage(
            OR (status='running' AND lease_expires_at < CURRENT_TIMESTAMP)
          )
       RETURNING business_date, stage, canonical_run_id, status, cursor_key,
-                processed_count, expected_count, persisted_count, lease_owner, lease_expires_at
+                processed_count, expected_count, persisted_count, attempt_count,
+                lease_owner, lease_expires_at
     `).bind(input.businessDate, input.stage).first<PipelineStageRow>()
     if (resumed) return { shouldEnqueue: true, row: resumed }
   }
 
   const row = await db.prepare(`
     SELECT business_date, stage, canonical_run_id, status, cursor_key,
-           processed_count, expected_count, persisted_count, lease_owner, lease_expires_at
+           processed_count, expected_count, persisted_count, attempt_count,
+           lease_owner, lease_expires_at
       FROM pipeline_stage_runs
      WHERE business_date=? AND stage=?
   `).bind(input.businessDate, input.stage).first<PipelineStageRow>()
@@ -72,7 +76,8 @@ export async function claimPipelineStage(
          OR (status='running' AND lease_expires_at < CURRENT_TIMESTAMP)
        )
     RETURNING business_date, stage, canonical_run_id, status, cursor_key,
-              processed_count, expected_count, persisted_count, lease_owner, lease_expires_at
+              processed_count, expected_count, persisted_count, attempt_count,
+              lease_owner, lease_expires_at
   `).bind(
     input.ownerId,
     leaseModifier(input.leaseSeconds ?? 900),
@@ -124,7 +129,7 @@ export async function queuePostPipelineStage(
       cursor: 0,
       triggerTime: input.businessDate,
       runId: state.row.canonical_run_id,
-      attempt: Math.max(0, Math.floor(input.attempt ?? 0)),
+      attempt: Math.max(0, Math.floor(input.attempt ?? state.row.attempt_count)),
     })
   } catch (error) {
     await markPipelineStage(env.DB, {
@@ -157,7 +162,7 @@ export async function queuePostVerifyStage(
       cursor: 0,
       triggerTime: input.businessDate,
       runId: state.row.canonical_run_id,
-      attempt: Math.max(0, Math.floor(input.attempt ?? 0)),
+      attempt: Math.max(0, Math.floor(input.attempt ?? state.row.attempt_count)),
     })
   } catch (error) {
     await markPipelineStage(env.DB, {

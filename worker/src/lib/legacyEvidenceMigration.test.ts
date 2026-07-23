@@ -10,6 +10,11 @@ assert.match(migration, /latest\.status = 'success'/)
 assert.match(migration, /artifact_d1_scrub_queue/)
 assert.match(migration, /INSERT OR IGNORE/)
 assert.match(migration, /retentionClass: 'superseded_run'/)
+assert.match(migration, /cursor\?\.status === 'complete'/)
+assert.ok(
+  migration.indexOf("cursor?.status === 'complete'") < migration.indexOf('SELECT sfi.id'),
+  'completed migration must return before scanning screener_funnel_items',
+)
 assert.match(scheduler, /"id": "legacy-evidence-migration"/)
 assert.match(scheduler, /limit=100&max_chunks=1/)
 

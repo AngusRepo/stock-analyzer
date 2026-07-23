@@ -316,6 +316,30 @@ export async function runPostPipelineCallbackChain(
     upstreamRunId: ctx.upstreamRunId,
     incrementAttempt: true,
   })
+  const snapshotAttempt = Math.max(0, Number(ctx.recoveryAttempt ?? 0))
+  if (!snapshotClosure.ready && snapshotAttempt >= 3) {
+    const error = `allocator snapshot retry budget exhausted attempt=${snapshotAttempt} `
+      + `native=${snapshotClosure.runNativeLineageRows} reconstructed=${snapshotClosure.reconstructedLineageRows} `
+      + `rejected=${snapshotClosure.rejectedLineageRows} expected=${snapshotClosure.expectedRows} `
+      + `published=${snapshotClosure.publishedRows} actual=${snapshotClosure.actualRows}`
+    results.push({
+      task: 'allocator-ev-feature-snapshot-backfill',
+      summary: error,
+      status: 'error',
+      critical: true,
+    })
+    await recordAllocatorEvLifecycle(env.DB, {
+      businessDate: ctx.runDate,
+      state: 'error',
+      nativeLineageRows: snapshotClosure.nativeLineageRows,
+      snapshotRunId: snapshotClosure.snapshotRunId,
+      snapshotRows: snapshotClosure.actualRows,
+      upstreamRunId: ctx.upstreamRunId,
+      lastError: error,
+    })
+    await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
+    return 'error'
+  }
   const snapshotTask = await logChainedTask(
     env,
     ctx,
@@ -362,7 +386,7 @@ export async function runPostPipelineCallbackChain(
       upstreamRunId: ctx.upstreamRunId,
       lastError: error,
     })
-    const attempt = Math.max(0, Number(ctx.recoveryAttempt ?? 0))
+    const attempt = snapshotAttempt
     const retryScheduled = attempt < 3
     if (attempt < 3) {
       await (env.UPDATE_QUEUE as any).send({

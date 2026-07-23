@@ -41,8 +41,10 @@ def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
 
 def test_allocator_snapshot_mode_closes_scheduler_callback(monkeypatch):
     callbacks = []
+    execution_kwargs = {}
 
     async def fake_execute_allocator_snapshot(**_kwargs):
+        execution_kwargs.update(_kwargs)
         return {"status": "ok", "snapshots_built": 135, "written": 135, "skipped_days": 0}
 
     async def fake_callback(payload):
@@ -70,6 +72,7 @@ def test_allocator_snapshot_mode_closes_scheduler_callback(monkeypatch):
     assert callback["status"] == "success"
     assert callback["run_id"] == "evening-chain-20260716"
     assert callback["run_date"] == "2026-07-16"
+    assert execution_kwargs["lineage_cohort_id"] == "evening-chain-20260716"
     assert "built=135 written=135" in callback["summary"]
 
 

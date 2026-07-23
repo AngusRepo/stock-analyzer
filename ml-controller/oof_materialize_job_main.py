@@ -54,7 +54,12 @@ async def _execute_lifecycle(
     ))
 
 
-async def _execute_allocator_snapshot(*, start_date: str, end_date: str) -> dict[str, Any]:
+async def _execute_allocator_snapshot(
+    *,
+    start_date: str,
+    end_date: str,
+    lineage_cohort_id: str,
+) -> dict[str, Any]:
     from services.allocator_ev_feature_snapshot_backfill import (
         backfill_allocator_ev_feature_snapshots,
     )
@@ -74,6 +79,7 @@ async def _execute_allocator_snapshot(*, start_date: str, end_date: str) -> dict
         s12_limit=_bounded_int("OOF_MATERIALIZE_S12_LIMIT", 5000, 500, 20000),
         s12_min_samples=_bounded_int("OOF_MATERIALIZE_S12_MIN_SAMPLES", 30, 5, 1000),
         s12_min_sample_dates=_bounded_int("OOF_MATERIALIZE_S12_MIN_SAMPLE_DATES", 8, 2, 252),
+        lineage_cohort_id=lineage_cohort_id,
     )
 
 
@@ -122,7 +128,11 @@ async def _run() -> int:
         if mode == "allocator_snapshot":
             if not start_date or not end_date:
                 raise RuntimeError("allocator snapshot mode requires start and end dates")
-            result = await _execute_allocator_snapshot(start_date=start_date, end_date=end_date)
+            result = await _execute_allocator_snapshot(
+                start_date=start_date,
+                end_date=end_date,
+                lineage_cohort_id=run_id,
+            )
             status = str(result.get("status") or "").lower()
             if (
                 status == "ok"

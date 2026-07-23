@@ -32,8 +32,10 @@ from services.l4_alpha_ev_resolver import (
 )
 from services.s12_trade_ev import extract_s12_trade_ev
 from services.price_horizon_projection_contract import (
+    OOF_PRICE_HORIZON_SOURCE,
     PRICE_HORIZONS_CTE,
     PRICE_HORIZON_SOURCE,
+    expected_price_horizon_source,
 )
 from services.fusion_market_context import (
     EXECUTION_MARKET_CONTEXT_FEATURE_NAMES,
@@ -339,6 +341,7 @@ def _samples(
     feature_era_counts: dict[str, int] = {}
     lineage_blocker_counts: dict[str, int] = {}
     adjustment_lineage_counts: dict[str, int] = {}
+    invalid_reason_counts: dict[str, int] = {}
     for row in rows:
         feature_era = _score_feature_era(row)
         feature_era_counts[feature_era] = feature_era_counts.get(feature_era, 0) + 1
@@ -349,10 +352,12 @@ def _samples(
             lineage_blocker_counts[blocker] = lineage_blocker_counts.get(blocker, 0) + 1
         adjustment_source = str(row.get("label_adjustment_source") or "missing")
         adjustment_lineage_counts[adjustment_source] = adjustment_lineage_counts.get(adjustment_source, 0) + 1
+        generation_mode = str(row.get("generation_mode") or "native").strip().lower()
+        expected_adjustment_source = expected_price_horizon_source(generation_mode)
         features = _feature_vector(row)
         selection_gross_target = (
             _bounded_return(row, "l4_executable_return_pct")
-            if adjustment_source == CANONICAL_ADJUSTMENT_FACTOR_SOURCE
+            if adjustment_source == expected_adjustment_source
             else None
         )
         selection_target = (
@@ -363,11 +368,30 @@ def _samples(
         if features is None:
             missing_features += 1
             invalid += 1
+            reason = (
+                "feature_era_incompatible"
+                if feature_era != CANONICAL_SCORE_FEATURE_VERSION
+                else "feature_lineage_blocked"
+                if lineage_blockers
+                else "feature_vector_missing_or_invalid"
+            )
+            invalid_reason_counts[reason] = invalid_reason_counts.get(reason, 0) + 1
             continue
         if selection_target is None:
             invalid += 1
+            reason = (
+                f"adjustment_source_mismatch:{generation_mode}"
+                if adjustment_source != expected_adjustment_source
+                else "target_missing_or_out_of_bounds"
+            )
+            invalid_reason_counts[reason] = invalid_reason_counts.get(reason, 0) + 1
             continue
-        day = str(row.get("prediction_date") or row.get("date") or "")[:10] or "unknown"
+        day = str(
+            row.get("prediction_date")
+            or row.get("snapshot_date")
+            or row.get("date")
+            or ""
+        )[:10] or "unknown"
         replay_target = _bounded_return(row, "s12_replay_pnl_pct")
         actual_trade_target = _bounded_return(row, "trade_pnl_pct")
         trade_target = replay_target
@@ -498,7 +522,12 @@ def _samples(
         "rejected_feature_era_rows": rejected_feature_era_rows,
         "lineage_blocker_counts": dict(sorted(lineage_blocker_counts.items())),
         "required_adjustment_factor_source": CANONICAL_ADJUSTMENT_FACTOR_SOURCE,
+        "required_adjustment_factor_sources": {
+            "native": PRICE_HORIZON_SOURCE,
+            "purged_oof": OOF_PRICE_HORIZON_SOURCE,
+        },
         "adjustment_lineage_counts": dict(sorted(adjustment_lineage_counts.items())),
+        "invalid_reason_counts": dict(sorted(invalid_reason_counts.items())),
         "feature_era_policy": {
             "mode": "strict_canonical_only",
             "accepted_versions": [CANONICAL_SCORE_FEATURE_VERSION],

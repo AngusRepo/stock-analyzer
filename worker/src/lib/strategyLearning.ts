@@ -287,6 +287,7 @@ const SCHEMA_DDL = [
     market_segment TEXT DEFAULT 'all',
     regime TEXT DEFAULT 'all',
     evidence_json TEXT NOT NULL DEFAULT '{}',
+    refresh_run_id TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(strategy_id, strategy_version, horizon_days, market_segment, regime)
   )`,
@@ -512,6 +513,14 @@ export async function ensureStrategyLearningTables(db: D1Database): Promise<void
   for (const sql of SCHEMA_DDL) {
     await db.prepare(sql).run()
   }
+  try {
+    await db.prepare('ALTER TABLE strategy_reward_ledger ADD COLUMN refresh_run_id TEXT').run()
+  } catch (error) {
+    const message = String(error instanceof Error ? error.message : error).toLowerCase()
+    if (!message.includes('duplicate column') && !message.includes('already exists')) throw error
+  }
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_strategy_reward_ledger_refresh
+    ON strategy_reward_ledger(refresh_run_id, date_end)`).run()
   await ensureStrategyRegistryGovernanceColumns(db)
   await ensureStrategyThresholdCalibrationTables(db)
 }
@@ -826,17 +835,38 @@ export function buildStrategyDecisionRows(
         : matched
           ? 'strategy_spec_matched'
           : 'strategy_spec_no_match'
+      const rawSignals = deriveStrategyRawSignals(candidate)
+      const featureRefDiagnostics = explainFeatureRefDsl(rawSignals, spec.thresholds.featureRefs)
+      const currentPrice = finiteNumber(candidate.current_price) ?? finiteNumber(rawSignals.close)
+      const volumeExpansion20 = finiteNumber(rawSignals.volumeExpansion20)
       const evidence = {
         validation,
         matches: assessment.matches,
         tags: assessment.tags,
         watch_points: assessment.watchPoints,
-        feature_ref_diagnostics: explainFeatureRefDsl(
-          deriveStrategyRawSignals(candidate),
-          spec.thresholds.featureRefs,
-        ),
+        feature_ref_diagnostics: featureRefDiagnostics,
+        base_gate_diagnostics: {
+          price: {
+            value: currentPrice,
+            min: spec.thresholds.minPrice ?? null,
+            max: spec.thresholds.maxPrice ?? null,
+            passed: spec.thresholds.minPrice == null && spec.thresholds.maxPrice == null
+              ? true
+              : currentPrice != null
+                && (spec.thresholds.minPrice == null || currentPrice >= spec.thresholds.minPrice)
+                && (spec.thresholds.maxPrice == null || currentPrice <= spec.thresholds.maxPrice),
+          },
+          volume_expansion_20: {
+            value: volumeExpansion20,
+            min: spec.thresholds.minVolumeExpansion20 ?? null,
+            passed: spec.thresholds.minVolumeExpansion20 == null
+              || (volumeExpansion20 != null && volumeExpansion20 >= spec.thresholds.minVolumeExpansion20),
+          },
+          missing_required_feature_refs: Array.isArray(featureRefDiagnostics?.missing_required_feature_refs)
+            ? featureRefDiagnostics.missing_required_feature_refs
+            : [],
+        },
       }
-      const rawSignals = deriveStrategyRawSignals(candidate)
       const thresholdScores = deriveStrategyThresholdScores(candidate)
       const context = {
         candidate: {
@@ -1126,7 +1156,12 @@ export async function persistStrategyDecisionRows(
           checksum: artifact.checksum,
           feature_ref_diagnostics: {
             weighted_score: evidence?.feature_ref_diagnostics?.weighted_score ?? null,
+            effective_min: evidence?.feature_ref_diagnostics?.effective_min ?? null,
+            passes_weighted_score: evidence?.feature_ref_diagnostics?.passes_weighted_score ?? null,
+            missing_required_feature_refs: evidence?.feature_ref_diagnostics?.missing_required_feature_refs ?? [],
           },
+          base_gate_diagnostics: evidence?.base_gate_diagnostics ?? null,
+          rejection_diagnostics: Array.isArray(evidence?.watch_points) ? evidence.watch_points : [],
         }),
         context_id: context.contextId,
         evidence_artifact_id: artifact.artifact_id,
@@ -1221,15 +1256,15 @@ function rewardForRow(row: StrategyRewardSourceRow): number | null {
   return finiteNumber(row.residual_return_net)
 }
 
-function maxDrawdown(values: number[]): number | null {
+function maxDrawdownFromDateReturns(values: number[]): number | null {
   if (!values.length) return null
-  let equity = 0
-  let peak = 0
+  let equity = 1
+  let peak = 1
   let mdd = 0
   for (const value of values) {
-    equity += value
+    equity *= Math.max(0, 1 + value)
     peak = Math.max(peak, equity)
-    mdd = Math.min(mdd, equity - peak)
+    mdd = Math.min(mdd, peak > 0 ? equity / peak - 1 : -1)
   }
   return round6(mdd)
 }
@@ -1246,16 +1281,31 @@ export function buildStrategyRewardLedgerRows(
 ): StrategyRewardLedgerRow[] {
   const nowIso = options.nowIso ?? new Date().toISOString()
   const horizonDays = options.horizonDays ?? 5
-  const buckets = new Map<string, { row: StrategyRewardSourceRow; rewards: number[]; dates: string[]; symbols: Set<string>; matchedTotal: number }>()
+  const buckets = new Map<string, {
+    row: StrategyRewardSourceRow
+    rewards: number[]
+    rewardsByDate: Map<string, number[]>
+    dates: string[]
+    symbols: Set<string>
+    matchedTotal: number
+  }>()
   for (const row of rows) {
     const reward = rewardForRow(row)
     if (reward == null) continue
     const marketSegment = options.marketSegment ?? (cleanToken(row.market_segment) || 'all')
     const regime = options.regime ?? regimeFromAlphaContext(row.alpha_context)
     const key = `${row.strategy_id}|${row.strategy_version}|${marketSegment}|${regime}`
-    const bucket = buckets.get(key) ?? { row, rewards: [], dates: [], symbols: new Set<string>(), matchedTotal: options.matchedTotal ?? rows.length }
+    const bucket = buckets.get(key) ?? {
+      row,
+      rewards: [],
+      rewardsByDate: new Map<string, number[]>(),
+      dates: [],
+      symbols: new Set<string>(),
+      matchedTotal: options.matchedTotal ?? rows.length,
+    }
     bucket.rewards.push(reward)
     bucket.dates.push(row.date)
+    bucket.rewardsByDate.set(row.date, [...(bucket.rewardsByDate.get(row.date) ?? []), reward])
     bucket.symbols.add(row.symbol)
     buckets.set(key, bucket)
   }
@@ -1264,11 +1314,17 @@ export function buildStrategyRewardLedgerRows(
     const rewards = bucket.rewards
     const rewardSum = rewards.reduce((sum, reward) => sum + reward, 0)
     const dates = [...new Set(bucket.dates)].sort()
+    const datePortfolioReturns = dates.map((date) => {
+      const dateRewards = bucket.rewardsByDate.get(date) ?? []
+      return dateRewards.reduce((sum, reward) => sum + reward, 0) / dateRewards.length
+    })
     const hitRate = rewards.length ? rewards.filter((reward) => reward > 0).length / rewards.length : null
     const avgReturn = rewards.length ? rewardSum / rewards.length : null
     const evidence = {
       version: STRATEGY_LEARNING_VERSION,
       reward_source: 'canonical_selection_labels_v4.residual_return_net',
+      max_drawdown_semantic: 'date_clustered_equal_weight_compounded_residual_return_v1',
+      max_drawdown_observation_dates: datePortfolioReturns.length,
       sample_symbols_preview: [...bucket.symbols].sort().slice(0, 20),
       date_start: dates[0] ?? null,
       date_end: dates.at(-1) ?? null,
@@ -1286,7 +1342,7 @@ export function buildStrategyRewardLedgerRows(
       hit_rate: round6(hitRate),
       avg_return_pct: round6(avgReturn),
       reward_sum: round6(rewardSum),
-      max_drawdown_pct: maxDrawdown(rewards),
+      max_drawdown_pct: maxDrawdownFromDateReturns(datePortfolioReturns),
       coverage: bucket.matchedTotal > 0 ? round6(rewards.length / bucket.matchedTotal) : null,
       market_segment: marketSegment,
       regime,
@@ -1365,7 +1421,11 @@ export async function listStrategyRewardSourceRows(
   return rows
 }
 
-export async function persistStrategyRewardLedgerRows(db: D1Database, rows: StrategyRewardLedgerRow[]): Promise<number> {
+export async function persistStrategyRewardLedgerRows(
+  db: D1Database,
+  rows: StrategyRewardLedgerRow[],
+  refreshRunId: string | null = null,
+): Promise<number> {
   await ensureStrategyLearningTables(db)
   if (rows.length === 0) return 0
   const statements = rows.map((row) => db.prepare(`
@@ -1373,9 +1433,9 @@ export async function persistStrategyRewardLedgerRows(db: D1Database, rows: Stra
       reward_id, strategy_id, strategy_version, strategy_status, alpha_bucket,
       date_start, date_end, horizon_days, samples, hit_rate, avg_return_pct,
       reward_sum, max_drawdown_pct, coverage, market_segment, regime,
-      evidence_json, updated_at
+      evidence_json, refresh_run_id, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(strategy_id, strategy_version, horizon_days, market_segment, regime) DO UPDATE SET
       strategy_status=excluded.strategy_status,
       alpha_bucket=excluded.alpha_bucket,
@@ -1388,26 +1448,13 @@ export async function persistStrategyRewardLedgerRows(db: D1Database, rows: Stra
       max_drawdown_pct=excluded.max_drawdown_pct,
       coverage=excluded.coverage,
       evidence_json=excluded.evidence_json,
+      refresh_run_id=excluded.refresh_run_id,
       updated_at=excluded.updated_at
   `).bind(
-    row.reward_id,
-    row.strategy_id,
-    row.strategy_version,
-    row.strategy_status,
-    row.alpha_bucket,
-    row.date_start,
-    row.date_end,
-    row.horizon_days,
-    row.samples,
-    row.hit_rate,
-    row.avg_return_pct,
-    row.reward_sum,
-    row.max_drawdown_pct,
-    row.coverage,
-    row.market_segment,
-    row.regime,
-    row.evidence_json,
-    row.updated_at,
+    row.reward_id, row.strategy_id, row.strategy_version, row.strategy_status, row.alpha_bucket,
+    row.date_start, row.date_end, row.horizon_days, row.samples, row.hit_rate,
+    row.avg_return_pct, row.reward_sum, row.max_drawdown_pct, row.coverage,
+    row.market_segment, row.regime, row.evidence_json, refreshRunId, row.updated_at,
   ))
   let persisted = 0
   for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
@@ -1479,18 +1526,34 @@ export async function refreshStrategyRewardLedger(
   source_rows: number
   ledger_rows: StrategyRewardLedgerRow[]
   persisted_rows: number
+  stale_rows_retired: number
+  refresh_run_id: string | null
 }> {
   await ensureStrategyLearningTables(db)
   const sourceRows = await listStrategyRewardSourceRows(db, options)
   const ledgerRows = buildStrategyRewardLedgerRows(sourceRows)
   const dryRun = options.dryRun !== false
-  const persisted = dryRun ? 0 : await persistStrategyRewardLedgerRows(db, ledgerRows)
+  const refreshRunId = dryRun
+    ? null
+    : `strategy-reward-v4-${options.endDate ?? 'latest'}-${Date.now().toString(36)}`
+  const persisted = dryRun ? 0 : await persistStrategyRewardLedgerRows(db, ledgerRows, refreshRunId)
+  let staleRowsRetired = 0
+  if (!dryRun && !options.startDate && refreshRunId) {
+    const retired = await db.prepare(`
+      DELETE FROM strategy_reward_ledger
+       WHERE (refresh_run_id IS NULL OR refresh_run_id <> ?)
+         AND (? IS NULL OR date_end IS NULL OR date(date_end) <= date(?))
+    `).bind(refreshRunId, options.endDate ?? null, options.endDate ?? null).run()
+    staleRowsRetired = Number(retired.meta?.changes ?? 0)
+  }
   return {
     success: true,
     mode: dryRun ? 'dry_run' : 'persisted',
     source_rows: sourceRows.length,
     ledger_rows: ledgerRows,
     persisted_rows: persisted,
+    stale_rows_retired: staleRowsRetired,
+    refresh_run_id: refreshRunId,
   }
 }
 
@@ -1946,6 +2009,7 @@ export async function runStrategyLearningClosure(
     `strategy_edge=${marginalEdge.status}:eligible=${marginalEdge.eligibleStrategies}`,
     `reward_source_rows=${rewards.source_rows}`,
     `reward_rows=${rewards.persisted_rows}`,
+    `reward_stale_retired=${rewards.stale_rows_retired}`,
     `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
     `policy_eligible=${policy ? policy.policy_state.evidence.eligible_strategy_count : 'n/a'}`,
     `threshold_calibration=${thresholdCalibration ? thresholdCalibration.status : 'skipped'}`,

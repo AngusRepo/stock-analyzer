@@ -14,6 +14,21 @@ binding = "DB"
 database_name = "stockvision-db"
 database_id = "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79"
 
+[[d1_databases]]
+binding = "MARKET_DB"
+database_name = "stockvision-market-db"
+database_id = "067bbeb0-1247-416a-96dd-138315345319"
+
+[[d1_databases]]
+binding = "LEARNING_DB"
+database_name = "stockvision-learning-db"
+database_id = "73599848-b73b-4bac-9144-df638b877dbc"
+
+[[d1_databases]]
+binding = "OPS_DB"
+database_name = "stockvision-ops-db"
+database_id = "d9914406-bb36-45a4-bdc4-fe565ed910d3"
+
 [[kv_namespaces]]
 binding = "KV"
 id = "39dcebcf5b6848c98f269ef9a48dc3f8"

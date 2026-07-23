@@ -29,6 +29,7 @@ from services.fusion_market_context import (
     merge_market_context,
     recorded_market_context,
 )
+from services.price_horizon_projection_contract import OOF_PRICE_HORIZON_SOURCE
 
 TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
@@ -632,7 +633,7 @@ def build_oof_snapshot_rows(
             "generation_mode": "purged_oof",
             "source_manifest_checksum": source_manifest_checksum,
             "l4_executable_return_pct": stacked["target_return"],
-            "label_adjustment_source": "canonical_market_daily:finlab.price",
+            "label_adjustment_source": OOF_PRICE_HORIZON_SOURCE,
             "prediction_generated_at": f"{stacked['prediction_date']}T13:30:00+08:00",
         })
     return snapshots, {

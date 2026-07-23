@@ -3,6 +3,16 @@ from __future__ import annotations
 
 PRICE_HORIZON_PROJECTION_VERSION = "price_horizon_v1"
 PRICE_HORIZON_SOURCE = "stock_prices:finlab_primary_canonical_mirror"
+OOF_PRICE_HORIZON_SOURCE = "canonical_market_daily:finlab.price"
+
+
+def expected_price_horizon_source(generation_mode: object) -> str:
+    """Return the only legal price lineage for the requested evidence lane."""
+    return (
+        OOF_PRICE_HORIZON_SOURCE
+        if str(generation_mode or "").strip().lower() == "purged_oof"
+        else PRICE_HORIZON_SOURCE
+    )
 
 PRICE_HORIZONS_CTE = """
 price_horizons AS (

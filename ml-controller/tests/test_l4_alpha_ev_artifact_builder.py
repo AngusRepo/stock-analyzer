@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.l4_alpha_ev_artifact_builder import (  # noqa: E402
     _date_cluster_metrics,
+    _samples,
     build_l4_alpha_ev_artifact_from_rows,
     load_l4_alpha_ev_training_rows,
 )
@@ -51,6 +52,32 @@ def _row(day: str, idx: int, *, target: float) -> dict:
             },
         }),
     }
+
+
+def test_l4_purged_oof_accepts_only_recorded_canonical_market_lineage():
+    rows = []
+    for idx in range(20):
+        row = _row("2026-05-01", idx, target=0.01 + idx * 0.0001)
+        row["snapshot_date"] = row.pop("prediction_date")
+        row["generation_mode"] = "purged_oof"
+        row["label_adjustment_source"] = "canonical_market_daily:finlab.price"
+        forecast = json.loads(row["forecast_data"])
+        forecast["ensemble_v2"].update({
+            "generation_mode": "purged_oof",
+            "semantic_version": "active8-purged-oof-chronological-ridge-v3",
+        })
+        row["forecast_data"] = json.dumps(forecast)
+        rows.append(row)
+
+    samples, audit = _samples(rows)
+    assert len(samples) == 20
+    assert audit["date_count"] == 1
+    assert audit["invalid_reason_counts"] == {}
+
+    rows[0]["label_adjustment_source"] = "stock_prices:finlab_primary_canonical_mirror"
+    samples, audit = _samples(rows, min_cross_section_samples_per_date=1)
+    assert len(samples) == 19
+    assert audit["invalid_reason_counts"] == {"adjustment_source_mismatch:purged_oof": 1}
 
 
 def test_l4_date_cluster_metrics_equal_weight_trading_dates():
@@ -149,6 +176,8 @@ def test_l4_alpha_ev_artifact_builder_reports_oof_semantic_by_generation_mode():
         for symbol_idx in range(20):
             row = _row(day, symbol_idx, target=0.001 * symbol_idx)
             forecast = json.loads(row["forecast_data"])
+            row["generation_mode"] = "purged_oof"
+            row["label_adjustment_source"] = "canonical_market_daily:finlab.price"
             forecast["ensemble_v2"]["generation_mode"] = "purged_oof"
             forecast["ensemble_v2"]["semantic_version"] = (
                 "active8-purged-oof-chronological-ridge-v3"

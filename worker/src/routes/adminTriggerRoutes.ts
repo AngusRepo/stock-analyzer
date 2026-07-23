@@ -34,6 +34,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'legacy-evidence-migration', 'legacy-strategy-evidence-migration', 'legacy-hot-data-retirement', 'artifact-reconcile', 'd1-evidence-scrub', 'r2-retention-sweep',
   'orphan-reachability-gc', 'cleanup-dlq-replay', 'storage-health-gate',
   'storage-integrity-audit', 'storage-capacity-report',
+  'data-domain-shadow-backfill',
   'monthly-retrain',
 ])
 
@@ -180,6 +181,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
       'storage-health-gate',
       'storage-integrity-audit',
       'storage-capacity-report',
+      'data-domain-shadow-backfill',
       'weekly-optuna',
       'l4-alpha-ev-refresh',
       'allocator-ev-fusion-refresh',

@@ -12,6 +12,7 @@ const D1_HEAVY_MAINTENANCE_TASKS = new Set([
   'legacy-hot-data-retirement', 'd1-evidence-scrub', 'r2-retention-sweep',
   'orphan-reachability-gc', 'cleanup-dlq-replay', 'weekly-cleanup',
   'price-horizon-projection',
+  'data-domain-shadow-backfill',
 ])
 const D1_MAINTENANCE_REQUEST_BUDGET_MS = 45_000
 
@@ -622,6 +623,21 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         force: c.req.query('force') === '1',
       })
       return result.summary
+    },
+    'data-domain-shadow-backfill': async () => {
+      const domain = String(c.req.query('domain') ?? '').trim().toLowerCase()
+      const allowed = new Set(['core', 'market', 'learning', 'ops', 'execution', 'paper', 'research'])
+      if (!allowed.has(domain)) throw new Error('invalid data domain')
+      const table = String(c.req.query('table') ?? '').trim().toLowerCase()
+      if (!table) throw new Error('data-domain-shadow-backfill requires table')
+      const { backfillDataDomainTableShadow } = await import('./dataDomainShadowBackfill')
+      const result = await backfillDataDomainTableShadow(c.env, {
+        domain: domain as any,
+        table,
+        limit: parseBoundedPositiveInt(c.req.query('limit'), 50, 50),
+        reset: c.req.query('reset') === '1',
+      })
+      return `data_domain_shadow_backfill ${JSON.stringify(result)}`
     },
     'storage-health-gate': async () => {
       const { runStorageHealthGate } = await import('./artifactLifecycle')

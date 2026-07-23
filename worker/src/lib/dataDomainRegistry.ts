@@ -38,6 +38,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'domain_projection_outbox', 'domain_projection_inbox', 'data_domain_cutovers',
     'data_retention_policies', 'data_retention_runs', 'storage_capacity_daily',
     'price_horizon_projection_status', 'price_horizon_projection_runs',
+    'data_domain_backfill_cursors', 'data_domain_parity_checks',
   ]),
   execution: new Set([
     'broker_execution_intents', 'broker_execution_legs', 'broker_execution_events',
@@ -65,11 +66,8 @@ export function tablesForDataDomain(domain: DataDomain): string[] {
   return [...DOMAIN_TABLES[domain]].sort()
 }
 
-export function databaseForDataDomain(
-  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
-  domain: DataDomain,
-): D1Database {
-  const bindings: Partial<Record<DataDomain, D1Database | undefined>> = {
+function domainBindings(env: Pick<Bindings, 'DB'> & Partial<Bindings>): Partial<Record<DataDomain, D1Database | undefined>> {
+  return {
     core: env.CORE_DB,
     market: env.MARKET_DB,
     learning: env.LEARNING_DB,
@@ -78,14 +76,37 @@ export function databaseForDataDomain(
     paper: env.PAPER_DB,
     research: env.RESEARCH_DB,
   }
-  const selected = bindings[domain]
-  if (selected) return selected
-  if (String(env.MULTI_D1_STRICT ?? '').toLowerCase() === 'true') {
-    throw new Error(`data_domain_binding_missing:${domain}`)
-  }
-  return env.DB
 }
 
+export function activeDataDomains(env: Partial<Bindings>): Set<DataDomain> {
+  const allowed = new Set<DataDomain>(['core', 'market', 'learning', 'ops', 'execution', 'paper', 'research'])
+  return new Set(
+    String(env.MULTI_D1_ACTIVE_DOMAINS ?? '')
+      .split(',')
+      .map((value) => value.trim().toLowerCase())
+      .filter((value): value is DataDomain => allowed.has(value as DataDomain)),
+  )
+}
+
+export function shadowDatabaseForDataDomain(
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
+  domain: DataDomain,
+): D1Database | null {
+  return domainBindings(env)[domain] ?? null
+}
+
+export function databaseForDataDomain(
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
+  domain: DataDomain,
+): D1Database {
+  const bindings = domainBindings(env)
+  const strict = String(env.MULTI_D1_STRICT ?? '').toLowerCase() === 'true'
+  const active = strict || activeDataDomains(env).has(domain)
+  if (!active) return env.DB
+  const selected = bindings[domain]
+  if (selected) return selected
+  throw new Error(`data_domain_binding_missing:${domain}`)
+}
 export function assertSingleDomainOwnership(tableNames: string[]): void {
   const missing = tableNames.filter((table) => !dataDomainForTable(table))
   if (missing.length) throw new Error(`unowned_data_domain_tables:${missing.sort().join(',')}`)

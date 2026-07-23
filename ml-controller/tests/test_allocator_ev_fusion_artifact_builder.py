@@ -236,6 +236,28 @@ def test_fusion_challenger_must_beat_canonical_l4_on_paired_oos_dates():
     assert "fusion_spread_delta_lcb90_inferior_to_canonical_l4" in comparison["failed_gates"]
 
 
+def test_fusion_purged_oof_uses_snapshot_date_and_recorded_market_lineage():
+    rows = []
+    for idx in range(20):
+        row = _row("2026-05-01", idx)
+        row["snapshot_date"] = row.pop("prediction_date")
+        row["generation_mode"] = "purged_oof"
+        row["label_adjustment_source"] = "canonical_market_daily:finlab.price"
+        forecast = json.loads(row["forecast_data"])
+        forecast["ensemble_v2"].update({
+            "generation_mode": "purged_oof",
+            "semantic_version": "active8-purged-oof-chronological-ridge-v3",
+        })
+        row["forecast_data"] = json.dumps(forecast)
+        rows.append(row)
+
+    samples, audit = _samples(rows)
+    assert len(samples) == 20
+    assert audit["date_count"] == 1
+    assert audit["raw_date_counts"] == {"2026-05-01": 20}
+    assert audit["invalid_reason_counts"] == {}
+
+
 def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_samples():
     rows = [_row("2026-05-01", idx) for idx in range(10)]
 

@@ -10,7 +10,7 @@ for (let day = 1; day <= 5; day++) {
       symbol: 'GOOD',
       strategy_id: strategy,
       strategy_version: 'v1',
-      production_owner: 1,
+      production_owner: strategy === 'A' ? 0 : 1,
       strategy_hit: strategy === 'A' ? 1 : 0,
       absolute_return_net: 0.03,
       residual_return_net: 0.02,
@@ -32,7 +32,7 @@ const result = evaluateStrategyMarginalEdgesV4(cells)
 const good = result.find((row) => row.strategyId === 'A')!
 const bad = result.find((row) => row.strategyId === 'B')!
 assert.equal(good.observationDates, 5)
-assert.equal(good.productionEligible, true)
+assert.equal(good.productionEligible, true, 'candidate/shadow strategy with real OOS edge must be eligible for promotion')
 assert(good.marginalEdgeMean! > 0)
 assert(good.marginalEdgeLcb90! > 0)
 assert.equal(bad.productionEligible, false)

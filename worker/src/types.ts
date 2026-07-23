@@ -12,6 +12,7 @@ export type Bindings = {
   PAPER_DB?: D1Database
   RESEARCH_DB?: D1Database
   MULTI_D1_STRICT?: string
+  MULTI_D1_ACTIVE_DOMAINS?: string
   KV: KVNamespace
   ARTIFACTS?: R2Bucket
   EVIDENCE_ARTIFACT_WRITER?: EvidenceArtifactWriter

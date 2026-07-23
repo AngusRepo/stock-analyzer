@@ -61,7 +61,6 @@ export function evaluateStrategyMarginalEdgesV4(cells: OutcomeCell[]): StrategyE
   const byDate = new Map<string, OutcomeCell[]>()
   const strategyKeys = new Map<string, { id: string; version: string }>()
   for (const cell of cells) {
-    if (Number(cell.production_owner) !== 1) continue
     const residual = finite(cell.residual_return_net)
     const absolute = finite(cell.absolute_return_net)
     if (residual == null || absolute == null) continue
@@ -166,7 +165,6 @@ export function evaluateStrategyPortfolioEdgeV4(
 ): StrategyPortfolioDateReturnV4[] {
   const byDate = new Map<string, OutcomeCell[]>()
   for (const cell of cells) {
-    if (Number(cell.production_owner) !== 1) continue
     const rows = byDate.get(cell.signal_date) ?? []
     rows.push(cell)
     byDate.set(cell.signal_date, rows)
@@ -237,6 +235,7 @@ export async function refreshStrategyMarginalEdgeV4(
          AND l.producer_run_id=m.producer_run_id
          AND l.label_schema_version='canonical-strategy-selection-label-v4'
        WHERE m.signal_date BETWEEN ? AND ?
+         AND m.strategy_status IN ('active', 'candidate', 'shadow')
          AND EXISTS (
            SELECT 1 FROM canonical_run_heads h
             WHERE h.logical_run_key='screener:' || m.signal_date || ':TW:production:market_screener'
@@ -346,6 +345,8 @@ export async function refreshStrategyMarginalEdgeV4(
       candidate_portfolio_positive_cost_net_lcb: candidatePortfolioPass,
       paired_champion_improvement_lcb: championComparisonPass,
       no_hard_top_k: true,
+      candidate_and_shadow_strategies_evaluated: true,
+      registry_cutover_requires_full_v4_portfolio_and_champion_pass: true,
     },
   })).run()
 
@@ -373,7 +374,7 @@ export async function refreshStrategyMarginalEdgeV4(
       row.positiveDateRate, row.absoluteHitReturnMean, row.productionEligible ? 1 : 0,
       row.productionWeightRaw,
       JSON.stringify({
-        method: 'date_clustered_leave_one_strategy_out_portfolio_delta',
+        method: 'date_clustered_leave_one_strategy_out_portfolio_delta_active_candidate_shadow',
         outcome: 'sector_or_market_neutral_cost_net_return',
         lcb: 'student_t_one_sided_90pct_date_clustered',
         min_dates: MIN_EDGE_DATES,
@@ -408,14 +409,59 @@ export async function refreshStrategyMarginalEdgeV4(
       await db.batch(dateStatements.slice(offset, offset + 200))
     }
 
-    if (status === 'promoted' && !sameAsChampion) {
-      await db.prepare(`
-        INSERT INTO strategy_marginal_edge_head_v4(owner_key, run_id, previous_run_id, promoted_at)
-        VALUES ('production', ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(owner_key) DO UPDATE SET
-          run_id=excluded.run_id, previous_run_id=strategy_marginal_edge_head_v4.run_id,
-          promoted_at=CURRENT_TIMESTAMP
-      `).bind(runId, previousHead?.run_id ?? null).run()
+    if (status === 'promoted') {
+      const registryPromotionStatements = eligible.map((row) => db.prepare(`
+        UPDATE strategy_spec_registry
+           SET status='active', promotion_status='production', updated_at=CURRENT_TIMESTAMP
+         WHERE strategy_id=? AND version=?
+           AND owner_type='strategy'
+           AND status IN ('research','shadow','candidate','active')
+           AND promotion_status <> 'retired'
+      `).bind(row.strategyId, row.strategyVersion))
+      const cutoverStatements = [...registryPromotionStatements]
+      if (!sameAsChampion) {
+        cutoverStatements.push(db.prepare(`
+          INSERT INTO strategy_marginal_edge_head_v4(owner_key, run_id, previous_run_id, promoted_at)
+          VALUES ('production', ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(owner_key) DO UPDATE SET
+            run_id=excluded.run_id, previous_run_id=strategy_marginal_edge_head_v4.run_id,
+            promoted_at=CURRENT_TIMESTAMP
+        `).bind(runId, previousHead?.run_id ?? null))
+      }
+      cutoverStatements.push(db.prepare(`
+        INSERT INTO observability_events(
+          event_id, date, severity, domain, source, status, title, summary,
+          owner, impact, next_action, evidence, created_at
+        )
+        SELECT ?, ?, 'info', 'strategy', 'strategy_marginal_edge_v4', 'promoted',
+               'Strategy Edge V4 automatic promotion', ?, 'strategy-learning',
+               'Eligible strategies can contribute to the production breadth plan without a hard top-K.',
+               'Monitor date-clustered cost-net edge and automatic zero-weight cooldown.', ?, CURRENT_TIMESTAMP
+         WHERE NOT EXISTS (
+           SELECT 1 FROM observability_events WHERE event_id=? AND date=?
+         )
+      `).bind(
+        `strategy-edge-v4-promotion:${runId}`,
+        asOfDate,
+        `promoted=${eligible.map((row) => row.strategyId).join(',')} gates=portfolio_lcb+absolute_return+paired_champion`,
+        JSON.stringify({
+          schema_version: STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION,
+          run_id: runId,
+          eligible_strategies: eligible.map((row) => ({
+            strategy_id: row.strategyId,
+            strategy_version: row.strategyVersion,
+            marginal_edge_lcb90: row.marginalEdgeLcb90,
+            absolute_hit_return_mean: row.absoluteHitReturnMean,
+          })),
+          candidate_portfolio_residual_lcb90: candidateResidual.lcb90,
+          candidate_portfolio_absolute_mean: candidateAbsoluteMean,
+          paired_champion_delta_lcb90: paired.lcb90,
+          no_hard_top_k: true,
+        }),
+        `strategy-edge-v4-promotion:${runId}`,
+        asOfDate,
+      ))
+      await db.batch(cutoverStatements)
     }
   } catch (error) {
     await db.prepare(`

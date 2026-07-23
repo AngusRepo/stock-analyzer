@@ -21,8 +21,10 @@ from services.ev_lineage_contract import (
     ev_feature_lineage_blockers,
 )
 from services.price_horizon_projection_contract import (
+    OOF_PRICE_HORIZON_SOURCE,
     PRICE_HORIZONS_CTE,
     PRICE_HORIZON_SOURCE,
+    expected_price_horizon_source,
 )
 
 
@@ -121,6 +123,7 @@ def _samples(
     model_set_signature_counts: dict[str, int] = {}
     lineage_blocker_counts: dict[str, int] = {}
     adjustment_lineage_counts: dict[str, int] = {}
+    invalid_reason_counts: dict[str, int] = {}
     for row in rows:
         score_payload = _loads(row.get("score_components"))
         forecast_payload = _loads(row.get("forecast_data"))
@@ -146,14 +149,31 @@ def _samples(
         lineage_blockers = ev_feature_lineage_blockers(row)
         for blocker in lineage_blockers:
             lineage_blocker_counts[blocker] = lineage_blocker_counts.get(blocker, 0) + 1
+        expected_adjustment_source = expected_price_horizon_source(ensemble_generation_mode)
         features = _feature_vector(row)
         target = (
             _target(row, cost_model_bps=cost_model_bps)
-            if adjustment_source == CANONICAL_ADJUSTMENT_FACTOR_SOURCE
+            if adjustment_source == expected_adjustment_source
             else None
         )
+        row_reasons: list[str] = []
+        if features is None:
+            if era != CANONICAL_SCORE_FEATURE_VERSION:
+                row_reasons.append("feature_era_incompatible")
+            if lineage_blockers:
+                row_reasons.append("feature_lineage_blocked")
+            if not row_reasons:
+                row_reasons.append("feature_vector_missing_or_invalid")
+        if adjustment_source != expected_adjustment_source:
+            row_reasons.append(
+                f"adjustment_source_mismatch:{ensemble_generation_mode or 'native'}"
+            )
+        elif _target(row, cost_model_bps=cost_model_bps) is None:
+            row_reasons.append("target_missing_or_out_of_bounds")
         if features is None or target is None:
             invalid += 1
+            for reason in row_reasons:
+                invalid_reason_counts[reason] = invalid_reason_counts.get(reason, 0) + 1
             continue
         day = str(
             row.get("prediction_date")
@@ -232,7 +252,12 @@ def _samples(
         "model_set_signature_counts": dict(sorted(model_set_signature_counts.items())),
         "lineage_blocker_counts": dict(sorted(lineage_blocker_counts.items())),
         "required_adjustment_factor_source": CANONICAL_ADJUSTMENT_FACTOR_SOURCE,
+        "required_adjustment_factor_sources": {
+            "native": PRICE_HORIZON_SOURCE,
+            "purged_oof": OOF_PRICE_HORIZON_SOURCE,
+        },
         "adjustment_lineage_counts": dict(sorted(adjustment_lineage_counts.items())),
+        "invalid_reason_counts": dict(sorted(invalid_reason_counts.items())),
         "rejected_feature_era_rows": rejected_feature_era_rows,
         "min_cross_section_samples_per_date": minimum_day_samples,
         "sparse_dates_rejected": sparse_dates,

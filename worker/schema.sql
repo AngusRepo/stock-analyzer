@@ -1272,6 +1272,7 @@ CREATE TABLE IF NOT EXISTS strategy_reward_ledger (
   market_segment           TEXT DEFAULT 'all',
   regime                   TEXT DEFAULT 'all',
   evidence_json            TEXT NOT NULL DEFAULT '{}',
+  refresh_run_id           TEXT,
   updated_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(strategy_id, strategy_version, horizon_days, market_segment, regime)
 );
@@ -1279,6 +1280,8 @@ CREATE INDEX IF NOT EXISTS idx_strategy_reward_ledger_strategy
   ON strategy_reward_ledger(strategy_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_strategy_reward_ledger_status
   ON strategy_reward_ledger(strategy_status, samples DESC);
+CREATE INDEX IF NOT EXISTS idx_strategy_reward_ledger_refresh
+  ON strategy_reward_ledger(refresh_run_id, date_end);
 
 CREATE TABLE IF NOT EXISTS strategy_policy_state (
   policy_id                TEXT PRIMARY KEY,
@@ -2108,3 +2111,36 @@ INSERT OR IGNORE INTO data_retention_policies VALUES
   ('price_horizon_learning_v1', 'learning', 'price_horizon_labels_v1,price_horizon_projection_status', 730, NULL, 'r2', 'retain', 1, 1, 'active', 'Executable five-session labels remain protected while referenced by active or champion artifacts', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
   ('price_horizon_rejections_v1', 'learning', 'price_horizon_label_rejections_v1', 90, 730, 'r2', 'archive_delete', 1, 1, 'active', 'Missing price evidence is retained hot for repair and cold for lineage audit', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
   ('price_horizon_ops_v1', 'ops', 'price_horizon_projection_runs', 504, 1825, 'r2', 'archive_delete', 1, 1, 'active', 'Projection run summaries remain available for lifecycle and SLA audits', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+
+-- Multi-D1 shadow backfill control plane.
+CREATE TABLE IF NOT EXISTS data_domain_backfill_cursors (
+  domain TEXT NOT NULL,
+  table_name TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','running','complete','error')),
+  cursor_json TEXT,
+  rows_copied INTEGER NOT NULL DEFAULT 0,
+  last_batch_rows INTEGER NOT NULL DEFAULT 0,
+  last_source_checksum TEXT,
+  last_target_checksum TEXT,
+  error_code TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(domain, table_name)
+);
+CREATE INDEX IF NOT EXISTS idx_data_domain_backfill_status
+  ON data_domain_backfill_cursors(status, domain, updated_at);
+
+CREATE TABLE IF NOT EXISTS data_domain_parity_checks (
+  check_id TEXT PRIMARY KEY,
+  domain TEXT NOT NULL,
+  table_name TEXT NOT NULL,
+  check_kind TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pass','fail','blocked')),
+  source_count INTEGER,
+  target_count INTEGER,
+  source_checksum TEXT,
+  target_checksum TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_data_domain_parity_latest
+  ON data_domain_parity_checks(domain, table_name, checked_at DESC);

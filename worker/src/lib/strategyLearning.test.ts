@@ -511,6 +511,33 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   assert(ledger[0].samples === 2, 'ledger should count reward samples')
   assert(ledger[0].hit_rate === 0.5, 'ledger should compute hit rate')
   assert(ledger[0].avg_return_pct === 0.005, 'ledger should compute average return')
+  assert(ledger[0].max_drawdown_pct === -0.01, 'ledger MDD should compound one equal-weight portfolio return per date')
+  const evidence = JSON.parse(ledger[0].evidence_json)
+  assert(
+    evidence.max_drawdown_semantic === 'date_clustered_equal_weight_compounded_residual_return_v1',
+    'ledger evidence should expose the date-clustered compounded MDD semantic',
+  )
+}
+
+{
+  const ledger = buildStrategyRewardLedgerRows([
+    {
+      date: '2026-05-15', symbol: '2330', strategy_id: 'same_day_portfolio', strategy_version: 'v1',
+      strategy_status: 'shadow', alpha_bucket: 'trend_following', market_segment: 'LISTED',
+      absolute_return_net: -0.2, residual_return_net: -0.2,
+    },
+    {
+      date: '2026-05-15', symbol: '2317', strategy_id: 'same_day_portfolio', strategy_version: 'v1',
+      strategy_status: 'shadow', alpha_bucket: 'trend_following', market_segment: 'LISTED',
+      absolute_return_net: 0.2, residual_return_net: 0.2,
+    },
+    {
+      date: '2026-05-16', symbol: '2454', strategy_id: 'same_day_portfolio', strategy_version: 'v1',
+      strategy_status: 'shadow', alpha_bucket: 'trend_following', market_segment: 'LISTED',
+      absolute_return_net: -0.1, residual_return_net: -0.1,
+    },
+  ])
+  assert(ledger[0].max_drawdown_pct === -0.1, 'same-day symbols must be equal-weighted before chronological drawdown')
 }
 
 {

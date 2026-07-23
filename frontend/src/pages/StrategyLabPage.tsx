@@ -17,7 +17,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Activity, BrainCircuit, FlaskConical, GitBranch, Loader2, PlayCircle, RefreshCw, ShieldCheck, TestTube2 } from 'lucide-react'
+import { Activity, BrainCircuit, ChevronDown, FlaskConical, GitBranch, Loader2, PlayCircle, RefreshCw, ShieldCheck, TestTube2 } from 'lucide-react'
 import {
   ApprovalReviewPanel,
   type ApprovalReviewGate,
@@ -1311,11 +1311,15 @@ function StrategyLifecycleSwimlane({
   dryRun,
   learning,
   experiments,
+  selectedSpecId,
+  onSelectSpec,
 }: {
   specs: StrategySpec[]
   dryRun: StrategyDryRunResponse | null
   learning: StrategyLearningResponse | null
   experiments: ResearchExperimentsResponse['experiments']
+  selectedSpecId?: string | null
+  onSelectSpec: (id: string) => void
 }) {
   const dryRunById = new Map((dryRun?.results ?? []).map((row) => [row.specId, row]))
   const learningById = new Map((learning?.specs ?? []).map((row) => [row.id, row]))
@@ -1328,50 +1332,90 @@ function StrategyLifecycleSwimlane({
     const dry = dryRunById.get(spec.id)
     const learned = learningById.get(spec.id)
     const gate = gateById.get(spec.id)
-    return {
-      spec,
-      dry,
-      learned,
-      gate,
-      experiments: experimentCountBySpec[spec.id] ?? 0,
-      cells: [
-        { label: 'Spec', value: spec.status, ok: spec.validation?.ok !== false },
-        { label: 'Dry-run', value: dry ? `${dry.matched}/${dry.sampleSize}` : '-', ok: Boolean(dry?.valid) },
-        { label: 'Ledger', value: learned ? `${learned.learning.decisions}/${learned.learning.samples}` : '-', ok: Number(learned?.learning.samples ?? 0) > 0 },
-        { label: 'Gate', value: gate?.decision ?? '-', ok: gate?.decision === 'candidate_ready' || gate?.decision === 'active_monitor' },
-      ],
-    }
+    const blockers = [...(spec.validation?.errors ?? []), ...(dry?.errors ?? []), ...(gate?.missing_evidence ?? [])].filter(Boolean)
+    const nextAction = !spec.validation?.ok
+      ? '先修正 strategy spec contract，再重新執行 dry-run。'
+      : !dry?.valid
+        ? '執行 dry-run，確認候選池覆蓋與 thresholds。'
+        : Number(learned?.learning.samples ?? 0) === 0
+          ? '刷新 reward ledger；沒有 outcome 前不推進 promotion gate。'
+          : blockers.length
+            ? `補齊 evidence：${compactEvidenceLabel(blockers[0])}`
+            : 'Evidence 已就緒；持續監控 shadow / paper outcome。'
+    return { spec, dry, learned, gate, blockers, nextAction, experiments: experimentCountBySpec[spec.id] ?? 0 }
   })
+  const selected = rows.find((row) => row.spec.id === selectedSpecId) ?? rows[0]
 
-  if (!rows.length) return null
+  if (!selected) return null
 
   return (
-    <Card className="border-slate-800 bg-slate-950/70">
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-sm">
-          <GitBranch className="h-4 w-4 text-cyan-300" /> Strategy Lifecycle Swimlane
-        </CardTitle>
-        <p className="text-xs text-slate-500">一列看完：策略定義、dry-run、reward ledger、promotion gate，不再靠兩個大表互相比對。</p>
+    <Card className="overflow-hidden border-slate-800 bg-slate-950/70">
+      <CardHeader className="border-b border-slate-800 pb-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-sm"><GitBranch className="h-4 w-4 text-cyan-300" /> Strategy Family Workspace</CardTitle>
+            <p className="mt-2 text-xs leading-5 text-slate-500">左側選策略；右側只解釋同一個 selection 的 lifecycle、blockers 與唯一下一步。</p>
+          </div>
+          <Badge variant="outline" className="border-cyan-500/25 bg-cyan-500/10 text-cyan-200">{rows.length} families</Badge>
+        </div>
       </CardHeader>
-      <CardContent className="space-y-2">
-        {rows.map((row) => (
-          <div key={row.spec.id} className="grid gap-2 rounded-2xl border border-slate-800 bg-black/20 p-3 text-xs lg:grid-cols-[minmax(180px,0.9fr)_repeat(4,minmax(110px,1fr))_90px]">
-            <div className="min-w-0">
-              <div className="truncate text-sm font-semibold text-slate-100">{row.spec.name}</div>
-              <div className="mt-1 truncate sv-num text-[10px] text-slate-500">{row.spec.id}</div>
-            </div>
-            {row.cells.map((cell) => (
-              <div key={cell.label} className={`rounded-xl border px-3 py-2 ${cell.ok ? 'border-emerald-500/25 bg-emerald-500/10' : 'border-amber-500/25 bg-amber-500/10'}`}>
-                <div className="sv-num text-[10px] normal-case text-slate-500">{cell.label}</div>
-                <div className={cell.ok ? 'mt-1 font-semibold text-emerald-100' : 'mt-1 font-semibold text-amber-100'}>{cell.value}</div>
+      <CardContent className="p-0">
+        <div className="grid xl:grid-cols-[minmax(300px,0.82fr)_minmax(0,1.18fr)]">
+          <div className="border-b border-slate-800 xl:border-b-0 xl:border-r">
+            {rows.map((row) => {
+              const isSelected = row.spec.id === selected.spec.id
+              return (
+                <button
+                  key={row.spec.id}
+                  type="button"
+                  aria-pressed={isSelected}
+                  onClick={() => onSelectSpec(row.spec.id)}
+                  className={`grid w-full gap-3 border-l-2 border-b border-b-slate-900 px-4 py-3 text-left transition hover:bg-slate-900/80 sm:grid-cols-[minmax(0,1fr)_72px_84px] ${isSelected ? 'border-l-cyan-300 bg-cyan-500/[0.09]' : row.blockers.length ? 'border-l-amber-500/40 bg-amber-500/[0.04]' : 'border-l-transparent bg-black/10'}`}
+                >
+                  <span className="min-w-0"><span className="block truncate text-sm font-semibold text-slate-100">{row.spec.name}</span><span className="mt-1 block truncate sv-num text-xs normal-case text-slate-500">{row.spec.alphaBucket} · {row.experiments} experiments</span></span>
+                  <span><span className="block text-xs text-slate-500">Dry-run</span><span className="mt-1 block sv-num text-sm normal-case text-cyan-100">{row.dry ? `${row.dry.matched}/${row.dry.sampleSize}` : '-'}</span></span>
+                  <span className="sm:text-right"><span className="block text-xs text-slate-500">Blockers</span><span className={`mt-1 block sv-num text-sm normal-case ${row.blockers.length ? 'text-amber-200' : 'text-emerald-200'}`}>{row.blockers.length}</span></span>
+                </button>
+              )
+            })}
+          </div>
+          <div className="min-w-0 p-4 lg:p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-lg font-semibold text-slate-50">{selected.spec.name}</h3>
+                  <Badge variant="outline" className={statusClass(selected.spec.status)}>{selected.spec.status}</Badge>
+                  <Badge variant="outline" className={selected.blockers.length ? 'border-amber-500/25 text-amber-200' : 'border-emerald-500/25 text-emerald-200'}>{selected.blockers.length ? `${selected.blockers.length} blockers` : 'evidence ready'}</Badge>
+                </div>
+                <p className="mt-1 sv-num text-xs normal-case text-slate-500">?strategy={selected.spec.id}</p>
               </div>
-            ))}
-            <div className="rounded-xl border border-sky-500/20 bg-sky-500/10 px-3 py-2">
-              <div className="sv-num text-[10px] normal-case text-slate-500">Registry</div>
-              <div className="mt-1 font-semibold text-sky-100">{row.experiments}</div>
+              <Badge variant="outline" className={strategyGateClass(selected.gate?.decision)}>{selected.gate?.decision ?? 'not_ready'}</Badge>
+            </div>
+            <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-300">{selected.spec.thesis}</p>
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+              {[
+                ['Spec', selected.spec.validation.ok ? 'contract ok' : 'contract fail'],
+                ['Dry-run', selected.dry ? `${pct(selected.dry.matchRate)} · ${selected.dry.matched}/${selected.dry.sampleSize}` : 'not run'],
+                ['Reward', selected.learned ? `${selected.learned.learning.samples} samples · hit ${pct(selected.learned.learning.hit_rate)}` : 'ledger missing'],
+                ['Registry', `${selected.experiments} linked experiments`],
+              ].map(([label, value]) => <div key={label} className="rounded-xl border border-slate-800 bg-black/20 p-3"><div className="text-xs text-slate-500">{label}</div><div className="mt-1 text-sm font-semibold text-slate-100">{value}</div></div>)}
+            </div>
+            <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.72fr)]">
+              <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
+                <div className="text-xs font-semibold text-slate-300">Evidence gaps</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {selected.blockers.slice(0, 6).map((blocker) => <Badge key={blocker} variant="outline" className="border-amber-500/25 bg-amber-500/10 text-amber-200">{compactEvidenceLabel(blocker)}</Badge>)}
+                  {!selected.blockers.length && <span className="text-xs text-emerald-300">No missing lifecycle evidence.</span>}
+                </div>
+              </div>
+              <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/[0.07] p-3">
+                <div className="text-xs font-semibold text-cyan-100">唯一下一步</div>
+                <p className="mt-2 text-xs leading-5 text-slate-300">{selected.nextAction}</p>
+                <a href="#strategy-actions" className="mt-3 inline-flex rounded-full border border-cyan-400/30 px-3 py-1.5 text-xs font-semibold text-cyan-200 hover:bg-cyan-400/10">前往對應操作</a>
+              </div>
             </div>
           </div>
-        ))}
+        </div>
       </CardContent>
     </Card>
   )
@@ -1401,6 +1445,7 @@ export default function StrategyLabPage() {
   const [modelUpgradeActionResult, setModelUpgradeActionResult] = useState<string | null>(null)
   const [modelUpgradeActionError, setModelUpgradeActionError] = useState<string | null>(null)
   const [registrySelection, setRegistrySelection] = useState<RegistrySelection>(null)
+  const [selectedStrategyIdIntent, setSelectedStrategyIdIntent] = useState<string | null>(() => new URLSearchParams(window.location.search).get('strategy'))
   const [runResults, setRunResults] = useState<Record<string, ResearchEvaluationRunResponse>>({})
   const [runHistory, setRunHistory] = useState<Record<string, ResearchEvaluationRunsResponse>>({})
   const [runErrors, setRunErrors] = useState<Record<string, string>>({})
@@ -1461,12 +1506,25 @@ export default function StrategyLabPage() {
   }, [dryRun])
 
   const stats = useMemo(() => {
-    const strategyCount = specs?.specs.length ?? 0
-    const safeGateCount = researchGates.filter((gate) => gate.gate.decision === 'ALLOW').length
-    const blockedGateCount = researchGates.filter((gate) => gate.gate.decision === 'BLOCK').length
     const dryRunMatches = dryRun?.results.reduce((sum, item) => sum + item.matched, 0) ?? 0
-    return { strategyCount, safeGateCount, blockedGateCount, dryRunMatches }
-  }, [dryRun, researchGates, specs])
+    const strategyBlockerCount = (strategyLearning?.promotion_gate ?? []).filter((gate) => gate.missing_evidence.length > 0).length
+    const pendingExperimentCount = (experiments?.experiments ?? []).filter((item) => ['queued', 'running', 'needs_more_evidence'].includes(item.status)).length
+    return { dryRunMatches, strategyBlockerCount, pendingExperimentCount }
+  }, [dryRun, experiments, strategyLearning])
+
+  const selectedStrategyId = useMemo(() => {
+    const rows = specs?.specs ?? []
+    if (rows.some((spec) => spec.id === selectedStrategyIdIntent)) return selectedStrategyIdIntent
+    const blockedId = strategyLearning?.promotion_gate.find((gate) => gate.missing_evidence.length > 0)?.strategy_id
+    return blockedId ?? rows[0]?.id ?? null
+  }, [selectedStrategyIdIntent, specs, strategyLearning])
+
+  function selectStrategy(id: string) {
+    setSelectedStrategyIdIntent(id)
+    const url = new URL(window.location.href)
+    url.searchParams.set('strategy', id)
+    window.history.replaceState({}, '', url)
+  }
 
   useEffect(() => {
     if (registrySelection) return
@@ -1848,11 +1906,20 @@ export default function StrategyLabPage() {
           </div>
         </div>
 
+        <div className="grid gap-2 rounded-2xl border border-slate-800 bg-slate-950/70 p-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.07] p-3"><div className="text-xs text-slate-500">今日研究焦點</div><div className="mt-1 text-base font-semibold text-amber-100">{stats.strategyBlockerCount} 個策略有 evidence gap</div></div>
+          <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/[0.07] p-3"><div className="text-xs text-slate-500">Pending experiments</div><div className="mt-1 text-base font-semibold text-cyan-100">{stats.pendingExperimentCount} 待 review / 執行</div></div>
+          <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.07] p-3"><div className="text-xs text-slate-500">Dry-run coverage</div><div className="mt-1 text-base font-semibold text-emerald-100">{stats.dryRunMatches} matched candidates</div></div>
+          <div className="rounded-xl border border-sky-500/20 bg-sky-500/[0.07] p-3"><div className="text-xs text-slate-500">Ownership boundary</div><div className="mt-1 text-base font-semibold text-sky-100">Model promotion → Model Pool</div></div>
+        </div>
+
         <StrategyLifecycleSwimlane
           specs={specs?.specs ?? []}
           dryRun={dryRun}
           learning={strategyLearning}
           experiments={experiments?.experiments ?? []}
+          selectedSpecId={selectedStrategyId}
+          onSelectSpec={selectStrategy}
         />
 
         {error && (
@@ -1861,25 +1928,7 @@ export default function StrategyLabPage() {
           </Card>
         )}
 
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-          {[
-            ['策略規格', stats.strategyCount, specs?.version ?? 'strategy-spec-v1'],
-            ['Dry-run 命中', stats.dryRunMatches, dryRun?.source ?? '-'],
-            ['研究實驗', experiments?.experiments.length ?? 0, experiments?.mode ?? 'read_only'],
-            ['允許 Gate', stats.safeGateCount, 'hypothesis / dry-run'],
-            ['阻擋 Gate', stats.blockedGateCount, 'deploy / trade'],
-          ].map(([label, value, hint]) => (
-            <Card key={label as string} className="border-slate-800 bg-slate-950/70">
-              <CardContent className="p-4">
-                <div className="text-[10px] normal-case text-slate-500">{label}</div>
-                <div className="mt-2 text-2xl font-bold text-slate-100">{value}</div>
-                <div className="mt-1 truncate text-xs text-slate-500">{hint}</div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(420px,0.85fr)]">
+        <div id="strategy-actions" className="grid scroll-mt-4 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(420px,0.85fr)]">
           <div className="space-y-4">
             <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3">
               <div className="text-[10px] font-semibold normal-case text-cyan-300">Action Lanes</div>
@@ -1899,16 +1948,24 @@ export default function StrategyLabPage() {
               actionResult={metaActionResult}
             />
 
-            <ModelUpgradeLaunchpad
-              status={modelUpgradeStatus}
-              busy={metaActionBusy}
-              actionResult={modelUpgradeActionResult}
-              actionError={modelUpgradeActionError}
-              selectedId={registrySelection?.kind === 'model_upgrade' ? registrySelection.id : null}
-              onSeedRegistry={seedModelUpgradeRegistry}
-              onRunEvaluations={runModelUpgradeEvaluations}
-              onSelectRow={(row) => setRegistrySelection({ kind: 'model_upgrade', id: row.candidate_id })}
-            />
+            <details className="group overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 text-sm font-semibold text-slate-100">
+                <span>Model research links <span className="ml-2 text-xs font-normal text-slate-500">governance only；promotion ownership 在 Model Pool</span></span>
+                <ChevronDown className="h-4 w-4 text-slate-500 transition group-open:rotate-180" />
+              </summary>
+              <div className="border-t border-slate-800 p-3">
+                <ModelUpgradeLaunchpad
+                  status={modelUpgradeStatus}
+                  busy={metaActionBusy}
+                  actionResult={modelUpgradeActionResult}
+                  actionError={modelUpgradeActionError}
+                  selectedId={registrySelection?.kind === 'model_upgrade' ? registrySelection.id : null}
+                  onSeedRegistry={seedModelUpgradeRegistry}
+                  onRunEvaluations={runModelUpgradeEvaluations}
+                  onSelectRow={(row) => setRegistrySelection({ kind: 'model_upgrade', id: row.candidate_id })}
+                />
+              </div>
+            </details>
 
             <Card className="border-slate-800 bg-slate-950/70">
               <CardHeader className="pb-3">
@@ -1929,6 +1986,12 @@ export default function StrategyLabPage() {
               </CardContent>
             </Card>
 
+            <details className="group overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 text-sm font-semibold text-slate-100">
+                <span className="flex items-center gap-2"><TestTube2 className="h-4 w-4 text-amber-300" /> 建立研究假說</span>
+                <span className="flex items-center gap-2 text-xs font-normal text-slate-500">獨立建立流程 <ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></span>
+              </summary>
+              <div className="border-t border-slate-800 p-3">
             <Card className="border-slate-800 bg-slate-950/70">
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-sm">
@@ -1967,6 +2030,8 @@ export default function StrategyLabPage() {
                 )}
               </CardContent>
             </Card>
+              </div>
+            </details>
           </div>
 
           <RegistryInspectorPanel

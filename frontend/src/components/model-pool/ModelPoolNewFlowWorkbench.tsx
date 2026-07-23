@@ -1537,10 +1537,17 @@ export default function ModelPoolNewFlowWorkbench({
       ?? grafanaRecords[0]?.candidate.id
       ?? null
   ), [grafanaRecords])
-  const [selectedModelIdIntent, setSelectedModelIdIntent] = useState<string | null>(null)
+  const [selectedModelIdIntent, setSelectedModelIdIntent] = useState<string | null>(() => new URLSearchParams(window.location.search).get('model'))
   const selectedModelId = grafanaRecords.some((record) => record.candidate.id === selectedModelIdIntent)
     ? selectedModelIdIntent
     : defaultSelectedModelId
+
+  function selectModel(id: string) {
+    setSelectedModelIdIntent(id)
+    const url = new URL(window.location.href)
+    url.searchParams.set('model', id)
+    window.history.replaceState({}, '', url)
+  }
 
   return (
     <WorkstationPanel
@@ -1561,14 +1568,14 @@ export default function ModelPoolNewFlowWorkbench({
         <FleetStatusStrip
           records={grafanaRecords}
           selectedModelId={selectedModelId}
-          onSelectModel={setSelectedModelIdIntent}
+          onSelectModel={selectModel}
         />
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1.8fr)_minmax(340px,0.8fr)]">
           <StateTimelinePanel
             records={grafanaRecords}
             selectedModelId={selectedModelId}
-            onSelectModel={setSelectedModelIdIntent}
+            onSelectModel={selectModel}
           />
           <PromotionReadinessPanel
             records={grafanaRecords}
@@ -1582,7 +1589,7 @@ export default function ModelPoolNewFlowWorkbench({
         <EvidenceTablePanel
           records={grafanaRecords}
           selectedModelId={selectedModelId}
-          onSelectModel={setSelectedModelIdIntent}
+          onSelectModel={selectModel}
         />
         <MetaBoundaryPanel />
       </div>

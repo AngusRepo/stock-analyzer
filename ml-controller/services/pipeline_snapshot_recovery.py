@@ -197,7 +197,7 @@ def resolve_next_session_evidence(
     response = request(
         f"{worker_url}/api/admin/historical-lineage-boundary",
         params={"task": "pipeline", "date": run_date},
-        headers={"X-Service-Token": worker_token},
+        headers={"Authorization": f"Bearer {worker_token}"},
         timeout=30.0,
     )
     if int(response.status_code) != 200:

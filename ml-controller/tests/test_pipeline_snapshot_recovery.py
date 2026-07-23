@@ -132,7 +132,7 @@ def test_next_session_falls_back_to_worker_official_calendar_owner(monkeypatch):
     def http_get(url, *, params, headers, timeout):
         assert url.endswith("/api/admin/historical-lineage-boundary")
         assert params == {"task": "pipeline", "date": "2026-07-22"}
-        assert headers == {"X-Service-Token": "secret"}
+        assert headers == {"Authorization": "Bearer secret"}
         assert timeout == 30.0
         return Response()
 

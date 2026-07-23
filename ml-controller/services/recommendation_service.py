@@ -4260,6 +4260,7 @@ def write_predictions_to_d1(
             "formal_layer3_blockers": data.get("formal_layer3_blockers"),
             "formal_layer3_contract": data.get("formal_layer3_contract"),
             "model_score_lineage": data.get("model_score_lineage"),
+            "pipeline_recovery_lineage": data.get("pipeline_recovery_lineage"),
             "feature_schema": data.get("feature_schema"),
             "feature_count": data.get("feature_count"),
             "feature_version": data.get("feature_version"),

@@ -198,6 +198,7 @@ async def _run() -> int:
     from graphs.daily_pipeline_v2 import (
         run_pipeline_v2,
         run_pipeline_v2_from_modal_prediction_callback,
+        run_pipeline_v2_from_snapshot_recovery,
         run_pipeline_v2_until_modal_prediction_spawn,
     )
 
@@ -208,6 +209,7 @@ async def _run() -> int:
     )
     run_id = os.environ.get("PIPELINE_PARENT_RUN_ID", "").strip() or run_id
     continuation_mode = _truthy_env("PIPELINE_MODAL_CONTINUATION_MODE")
+    snapshot_recovery_mode = _truthy_env("PIPELINE_SNAPSHOT_RECOVERY_MODE")
     from services.allocator_contract_guard import assert_allocator_contract_run_date
 
     assert_allocator_contract_run_date(run_date, label="pipeline-v2")
@@ -222,7 +224,16 @@ async def _run() -> int:
     emit_subtasks = True
 
     try:
-        if continuation_mode:
+        if continuation_mode and snapshot_recovery_mode:
+            raise ValueError("pipeline continuation and snapshot recovery modes are mutually exclusive")
+        if snapshot_recovery_mode:
+            source_gcs_uri = os.environ.get("PIPELINE_SNAPSHOT_RECOVERY_SOURCE_GCS_URI", "").strip()
+            result = await run_pipeline_v2_from_snapshot_recovery(
+                source_gcs_uri=source_gcs_uri,
+                run_date=run_date,
+                producer_run_id=run_id,
+            )
+        elif continuation_mode:
             from services.pipeline_modal_handoff import load_verified_modal_prediction_bundle
 
             result_gcs_uri = os.environ.get("PIPELINE_MODAL_RESULT_GCS_URI", "").strip()

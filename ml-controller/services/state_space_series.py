@@ -8,9 +8,11 @@ parity checks use the same payload shape as production inference.
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,78 @@ from services.active_model_policy import (
 STATE_SPACE_SERIES_EXPORT_SCHEMA_VERSION = "state-space-series-export-v1"
 LONG_HISTORY_SEQUENCE_SCHEMA_VERSION = "state-space-series-long-history-enrichment-v1"
 _LONG_HISTORY_CACHE: dict[str, dict[str, list[float]]] = {}
+
+
+def _utc_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def long_history_sequence_artifact_evidence(
+    *,
+    prefix: str | None = None,
+    as_of_utc: str | datetime | None = None,
+    storage_client: Any | None = None,
+) -> dict[str, Any]:
+    """Return immutable GCS object evidence for PIT-safe sequence recovery."""
+
+    resolved_prefix = (prefix or long_history_sequence_prefix()).strip().rstrip("/")
+    bucket_name = _configured_bucket_name()
+    if not bucket_name:
+        raise RuntimeError("GCS_BUCKET_NAME is required for sequence artifact evidence")
+
+    if storage_client is None:
+        from google.cloud import storage
+
+        storage_client = storage.Client()
+
+    client = storage_client
+    bucket = client.bucket(bucket_name)
+    manifest_path = f"{resolved_prefix}/prep/sequence_manifest.json"
+    manifest_blob = bucket.blob(manifest_path)
+    if not manifest_blob.exists():
+        raise RuntimeError(f"sequence artifact manifest missing: gs://{bucket_name}/{manifest_path}")
+    batch_count = _load_manifest_batch_count(bucket, resolved_prefix)
+
+    cutoff = _utc_datetime(as_of_utc) if as_of_utc is not None else None
+    objects: list[dict[str, Any]] = []
+    paths = [manifest_path, *(f"{resolved_prefix}/prep/batch_{idx}.npz" for idx in range(batch_count))]
+    for path in paths:
+        blob = bucket.blob(path)
+        if not blob.exists():
+            raise RuntimeError(f"sequence artifact object missing: gs://{bucket_name}/{path}")
+        blob.reload()
+        updated = _utc_datetime(blob.updated)
+        if cutoff is not None and updated > cutoff:
+            raise RuntimeError(
+                "sequence artifact is newer than PIT source state: "
+                f"gs://{bucket_name}/{path} updated={updated.isoformat()} cutoff={cutoff.isoformat()}"
+            )
+        objects.append({
+            "gcs_uri": f"gs://{bucket_name}/{path}",
+            "generation": str(blob.generation or ""),
+            "updated_at": updated.isoformat(),
+            "size": int(blob.size or 0),
+            "md5_hash": str(blob.md5_hash or ""),
+            "crc32c": str(blob.crc32c or ""),
+        })
+
+    fingerprint_payload = json.dumps(objects, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "schema_version": "state-space-sequence-artifact-evidence-v1",
+        "prefix": resolved_prefix,
+        "batch_count": batch_count,
+        "batch_count_source": "runtime_manifest_resolver",
+        "as_of_utc": cutoff.isoformat() if cutoff is not None else None,
+        "object_count": len(objects),
+        "object_fingerprint": hashlib.sha256(fingerprint_payload).hexdigest(),
+        "objects": objects,
+    }
 
 
 def _as_mapping(payload: Any) -> dict[str, Any]:

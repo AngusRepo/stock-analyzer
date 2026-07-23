@@ -63,6 +63,31 @@ async function putRunLog(
 export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
   const routes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
+  routes.get('/api/admin/historical-lineage-boundary', async (c) => {
+    const authError = await requireServiceToken(c)
+    if (authError) return authError
+
+    const task = c.req.query('task') || 'pipeline'
+    const signalDate = c.req.query('date') || ''
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(signalDate)) {
+      return c.json({ success: false, error: 'date must be YYYY-MM-DD' }, 400)
+    }
+    const {
+      HISTORICAL_CANONICAL_LINEAGE_WRITER_TASKS,
+      historicalLearningLineageDecision,
+    } = await import('../lib/historicalLearningLineageGuard')
+    if (!HISTORICAL_CANONICAL_LINEAGE_WRITER_TASKS.has(task)) {
+      return c.json({ success: false, error: `unsupported historical lineage task: ${task}` }, 400)
+    }
+    const boundary = await historicalLearningLineageDecision(c.env.DB, c.env.KV, task, signalDate)
+    return c.json({
+      success: true,
+      schema_version: 'historical-learning-lineage-boundary-v1',
+      calendar_owner: 'worker.schedulerPolicy.nextTwTradingDate',
+      boundary,
+    })
+  })
+
   routes.post('/api/admin/trigger/:task', async (c) => {
     const authError = await requireServiceToken(c)
     if (authError) return authError

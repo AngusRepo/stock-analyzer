@@ -48,6 +48,11 @@ assert(!missingCalendarEvidence.allowed, 'historical canonical writes require an
 const adminTriggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 assert(
+  adminTriggerRoutes.includes("routes.get('/api/admin/historical-lineage-boundary'")
+    && adminTriggerRoutes.includes("calendar_owner: 'worker.schedulerPolicy.nextTwTradingDate'"),
+  'controller snapshot recovery must read the existing Worker calendar owner without triggering a pipeline',
+)
+assert(
   adminTriggerRoutes.includes('historicalLearningLineageDecision(c.env.DB, c.env.KV, task, requestedRunDate)'),
   'all manual canonical writers must pass the historical event-time boundary',
 )

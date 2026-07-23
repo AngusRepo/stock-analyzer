@@ -10,6 +10,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+import httpx
 from services.state_space_series import long_history_sequence_artifact_evidence
 
 
@@ -164,6 +165,66 @@ def _active_versions(context: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def resolve_next_session_evidence(
+    run_date: str,
+    *,
+    query_fn: Callable[..., list[dict[str, Any]]],
+    http_get: Callable[..., Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    rows = query_fn(
+        """
+        SELECT MIN(date) AS next_session_date
+          FROM canonical_market_daily
+         WHERE stock_id = '0050'
+           AND source = 'finlab.price'
+           AND date > ?
+        """,
+        [run_date],
+    )
+    d1_date = str((rows or [{}])[0].get("next_session_date") or "")[:10]
+    if d1_date:
+        return d1_date, {
+            "schema_version": "pipeline-next-session-evidence-v1",
+            "calendar_owner": "canonical_market_daily:0050:finlab.price",
+            "next_session_date": d1_date,
+        }
+
+    worker_url = os.environ.get("STOCKVISION_WORKER_URL", "").strip().rstrip("/")
+    worker_token = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
+    if not worker_url or not worker_token:
+        raise ValueError("pipeline_snapshot_recovery_worker_calendar_not_configured")
+    request = http_get or httpx.get
+    response = request(
+        f"{worker_url}/api/admin/historical-lineage-boundary",
+        params={"task": "pipeline", "date": run_date},
+        headers={"X-Service-Token": worker_token},
+        timeout=30.0,
+    )
+    if int(response.status_code) != 200:
+        raise ValueError(f"pipeline_snapshot_recovery_worker_calendar_http_{response.status_code}")
+    payload = response.json()
+    boundary = payload.get("boundary") if isinstance(payload.get("boundary"), dict) else {}
+    next_date = str(boundary.get("nextSessionDate") or "")[:10]
+    next_open = str(boundary.get("nextSessionOpenUtc") or "")
+    if (
+        payload.get("schema_version") != "historical-learning-lineage-boundary-v1"
+        or payload.get("calendar_owner") != "worker.schedulerPolicy.nextTwTradingDate"
+        or str(boundary.get("signalDate") or "")[:10] != run_date
+        or not next_date
+        or next_date <= run_date
+        or next_open != f"{next_date}T01:00:00.000Z"
+    ):
+        raise ValueError("pipeline_snapshot_recovery_worker_calendar_contract_invalid")
+    return next_date, {
+        "schema_version": "pipeline-next-session-evidence-v1",
+        "calendar_owner": payload["calendar_owner"],
+        "next_session_date": next_date,
+        "next_session_open_utc": next_open,
+        "boundary_reason": str(boundary.get("reason") or ""),
+        "boundary_allowed": bool(boundary.get("allowed")),
+    }
+
+
 async def run_pipeline_snapshot_recovery(
     *,
     source_gcs_uri: str,
@@ -177,20 +238,11 @@ async def run_pipeline_snapshot_recovery(
 ) -> dict[str, Any]:
     if not source_gcs_uri or not run_date or not producer_run_id:
         raise ValueError("pipeline_snapshot_recovery_required_input_missing")
-    next_rows = await asyncio.to_thread(
-        query_fn,
-        """
-        SELECT MIN(date) AS next_session_date
-          FROM canonical_market_daily
-         WHERE stock_id = '0050'
-           AND source = 'finlab.price'
-           AND date > ?
-        """,
-        [run_date],
+    next_session_date, next_session_evidence = await asyncio.to_thread(
+        resolve_next_session_evidence,
+        run_date,
+        query_fn=query_fn,
     )
-    next_session_date = str((next_rows or [{}])[0].get("next_session_date") or "")[:10]
-    if not next_session_date:
-        raise ValueError("pipeline_snapshot_recovery_next_session_unavailable")
 
     envelope = await asyncio.to_thread(load_pipeline_state_envelope, source_gcs_uri)
     state, lineage = validate_snapshot_recovery_source(
@@ -199,6 +251,7 @@ async def run_pipeline_snapshot_recovery(
         run_date=run_date,
         next_session_date=next_session_date,
     )
+    lineage["next_session_evidence"] = next_session_evidence
     source_pit_checksum = lineage["source_pit_state_checksum"]
     sequence_evidence = await asyncio.to_thread(
         long_history_sequence_artifact_evidence,

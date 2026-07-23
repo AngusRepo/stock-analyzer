@@ -107,6 +107,45 @@ def test_pit_checksum_ignores_only_recovery_owned_state_fields():
     assert recovery.pit_state_checksum(state) != original
 
 
+def test_next_session_falls_back_to_worker_official_calendar_owner(monkeypatch):
+    monkeypatch.setenv("STOCKVISION_WORKER_URL", "https://worker.example")
+    monkeypatch.setenv("STOCKVISION_AUTH_TOKEN", "secret")
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "success": True,
+                "schema_version": "historical-learning-lineage-boundary-v1",
+                "calendar_owner": "worker.schedulerPolicy.nextTwTradingDate",
+                "boundary": {
+                    "allowed": False,
+                    "signalDate": "2026-07-22",
+                    "nextSessionDate": "2026-07-23",
+                    "nextSessionOpenUtc": "2026-07-23T01:00:00.000Z",
+                    "reason": "next_executable_session_opened_use_snapshot_only_repair",
+                },
+            }
+
+    def http_get(url, *, params, headers, timeout):
+        assert url.endswith("/api/admin/historical-lineage-boundary")
+        assert params == {"task": "pipeline", "date": "2026-07-22"}
+        assert headers == {"X-Service-Token": "secret"}
+        assert timeout == 30.0
+        return Response()
+
+    next_date, evidence = recovery.resolve_next_session_evidence(
+        "2026-07-22",
+        query_fn=lambda _sql, _params: [],
+        http_get=http_get,
+    )
+    assert next_date == "2026-07-23"
+    assert evidence["calendar_owner"] == "worker.schedulerPolicy.nextTwTradingDate"
+    assert evidence["boundary_allowed"] is False
+
+
 def test_snapshot_recovery_spawns_with_same_artifact_versions_and_non_native_lineage(monkeypatch):
     monkeypatch.setattr(recovery, "load_pipeline_state_envelope", lambda _uri: _envelope())
     evidence = {

@@ -399,6 +399,7 @@ def test_snapshot_candidate_query_avoids_correlated_evidence_lookups():
     assert "FROM daily_recommendations dr" in captured["sql"]
     assert "JOIN canonical_reference r" in captured["sql"]
     assert "FROM canonical_reference r" not in captured["sql"]
+    assert "json_extract(dr.score_components, '$.version')='score_v2'" in captured["sql"]
     assert captured["params"] == [
         "2026-06-18",
         None,

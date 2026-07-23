@@ -165,6 +165,8 @@ def load_allocator_ev_snapshot_candidate_rows(
         LEFT JOIN ranked_prediction_ids rp
           ON rp.stock_id=st.id AND rp.prediction_rank=1
         LEFT JOIN predictions p ON p.id=rp.id
+        WHERE dr.score_components IS NOT NULL
+          AND json_extract(dr.score_components, '$.version')='score_v2'
         ORDER BY COALESCE(dr.rank, 999999), COALESCE(dr.score, r.score_v2) DESC, r.symbol
         LIMIT ?
         """,

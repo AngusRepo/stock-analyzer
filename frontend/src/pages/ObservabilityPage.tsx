@@ -1,4 +1,5 @@
-﻿import { useMutation, useQuery } from '@tanstack/react-query'
+﻿import { useMemo, useState } from 'react'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   ArrowRight,
   CheckCircle2,
@@ -1004,33 +1005,6 @@ function OperationalReadinessDeck({
           <SchedulerShortcutDeck jobs={jobs} schedulerApiError={schedulerApiError} />
         </div>
       </div>
-      <SchedulerReadinessGroupBoard jobs={jobs} schedulerApiError={schedulerApiError} />
-    </div>
-  )
-}
-
-function DataQualityPanel({ checks }: { checks: DataQualityCheck[] }) {
-  if (!checks.length) return <div className="p-4 text-sm text-slate-500">目前沒有 data quality checks。</div>
-  const sortedChecks = [...checks].sort((a, b) => {
-    const rank = (status: string) => status === 'fail' ? 0 : status === 'warn' ? 1 : 2
-    return rank(a.status) - rank(b.status) || a.id.localeCompare(b.id)
-  })
-  const gates: ReadinessGate[] = sortedChecks.map((check) => {
-    const status = gateStatusFromQuality(check.status)
-    return {
-      id: check.id,
-      label: check.label,
-      status,
-      tone: readinessTone(status),
-      value: check.status.toUpperCase(),
-      source: 'data-quality report',
-      detail: check.summary,
-      latestDate: null,
-    }
-  })
-  return (
-    <div className="min-w-0 overflow-hidden rounded-xl border border-[#263247] bg-[#05070c] p-2">
-      <DataQualityCompactMatrix gates={gates} />
     </div>
   )
 }
@@ -1433,7 +1407,188 @@ function schedulerImpact(job: SchedulerJob) {
   return '若今天應執行，請檢查 Scheduler job 或 holiday policy。'
 }
 
+type ObsBlocker = {
+  id: string
+  severity: 'error' | 'warn'
+  status: 'NEW' | 'ACK'
+  title: string
+  rootCause: string
+  impact: string
+  nextAction: string
+  source: string
+  since: string
+  evidence: string
+  href?: string
+}
+
+function blockerSlug(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 54) || 'unknown'
+}
+
+function blockerRootKey(value: string) {
+  return value.toLowerCase().replace(/https?:\/\/\S+/g, 'url').replace(/\b\d{2,}\b/g, '#').replace(/\s+/g, ' ').trim()
+}
+
+function buildObsBlockers({
+  apiErrors,
+  jobs,
+  checks,
+  events,
+  deployDecision,
+  reportDate,
+}: {
+  apiErrors: Array<{ label: string; message: string }>
+  jobs: SchedulerJob[]
+  checks: DataQualityCheck[]
+  events: ObservabilityEvent[]
+  deployDecision?: string | null
+  reportDate?: string | null
+}): ObsBlocker[] {
+  const candidates: ObsBlocker[] = []
+  for (const item of apiErrors) {
+    candidates.push({
+      id: `api-${blockerSlug(item.label)}`,
+      severity: 'error',
+      status: 'NEW',
+      title: `${item.label} unavailable`,
+      rootCause: item.message,
+      impact: `${item.label} runtime evidence 無法驗證；目前畫面不可判定為 healthy。`,
+      nextAction: '先檢查 auth、route 與 upstream availability，再重新整理 evidence snapshot。',
+      source: item.label,
+      since: 'current refresh',
+      evidence: item.message,
+    })
+  }
+  for (const job of jobs.filter(schedulerHasRootCause)) {
+    const rootCause = schedulerRootCause(job)
+    candidates.push({
+      id: `scheduler-${blockerSlug(job.id)}`,
+      severity: job.lastStatus === 'failed' ? 'error' : 'warn',
+      status: 'NEW',
+      title: `${job.name} · ${schedulerStatusLabel(job.lastStatus)}`,
+      rootCause,
+      impact: schedulerImpact(job),
+      nextAction: job.details?.[0] ?? '開啟 Scheduler row 與對應 run log，先修 root cause 再重跑。',
+      source: `scheduler/${job.id}`,
+      since: job.lastAttemptAt ?? job.lastRunAt ?? job.lastRun ?? 'unknown',
+      evidence: schedulerStatusLog(job),
+      href: '/scheduler',
+    })
+  }
+  for (const check of checks.filter((item) => item.status === 'fail' || item.status === 'warn')) {
+    candidates.push({
+      id: `dq-${blockerSlug(check.id)}`,
+      severity: check.status === 'fail' ? 'error' : 'warn',
+      status: 'NEW',
+      title: check.label,
+      rootCause: check.summary,
+      impact: check.status === 'fail' ? 'Critical data gate 未通過，下游推薦不應視為 fresh。' : '資料 evidence 有警告，需確認是否影響今日 readiness。',
+      nextAction: '開啟 Data Quality 詳細檢查並依 metrics 補齊或隔離來源。',
+      source: `data-quality/${check.id}`,
+      since: reportDate ?? 'latest report',
+      evidence: check.summary,
+      href: `/data-quality${reportDate ? `?date=${reportDate}` : ''}`,
+    })
+  }
+  for (const event of events.filter((item) => item.severity === 'error' || item.severity === 'warn')) {
+    candidates.push({
+      id: `event-${blockerSlug(event.id)}`,
+      severity: event.severity as 'error' | 'warn',
+      status: String(event.status).toLowerCase() === 'ack' ? 'ACK' : 'NEW',
+      title: event.title,
+      rootCause: event.summary,
+      impact: event.impact,
+      nextAction: event.next_action,
+      source: `${event.domain}/${event.source}`,
+      since: event.ts,
+      evidence: event.runbook ?? event.summary,
+      href: event.domain === 'scheduler' ? '/scheduler' : event.domain === 'data_quality' ? '/data-quality' : undefined,
+    })
+  }
+  if (deployDecision === 'BLOCK' || deployDecision === 'WARN') {
+    candidates.push({
+      id: 'deploy-gate-decision',
+      severity: deployDecision === 'BLOCK' ? 'error' : 'warn',
+      status: 'NEW',
+      title: `Deploy gate ${deployDecision}`,
+      rootCause: 'Predeploy gate 尚未 PASS；詳細失敗項目以 deploy gate API evidence 為準。',
+      impact: 'Production release 不應繼續。',
+      nextAction: '先處理 active data / scheduler blockers，再重跑 predeploy gate。',
+      source: 'deploy-gate',
+      since: reportDate ?? 'latest report',
+      evidence: `decision=${deployDecision}`,
+    })
+  }
+
+  const deduped = new Map<string, ObsBlocker>()
+  for (const blocker of candidates) {
+    const key = blockerRootKey(blocker.rootCause)
+    const existing = deduped.get(key)
+    if (!existing || (existing.severity === 'warn' && blocker.severity === 'error')) deduped.set(key, blocker)
+  }
+  return [...deduped.values()].sort((a, b) => Number(b.severity === 'error') - Number(a.severity === 'error') || a.title.localeCompare(b.title))
+}
+
+function ObservabilityTriageBoard({
+  blockers,
+  selectedId,
+  onSelect,
+  onAcknowledge,
+}: {
+  blockers: ObsBlocker[]
+  selectedId?: string | null
+  onSelect: (id: string) => void
+  onAcknowledge: (id: string) => void
+}) {
+  const selected = blockers.find((item) => item.id === selectedId) ?? blockers[0]
+  return (
+    <div className="grid gap-3 xl:grid-cols-[minmax(0,1.12fr)_minmax(360px,0.88fr)]">
+      <WorkstationPanel title="Active Blockers" kicker="root-cause deduplicated; one triage state and one next action per issue">
+        <div className="border-b border-[#263247] bg-[#08111a] px-3 py-2 text-xs leading-5 text-[#9badbf]">
+          {blockers.length ? `${blockers.length} 個 root causes 需要處理；先修第一列，再看完整 inventory。` : '目前沒有 active blocker；可展開下方 inventory 檢查完整 job universe。'}
+        </div>
+        <div className="divide-y divide-[#202b39]">
+          {blockers.map((blocker) => {
+            const active = blocker.id === selected?.id
+            return (
+              <button key={blocker.id} type="button" aria-pressed={active} onClick={() => onSelect(blocker.id)} className={`grid w-full gap-2 border-l-2 px-3 py-3 text-left transition hover:bg-[#121c27] sm:grid-cols-[84px_minmax(0,1fr)_90px] ${active ? 'border-l-[#ffb15a] bg-[#131f2b]' : 'border-l-transparent bg-[#0b121a]'}`}>
+                <span><WorkstationPill tone={blocker.severity === 'error' ? 'error' : 'warn'}>{blocker.severity.toUpperCase()}</WorkstationPill></span>
+                <span className="min-w-0"><span className="block text-sm font-semibold text-[#f2ead8]">{blocker.title}</span><span className="mt-1 block truncate sv-num text-xs normal-case text-[#718096]">{blocker.source} · since {blocker.since}</span></span>
+                <span className="sm:text-right"><WorkstationPill tone={blocker.status === 'ACK' ? 'info' : blocker.severity === 'error' ? 'error' : 'warn'}>{blocker.status}</WorkstationPill></span>
+              </button>
+            )
+          })}
+          {!blockers.length && <div className="p-5 text-sm text-emerald-200">No active root-cause blocker in the current evidence snapshot.</div>}
+        </div>
+      </WorkstationPanel>
+
+      <WorkstationPanel title={selected?.title ?? 'Blocker Inspector'} kicker={selected ? `?blocker=${selected.id}` : 'select an active blocker'}>
+        {selected ? (
+          <div className="space-y-3 p-3">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="rounded-xl border border-[#263247] bg-[#070a10] p-3"><div className="text-xs text-[#718096]">Source / since</div><div className="mt-1 break-words sv-num text-xs normal-case text-slate-100">{selected.source}<br />{selected.since}</div></div>
+              <div className="rounded-xl border border-[#263247] bg-[#070a10] p-3"><div className="text-xs text-[#718096]">Triage</div><div className="mt-1"><WorkstationPill tone={selected.status === 'ACK' ? 'info' : 'warn'}>{selected.status}</WorkstationPill></div></div>
+            </div>
+            <div className="rounded-xl border border-rose-400/20 bg-rose-400/[0.05] p-3"><div className="text-xs font-semibold text-rose-200">Root cause</div><p className="mt-2 break-words text-xs leading-5 text-slate-200">{selected.rootCause}</p></div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="rounded-xl border border-[#263247] bg-[#070a10] p-3"><div className="text-xs font-semibold text-slate-300">Impact</div><p className="mt-2 text-xs leading-5 text-[#9badbf]">{selected.impact}</p></div>
+              <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.05] p-3"><div className="text-xs font-semibold text-cyan-200">唯一下一步</div><p className="mt-2 text-xs leading-5 text-slate-200">{selected.nextAction}</p></div>
+            </div>
+            <div className="rounded-xl border border-[#263247] bg-[#070a10] p-3"><div className="text-xs font-semibold text-slate-300">Evidence</div><p className="mt-2 break-words sv-num text-xs normal-case leading-5 text-[#9badbf]">{selected.evidence}</p></div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => onAcknowledge(selected.id)} disabled={selected.status === 'ACK'}>{selected.status === 'ACK' ? 'Acknowledged' : 'Acknowledge'}</Button>
+              {selected.href && <a href={selected.href} className="inline-flex items-center gap-1 rounded-md border border-sky-400/30 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-400/10">Open source detail <ExternalLink className="h-3 w-3" /></a>}
+            </div>
+          </div>
+        ) : <div className="p-5 text-sm text-[#718096]">No blocker selected.</div>}
+      </WorkstationPanel>
+    </div>
+  )
+}
+
 export default function ObservabilityPage() {
+  const [selectedBlockerIdIntent, setSelectedBlockerIdIntent] = useState<string | null>(() => new URLSearchParams(window.location.search).get('blocker'))
+  const [acknowledgedBlockers, setAcknowledgedBlockers] = useState<Record<string, boolean>>({})
   const scheduler = useQuery({ queryKey: ['obs', 'scheduler'], queryFn: schedulerApi.status, refetchInterval: 60_000, staleTime: 30_000 })
   const dataQuality = useQuery({ queryKey: ['obs', 'data-quality'], queryFn: () => dataQualityApi.status(), refetchInterval: 60_000, staleTime: 30_000 })
   const deployGate = useQuery({ queryKey: ['obs', 'deploy-gate'], queryFn: () => deployGateApi.predeploy(), refetchInterval: 60_000, staleTime: 30_000 })
@@ -1454,15 +1609,41 @@ export default function ObservabilityPage() {
   const schedulerApiError = errorMessage(scheduler.error)
   const dataQualityScore = computeDataQualityScore(dataQuality.data)
   const deployScore = deployGate.data ? deployGate.data.decision === 'PASS' ? 100 : deployGate.data.decision === 'WARN' ? 70 : 30 : 0
-  const failedChecks = dqChecks.filter((check) => check.status === 'fail').length
   const initialLoading = [scheduler, dataQuality, deployGate, system, observability].some((query) => query.isLoading)
+  const dataQualityApiError = errorMessage(dataQuality.error)
+  const deployGateApiError = errorMessage(deployGate.error)
+  const observabilityApiError = errorMessage(observability.error)
+  const systemApiError = errorMessage(system.error)
   const apiErrors = [
     { label: 'Scheduler API', message: schedulerApiError },
-    { label: 'Data Quality API', message: errorMessage(dataQuality.error) },
-    { label: 'Deploy Gate API', message: errorMessage(deployGate.error) },
-    { label: 'OBS Events API', message: errorMessage(observability.error) },
-    { label: 'System API', message: errorMessage(system.error) },
+    { label: 'Data Quality API', message: dataQualityApiError },
+    { label: 'Deploy Gate API', message: deployGateApiError },
+    { label: 'OBS Events API', message: observabilityApiError },
+    { label: 'System API', message: systemApiError },
   ].filter((item): item is { label: string; message: string } => Boolean(item.message))
+  const rawBlockers = useMemo(() => buildObsBlockers({
+    apiErrors,
+    jobs,
+    checks: dqChecks,
+    events,
+    deployDecision: deployGate.data?.decision,
+    reportDate: dataQuality.data?.date,
+  }), [schedulerApiError, dataQualityApiError, deployGateApiError, observabilityApiError, systemApiError, jobs, dqChecks, events, deployGate.data?.decision, dataQuality.data?.date])
+  const blockers = useMemo(() => rawBlockers.map((blocker) => ({
+    ...blocker,
+    status: acknowledgedBlockers[blocker.id] ? 'ACK' as const : blocker.status,
+  })), [acknowledgedBlockers, rawBlockers])
+  const selectedBlockerId = blockers.some((item) => item.id === selectedBlockerIdIntent)
+    ? selectedBlockerIdIntent
+    : blockers[0]?.id ?? null
+  const adaptiveBlocking = blockers.some((item) => item.source.includes('adaptive') || item.source.includes('ml_threshold_policy'))
+
+  function selectBlocker(id: string) {
+    setSelectedBlockerIdIntent(id)
+    const url = new URL(window.location.href)
+    url.searchParams.set('blocker', id)
+    window.history.replaceState({}, '', url)
+  }
 
   return (
     <AppShell>
@@ -1491,7 +1672,14 @@ export default function ObservabilityPage() {
           }
         />
 
-        <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="full rows, not fake tabs">
+        <ObservabilityTriageBoard
+          blockers={blockers}
+          selectedId={selectedBlockerId}
+          onSelect={selectBlocker}
+          onAcknowledge={(id) => setAcknowledgedBlockers((current) => ({ ...current, [id]: true }))}
+        />
+
+        <WorkstationPanel title="Operational Drilldown / Readiness Snapshot" kicker="compact readiness path; detailed inventory is collapsed below">
           <OperationalReadinessDeck
             jobs={jobs}
             checks={dqChecks}
@@ -1503,45 +1691,36 @@ export default function ObservabilityPage() {
             apiErrors={apiErrors}
             schedulerApiError={schedulerApiError}
           />
-          <div className="border-b border-[#263247] p-3">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs leading-5 text-slate-400">
-                Scheduler row 直接顯示 root cause、發生時間與可能影響；OBS 不再另外維護重複的事件收件匣。
-              </p>
-              <div className="flex flex-wrap gap-2 text-xs">
-                <a href="/scheduler" className="inline-flex items-center gap-1 rounded border border-sky-500/25 bg-sky-500/10 px-3 py-1.5 sv-num text-sky-200 hover:border-sky-300/50">
-                  Scheduler <ExternalLink className="h-3 w-3" />
-                </a>
-                <a href={`/data-quality${dataQuality.data?.date ? `?date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-emerald-500/25 bg-emerald-500/10 px-3 py-1.5 sv-num text-emerald-200 hover:border-emerald-300/50">
-                  Data Quality <ExternalLink className="h-3 w-3" />
-                </a>
-                <a href={`/data-quality?focus=price_freshness${dataQuality.data?.date ? `&date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-amber-500/25 bg-amber-500/10 px-3 py-1.5 sv-num text-amber-200 hover:border-amber-300/50">
-                  Price Data <ExternalLink className="h-3 w-3" />
-                </a>
-              </div>
-            </div>
-          </div>
-          <div className="grid gap-3 p-3">
-            <div>
-              <div className="mb-2 flex items-center justify-between gap-4">
-                <p className="shrink-0 whitespace-nowrap sv-num text-xs normal-case text-slate-400">Data Quality / 資料品質</p>
-                <div className="hidden items-center gap-3 sm:flex">
-                  <span className={`sv-num text-xs ${failedChecks ? 'text-rose-300' : 'text-emerald-300'}`}>{dataQualityScore}%</span>
-                </div>
-              </div>
-              <DataQualityPanel checks={dqChecks} />
+          <div className="border-t border-[#263247] p-3">
+            <div className="flex flex-wrap gap-2 text-xs">
+              <a href="/scheduler" className="inline-flex items-center gap-1 rounded border border-sky-500/25 bg-sky-500/10 px-3 py-1.5 sv-num text-sky-200 hover:border-sky-300/50">Scheduler <ExternalLink className="h-3 w-3" /></a>
+              <a href={`/data-quality${dataQuality.data?.date ? `?date=${dataQuality.data.date}` : ''}`} className="inline-flex items-center gap-1 rounded border border-emerald-500/25 bg-emerald-500/10 px-3 py-1.5 sv-num text-emerald-200 hover:border-emerald-300/50">Data Quality <ExternalLink className="h-3 w-3" /></a>
             </div>
           </div>
         </WorkstationPanel>
 
-        <section>
-          <AdaptiveMetaPanel
-            events={events}
-            onGaReview={(action, level) => gaReview.mutate({ action, level })}
-            gaReviewPending={gaReview.isPending}
-            gaReviewError={gaReview.error ? (gaReview.error as Error).message : null}
-          />
-        </section>
+        <details open={blockers.length === 0} className="group overflow-hidden rounded-xl border border-[#263247] bg-[#070a10]">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4">
+            <div><div className="text-sm font-semibold text-[#f2ead8]">Healthy / Scheduler Inventory</div><div className="mt-1 text-xs text-[#718096]">完整 Daily、Intraday、Weekly、Monthly 與 readiness chain 預設收合。</div></div>
+            <WorkstationPill tone={blockers.length ? 'neutral' : 'ok'}>{jobs.filter((job) => job.lastStatus === 'success').length}/{jobs.length} healthy</WorkstationPill>
+          </summary>
+          <div className="border-t border-[#263247] p-3"><SchedulerReadinessGroupBoard jobs={jobs} schedulerApiError={schedulerApiError} /></div>
+        </details>
+
+        <details open={adaptiveBlocking} className="group overflow-hidden rounded-xl border border-[#263247] bg-[#070a10]">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4">
+            <div><div className="text-sm font-semibold text-[#f2ead8]">Adaptive / Meta runtime evidence</div><div className="mt-1 text-xs text-[#718096]">OBS 只回答是否阻塞 production readiness；完整研究 evidence 留在 Strategy Lab / Model Pool。</div></div>
+            <WorkstationPill tone={adaptiveBlocking ? 'error' : 'ok'}>{adaptiveBlocking ? 'BLOCKING' : 'NOT BLOCKING'}</WorkstationPill>
+          </summary>
+          <section className="border-t border-[#263247]">
+            <AdaptiveMetaPanel
+              events={events}
+              onGaReview={(action, level) => gaReview.mutate({ action, level })}
+              gaReviewPending={gaReview.isPending}
+              gaReviewError={gaReview.error ? (gaReview.error as Error).message : null}
+            />
+          </section>
+        </details>
         </div>
       </div>
     </AppShell>

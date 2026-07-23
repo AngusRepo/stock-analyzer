@@ -171,7 +171,7 @@ function PromotionQueuePanelV2({
   const suppressedCount = queue?.suppressed_count ?? suppressedRows.length
 
   return (
-    <WorkstationPanel title="Promotion & Parameter Governance" kicker="artifact candidate, final compare, approval, champion pointer">
+    <WorkstationPanel title="Promotion Decisions / Promotion & Parameter Governance" kicker="reason, candidate vs champion, gates, decision source, rollback target">
       <div className="grid gap-3 p-3 md:grid-cols-4">
         <SignalInsightCard title="Auto candidates" value={String(autoCount)} detail="monthly release passed live gate and final compare" tone={autoCount ? 'ok' : 'neutral'} />
         <SignalInsightCard title="Approval required" value={String(approvalCount)} detail="weekly/manual changes still require Wei approval" tone={approvalCount ? 'warn' : 'neutral'} />
@@ -193,6 +193,15 @@ function PromotionQueuePanelV2({
           const liveStatus = String(row.live_gate_status ?? '').toLowerCase()
           const finalCompareReady = Boolean(row.final_compared_to)
           const approvalTone: WorkstationTone = isBlocked ? 'error' : row.approval_required ? 'warn' : row.promotion_decision === 'auto_promote_candidate' ? 'ok' : 'info'
+          const isAutoPromotion = !row.approval_required && row.promotion_decision === 'auto_promote_candidate'
+          const gateSummary = `${row.offline_gate_decision ?? 'offline missing'} / ${row.live_gate_status ?? 'live missing'} / ${finalCompareReady ? 'compare linked' : 'compare missing'}`
+          const promotionReason = isBlocked
+            ? `Blocked：${blockers.map((item) => item.label ?? item.code).join('、') || row.next_action}`
+            : isAutoPromotion
+              ? `Auto promotion：offline、live 與 final champion compare 已形成可稽核證據；controller 不需要人工點擊。`
+              : row.approval_required
+                ? 'Manual approval：證據可 review，但此 candidate type 仍在 Wei approval boundary。'
+                : `Controller decision：${humanizeGovernanceToken(row.promotion_decision)}。`
           const reviewMetrics: ApprovalReviewMetric[] = [
             {
               label: 'OOS IC',
@@ -250,16 +259,28 @@ function PromotionQueuePanelV2({
           ]
           const reviewImpacts: ApprovalReviewImpact[] = [
             {
-              label: 'Pointer owner',
-              value: 'model_champion_pointers',
-              detail: `model ${row.model_name}`,
-              tone: 'info',
+              label: 'Decision source',
+              value: isAutoPromotion ? 'AUTO / promotion controller' : row.approval_required ? 'WEI APPROVAL' : humanizeGovernanceToken(row.promotion_decision),
+              detail: isAutoPromotion ? '自動決策；UI 只提供稽核，不提供手動 auto-promote。' : 'manual governance boundary',
+              tone: isAutoPromotion ? 'ok' : 'warn',
             },
             {
               label: 'Candidate artifact',
-              value: row.artifact_id ?? 'artifact N/A',
-              detail: row.candidate_version ?? 'candidate version N/A',
+              value: row.candidate_version ?? row.artifact_id ?? 'candidate N/A',
+              detail: row.artifact_id ?? 'artifact id not exposed',
               tone: row.artifact_id ? 'ok' : 'warn',
+            },
+            {
+              label: 'Rollback target',
+              value: row.current_champion_version ?? 'not exposed',
+              detail: row.final_compared_to ? `final compared to ${row.final_compared_to}` : 'final compare target missing',
+              tone: row.current_champion_version ? 'info' : 'warn',
+            },
+            {
+              label: 'Decision time',
+              value: 'API not exposed',
+              detail: 'queue contract 尚未提供 decided_at；不可用 local refresh time 代替。',
+              tone: 'warn',
             },
             {
               label: 'Downstream',
@@ -272,7 +293,7 @@ function PromotionQueuePanelV2({
             <ApprovalReviewPanel
               key={row.artifact_id ?? `${row.model_name}-${row.candidate_version}`}
               title={`${row.model_name} artifact promotion`}
-              kicker="model artifact / champion pointer approval"
+              kicker="model artifact / champion pointer audit"
               status={row.promotion_decision}
               statusTone={approvalTone}
               candidate={
@@ -289,7 +310,12 @@ function PromotionQueuePanelV2({
                   <div>final compared to {row.final_compared_to ?? 'pending'}</div>
                 </>
               }
-              summary={row.next_action}
+              summary={
+                <span>
+                  <span className="font-semibold text-[#f1c16f]">Promotion reason：</span>{promotionReason}
+                  <span className="mt-1 block text-[#7f8da3]">gate evidence: {gateSummary}</span>
+                </span>
+              }
               metrics={reviewMetrics}
               gates={reviewGates}
               impacts={reviewImpacts}
@@ -317,15 +343,9 @@ function PromotionQueuePanelV2({
                       Wei approve + promote pointer
                     </Button>
                   ) : (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={!row.artifact_id || isPromoting || isBlocked}
-                      className="rounded-full border-sky-400/30 text-sky-200 hover:bg-sky-400/10"
-                      onClick={() => row.artifact_id && onPromote(row.artifact_id, false, true)}
-                    >
-                      Auto promote pointer
-                    </Button>
+                    <div className="rounded-full border border-emerald-400/25 bg-emerald-400/[0.08] px-3 py-1.5 text-xs font-semibold text-emerald-200">
+                      Auto promotion由 controller 執行 · UI audit only
+                    </div>
                   )}
                 </>
               }
@@ -339,7 +359,9 @@ function PromotionQueuePanelV2({
         {promotionResult && <PromotionControllerResultPanel result={promotionResult} />}
       </div>
       {suppressedRows.length > 0 && (
-        <div className="border-t border-[#263247] p-3">
+        <details className="group border-t border-[#263247] p-3">
+          <summary className="cursor-pointer list-none text-xs font-semibold text-[#90a0b8]">Superseded / suppressed versions · {suppressedRows.length} hidden</summary>
+          <div className="mt-3">
           <div className="mb-2 flex items-center justify-between gap-2">
             <p className="sv-num text-[11px] normal-case text-[#90a0b8]">Suppressed versions</p>
             <WorkstationPill tone="info">{suppressedRows.length} hidden</WorkstationPill>
@@ -360,7 +382,8 @@ function PromotionQueuePanelV2({
               </div>
             ))}
           </div>
-        </div>
+          </div>
+        </details>
       )}
     </WorkstationPanel>
   )

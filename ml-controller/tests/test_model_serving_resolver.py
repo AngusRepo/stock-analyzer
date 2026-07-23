@@ -46,6 +46,8 @@ def test_build_pool_from_d1_champion_pointer_serves_production_artifact():
                 "registration": {
                     "metadata": {
                         "target_semantic_version": resolver.LABEL_SCHEMA_VERSION,
+                        "seq_len": 512,
+                        "pred_len": 5,
                     }
                 }
             },
@@ -62,6 +64,17 @@ def test_build_pool_from_d1_champion_pointer_serves_production_artifact():
     assert entry["gcs_path"] == "universal/patchtst/vGood.zip"
     assert entry["rolling_ic"] == 0.12
     assert entry["target_semantic_version"] == resolver.LABEL_SCHEMA_VERSION
+    assert entry["seq_len"] == 512
+    assert entry["pred_len"] == 5
+    assert entry["sequence_contract"] == {
+        "schema_version": "model-serving-sequence-contract-v1",
+        "source": "model_artifact_registry",
+        "model": "PatchTST",
+        "artifact_id": "PatchTST:vGood:weekly_drift",
+        "version": "vGood",
+        "seq_len": 512,
+        "pred_len": 5,
+    }
 
 
 def test_d1_champion_retires_artifact_with_legacy_target_semantic():
@@ -259,6 +272,9 @@ def test_model_pool_reconcile_plan_retires_archived_d1_champion_pointer():
         "serving_owner": None,
         "serving_artifact_id": None,
         "serving_block_reason": "artifact_state_archived",
+        "seq_len": None,
+        "pred_len": None,
+        "sequence_contract": None,
     }
 
     patched = resolver.apply_model_pool_reconcile_plan(

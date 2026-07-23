@@ -20,6 +20,9 @@ DIRECT_ALPHA_MODELS = (
     "PatchTST",
     "iTransformer",
 )
+SEQUENCE_ALPHA_MODELS = ("DLinear", "PatchTST", "iTransformer")
+SEQUENCE_CONTRACT_FIELDS = ("seq_len", "pred_len", "sequence_contract")
+SEQUENCE_CONTRACT_SCHEMA_VERSION = "model-serving-sequence-contract-v1"
 L2_SIDECARS = ("TimesFM",)
 SERVING_OK_STATES = {"production"}
 SERVING_OK_OFFLINE_DECISIONS = {"STRONG_PASS", "PASS"}
@@ -90,6 +93,38 @@ def _artifact_metadata(artifact: dict[str, Any] | None) -> dict[str, Any]:
     return _json_obj(registration.get("metadata"))
 
 
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _sequence_artifact_contract(
+    model_name: str,
+    artifact: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if model_name not in SEQUENCE_ALPHA_MODELS or not artifact:
+        return None
+    metadata = _artifact_metadata(artifact)
+    seq_len = _positive_int(metadata.get("seq_len"))
+    pred_len = _positive_int(metadata.get("pred_len"))
+    version = str(artifact.get("version") or metadata.get("version") or "").strip()
+    artifact_id = str(artifact.get("artifact_id") or "").strip()
+    if seq_len is None or pred_len is None or not version or not artifact_id:
+        return None
+    return {
+        "schema_version": SEQUENCE_CONTRACT_SCHEMA_VERSION,
+        "source": "model_artifact_registry",
+        "model": model_name,
+        "artifact_id": artifact_id,
+        "version": version,
+        "seq_len": seq_len,
+        "pred_len": pred_len,
+    }
+
+
 def _folder(model_name: str) -> str:
     return model_name.lower().replace("-", "_")
 
@@ -125,6 +160,8 @@ def _artifact_block_reason(artifact: dict[str, Any] | None, *, model_name: str) 
         target_semantic = str(_artifact_metadata(artifact).get("target_semantic_version") or "").strip()
         if target_semantic != LABEL_SCHEMA_VERSION:
             return f"artifact_target_semantic_{target_semantic or 'missing'}_expected_{LABEL_SCHEMA_VERSION}"
+    if model_name in SEQUENCE_ALPHA_MODELS and _sequence_artifact_contract(model_name, artifact) is None:
+        return "artifact_sequence_contract_missing_or_invalid"
     return None
 
 
@@ -277,6 +314,9 @@ def build_pool_from_champion_pointers(
         block_reason = None if pointer and version else "missing_d1_champion_pointer"
         block_reason = block_reason or _artifact_block_reason(artifact, model_name=model_name)
         entry = dict(fallback_entry or {})
+        if model_name in SEQUENCE_ALPHA_MODELS:
+            for key in SEQUENCE_CONTRACT_FIELDS:
+                entry.pop(key, None)
         entry["version"] = version or str(entry.get("version") or "")
         entry["status"] = "retired" if block_reason else "active"
         entry["serving_owner"] = "model_champion_pointers"
@@ -290,6 +330,11 @@ def build_pool_from_champion_pointers(
             entry["offline_gate_decision"] = artifact.get("offline_gate_decision")
             entry["live_gate_status"] = artifact.get("live_gate_status")
             entry["target_semantic_version"] = artifact_metadata.get("target_semantic_version")
+            sequence_contract = _sequence_artifact_contract(model_name, artifact)
+            if sequence_contract:
+                entry["seq_len"] = sequence_contract["seq_len"]
+                entry["pred_len"] = sequence_contract["pred_len"]
+                entry["sequence_contract"] = sequence_contract
         elif version:
             entry.setdefault("gcs_path", _default_artifact_path(model_name, version))
             entry.setdefault("metadata_path", _default_metadata_path(model_name, version))

@@ -548,7 +548,16 @@ def test_sequence_family_models_use_sequence_contract_subset(monkeypatch):
                     },
                     "DLinear": {
                         "version": "v1",
-                        "seq_len": 512,
+                        "serving_artifact_id": "DLinear:v1:oof_full_fit_release",
+                        "sequence_contract": {
+                            "schema_version": "model-serving-sequence-contract-v1",
+                            "source": "model_artifact_registry",
+                            "model": "DLinear",
+                            "artifact_id": "DLinear:v1:oof_full_fit_release",
+                            "version": "v1",
+                            "seq_len": 512,
+                            "pred_len": 5,
+                        },
                     },
                 },
             },
@@ -577,9 +586,45 @@ def test_sequence_contract_is_resolved_per_serving_artifact():
     contracts = daily_pipeline_v2._sequence_model_contracts(
         pool={
             "models": {
-                "DLinear": {"version": "d1", "seq_len": 512},
-                "PatchTST": {"version": "p1", "seq_len": 768},
-                "iTransformer": {"version": "i1", "seq_len": 1024},
+                "DLinear": {
+                    "version": "d1",
+                    "serving_artifact_id": "DLinear:d1:oof_full_fit_release",
+                    "sequence_contract": {
+                        "schema_version": "model-serving-sequence-contract-v1",
+                        "source": "model_artifact_registry",
+                        "model": "DLinear",
+                        "artifact_id": "DLinear:d1:oof_full_fit_release",
+                        "version": "d1",
+                        "seq_len": 512,
+                        "pred_len": 5,
+                    },
+                },
+                "PatchTST": {
+                    "version": "p1",
+                    "serving_artifact_id": "PatchTST:p1:oof_full_fit_release",
+                    "sequence_contract": {
+                        "schema_version": "model-serving-sequence-contract-v1",
+                        "source": "model_artifact_registry",
+                        "model": "PatchTST",
+                        "artifact_id": "PatchTST:p1:oof_full_fit_release",
+                        "version": "p1",
+                        "seq_len": 768,
+                        "pred_len": 5,
+                    },
+                },
+                "iTransformer": {
+                    "version": "i1",
+                    "serving_artifact_id": "iTransformer:i1:oof_full_fit_release",
+                    "sequence_contract": {
+                        "schema_version": "model-serving-sequence-contract-v1",
+                        "source": "model_artifact_registry",
+                        "model": "iTransformer",
+                        "artifact_id": "iTransformer:i1:oof_full_fit_release",
+                        "version": "i1",
+                        "seq_len": 1024,
+                        "pred_len": 5,
+                    },
+                },
             },
         },
         model_status={
@@ -593,3 +638,32 @@ def test_sequence_contract_is_resolved_per_serving_artifact():
         "PatchTST": 768,
         "iTransformer": 1024,
     }
+    assert {name: row["pred_len"] for name, row in contracts.items()} == {
+        "DLinear": 5,
+        "PatchTST": 5,
+        "iTransformer": 5,
+    }
+
+
+def test_sequence_contract_rejects_stale_artifact_identity():
+    with pytest.raises(RuntimeError, match="version-bound sequence contract"):
+        daily_pipeline_v2._sequence_model_contracts(
+            pool={
+                "models": {
+                    "DLinear": {
+                        "version": "vNew",
+                        "serving_artifact_id": "DLinear:vNew:oof_full_fit_release",
+                        "sequence_contract": {
+                            "schema_version": "model-serving-sequence-contract-v1",
+                            "source": "model_artifact_registry",
+                            "model": "DLinear",
+                            "artifact_id": "DLinear:vOld:oof_full_fit_release",
+                            "version": "vOld",
+                            "seq_len": 1024,
+                            "pred_len": 5,
+                        },
+                    }
+                }
+            },
+            model_status={"DLinear": "active"},
+        )

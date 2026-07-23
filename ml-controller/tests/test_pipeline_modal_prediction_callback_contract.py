@@ -41,7 +41,7 @@ def test_pipeline_modal_prediction_bundle_contract_exists_on_modal() -> None:
     assert "predict_batch_v2_contract" in graph
     assert "sequence_model_series_by_model" in graph
     assert "sequence_model_contracts" in graph
-    assert "active serving artifact missing valid seq_len" in graph
+    assert "active serving artifact missing valid version-bound sequence contract" in graph
     assert "_post_pipeline_prediction_callback" in modal_app
     assert "_persist_pipeline_prediction_bundle" in modal_app
     assert "pipeline-modal-prediction-callback-v2" in modal_app

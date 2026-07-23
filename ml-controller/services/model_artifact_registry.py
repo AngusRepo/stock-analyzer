@@ -52,6 +52,7 @@ PRODUCTION_ARTIFACT_EXTENSIONS: dict[str, str] = {
 }
 PRODUCTION_ARTIFACT_MODEL_NAMES = frozenset(PRODUCTION_ARTIFACT_EXTENSIONS)
 ACTIVE8_ARTIFACT_MODEL_NAMES = PRODUCTION_ARTIFACT_MODEL_NAMES - {"TimesFM"}
+SEQUENCE_ARTIFACT_MODEL_NAMES = frozenset({"DLinear", "PatchTST", "iTransformer"})
 ACTIVE8_FAMILY_FEATURE_CONTRACT_VERSION = "active8-family-feature-contract-v3"
 ACTIVE8_TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 TIMESFM_L175_RELEASE_COHORT = frozenset({"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"})
@@ -60,6 +61,14 @@ PROMOTION_GRADE_SEQUENCE_METHODS = frozenset({
     "purged_walk_forward_retrain_rank_ic",
     "outer_purged_walk_forward_rank_ic",
 })
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _now_iso() -> str:
@@ -1805,7 +1814,13 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
             "Retrain this model under active8-family-feature-contract-v3; do not infer parity from a column count.",
         )
 
-    if contract_required and model_name in {"DLinear", "PatchTST", "iTransformer"}:
+    if contract_required and model_name in SEQUENCE_ARTIFACT_MODEL_NAMES:
+        if _positive_int(metadata.get("seq_len")) is None or _positive_int(metadata.get("pred_len")) is None:
+            add(
+                "artifact_sequence_contract_missing_or_invalid",
+                "Sequence artifact lacks positive seq_len/pred_len metadata",
+                "Regenerate artifact registration from the exact trained metadata; do not inherit another version's sequence length.",
+            )
         cpcv = _nested_dict(registration.get("model_cpcv")) or _nested_dict(metadata.get("model_cpcv"))
         method = str(cpcv.get("method") or "")
         validation_design = _nested_dict(cpcv.get("validation_design")) or _nested_dict(metadata.get("validation_design"))
@@ -2710,6 +2725,22 @@ def apply_promoted_artifact_to_model_pool(
     if not metadata:
         metadata = _artifact_registration_metadata(artifact)
     entry["target_semantic_version"] = metadata.get("target_semantic_version")
+    if model_name in SEQUENCE_ARTIFACT_MODEL_NAMES:
+        seq_len = _positive_int(metadata.get("seq_len"))
+        pred_len = _positive_int(metadata.get("pred_len"))
+        if seq_len is None or pred_len is None:
+            raise RuntimeError(f"{model_name} exact artifact sequence contract missing or invalid")
+        entry["seq_len"] = seq_len
+        entry["pred_len"] = pred_len
+        entry["sequence_contract"] = {
+            "schema_version": "model-serving-sequence-contract-v1",
+            "source": "model_artifact_registry",
+            "model": model_name,
+            "artifact_id": artifact.get("artifact_id"),
+            "version": candidate_version,
+            "seq_len": seq_len,
+            "pred_len": pred_len,
+        }
     offline_evidence = _json_loads(artifact.get("offline_evidence_json"))
     registration = _nested_dict(offline_evidence.get("registration"))
     gate = _nested_dict(offline_evidence.get("gate"))
@@ -2735,6 +2766,9 @@ def apply_promoted_artifact_to_model_pool(
         "feature_policy_schema_version": metadata.get("feature_policy_schema_version"),
         "family_feature_contract": metadata.get("family_feature_contract"),
         "target_semantic_version": metadata.get("target_semantic_version"),
+        "seq_len": metadata.get("seq_len"),
+        "pred_len": metadata.get("pred_len"),
+        "sequence_contract": entry.get("sequence_contract"),
     }
     entry["last_artifact_evidence"] = {
         key: value

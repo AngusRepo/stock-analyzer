@@ -345,26 +345,38 @@ def _sequence_model_contracts(
             continue
         entry = models.get(model_name)
         entry = entry if isinstance(entry, dict) else {}
-        evidence = entry.get("last_artifact_evidence")
-        evidence = evidence if isinstance(evidence, dict) else {}
-        raw_seq_len = entry.get("seq_len")
-        if raw_seq_len is None:
-            raw_seq_len = evidence.get("seq_len")
+        contract = entry.get("sequence_contract")
+        contract = contract if isinstance(contract, dict) else {}
+        version = str(entry.get("version") or "").strip()
+        artifact_id = str(entry.get("serving_artifact_id") or "").strip()
         try:
-            seq_len = int(raw_seq_len)
+            seq_len = int(contract.get("seq_len"))
+            pred_len = int(contract.get("pred_len"))
         except (TypeError, ValueError):
             seq_len = 0
-        if seq_len <= 0:
+            pred_len = 0
+        contract_valid = (
+            contract.get("schema_version") == "model-serving-sequence-contract-v1"
+            and contract.get("source") == "model_artifact_registry"
+            and str(contract.get("model") or "") == model_name
+            and str(contract.get("version") or "") == version
+            and str(contract.get("artifact_id") or "") == artifact_id
+            and seq_len > 0
+            and pred_len > 0
+        )
+        if not contract_valid:
             raise RuntimeError(
-                f"{model_name} active serving artifact missing valid seq_len"
+                f"{model_name} active serving artifact missing valid version-bound sequence contract"
             )
         contracts[model_name] = {
             "seq_len": seq_len,
-            "version": str(entry.get("version") or "").strip(),
+            "pred_len": pred_len,
+            "version": version,
+            "artifact_id": artifact_id,
             "artifact_path": str(
                 entry.get("gcs_path") or entry.get("artifact_path") or ""
             ).strip(),
-            "source": "serving_pool.models",
+            "source": "serving_pool.models.sequence_contract",
         }
     return contracts
 

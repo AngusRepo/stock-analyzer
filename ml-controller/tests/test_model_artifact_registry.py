@@ -2423,7 +2423,11 @@ def test_apply_promoted_artifact_to_model_pool_moves_matching_challenger_to_acti
             "version": "vNew",
             "candidate_type": "weekly_drift",
             "artifact_path": "universal/patchtst/vNew.zip",
-            "metadata": {"target_semantic_version": registry.LABEL_SCHEMA_VERSION},
+            "metadata": {
+                "target_semantic_version": registry.LABEL_SCHEMA_VERSION,
+                "seq_len": 512,
+                "pred_len": 5,
+            },
         },
         reason="wei_approval",
         promoted_at="2026-05-14T17:31:25+00:00",
@@ -2437,6 +2441,8 @@ def test_apply_promoted_artifact_to_model_pool_moves_matching_challenger_to_acti
     assert "challenger" not in entry
     assert entry["retired_versions"][0]["version"] == "v1"
     assert entry["promotion_controller"]["artifact_id"] == "PatchTST:vNew:weekly_drift"
+    assert entry["sequence_contract"]["artifact_id"] == "PatchTST:vNew:weekly_drift"
+    assert entry["sequence_contract"]["seq_len"] == 512
 
 
 def test_apply_promoted_oof_uncertain_recency_uses_degraded_serving_weight():
@@ -2455,6 +2461,11 @@ def test_apply_promoted_oof_uncertain_recency_uses_degraded_serving_weight():
         "version": "vNew",
         "candidate_type": "oof_full_fit_release",
         "artifact_path": "universal/patchtst/vNew.zip",
+        "metadata": {
+            "target_semantic_version": registry.LABEL_SCHEMA_VERSION,
+            "seq_len": 512,
+            "pred_len": 5,
+        },
         "offline_evidence_json": {
             "registration": {
                 "oof_promotion_evidence": {
@@ -2530,6 +2541,11 @@ def test_model_pool_release_writer_dry_run_does_not_mutate_pool():
             "version": "vNew",
             "candidate_type": "monthly_release",
             "artifact_path": "universal/dlinear/vNew.pt",
+            "metadata": {
+                "target_semantic_version": registry.LABEL_SCHEMA_VERSION,
+                "seq_len": 512,
+                "pred_len": 5,
+            },
         },
         reason="dry_run",
         promoted_at="2026-06-22T00:00:00+00:00",
@@ -2562,6 +2578,11 @@ def test_model_pool_release_writer_confirm_mutates_pool():
             "version": "vNew",
             "candidate_type": "monthly_release",
             "artifact_path": "universal/dlinear/vNew.pt",
+            "metadata": {
+                "target_semantic_version": registry.LABEL_SCHEMA_VERSION,
+                "seq_len": 512,
+                "pred_len": 5,
+            },
         },
         reason="wei_approval",
         promoted_at="2026-06-22T00:00:00+00:00",

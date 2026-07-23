@@ -56,6 +56,7 @@ export interface OptunaQueueEntry {
   processing_started_at?: string
   processed_at?: string
   run_id?: string
+  retry_count?: number
   sandbox_id?: string
   error?: string
   note?: string
@@ -309,7 +310,13 @@ export async function releaseOptunaQueueProcessorLock(kv: KVNamespace, runId: st
  */
 export async function popNextPending(kv: KVNamespace): Promise<OptunaQueueEntry | null> {
   const entries = await readQueue(kv)
-  const idx = entries.findIndex(e => e.status === 'pending')
+  let idx = -1
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    if (entries[i].status === 'pending') {
+      idx = i
+      break
+    }
+  }
   if (idx < 0) return null
   const claimed = {
     ...entries[idx],
@@ -319,6 +326,139 @@ export async function popNextPending(kv: KVNamespace): Promise<OptunaQueueEntry 
   entries[idx] = claimed
   await writeQueue(kv, entries)
   return claimed
+}
+
+export async function markTriggered(
+  kv: KVNamespace,
+  id: string,
+  meta: { run_id: string; note?: string },
+): Promise<void> {
+  const entries = await readQueue(kv)
+  const idx = entries.findIndex(e => e.id === id)
+  if (idx < 0) return
+  entries[idx] = {
+    ...entries[idx],
+    status: 'in_progress',
+    run_id: meta.run_id,
+    note: meta.note ?? entries[idx].note,
+    error: undefined,
+  }
+  await writeQueue(kv, entries)
+}
+
+
+export async function settleTriggeredEntry(
+  kv: KVNamespace,
+  input: {
+    id: string
+    run_id: string
+    outcome: 'success' | 'error' | 'skipped'
+    sandbox_id?: string
+    note?: string
+    error?: string
+    max_retries?: number
+  },
+): Promise<{ applied: boolean; reason: string; status?: OptunaQueueStatus }> {
+  const entries = await readQueue(kv)
+  const idx = entries.findIndex(e => e.id === input.id)
+  if (idx < 0) return { applied: false, reason: 'queue_entry_missing' }
+  const current = entries[idx]
+  if (current.status !== 'in_progress') {
+    return { applied: false, reason: `queue_entry_not_in_progress:${current.status}`, status: current.status }
+  }
+  if (!input.run_id || !current.run_id || current.run_id !== input.run_id) {
+    return { applied: false, reason: 'stale_callback_run_id_mismatch', status: current.status }
+  }
+
+  if (input.outcome === 'success') {
+    entries[idx] = {
+      ...current,
+      status: 'processed',
+      processed_at: new Date().toISOString(),
+      sandbox_id: input.sandbox_id,
+      note: input.note ?? current.note,
+      error: undefined,
+    }
+  } else if (input.outcome === 'skipped') {
+    entries[idx] = {
+      ...current,
+      status: 'failed',
+      processed_at: new Date().toISOString(),
+      error: String(input.error ?? input.note ?? 'optuna per-regime job skipped').slice(0, 500),
+    }
+  } else {
+    const retryCount = Number(current.retry_count ?? 0) + 1
+    const exhausted = retryCount >= Math.max(1, input.max_retries ?? 3)
+    entries[idx] = {
+      ...current,
+      status: exhausted ? 'failed' : 'pending',
+      retry_count: retryCount,
+      processing_started_at: undefined,
+      processed_at: exhausted ? new Date().toISOString() : undefined,
+      run_id: undefined,
+      error: String(input.error ?? input.note ?? 'optuna per-regime job failed').slice(0, 500),
+    }
+  }
+  await writeQueue(kv, entries)
+  return { applied: true, reason: 'settled', status: entries[idx].status }
+}
+
+export async function markRetryable(
+  kv: KVNamespace,
+  id: string,
+  error: string,
+  maxRetries = 3,
+): Promise<'pending' | 'failed'> {
+  const entries = await readQueue(kv)
+  const idx = entries.findIndex(e => e.id === id)
+  if (idx < 0) return 'failed'
+  const retryCount = Number(entries[idx].retry_count ?? 0) + 1
+  const exhausted = retryCount >= Math.max(1, maxRetries)
+  entries[idx] = {
+    ...entries[idx],
+    status: exhausted ? 'failed' : 'pending',
+    retry_count: retryCount,
+    processing_started_at: undefined,
+    processed_at: exhausted ? new Date().toISOString() : undefined,
+    run_id: undefined,
+    error: error.slice(0, 500),
+  }
+  await writeQueue(kv, entries)
+  return exhausted ? 'failed' : 'pending'
+}
+
+
+export async function requeueStaleInProgress(
+  kv: KVNamespace,
+  staleAfterSec = 6 * 3600,
+  maxRetries = 3,
+): Promise<{ requeued: number; failed: number }> {
+  const entries = await readQueue(kv)
+  const cutoff = Date.now() - Math.max(60, staleAfterSec) * 1000
+  let requeued = 0
+  let failed = 0
+  let changed = false
+  for (let i = 0; i < entries.length; i += 1) {
+    const entry = entries[i]
+    if (entry.status !== 'in_progress') continue
+    const startedAt = Date.parse(entry.processing_started_at ?? entry.enqueued_at)
+    if (Number.isFinite(startedAt) && startedAt > cutoff) continue
+    const retryCount = Number(entry.retry_count ?? 0) + 1
+    const exhausted = retryCount >= Math.max(1, maxRetries)
+    entries[i] = {
+      ...entry,
+      status: exhausted ? 'failed' : 'pending',
+      retry_count: retryCount,
+      processing_started_at: undefined,
+      processed_at: exhausted ? new Date().toISOString() : undefined,
+      run_id: undefined,
+      error: 'stale_in_progress_recovered',
+    }
+    exhausted ? failed += 1 : requeued += 1
+    changed = true
+  }
+  if (changed) await writeQueue(kv, entries)
+  return { requeued, failed }
 }
 
 export async function markProcessed(

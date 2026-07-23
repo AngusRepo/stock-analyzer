@@ -304,6 +304,24 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
       ]
       break
     }
+    case 'research_sweep': {
+      const sourcePatches = params?.sources
+      if (!sourcePatches || typeof sourcePatches !== 'object' || Array.isArray(sourcePatches)) {
+        return c.json({ error: 'research_sweep params must contain a sources object' }, 400)
+      }
+      try {
+        const { mergeCompositeOptunaCandidate } = await import('../lib/optunaConfigMerge')
+        const candidate = mergeCompositeOptunaCandidate(current, sourcePatches, mergeAlphaFrameworkConfig)
+        merged = candidate.config
+        updatedFields = candidate.updatedFields
+      } catch (error: any) {
+        return c.json({
+          error: 'Composite Optuna candidate merge failed',
+          detail: error?.message ?? String(error),
+        }, 400)
+      }
+      break
+    }
     case 'feature_window':
       console.warn(`[OptunaPush] source=${source} not yet wired (deferred to Phase B/C)`)
       return c.json({
@@ -496,7 +514,7 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
     default:
       return c.json({
         error: `Unknown source: ${source}`,
-        allowed: ['barrier', 'signal', 'sltp', 'screener', 'conformal', 'risk_params', 'rrg', 'alpha_framework', 'feature_window', 'ga_optimizer', 'regime', 'l2_sensitivity'],
+        allowed: ['barrier', 'signal', 'sltp', 'screener', 'conformal', 'risk_params', 'rrg', 'alpha_framework', 'research_sweep', 'feature_window', 'ga_optimizer', 'regime', 'l2_sensitivity'],
       }, 400)
   }
 
@@ -551,6 +569,30 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
     metadata: meta ?? undefined,
   })
 
+  let candidateRecord: Record<string, unknown> | null = null
+  let candidateRecordError: string | null = null
+  try {
+    const { recordParameterCandidateFromSandbox } = await import('../lib/parameterCandidateRegistry')
+    candidateRecord = await recordParameterCandidateFromSandbox(c.env.DB, {
+      source: String(source),
+      sandboxId,
+      cadence: typeof meta?.cadence === 'string' ? meta.cadence : undefined,
+      runId: typeof meta?.run_id === 'string'
+        ? meta.run_id
+        : typeof meta?.push_id === 'string'
+          ? meta.push_id
+          : undefined,
+      metadata: {
+        audit_source: 'optuna-push',
+        updated_fields: updatedFields,
+        source_names: Array.isArray(meta?.source_names) ? meta.source_names : undefined,
+      },
+    })
+  } catch (error: any) {
+    candidateRecordError = error?.message ?? String(error)
+    console.warn('[OptunaPush] parameter candidate registration failed:', candidateRecordError)
+  }
+
   const auditKey = `audit:optuna-push:${source}:${twToday()}`
   await c.env.KV.put(auditKey, JSON.stringify({
     target: 'sandbox',
@@ -569,6 +611,8 @@ adminOptunaRoutes.post('/api/admin/optuna-push', async (c) => {
     updatedFields,
     audit_key: auditKey,
     sandbox_id: sandboxId,
+    candidate_record: candidateRecord,
+    candidate_record_error: candidateRecordError,
     message: `Optuna ${source} written to SANDBOX (prod unchanged). Promote via POST /api/admin/config/promote {sandbox_id} + X-Confirm-Prod: true`,
   })
 })

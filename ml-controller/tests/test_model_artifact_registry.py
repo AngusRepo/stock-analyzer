@@ -966,7 +966,7 @@ def test_list_artifact_registry_decodes_json_fields(monkeypatch):
     assert rows[0]["offline_evidence_json"]["gate"]["decision"] == "PASS"
 
 
-def test_list_artifact_registry_attaches_latest_validation_bundle(monkeypatch):
+def test_list_artifact_registry_attaches_global_validation_without_mutating_candidate_evidence(monkeypatch):
     def fake_query(sql, params=None, timeout=60.0):
         if "FROM pbo_results" in sql:
             return [{
@@ -1001,13 +1001,55 @@ def test_list_artifact_registry_attaches_latest_validation_bundle(monkeypatch):
 
     rows = registry.list_artifact_registry(model_name="ExtraTrees", limit=1)
     offline = rows[0]["offline_evidence_json"]
+    global_validation = rows[0]["global_validation_observability"]
 
-    assert offline["pbo"]["pbo"] == 0.12
-    assert offline["pbo"]["method"] == "cscv_rank_logit"
-    assert offline["monte_carlo"]["mdd_95th"] == 0.18
-    assert offline["deflated_sharpe"]["method"] == "deflated_sharpe_proxy"
-    assert offline["validation_packet"]["root_cause"] == "artifact_registry_missing_validation_pointer"
+    assert offline == {
+        "gate": {"decision": "STRONG_PASS"},
+        "registration": {"model_cpcv": {"decision": "PASS"}},
+    }
+    assert global_validation["pbo"]["pbo"] == 0.12
+    assert global_validation["pbo"]["method"] == "cscv_rank_logit"
+    assert global_validation["monte_carlo"]["mdd_95th"] == 0.18
+    assert global_validation["deflated_sharpe"]["method"] == "deflated_sharpe_proxy"
+    assert global_validation["root_cause"] == "artifact_registry_missing_validation_pointer"
+    assert global_validation["promotion_eligible"] is False
 
+
+def test_global_validation_cannot_clear_candidate_promotion_blockers(monkeypatch):
+    def fake_query(sql, params=None, timeout=60.0):
+        if "FROM pbo_results" in sql:
+            return [{"run_date": "2026-07-20", "pbo": 0.01, "go_live_verdict": "PASS"}]
+        if "FROM monte_carlo_results" in sql:
+            return [{"run_date": "2026-07-20", "mdd_95th": 0.01, "go_live_verdict": "PASS"}]
+        if "FROM backtest_results" in sql:
+            return [{"run_date": "2026-07-20", "strategy": "unrelated", "sharpe": 9.0, "total_trades": 999}]
+        return [{
+            "artifact_id": "LightGBM:vCandidate:monthly_release",
+            "model_name": "LightGBM",
+            "version": "vCandidate",
+            "candidate_type": "monthly_release",
+            "state": "live_gate_passed",
+            "offline_gate_decision": "STRONG_PASS",
+            "live_gate_status": "passed",
+            "offline_gate_failed_gates": "[]",
+            "offline_evidence_json": json.dumps({
+                "gate": {"decision": "STRONG_PASS"},
+                "model_cpcv": {"decision": "PASS"},
+            }),
+            "live_evidence_json": PROMOTION_GRADE_LIVE_EVIDENCE,
+        }]
+
+    monkeypatch.setattr(registry.d1_client, "query", fake_query)
+
+    row = registry.list_artifact_registry(model_name="LightGBM", limit=1)[0]
+    codes = {
+        blocker["code"]
+        for blocker in registry.artifact_promotion_blockers(row, champion_version="vChampion")
+    }
+
+    assert "pbo_threshold_missing" in codes
+    assert "dsr_mc_missing" in codes
+    assert row["global_validation_observability"]["promotion_eligible"] is False
 
 def test_candidate_selection_keeps_weekly_out_unless_strong_pass():
     selection = registry.build_candidate_selection([

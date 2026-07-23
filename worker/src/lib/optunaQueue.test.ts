@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {
+  OPTUNA_QUEUE_KEY,
   OPTUNA_QUEUE_PROCESSOR_D1_LOCK_KEY,
   OPTUNA_QUEUE_PROCESSOR_LOCK_KEY,
   acquireOptunaQueueProcessorD1Lock,
@@ -8,11 +9,15 @@ import {
   closeOptunaRunD1Lock,
   enqueueOptunaRequest,
   listQueue,
+  markProcessed,
+  markRetryable,
+  markTriggered,
   optunaRunDateFromRunId,
   optunaTriggerSourceForReason,
   popNextPending,
   releaseOptunaQueueProcessorD1Lock,
   releaseOptunaQueueProcessorLock,
+  requeueStaleInProgress,
 } from './optunaQueue'
 
 class FakeKV {
@@ -120,6 +125,23 @@ async function main() {
   assert.equal(claimed?.status, 'in_progress')
   assert.ok(claimed?.processing_started_at)
 
+  await markTriggered(kv, first.id, { run_id: 'execution-1', note: 'callback expected' })
+  let claimedState = (await listQueue(kv))[0]
+  assert.equal(claimedState.status, 'in_progress')
+  assert.equal(claimedState.run_id, 'execution-1')
+  assert.match(claimedState.note ?? '', /callback expected/)
+
+  assert.equal(await markRetryable(kv, first.id, 'transient 409', 3), 'pending')
+  claimedState = (await listQueue(kv))[0]
+  assert.equal(claimedState.status, 'pending')
+  assert.equal(claimedState.retry_count, 1)
+  const retriedClaim = await popNextPending(kv)
+  assert.equal(retriedClaim?.id, first.id)
+  await markProcessed(kv, first.id, { sandbox_id: 'sandbox-1', note: 'callback success' })
+  claimedState = (await listQueue(kv))[0]
+  assert.equal(claimedState.status, 'processed')
+  assert.equal(claimedState.sandbox_id, 'sandbox-1')
+
   assert.equal(await acquireOptunaQueueProcessorLock(kv, 'run-1', 60), true)
   assert.equal(await acquireOptunaQueueProcessorLock(kv, 'run-2', 60), false)
   await releaseOptunaQueueProcessorLock(kv, 'wrong-run')
@@ -144,6 +166,38 @@ async function main() {
   const closed = await closeOptunaRunD1Lock(db, first.id, 'success')
   assert.equal(closed.closed, true)
   assert.equal(fakeD1.locks.get(`optuna:run:${first.id}`)?.owner, 'optuna_per_regime_run_success')
+
+  const fifoKv = new FakeKV()
+  const fifoFirst = await enqueueOptunaRequest(fifoKv as unknown as KVNamespace, {
+    reason: 'manual',
+    target: 'barrier',
+  })
+  const fifoSecond = await enqueueOptunaRequest(fifoKv as unknown as KVNamespace, {
+    reason: 'manual',
+    target: 'signal',
+  })
+  assert.notEqual(fifoFirst.id, fifoSecond.id)
+  assert.equal((await popNextPending(fifoKv as unknown as KVNamespace))?.id, fifoFirst.id)
+
+  const staleKv = new FakeKV()
+  const stale = await enqueueOptunaRequest(staleKv as unknown as KVNamespace, {
+    reason: 'manual',
+    target: 'per_regime',
+    regime_hint: 'bear_market',
+  })
+  await popNextPending(staleKv as unknown as KVNamespace)
+  const staleEntries = JSON.parse(staleKv.store.get(OPTUNA_QUEUE_KEY) ?? '[]')
+  staleEntries[0].processing_started_at = '2026-01-01T00:00:00.000Z'
+  staleKv.store.set(OPTUNA_QUEUE_KEY, JSON.stringify(staleEntries))
+  assert.deepEqual(
+    await requeueStaleInProgress(staleKv as unknown as KVNamespace, 60, 3),
+    { requeued: 1, failed: 0 },
+  )
+  const recovered = (await listQueue(staleKv as unknown as KVNamespace))[0]
+  assert.equal(recovered.id, stale.id)
+  assert.equal(recovered.status, 'pending')
+  assert.equal(recovered.retry_count, 1)
+  assert.equal(recovered.error, 'stale_in_progress_recovered')
 }
 
 main().catch((error) => {

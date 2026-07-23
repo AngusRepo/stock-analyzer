@@ -110,12 +110,7 @@ def _json_loads(value: Any) -> dict[str, Any]:
 
 
 def _latest_validation_bundle() -> dict[str, Any]:
-    """Read the latest global validation rows and expose them to artifacts.
-
-    Root cause for UI N/A: PBO/MC rows exist in D1, but model artifacts only
-    carried callback CPCV evidence. This read-time bundle keeps candidate rows
-    immutable while making promotion blockers and UI evidence fail-visible.
-    """
+    """Read latest global validation rows for observability only."""
     try:
         pbo_rows = d1_client.query(
             """
@@ -192,30 +187,17 @@ def _latest_validation_bundle() -> dict[str, Any]:
 
 
 def _attach_validation_bundle(row: dict[str, Any], bundle: dict[str, Any]) -> None:
-    offline = _json_loads(row.get("offline_evidence_json"))
-    packet = offline.get("validation_packet") if isinstance(offline.get("validation_packet"), dict) else {}
-    changed = False
-    for key in ("pbo", "monte_carlo", "deflated_sharpe"):
-        value = bundle.get(key)
-        if value and key not in offline:
-            offline[key] = value
-            changed = True
-        if value and key not in packet:
-            packet[key] = value
-            changed = True
-    if changed:
-        packet["scope"] = bundle.get("scope")
-        packet["root_cause"] = bundle.get("root_cause")
-        if bundle.get("backtest"):
-            packet["backtest"] = {
-                "run_date": bundle["backtest"].get("run_date"),
-                "strategy": bundle["backtest"].get("strategy"),
-                "sharpe": bundle["backtest"].get("sharpe"),
-                "max_drawdown": bundle["backtest"].get("max_drawdown"),
-                "total_trades": bundle["backtest"].get("total_trades"),
-            }
-        offline["validation_packet"] = packet
-        row["offline_evidence_json"] = offline
+    """Expose global validation without mutating candidate-owned evidence.
+
+    Promotion decisions consume ``offline_evidence_json``. Mixing the latest
+    weekly rows into that object lets unrelated global PASS results satisfy a
+    candidate's blockers, so the global bundle must remain display-only.
+    """
+    row["global_validation_observability"] = {
+        **_json_safe(bundle),
+        "promotion_eligible": False,
+        "note": "Global validation is observability-only; candidate-scoped evidence is required for promotion.",
+    }
 
 
 def _as_float(value: Any) -> float | None:

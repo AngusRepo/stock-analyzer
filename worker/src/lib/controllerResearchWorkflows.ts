@@ -45,7 +45,6 @@ const OPTUNA_RESEARCH_SOURCES = [
   'rrg',
   'alpha_framework',
   'ga_optimizer',
-  's12_smcvwap_tw',
 ]
 
 interface OptunaResearchOptions {
@@ -809,11 +808,15 @@ export async function runOptunaQueueProcessor(env: Bindings) {
     acquireOptunaQueueProcessorD1Lock,
     acquireOptunaQueueProcessorLock,
     acquireOptunaRunD1Lock,
-    popNextPending,
-    markProcessed,
+    closeOptunaRunD1Lock,
     markFailed,
+    markProcessed,
+    markRetryable,
+    markTriggered,
+    popNextPending,
     releaseOptunaQueueProcessorD1Lock,
     releaseOptunaQueueProcessorLock,
+    requeueStaleInProgress,
   } = await import('./optunaQueue')
   const lockRunId = `optuna-queue:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
   const d1Lock = await acquireOptunaQueueProcessorD1Lock(env.DB, lockRunId, 3600)
@@ -825,21 +828,22 @@ export async function runOptunaQueueProcessor(env: Bindings) {
   }
 
   let entry: Awaited<ReturnType<typeof popNextPending>> = null
+  let runLock: Awaited<ReturnType<typeof acquireOptunaRunD1Lock>> | null = null
   try {
+    await requeueStaleInProgress(env.KV, 6 * 3600, 3)
     entry = await popNextPending(env.KV)
     if (!entry) return 'empty'
 
     const isPerRegime = entry.target === 'per_regime'
     const runLockRunId = `optuna-per-regime:${entry.id}:${Date.now()}`
-    const runLock = isPerRegime
+    runLock = isPerRegime
       ? await acquireOptunaRunD1Lock(env.DB, entry, runLockRunId, 6 * 3600)
       : null
     if (runLock && !runLock.acquired) {
-      await markProcessed(env.KV, entry.id, {
-        note: `skipped_d1_run_lock=${runLock.lock_key}`,
-      })
-      return `locked: ${entry.id} d1_run=${runLock.lock_key}`
+      const retryStatus = await markRetryable(env.KV, entry.id, `d1_run_lock_busy:${runLock.lock_key}`)
+      return `${retryStatus}: ${entry.id} d1_run=${runLock.lock_key}`
     }
+
     const endpoint = isPerRegime ? '/optuna/per_regime/run' : `/optuna/${entry.target}`
     const body = isPerRegime
       ? {
@@ -850,6 +854,7 @@ export async function runOptunaQueueProcessor(env: Bindings) {
         push_kv: true,
         dry_run: false,
         cadence: 'queue',
+        research_data_source: 'snapshot',
         trigger_source: optunaTriggerSource(entry.reason),
         trigger_id: entry.id,
       }
@@ -861,8 +866,14 @@ export async function runOptunaQueueProcessor(env: Bindings) {
       timeoutMs: isPerRegime ? 60_000 : 3_500_000,
     })
     if (!resp.ok) {
-      const text = await resp.text().catch(() => '')
-      await markFailed(env.KV, entry.id, `HTTP ${resp.status}: ${text.slice(0, 300)}`)
+      const responseText = await resp.text().catch(() => '')
+      if (runLock?.acquired) await closeOptunaRunD1Lock(env.DB, entry.id, `dispatch_http_${resp.status}`)
+      const message = `HTTP ${resp.status}: ${responseText.slice(0, 300)}`
+      if ([409, 429, 502, 503, 504].includes(resp.status)) {
+        const retryStatus = await markRetryable(env.KV, entry.id, message)
+        return `${retryStatus}: ${entry.id} HTTP${resp.status}`
+      }
+      await markFailed(env.KV, entry.id, message)
       return `failed: ${entry.id} HTTP${resp.status}`
     }
 
@@ -877,20 +888,30 @@ export async function runOptunaQueueProcessor(env: Bindings) {
       ? String(data.executor)
       : (functionCallId ? 'modal' : 'cloud_run_job')
 
+    if (isPerRegime) {
+      if (!asyncRunId) {
+        if (runLock?.acquired) await closeOptunaRunD1Lock(env.DB, entry.id, 'dispatch_missing_run_id')
+        const retryStatus = await markRetryable(env.KV, entry.id, 'per_regime_dispatch_missing_async_run_id')
+        return `${retryStatus}: ${entry.id} missing_async_run_id`
+      }
+      await markTriggered(env.KV, entry.id, {
+        run_id: asyncRunId,
+        note: `triggered_${executor}=${asyncRunId} trigger_source=${data.trigger_source ?? optunaTriggerSource(entry.reason)} d1_run_lock=${runLock?.lock_key ?? 'none'} callback_expected`,
+      })
+      return `triggered: ${entry.id} ${executor}=${asyncRunId} callback expected`
+    }
+
     await markProcessed(env.KV, entry.id, {
       sandbox_id: sandboxId,
-      note: asyncRunId
-        ? `triggered_${executor}=${asyncRunId} trigger_source=${data.trigger_source ?? optunaTriggerSource(entry.reason)}${runLock ? ` d1_run_lock=${runLock.lock_key}` : ''}`
-        : `robust_sharpe=${data.robust_sharpe ?? 'n/a'}`,
+      note: `robust_sharpe=${data.robust_sharpe ?? 'n/a'}`,
     })
-    return asyncRunId
-      ? `triggered: ${entry.id} ${executor}=${asyncRunId}`
-      : `processed: ${entry.id}${sandboxId ? ` sandbox=${sandboxId.slice(-12)}` : ''}`
+    return `processed: ${entry.id}${sandboxId ? ` sandbox=${sandboxId.slice(-12)}` : ''}`
   } catch (e: any) {
     const msg = e?.message ?? String(e)
     if (entry) {
-      await markFailed(env.KV, entry.id, msg)
-      return `failed: ${entry.id} ${msg.slice(0, 100)}`
+      if (runLock?.acquired) await closeOptunaRunD1Lock(env.DB, entry.id, 'dispatch_exception')
+      const retryStatus = await markRetryable(env.KV, entry.id, msg)
+      return `${retryStatus}: ${entry.id} ${msg.slice(0, 100)}`
     }
     return `failed: optuna queue claim ${msg.slice(0, 100)}`
   } finally {
@@ -898,7 +919,6 @@ export async function runOptunaQueueProcessor(env: Bindings) {
     await releaseOptunaQueueProcessorD1Lock(env.DB, lockRunId)
   }
 }
-
 export async function runWeeklyLifecycleCheck(env: Bindings) {
   requireController(env)
 

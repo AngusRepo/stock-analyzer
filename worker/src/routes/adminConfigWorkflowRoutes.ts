@@ -133,6 +133,8 @@ adminConfigWorkflowRoutes.post('/api/admin/config/promote', async (c) => {
     sandbox_id?: string
     dry_run?: boolean
     reason?: string
+    candidate_id?: string
+    promotion_packet_id?: string
   }>().catch(() => null)
   if (!body?.sandbox_id) {
     return c.json({ error: 'Body requires { sandbox_id, dry_run?, reason? }' }, 400)
@@ -168,6 +170,40 @@ adminConfigWorkflowRoutes.post('/api/admin/config/promote', async (c) => {
     }, 400)
   }
 
+  const {
+    PRODUCTION_OVERRIDE_HEADER,
+    isExplicitProductionOverride,
+    recordProductionOverride,
+    validatePromotionPacketForProd,
+  } = await import('../lib/parameterCandidateRegistry')
+  const evidenceValidation = await validatePromotionPacketForProd(c.env.DB, {
+    candidateId: body.candidate_id,
+    promotionPacketId: body.promotion_packet_id,
+  })
+  const override = isExplicitProductionOverride(
+    c.req.header(PRODUCTION_OVERRIDE_HEADER),
+    body.reason,
+  )
+  if (!evidenceValidation.ok && !override) {
+    return c.json({
+      error: 'parameter_candidate_evidence_required',
+      detail: evidenceValidation.error,
+      candidate_id: evidenceValidation.candidate_id ?? body.candidate_id ?? null,
+      promotion_packet_id: evidenceValidation.promotion_packet_id ?? body.promotion_packet_id ?? null,
+      hint: 'Provide the PASS candidate promotion packet, or use an explicit audited production override.',
+    }, 409)
+  }
+  const overrideAudit = override
+    ? await recordProductionOverride(c.env.DB, {
+      route: '/api/admin/config/promote',
+      reason: String(body.reason),
+      actor: 'service_token',
+      candidateId: body.candidate_id ?? evidenceValidation.candidate_id ?? null,
+      promotionPacketId: body.promotion_packet_id ?? evidenceValidation.promotion_packet_id ?? null,
+      detail: { sandbox_id: body.sandbox_id },
+    })
+    : null
+
   const result = await promoteSandbox(c.env.KV, body.sandbox_id, {
     reason: body.reason,
   })
@@ -180,6 +216,9 @@ adminConfigWorkflowRoutes.post('/api/admin/config/promote', async (c) => {
     new_snapshot_id: result.snapshotId,
     skipped: result.skipped,
     reason: body.reason ?? null,
+    candidate_id: evidenceValidation.candidate_id ?? body.candidate_id ?? null,
+    promotion_packet_id: evidenceValidation.promotion_packet_id ?? body.promotion_packet_id ?? null,
+    production_override_audit: overrideAudit,
     diff_summary: summarizeDiff(diff),
     promoted_at: new Date().toISOString(),
   }), { expirationTtl: 90 * 86400 })
@@ -191,6 +230,9 @@ adminConfigWorkflowRoutes.post('/api/admin/config/promote', async (c) => {
     new_snapshot_id: result.snapshotId,
     skipped: result.skipped,
     audit_key: auditKey,
+    candidate_id: evidenceValidation.candidate_id ?? body.candidate_id ?? null,
+    promotion_packet_id: evidenceValidation.promotion_packet_id ?? body.promotion_packet_id ?? null,
+    production_override_audit: overrideAudit,
     diff_summary: summarizeDiff(diff),
   })
 })

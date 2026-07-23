@@ -1,6 +1,7 @@
 param(
   [switch]$SkipFrontendBuild,
   [switch]$SkipBugHunter,
+  [switch]$RuntimeSecretAudit,
   [int]$BugHunterMaxAgeHours = 48,
   [switch]$LiveSmoke,
   [string]$ApiBase = $env:STOCKVISION_API_BASE,
@@ -61,6 +62,12 @@ Pop-Location
 Write-Host '[P9 gate] P12 secret scan'
 & (Join-Path $PSScriptRoot 'p12_secret_scan.ps1') -Root $Root
 if ($LASTEXITCODE -ne 0) { throw "P12 secret scan failed" }
+
+if ($RuntimeSecretAudit) {
+  Write-Host '[P9 gate] Cloud Run runtime secret audit'
+  & (Join-Path $PSScriptRoot 'audit_cloudrun_secret_bindings.ps1')
+  if ($LASTEXITCODE -ne 0) { throw "Cloud Run runtime secret audit failed" }
+}
 
 Write-Host '[P9 gate] Bug Hunter CPD gate'
 & (Join-Path $PSScriptRoot 'bug_hunter_cpd_gate.ps1') -Root $Root -MaxAgeHours $BugHunterMaxAgeHours -Skip:$SkipBugHunter

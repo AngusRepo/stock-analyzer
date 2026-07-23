@@ -118,13 +118,15 @@ def test_backtest_engine_replay_uses_manifest_before_d1():
     assert "data_access.source == \"snapshot\"" in source
 
 
-def test_research_backtest_callers_share_single_loader_contract():
+def test_replay_callers_share_loader_while_walk_forward_uses_immutable_prep():
     config_pool = (ROOT / "routers" / "config_pool.py").read_text(encoding="utf-8")
     walk_forward = (ROOT / "routers" / "walk_forward.py").read_text(encoding="utf-8")
     backtest = (ROOT / "routers" / "backtest.py").read_text(encoding="utf-8")
 
     assert "BacktestDataset.load_for_research" in config_pool
-    assert "BacktestDataset.load_for_research" in walk_forward
+    assert "BacktestDataset.load_for_research" not in walk_forward
+    assert "_load_trading_calendar" in walk_forward
+    assert '"training_data_source": "immutable_gcs_prep"' in walk_forward
     assert "BacktestDataset.load_for_research" in backtest
     assert "BacktestDataset.load_from_d1(start_date=start_date, end_date=end_date)" not in config_pool
     assert "BacktestDataset.load_from_d1(" not in walk_forward

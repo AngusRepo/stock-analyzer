@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const workerDir = join(root, 'worker')
 const manifestPath = join(root, 'infra', 'gcp-scheduler-jobs.json')
+const wranglerCli = join(workerDir, 'node_modules', 'wrangler', 'bin', 'wrangler.js')
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -35,11 +36,11 @@ if (!sourceBranch || sourceBranch !== productionBranch) {
 const dirty = run('git', ['status', '--porcelain', '--untracked-files=all', '--', 'worker', 'infra/gcp-scheduler-jobs.json', 'tools/deploy_worker_with_provenance.mjs'], { capture: true })
 if (dirty) throw new Error(`Worker deployment inputs are dirty:\n${dirty}`)
 if (!existsSync(manifestPath)) throw new Error(`missing scheduler manifest: ${manifestPath}`)
+if (!existsSync(wranglerCli)) throw new Error('locked Worker Wrangler is missing; run npm ci in worker')
 
 const schedulerSha256 = createHash('sha256').update(readFileSync(manifestPath)).digest('hex')
-const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx'
-run(npx, [
-  '--no-install', 'wrangler', 'deploy', '--strict',
+run(process.execPath, [
+  wranglerCli, 'deploy', '--strict',
   '--tag', sourceSha,
   '--message', `source=${sourceSha},scheduler=${schedulerSha256}`,
-], { cwd: workerDir, shell: process.platform === 'win32' })
+], { cwd: workerDir })

@@ -24,6 +24,14 @@ def test_no_runtime_workload_uses_default_compute_identity() -> None:
     assert "roles/editor" in contract["default_compute_identity"]["forbidden_project_roles"]
     assert contract["project_roles"]["builder"] == ["roles/run.builder"]
 
+    pipeline_secrets = set(contract["secret_access"]["pipeline"])
+    assert {
+        "stockvision-anthropic-api-key",
+        "stockvision-gemini-api-key",
+        "stockvision-github-token",
+        "stockvision-ml-service-secret",
+    } <= pipeline_secrets
+
 
 def test_controller_deploy_is_fail_closed_on_identity_and_provenance() -> None:
     script = (ROOT / "deploy_ml_controller.sh").read_text(encoding="utf-8")
@@ -46,3 +54,5 @@ def test_cutover_requires_explicit_apply_and_separate_role_removal() -> None:
     assert "still uses $defaultEmail" in script
     assert "--oauth-service-account-email=$scalerEmail" in script
     assert '@("roles/run.invoker", "roles/run.viewer")' in script
+    assert "function Assert-LiveSecretCoverage" in script
+    assert script.index("Assert-LiveSecretCoverage") < script.index("Ensure-ServiceAccount $property.Name")

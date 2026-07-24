@@ -43,6 +43,61 @@ function Ensure-ServiceAccount([string]$Alias) {
   Invoke-Gcloud @("iam", "service-accounts", "create", $accountId, "--project=$project", "--display-name=StockVision $Alias runtime", "--quiet")
 }
 
+function Get-LiveSecretReferences([string]$Kind, [string]$Name) {
+  if ($Kind -eq "service") {
+    $resourceJson = & gcloud run services describe $Name --project=$project --region=$region --format=json
+  } elseif ($Kind -eq "job") {
+    $resourceJson = & gcloud run jobs describe $Name --project=$project --region=$region --format=json
+  } else {
+    throw "Unsupported Cloud Run resource kind: $Kind"
+  }
+  if ($LASTEXITCODE -ne 0) { throw "Failed to inspect live $Kind $Name before IAM cutover" }
+
+  $resource = $resourceJson | ConvertFrom-Json
+  if ($Kind -eq "service") {
+    $runtimeSpec = $resource.spec.template.spec
+  } else {
+    $runtimeSpec = $resource.spec.template.spec.template.spec
+  }
+
+  $references = @()
+  foreach ($container in @($runtimeSpec.containers)) {
+    foreach ($environmentVariable in @($container.env)) {
+      $secretName = [string]$environmentVariable.valueFrom.secretKeyRef.name
+      if ($secretName) { $references += $secretName }
+    }
+  }
+  foreach ($volume in @($runtimeSpec.volumes)) {
+    $secretName = [string]$volume.secret.secretName
+    if ($secretName) { $references += $secretName }
+  }
+  return @($references | Sort-Object -Unique)
+}
+
+function Assert-LiveSecretCoverage {
+  $gaps = @()
+  foreach ($entry in $contract.services.PSObject.Properties) {
+    $alias = [string]$entry.Value
+    $declared = @($contract.secret_access.$alias)
+    $missing = @(Get-LiveSecretReferences "service" $entry.Name | Where-Object { $_ -notin $declared })
+    if ($missing.Count -gt 0) { $gaps += "service $($entry.Name) [$alias]: $($missing -join ', ')" }
+  }
+  foreach ($entry in $contract.jobs.PSObject.Properties) {
+    $alias = [string]$entry.Value
+    $declared = @($contract.secret_access.$alias)
+    $missing = @(Get-LiveSecretReferences "job" $entry.Name | Where-Object { $_ -notin $declared })
+    if ($missing.Count -gt 0) { $gaps += "job $($entry.Name) [$alias]: $($missing -join ', ')" }
+  }
+  if ($gaps.Count -gt 0) {
+    throw "IAM contract does not cover live Secret references. No mutations applied.`n$($gaps -join "`n")"
+  }
+  Write-Host "[preflight] live Secret references are covered by the IAM contract"
+}
+
+if ($Apply) {
+  Assert-LiveSecretCoverage
+}
+
 foreach ($property in $contract.service_accounts.PSObject.Properties) {
   Ensure-ServiceAccount $property.Name
 }

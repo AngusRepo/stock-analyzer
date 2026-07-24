@@ -75,9 +75,13 @@
     ],
     "pipeline": [
       "finlab-api-key",
+      "stockvision-anthropic-api-key",
       "stockvision-cf-api-token",
+      "stockvision-gemini-api-key",
+      "stockvision-github-token",
       "stockvision-stockvision-auth-token",
       "stockvision-ml-controller-secret",
+      "stockvision-ml-service-secret",
       "stockvision-modal-token-id",
       "stockvision-modal-token-secret",
       "stockvision-finlab-exec-shioaji-api-key",

@@ -6,7 +6,7 @@ import {
   registerPipelineRun,
   runD1EvidenceScrub,
   runR2RetentionSweep,
-  runStorageHealthGate,
+  runStorageHealthCheck,
   STORAGE_LIFECYCLE_SCHEDULE,
   writeEvidenceArtifact,
 } from './artifactLifecycle'
@@ -239,7 +239,7 @@ async function testD1EvidenceScrubBisectsFailedBatchInsteadOfRetryingEveryRow():
   )
 }
 
-async function testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown(): Promise<void> {
+async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): Promise<void> {
   const healthyDb = new MockDb()
   healthyDb.queryMeta = { size_after: 7_000_000_000 }
   healthyDb.firstHandler = (statement) => {
@@ -248,8 +248,12 @@ async function testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown():
     if (statement.sql.includes('AS backlog_cohorts')) return { backlog_cohorts: 7, progress_24h: 10 }
     return { integrity_blocked: 0, cleanup_backlog_over_24h: 0 }
   }
-  const healthy = await runStorageHealthGate({ DB: healthyDb as any })
+  const healthy = await runStorageHealthCheck({ DB: healthyDb as any })
   assert.equal(healthy.healthy, true)
+  assert.equal(healthy.enforcement_scope, 'scheduler_execution_only')
+  assert.equal(healthy.admission_control, false)
+  assert.equal(healthy.blocks_storage_producers, false)
+  assert.equal(healthy.blocks_trading_path, false)
   assert.equal(healthy.d1_bytes, 7_000_000_000)
   assert.equal(healthy.allocator_ev_snapshot_dates, 10)
   assert.equal(healthy.legacy_retention_stalled, false)
@@ -257,7 +261,7 @@ async function testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown():
   const overCapacityDb = new MockDb()
   overCapacityDb.queryMeta = { size_after: 8_864_489_472 }
   overCapacityDb.firstHandler = healthyDb.firstHandler
-  const overCapacity = await runStorageHealthGate({ DB: overCapacityDb as any })
+  const overCapacity = await runStorageHealthCheck({ DB: overCapacityDb as any })
   assert.equal(overCapacity.healthy, false)
   assert.equal(overCapacity.d1_utilization, 0.8864489472)
 
@@ -269,20 +273,21 @@ async function testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown():
     if (statement.sql.includes('AS backlog_cohorts')) return { backlog_cohorts: 0, progress_24h: 0 }
     return { integrity_blocked: 0, cleanup_backlog_over_24h: 0 }
   }
-  const missingAllocator = await runStorageHealthGate({ DB: missingAllocatorDb as any })
+  const missingAllocator = await runStorageHealthCheck({ DB: missingAllocatorDb as any })
   assert.equal(missingAllocator.healthy, false)
   assert.equal(missingAllocator.allocator_ev_snapshot_rows, 0)
 
   const unknownDb = new MockDb()
   unknownDb.queryMeta = {}
   unknownDb.firstHandler = healthyDb.firstHandler
-  const unknown = await runStorageHealthGate({ DB: unknownDb as any })
+  const unknown = await runStorageHealthCheck({ DB: unknownDb as any })
   assert.equal(unknown.healthy, false)
   assert.equal(unknown.d1_bytes, null)
 }
 
 async function main(): Promise<void> {
-  assert.equal(STORAGE_LIFECYCLE_SCHEDULE.some((row) => row.task === 'storage-health-gate'), true)
+  assert.equal(STORAGE_LIFECYCLE_SCHEDULE.some((row) => row.task === 'storage-health-check'), true)
+  assert.equal(STORAGE_LIFECYCLE_SCHEDULE.some((row) => String(row.task) === 'storage-health-gate'), false)
   assert.equal(
     STORAGE_LIFECYCLE_SCHEDULE.some((row) => row.task === 'd1-evidence-scrub' && row.cron === '*/20 2-6 * * *'),
     true,
@@ -295,7 +300,7 @@ async function main(): Promise<void> {
   await testRetentionSweepPreservesMetadataAfterPayloadDelete()
   await testD1EvidenceScrubBatchesVerifiedRowsAtomically()
   await testD1EvidenceScrubBisectsFailedBatchInsteadOfRetryingEveryRow()
-  await testStorageHealthGateUsesD1ResultSizeAndFailsClosedWhenUnknown()
+  await testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope()
   console.log('artifact lifecycle tests passed')
 }
 

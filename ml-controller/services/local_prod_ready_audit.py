@@ -1933,7 +1933,7 @@ def _realtime_trading_local_closure_checks(root: Path) -> list[dict[str, Any]]:
         ),
         _check_text_contains(
             root, "infra/gcp-scheduler-jobs.json",
-            ("artifact-reconcile", "d1-evidence-scrub", "r2-retention-sweep", "orphan-reachability-gc", "cleanup-dlq-replay", "storage-health-gate", "storage-integrity-audit", "weekly-cleanup", "storage-capacity-report"),
+            ("artifact-reconcile", "d1-evidence-scrub", "r2-retention-sweep", "orphan-reachability-gc", "cleanup-dlq-replay", "storage-health-check", "storage-integrity-audit", "weekly-cleanup", "storage-capacity-report"),
             "realtime:p1:automatic_storage_lifecycle_schedule",
             "all automatic R2/D1 reconciliation, scrub, retention, integrity and reporting schedules are defined",
         ),

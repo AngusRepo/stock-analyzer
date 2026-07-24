@@ -91,17 +91,19 @@ Step 5: 同產業 ≤5 + Pearson 60d 去重 + top 25
 ## Deployment
 
 ```bash
-# Full deployment
-chmod +x deploy.sh && ./deploy.sh
+export PRODUCTION_BRANCH=<approved-production-branch>
+export GCS_BUCKET_NAME=stockvision-models
+export CLOUDFLARE_PAGES_PROJECT=stockvision-frontend
 
-# ML only
-cd ml-service && PYTHONIOENCODING=utf-8 python3 -m modal deploy modal_app.py
+# Cloud Run Service + Jobs; add --with-modal for an attested Modal release
+bash deploy_ml_controller.sh --check-only
+bash deploy_ml_controller.sh --with-modal
 
 # Worker only
-cd worker && npx wrangler deploy
+(cd worker && npm run deploy)
 
 # Frontend only
-cd frontend && npm run build && npx wrangler pages deploy dist --project-name=stockvision-frontend
+(cd frontend && npm run deploy)
 ```
 
 ## Cost

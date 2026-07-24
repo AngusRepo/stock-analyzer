@@ -68,7 +68,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'r2-retention-sweep', name: 'R2 Retention Sweep', schedule: 'Daily 02:40', cron: '40 18 * * *', group: 'daily' },
   { id: 'orphan-reachability-gc', name: 'Orphan Reachability GC', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },
   { id: 'cleanup-dlq-replay', name: 'Cleanup DLQ Replay', schedule: 'Daily 03:20', cron: '20 19 * * *', group: 'daily' },
-  { id: 'storage-health-gate', name: 'Storage Health Gate', schedule: 'Daily 06:45', cron: '45 22 * * *', group: 'daily' },
+  { id: 'storage-health-check', name: 'Storage Health Check', schedule: 'Daily 06:45', cron: '45 22 * * *', group: 'daily' },
   { id: 'storage-integrity-audit', name: 'Storage Integrity Audit', schedule: 'Sunday 03:30', cron: '30 19 * * 6', group: 'weekly' },
 
   { id: 'intraday-check', name: 'Intraday Check', schedule: 'Mon-Fri 09:00-13:30 per-min', cron: '* 1-4 * * 1-5 + 0-30 5 * * 1-5', group: 'intraday' },

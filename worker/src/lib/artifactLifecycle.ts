@@ -44,7 +44,7 @@ export const STORAGE_LIFECYCLE_SCHEDULE = [
   { task: 'r2-retention-sweep', cron: '40 2 * * *', timezone: 'Asia/Taipei' },
   { task: 'orphan-reachability-gc', cron: '0 3 * * *', timezone: 'Asia/Taipei' },
   { task: 'cleanup-dlq-replay', cron: '20 3 * * *', timezone: 'Asia/Taipei' },
-  { task: 'storage-health-gate', cron: '45 6 * * *', timezone: 'Asia/Taipei' },
+  { task: 'storage-health-check', cron: '45 6 * * *', timezone: 'Asia/Taipei' },
   { task: 'storage-integrity-audit', cron: '30 3 * * 0', timezone: 'Asia/Taipei' },
   { task: 'weekly-cleanup-v2', cron: '0 4 * * 0', timezone: 'Asia/Taipei' },
   { task: 'storage-capacity-report', cron: '30 4 1 * *', timezone: 'Asia/Taipei' },
@@ -660,10 +660,14 @@ export async function runOrphanReachabilityGc(
   return { scanned: (listed.objects ?? []).length, deleted, referenced }
 }
 
-export async function runStorageHealthGate(
+export async function runStorageHealthCheck(
   env: Pick<Bindings, 'DB'> & Partial<Bindings>,
 ): Promise<{
   healthy: boolean
+  enforcement_scope: 'scheduler_execution_only'
+  admission_control: false
+  blocks_storage_producers: false
+  blocks_trading_path: false
   integrity_blocked: number
   cleanup_backlog_over_24h: number
   dlq_pending: number
@@ -811,6 +815,10 @@ export async function runStorageHealthGate(
   const legacyRetentionProgress24h = Number(legacyRetention?.progress_24h ?? 0)
   const legacyRetentionStalled = legacyRetentionBacklog > 0 && legacyRetentionProgress24h === 0
   return {
+    enforcement_scope: 'scheduler_execution_only',
+    admission_control: false,
+    blocks_storage_producers: false,
+    blocks_trading_path: false,
     healthy: integrityBlocked === 0 && backlog === 0 && dlqPending === 0 &&
       allocatorSnapshotRows > 0 && allocatorSnapshotDates > 0 &&
       allocatorSnapshotIncompleteRuns === 0 && allocatorSnapshotStagingOrphans === 0 &&

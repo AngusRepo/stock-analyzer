@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "project_id": "gen-lang-client-0602998820",
+  "project_number": "530028717113",
+  "region": "asia-east1",
+  "bucket": "stockvision-models",
+  "default_compute_identity": {
+    "email": "530028717113-compute@developer.gserviceaccount.com",
+    "forbidden_project_roles": [
+      "roles/editor",
+      "roles/run.developer"
+    ],
+    "must_not_run_workloads": true
+  },
+  "service_accounts": {
+    "controller": "stockvision-ml-controller@gen-lang-client-0602998820.iam.gserviceaccount.com",
+    "pipeline": "stockvision-pipeline@gen-lang-client-0602998820.iam.gserviceaccount.com",
+    "shioaji_proxy": "stockvision-shioaji-proxy@gen-lang-client-0602998820.iam.gserviceaccount.com",
+    "shioaji_research": "stockvision-shioaji-research@gen-lang-client-0602998820.iam.gserviceaccount.com",
+    "execution_gateway": "stockvision-execution-gateway@gen-lang-client-0602998820.iam.gserviceaccount.com",
+    "scaler": "cloud-run-scaler@gen-lang-client-0602998820.iam.gserviceaccount.com",
+    "builder": "stockvision-cloudrun-builder@gen-lang-client-0602998820.iam.gserviceaccount.com"
+  },
+  "project_roles": {
+    "builder": [
+      "roles/run.builder"
+    ]
+  },
+  "services": {
+    "ml-controller": "controller",
+    "shioaji-proxy": "shioaji_proxy",
+    "shioaji-research": "shioaji_research",
+    "stockvision-execution-gateway": "execution_gateway"
+  },
+  "jobs": {
+    "pipeline-v2": "pipeline",
+    "verify-v2": "pipeline",
+    "screener-v2": "pipeline",
+    "optuna-research-sweep": "pipeline",
+    "strategy-mining-research": "pipeline",
+    "active8-oof-materialize": "pipeline",
+    "ml-controller-min-0": "scaler",
+    "ml-controller-min-1": "scaler",
+    "realtime-runtime-min-0": "scaler",
+    "realtime-runtime-min-1": "scaler"
+  },
+  "scheduler_oauth_callers": {
+    "ml-controller-min-0-monthly-sat": "ml-controller-min-0",
+    "ml-controller-min-0-trading-midday": "ml-controller-min-0",
+    "ml-controller-min-0-sunday-research": "ml-controller-min-0",
+    "ml-controller-min-0-night": "ml-controller-min-0",
+    "ml-controller-min-1-monthly-sat": "ml-controller-min-1",
+    "ml-controller-min-1-sunday-research": "ml-controller-min-1",
+    "ml-controller-min-1-trading-open": "ml-controller-min-1",
+    "ml-controller-min-1-evening": "ml-controller-min-1",
+    "realtime-runtime-min-0-trading-close": "realtime-runtime-min-0",
+    "realtime-runtime-min-1-trading-open": "realtime-runtime-min-1"
+  },
+  "secret_access": {
+    "controller": [
+      "finlab-api-key",
+      "stockvision-cf-api-token",
+      "stockvision-stockvision-auth-token",
+      "stockvision-ml-controller-secret",
+      "stockvision-modal-token-id",
+      "stockvision-modal-token-secret",
+      "stockvision-finlab-exec-shioaji-api-key",
+      "stockvision-finlab-exec-shioaji-secret-key",
+      "stockvision-finlab-exec-shioaji-account-id",
+      "stockvision-finlab-exec-shioaji-cert-person-id",
+      "stockvision-finlab-exec-shioaji-cert-password",
+      "stockvision-finlab-exec-shioaji-cert-pfx",
+      "stockvision-shioaji-proxy-service-token",
+      "stockvision-execution-gateway-service-token"
+    ],
+    "pipeline": [
+      "finlab-api-key",
+      "stockvision-cf-api-token",
+      "stockvision-stockvision-auth-token",
+      "stockvision-ml-controller-secret",
+      "stockvision-modal-token-id",
+      "stockvision-modal-token-secret",
+      "stockvision-finlab-exec-shioaji-api-key",
+      "stockvision-finlab-exec-shioaji-secret-key",
+      "stockvision-finlab-exec-shioaji-account-id",
+      "stockvision-finlab-exec-shioaji-cert-person-id",
+      "stockvision-finlab-exec-shioaji-cert-password",
+      "stockvision-finlab-exec-shioaji-cert-pfx",
+      "stockvision-shioaji-proxy-service-token",
+      "stockvision-execution-gateway-service-token"
+    ],
+    "shioaji_proxy": [
+      "stockvision-shioaji-api-key",
+      "stockvision-shioaji-secret-key",
+      "stockvision-shioaji-account-id",
+      "stockvision-shioaji-person-id",
+      "stockvision-shioaji-proxy-service-token"
+    ],
+    "shioaji_research": [
+      "stockvision-shioaji-api-key",
+      "stockvision-shioaji-secret-key",
+      "stockvision-shioaji-proxy-service-token"
+    ],
+    "execution_gateway": [
+      "finlab-api-key",
+      "stockvision-cf-api-token",
+      "stockvision-finlab-exec-shioaji-account-id",
+      "stockvision-finlab-exec-shioaji-api-key",
+      "stockvision-finlab-exec-shioaji-secret-key",
+      "stockvision-finlab-exec-shioaji-cert-person-id",
+      "stockvision-finlab-exec-shioaji-cert-password",
+      "stockvision-finlab-exec-shioaji-cert-pfx",
+      "stockvision-shioaji-proxy-service-token",
+      "stockvision-execution-gateway-service-token",
+      "stockvision-live-execution-hmac-secret"
+    ]
+  },
+  "bucket_object_admin": [
+    "controller",
+    "pipeline"
+  ],
+  "job_invokers": {
+    "controller": [
+      "pipeline-v2",
+      "verify-v2",
+      "screener-v2",
+      "optuna-research-sweep",
+      "strategy-mining-research",
+      "active8-oof-materialize"
+    ]
+  },
+  "service_invokers": {
+    "stockvision-execution-gateway": [
+      "controller",
+      "pipeline"
+    ]
+  },
+  "scaler_targets": [
+    "ml-controller",
+    "shioaji-proxy"
+  ]
+}

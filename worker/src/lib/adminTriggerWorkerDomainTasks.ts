@@ -662,11 +662,17 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       })
       return `data_domain_shadow_backfill ${JSON.stringify(result)}`
     },
+    'storage-health-check': async () => {
+      const { runStorageHealthCheck } = await import('./artifactLifecycle')
+      const result = await runStorageHealthCheck(c.env)
+      if (!result.healthy) throw new Error(`storage health check failed ${JSON.stringify(result)}`)
+      return `storage_health_check ${JSON.stringify(result)}`
+    },
     'storage-health-gate': async () => {
-      const { runStorageHealthGate } = await import('./artifactLifecycle')
-      const result = await runStorageHealthGate(c.env)
-      if (!result.healthy) throw new Error(`storage health gate failed ${JSON.stringify(result)}`)
-      return `storage_health_gate ${JSON.stringify(result)}`
+      const { runStorageHealthCheck } = await import('./artifactLifecycle')
+      const result = await runStorageHealthCheck(c.env)
+      if (!result.healthy) throw new Error(`legacy storage health alias failed ${JSON.stringify(result)}`)
+      return `storage_health_gate_legacy_alias ${JSON.stringify(result)}`
     },
     'storage-integrity-audit': async () => {
       const { runArtifactIntegrityAudit } = await import('./artifactLifecycle')
@@ -680,8 +686,8 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       return `storage_integrity_audit checked=${result.checked} verified=${result.verified}`
     },
     'storage-capacity-report': async () => {
-      const { runStorageHealthGate } = await import('./artifactLifecycle')
-      const health = await runStorageHealthGate(c.env)
+      const { runStorageHealthCheck } = await import('./artifactLifecycle')
+      const health = await runStorageHealthCheck(c.env)
       const { results } = await c.env.DB.prepare(`
         SELECT retention_class, status, COUNT(*) AS artifacts,
                COALESCE(SUM(byte_size), 0) AS bytes

@@ -163,7 +163,7 @@ app.route('/',                    adminOptunaRoutes)
 app.route('/',                    finlabExecutionLoopRoutes)
 app.route('/',                    adminTriggerRoutes)
 app.route('/',                    strategyDiscoveryRoutes)
-app.get('/api/health', (c) => c.json(buildWorkerHealthPayload()))
+app.get('/api/health', (c) => c.json(buildWorkerHealthPayload(c.env.CF_VERSION_METADATA)))
 export default {
   fetch: app.fetch,
 

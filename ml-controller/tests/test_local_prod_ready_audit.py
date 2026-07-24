@@ -316,7 +316,7 @@ def _write_realtime_trading_local_closure_fixture(root: Path) -> None:
     existing = {str(job.get("id")) for job in jobs if isinstance(job, dict)}
     for job_id in (
         "artifact-reconcile", "d1-evidence-scrub", "r2-retention-sweep",
-        "orphan-reachability-gc", "cleanup-dlq-replay", "storage-health-gate",
+        "orphan-reachability-gc", "cleanup-dlq-replay", "storage-health-check",
         "storage-integrity-audit", "weekly-cleanup", "storage-capacity-report",
     ):
         if job_id not in existing:

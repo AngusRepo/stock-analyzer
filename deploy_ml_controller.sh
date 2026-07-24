@@ -1,50 +1,19 @@
 #!/usr/bin/env bash
-# deploy_ml_controller.sh — one-shot deploy for Cloud Run Service + Job image sync.
+# Release ml-controller and its Cloud Run Jobs from one attested source.
 #
-# Why this script exists (M31 2026-04-21):
-#   Cloud Run Service `ml-controller` and Cloud Run Job `pipeline-v2` share the
-#   same source but manage image pointers INDEPENDENTLY. `gcloud run deploy` only
-#   updates the Service; the Job silently keeps running the old image until a
-#   manual `gcloud run jobs update pipeline-v2 --image=<sha>` lands. Prior
-#   sessions shipped code, deployed Service, assumed `pipeline-v2` Job ran the
-#   new code — but Job stayed on old image for WEEKS (T2.1/T2.4 4/19 commits
-#   never reached production until 4/21). See mistake.md M31.
-#
-# 2026-04-21 T1.0 Option A update:
-#   Build context moved to repo root so Dockerfile can COPY both ml-controller/
-#   and ml-service/ into the image. This enables the new POST /admin/modal-deploy
-#   endpoint (ml-controller/routers/admin.py) to subprocess `modal deploy` from
-#   Cloud Run itself. Script now supports --with-modal flag to trigger Modal
-#   redeploy as the final verification step (absorbs roadmap #13).
-#
-# What this script does:
-#   1. Deploy ml-controller Service from REPO ROOT (root Dockerfile)
-#   2. Read back the new container image URI from Service spec
-#   3. Update pipeline-v2 Job image to match
-#   4. Verify Service + Job image match (fail loudly if not)
-#   5. (Optional, --with-modal) Trigger POST /admin/modal-deploy to refresh
-#      ml-service/modal_app.py on Modal cloud
+# Safety contracts:
+#   - production deploys require an explicit matching PRODUCTION_BRANCH;
+#   - dirty or detached source trees are rejected;
+#   - Service and Jobs use dedicated runtime service accounts;
+#   - Git commit/tree and Scheduler manifest hashes are injected into runtime;
+#   - --with-modal deploys directly from ml-service/.venv with the same Git tag;
+#   - no serving endpoint can execute a Modal deployment.
 #
 # Usage:
-#   bash /path/to/stockvision-cloudflare-v12/deploy_ml_controller.sh [--check-only] [--with-modal]
+#   GCS_BUCKET_NAME=stockvision-models PRODUCTION_BRANCH=<approved-branch> \
+#     bash deploy_ml_controller.sh [--check-only] [--with-modal]
 #
-# Flags:
-#   --check-only    Run local/live preflight checks only. Do not deploy.
-#   --with-modal    After Cloud Run deploy + Job sync, trigger Modal redeploy
-#                   via /admin/modal-deploy endpoint. ~3-5 min extra wall-clock.
-#
-# Exit codes:
-#   0 — Service + Job (+ Modal if --with-modal) all live on new code
-#   1 — sanity check failed (wrong dir / missing gcloud)
-#   2 — Service deploy failed
-#   3 — image SHA extraction failed
-#   4 — Job update failed
-#   5 — verification mismatch
-#   6 — Modal deploy failed (only with --with-modal)
-#   7 — preflight check failed
-#
-# Dependencies: gcloud CLI authenticated with project gen-lang-client-0602998820.
-#               curl (for --with-modal).
+# This script mutates production unless --check-only is supplied.
 
 set -euo pipefail
 
@@ -57,6 +26,10 @@ GCS_BUCKET_NAME="${GCS_BUCKET_NAME:-}"
 RETRAIN_LOCK_BUCKET="${RETRAIN_LOCK_BUCKET:-${GCS_BUCKET_NAME}}"
 GCP_PROJECT_ID="${GCP_PROJECT_ID:-gen-lang-client-0602998820}"
 GCP_REGION="${GCP_REGION:-asia-east1}"
+SERVICE_RUNTIME_SERVICE_ACCOUNT="${SERVICE_RUNTIME_SERVICE_ACCOUNT:-stockvision-ml-controller@${GCP_PROJECT_ID}.iam.gserviceaccount.com}"
+JOB_RUNTIME_SERVICE_ACCOUNT="${JOB_RUNTIME_SERVICE_ACCOUNT:-stockvision-pipeline@${GCP_PROJECT_ID}.iam.gserviceaccount.com}"
+BUILD_SERVICE_ACCOUNT="${BUILD_SERVICE_ACCOUNT:-stockvision-cloudrun-builder@${GCP_PROJECT_ID}.iam.gserviceaccount.com}"
+PRODUCTION_BRANCH="${PRODUCTION_BRANCH:-}"
 PIPELINE_JOB_NAME="${PIPELINE_JOB_NAME:-pipeline-v2}"
 VERIFY_JOB_NAME="${VERIFY_JOB_NAME:-verify-v2}"
 SCREENER_JOB_NAME="${SCREENER_JOB_NAME:-screener-v2}"
@@ -105,6 +78,12 @@ MLC_DIR="$SCRIPT_DIR/ml-controller"
 MLS_DIR="$SCRIPT_DIR/ml-service"
 ROOT_DOCKERFILE="$SCRIPT_DIR/Dockerfile"
 PYTHON_BIN=""
+MODAL_PYTHON_BIN="${MODAL_PYTHON_BIN:-}"
+SOURCE_SHA=""
+SOURCE_TREE_SHA=""
+SOURCE_BRANCH=""
+SCHEDULER_MANIFEST_SHA256=""
+PROVENANCE_LABELS=""
 
 REQUIRED_ENV_VARS=(
   GCS_BUCKET_NAME
@@ -158,6 +137,72 @@ detect_python() {
   else
     echo "❌ ERROR: python/python3 not found in PATH (needed for preflight JSON parsing)" >&2
     exit 1
+  fi
+}
+
+load_release_provenance() {
+  if ! command -v git >/dev/null 2>&1; then
+    echo "ERROR: git is required for immutable release provenance" >&2
+    exit 7
+  fi
+
+  SOURCE_SHA=$(git -C "$SCRIPT_DIR" rev-parse HEAD)
+  SOURCE_TREE_SHA=$(git -C "$SCRIPT_DIR" rev-parse 'HEAD^{tree}')
+  SOURCE_BRANCH=$(git -C "$SCRIPT_DIR" branch --show-current)
+  if ! command -v sha256sum >/dev/null 2>&1; then
+    echo "ERROR: sha256sum is required for Scheduler manifest provenance" >&2
+    exit 7
+  fi
+  SCHEDULER_MANIFEST_SHA256=$(sha256sum "$SCRIPT_DIR/infra/gcp-scheduler-jobs.json" | awk '{print $1}')
+
+  if [ -z "$SOURCE_BRANCH" ]; then
+    echo "ERROR: detached HEAD is not an approved production source" >&2
+    exit 7
+  fi
+  if [ "$CHECK_ONLY" != "1" ]; then
+    require_nonempty "PRODUCTION_BRANCH" "Set the explicitly approved production branch"
+    if [ "$SOURCE_BRANCH" != "$PRODUCTION_BRANCH" ]; then
+      echo "ERROR: source branch $SOURCE_BRANCH does not match PRODUCTION_BRANCH=$PRODUCTION_BRANCH" >&2
+      exit 7
+    fi
+    if [ -n "$(git -C "$SCRIPT_DIR" status --porcelain --untracked-files=all)" ]; then
+      echo "ERROR: production source tree is dirty; deploy from a clean, reviewed worktree" >&2
+      exit 7
+    fi
+  elif [ -n "$(git -C "$SCRIPT_DIR" status --porcelain --untracked-files=all)" ]; then
+    echo "  Source tree           : DIRTY (deploy would be blocked)"
+  fi
+
+  case "$SERVICE_RUNTIME_SERVICE_ACCOUNT,$JOB_RUNTIME_SERVICE_ACCOUNT,$BUILD_SERVICE_ACCOUNT" in
+    *-compute@developer.gserviceaccount.com*)
+      echo "ERROR: default Compute Engine identity is forbidden for StockVision runtime" >&2
+      exit 7
+      ;;
+  esac
+
+  for account in "$SERVICE_RUNTIME_SERVICE_ACCOUNT" "$JOB_RUNTIME_SERVICE_ACCOUNT" "$BUILD_SERVICE_ACCOUNT"; do
+    if ! gcloud iam service-accounts describe "$account" --project="$GCP_PROJECT_ID" --format="value(email)" >/dev/null 2>&1; then
+      echo "ERROR: required dedicated service account does not exist: $account" >&2
+      echo "Run scripts/cutover_gcp_runtime_identities.ps1 without -Apply to review the IAM plan." >&2
+      exit 7
+    fi
+  done
+
+  RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},STOCKVISION_SOURCE_SHA=${SOURCE_SHA},STOCKVISION_SOURCE_TREE_SHA=${SOURCE_TREE_SHA},STOCKVISION_SOURCE_BRANCH=${SOURCE_BRANCH},STOCKVISION_SCHEDULER_MANIFEST_SHA256=${SCHEDULER_MANIFEST_SHA256},STOCKVISION_PROVENANCE_SCHEMA=v1"
+  PROVENANCE_LABELS="stockvision-source-sha=${SOURCE_SHA},stockvision-provenance-schema=v1"
+}
+
+detect_modal_python() {
+  if [ -n "$MODAL_PYTHON_BIN" ] && [ -x "$MODAL_PYTHON_BIN" ]; then
+    return
+  fi
+  if [ -x "$MLS_DIR/.venv/Scripts/python.exe" ]; then
+    MODAL_PYTHON_BIN="$MLS_DIR/.venv/Scripts/python.exe"
+  elif [ -x "$MLS_DIR/.venv/bin/python" ]; then
+    MODAL_PYTHON_BIN="$MLS_DIR/.venv/bin/python"
+  else
+    echo "ERROR: --with-modal requires ml-service/.venv Python; global Modal CLI is not accepted" >&2
+    exit 6
   fi
 }
 
@@ -410,6 +455,9 @@ load_verify_job_template() {
   # multiply Cloud Run cost. Let the scheduler surface one failed execution
   # instead of retrying the full graph three more times.
   VERIFY_JOB_MAX_RETRIES="${VERIFY_JOB_MAX_RETRIES_OVERRIDE:-0}"
+  # Never inherit the live template identity: legacy templates may still use
+  # the broad default Compute Engine service account.
+  VERIFY_JOB_SERVICE_ACCOUNT="$JOB_RUNTIME_SERVICE_ACCOUNT"
 }
 
 sync_verify_job() {
@@ -762,20 +810,17 @@ if ! command -v gcloud >/dev/null 2>&1; then
   exit 1
 fi
 detect_python
+load_release_provenance
 if [ ! -d "$MLC_DIR" ] || [ ! -f "$MLC_DIR/main.py" ]; then
   echo "❌ ERROR: ml-controller source not found at $MLC_DIR" >&2
   exit 1
 fi
-if [ ! -d "$MLS_DIR" ] || [ ! -f "$MLS_DIR/modal_app.py" ]; then
-  echo "❌ ERROR: ml-service source not found at $MLS_DIR (required by root Dockerfile)" >&2
+if [ "$WITH_MODAL" = "1" ] && { [ ! -d "$MLS_DIR" ] || [ ! -f "$MLS_DIR/modal_app.py" ]; }; then
+  echo "❌ ERROR: ml-service source not found at $MLS_DIR (required only by --with-modal)" >&2
   exit 1
 fi
 if [ ! -f "$ROOT_DOCKERFILE" ]; then
   echo "❌ ERROR: root Dockerfile not found at $ROOT_DOCKERFILE" >&2
-  exit 1
-fi
-if [ "$WITH_MODAL" = "1" ] && ! command -v curl >/dev/null 2>&1; then
-  echo "❌ ERROR: --with-modal needs curl in PATH" >&2
   exit 1
 fi
 
@@ -790,8 +835,11 @@ cd "$SCRIPT_DIR"
 echo "=== Step 1/4: Deploy Service $SERVICE (CWD=$SCRIPT_DIR, Dockerfile=repo root) ==="
 if ! gcloud run deploy "$SERVICE" \
     --source . \
+    --build-service-account="projects/${GCP_PROJECT_ID}/serviceAccounts/${BUILD_SERVICE_ACCOUNT}" \
     --region="$REGION" \
     --timeout=3600 \
+    --service-account="$SERVICE_RUNTIME_SERVICE_ACCOUNT" \
+    --update-labels="$PROVENANCE_LABELS" \
     --update-env-vars="$RUNTIME_ENV_VARS" \
     --update-secrets="$RUN_SECRET_BINDINGS" \
     --quiet; then
@@ -826,6 +874,8 @@ echo "=== Step 3/4: Update Job $JOB image to match Service ==="
 if ! gcloud run jobs update "$JOB" \
     --region="$REGION" \
     --image="$NEW_IMAGE" \
+    --service-account="$JOB_RUNTIME_SERVICE_ACCOUNT" \
+    --update-labels="$PROVENANCE_LABELS" \
     --update-secrets="$RUN_SECRET_BINDINGS" \
     --update-env-vars="$RUNTIME_ENV_VARS"; then
   echo "❌ Job update failed" >&2
@@ -930,55 +980,17 @@ SERVICE_REV=$(gcloud run services describe "$SERVICE" --region="$REGION" \
 echo "✅ Verification passed — Service and Job on identical image"
 echo ""
 
-# ── Step 5 (optional): Modal deploy via /admin/modal-deploy ──────────────────
+# Optional Modal release from the approved local release identity. Serving does
+# not expose a deployment endpoint and never accepts a user-selected app path.
 MODAL_RESULT=""
 if [ "$WITH_MODAL" = "1" ]; then
-  echo "=== Step 5/5: Trigger Modal deploy (--with-modal) ==="
-  if [ -z "${ML_CONTROLLER_TOKEN:-}" ]; then
-    echo "❌ ERROR: ML_CONTROLLER_TOKEN is required for --with-modal" >&2
+  echo "=== Step 5/5: Deploy Modal from local release identity ==="
+  detect_modal_python
+  if ! "$MODAL_PYTHON_BIN" -m modal deploy --tag "$SOURCE_SHA" "$MLS_DIR/modal_app.py"; then
+    echo "ERROR: direct Modal deploy failed" >&2
     exit 6
   fi
-  CTOKEN="${ML_CONTROLLER_TOKEN}"
-  URL="${ML_CONTROLLER_URL:-$ML_CONTROLLER_URL_DEFAULT}/admin/modal-deploy"
-  NOTE_JSON=$(printf '{"note":"deploy_ml_controller.sh rev=%s"}' "$SERVICE_REV")
-  # Use mktemp for portable temp file (Windows git-bash /tmp/ may not exist)
-  MODAL_RESP_FILE=$(mktemp -t modal_deploy_resp.XXXXXX.json 2>/dev/null || echo "/tmp/modal_deploy_resp.$$.json")
-  trap 'rm -f "$MODAL_RESP_FILE"' EXIT
-  echo "POST $URL"
-  set +e
-  HTTP_STATUS=$(curl -sS -o "$MODAL_RESP_FILE" -w "%{http_code}" \
-      -X POST "$URL" \
-      -H "X-Controller-Token: $CTOKEN" \
-      -H "Content-Type: application/json" \
-      --max-time 650 \
-      -d "$NOTE_JSON")
-  CURL_RC=$?
-  set -e
-  if [ "$CURL_RC" -ne 0 ] || [ "$HTTP_STATUS" != "200" ]; then
-    echo "❌ Modal deploy endpoint failed (curl_rc=$CURL_RC http=$HTTP_STATUS)" >&2
-    echo "Response body ($MODAL_RESP_FILE):" >&2
-    cat "$MODAL_RESP_FILE" >&2 || true
-    echo "" >&2
-    exit 6
-  fi
-  # Parse duration from response — surface parse failure instead of silent '?'
-  MODAL_RESP_FILE_PY="$MODAL_RESP_FILE"
-  if command -v cygpath >/dev/null 2>&1; then
-    MODAL_RESP_FILE_PY=$(cygpath -w "$MODAL_RESP_FILE")
-  fi
-  MODAL_DURATION=$(MODAL_RESP_FILE_PY="$MODAL_RESP_FILE_PY" "$PYTHON_BIN" -c "
-import json, os, sys
-try:
-    with open(os.environ['MODAL_RESP_FILE_PY'], encoding='utf-8') as f:
-        d = json.load(f)
-    v = d.get('duration_sec')
-    print(f'{v:.1f}' if isinstance(v, (int, float)) else str(v))
-except Exception as e:
-    print(f'parse_err:{type(e).__name__}', file=sys.stderr)
-    print('unknown')
-" 2>&1)
-  echo "✅ Modal deploy succeeded (duration ${MODAL_DURATION}s)"
-  MODAL_RESULT="Modal         : redeployed (${MODAL_DURATION}s)"
+  MODAL_RESULT="Modal         : deployed tag=${SOURCE_SHA}"
   echo ""
 fi
 

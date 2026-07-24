@@ -104,7 +104,7 @@ app.include_router(debate.router,       dependencies=[Depends(verify_token)])
 app.include_router(model_pool.router,   dependencies=[Depends(verify_token)])
 # 2026-04-20 #28b T3.4/T3.5: Config pool challenger weekly eval
 app.include_router(config_pool.router,  dependencies=[Depends(verify_token)])
-# 2026-04-21 #28b T1.0: admin endpoints (modal deploy)
+# Authenticated operational endpoints; deployment control-plane routes are excluded.
 app.include_router(admin.router,        dependencies=[Depends(verify_token)])
 app.include_router(research_benchmark.router, dependencies=[Depends(verify_token)])
 app.include_router(dataset_snapshots.router, dependencies=[Depends(verify_token)])
@@ -139,6 +139,13 @@ def health():
         "service": "ml-controller",
         "runtimeVersion": RUNTIME_VERSION,
         "controlPlaneVersion": CONTROL_PLANE_VERSION,
+        "provenance": {
+            "schema": os.environ.get("STOCKVISION_PROVENANCE_SCHEMA", "unattested"),
+            "sourceSha": os.environ.get("STOCKVISION_SOURCE_SHA", ""),
+            "sourceTreeSha": os.environ.get("STOCKVISION_SOURCE_TREE_SHA", ""),
+            "sourceBranch": os.environ.get("STOCKVISION_SOURCE_BRANCH", ""),
+            "schedulerManifestSha256": os.environ.get("STOCKVISION_SCHEDULER_MANIFEST_SHA256", ""),
+        },
         "callbackConfigured": bool(worker_url),
         "pipelineJobConfigured": all([pipeline_job_name, gcp_project_id, gcp_region]),
         "verifyJobConfigured": all([verify_job_name, gcp_project_id, gcp_region]),

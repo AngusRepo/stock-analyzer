@@ -113,5 +113,6 @@ assert.match(schedulerManifest, /legacy-strategy-evidence-migration[^\n]+durable
 assert.match(schedulerManifest, /d1-evidence-scrub[^\n]+durable=1/)
 assert.match(source, /D1_MAINTENANCE_REQUEST_BUDGET_MS = 45_000/)
 assert.match(source, /leaseSeconds: 300/)
-assert.match(schedulerManifest, /"id": "storage-health-gate"/)
+assert.match(schedulerManifest, /"id": "storage-health-check"/)
+assert.doesNotMatch(schedulerManifest, /"id": "storage-health-gate"/)
 assert.match(schedulerManifest, /"id": "storage-integrity-audit"/)

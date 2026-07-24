@@ -3,6 +3,11 @@ import type { EvidenceArtifactWriter } from './lib/evidenceArtifactContract'
 export type R2Bucket = any
 
 export type Bindings = {
+  CF_VERSION_METADATA?: {
+    id: string
+    tag?: string
+    timestamp: string
+  }
   DB: D1Database
   CORE_DB?: D1Database
   MARKET_DB?: D1Database

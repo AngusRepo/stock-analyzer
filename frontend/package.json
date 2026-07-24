@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "deploy": "node ../tools/deploy_pages_with_provenance.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

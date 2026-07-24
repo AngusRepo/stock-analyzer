@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "node ../tools/deploy_worker_with_provenance.mjs",
     "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.tests.json",
     "test:strategy-discovery": "node ../tools/run_strategy_discovery_tests.mjs",
     "db:init": "wrangler d1 execute stockvision-db --file=./schema.sql",

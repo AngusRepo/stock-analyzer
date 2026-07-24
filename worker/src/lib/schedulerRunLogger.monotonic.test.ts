@@ -1,4 +1,4 @@
-import { resolveMonotonicSchedulerEntry, type SchedulerRunLogEntry } from './schedulerRunLogger'
+import { getTaskDisplayName, resolveMonotonicSchedulerEntry, type SchedulerRunLogEntry } from './schedulerRunLogger'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -28,6 +28,14 @@ assert(
 assert(
   resolveMonotonicSchedulerEntry(entry('success'), entry('running')).status === 'success',
   'same-run terminal success must not regress to running',
+)
+assert(
+  resolveMonotonicSchedulerEntry(entry('success'), entry('skipped')).status === 'success',
+  'same-date terminal success must not be overwritten by a later scheduler skip',
+)
+assert(
+  getTaskDisplayName('post-close-price-refresh') === 'Post-close Price Refresh',
+  'post-close price refresh must remain visible in scheduler log reads',
 )
 assert(
   resolveMonotonicSchedulerEntry(entry('error', 'old-run'), entry('success', 'retry-run')).status === 'success',

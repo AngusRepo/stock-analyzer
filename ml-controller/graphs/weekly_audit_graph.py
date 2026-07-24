@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 
 from services.model_pool_health import read_model_pool_health_rows
-from scripts.audit_chain_no_lookahead import CHECKS as NO_LOOKAHEAD_CHECKS
+from services.no_lookahead_audit import CHECKS as NO_LOOKAHEAD_CHECKS
 
 logger = logging.getLogger(__name__)
 

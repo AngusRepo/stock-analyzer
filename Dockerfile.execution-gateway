@@ -20,6 +20,7 @@ COPY --chown=stockvision:stockvision ml-controller/services/broker_execution_con
 COPY --chown=stockvision:stockvision ml-controller/services/broker_execution_repository.py /app/services/broker_execution_repository.py
 COPY --chown=stockvision:stockvision ml-controller/services/d1_client.py /app/services/d1_client.py
 COPY --chown=stockvision:stockvision ml-controller/services/execution_snapshot_revalidator.py /app/services/execution_snapshot_revalidator.py
+COPY --chown=stockvision:stockvision ml-controller/services/d1_domain_client.py /app/services/d1_domain_client.py
 COPY --chown=stockvision:stockvision ml-controller/services/finlab_execution_adapter.py /app/services/finlab_execution_adapter.py
 COPY --chown=stockvision:stockvision ml-controller/services/finlab_execution_gateway.py /app/services/finlab_execution_gateway.py
 COPY --chown=stockvision:stockvision ml-controller/services/finlab_execution_shadow_service.py /app/services/finlab_execution_shadow_service.py

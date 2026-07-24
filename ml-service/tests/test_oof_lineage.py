@@ -87,3 +87,44 @@ def test_purged_indices_use_actual_per_symbol_label_known_date():
     assert train_idx.tolist() == [0]
     assert test_idx.tolist() == [2]
     assert metadata["purge_method"] == "actual_label_known_date"
+
+
+def test_frozen_forward_artifact_is_explicit_and_invalid_modes_fail_closed():
+    from app.oof_lineage import save_oof_prediction_artifact
+
+    bucket = _Bucket()
+    result = save_oof_prediction_artifact(
+        bucket=bucket,
+        gcs_prefix="forward",
+        cohort_id="extension",
+        fold_id="frozen_forward",
+        model_name="LightGBM",
+        artifact_version="frozen-v1",
+        raw_scores=np.asarray([0.1, 0.2]),
+        targets=np.asarray([0.01, 0.02]),
+        dates=np.asarray(["2026-07-08", "2026-07-08"]),
+        symbols=np.asarray(["A", "B"]),
+        markets=np.asarray(["TWSE", "TWSE"]),
+        label_known_dates=np.asarray(["2026-07-15", "2026-07-15"]),
+        split_metadata={"method": "frozen_fold_forward_inference"},
+        generation_mode="frozen_forward_oos",
+    )
+    assert result["generation_mode"] == "frozen_forward_oos"
+
+    with pytest.raises(ValueError, match="oof_generation_mode_invalid"):
+        save_oof_prediction_artifact(
+            bucket=bucket,
+            gcs_prefix="forward",
+            cohort_id="extension",
+            fold_id="frozen_forward",
+            model_name="LightGBM",
+            artifact_version="frozen-v1",
+            raw_scores=np.asarray([0.1]),
+            targets=np.asarray([0.01]),
+            dates=np.asarray(["2026-07-08"]),
+            symbols=np.asarray(["A"]),
+            markets=np.asarray(["TWSE"]),
+            label_known_dates=np.asarray(["2026-07-15"]),
+            split_metadata={},
+            generation_mode="renamed_fake_oof",
+        )

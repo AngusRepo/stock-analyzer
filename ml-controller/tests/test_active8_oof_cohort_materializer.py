@@ -526,3 +526,68 @@ def test_gcs_indexed_materialization_never_writes_large_oof_tables():
     assert "indexed_l4_prediction_rows" in source
     assert "CREATE TABLE IF NOT EXISTS active8_oof_materialized_artifacts" in migration
     assert "active8-oof-materialized-jsonl-gzip-v1" in migration
+
+
+def test_forward_extension_manifest_is_shadow_only_and_bound_to_base():
+    import hashlib
+    import json
+
+    from services.active8_oof_cohort_materializer import (
+        _manifest_checksum,
+        load_verified_oof_forward_extension,
+    )
+    from services.active8_oof_stacker import CORE_CROSS_SECTIONAL_MODELS
+
+    base = {"cohort_id": "base", "manifest_checksum": "a" * 64}
+    manifest = {
+        "schema_version": "active8-oof-forward-extension-v1",
+        "status": "ready",
+        "generation_mode": "frozen_forward_oos",
+        "extension_id": "ext",
+        "base_cohort_id": "base",
+        "base_manifest_checksum": "a" * 64,
+        "promotion_eligible": False,
+        "training_dispatched": False,
+        "counterfactual_reconstruction": True,
+        "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+        "extension_range": ["2026-07-08", "2026-07-16"],
+        "knowledge_cutoff_date": "2026-07-23",
+        "dates": ["2026-07-08", "2026-07-09"],
+        "model_artifacts": {name: {"path": name} for name in CORE_CROSS_SECTIONAL_MODELS},
+    }
+    manifest["manifest_checksum"] = _manifest_checksum(manifest)
+    raw = json.dumps(manifest).encode()
+
+    class Blob:
+        def download_as_bytes(self):
+            return raw
+
+    class Bucket:
+        def blob(self, _path):
+            return Blob()
+
+    loaded = load_verified_oof_forward_extension(
+        "forward/manifest.json", bucket=Bucket(), base_manifest=base
+    )
+    assert loaded["promotion_eligible"] is False
+
+    manifest["promotion_eligible"] = True
+    manifest["manifest_checksum"] = _manifest_checksum(manifest)
+    raw = json.dumps(manifest).encode()
+    with pytest.raises(ValueError, match="active8_oof_forward_manifest_invalid"):
+        load_verified_oof_forward_extension(
+            "forward/manifest.json", bucket=Bucket(), base_manifest=base
+        )
+
+
+def test_prep_only_source_stops_before_training_dispatch():
+    source = (ROOT / "ml-controller" / "routers" / "retrain_trigger.py").read_text(encoding="utf-8")
+    request_pos = source.index("prep_only: bool")
+    receipt_pos = source.index("prep_only_complete_no_training_dispatched")
+    orchestrator_pos = source.index(
+        "from services.modal_client import retrain_orchestrator",
+        source.index("async def trigger_universal_retrain"),
+    )
+    assert request_pos < receipt_pos < orchestrator_pos
+    assert '"training_dispatched": False' in source
+    assert "prep_only_output_prefix_collision" in source

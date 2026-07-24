@@ -16,6 +16,7 @@ import numpy as np
 from services import d1_client
 from services.active8_oof_stacker import (
     ACTIVE8_MODELS,
+    CORE_CROSS_SECTIONAL_MODELS,
     STACKER_SEMANTIC_VERSION,
     build_chronological_oof_stack,
 )
@@ -295,6 +296,7 @@ def _load_prediction_artifact(
     materialized_fold: str,
     expected_model: str,
     split: dict[str, str],
+    expected_generation_mode: str = "purged_oof",
 ) -> list[dict[str, Any]]:
     raw = bucket.blob(path).download_as_bytes()
     if hashlib.sha256(raw).hexdigest() != expected_checksum:
@@ -303,7 +305,7 @@ def _load_prediction_artifact(
     metadata = json.loads(str(data["metadata"].item()))
     expected = {
         "schema_version": "active8-oof-predictions-v1",
-        "generation_mode": "purged_oof",
+        "generation_mode": expected_generation_mode,
         "cohort_id": expected_artifact_cohort,
         "fold_id": expected_artifact_fold,
         "model_name": expected_model,
@@ -385,6 +387,83 @@ def load_oof_prediction_rows(
             ))
     return rows
 
+
+def load_verified_oof_forward_extension(
+    manifest_path: str,
+    *,
+    bucket: Any,
+    base_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    raw = bucket.blob(manifest_path).download_as_bytes()
+    manifest = json.loads(raw.decode("utf-8"))
+    if (
+        manifest.get("schema_version") != "active8-oof-forward-extension-v1"
+        or manifest.get("status") != "ready"
+        or manifest.get("generation_mode") != "frozen_forward_oos"
+        or manifest.get("promotion_eligible") is not False
+        or manifest.get("training_dispatched") is not False
+        or manifest.get("counterfactual_reconstruction") is not True
+        or manifest.get("target_semantic_version") != TARGET_SEMANTIC_VERSION
+        or manifest.get("manifest_checksum") != _manifest_checksum(manifest)
+    ):
+        raise ValueError("active8_oof_forward_manifest_invalid")
+    if (
+        str(manifest.get("base_cohort_id") or "") != str(base_manifest.get("cohort_id") or "")
+        or str(manifest.get("base_manifest_checksum") or "")
+        != str(base_manifest.get("manifest_checksum") or "")
+    ):
+        raise ValueError("active8_oof_forward_base_lineage_mismatch")
+    artifacts = dict(manifest.get("model_artifacts") or {})
+    if any(name not in artifacts for name in CORE_CROSS_SECTIONAL_MODELS):
+        raise ValueError("active8_oof_forward_core_models_missing")
+    dates = [str(value)[:10] for value in (manifest.get("dates") or [])]
+    extension_range = list(manifest.get("extension_range") or [])
+    if (
+        not dates
+        or len(extension_range) != 2
+        or min(dates) < str(extension_range[0])[:10]
+        or max(dates) > str(extension_range[1])[:10]
+        or max(dates) > str(manifest.get("knowledge_cutoff_date") or "")[:10]
+    ):
+        raise ValueError("active8_oof_forward_date_contract_invalid")
+    return manifest
+
+
+def load_oof_forward_prediction_rows(
+    manifest: dict[str, Any],
+    *,
+    bucket: Any,
+    materialized_cohort: str,
+) -> list[dict[str, Any]]:
+    extension_id = str(manifest.get("extension_id") or "")
+    extension_range = list(manifest.get("extension_range") or [None, None])
+    train_range = list(manifest.get("source_train_range") or [None, None])
+    split = {
+        "train_start": str(train_range[0]),
+        "train_end": str(train_range[1]),
+        "test_start": str(extension_range[0]),
+        "test_end": str(extension_range[1]),
+    }
+    rows: list[dict[str, Any]] = []
+    for model_name, artifact in sorted(dict(manifest.get("model_artifacts") or {}).items()):
+        if model_name not in ACTIVE8_MODELS:
+            raise ValueError(f"active8_oof_forward_unknown_model:{model_name}")
+        rows.extend(_load_prediction_artifact(
+            bucket=bucket,
+            path=str(artifact.get("path") or ""),
+            expected_checksum=str(artifact.get("payload_checksum") or ""),
+            expected_artifact_cohort=extension_id,
+            materialized_cohort=materialized_cohort,
+            expected_artifact_fold="frozen_forward",
+            materialized_fold="frozen_forward",
+            expected_model=model_name,
+            split=split,
+            expected_generation_mode="frozen_forward_oos",
+        ))
+    observed = sorted({str(row["prediction_date"])[:10] for row in rows})
+    if observed != sorted(str(value)[:10] for value in (manifest.get("dates") or [])):
+        raise ValueError("active8_oof_forward_prediction_dates_mismatch")
+    return rows
 
 def build_oof_fold_artifact_rows(
     manifest: dict[str, Any],

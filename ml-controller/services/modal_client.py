@@ -1244,6 +1244,16 @@ async def strategy_mining_research(payload: dict | None = None, fire_and_forget:
     return result
 
 
+async def build_frozen_oof_forward_extension(payload: dict) -> dict:
+    """Run pinned forward OOS inference; never trains or promotes artifacts."""
+    if not _USE_MODAL:
+        raise RuntimeError("frozen OOF forward extension requires Modal credentials")
+    logger.info("[ml_client] Modal.remote build_frozen_oof_forward_extension")
+    result = await _modal_remote_call("build_frozen_oof_forward_extension", payload)
+    if not isinstance(result, dict):
+        raise RuntimeError("frozen OOF forward extension returned invalid payload")
+    return result
+
 async def build_finlab_long_sequence_prep(payload: dict | None = None, fire_and_forget: bool = False) -> dict:
     """Build sequence-only prep from existing FinLab 3Y/5Y artifacts."""
     payload = payload or {}

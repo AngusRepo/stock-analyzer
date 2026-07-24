@@ -335,6 +335,34 @@ class AnalyzeRequest(BaseModel):
     end_date: str
 
 
+class OofForwardExtensionRequest(BaseModel):
+    base_manifest_path: str
+    prep_gcs_prefix: str
+    sequence_gcs_prefix: str
+    sequence_batch_count: int = 5
+    start_date: str
+    end_date: str
+    knowledge_cutoff_date: str
+    confirm: bool = False
+
+
+@router.post("/walk_forward/oof/forward-extension")
+async def build_walk_forward_oof_forward_extension(req: OofForwardExtensionRequest):
+    """Build frozen forward OOS evidence without retraining or promotion."""
+    if not req.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="forward extension requires confirm=true; writes immutable shadow evidence",
+        )
+    from services import modal_client
+
+    result = await modal_client.build_frozen_oof_forward_extension(req.model_dump())
+    if result.get("error"):
+        raise HTTPException(status_code=422, detail=result)
+    if result.get("training_dispatched") is not False or result.get("promotion_eligible") is not False:
+        raise HTTPException(status_code=422, detail="forward_extension_safety_contract_invalid")
+    return result
+
 class OofMaterializeRequest(BaseModel):
     cohort_id: str
     knowledge_cutoff_date: str
@@ -344,6 +372,7 @@ class OofMaterializeRequest(BaseModel):
     promote: bool = True
     prediction_storage_mode: str = "gcs_indexed_v1"
     lifecycle_cadence: str = "daily"
+    forward_extension_manifest_path: str | None = None
 
 
 _ACTIVE8_TREE_MODELS = {"LightGBM", "XGBoost", "ExtraTrees"}
@@ -1074,6 +1103,11 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
 
     if not req.dry_run and not req.confirm:
         raise HTTPException(status_code=400, detail="non-dry OOF materialization requires confirm=true")
+    if req.forward_extension_manifest_path and (not req.dry_run or req.promote):
+        raise HTTPException(
+            status_code=400,
+            detail="frozen forward extension is dry-run shadow evidence only and requires promote=false",
+        )
     from services.walk_forward_retrain import _get_bucket
     from services.active8_oof_cohort_materializer import (
         build_oof_snapshot_rows,
@@ -1081,7 +1115,9 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         archive_ev_candidate_artifacts,
         load_native_pit_component_rows,
         load_fundamental_quality_pit_by_key,
+        load_oof_forward_prediction_rows,
         load_oof_prediction_rows,
+        load_verified_oof_forward_extension,
         load_verified_oof_manifest,
         persist_oof_cohort,
     )
@@ -1104,6 +1140,20 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         if manifest["cohort_id"] != req.cohort_id:
             raise ValueError("requested_cohort_manifest_mismatch")
         prediction_rows = load_oof_prediction_rows(manifest, bucket=bucket)
+        forward_extension = None
+        forward_prediction_rows: list[dict[str, Any]] = []
+        if req.forward_extension_manifest_path:
+            forward_extension = load_verified_oof_forward_extension(
+                req.forward_extension_manifest_path,
+                bucket=bucket,
+                base_manifest=manifest,
+            )
+            forward_prediction_rows = load_oof_forward_prediction_rows(
+                forward_extension,
+                bucket=bucket,
+                materialized_cohort=req.cohort_id,
+            )
+            prediction_rows.extend(forward_prediction_rows)
         native_rows = load_native_pit_component_rows(prediction_rows)
         prediction_dates = sorted({
             str(row.get("prediction_date") or "")[:10]
@@ -1141,6 +1191,26 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             generation_mode="purged_oof",
             cohort_id=req.cohort_id,
         )
+        if forward_extension:
+            for result in (l4_result, fusion_result):
+                artifact = result.get("artifact") if isinstance(result, dict) else None
+                if isinstance(artifact, dict):
+                    artifact["generation_mode"] = "purged_oof_plus_frozen_forward_oos_shadow"
+                    artifact["promotion_state"] = "shadow_only"
+                packet = result.get("validation_packet") if isinstance(result, dict) else None
+                if isinstance(packet, dict):
+                    packet["decision"] = "FAIL"
+                    failed = list(packet.get("failed_gates") or [])
+                    if "frozen_forward_oos_shadow_only" not in failed:
+                        failed.append("frozen_forward_oos_shadow_only")
+                    packet["failed_gates"] = failed
+                    packet["forward_extension"] = {
+                        "manifest_path": req.forward_extension_manifest_path,
+                        "manifest_checksum": forward_extension["manifest_checksum"],
+                        "rows": len(forward_prediction_rows),
+                        "dates": forward_extension["dates"],
+                        "promotion_eligible": False,
+                    }
         full_fit_plan = build_oof_full_fit_dispatch_plan(manifest)
         persistence = persist_oof_cohort(
             manifest=manifest,
@@ -1306,6 +1376,9 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "status": "dry_run" if req.dry_run else "materialized",
             "cohort_id": req.cohort_id,
             "prediction_rows": len(prediction_rows),
+            "base_prediction_rows": len(prediction_rows) - len(forward_prediction_rows),
+            "forward_prediction_rows": len(forward_prediction_rows),
+            "forward_extension": forward_extension,
             "native_pit_rows": len(native_rows),
             "fundamental_pit_rows": len(fundamental_quality_by_key),
             "snapshot_evidence": snapshot_evidence,

@@ -2792,6 +2792,28 @@ def rebuild_canonical_adjusted_prep(payload: dict) -> dict:
         }
 
 
+@app.function(
+    cpu=4,
+    memory=8192,
+    timeout=3600,
+    scaledown_window=60,
+    max_containers=1,
+)
+def build_frozen_oof_forward_extension(payload: dict) -> dict:
+    """Run immutable forward inference only; no training or promotion."""
+    _setup_env()
+    from app.oof_forward_extension import build_frozen_forward_extension
+
+    try:
+        return build_frozen_forward_extension(payload or {})
+    except Exception as exc:
+        import traceback
+        return {
+            "error": str(exc),
+            "trace": traceback.format_exc()[:4000],
+            "type": "frozen_oof_forward_extension",
+        }
+
 # 2026-04-19 ML_POOL Stage 0.2: DLinear universal training (one-shot)
 @app.function(
     gpu="L4",

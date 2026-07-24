@@ -119,6 +119,7 @@ def save_oof_prediction_artifact(
     label_known_dates: np.ndarray,
     split_metadata: dict[str, Any],
     target_semantic_version: str = OOF_TARGET_SEMANTIC_VERSION,
+    generation_mode: str = "purged_oof",
 ) -> dict[str, Any]:
     raw = np.asarray(raw_scores, dtype=float).reshape(-1)
     target = np.asarray(targets, dtype=float).reshape(-1)
@@ -143,13 +144,15 @@ def save_oof_prediction_artifact(
         raise ValueError("oof_cohort_fold_or_artifact_version_missing")
     if target_semantic_version != OOF_TARGET_SEMANTIC_VERSION:
         raise ValueError("oof_target_semantic_mismatch")
+    if generation_mode not in {"purged_oof", "frozen_forward_oos"}:
+        raise ValueError("oof_generation_mode_invalid")
 
     rank = percentile_rank_by_date_market(raw, date_values, market_values)
     if not np.isfinite(rank).all() or not np.isfinite(target).all():
         raise ValueError("oof_non_finite_prediction_or_target")
     metadata = {
         "schema_version": OOF_PREDICTION_SCHEMA_VERSION,
-        "generation_mode": "purged_oof",
+        "generation_mode": generation_mode,
         "cohort_id": cohort_id,
         "fold_id": fold_id,
         "model_name": model_name,

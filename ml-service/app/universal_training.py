@@ -249,13 +249,17 @@ def _save_universal_versioned_model(
     version: str,
     feature_medians: dict[str, float],
     extra_metadata: dict | None = None,
+    artifact_root: str = "universal",
 ) -> dict:
-    """Save a universal model as a versioned artifact_registry candidate."""
+    """Save an immutable versioned model for candidate or OOF shadow use."""
     import joblib
 
     folder = model_name.lower().replace("-", "_")
-    model_path = f"universal/{folder}/{version}.joblib"
-    meta_path = f"universal/{folder}/metadata_{version}.json"
+    root = artifact_root.strip().strip("/")
+    if not root:
+        raise ValueError("versioned_model_artifact_root_required")
+    model_path = f"{root}/{folder}/{version}.joblib"
+    meta_path = f"{root}/{folder}/metadata_{version}.json"
 
     buf = io.BytesIO()
     joblib.dump(model, buf)
@@ -1509,7 +1513,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                 feature_policy_meta["feature_policy"] = feature_policy
                 model_selection_evidence["feature_release_mode"] = req.feature_release_mode
             model_extra_meta.update(feature_policy_meta)
-            if req.output_model_version and not walk_forward_mode:
+            if req.output_model_version:
                 saved_artifact = _save_universal_versioned_model(
                     bucket=bucket,
                     model_name=model_name,
@@ -1519,10 +1523,16 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     version=req.output_model_version,
                     feature_medians=feature_medians,
                     extra_metadata=model_extra_meta or None,
+                    artifact_root=(
+                        f"{gcs_prefix}/frozen_models"
+                        if walk_forward_mode
+                        else "universal"
+                    ),
                 )
                 model_path = saved_artifact["artifact_path"]
                 artifact_registrations[model_name] = {
-                    "status": "registered",
+                    "status": "shadow_source" if walk_forward_mode else "registered",
+                    "promotion_eligible": not walk_forward_mode,
                     "version": req.output_model_version,
                     "gcs_path": model_path,
                     "metadata_path": saved_artifact["metadata_path"],
@@ -1535,7 +1545,7 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                     "oos_ic": (ic_tracking.get(model_name) or {}).get("oos_ic"),
                     "metadata": saved_artifact["metadata"],
                 }
-                if req.register_challengers:
+                if not walk_forward_mode and req.register_challengers:
                     registration = _register_challenger_safe(
                         model_name,
                         req.output_model_version,
@@ -1548,8 +1558,9 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
                         registration["training_manifest_path"] = manifest_path
                         challenger_registrations[model_name] = registration
                 print(
-                    f"[TrainUniversal] Saved {model_name} candidate artifact to {model_path} "
-                    f"(version={req.output_model_version})"
+                    f"[TrainUniversal] Saved {model_name} "
+                    f"{'shadow source' if walk_forward_mode else 'candidate'} artifact "
+                    f"to {model_path} (version={req.output_model_version})"
                 )
                 continue
 

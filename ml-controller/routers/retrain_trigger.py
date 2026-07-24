@@ -14,6 +14,7 @@ import json
 import uuid
 import logging
 import asyncio
+import hashlib
 import tempfile
 import math
 from urllib.parse import urlsplit, urlunsplit
@@ -109,6 +110,14 @@ class UniversalRetrainTriggerRequest(BaseModel):
     dlinear_seq_len: int | None = Field(default=None, description="DLinear sequence context override.")
     patchtst_seq_len: int | None = Field(default=None, description="PatchTST sequence context override.")
     itransformer_seq_len: int | None = Field(default=None, description="iTransformer sequence context override.")
+    prep_only: bool = Field(
+        default=False,
+        description="Build immutable universal feature prep and stop before any model training.",
+    )
+    prep_output_gcs_prefix: str | None = Field(
+        default=None,
+        description="New immutable GCS prefix required by prep_only.",
+    )
 
 
 def _exact_dataset_snapshot_rejection(
@@ -1084,6 +1093,16 @@ async def trigger_universal_retrain(
 
     # ?? Idempotency check (P0-4, persistent via GCS) ?????????????????????????
     run_date = req.run_date or tw_now.date().isoformat()
+    prep_output_gcs_prefix = str(req.prep_output_gcs_prefix or "").strip().rstrip("/")
+    if req.prep_only and (
+        not prep_output_gcs_prefix
+        or not prep_output_gcs_prefix.startswith("universal/oof_forward_prep/")
+    ):
+        return {
+            "status": "rejected",
+            "error": "prep_only_immutable_output_prefix_required",
+            "required_prefix": "universal/oof_forward_prep/<run-id>",
+        }
     lock_key = f"retrain:{run_date}"
     lock_result = retrain_lock.acquire(
         lock_key,
@@ -1115,6 +1134,19 @@ async def trigger_universal_retrain(
         f"[retrain/universal] Lock acquired: {lock_key} (backend={lock_result.backend}, "
         f"reason={lock_result.reason})"
     )
+    if req.prep_only:
+        from google.cloud import storage as _prep_storage
+
+        prep_bucket = _prep_storage.Client().bucket(
+            os.environ.get("GCS_BUCKET_NAME", "stockvision-models")
+        )
+        if next(prep_bucket.list_blobs(prefix=f"{prep_output_gcs_prefix}/", max_results=1), None):
+            retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
+            return {
+                "status": "rejected",
+                "error": "prep_only_output_prefix_collision",
+                "output_gcs_prefix": prep_output_gcs_prefix,
+            }
     _upsert_retrain_status(
         run_id,
         status="started",
@@ -1558,7 +1590,7 @@ async def trigger_universal_retrain(
                 "batch_index": idx,
                 "shared_market_history": shared_history,
                 "per_stock_ts_map": batch_ps_ts,
-                "gcs_prefix": "universal",
+                "gcs_prefix": prep_output_gcs_prefix if req.prep_only else "universal",
             }
             if active_features:
                 prep_payload["active_features"] = active_features
@@ -1629,6 +1661,62 @@ async def trigger_universal_retrain(
 
     # ?? 7. Flow B: Modal orchestrator (selection ??train ??SHAP) ??????????????
     # Cloud Run 閫貊銝甈?Modal retrain_orchestrator嚗??Ｗ??Modal ?批???
+    if req.prep_only:
+        from google.cloud import storage as _prep_storage
+
+        prep_bucket = _prep_storage.Client().bucket(
+            os.environ.get("GCS_BUCKET_NAME", "stockvision-models")
+        )
+        feature_names_path = f"{prep_output_gcs_prefix}/prep/feature_names.json"
+        expected_paths = [
+            f"{prep_output_gcs_prefix}/prep/batch_{idx}.npz"
+            for idx in range(batch_count)
+        ]
+        missing_paths = [
+            path for path in [feature_names_path, *expected_paths]
+            if not prep_bucket.blob(path).exists()
+        ]
+        if missing_paths:
+            retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
+            return {
+                "status": "rejected",
+                "error": "prep_only_output_inventory_incomplete",
+                "missing_paths": missing_paths,
+                "run_id": run_id,
+            }
+        prep_checksums = {
+            path: hashlib.sha256(prep_bucket.blob(path).download_as_bytes()).hexdigest()
+            for path in expected_paths
+        }
+        receipt = {
+            "schema_version": "active8-immutable-feature-prep-receipt-v1",
+            "status": "ready",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "run_id": run_id,
+            "business_date": run_date,
+            "output_gcs_prefix": prep_output_gcs_prefix,
+            "batch_count": batch_count,
+            "batch_rows": [int(row.get("rows") or 0) for row in prep_results],
+            "output_rows": total_rows,
+            "output_checksums": prep_checksums,
+            "feature_names_path": feature_names_path,
+            "training_dispatched": False,
+        }
+        unsigned = json.dumps(receipt, sort_keys=True).encode("utf-8")
+        receipt["receipt_checksum"] = hashlib.sha256(unsigned).hexdigest()
+        receipt_path = f"{prep_output_gcs_prefix}/prep/immutable_receipt.json"
+        prep_bucket.blob(receipt_path).upload_from_string(
+            json.dumps(receipt, sort_keys=True, indent=2),
+            content_type="application/json",
+        )
+        retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
+        _upsert_retrain_status(
+            run_id,
+            status="completed",
+            summary=receipt,
+            downstream_notes="prep_only_complete_no_training_dispatched",
+        )
+        return {**receipt, "receipt_path": receipt_path}
     from services.modal_client import retrain_orchestrator
     followup_webhook_url = _build_followup_webhook_url(request)
     sequence_required = (

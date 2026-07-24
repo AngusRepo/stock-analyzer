@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
-const root = join(import.meta.dirname, '..', '..')
+const root = resolve('.')
 const lifecycle = readFileSync(join(root, 'src', 'lib', 'artifactLifecycle.ts'), 'utf8')
 const routes = readFileSync(join(root, 'src', 'routes', 'other.ts'), 'utf8')
 const schema = readFileSync(join(root, 'schema.sql'), 'utf8')

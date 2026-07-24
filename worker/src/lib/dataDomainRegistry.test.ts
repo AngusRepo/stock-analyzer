@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import path from 'node:path'
 import {
   activeDataDomains,
   assertSingleDomainOwnership,
@@ -10,9 +11,16 @@ import {
   tablesForDataDomain,
 } from './dataDomainRegistry'
 
-const schema = fs.readFileSync('schema.sql', 'utf8')
-const tableNames = [...schema.matchAll(/^CREATE TABLE IF NOT EXISTS\s+([A-Za-z0-9_]+)/gm)]
-  .map((match) => match[1].toLowerCase())
+const sqlFiles = [
+  'schema.sql',
+  ...fs.readdirSync('migrations')
+    .filter((name) => name.endsWith('.sql'))
+    .map((name) => path.join('migrations', name)),
+]
+const tableNames = [...new Set(sqlFiles.flatMap((file) => (
+  [...fs.readFileSync(file, 'utf8').matchAll(/^CREATE TABLE IF NOT EXISTS\s+([A-Za-z0-9_]+)/gm)]
+    .map((match) => match[1].toLowerCase())
+)))]
 assertSingleDomainOwnership(tableNames)
 
 for (const table of new Set(tableNames)) {

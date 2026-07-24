@@ -2810,6 +2810,12 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 'data_domain_shadow_backfill') {
+    const { processDataDomainShadowBackfillDrain } = await import('./dataDomainShadowBackfillDrain')
+    await processDataDomainShadowBackfillDrain(env, msg)
+    return
+  }
+
   if (msg.type === 'maintenance_backlog_drain') {
     const { processMaintenanceBacklogDrain } = await import('./maintenanceBacklogDrain')
     await processMaintenanceBacklogDrain(env, msg)

@@ -70,6 +70,15 @@ export function isDomainShadowCopyComplete(ownedTables: string[], completedTable
   return ownedTables.length > 0 && ownedTables.every((table) => completed.has(table))
 }
 
+export function isDomainShadowCutoverReady(
+  ownedTables: string[],
+  completedTables: string[],
+  checksumParityTables: string[],
+): boolean {
+  return isDomainShadowCopyComplete(ownedTables, completedTables)
+    && isDomainShadowCopyComplete(ownedTables, checksumParityTables)
+}
+
 function parseCursor(value: unknown): unknown[] | null {
   if (typeof value !== 'string' || !value.trim()) return null
   const parsed = JSON.parse(value)
@@ -117,6 +126,46 @@ export async function backfillDataDomainTableShadow(
     const sourceRows = Number(sourceCount?.count ?? 0)
     const targetRows = Number(targetCount?.count ?? 0)
     if (sourceRows !== targetRows) throw new Error(`domain_shadow_count_mismatch:${domain}:${table}:${sourceRows}/${targetRows}`)
+
+    const fullChecksumLimit = 1000
+    let sourceFullChecksum: string | null = null
+    let targetFullChecksum: string | null = null
+    let parityStatus: 'pass' | 'blocked' = 'blocked'
+    if (sourceRows <= fullChecksumLimit) {
+      const columnSql = columns.map(identifier).join(", ")
+      const sourceFull = await env.DB.prepare(`
+        SELECT ${columnSql} FROM ${identifier(table)} ORDER BY ${order}
+      `).all<Record<string, unknown>>()
+      const targetFull = await target.prepare(`
+        SELECT ${columnSql} FROM ${identifier(table)} ORDER BY ${order}
+      `).all<Record<string, unknown>>()
+      sourceFullChecksum = await checksumRows(sourceFull.results ?? [], columns)
+      targetFullChecksum = await checksumRows(targetFull.results ?? [], columns)
+      if (sourceFullChecksum !== targetFullChecksum) {
+        throw new Error(`domain_shadow_full_checksum_mismatch:${domain}:${table}`)
+      }
+      parityStatus = 'pass'
+    }
+
+    await env.DB.prepare(`
+      INSERT INTO data_domain_parity_checks(
+        check_id, domain, table_name, check_kind, status, source_count, target_count,
+        source_checksum, target_checksum, evidence_json
+      ) VALUES (?, ?, ?, 'full_table', ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(check_id) DO UPDATE SET
+        status=excluded.status, source_count=excluded.source_count, target_count=excluded.target_count,
+        source_checksum=excluded.source_checksum, target_checksum=excluded.target_checksum,
+        evidence_json=excluded.evidence_json, checked_at=CURRENT_TIMESTAMP
+    `).bind(
+      `domain-parity:${domain}:${table}:full-table`, domain, table, parityStatus,
+      sourceRows, targetRows, sourceFullChecksum, targetFullChecksum,
+      JSON.stringify({
+        schema_version: DATA_DOMAIN_SHADOW_SCHEMA_VERSION,
+        parity_scope: parityStatus === 'pass' ? 'full_table_checksum' : 'manifest_checksum_required',
+        full_checksum_limit: fullChecksumLimit,
+      }),
+    ).run()
+
     await env.DB.prepare(`
       INSERT INTO data_domain_backfill_cursors(domain, table_name, status, cursor_json, updated_at)
       VALUES (?, ?, 'complete', ?, CURRENT_TIMESTAMP)
@@ -129,8 +178,14 @@ export async function backfillDataDomainTableShadow(
         FROM data_domain_backfill_cursors
        WHERE domain=? AND status='complete'
     `).bind(domain).all<{ table_name: string }>()
+    const parityResult = await env.DB.prepare(`
+      SELECT table_name
+        FROM data_domain_parity_checks
+       WHERE domain=? AND check_kind='full_table' AND status='pass'
+    `).bind(domain).all<{ table_name: string }>()
     const completedTables = (completedResult.results ?? []).map((row) => String(row.table_name))
-    const domainShadowReady = isDomainShadowCopyComplete(ownedTables, completedTables)
+    const parityTables = (parityResult.results ?? []).map((row) => String(row.table_name))
+    const domainShadowReady = isDomainShadowCutoverReady(ownedTables, completedTables, parityTables)
     const currentCutover = await env.DB.prepare(`
       SELECT status FROM data_domain_cutovers WHERE domain=?
     `).bind(domain).first<{ status?: string }>()
@@ -151,13 +206,14 @@ export async function backfillDataDomainTableShadow(
       source_rows: sourceRows,
       target_rows: targetRows,
       batch_rows: 0,
-      batch_checksum: null,
+      batch_checksum: sourceFullChecksum,
       cursor,
       domain_tables_completed: completedTables.filter((completed) => ownedTables.includes(completed)).length,
       domain_tables_total: ownedTables.length,
       domain_shadow_ready: domainShadowReady,
     }
   }
+
   const columnSql = columns.map(identifier).join(", ")
   const valuesSql = columns.map(() => '?').join(', ')
   const nonKeys = columns.filter((column) => !primaryKeys.includes(column))

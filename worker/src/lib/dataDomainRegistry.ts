@@ -12,7 +12,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   market: new Set([
     'stock_prices', 'technical_indicators', 'financials', 'canonical_fundamental_features',
     'chip_data', 'news', 'factor_scores', 'sector_flow', 'market_breadth',
-    'market_trading_sessions',
+    'market_trading_sessions', 'intraday_minute_bars',
   ]),
   learning: new Set([
     'predictions', 's12_replay_trade_outcomes', 's12_structure_snapshots',
@@ -33,6 +33,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'strategy_marginal_edge_v4', 'strategy_marginal_edge_dates_v4',
     'strategy_marginal_edge_head_v4',
     'price_horizon_labels_v1', 'price_horizon_label_rejections_v1',
+    'allocator_ev_daily_lifecycle',
   ]),
   ops: new Set([
     'system_logs', 'observability_events', 'screener_funnel_runs', 'screener_funnel_items',
@@ -46,7 +47,12 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   execution: new Set([
     'broker_execution_intents', 'broker_execution_legs', 'broker_execution_events',
   ]),
-  paper: new Set([]),
+  paper: new Set([
+    'paper_accounts', 'paper_orders', 'paper_positions', 'paper_settlements',
+    'paper_daily_snapshots', 'paper_execution_events', 'paper_order_intents',
+    'paper_exit_intents', 'paper_challenger_candidates',
+    'paper_challenger_daily_metrics', 'paper_decision_attribution',
+  ]),
   research: new Set([
     'input_snapshots', 'feature_versions', 'features', 'strategy_versions', 'strategies',
     'analysis_runs', 'workflow_steps', 'workflow_checkpoints', 'model_calls',

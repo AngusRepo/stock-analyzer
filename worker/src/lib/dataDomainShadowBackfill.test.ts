@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { domainBackfillKeysetWhere, isDomainShadowCopyComplete } from './dataDomainShadowBackfill'
+import { domainBackfillKeysetWhere, isDomainShadowCopyComplete, isDomainShadowCutoverReady } from './dataDomainShadowBackfill'
 
 assert.deepEqual(domainBackfillKeysetWhere(['id'], null), { sql: '', binds: [] })
 assert.deepEqual(domainBackfillKeysetWhere(['date', 'symbol'], ['2026-07-23', '2330']), {
@@ -12,5 +12,7 @@ assert.throws(() => domainBackfillKeysetWhere(['bad-name'], [1]), /invalid_sql_i
 assert.equal(isDomainShadowCopyComplete(['runs', 'items'], ['runs']), false)
 assert.equal(isDomainShadowCopyComplete(['runs', 'items'], ['items', 'runs']), true)
 assert.equal(isDomainShadowCopyComplete([], []), false)
+assert.equal(isDomainShadowCutoverReady(['runs'], ['runs'], []), false)
+assert.equal(isDomainShadowCutoverReady(['runs'], ['runs'], ['runs']), true)
 
 console.log('data domain shadow backfill tests passed')

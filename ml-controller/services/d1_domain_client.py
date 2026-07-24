@@ -31,13 +31,25 @@ _DOMAIN_ENV = {
 }
 
 
+def _active_domains() -> set[D1DataDomain]:
+    values = {
+        value.strip().lower()
+        for value in os.environ.get("MULTI_D1_ACTIVE_DOMAINS", "").split(",")
+        if value.strip()
+    }
+    return {domain for domain in D1DataDomain if domain.value in values}
+
+
 def database_id_for_domain(domain: D1DataDomain | str) -> str:
     resolved_domain = D1DataDomain(domain)
-    specific = os.environ.get(_DOMAIN_ENV[resolved_domain], "").strip()
-    if specific:
-        return specific
-    if os.environ.get("MULTI_D1_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}:
+    strict = os.environ.get("MULTI_D1_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
+    domain_active = strict or resolved_domain in _active_domains()
+    if domain_active:
+        specific = os.environ.get(_DOMAIN_ENV[resolved_domain], "").strip()
+        if specific:
+            return specific
         raise RuntimeError(f"D1 domain database id missing: {resolved_domain.value}")
+
     legacy = os.environ.get("CF_D1_DB_ID", d1_client.CF_D1_DB_ID).strip()
     if not legacy:
         raise RuntimeError(f"Legacy CF_D1_DB_ID missing for domain: {resolved_domain.value}")

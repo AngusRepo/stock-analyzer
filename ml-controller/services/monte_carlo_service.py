@@ -9,6 +9,7 @@ This number decides if the strategy can go live with real money.
 
 Data source: D1 paper_orders (real paper trading history, buy→sell FIFO paired)
 """
+import hashlib
 import os
 import json
 import logging
@@ -499,6 +500,7 @@ async def run_monte_carlo_mdd(
         trade_regimes: list[str] | None = None
 
         data_quality_info: dict = {}
+        source_provenance: dict = {}
 
         if source == "paper":
             logger.info("[MonteCarlo] Fetching paper_orders from D1...")
@@ -513,6 +515,15 @@ async def run_monte_carlo_mdd(
             if not orders:
                 return {"error": "No paper orders found", "status": "failed"}
 
+            source_provenance = {
+                "source_table": "paper_orders",
+                "source_row_count": len(orders),
+                "source_first_created_at": orders[0].get("created_at"),
+                "source_last_created_at": orders[-1].get("created_at"),
+                "source_payload_sha256": hashlib.sha256(
+                    json.dumps(orders, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest(),
+            }
             logger.info(f"[MonteCarlo] Found {len(orders)} orders, validating + pairing...")
             pairing = _validate_and_pair_orders(orders)
 
@@ -544,14 +555,22 @@ async def run_monte_carlo_mdd(
             logger.info("[MonteCarlo] Fetching backtest trades from D1...")
             row = await _d1_query(
                 client,
-                """SELECT raw_results FROM backtest_results
+                """SELECT id, run_date, created_at, raw_results FROM backtest_results
                    ORDER BY run_date DESC, created_at DESC LIMIT 1""",
             )
 
             if not row or not row[0].get("raw_results"):
                 return {"error": "No backtest results found", "status": "failed"}
 
-            raw = json.loads(row[0]["raw_results"])
+            raw_text = str(row[0]["raw_results"])
+            source_provenance = {
+                "source_table": "backtest_results",
+                "source_row_id": row[0].get("id"),
+                "source_run_date": row[0].get("run_date"),
+                "source_created_at": row[0].get("created_at"),
+                "source_payload_sha256": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
+            }
+            raw = json.loads(raw_text)
             trade_returns, trade_regimes = _extract_backtest_returns_and_regimes(raw)
 
         else:
@@ -602,6 +621,7 @@ async def run_monte_carlo_mdd(
             "tail_risk_status": mc.tail_risk_status,
             "min_full_tail_risk_trades": mc.min_full_tail_risk_trades,
             "data_quality": data_quality_info or None,
+            "source_provenance": source_provenance,
         }, ensure_ascii=False)
 
         success = await _d1_exec(
@@ -648,6 +668,7 @@ async def run_monte_carlo_mdd(
             "block_size": mc.block_size,
             "regime_counts": mc.regime_counts,
             "data_quality": data_quality_info or None,
+            "source_provenance": source_provenance,
             "tail_risk_status": mc.tail_risk_status,
             "min_full_tail_risk_trades": mc.min_full_tail_risk_trades,
         }

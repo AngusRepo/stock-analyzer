@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from services.model_pool_health import read_model_pool_health_rows
+from scripts.audit_chain_no_lookahead import CHECKS as NO_LOOKAHEAD_CHECKS
 
 logger = logging.getLogger(__name__)
 
@@ -272,11 +273,34 @@ async def generate_weekly_audit() -> dict:
             ORDER BY run_date DESC LIMIT 1
         """)
 
+        point_in_time_checks = []
+        for check_name, sql, params in NO_LOOKAHEAD_CHECKS:
+            rows = await _d1_query(client, sql, params or None)
+            if not rows or "violations" not in rows[0]:
+                point_in_time_checks.append({
+                    "name": check_name,
+                    "violations": None,
+                    "status": "ERROR",
+                    "error": "missing_violation_count",
+                })
+                continue
+            violations = int(rows[0]["violations"])
+            point_in_time_checks.append({
+                "name": check_name,
+                "violations": violations,
+                "status": "PASS" if violations == 0 else "FAIL",
+            })
+        point_in_time_decision = (
+            "PASS" if all(row["status"] == "PASS" for row in point_in_time_checks) else "FAIL"
+        )
+
         risk_assessment = {
             "mc_mdd_95th": mc[0].get("mdd_95th") if mc else None,
             "mc_verdict": mc[0].get("go_live_verdict") if mc else None,
             "pbo": pbo[0].get("pbo") if pbo else None,
             "pbo_verdict": pbo[0].get("go_live_verdict") if pbo else None,
+            "point_in_time_decision": point_in_time_decision,
+            "point_in_time_checks": point_in_time_checks,
         }
 
         # ── Build report text ──

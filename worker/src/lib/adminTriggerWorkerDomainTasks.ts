@@ -13,6 +13,7 @@ const D1_HEAVY_MAINTENANCE_TASKS = new Set([
   'orphan-reachability-gc', 'cleanup-dlq-replay', 'weekly-cleanup',
   'price-horizon-projection',
   'strategy-learning-finalize',
+  'selection-reference-repair',
   'data-domain-shadow-backfill',
 ])
 const D1_MAINTENANCE_REQUEST_BUDGET_MS = 45_000
@@ -291,6 +292,22 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         `reward_rows=${rewards.persisted_rows}`,
         `reward_stale_retired=${rewards.stale_rows_retired}`,
         `refresh_run_id=${rewards.refresh_run_id ?? 'none'}`,
+      ].join(' ')
+    },
+    'selection-reference-repair': async () => {
+      const runDate = assertRunDate(requestedRunDate())
+      const { repairHistoricalSelectionReferences } = await import('./selectionReferenceRepair')
+      const result = await repairHistoricalSelectionReferences(c.env.DB, runDate, {
+        dryRun: c.req.query('dry_run') === '1',
+      })
+      return [
+        'selection_reference_repair date=' + result.signal_date,
+        'run_id=' + result.producer_run_id,
+        'expected=' + result.expected_rows,
+        'persisted=' + result.persisted_rows,
+        'strategy_matrix=' + result.strategy_matrix_status,
+        'dry_run=' + result.dry_run,
+        'artifact=' + result.source_artifact_id,
       ].join(' ')
     },
     'strategy-threshold-calibration': async () => {

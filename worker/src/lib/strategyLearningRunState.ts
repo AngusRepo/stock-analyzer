@@ -28,6 +28,8 @@ export async function inspectCanonicalStrategyUniverse(
       FROM selection_reference_snapshots_v1 r
      WHERE r.signal_date=?
        AND r.hard_gate_passed=1
+       AND r.strategy_labeled=1
+       AND r.strategy_matrix_status='ready'
        AND EXISTS (
          SELECT 1
            FROM canonical_run_heads h

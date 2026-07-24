@@ -207,6 +207,8 @@ export async function reconcileSelectionDecisionEvidenceV4(
       LEFT JOIN daily_recommendations dr
         ON dr.date=r.signal_date AND dr.symbol=r.symbol
      WHERE r.signal_date=?
+       AND r.strategy_labeled=1
+       AND r.strategy_matrix_status='ready'
        AND EXISTS (
          SELECT 1 FROM canonical_run_heads h
           WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'

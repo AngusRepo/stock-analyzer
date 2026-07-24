@@ -3533,6 +3533,7 @@ export async function processUpdateBatch(
         symbols: cohortSymbols,
         maturityAsOfDate,
         signedEligibleRepair: replayScope === 'signed_eligible_repair',
+        persistUnavailableOutcomes: dynamicCohortScope,
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

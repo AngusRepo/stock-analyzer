@@ -165,6 +165,8 @@ export async function loadFusionSnapshotMissingReplaySymbols(
     SELECT r.symbol
       FROM selection_reference_snapshots_v1 r
      WHERE r.signal_date=?
+       AND r.hard_gate_passed=1
+       AND r.feature_available=1
        AND EXISTS (
          SELECT 1 FROM canonical_market_daily cmd
           WHERE cmd.stock_id=r.symbol AND cmd.source='finlab.price'
@@ -198,6 +200,8 @@ export async function loadFusionSnapshotReplayCoverage(
       SELECT r.symbol
         FROM selection_reference_snapshots_v1 r
        WHERE r.signal_date=?
+         AND r.hard_gate_passed=1
+         AND r.feature_available=1
          AND EXISTS (
            SELECT 1 FROM canonical_run_heads h
             WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
@@ -757,6 +761,8 @@ export async function loadL0PassedSymbolsByHistoricalDate(
         ON dr.date=r.signal_date AND dr.symbol=r.symbol
       LEFT JOIN stocks st ON st.symbol=r.symbol
      WHERE r.signal_date=?
+       AND r.hard_gate_passed=1
+       AND r.feature_available=1
        AND EXISTS (
          SELECT 1 FROM canonical_run_heads h
           WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'

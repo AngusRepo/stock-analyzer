@@ -60,6 +60,24 @@ CHECKS: tuple[tuple[str, str, list[Any]], ...] = (
              OR verification_label_known_date <= prediction_date
            )
     """, [CANONICAL_LABEL_VERSION]),
+    ("canonical_selection_label", """
+        SELECT COUNT(*) AS violations FROM canonical_selection_labels_v4
+         WHERE entry_date <= signal_date
+            OR exit_date < entry_date
+            OR outcome_known_date < exit_date
+            OR date(created_at) < outcome_known_date
+    """, []),
+    ("strategy_matrix_lineage", """
+        SELECT COUNT(*) AS violations
+          FROM strategy_label_matrix_v4 m
+          LEFT JOIN selection_reference_snapshots_v1 r
+            ON r.signal_date=m.signal_date
+           AND r.symbol=m.symbol
+           AND r.producer_run_id=m.producer_run_id
+         WHERE r.symbol IS NULL
+            OR r.strategy_matrix_status <> 'ready'
+            OR m.strategy_registry_checksum <> r.strategy_registry_checksum
+    """, []),
 )
 
 

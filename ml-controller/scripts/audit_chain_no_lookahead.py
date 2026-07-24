@@ -100,6 +100,10 @@ def run_audit(query_fn: QueryFn) -> dict[str, Any]:
     }
 
 
+# Keep the operational CLI on the same fail-closed contract used by runtime.
+from services.no_lookahead_audit import CHECKS, run_audit
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pretty", action="store_true")

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from tools.verify_production_provenance import verify_production_provenance
 
 
@@ -32,3 +34,12 @@ def test_production_provenance_rejects_split_source_and_scheduler() -> None:
 
     assert any(error.startswith("source SHA split:") for error in errors)
     assert any(error.startswith("scheduler manifest split:") for error in errors)
+
+
+def test_worker_deploy_message_is_windows_shell_safe() -> None:
+    source = (Path(__file__).parents[2] / "tools" / "deploy_worker_with_provenance.mjs").read_text(
+        encoding="utf-8"
+    )
+
+    assert "source=${sourceSha};scheduler=${schedulerSha256}" in source
+    assert "source=${sourceSha} scheduler=${schedulerSha256}" not in source

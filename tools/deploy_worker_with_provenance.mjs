@@ -41,5 +41,5 @@ const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx'
 run(npx, [
   '--no-install', 'wrangler', 'deploy', '--strict',
   '--tag', sourceSha,
-  '--message', `source=${sourceSha} scheduler=${schedulerSha256}`,
+  '--message', `source=${sourceSha},scheduler=${schedulerSha256}`,
 ], { cwd: workerDir, shell: process.platform === 'win32' })

@@ -1,6 +1,9 @@
+from pathlib import Path
+
 from tools.verify_production_provenance import verify_production_provenance
 
 
+ROOT = Path(__file__).resolve().parents[2]
 SOURCE_SHA = "a" * 40
 MANIFEST_SHA = "b" * 64
 
@@ -32,3 +35,13 @@ def test_production_provenance_rejects_split_source_and_scheduler() -> None:
 
     assert any(error.startswith("source SHA split:") for error in errors)
     assert any(error.startswith("scheduler manifest split:") for error in errors)
+
+
+def test_cloudflare_deploy_messages_are_single_cli_arguments_on_windows() -> None:
+    worker_wrapper = (ROOT / "tools" / "deploy_worker_with_provenance.mjs").read_text(encoding="utf-8")
+    pages_wrapper = (ROOT / "tools" / "deploy_pages_with_provenance.mjs").read_text(encoding="utf-8")
+
+    assert " scheduler=${schedulerSha256}" not in worker_wrapper
+    assert ",scheduler=${schedulerSha256}" in worker_wrapper
+    assert " scheduler=${schedulerManifestSha256}" not in pages_wrapper
+    assert ",scheduler=${schedulerManifestSha256}" in pages_wrapper

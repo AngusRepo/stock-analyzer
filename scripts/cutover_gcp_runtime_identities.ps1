@@ -30,8 +30,15 @@ function Ensure-ServiceAccount([string]$Alias) {
     Write-Host "[dry-run] ensure service account $email"
     return
   }
-  & gcloud iam service-accounts describe $email --project=$project --format="value(email)" *> $null
-  if ($LASTEXITCODE -eq 0) { return }
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    & gcloud iam service-accounts describe $email --project=$project --format="value(email)" *> $null
+    $describeCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousPreference
+  }
+  if ($describeCode -eq 0) { return }
   $accountId = $email.Split("@")[0]
   Invoke-Gcloud @("iam", "service-accounts", "create", $accountId, "--project=$project", "--display-name=StockVision $Alias runtime", "--quiet")
 }

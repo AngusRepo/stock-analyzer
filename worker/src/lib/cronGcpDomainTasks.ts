@@ -1,6 +1,6 @@
 import type { Bindings } from '../types'
 import {
-  runModelIcTrackerChain,
+  runModelIcFullCheck,
   runObsidianDaily,
   runRegimeCompute,
   runVerifyV2,
@@ -32,7 +32,7 @@ export async function handleGcpDomainCron(deps: GcpCronDeps): Promise<boolean> {
   }
 
   if (cron === '30 11 * * 5') {
-    runWithLog('model-ic-tracker', async () => runModelIcTrackerChain(env))
+    runWithLog('model-ic-full-check', async () => runModelIcFullCheck(env))
     return true
   }
 

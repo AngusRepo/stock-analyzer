@@ -488,7 +488,7 @@ export async function runPostVerifyCallbackChain(
     return 'error'
   }
 
-  results.push(await logChainedTask(env, ctx, 'model-ic-tracker', () => runModelIcRollingRefresh(env, ctx.runDate)))
+  results.push(await logChainedTask(env, ctx, 'model-ic-rolling', () => runModelIcRollingRefresh(env, ctx.runDate)))
   if (isCurrentBusinessDate(ctx.runDate)) {
     results.push(await logChainedTask(env, ctx, 'artifact-auto-promotion', () => runArtifactAutoPromotion(env), { critical: false }))
   } else {

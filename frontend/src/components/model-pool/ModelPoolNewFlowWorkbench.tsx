@@ -175,6 +175,21 @@ function selectionCandidate(row?: SelectionModelRow) {
   return row?.monthly_release_candidate ?? row?.weekly_drift_candidate ?? null
 }
 
+function selectedPromotionRow(
+  modelId: string,
+  selectionRow: SelectionModelRow | undefined,
+  rows: PromotionQueueRow[],
+): PromotionQueueRow | null {
+  const selected = selectionCandidate(selectionRow)
+  if (!selected) return null
+  const modelRows = rows.filter((row) => row.model_name === modelId)
+  const artifactId = String(selected.artifact_id ?? '').trim()
+  const version = String(selected.version ?? '').trim()
+  return modelRows.find((row) => artifactId && row.artifact_id === artifactId)
+    ?? modelRows.find((row) => version && row.candidate_version === version)
+    ?? null
+}
+
 function releaseArtifact(row?: SelectionModelRow) {
   return row?.latest_monthly_release_artifact ?? selectionCandidate(row) ?? row?.serving_release_artifact ?? null
 }
@@ -820,7 +835,7 @@ function buildEvidenceCells({
       value: compactNumber(liveIc),
       title: liveIc == null
         ? `${candidateId}: daily rolling live IC is not available yet; this is not a shadow/challenger ownership gate.`
-        : `${candidateId}: daily verify-v2/model-ic-tracker rolling live IC ${liveIc.toFixed(4)}; this is not a shadow/challenger ownership gate.`,
+        : `${candidateId}: daily verify-v2/model-ic-rolling live IC ${liveIc.toFixed(4)}; this is not a shadow/challenger ownership gate.`,
       tone: toneFromIc(liveIc),
     },
     {
@@ -1383,7 +1398,7 @@ function EvidenceTablePanel({
   onSelectModel: (modelId: string) => void
 }) {
   return (
-    <GrafanaPanel title="Evidence table" kicker="registry, dataset, pointer, candidate compare, promotion pressure, and missing evidence">
+    <GrafanaPanel title="Evidence table" kicker="one selected best artifact per model, compared only with the current champion">
       <div className="overflow-x-auto bg-[#0b1118] p-3">
         <table className="w-full min-w-[1240px] border-separate border-spacing-y-2 text-left">
           <thead className="sv-num text-[12px] normal-case text-[#90a0b8]">
@@ -1395,7 +1410,7 @@ function EvidenceTablePanel({
               <th className="px-3 py-2 font-medium">Pointer</th>
               <th className="px-3 py-2 font-medium" title="Latest research registry state for this model artifact lane.">Research state</th>
               <th className="px-3 py-2 font-medium" title="Promotion queue load plus blockers that need review before release.">Review pressure</th>
-              <th className="px-3 py-2 font-medium">Artifact compare</th>
+              <th className="px-3 py-2 font-medium">Best artifact vs champion</th>
               <th className="px-3 py-2 font-medium">Missing evidence</th>
             </tr>
           </thead>
@@ -1450,9 +1465,10 @@ function EvidenceTablePanel({
                   <span className={`inline-block border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(compare.tone)}`}>
                     {compare.compareReady ? 'ready' : compare.hasCandidate ? 'baseline' : compare.hasReleaseArtifact ? 'serving' : 'no candidate'}
                   </span>
-                  <p className="mt-1 max-w-[260px] break-all sv-num text-[12px] leading-5 text-[#90a0b8]">
-                    {compactVersion(compare.candidate, 18)} vs {compactVersion(compare.champion, 18)}
-                  </p>
+                  <dl className="mt-2 grid max-w-[300px] gap-1 sv-num text-[12px] leading-5">
+                    <div className="grid grid-cols-[68px_1fr] gap-2"><dt className="text-[#70809b]">candidate</dt><dd className="break-all text-[#dce3ea]">{compactVersion(compare.candidate, 22)}</dd></div>
+                    <div className="grid grid-cols-[68px_1fr] gap-2"><dt className="text-[#70809b]">champion</dt><dd className="break-all text-[#dce3ea]">{compactVersion(compare.champion, 22)}</dd></div>
+                  </dl>
                   <p className="mt-1 max-w-[260px] sv-num text-[12px] leading-5 text-[#dce3ea]">{compare.metricDetail}</p>
                 </td>
                 <td className="rounded-r-xl border-y border-r border-[#263247] px-3 py-3">
@@ -1522,19 +1538,21 @@ export default function ModelPoolNewFlowWorkbench({
   }, [serving])
   const readyPointers = pointers?.ready_count ?? 0
   const pointerTotal = pointers?.model_count ?? 0
-  const selectedArtifacts = Object.values(selection?.models ?? {}).reduce((sum, row) => {
-    return sum + (row.monthly_release_candidate ? 1 : 0) + (row.weekly_drift_candidate ? 1 : 0)
-  }, 0)
+  const selectedArtifacts = Object.values(selection?.models ?? {}).filter((row) => Boolean(selectionCandidate(row))).length
   const promotionCount = promotionQueue?.count ?? promotionQueue?.queue?.length ?? 0
-  const grafanaRecords = useMemo(() => activeSlots.map((candidate) => buildGrafanaRecord({
-    candidate,
-    model: byName.get(candidate.id),
-    selectionRow: selection?.models?.[candidate.id],
-    pointerRow: pointers?.models?.[candidate.id],
-    statusRow: latestStatusFor(candidate.id, statusRows),
-    promotionRows: (promotionQueue?.queue ?? []).filter((row) => row.model_name === candidate.id),
-    modelUpgradeStatusReady,
-  })), [activeSlots, byName, selection, pointers, statusRows, promotionQueue, modelUpgradeStatusReady])
+  const grafanaRecords = useMemo(() => activeSlots.map((candidate) => {
+    const selectionRow = selection?.models?.[candidate.id]
+    const promotionRow = selectedPromotionRow(candidate.id, selectionRow, promotionQueue?.queue ?? [])
+    return buildGrafanaRecord({
+      candidate,
+      model: byName.get(candidate.id),
+      selectionRow,
+      pointerRow: pointers?.models?.[candidate.id],
+      statusRow: latestStatusFor(candidate.id, statusRows),
+      promotionRows: promotionRow ? [promotionRow] : [],
+      modelUpgradeStatusReady,
+    })
+  }), [activeSlots, byName, selection, pointers, statusRows, promotionQueue, modelUpgradeStatusReady])
   const defaultSelectedModelId = useMemo(() => (
     grafanaRecords.find((record) => record.blockers.length > 0)?.candidate.id
       ?? grafanaRecords[0]?.candidate.id
@@ -1574,20 +1592,11 @@ export default function ModelPoolNewFlowWorkbench({
           onSelectModel={selectModel}
         />
 
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.8fr)_minmax(340px,0.8fr)]">
-          <StateTimelinePanel
-            records={grafanaRecords}
-            selectedModelId={selectedModelId}
-            onSelectModel={selectModel}
-          />
-          <PromotionReadinessPanel
-            records={grafanaRecords}
-            selectedModelId={selectedModelId}
-            promotionResult={promotionResult}
-            finalComparePending={finalComparePending}
-            onDryRunFinalCompare={onDryRunFinalCompare}
-          />
-        </div>
+        <StateTimelinePanel
+          records={grafanaRecords}
+          selectedModelId={selectedModelId}
+          onSelectModel={selectModel}
+        />
 
         <EvidenceTablePanel
           records={grafanaRecords}

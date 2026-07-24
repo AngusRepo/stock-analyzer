@@ -280,7 +280,7 @@ assert(
   'post-pipeline chain must trigger verify-v2 with a deterministic date-level idempotency key',
 )
 assert(
-  postMarketChain.indexOf("'model-ic-tracker', () => runModelIcRollingRefresh") <
+  postMarketChain.indexOf("'model-ic-rolling', () => runModelIcRollingRefresh") <
     postMarketChain.indexOf("'adapt', () => runAdaptiveUpdate"),
   'post-verify chain must refresh rolling IC before adaptive params',
 )

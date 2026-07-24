@@ -30,7 +30,7 @@ import type { SchedulerJob } from '@/lib/api'
 import StandaloneJobRegistry from './StandaloneJobRegistry'
 import './ExecutionChainPanel.css'
 
-type VisualStatus = 'completed' | 'running' | 'waiting' | 'blocked' | 'not_started' | 'skipped'
+type VisualStatus = 'completed' | 'noop' | 'running' | 'waiting' | 'blocked' | 'not_started' | 'skipped'
 
 type StageDefinition = {
   id: string
@@ -40,7 +40,7 @@ type StageDefinition = {
 }
 
 type ChainScope = {
-  id: 'daily_readiness' | 'intraday' | 'weekly' | 'monthly'
+  id: 'daily_readiness' | 'intraday' | 'monthly'
   label: string
   title: string
   description: string
@@ -64,7 +64,7 @@ const STAGES: Record<string, StageDefinition> = {
   'post-pipeline-chain': { id: 'post-pipeline-chain', label: 'Pipeline callback', icon: GitBranch },
   'verify-v2': { id: 'verify-v2', label: 'Verify', icon: ShieldCheck },
   'post-verify-chain': { id: 'post-verify-chain', label: 'Verify callback', icon: GitBranch },
-  'model-ic-tracker': { id: 'model-ic-tracker', label: 'Model IC', icon: Activity },
+  'model-ic-rolling': { id: 'model-ic-rolling', label: 'Model IC rolling', icon: Activity },
   'linucb-reward-ledger': { id: 'linucb-reward-ledger', label: 'Reward ledger', icon: BookOpenCheck },
   adapt: { id: 'adapt', label: 'Adapt params', icon: Settings2 },
   'daily-report': { id: 'daily-report', label: 'Daily report', icon: FileCheck2 },
@@ -127,7 +127,7 @@ const SCOPES: ChainScope[] = [
       ['post-pipeline-chain'],
       ['verify-v2'],
       ['post-verify-chain'],
-      ['model-ic-tracker'],
+      ['model-ic-rolling'],
       ['linucb-reward-ledger'],
       ['adapt'],
       ['daily-report'],
@@ -138,32 +138,14 @@ const SCOPES: ChainScope[] = [
   },
   {
     id: 'intraday',
-    label: 'Intraday',
-    title: 'Intraday execution chain',
-    description: '盤前就緒、盤中檢查、重評、尾盤退出與官方收盤價刷新。',
-    relation: 'event',
+    label: 'Intraday guard',
+    title: 'Intraday readiness guard',
+    description: '只呈現已證實的盤前 dependency；re-score、EOD、close price 與 snapshot 是獨立時間觸發，留在下方分區。',
+    relation: 'mixed',
     columns: [
       ['morning-setup'],
       ['pre-market-warmup'],
       ['intraday-check'],
-      ['intraday-rescore'],
-      ['eod-exit'],
-      ['post-close-price-refresh'],
-      ['daily-snapshot'],
-    ],
-  },
-  {
-    id: 'weekly',
-    label: 'Weekly validation',
-    title: 'Weekly validation and drift chain',
-    description: '平行 validation evidence 合流後產生 drift verdict；不把 weekly 當 artifact promotion。',
-    relation: 'mixed',
-    columns: [
-      ['weekly-backtest', 'alpha-quality', 'model-ic-tracker'],
-      ['weekly-audit'],
-      ['weekly-optuna', 'sector-leaders'],
-      ['adaptive-meta-policy-replay', 'strategy-threshold-calibration', 'linucb-multiplier-replay'],
-      ['active8-oof-weekly'],
     ],
   },
   {
@@ -186,6 +168,7 @@ const MAPPED_JOB_IDS = new Set(SCOPES.flatMap((scope) => scope.columns.flat()))
 
 const STATUS_LABEL: Record<VisualStatus, string> = {
   completed: 'Completed',
+  noop: 'Checked · no action',
   running: 'Running',
   waiting: 'Waiting',
   blocked: 'Blocked',
@@ -196,6 +179,7 @@ const STATUS_LABEL: Record<VisualStatus, string> = {
 function visualStatus(job?: SchedulerJob): VisualStatus {
   if (!job) return 'not_started'
   if (job.lastStatus === 'success') return 'completed'
+  if (job.id === 'intraday-check' && job.lastStatus === 'skip') return 'noop'
   if (job.lastStatus === 'running') return 'running'
   if (job.lastStatus === 'waiting') return 'waiting'
   if (job.lastStatus === 'failed') return 'blocked'
@@ -207,7 +191,7 @@ function statusPriority(status: VisualStatus): number {
   if (status === 'running') return 0
   if (status === 'blocked') return 1
   if (status === 'waiting') return 2
-  if (status === 'completed') return 3
+  if (status === 'completed' || status === 'noop') return 3
   if (status === 'not_started') return 4
   return 5
 }
@@ -217,7 +201,7 @@ function connectorStatus(previousJobs: Array<SchedulerJob | undefined>, nextJobs
   const next = nextJobs.map(visualStatus)
   if (previous.includes('blocked')) return 'blocked'
   if (previous.includes('running') || next.includes('running')) return 'running'
-  if (previous.length > 0 && previous.every((status) => status === 'completed' || status === 'skipped')) return 'completed'
+  if (previous.length > 0 && previous.every((status) => status === 'completed' || status === 'noop' || status === 'skipped')) return 'completed'
   if (next.includes('waiting')) return 'waiting'
   return 'not_started'
 }
@@ -246,6 +230,20 @@ function statusSummary(job?: SchedulerJob): string {
   return '目前沒有新的 runtime evidence。'
 }
 
+function JobStatusSummary({ job, fallback }: { job?: SchedulerJob; fallback?: string }) {
+  const summary = job ? statusSummary(job) : (fallback ?? 'No runtime evidence.')
+  if (!job?.lastError) return <p className="obs-chain__summary">{summary}</p>
+
+  return (
+    <details className="obs-chain__error-disclosure">
+      <summary><strong>Error log</strong><span aria-hidden="true" /></summary>
+      <p className="obs-chain__error-preview">{summary}</p>
+      <p className="obs-chain__error-full">{summary}</p>
+    </details>
+  )
+}
+
+
 export function schedulerRefreshInterval(jobs?: SchedulerJob[]): number {
   return jobs?.some((job) => job.lastStatus === 'running') ? 3_000 : 15_000
 }
@@ -269,8 +267,9 @@ export default function ExecutionChainPanel({
 
   const jobMap = useMemo(() => new Map(jobs.map((job) => [job.id, job])), [jobs])
   const scope = SCOPES.find((item) => item.id === scopeId) ?? SCOPES[0]
+  const scopedJobMap = jobMap
   const stageIds = scope.columns.flat()
-  const scopeJobs = stageIds.map((id) => jobMap.get(id))
+  const scopeJobs = stageIds.map((id) => scopedJobMap.get(id))
   const availableJobs = scopeJobs.filter((job): job is SchedulerJob => Boolean(job))
   const currentJob = [...availableJobs]
     .filter((job) => ['running', 'blocked', 'waiting'].includes(visualStatus(job)))
@@ -278,20 +277,22 @@ export default function ExecutionChainPanel({
     ?? [...availableJobs].reverse().find((job) => visualStatus(job) === 'completed')
     ?? availableJobs[0]
   const currentId = currentJob?.id ?? stageIds[0]
-  const selectedJob = jobMap.get(selectedId ?? currentId)
+  const selectedJob = scopedJobMap.get(selectedId ?? currentId)
   const selectedDefinition = STAGES[selectedId ?? currentId] ?? STAGES[currentId]
 
-  const expectedJobs = scopeJobs.filter((job): job is SchedulerJob => Boolean(job && job.lastStatus !== 'skip'))
+  const expectedJobs = scopeJobs.filter((job): job is SchedulerJob => Boolean(job && visualStatus(job) !== 'skipped'))
   const progressJobs = expectedJobs.length > 0 ? expectedJobs : scopeJobs.filter((job): job is SchedulerJob => Boolean(job))
-  const completedCount = progressJobs.filter((job) => job.lastStatus === 'success').length
+  const completedCount = progressJobs.filter((job) => ['completed', 'noop'].includes(visualStatus(job))).length
   const progress = progressJobs.length > 0 ? Math.round((completedCount / progressJobs.length) * 100) : 0
   const running = scopeJobs.some((job) => job?.lastStatus === 'running')
+  const blockedCurrent = visualStatus(currentJob) === 'blocked'
+  const progressActive = running || blockedCurrent
 
   const currentColumnIndex = Math.max(0, scope.columns.findIndex((column) => column.includes(currentId)))
-  const nextColumn = scope.columns.slice(currentColumnIndex + 1).find((column) => column.some((id) => visualStatus(jobMap.get(id)) === 'waiting'))
-    ?? scope.columns.slice(currentColumnIndex + 1).find((column) => column.some((id) => visualStatus(jobMap.get(id)) === 'not_started'))
-  const nextId = nextColumn?.find((id) => visualStatus(jobMap.get(id)) === 'waiting') ?? nextColumn?.[0]
-  const nextJob = nextId ? jobMap.get(nextId) : undefined
+  const nextColumn = scope.columns.slice(currentColumnIndex + 1).find((column) => column.some((id) => visualStatus(scopedJobMap.get(id)) === 'waiting'))
+    ?? scope.columns.slice(currentColumnIndex + 1).find((column) => column.some((id) => visualStatus(scopedJobMap.get(id)) === 'not_started'))
+  const nextId = nextColumn?.find((id) => visualStatus(scopedJobMap.get(id)) === 'waiting') ?? nextColumn?.[0]
+  const nextJob = nextId ? scopedJobMap.get(nextId) : undefined
   const nextDefinition = nextId ? STAGES[nextId] : undefined
   const prerequisiteColumn = nextColumn ? scope.columns[Math.max(0, scope.columns.indexOf(nextColumn) - 1)] : []
 
@@ -328,7 +329,7 @@ export default function ExecutionChainPanel({
             <p>{scope.description}</p>
           </div>
         </div>
-        <div className="obs-chain__live">
+        <div className="obs-chain__live" aria-live="polite">
           <div className={`obs-chain__live-dot ${isFetching ? 'is-fetching' : ''}`} />
           <div>
             <strong>{apiError ? 'API unavailable' : isFetching ? 'Syncing callback state' : 'Callback sync active'}</strong>
@@ -363,8 +364,8 @@ export default function ExecutionChainPanel({
           {scope.columns.map((column, index) => {
             const previousColumn = scope.columns[index - 1] ?? []
             const connection = connectorStatus(
-              previousColumn.map((id) => jobMap.get(id)),
-              column.map((id) => jobMap.get(id)),
+              previousColumn.map((id) => scopedJobMap.get(id)),
+              column.map((id) => scopedJobMap.get(id)),
             )
             return (
               <div className="obs-chain__segment" key={`${scope.id}-${column.join('-')}`}>
@@ -372,7 +373,7 @@ export default function ExecutionChainPanel({
                 <div className={`obs-chain__column ${column.length > 1 ? 'is-parallel' : ''}`}>
                   {column.map((id, stageIndex) => {
                     const definition = STAGES[id] ?? { id, label: id, icon: Workflow }
-                    const job = jobMap.get(id)
+                    const job = scopedJobMap.get(id)
                     const status = visualStatus(job)
                     const Icon = definition.icon
                     return (
@@ -380,15 +381,16 @@ export default function ExecutionChainPanel({
                         type="button"
                         key={id}
                         data-chain-stage={id}
-                        className={`obs-chain__stage is-${status} ${selectedId === id ? 'is-selected' : ''} ${justCompleted.has(id) ? 'just-completed' : ''}`}
+                        className={`obs-chain__stage is-${status} ${currentId === id ? 'is-current' : ''} ${selectedId === id ? 'is-selected' : ''} ${justCompleted.has(id) ? 'just-completed' : ''}`}
                         onClick={() => setSelectedId(id)}
                         aria-label={`${definition.label}: ${STATUS_LABEL[status]}`}
+                        aria-current={currentId === id ? 'step' : undefined}
                       >
                         <span className="obs-chain__ordinal sv-num">{index + 1}{column.length > 1 ? String.fromCharCode(97 + stageIndex) : ''}</span>
                         <span className="obs-chain__orb">
                           <Icon aria-hidden="true" />
                           <span className="obs-chain__state-mark" aria-hidden="true">
-                            {status === 'completed' ? '✓' : status === 'blocked' ? '×' : status === 'running' ? '↻' : status === 'waiting' ? '⌛' : '○'}
+                            {status === 'completed' || status === 'noop' ? '✓' : status === 'blocked' ? '×' : status === 'running' ? '↻' : status === 'waiting' ? '⌛' : '○'}
                           </span>
                         </span>
                         <span className="obs-chain__stage-copy">
@@ -412,13 +414,13 @@ export default function ExecutionChainPanel({
           <span><Activity aria-hidden="true" /> Overall progress</span>
           <strong className="sv-num">{completedCount} / {progressJobs.length} completed · {progress}%</strong>
         </div>
-        <div className="obs-chain__progress-track" aria-label={`Overall progress ${progress}%`}>
-          <div className={`obs-chain__progress-fill ${running ? 'is-running' : ''}`} style={{ transform: `scaleX(${progress / 100})` }} />
+        <div className={`obs-chain__progress-track ${progressActive ? 'is-active' : ''} ${blockedCurrent ? 'is-blocked' : ''}`} aria-label={`Overall progress ${progress}%`}>
+          <div className={`obs-chain__progress-fill ${running ? 'is-running' : ''} ${blockedCurrent ? 'is-blocked' : ''}`} style={{ transform: `scaleX(${progress / 100})` }} />
         </div>
       </div>
 
       <div className="obs-chain__details">
-        <article className="obs-chain__detail obs-chain__detail--selected">
+        <article className={`obs-chain__detail obs-chain__detail--selected ${selectedJob?.lastError ? 'has-error' : ''}`}>
           <div className="obs-chain__detail-title">
             <span className={`obs-chain__detail-dot is-${visualStatus(selectedJob)}`} />
             <div>
@@ -426,7 +428,7 @@ export default function ExecutionChainPanel({
               <h4>{selectedDefinition?.label ?? selectedJob?.name ?? 'No stage selected'}</h4>
             </div>
           </div>
-          <p className="obs-chain__summary">{statusSummary(selectedJob)}</p>
+          <JobStatusSummary job={selectedJob} />
           <dl className="obs-chain__metrics">
             <div><dt>Status</dt><dd>{STATUS_LABEL[visualStatus(selectedJob)]}</dd></div>
             <div><dt>Last run</dt><dd className="sv-num">{selectedJob?.lastRun ?? '—'}</dd></div>
@@ -447,7 +449,7 @@ export default function ExecutionChainPanel({
               <h4>{nextDefinition?.label ?? 'Chain complete'}</h4>
             </div>
           </div>
-          <p className="obs-chain__summary">{nextJob ? statusSummary(nextJob) : '目前 scope 沒有下一個 waiting stage。'}</p>
+          <JobStatusSummary job={nextJob} fallback="目前 scope 沒有下一個 waiting stage。" />
           <dl className="obs-chain__metrics obs-chain__metrics--two">
             <div><dt>Trigger</dt><dd>{scope.relation === 'event' ? 'Callback / gate' : 'Callback / schedule'}</dd></div>
             <div><dt>Next run</dt><dd className="sv-num">{nextJob?.nextRun ?? '—'}</dd></div>
@@ -456,10 +458,10 @@ export default function ExecutionChainPanel({
             <p>Prerequisites</p>
             <div>
               {(prerequisiteColumn.length ? prerequisiteColumn : ['chain-root']).map((id) => {
-                const prerequisite = id === 'chain-root' ? undefined : jobMap.get(id)
+                const prerequisite = id === 'chain-root' ? undefined : scopedJobMap.get(id)
                 return (
                   <span key={id} className={`is-${visualStatus(prerequisite)}`}>
-                    {visualStatus(prerequisite) === 'completed' ? '✓' : '○'} {id === 'chain-root' ? 'No upstream stage' : (STAGES[id]?.label ?? prerequisite?.name ?? id)}
+                    {['completed', 'noop'].includes(visualStatus(prerequisite)) ? '✓' : '○'} {id === 'chain-root' ? 'No upstream stage' : (STAGES[id]?.label ?? prerequisite?.name ?? id)}
                   </span>
                 )
               })}

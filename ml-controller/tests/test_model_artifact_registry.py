@@ -1581,7 +1581,7 @@ def test_promotion_queue_exposes_artifact_compare_delta_for_offline_release():
     assert compare["oos_ic_delta"] == 0.017
     assert compare["metric_status"] == "candidate_beats_champion"
     assert row["action_context"]["root_cause"] == "live_shadow_not_started"
-    assert "model-ic-tracker" in row["action_context"]["scheduler_dependency"]
+    assert "model-ic-rolling" in row["action_context"]["scheduler_dependency"]
 
 
 def test_update_live_gate_from_ic_updates_active8_challenger_rows(monkeypatch):

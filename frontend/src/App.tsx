@@ -13,7 +13,7 @@ const PipelinePage = lazy(() => import('./pages/PipelinePage'))
 const SchedulerPage = lazy(() => import('./pages/SchedulerPage'))
 const ModelPoolPage = lazy(() => import('./pages/ModelPoolPage'))
 const DataQualityPage = lazy(() => import('./pages/DataQualityPage'))
-const StrategyLabPage = lazy(() => import('./pages/StrategyLabPage'))
+const StrategyLabPage = lazy(() => import('./pages/StrategyLearningPage'))
 const StrategyDiscoveryPage = lazy(() => import('./pages/StrategyDiscoveryPage'))
 const ObservabilityPage = lazy(() => import('./pages/ObservabilityPage'))
 

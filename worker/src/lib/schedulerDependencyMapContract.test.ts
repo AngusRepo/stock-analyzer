@@ -56,14 +56,16 @@ for (const spec of Object.values(SCHEDULER_DEPENDENCY_MAP)) {
   assertSafeConsolidationSpec(spec)
   const hasInternalChainOwner =
     (spec.task === 'allocator-ev-readiness' && updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-readiness'")) ||
-    (spec.task === 'allocator-ev-feature-snapshot-backfill' && postMarketChain.includes("task: 'allocator-ev-feature-snapshot-backfill'"))
+    (spec.task === 'allocator-ev-feature-snapshot-backfill' && postMarketChain.includes("task: 'allocator-ev-feature-snapshot-backfill'")) ||
+    (spec.task === 'model-ic-rolling' && postMarketChain.includes("'model-ic-rolling', () => runModelIcRollingRefresh"))
   assert(hasHandler(spec.task) || hasInternalChainOwner, `${spec.task} must keep a scheduled/manual handler or explicit internal chain owner during consolidation`)
 }
 
 for (const required of [
   'daily-snapshot',
   'pre-market-warmup',
-  'model-ic-tracker',
+  'model-ic-rolling',
+  'model-ic-full-check',
   'weekly-audit',
   'alpha-quality',
   'sector-leaders',
@@ -75,11 +77,18 @@ for (const required of [
   assert(SCHEDULER_DEPENDENCY_MAP[required], `dependency map missing reviewed scheduler: ${required}`)
 }
 
-for (const task of ['daily-snapshot', 'pre-market-warmup', 'model-ic-tracker']) {
+for (const task of ['daily-snapshot', 'pre-market-warmup', 'model-ic-rolling']) {
   const spec = SCHEDULER_DEPENDENCY_MAP[task]
   assert(spec.operatorRisk === 'high', `${task} must remain high-risk because it affects execution/account/model evidence`)
   assert(spec.consolidationClass === 'merge_into_chain', `${task} must be merged into a chain, not deleted`)
 }
+
+const rollingIc = SCHEDULER_DEPENDENCY_MAP['model-ic-rolling']
+const fullIc = SCHEDULER_DEPENDENCY_MAP['model-ic-full-check']
+assert(rollingIc.owner === 'worker_chain' && rollingIc.upstream.includes('verify-v2'), 'rolling IC must stay owned by post-verify')
+assert(fullIc.owner === 'gcp_scheduler' && fullIc.consolidationClass === 'keep_scheduler', 'full Model IC check must own the Friday scheduler')
+assert(!rollingIc.downstream.includes('model-ic-full-check'), 'Friday full-check must not be a daily-chain dependency')
+assert(!fullIc.downstream.includes('model-ic-rolling'), 'daily rolling IC must not depend on the Friday full-check')
 
 {
   const optunaQueue = SCHEDULER_DEPENDENCY_MAP['optuna-queue']

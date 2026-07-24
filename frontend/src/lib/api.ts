@@ -220,7 +220,9 @@ export type SchedulerJob = {
   lastRun: string
   lastRunAt?: string | null
   lastAttemptAt?: string | null
+  lastAttemptStatus?: 'success' | 'error' | 'skipped' | 'triggered' | 'running' | 'none'
   lastEffectiveRunAt?: string | null
+  lastEffectiveStatus?: 'success' | 'error' | 'skipped' | 'triggered' | 'running' | 'none'
   lastStatus: 'success' | 'failed' | 'running' | 'skip' | 'waiting' | 'sleep'
   lastDuration: string
   durationConcern?: 'expected_short' | 'suspicious_short' | null

@@ -200,7 +200,7 @@ const READINESS_STAGES: Array<{
     label: '驗證與回饋',
     owner: 'verify / learner',
     detail: 'verify、IC、LinUCB、adaptive evidence 回寫後形成隔日 guard。',
-    jobIds: ['verify-v2', 'model-ic-tracker', 'linucb-reward-ledger', 'adapt'],
+    jobIds: ['verify-v2', 'model-ic-rolling', 'linucb-reward-ledger', 'adapt'],
     nextAction: '確認 reward ledger 與 adaptive meta 沒有 stale evidence。',
   },
 ]
@@ -452,6 +452,25 @@ function DataQualityCompactMatrix({ gates }: { gates: ReadinessGate[] }) {
           </div>
           <MiniBar value={gate.status === 'ready' ? 94 : gate.status === 'running' ? 72 : gate.status === 'waiting' ? 48 : gate.status === 'blocked' ? 100 : 28} tone={gate.tone} />
           <p className="mt-1 line-clamp-2 text-xs leading-4 text-[#9badbf]">{gate.detail}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function SourceGateSummary({ gates }: { gates: ReadinessGate[] }) {
+  const ordered = [...gates].sort((a, b) => {
+    const priority = { blocked: 0, running: 1, waiting: 2, pending: 3, ready: 4 } as const
+    return priority[a.status] - priority[b.status]
+  })
+
+  return (
+    <div className="mt-2 grid gap-1.5" aria-label="Source gate status">
+      {ordered.slice(0, 3).map((gate) => (
+        <div key={gate.id} className="flex min-w-0 items-center gap-2 rounded-lg border border-white/[0.07] bg-black/15 px-2 py-1.5">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: toneColor(gate.tone) }} />
+          <span className="min-w-0 flex-1 truncate text-xs text-[#a8b6c5]">{gate.label}</span>
+          <span className="shrink-0 sv-num text-xs normal-case" style={{ color: toneColor(gate.tone) }}>{gate.value}</span>
         </div>
       ))}
     </div>
@@ -949,7 +968,7 @@ function OperationalReadinessDeck({
             </div>
           </div>
 
-          <div className="mt-4 grid gap-2 md:grid-cols-3">
+          <div className="mt-4 grid gap-2 md:grid-cols-2 2xl:grid-cols-4">
             <div className="rounded-2xl border border-sky-400/20 bg-sky-400/[0.06] p-3">
               <div className="flex items-center gap-2 text-sky-200">
                 <RadioTower className="h-4 w-4" />
@@ -980,6 +999,20 @@ function OperationalReadinessDeck({
               <p className="mt-2 text-lg font-semibold text-[#f2ead8]">{gates.filter((gate) => gate.status === 'ready').length}/{gates.length} ready</p>
               <p className="mt-1 text-xs leading-5 text-[#9badbf]">只要 critical gate 未 ready，下游推薦不應直接更新。</p>
             </div>
+
+            <div className="min-w-0 rounded-2xl border border-emerald-400/20 bg-emerald-400/[0.06] p-3" aria-label="Source gates summary">
+              <div className="flex items-center justify-between gap-2 text-emerald-200">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Database className="h-4 w-4 shrink-0" />
+                  <p className="truncate text-sm font-semibold">Source Gates</p>
+                </div>
+                <a href="/data-quality" className="inline-flex shrink-0 items-center gap-1 sv-num text-xs normal-case text-emerald-200 hover:text-emerald-100">
+                  Detail <ExternalLink className="h-3 w-3" />
+                </a>
+              </div>
+              <p className="mt-2 text-lg font-semibold text-[#f2ead8]">{gates.filter((gate) => gate.status === 'ready').length}/{gates.length} sources ready</p>
+              <SourceGateSummary gates={gates} />
+            </div>
           </div>
         </div>
       </div>
@@ -993,18 +1026,6 @@ function OperationalReadinessDeck({
         />
       </div>
 
-      <div className="mt-3 rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Database className="h-4 w-4 text-emerald-300" />
-            <p className="text-sm font-semibold text-[#f2ead8]">Source Gates / 資料就緒</p>
-          </div>
-          <a href="/data-quality" className="inline-flex items-center gap-1 sv-num text-xs normal-case text-emerald-200 hover:text-emerald-100">
-            Data Quality <ExternalLink className="h-3 w-3" />
-          </a>
-        </div>
-        <DataQualityCompactMatrix gates={gates} />
-      </div>
     </div>
   )
 }
@@ -1426,6 +1447,7 @@ function schedulerImpact(job: SchedulerJob) {
   if (job.lastStatus === 'failed') {
     if (job.id === 'evening-chain' || job.id === 'indicator-queue') return '價格、籌碼或技術指標可能不完整，後續推薦不可完全信任。'
     if (job.id === 'pipeline' || job.id === 'ml-predict' || job.id === 'recommendation') return 'AI Top Picks、ML 權重與 daily recommendation 可能仍是舊資料。'
+    if (job.id === 'model-ic-rolling' || job.id === 'model-ic-full-check') return 'IC, lifecycle, promotion and live-gate evidence may be delayed.'
     if (job.id === 'verify-v2' || job.id === 'model-ic-tracker') return 'IC、lifecycle、promotion/live gate evidence 會延遲更新。'
     return '相關下游資料可能 stale，需先修復此 scheduler。'
   }

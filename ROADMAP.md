@@ -71,7 +71,7 @@
 - **Where**: `universal/model_pool.json` + `ml-controller/routers/model_pool.py` + `ml-controller/services/model_ic_tracker.py` + `ml-controller/services/lifecycle_promotion_gate.py` + `worker/src/lib/controllerDailyWorkflows.ts`
 - **Why**: Bad model drags ensemble down. LinUCB downweights too slowly. Replacement has evidence (cause → candidate match)
 - **Expected**: Ensemble quality auto-maintained
-- **Impl**: Weekly `model-ic-tracker` cron calls `/model_pool/compute_weekly_ic`, then `/model_pool/promote_check`; lifecycle state, events, lineage, weights, shadow / promote / degrade decisions live in `model_pool.json`.
+- **Impl**: Daily `model-ic-rolling` runs inside post-verify with an isolated log identity; Friday `model-ic-full-check` calls `/model_pool/compute_weekly_ic`, then `/model_pool/promote_check`. Lifecycle state, events, lineage, weights, shadow / promote / degrade decisions live in `model_pool.json`.
 
 ### #9 Feature IC -> Retrain Feedback + Model Hyperparameter Optuna ✅
 - **What**: IC audit weak features excluded during retrain. Optuna 20-trial search per model (XGB/CatBoost/ExtraTrees/LightGBM)

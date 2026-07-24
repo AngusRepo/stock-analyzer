@@ -1841,7 +1841,7 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
         add(
             "live_ic_not_ready",
             "Rolling live IC is not ready",
-            "Keep daily predict -> verify-v2 -> model-ic-tracker running until verified rows are promotion-grade.",
+            "Keep daily predict -> verify-v2 -> model-ic-rolling running until verified rows are promotion-grade.",
         )
     elif live_status == "rolling_ic_passed":
         add(
@@ -2031,9 +2031,9 @@ def build_artifact_action_context(
         return {
             "root_cause": "live_shadow_not_started",
             "impact": "Candidate has offline evidence, but no production-adjacent live comparison yet.",
-            "next_action": "Run daily ML predict with shadow output, then verify-v2 and model-ic-tracker.",
+            "next_action": "Run daily ML predict with shadow output, then verify-v2 and model-ic-rolling.",
             "affected_downstream": ["live_gate", "promotion_controller", "artifact_diff"],
-            "scheduler_dependency": ["ml-predict", "verify-v2", "model-ic-tracker"],
+            "scheduler_dependency": ["ml-predict", "verify-v2", "model-ic-rolling"],
             "evidence_status": "offline_only",
             "selection_slot": selection_slot,
         }
@@ -2043,9 +2043,9 @@ def build_artifact_action_context(
         return {
             "root_cause": live_decision.get("root_cause") or live_status,
             "impact": "Live IC is not promotion-grade yet; UI should show candidate as shadowing, not failed.",
-            "next_action": "Keep daily predict/verify/model-ic-tracker running until verified rows meet min_samples.",
+            "next_action": "Keep daily predict/verify/model-ic-rolling running until verified rows meet min_samples.",
             "affected_downstream": ["promotion_controller"],
-            "scheduler_dependency": ["verify-v2", "model-ic-tracker"],
+            "scheduler_dependency": ["verify-v2", "model-ic-rolling"],
             "evidence_status": "collecting",
             "metrics": metrics,
             "selection_slot": selection_slot,
@@ -2083,7 +2083,7 @@ def build_artifact_action_context(
                 "impact": "Rolling live IC is only one evidence source; candidate is not promotion-grade yet.",
                 "next_action": "Resolve promotion blockers before final comparison or approval.",
                 "affected_downstream": ["promotion_controller", "model_pool_ui"],
-                "scheduler_dependency": ["validation_packet", "model-ic-tracker"],
+                "scheduler_dependency": ["validation_packet", "model-ic-rolling"],
                 "evidence_status": "blocked",
                 "selection_slot": selection_slot,
                 "metrics": live_decision.get("metrics") if isinstance(live_decision.get("metrics"), dict) else {},

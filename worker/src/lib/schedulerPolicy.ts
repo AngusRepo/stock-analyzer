@@ -60,7 +60,8 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'paper-trade': { kind: 'trading_day', holidayGated: true, description: 'paper trading execution' },
 
   'weekly-audit': { kind: 'trading_week', holidayGated: true, description: 'weekly trading audit' },
-  'model-ic-tracker': { kind: 'trading_week', holidayGated: true, description: 'weekly model IC tracker' },
+  'model-ic-rolling': { kind: 'trading_day', holidayGated: true, description: 'post-verify rolling model IC evidence refresh' },
+  'model-ic-full-check': { kind: 'trading_week', holidayGated: true, description: 'Friday full model IC, promotion dry-run, and config evaluation' },
   'artifact-auto-promotion': { kind: 'research', holidayGated: false, description: 'evidence-complete artifact auto-promotion and serving projection readback' },
 
   'debate-memory-retention': { kind: 'maintenance', holidayGated: false, description: 'daily debate memory retention' },

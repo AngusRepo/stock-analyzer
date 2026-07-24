@@ -26,6 +26,12 @@ assert(
 )
 
 assert(
+  postMarketChain.includes("'model-ic-rolling', () => runModelIcRollingRefresh") &&
+    !postMarketChain.includes("'model-ic-tracker', () => runModelIcRollingRefresh"),
+  'rolling IC callback must persist only the model-ic-rolling scheduler identity',
+)
+
+assert(
   adminControlRoutes.includes('const callbackRunId') &&
     adminControlRoutes.includes('run_id: callbackRunId'),
   'scheduler callback must persist callback run_id into canonical scheduler logs',

@@ -103,6 +103,18 @@ foreach ($job in $manifest.jobs) {
     & gcloud @args *> $null
     if ($LASTEXITCODE -ne 0) { throw "gcloud scheduler sync failed for $($job.id)" }
   }
+
+  foreach ($legacyId in @($job.legacyIds)) {
+    $legacyId = [string]$legacyId
+    if (-not $legacyId -or $legacyId -eq [string]$job.id -or -not $currentIds.Contains($legacyId)) {
+      continue
+    }
+    Write-Host "[scheduler-sync] replace legacy $legacyId -> $($job.id)"
+    if (-not $DryRun) {
+      gcloud scheduler jobs delete $legacyId --project $Project --location $Location --quiet *> $null
+      if ($LASTEXITCODE -ne 0) { throw "gcloud scheduler legacy replacement failed for $legacyId" }
+    }
+  }
 }
 
 if ($DeleteStale) {

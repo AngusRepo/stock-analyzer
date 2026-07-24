@@ -149,7 +149,7 @@ assert(
   'post-pipeline and post-verify chains must stay separate owners',
 )
 assert(
-  postMarketChain.indexOf("'model-ic-tracker', () => runModelIcRollingRefresh") <
+  postMarketChain.indexOf("'model-ic-rolling', () => runModelIcRollingRefresh") <
     postMarketChain.indexOf("'s12-replay-backfill', () => enqueueS12ReplayBackfillTask") &&
     postMarketChain.indexOf("'s12-replay-backfill', () => enqueueS12ReplayBackfillTask") <
     postMarketChain.indexOf("'paper-intraday-cache-clear', () => clearOpenPositionIntradayPriceCache"),

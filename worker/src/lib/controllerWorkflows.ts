@@ -2,7 +2,7 @@ export const GCP_DOMAIN_ORCHESTRATION_TASKS = [
   'obsidian-daily',
   'obsidian-sync',
   'regime-compute',
-  'model-ic-tracker',
+  'model-ic-full-check',
   'verify-v2',
   'weekly-audit',
   'weekly-drift-retrain',
@@ -33,7 +33,7 @@ export const GCP_DOMAIN_ORCHESTRATION_TASKS = [
 export {
   runArtifactAutoPromotion,
   runModelIcRollingRefresh,
-  runModelIcTrackerChain,
+  runModelIcFullCheck,
   runObsidianDaily,
   runPaperActivePostmarketPromotion,
   runRegimeCompute,

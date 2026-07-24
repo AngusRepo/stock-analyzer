@@ -33,22 +33,24 @@ assert(!page.includes('<ReadinessFlowMap'), 'OBS should no longer render the old
 assert(!page.includes('<SchedulerReadinessGroupBoard'), 'OBS should no longer render the scheduler card wall')
 assert(!page.includes('<SchedulerShortcutDeck'), 'Source Gates should not duplicate scheduler scope cards')
 
-for (const scope of ['Daily readiness', 'Intraday', 'Weekly validation', 'Monthly artifact']) {
+for (const scope of ['Daily readiness', 'Intraday guard', 'Monthly artifact']) {
   assert(chain.includes(scope), `execution chain must expose ${scope}`)
 }
 assert(!chain.includes("id: 'daily_ops'"), 'independent daily jobs must not be forced into a fake chain')
 assert(chain.includes("relation: 'event'") && chain.includes("relation: 'mixed'"), 'chain must distinguish event-only and mixed-trigger scopes')
 assert(chain.includes("['screener', 'regime-compute', 'allocator-ev-readiness']"), 'daily chain must render the parallel pre-pipeline readiness branch')
-assert(chain.includes("['weekly-backtest', 'alpha-quality', 'model-ic-tracker']"), 'weekly chain must render parallel validation evidence')
+assert(!chain.includes("id: 'weekly'"), 'schedule-driven weekly jobs must stay in grouped inventory rather than a fake dependency chain')
+assert(chain.includes("['morning-setup'],") && chain.includes("['pre-market-warmup'],") && chain.includes("['intraday-check'],"), 'intraday chain must retain only verified morning readiness dependencies')
+assert(chain.includes("['model-ic-rolling']") && !chain.includes('buildScopedJobMap') && !chain.includes('model-ic-tracker'), 'daily chain must consume the isolated rolling identity without timestamp inference')
+assert(chain.includes("job.id === 'intraday-check' && job.lastStatus === 'skip'") && chain.includes("noop: 'Checked · no action'"), 'an executed intraday heartbeat with no action must not look unexecuted')
 assert(chain.includes('Monthly artifact chain'), 'monthly scope should own artifact cadence')
-assert(chain.includes('不把 weekly 當 artifact promotion'), 'weekly scope must remain drift/validation rather than artifact promotion')
 
 assert(fs.existsSync(standalonePath) && fs.existsSync(standaloneCssPath), 'standalone job registry and isolated CSS should exist')
 assert(chain.includes('StandaloneJobRegistry') && chain.includes('MAPPED_JOB_IDS'), 'execution chain must account for jobs outside visual topology')
 assert(standalone.includes('.filter((job) => !mappedJobIds.has(job.id))'), 'every unmapped API job must enter the runtime registry')
 assert(standalone.includes('Standalone root') && standalone.includes('Unmapped dependency'), 'registry must distinguish independent jobs from missing topology')
 assert(standalone.includes('{jobs.length} / {jobs.length} accounted'), 'registry must expose full scheduler coverage')
-assert(standaloneCss.includes('.obs-standalone__row'), 'standalone jobs should use compact rows instead of another card wall')
+assert(standaloneCss.includes('.obs-standalone__group-card') && standaloneCss.includes('.obs-standalone__job-grid'), 'standalone jobs must use the approved grouped block presentation')
 
 assert(page.includes('schedulerApi.status'), 'execution chain must use the formal scheduler status API')
 assert(page.includes('schedulerRefreshInterval(query.state.data?.jobs)'), 'scheduler refresh must adapt to runtime status')
@@ -61,10 +63,16 @@ for (const animation of ['obs-running-breathe', 'obs-running-orbit', 'obs-comple
   assert(chainCss.includes(`@keyframes ${animation}`), `missing execution-chain animation ${animation}`)
 }
 assert(chainCss.includes('.obs-chain__progress-fill.is-running'), 'Overall progress must animate while any stage is running')
+assert(chain.includes('aria-current={currentId === id') && chain.includes("currentId === id ? 'is-current'"), 'current execution or death point must remain highlighted independently of selection')
+assert(chainCss.includes('@keyframes obs-death-beacon') && chainCss.includes('@keyframes obs-death-wave'), 'blocked current stage must expose a death-point animation')
+assert(chainCss.includes('.obs-chain__progress-track.is-active::after') && chainCss.includes('@keyframes obs-progress-track-flow'), 'Overall progress track must retain a visible flow animation')
+assert(chain.includes('JobStatusSummary') && chainCss.includes('.obs-chain__error-disclosure[open]'), 'long errors must use progressive disclosure instead of an internal scrollbar')
+assert(chainCss.includes('-webkit-line-clamp: 3') && !chainCss.includes('max-height: 96px'), 'collapsed errors must clamp without restoring the removed scroll box')
 assert(chainCss.includes('@media (prefers-reduced-motion: reduce)'), 'chain animations must respect reduced-motion preference')
 
 assert(page.includes('const schedulerApiError = errorMessage(scheduler.error)'), 'Scheduler API error must remain first-class')
-assert(page.includes('DataQualityCompactMatrix gates={gates}'), 'Source Gates must retain compact data-quality evidence')
+assert(page.includes('aria-label="Source gates summary"') && page.includes('<SourceGateSummary gates={gates} />'), 'Source Gates must sit in the top readiness summary row')
+assert(page.includes('md:grid-cols-2 2xl:grid-cols-4'), 'current stage, cadence, data gate, and Source Gates must share a four-column desktop row')
 assert(page.includes('/scheduler') && page.includes('/data-quality'), 'OBS must keep specialist drilldown links')
 assert(!page.includes('text-[10px]') && !page.includes('text-[11px]'), 'OBS page should avoid tiny operational text')
 assert(

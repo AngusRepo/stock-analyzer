@@ -9,6 +9,13 @@ interface TriggerRouteDeps {
   buildTaskMap: (c: any) => Record<string, TaskHandler>
 }
 
+const SCHEDULER_TASK_ALIASES: Record<string, string> = {
+  'model-ic-tracker': 'model-ic-full-check',
+}
+
+export function resolveSchedulerTaskAlias(task: string): string {
+  return SCHEDULER_TASK_ALIASES[task] ?? task
+}
 const SYNC_REQUIRED_TASKS = new Set([
   'evening-chain',
   'market-close-refresh',
@@ -16,6 +23,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'intraday-rescore',
   'alpha-quality', 'sector-leaders', 'optuna-queue',
   'weekly-cleanup', 'weekly-backtest',
+  'model-ic-full-check',
   'weekly-optuna', 'adaptive-meta-policy-replay', 'linucb-multiplier-replay',
   'l4-alpha-ev-refresh', 'allocator-ev-fusion-refresh', 'opb-arm-prior-refresh',
   'allocator-ev-feature-snapshot-backfill',
@@ -99,7 +107,8 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     if (rlCount >= 100) return c.json({ error: 'Rate limit exceeded (100/hr)' }, 429)
     await c.env.KV.put(rlKey, String(rlCount + 1), { expirationTtl: 3600 })
 
-    const task = c.req.param('task')
+    const requestedTask = c.req.param('task')
+    const task = resolveSchedulerTaskAlias(requestedTask)
     const requestedRunDate = c.req.query('date') || undefined
     const taskMap = deps.buildTaskMap(c)
     const fn = taskMap[task]

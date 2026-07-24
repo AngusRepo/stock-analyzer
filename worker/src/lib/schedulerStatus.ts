@@ -14,6 +14,7 @@ interface JobDef {
   cron: string
   group: 'pipeline_chain' | 'intraday' | 'weekly' | 'monthly' | 'daily'
   chainIndex?: number
+  legacyLogIds?: string[]
 }
 
 type SchedulerLastStatus = 'success' | 'failed' | 'running' | 'skip' | 'waiting' | 'sleep'
@@ -44,7 +45,8 @@ const JOB_DEFS: JobDef[] = [
   { id: 'allocator-ev-feature-snapshot-backfill', name: 'Allocator EV Feature Snapshot', schedule: 'Inside post-pipeline callback before verify', cron: '', group: 'pipeline_chain', chainIndex: 13 },
   { id: 'verify-v2', name: 'Verify (V2 LangGraph)', schedule: 'After pipeline callback', cron: '', group: 'pipeline_chain', chainIndex: 14 },
   { id: 'post-verify-chain', name: 'Post Verify Callback', schedule: 'After verify callback', cron: '', group: 'pipeline_chain', chainIndex: 15 },
-  { id: 'model-ic-tracker', name: 'Model IC Tracker', schedule: 'After verify callback / Friday full check', cron: '30 11 * * 5', group: 'pipeline_chain', chainIndex: 16 },
+  { id: 'model-ic-rolling', name: 'Model IC Rolling', schedule: 'After verify callback', cron: '', group: 'pipeline_chain', chainIndex: 16 },
+  { id: 'model-ic-full-check', name: 'Model IC Full Check', schedule: 'Friday 19:30', cron: '30 11 * * 5', group: 'weekly', legacyLogIds: ['model-ic-tracker'] },
   { id: 'linucb-reward-ledger', name: 'LinUCB Reward Ledger', schedule: 'After rolling IC', cron: '', group: 'pipeline_chain', chainIndex: 17 },
   { id: 'adapt', name: 'Adapt Params', schedule: 'After LinUCB ledger', cron: '', group: 'pipeline_chain', chainIndex: 18 },
   { id: 'daily-report', name: 'Daily Report', schedule: 'After adapt', cron: '', group: 'pipeline_chain', chainIndex: 19 },
@@ -115,7 +117,7 @@ const CHAIN_STEP_IDS = [
   'allocator-ev-lifecycle-watchdog',
   'verify-v2',
   'post-verify-chain',
-  'model-ic-tracker',
+  'model-ic-rolling',
   'linucb-reward-ledger',
   'adapt',
   'daily-report',
@@ -236,6 +238,15 @@ function getDisplayLog(logs: CronLogEntry[] | undefined, taskId: string): CronLo
   if (logTime < pipelineTime) return undefined
   return log
 }
+
+function getJobDisplayLog(logs: CronLogEntry[] | undefined, def: JobDef): CronLogEntry | undefined {
+  for (const taskId of [def.id, ...(def.legacyLogIds ?? [])]) {
+    const log = getDisplayLog(logs, taskId)
+    if (log) return log
+  }
+  return inferPipelineChildLog(logs, def.id)
+}
+
 
 function inferPipelineChildLog(logs: CronLogEntry[] | undefined, taskId: string): CronLogEntry | undefined {
   if (!PIPELINE_CHILD_TASKS.has(taskId)) return undefined
@@ -405,18 +416,18 @@ export async function getSchedulerStatus(env: Bindings) {
   )
 
   const jobs = await Promise.all(JOB_DEFS.map(async (def) => {
-    const todayLog = getDisplayLog(allLogs[today], def.id) ?? inferPipelineChildLog(allLogs[today], def.id)
+    const todayLog = getJobDisplayLog(allLogs[today], def)
     const nextRun = await getNextRunApproxWithPolicy({ task: def.id, cron: def.cron, kv: env.KV, skipKvPolicy: true })
 
     const displayLogs = dates.map((date) => ({
       date,
-      log: getDisplayLog(allLogs[date], def.id) ?? inferPipelineChildLog(allLogs[date], def.id),
+      log: getJobDisplayLog(allLogs[date], def),
     }))
     const { lastAttempt, lastEffective } = selectSchedulerDisplayLogs(displayLogs)
     const lastLog = lastAttempt ?? lastEffective
 
     const history7d = displayDates.map((date) => {
-      const log = getDisplayLog(allLogs[date], def.id) ?? inferPipelineChildLog(allLogs[date], def.id)
+      const log = getJobDisplayLog(allLogs[date], def)
       if (!log || log.status === 'skipped' || log.status === 'triggered' || log.status === 'running') return 'skip'
       return log.status === 'success' ? 'success' : 'failed'
     }).reverse()
@@ -460,7 +471,8 @@ export async function getSchedulerStatus(env: Bindings) {
   }))
 
   const failed24h = jobs.filter((job) => {
-    const todayLog = getDisplayLog(allLogs[today], job.id) ?? inferPipelineChildLog(allLogs[today], job.id)
+    const def = JOB_DEFS.find((row) => row.id === job.id)
+    const todayLog = def ? getJobDisplayLog(allLogs[today], def) : undefined
     return todayLog?.status === 'error'
   }).length
 

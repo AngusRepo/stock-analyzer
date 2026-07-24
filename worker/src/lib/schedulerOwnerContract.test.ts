@@ -31,6 +31,11 @@ assert(Array.isArray(manifest.jobs) && manifest.jobs.length >= 20, 'scheduler ma
 
 const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const cronGcpDomainTasks = fs.readFileSync('src/lib/cronGcpDomainTasks.ts', 'utf8')
+const controllerDailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
+const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
+const adminGcpTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
+const adminTriggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
+const schedulerStatus = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
 const tradingDayTasks = [
   'intraday-check',
   'intraday-rescore',
@@ -68,9 +73,29 @@ for (const task of tradingDayTasks) {
   assert(policyPattern.test(schedulerPolicy), `${task} must be gated by TW trading calendar / holiday KV`)
 }
 
-for (const required of ['market-close-refresh', 'evening-chain', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-tracker', 'optuna-queue', 'pre-market-warmup']) {
+for (const required of ['market-close-refresh', 'evening-chain', 'intraday-rescore', 'weekly-backtest', 'weekly-cleanup', 'model-ic-full-check', 'optuna-queue', 'pre-market-warmup']) {
   assert(manifest.jobs.some((job: any) => job.task === required || job.id === required), `manifest missing required scheduler job: ${required}`)
 }
+
+const intradayWindows = manifest.jobs.filter((job: any) => job.task === 'intraday-check')
+assert(intradayWindows.length === 2, 'intraday-check must use exactly two GCP windows for the 13:30 boundary')
+assert(
+  intradayWindows.some((job: any) => job.schedule === '* 1-4 * * 1-5') &&
+    intradayWindows.some((job: any) => job.schedule === '0-30 5 * * 1-5'),
+  'intraday-check windows must cover TW 09:00-12:59 and 13:00-13:30 only',
+)
+assert(!intradayWindows.some((job: any) => job.schedule === '* 1-5 * * 1-5'), 'intraday-check must never trigger at TW 13:31-13:59')
+
+const modelIcFullCheck = manifest.jobs.find((job: any) => job.id === 'model-ic-full-check')
+assert(modelIcFullCheck?.task === 'model-ic-full-check', 'Friday Model IC must own a separate full-check task identity')
+assert(modelIcFullCheck?.legacyIds?.includes('model-ic-tracker'), 'Model IC full-check cutover must explicitly retire the legacy scheduler id')
+
+assert(controllerDailyWorkflows.includes('runModelIcFullCheck') && !controllerDailyWorkflows.includes('runModelIcTrackerChain'), 'full-check workflow function must have a distinct name')
+assert(postMarketChain.includes("'model-ic-rolling', () => runModelIcRollingRefresh") && !postMarketChain.includes("'model-ic-tracker', () => runModelIcRollingRefresh"), 'post-verify must log only model-ic-rolling')
+assert(adminGcpTasks.includes("'model-ic-full-check': async () => runModelIcFullCheck"), 'admin scheduler trigger must expose only the full-check identity')
+assert(adminTriggerRoutes.includes("'model-ic-tracker': 'model-ic-full-check'") && adminTriggerRoutes.includes('resolveSchedulerTaskAlias'), 'legacy trigger URL must canonicalize before policy and logging')
+assert(schedulerStatus.includes("id: 'model-ic-rolling'") && schedulerStatus.includes("id: 'model-ic-full-check'") && schedulerStatus.includes("legacyLogIds: ['model-ic-tracker']"), 'OBS status must expose split identities and map old evidence only to full-check')
+assert(cronGcpDomainTasks.includes("runWithLog('model-ic-full-check'") && !cronGcpDomainTasks.includes("runWithLog('model-ic-tracker'"), 'cron dispatcher must log only the full-check identity')
 
 const weeklyS12Calibration = manifest.jobs.find((job: any) => job.id === 'weekly-s12-smcvwap-calibration')
 assert(weeklyS12Calibration?.task === 's12-smcvwap-calibration', 'weekly S12 calibration must have a first-class GCP Scheduler owner')
@@ -115,6 +140,7 @@ for (const critical of [
   'monthly-retrain',
   'optuna-queue',
   'external-evidence',
+  'model-ic-full-check',
 ]) {
   const job = manifest.jobs.find((j: any) => j.id === critical)
   assert(String(job?.query ?? '').split('&').includes('sync=1'), `${critical} scheduler must run synchronously so GCP sees data-readiness failures`)
@@ -158,6 +184,9 @@ assert(syncScript.includes('$job.timeZone'), 'scheduler sync must support per-jo
 assert(syncScript.includes('[switch]$DeleteStale'), 'scheduler sync must support explicit stale GCP job deletion')
 assert(syncScript.includes('scheduler jobs delete'), 'scheduler sync must delete stale GCP jobs when DeleteStale is approved')
 assert(syncScript.includes('if ($DeleteStale)'), 'scheduler dry-run must show stale job deletion candidates before mutation')
+assert(syncScript.includes('$job.legacyIds'), 'scheduler sync must support explicit one-job legacy ID replacement')
+assert(syncScript.includes('replace legacy'), 'scheduler sync must surface legacy replacement in dry-run output')
+assert(syncScript.includes('scheduler legacy replacement failed'), 'scheduler sync must fail closed if legacy deletion fails')
 
 const cloudflareScheduleSync = fs.readFileSync('../scripts/sync_cloudflare_worker_schedules.ps1', 'utf8')
 assert(cloudflareScheduleSync.includes('/workers/scripts/$ScriptName/schedules'), 'Cloudflare Worker schedule sync must use the script schedules API')

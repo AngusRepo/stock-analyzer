@@ -4,7 +4,8 @@
   "workerBaseUrlEnv": "STOCKVISION_WORKER_BASE_URL",
   "authTokenEnv": "SCHEDULER_AUTH_TOKEN",
   "jobs": [
-    { "id": "intraday-check", "schedule": "* 1-5 * * 1-5", "task": "intraday-check", "description": "TW 09:00-13:30 intraday paper trading heartbeat" },
+    { "id": "intraday-check", "schedule": "* 1-4 * * 1-5", "task": "intraday-check", "description": "TW 09:00-12:59 intraday paper trading heartbeat" },
+    { "id": "intraday-check-close-window", "schedule": "0-30 5 * * 1-5", "task": "intraday-check", "description": "TW 13:00-13:30 intraday paper trading heartbeat" },
     { "id": "rescore-10", "schedule": "0 2 * * 1-5", "task": "intraday-rescore", "query": "sync=1", "description": "TW 10:00 intraday ML re-score" },
     { "id": "rescore-11", "schedule": "0 3 * * 1-5", "task": "intraday-rescore", "query": "sync=1", "description": "TW 11:00 intraday ML re-score" },
     { "id": "rescore-12", "schedule": "0 4 * * 1-5", "task": "intraday-rescore", "query": "sync=1", "description": "TW 12:00 intraday ML re-score" },
@@ -19,7 +20,7 @@
     { "id": "active8-oof-daily", "schedule": "55 17 * * 1-5", "task": "active8-oof-daily", "query": "sync=1", "description": "TW 01:55 materialize latest ready immutable purged-OOF cohort, run L4/Fusion parity gates, and auto-promote only on PASS" },
     { "id": "external-evidence", "schedule": "15 15 * * 1-5", "task": "external-evidence", "query": "sync=1", "description": "TW 23:15 materialize formal-shadow GDELT/official external evidence for latest available recommendation date" },
     { "id": "weekly-audit", "schedule": "30 10 * * 5", "task": "weekly-audit", "description": "Friday TW 18:30 weekly audit" },
-    { "id": "model-ic-tracker", "schedule": "30 11 * * 5", "task": "model-ic-tracker", "description": "Friday TW 19:30 model IC tracker" },
+    { "id": "model-ic-full-check", "schedule": "30 11 * * 5", "task": "model-ic-full-check", "query": "sync=1", "legacyIds": ["model-ic-tracker"], "description": "Friday TW 19:30 full Model IC, promotion dry-run, and config evaluation" },
     { "id": "debate-memory-retention", "schedule": "0 19 * * *", "task": "debate-memory-retention", "description": "TW 03:00 debate memory retention" },
     { "id": "legacy-evidence-migration", "schedule": "20 17-21 * * *", "task": "legacy-evidence-migration", "query": "sync=1&durable=1&max_attempts=240", "description": "TW 01:20-05:20 idempotent durable queue drain: migrate noncanonical legacy D1 screener evidence to verified R2 artifacts" },
     { "id": "legacy-strategy-evidence-migration", "schedule": "5,25,45 17-21 * * *", "task": "legacy-strategy-evidence-migration", "query": "sync=1&durable=1&max_attempts=240", "description": "TW 01:05-05:45 idempotent durable queue drain: archive exact strategy JSON to R2 and preserve compact scalar learning rows" },

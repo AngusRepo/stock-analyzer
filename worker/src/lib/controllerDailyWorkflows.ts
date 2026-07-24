@@ -46,7 +46,7 @@ export async function runRegimeCompute(env: Bindings, runDate?: string) {
   return `regime=${newLabel} idx=${data.regime_index} kv=${data.kv_push_ok ? 'ok' : 'fail'} shift=${shiftSummary}`
 }
 
-export async function runModelIcTrackerChain(env: Bindings) {
+export async function runModelIcFullCheck(env: Bindings) {
   requireController(env)
 
   const icData = await controllerJson<any>(env, '/model_pool/compute_weekly_ic', {

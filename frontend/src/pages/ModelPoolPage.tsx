@@ -559,13 +559,6 @@ export default function ModelPoolPage() {
               onDryRunFinalCompare={(artifactId) => promotionController.mutate({ artifactId, approved: false, confirm: false })}
             />
 
-            <PromotionQueuePanelV2
-              queue={modelPoolSnapshot!.promotionQueue}
-              isPromoting={promotionController.isPending}
-              promotionResult={promotionController.data}
-              onPromote={(artifactId, approved, confirm) => promotionController.mutate({ artifactId, approved, confirm })}
-            />
-
             <WorkstationPanel title="State-space Overlays" kicker="regime risk overlay, not alpha vote model">
               <div className="space-y-2 p-3 text-xs text-muted-foreground">
                 <p>

@@ -57,3 +57,5 @@ def test_cutover_requires_explicit_apply_and_separate_role_removal() -> None:
     assert "function Assert-LiveSecretCoverage" in script
     assert script.index("Assert-LiveSecretCoverage") < script.index("Ensure-ServiceAccount $property.Name")
     assert '$ready -eq "True"' in script
+    assert "function Invoke-GcloudWithRetry" in script
+    assert script.count("Invoke-GcloudWithRetry @(") == 2

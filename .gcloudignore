@@ -10,6 +10,10 @@
 .github/
 .claude/
 .agents/
+worktrees/
+.codex-worktrees/
+.codex-edit-staging/
+.codex/
 .bug-hunter/
 .playwright-cli/
 audits/

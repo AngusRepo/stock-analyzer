@@ -38,10 +38,8 @@ if (!existsSync(manifestPath)) throw new Error(`missing scheduler manifest: ${ma
 
 const schedulerSha256 = createHash('sha256').update(readFileSync(manifestPath)).digest('hex')
 const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx'
-// Keep the release message shell-safe on Windows, where npx.cmd requires shell execution.
-const releaseMessage = `source=${sourceSha};scheduler=${schedulerSha256}`
 run(npx, [
   '--no-install', 'wrangler', 'deploy', '--strict',
   '--tag', sourceSha,
-  '--message', releaseMessage,
+  '--message', `source=${sourceSha},scheduler=${schedulerSha256}`,
 ], { cwd: workerDir, shell: process.platform === 'win32' })

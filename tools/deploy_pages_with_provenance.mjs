@@ -72,6 +72,6 @@ run(npx, [
   '--project-name', pagesProject,
   '--branch', sourceBranch,
   '--commit-hash', sourceSha,
-  '--commit-message', `source=${sourceSha} scheduler=${schedulerManifestSha256}`,
+  '--commit-message', `source=${sourceSha},scheduler=${schedulerManifestSha256}`,
   '--commit-dirty=false',
 ], { cwd: frontendDir, shell: useShell })

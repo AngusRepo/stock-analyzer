@@ -150,7 +150,12 @@ export async function repairHistoricalSelectionReferences(
     for (;;) {
       const page = await db.prepare(`
         SELECT i.id, i.symbol, i.name, i.score_after, i.evidence,
-               st.market market_segment, st.sector
+               st.market market_segment, st.sector,
+               EXISTS (
+                 SELECT 1 FROM stock_prices sp
+                  WHERE sp.stock_id=st.id AND date(sp.date)=date(i.date)
+                    AND sp.open>0 AND sp.high>0 AND sp.low>0 AND sp.close>0
+               ) price_available
           FROM screener_funnel_items i
           LEFT JOIN stocks st ON st.symbol=i.symbol
          WHERE i.run_id=? AND i.date=? AND i.stage='scoring'

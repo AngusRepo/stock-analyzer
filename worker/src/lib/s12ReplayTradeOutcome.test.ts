@@ -525,6 +525,36 @@ async function runHistoricalReplayRunnerTests(): Promise<void> {
     },
   })
   assert(offsetSummary.attempted === 1 && offsetSummary.persisted === 0, 'runner should support dry-run offset slices')
+
+  const unavailableWrites: unknown[][] = []
+  const unavailableEnv = {
+    DB: {
+      prepare(sql: string) {
+        assert(sql.includes('s12_replay_trade_outcomes'), 'unavailable replay closure must persist a terminal row')
+        return {
+          bind(...params: unknown[]) {
+            unavailableWrites.push(params)
+            return { async run() { return {} } }
+          },
+        }
+      },
+    },
+  } as any
+  const unavailableSummary = await runS12HistoricalReplayForDate(unavailableEnv, '2026-07-16', {
+    symbols: [{ symbol: '7887', market: 'OTC', market_segment: 'OTC' }],
+    resolveExecutionDate: async () => null,
+    loadBars: async () => { throw new Error('loadBars should not run when execution date is unresolved') },
+    maturityAsOfDate: '2026-07-24',
+    persistUnavailableOutcomes: true,
+  })
+  assert(unavailableSummary.attempted === 1, 'reference replay should still attempt unresolved mature symbols')
+  assert(unavailableSummary.persisted === 1, 'reference replay should persist explicit unavailable outcomes')
+  assert(unavailableSummary.skipped === 1, 'unresolved execution date should be recorded as skipped unavailable')
+  assert(unavailableWrites.length === 1, 'unavailable replay should produce exactly one D1 row')
+  const unavailableDetail = JSON.parse(String(unavailableWrites[0][22]))
+  assert(unavailableWrites[0][20] === 0, 'unavailable replay rows must not become EV samples')
+  assert(unavailableDetail.observation_kind === 'unavailable', 'unavailable replay rows must not be confused with not-executed structure')
+  assert(unavailableDetail.status_reason === 'unresolved_execution_date', 'unavailable replay rows must keep the blocker reason')
 }
 
 void runHistoricalReplayRunnerTests().catch((error) => {

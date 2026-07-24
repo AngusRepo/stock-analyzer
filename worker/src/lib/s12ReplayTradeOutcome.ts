@@ -123,6 +123,8 @@ export interface S12HistoricalReplayRunOptions {
   resolveExecutionDate?: (symbol: string, signalDate: string) => Promise<string | null>
   maturityAsOfDate?: string
   signedEligibleRepair?: boolean
+  persistUnavailableOutcomes?: boolean
+  loadBarsTimeoutMs?: number
 }
 
 export interface S12HistoricalReplayRunSummary {
@@ -163,6 +165,8 @@ export async function loadFusionSnapshotMissingReplaySymbols(
     SELECT r.symbol
       FROM selection_reference_snapshots_v1 r
      WHERE r.signal_date=?
+       AND r.hard_gate_passed=1
+       AND r.feature_available=1
        AND EXISTS (
          SELECT 1 FROM canonical_market_daily cmd
           WHERE cmd.stock_id=r.symbol AND cmd.source='finlab.price'
@@ -196,6 +200,8 @@ export async function loadFusionSnapshotReplayCoverage(
       SELECT r.symbol
         FROM selection_reference_snapshots_v1 r
        WHERE r.signal_date=?
+         AND r.hard_gate_passed=1
+         AND r.feature_available=1
          AND EXISTS (
            SELECT 1 FROM canonical_run_heads h
             WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
@@ -482,6 +488,8 @@ function replayObservationKind(status: S12ReplayOutcomeStatus, reason: string): 
     'missing_intraday_bars',
     'missing_entry_session_bars',
     'missing_post_entry_bars',
+    'missing_five_session_lifecycle_bars',
+    'unresolved_execution_date',
   ].includes(reason)) return 'unavailable'
   return 'not_executed'
 }
@@ -753,6 +761,8 @@ export async function loadL0PassedSymbolsByHistoricalDate(
         ON dr.date=r.signal_date AND dr.symbol=r.symbol
       LEFT JOIN stocks st ON st.symbol=r.symbol
      WHERE r.signal_date=?
+       AND r.hard_gate_passed=1
+       AND r.feature_available=1
        AND EXISTS (
          SELECT 1 FROM canonical_run_heads h
           WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
@@ -931,6 +941,7 @@ export async function runS12HistoricalReplayForDate(
   }
   try {
   const l0 = options.symbols ?? await loadL0PassedSymbolsByHistoricalDate(env.DB, signalDate)
+  const persistUnavailableOutcomes = options.persistUnavailableOutcomes === true
   const requestedLimit = options.limit ?? (l0.length || 1)
   const limit = Math.max(1, Math.min(5000, Math.floor(Number(requestedLimit))))
   const offset = Math.max(0, Math.floor(Number(options.offset ?? 0)))
@@ -951,6 +962,28 @@ export async function runS12HistoricalReplayForDate(
     )
     if (!executionDate) {
       unresolvedExecutionDates += 1
+      if (persistUnavailableOutcomes) {
+        const outcome = emptyOutcome({
+          symbol: row.symbol,
+          signalDate,
+          tradeDate: signalDate,
+          baseBars: [],
+          marketSegment: row.market_segment ?? null,
+          market: row.market ?? null,
+          replayDiagnostics: {
+            signal_date: signalDate,
+            execution_date: null,
+            execution_date_contract: 'next_stock_specific_session_after_signal',
+            outcome_known_date: options.maturityAsOfDate ?? signalDate,
+            outcome_known_at_contract: 'unresolved_stock_specific_session',
+          },
+        }, 'skipped', 'unresolved_execution_date', null)
+        outcomes.push(outcome)
+        if (options.persist !== false) {
+          await persistS12ReplayOutcome(env.DB, outcome)
+          persisted += 1
+        }
+      }
       continue
     }
     executionDates.add(executionDate)
@@ -961,6 +994,7 @@ export async function runS12HistoricalReplayForDate(
         date,
         5,
         options.maturityAsOfDate,
+        { researchTimeoutMs: options.loadBarsTimeoutMs ?? (persistUnavailableOutcomes ? 12_000 : 60_000) },
       )
       return {
         bars: loaded.bars,
@@ -979,6 +1013,35 @@ export async function runS12HistoricalReplayForDate(
     if (loaded.horizonComplete === false) {
       unresolvedExecutionDates += 1
       if (terminalDataSourceReason) break
+      if (persistUnavailableOutcomes) {
+        const outcome = emptyOutcome({
+          symbol: row.symbol,
+          signalDate,
+          tradeDate: executionDate,
+          baseBars: loaded.bars,
+          fallback15mBars: loaded.fallback15mBars,
+          fallback1hBars: loaded.fallback1hBars,
+          fallback4hBars: loaded.fallback4hBars,
+          fallbackDailyBars: loaded.fallbackDailyBars,
+          h4ReferenceDate: loaded.h4ReferenceDate,
+          h4ReferenceClose: loaded.h4ReferenceClose,
+          marketSegment: row.market_segment ?? null,
+          market: row.market ?? null,
+          replayDiagnostics: {
+            ...(loaded.diagnostics ?? {}),
+            signal_date: signalDate,
+            execution_date: executionDate,
+            execution_date_contract: 'next_stock_specific_session_after_signal',
+            outcome_known_date: options.maturityAsOfDate ?? executionDate,
+            outcome_known_at_contract: 'mature_reference_unavailable_lifecycle',
+          },
+        }, 'skipped', 'missing_five_session_lifecycle_bars', null)
+        outcomes.push(outcome)
+        if (options.persist !== false) {
+          await persistS12ReplayOutcome(env.DB, outcome)
+          persisted += 1
+        }
+      }
       continue
     }
     const alphaContext = parseJsonRecord(row.alpha_context)

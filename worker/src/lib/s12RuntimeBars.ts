@@ -505,6 +505,7 @@ async function fetchS12ResearchKbars(
   env: Bindings,
   symbol: string,
   tradeDate: string,
+  timeoutMs = 60_000,
 ): Promise<{ bars: IntradayRollingBar[]; cacheHit: boolean; cacheBusinessDate: string | null }> {
   const cached = await loadCachedS12ResearchBars(env, symbol, tradeDate)
   if (cached) return { bars: cached.bars, cacheHit: true, cacheBusinessDate: cached.artifactBusinessDate }
@@ -520,7 +521,7 @@ async function fetchS12ResearchKbars(
     try {
       const response = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(60_000),
+        signal: AbortSignal.timeout(Math.max(3_000, Math.min(60_000, Math.floor(timeoutMs)))),
       })
       const document = await response.json().catch(() => null) as {
         status?: string
@@ -622,6 +623,7 @@ async function fetchS12ShioajiKbars(
   env: Bindings,
   symbol: string,
   tradeDate: string,
+  options: { researchTimeoutMs?: number } = {},
 ): Promise<{
   bars: IntradayRollingBar[]
   previousSessionBars: IntradayRollingBar[]
@@ -707,7 +709,7 @@ async function fetchS12ShioajiKbars(
   let loadCurrentSessionProxy = !useResearchSource
   if (useResearchSource) {
     try {
-      const research = await fetchS12ResearchKbars(env, symbol, tradeDate)
+      const research = await fetchS12ResearchKbars(env, symbol, tradeDate, options.researchTimeoutMs ?? 60_000)
       rawBars = research.bars
       rawRowCount = rawBars.length
       provider = 'shioaji_research_service'
@@ -1153,6 +1155,7 @@ export async function loadS12HistoricalReplayBars(
   env: Bindings,
   symbol: string,
   tradeDate: string,
+  options: { researchTimeoutMs?: number } = {},
 ): Promise<{
   bars: IntradayRollingBar[]
   fallback15mBars: IntradayRollingBar[]
@@ -1198,7 +1201,7 @@ export async function loadS12HistoricalReplayBars(
     kbars_error: null,
   }
   try {
-    const kbars = await fetchS12ShioajiKbars(env, symbol, tradeDate)
+    const kbars = await fetchS12ShioajiKbars(env, symbol, tradeDate, options)
     diagnostics = {
       ...diagnostics,
       ...kbars.diagnostics,
@@ -1234,6 +1237,7 @@ export async function loadS12HistoricalReplayLifecycleBars(
   entryDate: string,
   maxSessions = 5,
   maxAvailableDate = '9999-12-31',
+  options: { researchTimeoutMs?: number } = {},
 ): Promise<{
   bars: IntradayRollingBar[]
   fallback15mBars: IntradayRollingBar[]
@@ -1269,7 +1273,7 @@ export async function loadS12HistoricalReplayLifecycleBars(
   // the preceding seven calendar days, so older sessions can reuse R2 instead
   // of issuing five concurrent broker queries for one replay candidate.
   for (const sessionDate of [...requestedSessionDates].reverse()) {
-    const loaded = await loadS12HistoricalReplayBars(env, symbol, sessionDate)
+    const loaded = await loadS12HistoricalReplayBars(env, symbol, sessionDate, options)
     loadedByDate.set(sessionDate, loaded)
     terminalDataSourceReason = terminalDataSourceReason
       ?? s12ResearchTerminalDataSourceReason(loaded.diagnostics)
@@ -1278,7 +1282,7 @@ export async function loadS12HistoricalReplayLifecycleBars(
   const loadedSessions = requestedSessionDates
     .filter((sessionDate) => loadedByDate.has(sessionDate))
     .map((sessionDate) => ({ sessionDate, loaded: loadedByDate.get(sessionDate)! }))
-  const first = loadedSessions[0]?.loaded ?? await loadS12HistoricalReplayBars(env, symbol, entryDate)
+  const first = loadedSessions[0]?.loaded ?? await loadS12HistoricalReplayBars(env, symbol, entryDate, options)
   const barsByStart = new Map<number, IntradayRollingBar>()
   const completeSessionDates: string[] = []
   for (const session of loadedSessions) {

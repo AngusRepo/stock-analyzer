@@ -124,6 +124,7 @@ export interface S12HistoricalReplayRunOptions {
   maturityAsOfDate?: string
   signedEligibleRepair?: boolean
   persistUnavailableOutcomes?: boolean
+  loadBarsTimeoutMs?: number
 }
 
 export interface S12HistoricalReplayRunSummary {
@@ -987,6 +988,7 @@ export async function runS12HistoricalReplayForDate(
         date,
         5,
         options.maturityAsOfDate,
+        { researchTimeoutMs: options.loadBarsTimeoutMs ?? (persistUnavailableOutcomes ? 12_000 : 60_000) },
       )
       return {
         bars: loaded.bars,

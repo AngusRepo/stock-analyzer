@@ -94,6 +94,7 @@ Step 5: 同產業 ≤5 + Pearson 60d 去重 + top 25
 export PRODUCTION_BRANCH=<approved-production-branch>
 export GCS_BUCKET_NAME=stockvision-models
 export CLOUDFLARE_PAGES_PROJECT=stockvision-frontend
+export CLOUDFLARE_PAGES_PRODUCTION_BRANCH=main
 
 # Cloud Run Service + Jobs; add --with-modal for an attested Modal release
 bash deploy_ml_controller.sh --check-only

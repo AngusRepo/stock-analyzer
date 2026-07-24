@@ -7,8 +7,11 @@ import { spawnSync } from 'node:child_process'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const frontendDir = join(root, 'frontend')
 const manifestPath = join(root, 'infra', 'gcp-scheduler-jobs.json')
+const wranglerCli = join(root, 'worker', 'node_modules', 'wrangler', 'bin', 'wrangler.js')
 const pagesProject = String(process.env.CLOUDFLARE_PAGES_PROJECT ?? '').trim()
 if (!pagesProject) throw new Error('CLOUDFLARE_PAGES_PROJECT is required')
+const pagesProductionBranch = String(process.env.CLOUDFLARE_PAGES_PRODUCTION_BRANCH ?? '').trim()
+if (!pagesProductionBranch) throw new Error('CLOUDFLARE_PAGES_PRODUCTION_BRANCH is required')
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -39,10 +42,10 @@ if (!sourceBranch || sourceBranch !== productionBranch) {
 const dirty = run('git', ['status', '--porcelain', '--untracked-files=all', '--', 'frontend', 'infra/gcp-scheduler-jobs.json', 'tools/deploy_pages_with_provenance.mjs'], { capture: true })
 if (dirty) throw new Error(`Pages deployment inputs are dirty:\n${dirty}`)
 if (!existsSync(manifestPath)) throw new Error(`missing scheduler manifest: ${manifestPath}`)
+if (!existsSync(wranglerCli)) throw new Error('locked Worker Wrangler is missing; run npm ci in worker')
 
 const schedulerManifestSha256 = createHash('sha256').update(readFileSync(manifestPath)).digest('hex')
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx'
 const useShell = process.platform === 'win32'
 
 run(npm, ['run', 'build'], {
@@ -58,6 +61,7 @@ const provenance = {
   sourceSha,
   sourceTreeSha,
   sourceBranch,
+  targetBranch: pagesProductionBranch,
   schedulerManifestSha256,
 }
 mkdirSync(join(frontendDir, 'dist'), { recursive: true })
@@ -67,11 +71,11 @@ writeFileSync(
   'utf8',
 )
 
-run(npx, [
-  '--no-install', 'wrangler', 'pages', 'deploy', 'dist',
+run(process.execPath, [
+  wranglerCli, 'pages', 'deploy', 'dist',
   '--project-name', pagesProject,
-  '--branch', sourceBranch,
+  '--branch', pagesProductionBranch,
   '--commit-hash', sourceSha,
   '--commit-message', `source=${sourceSha},scheduler=${schedulerManifestSha256}`,
   '--commit-dirty=false',
-], { cwd: frontendDir, shell: useShell })
+], { cwd: frontendDir })

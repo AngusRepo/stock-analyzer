@@ -45,3 +45,7 @@ def test_cloudflare_deploy_messages_are_single_cli_arguments_on_windows() -> Non
     assert ",scheduler=${schedulerSha256}" in worker_wrapper
     assert " scheduler=${schedulerManifestSha256}" not in pages_wrapper
     assert ",scheduler=${schedulerManifestSha256}" in pages_wrapper
+    assert "CLOUDFLARE_PAGES_PRODUCTION_BRANCH is required" in pages_wrapper
+    assert "'--branch', pagesProductionBranch" in pages_wrapper
+    assert "wranglerCli, 'pages', 'deploy'" in pages_wrapper
+    assert "wranglerCli, 'deploy', '--strict'" in worker_wrapper

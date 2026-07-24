@@ -542,17 +542,35 @@ export async function runD1EvidenceScrub(
 ): Promise<{ candidates: number; scrubbed: number; failed: number; blocked: number; errors: string[] }> {
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 250), 1000))
   const now = options.now ?? new Date().toISOString()
-  const { results } = await env.DB.prepare(`
-    SELECT q.scrub_id, q.artifact_id, q.target_table, q.target_pk_column,
-           q.target_pk_value, q.target_column, q.replacement_json,
-           a.status AS artifact_status, a.checksum_verified_at
-      FROM artifact_d1_scrub_queue q
-      LEFT JOIN run_artifacts a ON a.artifact_id = q.artifact_id
-     WHERE q.status IN ('pending','failed')
-       AND (q.next_attempt_at IS NULL OR q.next_attempt_at <= ?)
-     ORDER BY q.created_at, q.scrub_id
-     LIMIT ?
-  `).bind(now, limit).all<any>()
+  const selectRows = async (status: 'failed' | 'pending', rowLimit: number): Promise<any[]> => {
+    if (rowLimit <= 0) return []
+    const dueClause = status === 'failed'
+      ? "q.status='failed' AND q.next_attempt_at <= ?"
+      : "q.status='pending' AND q.next_attempt_at IS NULL"
+    const orderBy = status === 'failed'
+      ? 'q.next_attempt_at, q.created_at'
+      : 'q.created_at'
+    const statement = env.DB.prepare(`
+      SELECT q.scrub_id, q.artifact_id, q.target_table, q.target_pk_column,
+             q.target_pk_value, q.target_column, q.replacement_json,
+             a.status AS artifact_status, a.checksum_verified_at
+        FROM artifact_d1_scrub_queue q
+        LEFT JOIN run_artifacts a ON a.artifact_id = q.artifact_id
+       WHERE ${dueClause}
+       ORDER BY ${orderBy}
+       LIMIT ?
+    `)
+    const { results } = status === 'failed'
+      ? await statement.bind(now, rowLimit).all<any>()
+      : await statement.bind(rowLimit).all<any>()
+    return results ?? []
+  }
+
+  // Retry a bounded number of due failures first, then drain the pending backlog.
+  // Separate predicates preserve the (status, next_attempt_at, created_at) index order.
+  const retryRows = await selectRows('failed', Math.min(limit, 50))
+  const pendingRows = await selectRows('pending', limit - retryRows.length)
+  const results = [...retryRows, ...pendingRows]
   let scrubbed = 0
   let failed = 0
   let blocked = 0

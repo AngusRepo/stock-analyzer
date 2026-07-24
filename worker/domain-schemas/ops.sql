@@ -67,6 +67,8 @@ CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_run ON screener_funnel_item
 
 CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_symbol ON screener_funnel_items(symbol, date DESC);
 
+CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_date_id ON screener_funnel_items(date, id);
+
 CREATE TABLE IF NOT EXISTS pipeline_stage_runs (
   business_date TEXT NOT NULL,
   stage TEXT NOT NULL,

@@ -3053,7 +3053,12 @@ system.get('/status', async (c) => {
     totalNews,
     dbSize,
   ] = await Promise.all([
-    db.prepare('SELECT MAX(date) as d, COUNT(*) as cnt FROM stock_prices').first<any>(),
+    db.prepare(`
+      SELECT latest.date AS d, COUNT(prices.stock_id) AS cnt
+        FROM (SELECT date FROM stock_prices ORDER BY date DESC LIMIT 1) latest
+        LEFT JOIN stock_prices prices ON prices.date = latest.date
+       GROUP BY latest.date
+    `).first<any>(),
     db.prepare('SELECT MAX(date) as d FROM chip_data').first<any>(),
     db.prepare('SELECT MAX(published_at) as d, COUNT(*) as cnt FROM news').first<any>(),
     db.prepare('SELECT MAX(generated_at) as d FROM predictions').first<any>(),
@@ -3096,6 +3101,7 @@ system.get('/status', async (c) => {
         lastDate:  priceDate,
         isRecent:  priceOk,
         rowCount:  latestPrice?.cnt ?? 0,
+        rowCountScope: 'latest_session',
       },
       chips: {
         lastDate:  chipDate,

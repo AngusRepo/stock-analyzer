@@ -177,7 +177,10 @@ async function testRetentionSweepPreservesMetadataAfterPayloadDelete(): Promise<
 
 async function testD1EvidenceScrubBatchesVerifiedRowsAtomically(): Promise<void> {
   const db = new MockDb()
-  db.allHandler = () => Array.from({ length: 60 }, (_, index) => ({
+  const selects: Statement[] = []
+  db.allHandler = (statement) => {
+    selects.push(statement)
+    return statement.sql.includes("q.status='failed'") ? [] : Array.from({ length: 60 }, (_, index) => ({
     scrub_id: `scrub-${index}`,
     artifact_id: `artifact-${index}`,
     target_table: 'screener_funnel_items',
@@ -187,18 +190,23 @@ async function testD1EvidenceScrubBatchesVerifiedRowsAtomically(): Promise<void>
     replacement_json: JSON.stringify({ artifact_id: `artifact-${index}` }),
     artifact_status: 'ready',
     checksum_verified_at: '2026-07-14T01:00:00Z',
-  }))
+    }))
+  }
 
   const result = await runD1EvidenceScrub({ DB: db as any }, { limit: 1000 })
 
   assert.deepEqual(result, { candidates: 60, scrubbed: 60, failed: 0, blocked: 0, errors: [] })
   assert.deepEqual(db.batches.map(batch => batch.length), [50, 50, 20])
   assert.equal(db.runs.length, 0)
+  assert.equal(selects.length, 2)
+  assert.match(selects[0].sql, /q\.status='failed' AND q\.next_attempt_at <= \?/)
+  assert.match(selects[1].sql, /q\.status='pending' AND q\.next_attempt_at IS NULL/)
+  assert.equal(selects.some(statement => statement.sql.includes("status IN ('pending','failed')")), false)
 }
 
 async function testD1EvidenceScrubBisectsFailedBatchInsteadOfRetryingEveryRow(): Promise<void> {
   const db = new MockDb()
-  db.allHandler = () => Array.from({ length: 25 }, (_, index) => ({
+  db.allHandler = (statement) => statement.sql.includes("q.status='failed'") ? [] : Array.from({ length: 25 }, (_, index) => ({
     scrub_id: `scrub-${index}`,
     artifact_id: `artifact-${index}`,
     target_table: 'screener_funnel_items',

@@ -2,6 +2,8 @@ import type { Bindings } from '../types'
 
 export type DataDomain = 'core' | 'market' | 'learning' | 'ops' | 'execution' | 'paper' | 'research'
 
+export const MULTI_D1_STRICT_ROUTING_READY = false
+
 const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   core: new Set([
     'users', 'stocks', 'watchlist', 'risk_metrics', 'alert_rules', 'market_risk',
@@ -101,7 +103,10 @@ export function databaseForDataDomain(
 ): D1Database {
   const bindings = domainBindings(env)
   const strict = String(env.MULTI_D1_STRICT ?? '').toLowerCase() === 'true'
-  const active = strict || activeDataDomains(env).has(domain)
+  if (strict && !MULTI_D1_STRICT_ROUTING_READY) {
+    throw new Error('multi_d1_strict_routing_not_closed')
+  }
+  const active = activeDataDomains(env).has(domain)
   if (!active) return env.DB
   const selected = bindings[domain]
   if (selected) return selected

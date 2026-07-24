@@ -718,6 +718,7 @@ CREATE TABLE IF NOT EXISTS screener_funnel_items (
 );
 CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_run ON screener_funnel_items(run_id, stage, decision);
 CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_symbol ON screener_funnel_items(symbol, date DESC);
+CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_date_id ON screener_funnel_items(date, id);
 
 CREATE TABLE IF NOT EXISTS dataset_snapshots (
   snapshot_id     TEXT PRIMARY KEY,

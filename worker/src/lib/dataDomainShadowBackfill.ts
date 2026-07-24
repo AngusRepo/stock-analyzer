@@ -20,6 +20,9 @@ export interface DomainShadowBackfillResult {
   batch_rows: number
   batch_checksum: string | null
   cursor: unknown[] | null
+  domain_tables_completed?: number
+  domain_tables_total?: number
+  domain_shadow_ready?: boolean
 }
 
 function identifier(value: string): string {
@@ -60,6 +63,11 @@ export function domainBackfillKeysetWhere(primaryKeys: string[], cursor: unknown
   if (cursor.length !== primaryKeys.length) throw new Error('domain_backfill_cursor_shape_mismatch')
   const tuple = primaryKeys.map(identifier).join(", ")
   return { sql: `WHERE (${tuple}) > (${primaryKeys.map(() => '?').join(', ')})`, binds: cursor }
+}
+
+export function isDomainShadowCopyComplete(ownedTables: string[], completedTables: string[]): boolean {
+  const completed = new Set(completedTables.map((table) => table.trim().toLowerCase()))
+  return ownedTables.length > 0 && ownedTables.every((table) => completed.has(table))
 }
 
 function parseCursor(value: unknown): unknown[] | null {
@@ -110,19 +118,45 @@ export async function backfillDataDomainTableShadow(
     const targetRows = Number(targetCount?.count ?? 0)
     if (sourceRows !== targetRows) throw new Error(`domain_shadow_count_mismatch:${domain}:${table}:${sourceRows}/${targetRows}`)
     await env.DB.prepare(`
-      INSERT INTO data_domain_cutovers(domain,status,source_binding,target_binding)
-      VALUES (?, 'shadow', 'DB', ?)
-      ON CONFLICT(domain) DO UPDATE SET
-        status=CASE WHEN data_domain_cutovers.status IN ('legacy','shadow') THEN 'shadow' ELSE data_domain_cutovers.status END,
-        target_binding=excluded.target_binding, updated_at=CURRENT_TIMESTAMP
-    `).bind(domain, `${domain.toUpperCase()}_DB`).run()
-    await env.DB.prepare(`
       INSERT INTO data_domain_backfill_cursors(domain, table_name, status, cursor_json, updated_at)
       VALUES (?, ?, 'complete', ?, CURRENT_TIMESTAMP)
       ON CONFLICT(domain,table_name) DO UPDATE SET status='complete', cursor_json=excluded.cursor_json,
         error_code=NULL, updated_at=CURRENT_TIMESTAMP
     `).bind(domain, table, JSON.stringify(cursor)).run()
-    return { domain, table, status: 'shadow_table_complete', source_rows: sourceRows, target_rows: targetRows, batch_rows: 0, batch_checksum: null, cursor }
+    const ownedTables = tablesForDataDomain(domain)
+    const completedResult = await env.DB.prepare(`
+      SELECT table_name
+        FROM data_domain_backfill_cursors
+       WHERE domain=? AND status='complete'
+    `).bind(domain).all<{ table_name: string }>()
+    const completedTables = (completedResult.results ?? []).map((row) => String(row.table_name))
+    const domainShadowReady = isDomainShadowCopyComplete(ownedTables, completedTables)
+    const currentCutover = await env.DB.prepare(`
+      SELECT status FROM data_domain_cutovers WHERE domain=?
+    `).bind(domain).first<{ status?: string }>()
+    if (!domainShadowReady && currentCutover?.status && !['legacy', 'shadow'].includes(currentCutover.status)) {
+      throw new Error(`domain_cutover_inconsistent:${domain}:${currentCutover.status}`)
+    }
+    await env.DB.prepare(`
+      INSERT INTO data_domain_cutovers(domain,status,source_binding,target_binding)
+      VALUES (?, ?, 'DB', ?)
+      ON CONFLICT(domain) DO UPDATE SET
+        status=CASE WHEN data_domain_cutovers.status IN ('legacy','shadow') THEN excluded.status ELSE data_domain_cutovers.status END,
+        target_binding=excluded.target_binding, updated_at=CURRENT_TIMESTAMP
+    `).bind(domain, domainShadowReady ? 'shadow' : 'legacy', `${domain.toUpperCase()}_DB`).run()
+    return {
+      domain,
+      table,
+      status: 'shadow_table_complete',
+      source_rows: sourceRows,
+      target_rows: targetRows,
+      batch_rows: 0,
+      batch_checksum: null,
+      cursor,
+      domain_tables_completed: completedTables.filter((completed) => ownedTables.includes(completed)).length,
+      domain_tables_total: ownedTables.length,
+      domain_shadow_ready: domainShadowReady,
+    }
   }
   const columnSql = columns.map(identifier).join(", ")
   const valuesSql = columns.map(() => '?').join(', ')

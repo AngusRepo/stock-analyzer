@@ -6,6 +6,7 @@ import {
   databaseForDataDomain,
   dataDomainForTable,
   shadowDatabaseForDataDomain,
+  MULTI_D1_STRICT_ROUTING_READY,
   tablesForDataDomain,
 } from './dataDomainRegistry'
 
@@ -34,3 +35,9 @@ assert.equal(shadowDatabaseForDataDomain(shadowEnv, 'market'), market)
 assert.equal(databaseForDataDomain({ ...shadowEnv, MULTI_D1_ACTIVE_DOMAINS: 'market' }, 'market'), market)
 assert(activeDataDomains({ MULTI_D1_ACTIVE_DOMAINS: ' market,ops ' }).has('ops'))
 assert.throws(() => databaseForDataDomain({ DB: legacy, MULTI_D1_ACTIVE_DOMAINS: 'learning' }, 'learning'), /data_domain_binding_missing:learning/)
+
+assert.equal(MULTI_D1_STRICT_ROUTING_READY, false)
+assert.throws(
+  () => databaseForDataDomain({ ...shadowEnv, MULTI_D1_STRICT: 'true' }, 'market'),
+  /multi_d1_strict_routing_not_closed/,
+)

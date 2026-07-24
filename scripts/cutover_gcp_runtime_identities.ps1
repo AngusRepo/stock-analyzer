@@ -194,8 +194,10 @@ foreach ($service in $contract.scaler_targets) {
 foreach ($entry in $contract.services.PSObject.Properties) {
   $email = Get-ServiceAccount ([string]$entry.Value)
   if ($Apply) {
-    $actual = (& gcloud run services describe $entry.Name --project=$project --region=$region --format="value(spec.template.spec.serviceAccountName)").Trim()
-    if ($actual -eq $email) {
+    $resource = (& gcloud run services describe $entry.Name --project=$project --region=$region --format=json) | ConvertFrom-Json
+    $actual = [string]$resource.spec.template.spec.serviceAccountName
+    $ready = [string]($resource.status.conditions | Where-Object type -eq "Ready" | Select-Object -First 1 -ExpandProperty status)
+    if ($actual -eq $email -and $ready -eq "True") {
       Write-Host "[identity-cutover] service already correct $($entry.Name) -> $email"
       continue
     }
@@ -209,8 +211,10 @@ foreach ($entry in $contract.services.PSObject.Properties) {
 foreach ($entry in $contract.jobs.PSObject.Properties) {
   $email = Get-ServiceAccount ([string]$entry.Value)
   if ($Apply) {
-    $actual = (& gcloud run jobs describe $entry.Name --project=$project --region=$region --format="value(spec.template.spec.template.spec.serviceAccountName)").Trim()
-    if ($actual -eq $email) {
+    $resource = (& gcloud run jobs describe $entry.Name --project=$project --region=$region --format=json) | ConvertFrom-Json
+    $actual = [string]$resource.spec.template.spec.template.spec.serviceAccountName
+    $ready = [string]($resource.status.conditions | Where-Object type -eq "Ready" | Select-Object -First 1 -ExpandProperty status)
+    if ($actual -eq $email -and $ready -eq "True") {
       Write-Host "[identity-cutover] job already correct $($entry.Name) -> $email"
       continue
     }

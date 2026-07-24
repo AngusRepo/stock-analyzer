@@ -29,6 +29,26 @@ binding = "OPS_DB"
 database_name = "stockvision-ops-db"
 database_id = "d9914406-bb36-45a4-bdc4-fe565ed910d3"
 
+[[d1_databases]]
+binding = "CORE_DB"
+database_name = "stockvision-core-db"
+database_id = "8cc0ab1f-088c-4c21-b282-bcd4c790c7da"
+
+[[d1_databases]]
+binding = "EXECUTION_DB"
+database_name = "stockvision-execution-db"
+database_id = "731b3c7e-ad14-4e0e-b38e-4de53c5a83fa"
+
+[[d1_databases]]
+binding = "PAPER_DB"
+database_name = "stockvision-paper-db"
+database_id = "bd0a99b2-077b-4d57-8971-07ff8c7f19e1"
+
+[[d1_databases]]
+binding = "RESEARCH_DB"
+database_name = "stockvision-research-db"
+database_id = "9332506a-ef37-43d4-9ea3-5aa70b1561d2"
+
 [[kv_namespaces]]
 binding = "KV"
 id = "39dcebcf5b6848c98f269ef9a48dc3f8"

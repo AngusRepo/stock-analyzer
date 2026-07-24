@@ -20,6 +20,22 @@ function Invoke-Gcloud([string[]]$Arguments) {
   if ($LASTEXITCODE -ne 0) { throw "Failed: $display" }
 }
 
+function Invoke-GcloudWithRetry([string[]]$Arguments, [int]$MaxAttempts = 5) {
+  if (-not $Apply) {
+    Invoke-Gcloud $Arguments
+    return
+  }
+  $display = "gcloud " + ($Arguments -join " ")
+  for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+    & gcloud @Arguments
+    if ($LASTEXITCODE -eq 0) { return }
+    if ($attempt -eq $MaxAttempts) { throw "Failed after $MaxAttempts attempts: $display" }
+    $delaySeconds = [Math]::Min(5 * [Math]::Pow(2, $attempt - 1), 30)
+    Write-Warning "Attempt $attempt failed; retrying in $delaySeconds seconds: $display"
+    Start-Sleep -Seconds $delaySeconds
+  }
+}
+
 function Get-ServiceAccount([string]$Alias) {
   return [string]$contract.service_accounts.$Alias
 }
@@ -194,13 +210,15 @@ foreach ($service in $contract.scaler_targets) {
 foreach ($entry in $contract.services.PSObject.Properties) {
   $email = Get-ServiceAccount ([string]$entry.Value)
   if ($Apply) {
-    $actual = (& gcloud run services describe $entry.Name --project=$project --region=$region --format="value(spec.template.spec.serviceAccountName)").Trim()
-    if ($actual -eq $email) {
+    $resource = (& gcloud run services describe $entry.Name --project=$project --region=$region --format=json) | ConvertFrom-Json
+    $actual = [string]$resource.spec.template.spec.serviceAccountName
+    $ready = [string]($resource.status.conditions | Where-Object type -eq "Ready" | Select-Object -First 1 -ExpandProperty status)
+    if ($actual -eq $email -and $ready -eq "True") {
       Write-Host "[identity-cutover] service already correct $($entry.Name) -> $email"
       continue
     }
   }
-  Invoke-Gcloud @(
+  Invoke-GcloudWithRetry @(
     "run", "services", "update", $entry.Name,
     "--project=$project", "--region=$region", "--service-account=$email", "--quiet"
   )
@@ -209,13 +227,15 @@ foreach ($entry in $contract.services.PSObject.Properties) {
 foreach ($entry in $contract.jobs.PSObject.Properties) {
   $email = Get-ServiceAccount ([string]$entry.Value)
   if ($Apply) {
-    $actual = (& gcloud run jobs describe $entry.Name --project=$project --region=$region --format="value(spec.template.spec.template.spec.serviceAccountName)").Trim()
-    if ($actual -eq $email) {
+    $resource = (& gcloud run jobs describe $entry.Name --project=$project --region=$region --format=json) | ConvertFrom-Json
+    $actual = [string]$resource.spec.template.spec.template.spec.serviceAccountName
+    $ready = [string]($resource.status.conditions | Where-Object type -eq "Ready" | Select-Object -First 1 -ExpandProperty status)
+    if ($actual -eq $email -and $ready -eq "True") {
       Write-Host "[identity-cutover] job already correct $($entry.Name) -> $email"
       continue
     }
   }
-  Invoke-Gcloud @(
+  Invoke-GcloudWithRetry @(
     "run", "jobs", "update", $entry.Name,
     "--project=$project", "--region=$region", "--service-account=$email", "--quiet"
   )

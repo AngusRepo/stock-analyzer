@@ -986,7 +986,8 @@ MODAL_RESULT=""
 if [ "$WITH_MODAL" = "1" ]; then
   echo "=== Step 5/5: Deploy Modal from local release identity ==="
   detect_modal_python
-  if ! "$MODAL_PYTHON_BIN" -m modal deploy --tag "$SOURCE_SHA" "$MLS_DIR/modal_app.py"; then
+  if ! PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
+    "$MODAL_PYTHON_BIN" -m modal deploy --tag "$SOURCE_SHA" "$MLS_DIR/modal_app.py"; then
     echo "ERROR: direct Modal deploy failed" >&2
     exit 6
   fi

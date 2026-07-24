@@ -43,6 +43,7 @@ def test_controller_deploy_is_fail_closed_on_identity_and_provenance() -> None:
     assert "PRODUCTION_BRANCH" in script
     assert "STOCKVISION_SOURCE_SHA" in script
     assert "STOCKVISION_SCHEDULER_MANIFEST_SHA256" in script
+    assert 'PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"' in script
 
 
 def test_cutover_requires_explicit_apply_and_separate_role_removal() -> None:

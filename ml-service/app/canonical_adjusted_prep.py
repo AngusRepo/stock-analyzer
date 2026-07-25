@@ -21,8 +21,64 @@ from .sequence_training import (
 )
 
 
-SCHEMA_VERSION = "active8-canonical-adjusted-prep-v1"
+SCHEMA_VERSION = "active8-canonical-adjusted-prep-v2"
 
+
+def _manifest_checksum(manifest: dict[str, Any]) -> str:
+    unsigned = {key: value for key, value in manifest.items() if key != "manifest_checksum"}
+    return hashlib.sha256(json.dumps(unsigned, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _verified_source_receipt(bucket: Any, prefix: str, batch_count: int) -> dict[str, Any]:
+    path = f"{prefix}/prep/immutable_receipt.json"
+    blob = bucket.blob(path)
+    if not blob.exists():
+        raise ValueError("canonical_adjusted_source_receipt_missing")
+    receipt = json.loads(blob.download_as_text().lstrip("\ufeff"))
+    unsigned = {key: value for key, value in receipt.items() if key != "receipt_checksum"}
+    if (
+        receipt.get("schema_version") != "active8-immutable-feature-prep-receipt-v1"
+        or receipt.get("status") != "ready"
+        or str(receipt.get("output_gcs_prefix") or "").rstrip("/") != prefix
+        or int(receipt.get("batch_count") or 0) != batch_count
+        or receipt.get("receipt_checksum")
+        != hashlib.sha256(json.dumps(unsigned, sort_keys=True).encode("utf-8")).hexdigest()
+    ):
+        raise ValueError("canonical_adjusted_source_receipt_invalid")
+    checksums = receipt.get("output_checksums") or {}
+    expected = [f"{prefix}/prep/batch_{index}.npz" for index in range(batch_count)]
+    if sorted(checksums) != expected:
+        raise ValueError("canonical_adjusted_source_inventory_invalid")
+    for artifact_path, checksum in checksums.items():
+        raw = bucket.blob(artifact_path).download_as_bytes()
+        if hashlib.sha256(raw).hexdigest() != checksum:
+            raise ValueError(f"canonical_adjusted_source_checksum_mismatch:{artifact_path}")
+    return receipt
+
+
+def _verified_sequence_manifest(bucket: Any, prefix: str, batch_count: int) -> dict[str, Any]:
+    path = f"{prefix}/prep/sequence_manifest.json"
+    blob = bucket.blob(path)
+    if not blob.exists():
+        raise ValueError("canonical_adjusted_sequence_manifest_missing")
+    manifest = json.loads(blob.download_as_text().lstrip("\ufeff"))
+    if (
+        manifest.get("status") != "ready"
+        or manifest.get("contract") != "sequence_records_v3"
+        or str(manifest.get("output_gcs_prefix") or "").rstrip("/") != prefix
+        or int(manifest.get("batch_count") or 0) != batch_count
+        or manifest.get("manifest_checksum") != _manifest_checksum(manifest)
+    ):
+        raise ValueError("canonical_adjusted_sequence_manifest_invalid")
+    checksums = manifest.get("output_checksums") or {}
+    expected_batches = [f"{prefix}/prep/batch_{index}.npz" for index in range(batch_count)]
+    if any(path not in checksums for path in expected_batches):
+        raise ValueError("canonical_adjusted_sequence_inventory_invalid")
+    for artifact_path, checksum in checksums.items():
+        raw = bucket.blob(artifact_path).download_as_bytes()
+        if hashlib.sha256(raw).hexdigest() != checksum:
+            raise ValueError(f"canonical_adjusted_sequence_checksum_mismatch:{artifact_path}")
+    return manifest
 
 def build_adjusted_target_lookup(records: list[dict[str, Any]]) -> dict[str, dict[str, tuple[float, str]]]:
     output: dict[str, dict[str, tuple[float, str]]] = {}
@@ -89,15 +145,29 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
     if not output_prefix or output_prefix in {source_prefix, sequence_prefix}:
         raise ValueError("canonical_adjusted_output_prefix_must_be_new")
 
+    source_receipt = _verified_source_receipt(bucket, source_prefix, batch_count)
+    sequence_manifest = _verified_sequence_manifest(bucket, sequence_prefix, sequence_batch_count)
+    source_receipt_checksum = str(source_receipt["receipt_checksum"])
+    sequence_manifest_checksum = str(sequence_manifest["manifest_checksum"])
+
     manifest_blob = bucket.blob(f"{output_prefix}/prep/manifest.json")
     if manifest_blob.exists():
-        manifest = json.loads(manifest_blob.download_as_text())
+        manifest = json.loads(manifest_blob.download_as_text().lstrip("\ufeff"))
+        output_checksums = manifest.get("output_checksums") or {}
+        valid_outputs = bool(output_checksums) and all(
+            hashlib.sha256(bucket.blob(path).download_as_bytes()).hexdigest() == checksum
+            for path, checksum in output_checksums.items()
+        )
         if (
             manifest.get("schema_version") == SCHEMA_VERSION
             and manifest.get("source_gcs_prefix") == source_prefix
             and manifest.get("sequence_gcs_prefix") == sequence_prefix
+            and manifest.get("source_receipt_checksum") == source_receipt_checksum
+            and manifest.get("sequence_manifest_checksum") == sequence_manifest_checksum
+            and manifest.get("manifest_checksum") == _manifest_checksum(manifest)
+            and valid_outputs
         ):
-            return {"status": "idempotent_ready", **manifest}
+            return {**manifest, "status": "idempotent_ready"}
         raise ValueError("canonical_adjusted_output_prefix_collision")
 
     source_batches: list[dict[str, np.ndarray]] = []
@@ -195,6 +265,22 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
         "source_gcs_prefix": source_prefix,
         "sequence_gcs_prefix": sequence_prefix,
         "output_gcs_prefix": output_prefix,
+        "source_business_date": source_receipt.get("business_date"),
+        "source_receipt_checksum": source_receipt_checksum,
+        "sequence_manifest_checksum": sequence_manifest_checksum,
+        "source_feature_date_min": min(
+            str(value)[:10] for batch in source_batches for value in batch["dates"]
+        ),
+        "source_feature_date_max": max(
+            str(value)[:10] for batch in source_batches for value in batch["dates"]
+        ),
+        "sequence_date_min": (sequence_manifest.get("summary") or {}).get("date_min"),
+        "sequence_date_max": (sequence_manifest.get("summary") or {}).get("date_max"),
+        "signal_date_min": min(all_dates.astype(str).tolist()),
+        "signal_date_max": max(all_dates.astype(str).tolist()),
+        "label_known_date_max": max(
+            str(value)[:10] for row in staged for value in row["known_dates"]
+        ),
         "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
         "roundtrip_cost_bps": CANONICAL_ROUNDTRIP_COST_BPS,
         "rank_semantic_version": "same-market-same-date-global-percentile-v2",
@@ -207,8 +293,7 @@ def rebuild_canonical_adjusted_prep(payload: dict[str, Any]) -> dict[str, Any]:
         "source_checksums": source_checksums,
         "output_checksums": output_checksums,
     }
-    encoded_manifest = json.dumps(manifest, sort_keys=True).encode("utf-8")
-    manifest["manifest_checksum"] = hashlib.sha256(encoded_manifest).hexdigest()
+    manifest["manifest_checksum"] = _manifest_checksum(manifest)
     manifest_blob.upload_from_string(
         json.dumps(manifest, sort_keys=True, indent=2),
         content_type="application/json",

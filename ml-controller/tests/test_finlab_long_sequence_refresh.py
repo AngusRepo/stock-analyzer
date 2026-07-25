@@ -37,7 +37,9 @@ def test_successful_daily_3y_callback_spawns_long_sequence_refresh(monkeypatch):
 
     assert result["status"] == "spawned"
     assert result["function"] == "build_finlab_long_sequence_prep"
-    assert result["output_gcs_prefix"] == "universal/sequence_long/latest"
+    assert result["output_gcs_prefix"] == (
+        "universal/sequence_long/runs/finlab-v4-3y-20260611-1781186403489"
+    )
     assert result["trigger_run_id"] == "finlab-v4-3y-20260611-1781186403489"
     assert captured["fire_and_forget"] is True
     assert captured["payload"] == {
@@ -45,7 +47,9 @@ def test_successful_daily_3y_callback_spawns_long_sequence_refresh(monkeypatch):
             "gs://stockvision-models/finlab/v4/backfill/finlab-v4-5y-base",
             "gs://stockvision-models/finlab/v4/backfill/finlab-v4-3y-20260611-1781186403489",
         ],
-        "output_gcs_prefix": "universal/sequence_long/latest",
+        "output_gcs_prefix": (
+            "universal/sequence_long/runs/finlab-v4-3y-20260611-1781186403489"
+        ),
         "lanes": ["daily_price"],
         "min_len": 65,
         "batch_size": 512,
@@ -82,7 +86,9 @@ def test_successful_daily_incremental_callback_spawns_long_sequence_refresh(monk
 
     assert result["status"] == "spawned"
     assert result["function"] == "build_finlab_long_sequence_prep"
-    assert result["output_gcs_prefix"] == "universal/sequence_long/latest"
+    assert result["output_gcs_prefix"] == (
+        "universal/sequence_long/runs/finlab-v4-daily-20260702-178298215995"
+    )
     assert result["trigger_run_id"] == "finlab-v4-daily-20260702-178298215995"
     assert captured["fire_and_forget"] is True
     assert captured["payload"] == {
@@ -90,7 +96,9 @@ def test_successful_daily_incremental_callback_spawns_long_sequence_refresh(monk
             "gs://stockvision-models/finlab/v4/backfill/finlab-v4-5y-base",
             "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260702-178298215995",
         ],
-        "output_gcs_prefix": "universal/sequence_long/latest",
+        "output_gcs_prefix": (
+            "universal/sequence_long/runs/finlab-v4-daily-20260702-178298215995"
+        ),
         "lanes": ["daily_price"],
         "min_len": 65,
         "batch_size": 512,

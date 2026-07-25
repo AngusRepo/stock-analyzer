@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 
@@ -216,6 +217,45 @@ def test_build_finlab_long_history_sequence_prep_stitches_multiple_gcs_prefixes(
         "gs://stockvision-models/finlab/tail",
     ]
 
+
+def test_sequence_prep_seals_checksums_and_is_idempotent(tmp_path):
+    _write_finlab_price_artifact(tmp_path)
+    bucket = _Bucket()
+    payload = {
+        "source_artifact_root": str(tmp_path),
+        "output_gcs_prefix": "universal/sequence_long/runs/run-1",
+        "min_len": 8,
+        "batch_size": 2,
+    }
+
+    first = build_finlab_long_history_sequence_prep(payload, bucket=bucket)
+    second = build_finlab_long_history_sequence_prep(payload, bucket=bucket)
+
+    manifest = first["manifest"]
+    assert manifest["status"] == "ready"
+    assert manifest["batch_count"] == 1
+    assert manifest["batch_rows"] == [2]
+    assert len(manifest["manifest_checksum"]) == 64
+    for path, checksum in manifest["output_checksums"].items():
+        assert hashlib.sha256(bucket.store[path]).hexdigest() == checksum
+    assert second["status"] == "idempotent_ready"
+    assert second["manifest"]["manifest_checksum"] == manifest["manifest_checksum"]
+
+
+def test_sequence_prep_rejects_tampered_sealed_output(tmp_path):
+    _write_finlab_price_artifact(tmp_path)
+    bucket = _Bucket()
+    payload = {
+        "source_artifact_root": str(tmp_path),
+        "output_gcs_prefix": "universal/sequence_long/runs/run-2",
+        "min_len": 8,
+    }
+    first = build_finlab_long_history_sequence_prep(payload, bucket=bucket)
+    batch_path = first["output_paths"][0]
+    bucket.store[batch_path] = b"tampered"
+
+    with pytest.raises(SequenceSourceInvalidError, match="checksum mismatch"):
+        build_finlab_long_history_sequence_prep(payload, bucket=bucket)
 
 def test_sequence_loader_prefers_sequence_gcs_prefix(monkeypatch):
     bucket = _Bucket()

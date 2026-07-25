@@ -120,6 +120,34 @@ class UniversalRetrainTriggerRequest(BaseModel):
     )
 
 
+def _verified_prep_only_receipt(bucket: object, prefix: str, run_date: str) -> dict[str, Any] | None:
+    receipt_path = f"{prefix}/prep/immutable_receipt.json"
+    receipt_blob = bucket.blob(receipt_path)
+    if not receipt_blob.exists():
+        return None
+    receipt = json.loads(receipt_blob.download_as_text().lstrip("\ufeff"))
+    unsigned = {key: value for key, value in receipt.items() if key != "receipt_checksum"}
+    actual_checksum = hashlib.sha256(json.dumps(unsigned, sort_keys=True).encode("utf-8")).hexdigest()
+    if (
+        receipt.get("schema_version") != "active8-immutable-feature-prep-receipt-v1"
+        or receipt.get("status") != "ready"
+        or receipt.get("business_date") != run_date
+        or str(receipt.get("output_gcs_prefix") or "").rstrip("/") != prefix
+        or receipt.get("receipt_checksum") != actual_checksum
+    ):
+        raise ValueError("prep_only_sealed_receipt_invalid")
+    checksums = receipt.get("output_checksums") or {}
+    if not isinstance(checksums, dict) or not checksums:
+        raise ValueError("prep_only_sealed_inventory_missing")
+    for path, expected in checksums.items():
+        artifact = bucket.blob(str(path))
+        if not artifact.exists() or hashlib.sha256(artifact.download_as_bytes()).hexdigest() != expected:
+            raise ValueError(f"prep_only_sealed_checksum_mismatch:{path}")
+    feature_names_path = str(receipt.get("feature_names_path") or "")
+    if not feature_names_path or not bucket.blob(feature_names_path).exists():
+        raise ValueError("prep_only_feature_names_missing")
+    return receipt
+
 def _exact_dataset_snapshot_rejection(
     *,
     require_exact: bool,
@@ -1103,7 +1131,29 @@ async def trigger_universal_retrain(
             "error": "prep_only_immutable_output_prefix_required",
             "required_prefix": "universal/oof_forward_prep/<run-id>",
         }
-    lock_key = f"retrain:{run_date}"
+    prep_bucket = None
+    if req.prep_only:
+        from google.cloud import storage as _prep_storage
+
+        prep_bucket = _prep_storage.Client().bucket(
+            os.environ.get("GCS_BUCKET_NAME", "stockvision-models")
+        )
+        try:
+            sealed = _verified_prep_only_receipt(prep_bucket, prep_output_gcs_prefix, run_date)
+        except (ValueError, json.JSONDecodeError) as exc:
+            return {
+                "status": "rejected",
+                "error": str(exc),
+                "output_gcs_prefix": prep_output_gcs_prefix,
+            }
+        if sealed is not None:
+            return {
+                **sealed,
+                "status": "idempotent_ready",
+                "receipt_path": f"{prep_output_gcs_prefix}/prep/immutable_receipt.json",
+            }
+    lock_scope = hashlib.sha256(prep_output_gcs_prefix.encode("utf-8")).hexdigest()[:12]
+    lock_key = f"prep-only:{run_date}:{lock_scope}" if req.prep_only else f"retrain:{run_date}"
     lock_result = retrain_lock.acquire(
         lock_key,
         ttl_seconds=_UNIVERSAL_LOCK_TTL_SECONDS,
@@ -1134,19 +1184,7 @@ async def trigger_universal_retrain(
         f"[retrain/universal] Lock acquired: {lock_key} (backend={lock_result.backend}, "
         f"reason={lock_result.reason})"
     )
-    if req.prep_only:
-        from google.cloud import storage as _prep_storage
 
-        prep_bucket = _prep_storage.Client().bucket(
-            os.environ.get("GCS_BUCKET_NAME", "stockvision-models")
-        )
-        if next(prep_bucket.list_blobs(prefix=f"{prep_output_gcs_prefix}/", max_results=1), None):
-            retrain_lock.release(lock_key, expected_metadata={"run_id": run_id})
-            return {
-                "status": "rejected",
-                "error": "prep_only_output_prefix_collision",
-                "output_gcs_prefix": prep_output_gcs_prefix,
-            }
     _upsert_retrain_status(
         run_id,
         status="started",

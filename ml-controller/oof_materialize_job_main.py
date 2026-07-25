@@ -44,14 +44,29 @@ async def _execute_lifecycle(
     expected_cohort_id: str | None,
 ) -> dict[str, Any]:
     from routers.walk_forward import OofLifecycleRequest, run_walk_forward_oof_lifecycle
+    from services.active8_prep_lifecycle import (
+        Active8PrepDependencyPending,
+        ensure_active8_daily_prep,
+    )
 
-    return await run_walk_forward_oof_lifecycle(OofLifecycleRequest(
+    try:
+        prep = await ensure_active8_daily_prep(end_date=end_date, dry_run=False)
+    except Active8PrepDependencyPending as exc:
+        return {
+            "status": "pending",
+            "reason": exc.reason,
+            "dependency_retry_required": True,
+            "prep_lifecycle": exc.evidence,
+        }
+    result = await run_walk_forward_oof_lifecycle(OofLifecycleRequest(
         cadence=cadence,
         end_date=end_date,
         dry_run=False,
         promote=promote,
         expected_cohort_id=expected_cohort_id,
     ))
+    result["prep_lifecycle"] = prep
+    return result
 
 
 async def _execute_allocator_snapshot(
@@ -165,7 +180,8 @@ async def _run() -> int:
                 if callback_status != "running":
                     callback_status = "success"
             elif status in {"skipped", "pending"}:
-                callback_status = "skipped"
+                if callback_status != "running":
+                    callback_status = "skipped"
             else:
                 raise RuntimeError(f"unexpected OOF materialization status: {status or 'unknown'}")
     except Exception as exc:  # noqa: BLE001 - callback must close every terminal job state.

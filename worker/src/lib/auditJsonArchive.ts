@@ -4,8 +4,16 @@ import {
   upsertDatasetSnapshotManifest,
   type DatasetSnapshotManifest,
 } from './datasetSnapshots'
+import {
+  beginRetentionRun,
+  checkpointRetentionItem,
+  finishRetentionRun,
+  loadRetentionCursor,
+  type RetentionCursor,
+} from './retentionRunLedger'
 
 export const AUDIT_JSON_ARCHIVE_KIND = 'd1_audit_json_archive'
+const AUDIT_JSON_RETENTION_POLICY_ID = 'audit_json_r2_v1'
 export const AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE = 'ARCHIVE_D1_AUDIT_JSON_TO_R2'
 export const AUDIT_JSON_RETENTION_DEFAULT_DAYS = 90
 export const AUDIT_JSON_RETENTION_MIN_DAYS = 30
@@ -80,6 +88,9 @@ export type AuditJsonArchiveRunResult = {
     snapshot_id: string | null
     checksum: string | null
     status: 'dry_run' | 'archived' | 'skipped' | 'failed'
+    cursor_date: string | null
+    cursor_key: string | null
+    backlog_remaining: boolean
     error?: string
   }>
   total_archived_rows: number
@@ -306,13 +317,26 @@ function buildPointer(input: {
   })
 }
 
+function retentionCursorPredicate(
+  target: AuditJsonTargetConfig,
+  cursor: RetentionCursor | null,
+): { sql: string; binds: unknown[] } {
+  if (!cursor?.cursor_date || cursor.cursor_key == null) return { sql: '', binds: [] }
+  return {
+    sql: `AND (${target.dateColumn} > ? OR (${target.dateColumn} = ? AND ${target.keyColumn} > ?))`,
+    binds: [cursor.cursor_date, cursor.cursor_date, cursor.cursor_key],
+  }
+}
+
 async function loadCandidateRows(
   env: Pick<Bindings, 'DB'>,
   target: AuditJsonTargetConfig,
   cutoffDate: string,
   limit: number,
   minBlobBytes: number,
+  cursor: RetentionCursor | null,
 ): Promise<Record<string, unknown>[]> {
+  const keyset = retentionCursorPredicate(target, cursor)
   const { results } = await env.DB.prepare(`
     SELECT ${target.selectedColumns.join(', ')},
            (${blobLengthExpr(target)}) AS __blob_bytes
@@ -321,9 +345,10 @@ async function loadCandidateRows(
        AND ${target.dateColumn} < ?
        AND (${retentionEligibilityWhere(target)})
        AND (${archiveableWhere(target)})
+       ${keyset.sql}
      ORDER BY ${target.dateColumn} ASC, ${target.keyColumn} ASC
      LIMIT ?
-  `).bind(cutoffDate, ...archiveableBinds(target, minBlobBytes), limit).all<Record<string, unknown>>()
+  `).bind(cutoffDate, ...archiveableBinds(target, minBlobBytes), ...keyset.binds, limit).all<Record<string, unknown>>()
   return results ?? []
 }
 
@@ -479,9 +504,19 @@ export async function runAuditJsonArchiveRetention(
   if (!dryRun && !env.ARTIFACTS) {
     throw new Error('audit_json_archive_r2_binding_missing')
   }
+  if (!dryRun) {
+    await beginRetentionRun(env.DB, {
+      runId,
+      policyId: AUDIT_JSON_RETENTION_POLICY_ID,
+      businessDate,
+    })
+  }
 
   for (const target of selectedTargets(options.targets)) {
-    const rows = await loadCandidateRows(env, target, cutoffDate, limitPerTable, minBlobBytes)
+    const cursor = dryRun
+      ? null
+      : await loadRetentionCursor(env.DB, AUDIT_JSON_RETENTION_POLICY_ID, target.id)
+    const rows = await loadCandidateRows(env, target, cutoffDate, limitPerTable, minBlobBytes, cursor)
     const archivedBlobBytes = rows.reduce((sum, row) => sum + rowBlobBytes(row, target), 0)
     if (dryRun || rows.length === 0) {
       result.tables.push({
@@ -495,7 +530,22 @@ export async function runAuditJsonArchiveRetention(
         snapshot_id: null,
         checksum: null,
         status: dryRun ? 'dry_run' : 'skipped',
+        cursor_date: cursor?.cursor_date ?? null,
+        cursor_key: cursor?.cursor_key ?? null,
+        backlog_remaining: dryRun ? rows.length >= limitPerTable : false,
       })
+      if (!dryRun) {
+        await checkpointRetentionItem(env.DB, {
+          runId,
+          policyId: AUDIT_JSON_RETENTION_POLICY_ID,
+          datasetId: target.id,
+          status: 'skipped',
+          scannedRows: 0,
+          backlogRemaining: false,
+          cycleComplete: true,
+          evidence: { cutoff_date: cutoffDate, reason: 'no_more_eligible_rows' },
+        })
+      }
       continue
     }
 
@@ -581,6 +631,8 @@ export async function runAuditJsonArchiveRetention(
         originalByteLength: byteLength(row[blobColumn]),
       }))
 
+      const lastRow = rows[rows.length - 1]
+      const backlogRemaining = rows.length >= limitPerTable
       result.tables.push({
         target: target.id,
         table: target.table,
@@ -592,10 +644,28 @@ export async function runAuditJsonArchiveRetention(
         snapshot_id: snapshotId,
         checksum,
         status: 'archived',
+        cursor_date: String(lastRow?.[target.dateColumn] ?? '') || null,
+        cursor_key: String(lastRow?.[target.keyColumn] ?? '') || null,
+        backlog_remaining: backlogRemaining,
       })
       result.total_archived_rows += rows.length
       result.total_scrubbed_rows += scrubbed
       result.total_archived_blob_bytes += archivedBlobBytes
+      await checkpointRetentionItem(env.DB, {
+        runId,
+        policyId: AUDIT_JSON_RETENTION_POLICY_ID,
+        datasetId: target.id,
+        status: 'success',
+        scannedRows: rows.length,
+        archivedRows: rows.length,
+        scrubbedRows: scrubbed,
+        archivedBytes: archivedBlobBytes,
+        cursorDate: String(lastRow?.[target.dateColumn] ?? '') || null,
+        cursorKey: lastRow?.[target.keyColumn] as string | number | null,
+        backlogRemaining,
+        cycleComplete: !backlogRemaining,
+        evidence: { snapshot_id: snapshotId, r2_key: r2Key, checksum, cutoff_date: cutoffDate },
+      })
     } catch (error) {
       result.tables.push({
         target: target.id,
@@ -608,11 +678,38 @@ export async function runAuditJsonArchiveRetention(
         snapshot_id: null,
         checksum: null,
         status: 'failed',
+        cursor_date: cursor?.cursor_date ?? null,
+        cursor_key: cursor?.cursor_key ?? null,
+        backlog_remaining: true,
         error: error instanceof Error ? error.message : String(error),
       })
+      if (!dryRun) {
+        await checkpointRetentionItem(env.DB, {
+          runId,
+          policyId: AUDIT_JSON_RETENTION_POLICY_ID,
+          datasetId: target.id,
+          status: 'error',
+          cursorDate: cursor?.cursor_date ?? null,
+          cursorKey: cursor?.cursor_key ?? null,
+          backlogRemaining: true,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
     }
   }
 
+  if (!dryRun) {
+    const failed = result.tables.filter((table) => table.status === 'failed')
+    await finishRetentionRun(env.DB, {
+      runId,
+      status: failed.length ? 'error' : 'success',
+      scannedRows: result.tables.reduce((sum, table) => sum + table.candidate_rows, 0),
+      archivedRows: result.total_archived_rows,
+      scrubbedRows: result.total_scrubbed_rows,
+      archivedBytes: result.total_archived_blob_bytes,
+      error: failed.map((table) => `${table.target}:${table.error ?? 'unknown'}`).join('; ') || null,
+    })
+  }
   return result
 }
 

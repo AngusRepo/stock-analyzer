@@ -202,6 +202,96 @@ def load_oof_materialized_rows(
     return rows
 
 
+def load_indexed_oof_ev_rows(
+    *,
+    bucket: Any,
+    cohort_id: str,
+    source_manifest_checksum: str,
+    knowledge_cutoff_date: str,
+    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Load checksum-verified compact OOF evidence without D1 full-row tables."""
+
+    snapshots = load_oof_materialized_rows(
+        bucket=bucket,
+        cohort_id=cohort_id,
+        artifact_kind="allocator_ev_snapshots",
+        query_fn=query_fn,
+    )
+    l4_predictions = load_oof_materialized_rows(
+        bucket=bucket,
+        cohort_id=cohort_id,
+        artifact_kind="l4_predictions",
+        query_fn=query_fn,
+    )
+    if len(source_manifest_checksum) != 64:
+        raise ValueError("active8_oof_indexed_source_manifest_checksum_invalid")
+    if any(
+        str(row.get("source_manifest_checksum") or "") != source_manifest_checksum
+        for row in snapshots
+    ):
+        raise ValueError("active8_oof_indexed_snapshot_lineage_mismatch")
+
+    mature_snapshots = [
+        row for row in snapshots
+        if str(row.get("label_known_date") or "")[:10] <= knowledge_cutoff_date
+    ]
+    mature_snapshot_keys = {
+        (
+            str(row.get("cohort_id") or ""),
+            str(row.get("fold_id") or ""),
+            str(row.get("snapshot_date") or "")[:10],
+            str(row.get("symbol") or ""),
+            str(row.get("market_segment") or ""),
+        )
+        for row in mature_snapshots
+    }
+    eligible_l4 = [
+        row for row in l4_predictions
+        if int(row.get("eligible_for_efficacy") or 0) == 1
+        and str(row.get("trained_until") or "")[:10]
+        < str(row.get("prediction_date") or "")[:10]
+        and (
+            str(row.get("cohort_id") or ""),
+            str(row.get("fold_id") or ""),
+            str(row.get("prediction_date") or "")[:10],
+            str(row.get("symbol") or ""),
+            str(row.get("market_segment") or ""),
+        ) in mature_snapshot_keys
+    ]
+    l4_keys = {
+        (
+            str(row.get("cohort_id") or ""),
+            str(row.get("fold_id") or ""),
+            str(row.get("prediction_date") or "")[:10],
+            str(row.get("symbol") or ""),
+            str(row.get("market_segment") or ""),
+        )
+        for row in eligible_l4
+    }
+    mature_snapshots = [
+        row for row in mature_snapshots
+        if (
+            str(row.get("cohort_id") or ""),
+            str(row.get("fold_id") or ""),
+            str(row.get("snapshot_date") or "")[:10],
+            str(row.get("symbol") or ""),
+            str(row.get("market_segment") or ""),
+        ) in l4_keys
+    ]
+    return mature_snapshots, eligible_l4, {
+        "schema_version": "active8-oof-indexed-loader-evidence-v1",
+        "storage_mode": "gcs_indexed_v1",
+        "source_manifest_checksum": source_manifest_checksum,
+        "knowledge_cutoff_date": knowledge_cutoff_date,
+        "snapshot_rows_loaded": len(snapshots),
+        "snapshot_rows_mature": len(mature_snapshots),
+        "l4_rows_loaded": len(l4_predictions),
+        "l4_rows_eligible": len(eligible_l4),
+        "d1_full_row_tables_required": False,
+    }
+
+
 def persist_oof_materialized_artifact_indexes(
     artifacts: list[dict[str, Any]],
     *,
@@ -1263,11 +1353,16 @@ def archive_ev_candidate_artifacts(
         bucket.blob(path).upload_from_string(encoded, content_type="application/json")
         decision = str(validation.get("decision") or "PENDING").upper()
         state = "production" if promoted else "offline_passed" if decision == "PASS" else "offline_failed"
+        candidate_type = (
+            "l4_alpha_ev_refresh"
+            if model_name == "l4_alpha_ev"
+            else "allocator_ev_fusion_refresh"
+        )
         upsert_artifact_record({
             "artifact_id": f"{model_name}:{model_version}",
             "model_name": model_name,
             "version": model_version,
-            "candidate_type": "model_family_shadow",
+            "candidate_type": candidate_type,
             "state": state,
             "artifact_path": path,
             "metadata_path": path,

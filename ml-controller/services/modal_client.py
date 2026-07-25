@@ -1244,6 +1244,16 @@ async def strategy_mining_research(payload: dict | None = None, fire_and_forget:
     return result
 
 
+async def rebuild_canonical_adjusted_prep(payload: dict) -> dict:
+    """Build a sealed canonical adjusted prep from immutable feature and sequence inputs."""
+    if not _USE_MODAL:
+        raise RuntimeError("canonical adjusted prep requires Modal credentials")
+    logger.info("[ml_client] Modal.remote rebuild_canonical_adjusted_prep")
+    result = await _modal_remote_call("rebuild_canonical_adjusted_prep", payload)
+    if not isinstance(result, dict):
+        raise RuntimeError("canonical adjusted prep returned invalid payload")
+    return result
+
 async def build_frozen_oof_forward_extension(payload: dict) -> dict:
     """Run pinned forward OOS inference; never trains or promotes artifacts."""
     if not _USE_MODAL:

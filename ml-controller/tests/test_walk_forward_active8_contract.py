@@ -794,3 +794,31 @@ def test_completed_oof_release_alias_marks_candidate_pbo_failure(monkeypatch):
     assert json.loads(written[0]["offline_gate_failed_gates"]) == [
         "cohort_model_selection_pbo"
     ]
+
+
+def test_oof_lifecycle_uses_latest_prep_instead_of_stale_parent_contract():
+    source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
+
+    latest_lookup = 'prep_gcs_prefix = _latest_canonical_prep_prefix(bucket) or ""'
+    stale_parent_lookup = 'prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")'
+    assert source.index(latest_lookup) < source.index(stale_parent_lookup)
+    assert '                prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "")' not in source.splitlines()
+    assert 'calendar_evidence.get("sequence_gcs_prefix")' in source
+
+def test_ev_oof_candidates_use_formal_registry_candidate_types():
+    source = (ROOT / "ml-controller" / "services" / "active8_oof_cohort_materializer.py").read_text(encoding="utf-8")
+
+    assert '"l4_alpha_ev_refresh"' in source
+    assert '"allocator_ev_fusion_refresh"' in source
+    archive_block = source[source.index("def archive_ev_candidate_artifacts"):source.index("def persist_oof_cohort")]
+    assert '"candidate_type": "model_family_shadow"' not in archive_block
+
+def test_daily_oof_materialization_reuses_checksum_verified_gcs_indexes():
+    router = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
+    materializer = (ROOT / "ml-controller" / "services" / "active8_oof_cohort_materializer.py").read_text(encoding="utf-8")
+
+    assert "load_indexed_oof_ev_rows" in router
+    assert 'prediction_storage_mode") == "gcs_indexed_v1"' in router
+    assert '"source": "checksum_verified_indexed_loader"' in router
+    assert "active8_oof_indexed_snapshot_lineage_mismatch" in materializer
+    assert '"d1_full_row_tables_required": False' in materializer

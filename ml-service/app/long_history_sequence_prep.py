@@ -7,6 +7,7 @@ by DLinear, PatchTST, iTransformer, and the TimesFM L2 sidecar.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -254,8 +255,43 @@ def summarize_sequence_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _upload_sequence_batches(
+def _manifest_checksum(manifest: dict[str, Any]) -> str:
+    unsigned = {key: value for key, value in manifest.items() if key != "manifest_checksum"}
+    return hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _verified_existing_manifest(
     *,
+    bucket: Any,
+    output_gcs_prefix: str,
+    records_checksum: str,
+) -> dict[str, Any] | None:
+    prefix = output_gcs_prefix.strip().rstrip("/")
+    blob = bucket.blob(f"{prefix}/prep/sequence_manifest.json")
+    if not blob.exists():
+        return None
+    manifest = json.loads(blob.download_as_text().lstrip("\ufeff"))
+    if (
+        manifest.get("status") != "ready"
+        or manifest.get("contract") != "sequence_records_v3"
+        or str(manifest.get("output_gcs_prefix") or "").rstrip("/") != prefix
+        or manifest.get("records_checksum") != records_checksum
+        or manifest.get("manifest_checksum") != _manifest_checksum(manifest)
+    ):
+        raise SequenceSourceInvalidError("immutable sequence output prefix collision")
+    output_checksums = manifest.get("output_checksums") or {}
+    if not isinstance(output_checksums, dict) or not output_checksums:
+        raise SequenceSourceInvalidError("immutable sequence output inventory missing")
+    for path, expected in output_checksums.items():
+        artifact = bucket.blob(str(path))
+        if not artifact.exists() or hashlib.sha256(artifact.download_as_bytes()).hexdigest() != expected:
+            raise SequenceSourceInvalidError(f"immutable sequence checksum mismatch: {path}")
+    return manifest
+
+
+def _upload_sequence_batches(    *,
     bucket: Any,
     records: list[dict[str, Any]],
     output_gcs_prefix: str,
@@ -263,6 +299,8 @@ def _upload_sequence_batches(
     manifest: dict[str, Any],
 ) -> list[str]:
     paths: list[str] = []
+    output_checksums: dict[str, str] = {}
+    batch_rows: list[int] = []
     prefix = output_gcs_prefix.strip().rstrip("/")
     for batch_index, start in enumerate(range(0, len(records), batch_size)):
         batch = records[start:start + batch_size]
@@ -274,13 +312,26 @@ def _upload_sequence_batches(
             series_open=np.asarray([row["open"] for row in batch], dtype=object),
         )
         key = f"{prefix}/prep/batch_{batch_index}.npz"
-        bucket.blob(key).upload_from_string(buf.getvalue(), content_type="application/octet-stream")
+        encoded = buf.getvalue()
+        bucket.blob(key).upload_from_string(encoded, content_type="application/octet-stream")
         paths.append(key)
+        output_checksums[key] = hashlib.sha256(encoded).hexdigest()
+        batch_rows.append(len(batch))
 
-    bucket.blob(f"{prefix}/prep/feature_names.json").upload_from_string(
-        json.dumps(["close"], ensure_ascii=False),
+    feature_names_path = f"{prefix}/prep/feature_names.json"
+    feature_names = json.dumps(["close"], ensure_ascii=False).encode("utf-8")
+    bucket.blob(feature_names_path).upload_from_string(
+        feature_names,
         content_type="application/json",
     )
+    output_checksums[feature_names_path] = hashlib.sha256(feature_names).hexdigest()
+    manifest.update({
+        "status": "ready",
+        "batch_count": len(paths),
+        "batch_rows": batch_rows,
+        "output_checksums": output_checksums,
+    })
+    manifest["manifest_checksum"] = _manifest_checksum(manifest)
     bucket.blob(f"{prefix}/prep/sequence_manifest.json").upload_from_string(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True),
         content_type="application/json",
@@ -379,6 +430,9 @@ def build_finlab_long_history_sequence_prep(payload: dict[str, Any], *, bucket: 
         all_records = all_records[:max_series]
 
     summary = summarize_sequence_records(all_records)
+    records_checksum = hashlib.sha256(
+        json.dumps(all_records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "created_at": _utc_now(),
@@ -400,6 +454,7 @@ def build_finlab_long_history_sequence_prep(payload: dict[str, Any], *, bucket: 
         },
         "output_gcs_prefix": output_gcs_prefix,
         "batch_size": batch_size,
+        "records_checksum": records_checksum,
         "summary": summary,
         "lane_reports": lane_reports,
     }
@@ -417,6 +472,25 @@ def build_finlab_long_history_sequence_prep(payload: dict[str, Any], *, bucket: 
             bucket = _get_bucket()
         if bucket is None:
             raise RuntimeError("GCS bucket not available")
+        existing = _verified_existing_manifest(
+            bucket=bucket,
+            output_gcs_prefix=output_gcs_prefix,
+            records_checksum=records_checksum,
+        )
+        if existing is not None:
+            return {
+                "status": "idempotent_ready",
+                "dry_run": False,
+                "output_gcs_prefix": output_gcs_prefix,
+                "output_paths": sorted(
+                    path for path in existing["output_checksums"] if path.endswith(".npz")
+                ),
+                "manifest_path": f"{output_gcs_prefix}/prep/sequence_manifest.json",
+                "batch_count": int(existing.get("batch_count") or 0),
+                "records": [],
+                "record_preview": [],
+                "manifest": existing,
+            }
         output_paths = _upload_sequence_batches(
             bucket=bucket,
             records=all_records,

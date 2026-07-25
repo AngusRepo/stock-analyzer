@@ -2154,7 +2154,10 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             json.dumps(prep_unsigned, sort_keys=True).encode("utf-8")
         ).hexdigest()
         if (
-            prep_manifest.get("schema_version") != "active8-canonical-adjusted-prep-v1"
+            prep_manifest.get("schema_version") not in {
+                "active8-canonical-adjusted-prep-v1",
+                "active8-canonical-adjusted-prep-v2",
+            }
             or prep_manifest.get("status") != "ready"
             or prep_manifest.get("output_gcs_prefix") != prep_prefix
             or prep_manifest.get("manifest_checksum") != prep_manifest_checksum

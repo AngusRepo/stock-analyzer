@@ -34,3 +34,12 @@ def test_finlab_modal_workload_runs_object_lifecycle_preflight_first():
     assert function.index("verify_gcs_object_lifecycle(") < function.index(
         "finlab_v4_remote_backfill.main()"
     )
+
+
+def test_modal_exposes_bounded_gcs_writer_canary():
+    source = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
+    function = source.split("def gcs_writer_canary(payload: dict | None = None) -> dict:", 1)[1]
+    function = function.split("\n@app.", 1)[0]
+    assert "timeout=120" in source.split("def gcs_writer_canary", 1)[0][-200:]
+    assert "verify_gcs_object_lifecycle(" in function
+    assert "finlab_v4_remote_backfill" not in function

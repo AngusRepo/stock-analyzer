@@ -3467,6 +3467,34 @@ def _write_external_evidence_to_d1(payload: dict, result: dict | None = None) ->
 
 
 @app.function(
+    cpu=1,
+    memory=512,
+    timeout=120,
+    scaledown_window=30,
+    max_containers=1,
+)
+def gcs_writer_canary(payload: dict | None = None) -> dict:
+    """Verify the dedicated Modal writer can create, read, and delete one object."""
+    _setup_env()
+    from google.cloud import storage
+    from app.gcs_preflight import verify_gcs_object_lifecycle
+
+    payload = payload or {}
+    bucket_name = str(
+        payload.get("gcs_bucket")
+        or _get_gcs_bucket_name()
+        or ""
+    ).strip()
+    if not bucket_name:
+        raise RuntimeError("modal_gcs_writer_canary_bucket_not_configured")
+    return verify_gcs_object_lifecycle(
+        storage.Client().bucket(bucket_name),
+        workload="modal-gcs-writer",
+        run_id=str(payload.get("run_id") or "manual"),
+    )
+
+
+@app.function(
     cpu=2,
     memory=4096,
     timeout=7200,

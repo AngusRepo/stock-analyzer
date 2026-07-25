@@ -34,7 +34,7 @@
 .obs-standalone__group-card:first-child:last-child { grid-column: 1 / -1; }
 .obs-standalone__group-header { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border-bottom: 1px solid #202b3a; background: rgba(255, 255, 255, .025); }
 .obs-standalone__group-header p { margin: 0; color: #e2e8ef; font-size: 14px; font-weight: 600; }
-.obs-standalone__group-header > div > span { display: block; margin-top: 2px; color: #667b90; font-size: 11px; }
+.obs-standalone__group-header > div > span { display: block; margin-top: 2px; color: #8992a3; font-size: 12px; }
 .obs-standalone__group-stats { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; color: #8192a4; font-size: 12px; }
 .obs-standalone__group-stats span, .obs-standalone__group-stats strong { border: 1px solid #2a394a; border-radius: 999px; padding: 3px 7px; background: #0d1420; font-weight: 650; }
 .obs-standalone__group-stats .is-success { color: #71cf8a; }
@@ -52,7 +52,7 @@
 .obs-standalone__job-head { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .obs-standalone__identity { min-width: 0; }
 .obs-standalone__identity strong { display: block; overflow: hidden; color: #e0e7ee; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.obs-standalone__identity span { display: block; margin-top: 2px; overflow: hidden; color: #64798f; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.obs-standalone__identity span { display: block; margin-top: 2px; overflow: hidden; color: #8992a3; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .obs-standalone__status { display: flex; flex: none; align-items: center; gap: 5px; color: #8496a9; font-size: 12px; font-weight: 600; }
 .obs-standalone__status svg { width: 13px; height: 13px; }
 .obs-standalone__job-card.is-success .obs-standalone__status { color: #6dcc88; }
@@ -71,7 +71,7 @@
 .obs-standalone__timing { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 9px 0 0; }
 .obs-standalone__timing > div { min-width: 0; }
 .obs-standalone__timing > div + div { border-left: 1px solid #26384a; padding-left: 9px; }
-.obs-standalone__timing dt { color: #61778e; font-size: 11px; text-transform: uppercase; }
+.obs-standalone__timing dt { color: #8992a3; font-size: 12px; text-transform: uppercase; }
 .obs-standalone__timing dd { margin: 2px 0 0; overflow: hidden; color: #a8b6c4; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .obs-standalone__empty { padding: 22px; color: #6f849a; font-size: 13px; text-align: center; }
 

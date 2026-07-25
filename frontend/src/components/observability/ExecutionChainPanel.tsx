@@ -20,7 +20,6 @@ import {
   Settings2,
   ShieldCheck,
   Target,
-  TimerReset,
   Waypoints,
   Workflow,
   Wrench,
@@ -30,13 +29,22 @@ import type { SchedulerJob } from '@/lib/api'
 import StandaloneJobRegistry from './StandaloneJobRegistry'
 import './ExecutionChainPanel.css'
 
-type VisualStatus = 'completed' | 'noop' | 'running' | 'waiting' | 'blocked' | 'not_started' | 'skipped'
+type VisualStatus = 'completed' | 'noop' | 'running' | 'waiting' | 'blocked' | 'out_of_window' | 'not_started' | 'skipped'
 
 type StageDefinition = {
   id: string
   label: string
   icon: LucideIcon
   optional?: boolean
+}
+
+type ChainBranch = {
+  id: string
+  label: string
+  description: string
+  anchorId: string
+  relation: 'evidence' | 'shared_context'
+  columns: string[][]
 }
 
 type ChainScope = {
@@ -46,6 +54,7 @@ type ChainScope = {
   description: string
   relation: 'event' | 'mixed'
   columns: string[][]
+  branches?: ChainBranch[]
 }
 
 const STAGES: Record<string, StageDefinition> = {
@@ -75,7 +84,10 @@ const STAGES: Record<string, StageDefinition> = {
   'morning-setup': { id: 'morning-setup', label: 'Morning setup', icon: Settings2 },
   'pre-market-warmup': { id: 'pre-market-warmup', label: 'Pre-market', icon: CircleGauge },
   'intraday-check': { id: 'intraday-check', label: 'Intraday check', icon: Radar },
-  'intraday-rescore': { id: 'intraday-rescore', label: 'Intraday re-score', icon: BarChart3 },
+  'rescore-10': { id: 'rescore-10', label: '10:00 re-score', icon: BarChart3 },
+  'rescore-11': { id: 'rescore-11', label: '11:00 re-score', icon: BarChart3 },
+  'rescore-12': { id: 'rescore-12', label: '12:00 re-score', icon: BarChart3 },
+  'rescore-1230': { id: 'rescore-1230', label: '12:30 re-score', icon: BarChart3 },
   'eod-exit': { id: 'eod-exit', label: 'EOD exit', icon: Target },
   'post-close-price-refresh': { id: 'post-close-price-refresh', label: 'Close price', icon: RefreshCw },
   'daily-snapshot': { id: 'daily-snapshot', label: 'Daily snapshot', icon: Database },
@@ -139,13 +151,42 @@ const SCOPES: ChainScope[] = [
   {
     id: 'intraday',
     label: 'Intraday guard',
-    title: 'Intraday readiness guard',
-    description: '只呈現已證實的盤前 dependency；re-score、EOD、close price 與 snapshot 是獨立時間觸發，留在下方分區。',
+    title: 'Intraday readiness & execution chain',
+    description: '盤前準備、盤中 guard、定時 re-score 與收盤後帳務；依真實 dependency 與 shared live context 分層呈現。',
     relation: 'mixed',
     columns: [
       ['morning-setup'],
       ['pre-market-warmup'],
       ['intraday-check'],
+      ['eod-exit'],
+      ['post-close-price-refresh'],
+      ['daily-snapshot'],
+    ],
+    branches: [
+      {
+        id: 'premarket-context',
+        label: 'Pre-market context branch',
+        description: 'Evidence-only：US leading 與 news feed Morning Briefing，不是盤中 hard gate。',
+        anchorId: 'morning-setup',
+        relation: 'evidence',
+        columns: [
+          ['us-leading', 'news-analyst'],
+          ['morning-briefing'],
+        ],
+      },
+      {
+        id: 'intraday-rescore-spots',
+        label: 'Intraday Re-score branch',
+        description: '10:00 / 11:00 / 12:00 / 12:30；與 heartbeat 共用持倉與 broker quotes，但由獨立排程觸發。',
+        anchorId: 'intraday-check',
+        relation: 'shared_context',
+        columns: [
+          ['rescore-10'],
+          ['rescore-11'],
+          ['rescore-12'],
+          ['rescore-1230'],
+        ],
+      },
     ],
   },
   {
@@ -164,7 +205,14 @@ const SCOPES: ChainScope[] = [
   },
 ]
 
-const MAPPED_JOB_IDS = new Set(SCOPES.flatMap((scope) => scope.columns.flat()))
+function scopeStageIds(scope: ChainScope): string[] {
+  return [
+    ...scope.columns.flat(),
+    ...(scope.branches ?? []).flatMap((branch) => branch.columns.flat()),
+  ]
+}
+
+const MAPPED_JOB_IDS = new Set(SCOPES.flatMap(scopeStageIds))
 
 const STATUS_LABEL: Record<VisualStatus, string> = {
   completed: 'Completed',
@@ -172,6 +220,7 @@ const STATUS_LABEL: Record<VisualStatus, string> = {
   running: 'Running',
   waiting: 'Waiting',
   blocked: 'Blocked',
+  out_of_window: 'Not in window',
   not_started: 'Not started',
   skipped: 'Skipped',
 }
@@ -183,6 +232,7 @@ function visualStatus(job?: SchedulerJob): VisualStatus {
   if (job.lastStatus === 'running') return 'running'
   if (job.lastStatus === 'waiting') return 'waiting'
   if (job.lastStatus === 'failed') return 'blocked'
+  if (job.lastStatus === 'sleep') return 'out_of_window'
   if (job.lastStatus === 'skip') return 'skipped'
   return 'not_started'
 }
@@ -192,7 +242,8 @@ function statusPriority(status: VisualStatus): number {
   if (status === 'blocked') return 1
   if (status === 'waiting') return 2
   if (status === 'completed' || status === 'noop') return 3
-  if (status === 'not_started') return 4
+  if (status === 'out_of_window') return 4
+  if (status === 'not_started') return 5
   return 5
 }
 
@@ -268,7 +319,7 @@ export default function ExecutionChainPanel({
   const jobMap = useMemo(() => new Map(jobs.map((job) => [job.id, job])), [jobs])
   const scope = SCOPES.find((item) => item.id === scopeId) ?? SCOPES[0]
   const scopedJobMap = jobMap
-  const stageIds = scope.columns.flat()
+  const stageIds = scopeStageIds(scope)
   const scopeJobs = stageIds.map((id) => scopedJobMap.get(id))
   const availableJobs = scopeJobs.filter((job): job is SchedulerJob => Boolean(job))
   const currentJob = [...availableJobs]
@@ -288,13 +339,9 @@ export default function ExecutionChainPanel({
   const blockedCurrent = visualStatus(currentJob) === 'blocked'
   const progressActive = running || blockedCurrent
 
-  const currentColumnIndex = Math.max(0, scope.columns.findIndex((column) => column.includes(currentId)))
-  const nextColumn = scope.columns.slice(currentColumnIndex + 1).find((column) => column.some((id) => visualStatus(scopedJobMap.get(id)) === 'waiting'))
-    ?? scope.columns.slice(currentColumnIndex + 1).find((column) => column.some((id) => visualStatus(scopedJobMap.get(id)) === 'not_started'))
-  const nextId = nextColumn?.find((id) => visualStatus(scopedJobMap.get(id)) === 'waiting') ?? nextColumn?.[0]
-  const nextJob = nextId ? scopedJobMap.get(nextId) : undefined
-  const nextDefinition = nextId ? STAGES[nextId] : undefined
-  const prerequisiteColumn = nextColumn ? scope.columns[Math.max(0, scope.columns.indexOf(nextColumn) - 1)] : []
+  const currentStageIndex = Math.max(0, stageIds.indexOf(currentId))
+  const mainStageCount = scope.columns.flat().length
+  const branchStageCount = (scope.branches ?? []).flatMap((branch) => branch.columns.flat()).length
 
   useEffect(() => {
     const nextStatuses = Object.fromEntries(jobs.map((job) => [job.id, job.lastStatus]))
@@ -355,7 +402,7 @@ export default function ExecutionChainPanel({
         </div>
         <div className="obs-chain__phase sv-num">
           <span>{scope.relation === 'event' ? 'event-driven' : 'mixed triggers'}</span>
-          <strong>{Math.min(currentColumnIndex + 1, scope.columns.length)} / {scope.columns.length}</strong>
+          <strong>{branchStageCount > 0 ? `${mainStageCount} main · ${branchStageCount} branch` : `${Math.min(currentStageIndex + 1, stageIds.length)} / ${stageIds.length}`}</strong>
         </div>
       </div>
 
@@ -409,6 +456,68 @@ export default function ExecutionChainPanel({
         </div>
       </div>
 
+      {scope.branches && scope.branches.length > 0 && (
+        <div className="obs-chain__branches" aria-label="Execution branches">
+          {scope.branches.map((branch) => (
+            <section className="obs-chain__branch" key={branch.id} aria-labelledby={`${branch.id}-title`}>
+              <div className="obs-chain__branch-anchor">
+                <span>{branch.relation === 'evidence' ? 'Evidence branch' : 'Shared live context'}</span>
+                <strong id={`${branch.id}-title`}>{branch.label}</strong>
+                <p>{branch.description}</p>
+                <em>{branch.relation === 'evidence' ? 'context with' : 'shares inputs with'} {STAGES[branch.anchorId]?.label ?? branch.anchorId}</em>
+              </div>
+              <div className="obs-chain__branch-sequence">
+                {branch.columns.map((column, index) => {
+                  const previousColumn = branch.columns[index - 1] ?? []
+                  const connection = connectorStatus(
+                    previousColumn.map((id) => scopedJobMap.get(id)),
+                    column.map((id) => scopedJobMap.get(id)),
+                  )
+                  return (
+                    <div className="obs-chain__segment" key={`${branch.id}-${column.join('-')}`}>
+                      {index > 0 && <div className={`obs-chain__connector is-${connection}`} aria-hidden="true"><span /></div>}
+                      <div className={`obs-chain__column ${column.length > 1 ? 'is-parallel' : ''}`}>
+                        {column.map((id, stageIndex) => {
+                          const definition = STAGES[id] ?? { id, label: id, icon: Workflow }
+                          const job = scopedJobMap.get(id)
+                          const status = visualStatus(job)
+                          const Icon = definition.icon
+                          return (
+                            <button
+                              type="button"
+                              key={id}
+                              data-chain-stage={id}
+                              className={`obs-chain__stage is-branch is-${status} ${currentId === id ? 'is-current' : ''} ${selectedId === id ? 'is-selected' : ''} ${justCompleted.has(id) ? 'just-completed' : ''}`}
+                              onClick={() => setSelectedId(id)}
+                              aria-label={`${definition.label}: ${STATUS_LABEL[status]}`}
+                              aria-current={currentId === id ? 'step' : undefined}
+                            >
+                              <span className="obs-chain__ordinal sv-num">{branch.id === 'intraday-rescore-spots' ? `R${index + 1}` : `B${index + 1}${column.length > 1 ? String.fromCharCode(97 + stageIndex) : ''}`}</span>
+                              <span className="obs-chain__orb">
+                                <Icon aria-hidden="true" />
+                                <span className="obs-chain__state-mark" aria-hidden="true">
+                                  {status === 'completed' || status === 'noop' ? '✓' : status === 'blocked' ? '×' : status === 'running' ? '↻' : status === 'waiting' ? '⌛' : '○'}
+                                </span>
+                              </span>
+                              <span className="obs-chain__stage-copy">
+                                <strong>{definition.label}</strong>
+                                <span>{job?.name ?? id}</span>
+                                <small className="sv-num">{job?.lastRun || job?.nextRun || 'no runtime evidence'}</small>
+                                <em>{STATUS_LABEL[status]}</em>
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+
       <div className="obs-chain__progress">
         <div className="obs-chain__progress-label">
           <span><Activity aria-hidden="true" /> Overall progress</span>
@@ -441,33 +550,6 @@ export default function ExecutionChainPanel({
           )}
         </article>
 
-        <article className="obs-chain__detail obs-chain__detail--next">
-          <div className="obs-chain__detail-title">
-            <TimerReset aria-hidden="true" />
-            <div>
-              <p>Next up</p>
-              <h4>{nextDefinition?.label ?? 'Chain complete'}</h4>
-            </div>
-          </div>
-          <JobStatusSummary job={nextJob} fallback="目前 scope 沒有下一個 waiting stage。" />
-          <dl className="obs-chain__metrics obs-chain__metrics--two">
-            <div><dt>Trigger</dt><dd>{scope.relation === 'event' ? 'Callback / gate' : 'Callback / schedule'}</dd></div>
-            <div><dt>Next run</dt><dd className="sv-num">{nextJob?.nextRun ?? '—'}</dd></div>
-          </dl>
-          <div className="obs-chain__prerequisites">
-            <p>Prerequisites</p>
-            <div>
-              {(prerequisiteColumn.length ? prerequisiteColumn : ['chain-root']).map((id) => {
-                const prerequisite = id === 'chain-root' ? undefined : scopedJobMap.get(id)
-                return (
-                  <span key={id} className={`is-${visualStatus(prerequisite)}`}>
-                    {['completed', 'noop'].includes(visualStatus(prerequisite)) ? '✓' : '○'} {id === 'chain-root' ? 'No upstream stage' : (STAGES[id]?.label ?? prerequisite?.name ?? id)}
-                  </span>
-                )
-              })}
-            </div>
-          </div>
-        </article>
       </div>
       <StandaloneJobRegistry jobs={jobs} mappedJobIds={MAPPED_JOB_IDS} />
     </section>

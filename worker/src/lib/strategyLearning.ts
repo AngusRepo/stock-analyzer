@@ -1540,7 +1540,13 @@ export async function refreshStrategyRewardLedger(
     : `strategy-reward-v4-${options.endDate ?? 'latest'}-${Date.now().toString(36)}`
   const persisted = dryRun ? 0 : await persistStrategyRewardLedgerRows(db, ledgerRows, refreshRunId)
   let staleRowsRetired = 0
-  if (!dryRun && !options.startDate && refreshRunId) {
+  if (shouldRetireStaleStrategyRewardRows({
+    dryRun,
+    hasStartDate: Boolean(options.startDate),
+    refreshRunId,
+    ledgerRows: ledgerRows.length,
+    persistedRows: persisted,
+  })) {
     const retired = await db.prepare(`
       DELETE FROM strategy_reward_ledger
        WHERE (refresh_run_id IS NULL OR refresh_run_id <> ?)
@@ -1557,6 +1563,20 @@ export async function refreshStrategyRewardLedger(
     stale_rows_retired: staleRowsRetired,
     refresh_run_id: refreshRunId,
   }
+}
+
+export function shouldRetireStaleStrategyRewardRows(input: {
+  dryRun: boolean
+  hasStartDate: boolean
+  refreshRunId: string | null
+  ledgerRows: number
+  persistedRows: number
+}): boolean {
+  return !input.dryRun
+    && !input.hasStartDate
+    && Boolean(input.refreshRunId)
+    && input.ledgerRows > 0
+    && input.persistedRows === input.ledgerRows
 }
 
 function gateEvidenceFromSpec(spec: StrategyLearningSummary['specs'][number]): StrategyPromotionGateRow['evidence'] {

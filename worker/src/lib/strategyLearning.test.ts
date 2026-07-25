@@ -9,6 +9,7 @@ import {
   listStrategySpecsForLearning,
   registryRowToStrategySpec,
   seedDefaultStrategySpecRegistry,
+  shouldRetireStaleStrategyRewardRows,
   strategySpecToRegistryRow,
   type StrategySpecRegistryRow,
   type StrategyLearningSummary,
@@ -16,6 +17,30 @@ import {
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
+}
+
+{
+  assert(!shouldRetireStaleStrategyRewardRows({
+    dryRun: false,
+    hasStartDate: false,
+    refreshRunId: 'refresh-empty',
+    ledgerRows: 0,
+    persistedRows: 0,
+  }), 'empty reward refresh must never retire the previous ledger')
+  assert(!shouldRetireStaleStrategyRewardRows({
+    dryRun: false,
+    hasStartDate: false,
+    refreshRunId: 'refresh-partial',
+    ledgerRows: 4,
+    persistedRows: 3,
+  }), 'partially persisted reward refresh must preserve the previous ledger')
+  assert(shouldRetireStaleStrategyRewardRows({
+    dryRun: false,
+    hasStartDate: false,
+    refreshRunId: 'refresh-complete',
+    ledgerRows: 4,
+    persistedRows: 4,
+  }), 'complete full-window reward refresh may retire stale ledger rows')
 }
 
 class FakeStrategyRegistryStatement {

@@ -988,7 +988,7 @@ function OperationalReadinessDeck({
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2">
               <Database className="h-4 w-4 shrink-0 text-emerald-300" />
-              <p id="source-gates-title" className="truncate text-sm font-semibold text-[#f2ead8]">Source Gates / 資料就緒</p>
+              <p id="source-gates-title" className="truncate text-sm font-semibold text-[#f2ead8]">Source Gates / &#36039;&#26009;&#23601;&#32210;</p>
             </div>
             <a href="/data-quality" className="inline-flex shrink-0 items-center gap-1 sv-num text-xs normal-case text-emerald-200 hover:text-emerald-100">
               Data Quality <ExternalLink className="h-3 w-3" />

@@ -83,6 +83,8 @@ assert(chainCss.includes('@media (prefers-reduced-motion: reduce)'), 'chain anim
 assert(page.includes('const schedulerApiError = errorMessage(scheduler.error)'), 'Scheduler API error must remain first-class')
 assert(page.includes('aria-labelledby="source-gates-title"') && page.includes('<DataQualityCompactMatrix gates={gates} compact />'), 'full Source Gates must sit beside the readiness summary')
 assert(page.includes('xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]') && page.includes("compact ? 'grid grid-cols-2 gap-2 lg:grid-cols-4'"), 'Readiness control and Source Gates must use a 4:6 desktop ratio with four Source Gate cards per row')
+assert(page.includes('truncate text-sm font-semibold text-[#f2ead8]">Source Gates'), 'Source Gates must remain on the homepage StockIntelli typography baseline')
+assert(chainCss.includes('background: linear-gradient(90deg, #171714, #111821 58%, #0b1118)') && chainCss.includes('font-size: .875rem') && chainCss.includes('color: #f2ead8'), 'Execution Chain must align to the Source Gates and homepage surface hierarchy')
 assert(!page.includes('SourceGateSummary'), 'Source Gates must not collapse back into the replacement summary card')
 assert(page.includes('/scheduler') && page.includes('/data-quality'), 'OBS must keep specialist drilldown links')
 assert(!page.includes('text-[10px]') && !page.includes('text-[11px]'), 'OBS page should avoid tiny operational text')

@@ -1,7 +1,8 @@
 import pytest
 
-from app.canonical_adjusted_prep import build_adjusted_target_lookup
+from app.canonical_adjusted_prep import build_adjusted_target_lookup, _sequence_manifest_checksum
 from app.sequence_training import CANONICAL_ROUNDTRIP_COST_BPS
+from app.long_history_sequence_prep import _manifest_checksum as producer_manifest_checksum
 
 
 def test_adjusted_target_lookup_uses_next_open_fifth_close_and_net_cost():
@@ -41,3 +42,17 @@ def test_adjusted_target_lookup_rejects_missing_exchange_session_bars():
 
     assert "2026-06-01" not in lookup["3665"]
     assert "2026-06-01" in lookup["2330"]
+
+
+def test_sequence_manifest_checksum_matches_long_history_producer():
+    manifest = {
+        "schema_version": "finlab-long-history-sequence-prep-v2",
+        "status": "ready",
+        "contract": "sequence_records_v3",
+        "output_gcs_prefix": "universal/sequence_long/runs/example",
+        "batch_count": 1,
+        "summary": {"date_min": "2025-01-02", "date_max": "2026-07-23"},
+        "output_checksums": {"batch_0.npz": "a" * 64},
+    }
+
+    assert _sequence_manifest_checksum(manifest) == producer_manifest_checksum(manifest)

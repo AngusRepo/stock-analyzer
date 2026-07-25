@@ -648,7 +648,7 @@ CREATE INDEX IF NOT EXISTS idx_l4_oof_predictions_cohort_date
 CREATE TABLE IF NOT EXISTS active8_oof_date_eligibility (
   cohort_id TEXT NOT NULL,
   prediction_date TEXT NOT NULL,
-  evidence_scope TEXT NOT NULL CHECK(evidence_scope IN ('active8_oof','l4','fusion')),
+  evidence_scope TEXT NOT NULL CHECK(evidence_scope IN ('active8_oof','snapshot','l4','fusion')),
   eligibility_status TEXT NOT NULL CHECK(eligibility_status IN ('legal','illegal','pending')),
   reason_code TEXT NOT NULL,
   evidence_schema_version TEXT NOT NULL,

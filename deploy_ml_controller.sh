@@ -481,6 +481,7 @@ sync_verify_job() {
         --memory="$VERIFY_JOB_MEMORY" \
         --max-retries="$VERIFY_JOB_MAX_RETRIES" \
         "${service_account_args[@]}" \
+        --update-labels="$PROVENANCE_LABELS" \
         --update-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Verify job update failed" >&2
@@ -499,6 +500,7 @@ sync_verify_job() {
         --memory="$VERIFY_JOB_MEMORY" \
         --max-retries="$VERIFY_JOB_MAX_RETRIES" \
         "${service_account_args[@]}" \
+        --labels="$PROVENANCE_LABELS" \
         --set-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Verify job create failed" >&2
@@ -533,6 +535,7 @@ sync_screener_job() {
         --task-timeout="$SCREENER_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
+        --update-labels="$PROVENANCE_LABELS" \
         --update-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Screener job update failed" >&2
@@ -552,6 +555,7 @@ sync_screener_job() {
         --task-timeout="$SCREENER_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
+        --labels="$PROVENANCE_LABELS" \
         --set-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Screener job create failed" >&2
@@ -584,6 +588,7 @@ sync_optuna_job() {
         --task-timeout="$OPTUNA_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
+        --update-labels="$PROVENANCE_LABELS" \
         --update-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Optuna job update failed" >&2
@@ -603,6 +608,7 @@ sync_optuna_job() {
         --task-timeout="$OPTUNA_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
+        --labels="$PROVENANCE_LABELS" \
         --set-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Optuna job create failed" >&2
@@ -637,6 +643,7 @@ sync_strategy_mining_job() {
         --task-timeout="$STRATEGY_MINING_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
+        --update-labels="$PROVENANCE_LABELS" \
         --update-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Strategy mining job update failed" >&2
@@ -656,6 +663,7 @@ sync_strategy_mining_job() {
         --task-timeout="$STRATEGY_MINING_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
+        --labels="$PROVENANCE_LABELS" \
         --set-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Strategy mining job create failed" >&2
@@ -688,6 +696,7 @@ sync_oof_materialize_job() {
         --task-timeout="$OOF_MATERIALIZE_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
+        --update-labels="$PROVENANCE_LABELS" \
         --update-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "OOF materialize job update failed" >&2
@@ -706,6 +715,7 @@ sync_oof_materialize_job() {
         --task-timeout="$OOF_MATERIALIZE_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
+        --labels="$PROVENANCE_LABELS" \
         --set-secrets="$RUN_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "OOF materialize job create failed" >&2

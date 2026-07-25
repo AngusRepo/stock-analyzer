@@ -44,6 +44,8 @@ def test_controller_deploy_is_fail_closed_on_identity_and_provenance() -> None:
     assert "STOCKVISION_SOURCE_SHA" in script
     assert "STOCKVISION_SCHEDULER_MANIFEST_SHA256" in script
     assert 'PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"' in script
+    assert script.count('--update-labels="$PROVENANCE_LABELS"') == 7
+    assert script.count('--labels="$PROVENANCE_LABELS"') == 5
 
 
 def test_cutover_requires_explicit_apply_and_separate_role_removal() -> None:

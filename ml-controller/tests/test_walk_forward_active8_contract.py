@@ -147,7 +147,9 @@ def test_walk_forward_routes_long_sequence_v3_prep_into_every_oof_fold():
     assert "active8_oof_sequence_manifest_contract_invalid" in modal_source
     assert "active8_oof_sequence_v3_records_missing" in modal_source
     assert '"verification": "manifest_bytes_and_all_batch_sha256_v1"' in modal_source
-    assert '"schema_version": "active8-oof-cohort-manifest-v3"' in modal_source
+    assert '"schema_version": "active8-oof-cohort-manifest-v4"' in modal_source
+    assert '"source_prep_manifest_checksum": prep_manifest_checksum' in modal_source
+    assert '"source_sequence_manifest_checksum": sequence_manifest_evidence["artifact_checksum"]' in modal_source
     assert "canonical-adjusted-close-net-v4" in modal_source
     assert '"version": f"{cohort_id}-w{wid}"' in modal_source
     assert 'version = payload.get("output_model_version") or payload.get("version", "v1")' in modal_source

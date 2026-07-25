@@ -45,7 +45,7 @@ def _load_json(bucket: Any, path: str) -> dict[str, Any]:
 def _verify_base_manifest(bucket: Any, path: str) -> dict[str, Any]:
     manifest = _load_json(bucket, path)
     if (
-        manifest.get("schema_version") != "active8-oof-cohort-manifest-v3"
+        manifest.get("schema_version") not in {"active8-oof-cohort-manifest-v3", "active8-oof-cohort-manifest-v4"}
         or manifest.get("status") != "ready"
         or manifest.get("generation_mode") != "purged_oof"
         or manifest.get("manifest_checksum") != _manifest_checksum(manifest)

@@ -26,6 +26,16 @@
       "roles/run.builder"
     ]
   },
+  "custom_roles": {
+    "stockvisionOofJobRunner": {
+      "title": "StockVision OOF Job Runner",
+      "stage": "GA",
+      "permissions": [
+        "run.jobs.run",
+        "run.jobs.runWithOverrides"
+      ]
+    }
+  },
   "services": {
     "ml-controller": "controller",
     "shioaji-proxy": "shioaji_proxy",
@@ -132,6 +142,11 @@
       "strategy-mining-research",
       "active8-oof-materialize"
     ]
+  },
+  "job_override_invokers": {
+    "controller": {
+      "active8-oof-materialize": "stockvisionOofJobRunner"
+    }
   },
   "service_invokers": {
     "stockvision-execution-gateway": [

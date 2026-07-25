@@ -966,6 +966,9 @@ CREATE TABLE IF NOT EXISTS active8_oof_materialized_artifacts (
   compressed_bytes INTEGER NOT NULL CHECK(compressed_bytes >= 0),
   uncompressed_bytes INTEGER NOT NULL CHECK(uncompressed_bytes >= 0),
   source_manifest_checksum TEXT NOT NULL,
+  eligibility_policy_version TEXT NOT NULL DEFAULT 'legacy-unversioned',
+  date_set_checksum TEXT,
+  replacement_reason TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (cohort_id, artifact_kind),
@@ -976,6 +979,32 @@ CREATE TABLE IF NOT EXISTS active8_oof_materialized_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_active8_oof_materialized_artifacts_checksum
   ON active8_oof_materialized_artifacts(artifact_checksum);
+CREATE TABLE IF NOT EXISTS active8_oof_materialized_artifact_history (
+  cohort_id TEXT NOT NULL,
+  artifact_kind TEXT NOT NULL CHECK(artifact_kind IN ('allocator_ev_snapshots','l4_predictions')),
+  artifact_path TEXT NOT NULL,
+  artifact_checksum TEXT NOT NULL,
+  format_version TEXT NOT NULL CHECK(format_version = 'active8-oof-materialized-jsonl-gzip-v1'),
+  row_count INTEGER NOT NULL CHECK(row_count >= 0),
+  date_count INTEGER NOT NULL CHECK(date_count >= 0),
+  min_date TEXT,
+  max_date TEXT,
+  compressed_bytes INTEGER NOT NULL CHECK(compressed_bytes >= 0),
+  uncompressed_bytes INTEGER NOT NULL CHECK(uncompressed_bytes >= 0),
+  source_manifest_checksum TEXT NOT NULL,
+  eligibility_policy_version TEXT NOT NULL,
+  date_set_checksum TEXT,
+  replaced_by_checksum TEXT NOT NULL,
+  replacement_reason TEXT NOT NULL,
+  archived_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (cohort_id, artifact_kind, artifact_checksum),
+  CHECK(length(artifact_checksum) = 64),
+  CHECK(length(source_manifest_checksum) = 64),
+  CHECK(length(replaced_by_checksum) = 64),
+  CHECK(date_set_checksum IS NULL OR length(date_set_checksum) = 64)
+);
+CREATE INDEX IF NOT EXISTS idx_oof_materialized_history_replacement
+  ON active8_oof_materialized_artifact_history(cohort_id, artifact_kind, replaced_by_checksum);
 
 CREATE TABLE IF NOT EXISTS active8_oof_predictions (
   cohort_id TEXT NOT NULL,
@@ -1054,6 +1083,43 @@ CREATE TABLE IF NOT EXISTS l4_oof_predictions (
 );
 CREATE INDEX IF NOT EXISTS idx_l4_oof_predictions_cohort_date
   ON l4_oof_predictions(cohort_id, prediction_date);
+CREATE TABLE IF NOT EXISTS active8_oof_date_eligibility (
+  cohort_id TEXT NOT NULL,
+  prediction_date TEXT NOT NULL,
+  evidence_scope TEXT NOT NULL CHECK(evidence_scope IN ('active8_oof','l4','fusion')),
+  eligibility_status TEXT NOT NULL CHECK(eligibility_status IN ('legal','illegal','pending')),
+  reason_code TEXT NOT NULL,
+  evidence_schema_version TEXT NOT NULL,
+  source_manifest_checksum TEXT,
+  evidence_artifact_path TEXT,
+  evidence_artifact_checksum TEXT,
+  assessed_knowledge_cutoff TEXT NOT NULL,
+  assessed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(cohort_id, prediction_date, evidence_scope)
+);
+CREATE INDEX IF NOT EXISTS idx_active8_oof_date_eligibility_status
+  ON active8_oof_date_eligibility(evidence_scope, eligibility_status, prediction_date, cohort_id);
+
+CREATE TABLE IF NOT EXISTS active8_oof_retention_ledger (
+  cohort_id TEXT PRIMARY KEY,
+  legality_state TEXT NOT NULL CHECK(legality_state IN ('legal','mixed','illegal','pending')),
+  retention_action TEXT NOT NULL CHECK(retention_action IN ('retain_hot','archive_required','archive_only','delete_hot')),
+  status TEXT NOT NULL CHECK(status IN ('planned','blocked','archived','verified','deleted','error')),
+  d1_prediction_rows INTEGER NOT NULL DEFAULT 0,
+  d1_snapshot_rows INTEGER NOT NULL DEFAULT 0,
+  d1_l4_rows INTEGER NOT NULL DEFAULT 0,
+  hard_reference_count INTEGER NOT NULL DEFAULT 0,
+  archive_store TEXT CHECK(archive_store IN ('r2','gcs')),
+  archive_path TEXT,
+  archive_checksum TEXT,
+  archive_row_count INTEGER,
+  archive_verified_at TEXT,
+  blocker_reason TEXT,
+  planned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_active8_oof_retention_action_status
+  ON active8_oof_retention_ledger(retention_action, status, hard_reference_count);
 
 CREATE TABLE IF NOT EXISTS strategy_spec_registry (
   strategy_id              TEXT NOT NULL,

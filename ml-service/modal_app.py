@@ -1915,6 +1915,7 @@ def _load_verified_oof_resume_windows(
         "active8-oof-cohort-manifest-v1",
         "active8-oof-cohort-manifest-v2",
         "active8-oof-cohort-manifest-v3",
+        "active8-oof-cohort-manifest-v4",
     }:
         raise ValueError("active8_oof_resume_manifest_schema_invalid")
     if parent.get("manifest_checksum") != expected_manifest_checksum:
@@ -1928,14 +1929,17 @@ def _load_verified_oof_resume_windows(
         raise ValueError("active8_oof_resume_target_semantic_mismatch")
     if parent.get("score_semantic_version") != "same-market-same-date-percentile-rank-v1":
         raise ValueError("active8_oof_resume_score_semantic_mismatch")
-    if str(parent.get("prep_gcs_prefix") or "").rstrip("/") != str(
-        payload.get("prep_gcs_prefix") or "universal"
-    ).rstrip("/"):
-        raise ValueError("active8_oof_resume_prep_prefix_mismatch")
-    if str(parent.get("sequence_gcs_prefix") or "").rstrip("/") != str(
-        payload.get("sequence_gcs_prefix") or "universal/sequence_long/latest"
-    ).rstrip("/"):
-        raise ValueError("active8_oof_resume_sequence_prefix_mismatch")
+    parent_prep_prefix = str(parent.get("prep_gcs_prefix") or "").rstrip("/")
+    parent_prep_checksum = str((parent.get("prep_manifest") or {}).get("manifest_checksum") or "")
+    parent_sequence_prefix = str(parent.get("sequence_gcs_prefix") or "").rstrip("/")
+    parent_sequence_checksum = str((parent.get("sequence_manifest") or {}).get("artifact_checksum") or "")
+    if (
+        not parent_prep_prefix
+        or len(parent_prep_checksum) != 64
+        or not parent_sequence_prefix
+        or len(parent_sequence_checksum) != 64
+    ):
+        raise ValueError("active8_oof_resume_parent_input_lineage_missing")
 
     requested_by_split = {
         (
@@ -2015,6 +2019,18 @@ def _load_verified_oof_resume_windows(
         reused_window["source_fold_id"] = source_fold_id
         reused_window["source_cohort_id"] = source_cohort_id
         reused_window["source_manifest_checksum"] = source_manifest_checksum
+        reused_window["source_prep_gcs_prefix"] = str(
+            parent_window.get("source_prep_gcs_prefix") or parent_prep_prefix
+        )
+        reused_window["source_prep_manifest_checksum"] = str(
+            parent_window.get("source_prep_manifest_checksum") or parent_prep_checksum
+        )
+        reused_window["source_sequence_gcs_prefix"] = str(
+            parent_window.get("source_sequence_gcs_prefix") or parent_sequence_prefix
+        )
+        reused_window["source_sequence_manifest_checksum"] = str(
+            parent_window.get("source_sequence_manifest_checksum") or parent_sequence_checksum
+        )
         reused_window["reused_from_parent"] = True
         reused[window_id] = reused_window
 
@@ -2278,6 +2294,10 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "test_range": [window["test_start"], window["test_end"]],
             "model_metrics": {},
             "model_coverage": model_coverage,
+            "source_prep_gcs_prefix": prep_prefix,
+            "source_prep_manifest_checksum": prep_manifest_checksum,
+            "source_sequence_gcs_prefix": sequence_prefix,
+            "source_sequence_manifest_checksum": sequence_manifest_evidence["artifact_checksum"],
         }
 
         for model_name in model_coverage["unsupported_models"]:
@@ -2603,7 +2623,7 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         from app.oof_manifest_publisher import publish_oof_manifest
 
         manifest = {
-            "schema_version": "active8-oof-cohort-manifest-v3",
+            "schema_version": "active8-oof-cohort-manifest-v4",
 
             "cohort_id": cohort_id,
             "start_date": start_date,

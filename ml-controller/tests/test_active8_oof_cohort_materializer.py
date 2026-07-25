@@ -540,15 +540,16 @@ def test_gcs_indexed_materialization_never_writes_large_oof_tables():
     assert "active8-oof-materialized-jsonl-gzip-v1" in migration
 
 
-def test_materialized_index_only_accepts_idempotency_or_strict_forward_extension():
+def test_materialized_index_accepts_verified_no_lookahead_policy_upgrade():
     from services.active8_oof_cohort_materializer import (
+        OOF_PIT_ELIGIBILITY_POLICY_VERSION,
         persist_oof_materialized_artifact_indexes,
     )
 
-    captured = {}
+    captured = []
 
     def batch_fn(statements, **_kwargs):
-        captured["sql"] = statements[0][0]
+        captured.extend(statements)
         return {"error_count": 0}
 
     persist_oof_materialized_artifact_indexes(
@@ -565,17 +566,79 @@ def test_materialized_index_only_accepts_idempotency_or_strict_forward_extension
             "compressed_bytes": 10,
             "uncompressed_bytes": 20,
             "source_manifest_checksum": "b" * 64,
+            "eligibility_policy_version": OOF_PIT_ELIGIBILITY_POLICY_VERSION,
+            "date_set_checksum": "c" * 64,
+            "dates": ["2026-07-08", "2026-07-09"],
+        }],
+        eligibility_rows=[
+            {
+                "evidence_scope": "fusion",
+                "prediction_date": date,
+                "eligibility_status": "legal",
+            }
+            for date in ("2026-07-08", "2026-07-09")
+        ],
+        query_fn=lambda *_args: [{
+            "cohort_id": "cohort-1",
+            "artifact_kind": "allocator_ev_snapshots",
+            "artifact_path": "old-path",
+            "artifact_checksum": "d" * 64,
+            "format_version": "active8-oof-materialized-jsonl-gzip-v1",
+            "row_count": 200,
+            "date_count": 20,
+            "min_date": "2026-06-01",
+            "max_date": "2026-07-07",
+            "compressed_bytes": 100,
+            "uncompressed_bytes": 200,
+            "source_manifest_checksum": "b" * 64,
+            "eligibility_policy_version": "legacy-unversioned",
+            "date_set_checksum": None,
         }],
         batch_fn=batch_fn,
     )
 
-    sql = captured["sql"]
-    assert "artifact_checksum = excluded.artifact_checksum" in sql
-    assert "excluded.date_count > active8_oof_materialized_artifacts.date_count" in sql
-    assert "excluded.row_count >= active8_oof_materialized_artifacts.row_count" in sql
-    assert "excluded.min_date = active8_oof_materialized_artifacts.min_date" in sql
-    assert "excluded.max_date > active8_oof_materialized_artifacts.max_date" in sql
+    assert len(captured) == 2
+    assert "active8_oof_materialized_artifact_history" in captured[0][0]
+    assert captured[0][1][-1] == "remove-post-next-open-native-pit-rows"
+    assert "replacement_reason" in captured[1][0]
 
+
+def test_materialized_index_rejects_policy_upgrade_without_legal_dates():
+    from services.active8_oof_cohort_materializer import (
+        OOF_PIT_ELIGIBILITY_POLICY_VERSION,
+        persist_oof_materialized_artifact_indexes,
+    )
+
+    artifact = {
+        "cohort_id": "cohort-1",
+        "artifact_kind": "l4_predictions",
+        "artifact_path": "new",
+        "artifact_checksum": "a" * 64,
+        "format_version": "active8-oof-materialized-jsonl-gzip-v1",
+        "row_count": 20,
+        "date_count": 1,
+        "min_date": "2026-07-08",
+        "max_date": "2026-07-08",
+        "compressed_bytes": 10,
+        "uncompressed_bytes": 20,
+        "source_manifest_checksum": "b" * 64,
+        "eligibility_policy_version": OOF_PIT_ELIGIBILITY_POLICY_VERSION,
+        "date_set_checksum": "c" * 64,
+        "dates": ["2026-07-08"],
+    }
+    existing = [{
+        **artifact,
+        "artifact_path": "old",
+        "artifact_checksum": "d" * 64,
+        "eligibility_policy_version": "legacy-unversioned",
+    }]
+    with pytest.raises(ValueError, match="replacement_invalid"):
+        persist_oof_materialized_artifact_indexes(
+            [artifact],
+            eligibility_rows=[],
+            query_fn=lambda *_args: existing,
+            batch_fn=lambda *_args, **_kwargs: {"error_count": 0},
+        )
 
 def test_forward_extension_manifest_is_shadow_only_and_bound_to_base():
     import hashlib

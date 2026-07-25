@@ -36,6 +36,27 @@ function Invoke-GcloudWithRetry([string[]]$Arguments, [int]$MaxAttempts = 5) {
   }
 }
 
+function Ensure-CustomRole([string]$RoleId, [object]$Definition) {
+  $permissions = @($Definition.permissions) -join ","
+  $arguments = @(
+    "iam", "roles", "update", $RoleId,
+    "--project=$project", "--title=$([string]$Definition.title)",
+    "--stage=$([string]$Definition.stage)", "--permissions=$permissions", "--quiet"
+  )
+  if ($Apply) {
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+      & gcloud iam roles describe $RoleId --project=$project --format="value(name)" *> $null
+      $exists = $LASTEXITCODE -eq 0
+    } finally {
+      $ErrorActionPreference = $previousPreference
+    }
+    if (-not $exists) { $arguments[2] = "create" }
+  }
+  Invoke-Gcloud $arguments
+}
+
 function Get-ServiceAccount([string]$Alias) {
   return [string]$contract.service_accounts.$Alias
 }
@@ -117,6 +138,9 @@ if ($Apply) {
 foreach ($property in $contract.service_accounts.PSObject.Properties) {
   Ensure-ServiceAccount $property.Name
 }
+foreach ($entry in $contract.custom_roles.PSObject.Properties) {
+  Ensure-CustomRole $entry.Name $entry.Value
+}
 
 foreach ($entry in $contract.project_roles.PSObject.Properties) {
   $member = "serviceAccount:$(Get-ServiceAccount $entry.Name)"
@@ -160,6 +184,17 @@ foreach ($entry in $contract.job_invokers.PSObject.Properties) {
   }
 }
 
+foreach ($entry in $contract.job_override_invokers.PSObject.Properties) {
+  $member = "serviceAccount:$(Get-ServiceAccount $entry.Name)"
+  foreach ($jobEntry in $entry.Value.PSObject.Properties) {
+    $role = "projects/$project/roles/$([string]$jobEntry.Value)"
+    Invoke-Gcloud @(
+      "run", "jobs", "add-iam-policy-binding", $jobEntry.Name,
+      "--project=$project", "--region=$region", "--member=$member",
+      "--role=$role", "--quiet"
+    )
+  }
+}
 $scalerEmail = Get-ServiceAccount "scaler"
 $scalerMember = "serviceAccount:$scalerEmail"
 $scalerJobs = @($contract.scheduler_oauth_callers.PSObject.Properties.Value | Sort-Object -Unique)

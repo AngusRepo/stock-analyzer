@@ -78,10 +78,8 @@ def _load_resume_plan(
         raise HTTPException(status_code=400, detail=f"invalid OOF resume manifest: {exc}") from exc
     if list(manifest.get("model_set") or []) != list(models):
         raise HTTPException(status_code=400, detail="resume model set does not match requested Active-8 set")
-    if str(manifest.get("prep_gcs_prefix") or "").rstrip("/") != prep_gcs_prefix.rstrip("/"):
-        raise HTTPException(status_code=400, detail="resume prep prefix does not match requested V3 prep")
-    if str(manifest.get("sequence_gcs_prefix") or "").rstrip("/") != sequence_gcs_prefix.rstrip("/"):
-        raise HTTPException(status_code=400, detail="resume sequence prefix does not match requested V3 sequence prep")
+    parent_prep = str(manifest.get("prep_gcs_prefix") or "").rstrip("/")
+    parent_sequence = str(manifest.get("sequence_gcs_prefix") or "").rstrip("/")
     requested = {_window_split_key(window): window.window_id for window in windows}
     reused = []
     for parent_window in manifest.get("windows") or []:
@@ -98,6 +96,14 @@ def _load_resume_plan(
         "reused_window_ids": sorted(reused_set),
         "new_window_ids": [w.window_id for w in windows if w.window_id not in reused_set],
         "artifact_preflight": "modal_sha256_metadata_before_retrain",
+        "lineage_transition": {
+            "parent_prep_gcs_prefix": parent_prep,
+            "next_prep_gcs_prefix": prep_gcs_prefix.rstrip("/"),
+            "parent_sequence_gcs_prefix": parent_sequence,
+            "next_sequence_gcs_prefix": sequence_gcs_prefix.rstrip("/"),
+            "cross_prep_resume": parent_prep != prep_gcs_prefix.rstrip("/"),
+            "per_fold_lineage_required": True,
+        },
     }
 
 
@@ -375,6 +381,14 @@ class OofMaterializeRequest(BaseModel):
     forward_extension_manifest_path: str | None = None
 
 
+class OofRetentionArchiveRequest(BaseModel):
+    cohort_ids: list[str]
+    confirm: bool = False
+    delete_hot: bool = False
+    chunk_size: int = 2000
+    delete_chunk_size: int = 5000
+
+
 _ACTIVE8_TREE_MODELS = {"LightGBM", "XGBoost", "ExtraTrees"}
 _ACTIVE8_LIFECYCLE_MODELS = {"GNN", "TabM", "PatchTST", "iTransformer"}
 _ACTIVE8_FULL_FIT_MODELS = _ACTIVE8_TREE_MODELS | _ACTIVE8_LIFECYCLE_MODELS | {"DLinear"}
@@ -518,7 +532,7 @@ def build_oof_full_fit_dispatch_plan(manifest: dict[str, Any]) -> dict[str, Any]
     feature_lineage_ready = not tree_models or feature_consensus.get("status") == "ready"
     prep = manifest.get("prep_manifest") if isinstance(manifest.get("prep_manifest"), dict) else {}
     prep_lineage_ready = (
-        manifest.get("schema_version") == "active8-oof-cohort-manifest-v3"
+        manifest.get("schema_version") in {"active8-oof-cohort-manifest-v3", "active8-oof-cohort-manifest-v4"}
         and len(str(prep.get("manifest_checksum") or "")) == 64
         and prep.get("target_semantic_version") == manifest.get("target_semantic_version")
         and float(prep.get("roundtrip_cost_bps") or 0.0) == 18.0
@@ -694,7 +708,7 @@ def _materialize_completed_oof_release_aliases(
     cohort_id = str(manifest.get("cohort_id") or "")
     target_semantic = str(manifest.get("target_semantic_version") or "")
     chronological = (
-        manifest.get("schema_version") == "active8-oof-cohort-manifest-v3"
+        manifest.get("schema_version") in {"active8-oof-cohort-manifest-v3", "active8-oof-cohort-manifest-v4"}
         and len(checksum) == 64
         and bool(cohort_id)
         and target_semantic == ACTIVE8_TARGET_SEMANTIC_VERSION
@@ -1373,6 +1387,16 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 parity=parity,
                 promoted=False,
             )
+        physical_prediction_dates = sorted({
+            str(row.get("prediction_date") or "")[:10]
+            for row in prediction_rows
+            if str(row.get("prediction_date") or "")[:10]
+        })
+        base_prediction_dates = sorted({
+            str(row.get("prediction_date") or "")[:10]
+            for row in prediction_rows[:len(prediction_rows) - len(forward_prediction_rows)]
+            if str(row.get("prediction_date") or "")[:10]
+        })
         return {
             "status": "dry_run" if req.dry_run else "materialized",
             "cohort_id": req.cohort_id,
@@ -1380,6 +1404,17 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "base_prediction_rows": len(prediction_rows) - len(forward_prediction_rows),
             "forward_prediction_rows": len(forward_prediction_rows),
             "forward_extension": forward_extension,
+            "physical_prediction_coverage": {
+                "date_count": len(physical_prediction_dates),
+                "min_date": physical_prediction_dates[0] if physical_prediction_dates else None,
+                "max_date": physical_prediction_dates[-1] if physical_prediction_dates else None,
+                "base_max_date": base_prediction_dates[-1] if base_prediction_dates else None,
+                "manifest_declared_end_date": str(manifest.get("end_date") or "")[:10],
+                "declared_end_matches_physical": bool(
+                    physical_prediction_dates
+                    and physical_prediction_dates[-1] == str(manifest.get("end_date") or "")[:10]
+                ),
+            },
             "native_pit_rows": len(native_rows),
             "fundamental_pit_rows": len(fundamental_quality_by_key),
             "snapshot_evidence": snapshot_evidence,
@@ -1532,6 +1567,63 @@ def _oof_lifecycle_calendar(
         "coverage_threshold_rows": threshold,
     }
 
+def _oof_manifest_observed_core_dates(bucket: object, manifest: dict) -> tuple[list[str], dict]:
+    """Verify physical core-model dates instead of trusting declared test_end."""
+
+    import hashlib
+    import io
+
+    import numpy as np
+    from services.active8_oof_stacker import CORE_CROSS_SECTIONAL_MODELS
+
+    observed: set[str] = set()
+    fold_evidence: list[dict[str, object]] = []
+    for window in manifest.get("windows") or []:
+        metrics = window.get("model_metrics") or {}
+        by_model: dict[str, set[str]] = {}
+        for model_name in CORE_CROSS_SECTIONAL_MODELS:
+            model = metrics.get(model_name) or {}
+            path = str(model.get("oof_artifact") or "")
+            checksum = str(model.get("artifact_checksum") or "")
+            if not path or len(checksum) != 64:
+                raise ValueError(f"oof_physical_coverage_artifact_missing:{model_name}")
+            raw = bucket.blob(path).download_as_bytes()
+            if hashlib.sha256(raw).hexdigest() != checksum:
+                raise ValueError(f"oof_physical_coverage_checksum_mismatch:{model_name}")
+            artifact = np.load(io.BytesIO(raw), allow_pickle=True)
+            if "dates" not in artifact.files:
+                raise ValueError(f"oof_physical_coverage_dates_missing:{model_name}")
+            by_model[model_name] = {
+                str(value)[:10] for value in np.asarray(artifact["dates"]).astype(str)
+            }
+        common_dates = set.intersection(*by_model.values()) if by_model else set()
+        test_range = [str(value)[:10] for value in (window.get("test_range") or [])]
+        if len(test_range) != 2 or any(
+            date < test_range[0] or date > test_range[1] for date in common_dates
+        ):
+            raise ValueError("oof_physical_coverage_outside_declared_test_range")
+        observed.update(common_dates)
+        fold_evidence.append({
+            "window_id": int(window.get("window_id") or 0),
+            "declared_test_range": test_range,
+            "core_common_dates": len(common_dates),
+            "observed_min": min(common_dates) if common_dates else None,
+            "observed_max": max(common_dates) if common_dates else None,
+        })
+    dates = sorted(observed)
+    return dates, {
+        "schema_version": "active8-oof-physical-date-coverage-v1",
+        "core_models": list(CORE_CROSS_SECTIONAL_MODELS),
+        "dates": len(dates),
+        "min_date": dates[0] if dates else None,
+        "max_date": dates[-1] if dates else None,
+        "declared_end_date": str(manifest.get("end_date") or "")[:10],
+        "declared_end_matches_physical": bool(
+            dates and dates[-1] == str(manifest.get("end_date") or "")[:10]
+        ),
+        "folds": fold_evidence,
+    }
+
 def _latest_ready_oof_manifest(bucket: object) -> tuple[str, dict] | None:
     import json
 
@@ -1592,9 +1684,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         raise HTTPException(status_code=500, detail="GCS unavailable")
     parent = _latest_ready_oof_manifest(bucket)
     parent_manifest = parent[1] if parent is not None else {}
-    prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
-    if not prep_gcs_prefix or prep_gcs_prefix == "universal":
-        prep_gcs_prefix = _latest_canonical_prep_prefix(bucket) or ""
+    prep_gcs_prefix = _latest_canonical_prep_prefix(bucket) or ""
+    if not prep_gcs_prefix:
+        prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
     if not prep_gcs_prefix:
         raise HTTPException(status_code=422, detail="OOF lifecycle immutable canonical prep unavailable")
     try:
@@ -1631,8 +1723,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         mature_dates = dates
         resume_manifest_path = None
         sequence_gcs_prefix = str(
-            parent_manifest.get("sequence_gcs_prefix")
-            or calendar_evidence.get("sequence_gcs_prefix")
+            calendar_evidence.get("sequence_gcs_prefix")
+            or parent_manifest.get("sequence_gcs_prefix")
             or "universal/sequence_long/latest"
         )
         if parent is not None:
@@ -1651,7 +1743,14 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         if compatible_parent:
             parent_windows = list(parent_manifest.get("windows") or [])
             parent_fold_count = len(parent_windows)
-            parent_end = str(parent_manifest.get("end_date") or "")[:10]
+            try:
+                parent_physical_dates, parent_physical_coverage = (
+                    _oof_manifest_observed_core_dates(bucket, parent_manifest)
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            parent_end = parent_physical_dates[-1] if parent_physical_dates else ""
+            calendar_evidence["parent_physical_coverage"] = parent_physical_coverage
             new_mature_dates = [date for date in mature_dates if date > parent_end]
             if parent_fold_count < OOF_PROMOTION_MIN_FOLDS:
                 parent_start_index = mature_dates.index(parent_start)
@@ -1683,8 +1782,6 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 )
                 manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
                 resume_manifest_path = str(parent_path)
-                prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "")
-                sequence_gcs_prefix = str(parent_manifest.get("sequence_gcs_prefix") or "")
         else:
             cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSIONS:]
             start_date = cohort_dates[0]
@@ -1882,6 +1979,50 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             content_type="application/json",
         )
     return {"cadence": cadence, "dependency_retry_required": dependency_retry_required, **result}
+
+@router.post("/walk_forward/oof/retention/archive")
+async def archive_walk_forward_oof(req: OofRetentionArchiveRequest):
+    """Archive superseded OOF payloads before bounded hot-D1 deletion."""
+
+    from services.oof_hot_archive import (
+        archive_superseded_oof_cohort,
+        load_oof_archive_preflight,
+    )
+    from services.walk_forward_retrain import _get_bucket
+
+    cohort_ids = sorted({
+        str(value or "").strip()
+        for value in req.cohort_ids
+        if str(value or "").strip()
+    })
+    if not cohort_ids:
+        raise HTTPException(status_code=400, detail="oof archive cohort_ids required")
+    if not req.confirm:
+        return {
+            "status": "dry_run",
+            "delete_hot": req.delete_hot,
+            "cohorts": [load_oof_archive_preflight(cohort_id) for cohort_id in cohort_ids],
+        }
+    bucket = _get_bucket()
+    if bucket is None:
+        raise HTTPException(status_code=500, detail="GCS unavailable")
+    results = []
+    for cohort_id in cohort_ids:
+        try:
+            results.append(archive_superseded_oof_cohort(
+                cohort_id=cohort_id,
+                bucket=bucket,
+                delete_hot=req.delete_hot,
+                chunk_size=req.chunk_size,
+                delete_chunk_size=req.delete_chunk_size,
+            ))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"cohort_id": cohort_id, "error": str(exc), "completed": results},
+            ) from exc
+    return {"status": "completed", "delete_hot": req.delete_hot, "cohorts": results}
+
 
 @router.post("/walk_forward/analyze")
 async def walk_forward_analyze(req: AnalyzeRequest):

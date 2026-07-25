@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.gcs_preflight import verify_gcs_object_lifecycle
+from app.runtime_env import setup_modal_container_env
 
 
 class _Blob:
@@ -71,3 +74,26 @@ def test_gcs_preflight_surfaces_delete_permission_failure():
             workload="finlab",
             run_id="run-3",
         )
+
+
+def test_runtime_env_builds_modal_oidc_wif_adc_config(monkeypatch, tmp_path):
+    credentials_path = tmp_path / "gcp-wif.json"
+    token_path = tmp_path / "modal-token.jwt"
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", raising=False)
+    monkeypatch.setenv("MODAL_IDENTITY_TOKEN", "signed-modal-token")
+    monkeypatch.setenv("GCP_WIF_PROJECT_NUMBER", "123456789")
+    monkeypatch.setenv("GCP_WIF_POOL_ID", "modal-prod")
+    monkeypatch.setenv("GCP_WIF_PROVIDER_ID", "modal-oidc")
+    monkeypatch.setenv("GCP_WIF_SERVICE_ACCOUNT", "writer@example.iam.gserviceaccount.com")
+    monkeypatch.setenv("GCP_WIF_TOKEN_PATH", str(token_path))
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS_PATH", str(credentials_path))
+
+    result = setup_modal_container_env()
+
+    assert result["credentials_mode"] == "modal_oidc_wif"
+    assert token_path.read_text(encoding="utf-8") == "signed-modal-token"
+    config = json.loads(credentials_path.read_text(encoding="utf-8"))
+    assert config["type"] == "external_account"
+    assert config["credential_source"] == {"file": str(token_path)}
+    assert config["audience"].endswith("/workloadIdentityPools/modal-prod/providers/modal-oidc")
+    assert "writer@example.iam.gserviceaccount.com:generateAccessToken" in config["service_account_impersonation_url"]

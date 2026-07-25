@@ -13,9 +13,13 @@ def test_modal_uses_dedicated_bucket_scoped_writer_secret():
         (ROOT / "infra" / "modal-gcs-writer-contract.json").read_text(encoding="utf-8")
     )
     assert contract["modal_secret"] == "stockvision-modal-gcs-writer"
+    assert contract["credential_mode"] == "modal_oidc_workload_identity_federation"
+    assert contract["oidc_issuer"] == "https://oidc.modal.com"
+    assert contract["allowed_app_name"] == "stockvision-ml"
     assert contract["bucket_roles"] == ["roles/storage.objectAdmin"]
     assert contract["project_roles"] == []
     assert "roles/editor" in contract["forbidden_roles"]
+    assert contract["forbidden_credentials"] == ["service_account_private_key"]
     assert '"stockvision-modal-gcs-writer"' in source
     assert 'modal.Secret.from_name("gcs-credentials")' not in source
 

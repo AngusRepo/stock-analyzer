@@ -20,6 +20,7 @@ assert(weekly?.task === 'active8-oof-weekly' && weekly?.schedule === '5 23 * * 6
 assert(!manifest.jobs.some((job: any) => ['l4-alpha-ev-refresh', 'allocator-ev-fusion-refresh', 'monthly-l4-alpha-ev-refresh', 'monthly-allocator-ev-fusion-refresh', 'opb-arm-prior-refresh', 'monthly-opb-arm-prior-refresh'].includes(job.id)), 'legacy independent EV/OPB refresh jobs must not race the canonical OOF lifecycle')
 
 assert(workflows.includes("'/walk_forward/oof/lifecycle'"), 'all Worker cadence tasks must call the same controller OOF lifecycle owner')
+assert(workflows.includes("evidence_mode: 'purged_oof'"), 'manual Fusion refresh must use formal purged OOF evidence')
 for (const task of ['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly']) {
   assert(adminTasks.includes(`'${task}'`), `${task} must have an admin trigger handler`)
   assert(policies.includes(`'${task}'`), `${task} must have an explicit scheduler policy`)
@@ -32,7 +33,7 @@ assert(walkForward.includes('label_known_dates') && walkForward.includes('known 
 assert(walkForward.includes('cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSIONS:]'), 'weekly/monthly OOF must use the deterministic mature-session cohort')
 assert(walkForward.includes('train_window_days=OOF_TRAIN_SESSIONS') && walkForward.includes('test_window_days=OOF_TEST_SESSIONS'), 'OOF cohort must use the canonical 60/10 purged walk-forward windows')
 assert(walkForward.includes('active8-oof-dispatch-v1') && walkForward.includes('cohort_orchestrator_active'), 'OOF generation must have a durable idempotent dispatch fence')
-assert(walkForward.includes('active8-oof-lifecycle-receipt-v1'), 'materialization/promotion must write a durable per-cutoff receipt')
+assert(walkForward.includes('active8-oof-lifecycle-receipt-v2-rematerialize'), 'materialization/promotion must invalidate stale pre-rematerialization receipts')
 assert(
   walkForward.includes('active8-oof-full-fit-receipt-v1') &&
     walkForward.includes('FROM model_artifact_registry') &&

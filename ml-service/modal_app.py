@@ -87,8 +87,13 @@ image = (
     .add_local_dir(str(_LOCAL_APP_DIR), remote_path="/root/app")  # must be last
 )
 
-# Secrets: GCS credentials plus Cloudflare D1/KV/API credentials.
-gcs_secret = modal.Secret.from_name("gcs-credentials")
+# The Modal writer is a dedicated service account with bucket-level
+# roles/storage.objectAdmin only. Never bind project Editor to this identity.
+MODAL_GCS_WRITER_SECRET = os.environ.get(
+    "MODAL_GCS_WRITER_SECRET",
+    "stockvision-modal-gcs-writer",
+).strip()
+gcs_secret = modal.Secret.from_name(MODAL_GCS_WRITER_SECRET)
 finlab_secret = modal.Secret.from_name("stockvision-finlab")
 
 # stockvision-cf can be created manually with:
@@ -3552,12 +3557,32 @@ def finlab_v4_backfill(payload: dict) -> dict:
     stdout = io.StringIO()
     try:
         from tools import finlab_v4_remote_backfill
+        from google.cloud import storage
+        from app.gcs_preflight import verify_gcs_object_lifecycle
+
+        bucket_name = str(
+            payload.get("gcs_bucket")
+            or payload.get("GCS_BUCKET_NAME")
+            or _get_gcs_bucket_name()
+            or ""
+        ).strip()
+        if not bucket_name:
+            raise RuntimeError("finlab_v4_gcs_bucket_not_configured")
+        gcs_preflight = verify_gcs_object_lifecycle(
+            storage.Client().bucket(bucket_name),
+            workload="finlab-v4-backfill",
+            run_id=run_id,
+        )
 
         sys.argv = argv
         with contextlib.redirect_stdout(stdout):
             exit_code = finlab_v4_remote_backfill.main()
         output = stdout.getvalue()
-        result = {"exit_code": exit_code, "stdout_tail": output[-4000:]}
+        result = {
+            "exit_code": exit_code,
+            "stdout_tail": output[-4000:],
+            "gcs_preflight": gcs_preflight,
+        }
         for line in reversed([line.strip() for line in output.splitlines() if line.strip()]):
             try:
                 parsed = json.loads(line)

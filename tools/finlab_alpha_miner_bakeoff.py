@@ -322,6 +322,43 @@ def _fold_sharpes(returns: pd.Series, n_folds: int) -> list[float]:
     return [_annualized_sharpe(clean.iloc[chunk]) for chunk in chunks if len(chunk)]
 
 
+def _purged_partition_returns(
+    returns: pd.Series,
+    n_folds: int,
+    *,
+    embargo_sessions: int,
+) -> list[float]:
+    clean = returns.replace([np.inf, -np.inf], np.nan).dropna()
+    if clean.empty or n_folds < 4 or len(clean) < n_folds * (embargo_sessions + 1):
+        return []
+    chunks = np.array_split(np.arange(len(clean)), n_folds)
+    out: list[float] = []
+    for chunk in chunks:
+        usable = chunk[min(max(0, embargo_sessions), len(chunk)) :]
+        if not len(usable):
+            return []
+        values = clean.iloc[usable].astype(float).to_numpy()
+        out.append(float(np.prod(1.0 + values) - 1.0))
+    return out
+
+
+def _pit_market_regimes(close: pd.DataFrame) -> pd.Series:
+    market_return = close.pct_change(fill_method=None).median(axis=1).fillna(0.0)
+    trend = (1.0 + market_return).rolling(20, min_periods=10).apply(np.prod, raw=True) - 1.0
+    volatility = market_return.rolling(20, min_periods=10).std(ddof=0)
+    prior_volatility_median = volatility.expanding(min_periods=20).median().shift(1)
+    labels = pd.Series("neutral", index=market_return.index, dtype="object")
+    labels.loc[trend > 0.03] = "bull"
+    labels.loc[trend < -0.03] = "bear"
+    high_vol = (
+        prior_volatility_median.notna()
+        & volatility.notna()
+        & (volatility > prior_volatility_median * 1.5)
+    )
+    labels.loc[high_vol & (labels == "neutral")] = "high_volatility"
+    return labels
+
+
 def _deflated_sharpe_proxy(sharpe: float, n_trials: int, n_obs: int) -> float:
     if n_obs <= 1:
         return float(sharpe)
@@ -1116,6 +1153,7 @@ def _evaluate_candidate(
     n_trials_hint: int,
     similarity_pair_map: dict[tuple[str, str], float],
     similarity_feature_meta: dict[str, dict[str, Any]],
+    market_regimes: pd.Series,
 ) -> dict[str, Any]:
     score = _candidate_score(candidate, values, meta)
     if score is None:
@@ -1133,6 +1171,7 @@ def _evaluate_candidate(
     holdout = returns.loc[args.holdout_start: args.holdout_end]
     full = returns.loc[args.start_date: args.end_date]
     train_metrics = _slice_metrics(train)
+    validation_turnover = _mean_turnover(position.loc[args.validation_start: args.validation_end])
     validation_metrics = _slice_metrics(validation)
     holdout_metrics = _slice_metrics(holdout)
     full_metrics = _slice_metrics(full)
@@ -1149,14 +1188,20 @@ def _evaluate_candidate(
     deflated = _deflated_sharpe_proxy(validation_metrics["sharpe"], n_trials_hint, max(1, len(validation)))
     deflated_stats = _deflated_sharpe_stats(validation, n_trials_hint)
     fold_sharpes = _fold_sharpes(full, args.pbo_folds)
+    holdout_partition_returns = _purged_partition_returns(
+        holdout,
+        args.pbo_folds,
+        embargo_sessions=args.pbo_embargo_sessions,
+    )
+    holdout_clean = holdout.replace([np.inf, -np.inf], np.nan).dropna()
+    holdout_market_regimes = market_regimes.reindex(holdout_clean.index).fillna("unknown")
     fitness = (
-        validation_metrics["sharpe"] * 0.40
-        + holdout_metrics["sharpe"] * 0.30
+        validation_metrics["sharpe"] * 0.60
         + novelty * 0.20
         + deflated * 0.05
         + float(deflated_stats["probability"]) * 0.15
-        - max(0.0, abs(full_metrics["max_drawdown"]) - 0.35) * 2.0
-        - turnover * 0.15
+        - max(0.0, abs(validation_metrics["max_drawdown"]) - 0.35) * 2.0
+        - validation_turnover * 0.15
         - complexity * 0.015
     )
     return {
@@ -1176,10 +1221,16 @@ def _evaluate_candidate(
         "max_similarity": novelty_evidence["max_similarity"],
         "similarity_novelty_method": novelty_evidence["similarity_novelty_method"],
         "turnover": turnover,
+        "validation_turnover": validation_turnover,
         "fitness": fitness,
+        "fitness_contract": "validation_only_v2_holdout_untouched",
         "deflated_sharpe_proxy": deflated,
         "deflated_sharpe": deflated_stats,
         "fold_sharpes": fold_sharpes,
+        "holdout_partition_returns": holdout_partition_returns,
+        "holdout_daily_returns": [round(float(value), 10) for value in holdout_clean.tolist()],
+        "holdout_regimes": [str(value) for value in holdout_market_regimes.tolist()],
+        "pbo_embargo_sessions": args.pbo_embargo_sessions,
         "train": train_metrics,
         "validation": validation_metrics,
         "holdout": holdout_metrics,
@@ -1419,7 +1470,7 @@ def _pbo_by_algorithm(rows: list[dict[str, Any]], n_folds: int) -> dict[str, dic
         matrix = []
         usable = []
         for row in subset:
-            folds = row.get("fold_sharpes") or []
+            folds = row.get("holdout_partition_returns") or []
             if len(folds) == n_folds and all(np.isfinite(float(x)) for x in folds):
                 matrix.append([float(x) for x in folds])
                 usable.append(row)
@@ -1428,7 +1479,7 @@ def _pbo_by_algorithm(rows: list[dict[str, Any]], n_folds: int) -> dict[str, dic
                 "candidate_count": len(subset),
                 "usable_candidate_count": len(matrix),
                 "pbo": None,
-                "method": "cscv_fold_sharpe_rank_logit",
+                "method": "cscv_purged_holdout_return_rank_logit",
                 "reason": "insufficient_candidates_or_folds",
             }
             continue
@@ -1454,7 +1505,7 @@ def _pbo_by_algorithm(rows: list[dict[str, Any]], n_folds: int) -> dict[str, dic
             "median_logit": _safe_float(np.median(logits), 0.0) if logits else None,
             "split_count": len(logits),
             "fold_count": n_folds,
-            "method": "cscv_fold_sharpe_rank_logit",
+            "method": "cscv_purged_holdout_return_rank_logit",
         }
     return out
 
@@ -1687,6 +1738,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         close, tradable, values, meta, universe_info = _build_canonical114_factor_universe(args)
     else:
         close, tradable, values, meta, universe_info = _build_factor_universe(args)
+    market_regimes = _pit_market_regimes(close)
     factor_ids = sorted(values.keys())
     _progress(f"factor universe ready: {len(factor_ids)} factors")
     similarity_contract = _load_similarity_contract(
@@ -1719,6 +1771,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             n_trials_hint=n_trials_hint,
             similarity_pair_map=similarity_pair_map,
             similarity_feature_meta=similarity_feature_meta,
+            market_regimes=market_regimes,
         )
 
     rows: list[dict[str, Any]] = []
@@ -1810,6 +1863,7 @@ def main() -> int:
     parser.add_argument("--pymoo-generations", type=int, default=6)
     parser.add_argument("--finlab-confirm-top-n", type=int, default=8)
     parser.add_argument("--pbo-folds", type=int, default=8)
+    parser.add_argument("--pbo-embargo-sessions", type=int, default=5)
     parser.add_argument("--promote-min-validation-sharpe", type=float, default=1.0)
     parser.add_argument("--promote-min-holdout-sharpe", type=float, default=1.0)
     parser.add_argument("--promote-min-full-cagr", type=float, default=0.0)

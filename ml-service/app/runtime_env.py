@@ -16,6 +16,7 @@ def setup_modal_container_env() -> dict[str, bool | str | None]:
         creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_PATH", "/tmp/gcs-credentials.json")
         with open(creds_path, "w", encoding="utf-8") as fh:
             fh.write(creds_json)
+        os.chmod(creds_path, 0o600)
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
         creds_written = True
 

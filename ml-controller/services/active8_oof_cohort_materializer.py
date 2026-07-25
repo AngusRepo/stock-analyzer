@@ -31,6 +31,10 @@ from services.fusion_market_context import (
     recorded_market_context,
 )
 from services.price_horizon_projection_contract import OOF_PRICE_HORIZON_SOURCE
+from services.oof_retention_policy import (
+    build_oof_date_eligibility_rows,
+    persist_oof_date_eligibility,
+)
 
 TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
@@ -1170,6 +1174,7 @@ def persist_oof_cohort(
     snapshot_rows: list[dict[str, Any]],
     l4_predictions: list[dict[str, Any]] | None = None,
     bucket: Any | None = None,
+    knowledge_cutoff_date: str | None = None,
     dry_run: bool = True,
     prediction_storage_mode: str = "gcs_indexed_v1",
     query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
@@ -1190,6 +1195,19 @@ def persist_oof_cohort(
         identities = {tuple(str(row.get(field) or "") for field in fields) for row in rows}
         if len(identities) != len(rows):
             raise ValueError(f"active8_oof_{identity_name}_identity_duplicate")
+    eligibility_rows = build_oof_date_eligibility_rows(
+        cohort_id=cohort_id,
+        source_manifest_checksum=str(manifest.get("manifest_checksum") or ""),
+        prediction_rows=prediction_rows,
+        snapshot_rows=snapshot_rows,
+        l4_prediction_rows=list(l4_predictions or []),
+        knowledge_cutoff_date=str(
+            knowledge_cutoff_date
+            or manifest.get("knowledge_cutoff_date")
+            or max((str(row.get("label_known_date") or "")[:10] for row in prediction_rows), default="")
+        ),
+        target_semantic_version=TARGET_SEMANTIC_VERSION,
+    )
     if dry_run:
         return {
             "status": "dry_run",
@@ -1200,7 +1218,15 @@ def persist_oof_cohort(
             "l4_prediction_rows": len(l4_predictions or []),
             "fold_artifact_rows": len(fold_artifact_rows),
             "prediction_storage_mode": prediction_storage_mode,
+            "date_eligibility": {
+                scope: sum(
+                    row["evidence_scope"] == scope and row["eligibility_status"] == "legal"
+                    for row in eligibility_rows
+                )
+                for scope in ("active8_oof", "l4", "fusion")
+            },
         }
+    refreshing_ready = False
     existing = query_fn(
         "SELECT status, artifact_manifest_checksum, prediction_storage_mode FROM active8_oof_cohorts WHERE cohort_id = ?",
         [cohort_id],
@@ -1210,8 +1236,8 @@ def persist_oof_cohort(
         same_lineage = row.get("artifact_manifest_checksum") == manifest["manifest_checksum"]
         same_storage = row.get("prediction_storage_mode") == prediction_storage_mode
         if row.get("status") == "ready" and same_lineage and same_storage:
-            return {"status": "idempotent_ready", "cohort_id": cohort_id}
-        if row.get("status") != "building" or not same_lineage or not same_storage:
+            refreshing_ready = True
+        elif row.get("status") != "building" or not same_lineage or not same_storage:
             raise ValueError("active8_oof_cohort_id_collision")
 
     model_signature = build_model_set_signature(
@@ -1457,18 +1483,34 @@ def persist_oof_cohort(
         )
     ):
         raise RuntimeError("active8_oof_materialization_count_mismatch")
-    d1_client.execute(
-        """
-        UPDATE active8_oof_cohorts
-        SET status = 'ready', completed_folds = expected_folds,
-            prediction_rows = ?, prediction_dates = ?, ready_at = CURRENT_TIMESTAMP,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE cohort_id = ? AND status = 'building'
-        """,
-        [len(prediction_rows), prediction_dates, cohort_id],
+    eligibility_result = persist_oof_date_eligibility(
+        eligibility_rows,
+        batch_fn=batch_fn,
     )
+    if eligibility_result.get("error_count"):
+        raise RuntimeError(f"active8_oof_date_eligibility_failed:{eligibility_result}")
+    if refreshing_ready:
+        d1_client.execute(
+            """
+            UPDATE active8_oof_cohorts
+            SET prediction_rows = ?, prediction_dates = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE cohort_id = ? AND status = 'ready'
+            """,
+            [len(prediction_rows), prediction_dates, cohort_id],
+        )
+    else:
+        d1_client.execute(
+            """
+            UPDATE active8_oof_cohorts
+            SET status = 'ready', completed_folds = expected_folds,
+                prediction_rows = ?, prediction_dates = ?, ready_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE cohort_id = ? AND status = 'building'
+            """,
+            [len(prediction_rows), prediction_dates, cohort_id],
+        )
     return {
-        "status": "ready",
+        "status": "ready_refreshed" if refreshing_ready else "ready",
         "cohort_id": cohort_id,
         "prediction_storage_mode": prediction_storage_mode,
         "prediction_result": prediction_result,
@@ -1476,4 +1518,5 @@ def persist_oof_cohort(
         "snapshot_result": snapshot_result,
         "l4_result": l4_result,
         "counts": counts,
+        "eligibility_result": eligibility_result,
     }

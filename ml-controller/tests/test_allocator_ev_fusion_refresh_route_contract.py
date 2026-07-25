@@ -72,3 +72,12 @@ def test_mature_snapshot_query_uses_canonical_writer_contract() -> None:
     assert "SNAPSHOT_BACKFILL_SOURCE" in SOURCE
     assert "SNAPSHOT_BACKFILL_AS_OF_GUARD" in SOURCE
     assert "trained_until_strictly_before_snapshot_date'" not in SOURCE
+
+
+def test_purged_oof_refresh_is_explicit_and_fail_closed() -> None:
+    assert 'evidence_mode: Literal["native", "purged_oof"]' in SOURCE
+    assert "purged_oof_requires_knowledge_cutoff_end_date" in SOURCE
+    assert "_latest_ready_oof_cohort" in SOURCE
+    assert "allocator_ev_fusion_ready_oof_cohort_missing" in SOURCE
+    assert "load_allocator_ev_fusion_oof_training_rows" in SOURCE
+    assert "allocator_ev_fusion_{req.evidence_mode}_training_rows_empty" in SOURCE

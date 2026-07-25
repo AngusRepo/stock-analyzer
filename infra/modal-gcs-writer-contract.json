@@ -1,0 +1,19 @@
+{
+  "schema_version": "stockvision-modal-gcs-writer-contract-v1",
+  "modal_secret": "stockvision-modal-gcs-writer",
+  "service_account_id": "stockvision-modal-gcs-writer",
+  "bucket": "stockvision-models",
+  "bucket_roles": [
+    "roles/storage.objectAdmin"
+  ],
+  "project_roles": [],
+  "forbidden_roles": [
+    "roles/editor",
+    "roles/owner"
+  ],
+  "required_preflight": [
+    "storage.objects.create",
+    "storage.objects.get",
+    "storage.objects.delete"
+  ]
+}

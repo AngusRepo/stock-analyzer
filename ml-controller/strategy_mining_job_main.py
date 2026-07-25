@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from services import d1_client
+from services.strategy_mining_evidence import build_strategy_mining_evidence
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -316,6 +317,7 @@ def _build_args(alpha: Any, *, run_date: str, output_dir: Path) -> argparse.Name
         pymoo_generations=6,
         finlab_confirm_top_n=8,
         pbo_folds=8,
+        pbo_embargo_sessions=_env_int("STRATEGY_MINING_PBO_EMBARGO_SESSIONS", 5),
         promote_min_validation_sharpe=1.0,
         promote_min_holdout_sharpe=1.0,
         promote_min_full_cagr=0.0,
@@ -340,6 +342,7 @@ def _build_args(alpha: Any, *, run_date: str, output_dir: Path) -> argparse.Name
         ("STRATEGY_MINING_MAX_FACTORS", "max_factors", int),
         ("STRATEGY_MINING_FINLAB_CONFIRM_TOP_N", "finlab_confirm_top_n", int),
         ("STRATEGY_MINING_PBO_FOLDS", "pbo_folds", int),
+        ("STRATEGY_MINING_PBO_EMBARGO_SESSIONS", "pbo_embargo_sessions", int),
         ("STRATEGY_MINING_PROMOTE_MIN_VALIDATION_SHARPE", "promote_min_validation_sharpe", float),
         ("STRATEGY_MINING_PROMOTE_MIN_HOLDOUT_SHARPE", "promote_min_holdout_sharpe", float),
         ("STRATEGY_MINING_PROMOTE_MAX_FULL_DRAWDOWN", "promote_max_full_drawdown", float),
@@ -493,6 +496,8 @@ def _update_run(run_id: str, *, status: str, telemetry: dict[str, Any]) -> None:
 
 def _persist_candidates(run_id: str, report: dict[str, Any]) -> dict[str, Any]:
     candidate_to_family, representative_ids, _family_packets = _family_maps(report)
+    research_evidence = report.get("strategy_research_evidence") or {}
+    candidate_evidence = research_evidence.get("candidate_evidence") or {}
     confirm_ids = {_confirm_raw_candidate_id(row) for row in report.get("finlab_confirm") or [] if isinstance(row, dict)}
     rows = [row for row in report.get("rows") or [] if isinstance(row, dict)]
     max_candidates = _env_int("STRATEGY_MINING_LEDGER_MAX_CANDIDATES", 300)
@@ -505,14 +510,21 @@ def _persist_candidates(run_id: str, report: dict[str, Any]) -> dict[str, Any]:
         validation_status = "not_ok"
         if row.get("status") == "ok":
             validation_status = "finlab_confirmed" if raw_id in confirm_ids else "pymoo_ok"
-        promotion_state = "challenger_candidate" if raw_id in representative_ids else "research_candidate"
+        evidence = candidate_evidence.get(raw_id) or {}
+        promotion_state = (
+            "challenger_candidate"
+            if raw_id in representative_ids and evidence.get("status") == "pass"
+            else "research_candidate"
+        )
         metrics = {
             key: row.get(key)
             for key in [
                 "status",
                 "fitness",
+                "fitness_contract",
                 "complexity",
                 "turnover",
+                "validation_turnover",
                 "base_novelty",
                 "novelty",
                 "similarity_novelty_penalty",
@@ -532,6 +544,7 @@ def _persist_candidates(run_id: str, report: dict[str, Any]) -> dict[str, Any]:
             ]
         }
         metrics["raw_candidate_id"] = raw_id
+        metrics["research_evidence"] = evidence
         statements.append(
             (
                 """
@@ -569,6 +582,9 @@ def _persist_backtests(run_id: str, report: dict[str, Any]) -> dict[str, Any]:
     }
     statements: list[tuple[str, list[Any]]] = []
     config = report.get("config") or {}
+    research_evidence = report.get("strategy_research_evidence") or {}
+    common_pbo = research_evidence.get("pbo") or {}
+    candidate_evidence = research_evidence.get("candidate_evidence") or {}
     for confirm in _deduped_finlab_confirm(report):
         if not isinstance(confirm, dict):
             continue
@@ -582,8 +598,12 @@ def _persist_backtests(run_id: str, report: dict[str, Any]) -> dict[str, Any]:
                 "holdout": source_row.get("holdout"),
                 "full": source_row.get("full"),
                 "fitness": source_row.get("fitness"),
+                "fitness_contract": source_row.get("fitness_contract"),
                 "raw_candidate_id": raw_id,
             },
+            "common_pbo": common_pbo,
+            "candidate_research_evidence": candidate_evidence.get(raw_id),
+            "walk_forward": research_evidence.get("walk_forward"),
         }
         statements.append(
             (
@@ -604,7 +624,7 @@ def _persist_backtests(run_id: str, report: dict[str, Any]) -> dict[str, Any]:
                     _safe_float(confirm.get("max_drawdown")),
                     _safe_float(confirm.get("calmar")),
                     _safe_float(confirm.get("avg_turnover_proxy")),
-                    None,
+                    _safe_float(common_pbo.get("pbo")),
                     _safe_float(dsr),
                     _json_dumps(evidence),
                 ],
@@ -659,22 +679,49 @@ def _persist_candidate_similarity(run_id: str, report: dict[str, Any]) -> dict[s
 
 def _persist_promotion_packets(run_id: str, report: dict[str, Any]) -> dict[str, Any]:
     _candidate_to_family, representative_ids, family_packets = _family_maps(report)
+    research_evidence = report.get("strategy_research_evidence") or {}
+    candidate_evidence = research_evidence.get("candidate_evidence") or {}
     statements: list[tuple[str, list[Any]]] = []
     for raw_id in sorted(representative_ids):
         packet = family_packets.get(raw_id) or {}
+        evidence = candidate_evidence.get(raw_id) or {}
+        evidence_status = str(evidence.get("status") or "pending")
+        if evidence_status == "pass":
+            to_state = "challenger_candidate"
+            decision = "auto_research_gate_passed_pending_review"
+            failed_gates: list[str] = []
+        elif evidence_status == "failed":
+            to_state = "research_candidate"
+            decision = "auto_research_gate_failed"
+            failed_gates = list(evidence.get("failed_gates") or ["research_evidence_failed"])
+        else:
+            to_state = "research_candidate"
+            decision = "auto_research_evidence_pending"
+            failed_gates = ["research_evidence_pending"]
+        packet = {
+            **packet,
+            "strategy_research_evidence": {
+                "common_candidate_matrix": research_evidence.get("common_candidate_matrix"),
+                "pbo": research_evidence.get("pbo"),
+                "walk_forward": research_evidence.get("walk_forward"),
+                "candidate": evidence or None,
+            },
+        }
         statements.append(
             (
                 """
                 INSERT OR REPLACE INTO strategy_promotion_ledger (
                   ledger_id, candidate_id, run_id, from_state, to_state, decision,
                   failed_gates_json, packet_json, real_trading_effect
-                ) VALUES (?, ?, ?, 'research_candidate', 'challenger_candidate',
-                  'auto_research_gate_passed_pending_review', '[]', ?, 'none')
+                ) VALUES (?, ?, ?, 'research_candidate', ?, ?, ?, ?, 'none')
                 """,
                 [
                     f"{run_id}__{raw_id}__challenger_packet",
                     _ledger_candidate_id(run_id, raw_id),
                     run_id,
+                    to_state,
+                    decision,
+                    _json_dumps(failed_gates),
                     _json_dumps(packet),
                 ],
             )
@@ -761,6 +808,11 @@ def main() -> int:
 
     try:
         report = alpha.run(args)
+        report["strategy_research_evidence"] = build_strategy_mining_evidence(
+            list(report.get("rows") or []),
+            n_partitions=int(args.pbo_folds),
+            n_simulations=_env_int("STRATEGY_MINING_MONTE_CARLO_SIMULATIONS", 1000),
+        )
         report["job"] = {
             "run_id": run_id,
             "run_date": run_date,
@@ -777,6 +829,7 @@ def main() -> int:
             "ledger": ledger,
             "summary": report.get("summary"),
             "adaptive_strategy_families": report.get("adaptive_strategy_families"),
+            "strategy_research_evidence": report.get("strategy_research_evidence"),
             "factor_universe_summary": {
                 key: value
                 for key, value in (report.get("factor_universe") or {}).items()

@@ -1218,6 +1218,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             snapshot_rows=snapshot_rows,
             l4_predictions=l4_predictions,
             bucket=bucket,
+            knowledge_cutoff_date=req.knowledge_cutoff_date,
             dry_run=req.dry_run,
             prediction_storage_mode=req.prediction_storage_mode,
         )
@@ -1424,6 +1425,7 @@ OOF_LABEL_PURGE_SESSIONS = 5
 OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v2-rematerialize"
 OOF_LIFECYCLE_MIN_SESSIONS = OOF_MIN_MATURE_SESSIONS
 _OOF_TARGET_SEMANTIC_VERSION = (
     "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
@@ -1796,13 +1798,14 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     lifecycle_blob = bucket.blob(lifecycle_path)
     if lifecycle_blob.exists():
         receipt = json.loads(lifecycle_blob.download_as_text())
-        return {
-            "status": "idempotent_complete",
-            "cadence": cadence,
-            "cohort_id": cohort_id,
-            "knowledge_cutoff_date": knowledge_cutoff_date,
-            "receipt": receipt,
-        }
+        if receipt.get("schema_version") == OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION:
+            return {
+                "status": "idempotent_complete",
+                "cadence": cadence,
+                "cohort_id": cohort_id,
+                "knowledge_cutoff_date": knowledge_cutoff_date,
+                "receipt": receipt,
+            }
     if not req.dry_run and os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1":
         from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
 
@@ -1863,7 +1866,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     if not req.dry_run and not dependency_retry_required:
         lifecycle_blob.upload_from_string(
             json.dumps({
-                "schema_version": "active8-oof-lifecycle-receipt-v1",
+                "schema_version": OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION,
                 "status": result.get("status"),
                 "cohort_id": cohort_id,
                 "cadence": cadence,
@@ -1872,6 +1875,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 "promotion_reason": result.get("promotion_reason"),
                 "opb_refresh": result.get("opb_refresh"),
                 "full_fit_dispatch": result.get("full_fit_dispatch"),
+                "persistence": result.get("persistence"),
+                "snapshot_evidence": result.get("snapshot_evidence"),
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             }, sort_keys=True),
             content_type="application/json",

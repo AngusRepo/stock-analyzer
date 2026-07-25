@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from services import d1_client
 from services.allocator_ev_fusion_artifact_builder import (
     build_allocator_ev_fusion_artifact_from_rows,
+    load_allocator_ev_fusion_oof_training_rows,
     load_allocator_ev_fusion_training_rows,
 )
 from services.allocator_ev_feature_snapshot_backfill import backfill_allocator_ev_feature_snapshots
@@ -29,10 +30,12 @@ router = APIRouter(prefix="/allocator_ev_fusion", tags=["allocator_ev_fusion"])
 class AllocatorEvFusionRefreshReq(BaseModel):
     end_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     cadence: Literal["weekly", "monthly", "manual"] = "weekly"
+    evidence_mode: Literal["native", "purged_oof"] = "native"
+    cohort_id: str | None = Field(default=None, min_length=1, max_length=200)
     lookback_days: int | None = Field(default=None, ge=30, le=365)
     min_samples: int | None = Field(default=None, ge=100, le=10000)
     min_dates: int | None = Field(default=None, ge=5, le=252)
-    limit: int = Field(default=6000, ge=500, le=20000)
+    limit: int | None = Field(default=None, ge=500, le=20000)
     promote: bool = True
     dry_run: bool = False
     trigger_source: str = "worker_scheduler"
@@ -98,6 +101,42 @@ def _defaults_for_cadence(cadence: str) -> dict[str, int]:
     if cadence == "monthly":
         return {"lookback_days": 180, "min_samples": 1000, "min_dates": 35}
     return {"lookback_days": 90, "min_samples": 500, "min_dates": 20}
+
+
+def _latest_ready_oof_cohort() -> str:
+    rows = d1_client.query(
+        """
+        SELECT c.cohort_id
+        FROM active8_oof_cohorts c
+        JOIN active8_oof_materialized_artifacts a
+          ON a.cohort_id = c.cohort_id
+         AND a.source_manifest_checksum = c.artifact_manifest_checksum
+        WHERE c.status = 'ready'
+          AND c.generation_mode = 'purged_oof'
+          AND c.prediction_storage_mode = 'gcs_indexed_v1'
+          AND a.artifact_kind IN ('allocator_ev_snapshots', 'l4_predictions')
+        GROUP BY c.cohort_id, c.ready_at, c.updated_at
+        HAVING COUNT(DISTINCT a.artifact_kind) = 2
+        ORDER BY COALESCE(c.ready_at, c.updated_at) DESC, c.cohort_id DESC
+        LIMIT 1
+        """,
+        [],
+    )
+    cohort_id = str((rows[0] if rows else {}).get("cohort_id") or "").strip()
+    if not cohort_id:
+        raise HTTPException(status_code=409, detail="allocator_ev_fusion_ready_oof_cohort_missing")
+    return cohort_id
+
+
+def _get_oof_bucket() -> Any:
+    bucket_name = os.environ.get("GCS_BUCKET_NAME", "").strip()
+    if not bucket_name:
+        raise HTTPException(status_code=500, detail="GCS_BUCKET_NAME_not_configured")
+    try:
+        from google.cloud import storage
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="google_cloud_storage_not_available") from exc
+    return storage.Client().bucket(bucket_name)
 
 
 def _artifact_checksum(artifact: dict[str, Any]) -> str:
@@ -201,25 +240,59 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
     """
 
     defaults = _defaults_for_cadence(req.cadence)
-    end_date = _latest_mature_feature_date(req.end_date)
     lookback_days = req.lookback_days or defaults["lookback_days"]
     min_samples = req.min_samples or defaults["min_samples"]
     min_dates = req.min_dates or defaults["min_dates"]
-
-    rows = load_allocator_ev_fusion_training_rows(
-        d1_client.query,
-        end_date=end_date,
-        lookback_days=lookback_days,
-        limit=req.limit,
-        knowledge_cutoff_date=req.end_date or end_date,
-    )
+    row_limit = req.limit or (20000 if req.evidence_mode == "purged_oof" else 6000)
+    cohort_id: str | None = None
+    generation_mode = "native"
+    if req.evidence_mode == "purged_oof":
+        cohort_id = str(req.cohort_id or "").strip() or _latest_ready_oof_cohort()
+        if not req.end_date:
+            raise HTTPException(
+                status_code=422,
+                detail="purged_oof_requires_knowledge_cutoff_end_date",
+            )
+        try:
+            rows = load_allocator_ev_fusion_oof_training_rows(
+                d1_client.query,
+                cohort_id=cohort_id,
+                knowledge_cutoff_date=req.end_date,
+                limit=row_limit,
+                bucket=_get_oof_bucket(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        generation_mode = "purged_oof"
+        end_date = max(
+            str(row.get("prediction_date") or row.get("snapshot_date") or "")[:10]
+            for row in rows
+        )
+        knowledge_cutoff_date = req.end_date
+    else:
+        end_date = _latest_mature_feature_date(req.end_date)
+        knowledge_cutoff_date = req.end_date or end_date
+        rows = load_allocator_ev_fusion_training_rows(
+            d1_client.query,
+            end_date=end_date,
+            lookback_days=lookback_days,
+            limit=row_limit,
+            knowledge_cutoff_date=knowledge_cutoff_date,
+        )
+    if not rows:
+        raise HTTPException(
+            status_code=409,
+            detail=f"allocator_ev_fusion_{req.evidence_mode}_training_rows_empty",
+        )
     result = build_allocator_ev_fusion_artifact_from_rows(
         rows,
         trained_until=end_date,
         lookback_days=lookback_days,
         min_samples=min_samples,
         min_dates=min_dates,
-        knowledge_cutoff_date=req.end_date or end_date,
+        knowledge_cutoff_date=knowledge_cutoff_date,
+        generation_mode=generation_mode,
+        cohort_id=cohort_id,
     )
     artifact = result.get("artifact") if isinstance(result, dict) else None
     validation = result.get("validation_packet") if isinstance(result, dict) else None
@@ -305,10 +378,13 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
         **result,
         "status": status,
         "cadence": req.cadence,
+        "evidence_mode": req.evidence_mode,
+        "cohort_id": cohort_id,
         "end_date": end_date,
         "lookback_days": lookback_days,
         "min_samples": min_samples,
         "min_dates": min_dates,
+        "row_limit": row_limit,
         "rows_loaded": len(rows),
         "promoted": promoted,
         "promotion_error": promotion_error,
@@ -318,6 +394,7 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
         "production_mutation_allowed": bool(req.promote and not req.dry_run and decision == "PASS"),
         "summary": (
             f"allocator_ev_fusion_refresh status={status} cadence={req.cadence} "
+            f"evidence_mode={req.evidence_mode} cohort_id={cohort_id or 'none'} "
             f"end_date={end_date} model_version={(artifact or {}).get('model_version', 'unknown')} "
             f"decision={decision or 'UNKNOWN'} tier={(artifact or {}).get('promotion_tier', 'unknown')} "
             f"promoted={1 if promoted else 0}"

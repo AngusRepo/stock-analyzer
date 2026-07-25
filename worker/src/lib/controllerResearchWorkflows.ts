@@ -290,6 +290,7 @@ export async function runAllocatorEvFusionRefresh(env: Bindings, runDate?: strin
     method: 'POST',
     jsonBody: {
       cadence,
+      evidence_mode: 'purged_oof',
       end_date: runDate,
       promote: true,
       dry_run: false,

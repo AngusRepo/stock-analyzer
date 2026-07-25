@@ -1,6 +1,7 @@
 """Build allocator EV fusion artifacts from verified recommendation outcomes."""
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from datetime import date, datetime, timezone
@@ -1787,7 +1788,13 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "promotion_blockers": promotion_blockers,
         "validation_packet": validation_packet,
         "resolver_method": "market_conditioned_cross_fitted_rank_two_part_trade_ev_fusion",
-        "model_version": f"allocator-ev-fusion-cross-fit-v12-{trained_until.replace('-', '')}",
+        "model_version": (
+            f"allocator-ev-fusion-cross-fit-v12-{trained_until.replace('-', '')}"
+            if generation_mode == "native"
+            else "allocator-ev-fusion-cross-fit-v12-"
+            f"{trained_until.replace('-', '')}-oof-"
+            f"{hashlib.sha256(str(cohort_id or '').encode('utf-8')).hexdigest()[:10]}"
+        ),
         "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v12-pit-market-context",
         "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
         "trained_until": trained_until,
@@ -1827,9 +1834,126 @@ def load_allocator_ev_fusion_oof_training_rows(
     *,
     cohort_id: str,
     knowledge_cutoff_date: str,
-    limit: int = 12000,
+    limit: int = 20000,
+    bucket: Any | None = None,
 ) -> list[dict[str, Any]]:
     """Load one homogeneous OOF cohort with cross-fitted L4 and S12 labels."""
+
+    cohort_rows = query_fn(
+        """
+        SELECT status, prediction_storage_mode, artifact_manifest_checksum
+        FROM active8_oof_cohorts
+        WHERE cohort_id = ?
+        """,
+        [cohort_id],
+    )
+    if len(cohort_rows) != 1 or str(cohort_rows[0].get("status") or "") != "ready":
+        raise ValueError("allocator_ev_fusion_oof_cohort_not_ready")
+    cohort = cohort_rows[0]
+    storage_mode = str(cohort.get("prediction_storage_mode") or "d1_full_v1")
+    if storage_mode == "gcs_indexed_v1":
+        if bucket is None:
+            raise ValueError("allocator_ev_fusion_oof_gcs_bucket_missing")
+        manifest_checksum = str(cohort.get("artifact_manifest_checksum") or "")
+        index_rows = query_fn(
+            """
+            SELECT artifact_kind, source_manifest_checksum
+            FROM active8_oof_materialized_artifacts
+            WHERE cohort_id = ?
+              AND artifact_kind IN ('allocator_ev_snapshots', 'l4_predictions')
+            """,
+            [cohort_id],
+        )
+        index_by_kind = {
+            str(row.get("artifact_kind") or ""): row for row in index_rows
+        }
+        if set(index_by_kind) != {"allocator_ev_snapshots", "l4_predictions"}:
+            raise ValueError("allocator_ev_fusion_oof_artifact_indexes_incomplete")
+        if len(manifest_checksum) != 64 or any(
+            str(row.get("source_manifest_checksum") or "") != manifest_checksum
+            for row in index_by_kind.values()
+        ):
+            raise ValueError("allocator_ev_fusion_oof_manifest_lineage_mismatch")
+
+        # Imported lazily to keep native refreshes independent of OOF storage.
+        from services.active8_oof_cohort_materializer import (
+            build_fusion_oof_rows,
+            load_oof_materialized_rows,
+        )
+
+        snapshot_rows = load_oof_materialized_rows(
+            bucket=bucket,
+            cohort_id=cohort_id,
+            artifact_kind="allocator_ev_snapshots",
+            query_fn=query_fn,
+        )
+        l4_rows = load_oof_materialized_rows(
+            bucket=bucket,
+            cohort_id=cohort_id,
+            artifact_kind="l4_predictions",
+            query_fn=query_fn,
+        )
+        eligible_snapshots = [
+            row for row in snapshot_rows
+            if str(row.get("generation_mode") or "") == "purged_oof"
+            and str(row.get("source_manifest_checksum") or "") == manifest_checksum
+            and len(str(row.get("label_known_date") or "")[:10]) == 10
+            and str(row.get("label_known_date") or "")[:10] <= knowledge_cutoff_date
+        ]
+        eligible_l4 = [
+            row for row in l4_rows
+            if int(row.get("eligible_for_efficacy") or 0) == 1
+            and len(str(row.get("trained_until") or "")[:10]) == 10
+            and len(str(row.get("prediction_date") or "")[:10]) == 10
+            and str(row.get("trained_until") or "")[:10]
+            < str(row.get("prediction_date") or "")[:10]
+        ]
+        if not eligible_snapshots or not eligible_l4:
+            raise ValueError("allocator_ev_fusion_oof_indexed_rows_empty")
+        rows = build_fusion_oof_rows(
+            eligible_snapshots,
+            eligible_l4,
+            knowledge_cutoff_date=knowledge_cutoff_date,
+            query_fn=query_fn,
+        )
+        if not rows:
+            raise ValueError("allocator_ev_fusion_oof_joined_rows_empty")
+        by_date: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            prediction_date = str(
+                row.get("prediction_date") or row.get("snapshot_date") or ""
+            )[:10]
+            if len(prediction_date) != 10:
+                raise ValueError("allocator_ev_fusion_oof_prediction_date_invalid")
+            by_date.setdefault(prediction_date, []).append(row)
+        selected_dates: list[str] = []
+        selected_rows = 0
+        for prediction_date in sorted(by_date, reverse=True):
+            date_rows = by_date[prediction_date]
+            if len(date_rows) > int(limit):
+                raise ValueError("allocator_ev_fusion_oof_single_date_exceeds_limit")
+            if selected_rows + len(date_rows) > int(limit):
+                continue
+            selected_dates.append(prediction_date)
+            selected_rows += len(date_rows)
+        if not selected_dates:
+            raise ValueError("allocator_ev_fusion_oof_complete_date_cohort_empty")
+        selected = set(selected_dates)
+        return sorted(
+            (
+                row
+                for row in rows
+                if str(
+                    row.get("prediction_date") or row.get("snapshot_date") or ""
+                )[:10] in selected
+            ),
+            key=lambda row: (
+                str(row.get("prediction_date") or row.get("snapshot_date") or ""),
+                str(row.get("symbol") or ""),
+            ),
+        )
+    if storage_mode != "d1_full_v1":
+        raise ValueError("allocator_ev_fusion_oof_storage_mode_unsupported")
 
     rows = query_fn(
         f"""

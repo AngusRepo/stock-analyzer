@@ -185,6 +185,18 @@ def test_oof_persistence_is_resumable_and_uses_deterministic_upserts():
     assert "ON CONFLICT(cohort_id, fold_id, snapshot_date, symbol, market_segment)" in source
     assert "ON CONFLICT(cohort_id, fold_id, prediction_date, symbol, market_segment)" in source
 
+
+def test_ready_oof_cohort_refreshes_mature_artifacts_without_retraining():
+    source = (
+        ROOT / "ml-controller" / "services" / "active8_oof_cohort_materializer.py"
+    ).read_text()
+
+    assert "refreshing_ready = True" in source
+    assert '"status": "ready_refreshed" if refreshing_ready else "ready"' in source
+    assert 'return {"status": "idempotent_ready"' not in source
+    assert "archive_oof_materialized_rows(" in source
+
+
 def test_oof_migration_enforces_immutable_keys_and_point_in_time_labels():
     migration = (ROOT / "worker" / "migrations" / "0066_active8_oof_stacking_cohorts.sql").read_text()
 

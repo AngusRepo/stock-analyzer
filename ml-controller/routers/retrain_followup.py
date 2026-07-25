@@ -53,6 +53,7 @@ async def _run_monthly_oof_lifecycle(run_date: str | None) -> dict[str, Any]:
         end_date=run_date,
         dry_run=False,
         promote=True,
+        dispatch_full_fit=True,
     ))
 
 async def _resume_oof_full_fit_lifecycle(context: dict[str, Any]) -> dict[str, Any]:

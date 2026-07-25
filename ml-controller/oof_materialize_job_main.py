@@ -41,6 +41,7 @@ async def _execute_lifecycle(
     cadence: str,
     end_date: str | None,
     promote: bool,
+    dispatch_full_fit: bool,
     expected_cohort_id: str | None,
 ) -> dict[str, Any]:
     from routers.walk_forward import OofLifecycleRequest, run_walk_forward_oof_lifecycle
@@ -63,6 +64,7 @@ async def _execute_lifecycle(
         end_date=end_date,
         dry_run=False,
         promote=promote,
+        dispatch_full_fit=dispatch_full_fit,
         expected_cohort_id=expected_cohort_id,
     ))
     result["prep_lifecycle"] = prep
@@ -122,6 +124,7 @@ async def _run() -> int:
     start_date = os.environ.get("OOF_MATERIALIZE_START_DATE", "").strip() or None
     end_date = os.environ.get("OOF_MATERIALIZE_END_DATE", "").strip() or None
     promote = _truthy(os.environ.get("OOF_MATERIALIZE_PROMOTE", "1"))
+    dispatch_full_fit = _truthy(os.environ.get("OOF_MATERIALIZE_DISPATCH_FULL_FIT", "0"))
     expected_cohort_id = (
         os.environ.get("OOF_MATERIALIZE_EXPECTED_COHORT_ID", "").strip() or None
     )
@@ -171,6 +174,7 @@ async def _run() -> int:
                 cadence=cadence,
                 end_date=end_date,
                 promote=promote,
+                dispatch_full_fit=dispatch_full_fit,
                 expected_cohort_id=expected_cohort_id,
             )
             status = str(result.get("status") or "").lower()

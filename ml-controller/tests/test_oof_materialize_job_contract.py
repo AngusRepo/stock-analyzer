@@ -8,8 +8,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
     callbacks = []
+    lifecycle_kwargs = {}
 
     async def fake_execute_lifecycle(**_kwargs):
+        lifecycle_kwargs.update(_kwargs)
         return {
             "status": "materialized",
             "cohort_id": "cohort-1",
@@ -37,6 +39,7 @@ def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
     assert callback["run_date"] == "2026-07-17"
     assert "status=materialized" in callback["summary"]
     assert "cohort=cohort-1" in callback["summary"]
+    assert lifecycle_kwargs["dispatch_full_fit"] is False
 
 
 def test_allocator_snapshot_mode_closes_scheduler_callback(monkeypatch):
@@ -94,6 +97,7 @@ def test_oof_materialize_job_reports_full_fit_pending_as_running(monkeypatch):
 
     async def fake_execute_lifecycle(**kwargs):
         assert kwargs["expected_cohort_id"] == "cohort-1"
+        assert kwargs["dispatch_full_fit"] is True
         return {
             "status": "materialized",
             "cohort_id": "cohort-1",
@@ -109,6 +113,7 @@ def test_oof_materialize_job_reports_full_fit_pending_as_running(monkeypatch):
     monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "weekly")
     monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-07-17")
     monkeypatch.setenv("OOF_MATERIALIZE_EXPECTED_COHORT_ID", "cohort-1")
+    monkeypatch.setenv("OOF_MATERIALIZE_DISPATCH_FULL_FIT", "1")
     monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-pending")
 
     assert asyncio.run(oof_materialize_job_main._run()) == 0

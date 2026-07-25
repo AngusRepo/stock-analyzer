@@ -376,6 +376,7 @@ class OofMaterializeRequest(BaseModel):
     dry_run: bool = True
     confirm: bool = False
     promote: bool = True
+    dispatch_full_fit: bool = False
     prediction_storage_mode: str = "gcs_indexed_v1"
     lifecycle_cadence: str = "daily"
     forward_extension_manifest_path: str | None = None
@@ -1418,7 +1419,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 except Exception as exc:  # noqa: BLE001 - config mutation already has Worker audit snapshot.
                     promotion_receipt_error = str(exc)
         full_fit_dispatch = full_fit_plan
-        if not req.dry_run and req.promote:
+        if not req.dry_run and req.dispatch_full_fit:
             full_fit_dispatch = await dispatch_oof_full_fit_training(
                 manifest=manifest,
                 knowledge_cutoff_date=req.knowledge_cutoff_date,
@@ -1499,6 +1500,7 @@ class OofLifecycleRequest(BaseModel):
     end_date: str | None = None
     dry_run: bool = False
     promote: bool = True
+    dispatch_full_fit: bool = False
     expected_cohort_id: str | None = None
 
 
@@ -1978,6 +1980,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                     "OOF_MATERIALIZE_CADENCE": cadence,
                     "OOF_MATERIALIZE_END_DATE": req.end_date or knowledge_cutoff_date,
                     "OOF_MATERIALIZE_PROMOTE": "1" if req.promote else "0",
+                    "OOF_MATERIALIZE_DISPATCH_FULL_FIT": "1" if req.dispatch_full_fit else "0",
                     "OOF_MATERIALIZE_RUN_ID": run_id,
                     "OOF_MATERIALIZE_CALLBACK_TASK": callback_task,
                     "OOF_MATERIALIZE_EXPECTED_COHORT_ID": cohort_id,
@@ -2015,6 +2018,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         dry_run=req.dry_run,
         confirm=not req.dry_run,
         promote=req.promote,
+        dispatch_full_fit=req.dispatch_full_fit,
         lifecycle_cadence=cadence,
     ))
     opb_failed = (

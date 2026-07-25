@@ -22,6 +22,7 @@ assert(weekly?.task === 'active8-oof-weekly' && weekly?.schedule === '5 23 * * 6
 assert(!manifest.jobs.some((job: any) => ['l4-alpha-ev-refresh', 'allocator-ev-fusion-refresh', 'monthly-l4-alpha-ev-refresh', 'monthly-allocator-ev-fusion-refresh', 'opb-arm-prior-refresh', 'monthly-opb-arm-prior-refresh'].includes(job.id)), 'legacy independent EV/OPB refresh jobs must not race the canonical OOF lifecycle')
 
 assert(workflows.includes("'/walk_forward/oof/lifecycle'"), 'all Worker cadence tasks must call the same controller OOF lifecycle owner')
+assert(workflows.includes("dispatch_full_fit: cadence !== 'daily'"), 'daily evidence materialization must not implicitly dispatch Active-8 full-fit training')
 assert(workflows.includes("evidence_mode: 'purged_oof'"), 'manual Fusion refresh must use formal purged OOF evidence')
 for (const task of ['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly']) {
   assert(adminTasks.includes(`'${task}'`), `${task} must have an admin trigger handler`)
@@ -55,6 +56,7 @@ assert(monthlyHandoff >= 0 && monthlyHandoff < monthlyCallback, 'monthly retrain
 assert(retrainFollowup.includes('callback must retry until OOF handoff is durable'), 'failed monthly OOF handoff must keep retrain callback retryable')
 assert(retrainFollowup.includes('_resume_oof_full_fit_lifecycle') && retrainFollowup.includes('oof_lifecycle_resume_manifest_identity_mismatch'), 'completed OOF full-fit must resume only its checksum-bound lifecycle')
 assert(walkForward.includes('OOF_MATERIALIZE_EXPECTED_COHORT_ID'), 'durable materialization resume must remain bound to the originating cohort')
+assert(walkForward.includes('OOF_MATERIALIZE_DISPATCH_FULL_FIT') && walkForward.includes('if not req.dry_run and req.dispatch_full_fit'), 'full-fit training must require an explicit lifecycle dispatch flag')
 assert(walkForward.includes('outer_fold_majority_vote') && walkForward.includes('active8-oof-full-fit-feature-consensus-v1'), 'tree full-fit must use checksum-bound majority consensus from outer OOF feature selections')
 for (const field of ['gcs_prefix', 'feature_pool_path', 'dataset_snapshot']) {
   assert(trainingPolicy.includes(`"${field}"`), `full-fit train payload must preserve ${field} lineage`)

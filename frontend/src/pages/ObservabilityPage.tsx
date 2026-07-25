@@ -434,7 +434,7 @@ function ReadinessGateMatrix({ gates, limit = 12 }: { gates: ReadinessGate[]; li
 
 function DataQualityCompactMatrix({ gates, compact = false }: { gates: ReadinessGate[]; compact?: boolean }) {
   return (
-    <div className={compact ? 'grid gap-2 sm:grid-cols-2' : 'grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6'}>
+    <div className={compact ? 'grid grid-cols-2 gap-2 lg:grid-cols-4' : 'grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6'}>
       {gates.map((gate) => (
         <div key={gate.id} className={`min-h-[106px] rounded-xl border p-2 ${statusRingClass(gate.tone)}`}>
           <div className="flex items-start justify-between gap-2">
@@ -926,7 +926,7 @@ function OperationalReadinessDeck({
 
   return (
     <div className="border-b border-[#263247] bg-[#080b11] p-3">
-      <div className="grid items-stretch gap-3 2xl:grid-cols-[minmax(0,1fr)_minmax(540px,0.78fr)]">
+      <div className="grid items-stretch gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <div className="rounded-2xl border border-[#2b3a49] bg-[radial-gradient(circle_at_18%_0%,rgba(0,210,255,0.13),transparent_32%),linear-gradient(135deg,#10141d,#0b1118_58%,#141109)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div className="min-w-0">

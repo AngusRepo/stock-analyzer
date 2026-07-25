@@ -251,6 +251,88 @@
 .obs-chain__stage.is-branch .obs-chain__orb { width: 48px; height: 48px; }
 .obs-chain__stage.is-branch .obs-chain__orb > svg { width: 19px; height: 19px; }
 
+.obs-chain__topology, .obs-chain__main-lane { min-width: 0; }
+.obs-chain__lane-head { display: none; }
+
+@media (min-width: 1180px) {
+  .obs-chain__topology.is-intraday {
+    display: grid;
+    grid-template-columns: minmax(248px,.82fr) minmax(560px,1.72fr) minmax(292px,.96fr);
+    min-width: 0;
+    align-items: stretch;
+    gap: 10px;
+    padding: 14px 16px 8px;
+    border-top: 1px solid #1f3043;
+    background: rgba(7,14,24,.88);
+  }
+
+  .obs-chain__topology.is-intraday > .obs-chain__main-lane {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid #2a4057;
+    border-radius: 14px;
+    background: linear-gradient(180deg, rgba(13,31,49,.92), rgba(8,17,29,.9));
+  }
+
+  .obs-chain__topology.is-intraday .obs-chain__lane-head {
+    display: block;
+    min-height: 116px;
+    padding: 12px 13px;
+    border-bottom: 1px solid #2a3c50;
+  }
+  .obs-chain__lane-head > span { color: #72baf0; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .obs-chain__lane-head strong { display: block; margin-top: 4px; color: #e7eef5; font-size: 14px; font-weight: 680; }
+  .obs-chain__lane-head p { margin: 5px 0 0; color: #8294a8; font-size: 12px; line-height: 1.45; }
+
+  .obs-chain__topology.is-intraday .obs-chain__main-lane .obs-chain__viewport { overflow: hidden; border: 0; }
+  .obs-chain__topology.is-intraday .obs-chain__main-lane .obs-chain__sequence { width: 100%; min-width: 0; min-height: 0; justify-content: center; padding: 22px 8px 18px; }
+  .obs-chain__topology.is-intraday .obs-chain__main-lane .obs-chain__column,
+  .obs-chain__topology.is-intraday .obs-chain__main-lane .obs-chain__column.is-parallel { width: 76px; }
+  .obs-chain__topology.is-intraday .obs-chain__main-lane .obs-chain__connector { width: 18px; }
+  .obs-chain__topology.is-intraday .obs-chain__main-lane .obs-chain__stage { width: 76px; }
+  .obs-chain__topology.is-intraday .obs-chain__main-lane .obs-chain__orb { width: 44px; height: 44px; }
+  .obs-chain__topology.is-intraday .obs-chain__main-lane .obs-chain__orb > svg { width: 18px; height: 18px; }
+  .obs-chain__topology.is-intraday .obs-chain__main-lane .obs-chain__stage-copy strong { font-size: 11px; }
+  .obs-chain__topology.is-intraday .obs-chain__main-lane .obs-chain__stage-copy > span,
+  .obs-chain__topology.is-intraday .obs-chain__main-lane .obs-chain__stage-copy small,
+  .obs-chain__topology.is-intraday .obs-chain__main-lane .obs-chain__stage-copy em { font-size: 10px; }
+
+  .obs-chain__topology.is-intraday .obs-chain__branches { display: contents; }
+  .obs-chain__topology.is-intraday .obs-chain__branch {
+    grid-template-columns: minmax(0,1fr);
+    align-content: start;
+    gap: 12px;
+    padding: 12px;
+    background: rgba(13,25,40,.78);
+  }
+  .obs-chain__topology.is-intraday .obs-chain__branch:nth-child(1) { grid-column: 1; grid-row: 1; }
+  .obs-chain__topology.is-intraday .obs-chain__branch:nth-child(2) { grid-column: 3; grid-row: 1; }
+  .obs-chain__topology.is-intraday .obs-chain__branch-anchor { min-height: 104px; padding: 0 0 11px; border-right: 0; border-bottom: 1px solid #2a3c50; }
+  .obs-chain__topology.is-intraday .obs-chain__branch-sequence { width: 100%; flex-direction: column; align-items: stretch; }
+  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__segment { width: 100%; flex-direction: column; }
+  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__column,
+  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__column.is-parallel { width: 100%; gap: 7px; padding: 0; }
+  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__column.is-parallel::before { display: none; }
+  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector { width: 3px; height: 17px; }
+  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector::before { top: auto; right: -2px; bottom: -1px; border-top: 6px solid #56677c; border-right: 4px solid transparent; border-bottom: 0; border-left: 4px solid transparent; }
+  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-completed::before { border-top-color: var(--chain-green); }
+  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-running::before { border-top-color: var(--chain-cyan); }
+  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-waiting::before { border-top-color: var(--chain-amber); }
+  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-blocked::before { border-top-color: var(--chain-red); }
+  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-not_started::before { border-top-color: var(--chain-slate); }
+  .obs-chain__topology.is-intraday .obs-chain__stage.is-branch { grid-template-columns: 42px minmax(0,1fr); width: 100%; align-items: center; justify-items: start; gap: 9px; border: 1px solid #26384d; border-radius: 11px; padding: 8px 9px; background: rgba(7,15,25,.7); text-align: left; }
+  .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__ordinal { position: absolute; top: 5px; left: 6px; margin: 0; font-size: 9px; }
+  .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__orb { width: 40px; height: 40px; }
+  .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__orb > svg { width: 17px; height: 17px; }
+  .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__stage-copy { margin: 0; justify-items: start; }
+  .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__stage-copy strong { font-size: 11px; }
+  .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__stage-copy > span { display: none; }
+  .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__stage-copy small,
+  .obs-chain__topology.is-intraday .obs-chain__stage.is-branch .obs-chain__stage-copy em { margin-top: 2px; font-size: 10px; }
+}
+
 .obs-chain__progress { padding: 14px 20px 16px; background: rgba(8,16,27,.86); }
 .obs-chain__progress-label { display: flex; align-items: center; justify-content: space-between; gap: 18px; color: #9aabbd; font-size: 12px; }
 .obs-chain__progress-label span { display: flex; align-items: center; gap: 8px; color: #dce5ef; font-size: 13px; font-weight: 650; }

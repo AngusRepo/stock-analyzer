@@ -10,10 +10,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'ml-controller'))
+sys.path.insert(0, str(ROOT / 'ml-service'))
 
 from services import active8_prep_lifecycle as lifecycle
 from services import modal_client, walk_forward_retrain
 from routers import retrain_trigger
+from app.long_history_sequence_prep import _manifest_checksum as producer_manifest_checksum
 
 
 class _Blob:
@@ -75,6 +77,19 @@ def _snapshot(*, prefixed_checksum: bool = False) -> dict:
         "manifest_errors": [],
     }
 
+
+def test_sequence_manifest_checksum_matches_producer_contract():
+    manifest = {
+        "schema_version": "finlab-long-history-sequence-prep-v2",
+        "status": "ready",
+        "contract": "sequence_records_v3",
+        "output_gcs_prefix": "universal/sequence_long/runs/example",
+        "batch_count": 1,
+        "summary": {"date_min": "2025-01-02", "date_max": "2026-07-23"},
+        "output_checksums": {"batch_0.npz": "a" * 64},
+    }
+
+    assert lifecycle._manifest_checksum(manifest) == producer_manifest_checksum(manifest)
 
 def test_daily_prep_dry_run_resolves_latest_legal_business_date(monkeypatch):
     bucket = _Bucket()

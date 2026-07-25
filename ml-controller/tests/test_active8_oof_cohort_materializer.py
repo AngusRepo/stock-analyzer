@@ -572,7 +572,7 @@ def test_materialized_index_accepts_verified_no_lookahead_policy_upgrade():
         }],
         eligibility_rows=[
             {
-                "evidence_scope": "fusion",
+                "evidence_scope": "snapshot",
                 "prediction_date": date,
                 "eligibility_status": "legal",
             }

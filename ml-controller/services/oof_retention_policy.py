@@ -4,7 +4,7 @@ from typing import Any
 
 
 ELIGIBILITY_SCHEMA_VERSION = "oof-date-eligibility-v2"
-ELIGIBILITY_SCOPES = ("active8_oof", "l4", "fusion")
+ELIGIBILITY_SCOPES = ("active8_oof", "snapshot", "l4", "fusion")
 
 
 def _date_text(value: Any) -> str:
@@ -87,6 +87,26 @@ def build_oof_date_eligibility_rows(
             active_status, active_reason = "legal", "active8_purged_oof_complete"
         append(prediction_date, "active8_oof", active_status, active_reason)
 
+        snapshots = snapshots_by_date.get(prediction_date, [])
+        if active_status == "pending":
+            snapshot_status, snapshot_reason = "pending", "active8_labels_not_mature"
+        elif active_status == "illegal":
+            snapshot_status, snapshot_reason = "illegal", "active8_lineage_contract_unmet"
+        elif len(snapshots) < max(1, int(min_cross_section_rows)):
+            snapshot_status, snapshot_reason = "illegal", "snapshot_cross_section_incomplete"
+        elif any(
+            str(row.get("generation_mode") or "") != "purged_oof"
+            or str(row.get("source_manifest_checksum") or "")
+            != source_manifest_checksum
+            or not _date_text(row.get("label_known_date"))
+            or _date_text(row.get("label_known_date")) > cutoff
+            for row in snapshots
+        ):
+            snapshot_status, snapshot_reason = "illegal", "snapshot_pit_contract_unmet"
+        else:
+            snapshot_status, snapshot_reason = "legal", "allocator_snapshot_pit_complete"
+        append(prediction_date, "snapshot", snapshot_status, snapshot_reason)
+
         l4_rows = l4_by_date.get(prediction_date, [])
         if active_status == "pending":
             l4_status, l4_reason = "pending", "active8_labels_not_mature"
@@ -105,22 +125,12 @@ def build_oof_date_eligibility_rows(
             l4_status, l4_reason = "legal", "l4_chronological_oof_complete"
         append(prediction_date, "l4", l4_status, l4_reason)
 
-        snapshots = snapshots_by_date.get(prediction_date, [])
         if l4_status == "pending":
             fusion_status, fusion_reason = "pending", l4_reason
         elif l4_status == "illegal":
             fusion_status, fusion_reason = "illegal", l4_reason
-        elif len(snapshots) < max(1, int(min_cross_section_rows)):
-            fusion_status, fusion_reason = "illegal", "fusion_snapshot_cross_section_incomplete"
-        elif any(
-            str(row.get("generation_mode") or "") != "purged_oof"
-            or str(row.get("source_manifest_checksum") or "")
-            != source_manifest_checksum
-            or not _date_text(row.get("label_known_date"))
-            or _date_text(row.get("label_known_date")) > cutoff
-            for row in snapshots
-        ):
-            fusion_status, fusion_reason = "illegal", "fusion_snapshot_pit_contract_unmet"
+        elif snapshot_status != "legal":
+            fusion_status, fusion_reason = snapshot_status, snapshot_reason
         else:
             fusion_status, fusion_reason = "legal", "fusion_selection_evidence_complete"
         append(prediction_date, "fusion", fusion_status, fusion_reason)

@@ -86,7 +86,7 @@ def _l4(day: str, trained_until: str) -> dict:
     }
 
 
-def test_oof_date_eligibility_keeps_active8_l4_and_fusion_scopes_separate():
+def test_oof_date_eligibility_keeps_snapshot_l4_and_fusion_scopes_separate():
     rows = build_oof_date_eligibility_rows(
         cohort_id="cohort-1",
         source_manifest_checksum="a" * 64,
@@ -111,9 +111,11 @@ def test_oof_date_eligibility_keeps_active8_l4_and_fusion_scopes_separate():
         for row in rows
     }
     assert by_key[("2026-07-08", "active8_oof")]["eligibility_status"] == "legal"
+    assert by_key[("2026-07-08", "snapshot")]["eligibility_status"] == "legal"
     assert by_key[("2026-07-08", "l4")]["eligibility_status"] == "legal"
     assert by_key[("2026-07-08", "fusion")]["eligibility_status"] == "legal"
     assert by_key[("2026-07-09", "active8_oof")]["eligibility_status"] == "pending"
+    assert by_key[("2026-07-09", "snapshot")]["eligibility_status"] == "pending"
     assert by_key[("2026-07-09", "l4")]["eligibility_status"] == "pending"
     assert by_key[("2026-07-09", "fusion")]["eligibility_status"] == "pending"
 
@@ -131,6 +133,7 @@ def test_oof_date_eligibility_does_not_mark_oof_illegal_for_l4_warmup():
     )
     by_scope = {row["evidence_scope"]: row for row in rows}
     assert by_scope["active8_oof"]["eligibility_status"] == "legal"
+    assert by_scope["snapshot"]["eligibility_status"] == "legal"
     assert by_scope["l4"]["eligibility_status"] == "illegal"
     assert by_scope["l4"]["reason_code"] == "l4_cross_section_incomplete"
     assert by_scope["fusion"]["eligibility_status"] == "illegal"

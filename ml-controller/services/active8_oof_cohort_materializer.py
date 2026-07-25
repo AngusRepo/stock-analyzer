@@ -217,7 +217,7 @@ def persist_oof_materialized_artifact_indexes(
                 str(row.get("prediction_date") or "")[:10]
             )
     scope_by_kind = {
-        "allocator_ev_snapshots": "fusion",
+        "allocator_ev_snapshots": "snapshot",
         "l4_predictions": "l4",
     }
     cohort_ids = sorted({str(row["cohort_id"]) for row in artifacts})
@@ -1350,7 +1350,7 @@ def persist_oof_cohort(
                     row["evidence_scope"] == scope and row["eligibility_status"] == "legal"
                     for row in eligibility_rows
                 )
-                for scope in ("active8_oof", "l4", "fusion")
+                for scope in ("active8_oof", "snapshot", "l4", "fusion")
             },
         }
     refreshing_ready = False

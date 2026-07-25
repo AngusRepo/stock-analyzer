@@ -432,9 +432,9 @@ function ReadinessGateMatrix({ gates, limit = 12 }: { gates: ReadinessGate[]; li
   )
 }
 
-function DataQualityCompactMatrix({ gates }: { gates: ReadinessGate[] }) {
+function DataQualityCompactMatrix({ gates, compact = false }: { gates: ReadinessGate[]; compact?: boolean }) {
   return (
-    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6">
+    <div className={compact ? 'grid gap-2 sm:grid-cols-2' : 'grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6'}>
       {gates.map((gate) => (
         <div key={gate.id} className={`min-h-[106px] rounded-xl border p-2 ${statusRingClass(gate.tone)}`}>
           <div className="flex items-start justify-between gap-2">
@@ -452,25 +452,6 @@ function DataQualityCompactMatrix({ gates }: { gates: ReadinessGate[] }) {
           </div>
           <MiniBar value={gate.status === 'ready' ? 94 : gate.status === 'running' ? 72 : gate.status === 'waiting' ? 48 : gate.status === 'blocked' ? 100 : 28} tone={gate.tone} />
           <p className="mt-1 line-clamp-2 text-xs leading-4 text-[#9badbf]">{gate.detail}</p>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function SourceGateSummary({ gates }: { gates: ReadinessGate[] }) {
-  const ordered = [...gates].sort((a, b) => {
-    const priority = { blocked: 0, running: 1, waiting: 2, pending: 3, ready: 4 } as const
-    return priority[a.status] - priority[b.status]
-  })
-
-  return (
-    <div className="mt-2 grid gap-1.5" aria-label="Source gate status">
-      {ordered.slice(0, 3).map((gate) => (
-        <div key={gate.id} className="flex min-w-0 items-center gap-2 rounded-lg border border-white/[0.07] bg-black/15 px-2 py-1.5">
-          <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: toneColor(gate.tone) }} />
-          <span className="min-w-0 flex-1 truncate text-xs text-[#a8b6c5]">{gate.label}</span>
-          <span className="shrink-0 sv-num text-xs normal-case" style={{ color: toneColor(gate.tone) }}>{gate.value}</span>
         </div>
       ))}
     </div>
@@ -945,7 +926,7 @@ function OperationalReadinessDeck({
 
   return (
     <div className="border-b border-[#263247] bg-[#080b11] p-3">
-      <div className="grid gap-3">
+      <div className="grid items-stretch gap-3 2xl:grid-cols-[minmax(0,1fr)_minmax(540px,0.78fr)]">
         <div className="rounded-2xl border border-[#2b3a49] bg-[radial-gradient(circle_at_18%_0%,rgba(0,210,255,0.13),transparent_32%),linear-gradient(135deg,#10141d,#0b1118_58%,#141109)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div className="min-w-0">
@@ -968,7 +949,7 @@ function OperationalReadinessDeck({
             </div>
           </div>
 
-          <div className="mt-4 grid gap-2 md:grid-cols-2 2xl:grid-cols-4">
+          <div className="mt-4 grid gap-2 md:grid-cols-3">
             <div className="rounded-2xl border border-sky-400/20 bg-sky-400/[0.06] p-3">
               <div className="flex items-center gap-2 text-sky-200">
                 <RadioTower className="h-4 w-4" />
@@ -1000,21 +981,21 @@ function OperationalReadinessDeck({
               <p className="mt-1 text-xs leading-5 text-[#9badbf]">只要 critical gate 未 ready，下游推薦不應直接更新。</p>
             </div>
 
-            <div className="min-w-0 rounded-2xl border border-emerald-400/20 bg-emerald-400/[0.06] p-3" aria-label="Source gates summary">
-              <div className="flex items-center justify-between gap-2 text-emerald-200">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Database className="h-4 w-4 shrink-0" />
-                  <p className="truncate text-sm font-semibold">Source Gates</p>
-                </div>
-                <a href="/data-quality" className="inline-flex shrink-0 items-center gap-1 sv-num text-xs normal-case text-emerald-200 hover:text-emerald-100">
-                  Detail <ExternalLink className="h-3 w-3" />
-                </a>
-              </div>
-              <p className="mt-2 text-lg font-semibold text-[#f2ead8]">{gates.filter((gate) => gate.status === 'ready').length}/{gates.length} sources ready</p>
-              <SourceGateSummary gates={gates} />
-            </div>
           </div>
         </div>
+
+        <section className="flex h-full min-w-0 flex-col rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3" aria-labelledby="source-gates-title">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <Database className="h-4 w-4 shrink-0 text-emerald-300" />
+              <p id="source-gates-title" className="truncate text-sm font-semibold text-[#f2ead8]">Source Gates / 資料就緒</p>
+            </div>
+            <a href="/data-quality" className="inline-flex shrink-0 items-center gap-1 sv-num text-xs normal-case text-emerald-200 hover:text-emerald-100">
+              Data Quality <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
+          <DataQualityCompactMatrix gates={gates} compact />
+        </section>
       </div>
 
       <div className="mt-3">

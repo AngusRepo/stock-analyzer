@@ -81,7 +81,12 @@ const TASK_NAMES: Record<string, string> = {
   'data-domain-shadow-backfill': 'Data Domain Shadow Backfill',
   'intraday-check': 'Limit Buy + SL/TP',
   'intraday-rescore': 'Intraday Re-score',
+  'rescore-10': 'Intraday Re-score 10:00',
+  'rescore-11': 'Intraday Re-score 11:00',
+  'rescore-12': 'Intraday Re-score 12:00',
+  'rescore-1230': 'Intraday Re-score 12:30',
   'eod-exit': 'EOD Exit',
+  'post-close-price-refresh': 'Post-close Price Refresh',
   'weekly-audit': 'Weekly Audit',
   'model-ic-rolling': 'Model IC Rolling',
   'model-ic-full-check': 'Model IC Full Check',
@@ -182,7 +187,7 @@ export function resolveMonotonicSchedulerEntry(
   const explicitNewAttempt = Boolean(incoming.attempt_id) && previous.attempt_id !== incoming.attempt_id
   if (explicitNewRun || explicitNewAttempt) return incoming
   if (previous.status === 'error' && incoming.status !== 'error') return previous
-  if (previous.status === 'success' && ['running', 'triggered'].includes(incoming.status)) return previous
+  if (previous.status === 'success' && ['running', 'triggered', 'skipped'].includes(incoming.status)) return previous
   return incoming
 }
 

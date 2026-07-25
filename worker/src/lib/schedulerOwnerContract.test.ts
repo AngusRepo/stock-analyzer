@@ -36,6 +36,7 @@ const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
 const adminGcpTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 const adminTriggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const schedulerStatus = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
+const schedulerRunLogger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
 const tradingDayTasks = [
   'intraday-check',
   'intraday-rescore',
@@ -85,6 +86,21 @@ assert(
   'intraday-check windows must cover TW 09:00-12:59 and 13:00-13:30 only',
 )
 assert(!intradayWindows.some((job: any) => job.schedule === '* 1-5 * * 1-5'), 'intraday-check must never trigger at TW 13:31-13:59')
+
+const rescoreSlots = [
+  ['rescore-10', '0 2 * * 1-5', 'sync=1&cron=0%202%20%2A%20%2A%201-5'],
+  ['rescore-11', '0 3 * * 1-5', 'sync=1&cron=0%203%20%2A%20%2A%201-5'],
+  ['rescore-12', '0 4 * * 1-5', 'sync=1&cron=0%204%20%2A%20%2A%201-5'],
+  ['rescore-1230', '30 4 * * 1-5', 'sync=1&cron=30%204%20%2A%20%2A%201-5'],
+] as const
+for (const [id, cron, query] of rescoreSlots) {
+  const job = manifest.jobs.find((candidate: any) => candidate.id === id)
+  assert(job?.task === 'intraday-rescore' && job?.schedule === cron && job?.query === query, `${id} must carry its exact slot identity into the shared re-score handler`)
+  assert(schedulerStatus.includes(`id: '${id}'`) && schedulerRunLogger.includes(`'${id}':`), `${id} must have a first-class OBS definition and display name`)
+  assert(workerTasks.includes(`'${cron}': '${id}'`), `${id} must map its cron to a slot-specific runtime log`)
+}
+assert(workerTasks.includes("status: 'running'") && workerTasks.includes('logSchedulerResult(c.env.KV, slotTask'), 're-score slot must publish running and terminal status for realtime OBS feedback')
+assert(!schedulerStatus.includes("{ id: 'intraday-rescore'") && !schedulerStatus.includes("'intraday-rescore', 'morning-setup'"), 'OBS status and heatmap must not retain the collapsed aggregate re-score identity')
 
 const modelIcFullCheck = manifest.jobs.find((job: any) => job.id === 'model-ic-full-check')
 assert(modelIcFullCheck?.task === 'model-ic-full-check', 'Friday Model IC must own a separate full-check task identity')

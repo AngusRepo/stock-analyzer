@@ -4,8 +4,15 @@ import { twToday } from './dateUtils'
 import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
 import type { LegacyHotDataTarget } from './legacyHotDataRetirement'
 import { runWithMaintenanceLease, summarizeMaintenanceLeaseResult } from './maintenanceLease'
+import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 
-const RESCORE_CRONS = new Set(['0 2 * * 1-5', '0 3 * * 1-5', '0 4 * * 1-5', '30 4 * * 1-5'])
+const RESCORE_SLOT_TASK_BY_CRON: Record<string, string> = {
+  '0 2 * * 1-5': 'rescore-10',
+  '0 3 * * 1-5': 'rescore-11',
+  '0 4 * * 1-5': 'rescore-12',
+  '30 4 * * 1-5': 'rescore-1230',
+}
+const RESCORE_CRONS = new Set(Object.keys(RESCORE_SLOT_TASK_BY_CRON))
 const D1_HEAVY_MAINTENANCE_TASKS = new Set([
   'debate-memory-retention', 'audit-json-retention', 'artifact-reconcile',
   'legacy-evidence-migration', 'legacy-strategy-evidence-migration',
@@ -458,7 +465,44 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     },
     'intraday-rescore': async () => {
       const { runIntradayRescore } = await import('./cronOrchestrator')
-      return runIntradayRescore(c.env, inferIntradayRescoreCron(c.req.query('cron')), twToday())
+      const cron = inferIntradayRescoreCron(c.req.query('cron'))
+      const slotTask = RESCORE_SLOT_TASK_BY_CRON[cron]
+      const runDate = twToday()
+      const startedAt = Date.now()
+      if (slotTask) {
+        await logSchedulerResult(c.env.KV, slotTask, {
+          status: 'running',
+          summary: `started cron=${cron}`,
+          duration_ms: 0,
+          run_date: runDate,
+          strict: true,
+        })
+      }
+      try {
+        const summary = await runIntradayRescore(c.env, cron, runDate)
+        if (slotTask) {
+          await logSchedulerResult(c.env.KV, slotTask, {
+            status: classifySchedulerSummary(summary),
+            summary,
+            duration_ms: Date.now() - startedAt,
+            run_date: runDate,
+            strict: true,
+          })
+        }
+        return summary
+      } catch (error) {
+        if (slotTask) {
+          await logSchedulerResult(c.env.KV, slotTask, {
+            status: 'error',
+            summary: error instanceof Error ? error.message : String(error),
+            duration_ms: Date.now() - startedAt,
+            run_date: runDate,
+            error: String(error),
+            strict: true,
+          })
+        }
+        throw error
+      }
     },
     'morning-briefing': async () => {
       const { generateMorningBriefing } = await import('./morningBriefing')

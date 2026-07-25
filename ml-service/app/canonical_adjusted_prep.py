@@ -29,6 +29,12 @@ def _manifest_checksum(manifest: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(unsigned, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _sequence_manifest_checksum(manifest: dict[str, Any]) -> str:
+    unsigned = {key: value for key, value in manifest.items() if key != "manifest_checksum"}
+    return hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
 def _verified_source_receipt(bucket: Any, prefix: str, batch_count: int) -> dict[str, Any]:
     path = f"{prefix}/prep/immutable_receipt.json"
     blob = bucket.blob(path)
@@ -67,7 +73,7 @@ def _verified_sequence_manifest(bucket: Any, prefix: str, batch_count: int) -> d
         or manifest.get("contract") != "sequence_records_v3"
         or str(manifest.get("output_gcs_prefix") or "").rstrip("/") != prefix
         or int(manifest.get("batch_count") or 0) != batch_count
-        or manifest.get("manifest_checksum") != _manifest_checksum(manifest)
+        or manifest.get("manifest_checksum") != _sequence_manifest_checksum(manifest)
     ):
         raise ValueError("canonical_adjusted_sequence_manifest_invalid")
     checksums = manifest.get("output_checksums") or {}

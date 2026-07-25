@@ -55,14 +55,12 @@ def _get_bucket():
         return None
     try:
         from google.cloud import storage
+
         client = storage.Client()
         _bucket = client.bucket(bucket_name)
-        # 蝣箄? bucket 摮
-        if not _bucket.exists():
-            _bucket = client.create_bucket(bucket_name, location="asia-east1")
-            logger.info(f"[ModelStore] Created bucket: {bucket_name}")
-        else:
-            logger.info(f"[ModelStore] Using bucket: {bucket_name}")
+        # Object workloads use bucket-scoped IAM. Metadata probes and runtime
+        # bucket creation require broader permissions and violate that boundary.
+        logger.info(f"[ModelStore] Using configured bucket handle: {bucket_name}")
     except ImportError:
         logger.warning("[ModelStore] google-cloud-storage not installed, model persistence disabled")
         return None
@@ -72,8 +70,6 @@ def _get_bucket():
 
     return _bucket
 
-
-# ?? ?脣?璅∪? ??????????????????????????????????????????????????????????????????
 def save_model(
     stock_id: int,
     model_name: str,

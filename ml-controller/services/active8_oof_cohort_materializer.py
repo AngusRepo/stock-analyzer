@@ -215,8 +215,16 @@ def persist_oof_materialized_artifact_indexes(
           compressed_bytes=excluded.compressed_bytes,
           uncompressed_bytes=excluded.uncompressed_bytes,
           source_manifest_checksum=excluded.source_manifest_checksum
-        WHERE active8_oof_materialized_artifacts.artifact_checksum = excluded.artifact_checksum
-          AND active8_oof_materialized_artifacts.source_manifest_checksum = excluded.source_manifest_checksum
+        WHERE active8_oof_materialized_artifacts.source_manifest_checksum = excluded.source_manifest_checksum
+          AND (
+            active8_oof_materialized_artifacts.artifact_checksum = excluded.artifact_checksum
+            OR (
+              excluded.date_count > active8_oof_materialized_artifacts.date_count
+              AND excluded.row_count >= active8_oof_materialized_artifacts.row_count
+              AND excluded.min_date = active8_oof_materialized_artifacts.min_date
+              AND excluded.max_date > active8_oof_materialized_artifacts.max_date
+            )
+          )
     """
     result = batch_fn(
         [(sql, [

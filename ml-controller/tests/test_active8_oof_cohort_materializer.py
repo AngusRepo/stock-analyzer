@@ -540,6 +540,43 @@ def test_gcs_indexed_materialization_never_writes_large_oof_tables():
     assert "active8-oof-materialized-jsonl-gzip-v1" in migration
 
 
+def test_materialized_index_only_accepts_idempotency_or_strict_forward_extension():
+    from services.active8_oof_cohort_materializer import (
+        persist_oof_materialized_artifact_indexes,
+    )
+
+    captured = {}
+
+    def batch_fn(statements, **_kwargs):
+        captured["sql"] = statements[0][0]
+        return {"error_count": 0}
+
+    persist_oof_materialized_artifact_indexes(
+        [{
+            "cohort_id": "cohort-1",
+            "artifact_kind": "allocator_ev_snapshots",
+            "artifact_path": "path",
+            "artifact_checksum": "a" * 64,
+            "format_version": "active8-oof-materialized-jsonl-gzip-v1",
+            "row_count": 20,
+            "date_count": 2,
+            "min_date": "2026-07-08",
+            "max_date": "2026-07-09",
+            "compressed_bytes": 10,
+            "uncompressed_bytes": 20,
+            "source_manifest_checksum": "b" * 64,
+        }],
+        batch_fn=batch_fn,
+    )
+
+    sql = captured["sql"]
+    assert "artifact_checksum = excluded.artifact_checksum" in sql
+    assert "excluded.date_count > active8_oof_materialized_artifacts.date_count" in sql
+    assert "excluded.row_count >= active8_oof_materialized_artifacts.row_count" in sql
+    assert "excluded.min_date = active8_oof_materialized_artifacts.min_date" in sql
+    assert "excluded.max_date > active8_oof_materialized_artifacts.max_date" in sql
+
+
 def test_forward_extension_manifest_is_shadow_only_and_bound_to_base():
     import hashlib
     import json

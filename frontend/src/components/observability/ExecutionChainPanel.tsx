@@ -406,7 +406,16 @@ export default function ExecutionChainPanel({
         </div>
       </div>
 
-      <div className="obs-chain__viewport" ref={trackRef}>
+      <div className={`obs-chain__topology ${scope.id === 'intraday' ? 'is-intraday' : ''}`} ref={trackRef}>
+        <section className="obs-chain__main-lane" aria-labelledby={scope.id === 'intraday' ? 'intraday-main-flow-title' : 'obs-chain-title'}>
+          {scope.id === 'intraday' && (
+            <div className="obs-chain__lane-head">
+              <span>Primary guard</span>
+              <strong id="intraday-main-flow-title">Intraday main flow</strong>
+              <p>Pre-market warmup &rarr; intraday guard &rarr; EOD &rarr; close refresh &rarr; daily snapshot.</p>
+            </div>
+          )}
+          <div className="obs-chain__viewport">
         <div className="obs-chain__sequence">
           {scope.columns.map((column, index) => {
             const previousColumn = scope.columns[index - 1] ?? []
@@ -455,6 +464,7 @@ export default function ExecutionChainPanel({
           })}
         </div>
       </div>
+        </section>
 
       {scope.branches && scope.branches.length > 0 && (
         <div className="obs-chain__branches" aria-label="Execution branches">
@@ -517,6 +527,7 @@ export default function ExecutionChainPanel({
           ))}
         </div>
       )}
+      </div>
 
       <div className="obs-chain__progress">
         <div className="obs-chain__progress-label">

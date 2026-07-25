@@ -47,6 +47,8 @@ assert(chain.includes('function scopeStageIds') && chain.includes('scope.branche
 assert(chain.includes("'context with' : 'shares inputs with'") && chain.includes('${mainStageCount} main') && chain.includes('${branchStageCount} branch'), 'branch UI must state shared-input semantics and avoid a fake sequential phase number')
 assert(!chain.includes("'intraday-rescore': {") && !chain.includes('Next up') && !chain.includes('obs-chain__detail--next'), 'legacy aggregate re-score and redundant Next Up detail must stay removed')
 assert(chainCss.includes('.obs-chain__branches') && chainCss.includes('.obs-chain__branch-sequence') && chainCss.includes('grid-template-columns: minmax(0,1fr)'), 'execution branches and single-column selected detail must have explicit responsive styling')
+assert(chain.includes("obs-chain__topology ${scope.id === 'intraday' ? 'is-intraday' : ''}") && chain.includes('Intraday main flow'), 'intraday topology must place the pre-market branch, main flow, and re-score branch in one explicit layout')
+assert(chainCss.includes('grid-template-columns: minmax(248px,.82fr) minmax(560px,1.72fr) minmax(292px,.96fr)') && chainCss.includes('.obs-chain__branch:nth-child(1)') && chainCss.includes('.obs-chain__branch:nth-child(2)'), 'desktop intraday topology must order pre-market left, main center, and re-score right')
 assert(chain.includes("['model-ic-rolling']") && !chain.includes('buildScopedJobMap') && !chain.includes('model-ic-tracker'), 'daily chain must consume the isolated rolling identity without timestamp inference')
 assert(chain.includes("job.id === 'intraday-check' && job.lastStatus === 'skip'") && chain.includes("noop: 'Checked · no action'"), 'an executed intraday heartbeat with no action must not look unexecuted')
 assert(chain.includes("job.lastStatus === 'sleep') return 'out_of_window'") && chain.includes("out_of_window: 'Not in window'"), 'sleep must render as Not in window rather than Not started')
@@ -58,7 +60,7 @@ assert(chain.includes('StandaloneJobRegistry') && chain.includes('MAPPED_JOB_IDS
 assert(standalone.includes('.filter((job) => !mappedJobIds.has(job.id))'), 'every unmapped API job must enter the runtime registry')
 assert(standalone.includes('Standalone root') && standalone.includes('Unmapped dependency'), 'registry must distinguish independent jobs from missing topology')
 assert(standalone.includes('{jobs.length} / {jobs.length} accounted'), 'registry must expose full scheduler coverage')
-assert(standaloneCss.includes('.obs-standalone__group') && standaloneCss.includes('.obs-standalone__rows') && !standaloneCss.includes('.obs-standalone__group-card'), 'standalone jobs must use the restored grouped-row presentation')
+assert(standaloneCss.includes('.obs-standalone__group-card') && standaloneCss.includes('.obs-standalone__job-grid') && !standaloneCss.includes('.obs-standalone__rows'), 'standalone jobs must use the previous grouped-card presentation')
 
 assert(page.includes('schedulerApi.status'), 'execution chain must use the formal scheduler status API')
 assert(page.includes('schedulerRefreshInterval(query.state.data?.jobs)'), 'scheduler refresh must adapt to runtime status')
@@ -80,7 +82,7 @@ assert(chainCss.includes('@media (prefers-reduced-motion: reduce)'), 'chain anim
 
 assert(page.includes('const schedulerApiError = errorMessage(scheduler.error)'), 'Scheduler API error must remain first-class')
 assert(page.includes('aria-labelledby="source-gates-title"') && page.includes('<DataQualityCompactMatrix gates={gates} compact />'), 'full Source Gates must sit beside the readiness summary')
-assert(page.includes('2xl:grid-cols-[minmax(0,1fr)_minmax(540px,0.78fr)]') && page.includes('md:grid-cols-3'), 'Source Gates must remain a full right-side block beside the three readiness cards')
+assert(page.includes('xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]') && page.includes("compact ? 'grid grid-cols-2 gap-2 lg:grid-cols-4'"), 'Readiness control and Source Gates must use a 4:6 desktop ratio with four Source Gate cards per row')
 assert(!page.includes('SourceGateSummary'), 'Source Gates must not collapse back into the replacement summary card')
 assert(page.includes('/scheduler') && page.includes('/data-quality'), 'OBS must keep specialist drilldown links')
 assert(!page.includes('text-[10px]') && !page.includes('text-[11px]'), 'OBS page should avoid tiny operational text')

@@ -109,15 +109,21 @@ dashboardReadRoutes.get('/api/dashboard/v4/expected-return/status', async (c) =>
   if (authError) return authError
 
   const date = c.req.query('date') ?? twToday()
-  const [{ readCurrentExpectedReturnServingState }, { inspectAllocatorEvMaturityCoverage }] = await Promise.all([
+  const [
+    { readCurrentExpectedReturnServingState },
+    { inspectExpectedReturnCandidateEvidence },
+    { inspectAllocatorEvMaturityCoverage },
+  ] = await Promise.all([
     import('../lib/expectedReturnServingState'),
+    import('../lib/expectedReturnCandidateEvidence'),
     import('../lib/allocatorEvDailyLifecycle'),
   ])
-  const [serving, maturity] = await Promise.all([
+  const [serving, candidates, maturity] = await Promise.all([
     readCurrentExpectedReturnServingState(c.env, date),
+    inspectExpectedReturnCandidateEvidence(c.env.DB),
     inspectAllocatorEvMaturityCoverage(c.env.DB, date),
   ])
-  return c.json({ date, serving, maturity })
+  return c.json({ date, serving, candidates, maturity })
 })
 
 dashboardReadRoutes.get('/api/backtest/latest', async (c) => {

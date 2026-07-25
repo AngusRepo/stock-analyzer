@@ -114,3 +114,27 @@ def test_oof_materialize_job_reports_full_fit_pending_as_running(monkeypatch):
     assert asyncio.run(oof_materialize_job_main._run()) == 0
     assert callbacks[0]["status"] == "running"
     assert "error" not in callbacks[0]
+
+def test_oof_materialize_job_keeps_prep_dependency_pending_retriable(monkeypatch):
+    callbacks = []
+
+    async def fake_execute_lifecycle(**_kwargs):
+        return {
+            "status": "pending",
+            "reason": "immutable_sequence_behind_compute_snapshot",
+            "dependency_retry_required": True,
+        }
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(oof_materialize_job_main, "_execute_lifecycle", fake_execute_lifecycle)
+    monkeypatch.setattr(oof_materialize_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "daily")
+    monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-07-25")
+    monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-prep-pending")
+
+    assert asyncio.run(oof_materialize_job_main._run()) == 0
+    assert callbacks[0]["status"] == "running"
+    assert "error" not in callbacks[0]
+    assert "immutable_sequence_behind_compute_snapshot" in callbacks[0]["summary"]

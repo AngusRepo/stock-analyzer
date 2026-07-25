@@ -123,12 +123,16 @@ async function main() {
   assert.match(r2.puts[0].body, /"screener_funnel_items"/)
   assert.match(r2.puts[0].body, /\\"large\\":true/)
   assert.equal(db.manifestWrites, 1)
-  assert.equal(db.batchParams.length, 1)
+  assert(db.batchParams.length >= 3)
+  assert(db.preparedSql.some((sql) => sql.includes('data_retention_run_items')))
+  assert(db.preparedSql.some((sql) => sql.includes('data_retention_cursors')))
   const candidateSql = db.preparedSql.find((sql) => sql.includes('FROM screener_funnel_items')) ?? ''
   assert.match(candidateSql, /canonical_run_heads/)
   assert.match(candidateSql, /latest\.status = 'success'/)
 
-  const pointer = JSON.parse(String(db.batchParams[0][0]))
+  const pointerParams = db.batchParams.find((params) => String(params[0]).includes('"archived_to_r2":true'))
+  assert(pointerParams)
+  const pointer = JSON.parse(String(pointerParams[0]))
   assert.equal(pointer.archived_to_r2, true)
   assert.equal(pointer.archive_kind, 'd1_audit_json_archive')
   assert.equal(pointer.table, 'screener_funnel_items')

@@ -251,7 +251,15 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
     if not bucket_name:
         return {"status": "skipped", "reason": "GCS_BUCKET_NAME_not_configured"}
 
-    output_prefix = os.environ.get("FINLAB_LONG_SEQUENCE_OUTPUT_PREFIX", "universal/sequence_long/latest").strip().strip("/")
+    configured_root = os.environ.get(
+        "FINLAB_LONG_SEQUENCE_OUTPUT_PREFIX", "universal/sequence_long/runs"
+    ).strip().strip("/")
+    if configured_root.endswith("/latest"):
+        configured_root = f"{configured_root[:-7].rstrip('/')}/runs"
+    elif not configured_root.endswith("/runs"):
+        configured_root = f"{configured_root}/runs"
+    safe_run_id = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in run_id)
+    output_prefix = f"{configured_root}/{safe_run_id}"
     tail_prefix = f"gs://{bucket_name}/{_finlab_backfill_prefix()}/{run_id}"
     base_prefix = _long_sequence_base_5y_prefix(bucket_name)
     source_prefixes = [tail_prefix]

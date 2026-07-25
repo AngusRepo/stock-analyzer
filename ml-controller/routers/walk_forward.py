@@ -1115,6 +1115,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         archive_ev_candidate_artifacts,
         load_native_pit_component_rows,
         load_fundamental_quality_pit_by_key,
+        load_indexed_oof_ev_rows,
         load_oof_forward_prediction_rows,
         load_oof_prediction_rows,
         load_verified_oof_forward_extension,
@@ -1139,46 +1140,85 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         manifest, _raw = load_verified_oof_manifest(path, bucket=bucket)
         if manifest["cohort_id"] != req.cohort_id:
             raise ValueError("requested_cohort_manifest_mismatch")
-        prediction_rows = load_oof_prediction_rows(manifest, bucket=bucket)
+        persisted = d1_client.query(
+            """
+            SELECT status, prediction_storage_mode
+              FROM active8_oof_cohorts
+             WHERE cohort_id = ?
+            """,
+            [req.cohort_id],
+        )
+        reuse_indexed = bool(
+            not req.forward_extension_manifest_path
+            and persisted
+            and persisted[0].get("status") == "ready"
+            and persisted[0].get("prediction_storage_mode") == "gcs_indexed_v1"
+        )
         forward_extension = None
         forward_prediction_rows: list[dict[str, Any]] = []
-        if req.forward_extension_manifest_path:
-            forward_extension = load_verified_oof_forward_extension(
-                req.forward_extension_manifest_path,
+        prediction_rows: list[dict[str, Any]] = []
+        native_rows: list[dict[str, Any]] = []
+        fundamental_quality_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        if reuse_indexed:
+            snapshot_rows, l4_predictions, indexed_loader_evidence = load_indexed_oof_ev_rows(
                 bucket=bucket,
-                base_manifest=manifest,
+                cohort_id=req.cohort_id,
+                source_manifest_checksum=manifest["manifest_checksum"],
+                knowledge_cutoff_date=req.knowledge_cutoff_date,
             )
-            forward_prediction_rows = load_oof_forward_prediction_rows(
-                forward_extension,
-                bucket=bucket,
-                materialized_cohort=req.cohort_id,
+            snapshot_evidence = {
+                **indexed_loader_evidence,
+                "snapshot_dates": len({row["snapshot_date"] for row in snapshot_rows}),
+                "reused_immutable_materialization": True,
+            }
+        else:
+            prediction_rows = load_oof_prediction_rows(manifest, bucket=bucket)
+            if req.forward_extension_manifest_path:
+                forward_extension = load_verified_oof_forward_extension(
+                    req.forward_extension_manifest_path,
+                    bucket=bucket,
+                    base_manifest=manifest,
+                )
+                forward_prediction_rows = load_oof_forward_prediction_rows(
+                    forward_extension,
+                    bucket=bucket,
+                    materialized_cohort=req.cohort_id,
+                )
+                prediction_rows.extend(forward_prediction_rows)
+            native_rows = load_native_pit_component_rows(prediction_rows)
+            prediction_dates = sorted({
+                str(row.get("prediction_date") or "")[:10]
+                for row in prediction_rows if row.get("prediction_date")
+            })
+            market_context_by_date = load_pit_market_contexts(d1_client.query, prediction_dates)
+            fundamental_quality_by_key = load_fundamental_quality_pit_by_key(prediction_rows)
+            snapshot_rows, snapshot_evidence = build_oof_snapshot_rows(
+                prediction_rows,
+                native_rows,
+                cohort_id=req.cohort_id,
+                source_manifest_checksum=manifest["manifest_checksum"],
+                fundamental_quality_by_key=fundamental_quality_by_key,
+                market_context_by_date=market_context_by_date,
             )
-            prediction_rows.extend(forward_prediction_rows)
-        native_rows = load_native_pit_component_rows(prediction_rows)
-        prediction_dates = sorted({
-            str(row.get("prediction_date") or "")[:10]
-            for row in prediction_rows if row.get("prediction_date")
-        })
-        market_context_by_date = load_pit_market_contexts(d1_client.query, prediction_dates)
-        fundamental_quality_by_key = load_fundamental_quality_pit_by_key(prediction_rows)
-        snapshot_rows, snapshot_evidence = build_oof_snapshot_rows(
-            prediction_rows,
-            native_rows,
-            cohort_id=req.cohort_id,
-            source_manifest_checksum=manifest["manifest_checksum"],
-            fundamental_quality_by_key=fundamental_quality_by_key,
-            market_context_by_date=market_context_by_date,
-        )
         l4_result = build_l4_alpha_ev_artifact_from_rows(
             snapshot_rows,
             trained_until=req.knowledge_cutoff_date,
             generation_mode="purged_oof",
             cohort_id=req.cohort_id,
         )
-        l4_predictions, l4_prediction_evidence = build_l4_chronological_oof_predictions(
-            snapshot_rows,
-            cohort_id=req.cohort_id,
-        )
+        if reuse_indexed:
+            l4_prediction_evidence = {
+                "schema_version": "l4-chronological-oof-indexed-reuse-v1",
+                "cohort_id": req.cohort_id,
+                "prediction_rows": len(l4_predictions),
+                "prediction_dates": len({row["prediction_date"] for row in l4_predictions}),
+                "storage_mode": "gcs_indexed_v1",
+            }
+        else:
+            l4_predictions, l4_prediction_evidence = build_l4_chronological_oof_predictions(
+                snapshot_rows,
+                cohort_id=req.cohort_id,
+            )
         fusion_rows = build_fusion_oof_rows(
             snapshot_rows,
             l4_predictions,
@@ -1212,14 +1252,23 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                         "promotion_eligible": False,
                     }
         full_fit_plan = build_oof_full_fit_dispatch_plan(manifest)
-        persistence = persist_oof_cohort(
-            manifest=manifest,
-            prediction_rows=prediction_rows,
-            snapshot_rows=snapshot_rows,
-            l4_predictions=l4_predictions,
-            bucket=bucket,
-            dry_run=req.dry_run,
-            prediction_storage_mode=req.prediction_storage_mode,
+        persistence = (
+            {
+                "status": "idempotent_ready",
+                "cohort_id": req.cohort_id,
+                "prediction_storage_mode": "gcs_indexed_v1",
+                "source": "checksum_verified_indexed_loader",
+            }
+            if reuse_indexed
+            else persist_oof_cohort(
+                manifest=manifest,
+                prediction_rows=prediction_rows,
+                snapshot_rows=snapshot_rows,
+                l4_predictions=l4_predictions,
+                bucket=bucket,
+                dry_run=req.dry_run,
+                prediction_storage_mode=req.prediction_storage_mode,
+            )
         )
         parity = None
         promoted = False
@@ -1428,6 +1477,10 @@ OOF_LIFECYCLE_MIN_SESSIONS = OOF_MIN_MATURE_SESSIONS
 _OOF_TARGET_SEMANTIC_VERSION = (
     "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
 )
+_OOF_PREP_SCHEMAS = {
+    "active8-canonical-adjusted-prep-v1",
+    "active8-canonical-adjusted-prep-v2",
+}
 
 
 def _latest_canonical_prep_prefix(bucket: object) -> str | None:
@@ -1440,12 +1493,15 @@ def _latest_canonical_prep_prefix(bucket: object) -> str | None:
         except Exception:  # noqa: BLE001 - invalid prep candidates are ignored.
             continue
         if (
-            manifest.get("schema_version") == "active8-canonical-adjusted-prep-v1"
+            manifest.get("schema_version") in _OOF_PREP_SCHEMAS
             and manifest.get("status") == "ready"
             and manifest.get("target_semantic_version") == _OOF_TARGET_SEMANTIC_VERSION
             and float(manifest.get("roundtrip_cost_bps") or 0.0) == 18.0
         ):
-            candidates.append((str(manifest.get("created_at") or ""), str(manifest.get("output_gcs_prefix") or "")))
+            candidates.append((
+                str(manifest.get("signal_date_max") or manifest.get("created_at") or ""),
+                str(manifest.get("output_gcs_prefix") or ""),
+            ))
     if not candidates:
         return None
     prefix = max(candidates)[1].strip().rstrip("/")
@@ -1476,7 +1532,7 @@ def _oof_lifecycle_calendar(
         json.dumps(unsigned, sort_keys=True).encode("utf-8")
     ).hexdigest()
     if (
-        manifest.get("schema_version") != "active8-canonical-adjusted-prep-v1"
+        manifest.get("schema_version") not in _OOF_PREP_SCHEMAS
         or manifest.get("status") != "ready"
         or str(manifest.get("output_gcs_prefix") or "").rstrip("/") != prefix
         or manifest.get("target_semantic_version") != _OOF_TARGET_SEMANTIC_VERSION
@@ -1590,10 +1646,12 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         raise HTTPException(status_code=500, detail="GCS unavailable")
     parent = _latest_ready_oof_manifest(bucket)
     parent_manifest = parent[1] if parent is not None else {}
-    prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
-    if not prep_gcs_prefix or prep_gcs_prefix == "universal":
-        prep_gcs_prefix = _latest_canonical_prep_prefix(bucket) or ""
+    # Parent owns reusable fold lineage; the calendar and every new fold must
+    # use the latest independently verified immutable prep.
+    prep_gcs_prefix = _latest_canonical_prep_prefix(bucket) or ""
     if not prep_gcs_prefix:
+        prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "").strip().rstrip("/")
+    if not prep_gcs_prefix or prep_gcs_prefix == "universal":
         raise HTTPException(status_code=422, detail="OOF lifecycle immutable canonical prep unavailable")
     try:
         dates, calendar_evidence = _oof_lifecycle_calendar(
@@ -1681,8 +1739,11 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 )
                 manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
                 resume_manifest_path = str(parent_path)
-                prep_gcs_prefix = str(parent_manifest.get("prep_gcs_prefix") or "")
-                sequence_gcs_prefix = str(parent_manifest.get("sequence_gcs_prefix") or "")
+                sequence_gcs_prefix = str(
+                    calendar_evidence.get("sequence_gcs_prefix")
+                    or parent_manifest.get("sequence_gcs_prefix")
+                    or ""
+                )
         else:
             cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSIONS:]
             start_date = cohort_dates[0]

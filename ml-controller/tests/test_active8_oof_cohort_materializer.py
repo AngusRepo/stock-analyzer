@@ -590,4 +590,102 @@ def test_prep_only_source_stops_before_training_dispatch():
     )
     assert request_pos < receipt_pos < orchestrator_pos
     assert '"training_dispatched": False' in source
-    assert "prep_only_output_prefix_collision" in source
+    assert "prep_only_output_inventory_incomplete" in source
+    assert "_verified_prep_only_receipt" in source
+    assert '"status": "idempotent_ready"' in source
+
+def test_indexed_oof_loader_enforces_checksum_lineage_and_point_in_time_cutoff():
+    from services.active8_oof_cohort_materializer import (
+        archive_oof_materialized_rows,
+        load_indexed_oof_ev_rows,
+    )
+
+    blobs = {}
+
+    class Blob:
+        def __init__(self, path):
+            self.path = path
+
+        def upload_from_string(self, payload, content_type=None):
+            blobs[self.path] = bytes(payload)
+
+        def download_as_bytes(self):
+            return blobs[self.path]
+
+    class Bucket:
+        def blob(self, path):
+            return Blob(path)
+
+    checksum = "a" * 64
+    snapshots = [
+        {
+            "cohort_id": "cohort-indexed",
+            "fold_id": "w1",
+            "snapshot_date": "2026-07-08",
+            "symbol": "2330",
+            "market_segment": "LISTED",
+            "label_known_date": "2026-07-15",
+            "source_manifest_checksum": checksum,
+        },
+        {
+            "cohort_id": "cohort-indexed",
+            "fold_id": "w1",
+            "snapshot_date": "2026-07-09",
+            "symbol": "2317",
+            "market_segment": "LISTED",
+            "label_known_date": "2026-07-16",
+            "source_manifest_checksum": checksum,
+        },
+    ]
+    l4_rows = [
+        {
+            "cohort_id": "cohort-indexed",
+            "fold_id": "w1",
+            "prediction_date": "2026-07-08",
+            "symbol": "2330",
+            "market_segment": "LISTED",
+            "trained_until": "2026-07-07",
+            "eligible_for_efficacy": 1,
+        },
+        {
+            "cohort_id": "cohort-indexed",
+            "fold_id": "w1",
+            "prediction_date": "2026-07-09",
+            "symbol": "2317",
+            "market_segment": "LISTED",
+            "trained_until": "2026-07-08",
+            "eligible_for_efficacy": 1,
+        },
+    ]
+    bucket = Bucket()
+    indexes = {
+        "allocator_ev_snapshots": archive_oof_materialized_rows(
+            bucket=bucket,
+            cohort_id="cohort-indexed",
+            artifact_kind="allocator_ev_snapshots",
+            rows=snapshots,
+            source_manifest_checksum=checksum,
+        ),
+        "l4_predictions": archive_oof_materialized_rows(
+            bucket=bucket,
+            cohort_id="cohort-indexed",
+            artifact_kind="l4_predictions",
+            rows=l4_rows,
+            source_manifest_checksum=checksum,
+        ),
+    }
+
+    loaded_snapshots, loaded_l4, evidence = load_indexed_oof_ev_rows(
+        bucket=bucket,
+        cohort_id="cohort-indexed",
+        source_manifest_checksum=checksum,
+        knowledge_cutoff_date="2026-07-15",
+        query_fn=lambda _sql, params: [indexes[params[1]]],
+    )
+
+    assert [row["symbol"] for row in loaded_snapshots] == ["2330"]
+    assert [row["symbol"] for row in loaded_l4] == ["2330"]
+    assert evidence["snapshot_rows_loaded"] == 2
+    assert evidence["snapshot_rows_mature"] == 1
+    assert evidence["l4_rows_eligible"] == 1
+    assert evidence["d1_full_row_tables_required"] is False

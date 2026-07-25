@@ -40,7 +40,7 @@ def _normalize_sha256(value: Any) -> str:
 
 def _manifest_checksum(manifest: dict[str, Any]) -> str:
     unsigned = {key: value for key, value in manifest.items() if key != "manifest_checksum"}
-    return _sha256(json.dumps(unsigned, sort_keys=True).encode("utf-8"))
+    return _sha256(json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8"))
 
 
 def _latest_immutable_sequence(bucket: Any, cutoff: str) -> tuple[str, dict[str, Any]]:
@@ -86,7 +86,7 @@ def _latest_immutable_sequence(bucket: Any, cutoff: str) -> tuple[str, dict[str,
 
 def _receipt_checksum(receipt: dict[str, Any]) -> str:
     unsigned = {key: value for key, value in receipt.items() if key != "receipt_checksum"}
-    return _sha256(json.dumps(unsigned, sort_keys=True).encode("utf-8"))
+    return _sha256(json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8"))
 
 
 async def ensure_active8_daily_prep(

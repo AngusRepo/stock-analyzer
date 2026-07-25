@@ -8,6 +8,7 @@
   "workload_identity_provider_id": "modal-oidc",
   "oidc_issuer": "https://oidc.modal.com",
   "oidc_audience": "oidc.modal.com",
+  "google_subject_mapping": "assertion.workspace_id + ':' + assertion.app_id + ':' + assertion.function_id",
   "allowed_workspace_id": "ac-W0gMGaAlY1JUaxXgATRCPO",
   "allowed_environment_name": "main",
   "allowed_app_name": "stockvision-ml",

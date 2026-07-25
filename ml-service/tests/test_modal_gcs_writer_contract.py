@@ -15,6 +15,9 @@ def test_modal_uses_dedicated_bucket_scoped_writer_secret():
     assert contract["modal_secret"] == "stockvision-modal-gcs-writer"
     assert contract["credential_mode"] == "modal_oidc_workload_identity_federation"
     assert contract["oidc_issuer"] == "https://oidc.modal.com"
+    assert contract["google_subject_mapping"] == (
+        "assertion.workspace_id + ':' + assertion.app_id + ':' + assertion.function_id"
+    )
     assert contract["allowed_app_name"] == "stockvision-ml"
     assert contract["bucket_roles"] == ["roles/storage.objectAdmin"]
     assert contract["project_roles"] == []

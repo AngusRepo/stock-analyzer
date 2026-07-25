@@ -848,6 +848,9 @@ def upsert_artifact_record(record: dict[str, Any]) -> dict:
           promotion_decision, approval_state, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
         ON CONFLICT(artifact_id) DO UPDATE SET
+          model_name = excluded.model_name,
+          version = excluded.version,
+          candidate_type = excluded.candidate_type,
           state = excluded.state,
           artifact_path = excluded.artifact_path,
           metadata_path = excluded.metadata_path,

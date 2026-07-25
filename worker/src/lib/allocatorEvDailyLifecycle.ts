@@ -44,6 +44,10 @@ export interface AllocatorEvMaturityCoverage {
   snapshotDates: number
   strictL4PitRows: number
   strictL4PitDates: number
+  indexedL4PitRows: number
+  indexedL4PitDates: number
+  indexedL4PitMaxDate: string | null
+  indexedL4PitCohortId: string | null
   incompatibleOrLegacyL4Rows: number
   latestSnapshotDate: string | null
   state: 'awaiting_first_point_in_time_l4' | 'accumulating_point_in_time_l4'
@@ -58,7 +62,8 @@ export async function inspectAllocatorEvMaturityCoverage(
   asOfDate: string,
 ): Promise<AllocatorEvMaturityCoverage> {
   if (!validDate(asOfDate)) throw new Error(`invalid allocator EV maturity date: ${asOfDate}`)
-  const row = await db.prepare(`
+  const [row, indexed] = await Promise.all([
+    db.prepare(`
     WITH classified AS (
       SELECT snapshot_date,
              l4_model_version,
@@ -96,14 +101,44 @@ export async function inspectAllocatorEvMaturityCoverage(
     strict_l4_pit_dates?: number
     incompatible_or_legacy_l4_rows?: number
     latest_snapshot_date?: string | null
-  }>()
-  const strictL4PitRows = Number(row?.strict_l4_pit_rows ?? 0)
+  }>(),
+    db.prepare(`
+      SELECT a.cohort_id,
+             a.row_count,
+             a.date_count,
+             a.max_date
+        FROM active8_oof_materialized_artifacts a
+        JOIN active8_oof_cohorts c ON c.cohort_id = a.cohort_id
+       WHERE a.artifact_kind = 'l4_predictions'
+         AND c.status = 'ready'
+         AND a.row_count > 0
+         AND a.date_count > 0
+         AND date(a.max_date) <= date(?)
+       ORDER BY a.updated_at DESC, c.updated_at DESC, a.cohort_id DESC
+       LIMIT 1
+    `).bind(asOfDate).first<{
+      cohort_id?: string | null
+      row_count?: number
+      date_count?: number
+      max_date?: string | null
+    }>(),
+  ])
+  const nativeStrictL4PitRows = Number(row?.strict_l4_pit_rows ?? 0)
+  const nativeStrictL4PitDates = Number(row?.strict_l4_pit_dates ?? 0)
+  const indexedL4PitRows = Number(indexed?.row_count ?? 0)
+  const indexedL4PitDates = Number(indexed?.date_count ?? 0)
+  const strictL4PitRows = Math.max(nativeStrictL4PitRows, indexedL4PitRows)
+  const strictL4PitDates = Math.max(nativeStrictL4PitDates, indexedL4PitDates)
   return {
     asOfDate,
     snapshotRows: Number(row?.snapshot_rows ?? 0),
     snapshotDates: Number(row?.snapshot_dates ?? 0),
     strictL4PitRows,
-    strictL4PitDates: Number(row?.strict_l4_pit_dates ?? 0),
+    strictL4PitDates,
+    indexedL4PitRows,
+    indexedL4PitDates,
+    indexedL4PitMaxDate: indexed?.max_date ?? null,
+    indexedL4PitCohortId: indexed?.cohort_id ?? null,
     incompatibleOrLegacyL4Rows: Number(row?.incompatible_or_legacy_l4_rows ?? 0),
     latestSnapshotDate: row?.latest_snapshot_date ?? null,
     state: strictL4PitRows > 0

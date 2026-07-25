@@ -131,9 +131,12 @@ async function latestCandidate(
       FROM model_artifact_registry
      WHERE model_name=?
        AND candidate_type IN (?, 'model_family_shadow')
-     ORDER BY COALESCE(source_run_date, '') DESC, updated_at DESC, artifact_id DESC
+     ORDER BY CASE WHEN candidate_type = ? THEN 0 ELSE 1 END,
+              updated_at DESC,
+              COALESCE(source_run_date, '') DESC,
+              artifact_id DESC
      LIMIT 1
-  `).bind(owner, candidateType).first<RegistryRow>()
+  `).bind(owner, candidateType, candidateType).first<RegistryRow>()
 }
 
 export async function inspectExpectedReturnCandidateEvidence(

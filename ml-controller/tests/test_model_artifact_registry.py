@@ -102,6 +102,9 @@ def test_upsert_artifact_record_conflict_updates_promotion_metadata(monkeypatch)
 
     sql = str(captured["sql"])
     for field in (
+        "model_name",
+        "version",
+        "candidate_type",
         "final_compared_to",
         "live_gate_status",
         "live_evidence_json",

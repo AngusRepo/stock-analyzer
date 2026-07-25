@@ -19,9 +19,13 @@ void (async () => {
     ['allocator_ev_fusion_refresh', null],
   ])
   const db = {
-    prepare: () => ({
-      bind: (_owner: string, candidateType: string) => ({
-        first: async () => rows.get(candidateType) ?? null,
+    prepare: (sql: string) => ({
+      bind: (_owner: string, candidateType: string, preferredCandidateType: string) => ({
+        first: async () => {
+          assert.match(sql, /CASE WHEN candidate_type = \? THEN 0 ELSE 1 END/)
+          assert.equal(preferredCandidateType, candidateType)
+          return rows.get(candidateType) ?? null
+        },
       }),
     }),
   } as any

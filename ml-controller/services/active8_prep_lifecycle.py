@@ -29,6 +29,15 @@ def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _normalize_sha256(value: Any) -> str:
+    digest = str(value or "").strip().lower()
+    if digest.startswith("sha256:"):
+        digest = digest.removeprefix("sha256:")
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        return ""
+    return digest
+
+
 def _manifest_checksum(manifest: dict[str, Any]) -> str:
     unsigned = {key: value for key, value in manifest.items() if key != "manifest_checksum"}
     return _sha256(json.dumps(unsigned, sort_keys=True).encode("utf-8"))
@@ -101,8 +110,8 @@ async def ensure_active8_daily_prep(
             {"cutoff": cutoff, "manifest_errors": (snapshot or {}).get("manifest_errors")},
         )
     business_date = str(snapshot.get("business_date") or "")[:10]
-    snapshot_checksum = str(snapshot.get("checksum") or "")
-    if not business_date or len(snapshot_checksum) != 64:
+    snapshot_checksum = _normalize_sha256(snapshot.get("checksum"))
+    if not business_date or not snapshot_checksum:
         raise Active8PrepDependencyPending(
             "compute_snapshot_lineage_invalid",
             {"snapshot_id": snapshot.get("snapshot_id"), "business_date": business_date},

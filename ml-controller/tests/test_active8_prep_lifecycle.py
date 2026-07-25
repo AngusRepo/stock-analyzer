@@ -66,11 +66,12 @@ def _seal_sequence(bucket: _Bucket, *, date_max: str = "2026-07-24") -> tuple[st
     return prefix, manifest
 
 
-def _snapshot() -> dict:
+def _snapshot(*, prefixed_checksum: bool = False) -> dict:
+    checksum = "a" * 64
     return {
         "snapshot_id": "snapshot-20260724",
         "business_date": "2026-07-24",
-        "checksum": "a" * 64,
+        "checksum": f"sha256:{checksum}" if prefixed_checksum else checksum,
         "manifest_errors": [],
     }
 
@@ -88,6 +89,21 @@ def test_daily_prep_dry_run_resolves_latest_legal_business_date(monkeypatch):
     assert result["sequence_gcs_prefix"] == prefix
     assert result["sequence_manifest_checksum"] == manifest["manifest_checksum"]
     assert result["source_gcs_prefix"].startswith("universal/oof_forward_prep/2026-07-24-")
+
+def test_daily_prep_accepts_canonical_prefixed_snapshot_checksum(monkeypatch):
+    bucket = _Bucket()
+    _seal_sequence(bucket)
+    monkeypatch.setattr(
+        lifecycle,
+        "latest_dataset_snapshot",
+        lambda **_kwargs: _snapshot(prefixed_checksum=True),
+    )
+    monkeypatch.setattr(walk_forward_retrain, "_get_bucket", lambda: bucket)
+
+    result = asyncio.run(lifecycle.ensure_active8_daily_prep(end_date="2026-07-25", dry_run=True))
+
+    assert result["snapshot_checksum"] == "a" * 64
+    assert result["source_gcs_prefix"].endswith("-aaaaaaaaaaaa")
 
 
 def test_daily_prep_rejects_sequence_behind_snapshot(monkeypatch):

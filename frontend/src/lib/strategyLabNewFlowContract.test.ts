@@ -19,6 +19,8 @@ assert(page.includes("row.status === 'active'"), 'Active strategy grouping must 
 assert(page.includes("row.status === 'research' || row.status === 'shadow' || row.status === 'candidate'"), 'Learning/shadowing grouping must use canonical lifecycle statuses')
 assert(page.includes("row.status !== 'retired'"), 'Retired strategies should stay outside both primary groups')
 assert(page.includes('strategyLabApi.learning()'), 'The focused page should load the canonical reward ledger response')
+assert(page.includes('Promise.allSettled') && page.includes('strategyLabApi.specs()') && page.includes('registryLearningRow'), 'Strategy Lab must keep registry rows visible when the reward-ledger endpoint is unavailable')
+assert(page.includes('xl:grid-cols-2 xl:items-start'), 'Active and learning/shadowing strategy groups must share one desktop row')
 assert(!page.includes('StrategyLifecycleSwimlane'), 'The focused page should not repeat lifecycle experiment navigation')
 assert(!page.includes('MetaLearningDecisionDesk'), 'The focused page should not repeat meta-learning experiment controls')
 assert(!page.includes('ModelUpgradeLaunchpad'), 'Model research controls belong in Model Pool, not the reward ledger page')

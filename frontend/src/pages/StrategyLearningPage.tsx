@@ -3,7 +3,7 @@ import { Activity, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { strategyLabApi, type StrategyLearningResponse, type StrategyPromotionGate } from '@/lib/api'
+import { strategyLabApi, type StrategyLearningResponse, type StrategyPromotionGate, type StrategySpec } from '@/lib/api'
 
 type LearningRow = StrategyLearningResponse['specs'][number]
 
@@ -17,6 +17,22 @@ function statusClass(status: string): string {
   if (status === 'shadow' || status === 'candidate' || status === 'candidate_ready') return 'border-cyan-400/30 bg-cyan-400/10 text-cyan-200'
   if (status === 'research' || status === 'not_ready' || status === 'no_reward') return 'border-amber-400/30 bg-amber-400/10 text-amber-200'
   return 'border-slate-600 bg-slate-800/50 text-slate-300'
+}
+
+function registryLearningRow(spec: StrategySpec): LearningRow {
+  return {
+    ...spec,
+    learning: {
+      decisions: 0,
+      matched: 0,
+      match_rate: null,
+      samples: 0,
+      hit_rate: null,
+      avg_return_pct: null,
+      max_drawdown_pct: null,
+      status: 'no_decisions',
+    },
+  }
 }
 
 function StrategyLedgerGroup({
@@ -35,8 +51,8 @@ function StrategyLedgerGroup({
   empty: string
 }) {
   return (
-    <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70">
-      <header className="flex flex-wrap items-end justify-between gap-3 border-b border-slate-800 px-4 py-4 lg:px-5">
+    <section className="h-full overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70">
+      <header className="flex min-h-[112px] flex-wrap items-end justify-between gap-3 border-b border-slate-800 px-4 py-4 lg:px-5">
         <div>
           <h2 className="font-['Space_Grotesk'] text-lg font-semibold text-slate-100">{title}</h2>
           <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500">{description}</p>
@@ -47,46 +63,47 @@ function StrategyLedgerGroup({
       <div className="divide-y divide-slate-900">
         {rows.map((row) => {
           const gate = gateById.get(`${row.id}:${row.version}`)
+          const hasWeight = Object.prototype.hasOwnProperty.call(policyWeights, row.id)
           const weight = Number(policyWeights[row.id] ?? 0)
           const evidence = gate?.missing_evidence ?? []
+          const evidenceLabels = gate ? (evidence.length ? evidence : ['evidence ready']) : ['reward ledger unavailable']
           return (
-            <article key={`${row.id}:${row.version}`} className="grid gap-4 px-4 py-4 lg:px-5 xl:grid-cols-[minmax(220px,1.25fr)_150px_210px_minmax(190px,0.85fr)_minmax(230px,1fr)] xl:items-center">
+            <article key={`${row.id}:${row.version}`} className="space-y-4 px-4 py-4 lg:px-5">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="truncate text-sm font-semibold text-slate-100">{row.name}</h3>
+                  <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-100">{row.name}</h3>
                   <Badge variant="outline" className={statusClass(row.status)}>{row.status}</Badge>
                   <Badge variant="outline" className={statusClass(row.learning.status)}>{row.learning.status}</Badge>
                 </div>
-                <p className="mt-1 truncate font-mono text-xs text-slate-500">{row.id} · {row.alphaBucket}</p>
+                <p className="mt-1 truncate font-mono text-xs text-slate-500">{row.id} &middot; {row.alphaBucket}</p>
               </div>
 
-              <dl className="grid grid-cols-2 gap-2 text-xs xl:grid-cols-1">
-                <div><dt className="text-slate-500">Decisions</dt><dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.decisions}</dd></div>
-                <div><dt className="text-slate-500">Reward samples</dt><dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.samples}</dd></div>
+              <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Decisions</dt><dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.decisions}</dd></div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Rewards</dt><dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.samples}</dd></div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Hit rate</dt><dd className="mt-1 font-mono text-sm text-cyan-200">{pct(row.learning.hit_rate)}</dd></div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Avg return</dt><dd className={`mt-1 font-mono text-sm ${Number(row.learning.avg_return_pct ?? 0) >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{pct(row.learning.avg_return_pct)}</dd></div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">MDD</dt><dd className="mt-1 font-mono text-sm text-amber-200">{pct(row.learning.max_drawdown_pct)}</dd></div>
               </dl>
 
-              <dl className="grid grid-cols-3 gap-3 text-xs">
-                <div><dt className="text-slate-500">Hit rate</dt><dd className="mt-1 font-mono text-sm text-cyan-200">{pct(row.learning.hit_rate)}</dd></div>
-                <div><dt className="text-slate-500">Avg return</dt><dd className={`mt-1 font-mono text-sm ${Number(row.learning.avg_return_pct ?? 0) >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{pct(row.learning.avg_return_pct)}</dd></div>
-                <div><dt className="text-slate-500">MDD</dt><dd className="mt-1 font-mono text-sm text-amber-200">{pct(row.learning.max_drawdown_pct)}</dd></div>
-              </dl>
-
-              <div>
-                <div className="flex justify-between gap-3 text-xs text-slate-500"><span>Policy weight</span><span className="font-mono text-slate-300">{pct(weight)}</span></div>
-                <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
-                  <div className="h-full bg-emerald-300" style={{ width: `${Math.max(0, Math.min(100, weight * 100))}%` }} />
+              <div className="grid gap-3 sm:grid-cols-[minmax(180px,0.8fr)_minmax(0,1.2fr)]">
+                <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
+                  <div className="flex justify-between gap-3 text-xs text-slate-500"><span>Policy weight</span><span className="font-mono text-slate-300">{hasWeight ? pct(weight) : '-'}</span></div>
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
+                    <div className="h-full bg-emerald-300" style={{ width: `${hasWeight ? Math.max(0, Math.min(100, weight * 100)) : 0}%` }} />
+                  </div>
                 </div>
-              </div>
 
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline" className={statusClass(gate?.decision ?? 'not_ready')}>{gate?.decision ?? 'not_ready'}</Badge>
-                  <span className="text-xs text-slate-500">{gate?.current_stage ?? 'L0_hypothesis'} → {gate?.recommended_stage ?? gate?.recommended_next_status ?? 'shadow'}</span>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {(evidence.length ? evidence : ['evidence ready']).slice(0, 3).map((item) => (
-                    <span key={item} className={`rounded-md border px-2 py-1 text-xs ${evidence.length ? 'border-amber-400/20 bg-amber-400/[0.06] text-amber-200' : 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200'}`}>{item.replace(/_/g, ' ')}</span>
-                  ))}
+                <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline" className={statusClass(gate?.decision ?? 'ledger_pending')}>{gate?.decision ?? 'ledger pending'}</Badge>
+                    <span className="text-xs text-slate-500">{gate?.current_stage ?? 'stage unavailable'} &rarr; {gate?.recommended_stage ?? gate?.recommended_next_status ?? 'reward gate unavailable'}</span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {evidenceLabels.slice(0, 3).map((item) => (
+                      <span key={item} className={`rounded-md border px-2 py-1 text-xs ${evidence.length ? 'border-amber-400/20 bg-amber-400/[0.06] text-amber-200' : gate ? 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200' : 'border-slate-600/40 bg-slate-800/50 text-slate-400'}`}>{item.replace(/_/g, ' ')}</span>
+                    ))}
+                  </div>
                 </div>
               </div>
             </article>
@@ -97,21 +114,47 @@ function StrategyLedgerGroup({
     </section>
   )
 }
-
 export default function StrategyLearningPage() {
   const [learning, setLearning] = useState<StrategyLearningResponse | null>(null)
+  const [rows, setRows] = useState<LearningRow[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [result, setResult] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
       setError(null)
-      setLearning(await strategyLabApi.learning())
+      setNotice(null)
+      const [ledgerResult, registryResult] = await Promise.allSettled([
+        strategyLabApi.learning(),
+        strategyLabApi.specs(),
+      ])
+      const ledger = ledgerResult.status === 'fulfilled' ? ledgerResult.value : null
+      const registry = registryResult.status === 'fulfilled' ? registryResult.value : null
+      if (!ledger && !registry) {
+        const ledgerError = ledgerResult.status === 'rejected' ? String(ledgerResult.reason) : 'unknown ledger error'
+        const registryError = registryResult.status === 'rejected' ? String(registryResult.reason) : 'unknown registry error'
+        throw new Error(`Strategy APIs unavailable. ledger=${ledgerError}; registry=${registryError}`)
+      }
+
+      setLearning(ledger)
+      if (registry) {
+        const ledgerById = new Map((ledger?.specs ?? []).map((row) => [`${row.id}:${row.version}`, row]))
+        setRows(registry.specs.map((spec) => ledgerById.get(`${spec.id}:${spec.version}`) ?? registryLearningRow(spec)))
+      } else {
+        setRows(ledger?.specs ?? [])
+      }
+
+      if (!ledger) setNotice('Reward ledger API unavailable; showing canonical strategy registry rows without reward metrics.')
+      else if (!registry) setNotice('Strategy registry API unavailable; showing the latest reward-ledger snapshot.')
+      else if ((ledger.specs ?? []).length === 0) setNotice('Reward ledger returned no specs; showing canonical strategy registry rows.')
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Strategy reward ledger 載入失敗')
+      setLearning(null)
+      setRows([])
+      setError(cause instanceof Error ? cause.message : 'Strategy APIs unavailable')
     } finally {
       setLoading(false)
       setRefreshing(false)
@@ -120,7 +163,7 @@ export default function StrategyLearningPage() {
 
   useEffect(() => { void load() }, [load])
 
-  const visibleRows = useMemo(() => (learning?.specs ?? []).filter((row) => row.status !== 'retired'), [learning])
+  const visibleRows = useMemo(() => rows.filter((row) => row.status !== 'retired'), [rows])
   const activeRows = useMemo(() => visibleRows.filter((row) => row.status === 'active'), [visibleRows])
   const learningRows = useMemo(() => visibleRows.filter((row) => row.status === 'research' || row.status === 'shadow' || row.status === 'candidate'), [visibleRows])
   const gateById = useMemo(() => new Map((learning?.promotion_gate ?? []).map((gate) => [`${gate.strategy_id}:${gate.strategy_version}`, gate])), [learning])
@@ -164,28 +207,31 @@ export default function StrategyLearningPage() {
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Active strategies</div><div className="mt-2 font-mono text-2xl text-emerald-200">{activeRows.length}</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Learning + shadowing</div><div className="mt-2 font-mono text-2xl text-cyan-200">{learningRows.length}</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Decision / reward rows</div><div className="mt-2 font-mono text-2xl text-slate-100">{totals.decisions} / {totals.samples}</div></div>
-              <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">Adaptive policy</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-emerald-100"><ShieldCheck className="h-4 w-4" /> {policy?.status ?? 'shadow'}</div><div className="mt-1 text-xs text-slate-500">production effect false</div></div>
+              <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">Adaptive policy</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-emerald-100"><ShieldCheck className="h-4 w-4" /> {policy?.status ?? 'unavailable'}</div><div className="mt-1 text-xs text-slate-500">{learning ? 'production effect false' : 'ledger unavailable'}</div></div>
             </section>
 
             {error && <div className="rounded-xl border border-rose-400/25 bg-rose-400/[0.06] p-4 text-sm text-rose-200">{error}</div>}
+            {notice && <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.06] p-4 text-sm text-amber-100">{notice}</div>}
             {result && <div className="rounded-xl border border-emerald-400/25 bg-emerald-400/[0.06] p-4 text-sm text-emerald-200">{result}</div>}
 
-            <StrategyLedgerGroup
-              title="Active strategies"
-              description="目前 production active 的策略。Reward ledger 用來監控已上線策略，不在此頁改變 production allocation。"
-              rows={activeRows}
-              gateById={gateById}
-              policyWeights={policy?.strategy_weights ?? {}}
-              empty="目前沒有 active strategy reward rows。"
-            />
-            <StrategyLedgerGroup
-              title="Learning + shadowing strategies"
-              description="Research、shadow 與 candidate 策略集中在這裡，依 reward samples 與 evidence gap 決定是否繼續學習。"
-              rows={learningRows}
-              gateById={gateById}
-              policyWeights={policy?.strategy_weights ?? {}}
-              empty="目前沒有 learning、shadow 或 candidate strategy rows。"
-            />
+            <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
+              <StrategyLedgerGroup
+                title="Active strategies"
+                description="目前 production active 的策略。Reward ledger 用來監控已上線策略，不在此頁改變 production allocation。"
+                rows={activeRows}
+                gateById={gateById}
+                policyWeights={policy?.strategy_weights ?? {}}
+                empty="目前沒有 active strategy reward rows。"
+              />
+              <StrategyLedgerGroup
+                title="Learning + shadowing strategies"
+                description="Research、shadow 與 candidate 策略集中在這裡，依 reward samples 與 evidence gap 決定是否繼續學習。"
+                rows={learningRows}
+                gateById={gateById}
+                policyWeights={policy?.strategy_weights ?? {}}
+                empty="目前沒有 learning、shadow 或 candidate strategy rows。"
+              />
+            </div>
 
             <footer className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
               <p className="max-w-2xl text-xs leading-5 text-slate-500">Decision log → verify/paper outcome → reward ledger → adaptive shadow policy。這些操作不直接下單，也不改模型 vote。</p>

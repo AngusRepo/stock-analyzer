@@ -16,13 +16,14 @@ def _write_private_text(path: str, value: str) -> None:
 def _setup_modal_oidc_wif() -> tuple[bool, str | None]:
     token = os.environ.get("MODAL_IDENTITY_TOKEN", "").strip()
     project_number = os.environ.get("GCP_WIF_PROJECT_NUMBER", "").strip()
+    project_id = os.environ.get("GCP_WIF_PROJECT_ID", "").strip()
     pool_id = os.environ.get("GCP_WIF_POOL_ID", "").strip()
     provider_id = os.environ.get("GCP_WIF_PROVIDER_ID", "").strip()
     service_account = os.environ.get("GCP_WIF_SERVICE_ACCOUNT", "").strip()
-    configured = any((project_number, pool_id, provider_id, service_account))
+    configured = any((project_number, project_id, pool_id, provider_id, service_account))
     if not configured:
         return False, None
-    if not all((token, project_number, pool_id, provider_id, service_account)):
+    if not all((token, project_number, project_id, pool_id, provider_id, service_account)):
         raise RuntimeError("modal_oidc_wif_configuration_incomplete")
 
     token_path = os.environ.get("GCP_WIF_TOKEN_PATH", "/tmp/modal-identity-token.jwt")
@@ -45,6 +46,8 @@ def _setup_modal_oidc_wif() -> tuple[bool, str | None]:
     _write_private_text(token_path, token)
     _write_private_text(credentials_path, json.dumps(config, separators=(",", ":")))
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
+    os.environ["GOOGLE_CLOUD_PROJECT"] = project_id
+    os.environ["GCLOUD_PROJECT"] = project_id
     return True, credentials_path
 
 

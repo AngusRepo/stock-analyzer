@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -82,6 +83,7 @@ def test_runtime_env_builds_modal_oidc_wif_adc_config(monkeypatch, tmp_path):
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", raising=False)
     monkeypatch.setenv("MODAL_IDENTITY_TOKEN", "signed-modal-token")
     monkeypatch.setenv("GCP_WIF_PROJECT_NUMBER", "123456789")
+    monkeypatch.setenv("GCP_WIF_PROJECT_ID", "stockvision-test")
     monkeypatch.setenv("GCP_WIF_POOL_ID", "modal-prod")
     monkeypatch.setenv("GCP_WIF_PROVIDER_ID", "modal-oidc")
     monkeypatch.setenv("GCP_WIF_SERVICE_ACCOUNT", "writer@example.iam.gserviceaccount.com")
@@ -97,3 +99,4 @@ def test_runtime_env_builds_modal_oidc_wif_adc_config(monkeypatch, tmp_path):
     assert config["credential_source"] == {"file": str(token_path)}
     assert config["audience"].endswith("/workloadIdentityPools/modal-prod/providers/modal-oidc")
     assert "writer@example.iam.gserviceaccount.com:generateAccessToken" in config["service_account_impersonation_url"]
+    assert os.environ["GOOGLE_CLOUD_PROJECT"] == "stockvision-test"

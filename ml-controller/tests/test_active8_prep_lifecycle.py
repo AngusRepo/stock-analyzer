@@ -68,14 +68,22 @@ def _seal_sequence(bucket: _Bucket, *, date_max: str = "2026-07-24") -> tuple[st
     return prefix, manifest
 
 
-def _snapshot(*, prefixed_checksum: bool = False) -> dict:
+def _snapshot(*, prefixed_checksum: bool = False, business_date: str = "2026-07-24") -> dict:
     checksum = "a" * 64
     return {
         "snapshot_id": "snapshot-20260724",
-        "business_date": "2026-07-24",
+        "business_date": business_date,
         "checksum": f"sha256:{checksum}" if prefixed_checksum else checksum,
         "manifest_errors": [],
     }
+
+
+def _market_query(_sql, params):
+    assert params == ["2026-07-25", "2026-07-25"]
+    return [
+        {"trading_date": "2026-07-23", "price_rows": 1900},
+        {"trading_date": "2026-07-24", "price_rows": 1950},
+    ]
 
 
 def test_sequence_manifest_checksum_matches_producer_contract():
@@ -97,7 +105,9 @@ def test_daily_prep_dry_run_resolves_latest_legal_business_date(monkeypatch):
     monkeypatch.setattr(lifecycle, "latest_dataset_snapshot", lambda **_kwargs: _snapshot())
     monkeypatch.setattr(walk_forward_retrain, "_get_bucket", lambda: bucket)
 
-    result = asyncio.run(lifecycle.ensure_active8_daily_prep(end_date="2026-07-25", dry_run=True))
+    result = asyncio.run(lifecycle.ensure_active8_daily_prep(
+        end_date="2026-07-25", dry_run=True, query_fn=_market_query,
+    ))
 
     assert result["status"] == "dry_run"
     assert result["business_date"] == "2026-07-24"
@@ -115,7 +125,9 @@ def test_daily_prep_accepts_canonical_prefixed_snapshot_checksum(monkeypatch):
     )
     monkeypatch.setattr(walk_forward_retrain, "_get_bucket", lambda: bucket)
 
-    result = asyncio.run(lifecycle.ensure_active8_daily_prep(end_date="2026-07-25", dry_run=True))
+    result = asyncio.run(lifecycle.ensure_active8_daily_prep(
+        end_date="2026-07-25", dry_run=True, query_fn=_market_query,
+    ))
 
     assert result["snapshot_checksum"] == "a" * 64
     assert result["source_gcs_prefix"].endswith("-aaaaaaaaaaaa")
@@ -128,9 +140,28 @@ def test_daily_prep_rejects_sequence_behind_snapshot(monkeypatch):
     monkeypatch.setattr(walk_forward_retrain, "_get_bucket", lambda: bucket)
 
     with pytest.raises(lifecycle.Active8PrepDependencyPending) as exc:
-        asyncio.run(lifecycle.ensure_active8_daily_prep(end_date="2026-07-25"))
+        asyncio.run(lifecycle.ensure_active8_daily_prep(
+            end_date="2026-07-25", query_fn=_market_query,
+        ))
 
     assert exc.value.reason == "immutable_sequence_behind_compute_snapshot"
+
+
+def test_daily_prep_rejects_snapshot_behind_latest_market_session(monkeypatch):
+    monkeypatch.setattr(
+        lifecycle,
+        "latest_dataset_snapshot",
+        lambda **_kwargs: _snapshot(business_date="2026-07-23"),
+    )
+
+    with pytest.raises(lifecycle.Active8PrepDependencyPending) as exc:
+        asyncio.run(lifecycle.ensure_active8_daily_prep(
+            end_date="2026-07-25", query_fn=_market_query,
+        ))
+
+    assert exc.value.reason == "compute_snapshot_behind_market_session"
+    assert exc.value.evidence["expected_business_date"] == "2026-07-24"
+    assert exc.value.evidence["snapshot_business_date"] == "2026-07-23"
 
 
 def test_daily_prep_builds_feature_and_adjusted_receipts(monkeypatch):
@@ -164,7 +195,9 @@ def test_daily_prep_builds_feature_and_adjusted_receipts(monkeypatch):
     monkeypatch.setattr(retrain_trigger, "trigger_universal_retrain", fake_prep)
     monkeypatch.setattr(modal_client, "rebuild_canonical_adjusted_prep", fake_adjusted)
 
-    result = asyncio.run(lifecycle.ensure_active8_daily_prep(end_date="2026-07-25"))
+    result = asyncio.run(lifecycle.ensure_active8_daily_prep(
+        end_date="2026-07-25", query_fn=_market_query,
+    ))
 
     assert result["status"] == "ready"
     assert result["signal_date_max"] == "2026-07-17"

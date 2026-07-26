@@ -144,6 +144,95 @@ def test_native_pit_loader_uses_earliest_complete_run_before_next_open():
     assert "after-open" not in str(calls[-1][1])
 
 
+def test_native_pit_loader_resolves_checksum_verified_r2_pointer():
+    import json
+    from services.active8_oof_cohort_materializer import load_native_pit_component_rows
+
+    pointer = {
+        "schema_version": "legacy-screener-evidence-pointer-v1",
+        "artifact_id": "artifact:legacy_screener_funnel_evidence:2026-06-25:abc",
+        "r2_key": (
+            "evidence/class=superseded_run/domain=legacy_screener_funnel_evidence/"
+            "business_date=2026-06-25/chunk=abc.json"
+        ),
+        "checksum": "sha256:" + "a" * 64,
+        "row_id": 77,
+    }
+    archived_evidence = {
+        "score_components": {
+            "version": "score_v2",
+            "components": {
+                "mlEdge": 1.0,
+                "chipFlow": 2.0,
+                "technicalStructure": 3.0,
+                "fundamentalQuality": 4.0,
+                "newsTheme": 0.0,
+            },
+            "total": 10.0,
+        },
+        "taxonomy": {"industry": "semiconductor"},
+        "raw_signals": {"close": 100.0},
+    }
+
+    def query(sql, params):
+        if "FROM daily_recommendations" in sql:
+            return []
+        if "FROM stock_prices" in sql:
+            return [
+                {"trading_date": "2026-06-25", "price_rows": 1000},
+                {"trading_date": "2026-06-26", "price_rows": 1000},
+            ]
+        if "COUNT(i.id) component_rows" in sql:
+            assert "legacy-screener-evidence-pointer-v1" in sql
+            return [{
+                "date": "2026-06-25",
+                "run_id": "before-open",
+                "created_at": "2026-06-25 15:00:00",
+                "component_rows": 1,
+            }]
+        if "FROM screener_funnel_items i" in sql:
+            return [{
+                "evidence_row_id": 77,
+                "stock_id": 1,
+                "symbol": "2330",
+                "prediction_date": "2026-06-25",
+                "score": 10.0,
+                "evidence": pointer,
+                "market_segment": "TWSE",
+                "native_run_id": "before-open",
+                "native_created_at": "2026-06-25 15:00:00",
+            }]
+        raise AssertionError(sql)
+
+    def resolve(requests):
+        assert requests == [{
+            "row_id": 77,
+            "artifact_id": pointer["artifact_id"],
+            "r2_key": pointer["r2_key"],
+            "checksum": pointer["checksum"],
+            "source_run_id": "before-open",
+            "symbol": "2330",
+            "stage": "scoring",
+        }]
+        return {77: {
+            **requests[0],
+            "evidence": json.dumps(archived_evidence),
+        }}
+
+    rows = load_native_pit_component_rows(
+        [{"prediction_date": "2026-06-25", "symbol": "2330"}],
+        query_fn=query,
+        archive_resolver=resolve,
+    )
+
+    assert len(rows) == 1
+    context = json.loads(rows[0]["alpha_context"])
+    assert context["native_evidence_storage_mode"] == "r2_checksum_pointer_v1"
+    assert context["native_evidence_artifact_id"] == pointer["artifact_id"]
+    assert context["native_evidence_checksum"] == pointer["checksum"]
+    assert context["native_evidence_row_id"] == 77
+
+
 def test_native_pit_loader_bounds_d1_evidence_payload_by_date_chunk():
     source = (
         ROOT / "ml-controller" / "services" / "active8_oof_cohort_materializer.py"

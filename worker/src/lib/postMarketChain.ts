@@ -22,6 +22,13 @@ export type ChainContext = {
   recoveryAttempt?: number
 }
 
+export function resolveChainAttemptId(ctx: ChainContext): string | undefined {
+  if (!ctx.upstreamRunId && ctx.recoveryAttempt == null) return undefined
+  const owner = ctx.upstreamRunId || ctx.runDate || 'post-market-callback'
+  const attempt = Math.max(0, Math.floor(Number(ctx.recoveryAttempt ?? 0)))
+  return `${owner}:attempt-${attempt}`
+}
+
 type ChainedTask = {
   task: string
   summary: string
@@ -100,6 +107,7 @@ async function emitChainedTaskObservability(
       duration_ms: durationMs,
       error,
       run_id: ctx.upstreamRunId,
+      attempt_id: resolveChainAttemptId(ctx),
       run_date: ctx.runDate,
     }, env)),
     withObservabilityTimeout(`${task} compute profile`, recordWorkerTaskComputeProfile(env, {
@@ -151,6 +159,7 @@ async function logSkippedHistoricalTask(env: Bindings, ctx: ChainContext, task: 
     summary,
     duration_ms: 0,
     run_id: ctx.upstreamRunId,
+    attempt_id: resolveChainAttemptId(ctx),
     run_date: ctx.runDate,
   }, env)
   return { task, summary, status: 'skipped' }
@@ -272,6 +281,7 @@ async function logChainSummary(
       : summary || 'success',
     duration_ms: Date.now() - startedAt,
     run_id: ctx.upstreamRunId,
+    attempt_id: resolveChainAttemptId(ctx),
     run_date: ctx.runDate,
   }, env)
   if (task === 'post-verify-chain') {
@@ -282,6 +292,7 @@ async function logChainSummary(
         : `root chain closed after post-verify: ${summary || 'success'}`,
       duration_ms: Date.now() - startedAt,
       run_id: ctx.upstreamRunId,
+      attempt_id: resolveChainAttemptId(ctx),
       run_date: ctx.runDate,
     }, env)
   }

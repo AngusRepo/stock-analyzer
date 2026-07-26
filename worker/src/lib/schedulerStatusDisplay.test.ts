@@ -1,6 +1,8 @@
 import {
   estimateSchedulerStatusKvReads,
   getSchedulerScanDates,
+  mergeDirectSchedulerLog,
+  reconcileDurablePipelineStageStatus,
   resolveSchedulerDisplayStatus,
   resolveSchedulerLogStatus,
   selectSchedulerDisplayLogs,
@@ -64,6 +66,46 @@ const logs: SchedulerDisplayLogCandidate[] = [
   const display = selectSchedulerDisplayLogs(logs)
   assert(display.lastAttempt?.timestamp === '2026-04-29T05:30:00.000Z', 'lastAttempt must show the newest cron attempt even when skipped')
   assert(display.lastEffective?.timestamp === '2026-04-28T02:10:00.000Z', 'lastEffective should preserve the latest non-skipped run')
+}
+
+{
+  const aggregate: SchedulerDisplayLogCandidate['log'] = {
+    task: 'evening-chain',
+    status: 'success',
+    summary: 'older aggregate completion',
+    duration_ms: 0,
+    run_date: '2026-07-24',
+    timestamp: '2026-07-26T07:03:00.000Z',
+  }
+  const direct: SchedulerDisplayLogCandidate['log'] = {
+    task: 'evening-chain',
+    status: 'running',
+    summary: 'new replay reached screener',
+    duration_ms: 0,
+    run_date: '2026-07-24',
+    timestamp: '2026-07-26T13:52:50.000Z',
+  }
+  const merged = mergeDirectSchedulerLog([aggregate!], direct)
+  assert(merged[0].status === 'running', 'newer direct root head must replace an older aggregate completion')
+}
+
+{
+  const aggregate: SchedulerDisplayLogCandidate['log'] = {
+    task: 'evening-chain',
+    status: 'running',
+    summary: 'new aggregate state',
+    duration_ms: 0,
+    timestamp: '2026-07-26T13:52:50.000Z',
+  }
+  const direct: SchedulerDisplayLogCandidate['log'] = {
+    task: 'evening-chain',
+    status: 'success',
+    summary: 'stale direct state',
+    duration_ms: 0,
+    timestamp: '2026-07-26T07:03:00.000Z',
+  }
+  const merged = mergeDirectSchedulerLog([aggregate!], direct)
+  assert(merged[0].status === 'running', 'older direct root head must not overwrite a newer aggregate state')
 }
 
 {
@@ -188,4 +230,45 @@ const logs: SchedulerDisplayLogCandidate[] = [
   })
   assert(status.status === 'success', 'today log must take precedence over an older historical replay attempt')
   assert(status.statusScope === 'today', 'today log must keep today scope')
+}
+
+{
+  const status = reconcileDurablePipelineStageStatus({
+    jobId: 'post-pipeline-chain',
+    runDate: '2026-07-24',
+    baseStatus: 'failed',
+    baseTimestamp: '2026-07-26T06:22:00.000Z',
+    durable: {
+      business_date: '2026-07-24',
+      stage: 'post_pipeline_chain',
+      canonical_run_id: 'pipeline-v2-zkgm6',
+      status: 'success',
+      attempt_count: 4,
+      updated_at: '2026-07-26 06:51:33',
+      last_error: null,
+    },
+  })
+  assert(status?.lastStatus === 'success', 'newer durable success must replace a stale KV callback error')
+  assert(status?.recoveredFromStatus === 'failed', 'recovered callback state must remain explicit for operators')
+  assert(status?.lastError == null, 'recovered callback state must not retain the stale error text')
+  assert(status?.attemptCount === 4, 'durable attempt count must be exposed as recovery evidence')
+}
+
+{
+  const status = reconcileDurablePipelineStageStatus({
+    jobId: 'post-pipeline-chain',
+    runDate: '2026-07-24',
+    baseStatus: 'failed',
+    baseTimestamp: '2026-07-26T07:00:00.000Z',
+    durable: {
+      business_date: '2026-07-24',
+      stage: 'post_pipeline_chain',
+      canonical_run_id: 'pipeline-v2-zkgm6',
+      status: 'success',
+      attempt_count: 4,
+      updated_at: '2026-07-26 06:51:33',
+      last_error: null,
+    },
+  })
+  assert(status === null, 'older durable state must not overwrite newer scheduler evidence')
 }

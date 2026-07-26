@@ -6,13 +6,18 @@ import {
   BarChart3,
   BookOpenCheck,
   BrainCircuit,
+  Check,
   CircleGauge,
+  CircleHelp,
   Database,
   FileCheck2,
   GitBranch,
+  Hourglass,
   Layers3,
   Link2,
+  LoaderCircle,
   Microscope,
+  Minus,
   MoonStar,
   Radar,
   RefreshCw,
@@ -23,6 +28,7 @@ import {
   Waypoints,
   Workflow,
   Wrench,
+  X,
   Zap,
 } from 'lucide-react'
 import type { SchedulerJob } from '@/lib/api'
@@ -54,6 +60,7 @@ type ChainScope = {
   description: string
   relation: 'event' | 'mixed'
   columns: string[][]
+  orchestratorId?: string
   branches?: ChainBranch[]
 }
 
@@ -127,9 +134,9 @@ const SCOPES: ChainScope[] = [
     title: 'Daily readiness execution chain',
     description: 'Callback、readiness gate 與 pipeline stage 的正式 runtime 狀態。',
     relation: 'event',
+    orchestratorId: 'evening-chain',
     columns: [
       ['market-close-refresh'],
-      ['evening-chain'],
       ['finlab-v4-backfill', 'finlab-backfill-watchdog'],
       ['update'],
       ['indicator-queue'],
@@ -205,10 +212,17 @@ const SCOPES: ChainScope[] = [
   },
 ]
 
-function scopeStageIds(scope: ChainScope): string[] {
+function scopeExecutionStageIds(scope: ChainScope): string[] {
   return [
     ...scope.columns.flat(),
     ...(scope.branches ?? []).flatMap((branch) => branch.columns.flat()),
+  ]
+}
+
+function scopeStageIds(scope: ChainScope): string[] {
+  return [
+    ...(scope.orchestratorId ? [scope.orchestratorId] : []),
+    ...scopeExecutionStageIds(scope),
   ]
 }
 
@@ -223,6 +237,17 @@ const STATUS_LABEL: Record<VisualStatus, string> = {
   out_of_window: 'Not in window',
   not_started: 'Not started',
   skipped: 'Skipped',
+}
+
+const STATUS_ICON: Record<VisualStatus, LucideIcon> = {
+  completed: Check,
+  noop: Check,
+  running: LoaderCircle,
+  waiting: Hourglass,
+  blocked: X,
+  out_of_window: Minus,
+  not_started: CircleHelp,
+  skipped: Minus,
 }
 
 function visualStatus(job?: SchedulerJob): VisualStatus {
@@ -248,6 +273,13 @@ function statusLabel(job?: SchedulerJob): string {
   const label = STATUS_LABEL[visualStatus(job)]
   if (job?.statusScope !== 'historical_replay' || !job.statusRunDate) return label
   return `Historical replay · ${formatReplayDate(job.statusRunDate)} · ${label}`
+}
+
+function StageStatusMarker({ status }: { status: VisualStatus }) {
+  const StatusIcon = STATUS_ICON[status]
+  return <span className="obs-chain__state-mark" aria-hidden="true">
+    <StatusIcon />
+  </span>
 }
 
 function statusPriority(status: VisualStatus): number {
@@ -332,7 +364,9 @@ export default function ExecutionChainPanel({
   const jobMap = useMemo(() => new Map(jobs.map((job) => [job.id, job])), [jobs])
   const scope = SCOPES.find((item) => item.id === scopeId) ?? SCOPES[0]
   const scopedJobMap = jobMap
-  const stageIds = scopeStageIds(scope)
+  const stageIds = scopeExecutionStageIds(scope)
+  const orchestratorJob = scope.orchestratorId ? scopedJobMap.get(scope.orchestratorId) : undefined
+  const orchestratorStatus = visualStatus(orchestratorJob)
   const scopeJobs = stageIds.map((id) => scopedJobMap.get(id))
   const availableJobs = scopeJobs.filter((job): job is SchedulerJob => Boolean(job))
   const currentJob = [...availableJobs]
@@ -348,9 +382,10 @@ export default function ExecutionChainPanel({
   const progressJobs = expectedJobs.length > 0 ? expectedJobs : scopeJobs.filter((job): job is SchedulerJob => Boolean(job))
   const completedCount = progressJobs.filter((job) => ['completed', 'noop'].includes(visualStatus(job))).length
   const progress = progressJobs.length > 0 ? Math.round((completedCount / progressJobs.length) * 100) : 0
-  const running = scopeJobs.some((job) => job?.lastStatus === 'running')
+  const running = scopeJobs.some((job) => job?.lastStatus === 'running') || orchestratorJob?.lastStatus === 'running'
   const blockedCurrent = visualStatus(currentJob) === 'blocked'
-  const progressActive = running || blockedCurrent
+  const progressBlocked = blockedCurrent || orchestratorStatus === 'blocked'
+  const progressActive = running || progressBlocked
 
   const currentStageIndex = Math.max(0, stageIds.indexOf(currentId))
   const mainStageCount = scope.columns.flat().length
@@ -413,9 +448,29 @@ export default function ExecutionChainPanel({
             </button>
           ))}
         </div>
-        <div className="obs-chain__phase sv-num">
-          <span>{scope.relation === 'event' ? 'event-driven' : 'mixed triggers'}</span>
-          <strong>{branchStageCount > 0 ? `${mainStageCount} main · ${branchStageCount} branch` : `${Math.min(currentStageIndex + 1, stageIds.length)} / ${stageIds.length}`}</strong>
+        <div className="obs-chain__toolbar-meta">
+          {scope.orchestratorId && (
+            <button
+              type="button"
+              className={`obs-chain__orchestrator is-${orchestratorStatus} ${selectedId === scope.orchestratorId ? 'is-selected' : ''}`}
+              onClick={() => setSelectedId(scope.orchestratorId ?? null)}
+              aria-label={`Parent orchestration: ${statusLabel(orchestratorJob)}`}
+              aria-pressed={selectedId === scope.orchestratorId}
+              title="Parent orchestration; completion is owned by the terminal callback."
+            >
+              <Link2 aria-hidden="true" />
+              <span>
+                <small>Parent orchestration · terminal callback</small>
+                <strong>{orchestratorJob?.name ?? STAGES[scope.orchestratorId]?.label ?? scope.orchestratorId}</strong>
+              </span>
+              <em>{statusLabel(orchestratorJob)}</em>
+              <StageStatusMarker status={orchestratorStatus} />
+            </button>
+          )}
+          <div className="obs-chain__phase sv-num">
+            <span>{scope.relation === 'event' ? 'event-driven' : 'mixed triggers'}</span>
+            <strong>{branchStageCount > 0 ? `${mainStageCount} main · ${branchStageCount} branch` : `${Math.min(currentStageIndex + 1, stageIds.length)} / ${stageIds.length}`}</strong>
+          </div>
         </div>
       </div>
 
@@ -458,9 +513,7 @@ export default function ExecutionChainPanel({
                         <span className="obs-chain__ordinal sv-num">{index + 1}{column.length > 1 ? String.fromCharCode(97 + stageIndex) : ''}</span>
                         <span className="obs-chain__orb">
                           <Icon aria-hidden="true" />
-                          <span className="obs-chain__state-mark" aria-hidden="true">
-                            {status === 'completed' || status === 'noop' ? '✓' : status === 'blocked' ? '×' : status === 'running' ? '↻' : status === 'waiting' ? '⌛' : '○'}
-                          </span>
+                          <StageStatusMarker status={status} />
                         </span>
                         <span className="obs-chain__stage-copy">
                           <strong>{definition.label}</strong>
@@ -518,9 +571,7 @@ export default function ExecutionChainPanel({
                               <span className="obs-chain__ordinal sv-num">{branch.id === 'intraday-rescore-spots' ? `R${index + 1}` : `B${index + 1}${column.length > 1 ? String.fromCharCode(97 + stageIndex) : ''}`}</span>
                               <span className="obs-chain__orb">
                                 <Icon aria-hidden="true" />
-                                <span className="obs-chain__state-mark" aria-hidden="true">
-                                  {status === 'completed' || status === 'noop' ? '✓' : status === 'blocked' ? '×' : status === 'running' ? '↻' : status === 'waiting' ? '⌛' : '○'}
-                                </span>
+                                <StageStatusMarker status={status} />
                               </span>
                               <span className="obs-chain__stage-copy">
                                 <strong>{definition.label}</strong>
@@ -547,8 +598,8 @@ export default function ExecutionChainPanel({
           <span><Activity aria-hidden="true" /> Overall progress</span>
           <strong className="sv-num">{completedCount} / {progressJobs.length} completed · {progress}%</strong>
         </div>
-        <div className={`obs-chain__progress-track ${progressActive ? 'is-active' : ''} ${blockedCurrent ? 'is-blocked' : ''}`} aria-label={`Overall progress ${progress}%`}>
-          <div className={`obs-chain__progress-fill ${running ? 'is-running' : ''} ${blockedCurrent ? 'is-blocked' : ''}`} style={{ transform: `scaleX(${progress / 100})` }} />
+        <div className={`obs-chain__progress-track ${progressActive ? 'is-active' : ''} ${progressBlocked ? 'is-blocked' : ''}`} aria-label={`Overall progress ${progress}%`}>
+          <div className={`obs-chain__progress-fill ${running ? 'is-running' : ''} ${progressBlocked ? 'is-blocked' : ''}`} style={{ transform: `scaleX(${progress / 100})` }} />
         </div>
       </div>
 

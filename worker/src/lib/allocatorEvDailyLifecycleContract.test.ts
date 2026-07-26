@@ -41,6 +41,7 @@ assert(lifecycle.includes('runNativeLineageRows + reconstructedLineageRows === e
 assert(controllerResearch.includes('allowPointInTimeReconstruction: true'), 'only the explicit backfill workflow may opt into reconstructed closure')
 assert(controllerResearch.includes('kv: env.KV'), 'explicit backfill closure must use the canonical calendar owner')
 assert(lifecycle.includes("state !== 'verify_triggered'"), 'watchdog must detect stale verify callbacks')
+assert(lifecycle.includes("stage: 'post_pipeline_chain'") && lifecycle.includes('status: postPipelineStatus'), 'watchdog recovery must reconcile the canonical post-pipeline stage state')
 assert(lifecycle.includes("excluded.state = 'replay_pending_maturity'"), 'replay queue must be able to return to stock-specific maturity waiting')
 assert(lifecycle.includes('MAX(prediction_date) AS business_date'), 'cross-midnight watchdog must follow the latest native lineage date')
 assert(lifecycle.includes("WHERE state = 'replay_pending_maturity'"), 'watchdog must revisit older replay cohorts waiting for five sessions')

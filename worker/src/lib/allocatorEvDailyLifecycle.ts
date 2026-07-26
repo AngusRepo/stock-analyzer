@@ -475,10 +475,19 @@ export async function runAllocatorEvLifecycleWatchdog(
   }
 
   const { runPostPipelineCallbackChain } = await import('./postMarketChain')
-  await runPostPipelineCallbackChain(env, {
+  const { markPipelineStage } = await import('./pipelineStageLease')
+  const postPipelineStatus = await runPostPipelineCallbackChain(env, {
     runDate: businessDate,
     upstreamRunId: lifecycle?.upstream_run_id || `allocator-ev-lifecycle-watchdog-${businessDate}`,
     recoveryAttempt: Math.max(1, Number(lifecycle?.attempt_count ?? 0) + 1),
+  })
+  await markPipelineStage(env.DB, {
+    businessDate,
+    stage: 'post_pipeline_chain',
+    status: postPipelineStatus,
+    error: postPipelineStatus === 'error'
+      ? 'allocator EV lifecycle watchdog post-pipeline recovery failed'
+      : null,
   })
   const repaired = await inspectAllocatorSnapshotClosure(env.DB, businessDate, { kv: env.KV })
   if (!repaired.ready) {

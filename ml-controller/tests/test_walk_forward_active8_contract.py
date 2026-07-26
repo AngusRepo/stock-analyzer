@@ -819,6 +819,8 @@ def test_daily_oof_materialization_reuses_checksum_verified_gcs_indexes():
 
     assert "load_indexed_oof_ev_rows" in router
     assert 'prediction_storage_mode") == "gcs_indexed_v1"' in router
+    assert "len(materialized_indexes) == 2" in router
+    assert "OOF_PIT_ELIGIBILITY_POLICY_VERSION" in router
     assert '"source": "checksum_verified_indexed_loader"' in router
     assert "active8_oof_indexed_snapshot_lineage_mismatch" in materializer
     assert '"d1_full_row_tables_required": False' in materializer

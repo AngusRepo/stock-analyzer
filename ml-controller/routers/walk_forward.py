@@ -1127,6 +1127,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
     from services.active8_oof_cohort_materializer import (
         build_oof_snapshot_rows,
         build_fusion_oof_rows,
+        OOF_PIT_ELIGIBILITY_POLICY_VERSION,
         archive_ev_candidate_artifacts,
         load_native_pit_component_rows,
         load_fundamental_quality_pit_by_key,
@@ -1163,11 +1164,33 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             """,
             [req.cohort_id],
         )
+        materialized_indexes = d1_client.query(
+            """
+            SELECT artifact_kind, source_manifest_checksum,
+                   eligibility_policy_version
+              FROM active8_oof_materialized_artifacts
+             WHERE cohort_id = ?
+               AND artifact_kind IN ('allocator_ev_snapshots', 'l4_predictions')
+            """,
+            [req.cohort_id],
+        )
         reuse_indexed = bool(
             not req.forward_extension_manifest_path
             and persisted
             and persisted[0].get("status") == "ready"
             and persisted[0].get("prediction_storage_mode") == "gcs_indexed_v1"
+            and len(materialized_indexes) == 2
+            and {
+                str(row.get("artifact_kind") or "")
+                for row in materialized_indexes
+            } == {"allocator_ev_snapshots", "l4_predictions"}
+            and all(
+                str(row.get("source_manifest_checksum") or "")
+                == str(manifest["manifest_checksum"])
+                and str(row.get("eligibility_policy_version") or "")
+                == OOF_PIT_ELIGIBILITY_POLICY_VERSION
+                for row in materialized_indexes
+            )
         )
         forward_extension = None
         forward_prediction_rows: list[dict[str, Any]] = []

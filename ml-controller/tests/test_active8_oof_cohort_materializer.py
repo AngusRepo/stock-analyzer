@@ -242,6 +242,10 @@ def test_native_pit_loader_bounds_d1_evidence_payload_by_date_chunk():
     assert source.count(
         "for offset in range(0, len(dates), query_date_chunk_size):"
     ) == 2
+    assert source.count(
+        "substr(json_extract(i.evidence, '$.r2_key'), 1, 69)"
+    ) == 2
+    assert "$.r2_key') LIKE" not in source
 
 
 def test_oof_persistence_rejects_duplicate_snapshot_identity_before_writes():

@@ -1148,7 +1148,7 @@ def load_native_pit_component_rows(
                 OR (
                   json_extract(i.evidence, '$.schema_version') = 'legacy-screener-evidence-pointer-v1'
                   AND json_extract(i.evidence, '$.artifact_id') LIKE 'artifact:legacy_screener_funnel_evidence:%'
-                  AND json_extract(i.evidence, '$.r2_key') LIKE 'evidence/class=superseded_run/domain=legacy_screener_funnel_evidence/%'
+                  AND substr(json_extract(i.evidence, '$.r2_key'), 1, 69) = 'evidence/class=superseded_run/domain=legacy_screener_funnel_evidence/'
                   AND json_extract(i.evidence, '$.checksum') LIKE 'sha256:%'
                   AND CAST(json_extract(i.evidence, '$.row_id') AS INTEGER) = i.id
                 )
@@ -1205,7 +1205,7 @@ def load_native_pit_component_rows(
                 OR (
                   json_extract(i.evidence, '$.schema_version') = 'legacy-screener-evidence-pointer-v1'
                   AND json_extract(i.evidence, '$.artifact_id') LIKE 'artifact:legacy_screener_funnel_evidence:%'
-                  AND json_extract(i.evidence, '$.r2_key') LIKE 'evidence/class=superseded_run/domain=legacy_screener_funnel_evidence/%'
+                  AND substr(json_extract(i.evidence, '$.r2_key'), 1, 69) = 'evidence/class=superseded_run/domain=legacy_screener_funnel_evidence/'
                   AND json_extract(i.evidence, '$.checksum') LIKE 'sha256:%'
                   AND CAST(json_extract(i.evidence, '$.row_id') AS INTEGER) = i.id
                 )

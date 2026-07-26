@@ -339,10 +339,12 @@ def test_candidate_and_promotion_packets_are_checksum_addressed(monkeypatch):
         l4_result=result,
         fusion_result=result,
         parity={"decision": "PASS"},
-        promoted=True,
+        promoted={"l4_alpha_ev": True, "allocator_ev_fusion": False},
     )
 
     assert candidate["l4_alpha_ev"]["path"] != receipt["l4_alpha_ev"]["path"]
+    assert receipt["l4_alpha_ev"]["state"] == "production"
+    assert receipt["allocator_ev_fusion"]["state"] == "offline_passed"
     assert all(record["checksum"] in record["artifact_path"] for record in registry)
     assert len(uploaded) == 4
 

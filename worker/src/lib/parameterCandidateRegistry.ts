@@ -605,6 +605,31 @@ export async function validatePromotionPacketForProd(
   return validation
 }
 
+export async function markParameterCandidatePromoted(
+  db: D1Database,
+  input: {
+    candidateId: string
+    promotionPacketId: string
+    detail?: JsonRecord | null
+  },
+): Promise<void> {
+  await ensureParameterCandidateTables(db)
+  const result = await db.prepare(
+    `UPDATE parameter_candidate_registry
+        SET status = 'PROD_ACTIVE', updated_at = datetime('now')
+      WHERE candidate_id = ?
+        AND promotion_packet_id = ?
+        AND status = 'PROMOTION_READY'`,
+  ).bind(input.candidateId, input.promotionPacketId).run()
+  if (Number(result.meta?.changes ?? 0) !== 1) {
+    throw new Error('parameter_candidate_promoted_transition_identity_mismatch')
+  }
+  await recordParameterCandidateEvent(db, input.candidateId, 'candidate_promoted', {
+    promotion_packet_id: input.promotionPacketId,
+    ...(input.detail ?? {}),
+  })
+}
+
 export function isExplicitProductionOverride(headerValue: unknown, reason: unknown): boolean {
   return String(headerValue ?? '').trim().toLowerCase() === 'true' && String(reason ?? '').trim().length >= 8
 }

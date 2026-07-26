@@ -110,19 +110,36 @@ def assess_ev_operational_parity(
     denominator = max(1, comparable)
     l4_coverage = l4_loaded / denominator
     fusion_coverage = fusion_loaded / denominator
-    blockers = []
+    shared_blockers = []
     if comparable < MIN_PARITY_ROWS:
-        blockers.append("insufficient_complete_native_parity_rows")
+        shared_blockers.append("insufficient_complete_native_parity_rows")
     if feature_mismatches:
-        blockers.append("training_serving_feature_mismatch")
+        shared_blockers.append("training_serving_feature_mismatch")
+    l4_blockers = list(shared_blockers)
     if l4_coverage < MIN_SERVING_COVERAGE:
-        blockers.append("l4_serving_coverage_below_98pct")
+        l4_blockers.append("l4_serving_coverage_below_98pct")
+    fusion_blockers = list(l4_blockers)
     if fusion_coverage < MIN_SERVING_COVERAGE:
-        blockers.append("fusion_serving_coverage_below_98pct")
+        fusion_blockers.append("fusion_serving_coverage_below_98pct")
+    blockers = list(dict.fromkeys([*l4_blockers, *fusion_blockers]))
+    owner_decisions = {
+        "l4_alpha_ev": {
+            "decision": "PASS" if not l4_blockers else "FAIL",
+            "failed_gates": l4_blockers,
+            "serving_coverage": l4_coverage,
+        },
+        "allocator_ev_fusion": {
+            "decision": "PASS" if not fusion_blockers else "FAIL",
+            "failed_gates": fusion_blockers,
+            "serving_coverage": fusion_coverage,
+            "requires_l4_parity": True,
+        },
+    }
     return {
-        "schema_version": "ev-operational-parity-v1",
+        "schema_version": "ev-operational-parity-v2",
         "decision": "PASS" if not blockers else "FAIL",
         "failed_gates": blockers,
+        "owner_decisions": owner_decisions,
         "native_rows": len(native_rows),
         "comparable_rows": comparable,
         "feature_mismatch_count": len(feature_mismatches),

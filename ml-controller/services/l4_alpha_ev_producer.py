@@ -248,14 +248,37 @@ def _feature_value(name: str, row: dict[str, Any], prediction: dict[str, Any] | 
 
 
 def _rejected_payload(artifact: dict[str, Any], blockers: list[str]) -> dict[str, Any]:
+    validation_packet = _first_dict(
+        artifact.get("validation_packet"),
+        artifact.get("validation_evidence"),
+        artifact.get("validation"),
+    ) or {}
     payload = {
-        **artifact,
         "schema_version": "l4-alpha-ev-v1",
         "producer_schema_version": PRODUCER_SCHEMA_VERSION,
+        "artifact_schema_version": artifact.get("schema_version"),
+        "artifact_contract_version": artifact.get("artifact_contract_version"),
+        "feature_semantic_version": artifact.get("feature_semantic_version"),
+        "label_schema_version": artifact.get("label_schema_version"),
         "expected_return_owner": OWNER,
         "expected_return": None,
         "expected_return_mean": None,
         "expected_return_source": "l4_alpha_ev:artifact_validation_failed_no_expected_return",
+        "promotion_state": _approval_state(artifact) or None,
+        "validation_packet": {
+            "decision": _validation_decision(artifact) or None,
+            "failed_gates": list(validation_packet.get("failed_gates") or []),
+        },
+        "resolver_method": _resolver_method(artifact) or None,
+        "model_version": artifact.get("model_version"),
+        "feature_snapshot_version": artifact.get("feature_snapshot_version"),
+        "trained_until": artifact.get("trained_until"),
+        "horizon_days": artifact.get("horizon_days"),
+        "horizon_bars": artifact.get("horizon_bars"),
+        "cost_model_bps": artifact.get("cost_model_bps"),
+        "output_is_net_of_costs": artifact.get("output_is_net_of_costs"),
+        "feature_families": list(artifact.get("feature_families") or []),
+        "feature_names": list(artifact.get("feature_names") or []),
         "blockers": blockers,
     }
     normalized = resolve_l4_alpha_ev(payload)
@@ -322,6 +345,22 @@ def assess_l4_artifact_cutover(artifact: dict[str, Any] | None) -> dict[str, Any
         "producer_schema_version": PRODUCER_SCHEMA_VERSION,
         "artifact_model_version": payload.get("model_version"),
         "blockers": blockers,
+    }
+
+
+def assess_l4_policy_cutover(policy: dict[str, Any] | None) -> dict[str, Any]:
+    """Resolve and validate the configured serving artifact once per pipeline run."""
+    artifact = _policy_artifact(policy)
+    readiness = assess_l4_artifact_cutover(artifact)
+    return {
+        **readiness,
+        "schema_version": "l4-alpha-ev-policy-cutover-readiness-v1",
+        "configured": artifact is not None,
+        "artifact_model_version": (artifact or {}).get("model_version"),
+        "artifact_contract_version": (artifact or {}).get("artifact_contract_version"),
+        "feature_semantic_version": (artifact or {}).get("feature_semantic_version"),
+        "label_schema_version": (artifact or {}).get("label_schema_version"),
+        "policy": "incompatible_incumbent_abstains_until_compatible_quality_passed_artifact_is_promoted",
     }
 
 

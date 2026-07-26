@@ -128,6 +128,171 @@ adminConfigCoreRoutes.put('/api/admin/config', async (c) => {
   })
 })
 
+adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c) => {
+  const authError = await requireServiceToken(c)
+  if (authError) return authError
+
+  const body = await c.req.json<{
+    l4_alpha_ev?: Record<string, any>
+    allocator_ev_fusion?: Record<string, any>
+  }>().catch(() => null)
+  if (!body || (!body.l4_alpha_ev && !body.allocator_ev_fusion)) {
+    return c.json({ error: 'expected_return_candidate_required' }, 400)
+  }
+
+  const { buildExpectedReturnOwnerPromotionPlan } = await import('../lib/expectedReturnArtifactPromotion')
+  const { getTradingConfig, setTradingConfig, validateTradingConfig } = await import('../lib/tradingConfig')
+  const {
+    markParameterCandidatePromoted,
+    recordParameterCandidateEvidence,
+    recordParameterCandidateFromSandbox,
+    validatePromotionPacketForProd,
+  } = await import('../lib/parameterCandidateRegistry')
+
+  let current = await getTradingConfig(c.env.KV) as unknown as Record<string, any>
+  const outcomes: Record<string, any> = {}
+  const orderedCandidates = [
+    ['l4_alpha_ev', body.l4_alpha_ev],
+    ['allocator_ev_fusion', body.allocator_ev_fusion],
+  ] as const
+
+  for (const [owner, rawCandidate] of orderedCandidates) {
+    if (!rawCandidate) continue
+    const candidate = {
+      artifact: rawCandidate.artifact ?? {},
+      validation_packet: rawCandidate.validation_packet ?? {},
+      operational_parity: rawCandidate.operational_parity ?? {},
+      cohort_id: String(rawCandidate.cohort_id ?? ''),
+      source_run_date: String(rawCandidate.source_run_date ?? ''),
+      artifact_path: String(rawCandidate.artifact_path ?? ''),
+      artifact_checksum: String(rawCandidate.artifact_checksum ?? ''),
+    }
+    const plan = buildExpectedReturnOwnerPromotionPlan(current, owner, candidate)
+    await recordParameterCandidateFromSandbox(c.env.DB, {
+      source: 'expected_return_oof',
+      candidateId: plan.candidate_id,
+      cadence: String(rawCandidate.cadence ?? 'oof'),
+      runId: candidate.cohort_id,
+      status: 'SHADOW_COLLECTING',
+      metadata: {
+        expected_return_owner: owner,
+        model_version: plan.model_version,
+        cohort_id: candidate.cohort_id,
+        source_run_date: candidate.source_run_date,
+        artifact_path: candidate.artifact_path,
+        artifact_checksum: candidate.artifact_checksum,
+        mutates_trading_config: true,
+        production_gate: 'owner_quality_plus_owner_operational_parity',
+      },
+    })
+    const evidence = {
+      schema_version: 'expected-return-owner-promotion-evidence-v1',
+      candidate_id: plan.candidate_id,
+      source: 'active8_oof',
+      owner,
+      decision: plan.eligible ? 'PASS' : 'FAIL',
+      validation_status: plan.eligible ? 'PROMOTION_READY' : 'EVIDENCE_INSUFFICIENT',
+      model_version: plan.model_version,
+      cohort_id: candidate.cohort_id,
+      source_run_date: candidate.source_run_date,
+      artifact_path: candidate.artifact_path,
+      artifact_checksum: candidate.artifact_checksum,
+      blockers: plan.blockers,
+      offline_validation: {
+        schema_version: candidate.validation_packet.schema_version ?? null,
+        decision: candidate.validation_packet.decision ?? null,
+        failed_gates: candidate.validation_packet.failed_gates ?? [],
+      },
+      operational_parity: {
+        schema_version: candidate.operational_parity.schema_version ?? null,
+        owner_decision: candidate.operational_parity.owner_decisions?.[owner] ?? null,
+        native_rows: candidate.operational_parity.native_rows ?? null,
+        comparable_rows: candidate.operational_parity.comparable_rows ?? null,
+        feature_mismatch_count: candidate.operational_parity.feature_mismatch_count ?? null,
+        l4_serving_coverage: candidate.operational_parity.l4_serving_coverage ?? null,
+        fusion_serving_coverage: candidate.operational_parity.fusion_serving_coverage ?? null,
+      },
+      serving_state: plan.serving_state,
+      validation_packet: {
+        schema_version: 'expected-return-owner-promotion-packet-v1',
+        decision: plan.eligible ? 'PASS' : 'FAIL',
+        owner,
+        model_version: plan.model_version,
+        cohort_id: candidate.cohort_id,
+        artifact_path: candidate.artifact_path,
+        artifact_checksum: candidate.artifact_checksum,
+        blockers: plan.blockers,
+      },
+      gate: {
+        decision: plan.eligible ? 'PASS' : 'FAIL',
+        validation_packet: { decision: plan.eligible ? 'PASS' : 'FAIL' },
+      },
+    }
+    const recorded = await recordParameterCandidateEvidence(c.env.DB, {
+      candidateId: plan.candidate_id,
+      evidenceType: 'expected_return_owner_quality_and_parity',
+      decision: plan.eligible ? 'PASS' : 'FAIL',
+      evidence,
+    })
+    if (!plan.eligible || !recorded.promotion_packet_id) {
+      outcomes[owner] = {
+        promoted: false,
+        candidate_id: plan.candidate_id,
+        promotion_packet_id: recorded.promotion_packet_id,
+        blockers: plan.blockers,
+      }
+      continue
+    }
+
+    const promotionGate = await validatePromotionPacketForProd(c.env.DB, {
+      candidateId: plan.candidate_id,
+      promotionPacketId: recorded.promotion_packet_id,
+    })
+    const configErrors = validateTradingConfig(plan.next_config as any)
+    if (!promotionGate.ok || configErrors.length > 0) {
+      outcomes[owner] = {
+        promoted: false,
+        candidate_id: plan.candidate_id,
+        promotion_packet_id: recorded.promotion_packet_id,
+        blockers: [
+          ...(!promotionGate.ok ? [`promotion_packet:${promotionGate.error}`] : []),
+          ...configErrors.map((error) => `config_validation:${error}`),
+        ],
+      }
+      continue
+    }
+
+    const snapshot = await setTradingConfig(c.env.KV, plan.next_config as any, {
+      source: 'expected_return_oof_auto_promotion',
+      push_id: recorded.promotion_packet_id,
+    })
+    await markParameterCandidatePromoted(c.env.DB, {
+      candidateId: plan.candidate_id,
+      promotionPacketId: recorded.promotion_packet_id,
+      detail: { expected_return_owner: owner, model_version: plan.model_version },
+    })
+    current = plan.next_config
+    outcomes[owner] = {
+      promoted: true,
+      candidate_id: plan.candidate_id,
+      promotion_packet_id: recorded.promotion_packet_id,
+      model_version: plan.model_version,
+      snapshot,
+      serving_state: plan.serving_state,
+    }
+  }
+
+  const promotedOwners = Object.entries(outcomes)
+    .filter(([, outcome]) => outcome?.promoted === true)
+    .map(([owner]) => owner)
+  return c.json({
+    success: promotedOwners.length > 0,
+    status: promotedOwners.length > 0 ? 'promoted' : 'failed_validation',
+    promoted_owners: promotedOwners,
+    outcomes,
+  })
+})
+
 adminConfigCoreRoutes.post('/api/admin/config/push-defaults', async (c) => {
   const authError = await requireServiceToken(c)
   if (authError) return authError

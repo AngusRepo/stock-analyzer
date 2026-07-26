@@ -938,6 +938,9 @@ def test_sparse_tangent_allocation_explains_missing_expected_return_input():
     assert allocation["sparse_input_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
     assert allocation["expected_return"] == 0.0
     assert allocation["expected_return_source"] == "s12_trade_ev_missing_no_allocation_edge"
+    assert allocation["expected_return_owner"] == "risk_abstention"
+    assert allocation["allocator_edge_resolver"]["abstention"] is True
+    assert allocation["expected_return_abstention"]["candidate_contract"] == "explicit_no_trade_abstention"
 
 
 def test_sparse_tangent_allocation_reowns_existing_buy_labels():
@@ -1583,6 +1586,9 @@ def test_sparse_tangent_allocation_blocks_unvalidated_l4_alpha_ev_payload():
     assert allocation["expected_return"] == 0.0
     assert allocation["expected_return_source"].endswith("_validation_failed_no_expected_return")
     assert "validation_packet_not_pass" in allocation["l4_alpha_ev"]["blockers"]
+    assert allocation["expected_return_owner"] == "risk_abstention"
+    assert allocation["allocator_edge_resolver"]["abstention_reason"].endswith("_validation_failed_no_expected_return")
+    assert allocation["expected_return_abstention"]["l4_candidate"]["status"] == "rejected"
     assert "empirical_bucket_not_production_alpha_ev_owner" in allocation["l4_alpha_ev"]["blockers"]
 
 

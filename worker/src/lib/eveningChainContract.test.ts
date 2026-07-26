@@ -219,6 +219,18 @@ assert(
     updateOrchestrator.includes('blocked=${blockedRows}'),
   'S12 unavailable observations must stay visible and execution-fail-closed while only incomplete canonical coverage blocks the lifecycle',
 )
+const s12FinalizerStart = updateOrchestrator.indexOf('const finalizerStage = `s12_snapshot_pipeline:${runId}`')
+const s12FinalizerEnd = updateOrchestrator.indexOf("if (msg.type === 's12_replay_backfill_chunk')", s12FinalizerStart)
+const s12Finalizer = updateOrchestrator.slice(s12FinalizerStart, s12FinalizerEnd)
+assert(
+  s12FinalizerStart >= 0 &&
+    s12Finalizer.includes('enqueuePipelineStage') &&
+    s12Finalizer.includes('claimPipelineStage') &&
+    s12Finalizer.includes('markPipelineStage') &&
+    s12Finalizer.indexOf('claimPipelineStage') < s12Finalizer.indexOf('continuePostScreenerPipeline') &&
+    s12Finalizer.includes('Duplicate S12 snapshot finalizer suppressed'),
+  'at-least-once S12 snapshot queue delivery must claim one durable per-run finalizer before triggering pipeline',
+)
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')
 const marketDataReadiness = fs.readFileSync('src/lib/marketDataReadiness.ts', 'utf8')

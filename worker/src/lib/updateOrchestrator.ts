@@ -18,6 +18,11 @@ import {
 } from './controllerResearchWorkflows'
 import { runOfficialMarketSummaryRefresh } from './officialMarketSummaryRefresh'
 import { enqueuePostScreenerPipelineContinuation } from './postScreenerContinuation'
+import {
+  claimPipelineStage,
+  enqueuePipelineStage,
+  markPipelineStage,
+} from './pipelineStageLease'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 import {
   readCurrentExpectedReturnServingState,
@@ -3463,7 +3468,42 @@ export async function processUpdateBatch(
       run_id: runId,
       run_date: triggerTime,
     })
-    await continuePostScreenerPipeline(env, deps, triggerTime, runId, true)
+    const finalizerStage = `s12_snapshot_pipeline:${runId}`
+    const finalizerState = await enqueuePipelineStage(env.DB, {
+      businessDate: triggerTime,
+      stage: finalizerStage,
+      runId,
+      resumeWaiting: true,
+    })
+    const finalizerOwner = `s12-snapshot-finalizer:${runId}:${crypto.randomUUID()}`
+    const finalizerClaim = await claimPipelineStage(env.DB, {
+      businessDate: triggerTime,
+      stage: finalizerStage,
+      ownerId: finalizerOwner,
+      leaseSeconds: 900,
+    })
+    if (!finalizerClaim) {
+      console.log(
+        `[Queue] Duplicate S12 snapshot finalizer suppressed date=${triggerTime} run_id=${runId} status=${finalizerState.row.status}`,
+      )
+      return
+    }
+    try {
+      await continuePostScreenerPipeline(env, deps, triggerTime, runId, true)
+      await markPipelineStage(env.DB, {
+        businessDate: triggerTime,
+        stage: finalizerStage,
+        status: 'success',
+      })
+    } catch (error) {
+      await markPipelineStage(env.DB, {
+        businessDate: triggerTime,
+        stage: finalizerStage,
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
     return
   }
 

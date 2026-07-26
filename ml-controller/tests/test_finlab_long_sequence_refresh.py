@@ -23,6 +23,7 @@ def test_successful_daily_3y_callback_spawns_long_sequence_refresh(monkeypatch):
     monkeypatch.setenv("FINLAB_LONG_SEQUENCE_5Y_BASE_RUN_ID", "finlab-v4-5y-base")
     monkeypatch.setenv("FINLAB_LONG_SEQUENCE_OUTPUT_PREFIX", "universal/sequence_long/latest")
     monkeypatch.setattr(finlab, "_gcs_object_exists", lambda uri: True)
+    monkeypatch.setattr(finlab, "_latest_verified_sequence_sources", lambda bucket, cutoff: [])
     monkeypatch.setattr(modal_client, "build_finlab_long_sequence_prep", fake_build_finlab_long_sequence_prep)
 
     result = asyncio.run(
@@ -72,6 +73,7 @@ def test_successful_daily_incremental_callback_spawns_long_sequence_refresh(monk
     monkeypatch.setenv("FINLAB_LONG_SEQUENCE_5Y_BASE_RUN_ID", "finlab-v4-5y-base")
     monkeypatch.setenv("FINLAB_LONG_SEQUENCE_OUTPUT_PREFIX", "universal/sequence_long/latest")
     monkeypatch.setattr(finlab, "_gcs_object_exists", lambda uri: True)
+    monkeypatch.setattr(finlab, "_latest_verified_sequence_sources", lambda bucket, cutoff: [])
     monkeypatch.setattr(modal_client, "build_finlab_long_sequence_prep", fake_build_finlab_long_sequence_prep)
 
     result = asyncio.run(
@@ -133,6 +135,35 @@ def test_long_sequence_refresh_skips_non_tail_backfill(monkeypatch):
     }
 
 
+def test_daily_refresh_carries_forward_verified_sequence_sources(monkeypatch):
+    captured: dict = {}
+
+    async def fake_build(payload: dict, fire_and_forget: bool = False) -> dict:
+        captured["payload"] = payload
+        return {"status": "spawned"}
+
+    previous = [
+        "gs://stockvision-models/finlab/v4/backfill/finlab-v4-3y-20260701-base",
+        "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260723-tail",
+    ]
+    monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models")
+    monkeypatch.setenv("FINLAB_LONG_SEQUENCE_REFRESH_ENABLED", "1")
+    monkeypatch.setattr(finlab, "_gcs_object_exists", lambda uri: True)
+    monkeypatch.setattr(finlab, "_latest_verified_sequence_sources", lambda bucket, cutoff: previous)
+    monkeypatch.setattr(modal_client, "build_finlab_long_sequence_prep", fake_build)
+
+    result = asyncio.run(finlab._maybe_spawn_long_sequence_refresh({
+        "status": "success",
+        "run_date": "2026-07-24",
+        "result": {"run_id": "finlab-v4-daily-20260724-tail"},
+    }))
+
+    assert captured["payload"]["source_gcs_prefixes"] == [
+        *previous,
+        "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20260724-tail",
+    ]
+    assert result["prior_sequence_source_count"] == 2
+
 def test_long_sequence_refresh_skips_daily_run_without_price_tail(monkeypatch):
     async def fake_build_finlab_long_sequence_prep(payload: dict, fire_and_forget: bool = False) -> dict:
         raise AssertionError("long sequence refresh should not spawn without adjusted OHLC label fields")
@@ -140,6 +171,7 @@ def test_long_sequence_refresh_skips_daily_run_without_price_tail(monkeypatch):
     monkeypatch.setenv("GCS_BUCKET_NAME", "stockvision-models")
     monkeypatch.setenv("FINLAB_LONG_SEQUENCE_REFRESH_ENABLED", "1")
     monkeypatch.setattr(finlab, "_gcs_object_exists", lambda uri: False)
+    monkeypatch.setattr(finlab, "_latest_verified_sequence_sources", lambda bucket, cutoff: [])
     monkeypatch.setattr(modal_client, "build_finlab_long_sequence_prep", fake_build_finlab_long_sequence_prep)
 
     result = asyncio.run(
@@ -182,6 +214,7 @@ def test_long_sequence_refresh_excludes_legacy_base_without_adjusted_ohlc(monkey
         "_gcs_object_exists",
         lambda uri: "finlab-v4-5y-base" not in uri,
     )
+    monkeypatch.setattr(finlab, "_latest_verified_sequence_sources", lambda bucket, cutoff: [])
     monkeypatch.setattr(modal_client, "build_finlab_long_sequence_prep", fake_build_finlab_long_sequence_prep)
 
     result = asyncio.run(finlab._maybe_spawn_long_sequence_refresh({

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException
@@ -222,6 +223,34 @@ def _long_sequence_base_5y_prefix(bucket_name: str) -> str:
     return f"gs://{bucket_name}/{_finlab_backfill_prefix()}/{run_id}"
 
 
+def _latest_verified_sequence_sources(bucket_name: str, cutoff: str) -> list[str]:
+    if not cutoff:
+        return []
+    try:
+        from google.cloud import storage
+        from services.active8_prep_lifecycle import (
+            Active8PrepDependencyPending,
+            _latest_immutable_sequence,
+        )
+
+        _, manifest = _latest_immutable_sequence(storage.Client().bucket(bucket_name), cutoff)
+    except Active8PrepDependencyPending:
+        return []
+    source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+    prefixes = source.get("source_gcs_prefixes") if isinstance(source, dict) else []
+    verified: list[str] = []
+    for prefix in prefixes or []:
+        normalized = str(prefix).rstrip("/")
+        match = re.search(r"/finlab-v4-(?:daily|3y|5y)-(\d{8})(?:-|$)", normalized)
+        if not normalized.startswith(f"gs://{bucket_name}/") or not match:
+            continue
+        raw_date = match.group(1)
+        source_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+        if source_date <= cutoff:
+            verified.append(normalized)
+    return verified
+
+
 def _is_long_sequence_tail_backfill_run(run_id: str) -> bool:
     return "-3y-" in run_id or "-daily-" in run_id
 
@@ -264,6 +293,7 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
     base_prefix = _long_sequence_base_5y_prefix(bucket_name)
     source_prefixes = [tail_prefix]
     base_missing_uris: list[str] = []
+    prior_source_prefixes: list[str] = []
     lanes = _csv_env("FINLAB_LONG_SEQUENCE_LANES", "daily_price")
     if "daily_price" in lanes:
         required_uris = [
@@ -279,12 +309,15 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
                 "required_uris": required_uris,
                 "missing_uris": missing_uris,
             }
+        run_date = str(body.get("run_date") or "")[:10]
+        prior_source_prefixes = _latest_verified_sequence_sources(bucket_name, run_date)
+        source_prefixes = list(dict.fromkeys([*prior_source_prefixes, tail_prefix]))
         base_required_uris = [
             f"{base_prefix}/raw/daily_price/adj_close.parquet",
             f"{base_prefix}/raw/daily_price/adj_open.parquet",
         ]
         base_missing_uris = [uri for uri in base_required_uris if not _gcs_object_exists(uri)]
-        if not base_missing_uris:
+        if not prior_source_prefixes and not base_missing_uris:
             source_prefixes.insert(0, base_prefix)
 
     payload = {
@@ -308,6 +341,7 @@ async def _maybe_spawn_long_sequence_refresh(body: dict[str, Any]) -> dict[str, 
         "source_gcs_prefixes": payload["source_gcs_prefixes"],
         "base_source_status": "included" if not base_missing_uris else "excluded_missing_adjusted_ohlc",
         "base_missing_uris": base_missing_uris,
+        "prior_sequence_source_count": len(prior_source_prefixes),
         "trigger_run_id": run_id,
     }
 

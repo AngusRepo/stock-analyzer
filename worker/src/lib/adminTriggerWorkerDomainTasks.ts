@@ -285,12 +285,21 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const { reconcileSelectionDecisionEvidenceV4 } = await import('./selectionReferenceEvidence')
       const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
       const { refreshStrategyRewardLedger } = await import('./strategyLearning')
+      const { completeStrategyLearningRun, loadStrategyLearningRun } = await import('./strategyLearningRunState')
+      const { logSchedulerResult } = await import('./schedulerRunLogger')
+      const runState = await loadStrategyLearningRun(c.env.DB, runDate)
+      if (!runState) throw new Error(`strategy_learning_run_missing:${runDate}`)
+      const coverage = await completeStrategyLearningRun(c.env.DB, {
+        businessDate: runDate,
+        runId: runState.canonical_run_id,
+      })
       const decisionEvidence = await reconcileSelectionDecisionEvidenceV4(c.env.DB, runDate)
       const labels = await materializeCanonicalSelectionLabelsV4(c.env.DB, { asOfDate: runDate })
       const marginalEdge = await refreshStrategyMarginalEdgeV4(c.env.DB, runDate)
       const rewards = await refreshStrategyRewardLedger(c.env.DB, { endDate: runDate, dryRun: false })
-      return [
+      const summary = [
         `strategy_learning_finalize date=${runDate}`,
+        `materialized_complete candidates=${coverage.candidateRows}/${coverage.expectedCandidates} rows=${coverage.decisionRows}/${coverage.expectedRows}`,
         `selection_decisions=${decisionEvidence.finalSignalRows}/${decisionEvidence.referenceRows}`,
         `selection_labels=${labels.persisted_rows}`,
         `selection_pending=${labels.pending_rows}`,
@@ -300,6 +309,10 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         `reward_stale_retired=${rewards.stale_rows_retired}`,
         `refresh_run_id=${rewards.refresh_run_id ?? 'none'}`,
       ].join(' ')
+      await logSchedulerResult(c.env.KV, 'strategy-learning', { status: 'success', summary, duration_ms: 0, run_id: runState.canonical_run_id, run_date: runDate })
+      await logSchedulerResult(c.env.KV, 'post-verify-chain', { status: 'success', summary: `strategy-learning finalizer recovered; ${summary}`, duration_ms: 0, run_id: runState.canonical_run_id, run_date: runDate })
+      await logSchedulerResult(c.env.KV, 'evening-chain', { status: 'success', summary: `root chain closed by strategy-learning finalizer; ${summary}`, duration_ms: 0, run_id: runState.canonical_run_id, run_date: runDate })
+      return summary
     },
     'selection-reference-repair': async () => {
       const runDate = assertRunDate(requestedRunDate())

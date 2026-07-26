@@ -237,6 +237,19 @@ function visualStatus(job?: SchedulerJob): VisualStatus {
   return 'not_started'
 }
 
+function formatReplayDate(runDate?: string | null): string {
+  if (!runDate) return ''
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(runDate)
+  if (!parts) return runDate
+  return `${Number(parts[2])}/${Number(parts[3])}`
+}
+
+function statusLabel(job?: SchedulerJob): string {
+  const label = STATUS_LABEL[visualStatus(job)]
+  if (job?.statusScope !== 'historical_replay' || !job.statusRunDate) return label
+  return `Historical replay · ${formatReplayDate(job.statusRunDate)} · ${label}`
+}
+
 function statusPriority(status: VisualStatus): number {
   if (status === 'running') return 0
   if (status === 'blocked') return 1
@@ -439,7 +452,7 @@ export default function ExecutionChainPanel({
                         data-chain-stage={id}
                         className={`obs-chain__stage is-${status} ${currentId === id ? 'is-current' : ''} ${selectedId === id ? 'is-selected' : ''} ${justCompleted.has(id) ? 'just-completed' : ''}`}
                         onClick={() => setSelectedId(id)}
-                        aria-label={`${definition.label}: ${STATUS_LABEL[status]}`}
+                        aria-label={`${definition.label}: ${statusLabel(job)}`}
                         aria-current={currentId === id ? 'step' : undefined}
                       >
                         <span className="obs-chain__ordinal sv-num">{index + 1}{column.length > 1 ? String.fromCharCode(97 + stageIndex) : ''}</span>
@@ -453,7 +466,7 @@ export default function ExecutionChainPanel({
                           <strong>{definition.label}</strong>
                           <span>{job?.name ?? id}</span>
                           <small className="sv-num">{job?.lastRun || job?.nextRun || 'no runtime evidence'}</small>
-                          <em>{STATUS_LABEL[status]}{definition.optional ? ' · optional' : ''}</em>
+                          <em>{statusLabel(job)}{definition.optional ? ' · optional' : ''}</em>
                         </span>
                       </button>
                     )
@@ -499,7 +512,7 @@ export default function ExecutionChainPanel({
                               data-chain-stage={id}
                               className={`obs-chain__stage is-branch is-${status} ${currentId === id ? 'is-current' : ''} ${selectedId === id ? 'is-selected' : ''} ${justCompleted.has(id) ? 'just-completed' : ''}`}
                               onClick={() => setSelectedId(id)}
-                              aria-label={`${definition.label}: ${STATUS_LABEL[status]}`}
+                              aria-label={`${definition.label}: ${statusLabel(job)}`}
                               aria-current={currentId === id ? 'step' : undefined}
                             >
                               <span className="obs-chain__ordinal sv-num">{branch.id === 'intraday-rescore-spots' ? `R${index + 1}` : `B${index + 1}${column.length > 1 ? String.fromCharCode(97 + stageIndex) : ''}`}</span>
@@ -513,7 +526,7 @@ export default function ExecutionChainPanel({
                                 <strong>{definition.label}</strong>
                                 <span>{job?.name ?? id}</span>
                                 <small className="sv-num">{job?.lastRun || job?.nextRun || 'no runtime evidence'}</small>
-                                <em>{STATUS_LABEL[status]}</em>
+                                <em>{statusLabel(job)}</em>
                               </span>
                             </button>
                           )
@@ -550,7 +563,7 @@ export default function ExecutionChainPanel({
           </div>
           <JobStatusSummary job={selectedJob} />
           <dl className="obs-chain__metrics">
-            <div><dt>Status</dt><dd>{STATUS_LABEL[visualStatus(selectedJob)]}</dd></div>
+            <div><dt>Status</dt><dd>{statusLabel(selectedJob)}</dd></div>
             <div><dt>Last run</dt><dd className="sv-num">{selectedJob?.lastRun ?? '—'}</dd></div>
             <div><dt>Duration</dt><dd className="sv-num">{selectedJob?.lastDuration ?? '—'}</dd></div>
           </dl>

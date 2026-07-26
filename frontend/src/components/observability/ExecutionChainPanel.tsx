@@ -73,6 +73,7 @@ const STAGES: Record<string, StageDefinition> = {
   'indicator-queue': { id: 'indicator-queue', label: 'Indicator queue', icon: CircleGauge },
   screener: { id: 'screener', label: 'Screener', icon: ScanSearch },
   'regime-compute': { id: 'regime-compute', label: 'HMM regime', icon: Activity },
+  's12-structure-snapshot': { id: 's12-structure-snapshot', label: 'S12 structure', icon: Layers3 },
   'allocator-ev-readiness': { id: 'allocator-ev-readiness', label: 'Allocator EV', icon: CircleGauge },
   pipeline: { id: 'pipeline', label: 'Pipeline', icon: Workflow },
   'ml-predict': { id: 'ml-predict', label: 'ML predict', icon: BrainCircuit },
@@ -140,7 +141,10 @@ const SCOPES: ChainScope[] = [
       ['finlab-v4-backfill', 'finlab-backfill-watchdog'],
       ['update'],
       ['indicator-queue'],
-      ['screener', 'regime-compute', 'allocator-ev-readiness'],
+      ['screener'],
+      ['regime-compute'],
+      ['s12-structure-snapshot'],
+      ['allocator-ev-readiness'],
       ['pipeline'],
       ['ml-predict', 'recommendation'],
       ['post-pipeline-chain'],
@@ -375,6 +379,15 @@ export default function ExecutionChainPanel({
     ?? [...availableJobs].reverse().find((job) => visualStatus(job) === 'completed')
     ?? availableJobs[0]
   const currentId = currentJob?.id ?? stageIds[0]
+  const currentStatus = visualStatus(currentJob)
+  const CurrentStatusIcon = STATUS_ICON[currentStatus]
+  const currentCue = currentStatus === 'running'
+    ? 'Running now'
+    : currentStatus === 'blocked'
+      ? 'Blocked here'
+      : currentStatus === 'waiting'
+        ? 'Waiting next'
+        : 'No active runtime · latest checkpoint'
   const selectedJob = scopedJobMap.get(selectedId ?? currentId)
   const selectedDefinition = STAGES[selectedId ?? currentId] ?? STAGES[currentId]
 
@@ -449,6 +462,19 @@ export default function ExecutionChainPanel({
           ))}
         </div>
         <div className="obs-chain__toolbar-meta">
+          <button
+            type='button'
+            className={`obs-chain__runtime is-${currentStatus}`}
+            onClick={() => setSelectedId(currentId)}
+            aria-label={`${currentCue}: ${currentJob?.name ?? currentId}`}
+          >
+            <span className='obs-chain__runtime-icon'><CurrentStatusIcon aria-hidden='true' /></span>
+            <span>
+              <small>{currentCue}</small>
+              <strong>{currentJob?.name ?? STAGES[currentId]?.label ?? currentId}</strong>
+            </span>
+            <em>{statusLabel(currentJob)}</em>
+          </button>
           {scope.orchestratorId && (
             <button
               type="button"

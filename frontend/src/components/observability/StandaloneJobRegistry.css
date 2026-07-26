@@ -75,6 +75,18 @@
 .obs-standalone__timing dd { margin: 2px 0 0; overflow: hidden; color: #a8b6c4; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .obs-standalone__empty { padding: 22px; color: #6f849a; font-size: 13px; text-align: center; }
 
+@media (min-width: 1280px) {
+  .obs-standalone__groups { grid-template-columns: repeat(10, minmax(0, 1fr)); align-items: start; }
+  .obs-standalone__group-card[aria-label='Weekly operations'] { grid-column: span 4; }
+  .obs-standalone__group-card[aria-label='Pipeline support'] { grid-column: span 2; }
+  .obs-standalone__group-card[aria-label='Daily operations'] { grid-column: span 4; }
+  .obs-standalone__group-card[aria-label='Intraday roots'],
+  .obs-standalone__group-card[aria-label='Monthly operations'] { grid-column: span 5; }
+  .obs-standalone__group-card[aria-label='Pipeline support'] .obs-standalone__group-header { align-items: flex-start; flex-direction: column; }
+  .obs-standalone__group-card[aria-label='Pipeline support'] .obs-standalone__group-stats { justify-content: flex-start; }
+  .obs-standalone__group-card[aria-label='Pipeline support'] .obs-standalone__job-grid { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 1120px) {
   .obs-standalone__groups { grid-template-columns: 1fr; }
 }

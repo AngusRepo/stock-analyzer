@@ -55,6 +55,7 @@ const logs: SchedulerDisplayLogCandidate[] = [
   const policySource = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
   assert(statusSource.includes('directFallback: false'), 'scheduler status must not per-task scan KV logs')
   assert(statusSource.includes('skipKvPolicy: true'), 'scheduler status nextRun must not probe KV policy per card')
+  assert(statusSource.includes("id: 's12-structure-snapshot'") && statusSource.includes("'s12-structure-snapshot',"), 'S12 runtime logs must be exposed as a first-class chain stage')
   assert(loggerSource.includes('scheduler:run:daily:'), 'scheduler logger must maintain daily aggregate logs for OBS')
   assert(policySource.includes('skipKvPolicy?: boolean'), 'scheduler policy must expose no-KV nextRun mode')
 }

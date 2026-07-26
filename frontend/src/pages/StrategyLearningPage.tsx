@@ -60,7 +60,7 @@ function StrategyLedgerGroup({
         <Badge variant="outline" className="border-slate-700 bg-slate-900 text-slate-300">{rows.length} strategies</Badge>
       </header>
 
-      <div className="divide-y divide-slate-900">
+      <div className="grid grid-cols-1 gap-px bg-slate-900 xl:grid-cols-2">
         {rows.map((row) => {
           const gate = gateById.get(`${row.id}:${row.version}`)
           const hasWeight = Object.prototype.hasOwnProperty.call(policyWeights, row.id)
@@ -68,7 +68,7 @@ function StrategyLedgerGroup({
           const evidence = gate?.missing_evidence ?? []
           const evidenceLabels = gate ? (evidence.length ? evidence : ['evidence ready']) : ['reward ledger unavailable']
           return (
-            <article key={`${row.id}:${row.version}`} className="space-y-4 px-4 py-4 lg:px-5">
+            <article key={`${row.id}:${row.version}`} className="min-w-0 space-y-4 bg-slate-950/70 px-4 py-4 lg:px-5">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-slate-100">{row.name}</h3>
@@ -78,7 +78,7 @@ function StrategyLedgerGroup({
                 <p className="mt-1 truncate font-mono text-xs text-slate-500">{row.id} &middot; {row.alphaBucket}</p>
               </div>
 
-              <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+              <dl className="grid grid-cols-2 gap-2 2xl:grid-cols-3">
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Decisions</dt><dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.decisions}</dd></div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Rewards</dt><dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.samples}</dd></div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Hit rate</dt><dd className="mt-1 font-mono text-sm text-cyan-200">{pct(row.learning.hit_rate)}</dd></div>
@@ -86,7 +86,7 @@ function StrategyLedgerGroup({
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">MDD</dt><dd className="mt-1 font-mono text-sm text-amber-200">{pct(row.learning.max_drawdown_pct)}</dd></div>
               </dl>
 
-              <div className="grid gap-3 sm:grid-cols-[minmax(180px,0.8fr)_minmax(0,1.2fr)]">
+              <div className="grid gap-3">
                 <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
                   <div className="flex justify-between gap-3 text-xs text-slate-500"><span>Policy weight</span><span className="font-mono text-slate-300">{hasWeight ? pct(weight) : '-'}</span></div>
                   <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
@@ -109,7 +109,7 @@ function StrategyLedgerGroup({
             </article>
           )
         })}
-        {!rows.length && <div className="px-5 py-8 text-sm text-slate-500">{empty}</div>}
+        {!rows.length && <div className="px-5 py-8 text-sm text-slate-500 xl:col-span-2">{empty}</div>}
       </div>
     </section>
   )

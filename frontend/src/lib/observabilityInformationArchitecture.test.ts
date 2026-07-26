@@ -40,7 +40,7 @@ for (const scope of ['Daily readiness', 'Intraday guard', 'Monthly artifact']) {
 }
 assert(!chain.includes("id: 'daily_ops'"), 'independent daily jobs must not be forced into a fake chain')
 assert(chain.includes("relation: 'event'") && chain.includes("relation: 'mixed'"), 'chain must distinguish event-only and mixed-trigger scopes')
-assert(chain.includes("['screener', 'regime-compute', 'allocator-ev-readiness']"), 'daily chain must render the parallel pre-pipeline readiness branch')
+assert(chain.includes("['screener'],") && chain.includes("['regime-compute'],") && chain.includes("['s12-structure-snapshot'],") && chain.includes("['allocator-ev-readiness'],"), 'daily chain must expose the verified screener -> regime -> S12 -> allocator sequence')
 assert(!chain.includes("id: 'weekly'"), 'schedule-driven weekly jobs must stay in grouped inventory rather than a fake dependency chain')
 assert(chain.includes("orchestratorId: 'evening-chain'") && !chain.includes("      ['evening-chain'],"), 'Evening Chain must render as parent orchestration rather than an earlier sequential step')
 assert(chain.includes('function scopeExecutionStageIds') && chain.includes('Parent orchestration · terminal callback'), 'parent orchestration must be excluded from step progress and explain terminal-callback ownership')
@@ -54,7 +54,7 @@ assert(chain.includes("'context with' : 'shares inputs with'") && chain.includes
 assert(!chain.includes("'intraday-rescore': {") && !chain.includes('Next up') && !chain.includes('obs-chain__detail--next'), 'legacy aggregate re-score and redundant Next Up detail must stay removed')
 assert(chainCss.includes('.obs-chain__branches') && chainCss.includes('.obs-chain__branch-sequence') && chainCss.includes('grid-template-columns: minmax(0,1fr)'), 'execution branches and single-column selected detail must have explicit responsive styling')
 assert(chain.includes("obs-chain__topology ${scope.id === 'intraday' ? 'is-intraday' : ''}") && chain.includes('Intraday main flow'), 'intraday topology must place the pre-market branch, main flow, and re-score branch in one explicit layout')
-assert(chainCss.includes('grid-template-columns: minmax(248px,.82fr) minmax(560px,1.72fr) minmax(292px,.96fr)') && chainCss.includes('.obs-chain__branch:nth-child(1)') && chainCss.includes('.obs-chain__branch:nth-child(2)'), 'desktop intraday topology must order pre-market left, main center, and re-score right')
+assert(chainCss.includes('grid-template-columns: minmax(210px,.68fr) minmax(620px,2.25fr) minmax(240px,.75fr)') && chainCss.includes('minmax(760px,2.7fr)') && chainCss.includes('.obs-chain__branch:nth-child(1)') && chainCss.includes('.obs-chain__branch:nth-child(2)'), 'desktop intraday topology must enlarge the main lane between pre-market left and re-score right')
 assert(chain.includes("['model-ic-rolling']") && !chain.includes('buildScopedJobMap') && !chain.includes('model-ic-tracker'), 'daily chain must consume the isolated rolling identity without timestamp inference')
 assert(chain.includes("job.id === 'intraday-check' && job.lastStatus === 'skip'") && chain.includes("noop: 'Checked · no action'"), 'an executed intraday heartbeat with no action must not look unexecuted')
 assert(chain.includes("job.lastStatus === 'sleep') return 'out_of_window'") && chain.includes("out_of_window: 'Not in window'"), 'sleep must render as Not in window rather than Not started')
@@ -70,6 +70,7 @@ assert(standalone.includes('.filter((job) => !mappedJobIds.has(job.id))'), 'ever
 assert(standalone.includes('Standalone root') && standalone.includes('Unmapped dependency'), 'registry must distinguish independent jobs from missing topology')
 assert(standalone.includes('{jobs.length} / {jobs.length} accounted'), 'registry must expose full scheduler coverage')
 assert(standaloneCss.includes('.obs-standalone__group-card') && standaloneCss.includes('.obs-standalone__job-grid') && !standaloneCss.includes('.obs-standalone__rows'), 'standalone jobs must use the previous grouped-card presentation')
+assert(standalone.includes("['weekly', 'pipeline_chain', 'daily', 'intraday', 'monthly']") && standaloneCss.includes("[aria-label='Weekly operations'] { grid-column: span 4;") && standaloneCss.includes("[aria-label='Pipeline support'] { grid-column: span 2;") && standaloneCss.includes("[aria-label='Daily operations'] { grid-column: span 4;"), 'standalone desktop top row must stay Weekly 4 / Pipeline 2 / Daily 4')
 
 assert(page.includes('schedulerApi.status'), 'execution chain must use the formal scheduler status API')
 assert(page.includes('schedulerRefreshInterval(query.state.data?.jobs)'), 'scheduler refresh must adapt to runtime status')
@@ -83,6 +84,7 @@ for (const animation of ['obs-running-breathe', 'obs-running-orbit', 'obs-comple
 }
 assert(chainCss.includes('.obs-chain__progress-fill.is-running'), 'Overall progress must animate while any stage is running')
 assert(chain.includes('aria-current={currentId === id') && chain.includes("currentId === id ? 'is-current'"), 'current execution or death point must remain highlighted independently of selection')
+assert(chain.includes('Running now') && chain.includes('No active runtime · latest checkpoint') && chain.includes('obs-chain__runtime'), 'toolbar must explicitly identify the current runtime or state that none is active')
 assert(chainCss.includes('@keyframes obs-death-beacon') && chainCss.includes('@keyframes obs-death-wave'), 'blocked current stage must expose a death-point animation')
 assert(chainCss.includes('.obs-chain__progress-track.is-active::after') && chainCss.includes('@keyframes obs-progress-track-flow'), 'Overall progress track must retain a visible flow animation')
 assert(chain.includes('JobStatusSummary') && chainCss.includes('.obs-chain__error-disclosure[open]'), 'long errors must use progressive disclosure instead of an internal scrollbar')

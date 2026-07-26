@@ -33,6 +33,18 @@ def test_no_runtime_workload_uses_default_compute_identity() -> None:
     } <= pipeline_secrets
 
 
+def test_controller_override_role_covers_every_invoked_job() -> None:
+    contract = json.loads((ROOT / "infra" / "gcp-runtime-identities.json").read_text(encoding="utf-8"))
+    role_id = "stockvisionJobOverrideRunner"
+
+    assert set(contract["job_override_invokers"]["controller"]) == set(contract["job_invokers"]["controller"])
+    assert set(contract["job_override_invokers"]["controller"].values()) == {role_id}
+    assert set(contract["custom_roles"][role_id]["permissions"]) == {
+        "run.jobs.run",
+        "run.jobs.runWithOverrides",
+    }
+
+
 def test_controller_deploy_is_fail_closed_on_identity_and_provenance() -> None:
     script = (ROOT / "deploy_ml_controller.sh").read_text(encoding="utf-8")
 

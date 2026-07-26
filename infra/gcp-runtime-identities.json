@@ -27,8 +27,8 @@
     ]
   },
   "custom_roles": {
-    "stockvisionOofJobRunner": {
-      "title": "StockVision OOF Job Runner",
+    "stockvisionJobOverrideRunner": {
+      "title": "StockVision Job Override Runner",
       "stage": "GA",
       "permissions": [
         "run.jobs.run",
@@ -145,7 +145,12 @@
   },
   "job_override_invokers": {
     "controller": {
-      "active8-oof-materialize": "stockvisionOofJobRunner"
+      "pipeline-v2": "stockvisionJobOverrideRunner",
+      "verify-v2": "stockvisionJobOverrideRunner",
+      "screener-v2": "stockvisionJobOverrideRunner",
+      "optuna-research-sweep": "stockvisionJobOverrideRunner",
+      "strategy-mining-research": "stockvisionJobOverrideRunner",
+      "active8-oof-materialize": "stockvisionJobOverrideRunner"
     }
   },
   "service_invokers": {

@@ -7,7 +7,7 @@ const persistence = readFileSync(new URL('./s12StructureSnapshots.ts', import.me
 const types = readFileSync(new URL('../types.ts', import.meta.url), 'utf8')
 
 assert.match(types, /\| 's12_candidate_snapshot_chunk'/)
-assert.match(orchestrator, /const S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE = 5/)
+assert.match(orchestrator, /const S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE = 1/)
 assert.match(orchestrator, /const S12_CANDIDATE_SNAPSHOT_RESEARCH_TIMEOUT_MS = 10_000/)
 assert.match(orchestrator, /researchTimeoutMs: S12_CANDIDATE_SNAPSHOT_RESEARCH_TIMEOUT_MS/)
 assert.match(orchestrator, /if \(msg\.type === 's12_candidate_snapshot_chunk'\)/)

@@ -32,6 +32,7 @@ import {
   Zap,
 } from 'lucide-react'
 import type { SchedulerJob } from '@/lib/api'
+import { buildAttemptAwareJobMap } from './executionChainAttemptState'
 import StandaloneJobRegistry from './StandaloneJobRegistry'
 import './ExecutionChainPanel.css'
 
@@ -328,54 +329,6 @@ export function inferOrchestratorStage(summary?: string | null): string | null {
   return ORCHESTRATOR_STAGE_HINTS.find(([pattern]) => pattern.test(normalized))?.[1] ?? null
 }
 
-function buildAttemptAwareJobMap(
-  base: Map<string, SchedulerJob>,
-  scope: ChainScope,
-): Map<string, SchedulerJob> {
-  const orchestrator = scope.orchestratorId ? base.get(scope.orchestratorId) : undefined
-  if (!orchestrator || visualStatus(orchestrator) !== 'running') return base
-
-  const directRunningStageId = [...scope.columns].reverse().flat()
-    .find((stageId) => visualStatus(base.get(stageId)) === 'running')
-  const currentStageId = directRunningStageId ?? inferOrchestratorStage(orchestrator.summary)
-  const derivedFromParent = !directRunningStageId
-  const currentColumnIndex = currentStageId
-    ? scope.columns.findIndex((column) => column.includes(currentStageId))
-    : -1
-  if (!currentStageId || currentColumnIndex < 0) return base
-
-  const next = new Map(base)
-  const current = next.get(currentStageId)
-  if (current) {
-    next.set(currentStageId, {
-      ...current,
-      lastStatus: 'running',
-      lastRun: derivedFromParent ? orchestrator.lastRun : current.lastRun,
-      lastRunAt: derivedFromParent ? orchestrator.lastRunAt : current.lastRunAt,
-      lastError: undefined,
-      summary: derivedFromParent ? orchestrator.summary : current.summary,
-      statusScope: orchestrator.statusScope,
-      statusRunDate: orchestrator.statusRunDate,
-      displayNote: derivedFromParent ? 'Current stage derived from parent orchestration callback.' : 'Current stage confirmed by its direct scheduler head.',
-    })
-  }
-
-  scope.columns.slice(currentColumnIndex + 1).flat().forEach((jobId) => {
-    const job = next.get(jobId)
-    if (!job) return
-    next.set(jobId, {
-      ...job,
-      lastStatus: 'waiting',
-      lastError: undefined,
-      summary: `Waiting for current replay stage ${currentStageId}`,
-      statusScope: orchestrator.statusScope,
-      statusRunDate: orchestrator.statusRunDate,
-      displayNote: 'Previous-attempt terminal state is suppressed while the current replay is still upstream.',
-    })
-  })
-  return next
-}
-
 function connectorStatus(previousJobs: Array<SchedulerJob | undefined>, nextJobs: Array<SchedulerJob | undefined>): VisualStatus {
   const previous = previousJobs.map(visualStatus)
   const next = nextJobs.map(visualStatus)
@@ -447,7 +400,7 @@ export default function ExecutionChainPanel({
 
   const jobMap = useMemo(() => new Map(jobs.map((job) => [job.id, job])), [jobs])
   const scope = SCOPES.find((item) => item.id === scopeId) ?? SCOPES[0]
-  const scopedJobMap = useMemo(() => buildAttemptAwareJobMap(jobMap, scope), [jobMap, scope])
+  const scopedJobMap = useMemo(() => buildAttemptAwareJobMap(jobMap, scope, inferOrchestratorStage), [jobMap, scope])
   const stageIds = scopeExecutionStageIds(scope)
   const orchestratorJob = scope.orchestratorId ? scopedJobMap.get(scope.orchestratorId) : undefined
   const orchestratorStatus = visualStatus(orchestratorJob)

@@ -12,6 +12,7 @@ const apiPath = path.join(root, 'src', 'lib', 'api.ts')
 const chainCssPath = path.join(root, 'src', 'components', 'observability', 'ExecutionChainPanel.css')
 const standalonePath = path.join(root, 'src', 'components', 'observability', 'StandaloneJobRegistry.tsx')
 const standaloneCssPath = path.join(root, 'src', 'components', 'observability', 'StandaloneJobRegistry.css')
+const attemptStatePath = path.join(root, 'src', 'components', 'observability', 'executionChainAttemptState.ts')
 const removedChartPath = path.join(root, 'src', 'components', 'charts', 'ObservabilityEventTimeline.tsx')
 
 const page = fs.readFileSync(pagePath, 'utf8').replace(/\r\n/g, '\n')
@@ -20,6 +21,7 @@ const api = fs.readFileSync(apiPath, 'utf8').replace(/\r\n/g, '\n')
 const chainCss = fs.readFileSync(chainCssPath, 'utf8').replace(/\r\n/g, '\n')
 const standalone = fs.readFileSync(standalonePath, 'utf8').replace(/\r\n/g, '\n')
 const standaloneCss = fs.readFileSync(standaloneCssPath, 'utf8').replace(/\r\n/g, '\n')
+const attemptState = fs.readFileSync(attemptStatePath, 'utf8').replace(/\r\n/g, '\n')
 
 assert(!fs.existsSync(removedChartPath), 'OBS severity timeline chart should remain removed')
 assert(!page.includes('ObservabilityEventTimeline'), 'ObservabilityPage should not render the removed severity timeline')
@@ -106,9 +108,14 @@ assert(
 )
 
 assert(chain.includes('buildAttemptAwareJobMap') && chain.includes('inferOrchestratorStage'), 'active historical replay must derive its current stage from parent orchestration evidence')
-assert(chain.includes("lastStatus: 'waiting'") && chain.includes('Previous-attempt terminal state is suppressed'), 'active replay must suppress stale downstream terminal states from an older attempt')
+assert(attemptState.includes("lastStatus: 'waiting'") && attemptState.includes('Previous-attempt terminal state is suppressed'), 'active replay must suppress stale downstream terminal states from an older attempt')
 assert(chain.includes("recoveredFromStatus === 'failed'") && chain.includes('Recovered'), 'durably recovered callbacks must render as one recovered result instead of simultaneous red and green states')
 assert(api.includes('statusAuthority?:') && api.includes('attemptCount?: number | null'), 'scheduler API must expose durable authority and retry count')
 
-assert(chain.includes('directRunningStageId') && chain.includes('Current stage confirmed by its direct scheduler head.'), 'direct stage running evidence must outrank a lagging parent orchestration hint')
+assert(
+  attemptState.includes('directRunningStageId')
+    && attemptState.includes('!directRunningStageId && !orchestratorRunning')
+    && attemptState.includes('Current stage confirmed by its direct scheduler head.'),
+  'direct stage running evidence must outrank a lagging parent orchestration hint',
+)
 console.log('observabilityInformationArchitecture: execution chain + standalone registry OK')

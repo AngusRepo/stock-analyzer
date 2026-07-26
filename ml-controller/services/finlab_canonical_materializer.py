@@ -1888,7 +1888,7 @@ def build_valuation_rows(
         pl.col("date").alias("available_date"),
         pl.lit("finlab.daily_valuation").alias("source"),
         pl.lit(lineage).alias("lineage_json"),
-        pl.lit(generated_at[:10]).alias("as_of_date"),
+        pl.col("date").alias("as_of_date"),
     ).select([
         "stock_id",
         "period",

@@ -264,6 +264,7 @@ def test_single_day_materialization_does_not_carry_prior_financial_fields() -> N
     assert financial_rows == []
     row = next(item for item in valuation_rows if item["stock_id"] == "2330")
     assert row["available_date"] == "2026-06-29"
+    assert row["as_of_date"] == "2026-06-29"
     assert row["period"] == "2026-06-29"
     assert row["report_date"] == "2026-06-29"
     assert row["source"] == "finlab.daily_valuation"
@@ -1150,6 +1151,7 @@ def test_fundamental_materialization_keeps_pb_only_snapshot_with_owned_period() 
     assert pb_only["period"] == "2026-07-09"
     assert pb_only["report_date"] == "2026-07-09"
     assert pb_only["available_date"] == "2026-07-09"
+    assert pb_only["as_of_date"] == "2026-07-09"
     assert pb_only["source"] == "finlab.daily_valuation"
 
 

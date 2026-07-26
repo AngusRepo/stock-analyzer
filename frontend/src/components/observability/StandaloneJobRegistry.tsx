@@ -10,7 +10,7 @@ const GROUP_LABEL: Record<SchedulerJob['group'], string> = {
   monthly: 'Monthly operations',
 }
 
-const GROUP_ORDER: SchedulerJob['group'][] = ['pipeline_chain', 'daily', 'intraday', 'weekly', 'monthly']
+const GROUP_ORDER: SchedulerJob['group'][] = ['weekly', 'pipeline_chain', 'daily', 'intraday', 'monthly']
 
 const STATUS_LABEL: Record<SchedulerJob['lastStatus'], string> = {
   success: 'Completed',

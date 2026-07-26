@@ -56,6 +56,7 @@ for (const spec of Object.values(SCHEDULER_DEPENDENCY_MAP)) {
   assertSafeConsolidationSpec(spec)
   const hasInternalChainOwner =
     (spec.task === 'allocator-ev-readiness' && updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-readiness'")) ||
+    (spec.task === 's12-structure-snapshot' && updateOrchestrator.includes("logSchedulerResult(env.KV, 's12-structure-snapshot'")) ||
     (spec.task === 'allocator-ev-feature-snapshot-backfill' && postMarketChain.includes("task: 'allocator-ev-feature-snapshot-backfill'")) ||
     (spec.task === 'model-ic-rolling' && postMarketChain.includes("'model-ic-rolling', () => runModelIcRollingRefresh"))
   assert(hasHandler(spec.task) || hasInternalChainOwner, `${spec.task} must keep a scheduled/manual handler or explicit internal chain owner during consolidation`)

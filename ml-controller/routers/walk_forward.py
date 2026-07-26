@@ -1534,7 +1534,20 @@ OOF_LABEL_PURGE_SESSIONS = 5
 OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
-OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v2-rematerialize"
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v3-pit-policy"
+
+
+def _active_oof_materialization_policy_version() -> str:
+    from services.active8_oof_cohort_materializer import OOF_PIT_ELIGIBILITY_POLICY_VERSION
+
+    return OOF_PIT_ELIGIBILITY_POLICY_VERSION
+
+def _oof_lifecycle_receipt_matches_active_policy(receipt: dict[str, Any]) -> bool:
+
+    return (
+        receipt.get("schema_version") == OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION
+        and receipt.get("materialization_policy_version") == _active_oof_materialization_policy_version()
+    )
 OOF_LIFECYCLE_MIN_SESSIONS = OOF_MIN_MATURE_SESSIONS
 _OOF_TARGET_SEMANTIC_VERSION = (
     "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
@@ -1983,7 +1996,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     lifecycle_blob = bucket.blob(lifecycle_path)
     if lifecycle_blob.exists():
         receipt = json.loads(lifecycle_blob.download_as_text())
-        if receipt.get("schema_version") == OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION:
+        if _oof_lifecycle_receipt_matches_active_policy(receipt):
             return {
                 "status": "idempotent_complete",
                 "cadence": cadence,
@@ -2054,6 +2067,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         lifecycle_blob.upload_from_string(
             json.dumps({
                 "schema_version": OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION,
+                "materialization_policy_version": _active_oof_materialization_policy_version(),
                 "status": result.get("status"),
                 "cohort_id": cohort_id,
                 "cadence": cadence,

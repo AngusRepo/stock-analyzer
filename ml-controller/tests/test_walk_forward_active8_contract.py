@@ -824,3 +824,22 @@ def test_daily_oof_materialization_reuses_checksum_verified_gcs_indexes():
     assert '"source": "checksum_verified_indexed_loader"' in router
     assert "active8_oof_indexed_snapshot_lineage_mismatch" in materializer
     assert '"d1_full_row_tables_required": False' in materializer
+
+def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
+    from routers.walk_forward import (
+        OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION,
+        _oof_lifecycle_receipt_matches_active_policy,
+    )
+    from services.active8_oof_cohort_materializer import (
+        OOF_PIT_ELIGIBILITY_POLICY_VERSION,
+    )
+
+    current = {
+        "schema_version": OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION,
+        "materialization_policy_version": OOF_PIT_ELIGIBILITY_POLICY_VERSION,
+    }
+    assert _oof_lifecycle_receipt_matches_active_policy(current)
+    assert not _oof_lifecycle_receipt_matches_active_policy({
+        **current,
+        "materialization_policy_version": "legacy-v1",
+    })

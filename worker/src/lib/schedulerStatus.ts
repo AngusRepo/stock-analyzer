@@ -528,14 +528,32 @@ function timestampTwDate(timestamp?: string): string | null {
 export function resolveSchedulerDisplayStatus(input: {
   todayLog?: CronLogEntry
   lastAttempt?: CronLogEntry
+  activeReplayLog?: CronLogEntry
+  activeReplayRunDate?: string | null
+  activeReplayHeartbeatAt?: string | null
   def: Pick<JobDef, 'id' | 'group' | 'chainIndex'>
   nextRun: string
   today: string
   nowMs?: number
 }): SchedulerDisplayStatus {
-  const { todayLog, lastAttempt, def, nextRun, today, nowMs = Date.now() } = input
+  const {
+    todayLog,
+    lastAttempt,
+    activeReplayLog,
+    activeReplayRunDate,
+    activeReplayHeartbeatAt,
+    def,
+    nextRun,
+    today,
+    nowMs = Date.now(),
+  } = input
+  const activeRunDate = String(activeReplayRunDate ?? '').trim()
+  const activeLogRunDate = String(activeReplayLog?.run_date ?? '').trim()
+  const hasActiveReplayLog = Boolean(
+    activeRunDate && activeRunDate !== today && activeLogRunDate === activeRunDate,
+  )
   const resolvedToday = resolveSchedulerLogStatus(todayLog, def, nowMs)
-  if (resolvedToday.status) {
+  if (resolvedToday.status && !hasActiveReplayLog) {
     return {
       status: resolvedToday.status,
       statusScope: 'today',
@@ -544,12 +562,24 @@ export function resolveSchedulerDisplayStatus(input: {
     }
   }
 
-  const replayRunDate = String(lastAttempt?.run_date ?? '').trim()
+  const replayLog = hasActiveReplayLog ? activeReplayLog : lastAttempt
+  const replayRunDate = String(replayLog?.run_date ?? '').trim()
+  const replayLogTimestampMs = parseLogTime(replayLog?.timestamp)
+  const heartbeatTimestampMs = parseLogTime(activeReplayHeartbeatAt ?? undefined)
+  const replayStatusLog = hasActiveReplayLog
+    && def.id === 'evening-chain'
+    && replayLog
+    && heartbeatTimestampMs != null
+    && (replayLogTimestampMs == null || heartbeatTimestampMs > replayLogTimestampMs)
+    ? { ...replayLog, timestamp: String(activeReplayHeartbeatAt) }
+    : replayLog
   const isHistoricalReplay = Boolean(
-    replayRunDate && replayRunDate !== today && timestampTwDate(lastAttempt?.timestamp) === today,
+    hasActiveReplayLog || (
+      replayRunDate && replayRunDate !== today && timestampTwDate(replayLog?.timestamp) === today
+    ),
   )
   if (isHistoricalReplay) {
-    const resolvedReplay = resolveSchedulerLogStatus(lastAttempt, def, nowMs)
+    const resolvedReplay = resolveSchedulerLogStatus(replayStatusLog, def, nowMs)
     if (resolvedReplay.status) {
       return {
         status: resolvedReplay.status,
@@ -604,9 +634,25 @@ export async function getSchedulerStatus(env: Bindings) {
       allLogs[activeChainDate] ?? [],
     )
   }
+  const activeReplayHeartbeatAt = activeChainDate
+    ? (allLogs[activeChainDate] ?? [])
+      .filter((entry) => (
+        CHAIN_STEP_IDS.includes(entry.task)
+        && String(entry.run_date ?? activeChainDate) === activeChainDate
+      ))
+      .reduce<string | undefined>((latest, entry) => {
+        const timestampMs = parseLogTime(entry.timestamp)
+        if (timestampMs == null) return latest
+        const latestMs = parseLogTime(latest)
+        return latestMs == null || timestampMs > latestMs ? String(entry.timestamp) : latest
+      }, undefined)
+    : undefined
 
   const jobs = await Promise.all(JOB_DEFS.map(async (def) => {
     const todayLog = getJobDisplayLog(allLogs[today], def)
+    const activeReplayLog = activeChainDate && CHAIN_STEP_IDS.includes(def.id)
+      ? getJobDisplayLog(allLogs[activeChainDate], def)
+      : undefined
     const nextRun = await getNextRunApproxWithPolicy({ task: def.id, cron: def.cron, kv: env.KV, skipKvPolicy: true })
 
     const displayLogs = dates.map((date) => ({
@@ -625,10 +671,18 @@ export async function getSchedulerStatus(env: Bindings) {
     const resolvedDisplay = resolveSchedulerDisplayStatus({
       todayLog,
       lastAttempt,
+      activeReplayLog,
+      activeReplayRunDate: activeChainDate,
+      activeReplayHeartbeatAt,
       def,
       nextRun,
       today,
     })
+    const displayLog = resolvedDisplay.statusScope === 'historical_replay'
+      && resolvedDisplay.statusRunDate === activeChainDate
+      && activeReplayLog
+      ? activeReplayLog
+      : lastLog
     const durableState = resolvedDisplay.statusRunDate
       ? durableStageStates.get(`${resolvedDisplay.statusRunDate}:${def.id}`)
       : undefined
@@ -636,13 +690,13 @@ export async function getSchedulerStatus(env: Bindings) {
       jobId: def.id,
       runDate: resolvedDisplay.statusRunDate,
       baseStatus: resolvedDisplay.status,
-      baseTimestamp: lastLog?.timestamp,
+      baseTimestamp: displayLog?.timestamp,
       durable: durableState,
     })
     const lastStatus = durableOverride?.lastStatus ?? resolvedDisplay.status
 
-    const lastDuration = formatDuration(lastLog?.duration_ms)
-    const shortRun = inferShortRunConcern(def, lastLog)
+    const lastDuration = formatDuration(displayLog?.duration_ms)
+    const shortRun = inferShortRunConcern(def, displayLog)
 
     const successCount = history7d.filter((item) => item === 'success').length
     const totalCount = history7d.filter((item) => item !== 'skip').length
@@ -654,8 +708,8 @@ export async function getSchedulerStatus(env: Bindings) {
       cron: def.cron,
       group: def.group,
       chainIndex: def.chainIndex,
-      lastRun: durableOverride?.lastRunAt ? formatTimestamp(durableOverride.lastRunAt) : lastLog?.timestamp ? formatTimestamp(lastLog.timestamp) : 'N/A',
-      lastRunAt: durableOverride?.lastRunAt ?? lastLog?.timestamp ?? null,
+      lastRun: durableOverride?.lastRunAt ? formatTimestamp(durableOverride.lastRunAt) : displayLog?.timestamp ? formatTimestamp(displayLog.timestamp) : 'N/A',
+      lastRunAt: durableOverride?.lastRunAt ?? displayLog?.timestamp ?? null,
       lastAttempt: lastAttempt?.timestamp ? formatTimestamp(lastAttempt.timestamp) : 'N/A',
       lastAttemptAt: lastAttempt?.timestamp ?? null,
       lastAttemptStatus: lastAttempt?.status ?? 'none',
@@ -670,14 +724,14 @@ export async function getSchedulerStatus(env: Bindings) {
       durationConcernReason: shortRun.durationConcernReason,
       lastError: durableOverride
         ? durableOverride.lastError
-        : resolvedDisplay.staleReason ?? todayLog?.error ?? lastLog?.error,
+        : resolvedDisplay.staleReason ?? displayLog?.error,
       nextRun,
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',
-      summary: durableOverride?.summary ?? lastLog?.summary ?? '',
-      details: lastLog?.details ?? [],
-      runId: durableOverride?.runId ?? lastLog?.run_id ?? null,
-      attemptId: lastLog?.attempt_id ?? null,
+      summary: durableOverride?.summary ?? displayLog?.summary ?? '',
+      details: displayLog?.details ?? [],
+      runId: durableOverride?.runId ?? displayLog?.run_id ?? null,
+      attemptId: displayLog?.attempt_id ?? null,
       attemptCount: durableOverride?.attemptCount ?? null,
       recoveredFromStatus: durableOverride?.recoveredFromStatus ?? null,
       statusAuthority: durableOverride?.statusAuthority ?? 'scheduler_kv',

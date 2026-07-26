@@ -187,6 +187,72 @@ const logs: SchedulerDisplayLogCandidate[] = [
 
 {
   const status = resolveSchedulerDisplayStatus({
+    todayLog: {
+      task: 'screener',
+      status: 'skipped',
+      summary: 'today scheduler window skipped while historical replay remains active',
+      duration_ms: 0,
+      run_date: '2026-07-27',
+      timestamp: '2026-07-26T16:05:00.000Z',
+    },
+    lastAttempt: {
+      task: 'screener',
+      status: 'success',
+      summary: 'historical replay screener completed before midnight',
+      duration_ms: 268_952,
+      run_date: '2026-07-24',
+      timestamp: '2026-07-26T13:57:34.432Z',
+    },
+    activeReplayLog: {
+      task: 'screener',
+      status: 'success',
+      summary: 'historical replay screener completed before midnight',
+      duration_ms: 268_952,
+      run_date: '2026-07-24',
+      timestamp: '2026-07-26T13:57:34.432Z',
+    },
+    activeReplayRunDate: '2026-07-24',
+    def: { id: 'screener', group: 'pipeline_chain', chainIndex: 6 },
+    nextRun: '7/27 21:38',
+    today: '2026-07-27',
+    nowMs: Date.parse('2026-07-26T16:21:30.000Z'),
+  })
+  assert(status.status === 'success', 'completed upstream stage must stay completed when an active replay crosses midnight')
+  assert(status.statusScope === 'historical_replay', 'cross-midnight upstream stage must retain replay scope')
+  assert(status.statusRunDate === '2026-07-24', 'cross-midnight upstream stage must retain the active replay date')
+}
+
+{
+  const status = resolveSchedulerDisplayStatus({
+    lastAttempt: {
+      task: 'evening-chain',
+      status: 'running',
+      summary: 'historical chain still owns the active replay',
+      duration_ms: 0,
+      run_date: '2026-07-24',
+      timestamp: '2026-07-26T13:57:36.352Z',
+    },
+    activeReplayLog: {
+      task: 'evening-chain',
+      status: 'running',
+      summary: 'historical chain still owns the active replay',
+      duration_ms: 0,
+      run_date: '2026-07-24',
+      timestamp: '2026-07-26T13:57:36.352Z',
+    },
+    activeReplayRunDate: '2026-07-24',
+    activeReplayHeartbeatAt: '2026-07-26T16:21:29.943Z',
+    def: { id: 'evening-chain', group: 'pipeline_chain', chainIndex: 2 },
+    nextRun: '7/27 21:00',
+    today: '2026-07-27',
+    nowMs: Date.parse('2026-07-26T16:21:30.000Z'),
+  })
+  assert(status.status === 'running', 'active replay parent must remain running after midnight')
+  assert(status.statusScope === 'historical_replay', 'cross-midnight parent must retain replay scope')
+}
+
+{
+  const status = resolveSchedulerDisplayStatus({
     lastAttempt: {
       task: 'evening-chain',
       status: 'running',

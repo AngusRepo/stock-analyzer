@@ -424,6 +424,7 @@ export async function runPostPipelineCallbackChain(
     stage: 'verify_v2',
     runId: ctx.upstreamRunId || `verify-v2-${ctx.runDate}`,
     resumeWaiting: true,
+    supersedeSuccess: true,
   })
   let verifyTask: ChainedTask
   if (!verifyStage.shouldEnqueue) {

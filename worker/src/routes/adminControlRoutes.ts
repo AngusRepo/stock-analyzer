@@ -728,6 +728,7 @@ async function handleSchedulerCallback(c: any) {
       businessDate: callbackRunDate,
       runId: callbackRunId,
       resumeWaiting: true,
+      supersedeSuccess: true,
     })
     await logSchedulerResult(c.env.KV, 'post-verify-chain', {
       status: 'triggered',

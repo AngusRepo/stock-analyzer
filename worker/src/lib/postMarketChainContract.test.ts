@@ -54,7 +54,8 @@ assert(
   pipelineStageLease.includes("status='success'") &&
     pipelineStageLease.includes('canonical_run_id<>?') &&
     pipelineStageLease.includes('completed_at=NULL') &&
-    (callbackRoutes.match(/supersedeSuccess: true/g)?.length ?? 0) >= 2,
+    postMarketChain.includes('supersedeSuccess: true') &&
+    (callbackRoutes.match(/supersedeSuccess: true/g)?.length ?? 0) >= 3,
   'a new same-date pipeline or snapshot run must supersede stale success while duplicate run IDs remain idempotent',
 )
 assert(

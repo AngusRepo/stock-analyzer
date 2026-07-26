@@ -185,13 +185,20 @@ export async function queuePostPipelineStage(
 
 export async function queuePostVerifyStage(
   env: Pick<Bindings, 'DB' | 'UPDATE_QUEUE'>,
-  input: { businessDate: string; runId: string; resumeWaiting?: boolean; attempt?: number },
+  input: {
+    businessDate: string
+    runId: string
+    resumeWaiting?: boolean
+    supersedeSuccess?: boolean
+    attempt?: number
+  },
 ): Promise<{ queued: boolean; canonicalRunId: string; status: PipelineStageStatus }> {
   const state = await enqueuePipelineStage(env.DB, {
     businessDate: input.businessDate,
     stage: 'post_verify_chain',
     runId: input.runId,
     resumeWaiting: input.resumeWaiting,
+    supersedeSuccess: input.supersedeSuccess,
   })
   if (!state.shouldEnqueue) {
     return { queued: false, canonicalRunId: state.row.canonical_run_id, status: state.row.status }

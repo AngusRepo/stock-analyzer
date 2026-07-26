@@ -5,6 +5,10 @@ import { resolveFinLabDispatchFence } from '../lib/finLabDispatchFence'
 import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
 import type { EvidenceArtifactWriteInput } from '../lib/evidenceArtifactContract'
 import { normalizeSingleD1BatchStatement } from '../lib/d1BatchStatement'
+import {
+  LegacyEvidenceResolveError,
+  resolveLegacyScreenerEvidence,
+} from '../lib/legacyEvidenceResolver'
 import { markPipelineStage, queuePostPipelineStage, queuePostVerifyStage } from '../lib/pipelineStageLease'
 
 export const adminControlRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -211,6 +215,22 @@ adminControlRoutes.post('/api/internal/evidence-artifacts/screener-funnel', asyn
 
   const manifest = await writeEvidenceArtifact(c.env, input)
   return c.json({ ok: true, manifest })
+})
+
+adminControlRoutes.post('/api/internal/evidence-artifacts/legacy-screener/resolve', async (c) => {
+  const authError = requireServiceToken(c)
+  if (authError) return authError
+  if (!c.env.ARTIFACTS) return c.json({ error: 'artifact_r2_binding_missing' }, 503)
+
+  const body = await c.req.json().catch(() => null) as any
+  try {
+    const result = await resolveLegacyScreenerEvidence(c.env, body?.artifacts)
+    return c.json({ ok: true, ...result })
+  } catch (error) {
+    const status = error instanceof LegacyEvidenceResolveError ? error.statusCode : 500
+    const message = error instanceof Error ? error.message : 'legacy_evidence_resolve_failed'
+    return c.json({ error: message }, status as any)
+  }
 })
 
 function nullableText(value: unknown): string | null {

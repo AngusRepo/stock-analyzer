@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import statistics
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
+from services import d1_client
 from services.dataset_snapshots import latest_dataset_snapshot
 
 
@@ -89,16 +91,70 @@ def _receipt_checksum(receipt: dict[str, Any]) -> str:
     return _sha256(json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode("utf-8"))
 
 
+def _latest_market_session(
+    cutoff: str,
+    *,
+    query_fn: Callable[..., list[dict[str, Any]]],
+) -> tuple[str, dict[str, Any]]:
+    rows = query_fn(
+        """
+        SELECT substr(date, 1, 10) trading_date, COUNT(*) price_rows
+        FROM stock_prices
+        WHERE substr(date, 1, 10) BETWEEN date(?, '-45 days') AND date(?)
+        GROUP BY substr(date, 1, 10)
+        ORDER BY trading_date
+        """,
+        [cutoff, cutoff],
+    )
+    counts = [
+        max(0, int(row.get("price_rows") or 0))
+        for row in rows or []
+        if str(row.get("trading_date") or "")[:10]
+    ]
+    if not counts:
+        raise Active8PrepDependencyPending(
+            "market_session_calendar_missing",
+            {"cutoff": cutoff},
+        )
+    reference = float(statistics.median(counts))
+    threshold = max(100, int(reference * 0.20))
+    sessions = [
+        str(row.get("trading_date") or "")[:10]
+        for row in rows
+        if int(row.get("price_rows") or 0) >= threshold
+    ]
+    if not sessions:
+        raise Active8PrepDependencyPending(
+            "market_session_coverage_incomplete",
+            {
+                "cutoff": cutoff,
+                "coverage_reference": reference,
+                "coverage_threshold": threshold,
+            },
+        )
+    latest_row = next(row for row in reversed(rows) if str(row.get("trading_date") or "")[:10] == sessions[-1])
+    return sessions[-1], {
+        "market_session_coverage_reference": reference,
+        "market_session_coverage_threshold": threshold,
+        "market_session_price_rows": int(latest_row.get("price_rows") or 0),
+    }
+
+
 async def ensure_active8_daily_prep(
     *,
     end_date: str | None,
     dry_run: bool = False,
+    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
 ) -> dict[str, Any]:
     from routers.retrain_trigger import UniversalRetrainTriggerRequest, trigger_universal_retrain
     from services import modal_client
     from services.walk_forward_retrain import _get_bucket
 
     cutoff = end_date or (datetime.now(timezone.utc) + timedelta(hours=8)).date().isoformat()
+    expected_business_date, market_session_evidence = _latest_market_session(
+        cutoff,
+        query_fn=query_fn,
+    )
     snapshot = latest_dataset_snapshot(
         kind="backtest_dataset",
         as_of_business_date=cutoff,
@@ -115,6 +171,17 @@ async def ensure_active8_daily_prep(
         raise Active8PrepDependencyPending(
             "compute_snapshot_lineage_invalid",
             {"snapshot_id": snapshot.get("snapshot_id"), "business_date": business_date},
+        )
+    if business_date != expected_business_date:
+        raise Active8PrepDependencyPending(
+            "compute_snapshot_behind_market_session",
+            {
+                "cutoff": cutoff,
+                "expected_business_date": expected_business_date,
+                "snapshot_business_date": business_date,
+                "snapshot_id": snapshot.get("snapshot_id"),
+                **market_session_evidence,
+            },
         )
 
     bucket = _get_bucket()
@@ -141,6 +208,8 @@ async def ensure_active8_daily_prep(
     plan = {
         "cutoff": cutoff,
         "business_date": business_date,
+        "expected_business_date": expected_business_date,
+        **market_session_evidence,
         "snapshot_id": snapshot.get("snapshot_id"),
         "snapshot_checksum": snapshot_checksum,
         "source_gcs_prefix": source_prefix,

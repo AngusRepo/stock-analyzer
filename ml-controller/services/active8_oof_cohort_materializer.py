@@ -35,6 +35,7 @@ from services.oof_retention_policy import (
     build_oof_date_eligibility_rows,
     persist_oof_date_eligibility,
 )
+from services.worker_evidence_archive_client import resolve_legacy_screener_evidence
 
 TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
@@ -1034,6 +1035,9 @@ def load_native_pit_component_rows(
     prediction_rows: list[dict[str, Any]],
     *,
     query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
+    archive_resolver: Callable[
+        [list[dict[str, Any]]], dict[int, dict[str, Any]]
+    ] = resolve_legacy_screener_evidence,
 ) -> list[dict[str, Any]]:
     """Load same-day non-ML ScoreV2/S12 inputs without reconstructing future data."""
 
@@ -1137,7 +1141,17 @@ def load_native_pit_component_rows(
              AND i.stage = 'scoring'
             WHERE r.date IN ({placeholders})
               AND r.status = 'success'
-              AND json_extract(i.evidence, '$.score_components') IS NOT NULL
+              AND json_valid(i.evidence) = 1
+              AND (
+                json_extract(i.evidence, '$.score_components') IS NOT NULL
+                OR (
+                  json_extract(i.evidence, '$.schema_version') = 'legacy-screener-evidence-pointer-v1'
+                  AND json_extract(i.evidence, '$.artifact_id') LIKE 'artifact:legacy_screener_funnel_evidence:%'
+                  AND json_extract(i.evidence, '$.r2_key') LIKE 'evidence/class=superseded_run/domain=legacy_screener_funnel_evidence/%'
+                  AND json_extract(i.evidence, '$.checksum') LIKE 'sha256:%'
+                  AND CAST(json_extract(i.evidence, '$.row_id') AS INTEGER) = i.id
+                )
+              )
             GROUP BY r.date, r.run_id, r.created_at
             ORDER BY r.date, r.created_at, r.run_id
             """,
@@ -1170,6 +1184,7 @@ def load_native_pit_component_rows(
         evidence_rows = query_fn(
             f"""
             SELECT
+              i.id evidence_row_id,
               s.id stock_id,
               i.symbol,
               r.date prediction_date,
@@ -1183,10 +1198,35 @@ def load_native_pit_component_rows(
             JOIN stocks s ON s.symbol = i.symbol
             WHERE i.run_id IN ({run_placeholders})
               AND i.stage = 'scoring'
-              AND json_extract(i.evidence, '$.score_components') IS NOT NULL
+              AND json_valid(i.evidence) = 1
+              AND (
+                json_extract(i.evidence, '$.score_components') IS NOT NULL
+                OR (
+                  json_extract(i.evidence, '$.schema_version') = 'legacy-screener-evidence-pointer-v1'
+                  AND json_extract(i.evidence, '$.artifact_id') LIKE 'artifact:legacy_screener_funnel_evidence:%'
+                  AND json_extract(i.evidence, '$.r2_key') LIKE 'evidence/class=superseded_run/domain=legacy_screener_funnel_evidence/%'
+                  AND json_extract(i.evidence, '$.checksum') LIKE 'sha256:%'
+                  AND CAST(json_extract(i.evidence, '$.row_id') AS INTEGER) = i.id
+                )
+              )
             """,
             run_ids,
         )
+        pointer_requests: list[dict[str, Any]] = []
+        for row in evidence_rows:
+            pointer = _loads(row.get("evidence"))
+            if pointer.get("schema_version") != "legacy-screener-evidence-pointer-v1":
+                continue
+            pointer_requests.append({
+                "row_id": int(row.get("evidence_row_id") or 0),
+                "artifact_id": pointer.get("artifact_id"),
+                "r2_key": pointer.get("r2_key"),
+                "checksum": pointer.get("checksum"),
+                "source_run_id": row.get("native_run_id"),
+                "symbol": row.get("symbol"),
+                "stage": "scoring",
+            })
+        archived_by_row_id = archive_resolver(pointer_requests) if pointer_requests else {}
         for row in evidence_rows:
             date = str(row.get("prediction_date") or "")[:10]
             symbol = str(row.get("symbol") or "")
@@ -1195,7 +1235,23 @@ def load_native_pit_component_rows(
                 continue
             if symbol not in symbols or (date, symbol) in rows_by_key:
                 continue
-            evidence = _loads(row.get("evidence"))
+            pointer = _loads(row.get("evidence"))
+            archive_lineage: dict[str, Any] = {"native_evidence_storage_mode": "d1_inline_v1"}
+            if pointer.get("schema_version") == "legacy-screener-evidence-pointer-v1":
+                row_id = int(row.get("evidence_row_id") or 0)
+                archived = archived_by_row_id.get(row_id)
+                if archived is None:
+                    raise RuntimeError(f"legacy_evidence_resolve_failed:missing_row:{row_id}")
+                evidence = _loads(archived.get("evidence"))
+                archive_lineage = {
+                    "native_evidence_storage_mode": "r2_checksum_pointer_v1",
+                    "native_evidence_artifact_id": archived.get("artifact_id"),
+                    "native_evidence_r2_key": archived.get("r2_key"),
+                    "native_evidence_checksum": archived.get("checksum"),
+                    "native_evidence_row_id": row_id,
+                }
+            else:
+                evidence = pointer
             score_payload = _loads(evidence.get("score_components"))
             components = score_payload.get("components")
             if (
@@ -1212,6 +1268,7 @@ def load_native_pit_component_rows(
                 "native_run_id": row.get("native_run_id"),
                 "native_created_at": row.get("native_created_at"),
                 "execution_cutoff_utc": f"{next_session[date]}T01:00:00+00:00",
+                **archive_lineage,
             }
             rows_by_key[(date, symbol)] = {
                 **row,

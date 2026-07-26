@@ -288,8 +288,8 @@ assert(
 
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
 assert(
-  postMarketChain.includes('runVerifyV2(env, ctx.runDate, `verify_v2:${ctx.runDate}`)'),
-  'post-pipeline chain must trigger verify-v2 with a deterministic date-level idempotency key',
+  postMarketChain.includes('verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}'),
+  'post-pipeline chain must trigger verify-v2 with a deterministic snapshot-owned idempotency key',
 )
 assert(
   postMarketChain.indexOf("'model-ic-rolling', () => runModelIcRollingRefresh") <

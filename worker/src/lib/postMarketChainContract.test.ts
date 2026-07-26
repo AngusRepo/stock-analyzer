@@ -64,6 +64,10 @@ assert(
   'verify terminal callback must durably and idempotently queue the post-verify chain',
 )
 assert(
+  postMarketChain.includes('verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}'),
+  'verify idempotency must change with snapshot evidence while duplicate callbacks for the same snapshot remain stable',
+)
+assert(
   callbackRoutes.includes("['success', 'skipped'].includes(String(body.status))"),
   'verify-v2 skipped callback must continue post-verify chain for replay dates with no matured prediction window',
 )
@@ -87,9 +91,9 @@ assert(
   'current-date-only tasks must be guarded so historical reruns cannot dirty current reports',
 )
 assert(
-  postMarketChain.includes('runVerifyV2(env, ctx.runDate, `verify_v2:${ctx.runDate}`)') &&
+  postMarketChain.includes('verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}') &&
     postMarketChain.includes("stage: 'verify_v2'"),
-  'verify-v2 must receive the callback business date and deterministic stage idempotency key',
+  'verify-v2 must receive the callback business date and deterministic snapshot-owned idempotency key',
 )
 assert(
   postMarketChain.includes('runAllocatorEvFeatureSnapshotBackfill') &&

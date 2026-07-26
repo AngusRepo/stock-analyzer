@@ -446,7 +446,11 @@ export async function runPostPipelineCallbackChain(
         env,
         ctx,
         'verify-v2',
-        () => runVerifyV2(env, ctx.runDate, `verify_v2:${ctx.runDate}`),
+        () => runVerifyV2(
+          env,
+          ctx.runDate,
+          `verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}`,
+        ),
       )
       : {
         task: 'verify-v2',

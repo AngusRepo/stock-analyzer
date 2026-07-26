@@ -28,6 +28,7 @@ export interface AllocatorEvLifecycleRow {
 export interface AllocatorSnapshotClosure {
   businessDate: string
   recommendationRows: number
+  recommendationMaxCreatedAt: string | null
   nativeLineageRows: number
   runNativeLineageRows: number
   reconstructedLineageRows: number
@@ -36,6 +37,7 @@ export interface AllocatorSnapshotClosure {
   expectedRows: number
   publishedRows: number
   actualRows: number
+  snapshotMaxGeneratedAt: string | null
   ready: boolean
 }
 
@@ -260,6 +262,7 @@ export async function inspectAllocatorSnapshotClosure(
     db.prepare(`
       SELECT
         COUNT(*) AS recommendation_rows,
+        MAX(dr.created_at) AS recommendation_max_created_at,
         COALESCE(SUM(CASE WHEN EXISTS (
           SELECT 1
             FROM predictions p
@@ -280,7 +283,11 @@ export async function inspectAllocatorSnapshotClosure(
        WHERE dr.date = ?
          AND dr.score_components IS NOT NULL
          AND json_extract(dr.score_components, '$.version') = 'score_v2'
-    `).bind(nextSessionOpenUtc, nextSessionOpenUtc, businessDate).first<{ recommendation_rows?: number; row_count?: number }>(),
+    `).bind(nextSessionOpenUtc, nextSessionOpenUtc, businessDate).first<{
+      recommendation_rows?: number
+      recommendation_max_created_at?: string | null
+      row_count?: number
+    }>(),
     db.prepare(`
       SELECT run_id, expected_rows, published_rows, status,
              native_lineage_rows, reconstructed_lineage_rows, rejected_lineage_rows
@@ -299,11 +306,12 @@ export async function inspectAllocatorSnapshotClosure(
       rejected_lineage_rows?: number
     }>(),
     db.prepare(`
-      SELECT COUNT(*) AS row_count
+      SELECT COUNT(*) AS row_count,
+             MAX(generated_at) AS max_generated_at
         FROM allocator_ev_feature_snapshots
        WHERE snapshot_date = ?
          AND snapshot_source = 'allocator_ev_asof_backfill_v2'
-    `).bind(businessDate).first<{ row_count?: number }>(),
+    `).bind(businessDate).first<{ row_count?: number; max_generated_at?: string | null }>(),
   ])
   const expectedRows = Number(run?.expected_rows ?? 0)
   const publishedRows = Number(run?.published_rows ?? 0)
@@ -311,10 +319,15 @@ export async function inspectAllocatorSnapshotClosure(
   const runNativeLineageRows = Number(run?.native_lineage_rows ?? 0)
   const reconstructedLineageRows = Number(run?.reconstructed_lineage_rows ?? 0)
   const rejectedLineageRows = Number(run?.rejected_lineage_rows ?? 0)
+  const recommendationMaxCreatedAt = lineage?.recommendation_max_created_at ?? null
+  const snapshotMaxGeneratedAt = actual?.max_generated_at ?? null
+  const snapshotFresh = Boolean(recommendationMaxCreatedAt && snapshotMaxGeneratedAt)
+    && Date.parse(String(snapshotMaxGeneratedAt)) >= Date.parse(`${recommendationMaxCreatedAt}Z`)
   const commonReady = run?.status === 'ready'
     && expectedRows > 0
     && publishedRows === expectedRows
     && actualRows === expectedRows
+    && snapshotFresh
   const nativeReady = Number(lineage?.row_count ?? 0) === expectedRows
     && runNativeLineageRows === expectedRows
     && reconstructedLineageRows === 0
@@ -326,6 +339,7 @@ export async function inspectAllocatorSnapshotClosure(
   return {
     businessDate,
     recommendationRows: Number(lineage?.recommendation_rows ?? 0),
+    recommendationMaxCreatedAt,
     nativeLineageRows: Number(lineage?.row_count ?? 0),
     runNativeLineageRows,
     reconstructedLineageRows,
@@ -334,6 +348,7 @@ export async function inspectAllocatorSnapshotClosure(
     expectedRows,
     publishedRows,
     actualRows,
+    snapshotMaxGeneratedAt,
     ready: commonReady && (nativeReady || reconstructedReady),
   }
 }

@@ -8,6 +8,7 @@ function assert(condition: unknown, message: string): void {
 const root = process.cwd()
 const pagePath = path.join(root, 'src', 'pages', 'ObservabilityPage.tsx')
 const chainPath = path.join(root, 'src', 'components', 'observability', 'ExecutionChainPanel.tsx')
+const apiPath = path.join(root, 'src', 'lib', 'api.ts')
 const chainCssPath = path.join(root, 'src', 'components', 'observability', 'ExecutionChainPanel.css')
 const standalonePath = path.join(root, 'src', 'components', 'observability', 'StandaloneJobRegistry.tsx')
 const standaloneCssPath = path.join(root, 'src', 'components', 'observability', 'StandaloneJobRegistry.css')
@@ -15,6 +16,7 @@ const removedChartPath = path.join(root, 'src', 'components', 'charts', 'Observa
 
 const page = fs.readFileSync(pagePath, 'utf8').replace(/\r\n/g, '\n')
 const chain = fs.readFileSync(chainPath, 'utf8').replace(/\r\n/g, '\n')
+const api = fs.readFileSync(apiPath, 'utf8').replace(/\r\n/g, '\n')
 const chainCss = fs.readFileSync(chainCssPath, 'utf8').replace(/\r\n/g, '\n')
 const standalone = fs.readFileSync(standalonePath, 'utf8').replace(/\r\n/g, '\n')
 const standaloneCss = fs.readFileSync(standaloneCssPath, 'utf8').replace(/\r\n/g, '\n')
@@ -54,6 +56,9 @@ assert(chain.includes("job.id === 'intraday-check' && job.lastStatus === 'skip'"
 assert(chain.includes("job.lastStatus === 'sleep') return 'out_of_window'") && chain.includes("out_of_window: 'Not in window'"), 'sleep must render as Not in window rather than Not started')
 assert(chainCss.includes('.obs-chain__stage.is-out_of_window'), 'out-of-window stages must retain the neutral chain style')
 assert(chain.includes('Monthly artifact chain'), 'monthly scope should own artifact cadence')
+assert(api.includes("statusScope?: 'today' | 'historical_replay' | 'schedule'"), 'scheduler API must expose historical replay scope')
+assert(api.includes('statusRunDate?: string | null'), 'scheduler API must expose the effective replay date')
+assert(chain.includes('function statusLabel') && chain.includes('Historical replay · ${formatReplayDate(job.statusRunDate)} · ${label}'), 'historical replay stages must identify their effective date and runtime status')
 
 assert(fs.existsSync(standalonePath) && fs.existsSync(standaloneCssPath), 'standalone job registry and isolated CSS should exist')
 assert(chain.includes('StandaloneJobRegistry') && chain.includes('MAPPED_JOB_IDS'), 'execution chain must account for jobs outside visual topology')

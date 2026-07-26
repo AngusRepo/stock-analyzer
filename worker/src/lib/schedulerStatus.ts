@@ -23,6 +23,13 @@ type SchedulerResolvedStatus = {
   staleRunning: boolean
   staleReason?: string
 }
+export type SchedulerStatusScope = 'today' | 'historical_replay' | 'schedule'
+export type SchedulerDisplayStatus = {
+  status: SchedulerLastStatus
+  statusScope: SchedulerStatusScope
+  statusRunDate: string | null
+  staleReason?: string
+}
 type SchedulerDurationConcern = 'expected_short' | 'suspicious_short' | null
 
 const JOB_DEFS: JobDef[] = [
@@ -397,10 +404,58 @@ export function resolveSchedulerLogStatus(
   return { status: null, staleRunning: false }
 }
 
-function inferIdleStatus(def: JobDef, nextRun: string, today: string): SchedulerLastStatus {
+function inferIdleStatus(def: Pick<JobDef, 'group' | 'chainIndex'>, nextRun: string, today: string): SchedulerLastStatus {
   if (nextRunTwDate(nextRun) === today) return 'waiting'
   if (def.group === 'pipeline_chain' && def.chainIndex != null && def.chainIndex > 1 && isWeekdayTw(today)) return 'waiting'
   return 'sleep'
+}
+
+function timestampTwDate(timestamp?: string): string | null {
+  const timestampMs = parseLogTime(timestamp)
+  if (timestampMs == null) return null
+  return new Date(timestampMs + 8 * 3600_000).toISOString().slice(0, 10)
+}
+
+export function resolveSchedulerDisplayStatus(input: {
+  todayLog?: CronLogEntry
+  lastAttempt?: CronLogEntry
+  def: Pick<JobDef, 'id' | 'group' | 'chainIndex'>
+  nextRun: string
+  today: string
+  nowMs?: number
+}): SchedulerDisplayStatus {
+  const { todayLog, lastAttempt, def, nextRun, today, nowMs = Date.now() } = input
+  const resolvedToday = resolveSchedulerLogStatus(todayLog, def, nowMs)
+  if (resolvedToday.status) {
+    return {
+      status: resolvedToday.status,
+      statusScope: 'today',
+      statusRunDate: today,
+      staleReason: resolvedToday.staleReason,
+    }
+  }
+
+  const replayRunDate = String(lastAttempt?.run_date ?? '').trim()
+  const isHistoricalReplay = Boolean(
+    replayRunDate && replayRunDate !== today && timestampTwDate(lastAttempt?.timestamp) === today,
+  )
+  if (isHistoricalReplay) {
+    const resolvedReplay = resolveSchedulerLogStatus(lastAttempt, def, nowMs)
+    if (resolvedReplay.status) {
+      return {
+        status: resolvedReplay.status,
+        statusScope: 'historical_replay',
+        statusRunDate: replayRunDate,
+        staleReason: resolvedReplay.staleReason,
+      }
+    }
+  }
+
+  return {
+    status: inferIdleStatus(def, nextRun, today),
+    statusScope: 'schedule',
+    statusRunDate: null,
+  }
 }
 
 export async function getSchedulerStatus(env: Bindings) {
@@ -435,8 +490,14 @@ export async function getSchedulerStatus(env: Bindings) {
       return log.status === 'success' ? 'success' : 'failed'
     }).reverse()
 
-    const resolvedToday = resolveSchedulerLogStatus(todayLog, def)
-    const lastStatus = resolvedToday.status ?? inferIdleStatus(def, nextRun, today)
+    const resolvedDisplay = resolveSchedulerDisplayStatus({
+      todayLog,
+      lastAttempt,
+      def,
+      nextRun,
+      today,
+    })
+    const lastStatus = resolvedDisplay.status
 
     const lastDuration = formatDuration(lastLog?.duration_ms)
     const shortRun = inferShortRunConcern(def, lastLog)
@@ -460,10 +521,12 @@ export async function getSchedulerStatus(env: Bindings) {
       lastEffectiveRunAt: lastEffective?.timestamp ?? null,
       lastEffectiveStatus: lastEffective?.status ?? 'none',
       lastStatus,
+      statusScope: resolvedDisplay.statusScope,
+      statusRunDate: resolvedDisplay.statusRunDate,
       lastDuration,
       durationConcern: shortRun.durationConcern,
       durationConcernReason: shortRun.durationConcernReason,
-      lastError: resolvedToday.staleReason ?? todayLog?.error ?? lastLog?.error,
+      lastError: resolvedDisplay.staleReason ?? todayLog?.error ?? lastLog?.error,
       nextRun,
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',

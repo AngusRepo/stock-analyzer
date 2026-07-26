@@ -635,6 +635,7 @@ async function handleSchedulerCallback(c: any) {
         businessDate: callbackRunDate,
         runId: callbackRunId,
         resumeWaiting: true,
+        supersedeSuccess: true,
       })
       await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
         status: 'triggered',
@@ -669,6 +670,7 @@ async function handleSchedulerCallback(c: any) {
         const continuation = await queuePostPipelineStage(c.env, {
           businessDate: callbackRunDate,
           runId: callbackRunId,
+          supersedeSuccess: true,
         })
         await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
           status: 'triggered',

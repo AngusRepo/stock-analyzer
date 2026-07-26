@@ -20,7 +20,13 @@ const leaseModifier = (seconds: number) => `+${Math.max(30, Math.floor(seconds))
 
 export async function enqueuePipelineStage(
   db: D1Database,
-  input: { businessDate: string; stage: string; runId: string; resumeWaiting?: boolean },
+  input: {
+    businessDate: string
+    stage: string
+    runId: string
+    resumeWaiting?: boolean
+    supersedeSuccess?: boolean
+  },
 ): Promise<{ shouldEnqueue: boolean; row: PipelineStageRow }> {
   const inserted = await db.prepare(`
     INSERT INTO pipeline_stage_runs (
@@ -48,6 +54,33 @@ export async function enqueuePipelineStage(
                 lease_owner, lease_expires_at
     `).bind(input.businessDate, input.stage).first<PipelineStageRow>()
     if (resumed) return { shouldEnqueue: true, row: resumed }
+  }
+
+  if (input.supersedeSuccess) {
+    const superseded = await db.prepare(`
+      UPDATE pipeline_stage_runs
+         SET canonical_run_id=?,
+             status='queued',
+             cursor_key=NULL,
+             processed_count=0,
+             expected_count=NULL,
+             persisted_count=0,
+             attempt_count=0,
+             lease_owner=NULL,
+             lease_expires_at=NULL,
+             queued_at=CURRENT_TIMESTAMP,
+             started_at=NULL,
+             completed_at=NULL,
+             last_error=NULL,
+             updated_at=CURRENT_TIMESTAMP
+       WHERE business_date=? AND stage=?
+         AND status='success'
+         AND canonical_run_id<>?
+      RETURNING business_date, stage, canonical_run_id, status, cursor_key,
+                processed_count, expected_count, persisted_count, attempt_count,
+                lease_owner, lease_expires_at
+    `).bind(input.runId, input.businessDate, input.stage, input.runId).first<PipelineStageRow>()
+    if (superseded) return { shouldEnqueue: true, row: superseded }
   }
 
   const row = await db.prepare(`
@@ -112,13 +145,20 @@ export async function markPipelineStage(
 
 export async function queuePostPipelineStage(
   env: Pick<Bindings, 'DB' | 'UPDATE_QUEUE'>,
-  input: { businessDate: string; runId: string; resumeWaiting?: boolean; attempt?: number },
+  input: {
+    businessDate: string
+    runId: string
+    resumeWaiting?: boolean
+    supersedeSuccess?: boolean
+    attempt?: number
+  },
 ): Promise<{ queued: boolean; canonicalRunId: string; status: PipelineStageStatus }> {
   const state = await enqueuePipelineStage(env.DB, {
     businessDate: input.businessDate,
     stage: 'post_pipeline_chain',
     runId: input.runId,
     resumeWaiting: input.resumeWaiting,
+    supersedeSuccess: input.supersedeSuccess,
   })
   if (!state.shouldEnqueue) {
     return { queued: false, canonicalRunId: state.row.canonical_run_id, status: state.row.status }

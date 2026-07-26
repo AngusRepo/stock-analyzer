@@ -51,6 +51,13 @@ assert(
   'pipeline and snapshot callbacks must share the durable date-level post-pipeline stage',
 )
 assert(
+  pipelineStageLease.includes("status='success'") &&
+    pipelineStageLease.includes('canonical_run_id<>?') &&
+    pipelineStageLease.includes('completed_at=NULL') &&
+    (callbackRoutes.match(/supersedeSuccess: true/g)?.length ?? 0) >= 2,
+  'a new same-date pipeline or snapshot run must supersede stale success while duplicate run IDs remain idempotent',
+)
+assert(
   callbackRoutes.includes('queuePostVerifyStage') &&
     pipelineStageLease.includes("stage: 'post_verify_chain'"),
   'verify terminal callback must durably and idempotently queue the post-verify chain',

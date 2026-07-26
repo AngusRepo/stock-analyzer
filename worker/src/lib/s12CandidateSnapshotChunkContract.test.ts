@@ -7,7 +7,9 @@ const persistence = readFileSync(new URL('./s12StructureSnapshots.ts', import.me
 const types = readFileSync(new URL('../types.ts', import.meta.url), 'utf8')
 
 assert.match(types, /\| 's12_candidate_snapshot_chunk'/)
-assert.match(orchestrator, /const S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE = 20/)
+assert.match(orchestrator, /const S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE = 5/)
+assert.match(orchestrator, /const S12_CANDIDATE_SNAPSHOT_RESEARCH_TIMEOUT_MS = 10_000/)
+assert.match(orchestrator, /researchTimeoutMs: S12_CANDIDATE_SNAPSHOT_RESEARCH_TIMEOUT_MS/)
 assert.match(orchestrator, /if \(msg\.type === 's12_candidate_snapshot_chunk'\)/)
 assert.match(orchestrator, /cursorKey: ''/)
 assert.match(orchestrator, /cursorKey,\s*triggerTime, runId, attempt: 1/)
@@ -20,6 +22,8 @@ assert.doesNotMatch(
   /runS12CandidateStructureSnapshots\(env, triggerTime\)\s*$/m,
   'pre-pipeline must not process the full reference universe in one queue invocation',
 )
+assert.match(candidateSnapshots, /researchTimeoutMs\?: number/)
+assert.match(candidateSnapshots, /loadS12HistoricalReplayBars\(targetEnv, targetSymbol, targetDate, \{/)
 
 assert.match(candidateSnapshots, /AND r\.symbol > \?/)
 assert.match(candidateSnapshots, /bind\(tradeDate, afterSymbol, cappedLimit \+ 1\)/)

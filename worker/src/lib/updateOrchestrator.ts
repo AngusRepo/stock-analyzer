@@ -45,7 +45,8 @@ const FINLAB_PENDING_WATCHDOG_STALE_MS = 15 * 60_000
 const FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS = 3
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
 const S12_REPLAY_QUEUE_CHUNK_SIZE = 20
-const S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE = 20
+const S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE = 5
+const S12_CANDIDATE_SNAPSHOT_RESEARCH_TIMEOUT_MS = 10_000
 const S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS = 60
 const S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS = 180
 const S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS = 60
@@ -3356,6 +3357,7 @@ export async function processUpdateBatch(
         limit: S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE,
         symbols,
         pendingRunId: runId,
+        researchTimeoutMs: S12_CANDIDATE_SNAPSHOT_RESEARCH_TIMEOUT_MS,
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

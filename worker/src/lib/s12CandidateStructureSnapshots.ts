@@ -105,6 +105,7 @@ export async function runS12CandidateStructureSnapshots(
     limit?: number
     symbols?: S12PipelineSeedSymbol[]
     loadBars?: typeof loadS12HistoricalReplayBars
+    researchTimeoutMs?: number
     source?: 's12_candidate_snapshot' | 's12_candidate_snapshot_reconstruction'
     pendingRunId?: string
   } = {},
@@ -121,7 +122,10 @@ export async function runS12CandidateStructureSnapshots(
   const limit = Math.min(2000, positiveLimit(options.limit ?? (env as any).S12_PREPIPELINE_SNAPSHOT_LIMIT, 1000))
   const candidates = options.symbols ?? await loadS12PipelineSeedSymbolsByDate(env.DB, tradeDate, limit)
   const selected = candidates.slice(0, limit)
-  const loadBars = options.loadBars ?? loadS12HistoricalReplayBars
+  const loadBars = options.loadBars ?? ((targetEnv, targetSymbol, targetDate) => (
+    loadS12HistoricalReplayBars(targetEnv, targetSymbol, targetDate, {
+      researchTimeoutMs: options.researchTimeoutMs,
+    })))
   const basePolicy = s12TimingPolicyFromEnv(env as any)
   const calibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(env.DB, { includeSuperseded: true }).catch(() => [])
   let persisted = 0

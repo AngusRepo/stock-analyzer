@@ -143,7 +143,7 @@ const SCHEDULER_STATUS_SCAN_DAYS = 7
 const SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS = 2
 
 export function estimateSchedulerStatusKvReads(): number {
-  return SCHEDULER_STATUS_SCAN_DAYS
+  return SCHEDULER_STATUS_SCAN_DAYS * 2 + CHAIN_STEP_IDS.filter((task) => task !== 'evening-chain').length
 }
 
 export interface SchedulerDisplayLogCandidate {
@@ -168,6 +168,24 @@ export function selectSchedulerDisplayLogs(candidates: SchedulerDisplayLogCandid
   }
 
   return { lastAttempt, lastEffective }
+}
+
+export function mergeDirectSchedulerLog(
+  aggregateLogs: CronLogEntry[],
+  directLog?: CronLogEntry | null,
+): CronLogEntry[] {
+  if (!directLog?.task || !directLog.timestamp) return aggregateLogs
+  const index = aggregateLogs.findIndex((entry) => entry.task === directLog.task)
+  if (index < 0) return [...aggregateLogs, directLog]
+
+  const aggregateTimestamp = Date.parse(aggregateLogs[index].timestamp ?? '')
+  const directTimestamp = Date.parse(directLog.timestamp)
+  if (Number.isFinite(aggregateTimestamp) && (!Number.isFinite(directTimestamp) || aggregateTimestamp > directTimestamp)) {
+    return aggregateLogs
+  }
+  const merged = [...aggregateLogs]
+  merged[index] = directLog
+  return merged
 }
 
 function formatDuration(durationMs?: number | null): string {
@@ -228,6 +246,95 @@ export function getSchedulerScanDates(): string[] {
     dates.push(d.toISOString().slice(0, 10))
   }
   return dates
+}
+
+export type DurablePipelineStageDisplayRow = {
+  business_date: string
+  stage: 'post_pipeline_chain' | 'verify_v2' | 'post_verify_chain'
+  canonical_run_id: string
+  status: 'queued' | 'running' | 'waiting' | 'success' | 'error'
+  attempt_count: number
+  updated_at: string
+  last_error: string | null
+}
+
+const DURABLE_STAGE_JOB_IDS: Record<DurablePipelineStageDisplayRow['stage'], string> = {
+  post_pipeline_chain: 'post-pipeline-chain',
+  verify_v2: 'verify-v2',
+  post_verify_chain: 'post-verify-chain',
+}
+
+function sqliteUtcTimestamp(value: string): string {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) return ''
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(normalized)) {
+    return `${normalized.replace(' ', 'T')}Z`
+  }
+  return normalized
+}
+
+export function reconcileDurablePipelineStageStatus(input: {
+  jobId: string
+  runDate: string | null
+  baseStatus: SchedulerLastStatus
+  baseTimestamp?: string | null
+  durable?: DurablePipelineStageDisplayRow
+}): {
+  lastStatus: SchedulerLastStatus
+  lastRunAt: string
+  summary: string
+  lastError?: string
+  recoveredFromStatus?: SchedulerLastStatus
+  statusAuthority: 'durable_pipeline_stage'
+  runId: string
+  attemptCount: number
+} | null {
+  const { jobId, runDate, baseStatus, baseTimestamp, durable } = input
+  if (!durable || !runDate || durable.business_date !== runDate) return null
+  if (DURABLE_STAGE_JOB_IDS[durable.stage] !== jobId) return null
+
+  const durableTimestamp = sqliteUtcTimestamp(durable.updated_at)
+  const durableMs = Date.parse(durableTimestamp)
+  const baseMs = baseTimestamp ? Date.parse(baseTimestamp) : Number.NEGATIVE_INFINITY
+  if (!Number.isFinite(durableMs) || (Number.isFinite(baseMs) && durableMs <= baseMs)) return null
+
+  const lastStatus: SchedulerLastStatus = durable.status === 'success'
+    ? 'success'
+    : durable.status === 'error'
+      ? 'failed'
+      : durable.status === 'waiting'
+        ? 'waiting'
+        : 'running'
+  const recovered = baseStatus === 'failed' && lastStatus === 'success'
+  const authority = `durable stage=${durable.stage} run_id=${durable.canonical_run_id} attempt=${durable.attempt_count}`
+
+  return {
+    lastStatus,
+    lastRunAt: durableTimestamp,
+    summary: recovered ? `Recovered; ${authority}` : `${durable.status}; ${authority}`,
+    lastError: lastStatus === 'failed' ? (durable.last_error || undefined) : undefined,
+    recoveredFromStatus: recovered ? baseStatus : undefined,
+    statusAuthority: 'durable_pipeline_stage',
+    runId: durable.canonical_run_id,
+    attemptCount: durable.attempt_count,
+  }
+}
+
+async function loadDurablePipelineStageStates(
+  db: D1Database,
+  dates: string[],
+): Promise<Map<string, DurablePipelineStageDisplayRow>> {
+  const placeholders = dates.map(() => '?').join(', ')
+  const result = await db.prepare(`
+    SELECT business_date, stage, canonical_run_id, status, attempt_count, updated_at, last_error
+      FROM pipeline_stage_runs
+     WHERE business_date IN (${placeholders})
+       AND stage IN ('post_pipeline_chain', 'verify_v2', 'post_verify_chain')
+  `).bind(...dates).all<DurablePipelineStageDisplayRow>()
+  return new Map((result.results ?? []).map((row) => [
+    `${row.business_date}:${DURABLE_STAGE_JOB_IDS[row.stage]}`,
+    row,
+  ]))
 }
 
 function parseLogTime(ts?: string): number | null {
@@ -421,14 +528,32 @@ function timestampTwDate(timestamp?: string): string | null {
 export function resolveSchedulerDisplayStatus(input: {
   todayLog?: CronLogEntry
   lastAttempt?: CronLogEntry
+  activeReplayLog?: CronLogEntry
+  activeReplayRunDate?: string | null
+  activeReplayHeartbeatAt?: string | null
   def: Pick<JobDef, 'id' | 'group' | 'chainIndex'>
   nextRun: string
   today: string
   nowMs?: number
 }): SchedulerDisplayStatus {
-  const { todayLog, lastAttempt, def, nextRun, today, nowMs = Date.now() } = input
+  const {
+    todayLog,
+    lastAttempt,
+    activeReplayLog,
+    activeReplayRunDate,
+    activeReplayHeartbeatAt,
+    def,
+    nextRun,
+    today,
+    nowMs = Date.now(),
+  } = input
+  const activeRunDate = String(activeReplayRunDate ?? '').trim()
+  const activeLogRunDate = String(activeReplayLog?.run_date ?? '').trim()
+  const hasActiveReplayLog = Boolean(
+    activeRunDate && activeRunDate !== today && activeLogRunDate === activeRunDate,
+  )
   const resolvedToday = resolveSchedulerLogStatus(todayLog, def, nowMs)
-  if (resolvedToday.status) {
+  if (resolvedToday.status && !hasActiveReplayLog) {
     return {
       status: resolvedToday.status,
       statusScope: 'today',
@@ -437,12 +562,24 @@ export function resolveSchedulerDisplayStatus(input: {
     }
   }
 
-  const replayRunDate = String(lastAttempt?.run_date ?? '').trim()
+  const replayLog = hasActiveReplayLog ? activeReplayLog : lastAttempt
+  const replayRunDate = String(replayLog?.run_date ?? '').trim()
+  const replayLogTimestampMs = parseLogTime(replayLog?.timestamp)
+  const heartbeatTimestampMs = parseLogTime(activeReplayHeartbeatAt ?? undefined)
+  const replayStatusLog = hasActiveReplayLog
+    && def.id === 'evening-chain'
+    && replayLog
+    && heartbeatTimestampMs != null
+    && (replayLogTimestampMs == null || heartbeatTimestampMs > replayLogTimestampMs)
+    ? { ...replayLog, timestamp: String(activeReplayHeartbeatAt) }
+    : replayLog
   const isHistoricalReplay = Boolean(
-    replayRunDate && replayRunDate !== today && timestampTwDate(lastAttempt?.timestamp) === today,
+    hasActiveReplayLog || (
+      replayRunDate && replayRunDate !== today && timestampTwDate(replayLog?.timestamp) === today
+    ),
   )
   if (isHistoricalReplay) {
-    const resolvedReplay = resolveSchedulerLogStatus(lastAttempt, def, nowMs)
+    const resolvedReplay = resolveSchedulerLogStatus(replayStatusLog, def, nowMs)
     if (resolvedReplay.status) {
       return {
         status: resolvedReplay.status,
@@ -466,17 +603,56 @@ export async function getSchedulerStatus(env: Bindings) {
   const today = dates[0]
 
   const allLogs: Record<string, CronLogEntry[]> = {}
+  const durableStageStatesPromise = loadDurablePipelineStageStates(env.DB, dates).catch((error) => {
+    console.warn('[schedulerStatus] durable pipeline stage read failed:', error)
+    return new Map<string, DurablePipelineStageDisplayRow>()
+  })
   await Promise.all(
     dates.map(async (date, index) => {
-      allLogs[date] = await getCronLogs(env.KV, date, {
-        legacyFallback: index < SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS,
-        directFallback: false,
-      })
+      const [aggregateLogs, directRootLog] = await Promise.all([
+        getCronLogs(env.KV, date, {
+          legacyFallback: index < SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS,
+          directFallback: false,
+        }),
+        env.KV.get(`scheduler:run:evening-chain:${date}`, 'json') as Promise<CronLogEntry | null>,
+      ])
+      allLogs[date] = mergeDirectSchedulerLog(aggregateLogs, directRootLog)
     }),
   )
+  const durableStageStates = await durableStageStatesPromise
+  const activeChainDate = dates.find((date) => {
+    const root = allLogs[date]?.find((entry) => entry.task === 'evening-chain')
+    return root?.status === 'running' || root?.status === 'triggered'
+  })
+  if (activeChainDate) {
+    const activeTaskIds = CHAIN_STEP_IDS.filter((task) => task !== 'evening-chain')
+    const directChainLogs = await Promise.all(activeTaskIds.map((task) => (
+      env.KV.get(`scheduler:run:${task}:${activeChainDate}`, 'json') as Promise<CronLogEntry | null>
+    )))
+    allLogs[activeChainDate] = directChainLogs.reduce(
+      (logs, directLog) => mergeDirectSchedulerLog(logs, directLog),
+      allLogs[activeChainDate] ?? [],
+    )
+  }
+  const activeReplayHeartbeatAt = activeChainDate
+    ? (allLogs[activeChainDate] ?? [])
+      .filter((entry) => (
+        CHAIN_STEP_IDS.includes(entry.task)
+        && String(entry.run_date ?? activeChainDate) === activeChainDate
+      ))
+      .reduce<string | undefined>((latest, entry) => {
+        const timestampMs = parseLogTime(entry.timestamp)
+        if (timestampMs == null) return latest
+        const latestMs = parseLogTime(latest)
+        return latestMs == null || timestampMs > latestMs ? String(entry.timestamp) : latest
+      }, undefined)
+    : undefined
 
   const jobs = await Promise.all(JOB_DEFS.map(async (def) => {
     const todayLog = getJobDisplayLog(allLogs[today], def)
+    const activeReplayLog = activeChainDate && CHAIN_STEP_IDS.includes(def.id)
+      ? getJobDisplayLog(allLogs[activeChainDate], def)
+      : undefined
     const nextRun = await getNextRunApproxWithPolicy({ task: def.id, cron: def.cron, kv: env.KV, skipKvPolicy: true })
 
     const displayLogs = dates.map((date) => ({
@@ -495,14 +671,32 @@ export async function getSchedulerStatus(env: Bindings) {
     const resolvedDisplay = resolveSchedulerDisplayStatus({
       todayLog,
       lastAttempt,
+      activeReplayLog,
+      activeReplayRunDate: activeChainDate,
+      activeReplayHeartbeatAt,
       def,
       nextRun,
       today,
     })
-    const lastStatus = resolvedDisplay.status
+    const displayLog = resolvedDisplay.statusScope === 'historical_replay'
+      && resolvedDisplay.statusRunDate === activeChainDate
+      && activeReplayLog
+      ? activeReplayLog
+      : lastLog
+    const durableState = resolvedDisplay.statusRunDate
+      ? durableStageStates.get(`${resolvedDisplay.statusRunDate}:${def.id}`)
+      : undefined
+    const durableOverride = reconcileDurablePipelineStageStatus({
+      jobId: def.id,
+      runDate: resolvedDisplay.statusRunDate,
+      baseStatus: resolvedDisplay.status,
+      baseTimestamp: displayLog?.timestamp,
+      durable: durableState,
+    })
+    const lastStatus = durableOverride?.lastStatus ?? resolvedDisplay.status
 
-    const lastDuration = formatDuration(lastLog?.duration_ms)
-    const shortRun = inferShortRunConcern(def, lastLog)
+    const lastDuration = formatDuration(displayLog?.duration_ms)
+    const shortRun = inferShortRunConcern(def, displayLog)
 
     const successCount = history7d.filter((item) => item === 'success').length
     const totalCount = history7d.filter((item) => item !== 'skip').length
@@ -514,8 +708,8 @@ export async function getSchedulerStatus(env: Bindings) {
       cron: def.cron,
       group: def.group,
       chainIndex: def.chainIndex,
-      lastRun: lastLog?.timestamp ? formatTimestamp(lastLog.timestamp) : 'N/A',
-      lastRunAt: lastLog?.timestamp ?? null,
+      lastRun: durableOverride?.lastRunAt ? formatTimestamp(durableOverride.lastRunAt) : displayLog?.timestamp ? formatTimestamp(displayLog.timestamp) : 'N/A',
+      lastRunAt: durableOverride?.lastRunAt ?? displayLog?.timestamp ?? null,
       lastAttempt: lastAttempt?.timestamp ? formatTimestamp(lastAttempt.timestamp) : 'N/A',
       lastAttemptAt: lastAttempt?.timestamp ?? null,
       lastAttemptStatus: lastAttempt?.status ?? 'none',
@@ -528,12 +722,19 @@ export async function getSchedulerStatus(env: Bindings) {
       lastDuration,
       durationConcern: shortRun.durationConcern,
       durationConcernReason: shortRun.durationConcernReason,
-      lastError: resolvedDisplay.staleReason ?? todayLog?.error ?? lastLog?.error,
+      lastError: durableOverride
+        ? durableOverride.lastError
+        : resolvedDisplay.staleReason ?? displayLog?.error,
       nextRun,
       history7d,
       rate7d: totalCount > 0 ? `${successCount}/${totalCount}` : 'N/A',
-      summary: lastLog?.summary || '',
-      details: lastLog?.details ?? [],
+      summary: durableOverride?.summary ?? displayLog?.summary ?? '',
+      details: displayLog?.details ?? [],
+      runId: durableOverride?.runId ?? displayLog?.run_id ?? null,
+      attemptId: displayLog?.attempt_id ?? null,
+      attemptCount: durableOverride?.attemptCount ?? null,
+      recoveredFromStatus: durableOverride?.recoveredFromStatus ?? null,
+      statusAuthority: durableOverride?.statusAuthority ?? 'scheduler_kv',
       consolidation: getSchedulerDependencySpec(def.id) ?? null,
     }
   }))

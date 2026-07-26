@@ -32,6 +32,7 @@ import {
   Zap,
 } from 'lucide-react'
 import type { SchedulerJob } from '@/lib/api'
+import { buildAttemptAwareJobMap } from './executionChainAttemptState'
 import StandaloneJobRegistry from './StandaloneJobRegistry'
 import './ExecutionChainPanel.css'
 
@@ -275,6 +276,10 @@ function formatReplayDate(runDate?: string | null): string {
 
 function statusLabel(job?: SchedulerJob): string {
   const label = STATUS_LABEL[visualStatus(job)]
+  if (job?.recoveredFromStatus === 'failed' && job.lastStatus === 'success') {
+    const replay = job.statusScope === 'historical_replay' && job.statusRunDate ? `Historical replay \u00b7 ${formatReplayDate(job.statusRunDate)} \u00b7 ` : ''
+    return `${replay}Recovered`
+  }
   if (job?.statusScope !== 'historical_replay' || !job.statusRunDate) return label
   return `Historical replay · ${formatReplayDate(job.statusRunDate)} · ${label}`
 }
@@ -294,6 +299,34 @@ function statusPriority(status: VisualStatus): number {
   if (status === 'out_of_window') return 4
   if (status === 'not_started') return 5
   return 5
+}
+
+const ORCHESTRATOR_STAGE_HINTS: Array<[RegExp, string]> = [
+  [/strategy-learning/i, 'strategy-learning'],
+  [/meta(?:-| )learning/i, 'meta-learning-shadow'],
+  [/obsidian/i, 'obsidian-sync'],
+  [/paper(?:-| )active/i, 'paper-active-postmarket'],
+  [/daily report/i, 'daily-report'],
+  [/adapt/i, 'adapt'],
+  [/reward ledger|linucb/i, 'linucb-reward-ledger'],
+  [/model ic|rolling ic/i, 'model-ic-rolling'],
+  [/post(?:-| )verify/i, 'post-verify-chain'],
+  [/verify/i, 'verify-v2'],
+  [/snapshot callback|post(?:-| )pipeline|allocator snapshot/i, 'post-pipeline-chain'],
+  [/pipeline/i, 'pipeline'],
+  [/allocator ev readiness/i, 'allocator-ev-readiness'],
+  [/s12|structure snapshot/i, 's12-structure-snapshot'],
+  [/regime/i, 'regime-compute'],
+  [/screener/i, 'screener'],
+  [/indicator/i, 'indicator-queue'],
+  [/market data|market update|source readiness/i, 'update'],
+  [/finlab/i, 'finlab-v4-backfill'],
+]
+
+export function inferOrchestratorStage(summary?: string | null): string | null {
+  const normalized = String(summary ?? '').trim()
+  if (!normalized) return null
+  return ORCHESTRATOR_STAGE_HINTS.find(([pattern]) => pattern.test(normalized))?.[1] ?? null
 }
 
 function connectorStatus(previousJobs: Array<SchedulerJob | undefined>, nextJobs: Array<SchedulerJob | undefined>): VisualStatus {
@@ -367,7 +400,7 @@ export default function ExecutionChainPanel({
 
   const jobMap = useMemo(() => new Map(jobs.map((job) => [job.id, job])), [jobs])
   const scope = SCOPES.find((item) => item.id === scopeId) ?? SCOPES[0]
-  const scopedJobMap = jobMap
+  const scopedJobMap = useMemo(() => buildAttemptAwareJobMap(jobMap, scope, inferOrchestratorStage), [jobMap, scope])
   const stageIds = scopeExecutionStageIds(scope)
   const orchestratorJob = scope.orchestratorId ? scopedJobMap.get(scope.orchestratorId) : undefined
   const orchestratorStatus = visualStatus(orchestratorJob)

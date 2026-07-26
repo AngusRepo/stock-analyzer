@@ -102,6 +102,11 @@ assert(
   'allocator snapshot retries must use the durable stage attempt counter and stop after a bounded budget',
 )
 assert(
+  postMarketChain.includes('attempt_id: resolveChainAttemptId(ctx)') &&
+    updateOrchestrator.match(/recoveryAttempt: Math\.max\(/g)?.length === 2,
+  'post-pipeline and post-verify retries must emit attempt-scoped scheduler evidence so recovery can replace an earlier error',
+)
+assert(
   researchWorkflows.includes('durable: !(params.dryRun ?? false)') &&
     researchWorkflows.includes('upstream_run_id: params.runId') &&
     postMarketChain.includes("/\\bstatus=(?:spawned|pending)\\b/i") &&

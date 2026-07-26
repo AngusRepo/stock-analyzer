@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
+import { nextTwTradingDate } from './schedulerPolicy'
 
 export type AllocatorEvLifecycleState =
   | 'lineage_ready'
@@ -234,24 +235,34 @@ export async function recordAllocatorEvLifecycle(
 export async function inspectAllocatorSnapshotClosure(
   db: D1Database,
   businessDate: string,
-  options: { allowPointInTimeReconstruction?: boolean } = {},
+  options: {
+    allowPointInTimeReconstruction?: boolean
+    kv?: KVNamespace
+    nowMs?: number
+  } = {},
 ): Promise<AllocatorSnapshotClosure> {
   if (!validDate(businessDate)) throw new Error(`invalid allocator snapshot date: ${businessDate}`)
+  const nowMs = options.nowMs ?? Date.now()
+  const today = new Date(nowMs + 8 * 3600_000).toISOString().slice(0, 10)
+  let nextSessionOpenUtc: string | null = null
+  if (businessDate < today && options.kv) {
+    try {
+      const nextSessionDate = await nextTwTradingDate(options.kv, businessDate, db, {
+        requireOfficialFutureCalendar: true,
+        nowMs,
+      })
+      nextSessionOpenUtc = `${nextSessionDate}T01:00:00.000Z`
+    } catch (error) {
+      console.warn(`[allocatorEvDailyLifecycle] next session unresolved for ${businessDate}:`, error)
+    }
+  }
   const [lineage, run, actual] = await Promise.all([
     db.prepare(`
-      WITH next_executable_session AS (
-        SELECT MIN(date(c.date)) AS session_date
-          FROM canonical_market_daily c
-         WHERE c.stock_id = '0050'
-           AND c.source = 'finlab.price'
-           AND date(c.date) > date(?)
-      )
       SELECT
         COUNT(*) AS recommendation_rows,
         COALESCE(SUM(CASE WHEN EXISTS (
           SELECT 1
             FROM predictions p
-            CROSS JOIN next_executable_session next_session
            WHERE p.stock_id = dr.stock_id
              AND p.prediction_date >= dr.date
              AND p.prediction_date < date(dr.date, '+1 day')
@@ -260,8 +271,8 @@ export async function inspectAllocatorSnapshotClosure(
              AND (
                date(datetime(p.generated_at, '+8 hours')) <= substr(p.prediction_date, 1, 10)
                OR (
-                 next_session.session_date IS NOT NULL
-                 AND datetime(p.generated_at) < datetime(next_session.session_date || ' 01:00:00')
+                 ? IS NOT NULL
+                 AND datetime(p.generated_at) < datetime(?)
                )
              )
         ) THEN 1 ELSE 0 END), 0) AS row_count
@@ -269,7 +280,7 @@ export async function inspectAllocatorSnapshotClosure(
        WHERE dr.date = ?
          AND dr.score_components IS NOT NULL
          AND json_extract(dr.score_components, '$.version') = 'score_v2'
-    `).bind(businessDate, businessDate).first<{ recommendation_rows?: number; row_count?: number }>(),
+    `).bind(nextSessionOpenUtc, nextSessionOpenUtc, businessDate).first<{ recommendation_rows?: number; row_count?: number }>(),
     db.prepare(`
       SELECT run_id, expected_rows, published_rows, status,
              native_lineage_rows, reconstructed_lineage_rows, rejected_lineage_rows
@@ -384,7 +395,7 @@ export async function runAllocatorEvLifecycleWatchdog(
 ): Promise<string> {
   const businessDate = await resolveLifecycleBusinessDate(env.DB, requestedDate)
   const [snapshot, maturity] = await Promise.all([
-    inspectAllocatorSnapshotClosure(env.DB, businessDate),
+    inspectAllocatorSnapshotClosure(env.DB, businessDate, { kv: env.KV }),
     inspectAllocatorEvMaturityCoverage(env.DB, businessDate),
   ])
   if (snapshot.nativeLineageRows <= 0) {
@@ -469,7 +480,7 @@ export async function runAllocatorEvLifecycleWatchdog(
     upstreamRunId: lifecycle?.upstream_run_id || `allocator-ev-lifecycle-watchdog-${businessDate}`,
     recoveryAttempt: Math.max(1, Number(lifecycle?.attempt_count ?? 0) + 1),
   })
-  const repaired = await inspectAllocatorSnapshotClosure(env.DB, businessDate)
+  const repaired = await inspectAllocatorSnapshotClosure(env.DB, businessDate, { kv: env.KV })
   if (!repaired.ready) {
     throw new Error(
       `allocator EV lifecycle repair incomplete date=${businessDate} lineage=${repaired.nativeLineageRows} `

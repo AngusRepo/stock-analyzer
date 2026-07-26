@@ -432,6 +432,7 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
     } = await import('./allocatorEvDailyLifecycle')
     const closure = await inspectAllocatorSnapshotClosure(env.DB, params.startDate, {
       allowPointInTimeReconstruction: true,
+      kv: env.KV,
     })
     if (!closure.ready) {
       throw new Error(

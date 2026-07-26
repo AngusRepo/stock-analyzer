@@ -308,7 +308,7 @@ export async function runPostPipelineCallbackChain(
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return 'error'
   }
-  let snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate)
+  let snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, { kv: env.KV })
   await recordAllocatorEvLifecycle(env.DB, {
     businessDate: ctx.runDate,
     state: 'lineage_ready',
@@ -370,7 +370,7 @@ export async function runPostPipelineCallbackChain(
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return 'waiting'
   }
-  snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate)
+  snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, { kv: env.KV })
   if (snapshotTask.status === 'error' || !snapshotClosure.ready) {
     const error = snapshotTask.status === 'error'
       ? snapshotTask.summary

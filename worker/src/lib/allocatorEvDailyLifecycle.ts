@@ -415,6 +415,19 @@ export async function runAllocatorEvLifecycleWatchdog(
   }
   const lifecycle = await readAllocatorEvLifecycle(env.DB, businessDate)
   const postVerifyReached = lifecycle && ['replay_pending_maturity', 'replay_enqueued', 'replay_complete'].includes(lifecycle.state)
+  const postPipelineReached = lifecycle
+    && [
+      'verify_triggered', 'replay_pending_maturity', 'replay_enqueued', 'replay_complete',
+    ].includes(lifecycle.state)
+  if (snapshot.ready && postPipelineReached) {
+    const { markPipelineStage } = await import('./pipelineStageLease')
+    await markPipelineStage(env.DB, {
+      businessDate,
+      stage: 'post_pipeline_chain',
+      status: 'success',
+      error: null,
+    })
+  }
   let matureReplayMissingRows = 0
   if (lifecycle?.state === 'replay_pending_maturity') {
     const { loadFusionSnapshotReplayCoverage } = await import('./s12ReplayTradeOutcome')

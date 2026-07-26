@@ -2975,6 +2975,11 @@ export async function processUpdateBatch(
       const status = await runPostVerifyCallbackChain(env, {
         runDate: triggerTime,
         upstreamRunId: claimed.canonical_run_id,
+        recoveryAttempt: Math.max(
+          0,
+          Number(msg.attempt ?? 0),
+          Number(claimed.attempt_count ?? 1) - 1,
+        ),
       })
       await markPipelineStage(env.DB, {
         businessDate: triggerTime,

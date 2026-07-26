@@ -230,6 +230,12 @@ export type SchedulerJob = {
   durationConcern?: 'expected_short' | 'suspicious_short' | null
   durationConcernReason?: string
   lastError?: string
+  runId?: string | null
+  attemptId?: string | null
+  attemptCount?: number | null
+  recoveredFromStatus?: 'success' | 'failed' | 'running' | 'skip' | 'waiting' | 'sleep' | null
+  statusAuthority?: 'scheduler_kv' | 'durable_pipeline_stage'
+  displayNote?: string | null
   nextRun: string
   history7d: Array<'success' | 'failed' | 'skip'>
   rate7d: string

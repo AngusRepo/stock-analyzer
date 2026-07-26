@@ -105,4 +105,10 @@ assert(
   'Adaptive / Meta Evidence layout should remain intact',
 )
 
+assert(chain.includes('buildAttemptAwareJobMap') && chain.includes('inferOrchestratorStage'), 'active historical replay must derive its current stage from parent orchestration evidence')
+assert(chain.includes("lastStatus: 'waiting'") && chain.includes('Previous-attempt terminal state is suppressed'), 'active replay must suppress stale downstream terminal states from an older attempt')
+assert(chain.includes("recoveredFromStatus === 'failed'") && chain.includes('Recovered'), 'durably recovered callbacks must render as one recovered result instead of simultaneous red and green states')
+assert(api.includes('statusAuthority?:') && api.includes('attemptCount?: number | null'), 'scheduler API must expose durable authority and retry count')
+
+assert(chain.includes('directRunningStageId') && chain.includes('Current stage confirmed by its direct scheduler head.'), 'direct stage running evidence must outrank a lagging parent orchestration hint')
 console.log('observabilityInformationArchitecture: execution chain + standalone registry OK')

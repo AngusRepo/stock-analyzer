@@ -69,10 +69,20 @@ def _load_watch_rows(query_fn: QueryFn, observation_date: str) -> list[dict[str,
         """
         SELECT id, trade_date, symbol, source, state, ready, invalidated,
                entry_context_json, exit_plan_json, raw_json, updated_at
-          FROM s12_structure_snapshots
-         WHERE date(trade_date)=date(?)
-           AND source='s12_intraday_setup_watch'
-         ORDER BY symbol, datetime(updated_at) DESC, id DESC
+          FROM s12_structure_snapshots s
+         WHERE date(s.trade_date)=date(?)
+           AND s.source='s12_intraday_setup_watch'
+           AND json_valid(s.raw_json)=1
+           AND EXISTS (
+             SELECT 1
+               FROM daily_recommendations dr
+              WHERE date(dr.date)=date(json_extract(s.raw_json, '$.runtimeMetadata.source_trade_date'))
+                AND dr.symbol=s.symbol
+                AND json_valid(dr.score_components)=1
+                AND COALESCE(json_extract(dr.score_components, '$.eligibleForAllocation'), 1)=1
+                AND COALESCE(json_extract(dr.score_components, '$.reason'), '')<>'formal_ml_gate_filtered'
+           )
+         ORDER BY s.symbol, datetime(s.updated_at) DESC, s.id DESC
         """.strip(),
         [observation_date],
     )

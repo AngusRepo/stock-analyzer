@@ -216,3 +216,19 @@ def test_formal_ml_filtered_candidate_has_explicit_abstention_reason(monkeypatch
     assert summary["action_counts"]["abstain"] == 1
     assert summary["reason_counts"] == {"frozen_source_formal_ml_gate_filtered": 1}
     assert writes[0][1][11] == "abstain"
+
+
+def test_watch_loader_enforces_frozen_decision_universe():
+    captured = {}
+
+    def query(sql, params=None):
+        captured["sql"] = sql
+        captured["params"] = params
+        return []
+
+    assert service._load_watch_rows(query, "2026-07-24") == []
+    assert "FROM daily_recommendations dr" in captured["sql"]
+    assert "$.runtimeMetadata.source_trade_date" in captured["sql"]
+    assert "$.eligibleForAllocation" in captured["sql"]
+    assert "formal_ml_gate_filtered" in captured["sql"]
+    assert captured["params"] == ["2026-07-24"]

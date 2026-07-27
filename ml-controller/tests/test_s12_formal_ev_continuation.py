@@ -24,7 +24,8 @@ def test_ready_structure_can_only_materialize_potential_buy(monkeypatch):
                 "symbol": "2441",
                 "date": "2026-07-24",
                 "score": 65,
-                "score_components": '{"version":"score_v2","mlEdge":0.3}',
+                "ml_score": 12,
+                "score_components": '{"version":"score_v2","seedComponents":{"chipFlowSeed40":20,"technicalSeed30":15,"screenerMomentumSeed20":5,"mlEdgeSeed30":12}}',
                 "alpha_context": "{}",
                 "alpha_allocation": '{"l4_alpha_ev":{"status":"loaded","expected_return":0.02,"expected_return_source":"l4_alpha_ev","expected_return_owner":"l4_alpha_ev"}}',
                 "forecast_data": '{"ensemble_v2":{}}',
@@ -54,9 +55,18 @@ def test_ready_structure_can_only_materialize_potential_buy(monkeypatch):
             "sample_policy": "verified_s12_symbol",
         }),
     )
-    monkeypatch.setattr(service, "_row_expected_return_with_source", lambda row, alpha_policy=None: (
-        row.update({"_allocator_edge_resolver": {"expected_return_owner": "l4_alpha_ev"}}) or (0.02, "l4_alpha_ev")
-    ))
+    def resolve(row, alpha_policy=None):
+        assert row["score_seed_inputs"] == {
+            "chipFlowSeed40": 20.0,
+            "technicalSeed30": 15.0,
+            "screenerMomentumSeed20": 5.0,
+            "mlEdgeSeed30": 12.0,
+            "personaAlphaSeed": 0.0,
+        }
+        row["_allocator_edge_resolver"] = {"expected_return_owner": "l4_alpha_ev"}
+        return 0.02, "l4_alpha_ev"
+
+    monkeypatch.setattr(service, "_row_expected_return_with_source", resolve)
     monkeypatch.setattr(service, "_can_promote_ranking_candidate", lambda *args, **kwargs: True)
     writes = []
     summary = service.materialize_s12_formal_ev_decisions(
@@ -105,3 +115,48 @@ def test_bearish_risk_never_promotes(monkeypatch):
     )
     assert summary["action_counts"]["abstain"] == 1
     assert writes[0][1][6] == "risk_blocked"
+
+
+def test_missing_frozen_score_seed_abstains_without_aborting_batch(monkeypatch):
+    monkeypatch.setattr(
+        service,
+        "_load_watch_rows",
+        lambda *_: [{
+            "id": 3,
+            "symbol": "9999",
+            "state": "reaction_ready",
+            "ready": 1,
+            "invalidated": 0,
+            "raw_json": '{"runtimeMetadata":{"source_trade_date":"2026-07-24"}}',
+        }],
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_frozen_candidates",
+        lambda *args: {"9999": {"symbol": "9999", "score_seed_inputs": None, "forecast_data": {}}},
+    )
+    monkeypatch.setattr(
+        service,
+        "load_merged_trading_config_with_contract",
+        lambda: SimpleNamespace(
+            config={"ranking": {}, "alphaFramework": {}},
+            contract=SimpleNamespace(to_dict=lambda: {}),
+        ),
+    )
+    monkeypatch.setattr(
+        service.S12TradeEvBootstrapProvider,
+        "for_run_date",
+        lambda *args, **kwargs: SimpleNamespace(build_for_row=lambda *args, **kwargs: {"status": "loaded"}),
+    )
+    writes = []
+    summary = service.materialize_s12_formal_ev_decisions(
+        observation_date="2026-07-27",
+        producer_run_id="formal-missing-seed",
+        query_fn=lambda *args: [],
+        write_fn=lambda statements: writes.extend(statements) or {
+            "success_count": len(statements), "error_count": 0,
+        },
+    )
+    assert summary["action_counts"]["abstain"] == 1
+    assert summary["reason_counts"] == {"frozen_source_score_v2_seed_missing": 1}
+    assert writes[0][1][11] == "abstain"

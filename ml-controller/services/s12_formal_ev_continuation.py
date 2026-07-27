@@ -15,6 +15,7 @@ from services import d1_client
 from services.recommendation_service import (
     _can_promote_ranking_candidate,
     _row_expected_return_with_source,
+    _score_v2_seed_inputs_from_payload,
 )
 from services.s12_trade_ev_bootstrap import S12TradeEvBootstrapProvider
 from services.trading_config_loader import load_merged_trading_config_with_contract
@@ -114,6 +115,12 @@ def _load_frozen_candidates(
             row = dict(raw)
             for key in ("score_components", "alpha_context", "alpha_allocation", "forecast_data"):
                 row[key] = _json_object(row.get(key))
+            ml_score = _finite(row.get("ml_score"))
+            row["score_seed_inputs"] = (
+                _score_v2_seed_inputs_from_payload(row.get("score_components"), ml_score=ml_score)
+                if ml_score is not None
+                else None
+            )
             allocation = row.get("alpha_allocation") or {}
             forecast = row.get("forecast_data") or {}
             ensemble = forecast.get("ensemble_v2") if isinstance(forecast.get("ensemble_v2"), dict) else {}
@@ -188,21 +195,30 @@ def materialize_s12_formal_ev_decisions(
                 s12_payload = provider.build_for_row(candidate, prediction=prediction)
                 candidate["s12_trade_ev"] = s12_payload
                 s12_status = str(s12_payload.get("status") or "missing")
-                resolved, source = _row_expected_return_with_source(
-                    candidate,
-                    alpha_policy=alpha_policy,
-                )
-                uncertainty_adjusted = _finite(resolved)
-                expected_return = uncertainty_adjusted
-                resolver = candidate.get("_allocator_edge_resolver")
-                resolver = resolver if isinstance(resolver, dict) else {}
-                owner = str(resolver.get("expected_return_owner") or "").strip() or None
-                can_promote = _can_promote_ranking_candidate(
-                    candidate,
-                    ranking_config,
-                    alpha_policy=alpha_policy,
-                )
-                if structure_class != "execution_ready":
+                if not isinstance(candidate.get("score_seed_inputs"), dict):
+                    action = "abstain"
+                    reason = "frozen_source_score_v2_seed_missing"
+                    source = "missing"
+                    resolver = {}
+                    can_promote = False
+                else:
+                    resolved, source = _row_expected_return_with_source(
+                        candidate,
+                        alpha_policy=alpha_policy,
+                    )
+                    uncertainty_adjusted = _finite(resolved)
+                    expected_return = uncertainty_adjusted
+                    resolver = candidate.get("_allocator_edge_resolver")
+                    resolver = resolver if isinstance(resolver, dict) else {}
+                    owner = str(resolver.get("expected_return_owner") or "").strip() or None
+                    can_promote = _can_promote_ranking_candidate(
+                        candidate,
+                        ranking_config,
+                        alpha_policy=alpha_policy,
+                    )
+                if reason == "frozen_source_score_v2_seed_missing":
+                    pass
+                elif structure_class != "execution_ready":
                     action = "hold" if structure_class == "setup_waiting" else "abstain"
                     reason = f"s12_structure_{structure_class}:{state}"
                 elif owner == "risk_abstention":

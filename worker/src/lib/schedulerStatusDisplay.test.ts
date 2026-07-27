@@ -5,6 +5,7 @@ import {
   reconcileDurablePipelineStageStatus,
   resolveSchedulerDisplayStatus,
   resolveSchedulerLogStatus,
+  selectSchedulerChainDates,
   selectSchedulerDisplayLogs,
   type SchedulerDisplayLogCandidate,
 } from './schedulerStatus'
@@ -13,6 +14,49 @@ import * as fs from 'node:fs'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
+}
+
+{
+  const dates = ['2026-07-27', '2026-07-26', '2026-07-25', '2026-07-24', '2026-07-23']
+  const selection = selectSchedulerChainDates(dates, {
+    '2026-07-27': [],
+    '2026-07-26': [],
+    '2026-07-25': [],
+    '2026-07-24': [{
+      task: 'evening-chain',
+      status: 'success',
+      summary: 'historical replay completed after midnight',
+      duration_ms: 0,
+      run_date: '2026-07-24',
+      timestamp: '2026-07-26T18:54:46.000Z',
+    }],
+    '2026-07-23': [],
+  })
+  assert(selection.activeChainDate === null, 'a completed replay must not be marked active')
+  assert(selection.chainStatusDate === '2026-07-24', 'completed replay must remain the canonical chain status date')
+}
+
+{
+  const dates = ['2026-07-27', '2026-07-24']
+  const selection = selectSchedulerChainDates(dates, {
+    '2026-07-27': [{
+      task: 'evening-chain',
+      status: 'success',
+      summary: 'latest chain completed',
+      duration_ms: 0,
+      run_date: '2026-07-27',
+      timestamp: '2026-07-27T13:56:29.000Z',
+    }],
+    '2026-07-24': [{
+      task: 'evening-chain',
+      status: 'success',
+      summary: 'older replay completed',
+      duration_ms: 0,
+      run_date: '2026-07-24',
+      timestamp: '2026-07-26T18:54:46.000Z',
+    }],
+  })
+  assert(selection.chainStatusDate === '2026-07-27', 'latest completed chain must replace the older replay date')
 }
 
 const logs: SchedulerDisplayLogCandidate[] = [
@@ -301,6 +345,25 @@ const logs: SchedulerDisplayLogCandidate[] = [
 {
   const status = reconcileDurablePipelineStageStatus({
     jobId: 'post-pipeline-chain',
+    runDate: '2026-07-27',
+    baseStatus: 'success',
+    baseTimestamp: '2026-07-27T13:46:39.887Z',
+    durable: {
+      business_date: '2026-07-27',
+      stage: 'post_pipeline_chain',
+      canonical_run_id: 'pipeline-v2-m82fp',
+      status: 'success',
+      attempt_count: 2,
+      updated_at: '2026-07-27 15:30:11',
+      last_error: null,
+    },
+  })
+  assert(status === null, 'later durable success readback must not replace the original scheduler completion time')
+}
+
+{
+  const status = reconcileDurablePipelineStageStatus({
+    jobId: 'post-pipeline-chain',
     runDate: '2026-07-24',
     baseStatus: 'failed',
     baseTimestamp: '2026-07-26T06:22:00.000Z',
@@ -318,6 +381,25 @@ const logs: SchedulerDisplayLogCandidate[] = [
   assert(status?.recoveredFromStatus === 'failed', 'recovered callback state must remain explicit for operators')
   assert(status?.lastError == null, 'recovered callback state must not retain the stale error text')
   assert(status?.attemptCount === 4, 'durable attempt count must be exposed as recovery evidence')
+}
+
+{
+  const status = reconcileDurablePipelineStageStatus({
+    jobId: 'post-pipeline-chain',
+    runDate: '2026-07-27',
+    baseStatus: 'success',
+    baseTimestamp: '2026-07-27T13:46:39.887Z',
+    durable: {
+      business_date: '2026-07-27',
+      stage: 'post_pipeline_chain',
+      canonical_run_id: 'pipeline-v2-m82fp',
+      status: 'success',
+      attempt_count: 2,
+      updated_at: '2026-07-27 15:30:11',
+      last_error: null,
+    },
+  })
+  assert(status === null, 'later durable success readback must not replace the original scheduler completion time')
 }
 
 {

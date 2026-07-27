@@ -71,6 +71,15 @@ async function loadSetupWatchSeeds(db: D1Database, today: string): Promise<Setup
            'waiting_sweep', 'waiting_choch', 'waiting_bos',
            'waiting_retest', 'waiting_reaction'
          )
+         AND EXISTS (
+           SELECT 1
+             FROM daily_recommendations dr
+            WHERE date(dr.date) = date(ss.trade_date)
+              AND dr.symbol = ss.symbol
+              AND json_valid(dr.score_components) = 1
+              AND COALESCE(json_extract(dr.score_components, '$.eligibleForAllocation'), 1) = 1
+              AND COALESCE(json_extract(dr.score_components, '$.reason'), '') <> 'formal_ml_gate_filtered'
+         )
     )
     SELECT symbol, trade_date AS source_trade_date, state, demand_zone_low, demand_zone_high
       FROM latest

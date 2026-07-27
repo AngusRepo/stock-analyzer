@@ -195,7 +195,15 @@ def materialize_s12_formal_ev_decisions(
                 s12_payload = provider.build_for_row(candidate, prediction=prediction)
                 candidate["s12_trade_ev"] = s12_payload
                 s12_status = str(s12_payload.get("status") or "missing")
-                if not isinstance(candidate.get("score_seed_inputs"), dict):
+                score_components = candidate.get("score_components")
+                score_components = score_components if isinstance(score_components, dict) else {}
+                if str(score_components.get("reason") or "") == "formal_ml_gate_filtered":
+                    action = "abstain"
+                    reason = "frozen_source_formal_ml_gate_filtered"
+                    source = "formal_ml_gate_filtered"
+                    resolver = {}
+                    can_promote = False
+                elif not isinstance(candidate.get("score_seed_inputs"), dict):
                     action = "abstain"
                     reason = "frozen_source_score_v2_seed_missing"
                     source = "missing"
@@ -216,7 +224,10 @@ def materialize_s12_formal_ev_decisions(
                         ranking_config,
                         alpha_policy=alpha_policy,
                     )
-                if reason == "frozen_source_score_v2_seed_missing":
+                if reason in {
+                    "frozen_source_formal_ml_gate_filtered",
+                    "frozen_source_score_v2_seed_missing",
+                }:
                     pass
                 elif structure_class != "execution_ready":
                     action = "hold" if structure_class == "setup_waiting" else "abstain"
@@ -236,6 +247,11 @@ def materialize_s12_formal_ev_decisions(
                 evidence.update({
                     "expected_return_source": source,
                     "expected_return_owner": owner,
+                    "score_v2_contract": {
+                        "version": score_components.get("version"),
+                        "reason": score_components.get("reason"),
+                        "eligible_for_allocation": score_components.get("eligibleForAllocation"),
+                    },
                     "allocator_edge_resolver": resolver,
                     "promotion_blocked_reason": candidate.get("promotion_blocked_reason"),
                     "s12_trade_ev": s12_payload,

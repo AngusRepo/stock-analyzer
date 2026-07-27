@@ -160,3 +160,59 @@ def test_missing_frozen_score_seed_abstains_without_aborting_batch(monkeypatch):
     assert summary["action_counts"]["abstain"] == 1
     assert summary["reason_counts"] == {"frozen_source_score_v2_seed_missing": 1}
     assert writes[0][1][11] == "abstain"
+
+
+def test_formal_ml_filtered_candidate_has_explicit_abstention_reason(monkeypatch):
+    monkeypatch.setattr(
+        service,
+        "_load_watch_rows",
+        lambda *_: [{
+            "id": 4,
+            "symbol": "2395",
+            "state": "limited_takeover_ready",
+            "ready": 1,
+            "invalidated": 0,
+            "raw_json": '{"runtimeMetadata":{"source_trade_date":"2026-07-24"}}',
+        }],
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_frozen_candidates",
+        lambda *args: {
+            "2395": {
+                "symbol": "2395",
+                "score_seed_inputs": None,
+                "score_components": {
+                    "version": "score_v2_filtered_v1",
+                    "reason": "formal_ml_gate_filtered",
+                    "eligibleForAllocation": 0,
+                },
+                "forecast_data": {},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "load_merged_trading_config_with_contract",
+        lambda: SimpleNamespace(
+            config={"ranking": {}, "alphaFramework": {}},
+            contract=SimpleNamespace(to_dict=lambda: {}),
+        ),
+    )
+    monkeypatch.setattr(
+        service.S12TradeEvBootstrapProvider,
+        "for_run_date",
+        lambda *args, **kwargs: SimpleNamespace(build_for_row=lambda *args, **kwargs: {"status": "loaded"}),
+    )
+    writes = []
+    summary = service.materialize_s12_formal_ev_decisions(
+        observation_date="2026-07-27",
+        producer_run_id="formal-filtered",
+        query_fn=lambda *args: [],
+        write_fn=lambda statements: writes.extend(statements) or {
+            "success_count": len(statements), "error_count": 0,
+        },
+    )
+    assert summary["action_counts"]["abstain"] == 1
+    assert summary["reason_counts"] == {"frozen_source_formal_ml_gate_filtered": 1}
+    assert writes[0][1][11] == "abstain"

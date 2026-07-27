@@ -2066,6 +2066,37 @@ async function continuePostScreenerPipeline(
       run_id: snapshotRunId,
       run_date: triggerTime,
     })
+    const durableEnabled = ['1', 'true', 'yes', 'on'].includes(
+      String((env as any).S12_DURABLE_STRUCTURE_JOB_ENABLED ?? '').trim().toLowerCase(),
+    )
+    if (durableEnabled) {
+      if (!env.ML_CONTROLLER_URL || !env.ML_CONTROLLER_SECRET) throw new Error('s12_structure_controller_missing')
+      const response = await fetch(`${env.ML_CONTROLLER_URL.replace(/\/$/, '')}/s12-structure/batch/run`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Controller-Token': env.ML_CONTROLLER_SECRET,
+        },
+        body: JSON.stringify({
+          run_date: triggerTime,
+          chain_run_id: snapshotRunId,
+          source: 'evening_chain',
+        }),
+        signal: AbortSignal.timeout(30_000),
+      })
+      const payload = await response.json().catch(() => ({})) as any
+      if (!response.ok) {
+        throw new Error(`s12_structure_batch_trigger_${response.status}:${JSON.stringify(payload).slice(0, 300)}`)
+      }
+      await logSchedulerResult(env.KV, 's12-structure-snapshot', {
+        status: 'triggered',
+        summary: `durable S12 structure job triggered date=${triggerTime} run_id=${payload.run_id ?? 'unknown'} execution=${payload.execution_id ?? 'unknown'} callback expected`,
+        duration_ms: 0,
+        run_id: payload.run_id ?? snapshotRunId,
+        run_date: triggerTime,
+      }, env)
+      return
+    }
     await env.UPDATE_QUEUE.send({
       type: 's12_candidate_snapshot_chunk', cursor: 0, cursorKey: '',
       triggerTime, runId: snapshotRunId, attempt: 1,
@@ -3331,6 +3362,96 @@ export async function processUpdateBatch(
       return
     }
     await continuePostScreenerPipeline(env, deps, triggerTime, runId)
+    return
+  }
+
+  if (msg.type === 's12_structure_batch_complete') {
+    const triggerTime = msg.triggerTime
+    const runId = msg.runId || ''
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime) || !runId) {
+      throw new Error('invalid_s12_structure_batch_completion_message')
+    }
+    const coverage = await env.DB.prepare(`
+      SELECT COUNT(*) reference_rows,
+             SUM(CASE WHEN s.symbol IS NOT NULL THEN 1 ELSE 0 END) persisted_rows,
+             SUM(CASE WHEN s.ready=1 THEN 1 ELSE 0 END) ready_rows,
+             SUM(CASE WHEN s.state='data_unavailable' THEN 1 ELSE 0 END) unavailable_rows,
+             SUM(CASE WHEN s.symbol IS NOT NULL AND s.ready=0
+                       AND s.state<>'data_unavailable' THEN 1 ELSE 0 END) blocked_rows
+        FROM selection_reference_snapshots_v1 r
+        LEFT JOIN s12_structure_snapshots s
+          ON s.trade_date=r.signal_date AND s.symbol=r.symbol
+         AND s.source='s12_candidate_snapshot' AND s.pending_run_id=?
+       WHERE r.signal_date=?
+         AND EXISTS (
+           SELECT 1 FROM canonical_run_heads h
+            WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
+              AND h.run_id=r.producer_run_id
+         )
+    `).bind(runId, triggerTime).first<{
+      reference_rows?: number
+      persisted_rows?: number
+      ready_rows?: number
+      unavailable_rows?: number
+      blocked_rows?: number
+    }>()
+    const referenceRows = Number(coverage?.reference_rows ?? 0)
+    const persistedRows = Number(coverage?.persisted_rows ?? 0)
+    if (referenceRows <= 0 || persistedRows !== referenceRows) {
+      const summary = `durable S12 canonical snapshot coverage=${persistedRows}/${referenceRows} date=${triggerTime} run_id=${runId}`
+      await logSchedulerResult(env.KV, 's12-structure-snapshot', {
+        status: 'error', summary, duration_ms: 0, run_id: runId, run_date: triggerTime,
+      }, env)
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'error',
+        summary: `event-driven chain stopped: ${summary}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: triggerTime,
+      }, env)
+      return
+    }
+    await logSchedulerResult(env.KV, 's12-structure-snapshot', {
+      status: 'success',
+      summary: `durable S12 canonical snapshots complete coverage=${persistedRows}/${referenceRows} ready=${Number(coverage?.ready_rows ?? 0)} blocked=${Number(coverage?.blocked_rows ?? 0)} unavailable=${Number(coverage?.unavailable_rows ?? 0)} date=${triggerTime} run_id=${runId}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: triggerTime,
+    }, env)
+    const stage = `s12_snapshot_pipeline:${runId}`
+    const stageState = await enqueuePipelineStage(env.DB, {
+      businessDate: triggerTime,
+      stage,
+      runId,
+      resumeWaiting: true,
+    })
+    const ownerId = `s12-durable-finalizer:${runId}:${crypto.randomUUID()}`
+    const claim = await claimPipelineStage(env.DB, {
+      businessDate: triggerTime,
+      stage,
+      ownerId,
+      leaseSeconds: 900,
+    })
+    if (!claim) {
+      console.log(`[Queue] Duplicate durable S12 finalizer suppressed date=${triggerTime} run_id=${runId} status=${stageState.row.status}`)
+      return
+    }
+    try {
+      await continuePostScreenerPipeline(env, deps, triggerTime, runId, true)
+      await markPipelineStage(env.DB, {
+        businessDate: triggerTime,
+        stage,
+        status: 'success',
+      })
+    } catch (error) {
+      await markPipelineStage(env.DB, {
+        businessDate: triggerTime,
+        stage,
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
     return
   }
 

@@ -2,7 +2,6 @@ import type { Bindings } from '../types'
 import {
   assessS12IntradayStructureFromBaseBars,
   s12TimingPolicyFromEnv,
-  type S12IntradayAssessment,
 } from './s12IntradayStructure'
 import {
   loadS12HistoricalReplayBars,
@@ -19,6 +18,7 @@ import {
   type S12TwCalibrationArtifact,
 } from './s12TwEquityCalibration'
 import { acquireS12ResearchLease, releaseS12ResearchLease } from './s12ResearchLease'
+import { classifyS12Structure } from './s12StructureTaxonomy'
 
 const M15_MS = 15 * 60_000
 
@@ -31,7 +31,7 @@ export interface S12PipelineSeedSymbol {
 }
 
 export interface S12CandidateSnapshotSummary {
-  schema_version: 's12-candidate-structure-snapshot-summary-v2'
+  schema_version: 's12-candidate-structure-snapshot-summary-v3'
   trade_date: string
   source: string
   candidate_count: number
@@ -39,6 +39,8 @@ export interface S12CandidateSnapshotSummary {
   persisted: number
   ready: number
   setup_only: number
+  risk_blocked: number
+  invalidated: number
   unavailable: number
   blocked: number
   skipped: number
@@ -55,18 +57,6 @@ function positiveLimit(value: unknown, fallback: number): number {
 function lastBarEndMs(bars: Array<{ startMs: number }>): number {
   const last = bars.length ? bars[bars.length - 1] : null
   return Number.isFinite(last?.startMs) ? Number(last?.startMs) + M15_MS : Date.now()
-}
-
-function isSetupOnly(assessment: S12IntradayAssessment): boolean {
-  return [
-    'waiting_sweep',
-    'waiting_choch',
-    'waiting_bos',
-    'waiting_retest',
-    'waiting_reaction',
-    'waiting_1h_demand_zone',
-    'waiting_15m_zone_touch',
-  ].includes(String(assessment.state ?? ''))
 }
 
 export async function loadS12PipelineSeedSymbolsByDate(
@@ -131,6 +121,8 @@ export async function runS12CandidateStructureSnapshots(
   let persisted = 0
   let ready = 0
   let setupOnly = 0
+  let riskBlocked = 0
+  let invalidated = 0
   let unavailable = 0
   let blocked = 0
   let skipped = 0
@@ -225,10 +217,19 @@ export async function runS12CandidateStructureSnapshots(
         },
       })
       if (ok) persisted += 1
-      if (assessment.ready) ready += 1
-      else if (isSetupOnly(assessment)) setupOnly += 1
-      else {
+      const structureClass = classifyS12Structure(assessment)
+      if (structureClass === 'execution_ready') ready += 1
+      else if (structureClass === 'setup_waiting') setupOnly += 1
+      else if (structureClass === 'risk_blocked') {
+        riskBlocked += 1
         blocked += 1
+        skipped += 1
+      } else if (structureClass === 'invalidated') {
+        invalidated += 1
+        blocked += 1
+        skipped += 1
+      } else {
+        unavailable += 1
         skipped += 1
       }
     } catch (error) {
@@ -239,7 +240,7 @@ export async function runS12CandidateStructureSnapshots(
   }
 
   return {
-    schema_version: 's12-candidate-structure-snapshot-summary-v2',
+    schema_version: 's12-candidate-structure-snapshot-summary-v3',
     trade_date: tradeDate,
     source: snapshotSource,
     candidate_count: candidates.length,
@@ -247,6 +248,8 @@ export async function runS12CandidateStructureSnapshots(
     persisted,
     ready,
     setup_only: setupOnly,
+    risk_blocked: riskBlocked,
+    invalidated,
     unavailable,
     blocked,
     skipped,

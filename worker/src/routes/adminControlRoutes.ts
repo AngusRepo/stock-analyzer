@@ -94,17 +94,25 @@ function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
       'screener-funnel-evidence-index-v1',
     ])],
     ['screener_funnel_chunk', new Set(['screener-funnel-evidence-chunk-v1'])],
+    ['s12_research_minute_bars', new Set(['s12-research-minute-bars-v2'])],
+    ['s12_structure_batch', new Set(['s12-structure-batch-summary-v1'])],
   ])
   const allowedSchemas = schemaByDomain.get(body.domain)
-  if (!allowedSchemas) throw new Error('domain must be screener_funnel or screener_funnel_chunk')
+  if (!allowedSchemas) throw new Error('artifact domain is not allowed')
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(body.businessDate ?? ''))) {
     throw new Error('businessDate must use YYYY-MM-DD')
   }
   if (typeof body.producerRunId !== 'string' || !body.producerRunId.trim() || body.producerRunId.length > 200) {
     throw new Error('producerRunId is required and must be <= 200 characters')
   }
-  if (!['canonical_model_evidence', 'failed_debug'].includes(body.retentionClass)) {
-    throw new Error('invalid screener retentionClass')
+  const retentionByDomain = new Map<string, Set<string>>([
+    ['screener_funnel', new Set(['canonical_model_evidence', 'failed_debug'])],
+    ['screener_funnel_chunk', new Set(['canonical_model_evidence', 'failed_debug'])],
+    ['s12_research_minute_bars', new Set(['raw_market_unreferenced'])],
+    ['s12_structure_batch', new Set(['canonical_model_evidence', 'paper_shadow', 'failed_debug'])],
+  ])
+  if (!retentionByDomain.get(body.domain)?.has(body.retentionClass)) {
+    throw new Error('invalid artifact retentionClass for domain')
   }
   if (!allowedSchemas.has(body.schemaVersion)) throw new Error('invalid screener schemaVersion')
   if (!body.payload || typeof body.payload !== 'object' || Array.isArray(body.payload)) {
@@ -116,6 +124,25 @@ function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
   }
   if (body.metadata != null && (typeof body.metadata !== 'object' || Array.isArray(body.metadata))) {
     throw new Error('metadata must be an object')
+  }
+  if (body.domain === 's12_research_minute_bars') {
+    if (
+      typeof body.payload.symbol !== 'string'
+      || !Array.isArray(body.payload.bars)
+      || body.payload.bars.length !== rowCount
+    ) {
+      throw new Error('invalid S12 research bars artifact payload')
+    }
+  }
+  if (body.domain === 's12_structure_batch') {
+    if (
+      body.payload.schema_version !== 's12-durable-structure-batch-summary-v1'
+      || typeof body.payload.run_id !== 'string'
+      || Number(body.payload.candidate_count) !== rowCount
+      || body.payload.coverage_passed !== true
+    ) {
+      throw new Error('invalid S12 structure batch artifact payload')
+    }
   }
   if (body.domain === 'screener_funnel_chunk') {
     const chunkIndex = Number(body.payload.chunk_index)
@@ -215,6 +242,31 @@ adminControlRoutes.post('/api/internal/evidence-artifacts/screener-funnel', asyn
 
   const manifest = await writeEvidenceArtifact(c.env, input)
   return c.json({ ok: true, manifest })
+})
+
+adminControlRoutes.post('/api/internal/evidence-artifacts/s12-research/read', async (c) => {
+  const authError = requireServiceToken(c)
+  if (authError) return authError
+  if (!c.env.ARTIFACTS) return c.json({ error: 'artifact_r2_binding_missing' }, 503)
+  const body = await c.req.json().catch(() => null) as { r2_key?: unknown } | null
+  const r2Key = typeof body?.r2_key === 'string' ? body.r2_key.trim() : ''
+  if (!/^evidence\/class=raw_market_unreferenced\/domain=s12_research_minute_bars\//.test(r2Key)) {
+    return c.json({ error: 'invalid_s12_research_artifact_key' }, 400)
+  }
+  const manifest = await c.env.DB.prepare(`
+    SELECT artifact_id
+      FROM run_artifacts
+     WHERE r2_key=?
+       AND domain='s12_research_minute_bars'
+       AND schema_version='s12-research-minute-bars-v2'
+       AND retention_class='raw_market_unreferenced'
+       AND status='ready'
+     LIMIT 1
+  `).bind(r2Key).first<{ artifact_id?: string }>()
+  if (!manifest?.artifact_id) return c.json({ error: 'artifact_manifest_not_found' }, 404)
+  const object = await c.env.ARTIFACTS.get(r2Key)
+  if (!object) return c.json({ error: 'artifact_object_not_found' }, 404)
+  return c.json({ ok: true, body: await object.text() })
 })
 
 adminControlRoutes.post('/api/internal/evidence-artifacts/legacy-screener/resolve', async (c) => {
@@ -711,8 +763,47 @@ async function handleSchedulerCallback(c: any) {
     }
   }
 
-  const verifyCanContinue =
-    body.task === 'verify-v2' &&
+  if (body.task === 's12-structure-batch') {
+    if (!callbackRunDate || !callbackRunId) {
+      return c.json({ error: 'S12 structure callback missing run_date or run_id' }, 400)
+    }
+    const callbackSource = String(body.metadata?.source ?? 'evening_chain')
+    if (String(body.status) === 'success') {
+      if (callbackSource === 'evening_chain') {
+        await c.env.UPDATE_QUEUE.send({
+          type: 's12_structure_batch_complete',
+          cursor: 0,
+          triggerTime: callbackRunDate,
+          runId: callbackRunId,
+        })
+      }
+      await logSchedulerResult(c.env.KV, 's12-structure-snapshot', {
+        status: callbackSource === 'evening_chain' ? 'triggered' : 'success',
+        summary: callbackSource === 'evening_chain'
+          ? `durable S12 callback accepted; finalizer queued date=${callbackRunDate} run_id=${callbackRunId}`
+          : `durable S12 shadow complete without pipeline continuation date=${callbackRunDate} run_id=${callbackRunId}`,
+        duration_ms: Number(body.duration_ms ?? 0),
+        run_id: callbackRunId,
+        run_date: callbackRunDate,
+      }, c.env as any)
+    } else {
+      const summary = `durable S12 structure batch failed: ${String(body.summary ?? body.error ?? body.status)}`
+      await logSchedulerResult(c.env.KV, 's12-structure-snapshot', {
+        status: 'error', summary, duration_ms: Number(body.duration_ms ?? 0),
+        error: body.error != null ? String(body.error) : undefined,
+        run_id: callbackRunId, run_date: callbackRunDate,
+      }, c.env as any)
+      if (callbackSource === 'evening_chain') {
+        await logSchedulerResult(c.env.KV, 'evening-chain', {
+          status: 'error', summary: `root chain stopped: ${summary}`, duration_ms: 0,
+          error: body.error != null ? String(body.error) : undefined,
+          run_id: callbackRunId, run_date: callbackRunDate,
+        }, c.env as any)
+      }
+    }
+  }
+
+  const verifyCanContinue =    body.task === 'verify-v2' &&
     ['success', 'skipped'].includes(String(body.status)) &&
     c.env.ML_CONTROLLER_URL
   if (verifyCanContinue) {

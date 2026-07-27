@@ -1,6 +1,7 @@
 import { allocatorContractGuardEnabled } from './allocatorContractGuard'
 import type {
   EvidenceArtifactManifest,
+  EvidenceArtifactReader,
   EvidenceArtifactWriteInput,
   EvidenceArtifactWriter,
 } from '../lib/evidenceArtifactContract'
@@ -285,6 +286,46 @@ export class RestEvidenceArtifactWriter implements EvidenceArtifactWriter {
       return this.writeChunkedScreener(input, items)
     }
     return this.post(input)
+  }
+}
+
+export class RestEvidenceArtifactReader implements EvidenceArtifactReader {
+  constructor(private readonly config: EvidenceArtifactWriterConfig) {}
+
+  static fromEnv(): RestEvidenceArtifactReader {
+    return new RestEvidenceArtifactReader({
+      workerUrl: requiredWorkerUrl('STOCKVISION_WORKER_URL'),
+      serviceToken: requiredEnv('STOCKVISION_AUTH_TOKEN'),
+      maxRetries: optionalIntEnv('ARTIFACT_READER_MAX_RETRIES', 3),
+    })
+  }
+
+  async read(r2Key: string): Promise<string | null> {
+    if (!/^evidence\/class=raw_market_unreferenced\/domain=s12_research_minute_bars\//.test(r2Key)) {
+      throw new Error('Evidence artifact reader rejected non-S12 key')
+    }
+    const response = await fetchWithRetry(
+      `${this.config.workerUrl}/api/internal/evidence-artifacts/s12-research/read`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.config.serviceToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ r2_key: r2Key }),
+      },
+      this.config.maxRetries,
+    )
+    if (response.status === 404) return null
+    const text = await response.text()
+    if (!response.ok) {
+      throw new Error(`Evidence artifact reader HTTP ${response.status}: ${text.slice(0, 300)}`)
+    }
+    const payload = JSON.parse(text) as { ok?: boolean; body?: string }
+    if (!payload.ok || typeof payload.body !== 'string') {
+      throw new Error('Evidence artifact reader returned invalid payload')
+    }
+    return payload.body
   }
 }
 

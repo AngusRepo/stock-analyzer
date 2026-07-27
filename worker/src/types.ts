@@ -1,4 +1,4 @@
-import type { EvidenceArtifactWriter } from './lib/evidenceArtifactContract'
+import type { EvidenceArtifactReader, EvidenceArtifactWriter } from './lib/evidenceArtifactContract'
 
 export type R2Bucket = any
 
@@ -21,6 +21,7 @@ export type Bindings = {
   KV: KVNamespace
   ARTIFACTS?: R2Bucket
   EVIDENCE_ARTIFACT_WRITER?: EvidenceArtifactWriter
+  EVIDENCE_ARTIFACT_READER?: EvidenceArtifactReader
   JWT_SECRET: string
   GOOGLE_CLIENT_ID: string
   GOOGLE_CLIENT_SECRET: string
@@ -61,6 +62,7 @@ export type Bindings = {
   // Shioaji 即時報價 Proxy（Cloud Run）
   SHIOAJI_PROXY_URL?: string
   S12_RESEARCH_KBARS_URL?: string
+  S12_DURABLE_STRUCTURE_JOB_ENABLED?: string
   PROXY_SERVICE_TOKEN?: string
   DAILY_PRICE_SOURCE?: string
   FINLAB_DAILY_PRICE_PRIMARY_ENABLED?: string
@@ -318,6 +320,7 @@ export interface UpdateQueueMsg {
     | 'finalize_update'
     | 'post_screener_pipeline'
     | 's12_candidate_snapshot_chunk'
+    | 's12_structure_batch_complete'
     | 'news_batch'
     | 'source_readiness_retry'
     | 'finlab_backfill_complete'

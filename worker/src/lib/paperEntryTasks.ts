@@ -491,6 +491,54 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
     return null
   })
   if (setupWatch) console.log('[Intraday] S12 setup watch:', setupWatch)
+  const formalEvReady = await env.DB.prepare(`
+    SELECT COUNT(*) AS ready_count
+      FROM s12_structure_snapshots s
+     WHERE s.trade_date=?
+       AND s.source='s12_intraday_setup_watch'
+       AND s.ready=1
+       AND COALESCE(s.invalidated, 0)=0
+       AND NOT EXISTS (
+         SELECT 1 FROM s12_formal_ev_decisions d
+          WHERE d.observation_date=s.trade_date
+            AND d.symbol=s.symbol
+            AND d.structure_snapshot_id=s.id
+            AND datetime(d.updated_at) >= datetime(s.updated_at)
+       )
+  `).bind(today).first<{ ready_count?: number }>().catch(() => null)
+  const formalEvReadyCount = Number(formalEvReady?.ready_count ?? 0)
+  if (formalEvReadyCount > 0) {
+    if (!env.ML_CONTROLLER_URL || !env.ML_CONTROLLER_SECRET) {
+      console.warn('[Intraday] S12 formal EV controller missing; retry remains pending')
+    } else {
+      const response = await fetch(
+        `${env.ML_CONTROLLER_URL.replace(/\/$/, '')}/s12-formal-ev/run`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Controller-Token': env.ML_CONTROLLER_SECRET,
+          },
+          body: JSON.stringify({
+            observation_date: today,
+            producer_run_id: `s12-formal-ev:${today}`,
+          }),
+          signal: AbortSignal.timeout(60_000),
+        },
+      ).catch((error) => {
+        console.warn('[Intraday] S12 formal EV trigger failed:', error)
+        return null
+      })
+      if (response && !response.ok) {
+        console.warn(
+          '[Intraday] S12 formal EV rejected:',
+          response.status,
+          (await response.text().catch(() => '')).slice(0, 300),
+        )
+      }
+    }
+  }
+
   await reconcilePendingBuyDebates(env, today).catch((e) =>
     console.warn('[Intraday] pending debate reconcile failed:', e),
   )

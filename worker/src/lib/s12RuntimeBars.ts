@@ -10,7 +10,7 @@ interface IntradaySnapshotSample {
   totalVolume: number
 }
 
-interface S12KbarRow {
+export interface S12KbarRow {
   ts?: string | null
   time?: string | null
   datetime?: string | null
@@ -72,6 +72,13 @@ export interface S12BaseBarDiagnostics {
   kbars_cache_business_date?: string | null
   kbars_point_in_time_reconstruction?: boolean
   kbars_research_fallback_reason?: string | null
+}
+
+export interface S12ResearchBarsOverride {
+  bars: IntradayRollingBar[]
+  cacheHit: boolean
+  cacheBusinessDate: string | null
+  error?: string | null
 }
 
 export interface S12DailyPriceDomainValidation {
@@ -442,7 +449,7 @@ async function loadCachedS12ResearchBars(
   symbol: string,
   tradeDate: string,
 ): Promise<{ bars: IntradayRollingBar[]; artifactBusinessDate: string } | null> {
-  if (!env.ARTIFACTS) return null
+  if (!env.ARTIFACTS && !env.EVIDENCE_ARTIFACT_READER) return null
   const manifest = await env.DB.prepare(`
     SELECT r2_key, checksum, schema_version, business_date
       FROM run_artifacts
@@ -460,9 +467,10 @@ async function loadCachedS12ResearchBars(
     `shioaji-research:%:${symbol}`,
   ).first<{ r2_key?: string | null; checksum?: string | null; schema_version?: string | null; business_date?: string | null }>()
   if (!manifest?.r2_key || manifest.schema_version !== S12_RESEARCH_ARTIFACT_SCHEMA) return null
-  const object = await env.ARTIFACTS.get(manifest.r2_key)
-  if (!object) return null
-  const body = await object.text()
+  const body = env.ARTIFACTS
+    ? await env.ARTIFACTS.get(manifest.r2_key).then((object: any) => object?.text() ?? null)
+    : await env.EVIDENCE_ARTIFACT_READER?.read(manifest.r2_key) ?? null
+  if (!body) return null
   if (await sha256Text(body) !== manifest.checksum) {
     throw new Error(`s12_research_cache_checksum_mismatch:${symbol}:${tradeDate}`)
   }
@@ -582,7 +590,98 @@ async function fetchS12ResearchKbars(
   throw new Error(lastError)
 }
 
-function s12KbarRowToBar(row: S12KbarRow): IntradayRollingBar | null {
+export async function fetchS12ResearchKbarsBatch(
+  env: Bindings,
+  symbols: string[],
+  tradeDate: string,
+  timeoutMs = 120_000,
+): Promise<Map<string, S12ResearchBarsOverride>> {
+  const uniqueSymbols = [...new Set(
+    symbols.map((symbol) => String(symbol ?? '').trim().toUpperCase()).filter(Boolean),
+  )]
+  if (uniqueSymbols.length > 64) throw new Error(`s12_research_batch_too_large:${uniqueSymbols.length}`)
+  const out = new Map<string, S12ResearchBarsOverride>()
+  const cached = await Promise.all(uniqueSymbols.map(async (symbol) => ({
+    symbol,
+    value: await loadCachedS12ResearchBars(env, symbol, tradeDate).catch(() => null),
+  })))
+  for (const item of cached) {
+    if (!item.value) continue
+    out.set(item.symbol, {
+      bars: item.value.bars,
+      cacheHit: true,
+      cacheBusinessDate: item.value.artifactBusinessDate,
+    })
+  }
+  const misses = uniqueSymbols.filter((symbol) => !out.has(symbol))
+  if (!misses.length) return out
+  const researchUrl = String(env.S12_RESEARCH_KBARS_URL ?? '').replace(/\/+$/, '')
+  const token = String(env.PROXY_SERVICE_TOKEN ?? '').trim()
+  if (!researchUrl) throw new Error('s12_research_service_url_missing')
+  if (!token) throw new Error('s12_research_service_token_missing')
+  const startDate = dateDaysBefore(tradeDate, 7)
+  const response = await fetch(`${researchUrl}/kbars/batch`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbols: misses, start: startDate, end: tradeDate, limit: 5000 }),
+    signal: AbortSignal.timeout(Math.max(10_000, Math.min(600_000, Math.floor(timeoutMs)))),
+  })
+  const payload = await response.json().catch(() => null) as {
+    detail?: string
+    results?: Array<{ symbol?: string; status?: string; data?: S12KbarRow[]; detail?: string }>
+  } | null
+  if (!response.ok) {
+    const detail = String(payload?.detail ?? `http_${response.status}`).replace(/\s+/g, ' ').slice(0, 180)
+    throw new Error(`s12_research_service_${response.status}:${detail}`)
+  }
+  const bySymbol = new Map(
+    (payload?.results ?? []).map((item) => [String(item.symbol ?? '').toUpperCase(), item]),
+  )
+  for (const symbol of misses) {
+    const item = bySymbol.get(symbol)
+    if (!item || item.status !== 'ok') {
+      out.set(symbol, {
+        bars: [], cacheHit: false, cacheBusinessDate: null,
+        error: `s12_research_batch_symbol_error:${symbol}:${String(item?.detail ?? 'missing_result').slice(0, 180)}`,
+      })
+      continue
+    }
+    const sourceRows = Array.isArray(item.data) ? item.data : []
+    const bars = sourceRows
+      .map(s12KbarRowToBar)
+      .filter((bar): bar is IntradayRollingBar => bar != null)
+      .filter((bar) => twDateText(bar.startMs) <= tradeDate && isTwSessionTime(bar.startMs))
+      .sort((left, right) => left.startMs - right.startMs)
+    if (!bars.length) {
+      out.set(symbol, {
+        bars: [], cacheHit: false, cacheBusinessDate: null,
+        error: `s12_research_service_empty:${symbol}:${tradeDate}`,
+      })
+      continue
+    }
+    await writeEvidenceArtifact(env, {
+      domain: S12_RESEARCH_ARTIFACT_DOMAIN,
+      businessDate: tradeDate,
+      producerRunId: s12ResearchProducerRunId(tradeDate, symbol),
+      retentionClass: 'raw_market_unreferenced',
+      schemaVersion: S12_RESEARCH_ARTIFACT_SCHEMA,
+      payload: { symbol, provider: 'shioaji_research_service_batch', bars },
+      rowCount: bars.length,
+      metadata: {
+        symbol,
+        source_service: 'shioaji-research',
+        source_start_date: startDate,
+        source_end_date: tradeDate,
+        source_kbar_rows: sourceRows.length,
+        transport: 'batch_v1',
+      },
+    })
+    out.set(symbol, { bars, cacheHit: false, cacheBusinessDate: null })
+  }
+  return out
+}
+
+export function s12KbarRowToBar(row: S12KbarRow): IntradayRollingBar | null {
   const startMs = parseTwKbarTimeMs(row.ts ?? row.time ?? row.datetime)
   const open = finiteNumber(row.open)
   const high = finiteNumber(row.high)
@@ -623,7 +722,7 @@ async function fetchS12ShioajiKbars(
   env: Bindings,
   symbol: string,
   tradeDate: string,
-  options: { researchTimeoutMs?: number } = {},
+  options: { researchTimeoutMs?: number; researchBarsOverride?: S12ResearchBarsOverride } = {},
 ): Promise<{
   bars: IntradayRollingBar[]
   previousSessionBars: IntradayRollingBar[]
@@ -709,7 +808,11 @@ async function fetchS12ShioajiKbars(
   let loadCurrentSessionProxy = !useResearchSource
   if (useResearchSource) {
     try {
-      const research = await fetchS12ResearchKbars(env, symbol, tradeDate, options.researchTimeoutMs ?? 60_000)
+      const research: S12ResearchBarsOverride = options.researchBarsOverride ?? await fetchS12ResearchKbars(
+        env, symbol, tradeDate, options.researchTimeoutMs ?? 60_000,
+      )
+      if (research.error) throw new Error(research.error)
+      if (!research.bars.length) throw new Error(`s12_research_service_empty:${symbol}:${tradeDate}`)
       rawBars = research.bars
       rawRowCount = rawBars.length
       provider = 'shioaji_research_service'
@@ -1155,7 +1258,7 @@ export async function loadS12HistoricalReplayBars(
   env: Bindings,
   symbol: string,
   tradeDate: string,
-  options: { researchTimeoutMs?: number } = {},
+  options: { researchTimeoutMs?: number; researchBarsOverride?: S12ResearchBarsOverride } = {},
 ): Promise<{
   bars: IntradayRollingBar[]
   fallback15mBars: IntradayRollingBar[]

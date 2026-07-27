@@ -23,6 +23,8 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'allocator_ev_feature_snapshot_staging', 'active8_oof_cohorts',
     'active8_oof_fold_artifacts', 'active8_oof_materialized_artifacts',
     'active8_oof_predictions', 'allocator_ev_oof_snapshots', 'l4_oof_predictions',
+    'active8_oof_date_eligibility', 'active8_oof_materialized_artifact_history',
+    'active8_oof_retention_ledger', 's12_formal_ev_decisions',
     'strategy_spec_registry', 'strategy_decision_log', 'selection_reference_snapshots_v1',
     'strategy_label_matrix_v4', 'strategy_label_matrix_runs_v4', 'selection_reference_repair_runs_v1',
     'strategy_reward_ledger',
@@ -43,6 +45,8 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'data_retention_policies', 'data_retention_runs', 'storage_capacity_daily',
     'price_horizon_projection_status', 'price_horizon_projection_runs',
     'data_domain_backfill_cursors', 'data_domain_parity_checks',
+    'data_retention_cursors', 'data_retention_run_items',
+    's12_structure_batch_runs', 's12_structure_batch_shards',
   ]),
   execution: new Set([
     'broker_execution_intents', 'broker_execution_legs', 'broker_execution_events',

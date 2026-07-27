@@ -16,6 +16,8 @@ const dashboardReadRoutes = fs.readFileSync('src/routes/dashboardReadRoutes.ts',
 
 assert(migration.includes('allocator_ev_daily_lifecycle'), 'daily allocator EV lifecycle must be durable in D1')
 assert(lifecycle.includes('inspectAllocatorSnapshotClosure'), 'watchdog must verify snapshot readback')
+assert(lifecycle.includes('recoverCompletedS12DurableCallback'), 'watchdog must recover a lost durable S12 success callback')
+assert(lifecycle.includes("type: 's12_structure_batch_complete'"), 'watchdog must requeue only the idempotent S12 completion finalizer')
 assert(lifecycle.includes('inspectAllocatorEvMaturityCoverage'), 'watchdog must expose strict expected-return maturity coverage')
 assert(lifecycle.includes("'$.l4_alpha_ev.artifact_contract_version'"), 'L4 PIT maturity must require the current artifact contract')
 assert(lifecycle.includes("'$.l4_alpha_ev.point_in_time_prediction_lineage.schema_version'"), 'L4 PIT maturity must require explicit point-in-time lineage')

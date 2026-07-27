@@ -404,11 +404,61 @@ function twTodayDate(): string {
   return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 }
 
+async function recoverCompletedS12DurableCallback(
+  env: Bindings,
+  businessDate: string,
+): Promise<string | null> {
+  const enabled = ['1', 'true', 'yes', 'on'].includes(
+    String((env as any).S12_DURABLE_STRUCTURE_JOB_ENABLED ?? '').trim().toLowerCase(),
+  )
+  if (!enabled) return null
+  const run = await env.DB.prepare(`
+    SELECT run_id, status, updated_at, last_error
+      FROM s12_structure_batch_runs
+     WHERE trade_date=? AND source='evening_chain'
+     ORDER BY datetime(updated_at) DESC
+     LIMIT 1
+  `).bind(businessDate).first<{
+    run_id?: string
+    status?: string
+    updated_at?: string
+    last_error?: string | null
+  }>()
+  if (!run?.run_id) return null
+  if (run.status !== 'success') {
+    const ageMs = Date.now() - Date.parse(String(run.updated_at ?? ''))
+    if (run.status === 'error' || !Number.isFinite(ageMs) || ageMs >= 75 * 60_000) {
+      return `s12 durable batch requires retry date=${businessDate} run_id=${run.run_id} status=${run.status} error=${run.last_error ?? 'none'}`
+    }
+    return null
+  }
+  const stage = await env.DB.prepare(`
+    SELECT status, lease_expires_at
+      FROM pipeline_stage_runs
+     WHERE business_date=? AND stage=?
+  `).bind(businessDate, `s12_snapshot_pipeline:${run.run_id}`).first<{
+    status?: string
+    lease_expires_at?: string | null
+  }>()
+  const runningLeaseLive = stage?.status === 'running'
+    && Date.parse(String(stage.lease_expires_at ?? '')) > Date.now()
+  if (stage?.status === 'success' || runningLeaseLive || stage?.status === 'queued') return null
+  await env.UPDATE_QUEUE.send({
+    type: 's12_structure_batch_complete',
+    cursor: 0,
+    triggerTime: businessDate,
+    runId: run.run_id,
+  } as any)
+  return `s12 durable callback recovered date=${businessDate} run_id=${run.run_id} prior_stage=${stage?.status ?? 'missing'}`
+}
+
 export async function runAllocatorEvLifecycleWatchdog(
   env: Bindings,
   requestedDate?: string,
 ): Promise<string> {
   const businessDate = await resolveLifecycleBusinessDate(env.DB, requestedDate)
+  const s12Recovery = await recoverCompletedS12DurableCallback(env, businessDate)
+  if (s12Recovery) return s12Recovery
   const [snapshot, maturity] = await Promise.all([
     inspectAllocatorSnapshotClosure(env.DB, businessDate, { kv: env.KV }),
     inspectAllocatorEvMaturityCoverage(env.DB, businessDate),

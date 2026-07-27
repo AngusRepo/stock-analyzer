@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
 
 
 API_KEY = os.environ.get("SHIOAJI_API_KEY", "")
@@ -264,6 +265,13 @@ def usage_endpoint(authorization: str | None = Header(default=None)):
     }
 
 
+class KbarsBatchRequest(BaseModel):
+    symbols: list[str] = Field(min_length=1, max_length=64)
+    start: str
+    end: str
+    limit: int = Field(default=5000, ge=1, le=5000)
+
+
 @app.get("/kbars/{symbol}")
 def kbars_endpoint(
     symbol: str,
@@ -291,6 +299,71 @@ def kbars_endpoint(
         "end": end_date.isoformat(),
         "count": len(rows),
         "data": rows,
+    }
+
+
+@app.post("/kbars/batch")
+def kbars_batch_endpoint(
+    request: KbarsBatchRequest,
+    authorization: str | None = Header(default=None),
+):
+    verify_token(authorization)
+    try:
+        start_date = datetime.fromisoformat(request.start).date()
+        end_date = datetime.fromisoformat(request.end).date()
+    except ValueError as exc:
+        raise HTTPException(400, "start and end must be ISO dates") from exc
+    if end_date < start_date or (end_date - start_date).days > 14:
+        raise HTTPException(400, "historical kbar range must be between 0 and 14 days")
+
+    symbols: list[str] = []
+    seen: set[str] = set()
+    for raw_symbol in request.symbols:
+        symbol = str(raw_symbol or "").upper().strip()
+        if not re.fullmatch(r"[0-9A-Z]{2,10}", symbol):
+            raise HTTPException(400, f"invalid Taiwan security symbol: {symbol}")
+        if symbol not in seen:
+            seen.add(symbol)
+            symbols.append(symbol)
+
+    results: list[dict] = []
+    success_count = 0
+    terminal_error: str | None = None
+    for symbol in symbols:
+        if terminal_error:
+            results.append({
+                "symbol": symbol, "status": "error", "count": 0,
+                "data": [], "detail": terminal_error,
+            })
+            continue
+        try:
+            rows = get_kbars(
+                symbol, start_date.isoformat(), end_date.isoformat(), request.limit,
+            )
+            success_count += 1
+            results.append({"symbol": symbol, "status": "ok", "count": len(rows), "data": rows})
+        except HTTPException as exc:
+            detail = str(exc.detail)
+            results.append({
+                "symbol": symbol, "status": "error", "count": 0,
+                "data": [], "detail": detail,
+            })
+            if exc.status_code in {401, 403} or "bandwidth_exhausted" in detail:
+                terminal_error = detail
+        except Exception as exc:  # noqa: BLE001 - preserve per-symbol failure evidence.
+            results.append({
+                "symbol": symbol, "status": "error", "count": 0,
+                "data": [], "detail": f"{type(exc).__name__}:{exc}",
+            })
+
+    return {
+        "status": "ok" if success_count == len(symbols) else "partial",
+        "start": start_date.isoformat(),
+        "end": end_date.isoformat(),
+        "requested": len(symbols),
+        "succeeded": success_count,
+        "failed": len(symbols) - success_count,
+        "results": results,
     }
 
 

@@ -67,6 +67,35 @@ def test_kbars_are_normalized_without_execution_routes(monkeypatch: pytest.Monke
     paths = {route.path for route in research.app.routes}
     assert "/kbars/{symbol}" in paths
     assert not paths.intersection({"/quote/{symbol}", "/orders", "/market-risk"})
+    assert "/kbars/batch" in paths
+
+
+def test_batch_kbars_preserves_per_symbol_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(research, "SERVICE_TOKEN", "test-token")
+    calls: list[str] = []
+
+    def fake_get(symbol: str, start: str, end: str, limit: int = 5000):
+        calls.append(symbol)
+        if symbol == "1785":
+            raise LookupError("stock_contract_not_found:1785")
+        return [{"ts": "2026-07-24T09:01:00+08:00", "close": 100.0}]
+
+    monkeypatch.setattr(research, "get_kbars", fake_get)
+    result = research.kbars_batch_endpoint(
+        research.KbarsBatchRequest(
+            symbols=["2441", "1785", "2441"],
+            start="2026-07-17",
+            end="2026-07-24",
+        ),
+        authorization="Bearer test-token",
+    )
+
+    assert calls == ["2441", "1785"]
+    assert result["status"] == "partial"
+    assert result["requested"] == 2
+    assert result["succeeded"] == 1
+    assert result["failed"] == 1
+    assert [row["status"] for row in result["results"]] == ["ok", "error"]
 
 
 def test_auth_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:

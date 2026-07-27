@@ -44,3 +44,7 @@ export type EvidenceArtifactManifest = {
 export interface EvidenceArtifactWriter {
   write(input: EvidenceArtifactWriteInput): Promise<EvidenceArtifactManifest>
 }
+
+export interface EvidenceArtifactReader {
+  read(r2Key: string): Promise<string | null>
+}

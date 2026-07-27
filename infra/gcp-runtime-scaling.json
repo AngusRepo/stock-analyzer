@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "project_id": "gen-lang-client-0602998820",
+  "region": "asia-east1",
+  "timezone": "Asia/Taipei",
+  "artifact_registry_repository": "cloud-run-source-deploy",
+  "scaler_service_account": "cloud-run-scaler@gen-lang-client-0602998820.iam.gserviceaccount.com",
+  "service_policies": {
+    "ml-controller": {
+      "cpu": "4",
+      "memory": "4Gi",
+      "concurrency": 40,
+      "timeout_seconds": 3600,
+      "cpu_allocation": "request_only",
+      "default_min": 0,
+      "max": 5,
+      "warm_enabled": true
+    },
+    "shioaji-proxy": {
+      "cpu": "1",
+      "memory": "512Mi",
+      "concurrency": 4,
+      "timeout_seconds": 15,
+      "cpu_allocation": "continuous",
+      "default_min": 0,
+      "max": 1,
+      "warm_enabled": true,
+      "warm_reason": "persistent broker session, subscriptions, tick cache, watchdog"
+    },
+    "shioaji-research": {
+      "cpu": "1",
+      "memory": "1Gi",
+      "concurrency": 1,
+      "timeout_seconds": 120,
+      "cpu_allocation": "request_only",
+      "default_min": 0,
+      "max": 20,
+      "warm_enabled": false,
+      "warm_reason": "request-scoped research bars with bounded service autoscaling"
+    },
+    "stockvision-execution-gateway": {
+      "cpu": "1",
+      "memory": "1Gi",
+      "concurrency": 1,
+      "timeout_seconds": 10,
+      "cpu_allocation": "continuous",
+      "default_min": 0,
+      "max": 1,
+      "warm_enabled": false,
+      "warm_enable_contract": "FINLAB_LIVE_SUBMIT_ENABLED=1 or LIVE_EXECUTION_SHADOW_BROKER_READ_ENABLED=1",
+      "warm_reason": "continuous CPU remains a future safety invariant; disabled execution has no background owner"
+    }
+  },
+  "scaler_jobs": {
+    "ml-controller-min-1": {
+      "services": ["ml-controller"],
+      "desired_min": 1,
+      "calendar_gate": "none"
+    },
+    "ml-controller-min-0": {
+      "services": ["ml-controller"],
+      "desired_min": 0,
+      "calendar_gate": "none"
+    },
+    "realtime-runtime-min-1": {
+      "services": ["shioaji-proxy"],
+      "desired_min": 1,
+      "calendar_gate": "twse_fail_open_min_1"
+    },
+    "realtime-runtime-min-0": {
+      "services": ["shioaji-proxy"],
+      "desired_min": 0,
+      "calendar_gate": "none"
+    }
+  },
+  "schedules": [
+    {"name": "realtime-runtime-min-1-trading-open", "job": "realtime-runtime-min-1", "cron": "30 8 * * 1-5"},
+    {"name": "realtime-runtime-min-0-trading-close", "job": "realtime-runtime-min-0", "cron": "31 13 * * 1-5"},
+    {"name": "ml-controller-min-1-trading-open", "job": "ml-controller-min-1", "cron": "40 8 * * 1-5"},
+    {"name": "ml-controller-min-0-trading-midday", "job": "ml-controller-min-0", "cron": "0 14 * * 1-5"},
+    {"name": "ml-controller-min-1-evening", "job": "ml-controller-min-1", "cron": "30 20 * * 1-5"},
+    {"name": "ml-controller-min-0-night", "job": "ml-controller-min-0", "cron": "0 0 * * 2-6"},
+    {"name": "ml-controller-min-1-monthly-sat", "job": "ml-controller-min-1", "cron": "first saturday of month 09:50"},
+    {"name": "ml-controller-min-0-monthly-sat", "job": "ml-controller-min-0", "cron": "first saturday of month 16:30"},
+    {"name": "ml-controller-min-1-sunday-research", "job": "ml-controller-min-1", "cron": "0 1 * * 0"},
+    {"name": "ml-controller-min-0-sunday-research", "job": "ml-controller-min-0", "cron": "0 7 * * 0"}
+  ],
+  "evening_window_policy": {
+    "enabled": true,
+    "classification": "reliability_optimization_not_correctness_dependency",
+    "reason": "controller cold starts measured in tens of seconds; callback correctness remains durable queue owned",
+    "reassess_after_successful_native_chains": 10
+  }
+}

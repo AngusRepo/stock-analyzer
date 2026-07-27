@@ -25,6 +25,80 @@ def _to_float(value: object, default: float = 0.0) -> float:
     return out if math.isfinite(out) else default
 
 
+def apply_categorical_exposure_cap(
+    weights: dict[str, float],
+    category_by_symbol: dict[str, str],
+    *,
+    max_category_weight: float | None,
+) -> tuple[dict[str, float], bool, dict[str, Any]]:
+    """Cap known category exposure and leave the excess in cash.
+
+    The cap never redistributes weight into weaker candidates, so it preserves
+    sparse allocation semantics and cannot become a hidden top-K/fill rule.
+    """
+    cap = _to_float(max_category_weight, 0.0)
+    cleaned = {
+        str(symbol): _to_float(weight, 0.0)
+        for symbol, weight in weights.items()
+        if str(symbol).strip() and _to_float(weight, 0.0) > 0.0
+    }
+    normalized_categories = {
+        str(symbol): str(category or "").strip().upper()
+        for symbol, category in category_by_symbol.items()
+    }
+    uncategorized = {"", "UNKNOWN", "UNCLASSIFIED", "NONE", "NULL"}
+    exposure_before: dict[str, float] = {}
+    for symbol, weight in cleaned.items():
+        category = normalized_categories.get(symbol, "")
+        if category in uncategorized:
+            continue
+        exposure_before[category] = exposure_before.get(category, 0.0) + weight
+
+    capped = dict(cleaned)
+    capped_categories: list[str] = []
+    if 0.0 < cap < 1.0:
+        for category, exposure in exposure_before.items():
+            if exposure <= cap:
+                continue
+            scale = cap / exposure
+            capped_categories.append(category)
+            for symbol, weight in list(capped.items()):
+                if normalized_categories.get(symbol, "") == category:
+                    capped[symbol] = weight * scale
+
+    capped = {
+        symbol: round(weight, 10)
+        for symbol, weight in capped.items()
+        if weight > 1e-12
+    }
+    exposure_after: dict[str, float] = {}
+    for symbol, weight in capped.items():
+        category = normalized_categories.get(symbol, "")
+        if category in uncategorized:
+            continue
+        exposure_after[category] = exposure_after.get(category, 0.0) + weight
+
+    applied = bool(capped_categories)
+    return capped, applied, {
+        "policy": "known_category_cap_reduce_to_cash_no_forced_redistribution",
+        "max_category_weight": cap if 0.0 < cap < 1.0 else None,
+        "applied": applied,
+        "capped_categories": sorted(capped_categories),
+        "exposure_before": {
+            category: round(value, 10)
+            for category, value in sorted(exposure_before.items())
+        },
+        "exposure_after": {
+            category: round(value, 10)
+            for category, value in sorted(exposure_after.items())
+        },
+        "unallocated_increment": round(
+            max(0.0, sum(cleaned.values()) - sum(capped.values())),
+            10,
+        ),
+    }
+
+
 def _symbol(row: dict[str, Any]) -> str:
     return str(row.get("symbol") or "").strip()
 

@@ -1,7 +1,8 @@
 """Dedicated private Cloud Run app for StockVision broker execution.
 
-Do not mount this route in the general ml-controller service. Runtime must use
-min=1/max=1, continuous CPU and a private invoker before live flags are set.
+Do not mount this route in the general ml-controller service. Runtime keeps
+max=1, continuous CPU and a private invoker; min=1 is mandatory before broker
+read or live-submit is enabled, while a fully disabled gateway remains min=0.
 """
 
 from __future__ import annotations

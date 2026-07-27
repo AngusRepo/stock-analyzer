@@ -11,11 +11,14 @@ import {
   runS12DurableStructureBatch,
   type S12DurableRunSource,
 } from '../lib/s12DurableStructureBatch'
+import { runS12IntradaySetupWatchBatch } from '../lib/s12IntradaySetupWatch'
+
+type S12StructureRunSource = S12DurableRunSource | 'intraday_watch'
 
 type Args = {
   date?: string
   runId?: string
-  source?: S12DurableRunSource
+  source?: S12StructureRunSource
 }
 
 function parseArgs(argv: string[]): Args {
@@ -24,7 +27,7 @@ function parseArgs(argv: string[]): Args {
     const arg = argv[i]
     if (arg === '--date') args.date = argv[++i]
     else if (arg === '--run-id') args.runId = argv[++i]
-    else if (arg === '--source') args.source = argv[++i] as S12DurableRunSource
+    else if (arg === '--source') args.source = argv[++i] as S12StructureRunSource
   }
   return args
 }
@@ -57,6 +60,7 @@ function buildBindings(): Bindings {
     STOCKVISION_AUTH_TOKEN: env.STOCKVISION_AUTH_TOKEN ?? '',
     S12_RESEARCH_KBARS_URL: env.S12_RESEARCH_KBARS_URL ?? '',
     PROXY_SERVICE_TOKEN: env.PROXY_SERVICE_TOKEN ?? '',
+    SHIOAJI_PROXY_URL: env.SHIOAJI_PROXY_URL ?? '',
     S12_INTRADAY_KBARS_ENABLED: 'true',
   } as unknown as Bindings
 }
@@ -70,16 +74,28 @@ async function main(): Promise<void> {
   )
   const source = String(
     args.source || process.env.S12_STRUCTURE_RUN_SOURCE || 'evening_chain',
-  ) as S12DurableRunSource
-  if (!['evening_chain', 'historical_shadow', 'manual_repair'].includes(source)) {
+  ) as S12StructureRunSource
+  if (!['evening_chain', 'historical_shadow', 'manual_repair', 'intraday_watch'].includes(source)) {
     throw new Error(`invalid_s12_structure_run_source:${source}`)
   }
-  const summary = await runS12DurableStructureBatch(buildBindings(), runDate, {
-    runId,
-    source,
-    shardSize: Number(process.env.S12_STRUCTURE_SHARD_SIZE || 48),
-    concurrency: Number(process.env.S12_STRUCTURE_CONCURRENCY || 12),
-  })
+  let symbols: string[] = []
+  if (process.env.S12_STRUCTURE_SYMBOLS_JSON) {
+    const parsed = JSON.parse(process.env.S12_STRUCTURE_SYMBOLS_JSON)
+    if (!Array.isArray(parsed)) throw new Error('invalid_s12_structure_symbols_json')
+    symbols = Array.from(new Set(parsed.map((value) => String(value).trim()).filter(Boolean)))
+  }
+  const bindings = buildBindings()
+  const summary = source === 'intraday_watch'
+    ? await runS12IntradaySetupWatchBatch(bindings, runDate, {
+        symbols,
+        concurrency: Number(process.env.S12_INTRADAY_WATCH_CONCURRENCY || 4),
+      })
+    : await runS12DurableStructureBatch(bindings, runDate, {
+        runId,
+        source,
+        shardSize: Number(process.env.S12_STRUCTURE_SHARD_SIZE || 48),
+        concurrency: Number(process.env.S12_STRUCTURE_CONCURRENCY || 12),
+      })
   console.log(JSON.stringify({
     task: 's12-structure-batch',
     status: 'success',

@@ -46,7 +46,10 @@ from services.active_model_policy import ACTIVE_ALPHA_MODELS, gnn_return_history
 from services.ensemble_v2 import ENSEMBLE_V2_SEMANTIC_VERSION, build_formal_model_input_contract
 from services.fundamental_quality import score_fundamental_quality
 from services.market_segment_policy import normalize_segment, policy_for_segment
-from services.portfolio_allocation import allocate_sparse_tangent_with_evidence
+from services.portfolio_allocation import (
+    allocate_sparse_tangent_with_evidence,
+    apply_categorical_exposure_cap,
+)
 from services.similarity_evidence import (
     apply_cluster_exposure_cap,
     similarity_components,
@@ -1686,6 +1689,7 @@ def filter_and_score_recommendations(
     regime_surface: dict | None = None,
     alpha_policy: dict | None = None,
     fundamental_quality_by_symbol: dict[str, dict[str, Any]] | None = None,
+    pit_sector_alpha_by_symbol: dict[str, dict[str, Any]] | None = None,
     run_date: str | None = None,
     include_filtered_diagnostics: bool = False,
 ) -> tuple[list[dict], int] | tuple[list[dict], int, dict[str, dict[str, Any]]]:
@@ -2042,6 +2046,11 @@ def filter_and_score_recommendations(
             else {}
         )
         persisted_alpha_context["market_regime_context"] = market_context
+        sector_expert = (pit_sector_alpha_by_symbol or {}).get(symbol)
+        if isinstance(sector_expert, dict):
+            # Late evidence only: the L1.5 decision universe is already frozen.
+            persisted_alpha_context["pit_sector_alpha_expert"] = sector_expert
+            row["pit_sector_alpha_expert"] = sector_expert
         row["alpha_context"] = persisted_alpha_context
         if s12_trade_ev_provider is not None:
             s12_trade_ev = s12_trade_ev_provider.build_for_row(row, prediction=ml)
@@ -3826,6 +3835,28 @@ def _apply_sparse_tangent_buy_selection(
             "unallocated_cash_weight": round(max(0.0, 1.0 - sum(float(value or 0.0) for value in weights.values())), 10),
             "candidate_diagnostics": opb_candidate_diagnostics,
         }
+    sector_by_symbol = {
+        str(row.get("symbol") or "").strip(): str(
+            row.get("industry") or row.get("sector") or ""
+        ).strip()
+        for row in eligible_rows
+        if str(row.get("symbol") or "").strip()
+    }
+    weights, sector_cap_applied, sector_exposure_evidence = apply_categorical_exposure_cap(
+        weights,
+        sector_by_symbol,
+        max_category_weight=sector_concentration_cap,
+    )
+    allocation_result = {
+        **allocation_result,
+        "weights": weights,
+        "sector_exposure_cap_applied": sector_cap_applied,
+        "sector_exposure_evidence": sector_exposure_evidence,
+        "unallocated_cash_weight": round(
+            max(0.0, 1.0 - sum(float(value or 0.0) for value in weights.values())),
+            10,
+        ),
+    }
     selected_symbols = set(weights)
     selected_by_symbol = {row.get("symbol"): row for row in eligible_rows}
     history_coverage = sum(1 for symbol in selected_symbols if risk_history.get(symbol))
@@ -3870,6 +3901,8 @@ def _apply_sparse_tangent_buy_selection(
         "cluster_penalty_applied": cluster_penalty_applied,
         "max_cluster_weight": max_cluster_weight,
         "sector_concentration_cap": sector_concentration_cap,
+        "sector_exposure_cap_applied": sector_cap_applied,
+        "sector_exposure_evidence": sector_exposure_evidence,
         "strategy_concentration_cap": strategy_concentration_cap,
         "family_concentration_cap": family_concentration_cap,
         "unallocated_cash_weight": allocation_result.get("unallocated_cash_weight"),
@@ -4104,6 +4137,14 @@ def _apply_sparse_tangent_buy_selection(
             "cluster_exposure": cluster_evidence.get("cluster_exposure"),
             "cluster_pairwise_corr_max": cluster_evidence.get("pairwise_corr_max"),
             "max_cluster_weight": max_cluster_weight,
+            "sector": sector_by_symbol.get(symbol) or None,
+            "sector_concentration_cap": sector_concentration_cap,
+            "sector_exposure_cap_applied": sector_cap_applied,
+            "sector_exposure": (
+                (sector_exposure_evidence.get("exposure_after") or {}).get(
+                    sector_by_symbol.get(symbol, "")
+                )
+            ),
             "pairwise_corr_max": similarity_evidence.get("pairwise_corr_max"),
             "covariance_method": similarity_evidence.get("covariance_method"),
             "covariance_shrinkage": similarity_evidence.get("covariance_shrinkage"),

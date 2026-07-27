@@ -210,6 +210,8 @@ CREATE TABLE IF NOT EXISTS sector_flow (
   up_count        INTEGER,
   llm_summary     TEXT,
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT,
+  pit_lineage_version TEXT,
   classification TEXT DEFAULT 'industry',
   rs_ratio        REAL,
   rs_momentum     REAL,
@@ -231,6 +233,8 @@ CREATE INDEX IF NOT EXISTS idx_sector_flow_date ON sector_flow(date DESC, total_
 CREATE INDEX IF NOT EXISTS idx_sector_flow_rotation_regime ON sector_flow(date, classification, rotation_regime);
 
 CREATE INDEX IF NOT EXISTS idx_sector_flow_rotation_score ON sector_flow(date, classification, rotation_score DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sector_flow_pit_lineage ON sector_flow(pit_lineage_version, date DESC, updated_at);
 
 CREATE INDEX IF NOT EXISTS idx_prices_date_stock ON stock_prices(date, stock_id);
 

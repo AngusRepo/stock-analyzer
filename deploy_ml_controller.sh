@@ -22,6 +22,7 @@ SERVICE="ml-controller"
 JOB="pipeline-v2"
 ML_CONTROLLER_URL_DEFAULT="https://ml-controller-530028717113.asia-east1.run.app"
 ML_CONTROLLER_PUBLIC_URL="${ML_CONTROLLER_PUBLIC_URL:-$ML_CONTROLLER_URL_DEFAULT}"
+SHIOAJI_PROXY_URL="${SHIOAJI_PROXY_URL:-https://shioaji-proxy-530028717113.asia-east1.run.app}"
 GCS_BUCKET_NAME="${GCS_BUCKET_NAME:-}"
 RETRAIN_LOCK_BUCKET="${RETRAIN_LOCK_BUCKET:-${GCS_BUCKET_NAME}}"
 GCP_PROJECT_ID="${GCP_PROJECT_ID:-gen-lang-client-0602998820}"
@@ -73,6 +74,7 @@ STRATEGY_MINING_JOB_NAME="${STRATEGY_MINING_JOB_NAME:-strategy-mining-research}"
 STRATEGY_MINING_EXECUTION_ENABLED="${STRATEGY_MINING_EXECUTION_ENABLED:-true}"
 STRATEGY_MINING_BACKEND="${STRATEGY_MINING_BACKEND:-modal}"
 RUNTIME_ENV_VARS="GCS_BUCKET_NAME=${GCS_BUCKET_NAME},RETRAIN_LOCK_BUCKET=${RETRAIN_LOCK_BUCKET},GCP_PROJECT_ID=${GCP_PROJECT_ID},GCP_REGION=${GCP_REGION},PIPELINE_JOB_NAME=${PIPELINE_JOB_NAME},VERIFY_JOB_NAME=${VERIFY_JOB_NAME},SCREENER_JOB_NAME=${SCREENER_JOB_NAME},S12_STRUCTURE_JOB_NAME=${S12_STRUCTURE_JOB_NAME},OPTUNA_JOB_NAME=${OPTUNA_JOB_NAME},OOF_MATERIALIZE_JOB_NAME=${OOF_MATERIALIZE_JOB_NAME},STOCKVISION_WORKER_URL=${STOCKVISION_WORKER_URL},ML_CONTROLLER_PUBLIC_URL=${ML_CONTROLLER_PUBLIC_URL},CF_D1_DB_ID=${CF_D1_DB_ID},CF_KV_NAMESPACE_ID=${CF_KV_NAMESPACE_ID},S12_RESEARCH_KBARS_URL=https://shioaji-research-530028717113.asia-east1.run.app,SHIOAJI_CERT_PATH=${SHIOAJI_CERT_MOUNT_PATH},PIPELINE_STATE_SPACE_OVERLAY_MODE=${PIPELINE_STATE_SPACE_OVERLAY_MODE},PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS=${PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS},MODAL_PREDICT_BATCH_SIZE_CANDIDATES=${MODAL_PREDICT_BATCH_SIZE_CANDIDATES},MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE=${MODAL_PREDICT_BATCH_SIZE_OBSERVATION_SOURCE},TIMESFM_MIN_SEQUENCE_COVERAGE=${TIMESFM_MIN_SEQUENCE_COVERAGE},TIMESFM_MIN_SEQUENCE_POINTS=${TIMESFM_MIN_SEQUENCE_POINTS},FINLAB_BACKFILL_EXECUTOR=${FINLAB_BACKFILL_EXECUTOR},STRATEGY_MINING_JOB_NAME=${STRATEGY_MINING_JOB_NAME},STRATEGY_MINING_EXECUTION_ENABLED=${STRATEGY_MINING_EXECUTION_ENABLED},STRATEGY_MINING_BACKEND=${STRATEGY_MINING_BACKEND}"
+RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},SHIOAJI_PROXY_URL=${SHIOAJI_PROXY_URL}"
 if [ -n "${CF_ACCOUNT_ID:-}" ]; then
   RUNTIME_ENV_VARS="${RUNTIME_ENV_VARS},CF_ACCOUNT_ID=${CF_ACCOUNT_ID}"
 fi
@@ -94,6 +96,7 @@ REQUIRED_ENV_VARS=(
   RETRAIN_LOCK_BUCKET
   GCP_PROJECT_ID
   GCP_REGION
+  SHIOAJI_PROXY_URL
   PIPELINE_JOB_NAME
   VERIFY_JOB_NAME
   SCREENER_JOB_NAME
@@ -311,6 +314,9 @@ doc = json.loads(raw)
 template = doc.get("spec", {}).get("template", {}) or {}
 metadata = template.get("metadata", {}) or {}
 annotations = metadata.get("annotations", {}) or {}
+service_annotations = (doc.get("metadata", {}) or {}).get("annotations", {}) or {}
+min_scale = service_annotations.get("run.googleapis.com/minScale", annotations.get("autoscaling.knative.dev/minScale", ""))
+max_scale = service_annotations.get("run.googleapis.com/maxScale", annotations.get("autoscaling.knative.dev/maxScale", ""))
 spec = template.get("spec", {}) or {}
 containers = spec.get("containers", []) or []
 container = containers[0] if containers else {}
@@ -320,8 +326,8 @@ print(f'CPU_THROTTLING={annotations.get("run.googleapis.com/cpu-throttling", "de
 print(f'CPU={limits.get("cpu", "")}')
 print(f'MEMORY={limits.get("memory", "")}')
 print(f'CONCURRENCY={spec.get("containerConcurrency", "")}')
-print(f'MIN_SCALE={annotations.get("autoscaling.knative.dev/minScale", "")}')
-print(f'MAX_SCALE={annotations.get("autoscaling.knative.dev/maxScale", "")}')
+print(f'MIN_SCALE={min_scale}')
+print(f'MAX_SCALE={max_scale}')
 PY
 )
 }

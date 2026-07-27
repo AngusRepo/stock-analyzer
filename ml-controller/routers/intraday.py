@@ -33,6 +33,7 @@ from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel
 
 from services.d1_client import query as d1_query
+from services.intraday_prediction_batch import load_latest_ensemble_predictions
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/intraday", tags=["intraday"])
@@ -119,24 +120,7 @@ def rescore_positions(req: RescoreRequest = Body(...)):
         tw_today = tw_now.date().isoformat()
 
     symbols = [p.symbol for p in req.positions]
-
-    # Batch-read latest ensemble predictions from D1
-    predictions_map: dict[str, dict] = {}
-    if symbols:
-        # D1 REST API has placeholder limit ~100, batch if needed
-        for sym in symbols:
-            rows = d1_query("""
-                SELECT p.direction_accuracy, p.trade_signal, p.signal_raw,
-                       p.entry_price as pred_entry, p.stop_loss as pred_stop,
-                       p.target1 as pred_t1, p.generated_at
-                FROM predictions p
-                JOIN stocks s ON s.id = p.stock_id
-                WHERE s.symbol = ? AND p.model_name = 'ensemble'
-                ORDER BY p.generated_at DESC LIMIT 1
-            """, [sym])
-            if rows:
-                predictions_map[sym] = rows[0]
-
+    predictions_map = load_latest_ensemble_predictions(symbols, d1_query)
     results: list[dict] = []
 
     for pos in req.positions:

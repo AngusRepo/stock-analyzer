@@ -341,6 +341,14 @@ async function fetchShioajiMonitoringQuotes(
   return map
 }
 
+export async function batchGetIntradayMonitoringOHLC(
+  symbols: string[],
+  env?: IntradayEnv,
+): Promise<Map<string, IntradayOHLC>> {
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol ?? '').trim()).filter(Boolean))]
+  return fetchShioajiMonitoringQuotes(uniqueSymbols, env)
+}
+
 async function fetchSingleOrderbookQuotes(
   symbols: string[],
   env?: IntradayEnv,

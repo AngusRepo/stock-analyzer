@@ -15,6 +15,7 @@ from services.active8_score_semantics import (  # noqa: E402
     MODEL_SCORE_SEMANTIC_VERSION,
     MODEL_TARGET_SEMANTIC_VERSION,
 )
+from services.active_model_policy import CORE_CROSS_SECTIONAL_ALPHA_MODELS  # noqa: E402
 
 
 def _install_daily_pipeline_import_stubs():
@@ -71,11 +72,29 @@ def test_pipeline_keeps_sector_flow_out_of_market_env_fanout():
 
     assert 'g.add_edge("load_inputs",         "compute_sector_flow")' not in source
     assert 'g.add_edge("compute_sector_flow", "build_payloads")' not in source
-    assert source.index('g.add_edge("write_d1",            "compute_sector_flow")') < source.index(
-        'g.add_edge("compute_sector_flow", "export_dataset_snapshot")'
+    assert 'g.add_edge("compute_personas",    "compute_sector_flow")' not in source
+    assert 'g.add_edge("write_d1",            "compute_sector_flow")' in source
+    assert 'g.add_edge("compute_sector_flow", "export_dataset_snapshot")' in source
+    assert source.index('g.add_edge("compute_personas",    "recommend")') < source.index(
+        'g.add_edge("write_d1",            "compute_sector_flow")'
     )
     assert "_load_market_env_with_backoff" in source
     assert "D1_RETRYABLE_MARKERS" in source
+
+
+def test_sector_expert_is_late_pit_evidence_and_cannot_mutate_candidate_slate():
+    graph_source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
+    recommendation_source = Path(__file__).resolve().parent.parent.joinpath("services", "recommendation_service.py").read_text(encoding="utf-8")
+
+    assert "decision_universe_frozen_at" in graph_source
+    assert "knowledge_cutoff=decision_cutoff" in graph_source
+    assert "pit_sector_alpha_by_symbol=sector_experts" in graph_source
+    assert recommendation_source.index("apply_alpha_context(") < recommendation_source.index(
+        'row["pit_sector_alpha_expert"] = sector_expert'
+    )
+    assert recommendation_source.index('row["pit_sector_alpha_expert"] = sector_expert') < recommendation_source.index(
+        "materialize_l4_alpha_ev("
+    )
 
 
 def test_pipeline_loads_run_date_scoped_adaptive_params_for_threshold_policy():
@@ -199,6 +218,7 @@ def test_core_family_evidence_strict_active8_rejects_missing_ensemble_output():
             "schema_version": MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
             "semantic_version": MODEL_SCORE_SEMANTIC_VERSION,
             "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
+            "required_core_models": list(CORE_CROSS_SECTIONAL_ALPHA_MODELS),
             "complete": True,
             "blockers": [],
         },

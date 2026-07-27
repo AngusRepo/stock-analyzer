@@ -303,29 +303,37 @@ export async function queryTopConceptTagsForSymbols(
   db: D1Database,
   symbols: string[],
   chunkSize = 400,
+  asOfDate?: string,
 ): Promise<Array<{ symbol: string; tag: string; tag_type?: string }>> {
   const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
   const safeChunkSize = Math.max(1, Math.min(D1_IN_CHUNK_SIZE, Math.floor(chunkSize || D1_IN_CHUNK_SIZE)))
   const rows: Array<{ symbol: string; tag: string; tag_type?: string }> = []
+  const decisionDate = String(asOfDate ?? '').slice(0, 10)
+  const finlabAsOfClause = decisionDate ? ' AND date(as_of_date) <= date(?)' : ''
+  const stockTagsAsOfClause = decisionDate ? " AND datetime(updated_at) < datetime(?, '+1 day')" : ''
 
   for (let i = 0; i < uniqueSymbols.length; i += safeChunkSize) {
     const chunk = uniqueSymbols.slice(i, i + safeChunkSize)
     const placeholders = chunk.map(() => '?').join(',')
-    const { results } = await db.prepare(
+    const statement = db.prepare(
       `SELECT symbol, tag, tag_type
          FROM (
            SELECT symbol, tag, tag_type, weight, 1 AS priority
              FROM finlab_taxonomy_tags
             WHERE tag_type IN ('industry_theme', 'subindustry', 'industry')
-              AND symbol IN (${placeholders})
+              AND symbol IN (${placeholders})${finlabAsOfClause}
            UNION ALL
            SELECT symbol, tag, tag_type, weight, 2 AS priority
              FROM stock_tags
             WHERE tag_type='concept'
-              AND symbol IN (${placeholders})
+              AND symbol IN (${placeholders})${stockTagsAsOfClause}
          )
         ORDER BY symbol, priority ASC, weight DESC`
-    ).bind(...chunk, ...chunk).all<{ symbol: string; tag: string; tag_type?: string }>()
+    )
+    const params = decisionDate
+      ? [...chunk, decisionDate, ...chunk, decisionDate]
+      : [...chunk, ...chunk]
+    const { results } = await statement.bind(...params).all<{ symbol: string; tag: string; tag_type?: string }>()
     rows.push(...(results ?? []))
   }
 
@@ -337,7 +345,7 @@ async function materializeScreenerThemeRuntime(
   date: string,
   symbols: string[],
 ): Promise<{ signals: number; tags: number; features: number }> {
-  const tags = await queryTopConceptTagsForSymbols(db, symbols) as FinLabTaxonomyTagRow[]
+  const tags = await queryTopConceptTagsForSymbols(db, symbols, 400, date) as FinLabTaxonomyTagRow[]
   const generatedAt = new Date().toISOString()
   const signals = buildFinLabTaxonomyThemeSignals(tags, date, generatedAt)
   await upsertThemeSignals(db, signals)
@@ -365,8 +373,9 @@ function rrgClassificationForTagType(tagType: string | null | undefined): string
 async function loadSymbolTaxonomyProfiles(
   db: D1Database,
   symbols: string[],
+  asOfDate?: string,
 ): Promise<Map<string, SymbolTaxonomyProfile>> {
-  const rows = await queryTopConceptTagsForSymbols(db, symbols)
+  const rows = await queryTopConceptTagsForSymbols(db, symbols, 400, asOfDate)
   const profiles = new Map<string, SymbolTaxonomyProfile>()
   for (const row of rows) {
     const symbol = String(row.symbol || '').trim()
@@ -3011,7 +3020,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     ...allPrices.map((p) => p.stock_id),
     ...emergingResearchPrices.map((p) => p.stock_id),
   ].map((symbol) => String(symbol || '').trim()).filter(Boolean))]
-  const taxonomyProfiles = await loadSymbolTaxonomyProfiles(env.DB, taxonomyUniverse)
+  const taxonomyProfiles = await loadSymbolTaxonomyProfiles(env.DB, taxonomyUniverse, endDate)
   const tagRows = [...taxonomyProfiles.entries()].flatMap(([symbol, profile]) =>
     profile.tags.map((tag) => ({ symbol, tag, weight: 1 })),
   )
@@ -3764,12 +3773,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   // RRG quadrant axes (RS=100, Mom=0) are canonical de Kempenaer coordinates,
   // so they stay fixed rather than becoming Optuna-tunable policy knobs.
   const sectorHeatScores: SectorHeatScore[] = []
-  let rrgAdjustedCount = 0
+  let rrgShadowNonzeroCount = 0
   const rrgCfg = cfg.rrg
   if (rrgCfg && scored.length > 0) {
     try {
       // (a) 瘥???∠? top (highest weight) concept tag
-      const topTagRows = await queryTopConceptTagsForSymbols(env.DB, [...overlayEligibleSymbols])
+      const topTagRows = await queryTopConceptTagsForSymbols(env.DB, [...overlayEligibleSymbols], 400, endDate)
       const symbolTags = new Map<string, Array<{ tag: string; classification: string }>>()
       for (const r of topTagRows ?? []) {
         const tags = symbolTags.get(r.symbol) ?? []
@@ -3783,14 +3792,16 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
                 rotation_acceleration, quadrant_age, transition_path, rotation_window
            FROM sector_flow
          WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
+           AND date <= ?
            AND quadrant IS NOT NULL
            AND rs_ratio IS NOT NULL
            AND rs_momentum IS NOT NULL
            AND date = (SELECT MAX(date) FROM sector_flow
                        WHERE classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
+                         AND date <= ?
                          AND rs_ratio IS NOT NULL
                          AND rs_momentum IS NOT NULL)`
-      ).all<{
+      ).bind(endDate, endDate).all<{
         sector: string
         classification: string
         quadrant: string
@@ -3858,7 +3869,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
             reasonCode: 'rrg_overlay_unmapped_neutral',
             scoreBefore: c.score,
             scoreAfter: c.score,
-            evidence: { tag: matched.tag, classification: matched.classification, taxonomyKey, latestThemeUniverseSize: latestThemeUniverse.size },
+            evidence: {
+              tag: matched.tag,
+              classification: matched.classification,
+              taxonomyKey,
+              latestThemeUniverseSize: latestThemeUniverse.size,
+              applicationMode: 'shadow_late_l4_fusion_feature_only',
+              candidateSetMutationAllowed: false,
+            },
           })
           continue
         }
@@ -3908,19 +3926,16 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         }
         adjustment += turnoverShareAdjustment
         if (adjustment !== 0) {
-          const before = c.score
-          c.score += adjustment
-          const sign = adjustment > 0 ? '+' : ''
-          c.reason = `[rrg_overlay ${q} ${sign}${adjustment}] ${c.reason}`
-          rrgAdjustedCount++
+          const frozenScore = c.score
+          rrgShadowNonzeroCount++
           pushFunnelItem(funnelItems, {
             symbol: c.symbol,
             name: c.name,
             stage: 'rrg_overlay',
             decision: 'observe',
             reasonCode,
-            scoreBefore: before,
-            scoreAfter: c.score,
+            scoreBefore: frozenScore,
+            scoreAfter: frozenScore,
             evidence: {
               tag: matched.tag,
               classification: matched.classification,
@@ -3939,13 +3954,16 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
               rotationWindow,
               rotationAdjustment,
               turnoverShareAdjustment,
-              adjustment,
+              shadowAdjustment: adjustment,
+              applicationMode: 'shadow_late_l4_fusion_feature_only',
+              downstreamOwner: 'l4_fusion_allocator',
+              candidateSetMutationAllowed: false,
             },
           })
         }
       }
       debugLog.push(
-        `[Step 3] RRG overlay applied to ${rrgAdjustedCount}/${scored.length} ` +
+        `[Step 3] RRG shadow evidence nonzero=${rrgShadowNonzeroCount}/${scored.length} ` +
         `(taxonomy sectors loaded: ${themeQuadrant.size}, ` +
         `bonuses: L=${rrgCfg.leadingBonus} I=${rrgCfg.improvingBonus} W=${rrgCfg.weakeningBonus} La=${rrgCfg.laggingPenalty})`
       )
@@ -3954,7 +3972,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       debugLog.push(`[Step 3] RRG quadrant bonus skipped (error): ${e}`)
     }
   } else {
-    debugLog.push('[Step 3] RRG quadrant bonus skipped (cfg.rrg missing or empty scored)')
+    debugLog.push('[Step 3] RRG shadow evidence skipped (cfg.rrg missing or empty scored)')
   }
 
   // ?? Step 4: ???Ｗ?????

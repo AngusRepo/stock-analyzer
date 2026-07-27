@@ -190,6 +190,7 @@ def _l4_alpha_ev(value: float, *, method: str = "stacked_meta_calibrator") -> di
         "trained_until": "2026-07-06",
         "horizon_days": 3,
         "cost_model_bps": 18.0,
+        "output_is_net_of_costs": True,
         "feature_families": ["fundamental", "formal_ml", "chip", "technical", "regime", "s12_context"],
         "feature_names": [
             "ml_edge_norm",

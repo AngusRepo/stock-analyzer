@@ -48,6 +48,7 @@ def _l4_payload(value: float) -> dict:
         "trained_until": "2026-01-01",
         "horizon_days": 5,
         "cost_model_bps": 18.0,
+        "output_is_net_of_costs": True,
     }
 
 
@@ -137,6 +138,17 @@ def _row(day: str, idx: int) -> dict:
         "s12_replay_status": "executed" if replay_executed else "not_triggered",
         "alpha_context": json.dumps({
             "market_heat_expected_return": 0.003 + (idx % 5) * 0.0005,
+            "pit_sector_alpha_expert": {
+                "status": "loaded",
+                "point_in_time": True,
+                "signal_date": day,
+                "source_date": day,
+                "features": {
+                    "sector_alpha_available": 1.0,
+                    "sector_rs_consensus": max(-1.0, min(1.0, l4 * 50.0)),
+                    "sector_momentum_consensus": max(-1.0, min(1.0, s12 * 50.0)),
+                },
+            },
             "market_regime_context": {
                 "schema_version": "fusion-market-context-pit-v1",
                 "signal_date": day,
@@ -185,12 +197,12 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["validation_packet"]["sample_audit"]["l4_available_count"] > 0
     assert artifact["validation_packet"]["sample_audit"]["s12_structure_available_count"] > 0
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
-    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v12"
-    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v12"
+    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v13"
+    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v13"
     assert artifact["validation_packet"]["validation_scope"]["selection_target"] == (
         "same_date_cross_section_residual_of_five_session_net_return"
     )
-    assert artifact["resolver_method"] == "market_conditioned_cross_fitted_rank_two_part_trade_ev_fusion"
+    assert artifact["resolver_method"] == "sector_market_conditioned_cross_fitted_rank_two_part_trade_ev_fusion"
     assert "l4_expected_return" in artifact["coefficients"]
     assert "s12_trade_expected_return" in artifact["coefficients"]
     assert artifact["coefficients"]["l4_expected_return"] != 0
@@ -205,8 +217,10 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["validation_packet"]["champion_comparison"]["decision"] == "PASS"
     assert artifact["validation_packet"]["champion_comparison"]["top_trade_ev_lcb90"] > 0
     assert artifact["validation_packet"]["sample_audit"]["market_context_available_coverage"] == 1.0
+    assert artifact["validation_packet"]["sample_audit"]["sector_alpha_available_coverage"] == 1.0
     assert "market_return_5d" in artifact["feature_names"]
     assert "l4_defensive_regime_interaction" in artifact["feature_names"]
+    assert "sector_rs_consensus" in artifact["feature_names"]
 
 
 def test_fusion_challenger_must_beat_canonical_l4_on_paired_oos_dates():

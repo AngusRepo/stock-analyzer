@@ -667,6 +667,8 @@ CREATE TABLE IF NOT EXISTS sector_flow (
   up_count        INTEGER,  -- 上漲家數
   llm_summary     TEXT,     -- LLM 生成的族群分析
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT,
+  pit_lineage_version TEXT,
   classification TEXT DEFAULT 'industry',
   rs_ratio        REAL,
   rs_momentum     REAL,
@@ -685,6 +687,7 @@ CREATE TABLE IF NOT EXISTS sector_flow (
 CREATE INDEX IF NOT EXISTS idx_sector_flow_date ON sector_flow(date DESC, total_net DESC);
 CREATE INDEX IF NOT EXISTS idx_sector_flow_rotation_regime ON sector_flow(date, classification, rotation_regime);
 CREATE INDEX IF NOT EXISTS idx_sector_flow_rotation_score ON sector_flow(date, classification, rotation_score DESC);
+CREATE INDEX IF NOT EXISTS idx_sector_flow_pit_lineage ON sector_flow(pit_lineage_version, date DESC, updated_at);
 
 CREATE TABLE IF NOT EXISTS screener_funnel_runs (
   run_id          TEXT PRIMARY KEY,

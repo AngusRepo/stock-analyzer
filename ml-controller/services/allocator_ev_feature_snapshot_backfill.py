@@ -35,6 +35,10 @@ from services.fusion_market_context import (
     merge_market_context,
     recorded_market_context,
 )
+from services.pit_sector_alpha import (
+    load_pit_sector_alpha_experts_by_key,
+    unavailable_sector_alpha,
+)
 
 
 QueryFn = Callable[[str, list[Any] | None], list[dict[str, Any]]]
@@ -656,6 +660,12 @@ def build_allocator_ev_feature_snapshots_for_date(
         query_fn,
         timed_candidates,
     )
+    sector_alpha_load_error: str | None = None
+    try:
+        sector_alpha_by_key = load_pit_sector_alpha_experts_by_key(query_fn, candidates)
+    except Exception as exc:  # noqa: BLE001 - missing evidence remains explicit in each snapshot.
+        sector_alpha_by_key = {}
+        sector_alpha_load_error = f"{type(exc).__name__}:{exc}"
     generated_values = sorted(
         str(row.get("prediction_generated_at") or "").strip()
         for row in candidates
@@ -692,6 +702,7 @@ def build_allocator_ev_feature_snapshots_for_date(
     rejected_lineage_rows = 0
     market_context_rows = 0
     regime_surface_rows = 0
+    sector_alpha_rows = 0
     for raw in candidates:
         row, prediction = _parse_candidate_row(raw)
         reference_rejection = str(row.get("reference_feature_rejection_reason") or "").strip()
@@ -777,6 +788,12 @@ def build_allocator_ev_feature_snapshots_for_date(
             else {}
         )
         alpha_context["market_regime_context"] = market_context
+        sector_expert = sector_alpha_by_key.get((snapshot_date, str(row.get("symbol") or "")))
+        if not isinstance(sector_expert, dict):
+            sector_expert = unavailable_sector_alpha(snapshot_date, "snapshot_sector_alpha_not_loaded")
+        alpha_context["pit_sector_alpha_expert"] = sector_expert
+        if sector_expert.get("status") == "loaded" and sector_expert.get("point_in_time") is True:
+            sector_alpha_rows += 1
         row["alpha_context"] = alpha_context
         existing = row.get("existing_alpha_allocation") if isinstance(row.get("existing_alpha_allocation"), dict) else {}
         l4_payload = _existing_l4_payload(existing, snapshot_date=snapshot_date)
@@ -951,6 +968,12 @@ def build_allocator_ev_feature_snapshots_for_date(
             "regime_surface_rows": regime_surface_rows,
             "coverage": round(market_context_rows / max(1, len(statements)), 8),
             "load_error": market_context_load_error,
+        },
+        "pit_sector_alpha": {
+            "available_rows": sector_alpha_rows,
+            "coverage": round(sector_alpha_rows / max(1, len(statements)), 8),
+            "load_error": sector_alpha_load_error,
+            "point_in_time_required": True,
         },
         "written": 0 if dry_run else len(statements),
         "stale_rows_deleted": None,

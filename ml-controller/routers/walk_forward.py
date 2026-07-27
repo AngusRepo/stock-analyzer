@@ -1230,6 +1230,8 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             })
             market_context_by_date = load_pit_market_contexts(d1_client.query, prediction_dates)
             fundamental_quality_by_key = load_fundamental_quality_pit_by_key(prediction_rows)
+            from services.pit_sector_alpha import load_pit_sector_alpha_experts_by_key
+            sector_alpha_by_key = load_pit_sector_alpha_experts_by_key(d1_client.query, native_rows)
             snapshot_rows, snapshot_evidence = build_oof_snapshot_rows(
                 prediction_rows,
                 native_rows,
@@ -1237,6 +1239,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 source_manifest_checksum=manifest["manifest_checksum"],
                 fundamental_quality_by_key=fundamental_quality_by_key,
                 market_context_by_date=market_context_by_date,
+                sector_alpha_by_key=sector_alpha_by_key,
             )
         l4_result = build_l4_alpha_ev_artifact_from_rows(
             snapshot_rows,

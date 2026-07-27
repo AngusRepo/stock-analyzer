@@ -120,6 +120,11 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
     'screener must fail closed when funnel evidence persistence fails because pipeline requires L1 seed evidence',
   )
   assert(marketScreener.includes('rrg_overlay'), 'RRG must be recorded as overlay evidence, not opaque bonus text')
+  assert(!marketScreener.includes('c.score += adjustment'), 'RRG evidence must not mutate the L1/L1.5 candidate score')
+  assert(marketScreener.includes("applicationMode: 'shadow_late_l4_fusion_feature_only'"), 'RRG must declare its late learned consumer scope')
+  assert(marketScreener.includes('candidateSetMutationAllowed: false'), 'RRG must explicitly forbid candidate-set mutation')
+  assert(marketScreener.includes('queryTopConceptTagsForSymbols(env.DB, [...overlayEligibleSymbols], 400, endDate)'), 'RRG taxonomy must be point-in-time as of the screener date')
+  assert(marketScreener.includes(').bind(endDate, endDate).all<{'), 'RRG snapshot must not read sector_flow rows after the screener date')
   assert(marketScreener.includes('latestThemeUniverse'), 'RRG overlay must align FinLab taxonomy tags to the latest sector_flow taxonomy universe')
   assert(marketScreener.includes("SELECT sector, classification, quadrant"), 'screener RRG overlay must keep sector_flow classification with the sector')
   assert(marketScreener.includes('AND rs_ratio IS NOT NULL'), 'screener RRG overlay must anchor to latest sector_flow snapshot with RS evidence, not stale latest non-null quadrant')

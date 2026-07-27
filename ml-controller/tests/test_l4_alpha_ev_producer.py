@@ -350,3 +350,46 @@ def test_filter_and_score_materializes_l4_alpha_ev_for_allocator(monkeypatch):
     assert promoted[0]["alpha_allocation"]["expected_return_owner"] == "l4_alpha_ev"
     assert promoted[0]["alpha_allocation"]["expected_return"] > 0
     assert promoted[0]["alpha_allocation"]["l4_alpha_ev"]["status"] == "loaded"
+
+
+def test_materialize_l4_alpha_ev_normalizes_gross_artifact_once_and_marks_net():
+    payload = materialize_l4_alpha_ev(
+        _row(),
+        prediction=_prediction(),
+        policy={"l4_alpha_ev": _artifact(output_is_net_of_costs=False)},
+    )
+
+    assert payload["status"] == "loaded"
+    assert payload["expected_return"] == pytest.approx(0.01644)
+    assert payload["output_is_net_of_costs"] is True
+    assert payload["source_output_is_net_of_costs"] is False
+    assert payload["cost_normalization_applied"] is True
+    assert payload["cost_normalization_bps"] == pytest.approx(18.0)
+
+
+def test_materialize_l4_alpha_ev_rejects_ambiguous_persisted_gross_payload():
+    existing = {
+        **_artifact(output_is_net_of_costs=False),
+        "schema_version": "l4-alpha-ev-v1",
+        "expected_return": 0.01,
+        "expected_return_mean": 0.01,
+        "expected_return_owner": "l4_alpha_ev",
+    }
+    payload = materialize_l4_alpha_ev({**_row(), "l4_alpha_ev": existing})
+
+    assert payload["status"] == "rejected"
+    assert payload["expected_return"] is None
+    assert "materialized_output_cost_semantic_ambiguous" in payload["blockers"]
+
+
+def test_materialize_l4_alpha_ev_rejects_missing_cost_semantic():
+    artifact = _artifact()
+    artifact.pop("output_is_net_of_costs")
+    payload = materialize_l4_alpha_ev(
+        _row(),
+        prediction=_prediction(),
+        policy={"l4_alpha_ev": artifact},
+    )
+
+    assert payload["status"] == "rejected"
+    assert "output_is_net_of_costs_missing_or_invalid" in payload["blockers"]

@@ -769,19 +769,29 @@ async function handleSchedulerCallback(c: any) {
     }
     const callbackSource = String(body.metadata?.source ?? 'evening_chain')
     if (String(body.status) === 'success') {
-      if (callbackSource === 'evening_chain') {
+      const continuationType = callbackSource === 'evening_chain'
+        ? 's12_structure_batch_complete'
+        : callbackSource === 'intraday_watch'
+          ? 's12_intraday_setup_watch_complete'
+          : null
+      if (continuationType) {
         await c.env.UPDATE_QUEUE.send({
-          type: 's12_structure_batch_complete',
+          type: continuationType,
           cursor: 0,
           triggerTime: callbackRunDate,
           runId: callbackRunId,
         })
       }
-      await logSchedulerResult(c.env.KV, 's12-structure-snapshot', {
-        status: callbackSource === 'evening_chain' ? 'triggered' : 'success',
+      const logTask = callbackSource === 'intraday_watch'
+        ? 's12-intraday-setup-watch'
+        : 's12-structure-snapshot'
+      await logSchedulerResult(c.env.KV, logTask, {
+        status: continuationType ? 'triggered' : 'success',
         summary: callbackSource === 'evening_chain'
           ? `durable S12 callback accepted; finalizer queued date=${callbackRunDate} run_id=${callbackRunId}`
-          : `durable S12 shadow complete without pipeline continuation date=${callbackRunDate} run_id=${callbackRunId}`,
+          : callbackSource === 'intraday_watch'
+            ? `durable intraday S12 setup watch complete; formal EV queued date=${callbackRunDate} run_id=${callbackRunId}`
+            : `durable S12 shadow complete without pipeline continuation date=${callbackRunDate} run_id=${callbackRunId}`,
         duration_ms: Number(body.duration_ms ?? 0),
         run_id: callbackRunId,
         run_date: callbackRunDate,

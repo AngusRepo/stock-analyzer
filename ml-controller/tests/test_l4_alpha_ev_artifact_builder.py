@@ -41,6 +41,18 @@ def _row(day: str, idx: int, *, target: float) -> dict:
                 "newsTheme": 0.0,
             },
         }),
+        "alpha_context": json.dumps({
+            "pit_sector_alpha_expert": {
+                "status": "loaded",
+                "point_in_time": True,
+                "signal_date": day,
+                "source_date": day,
+                "features": {
+                    "sector_alpha_available": 1.0,
+                    "sector_rs_consensus": (idx % 25) / 12.0 - 1.0,
+                },
+            },
+        }),
         "forecast_data": json.dumps({
             "ensemble_v2": {
                 "semantic_version": "active8-ic-weighted-rank-v4",
@@ -121,12 +133,13 @@ def test_l4_alpha_ev_artifact_builder_emits_production_artifact_when_oos_passes(
     assert artifact["resolver_method"] == "ridge_meta_calibrator"
     assert artifact["expected_return_owner"] == "l4_alpha_ev"
     assert artifact["output_is_net_of_costs"] is True
-    assert artifact["artifact_contract_version"] == "l4-alpha-ev-contract-v4"
+    assert artifact["artifact_contract_version"] == "l4-alpha-ev-contract-v5"
     assert artifact["label_schema_version"] == "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
-    assert artifact["feature_semantic_version"] == "l4-directional-score-components-v2-lineage-bound"
+    assert artifact["feature_semantic_version"] == "l4-directional-score-sector-components-v3-lineage-bound"
     assert "expectedReturnCalibration" not in artifact
     assert artifact["coefficients"]["ensemble_directional_margin"] != 0
     assert "ensemble_confidence_centered" not in artifact["coefficients"]
+    assert artifact["validation_packet"]["sample_audit"]["sector_alpha_available_count"] == len(rows)
 
 
 def test_l4_alpha_ev_artifact_builder_fails_closed_on_insufficient_samples():
@@ -226,7 +239,7 @@ def test_l4_alpha_ev_artifact_builder_reports_degenerate_feature_without_forcing
 
     packet = out["artifact"]["validation_packet"]
     audit = packet["sample_audit"]
-    assert audit["degenerate_features"] == ["fundamental_quality_norm"]
+    assert "fundamental_quality_norm" in audit["degenerate_features"]
     assert audit["feature_profile"]["fundamental_quality_norm"] == {
         "samples": 200,
         "nonzero_samples": 0,

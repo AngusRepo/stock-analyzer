@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { batchGetIntradayOHLC } from './paperIntradayData'
+import { batchGetIntradayMonitoringOHLC } from './paperIntradayData'
 import {
   assessS12IntradayStructureFromBaseBars,
   s12TimingPolicyFromEnv,
@@ -24,7 +24,7 @@ export const S12_SETUP_WATCH_STATES = new Set([
   'waiting_reaction',
 ])
 
-interface SetupWatchSeed {
+export interface SetupWatchSeed {
   symbol: string
   source_trade_date: string
   state: string
@@ -48,7 +48,7 @@ export function isSetupWatchNearDemandZone(
   return currentPrice >= low * (1 - proximityPct) && currentPrice <= high * (1 + proximityPct)
 }
 
-async function loadSetupWatchSeeds(db: D1Database, today: string): Promise<SetupWatchSeed[]> {
+export async function loadSetupWatchSeeds(db: D1Database, today: string): Promise<SetupWatchSeed[]> {
   const { results } = await db.prepare(`
     WITH source_date AS (
       SELECT MAX(trade_date) AS trade_date
@@ -103,7 +103,7 @@ async function loadSetupWatchSeeds(db: D1Database, today: string): Promise<Setup
 }
 
 export interface S12SetupWatchSummary {
-  status: 'ok' | 'empty' | 'skipped'
+  status: 'ok' | 'empty' | 'skipped' | 'triggered' | 'running'
   source_trade_date: string | null
   watched: number
   near_zone: number
@@ -111,17 +111,98 @@ export interface S12SetupWatchSummary {
   ready_for_formal_ev: number
   still_waiting: number
   errors: number
+  run_id?: string | null
+  execution_id?: string | null
 }
 
-export async function runS12IntradaySetupWatch(env: Bindings, today: string): Promise<S12SetupWatchSummary> {
-  const seeds = await loadSetupWatchSeeds(env.DB, today)
+function enabledFlag(value: unknown, fallback: boolean): boolean {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (!normalized) return fallback
+  return ['1', 'true', 'yes', 'on'].includes(normalized)
+}
+
+async function runBounded<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let cursor = 0
+  const workers = Array.from(
+    { length: Math.min(items.length, Math.max(1, Math.floor(concurrency))) },
+    async () => {
+      while (cursor < items.length) {
+        const index = cursor
+        cursor += 1
+        await fn(items[index])
+      }
+    },
+  )
+  await Promise.all(workers)
+}
+
+function minuteBucketRunId(today: string): string {
+  const tw = new Date(Date.now() + 8 * 3600_000).toISOString()
+  return `s12-intraday-watch:${today}:${tw.slice(11, 16).replace(':', '')}`
+}
+
+async function triggerDurableSetupWatch(
+  env: Bindings,
+  today: string,
+  symbols: string[],
+): Promise<Pick<S12SetupWatchSummary, 'status' | 'run_id' | 'execution_id'>> {
+  if (!env.ML_CONTROLLER_URL || !env.ML_CONTROLLER_SECRET) {
+    throw new Error('s12_intraday_watch_controller_missing')
+  }
+  const chainRunId = minuteBucketRunId(today)
+  const response = await fetch(`${env.ML_CONTROLLER_URL.replace(/\/$/, '')}/s12-structure/batch/run`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Controller-Token': env.ML_CONTROLLER_SECRET,
+    },
+    body: JSON.stringify({
+      run_date: today,
+      chain_run_id: chainRunId,
+      source: 'intraday_watch',
+      symbols,
+    }),
+    signal: AbortSignal.timeout(10_000),
+  })
+  const payload = await response.json().catch(() => ({})) as any
+  if (response.status === 409) {
+    const detail = payload?.detail ?? payload
+    return {
+      status: 'running',
+      run_id: detail?.run_id ?? chainRunId,
+      execution_id: detail?.execution_id ?? null,
+    }
+  }
+  if (!response.ok) {
+    throw new Error(`s12_intraday_watch_trigger_${response.status}:${JSON.stringify(payload).slice(0, 300)}`)
+  }
+  return {
+    status: 'triggered',
+    run_id: payload?.run_id ?? chainRunId,
+    execution_id: payload?.execution_id ?? null,
+  }
+}
+
+export async function runS12IntradaySetupWatchBatch(
+  env: Bindings,
+  today: string,
+  options: { symbols?: string[]; concurrency?: number } = {},
+): Promise<S12SetupWatchSummary> {
+  const requestedSymbols = new Set((options.symbols ?? []).map((value) => String(value).trim()))
+  const allSeeds = await loadSetupWatchSeeds(env.DB, today)
+  const seeds = requestedSymbols.size > 0
+    ? allSeeds.filter((seed) => requestedSymbols.has(seed.symbol))
+    : allSeeds
   if (!seeds.length) {
     return { status: 'empty', source_trade_date: null, watched: 0, near_zone: 0, assessed: 0, ready_for_formal_ev: 0, still_waiting: 0, errors: 0 }
   }
-  const quotes = await batchGetIntradayOHLC(seeds.map((row) => row.symbol), {
+  const quotes = await batchGetIntradayMonitoringOHLC(seeds.map((row) => row.symbol), {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
-    requireBrokerQuote: true,
   })
   const proximityPct = Math.max(0.002, Math.min(0.05, Number((env as any).S12_SETUP_WATCH_ZONE_PROXIMITY_PCT ?? 0.018)))
   const calibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(env.DB).catch(() => [])
@@ -131,11 +212,15 @@ export async function runS12IntradaySetupWatch(env: Bindings, today: string): Pr
   let stillWaiting = 0
   let errors = 0
 
-  for (const seed of seeds) {
+  const nearSeeds = seeds.filter((seed) => {
     const quote = quotes.get(seed.symbol)
     const price = Number(quote?.last ?? 0)
-    if (!quote || !isSetupWatchNearDemandZone(seed, price, proximityPct)) continue
-    nearZone += 1
+    return Boolean(quote && isSetupWatchNearDemandZone(seed, price, proximityPct))
+  })
+  nearZone = nearSeeds.length
+  await runBounded(nearSeeds, options.concurrency ?? 4, async (seed) => {
+    const quote = quotes.get(seed.symbol)!
+    const price = Number(quote.last ?? 0)
     try {
       const [bars, stock] = await Promise.all([
         loadS12IntradayBaseBars(env, seed.symbol, today, price, Number(quote.totalVolume ?? 0)),
@@ -187,7 +272,7 @@ export async function runS12IntradaySetupWatch(env: Bindings, today: string): Pr
       errors += 1
       console.warn(`[S12SetupWatch] ${seed.symbol} failed:`, error instanceof Error ? error.message : String(error))
     }
-  }
+  })
   return {
     status: 'ok',
     source_trade_date: seeds[0]?.source_trade_date ?? null,
@@ -197,5 +282,47 @@ export async function runS12IntradaySetupWatch(env: Bindings, today: string): Pr
     ready_for_formal_ev: ready,
     still_waiting: stillWaiting,
     errors,
+  }
+}
+
+export async function runS12IntradaySetupWatch(env: Bindings, today: string): Promise<S12SetupWatchSummary> {
+  const seeds = await loadSetupWatchSeeds(env.DB, today)
+  if (!seeds.length) {
+    return { status: 'empty', source_trade_date: null, watched: 0, near_zone: 0, assessed: 0, ready_for_formal_ev: 0, still_waiting: 0, errors: 0 }
+  }
+  const quotes = await batchGetIntradayMonitoringOHLC(seeds.map((row) => row.symbol), {
+    SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
+    PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
+  })
+  const proximityPct = Math.max(0.002, Math.min(0.05, Number((env as any).S12_SETUP_WATCH_ZONE_PROXIMITY_PCT ?? 0.018)))
+  const nearSymbols = seeds
+    .filter((seed) => {
+      const quote = quotes.get(seed.symbol)
+      return Boolean(quote && isSetupWatchNearDemandZone(seed, Number(quote.last ?? 0), proximityPct))
+    })
+    .map((seed) => seed.symbol)
+  if (!nearSymbols.length) {
+    return {
+      status: 'ok', source_trade_date: seeds[0]?.source_trade_date ?? null,
+      watched: seeds.length, near_zone: 0, assessed: 0,
+      ready_for_formal_ev: 0, still_waiting: 0, errors: 0,
+    }
+  }
+  const durableEnabled = enabledFlag((env as any).S12_DURABLE_STRUCTURE_JOB_ENABLED, true)
+  if (!durableEnabled) {
+    return runS12IntradaySetupWatchBatch(env, today, { symbols: nearSymbols, concurrency: 4 })
+  }
+  const trigger = await triggerDurableSetupWatch(env, today, nearSymbols)
+  return {
+    status: trigger.status,
+    source_trade_date: seeds[0]?.source_trade_date ?? null,
+    watched: seeds.length,
+    near_zone: nearSymbols.length,
+    assessed: 0,
+    ready_for_formal_ev: 0,
+    still_waiting: 0,
+    errors: 0,
+    run_id: trigger.run_id,
+    execution_id: trigger.execution_id,
   }
 }

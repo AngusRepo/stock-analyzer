@@ -95,6 +95,7 @@ from services.breeze2_reason_shadow import (
     build_breeze2_reason_shadow_for_canonical_payloads,
 )
 from services.sector_flow_service import run_sector_flow_pipeline
+from services.pit_sector_alpha import load_pit_sector_alpha_experts, unavailable_sector_alpha
 from services.persona_service import (
     ChipBar,
     MarginBar,
@@ -526,6 +527,7 @@ class PipelineStateV2(TypedDict, total=False):
     active_stocks: list[dict]              # from latest screener funnel candidate seed
     screener_recs: list[dict]              # screener-owned seed rows, enriched with optional daily_recommendations state
     screener_run_id: str                    # latest screener_funnel_runs.run_id used as candidate source
+    decision_universe_frozen_at: str          # canonical L1.5 slate availability cutoff
     market_env: dict                        # market_risk + twii + breadth + us + history
     adaptive_params: dict                   # from KV ml:adaptive_params
     barrier_params: dict                    # from KV trading:config.barrier
@@ -552,6 +554,7 @@ class PipelineStateV2(TypedDict, total=False):
     sell_filtered_diagnostics: dict          # symbol -> diagnostic payload for preserved non-buy seed rows
     expected_return_serving_preflight: dict  # L4/Fusion compatibility before row materialization
     expected_return_owner_coverage: dict     # valid owner or explicit abstention for every screener seed
+    pit_sector_alpha_coverage: dict          # prior completed PIT sector expert coverage
     llm_reasons: dict                       # symbol ??{reason, watchPoints}
 
     breeze2_reason_shadow: dict             # symbol -> advisory-only Breeze2 shadow reason
@@ -577,7 +580,7 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
     screener_recs = d1_client.query(
         f"""
         WITH latest_screener_run AS (
-            SELECT run_id
+            SELECT run_id, created_at
               FROM screener_funnel_runs
              WHERE date = ?
                AND status = 'success'
@@ -639,6 +642,7 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
         SELECT
             dr.id AS id,
             sfi.run_id AS screener_run_id,
+            (SELECT created_at FROM latest_screener_run) AS decision_universe_frozen_at,
             ? AS date,
             COALESCE(dr.stock_id, st.id) AS stock_id,
             sfi.symbol AS symbol,
@@ -742,6 +746,9 @@ async def node_load_inputs(state: PipelineStateV2) -> dict:
         "active_stocks": active_stocks,
         "screener_recs": screener_recs,
         "screener_run_id": str(screener_recs[0].get("screener_run_id") or ""),
+        "decision_universe_frozen_at": str(
+            screener_recs[0].get("decision_universe_frozen_at") or ""
+        ),
     }
 
 
@@ -2716,11 +2723,9 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
 
 async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
     """
-    Phase 6: Compute RRG (rs_ratio / rs_momentum / quadrant) for concept + industry
-    and upsert into sector_flow. Screener consumes the latest completed sector_flow
-    before this pipeline starts, so this refresh is post-write evidence for
-    dashboards and the next screener run. It must not contend with the hot-path
-    market_env reads.
+    Compute RRG evidence after recommendation is persisted. The completed
+    snapshot is eligible only for the next decision session, so sector evidence
+    cannot alter the current strategy/ML slate or its diversity.
 
     Runs sync work in a thread to avoid blocking the event loop (d1_client is sync).
     """
@@ -2809,6 +2814,50 @@ async def node_recommend(state: PipelineStateV2) -> dict:
             "seeds before ML/recommendation; refusing watchlist fallback"
         )
 
+    decision_cutoff = str(state.get("decision_universe_frozen_at") or "").strip()
+    fallback_industries = {
+        str(rec.get("symbol") or ""): str(rec.get("industry") or rec.get("sector") or "")
+        for rec in screener_recs
+        if rec.get("symbol")
+    }
+    try:
+        sector_experts = await asyncio.to_thread(
+            load_pit_sector_alpha_experts,
+            d1_client.query,
+            signal_date=state["run_date"],
+            symbols=[str(rec.get("symbol") or "") for rec in screener_recs],
+            fallback_industry_by_symbol=fallback_industries,
+            knowledge_cutoff=decision_cutoff,
+        )
+        sector_load_error = None
+    except Exception as exc:  # noqa: BLE001 - unavailable evidence must remain explicit.
+        sector_experts = {}
+        sector_load_error = f"{type(exc).__name__}:{exc}"
+    sector_loaded = sum(
+        1
+        for expert in sector_experts.values()
+        if expert.get("status") == "loaded" and expert.get("point_in_time") is True
+    )
+    source_dates = sorted({
+        str(expert.get("source_date") or "")
+        for expert in sector_experts.values()
+        if expert.get("status") == "loaded" and expert.get("source_date")
+    })
+    sector_alpha_coverage = {
+        "schema_version": "pit-sector-alpha-runtime-coverage-v1",
+        "signal_date": state["run_date"],
+        "decision_universe_frozen_at": decision_cutoff or None,
+        "candidate_rows": len(screener_recs),
+        "available_rows": sector_loaded,
+        "coverage": round(sector_loaded / max(1, len(screener_recs)), 8),
+        "source_dates": source_dates,
+        "load_error": sector_load_error,
+        "producer_position": "post_recommendation_for_next_decision_session",
+        "application_scope": "late_l4_fusion_feature_only",
+        "candidate_set_mutation_allowed": False,
+        "same_signal_date_sector_flow_allowed": False,
+    }
+
     fundamental_quality_by_symbol = load_fundamental_quality_by_symbol(screener_recs, state["run_date"])
 
     final, sell_count, filter_stage_diagnostics = filter_and_score_recommendations(
@@ -2821,6 +2870,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         regime_surface=regime_surface,
         alpha_policy=alpha_policy,
         fundamental_quality_by_symbol=fundamental_quality_by_symbol,
+        pit_sector_alpha_by_symbol=sector_experts,
         run_date=state["run_date"],
         include_filtered_diagnostics=True,
     )
@@ -2986,6 +3036,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         "sell_filtered_diagnostics": filtered_diagnostics,
         "expected_return_serving_preflight": expected_return_serving_preflight,
         "expected_return_owner_coverage": owner_coverage,
+        "pit_sector_alpha_coverage": sector_alpha_coverage,
     }
 
 
@@ -2998,7 +3049,7 @@ async def node_llm_reasons(state: PipelineStateV2) -> dict:
     if not candidates:
         return {"llm_reasons": {}, "breeze2_reason_shadow": {}}
 
-    # Top themes from sector_flow_summary (Phase 6 ??node_compute_sector_flow populates)
+    # Current-run sector flow is intentionally computed after this node.
     # Optional context for LLM prompt; empty list is acceptable fallback.
     top_themes: list[str] = []
     sf = state.get("sector_flow_summary") or {}

@@ -64,6 +64,12 @@ import {
 import { buildCanonicalTradeLifecycle, serializeCanonicalTradeLifecycle } from './canonicalTradeLifecycle'
 import { persistS12StructureSnapshot } from './s12StructureSnapshots'
 import { runS12IntradaySetupWatch } from './s12IntradaySetupWatch'
+import { triggerPendingS12FormalEv } from './s12FormalEvTrigger'
+import {
+  acquireIntradayExecutionLease,
+  refreshIntradayExecutionLease,
+  releaseIntradayExecutionLease,
+} from './intradayExecutionLease'
 import { loadIntradayTechnicalRollingBars, loadS12IntradayBaseBars, rollingBarsToOhlcvRows, type S12BaseBarSource } from './s12RuntimeBars'
 import {
   applyS12TwCalibrationArtifact,
@@ -478,7 +484,7 @@ function shouldPersistActiveExecutionStatus(status: PendingBuyActiveExecutionSta
     status === 'quote_unavailable'
 }
 
-export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossPollResult> {
+async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Promise<IntradayStopLossPollResult> {
   const cfg = await getTradingConfig(env.KV)
   const { hour: twHour, minute: twMin } = getTwClockParts()
   const minutesSinceOpen = minutesSinceTwMarketOpen(twHour, twMin)
@@ -491,52 +497,14 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
     return null
   })
   if (setupWatch) console.log('[Intraday] S12 setup watch:', setupWatch)
-  const formalEvReady = await env.DB.prepare(`
-    SELECT COUNT(*) AS ready_count
-      FROM s12_structure_snapshots s
-     WHERE s.trade_date=?
-       AND s.source='s12_intraday_setup_watch'
-       AND s.ready=1
-       AND COALESCE(s.invalidated, 0)=0
-       AND NOT EXISTS (
-         SELECT 1 FROM s12_formal_ev_decisions d
-          WHERE d.observation_date=s.trade_date
-            AND d.symbol=s.symbol
-            AND d.structure_snapshot_id=s.id
-            AND datetime(d.updated_at) >= datetime(s.updated_at)
-       )
-  `).bind(today).first<{ ready_count?: number }>().catch(() => null)
-  const formalEvReadyCount = Number(formalEvReady?.ready_count ?? 0)
-  if (formalEvReadyCount > 0) {
-    if (!env.ML_CONTROLLER_URL || !env.ML_CONTROLLER_SECRET) {
-      console.warn('[Intraday] S12 formal EV controller missing; retry remains pending')
-    } else {
-      const response = await fetch(
-        `${env.ML_CONTROLLER_URL.replace(/\/$/, '')}/s12-formal-ev/run`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Controller-Token': env.ML_CONTROLLER_SECRET,
-          },
-          body: JSON.stringify({
-            observation_date: today,
-            producer_run_id: `s12-formal-ev:${today}`,
-          }),
-          signal: AbortSignal.timeout(60_000),
-        },
-      ).catch((error) => {
-        console.warn('[Intraday] S12 formal EV trigger failed:', error)
-        return null
-      })
-      if (response && !response.ok) {
-        console.warn(
-          '[Intraday] S12 formal EV rejected:',
-          response.status,
-          (await response.text().catch(() => '')).slice(0, 300),
-        )
-      }
-    }
+  await triggerPendingS12FormalEv(env, today).catch((error) => {
+    console.warn(
+      '[Intraday] S12 formal EV trigger failed; durable retry remains pending:',
+      error instanceof Error ? error.message : String(error),
+    )
+  })
+  if (!await refreshIntradayExecutionLease(env.DB, leaseRunId)) {
+    throw new Error('intraday_execution_lease_lost_after_setup_watch')
   }
 
   await reconcilePendingBuyDebates(env, today).catch((e) =>
@@ -574,6 +542,9 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
   if (riskRaw && ['orange', 'red', 'black'].includes(riskRaw)) {
     await new Promise((r) => setTimeout(r, 30_000))
     holdingPoll = await pollIntradayStopLoss(env)
+  }
+  if (!await refreshIntradayExecutionLease(env.DB, leaseRunId)) {
+    throw new Error('intraday_execution_lease_lost_after_holding_poll')
   }
 
   if (twHour === 13 && twMin >= 25) {
@@ -2666,4 +2637,25 @@ export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossP
     await recordPendingBuyAuditOnly(env, today, pendingRunId, 'intraday_check', executionAuditEvents)
   }
   return holdingPoll
+}
+
+export async function runIntradayCheck(env: Bindings): Promise<IntradayStopLossPollResult> {
+  if (!isTwIntradayTradingMinute()) {
+    return { status: 'healthy_empty', positions: 0, quoted: 0, missing_symbols: [] }
+  }
+  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const runId = `intraday-check:${today}:${crypto.randomUUID()}`
+  const acquired = await acquireIntradayExecutionLease(env.DB, runId, today)
+  if (!acquired) {
+    console.log('[Intraday] atomic D1 lease busy; overlapping trigger suppressed')
+    return { status: 'partial', positions: 0, quoted: 0, missing_symbols: [] }
+  }
+  try {
+    return await runIntradayCheckUnlocked(env, runId)
+  } finally {
+    await releaseIntradayExecutionLease(env.DB, runId).catch((error) => {
+      console.warn('[Intraday] D1 lease release failed:',
+        error instanceof Error ? error.message : String(error))
+    })
+  }
 }

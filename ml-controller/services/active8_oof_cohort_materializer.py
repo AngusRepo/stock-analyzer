@@ -31,6 +31,7 @@ from services.fusion_market_context import (
     recorded_market_context,
 )
 from services.price_horizon_projection_contract import OOF_PRICE_HORIZON_SOURCE
+from services.pit_sector_alpha import unavailable_sector_alpha
 from services.oof_retention_policy import (
     build_oof_date_eligibility_rows,
     persist_oof_date_eligibility,
@@ -41,7 +42,7 @@ TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
 D1_IN_CLAUSE_CHUNK_SIZE = 80
 OOF_MATERIALIZED_ARTIFACT_SCHEMA_VERSION = "active8-oof-materialized-jsonl-gzip-v1"
-OOF_PIT_ELIGIBILITY_POLICY_VERSION = "recorded-score-v2-r2-before-next-session-open-v2"
+OOF_PIT_ELIGIBILITY_POLICY_VERSION = "recorded-score-v2-r2-sector-before-next-session-open-v3"
 OOF_POLICY_REPLACEMENT_REASON = "restore-checksum-verified-recorded-pit-evidence"
 OOF_MATERIALIZED_ARTIFACT_KINDS = {
     "allocator_ev_snapshots": "snapshot_date",
@@ -813,6 +814,7 @@ def build_oof_snapshot_rows(
     s12_provider_factory: Callable[[str], S12TradeEvBootstrapProvider] | None = None,
     fundamental_quality_by_key: dict[tuple[str, str], dict[str, Any]] | None = None,
     market_context_by_date: dict[tuple[str, str], dict[str, Any]] | None = None,
+    sector_alpha_by_key: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     stack_rows, stack_evidence = build_chronological_oof_stack(prediction_rows)
     native_by_key = {
@@ -825,8 +827,10 @@ def build_oof_snapshot_rows(
     providers: dict[str, S12TradeEvBootstrapProvider] = {}
     fundamental_quality_by_key = fundamental_quality_by_key or {}
     market_context_by_date = market_context_by_date or {}
+    sector_alpha_by_key = sector_alpha_by_key or {}
     fundamental_pit_rows = 0
     market_context_rows = 0
+    sector_alpha_rows = 0
     snapshots: list[dict[str, Any]] = []
     rejected = defaultdict(int)
     stacker_eligible_by_date: Counter[str] = Counter()
@@ -892,6 +896,12 @@ def build_oof_snapshot_rows(
             market_context_rows += 1
         alpha_context = _loads(native.get("alpha_context"))
         alpha_context["market_regime_context"] = market_context
+        sector_expert = sector_alpha_by_key.get((signal_date, stacked["symbol"]))
+        if not isinstance(sector_expert, dict):
+            sector_expert = unavailable_sector_alpha(signal_date, "oof_sector_alpha_not_loaded")
+        alpha_context["pit_sector_alpha_expert"] = sector_expert
+        if sector_expert.get("status") == "loaded" and sector_expert.get("point_in_time") is True:
+            sector_alpha_rows += 1
         candidate = {
             **native,
             "symbol": stacked["symbol"],
@@ -943,6 +953,8 @@ def build_oof_snapshot_rows(
         "fundamental_pit_coverage": round(fundamental_pit_rows / max(1, len(snapshots)), 6),
         "market_context_rows": market_context_rows,
         "market_context_coverage": round(market_context_rows / max(1, len(snapshots)), 6),
+        "sector_alpha_rows": sector_alpha_rows,
+        "sector_alpha_coverage": round(sector_alpha_rows / max(1, len(snapshots)), 6),
         "rejected": dict(sorted(rejected.items())),
         "stacker_eligible_by_date": dict(sorted(stacker_eligible_by_date.items())),
         "native_matched_by_date": dict(sorted(native_matched_by_date.items())),

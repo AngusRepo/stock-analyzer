@@ -171,6 +171,18 @@ foreach ($alias in $contract.bucket_object_admin) {
   )
 }
 
+foreach ($entry in $contract.artifact_registry_readers.PSObject.Properties) {
+  $member = "serviceAccount:$(Get-ServiceAccount $entry.Name)"
+  foreach ($repository in $entry.Value) {
+    Invoke-Gcloud @(
+      "artifacts", "repositories", "add-iam-policy-binding", [string]$repository,
+      "--project=$project", "--location=$region", "--member=$member",
+      "--role=roles/artifactregistry.reader", "--quiet"
+    )
+  }
+}
+
+
 foreach ($entry in $contract.job_invokers.PSObject.Properties) {
   $member = "serviceAccount:$(Get-ServiceAccount $entry.Name)"
   foreach ($job in $entry.Value) {

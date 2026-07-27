@@ -87,8 +87,11 @@ def test_write_sector_flow_persists_cash_flow_fields(monkeypatch):
     assert "rotation_score" in sql
     assert "rotation_regime" in sql
     assert "rrg_tail_json" in sql
+    assert "updated_at" in sql
+    assert "pit_lineage_version" in sql
     params = captured["statements"][0][1]
-    assert params[-3:] == [-0.0142, -0.3681, -0.4322]
+    assert params[-5:-2] == [-0.0142, -0.3681, -0.4322]
+    assert params[-1] == sector_flow_service.SECTOR_FLOW_PIT_LINEAGE_VERSION
 
 
 def test_load_rrg_history_builds_per_sector_tail(monkeypatch):
@@ -172,3 +175,6 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
     assert "industry_theme" in summary
     assert "rotation_regimes" in summary["industry_theme"]
     assert "with_rotation" in summary["industry_theme"]
+    assert summary["pit_lineage_version"] == sector_flow_service.SECTOR_FLOW_PIT_LINEAGE_VERSION
+    assert summary["producer_position"] == "post_recommendation_for_next_decision_session"
+    assert summary["same_signal_date_consumption_allowed"] is False

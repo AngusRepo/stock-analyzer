@@ -5,9 +5,12 @@ order API. The general `ml-controller` live-submit route remains fail-closed.
 
 ## Required Cloud Run contract
 
+The singleton warm contract applies whenever broker-read shadow or live-submit
+is enabled. With both features disabled, the service remains `min=0`.
+
 - distinct Cloud Run service and dedicated least-privilege service account
 - private ingress / authenticated invoker only; never `allUsers`
-- minimum instances: `1`
+- minimum instances: `0` while disabled; `1` before enabling broker access
 - maximum instances: `1`
 - container concurrency: `1`
 - CPU throttling: disabled

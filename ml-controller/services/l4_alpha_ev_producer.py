@@ -17,24 +17,38 @@ from services.l4_alpha_ev_resolver import (
     SNAPSHOT_BACKFILL_USAGE_SCOPE,
     resolve_l4_alpha_ev,
 )
+from services.expected_return_cost_contract import (
+    ExpectedReturnCostContractError,
+    expected_return_cost_contract_blockers,
+    normalize_expected_return_to_net,
+)
 from services.evidence_contracts import (
     L4_ARTIFACT_CONTRACT_VERSION,
     L4_FEATURE_SEMANTIC_VERSION,
     LABEL_SCHEMA_VERSION,
+    LEGACY_L4_ARTIFACT_CONTRACT_VERSION,
+    SUPPORTED_L4_FEATURE_SEMANTICS,
     SUPPORTED_L4_SERVING_CONTRACT_PAIRS,
 )
+from services.pit_sector_alpha import SECTOR_ALPHA_FEATURE_NAMES, sector_alpha_feature_values
 
 
 PRODUCER_SCHEMA_VERSION = "l4-alpha-ev-producer-v2"
 REQUIRED_ARTIFACT_CONTRACT_VERSION = L4_ARTIFACT_CONTRACT_VERSION
 REQUIRED_FEATURE_SEMANTIC_VERSION = L4_FEATURE_SEMANTIC_VERSION
 REQUIRED_LABEL_SCHEMA_VERSION = LABEL_SCHEMA_VERSION
-CANONICAL_FEATURE_NAMES = {
+BASE_CANONICAL_FEATURE_NAMES = {
     "ml_edge_norm",
     "fundamental_quality_norm",
     "chip_flow_norm",
     "technical_structure_norm",
     "ensemble_directional_margin",
+}
+CANONICAL_FEATURE_NAMES = BASE_CANONICAL_FEATURE_NAMES | set(SECTOR_ALPHA_FEATURE_NAMES)
+CANONICAL_FEATURE_NAMES_BY_CONTRACT = {
+    "l4-alpha-ev-contract-v3": BASE_CANONICAL_FEATURE_NAMES,
+    LEGACY_L4_ARTIFACT_CONTRACT_VERSION: BASE_CANONICAL_FEATURE_NAMES,
+    L4_ARTIFACT_CONTRACT_VERSION: CANONICAL_FEATURE_NAMES,
 }
 POLICY_KEYS = (
     "l4_alpha_ev",
@@ -244,6 +258,7 @@ def _feature_value(name: str, row: dict[str, Any], prediction: dict[str, Any] | 
             else _float_or_none(s12_context.get("reward_confidence_multiplier")) - 1.0
         ),
     }
+    values.update(sector_alpha_feature_values({**row, "alpha_context": alpha}))
     return values.get(name)
 
 
@@ -302,17 +317,19 @@ def _semantic_contract_blockers(artifact: dict[str, Any]) -> list[str]:
         and (contract_version, label_version) not in SUPPORTED_L4_SERVING_CONTRACT_PAIRS
     ):
         blockers.append("artifact_label_contract_pair_incompatible")
-    if str(artifact.get("feature_semantic_version") or "").strip() != REQUIRED_FEATURE_SEMANTIC_VERSION:
+    expected_semantic = SUPPORTED_L4_FEATURE_SEMANTICS.get(contract_version)
+    if str(artifact.get("feature_semantic_version") or "").strip() != expected_semantic:
         blockers.append("feature_semantic_version_incompatible")
+    expected_feature_names = CANONICAL_FEATURE_NAMES_BY_CONTRACT.get(contract_version, CANONICAL_FEATURE_NAMES)
     feature_names = {
         str(value).strip()
         for value in (artifact.get("feature_names") or [])
         if str(value).strip()
     }
-    if feature_names != CANONICAL_FEATURE_NAMES:
+    if feature_names != expected_feature_names:
         blockers.append("canonical_feature_set_mismatch")
     coefficients = _coefficients(artifact) or {}
-    if set(coefficients) != CANONICAL_FEATURE_NAMES:
+    if set(coefficients) != expected_feature_names:
         blockers.append("canonical_coefficient_set_mismatch")
     return blockers
 
@@ -321,6 +338,7 @@ def assess_l4_artifact_cutover(artifact: dict[str, Any] | None) -> dict[str, Any
     """Report whether an artifact can serve the current V2-only producer contract."""
     payload = artifact if isinstance(artifact, dict) else {}
     blockers = _semantic_contract_blockers(payload)
+    blockers.extend(expected_return_cost_contract_blockers(payload))
     method = _resolver_method(payload)
     if method in EMPIRICAL_ONLY_METHODS:
         blockers.append("empirical_bucket_not_production_alpha_ev_owner")
@@ -329,6 +347,8 @@ def assess_l4_artifact_cutover(artifact: dict[str, Any] | None) -> dict[str, Any
     if _approval_state(payload) not in {"production_approved", "approved_for_production", "live"}:
         blockers.append("production_approval_missing")
     required_families = {"score_v2_components", "formal_ml_direction"}
+    if str(payload.get("artifact_contract_version") or "") == L4_ARTIFACT_CONTRACT_VERSION:
+        required_families.add("pit_sector_alpha")
     blockers.extend(
         f"feature_family_missing:{family}"
         for family in sorted(required_families - _feature_families(payload))
@@ -372,14 +392,18 @@ def materialize_l4_alpha_ev(
     usage_scope: str = "production",
 ) -> dict[str, Any] | None:
     """Return validated row-level L4 alpha EV, or None when no producer is configured."""
+    artifact = _policy_artifact(policy)
     existing = _existing_payload(row, prediction)
-    if existing is not None:
+    if existing is not None and existing.get("output_is_net_of_costs") is True:
         semantic_blockers = _semantic_contract_blockers(existing)
         if semantic_blockers:
             return _rejected_payload(existing, semantic_blockers)
         return resolve_l4_alpha_ev(existing, usage_scope=usage_scope)
-
-    artifact = _policy_artifact(policy)
+    if existing is not None and artifact is None:
+        return _rejected_payload(
+            existing,
+            ["materialized_output_cost_semantic_ambiguous"],
+        )
     if artifact is None:
         return None
 
@@ -423,8 +447,7 @@ def materialize_l4_alpha_ev(
             blockers.append(f"{key}_missing")
     if artifact.get("horizon_days") is None and artifact.get("horizon_bars") is None:
         blockers.append("horizon_missing")
-    if artifact.get("cost_model_bps") is None:
-        blockers.append("cost_model_bps_missing")
+    blockers.extend(expected_return_cost_contract_blockers(artifact))
 
     if blockers:
         return _rejected_payload(artifact, blockers)
@@ -447,10 +470,13 @@ def materialize_l4_alpha_ev(
     for name, coef in (coefs or {}).items():
         expected_return += coef * feature_values[name]
 
-    if artifact.get("output_is_net_of_costs") is False:
-        cost_bps = _float_or_none(artifact.get("cost_model_bps"))
-        if cost_bps is not None:
-            expected_return -= cost_bps / 10000.0
+    try:
+        expected_return, cost_metadata = normalize_expected_return_to_net(
+            expected_return,
+            artifact,
+        )
+    except ExpectedReturnCostContractError as exc:
+        return _rejected_payload(artifact, str(exc).split(","))
 
     clip = artifact.get("output_clip") if isinstance(artifact.get("output_clip"), dict) else {}
     min_value = _float_or_none(clip.get("min"))
@@ -464,6 +490,7 @@ def materialize_l4_alpha_ev(
         **artifact,
         "schema_version": "l4-alpha-ev-v1",
         "producer_schema_version": PRODUCER_SCHEMA_VERSION,
+        **cost_metadata,
         "expected_return_owner": OWNER,
         "expected_return_mean": round(expected_return, 10),
         "expected_return_source": f"l4_alpha_ev:{method or 'formal_meta_calibrator'}",

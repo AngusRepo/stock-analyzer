@@ -44,6 +44,7 @@ from services.fusion_market_context import (
     market_context_feature_values,
     market_regime_bucket,
 )
+from services.pit_sector_alpha import SECTOR_ALPHA_FEATURE_NAMES, sector_alpha_feature_values
 
 
 SELECTION_FEATURE_NAMES = [
@@ -56,6 +57,7 @@ SELECTION_FEATURE_NAMES = [
     "ensemble_directional_margin",
     "score_v2_available",
     "ensemble_rank_available",
+    *SECTOR_ALPHA_FEATURE_NAMES,
     *MARKET_CONTEXT_FEATURE_NAMES,
 ]
 EXECUTION_FEATURE_NAMES = [
@@ -89,6 +91,8 @@ PRIMARY_MIN_S12_STRUCTURE_SAMPLES = 300
 PRIMARY_MIN_S12_STRUCTURE_DATES = 8
 PRIMARY_MIN_MARKET_CONTEXT_SAMPLES = 300
 PRIMARY_MIN_MARKET_CONTEXT_DATES = 8
+PRIMARY_MIN_SECTOR_ALPHA_SAMPLES = 300
+PRIMARY_MIN_SECTOR_ALPHA_DATES = 8
 ASSISTIVE_MIN_DATES = 10
 ASSISTIVE_MIN_SAMPLES = 500
 ASSISTIVE_MIN_EXPERT_SAMPLES = 100
@@ -210,6 +214,7 @@ def _selection_raw_features(row: dict[str, Any]) -> dict[str, float]:
         "ensemble_directional_margin": (avg_rank - 0.5) if avg_rank is not None else 0.0,
         "score_v2_available": 1.0 if all(value is not None for value in score_values) else 0.0,
         "ensemble_rank_available": 1.0 if avg_rank is not None else 0.0,
+        **sector_alpha_feature_values(row),
     }
 
 
@@ -513,6 +518,10 @@ def _samples(
         sample for sample in out
         if float(sample["features"].get("regime_surface_available") or 0.0) > 0.0
     ]
+    sector_alpha_samples = [
+        sample for sample in out
+        if float(sample["features"].get("sector_alpha_available") or 0.0) > 0.0
+    ]
     return out, {
         "input_rows": len(rows),
         "sample_count": len(out),
@@ -565,6 +574,9 @@ def _samples(
         "regime_surface_available_count": len(regime_surface_samples),
         "regime_surface_available_date_count": len({row["date"] for row in regime_surface_samples}),
         "regime_surface_available_coverage": round(len(regime_surface_samples) / len(out), 8) if out else 0.0,
+        "sector_alpha_available_count": len(sector_alpha_samples),
+        "sector_alpha_available_date_count": len({row["date"] for row in sector_alpha_samples}),
+        "sector_alpha_available_coverage": round(len(sector_alpha_samples) / len(out), 8) if out else 0.0,
         "regime_bucket_counts": {
             bucket: sum(1 for row in out if row.get("regime_bucket") == bucket)
             for bucket in sorted({str(row.get("regime_bucket")) for row in out})
@@ -1529,6 +1541,8 @@ def _promotion_tier(
     structure_date_count = int(diagnostics.get("s12_structure_available_date_count") or 0)
     market_context_count = int(diagnostics.get("market_context_available_count") or 0)
     market_context_date_count = int(diagnostics.get("market_context_available_date_count") or 0)
+    sector_alpha_count = int(diagnostics.get("sector_alpha_available_count") or 0)
+    sector_alpha_date_count = int(diagnostics.get("sector_alpha_available_date_count") or 0)
     top_mean = float(oos_metrics.get("top_quintile_mean_return") or 0.0)
     spread = float(oos_metrics.get("top_bottom_spread") or 0.0)
     corr = float(oos_metrics.get("prediction_target_corr") or 0.0)
@@ -1560,6 +1574,10 @@ def _promotion_tier(
         blockers.append("primary_market_context_samples_low")
     if market_context_date_count < PRIMARY_MIN_MARKET_CONTEXT_DATES:
         blockers.append("primary_market_context_dates_low")
+    if sector_alpha_count < PRIMARY_MIN_SECTOR_ALPHA_SAMPLES:
+        blockers.append("primary_sector_alpha_samples_low")
+    if sector_alpha_date_count < PRIMARY_MIN_SECTOR_ALPHA_DATES:
+        blockers.append("primary_sector_alpha_dates_low")
     if champion_comparison.get("decision") != "PASS":
         blockers.append("primary_not_superior_to_canonical_l4")
     if top_mean <= 0.0:
@@ -1587,6 +1605,8 @@ def _promotion_tier(
         and structure_date_count >= ASSISTIVE_MIN_EXPERT_DATES
         and market_context_count >= ASSISTIVE_MIN_EXPERT_SAMPLES
         and market_context_date_count >= ASSISTIVE_MIN_EXPERT_DATES
+        and sector_alpha_count >= ASSISTIVE_MIN_EXPERT_SAMPLES
+        and sector_alpha_date_count >= ASSISTIVE_MIN_EXPERT_DATES
         and execution_model.get("decision") == "PASS"
         and execution_probability_model.get("decision") == "PASS"
     )
@@ -1755,6 +1775,8 @@ def build_allocator_ev_fusion_artifact_from_rows(
                 "min_s12_structure_dates": PRIMARY_MIN_S12_STRUCTURE_DATES,
                 "min_market_context_samples": PRIMARY_MIN_MARKET_CONTEXT_SAMPLES,
                 "min_market_context_dates": PRIMARY_MIN_MARKET_CONTEXT_DATES,
+                "min_sector_alpha_samples": PRIMARY_MIN_SECTOR_ALPHA_SAMPLES,
+                "min_sector_alpha_dates": PRIMARY_MIN_SECTOR_ALPHA_DATES,
                 "execution_expert_validation_passed": True,
                 "final_top_trade_ev_lcb90_positive": True,
                 "supported_regime_upper_bound_not_negative": True,
@@ -1768,7 +1790,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
         },
     }
     artifact = {
-        "schema_version": "allocator-ev-fusion-artifact-v12",
+        "schema_version": "allocator-ev-fusion-artifact-v13",
         "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
         "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
         "label_schema_version": LABEL_SCHEMA_VERSION,
@@ -1787,15 +1809,15 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "operational_parity_required": generation_mode == "purged_oof",
         "promotion_blockers": promotion_blockers,
         "validation_packet": validation_packet,
-        "resolver_method": "market_conditioned_cross_fitted_rank_two_part_trade_ev_fusion",
+        "resolver_method": "sector_market_conditioned_cross_fitted_rank_two_part_trade_ev_fusion",
         "model_version": (
-            f"allocator-ev-fusion-cross-fit-v12-{trained_until.replace('-', '')}"
+            f"allocator-ev-fusion-cross-fit-v13-sector-{trained_until.replace('-', '')}"
             if generation_mode == "native"
-            else "allocator-ev-fusion-cross-fit-v12-"
+            else "allocator-ev-fusion-cross-fit-v13-sector-"
             f"{trained_until.replace('-', '')}-oof-"
             f"{hashlib.sha256(str(cohort_id or '').encode('utf-8')).hexdigest()[:10]}"
         ),
-        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v12-pit-market-context",
+        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v13-pit-sector-market-context",
         "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
         "trained_until": trained_until,
         "horizon_days": 5,

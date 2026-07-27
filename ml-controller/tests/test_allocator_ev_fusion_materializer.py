@@ -294,3 +294,28 @@ def test_allocator_ev_fusion_v12_serves_market_regime_interactions():
     assert payload["raw_execution_residual"] == pytest.approx(0.04)
     assert payload["execution_probability"] == pytest.approx(0.5)
     assert payload["expected_return"] == pytest.approx(0.02)
+
+
+def test_allocator_ev_fusion_normalizes_gross_artifact_once_and_marks_net():
+    artifact = {
+        **_artifact(),
+        "cost_model_bps": 18.0,
+        "output_is_net_of_costs": False,
+    }
+    payload = materialize_allocator_ev_fusion(
+        {},
+        l4_value=0.02,
+        l4_source="l4:test",
+        l4_payload={},
+        s12_value=0.01,
+        s12_source="s12:test",
+        s12_payload={"status": "loaded"},
+        market_heat_expected_return=0.0,
+        policy={"allocatorEvFusion": artifact},
+    )
+
+    assert payload["status"] == "loaded"
+    assert payload["expected_return"] == pytest.approx(0.0382)
+    assert payload["output_is_net_of_costs"] is True
+    assert payload["source_output_is_net_of_costs"] is False
+    assert payload["cost_normalization_applied"] is True

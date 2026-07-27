@@ -36,6 +36,7 @@ import {
   finLabSentinelFieldForLane,
 } from './finlabSourceContract'
 
+import { triggerPendingS12FormalEv } from './s12FormalEvTrigger'
 const UPDATE_BATCH_SIZE = 40
 const UPDATE_SHARD_COUNT = 4
 const INDICATOR_BATCH_CONCURRENCY = 4
@@ -3364,6 +3365,24 @@ export async function processUpdateBatch(
     await continuePostScreenerPipeline(env, deps, triggerTime, runId)
     return
   }
+
+  if (msg.type === 's12_intraday_setup_watch_complete') {
+    const triggerTime = msg.triggerTime
+    const runId = msg.runId || ''
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime) || !runId) {
+      throw new Error('invalid_s12_intraday_setup_watch_completion_message')
+    }
+    const summary = await triggerPendingS12FormalEv(env, triggerTime)
+    await logSchedulerResult(env.KV, 's12-intraday-setup-watch', {
+      status: summary.status === 'empty' ? 'success' : summary.status,
+      summary: `formal EV continuation ${summary.status}; ready=${summary.ready_count} date=${triggerTime} run_id=${runId}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: triggerTime,
+    }, env)
+    return
+  }
+
 
   if (msg.type === 's12_structure_batch_complete') {
     const triggerTime = msg.triggerTime

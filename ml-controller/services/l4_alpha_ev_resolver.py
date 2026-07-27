@@ -232,6 +232,8 @@ def resolve_l4_alpha_ev(
         blockers.append("horizon_missing")
     if payload.get("cost_model_bps") is None:
         blockers.append("cost_model_bps_missing")
+    if payload.get("output_is_net_of_costs") is not True:
+        blockers.append("materialized_expected_return_not_net_of_costs")
 
     status = "loaded" if not blockers else "rejected"
     if status != "loaded":

@@ -26,15 +26,17 @@ from services.price_horizon_projection_contract import (
     PRICE_HORIZON_SOURCE,
     expected_price_horizon_source,
 )
+from services.pit_sector_alpha import SECTOR_ALPHA_FEATURE_NAMES, sector_alpha_feature_values
 
 
-FEATURE_NAMES = [
+BASE_FEATURE_NAMES = [
     "ml_edge_norm",
     "fundamental_quality_norm",
     "chip_flow_norm",
     "technical_structure_norm",
     "ensemble_directional_margin",
 ]
+FEATURE_NAMES = [*BASE_FEATURE_NAMES, *SECTOR_ALPHA_FEATURE_NAMES]
 CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
 CANONICAL_SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
 CANONICAL_ENSEMBLE_SEMANTIC_VERSION = ENSEMBLE_SEMANTIC_VERSION
@@ -43,6 +45,8 @@ FEATURE_SEMANTIC_VERSION = L4_FEATURE_SEMANTIC_VERSION
 LABEL_PURGE_DATE_GROUPS = 5
 ARTIFACT_CONTRACT_VERSION = L4_ARTIFACT_CONTRACT_VERSION
 MIN_CROSS_SECTION_SAMPLES_PER_DATE = 20
+MIN_SECTOR_ALPHA_SAMPLES = 300
+MIN_SECTOR_ALPHA_DATES = 8
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -94,6 +98,7 @@ def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
         "technical_structure_norm": None if technical is None else technical / 25.0,
         "ensemble_directional_margin": None if avg_rank is None else avg_rank - 0.5,
     }
+    values.update(sector_alpha_feature_values(row))
     if any(values[name] is None for name in FEATURE_NAMES):
         return None
     return {name: float(values[name]) for name in FEATURE_NAMES}
@@ -267,6 +272,8 @@ def _samples(
         "degenerate_features": sorted(
             name for name, profile in feature_profile.items() if profile["degenerate"]
         ),
+        "sector_alpha_available_count": sum(row["features"]["sector_alpha_available"] > 0.0 for row in out),
+        "sector_alpha_available_date_count": len({row["date"] for row in out if row["features"]["sector_alpha_available"] > 0.0}),
         "excluded_zero_return_dates": excluded_zero_dates,
     }
     return out, diagnostics
@@ -529,6 +536,12 @@ def build_l4_alpha_ev_artifact_from_rows(
         blockers.append("insufficient_samples")
     if len(dates) < min_dates:
         blockers.append("insufficient_dates")
+    required_sector_samples = min(MIN_SECTOR_ALPHA_SAMPLES, max(1, int(min_samples)))
+    required_sector_dates = min(MIN_SECTOR_ALPHA_DATES, max(1, int(min_dates)))
+    if int(diagnostics.get("sector_alpha_available_count") or 0) < required_sector_samples:
+        blockers.append("pit_sector_alpha_samples_low")
+    if int(diagnostics.get("sector_alpha_available_date_count") or 0) < required_sector_dates:
+        blockers.append("pit_sector_alpha_dates_low")
     if len(train) < len(FEATURE_NAMES) + 2 or not test:
         blockers.append("insufficient_train_test_split")
 
@@ -581,7 +594,7 @@ def build_l4_alpha_ev_artifact_from_rows(
 
     blockers.extend(value for value in fit_blockers if value not in blockers)
     decision = "PASS" if not blockers else "FAIL"
-    model_version = f"l4-alpha-ev-ridge-v4-{trained_until.replace('-', '')}"
+    model_version = f"l4-alpha-ev-ridge-v5-sector-{trained_until.replace('-', '')}"
     validation_packet = {
         "schema_version": "l4-alpha-ev-validation-packet-v1",
         "decision": decision,
@@ -600,6 +613,8 @@ def build_l4_alpha_ev_artifact_from_rows(
             "purged_signal_date_groups": LABEL_PURGE_DATE_GROUPS,
             "fit_min_samples": effective_fit_min_samples,
             "fit_min_dates": effective_fit_min_dates,
+            "min_sector_alpha_samples": required_sector_samples,
+            "min_sector_alpha_dates": required_sector_dates,
         },
         "sample_audit": diagnostics,
         "train_metrics": train_metrics,
@@ -623,14 +638,14 @@ def build_l4_alpha_ev_artifact_from_rows(
         "fitted": fitted,
         "fit_blockers": fit_blockers,
         "model_version": model_version,
-        "feature_snapshot_version": "l4-alpha-feature-snapshot-v4-directional-components",
+        "feature_snapshot_version": "l4-alpha-feature-snapshot-v5-pit-sector-components",
         "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
         "label_schema_version": LABEL_SCHEMA_VERSION,
         "trained_until": trained_until,
         "horizon_days": 5,
         "cost_model_bps": cost_model_bps,
         "output_is_net_of_costs": True,
-        "feature_families": ["score_v2_components", "formal_ml_direction"],
+        "feature_families": ["score_v2_components", "formal_ml_direction", "pit_sector_alpha"],
         "feature_names": FEATURE_NAMES,
         "intercept": round(serving_intercept, 10),
         "coefficients": {name: round(value, 10) for name, value in serving_coefs.items()},
@@ -701,7 +716,7 @@ def build_l4_chronological_oof_predictions(
             continue
         intercept, coefficients = _fit_ridge(prior, l2=l2)
         trained_until = max(sample["label_known_date"] for sample in prior)
-        model_version = f"l4-oof-cross-fit-v4-{cohort_id}-{prediction_date.replace('-', '')}"
+        model_version = f"l4-oof-cross-fit-v5-sector-{cohort_id}-{prediction_date.replace('-', '')}"
         for sample in current:
             expected_return = intercept + sum(
                 coefficients[name] * sample["features"][name]

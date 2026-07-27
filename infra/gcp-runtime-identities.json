@@ -133,6 +133,11 @@
     "controller",
     "pipeline"
   ],
+  "artifact_registry_readers": {
+    "scaler": [
+      "cloud-run-source-deploy"
+    ]
+  },
   "job_invokers": {
     "controller": [
       "pipeline-v2",

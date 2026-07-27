@@ -17,6 +17,7 @@ Mapping:
 from __future__ import annotations
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Literal, Optional, TypedDict
 
 from services import d1_client
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 TagType = Literal["concept", "industry", "industry_theme", "subindustry"]
 Classification = Literal["theme", "industry", "industry_theme", "subindustry"]
+SECTOR_FLOW_PIT_LINEAGE_VERSION = "sector-flow-pit-v1"
 
 
 class CashFlow(TypedDict):
@@ -511,6 +513,7 @@ def write_sector_flow(
     # chip-flow computation (separate path) — here we ONLY populate RRG fields.
     # Use COALESCE via SELECT existing row, fallback to 0.
     statements: list[tuple[str, list]] = []
+    available_at = datetime.now(timezone.utc).isoformat()
     for pt in points:
         if pt.rs_ratio is None:
             continue  # skip tags without enough members
@@ -525,9 +528,10 @@ def write_sector_flow(
               date, sector, classification, rs_ratio, rs_momentum, quadrant,
               rotation_velocity, rotation_acceleration, quadrant_age, transition_path,
               rotation_score, rotation_regime, rotation_hysteresis, rotation_window, rrg_tail_json,
-              stock_count, foreign_net, trust_net, total_net
+              stock_count, foreign_net, trust_net, total_net,
+              updated_at, pit_lineage_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date, sector, classification) DO UPDATE SET
               rs_ratio = excluded.rs_ratio,
               rs_momentum = excluded.rs_momentum,
@@ -544,7 +548,9 @@ def write_sector_flow(
               stock_count = excluded.stock_count,
               foreign_net = excluded.foreign_net,
               trust_net = excluded.trust_net,
-              total_net = excluded.total_net
+              total_net = excluded.total_net,
+              updated_at = excluded.updated_at,
+              pit_lineage_version = excluded.pit_lineage_version
             """.strip(),
             [
                 as_of_date,
@@ -566,6 +572,8 @@ def write_sector_flow(
                 round(float(flow.get("foreign_net") or 0.0), 4),
                 round(float(flow.get("trust_net") or 0.0), 4),
                 round(float(flow.get("total_net") or 0.0), 4),
+                available_at,
+                SECTOR_FLOW_PIT_LINEAGE_VERSION,
             ],
         ))
 
@@ -590,7 +598,12 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
     Subindustry is optional: if no rows exist for that tag_type the path
     silently writes 0 rows.
     """
-    summary: dict = {"as_of_date": as_of_date}
+    summary: dict = {
+        "as_of_date": as_of_date,
+        "pit_lineage_version": SECTOR_FLOW_PIT_LINEAGE_VERSION,
+        "producer_position": "post_recommendation_for_next_decision_session",
+        "same_signal_date_consumption_allowed": False,
+    }
 
     paths: list[tuple[TagType, Classification]] = [
         ("concept", "theme"),

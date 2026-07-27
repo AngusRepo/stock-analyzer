@@ -611,7 +611,18 @@ sync_s12_structure_job() {
       --set-secrets="$S12_STRUCTURE_SECRET_BINDINGS" \
       --env-vars-file="$env_file"
   fi
-  echo "S12 structure job sync succeeded"
+  local controller_member="serviceAccount:${SERVICE_RUNTIME_SERVICE_ACCOUNT}"
+  for role in \
+    "projects/${GCP_PROJECT_ID}/roles/stockvisionJobOverrideRunner" \
+    "roles/run.invoker" \
+    "roles/run.viewer"; do
+    gcloud run jobs add-iam-policy-binding "$S12_STRUCTURE_JOB_NAME" \
+      --region="$REGION" \
+      --member="$controller_member" \
+      --role="$role" \
+      --quiet >/dev/null
+  done
+  echo "S12 structure job sync + controller IAM succeeded"
   echo ""
 }
 

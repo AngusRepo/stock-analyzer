@@ -18,6 +18,8 @@ def test_no_runtime_workload_uses_default_compute_identity() -> None:
     assert set(contract["scheduler_oauth_callers"].values()) == {
         "ml-controller-min-0",
         "ml-controller-min-1",
+        "ml-controller-monthly-min-0",
+        "ml-controller-monthly-min-1",
         "realtime-runtime-min-0",
         "realtime-runtime-min-1",
     }

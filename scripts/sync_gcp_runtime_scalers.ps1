@@ -1,9 +1,14 @@
 param(
   [string]$ManifestPath = (Join-Path $PSScriptRoot "..\infra\gcp-runtime-scaling.json"),
+  [switch]$DryRun,
   [switch]$Apply
 )
 
 $ErrorActionPreference = "Stop"
+if ($Apply -eq $DryRun) {
+  throw "Specify exactly one of -DryRun or -Apply"
+}
+
 $manifest = Get-Content -Raw $ManifestPath | ConvertFrom-Json
 $project = [string]$manifest.project_id
 $region = [string]$manifest.region
@@ -40,6 +45,16 @@ case "$status" in
   *) desired=1; echo "TWSE calendar unavailable; fail-open min=1" >&2 ;;
 esac
 '@
+  } elseif ([string]$job.calendar_gate -eq "first_saturday_only") {
+    $firstSaturday = @'
+day="$(TZ=Asia/Taipei date +%d)"
+if [ "$day" -gt 7 ]; then
+  echo "not first Saturday in Asia/Taipei; no scaling mutation"
+  exit 0
+fi
+desired=__DESIRED__
+'@
+    $firstSaturday.Replace("__DESIRED__", [string]$desired)
   } else {
     "desired=$desired"
   }

@@ -151,6 +151,32 @@ export interface SchedulerDisplayLogCandidate {
   log?: CronLogEntry
 }
 
+export function selectSchedulerChainDates(
+  dates: string[],
+  logsByDate: Record<string, CronLogEntry[]>,
+): {
+  activeChainDate: string | null
+  chainStatusDate: string | null
+} {
+  const rootForDate = (date: string) => logsByDate[date]?.find((entry) => entry.task === 'evening-chain')
+  const activeChainDate = dates.find((date) => {
+    const root = rootForDate(date)
+    return root?.status === 'running' || root?.status === 'triggered'
+  }) ?? null
+  const latestTerminalChainDate = dates.find((date) => {
+    const root = rootForDate(date)
+    return root?.status === 'success' || root?.status === 'error'
+  }) ?? null
+
+  return {
+    activeChainDate,
+    // A completed replay remains the canonical status source until a newer
+    // chain attempt starts. Otherwise direct stage heads disappear as soon as
+    // the root callback closes and the UI falls back to an older aggregate day.
+    chainStatusDate: activeChainDate ?? latestTerminalChainDate,
+  }
+}
+
 export function selectSchedulerDisplayLogs(candidates: SchedulerDisplayLogCandidate[]): {
   lastAttempt?: CronLogEntry
   lastEffective?: CronLogEntry
@@ -292,6 +318,10 @@ export function reconcileDurablePipelineStageStatus(input: {
   const { jobId, runDate, baseStatus, baseTimestamp, durable } = input
   if (!durable || !runDate || durable.business_date !== runDate) return null
   if (DURABLE_STAGE_JOB_IDS[durable.stage] !== jobId) return null
+  // A later watchdog/readback may touch the durable row after the scheduler KV
+  // already recorded success. Keep the original completion timestamp in that
+  // case; durable state is recovery authority, not a second execution time.
+  if (baseStatus === 'success' && durable.status === 'success') return null
 
   const durableTimestamp = sqliteUtcTimestamp(durable.updated_at)
   const durableMs = Date.parse(durableTimestamp)
@@ -620,18 +650,15 @@ export async function getSchedulerStatus(env: Bindings) {
     }),
   )
   const durableStageStates = await durableStageStatesPromise
-  const activeChainDate = dates.find((date) => {
-    const root = allLogs[date]?.find((entry) => entry.task === 'evening-chain')
-    return root?.status === 'running' || root?.status === 'triggered'
-  })
-  if (activeChainDate) {
+  const { activeChainDate, chainStatusDate } = selectSchedulerChainDates(dates, allLogs)
+  if (chainStatusDate) {
     const activeTaskIds = CHAIN_STEP_IDS.filter((task) => task !== 'evening-chain')
     const directChainLogs = await Promise.all(activeTaskIds.map((task) => (
-      env.KV.get(`scheduler:run:${task}:${activeChainDate}`, 'json') as Promise<CronLogEntry | null>
+      env.KV.get(`scheduler:run:${task}:${chainStatusDate}`, 'json') as Promise<CronLogEntry | null>
     )))
-    allLogs[activeChainDate] = directChainLogs.reduce(
+    allLogs[chainStatusDate] = directChainLogs.reduce(
       (logs, directLog) => mergeDirectSchedulerLog(logs, directLog),
-      allLogs[activeChainDate] ?? [],
+      allLogs[chainStatusDate] ?? [],
     )
   }
   const activeReplayHeartbeatAt = activeChainDate
@@ -650,8 +677,8 @@ export async function getSchedulerStatus(env: Bindings) {
 
   const jobs = await Promise.all(JOB_DEFS.map(async (def) => {
     const todayLog = getJobDisplayLog(allLogs[today], def)
-    const activeReplayLog = activeChainDate && CHAIN_STEP_IDS.includes(def.id)
-      ? getJobDisplayLog(allLogs[activeChainDate], def)
+    const chainReplayLog = chainStatusDate && CHAIN_STEP_IDS.includes(def.id)
+      ? getJobDisplayLog(allLogs[chainStatusDate], def)
       : undefined
     const nextRun = await getNextRunApproxWithPolicy({ task: def.id, cron: def.cron, kv: env.KV, skipKvPolicy: true })
 
@@ -671,17 +698,17 @@ export async function getSchedulerStatus(env: Bindings) {
     const resolvedDisplay = resolveSchedulerDisplayStatus({
       todayLog,
       lastAttempt,
-      activeReplayLog,
-      activeReplayRunDate: activeChainDate,
+      activeReplayLog: chainReplayLog,
+      activeReplayRunDate: chainStatusDate,
       activeReplayHeartbeatAt,
       def,
       nextRun,
       today,
     })
     const displayLog = resolvedDisplay.statusScope === 'historical_replay'
-      && resolvedDisplay.statusRunDate === activeChainDate
-      && activeReplayLog
-      ? activeReplayLog
+      && resolvedDisplay.statusRunDate === chainStatusDate
+      && chainReplayLog
+      ? chainReplayLog
       : lastLog
     const durableState = resolvedDisplay.statusRunDate
       ? durableStageStates.get(`${resolvedDisplay.statusRunDate}:${def.id}`)

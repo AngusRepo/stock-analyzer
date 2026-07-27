@@ -202,8 +202,8 @@ async function marketBySymbol(
   candidates: S12PipelineSeedSymbol[],
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>()
-  for (let offset = 0; offset < candidates.length; offset += 200) {
-    const symbols = candidates.slice(offset, offset + 200).map((row) => row.symbol)
+  for (let offset = 0; offset < candidates.length; offset += 80) {
+    const symbols = candidates.slice(offset, offset + 80).map((row) => row.symbol)
     if (!symbols.length) continue
     const placeholders = symbols.map(() => '?').join(',')
     const { results } = await db.prepare(

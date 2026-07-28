@@ -11,6 +11,7 @@ function validL4(): Record<string, any> {
     feature_semantic_version: L4_ALPHA_EV_CONTRACT.featureSemanticVersion,
     label_schema_version: L4_ALPHA_EV_CONTRACT.labelSchemaVersion,
     model_version: 'l4-v4-test',
+    output_is_net_of_costs: true,
   }
 }
 
@@ -24,6 +25,7 @@ function validFusion(): Record<string, any> {
     feature_semantic_version: ALLOCATOR_EV_FUSION_CONTRACT.featureSemanticVersion,
     label_schema_version: ALLOCATOR_EV_FUSION_CONTRACT.labelSchemaVersion,
     model_version: 'fusion-v11-test',
+    output_is_net_of_costs: true,
   }
 }
 
@@ -90,5 +92,36 @@ const l4Fallback = resolveExpectedReturnServingState({
 })
 assert.equal(l4Fallback.expected_return_owner, 'l4_alpha_ev')
 assert.equal(l4Fallback.artifacts.allocator_ev_fusion.artifact_state, 'candidate_not_ready')
+
+const grossReturnL4 = validL4()
+grossReturnL4.output_is_net_of_costs = false
+const grossReturnRejected = resolveExpectedReturnServingState({
+  ensemble_v2: { l4AlphaEv: grossReturnL4 },
+})
+assert.equal(grossReturnRejected.expected_return_owner, null)
+assert(grossReturnRejected.artifacts.l4_alpha_ev.blockers.includes('expected_return_not_net_of_costs'))
+
+const safeBaseline = resolveExpectedReturnServingState({
+  ensemble_v2: {
+    l4AlphaEv: {
+      expected_return_owner: 'l4_alpha_ev',
+      serving_mode: 'abstention_baseline',
+      promotion_state: 'safe_abstention',
+      validation_packet: {
+        decision: 'PASS',
+        alpha_quality_passed: false,
+      },
+      artifact_contract_version: L4_ALPHA_EV_CONTRACT.artifactContractVersion,
+      feature_semantic_version: L4_ALPHA_EV_CONTRACT.featureSemanticVersion,
+      label_schema_version: L4_ALPHA_EV_CONTRACT.labelSchemaVersion,
+      model_version: 'l4-alpha-ev-abstention-baseline-v1',
+      output_is_net_of_costs: true,
+    },
+  },
+})
+assert.equal(safeBaseline.state, 'safe_abstention')
+assert.equal(safeBaseline.expected_return_owner, null)
+assert.equal(safeBaseline.artifacts.l4_alpha_ev.artifact_state, 'abstention_baseline')
+assert.equal(safeBaseline.artifacts.l4_alpha_ev.serving_available, true)
 
 console.log('expectedReturnServingState tests passed')

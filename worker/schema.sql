@@ -829,6 +829,25 @@ CREATE TABLE IF NOT EXISTS model_champion_pointers (
 CREATE INDEX IF NOT EXISTS idx_model_champion_pointers_updated
   ON model_champion_pointers(updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS expected_return_artifact_payloads (
+  artifact_id TEXT PRIMARY KEY,
+  model_name TEXT NOT NULL CHECK(model_name IN ('l4_alpha_ev','allocator_ev_fusion')),
+  model_version TEXT NOT NULL,
+  serving_mode TEXT NOT NULL CHECK(serving_mode IN ('alpha','abstention_baseline')),
+  artifact_json TEXT NOT NULL CHECK(json_valid(artifact_json)),
+  payload_checksum TEXT NOT NULL CHECK(length(payload_checksum) = 64),
+  source_artifact_path TEXT,
+  source_artifact_checksum TEXT,
+  source_cohort_id TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(artifact_id) REFERENCES model_artifact_registry(artifact_id) ON DELETE RESTRICT,
+  UNIQUE(model_name, model_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_expected_return_artifact_payloads_owner
+  ON expected_return_artifact_payloads(model_name, serving_mode, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS allocator_ev_feature_snapshots (
   snapshot_date               TEXT NOT NULL,
   stock_id                    INTEGER NOT NULL,

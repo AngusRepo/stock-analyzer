@@ -9,8 +9,10 @@ adminConfigCoreRoutes.get('/api/admin/config', async (c) => {
   if (authError) return authError
 
   const { getTradingConfig } = await import('../lib/tradingConfig')
+  const { hydrateExpectedReturnConfigFromPointers } = await import('../lib/expectedReturnServingRegistry')
   const config = await getTradingConfig(c.env.KV)
-  return c.json(config)
+  const hydrated = await hydrateExpectedReturnConfigFromPointers(c.env.DB, config as any)
+  return c.json(hydrated.config)
 })
 
 adminConfigCoreRoutes.put('/api/admin/config', async (c) => {
@@ -149,7 +151,9 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
     validatePromotionPacketForProd,
   } = await import('../lib/parameterCandidateRegistry')
 
-  let current = await getTradingConfig(c.env.KV) as unknown as Record<string, any>
+  const rawCurrent = await getTradingConfig(c.env.KV) as unknown as Record<string, any>
+  const { hydrateExpectedReturnConfigFromPointers } = await import('../lib/expectedReturnServingRegistry')
+  let current = (await hydrateExpectedReturnConfigFromPointers(c.env.DB, rawCurrent)).config
   const outcomes: Record<string, any> = {}
   const orderedCandidates = [
     ['l4_alpha_ev', body.l4_alpha_ev],
@@ -262,10 +266,38 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
       continue
     }
 
-    const snapshot = await setTradingConfig(c.env.KV, plan.next_config as any, {
-      source: 'expected_return_oof_auto_promotion',
-      push_id: recorded.promotion_packet_id,
-    })
+    const { commitExpectedReturnChampion } = await import('../lib/expectedReturnServingRegistry')
+    let pointerCommit: Awaited<ReturnType<typeof commitExpectedReturnChampion>>
+    try {
+      pointerCommit = await commitExpectedReturnChampion(c.env.DB, {
+        owner,
+        artifact: plan.serving_artifact ?? {},
+        artifactPath: candidate.artifact_path,
+        artifactChecksum: candidate.artifact_checksum,
+        promotionPacketId: recorded.promotion_packet_id,
+        candidateId: plan.candidate_id,
+        sourceRunDate: candidate.source_run_date,
+      })
+    } catch (error) {
+      outcomes[owner] = {
+        promoted: false,
+        candidate_id: plan.candidate_id,
+        promotion_packet_id: recorded.promotion_packet_id,
+        blockers: [`champion_pointer_commit:${error instanceof Error ? error.message : String(error)}`],
+      }
+      continue
+    }
+    let snapshot: Awaited<ReturnType<typeof setTradingConfig>> | null = null
+    let configProjectionError: string | null = null
+    try {
+      snapshot = await setTradingConfig(c.env.KV, plan.next_config as any, {
+        source: 'expected_return_oof_auto_promotion',
+        push_id: recorded.promotion_packet_id,
+      })
+    } catch (error) {
+      // D1 pointer + payload is the serving authority. KV is a repairable projection.
+      configProjectionError = error instanceof Error ? error.message : String(error)
+    }
     await markParameterCandidatePromoted(c.env.DB, {
       candidateId: plan.candidate_id,
       promotionPacketId: recorded.promotion_packet_id,
@@ -279,6 +311,8 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
       model_version: plan.model_version,
       snapshot,
       serving_state: plan.serving_state,
+      pointer_commit: pointerCommit,
+      config_projection_error: configProjectionError,
     }
   }
 

@@ -380,6 +380,25 @@ CREATE TABLE IF NOT EXISTS model_champion_pointers (
 CREATE INDEX IF NOT EXISTS idx_model_champion_pointers_updated
   ON model_champion_pointers(updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS expected_return_artifact_payloads (
+  artifact_id TEXT PRIMARY KEY,
+  model_name TEXT NOT NULL CHECK(model_name IN ('l4_alpha_ev','allocator_ev_fusion')),
+  model_version TEXT NOT NULL,
+  serving_mode TEXT NOT NULL CHECK(serving_mode IN ('alpha','abstention_baseline')),
+  artifact_json TEXT NOT NULL CHECK(json_valid(artifact_json)),
+  payload_checksum TEXT NOT NULL CHECK(length(payload_checksum) = 64),
+  source_artifact_path TEXT,
+  source_artifact_checksum TEXT,
+  source_cohort_id TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(artifact_id) REFERENCES model_artifact_registry(artifact_id) ON DELETE RESTRICT,
+  UNIQUE(model_name, model_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_expected_return_artifact_payloads_owner
+  ON expected_return_artifact_payloads(model_name, serving_mode, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS allocator_ev_feature_snapshots (
   snapshot_date               TEXT NOT NULL,
   stock_id                    INTEGER NOT NULL,
@@ -538,6 +557,7 @@ CREATE TABLE IF NOT EXISTS active8_oof_materialized_artifacts (
 
 CREATE INDEX IF NOT EXISTS idx_active8_oof_materialized_artifacts_checksum
   ON active8_oof_materialized_artifacts(artifact_checksum);
+
 CREATE TABLE IF NOT EXISTS active8_oof_materialized_artifact_history (
   cohort_id TEXT NOT NULL,
   artifact_kind TEXT NOT NULL CHECK(artifact_kind IN ('allocator_ev_snapshots','l4_predictions')),
@@ -562,6 +582,7 @@ CREATE TABLE IF NOT EXISTS active8_oof_materialized_artifact_history (
   CHECK(length(replaced_by_checksum) = 64),
   CHECK(date_set_checksum IS NULL OR length(date_set_checksum) = 64)
 );
+
 CREATE INDEX IF NOT EXISTS idx_oof_materialized_history_replacement
   ON active8_oof_materialized_artifact_history(cohort_id, artifact_kind, replaced_by_checksum);
 
@@ -645,6 +666,7 @@ CREATE TABLE IF NOT EXISTS l4_oof_predictions (
 
 CREATE INDEX IF NOT EXISTS idx_l4_oof_predictions_cohort_date
   ON l4_oof_predictions(cohort_id, prediction_date);
+
 CREATE TABLE IF NOT EXISTS active8_oof_date_eligibility (
   cohort_id TEXT NOT NULL,
   prediction_date TEXT NOT NULL,
@@ -659,6 +681,7 @@ CREATE TABLE IF NOT EXISTS active8_oof_date_eligibility (
   assessed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(cohort_id, prediction_date, evidence_scope)
 );
+
 CREATE INDEX IF NOT EXISTS idx_active8_oof_date_eligibility_status
   ON active8_oof_date_eligibility(evidence_scope, eligibility_status, prediction_date, cohort_id);
 
@@ -680,6 +703,7 @@ CREATE TABLE IF NOT EXISTS active8_oof_retention_ledger (
   planned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
 CREATE INDEX IF NOT EXISTS idx_active8_oof_retention_action_status
   ON active8_oof_retention_ledger(retention_action, status, hard_reference_count);
 

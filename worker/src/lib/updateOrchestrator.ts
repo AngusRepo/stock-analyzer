@@ -10,10 +10,8 @@ import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady, loadMarketDataReadinessStats } from './marketDataReadiness'
 import { runRegimeCompute } from './controllerDailyWorkflows'
 import {
-  runAllocatorEvFusionRefresh,
   runAllocatorEvFeatureSnapshotBackfill,
   runFinLabV4Backfill,
-  runL4AlphaEvRefresh,
   runOpbArmPriorRefresh,
 } from './controllerResearchWorkflows'
 import { runOfficialMarketSummaryRefresh } from './officialMarketSummaryRefresh'
@@ -24,10 +22,8 @@ import {
   markPipelineStage,
 } from './pipelineStageLease'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
-import {
-  readCurrentExpectedReturnServingState,
-  refreshExpectedReturnServingState,
-} from './expectedReturnServingState'
+import { refreshExpectedReturnServingState } from './expectedReturnServingState'
+import { inspectExpectedReturnLifecycleHealth } from './expectedReturnServingRegistry'
 import { fetchPunishedStocks } from './twseApi'
 import {
   finLabCanonicalDatasetsForLane,
@@ -1870,97 +1866,39 @@ async function runDailyAllocatorEvReadiness(
 ): Promise<{ ok: boolean; summary: string }> {
   const started = Date.now()
   const parts: string[] = []
-  let l4ChampionAvailable = false
-  let fusionChampionAvailable = false
-
-  const loadApprovedL4Champion = async (): Promise<Record<string, any> | null> => {
-    const rawConfig = await env.KV.get('trading:config', 'json') as Record<string, any> | null
-    const ensembleV2 = rawConfig?.ensemble_v2 && typeof rawConfig.ensemble_v2 === 'object'
-      ? rawConfig.ensemble_v2 as Record<string, any>
-      : {}
-    const champion = ensembleV2.l4AlphaEv ?? ensembleV2.l4_alpha_ev
-    const state = await readCurrentExpectedReturnServingState(env, triggerTime)
-    return state.artifacts.l4_alpha_ev.eligible ? champion as Record<string, any> : null
-  }
-
-  const loadApprovedFusionChampion = async (): Promise<Record<string, any> | null> => {
-    const rawConfig = await env.KV.get('trading:config', 'json') as Record<string, any> | null
-    const ensembleV2 = rawConfig?.ensemble_v2 && typeof rawConfig.ensemble_v2 === 'object'
-      ? rawConfig.ensemble_v2 as Record<string, any>
-      : {}
-    const champion = ensembleV2.allocatorEvFusion ?? ensembleV2.allocator_ev_fusion
-    const state = await readCurrentExpectedReturnServingState(env, triggerTime)
-    return state.artifacts.allocator_ev_fusion.eligible ? champion as Record<string, any> : null
-  }
-
-  try {
-    const l4Started = Date.now()
-    const l4Summary = await runL4AlphaEvRefresh(env, triggerTime, 'weekly')
-    parts.push(`l4=${l4Summary}`)
-    const champion = await loadApprovedL4Champion()
-    l4ChampionAvailable = champion !== null
-    if (!l4ChampionAvailable) {
-      parts.push('l4_unavailable=refresh completed without a production-approved contract-compatible champion')
-      parts.push('expected_return_action_gate=validated_s12_only')
-    }
-    await logSchedulerResult(env.KV, 'l4-alpha-ev-refresh', {
-      status: 'success',
-      summary: `daily-chain ${l4Summary}`,
-      duration_ms: Date.now() - l4Started,
-      run_date: triggerTime,
-    })
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
-    const champion = await loadApprovedL4Champion()
-    l4ChampionAvailable = champion !== null
-    await logSchedulerResult(env.KV, 'l4-alpha-ev-refresh', {
-      status: 'error',
-      summary: l4ChampionAvailable
-        ? `daily-chain L4 alpha EV challenger rejected for ${triggerTime}; retained champion=${champion.model_version}`
-        : `daily-chain L4 alpha EV refresh failed for ${triggerTime}; no production-approved champion available`,
-      duration_ms: Date.now() - started,
-      error: message,
-      run_date: triggerTime,
-    })
-    if (l4ChampionAvailable) {
-      parts.push(`l4_challenger_rejected=${message}`)
-      parts.push(`l4_champion_retained=${champion.model_version}`)
-    } else {
-      parts.push(`l4_unavailable=${message}`)
-      parts.push('expected_return_action_gate=validated_s12_only')
-    }
-  }
-
-  try {
-    const fusionStarted = Date.now()
-    const fusionSummary = await runAllocatorEvFusionRefresh(env, triggerTime, 'weekly')
-    parts.push(`fusion=${fusionSummary}`)
-    fusionChampionAvailable = (await loadApprovedFusionChampion()) !== null
-    await logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh', {
-      status: 'success',
-      summary: `daily-chain ${fusionSummary}`,
-      duration_ms: Date.now() - fusionStarted,
-      run_date: triggerTime,
-    })
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
-    fusionChampionAvailable = (await loadApprovedFusionChampion()) !== null
-    parts.push(`fusion_degraded=${message}`)
-    await logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh', {
-      status: 'error',
-      summary: l4ChampionAvailable
-        ? `daily-chain allocator EV fusion degraded; stale config cleared by controller when available; pipeline continues with validated L4 alpha EV or S12 trade EV for ${triggerTime}`
-        : `daily-chain allocator EV fusion degraded; pipeline continues in observation mode with validated S12 trade EV only; BUY/allocation remain fail closed when expected return is unavailable for ${triggerTime}`,
-      duration_ms: Date.now() - started,
-      error: message,
-      run_date: triggerTime,
-    })
-  }
-
+  const health = await inspectExpectedReturnLifecycleHealth(env, triggerTime)
   const servingState = await refreshExpectedReturnServingState(env, triggerTime)
   const priorOwner = servingState.expected_return_owner
   parts.push(`expected_return_serving_state=${servingState.state}`)
   parts.push(`expected_return_action_gate=${servingState.action_gate}`)
+  parts.push(`expected_mature_signal_date=${health.expected_mature_signal_date ?? 'unresolved'}`)
+  parts.push(`oof_snapshot_max=${health.oof_max_dates.allocator_ev_snapshots ?? 'missing'}`)
+  parts.push(`oof_l4_max=${health.oof_max_dates.l4_predictions ?? 'missing'}`)
+
+  for (const owner of ['l4_alpha_ev', 'allocator_ev_fusion'] as const) {
+    const artifactState = servingState.artifacts[owner]
+    const candidate = health.latest_candidates[owner]
+    const task = owner === 'l4_alpha_ev' ? 'l4-alpha-ev-refresh' : 'allocator-ev-fusion-refresh'
+    const candidateDecision = String(candidate?.offline_gate_decision ?? 'missing')
+    const candidateVersion = String(candidate?.version ?? 'missing')
+    const ownerAlerts = [...health.alerts, ...servingState.hard_alerts]
+      .filter((alert) => alert.startsWith(`${owner}:`))
+    parts.push(`${owner}_serving=${artifactState.artifact_state}:${artifactState.model_version ?? 'none'}`)
+    parts.push(`${owner}_latest_candidate=${candidateVersion}:${candidateDecision}`)
+    await logSchedulerResult(env.KV, task, {
+      status: ownerAlerts.length > 0 ? 'error' : artifactState.eligible ? 'success' : 'skipped',
+      summary: [
+        `canonical OOF owner inspection for ${triggerTime}`,
+        `serving=${artifactState.artifact_state}`,
+        `version=${artifactState.model_version ?? 'none'}`,
+        `candidate=${candidateVersion}`,
+        `candidate_gate=${candidateDecision}`,
+        ownerAlerts.length > 0 ? `alerts=${ownerAlerts.join(',')}` : '',
+      ].filter(Boolean).join(' '),
+      duration_ms: Date.now() - started,
+      run_date: triggerTime,
+    })
+  }
   if (priorOwner) {
     const opbStarted = Date.now()
     try {
@@ -1993,11 +1931,16 @@ async function runDailyAllocatorEvReadiness(
     })
   }
 
+  const hardAlerts = [...new Set([...health.alerts, ...servingState.hard_alerts])]
+  const warnings = [...new Set([...health.warnings, ...servingState.warnings])]
+  if (hardAlerts.length > 0) parts.push(`hard_alerts=${hardAlerts.join(',')}`)
+  if (warnings.length > 0) parts.push(`warnings=${warnings.join(',')}`)
   const summary = `allocator EV model readiness before pipeline for ${triggerTime}; ${parts.join(' | ')}`
   await logSchedulerResult(env.KV, 'allocator-ev-readiness', {
-    status: 'success',
+    status: hardAlerts.length > 0 ? 'error' : 'success',
     summary,
     duration_ms: Date.now() - started,
+    error: hardAlerts.length > 0 ? hardAlerts.join(',') : undefined,
     run_date: triggerTime,
   })
   return { ok: true, summary }

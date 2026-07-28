@@ -1582,7 +1582,7 @@ OOF_LABEL_PURGE_SESSIONS = 5
 OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
-OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v3-pit-policy"
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v4-serving-owner"
 
 
 def _active_oof_materialization_policy_version() -> str:
@@ -1852,6 +1852,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     knowledge_cutoff_date = str(calendar_evidence["cutoff"])
 
     selected: tuple[str, dict] | None = None
+    daily_forward_extension: dict[str, Any] | None = None
+    daily_forward_extension_plan: dict[str, Any] | None = None
     if cadence == "daily":
         selected = parent
         if selected is None:
@@ -1860,6 +1862,42 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 "reason": "no_ready_purged_oof_manifest",
                 "cadence": cadence,
                 "calendar": calendar_evidence,
+            }
+        parent_path, parent_daily_manifest = selected
+        try:
+            parent_physical_dates, parent_physical_coverage = (
+                _oof_manifest_observed_core_dates(bucket, parent_daily_manifest)
+            )
+            parent_end = parent_physical_dates[-1] if parent_physical_dates else ""
+            new_mature_dates = [date for date in dates if date > parent_end]
+            calendar_evidence["parent_physical_coverage"] = parent_physical_coverage
+            if new_mature_dates:
+                daily_forward_extension_plan = {
+                    "base_manifest_path": str(parent_path),
+                    "prep_gcs_prefix": prep_gcs_prefix,
+                    "sequence_gcs_prefix": str(
+                        calendar_evidence.get("sequence_gcs_prefix")
+                        or parent_daily_manifest.get("sequence_gcs_prefix")
+                        or "universal/sequence_long/latest"
+                    ),
+                    "sequence_batch_count": int(parent_daily_manifest.get("sequence_batch_count") or 5),
+                    "start_date": new_mature_dates[0],
+                    "end_date": new_mature_dates[-1],
+                    "knowledge_cutoff_date": knowledge_cutoff_date,
+                    "confirm": True,
+                }
+                daily_forward_extension = {
+                    "status": "planned",
+                    "dates": new_mature_dates,
+                    "promotion_eligible": False,
+                    "training_dispatched": False,
+                }
+        except Exception as exc:  # noqa: BLE001 - keep canonical base materialization observable.
+            daily_forward_extension = {
+                "status": "blocked",
+                "reason": str(exc),
+                "promotion_eligible": False,
+                "training_dispatched": False,
             }
     else:
         from services.backtest_engine import walk_forward_windows
@@ -2095,6 +2133,38 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             "execution_name": execution.execution_name,
             "run_id": run_id,
         }
+    if daily_forward_extension_plan and not req.dry_run:
+        try:
+            from services import modal_client
+
+            extension = await modal_client.build_frozen_oof_forward_extension(
+                daily_forward_extension_plan
+            )
+            if extension.get("training_dispatched") is not False:
+                raise ValueError("daily_forward_extension_dispatched_training")
+            if extension.get("promotion_eligible") is not False:
+                raise ValueError("daily_forward_extension_claimed_promotion_eligibility")
+            daily_forward_extension = {
+                "status": extension.get("status") or "ready",
+                "manifest_path": extension.get("manifest_path"),
+                "manifest_checksum": extension.get("manifest_checksum"),
+                "dates": extension.get("dates") or [],
+                "promotion_eligible": False,
+                "training_dispatched": False,
+            }
+        except Exception as exc:  # noqa: BLE001 - persist explicit blocker without forging evidence.
+            daily_forward_extension = {
+                "status": "blocked",
+                "reason": str(exc),
+                "promotion_eligible": False,
+                "training_dispatched": False,
+            }
+    forward_extension_manifest_path = str(
+        (daily_forward_extension or {}).get("manifest_path") or ""
+    ).strip() or None
+    forward_extension_retry_required = bool(
+        not req.dry_run and daily_forward_extension_plan and not forward_extension_manifest_path
+    )
     result = await materialize_walk_forward_oof(OofMaterializeRequest(
         cohort_id=cohort_id,
         knowledge_cutoff_date=knowledge_cutoff_date,
@@ -2104,13 +2174,17 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         promote=req.promote,
         dispatch_full_fit=req.dispatch_full_fit,
         lifecycle_cadence=cadence,
+        forward_extension_manifest_path=forward_extension_manifest_path,
     ))
+    result["daily_forward_extension"] = daily_forward_extension
     opb_failed = (
         isinstance(result.get("opb_refresh"), dict)
         and result["opb_refresh"].get("status") == "failed"
     )
     full_fit_retry_required = bool(result.get("full_fit_retry_required"))
-    dependency_retry_required = opb_failed or full_fit_retry_required
+    dependency_retry_required = (
+        opb_failed or full_fit_retry_required or forward_extension_retry_required
+    )
     if not req.dry_run and not dependency_retry_required:
         lifecycle_blob.upload_from_string(
             json.dumps({
@@ -2122,6 +2196,15 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 "knowledge_cutoff_date": knowledge_cutoff_date,
                 "promoted": bool(result.get("promoted")),
                 "promotion_reason": result.get("promotion_reason"),
+                "evidence_closure": {
+                    "materialized": result.get("status") == "materialized",
+                    "candidate_artifacts": bool(result.get("candidate_artifacts")),
+                    "daily_forward_extension": daily_forward_extension,
+                },
+                "serving_closure": {
+                    "alpha_champion_promoted": bool(result.get("promoted")),
+                    "status": "promoted" if result.get("promoted") else "quality_gate_not_passed_or_not_ready",
+                },
                 "opb_refresh": result.get("opb_refresh"),
                 "full_fit_dispatch": result.get("full_fit_dispatch"),
                 "persistence": result.get("persistence"),

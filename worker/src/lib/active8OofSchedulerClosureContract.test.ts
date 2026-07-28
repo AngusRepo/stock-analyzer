@@ -37,9 +37,21 @@ assert(walkForward.includes('cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSION
 assert(walkForward.includes('train_window_days=OOF_TRAIN_SESSIONS') && walkForward.includes('test_window_days=OOF_TEST_SESSIONS'), 'OOF cohort must use the canonical 60/10 purged walk-forward windows')
 assert(walkForward.includes('active8-oof-dispatch-v1') && walkForward.includes('cohort_orchestrator_active'), 'OOF generation must have a durable idempotent dispatch fence')
 assert(
-  walkForward.includes('active8-oof-lifecycle-receipt-v3-pit-policy') &&
+  walkForward.includes('active8-oof-lifecycle-receipt-v4-serving-owner') &&
     walkForward.includes('_oof_lifecycle_receipt_matches_active_policy'),
   'materialization/promotion must invalidate stale receipts when the active PIT policy changes',
+)
+assert(
+  walkForward.includes('build_frozen_oof_forward_extension') &&
+    walkForward.includes('daily_forward_extension_dispatched_training') &&
+    walkForward.includes('daily_forward_extension_claimed_promotion_eligibility') &&
+    walkForward.includes('forward_extension_manifest_path=forward_extension_manifest_path') &&
+    walkForward.includes('forward_extension_retry_required'),
+  'daily lifecycle must feed exact frozen forward evidence into materialization, without training or promotion, and remain retryable when blocked',
+)
+assert(
+  walkForward.includes('"evidence_closure"') && walkForward.includes('"serving_closure"'),
+  'lifecycle receipts must not conflate materialized evidence with a promoted serving champion',
 )
 assert(
   walkForward.includes('active8-oof-full-fit-receipt-v1') &&
@@ -48,9 +60,9 @@ assert(
   'full-fit dispatch must remain retryable until every eligible artifact reaches registry closure',
 )
 assert(
-  walkForward.includes('dependency_retry_required = opb_failed or full_fit_retry_required') &&
+  walkForward.includes('opb_failed or full_fit_retry_required or forward_extension_retry_required') &&
     walkForward.includes('if not req.dry_run and not dependency_retry_required'),
-  'failed OPB refresh or full-fit dispatch must leave lifecycle retryable instead of writing false closure',
+  'failed OPB, full-fit, or frozen-forward evidence must leave lifecycle retryable instead of writing false closure',
 )
 assert(walkForward.indexOf('promoted = True') < walkForward.indexOf('/api/admin/trigger/opb-arm-prior-refresh'), 'OPB refresh must be event-driven only after successful EV promotion')
 

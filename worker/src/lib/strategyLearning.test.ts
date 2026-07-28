@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import {
   buildStrategyAdaptivePolicyState,
   buildStrategyDecisionRows,
+  buildStrategyRewardDailyStatsRows,
   buildStrategyRewardLedgerRows,
   hydrateStrategyCandidateDailyFeatures,
   evaluateStrategyPromotionGate,
@@ -10,6 +11,7 @@ import {
   registryRowToStrategySpec,
   seedDefaultStrategySpecRegistry,
   shouldRetireStaleStrategyRewardRows,
+  summarizeDateClusteredReturns,
   strategySpecToRegistryRow,
   type StrategySpecRegistryRow,
   type StrategyLearningSummary,
@@ -17,6 +19,38 @@ import {
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
+}
+
+function strategyLearningEvidence(
+  overrides: Partial<StrategyLearningSummary['specs'][number]['learning']> = {},
+): StrategyLearningSummary['specs'][number]['learning'] {
+  return {
+    evidence_available: true,
+    decisions: 800,
+    matched: 240,
+    match_rate: 0.3,
+    today_decisions: 0,
+    today_matched: 0,
+    rolling_decisions: 80,
+    rolling_matched: 24,
+    rolling_match_rate: 0.3,
+    rolling_sessions: 12,
+    samples: 450,
+    hit_rate: 0.62,
+    avg_return_pct: 0.018,
+    max_drawdown_pct: -0.03,
+    rolling_samples: 45,
+    rolling_hit_rate: 0.62,
+    rolling_avg_return_pct: 0.018,
+    rolling_max_drawdown_pct: -0.03,
+    rolling_reward_dates: 12,
+    rolling_date_return_mean: 0.018,
+    rolling_date_return_lcb90: 0.006,
+    latest_decision_date: '2026-05-19',
+    latest_reward_date: '2026-05-12',
+    status: 'learning',
+    ...overrides,
+  }
 }
 
 {
@@ -566,6 +600,70 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
 }
 
 {
+  const daily = buildStrategyRewardDailyStatsRows([
+    {
+      date: '2026-05-15', symbol: '2330', strategy_id: 'daily_projection', strategy_version: 'v1',
+      strategy_status: 'shadow', alpha_bucket: 'mean_reversion', residual_return_net: 0.03,
+    },
+    {
+      date: '2026-05-15', symbol: '2317', strategy_id: 'daily_projection', strategy_version: 'v1',
+      strategy_status: 'shadow', alpha_bucket: 'mean_reversion', residual_return_net: -0.01,
+    },
+    {
+      date: '2026-05-16', symbol: '2454', strategy_id: 'daily_projection', strategy_version: 'v1',
+      strategy_status: 'shadow', alpha_bucket: 'mean_reversion', residual_return_net: 0.02,
+    },
+  ], { nowIso: '2026-05-20T00:00:00.000Z', refreshRunId: 'refresh-v1' })
+  assert(daily.length === 2, 'daily projection must retain one row per signal date and strategy version')
+  assert(daily[0].reward_samples === 2 && daily[0].reward_hits === 1, 'daily projection must retain sample and hit counts')
+  assert(daily[0].date_portfolio_return === 0.01, 'daily projection must equal-weight same-date rewards')
+  assert(daily[0].reward_refresh_run_id === 'refresh-v1', 'daily projection must retain refresh lineage')
+
+  const stable = summarizeDateClusteredReturns(Array.from({ length: 12 }, (_, index) => 0.01 + index * 0.0001))
+  assert(stable.mean != null && stable.mean > 0, 'date-clustered mean should retain positive edge')
+  assert(stable.lcb90 != null && stable.lcb90 > 0, 'stable cross-date edge should have a positive one-sided LCB')
+  assert(summarizeDateClusteredReturns([0.01]).lcb90 == null, 'one date must not manufacture confidence')
+}
+
+{
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'shadow' as const }
+  const summary = {
+    version: 'strategy-learning-v4',
+    date: '2026-07-28',
+    spec_source: 'registry',
+    specs: [{
+      ...spec,
+      learning: strategyLearningEvidence({
+        decisions: 16042,
+        matched: 1937,
+        match_rate: 0.120746,
+        today_decisions: 0,
+        rolling_decisions: 0,
+        rolling_matched: 0,
+        rolling_match_rate: null,
+        rolling_sessions: 0,
+        rolling_samples: 0,
+        rolling_hit_rate: null,
+        rolling_avg_return_pct: null,
+        rolling_max_drawdown_pct: null,
+        rolling_reward_dates: 0,
+        rolling_date_return_mean: null,
+        rolling_date_return_lcb90: null,
+      }),
+    }],
+    promotion_gate: [],
+    policy_state_preview: {} as any,
+  } satisfies StrategyLearningSummary
+  const gate = evaluateStrategyPromotionGate(summary)
+  assert(gate[0].evidence.lifetime_decisions === 16042, 'gate evidence must expose cumulative observability')
+  assert(gate[0].evidence.decisions === 0, 'promotion must use rolling decisions rather than lifetime totals')
+  assert(gate[0].missing_evidence.includes('mature_dates_lt_10'), 'promotion must require independent mature dates')
+  assert(gate[0].missing_evidence.includes('date_return_lcb90_not_positive'), 'promotion must require positive cross-date confidence')
+  const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
+  assert(policy.strategy_weights[spec.id] == null, 'immature lifetime evidence must not receive adaptive weight')
+}
+
+{
   const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'shadow' as const }
   const summary = {
     version: 'strategy-learning-v4',
@@ -573,16 +671,8 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
     spec_source: 'registry',
     specs: [{
       ...spec,
-      learning: {
-        decisions: 80,
-        matched: 24,
-        match_rate: 0.3,
-        samples: 45,
-        hit_rate: 0.62,
-        avg_return_pct: 0.018,
-        max_drawdown_pct: -0.03,
-        status: 'learning',
-      },
+      learning: strategyLearningEvidence(),
+
     }],
     promotion_gate: [],
     policy_state_preview: {} as any,
@@ -610,16 +700,26 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
     spec_source: 'registry',
     specs: [{
       ...spec,
-      learning: {
+      learning: strategyLearningEvidence({
         decisions: 3,
         matched: 1,
         match_rate: 0.333333,
+        rolling_decisions: 3,
+        rolling_matched: 1,
+        rolling_match_rate: 0.333333,
+        rolling_sessions: 1,
         samples: 2,
         hit_rate: 0.5,
         avg_return_pct: -0.01,
         max_drawdown_pct: -0.12,
-        status: 'learning',
-      },
+        rolling_samples: 2,
+        rolling_hit_rate: 0.5,
+        rolling_avg_return_pct: -0.01,
+        rolling_max_drawdown_pct: -0.12,
+        rolling_reward_dates: 1,
+        rolling_date_return_mean: -0.01,
+        rolling_date_return_lcb90: null,
+      }),
     }],
     promotion_gate: [],
     policy_state_preview: {} as any,
@@ -639,16 +739,8 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
     spec_source: 'registry',
     specs: [{
       ...spec,
-      learning: {
-        decisions: 80,
-        matched: 24,
-        match_rate: 0.3,
-        samples: 45,
-        hit_rate: 0.62,
-        avg_return_pct: 0.018,
-        max_drawdown_pct: -0.03,
-        status: 'learning',
-      },
+      learning: strategyLearningEvidence(),
+
     }],
     promotion_gate: [],
     policy_state_preview: {} as any,
@@ -667,16 +759,25 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
     spec_source: 'registry',
     specs: [{
       ...spec,
-      learning: {
-        decisions: 90,
-        matched: 20,
+      learning: strategyLearningEvidence({
+        decisions: 900,
+        matched: 200,
         match_rate: 0.222222,
-        samples: 45,
+        rolling_decisions: 90,
+        rolling_matched: 20,
+        rolling_match_rate: 0.222222,
+        samples: 450,
         hit_rate: 0.44,
         avg_return_pct: -0.006,
         max_drawdown_pct: -0.11,
-        status: 'learning',
-      },
+        rolling_samples: 45,
+        rolling_hit_rate: 0.44,
+        rolling_avg_return_pct: -0.006,
+        rolling_max_drawdown_pct: -0.11,
+        rolling_reward_dates: 12,
+        rolling_date_return_mean: -0.006,
+        rolling_date_return_lcb90: -0.01,
+      }),
     }],
     promotion_gate: [],
     policy_state_preview: {} as any,

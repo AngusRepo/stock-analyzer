@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
 import {
   strategyLabApi,
@@ -437,11 +437,11 @@ function StrategyLearningPanel({
       <CardContent className="space-y-4">
         <div className="grid grid-cols-1 gap-2 text-xs md:grid-cols-4">
           <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
-            <div className="text-slate-500">Decision rows</div>
+            <div className="text-slate-500">Lifetime decision rows</div>
             <div className="mt-1 text-xl font-semibold text-slate-100">{totals.decisions}</div>
           </div>
           <div className="rounded-xl border border-slate-800 bg-black/20 p-3">
-            <div className="text-slate-500">Reward samples</div>
+            <div className="text-slate-500">Lifetime reward samples</div>
             <div className="mt-1 text-xl font-semibold text-emerald-200">{totals.samples}</div>
           </div>
           <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3">
@@ -515,16 +515,18 @@ function StrategyLearningPanel({
                   </div>
                   <div className="grid grid-cols-2 gap-2 xl:block xl:space-y-1">
                     <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1">
-                      <span className="text-slate-500">decisions </span><span className="text-slate-200">{row.learning.decisions}</span>
+                      <span className="text-slate-500">lifetime </span><span className="text-slate-200">{row.learning.decisions}</span>
+                      <div className="text-[10px] text-slate-500">today {row.learning.today_decisions} · latest {row.learning.latest_decision_date ?? '-'}</div>
                     </div>
                     <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1">
-                      <span className="text-slate-500">samples </span><span className="text-slate-200">{row.learning.samples}</span>
+                      <span className="text-slate-500">rolling </span><span className="text-slate-200">{row.learning.rolling_decisions}</span>
+                      <div className="text-[10px] text-slate-500">{row.learning.rolling_sessions} sessions</div>
                     </div>
                   </div>
                   <div className="grid grid-cols-3 gap-2 xl:block xl:space-y-1">
-                    <div><span className="text-slate-500">hit </span><span className="text-cyan-200">{pct(row.learning.hit_rate)}</span></div>
-                    <div><span className="text-slate-500">avg </span><span className={Number(row.learning.avg_return_pct ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}>{pct(row.learning.avg_return_pct)}</span></div>
-                    <div><span className="text-slate-500">MDD </span><span className="text-amber-200">{pct(row.learning.max_drawdown_pct)}</span></div>
+                    <div><span className="text-slate-500">mature dates </span><span className="text-cyan-200">{row.learning.rolling_reward_dates}</span></div>
+                    <div><span className="text-slate-500">rolling avg </span><span className={Number(row.learning.rolling_avg_return_pct ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}>{pct(row.learning.rolling_avg_return_pct)}</span></div>
+                    <div><span className="text-slate-500">LCB90 </span><span className="text-amber-200">{pct(row.learning.rolling_date_return_lcb90)}</span></div>
                   </div>
                   <div>
                     <div className="flex justify-between gap-2 text-[10px] normal-case text-slate-500">

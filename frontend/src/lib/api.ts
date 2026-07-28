@@ -605,14 +605,30 @@ export type StrategyLearningResponse = {
   specs: Array<Omit<StrategySpec, 'validation'> & {
     validation?: StrategySpec['validation']
     learning: {
+      evidence_available: boolean
       decisions: number
       matched: number
       match_rate: number | null
+      today_decisions: number
+      today_matched: number
+      rolling_decisions: number
+      rolling_matched: number
+      rolling_match_rate: number | null
+      rolling_sessions: number
       samples: number
       hit_rate: number | null
       avg_return_pct: number | null
       max_drawdown_pct: number | null
-      status: 'learning' | 'no_decisions' | 'no_reward'
+      rolling_samples: number
+      rolling_hit_rate: number | null
+      rolling_avg_return_pct: number | null
+      rolling_max_drawdown_pct: number | null
+      rolling_reward_dates: number
+      rolling_date_return_mean: number | null
+      rolling_date_return_lcb90: number | null
+      latest_decision_date: string | null
+      latest_reward_date: string | null
+      status: 'learning' | 'no_decisions' | 'no_reward' | 'unavailable'
     }
   }>
   promotion_gate: StrategyPromotionGate[]
@@ -626,7 +642,7 @@ export type StrategyPromotionGate = {
   alpha_bucket: string
   current_stage?: 'L0_hypothesis' | 'L1_shadow' | 'L2_paper_active' | 'L3_production_allocation'
   recommended_stage?: 'L0_hypothesis' | 'L1_shadow' | 'L2_paper_active' | 'L3_production_allocation'
-  decision: 'not_ready' | 'candidate_ready' | 'active_monitor'
+  decision: 'not_ready' | 'candidate_ready' | 'active_monitor' | 'active_cooldown'
   recommended_next_status: 'shadow' | 'candidate' | 'active'
   requires_wei_approval: boolean
   l3_requires_wei_approval?: boolean
@@ -640,6 +656,9 @@ export type StrategyPromotionGate = {
     hit_rate: number | null
     avg_return_pct: number | null
     max_drawdown_pct: number | null
+    mature_dates: number
+    date_return_lcb90: number | null
+    lifetime_decisions: number
   }
 }
 

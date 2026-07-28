@@ -2778,23 +2778,27 @@ export async function rebuildHistoricalStrategyEvidenceV5(
            )
          ORDER BY r.symbol
       `).bind(date).all<any>()
-      const references = referencesResult.results ?? []
-      const producerRunIds = new Set(references.map((row) => cleanToken(row.producer_run_id)))
-      const checksums = new Set(references.map((row) => cleanToken(row.strategy_registry_checksum)).filter(Boolean))
-      const artifactIds = new Set(references.map((row) => cleanToken(row.evidence_artifact_id)).filter(Boolean))
-      if (!references.length || producerRunIds.size !== 1 || checksums.size !== 1 || artifactIds.size !== 1) {
+      const referenceRows = referencesResult.results ?? []
+      const producerRunIds = new Set(referenceRows.map((row) => cleanToken(row.producer_run_id)))
+      const checksums = new Set(referenceRows.map((row) => cleanToken(row.strategy_registry_checksum)).filter(Boolean))
+      const artifactIds = new Set(referenceRows.map((row) => cleanToken(row.evidence_artifact_id)).filter(Boolean))
+      if (!referenceRows.length || producerRunIds.size !== 1 || checksums.size !== 1 || artifactIds.size !== 1) {
         throw new Error('reference_lineage_incomplete')
       }
+      const references = [...new Map(referenceRows.map((row) => [cleanToken(row.symbol), row])).values()]
       const producerRunId = [...producerRunIds][0]
       const decisionResult = await db.prepare(`
         SELECT d.date, d.symbol, d.name, d.strategy_id, d.strategy_version,
                d.strategy_status, d.alpha_bucket
           FROM strategy_decision_log d
-          JOIN selection_reference_snapshots_v1 r
-            ON r.signal_date=d.date AND r.symbol=d.symbol AND r.producer_run_id=?
          WHERE d.date=?
+           AND EXISTS (
+             SELECT 1 FROM selection_reference_snapshots_v1 r
+              WHERE r.signal_date=d.date AND r.symbol=d.symbol
+                AND r.producer_run_id=?
+           )
          ORDER BY d.symbol, d.strategy_id, d.strategy_version
-      `).bind(producerRunId, date).all<HistoricalStrategyDecisionRowV5>()
+      `).bind(date, producerRunId).all<HistoricalStrategyDecisionRowV5>()
       const decisions = decisionResult.results ?? []
       const referenceSymbols = new Set(references.map((row) => cleanToken(row.symbol)))
       const strategyKeys = new Set(decisions.map((row) => row.strategy_id + '|' + row.strategy_version))
@@ -2808,12 +2812,15 @@ export async function rebuildHistoricalStrategyEvidenceV5(
                c.current_price AS context_current_price,
                c.industry AS context_industry
           FROM strategy_decision_log d
-          JOIN selection_reference_snapshots_v1 r
-            ON r.signal_date=d.date AND r.symbol=d.symbol AND r.producer_run_id=?
           LEFT JOIN strategy_candidate_contexts c ON c.context_id=d.context_id
          WHERE d.date=?
+           AND EXISTS (
+             SELECT 1 FROM selection_reference_snapshots_v1 r
+              WHERE r.signal_date=d.date AND r.symbol=d.symbol
+                AND r.producer_run_id=?
+           )
          GROUP BY d.symbol
-      `).bind(producerRunId, date).all<HistoricalStrategyContextRowV5>()
+      `).bind(date, producerRunId).all<HistoricalStrategyContextRowV5>()
       const contextBySymbol = new Map((contextResult.results ?? []).map((row) => [row.symbol, row]))
       const decisionUpdates: D1PreparedStatement[] = []
       let evaluableRows = 0

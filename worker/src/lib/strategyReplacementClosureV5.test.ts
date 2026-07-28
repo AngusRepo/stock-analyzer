@@ -29,6 +29,10 @@ assert(learning.includes('maxDates: 2'), 'daily closure must drain history in bo
 assert(!learning.includes('d.strategy_status, d.alpha_bucket, d.context_json, d.evidence_json'), 'historical decision query must not duplicate large JSON per strategy row')
 assert(learning.includes('GROUP BY d.symbol'), 'historical context must be loaded once per symbol')
 assert(learning.includes('evidence_json=json_patch'), 'historical evidence must merge in D1 without a read-modify-write payload')
+const historicalRebuild = learning.slice(learning.indexOf('export async function rebuildHistoricalStrategyEvidenceV5'), learning.indexOf('export async function finalizeStrategyLearningEvidenceV5'))
+assert(historicalRebuild.includes('new Map(referenceRows.map'), 'raw reference lineage must be deduplicated by symbol after validation')
+assert(!historicalRebuild.includes('JOIN selection_reference_snapshots_v1 r'),
+  'reference membership must use EXISTS so duplicate snapshots cannot multiply decision rows')
 assert(runState.includes('priorCanonicalSuccess'), 'completed historical runs need a frozen lineage fast path')
 assert(runState.includes('completed_at=CASE'), 'a new producer run must clear stale completion provenance')
 assert(runState.indexOf('priorCanonicalSuccess') < runState.indexOf('JOIN strategy_spec_registry'),

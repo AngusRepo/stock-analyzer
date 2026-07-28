@@ -2708,8 +2708,11 @@ interface HistoricalStrategyDecisionRowV5 {
   strategy_version: string
   strategy_status: StrategySpecStatus
   alpha_bucket: string
+}
+
+interface HistoricalStrategyContextRowV5 {
+  symbol: string
   context_json: string
-  evidence_json: string
   context_raw_signals_json: string | null
   context_current_price: number | string | null
   context_industry: string | null
@@ -2785,14 +2788,10 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       const producerRunId = [...producerRunIds][0]
       const decisionResult = await db.prepare(`
         SELECT d.date, d.symbol, d.name, d.strategy_id, d.strategy_version,
-               d.strategy_status, d.alpha_bucket, d.context_json, d.evidence_json,
-               c.raw_signals_json AS context_raw_signals_json,
-               c.current_price AS context_current_price,
-               c.industry AS context_industry
+               d.strategy_status, d.alpha_bucket
           FROM strategy_decision_log d
           JOIN selection_reference_snapshots_v1 r
             ON r.signal_date=d.date AND r.symbol=d.symbol AND r.producer_run_id=?
-          LEFT JOIN strategy_candidate_contexts c ON c.context_id=d.context_id
          WHERE d.date=?
          ORDER BY d.symbol, d.strategy_id, d.strategy_version
       `).bind(producerRunId, date).all<HistoricalStrategyDecisionRowV5>()
@@ -2803,22 +2802,36 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       if (!strategyKeys.size || decisions.length !== expectedCells) {
         throw new Error(`decision_grid_incomplete:${decisions.length}/${expectedCells}`)
       }
+      const contextResult = await db.prepare(`
+        SELECT d.symbol, d.context_json,
+               c.raw_signals_json AS context_raw_signals_json,
+               c.current_price AS context_current_price,
+               c.industry AS context_industry
+          FROM strategy_decision_log d
+          JOIN selection_reference_snapshots_v1 r
+            ON r.signal_date=d.date AND r.symbol=d.symbol AND r.producer_run_id=?
+          LEFT JOIN strategy_candidate_contexts c ON c.context_id=d.context_id
+         WHERE d.date=?
+         GROUP BY d.symbol
+      `).bind(producerRunId, date).all<HistoricalStrategyContextRowV5>()
+      const contextBySymbol = new Map((contextResult.results ?? []).map((row) => [row.symbol, row]))
       const decisionUpdates: D1PreparedStatement[] = []
       let evaluableRows = 0
       let unavailableRows = 0
       const rebuilt = decisions.map((row) => {
         const key = row.strategy_id + '|' + row.strategy_version
         const spec = specByKey.get(key)
-        const fullContext = parseJson<any>(row.context_json, {})
-        const contextRaw = parseJson<Record<string, any>>(row.context_raw_signals_json, {})
+        const context = contextBySymbol.get(row.symbol)
+        const fullContext = parseJson<any>(context?.context_json, {})
+        const contextRaw = parseJson<Record<string, any>>(context?.context_raw_signals_json, {})
         const rawSignals = Object.keys(contextRaw).length
           ? Object.fromEntries(Object.entries(contextRaw).filter(([name]) => name !== 'score_v2'))
           : fullContext?.candidate?.raw_signals ?? null
         const candidate: StrategyCandidateInput = {
           symbol: row.symbol,
           name: row.name ?? undefined,
-          industry: firstCleanToken(row.context_industry, fullContext?.candidate?.industry) ?? undefined,
-          current_price: firstFinite(row.context_current_price, fullContext?.candidate?.current_price),
+          industry: firstCleanToken(context?.context_industry, fullContext?.candidate?.industry) ?? undefined,
+          current_price: firstFinite(context?.context_current_price, fullContext?.candidate?.current_price),
           raw_signals: rawSignals,
           score_v2: contextRaw.score_v2 ?? fullContext?.score_v2 ?? null,
         }
@@ -2838,12 +2851,10 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         const unavailableReason = evaluability.evaluable ? null : evaluability.unavailableReasons.join('|')
         if (evaluability.evaluable) evaluableRows += 1
         else unavailableRows += 1
-        const priorEvidence = parseJson<Record<string, unknown>>(row.evidence_json, {})
         const evidence = {
-          ...priorEvidence,
           pit_reconstruction: {
             schema_version: 'strategy-decision-pit-reconstruction-v5',
-            source: row.context_raw_signals_json ? 'strategy_candidate_contexts' : 'strategy_decision_context',
+            source: context?.context_raw_signals_json ? 'strategy_candidate_contexts' : 'strategy_decision_context',
             strategy_id: row.strategy_id,
             strategy_version: row.strategy_version,
             evaluability,
@@ -2856,7 +2867,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         decisionUpdates.push(db.prepare(`
           UPDATE strategy_decision_log
              SET evaluable=?, unavailable_reason=?, matched=?, match_score=?,
-                 reason_code=?, evidence_json=?
+                 reason_code=?, evidence_json=json_patch(CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END, ?)
            WHERE date=? AND symbol=? AND strategy_id=? AND strategy_version=?
         `).bind(
           evaluability.evaluable ? 1 : 0,

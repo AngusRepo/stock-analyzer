@@ -26,6 +26,9 @@ assert(learning.includes('assessStrategySpecEvaluability'), 'decision logging mu
 assert(learning.includes('hydrateS12StrategyEvidence'), 'S12 must read formal intraday snapshot evidence')
 assert(learning.includes('rebuildHistoricalStrategyEvidenceV5'), 'daily closure must own bounded PIT backlog reconstruction')
 assert(learning.includes('maxDates: 2'), 'daily closure must drain history in bounded chunks')
+assert(!learning.includes('d.strategy_status, d.alpha_bucket, d.context_json, d.evidence_json'), 'historical decision query must not duplicate large JSON per strategy row')
+assert(learning.includes('GROUP BY d.symbol'), 'historical context must be loaded once per symbol')
+assert(learning.includes('evidence_json=json_patch'), 'historical evidence must merge in D1 without a read-modify-write payload')
 assert(runState.includes('priorCanonicalSuccess'), 'completed historical runs need a frozen lineage fast path')
 assert(runState.includes('completed_at=CASE'), 'a new producer run must clear stale completion provenance')
 assert(runState.indexOf('priorCanonicalSuccess') < runState.indexOf('JOIN strategy_spec_registry'),

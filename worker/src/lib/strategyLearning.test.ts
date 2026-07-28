@@ -26,12 +26,19 @@ function strategyLearningEvidence(
 ): StrategyLearningSummary['specs'][number]['learning'] {
   return {
     evidence_available: true,
+    reward_owner: 'selection_edge_v4',
     decisions: 800,
+    evaluable_decisions: 760,
+    unavailable_decisions: 40,
     matched: 240,
     match_rate: 0.3,
     today_decisions: 0,
+    today_evaluable_decisions: 0,
+    today_unavailable_decisions: 0,
     today_matched: 0,
     rolling_decisions: 80,
+    rolling_evaluable_decisions: 76,
+    rolling_unavailable_decisions: 4,
     rolling_matched: 24,
     rolling_match_rate: 0.3,
     rolling_sessions: 12,
@@ -628,7 +635,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
 {
   const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'shadow' as const }
   const summary = {
-    version: 'strategy-learning-v4',
+    version: 'strategy-learning-v5',
     date: '2026-07-28',
     spec_source: 'registry',
     specs: [{
@@ -638,7 +645,11 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
         matched: 1937,
         match_rate: 0.120746,
         today_decisions: 0,
+        today_evaluable_decisions: 0,
+        today_unavailable_decisions: 0,
         rolling_decisions: 0,
+        rolling_evaluable_decisions: 0,
+        rolling_unavailable_decisions: 0,
         rolling_matched: 0,
         rolling_match_rate: null,
         rolling_sessions: 0,
@@ -666,7 +677,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
 {
   const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'shadow' as const }
   const summary = {
-    version: 'strategy-learning-v4',
+    version: 'strategy-learning-v5',
     date: '2026-05-19',
     spec_source: 'registry',
     specs: [{
@@ -679,7 +690,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)
   assert(gate[0].decision === 'candidate_ready', 'strong strategy evidence should be candidate-ready')
-  assert(gate[0].requires_wei_approval === true, 'strategy promotion should require Wei approval')
+  assert(gate[0].requires_wei_approval === false, 'strategy promotion is automatic but remains Edge V5 gated')
   assert(gate[0].current_stage === 'L1_shadow', 'shadow strategy should be L1')
   assert(gate[0].recommended_stage === 'L2_paper_active', 'ready shadow strategy should advance to L2 paper-active')
   assert(gate[0].l3_requires_wei_approval === false, 'L2 paper-active does not equal production allocation')
@@ -747,7 +758,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)
   assert(gate[0].recommended_stage === 'L3_production_allocation', 'ready candidate strategy should request L3')
-  assert(gate[0].l3_requires_wei_approval === true, 'L3 production allocation must require Wei approval')
+  assert(gate[0].l3_requires_wei_approval === false, 'L3 production allocation must be automatically governed by Edge V5')
   assert(gate[0].production_effect === false, 'L3 gate is still metadata until approved')
 }
 
@@ -791,4 +802,27 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
   assert(policy.strategy_weights[spec.id] === 0, 'negative-edge cooldown strategies must have zero production contribution')
   assert(policy.threshold_deltas[spec.id].minVolumeExpansion20 === 0.12, 'cooldown should tighten raw-signal thresholds')
+}
+
+{
+  const spec = {
+    ...DEFAULT_STRATEGY_SPECS[0],
+    id: 'decision_evaluability_contract_v1',
+    status: 'candidate' as const,
+    thresholds: { dsl: { all: [{ signal: 'technicalIndicators.contractSignal', op: '>=' as const, value: 1 }] } },
+  }
+  const [unavailable] = buildStrategyDecisionRows(
+    '2026-07-28',
+    [{ symbol: '1000', raw_signals: { technicalIndicators: {} } }],
+    [spec],
+  )
+  assert(unavailable.evaluable === 0, 'missing signal decision must be marked unavailable')
+  assert(unavailable.matched === 0, 'unavailable decision must not become a hit')
+  assert(unavailable.reason_code.startsWith('strategy_spec_unavailable:'), 'unavailable decision must expose a stable reason code')
+  const [negative] = buildStrategyDecisionRows(
+    '2026-07-28',
+    [{ symbol: '1001', raw_signals: { technicalIndicators: { contractSignal: 0 } } }],
+    [spec],
+  )
+  assert(negative.evaluable === 1 && negative.matched === 0, 'present but failing signal must remain an evaluable negative')
 }

@@ -33,6 +33,7 @@ import {
 } from './finlabSourceContract'
 
 import { triggerPendingS12FormalEv } from './s12FormalEvTrigger'
+import { twToday } from './dateUtils'
 const UPDATE_BATCH_SIZE = 40
 const UPDATE_SHARD_COUNT = 4
 const INDICATOR_BATCH_CONCURRENCY = 4
@@ -3081,10 +3082,9 @@ export async function processUpdateBatch(
     }
 
     const {
+      finalizeStrategyLearningEvidenceV5,
       listStrategySpecsForLearning,
       materializeStrategyDecisionLogChunk,
-      refreshStrategyAdaptivePolicyState,
-      refreshStrategyRewardLedger,
       seedDefaultStrategySpecRegistry,
     } = await import('./strategyLearning')
     if (!requestedCursor) {
@@ -3170,22 +3170,22 @@ export async function processUpdateBatch(
         runId: canonicalRunId,
       })
 
-      const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
-      const { reconcileSelectionDecisionEvidenceV4 } = await import('./selectionReferenceEvidence')
-      const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
-      const decisionEvidence = await reconcileSelectionDecisionEvidenceV4(env.DB, triggerTime)
-      const labels = await materializeCanonicalSelectionLabelsV4(env.DB, { asOfDate: triggerTime })
-      const marginalEdge = await refreshStrategyMarginalEdgeV4(env.DB, triggerTime)
-      const rewards = await refreshStrategyRewardLedger(env.DB, { endDate: triggerTime, dryRun: false })
-      const policy = msg.force
-        ? await refreshStrategyAdaptivePolicyState(env.DB, { date: triggerTime, dryRun: false })
-        : null
+      const currentBusinessDateRun = Boolean(msg.force) && triggerTime === twToday()
+      const { decisionEvidence, historicalEvidence, labels, marginalEdge, rewards, policy, thresholdCalibration }
+        = await finalizeStrategyLearningEvidenceV5(env.DB, triggerTime, {
+          allowPromotion: currentBusinessDateRun,
+          persistPolicy: currentBusinessDateRun,
+          calibrateThresholds: currentBusinessDateRun,
+          calibrationCadence: 'daily_drift',
+        })
       const summary = [
       `materialized_complete candidates=${coverage.candidateRows}/${coverage.expectedCandidates} rows=${coverage.decisionRows}/${coverage.expectedRows}`,
       `last_candidates=${chunk.candidate_count}`,
       `last_decision_rows=${chunk.persisted_rows}`,
       `selection_decisions=${decisionEvidence.finalSignalRows}/${decisionEvidence.referenceRows}`,
       `selection_ev_owner=${decisionEvidence.evOwnerRows}`,
+      `strategy_pit_rebuild=${historicalEvidence.successfulDates}/${historicalEvidence.attemptedDates}`,
+      `strategy_pit_blocked=${historicalEvidence.blockedDates}`,
       `selection_labels=${labels.persisted_rows}`,
       `selection_pending=${labels.pending_rows}`,
       `selection_unavailable=${labels.unavailable_rows}`,
@@ -3193,6 +3193,7 @@ export async function processUpdateBatch(
       `reward_source_rows=${rewards.source_rows}`,
       `reward_rows=${rewards.persisted_rows}`,
       `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
+      `threshold_calibration=${thresholdCalibration ? thresholdCalibration.status : 'skipped_historical'}`,
       ].join(' ')
 
       await logSchedulerResult(env.KV, 'strategy-learning', {

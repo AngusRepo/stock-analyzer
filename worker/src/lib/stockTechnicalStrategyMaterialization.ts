@@ -109,8 +109,25 @@ function windowMin(values: number[], length: number, endExclusive = values.lengt
   return clean.length === length ? Math.min(...clean) : null
 }
 
-function safeRatio(numerator: NullableNumber, denominator: NullableNumber): number | null {
-  const n = finiteNumber(numerator)
+function wilderRsi(values: number[], period: number): number | null {
+  if (period < 1 || values.length <= period) return null
+  let avgGain = 0
+  let avgLoss = 0
+  for (let index = 1; index <= period; index += 1) {
+    const change = values[index] - values[index - 1]
+    avgGain += Math.max(change, 0) / period
+    avgLoss += Math.max(-change, 0) / period
+  }
+  for (let index = period + 1; index < values.length; index += 1) {
+    const change = values[index] - values[index - 1]
+    avgGain = ((period - 1) * avgGain + Math.max(change, 0)) / period
+    avgLoss = ((period - 1) * avgLoss + Math.max(-change, 0)) / period
+  }
+  if (avgLoss <= 1e-12) return avgGain <= 1e-12 ? 50 : 100
+  return 100 - 100 / (1 + avgGain / avgLoss)
+}
+
+function safeRatio(numerator: NullableNumber, denominator: NullableNumber): number | null {  const n = finiteNumber(numerator)
   const d = finiteNumber(denominator)
   if (n == null || d == null || Math.abs(d) <= 1e-12) return null
   return n / d
@@ -247,6 +264,7 @@ export function deriveStockTechnicalDailyFeatures(
     stockTechLatestClose: latest.close,
     stockTechTurnover20: windowAvg(turnovers, 20),
     stockTechMa5: ma(5),
+    stockTechRsi2: wilderRsi(closes, 2),
     stockTechMa10: ma(10),
     stockTechMa20: ma(20),
     stockTechMa50: ma(50),
@@ -577,8 +595,15 @@ export function materializeStockTechnicalStrategyScores<T extends StockTechnical
     )
     setSignalScore(raw, '06', s6Signal, s6Score, telemetry)
 
-    const s11Score = score([
-      [0.35, rank(candidate, 'stockTechRs63')],
+    const rsi2 = indicator(candidate, 'stockTechRsi2')
+    const s8RiskFilterSignal = !!(
+      eligible &&
+      rsi2 != null &&
+      rsi2 <= 10
+    )
+    setSignalScore(raw, '08RiskFilter', s8RiskFilterSignal, rsi2 == null ? null : 1 - rsi2 / 100, telemetry)
+
+    const s11Score = score([      [0.35, rank(candidate, 'stockTechRs63')],
       [0.25, rank(candidate, 'stockTechVr20')],
       [0.20, indicator(candidate, 'stockTechClv')],
       [0.20, indicator(candidate, 'stockTechGapQuality')],

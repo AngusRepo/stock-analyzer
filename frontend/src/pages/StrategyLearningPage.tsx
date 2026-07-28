@@ -24,12 +24,19 @@ function registryLearningRow(spec: StrategySpec): LearningRow {
     ...spec,
     learning: {
       evidence_available: false,
+      reward_owner: 'selection_edge_v4',
       decisions: 0,
+      evaluable_decisions: 0,
+      unavailable_decisions: 0,
       matched: 0,
       match_rate: null,
       today_decisions: 0,
+      today_evaluable_decisions: 0,
+      today_unavailable_decisions: 0,
       today_matched: 0,
       rolling_decisions: 0,
+      rolling_evaluable_decisions: 0,
+      rolling_unavailable_decisions: 0,
       rolling_matched: 0,
       rolling_match_rate: null,
       rolling_sessions: 0,
@@ -96,14 +103,15 @@ function StrategyLedgerGroup({
 
               <dl className="grid grid-cols-2 gap-2 2xl:grid-cols-3">
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
-                  <dt className="text-xs text-slate-500">Lifetime decisions</dt>
-                  <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.decisions : '-'}</dd>
-                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>today {row.learning.today_decisions} · latest {row.learning.latest_decision_date ?? '-'}</> : 'unavailable'}</div>
+                  <dt className="text-xs text-slate-500">Evaluable decisions</dt>
+                  <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.evaluable_decisions : '-'}</dd>
+                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>unavailable {row.learning.unavailable_decisions} / total {row.learning.decisions}</> : 'unavailable'}</div>
+                  <div className="mt-1 text-xs text-slate-500">{row.learning.reward_owner === 's12_execution_replay_v3_net' ? 'S12 execution reward' : 'selection edge reward'}</div>
                 </div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
-                  <dt className="text-xs text-slate-500">Rolling decisions</dt>
-                  <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.rolling_decisions : '-'}</dd>
-                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>{row.learning.rolling_sessions} sessions</> : 'unavailable'}</div>
+                  <dt className="text-xs text-slate-500">Rolling evaluable</dt>
+                  <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.rolling_evaluable_decisions : '-'}</dd>
+                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>unavailable {row.learning.rolling_unavailable_decisions} / {row.learning.rolling_sessions} sessions</> : 'unavailable'}</div>
                 </div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Lifetime rewards</dt><dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.samples : '-'}</dd></div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">

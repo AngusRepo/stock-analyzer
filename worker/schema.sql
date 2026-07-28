@@ -248,6 +248,7 @@ CREATE TABLE IF NOT EXISTS s12_replay_trade_outcomes (
   id                    INTEGER PRIMARY KEY AUTOINCREMENT,
   symbol                TEXT NOT NULL,
   market                TEXT,
+  signal_date           TEXT,
   trade_date            TEXT NOT NULL,
   assessment_state      TEXT,
   setup_id              TEXT,
@@ -273,6 +274,11 @@ CREATE TABLE IF NOT EXISTS s12_replay_trade_outcomes (
 );
 CREATE INDEX IF NOT EXISTS idx_s12_replay_trade_outcomes_date
   ON s12_replay_trade_outcomes(trade_date DESC, sample_eligible, symbol);
+CREATE INDEX IF NOT EXISTS idx_s12_replay_trade_outcomes_signal_date
+  ON s12_replay_trade_outcomes(signal_date DESC, sample_eligible, symbol);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_s12_replay_trade_outcomes_signal_setup_v2
+  ON s12_replay_trade_outcomes(symbol, signal_date, setup_id)
+  WHERE signal_date IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS s12_structure_snapshots (
   id                    INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -62,6 +62,7 @@ const baseSpec: StrategySpec = {
   assert(features.stockTechHighPos252 != null, 'daily feature materializer should compute 52w high position')
   assert(features.stockTechVr20 != null, 'daily feature materializer should compute current volume expansion')
   assert(features.stockTechMom12_1 != null, 'S2 momentum should use a 252-bar fallback instead of staying null')
+  assert(features.stockTechRsi2 != null, 'S8 observe-only filter requires a real Wilder RSI2 feature')
 }
 
 {
@@ -85,6 +86,7 @@ const baseSpec: StrategySpec = {
     stockTechDeduct20Raw: 10,
     stockTechDeduct20Prev: -1,
     stockTechStretchHh20Atr: 0.2,
+    stockTechRsi2: 5,
   })
   const nearMiss = candidate('9994', {
     stockTechHistoryDays: 260,
@@ -155,6 +157,8 @@ const baseSpec: StrategySpec = {
   assert.equal(nearMiss.raw_signals.technicalIndicators.stockTechS01Signal, 0)
   assert.equal(nearMiss.raw_signals.technicalIndicators.stockTechS01Admission, 1)
   assert.equal(winner.raw_signals.technicalIndicators.stockTechS02Signal, 1)
+  assert.equal(winner.raw_signals.technicalIndicators.stockTechS08RiskFilterSignal, 1)
+  assert(winner.raw_signals.technicalIndicators.stockTechS08RiskFilterScore! > 0.9)
   assert(winner.raw_signals.technicalIndicators.stockTechS02Score != null)
   assert.equal(winner.raw_signals.technicalIndicators.stockTechS02Admission, 1)
   assert(winner.raw_signals.technicalIndicators.stockTechS01Score != null)

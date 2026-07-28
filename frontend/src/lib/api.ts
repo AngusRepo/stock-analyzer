@@ -606,12 +606,19 @@ export type StrategyLearningResponse = {
     validation?: StrategySpec['validation']
     learning: {
       evidence_available: boolean
+      reward_owner: 'selection_edge_v4' | 's12_execution_replay_v3_net'
       decisions: number
+      evaluable_decisions: number
+      unavailable_decisions: number
       matched: number
       match_rate: number | null
       today_decisions: number
+      today_evaluable_decisions: number
+      today_unavailable_decisions: number
       today_matched: number
       rolling_decisions: number
+      rolling_evaluable_decisions: number
+      rolling_unavailable_decisions: number
       rolling_matched: number
       rolling_match_rate: number | null
       rolling_sessions: number
@@ -650,6 +657,9 @@ export type StrategyPromotionGate = {
   missing_evidence: string[]
   evidence: {
     decisions: number
+    total_decisions: number
+    evaluable_decisions: number
+    unavailable_decisions: number
     matched: number
     match_rate: number | null
     samples: number

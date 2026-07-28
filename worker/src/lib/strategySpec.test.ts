@@ -1,6 +1,7 @@
 import {
   DEFAULT_STRATEGY_SPECS,
   assessCandidateAgainstStrategySpecs,
+  assessStrategySpecEvaluability,
   deriveStrategyRawSignals,
   deriveStrategyThresholdScores,
   validateStrategySpec,
@@ -262,7 +263,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   }])
   assert(!assessment.matches.length, '0081 must fail closed when any positive-weight formal feature is missing')
   assert(
-    assessment.watchPoints.some((point) => point.includes('strategy_spec_missing_required_feature_refs:alpha_miner_pymoo_nsga3_novelty_0081:KSFT')),
+    assessment.watchPoints.some((point) => point.includes('strategy_spec_unavailable:alpha_miner_pymoo_nsga3_novelty_0081:missing_feature_ref:KSFT')),
     '0081 missing formal feature should be visible in watch points',
   )
 }
@@ -341,7 +342,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   }, [spec])
   assert(!rawOnly.matches.length, '0193 must not score raw margin balance as a normalized feature')
   assert(
-    rawOnly.watchPoints.some((point) => point.includes('strategy_spec_missing_required_feature_refs:alpha_miner_pymoo_nsga3_novelty_0193:') && point.includes('margin_balance')),
+    rawOnly.watchPoints.some((point) => point.includes('strategy_spec_unavailable:alpha_miner_pymoo_nsga3_novelty_0193:') && point.includes('margin_balance')),
     '0193 should expose missing normalized margin balance evidence',
   )
 
@@ -360,7 +361,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   }, [spec])
   assert(!normalizedMarginOnly.matches.length, '0193 must not score raw constant us sentiment as stock-selection evidence')
   assert(
-    normalizedMarginOnly.watchPoints.some((point) => point.includes('strategy_spec_missing_required_feature_refs:alpha_miner_pymoo_nsga3_novelty_0193:us_sentiment_score')),
+    normalizedMarginOnly.watchPoints.some((point) => point.includes('strategy_spec_unavailable:alpha_miner_pymoo_nsga3_novelty_0193:missing_feature_ref:us_sentiment_score')),
     '0193 should expose missing normalized/non-constant us sentiment evidence',
   )
 
@@ -599,7 +600,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   }, [smrcVwapSpec])
   assert(!missingVwap.matches.length, 'SMRC VWAP daily strategy must fail closed when daily VWAP evidence is absent')
   assert(
-    missingVwap.watchPoints.some((point) => point.includes('strategy_spec_missing_required_feature_refs:smrc_vwap_reclaim_v1')),
+    missingVwap.watchPoints.some((point) => point.includes('strategy_spec_unavailable:smrc_vwap_reclaim_v1')),
     'SMRC VWAP daily strategy should report missing daily feature refs instead of falling through to intraday S12',
   )
 }
@@ -694,4 +695,25 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   assert(result.valid, 'dry-run spec should be valid')
   assert(result.sampleSize === 2, 'dry-run should report sample size')
   assert(result.matched >= 1, 'dry-run should count matches')
+}
+
+{
+  const spec: StrategySpec = {
+    ...DEFAULT_STRATEGY_SPECS[0],
+    id: 'evaluable_contract_test_v1',
+    status: 'candidate',
+    thresholds: {
+      dsl: { all: [{ signal: 'technicalIndicators.contractSignal', op: '>=', value: 1 }] },
+    },
+  }
+  const unavailable = assessStrategySpecEvaluability({ symbol: '1000', raw_signals: { technicalIndicators: {} } }, spec)
+  assert(!unavailable.evaluable, 'missing required DSL signal must be unavailable, not a negative strategy decision')
+  assert(unavailable.missingSignals.includes('technicalIndicators.contractSignal'), 'unavailable diagnostics must name the missing DSL signal')
+  const evaluableNoMatch = assessStrategySpecEvaluability({
+    symbol: '1000', raw_signals: { technicalIndicators: { contractSignal: 0 } },
+  }, spec)
+  assert(evaluableNoMatch.evaluable, 'present DSL signal must be evaluable even when it does not pass')
+  assert(!assessCandidateAgainstStrategySpecs({
+    symbol: '1000', raw_signals: { technicalIndicators: { contractSignal: 0 } },
+  }, [spec]).matches.length, 'evaluable non-match must stay a valid negative observation')
 }

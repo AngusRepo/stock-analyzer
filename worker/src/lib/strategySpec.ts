@@ -220,6 +220,22 @@ export interface StrategySpecAssessment {
   watchPoints: string[]
 }
 
+export interface StrategySpecEvaluability {
+  evaluable: boolean
+  missingSignals: string[]
+  missingFeatureRefs: string[]
+  unavailableReasons: string[]
+  signalDiagnostics: Array<{
+    group: 'all' | 'any' | 'not'
+    signal: string
+    op: StrategySignalOperator
+    expected: number | string | boolean
+    actual: unknown
+    present: boolean
+    passed: boolean
+  }>
+}
+
 export interface StrategyThresholdScores {
   seedScore: number
   chipFlow: number
@@ -820,6 +836,133 @@ function meetsSignalDsl(raw: StrategyRawSignals, dsl?: StrategySignalDsl): boole
   return true
 }
 
+function signalConditionPresent(value: unknown, expected: StrategySignalCondition['value']): boolean {
+  if (value == null || value === '') return false
+  return typeof expected === 'number' ? finiteNumber(value) != null : true
+}
+
+export function explainSignalDsl(
+  raw: StrategyRawSignals,
+  dsl?: StrategySignalDsl,
+): StrategySpecEvaluability['signalDiagnostics'] {
+  if (!dsl) return []
+  const groups: Array<['all' | 'any' | 'not', StrategySignalCondition[]]> = [
+    ['all', dsl.all ?? []],
+    ['any', dsl.any ?? []],
+    ['not', dsl.not ?? []],
+  ]
+  return groups.flatMap(([group, conditions]) => conditions.map((condition) => {
+    const actual = signalValue(raw, condition.signal)
+    const present = signalConditionPresent(actual, condition.value)
+    return {
+      group,
+      signal: cleanText(condition.signal),
+      op: condition.op,
+      expected: condition.value,
+      actual: present ? actual : null,
+      present,
+      passed: present && compareSignal(actual, condition),
+    }
+  }))
+}
+
+function unresolvedDslSignals(
+  diagnostics: StrategySpecEvaluability['signalDiagnostics'],
+): string[] {
+  const unresolved: string[] = []
+  for (const group of ['all', 'any', 'not'] as const) {
+    const rows = diagnostics.filter((row) => row.group === group)
+    if (!rows.length) continue
+    const outcomeAlreadyKnown = group === 'all'
+      ? rows.some((row) => row.present && !row.passed)
+      : group === 'any'
+        ? rows.some((row) => row.present && row.passed)
+        : rows.some((row) => row.present && row.passed)
+    if (outcomeAlreadyKnown) continue
+    unresolved.push(...rows.filter((row) => !row.present).map((row) => row.signal))
+  }
+  return unresolved
+}
+function missingConfiguredThresholdSignals(raw: StrategyRawSignals, thresholds: StrategySpecThresholds): string[] {
+  const scalarSignals: Array<[keyof StrategyRawSignals, number | undefined]> = [
+    ['closeAboveMa20Pct', thresholds.minCloseAboveMa20Pct ?? thresholds.maxCloseAboveMa20Pct],
+    ['closeAboveMa60Pct', thresholds.minCloseAboveMa60Pct ?? thresholds.maxCloseAboveMa60Pct],
+    ['volumeExpansion20', thresholds.minVolumeExpansion20],
+    ['return20d', thresholds.minReturn20d ?? thresholds.maxReturn20d],
+    ['foreignTrustNet5d', thresholds.minForeignTrustNet5d],
+    ['dealerNet5d', thresholds.minDealerNet5d],
+    ['brokerNetShares5d', thresholds.minBrokerNetShares5d],
+    ['brokerNetAmount5d', thresholds.minBrokerNetAmount5d],
+    ['brokerCount', thresholds.minBrokerCount],
+    ['brokerConcentration', thresholds.maxBrokerConcentration],
+    ['revenueGrowthYoY', thresholds.minRevenueGrowthYoY],
+    ['monthlyRevenueYoY', thresholds.minMonthlyRevenueYoY],
+    ['monthlyRevenueMoM', thresholds.minMonthlyRevenueMoM],
+    ['grossMargin', thresholds.minGrossMargin],
+    ['operatingMargin', thresholds.minOperatingMargin],
+    ['roe', thresholds.minRoe],
+    ['eps', thresholds.minEps],
+    ['pe', thresholds.maxPe],
+    ['pb', thresholds.maxPb],
+  ]
+  const missing = scalarSignals
+    .filter(([, threshold]) => threshold != null)
+    .filter(([signal]) => finiteNumber(raw[signal]) == null)
+    .map(([signal]) => String(signal))
+  for (const key of new Set([
+    ...Object.keys(thresholds.minTechnicalIndicators ?? {}),
+    ...Object.keys(thresholds.maxTechnicalIndicators ?? {}),
+  ])) {
+    if (finiteNumber(raw.technicalIndicators?.[key]) == null) missing.push('technicalIndicators.' + key)
+  }
+  for (const key of new Set([
+    ...Object.keys(thresholds.minFactorSignals ?? {}),
+    ...Object.keys(thresholds.maxFactorSignals ?? {}),
+  ])) {
+    if (finiteNumber(raw.factorSignals?.[key]) == null) missing.push('factorSignals.' + key)
+  }
+  return missing
+}
+
+export function assessStrategySpecEvaluability(
+  candidate: StrategyCandidateInput,
+  spec: StrategySpec,
+): StrategySpecEvaluability {
+  const validation = validateStrategySpec(spec)
+  if (!validation.ok) {
+    return {
+      evaluable: false,
+      missingSignals: [],
+      missingFeatureRefs: [],
+      unavailableReasons: validation.errors.map((error) => 'strategy_spec_invalid:' + error),
+      signalDiagnostics: [],
+    }
+  }
+  const raw = deriveStrategyRawSignals(candidate)
+  const signalDiagnostics = explainSignalDsl(raw, spec.thresholds.dsl)
+  const missingSignals = [
+    ...unresolvedDslSignals(signalDiagnostics),
+    ...missingConfiguredThresholdSignals(raw, spec.thresholds),
+  ]
+  const currentPrice = finiteNumber(candidate.current_price) ?? finiteNumber(raw.close)
+  if ((spec.thresholds.minPrice != null || spec.thresholds.maxPrice != null) && currentPrice == null) {
+    missingSignals.push('current_price')
+  }
+  const missingFeatureRefs = missingRequiredFeatureRefs(raw, spec.thresholds.featureRefs)
+  const cleanMissingSignals = [...new Set(missingSignals.filter(Boolean))]
+  const unavailableReasons = [
+    ...cleanMissingSignals.map((signal) => 'missing_signal:' + signal),
+    ...missingFeatureRefs.map((featureRef) => 'missing_feature_ref:' + featureRef),
+  ]
+  return {
+    evaluable: unavailableReasons.length === 0,
+    missingSignals: cleanMissingSignals,
+    missingFeatureRefs,
+    unavailableReasons,
+    signalDiagnostics,
+  }
+}
+
 function meetsFeatureRefDsl(raw: StrategyRawSignals, dsl?: StrategyFeatureRefDsl): boolean {
   if (!dsl) return true
   const all = dsl.all ?? []
@@ -897,6 +1040,11 @@ export function assessCandidateAgainstStrategySpecs(
       watchPoints.push(`strategy_spec_invalid:${spec.id || 'unknown'}:${validation.errors.join(',')}`)
       continue
     }
+    const evaluability = assessStrategySpecEvaluability(candidate, spec)
+    if (!evaluability.evaluable) {
+      watchPoints.push('strategy_spec_unavailable:' + spec.id + ':' + evaluability.unavailableReasons.join('|'))
+      continue
+    }
     const t = spec.thresholds
     if (!industryAllowed(candidate, t)) continue
     if (!meetsPrice(candidate, t)) continue
@@ -904,11 +1052,6 @@ export function assessCandidateAgainstStrategySpecs(
     if (!meetsMinimum(scores.chipFlow, t.minChipScore)) continue
     if (!meetsMinimum(scores.technicalStructure, t.minTechScore)) continue
     if (!meetsMinimum(scores.momentumScore, t.minMomentumScore)) continue
-    const missingFeatureRefs = missingRequiredFeatureRefs(raw, t.featureRefs)
-    if (missingFeatureRefs.length) {
-      watchPoints.push(`strategy_spec_missing_required_feature_refs:${spec.id}:${missingFeatureRefs.join('|')}`)
-      continue
-    }
     if (!meetsRawSignalThresholds(raw, t)) continue
 
     matches.push({

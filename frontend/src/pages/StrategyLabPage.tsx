@@ -488,7 +488,7 @@ function StrategyLearningPanel({
                   </div>
                 </div>
               ))}
-              {!policyWeights.length && <div className="rounded-xl border border-dashed border-slate-700 p-3 text-slate-500">reward evidence 尚不足，policy weight 暫不給建議。</div>}
+              {!policyWeights.length && <div className="rounded-xl border border-dashed border-slate-700 p-3 text-slate-500">No non-zero shadow policy weight.</div>}
             </div>
           </div>
         </div>
@@ -515,12 +515,13 @@ function StrategyLearningPanel({
                   </div>
                   <div className="grid grid-cols-2 gap-2 xl:block xl:space-y-1">
                     <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1">
-                      <span className="text-slate-500">lifetime </span><span className="text-slate-200">{row.learning.decisions}</span>
-                      <div className="text-[10px] text-slate-500">today {row.learning.today_decisions} · latest {row.learning.latest_decision_date ?? '-'}</div>
+                      <span className="text-slate-500">evaluable </span><span className="text-slate-200">{row.learning.evaluable_decisions}</span>
+                      <div className="text-[10px] text-slate-500">unavailable {row.learning.unavailable_decisions} / total {row.learning.decisions}</div>
+                      <div className="text-[10px] text-slate-500">{row.learning.reward_owner === 's12_execution_replay_v3_net' ? 'S12 execution reward' : 'selection edge reward'}</div>
                     </div>
                     <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1">
-                      <span className="text-slate-500">rolling </span><span className="text-slate-200">{row.learning.rolling_decisions}</span>
-                      <div className="text-[10px] text-slate-500">{row.learning.rolling_sessions} sessions</div>
+                      <span className="text-slate-500">rolling evaluable </span><span className="text-slate-200">{row.learning.rolling_evaluable_decisions}</span>
+                      <div className="text-[10px] text-slate-500">unavailable {row.learning.rolling_unavailable_decisions} / {row.learning.rolling_sessions} sessions</div>
                     </div>
                   </div>
                   <div className="grid grid-cols-3 gap-2 xl:block xl:space-y-1">

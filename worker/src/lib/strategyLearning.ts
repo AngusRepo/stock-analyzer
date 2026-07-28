@@ -1,6 +1,7 @@
 import {
   DEFAULT_STRATEGY_SPECS,
   assessCandidateAgainstStrategySpecs,
+  assessStrategySpecEvaluability,
   deriveStrategyRawSignals,
   deriveStrategyThresholdScores,
   explainFeatureRefDsl,
@@ -22,6 +23,8 @@ import type { OhlcvRow } from './ohlcvTradePlanLevels'
 import type { Bindings } from '../types'
 import { writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
+import { CANONICAL_SELECTION_ROUNDTRIP_COST_BPS } from './canonicalSelectionLabels'
+import { S12_REPLAY_ENGINE_SIGNATURE } from './s12ReplayContract'
 import {
   applyStrategyThresholdCalibrationArtifacts,
   buildStrategyThresholdAutoDecisions,
@@ -37,7 +40,7 @@ import {
   type StrategyThresholdCalibrationCadence,
 } from './strategyThresholdCalibration'
 
-export const STRATEGY_LEARNING_VERSION = 'strategy-learning-v4'
+export const STRATEGY_LEARNING_VERSION = 'strategy-learning-v5'
 
 export interface StrategySpecRegistryRow {
   strategy_id: string
@@ -75,6 +78,8 @@ export interface StrategyDecisionLogRow {
   strategy_version: string
   strategy_status: StrategySpecStatus
   alpha_bucket: string
+  evaluable: 0 | 1
+  unavailable_reason: string | null
   matched: 0 | 1
   match_score: number | null
   reason_code: string
@@ -124,6 +129,8 @@ export interface StrategyLearningDailyStatsRow {
   strategy_id: string
   strategy_version: string
   decisions: number
+  evaluable_decisions: number
+  unavailable_decisions: number
   matched: number
   reward_samples: number
   reward_hits: number
@@ -137,6 +144,8 @@ interface StrategyLearningHeadRow {
   strategy_id: string
   strategy_version: string
   lifetime_decisions: number
+  lifetime_evaluable_decisions: number
+  lifetime_unavailable_decisions: number
   lifetime_matched: number
   decision_dates: number
   lifetime_reward_samples: number
@@ -169,6 +178,9 @@ export interface StrategyPromotionGateRow {
   missing_evidence: string[]
   evidence: {
     decisions: number
+    total_decisions: number
+    evaluable_decisions: number
+    unavailable_decisions: number
     matched: number
     match_rate: number | null
     samples: number
@@ -211,12 +223,19 @@ export interface StrategyLearningSummary {
   specs: Array<StrategySpec & {
     learning: {
       evidence_available: boolean
+      reward_owner: 'selection_edge_v4' | 's12_execution_replay_v3_net'
       decisions: number
+      evaluable_decisions: number
+      unavailable_decisions: number
       matched: number
       match_rate: number | null
       today_decisions: number
+      today_evaluable_decisions: number
+      today_unavailable_decisions: number
       today_matched: number
       rolling_decisions: number
+      rolling_evaluable_decisions: number
+      rolling_unavailable_decisions: number
       rolling_matched: number
       rolling_match_rate: number | null
       rolling_sessions: number
@@ -233,7 +252,7 @@ export interface StrategyLearningSummary {
       rolling_date_return_lcb90: number | null
       latest_decision_date: string | null
       latest_reward_date: string | null
-      status: 'learning' | 'no_decisions' | 'no_reward'
+      status: 'learning' | 'no_decisions' | 'no_reward' | 'unavailable'
     }
   }>
   promotion_gate: StrategyPromotionGateRow[]
@@ -306,6 +325,8 @@ const SCHEMA_DDL = [
     strategy_version TEXT NOT NULL,
     strategy_status TEXT NOT NULL,
     alpha_bucket TEXT NOT NULL,
+    evaluable INTEGER NOT NULL DEFAULT 0 CHECK(evaluable IN (0,1)),
+    unavailable_reason TEXT,
     matched INTEGER NOT NULL DEFAULT 0,
     match_score REAL,
     reason_code TEXT NOT NULL,
@@ -325,6 +346,8 @@ const SCHEMA_DDL = [
     strategy_id TEXT NOT NULL,
     strategy_version TEXT NOT NULL,
     decisions INTEGER NOT NULL DEFAULT 0,
+    evaluable_decisions INTEGER NOT NULL DEFAULT 0,
+    unavailable_decisions INTEGER NOT NULL DEFAULT 0,
     matched INTEGER NOT NULL DEFAULT 0,
     reward_samples INTEGER NOT NULL DEFAULT 0,
     reward_hits INTEGER NOT NULL DEFAULT 0,
@@ -343,6 +366,8 @@ const SCHEMA_DDL = [
     strategy_id TEXT NOT NULL,
     strategy_version TEXT NOT NULL,
     lifetime_decisions INTEGER NOT NULL DEFAULT 0,
+    lifetime_evaluable_decisions INTEGER NOT NULL DEFAULT 0,
+    lifetime_unavailable_decisions INTEGER NOT NULL DEFAULT 0,
     lifetime_matched INTEGER NOT NULL DEFAULT 0,
     decision_dates INTEGER NOT NULL DEFAULT 0,
     lifetime_reward_samples INTEGER NOT NULL DEFAULT 0,
@@ -389,6 +414,55 @@ const SCHEMA_DDL = [
     threshold_deltas_json TEXT NOT NULL DEFAULT '{}',
     evidence_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS strategy_evidence_rebuild_runs_v5 (
+    signal_date TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK(status IN ('pending','success','blocked','failed')),
+    candidate_count INTEGER NOT NULL DEFAULT 0,
+    strategy_count INTEGER NOT NULL DEFAULT 0,
+    decision_rows INTEGER NOT NULL DEFAULT 0,
+    evaluable_rows INTEGER NOT NULL DEFAULT 0,
+    unavailable_rows INTEGER NOT NULL DEFAULT 0,
+    matrix_rows INTEGER NOT NULL DEFAULT 0,
+    labeler_version TEXT NOT NULL DEFAULT 'strategy-decision-log-pit-reconstruction-v5',
+    source_checksum TEXT,
+    blocker_reason TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_strategy_evidence_rebuild_v5_status
+    ON strategy_evidence_rebuild_runs_v5(status, signal_date)`,
+  `CREATE TABLE IF NOT EXISTS strategy_replacement_cutover_guards_v5 (
+    guard_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    phase TEXT NOT NULL CHECK(phase IN ('pre','post','portfolio_post')),
+    precondition_ok INTEGER NOT NULL CHECK(precondition_ok=1),
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_strategy_replacement_cutover_guards_v5_run
+    ON strategy_replacement_cutover_guards_v5(run_id, phase)`,
+  `CREATE TABLE IF NOT EXISTS strategy_replacement_decisions_v5 (
+    decision_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    as_of_date TEXT NOT NULL,
+    family_id TEXT NOT NULL,
+    candidate_strategy_id TEXT NOT NULL,
+    candidate_strategy_version TEXT NOT NULL,
+    replaced_strategy_id TEXT NOT NULL,
+    replaced_strategy_version TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('proposed','accepted','rejected')),
+    paired_dates INTEGER NOT NULL DEFAULT 0,
+    paired_delta_mean REAL,
+    paired_delta_lcb90 REAL,
+    candidate_absolute_mean REAL,
+    candidate_max_drawdown REAL,
+    replaced_max_drawdown REAL,
+    candidate_turnover REAL,
+    replaced_turnover REAL,
+    return_correlation REAL,
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(run_id, candidate_strategy_id, candidate_strategy_version, replaced_strategy_id, replaced_strategy_version)
   )`,
 ] as const
 
@@ -921,13 +995,19 @@ export function buildStrategyDecisionRows(
     if (!symbol) continue
     for (const spec of specs) {
       const validation = validateStrategySpec(spec)
-      const assessment = validation.ok ? assessCandidateAgainstStrategySpecs(candidate, [spec]) : { matches: [], tags: [], watchPoints: [] }
-      const matched = assessment.matches.length > 0
+      const evaluability = assessStrategySpecEvaluability(candidate, spec)
+      const assessment = validation.ok && evaluability.evaluable
+        ? assessCandidateAgainstStrategySpecs(candidate, [spec])
+        : { matches: [], tags: [], watchPoints: [] }
+      const matched = evaluability.evaluable && assessment.matches.length > 0
+      const unavailableReason = evaluability.evaluable ? null : evaluability.unavailableReasons.join('|')
       const reasonCode = !validation.ok
         ? `strategy_spec_invalid:${validation.errors.join('|')}`
-        : matched
-          ? 'strategy_spec_matched'
-          : 'strategy_spec_no_match'
+        : !evaluability.evaluable
+          ? `strategy_spec_unavailable:${unavailableReason}`
+          : matched
+            ? 'strategy_spec_matched'
+            : 'strategy_spec_no_match'
       const rawSignals = deriveStrategyRawSignals(candidate)
       const featureRefDiagnostics = explainFeatureRefDsl(rawSignals, spec.thresholds.featureRefs)
       const currentPrice = finiteNumber(candidate.current_price) ?? finiteNumber(rawSignals.close)
@@ -937,6 +1017,8 @@ export function buildStrategyDecisionRows(
         matches: assessment.matches,
         tags: assessment.tags,
         watch_points: assessment.watchPoints,
+        evaluability,
+        signal_dsl_diagnostics: evaluability.signalDiagnostics,
         feature_ref_diagnostics: featureRefDiagnostics,
         base_gate_diagnostics: {
           price: {
@@ -987,6 +1069,8 @@ export function buildStrategyDecisionRows(
         strategy_version: spec.version,
         strategy_status: spec.status,
         alpha_bucket: spec.alphaBucket,
+        evaluable: evaluability.evaluable ? 1 : 0,
+        unavailable_reason: unavailableReason,
         matched: matched ? 1 : 0,
         match_score: matchScore(candidate, matched),
         reason_code: reasonCode,
@@ -1084,9 +1168,77 @@ export async function listStrategyLearningCandidates(
     }
   })
   await hydrateStrategyCandidateDailyFeatures(db, date, candidates)
+  await hydrateS12StrategyEvidence(db, date, candidates)
   return candidates
 }
 
+interface StrategyS12EvidenceRow {
+  symbol: string
+  source: string
+  state: string
+  ready: number | string
+  invalidated: number | string
+}
+
+export async function hydrateS12StrategyEvidence(
+  db: D1Database,
+  date: string,
+  candidates: StrategyCandidateInput[],
+): Promise<{ available: number; unavailable: number; missing: number }> {
+  if (!candidates.length) return { available: 0, unavailable: 0, missing: 0 }
+  const bySymbol = new Map<string, StrategyS12EvidenceRow>()
+  const symbols = [...new Set(candidates.map((candidate) => cleanToken(candidate.symbol)).filter(Boolean))]
+  for (let offset = 0; offset < symbols.length; offset += 80) {
+    const chunk = symbols.slice(offset, offset + 80)
+    const placeholders = chunk.map(() => '?').join(',')
+    const page = await db.prepare(`
+      SELECT symbol, source, state, ready, invalidated
+        FROM (
+          SELECT symbol, source, state, ready, invalidated,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY symbol
+                   ORDER BY CASE source
+                     WHEN 's12_candidate_snapshot' THEN 1
+                     WHEN 's12_candidate_snapshot_reconstruction' THEN 2
+                     ELSE 3
+                   END, updated_at DESC, id DESC
+                 ) AS row_rank
+            FROM s12_structure_snapshots
+           WHERE trade_date=?
+             AND symbol IN (${placeholders})
+             AND source IN ('s12_candidate_snapshot', 's12_candidate_snapshot_reconstruction')
+        )
+       WHERE row_rank=1
+    `).bind(date, ...chunk).all<StrategyS12EvidenceRow>()
+    for (const row of page.results ?? []) bySymbol.set(cleanToken(row.symbol), row)
+  }
+  let available = 0
+  let unavailable = 0
+  let missing = 0
+  for (const candidate of candidates) {
+    const row = bySymbol.get(cleanToken(candidate.symbol))
+    const raw = ensureRawSignalObjects(candidate)
+    if (!row) {
+      missing += 1
+      continue
+    }
+    if (cleanToken(row.state) === 'data_unavailable') {
+      raw.source = [cleanToken(raw.source), `s12:${row.source}:data_unavailable`].filter(Boolean).join('|')
+      unavailable += 1
+      continue
+    }
+    const ready = Number(row.ready) === 1
+    const invalidated = Number(row.invalidated) === 1
+    raw.technicalIndicators!.stockTechS12StructureAvailable = 1
+    raw.technicalIndicators!.stockTechS12Ready = ready ? 1 : 0
+    raw.technicalIndicators!.stockTechS12Invalidated = invalidated ? 1 : 0
+    raw.technicalIndicators!.stockTechS12Signal = ready && !invalidated ? 1 : 0
+    raw.technicalIndicators!.stockTechS12Score = ready && !invalidated ? 1 : 0
+    raw.source = [cleanToken(raw.source), `s12:${row.source}:${cleanToken(row.state)}`].filter(Boolean).join('|')
+    available += 1
+  }
+  return { available, unavailable, missing }
+}
 export async function hydrateStrategyCandidateDailyFeatures(
   db: D1Database,
   date: string,
@@ -1255,6 +1407,8 @@ export async function persistStrategyDecisionRows(
             passes_weighted_score: evidence?.feature_ref_diagnostics?.passes_weighted_score ?? null,
             missing_required_feature_refs: evidence?.feature_ref_diagnostics?.missing_required_feature_refs ?? [],
           },
+          evaluability: evidence?.evaluability ?? null,
+          signal_dsl_diagnostics: evidence?.signal_dsl_diagnostics ?? [],
           base_gate_diagnostics: evidence?.base_gate_diagnostics ?? null,
           rejection_diagnostics: Array.isArray(evidence?.watch_points) ? evidence.watch_points : [],
         }),
@@ -1269,14 +1423,16 @@ export async function persistStrategyDecisionRows(
   const statements = persistedRows.map((row) => db.prepare(`
     INSERT INTO strategy_decision_log (
       decision_id, date, symbol, name, strategy_id, strategy_version,
-      strategy_status, alpha_bucket, matched, match_score, reason_code,
+      strategy_status, alpha_bucket, evaluable, unavailable_reason, matched, match_score, reason_code,
       context_json, evidence_json, created_at, context_id, evidence_artifact_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(date, symbol, strategy_id, strategy_version) DO UPDATE SET
       name=excluded.name,
       strategy_status=excluded.strategy_status,
       alpha_bucket=excluded.alpha_bucket,
+      evaluable=excluded.evaluable,
+      unavailable_reason=excluded.unavailable_reason,
       matched=excluded.matched,
       match_score=excluded.match_score,
       reason_code=excluded.reason_code,
@@ -1293,6 +1449,8 @@ export async function persistStrategyDecisionRows(
     row.strategy_version,
     row.strategy_status,
     row.alpha_bucket,
+    row.evaluable,
+    row.unavailable_reason,
     row.matched,
     row.match_score,
     row.reason_code,
@@ -1496,6 +1654,8 @@ export function buildStrategyRewardDailyStatsRows(
         strategy_id: bucket.strategyId,
         strategy_version: bucket.strategyVersion,
         decisions: 0,
+        evaluable_decisions: 0,
+        unavailable_decisions: 0,
         matched: 0,
         reward_samples: bucket.rewards.length,
         reward_hits: bucket.rewards.filter((reward) => reward > 0).length,
@@ -1519,6 +1679,8 @@ export async function materializeStrategyDecisionDailyStats(
     SELECT strategy_id,
            strategy_version,
            COUNT(*) AS decisions,
+           SUM(CASE WHEN evaluable = 1 THEN 1 ELSE 0 END) AS evaluable_decisions,
+           SUM(CASE WHEN evaluable = 0 THEN 1 ELSE 0 END) AS unavailable_decisions,
            SUM(CASE WHEN matched = 1 THEN 1 ELSE 0 END) AS matched
       FROM strategy_decision_log
      WHERE date = ?
@@ -1527,6 +1689,8 @@ export async function materializeStrategyDecisionDailyStats(
     strategy_id: string
     strategy_version: string
     decisions: number
+    evaluable_decisions: number
+    unavailable_decisions: number
     matched: number
   }>()
   const rows = results ?? []
@@ -1534,11 +1698,13 @@ export async function materializeStrategyDecisionDailyStats(
   const nowIso = new Date().toISOString()
   const statements = rows.map((row) => db.prepare(`
     INSERT INTO strategy_learning_daily_stats (
-      date, strategy_id, strategy_version, decisions, matched, updated_at
+      date, strategy_id, strategy_version, decisions, evaluable_decisions, unavailable_decisions, matched, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(date, strategy_id, strategy_version) DO UPDATE SET
       decisions=excluded.decisions,
+      evaluable_decisions=excluded.evaluable_decisions,
+      unavailable_decisions=excluded.unavailable_decisions,
       matched=excluded.matched,
       updated_at=excluded.updated_at
   `).bind(
@@ -1546,6 +1712,8 @@ export async function materializeStrategyDecisionDailyStats(
     row.strategy_id,
     row.strategy_version,
     Number(row.decisions ?? 0),
+    Number(row.evaluable_decisions ?? 0),
+    Number(row.unavailable_decisions ?? 0),
     Number(row.matched ?? 0),
     nowIso,
   ))
@@ -1597,6 +1765,8 @@ export async function refreshStrategyLearningHeads(db: D1Database): Promise<numb
     SELECT strategy_id,
            strategy_version,
            SUM(decisions) AS lifetime_decisions,
+           SUM(evaluable_decisions) AS lifetime_evaluable_decisions,
+           SUM(unavailable_decisions) AS lifetime_unavailable_decisions,
            SUM(matched) AS lifetime_matched,
            COUNT(DISTINCT CASE WHEN decisions > 0 THEN date END) AS decision_dates,
            SUM(reward_samples) AS lifetime_reward_samples,
@@ -1614,13 +1784,15 @@ export async function refreshStrategyLearningHeads(db: D1Database): Promise<numb
   const statements = rows.map((row) => db.prepare(`
     INSERT INTO strategy_learning_head (
       strategy_id, strategy_version,
-      lifetime_decisions, lifetime_matched, decision_dates,
+      lifetime_decisions, lifetime_evaluable_decisions, lifetime_unavailable_decisions, lifetime_matched, decision_dates,
       lifetime_reward_samples, lifetime_reward_hits, lifetime_reward_sum,
       reward_dates, latest_decision_date, latest_reward_date, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(strategy_id, strategy_version) DO UPDATE SET
       lifetime_decisions=excluded.lifetime_decisions,
+      lifetime_evaluable_decisions=excluded.lifetime_evaluable_decisions,
+      lifetime_unavailable_decisions=excluded.lifetime_unavailable_decisions,
       lifetime_matched=excluded.lifetime_matched,
       decision_dates=excluded.decision_dates,
       lifetime_reward_samples=excluded.lifetime_reward_samples,
@@ -1634,6 +1806,8 @@ export async function refreshStrategyLearningHeads(db: D1Database): Promise<numb
     row.strategy_id,
     row.strategy_version,
     Number(row.lifetime_decisions ?? 0),
+    Number(row.lifetime_evaluable_decisions ?? 0),
+    Number(row.lifetime_unavailable_decisions ?? 0),
     Number(row.lifetime_matched ?? 0),
     Number(row.decision_dates ?? 0),
     Number(row.lifetime_reward_samples ?? 0),
@@ -1920,7 +2094,10 @@ export function shouldRetireStaleStrategyRewardRows(input: {
 
 function gateEvidenceFromSpec(spec: StrategyLearningSummary['specs'][number]): StrategyPromotionGateRow['evidence'] {
   return {
-    decisions: spec.learning.rolling_decisions,
+    decisions: spec.learning.rolling_evaluable_decisions,
+    total_decisions: spec.learning.rolling_decisions,
+    evaluable_decisions: spec.learning.rolling_evaluable_decisions,
+    unavailable_decisions: spec.learning.rolling_unavailable_decisions,
     matched: spec.learning.rolling_matched,
     match_rate: spec.learning.rolling_match_rate,
     samples: spec.learning.rolling_samples,
@@ -1938,6 +2115,9 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
     const evidence = gateEvidenceFromSpec(spec)
     const missing: string[] = []
     if (spec.status === 'research') missing.push('status_must_enter_shadow_before_promotion')
+    if (spec.learning.reward_owner === 's12_execution_replay_v3_net') {
+      missing.push('production_owned_by_s12_calibration_not_selection_replacement')
+    }
     if (evidence.decisions < PROMOTION_MIN_DECISIONS) missing.push(`decisions_lt_${PROMOTION_MIN_DECISIONS}`)
     if (evidence.match_rate == null || evidence.match_rate < PROMOTION_MIN_MATCH_RATE) missing.push(`match_rate_lt_${PROMOTION_MIN_MATCH_RATE}`)
     if (evidence.samples < PROMOTION_MIN_SAMPLES) missing.push(`samples_lt_${PROMOTION_MIN_SAMPLES}`)
@@ -2001,8 +2181,8 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       recommended_stage: recommendedStage,
       decision: activeCooldown ? 'active_cooldown' : activeMonitor ? 'active_monitor' : ready ? 'candidate_ready' : 'not_ready',
       recommended_next_status: recommendedNextStatus,
-      requires_wei_approval: !activeMonitor || activeCooldown,
-      l3_requires_wei_approval: recommendedStage === 'L3_production_allocation' && !activeMonitor,
+      requires_wei_approval: false,
+      l3_requires_wei_approval: false,
       production_effect: false,
       missing_evidence: activeCooldown ? activeCooldownReasons : activeMonitor ? [] : missing,
       evidence,
@@ -2243,6 +2423,91 @@ export async function runStrategyThresholdAutoCalibration(
   return result
 }
 
+interface S12ExecutionDateMetric {
+  date: string
+  outcome_known_date: string | null
+  samples: number
+  hits: number
+  reward_sum: number
+  date_return: number
+}
+
+interface S12ExecutionLearningMetrics {
+  lifetimeSamples: number
+  lifetimeHits: number
+  lifetimeRewardSum: number
+  lifetimeMdd: number | null
+  rollingSamples: number
+  rollingHits: number
+  rollingRewardSum: number
+  rollingMdd: number | null
+  rollingRewardDates: number
+  rollingDateReturnMean: number | null
+  rollingDateReturnLcb90: number | null
+  latestRewardDate: string | null
+}
+
+async function loadS12ExecutionLearningMetrics(
+  db: D1Database,
+  asOfDate: string,
+  windowStart: string | null,
+): Promise<S12ExecutionLearningMetrics> {
+  const rows = (await db.prepare(`
+    SELECT o.signal_date AS date,
+           MAX(date(json_extract(o.detail_json, '$.replay_diagnostics.outcome_known_date'))) AS outcome_known_date,
+           COUNT(*) AS samples,
+           SUM(CASE WHEN CAST(o.pnl_pct AS REAL) - (? / 10000.0) > 0 THEN 1 ELSE 0 END) AS hits,
+           SUM(CAST(o.pnl_pct AS REAL) - (? / 10000.0)) AS reward_sum,
+           AVG(CAST(o.pnl_pct AS REAL) - (? / 10000.0)) AS date_return
+      FROM s12_replay_trade_outcomes o
+     WHERE o.signal_date IS NOT NULL
+       AND date(o.signal_date) <= date(?)
+       AND o.sample_eligible=1
+       AND o.source='s12_multisession_structure_replay_v3'
+       AND o.pnl_pct IS NOT NULL
+       AND json_extract(o.detail_json, '$.schema_version')='s12-replay-trade-outcome-v3'
+       AND json_extract(o.detail_json, '$.observation_kind')='executed'
+       AND json_extract(o.detail_json, '$.replay_diagnostics.replay_engine_signature')=?
+       AND date(json_extract(o.detail_json, '$.replay_diagnostics.outcome_known_date')) IS NOT NULL
+       AND date(json_extract(o.detail_json, '$.replay_diagnostics.outcome_known_date')) <= date(?)
+     GROUP BY o.signal_date
+     ORDER BY o.signal_date
+  `).bind(
+    CANONICAL_SELECTION_ROUNDTRIP_COST_BPS,
+    CANONICAL_SELECTION_ROUNDTRIP_COST_BPS,
+    CANONICAL_SELECTION_ROUNDTRIP_COST_BPS,
+    asOfDate,
+    S12_REPLAY_ENGINE_SIGNATURE,
+    asOfDate,
+  ).all<S12ExecutionDateMetric>()).results ?? []
+  const normalized = rows.map((row) => ({
+    date: cleanToken(row.date),
+    outcomeKnownDate: cleanToken(row.outcome_known_date) || null,
+    samples: Number(row.samples ?? 0),
+    hits: Number(row.hits ?? 0),
+    rewardSum: Number(row.reward_sum ?? 0),
+    dateReturn: Number(row.date_return ?? 0),
+  })).filter((row) => row.date && row.samples > 0 && Number.isFinite(row.dateReturn))
+  const rolling = windowStart ? normalized.filter((row) => row.date >= windowStart) : normalized
+  const lifetimeReturns = normalized.map((row) => row.dateReturn)
+  const rollingReturns = rolling.map((row) => row.dateReturn)
+  const rollingStats = summarizeDateClusteredReturns(rollingReturns)
+  return {
+    lifetimeSamples: normalized.reduce((sum, row) => sum + row.samples, 0),
+    lifetimeHits: normalized.reduce((sum, row) => sum + row.hits, 0),
+    lifetimeRewardSum: normalized.reduce((sum, row) => sum + row.rewardSum, 0),
+    lifetimeMdd: maxDrawdownFromDateReturns(lifetimeReturns),
+    rollingSamples: rolling.reduce((sum, row) => sum + row.samples, 0),
+    rollingHits: rolling.reduce((sum, row) => sum + row.hits, 0),
+    rollingRewardSum: rolling.reduce((sum, row) => sum + row.rewardSum, 0),
+    rollingMdd: maxDrawdownFromDateReturns(rollingReturns),
+    rollingRewardDates: rolling.length,
+    rollingDateReturnMean: rollingStats.mean,
+    rollingDateReturnLcb90: rollingStats.lcb90,
+    latestRewardDate: normalized.map((row) => row.outcomeKnownDate).filter((value): value is string => Boolean(value)).at(-1) ?? null,
+  }
+}
+
 export async function buildStrategyLearningSummary(
   db: D1Database,
   date: string,
@@ -2262,6 +2527,8 @@ export async function buildStrategyLearningSummary(
         SELECT strategy_id,
                strategy_version,
                lifetime_decisions,
+               lifetime_evaluable_decisions,
+               lifetime_unavailable_decisions,
                lifetime_matched,
                decision_dates,
                lifetime_reward_samples,
@@ -2276,6 +2543,8 @@ export async function buildStrategyLearningSummary(
         SELECT strategy_id,
                strategy_version,
                SUM(decisions) AS lifetime_decisions,
+               SUM(evaluable_decisions) AS lifetime_evaluable_decisions,
+               SUM(unavailable_decisions) AS lifetime_unavailable_decisions,
                SUM(matched) AS lifetime_matched,
                COUNT(DISTINCT CASE WHEN decisions > 0 THEN date END) AS decision_dates,
                SUM(reward_samples) AS lifetime_reward_samples,
@@ -2327,6 +2596,8 @@ export async function buildStrategyLearningSummary(
                strategy_id,
                strategy_version,
                decisions,
+               evaluable_decisions,
+               unavailable_decisions,
                matched,
                reward_samples,
                reward_hits,
@@ -2340,6 +2611,7 @@ export async function buildStrategyLearningSummary(
          ORDER BY date, strategy_id, strategy_version
       `).bind(windowStart, date).all<StrategyLearningDailyStatsRow>()).results ?? []
     : []
+  const s12ExecutionMetrics = await loadS12ExecutionLearningMetrics(db, date, windowStart)
   const dailyBySpec = new Map<string, StrategyLearningDailyStatsRow[]>()
   for (const row of dailyRows) {
     const key = row.strategy_id + '|' + row.strategy_version
@@ -2356,47 +2628,68 @@ export async function buildStrategyLearningSummary(
       const rollingRows = dailyBySpec.get(key) ?? []
       const todayRow = rollingRows.find((row) => row.date === date)
       const lifetimeDecisions = Number(head?.lifetime_decisions ?? 0)
+      const lifetimeEvaluable = Number(head?.lifetime_evaluable_decisions ?? 0)
+      const lifetimeUnavailable = Number(head?.lifetime_unavailable_decisions ?? 0)
       const lifetimeMatched = Number(head?.lifetime_matched ?? 0)
-      const lifetimeSamples = Number(head?.lifetime_reward_samples ?? 0)
-      const lifetimeHits = Number(head?.lifetime_reward_hits ?? 0)
-      const lifetimeRewardSum = Number(head?.lifetime_reward_sum ?? 0)
+      const usesS12ExecutionReward = spec.id === 'stock_tech_s12_multitimeframe_smc_reclaim_v2'
+      const lifetimeSamples = usesS12ExecutionReward ? s12ExecutionMetrics.lifetimeSamples : Number(head?.lifetime_reward_samples ?? 0)
+      const lifetimeHits = usesS12ExecutionReward ? s12ExecutionMetrics.lifetimeHits : Number(head?.lifetime_reward_hits ?? 0)
+      const lifetimeRewardSum = usesS12ExecutionReward ? s12ExecutionMetrics.lifetimeRewardSum : Number(head?.lifetime_reward_sum ?? 0)
       const rollingDecisions = rollingRows.reduce((sum, row) => sum + Number(row.decisions ?? 0), 0)
+      const rollingEvaluable = rollingRows.reduce((sum, row) => sum + Number(row.evaluable_decisions ?? 0), 0)
+      const rollingUnavailable = rollingRows.reduce((sum, row) => sum + Number(row.unavailable_decisions ?? 0), 0)
       const rollingMatched = rollingRows.reduce((sum, row) => sum + Number(row.matched ?? 0), 0)
       const rewardRows = rollingRows.filter((row) => Number(row.reward_samples ?? 0) > 0)
-      const rollingSamples = rewardRows.reduce((sum, row) => sum + Number(row.reward_samples ?? 0), 0)
-      const rollingHits = rewardRows.reduce((sum, row) => sum + Number(row.reward_hits ?? 0), 0)
-      const rollingRewardSum = rewardRows.reduce((sum, row) => sum + Number(row.reward_sum ?? 0), 0)
-      const dateReturns = rewardRows
+      const selectionRollingSamples = rewardRows.reduce((sum, row) => sum + Number(row.reward_samples ?? 0), 0)
+      const selectionRollingHits = rewardRows.reduce((sum, row) => sum + Number(row.reward_hits ?? 0), 0)
+      const selectionRollingRewardSum = rewardRows.reduce((sum, row) => sum + Number(row.reward_sum ?? 0), 0)
+      const selectionDateReturns = rewardRows
         .map((row) => finiteNumber(row.date_portfolio_return))
         .filter((value): value is number => value != null)
-      const dateReturnStats = summarizeDateClusteredReturns(dateReturns)
+      const selectionDateReturnStats = summarizeDateClusteredReturns(selectionDateReturns)
+      const rollingSamples = usesS12ExecutionReward ? s12ExecutionMetrics.rollingSamples : selectionRollingSamples
+      const rollingHits = usesS12ExecutionReward ? s12ExecutionMetrics.rollingHits : selectionRollingHits
+      const rollingRewardSum = usesS12ExecutionReward ? s12ExecutionMetrics.rollingRewardSum : selectionRollingRewardSum
       return {
         ...spec,
         learning: {
           evidence_available: true,
+          reward_owner: usesS12ExecutionReward ? 's12_execution_replay_v3_net' : 'selection_edge_v4',
           decisions: lifetimeDecisions,
+          evaluable_decisions: lifetimeEvaluable,
+          unavailable_decisions: lifetimeUnavailable,
           matched: lifetimeMatched,
-          match_rate: lifetimeDecisions > 0 ? round6(lifetimeMatched / lifetimeDecisions) : null,
+          match_rate: lifetimeEvaluable > 0 ? round6(lifetimeMatched / lifetimeEvaluable) : null,
           today_decisions: Number(todayRow?.decisions ?? 0),
+          today_evaluable_decisions: Number(todayRow?.evaluable_decisions ?? 0),
+          today_unavailable_decisions: Number(todayRow?.unavailable_decisions ?? 0),
           today_matched: Number(todayRow?.matched ?? 0),
           rolling_decisions: rollingDecisions,
+          rolling_evaluable_decisions: rollingEvaluable,
+          rolling_unavailable_decisions: rollingUnavailable,
           rolling_matched: rollingMatched,
-          rolling_match_rate: rollingDecisions > 0 ? round6(rollingMatched / rollingDecisions) : null,
+          rolling_match_rate: rollingEvaluable > 0 ? round6(rollingMatched / rollingEvaluable) : null,
           rolling_sessions: rollingRows.filter((row) => Number(row.decisions ?? 0) > 0).length,
           samples: lifetimeSamples,
           hit_rate: lifetimeSamples > 0 ? round6(lifetimeHits / lifetimeSamples) : null,
           avg_return_pct: lifetimeSamples > 0 ? round6(lifetimeRewardSum / lifetimeSamples) : null,
-          max_drawdown_pct: lifetimeMddBySpec.get(key) ?? null,
+          max_drawdown_pct: usesS12ExecutionReward ? s12ExecutionMetrics.lifetimeMdd : (lifetimeMddBySpec.get(key) ?? null),
           rolling_samples: rollingSamples,
           rolling_hit_rate: rollingSamples > 0 ? round6(rollingHits / rollingSamples) : null,
           rolling_avg_return_pct: rollingSamples > 0 ? round6(rollingRewardSum / rollingSamples) : null,
-          rolling_max_drawdown_pct: maxDrawdownFromDateReturns(dateReturns),
-          rolling_reward_dates: rewardRows.length,
-          rolling_date_return_mean: dateReturnStats.mean,
-          rolling_date_return_lcb90: dateReturnStats.lcb90,
+          rolling_max_drawdown_pct: usesS12ExecutionReward ? s12ExecutionMetrics.rollingMdd : maxDrawdownFromDateReturns(selectionDateReturns),
+          rolling_reward_dates: usesS12ExecutionReward ? s12ExecutionMetrics.rollingRewardDates : rewardRows.length,
+          rolling_date_return_mean: usesS12ExecutionReward ? s12ExecutionMetrics.rollingDateReturnMean : selectionDateReturnStats.mean,
+          rolling_date_return_lcb90: usesS12ExecutionReward ? s12ExecutionMetrics.rollingDateReturnLcb90 : selectionDateReturnStats.lcb90,
           latest_decision_date: head?.latest_decision_date ?? null,
-          latest_reward_date: head?.latest_reward_date ?? null,
-          status: lifetimeSamples > 0 ? 'learning' : lifetimeDecisions > 0 ? 'no_reward' : 'no_decisions',
+          latest_reward_date: usesS12ExecutionReward ? s12ExecutionMetrics.latestRewardDate : (head?.latest_reward_date ?? null),
+          status: lifetimeSamples > 0
+            ? 'learning'
+            : lifetimeEvaluable > 0
+              ? 'no_reward'
+              : lifetimeUnavailable > 0
+                ? 'unavailable'
+                : 'no_decisions',
         },
       }
     }),
@@ -2407,10 +2700,314 @@ export async function buildStrategyLearningSummary(
   summary.policy_state_preview = buildStrategyAdaptivePolicyState(summary)
   return summary
 }
+interface HistoricalStrategyDecisionRowV5 {
+  date: string
+  symbol: string
+  name: string | null
+  strategy_id: string
+  strategy_version: string
+  strategy_status: StrategySpecStatus
+  alpha_bucket: string
+  context_json: string
+  evidence_json: string
+  context_raw_signals_json: string | null
+  context_current_price: number | string | null
+  context_industry: string | null
+}
+
+export async function rebuildHistoricalStrategyEvidenceV5(
+  db: D1Database,
+  options: { asOfDate: string; maxDates?: number },
+): Promise<{ attemptedDates: number; successfulDates: number; blockedDates: number; rebuiltDecisions: number; rebuiltMatrixRows: number }> {
+  await ensureStrategyLearningTables(db)
+  const maxDates = Math.max(1, Math.min(5, Math.floor(options.maxDates ?? 2)))
+  const dateRows = await db.prepare(`
+    SELECT d.date
+      FROM strategy_decision_log d
+      LEFT JOIN strategy_evidence_rebuild_runs_v5 r ON r.signal_date=d.date
+     WHERE d.date<=?
+       AND (r.signal_date IS NULL OR r.status NOT IN ('success','blocked'))
+     GROUP BY d.date
+     ORDER BY d.date DESC
+     LIMIT ?
+  `).bind(options.asOfDate, maxDates).all<{ date: string }>()
+  const registryRows = await db.prepare(`
+    SELECT strategy_id, version, name, status, owner, alpha_bucket,
+           family_id, variant_id, owner_type, promotion_status,
+           supported_regimes_json, thesis, thresholds_json, candidate_policy_json,
+           risk_notes_json, source_refs_json, created_by, created_at, updated_at
+      FROM strategy_spec_registry
+  `).all<StrategySpecRegistryRow>()
+  const specByKey = new Map((registryRows.results ?? []).map((row) => [
+    row.strategy_id + '|' + row.version,
+    registryRowToStrategySpec(row),
+  ]))
+  const governanceByKey = new Map((registryRows.results ?? []).map((row) => [
+    row.strategy_id + '|' + row.version,
+    row,
+  ]))
+  const { persistSelectionEvidenceV4 } = await import('./selectionReferenceEvidence')
+  let successfulDates = 0
+  let blockedDates = 0
+  let rebuiltDecisions = 0
+  let rebuiltMatrixRows = 0
+
+  for (const { date } of dateRows.results ?? []) {
+    await db.prepare(`
+      INSERT INTO strategy_evidence_rebuild_runs_v5(signal_date, status, updated_at)
+      VALUES (?, 'pending', CURRENT_TIMESTAMP)
+      ON CONFLICT(signal_date) DO UPDATE SET status='pending', blocker_reason=NULL, updated_at=CURRENT_TIMESTAMP
+    `).bind(date).run()
+    try {
+      const referencesResult = await db.prepare(`
+        SELECT r.signal_date, r.symbol, r.producer_run_id, r.name, r.market_segment, r.sector,
+               r.strategy_selected, r.selection_stage, r.rejection_reason, r.score_v2,
+               r.score_components, r.feature_available, r.feature_rejection_reason,
+               r.strategy_labeler_version, r.strategy_router_version,
+               r.strategy_registry_checksum, r.evidence_artifact_id
+          FROM selection_reference_snapshots_v1 r
+         WHERE r.signal_date=?
+           AND r.hard_gate_passed=1
+           AND EXISTS (
+             SELECT 1 FROM canonical_run_heads h
+              WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
+                AND h.run_id=r.producer_run_id
+           )
+         ORDER BY r.symbol
+      `).bind(date).all<any>()
+      const references = referencesResult.results ?? []
+      const producerRunIds = new Set(references.map((row) => cleanToken(row.producer_run_id)))
+      const checksums = new Set(references.map((row) => cleanToken(row.strategy_registry_checksum)).filter(Boolean))
+      const artifactIds = new Set(references.map((row) => cleanToken(row.evidence_artifact_id)).filter(Boolean))
+      if (!references.length || producerRunIds.size !== 1 || checksums.size !== 1 || artifactIds.size !== 1) {
+        throw new Error('reference_lineage_incomplete')
+      }
+      const producerRunId = [...producerRunIds][0]
+      const decisionResult = await db.prepare(`
+        SELECT d.date, d.symbol, d.name, d.strategy_id, d.strategy_version,
+               d.strategy_status, d.alpha_bucket, d.context_json, d.evidence_json,
+               c.raw_signals_json AS context_raw_signals_json,
+               c.current_price AS context_current_price,
+               c.industry AS context_industry
+          FROM strategy_decision_log d
+          JOIN selection_reference_snapshots_v1 r
+            ON r.signal_date=d.date AND r.symbol=d.symbol AND r.producer_run_id=?
+          LEFT JOIN strategy_candidate_contexts c ON c.context_id=d.context_id
+         WHERE d.date=?
+         ORDER BY d.symbol, d.strategy_id, d.strategy_version
+      `).bind(producerRunId, date).all<HistoricalStrategyDecisionRowV5>()
+      const decisions = decisionResult.results ?? []
+      const referenceSymbols = new Set(references.map((row) => cleanToken(row.symbol)))
+      const strategyKeys = new Set(decisions.map((row) => row.strategy_id + '|' + row.strategy_version))
+      const expectedCells = referenceSymbols.size * strategyKeys.size
+      if (!strategyKeys.size || decisions.length !== expectedCells) {
+        throw new Error(`decision_grid_incomplete:${decisions.length}/${expectedCells}`)
+      }
+      const decisionUpdates: D1PreparedStatement[] = []
+      let evaluableRows = 0
+      let unavailableRows = 0
+      const rebuilt = decisions.map((row) => {
+        const key = row.strategy_id + '|' + row.strategy_version
+        const spec = specByKey.get(key)
+        const fullContext = parseJson<any>(row.context_json, {})
+        const contextRaw = parseJson<Record<string, any>>(row.context_raw_signals_json, {})
+        const rawSignals = Object.keys(contextRaw).length
+          ? Object.fromEntries(Object.entries(contextRaw).filter(([name]) => name !== 'score_v2'))
+          : fullContext?.candidate?.raw_signals ?? null
+        const candidate: StrategyCandidateInput = {
+          symbol: row.symbol,
+          name: row.name ?? undefined,
+          industry: firstCleanToken(row.context_industry, fullContext?.candidate?.industry) ?? undefined,
+          current_price: firstFinite(row.context_current_price, fullContext?.candidate?.current_price),
+          raw_signals: rawSignals,
+          score_v2: contextRaw.score_v2 ?? fullContext?.score_v2 ?? null,
+        }
+        const evaluability = spec
+          ? assessStrategySpecEvaluability(candidate, spec)
+          : {
+              evaluable: false,
+              missingSignals: [],
+              missingFeatureRefs: [],
+              unavailableReasons: ['historical_strategy_spec_version_missing'],
+              signalDiagnostics: [],
+            }
+        const assessment = spec && evaluability.evaluable
+          ? assessCandidateAgainstStrategySpecs(candidate, [spec])
+          : { matches: [], tags: [], watchPoints: [] }
+        const matched = evaluability.evaluable && assessment.matches.length > 0
+        const unavailableReason = evaluability.evaluable ? null : evaluability.unavailableReasons.join('|')
+        if (evaluability.evaluable) evaluableRows += 1
+        else unavailableRows += 1
+        const priorEvidence = parseJson<Record<string, unknown>>(row.evidence_json, {})
+        const evidence = {
+          ...priorEvidence,
+          pit_reconstruction: {
+            schema_version: 'strategy-decision-pit-reconstruction-v5',
+            source: row.context_raw_signals_json ? 'strategy_candidate_contexts' : 'strategy_decision_context',
+            strategy_id: row.strategy_id,
+            strategy_version: row.strategy_version,
+            evaluability,
+            matched,
+            assessment,
+            knowledge_cutoff: date,
+            no_lookahead: true,
+          },
+        }
+        decisionUpdates.push(db.prepare(`
+          UPDATE strategy_decision_log
+             SET evaluable=?, unavailable_reason=?, matched=?, match_score=?,
+                 reason_code=?, evidence_json=?
+           WHERE date=? AND symbol=? AND strategy_id=? AND strategy_version=?
+        `).bind(
+          evaluability.evaluable ? 1 : 0,
+          unavailableReason,
+          matched ? 1 : 0,
+          matchScore(candidate, matched),
+          evaluability.evaluable ? (matched ? 'strategy_spec_matched' : 'strategy_spec_no_match') : 'strategy_spec_unavailable:' + unavailableReason,
+          JSON.stringify(evidence),
+          date, row.symbol, row.strategy_id, row.strategy_version,
+        ))
+        return { row, spec, evaluability, matched }
+      })
+      for (let offset = 0; offset < decisionUpdates.length; offset += STRATEGY_LEARNING_D1_BATCH_SIZE) {
+        await db.batch(decisionUpdates.slice(offset, offset + STRATEGY_LEARNING_D1_BATCH_SIZE))
+      }
+
+      const existingMatrix = await db.prepare(`
+        SELECT status FROM strategy_label_matrix_runs_v4 WHERE producer_run_id=?
+      `).bind(producerRunId).first<{ status?: string }>()
+      let matrixRows = 0
+      if (existingMatrix?.status === 'ready') {
+        matrixRows = Number((await db.prepare(
+          'SELECT COUNT(*) AS count FROM strategy_label_matrix_v4 WHERE producer_run_id=?',
+        ).bind(producerRunId).first<{ count: number }>())?.count ?? 0)
+      } else {
+        const labelerVersion = 'strategy-decision-log-pit-reconstruction-v5'
+        const matrix = rebuilt.map(({ row, spec, evaluability, matched }) => {
+          if (!spec) throw new Error('matrix_strategy_spec_version_missing:' + row.strategy_id + '|' + row.strategy_version)
+          const governance = governanceByKey.get(row.strategy_id + '|' + row.strategy_version)
+          return {
+            signal_date: date,
+            symbol: row.symbol,
+            producer_run_id: producerRunId,
+            strategy_id: row.strategy_id,
+            strategy_version: row.strategy_version,
+            strategy_status: row.strategy_status,
+            alpha_bucket: row.alpha_bucket,
+            family_id: cleanToken(spec.familyId) || 'UNKNOWN',
+            production_owner: row.strategy_status === 'active' && governance?.owner_type === 'strategy' ? 1 : 0,
+            strategy_hit: evaluability.evaluable && matched ? 1 : 0,
+            weak_label: evaluability.evaluable ? (matched ? 1 : 0) : 0,
+            affinity: evaluability.evaluable ? (matched ? 1 : 0) : 0,
+            position_weight: 0,
+            overlap: 0,
+            labeler_version: labelerVersion,
+            strategy_registry_checksum: [...checksums][0],
+          }
+        })
+        const persisted = await persistSelectionEvidenceV4(db, {
+          signalDate: date,
+          producerRunId,
+          references: references.map((row) => ({
+            signal_date: date,
+            symbol: cleanToken(row.symbol),
+            producer_run_id: producerRunId,
+            name: cleanToken(row.name) || null,
+            market_segment: cleanToken(row.market_segment) || null,
+            sector: cleanToken(row.sector) || null,
+            strategy_selected: Number(row.strategy_selected) === 1 ? 1 : 0,
+            selection_stage: cleanToken(row.selection_stage) || 'l1_labeled_observe',
+            rejection_reason: cleanToken(row.rejection_reason) || null,
+            score_v2: finiteNumber(row.score_v2),
+            score_components: typeof row.score_components === 'string' ? row.score_components : null,
+            feature_available: Number(row.feature_available) === 1 ? 1 : 0,
+            feature_rejection_reason: cleanToken(row.feature_rejection_reason) || null,
+            strategy_labeler_version: labelerVersion,
+            strategy_router_version: cleanToken(row.strategy_router_version) || null,
+            strategy_registry_checksum: [...checksums][0],
+          })),
+          matrix,
+          strategyCount: strategyKeys.size,
+          strategyRegistryChecksum: [...checksums][0],
+          labelerVersion,
+          evidenceArtifactId: [...artifactIds][0],
+        })
+        matrixRows = persisted.matrixRows
+      }
+      await materializeStrategyDecisionDailyStats(db, date)
+      await db.prepare(`
+        UPDATE strategy_evidence_rebuild_runs_v5
+           SET status='success', candidate_count=?, strategy_count=?, decision_rows=?,
+               evaluable_rows=?, unavailable_rows=?, matrix_rows=?,
+               source_checksum=?, blocker_reason=NULL, updated_at=CURRENT_TIMESTAMP
+         WHERE signal_date=?
+      `).bind(
+        referenceSymbols.size, strategyKeys.size, decisions.length,
+        evaluableRows, unavailableRows, matrixRows, [...checksums][0], date,
+      ).run()
+      successfulDates += 1
+      rebuiltDecisions += decisions.length
+      rebuiltMatrixRows += matrixRows
+    } catch (error) {
+      const reason = error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500)
+      const status = reason.startsWith('reference_lineage_incomplete')
+        || reason.startsWith('decision_grid_incomplete')
+        || reason.startsWith('matrix_strategy_spec_version_missing')
+        ? 'blocked'
+        : 'failed'
+      await db.prepare(`
+        UPDATE strategy_evidence_rebuild_runs_v5
+           SET status=?, blocker_reason=?, updated_at=CURRENT_TIMESTAMP
+         WHERE signal_date=?
+      `).bind(status, reason, date).run()
+      blockedDates += 1
+    }
+  }
+  if ((dateRows.results ?? []).length) await refreshStrategyLearningHeads(db)
+  return {
+    attemptedDates: (dateRows.results ?? []).length,
+    successfulDates,
+    blockedDates,
+    rebuiltDecisions,
+    rebuiltMatrixRows,
+  }
+}
+
+export async function finalizeStrategyLearningEvidenceV5(
+  db: D1Database,
+  date: string,
+  options: {
+    allowPromotion?: boolean
+    persistPolicy?: boolean
+    calibrateThresholds?: boolean
+    calibrationCadence?: StrategyThresholdCalibrationCadence
+  } = {},
+) {
+  const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
+  const { reconcileSelectionDecisionEvidenceV4 } = await import('./selectionReferenceEvidence')
+  const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
+  const decisionEvidence = await reconcileSelectionDecisionEvidenceV4(db, date)
+  const historicalEvidence = await rebuildHistoricalStrategyEvidenceV5(db, { asOfDate: date, maxDates: 2 })
+  const labels = await materializeCanonicalSelectionLabelsV4(db, { asOfDate: date })
+  const marginalEdge = await refreshStrategyMarginalEdgeV4(db, date, { allowPromotion: options.allowPromotion === true })
+  const rewards = await refreshStrategyRewardLedger(db, { endDate: date, dryRun: false })
+  const policy = options.persistPolicy === false
+    ? null
+    : await refreshStrategyAdaptivePolicyState(db, { date, dryRun: false })
+  const thresholdCalibration = options.calibrateThresholds === false
+    ? null
+    : await runStrategyThresholdAutoCalibration(db, {
+      runDate: date,
+      cadence: options.calibrationCadence ?? 'daily_drift',
+      dryRun: false,
+    })
+  return { decisionEvidence, historicalEvidence, labels, marginalEdge, rewards, policy, thresholdCalibration }
+}
+
 export async function runStrategyLearningClosure(
   db: D1Database,
   date: string,
-  options: { persistPolicy?: boolean; calibrateThresholds?: boolean; calibrationCadence?: StrategyThresholdCalibrationCadence } = {},
+  options: { allowPromotion?: boolean; persistPolicy?: boolean; calibrateThresholds?: boolean; calibrationCadence?: StrategyThresholdCalibrationCadence } = {},
 ): Promise<string> {
   await ensureStrategyLearningTables(db)
   const seeded = await seedDefaultStrategySpecRegistry(db)
@@ -2429,23 +3026,8 @@ export async function runStrategyLearningClosure(
     if (!chunk.next_cursor_symbol || chunk.next_cursor_symbol === decisionCursor) throw new Error('strategy_learning_pagination_stalled')
     decisionCursor = chunk.next_cursor_symbol
   }
-  const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
-  const { reconcileSelectionDecisionEvidenceV4 } = await import('./selectionReferenceEvidence')
-  const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
-  const decisionEvidence = await reconcileSelectionDecisionEvidenceV4(db, date)
-  const labels = await materializeCanonicalSelectionLabelsV4(db, { asOfDate: date })
-  const marginalEdge = await refreshStrategyMarginalEdgeV4(db, date)
-  const rewards = await refreshStrategyRewardLedger(db, { endDate: date, dryRun: false })
-  const policy = options.persistPolicy === false
-    ? null
-    : await refreshStrategyAdaptivePolicyState(db, { date, dryRun: false })
-  const thresholdCalibration = options.calibrateThresholds === false
-    ? null
-    : await runStrategyThresholdAutoCalibration(db, {
-      runDate: date,
-      cadence: options.calibrationCadence ?? 'daily_drift',
-      dryRun: false,
-    })
+  const { decisionEvidence, historicalEvidence, labels, marginalEdge, rewards, policy, thresholdCalibration }
+    = await finalizeStrategyLearningEvidenceV5(db, date, options)
   return [
     `seeded=${seeded.seeded}`,
     `spec_source=${decisionSpecSource}`,
@@ -2453,6 +3035,9 @@ export async function runStrategyLearningClosure(
     `decision_rows=${decisionRows}`,
     `selection_decisions=${decisionEvidence.finalSignalRows}/${decisionEvidence.referenceRows}`,
     `selection_ev_owner=${decisionEvidence.evOwnerRows}`,
+    `strategy_pit_rebuild=${historicalEvidence.successfulDates}/${historicalEvidence.attemptedDates}`,
+    `strategy_pit_blocked=${historicalEvidence.blockedDates}`,
+    `strategy_pit_matrix_rows=${historicalEvidence.rebuiltMatrixRows}`,
     `selection_labels=${labels.persisted_rows}`,
     `strategy_edge=${marginalEdge.status}:eligible=${marginalEdge.eligibleStrategies}`,
     `reward_source_rows=${rewards.source_rows}`,

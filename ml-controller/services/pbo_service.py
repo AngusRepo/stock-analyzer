@@ -483,6 +483,7 @@ def _run_cpcv(
 async def run_pbo_analysis(
     n_partitions: int = DEFAULT_N_PARTITIONS,
     source: str = "backtest",
+    expected_run_date: str | None = None,
 ) -> dict:
     """
     Full PBO pipeline:
@@ -500,18 +501,32 @@ async def run_pbo_analysis(
         trades: list[dict] = []
         trades_truncated = False
         strategy_partition_returns: dict[str, list[float]] = {}
+        source_provenance: dict = {}
 
         if source == "backtest":
             logger.info("[PBO] Fetching backtest trades from D1...")
+            if not expected_run_date:
+                return {
+                    "error": "expected_run_date is required for backtest PBO evidence",
+                    "status": "failed",
+                }
             row = await _d1_query(
                 client,
-                """SELECT raw_results FROM backtest_results
-                   ORDER BY run_date DESC, created_at DESC LIMIT 1""",
+                """SELECT id, run_date, created_at, raw_results FROM backtest_results
+                   WHERE run_date = ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                [expected_run_date],
             )
             if not row or not row[0].get("raw_results"):
-                return {"error": "No backtest results found", "status": "failed"}
+                return {"error": f"No backtest results found for run_date={expected_run_date}", "status": "failed"}
 
             raw = json.loads(row[0]["raw_results"])
+            source_provenance = {
+                "source_table": "backtest_results",
+                "source_row_id": row[0].get("id"),
+                "source_run_date": row[0].get("run_date"),
+                "source_created_at": row[0].get("created_at"),
+            }
             strategy_partition_returns = _extract_strategy_partition_returns(raw)
             trades = [] if strategy_partition_returns else raw.get("trades", [])
 
@@ -583,6 +598,7 @@ async def run_pbo_analysis(
             "oos_rank_percentiles": pbo.oos_rank_percentiles,
             "selected_strategy_counts": pbo.selected_strategy_counts,
             "source": source,
+            "source_provenance": source_provenance or None,
         }, ensure_ascii=False)
 
         success = await _d1_exec(
@@ -619,6 +635,7 @@ async def run_pbo_analysis(
             "sampled": pbo.sampled,
             "embargo_days": pbo.embargo_days,
             "embargo_source": pbo.embargo_source,
+            "source_provenance": source_provenance or None,
         }
         logger.info(f"[PBO] Done: {pbo.go_live_verdict} — PBO = {pbo.pbo:.1%}")
         return summary

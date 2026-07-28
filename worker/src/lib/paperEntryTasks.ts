@@ -105,6 +105,7 @@ import {
   type FiveSlotHolding,
 } from './fiveSlotCapitalAllocator'
 import { l4SparseSizingFromWatchPoints, resolveL4SparseBudgetFloor } from './l4SparseAllocationSizing'
+import { withD1ReadRetry } from './d1TransientRetry'
 import {
   batchLoadOhlcvTradePlanLevelsBySymbol,
   formatOhlcvTradePlanWatchPoint,
@@ -511,7 +512,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     console.warn('[Intraday] pending debate reconcile failed:', e),
   )
 
-  const debateSnapshot = await loadPendingBuySnapshot(env, today, { allowFallbackRecent: false })
+  const debateSnapshot = await withD1ReadRetry(
+    'pending_debate_snapshot',
+    'pending_buy_state',
+    () => loadPendingBuySnapshot(env, today, { allowFallbackRecent: false }),
+  )
   const staleDebateItems = debateSnapshot.pendingBuys.filter((item) =>
     (item.debate_verdict ?? 'PENDING') === 'PENDING' || (item.debate_status ?? 'pending') === 'pending',
   )
@@ -550,7 +555,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   if (twHour === 13 && twMin >= 25) {
     await forceDayTradeClose(env, cfg, today)
 
-    const pendingSnapshot = await loadPendingBuySnapshot(env, today, { allowFallbackRecent: false })
+    const pendingSnapshot = await withD1ReadRetry(
+      'close_pending_snapshot',
+      'pending_buy_state',
+      () => loadPendingBuySnapshot(env, today, { allowFallbackRecent: false }),
+    )
     if (pendingSnapshot.pendingBuys.length > 0) {
       const pendingBuys = pendingSnapshot.pendingBuys
       const cancelled = pendingBuys.map((b) => b.symbol).join(', ')
@@ -570,7 +579,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     return holdingPoll
   }
 
-  const pendingSnapshot = await loadPendingBuySnapshot(env, today, { allowFallbackRecent: false })
+  const pendingSnapshot = await withD1ReadRetry(
+    'active_pending_snapshot',
+    'pending_buy_state',
+    () => loadPendingBuySnapshot(env, today, { allowFallbackRecent: false }),
+  )
   let pendingBuys: PendingBuy[] = pendingSnapshot.pendingBuys
   if (pendingBuys.length === 0) return holdingPoll
   const pendingRunId = pendingRunIdFromMeta(pendingSnapshot.meta)
@@ -635,7 +648,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     throw new Error('intraday_authoritative_market_data_unavailable_all_symbols')
   }
 
-  const acc = await env.DB.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>()
+  const acc = await withD1ReadRetry(
+    'account_snapshot',
+    'paper_accounts',
+    () => env.DB.prepare('SELECT cash, initial_cash FROM paper_accounts WHERE id=?').bind(ACCOUNT_ID).first<any>(),
+  )
   if (!acc) return holdingPoll
   const settledCash = Number(acc.cash ?? 0)
   const { getAvailableCash: getAvailCash } = await import('./dateUtils')
@@ -643,9 +660,13 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   ;(acc as any).cash = availableCash
   if (availableCash < cfg.position.minCashToTrade) return holdingPoll
 
-  const { results: positions } = await env.DB.prepare(
-    'SELECT symbol, shares FROM paper_positions WHERE account_id=? AND shares>0',
-  ).bind(ACCOUNT_ID).all<any>()
+  const { results: positions } = await withD1ReadRetry(
+    'position_snapshot',
+    'paper_positions',
+    () => env.DB.prepare(
+      'SELECT symbol, shares FROM paper_positions WHERE account_id=? AND shares>0',
+    ).bind(ACCOUNT_ID).all<any>(),
+  )
   const posSymbols = (positions ?? []).map((p: any) => p.symbol)
   const posQuoteMap = await batchGetIntradayOHLC(posSymbols, {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
@@ -659,7 +680,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   }
   const quoteMissingPosSymbols = posSymbols.filter((symbol: string) => !posQuotePriceMap.has(symbol))
   const posFallbackPriceMap = quoteMissingPosSymbols.length > 0
-    ? await batchGetLatestPrices(env.DB, quoteMissingPosSymbols)
+    ? await withD1ReadRetry(
+      'position_price_fallback',
+      'stock_prices_latest',
+      () => batchGetLatestPrices(env.DB, quoteMissingPosSymbols),
+    )
     : new Map<string, number>()
   const positionValuation = computePaperPositionValuation({
     positions: (positions ?? []).map((pos: any) => ({
@@ -677,7 +702,11 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       `missing=${positionValuation.missingSymbols.join(',') || '-'}`,
     )
   }
-  const settlement = await getUnsettledSettlementSummary(env.DB, ACCOUNT_ID)
+  const settlement = await withD1ReadRetry(
+    'settlement_snapshot',
+    'paper_settlement_ledger',
+    () => getUnsettledSettlementSummary(env.DB, ACCOUNT_ID),
+  )
   const totalPortfolio = computePaperTotalValue({
     settledCash,
     positionsValue: positionValue,
@@ -721,11 +750,15 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
   if (currentPositionCount >= maxPos && pendingBuys.length > 0) {
     console.log(`[Intraday] Position cap ${currentPositionCount}/${maxPos} reached, evaluating replacements...`)
 
-    const { results: fullPositions } = await env.DB.prepare(`
-      SELECT symbol, name, shares, avg_cost, entry_date, entry_price,
-             initial_stop, trailing_stop, tp1_price, tp1_hit, highest_since_entry
-      FROM paper_positions WHERE account_id=? AND shares>0
-    `).bind(ACCOUNT_ID).all<any>()
+    const { results: fullPositions } = await withD1ReadRetry(
+      'replacement_position_snapshot',
+      'paper_positions_full',
+      () => env.DB.prepare(`
+        SELECT symbol, name, shares, avg_cost, entry_date, entry_price,
+               initial_stop, trailing_stop, tp1_price, tp1_hit, highest_since_entry
+        FROM paper_positions WHERE account_id=? AND shares>0
+      `).bind(ACCOUNT_ID).all<any>(),
+    )
 
     const weaknessScores: { symbol: string; score: number }[] = []
     for (const pos of fullPositions ?? []) {

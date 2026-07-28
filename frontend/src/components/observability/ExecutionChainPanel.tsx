@@ -55,7 +55,7 @@ type ChainBranch = {
 }
 
 type ChainScope = {
-  id: 'daily_readiness' | 'intraday' | 'monthly'
+  id: 'daily_readiness' | 'intraday' | 'weekly' | 'monthly'
   label: string
   title: string
   description: string
@@ -80,8 +80,11 @@ const STAGES: Record<string, StageDefinition> = {
   'ml-predict': { id: 'ml-predict', label: 'ML predict', icon: BrainCircuit },
   recommendation: { id: 'recommendation', label: 'Recommendation', icon: Target },
   'post-pipeline-chain': { id: 'post-pipeline-chain', label: 'Pipeline callback', icon: GitBranch },
+  'allocator-ev-feature-snapshot-backfill': { id: 'allocator-ev-feature-snapshot-backfill', label: 'EV feature snapshot', icon: Database },
   'verify-v2': { id: 'verify-v2', label: 'Verify', icon: ShieldCheck },
   'post-verify-chain': { id: 'post-verify-chain', label: 'Verify callback', icon: GitBranch },
+  'allocator-ev-lifecycle-watchdog': { id: 'allocator-ev-lifecycle-watchdog', label: 'EV lifecycle', icon: Radar, optional: true },
+  'active8-oof-daily': { id: 'active8-oof-daily', label: 'Active-8 daily OOF', icon: Layers3 },
   'model-ic-rolling': { id: 'model-ic-rolling', label: 'Model IC rolling', icon: Activity },
   'linucb-reward-ledger': { id: 'linucb-reward-ledger', label: 'Reward ledger', icon: BookOpenCheck },
   adapt: { id: 'adapt', label: 'Adapt params', icon: Settings2 },
@@ -116,6 +119,10 @@ const STAGES: Record<string, StageDefinition> = {
   'weekly-backtest': { id: 'weekly-backtest', label: 'Validation / MC', icon: BarChart3 },
   'alpha-quality': { id: 'alpha-quality', label: 'Alpha quality', icon: Activity },
   'weekly-audit': { id: 'weekly-audit', label: 'Weekly audit', icon: ShieldCheck },
+  'storage-integrity-audit': { id: 'storage-integrity-audit', label: 'Storage integrity', icon: ShieldCheck },
+  'model-ic-full-check': { id: 'model-ic-full-check', label: 'Model IC full', icon: Activity },
+  'weekly-cleanup': { id: 'weekly-cleanup', label: 'Weekly cleanup', icon: Archive },
+  'weekly-drift-retrain': { id: 'weekly-drift-retrain', label: 'Drift retrain', icon: BrainCircuit, optional: true },
   'weekly-optuna': { id: 'weekly-optuna', label: 'Drift research', icon: Microscope, optional: true },
   'adaptive-meta-policy-replay': { id: 'adaptive-meta-policy-replay', label: 'Meta replay', icon: BrainCircuit, optional: true },
   'strategy-threshold-calibration': { id: 'strategy-threshold-calibration', label: 'Threshold calibration', icon: Settings2, optional: true },
@@ -149,8 +156,11 @@ const SCOPES: ChainScope[] = [
       ['pipeline'],
       ['ml-predict', 'recommendation'],
       ['post-pipeline-chain'],
+      ['allocator-ev-feature-snapshot-backfill'],
       ['verify-v2'],
       ['post-verify-chain'],
+      ['allocator-ev-lifecycle-watchdog'],
+      ['active8-oof-daily'],
       ['model-ic-rolling'],
       ['linucb-reward-ledger'],
       ['adapt'],
@@ -199,6 +209,25 @@ const SCOPES: ChainScope[] = [
           ['rescore-1230'],
         ],
       },
+    ],
+  },
+  {
+    id: 'weekly',
+    label: 'Weekly research',
+    title: 'Weekly validation & research chain',
+    description: 'Point-in-time validation, adaptive research, calibration, and approval-gated retrain evidence.',
+    relation: 'mixed',
+    columns: [
+      ['weekly-audit', 'model-ic-full-check'],
+      ['storage-integrity-audit'],
+      ['weekly-cleanup'],
+      ['weekly-backtest', 'alpha-quality'],
+      ['weekly-optuna', 'sector-leaders'],
+      ['adaptive-meta-policy-replay'],
+      ['strategy-threshold-calibration'],
+      ['linucb-multiplier-replay'],
+      ['active8-oof-weekly'],
+      ['weekly-drift-retrain'],
     ],
   },
   {

@@ -42,7 +42,9 @@ router = APIRouter(prefix="/backtest", tags=["backtest"])
 
 
 @router.post("/run")
-async def trigger_backtest():
+async def trigger_backtest(
+    run_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+):
     """
     Run full backtest pipeline:
     1. Fetch OHLCV + ML signals from D1
@@ -52,7 +54,7 @@ async def trigger_backtest():
     """
     logger.info("[Backtest] Triggered via API")
     try:
-        return await run_full_backtest()
+        return await run_full_backtest(run_date=run_date)
     except Exception as e:
         logger.exception("[Backtest] Pipeline failed")
         return {"status": "error", "error": str(e)}
@@ -67,6 +69,7 @@ async def trigger_monte_carlo(
                         description="Simulation method; regime/block bootstrap preserves clustered loss streaks"),
     block_size: int | None = Query(default=None, ge=1, le=60,
                                    description="Optional moving-block size for block bootstrap"),
+    expected_run_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
     """
     P0#5 Monte Carlo MDD Simulation:
@@ -83,6 +86,7 @@ async def trigger_monte_carlo(
             source=source,
             method=method,
             block_size=block_size,
+            expected_run_date=expected_run_date,
         )
     except Exception as e:
         logger.exception("[MonteCarlo] Pipeline failed")
@@ -462,6 +466,7 @@ async def trigger_pbo(
     partitions: int = Query(default=10, ge=4, le=20, description="Number of time partitions"),
     source: str = Query(default="backtest", pattern="^(paper|backtest)$",
                         description="Data source: backtest or paper"),
+    expected_run_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
     """
     P0#6 Probability of Backtest Overfitting (CPCV):
@@ -472,7 +477,11 @@ async def trigger_pbo(
     """
     logger.info(f"[PBO] Triggered: source={source}, partitions={partitions}")
     try:
-        return await run_pbo_analysis(n_partitions=partitions, source=source)
+        return await run_pbo_analysis(
+            n_partitions=partitions,
+            source=source,
+            expected_run_date=expected_run_date,
+        )
     except Exception as e:
         logger.exception("[PBO] Pipeline failed")
         return {"status": "error", "error": str(e)}

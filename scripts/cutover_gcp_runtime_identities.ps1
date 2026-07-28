@@ -80,6 +80,44 @@ function Ensure-ServiceAccount([string]$Alias) {
   Invoke-Gcloud @("iam", "service-accounts", "create", $accountId, "--project=$project", "--display-name=StockVision $Alias runtime", "--quiet")
 }
 
+
+function Get-ServingRevisionIdentityMismatches([string]$ServiceName, [string]$ExpectedEmail, [object]$Resource = $null) {
+  if (-not $Apply) { return @() }
+  if ($null -eq $Resource) {
+    $Resource = (& gcloud run services describe $ServiceName --project=$project --region=$region --format=json) | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw "Failed to inspect service $ServiceName traffic identity" }
+  }
+  $mismatches = @()
+  foreach ($target in @($Resource.status.traffic)) {
+    $percent = if ($null -eq $target.percent) { 0 } else { [int]$target.percent }
+    if ($percent -le 0) { continue }
+    $revisionName = [string]$target.revisionName
+    if (-not $revisionName -and [bool]$target.latestRevision) {
+      $revisionName = [string]$Resource.status.latestReadyRevisionName
+    }
+    if (-not $revisionName) {
+      $mismatches += "unknown-serving-revision:${percent}%"
+      continue
+    }
+    $revisionEmail = (& gcloud run revisions describe $revisionName `
+      --project=$project --region=$region --format="value(spec.serviceAccountName)").Trim()
+    if ($LASTEXITCODE -ne 0) { throw "Failed to inspect revision $revisionName for $ServiceName" }
+    if ($revisionEmail -ne $ExpectedEmail) {
+      $mismatches += "${revisionName}:${percent}%:${revisionEmail}"
+    }
+  }
+  return @($mismatches)
+}
+
+function Assert-ServiceServingIdentity([string]$ServiceName, [string]$ExpectedEmail) {
+  if (-not $Apply) { return }
+  $resource = (& gcloud run services describe $ServiceName --project=$project --region=$region --format=json) | ConvertFrom-Json
+  if ($LASTEXITCODE -ne 0) { throw "Failed to verify service $ServiceName after identity cutover" }
+  $mismatches = @(Get-ServingRevisionIdentityMismatches $ServiceName $ExpectedEmail $resource)
+  if ($mismatches.Count -gt 0) {
+    throw "Service $ServiceName still serves revisions with the wrong identity: $($mismatches -join ', ')"
+  }
+}
 function Get-LiveSecretReferences([string]$Kind, [string]$Name) {
   if ($Kind -eq "service") {
     $resourceJson = & gcloud run services describe $Name --project=$project --region=$region --format=json
@@ -260,8 +298,18 @@ foreach ($entry in $contract.services.PSObject.Properties) {
     $resource = (& gcloud run services describe $entry.Name --project=$project --region=$region --format=json) | ConvertFrom-Json
     $actual = [string]$resource.spec.template.spec.serviceAccountName
     $ready = [string]($resource.status.conditions | Where-Object type -eq "Ready" | Select-Object -First 1 -ExpandProperty status)
-    if ($actual -eq $email -and $ready -eq "True") {
+    $servingMismatches = @(Get-ServingRevisionIdentityMismatches $entry.Name $email $resource)
+    if ($actual -eq $email -and $ready -eq "True" -and $servingMismatches.Count -eq 0) {
       Write-Host "[identity-cutover] service already correct $($entry.Name) -> $email"
+      continue
+    }
+    if ($actual -eq $email -and $ready -eq "True") {
+      Write-Warning "Template identity is correct but serving traffic is stale for $($entry.Name): $($servingMismatches -join ', ')"
+      Invoke-GcloudWithRetry @(
+        "run", "services", "update-traffic", $entry.Name,
+        "--project=$project", "--region=$region", "--to-latest", "--quiet"
+      )
+      Assert-ServiceServingIdentity $entry.Name $email
       continue
     }
   }
@@ -269,6 +317,7 @@ foreach ($entry in $contract.services.PSObject.Properties) {
     "run", "services", "update", $entry.Name,
     "--project=$project", "--region=$region", "--service-account=$email", "--quiet"
   )
+  Assert-ServiceServingIdentity $entry.Name $email
 }
 
 foreach ($entry in $contract.jobs.PSObject.Properties) {
@@ -294,8 +343,12 @@ if ($RemoveDefaultComputeRoles) {
   } else {
     $defaultEmail = [string]$contract.default_compute_identity.email
     foreach ($entry in $contract.services.PSObject.Properties) {
-      $actual = (& gcloud run services describe $entry.Name --project=$project --region=$region --format="value(spec.template.spec.serviceAccountName)").Trim()
+      $resource = (& gcloud run services describe $entry.Name --project=$project --region=$region --format=json) | ConvertFrom-Json
+      $actual = [string]$resource.spec.template.spec.serviceAccountName
       if ($actual -eq $defaultEmail) { throw "Refusing role removal: service $($entry.Name) still uses $defaultEmail" }
+      $expected = Get-ServiceAccount ([string]$entry.Value)
+      $mismatches = @(Get-ServingRevisionIdentityMismatches $entry.Name $expected $resource)
+      if ($mismatches.Count -gt 0) { throw "Refusing role removal: service $($entry.Name) serving revision identity drift: $($mismatches -join ', ')" }
     }
     foreach ($entry in $contract.jobs.PSObject.Properties) {
       $actual = (& gcloud run jobs describe $entry.Name --project=$project --region=$region --format="value(spec.template.spec.template.spec.serviceAccountName)").Trim()

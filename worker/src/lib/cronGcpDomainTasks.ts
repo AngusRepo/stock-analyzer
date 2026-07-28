@@ -59,9 +59,10 @@ export async function handleGcpDomainCron(deps: GcpCronDeps): Promise<boolean> {
 
   if (cron === '0 22 * * 6') {
     runWithLog('weekly-backtest', async () => {
-      const bt = await runWeeklyBacktest(env)
-      const mc = await runWeeklyMonteCarlo(env)
-      const pbo = await runWeeklyPBO(env)
+      const runDate = twToday()
+      const bt = await runWeeklyBacktest(env, runDate)
+      const mc = await runWeeklyMonteCarlo(env, runDate)
+      const pbo = await runWeeklyPBO(env, runDate)
       return summarizeWeeklyValidationChain({ backtest: bt, monteCarlo: mc, pbo })
     })
     runWithLog('alpha-quality', async () => runWeeklyAlphaQuality(env))

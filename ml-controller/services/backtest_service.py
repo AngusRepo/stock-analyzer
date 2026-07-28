@@ -11,7 +11,8 @@ FIFO Order Matching:
   - TP2/stop/time: sell all remaining lots
   - Each lot produces its own trade record with true per-lot P&L
 
-Entry: ML BUY/STRONG_BUY + confidence >= threshold
+Entry: formal adaptive BUY/STRONG_BUY generated after T close, filled at T+1 open.
+Confidence remains evidence; it is not a second hard-coded trade gate.
 Exit 7-layer cascade (mirrors StockVisionStrategy.py):
   1. Hard stop (-12%)
   2+4. ATR trailing stop (profit-tiered: 3.0x / 2.5x / 2.0x)
@@ -31,7 +32,10 @@ from typing import Optional
 
 import httpx
 import polars as pl
-from services.research_data_access import resolve_research_data_access
+from services.research_data_access import (
+    latest_snapshot_business_end_date,
+    resolve_research_data_access,
+)
 from services.snapshot_parquet import read_snapshot_component
 
 logger = logging.getLogger(__name__)
@@ -47,7 +51,6 @@ D1_API = (
 )
 
 # ── Strategy Parameters (mirror Worker tradingConfig + paper.ts) ──────────────
-CONFIDENCE_THRESHOLD = 0.60
 HARD_STOP_PCT = -0.12
 TP1_ATR_MULT = 1.5    # H9 fix: ATR-relative (was fixed 1.03)
 TP2_ATR_MULT = 3.0    # H9 fix: ATR-relative (was fixed 1.06)
@@ -255,7 +258,14 @@ def _group_snapshot_rows_by_stock_id(df: pl.DataFrame) -> dict[int, list[dict]]:
     grouped: dict[int, list[dict]] = defaultdict(list)
     if df.is_empty():
         return grouped
-    for row in df.sort(["stock_id", "date"] if "date" in df.columns else ["stock_id"]).to_dicts():
+    sort_columns = ["stock_id"]
+    if "prediction_date" in df.columns:
+        sort_columns.append("prediction_date")
+        if "generated_at" in df.columns:
+            sort_columns.append("generated_at")
+    elif "date" in df.columns:
+        sort_columns.append("date")
+    for row in df.sort(sort_columns).to_dicts():
         grouped[int(row["stock_id"])].append(row)
     return grouped
 
@@ -333,13 +343,14 @@ async def _bulk_load_ensemble_signals_by_stock(
         rows = await _d1_query(
             client,
             f"""
-            SELECT stock_id, generated_at, trade_signal, direction_accuracy,
+            SELECT stock_id, prediction_date, generated_at, trade_signal, signal_raw, direction_accuracy,
                    entry_price, stop_loss, target1, target2, forecast_data
             FROM predictions
             WHERE stock_id IN ({placeholders})
               AND model_name = 'ensemble'
-              AND generated_at >= date('now', '-730 days')
-            ORDER BY stock_id, generated_at
+              AND prediction_date IS NOT NULL
+              AND prediction_date >= date('now', '-730 days')
+            ORDER BY stock_id, prediction_date, generated_at
             """,
             ids,
         )
@@ -347,6 +358,47 @@ async def _bulk_load_ensemble_signals_by_stock(
         for row in rows:
             grouped[int(row["stock_id"])].append(row)
     return grouped, query_count
+
+def _parse_formal_signals(raw_signals: list[dict]) -> tuple[list[dict], dict[str, int]]:
+    """Materialize one latest formal ensemble decision per prediction date."""
+    latest_by_date: dict[str, dict] = {}
+    diagnostics = {
+        "raw_rows": len(raw_signals),
+        "missing_prediction_date": 0,
+        "formal_rows": 0,
+        "formal_buy_rows": 0,
+    }
+    for row in raw_signals:
+        prediction_date = str(row.get("prediction_date") or "")[:10]
+        if not prediction_date:
+            diagnostics["missing_prediction_date"] += 1
+            continue
+        forecast: dict = {}
+        try:
+            forecast = json.loads(row.get("forecast_data") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            pass
+        signal = str(
+            row.get("trade_signal")
+            or row.get("signal_raw")
+            or forecast.get("signal")
+            or "HOLD"
+        ).upper()
+        latest_by_date[prediction_date] = {
+            "date": prediction_date,
+            "signal": signal,
+            "confidence": row.get("direction_accuracy") or 0,
+            "entry_price": row.get("entry_price"),
+            "stop_loss": row.get("stop_loss"),
+            "target1": row.get("target1"),
+            "target2": row.get("target2"),
+        }
+    signals = [latest_by_date[key] for key in sorted(latest_by_date)]
+    diagnostics["formal_rows"] = len(signals)
+    diagnostics["formal_buy_rows"] = sum(
+        1 for signal in signals if signal["signal"] in {"BUY", "STRONG_BUY"}
+    )
+    return signals, diagnostics
 
 
 def _tick_size(price: float) -> float:
@@ -412,12 +464,14 @@ def _run_backtest_for_stock(
 
     for idx, bar in enumerate(prices):
         date_str = bar["date"]
+        open_price = float(bar.get("open") or bar["close"])
         close = float(bar["close"])
         high = float(bar.get("high") or close)
         low = float(bar.get("low") or close)
-        sig = sig_map.get(date_str, {})
-        signal = sig.get("signal", "HOLD")
-        confidence = float(sig.get("confidence") or 0)
+        # A decision produced after T close is first executable at T+1 open.
+        signal_date = prices[idx - 1]["date"] if idx > 0 else None
+        sig = sig_map.get(signal_date, {}) if signal_date else {}
+        signal = str(sig.get("signal", "HOLD")).upper()
 
         # ── Check exit conditions for open position ──
         if position is not None and position.total_shares > 0:
@@ -426,6 +480,7 @@ def _run_backtest_for_stock(
                 continue  # skip bars with invalid price data
             position.highest_since_entry = max(position.highest_since_entry, high)
             profit_ratio = (close - entry) / entry
+            exit_fill_price = close
             days_held = _date_diff(position.entry_date, date_str)
             atr = _compute_atr14(prices, idx)
 
@@ -456,6 +511,7 @@ def _run_backtest_for_stock(
                 exit_reason = f"ML_SELL ({signal})"
                 sell_all = True
 
+                exit_fill_price = open_price
             # Layer 5: TP2 full exit — ATR-relative (H9 fix, matches Worker)
             tp2_price = entry + atr * TP2_ATR_MULT if atr > 0 else entry * 1.06
             if exit_reason is None and close >= tp2_price:
@@ -480,7 +536,7 @@ def _run_backtest_for_stock(
 
             # Execute full exit if triggered
             if sell_all and exit_reason and position.total_shares > 0:
-                sell_px = _apply_slippage(close, "sell")  # C4: slippage on exit
+                sell_px = _apply_slippage(exit_fill_price, "sell")
                 trades = position.sell_fifo(
                     position.total_shares, date_str, sell_px, exit_reason
                 )
@@ -491,8 +547,8 @@ def _run_backtest_for_stock(
                 position = None
 
         # ── Check entry conditions ──
-        if position is None and signal in ("BUY", "STRONG_BUY") and confidence >= CONFIDENCE_THRESHOLD:
-            fill_price = _apply_slippage(close, "buy")  # C4: slippage on entry
+        if position is None and signal in ("BUY", "STRONG_BUY"):
+            fill_price = _apply_slippage(open_price, "buy")
             shares = int(STAKE_AMOUNT / fill_price) if fill_price > 0 else 0
             if shares > 0:
                 lot = BuyLot(
@@ -580,7 +636,7 @@ def _compute_metrics(all_trades: list[dict], first_date: str, last_date: str) ->
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
-async def run_full_backtest() -> dict:
+async def run_full_backtest(run_date: str | None = None) -> dict:
     """
     Full backtest pipeline:
     1. Fetch stock list + OHLCV + ML signals from D1
@@ -593,10 +649,15 @@ async def run_full_backtest() -> dict:
 
     async with httpx.AsyncClient() as client:
         backtest_start_date = "2023-01-01"
-        backtest_end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        wall_clock_date = run_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        backtest_end_date = latest_snapshot_business_end_date(
+            kind="backtest_dataset",
+            as_of_business_date=wall_clock_date,
+        ) or wall_clock_date
         data_access = resolve_research_data_access(
             lane="backtest_service.run_full_backtest",
             kind="backtest_dataset",
+            business_date=wall_clock_date,
             required_start_date=backtest_start_date,
             required_end_date=backtest_end_date,
         )
@@ -642,6 +703,12 @@ async def run_full_backtest() -> dict:
         last_date = "0000-01-01"
         stocks_processed = 0
         stocks_skipped = 0
+        signal_diagnostics = {
+            "raw_rows": 0,
+            "missing_prediction_date": 0,
+            "formal_rows": 0,
+            "formal_buy_rows": 0,
+        }
 
         for stock in stocks:
             symbol = stock["symbol"]
@@ -655,23 +722,9 @@ async def run_full_backtest() -> dict:
 
             raw_signals = signals_by_stock.get(int(stock_id), [])
 
-            # Parse signals
-            signals = []
-            for p in raw_signals:
-                fd = {}
-                try:
-                    fd = json.loads(p.get("forecast_data") or "{}")
-                except (json.JSONDecodeError, TypeError):
-                    pass
-                signals.append({
-                    "date": (p.get("generated_at") or "")[:10],
-                    "signal": fd.get("signal") or p.get("trade_signal") or "HOLD",
-                    "confidence": p.get("direction_accuracy") or 0,
-                    "entry_price": p.get("entry_price"),
-                    "stop_loss": p.get("stop_loss"),
-                    "target1": p.get("target1"),
-                    "target2": p.get("target2"),
-                })
+            signals, stock_signal_diagnostics = _parse_formal_signals(raw_signals)
+            for key in signal_diagnostics:
+                signal_diagnostics[key] += stock_signal_diagnostics[key]
 
             # Tag price bars with symbol
             for bar in prices:
@@ -715,7 +768,7 @@ async def run_full_backtest() -> dict:
             exit_dist[cat] = exit_dist.get(cat, 0) + 1
 
         # ── Step 4: Write to D1 ──
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = wall_clock_date
         # Store full profit_ratio list for Monte Carlo (compact), trades truncated for display
         all_returns = [t["profit_ratio"] for t in all_trades]
         raw_json = json.dumps({
@@ -737,6 +790,8 @@ async def run_full_backtest() -> dict:
                 "data_access": data_access.to_dict(),
                 "d1_read_queries": 1 + price_query_count + signal_query_count,
                 "d1_read_chunk_size": BACKTEST_D1_READ_CHUNK_SIZE,
+                "execution_contract": "prediction_date_t_close_to_t_plus_1_open_v1",
+                "signal_diagnostics": signal_diagnostics,
             },
         }, ensure_ascii=False)
 
@@ -779,6 +834,8 @@ async def run_full_backtest() -> dict:
             "expectancy": round(result.expectancy, 4),
             "cagr": round(result.cagr, 4) if result.cagr else None,
             "exit_distribution": exit_dist,
+            "execution_contract": "prediction_date_t_close_to_t_plus_1_open_v1",
+            "signal_diagnostics": signal_diagnostics,
             "data_access": {
                 **data_access.to_dict(),
                 "read_path": "snapshot" if data_access.source == "snapshot" else "d1_chunked_bulk_fallback",

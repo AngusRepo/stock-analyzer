@@ -3,6 +3,7 @@ import { controllerFetch, controllerJson, controllerPostJson } from './controlle
 import { invalidateModelPoolReadCache } from './modelPoolReadCache'
 import { readCurrentExpectedReturnServingState } from './expectedReturnServingState'
 import { nextTwTradingDate } from './schedulerPolicy'
+import { twToday } from './dateUtils'
 
 function requireController(env: Bindings): void {
   if (!env.ML_CONTROLLER_URL) {
@@ -599,9 +600,9 @@ export async function runWeeklyValidationChain(env: Bindings, runDate?: string) 
     return runWeeklyBacktestResearchBundle(env, runDate)
   }
 
-  const bt = await runWeeklyBacktest(env)
-  const mc = await runWeeklyMonteCarlo(env)
-  const pbo = await runWeeklyPBO(env)
+  const bt = await runWeeklyBacktest(env, runDate)
+  const mc = await runWeeklyMonteCarlo(env, runDate)
+  const pbo = await runWeeklyPBO(env, runDate)
   const artifactValidation = await runWeeklyModelArtifactValidation(env)
   return summarizeWeeklyValidationChain({ backtest: bt, monteCarlo: mc, pbo, artifactValidation })
 }
@@ -953,10 +954,10 @@ export async function runWeeklyLifecycleCheck(env: Bindings) {
   return `model_pool dry_run=${result.actions_count ?? 0} [${transitions}]`
 }
 
-export async function runWeeklyBacktest(env: Bindings) {
+export async function runWeeklyBacktest(env: Bindings, runDate = twToday()) {
   requireController(env)
 
-  const resp = await controllerFetch(env, '/backtest/run', {
+  const resp = await controllerFetch(env, `/backtest/run?run_date=${encodeURIComponent(runDate)}`, {
     method: 'POST',
     timeoutMs: 300_000,
   })
@@ -970,12 +971,15 @@ export async function runWeeklyBacktest(env: Bindings) {
   return `trades=${result.total_trades ?? 0}, win=${result.win_rate ?? '-'}, sharpe=${result.sharpe ?? '-'}`
 }
 
-export async function runWeeklyMonteCarlo(env: Bindings) {
+export async function runWeeklyMonteCarlo(env: Bindings, runDate = twToday()) {
   requireController(env)
 
   const results: string[] = []
   for (const source of ['paper', 'backtest'] as const) {
-    const resp = await controllerFetch(env, `/backtest/monte-carlo?n=1000&source=${source}`, {
+    const evidenceDate = source === 'backtest'
+      ? `&expected_run_date=${encodeURIComponent(runDate)}`
+      : ''
+    const resp = await controllerFetch(env, `/backtest/monte-carlo?n=1000&source=${source}${evidenceDate}`, {
       method: 'POST',
       timeoutMs: 120_000,
     }).catch(() => null)
@@ -988,7 +992,10 @@ export async function runWeeklyMonteCarlo(env: Bindings) {
     if (result.status === 'failed' || result.status === 'error') {
       results.push(`${source}:${result.error ?? 'failed'}`)
     } else {
-      const mdd95 = Number(result.mdd_95th ?? NaN)
+      const mddRaw = String(result.mdd_95th ?? '').trim()
+      const mdd95 = mddRaw.endsWith('%')
+        ? Number.parseFloat(mddRaw.slice(0, -1)) / 100
+        : Number(mddRaw)
       const threshold = Number(result.fail_threshold ?? result.max_mdd_95th ?? 0.30)
       const verdict = String(result.go_live_verdict ?? 'UNKNOWN')
       const gate = Number.isFinite(mdd95) && Number.isFinite(threshold) && mdd95 <= threshold ? 'pass' : 'fail'
@@ -1007,10 +1014,10 @@ export async function runWeeklyMonteCarlo(env: Bindings) {
   return results.join(', ')
 }
 
-export async function runWeeklyPBO(env: Bindings) {
+export async function runWeeklyPBO(env: Bindings, runDate = twToday()) {
   requireController(env)
 
-  const resp = await controllerFetch(env, '/backtest/pbo?partitions=10&source=backtest', {
+  const resp = await controllerFetch(env, `/backtest/pbo?partitions=10&source=backtest&expected_run_date=${encodeURIComponent(runDate)}`, {
     method: 'POST',
     timeoutMs: 120_000,
   }).catch(() => null)

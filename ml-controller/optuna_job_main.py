@@ -221,13 +221,17 @@ async def _run() -> int:
     try:
         if mode == "per_regime":
             result = await asyncio.to_thread(run_per_regime, req)
-            if isinstance(result, dict) and result.get("status") in {"completed", "ok"}:
+            result_status = result.get("status") if isinstance(result, dict) else None
+            if result_status in {"completed", "ok"}:
                 status = "success"
+            elif result_status == "skipped":
+                status = "skipped"
             else:
                 error = str(result)
             push = result.get("push") if isinstance(result, dict) else None
             summary = (
                 f"per_regime:{getattr(req, 'target', 'unknown')}:{status} "
+                f"reason={result.get('reason') if isinstance(result, dict) else None} "
                 f"push_target={push.get('target') if isinstance(push, dict) else 'not_pushed'}"
             )[:1200]
         elif mode == "parameter_validation":

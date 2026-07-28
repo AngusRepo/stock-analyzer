@@ -49,27 +49,12 @@ import {
   formatEntryPriceModelV2WatchPoint,
 } from './entryPriceModelV2'
 
+import { withD1ReadRetry } from './d1TransientRetry'
 type CircuitBreakerState = _CBState
-
-function isTransientD1Error(error: unknown): boolean {
-  return /D1_ERROR|timeout|timed out|temporar|internal error|connection reset|network/i.test(String(error))
-}
-
 async function withD1Retry<T>(label: string, operation: () => Promise<T>, attempts = 3): Promise<T> {
-  let lastError: unknown
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      return await operation()
-    } catch (error) {
-      lastError = error
-      if (!isTransientD1Error(error) || attempt >= attempts) throw error
-      const delayMs = 150 * (2 ** (attempt - 1)) + Math.floor(Math.random() * 100)
-      console.warn(`[MorningSetup] transient D1 failure label=${label} attempt=${attempt}/${attempts}; retry_ms=${delayMs}`)
-      await new Promise((resolve) => setTimeout(resolve, delayMs))
-    }
-  }
-  throw lastError
+  return withD1ReadRetry('morning_setup', label, operation, attempts)
 }
+
 
 async function recordMorningSetupFailureWithoutReplacingState(
   env: Bindings,

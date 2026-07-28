@@ -34,7 +34,26 @@ function dependencyEvidence(job: SchedulerJob) {
   const upstream = job.consolidation?.upstream?.filter(Boolean) ?? []
   const downstream = job.consolidation?.downstream?.filter(Boolean) ?? []
   const hasDependency = upstream.length > 0 || downstream.length > 0 || typeof job.chainIndex === 'number'
-  return { upstream, downstream, hasDependency }
+  const consolidationClass = job.consolidation?.consolidationClass
+  if (!hasDependency) {
+    return { upstream, downstream, hasDependency, isTopologyGap: false, label: 'Standalone root' }
+  }
+  if (consolidationClass === 'merge_into_chain' || consolidationClass === 'downstream_evidence') {
+    return { upstream, downstream, hasDependency, isTopologyGap: false, label: 'Consolidation tracked' }
+  }
+  if (consolidationClass === 'manual_maintenance_candidate') {
+    return { upstream, downstream, hasDependency, isTopologyGap: false, label: 'Maintenance candidate' }
+  }
+  if (consolidationClass === 'disable_candidate') {
+    return { upstream, downstream, hasDependency, isTopologyGap: false, label: 'Retirement candidate' }
+  }
+  return {
+    upstream,
+    downstream,
+    hasDependency,
+    isTopologyGap: consolidationClass === 'keep_scheduler',
+    label: consolidationClass === 'keep_scheduler' ? 'Topology missing' : 'Dependency unclassified',
+  }
 }
 
 function statusCount(jobs: SchedulerJob[], status: SchedulerJob['lastStatus']) {
@@ -114,10 +133,10 @@ export default function StandaloneJobRegistry({
                           {job.lastError || job.summary || '目前 API 沒有提供摘要。'}
                         </p>
 
-                        <div className={`obs-standalone__relation ${dependency.hasDependency ? 'is-unmapped' : ''}`}>
-                          {dependency.hasDependency ? <AlertTriangle aria-hidden="true" /> : <CalendarClock aria-hidden="true" />}
+                        <div className={`obs-standalone__relation ${dependency.isTopologyGap ? 'is-unmapped' : ''}`}>
+                          {dependency.isTopologyGap ? <AlertTriangle aria-hidden="true" /> : <CalendarClock aria-hidden="true" />}
                           <div>
-                            <strong>{dependency.hasDependency ? 'Unmapped dependency' : 'Standalone root'}</strong>
+                            <strong>{dependency.label}</strong>
                             <span>
                               {dependency.hasDependency
                                 ? `up ${dependency.upstream.length} · down ${dependency.downstream.length}${typeof job.chainIndex === 'number' ? ` · index ${job.chainIndex}` : ''}`

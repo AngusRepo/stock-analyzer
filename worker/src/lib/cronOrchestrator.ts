@@ -62,14 +62,14 @@ async function probeMlController(env: Bindings): Promise<string> {
     const warmup = await fetch(`${env.ML_CONTROLLER_URL}/warmup`, {
       method: 'POST',
       headers,
-      signal: AbortSignal.timeout(45_000),
+      signal: AbortSignal.timeout(40_000),
     })
     if (warmup.ok) {
       const body = await warmup.json().catch(() => ({})) as any
       const targets = warmupTargetSummary(body)
       return targets.ok
         ? `ML-Controller:ok warmup=ok ${targets.summary}`
-        : `ML-Controller:fail(warmup degraded ${targets.summary})`
+        : `ML-Controller:ok warmup=degraded ${targets.summary}`
     }
     warmupNote = `warmup_http=${warmup.status}`
   } catch (e: any) {

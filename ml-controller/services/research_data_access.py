@@ -7,7 +7,12 @@ from typing import Any, Literal
 
 from services.dataset_snapshots import latest_dataset_snapshot, validate_dataset_snapshot_manifest
 
+
 ResearchDataMode = Literal["d1_chunked", "snapshot", "auto"]
+
+
+class ResearchSnapshotNotReadyError(RuntimeError):
+    """A strict snapshot-backed workload has no point-in-time-ready manifest."""
 
 
 @dataclass(frozen=True)
@@ -148,7 +153,7 @@ def resolve_research_data_access(
 
     if selected == "snapshot":
         if not snapshot_ready:
-            raise RuntimeError(
+            raise ResearchSnapshotNotReadyError(
                 "research_snapshot_required_but_unavailable:"
                 f"lane={lane} kind={kind} date={business_date or 'latest'} errors={','.join(errors)}"
             )

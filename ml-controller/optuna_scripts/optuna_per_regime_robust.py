@@ -67,7 +67,11 @@ from services.backtest_engine import (  # noqa: E402
     BacktestMetrics,
     Trade,
 )
-from services.research_data_access import ResearchDataMode  # noqa: E402
+from services.research_data_access import (  # noqa: E402
+    ResearchDataMode,
+    ResearchSnapshotNotReadyError,
+    latest_snapshot_business_end_date,
+)
 from services.stratified_subset import select_stratified_subset  # noqa: E402
 from services.walk_forward_retrain import predict_regime_at_date  # noqa: E402
 from services.kv_pusher import push_optuna_result  # noqa: E402
@@ -279,11 +283,26 @@ def run_search(
     window_days: int = 365,
     data_mode: ResearchDataMode | None = None,
     push_kv: bool = False,
+    as_of_date: str | None = None,
 ) -> dict:
     """Execute per-regime robust search."""
-    today = datetime.now(timezone(timedelta(hours=8))).date()
-    end_date = today.strftime("%Y-%m-%d")
-    start_date = (today - timedelta(days=window_days)).strftime("%Y-%m-%d")
+    wall_clock_date = as_of_date or datetime.now(
+        timezone(timedelta(hours=8))
+    ).date().strftime("%Y-%m-%d")
+    if data_mode in {"snapshot", "auto"}:
+        end_date = latest_snapshot_business_end_date(
+            kind="backtest_dataset",
+            as_of_business_date=wall_clock_date,
+        )
+        if not end_date:
+            raise ResearchSnapshotNotReadyError(
+                "optuna_per_regime_snapshot_not_ready:"
+                f"as_of={wall_clock_date} kind=backtest_dataset"
+            )
+    else:
+        end_date = wall_clock_date
+    end_day = datetime.strptime(end_date, "%Y-%m-%d").date()
+    start_date = (end_day - timedelta(days=window_days)).strftime("%Y-%m-%d")
 
     symbols = select_stratified_subset(target_size=subset_size, end_date=end_date)
     dataset, data_access = BacktestDataset.load_for_research(
@@ -344,6 +363,7 @@ def run_search(
         "n_trials_completed": len(study.trials),
         "n_pareto": len(pareto),
         "window": {"start": start_date, "end": end_date},
+        "wall_clock_date": wall_clock_date,
         "data_access": data_access,
     }
 

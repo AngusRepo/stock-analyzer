@@ -75,4 +75,10 @@ def test_cutover_requires_explicit_apply_and_separate_role_removal() -> None:
     assert script.index("Assert-LiveSecretCoverage") < script.index("Ensure-ServiceAccount $property.Name")
     assert '$ready -eq "True"' in script
     assert "function Invoke-GcloudWithRetry" in script
-    assert script.count("Invoke-GcloudWithRetry @(") == 2
+    assert script.count("Invoke-GcloudWithRetry @(") == 3
+    assert "function Get-ServingRevisionIdentityMismatches" in script
+    assert "gcloud run revisions describe" in script
+    assert '"update-traffic", $entry.Name' in script
+    assert '"--to-latest"' in script
+    assert "Assert-ServiceServingIdentity" in script
+    assert "serving revision identity drift" in script

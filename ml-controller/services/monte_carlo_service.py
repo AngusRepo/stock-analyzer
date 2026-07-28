@@ -481,6 +481,7 @@ async def run_monte_carlo_mdd(
     source: str = "paper",
     method: str | None = None,
     block_size: int | None = None,
+    expected_run_date: str | None = None,
 ) -> dict:
     """
     Full Monte Carlo MDD pipeline:
@@ -553,14 +554,21 @@ async def run_monte_carlo_mdd(
 
         elif source == "backtest":
             logger.info("[MonteCarlo] Fetching backtest trades from D1...")
+            if not expected_run_date:
+                return {
+                    "error": "expected_run_date is required for backtest Monte Carlo evidence",
+                    "status": "failed",
+                }
             row = await _d1_query(
                 client,
                 """SELECT id, run_date, created_at, raw_results FROM backtest_results
-                   ORDER BY run_date DESC, created_at DESC LIMIT 1""",
+                   WHERE run_date = ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                [expected_run_date],
             )
 
             if not row or not row[0].get("raw_results"):
-                return {"error": "No backtest results found", "status": "failed"}
+                return {"error": f"No backtest results found for run_date={expected_run_date}", "status": "failed"}
 
             raw_text = str(row[0]["raw_results"])
             source_provenance = {

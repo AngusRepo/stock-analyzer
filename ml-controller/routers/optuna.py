@@ -38,7 +38,11 @@ from services.ga_optimizer_service import GAOptimizerRequest, run_ga_optimizer a
 from services.kv_pusher import push_optuna_result
 from services.optuna_route_policy import OptunaRoutePolicy
 from services.optuna_script_contracts import get_optuna_script_contract
-from services.research_data_access import ResearchDataMode, resolve_research_data_access
+from services.research_data_access import (
+    ResearchDataMode,
+    ResearchSnapshotNotReadyError,
+    resolve_research_data_access,
+)
 from services.snapshot_parquet import read_snapshot_component
 
 # 把 optuna_scripts/ 加到 sys.path 讓 import 可以 work
@@ -1574,7 +1578,16 @@ def run_per_regime(req: PerRegimeReq = Body(default=PerRegimeReq())):
             window_days=req.window_days,
             data_mode=_research_data_mode_for_request(req),
             push_kv=req.push_kv and not req.dry_run,
+            as_of_date=req.run_date,
         )
+    except ResearchSnapshotNotReadyError as e:
+        return {
+            "status": "skipped",
+            "source": "per_regime_robust",
+            "reason": str(e),
+            "run_date": req.run_date,
+            "retryable": True,
+        }
     except RuntimeError as e:
         # e.g. "No feasible trials — regime split too sparse"
         raise HTTPException(400, str(e))

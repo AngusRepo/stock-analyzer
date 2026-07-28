@@ -228,6 +228,7 @@ async def warmup():
     """Prewarm Modal hot-path inference functions before the daily pipeline."""
     from services import modal_client
     from services.state_space_series import build_state_space_series_from_payloads
+    from services.warmup_service import run_named_warmups
 
     payloads = [_warmup_payload("2330", 2330), _warmup_payload("2317", 2317)]
     series = build_state_space_series_from_payloads(payloads)
@@ -237,21 +238,28 @@ async def warmup():
         "timesfm_universal_predict": modal_client.timesfm_batch_predict(series),
         "strategy_similarity_evidence": modal_client.strategy_similarity_evidence(_strategy_similarity_warmup_payload()),
     }
+    outcomes = await run_named_warmups(targets)
     results = {}
-    for name, awaitable in targets.items():
+    for name, outcome in outcomes.items():
+        if outcome.error:
+            results[name] = {
+                "status": "error",
+                "error": outcome.error,
+                "elapsed_sec": outcome.elapsed_sec,
+            }
+            continue
         try:
-            started = asyncio.get_running_loop().time()
-            result = await asyncio.wait_for(awaitable, timeout=90.0)
+            result = outcome.value
             if name == "strategy_similarity_evidence":
                 summary = _summarize_strategy_similarity_warmup_result(result)
-                summary["elapsed_sec"] = round(asyncio.get_running_loop().time() - started, 3)
+                summary["elapsed_sec"] = outcome.elapsed_sec
                 results[name] = summary
                 continue
             if isinstance(result, list):
                 n_error = sum(1 for item in result if isinstance(item, dict) and item.get("error"))
                 results[name] = {
                     "status": "ok" if n_error == 0 else "degraded",
-                    "elapsed_sec": round(asyncio.get_running_loop().time() - started, 3),
+                    "elapsed_sec": outcome.elapsed_sec,
                     "n_input": len(result),
                     "n_success": len(result) - n_error,
                     "n_error": n_error,
@@ -260,11 +268,15 @@ async def warmup():
                 continue
             results[name] = {
                 "status": "ok" if not (isinstance(result, dict) and result.get("error")) else "degraded",
-                "elapsed_sec": round(asyncio.get_running_loop().time() - started, 3),
+                "elapsed_sec": outcome.elapsed_sec,
                 "n_input": result.get("n_input") if isinstance(result, dict) else None,
                 "n_success": result.get("n_success") if isinstance(result, dict) else None,
                 "error": result.get("error") if isinstance(result, dict) else None,
             }
-        except Exception as exc:  # noqa: BLE001 - warmup must never be a production gate.
-            results[name] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        except Exception as exc:  # noqa: BLE001 - malformed evidence must not fail the endpoint.
+            results[name] = {
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "elapsed_sec": outcome.elapsed_sec,
+            }
     return {"status": "warmup_complete", "targets": results}

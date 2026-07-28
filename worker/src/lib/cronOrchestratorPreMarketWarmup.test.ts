@@ -78,7 +78,7 @@ void (async () => {
       ML_CONTROLLER_SECRET: 'secret',
     } as any)
 
-    assert.match(summary, /ERROR: control-plane drift/)
-    assert.match(summary, /ML-Controller:fail\(warmup degraded/)
+    assert(!summary.startsWith('ERROR:'), 'optional warmup degradation must not block intraday readiness')
+    assert.match(summary, /ML-Controller:ok warmup=degraded/)
   })
 })()

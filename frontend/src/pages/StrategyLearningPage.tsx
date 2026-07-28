@@ -23,14 +23,30 @@ function registryLearningRow(spec: StrategySpec): LearningRow {
   return {
     ...spec,
     learning: {
+      evidence_available: false,
       decisions: 0,
       matched: 0,
       match_rate: null,
+      today_decisions: 0,
+      today_matched: 0,
+      rolling_decisions: 0,
+      rolling_matched: 0,
+      rolling_match_rate: null,
+      rolling_sessions: 0,
       samples: 0,
       hit_rate: null,
       avg_return_pct: null,
       max_drawdown_pct: null,
-      status: 'no_decisions',
+      rolling_samples: 0,
+      rolling_hit_rate: null,
+      rolling_avg_return_pct: null,
+      rolling_max_drawdown_pct: null,
+      rolling_reward_dates: 0,
+      rolling_date_return_mean: null,
+      rolling_date_return_lcb90: null,
+      latest_decision_date: null,
+      latest_reward_date: null,
+      status: 'unavailable',
     },
   }
 }
@@ -79,11 +95,24 @@ function StrategyLedgerGroup({
               </div>
 
               <dl className="grid grid-cols-2 gap-2 2xl:grid-cols-3">
-                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Decisions</dt><dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.decisions}</dd></div>
-                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Rewards</dt><dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.samples}</dd></div>
-                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Hit rate</dt><dd className="mt-1 font-mono text-sm text-cyan-200">{pct(row.learning.hit_rate)}</dd></div>
-                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Avg return</dt><dd className={`mt-1 font-mono text-sm ${Number(row.learning.avg_return_pct ?? 0) >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{pct(row.learning.avg_return_pct)}</dd></div>
-                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">MDD</dt><dd className="mt-1 font-mono text-sm text-amber-200">{pct(row.learning.max_drawdown_pct)}</dd></div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
+                  <dt className="text-xs text-slate-500">Lifetime decisions</dt>
+                  <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.decisions : '-'}</dd>
+                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>today {row.learning.today_decisions} · latest {row.learning.latest_decision_date ?? '-'}</> : 'unavailable'}</div>
+                </div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
+                  <dt className="text-xs text-slate-500">Rolling decisions</dt>
+                  <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.rolling_decisions : '-'}</dd>
+                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>{row.learning.rolling_sessions} sessions</> : 'unavailable'}</div>
+                </div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Lifetime rewards</dt><dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.samples : '-'}</dd></div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
+                  <dt className="text-xs text-slate-500">Rolling mature dates</dt>
+                  <dd className="mt-1 font-mono text-sm text-cyan-200">{row.learning.evidence_available ? row.learning.rolling_reward_dates : '-'}</dd>
+                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>LCB90 {pct(row.learning.rolling_date_return_lcb90)}</> : 'unavailable'}</div>
+                </div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Rolling hit / avg</dt><dd className="mt-1 font-mono text-sm text-cyan-200">{pct(row.learning.rolling_hit_rate)} / {pct(row.learning.rolling_avg_return_pct)}</dd></div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Rolling MDD</dt><dd className="mt-1 font-mono text-sm text-amber-200">{pct(row.learning.rolling_max_drawdown_pct)}</dd></div>
               </dl>
 
               <div className="grid gap-3">
@@ -206,7 +235,7 @@ export default function StrategyLearningPage() {
             <section className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Active strategies</div><div className="mt-2 font-mono text-2xl text-emerald-200">{activeRows.length}</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Learning + shadowing</div><div className="mt-2 font-mono text-2xl text-cyan-200">{learningRows.length}</div></div>
-              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Decision / reward rows</div><div className="mt-2 font-mono text-2xl text-slate-100">{totals.decisions} / {totals.samples}</div></div>
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Lifetime decision / reward rows</div><div className="mt-2 font-mono text-2xl text-slate-100">{learning ? totals.decisions : '-'} / {learning ? totals.samples : '-'}</div></div>
               <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">Adaptive policy</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-emerald-100"><ShieldCheck className="h-4 w-4" /> {policy?.status ?? 'unavailable'}</div><div className="mt-1 text-xs text-slate-500">{learning ? 'production effect false' : 'ledger unavailable'}</div></div>
             </section>
 

@@ -119,6 +119,34 @@ export interface StrategyRewardLedgerRow {
   updated_at: string
 }
 
+export interface StrategyLearningDailyStatsRow {
+  date: string
+  strategy_id: string
+  strategy_version: string
+  decisions: number
+  matched: number
+  reward_samples: number
+  reward_hits: number
+  reward_sum: number
+  date_portfolio_return: number | null
+  reward_refresh_run_id: string | null
+  updated_at: string
+}
+
+interface StrategyLearningHeadRow {
+  strategy_id: string
+  strategy_version: string
+  lifetime_decisions: number
+  lifetime_matched: number
+  decision_dates: number
+  lifetime_reward_samples: number
+  lifetime_reward_hits: number
+  lifetime_reward_sum: number
+  reward_dates: number
+  latest_decision_date: string | null
+  latest_reward_date: string | null
+}
+
 export type StrategyPromotionDecision = 'not_ready' | 'candidate_ready' | 'active_monitor' | 'active_cooldown'
 export type StrategyLearningStage =
   | 'L0_hypothesis'
@@ -147,6 +175,9 @@ export interface StrategyPromotionGateRow {
     hit_rate: number | null
     avg_return_pct: number | null
     max_drawdown_pct: number | null
+    mature_dates: number
+    date_return_lcb90: number | null
+    lifetime_decisions: number
   }
 }
 
@@ -179,13 +210,29 @@ export interface StrategyLearningSummary {
   spec_source: 'registry'
   specs: Array<StrategySpec & {
     learning: {
+      evidence_available: boolean
       decisions: number
       matched: number
       match_rate: number | null
+      today_decisions: number
+      today_matched: number
+      rolling_decisions: number
+      rolling_matched: number
+      rolling_match_rate: number | null
+      rolling_sessions: number
       samples: number
       hit_rate: number | null
       avg_return_pct: number | null
       max_drawdown_pct: number | null
+      rolling_samples: number
+      rolling_hit_rate: number | null
+      rolling_avg_return_pct: number | null
+      rolling_max_drawdown_pct: number | null
+      rolling_reward_dates: number
+      rolling_date_return_mean: number | null
+      rolling_date_return_lcb90: number | null
+      latest_decision_date: string | null
+      latest_reward_date: string | null
       status: 'learning' | 'no_decisions' | 'no_reward'
     }
   }>
@@ -205,6 +252,10 @@ const PROMOTION_MIN_SAMPLES = 30
 const PROMOTION_MIN_HIT_RATE = 0.52
 const PROMOTION_MIN_AVG_RETURN = 0
 const PROMOTION_MIN_MAX_DRAWDOWN = -0.08
+const PROMOTION_MIN_MATURE_DATES = 10
+const PROMOTION_MIN_DATE_RETURN_LCB90 = 0
+const STRATEGY_LEARNING_ROLLING_SESSIONS = 60
+const STRATEGY_DAILY_RECONCILIATION_CALENDAR_DAYS = 21
 const ACTIVE_COOLDOWN_MIN_SAMPLES = 30
 const ACTIVE_COOLDOWN_HIT_RATE = 0.48
 const STRATEGY_LEARNING_DEFAULT_CANDIDATE_LIMIT = 2000
@@ -269,6 +320,41 @@ const SCHEMA_DDL = [
     ON strategy_decision_log(symbol, date DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_status
     ON strategy_decision_log(strategy_status, matched, date DESC)`,
+  `CREATE TABLE IF NOT EXISTS strategy_learning_daily_stats (
+    date TEXT NOT NULL,
+    strategy_id TEXT NOT NULL,
+    strategy_version TEXT NOT NULL,
+    decisions INTEGER NOT NULL DEFAULT 0,
+    matched INTEGER NOT NULL DEFAULT 0,
+    reward_samples INTEGER NOT NULL DEFAULT 0,
+    reward_hits INTEGER NOT NULL DEFAULT 0,
+    reward_sum REAL NOT NULL DEFAULT 0,
+    date_portfolio_return REAL,
+    reward_refresh_run_id TEXT,
+    projection_version TEXT NOT NULL DEFAULT 'strategy-learning-daily-v1',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(date, strategy_id, strategy_version)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_strategy_learning_daily_stats_strategy_date
+    ON strategy_learning_daily_stats(strategy_id, strategy_version, date DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_strategy_learning_daily_stats_date
+    ON strategy_learning_daily_stats(date DESC, strategy_id)`,
+  `CREATE TABLE IF NOT EXISTS strategy_learning_head (
+    strategy_id TEXT NOT NULL,
+    strategy_version TEXT NOT NULL,
+    lifetime_decisions INTEGER NOT NULL DEFAULT 0,
+    lifetime_matched INTEGER NOT NULL DEFAULT 0,
+    decision_dates INTEGER NOT NULL DEFAULT 0,
+    lifetime_reward_samples INTEGER NOT NULL DEFAULT 0,
+    lifetime_reward_hits INTEGER NOT NULL DEFAULT 0,
+    lifetime_reward_sum REAL NOT NULL DEFAULT 0,
+    reward_dates INTEGER NOT NULL DEFAULT 0,
+    latest_decision_date TEXT,
+    latest_reward_date TEXT,
+    projection_version TEXT NOT NULL DEFAULT 'strategy-learning-head-v1',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(strategy_id, strategy_version)
+  )`,
   `CREATE TABLE IF NOT EXISTS strategy_reward_ledger (
     reward_id TEXT PRIMARY KEY,
     strategy_id TEXT NOT NULL,
@@ -507,6 +593,13 @@ function materializeSmrcVwapCrossSectionalRanks(candidates: StrategyCandidateInp
 
 function stableIdPart(value: string): string {
   return value.replace(/[^A-Za-z0-9_.-]+/g, '_').slice(0, 96)
+}
+
+function isoDateMinusCalendarDays(date: string, days: number): string {
+  const parsed = new Date(date + 'T00:00:00.000Z')
+  if (!Number.isFinite(parsed.getTime())) throw new Error('invalid_strategy_learning_date:' + date)
+  parsed.setUTCDate(parsed.getUTCDate() - Math.max(0, Math.floor(days)))
+  return parsed.toISOString().slice(0, 10)
 }
 
 export async function ensureStrategyLearningTables(db: D1Database): Promise<void> {
@@ -1269,6 +1362,22 @@ function maxDrawdownFromDateReturns(values: number[]): number | null {
   return round6(mdd)
 }
 
+export function summarizeDateClusteredReturns(values: number[]): {
+  mean: number | null
+  lcb90: number | null
+} {
+  const finite = values.filter((value) => Number.isFinite(value))
+  if (!finite.length) return { mean: null, lcb90: null }
+  const mean = finite.reduce((sum, value) => sum + value, 0) / finite.length
+  if (finite.length < 2) return { mean: round6(mean), lcb90: null }
+  const variance = finite.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (finite.length - 1)
+  const standardError = Math.sqrt(Math.max(variance, 0) / finite.length)
+  return {
+    mean: round6(mean),
+    lcb90: round6(mean - 1.281551565545 * standardError),
+  }
+}
+
 function regimeFromAlphaContext(raw: string | null | undefined): string {
   const parsed = parseJson<Record<string, unknown>>(raw, {})
   const regime = cleanToken(parsed.regime ?? parsed.market_regime ?? parsed.regime_label)
@@ -1350,6 +1459,193 @@ export function buildStrategyRewardLedgerRows(
       updated_at: nowIso,
     }
   }).sort((a, b) => a.strategy_id.localeCompare(b.strategy_id))
+}
+
+export function buildStrategyRewardDailyStatsRows(
+  rows: StrategyRewardSourceRow[],
+  options: { nowIso?: string; refreshRunId?: string | null } = {},
+): StrategyLearningDailyStatsRow[] {
+  const nowIso = options.nowIso ?? new Date().toISOString()
+  const refreshRunId = options.refreshRunId ?? null
+  const buckets = new Map<string, {
+    date: string
+    strategyId: string
+    strategyVersion: string
+    rewards: number[]
+  }>()
+  for (const row of rows) {
+    const reward = rewardForRow(row)
+    if (reward == null) continue
+    const key = `${row.date}|${row.strategy_id}|${row.strategy_version}`
+    const bucket = buckets.get(key) ?? {
+      date: row.date,
+      strategyId: row.strategy_id,
+      strategyVersion: row.strategy_version,
+      rewards: [],
+    }
+    bucket.rewards.push(reward)
+    buckets.set(key, bucket)
+  }
+  return [...buckets.values()]
+    .map((bucket) => {
+      const rewardSum = bucket.rewards.reduce((sum, reward) => sum + reward, 0)
+      return {
+        date: bucket.date,
+        strategy_id: bucket.strategyId,
+        strategy_version: bucket.strategyVersion,
+        decisions: 0,
+        matched: 0,
+        reward_samples: bucket.rewards.length,
+        reward_hits: bucket.rewards.filter((reward) => reward > 0).length,
+        reward_sum: round6(rewardSum) ?? 0,
+        date_portfolio_return: round6(rewardSum / bucket.rewards.length),
+        reward_refresh_run_id: refreshRunId,
+        updated_at: nowIso,
+      }
+    })
+    .sort((a, b) => a.date.localeCompare(b.date)
+      || a.strategy_id.localeCompare(b.strategy_id)
+      || a.strategy_version.localeCompare(b.strategy_version))
+}
+
+export async function materializeStrategyDecisionDailyStats(
+  db: D1Database,
+  date: string,
+): Promise<number> {
+  await ensureStrategyLearningTables(db)
+  const { results } = await db.prepare(`
+    SELECT strategy_id,
+           strategy_version,
+           COUNT(*) AS decisions,
+           SUM(CASE WHEN matched = 1 THEN 1 ELSE 0 END) AS matched
+      FROM strategy_decision_log
+     WHERE date = ?
+     GROUP BY strategy_id, strategy_version
+  `).bind(date).all<{
+    strategy_id: string
+    strategy_version: string
+    decisions: number
+    matched: number
+  }>()
+  const rows = results ?? []
+  if (!rows.length) return 0
+  const nowIso = new Date().toISOString()
+  const statements = rows.map((row) => db.prepare(`
+    INSERT INTO strategy_learning_daily_stats (
+      date, strategy_id, strategy_version, decisions, matched, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(date, strategy_id, strategy_version) DO UPDATE SET
+      decisions=excluded.decisions,
+      matched=excluded.matched,
+      updated_at=excluded.updated_at
+  `).bind(
+    date,
+    row.strategy_id,
+    row.strategy_version,
+    Number(row.decisions ?? 0),
+    Number(row.matched ?? 0),
+    nowIso,
+  ))
+  for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
+    await db.batch(statements.slice(i, i + STRATEGY_LEARNING_D1_BATCH_SIZE))
+  }
+  return rows.length
+}
+
+async function persistStrategyRewardDailyStatsRows(
+  db: D1Database,
+  rows: StrategyLearningDailyStatsRow[],
+): Promise<number> {
+  if (!rows.length) return 0
+  const statements = rows.map((row) => db.prepare(`
+    INSERT INTO strategy_learning_daily_stats (
+      date, strategy_id, strategy_version,
+      reward_samples, reward_hits, reward_sum, date_portfolio_return,
+      reward_refresh_run_id, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(date, strategy_id, strategy_version) DO UPDATE SET
+      reward_samples=excluded.reward_samples,
+      reward_hits=excluded.reward_hits,
+      reward_sum=excluded.reward_sum,
+      date_portfolio_return=excluded.date_portfolio_return,
+      reward_refresh_run_id=excluded.reward_refresh_run_id,
+      updated_at=excluded.updated_at
+  `).bind(
+    row.date,
+    row.strategy_id,
+    row.strategy_version,
+    row.reward_samples,
+    row.reward_hits,
+    row.reward_sum,
+    row.date_portfolio_return,
+    row.reward_refresh_run_id,
+    row.updated_at,
+  ))
+  for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
+    await db.batch(statements.slice(i, i + STRATEGY_LEARNING_D1_BATCH_SIZE))
+  }
+  return rows.length
+}
+
+export async function refreshStrategyLearningHeads(db: D1Database): Promise<number> {
+  await ensureStrategyLearningTables(db)
+  const { results } = await db.prepare(`
+    SELECT strategy_id,
+           strategy_version,
+           SUM(decisions) AS lifetime_decisions,
+           SUM(matched) AS lifetime_matched,
+           COUNT(DISTINCT CASE WHEN decisions > 0 THEN date END) AS decision_dates,
+           SUM(reward_samples) AS lifetime_reward_samples,
+           SUM(reward_hits) AS lifetime_reward_hits,
+           SUM(reward_sum) AS lifetime_reward_sum,
+           COUNT(DISTINCT CASE WHEN reward_samples > 0 THEN date END) AS reward_dates,
+           MAX(CASE WHEN decisions > 0 THEN date END) AS latest_decision_date,
+           MAX(CASE WHEN reward_samples > 0 THEN date END) AS latest_reward_date
+      FROM strategy_learning_daily_stats
+     GROUP BY strategy_id, strategy_version
+  `).all<StrategyLearningHeadRow>()
+  const rows = results ?? []
+  if (!rows.length) return 0
+  const nowIso = new Date().toISOString()
+  const statements = rows.map((row) => db.prepare(`
+    INSERT INTO strategy_learning_head (
+      strategy_id, strategy_version,
+      lifetime_decisions, lifetime_matched, decision_dates,
+      lifetime_reward_samples, lifetime_reward_hits, lifetime_reward_sum,
+      reward_dates, latest_decision_date, latest_reward_date, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(strategy_id, strategy_version) DO UPDATE SET
+      lifetime_decisions=excluded.lifetime_decisions,
+      lifetime_matched=excluded.lifetime_matched,
+      decision_dates=excluded.decision_dates,
+      lifetime_reward_samples=excluded.lifetime_reward_samples,
+      lifetime_reward_hits=excluded.lifetime_reward_hits,
+      lifetime_reward_sum=excluded.lifetime_reward_sum,
+      reward_dates=excluded.reward_dates,
+      latest_decision_date=excluded.latest_decision_date,
+      latest_reward_date=excluded.latest_reward_date,
+      updated_at=excluded.updated_at
+  `).bind(
+    row.strategy_id,
+    row.strategy_version,
+    Number(row.lifetime_decisions ?? 0),
+    Number(row.lifetime_matched ?? 0),
+    Number(row.decision_dates ?? 0),
+    Number(row.lifetime_reward_samples ?? 0),
+    Number(row.lifetime_reward_hits ?? 0),
+    Number(row.lifetime_reward_sum ?? 0),
+    Number(row.reward_dates ?? 0),
+    row.latest_decision_date ?? null,
+    row.latest_reward_date ?? null,
+    nowIso,
+  ))
+  for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
+    await db.batch(statements.slice(i, i + STRATEGY_LEARNING_D1_BATCH_SIZE))
+  }
+  return rows.length
 }
 
 export async function listStrategyRewardSourceRows(
@@ -1526,25 +1822,39 @@ export async function refreshStrategyRewardLedger(
   source_rows: number
   ledger_rows: StrategyRewardLedgerRow[]
   persisted_rows: number
+  daily_decision_rows: number
+  daily_reward_rows: number
+  head_rows: number
   stale_rows_retired: number
+  stale_daily_rewards_cleared: number
   refresh_run_id: string | null
 }> {
   await ensureStrategyLearningTables(db)
+  const dryRun = options.dryRun !== false
   const sourceRows = await listStrategyRewardSourceRows(db, options)
   const ledgerRows = buildStrategyRewardLedgerRows(sourceRows)
-  const dryRun = options.dryRun !== false
   const refreshRunId = dryRun
     ? null
     : `strategy-reward-v4-${options.endDate ?? 'latest'}-${Date.now().toString(36)}`
+  const dailyProjectionStart = options.startDate
+    ?? (options.endDate ? isoDateMinusCalendarDays(options.endDate, STRATEGY_DAILY_RECONCILIATION_CALENDAR_DAYS) : null)
+  const dailyStatsRows = buildStrategyRewardDailyStatsRows(sourceRows, { refreshRunId })
+    .filter((row) => dailyProjectionStart == null || row.date >= dailyProjectionStart)
+  const dailyDecisionRows = !dryRun && options.endDate
+    ? await materializeStrategyDecisionDailyStats(db, options.endDate)
+    : 0
   const persisted = dryRun ? 0 : await persistStrategyRewardLedgerRows(db, ledgerRows, refreshRunId)
+  const dailyRewardRows = dryRun ? 0 : await persistStrategyRewardDailyStatsRows(db, dailyStatsRows)
   let staleRowsRetired = 0
-  if (shouldRetireStaleStrategyRewardRows({
+  let staleDailyRewardsCleared = 0
+  const fullLedgerRefreshComplete = shouldRetireStaleStrategyRewardRows({
     dryRun,
     hasStartDate: Boolean(options.startDate),
     refreshRunId,
     ledgerRows: ledgerRows.length,
     persistedRows: persisted,
-  })) {
+  })
+  if (fullLedgerRefreshComplete) {
     const retired = await db.prepare(`
       DELETE FROM strategy_reward_ledger
        WHERE (refresh_run_id IS NULL OR refresh_run_id <> ?)
@@ -1552,17 +1862,46 @@ export async function refreshStrategyRewardLedger(
     `).bind(refreshRunId, options.endDate ?? null, options.endDate ?? null).run()
     staleRowsRetired = Number(retired.meta?.changes ?? 0)
   }
+  const dailyRefreshComplete = !dryRun
+    && dailyStatsRows.length > 0
+    && dailyRewardRows === dailyStatsRows.length
+  if (dailyRefreshComplete) {
+    const cleared = await db.prepare(`
+      UPDATE strategy_learning_daily_stats
+         SET reward_samples=0,
+             reward_hits=0,
+             reward_sum=0,
+             date_portfolio_return=NULL,
+             reward_refresh_run_id=?,
+             updated_at=CURRENT_TIMESTAMP
+       WHERE (reward_refresh_run_id IS NULL OR reward_refresh_run_id <> ?)
+         AND reward_samples > 0
+         AND (? IS NULL OR date(date) >= date(?))
+         AND (? IS NULL OR date(date) <= date(?))
+    `).bind(
+      refreshRunId,
+      refreshRunId,
+      dailyProjectionStart,
+      dailyProjectionStart,
+      options.endDate ?? null,
+      options.endDate ?? null,
+    ).run()
+    staleDailyRewardsCleared = Number(cleared.meta?.changes ?? 0)
+  }  const headRows = dryRun ? 0 : await refreshStrategyLearningHeads(db)
   return {
     success: true,
     mode: dryRun ? 'dry_run' : 'persisted',
     source_rows: sourceRows.length,
     ledger_rows: ledgerRows,
     persisted_rows: persisted,
+    daily_decision_rows: dailyDecisionRows,
+    daily_reward_rows: dailyRewardRows,
+    head_rows: headRows,
     stale_rows_retired: staleRowsRetired,
+    stale_daily_rewards_cleared: staleDailyRewardsCleared,
     refresh_run_id: refreshRunId,
   }
 }
-
 export function shouldRetireStaleStrategyRewardRows(input: {
   dryRun: boolean
   hasStartDate: boolean
@@ -1579,13 +1918,16 @@ export function shouldRetireStaleStrategyRewardRows(input: {
 
 function gateEvidenceFromSpec(spec: StrategyLearningSummary['specs'][number]): StrategyPromotionGateRow['evidence'] {
   return {
-    decisions: spec.learning.decisions,
-    matched: spec.learning.matched,
-    match_rate: spec.learning.match_rate,
-    samples: spec.learning.samples,
-    hit_rate: spec.learning.hit_rate,
-    avg_return_pct: spec.learning.avg_return_pct,
-    max_drawdown_pct: spec.learning.max_drawdown_pct,
+    decisions: spec.learning.rolling_decisions,
+    matched: spec.learning.rolling_matched,
+    match_rate: spec.learning.rolling_match_rate,
+    samples: spec.learning.rolling_samples,
+    hit_rate: spec.learning.rolling_hit_rate,
+    avg_return_pct: spec.learning.rolling_avg_return_pct,
+    max_drawdown_pct: spec.learning.rolling_max_drawdown_pct,
+    mature_dates: spec.learning.rolling_reward_dates,
+    date_return_lcb90: spec.learning.rolling_date_return_lcb90,
+    lifetime_decisions: spec.learning.decisions,
   }
 }
 
@@ -1602,13 +1944,22 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
     if (evidence.max_drawdown_pct != null && evidence.max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN) {
       missing.push(`max_drawdown_lt_${PROMOTION_MIN_MAX_DRAWDOWN}`)
     }
+    if (evidence.mature_dates < PROMOTION_MIN_MATURE_DATES) {
+      missing.push(`mature_dates_lt_${PROMOTION_MIN_MATURE_DATES}`)
+    }
+    if (evidence.date_return_lcb90 == null || evidence.date_return_lcb90 <= PROMOTION_MIN_DATE_RETURN_LCB90) {
+      missing.push('date_return_lcb90_not_positive')
+    }
 
     const activeMonitor = spec.status === 'active'
-    const activeCooldownReasons = activeMonitor && evidence.samples >= ACTIVE_COOLDOWN_MIN_SAMPLES
+    const activeEvidenceReady = evidence.samples >= ACTIVE_COOLDOWN_MIN_SAMPLES
+      && evidence.mature_dates >= PROMOTION_MIN_MATURE_DATES
+    const activeCooldownReasons = activeMonitor && activeEvidenceReady
       ? [
         evidence.hit_rate != null && evidence.hit_rate < ACTIVE_COOLDOWN_HIT_RATE ? `active_hit_rate_lt_${ACTIVE_COOLDOWN_HIT_RATE}` : null,
         evidence.avg_return_pct != null && evidence.avg_return_pct <= 0 ? 'active_avg_return_not_positive' : null,
         evidence.max_drawdown_pct != null && evidence.max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN ? `active_max_drawdown_lt_${PROMOTION_MIN_MAX_DRAWDOWN}` : null,
+        evidence.date_return_lcb90 != null && evidence.date_return_lcb90 <= PROMOTION_MIN_DATE_RETURN_LCB90 ? 'active_date_return_lcb90_not_positive' : null,
       ].filter((reason): reason is string => reason != null)
       : []
     const activeCooldown = activeMonitor && activeCooldownReasons.length > 0
@@ -1659,18 +2010,22 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
 
 function strategyPolicyScore(spec: StrategyLearningSummary['specs'][number], gate: StrategyPromotionGateRow): number {
   if (gate.decision === 'active_cooldown') return 0
-  const samples = Math.max(0, spec.learning.samples)
-  if (samples <= 0 || spec.learning.hit_rate == null || spec.learning.avg_return_pct == null) return 0
+  if (spec.learning.rolling_reward_dates < PROMOTION_MIN_MATURE_DATES) return 0
+  if (spec.learning.rolling_date_return_lcb90 == null || spec.learning.rolling_date_return_lcb90 <= 0) return 0
+  const samples = Math.max(0, spec.learning.rolling_samples)
+  const hitRate = spec.learning.rolling_hit_rate
+  const avgReturn = spec.learning.rolling_avg_return_pct
+  const maxDrawdown = spec.learning.rolling_max_drawdown_pct
+  if (samples <= 0 || hitRate == null || avgReturn == null) return 0
   const sampleConfidence = Math.min(samples / 100, 1) * 0.2
-  const hitLift = Math.max(spec.learning.hit_rate - 0.5, 0) * 1.5
-  const returnLift = Math.max(spec.learning.avg_return_pct, 0) * 4
-  const drawdownPenalty = spec.learning.max_drawdown_pct != null && spec.learning.max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN
-    ? Math.abs(spec.learning.max_drawdown_pct) * 2
+  const hitLift = Math.max(hitRate - 0.5, 0) * 1.5
+  const returnLift = Math.max(avgReturn, 0) * 4
+  const drawdownPenalty = maxDrawdown != null && maxDrawdown < PROMOTION_MIN_MAX_DRAWDOWN
+    ? Math.abs(maxDrawdown) * 2
     : 0
   const gateBonus = gate.decision === 'candidate_ready' || gate.decision === 'active_monitor' ? 0.08 : 0
   return Math.max(0, 0.01 + sampleConfidence + hitLift + returnLift + gateBonus - drawdownPenalty)
 }
-
 export function buildStrategyAdaptivePolicyState(
   summary: StrategyLearningSummary,
   options: { nowIso?: string } = {},
@@ -1690,18 +2045,22 @@ export function buildStrategyAdaptivePolicyState(
   const thresholdDeltas: StrategyAdaptivePolicyState['threshold_deltas'] = {}
   for (const row of scored) {
     strategyWeights[row.spec.id] = total > 0 ? round6(row.score / total) ?? 0 : 0
-    const rewardHealthy = row.spec.learning.avg_return_pct != null
-      && row.spec.learning.avg_return_pct > 0
-      && row.spec.learning.hit_rate != null
-      && row.spec.learning.hit_rate >= 0.58
-    const drawdownWeak = row.spec.learning.max_drawdown_pct != null && row.spec.learning.max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN
+    const rewardHealthy = row.spec.learning.rolling_reward_dates >= PROMOTION_MIN_MATURE_DATES
+      && row.spec.learning.rolling_date_return_lcb90 != null
+      && row.spec.learning.rolling_date_return_lcb90 > 0
+      && row.spec.learning.rolling_avg_return_pct != null
+      && row.spec.learning.rolling_avg_return_pct > 0
+      && row.spec.learning.rolling_hit_rate != null
+      && row.spec.learning.rolling_hit_rate >= 0.58
+    const drawdownWeak = row.spec.learning.rolling_max_drawdown_pct != null
+      && row.spec.learning.rolling_max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN
     thresholdDeltas[row.spec.id] = rewardHealthy
       ? {
         minVolumeExpansion20: -0.05,
         minCloseAboveMa20Pct: -0.005,
-        minBrokerCount: row.spec.learning.hit_rate != null && row.spec.learning.hit_rate >= 0.6 ? -1 : 0,
+        minBrokerCount: row.spec.learning.rolling_hit_rate != null && row.spec.learning.rolling_hit_rate >= 0.6 ? -1 : 0,
       }
-      : drawdownWeak || row.spec.learning.avg_return_pct == null || row.spec.learning.avg_return_pct <= 0
+      : drawdownWeak || row.spec.learning.rolling_avg_return_pct == null || row.spec.learning.rolling_avg_return_pct <= 0
         ? { minVolumeExpansion20: 0.08, minCloseAboveMa20Pct: 0.01, minRevenueGrowthYoY: 1 }
         : { minVolumeExpansion20: 0 }
   }
@@ -1887,66 +2246,102 @@ export async function buildStrategyLearningSummary(
   date: string,
 ): Promise<StrategyLearningSummary> {
   const { specs, source } = await listStrategySpecsForLearning(db)
-  const learningBySpec = new Map<string, {
-    decisions: number
-    matched: number
-    samples: number
-    hit_rate: number | null
-    avg_return_pct: number | null
-    max_drawdown_pct: number | null
-  }>()
-  try {
-    const { results } = await db.prepare(`
-      SELECT strategy_id,
-             strategy_version,
-             COUNT(*) AS decisions,
-             SUM(CASE WHEN matched = 1 THEN 1 ELSE 0 END) AS matched
-        FROM strategy_decision_log
-       WHERE date = ?
-       GROUP BY strategy_id, strategy_version
-    `).bind(date).all<{ strategy_id: string; strategy_version: string; decisions: number; matched: number }>()
-    for (const row of results ?? []) {
-      learningBySpec.set(`${row.strategy_id}|${row.strategy_version}`, {
-        decisions: Number(row.decisions ?? 0),
-        matched: Number(row.matched ?? 0),
-        samples: 0,
-        hit_rate: null,
-        avg_return_pct: null,
-        max_drawdown_pct: null,
-      })
-    }
-    const { results: rewardRows } = await db.prepare(`
-      SELECT strategy_id,
-             strategy_version,
-             SUM(samples) AS samples,
-             SUM(hit_rate * samples) /
-               NULLIF(SUM(CASE WHEN hit_rate IS NOT NULL THEN samples ELSE 0 END), 0) AS hit_rate,
-             SUM(avg_return_pct * samples) /
-               NULLIF(SUM(CASE WHEN avg_return_pct IS NOT NULL THEN samples ELSE 0 END), 0) AS avg_return_pct,
-             MIN(max_drawdown_pct) AS max_drawdown_pct
-        FROM strategy_reward_ledger
-       GROUP BY strategy_id, strategy_version
-    `).all<{ strategy_id: string; strategy_version: string; samples: number; hit_rate: number | null; avg_return_pct: number | null; max_drawdown_pct: number | null }>()
-    for (const row of rewardRows ?? []) {
-      const key = `${row.strategy_id}|${row.strategy_version}`
-      const prev = learningBySpec.get(key) ?? {
-        decisions: 0,
-        matched: 0,
-        samples: 0,
-        hit_rate: null,
-        avg_return_pct: null,
-        max_drawdown_pct: null,
-      }
-      learningBySpec.set(key, {
-        ...prev,
-        samples: Number(row.samples ?? 0),
-        hit_rate: row.hit_rate == null ? null : Number(row.hit_rate),
-        avg_return_pct: row.avg_return_pct == null ? null : Number(row.avg_return_pct),
-        max_drawdown_pct: row.max_drawdown_pct == null ? null : Number(row.max_drawdown_pct),
-      })
-    }
-  } catch {
-    // Missing strategy learning tables should be visible through zero learning state, not a page crash.
+  const projectionHead = await db.prepare(`
+    SELECT MAX(latest_date) AS latest_date
+      FROM (
+        SELECT latest_decision_date AS latest_date FROM strategy_learning_head
+        UNION ALL
+        SELECT latest_reward_date AS latest_date FROM strategy_learning_head
+      )
+  `).first<{ latest_date: string | null }>()
+  const canUseLatestHead = projectionHead?.latest_date == null || projectionHead.latest_date <= date
+  const headRows = canUseLatestHead
+    ? (await db.prepare(`
+        SELECT strategy_id,
+               strategy_version,
+               lifetime_decisions,
+               lifetime_matched,
+               decision_dates,
+               lifetime_reward_samples,
+               lifetime_reward_hits,
+               lifetime_reward_sum,
+               reward_dates,
+               latest_decision_date,
+               latest_reward_date
+          FROM strategy_learning_head
+      `).all<StrategyLearningHeadRow>()).results ?? []
+    : (await db.prepare(`
+        SELECT strategy_id,
+               strategy_version,
+               SUM(decisions) AS lifetime_decisions,
+               SUM(matched) AS lifetime_matched,
+               COUNT(DISTINCT CASE WHEN decisions > 0 THEN date END) AS decision_dates,
+               SUM(reward_samples) AS lifetime_reward_samples,
+               SUM(reward_hits) AS lifetime_reward_hits,
+               SUM(reward_sum) AS lifetime_reward_sum,
+               COUNT(DISTINCT CASE WHEN reward_samples > 0 THEN date END) AS reward_dates,
+               MAX(CASE WHEN decisions > 0 THEN date END) AS latest_decision_date,
+               MAX(CASE WHEN reward_samples > 0 THEN date END) AS latest_reward_date
+          FROM strategy_learning_daily_stats
+         WHERE date <= ?
+         GROUP BY strategy_id, strategy_version
+      `).bind(date).all<StrategyLearningHeadRow>()).results ?? []
+  const headBySpec = new Map(
+    headRows.map((row) => [row.strategy_id + '|' + row.strategy_version, row]),
+  )
+
+  const lifetimeMddRows = canUseLatestHead
+    ? (await db.prepare(`
+        SELECT strategy_id,
+               strategy_version,
+               MIN(max_drawdown_pct) AS max_drawdown_pct
+          FROM strategy_reward_ledger
+         GROUP BY strategy_id, strategy_version
+      `).all<{
+        strategy_id: string
+        strategy_version: string
+        max_drawdown_pct: number | null
+      }>()).results ?? []
+    : []
+  const lifetimeMddBySpec = new Map(
+    (lifetimeMddRows ?? []).map((row) => [
+      row.strategy_id + '|' + row.strategy_version,
+      row.max_drawdown_pct == null ? null : Number(row.max_drawdown_pct),
+    ]),
+  )
+
+  const { results: windowDateRows } = await db.prepare(`
+    SELECT DISTINCT date
+      FROM strategy_learning_daily_stats
+     WHERE date <= ?
+     ORDER BY date DESC
+     LIMIT ?
+  `).bind(date, STRATEGY_LEARNING_ROLLING_SESSIONS).all<{ date: string }>()
+  const windowDates = (windowDateRows ?? []).map((row) => row.date)
+  const windowStart = windowDates.at(-1) ?? null
+  const dailyRows = windowStart
+    ? (await db.prepare(`
+        SELECT date,
+               strategy_id,
+               strategy_version,
+               decisions,
+               matched,
+               reward_samples,
+               reward_hits,
+               reward_sum,
+               date_portfolio_return,
+               reward_refresh_run_id,
+               updated_at
+          FROM strategy_learning_daily_stats
+         WHERE date >= ?
+           AND date <= ?
+         ORDER BY date, strategy_id, strategy_version
+      `).bind(windowStart, date).all<StrategyLearningDailyStatsRow>()).results ?? []
+    : []
+  const dailyBySpec = new Map<string, StrategyLearningDailyStatsRow[]>()
+  for (const row of dailyRows) {
+    const key = row.strategy_id + '|' + row.strategy_version
+    dailyBySpec.set(key, [...(dailyBySpec.get(key) ?? []), row])
   }
 
   const summary = {
@@ -1954,20 +2349,52 @@ export async function buildStrategyLearningSummary(
     date,
     spec_source: source,
     specs: specs.map((spec) => {
-      const learning = learningBySpec.get(`${spec.id}|${spec.version}`) ?? {
-        decisions: 0,
-        matched: 0,
-        samples: 0,
-        hit_rate: null,
-        avg_return_pct: null,
-        max_drawdown_pct: null,
-      }
+      const key = spec.id + '|' + spec.version
+      const head = headBySpec.get(key)
+      const rollingRows = dailyBySpec.get(key) ?? []
+      const todayRow = rollingRows.find((row) => row.date === date)
+      const lifetimeDecisions = Number(head?.lifetime_decisions ?? 0)
+      const lifetimeMatched = Number(head?.lifetime_matched ?? 0)
+      const lifetimeSamples = Number(head?.lifetime_reward_samples ?? 0)
+      const lifetimeHits = Number(head?.lifetime_reward_hits ?? 0)
+      const lifetimeRewardSum = Number(head?.lifetime_reward_sum ?? 0)
+      const rollingDecisions = rollingRows.reduce((sum, row) => sum + Number(row.decisions ?? 0), 0)
+      const rollingMatched = rollingRows.reduce((sum, row) => sum + Number(row.matched ?? 0), 0)
+      const rewardRows = rollingRows.filter((row) => Number(row.reward_samples ?? 0) > 0)
+      const rollingSamples = rewardRows.reduce((sum, row) => sum + Number(row.reward_samples ?? 0), 0)
+      const rollingHits = rewardRows.reduce((sum, row) => sum + Number(row.reward_hits ?? 0), 0)
+      const rollingRewardSum = rewardRows.reduce((sum, row) => sum + Number(row.reward_sum ?? 0), 0)
+      const dateReturns = rewardRows
+        .map((row) => finiteNumber(row.date_portfolio_return))
+        .filter((value): value is number => value != null)
+      const dateReturnStats = summarizeDateClusteredReturns(dateReturns)
       return {
         ...spec,
         learning: {
-          ...learning,
-          match_rate: learning.decisions > 0 ? round6(learning.matched / learning.decisions) : null,
-          status: learning.samples > 0 ? 'learning' : learning.decisions > 0 ? 'no_reward' : 'no_decisions',
+          evidence_available: true,
+          decisions: lifetimeDecisions,
+          matched: lifetimeMatched,
+          match_rate: lifetimeDecisions > 0 ? round6(lifetimeMatched / lifetimeDecisions) : null,
+          today_decisions: Number(todayRow?.decisions ?? 0),
+          today_matched: Number(todayRow?.matched ?? 0),
+          rolling_decisions: rollingDecisions,
+          rolling_matched: rollingMatched,
+          rolling_match_rate: rollingDecisions > 0 ? round6(rollingMatched / rollingDecisions) : null,
+          rolling_sessions: rollingRows.filter((row) => Number(row.decisions ?? 0) > 0).length,
+          samples: lifetimeSamples,
+          hit_rate: lifetimeSamples > 0 ? round6(lifetimeHits / lifetimeSamples) : null,
+          avg_return_pct: lifetimeSamples > 0 ? round6(lifetimeRewardSum / lifetimeSamples) : null,
+          max_drawdown_pct: lifetimeMddBySpec.get(key) ?? null,
+          rolling_samples: rollingSamples,
+          rolling_hit_rate: rollingSamples > 0 ? round6(rollingHits / rollingSamples) : null,
+          rolling_avg_return_pct: rollingSamples > 0 ? round6(rollingRewardSum / rollingSamples) : null,
+          rolling_max_drawdown_pct: maxDrawdownFromDateReturns(dateReturns),
+          rolling_reward_dates: rewardRows.length,
+          rolling_date_return_mean: dateReturnStats.mean,
+          rolling_date_return_lcb90: dateReturnStats.lcb90,
+          latest_decision_date: head?.latest_decision_date ?? null,
+          latest_reward_date: head?.latest_reward_date ?? null,
+          status: lifetimeSamples > 0 ? 'learning' : lifetimeDecisions > 0 ? 'no_reward' : 'no_decisions',
         },
       }
     }),
@@ -1978,7 +2405,6 @@ export async function buildStrategyLearningSummary(
   summary.policy_state_preview = buildStrategyAdaptivePolicyState(summary)
   return summary
 }
-
 export async function runStrategyLearningClosure(
   db: D1Database,
   date: string,
@@ -2029,7 +2455,11 @@ export async function runStrategyLearningClosure(
     `strategy_edge=${marginalEdge.status}:eligible=${marginalEdge.eligibleStrategies}`,
     `reward_source_rows=${rewards.source_rows}`,
     `reward_rows=${rewards.persisted_rows}`,
+    `daily_decision_rows=${rewards.daily_decision_rows}`,
+    `daily_reward_rows=${rewards.daily_reward_rows}`,
+    `learning_head_rows=${rewards.head_rows}`,
     `reward_stale_retired=${rewards.stale_rows_retired}`,
+    `daily_reward_stale_cleared=${rewards.stale_daily_rewards_cleared}`,
     `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
     `policy_eligible=${policy ? policy.policy_state.evidence.eligible_strategy_count : 'n/a'}`,
     `threshold_calibration=${thresholdCalibration ? thresholdCalibration.status : 'skipped'}`,

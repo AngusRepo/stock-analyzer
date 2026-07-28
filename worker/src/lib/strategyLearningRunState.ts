@@ -11,6 +11,7 @@ export type StrategyLearningRunRow = {
   persisted_decision_rows: number
   lease_owner: string | null
   lease_expires_at: string | null
+  completed_at: string | null
 }
 
 type UniverseRow = {
@@ -98,6 +99,10 @@ export async function initializeStrategyLearningRun(
         WHEN strategy_learning_runs.status='error' THEN NULL
         ELSE strategy_learning_runs.lease_expires_at
       END,
+      completed_at=CASE
+        WHEN strategy_learning_runs.producer_run_id IS NOT excluded.producer_run_id THEN NULL
+        ELSE strategy_learning_runs.completed_at
+      END,
       updated_at=CURRENT_TIMESTAMP
   `).bind(
     input.businessDate,
@@ -120,7 +125,7 @@ export async function loadStrategyLearningRun(
     SELECT business_date, canonical_run_id, producer_run_id, status, cursor_symbol,
            expected_candidates, processed_candidates, strategy_count,
            expected_decision_rows, persisted_decision_rows,
-           lease_owner, lease_expires_at
+           lease_owner, lease_expires_at, completed_at
       FROM strategy_learning_runs
      WHERE business_date=?
   `).bind(businessDate).first<StrategyLearningRunRow>()
@@ -146,7 +151,7 @@ export async function claimStrategyLearningPage(
     RETURNING business_date, canonical_run_id, producer_run_id, status, cursor_symbol,
               expected_candidates, processed_candidates, strategy_count,
               expected_decision_rows, persisted_decision_rows,
-              lease_owner, lease_expires_at
+              lease_owner, lease_expires_at, completed_at
   `).bind(
     input.runId,
     modifier,
@@ -192,6 +197,25 @@ export async function completeStrategyLearningRun(
 ): Promise<{ candidateRows: number; decisionRows: number; expectedCandidates: number; expectedRows: number }> {
   const state = await loadStrategyLearningRun(db, input.businessDate)
   if (!state) throw new Error(`strategy_learning_run_missing:${input.businessDate}`)
+  const expectedCandidates = Math.max(0, Number(state.expected_candidates ?? 0))
+  const expectedRows = Math.max(0, Number(state.expected_decision_rows ?? 0))
+  const priorCanonicalSuccess = Boolean(state.completed_at)
+    && Math.max(0, Number(state.processed_candidates ?? 0)) === expectedCandidates
+    && Math.max(0, Number(state.persisted_decision_rows ?? 0)) === expectedRows
+  if (priorCanonicalSuccess) {
+    await db.prepare(`
+      UPDATE strategy_learning_runs
+         SET status='success', lease_owner=NULL, lease_expires_at=NULL,
+             updated_at=CURRENT_TIMESTAMP, last_error=NULL
+       WHERE business_date=? AND canonical_run_id=?
+    `).bind(input.businessDate, state.canonical_run_id).run()
+    return {
+      candidateRows: expectedCandidates,
+      decisionRows: expectedRows,
+      expectedCandidates,
+      expectedRows,
+    }
+  }
   const coverage = await db.prepare(`
     SELECT COUNT(DISTINCT d.symbol) AS candidate_rows,
            COUNT(*) AS decision_rows
@@ -202,8 +226,6 @@ export async function completeStrategyLearningRun(
   `).bind(input.businessDate).first<{ candidate_rows: number; decision_rows: number }>()
   const candidateRows = Math.max(0, Number(coverage?.candidate_rows ?? 0))
   const decisionRows = Math.max(0, Number(coverage?.decision_rows ?? 0))
-  const expectedCandidates = Math.max(0, Number(state.expected_candidates ?? 0))
-  const expectedRows = Math.max(0, Number(state.expected_decision_rows ?? 0))
   if (candidateRows !== expectedCandidates || decisionRows !== expectedRows) {
     const error = `strategy_learning_incomplete:candidates=${candidateRows}/${expectedCandidates}:rows=${decisionRows}/${expectedRows}`
     await failStrategyLearningRun(db, { businessDate: input.businessDate, error })

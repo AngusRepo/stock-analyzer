@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 const migration = readFileSync('migrations/0089_strategy_evaluability_and_atomic_replacement.sql', 'utf8')
 const learning = readFileSync('src/lib/strategyLearning.ts', 'utf8')
 const edge = readFileSync('src/lib/strategyMarginalEdgeV4.ts', 'utf8')
+const runState = readFileSync('src/lib/strategyLearningRunState.ts', 'utf8')
 
 assert(migration.includes('evaluable INTEGER NOT NULL DEFAULT 0'), 'legacy strategy decisions must fail closed')
 assert(migration.includes('unavailable_decisions INTEGER NOT NULL DEFAULT 0'), 'daily projection must separate unavailable decisions')
@@ -25,6 +26,10 @@ assert(learning.includes('assessStrategySpecEvaluability'), 'decision logging mu
 assert(learning.includes('hydrateS12StrategyEvidence'), 'S12 must read formal intraday snapshot evidence')
 assert(learning.includes('rebuildHistoricalStrategyEvidenceV5'), 'daily closure must own bounded PIT backlog reconstruction')
 assert(learning.includes('maxDates: 2'), 'daily closure must drain history in bounded chunks')
+assert(runState.includes('priorCanonicalSuccess'), 'completed historical runs need a frozen lineage fast path')
+assert(runState.includes('completed_at=CASE'), 'a new producer run must clear stale completion provenance')
+assert(runState.indexOf('priorCanonicalSuccess') < runState.indexOf('JOIN strategy_spec_registry'),
+  'historical completion provenance must be evaluated before current-registry coverage')
 
 assert(edge.includes('const MIN_EDGE_DATES = 10'), 'strategy edge and learning gates must both require ten dates')
 assert(edge.includes('evaluatePairedStrategyReplacementsV5'), 'promotion must use paired one-in-one-out evaluation')

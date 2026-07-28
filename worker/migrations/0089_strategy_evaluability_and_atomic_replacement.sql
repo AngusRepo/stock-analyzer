@@ -9,11 +9,6 @@ ALTER TABLE strategy_learning_daily_stats ADD COLUMN unavailable_decisions INTEG
 ALTER TABLE strategy_learning_head ADD COLUMN lifetime_evaluable_decisions INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE strategy_learning_head ADD COLUMN lifetime_unavailable_decisions INTEGER NOT NULL DEFAULT 0;
 
-UPDATE strategy_decision_log
-   SET evaluable=0,
-       unavailable_reason=COALESCE(unavailable_reason, 'legacy_strategy_learning_pre_v5_unverified')
- WHERE evaluable=0;
-
 UPDATE strategy_learning_daily_stats
    SET evaluable_decisions=0,
        unavailable_decisions=decisions,

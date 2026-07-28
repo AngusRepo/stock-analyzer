@@ -33,6 +33,8 @@ const historicalRebuild = learning.slice(learning.indexOf('export async function
 assert(historicalRebuild.includes('new Map(referenceRows.map'), 'raw reference lineage must be deduplicated by symbol after validation')
 assert(!historicalRebuild.includes('JOIN selection_reference_snapshots_v1 r'),
   'reference membership must use EXISTS so duplicate snapshots cannot multiply decision rows')
+assert.equal((historicalRebuild.match(/r\.hard_gate_passed=1/g) ?? []).length, 3,
+  'reference, decision, and context sets must share the canonical L0 hard-gate predicate')
 assert(runState.includes('priorCanonicalSuccess'), 'completed historical runs need a frozen lineage fast path')
 assert(runState.includes('completed_at=CASE'), 'a new producer run must clear stale completion provenance')
 assert(runState.indexOf('priorCanonicalSuccess') < runState.indexOf('JOIN strategy_spec_registry'),

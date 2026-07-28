@@ -2796,6 +2796,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
              SELECT 1 FROM selection_reference_snapshots_v1 r
               WHERE r.signal_date=d.date AND r.symbol=d.symbol
                 AND r.producer_run_id=?
+                 AND r.hard_gate_passed=1
            )
          ORDER BY d.symbol, d.strategy_id, d.strategy_version
       `).bind(date, producerRunId).all<HistoricalStrategyDecisionRowV5>()
@@ -2818,6 +2819,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
              SELECT 1 FROM selection_reference_snapshots_v1 r
               WHERE r.signal_date=d.date AND r.symbol=d.symbol
                 AND r.producer_run_id=?
+                 AND r.hard_gate_passed=1
            )
          GROUP BY d.symbol
       `).bind(date, producerRunId).all<HistoricalStrategyContextRowV5>()

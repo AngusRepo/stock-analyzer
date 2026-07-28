@@ -331,7 +331,16 @@ export async function persistSelectionEvidenceV4(
       strategy_registry_checksum, labeler_version
     ) VALUES (?, ?, 'writing', ?, ?, ?, 0, ?, ?)
     ON CONFLICT(producer_run_id) DO UPDATE SET
-      status='writing', error_code=NULL, updated_at=CURRENT_TIMESTAMP
+      signal_date=excluded.signal_date,
+      status='writing',
+      reference_candidate_count=excluded.reference_candidate_count,
+      strategy_count=excluded.strategy_count,
+      expected_cell_count=excluded.expected_cell_count,
+      persisted_cell_count=0,
+      strategy_registry_checksum=excluded.strategy_registry_checksum,
+      labeler_version=excluded.labeler_version,
+      error_code=NULL,
+      updated_at=CURRENT_TIMESTAMP
   `).bind(
     input.producerRunId,
     input.signalDate,
@@ -387,7 +396,7 @@ export async function persistSelectionEvidenceV4(
 
     const counts = await db.prepare(`
       SELECT
-        (SELECT COUNT(*) FROM selection_reference_snapshots_v1 WHERE producer_run_id = ?) reference_rows,
+        (SELECT COUNT(*) FROM selection_reference_snapshots_v1 WHERE producer_run_id = ? AND hard_gate_passed = 1) reference_rows,
         (SELECT COUNT(*) FROM strategy_label_matrix_v4 WHERE producer_run_id = ?) matrix_rows
     `).bind(input.producerRunId, input.producerRunId).first<any>()
     const referenceRows = Number(counts?.reference_rows ?? 0)

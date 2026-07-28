@@ -5,6 +5,8 @@ const migration = readFileSync('migrations/0089_strategy_evaluability_and_atomic
 const learning = readFileSync('src/lib/strategyLearning.ts', 'utf8')
 const edge = readFileSync('src/lib/strategyMarginalEdgeV4.ts', 'utf8')
 const runState = readFileSync('src/lib/strategyLearningRunState.ts', 'utf8')
+const selectionEvidence = readFileSync('src/lib/selectionReferenceEvidence.ts', 'utf8')
+const routes = readFileSync('src/routes/other.ts', 'utf8')
 
 assert(migration.includes('evaluable INTEGER NOT NULL DEFAULT 0'), 'legacy strategy decisions must fail closed')
 assert(migration.includes('unavailable_decisions INTEGER NOT NULL DEFAULT 0'), 'daily projection must separate unavailable decisions')
@@ -35,6 +37,14 @@ assert(!historicalRebuild.includes('JOIN selection_reference_snapshots_v1 r'),
   'reference membership must use EXISTS so duplicate snapshots cannot multiply decision rows')
 assert.equal((historicalRebuild.match(/r\.hard_gate_passed=1/g) ?? []).length, 3,
   'reference, decision, and context sets must share the canonical L0 hard-gate predicate')
+assert(historicalRebuild.includes('superseded_by_strategy_decision_log_pit_reconstruction_v5'),
+  'legacy ready matrices must be durably superseded before V5 replacement')
+assert(selectionEvidence.includes('reference_candidate_count=excluded.reference_candidate_count'),
+  'matrix retry must replace stale run metadata with the current canonical universe')
+assert(selectionEvidence.includes('producer_run_id = ? AND hard_gate_passed = 1'),
+  'reference persistence coverage must count the canonical hard-gate universe only')
+assert(edge.includes("mr.status='ready'") && learning.includes("mr.status='ready'") && routes.includes("mr.status='ready'"),
+  'Edge, reward, and UI consumers must reject partial matrix rebuilds')
 assert(runState.includes('priorCanonicalSuccess'), 'completed historical runs need a frozen lineage fast path')
 assert(runState.includes('completed_at=CASE'), 'a new producer run must clear stale completion provenance')
 assert(runState.indexOf('priorCanonicalSuccess') < runState.indexOf('JOIN strategy_spec_registry'),

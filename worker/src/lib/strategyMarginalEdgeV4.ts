@@ -497,6 +497,10 @@ export async function refreshStrategyMarginalEdgeV4(
          AND m.strategy_status IN ('active', 'candidate', 'shadow')
          AND m.family_id <> 'SMC_STRUCTURE_RECLAIM'
          AND EXISTS (
+           SELECT 1 FROM strategy_label_matrix_runs_v4 mr
+            WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
+         )
+         AND EXISTS (
            SELECT 1 FROM canonical_run_heads h
             WHERE h.logical_run_key='screener:' || m.signal_date || ':TW:production:market_screener'
               AND h.run_id=m.producer_run_id

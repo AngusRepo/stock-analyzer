@@ -1838,6 +1838,7 @@ export async function listStrategyRewardSourceRows(
     const clauses = [
       'm.strategy_hit = 1',
       "l.label_schema_version = 'canonical-strategy-selection-label-v4'",
+      "EXISTS (SELECT 1 FROM strategy_label_matrix_runs_v4 mr WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready')",
       "EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || m.signal_date || ':TW:production:market_screener' AND h.run_id = m.producer_run_id)",
       `(
         m.signal_date > ?
@@ -2893,16 +2894,38 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         await db.batch(decisionUpdates.slice(offset, offset + STRATEGY_LEARNING_D1_BATCH_SIZE))
       }
 
+      const labelerVersion = 'strategy-decision-log-pit-reconstruction-v5'
+      const expectedMatrixRows = references.length * strategyKeys.size
       const existingMatrix = await db.prepare(`
-        SELECT status FROM strategy_label_matrix_runs_v4 WHERE producer_run_id=?
-      `).bind(producerRunId).first<{ status?: string }>()
-      let matrixRows = 0
-      if (existingMatrix?.status === 'ready') {
-        matrixRows = Number((await db.prepare(
+        SELECT status, reference_candidate_count, strategy_count, expected_cell_count,
+               persisted_cell_count, labeler_version
+          FROM strategy_label_matrix_runs_v4
+         WHERE producer_run_id=?
+      `).bind(producerRunId).first<any>()
+      const existingMatrixRows = existingMatrix
+        ? Number((await db.prepare(
           'SELECT COUNT(*) AS count FROM strategy_label_matrix_v4 WHERE producer_run_id=?',
         ).bind(producerRunId).first<{ count: number }>())?.count ?? 0)
+        : 0
+      let matrixRows = 0
+      const reusableExistingMatrix = existingMatrix?.status === 'ready'
+        && Number(existingMatrix.reference_candidate_count) === references.length
+        && Number(existingMatrix.strategy_count) === strategyKeys.size
+        && Number(existingMatrix.expected_cell_count) === expectedMatrixRows
+        && Number(existingMatrix.persisted_cell_count) === expectedMatrixRows
+        && cleanToken(existingMatrix.labeler_version) === labelerVersion
+        && existingMatrixRows === expectedMatrixRows
+      if (reusableExistingMatrix) {
+        matrixRows = expectedMatrixRows
       } else {
-        const labelerVersion = 'strategy-decision-log-pit-reconstruction-v5'
+        if (existingMatrix) {
+          await db.prepare(`
+            UPDATE strategy_label_matrix_runs_v4
+               SET status='writing', error_code='superseded_by_strategy_decision_log_pit_reconstruction_v5', updated_at=CURRENT_TIMESTAMP
+             WHERE producer_run_id=?
+          `).bind(producerRunId).run()
+          await db.prepare('DELETE FROM strategy_label_matrix_v4 WHERE producer_run_id=?').bind(producerRunId).run()
+        }
         const matrix = rebuilt.map(({ row, spec, evaluability, matched }) => {
           if (!spec) throw new Error('matrix_strategy_spec_version_missing:' + row.strategy_id + '|' + row.strategy_version)
           const governance = governanceByKey.get(row.strategy_id + '|' + row.strategy_version)

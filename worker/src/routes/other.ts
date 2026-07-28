@@ -3407,6 +3407,10 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
      WHERE producer_run_id = ?
        AND production_owner = 1
        AND strategy_hit = 1
+       AND EXISTS (
+         SELECT 1 FROM strategy_label_matrix_runs_v4 mr
+          WHERE mr.producer_run_id=strategy_label_matrix_v4.producer_run_id AND mr.status='ready'
+       )
   `).bind(latestRun.run_id).all<any>().catch(() => ({ results: [] as any[] }))
   const referenceCount = await db.prepare(`
     SELECT COUNT(*) AS candidate_count

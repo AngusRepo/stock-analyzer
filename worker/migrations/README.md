@@ -1,6 +1,8 @@
 # D1 migration contract
 
-`schema.production.snapshot.sql` is the reproducible bootstrap snapshot.
+`../bootstrap/schema.production.snapshot.sql` is the reproducible bootstrap snapshot.
+It must remain outside this directory because Wrangler treats every `.sql`
+file here as an ordered migration.
 All new DDL must be an ordered, append-only file in this directory and must
 also refresh the snapshot after production migration verification.
 

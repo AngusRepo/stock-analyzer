@@ -39,7 +39,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'finlab-v4-backfill', name: 'FinLab V4 Backfill', schedule: 'Inside evening chain', cron: '', group: 'pipeline_chain', chainIndex: 3 },
   { id: 'finlab-backfill-watchdog', name: 'FinLab Pending Watchdog', schedule: 'Weekdays 21:20-23:50 / 10m', cron: '*/10 13-15 * * 1-5', group: 'pipeline_chain', chainIndex: 3 },
   { id: 'allocator-ev-lifecycle-watchdog', name: 'Allocator EV Lifecycle Watchdog', schedule: 'Weekdays 21:00-01:50 / 10m', cron: '*/10 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 13 },
-  { id: 'active8-oof-daily', name: 'Active-8 OOF Materialize', schedule: 'Weekdays 01:55', cron: '55 17 * * 1-5', group: 'pipeline_chain', chainIndex: 14 },
+  { id: 'active8-oof-daily', name: 'Active-8 OOF Materialize', schedule: 'Tue-Sat 01:55 (prior trading session)', cron: '55 17 * * 1-5', group: 'pipeline_chain' },
   { id: 'update', name: 'Market Data Update', schedule: 'After FinLab canonical ready', cron: '', group: 'pipeline_chain', chainIndex: 4 },
   { id: 'indicator-queue', name: 'Indicator Queue', schedule: 'After update readiness', cron: '', group: 'pipeline_chain', chainIndex: 5 },
   { id: 'screener', name: 'Screener', schedule: 'After indicators', cron: '', group: 'pipeline_chain', chainIndex: 6 },
@@ -280,6 +280,9 @@ export type DurablePipelineStageDisplayRow = {
   canonical_run_id: string
   status: 'queued' | 'running' | 'waiting' | 'success' | 'error'
   attempt_count: number
+  queued_at?: string | null
+  started_at?: string | null
+  completed_at?: string | null
   updated_at: string
   last_error: string | null
 }
@@ -356,7 +359,8 @@ async function loadDurablePipelineStageStates(
 ): Promise<Map<string, DurablePipelineStageDisplayRow>> {
   const placeholders = dates.map(() => '?').join(', ')
   const result = await db.prepare(`
-    SELECT business_date, stage, canonical_run_id, status, attempt_count, updated_at, last_error
+    SELECT business_date, stage, canonical_run_id, status, attempt_count,
+           queued_at, started_at, completed_at, updated_at, last_error
       FROM pipeline_stage_runs
      WHERE business_date IN (${placeholders})
        AND stage IN ('post_pipeline_chain', 'verify_v2', 'post_verify_chain')
@@ -365,6 +369,25 @@ async function loadDurablePipelineStageStates(
     `${row.business_date}:${DURABLE_STAGE_JOB_IDS[row.stage]}`,
     row,
   ]))
+}
+
+export type SchedulerRunDisplayTime = {
+  timestamp: string | null
+  basis: 'started' | 'updated'
+}
+
+const CALLBACK_CONTAINER_JOB_IDS = new Set(['post-pipeline-chain', 'post-verify-chain'])
+
+export function resolveSchedulerRunDisplayTime(input: {
+  jobId: string
+  displayTimestamp?: string | null
+  durable?: DurablePipelineStageDisplayRow
+}): SchedulerRunDisplayTime {
+  const durableStartedAt = sqliteUtcTimestamp(input.durable?.started_at ?? '')
+  if (CALLBACK_CONTAINER_JOB_IDS.has(input.jobId) && durableStartedAt) {
+    return { timestamp: durableStartedAt, basis: 'started' }
+  }
+  return { timestamp: input.displayTimestamp ?? null, basis: 'updated' }
 }
 
 function parseLogTime(ts?: string): number | null {
@@ -561,6 +584,7 @@ export function resolveSchedulerDisplayStatus(input: {
   activeReplayLog?: CronLogEntry
   activeReplayRunDate?: string | null
   activeReplayHeartbeatAt?: string | null
+  activeReplayIsRunning?: boolean
   def: Pick<JobDef, 'id' | 'group' | 'chainIndex'>
   nextRun: string
   today: string
@@ -572,6 +596,7 @@ export function resolveSchedulerDisplayStatus(input: {
     activeReplayLog,
     activeReplayRunDate,
     activeReplayHeartbeatAt,
+    activeReplayIsRunning = false,
     def,
     nextRun,
     today,
@@ -579,8 +604,13 @@ export function resolveSchedulerDisplayStatus(input: {
   } = input
   const activeRunDate = String(activeReplayRunDate ?? '').trim()
   const activeLogRunDate = String(activeReplayLog?.run_date ?? '').trim()
+  const replayObservedToday = timestampTwDate(activeReplayLog?.timestamp) === today
+    || timestampTwDate(activeReplayHeartbeatAt ?? undefined) === today
   const hasActiveReplayLog = Boolean(
-    activeRunDate && activeRunDate !== today && activeLogRunDate === activeRunDate,
+    activeRunDate
+    && activeRunDate !== today
+    && activeLogRunDate === activeRunDate
+    && (activeReplayIsRunning || replayObservedToday),
   )
   const resolvedToday = resolveSchedulerLogStatus(todayLog, def, nowMs)
   if (resolvedToday.status && !hasActiveReplayLog) {
@@ -701,6 +731,7 @@ export async function getSchedulerStatus(env: Bindings) {
       activeReplayLog: chainReplayLog,
       activeReplayRunDate: chainStatusDate,
       activeReplayHeartbeatAt,
+      activeReplayIsRunning: Boolean(activeChainDate && chainStatusDate === activeChainDate),
       def,
       nextRun,
       today,
@@ -721,6 +752,11 @@ export async function getSchedulerStatus(env: Bindings) {
       durable: durableState,
     })
     const lastStatus = durableOverride?.lastStatus ?? resolvedDisplay.status
+    const displayTime = resolveSchedulerRunDisplayTime({
+      jobId: def.id,
+      displayTimestamp: durableOverride?.lastRunAt ?? displayLog?.timestamp ?? null,
+      durable: durableState,
+    })
 
     const lastDuration = formatDuration(displayLog?.duration_ms)
     const shortRun = inferShortRunConcern(def, displayLog)
@@ -735,8 +771,9 @@ export async function getSchedulerStatus(env: Bindings) {
       cron: def.cron,
       group: def.group,
       chainIndex: def.chainIndex,
-      lastRun: durableOverride?.lastRunAt ? formatTimestamp(durableOverride.lastRunAt) : displayLog?.timestamp ? formatTimestamp(displayLog.timestamp) : 'N/A',
-      lastRunAt: durableOverride?.lastRunAt ?? displayLog?.timestamp ?? null,
+      lastRun: displayTime.timestamp ? formatTimestamp(displayTime.timestamp) : 'N/A',
+      lastRunAt: displayTime.timestamp,
+      lastRunBasis: displayTime.basis,
       lastAttempt: lastAttempt?.timestamp ? formatTimestamp(lastAttempt.timestamp) : 'N/A',
       lastAttemptAt: lastAttempt?.timestamp ?? null,
       lastAttemptStatus: lastAttempt?.status ?? 'none',

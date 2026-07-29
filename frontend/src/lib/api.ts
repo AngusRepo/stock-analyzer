@@ -219,6 +219,7 @@ export type SchedulerJob = {
   chainIndex?: number
   lastRun: string
   lastRunAt?: string | null
+  lastRunBasis?: 'started' | 'updated'
   lastAttemptAt?: string | null
   lastAttemptStatus?: 'success' | 'error' | 'skipped' | 'triggered' | 'running' | 'none'
   lastEffectiveRunAt?: string | null

@@ -9,6 +9,7 @@ import { computeAndStoreIndicators } from './technicalIndicators'
 import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady, loadMarketDataReadinessStats } from './marketDataReadiness'
 import { runRegimeCompute } from './controllerDailyWorkflows'
+import { readMarketRegimeState } from './marketRegimeState'
 import {
   runAllocatorEvFeatureSnapshotBackfill,
   runFinLabV4Backfill,
@@ -1583,6 +1584,44 @@ export async function runQueueUpdate(env: Bindings, runDate?: string, force = fa
   }
 }
 
+async function ensureSameDateRegimeReady(
+  env: Bindings,
+  triggerTime: string,
+  runId: string | undefined,
+  source: string,
+): Promise<string> {
+  const current = await readMarketRegimeState(env.KV)
+  if (current?.source === 'hmm' && current.run_date === triggerTime) {
+    return `regime=${current.label} idx=${current.regime_index} kv=verified source=existing`
+  }
+
+  await logSchedulerResult(env.KV, 'regime-compute', {
+    status: 'running',
+    summary: `pre-screener regime-compute started for ${triggerTime}; run_id=${runId ?? 'n/a'}; source=${source}`,
+    duration_ms: 0,
+    run_date: triggerTime,
+  })
+  const startedAt = Date.now()
+  try {
+    const summary = String(await runRegimeCompute(env, triggerTime))
+    await logSchedulerResult(env.KV, 'regime-compute', {
+      status: 'success',
+      summary: `pre-screener ${summary}; source=${source}`,
+      duration_ms: Date.now() - startedAt,
+      run_date: triggerTime,
+    })
+    return summary
+  } catch (error) {
+    await logSchedulerResult(env.KV, 'regime-compute', {
+      status: 'error',
+      summary: `pre-screener regime-compute failed for ${triggerTime}; source=${source}`,
+      duration_ms: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+      run_date: triggerTime,
+    })
+    throw error
+  }
+}
 async function finalizeUpdateChain(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
@@ -1718,6 +1757,8 @@ async function runFinalizeContinuation(
   await checkAlerts(env)
   const matureStrategyEvidence = await refreshMatureStrategyEvidenceBeforeScreener(env, triggerTime, runId)
   console.log(`[Queue] Mature strategy evidence refreshed before screener: ${matureStrategyEvidence}`)
+  const regimeSummary = await ensureSameDateRegimeReady(env, triggerTime, runId, 'indicator-finalizer')
+  console.log(`[Queue] Same-date regime ready before screener: ${regimeSummary}`)
 
   const runAsyncScreener = deps.runMarketScreenerAsync
   if (runAsyncScreener) {
@@ -2042,53 +2083,7 @@ async function continuePostScreenerPipeline(
   snapshotsReady = false,
 ): Promise<void> {
   if (!snapshotsReady) {
-    await logSchedulerResult(env.KV, 'regime-compute', {
-      status: 'running',
-      summary: `pre-pipeline regime-compute started for ${triggerTime}; run_id=${runId ?? 'n/a'}`,
-      duration_ms: 0,
-      run_date: triggerTime,
-    })
-
-    try {
-      const startedAt = Date.now()
-      const regimeSummary = String(await runRegimeCompute(env, triggerTime))
-      const regimeStatus = regimeSummary.includes('kv=ok') ? 'success' : 'error'
-      await logSchedulerResult(env.KV, 'regime-compute', {
-        status: regimeStatus,
-        summary: `pre-pipeline ${regimeSummary}`,
-        duration_ms: Date.now() - startedAt,
-        run_date: triggerTime,
-      })
-      if (regimeStatus !== 'success') {
-        await logSchedulerResult(env.KV, 'evening-chain', {
-          status: 'error',
-          summary: `event-driven chain stopped: regime-compute did not update KV before pipeline for ${triggerTime}; ${regimeSummary}`,
-          duration_ms: 0,
-          run_id: runId,
-          run_date: triggerTime,
-        })
-        return
-      }
-      console.log(`[Queue] Event-driven: regime-compute completed before pipeline for ${triggerTime}`)
-    } catch (e) {
-      await logSchedulerResult(env.KV, 'evening-chain', {
-        status: 'error',
-        summary: `event-driven chain stopped: regime-compute failed before pipeline for ${triggerTime}`,
-        duration_ms: 0,
-        error: String(e),
-        run_id: runId,
-        run_date: triggerTime,
-      })
-      await logSchedulerResult(env.KV, 'regime-compute', {
-        status: 'error',
-        summary: e instanceof Error ? e.message : String(e),
-        duration_ms: 0,
-        error: String(e),
-        run_date: triggerTime,
-      })
-      console.warn('[Queue] Event-driven regime-compute failed:', e)
-      return
-    }
+    await ensureSameDateRegimeReady(env, triggerTime, runId, 'post-screener-callback')
 
     const snapshotRunId = runId ?? `s12-candidate-snapshot-${triggerTime}-${Date.now().toString(36)}`
     await logSchedulerResult(env.KV, 's12-structure-snapshot', {

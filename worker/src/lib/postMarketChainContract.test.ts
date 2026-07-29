@@ -127,10 +127,10 @@ assert(
   'allocator snapshots must use a durable job and resume the same date-level post-pipeline stage from its callback',
 )
 assert(
-  postScreenerContinuationBlock.indexOf('runRegimeCompute(env, triggerTime)') > 0 &&
-    postScreenerContinuationBlock.indexOf('runRegimeCompute(env, triggerTime)') <
+  postScreenerContinuationBlock.indexOf('ensureSameDateRegimeReady(env, triggerTime') > 0 &&
+    postScreenerContinuationBlock.indexOf('ensureSameDateRegimeReady(env, triggerTime') <
       postScreenerContinuationBlock.indexOf('deps.runMLAndRiskV2(env, triggerTime'),
-  'regime-compute must run with the chain business date before pipeline/recommendation so market_regime_state is not null or future-dated',
+  'post-screener continuation must retain a same-date regime assertion before pipeline/recommendation',
 )
 assert(
   updateOrchestrator.includes("type: 'post_screener_pipeline'") &&

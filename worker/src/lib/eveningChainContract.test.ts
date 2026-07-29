@@ -73,6 +73,12 @@ assert(
   'mature strategy labels/edge/rewards must refresh fail-closed before the current-day screener consumes priors',
 )
 assert(
+  updateOrchestrator.indexOf("ensureSameDateRegimeReady(env, triggerTime, runId, 'indicator-finalizer')") > 0 &&
+    updateOrchestrator.indexOf("ensureSameDateRegimeReady(env, triggerTime, runId, 'indicator-finalizer')") <
+      updateOrchestrator.indexOf('const runAsyncScreener = deps.runMarketScreenerAsync'),
+  'same-date HMM regime PIT must be materialized and verified before screener consumes regime-adaptive policy',
+)
+assert(
   controllerDailyWorkflows.includes('assertRegimeComputeClosure(data, runDate)') &&
     controllerDailyWorkflows.includes('readMarketRegimeState(env.KV)') &&
     controllerDailyWorkflows.includes('market_regime_state readback mismatch'),

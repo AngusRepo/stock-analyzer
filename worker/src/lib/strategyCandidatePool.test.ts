@@ -351,6 +351,8 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(plan.mlSlate.some((candidate) => candidate.symbol === '6115'), 'FinLab-style portfolio intelligence should let niche multi-family support survive broad crowded labels')
   const niche = plan.mlSlate.find((candidate) => candidate.symbol === '6115') as any
   assert(niche.strategy_router_version === 'multi-strategy-ple-router-v1', 'routed candidate should expose L1.5 router provenance')
+  assert(niche.strategy_affinity_version === 'strategy-raw-quality-affinity-v1', 'incumbent production affinity semantics must remain explicit')
+  assert(niche.strategy_challenger_affinity_version === 'strategy-threshold-margin-affinity-v2', 'challenger must expose strategy-specific threshold-margin semantics')
   assert(niche.strategy_router_reason === 'l15_route_floor_eligible_dispatch_priority_rank', 'routed candidate should expose route-floor eligibility and dispatch-only rank semantics')
   assert(niche.marginal_utility_score != null, 'L1.5 selected candidate should expose marginal utility score')
   assert(niche.strategy_router_components?.marginal_utility_score != null, 'L1.5 selected candidate should persist marginal utility components')
@@ -370,6 +372,174 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(plan.telemetry.strategy_similarity_blocked_reason === 'modal_python_strategy_similarity_evidence_missing', 'missing Modal L1.25 evidence must be explicit')
   assert(niche.strategy_portfolio_prior?.strategy_similarity_graph?.evidence_only === true, 'strategy similarity graph must remain evidence-only')
   assert(!('selected' in (niche.strategy_portfolio_prior?.strategy_similarity_graph ?? {})), 'strategy similarity graph must not become a selector')
+}
+
+{
+  const marginCandidate: StrategyCandidatePoolCandidate = {
+    symbol: '7777',
+    name: 'Margin Candidate',
+    industry: 'Test',
+    current_price: 50,
+    market_segment: 'LISTED',
+    eligible_for_ml: 1,
+    score_components: scoreV2Payload({ finalScore: 70, chipFlow: 20, technicalStructure: 20, momentumScore: 10 }),
+    raw_signals: rawSignalPayload({ return20d: 0.1 }),
+  }
+  const baseSpec = {
+    id: 'loose_margin_v1',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Loose margin',
+    status: 'active' as const,
+    owner: 'strategy' as const,
+    familyId: 'TREND_RECLAIM_CONTINUATION' as const,
+    variantId: 'loose_margin_v1',
+    ownerType: 'strategy' as const,
+    promotionStatus: 'production' as const,
+    alphaBucket: 'trend_following' as const,
+    supportedRegimes: ['bull' as const],
+    thesis: 'Test strategy-specific threshold distance.',
+    thresholds: { minPrice: 10, minReturn20d: 0.01 },
+    candidatePolicy: { poolQuota: 8, costBudget: 8 },
+    riskNotes: ['test only'],
+    createdBy: 'p5_strategy_governance' as const,
+  }
+  const tightSpec = {
+    ...baseSpec,
+    id: 'tight_margin_v1',
+    name: 'Tight margin',
+    familyId: 'REVENUE_QUALITY_MOMENTUM' as const,
+    variantId: 'tight_margin_v1',
+    thresholds: { minPrice: 10, minReturn20d: 0.099 },
+  }
+  const similarity = coerceModalStrategySimilarityGraphEvidence({
+    schema_version: 'strategy-similarity-evidence-v1',
+    status: 'computed',
+    source: 'modal_python',
+    algorithm_owner: 'ml-service-modal-python',
+    graph_algorithm: 'networkx.Graph+networkx.connected_components',
+    method: 'networkx_connected_components_oof_residual_correlation',
+    input_scope: 'mature_oof_residual_returns_with_same_day_overlap_diagnostic',
+    eligible_oof_pair_count: 1,
+    paired_date_max: 8,
+    oof_max_date: '2026-07-08',
+    medoid_algorithm: "sklearn_extra.cluster.KMedoids(method='pam')",
+    medoid_scope: 'connected_component',
+    evidence_only: true,
+    global_k_hardcoded: false,
+    production_selector: false,
+    self_implemented_algorithm: false,
+    kmedoids_pam_preflight_status: 'pass',
+    kmedoids_pam_preflight: { status: 'pass', self_implemented_fallback: false },
+    strategy_count: 2,
+    edge_count: 1,
+    component_count: 1,
+    effective_strategy_count: 1,
+    edge_threshold: 0.8,
+    edge_threshold_source: 'adaptive_quantile',
+    strategy_cluster_id: { loose_margin_v1: 'sc000', tight_margin_v1: 'sc000' },
+    strategy_cluster_size: { loose_margin_v1: 2, tight_margin_v1: 2 },
+    strategy_cluster_crowding_score: { loose_margin_v1: 0.9, tight_margin_v1: 0.9 },
+    strategy_cluster_uniqueness_score: { loose_margin_v1: 0.1, tight_margin_v1: 0.1 },
+    medoid_strategy_by_cluster: { sc000: 'loose_margin_v1' },
+  })
+  assert(similarity, 'test similarity evidence must satisfy the Modal contract')
+  const plan = buildMultiStrategyPleRoutingPlan([marginCandidate], [baseSpec, tightSpec], {
+    maxSlateSize: 1,
+    regime: 'bull',
+    minRouteScore: 0,
+    strategySimilarityGraphEvidence: similarity,
+    previousSlateSymbols: ['7777', '8888'],
+  })
+  const routed = plan.l0Annotated[0] as any
+  assert(routed.strategy_affinity_vector.loose_margin_v1 === routed.strategy_affinity_vector.tight_margin_v1, 'incumbent affinity must remain unchanged until challenger promotion')
+  assert(routed.strategy_challenger_affinity_vector.loose_margin_v1 > routed.strategy_challenger_affinity_vector.tight_margin_v1, 'challenger affinity must follow each strategy threshold margin')
+  assert(routed.strategy_router_components.challenger_raw_active_strategy_support > routed.strategy_router_components.challenger_residualized_active_strategy_support, 'correlated strategy hits must receive diminishing challenger support')
+  assert(routed.strategy_router_components.challenger_effective_strategy_support_count === 1, 'same similarity cluster must count as one effective challenger support owner')
+  assert(plan.telemetry.temporal_jaccard === 0.5, 'router must expose cross-day slate Jaccard without using it as a selector')
+  assert(plan.telemetry.previous_list_recall === 0.5, 'router must expose previous-list recall')
+  assert(plan.telemetry.fresh_share === 0, 'router must expose fresh share independently of Jaccard')
+}
+
+{
+  const candidate: StrategyCandidatePoolCandidate = {
+    symbol: '7766',
+    name: 'Alpha lineage candidate',
+    industry: 'Test',
+    current_price: 50,
+    market_segment: 'LISTED',
+    eligible_for_ml: 1,
+    score_components: scoreV2Payload({ finalScore: 70, chipFlow: 20, technicalStructure: 20, momentumScore: 10 }),
+    raw_signals: rawSignalPayload({ return20d: 0.1 }),
+  }
+  const alphaA = {
+    id: 'alpha223_a',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Alpha223 A',
+    status: 'active' as const,
+    owner: 'strategy' as const,
+    familyId: 'ALPHA223_CASH_GAP_BROKER_FLOW' as const,
+    variantId: 'alpha223_a',
+    ownerType: 'strategy' as const,
+    promotionStatus: 'production' as const,
+    alphaBucket: 'trend_following' as const,
+    supportedRegimes: ['bull' as const],
+    thesis: 'Alpha223 parent-lineage variant A.',
+    thresholds: { minPrice: 10, minReturn20d: 0.01 },
+    candidatePolicy: { poolQuota: 8, costBudget: 8 },
+    riskNotes: ['test only'],
+    createdBy: 'p5_strategy_governance' as const,
+  }
+  const alphaB = {
+    ...alphaA,
+    id: 'alpha223_b',
+    name: 'Alpha223 B',
+    familyId: 'ALPHA223_QUALITY_TURNOVER' as const,
+    variantId: 'alpha223_b',
+    thesis: 'Alpha223 parent-lineage variant B.',
+  }
+  const singletonGraph = coerceModalStrategySimilarityGraphEvidence({
+    schema_version: 'strategy-similarity-evidence-v1',
+    status: 'computed',
+    source: 'modal_python',
+    algorithm_owner: 'ml-service-modal-python',
+    graph_algorithm: 'networkx.Graph+networkx.connected_components',
+    method: 'networkx_connected_components_oof_residual_correlation',
+    input_scope: 'mature_oof_residual_returns_with_same_day_overlap_diagnostic',
+    eligible_oof_pair_count: 1,
+    paired_date_max: 8,
+    oof_max_date: '2026-07-08',
+    medoid_algorithm: "sklearn_extra.cluster.KMedoids(method='pam')",
+    medoid_scope: 'connected_component',
+    evidence_only: true,
+    global_k_hardcoded: false,
+    production_selector: false,
+    self_implemented_algorithm: false,
+    kmedoids_pam_preflight_status: 'pass',
+    kmedoids_pam_preflight: { status: 'pass', self_implemented_fallback: false },
+    strategy_count: 2,
+    edge_count: 0,
+    component_count: 2,
+    effective_strategy_count: 2,
+    edge_threshold: 0.8,
+    edge_threshold_source: 'adaptive_quantile',
+    strategy_cluster_id: { alpha223_a: 'sc000', alpha223_b: 'sc001' },
+    strategy_cluster_size: { alpha223_a: 1, alpha223_b: 1 },
+    strategy_cluster_crowding_score: { alpha223_a: 0, alpha223_b: 0 },
+    strategy_cluster_uniqueness_score: { alpha223_a: 1, alpha223_b: 1 },
+    medoid_strategy_by_cluster: { sc000: 'alpha223_a', sc001: 'alpha223_b' },
+  })
+  assert(singletonGraph, 'singleton Modal graph fixture must satisfy the evidence contract')
+  const plan = buildMultiStrategyPleRoutingPlan([candidate], [alphaA, alphaB], {
+    maxSlateSize: 1,
+    regime: 'bull',
+    minRouteScore: 0,
+    strategySimilarityGraphEvidence: singletonGraph,
+  })
+  const routed = plan.l0Annotated[0] as any
+  assert(routed.strategy_router_components.challenger_effective_strategy_support_count === 2, 'Modal OOF graph, not strategy naming, must own independent support count')
+  assert(Object.values(routed.strategy_raw_position_weight_vector).filter((value: any) => value > 0).length === 2, 'raw attribution must retain both Alpha223 matches')
+  assert(Object.values(routed.strategy_position_weight_vector).filter((value: any) => value > 0).length === 2, 'incumbent production weights must remain unchanged before challenger promotion')
+  assert(Object.values(routed.strategy_challenger_position_weight_vector).filter((value: any) => value > 0).length === 2, 'challenger must follow the independent Modal evidence without ID-prefix consolidation')
 }
 
 {
@@ -1045,7 +1215,11 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     source: 'modal_python',
     algorithm_owner: 'ml-service-modal-python',
     graph_algorithm: 'networkx.Graph+networkx.connected_components',
-    method: 'networkx_connected_components_jaccard_overlap',
+    method: 'networkx_connected_components_oof_residual_correlation',
+    input_scope: 'mature_oof_residual_returns_with_same_day_overlap_diagnostic',
+    eligible_oof_pair_count: 1,
+    paired_date_max: 8,
+    oof_max_date: '2026-07-08',
     medoid_algorithm: "sklearn_extra.cluster.KMedoids(method='pam')",
     evidence_only: true,
     global_k_hardcoded: false,
@@ -1089,7 +1263,11 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     version: 'strategy-similarity-graph-v1',
     source: 'modal_python',
     algorithm_owner: 'ml-service-modal-python',
-    method: 'networkx_connected_components_jaccard_overlap',
+    method: 'networkx_connected_components_oof_residual_correlation',
+    input_scope: 'mature_oof_residual_returns_with_same_day_overlap_diagnostic',
+    eligible_oof_pair_count: 1,
+    paired_date_max: 8,
+    oof_max_date: '2026-07-08',
     medoid_algorithm: "sklearn_extra.cluster.KMedoids(method='pam')",
     evidence_only: true,
     global_k_hardcoded: false,

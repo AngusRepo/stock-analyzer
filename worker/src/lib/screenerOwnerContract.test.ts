@@ -49,6 +49,21 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(marketScreener.includes('getAdaptiveParamsForRegime(env.KV, canonicalRegimeState.family)'), 'adaptive overlay must resolve from the verified PIT regime owner')
   assert(screenerMarketData.includes('asOfDate?: string'), 'screener D1 loader must support as-of-date backfills')
   assert(screenerMarketData.includes('WHERE date <= ?'), 'screener D1 loader must cap price/chip data by requested date')
+  assert(
+    marketScreener.includes('const bestOrderBlockStrength = priceAction ? bestOrderBlock?.strength ?? 0 : null'),
+    'SMRC must distinguish an evaluable no-order-block observation (zero) from unavailable price action (null)',
+  )
+  assert(marketScreener.includes('priceActionStructureAvailable: priceAction ? 1 : 0'), 'SMRC must persist price-action evaluability diagnostics')
+  assert(marketScreener.includes('loadMatureStrategyOofReturns'), 'daily routing must load mature OOF residual-return evidence')
+  assert(marketScreener.includes('outcome_known_date <= ?') && marketScreener.includes('signal_date < ?'), 'OOF redundancy evidence must be point-in-time')
+  assert(marketScreener.includes("label_schema_version = 'canonical-strategy-selection-label-v4'"), 'OOF redundancy evidence must use canonical selection labels')
+  assert(marketScreener.includes('mature_oof_residual_returns_with_same_day_overlap_diagnostic'), 'same-day strategy overlap must remain diagnostic-only')
+  assert(marketScreener.includes('strategy_oof_return_load_error'), 'OOF loader failure must be explicit telemetry, not an empty silent fallback')
+  assert(marketScreener.includes('promoted_marginal_edge_load_error'), 'marginal-edge weight loader failure must remain visible')
+  assert(marketScreener.includes('promoted_route_calibration_load_error'), 'route calibration loader failure must remain visible')
+  assert(marketScreener.includes("domain: 'strategy_redundancy_oof'"), 'full OOF redundancy evidence must be archived through the R2 artifact lifecycle')
+  assert(marketScreener.includes('r2_artifact_id: evidenceManifest.artifact_id'), 'D1 redundancy rows must retain a compact R2 pointer')
+  assert(marketScreener.includes('evidence_artifact_id=excluded.evidence_artifact_id'), 'redundancy artifact reruns must idempotently retain the evidence pointer')
 }
 
 {
@@ -263,8 +278,15 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(marketScreener.includes('strategy_weak_label_vector'), 'screener must persist L1 weak-label vectors into funnel evidence')
   assert(marketScreener.includes('finlab_portfolio_intelligence_version'), 'screener must persist L1.25 FinLab portfolio intelligence version into funnel evidence')
   assert(marketScreener.includes("import { loadRuntimeTeacherEvidence } from './runtimeTeacherEvidence'"), 'screener must load runtime teacher evidence through the dedicated owner module')
-  assert(marketScreener.includes('const runtimeTeacherEvidence = await loadRuntimeTeacherEvidence'), 'daily L1.5 must load optional historical runtime teacher evidence before routing')
+  assert(
+    marketScreener.includes('const [strategyPortfolioMetrics, strategySimilarityEvidence, runtimeTeacherEvidence, previousL15SlateLoad, promotedRouteCalibrationLoad] = await Promise.all([') &&
+      marketScreener.includes('loadRuntimeTeacherEvidence('),
+    'daily L1.5 must load optional historical runtime teacher evidence in the bounded parallel evidence stage before routing',
+  )
+  assert(marketScreener.includes('loadPreviousCanonicalL15Slate(env.DB, endDate)'), 'daily L1.5 must load the previous canonical slate for non-selecting stickiness telemetry')
   assert(marketScreener.includes('runtimeTeacherEvidence: runtimeTeacherEvidence.labels'), 'daily L1.5 must pass runtimeTeacherEvidence, not deprecated mlTeacherLabels')
+  assert(marketScreener.includes('loadPromotedStrategyRouteCalibration(env.DB)'), 'daily L1.5 must load only the promoted route calibration head')
+  assert(marketScreener.includes('promotedRouteCalibration,'), 'daily L1.5 must pass promoted route calibration into the router')
   assert(!marketScreener.includes('mlTeacherLabels:'), 'daily screener must not pass deprecated mlTeacherLabels as the formal router input')
   assert(strategyCandidatePool.includes('runtimeTeacherEvidence?: Record<string, Record<string, number>>'), 'Layer1 breadth plan must accept runtimeTeacherEvidence as optional input')
   assert(strategyCandidatePool.includes('runtimeTeacherEvidence: options.runtimeTeacherEvidence'), 'Layer1 breadth plan must forward runtimeTeacherEvidence into L1.5 router')

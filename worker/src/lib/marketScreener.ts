@@ -127,11 +127,91 @@ type L125StrategySimilarityEvidenceLoad = {
   evidence: StrategySimilarityGraphEvidence | null
   error?: string
   payload_strategy_count: number
+  artifact_id?: string
+}
+
+async function persistStrategyRedundancyArtifact(
+  env: Bindings,
+  asOfDate: string,
+  raw: Record<string, unknown>,
+  payloadStrategyCount: number,
+): Promise<string> {
+  const rawGraphJson = JSON.stringify(raw)
+  const checksum = (await sha256Text(rawGraphJson)).slice(0, 20)
+  const artifactId = `strategy-redundancy-oof-v1-${asOfDate}-${checksum}`
+  const sourceContract = String(raw.input_scope ?? '').trim()
+  const pass = raw.status === 'computed'
+    && raw.method === 'networkx_connected_components_oof_residual_correlation'
+    && sourceContract === 'mature_oof_residual_returns_with_same_day_overlap_diagnostic'
+    && Number(raw.eligible_oof_pair_count ?? 0) > 0
+  const evidenceManifest = await writeEvidenceArtifact(env, {
+    domain: 'strategy_redundancy_oof',
+    businessDate: asOfDate,
+    producerRunId: artifactId,
+    retentionClass: 'canonical_model_evidence',
+    schemaVersion: 'strategy-redundancy-oof-evidence-v1',
+    payload: raw,
+    rowCount: Math.max(0, Math.floor(Number(raw.eligible_oof_pair_count ?? 0) || 0)),
+    metadata: {
+      source_contract: sourceContract || 'missing',
+      oof_max_date: String(raw.oof_max_date ?? '').trim() || null,
+      pass,
+    },
+  })
+  const graphJson = JSON.stringify({
+    schema_version: raw.schema_version ?? null,
+    status: raw.status ?? null,
+    method: raw.method ?? null,
+    input_scope: raw.input_scope ?? null,
+    edge_threshold: raw.edge_threshold ?? null,
+    strategy_cluster_id: raw.strategy_cluster_id ?? {},
+    strategy_cluster_size: raw.strategy_cluster_size ?? {},
+    strategy_cluster_uniqueness_score: raw.strategy_cluster_uniqueness_score ?? {},
+    eligible_oof_pair_count: raw.eligible_oof_pair_count ?? 0,
+    paired_date_max: raw.paired_date_max ?? 0,
+    oof_max_date: raw.oof_max_date ?? null,
+    r2_artifact_id: evidenceManifest.artifact_id,
+    r2_key: evidenceManifest.r2_key,
+    checksum: evidenceManifest.checksum,
+  })
+  await env.DB.prepare(`
+    INSERT INTO strategy_redundancy_artifacts_v1 (
+      artifact_id, as_of_date, status, source_contract,
+      strategy_count, paired_date_count, oof_max_date,
+      edge_count, effective_strategy_count, graph_json,
+      evidence_artifact_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(artifact_id) DO UPDATE SET
+      status=excluded.status,
+      source_contract=excluded.source_contract,
+      strategy_count=excluded.strategy_count,
+      paired_date_count=excluded.paired_date_count,
+      oof_max_date=excluded.oof_max_date,
+      edge_count=excluded.edge_count,
+      effective_strategy_count=excluded.effective_strategy_count,
+      graph_json=excluded.graph_json,
+      evidence_artifact_id=excluded.evidence_artifact_id,
+      created_at=CURRENT_TIMESTAMP
+  `).bind(
+    artifactId,
+    asOfDate,
+    pass ? 'pass' : 'fail',
+    sourceContract || 'missing',
+    Math.max(0, Math.floor(Number(raw.strategy_count ?? payloadStrategyCount) || 0)),
+    Math.max(0, Math.floor(Number(raw.paired_date_max ?? 0) || 0)),
+    String(raw.oof_max_date ?? '').trim() || null,
+    Math.max(0, Math.floor(Number(raw.edge_count ?? 0) || 0)),
+    Number.isFinite(Number(raw.effective_strategy_count)) ? Number(raw.effective_strategy_count) : null,
+    graphJson,
+    evidenceManifest.artifact_id,
+  ).run()
+  return artifactId
 }
 
 async function loadL125StrategySimilarityGraphEvidence(
   env: Bindings,
   payload: StrategySimilarityEvidencePayload,
+  asOfDate: string,
 ): Promise<L125StrategySimilarityEvidenceLoad> {
   const payloadStrategyCount = payload.strategies.length
   if (!payloadStrategyCount) {
@@ -157,16 +237,18 @@ async function loadL125StrategySimilarityGraphEvidence(
       payload,
       120_000,
     )
+    const artifactId = await persistStrategyRedundancyArtifact(env, asOfDate, raw, payloadStrategyCount)
     const evidence = coerceModalStrategySimilarityGraphEvidence(raw)
     if (!evidence || evidence.source !== 'modal_python') {
       return {
         status: 'invalid_blocked',
         evidence: null,
         payload_strategy_count: payloadStrategyCount,
+        artifact_id: artifactId,
         error: 'invalid_modal_strategy_similarity_evidence_contract',
       }
     }
-    return { status: 'modal_python', evidence, payload_strategy_count: payloadStrategyCount }
+    return { status: 'modal_python', evidence, payload_strategy_count: payloadStrategyCount, artifact_id: artifactId }
   } catch (error) {
     return {
       status: 'unavailable_blocked',
@@ -267,6 +349,97 @@ export async function loadSelectionHistoryFlags(
   }
   return selectionFlagMap
 }
+
+export async function loadPreviousCanonicalL15Slate(
+  db: D1Database,
+  endDate: string,
+): Promise<{ date: string | null; runId: string | null; symbols: string[] }> {
+  const { results } = await db.prepare(`
+    WITH previous_run AS (
+      SELECT r.run_id, r.date
+        FROM screener_funnel_runs r
+       WHERE r.date < ?
+         AND r.status = 'success'
+         AND EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.run_id = r.run_id)
+       ORDER BY r.date DESC, r.created_at DESC
+       LIMIT 1
+    )
+    SELECT p.date, p.run_id, i.symbol
+      FROM previous_run p
+      JOIN screener_funnel_items i ON i.run_id = p.run_id
+     WHERE i.stage = 'l1_candidate_seed_after_overlay'
+       AND i.decision IN ('selected', 'pass')
+     GROUP BY p.date, p.run_id, i.symbol
+     ORDER BY i.symbol
+  `).bind(endDate).all<{ date: string; run_id: string; symbol: string }>()
+  const rows = results ?? []
+  return {
+    date: rows[0]?.date ?? null,
+    runId: rows[0]?.run_id ?? null,
+    symbols: [...new Set(rows.map((row) => String(row.symbol ?? '').trim().toUpperCase()).filter(Boolean))],
+  }
+}
+
+export async function loadMatureStrategyOofReturns(
+  db: D1Database,
+  asOfDate: string,
+): Promise<Record<string, Array<{ signal_date: string; residual_return: number; sample_count: number }>>> {
+  const { results } = await db.prepare(`
+    WITH mature_dates AS (
+      SELECT DISTINCT signal_date
+        FROM canonical_selection_labels_v4
+       WHERE outcome_known_date <= ?
+         AND signal_date < ?
+         AND label_schema_version = 'canonical-strategy-selection-label-v4'
+       ORDER BY signal_date DESC
+       LIMIT 60
+    )
+    SELECT m.strategy_id, m.signal_date,
+           AVG(l.residual_return_net) residual_return,
+           COUNT(*) sample_count
+      FROM strategy_label_matrix_v4 m
+      JOIN mature_dates d ON d.signal_date=m.signal_date
+      JOIN canonical_selection_labels_v4 l
+        ON l.signal_date=m.signal_date
+       AND l.symbol=m.symbol
+       AND l.producer_run_id=m.producer_run_id
+       AND l.label_schema_version='canonical-strategy-selection-label-v4'
+     WHERE m.evaluable=1
+       AND m.strategy_hit=1
+       AND EXISTS (
+         SELECT 1 FROM strategy_label_matrix_runs_v4 mr
+          WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
+       )
+       AND EXISTS (
+         SELECT 1 FROM canonical_run_heads h
+          WHERE h.logical_run_key='screener:' || m.signal_date || ':TW:production:market_screener'
+            AND h.run_id=m.producer_run_id
+       )
+     GROUP BY m.strategy_id, m.signal_date
+    HAVING COUNT(*) >= 3
+     ORDER BY m.strategy_id, m.signal_date
+  `).bind(asOfDate, asOfDate).all<{
+    strategy_id: string
+    signal_date: string
+    residual_return: number | string
+    sample_count: number | string
+  }>()
+  const output: Record<string, Array<{ signal_date: string; residual_return: number; sample_count: number }>> = {}
+  for (const row of results ?? []) {
+    const strategyId = String(row.strategy_id ?? '').trim()
+    const residualReturn = Number(row.residual_return)
+    const sampleCount = Number(row.sample_count)
+    if (!strategyId || !Number.isFinite(residualReturn) || !Number.isFinite(sampleCount)) continue
+    output[strategyId] ??= []
+    output[strategyId].push({
+      signal_date: row.signal_date,
+      residual_return: residualReturn,
+      sample_count: Math.max(0, Math.floor(sampleCount)),
+    })
+  }
+  return output
+}
+
 
 interface ScreenerFunnelItemInput {
   symbol: string
@@ -1483,6 +1656,7 @@ function deriveStrategyRawSignals(
   const priceAction = ohlcvRows.length >= 5 ? buildPriceActionStructure(ohlcvRows, { latestPrice: close }) : null
   const bestFvg = priceAction?.bestFvg ?? null
   const bestOrderBlock = priceAction?.bestOrderBlock ?? null
+  const bestOrderBlockStrength = priceAction ? bestOrderBlock?.strength ?? 0 : null
   const smc = priceAction?.smc ?? null
   const displacementPct = smc?.bullishDisplacement?.displacementPct ?? 0
   const bosBullish = smc?.bullishBos ? 1 : 0
@@ -1516,7 +1690,7 @@ function deriveStrategyRawSignals(
     techRoc10,
     techGapDown,
     volaCv90d,
-    bestOrderBlockStrength: bestOrderBlock?.strength ?? null,
+    bestOrderBlockStrength,
     bbBandwidthPct,
     vwapBias,
     vwap5d,
@@ -1609,7 +1783,9 @@ function deriveStrategyRawSignals(
       bearishLiquiditySweep: smc?.bearishLiquiditySweep ? 1 : 0,
       bestFvgStrength: bestFvg?.strength ?? null,
       bestFvgRetested: bestFvg?.status === 'retested' ? 1 : 0,
-      bestOrderBlockStrength: bestOrderBlock?.strength ?? null,
+      priceActionStructureAvailable: priceAction ? 1 : 0,
+      orderBlockDetected: priceAction ? (bestOrderBlock ? 1 : 0) : null,
+      bestOrderBlockStrength,
       bestOrderBlockRetested: bestOrderBlock?.status === 'retested' ? 1 : 0,
       KLOW2: kLow2,
       KSFT: kSft,
@@ -3239,19 +3415,27 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     ])
     runtimeStrategySpecs = specs
     const { loadPromotedStrategyMarginalEdgeWeightsV4 } = await import('./strategyMarginalEdgeV4')
-    const marginalEdgeState = await loadPromotedStrategyMarginalEdgeWeightsV4(
-      env.DB,
-      specs.map((spec: StrategySpec) => spec.id),
-    ).catch(() => null)
+    const [marginalEdgeLoad, strategyOofLoad] = await Promise.all([
+      loadPromotedStrategyMarginalEdgeWeightsV4(
+        env.DB,
+        specs.map((spec: StrategySpec) => spec.id),
+      )
+        .then((value) => ({ value, error: null as string | null }))
+        .catch((error) => ({
+          value: null,
+          error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
+        })),
+      loadMatureStrategyOofReturns(env.DB, endDate)
+        .then((returns) => ({ returns, error: null as string | null }))
+        .catch((error) => ({
+          returns: {} as Record<string, Array<{ signal_date: string; residual_return: number; sample_count: number }>>,
+          error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
+        })),
+    ])
+    const marginalEdgeState = marginalEdgeLoad.value
+    const strategyOofReturns = strategyOofLoad.returns
     const activeStrategyWeights = marginalEdgeState?.weights
       ?? (policyState?.status === 'active' ? policyState.strategy_weights : undefined)
-    const strategyPortfolioMetrics = await loadStrategyPortfolioMetricOverrides(env.DB, {
-      regime: currentRegime,
-      marketSegment: 'all',
-      asOfDate: endDate,
-      minSamples: 5,
-      knownStrategyIds: specs.map((spec: any) => String(spec.id || '').trim()).filter(Boolean),
-    })
     const strategySimilarityPayload = buildStrategySimilarityEvidencePayload(
       strategySourceUniverse as any,
       specs,
@@ -3259,17 +3443,42 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         regime: currentRegime,
         strategyWeights: activeStrategyWeights,
       },
+      strategyOofReturns,
     )
-    const strategySimilarityEvidence = await loadL125StrategySimilarityGraphEvidence(env, strategySimilarityPayload)
-    const runtimeTeacherEvidence = await loadRuntimeTeacherEvidence(
-      env.DB,
-      strategySourceUniverse.map((candidate: any) => String(candidate.symbol || '').trim()).filter(Boolean),
-      {
-        runDate: endDate,
-        lookbackDays: 30,
-        verifiedOnly: true,
-      },
-    )
+    const { loadPromotedStrategyRouteCalibration } = await import('./strategyRouteCalibration')
+    const [strategyPortfolioMetrics, strategySimilarityEvidence, runtimeTeacherEvidence, previousL15SlateLoad, promotedRouteCalibrationLoad] = await Promise.all([
+      loadStrategyPortfolioMetricOverrides(env.DB, {
+        regime: currentRegime,
+        marketSegment: 'all',
+        asOfDate: endDate,
+        minSamples: 5,
+        knownStrategyIds: specs.map((spec: any) => String(spec.id || '').trim()).filter(Boolean),
+      }),
+      loadL125StrategySimilarityGraphEvidence(env, strategySimilarityPayload, endDate),
+      loadRuntimeTeacherEvidence(
+        env.DB,
+        strategySourceUniverse.map((candidate: any) => String(candidate.symbol || '').trim()).filter(Boolean),
+        {
+          runDate: endDate,
+          lookbackDays: 30,
+          verifiedOnly: true,
+        },
+      ),
+      loadPreviousCanonicalL15Slate(env.DB, endDate)
+        .then((value) => ({ value, error: null as string | null }))
+        .catch((error) => ({
+          value: { date: null, runId: null, symbols: [] as string[] },
+          error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
+        })),
+      loadPromotedStrategyRouteCalibration(env.DB)
+        .then((value) => ({ value, error: null as string | null }))
+        .catch((error) => ({
+          value: null,
+          error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
+        })),
+    ])
+    const previousL15Slate = previousL15SlateLoad.value
+    const promotedRouteCalibration = promotedRouteCalibrationLoad.value
     const layer1BreadthPlan = buildLayer1StrategyBreadthPlan(
       strategySourceUniverse as any,
       specs,
@@ -3282,6 +3491,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         strategyPortfolioMetricSource: strategyPortfolioMetrics.telemetry.source,
         strategySimilarityGraphEvidence: strategySimilarityEvidence.evidence,
         runtimeTeacherEvidence: runtimeTeacherEvidence.labels,
+        previousSlateSymbols: previousL15Slate.symbols,
+        promotedRouteCalibration,
       },
     )
     strategySelectionPlan = layer1BreadthPlan.selection
@@ -3354,6 +3565,20 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       route_score_distribution: layer1BreadthPlan.telemetry.route_score_distribution ?? null,
       route_score_above_floor_count: layer1BreadthPlan.telemetry.route_score_above_floor_count ?? null,
       route_score_below_floor_count: layer1BreadthPlan.telemetry.route_score_below_floor_count ?? null,
+      previous_l15_slate_date: previousL15Slate.date,
+      previous_l15_slate_run_id: previousL15Slate.runId,
+      previous_l15_slate_load_error: previousL15SlateLoad.error,
+      strategy_oof_return_strategy_count: Object.keys(strategyOofReturns).length,
+      strategy_oof_return_load_error: strategyOofLoad.error,
+      promoted_route_calibration_run_id: promotedRouteCalibration?.runId ?? null,
+      promoted_route_calibration_load_error: promotedRouteCalibrationLoad.error,
+      promoted_marginal_edge_run_id: marginalEdgeState?.runId ?? null,
+      promoted_marginal_edge_load_error: marginalEdgeLoad.error,
+      previous_l15_slate_count: layer1BreadthPlan.telemetry.previous_slate_count ?? null,
+      l15_temporal_intersection_count: layer1BreadthPlan.telemetry.temporal_intersection_count ?? null,
+      l15_temporal_jaccard: layer1BreadthPlan.telemetry.temporal_jaccard ?? null,
+      l15_previous_list_recall: layer1BreadthPlan.telemetry.previous_list_recall ?? null,
+      l15_fresh_share: layer1BreadthPlan.telemetry.fresh_share ?? null,
       teacher_label_available_count: layer1BreadthPlan.telemetry.teacher_label_available_count ?? null,
       teacher_label_missing_count: layer1BreadthPlan.telemetry.teacher_label_missing_count ?? null,
       teacher_label_contract: layer1BreadthPlan.telemetry.teacher_label_contract ?? null,
@@ -3370,6 +3595,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       strategy_similarity_medoid_algorithm: layer1BreadthPlan.telemetry.strategy_similarity_medoid_algorithm ?? null,
       strategy_similarity_blocked_reason: strategySimilarityEvidence.error ?? layer1BreadthPlan.telemetry.strategy_similarity_blocked_reason ?? null,
       strategy_similarity_payload_strategy_count: strategySimilarityEvidence.payload_strategy_count,
+      strategy_similarity_artifact_id: strategySimilarityEvidence.artifact_id ?? null,
       strategy_portfolio_metrics: strategyPortfolioMetrics.telemetry,
       pool_status: strategySelectionPlan.pools.map((pool: any) => ({
         strategy_id: pool.strategy_id,

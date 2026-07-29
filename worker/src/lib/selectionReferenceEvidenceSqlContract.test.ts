@@ -33,5 +33,5 @@ function assertInsertArity(table: string, expectedPlaceholders: number): void {
   assert.equal(placeholders, expectedPlaceholders, `${table} INSERT bind arity changed unexpectedly`)
 }
 
-assertInsertArity('selection_reference_snapshots_v1', 18)
-assertInsertArity('strategy_label_matrix_v4', 19)
+assertInsertArity('selection_reference_snapshots_v1', 23)
+assertInsertArity('strategy_label_matrix_v4', 25)

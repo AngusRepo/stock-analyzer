@@ -2,6 +2,7 @@ import {
   buildStrategyPortfolioBacktestMetricOverrides,
   buildStrategyPortfolioDecisionLogMetricOverrides,
   buildStrategyPortfolioMetricOverridesFromLedgerRows,
+  coerceModalStrategySimilarityGraphEvidence,
   loadStrategyPortfolioMetricOverrides,
   rewardLedgerRowToStrategyPortfolioMetrics,
   type StrategyBacktestResultMetricRow,
@@ -134,6 +135,33 @@ function fakeDb(input: {
 }
 
 {
+  const overrides = buildStrategyPortfolioMetricOverridesFromLedgerRows([
+    row({ strategy_id: 'segmented_v1', market_segment: 'TWSE', samples: 3, hit_rate: 2 / 3, avg_return_pct: 0.02, reward_sum: 0.06 }),
+    row({ strategy_id: 'segmented_v1', market_segment: 'OTC', samples: 7, hit_rate: 3 / 7, avg_return_pct: -0.01, reward_sum: -0.07 }),
+  ], { marketSegment: 'all', minSamples: 5 })
+  assert(overrides.segmented_v1.metric_sample_count === 10, 'all-market loader must aggregate TWSE/OTC samples before applying minSamples')
+  assert(overrides.segmented_v1.recent_alpha === -0.001, 'all-market return must be sample-weighted across market segments')
+}
+
+{
+  const overrides = buildStrategyPortfolioMetricOverridesFromLedgerRows([
+    row({ strategy_id: 'canonical_all_v1', market_segment: 'all', samples: 20, avg_return_pct: 0.03 }),
+    row({ strategy_id: 'canonical_all_v1', market_segment: 'TWSE', samples: 100, avg_return_pct: -0.02 }),
+  ], { marketSegment: 'all', minSamples: 5 })
+  assert(overrides.canonical_all_v1.metric_sample_count === 20, 'canonical all-market row must win over segment rows to prevent double counting')
+  assert(overrides.canonical_all_v1.recent_alpha === 0.03, 'canonical all-market evidence must retain its own return')
+}
+
+{
+  const overrides = buildStrategyPortfolioMetricOverridesFromLedgerRows([
+    row({ strategy_id: 'latest_materialization_v1', market_segment: 'TWSE', samples: 100, avg_return_pct: -0.02, updated_at: '2026-07-27T00:00:00.000Z' }),
+    row({ strategy_id: 'latest_materialization_v1', market_segment: 'TWSE', samples: 20, avg_return_pct: 0.015, updated_at: '2026-07-28T00:00:00.000Z' }),
+  ], { marketSegment: 'all', minSamples: 5 })
+  assert(overrides.latest_materialization_v1.metric_sample_count === 20, 'latest legal segment materialization must win over an older larger row')
+  assert(overrides.latest_materialization_v1.recent_alpha === 0.015, 'older sample volume must not override the newest PIT materialization')
+}
+
+{
   const raw = {
     strategy_id: 'reliable_low_corr_v1',
     strategy_returns_by_partition: {
@@ -173,6 +201,37 @@ function fakeDb(input: {
   assert((overrides.trend_a_v1.centrality ?? 0) > 0, 'decision log should compute centrality-like crowding evidence')
 }
 
+{
+  const evidence = coerceModalStrategySimilarityGraphEvidence({
+    status: 'computed',
+    source: 'modal_python',
+    algorithm_owner: 'ml-service-modal-python',
+    method: 'networkx_connected_components_oof_residual_correlation',
+    input_scope: 'mature_oof_residual_returns_with_same_day_overlap_diagnostic',
+    medoid_algorithm: "sklearn_extra.cluster.KMedoids(method='pam')",
+    kmedoids_pam_preflight_status: 'pass',
+    kmedoids_pam_preflight: { status: 'pass' },
+    global_k_hardcoded: false,
+    production_selector: false,
+    self_implemented_algorithm: false,
+    strategy_count: 2,
+    edge_count: 1,
+    component_count: 1,
+    effective_strategy_count: 1,
+    edge_threshold: 0.6,
+    edge_threshold_source: 'adaptive_quantile',
+    eligible_oof_pair_count: 1,
+    paired_date_max: 8,
+    oof_max_date: '2026-07-08',
+    strategy_cluster_id: { alpha_a: 'sc000', alpha_b: 'sc000' },
+    strategy_cluster_size: { alpha_a: 2, alpha_b: 2 },
+    strategy_cluster_crowding_score: { alpha_a: 0.5, alpha_b: 0.5 },
+    strategy_cluster_uniqueness_score: { alpha_a: 0.5, alpha_b: 0.5 },
+  })
+  assert(evidence?.method === 'networkx_connected_components_oof_residual_correlation', 'Worker must accept the mature OOF residual similarity contract')
+  assert(evidence?.eligible_oof_pair_count === 1, 'Worker must retain OOF pair coverage diagnostics')
+  assert(evidence?.paired_date_max === 8 && evidence?.oof_max_date === '2026-07-08', 'Worker must retain OOF maturity diagnostics')
+}
 async function main(): Promise<void> {
   {
     const db = fakeDb({
@@ -203,6 +262,7 @@ async function main(): Promise<void> {
     assert((result.metrics.missing_strategy_v1.reliability ?? 1) < 0.5, 'missing known strategy should receive conservative reliability shrinkage')
     const executedSql = ((fakeDb as any).sqls ?? []).join('\n')
     assert(executedSql.includes("selection_contract_version = 'selection-reference-snapshot-v3'"), 'reward reader must reject legacy selection contracts')
+    assert(executedSql.includes("? = 'all' OR market_segment = ?"), 'all-market reward reader must use a true wildcard before sample-weighted aggregation')
     assert(executedSql.includes("evaluation_contract_version = 'strategy-evaluation-v2'"), 'decision reader must reject legacy evaluation contracts')
     assert(executedSql.includes('ROW_NUMBER() OVER') && executedSql.includes('PARTITION BY strategy_id'), 'decision evidence must use per-strategy balance instead of a global LIMIT')
   }

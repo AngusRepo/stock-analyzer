@@ -212,6 +212,9 @@ export interface StrategySpecMatch {
   status: StrategySpecStatus
   label: string
   reason: string
+  matchStrength: number
+  thresholdMargin: number
+  evidenceCount: number
 }
 
 export interface StrategySpecAssessment {
@@ -1025,6 +1028,148 @@ function meetsRawSignalThresholds(raw: StrategyRawSignals, thresholds: StrategyS
     && meetsFeatureRefDsl(raw, thresholds.featureRefs)
 }
 
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value))
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10_000) / 10_000
+}
+
+function passedNumericThresholdStrength(actualRaw: unknown, expected: number, direction: 'min' | 'max'): number | null {
+  const actual = finiteNumber(actualRaw)
+  if (actual == null) return null
+  const signedMargin = direction === 'min' ? actual - expected : expected - actual
+  if (signedMargin < 0) return 0
+  if (Math.abs(expected) < 1e-9) return signedMargin === 0 ? 0.5 : 0.75
+  const relativeMargin = signedMargin / Math.abs(expected)
+  return clamp01(0.5 + 0.5 * (relativeMargin / (1 + relativeMargin)))
+}
+
+function conditionStrength(
+  actual: unknown,
+  condition: StrategyComparisonCondition,
+  negate = false,
+): number | null {
+  if (typeof condition.value !== 'number') return compareSignal(actual, condition) !== negate ? 0.75 : 0
+  let direction: 'min' | 'max' | null = null
+  if (condition.op === '>=' || condition.op === '>') direction = negate ? 'max' : 'min'
+  if (condition.op === '<=' || condition.op === '<') direction = negate ? 'min' : 'max'
+  if (!direction) return compareSignal(actual, condition) !== negate ? 0.75 : 0
+  return passedNumericThresholdStrength(actual, condition.value, direction)
+}
+
+export function deriveStrategySpecMatchStrength(
+  candidate: StrategyCandidateInput,
+  spec: StrategySpec,
+): { matchStrength: number; thresholdMargin: number; evidenceCount: number } {
+  const scores = deriveStrategyThresholdScores(candidate)
+  const raw = deriveStrategyRawSignals(candidate)
+  const t = spec.thresholds
+  const strengths: number[] = []
+  const addMin = (actual: unknown, expected?: number) => {
+    if (expected == null) return
+    const value = passedNumericThresholdStrength(actual, expected, 'min')
+    if (value != null) strengths.push(value)
+  }
+  const addMax = (actual: unknown, expected?: number) => {
+    if (expected == null) return
+    const value = passedNumericThresholdStrength(actual, expected, 'max')
+    if (value != null) strengths.push(value)
+  }
+
+  addMin(scores.seedScore, t.minSeedScore)
+  addMin(scores.chipFlow, t.minChipScore)
+  addMin(scores.technicalStructure, t.minTechScore)
+  addMin(scores.momentumScore, t.minMomentumScore)
+  addMin(candidate.current_price ?? raw.close, t.minPrice)
+  addMax(candidate.current_price ?? raw.close, t.maxPrice)
+
+  const scalarMinChecks: Array<[unknown, number | undefined]> = [
+    [raw.closeAboveMa20Pct, t.minCloseAboveMa20Pct],
+    [raw.closeAboveMa60Pct, t.minCloseAboveMa60Pct],
+    [raw.volumeExpansion20, t.minVolumeExpansion20],
+    [raw.return20d, t.minReturn20d],
+    [raw.foreignTrustNet5d, t.minForeignTrustNet5d],
+    [raw.dealerNet5d, t.minDealerNet5d],
+    [raw.brokerNetShares5d, t.minBrokerNetShares5d],
+    [raw.brokerNetAmount5d, t.minBrokerNetAmount5d],
+    [raw.brokerCount, t.minBrokerCount],
+    [raw.revenueGrowthYoY, t.minRevenueGrowthYoY],
+    [raw.monthlyRevenueYoY, t.minMonthlyRevenueYoY],
+    [raw.monthlyRevenueMoM, t.minMonthlyRevenueMoM],
+    [raw.grossMargin, t.minGrossMargin],
+    [raw.operatingMargin, t.minOperatingMargin],
+    [raw.roe, t.minRoe],
+    [raw.eps, t.minEps],
+  ]
+  const scalarMaxChecks: Array<[unknown, number | undefined]> = [
+    [raw.closeAboveMa20Pct, t.maxCloseAboveMa20Pct],
+    [raw.closeAboveMa60Pct, t.maxCloseAboveMa60Pct],
+    [raw.return20d, t.maxReturn20d],
+    [raw.brokerConcentration, t.maxBrokerConcentration],
+    [raw.pe, t.maxPe],
+    [raw.pb, t.maxPb],
+  ]
+  for (const [actual, expected] of scalarMinChecks) addMin(actual, expected)
+  for (const [actual, expected] of scalarMaxChecks) addMax(actual, expected)
+  for (const [signal, expected] of Object.entries(t.minTechnicalIndicators ?? {})) addMin(raw.technicalIndicators?.[signal], expected)
+  for (const [signal, expected] of Object.entries(t.maxTechnicalIndicators ?? {})) addMax(raw.technicalIndicators?.[signal], expected)
+  for (const [signal, expected] of Object.entries(t.minFactorSignals ?? {})) addMin(raw.factorSignals?.[signal], expected)
+  for (const [signal, expected] of Object.entries(t.maxFactorSignals ?? {})) addMax(raw.factorSignals?.[signal], expected)
+
+  for (const condition of t.dsl?.all ?? []) {
+    const strength = conditionStrength(signalValue(raw, condition.signal), condition)
+    if (strength != null) strengths.push(strength)
+  }
+  const anyStrengths = (t.dsl?.any ?? [])
+    .filter((condition) => compareSignal(signalValue(raw, condition.signal), condition))
+    .map((condition) => conditionStrength(signalValue(raw, condition.signal), condition))
+    .filter((value): value is number => value != null)
+  if (anyStrengths.length) strengths.push(Math.max(...anyStrengths))
+  for (const condition of t.dsl?.not ?? []) {
+    const strength = conditionStrength(signalValue(raw, condition.signal), condition, true)
+    if (strength != null) strengths.push(strength)
+  }
+
+  for (const condition of t.featureRefs?.all ?? []) {
+    const strength = conditionStrength(featureRefValue(raw, condition), condition)
+    if (strength != null) strengths.push(strength)
+  }
+  const featureAnyStrengths = (t.featureRefs?.any ?? [])
+    .filter((condition) => compareSignal(featureRefValue(raw, condition), condition))
+    .map((condition) => conditionStrength(featureRefValue(raw, condition), condition))
+    .filter((value): value is number => value != null)
+  if (featureAnyStrengths.length) strengths.push(Math.max(...featureAnyStrengths))
+  for (const condition of t.featureRefs?.not ?? []) {
+    const strength = conditionStrength(featureRefValue(raw, condition), condition, true)
+    if (strength != null) strengths.push(strength)
+  }
+  const weighted = t.featureRefs?.weightedScore
+  if (weighted) {
+    let numerator = 0
+    let denominator = 0
+    for (const term of weighted.terms ?? []) {
+      const value = finiteNumber(featureRefValue(raw, term))
+      const weight = finiteNumber(term.weight) ?? 1
+      if (value == null || weight <= 0) continue
+      numerator += value * weight
+      denominator += weight
+    }
+    if (denominator > 0) addMin(numerator / denominator, effectiveWeightedScoreMin(weighted).min)
+  }
+
+  const bounded = strengths.filter((value) => Number.isFinite(value) && value > 0).map(clamp01)
+  const matchStrength = bounded.length
+    ? bounded.length / bounded.reduce((sum, value) => sum + 1 / Math.max(value, 1e-9), 0)
+    : 0.5
+  return {
+    matchStrength: round4(matchStrength),
+    thresholdMargin: round4(clamp01((matchStrength - 0.5) * 2)),
+    evidenceCount: bounded.length,
+  }
+}
+
 export function assessCandidateAgainstStrategySpecs(
   candidate: StrategyCandidateInput,
   specs: StrategySpec[],
@@ -1054,12 +1199,14 @@ export function assessCandidateAgainstStrategySpecs(
     if (!meetsMinimum(scores.momentumScore, t.minMomentumScore)) continue
     if (!meetsRawSignalThresholds(raw, t)) continue
 
+    const strength = deriveStrategySpecMatchStrength(candidate, spec)
     matches.push({
       specId: spec.id,
       alphaBucket: spec.alphaBucket,
       status: spec.status,
       label: spec.name,
       reason: spec.thesis,
+      ...strength,
     })
   }
 

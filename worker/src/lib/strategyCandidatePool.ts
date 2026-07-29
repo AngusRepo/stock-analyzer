@@ -301,6 +301,11 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
     strategy_similarity_degraded_reason?: string
     strategy_portfolio_metric_source?: string
     strategy_portfolio_metric_count?: number
+    previous_slate_count?: number
+    temporal_intersection_count?: number
+    temporal_jaccard?: number | null
+    previous_list_recall?: number | null
+    fresh_share?: number | null
   }
 }
 
@@ -1388,6 +1393,8 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     strategyPortfolioMetricSource?: string
     strategySimilarityGraphEvidence?: StrategySimilarityGraphEvidence | null
     runtimeTeacherEvidence?: Record<string, Record<string, number>>
+    previousSlateSymbols?: string[]
+    promotedRouteCalibration?: { runId: string; routeVersion: string; routeFloor: number } | null
     policy?: StrategyCandidatePoolPolicy
   },
 ): Layer1StrategyBreadthPlan<T> {
@@ -1408,6 +1415,8 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     strategyPortfolioMetrics: options.strategyPortfolioMetrics,
     strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
     runtimeTeacherEvidence: options.runtimeTeacherEvidence,
+    previousSlateSymbols: options.previousSlateSymbols,
+    promotedRouteCalibration: options.promotedRouteCalibration,
   })
   const adaptiveCapacity = resolveLayer15SoftCapacity({
     baseline: targetSize,
@@ -1438,6 +1447,8 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
         strategyPortfolioMetrics: options.strategyPortfolioMetrics,
         strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
         runtimeTeacherEvidence: options.runtimeTeacherEvidence,
+        previousSlateSymbols: options.previousSlateSymbols,
+        promotedRouteCalibration: options.promotedRouteCalibration,
       })
     : provisionalRouterPlan
 
@@ -1523,6 +1534,11 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       strategy_similarity_blocked_reason: routerPlan.telemetry.strategy_similarity_blocked_reason,
       strategy_portfolio_metric_source: options.strategyPortfolioMetricSource,
       strategy_portfolio_metric_count: Object.keys(options.strategyPortfolioMetrics ?? {}).length,
+      previous_slate_count: routerPlan.telemetry.previous_slate_count,
+      temporal_intersection_count: routerPlan.telemetry.temporal_intersection_count,
+      temporal_jaccard: routerPlan.telemetry.temporal_jaccard,
+      previous_list_recall: routerPlan.telemetry.previous_list_recall,
+      fresh_share: routerPlan.telemetry.fresh_share,
     },
   }
 }

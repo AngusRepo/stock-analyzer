@@ -8,7 +8,11 @@ export interface StrategySimilarityGraphEvidence {
   version: 'strategy-similarity-graph-v1'
   evidence_only: true
   status?: string
-  method: 'connected_components_jaccard_overlap' | 'networkx_connected_components_jaccard_overlap' | 'not_computed'
+  method:
+    | 'connected_components_jaccard_overlap'
+    | 'networkx_connected_components_jaccard_overlap'
+    | 'networkx_connected_components_oof_residual_correlation'
+    | 'not_computed'
   source?: 'modal_python' | 'missing'
   schema_version?: string
   algorithm_owner?: string
@@ -26,6 +30,9 @@ export interface StrategySimilarityGraphEvidence {
   effective_strategy_count: number
   edge_threshold: number
   edge_threshold_source: 'config_explicit' | 'adaptive_quantile' | 'adaptive_empty'
+  eligible_oof_pair_count?: number
+  paired_date_max?: number
+  oof_max_date?: string | null
   strategy_cluster_id: Record<string, string>
   strategy_cluster_size: Record<string, number>
   strategy_cluster_crowding_score: Record<string, number>
@@ -208,6 +215,9 @@ export function coerceModalStrategySimilarityGraphEvidence(raw: unknown): Strate
   if (cleanText(record.source) !== 'modal_python') return null
   if (cleanText(record.algorithm_owner) !== 'ml-service-modal-python') return null
   if (cleanText(record.status) !== 'computed') return null
+  if (cleanText(record.method) !== 'networkx_connected_components_oof_residual_correlation') return null
+  if (cleanText(record.input_scope) !== 'mature_oof_residual_returns_with_same_day_overlap_diagnostic') return null
+  if ((finiteNumber(record.eligible_oof_pair_count) ?? 0) <= 0) return null
   if (cleanText(record.medoid_algorithm) !== "sklearn_extra.cluster.KMedoids(method='pam')") return null
   if (cleanText(record.kmedoids_pam_preflight_status) !== 'pass') return null
   if (cleanText(preflight.status) !== 'pass') return null
@@ -223,9 +233,13 @@ export function coerceModalStrategySimilarityGraphEvidence(raw: unknown): Strate
     ? rawSize
     : clusterSizesFromComponents(record.components, strategyClusterId)
   const source = 'modal_python'
-  const method = cleanText(record.method) === 'networkx_connected_components_jaccard_overlap'
-    ? 'networkx_connected_components_jaccard_overlap'
-    : 'connected_components_jaccard_overlap'
+  const methodText = cleanText(record.method)
+  const method: StrategySimilarityGraphEvidence['method'] =
+    methodText === 'networkx_connected_components_oof_residual_correlation'
+      ? 'networkx_connected_components_oof_residual_correlation'
+      : methodText === 'networkx_connected_components_jaccard_overlap'
+        ? 'networkx_connected_components_jaccard_overlap'
+        : 'connected_components_jaccard_overlap'
   const edgeThresholdSource = cleanText(record.edge_threshold_source)
   return {
     version: 'strategy-similarity-graph-v1',
@@ -249,6 +263,9 @@ export function coerceModalStrategySimilarityGraphEvidence(raw: unknown): Strate
     edge_threshold_source: edgeThresholdSource === 'config_explicit' || edgeThresholdSource === 'adaptive_quantile'
       ? edgeThresholdSource
       : 'adaptive_empty',
+    eligible_oof_pair_count: Math.max(0, Math.round(finiteNumber(record.eligible_oof_pair_count) ?? 0)),
+    paired_date_max: Math.max(0, Math.round(finiteNumber(record.paired_date_max) ?? 0)),
+    oof_max_date: cleanText(record.oof_max_date) || null,
     strategy_cluster_id: strategyClusterId,
     strategy_cluster_size: strategyClusterSize,
     strategy_cluster_crowding_score: numberRecord(record.strategy_cluster_crowding_score, 0),
@@ -378,6 +395,102 @@ function scoreRowForPreference(row: StrategyRewardLedgerMetricRow, options: Load
   return regimeScore + segmentScore + sampleScore + horizonScore
 }
 
+function latestTimestamp(row: StrategyRewardLedgerMetricRow): number {
+  const parsed = Date.parse(cleanText(row.updated_at))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function bestRewardRow(
+  rows: StrategyRewardLedgerMetricRow[],
+  options: LoadStrategyPortfolioMetricOptions,
+): StrategyRewardLedgerMetricRow | null {
+  return [...rows].sort((left, right) => {
+    const recency = latestTimestamp(right) - latestTimestamp(left)
+    if (recency !== 0) return recency
+    const preference = scoreRowForPreference(right, options) - scoreRowForPreference(left, options)
+    if (preference !== 0) return preference
+    return Number(right.samples ?? 0) - Number(left.samples ?? 0)
+  })[0] ?? null
+}
+
+function aggregateMarketSegmentRows(
+  rows: StrategyRewardLedgerMetricRow[],
+  options: LoadStrategyPortfolioMetricOptions,
+): StrategyRewardLedgerMetricRow | null {
+  if (!rows.length) return null
+  const bestBySegment = new Map<string, StrategyRewardLedgerMetricRow>()
+  for (const row of rows) {
+    const segment = cleanText(row.market_segment).toLowerCase() || 'unknown'
+    const existing = bestBySegment.get(segment)
+    const preferred = bestRewardRow(existing ? [existing, row] : [row], options)
+    if (preferred) bestBySegment.set(segment, preferred)
+  }
+  const selected = [...bestBySegment.values()]
+  const totalSamples = selected.reduce((sum, row) => sum + Math.max(0, Number(row.samples ?? 0)), 0)
+  if (totalSamples <= 0) return null
+  const weighted = (read: (row: StrategyRewardLedgerMetricRow) => number | null, fallback: number): number => {
+    let numerator = 0
+    let denominator = 0
+    for (const row of selected) {
+      const value = read(row)
+      const samples = Math.max(0, Number(row.samples ?? 0))
+      if (value == null || samples <= 0) continue
+      numerator += value * samples
+      denominator += samples
+    }
+    return denominator > 0 ? numerator / denominator : fallback
+  }
+  const rewardSum = selected.reduce((sum, row) => {
+    const samples = Math.max(0, Number(row.samples ?? 0))
+    return sum + (finiteNumber(row.reward_sum) ?? (finiteNumber(row.avg_return_pct) ?? 0) * samples)
+  }, 0)
+  const newest = [...selected].sort((left, right) => latestTimestamp(right) - latestTimestamp(left))[0]
+  return {
+    ...newest,
+    samples: totalSamples,
+    hit_rate: round4(weighted((row) => finiteNumber(row.hit_rate), 0.5)),
+    avg_return_pct: round4(rewardSum / totalSamples),
+    reward_sum: round4(rewardSum),
+    max_drawdown_pct: -round4(Math.max(...selected.map((row) => Math.abs(finiteNumber(row.max_drawdown_pct) ?? 0)))),
+    coverage: round4(weighted((row) => finiteNumber(row.coverage), 1)),
+    market_segment: 'all',
+    evidence_json: JSON.stringify({
+      aggregation_contract: 'sample_weighted_market_segments_v1',
+      source_segments: selected.map((row) => cleanText(row.market_segment) || 'unknown').sort(),
+      source_row_count: selected.length,
+      source_samples: totalSamples,
+    }),
+    updated_at: newest.updated_at,
+  }
+}
+
+function preferredRewardRowForStrategy(
+  rows: StrategyRewardLedgerMetricRow[],
+  options: LoadStrategyPortfolioMetricOptions,
+): StrategyRewardLedgerMetricRow | null {
+  if (!rows.length) return null
+  const requestedRegime = cleanText(options.regime).toLowerCase()
+  const requestedSegment = cleanText(options.marketSegment).toLowerCase() || 'all'
+  const exactRegimeRows = requestedRegime
+    ? rows.filter((row) => (cleanText(row.regime).toLowerCase() || 'all') === requestedRegime)
+    : []
+  const genericRegimeRows = rows.filter((row) => (cleanText(row.regime).toLowerCase() || 'all') === 'all')
+  const regimeRows = exactRegimeRows.length ? exactRegimeRows : genericRegimeRows.length ? genericRegimeRows : rows
+  const nearestHorizonDistance = Math.min(...regimeRows.map((row) => Math.abs(Number(row.horizon_days ?? 5) - 5)))
+  const horizonRows = regimeRows.filter((row) => Math.abs(Number(row.horizon_days ?? 5) - 5) === nearestHorizonDistance)
+
+  if (requestedSegment !== 'all') {
+    const exactSegmentRows = horizonRows.filter((row) => cleanText(row.market_segment).toLowerCase() === requestedSegment)
+    if (exactSegmentRows.length) return bestRewardRow(exactSegmentRows, options)
+    const genericRows = horizonRows.filter((row) => (cleanText(row.market_segment).toLowerCase() || 'all') === 'all')
+    return bestRewardRow(genericRows, options)
+  }
+
+  const canonicalAllRows = horizonRows.filter((row) => (cleanText(row.market_segment).toLowerCase() || 'all') === 'all')
+  if (canonicalAllRows.length) return bestRewardRow(canonicalAllRows, options)
+  return aggregateMarketSegmentRows(horizonRows, options)
+}
+
 function jaccard(a: Set<string>, b: Set<string>): number {
   if (!a.size && !b.size) return 0
   let intersection = 0
@@ -484,18 +597,21 @@ export function buildStrategyPortfolioMetricOverridesFromLedgerRows(
   options: LoadStrategyPortfolioMetricOptions = {},
 ): StrategyPortfolioMetricOverrides {
   const minSamples = Math.max(0, Math.floor(options.minSamples ?? 5))
-  const best = new Map<string, { row: StrategyRewardLedgerMetricRow; score: number }>()
+  const byStrategy = new Map<string, StrategyRewardLedgerMetricRow[]>()
   for (const row of rows) {
-    if (!cleanText(row.strategy_id)) continue
-    if (Number(row.samples ?? 0) < minSamples) continue
-    const score = scoreRowForPreference(row, options)
-    const existing = best.get(row.strategy_id)
-    if (!existing || score > existing.score) best.set(row.strategy_id, { row, score })
+    const strategyId = cleanText(row.strategy_id)
+    if (!strategyId) continue
+    const strategyRows = byStrategy.get(strategyId) ?? []
+    strategyRows.push(row)
+    byStrategy.set(strategyId, strategyRows)
   }
-  return Object.fromEntries([...best.entries()].map(([strategyId, item]) => [
-    strategyId,
-    rewardLedgerRowToStrategyPortfolioMetrics(item.row),
-  ]))
+  const out: StrategyPortfolioMetricOverrides = {}
+  for (const [strategyId, strategyRows] of byStrategy.entries()) {
+    const preferred = preferredRewardRowForStrategy(strategyRows, options)
+    if (!preferred || Number(preferred.samples ?? 0) < minSamples) continue
+    out[strategyId] = rewardLedgerRowToStrategyPortfolioMetrics(preferred)
+  }
+  return out
 }
 
 export function buildStrategyPortfolioDecisionLogMetricOverrides(
@@ -818,11 +934,11 @@ export async function loadStrategyPortfolioMetricOverrides(
         FROM strategy_reward_ledger
        WHERE samples > 0
          AND selection_contract_version = 'selection-reference-snapshot-v3'
-         AND (market_segment = ? OR market_segment = 'all' OR market_segment IS NULL)
+         AND (? = 'all' OR market_segment = ? OR market_segment = 'all' OR market_segment IS NULL)
          AND (? IS NULL OR regime = ? OR regime = 'all' OR regime IS NULL)
        ORDER BY updated_at DESC, samples DESC
        LIMIT ?
-    `).bind(marketSegment, regime, regime, limit).all<StrategyRewardLedgerMetricRow>()
+    `).bind(marketSegment, marketSegment, regime, regime, limit).all<StrategyRewardLedgerMetricRow>()
     ledgerRows = results ?? []
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error))

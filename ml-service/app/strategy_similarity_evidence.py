@@ -37,6 +37,24 @@ def _clean_strategy_id(value: object) -> str:
 def _clean_symbol(value: object) -> str:
     return _clean_text(value).upper()
 
+def _normalize_oof_returns(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        signal_date = _clean_text(item.get("signal_date") or item.get("date"))
+        residual_return = _to_float(item.get("residual_return"), float("nan"))
+        sample_count = int(_to_float(item.get("sample_count"), 0))
+        if signal_date and math.isfinite(residual_return) and sample_count >= 3:
+            rows.append({
+                "signal_date": signal_date,
+                "residual_return": residual_return,
+                "sample_count": sample_count,
+            })
+    return sorted(rows, key=lambda row: row["signal_date"])
+
 
 def _to_float(value: object, default: float = 0.0) -> float:
     try:
@@ -59,6 +77,46 @@ def _jaccard(left: set[str], right: set[str]) -> float:
     return len(left & right) / union_size
 
 
+def _paired_oof_similarity(
+    left: list[dict[str, Any]],
+    right: list[dict[str, Any]],
+    left_symbols: set[str],
+    right_symbols: set[str],
+) -> dict[str, Any]:
+    left_by_date = {row["signal_date"]: float(row["residual_return"]) for row in left}
+    right_by_date = {row["signal_date"]: float(row["residual_return"]) for row in right}
+    dates = sorted(set(left_by_date) & set(right_by_date))
+    overlap = _jaccard(left_symbols, right_symbols)
+    if len(dates) < 5:
+        return {
+            "eligible": False,
+            "paired_dates": len(dates),
+            "return_correlation": None,
+            "return_correlation_lcb90": None,
+            "same_day_jaccard_diagnostic": round(overlap, 8),
+            "similarity": 0.0,
+        }
+    left_values = np.asarray([left_by_date[date] for date in dates], dtype=float)
+    right_values = np.asarray([right_by_date[date] for date in dates], dtype=float)
+    if float(np.std(left_values)) <= 1e-12 or float(np.std(right_values)) <= 1e-12:
+        correlation = 0.0
+    else:
+        correlation = float(np.corrcoef(left_values, right_values)[0, 1])
+    bounded = max(-0.999999, min(0.999999, correlation))
+    fisher_lcb = math.tanh(math.atanh(bounded) - 1.281552 / math.sqrt(max(1, len(dates) - 3)))
+    # Same-day overlap is diagnostic only; OOF residual returns own redundancy.
+    similarity = max(0.0, fisher_lcb)
+    return {
+        "eligible": True,
+        "paired_dates": len(dates),
+        "return_correlation": round(correlation, 8),
+        "return_correlation_lcb90": round(fisher_lcb, 8),
+        "same_day_jaccard_diagnostic": round(overlap, 8),
+        "similarity": round(similarity, 8),
+    }
+
+
+
 def _strategy_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     rows = payload.get("strategies")
     if isinstance(rows, list):
@@ -73,6 +131,7 @@ def _strategy_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
             normalized.append({
                 "strategy_id": strategy_id,
                 "family_id": _clean_text(row.get("family_id") or row.get("familyId") or row.get("family")),
+                "oof_returns": _normalize_oof_returns(row.get("oof_returns")),
                 "symbols": sorted({
                     _clean_symbol(symbol)
                     for symbol in symbols
@@ -94,6 +153,7 @@ def _strategy_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
         normalized.append({
             "strategy_id": strategy_id,
             "family_id": _clean_text(strategy_family.get(strategy_id) if isinstance(strategy_family, dict) else ""),
+            "oof_returns": [],
             "symbols": sorted({
                 _clean_symbol(symbol)
                 for symbol in symbols
@@ -248,6 +308,10 @@ def build_strategy_similarity_evidence(payload: dict[str, Any] | None) -> dict[s
         row["strategy_id"]: set(row["symbols"])
         for row in rows
     }
+    oof_returns_by_strategy = {
+        row["strategy_id"]: list(row.get("oof_returns") or [])
+        for row in rows
+    }
     graph = nx.Graph()
     for row in rows:
         graph.add_node(
@@ -257,9 +321,18 @@ def build_strategy_similarity_evidence(payload: dict[str, Any] | None) -> dict[s
         )
 
     similarities: list[float] = []
+    pairwise_evidence: dict[str, dict[str, Any]] = {}
     for left_idx, left_id in enumerate(strategy_ids):
         for right_id in strategy_ids[left_idx + 1:]:
-            similarities.append(_jaccard(symbols_by_strategy[left_id], symbols_by_strategy[right_id]))
+            evidence = _paired_oof_similarity(
+                oof_returns_by_strategy[left_id],
+                oof_returns_by_strategy[right_id],
+                symbols_by_strategy[left_id],
+                symbols_by_strategy[right_id],
+            )
+            pairwise_evidence[f"{left_id}|{right_id}"] = evidence
+            if evidence["eligible"]:
+                similarities.append(float(evidence["similarity"]))
 
     threshold, threshold_source = _adaptive_threshold(
         similarities,
@@ -270,12 +343,21 @@ def build_strategy_similarity_evidence(payload: dict[str, Any] | None) -> dict[s
     )
 
     max_pairwise = 0.0
+    max_same_day_overlap = 0.0
     for left_idx, left_id in enumerate(strategy_ids):
         for right_id in strategy_ids[left_idx + 1:]:
-            similarity = _jaccard(symbols_by_strategy[left_id], symbols_by_strategy[right_id])
+            evidence = pairwise_evidence[f"{left_id}|{right_id}"]
+            similarity = float(evidence["similarity"])
             max_pairwise = max(max_pairwise, similarity)
-            if similarity >= threshold:
-                graph.add_edge(left_id, right_id, weight=round(similarity, 8), similarity=round(similarity, 8))
+            max_same_day_overlap = max(max_same_day_overlap, float(evidence["same_day_jaccard_diagnostic"]))
+            if evidence["eligible"] and similarity >= threshold:
+                graph.add_edge(
+                    left_id,
+                    right_id,
+                    weight=round(similarity, 8),
+                    similarity=round(similarity, 8),
+                    paired_dates=int(evidence["paired_dates"]),
+                )
 
     components = [sorted(component) for component in nx.connected_components(graph)]
     components.sort(key=lambda members: min(strategy_ids.index(strategy_id) for strategy_id in members))
@@ -323,15 +405,27 @@ def build_strategy_similarity_evidence(payload: dict[str, Any] | None) -> dict[s
     else:
         effective_strategy_count = 0.0
 
+    eligible_pair_count = sum(1 for evidence in pairwise_evidence.values() if evidence["eligible"])
+    paired_date_max = max(
+        (int(evidence["paired_dates"]) for evidence in pairwise_evidence.values() if evidence["eligible"]),
+        default=0,
+    )
+    oof_dates = sorted({
+        row["signal_date"]
+        for returns in oof_returns_by_strategy.values()
+        for row in returns
+    })
+    evidence_available = eligible_pair_count > 0
+
     return {
         "schema_version": STRATEGY_SIMILARITY_EVIDENCE_VERSION,
-        "status": "computed" if kmedoids_preflight.get("status") == "pass" else "blocked",
+        "status": "computed" if kmedoids_preflight.get("status") == "pass" and evidence_available else "blocked",
         "version": "strategy-similarity-graph-v1",
         "evidence_only": True,
         "source": "modal_python",
         "algorithm_owner": "ml-service-modal-python",
         "graph_algorithm": "networkx.Graph+networkx.connected_components",
-        "method": "networkx_connected_components_jaccard_overlap",
+        "method": "networkx_connected_components_oof_residual_correlation",
         "medoid_algorithm": "sklearn_extra.cluster.KMedoids(method='pam')",
         "medoid_scope": "per_graph_component_representative",
         "production_selector": False,
@@ -346,7 +440,13 @@ def build_strategy_similarity_evidence(payload: dict[str, Any] | None) -> dict[s
         "edge_count": int(graph.number_of_edges()),
         "component_count": len(component_rows),
         "effective_strategy_count": effective_strategy_count,
-        "pairwise_overlap_max": round(max_pairwise, 8),
+        "pairwise_similarity_max": round(max_pairwise, 8),
+        "pairwise_overlap_max": round(max_same_day_overlap, 8),
+        "same_day_jaccard_max": round(max_same_day_overlap, 8),
+        "eligible_oof_pair_count": eligible_pair_count,
+        "paired_date_max": paired_date_max,
+        "oof_max_date": oof_dates[-1] if oof_dates else None,
+        "pairwise_oof_evidence": pairwise_evidence,
         "strategy_cluster_id": strategy_cluster_id,
         "strategy_cluster_size": strategy_cluster_size,
         "strategy_cluster_crowding_score": strategy_cluster_crowding_score,
@@ -355,6 +455,7 @@ def build_strategy_similarity_evidence(payload: dict[str, Any] | None) -> dict[s
         "components": component_rows,
         "kmedoids_pam_preflight_status": kmedoids_preflight.get("status"),
         "kmedoids_pam_preflight": kmedoids_preflight,
-        "input_scope": "strategy_affinity_matrix_or_strategy_supported_symbols",
+        "input_scope": "mature_oof_residual_returns_with_same_day_overlap_diagnostic",
         "output_scope": "strategy_similarity_crowding_uniqueness_medoid_representatives",
+        "blocked_reason": None if evidence_available else "insufficient_paired_mature_oof_residual_returns",
     }

@@ -228,13 +228,11 @@ class FakeCandidateFeatureStatement {
   }
 
   async all<T>(): Promise<{ results: T[] }> {
-    const date = String(this.args[this.args.length - 2] ?? '')
-    const limit = Number(this.args[this.args.length - 1] ?? this.rows.length)
-    const symbols = new Set(this.args.slice(0, -2).map(String))
+    const date = String(this.args[this.args.length - 1] ?? '')
+    const symbols = new Set(this.args.slice(0, -1).map(String))
     const results = this.rows
       .filter((row) => symbols.has(row.symbol) && row.date <= date)
       .sort((left, right) => left.symbol.localeCompare(right.symbol) || right.date.localeCompare(left.date))
-      .slice(0, limit)
     return { results: results as T[] }
   }
 }
@@ -244,6 +242,9 @@ class FakeCandidateFeatureD1 {
 
   prepare(sql: string): FakeCandidateFeatureStatement {
     assert(sql.includes('stock_prices'), 'daily strategy candidate feature hydration should read stock_prices')
+    assert(sql.includes('ROW_NUMBER() OVER (PARTITION BY s.symbol ORDER BY sp.date DESC)'), 'daily hydration must cap bars per symbol, not with one global LIMIT')
+    assert(sql.includes('price_rank <= 70'), 'daily hydration must keep the latest 70 bars for every requested symbol')
+    assert(!sql.includes('LIMIT ?'), 'daily hydration must not truncate later symbols with a global LIMIT')
     return new FakeCandidateFeatureStatement(this.rows)
   }
 }
@@ -299,7 +300,9 @@ class FakeCandidateFeatureD1 {
     source.includes('hydrateStrategyCandidateDailyFeatures') &&
       source.includes('materializeFormal137FeatureAliases(candidates.map') &&
       source.includes('materializeSmrcVwapCrossSectionalRanks(candidates)') &&
-      source.includes('FROM stock_prices sp') &&
+      source.includes('ROW_NUMBER() OVER (PARTITION BY s.symbol ORDER BY sp.date DESC)') &&
+      source.includes('price_rank <= 70') &&
+      !source.includes('Math.min(5000, symbolsNeedingOhlcv.length * 70)') &&
       source.includes('JOIN stocks s ON s.id = sp.stock_id'),
     'strategy learning candidates must materialize daily VWAP/SMC aliases before strategy decision evaluation',
   )
@@ -397,6 +400,11 @@ async function runStrategyCandidateDailyFeatureHydrationTest(): Promise<void> {
     { symbol: '2222', date: '2026-07-05', open: 19.8, high: 20, low: 19.3, close: 19.5, volume: 1200 },
     { symbol: '2222', date: '2026-07-06', open: 19.5, high: 19.7, low: 19, close: 19.2, volume: 1300 },
     { symbol: '2222', date: '2026-07-07', open: 19.2, high: 19.4, low: 18.8, close: 19, volume: 1400 },
+    { symbol: '3333', date: '2026-07-03', open: 30, high: 30.2, low: 29.8, close: 30, volume: 1000 },
+    { symbol: '3333', date: '2026-07-04', open: 30, high: 30.2, low: 29.8, close: 30, volume: 1000 },
+    { symbol: '3333', date: '2026-07-05', open: 30, high: 30.2, low: 29.8, close: 30, volume: 1000 },
+    { symbol: '3333', date: '2026-07-06', open: 30, high: 30.2, low: 29.8, close: 30, volume: 1000 },
+    { symbol: '3333', date: '2026-07-07', open: 30, high: 30.2, low: 29.8, close: 30, volume: 1000 },
   ]
   const candidates = [
     {
@@ -427,6 +435,14 @@ async function runStrategyCandidateDailyFeatureHydrationTest(): Promise<void> {
         },
       },
     },
+    {
+      symbol: '3333',
+      current_price: 30,
+      raw_signals: {
+        close: 30,
+        volumeExpansion20: 1,
+      },
+    },
   ]
   const telemetry = await hydrateStrategyCandidateDailyFeatures(
     new FakeCandidateFeatureD1(priceRows) as unknown as D1Database,
@@ -435,7 +451,8 @@ async function runStrategyCandidateDailyFeatureHydrationTest(): Promise<void> {
   )
   const strong = candidates[0].raw_signals as any
   const weak = candidates[1].raw_signals as any
-  assert(telemetry.hydratedSymbols === 2, 'daily feature hydration should touch candidates missing VWAP evidence')
+  const noOrderBlock = candidates[2].raw_signals as any
+  assert(telemetry.hydratedSymbols === 3, 'daily feature hydration should touch every candidate missing VWAP evidence')
   assert(strong.factorSignals.vwap_bias > 0, 'daily feature hydration should materialize positive same-day VWAP bias')
   assert(strong.factorSignals.vwap_bias_5d > 0, 'daily feature hydration should materialize positive 5-day VWAP bias')
   assert(weak.factorSignals.vwap_bias < 0, 'daily feature hydration should preserve weak VWAP evidence for ranking')
@@ -443,6 +460,9 @@ async function runStrategyCandidateDailyFeatureHydrationTest(): Promise<void> {
   assert(strong.factorSignals.finlabCsVwapBias5dRank === 1, 'cross-sectional 5-day VWAP rank should favor the stronger reclaim setup')
   assert(strong.factorSignals.finlabCsBestOrderBlockStrengthRank === 1, 'cross-sectional order-block rank should use SMC strength evidence')
   assert(strong.factorSignals.finlabCsVolumeExpansion20Rank === 1, 'cross-sectional volume rank should use daily raw signals')
+  assert(noOrderBlock.technicalIndicators.priceActionStructureAvailable === 1, 'valid daily bars must mark the price-action structure evaluable')
+  assert(noOrderBlock.technicalIndicators.orderBlockDetected === 0, 'flat valid bars should record a real no-order-block observation')
+  assert(noOrderBlock.technicalIndicators.bestOrderBlockStrength === 0, 'no detected order block must be zero strength rather than unavailable')
 }
 
 runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {

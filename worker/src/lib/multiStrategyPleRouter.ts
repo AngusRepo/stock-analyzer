@@ -18,6 +18,8 @@ import {
 } from './strategyPortfolioMetrics'
 
 export const STRATEGY_LABELER_VERSION = 'strategy-labeler-v1'
+export const STRATEGY_AFFINITY_VERSION = 'strategy-raw-quality-affinity-v1'
+export const STRATEGY_AFFINITY_CHALLENGER_VERSION = 'strategy-threshold-margin-affinity-v2'
 export const FINLAB_PORTFOLIO_INTELLIGENCE_VERSION = 'finlab-portfolio-intelligence-v1'
 export const MULTI_STRATEGY_PLE_ROUTER_VERSION = 'multi-strategy-ple-router-v1'
 export const L15_MARGINAL_SLATE_BUILDER_VERSION = 'l15-route-floor-full-decision-universe-v2'
@@ -84,6 +86,14 @@ export interface StrategyPortfolioPriorSnapshot {
 export interface MultiStrategyPleRouterComponents {
   [key: string]: number
   active_strategy_support: number
+  challenger_raw_active_strategy_support: number
+  challenger_residualized_active_strategy_support: number
+  challenger_duplicate_support_discount: number
+  challenger_effective_strategy_support_count: number
+  challenger_route_score: number
+  challenger_risk_adjusted_affinity: number
+  challenger_uncertainty: number
+  strategy_affinity_evidence_count: number
   raw_signal_quality: number
   cross_family_bonus: number
   same_family_crowding_penalty: number
@@ -108,11 +118,19 @@ export interface MultiStrategyPleRouterComponents {
 }
 
 export interface MultiStrategyPleAnnotatedCandidate extends StrategyCandidatePoolCandidate {
+  strategy_challenger_affinity_version?: typeof STRATEGY_AFFINITY_CHALLENGER_VERSION
   strategy_labeler_version?: typeof STRATEGY_LABELER_VERSION
+  strategy_challenger_affinity_vector?: Record<string, number>
+  strategy_affinity_version?: typeof STRATEGY_AFFINITY_VERSION
   strategy_affinity_vector?: Record<string, number>
+  strategy_match_strength_vector?: Record<string, number>
+  strategy_threshold_margin_vector?: Record<string, number>
+  strategy_affinity_evidence_count_vector?: Record<string, number>
   strategy_weak_label_vector?: Record<string, number>
   strategy_hit_vector?: Record<string, number>
   strategy_position_weight_vector?: Record<string, number>
+  strategy_challenger_position_weight_vector?: Record<string, number>
+  strategy_raw_position_weight_vector?: Record<string, number>
   strategy_overlap_vector?: Record<string, number>
   strategy_evaluable_vector?: Record<string, number>
   strategy_unavailable_reason_vector?: Record<string, string | null>
@@ -120,6 +138,7 @@ export interface MultiStrategyPleAnnotatedCandidate extends StrategyCandidatePoo
   strategy_portfolio_prior?: StrategyPortfolioPriorSnapshot
   strategy_router_version?: typeof MULTI_STRATEGY_PLE_ROUTER_VERSION
   strategy_router_score?: number
+  strategy_incumbent_route_score?: number
   candidate_route_score?: number
   ml_slate_eligibility?: number
   family_exposure?: Partial<Record<StrategyFamilyId, number>>
@@ -127,6 +146,8 @@ export interface MultiStrategyPleAnnotatedCandidate extends StrategyCandidatePoo
   risk_adjusted_affinity?: number
   uncertainty?: number
   runtime_teacher_evidence?: Record<string, number>
+  strategy_challenger_route_score?: number
+  strategy_challenger_route_version?: string
   runtime_teacher_evidence_source?: 'historical_verified_cache' | 'candidate_supplied_runtime_evidence' | 'missing_runtime_teacher_cache'
   ml_teacher_labels?: Record<string, number>
   market_heat_score?: number
@@ -148,6 +169,10 @@ interface StrategyLabel {
   status: StrategySpec['status']
   production_owner: boolean
   affinity: number
+  match_strength: number
+  threshold_margin: number
+  affinity_evidence_count: number
+  challenger_affinity: number
   weak_label: number
   strategy_hit: number
   position_weight: number
@@ -201,7 +226,7 @@ export interface MultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCand
     capacity_policy: 'route_floor_full_decision_universe'
     slate_selection_policy: typeof L15_MARGINAL_SLATE_BUILDER_VERSION
     min_route_score: number
-    min_route_score_source: 'config_explicit' | 'adaptive_route_score_distribution' | 'adaptive_no_active_scores'
+    min_route_score_source: 'config_explicit' | 'promoted_route_calibration_artifact' | 'adaptive_route_score_distribution' | 'adaptive_no_active_scores'
     route_score_distribution: Record<'p10' | 'p25' | 'p50' | 'p75' | 'p90', number | null>
     route_score_above_floor_count: number
     route_score_below_floor_count: number
@@ -213,6 +238,11 @@ export interface MultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCand
     runtime_teacher_evidence_missing_count: number
     strategy_usage: Record<string, number>
     family_usage: Partial<Record<StrategyFamilyId, number>>
+    previous_slate_count: number
+    temporal_intersection_count: number
+    temporal_jaccard: number | null
+    previous_list_recall: number | null
+    fresh_share: number | null
   }
 }
 
@@ -228,14 +258,21 @@ export interface MultiStrategyPleRoutingOptions {
   minRouteScore?: number
   strategySimilarityEdgeThreshold?: number | null
   strategySimilarityThresholdQuantile?: number | null
+  previousSlateSymbols?: string[]
+  promotedRouteCalibration?: { runId: string; routeVersion: string; routeFloor: number } | null
 }
 
 export interface StrategySimilarityEvidencePayload {
-  input_scope: 'strategy_affinity_matrix_or_strategy_supported_symbols'
+  input_scope: 'mature_oof_residual_returns_with_same_day_overlap_diagnostic'
   strategies: Array<{
     strategy_id: string
     family_id?: string | null
     symbols: string[]
+    oof_returns: Array<{
+      signal_date: string
+      residual_return: number
+      sample_count: number
+    }>
   }>
   edge_threshold?: number | null
   threshold_quantile?: number | null
@@ -377,7 +414,8 @@ function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
       const assessment = regimeWeight > 0 && evaluable
         ? assessCandidateAgainstStrategySpecs(candidate, [spec])
         : { matches: [] }
-      const matched = assessment.matches.length > 0
+      const match = assessment.matches[0] ?? null
+      const matched = match != null
       const configuredWeight = options.strategyWeights == null
         ? 1
         : finiteNumber(options.strategyWeights[spec.id]) ?? 0
@@ -392,6 +430,10 @@ function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
         status: spec.status,
         production_owner: productionOwner,
         affinity: matched ? round3(clamp(rawQuality * configuredWeight * regimeWeight * statusMultiplier, 0, 100)) : 0,
+        challenger_affinity: matched ? round3(clamp(match.matchStrength * 100 * configuredWeight * regimeWeight * statusMultiplier, 0, 100)) : 0,
+        match_strength: match?.matchStrength ?? 0,
+        threshold_margin: match?.thresholdMargin ?? 0,
+        affinity_evidence_count: match?.evidenceCount ?? 0,
         weak_label: 0,
         strategy_hit: matched ? 1 : 0,
         position_weight: 0,
@@ -457,6 +499,13 @@ function resolveAdaptiveRouteFloor<T extends StrategyCandidatePoolCandidate>(
   const distribution = routeScoreDistribution(scores)
   if (explicit != null) {
     return { value: round3(clamp(explicit, 0, 100)), source: 'config_explicit', distribution }
+  }
+  if (options.promotedRouteCalibration?.routeVersion === STRATEGY_AFFINITY_CHALLENGER_VERSION) {
+    return {
+      value: round3(clamp(options.promotedRouteCalibration.routeFloor, 0, 100)),
+      source: 'promoted_route_calibration_artifact',
+      distribution,
+    }
   }
   if (!scores.length) {
     return { value: 20, source: 'adaptive_no_active_scores', distribution }
@@ -762,6 +811,7 @@ export function buildStrategySimilarityEvidencePayload<T extends StrategyCandida
     MultiStrategyPleRoutingOptions,
     'regime' | 'strategyWeights' | 'strategySimilarityEdgeThreshold' | 'strategySimilarityThresholdQuantile'
   > = {},
+  oofReturnsByStrategy: Record<string, Array<{ signal_date: string; residual_return: number; sample_count: number }>> = {},
 ): StrategySimilarityEvidencePayload {
   const states = buildCandidateLabelStates(candidates, specs, { maxSlateSize: 0, ...options })
   const validSpecs = specs
@@ -778,7 +828,7 @@ export function buildStrategySimilarityEvidencePayload<T extends StrategyCandida
     }
   }
   return {
-    input_scope: 'strategy_affinity_matrix_or_strategy_supported_symbols',
+    input_scope: 'mature_oof_residual_returns_with_same_day_overlap_diagnostic',
     edge_threshold: options.strategySimilarityEdgeThreshold ?? null,
     threshold_quantile: options.strategySimilarityThresholdQuantile ?? null,
     random_state: 0,
@@ -786,7 +836,94 @@ export function buildStrategySimilarityEvidencePayload<T extends StrategyCandida
       strategy_id: spec.id,
       family_id: spec.familyId,
       symbols: [...(strategySymbols.get(spec.id) ?? new Set<string>())].sort(),
+      oof_returns: oofReturnsByStrategy[spec.id] ?? [],
     })),
+  }
+}
+
+interface ResidualizedStrategySupport {
+  rawSupport: number
+  residualizedSupport: number
+  duplicateSupportDiscount: number
+  effectiveCount: number
+  representativeStrategyIds: string[]
+  contributionByStrategy: Record<string, number>
+  residualContributionByStrategy: Record<string, number>
+}
+
+function buildResidualizedStrategySupport(
+  activeLabels: StrategyLabel[],
+  prior: StrategyPortfolioPriorSnapshot,
+): ResidualizedStrategySupport {
+  const contributionByStrategy: Record<string, number> = {}
+  const grouped = new Map<string, Array<{ strategyId: string; weighted: number; novelty: number }>>()
+  const graphUsable = prior.strategy_similarity_graph.status === 'computed'
+    && prior.strategy_similarity_graph.source === 'modal_python'
+  for (const label of activeLabels) {
+    const metrics = prior.strategy_metrics[label.strategy_id]
+    const strategyPrior = metrics?.prior_weight ?? prior.strategy_prior_weight[label.strategy_id] ?? 1
+    const familyPrior = prior.family_prior_weight[label.family_id] ?? 1
+    const reliability = metrics?.reliability ?? 0.5
+    const diversification = metrics?.diversification_value ?? 0.5
+    const crowding = metrics?.crowding_score ?? 0
+    const weighted = Math.max(0, label.challenger_affinity
+      * strategyPrior
+      * familyPrior
+      * reliability
+      * (0.65 + diversification * 0.35)
+      * (1 - crowding * 0.3))
+    contributionByStrategy[label.strategy_id] = round3(weighted)
+    const clusterId = graphUsable ? cleanText(prior.strategy_cluster_id[label.strategy_id]) : ''
+    const groupId = clusterId ? 'cluster:' + clusterId : 'strategy:' + label.strategy_id
+    const graphUniqueness = graphUsable
+      ? clamp(prior.strategy_cluster_uniqueness_score[label.strategy_id] ?? 1, 0, 1)
+      : 1
+    // No OOF graph means unknown redundancy, not evidence of duplication.
+    const novelty = graphUsable ? graphUniqueness : 1
+    const rows = grouped.get(groupId) ?? []
+    rows.push({ strategyId: label.strategy_id, weighted, novelty: clamp(novelty, 0, 1) })
+    grouped.set(groupId, rows)
+  }
+
+  const rawSupport = Object.values(contributionByStrategy).reduce((sum, value) => sum + value, 0)
+  const representatives = [...grouped.values()]
+    .map((rows) => [...rows].sort((left, right) => right.weighted - left.weighted)[0])
+    .filter((row) => row && row.weighted > 0)
+    .sort((left, right) => right.weighted - left.weighted)
+  if (!representatives.length) {
+    return {
+      rawSupport: 0,
+      residualizedSupport: 0,
+      duplicateSupportDiscount: 0,
+      effectiveCount: 0,
+      representativeStrategyIds: [],
+      contributionByStrategy,
+      residualContributionByStrategy: Object.fromEntries(Object.keys(contributionByStrategy).map((strategyId) => [strategyId, 0])),
+    }
+  }
+  const base = representatives[0].weighted
+  let squaredSupport = base * base
+  for (const representative of representatives.slice(1)) {
+    squaredSupport += representative.weighted * representative.weighted * representative.novelty
+  }
+  const residualizedSupport = clamp(Math.sqrt(squaredSupport), 0, 100)
+  const effectiveCount = base > 0 ? clamp(squaredSupport / (base * base), 1, representatives.length) : 0
+  const residualContributionByStrategy = Object.fromEntries(
+    Object.keys(contributionByStrategy).map((strategyId) => [strategyId, 0]),
+  )
+  representatives.forEach((representative, index) => {
+    residualContributionByStrategy[representative.strategyId] = round3(
+      representative.weighted * Math.sqrt(index === 0 ? 1 : representative.novelty),
+    )
+  })
+  return {
+    rawSupport: round3(rawSupport),
+    residualizedSupport: round3(residualizedSupport),
+    duplicateSupportDiscount: round3(rawSupport > 0 ? clamp(1 - residualizedSupport / rawSupport, 0, 1) : 0),
+    effectiveCount: round3(effectiveCount),
+    representativeStrategyIds: representatives.map((row) => row.strategyId),
+    contributionByStrategy,
+    residualContributionByStrategy,
   }
 }
 
@@ -802,6 +939,18 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
   const familyIds = uniqueTexts(activeLabels.map((label) => label.family_id)) as StrategyFamilyId[]
   const activeStrategyIds = uniqueTexts(activeLabels.map((label) => label.strategy_id))
   const strategyAffinity = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.affinity]))
+  const strategyChallengerAffinity = Object.fromEntries(
+    state.labels.map((label) => [label.strategy_id, label.challenger_affinity]),
+  )
+  const strategyMatchStrength = Object.fromEntries(
+    state.labels.map((label) => [label.strategy_id, label.match_strength]),
+  )
+  const strategyThresholdMargin = Object.fromEntries(
+    state.labels.map((label) => [label.strategy_id, label.threshold_margin]),
+  )
+  const strategyAffinityEvidenceCount = Object.fromEntries(
+    state.labels.map((label) => [label.strategy_id, label.affinity_evidence_count]),
+  )
   const strategyWeakLabels = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.weak_label]))
   const strategyHitVector = Object.fromEntries(state.labels.map((label) => [label.strategy_id, label.strategy_hit]))
   const strategyOverlapVector = Object.fromEntries(state.labels.map((label) => [
@@ -826,6 +975,15 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
   const positionTotal = Math.max(1e-9, Object.values(rawPositionWeights).reduce((sum, value) => sum + value, 0))
   const strategyPositionWeights = Object.fromEntries(
     Object.entries(rawPositionWeights).map(([strategyId, value]) => [strategyId, round3(value / positionTotal)]),
+  )
+  const challengerResidualizedSupport = buildResidualizedStrategySupport(activeLabels, prior)
+  const challengerPositionTotal = Math.max(
+    1e-9,
+    Object.values(challengerResidualizedSupport.residualContributionByStrategy).reduce((sum, value) => sum + value, 0),
+  )
+  const strategyChallengerPositionWeights = Object.fromEntries(
+    Object.entries(challengerResidualizedSupport.residualContributionByStrategy)
+      .map(([strategyId, value]) => [strategyId, round3(value / challengerPositionTotal)]),
   )
   const weightedSupportByFamily = activeLabels.reduce<Partial<Record<StrategyFamilyId, number>>>((out, label) => {
     const metrics = prior.strategy_metrics[label.strategy_id]
@@ -899,14 +1057,55 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     0,
     100,
   ))
-  const mlSlateEligibility = round3(clamp(routeScore / 100, 0, 1))
+  const challengerRepresentativeIds = new Set(challengerResidualizedSupport.representativeStrategyIds)
+  const challengerMetrics = activeLabels
+    .filter((label) => challengerRepresentativeIds.has(label.strategy_id))
+    .map((label) => prior.strategy_metrics[label.strategy_id])
+    .filter((metrics): metrics is StrategyPortfolioMetrics => Boolean(metrics))
+  const challengerReliability = average(challengerMetrics.map((metrics) => metrics.reliability), activeLabels.length ? 0.5 : 0)
+  const challengerCrowding = average(challengerMetrics.map((metrics) => metrics.crowding_score), activeLabels.length ? 0 : 0)
+  const challengerDiversification = average(challengerMetrics.map((metrics) => metrics.diversification_value), activeLabels.length ? 0.5 : 0)
+  const challengerDiversityContribution = round3(clamp(
+    challengerDiversification + Math.min(0.18, Math.max(0, challengerResidualizedSupport.effectiveCount - 1) * 0.075),
+    0,
+    1,
+  ))
+  const challengerRiskAdjustedAffinity = round3(clamp(
+    challengerResidualizedSupport.residualizedSupport
+      * (0.72 + challengerReliability * 0.28)
+      * (1 - challengerCrowding * 0.22),
+    0,
+    100,
+  ))
+  const challengerUncertainty = round3(clamp(
+    0.58
+    - Math.min(0.28, challengerResidualizedSupport.effectiveCount * 0.07)
+    - challengerReliability * 0.18
+    + challengerCrowding * 0.22
+    + (teacherValues.length ? -0.05 : 0.08),
+    0,
+    1,
+  ))
+  const challengerRouteScore = round3(clamp(
+    challengerRiskAdjustedAffinity * 0.62
+    + state.raw_quality * 0.2
+    + challengerDiversityContribution * 8
+    + teacherAlignmentContribution
+    + marketHeatContribution
+    - challengerUncertainty * 5,
+    0,
+    100,
+  ))
+  const challengerServing = options.promotedRouteCalibration?.routeVersion === STRATEGY_AFFINITY_CHALLENGER_VERSION
+  const servingRouteScore = challengerServing ? challengerRouteScore : routeScore
+  const mlSlateEligibility = round3(clamp(servingRouteScore / 100, 0, 1))
   let routerDecision: StrategyRouterDecision = 'observe_only'
   let routerReason = 'no_active_strategy_label'
   let queueDecision: StrategyQueueDecision = 'research_only_queue'
   if (!eligibleForMl(state.candidate)) {
     routerDecision = 'research_only'
     routerReason = state.candidate.restricted === true ? 'restricted_or_attention' : 'not_ml_eligible_segment'
-  } else if (activeLabels.length > 0 && routeScore >= minRouteScore && maxSlateSize > 0) {
+  } else if (activeLabels.length > 0 && servingRouteScore >= minRouteScore && maxSlateSize > 0) {
     routerDecision = 'ml_slate'
     routerReason = 'l15_ple_router_selected_by_strategy_portfolio_evidence'
     queueDecision = 'ml_queue'
@@ -917,18 +1116,29 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
   const out: T & MultiStrategyPleAnnotatedCandidate = {
     ...state.candidate,
     strategy_labeler_version: STRATEGY_LABELER_VERSION,
+    strategy_affinity_version: STRATEGY_AFFINITY_VERSION,
     strategy_affinity_vector: strategyAffinity,
+    strategy_challenger_affinity_version: STRATEGY_AFFINITY_CHALLENGER_VERSION,
+    strategy_challenger_affinity_vector: strategyChallengerAffinity,
+    strategy_match_strength_vector: strategyMatchStrength,
+    strategy_threshold_margin_vector: strategyThresholdMargin,
+    strategy_affinity_evidence_count_vector: strategyAffinityEvidenceCount,
     strategy_weak_label_vector: strategyWeakLabels,
     strategy_hit_vector: strategyHitVector,
     strategy_position_weight_vector: strategyPositionWeights,
+    strategy_raw_position_weight_vector: strategyPositionWeights,
+    strategy_challenger_position_weight_vector: strategyChallengerPositionWeights,
     strategy_overlap_vector: strategyOverlapVector,
     strategy_evaluable_vector: strategyEvaluableVector,
     strategy_unavailable_reason_vector: strategyUnavailableReasonVector,
     strategy_family_affinity: familyAffinity,
     strategy_portfolio_prior: prior,
     strategy_router_version: MULTI_STRATEGY_PLE_ROUTER_VERSION,
-    strategy_router_score: routeScore,
-    candidate_route_score: routeScore,
+    strategy_router_score: servingRouteScore,
+    strategy_incumbent_route_score: routeScore,
+    strategy_challenger_route_score: challengerRouteScore,
+    strategy_challenger_route_version: STRATEGY_AFFINITY_CHALLENGER_VERSION,
+    candidate_route_score: servingRouteScore,
     ml_slate_eligibility: mlSlateEligibility,
     family_exposure: familyExposure,
     diversity_contribution: diversityContribution,
@@ -945,6 +1155,14 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     strategy_router_reason: routerReason,
     strategy_router_components: {
       active_strategy_support: round3(scaledActiveSupport),
+      challenger_raw_active_strategy_support: challengerResidualizedSupport.rawSupport,
+      challenger_residualized_active_strategy_support: challengerResidualizedSupport.residualizedSupport,
+      challenger_duplicate_support_discount: challengerResidualizedSupport.duplicateSupportDiscount,
+      challenger_effective_strategy_support_count: challengerResidualizedSupport.effectiveCount,
+      challenger_route_score: challengerRouteScore,
+      challenger_risk_adjusted_affinity: challengerRiskAdjustedAffinity,
+      challenger_uncertainty: challengerUncertainty,
+      strategy_affinity_evidence_count: activeLabels.reduce((sum, label) => sum + label.affinity_evidence_count, 0),
       raw_signal_quality: state.raw_quality,
       cross_family_bonus: round3(crossFamilyBonus),
       same_family_crowding_penalty: round3(sameFamilyCrowdingPenalty),
@@ -967,7 +1185,7 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
       market_heat_contribution: marketHeatContribution,
       market_heat_alpha: 0,
     },
-    strategy_pool_score: routeScore,
+    strategy_pool_score: servingRouteScore,
     strategy_pool_ids: activeStrategyIds,
     strategy_family_ids: familyIds,
     strategy_variant_ids: uniqueTexts(activeLabels.map((label) => label.variant_id)),
@@ -985,7 +1203,7 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     strategy_watch_points: uniqueTexts([
       ...(state.candidate.strategy_watch_points ?? []),
       `strategy_router_decision:${routerDecision}`,
-      `strategy_router_score:${routeScore.toFixed(2)}`,
+      `strategy_router_score:${servingRouteScore.toFixed(2)}`,
       `strategy_router_reason:${routerReason}`,
       `market_heat_score:${heatScore.toFixed(3)}`,
     ]),
@@ -1239,6 +1457,11 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
   const routeScoreAboveFloorCount = routeScores.filter((score) => score >= minRouteScore).length
   const teacherAvailableCount = annotatedWithMarginalEvidence.filter((candidate) => (candidate.strategy_router_components?.teacher_label_count ?? 0) > 0).length
   const runtimeTeacherAvailableCount = annotatedWithMarginalEvidence.filter((candidate) => (candidate.strategy_router_components?.runtime_teacher_evidence_count ?? 0) > 0).length
+  const previousSlate = new Set(uniqueTexts(options.previousSlateSymbols ?? []).map((symbol) => symbol.toUpperCase()))
+  const currentSlate = new Set(mlSlate.map((candidate) => cleanText(candidate.symbol).toUpperCase()).filter(Boolean))
+  let temporalIntersectionCount = 0
+  for (const symbol of currentSlate) if (previousSlate.has(symbol)) temporalIntersectionCount += 1
+  const temporalUnionCount = currentSlate.size + previousSlate.size - temporalIntersectionCount
 
   return {
     version: MULTI_STRATEGY_PLE_ROUTER_VERSION,
@@ -1292,6 +1515,11 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
       runtime_teacher_evidence_missing_count: Math.max(0, annotated.length - runtimeTeacherAvailableCount),
       strategy_usage: Object.fromEntries(Object.entries(strategyUsage).sort()),
       family_usage: Object.fromEntries(Object.entries(familyUsage).sort()) as Partial<Record<StrategyFamilyId, number>>,
+      previous_slate_count: previousSlate.size,
+      temporal_intersection_count: temporalIntersectionCount,
+      temporal_jaccard: previousSlate.size ? round3(temporalIntersectionCount / Math.max(1, temporalUnionCount)) : null,
+      previous_list_recall: previousSlate.size ? round3(temporalIntersectionCount / previousSlate.size) : null,
+      fresh_share: previousSlate.size && currentSlate.size ? round3((currentSlate.size - temporalIntersectionCount) / currentSlate.size) : null,
     },
   }
 }

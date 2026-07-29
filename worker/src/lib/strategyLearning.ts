@@ -635,7 +635,14 @@ function materializeDailyVwapAndSmc(raw: StrategyRawSignals, bars: OhlcvRow[]): 
   if (bars.length >= 5) {
     const structure = buildPriceActionStructure(bars, { latestPrice: close })
     const smc = structure.smc
-    raw.bestOrderBlockStrength = firstFinite(raw.bestOrderBlockStrength, raw.technicalIndicators.bestOrderBlockStrength, structure.bestOrderBlock?.strength)
+    raw.bestOrderBlockStrength = firstFinite(
+      raw.bestOrderBlockStrength,
+      raw.technicalIndicators.bestOrderBlockStrength,
+      structure.bestOrderBlock?.strength,
+      0,
+    )
+    touched = setIfFinite(raw.technicalIndicators, 'priceActionStructureAvailable', 1) || touched
+    touched = setIfFinite(raw.technicalIndicators, 'orderBlockDetected', structure.bestOrderBlock ? 1 : 0) || touched
     touched = setIfFinite(raw.technicalIndicators, 'bestOrderBlockStrength', raw.bestOrderBlockStrength ?? null) || touched
     touched = setIfFinite(raw.technicalIndicators, 'smcBullishScore', firstFinite(raw.technicalIndicators.smcBullishScore, smc.bullishScore)) || touched
     touched = setIfFinite(raw.technicalIndicators, 'smcBearishScore', firstFinite(raw.technicalIndicators.smcBearishScore, smc.bearishScore)) || touched
@@ -1288,24 +1295,32 @@ export async function hydrateStrategyCandidateDailyFeatures(
   })
   let hydratedSymbols = 0
   if (symbolsNeedingOhlcv.length > 0) {
-    const placeholders = symbolsNeedingOhlcv.map(() => '?').join(', ')
     try {
-      const { results } = await db.prepare(`
-        SELECT s.symbol, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume
-          FROM stock_prices sp
-          JOIN stocks s ON s.id = sp.stock_id
-         WHERE s.symbol IN (${placeholders})
-           AND sp.date <= ?
-         ORDER BY s.symbol ASC, sp.date DESC
-         LIMIT ?
-      `).bind(...symbolsNeedingOhlcv, date, Math.min(5000, symbolsNeedingOhlcv.length * 70)).all<StrategyCandidatePriceRow>()
       const bySymbol = new Map<string, StrategyCandidatePriceRow[]>()
-      for (const row of results ?? []) {
-        const symbol = cleanToken(row.symbol)
-        if (!symbol) continue
-        const rows = bySymbol.get(symbol) ?? []
-        rows.push(row)
-        bySymbol.set(symbol, rows)
+      for (let offset = 0; offset < symbolsNeedingOhlcv.length; offset += 40) {
+        const symbolChunk = symbolsNeedingOhlcv.slice(offset, offset + 40)
+        const placeholders = symbolChunk.map(() => '?').join(', ')
+        const { results } = await db.prepare(`
+          WITH ranked_prices AS (
+            SELECT s.symbol, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume,
+                   ROW_NUMBER() OVER (PARTITION BY s.symbol ORDER BY sp.date DESC) AS price_rank
+              FROM stock_prices sp
+              JOIN stocks s ON s.id = sp.stock_id
+             WHERE s.symbol IN (${placeholders})
+               AND sp.date <= ?
+          )
+          SELECT symbol, date, open, high, low, close, volume
+            FROM ranked_prices
+           WHERE price_rank <= 70
+           ORDER BY symbol ASC, date DESC
+        `).bind(...symbolChunk, date).all<StrategyCandidatePriceRow>()
+        for (const row of results ?? []) {
+          const symbol = cleanToken(row.symbol)
+          if (!symbol) continue
+          const rows = bySymbol.get(symbol) ?? []
+          rows.push(row)
+          bySymbol.set(symbol, rows)
+        }
       }
       for (const candidate of candidates) {
         const symbol = cleanToken(candidate.symbol)
@@ -3001,7 +3016,13 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             unavailable_reason: evaluability.evaluable ? null : evaluability.unavailableReasons.join('|'),
             weak_label: evaluability.evaluable ? (matched ? 1 : 0) : 0,
             affinity: evaluability.evaluable ? (matched ? 1 : 0) : 0,
+            affinity_version: 'strategy-affinity-binary-pit-reconstruction-v1',
+            match_strength: 0,
+            threshold_margin: 0,
+            affinity_evidence_count: 0,
             position_weight: 0,
+            challenger_affinity: 0,
+            challenger_position_weight: 0,
             overlap: 0,
             labeler_version: labelerVersion,
             strategy_registry_checksum: [...checksums][0],
@@ -3025,7 +3046,12 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             feature_available: Number(row.feature_available) === 1 ? 1 : 0,
             feature_rejection_reason: cleanToken(row.feature_rejection_reason) || null,
             strategy_labeler_version: labelerVersion,
+            strategy_affinity_version: 'strategy-affinity-binary-pit-reconstruction-v1',
             strategy_router_version: cleanToken(row.strategy_router_version) || null,
+            strategy_router_score: null,
+            strategy_challenger_affinity_version: null,
+            strategy_challenger_route_version: null,
+            strategy_challenger_route_score: null,
             strategy_registry_checksum: [...checksums][0],
           })),
           matrix,
@@ -3094,6 +3120,8 @@ export async function finalizeStrategyLearningEvidenceV5(
   const historicalEvidence = await rebuildHistoricalStrategyEvidenceV5(db, { asOfDate: date, maxDates: 2 })
   const labels = await materializeCanonicalSelectionLabelsV4(db, { asOfDate: date })
   const marginalEdge = await refreshStrategyMarginalEdgeV4(db, date, { allowPromotion: options.allowPromotion === true })
+  const { refreshStrategyRouteCalibration } = await import('./strategyRouteCalibration')
+  const routeCalibration = await refreshStrategyRouteCalibration(db, date, { allowPromotion: options.allowPromotion === true })
   const rewards = await refreshStrategyRewardLedger(db, { endDate: date, dryRun: false })
   const policy = options.persistPolicy === false
     ? null
@@ -3105,7 +3133,7 @@ export async function finalizeStrategyLearningEvidenceV5(
       cadence: options.calibrationCadence ?? 'daily_drift',
       dryRun: false,
     })
-  return { decisionEvidence, historicalEvidence, labels, marginalEdge, rewards, policy, thresholdCalibration }
+  return { decisionEvidence, historicalEvidence, labels, marginalEdge, routeCalibration, rewards, policy, thresholdCalibration }
 }
 
 export async function runStrategyLearningClosure(

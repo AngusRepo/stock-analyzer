@@ -16,14 +16,24 @@ export interface SelectionEvidenceCandidate {
   score?: number | null
   score_components?: unknown
   strategy_labeler_version?: string | null
+  strategy_affinity_version?: string | null
+  strategy_challenger_affinity_version?: string | null
   strategy_router_version?: string | null
+  strategy_router_score?: number | null
+  strategy_challenger_route_version?: string | null
+  strategy_challenger_route_score?: number | null
   strategy_router_decision?: string | null
   strategy_router_reason?: string | null
   strategy_pool_ids?: string[]
   strategy_affinity_vector?: Record<string, number>
+  strategy_challenger_affinity_vector?: Record<string, number>
+  strategy_match_strength_vector?: Record<string, number>
+  strategy_threshold_margin_vector?: Record<string, number>
+  strategy_affinity_evidence_count_vector?: Record<string, number>
   strategy_weak_label_vector?: Record<string, number>
   strategy_hit_vector?: Record<string, number>
   strategy_position_weight_vector?: Record<string, number>
+  strategy_challenger_position_weight_vector?: Record<string, number>
   strategy_overlap_vector?: Record<string, number>
   strategy_evaluable_vector?: Record<string, number>
   strategy_unavailable_reason_vector?: Record<string, string | null>
@@ -44,7 +54,12 @@ export interface SelectionReferenceRowV1 {
   feature_available: number
   feature_rejection_reason: string | null
   strategy_labeler_version: string | null
+  strategy_affinity_version: string | null
   strategy_router_version: string | null
+  strategy_router_score: number | null
+  strategy_challenger_affinity_version: string | null
+  strategy_challenger_route_version: string | null
+  strategy_challenger_route_score: number | null
   strategy_registry_checksum: string
 }
 
@@ -61,7 +76,13 @@ export interface StrategyLabelMatrixRowV4 {
   strategy_hit: number
   weak_label: number
   affinity: number
+  affinity_version: string | null
+  match_strength: number
+  threshold_margin: number
+  affinity_evidence_count: number
   position_weight: number
+  challenger_affinity: number
+  challenger_position_weight: number
   overlap: number
   evaluable: number
   unavailable_reason: string | null
@@ -163,7 +184,12 @@ export function buildSelectionEvidenceV4(input: {
       feature_available: scoreComponents ? 1 : 0,
       feature_rejection_reason: scoreComponents ? null : 'score_v2_components_missing_or_invalid',
       strategy_labeler_version: labelerVersion,
+      strategy_affinity_version: clean(candidate.strategy_affinity_version) || null,
       strategy_router_version: clean(candidate.strategy_router_version) || null,
+      strategy_router_score: Number.isFinite(Number(candidate.strategy_router_score)) ? Number(candidate.strategy_router_score) : null,
+      strategy_challenger_affinity_version: clean(candidate.strategy_challenger_affinity_version) || null,
+      strategy_challenger_route_version: clean(candidate.strategy_challenger_route_version) || null,
+      strategy_challenger_route_score: Number.isFinite(Number(candidate.strategy_challenger_route_score)) ? Number(candidate.strategy_challenger_route_score) : null,
       strategy_registry_checksum: input.strategyRegistryChecksum,
     })
 
@@ -187,7 +213,13 @@ export function buildSelectionEvidenceV4(input: {
         strategy_hit: finite(candidate.strategy_hit_vector?.[spec.id]) > 0 ? 1 : 0,
         weak_label: finite(candidate.strategy_weak_label_vector?.[spec.id]),
         affinity: finite(candidate.strategy_affinity_vector?.[spec.id]),
+        affinity_version: clean(candidate.strategy_affinity_version) || null,
+        match_strength: finite(candidate.strategy_match_strength_vector?.[spec.id]),
+        threshold_margin: finite(candidate.strategy_threshold_margin_vector?.[spec.id]),
+        affinity_evidence_count: finite(candidate.strategy_affinity_evidence_count_vector?.[spec.id]),
         position_weight: finite(candidate.strategy_position_weight_vector?.[spec.id]),
+        challenger_affinity: finite(candidate.strategy_challenger_affinity_vector?.[spec.id]),
+        challenger_position_weight: finite(candidate.strategy_challenger_position_weight_vector?.[spec.id]),
         overlap: finite(candidate.strategy_overlap_vector?.[spec.id]),
         evaluable,
         unavailable_reason: unavailableReason,
@@ -370,16 +402,19 @@ export async function persistSelectionEvidenceV4(
         strategy_selected, ml_selected, l4_selected, ev_owner_available, final_signal,
         selection_stage, rejection_reason, selection_propensity, score_v2, score_components,
         allocation_selected, decision_evidence_reconciled_at,
-        strategy_labeler_version, strategy_router_version,
+        strategy_labeler_version, strategy_affinity_version, strategy_router_version, strategy_router_score,
+        strategy_challenger_affinity_version, strategy_challenger_route_version, strategy_challenger_route_score,
         strategy_registry_checksum, feature_contract_version, evidence_artifact_id
       ) VALUES (?, ?, ?, ?, ?, ?, 1, 'hard_filters_passed', ?, ?, 1, ?, 0, 0, 0, NULL,
-                ?, ?, 1.0, ?, ?, 0, NULL, ?, ?, ?, ?, ?)
+                ?, ?, 1.0, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       row.signal_date, row.symbol, row.producer_run_id, row.name,
       row.market_segment, row.sector, row.feature_available, row.feature_rejection_reason,
       row.strategy_selected, row.selection_stage, row.rejection_reason, row.score_v2,
-      row.score_components, row.strategy_labeler_version, row.strategy_router_version,
-      row.strategy_registry_checksum, SELECTION_REFERENCE_CONTRACT_VERSION,
+      row.score_components, row.strategy_labeler_version, row.strategy_affinity_version,
+      row.strategy_router_version, row.strategy_router_score,
+      row.strategy_challenger_affinity_version, row.strategy_challenger_route_version,
+      row.strategy_challenger_route_score, row.strategy_registry_checksum, SELECTION_REFERENCE_CONTRACT_VERSION,
       input.evidenceArtifactId,
     ))
     for (let offset = 0; offset < referenceStatements.length; offset += 200) {
@@ -390,15 +425,19 @@ export async function persistSelectionEvidenceV4(
       INSERT OR IGNORE INTO strategy_label_matrix_v4 (
         signal_date, symbol, producer_run_id, strategy_id, strategy_version,
         strategy_status, alpha_bucket, family_id, production_owner,
-        strategy_hit, weak_label, affinity, position_weight, overlap,
+        strategy_hit, weak_label, affinity, affinity_version, match_strength,
+        threshold_margin, affinity_evidence_count, position_weight,
+        challenger_affinity, challenger_position_weight, overlap,
         evaluable, unavailable_reason, label_reason, labeler_version,
         strategy_registry_checksum, reference_contract_version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
     `).bind(
       row.signal_date, row.symbol, row.producer_run_id, row.strategy_id,
       row.strategy_version, row.strategy_status, row.alpha_bucket, row.family_id,
       row.production_owner, row.strategy_hit, row.weak_label, row.affinity,
-      row.position_weight, row.overlap, row.evaluable, row.unavailable_reason, row.labeler_version,
+      row.affinity_version, row.match_strength, row.threshold_margin, row.affinity_evidence_count,
+      row.position_weight, row.challenger_affinity, row.challenger_position_weight,
+      row.overlap, row.evaluable, row.unavailable_reason, row.labeler_version,
       row.strategy_registry_checksum, SELECTION_REFERENCE_CONTRACT_VERSION,
     ))
     for (let offset = 0; offset < matrixStatements.length; offset += 250) {

@@ -59,6 +59,14 @@ assert(
   'a new same-date pipeline or snapshot run must supersede stale success while duplicate run IDs remain idempotent',
 )
 assert(
+  pipelineStageLease.includes('adoptRunIdOnResume') &&
+    pipelineStageLease.includes("status IN ('waiting', 'error')") &&
+    pipelineStageLease.includes("status='running' AND lease_expires_at < CURRENT_TIMESTAMP") &&
+    pipelineCallbackBlock.includes('adoptRunIdOnResume: true') &&
+    verifyCallbackBlock.includes('adoptRunIdOnResume: true'),
+  'a newer successful pipeline or verify callback must adopt canonical ownership from an errored, waiting, or stale stage',
+)
+assert(
   callbackRoutes.includes('queuePostVerifyStage') &&
     pipelineStageLease.includes("stage: 'post_verify_chain'"),
   'verify terminal callback must durably and idempotently queue the post-verify chain',

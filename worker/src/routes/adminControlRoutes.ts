@@ -722,6 +722,7 @@ async function handleSchedulerCallback(c: any) {
         const continuation = await queuePostPipelineStage(c.env, {
           businessDate: callbackRunDate,
           runId: callbackRunId,
+          adoptRunIdOnResume: true,
           supersedeSuccess: true,
         })
         await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
@@ -829,6 +830,7 @@ async function handleSchedulerCallback(c: any) {
       businessDate: callbackRunDate,
       runId: callbackRunId,
       resumeWaiting: true,
+      adoptRunIdOnResume: true,
       supersedeSuccess: true,
     })
     await logSchedulerResult(c.env.KV, 'post-verify-chain', {

@@ -25,6 +25,7 @@ export async function enqueuePipelineStage(
     stage: string
     runId: string
     resumeWaiting?: boolean
+    adoptRunIdOnResume?: boolean
     supersedeSuccess?: boolean
   },
 ): Promise<{ shouldEnqueue: boolean; row: PipelineStageRow }> {
@@ -38,6 +39,27 @@ export async function enqueuePipelineStage(
               lease_owner, lease_expires_at
   `).bind(input.businessDate, input.stage, input.runId).first<PipelineStageRow>()
   if (inserted) return { shouldEnqueue: true, row: inserted }
+
+  if (input.adoptRunIdOnResume) {
+    const adopted = await db.prepare(`
+      UPDATE pipeline_stage_runs
+         SET canonical_run_id=?, status='queued', cursor_key=NULL,
+             processed_count=0, expected_count=NULL, persisted_count=0,
+             attempt_count=0, lease_owner=NULL, lease_expires_at=NULL,
+             queued_at=CURRENT_TIMESTAMP, started_at=NULL, completed_at=NULL,
+             last_error=NULL, updated_at=CURRENT_TIMESTAMP
+       WHERE business_date=? AND stage=?
+         AND canonical_run_id<>?
+         AND (
+           status IN ('waiting', 'error')
+           OR (status='running' AND lease_expires_at < CURRENT_TIMESTAMP)
+         )
+      RETURNING business_date, stage, canonical_run_id, status, cursor_key,
+                processed_count, expected_count, persisted_count, attempt_count,
+                lease_owner, lease_expires_at
+    `).bind(input.runId, input.businessDate, input.stage, input.runId).first<PipelineStageRow>()
+    if (adopted) return { shouldEnqueue: true, row: adopted }
+  }
 
   if (input.resumeWaiting) {
     const resumed = await db.prepare(`
@@ -149,6 +171,7 @@ export async function queuePostPipelineStage(
     businessDate: string
     runId: string
     resumeWaiting?: boolean
+    adoptRunIdOnResume?: boolean
     supersedeSuccess?: boolean
     attempt?: number
   },
@@ -158,6 +181,7 @@ export async function queuePostPipelineStage(
     stage: 'post_pipeline_chain',
     runId: input.runId,
     resumeWaiting: input.resumeWaiting,
+    adoptRunIdOnResume: input.adoptRunIdOnResume,
     supersedeSuccess: input.supersedeSuccess,
   })
   if (!state.shouldEnqueue) {
@@ -189,6 +213,7 @@ export async function queuePostVerifyStage(
     businessDate: string
     runId: string
     resumeWaiting?: boolean
+    adoptRunIdOnResume?: boolean
     supersedeSuccess?: boolean
     attempt?: number
   },
@@ -198,6 +223,7 @@ export async function queuePostVerifyStage(
     stage: 'post_verify_chain',
     runId: input.runId,
     resumeWaiting: input.resumeWaiting,
+    adoptRunIdOnResume: input.adoptRunIdOnResume,
     supersedeSuccess: input.supersedeSuccess,
   })
   if (!state.shouldEnqueue) {

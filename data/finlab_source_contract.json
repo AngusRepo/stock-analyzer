@@ -89,11 +89,12 @@
     },
     "regime_context": {
       "canonical_datasets": ["canonical_market_index_daily", "canonical_futures_daily", "canonical_regime_context_daily"],
-      "required_fields": ["taiex_close"],
+      "required_fields": ["taiex_close", "official_tpex_index"],
       "optional_fields": [],
       "sentinel_field": "taiex_close",
       "fields": {
-        "taiex_close": { "required": true }
+        "taiex_close": { "required": true },
+        "official_tpex_index": { "required": true }
       }
     },
     "trading_restrictions": {

@@ -3269,6 +3269,17 @@ export async function processUpdateBatch(
     }
 
     try {
+      const readiness = await checkEveningChainSourceReadiness(env, triggerTime)
+      if (hasFinLabRefreshableMissing(readiness)) {
+        const retrySummary = await runDailyUpdate(env, true, triggerTime)
+        await logSchedulerResult(env.KV, 'evening-chain', {
+          status: 'running',
+          summary: `canonical source retry dispatched for ${triggerTime}; ${retrySummary}`,
+          duration_ms: 0,
+          run_date: triggerTime,
+        })
+        return
+      }
       const bulkSummary = await runBulkFetch(env, false, triggerTime)
       await runQueueUpdate(env, triggerTime, false)
       await logSchedulerResult(env.KV, 'evening-chain', {

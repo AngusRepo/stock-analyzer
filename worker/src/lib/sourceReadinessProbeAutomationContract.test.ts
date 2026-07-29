@@ -17,6 +17,9 @@ const schedulerStatus = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
 const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const types = fs.readFileSync('src/types.ts', 'utf8')
 const observabilityPage = fs.readFileSync('../frontend/src/pages/ObservabilityPage.tsx', 'utf8')
+const finlabContract = JSON.parse(fs.readFileSync('../data/finlab_source_contract.json', 'utf8')) as {
+  lanes: Record<string, { required_fields?: string[] }>
+}
 
 assert(
   manifest.jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.schedule === '0 13 * * 1-5' && job.query === 'sync=1'),
@@ -57,4 +60,14 @@ assert(
   'FinLab daily source refresh must continue through evening-chain callbacks only',
 )
 
+assert(
+  finlabContract.lanes.regime_context?.required_fields?.includes('official_tpex_index'),
+  'TWOII readiness must have an explicit official_tpex_index source-contract owner',
+)
+assert(
+  updateOrchestrator.includes('const readiness = await checkEveningChainSourceReadiness(env, triggerTime)') &&
+    updateOrchestrator.includes('if (hasFinLabRefreshableMissing(readiness))') &&
+    updateOrchestrator.includes('await runDailyUpdate(env, true, triggerTime)'),
+  'source readiness retry must redispatch scoped FinLab canonical lanes before legacy supplemental bulk fetch',
+)
 console.log('sourceReadinessProbeAutomationContract.test.ts passed')

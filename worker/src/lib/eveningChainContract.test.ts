@@ -81,7 +81,8 @@ assert(
 assert(
   controllerDailyWorkflows.includes('assertRegimeComputeClosure(data, runDate)') &&
     controllerDailyWorkflows.includes('readMarketRegimeState(env.KV)') &&
-    controllerDailyWorkflows.includes('market_regime_state readback mismatch'),
+    controllerDailyWorkflows.includes('market_regime_state readback mismatch') &&
+    controllerDailyWorkflows.includes('REGIME_KV_READBACK_DELAYS_MS'),
   'regime compute must verify same-date KV persistence and posterior surface before downstream stages',
 )
 assert(updateOrchestrator.includes('refreshExpectedReturnServingState'), 'daily readiness must persist canonical expected-return serving state')

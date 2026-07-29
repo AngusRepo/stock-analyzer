@@ -21,6 +21,7 @@ export async function runObsidianDaily(env: Bindings, date: string) {
 }
 
 const REGIME_SURFACE_LABELS = ['bull_market', 'volatile', 'sideways', 'bear_market'] as const
+const REGIME_KV_READBACK_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000, 8_000, 12_000, 15_000, 15_000] as const
 
 export function assertRegimeComputeClosure(data: any, runDate?: string): void {
   if (data?.kv_push_ok !== true) {
@@ -67,7 +68,7 @@ export async function runRegimeCompute(env: Bindings, runDate?: string) {
   assertRegimeComputeClosure(data, runDate)
   const expectedRunDate = runDate ?? String(data.run_date ?? '')
   let persisted = null
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt <= REGIME_KV_READBACK_DELAYS_MS.length; attempt += 1) {
     persisted = await readMarketRegimeState(env.KV)
     if (
       persisted?.run_date === expectedRunDate &&
@@ -75,7 +76,8 @@ export async function runRegimeCompute(env: Bindings, runDate?: string) {
     ) {
       break
     }
-    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)))
+    const delayMs = REGIME_KV_READBACK_DELAYS_MS[attempt]
+    if (delayMs != null) await new Promise((resolve) => setTimeout(resolve, delayMs))
   }
   if (persisted?.run_date !== expectedRunDate) {
     throw new Error(

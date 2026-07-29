@@ -574,6 +574,34 @@ adminWriteRoutes.post('/api/admin/strategy/evidence-v5/rebuild', async (c) => {
   })
 })
 
+adminWriteRoutes.post('/api/admin/strategy/marginal-edge-v4/refresh', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  type Body = {
+    as_of_date?: string
+  }
+  const body = await c.req.json<Body>().catch(() => ({} as Body))
+  const asOfDate = body.as_of_date ?? c.req.query('as_of_date') ?? twToday()
+  if (c.req.header('X-Confirm-Strategy-Learning') !== 'true') {
+    return c.json({
+      error: 'Strategy marginal-edge refresh requires header X-Confirm-Strategy-Learning: true',
+      hint: 'This persists shadow marginal-edge evidence with promotion disabled and never marks evening-chain complete.',
+    }, 400)
+  }
+
+  const { refreshStrategyMarginalEdgeV4 } = await import('../lib/strategyMarginalEdgeV4')
+  const report = await refreshStrategyMarginalEdgeV4(c.env.DB, asOfDate, { allowPromotion: false })
+  return c.json({
+    success: true,
+    mode: 'persisted_shadow',
+    as_of_date: asOfDate,
+    promotion_allowed: false,
+    ...report,
+    note: 'Marginal-edge evidence refreshed without promotion or evening-chain scheduler mutation.',
+  })
+})
+
 adminWriteRoutes.post('/api/admin/strategy/reward-ledger/refresh', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

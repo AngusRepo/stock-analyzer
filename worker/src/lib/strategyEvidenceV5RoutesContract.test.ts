@@ -26,3 +26,14 @@ test('standalone route does not call the chain finalizer', () => {
   const route = routes.slice(routes.indexOf("/api/admin/strategy/evidence-v5/rebuild"), routes.indexOf("/api/admin/strategy/reward-ledger/refresh"))
   assert(!route.includes('finalizeStrategyLearningEvidenceV5'))
 })
+
+test('marginal edge refresh is evidence-only and cannot promote', () => {
+  const route = routes.slice(
+    routes.indexOf("/api/admin/strategy/marginal-edge-v4/refresh"),
+    routes.indexOf("/api/admin/strategy/reward-ledger/refresh"),
+  )
+  assert(route.includes('X-Confirm-Strategy-Learning'))
+  assert(route.includes('refreshStrategyMarginalEdgeV4'))
+  assert(route.includes('{ allowPromotion: false }'))
+  assert(!route.includes('finalizeStrategyLearningEvidenceV5'))
+})

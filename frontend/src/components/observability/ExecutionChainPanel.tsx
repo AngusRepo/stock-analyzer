@@ -84,7 +84,6 @@ const STAGES: Record<string, StageDefinition> = {
   'verify-v2': { id: 'verify-v2', label: 'Verify', icon: ShieldCheck },
   'post-verify-chain': { id: 'post-verify-chain', label: 'Verify callback', icon: GitBranch },
   'allocator-ev-lifecycle-watchdog': { id: 'allocator-ev-lifecycle-watchdog', label: 'EV lifecycle', icon: Radar, optional: true },
-  'active8-oof-daily': { id: 'active8-oof-daily', label: 'Active-8 daily OOF', icon: Layers3 },
   'model-ic-rolling': { id: 'model-ic-rolling', label: 'Model IC rolling', icon: Activity },
   'linucb-reward-ledger': { id: 'linucb-reward-ledger', label: 'Reward ledger', icon: BookOpenCheck },
   adapt: { id: 'adapt', label: 'Adapt params', icon: Settings2 },
@@ -160,7 +159,6 @@ const SCOPES: ChainScope[] = [
       ['verify-v2'],
       ['post-verify-chain'],
       ['allocator-ev-lifecycle-watchdog'],
-      ['active8-oof-daily'],
       ['model-ic-rolling'],
       ['linucb-reward-ledger'],
       ['adapt'],
@@ -311,6 +309,14 @@ function statusLabel(job?: SchedulerJob): string {
   }
   if (job?.statusScope !== 'historical_replay' || !job.statusRunDate) return label
   return `Historical replay · ${formatReplayDate(job.statusRunDate)} · ${label}`
+}
+
+function runtimeEvidence(job?: SchedulerJob): string {
+  if (!job) return 'no runtime evidence'
+  if (job.lastRun && job.lastRun !== 'N/A') {
+    return `${job.lastRunBasis === 'started' ? 'Started ' : ''}${job.lastRun}`
+  }
+  return job.nextRun || 'no runtime evidence'
 }
 
 function StageStatusMarker({ status }: { status: VisualStatus }) {
@@ -606,7 +612,7 @@ export default function ExecutionChainPanel({
                         <span className="obs-chain__stage-copy">
                           <strong>{definition.label}</strong>
                           <span>{job?.name ?? id}</span>
-                          <small className="sv-num">{job?.lastRun || job?.nextRun || 'no runtime evidence'}</small>
+                          <small className="sv-num">{runtimeEvidence(job)}</small>
                           <em>{statusLabel(job)}{definition.optional ? ' · optional' : ''}</em>
                         </span>
                       </button>
@@ -664,7 +670,7 @@ export default function ExecutionChainPanel({
                               <span className="obs-chain__stage-copy">
                                 <strong>{definition.label}</strong>
                                 <span>{job?.name ?? id}</span>
-                                <small className="sv-num">{job?.lastRun || job?.nextRun || 'no runtime evidence'}</small>
+                                <small className="sv-num">{runtimeEvidence(job)}</small>
                                 <em>{statusLabel(job)}</em>
                               </span>
                             </button>
@@ -703,7 +709,7 @@ export default function ExecutionChainPanel({
           <JobStatusSummary job={selectedJob} />
           <dl className="obs-chain__metrics">
             <div><dt>Status</dt><dd>{statusLabel(selectedJob)}</dd></div>
-            <div><dt>Last run</dt><dd className="sv-num">{selectedJob?.lastRun ?? '—'}</dd></div>
+            <div><dt>{selectedJob?.lastRunBasis === 'started' ? 'Started' : 'Last run'}</dt><dd className="sv-num">{selectedJob?.lastRun ?? '—'}</dd></div>
             <div><dt>Duration</dt><dd className="sv-num">{selectedJob?.lastDuration ?? '—'}</dd></div>
           </dl>
           {stageDetails(selectedJob).length > 0 && (

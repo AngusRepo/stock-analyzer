@@ -4,6 +4,7 @@ import {
   mergeDirectSchedulerLog,
   reconcileDurablePipelineStageStatus,
   resolveSchedulerDisplayStatus,
+  resolveSchedulerRunDisplayTime,
   resolveSchedulerLogStatus,
   selectSchedulerChainDates,
   selectSchedulerDisplayLogs,
@@ -256,6 +257,7 @@ const logs: SchedulerDisplayLogCandidate[] = [
       timestamp: '2026-07-26T13:57:34.432Z',
     },
     activeReplayRunDate: '2026-07-24',
+    activeReplayIsRunning: true,
     def: { id: 'screener', group: 'pipeline_chain', chainIndex: 6 },
     nextRun: '7/27 21:38',
     today: '2026-07-27',
@@ -342,6 +344,64 @@ const logs: SchedulerDisplayLogCandidate[] = [
   assert(status.statusScope === 'today', 'today log must keep today scope')
 }
 
+
+{
+  const status = resolveSchedulerDisplayStatus({
+    todayLog: {
+      task: 'market-close-refresh',
+      status: 'success',
+      summary: 'refreshed 1967 close prices',
+      duration_ms: 65_274,
+      run_date: '2026-07-29',
+      timestamp: '2026-07-29T10:11:07.000Z',
+    },
+    lastAttempt: {
+      task: 'market-close-refresh',
+      status: 'success',
+      summary: 'prior trading session close refresh',
+      duration_ms: 65_274,
+      run_date: '2026-07-28',
+      timestamp: '2026-07-28T10:11:07.000Z',
+    },
+    activeReplayLog: {
+      task: 'market-close-refresh',
+      status: 'success',
+      summary: 'terminal prior-session chain snapshot',
+      duration_ms: 65_274,
+      run_date: '2026-07-28',
+      timestamp: '2026-07-28T10:11:07.000Z',
+    },
+    activeReplayRunDate: '2026-07-28',
+    activeReplayIsRunning: false,
+    def: { id: 'market-close-refresh', group: 'pipeline_chain', chainIndex: 1 },
+    nextRun: '7/30 18:10',
+    today: '2026-07-29',
+    nowMs: Date.parse('2026-07-29T10:12:00.000Z'),
+  })
+  assert(status.status === 'success', 'today close refresh must not be hidden by a terminal prior-session chain snapshot')
+  assert(status.statusScope === 'today', 'today close refresh must retain today scope')
+  assert(status.statusRunDate === '2026-07-29', 'today close refresh must expose today as its run date')
+}
+
+{
+  const displayTime = resolveSchedulerRunDisplayTime({
+    jobId: 'post-verify-chain',
+    displayTimestamp: '2026-07-28T14:22:42.000Z',
+    durable: {
+      business_date: '2026-07-28',
+      stage: 'post_verify_chain',
+      canonical_run_id: 'verify-2026-07-28-a0891e08145a',
+      status: 'success',
+      attempt_count: 1,
+      started_at: '2026-07-28 14:21:16',
+      completed_at: '2026-07-28 14:22:42',
+      updated_at: '2026-07-28 14:22:42',
+      last_error: null,
+    },
+  })
+  assert(displayTime.timestamp === '2026-07-28T14:21:16Z', 'callback containers must display durable started_at')
+  assert(displayTime.basis === 'started', 'callback container timestamp basis must be explicit')
+}
 {
   const status = reconcileDurablePipelineStageStatus({
     jobId: 'post-pipeline-chain',
@@ -382,6 +442,7 @@ const logs: SchedulerDisplayLogCandidate[] = [
   assert(status?.lastError == null, 'recovered callback state must not retain the stale error text')
   assert(status?.attemptCount === 4, 'durable attempt count must be exposed as recovery evidence')
 }
+
 
 {
   const status = reconcileDurablePipelineStageStatus({

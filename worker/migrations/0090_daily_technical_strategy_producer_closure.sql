@@ -24,6 +24,9 @@ ALTER TABLE strategy_learning_daily_stats
 ALTER TABLE strategy_learning_daily_stats
   ADD COLUMN reward_contract_version TEXT;
 
+ALTER TABLE strategy_evidence_rebuild_runs_v5
+  ADD COLUMN evaluation_contract_version TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_evaluable
   ON strategy_decision_log(date, strategy_id, evaluable, matched);
 

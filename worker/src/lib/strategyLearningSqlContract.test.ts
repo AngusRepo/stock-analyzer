@@ -45,3 +45,7 @@ assert.match(source, /SUM\(CASE WHEN decision_contract_version = 'strategy-evalu
 assert.match(source, /COUNT\(DISTINCT CASE WHEN decision_contract_version = 'strategy-evaluation-v2' AND decisions > 0 THEN date END\) AS decision_dates/)
 assert.doesNotMatch(source, /SUM\(decisions\) AS lifetime_decisions/)
 assert.match(source, /decision_contract_version = 'strategy-evaluation-v2'\s+OR reward_contract_version = 'selection-reference-snapshot-v3'/)
+assert.match(source, /SET evaluable=\?, unavailable_reason=\?, evaluation_contract_version='strategy-evaluation-v2'/)
+assert.match(source, /COALESCE\(r\.evaluation_contract_version, ''\) <> 'strategy-evaluation-v2'/)
+assert.match(source, /existingMatrix\.reference_contract_version\) === SELECTION_REFERENCE_CONTRACT_VERSION/)
+assert.match(source, /SET status='success'[\s\S]*evaluation_contract_version='strategy-evaluation-v2'/)

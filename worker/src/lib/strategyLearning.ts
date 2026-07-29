@@ -435,6 +435,7 @@ const SCHEMA_DDL = [
     unavailable_rows INTEGER NOT NULL DEFAULT 0,
     matrix_rows INTEGER NOT NULL DEFAULT 0,
     labeler_version TEXT NOT NULL DEFAULT 'strategy-decision-log-pit-reconstruction-v5',
+    evaluation_contract_version TEXT,
     source_checksum TEXT,
     blocker_reason TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -2093,7 +2094,8 @@ export async function refreshStrategyRewardLedger(
       options.endDate ?? null,
     ).run()
     staleDailyRewardsCleared = Number(cleared.meta?.changes ?? 0)
-  }  const headRows = dryRun ? 0 : await refreshStrategyLearningHeads(db)
+  }
+  const headRows = dryRun ? 0 : await refreshStrategyLearningHeads(db)
   return {
     success: true,
     mode: dryRun ? 'dry_run' : 'persisted',
@@ -2771,7 +2773,11 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       FROM strategy_decision_log d
       LEFT JOIN strategy_evidence_rebuild_runs_v5 r ON r.signal_date=d.date
      WHERE d.date<=?
-       AND (r.signal_date IS NULL OR r.status NOT IN ('success','blocked'))
+       AND (
+         r.signal_date IS NULL
+         OR COALESCE(r.evaluation_contract_version, '') <> 'strategy-evaluation-v2'
+         OR r.status NOT IN ('success','blocked')
+       )
      GROUP BY d.date
      ORDER BY d.date DESC
      LIMIT ?
@@ -2791,7 +2797,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
     row.strategy_id + '|' + row.version,
     row,
   ]))
-  const { persistSelectionEvidenceV4 } = await import('./selectionReferenceEvidence')
+  const { persistSelectionEvidenceV4, SELECTION_REFERENCE_CONTRACT_VERSION } = await import('./selectionReferenceEvidence')
   let successfulDates = 0
   let blockedDates = 0
   let rebuiltDecisions = 0
@@ -2799,9 +2805,10 @@ export async function rebuildHistoricalStrategyEvidenceV5(
 
   for (const { date } of dateRows.results ?? []) {
     await db.prepare(`
-      INSERT INTO strategy_evidence_rebuild_runs_v5(signal_date, status, updated_at)
-      VALUES (?, 'pending', CURRENT_TIMESTAMP)
-      ON CONFLICT(signal_date) DO UPDATE SET status='pending', blocker_reason=NULL, updated_at=CURRENT_TIMESTAMP
+      INSERT INTO strategy_evidence_rebuild_runs_v5(signal_date, status, evaluation_contract_version, updated_at)
+      VALUES (?, 'pending', 'strategy-evaluation-v2', CURRENT_TIMESTAMP)
+      ON CONFLICT(signal_date) DO UPDATE SET
+        status='pending', evaluation_contract_version='strategy-evaluation-v2', blocker_reason=NULL, updated_at=CURRENT_TIMESTAMP
     `).bind(date).run()
     try {
       const referencesResult = await db.prepare(`
@@ -2917,8 +2924,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         }
         decisionUpdates.push(db.prepare(`
           UPDATE strategy_decision_log
-             SET evaluable=?, unavailable_reason=?, matched=?, match_score=?,
-                 reason_code=?, evidence_json=json_patch(CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END, ?)
+             SET evaluable=?, unavailable_reason=?, evaluation_contract_version='strategy-evaluation-v2',
+                 matched=?, match_score=?, reason_code=?, evidence_json=json_patch(CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END, ?)
            WHERE date=? AND symbol=? AND strategy_id=? AND strategy_version=?
         `).bind(
           evaluability.evaluable ? 1 : 0,
@@ -2939,7 +2946,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       const expectedMatrixRows = references.length * strategyKeys.size
       const existingMatrix = await db.prepare(`
         SELECT status, reference_candidate_count, strategy_count, expected_cell_count,
-               persisted_cell_count, labeler_version
+               persisted_cell_count, labeler_version, reference_contract_version
           FROM strategy_label_matrix_runs_v4
          WHERE producer_run_id=?
       `).bind(producerRunId).first<any>()
@@ -2955,6 +2962,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         && Number(existingMatrix.expected_cell_count) === expectedMatrixRows
         && Number(existingMatrix.persisted_cell_count) === expectedMatrixRows
         && cleanToken(existingMatrix.labeler_version) === labelerVersion
+        && cleanToken(existingMatrix.reference_contract_version) === SELECTION_REFERENCE_CONTRACT_VERSION
         && existingMatrixRows === expectedMatrixRows
       if (reusableExistingMatrix) {
         matrixRows = expectedMatrixRows
@@ -3025,7 +3033,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         UPDATE strategy_evidence_rebuild_runs_v5
            SET status='success', candidate_count=?, strategy_count=?, decision_rows=?,
                evaluable_rows=?, unavailable_rows=?, matrix_rows=?,
-               source_checksum=?, blocker_reason=NULL, updated_at=CURRENT_TIMESTAMP
+               source_checksum=?, evaluation_contract_version='strategy-evaluation-v2',
+               blocker_reason=NULL, updated_at=CURRENT_TIMESTAMP
          WHERE signal_date=?
       `).bind(
         referenceSymbols.size, strategyKeys.size, decisions.length,
@@ -3043,7 +3052,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         : 'failed'
       await db.prepare(`
         UPDATE strategy_evidence_rebuild_runs_v5
-           SET status=?, blocker_reason=?, updated_at=CURRENT_TIMESTAMP
+           SET status=?, evaluation_contract_version='strategy-evaluation-v2',
+               blocker_reason=?, updated_at=CURRENT_TIMESTAMP
          WHERE signal_date=?
       `).bind(status, reason, date).run()
       blockedDates += 1

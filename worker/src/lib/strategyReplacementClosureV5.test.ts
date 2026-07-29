@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const migration = readFileSync('migrations/0089_strategy_evaluability_and_atomic_replacement.sql', 'utf8')
+const migration0090 = readFileSync('migrations/0090_daily_technical_strategy_producer_closure.sql', 'utf8')
 const learning = readFileSync('src/lib/strategyLearning.ts', 'utf8')
 const edge = readFileSync('src/lib/strategyMarginalEdgeV4.ts', 'utf8')
 const runState = readFileSync('src/lib/strategyLearningRunState.ts', 'utf8')
@@ -11,6 +12,7 @@ const routes = readFileSync('src/routes/other.ts', 'utf8')
 assert(migration.includes('evaluable INTEGER NOT NULL DEFAULT 0'), 'legacy strategy decisions must fail closed')
 assert(migration.includes('unavailable_decisions INTEGER NOT NULL DEFAULT 0'), 'daily projection must separate unavailable decisions')
 assert(migration.includes('strategy_evidence_rebuild_runs_v5'), 'historical PIT rebuild requires a durable ledger')
+assert(migration0090.includes('ADD COLUMN evaluation_contract_version TEXT'), 'rebuild ledger must distinguish pre-v2 success from valid v2 reconstruction')
 assert(migration.includes('strategy_replacement_decisions_v5'), 'paired replacements require immutable decision evidence')
 for (const id of [
   'stock_tech_s05_first_dry_pullback_v1',

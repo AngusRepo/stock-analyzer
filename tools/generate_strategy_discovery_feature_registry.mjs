@@ -9,10 +9,12 @@ const pitOverlayPath = resolve(root, 'data/feature_registry/strategy_discovery_p
 const outputPath = resolve(root, 'worker/src/strategy-discovery/data/formal137-feature-registry.v1.json')
 const sourceBytes = readFileSync(sourcePath)
 const pitOverlayBytes = readFileSync(pitOverlayPath)
-const source = JSON.parse(sourceBytes.toString('utf8'))
-const pitOverlay = JSON.parse(pitOverlayBytes.toString('utf8'))
-const sourceHash = createHash('sha256').update(sourceBytes).digest('hex')
-const pitOverlayHash = createHash('sha256').update(pitOverlayBytes).digest('hex')
+const sourceText = sourceBytes.toString('utf8').replace(/\r\n/g, '\n')
+const pitOverlayText = pitOverlayBytes.toString('utf8').replace(/\r\n/g, '\n')
+const source = JSON.parse(sourceText)
+const pitOverlay = JSON.parse(pitOverlayText)
+const sourceHash = createHash('sha256').update(sourceText, 'utf8').digest('hex')
+const pitOverlayHash = createHash('sha256').update(pitOverlayText, 'utf8').digest('hex')
 const unknown = 'UNKNOWN'
 
 const pitFeatures = pitOverlay?.features && typeof pitOverlay.features === 'object' ? pitOverlay.features : {}
@@ -92,7 +94,9 @@ const output = JSON.stringify({
 }, null, 2) + '\n'
 
 if (process.argv.includes('--check')) {
-  const existing = readFileSync(outputPath, 'utf8')
+  // Git may materialize the tracked JSON with CRLF on Windows. The registry
+  // contract is its JSON payload; line-ending conversion is not semantic drift.
+  const existing = readFileSync(outputPath, 'utf8').replace(/\r\n/g, '\n')
   if (existing !== output) throw new Error('strategy_discovery_feature_registry_drift')
 } else {
   mkdirSync(dirname(outputPath), { recursive: true })

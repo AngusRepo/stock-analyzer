@@ -9,6 +9,27 @@ export type MaintenanceBacklogTask =
 
 const ACTIVE_TTL_SECONDS = 6 * 3600
 const DEFAULT_MAX_ATTEMPTS = 240
+const DEFAULT_MAX_CYCLES = 4
+const MAX_CYCLES = 8
+
+export type MaintenanceDrainNextStep = 'next_attempt' | 'next_cycle' | 'complete' | 'exhausted'
+
+export function resolveMaintenanceDrainNextStep(input: {
+  backlogRemaining: boolean
+  attempt: number
+  maxAttempts: number
+  cycle: number
+  maxCycles: number
+}): MaintenanceDrainNextStep {
+  if (!input.backlogRemaining) return 'complete'
+  if (input.attempt + 1 < input.maxAttempts) return 'next_attempt'
+  if (input.cycle + 1 < input.maxCycles) return 'next_cycle'
+  return 'exhausted'
+}
+function defaultMaxCycles(task: MaintenanceBacklogTask): number {
+  return task === 'd1-evidence-scrub' ? DEFAULT_MAX_CYCLES : 1
+}
+
 
 function activeKey(task: MaintenanceBacklogTask): string {
   return `maintenance:backlog-drain:${task}:active`
@@ -24,6 +45,8 @@ function queueMessage(
   runId: string,
   attempt: number,
   maxAttempts: number,
+  cycle: number,
+  maxCycles: number,
 ): UpdateQueueMsg {
   return {
     type: 'maintenance_backlog_drain',
@@ -33,6 +56,8 @@ function queueMessage(
     runId,
     attempt,
     maxAttempts,
+    maintenanceCycle: cycle,
+    maxMaintenanceCycles: maxCycles,
   }
 }
 
@@ -43,6 +68,7 @@ export async function enqueueMaintenanceBacklogDrain(
     runDate: string
     runId?: string
     maxAttempts?: number
+    maxCycles?: number
   },
 ): Promise<{ queued: boolean; runId: string }> {
   const runId = input.runId ?? `${input.task}:${input.runDate}:${crypto.randomUUID()}`
@@ -58,6 +84,8 @@ export async function enqueueMaintenanceBacklogDrain(
       runId,
       0,
       Math.max(1, Math.min(Math.floor(input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS), DEFAULT_MAX_ATTEMPTS)),
+      0,
+      Math.max(1, Math.min(Math.floor(input.maxCycles ?? defaultMaxCycles(input.task)), MAX_CYCLES)),
     ))
     return { queued: true, runId }
   } catch (error) {
@@ -106,6 +134,8 @@ export async function processMaintenanceBacklogDrain(
   if (!task) throw new Error('maintenance_backlog_task_missing')
   const attempt = Math.max(0, Math.floor(msg.attempt ?? 0))
   const maxAttempts = Math.max(1, Math.min(Math.floor(msg.maxAttempts ?? DEFAULT_MAX_ATTEMPTS), DEFAULT_MAX_ATTEMPTS))
+  const cycle = Math.max(0, Math.floor(msg.maintenanceCycle ?? 0))
+  const maxCycles = Math.max(1, Math.min(Math.floor(msg.maxMaintenanceCycles ?? defaultMaxCycles(task)), MAX_CYCLES))
   const runId = msg.runId ?? `${task}:${msg.triggerTime}:queue`
   const leaseResult = await runWithMaintenanceLease(env.DB, {
     taskName: `${task}:queue`,
@@ -116,7 +146,7 @@ export async function processMaintenanceBacklogDrain(
 
   if ('skipped' in leaseResult && leaseResult.skipped) {
     await (env.UPDATE_QUEUE as any).send(
-      queueMessage(task, msg.triggerTime, runId, attempt, maxAttempts),
+      queueMessage(task, msg.triggerTime, runId, attempt, maxAttempts, cycle, maxCycles),
       { delaySeconds: 30 },
     )
     return
@@ -128,22 +158,41 @@ export async function processMaintenanceBacklogDrain(
     attempt,
     summary: result.summary,
     backlog_remaining: result.backlogRemaining,
+    cycle,
+    max_cycles: maxCycles,
     updated_at: new Date().toISOString(),
   }), { expirationTtl: ACTIVE_TTL_SECONDS })
 
-  if (result.backlogRemaining && attempt + 1 < maxAttempts) {
+  const nextStep = resolveMaintenanceDrainNextStep({
+    backlogRemaining: result.backlogRemaining,
+    attempt,
+    maxAttempts,
+    cycle,
+    maxCycles,
+  })
+
+  if (nextStep === 'next_attempt') {
     await env.KV.put(activeKey(task), runId, { expirationTtl: ACTIVE_TTL_SECONDS })
     await (env.UPDATE_QUEUE as any).send(
-      queueMessage(task, msg.triggerTime, runId, attempt + 1, maxAttempts),
+      queueMessage(task, msg.triggerTime, runId, attempt + 1, maxAttempts, cycle, maxCycles),
       { delaySeconds: 5 },
+    )
+    return
+  }
+
+  if (nextStep === 'next_cycle') {
+    await env.KV.put(activeKey(task), runId, { expirationTtl: ACTIVE_TTL_SECONDS })
+    await (env.UPDATE_QUEUE as any).send(
+      queueMessage(task, msg.triggerTime, runId, 0, maxAttempts, cycle + 1, maxCycles),
+      { delaySeconds: 30 },
     )
     return
   }
 
   await env.KV.delete(activeKey(task))
   await logSchedulerResult(env.KV, task, {
-    status: result.backlogRemaining ? 'error' : 'success',
-    summary: `durable_drain attempts=${attempt + 1}/${maxAttempts} backlog_remaining=${result.backlogRemaining} ${result.summary}`,
+    status: nextStep === 'exhausted' ? 'error' : 'success',
+    summary: `durable_drain cycles=${cycle + 1}/${maxCycles} attempts=${attempt + 1}/${maxAttempts} backlog_remaining=${result.backlogRemaining} ${result.summary}`,
     duration_ms: 0,
     run_id: runId,
     run_date: msg.triggerTime,

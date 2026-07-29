@@ -1187,6 +1187,9 @@ CREATE TABLE IF NOT EXISTS strategy_decision_log (
   strategy_version         TEXT NOT NULL,
   strategy_status          TEXT NOT NULL,
   alpha_bucket             TEXT NOT NULL,
+  evaluable                INTEGER NOT NULL DEFAULT 0 CHECK(evaluable IN (0, 1)),
+  unavailable_reason       TEXT,
+  evaluation_contract_version TEXT NOT NULL DEFAULT 'strategy-evaluation-legacy-unverified',
   matched                  INTEGER NOT NULL DEFAULT 0,
   match_score              REAL,
   reason_code              TEXT NOT NULL,
@@ -1306,6 +1309,8 @@ CREATE TABLE IF NOT EXISTS selection_reference_snapshots_v1 (
 );
 CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_date
   ON selection_reference_snapshots_v1(signal_date, hard_gate_passed, strategy_selected);
+CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_contract_date
+  ON selection_reference_snapshots_v1(feature_contract_version, signal_date, symbol, producer_run_id);
 CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_symbol
   ON selection_reference_snapshots_v1(symbol, signal_date DESC);
 
@@ -1336,6 +1341,8 @@ CREATE TABLE IF NOT EXISTS strategy_label_matrix_v4 (
   family_id TEXT NOT NULL,
   production_owner INTEGER NOT NULL CHECK(production_owner IN (0, 1)),
   strategy_hit INTEGER NOT NULL CHECK(strategy_hit IN (0, 1)),
+  evaluable INTEGER NOT NULL DEFAULT 0 CHECK(evaluable IN (0, 1)),
+  unavailable_reason TEXT,
   weak_label REAL NOT NULL,
   affinity REAL NOT NULL,
   position_weight REAL NOT NULL,
@@ -1349,6 +1356,8 @@ CREATE TABLE IF NOT EXISTS strategy_label_matrix_v4 (
 );
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_date
   ON strategy_label_matrix_v4(signal_date, strategy_id, strategy_hit);
+CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_evaluable
+  ON strategy_label_matrix_v4(signal_date, strategy_id, evaluable, strategy_hit);
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_symbol
   ON strategy_label_matrix_v4(symbol, signal_date DESC);
 
@@ -1362,6 +1371,7 @@ CREATE TABLE IF NOT EXISTS strategy_label_matrix_runs_v4 (
   persisted_cell_count INTEGER NOT NULL DEFAULT 0,
   strategy_registry_checksum TEXT NOT NULL,
   labeler_version TEXT NOT NULL,
+  reference_contract_version TEXT NOT NULL,
   error_code TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -1386,6 +1396,7 @@ CREATE TABLE IF NOT EXISTS strategy_reward_ledger (
   coverage                 REAL,
   market_segment           TEXT DEFAULT 'all',
   regime                   TEXT DEFAULT 'all',
+  selection_contract_version TEXT,
   evidence_json            TEXT NOT NULL DEFAULT '{}',
   refresh_run_id           TEXT,
   updated_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,

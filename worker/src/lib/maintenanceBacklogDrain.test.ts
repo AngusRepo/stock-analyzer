@@ -1,6 +1,9 @@
 import { strict as assert } from 'node:assert'
 import * as fs from 'node:fs'
-import { enqueueMaintenanceBacklogDrain } from './maintenanceBacklogDrain'
+import {
+  enqueueMaintenanceBacklogDrain,
+  resolveMaintenanceDrainNextStep,
+} from './maintenanceBacklogDrain'
 
 void (async () => {
   const values = new Map<string, string>()
@@ -39,13 +42,21 @@ void (async () => {
     runId: 'drain-1',
     attempt: 0,
     maxAttempts: 240,
+    maintenanceCycle: 0,
+    maxMaintenanceCycles: 1,
   })
+
+  assert.equal(resolveMaintenanceDrainNextStep({ backlogRemaining: false, attempt: 0, maxAttempts: 240, cycle: 0, maxCycles: 4 }), 'complete')
+  assert.equal(resolveMaintenanceDrainNextStep({ backlogRemaining: true, attempt: 238, maxAttempts: 240, cycle: 0, maxCycles: 4 }), 'next_attempt')
+  assert.equal(resolveMaintenanceDrainNextStep({ backlogRemaining: true, attempt: 239, maxAttempts: 240, cycle: 0, maxCycles: 4 }), 'next_cycle')
+  assert.equal(resolveMaintenanceDrainNextStep({ backlogRemaining: true, attempt: 239, maxAttempts: 240, cycle: 3, maxCycles: 4 }), 'exhausted')
 
   const orchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
   assert.match(orchestrator, /msg\.type === 'maintenance_backlog_drain'/)
   assert.match(orchestrator, /processMaintenanceBacklogDrain/)
   const scheduler = fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8')
   assert.match(scheduler, /legacy-strategy-evidence-migration[^\n]+durable=1/)
+  assert.match(scheduler, /d1-evidence-scrub[^\n]+max_cycles=4/)
 })().catch((error) => {
   throw error
 })

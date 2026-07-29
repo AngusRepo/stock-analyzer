@@ -66,7 +66,6 @@ export interface StrategyCandidatePoolPolicy {
   maxPoolQuota: number
   defaultCostBudget: number
   maxOneStrategyShare: number
-  maxIndustryShare: number
 }
 
 export interface StrategyCapacityInput {
@@ -248,6 +247,7 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
     adaptive_capacity_eligible_count?: number
     adaptive_capacity_source_universe_count?: number
     adaptive_target_size_before_dynamic_quota?: number
+    soft_capacity_reference_target?: number
     dynamic_effective_quota_policy?: string
     dynamic_effective_quota_total?: number
     dynamic_effective_quota_by_strategy?: Record<string, number>
@@ -315,7 +315,6 @@ export const DEFAULT_STRATEGY_CANDIDATE_POOL_POLICY: StrategyCandidatePoolPolicy
   maxPoolQuota: 20,
   defaultCostBudget: 20,
   maxOneStrategyShare: 0.35,
-  maxIndustryShare: 0.22,
 }
 
 function finiteNumber(value: unknown): number | null {
@@ -977,7 +976,9 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
       const staticMaxMlShare = finiteNumber(runtimePolicy.maxMlShare)
       const evidenceRequirements = runtimePolicy.evidenceRequirements?.map(cleanText).filter(Boolean)
         ?? ['price', 'chip_or_flow', 'technical']
-      const configuredStrategyWeight = finiteNumber(options.strategyWeights?.[spec.id]) ?? 1
+      const configuredStrategyWeight = options.strategyWeights == null
+        ? 1
+        : finiteNumber(options.strategyWeights[spec.id]) ?? 0
       const specRegimeWeight = regimeWeight(spec, options.regime)
       const rWeight = specRegimeWeight * configuredStrategyWeight
       const missingEvidence = validation.ok ? [] : validation.errors
@@ -1276,7 +1277,6 @@ export function mergeStrategyCandidatePools<T extends StrategyCandidatePoolCandi
 
   const ordered = [...bestBySymbol.values()].sort((a, b) => b.strategy_score - a.strategy_score)
   const strategyCap = Math.max(1, Math.floor(capacity.mlQueueCap * policy.maxOneStrategyShare))
-  const industryCap = Math.max(2, Math.floor(capacity.mlQueueCap * policy.maxIndustryShare))
   const strategyUsage = new Map<string, number>()
   const industryUsage = new Map<string, number>()
   const mlQueue: T[] = []
@@ -1308,9 +1308,6 @@ export function mergeStrategyCandidatePools<T extends StrategyCandidatePoolCandi
     } else if (nextStrategyCount > entryStrategyCap) {
       decision = 'research_only_queue'
       reason = 'strategy_share_cap'
-    } else if (nextIndustryCount > industryCap) {
-      decision = 'research_only_queue'
-      reason = 'industry_diversity_cap'
     } else if (mlQueue.length >= capacity.mlQueueCap) {
       decision = 'research_only_queue'
       reason = 'ml_capacity_overflow'
@@ -1422,7 +1419,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     matchedCandidateCount: provisionalRouterPlan.telemetry.matched_candidates,
   })
   const adaptiveTargetSizeBeforeDynamicQuota = adaptiveCapacity.target
-  const preliminarySelection = planStrategyFirstCandidateSelection(featureEnrichedUniverse, specs, {
+  const selection = planStrategyFirstCandidateSelection(featureEnrichedUniverse, specs, {
     regime: options.regime,
     strategyWeights: options.strategyWeights,
     strategyPortfolioMetrics: options.strategyPortfolioMetrics,
@@ -1431,20 +1428,9 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     capacity: { requestedTotalCap: Math.max(1, adaptiveTargetSizeBeforeDynamicQuota) },
     mlQueueCapOverride: Math.max(1, adaptiveTargetSizeBeforeDynamicQuota),
   })
-  const dynamicEffectiveQuota = resolveDynamicEffectiveQuota(preliminarySelection.pools)
-  const adaptiveTargetSize = Math.min(adaptiveTargetSizeBeforeDynamicQuota, dynamicEffectiveQuota.total)
-  const selection = adaptiveTargetSize === adaptiveTargetSizeBeforeDynamicQuota
-    ? preliminarySelection
-    : planStrategyFirstCandidateSelection(featureEnrichedUniverse, specs, {
-        regime: options.regime,
-        strategyWeights: options.strategyWeights,
-        strategyPortfolioMetrics: options.strategyPortfolioMetrics,
-        strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
-        policy,
-        capacity: { requestedTotalCap: Math.max(1, adaptiveTargetSize) },
-        mlQueueCapOverride: Math.max(1, adaptiveTargetSize),
-      })
-  const routerPlan = adaptiveTargetSize > 0 && adaptiveTargetSize < adaptiveCapacity.max
+  const dynamicEffectiveQuota = resolveDynamicEffectiveQuota(selection.pools)
+  const adaptiveTargetSize = adaptiveTargetSizeBeforeDynamicQuota
+  const routerPlan = adaptiveTargetSize > 0
     ? buildMultiStrategyPleRoutingPlan(featureEnrichedUniverse, specs, {
         maxSlateSize: adaptiveTargetSize,
         regime: options.regime,
@@ -1455,11 +1441,13 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       })
     : provisionalRouterPlan
 
-  const strategySelected = adaptiveTargetSize > 0 ? routerPlan.mlSlate.slice(0, adaptiveTargetSize) : []
-  const breadthEvidenceTargetSize = adaptiveTargetSize
+  const strategySelected = adaptiveTargetSize > 0 ? routerPlan.mlSlate : []
+  const breadthEvidenceTargetSize = strategySelected.length
   const topUp: T[] = []
 
-  const breadthPool = [...strategySelected, ...topUp].slice(0, breadthEvidenceTargetSize)
+  // The adaptive capacity is an operational planning reference only. Every
+  // candidate above the route floor remains in the formal L1 decision universe.
+  const breadthPool = [...strategySelected, ...topUp]
   const formalCoarseQueue = strategySelected
   const adaptivePolicyTelemetry = resolveAdaptivePolicyTelemetry(selection.pools)
 
@@ -1473,9 +1461,9 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     selection,
     telemetry: {
       selection_order: 'full_feature_enriched_universe_strategy_only_no_raw_signal_forced_fill',
-      target_size: adaptiveTargetSize,
+      target_size: strategySelected.length,
       soft_capacity_baseline: adaptiveCapacity.baseline,
-      adaptive_target_size: adaptiveTargetSize,
+      adaptive_target_size: strategySelected.length,
       adaptive_capacity_min_reference: adaptiveCapacity.minReference,
       adaptive_capacity_max: adaptiveCapacity.max,
       adaptive_capacity_policy: adaptiveCapacity.policy,
@@ -1483,7 +1471,8 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       adaptive_capacity_eligible_count: adaptiveCapacity.eligibleAboveFloor,
       adaptive_capacity_source_universe_count: adaptiveCapacity.sourceUniverseCount,
       adaptive_target_size_before_dynamic_quota: adaptiveTargetSizeBeforeDynamicQuota,
-      dynamic_effective_quota_policy: 'sum_active_production_strict_matches_bounded_by_adaptive_pool_quota_and_adaptive_cost_budget',
+      soft_capacity_reference_target: adaptiveTargetSizeBeforeDynamicQuota,
+      dynamic_effective_quota_policy: 'telemetry_only_not_candidate_admission',
       dynamic_effective_quota_total: dynamicEffectiveQuota.total,
       dynamic_effective_quota_by_strategy: dynamicEffectiveQuota.byStrategy,
       adaptive_strategy_policy_version: ADAPTIVE_STRATEGY_POLICY_VERSION,
@@ -1539,7 +1528,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
 }
 
 interface Layer15SoftCapacityDecision {
-  policy: 'soft_baseline_adaptive_ceiling_no_forced_fill'
+  policy: 'route_floor_decision_universe_no_capacity_admission'
   baseline: number
   minReference: number
   max: number
@@ -1560,8 +1549,6 @@ function resolveLayer15SoftCapacity(input: {
 }): Layer15SoftCapacityDecision {
   const baseline = Math.max(1, Math.round(input.baseline))
   const sourceUniverseCount = Math.max(0, Math.round(input.sourceUniverseCount))
-  const hardTotalCap = Math.max(baseline, Math.round(input.hardTotalCap))
-  const adaptiveMax = Math.min(hardTotalCap, Math.max(baseline, Math.ceil(baseline * 4 / 3)))
   const qualityFloorEligible = finiteNumber(input.routeScoreAboveFloorCount)
   const activeLabeled = finiteNumber(input.activeLabeledCandidateCount)
   const matched = finiteNumber(input.matchedCandidateCount)
@@ -1569,29 +1556,16 @@ function resolveLayer15SoftCapacity(input: {
     qualityFloorEligible ?? activeLabeled ?? matched ?? sourceUniverseCount,
   ))
   const boundedEligible = Math.min(sourceUniverseCount || eligibleAboveFloor, eligibleAboveFloor)
-  let target = 0
-  let reason = 'no_quality_floor_pass_no_forced_fill'
-
-  if (boundedEligible > 0 && boundedEligible < baseline) {
-    target = boundedEligible
-    reason = 'quality_floor_below_soft_baseline_no_forced_fill'
-  } else if (boundedEligible === baseline) {
-    target = baseline
-    reason = 'quality_floor_matches_soft_baseline'
-  } else if (boundedEligible > baseline) {
-    const overflow = boundedEligible - baseline
-    const expansion = Math.min(adaptiveMax - baseline, Math.ceil(overflow * 0.5))
-    target = baseline + Math.max(0, expansion)
-    reason = expansion > 0
-      ? 'adaptive_expand_above_soft_baseline_for_diversity'
-      : 'soft_baseline_capacity_sufficient'
-  }
+  const target = boundedEligible
+  const reason = boundedEligible > 0
+    ? 'all_route_floor_candidates_preserved_for_downstream_learning'
+    : 'no_quality_floor_pass_no_forced_fill'
 
   return {
-    policy: 'soft_baseline_adaptive_ceiling_no_forced_fill',
+    policy: 'route_floor_decision_universe_no_capacity_admission',
     baseline,
     minReference: Math.max(1, Math.min(baseline, Math.round(input.coarseMlQueueSize))),
-    max: Math.min(adaptiveMax, sourceUniverseCount || adaptiveMax),
+    max: sourceUniverseCount,
     target: Math.min(target, sourceUniverseCount || target),
     eligibleAboveFloor: boundedEligible,
     sourceUniverseCount,

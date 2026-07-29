@@ -65,6 +65,19 @@ assert(
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const expectedReturnServingState = fs.readFileSync('src/lib/expectedReturnServingState.ts', 'utf8')
+const controllerDailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
+assert(
+  updateOrchestrator.includes('refreshMatureStrategyEvidenceBeforeScreener') &&
+    updateOrchestrator.indexOf('const matureStrategyEvidence = await refreshMatureStrategyEvidenceBeforeScreener') <
+      updateOrchestrator.indexOf('const runAsyncScreener = deps.runMarketScreenerAsync'),
+  'mature strategy labels/edge/rewards must refresh fail-closed before the current-day screener consumes priors',
+)
+assert(
+  controllerDailyWorkflows.includes('assertRegimeComputeClosure(data, runDate)') &&
+    controllerDailyWorkflows.includes('readMarketRegimeState(env.KV)') &&
+    controllerDailyWorkflows.includes('market_regime_state readback mismatch'),
+  'regime compute must verify same-date KV persistence and posterior surface before downstream stages',
+)
 assert(updateOrchestrator.includes('refreshExpectedReturnServingState'), 'daily readiness must persist canonical expected-return serving state')
 assert(expectedReturnServingState.includes("'retired_incompatible'"), 'stale promoted artifacts must be explicitly retired from serving without rewriting evidence')
 assert(expectedReturnServingState.includes("'validated_s12_only'"), 'no-owner production behavior must remain explicit and fail closed')
@@ -187,25 +200,25 @@ assert(
 )
 assert(
   updateOrchestrator.includes('runDailyAllocatorEvReadiness') &&
-    updateOrchestrator.includes('runL4AlphaEvRefresh') &&
-    updateOrchestrator.includes('runAllocatorEvFusionRefresh') &&
+    updateOrchestrator.includes('inspectExpectedReturnLifecycleHealth') &&
+    updateOrchestrator.includes('refreshExpectedReturnServingState') &&
     updateOrchestrator.includes('runOpbArmPriorRefresh') &&
     updateOrchestrator.indexOf('const evReadiness = await runDailyAllocatorEvReadiness') <
       updateOrchestrator.indexOf('const summary = await deps.runMLAndRiskV2'),
-  'evening-chain must refresh L4/fusion model readiness before triggering pipeline',
+  'evening-chain must inspect current L4/fusion serving readiness before triggering pipeline without nightly retraining',
 )
 assert(
-  updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh'") &&
-    updateOrchestrator.includes('fusion_degraded=') &&
-    updateOrchestrator.includes('pipeline continues with validated L4 alpha EV or S12 trade EV') &&
-    updateOrchestrator.includes('BUY/allocation remain fail closed when expected return is unavailable'),
-  'allocator EV fusion validation failure must remain visible while expected-return action gates stay fail closed',
+  updateOrchestrator.includes("owner === 'l4_alpha_ev' ? 'l4-alpha-ev-refresh' : 'allocator-ev-fusion-refresh'") &&
+    updateOrchestrator.includes("logSchedulerResult(env.KV, task") &&
+    updateOrchestrator.includes('expected_return_serving_state=') &&
+    updateOrchestrator.includes('expected_return_action_gate=') &&
+    updateOrchestrator.includes('ownerAlerts.length > 0') &&
+    updateOrchestrator.includes('allocator EV readiness failed before pipeline'),
+  'allocator EV readiness must expose owner alerts and stop the chain before pipeline when serving is invalid',
 )
 assert(
-  updateOrchestrator.includes('l4_challenger_rejected=') &&
-    updateOrchestrator.includes('l4_champion_retained=') &&
-    updateOrchestrator.includes('l4_unavailable=') &&
-    updateOrchestrator.includes('refreshExpectedReturnServingState') &&
+  updateOrchestrator.includes('refreshExpectedReturnServingState') &&
+    updateOrchestrator.includes('candidate_gate=') &&
     expectedReturnServingState.includes("artifact.promotion_state !== requiredPromotionState") &&
     expectedReturnServingState.includes("String(artifact.validation_packet?.decision ?? '').toUpperCase() !== 'PASS'") &&
     expectedReturnServingState.includes("action_gate: owner ? 'expected_return_owner' : 'validated_s12_only'"),

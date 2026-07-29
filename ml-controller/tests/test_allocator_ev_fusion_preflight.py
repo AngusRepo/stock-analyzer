@@ -52,7 +52,7 @@ def test_allocator_ev_fusion_policy_preflight_uses_runtime_materialization_contr
 
 
 def test_daily_pipeline_exposes_combined_l4_and_fusion_serving_preflight():
-    source = Path("ml-controller/graphs/daily_pipeline_v2.py").read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[1] / "graphs" / "daily_pipeline_v2.py").read_text(encoding="utf-8")
 
     assert "fusion_serving_preflight = assess_allocator_ev_fusion_policy(alpha_policy)" in source
     assert '"schema_version": "expected-return-serving-preflight-v1"' in source

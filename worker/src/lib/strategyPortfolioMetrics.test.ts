@@ -69,6 +69,7 @@ function fakeDb(input: {
           return {
             async all() {
               ;(fakeDb as any).lastSql = sql
+              ;(fakeDb as any).sqls = [...((fakeDb as any).sqls ?? []), sql]
               ;(fakeDb as any).lastArgs = args
               if (input.error) throw input.error
               if (sql.includes('FROM strategy_reward_ledger')) return { results: input.ledgerRows ?? [] }
@@ -200,6 +201,10 @@ async function main(): Promise<void> {
     assert(result.metrics.backtest_only_strategy_v1 != null, 'loader should include explicitly mapped backtest-only strategy metrics')
     assert(result.metrics.missing_strategy_v1.strategy_metric_status === 'no_evidence', 'missing known strategy should be shrunk, not omitted from L1.25')
     assert((result.metrics.missing_strategy_v1.reliability ?? 1) < 0.5, 'missing known strategy should receive conservative reliability shrinkage')
+    const executedSql = ((fakeDb as any).sqls ?? []).join('\n')
+    assert(executedSql.includes("selection_contract_version = 'selection-reference-snapshot-v3'"), 'reward reader must reject legacy selection contracts')
+    assert(executedSql.includes("evaluation_contract_version = 'strategy-evaluation-v2'"), 'decision reader must reject legacy evaluation contracts')
+    assert(executedSql.includes('ROW_NUMBER() OVER') && executedSql.includes('PARTITION BY strategy_id'), 'decision evidence must use per-strategy balance instead of a global LIMIT')
   }
 
   {

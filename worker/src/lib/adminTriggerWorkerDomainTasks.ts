@@ -563,6 +563,10 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         dryRun,
         confirmPhrase,
       })
+      const failed = result.tables.filter((table) => table.status === 'failed')
+      if (failed.length) {
+        throw new Error(`audit json retention failed ${JSON.stringify(failed)}`)
+      }
       return summarizeAuditJsonArchiveRun(result)
     },
     'artifact-reconcile': async () => {
@@ -684,6 +688,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           task: 'd1-evidence-scrub',
           runDate: requestedRunDate() || twToday(),
           maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 240, 240),
+          maxCycles: parseBoundedPositiveInt(c.req.query('max_cycles'), 4, 8),
         })
         return `d1_evidence_scrub durable=true queued=${queued.queued} run_id=${queued.runId}`
       }

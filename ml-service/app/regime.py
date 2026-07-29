@@ -29,9 +29,16 @@ DEFAULT_REGIME_CONFIG = {
     3: {"label": "熊市危機",   "price_mult": 0.65, "feature_mult": 0.75, "consensus_threshold": 0.72},
 }
 REGIME_CONFIG = DEFAULT_REGIME_CONFIG  # runtime alias, overridden by regime_config_override
+REGIME_SURFACE_LABELS = {
+    0: "bull_market",
+    1: "volatile",
+    2: "sideways",
+    3: "bear_market",
+}
 
 PRICE_MODEL_NAMES   = {"DLinear", "PatchTST", "iTransformer"}
 FEATURE_MODEL_NAMES = {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}
+REGIME_FEATURE_WIDTH = 6
 
 
 class RegimeDetector:
@@ -52,6 +59,17 @@ class RegimeDetector:
           col 2: risk_score (0-1)
           col 3: market_bias_20d
         """
+        features_raw = np.asarray(features_raw, dtype=float)
+        if features_raw.ndim != 2 or features_raw.shape[1] != REGIME_FEATURE_WIDTH:
+            logger.warning(
+                "[Regime] invalid feature contract: shape=%s expected_width=%s",
+                features_raw.shape,
+                REGIME_FEATURE_WIDTH,
+            )
+            return self
+        if not np.isfinite(features_raw).all():
+            logger.warning("[Regime] non-finite feature values; training skipped")
+            return self
         if len(features_raw) < 30:
             logger.warning("[Regime] 資料不足 30 天，跳過訓練")
             return self
@@ -100,105 +118,123 @@ class RegimeDetector:
         return self
 
     def _assign_semantic_regimes(self, features_raw: np.ndarray, states: np.ndarray) -> dict:
-        """根據每個 HMM 狀態的統計特徵，映射到語意 regime"""
-        state_stats = {}
-        for s in range(self.n_components):
-            mask = states == s
+        """Map latent states to stable market semantics using return and realized volatility."""
+        state_stats: dict[int, dict[str, float | int]] = {}
+        for state in range(self.n_components):
+            mask = states == state
             if mask.sum() < 3:
                 continue
-            f = features_raw[mask]
-            state_stats[s] = {
-                "mean_return": float(f[:, 0].mean()),   # 平均日報酬
-                "mean_vol":    float(f[:, 2].mean()),   # 平均風險分數（代理波動率）
-                "count":       int(mask.sum()),
+            features = features_raw[mask]
+            mean_daily_return = 0.35 * float(features[:, 0].mean()) + 0.65 * float(features[:, 1].mean()) / 5.0
+            state_stats[state] = {
+                "mean_return": mean_daily_return,
+                "mean_vol": float(features[:, 5].mean()),
+                "count": int(mask.sum()),
             }
 
         if not state_stats:
-            return {0: 1}
+            return {state: 2 for state in range(self.n_components)}
 
-        # 按平均報酬降序排列
-        ranked = sorted(state_stats.items(), key=lambda x: -x[1]["mean_return"])
-        n = len(ranked)
-
-        regime_map = {}
-        if n >= 4:
-            # 最高報酬 & 低波動 → 0（低波動牛市）
-            # 最高報酬 & 高波動 → 1（高波動牛市）
-            # 中間 → 2（震盪）
-            # 最低報酬 → 3（熊市）
-            top_half = sorted(ranked[:n//2+1], key=lambda x: x[1]["mean_vol"])
-            for i, (s, _) in enumerate(top_half):
-                regime_map[s] = min(i, 1)
-            for i, (s, _) in enumerate(ranked[n//2+1:]):
-                regime_map[s] = min(2 + i, 3)
-        elif n == 3:
-            regime_map[ranked[0][0]] = 0   # 最好
-            regime_map[ranked[1][0]] = 2   # 中間
-            regime_map[ranked[2][0]] = 3   # 最差
-        elif n == 2:
-            regime_map[ranked[0][0]] = 0
-            regime_map[ranked[1][0]] = 3
+        ranked = sorted(state_stats, key=lambda state: state_stats[state]["mean_return"])
+        regime_map: dict[int, int] = {}
+        if len(ranked) == 1:
+            regime_map[ranked[0]] = 2
         else:
-            regime_map[ranked[0][0]] = 1
+            regime_map[ranked[0]] = 3
+            regime_map[ranked[-1]] = 0
+            middle = ranked[1:-1]
+            if middle:
+                volatile_state = max(middle, key=lambda state: state_stats[state]["mean_vol"])
+                regime_map[volatile_state] = 1
+                for state in middle:
+                    regime_map.setdefault(state, 2)
 
-        # 補全遺漏的 state
-        for s in range(self.n_components):
-            if s not in regime_map:
-                regime_map[s] = 1
+        for state in range(self.n_components):
+            regime_map.setdefault(state, 2)
         return regime_map
-
-    # ── 推論 ──────────────────────────────────────────────────────────────────
     def predict_regime(self, current_features_raw: np.ndarray, regime_config_override: dict | None = None) -> dict:
-        """
-        輸入當前市況特徵向量（1 行），回傳 regime 資訊 dict。
-        regime_config_override: optional KV dict keyed by regime index (int or str),
-            values are partial dicts merged on top of DEFAULT_REGIME_CONFIG.
-        """
-        # Deep merge: override 只覆蓋有給的 key，其餘保留 default
+        """Infer the latest regime from the full point-in-time feature sequence."""
         if regime_config_override:
             effective_config = {}
-            for k, v in DEFAULT_REGIME_CONFIG.items():
-                override_entry = regime_config_override.get(k) or regime_config_override.get(str(k)) or {}
-                effective_config[k] = {**v, **{ok: float(ov) if ok != "label" else ov for ok, ov in override_entry.items()}}
+            for key, value in DEFAULT_REGIME_CONFIG.items():
+                override_entry = regime_config_override.get(key) or regime_config_override.get(str(key)) or {}
+                effective_config[key] = {
+                    **value,
+                    **{
+                        override_key: float(override_value) if override_key != "label" else override_value
+                        for override_key, override_value in override_entry.items()
+                    },
+                }
         else:
             effective_config = DEFAULT_REGIME_CONFIG
 
         default = {
-            "regime_index": 1, "hmm_state": -1,
-            "label": "未知（使用預設）",
+            "regime_index": 2,
+            "hmm_state": -1,
+            "label": "sideways",
             "weight_multipliers": {},
             "consensus_threshold": 0.60,
+            "regime_surface": {},
+            "state_probabilities": {},
+            "sequence_length": 0,
         }
         if not self._trained or self.model is None:
             return default
 
         try:
-            f = current_features_raw.reshape(1, -1)
-            if self.feature_means is not None:
-                f = (f - self.feature_means) / self.feature_stds
+            sequence = np.asarray(current_features_raw, dtype=float)
+            if sequence.ndim == 1:
+                sequence = sequence.reshape(1, -1)
+            if sequence.ndim != 2 or not len(sequence):
+                return default
+            if self.feature_means is None or self.feature_stds is None:
+                return default
+            if sequence.shape[1] != len(self.feature_means):
+                logger.warning(
+                    "[Regime] feature width mismatch: got=%s expected=%s",
+                    sequence.shape[1],
+                    len(self.feature_means),
+                )
+                return default
 
-            state     = int(self.model.predict(f)[-1])
-            reg_idx   = self.regime_map.get(state, 1)
-            cfg       = effective_config.get(reg_idx, effective_config[1])
-
-            mults = {}
-            for m in PRICE_MODEL_NAMES:
-                mults[m] = cfg["price_mult"]
-            for m in FEATURE_MODEL_NAMES:
-                mults[m] = cfg["feature_mult"]
+            normalized = (sequence - self.feature_means) / self.feature_stds
+            state_probabilities = np.asarray(self.model.predict_proba(normalized)[-1], dtype=float)
+            state = int(np.argmax(state_probabilities))
+            regime_surface = {label: 0.0 for label in REGIME_SURFACE_LABELS.values()}
+            for state_index, probability in enumerate(state_probabilities):
+                regime_index = self.regime_map.get(state_index, 2)
+                regime_surface[REGIME_SURFACE_LABELS[regime_index]] += float(probability)
+            total_probability = sum(regime_surface.values())
+            if total_probability <= 0:
+                return default
+            regime_surface = {
+                label: probability / total_probability
+                for label, probability in regime_surface.items()
+            }
+            regime_index = max(
+                REGIME_SURFACE_LABELS,
+                key=lambda index: regime_surface[REGIME_SURFACE_LABELS[index]],
+            )
+            config = effective_config.get(regime_index, effective_config[2])
+            multipliers = {model: config["price_mult"] for model in PRICE_MODEL_NAMES}
+            multipliers.update({model: config["feature_mult"] for model in FEATURE_MODEL_NAMES})
 
             return {
-                "regime_index":       reg_idx,
-                "hmm_state":          state,
-                "label":              cfg["label"],
-                "weight_multipliers": mults,
-                "consensus_threshold": cfg["consensus_threshold"],
+                "regime_index": regime_index,
+                "hmm_state": state,
+                "label": config["label"],
+                "weight_multipliers": multipliers,
+                "consensus_threshold": config["consensus_threshold"],
+                "regime_surface": regime_surface,
+                "state_probabilities": {
+                    str(index): float(probability)
+                    for index, probability in enumerate(state_probabilities)
+                },
+                "sequence_length": int(len(sequence)),
             }
-        except Exception as e:
-            logger.warning(f"[Regime] predict_regime failed: {e}")
+        except Exception as exc:
+            logger.warning("[Regime] predict_regime failed: %s", exc)
             return default
-
-    # ── GCS 持久化 ────────────────────────────────────────────────────────────
     def save_to_gcs(
         self,
         gcs_prefix: str = "market_regime",     # 2026-04-18 #32: walk-forward override
@@ -280,62 +316,65 @@ class RegimeDetector:
 
 
 # ── 特徵建構工具 ───────────────────────────────────────────────────────────────
-def build_market_feature_matrix(market_env: dict | None) -> np.ndarray | None:
-    """
-    從 market_env.history 建立供 HMM 訓練的特徵矩陣
-    Returns shape (n_days, 6) or None.
-    Features: [ret_1d, ret_5d, risk_score, bias_20d, abs_ret_1d, realized_vol_3d]
-    """
-    if not market_env:
-        return None
-    history = market_env.get("history", {})
-    if not history or len(history) < 20:
-        return None
+def build_market_feature_rows(market_env: dict | None) -> tuple[list[str], np.ndarray | None]:
+    """Build one canonical PIT date vector and its HMM feature matrix."""
+    history = market_env.get("history", {}) if market_env else {}
+    if not isinstance(history, dict):
+        return [], None
 
-    # H5 fix: add short-term features for faster regime detection
-    rows = []
-    sorted_dates = sorted(history.keys())
-    for i, date in enumerate(sorted_dates):
-        row = history[date]
-        ret_1d = float(row.get("market_return_1d", 0) or 0)
+    dated_returns: list[tuple[str, float, float, float, float]] = []
+    for raw_date in sorted(history):
+        row = history.get(raw_date)
+        if not isinstance(row, dict):
+            continue
+        required = (
+            row.get("market_return_1d"),
+            row.get("market_return_5d"),
+            row.get("risk_score"),
+            row.get("market_bias_20d"),
+        )
+        try:
+            values = tuple(float(value) for value in required)
+        except (TypeError, ValueError):
+            continue
+        if not all(np.isfinite(value) for value in values):
+            continue
+        dated_returns.append((str(raw_date)[:10], *values))
+
+    if len(dated_returns) < 20:
+        return [], None
+
+    dates: list[str] = []
+    rows: list[list[float]] = []
+    prior_returns: list[float] = []
+    for feature_date, ret_1d, ret_5d, risk_score, bias_20d in dated_returns:
+        prior_returns.append(ret_1d)
+        realized_window = prior_returns[-3:]
+        realized_vol = float(np.std(realized_window)) if len(realized_window) >= 3 else abs(ret_1d)
+        dates.append(feature_date)
         rows.append([
             ret_1d,
-            float(row.get("market_return_5d",  0) or 0),
-            float(row.get("risk_score",       50) or 50) / 100,
-            float(row.get("market_bias_20d",   0) or 0),
-            abs(ret_1d),  # H5: intraday volatility proxy (|1d return|)
-            # H5: 3-day realized volatility (std of last 3 returns)
-            float(np.std([
-                float(history.get(sorted_dates[max(0, i-j)], {}).get("market_return_1d", 0) or 0)
-                for j in range(min(3, i+1))
-            ])) if i >= 2 else abs(ret_1d),
+            ret_5d,
+            risk_score / 100,
+            bias_20d,
+            abs(ret_1d),
+            realized_vol,
         ])
+    return dates, np.asarray(rows, dtype=float)
 
-    if len(rows) < 20:
-        return None
-    return np.array(rows, dtype=float)
+
+def build_market_feature_matrix(market_env: dict | None) -> np.ndarray | None:
+    """Return the canonical PIT HMM feature matrix."""
+    _, matrix = build_market_feature_rows(market_env)
+    return matrix
+
+
+def latest_market_feature_date(market_env: dict | None) -> str | None:
+    dates, _ = build_market_feature_rows(market_env)
+    return dates[-1] if dates else None
 
 
 def get_current_market_features(market_env: dict | None) -> np.ndarray | None:
-    """從 market_env 取當前（最新一天）的 6 維特徵向量（與 build_market_feature_matrix 對齊）"""
-    if not market_env:
-        return None
-    history = market_env.get("history", {})
-
-    # 嘗試從 history 取最新一天
-    if history:
-        latest_date = max(history.keys())
-        row = history[latest_date]
-    else:
-        row = market_env  # 直接用當前值
-
-    ret_1d = float(row.get("market_return_1d", 0) or 0)
-    # H5: include short-term features for faster regime detection
-    return np.array([
-        ret_1d,
-        float(row.get("market_return_5d",  0) or 0),
-        float(row.get("risk_score",       50) or 50) / 100,
-        float(row.get("market_bias_20d",   0) or 0),
-        abs(ret_1d),  # intraday volatility proxy
-        abs(ret_1d),  # 3d vol placeholder (single-day, no history here)
-    ], dtype=float)
+    """Return the latest row from the same feature builder used for training."""
+    matrix = build_market_feature_matrix(market_env)
+    return matrix[-1] if matrix is not None and len(matrix) else None

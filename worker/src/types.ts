@@ -356,6 +356,8 @@ export interface UpdateQueueMsg {
   maxAttempts?: number
   dataDomain?: 'core' | 'market' | 'learning' | 'ops' | 'execution' | 'paper' | 'research'
   dataDomainTable?: string
+  maintenanceCycle?: number
+  maxMaintenanceCycles?: number
   force?: boolean
 }
 

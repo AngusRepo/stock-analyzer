@@ -80,6 +80,7 @@ export interface StrategyDecisionLogRow {
   alpha_bucket: string
   evaluable: 0 | 1
   unavailable_reason: string | null
+  evaluation_contract_version: 'strategy-evaluation-v2'
   matched: 0 | 1
   match_score: number | null
   reason_code: string
@@ -132,11 +133,13 @@ export interface StrategyLearningDailyStatsRow {
   evaluable_decisions: number
   unavailable_decisions: number
   matched: number
+  decision_contract_version: string | null
   reward_samples: number
   reward_hits: number
   reward_sum: number
   date_portfolio_return: number | null
   reward_refresh_run_id: string | null
+  reward_contract_version: string | null
   updated_at: string
 }
 
@@ -327,6 +330,7 @@ const SCHEMA_DDL = [
     alpha_bucket TEXT NOT NULL,
     evaluable INTEGER NOT NULL DEFAULT 0 CHECK(evaluable IN (0,1)),
     unavailable_reason TEXT,
+    evaluation_contract_version TEXT NOT NULL DEFAULT 'strategy-evaluation-legacy-unverified',
     matched INTEGER NOT NULL DEFAULT 0,
     match_score REAL,
     reason_code TEXT NOT NULL,
@@ -354,6 +358,8 @@ const SCHEMA_DDL = [
     reward_sum REAL NOT NULL DEFAULT 0,
     date_portfolio_return REAL,
     reward_refresh_run_id TEXT,
+    decision_contract_version TEXT,
+    reward_contract_version TEXT,
     projection_version TEXT NOT NULL DEFAULT 'strategy-learning-daily-v1',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(date, strategy_id, strategy_version)
@@ -362,6 +368,10 @@ const SCHEMA_DDL = [
     ON strategy_learning_daily_stats(strategy_id, strategy_version, date DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_strategy_learning_daily_stats_date
     ON strategy_learning_daily_stats(date DESC, strategy_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_strategy_learning_daily_stats_decision_contract
+    ON strategy_learning_daily_stats(decision_contract_version, date DESC, strategy_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_strategy_learning_daily_stats_reward_contract
+    ON strategy_learning_daily_stats(reward_contract_version, date DESC, strategy_id)`,
   `CREATE TABLE IF NOT EXISTS strategy_learning_head (
     strategy_id TEXT NOT NULL,
     strategy_version TEXT NOT NULL,
@@ -1017,6 +1027,7 @@ export function buildStrategyDecisionRows(
         matches: assessment.matches,
         tags: assessment.tags,
         watch_points: assessment.watchPoints,
+        evaluation_contract_version: 'strategy-evaluation-v2',
         evaluability,
         signal_dsl_diagnostics: evaluability.signalDiagnostics,
         feature_ref_diagnostics: featureRefDiagnostics,
@@ -1071,6 +1082,7 @@ export function buildStrategyDecisionRows(
         alpha_bucket: spec.alphaBucket,
         evaluable: evaluability.evaluable ? 1 : 0,
         unavailable_reason: unavailableReason,
+        evaluation_contract_version: 'strategy-evaluation-v2',
         matched: matched ? 1 : 0,
         match_score: matchScore(candidate, matched),
         reason_code: reasonCode,
@@ -1423,16 +1435,17 @@ export async function persistStrategyDecisionRows(
   const statements = persistedRows.map((row) => db.prepare(`
     INSERT INTO strategy_decision_log (
       decision_id, date, symbol, name, strategy_id, strategy_version,
-      strategy_status, alpha_bucket, evaluable, unavailable_reason, matched, match_score, reason_code,
-      context_json, evidence_json, created_at, context_id, evidence_artifact_id
+      strategy_status, alpha_bucket, evaluable, unavailable_reason, evaluation_contract_version,
+      matched, match_score, reason_code, context_json, evidence_json, created_at, context_id, evidence_artifact_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(date, symbol, strategy_id, strategy_version) DO UPDATE SET
       name=excluded.name,
       strategy_status=excluded.strategy_status,
       alpha_bucket=excluded.alpha_bucket,
       evaluable=excluded.evaluable,
       unavailable_reason=excluded.unavailable_reason,
+      evaluation_contract_version=excluded.evaluation_contract_version,
       matched=excluded.matched,
       match_score=excluded.match_score,
       reason_code=excluded.reason_code,
@@ -1451,6 +1464,7 @@ export async function persistStrategyDecisionRows(
     row.alpha_bucket,
     row.evaluable,
     row.unavailable_reason,
+    row.evaluation_contract_version,
     row.matched,
     row.match_score,
     row.reason_code,
@@ -1657,11 +1671,13 @@ export function buildStrategyRewardDailyStatsRows(
         evaluable_decisions: 0,
         unavailable_decisions: 0,
         matched: 0,
+        decision_contract_version: null,
         reward_samples: bucket.rewards.length,
         reward_hits: bucket.rewards.filter((reward) => reward > 0).length,
         reward_sum: round6(rewardSum) ?? 0,
         date_portfolio_return: round6(rewardSum / bucket.rewards.length),
         reward_refresh_run_id: refreshRunId,
+        reward_contract_version: 'selection-reference-snapshot-v3',
         updated_at: nowIso,
       }
     })
@@ -1684,6 +1700,7 @@ export async function materializeStrategyDecisionDailyStats(
            SUM(CASE WHEN matched = 1 THEN 1 ELSE 0 END) AS matched
       FROM strategy_decision_log
      WHERE date = ?
+       AND evaluation_contract_version = 'strategy-evaluation-v2'
      GROUP BY strategy_id, strategy_version
   `).bind(date).all<{
     strategy_id: string
@@ -1698,14 +1715,17 @@ export async function materializeStrategyDecisionDailyStats(
   const nowIso = new Date().toISOString()
   const statements = rows.map((row) => db.prepare(`
     INSERT INTO strategy_learning_daily_stats (
-      date, strategy_id, strategy_version, decisions, evaluable_decisions, unavailable_decisions, matched, updated_at
+      date, strategy_id, strategy_version, decisions, evaluable_decisions, unavailable_decisions,
+      matched, decision_contract_version, projection_version, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(date, strategy_id, strategy_version) DO UPDATE SET
       decisions=excluded.decisions,
       evaluable_decisions=excluded.evaluable_decisions,
       unavailable_decisions=excluded.unavailable_decisions,
       matched=excluded.matched,
+      decision_contract_version=excluded.decision_contract_version,
+      projection_version=excluded.projection_version,
       updated_at=excluded.updated_at
   `).bind(
     date,
@@ -1715,6 +1735,8 @@ export async function materializeStrategyDecisionDailyStats(
     Number(row.evaluable_decisions ?? 0),
     Number(row.unavailable_decisions ?? 0),
     Number(row.matched ?? 0),
+    'strategy-evaluation-v2',
+    'strategy-learning-daily-v2',
     nowIso,
   ))
   for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
@@ -1732,15 +1754,16 @@ async function persistStrategyRewardDailyStatsRows(
     INSERT INTO strategy_learning_daily_stats (
       date, strategy_id, strategy_version,
       reward_samples, reward_hits, reward_sum, date_portfolio_return,
-      reward_refresh_run_id, updated_at
+      reward_refresh_run_id, reward_contract_version, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(date, strategy_id, strategy_version) DO UPDATE SET
       reward_samples=excluded.reward_samples,
       reward_hits=excluded.reward_hits,
       reward_sum=excluded.reward_sum,
       date_portfolio_return=excluded.date_portfolio_return,
       reward_refresh_run_id=excluded.reward_refresh_run_id,
+      reward_contract_version=excluded.reward_contract_version,
       updated_at=excluded.updated_at
   `).bind(
     row.date,
@@ -1751,6 +1774,7 @@ async function persistStrategyRewardDailyStatsRows(
     row.reward_sum,
     row.date_portfolio_return,
     row.reward_refresh_run_id,
+    row.reward_contract_version,
     row.updated_at,
   ))
   for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
@@ -1764,17 +1788,17 @@ export async function refreshStrategyLearningHeads(db: D1Database): Promise<numb
   const { results } = await db.prepare(`
     SELECT strategy_id,
            strategy_version,
-           SUM(decisions) AS lifetime_decisions,
-           SUM(evaluable_decisions) AS lifetime_evaluable_decisions,
-           SUM(unavailable_decisions) AS lifetime_unavailable_decisions,
-           SUM(matched) AS lifetime_matched,
-           COUNT(DISTINCT CASE WHEN decisions > 0 THEN date END) AS decision_dates,
-           SUM(reward_samples) AS lifetime_reward_samples,
-           SUM(reward_hits) AS lifetime_reward_hits,
-           SUM(reward_sum) AS lifetime_reward_sum,
-           COUNT(DISTINCT CASE WHEN reward_samples > 0 THEN date END) AS reward_dates,
-           MAX(CASE WHEN decisions > 0 THEN date END) AS latest_decision_date,
-           MAX(CASE WHEN reward_samples > 0 THEN date END) AS latest_reward_date
+           SUM(CASE WHEN decision_contract_version = 'strategy-evaluation-v2' THEN decisions ELSE 0 END) AS lifetime_decisions,
+           SUM(CASE WHEN decision_contract_version = 'strategy-evaluation-v2' THEN evaluable_decisions ELSE 0 END) AS lifetime_evaluable_decisions,
+           SUM(CASE WHEN decision_contract_version = 'strategy-evaluation-v2' THEN unavailable_decisions ELSE 0 END) AS lifetime_unavailable_decisions,
+           SUM(CASE WHEN decision_contract_version = 'strategy-evaluation-v2' THEN matched ELSE 0 END) AS lifetime_matched,
+           COUNT(DISTINCT CASE WHEN decision_contract_version = 'strategy-evaluation-v2' AND decisions > 0 THEN date END) AS decision_dates,
+           SUM(CASE WHEN reward_contract_version = 'selection-reference-snapshot-v3' THEN reward_samples ELSE 0 END) AS lifetime_reward_samples,
+           SUM(CASE WHEN reward_contract_version = 'selection-reference-snapshot-v3' THEN reward_hits ELSE 0 END) AS lifetime_reward_hits,
+           SUM(CASE WHEN reward_contract_version = 'selection-reference-snapshot-v3' THEN reward_sum ELSE 0 END) AS lifetime_reward_sum,
+           COUNT(DISTINCT CASE WHEN reward_contract_version = 'selection-reference-snapshot-v3' AND reward_samples > 0 THEN date END) AS reward_dates,
+           MAX(CASE WHEN decision_contract_version = 'strategy-evaluation-v2' AND decisions > 0 THEN date END) AS latest_decision_date,
+           MAX(CASE WHEN reward_contract_version = 'selection-reference-snapshot-v3' AND reward_samples > 0 THEN date END) AS latest_reward_date
       FROM strategy_learning_daily_stats
      GROUP BY strategy_id, strategy_version
   `).all<StrategyLearningHeadRow>()
@@ -1786,9 +1810,9 @@ export async function refreshStrategyLearningHeads(db: D1Database): Promise<numb
       strategy_id, strategy_version,
       lifetime_decisions, lifetime_evaluable_decisions, lifetime_unavailable_decisions, lifetime_matched, decision_dates,
       lifetime_reward_samples, lifetime_reward_hits, lifetime_reward_sum,
-      reward_dates, latest_decision_date, latest_reward_date, updated_at
+      reward_dates, latest_decision_date, latest_reward_date, projection_version, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(strategy_id, strategy_version) DO UPDATE SET
       lifetime_decisions=excluded.lifetime_decisions,
       lifetime_evaluable_decisions=excluded.lifetime_evaluable_decisions,
@@ -1801,6 +1825,7 @@ export async function refreshStrategyLearningHeads(db: D1Database): Promise<numb
       reward_dates=excluded.reward_dates,
       latest_decision_date=excluded.latest_decision_date,
       latest_reward_date=excluded.latest_reward_date,
+      projection_version=excluded.projection_version,
       updated_at=excluded.updated_at
   `).bind(
     row.strategy_id,
@@ -1816,6 +1841,7 @@ export async function refreshStrategyLearningHeads(db: D1Database): Promise<numb
     Number(row.reward_dates ?? 0),
     row.latest_decision_date ?? null,
     row.latest_reward_date ?? null,
+    'strategy-learning-head-v2',
     nowIso,
   ))
   for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
@@ -1837,6 +1863,8 @@ export async function listStrategyRewardSourceRows(
   for (;;) {
     const clauses = [
       'm.strategy_hit = 1',
+      'm.evaluable = 1',
+      "m.reference_contract_version = 'selection-reference-snapshot-v3'",
       "l.label_schema_version = 'canonical-strategy-selection-label-v4'",
       "EXISTS (SELECT 1 FROM strategy_label_matrix_runs_v4 mr WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready')",
       "EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || m.signal_date || ':TW:production:market_screener' AND h.run_id = m.producer_run_id)",
@@ -1906,9 +1934,9 @@ export async function persistStrategyRewardLedgerRows(
       reward_id, strategy_id, strategy_version, strategy_status, alpha_bucket,
       date_start, date_end, horizon_days, samples, hit_rate, avg_return_pct,
       reward_sum, max_drawdown_pct, coverage, market_segment, regime,
-      evidence_json, refresh_run_id, updated_at
+      selection_contract_version, evidence_json, refresh_run_id, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(strategy_id, strategy_version, horizon_days, market_segment, regime) DO UPDATE SET
       strategy_status=excluded.strategy_status,
       alpha_bucket=excluded.alpha_bucket,
@@ -1920,6 +1948,7 @@ export async function persistStrategyRewardLedgerRows(
       reward_sum=excluded.reward_sum,
       max_drawdown_pct=excluded.max_drawdown_pct,
       coverage=excluded.coverage,
+      selection_contract_version=excluded.selection_contract_version,
       evidence_json=excluded.evidence_json,
       refresh_run_id=excluded.refresh_run_id,
       updated_at=excluded.updated_at
@@ -1927,7 +1956,7 @@ export async function persistStrategyRewardLedgerRows(
     row.reward_id, row.strategy_id, row.strategy_version, row.strategy_status, row.alpha_bucket,
     row.date_start, row.date_end, row.horizon_days, row.samples, row.hit_rate,
     row.avg_return_pct, row.reward_sum, row.max_drawdown_pct, row.coverage,
-    row.market_segment, row.regime, row.evidence_json, refreshRunId, row.updated_at,
+    row.market_segment, row.regime, 'selection-reference-snapshot-v3', row.evidence_json, refreshRunId, row.updated_at,
   ))
   let persisted = 0
   for (let i = 0; i < statements.length; i += STRATEGY_LEARNING_D1_BATCH_SIZE) {
@@ -2518,11 +2547,13 @@ export async function buildStrategyLearningSummary(
     SELECT MAX(latest_date) AS latest_date
       FROM (
         SELECT latest_decision_date AS latest_date FROM strategy_learning_head
+         WHERE projection_version = 'strategy-learning-head-v2'
         UNION ALL
         SELECT latest_reward_date AS latest_date FROM strategy_learning_head
+         WHERE projection_version = 'strategy-learning-head-v2'
       )
   `).first<{ latest_date: string | null }>()
-  const canUseLatestHead = projectionHead?.latest_date == null || projectionHead.latest_date <= date
+  const canUseLatestHead = projectionHead?.latest_date != null && projectionHead.latest_date <= date
   const headRows = canUseLatestHead
     ? (await db.prepare(`
         SELECT strategy_id,
@@ -2539,21 +2570,22 @@ export async function buildStrategyLearningSummary(
                latest_decision_date,
                latest_reward_date
           FROM strategy_learning_head
+         WHERE projection_version = 'strategy-learning-head-v2'
       `).all<StrategyLearningHeadRow>()).results ?? []
     : (await db.prepare(`
         SELECT strategy_id,
                strategy_version,
-               SUM(decisions) AS lifetime_decisions,
-               SUM(evaluable_decisions) AS lifetime_evaluable_decisions,
-               SUM(unavailable_decisions) AS lifetime_unavailable_decisions,
-               SUM(matched) AS lifetime_matched,
-               COUNT(DISTINCT CASE WHEN decisions > 0 THEN date END) AS decision_dates,
-               SUM(reward_samples) AS lifetime_reward_samples,
-               SUM(reward_hits) AS lifetime_reward_hits,
-               SUM(reward_sum) AS lifetime_reward_sum,
-               COUNT(DISTINCT CASE WHEN reward_samples > 0 THEN date END) AS reward_dates,
-               MAX(CASE WHEN decisions > 0 THEN date END) AS latest_decision_date,
-               MAX(CASE WHEN reward_samples > 0 THEN date END) AS latest_reward_date
+               SUM(CASE WHEN decision_contract_version = 'strategy-evaluation-v2' THEN decisions ELSE 0 END) AS lifetime_decisions,
+               SUM(CASE WHEN decision_contract_version = 'strategy-evaluation-v2' THEN evaluable_decisions ELSE 0 END) AS lifetime_evaluable_decisions,
+               SUM(CASE WHEN decision_contract_version = 'strategy-evaluation-v2' THEN unavailable_decisions ELSE 0 END) AS lifetime_unavailable_decisions,
+               SUM(CASE WHEN decision_contract_version = 'strategy-evaluation-v2' THEN matched ELSE 0 END) AS lifetime_matched,
+               COUNT(DISTINCT CASE WHEN decision_contract_version = 'strategy-evaluation-v2' AND decisions > 0 THEN date END) AS decision_dates,
+               SUM(CASE WHEN reward_contract_version = 'selection-reference-snapshot-v3' THEN reward_samples ELSE 0 END) AS lifetime_reward_samples,
+               SUM(CASE WHEN reward_contract_version = 'selection-reference-snapshot-v3' THEN reward_hits ELSE 0 END) AS lifetime_reward_hits,
+               SUM(CASE WHEN reward_contract_version = 'selection-reference-snapshot-v3' THEN reward_sum ELSE 0 END) AS lifetime_reward_sum,
+               COUNT(DISTINCT CASE WHEN reward_contract_version = 'selection-reference-snapshot-v3' AND reward_samples > 0 THEN date END) AS reward_dates,
+               MAX(CASE WHEN decision_contract_version = 'strategy-evaluation-v2' AND decisions > 0 THEN date END) AS latest_decision_date,
+               MAX(CASE WHEN reward_contract_version = 'selection-reference-snapshot-v3' AND reward_samples > 0 THEN date END) AS latest_reward_date
           FROM strategy_learning_daily_stats
          WHERE date <= ?
          GROUP BY strategy_id, strategy_version
@@ -2568,6 +2600,7 @@ export async function buildStrategyLearningSummary(
                strategy_version,
                MIN(max_drawdown_pct) AS max_drawdown_pct
           FROM strategy_reward_ledger
+         WHERE selection_contract_version = 'selection-reference-snapshot-v3'
          GROUP BY strategy_id, strategy_version
       `).all<{
         strategy_id: string
@@ -2586,6 +2619,10 @@ export async function buildStrategyLearningSummary(
     SELECT DISTINCT date
       FROM strategy_learning_daily_stats
      WHERE date <= ?
+       AND (
+         decision_contract_version = 'strategy-evaluation-v2'
+         OR reward_contract_version = 'selection-reference-snapshot-v3'
+       )
      ORDER BY date DESC
      LIMIT ?
   `).bind(date, STRATEGY_LEARNING_ROLLING_SESSIONS).all<{ date: string }>()
@@ -2600,11 +2637,13 @@ export async function buildStrategyLearningSummary(
                evaluable_decisions,
                unavailable_decisions,
                matched,
+               decision_contract_version,
                reward_samples,
                reward_hits,
                reward_sum,
                date_portfolio_return,
                reward_refresh_run_id,
+               reward_contract_version,
                updated_at
           FROM strategy_learning_daily_stats
          WHERE date >= ?
@@ -2627,7 +2666,8 @@ export async function buildStrategyLearningSummary(
       const key = spec.id + '|' + spec.version
       const head = headBySpec.get(key)
       const rollingRows = dailyBySpec.get(key) ?? []
-      const todayRow = rollingRows.find((row) => row.date === date)
+      const decisionRows = rollingRows.filter((row) => row.decision_contract_version === 'strategy-evaluation-v2')
+      const todayRow = decisionRows.find((row) => row.date === date)
       const lifetimeDecisions = Number(head?.lifetime_decisions ?? 0)
       const lifetimeEvaluable = Number(head?.lifetime_evaluable_decisions ?? 0)
       const lifetimeUnavailable = Number(head?.lifetime_unavailable_decisions ?? 0)
@@ -2636,11 +2676,12 @@ export async function buildStrategyLearningSummary(
       const lifetimeSamples = usesS12ExecutionReward ? s12ExecutionMetrics.lifetimeSamples : Number(head?.lifetime_reward_samples ?? 0)
       const lifetimeHits = usesS12ExecutionReward ? s12ExecutionMetrics.lifetimeHits : Number(head?.lifetime_reward_hits ?? 0)
       const lifetimeRewardSum = usesS12ExecutionReward ? s12ExecutionMetrics.lifetimeRewardSum : Number(head?.lifetime_reward_sum ?? 0)
-      const rollingDecisions = rollingRows.reduce((sum, row) => sum + Number(row.decisions ?? 0), 0)
-      const rollingEvaluable = rollingRows.reduce((sum, row) => sum + Number(row.evaluable_decisions ?? 0), 0)
-      const rollingUnavailable = rollingRows.reduce((sum, row) => sum + Number(row.unavailable_decisions ?? 0), 0)
-      const rollingMatched = rollingRows.reduce((sum, row) => sum + Number(row.matched ?? 0), 0)
-      const rewardRows = rollingRows.filter((row) => Number(row.reward_samples ?? 0) > 0)
+      const rollingDecisions = decisionRows.reduce((sum, row) => sum + Number(row.decisions ?? 0), 0)
+      const rollingEvaluable = decisionRows.reduce((sum, row) => sum + Number(row.evaluable_decisions ?? 0), 0)
+      const rollingUnavailable = decisionRows.reduce((sum, row) => sum + Number(row.unavailable_decisions ?? 0), 0)
+      const rollingMatched = decisionRows.reduce((sum, row) => sum + Number(row.matched ?? 0), 0)
+      const rewardRows = rollingRows.filter((row) => row.reward_contract_version === 'selection-reference-snapshot-v3'
+        && Number(row.reward_samples ?? 0) > 0)
       const selectionRollingSamples = rewardRows.reduce((sum, row) => sum + Number(row.reward_samples ?? 0), 0)
       const selectionRollingHits = rewardRows.reduce((sum, row) => sum + Number(row.reward_hits ?? 0), 0)
       const selectionRollingRewardSum = rewardRows.reduce((sum, row) => sum + Number(row.reward_sum ?? 0), 0)
@@ -2670,7 +2711,7 @@ export async function buildStrategyLearningSummary(
           rolling_unavailable_decisions: rollingUnavailable,
           rolling_matched: rollingMatched,
           rolling_match_rate: rollingEvaluable > 0 ? round6(rollingMatched / rollingEvaluable) : null,
-          rolling_sessions: rollingRows.filter((row) => Number(row.decisions ?? 0) > 0).length,
+          rolling_sessions: decisionRows.filter((row) => Number(row.decisions ?? 0) > 0).length,
           samples: lifetimeSamples,
           hit_rate: lifetimeSamples > 0 ? round6(lifetimeHits / lifetimeSamples) : null,
           avg_return_pct: lifetimeSamples > 0 ? round6(lifetimeRewardSum / lifetimeSamples) : null,
@@ -2940,6 +2981,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             family_id: cleanToken(spec.familyId) || 'UNKNOWN',
             production_owner: row.strategy_status === 'active' && governance?.owner_type === 'strategy' ? 1 : 0,
             strategy_hit: evaluability.evaluable && matched ? 1 : 0,
+            evaluable: evaluability.evaluable ? 1 : 0,
+            unavailable_reason: evaluability.evaluable ? null : evaluability.unavailableReasons.join('|'),
             weak_label: evaluability.evaluable ? (matched ? 1 : 0) : 0,
             affinity: evaluability.evaluable ? (matched ? 1 : 0) : 0,
             position_weight: 0,

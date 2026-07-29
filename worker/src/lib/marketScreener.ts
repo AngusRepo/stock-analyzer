@@ -19,6 +19,7 @@ import {
   reconcileCandidatesStrategyPoolAttribution,
 } from './screenerStrategyConsumer'
 import { getAdaptiveParamsForRegime } from './adaptiveConfig'
+import { readMarketRegimeState } from './marketRegimeState'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
 import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint, type Breeze2CandidateShape } from './breeze2Runtime'
 import { controllerPostJson } from './controllerClient'
@@ -408,11 +409,6 @@ function taxonomyWatchPoint(profile: SymbolTaxonomyProfile | undefined): string 
   return parts.length ? `taxonomy:${parts.join(',')}` : null
 }
 
-function taxonomyLayerValue(candidate: { taxonomy?: SymbolTaxonomyProfile; industry?: string }, layer: 'industryTheme' | 'subindustry' | 'industry' | 'concept'): string | null {
-  if (layer === 'concept') return candidate.taxonomy?.concepts?.[0] ?? null
-  return candidate.taxonomy?.[layer] ?? (layer === 'industry' ? candidate.industry ?? null : null)
-}
-
 function round1(value: number): number {
   return Math.round(value * 10) / 10
 }
@@ -448,23 +444,6 @@ function applyScoreV2NewsThemeAdjustment(
   const appliedRankingDelta = round1(riskAdjustment)
   candidate.score = round1(candidate.score + appliedRankingDelta)
   return appliedRankingDelta
-}
-
-function applyTaxonomyDiversityCap<T extends { taxonomy?: SymbolTaxonomyProfile; industry?: string }>(
-  candidates: T[],
-  layer: 'industryTheme' | 'subindustry' | 'industry' | 'concept',
-  maxPerLayer: number,
-): T[] {
-  const max = Math.max(1, Math.floor(maxPerLayer))
-  const counts = new Map<string, number>()
-  return candidates.filter((candidate) => {
-    const key = taxonomyLayerValue(candidate, layer)
-    if (!key) return true
-    const count = counts.get(key) ?? 0
-    if (count >= max) return false
-    counts.set(key, count + 1)
-    return true
-  })
 }
 
 async function writeScreenerFunnel(
@@ -2837,93 +2816,6 @@ export function scoreMultiFactor(
 
 
 /**
- * Step 5c: ?梢??批????Pearson correlation > threshold ???擃?
- */
-async function deduplicateByCorrelation(
-  candidates: ScreenerCandidate[],
-  db: D1Database,
-  threshold: number,
-  windowDays: number,
-): Promise<ScreenerCandidate[]> {
-  if (candidates.length <= 1) return candidates
-  const symbols = candidates.map(c => c.symbol)
-
-  const priceRows: { symbol: string; date: string; close: number }[] = []
-  for (const chunk of chunkArray(symbols, 400)) {
-    const ph = chunk.map(() => '?').join(',')
-    const { results } = await db.prepare(`
-      SELECT s.symbol, sp.date, sp.close
-      FROM stock_prices sp
-      JOIN stocks s ON sp.stock_id = s.id
-      WHERE s.symbol IN (${ph}) AND sp.date >= date('now', '-${windowDays + 30} days')
-      ORDER BY s.symbol, sp.date
-    `).bind(...chunk).all<{ symbol: string; date: string; close: number }>()
-    priceRows.push(...(results ?? []))
-  }
-
-  if (!priceRows?.length) return candidates
-
-  // 撱?symbol ??daily returns 摨?
-  const returnSeries = new Map<string, number[]>()
-  const priceBySymbol = new Map<string, { date: string; close: number }[]>()
-  for (const r of priceRows) {
-    if (!priceBySymbol.has(r.symbol)) priceBySymbol.set(r.symbol, [])
-    priceBySymbol.get(r.symbol)!.push(r)
-  }
-  for (const [sym, prices] of priceBySymbol) {
-    if (prices.length < 10) continue  // 憭芸?銝?
-    const returns: number[] = []
-    for (let i = 1; i < prices.length; i++) {
-      if (prices[i - 1].close > 0) {
-        returns.push((prices[i].close - prices[i - 1].close) / prices[i - 1].close)
-      }
-    }
-    returnSeries.set(sym, returns)
-  }
-
-  // Pearson ?賊???
-  function pearson(a: number[], b: number[]): number {
-    const n = Math.min(a.length, b.length)
-    if (n < 10) return 0
-    const ax = a.slice(-n), bx = b.slice(-n)
-    const meanA = ax.reduce((s, v) => s + v, 0) / n
-    const meanB = bx.reduce((s, v) => s + v, 0) / n
-    let num = 0, denA = 0, denB = 0
-    for (let i = 0; i < n; i++) {
-      const da = ax[i] - meanA, db = bx[i] - meanB
-      num += da * db
-      denA += da * da
-      denB += db * db
-    }
-    const den = Math.sqrt(denA * denB)
-    return den > 0 ? num / den : 0
-  }
-
-  // 璅?閬宏?斤?嚗orrelation > threshold ??蝘駁?頛???
-  const removed = new Set<string>()
-  for (let i = 0; i < candidates.length; i++) {
-    if (removed.has(candidates[i].symbol)) continue
-    const aReturns = returnSeries.get(candidates[i].symbol)
-    if (!aReturns) continue
-
-    for (let j = i + 1; j < candidates.length; j++) {
-      if (removed.has(candidates[j].symbol)) continue
-      const bReturns = returnSeries.get(candidates[j].symbol)
-      if (!bReturns) continue
-
-      const corr = pearson(aReturns, bReturns)
-      if (corr > threshold) {
-        // 蝘駁?雿?
-        const loser = candidates[i].score >= candidates[j].score ? candidates[j].symbol : candidates[i].symbol
-        removed.add(loser)
-      }
-    }
-  }
-
-  return candidates.filter(c => !removed.has(c.symbol))
-}
-
-/**
  * Bottom-up ?典??湧?∩蜓瘚?嚗2嚗?
  */
 export async function runBottomUpScreener(env: Bindings, runDate?: string | null): Promise<{
@@ -2935,9 +2827,21 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const debugLog: string[] = []
   const cfg = await getTradingConfig(env.KV)
   const sc = cfg.screener
-  const adaptiveParams = await getAdaptiveParamsForRegime(env.KV)
-  const screenerPolicy = resolveScreenerPolicy(cfg, adaptiveParams)
   const endDate = resolveScreenerRunDate(runDate)
+  const canonicalRegimeState = await readMarketRegimeState(env.KV)
+  if (
+    !canonicalRegimeState
+    || canonicalRegimeState.source !== 'hmm'
+    || canonicalRegimeState.run_date !== endDate
+  ) {
+    throw new Error(
+      'screener_regime_pit_unavailable:expected=' + endDate
+      + ':actual=' + (canonicalRegimeState?.run_date ?? 'missing')
+      + ':source=' + (canonicalRegimeState?.source ?? 'missing'),
+    )
+  }
+  const adaptiveParams = await getAdaptiveParamsForRegime(env.KV, canonicalRegimeState.family)
+  const screenerPolicy = resolveScreenerPolicy(cfg, adaptiveParams)
   const runId = `screener-${endDate}-${Date.now()}`
   const funnelItems: ScreenerFunnelItemInput[] = []
 
@@ -3327,8 +3231,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const { buildLayer1StrategyBreadthPlan } = strategyCandidatePoolModule
     const { loadStrategyPortfolioMetricOverrides } = strategyPortfolioMetricsModule
     passesLayer1TopUpQualityGuard = strategyCandidatePoolModule.passesLayer1TopUpQualityGuard
-    const currentRegime = (adaptiveParams as any)?.provenance?.regime ?? null
-    runtimeStrategyRegime = currentRegime == null ? null : String(currentRegime)
+    const currentRegime = canonicalRegimeState.family
+    runtimeStrategyRegime = currentRegime
     const [{ specs, source, registryRowCount, activeCount }, policyState] = await Promise.all([
       listStrategySpecsForLearning(env.DB),
       getLatestStrategyPolicyState(env.DB).catch(() => null),
@@ -3344,6 +3248,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const strategyPortfolioMetrics = await loadStrategyPortfolioMetricOverrides(env.DB, {
       regime: currentRegime,
       marketSegment: 'all',
+      asOfDate: endDate,
       minSamples: 5,
       knownStrategyIds: specs.map((spec: any) => String(spec.id || '').trim()).filter(Boolean),
     })
@@ -4327,44 +4232,36 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     console.warn('[Screener v2] selection diversity failed:', e)
   }
 
-  const maxPerIndustry = (sc as any).maxPerIndustry ?? 5
-  const industryCount = new Map<string, number>()
-  let afterIndustryLimit = scored.filter(c => {
-    const cnt = industryCount.get(c.industry) ?? 0
-    if (cnt >= maxPerIndustry) return false
-    industryCount.set(c.industry, cnt + 1)
-    return true
-  })
+  // Sector/taxonomy/correlation concentration is evidence for L4/Fusion and the
+  // portfolio risk owner. It must not mutate the L1 decision universe.
+  const maxPerIndustry = Number((sc as any).maxPerIndustry ?? 5)
   const selectionTargetSize = Math.max(0, Math.round(layer1AdaptiveTargetSize))
   const dynamicThemeCap = Number((sc as any).maxPerIndustryTheme ?? Math.max(3, Math.ceil(selectionTargetSize * 0.18)))
   const dynamicSubindustryCap = Number((sc as any).maxPerSubindustry ?? Math.max(2, Math.ceil(selectionTargetSize * 0.14)))
-  const beforeTaxonomyCap = afterIndustryLimit.length
-  afterIndustryLimit = applyTaxonomyDiversityCap(afterIndustryLimit, 'industryTheme', dynamicThemeCap)
-  afterIndustryLimit = applyTaxonomyDiversityCap(afterIndustryLimit, 'subindustry', dynamicSubindustryCap)
-  debugLog.push(
-    `[Step 5b] taxonomy diversity cap industry<=${maxPerIndustry} ` +
-    `industry_theme<=${dynamicThemeCap} subindustry<=${dynamicSubindustryCap} ` +
-    `${beforeTaxonomyCap}->${afterIndustryLimit.length}`,
-  )
-
-  // 5c: ?梢??批??
-  const corrThreshold = (sc as any).correlationThreshold ?? 0.8
-  const corrWindow = (sc as any).correlationWindow ?? 60
-  try {
-    // Only deduplicate the active policy pool to keep the Worker bounded.
-    const top50 = afterIndustryLimit.slice(0, selectionTargetSize)
-    afterIndustryLimit = [
-      ...(await deduplicateByCorrelation(top50, env.DB, corrThreshold, corrWindow)) as ScoredCandidate[],
-      ...afterIndustryLimit.slice(selectionTargetSize),
-    ]
-  } catch (e) {
-    console.warn('[Screener v2] Correlation dedup failed:', e)
+  const afterIndustryLimit = [...scored]
+  const countExposure = (key: 'industry' | 'industryTheme' | 'subindustry') => {
+    const counts = new Map<string, number>()
+    for (const candidate of scored) {
+      const value = key === 'industry'
+        ? String(candidate.industry || 'unknown')
+        : String((candidate as any)[key] || (candidate as any).taxonomy?.[key] || 'unknown')
+      counts.set(value, (counts.get(value) ?? 0) + 1)
+    }
+    return Object.fromEntries([...counts.entries()].sort((a, b) => b[1] - a[1]))
   }
-
-  // 5d: top N ?芣嚗trategy pool 撌脣 Step 2c嚗??函′蝭拙??RG/?駁???摰???
-  let finalCandidates = dedupeScreenerCandidatesBySymbol(
-    annotateCandidatesWithStrategySpecs(afterIndustryLimit.slice(0, selectionTargetSize) as ScreenerCandidate[], runtimeStrategySpecs),
+  const industryExposure = countExposure('industry')
+  const themeExposure = countExposure('industryTheme')
+  const subindustryExposure = countExposure('subindustry')
+  const countAbove = (exposure: Record<string, number>, threshold: number) =>
+    Object.values(exposure).filter((count) => count > threshold).length
+  debugLog.push(
+    `[Step 5b] concentration evidence only; candidate mutation disabled ` +
+    `industry_over_${maxPerIndustry}=${countAbove(industryExposure, maxPerIndustry)} ` +
+    `theme_over_${dynamicThemeCap}=${countAbove(themeExposure, dynamicThemeCap)} ` +
+    `subindustry_over_${dynamicSubindustryCap}=${countAbove(subindustryExposure, dynamicSubindustryCap)}`,
   )
+  // 5d: top N ?芣嚗trategy pool 撌脣 Step 2c嚗??函′蝭拙??RG/?駁???摰???
+  let finalCandidates: ScreenerCandidate[] = []
   if (layer1BreadthPool.length > 0) {
     const layer1TargetSize = selectionTargetSize
     const updatedBySymbol = new Map(scored.map((candidate) => [String(candidate.symbol || '').trim(), candidate]))
@@ -4378,7 +4275,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         if (!isFormalStrategyHit) return false
         return updatedBySymbol.has(symbol)
       })
-      .slice(0, layer1TargetSize)
     const selectedSymbols = new Set(layer1Queue.map((candidate: any) => String(candidate.symbol || '').trim()))
     const selectedCandidates = reconcileCandidatesStrategyPoolAttribution(layer1Queue.map((entry: any) => {
       const symbol = String(entry.symbol || '').trim()
@@ -4451,6 +4347,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     strategySelectionTelemetry = {
       ...(strategySelectionTelemetry ?? {}),
       post_diversity_universe_count: afterIndustryLimit.length,
+      sector_concentration_policy: 'evidence_only_no_candidate_mutation',
       layer1_breadth_count: layer1BreadthPool.length,
       coarse_queue_count: layer2CoarseQueueSeed.length,
       top_up_count: 0,
@@ -4470,6 +4367,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     strategySelectionTelemetry = {
       ...(strategySelectionTelemetry ?? {}),
       post_diversity_universe_count: afterIndustryLimit.length,
+      sector_concentration_policy: 'evidence_only_no_candidate_mutation',
       layer1_breadth_count: 0,
       coarse_queue_count: 0,
       top_up_count: 0,
@@ -4500,7 +4398,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const afterDedupSet = new Set(afterIndustryLimit.map(c => c.symbol))
   const removedByDedup = afterIndustryLimit.filter(c => !afterDedupSet.has(c.symbol))
   // 鋡急?瑞?
-  const truncated = afterIndustryLimit.slice(selectionTargetSize)
+  const selectedAtL1 = new Set(finalCandidates.map((candidate) => String(candidate.symbol || '').trim()))
+  const routeFloorRejected = afterIndustryLimit.filter(
+    (candidate) => !selectedAtL1.has(String(candidate.symbol || '').trim()),
+  )
   const emergingMaxCandidates = screenerPolicy.sizing.emergingResearchSize
   const emergingResearchCandidates: ScreenerCandidate[] = []
   const shouldScoreEmerging = emergingMaxCandidates > 0 && emergingResearchPrices.length > 0
@@ -4555,9 +4456,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   } else {
     debugLog.push('[Step 5e] emerging research lane retired; skipped')
   }
-  if (truncated.length) {
-    debugLog.push(`[Step 5d] 鋡?top ${maxCandidates} ?芣嚗? 10嚗?`)
-    for (const c of truncated.slice(0, 10)) {
+  if (routeFloorRejected.length) {
+    debugLog.push('[Step 5d] route-floor rejected evidence: ' + routeFloorRejected.length + '; first 10')
+    for (const c of routeFloorRejected.slice(0, 10)) {
       debugLog.push(`  ${c.symbol} ${c.name} ${c.industry} score=${c.score.toFixed(1)}`)
     }
   }

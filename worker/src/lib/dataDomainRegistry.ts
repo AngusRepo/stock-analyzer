@@ -28,7 +28,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'active8_oof_retention_ledger', 's12_formal_ev_decisions',
     'strategy_spec_registry', 'strategy_decision_log', 'selection_reference_snapshots_v1',
     'strategy_label_matrix_v4', 'strategy_label_matrix_runs_v4', 'selection_reference_repair_runs_v1',
-    'strategy_reward_ledger',
+    'strategy_reward_ledger', 'strategy_learning_daily_stats', 'strategy_learning_head',
     'strategy_policy_state', 'parameter_candidate_registry', 'parameter_candidate_evidence',
     'parameter_candidate_events', 'entry_model_replay_reports',
     'canonical_selection_labels_v4', 'canonical_selection_label_rejections_v4',

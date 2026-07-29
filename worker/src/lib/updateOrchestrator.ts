@@ -41,6 +41,8 @@ const NEWS_BATCH_CONCURRENCY = 2
 const FINALIZE_RECHECK_DELAY_MS = 30_000
 const FINALIZE_RECHECK_MAX_ATTEMPTS = 10
 const FINALIZE_ORPHAN_REPAIR_DELAY_MS = 2 * 60_000
+const FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS = 2 * 60
+const FINALIZE_CONTINUATION_MAX_ATTEMPTS = 45
 const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
 const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
 const SOURCE_READINESS_FINLAB_REFRESH_COOLDOWN_SECONDS = 45 * 60
@@ -1587,16 +1589,57 @@ async function finalizeUpdateChain(
   triggerTime: string,
   runId: string,
   shardCount: number,
+  continuationAttempt = 1,
 ): Promise<void> {
-  const finalKey = `cron:indicator-queue:${triggerTime}:${runId}:finalized`
-  const acquired = await acquireFinalizeLock(env, triggerTime, runId)
-  if (!acquired) {
-    console.log(`[Queue] Finalize already acquired for ${triggerTime} ${runId}`)
-    await repairFinalizeContinuationIfNeeded(env, deps, triggerTime, runId, shardCount)
+  const readiness = await checkEveningChainSourceReadiness(env, triggerTime)
+  if (!readiness.ok) {
+    await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, `canonical source not ready: ${readiness.summary}`)
     return
   }
-  await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
-  await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'lock-acquired')
+
+  const finalKey = `cron:indicator-queue:${triggerTime}:${runId}:finalized`
+  try {
+    const acquired = await acquireFinalizeLock(env, triggerTime, runId)
+    if (!acquired) {
+      console.log(`[Queue] Finalize already acquired for ${triggerTime} ${runId}`)
+      const repaired = await repairFinalizeContinuationIfNeeded(env, deps, triggerTime, runId, shardCount)
+      if (!repaired) {
+        await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, 'finalizer lease is still owned by the original continuation')
+      }
+      return
+    }
+    await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
+    await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'lock-acquired')
+  } catch (error) {
+    await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, error instanceof Error ? error.message : String(error))
+  }
+}
+
+async function deferFinalizeContinuation(
+  env: Bindings,
+  triggerTime: string,
+  runId: string,
+  shardCount: number,
+  continuationAttempt: number,
+  reason: string,
+): Promise<void> {
+  if (continuationAttempt >= FINALIZE_CONTINUATION_MAX_ATTEMPTS) {
+    await logSchedulerResult(env.KV, 'evening-chain', {
+      status: 'error',
+      summary: `indicator finalizer continuation exhausted for ${triggerTime}; run_id=${runId}`,
+      duration_ms: 0, error: reason, run_id: runId, run_date: triggerTime,
+    })
+    throw new Error(`indicator finalizer continuation exhausted: ${reason}`)
+  }
+  await logSchedulerResult(env.KV, 'evening-chain', {
+    status: 'running',
+    summary: `indicator finalizer deferred for ${triggerTime}; run_id=${runId}; continuation_attempt=${continuationAttempt}; reason=${reason}`,
+    duration_ms: 0, run_id: runId, run_date: triggerTime,
+  })
+  await env.UPDATE_QUEUE.send({
+    type: 'finalize_update', cursor: 0, triggerTime, runId, shardCount, attempt: 1,
+    continuationAttempt: continuationAttempt + 1,
+  }, { delaySeconds: FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS } as any)
 }
 
 export async function refreshMatureStrategyEvidenceBeforeScreener(
@@ -1859,16 +1902,16 @@ async function repairFinalizeContinuationIfNeeded(
   triggerTime: string,
   runId: string,
   shardCount: number,
-): Promise<void> {
+): Promise<boolean> {
   const lock = await loadFinalizeLock(env, triggerTime, runId)
   if (!finalizeLockIsRepairable(lock)) {
     console.log(`[Queue] Finalize lock is recent; waiting for original finalizer ${triggerTime} ${runId}`)
-    return
+    return false
   }
 
   if (await hasPipelineEvidence(env, triggerTime)) {
     console.log(`[Queue] Finalize continuation already reached pipeline for ${triggerTime} ${runId}`)
-    return
+    return true
   }
 
   if (await hasSuccessfulScreenerRun(env.DB, triggerTime)) {
@@ -1892,7 +1935,7 @@ async function repairFinalizeContinuationIfNeeded(
       shardCount,
       attempt: 1,
     })
-    return
+    return true
   }
 
   await logSchedulerResult(env.KV, 'evening-chain', {
@@ -1902,6 +1945,7 @@ async function repairFinalizeContinuationIfNeeded(
     run_date: triggerTime,
   })
   await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'stale-lock-repair')
+  return true
 }
 
 async function runDailyAllocatorEvReadiness(
@@ -3321,13 +3365,16 @@ export async function processUpdateBatch(
     const runId = msg.runId || `${triggerTime}-single`
     const shardCount = Number.isFinite(msg.shardCount) && Number(msg.shardCount) > 0 ? Number(msg.shardCount) : 1
     const attempt = Number.isFinite(msg.attempt) ? Number(msg.attempt) : 1
+    const continuationAttempt = Number.isFinite(msg.continuationAttempt)
+      ? Number(msg.continuationAttempt)
+      : 1
     const donePrefix = `cron:indicator-queue:${triggerTime}:${runId}:done:`
     await new Promise((resolve) => setTimeout(resolve, FINALIZE_RECHECK_DELAY_MS))
     const done = await env.KV.list({ prefix: donePrefix })
     const doneCount = new Set(done.keys.map((k) => k.name)).size
 
     if (doneCount >= shardCount) {
-      await finalizeUpdateChain(env, deps, triggerTime, runId, shardCount)
+      await finalizeUpdateChain(env, deps, triggerTime, runId, shardCount, continuationAttempt)
       return
     }
 
@@ -3346,6 +3393,7 @@ export async function processUpdateBatch(
         runId,
         shardCount,
         attempt: attempt + 1,
+        continuationAttempt,
       })
       return
     }

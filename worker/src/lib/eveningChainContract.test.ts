@@ -189,6 +189,13 @@ assert(
   'indicator queue finalizer must repair stale/orphaned locks so screener seed rows cannot strand the chain before pipeline',
 )
 assert(
+  updateOrchestrator.includes('deferFinalizeContinuation') &&
+    updateOrchestrator.includes('checkEveningChainSourceReadiness(env, triggerTime)') &&
+    updateOrchestrator.includes('continuationAttempt: continuationAttempt + 1') &&
+    updateOrchestrator.includes('FINALIZE_CONTINUATION_MAX_ATTEMPTS'),
+  'indicator finalizer must durably retry the same run and recheck canonical source readiness before screener',
+)
+assert(
   updateOrchestrator.includes("logSchedulerResult(env.KV, 'update'") &&
     updateOrchestrator.includes('market data update ready for'),
   'runDailyUpdate must write canonical update success logs so OBS can reconcile market-data readiness separately from downstream callbacks',

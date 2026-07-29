@@ -6,7 +6,13 @@ from typing import Any
 from services.regime_monitors import build_regime_monitors
 
 
-REGIME_EVIDENCE_SCHEMA_VERSION = "regime-evidence-v1"
+REGIME_EVIDENCE_SCHEMA_VERSION = "regime-evidence-v2"
+
+_HISTORY_KEY_ALIASES = {
+    "twii_return_1d": ("twii_return_1d", "market_return_1d"),
+    "twii_return_5d": ("twii_return_5d", "market_return_5d"),
+    "twii_bias_20d": ("twii_bias_20d", "market_bias_20d"),
+}
 
 
 def _to_float(value: Any) -> float | None:
@@ -32,10 +38,12 @@ def _latest_value(market_env: dict[str, Any], rows: list[dict[str, Any]], key: s
     direct = _to_float(market_env.get(key))
     if direct is not None:
         return direct
+    aliases = _HISTORY_KEY_ALIASES.get(key, (key,))
     for row in reversed(rows):
-        value = _to_float(row.get(key))
-        if value is not None:
-            return value
+        for alias in aliases:
+            value = _to_float(row.get(alias))
+            if value is not None:
+                return value
     return None
 
 

@@ -12,7 +12,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   market: new Set([
     'stock_prices', 'technical_indicators', 'financials', 'canonical_fundamental_features',
     'chip_data', 'news', 'factor_scores', 'sector_flow', 'market_breadth',
-    'market_trading_sessions',
+    'market_trading_sessions', 'intraday_minute_bars',
   ]),
   learning: new Set([
     'predictions', 's12_replay_trade_outcomes', 's12_structure_snapshots',
@@ -25,6 +25,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'active8_oof_predictions', 'allocator_ev_oof_snapshots', 'l4_oof_predictions',
     'strategy_spec_registry', 'strategy_decision_log', 'selection_reference_snapshots_v1',
     'strategy_label_matrix_v4', 'strategy_label_matrix_runs_v4', 'strategy_reward_ledger',
+    'strategy_learning_daily_stats', 'strategy_learning_head',
     'strategy_policy_state', 'parameter_candidate_registry', 'parameter_candidate_evidence',
     'parameter_candidate_events', 'entry_model_replay_reports',
     'canonical_selection_labels_v4', 'canonical_selection_label_rejections_v4',
@@ -32,20 +33,27 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'strategy_marginal_edge_v4', 'strategy_marginal_edge_dates_v4',
     'strategy_marginal_edge_head_v4',
     'price_horizon_labels_v1', 'price_horizon_label_rejections_v1',
+    'allocator_ev_daily_lifecycle',
   ]),
   ops: new Set([
     'system_logs', 'observability_events', 'screener_funnel_runs', 'screener_funnel_items',
     'pipeline_stage_runs', 'strategy_learning_runs', 'maintenance_task_leases',
     'legacy_migration_cursors', 'scheduler_locks', 'artifact_hard_references',
     'domain_projection_outbox', 'domain_projection_inbox', 'data_domain_cutovers',
-    'data_retention_policies', 'data_retention_runs', 'storage_capacity_daily',
+    'data_retention_policies', 'data_retention_runs', 'data_retention_cursors',
+    'data_retention_run_items', 'storage_capacity_daily',
     'price_horizon_projection_status', 'price_horizon_projection_runs',
     'data_domain_backfill_cursors', 'data_domain_parity_checks',
   ]),
   execution: new Set([
     'broker_execution_intents', 'broker_execution_legs', 'broker_execution_events',
   ]),
-  paper: new Set([]),
+  paper: new Set([
+    'paper_accounts', 'paper_orders', 'paper_positions', 'paper_settlements',
+    'paper_daily_snapshots', 'paper_execution_events', 'paper_order_intents',
+    'paper_exit_intents', 'paper_challenger_candidates',
+    'paper_challenger_daily_metrics', 'paper_decision_attribution',
+  ]),
   research: new Set([
     'input_snapshots', 'feature_versions', 'features', 'strategy_versions', 'strategies',
     'analysis_runs', 'workflow_steps', 'workflow_checkpoints', 'model_calls',

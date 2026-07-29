@@ -236,6 +236,8 @@ export async function refreshStrategyMarginalEdgeV4(
          AND l.label_schema_version='canonical-strategy-selection-label-v4'
        WHERE m.signal_date BETWEEN ? AND ?
          AND m.strategy_status IN ('active', 'candidate', 'shadow')
+         AND m.evaluable = 1
+         AND m.reference_contract_version = 'selection-reference-snapshot-v3'
          AND EXISTS (
            SELECT 1 FROM canonical_run_heads h
             WHERE h.logical_run_key='screener:' || m.signal_date || ':TW:production:market_screener'
@@ -418,7 +420,16 @@ export async function refreshStrategyMarginalEdgeV4(
            AND status IN ('research','shadow','candidate','active')
            AND promotion_status <> 'retired'
       `).bind(row.strategyId, row.strategyVersion))
-      const cutoverStatements = [...registryPromotionStatements]
+      const eligibleRegistryKeys = eligible.map((row) => `${row.strategyId}|${row.strategyVersion}`)
+      const registryDemotionStatement = db.prepare(`
+        UPDATE strategy_spec_registry
+           SET status='candidate', promotion_status='candidate', updated_at=CURRENT_TIMESTAMP
+         WHERE owner_type='strategy'
+           AND status='active'
+           AND promotion_status='production'
+           AND (strategy_id || '|' || version) NOT IN (${eligibleRegistryKeys.map(() => '?').join(',')})
+      `).bind(...eligibleRegistryKeys)
+      const cutoverStatements = [registryDemotionStatement, ...registryPromotionStatements]
       if (!sameAsChampion) {
         cutoverStatements.push(db.prepare(`
           INSERT INTO strategy_marginal_edge_head_v4(owner_key, run_id, previous_run_id, promoted_at)
@@ -435,7 +446,7 @@ export async function refreshStrategyMarginalEdgeV4(
         )
         SELECT ?, ?, 'info', 'strategy', 'strategy_marginal_edge_v4', 'promoted',
                'Strategy Edge V4 automatic promotion', ?, 'strategy-learning',
-               'Eligible strategies can contribute to the production breadth plan without a hard top-K.',
+               'Promoted marginal-edge portfolio atomically replaces weak production contributors without a hard top-K.',
                'Monitor date-clustered cost-net edge and automatic zero-weight cooldown.', ?, CURRENT_TIMESTAMP
          WHERE NOT EXISTS (
            SELECT 1 FROM observability_events WHERE event_id=? AND date=?
@@ -457,6 +468,7 @@ export async function refreshStrategyMarginalEdgeV4(
           candidate_portfolio_absolute_mean: candidateAbsoluteMean,
           paired_champion_delta_lcb90: paired.lcb90,
           no_hard_top_k: true,
+          atomic_registry_replacement: true,
         }),
         `strategy-edge-v4-promotion:${runId}`,
         asOfDate,

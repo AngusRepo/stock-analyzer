@@ -66,6 +66,9 @@ def test_operational_parity_passes_without_future_labels(monkeypatch):
     assert result["comparable_rows"] == 20
     assert result["l4_serving_coverage"] == 1.0
     assert result["fusion_serving_coverage"] == 1.0
+    assert result["schema_version"] == "ev-operational-parity-v2"
+    assert result["owner_decisions"]["l4_alpha_ev"]["decision"] == "PASS"
+    assert result["owner_decisions"]["allocator_ev_fusion"]["decision"] == "PASS"
 
 
 def test_operational_parity_rejects_training_serving_feature_drift(monkeypatch):
@@ -81,3 +84,26 @@ def test_operational_parity_rejects_training_serving_feature_drift(monkeypatch):
     assert result["decision"] == "FAIL"
     assert "training_serving_feature_mismatch" in result["failed_gates"]
     assert result["feature_mismatch_count"] == 20
+    assert result["owner_decisions"]["l4_alpha_ev"]["decision"] == "FAIL"
+    assert result["owner_decisions"]["allocator_ev_fusion"]["decision"] == "FAIL"
+
+
+def test_l4_parity_can_pass_when_only_fusion_materialization_fails(monkeypatch):
+    from services import ev_operational_parity as parity
+
+    _patch_materializers(monkeypatch, parity)
+    monkeypatch.setattr(
+        parity,
+        "materialize_allocator_ev_fusion",
+        lambda *args, **kwargs: {"status": "rejected", "blockers": ["fusion_contract"]},
+    )
+    result = parity.assess_ev_operational_parity(
+        l4_artifact={"model_version": "l4-oof"},
+        fusion_artifact={"model_version": "fusion-oof"},
+        native_rows=_native_rows(),
+    )
+
+    assert result["decision"] == "FAIL"
+    assert result["owner_decisions"]["l4_alpha_ev"]["decision"] == "PASS"
+    assert result["owner_decisions"]["allocator_ev_fusion"]["decision"] == "FAIL"
+    assert result["l4_serving_coverage"] == 1.0

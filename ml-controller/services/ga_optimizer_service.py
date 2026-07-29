@@ -220,11 +220,19 @@ def _candidate_metrics(candidate: dict[str, Any], evaluator: Evaluator | None) -
         "trade_count": 120,
         "pbo": _clamp(0.30 + balance_penalty * 0.15, 0.0, 1.0),
         "mdd_95th": _clamp(0.16 + risk_penalty * 0.10, 0.05, 0.50),
+        "evidence_semantic": "synthetic_parameter_prior_proxy",
+        "promotion_eligible": False,
+        "pbo_applied": False,
+        "monte_carlo_applied": False,
     }
 
 
 def _gate(metrics: dict[str, Any]) -> dict[str, Any]:
+    explicitly_non_promotable = metrics.get("promotion_eligible") is False
     checks = {
+        "real_oos_evidence": not explicitly_non_promotable,
+        "pbo_evidence": not explicitly_non_promotable or metrics.get("pbo_applied") is True,
+        "monte_carlo_evidence": not explicitly_non_promotable or metrics.get("monte_carlo_applied") is True,
         "min_trade_count": _to_float(metrics.get("trade_count"), 0.0) >= 60,
         "min_sharpe": _to_float(metrics.get("sharpe"), -99.0) >= 0.50,
         "max_drawdown": _to_float(metrics.get("max_drawdown"), 99.0) <= 0.25,
@@ -405,7 +413,8 @@ def run_ga_optimizer(req: GAOptimizerRequest, *, evaluator: Evaluator | None = N
             "target": "production_meta_optimizer_learning_state",
             "production_learning_loop": True,
             "mutates_trading_config": False,
-            "applies_to_production": "learning_state_only_until_gated_promotion",
+            "applies_to_production": False,
+            "promotion_scope": "learning_state_only_until_candidate_bound_oos_evidence_passes",
             "push_target": "worker_kv_ga_optimizer_state",
             "effective_fields": [
                 "alphaFramework.allocation.weights",

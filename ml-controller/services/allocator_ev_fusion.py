@@ -552,3 +552,40 @@ def materialize_allocator_ev_fusion(
         "semantic": "allocation_expected_return_fuses_l4_selection_alpha_and_s12_execution_trade_ev",
         "blockers": [],
     }
+
+
+def assess_allocator_ev_fusion_policy(policy: dict[str, Any] | None) -> dict[str, Any]:
+    """Validate the configured Fusion owner once before row materialization."""
+    artifact = policy_artifact(policy)
+    if artifact is None:
+        blockers = ["artifact_missing"]
+        payload: dict[str, Any] = {}
+    else:
+        payload = materialize_allocator_ev_fusion(
+            {},
+            l4_value=0.0,
+            l4_source="preflight",
+            l4_payload={"status": "loaded"},
+            s12_value=0.0,
+            s12_source="preflight",
+            s12_payload={"status": "loaded"},
+            market_heat_expected_return=0.0,
+            policy=policy,
+        ) or {}
+        blockers = list(payload.get("blockers") or [])
+        if payload.get("status") != "loaded" and not blockers:
+            blockers.append("artifact_not_loadable")
+        if payload.get("primary_expected_return_allowed") is not True:
+            blockers.append("primary_expected_return_not_allowed")
+        blockers = list(dict.fromkeys(blockers))
+    return {
+        "schema_version": "allocator-ev-fusion-policy-cutover-readiness-v1",
+        "ready": not blockers,
+        "configured": artifact is not None,
+        "artifact_model_version": (artifact or {}).get("model_version"),
+        "artifact_contract_version": (artifact or {}).get("artifact_contract_version"),
+        "feature_semantic_version": (artifact or {}).get("feature_semantic_version"),
+        "label_schema_version": (artifact or {}).get("label_schema_version"),
+        "blockers": blockers,
+        "policy": "fusion_serves_only_after_owner_quality_parity_and_current_contract_pass",
+    }

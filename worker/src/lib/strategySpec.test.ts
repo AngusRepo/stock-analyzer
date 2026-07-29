@@ -3,6 +3,7 @@ import {
   assessCandidateAgainstStrategySpecs,
   deriveStrategyRawSignals,
   deriveStrategyThresholdScores,
+  explainStrategyEvaluability,
   validateStrategySpec,
 } from './strategySpec'
 import type { StrategySpec } from './strategySpec'
@@ -694,4 +695,53 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   assert(result.valid, 'dry-run spec should be valid')
   assert(result.sampleSize === 2, 'dry-run should report sample size')
   assert(result.matched >= 1, 'dry-run should count matches')
+}
+{
+  const falseSignalSpec: StrategySpec = {
+    ...DEFAULT_STRATEGY_SPECS[0],
+    id: 'false_signal_contract_v1',
+    thresholds: {
+      minPrice: 10,
+      dsl: { all: [{ signal: 'factorSignals.isPullback', op: '==', value: false }] },
+    },
+  }
+  const missing = assessCandidateAgainstStrategySpecs({
+    symbol: '9901',
+    current_price: 50,
+    raw_signals: { factorSignals: {} },
+  }, [falseSignalSpec])
+  assert(missing.matches.length === 0, 'missing boolean signal must be unavailable, not equal to false')
+  assert(missing.watchPoints.some((point) => point.includes('strategy_spec_missing_required_signal_refs:false_signal_contract_v1:factorSignals.isPullback')), 'missing signal must emit an explicit unavailable diagnostic')
+
+  const present = assessCandidateAgainstStrategySpecs({
+    symbol: '9902',
+    current_price: 50,
+    raw_signals: { factorSignals: { isPullback: false } as any },
+  }, [falseSignalSpec])
+  assert(present.matches.length === 1, 'an explicitly observed false signal should satisfy a false equality condition')
+}
+{
+  const thresholdSpec: StrategySpec = {
+    ...DEFAULT_STRATEGY_SPECS[0],
+    id: 'threshold_availability_contract_v1',
+    thresholds: {
+      minPrice: 10,
+      minForeignTrustNet5d: 0,
+      minTechnicalIndicators: { rsi14: 0 },
+    },
+  }
+  const missing = explainStrategyEvaluability({
+    symbol: '9910',
+    current_price: 50,
+    raw_signals: { foreignTrustNet5d: 0, technicalIndicators: {} },
+  }, thresholdSpec)
+  assert(missing.evaluable === false, 'missing scalar/map threshold input must make the strategy unavailable')
+  assert(missing.missing_required_threshold_refs.includes('technicalIndicators.rsi14'), 'missing technical threshold key must be explicit')
+
+  const observedZero = explainStrategyEvaluability({
+    symbol: '9911',
+    current_price: 50,
+    raw_signals: { foreignTrustNet5d: 0, technicalIndicators: { rsi14: 0 } },
+  }, thresholdSpec)
+  assert(observedZero.evaluable === true, 'observed numeric zero must remain valid evidence instead of missing')
 }

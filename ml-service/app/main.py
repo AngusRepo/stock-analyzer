@@ -789,7 +789,7 @@ async def regime_current(req: RegimeRequest, request: Request):
     from .regime import (
         RegimeDetector,
         build_market_feature_matrix,
-        get_current_market_features,
+        latest_market_feature_date,
     )
 
     TW_TZ = timezone(timedelta(hours=8))
@@ -806,11 +806,13 @@ async def regime_current(req: RegimeRequest, request: Request):
         if detector._trained:
             detector.save_to_gcs()
 
-    cur_feat = get_current_market_features(req.market_env)
-    if cur_feat is None:
-        raise HTTPException(status_code=400, detail="market_env missing current features")
+    feature_sequence = build_market_feature_matrix(req.market_env)
+    if feature_sequence is None or not len(feature_sequence):
+        raise HTTPException(status_code=400, detail="market_env missing PIT feature sequence")
 
-    info = detector.predict_regime(cur_feat)
+    info = detector.predict_regime(feature_sequence)
+    if not info.get("regime_surface"):
+        raise HTTPException(status_code=503, detail="HMM posterior surface unavailable")
     reg_idx = int(info.get("regime_index", 1))
     label_en = _REGIME_INDEX_TO_EN.get(reg_idx, "sideways")
 
@@ -821,6 +823,10 @@ async def regime_current(req: RegimeRequest, request: Request):
         "label_zh":            info.get("label", "盤整"),
         "weight_multipliers":  info.get("weight_multipliers", {}),
         "consensus_threshold": info.get("consensus_threshold", 0.60),
+        "regime_surface":      info.get("regime_surface", {}),
+        "state_probabilities": info.get("state_probabilities", {}),
+        "sequence_length":     info.get("sequence_length", 0),
+        "feature_date":        latest_market_feature_date(req.market_env),
         "computed_at":         datetime.now(TW_TZ).isoformat(),
     }
 
@@ -880,7 +886,7 @@ class WalkForwardReplayRequest(BaseModel):
 async def regime_replay_at_date(req: WalkForwardReplayRequest, request: Request):
     # Predict regime at a historical date using the windowed HMM snapshot.
     await verify_service_token(request)
-    from .regime import RegimeDetector, get_current_market_features
+    from .regime import RegimeDetector, build_market_feature_matrix
 
     gcs_prefix = f"walk_forward/w{req.window_id}"
     detector = RegimeDetector.load_from_gcs(
@@ -893,11 +899,13 @@ async def regime_replay_at_date(req: WalkForwardReplayRequest, request: Request)
             detail=f"No HMM snapshot at {gcs_prefix}. Run /regime/train_window first.",
         )
 
-    cur_feat = get_current_market_features(req.market_env)
-    if cur_feat is None:
-        raise HTTPException(status_code=400, detail="market_env missing current features")
+    feature_sequence = build_market_feature_matrix(req.market_env)
+    if feature_sequence is None or not len(feature_sequence):
+        raise HTTPException(status_code=400, detail="market_env missing PIT feature sequence")
 
-    info = detector.predict_regime(cur_feat)
+    info = detector.predict_regime(feature_sequence)
+    if not info.get("regime_surface"):
+        raise HTTPException(status_code=503, detail="HMM posterior surface unavailable")
     reg_idx = int(info.get("regime_index", 1))
     return {
         "window_id":       req.window_id,
@@ -905,6 +913,8 @@ async def regime_replay_at_date(req: WalkForwardReplayRequest, request: Request)
         "regime_index":    reg_idx,
         "hmm_state":       info.get("hmm_state", -1),
         "label_zh":        info.get("label", "盤整"),
+        "regime_surface":  info.get("regime_surface", {}),
+        "sequence_length": info.get("sequence_length", 0),
     }
 
 

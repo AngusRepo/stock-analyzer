@@ -65,6 +65,19 @@ assert(
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const expectedReturnServingState = fs.readFileSync('src/lib/expectedReturnServingState.ts', 'utf8')
+const controllerDailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
+assert(
+  updateOrchestrator.includes('refreshMatureStrategyEvidenceBeforeScreener') &&
+    updateOrchestrator.indexOf('const matureStrategyEvidence = await refreshMatureStrategyEvidenceBeforeScreener') <
+      updateOrchestrator.indexOf('const runAsyncScreener = deps.runMarketScreenerAsync'),
+  'mature strategy labels/edge/rewards must refresh fail-closed before the current-day screener consumes priors',
+)
+assert(
+  controllerDailyWorkflows.includes('assertRegimeComputeClosure(data, runDate)') &&
+    controllerDailyWorkflows.includes('readMarketRegimeState(env.KV)') &&
+    controllerDailyWorkflows.includes('market_regime_state readback mismatch'),
+  'regime compute must verify same-date KV persistence and posterior surface before downstream stages',
+)
 assert(updateOrchestrator.includes('refreshExpectedReturnServingState'), 'daily readiness must persist canonical expected-return serving state')
 assert(expectedReturnServingState.includes("'retired_incompatible'"), 'stale promoted artifacts must be explicitly retired from serving without rewriting evidence')
 assert(expectedReturnServingState.includes("'validated_s12_only'"), 'no-owner production behavior must remain explicit and fail closed')

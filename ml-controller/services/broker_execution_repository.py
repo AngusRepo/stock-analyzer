@@ -63,10 +63,11 @@ class BrokerExecutionRepository(Protocol):
 class D1BrokerExecutionRepository:
     def __init__(self, query_fn: QueryFn | None = None, execute_fn: ExecuteFn | None = None) -> None:
         if query_fn is None or execute_fn is None:
-            from services import d1_client
+            from services.d1_domain_client import D1DataDomain, client_for_domain
 
-            query_fn = query_fn or (lambda sql, params, timeout: d1_client.query(sql, params, timeout))
-            execute_fn = execute_fn or (lambda sql, params, timeout: d1_client.execute(sql, params, timeout))
+            client = client_for_domain(D1DataDomain.EXECUTION)
+            query_fn = query_fn or client.query
+            execute_fn = execute_fn or client.execute
         self._query = query_fn
         self._execute = execute_fn
 

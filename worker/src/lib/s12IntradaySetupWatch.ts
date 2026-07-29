@@ -104,7 +104,18 @@ export interface S12SetupWatchSummary {
   errors: number
 }
 
+export function isS12IntradaySetupWatchEnabled(
+  env: Pick<Bindings, 'S12_INTRADAY_SETUP_WATCH_ENABLED'>,
+): boolean {
+  return ['1', 'true', 'yes', 'enabled'].includes(
+    String(env.S12_INTRADAY_SETUP_WATCH_ENABLED ?? '').trim().toLowerCase(),
+  )
+}
+
 export async function runS12IntradaySetupWatch(env: Bindings, today: string): Promise<S12SetupWatchSummary> {
+  if (!isS12IntradaySetupWatchEnabled(env)) {
+    return { status: 'skipped', source_trade_date: null, watched: 0, near_zone: 0, assessed: 0, ready_for_formal_ev: 0, still_waiting: 0, errors: 0 }
+  }
   const seeds = await loadSetupWatchSeeds(env.DB, today)
   if (!seeds.length) {
     return { status: 'empty', source_trade_date: null, watched: 0, near_zone: 0, assessed: 0, ready_for_formal_ev: 0, still_waiting: 0, errors: 0 }

@@ -2,6 +2,7 @@ import {
   assessCandidateAgainstStrategySpecs,
   deriveStrategyRawSignals,
   deriveStrategyThresholdScores,
+  explainStrategyEvaluability,
   normalizeStrategySpecGovernance,
   validateStrategySpec,
   type StrategyCandidateInput,
@@ -19,7 +20,7 @@ import {
 export const STRATEGY_LABELER_VERSION = 'strategy-labeler-v1'
 export const FINLAB_PORTFOLIO_INTELLIGENCE_VERSION = 'finlab-portfolio-intelligence-v1'
 export const MULTI_STRATEGY_PLE_ROUTER_VERSION = 'multi-strategy-ple-router-v1'
-export const L15_MARGINAL_SLATE_BUILDER_VERSION = 'l15-adaptive-marginal-slate-builder-v1'
+export const L15_MARGINAL_SLATE_BUILDER_VERSION = 'l15-route-floor-full-decision-universe-v2'
 export const ACTIVE_8_ML_TEACHERS = [
   'LightGBM',
   'XGBoost',
@@ -113,6 +114,8 @@ export interface MultiStrategyPleAnnotatedCandidate extends StrategyCandidatePoo
   strategy_hit_vector?: Record<string, number>
   strategy_position_weight_vector?: Record<string, number>
   strategy_overlap_vector?: Record<string, number>
+  strategy_evaluable_vector?: Record<string, number>
+  strategy_unavailable_reason_vector?: Record<string, string | null>
   strategy_family_affinity?: Partial<Record<StrategyFamilyId, number>>
   strategy_portfolio_prior?: StrategyPortfolioPriorSnapshot
   strategy_router_version?: typeof MULTI_STRATEGY_PLE_ROUTER_VERSION
@@ -149,6 +152,8 @@ interface StrategyLabel {
   strategy_hit: number
   position_weight: number
   overlap: number
+  evaluable: boolean
+  unavailable_reason: string | null
 }
 
 interface CandidateLabelState<T extends StrategyCandidatePoolCandidate> {
@@ -193,7 +198,7 @@ export interface MultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCand
     ml_slate_count: number
     observe_only_count: number
     capacity_overflow_count: number
-    capacity_policy: 'max_only_no_minimum'
+    capacity_policy: 'route_floor_full_decision_universe'
     slate_selection_policy: typeof L15_MARGINAL_SLATE_BUILDER_VERSION
     min_route_score: number
     min_route_score_source: 'config_explicit' | 'adaptive_route_score_distribution' | 'adaptive_no_active_scores'
@@ -367,12 +372,16 @@ function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
     const rawQuality = rawSignalQuality(candidate)
     for (const spec of normalizedSpecs) {
       const regimeWeight = specRegimeWeight(spec, options.regime)
-      const assessment = regimeWeight > 0
+      const evaluability = explainStrategyEvaluability(candidate, spec)
+      const evaluable = evaluability.evaluable
+      const assessment = regimeWeight > 0 && evaluable
         ? assessCandidateAgainstStrategySpecs(candidate, [spec])
         : { matches: [] }
       const matched = assessment.matches.length > 0
-      const configuredWeight = finiteNumber(options.strategyWeights?.[spec.id]) ?? 1
-      const productionOwner = specCanEnterMlSlate(spec)
+      const configuredWeight = options.strategyWeights == null
+        ? 1
+        : finiteNumber(options.strategyWeights[spec.id]) ?? 0
+      const productionOwner = specCanEnterMlSlate(spec) && configuredWeight > 0
       const statusMultiplier = productionOwner ? 1 : spec.status === 'candidate' ? 0.75 : spec.status === 'shadow' ? 0.55 : 0.3
       labels.push({
         strategy_id: spec.id,
@@ -387,6 +396,8 @@ function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
         strategy_hit: matched ? 1 : 0,
         position_weight: 0,
         overlap: 0,
+        evaluable,
+        unavailable_reason: evaluability.unavailable_reason,
       })
     }
     const matchedAffinityTotal = labels.reduce((sum, item) => sum + (item.strategy_hit > 0 ? item.affinity : 0), 0)
@@ -797,6 +808,12 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     label.strategy_id,
     prior.strategy_metrics[label.strategy_id]?.holding_overlap ?? label.overlap,
   ]))
+  const strategyEvaluableVector = Object.fromEntries(
+    state.labels.map((label) => [label.strategy_id, label.evaluable ? 1 : 0]),
+  )
+  const strategyUnavailableReasonVector = Object.fromEntries(
+    state.labels.map((label) => [label.strategy_id, label.unavailable_reason]),
+  )
   const rawPositionWeights = Object.fromEntries(state.labels.map((label) => {
     const metrics = prior.strategy_metrics[label.strategy_id]
     const weight = label.affinity
@@ -905,6 +922,8 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     strategy_hit_vector: strategyHitVector,
     strategy_position_weight_vector: strategyPositionWeights,
     strategy_overlap_vector: strategyOverlapVector,
+    strategy_evaluable_vector: strategyEvaluableVector,
+    strategy_unavailable_reason_vector: strategyUnavailableReasonVector,
     strategy_family_affinity: familyAffinity,
     strategy_portfolio_prior: prior,
     strategy_router_version: MULTI_STRATEGY_PLE_ROUTER_VERSION,
@@ -1170,7 +1189,12 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
   const annotated = states.map((state) => annotateCandidate(state, prior, maxSlateSize, minRouteScore, options))
   const routed = annotated
     .filter((candidate) => candidate.strategy_router_decision === 'ml_slate')
-  const marginalSlate = selectAdaptiveMarginalSlate(routed, prior, maxSlateSize)
+  const marginalSlate = selectAdaptiveMarginalSlate(routed, prior, routed.length)
+  if (marginalSlate.selected.length !== routed.length) {
+    throw new Error(
+      'l15_route_floor_contract_violation:selected=' + marginalSlate.selected.length + ':eligible=' + routed.length,
+    )
+  }
   const selectedSymbols = new Set(marginalSlate.selected.map((candidate) => cleanText(candidate.symbol).toUpperCase()))
   const marginalEvidenceBySymbol = new Map(
     marginalSlate.annotated.map((candidate) => [cleanText(candidate.symbol).toUpperCase(), candidate]),
@@ -1186,9 +1210,9 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
       ...candidate,
       strategy_pool_rank: index + 1,
       strategy_router_decision: 'ml_slate' as const,
-      strategy_router_reason: 'l15_adaptive_marginal_utility_selected',
+      strategy_router_reason: 'l15_route_floor_eligible_dispatch_priority_rank',
       strategy_pool_decision: 'ml_queue' as const,
-      strategy_pool_reason: 'l15_adaptive_marginal_utility_selected',
+      strategy_pool_reason: 'l15_route_floor_eligible_dispatch_priority_rank',
       strategy_router_components: {
         ...(candidate.strategy_router_components ?? {}),
         ...(candidate.marginal_utility_components ?? {}),
@@ -1204,23 +1228,6 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
     .filter((candidate) => {
       const symbol = cleanText(candidate.symbol).toUpperCase()
       return !selectedSymbols.has(symbol)
-    })
-    .map((candidate) => {
-      if (candidate.strategy_router_decision === 'ml_slate') {
-        return {
-          ...candidate,
-          strategy_router_decision: 'capacity_overflow' as const,
-          strategy_router_reason: 'l15_marginal_utility_not_selected_capacity_max',
-          strategy_pool_decision: 'research_only_queue' as const,
-          strategy_pool_reason: 'l15_marginal_utility_not_selected_capacity_max',
-          strategy_router_components: {
-            ...(candidate.strategy_router_components ?? {}),
-            ...(candidate.marginal_utility_components ?? {}),
-            marginal_utility_score: candidate.marginal_utility_score ?? 0,
-          } as MultiStrategyPleRouterComponents,
-        }
-      }
-      return candidate
     })
   const strategyUsage = countBy(mlSlate.flatMap((candidate) => candidate.strategy_pool_ids ?? []))
   const familyUsage = countBy(mlSlate.flatMap((candidate) => candidate.strategy_family_ids ?? []) as StrategyFamilyId[])
@@ -1239,7 +1246,7 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
     portfolio_intelligence_version: FINLAB_PORTFOLIO_INTELLIGENCE_VERSION,
     selection_order: 'l1_full_universe_labeler_l125_finlab_portfolio_l15_ple_router',
     source_universe_count: candidates.length,
-    max_slate_size: maxSlateSize,
+    max_slate_size: mlSlate.length,
     l0Annotated: annotatedWithMarginalEvidence,
     mlSlate,
     observeOnly,
@@ -1270,7 +1277,7 @@ export function buildMultiStrategyPleRoutingPlan<T extends StrategyCandidatePool
       ml_slate_count: mlSlate.length,
       observe_only_count: observeOnly.length,
       capacity_overflow_count: observeOnly.filter((candidate) => candidate.strategy_router_decision === 'capacity_overflow').length,
-      capacity_policy: 'max_only_no_minimum',
+      capacity_policy: 'route_floor_full_decision_universe',
       slate_selection_policy: L15_MARGINAL_SLATE_BUILDER_VERSION,
       min_route_score: minRouteScore,
       min_route_score_source: routeFloor.source,

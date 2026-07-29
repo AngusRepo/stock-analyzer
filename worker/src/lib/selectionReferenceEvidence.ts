@@ -4,7 +4,7 @@ import {
   type StrategySpec,
 } from './strategySpec'
 
-export const SELECTION_REFERENCE_CONTRACT_VERSION = 'selection-reference-snapshot-v2'
+export const SELECTION_REFERENCE_CONTRACT_VERSION = 'selection-reference-snapshot-v3'
 export const STRATEGY_LABEL_MATRIX_VERSION = 'strategy-label-matrix-v4'
 
 export interface SelectionEvidenceCandidate {
@@ -25,6 +25,8 @@ export interface SelectionEvidenceCandidate {
   strategy_hit_vector?: Record<string, number>
   strategy_position_weight_vector?: Record<string, number>
   strategy_overlap_vector?: Record<string, number>
+  strategy_evaluable_vector?: Record<string, number>
+  strategy_unavailable_reason_vector?: Record<string, string | null>
 }
 
 export interface SelectionReferenceRowV1 {
@@ -61,6 +63,8 @@ export interface StrategyLabelMatrixRowV4 {
   affinity: number
   position_weight: number
   overlap: number
+  evaluable: number
+  unavailable_reason: string | null
   labeler_version: string
   strategy_registry_checksum: string
 }
@@ -167,6 +171,9 @@ export function buildSelectionEvidenceV4(input: {
       const owner = spec.status === 'active'
         && spec.ownerType === 'strategy'
         && spec.promotionStatus === 'production'
+      const evaluable = finite(candidate.strategy_evaluable_vector?.[spec.id], 0) > 0 ? 1 : 0
+      const unavailableReason = clean(candidate.strategy_unavailable_reason_vector?.[spec.id])
+        || (evaluable ? null : 'strategy_evaluability_missing')
       matrix.push({
         signal_date: input.signalDate,
         symbol,
@@ -182,6 +189,8 @@ export function buildSelectionEvidenceV4(input: {
         affinity: finite(candidate.strategy_affinity_vector?.[spec.id]),
         position_weight: finite(candidate.strategy_position_weight_vector?.[spec.id]),
         overlap: finite(candidate.strategy_overlap_vector?.[spec.id]),
+        evaluable,
+        unavailable_reason: unavailableReason,
         labeler_version: labelerVersion,
         strategy_registry_checksum: input.strategyRegistryChecksum,
       })
@@ -307,7 +316,7 @@ export async function persistSelectionEvidenceV4(
   }
   const existing = await db.prepare(`
     SELECT status, reference_candidate_count, strategy_count, expected_cell_count,
-           persisted_cell_count, strategy_registry_checksum, labeler_version
+           persisted_cell_count, strategy_registry_checksum, labeler_version, reference_contract_version
       FROM strategy_label_matrix_runs_v4
      WHERE producer_run_id = ?
   `).bind(input.producerRunId).first<any>()
@@ -318,6 +327,7 @@ export async function persistSelectionEvidenceV4(
       && Number(existing.persisted_cell_count) === expectedCells
       && clean(existing.strategy_registry_checksum) === input.strategyRegistryChecksum
       && clean(existing.labeler_version) === input.labelerVersion
+      && clean(existing.reference_contract_version) === SELECTION_REFERENCE_CONTRACT_VERSION
     if (!same) throw new Error('strategy_label_matrix_immutable_run_conflict')
     return { referenceRows: input.references.length, matrixRows: expectedCells }
   }
@@ -326,8 +336,8 @@ export async function persistSelectionEvidenceV4(
     INSERT INTO strategy_label_matrix_runs_v4 (
       producer_run_id, signal_date, status, reference_candidate_count,
       strategy_count, expected_cell_count, persisted_cell_count,
-      strategy_registry_checksum, labeler_version
-    ) VALUES (?, ?, 'writing', ?, ?, ?, 0, ?, ?)
+      strategy_registry_checksum, labeler_version, reference_contract_version
+    ) VALUES (?, ?, 'writing', ?, ?, ?, 0, ?, ?, ?)
     ON CONFLICT(producer_run_id) DO UPDATE SET
       status='writing', error_code=NULL, updated_at=CURRENT_TIMESTAMP
   `).bind(
@@ -338,6 +348,7 @@ export async function persistSelectionEvidenceV4(
     expectedCells,
     input.strategyRegistryChecksum,
     input.labelerVersion,
+    SELECTION_REFERENCE_CONTRACT_VERSION,
   ).run()
 
   try {
@@ -369,14 +380,14 @@ export async function persistSelectionEvidenceV4(
         signal_date, symbol, producer_run_id, strategy_id, strategy_version,
         strategy_status, alpha_bucket, family_id, production_owner,
         strategy_hit, weak_label, affinity, position_weight, overlap,
-        label_reason, labeler_version, strategy_registry_checksum,
-        reference_contract_version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+        evaluable, unavailable_reason, label_reason, labeler_version,
+        strategy_registry_checksum, reference_contract_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
     `).bind(
       row.signal_date, row.symbol, row.producer_run_id, row.strategy_id,
       row.strategy_version, row.strategy_status, row.alpha_bucket, row.family_id,
       row.production_owner, row.strategy_hit, row.weak_label, row.affinity,
-      row.position_weight, row.overlap, row.labeler_version,
+      row.position_weight, row.overlap, row.evaluable, row.unavailable_reason, row.labeler_version,
       row.strategy_registry_checksum, SELECTION_REFERENCE_CONTRACT_VERSION,
     ))
     for (let offset = 0; offset < matrixStatements.length; offset += 250) {

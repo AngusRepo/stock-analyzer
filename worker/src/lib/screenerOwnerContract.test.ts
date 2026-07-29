@@ -44,6 +44,9 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(!marketScreener.includes('async function loadMarketDataFromD1'), 'marketScreener should not own D1 market data loading')
   assert(marketScreener.includes('resolveScreenerRunDate'), 'screener must resolve an explicit rerun date instead of always using today')
   assert(marketScreener.includes('runBottomUpScreener(env: Bindings, runDate?: string | null)'), 'screener public contract must accept a backfill date')
+  assert(marketScreener.includes('canonicalRegimeState.run_date !== endDate'), 'screener must fail closed unless regime state matches the signal date')
+  assert(marketScreener.includes("canonicalRegimeState.source !== 'hmm'"), 'screener must reject legacy regime fallback for production/backfill admission')
+  assert(marketScreener.includes('getAdaptiveParamsForRegime(env.KV, canonicalRegimeState.family)'), 'adaptive overlay must resolve from the verified PIT regime owner')
   assert(screenerMarketData.includes('asOfDate?: string'), 'screener D1 loader must support as-of-date backfills')
   assert(screenerMarketData.includes('WHERE date <= ?'), 'screener D1 loader must cap price/chip data by requested date')
 }
@@ -89,6 +92,8 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
   assert(marketScreener.includes('buildLayer1StrategyBreadthPlan'), 'L1 breadth pool must be driven by the L1.5 adaptive router from the full feature-enriched universe')
   assert(!marketScreener.includes('preRankPool = scoredSorted.slice(0, screenerPolicy.sizing.candidatePoolSize)'), 'L1 breadth pool must not be pre-ranked by score top 200')
   assert(marketScreener.includes('layer1BreadthPool'), 'marketScreener should name the Layer1 breadth pool explicitly')
+  assert(!marketScreener.includes('.slice(0, layer1TargetSize)'), 'formal route-floor L1 candidates must not be truncated by adaptive capacity')
+  assert(marketScreener.includes('routeFloorRejected'), 'non-admitted L0 candidates must be identified by route-floor evidence, not rank truncation')
   assert(marketScreener.includes('passesLayer1TopUpQualityGuard'), 'post-overlay L1 top-up must not bypass raw strategy quality guards')
   assert(marketScreener.includes('research_strategy_ids'), 'production funnel evidence must keep research strategy attribution separate from active strategy ids')
   assert(!marketScreener.includes("['layer1_breadth']"), 'Layer1 top-up must not masquerade as a registered strategy id')
@@ -311,4 +316,16 @@ const dailyPipeline = fs.readFileSync('../ml-controller/graphs/daily_pipeline_v2
 {
   assert(!stocksRoute.includes('function computeTechnicalIndicators'), 'stocks route must not own indicator formula implementation')
   assert(stocksRoute.includes("../lib/technicalIndicators"), 'stocks route should call technical indicator domain service')
+}
+{
+  assert(
+    marketScreener.includes("sector_concentration_policy: 'evidence_only_no_candidate_mutation'"),
+    'sector concentration must be persisted as evidence instead of mutating the L1 decision universe',
+  )
+  assert(
+    marketScreener.includes('const afterIndustryLimit = [...scored]'),
+    'post-sector L1 universe must retain every scored candidate',
+  )
+  assert(!marketScreener.includes('deduplicateByCorrelation('), 'legacy correlation candidate mutator must stay retired')
+  assert(!marketScreener.includes('applyTaxonomyDiversityCap('), 'taxonomy concentration must not return as an L1 admission cap')
 }

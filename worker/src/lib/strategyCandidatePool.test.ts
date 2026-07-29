@@ -275,14 +275,16 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   })
 
   assert((plan.telemetry as any).soft_capacity_baseline === 12, 'L1.5 targetSize should be a soft baseline, not a hard top-k cap')
-  assert((plan.telemetry as any).adaptive_capacity_policy === 'soft_baseline_adaptive_ceiling_no_forced_fill', 'L1.5 capacity policy should document adaptive ceiling semantics')
+  assert((plan.telemetry as any).adaptive_capacity_policy === 'route_floor_decision_universe_no_capacity_admission', 'L1.5 capacity policy must document route-floor admission without a capacity owner')
   assert(Number((plan.telemetry as any).adaptive_target_size) > 12, 'L1.5 should expand above soft baseline when broad quality-floor evidence exists')
   assert(Number((plan.telemetry as any).adaptive_target_size_before_dynamic_quota) > 12, 'L1.5 should preserve the pre-dynamic adaptive target for audit')
-  assert(Number((plan.telemetry as any).dynamic_effective_quota_total) >= Number((plan.telemetry as any).adaptive_target_size), 'dynamic effective quota should cap, not inflate, the adaptive target')
-  assert(plan.breadthPool.length === Number((plan.telemetry as any).adaptive_target_size), 'L1.5 breadth pool should follow adaptive target size')
+  assert((plan.telemetry as any).dynamic_effective_quota_policy === 'telemetry_only_not_candidate_admission', 'dynamic strategy quotas must be telemetry only and cannot remove candidates')
+  assert(plan.breadthPool.length === plan.coarseQueue.length, 'every route-floor candidate must remain in the L1 decision universe')
+  assert(Number((plan.telemetry as any).adaptive_target_size) === plan.coarseQueue.length, 'adaptive target telemetry must report actual route-floor breadth')
+  assert(Number((plan.telemetry as any).soft_capacity_reference_target) > 12, 'soft capacity reference remains telemetry only')
   assert((plan.telemetry as any).strategy_matrix_candidate_count === broadCandidates.length, 'soft capacity must not reduce full-universe strategy labeling scope')
   assert((plan.telemetry as any).strategy_matrix_cell_count === broadCandidates.length, 'single-strategy matrix should still evaluate every candidate')
-  assert(plan.coarseQueue.every((candidate: any) => candidate.strategy_pool_decision === 'ml_queue'), 'adaptive expansion should remain formal strategy evidence, not raw score top-up')
+  assert(plan.coarseQueue.every((candidate: any) => candidate.strategy_router_decision === 'ml_slate'), 'route-floor candidates should remain formal strategy evidence without raw-score top-up')
 }
 
 {
@@ -337,9 +339,9 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     maxSlateSize: 3,
     regime: 'bull',
   })
-  assert(plan.mlSlate.length <= 3, 'L1.5 router capacity is a maximum, not a minimum')
-  assert(plan.telemetry.capacity_policy === 'max_only_no_minimum', 'L1.5 router must document no minimum top-up policy')
-  assert(plan.telemetry.slate_selection_policy === 'l15-adaptive-marginal-slate-builder-v1', 'L1.5 router must use adaptive marginal slate construction, not routeScore top-k truncation')
+  assert(plan.mlSlate.length === plan.telemetry.route_score_above_floor_count, 'L1.5 must retain every route-floor eligible candidate regardless of dispatch capacity')
+  assert(plan.telemetry.capacity_policy === 'route_floor_full_decision_universe', 'L1.5 router must document full route-floor decision-universe policy')
+  assert(plan.telemetry.slate_selection_policy === 'l15-route-floor-full-decision-universe-v2', 'L1.5 router must use rank only for dispatch priority, not top-k admission')
   assert(plan.telemetry.strategy_matrix_candidate_count === broadCandidates.length, 'L1 label matrix candidate count must follow runtime L0 universe size')
   assert(plan.telemetry.strategy_matrix_strategy_count === [broadSpec, nicheSpec].length, 'L1 label matrix strategy dimension must follow current strategy count')
   assert(plan.telemetry.strategy_matrix_cell_count === broadCandidates.length * [broadSpec, nicheSpec].length, 'L1 label matrix must cover runtime candidates x current strategies')
@@ -349,7 +351,7 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   assert(plan.mlSlate.some((candidate) => candidate.symbol === '6115'), 'FinLab-style portfolio intelligence should let niche multi-family support survive broad crowded labels')
   const niche = plan.mlSlate.find((candidate) => candidate.symbol === '6115') as any
   assert(niche.strategy_router_version === 'multi-strategy-ple-router-v1', 'routed candidate should expose L1.5 router provenance')
-  assert(niche.strategy_router_reason === 'l15_adaptive_marginal_utility_selected', 'routed candidate should expose marginal-utility selection reason')
+  assert(niche.strategy_router_reason === 'l15_route_floor_eligible_dispatch_priority_rank', 'routed candidate should expose route-floor eligibility and dispatch-only rank semantics')
   assert(niche.marginal_utility_score != null, 'L1.5 selected candidate should expose marginal utility score')
   assert(niche.strategy_router_components?.marginal_utility_score != null, 'L1.5 selected candidate should persist marginal utility components')
   assert((niche.strategy_family_ids ?? []).length === 2, 'niche candidate should retain cross-family strategy evidence')
@@ -448,12 +450,24 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
   const hot = annotated.find((candidate) => candidate.symbol === '8801') as any
   const quiet = annotated.find((candidate) => candidate.symbol === '8802') as any
 
-  assert(plan.mlSlate.length === 1, 'market heat must respect L1.5 max capacity')
-  assert(plan.telemetry.capacity_policy === 'max_only_no_minimum', 'market heat must not become a forced-fill sleeve')
+  assert(plan.mlSlate.length === 2, 'market heat must not turn max dispatch size into candidate admission')
+  assert(plan.telemetry.capacity_policy === 'route_floor_full_decision_universe', 'market heat must remain evidence and must not become a candidate-removal quota')
   assert(hot.strategy_router_components.market_heat_score > quiet.strategy_router_components.market_heat_score, 'hot candidate should expose stronger market heat evidence')
   assert(hot.strategy_router_components.market_heat_contribution > quiet.strategy_router_components.market_heat_contribution, 'market heat should feed route score')
   assert(hot.strategy_router_components.market_heat_alpha > 0, 'market heat should feed marginal utility')
   assert(plan.mlSlate[0].symbol === '8801', 'market heat should let high relative-strength candidate compete for the formal slate')
+  const largeUniverse = Array.from({ length: 291 }, (_, index) => ({
+    ...quietCandidate,
+    symbol: `9${String(index).padStart(3, '0')}`,
+    name: `Route floor candidate ${index}`,
+  }))
+  const largePlan = buildMultiStrategyPleRoutingPlan(largeUniverse, [broadSpec], {
+    maxSlateSize: 160,
+    minRouteScore: 0,
+    regime: 'bull',
+  })
+  assert(largePlan.mlSlate.length === 291, '291 route-floor eligible candidates must not be silently truncated to the legacy 160 capacity')
+  assert(largePlan.observeOnly.every((candidate) => candidate.strategy_router_decision !== 'capacity_overflow'), 'capacity_overflow must not remain an admission outcome')
 }
 
 {
@@ -1087,4 +1101,35 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     strategy_cluster_id: { blocked_strategy: 'sc000' },
   })
   assert(blockedEvidence === null, 'blocked official PAM preflight must not be accepted as formal Modal L1.25 evidence')
+}
+{
+  const first: any = {
+    ...DEFAULT_STRATEGY_SPECS[0],
+    id: 'explicit_weight_owner_a',
+    status: 'active',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
+    thresholds: { minPrice: 10 },
+  }
+  const omitted: any = {
+    ...first,
+    id: 'explicit_weight_owner_b',
+    variantId: 'explicit_weight_owner_b',
+  }
+  const candidate: any = {
+    symbol: '9912',
+    current_price: 50,
+    raw_signals: { close: 50 },
+    score_v2: scoreV2Payload({ finalScore: 70, chipFlow: 18, technicalStructure: 18, momentumScore: 12 }),
+  }
+  const plan = buildMultiStrategyPleRoutingPlan([candidate], [first, omitted], {
+    strategyWeights: { [first.id]: 1 },
+    maxSlateSize: 1,
+  })
+  assert(plan.l0Annotated[0].strategy_pool_ids?.includes(first.id), 'explicit positive artifact weight must retain the production owner')
+  assert(!plan.l0Annotated[0].strategy_pool_ids?.includes(omitted.id), 'strategy omitted from an explicit artifact weight map must have zero production contribution')
+  const pools = buildStrategyCandidatePools([candidate], [first, omitted], {
+    strategyWeights: { [first.id]: 1 },
+  })
+  assert(pools.find((pool) => pool.strategy_id === omitted.id)?.regime_weight === 0, 'candidate-pool evidence must use the same fail-closed explicit weight contract')
 }

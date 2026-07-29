@@ -136,10 +136,19 @@ async function listCanonicalReferences(
   for (;;) {
     const clauses = [
       "r.signal_date <= ?",
+      "r.feature_contract_version = ?",
       "(r.signal_date > ? OR (r.signal_date = ? AND r.symbol > ?))",
       "EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || r.signal_date || ':TW:production:market_screener' AND h.run_id = r.producer_run_id)",
+      "NOT EXISTS (SELECT 1 FROM canonical_selection_labels_v4 l WHERE l.signal_date = r.signal_date AND l.symbol = r.symbol AND l.producer_run_id = r.producer_run_id AND l.label_schema_version = 'canonical-strategy-selection-label-v4' AND l.reference_contract_version = ?)",
     ]
-    const binds: unknown[] = [asOfDate, cursorDate, cursorDate, cursorSymbol]
+    const binds: unknown[] = [
+      asOfDate,
+      SELECTION_REFERENCE_CONTRACT_VERSION,
+      cursorDate,
+      cursorDate,
+      cursorSymbol,
+      SELECTION_REFERENCE_CONTRACT_VERSION,
+    ]
     if (startDate) { clauses.push('r.signal_date >= ?'); binds.push(startDate) }
     if (endDate) { clauses.push('r.signal_date <= ?'); binds.push(endDate) }
     const page = await db.prepare(`

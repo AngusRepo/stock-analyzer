@@ -30,6 +30,8 @@ from services import d1_client, kv_client
 from services.ensemble_v2 import attach_ensemble_v2
 from services.expected_return_calibration import load_expected_return_calibration_report
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
+from services.l4_alpha_ev_producer import assess_l4_policy_cutover
+from services.allocator_ev_fusion import assess_allocator_ev_fusion_policy
 from services.payload_builder import (
     DAILY_RECOMMENDATION_PIPELINE_COLUMNS,
     PredictPayload,
@@ -548,6 +550,8 @@ class PipelineStateV2(TypedDict, total=False):
     layer3_formal_gate_target_size: int      # legacy audit field; now equals L3 evidence input count
     sell_filtered_symbols: list[str]        # symbols dropped due to SELL/NO_SIGNAL
     sell_filtered_diagnostics: dict          # symbol -> diagnostic payload for preserved non-buy seed rows
+    expected_return_serving_preflight: dict  # L4/Fusion compatibility before row materialization
+    expected_return_owner_coverage: dict     # valid owner or explicit abstention for every screener seed
     llm_reasons: dict                       # symbol ??{reason, watchPoints}
 
     breeze2_reason_shadow: dict             # symbol -> advisory-only Breeze2 shadow reason
@@ -2764,6 +2768,13 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     if isinstance(l4_alpha_ev_policy, dict):
         alpha_policy = dict(alpha_policy) if isinstance(alpha_policy, dict) else {}
         alpha_policy.setdefault("l4_alpha_ev", l4_alpha_ev_policy)
+    l4_serving_preflight = assess_l4_policy_cutover(alpha_policy)
+    if l4_serving_preflight.get("ready") is not True:
+        logger.error(
+            "[Pipeline V2] configured L4 artifact is not serving-compatible; "
+            "rows will explicitly abstain or use a validated S12 owner: %s",
+            l4_serving_preflight,
+        )
     allocator_ev_fusion_policy = (
         trading_cfg.get("allocatorEvFusion")
         or trading_cfg.get("allocator_ev_fusion")
@@ -2774,6 +2785,23 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         alpha_policy = dict(alpha_policy) if isinstance(alpha_policy, dict) else {}
         alpha_policy.setdefault("allocatorEvFusion", allocator_ev_fusion_policy)
         alpha_policy.setdefault("allocator_ev_fusion", allocator_ev_fusion_policy)
+    fusion_serving_preflight = assess_allocator_ev_fusion_policy(alpha_policy)
+    serving_owner = (
+        "allocator_ev_fusion"
+        if fusion_serving_preflight.get("ready") is True
+        else "l4_alpha_ev"
+        if l4_serving_preflight.get("ready") is True
+        else None
+    )
+    expected_return_serving_preflight = {
+        "schema_version": "expected-return-serving-preflight-v1",
+        "expected_return_owner": serving_owner,
+        "action_gate": "expected_return_owner" if serving_owner else "validated_s12_only",
+        "artifacts": {
+            "l4_alpha_ev": l4_serving_preflight,
+            "allocator_ev_fusion": fusion_serving_preflight,
+        },
+    }
     screener_recs = state["screener_recs"]
     if not screener_recs:
         raise RuntimeError(
@@ -2897,10 +2925,58 @@ async def node_recommend(state: PipelineStateV2) -> dict:
             ),
             "sparse_decision_coverage": False,
             "decision_pool_reason": "ml_filter_preserved_non_buy",
+            "decision_expected_return_owner": "risk_abstention",
         }
 
+    for symbol in filtered_syms:
+        diagnostic = filtered_diagnostics.setdefault(symbol, {})
+        diagnostic["decision_expected_return_owner"] = "risk_abstention"
+
+    allowed_owners = {
+        "allocator_ev_fusion",
+        "l4_alpha_ev",
+        "s12_trade_ev",
+        "risk_abstention",
+    }
+    owner_counts: dict[str, int] = {}
+    unresolved_symbols: list[str] = []
+    for row in final:
+        allocation = row.get("alpha_allocation") if isinstance(row.get("alpha_allocation"), dict) else {}
+        owner = str(allocation.get("expected_return_owner") or "").strip()
+        if owner not in allowed_owners:
+            unresolved_symbols.append(str(row.get("symbol") or ""))
+            continue
+        owner_counts[owner] = owner_counts.get(owner, 0) + 1
+    for symbol in filtered_syms:
+        owner = str(
+            (filtered_diagnostics.get(symbol) or {}).get("decision_expected_return_owner")
+            or ""
+        ).strip()
+        if owner not in allowed_owners:
+            unresolved_symbols.append(symbol)
+            continue
+        owner_counts[owner] = owner_counts.get(owner, 0) + 1
+    owner_coverage = {
+        "schema_version": "expected-return-owner-coverage-v1",
+        "seed_rows": len(screener_recs),
+        "covered_rows": sum(owner_counts.values()),
+        "owner_counts": owner_counts,
+        "unresolved_symbols": unresolved_symbols,
+        "valid_owner_or_explicit_abstention_required": True,
+        "expected_return_serving_preflight": expected_return_serving_preflight,
+    }
+    if unresolved_symbols or owner_coverage["covered_rows"] != len(screener_recs):
+        raise RuntimeError(
+            "expected_return_owner_coverage_incomplete: "
+            f"covered={owner_coverage['covered_rows']} seeds={len(screener_recs)} "
+            f"unresolved={unresolved_symbols[:20]}"
+        )
+
     logger.info(
-        f"[Pipeline V2] Recommend done: {len(final)} kept, {sell_count} SELL filtered"
+        "[Pipeline V2] Recommend done: %s kept, %s SELL filtered, owner_coverage=%s",
+        len(final),
+        sell_count,
+        owner_coverage,
     )
     return {
         "final_recommendations": final,
@@ -2908,6 +2984,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         "layer3_formal_gate_target_size": core_family_target_size,
         "sell_filtered_symbols": filtered_syms,
         "sell_filtered_diagnostics": filtered_diagnostics,
+        "expected_return_serving_preflight": expected_return_serving_preflight,
+        "expected_return_owner_coverage": owner_coverage,
     }
 
 

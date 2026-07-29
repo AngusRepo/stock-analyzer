@@ -1595,6 +1595,47 @@ async function finalizeUpdateChain(
   await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'lock-acquired')
 }
 
+export async function refreshMatureStrategyEvidenceBeforeScreener(
+  env: Bindings,
+  asOfDate: string,
+  runId: string,
+): Promise<string> {
+  const startedAt = Date.now()
+  try {
+    const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
+    const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
+    const { refreshStrategyRewardLedger } = await import('./strategyLearning')
+    const labels = await materializeCanonicalSelectionLabelsV4(env.DB, { asOfDate })
+    const marginalEdge = await refreshStrategyMarginalEdgeV4(env.DB, asOfDate)
+    const rewards = await refreshStrategyRewardLedger(env.DB, { endDate: asOfDate, dryRun: false })
+    const summary = [
+      `labels=${labels.persisted_rows}`,
+      `pending=${labels.pending_rows}`,
+      `unavailable=${labels.unavailable_rows}`,
+      `edge=${marginalEdge.status}:eligible=${marginalEdge.eligibleStrategies}:dates=${marginalEdge.sampleDates}`,
+      `reward_source=${rewards.source_rows}`,
+      `reward_rows=${rewards.persisted_rows}`,
+    ].join(' ')
+    await logSchedulerResult(env.KV, 'strategy-learning-mature-evidence', {
+      status: 'success',
+      summary,
+      duration_ms: Date.now() - startedAt,
+      run_id: runId,
+      run_date: asOfDate,
+    }, env)
+    return summary
+  } catch (error) {
+    await logSchedulerResult(env.KV, 'strategy-learning-mature-evidence', {
+      status: 'error',
+      summary: `mature evidence refresh failed before screener for ${asOfDate}`,
+      duration_ms: Date.now() - startedAt,
+      run_id: runId,
+      run_date: asOfDate,
+      error: String(error),
+    }, env)
+    throw error
+  }
+}
 async function runFinalizeContinuation(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
@@ -1628,6 +1669,8 @@ async function runFinalizeContinuation(
     console.warn('[Queue] Dataset manifest write failed:', e)
   }
   await checkAlerts(env)
+  const matureStrategyEvidence = await refreshMatureStrategyEvidenceBeforeScreener(env, triggerTime, runId)
+  console.log(`[Queue] Mature strategy evidence refreshed before screener: ${matureStrategyEvidence}`)
 
   const runAsyncScreener = deps.runMarketScreenerAsync
   if (runAsyncScreener) {
@@ -2810,6 +2853,12 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 'data_domain_shadow_backfill') {
+    const { processDataDomainShadowBackfillDrain } = await import('./dataDomainShadowBackfillDrain')
+    await processDataDomainShadowBackfillDrain(env, msg)
+    return
+  }
+
   if (msg.type === 'maintenance_backlog_drain') {
     const { processMaintenanceBacklogDrain } = await import('./maintenanceBacklogDrain')
     await processMaintenanceBacklogDrain(env, msg)

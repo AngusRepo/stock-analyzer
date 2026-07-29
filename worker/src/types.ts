@@ -61,6 +61,7 @@ export type Bindings = {
   // Shioaji 即時報價 Proxy（Cloud Run）
   SHIOAJI_PROXY_URL?: string
   S12_RESEARCH_KBARS_URL?: string
+  S12_INTRADAY_SETUP_WATCH_ENABLED?: string
   PROXY_SERVICE_TOKEN?: string
   DAILY_PRICE_SOURCE?: string
   FINLAB_DAILY_PRICE_PRIMARY_ENABLED?: string
@@ -329,6 +330,7 @@ export interface UpdateQueueMsg {
     | 'post_pipeline_chain'
     | 'post_verify_chain'
     | 'maintenance_backlog_drain'
+    | 'data_domain_shadow_backfill'
   newsStocks?: Array<{
     id: number
     symbol: string
@@ -349,6 +351,10 @@ export interface UpdateQueueMsg {
     | 'legacy-strategy-evidence-migration'
     | 'd1-evidence-scrub'
   maxAttempts?: number
+  dataDomain?: 'core' | 'market' | 'learning' | 'ops' | 'execution' | 'paper' | 'research'
+  dataDomainTable?: string
+  maintenanceCycle?: number
+  maxMaintenanceCycles?: number
   force?: boolean
 }
 

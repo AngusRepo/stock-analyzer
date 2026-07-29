@@ -90,6 +90,8 @@ export interface StrategyPortfolioMetricLoadResult {
     backtest_result_row_count: number
     metric_count: number
     live_metric_count: number
+    performance_metric_count: number
+    structural_metric_count: number
     known_strategy_count: number
     missing_metric_count: number
     metric_status_counts: Record<string, number>
@@ -108,6 +110,7 @@ export interface LoadStrategyPortfolioMetricOptions {
   limit?: number
   decisionLookbackDays?: number
   decisionLimit?: number
+  asOfDate?: string
   backtestLimit?: number
   knownStrategyIds?: string[]
 }
@@ -349,6 +352,8 @@ function emptyResult(
       backtest_result_row_count: 0,
       metric_count: 0,
       live_metric_count: 0,
+      performance_metric_count: 0,
+      structural_metric_count: 0,
       known_strategy_count: options.knownStrategyIds?.length ?? 0,
       missing_metric_count: options.knownStrategyIds?.length ?? 0,
       metric_status_counts: options.knownStrategyIds?.length ? { no_evidence: options.knownStrategyIds.length } : {},
@@ -719,6 +724,8 @@ function annotateStrategyMetricStatuses(
   metrics: StrategyPortfolioMetricOverrides
   statusCounts: Record<string, number>
   liveMetricCount: number
+  performanceMetricCount: number
+  structuralMetricCount: number
   knownStrategyCount: number
   missingMetricCount: number
 } {
@@ -729,6 +736,8 @@ function annotateStrategyMetricStatuses(
   const metrics: StrategyPortfolioMetricOverrides = {}
   const statusCounts: Record<string, number> = {}
   let missingMetricCount = 0
+  let performanceMetricCount = 0
+  let structuralMetricCount = 0
 
   for (const strategyId of strategyIds) {
     const hasLedger = Boolean(sources.ledger[strategyId])
@@ -746,31 +755,39 @@ function annotateStrategyMetricStatuses(
     else if (hasDecision) status = 'decision_log_only'
     else status = 'no_evidence'
 
-    if (status === 'no_evidence') missingMetricCount += 1
+    const hasPerformanceEvidence = hasLedger || hasBacktest
+    if (hasPerformanceEvidence) performanceMetricCount += 1
+    else missingMetricCount += 1
+    if (hasDecision) structuralMetricCount += 1
     statusCounts[status] = (statusCounts[status] ?? 0) + 1
     const base = liveMetrics[strategyId] ?? {}
-    metrics[strategyId] = status === 'no_evidence'
+    metrics[strategyId] = hasPerformanceEvidence
       ? {
-          strategy_metric_status: status as any,
-          metric_reason: 'known_strategy_without_reward_backtest_or_decision_log_evidence',
-          metric_sample_count: 0,
-          metric_sources: [],
-          reliability: 0.48,
-          prior_weight: 0.85,
-        }
-      : {
           ...base,
           strategy_metric_status: status as any,
           metric_reason: sourceList.join('+'),
           metric_sample_count: Math.max(0, Math.round(Number((base as any).metric_sample_count ?? 0) || 0)),
           metric_sources: sourceList,
         }
+      : {
+          ...base,
+          strategy_metric_status: status as any,
+          metric_reason: hasDecision
+            ? 'structural_decision_evidence_only_no_performance_edge'
+            : 'known_strategy_without_reward_or_backtest_evidence',
+          metric_sample_count: 0,
+          metric_sources: sourceList,
+          reliability: 0,
+          prior_weight: 0,
+        }
   }
 
   return {
     metrics,
     statusCounts,
-    liveMetricCount: Object.keys(liveMetrics).length,
+    liveMetricCount: performanceMetricCount,
+    performanceMetricCount,
+    structuralMetricCount,
     knownStrategyCount: knownStrategyIds.length,
     missingMetricCount,
   }
@@ -784,7 +801,8 @@ export async function loadStrategyPortfolioMetricOverrides(
   const regime = cleanText(options.regime) || null
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 500), 2000))
   const decisionLookbackDays = Math.max(1, Math.min(Math.floor(options.decisionLookbackDays ?? 20), 120))
-  const decisionLimit = Math.max(1, Math.min(Math.floor(options.decisionLimit ?? 2000), 5000))
+  const decisionRowsPerStrategy = Math.max(1, Math.min(Math.floor(options.decisionLimit ?? 500), 1000))
+  const asOfDate = cleanText(options.asOfDate) || new Date().toISOString().slice(0, 10)
   const backtestLimit = Math.max(1, Math.min(Math.floor(options.backtestLimit ?? 200), 1000))
   let ledgerRows: StrategyRewardLedgerMetricRow[] = []
   let decisionRows: StrategyDecisionLogMetricRow[] = []
@@ -799,6 +817,7 @@ export async function loadStrategyPortfolioMetricOverrides(
              updated_at
         FROM strategy_reward_ledger
        WHERE samples > 0
+         AND selection_contract_version = 'selection-reference-snapshot-v3'
          AND (market_segment = ? OR market_segment = 'all' OR market_segment IS NULL)
          AND (? IS NULL OR regime = ? OR regime = 'all' OR regime IS NULL)
        ORDER BY updated_at DESC, samples DESC
@@ -811,13 +830,24 @@ export async function loadStrategyPortfolioMetricOverrides(
 
   try {
     const { results } = await db.prepare(`
+      WITH ranked AS (
+        SELECT date, symbol, strategy_id, alpha_bucket, match_score,
+               ROW_NUMBER() OVER (
+                 PARTITION BY strategy_id
+                 ORDER BY date DESC, symbol ASC
+               ) AS strategy_row_number
+          FROM strategy_decision_log
+         WHERE matched = 1
+           AND evaluable = 1
+           AND evaluation_contract_version = 'strategy-evaluation-v2'
+           AND date <= ?
+           AND date >= date(?, '-' || ? || ' days')
+      )
       SELECT date, symbol, strategy_id, alpha_bucket, match_score
-        FROM strategy_decision_log
-       WHERE matched = 1
-         AND date >= date('now', '-' || ? || ' days')
-       ORDER BY date DESC
-       LIMIT ?
-    `).bind(decisionLookbackDays, decisionLimit).all<StrategyDecisionLogMetricRow>()
+        FROM ranked
+       WHERE strategy_row_number <= ?
+       ORDER BY date DESC, strategy_id ASC, symbol ASC
+    `).bind(asOfDate, asOfDate, decisionLookbackDays, decisionRowsPerStrategy).all<StrategyDecisionLogMetricRow>()
     decisionRows = results ?? []
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error))
@@ -853,7 +883,7 @@ export async function loadStrategyPortfolioMetricOverrides(
   )
   const metrics = annotated.metrics
   const metricCount = Object.keys(metrics).length
-  const status = annotated.liveMetricCount > 0 ? 'loaded' : 'empty'
+  const status = annotated.performanceMetricCount > 0 ? 'loaded' : 'empty'
   return {
     version: STRATEGY_PORTFOLIO_METRICS_SOURCE_VERSION,
     source: 'strategy_reward_ledger+strategy_decision_log+backtest_results',
@@ -868,6 +898,8 @@ export async function loadStrategyPortfolioMetricOverrides(
       backtest_result_row_count: backtestRows.length,
       metric_count: metricCount,
       live_metric_count: annotated.liveMetricCount,
+      performance_metric_count: annotated.performanceMetricCount,
+      structural_metric_count: annotated.structuralMetricCount,
       known_strategy_count: annotated.knownStrategyCount,
       missing_metric_count: annotated.missingMetricCount,
       metric_status_counts: annotated.statusCounts,

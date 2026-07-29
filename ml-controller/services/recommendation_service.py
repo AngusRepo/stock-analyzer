@@ -3101,6 +3101,58 @@ def _allocator_edge_resolver(
     return expected_return, source, evidence
 
 
+def _allocator_abstention_resolver(
+    row: dict,
+    *,
+    source: str,
+    payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    l4_payload = row.get("l4_alpha_ev") if isinstance(row.get("l4_alpha_ev"), dict) else {}
+    s12_payload = row.get("s12_trade_ev") if isinstance(row.get("s12_trade_ev"), dict) else {}
+    fusion_payload = row.get("allocator_ev_fusion") if isinstance(row.get("allocator_ev_fusion"), dict) else {}
+    rejected_owner = str((payload or {}).get("expected_return_owner") or "").strip()
+    if rejected_owner == "l4_alpha_ev":
+        l4_payload = payload or {}
+    elif rejected_owner == "s12_trade_ev":
+        s12_payload = payload or {}
+    elif rejected_owner == "allocator_ev_fusion":
+        fusion_payload = payload or {}
+    evidence = {
+        "schema_version": "allocator-edge-abstention-v1",
+        "expected_return_owner": "risk_abstention",
+        "expected_return": 0.0,
+        "expected_return_source": source or "missing_expected_return_no_allocation_edge",
+        "primary_expected_return_available": False,
+        "abstention": True,
+        "abstention_reason": source or "missing_expected_return_no_allocation_edge",
+        "candidate_contract": "explicit_no_trade_abstention",
+        "policy": "no_validated_trade_ev_means_abstain_without_fabricating_expected_return",
+        "l4_candidate": {
+            "status": l4_payload.get("status"),
+            "model_version": l4_payload.get("model_version"),
+            "expected_return_source": l4_payload.get("expected_return_source"),
+            "blockers": list(l4_payload.get("blockers") or []),
+        } if l4_payload else None,
+        "s12_candidate": {
+            "status": s12_payload.get("status"),
+            "expected_return_source": s12_payload.get("expected_return_source")
+            or s12_payload.get("trade_expected_return_source"),
+            "blockers": list(s12_payload.get("blockers") or []),
+        } if s12_payload else None,
+        "fusion_candidate": {
+            "status": fusion_payload.get("status"),
+            "model_version": fusion_payload.get("model_version"),
+            "expected_return_source": fusion_payload.get("expected_return_source"),
+            "blockers": list(fusion_payload.get("blockers") or []),
+        } if fusion_payload else None,
+        "rejected_payload_owner": (payload or {}).get("expected_return_owner") if isinstance(payload, dict) else None,
+    }
+    evidence = {key: value for key, value in evidence.items() if value is not None}
+    row["_allocator_edge_resolver"] = evidence
+    row["_expected_return_abstention"] = evidence
+    return evidence
+
+
 def _row_expected_return_with_source(row: dict, *, alpha_policy: dict | None = None) -> tuple[float, str]:
     alpha_context = row.get("alpha_context") if isinstance(row.get("alpha_context"), dict) else {}
     heat_edge = _float_or_none(row.get("market_heat_expected_return"))
@@ -3122,6 +3174,11 @@ def _row_expected_return_with_source(row: dict, *, alpha_policy: dict | None = N
     if isinstance(payload, dict):
         row["_expected_return_payload"] = payload
     if canonical_value is None:
+        _allocator_abstention_resolver(
+            row,
+            source=canonical_source,
+            payload=payload,
+        )
         if (
             canonical_source != "missing_expected_return_no_allocation_edge"
             and _expected_return_source_missing(canonical_source)
@@ -3573,16 +3630,13 @@ def _apply_sparse_tangent_buy_selection(
     for row in eligible_rows:
         symbol = str(row.get("symbol") or "").strip()
         expected_return, expected_return_source = _row_expected_return_with_source(row, alpha_policy=policy)
+        expected_return_owner = str((row.get("_allocator_edge_resolver") or {}).get("expected_return_owner") or "")
         candidate = {
             "symbol": symbol,
             "score": row.get("score"),
             "expected_return": expected_return,
             "expected_return_source": expected_return_source,
-            "expected_return_owner": (
-                row.get("_allocator_edge_resolver", {}).get("expected_return_owner")
-                if isinstance(row.get("_allocator_edge_resolver"), dict)
-                else None
-            ),
+            "expected_return_owner": expected_return_owner or None,
             "allocator_edge_quality_score": (
                 (row.get("_allocator_edge_resolver") or {}).get("allocator_edge_quality_score")
                 if isinstance(row.get("_allocator_edge_resolver"), dict)
@@ -3602,6 +3656,11 @@ def _apply_sparse_tangent_buy_selection(
             "market_heat_expected_return": row.get("market_heat_expected_return"),
             "turnover_pressure": row.get("turnover_pressure") or row.get("turnover") or row.get("expected_turnover"),
         }
+        if expected_return_owner == "risk_abstention":
+            row["promotion_blocked_reason"] = "no_validated_expected_return_owner"
+            row["promotion_expected_return"] = 0.0
+            row["promotion_expected_return_source"] = expected_return_source
+            continue
         allocation_candidates.append(candidate)
         if symbol:
             candidate_evidence_by_symbol[symbol] = {
@@ -3869,6 +3928,9 @@ def _apply_sparse_tangent_buy_selection(
             else row.get("_allocator_edge_resolver")
         )
         expected_return_owner = str((resolver or {}).get("expected_return_owner") or "").strip()
+        if expected_return_owner == "risk_abstention":
+            expected_return = 0.0
+            expected_return_raw = 0.0
         allocator_ev_fusion_payload = (
             expected_return_payload
             if expected_return_owner == "allocator_ev_fusion"
@@ -3960,7 +4022,11 @@ def _apply_sparse_tangent_buy_selection(
             "allocation_rank_policy": "diagnostic_only_not_capacity_gate",
             "sparse_weight_state": sparse_weight_state,
             "expected_return": round(expected_return, 10),
-            "expected_return_source": (evidence or {}).get("expected_return_source")
+            "expected_return_source": (
+                (resolver or {}).get("expected_return_source")
+                if expected_return_owner == "risk_abstention"
+                else (evidence or {}).get("expected_return_source")
+            )
             or row.get("promotion_expected_return_source"),
             "expected_return_owner": expected_return_owner or None,
             "allocator_edge_resolver": resolver,
@@ -3980,6 +4046,7 @@ def _apply_sparse_tangent_buy_selection(
                 (evidence or {}).get("expected_return_uncertainty_adjustment")
                 or row.get("_expected_return_uncertainty_adjustment")
             ),
+            "expected_return_abstention": row.get("_expected_return_abstention"),
             "allocator_ev_fusion": allocator_ev_fusion_payload,
             "allocator_ev_fusion_diagnostic": allocator_ev_fusion_payload if isinstance(allocator_ev_fusion_payload, dict) else {
                 "status": "not_evaluated",
@@ -5019,8 +5086,44 @@ def delete_filtered_recommendations(
     """Preserve screener-owned rows and mark ML-filtered symbols as non-buy."""
     if not filtered_symbols:
         return 0
-    statements = [
-        (
+    statements: list[tuple[str, list[Any]]] = []
+    for sym in filtered_symbols:
+        diagnostic = {
+            "status": "not_evaluated",
+            "reason": "ml_filter_preserved_non_buy",
+            "diagnostic_role": "coverage_marker_not_expected_return_owner",
+            **((filtered_diagnostics or {}).get(sym) or {}),
+        }
+        abstention = {
+            "schema_version": "allocator-edge-abstention-v1",
+            "expected_return_owner": "risk_abstention",
+            "expected_return": 0.0,
+            "expected_return_source": "ml_filtered_sell_or_no_signal_preserved_seed",
+            "primary_expected_return_available": False,
+            "abstention": True,
+            "abstention_reason": "ml_filter_preserved_non_buy",
+            "candidate_contract": "explicit_no_trade_abstention",
+            "policy": "ml_filtered_seed_is_preserved_for_counterfactual_learning_but_not_allocation",
+        }
+        alpha_allocation = {
+            "engine": "sparse_tangent_inverse_risk",
+            "allocation_method": "sparse_tangent_inverse_risk_final_allocation",
+            "input_scope": "post_l3_5_evidence_fusion_candidates",
+            "selection_policy": "positive_expected_edge_sparse_weights_no_forced_fill",
+            "selected": 0,
+            "eligible_for_sparse": 0,
+            "expected_return": 0,
+            "expected_return_source": "ml_filtered_sell_or_no_signal_preserved_seed",
+            "expected_return_owner": "risk_abstention",
+            "allocator_edge_resolver": abstention,
+            "expected_return_abstention": abstention,
+            "selection_reason": "preserved_screener_seed_non_buy",
+            "stale_selection_cleared_reason": "ml_filter_preserved_non_buy",
+            "sparse_input_blocked_reason": "ml_filter_preserved_non_buy",
+            "no_l3_allocation_reason": "ml_filtered_sell_or_no_signal_preserved_seed",
+            "allocator_ev_fusion_diagnostic": diagnostic,
+        }
+        statements.append((
             """
             UPDATE daily_recommendations
                SET score = 0,
@@ -5050,52 +5153,15 @@ def delete_filtered_recommendations(
                      )
                      ELSE json_array('ml_filter:preserved_screener_seed_not_buy')
                    END,
-                   alpha_allocation = json_object(
-                     'engine',
-                     'sparse_tangent_inverse_risk',
-                     'allocation_method',
-                     'sparse_tangent_inverse_risk_final_allocation',
-                     'input_scope',
-                     'post_l3_5_evidence_fusion_candidates',
-                     'selection_policy',
-                     'positive_expected_edge_sparse_weights_no_forced_fill',
-                     'selected',
-                     0,
-                     'eligible_for_sparse',
-                     0,
-                     'expected_return',
-                     0,
-                     'expected_return_source',
-                     'ml_filtered_sell_or_no_signal_preserved_seed',
-                     'selection_reason',
-                     'preserved_screener_seed_non_buy',
-                     'stale_selection_cleared_reason',
-                     'ml_filter_preserved_non_buy',
-                     'sparse_input_blocked_reason',
-                     'ml_filter_preserved_non_buy',
-                     'no_l3_allocation_reason',
-                     'ml_filtered_sell_or_no_signal_preserved_seed',
-                     'allocator_ev_fusion_diagnostic',
-                     json(?)
-                   )
+                   alpha_allocation = json(?)
              WHERE date = ? AND symbol = ?
             """.strip(),
             [
-                json.dumps(
-                    {
-                        "status": "not_evaluated",
-                        "reason": "ml_filter_preserved_non_buy",
-                        "diagnostic_role": "coverage_marker_not_expected_return_owner",
-                        **((filtered_diagnostics or {}).get(sym) or {}),
-                    },
-                    ensure_ascii=False,
-                ),
+                json.dumps(alpha_allocation, ensure_ascii=False),
                 run_date,
                 sym,
             ],
-        )
-        for sym in filtered_symbols
-    ]
+        ))
     d1_client.batch_execute(statements)
     logger.info(f"[recommendation_service] Preserved {len(filtered_symbols)} ML-filtered screener seed rows")
     return len(filtered_symbols)

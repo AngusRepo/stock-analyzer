@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { evaluateStrategyMarginalEdgesV4, evaluateStrategyPortfolioEdgeV4 } from './strategyMarginalEdgeV4'
 
 const cells: any[] = []
@@ -42,5 +43,10 @@ assert.equal(bad.productionWeightRaw, 0)
 const portfolio = evaluateStrategyPortfolioEdgeV4(cells, new Map([['A|v1', 1]]))
 assert.equal(portfolio.length, 5)
 assert(portfolio.every((row) => row.residualReturn === 0.02 && row.absoluteReturn === 0.03))
+
+const source = readFileSync(new URL('./strategyMarginalEdgeV4.ts', import.meta.url), 'utf8')
+assert.match(source, /SET status='candidate', promotion_status='candidate'/)
+assert.match(source, /NOT IN \(\$\{eligibleRegistryKeys\.map/)
+assert.match(source, /atomic_registry_replacement: true/)
 
 console.log('strategyMarginalEdgeV4 tests passed')

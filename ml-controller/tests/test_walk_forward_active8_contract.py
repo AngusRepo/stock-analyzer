@@ -125,13 +125,19 @@ def test_modal_walk_forward_orchestrator_no_longer_defaults_tree_only():
     assert "payload.get(\"models\") or [\"XGBoost\", \"ExtraTrees\", \"LightGBM\"]" not in source
 
 
-def test_oof_automatic_promotion_requires_primary_fusion_and_operational_parity():
+def test_oof_automatic_promotion_is_owner_specific_and_uses_packet_gate():
     source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
 
+    assert 'l4_promotion_allowed = bool(' in source
+    assert '(owner_parity.get("l4_alpha_ev") or {}).get("decision") == "PASS"' in source
     assert 'fusion_tier == "primary"' in source
-    assert 'parity.get("decision") == "PASS"' in source
+    assert '(owner_parity.get("allocator_ev_fusion") or {}).get("decision") == "PASS"' in source
+    assert '"/api/admin/config/expected-return/promote"' in source
+    assert '"promoted_by_owner"' in source
+    promotion_block = source[source.index("if req.promote and l4_promotion_allowed"):source.index("full_fit_dispatch = full_fit_plan")]
+    assert '"/api/admin/config",' not in promotion_block
     assert "archive_ev_candidate_artifacts" in source
-    assert "purged OOF quality PASS and native operational parity PASS" in source
+    assert "owner-specific purged OOF quality and native operational parity PASS" in source
 
 
 def test_walk_forward_routes_long_sequence_v3_prep_into_every_oof_fold():

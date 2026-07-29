@@ -707,6 +707,142 @@ function missingRequiredFeatureRefs(raw: StrategyRawSignals, dsl?: StrategyFeatu
   return [...new Set(missing)]
 }
 
+function signalPresent(value: unknown): boolean {
+  if (value == null || value === '') return false
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (typeof value === 'boolean') return true
+  return cleanText(value).length > 0
+}
+
+function missingRequiredSignalRefs(raw: StrategyRawSignals, dsl?: StrategySignalDsl): string[] {
+  if (!dsl) return []
+  const missing = new Set<string>()
+  for (const condition of [...(dsl.all ?? []), ...(dsl.not ?? [])]) {
+    if (!signalPresent(signalValue(raw, condition.signal))) missing.add(cleanText(condition.signal) || 'unknown')
+  }
+  const any = dsl.any ?? []
+  if (any.length && !any.some((condition) => signalPresent(signalValue(raw, condition.signal)))) {
+    for (const condition of any) missing.add(cleanText(condition.signal) || 'unknown')
+  }
+  return [...missing]
+}
+
+export function explainSignalDsl(raw: StrategyRawSignals, dsl?: StrategySignalDsl): Record<string, unknown> | null {
+  if (!dsl) return null
+  const missing = missingRequiredSignalRefs(raw, dsl)
+  return {
+    evaluable: missing.length === 0,
+    missing_required_signal_refs: missing,
+  }
+}
+export interface StrategyEvaluabilityDiagnostics {
+  evaluable: boolean
+  unavailable_reason: string | null
+  invalid_spec_errors: string[]
+  missing_required_threshold_refs: string[]
+  missing_required_signal_refs: string[]
+  missing_required_feature_refs: string[]
+}
+
+function missingRequiredThresholdRefs(
+  candidate: StrategyCandidateInput,
+  raw: StrategyRawSignals,
+  thresholds: StrategySpecThresholds,
+): string[] {
+  const missing = new Set<string>()
+  const requireSignal = (enabled: boolean, path: string, value: unknown) => {
+    if (enabled && !signalPresent(value)) missing.add(path)
+  }
+  const enabled = (value: unknown) => value != null
+  const scores = deriveStrategyThresholdScores(candidate)
+  requireSignal(enabled(thresholds.minSeedScore), 'score_v2.seedScore', scores.source === 'score_v2' ? scores.seedScore : null)
+  requireSignal(enabled(thresholds.minChipScore), 'score_v2.chipFlow', scores.source === 'score_v2' ? scores.chipFlow : null)
+  requireSignal(enabled(thresholds.minTechScore), 'score_v2.technicalStructure', scores.source === 'score_v2' ? scores.technicalStructure : null)
+  requireSignal(enabled(thresholds.minMomentumScore), 'score_v2.momentumScore', scores.source === 'score_v2' ? scores.momentumScore : null)
+
+  const price = finiteNumber(candidate.current_price) ?? finiteNumber(raw.close)
+  requireSignal(enabled(thresholds.minPrice) || enabled(thresholds.maxPrice), 'close', price)
+  const scalarSignals: Array<[unknown, string, unknown]> = [
+    [thresholds.minCloseAboveMa20Pct ?? thresholds.maxCloseAboveMa20Pct, 'closeAboveMa20Pct', raw.closeAboveMa20Pct],
+    [thresholds.minCloseAboveMa60Pct ?? thresholds.maxCloseAboveMa60Pct, 'closeAboveMa60Pct', raw.closeAboveMa60Pct],
+    [thresholds.minVolumeExpansion20, 'volumeExpansion20', raw.volumeExpansion20],
+    [thresholds.minReturn20d ?? thresholds.maxReturn20d, 'return20d', raw.return20d],
+    [thresholds.minForeignTrustNet5d, 'foreignTrustNet5d', raw.foreignTrustNet5d],
+    [thresholds.minDealerNet5d, 'dealerNet5d', raw.dealerNet5d],
+    [thresholds.minBrokerNetShares5d, 'brokerNetShares5d', raw.brokerNetShares5d],
+    [thresholds.minBrokerNetAmount5d, 'brokerNetAmount5d', raw.brokerNetAmount5d],
+    [thresholds.minBrokerCount, 'brokerCount', raw.brokerCount],
+    [thresholds.maxBrokerConcentration, 'brokerConcentration', raw.brokerConcentration],
+    [thresholds.minRevenueGrowthYoY, 'revenueGrowthYoY', raw.revenueGrowthYoY],
+    [thresholds.minMonthlyRevenueYoY, 'monthlyRevenueYoY', raw.monthlyRevenueYoY],
+    [thresholds.minMonthlyRevenueMoM, 'monthlyRevenueMoM', raw.monthlyRevenueMoM],
+    [thresholds.minGrossMargin, 'grossMargin', raw.grossMargin],
+    [thresholds.minOperatingMargin, 'operatingMargin', raw.operatingMargin],
+    [thresholds.minRoe, 'roe', raw.roe],
+    [thresholds.minEps, 'eps', raw.eps],
+    [thresholds.maxPe, 'pe', raw.pe],
+    [thresholds.maxPb, 'pb', raw.pb],
+  ]
+  for (const [threshold, path, value] of scalarSignals) requireSignal(enabled(threshold), path, value)
+
+  const technicalKeys = new Set([
+    ...Object.keys(thresholds.minTechnicalIndicators ?? {}),
+    ...Object.keys(thresholds.maxTechnicalIndicators ?? {}),
+  ])
+  for (const key of technicalKeys) {
+    requireSignal(true, `technicalIndicators.${key}`, raw.technicalIndicators?.[key])
+  }
+  const factorKeys = new Set([
+    ...Object.keys(thresholds.minFactorSignals ?? {}),
+    ...Object.keys(thresholds.maxFactorSignals ?? {}),
+  ])
+  for (const key of factorKeys) {
+    requireSignal(true, `factorSignals.${key}`, raw.factorSignals?.[key])
+  }
+  if ((thresholds.includeIndustries?.length || thresholds.excludeIndustries?.length) && !cleanText(candidate.industry ?? candidate.sector)) {
+    missing.add('industry')
+  }
+  return [...missing]
+}
+
+export function explainStrategyEvaluability(
+  candidate: StrategyCandidateInput,
+  spec: StrategySpec,
+): StrategyEvaluabilityDiagnostics {
+  const validation = validateStrategySpec(spec)
+  const raw = deriveStrategyRawSignals(candidate)
+  const signalDiagnostics = explainSignalDsl(raw, spec.thresholds.dsl)
+  const featureDiagnostics = explainFeatureRefDsl(raw, spec.thresholds.featureRefs)
+  const missingThresholds = missingRequiredThresholdRefs(candidate, raw, spec.thresholds)
+  const missingSignals = Array.isArray(signalDiagnostics?.missing_required_signal_refs)
+    ? signalDiagnostics.missing_required_signal_refs.map(String)
+    : []
+  const missingFeatures = Array.isArray(featureDiagnostics?.missing_required_feature_refs)
+    ? featureDiagnostics.missing_required_feature_refs.map(String)
+    : []
+  const evaluable = validation.ok
+    && missingThresholds.length === 0
+    && missingSignals.length === 0
+    && missingFeatures.length === 0
+  const unavailableReason = !validation.ok
+    ? `strategy_spec_invalid:${validation.errors.join('|')}`
+    : missingThresholds.length
+      ? `missing_required_thresholds:${missingThresholds.join('|')}`
+      : missingSignals.length
+        ? `missing_required_signals:${missingSignals.join('|')}`
+        : missingFeatures.length
+          ? `missing_required_features:${missingFeatures.join('|')}`
+          : null
+  return {
+    evaluable,
+    unavailable_reason: unavailableReason,
+    invalid_spec_errors: validation.errors,
+    missing_required_threshold_refs: missingThresholds,
+    missing_required_signal_refs: missingSignals,
+    missing_required_feature_refs: missingFeatures,
+  }
+}
+
 function activeWeightedScoreCalibration(
   weighted: StrategyFeatureRefWeightedScore,
 ): StrategyFeatureRefWeightedScoreCalibration | null {
@@ -783,6 +919,7 @@ export function explainFeatureRefDsl(raw: StrategyRawSignals, dsl?: StrategyFeat
 type StrategyComparisonCondition = Pick<StrategySignalCondition, 'op' | 'value'>
 
 function compareSignal(rawValue: unknown, condition: StrategyComparisonCondition): boolean {
+  if (rawValue == null || rawValue === '') return false
   const op = condition.op
   const expected = condition.value
   if (typeof expected === 'number') {
@@ -811,6 +948,7 @@ function compareSignal(rawValue: unknown, condition: StrategyComparisonCondition
 
 function meetsSignalDsl(raw: StrategyRawSignals, dsl?: StrategySignalDsl): boolean {
   if (!dsl) return true
+  if (missingRequiredSignalRefs(raw, dsl).length) return false
   const all = dsl.all ?? []
   const any = dsl.any ?? []
   const not = dsl.not ?? []
@@ -904,6 +1042,11 @@ export function assessCandidateAgainstStrategySpecs(
     if (!meetsMinimum(scores.chipFlow, t.minChipScore)) continue
     if (!meetsMinimum(scores.technicalStructure, t.minTechScore)) continue
     if (!meetsMinimum(scores.momentumScore, t.minMomentumScore)) continue
+    const missingSignalRefs = missingRequiredSignalRefs(raw, t.dsl)
+    if (missingSignalRefs.length) {
+      watchPoints.push('strategy_spec_missing_required_signal_refs:' + spec.id + ':' + missingSignalRefs.join('|'))
+      continue
+    }
     const missingFeatureRefs = missingRequiredFeatureRefs(raw, t.featureRefs)
     if (missingFeatureRefs.length) {
       watchPoints.push(`strategy_spec_missing_required_feature_refs:${spec.id}:${missingFeatureRefs.join('|')}`)

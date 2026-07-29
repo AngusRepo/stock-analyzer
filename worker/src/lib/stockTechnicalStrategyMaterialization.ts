@@ -39,7 +39,7 @@ export interface StockTechnicalMarketRegime {
 }
 
 export interface StockTechnicalStrategyMaterializationTelemetry {
-  method: 'stock_technical_strategy12_daily_materialization_v1'
+  method: 'stock_technical_strategy12_daily_materialization_v2'
   universeCount: number
   materializedCount: number
   scoreCoverage: Record<string, number>
@@ -51,7 +51,7 @@ export interface StockTechnicalStrategyMaterializationTelemetry {
   }
 }
 
-type StockTechnicalStrategySuffix = '01' | '02' | '04' | '06' | '11'
+type StockTechnicalStrategySuffix = '01' | '02' | '03' | '04' | '05' | '06' | '07' | '08' | '09' | '10' | '11'
 
 interface StockTechnicalAdmissionConfig<T extends StockTechnicalMaterializationCandidate> {
   suffix: StockTechnicalStrategySuffix
@@ -116,24 +116,189 @@ function safeRatio(numerator: NullableNumber, denominator: NullableNumber): numb
   return n / d
 }
 
-function atrAt(bars: CleanStockTechnicalDailyBar[], period: number): number | null {
-  if (bars.length < period + 1) return null
-  const end = bars.length
-  const start = end - period
-  const trueRanges: number[] = []
-  for (let index = start; index < end; index += 1) {
+function atrAtIndex(
+  bars: CleanStockTechnicalDailyBar[],
+  period: number,
+  endIndex = bars.length - 1,
+): number | null {
+  if (endIndex < period || endIndex >= bars.length) return null
+  let wilderAverage: number | null = null
+  let observations = 0
+  for (let index = 1; index <= endIndex; index += 1) {
     const row = bars[index]
-    const prevClose = finiteNumber(bars[index - 1]?.close)
-    if (prevClose == null) return null
-    trueRanges.push(Math.max(
+    const prevClose = bars[index - 1].close
+    const trueRange = Math.max(
       row.high - row.low,
       Math.abs(row.high - prevClose),
       Math.abs(row.low - prevClose),
-    ))
+    )
+    wilderAverage = wilderAverage == null
+      ? trueRange
+      : ((period - 1) * wilderAverage + trueRange) / period
+    observations += 1
   }
-  return avg(trueRanges)
+  return observations >= period ? wilderAverage : null
 }
 
+function atrAt(bars: CleanStockTechnicalDailyBar[], period: number): number | null {
+  return atrAtIndex(bars, period)
+}
+
+function rsiWilderAt(closes: number[], period: number, endIndex = closes.length - 1): number | null {
+  if (endIndex < period || endIndex >= closes.length) return null
+  let averageGain: number | null = null
+  let averageLoss: number | null = null
+  let observations = 0
+  for (let index = 1; index <= endIndex; index += 1) {
+    const delta = closes[index] - closes[index - 1]
+    const gain = Math.max(delta, 0)
+    const loss = Math.max(-delta, 0)
+    averageGain = averageGain == null ? gain : ((period - 1) * averageGain + gain) / period
+    averageLoss = averageLoss == null ? loss : ((period - 1) * averageLoss + loss) / period
+    observations += 1
+  }
+  if (observations < period || averageGain == null || averageLoss == null) return null
+  if (averageLoss <= 1e-12 && averageGain <= 1e-12) return 50
+  if (averageLoss <= 1e-12) return 100
+  const relativeStrengthValue = averageGain / averageLoss
+  return 100 - 100 / (1 + relativeStrengthValue)
+}
+
+function meanAt(values: number[], period: number, index: number): number | null {
+  return windowAvg(values, period, index + 1)
+}
+
+function volumeRatioAt(volumes: number[], index: number, period = 20): number | null {
+  return safeRatio(volumes[index], windowAvg(volumes, period, index))
+}
+
+function deriveS05EventFeatures(bars: CleanStockTechnicalDailyBar[]): Record<string, number | null> {
+  const i = bars.length - 1
+  if (i < 203) return {}
+  const closes = bars.map((row) => row.close)
+  const highs = bars.map((row) => row.high)
+  const volumes = bars.map((row) => row.volume)
+  let breakoutIndex: number | null = null
+  for (let b = Math.max(0, i - 15); b < i - 2; b += 1) {
+    const hhPrev60 = windowMax(highs, 60, b)
+    const ma20 = meanAt(closes, 20, b)
+    const ma50 = meanAt(closes, 50, b)
+    const ma200 = meanAt(closes, 200, b)
+    const vr20 = volumeRatioAt(volumes, b)
+    if (
+      hhPrev60 != null && ma20 != null && ma50 != null && ma200 != null && vr20 != null &&
+      closes[b] > hhPrev60 && vr20 >= 1.20 && closes[b] > ma20 && ma20 > ma50 && ma50 > ma200
+    ) breakoutIndex = b
+  }
+  if (breakoutIndex == null) return {
+    stockTechS05DaysSinceBreakout: null,
+    stockTechS05PullbackDd: null,
+    stockTechS05PullbackQuality: null,
+    stockTechS05DryupQuality: null,
+    stockTechS05PullbackVolRatio: null,
+    stockTechS05PathOk: 0,
+    stockTechS05Trigger: 0,
+  }
+
+  const peakSince = Math.max(...highs.slice(breakoutIndex, i))
+  let pathOk = true
+  for (let index = breakoutIndex + 1; index <= i; index += 1) {
+    const ma50 = meanAt(closes, 50, index)
+    if (ma50 == null || closes[index] <= ma50) {
+      pathOk = false
+      break
+    }
+  }
+  const pullbackRatio = safeRatio(closes[i], peakSince)
+  const pullbackDd = pullbackRatio == null ? null : pullbackRatio - 1
+  const ma20 = meanAt(closes, 20, i)
+  const atr14 = atrAtIndex(bars, 14, i)
+  const pullbackVol3 = windowAvg(volumes, 3, i)
+  const baselineVol20 = windowAvg(volumes, 20, i - 3)
+  const pullbackVolRatio = safeRatio(pullbackVol3, baselineVol20)
+  const triggerAt = (index: number) => {
+    if (index <= 0 || index >= bars.length) return false
+    const row = bars[index]
+    const dayRange = Math.max(1e-8, row.high - row.low)
+    const clv = clamp((row.close - row.low) / dayRange)
+    return row.close > row.open &&
+      row.close > bars[index - 1].high &&
+      clv >= 0.75 &&
+      (volumeRatioAt(volumes, index) ?? 0) >= 1
+  }
+  let breakoutConsumed = false
+  for (let index = breakoutIndex + 3; index < i; index += 1) {
+    if (triggerAt(index)) {
+      breakoutConsumed = true
+      break
+    }
+  }
+  const trigger = triggerAt(i) && !breakoutConsumed
+
+  return {
+    stockTechS05DaysSinceBreakout: i - breakoutIndex,
+    stockTechS05PullbackDd: pullbackDd,
+    stockTechS05PullbackQuality: pullbackDd == null ? null : clamp(1 - Math.abs(pullbackDd + 0.06) / 0.06),
+    stockTechS05DryupQuality: pullbackVolRatio == null ? null : clamp(1 - pullbackVolRatio),
+    stockTechS05PullbackVolRatio: pullbackVolRatio,
+    stockTechS05DistMa20Atr: ma20 == null || atr14 == null ? null : safeRatio(Math.abs(closes[i] - ma20), atr14),
+    stockTechS05PathOk: pathOk ? 1 : 0,
+    stockTechS05Trigger: trigger ? 1 : 0,
+  }
+}
+
+function deriveS10EventFeatures(bars: CleanStockTechnicalDailyBar[]): Record<string, number | null> {
+  const i = bars.length - 1
+  if (i < 55) return {}
+  const closes = bars.map((row) => row.close)
+  const highs = bars.map((row) => row.high)
+  const lows = bars.map((row) => row.low)
+  const volumes = bars.map((row) => row.volume)
+  let downGapIndex: number | null = null
+  let preDecline: number | null = null
+  for (let a = Math.max(22, i - 5); a < i; a += 1) {
+    const atrPrev = atrAtIndex(bars, 14, a - 1)
+    const ma20Prev = meanAt(closes, 20, a - 1)
+    const ma50Prev = meanAt(closes, 50, a - 1)
+    const decline = pctChange(closes[a - 1], closes[a - 21])
+    const gapDownAtr = atrPrev == null ? null : safeRatio(lows[a - 1] - highs[a], atrPrev)
+    if (
+      highs[a] < lows[a - 1] &&
+      gapDownAtr != null && gapDownAtr >= 0.10 &&
+      ma20Prev != null && ma50Prev != null && closes[a - 1] < ma20Prev && ma20Prev < ma50Prev &&
+      decline != null && decline <= -0.08
+    ) {
+      downGapIndex = a
+      preDecline = -decline
+    }
+  }
+  if (downGapIndex == null) return {
+    stockTechS10GapUpAtr: null,
+    stockTechS10PreDecline: null,
+    stockTechS10IslandLow: null,
+    stockTechS10Trigger: 0,
+  }
+
+  const islandHigh = Math.max(...highs.slice(downGapIndex, i))
+  const islandLow = Math.min(...lows.slice(downGapIndex, i))
+  const atr14 = atrAtIndex(bars, 14, i)
+  const gapUpAtr = atr14 == null ? null : safeRatio(lows[i] - islandHigh, atr14)
+  const dayRange = Math.max(1e-8, bars[i].high - bars[i].low)
+  const clv = clamp((bars[i].close - bars[i].low) / dayRange)
+  const trigger = islandHigh < lows[downGapIndex - 1] &&
+    lows[i] > islandHigh &&
+    gapUpAtr != null && gapUpAtr >= 0.10 &&
+    bars[i].close > bars[i].open &&
+    clv >= 0.70 &&
+    (volumeRatioAt(volumes, i) ?? 0) >= 1.50
+
+  return {
+    stockTechS10GapUpAtr: trigger ? gapUpAtr : null,
+    stockTechS10PreDecline: trigger ? preDecline : null,
+    stockTechS10IslandLow: trigger ? islandLow : null,
+    stockTechS10Trigger: trigger ? 1 : 0,
+  }
+}
 function rankPercentile(value: NullableNumber, sortedAsc: number[]): number | null {
   const num = finiteNumber(value)
   if (num == null || sortedAsc.length < 2) return null
@@ -238,7 +403,51 @@ export function deriveStockTechnicalDailyFeatures(
   const close21 = closeShift(21)
   const close252 = closeShift(252) ?? closeShift(251)
   const stretch = hhPrev20 == null ? null : safeRatio(latest.close - hhPrev20, atr14)
-
+  const rangePrev10 = rangePrev(10)
+  const rangePrev20 = rangePrev(20)
+  const rangePrev60 = rangePrev(60)
+  const contract10_20Ratio = safeRatio(rangePrev10, rangePrev20)
+  const contract20_60Ratio = safeRatio(rangePrev20, rangePrev60)
+  const dryup10_50Ratio = safeRatio(vmaPrev10, vmaPrev50)
+  const atr14Prev = atrAtIndex(bars, 14, n - 2)
+  const rsi2 = rsiWilderAt(closes, 2, n - 1)
+  const rsi2Prev = rsiWilderAt(closes, 2, n - 2)
+  const vr20Prev = volumeRatioAt(volumes, n - 2)
+  const support20Shift2 = windowMin(lows, 20, n - 2)
+  const breakDepth = support20Shift2 == null || prevLow == null || atr14Prev == null
+    ? null
+    : safeRatio(support20Shift2 - prevLow, atr14Prev)
+  const closeBreakDepth = support20Shift2 == null || prevClose == null || atr14Prev == null
+    ? null
+    : safeRatio(support20Shift2 - prevClose, atr14Prev)
+  const reclaimStrength = support20Shift2 == null || atr14 == null
+    ? null
+    : safeRatio(latest.close - support20Shift2, atr14)
+  const ma200Shift2 = meanAt(closes, 200, n - 3)
+  const ma200Shift22 = meanAt(closes, 200, n - 23)
+  const currentMa5 = ma(5)
+  const ma5Distance = atr14 == null || currentMa5 == null ? null : safeRatio(currentMa5 - latest.close, atr14)
+  const baseTop = windowMax(highs, 20, n - 3)
+  const baseBottom = windowMin(lows, 20, n - 3)
+  const baseRatio = safeRatio(baseTop, baseBottom)
+  const baseWidth = baseRatio == null ? null : baseRatio - 1
+  const candleOk = (index: number) => {
+    if (index < 0 || index >= bars.length) return false
+    const row = bars[index]
+    const range = Math.max(1e-8, row.high - row.low)
+    const rowClv = (row.close - row.low) / range
+    const rowBody = Math.abs(row.close - row.open) / range
+    const rowUpperWick = (row.high - Math.max(row.open, row.close)) / range
+    return row.close > row.open && rowBody >= 0.55 && rowUpperWick <= 0.25 && rowClv >= 0.70
+  }
+  const opensInside = n >= 3 &&
+    bars[n - 2].open >= bars[n - 3].open && bars[n - 2].open <= bars[n - 3].close &&
+    latest.open >= bars[n - 2].open && latest.open <= bars[n - 2].close
+  const ret3 = pctChange(latest.close, closeShift(3))
+  const vol3Ratio = safeRatio(windowAvg(volumes, 3, n), windowAvg(volumes, 20, n - 3))
+  const heatQuality = ret3 == null ? null : clamp(1 - (ret3 - 0.03) / 0.09)
+  const s05EventFeatures = deriveS05EventFeatures(bars)
+  const s10EventFeatures = deriveS10EventFeatures(bars)
   return {
     stockTechHistoryDays: n,
     stockTechLatestOpen: latest.open,
@@ -256,6 +465,7 @@ export function deriveStockTechnicalDailyFeatures(
     stockTechMa150: ma(150),
     stockTechMa200: ma(200),
     stockTechPrevClose: prevClose,
+    stockTechPrev2Close: closeShift(2),
     stockTechPrevOpen: openShift(1),
     stockTechPrevHigh: prevHigh,
     stockTechPrevLow: prevLow,
@@ -269,9 +479,12 @@ export function deriveStockTechnicalDailyFeatures(
     stockTechHhPrev60: hhPrev(60),
     stockTechLlPrev10: llPrev(10),
     stockTechLlPrev20: llPrev(20),
-    stockTechRangePrev10: rangePrev(10),
-    stockTechRangePrev20: rangePrev(20),
-    stockTechRangePrev60: rangePrev(60),
+    stockTechRangePrev10: rangePrev10,
+    stockTechRangePrev20: rangePrev20,
+    stockTechRangePrev60: rangePrev60,
+    stockTechContract10_20: contract10_20Ratio == null ? null : 1 - contract10_20Ratio,
+    stockTechContract20_60: contract20_60Ratio == null ? null : 1 - contract20_60Ratio,
+    stockTechDryup10_50: dryup10_50Ratio == null ? null : 1 - dryup10_50Ratio,
     stockTechHighPos252: highPos252,
     stockTechReturn63: pctChange(latest.close, closeShift(63)),
     stockTechReturn60: pctChange(latest.close, closeShift(60)),
@@ -280,9 +493,13 @@ export function deriveStockTechnicalDailyFeatures(
     stockTechReturn63Prev1: pctChange(prevClose, closeShift(64)),
     stockTechMom12_1: pctChange(closeShift(21), close252),
     stockTechAtr14: atr14,
+    stockTechAtr14Prev: atr14Prev,
+    stockTechRsi2: rsi2,
+    stockTechRsi2Prev: rsi2Prev,
     stockTechAtr20: atr20,
     stockTechNatr20: natr20,
     stockTechVr20: safeRatio(latest.volume, vmaPrev20),
+    stockTechVr20Prev: vr20Prev,
     stockTechVmaPrev10: vmaPrev10,
     stockTechVmaPrev20: vmaPrev20,
     stockTechVmaPrev50: vmaPrev50,
@@ -298,6 +515,23 @@ export function deriveStockTechnicalDailyFeatures(
     stockTechDeduct20Raw: close20 != null ? latest.close - close20 : null,
     stockTechDeduct20Prev: prevClose != null && close21 != null ? prevClose - close21 : null,
     stockTechStretchHh20Atr: stretch,
+    stockTechS07Support20Shift2: support20Shift2,
+    stockTechS07BreakDepth: breakDepth,
+    stockTechS07CloseBreakDepth: closeBreakDepth,
+    stockTechS07ReclaimStrength: reclaimStrength,
+    stockTechS07Ma200Shift2: ma200Shift2,
+    stockTechS07Ma200Shift22: ma200Shift22,
+    stockTechS08Ma5DistanceAtr: ma5Distance,
+    stockTechS09BaseTop: baseTop,
+    stockTechS09BaseWidth: baseWidth,
+    stockTechS09ThreeCandles: candleOk(n - 1) && candleOk(n - 2) && candleOk(n - 3) ? 1 : 0,
+    stockTechS09OpensInside: opensInside ? 1 : 0,
+    stockTechS09Ret3: ret3,
+    stockTechS09Vol3Ratio: vol3Ratio,
+    stockTechS09HeatQuality: heatQuality,
+    stockTechMa50Ago10: ma(50, 10),
+    ...s05EventFeatures,
+    ...s10EventFeatures,
   }
 }
 
@@ -366,7 +600,7 @@ function setSignalScore(
   indicators[signalKey] = signal ? 1 : 0
   const cleanScore = finiteNumber(score)
   indicators[scoreKey] = cleanScore == null ? null : round4(clamp(cleanScore))
-  telemetry.scoreCoverage[scoreKey] = (telemetry.scoreCoverage[scoreKey] ?? 0) + 1
+  if (cleanScore != null) telemetry.scoreCoverage[scoreKey] = (telemetry.scoreCoverage[scoreKey] ?? 0) + 1
   if (signal) telemetry.signalCoverage[signalKey] = (telemetry.signalCoverage[signalKey] ?? 0) + 1
 }
 
@@ -423,7 +657,7 @@ export function materializeStockTechnicalStrategyScores<T extends StockTechnical
   options: { marketRegime?: StockTechnicalMarketRegime | null } = {},
 ): StockTechnicalStrategyMaterializationTelemetry {
   const telemetry: StockTechnicalStrategyMaterializationTelemetry = {
-    method: 'stock_technical_strategy12_daily_materialization_v1',
+    method: 'stock_technical_strategy12_daily_materialization_v2',
     universeCount: candidates.length,
     materializedCount: 0,
     scoreCoverage: {},
@@ -452,6 +686,10 @@ export function materializeStockTechnicalStrategyScores<T extends StockTechnical
     indicators.stockTechRs63Prev1 = rs63Prev == null ? null : round4(rs63Prev)
     indicators.stockTechRs126 = rs126 == null ? null : round4(rs126)
     indicators.stockTechNegNatr20 = indicator(candidate, 'stockTechNatr20') == null ? null : -indicator(candidate, 'stockTechNatr20')!
+    indicators.stockTechNegRsi2 = indicator(candidate, 'stockTechRsi2') == null ? null : -indicator(candidate, 'stockTechRsi2')!
+    indicators.stockTechNegRsi2Prev = indicator(candidate, 'stockTechRsi2Prev') == null ? null : -indicator(candidate, 'stockTechRsi2Prev')!
+    indicators.stockTechNegVr20 = indicator(candidate, 'stockTechVr20') == null ? null : -indicator(candidate, 'stockTechVr20')!
+    indicators.stockTechNegS09BaseWidth = indicator(candidate, 'stockTechS09BaseWidth') == null ? null : -indicator(candidate, 'stockTechS09BaseWidth')!
     indicators.stockTechLiquidityRank = rankPercentile(indicator(candidate, 'stockTechTurnover20'), turnoverValues)
     indicators.stockTechEligible = (
       (indicator(candidate, 'stockTechHistoryDays') ?? 0) >= 252 &&
@@ -531,6 +769,34 @@ export function materializeStockTechnicalStrategyScores<T extends StockTechnical
       (indicator(candidate, 'stockTechRs126') ?? -Infinity) > 0
     )
     setSignalScore(raw, '02', s2Signal, s2Score, telemetry)
+    const s3ContractionScore = score([
+      [0.50, rank(candidate, 'stockTechContract20_60')],
+      [0.50, rank(candidate, 'stockTechContract10_20')],
+    ])
+    const s3Score = score([
+      [0.35, rank(candidate, 'stockTechRs126')],
+      [0.25, s3ContractionScore],
+      [0.20, rank(candidate, 'stockTechDryup10_50')],
+      [0.20, rank(candidate, 'stockTechVr20')],
+    ])
+    const s3Signal = !!(
+      eligible &&
+      mkt2 &&
+      close != null &&
+      close > (indicator(candidate, 'stockTechMa50') ?? Infinity) &&
+      (indicator(candidate, 'stockTechMa50') ?? -Infinity) > (indicator(candidate, 'stockTechMa150') ?? Infinity) &&
+      (indicator(candidate, 'stockTechMa150') ?? -Infinity) > (indicator(candidate, 'stockTechMa200') ?? Infinity) &&
+      (indicator(candidate, 'stockTechMa200') ?? -Infinity) > (indicator(candidate, 'stockTechMa200Ago20') ?? Infinity) &&
+      (indicator(candidate, 'stockTechHighPos252') ?? 0) >= 0.85 &&
+      (rank(candidate, 'stockTechRs126') ?? 0) >= 0.75 &&
+      (indicator(candidate, 'stockTechRangePrev20') ?? Infinity) <= 0.65 * (indicator(candidate, 'stockTechRangePrev60') ?? -Infinity) &&
+      (indicator(candidate, 'stockTechRangePrev10') ?? Infinity) <= 0.75 * (indicator(candidate, 'stockTechRangePrev20') ?? -Infinity) &&
+      (indicator(candidate, 'stockTechRangePrev20') ?? Infinity) <= 0.18 &&
+      (indicator(candidate, 'stockTechVmaPrev10') ?? Infinity) <= 0.80 * (indicator(candidate, 'stockTechVmaPrev50') ?? -Infinity) &&
+      close > (indicator(candidate, 'stockTechHhPrev20') ?? Infinity) &&
+      (indicator(candidate, 'stockTechVr20') ?? 0) >= 1.50
+    )
+    setSignalScore(raw, '03', s3Signal, s3Score, telemetry)
 
     const s4Score = score([
       [0.35, rank(candidate, 'stockTechRs63')],
@@ -553,6 +819,30 @@ export function materializeStockTechnicalStrategyScores<T extends StockTechnical
       (indicator(candidate, 'stockTechStretchHh20Atr') ?? Infinity) <= 0.50
     )
     setSignalScore(raw, '04', s4Signal, s4Score, telemetry)
+    const s5Score = score([
+      [0.40, rank(candidate, 'stockTechRs63')],
+      [0.25, indicator(candidate, 'stockTechS05PullbackQuality')],
+      [0.20, indicator(candidate, 'stockTechS05DryupQuality')],
+      [0.15, indicator(candidate, 'stockTechClv')],
+    ])
+    const s5Signal = !!(
+      eligible &&
+      mkt2 &&
+      (indicator(candidate, 'stockTechS05DaysSinceBreakout') ?? -Infinity) >= 3 &&
+      (indicator(candidate, 'stockTechS05DaysSinceBreakout') ?? Infinity) <= 15 &&
+      close != null &&
+      close > (indicator(candidate, 'stockTechMa20') ?? Infinity) &&
+      (indicator(candidate, 'stockTechMa20') ?? -Infinity) > (indicator(candidate, 'stockTechMa50') ?? Infinity) &&
+      (indicator(candidate, 'stockTechMa50') ?? -Infinity) > (indicator(candidate, 'stockTechMa200') ?? Infinity) &&
+      (rank(candidate, 'stockTechRs63') ?? 0) >= 0.80 &&
+      indicator(candidate, 'stockTechS05PathOk') === 1 &&
+      (indicator(candidate, 'stockTechS05PullbackDd') ?? -Infinity) >= -0.12 &&
+      (indicator(candidate, 'stockTechS05PullbackDd') ?? Infinity) <= -0.03 &&
+      (indicator(candidate, 'stockTechS05DistMa20Atr') ?? Infinity) <= 0.50 &&
+      (indicator(candidate, 'stockTechS05PullbackVolRatio') ?? Infinity) <= 0.80 &&
+      indicator(candidate, 'stockTechS05Trigger') === 1
+    )
+    setSignalScore(raw, '05', s5Signal, s5Score, telemetry)
 
     const s6Score = score([
       [0.45, rank(candidate, 'stockTechRs63')],
@@ -576,6 +866,85 @@ export function materializeStockTechnicalStrategyScores<T extends StockTechnical
       (indicator(candidate, 'stockTechClv') ?? 0) >= 0.70
     )
     setSignalScore(raw, '06', s6Signal, s6Score, telemetry)
+    const s7Score = score([
+      [0.35, rank(candidate, 'stockTechS07ReclaimStrength')],
+      [0.25, rank(candidate, 'stockTechVr20Prev')],
+      [0.20, rank(candidate, 'stockTechNegRsi2Prev')],
+      [0.20, rank(candidate, 'stockTechRs126')],
+    ])
+    const s7Support = indicator(candidate, 'stockTechS07Support20Shift2')
+    const s7Signal = !!(
+      eligible &&
+      mkt1 &&
+      (indicator(candidate, 'stockTechPrev2Close') ?? -Infinity) > (indicator(candidate, 'stockTechS07Ma200Shift2') ?? Infinity) &&
+      (indicator(candidate, 'stockTechS07Ma200Shift2') ?? -Infinity) > (indicator(candidate, 'stockTechS07Ma200Shift22') ?? Infinity) &&
+      s7Support != null &&
+      (indicator(candidate, 'stockTechPrevLow') ?? Infinity) < s7Support &&
+      (indicator(candidate, 'stockTechPrevClose') ?? Infinity) < s7Support &&
+      (indicator(candidate, 'stockTechS07BreakDepth') ?? -Infinity) >= 0.10 &&
+      (indicator(candidate, 'stockTechS07BreakDepth') ?? Infinity) <= 1.00 &&
+      (indicator(candidate, 'stockTechS07CloseBreakDepth') ?? -Infinity) > 0 &&
+      (indicator(candidate, 'stockTechS07CloseBreakDepth') ?? Infinity) <= 0.75 &&
+      (indicator(candidate, 'stockTechVr20Prev') ?? 0) >= 1.50 &&
+      (indicator(candidate, 'stockTechRsi2Prev') ?? Infinity) <= 10 &&
+      close != null && close > s7Support &&
+      close > (indicator(candidate, 'stockTechLatestOpen') ?? Infinity) &&
+      close > ((indicator(candidate, 'stockTechPrevHigh') ?? Infinity) + (indicator(candidate, 'stockTechPrevLow') ?? Infinity)) / 2 &&
+      (indicator(candidate, 'stockTechClv') ?? 0) >= 0.70 &&
+      (indicator(candidate, 'stockTechVr20') ?? 0) >= 1.00
+    )
+    setSignalScore(raw, '07', s7Signal, s7Score, telemetry)
+
+    const s8Score = score([
+      [0.40, rank(candidate, 'stockTechNegRsi2')],
+      [0.35, rank(candidate, 'stockTechRs126')],
+      [0.25, rank(candidate, 'stockTechNegVr20')],
+    ])
+    const s8Signal = !!(
+      eligible &&
+      mkt1 &&
+      close != null &&
+      close > (indicator(candidate, 'stockTechMa200') ?? Infinity) &&
+      (indicator(candidate, 'stockTechMa50') ?? -Infinity) > (indicator(candidate, 'stockTechMa200') ?? Infinity) &&
+      (indicator(candidate, 'stockTechMa200') ?? -Infinity) > (indicator(candidate, 'stockTechMa200Ago20') ?? Infinity) &&
+      (indicator(candidate, 'stockTechRs126') ?? -Infinity) > 0 &&
+      (indicator(candidate, 'stockTechRsi2') ?? Infinity) <= 5 &&
+      (indicator(candidate, 'stockTechS08Ma5DistanceAtr') ?? -Infinity) >= 0.50 &&
+      (indicator(candidate, 'stockTechVr20') ?? Infinity) < 3.00
+    )
+    setSignalScore(raw, '08', s8Signal, s8Score, telemetry)
+
+    const s9Score = score([
+      [0.35, rank(candidate, 'stockTechRs63')],
+      [0.25, rank(candidate, 'stockTechS09Vol3Ratio')],
+      [0.20, rank(candidate, 'stockTechNegS09BaseWidth')],
+      [0.20, indicator(candidate, 'stockTechS09HeatQuality')],
+    ])
+    const s9Signal = !!(
+      eligible &&
+      mkt1 &&
+      (indicator(candidate, 'stockTechS09BaseWidth') ?? Infinity) <= 0.15 &&
+      indicator(candidate, 'stockTechS09ThreeCandles') === 1 &&
+      (indicator(candidate, 'stockTechPrevClose') ?? -Infinity) > (indicator(candidate, 'stockTechPrev2Close') ?? Infinity) &&
+      close != null && close > (indicator(candidate, 'stockTechPrevClose') ?? Infinity) &&
+      indicator(candidate, 'stockTechS09OpensInside') === 1 &&
+      (indicator(candidate, 'stockTechS09Ret3') ?? -Infinity) >= 0.03 &&
+      (indicator(candidate, 'stockTechS09Ret3') ?? Infinity) <= 0.12 &&
+      close > (indicator(candidate, 'stockTechS09BaseTop') ?? Infinity) &&
+      close > (indicator(candidate, 'stockTechMa50') ?? Infinity) &&
+      (indicator(candidate, 'stockTechMa50') ?? -Infinity) >= (indicator(candidate, 'stockTechMa50Ago10') ?? Infinity) &&
+      (indicator(candidate, 'stockTechS09Vol3Ratio') ?? 0) >= 1.20
+    )
+    setSignalScore(raw, '09', s9Signal, s9Score, telemetry)
+
+    const s10Score = score([
+      [0.35, rank(candidate, 'stockTechVr20')],
+      [0.25, rank(candidate, 'stockTechS10GapUpAtr')],
+      [0.20, rank(candidate, 'stockTechS10PreDecline')],
+      [0.20, indicator(candidate, 'stockTechClv')],
+    ])
+    const s10Signal = eligible && indicator(candidate, 'stockTechS10Trigger') === 1
+    setSignalScore(raw, '10', s10Signal, s10Score, telemetry)
 
     const s11Score = score([
       [0.35, rank(candidate, 'stockTechRs63')],

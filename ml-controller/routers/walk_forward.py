@@ -1272,7 +1272,10 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         )
         parity = None
         promoted = False
+        promoted_by_owner = {"l4_alpha_ev": False, "allocator_ev_fusion": False}
         promotion_error = None
+        promotion_errors_by_owner: dict[str, Any] = {}
+        promotion_response: dict[str, Any] | None = None
         candidate_artifacts = None
         promotion_receipts = None
         promotion_receipt_error = None
@@ -1287,11 +1290,11 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             or (fusion_artifact or {}).get("promotion_tier")
             or ""
         )
+        l4_promotion_allowed = False
+        fusion_promotion_allowed = False
         if (
             not req.dry_run
             and l4_decision == "PASS"
-            and fusion_decision == "PASS"
-            and fusion_tier == "primary"
         ):
             from services.ev_operational_parity import assess_ev_operational_parity
             from services.worker_config_client import worker_fetch
@@ -1311,6 +1314,21 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 fusion_artifact=fusion_artifact,
                 native_rows=parity_rows,
             )
+            owner_parity = (
+                parity.get("owner_decisions")
+                if isinstance(parity.get("owner_decisions"), dict)
+                else {}
+            )
+            l4_promotion_allowed = bool(
+                l4_decision == "PASS"
+                and (owner_parity.get("l4_alpha_ev") or {}).get("decision") == "PASS"
+            )
+            fusion_promotion_allowed = bool(
+                l4_promotion_allowed
+                and fusion_decision == "PASS"
+                and fusion_tier == "primary"
+                and (owner_parity.get("allocator_ev_fusion") or {}).get("decision") == "PASS"
+            )
             candidate_artifacts = archive_ev_candidate_artifacts(
                 bucket=bucket,
                 cohort_id=req.cohort_id,
@@ -1321,71 +1339,91 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 parity=parity,
                 promoted=False,
             )
-            if req.promote and parity.get("decision") == "PASS":
-                serving_l4 = {
-                    **l4_artifact,
-                    "promotion_state": "production_approved",
-                    "approval_state": "production_approved",
-                    "operational_parity": parity,
+            if req.promote and l4_promotion_allowed:
+                promotion_payload: dict[str, Any] = {
+                    "l4_alpha_ev": {
+                        "artifact": l4_artifact,
+                        "validation_packet": l4_result.get("validation_packet") or {},
+                        "operational_parity": parity,
+                        "cohort_id": req.cohort_id,
+                        "source_run_date": req.knowledge_cutoff_date,
+                        "cadence": req.lifecycle_cadence,
+                        "artifact_path": (candidate_artifacts.get("l4_alpha_ev") or {}).get("path"),
+                        "artifact_checksum": (candidate_artifacts.get("l4_alpha_ev") or {}).get("checksum"),
+                    },
                 }
-                serving_fusion = {
-                    **fusion_artifact,
-                    "promotion_state": "production_primary",
-                    "promotion_tier": "primary",
-                    "primary_expected_return_allowed": True,
-                    "operational_parity_required": False,
-                    "operational_parity": parity,
-                }
+                if fusion_promotion_allowed:
+                    promotion_payload["allocator_ev_fusion"] = {
+                        "artifact": fusion_artifact,
+                        "validation_packet": fusion_result.get("validation_packet") or {},
+                        "operational_parity": parity,
+                        "cohort_id": req.cohort_id,
+                        "source_run_date": req.knowledge_cutoff_date,
+                        "cadence": req.lifecycle_cadence,
+                        "artifact_path": (candidate_artifacts.get("allocator_ev_fusion") or {}).get("path"),
+                        "artifact_checksum": (candidate_artifacts.get("allocator_ev_fusion") or {}).get("checksum"),
+                    }
                 try:
-                    await worker_fetch(
-                        "/api/admin/config",
-                        method="PUT",
-                        json_body={
-                            "ensemble_v2": {
-                                "l4AlphaEv": serving_l4,
-                                "l4_alpha_ev": serving_l4,
-                                "allocatorEvFusion": serving_fusion,
-                                "allocator_ev_fusion": serving_fusion,
-                            },
-                            "meta": {
-                                "source": "active8_oof_automatic_promotion",
-                                "push_id": f"active8_oof:{req.cohort_id}:{req.knowledge_cutoff_date}",
-                                "promotion_reason": "offline_oof_quality_pass_and_native_operational_parity_pass",
-                            },
-                        },
+                    promotion_response = await worker_fetch(
+                        "/api/admin/config/expected-return/promote",
+                        method="POST",
+                        json_body=promotion_payload,
                         timeout=30.0,
                     )
-                    promoted = True
-                    try:
-                        opb_refresh = await worker_fetch(
-                            "/api/admin/trigger/opb-arm-prior-refresh"
-                            f"?sync=1&date={req.knowledge_cutoff_date}"
-                            "&expected_return_owner=allocator_ev_fusion",
-                            method="POST",
-                            timeout=120.0,
+                    outcomes = (
+                        promotion_response.get("outcomes")
+                        if isinstance(promotion_response.get("outcomes"), dict)
+                        else {}
+                    )
+                    for owner in promoted_by_owner:
+                        outcome = outcomes.get(owner) if isinstance(outcomes.get(owner), dict) else {}
+                        promoted_by_owner[owner] = outcome.get("promoted") is True
+                        if outcome and outcome.get("promoted") is not True:
+                            promotion_errors_by_owner[owner] = outcome.get("blockers") or ["promotion_not_confirmed"]
+                    promoted = any(promoted_by_owner.values())
+                    if not promoted:
+                        promotion_error = "expected_return_owner_promotion_not_confirmed"
+                    else:
+                        serving_owner = (
+                            "allocator_ev_fusion"
+                            if promoted_by_owner["allocator_ev_fusion"]
+                            else "l4_alpha_ev"
                         )
-                    except Exception as exc:  # noqa: BLE001 - EV promotion is durable; daily lifecycle retries OPB.
-                        opb_refresh = {"status": "failed", "error": str(exc)}
-                    try:
-                        from services.discord_alert import alert_lifecycle
+                        try:
+                            opb_refresh = await worker_fetch(
+                                "/api/admin/trigger/opb-arm-prior-refresh"
+                                f"?sync=1&date={req.knowledge_cutoff_date}"
+                                f"&expected_return_owner={serving_owner}",
+                                method="POST",
+                                timeout=120.0,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - EV promotion is durable; daily lifecycle retries OPB.
+                            opb_refresh = {"status": "failed", "error": str(exc)}
+                        try:
+                            from services.discord_alert import alert_lifecycle
 
-                        notification_sent = await asyncio.to_thread(
-                            alert_lifecycle,
-                            event="promote",
-                            model_name="L4+Fusion OOF",
-                            from_status="offline_candidate",
-                            to_status="production",
-                            reason="purged OOF quality PASS and native operational parity PASS",
-                            metrics={
-                                "cohort_id": req.cohort_id,
-                                "knowledge_cutoff_date": req.knowledge_cutoff_date,
-                                "l4_serving_coverage": parity.get("l4_serving_coverage"),
-                                "fusion_serving_coverage": parity.get("fusion_serving_coverage"),
-                                "feature_mismatch_count": parity.get("feature_mismatch_count"),
-                            },
-                        )
-                    except Exception:  # noqa: BLE001 - alert is non-blocking after durable promotion evidence.
-                        notification_sent = False
+                            notification_sent = await asyncio.to_thread(
+                                alert_lifecycle,
+                                event="promote",
+                                model_name=(
+                                    "L4+Fusion OOF"
+                                    if promoted_by_owner["allocator_ev_fusion"]
+                                    else "L4 OOF"
+                                ),
+                                from_status="offline_candidate",
+                                to_status="production",
+                                reason="owner-specific purged OOF quality and native operational parity PASS",
+                                metrics={
+                                    "cohort_id": req.cohort_id,
+                                    "knowledge_cutoff_date": req.knowledge_cutoff_date,
+                                    "promoted_by_owner": promoted_by_owner,
+                                    "l4_serving_coverage": parity.get("l4_serving_coverage"),
+                                    "fusion_serving_coverage": parity.get("fusion_serving_coverage"),
+                                    "feature_mismatch_count": parity.get("feature_mismatch_count"),
+                                },
+                            )
+                        except Exception:  # noqa: BLE001 - alert is non-blocking after durable promotion evidence.
+                            notification_sent = False
                 except Exception as exc:  # noqa: BLE001
                     promotion_error = str(exc)
             if promoted:
@@ -1398,7 +1436,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                         l4_result=l4_result,
                         fusion_result=fusion_result,
                         parity=parity,
-                        promoted=True,
+                        promoted=promoted_by_owner,
                     )
                 except Exception as exc:  # noqa: BLE001 - config mutation already has Worker audit snapshot.
                     promotion_receipt_error = str(exc)
@@ -1438,7 +1476,10 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "persistence": persistence,
             "operational_parity": parity,
             "promoted": promoted,
+            "promoted_by_owner": promoted_by_owner,
             "promotion_error": promotion_error,
+            "promotion_errors_by_owner": promotion_errors_by_owner,
+            "promotion_response": promotion_response,
             "candidate_artifacts": candidate_artifacts,
             "promotion_receipts": promotion_receipts,
             "promotion_receipt_error": promotion_receipt_error,
@@ -1446,12 +1487,16 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "opb_refresh": opb_refresh,
             "full_fit_dispatch": full_fit_dispatch,
             "full_fit_retry_required": bool(full_fit_dispatch.get("retry_required")),
-            "promotion_allowed": bool(parity and parity.get("decision") == "PASS"),
+            "promotion_allowed": l4_promotion_allowed or fusion_promotion_allowed,
+            "promotion_allowed_by_owner": {
+                "l4_alpha_ev": l4_promotion_allowed,
+                "allocator_ev_fusion": fusion_promotion_allowed,
+            },
             "fusion_promotion_tier": fusion_tier,
             "promotion_reason": (
-                "offline_oof_quality_pass_and_native_operational_parity_pass"
+                "owner_specific_offline_oof_quality_and_native_operational_parity_pass"
                 if promoted
-                else "quality_or_operational_parity_not_passed"
+                else "no_owner_passed_quality_parity_and_promotion_packet_gates"
             ),
         }
     except ValueError as exc:

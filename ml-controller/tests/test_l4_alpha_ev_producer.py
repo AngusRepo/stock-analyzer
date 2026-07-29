@@ -8,7 +8,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services import recommendation_service  # noqa: E402
-from services.l4_alpha_ev_producer import assess_l4_artifact_cutover, materialize_l4_alpha_ev  # noqa: E402
+from services.l4_alpha_ev_producer import (  # noqa: E402
+    assess_l4_artifact_cutover,
+    assess_l4_policy_cutover,
+    materialize_l4_alpha_ev,
+)
 from services.l4_alpha_ev_resolver import SNAPSHOT_BACKFILL_USAGE_SCOPE  # noqa: E402
 from services.recommendation_service import (  # noqa: E402
     apply_sparse_tangent_allocation,
@@ -152,6 +156,26 @@ def test_l4_cutover_requires_current_producer_contract_before_promotion():
     assert "feature_semantic_version_incompatible" in readiness["blockers"]
 
 
+def test_l4_policy_cutover_exposes_incompatible_incumbent_before_row_materialization():
+    legacy = _artifact(
+        model_version="l4-alpha-ev-ridge-20260702",
+        artifact_contract_version=None,
+        feature_semantic_version=None,
+        label_schema_version=None,
+        feature_names=["score_final_norm", "ensemble_avg_rank_centered", "ensemble_confidence_centered"],
+        coefficients={
+            "score_final_norm": 0.045,
+            "ensemble_avg_rank_centered": -0.071,
+            "ensemble_confidence_centered": 0.057,
+        },
+    )
+    readiness = assess_l4_policy_cutover({"l4_alpha_ev": legacy})
+    assert readiness["configured"] is True
+    assert readiness["ready"] is False
+    assert readiness["artifact_model_version"] == "l4-alpha-ev-ridge-20260702"
+    assert "artifact_contract_version_incompatible" in readiness["blockers"]
+    assert "canonical_feature_set_mismatch" in readiness["blockers"]
+
 def test_materialize_l4_alpha_ev_rejects_legacy_unsigned_confidence_artifact():
     legacy = _artifact(
         schema_version="l4-alpha-ev-artifact-v1",
@@ -176,6 +200,9 @@ def test_materialize_l4_alpha_ev_rejects_legacy_unsigned_confidence_artifact():
     assert "artifact_contract_version_incompatible" in payload["blockers"]
     assert "feature_semantic_version_incompatible" in payload["blockers"]
     assert "label_schema_version_incompatible" in payload["blockers"]
+    assert payload["model_version"] == "l4-alpha-ev-20260707"
+    assert "coefficients" not in payload
+    assert set(payload["validation_packet"]) == {"decision", "failed_gates"}
 
 
 def test_materialize_l4_alpha_ev_allows_fitted_fail_only_for_snapshot_backfill():

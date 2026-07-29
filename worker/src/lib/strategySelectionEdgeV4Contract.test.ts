@@ -7,6 +7,8 @@ const learning = fs.readFileSync(path.join(root, 'strategyLearning.ts'), 'utf8')
 const screener = fs.readFileSync(path.join(root, 'marketScreener.ts'), 'utf8')
 const labels = fs.readFileSync(path.join(root, 'canonicalSelectionLabels.ts'), 'utf8')
 const reference = fs.readFileSync(path.join(root, 'selectionReferenceEvidence.ts'), 'utf8')
+const canonicalLabels = fs.readFileSync(path.join(root, 'canonicalSelectionLabels.ts'), 'utf8')
+const evaluableMigration = fs.readFileSync(path.join(root, '../../migrations/0090_daily_technical_strategy_producer_closure.sql'), 'utf8')
 
 assert.match(learning, /canonical_selection_labels_v4/)
 assert.match(learning, /residual_return_net/)
@@ -25,5 +27,26 @@ assert.match(reference, /reconcileSelectionDecisionEvidenceV4/)
 assert.match(reference, /allocation_selected/)
 assert.match(reference, /score_components/)
 assert.match(reference, /expected_return_owner_unavailable/)
+assert.match(canonicalLabels, /r\.feature_contract_version = \?/)
+assert.match(canonicalLabels, /NOT EXISTS \(SELECT 1 FROM canonical_selection_labels_v4/)
+assert.match(canonicalLabels, /SELECTION_REFERENCE_CONTRACT_VERSION/)
 
 console.log('strategySelectionEdgeV4Contract tests passed')
+const dailyTechnicalCandidateIds = [
+  'stock_tech_s03_vcp_contraction_breakout_v1',
+  'stock_tech_s05_first_dry_pullback_v1',
+  'stock_tech_s07_2b_false_break_reversal_v1',
+  'stock_tech_s08_rsi2_bull_mean_reversion_v1',
+  'stock_tech_s09_three_soldiers_base_breakout_v1',
+  'stock_tech_s10_island_reversal_v1',
+]
+for (const strategyId of dailyTechnicalCandidateIds) assert.match(evaluableMigration, new RegExp(strategyId))
+for (const suffix of ['03', '05', '07', '08', '09', '10']) {
+  assert.match(evaluableMigration, new RegExp(`stockTechS${suffix}Signal`))
+}
+assert.match(evaluableMigration, /status = 'candidate'/)
+assert.match(evaluableMigration, /owner_type = 'strategy'/)
+assert.match(evaluableMigration, /promotion_status = 'candidate'/)
+assert.match(evaluableMigration, /\$\.maxMlShare', 0/)
+assert.match(evaluableMigration, /stock_tech_s12_multitimeframe_smc_reclaim_v1/)
+assert.match(evaluableMigration, /s12_structure_snapshots/)

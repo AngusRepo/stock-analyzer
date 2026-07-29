@@ -8,6 +8,9 @@ def test_domain_database_id_prefers_specific_then_legacy(monkeypatch):
     assert d1_domain_client.database_id_for_domain("market") == "legacy"
 
     monkeypatch.setenv("CF_D1_MARKET_DB_ID", "market-db")
+    assert d1_domain_client.database_id_for_domain("market") == "legacy"
+
+    monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "market")
     assert d1_domain_client.database_id_for_domain("market") == "market-db"
 
 
@@ -25,6 +28,7 @@ def test_domain_database_id_fails_closed_in_strict_mode(monkeypatch):
 
 def test_domain_client_routes_query_to_resolved_database(monkeypatch):
     monkeypatch.setenv("CF_D1_OPS_DB_ID", "ops-db")
+    monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "ops")
     monkeypatch.delenv("MULTI_D1_STRICT", raising=False)
     captured = {}
 
@@ -36,3 +40,17 @@ def test_domain_client_routes_query_to_resolved_database(monkeypatch):
     rows = d1_domain_client.client_for_domain("ops").query("SELECT 1", timeout=12)
     assert rows == [{"ok": 1}]
     assert captured["database_id"] == "ops-db"
+
+
+def test_active_domain_fails_closed_when_specific_id_is_missing(monkeypatch):
+    monkeypatch.setenv("CF_D1_DB_ID", "legacy")
+    monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "execution")
+    monkeypatch.delenv("CF_D1_EXECUTION_DB_ID", raising=False)
+    monkeypatch.delenv("MULTI_D1_STRICT", raising=False)
+
+    try:
+        d1_domain_client.database_id_for_domain("execution")
+    except RuntimeError as exc:
+        assert "execution" in str(exc)
+    else:
+        raise AssertionError("an active domain must not silently fall back to legacy")

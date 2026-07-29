@@ -278,7 +278,20 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
         hmm_state = info.get("hmm_state", -1)
         label_zh  = info.get("label_zh", "")
         regime_surface = _extract_regime_surface(info)
-
+        surface_total = sum(regime_surface.values())
+        expected_labels = {"bull_market", "volatile", "sideways", "bear_market"}
+        if set(regime_surface) != expected_labels or not (0.999 <= surface_total <= 1.001):
+            raise HTTPException(
+                status_code=502,
+                detail=f"ml-service returned invalid regime_surface: keys={sorted(regime_surface)} total={surface_total}",
+            )
+        feature_date = str(info.get("feature_date") or "")
+        proxy_date = str(market_env.get("market_proxy_latest_date") or "")
+        if proxy_date and feature_date != proxy_date:
+            raise HTTPException(
+                status_code=502,
+                detail=f"regime feature lineage mismatch: feature_date={feature_date} proxy_date={proxy_date}",
+            )
     evidence_pack = build_regime_evidence_pack(market_env, raw_label=label_en)
     effective_label = evidence_pack["effective_label"]
 
@@ -308,8 +321,9 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
         kv_push_ok = bool(result.get("success", False))
     except Exception as e:
         logger.error(f"[Regime] KV push failed: {e}")
-        # Don't raise — we want to return the regime info even if KV push fails
-
+        raise HTTPException(status_code=502, detail=f"market_regime_state push failed: {e}")
+    if not kv_push_ok:
+        raise HTTPException(status_code=502, detail="market_regime_state push returned success=false")
     logger.info(f"[Regime] compute done: raw={label_en} effective={effective_label} (idx={reg_idx}) kv_push_ok={kv_push_ok}")
 
     return {
@@ -325,4 +339,7 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
         "kv_push_ok":      kv_push_ok,
         "computed_at":     info.get("computed_at", datetime.now(TW_TZ).isoformat()),
         "run_date":        market_env.get("requested_run_date"),
+        "feature_date":    feature_date,
+        "market_proxy_symbol": market_env.get("market_proxy_symbol"),
+        "market_proxy_source": market_env.get("market_proxy_source"),
     }

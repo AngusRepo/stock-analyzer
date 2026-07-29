@@ -127,9 +127,12 @@ class MarketEnv:
     """?梁 market environment ??撠? worker line 1124-1147"""
     risk_score: float = 50.0
     risk_level: str = "medium"
-    twii_return_1d: float = 0.0
-    twii_return_5d: float = 0.0
-    twii_bias_20d: float = 0.0
+    twii_return_1d: Optional[float] = None
+    twii_return_5d: Optional[float] = None
+    twii_bias_20d: Optional[float] = None
+    market_proxy_symbol: Optional[str] = None
+    market_proxy_source: Optional[str] = None
+    market_proxy_latest_date: Optional[str] = None
     history: dict = field(default_factory=dict)
     us_sox_return: Optional[float] = None
     us_gspc_return: Optional[float] = None
@@ -200,45 +203,86 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     risk_row = risk_rows[0] if risk_rows else {}
 
     # ?? 2. TAIEX 25 days for twii returns ???????????????????????????????????
-    twii_rows = d1_client.query(
-        "SELECT date, close FROM stock_prices "
-        "WHERE stock_id=(SELECT id FROM stocks WHERE symbol IN ('TAIEX','^TWII') LIMIT 1) "
-        "AND date <= ? ORDER BY date DESC LIMIT 25",
+    # Resolve one point-in-time market proxy. TAIEX is canonical when it is
+    # sufficiently populated and as fresh as 0050; otherwise use 0050 explicitly.
+    raw_twii_rows = d1_client.query(
+        "SELECT sp.date, sp.close, s.symbol FROM stock_prices sp "
+        "JOIN stocks s ON s.id = sp.stock_id "
+        "WHERE s.symbol IN ('TAIEX','^TWII') AND sp.date <= ? "
+        "ORDER BY sp.date DESC, CASE WHEN s.symbol = 'TAIEX' THEN 0 ELSE 1 END LIMIT 520",
         [run_date],
     )
-    twii_arr = [r["close"] for r in reversed(twii_rows)]
-    twii_1d = (twii_arr[-1] - twii_arr[-2]) / twii_arr[-2] if len(twii_arr) >= 2 else 0.0
-    twii_5d = (twii_arr[-1] - twii_arr[-6]) / twii_arr[-6] if len(twii_arr) >= 6 else 0.0
-    if len(twii_arr) >= 20:
-        twii_ma20 = sum(twii_arr[-20:]) / 20
-    else:
-        twii_ma20 = twii_arr[-1] if twii_arr else 0.0
-    twii_bias_20d = (twii_arr[-1] - twii_ma20) / twii_ma20 if twii_arr and twii_ma20 else 0.0
+    twii_by_date: dict[str, dict] = {}
+    for row in raw_twii_rows or []:
+        date_key = str(row.get("date") or "")
+        if not date_key:
+            continue
+        existing = twii_by_date.get(date_key)
+        if existing is None or str(row.get("symbol") or "") == "TAIEX":
+            twii_by_date[date_key] = row
+    twii_rows = [twii_by_date[key] for key in sorted(twii_by_date)][-260:]
 
-    # ?? 3. Market history (from market_risk + 0050 ETF fallback) ?????????????
-    # market_risk ?芣? ~15 憭抬?3/23 韏瘀?嚗? retrain ?閬?3 撟湔風?脯?
-    # Fallback: ??0050 ETF close ?? market_return_1d/5d/bias_20d??
-    # 0050 頝?TWII ?賊???>0.99嚗???之??proxy??
+    raw_etf_rows = d1_client.query(
+        "SELECT sp.date, sp.close, s.symbol FROM stock_prices sp "
+        "JOIN stocks s ON s.id = sp.stock_id "
+        "WHERE s.symbol = '0050' AND sp.date <= ? ORDER BY sp.date DESC LIMIT 800",
+        [run_date],
+    )
+    etf_rows = list(reversed(raw_etf_rows or []))
+
+    latest_twii_date = str(twii_rows[-1].get("date") or "") if twii_rows else ""
+    latest_etf_date = str(etf_rows[-1].get("date") or "") if etf_rows else ""
+    use_twii = len(twii_rows) >= 20 and latest_twii_date >= latest_etf_date
+    market_proxy_rows = twii_rows if use_twii else etf_rows
+    market_proxy_symbol = (
+        str(market_proxy_rows[-1].get("symbol") or ("TAIEX" if use_twii else "0050"))
+        if market_proxy_rows else None
+    )
+    market_proxy_source = "stock_prices_twii" if use_twii else "stock_prices_0050_fallback"
+    market_proxy_latest_date = str(market_proxy_rows[-1].get("date") or "") if market_proxy_rows else None
+    market_proxy_closes = [float(row["close"]) for row in market_proxy_rows if row.get("close") is not None]
+    twii_1d = (
+        (market_proxy_closes[-1] - market_proxy_closes[-2]) / market_proxy_closes[-2]
+        if len(market_proxy_closes) >= 2 and market_proxy_closes[-2] else None
+    )
+    twii_5d = (
+        (market_proxy_closes[-1] - market_proxy_closes[-6]) / market_proxy_closes[-6]
+        if len(market_proxy_closes) >= 6 and market_proxy_closes[-6] else None
+    )
+    twii_bias_20d = None
+    if len(market_proxy_closes) >= 20:
+        market_proxy_ma20 = sum(market_proxy_closes[-20:]) / 20
+        if market_proxy_ma20:
+            twii_bias_20d = (market_proxy_closes[-1] - market_proxy_ma20) / market_proxy_ma20
     history_map: dict[str, dict] = {}
 
     # 3a. market_risk ?潘????交??券?
     history_rows = d1_client.query(
-        "SELECT date, risk_score, risk_level, twii_bias as market_bias_20d, twii_close, "
-        "       foreign_consecutive_sell, foreign_net_5d, limit_down_count, limit_down_pct, "
-        "       adl_value, adl_trend "
-        "FROM market_risk WHERE date <= ? ORDER BY date ASC LIMIT 500",
+        "SELECT * FROM ("
+        "  SELECT date, risk_score, risk_level, twii_bias AS market_bias_20d, twii_close, "
+        "         foreign_consecutive_sell, foreign_net_5d, limit_down_count, limit_down_pct, "
+        "         adl_value, adl_trend "
+        "  FROM market_risk WHERE date <= ? ORDER BY date DESC LIMIT 500"
+        ") ORDER BY date ASC",
         [run_date],
     )
     adl_trend_map = {"up": 1.0, "flat": 0.0, "down": -1.0}
-    for i, row in enumerate(history_rows):
-        prev1 = history_rows[i - 1]["twii_close"] if i >= 1 else None
-        prev5 = history_rows[i - 5]["twii_close"] if i >= 5 else None
+    valid_twii_closes: list[float] = []
+    for row in history_rows:
+        try:
+            close = float(row.get("twii_close"))
+        except (TypeError, ValueError):
+            continue
+        prev1 = valid_twii_closes[-1] if valid_twii_closes else None
+        prev5 = valid_twii_closes[-5] if len(valid_twii_closes) >= 5 else None
         history_map[row["date"]] = {
+            "market_proxy_symbol": "TAIEX",
+            "market_proxy_source": "market_risk_twii_close",
             "risk_score": row.get("risk_score"),
             "risk_level": row.get("risk_level"),
             "market_bias_20d": row.get("market_bias_20d"),
-            "market_return_1d": (row["twii_close"] - prev1) / prev1 if prev1 else 0,
-            "market_return_5d": (row["twii_close"] - prev5) / prev5 if prev5 else 0,
+            "market_return_1d": (close - prev1) / prev1 if prev1 else 0.0,
+            "market_return_5d": (close - prev5) / prev5 if prev5 else 0.0,
             "foreign_consecutive_sell": row.get("foreign_consecutive_sell", 0),
             "foreign_net_5d_market": row.get("foreign_net_5d", 0),
             "limit_down_count": row.get("limit_down_count", 0),
@@ -246,8 +290,7 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
             "adl_value": row.get("adl_value", 0),
             "adl_trend_numeric": adl_trend_map.get(str(row.get("adl_trend") or "flat"), 0.0),
         }
-
-    # 3b-pre. US market signals 甇瑕嚗IX ?冽 risk_score 閮?嚗?
+        valid_twii_closes.append(close)
     us_history_by_date: dict[str, dict] = {}
     us_rows = d1_client.query(
         "SELECT date, vix_close, hy_spread, hy_spread_chg, sox_return, gspc_return, dxy_return, sentiment "
@@ -266,13 +309,6 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         }
 
     # 3b. 0050 ETF fallback + ADL from full market prices
-    etf_rows = d1_client.query(
-        "SELECT sp.date, sp.close FROM stock_prices sp "
-        "JOIN stocks s ON s.id = sp.stock_id "
-        "WHERE s.symbol = '0050' AND sp.date <= ? ORDER BY sp.date ASC LIMIT 800",
-        [run_date],
-    )
-
     # 3c. ADL (Advance/Decline Line) ??瘥銝撞摰嗆 - 銝?摰嗆?敞蝛?
     # 敺撣 stock_prices 蝞?銝?鞈?market_risk 銵?
     adl_rows = d1_client.query(
@@ -336,58 +372,62 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
     if etf_rows:
         for i, row in enumerate(etf_rows):
             date_str = row["date"]
-            if date_str in history_map:
-                # market_risk ???潘?雿?銝?computed fields if missing
-                adl_val, adl_trend = adl_by_date.get(date_str, (0, 0))
-                ld_count, ld_pct = breadth_by_date.get(date_str, (0, 0))
-                if history_map[date_str].get("adl_value", 0) == 0:
-                    history_map[date_str]["adl_value"] = adl_val
-                    history_map[date_str]["adl_trend_numeric"] = adl_trend
-                if history_map[date_str].get("limit_down_count", 0) == 0:
-                    history_map[date_str]["limit_down_count"] = ld_count
-                    history_map[date_str]["limit_down_pct"] = ld_pct
-                if "bull_alignment_pct" not in history_map[date_str]:
-                    history_map[date_str]["bull_alignment_pct"] = bull_by_date.get(date_str, 0)
-                continue
             close = float(row["close"])
             prev1_close = float(etf_rows[i - 1]["close"]) if i >= 1 else close
             prev5_close = float(etf_rows[i - 5]["close"]) if i >= 5 else close
             if i >= 20:
                 ma20 = sum(float(etf_rows[j]["close"]) for j in range(i - 19, i + 1)) / 20
-                bias_20d = (close - ma20) / ma20 if ma20 else 0
+                bias_20d = (close - ma20) / ma20 if ma20 else 0.0
             else:
-                bias_20d = 0
+                bias_20d = 0.0
+            market_return_1d = (close - prev1_close) / prev1_close if prev1_close else 0.0
+            market_return_5d = (close - prev5_close) / prev5_close if prev5_close else 0.0
             adl_val, adl_trend = adl_by_date.get(date_str, (0, 0))
             ld_count, ld_pct = breadth_by_date.get(date_str, (0, 0))
-            # ?? Compute risk_score from available data (mirrors Worker calcRiskScore) ??
-            _rs = 0
-            _vix_row = us_history_by_date.get(date_str, {})
-            _vix = _vix_row.get("vix_close")
-            if _vix is not None:
-                if _vix >= 40: _rs += 35
-                elif _vix >= 30: _rs += 25
-                elif _vix >= 20: _rs += 15
-                elif _vix >= 15: _rs += 5
-            # bias contribution (max 15)
-            _abs_bias = abs(bias_20d * 100) if bias_20d else 0
-            if _abs_bias >= 10: _rs += 15
-            elif _abs_bias >= 6: _rs += 8
-            elif _abs_bias >= 3: _rs += 3
-            # ADL trend (max 8)
-            if adl_trend < 0: _rs += 8
-            # bull alignment (max 8)
-            _ba = bull_by_date.get(date_str, 0.5)
-            if _ba < 0.2: _rs += 8
-            elif _ba < 0.3: _rs += 4
-            _rs = min(100, _rs)
-            _rl = "green" if _rs <= 25 else "yellow" if _rs <= 45 else "orange" if _rs <= 65 else "red" if _rs <= 85 else "black"
+
+            if date_str in history_map:
+                existing = history_map[date_str]
+                if existing.get("market_bias_20d") is None:
+                    existing["market_bias_20d"] = round(bias_20d, 6)
+                if existing.get("market_return_1d") is None:
+                    existing["market_return_1d"] = round(market_return_1d, 6)
+                if existing.get("market_return_5d") is None:
+                    existing["market_return_5d"] = round(market_return_5d, 6)
+                if existing.get("adl_value", 0) == 0:
+                    existing["adl_value"] = adl_val
+                    existing["adl_trend_numeric"] = adl_trend
+                if existing.get("limit_down_count", 0) == 0:
+                    existing["limit_down_count"] = ld_count
+                    existing["limit_down_pct"] = ld_pct
+                existing.setdefault("bull_alignment_pct", bull_by_date.get(date_str, 0))
+                continue
+
+            risk_score = 0
+            vix = us_history_by_date.get(date_str, {}).get("vix_close")
+            if vix is not None:
+                if vix >= 40: risk_score += 35
+                elif vix >= 30: risk_score += 25
+                elif vix >= 20: risk_score += 15
+                elif vix >= 15: risk_score += 5
+            absolute_bias_pct = abs(bias_20d * 100) if bias_20d else 0
+            if absolute_bias_pct >= 10: risk_score += 15
+            elif absolute_bias_pct >= 6: risk_score += 8
+            elif absolute_bias_pct >= 3: risk_score += 3
+            if adl_trend < 0: risk_score += 8
+            bull_alignment = bull_by_date.get(date_str, 0.5)
+            if bull_alignment < 0.2: risk_score += 8
+            elif bull_alignment < 0.3: risk_score += 4
+            risk_score = min(100, risk_score)
+            risk_level = "green" if risk_score <= 25 else "yellow" if risk_score <= 45 else "orange" if risk_score <= 65 else "red" if risk_score <= 85 else "black"
 
             history_map[date_str] = {
-                "risk_score": _rs,
-                "risk_level": _rl,
-                "market_bias_20d": round(bias_20d, 4),
-                "market_return_1d": round((close - prev1_close) / prev1_close, 6) if prev1_close else 0,
-                "market_return_5d": round((close - prev5_close) / prev5_close, 6) if prev5_close else 0,
+                "market_proxy_symbol": "0050",
+                "market_proxy_source": "stock_prices_0050_fallback",
+                "risk_score": risk_score,
+                "risk_level": risk_level,
+                "market_bias_20d": round(bias_20d, 6),
+                "market_return_1d": round(market_return_1d, 6),
+                "market_return_5d": round(market_return_5d, 6),
                 "foreign_consecutive_sell": 0,
                 "foreign_net_5d_market": 0,
                 "limit_down_count": ld_count,
@@ -396,14 +436,18 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
                 "adl_trend_numeric": adl_trend,
                 "bull_alignment_pct": bull_by_date.get(date_str, 0),
             }
-        logger.info(f"[payload_builder] Market history: {len(history_rows)} from market_risk + {len(etf_rows)} from 0050 ETF = {len(history_map)} total dates")
-
+        logger.info(
+            "[payload_builder] Market history: %s valid TAIEX rows + %s 0050 rows = %s total dates",
+            len(valid_twii_closes),
+            len(etf_rows),
+            len(history_map),
+        )
     # ?? 3e. Merge US signals + advance_ratio into history_map (Wave 2 time-series) ??
     us_sent_map = {"bullish": 1.0, "neutral": 0.0, "bearish": -1.0}
     merged_us = 0
     for date_str, us_data in us_history_by_date.items():
         if date_str not in history_map:
-            history_map[date_str] = {}
+            continue
         history_map[date_str]["us_sox_return"] = us_data.get("sox_return") or 0.0
         history_map[date_str]["us_gspc_return"] = us_data.get("gspc_return") or 0.0
         history_map[date_str]["us_dxy_return"] = us_data.get("dxy_return") or 0.0
@@ -416,9 +460,8 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         merged_us += 1
     # advance_ratio from ADL computation
     for date_str, ar_val in advance_ratio_by_date.items():
-        if date_str not in history_map:
-            history_map[date_str] = {}
-        history_map[date_str]["advance_ratio"] = ar_val
+        if date_str in history_map:
+            history_map[date_str]["advance_ratio"] = ar_val
     if merged_us:
         logger.info(f"[payload_builder] Merged {merged_us} US signal dates + {len(advance_ratio_by_date)} advance_ratio dates into history_map")
 
@@ -465,6 +508,9 @@ def load_market_env(run_date: str) -> tuple[MarketEnv, dict, dict, dict[str, flo
         twii_return_1d=twii_1d,
         twii_return_5d=twii_5d,
         twii_bias_20d=twii_bias_20d,
+        market_proxy_symbol=market_proxy_symbol,
+        market_proxy_source=market_proxy_source,
+        market_proxy_latest_date=market_proxy_latest_date,
         history=history_map,
         us_sox_return=us_signal.get("sox_return"),
         us_gspc_return=us_signal.get("gspc_return"),

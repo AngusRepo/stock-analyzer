@@ -1,6 +1,6 @@
 import type { Bindings } from '../types'
 import { controllerFetch, controllerJson } from './controllerClient'
-import { readCurrentLegacyRegimeLabel } from './marketRegimeState'
+import { readCurrentLegacyRegimeLabel, readMarketRegimeState } from './marketRegimeState'
 import { recordPaperActivePostmarketReport } from './paperActiveChallenger'
 
 function requireController(env: Bindings): void {
@@ -20,6 +20,36 @@ export async function runObsidianDaily(env: Bindings, date: string) {
   return res.ok ? await res.json() : `HTTP ${res.status}`
 }
 
+const REGIME_SURFACE_LABELS = ['bull_market', 'volatile', 'sideways', 'bear_market'] as const
+
+export function assertRegimeComputeClosure(data: any, runDate?: string): void {
+  if (data?.kv_push_ok !== true) {
+    throw new Error('Controller /regime/compute did not persist market_regime_state')
+  }
+  if (runDate && data?.run_date !== runDate) {
+    throw new Error(`Regime run_date mismatch: expected=${runDate} actual=${String(data?.run_date ?? 'missing')}`)
+  }
+  const surface = data?.regime_surface
+  if (!surface || typeof surface !== 'object') {
+    throw new Error('Regime posterior surface missing')
+  }
+  const keys = Object.keys(surface).sort()
+  const expectedKeys = [...REGIME_SURFACE_LABELS].sort()
+  if (keys.length !== expectedKeys.length || keys.some((key, index) => key !== expectedKeys[index])) {
+    throw new Error(`Regime posterior keys invalid: ${keys.join(',')}`)
+  }
+  const total = REGIME_SURFACE_LABELS.reduce((sum, label) => {
+    const probability = Number(surface[label])
+    if (!Number.isFinite(probability) || probability < 0 || probability > 1) {
+      throw new Error(`Regime posterior probability invalid: ${label}=${String(surface[label])}`)
+    }
+    return sum + probability
+  }, 0)
+  if (Math.abs(total - 1) > 0.001) {
+    throw new Error(`Regime posterior total invalid: ${total}`)
+  }
+}
+
 export async function runRegimeCompute(env: Bindings, runDate?: string) {
   requireController(env)
 
@@ -34,7 +64,31 @@ export async function runRegimeCompute(env: Bindings, runDate?: string) {
   }
 
   const data = await res.json() as any
-  const newLabel = data.regime_label_en as string | null
+  assertRegimeComputeClosure(data, runDate)
+  const expectedRunDate = runDate ?? String(data.run_date ?? '')
+  let persisted = null
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    persisted = await readMarketRegimeState(env.KV)
+    if (
+      persisted?.run_date === expectedRunDate &&
+      Object.keys(persisted.regime_surface).length === REGIME_SURFACE_LABELS.length
+    ) {
+      break
+    }
+    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)))
+  }
+  if (persisted?.run_date !== expectedRunDate) {
+    throw new Error(
+      `market_regime_state readback mismatch: expected=${expectedRunDate} actual=${persisted?.run_date ?? 'missing'}`,
+    )
+  }
+  assertRegimeComputeClosure({
+    kv_push_ok: true,
+    run_date: persisted.run_date,
+    regime_surface: persisted.regime_surface,
+  }, expectedRunDate)
+
+  const newLabel = persisted.label
   let shiftSummary = 'n/a'
   try {
     const { detectRegimeShift } = await import('./riskTriggers')
@@ -43,9 +97,8 @@ export async function runRegimeCompute(env: Bindings, runDate?: string) {
     shiftSummary = `hook_error(${String(e?.message ?? e).slice(0, 30)})`
   }
 
-  return `regime=${newLabel} idx=${data.regime_index} kv=${data.kv_push_ok ? 'ok' : 'fail'} shift=${shiftSummary}`
+  return `regime=${newLabel} idx=${persisted.regime_index} kv=verified shift=${shiftSummary}`
 }
-
 export async function runModelIcFullCheck(env: Bindings) {
   requireController(env)
 

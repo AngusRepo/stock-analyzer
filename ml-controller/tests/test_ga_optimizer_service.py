@@ -68,3 +68,15 @@ def test_run_ga_optimizer_generates_learning_state_without_prod_mutation():
     assert result["best"]["candidate"]["target"] == "meta_optimizer_learning"
     assert result["best"]["candidate"]["params"]["alphaFramework"]
     assert len(result["ranked"]) <= 8
+
+
+def test_ga_without_real_evaluator_cannot_pass_promotion_evidence_gate():
+    candidate = build_ga_candidate(None, generation=0, candidate_index=0)
+    result = evaluate_ga_population([candidate])
+
+    assert result["best"]["metrics"]["evidence_semantic"] == "synthetic_parameter_prior_proxy"
+    assert result["best"]["metrics"]["promotion_eligible"] is False
+    assert result["best"]["gate"]["passed"] is False
+    assert "real_oos_evidence" in result["best"]["gate"]["failed_gates"]
+    assert "pbo_evidence" in result["best"]["gate"]["failed_gates"]
+    assert "monte_carlo_evidence" in result["best"]["gate"]["failed_gates"]

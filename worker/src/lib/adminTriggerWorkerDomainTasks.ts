@@ -525,6 +525,10 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         dryRun,
         confirmPhrase,
       })
+      const failed = result.tables.filter((table) => table.status === 'failed')
+      if (failed.length) {
+        throw new Error(`audit json retention failed ${JSON.stringify(failed)}`)
+      }
       return summarizeAuditJsonArchiveRun(result)
     },
     'artifact-reconcile': async () => {
@@ -646,6 +650,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           task: 'd1-evidence-scrub',
           runDate: requestedRunDate() || twToday(),
           maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 240, 240),
+          maxCycles: parseBoundedPositiveInt(c.req.query('max_cycles'), 4, 8),
         })
         return `d1_evidence_scrub durable=true queued=${queued.queued} run_id=${queued.runId}`
       }
@@ -696,7 +701,17 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const allowed = new Set(['core', 'market', 'learning', 'ops', 'execution', 'paper', 'research'])
       if (!allowed.has(domain)) throw new Error('invalid data domain')
       const table = String(c.req.query('table') ?? '').trim().toLowerCase()
-      if (!table) throw new Error('data-domain-shadow-backfill requires table')
+      if (c.req.query('durable') === '1') {
+        const { enqueueDataDomainShadowBackfill } = await import('./dataDomainShadowBackfillDrain')
+        const queued = await enqueueDataDomainShadowBackfill(c.env, {
+          domain: domain as any,
+          table: table || undefined,
+          runDate: requestedRunDate() || twToday(),
+          maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 5000, 20000),
+        })
+        return `data_domain_shadow_backfill durable=true domain=${domain} queued=${queued.queued} run_id=${queued.runId}`
+      }
+      if (!table) throw new Error('data-domain-shadow-backfill requires table unless durable=1')
       const { backfillDataDomainTableShadow } = await import('./dataDomainShadowBackfill')
       const result = await backfillDataDomainTableShadow(c.env, {
         domain: domain as any,

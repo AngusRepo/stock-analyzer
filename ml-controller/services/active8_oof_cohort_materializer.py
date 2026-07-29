@@ -1256,29 +1256,45 @@ def archive_ev_candidate_artifacts(
     l4_result: dict[str, Any],
     fusion_result: dict[str, Any],
     parity: dict[str, Any] | None,
-    promoted: bool,
+    promoted: bool | dict[str, bool],
 ) -> dict[str, Any]:
     """Persist complete candidate JSON and its automatic promotion evidence."""
 
     output = {}
+    promoted_by_owner = (
+        dict(promoted)
+        if isinstance(promoted, dict)
+        else {
+            "l4_alpha_ev": bool(promoted),
+            "allocator_ev_fusion": bool(promoted),
+        }
+    )
     for model_name, result in (("l4_alpha_ev", l4_result), ("allocator_ev_fusion", fusion_result)):
         artifact = dict(result.get("artifact") or {})
         validation = dict(result.get("validation_packet") or {})
         model_version = str(artifact.get("model_version") or "unknown")
+        owner_promoted = bool(promoted_by_owner.get(model_name))
+        owner_parity = (
+            ((parity or {}).get("owner_decisions") or {}).get(model_name)
+            if isinstance((parity or {}).get("owner_decisions"), dict)
+            else None
+        )
         payload = {
             "schema_version": "ev-oof-candidate-packet-v1",
             "cohort_id": cohort_id,
             "artifact": artifact,
             "validation_packet": validation,
             "operational_parity": parity,
-            "promoted": promoted,
+            "owner_operational_parity": owner_parity,
+            "promoted": owner_promoted,
+            "promoted_by_owner": promoted_by_owner,
         }
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
         checksum = hashlib.sha256(encoded).hexdigest()
         path = f"universal/ev_candidates/{cohort_id}/{model_name}/{checksum}.json"
         bucket.blob(path).upload_from_string(encoded, content_type="application/json")
         decision = str(validation.get("decision") or "PENDING").upper()
-        state = "production" if promoted else "offline_passed" if decision == "PASS" else "offline_failed"
+        state = "production" if owner_promoted else "offline_passed" if decision == "PASS" else "offline_failed"
         candidate_type = (
             "l4_alpha_ev_refresh"
             if model_name == "l4_alpha_ev"
@@ -1306,9 +1322,15 @@ def archive_ev_candidate_artifacts(
                 "validation_packet": validation,
                 "training_data": artifact.get("training_data"),
             }, ensure_ascii=False),
-            "live_gate_status": "promoted" if promoted else "parity_passed" if parity and parity.get("decision") == "PASS" else "not_started",
+            "live_gate_status": (
+                "promoted"
+                if owner_promoted
+                else "parity_passed"
+                if isinstance(owner_parity, dict) and owner_parity.get("decision") == "PASS"
+                else "not_started"
+            ),
             "live_evidence_json": json.dumps(parity or {}, ensure_ascii=False),
-            "promotion_decision": "primary" if promoted else "shadow",
+            "promotion_decision": "primary" if owner_promoted else "shadow",
             "approval_state": artifact.get("promotion_state") or "approval_required",
         })
         output[model_name] = {"path": path, "checksum": checksum, "state": state}

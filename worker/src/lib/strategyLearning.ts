@@ -2762,11 +2762,10 @@ interface HistoricalStrategyContextRowV5 {
   context_industry: string | null
 }
 
-export async function rebuildHistoricalStrategyEvidenceV5(
+export async function listHistoricalStrategyEvidenceV5Dates(
   db: D1Database,
   options: { asOfDate: string; maxDates?: number },
-): Promise<{ attemptedDates: number; successfulDates: number; blockedDates: number; rebuiltDecisions: number; rebuiltMatrixRows: number }> {
-  await ensureStrategyLearningTables(db)
+): Promise<string[]> {
   const maxDates = Math.max(1, Math.min(5, Math.floor(options.maxDates ?? 2)))
   const dateRows = await db.prepare(`
     SELECT d.date
@@ -2782,6 +2781,15 @@ export async function rebuildHistoricalStrategyEvidenceV5(
      ORDER BY d.date DESC
      LIMIT ?
   `).bind(options.asOfDate, maxDates).all<{ date: string }>()
+  return (dateRows.results ?? []).map((row) => row.date)
+}
+
+export async function rebuildHistoricalStrategyEvidenceV5(
+  db: D1Database,
+  options: { asOfDate: string; maxDates?: number },
+): Promise<{ attemptedDates: number; successfulDates: number; blockedDates: number; rebuiltDecisions: number; rebuiltMatrixRows: number }> {
+  await ensureStrategyLearningTables(db)
+  const candidateDates = await listHistoricalStrategyEvidenceV5Dates(db, options)
   const registryRows = await db.prepare(`
     SELECT strategy_id, version, name, status, owner, alpha_bucket,
            family_id, variant_id, owner_type, promotion_status,
@@ -2803,7 +2811,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
   let rebuiltDecisions = 0
   let rebuiltMatrixRows = 0
 
-  for (const { date } of dateRows.results ?? []) {
+  for (const date of candidateDates) {
     await db.prepare(`
       INSERT INTO strategy_evidence_rebuild_runs_v5(signal_date, status, evaluation_contract_version, updated_at)
       VALUES (?, 'pending', 'strategy-evaluation-v2', CURRENT_TIMESTAMP)
@@ -3059,9 +3067,9 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       blockedDates += 1
     }
   }
-  if ((dateRows.results ?? []).length) await refreshStrategyLearningHeads(db)
+  if (candidateDates.length) await refreshStrategyLearningHeads(db)
   return {
-    attemptedDates: (dateRows.results ?? []).length,
+    attemptedDates: candidateDates.length,
     successfulDates,
     blockedDates,
     rebuiltDecisions,

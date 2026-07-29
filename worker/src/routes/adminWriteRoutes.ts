@@ -527,6 +527,53 @@ adminWriteRoutes.post('/api/admin/strategy/decision-log/materialize', async (c) 
   })
 })
 
+adminWriteRoutes.post('/api/admin/strategy/evidence-v5/rebuild', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  type Body = {
+    as_of_date?: string
+    max_dates?: number
+    dry_run?: boolean
+  }
+  const body = await c.req.json<Body>().catch(() => ({} as Body))
+  const asOfDate = body.as_of_date ?? c.req.query('as_of_date') ?? twToday()
+  const maxDates = Math.max(1, Math.min(5, Math.floor(body.max_dates ?? 2)))
+  const dryRun = body.dry_run !== false
+  const {
+    listHistoricalStrategyEvidenceV5Dates,
+    rebuildHistoricalStrategyEvidenceV5,
+  } = await import('../lib/strategyLearning')
+
+  if (dryRun) {
+    const candidateDates = await listHistoricalStrategyEvidenceV5Dates(c.env.DB, { asOfDate, maxDates })
+    return c.json({
+      success: true,
+      mode: 'dry_run',
+      as_of_date: asOfDate,
+      max_dates: maxDates,
+      candidate_dates: candidateDates,
+      note: 'Preview only; no strategy evidence or evening-chain status was mutated.',
+    })
+  }
+  if (c.req.header('X-Confirm-Strategy-Learning') !== 'true') {
+    return c.json({
+      error: 'Historical strategy evidence rebuild requires header X-Confirm-Strategy-Learning: true',
+      hint: 'Run dry_run first. This rebuilds PIT strategy evidence only and never marks evening-chain complete.',
+    }, 400)
+  }
+
+  const report = await rebuildHistoricalStrategyEvidenceV5(c.env.DB, { asOfDate, maxDates })
+  return c.json({
+    success: report.blockedDates === 0,
+    mode: 'persisted',
+    as_of_date: asOfDate,
+    max_dates: maxDates,
+    ...report,
+    note: 'Historical PIT strategy evidence rebuilt without mutating evening-chain scheduler status.',
+  })
+})
+
 adminWriteRoutes.post('/api/admin/strategy/reward-ledger/refresh', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

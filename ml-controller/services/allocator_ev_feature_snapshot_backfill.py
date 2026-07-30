@@ -691,6 +691,7 @@ def build_allocator_ev_feature_snapshots_for_date(
     reused_l4 = 0
     reused_s12 = 0
     snapshots_without_l4 = 0
+    l4_materialization_blockers: dict[str, int] = {}
     snapshots_with_s12_trade_ev = 0
     snapshots_with_s12_direct_ev = 0
     snapshots_with_s12_cold_ev = 0
@@ -806,6 +807,17 @@ def build_allocator_ev_feature_snapshots_for_date(
                 policy={"l4_alpha_ev": artifact},
                 usage_scope=materialization_scope,
             )
+        if not isinstance(l4_payload, dict):
+            l4_materialization_blockers["materializer_returned_none"] = (
+                l4_materialization_blockers.get("materializer_returned_none", 0) + 1
+            )
+        elif l4_payload.get("status") != "loaded":
+            blockers = l4_payload.get("blockers") or ["rejected_without_blocker"]
+            for blocker in blockers:
+                key = str(blocker or "rejected_without_blocker").strip()
+                if not key:
+                    key = "rejected_without_blocker"
+                l4_materialization_blockers[key] = l4_materialization_blockers.get(key, 0) + 1
         if not isinstance(l4_payload, dict) or l4_payload.get("status") != "loaded":
             l4_payload = None
             snapshots_without_l4 += 1
@@ -951,6 +963,7 @@ def build_allocator_ev_feature_snapshots_for_date(
         "reused_l4_payloads": reused_l4,
         "reused_s12_payloads": reused_s12,
         "snapshots_without_l4": snapshots_without_l4,
+        "l4_materialization_blockers": l4_materialization_blockers,
         "snapshots_with_s12_trade_ev": snapshots_with_s12_trade_ev,
         "snapshots_with_s12_direct_ev": snapshots_with_s12_direct_ev,
         "snapshots_with_s12_cold_ev": snapshots_with_s12_cold_ev,
@@ -1027,9 +1040,14 @@ def backfill_allocator_ev_feature_snapshots(
             ),
         ))
     aggregate_skip_reasons: dict[str, int] = {}
+    aggregate_l4_materialization_blockers: dict[str, int] = {}
     for row in rows:
         for reason, count in (row.get("skip_reasons") or {}).items():
             aggregate_skip_reasons[reason] = aggregate_skip_reasons.get(reason, 0) + int(count or 0)
+        for blocker, count in (row.get("l4_materialization_blockers") or {}).items():
+            aggregate_l4_materialization_blockers[blocker] = (
+                aggregate_l4_materialization_blockers.get(blocker, 0) + int(count or 0)
+            )
         day_reason = str(row.get("reason") or "").strip()
         if row.get("status") == "skipped" and day_reason:
             key = f"day:{day_reason}"
@@ -1049,6 +1067,7 @@ def backfill_allocator_ev_feature_snapshots(
             1 for row in rows if row.get("l4_usage_mode") == "snapshot_backfill_only"
         ),
         "snapshots_without_l4": sum(int(row.get("snapshots_without_l4") or 0) for row in rows),
+        "l4_materialization_blockers": aggregate_l4_materialization_blockers,
         "snapshots_with_s12_trade_ev": sum(int(row.get("snapshots_with_s12_trade_ev") or 0) for row in rows),
         "snapshots_with_s12_direct_ev": sum(int(row.get("snapshots_with_s12_direct_ev") or 0) for row in rows),
         "snapshots_with_s12_cold_ev": sum(int(row.get("snapshots_with_s12_cold_ev") or 0) for row in rows),

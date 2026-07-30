@@ -124,6 +124,53 @@ def test_materialize_l4_alpha_ev_uses_production_learned_artifact():
     assert payload["feature_values"]["fundamental_quality_norm"] == pytest.approx(0.72)
 
 
+def test_materialize_l4_alpha_ev_falls_through_rejected_existing_payload_to_valid_artifact():
+    stale_abstention = {
+        "schema_version": "l4-alpha-ev-v1",
+        "status": "rejected",
+        "expected_return_owner": "l4_alpha_ev",
+        "expected_return": None,
+        "expected_return_source": "l4_alpha_ev_abstention_baseline",
+        "promotion_state": "safe_abstention",
+        "validation_packet": {"decision": "PASS", "failed_gates": []},
+        "resolver_method": "abstention_baseline",
+        "model_version": "l4-alpha-ev-abstention-baseline-v1",
+        "output_is_net_of_costs": True,
+    }
+    prediction = {**_prediction(), "l4_alpha_ev": stale_abstention}
+
+    payload = materialize_l4_alpha_ev(
+        _row(),
+        prediction=prediction,
+        policy={"l4_alpha_ev": _artifact()},
+    )
+
+    assert payload["status"] == "loaded"
+    assert payload["model_version"] == "l4-alpha-ev-20260707"
+    assert payload["expected_return"] == pytest.approx(0.01824)
+
+
+def test_materialize_l4_alpha_ev_preserves_rejected_existing_payload_without_artifact():
+    stale_abstention = {
+        "schema_version": "l4-alpha-ev-v1",
+        "status": "rejected",
+        "expected_return_owner": "l4_alpha_ev",
+        "expected_return": None,
+        "expected_return_source": "l4_alpha_ev_abstention_baseline",
+        "promotion_state": "safe_abstention",
+        "validation_packet": {"decision": "PASS", "failed_gates": []},
+        "resolver_method": "abstention_baseline",
+        "model_version": "l4-alpha-ev-abstention-baseline-v1",
+        "output_is_net_of_costs": True,
+    }
+
+    payload = materialize_l4_alpha_ev(_row(), prediction={**_prediction(), "l4_alpha_ev": stale_abstention})
+
+    assert payload["status"] == "rejected"
+    assert payload["expected_return"] is None
+    assert "expected_return_missing" in payload["blockers"]
+
+
 def test_l4_serving_migration_accepts_only_exact_legacy_contract_pair():
     legacy = _artifact(
         artifact_contract_version="l4-alpha-ev-contract-v3",

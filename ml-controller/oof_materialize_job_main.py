@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -108,6 +109,10 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
             f"built={result.get('snapshots_built', 0)}",
             f"written={result.get('written', 0)}",
             f"skipped_days={result.get('skipped_days', 0)}",
+            f"without_l4={result.get('snapshots_without_l4', 0)}",
+            "l4_blockers=" + json.dumps(
+                result.get("l4_materialization_blockers") or {}, separators=(",", ":"), sort_keys=True
+            ),
         ])
     return " ".join([
         f"run_id={run_id}",

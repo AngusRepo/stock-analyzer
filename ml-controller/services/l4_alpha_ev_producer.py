@@ -394,12 +394,19 @@ def materialize_l4_alpha_ev(
     """Return validated row-level L4 alpha EV, or None when no producer is configured."""
     artifact = _policy_artifact(policy)
     existing = _existing_payload(row, prediction)
+    existing_rejection: dict[str, Any] | None = None
     if existing is not None and existing.get("output_is_net_of_costs") is True:
         semantic_blockers = _semantic_contract_blockers(existing)
         if semantic_blockers:
-            return _rejected_payload(existing, semantic_blockers)
-        return resolve_l4_alpha_ev(existing, usage_scope=usage_scope)
+            existing_rejection = _rejected_payload(existing, semantic_blockers)
+        else:
+            resolved_existing = resolve_l4_alpha_ev(existing, usage_scope=usage_scope)
+            if resolved_existing.get("status") == "loaded":
+                return resolved_existing
+            existing_rejection = resolved_existing
     if existing is not None and artifact is None:
+        if existing_rejection is not None:
+            return existing_rejection
         return _rejected_payload(
             existing,
             ["materialized_output_cost_semantic_ambiguous"],

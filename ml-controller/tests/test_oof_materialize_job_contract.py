@@ -48,7 +48,14 @@ def test_allocator_snapshot_mode_closes_scheduler_callback(monkeypatch):
 
     async def fake_execute_allocator_snapshot(**_kwargs):
         execution_kwargs.update(_kwargs)
-        return {"status": "ok", "snapshots_built": 135, "written": 135, "skipped_days": 0}
+        return {
+            "status": "ok",
+            "snapshots_built": 135,
+            "written": 135,
+            "skipped_days": 0,
+            "snapshots_without_l4": 3,
+            "l4_materialization_blockers": {"expected_return_missing": 3},
+        }
 
     async def fake_callback(payload):
         callbacks.append(payload)
@@ -77,6 +84,8 @@ def test_allocator_snapshot_mode_closes_scheduler_callback(monkeypatch):
     assert callback["run_date"] == "2026-07-16"
     assert execution_kwargs["lineage_cohort_id"] == "evening-chain-20260716"
     assert "built=135 written=135" in callback["summary"]
+    assert "without_l4=3" in callback["summary"]
+    assert 'l4_blockers={"expected_return_missing":3}' in callback["summary"]
 
 
 def test_oof_materialize_job_contract_is_durable_and_deployed():

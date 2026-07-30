@@ -966,6 +966,7 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
     assert result["l4_usage_mode"] == "not_fit_eligible"
     assert result["snapshots_built"] == 1
     assert result["snapshots_without_l4"] == 1
+    assert result["l4_materialization_blockers"] == {"materializer_returned_none": 1}
     allocation = json.loads(written[1][1][8])
     assert "l4_alpha_ev" not in allocation
     assert allocation["snapshot_l4_available"] is False

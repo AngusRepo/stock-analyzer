@@ -166,18 +166,42 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
 
     monkeypatch.setattr(sector_flow_service, "_load_symbol_cash_flows_5d", lambda as_of_date: {})
     monkeypatch.setattr(sector_flow_service, "_load_symbol_session_state", lambda as_of_date: {})
-    monkeypatch.setattr(sector_flow_service, "_load_stock_tags", lambda tag_type: {})
+    monkeypatch.setattr(
+        sector_flow_service,
+        "_load_stock_tags",
+        lambda tag_type: {tag_type: ["2330"]},
+    )
     monkeypatch.setattr(sector_flow_service, "_aggregate_tag_cash_flows", lambda tag_members, symbol_flows: {})
-    monkeypatch.setattr(sector_flow_service, "_aggregate_tag_session_stats", lambda tag_members, symbol_state: {})
-    monkeypatch.setattr(sector_flow_service, "write_sector_flow_stock_details", lambda **kwargs: 0)
+    monkeypatch.setattr(
+        sector_flow_service,
+        "_aggregate_tag_session_stats",
+        lambda tag_members, symbol_state: {
+            tag: {
+                "stock_count": 1,
+                "up_count": 1,
+                "turnover_value": 1.0,
+                "turnover_share": 1.0,
+                "turnover_share_delta": 0.0,
+            }
+            for tag in tag_members
+        },
+    )
+    monkeypatch.setattr(sector_flow_service, "write_sector_flow_stock_details", lambda **kwargs: 1)
 
     def fake_compute(tag_type, as_of_date):
         captured_tag_types.append(tag_type)
-        return []
+        return [RrgPoint(
+            sector=tag_type,
+            rs_ratio=101.0,
+            rs_momentum=1.0,
+            quadrant="Leading",
+            member_count=1,
+            theme_return_5d=0.01,
+        )]
 
     def fake_write(points, classification, as_of_date, cash_flows=None, session_stats=None):
         captured_classifications.append(classification)
-        return 0
+        return len(points)
 
     monkeypatch.setattr(sector_flow_service, "compute_sector_flow_for_tag_type", fake_compute)
     monkeypatch.setattr(sector_flow_service, "write_sector_flow", fake_write)
@@ -192,7 +216,55 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
     assert summary["pit_lineage_version"] == sector_flow_service.SECTOR_FLOW_PIT_LINEAGE_VERSION
     assert summary["producer_position"] == "post_recommendation_for_next_decision_session"
     assert summary["same_signal_date_consumption_allowed"] is False
+    assert summary["closure"]["status"] == "complete"
 
+
+def test_run_sector_flow_pipeline_fails_closed_when_a_required_path_errors(monkeypatch):
+    monkeypatch.setattr(sector_flow_service, "_load_symbol_cash_flows_5d", lambda as_of_date: {})
+    monkeypatch.setattr(sector_flow_service, "_load_symbol_session_state", lambda as_of_date: {})
+    monkeypatch.setattr(
+        sector_flow_service,
+        "_load_stock_tags",
+        lambda tag_type: {tag_type: ["2330"]},
+    )
+    monkeypatch.setattr(sector_flow_service, "_aggregate_tag_cash_flows", lambda *args: {})
+    monkeypatch.setattr(
+        sector_flow_service,
+        "_aggregate_tag_session_stats",
+        lambda tag_members, symbol_state: {
+            tag: {
+                "stock_count": 1,
+                "up_count": 1,
+                "turnover_value": 1.0,
+                "turnover_share": 1.0,
+                "turnover_share_delta": 0.0,
+            }
+            for tag in tag_members
+        },
+    )
+    monkeypatch.setattr(sector_flow_service, "write_sector_flow_stock_details", lambda **kwargs: 1)
+
+    def fake_compute(tag_type, as_of_date):
+        if tag_type == "industry_theme":
+            raise RuntimeError("upstream unavailable")
+        return [RrgPoint(
+            sector=tag_type,
+            rs_ratio=101.0,
+            rs_momentum=1.0,
+            quadrant="Leading",
+            member_count=1,
+            theme_return_5d=0.01,
+        )]
+
+    monkeypatch.setattr(sector_flow_service, "compute_sector_flow_for_tag_type", fake_compute)
+    monkeypatch.setattr(
+        sector_flow_service,
+        "write_sector_flow",
+        lambda points, *args, **kwargs: len(points),
+    )
+
+    with pytest.raises(RuntimeError, match="sector_flow_pit_incomplete.*industry_theme:error"):
+        sector_flow_service.run_sector_flow_pipeline("2026-05-15")
 
 def test_aggregate_tag_session_stats_computes_daily_breadth_and_turnover_acceleration():
     stats = sector_flow_service._aggregate_tag_session_stats(

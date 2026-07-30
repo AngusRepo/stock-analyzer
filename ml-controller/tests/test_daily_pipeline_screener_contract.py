@@ -292,6 +292,18 @@ def test_daily_pipeline_graph_routes_l2_timesfm_before_l3_formal_predict():
     assert 'g.add_edge("ml_predict",          "compute_personas")' not in source
 
 
+def test_daily_sector_flow_retries_and_fails_closed_instead_of_returning_fake_success():
+    source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
+    start = source.index("async def node_compute_sector_flow")
+    end = source.index("async def node_recommend", start)
+    body = source[start:end]
+
+    assert "for attempt in range(1, 4)" in body
+    assert "sector_flow failed (non-fatal)" not in body
+    assert "raise RuntimeError" in body
+    assert "sector_flow_daily_closure_failed" in body
+
+
 def test_daily_pipeline_does_not_inject_gnn_controller_adapter():
     source = Path(__file__).resolve().parent.parent.joinpath("graphs", "daily_pipeline_v2.py").read_text(encoding="utf-8")
 

@@ -716,6 +716,7 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
 
     symbol_flows = _load_symbol_cash_flows_5d(as_of_date)
     symbol_session_state = _load_symbol_session_state(as_of_date)
+    failures: list[str] = []
     for tag_type, classification in paths:
         try:
             tag_members = _load_stock_tags(tag_type)
@@ -755,6 +756,36 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
         except Exception as e:
             logger.error(f"[sector_flow] {tag_type} path failed: {e}")
             summary[tag_type] = {"error": str(e)}
+
+        path_summary = summary[tag_type]
+        if path_summary.get("error"):
+            failures.append(f"{tag_type}:error:{path_summary['error']}")
+            continue
+        total_tags = int(path_summary.get("total_tags") or 0)
+        written = int(path_summary.get("written") or 0)
+        breadth_ready = int(path_summary.get("breadth_ready") or 0)
+        participation_ready = int(path_summary.get("participation_ready") or 0)
+        if total_tags <= 0:
+            failures.append(f"{tag_type}:tag_pool_empty")
+        elif written <= 0:
+            failures.append(f"{tag_type}:no_rows_written")
+        elif breadth_ready < written:
+            failures.append(f"{tag_type}:breadth_incomplete:{breadth_ready}/{written}")
+        elif participation_ready < written:
+            failures.append(
+                f"{tag_type}:participation_incomplete:{participation_ready}/{written}"
+            )
+
+    summary["closure"] = {
+        "status": "failed" if failures else "complete",
+        "required_paths": [tag_type for tag_type, _ in paths],
+        "failures": failures,
+    }
+    if failures:
+        raise RuntimeError(
+            "sector_flow_pit_incomplete:"
+            + json.dumps(summary["closure"], ensure_ascii=False, sort_keys=True)
+        )
 
     logger.info(f"[sector_flow] Pipeline complete: {summary}")
     return summary

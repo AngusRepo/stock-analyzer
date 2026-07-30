@@ -141,6 +141,7 @@ def test_native_pit_loader_uses_earliest_complete_run_before_next_open():
     assert len(rows) == 1
     assert rows[0]["native_component_source"] == RECORDED_PIT_COMPONENT_SOURCE
     assert rows[0]["native_run_id"] == "before-open"
+    assert rows[0]["decision_universe_frozen_at"] == "2026-06-25 15:00:00"
     assert "after-open" not in str(calls[-1][1])
 
 

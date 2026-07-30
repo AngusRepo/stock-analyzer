@@ -2731,12 +2731,21 @@ async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
     """
     logger.info("[Pipeline V2] node_compute_sector_flow")
     run_date = state["run_date"]
-    try:
-        summary = await asyncio.to_thread(run_sector_flow_pipeline, run_date)
-        return {"sector_flow_summary": summary}
-    except Exception as e:
-        logger.error(f"[Pipeline V2] sector_flow failed (non-fatal): {e}")
-        return {"sector_flow_summary": {}, "errors": [f"sector_flow: {e}"]}
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            summary = await asyncio.to_thread(run_sector_flow_pipeline, run_date)
+            return {"sector_flow_summary": summary}
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "[Pipeline V2] sector_flow attempt %s/3 failed: %s",
+                attempt,
+                exc,
+            )
+            if attempt < 3:
+                await asyncio.sleep(2 ** attempt)
+    raise RuntimeError(f"sector_flow_daily_closure_failed:{last_error}") from last_error
 
 
 async def node_recommend(state: PipelineStateV2) -> dict:

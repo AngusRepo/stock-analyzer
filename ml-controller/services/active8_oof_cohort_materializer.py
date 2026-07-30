@@ -1294,7 +1294,22 @@ def load_native_pit_component_rows(
                 "market_heat_expected_return": None,
                 "native_component_source": RECORDED_PIT_COMPONENT_SOURCE,
             }
-    return list(rows_by_key.values())
+    rows = list(rows_by_key.values())
+    for row in rows:
+        prediction_date = str(row.get("prediction_date") or "")[:10]
+        decision_cutoff = str(
+            row.get("decision_universe_frozen_at")
+            or row.get("native_created_at")
+            or ""
+        ).strip()
+        if decision_cutoff:
+            row["decision_universe_frozen_at"] = decision_cutoff
+        elif prediction_date:
+            # Match the conservative market-close cutoff persisted on OOF rows.
+            row["decision_universe_frozen_at"] = (
+                f"{prediction_date}T13:30:00+08:00"
+            )
+    return rows
 
 
 def persist_l4_oof_predictions(

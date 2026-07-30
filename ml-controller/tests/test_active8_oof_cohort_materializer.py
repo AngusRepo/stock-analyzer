@@ -695,7 +695,7 @@ def test_materialized_index_accepts_verified_no_lookahead_policy_upgrade():
 
     assert len(captured) == 2
     assert "active8_oof_materialized_artifact_history" in captured[0][0]
-    assert captured[0][1][-1] == "restore-checksum-verified-recorded-pit-evidence"
+    assert captured[0][1][-1] == "add-recorded-decision-cutoff-sector-pit-evidence"
     assert "replacement_reason" in captured[1][0]
 
 

@@ -42,8 +42,8 @@ TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
 D1_IN_CLAUSE_CHUNK_SIZE = 80
 OOF_MATERIALIZED_ARTIFACT_SCHEMA_VERSION = "active8-oof-materialized-jsonl-gzip-v1"
-OOF_PIT_ELIGIBILITY_POLICY_VERSION = "recorded-score-v2-r2-sector-before-next-session-open-v3"
-OOF_POLICY_REPLACEMENT_REASON = "restore-checksum-verified-recorded-pit-evidence"
+OOF_PIT_ELIGIBILITY_POLICY_VERSION = "recorded-score-v2-r2-sector-before-next-session-open-v4"
+OOF_POLICY_REPLACEMENT_REASON = "add-recorded-decision-cutoff-sector-pit-evidence"
 OOF_MATERIALIZED_ARTIFACT_KINDS = {
     "allocator_ev_snapshots": "snapshot_date",
     "l4_predictions": "prediction_date",
@@ -413,7 +413,8 @@ def persist_oof_materialized_artifact_indexes(
             OR excluded.replacement_reason IN (
               'strict-forward-extension',
               'remove-post-next-open-native-pit-rows',
-              'restore-checksum-verified-recorded-pit-evidence'
+              'restore-checksum-verified-recorded-pit-evidence',
+              'add-recorded-decision-cutoff-sector-pit-evidence'
             )
           )
     """

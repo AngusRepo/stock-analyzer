@@ -2791,6 +2791,24 @@ export async function listHistoricalStrategyEvidenceV5Dates(
          r.signal_date IS NULL
          OR COALESCE(r.evaluation_contract_version, '') <> 'strategy-evaluation-v2'
          OR r.status NOT IN ('success','blocked')
+         OR (
+           r.status='success'
+           AND NOT EXISTS (
+             SELECT 1
+               FROM strategy_label_matrix_runs_v4 mr
+              WHERE mr.signal_date=d.date
+                AND mr.status='ready'
+                AND mr.labeler_version='strategy-decision-log-pit-reconstruction-v5'
+                AND mr.reference_contract_version='selection-reference-snapshot-v3'
+                AND mr.expected_cell_count > 0
+                AND mr.persisted_cell_count=mr.expected_cell_count
+                AND EXISTS (
+                  SELECT 1 FROM canonical_run_heads h
+                   WHERE h.logical_run_key='screener:' || mr.signal_date || ':TW:production:market_screener'
+                     AND h.run_id=mr.producer_run_id
+                )
+           )
+         )
        )
      GROUP BY d.date
      ORDER BY CASE WHEN d.date=? THEN 0 ELSE 1 END, d.date DESC

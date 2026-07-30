@@ -574,6 +574,76 @@ adminWriteRoutes.post('/api/admin/strategy/evidence-v5/rebuild', async (c) => {
   })
 })
 
+adminWriteRoutes.post('/api/admin/strategy/redundancy/backfill', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  type Body = {
+    start_date?: string
+    end_date?: string
+    dry_run?: boolean
+  }
+  const body = await c.req.json<Body>().catch(() => ({} as Body))
+  const startDate = body.start_date ?? c.req.query('start_date') ?? twToday()
+  const endDate = body.end_date ?? c.req.query('end_date') ?? startDate
+  const dryRun = body.dry_run !== false
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate) || startDate > endDate) {
+    return c.json({ error: 'valid start_date/end_date are required' }, 400)
+  }
+  const spanDays = Math.floor((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86_400_000)
+  if (!Number.isFinite(spanDays) || spanDays > 31) {
+    return c.json({ error: 'strategy redundancy backfill range must be <= 31 calendar days' }, 400)
+  }
+  if (!dryRun && c.req.header('X-Confirm-Strategy-Learning') !== 'true') {
+    return c.json({
+      error: 'Strategy redundancy backfill requires header X-Confirm-Strategy-Learning: true',
+      hint: 'Run dry_run first. This writes PIT evidence only and never changes strategy weights or recommendations.',
+    }, 400)
+  }
+
+  const dateRows = await c.env.DB.prepare(`
+    SELECT DISTINCT mr.signal_date
+      FROM strategy_label_matrix_runs_v4 mr
+     WHERE mr.signal_date BETWEEN ? AND ?
+       AND EXISTS (
+         SELECT 1 FROM canonical_run_heads h
+          WHERE h.logical_run_key='screener:' || mr.signal_date || ':TW:production:market_screener'
+            AND h.run_id=mr.producer_run_id
+       )
+     ORDER BY mr.signal_date
+  `).bind(startDate, endDate).all<{ signal_date: string }>()
+  const dates = (dateRows.results ?? []).map((row) => row.signal_date)
+  const {
+    prepareStrategyRedundancyBackfill,
+    rebuildStrategyRedundancyArtifactForDate,
+  } = await import('../lib/marketScreener')
+  const results: Array<Record<string, unknown>> = []
+  for (const date of dates) {
+    try {
+      const result = dryRun
+        ? await prepareStrategyRedundancyBackfill(c.env, date)
+        : await rebuildStrategyRedundancyArtifactForDate(c.env, date)
+      results.push({ ...result, payload: undefined, status: dryRun ? 'eligible' : 'ready' })
+    } catch (error) {
+      results.push({
+        as_of_date: date,
+        status: 'blocked',
+        error: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+      })
+    }
+  }
+  const blocked = results.filter((row) => row.status === 'blocked').length
+  return c.json({
+    success: dates.length > 0 && blocked === 0,
+    mode: dryRun ? 'dry_run' : 'persisted',
+    start_date: startDate,
+    end_date: endDate,
+    dates_found: dates.length,
+    blocked_dates: blocked,
+    results,
+  })
+})
+
 adminWriteRoutes.post('/api/admin/strategy/marginal-edge-v4/refresh', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError

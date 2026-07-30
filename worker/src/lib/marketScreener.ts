@@ -209,7 +209,7 @@ async function persistStrategyRedundancyArtifact(
   return artifactId
 }
 
-async function loadL125StrategySimilarityGraphEvidence(
+export async function loadL125StrategySimilarityGraphEvidence(
   env: Bindings,
   payload: StrategySimilarityEvidencePayload,
   asOfDate: string,
@@ -257,6 +257,145 @@ async function loadL125StrategySimilarityGraphEvidence(
       payload_strategy_count: payloadStrategyCount,
       error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
     }
+  }
+}
+
+interface PreparedStrategyRedundancyBackfill {
+  as_of_date: string
+  producer_run_id: string
+  strategy_registry_checksum: string
+  matrix_rows: number
+  strategy_count: number
+  oof_strategy_count: number
+  payload: StrategySimilarityEvidencePayload
+}
+
+export async function prepareStrategyRedundancyBackfill(
+  env: Bindings,
+  asOfDate: string,
+): Promise<PreparedStrategyRedundancyBackfill> {
+  const run = await env.DB.prepare(`
+    SELECT mr.producer_run_id, mr.status, mr.strategy_count,
+           mr.expected_cell_count, mr.persisted_cell_count,
+           mr.strategy_registry_checksum
+      FROM strategy_label_matrix_runs_v4 mr
+     WHERE mr.signal_date=?
+       AND EXISTS (
+         SELECT 1 FROM canonical_run_heads h
+          WHERE h.logical_run_key='screener:' || mr.signal_date || ':TW:production:market_screener'
+            AND h.run_id=mr.producer_run_id
+       )
+     ORDER BY datetime(mr.updated_at) DESC
+     LIMIT 1
+  `).bind(asOfDate).first<{
+    producer_run_id: string
+    status: string
+    strategy_count: number
+    expected_cell_count: number
+    persisted_cell_count: number
+    strategy_registry_checksum: string
+  }>()
+  if (!run) throw new Error(`strategy_redundancy_matrix_run_missing:${asOfDate}`)
+  const expectedCells = Math.max(0, Number(run.expected_cell_count ?? 0))
+  const persistedCells = Math.max(0, Number(run.persisted_cell_count ?? 0))
+  if (run.status !== 'ready' || expectedCells <= 0 || persistedCells !== expectedCells) {
+    throw new Error(`strategy_redundancy_matrix_not_ready:${asOfDate}:${run.status}:${persistedCells}/${expectedCells}`)
+  }
+
+  const matrix = await env.DB.prepare(`
+    SELECT strategy_id, strategy_version, strategy_status, family_id,
+           symbol, evaluable, strategy_hit, affinity,
+           strategy_registry_checksum
+      FROM strategy_label_matrix_v4
+     WHERE signal_date=? AND producer_run_id=?
+     ORDER BY strategy_id, symbol
+  `).bind(asOfDate, run.producer_run_id).all<{
+    strategy_id: string
+    strategy_version: string
+    strategy_status: string
+    family_id: string
+    symbol: string
+    evaluable: number
+    strategy_hit: number
+    affinity: number
+    strategy_registry_checksum: string
+  }>()
+  const rows = matrix.results ?? []
+  if (rows.length !== expectedCells) {
+    throw new Error(`strategy_redundancy_matrix_count_mismatch:${asOfDate}:${rows.length}/${expectedCells}`)
+  }
+  const checksums = new Set(rows.map((row) => String(row.strategy_registry_checksum ?? '').trim()).filter(Boolean))
+  if (checksums.size !== 1 || !checksums.has(String(run.strategy_registry_checksum ?? '').trim())) {
+    throw new Error(`strategy_redundancy_registry_checksum_mismatch:${asOfDate}`)
+  }
+
+  const strategyRows = new Map<string, {
+    family_id: string | null
+    version: string
+    status: string
+    symbols: Set<string>
+  }>()
+  for (const row of rows) {
+    const strategyId = String(row.strategy_id ?? '').trim()
+    const version = String(row.strategy_version ?? '').trim()
+    const familyId = String(row.family_id ?? '').trim() || null
+    const status = String(row.strategy_status ?? '').trim()
+    if (!strategyId || !version || !status) {
+      throw new Error(`strategy_redundancy_matrix_identity_missing:${asOfDate}`)
+    }
+    const current = strategyRows.get(strategyId)
+    if (current && (current.version !== version || current.family_id !== familyId || current.status !== status)) {
+      throw new Error(`strategy_redundancy_matrix_identity_conflict:${asOfDate}:${strategyId}`)
+    }
+    const state = current ?? { family_id: familyId, version, status, symbols: new Set<string>() }
+    if (Number(row.evaluable) === 1 && Number(row.strategy_hit) === 1 && Number(row.affinity) > 0) {
+      const symbol = String(row.symbol ?? '').trim().toUpperCase()
+      if (symbol) state.symbols.add(symbol)
+    }
+    strategyRows.set(strategyId, state)
+  }
+  if (strategyRows.size !== Number(run.strategy_count ?? 0)) {
+    throw new Error(`strategy_redundancy_strategy_count_mismatch:${asOfDate}:${strategyRows.size}/${run.strategy_count}`)
+  }
+
+  const oofReturns = await loadMatureStrategyOofReturns(env.DB, asOfDate)
+  const strategies = [...strategyRows.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([strategyId, row]) => ({
+      strategy_id: strategyId,
+      family_id: row.family_id,
+      symbols: [...row.symbols].sort(),
+      oof_returns: oofReturns[strategyId] ?? [],
+    }))
+  const payload: StrategySimilarityEvidencePayload = {
+    input_scope: 'mature_oof_residual_returns_with_same_day_overlap_diagnostic',
+    strategies,
+    edge_threshold: null,
+    threshold_quantile: null,
+    random_state: 0,
+  }
+  return {
+    as_of_date: asOfDate,
+    producer_run_id: run.producer_run_id,
+    strategy_registry_checksum: run.strategy_registry_checksum,
+    matrix_rows: rows.length,
+    strategy_count: strategies.length,
+    oof_strategy_count: strategies.filter((row) => row.oof_returns.length > 0).length,
+    payload,
+  }
+}
+
+export async function rebuildStrategyRedundancyArtifactForDate(env: Bindings, asOfDate: string) {
+  const prepared = await prepareStrategyRedundancyBackfill(env, asOfDate)
+  const result = await loadL125StrategySimilarityGraphEvidence(env, prepared.payload, asOfDate)
+  if (result.status !== 'modal_python' || !result.artifact_id) {
+    throw new Error(`strategy_redundancy_artifact_not_ready:${asOfDate}:${result.status}:${result.error ?? 'unknown'}`)
+  }
+  return {
+    ...prepared,
+    payload: undefined,
+    status: 'ready',
+    artifact_id: result.artifact_id,
   }
 }
 

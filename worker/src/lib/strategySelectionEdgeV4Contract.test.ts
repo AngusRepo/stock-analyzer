@@ -8,6 +8,7 @@ const screener = fs.readFileSync(path.join(root, 'marketScreener.ts'), 'utf8')
 const labels = fs.readFileSync(path.join(root, 'canonicalSelectionLabels.ts'), 'utf8')
 const reference = fs.readFileSync(path.join(root, 'selectionReferenceEvidence.ts'), 'utf8')
 const canonicalLabels = fs.readFileSync(path.join(root, 'canonicalSelectionLabels.ts'), 'utf8')
+const thresholdCalibration = fs.readFileSync(path.join(root, 'strategyThresholdCalibration.ts'), 'utf8')
 const evaluableMigration = fs.readFileSync(path.join(root, '../../migrations/0090_daily_technical_strategy_producer_closure.sql'), 'utf8')
 
 assert.match(learning, /canonical_selection_labels_v4/)
@@ -30,6 +31,15 @@ assert.match(reference, /expected_return_owner_unavailable/)
 assert.match(canonicalLabels, /r\.feature_contract_version = \?/)
 assert.match(canonicalLabels, /NOT EXISTS \(SELECT 1 FROM canonical_selection_labels_v4/)
 assert.match(canonicalLabels, /SELECTION_REFERENCE_CONTRACT_VERSION/)
+const thresholdEvidenceLoader = thresholdCalibration.slice(
+  thresholdCalibration.indexOf('export async function listStrategyThresholdCalibrationEvidenceRows'),
+  thresholdCalibration.indexOf('export function buildStrategyThresholdAutoDecisions'),
+)
+assert.match(thresholdEvidenceLoader, /canonical_selection_labels_v4/)
+assert.match(thresholdEvidenceLoader, /strategy-evaluation-v2/)
+assert.match(thresholdEvidenceLoader, /selection-reference-snapshot-v3/)
+assert.match(thresholdEvidenceLoader, /canonical_run_heads/)
+assert.doesNotMatch(thresholdEvidenceLoader, /JOIN predictions|trade_pnl_pct|actual_return_pct/)
 
 console.log('strategySelectionEdgeV4Contract tests passed')
 const dailyTechnicalCandidateIds = [

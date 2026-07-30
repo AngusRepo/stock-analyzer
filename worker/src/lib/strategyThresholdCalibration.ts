@@ -582,34 +582,55 @@ export async function listStrategyThresholdCalibrationEvidenceRows(
 ): Promise<StrategyThresholdCalibrationEvidenceRow[]> {
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 50_000), 100_000))
   const { results } = await db.prepare(`
-    SELECT l.date,
-           l.strategy_id,
-           l.strategy_version,
+    SELECT m.signal_date AS date,
+           m.strategy_id,
+           m.strategy_version,
            CASE
-             WHEN json_valid(l.evidence_json)
-             THEN CAST(json_extract(l.evidence_json, '$.feature_ref_diagnostics.weighted_score') AS REAL)
+             WHEN json_valid(d.evidence_json)
+             THEN CAST(json_extract(d.evidence_json, '$.feature_ref_diagnostics.weighted_score') AS REAL)
              ELSE NULL
            END AS weighted_score,
            CASE
              WHEN json_valid(c.raw_signals_json)
              THEN c.raw_signals_json
-             WHEN json_valid(l.context_json)
-             THEN json_extract(l.context_json, '$.candidate.raw_signals')
+             WHEN json_valid(d.context_json)
+             THEN json_extract(d.context_json, '$.candidate.raw_signals')
              ELSE NULL
            END AS raw_signals_json,
-           COALESCE(p.trade_pnl_pct, p.actual_return_pct) AS reward_pct
-      FROM strategy_decision_log l
+           label.residual_return_net AS reward_pct
+      FROM strategy_label_matrix_v4 m
+      JOIN strategy_decision_log d
+        ON d.date = m.signal_date
+       AND d.symbol = m.symbol
+       AND d.strategy_id = m.strategy_id
+       AND d.strategy_version = m.strategy_version
       LEFT JOIN strategy_candidate_contexts c
-        ON c.context_id = l.context_id
-      LEFT JOIN stocks s
-        ON s.symbol = l.symbol
-      LEFT JOIN predictions p
-        ON p.stock_id = s.id
-       AND p.prediction_date = l.date
-       AND p.model_name = 'ensemble'
-     WHERE l.date >= ?
-       AND l.date <= ?
-     ORDER BY l.date DESC, l.strategy_id ASC
+        ON c.context_id = d.context_id
+      JOIN canonical_selection_labels_v4 label
+        ON label.signal_date = m.signal_date
+       AND label.symbol = m.symbol
+       AND label.producer_run_id = m.producer_run_id
+       AND label.label_schema_version = 'canonical-strategy-selection-label-v4'
+       AND label.reference_contract_version = 'selection-reference-snapshot-v3'
+     WHERE m.signal_date >= ?
+       AND m.signal_date <= ?
+       AND m.reference_contract_version = 'selection-reference-snapshot-v3'
+       AND m.evaluable = 1
+       AND d.evaluable = 1
+       AND d.evaluation_contract_version = 'strategy-evaluation-v2'
+       AND EXISTS (
+         SELECT 1
+           FROM strategy_label_matrix_runs_v4 mr
+          WHERE mr.producer_run_id = m.producer_run_id
+            AND mr.status = 'ready'
+       )
+       AND EXISTS (
+         SELECT 1
+           FROM canonical_run_heads h
+          WHERE h.logical_run_key = 'screener:' || m.signal_date || ':TW:production:market_screener'
+            AND h.run_id = m.producer_run_id
+       )
+     ORDER BY m.signal_date DESC, m.strategy_id ASC, m.symbol ASC
      LIMIT ?
   `).bind(options.startDate, options.endDate, limit).all<StrategyThresholdCalibrationEvidenceRow & { raw_signals_json?: string | null }>()
   return (results ?? []).map((row) => ({

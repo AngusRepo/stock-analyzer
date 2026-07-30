@@ -36,6 +36,8 @@ class WalkForwardRequest(BaseModel):
     # 2026-04-19 N2: per-window feature selection controls
     fs_max_rounds: int = 60          # lighter than production 100; trade speed for slight precision loss
     fs_force_refresh: bool = False   # True = re-run FS even if walk_forward/w{id}/feature_pool.json exists
+    completion_task: str | None = None
+    completion_run_date: str | None = None
     cohort_id: str | None = None
     prep_gcs_prefix: str = "universal"
     sequence_gcs_prefix: str = "universal/sequence_long/latest"
@@ -303,6 +305,8 @@ async def walk_forward_run(req: WalkForwardRequest):
             "prep_gcs_prefix": req.prep_gcs_prefix,
             "sequence_gcs_prefix": req.sequence_gcs_prefix,
             "sequence_batch_count": req.sequence_batch_count,
+            "completion_task": req.completion_task,
+            "completion_run_date": req.completion_run_date,
             "resume_manifest_path": req.resume_manifest_path,
             # 2026-04-19 N2: per-window FS to eliminate look-ahead bias
             "fs_max_rounds": req.fs_max_rounds,
@@ -1608,7 +1612,7 @@ _OOF_PREP_SCHEMAS = {
 
 
 def _latest_canonical_prep_prefix(bucket: object) -> str | None:
-    candidates: list[tuple[str, str]] = []
+    candidates: list[tuple[str, str, str]] = []
     for blob in bucket.list_blobs(prefix="universal/canonical_adjusted"):
         if not str(blob.name).endswith("/prep/manifest.json"):
             continue
@@ -1621,14 +1625,18 @@ def _latest_canonical_prep_prefix(bucket: object) -> str | None:
             and manifest.get("status") == "ready"
             and manifest.get("target_semantic_version") == _OOF_TARGET_SEMANTIC_VERSION
             and float(manifest.get("roundtrip_cost_bps") or 0.0) == 18.0
+            and str(manifest.get("signal_date_max") or "")[:10]
         ):
             candidates.append((
-                str(manifest.get("signal_date_max") or manifest.get("created_at") or ""),
+                str(manifest["signal_date_max"])[:10],
+                str(manifest.get("created_at") or ""),
                 str(manifest.get("output_gcs_prefix") or ""),
             ))
     if not candidates:
         return None
-    prefix = max(candidates)[1].strip().rstrip("/")
+    # Semantic event time owns recency. Artifact creation time only breaks ties
+    # between equivalent signal horizons and must never substitute for one.
+    prefix = max(candidates)[2].strip().rstrip("/")
     return prefix or None
 
 
@@ -1914,6 +1922,51 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     cadence = str(req.cadence or "daily").strip().lower()
     if cadence not in {"daily", "weekly", "monthly"}:
         raise HTTPException(status_code=400, detail="OOF lifecycle cadence must be daily, weekly, or monthly")
+    if not req.dry_run and os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1":
+        from datetime import datetime, timedelta, timezone
+        from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
+
+        run_date = req.end_date or datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+        callback_task = f"active8-oof-{cadence}"
+        run_id = f"{callback_task}:{run_date}:resolve-after-prep"
+        env_overrides = {
+            "OOF_MATERIALIZE_CADENCE": cadence,
+            "OOF_MATERIALIZE_END_DATE": run_date,
+            "OOF_MATERIALIZE_PROMOTE": "1" if req.promote else "0",
+            "OOF_MATERIALIZE_DISPATCH_FULL_FIT": "1" if req.dispatch_full_fit else "0",
+            "OOF_MATERIALIZE_RUN_ID": run_id,
+            "OOF_MATERIALIZE_CALLBACK_TASK": callback_task,
+        }
+        if req.expected_cohort_id:
+            env_overrides["OOF_MATERIALIZE_EXPECTED_COHORT_ID"] = req.expected_cohort_id
+        job_name = os.environ.get("OOF_MATERIALIZE_JOB_NAME", "active8-oof-materialize").strip()
+        try:
+            execution = CloudRunJobsClient(job_name=job_name).run_job(
+                env_overrides=env_overrides,
+            )
+        except JobAlreadyRunningError as exc:
+            return {
+                "status": "pending",
+                "reason": "materialization_job_active",
+                "cadence": cadence,
+                "run_date": run_date,
+                "execution_id": exc.execution.execution_id,
+                "execution_name": exc.execution.execution_name,
+            }
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"OOF materialization job dispatch failed: {type(exc).__name__}: {exc}",
+            ) from exc
+        return {
+            "status": "spawned",
+            "reason": "durable_prep_first_oof_job_dispatched",
+            "cadence": cadence,
+            "run_date": run_date,
+            "execution_id": execution.execution_id,
+            "execution_name": execution.execution_name,
+            "run_id": run_id,
+        }
     bucket = _get_bucket()
     if bucket is None:
         raise HTTPException(status_code=500, detail="GCS unavailable")
@@ -2116,6 +2169,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 prep_gcs_prefix=prep_gcs_prefix,
                 sequence_gcs_prefix=sequence_gcs_prefix,
                 resume_manifest_path=resume_manifest_path,
+                completion_task=f"active8-oof-{cadence}",
+                completion_run_date=knowledge_cutoff_date,
             )
             if req.dry_run:
                 preview = await walk_forward_dry_run(plan)
@@ -2183,49 +2238,6 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 "knowledge_cutoff_date": knowledge_cutoff_date,
                 "receipt": receipt,
             }
-    if not req.dry_run and os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1":
-        from services.cloud_run_jobs_client import CloudRunJobsClient, JobAlreadyRunningError
-
-        job_name = os.environ.get("OOF_MATERIALIZE_JOB_NAME", "active8-oof-materialize").strip()
-        callback_task = f"active8-oof-{cadence}"
-        run_id = f"{callback_task}:{knowledge_cutoff_date}:{cohort_id}"
-        try:
-            execution = CloudRunJobsClient(job_name=job_name).run_job(
-                env_overrides={
-                    "OOF_MATERIALIZE_CADENCE": cadence,
-                    "OOF_MATERIALIZE_END_DATE": req.end_date or knowledge_cutoff_date,
-                    "OOF_MATERIALIZE_PROMOTE": "1" if req.promote else "0",
-                    "OOF_MATERIALIZE_DISPATCH_FULL_FIT": "1" if req.dispatch_full_fit else "0",
-                    "OOF_MATERIALIZE_RUN_ID": run_id,
-                    "OOF_MATERIALIZE_CALLBACK_TASK": callback_task,
-                    "OOF_MATERIALIZE_EXPECTED_COHORT_ID": cohort_id,
-                },
-            )
-        except JobAlreadyRunningError as exc:
-            return {
-                "status": "pending",
-                "reason": "materialization_job_active",
-                "cadence": cadence,
-                "cohort_id": cohort_id,
-                "knowledge_cutoff_date": knowledge_cutoff_date,
-                "execution_id": exc.execution.execution_id,
-                "execution_name": exc.execution.execution_name,
-            }
-        except Exception as exc:  # noqa: BLE001 - dispatch errors must remain visible to scheduler.
-            raise HTTPException(
-                status_code=502,
-                detail=f"OOF materialization job dispatch failed: {type(exc).__name__}: {exc}",
-            ) from exc
-        return {
-            "status": "spawned",
-            "reason": "durable_materialization_job_dispatched",
-            "cadence": cadence,
-            "cohort_id": cohort_id,
-            "knowledge_cutoff_date": knowledge_cutoff_date,
-            "execution_id": execution.execution_id,
-            "execution_name": execution.execution_name,
-            "run_id": run_id,
-        }
     if daily_forward_extension_plan and not req.dry_run:
         try:
             from services import modal_client

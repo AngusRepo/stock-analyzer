@@ -192,7 +192,7 @@ async def _run() -> int:
                 raise RuntimeError(f"oof_dependency_retry_required:{reason}{suffix}")
             if status in {"materialized", "idempotent_complete"}:
                 callback_status = "success"
-            elif status in {"skipped", "pending"}:
+            elif status in {"skipped", "pending", "spawned"}:
                 callback_status = "skipped"
             else:
                 raise RuntimeError(f"unexpected OOF materialization status: {status or 'unknown'}")

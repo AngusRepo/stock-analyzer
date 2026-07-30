@@ -2671,11 +2671,34 @@ def walk_forward_orchestrator(payload: dict) -> dict:
         print(f"[WF-Orchestrator] Persist failed: {e}")
         raise RuntimeError(f"active8_oof_manifest_persist_failed:{e}") from e
 
+    completion_task = str(payload.get("completion_task") or "").strip()
+    completion_run_date = str(payload.get("completion_run_date") or end_date)[:10]
+    completion_trigger = None
+    if completion_task and manifest.get("status") == "ready":
+        completion_trigger = _trigger_worker_admin_task(
+            completion_task,
+            completion_run_date,
+        )
+    elif completion_task:
+        completion_trigger = _post_worker_scheduler_callback(
+            {
+                "callback_task": completion_task,
+                "run_date": completion_run_date,
+                "run_id": f"{completion_task}:{completion_run_date}:{cohort_id}",
+            },
+            {"run_id": cohort_id, "summary": aggregate},
+            "error",
+            f"OOF cohort failed readiness gates cohort={cohort_id}",
+            int((time.time() - t0) * 1000),
+            error="oof_cohort_manifest_failed",
+        )
+
     return {
         "gcs_path": gcs_path,
         "aggregate": aggregate,
         "manifest_checksum": manifest["manifest_checksum"],
         "publication_mode": publication["publication_mode"],
+        "completion_trigger": completion_trigger,
         "elapsed_s": round(time.time() - t0, 1),
     }
 
@@ -3433,6 +3456,52 @@ def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, su
             last_error = {"status": "error", "attempt": attempt, "error": f"{type(exc).__name__}: {exc}"}
         time.sleep(min(attempt * 2, 5))
     return last_error or {"status": "error", "error": "unknown_callback_failure"}
+
+
+def _trigger_worker_admin_task(task: str, run_date: str) -> dict:
+    """Resume the durable OOF owner after an immutable Modal cohort is ready."""
+    import json
+    import os
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    allowed = {"active8-oof-daily", "active8-oof-weekly", "active8-oof-monthly"}
+    if task not in allowed:
+        return {"status": "error", "error": f"unsupported_completion_task:{task}"}
+    worker_url = str(os.environ.get("STOCKVISION_WORKER_URL") or "").strip().rstrip("/")
+    token = str(os.environ.get("STOCKVISION_AUTH_TOKEN") or "").strip()
+    if not worker_url or not token:
+        return {"status": "error", "error": "completion_trigger_url_or_token_missing"}
+    query = urllib.parse.urlencode({"sync": "1", "force": "1", "date": run_date})
+    url = f"{worker_url}/api/admin/trigger/{task}?{query}"
+    request = urllib.request.Request(
+        url,
+        data=b"",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    last_error: dict | None = None
+    for attempt in range(1, 4):
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                body = response.read().decode("utf-8", errors="replace")
+                return {
+                    "status": "ok",
+                    "code": response.status,
+                    "attempt": attempt,
+                    "response": json.loads(body) if body else {},
+                }
+        except urllib.error.HTTPError as exc:
+            last_error = {"status": "error", "code": exc.code, "attempt": attempt}
+        except Exception as exc:  # noqa: BLE001 - retry bounded completion delivery.
+            last_error = {"status": "error", "attempt": attempt, "error": f"{type(exc).__name__}: {exc}"}
+        time.sleep(min(attempt * 2, 5))
+    return last_error or {"status": "error", "error": "completion_trigger_failed"}
 
 
 def _write_finlab_macro_context_to_d1() -> dict:

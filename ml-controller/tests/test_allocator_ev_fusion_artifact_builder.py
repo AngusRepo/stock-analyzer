@@ -29,6 +29,11 @@ from services.l4_alpha_ev_resolver import (  # noqa: E402
 )
 from services.ev_lineage_contract import prediction_timing_blockers  # noqa: E402
 from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION  # noqa: E402
+from services.evidence_contracts import (  # noqa: E402
+    L4_ARTIFACT_CONTRACT_VERSION,
+    L4_FEATURE_SEMANTIC_VERSION,
+    LABEL_SCHEMA_VERSION,
+)
 
 
 def _l4_payload(value: float) -> dict:
@@ -50,6 +55,35 @@ def _l4_payload(value: float) -> dict:
         "cost_model_bps": 18.0,
         "output_is_net_of_costs": True,
     }
+
+
+def _oof_l4_payload(value: float, *, prediction_date: str) -> dict:
+    checksum = "a" * 64
+    trained_until = (date.fromisoformat(prediction_date) - timedelta(days=1)).isoformat()
+    payload = _l4_payload(value)
+    payload.update({
+        "artifact_contract_version": L4_ARTIFACT_CONTRACT_VERSION,
+        "feature_snapshot_version": L4_FEATURE_SEMANTIC_VERSION,
+        "label_schema_version": LABEL_SCHEMA_VERSION,
+        "approval_state": "purged_oof_evidence_only",
+        "purged_oof_evidence_only": True,
+        "generation_mode": "purged_oof",
+        "cohort_id": "cohort-v7",
+        "fold_id": "w4",
+        "source_manifest_checksum": checksum,
+        "trained_until": trained_until,
+        "point_in_time_prediction_lineage": {
+            "schema_version": "l4-point-in-time-prediction-lineage-v1",
+            "as_of_guard": "label_known_date_strictly_before_prediction_date",
+            "cohort_id": "cohort-v7",
+            "fold_id": "w4",
+            "prediction_date": prediction_date,
+            "trained_until": trained_until,
+            "source_manifest_checksum": checksum,
+            "feature_semantic_version": L4_FEATURE_SEMANTIC_VERSION,
+        },
+    })
+    return payload
 
 
 def _ensemble_forecast(avg_rank: float = 0.65, confidence: float = 0.72) -> str:
@@ -270,6 +304,45 @@ def test_fusion_purged_oof_uses_snapshot_date_and_recorded_market_lineage():
     assert audit["date_count"] == 1
     assert audit["raw_date_counts"] == {"2026-05-01": 20}
     assert audit["invalid_reason_counts"] == {}
+
+
+def test_fusion_purged_oof_accepts_current_l4_contract_and_audits_rejections():
+    row = _row("2026-05-01", 1)
+    row["generation_mode"] = "purged_oof"
+    row["label_adjustment_source"] = "canonical_market_daily:finlab.price"
+    forecast = json.loads(row["forecast_data"])
+    forecast["ensemble_v2"].update({
+        "generation_mode": "purged_oof",
+        "semantic_version": "active8-purged-oof-chronological-ridge-v3",
+    })
+    row["forecast_data"] = json.dumps(forecast)
+    allocation = json.loads(row["alpha_allocation"])
+    allocation["l4_alpha_ev"] = _oof_l4_payload(0.012, prediction_date="2026-05-01")
+    row["alpha_allocation"] = json.dumps(allocation)
+
+    samples, audit = _samples([row], min_cross_section_samples_per_date=1)
+    assert samples[0]["features"]["l4_available"] == 1.0
+    assert samples[0]["features"]["l4_expected_return"] == 0.012
+    assert audit["l4_resolver_blocker_counts"] == {}
+
+    rejected_payload = _oof_l4_payload(0.012, prediction_date="2026-05-01")
+    rejected_payload["feature_snapshot_version"] = "legacy-incompatible-feature"
+    rejected_row = {
+        **row,
+        "alpha_allocation": json.dumps({
+            **allocation,
+            "l4_alpha_ev": rejected_payload,
+        }),
+    }
+    rejected_samples, rejected_audit = _samples(
+        [rejected_row],
+        min_cross_section_samples_per_date=1,
+    )
+    assert rejected_samples[0]["features"]["l4_available"] == 0.0
+    assert rejected_audit["l4_resolver_blocker_counts"] == {
+        "production_approval_missing": 1,
+        "purged_oof_feature_semantic_version_incompatible": 1,
+    }
 
 
 def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_samples():

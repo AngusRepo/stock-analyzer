@@ -5,13 +5,18 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ml-controller"))
 
+from services.evidence_contracts import (  # noqa: E402
+    L4_ARTIFACT_CONTRACT_VERSION,
+    L4_FEATURE_SEMANTIC_VERSION,
+)
+
 
 def _payload() -> dict:
     checksum = "a" * 64
     return {
         "schema_version": "l4-alpha-ev-v1",
-        "artifact_contract_version": "l4-alpha-ev-contract-v4",
-        "feature_snapshot_version": "l4-directional-score-components-v2-lineage-bound",
+        "artifact_contract_version": L4_ARTIFACT_CONTRACT_VERSION,
+        "feature_snapshot_version": L4_FEATURE_SEMANTIC_VERSION,
         "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "approval_state": "purged_oof_evidence_only",
         "purged_oof_evidence_only": True,
@@ -36,7 +41,7 @@ def _payload() -> dict:
             "prediction_date": "2026-06-25",
             "trained_until": "2026-06-24",
             "source_manifest_checksum": checksum,
-            "feature_semantic_version": "l4-directional-score-components-v2-lineage-bound",
+            "feature_semantic_version": L4_FEATURE_SEMANTIC_VERSION,
         },
     }
 
@@ -54,6 +59,21 @@ def test_purged_oof_payload_is_evidence_eligible_but_never_production_eligible()
     assert production["expected_return"] is None
 
 
+def test_supported_legacy_purged_oof_contract_remains_evidence_eligible():
+    from services.l4_alpha_ev_resolver import PURGED_OOF_USAGE_SCOPE, resolve_l4_alpha_ev
+
+    payload = _payload()
+    payload["artifact_contract_version"] = "l4-alpha-ev-contract-v4"
+    payload["feature_snapshot_version"] = "l4-directional-score-components-v2-lineage-bound"
+    payload["point_in_time_prediction_lineage"]["feature_semantic_version"] = (
+        "l4-directional-score-components-v2-lineage-bound"
+    )
+
+    evidence = resolve_l4_alpha_ev(payload, usage_scope=PURGED_OOF_USAGE_SCOPE)
+    assert evidence["status"] == "loaded"
+    assert evidence["purged_oof_evidence_eligible"] is True
+
+
 def test_purged_oof_payload_fails_closed_on_semantic_checksum_or_time_drift():
     from services.l4_alpha_ev_resolver import PURGED_OOF_USAGE_SCOPE, resolve_l4_alpha_ev
 
@@ -68,3 +88,4 @@ def test_purged_oof_payload_fails_closed_on_semantic_checksum_or_time_drift():
         assert resolved["status"] == "rejected"
         assert resolved["expected_return"] is None
         assert resolved["purged_oof_evidence_eligible"] is False
+        assert any(blocker.startswith("purged_oof_") for blocker in resolved["blockers"])

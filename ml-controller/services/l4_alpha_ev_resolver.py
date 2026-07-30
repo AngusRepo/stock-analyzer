@@ -10,6 +10,14 @@ import json
 import math
 from typing import Any
 
+from services.evidence_contracts import (
+    L4_ARTIFACT_CONTRACT_VERSION,
+    L4_FEATURE_SEMANTIC_VERSION,
+    LABEL_SCHEMA_VERSION,
+    SUPPORTED_L4_FEATURE_SEMANTICS,
+    SUPPORTED_L4_SERVING_CONTRACT_PAIRS,
+)
+
 
 SCHEMA_VERSION = "l4-alpha-ev-v1"
 OWNER = "l4_alpha_ev"
@@ -26,11 +34,9 @@ PURGED_OOF_USAGE_SCOPE = "purged_oof_evidence"
 PURGED_OOF_APPROVAL_STATE = "purged_oof_evidence_only"
 PURGED_OOF_LINEAGE_SCHEMA_VERSION = "l4-point-in-time-prediction-lineage-v1"
 PURGED_OOF_AS_OF_GUARD = "label_known_date_strictly_before_prediction_date"
-PURGED_OOF_ARTIFACT_CONTRACT_VERSION = "l4-alpha-ev-contract-v4"
-PURGED_OOF_FEATURE_SEMANTIC_VERSION = "l4-directional-score-components-v2-lineage-bound"
-PURGED_OOF_LABEL_SCHEMA_VERSION = (
-    "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
-)
+PURGED_OOF_ARTIFACT_CONTRACT_VERSION = L4_ARTIFACT_CONTRACT_VERSION
+PURGED_OOF_FEATURE_SEMANTIC_VERSION = L4_FEATURE_SEMANTIC_VERSION
+PURGED_OOF_LABEL_SCHEMA_VERSION = LABEL_SCHEMA_VERSION
 EMPIRICAL_ONLY_METHODS = {
     "empirical",
     "empirical_bucket",
@@ -121,44 +127,71 @@ def _snapshot_backfill_allowed(payload: dict[str, Any], usage_scope: str) -> boo
     )
 
 
-def _purged_oof_allowed(payload: dict[str, Any], usage_scope: str) -> bool:
+def _purged_oof_blockers(payload: dict[str, Any], usage_scope: str) -> list[str]:
+    blockers: list[str] = []
     if usage_scope != PURGED_OOF_USAGE_SCOPE:
-        return False
+        return ["usage_scope_mismatch"]
     lineage = (
         payload.get("point_in_time_prediction_lineage")
         if isinstance(payload.get("point_in_time_prediction_lineage"), dict)
         else {}
     )
+    contract_version = str(payload.get("artifact_contract_version") or "").strip()
+    label_version = str(payload.get("label_schema_version") or "").strip()
+    expected_semantic = SUPPORTED_L4_FEATURE_SEMANTICS.get(contract_version)
+    feature_semantic = str(payload.get("feature_snapshot_version") or "").strip()
+    if str(payload.get("generation_mode") or "").strip() != "purged_oof":
+        blockers.append("generation_mode_mismatch")
+    if payload.get("schema_version") != SCHEMA_VERSION:
+        blockers.append("schema_version_mismatch")
+    if (
+        label_version != PURGED_OOF_LABEL_SCHEMA_VERSION
+        or (contract_version, label_version) not in SUPPORTED_L4_SERVING_CONTRACT_PAIRS
+    ):
+        blockers.append("artifact_label_contract_pair_incompatible")
+    if not expected_semantic or feature_semantic != expected_semantic:
+        blockers.append("feature_semantic_version_incompatible")
+    if payload.get("output_is_net_of_costs") is not True:
+        blockers.append("output_not_net_of_costs")
+    if _float_or_none(payload.get("horizon_days")) != 5.0:
+        blockers.append("horizon_days_mismatch")
+    if _float_or_none(payload.get("cost_model_bps")) is None:
+        blockers.append("cost_model_bps_missing")
+    if _approval_state(payload) != PURGED_OOF_APPROVAL_STATE:
+        blockers.append("approval_state_mismatch")
+    if payload.get("purged_oof_evidence_only") is not True:
+        blockers.append("evidence_only_flag_missing")
+    for key in ("cohort_id", "fold_id", "source_manifest_checksum"):
+        if not str(payload.get(key) or "").strip():
+            blockers.append(f"{key}_missing")
+    if lineage.get("schema_version") != PURGED_OOF_LINEAGE_SCHEMA_VERSION:
+        blockers.append("lineage_schema_version_mismatch")
+    if lineage.get("as_of_guard") != PURGED_OOF_AS_OF_GUARD:
+        blockers.append("lineage_as_of_guard_mismatch")
+    for key in ("cohort_id", "fold_id", "source_manifest_checksum"):
+        if str(lineage.get(key) or "").strip() != str(payload.get(key) or "").strip():
+            blockers.append(f"lineage_{key}_mismatch")
+    if str(lineage.get("feature_semantic_version") or "").strip() != expected_semantic:
+        blockers.append("lineage_feature_semantic_version_incompatible")
     prediction_date = str(lineage.get("prediction_date") or "")[:10]
     lineage_trained_until = str(lineage.get("trained_until") or "")[:10]
     payload_trained_until = str(payload.get("trained_until") or "")[:10]
-    return (
-        str(payload.get("generation_mode") or "").strip() == "purged_oof"
-        and payload.get("schema_version") == SCHEMA_VERSION
-        and payload.get("artifact_contract_version") == PURGED_OOF_ARTIFACT_CONTRACT_VERSION
-        and payload.get("feature_snapshot_version") == PURGED_OOF_FEATURE_SEMANTIC_VERSION
-        and payload.get("label_schema_version") == PURGED_OOF_LABEL_SCHEMA_VERSION
-        and payload.get("output_is_net_of_costs") is True
-        and int(payload.get("horizon_days") or 0) == 5
-        and _float_or_none(payload.get("cost_model_bps")) is not None
-        and _approval_state(payload) == PURGED_OOF_APPROVAL_STATE
-        and payload.get("purged_oof_evidence_only") is True
-        and str(payload.get("cohort_id") or "").strip() != ""
-        and str(payload.get("fold_id") or "").strip() != ""
-        and str(payload.get("source_manifest_checksum") or "").strip() != ""
-        and lineage.get("schema_version") == PURGED_OOF_LINEAGE_SCHEMA_VERSION
-        and lineage.get("as_of_guard") == PURGED_OOF_AS_OF_GUARD
-        and str(lineage.get("cohort_id") or "").strip() == str(payload.get("cohort_id") or "").strip()
-        and str(lineage.get("fold_id") or "").strip() == str(payload.get("fold_id") or "").strip()
-        and str(lineage.get("source_manifest_checksum") or "").strip()
-        == str(payload.get("source_manifest_checksum") or "").strip()
-        and lineage.get("feature_semantic_version") == PURGED_OOF_FEATURE_SEMANTIC_VERSION
-        and lineage_trained_until == payload_trained_until
-        and len(str(payload.get("source_manifest_checksum") or "").strip()) == 64
-        and bool(prediction_date)
-        and bool(lineage_trained_until)
-        and lineage_trained_until < prediction_date
-    )
+    if lineage_trained_until != payload_trained_until:
+        blockers.append("lineage_trained_until_mismatch")
+    if len(str(payload.get("source_manifest_checksum") or "").strip()) != 64:
+        blockers.append("source_manifest_checksum_invalid")
+    if not prediction_date:
+        blockers.append("lineage_prediction_date_missing")
+    if not lineage_trained_until:
+        blockers.append("lineage_trained_until_missing")
+    if prediction_date and lineage_trained_until and lineage_trained_until >= prediction_date:
+        blockers.append("lineage_lookahead_detected")
+    return list(dict.fromkeys(blockers))
+
+
+def _purged_oof_allowed(payload: dict[str, Any], usage_scope: str) -> bool:
+    return not _purged_oof_blockers(payload, usage_scope)
+
 
 def _expected_return_value(payload: dict[str, Any]) -> float | None:
     for key in (
@@ -204,6 +237,10 @@ def resolve_l4_alpha_ev(
 
     snapshot_backfill_allowed = _snapshot_backfill_allowed(payload, usage_scope)
     purged_oof_allowed = _purged_oof_allowed(payload, usage_scope)
+    if usage_scope == PURGED_OOF_USAGE_SCOPE and not purged_oof_allowed:
+        blockers.extend(
+            f"purged_oof_{blocker}" for blocker in _purged_oof_blockers(payload, usage_scope)
+        )
     approval_state = _approval_state(payload)
     if (
         approval_state not in APPROVED_STATES

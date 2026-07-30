@@ -237,7 +237,57 @@ def _date_strictly_before(left: Any, right: Any) -> bool:
         return False
 
 
-def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
+def _resolve_l4_feature(
+    row: dict[str, Any],
+) -> tuple[float | None, dict[str, Any] | None, list[str]]:
+    extractor_row = _row_for_extractors(row)
+    usage_scope = _l4_usage_scope(row)
+    l4_value, l4_source, l4_payload = extract_l4_alpha_ev(
+        extractor_row,
+        usage_scope=usage_scope,
+    )
+    blockers = [
+        str(value).strip()
+        for value in ((l4_payload or {}).get("blockers") or [])
+        if str(value).strip()
+    ]
+    signal_date = str(
+        row.get("prediction_date") or row.get("snapshot_date") or row.get("date") or ""
+    )[:10]
+    l4_point_in_time = False
+    if l4_value is not None and isinstance(l4_payload, dict):
+        l4_point_in_time = _date_strictly_before(
+            l4_payload.get("trained_until"),
+            signal_date,
+        )
+        if usage_scope in {SNAPSHOT_BACKFILL_USAGE_SCOPE, PURGED_OOF_USAGE_SCOPE}:
+            lineage = (
+                l4_payload.get("point_in_time_prediction_lineage")
+                if isinstance(l4_payload.get("point_in_time_prediction_lineage"), dict)
+                else {}
+            )
+            l4_point_in_time = (
+                l4_point_in_time
+                and lineage.get("schema_version") == "l4-point-in-time-prediction-lineage-v1"
+                and str(lineage.get("prediction_date") or "")[:10] == signal_date
+                and _date_strictly_before(lineage.get("trained_until"), signal_date)
+            )
+    if l4_value is not None and not l4_point_in_time:
+        blockers.append("l4_point_in_time_lineage_invalid")
+    if l4_value is None and not blockers:
+        blockers.append(str(l4_source or "l4_alpha_ev_missing"))
+    return (
+        l4_value if l4_point_in_time else None,
+        l4_payload,
+        list(dict.fromkeys(blockers)),
+    )
+
+
+def _feature_vector(
+    row: dict[str, Any],
+    *,
+    l4_state: tuple[float | None, dict[str, Any] | None, list[str]] | None = None,
+) -> dict[str, float] | None:
     if _score_feature_era(row) != CANONICAL_SCORE_FEATURE_VERSION:
         return None
     score_payload = _loads(row.get("score_components"))
@@ -246,35 +296,7 @@ def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
     if ev_feature_lineage_blockers(row):
         return None
     extractor_row = _row_for_extractors(row)
-    usage_scope = _l4_usage_scope(row)
-    l4_value, _l4_source, _l4_payload = extract_l4_alpha_ev(
-        extractor_row,
-        usage_scope=usage_scope,
-    )
-    l4_point_in_time = False
-    if l4_value is not None and isinstance(_l4_payload, dict):
-        l4_point_in_time = _date_strictly_before(
-            _l4_payload.get("trained_until"),
-            row.get("prediction_date"),
-        )
-        if usage_scope in {SNAPSHOT_BACKFILL_USAGE_SCOPE, PURGED_OOF_USAGE_SCOPE}:
-            lineage = (
-                _l4_payload.get("point_in_time_prediction_lineage")
-                if isinstance(_l4_payload.get("point_in_time_prediction_lineage"), dict)
-                else {}
-            )
-            l4_point_in_time = (
-                l4_point_in_time
-                and lineage.get("schema_version") == "l4-point-in-time-prediction-lineage-v1"
-                and str(lineage.get("prediction_date") or "")[:10]
-                == str(row.get("prediction_date") or "")[:10]
-                and _date_strictly_before(
-                    lineage.get("trained_until"),
-                    row.get("prediction_date"),
-                )
-            )
-    if not l4_point_in_time:
-        l4_value = None
+    l4_value, _l4_payload, _l4_blockers = l4_state or _resolve_l4_feature(row)
     s12_value, _s12_source, s12_payload = extract_s12_trade_ev(extractor_row)
     l4_available = 1.0 if l4_value is not None else 0.0
     if l4_value is None:
@@ -347,6 +369,7 @@ def _samples(
     feature_era_counts: dict[str, int] = {}
     lineage_blocker_counts: dict[str, int] = {}
     adjustment_lineage_counts: dict[str, int] = {}
+    l4_resolver_blocker_counts: dict[str, int] = {}
     invalid_reason_counts: dict[str, int] = {}
     for row in rows:
         feature_era = _score_feature_era(row)
@@ -360,7 +383,10 @@ def _samples(
         adjustment_lineage_counts[adjustment_source] = adjustment_lineage_counts.get(adjustment_source, 0) + 1
         generation_mode = str(row.get("generation_mode") or "native").strip().lower()
         expected_adjustment_source = expected_price_horizon_source(generation_mode)
-        features = _feature_vector(row)
+        l4_state = _resolve_l4_feature(row)
+        for blocker in l4_state[2]:
+            l4_resolver_blocker_counts[blocker] = l4_resolver_blocker_counts.get(blocker, 0) + 1
+        features = _feature_vector(row, l4_state=l4_state)
         selection_gross_target = (
             _bounded_return(row, "l4_executable_return_pct")
             if adjustment_source == expected_adjustment_source
@@ -531,6 +557,7 @@ def _samples(
         "feature_era_counts": dict(sorted(feature_era_counts.items())),
         "rejected_feature_era_rows": rejected_feature_era_rows,
         "lineage_blocker_counts": dict(sorted(lineage_blocker_counts.items())),
+        "l4_resolver_blocker_counts": dict(sorted(l4_resolver_blocker_counts.items())),
         "required_adjustment_factor_source": CANONICAL_ADJUSTMENT_FACTOR_SOURCE,
         "required_adjustment_factor_sources": {
             "native": PRICE_HORIZON_SOURCE,

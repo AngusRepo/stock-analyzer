@@ -3,6 +3,7 @@ import {
   buildStrategyPortfolioDecisionLogMetricOverrides,
   buildStrategyPortfolioMetricOverridesFromLedgerRows,
   coerceModalStrategySimilarityGraphEvidence,
+  modalStrategySimilarityBlockedReason,
   loadStrategyPortfolioMetricOverrides,
   rewardLedgerRowToStrategyPortfolioMetrics,
   type StrategyBacktestResultMetricRow,
@@ -231,6 +232,36 @@ function fakeDb(input: {
   assert(evidence?.method === 'networkx_connected_components_oof_residual_correlation', 'Worker must accept the mature OOF residual similarity contract')
   assert(evidence?.eligible_oof_pair_count === 1, 'Worker must retain OOF pair coverage diagnostics')
   assert(evidence?.paired_date_max === 8 && evidence?.oof_max_date === '2026-07-08', 'Worker must retain OOF maturity diagnostics')
+}
+
+{
+  const blocked = {
+    status: 'blocked',
+    source: 'modal_python',
+    algorithm_owner: 'ml-service-modal-python',
+    method: 'networkx_connected_components_oof_residual_correlation',
+    input_scope: 'mature_oof_residual_returns_with_same_day_overlap_diagnostic',
+    medoid_algorithm: "sklearn_extra.cluster.KMedoids(method='pam')",
+    global_k_hardcoded: false,
+    production_selector: false,
+    self_implemented_algorithm: false,
+    strategy_count: 2,
+    eligible_oof_pair_count: 0,
+    blocked_reason: 'insufficient_paired_mature_oof_residual_returns',
+    strategy_cluster_id: { alpha_a: 'sc000', alpha_b: 'sc001' },
+  }
+  assert(
+    modalStrategySimilarityBlockedReason(blocked) === 'insufficient_paired_mature_oof_residual_returns',
+    'valid fail-closed Modal evidence must retain its blocked reason',
+  )
+  assert(
+    coerceModalStrategySimilarityGraphEvidence(blocked) === null,
+    'blocked evidence must never be accepted as formal router evidence',
+  )
+  assert(
+    modalStrategySimilarityBlockedReason({ ...blocked, production_selector: true }) === null,
+    'unsafe blocked evidence must remain schema-invalid',
+  )
 }
 async function main(): Promise<void> {
   {

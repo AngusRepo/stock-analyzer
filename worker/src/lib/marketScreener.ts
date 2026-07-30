@@ -30,7 +30,7 @@ import { buildPartialScreenerScoreV2, buildScoreV2Components, readScoreV2Snapsho
 import { loadExternalEvidenceRiskOverlays } from './newsThemeRiskOverlay'
 import { buildPriceActionStructure } from './priceActionStructure'
 import { FINLAB_PORTFOLIO_INTELLIGENCE_VERSION, buildStrategySimilarityEvidencePayload, type StrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
-import { coerceModalStrategySimilarityGraphEvidence, type StrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
+import { coerceModalStrategySimilarityGraphEvidence, modalStrategySimilarityBlockedReason, type StrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
 import { loadRuntimeTeacherEvidence } from './runtimeTeacherEvidence'
 import type { StrategySpec } from './strategySpec'
 import {
@@ -240,6 +240,16 @@ export async function loadL125StrategySimilarityGraphEvidence(
       120_000,
     )
     const artifactId = await persistStrategyRedundancyArtifact(env, asOfDate, raw, payloadStrategyCount)
+    const blockedReason = modalStrategySimilarityBlockedReason(raw)
+    if (blockedReason) {
+      return {
+        status: 'unavailable_blocked',
+        evidence: null,
+        payload_strategy_count: payloadStrategyCount,
+        artifact_id: artifactId,
+        error: `strategy_similarity_evidence_blocked:${blockedReason}`,
+      }
+    }
     const evidence = coerceModalStrategySimilarityGraphEvidence(raw)
     if (!evidence || evidence.source !== 'modal_python') {
       return {

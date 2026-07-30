@@ -206,6 +206,27 @@ function clusterSizesFromComponents(raw: unknown, strategyClusterId: Record<stri
   )
 }
 
+export function modalStrategySimilarityBlockedReason(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  const reason = cleanText(record.blocked_reason)
+  if (cleanText(record.source) !== 'modal_python') return null
+  if (cleanText(record.algorithm_owner) !== 'ml-service-modal-python') return null
+  if (cleanText(record.status) !== 'blocked') return null
+  if (cleanText(record.method) !== 'networkx_connected_components_oof_residual_correlation') return null
+  if (cleanText(record.input_scope) !== 'mature_oof_residual_returns_with_same_day_overlap_diagnostic') return null
+  if (cleanText(record.medoid_algorithm) !== "sklearn_extra.cluster.KMedoids(method='pam')") return null
+  if (record.global_k_hardcoded !== false) return null
+  if (record.production_selector !== false) return null
+  if (record.self_implemented_algorithm !== false) return null
+  if (!reason) return null
+  if ((finiteNumber(record.eligible_oof_pair_count) ?? -1) !== 0) return null
+  const strategyClusterId = stringRecord(record.strategy_cluster_id)
+  const strategyCount = Math.max(0, Math.round(finiteNumber(record.strategy_count) ?? 0))
+  if (!strategyCount || Object.keys(strategyClusterId).length !== strategyCount) return null
+  return reason
+}
+
 export function coerceModalStrategySimilarityGraphEvidence(raw: unknown): StrategySimilarityGraphEvidence | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const record = raw as Record<string, unknown>

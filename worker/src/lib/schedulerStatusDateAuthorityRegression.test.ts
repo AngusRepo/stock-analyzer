@@ -45,3 +45,18 @@ const active = selectSchedulerChainDates(
 )
 assert.equal(active.activeChainDate, '2026-07-30')
 assert.equal(active.chainStatusDate, '2026-07-30')
+
+const newerTerminalOverStaleActive = selectSchedulerChainDates(
+  ['2026-07-30', '2026-07-29', '2026-07-28'],
+  {
+    '2026-07-30': [{ task: 'evening-chain', status: 'success', summary: 'latest closed', duration_ms: 0, timestamp: '2026-07-30T16:06:08Z' }],
+    '2026-07-29': [],
+    '2026-07-28': [{ task: 'evening-chain', status: 'running', summary: 'stale old run', duration_ms: 0, timestamp: '2026-07-28T14:22:42Z' }],
+  },
+)
+assert.equal(
+  newerTerminalOverStaleActive.activeChainDate,
+  null,
+  'an older stale running chain must not stay active after a newer chain closes',
+)
+assert.equal(newerTerminalOverStaleActive.chainStatusDate, '2026-07-30')

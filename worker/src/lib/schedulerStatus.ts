@@ -159,21 +159,23 @@ export function selectSchedulerChainDates(
   chainStatusDate: string | null
 } {
   const rootForDate = (date: string) => logsByDate[date]?.find((entry) => entry.task === 'evening-chain')
-  const activeChainDate = dates.find((date) => {
+  const chainStatusDate = dates.find((date) => {
     const root = rootForDate(date)
-    return root?.status === 'running' || root?.status === 'triggered'
+    return root?.status === 'running'
+      || root?.status === 'triggered'
+      || root?.status === 'success'
+      || root?.status === 'error'
   }) ?? null
-  const latestTerminalChainDate = dates.find((date) => {
-    const root = rootForDate(date)
-    return root?.status === 'success' || root?.status === 'error'
-  }) ?? null
+  const latestRoot = chainStatusDate ? rootForDate(chainStatusDate) : undefined
+  const activeChainDate = latestRoot?.status === 'running' || latestRoot?.status === 'triggered'
+    ? chainStatusDate
+    : null
 
   return {
     activeChainDate,
-    // A completed replay remains the canonical status source until a newer
-    // chain attempt starts. Otherwise direct stage heads disappear as soon as
-    // the root callback closes and the UI falls back to an older aggregate day.
-    chainStatusDate: activeChainDate ?? latestTerminalChainDate,
+    // Dates are newest-first. An older stale running head must never override
+    // a newer terminal chain, while a newer active attempt still takes over.
+    chainStatusDate,
   }
 }
 

@@ -9,7 +9,12 @@ class _Blob:
     def __init__(self):
         self.payload = b""
 
-    def upload_from_string(self, payload, content_type=None):
+    def exists(self):
+        return bool(self.payload)
+
+    def upload_from_string(self, payload, content_type=None, **kwargs):
+        if kwargs.get("if_generation_match") == 0 and self.payload:
+            raise RuntimeError("precondition failed")
         self.payload = payload
 
     def download_as_bytes(self):

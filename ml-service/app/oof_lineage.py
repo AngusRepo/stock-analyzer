@@ -103,6 +103,52 @@ def oof_date_cluster_rank_ic_from_bytes(payload: bytes, *, min_cohort_rows: int 
     }
 
 
+def _verify_existing_oof_payload(
+    payload: bytes,
+    *,
+    expected_metadata: dict[str, Any],
+    raw_scores: np.ndarray,
+    rank_scores: np.ndarray,
+    targets: np.ndarray,
+    dates: np.ndarray,
+    symbols: np.ndarray,
+    markets: np.ndarray,
+    label_known_dates: np.ndarray,
+) -> None:
+    try:
+        artifact = np.load(io.BytesIO(payload), allow_pickle=True)
+        existing_metadata = json.loads(str(artifact["metadata"].item()))
+        if existing_metadata != expected_metadata:
+            raise ValueError("metadata")
+        expected_arrays = {
+            "raw_scores": raw_scores,
+            "rank_scores": rank_scores,
+            "targets": targets,
+            "dates": dates,
+            "symbols": symbols,
+            "markets": markets,
+            "label_known_dates": label_known_dates,
+        }
+        for name, expected in expected_arrays.items():
+            if name not in artifact.files:
+                raise ValueError(name)
+            observed_array = np.asarray(artifact[name])
+            expected_array = np.asarray(expected)
+            numeric = (
+                np.issubdtype(observed_array.dtype, np.number)
+                and np.issubdtype(expected_array.dtype, np.number)
+            )
+            equal = np.array_equal(
+                observed_array,
+                expected_array,
+                equal_nan=True,
+            ) if numeric else np.array_equal(observed_array, expected_array)
+            if not equal:
+                raise ValueError(name)
+    except Exception as exc:
+        raise ValueError("oof_prediction_artifact_immutable_conflict") from exc
+
+
 def save_oof_prediction_artifact(
     *,
     bucket: Any,
@@ -183,9 +229,43 @@ def save_oof_prediction_artifact(
         f"{gcs_prefix.rstrip('/')}/oof/{cohort_id}/{fold_id}/"
         f"{model_name.lower()}.npz"
     )
-    bucket.blob(path).upload_from_string(payload, content_type="application/octet-stream")
+    blob = bucket.blob(path)
+
+    def existing_result() -> dict[str, Any]:
+        existing_payload = blob.download_as_bytes()
+        _verify_existing_oof_payload(
+            existing_payload,
+            expected_metadata=metadata,
+            raw_scores=raw,
+            rank_scores=rank,
+            targets=target,
+            dates=date_values,
+            symbols=symbol_values,
+            markets=market_values,
+            label_known_dates=known_values,
+        )
+        return {
+            **metadata,
+            "path": path,
+            "payload_checksum": hashlib.sha256(existing_payload).hexdigest(),
+            "idempotent_existing": True,
+        }
+
+    if blob.exists():
+        return existing_result()
+    try:
+        blob.upload_from_string(
+            payload,
+            content_type="application/octet-stream",
+            if_generation_match=0,
+        )
+    except Exception:
+        if blob.exists():
+            return existing_result()
+        raise
     return {
         **metadata,
         "path": path,
         "payload_checksum": hashlib.sha256(payload).hexdigest(),
+        "idempotent_existing": False,
     }

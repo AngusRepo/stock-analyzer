@@ -13,9 +13,19 @@ sys.path.insert(0, str(ROOT))
 class _Blob:
     def __init__(self):
         self.payload = None
+        self.upload_count = 0
 
-    def upload_from_string(self, payload, content_type=None):
+    def exists(self):
+        return self.payload is not None
+
+    def download_as_bytes(self):
+        return self.payload
+
+    def upload_from_string(self, payload, content_type=None, **kwargs):
+        if kwargs.get("if_generation_match") == 0 and self.payload is not None:
+            raise RuntimeError("precondition failed")
         self.payload = payload
+        self.upload_count += 1
 
 
 class _Bucket:
@@ -128,3 +138,36 @@ def test_frozen_forward_artifact_is_explicit_and_invalid_modes_fail_closed():
             split_metadata={},
             generation_mode="renamed_fake_oof",
         )
+
+def test_oof_artifact_write_is_idempotent_and_rejects_content_drift():
+    from app.oof_lineage import save_oof_prediction_artifact
+
+    bucket = _Bucket()
+    kwargs = {
+        "bucket": bucket,
+        "gcs_prefix": "universal",
+        "cohort_id": "cohort",
+        "fold_id": "w1",
+        "model_name": "TabM",
+        "artifact_version": "v1",
+        "raw_scores": np.asarray([0.3, 0.1]),
+        "targets": np.asarray([0.03, -0.01]),
+        "dates": np.asarray(["2026-06-01"] * 2),
+        "symbols": np.asarray(["A", "B"]),
+        "markets": np.asarray(["TWSE", "TWSE"]),
+        "label_known_dates": np.asarray(["2026-06-08"] * 2),
+        "split_metadata": {"method": "test"},
+    }
+    first = save_oof_prediction_artifact(**kwargs)
+    second = save_oof_prediction_artifact(**kwargs)
+    blob = bucket.objects[first["path"]]
+
+    assert first["idempotent_existing"] is False
+    assert second["idempotent_existing"] is True
+    assert first["payload_checksum"] == second["payload_checksum"]
+    assert blob.upload_count == 1
+
+    changed = {**kwargs, "raw_scores": np.asarray([0.4, 0.1])}
+    with pytest.raises(ValueError, match="immutable_conflict"):
+        save_oof_prediction_artifact(**changed)
+    assert blob.upload_count == 1

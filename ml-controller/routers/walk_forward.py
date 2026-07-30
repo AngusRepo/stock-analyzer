@@ -1586,7 +1586,7 @@ OOF_LABEL_PURGE_SESSIONS = 5
 OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
-OOF_COHORT_ID_VERSION = "v6-exact-fold-artifacts"
+OOF_COHORT_ID_VERSION = "v7-immutable-fold-evidence"
 OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v4-serving-owner"
 
 

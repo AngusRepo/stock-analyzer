@@ -862,3 +862,9 @@ def test_oof_dispatch_fence_probes_modal_terminal_state_before_holding_lock():
     assert "get.aio(timeout=0)" in client_source
     assert '"status": "failed"' in client_source
     assert '"status": "unknown"' in client_source
+
+
+def test_oof_cohort_version_owns_immutable_fold_evidence_contract():
+    from routers.walk_forward import OOF_COHORT_ID_VERSION
+
+    assert OOF_COHORT_ID_VERSION == "v7-immutable-fold-evidence"

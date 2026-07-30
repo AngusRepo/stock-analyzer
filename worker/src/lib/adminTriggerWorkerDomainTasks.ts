@@ -285,18 +285,22 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const { finalizeStrategyLearningEvidenceV5 } = await import('./strategyLearning')
       const {
         completeStrategyLearningRun,
+        deferStrategyLearningFinalizer,
         failStrategyLearningRun,
         loadStrategyLearningRun,
+        markStrategyLearningRunFinalized,
       } = await import('./strategyLearningRunState')
       const { logSchedulerResult } = await import('./schedulerRunLogger')
       const runState = await loadStrategyLearningRun(c.env.DB, runDate)
       if (!runState) throw new Error(`strategy_learning_run_missing:${runDate}`)
       const finalizerAttemptId = `${runState.canonical_run_id}:manual-finalize:${Date.now().toString(36)}`
+      let materializationValidated = false
       try {
         const coverage = await completeStrategyLearningRun(c.env.DB, {
           businessDate: runDate,
           runId: runState.canonical_run_id,
         })
+        materializationValidated = true
         const currentBusinessDateRun = c.req.query('force_policy') === '1' && runDate === twToday()
         const {
           auditEveningChainEvidenceClosure,
@@ -345,13 +349,25 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         await logSchedulerResult(c.env.KV, 'strategy-learning', { status: 'success', summary, duration_ms: 0, run_id: runState.canonical_run_id, attempt_id: finalizerAttemptId, run_date: runDate })
         await logSchedulerResult(c.env.KV, 'post-verify-chain', { status: 'success', summary: `strategy-learning finalizer recovered; ${summary}`, duration_ms: 0, run_id: runState.canonical_run_id, attempt_id: finalizerAttemptId, run_date: runDate })
         await logSchedulerResult(c.env.KV, 'evening-chain', { status: 'success', summary: `root chain closed by strategy-learning finalizer; ${summary}`, duration_ms: 0, run_id: runState.canonical_run_id, attempt_id: finalizerAttemptId, run_date: runDate })
+        await markStrategyLearningRunFinalized(c.env.DB, {
+          businessDate: runDate,
+          runId: runState.canonical_run_id,
+        })
         return summary
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
-        await failStrategyLearningRun(c.env.DB, {
-          businessDate: runDate,
-          error: errorMessage,
-        })
+        if (materializationValidated) {
+          await deferStrategyLearningFinalizer(c.env.DB, {
+            businessDate: runDate,
+            runId: runState.canonical_run_id,
+            error: errorMessage,
+          })
+        } else {
+          await failStrategyLearningRun(c.env.DB, {
+            businessDate: runDate,
+            error: errorMessage,
+          })
+        }
         await Promise.allSettled([
           logSchedulerResult(c.env.KV, 'strategy-learning', {
             status: 'error', summary: errorMessage, error: errorMessage, duration_ms: 0,

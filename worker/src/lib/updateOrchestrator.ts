@@ -3178,8 +3178,10 @@ export async function processUpdateBatch(
       checkpointStrategyLearningPage,
       claimStrategyLearningPage,
       completeStrategyLearningRun,
+      deferStrategyLearningFinalizer,
       failStrategyLearningRun,
       initializeStrategyLearningRun,
+      markStrategyLearningRunFinalized,
     } = await import('./strategyLearningRunState')
     const state = await initializeStrategyLearningRun(env.DB, {
       businessDate: triggerTime,
@@ -3190,6 +3192,12 @@ export async function processUpdateBatch(
       console.log(`[Queue] strategy-learning already complete date=${triggerTime} run_id=${state.canonical_run_id}`)
       return
     }
+    const expectedCandidates = Math.max(0, Number(state.expected_candidates ?? 0))
+    const expectedRows = Math.max(0, Number(state.expected_decision_rows ?? 0))
+    const materializationAlreadyComplete = expectedCandidates > 0
+      && expectedRows > 0
+      && Number(state.processed_candidates) === expectedCandidates
+      && Number(state.persisted_decision_rows) === expectedRows
     const durableCursor = String(state.cursor_symbol ?? '')
     if (requestedCursor && requestedCursor !== durableCursor) {
       console.log(`[Queue] stale strategy-learning cursor ignored date=${triggerTime} requested=${requestedCursor} durable=${durableCursor}`)
@@ -3208,8 +3216,11 @@ export async function processUpdateBatch(
       return
     }
 
+    let materializationValidated = materializationAlreadyComplete
     try {
-      const chunk = await materializeStrategyDecisionLogChunk(env.DB, {
+      let chunk: Awaited<ReturnType<typeof materializeStrategyDecisionLogChunk>> | null = null
+      if (!materializationAlreadyComplete) {
+        chunk = await materializeStrategyDecisionLogChunk(env.DB, {
         date: triggerTime,
         afterSymbol: durableCursor,
         limit: STRATEGY_LEARNING_QUEUE_CHUNK_SIZE,
@@ -3248,11 +3259,13 @@ export async function processUpdateBatch(
         })
         return
       }
+      }
 
       const coverage = await completeStrategyLearningRun(env.DB, {
         businessDate: triggerTime,
         runId: canonicalRunId,
       })
+      materializationValidated = true
 
       const currentBusinessDateRun = Boolean(msg.force) && triggerTime === twToday()
       const {
@@ -3281,8 +3294,8 @@ export async function processUpdateBatch(
       if (!closureSummary) throw new Error('evening_chain_evidence_closure_callback_missing')
       const summary = [
       `materialized_complete candidates=${coverage.candidateRows}/${coverage.expectedCandidates} rows=${coverage.decisionRows}/${coverage.expectedRows}`,
-      `last_candidates=${chunk.candidate_count}`,
-      `last_decision_rows=${chunk.persisted_rows}`,
+      `last_candidates=${chunk?.candidate_count ?? 0}`,
+      `last_decision_rows=${chunk?.persisted_rows ?? 0}`,
       `selection_decisions=${decisionEvidence.finalSignalRows}/${decisionEvidence.referenceRows}`,
       `selection_ev_owner=${decisionEvidence.evOwnerRows}`,
       `strategy_pit_rebuild=${historicalEvidence.successfulDates}/${historicalEvidence.attemptedDates}`,
@@ -3310,13 +3323,22 @@ export async function processUpdateBatch(
         status: 'success', summary: `root chain closed after queued strategy-learning: ${summary}`,
         duration_ms: 0, run_id: canonicalRunId, attempt_id: finalizerAttemptId, run_date: triggerTime,
       })
+      await markStrategyLearningRunFinalized(env.DB, { businessDate: triggerTime, runId: canonicalRunId })
       return
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)
-      await failStrategyLearningRun(env.DB, {
-        businessDate: triggerTime,
-        error: errorMessage,
-      })
+      if (materializationValidated) {
+        await deferStrategyLearningFinalizer(env.DB, {
+          businessDate: triggerTime,
+          runId: canonicalRunId,
+          error: errorMessage,
+        })
+      } else {
+        await failStrategyLearningRun(env.DB, {
+          businessDate: triggerTime,
+          error: errorMessage,
+        })
+      }
       await Promise.allSettled([
         logSchedulerResult(env.KV, 'strategy-learning', {
           status: 'error', summary: errorMessage, error: errorMessage, duration_ms: 0,

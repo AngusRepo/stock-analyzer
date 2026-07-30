@@ -199,7 +199,7 @@ export async function completeStrategyLearningRun(
   if (!state) throw new Error(`strategy_learning_run_missing:${input.businessDate}`)
   const expectedCandidates = Math.max(0, Number(state.expected_candidates ?? 0))
   const expectedRows = Math.max(0, Number(state.expected_decision_rows ?? 0))
-  const priorCanonicalSuccess = Boolean(state.completed_at)
+  const priorCanonicalSuccess = state.status === 'success' && Boolean(state.completed_at)
     && Math.max(0, Number(state.processed_candidates ?? 0)) === expectedCandidates
     && Math.max(0, Number(state.persisted_decision_rows ?? 0)) === expectedRows
   if (priorCanonicalSuccess) {
@@ -233,12 +233,45 @@ export async function completeStrategyLearningRun(
   }
   await db.prepare(`
     UPDATE strategy_learning_runs
-       SET status='success', processed_candidates=?, persisted_decision_rows=?,
-           lease_owner=NULL, lease_expires_at=NULL, completed_at=CURRENT_TIMESTAMP,
+       SET status='running', processed_candidates=?, persisted_decision_rows=?,
+           lease_owner=?, lease_expires_at=datetime('now', '+300 seconds'), completed_at=NULL,
            updated_at=CURRENT_TIMESTAMP, last_error=NULL
      WHERE business_date=? AND canonical_run_id=?
-  `).bind(candidateRows, decisionRows, input.businessDate, state.canonical_run_id).run()
+  `).bind(
+    candidateRows, decisionRows, input.runId, input.businessDate, state.canonical_run_id,
+  ).run()
   return { candidateRows, decisionRows, expectedCandidates, expectedRows }
+}
+
+export async function markStrategyLearningRunFinalized(
+  db: D1Database,
+  input: { businessDate: string; runId: string },
+): Promise<void> {
+  const result = await db.prepare(`
+    UPDATE strategy_learning_runs
+       SET status='success', lease_owner=NULL, lease_expires_at=NULL,
+           completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, last_error=NULL
+     WHERE business_date=? AND canonical_run_id=?
+       AND processed_candidates=expected_candidates
+       AND persisted_decision_rows=expected_decision_rows
+  `).bind(input.businessDate, input.runId).run()
+  if (Number(result.meta?.changes ?? 0) !== 1) {
+    throw new Error(`strategy_learning_finalize_state_conflict:${input.businessDate}`)
+  }
+}
+
+export async function deferStrategyLearningFinalizer(
+  db: D1Database,
+  input: { businessDate: string; runId: string; error: string },
+): Promise<void> {
+  await db.prepare(`
+    UPDATE strategy_learning_runs
+       SET status='queued', lease_owner=NULL, lease_expires_at=NULL, completed_at=NULL,
+           last_error=?, updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=? AND canonical_run_id=?
+       AND processed_candidates=expected_candidates
+       AND persisted_decision_rows=expected_decision_rows
+  `).bind(input.error.slice(0, 1000), input.businessDate, input.runId).run()
 }
 
 export async function failStrategyLearningRun(

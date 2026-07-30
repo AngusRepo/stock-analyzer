@@ -69,7 +69,10 @@ def _verify_base_manifest(bucket: Any, path: str) -> dict[str, Any]:
 def _verify_prep_manifest(bucket: Any, prefix: str) -> dict[str, Any]:
     manifest = _load_json(bucket, f"{prefix}/prep/manifest.json")
     if (
-        manifest.get("schema_version") != "active8-canonical-adjusted-prep-v1"
+        manifest.get("schema_version") not in {
+            "active8-canonical-adjusted-prep-v1",
+            "active8-canonical-adjusted-prep-v2",
+        }
         or manifest.get("status") != "ready"
         or str(manifest.get("output_gcs_prefix") or "").rstrip("/") != prefix
         or manifest.get("target_semantic_version") != SEQUENCE_RETURN_SEMANTIC_VERSION
@@ -77,6 +80,12 @@ def _verify_prep_manifest(bucket: Any, prefix: str) -> dict[str, Any]:
         or manifest.get("manifest_checksum") != _manifest_checksum(manifest)
     ):
         raise ValueError("forward_extension_prep_manifest_invalid")
+    if manifest.get("schema_version") == "active8-canonical-adjusted-prep-v2" and (
+        manifest.get("rank_semantic_version") != "same-market-same-date-global-percentile-v2"
+        or len(str(manifest.get("source_receipt_checksum") or "")) != 64
+        or len(str(manifest.get("sequence_manifest_checksum") or "")) != 64
+    ):
+        raise ValueError("forward_extension_prep_v2_lineage_invalid")
     paths = [f"{prefix}/prep/batch_{idx}.npz" for idx in range(len(manifest.get("batch_rows") or []))]
     checksums = dict(manifest.get("output_checksums") or {})
     if not paths or sorted(paths) != sorted(checksums):

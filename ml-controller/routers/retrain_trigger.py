@@ -275,8 +275,13 @@ def _verify_prebuilt_canonical_prep(
     actual_manifest_checksum = hashlib.sha256(
         json.dumps(unsigned, sort_keys=True).encode("utf-8")
     ).hexdigest()
+    schema_version = str(manifest.get("schema_version") or "")
+    if schema_version not in {
+        "active8-canonical-adjusted-prep-v1",
+        "active8-canonical-adjusted-prep-v2",
+    }:
+        raise ValueError("prebuilt_canonical_prep_manifest_mismatch:schema_version")
     required = {
-        "schema_version": "active8-canonical-adjusted-prep-v1",
         "status": "ready",
         "output_gcs_prefix": normalized_prefix,
         "target_semantic_version": expected_target_semantic_version,
@@ -308,13 +313,68 @@ def _verify_prebuilt_canonical_prep(
     sequence_prefix = str(manifest.get("sequence_gcs_prefix") or "").strip().rstrip("/")
     if not sequence_prefix:
         raise ValueError("prebuilt_canonical_prep_sequence_prefix_missing")
+
+    source_receipt_checksum = ""
+    sequence_manifest_checksum = ""
+    if schema_version == "active8-canonical-adjusted-prep-v2":
+        if manifest.get("rank_semantic_version") != "same-market-same-date-global-percentile-v2":
+            raise ValueError("prebuilt_canonical_prep_rank_semantic_invalid")
+        source_prefix = str(manifest.get("source_gcs_prefix") or "").strip().rstrip("/")
+        source_receipt_checksum = str(manifest.get("source_receipt_checksum") or "").strip()
+        sequence_manifest_checksum = str(manifest.get("sequence_manifest_checksum") or "").strip()
+        if not source_prefix or len(source_receipt_checksum) != 64:
+            raise ValueError("prebuilt_canonical_prep_source_lineage_incomplete")
+        if len(sequence_manifest_checksum) != 64:
+            raise ValueError("prebuilt_canonical_prep_sequence_lineage_incomplete")
+        receipt = json.loads(
+            bucket.blob(f"{source_prefix}/prep/immutable_receipt.json")
+            .download_as_text()
+            .lstrip("\ufeff")
+        )
+        unsigned_receipt = {
+            key: value for key, value in receipt.items() if key != "receipt_checksum"
+        }
+        actual_receipt_checksum = hashlib.sha256(
+            json.dumps(unsigned_receipt, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        if (
+            receipt.get("schema_version") != "active8-immutable-feature-prep-receipt-v1"
+            or receipt.get("status") != "ready"
+            or str(receipt.get("output_gcs_prefix") or "").rstrip("/") != source_prefix
+            or receipt.get("receipt_checksum") != actual_receipt_checksum
+            or actual_receipt_checksum != source_receipt_checksum
+            or dict(receipt.get("output_checksums") or {})
+            != dict(manifest.get("source_checksums") or {})
+        ):
+            raise ValueError("prebuilt_canonical_prep_source_receipt_invalid")
+        date_fields = {
+            key: str(manifest.get(key) or "")[:10]
+            for key in (
+                "source_business_date",
+                "source_feature_date_max",
+                "sequence_date_max",
+                "signal_date_max",
+                "label_known_date_max",
+            )
+        }
+        if any(len(value) != 10 for value in date_fields.values()):
+            raise ValueError("prebuilt_canonical_prep_date_lineage_incomplete")
+        if (
+            date_fields["signal_date_max"] > date_fields["source_feature_date_max"]
+            or date_fields["signal_date_max"] > date_fields["sequence_date_max"]
+            or date_fields["label_known_date_max"] <= date_fields["signal_date_max"]
+        ):
+            raise ValueError("prebuilt_canonical_prep_date_lineage_invalid")
     return {
+        "schema_version": schema_version,
         "manifest_path": manifest_path,
         "manifest_checksum": actual_manifest_checksum,
         "gcs_prefix": normalized_prefix,
         "batch_count": len(batch_rows),
         "total_rows": int(manifest["output_rows"]),
         "sequence_gcs_prefix": sequence_prefix,
+        "source_receipt_checksum": source_receipt_checksum,
+        "sequence_manifest_checksum": sequence_manifest_checksum,
         "target_semantic_version": expected_target_semantic_version,
         "roundtrip_cost_bps": 18.0,
     }
@@ -402,6 +462,7 @@ def _verify_prebuilt_sequence_prep(
     return {
         "manifest_path": manifest_path,
         "manifest_checksum": expected_manifest_checksum,
+        "lineage_manifest_checksum": str(manifest.get("manifest_checksum") or ""),
         "gcs_prefix": normalized_prefix,
         "batch_count": len(checksums),
         "batch_checksums": checksums,
@@ -1006,6 +1067,12 @@ async def _dispatch_prebuilt_oof_full_fit(
         str(req.sequence_gcs_prefix).strip().rstrip("/") != verified["sequence_gcs_prefix"]
     ):
         raise ValueError("prebuilt_canonical_prep_sequence_prefix_mismatch")
+    if (
+        verified.get("schema_version") == "active8-canonical-adjusted-prep-v2"
+        and verified.get("sequence_manifest_checksum")
+        != sequence_verified.get("lineage_manifest_checksum")
+    ):
+        raise ValueError("prebuilt_canonical_prep_sequence_checksum_mismatch")
     if len(str(req.prebuilt_prep_source_manifest_checksum or "")) != 64:
         raise ValueError("prebuilt_canonical_prep_source_manifest_checksum_missing")
     if not str(req.prebuilt_prep_source_cohort_id or "").strip():

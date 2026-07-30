@@ -91,16 +91,40 @@ def test_exact_snapshot_rejects_missing_snapshot_component_or_wrong_date():
     )["reason"] == "exact_dataset_snapshot_feature_component_missing"
 
 def test_prebuilt_canonical_prep_requires_verified_manifest_and_batches():
-    prefix = "universal/canonical_adjusted_v4/test"
+    prefix = "universal/canonical_adjusted_v5/test"
     batches = {
         f"{prefix}/prep/batch_0.npz": b"batch-zero",
         f"{prefix}/prep/batch_1.npz": b"batch-one",
     }
+    source_prefix = "universal/oof_forward_prep/test"
+    source_checksums = {
+        f"{source_prefix}/prep/batch_0.npz": "a" * 64,
+        f"{source_prefix}/prep/batch_1.npz": "b" * 64,
+    }
+    receipt = {
+        "schema_version": "active8-immutable-feature-prep-receipt-v1",
+        "status": "ready",
+        "output_gcs_prefix": source_prefix,
+        "output_checksums": source_checksums,
+    }
+    receipt["receipt_checksum"] = hashlib.sha256(
+        json.dumps(receipt, sort_keys=True).encode("utf-8")
+    ).hexdigest()
     manifest = {
-        "schema_version": "active8-canonical-adjusted-prep-v1",
+        "schema_version": "active8-canonical-adjusted-prep-v2",
         "status": "ready",
         "output_gcs_prefix": prefix,
+        "source_gcs_prefix": source_prefix,
         "sequence_gcs_prefix": "universal/sequence_long/canonical-v4",
+        "source_business_date": "2026-07-29",
+        "source_feature_date_max": "2026-07-29",
+        "sequence_date_max": "2026-07-29",
+        "signal_date_max": "2026-07-22",
+        "label_known_date_max": "2026-07-29",
+        "source_receipt_checksum": receipt["receipt_checksum"],
+        "sequence_manifest_checksum": "c" * 64,
+        "rank_semantic_version": "same-market-same-date-global-percentile-v2",
+        "source_checksums": source_checksums,
         "target_semantic_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "roundtrip_cost_bps": 18.0,
         "output_rows": 11000,
@@ -114,6 +138,7 @@ def test_prebuilt_canonical_prep_requires_verified_manifest_and_batches():
     blobs = {
         **batches,
         f"{prefix}/prep/manifest.json": json.dumps(manifest).encode("utf-8"),
+        f"{source_prefix}/prep/immutable_receipt.json": json.dumps(receipt).encode("utf-8"),
     }
 
     class Blob:
@@ -136,6 +161,7 @@ def test_prebuilt_canonical_prep_requires_verified_manifest_and_batches():
         expected_manifest_checksum=checksum,
         expected_target_semantic_version=manifest["target_semantic_version"],
     )
+    assert verified["schema_version"] == "active8-canonical-adjusted-prep-v2"
     assert verified["batch_count"] == 2
     assert verified["total_rows"] == 11000
     assert verified["manifest_checksum"] == checksum

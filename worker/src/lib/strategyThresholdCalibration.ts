@@ -50,6 +50,11 @@ export interface StrategyThresholdCalibrationEvidenceRow {
   reward_pct: number | null
 }
 
+type StrategyThresholdCalibrationEvidenceQueryRow = StrategyThresholdCalibrationEvidenceRow & {
+  symbol: string
+  raw_signals_json?: string | null
+}
+
 export interface StrategyThresholdAutoCalibrationOptions {
   runDate: string
   cadence: StrategyThresholdCalibrationCadence
@@ -581,10 +586,76 @@ export async function listStrategyThresholdCalibrationEvidenceRows(
   options: { startDate: string; endDate: string; limit?: number },
 ): Promise<StrategyThresholdCalibrationEvidenceRow[]> {
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 50_000), 100_000))
-  const { results } = await db.prepare(`
-    SELECT m.signal_date AS date,
-           m.strategy_id,
-           m.strategy_version,
+  const pageSize = Math.min(500, limit)
+  const rows: StrategyThresholdCalibrationEvidenceQueryRow[] = []
+  let cursorDate = '9999-12-31'
+  let cursorStrategyId = ''
+  let cursorSymbol = ''
+  let cursorStrategyVersion = ''
+
+  while (rows.length < limit) {
+    const remaining = limit - rows.length
+    const { results } = await db.prepare(`
+    WITH evidence_page AS MATERIALIZED (
+      SELECT m.signal_date,
+             m.strategy_id,
+             m.strategy_version,
+             m.symbol,
+             m.producer_run_id
+        FROM strategy_label_matrix_v4 m
+       WHERE m.signal_date >= ?
+         AND m.signal_date <= ?
+         AND m.reference_contract_version = 'selection-reference-snapshot-v3'
+         AND m.evaluable = 1
+         AND EXISTS (
+           SELECT 1
+             FROM strategy_label_matrix_runs_v4 mr
+            WHERE mr.producer_run_id = m.producer_run_id
+              AND mr.status = 'ready'
+         )
+         AND EXISTS (
+           SELECT 1
+             FROM canonical_run_heads h
+            WHERE h.logical_run_key = 'screener:' || m.signal_date || ':TW:production:market_screener'
+              AND h.run_id = m.producer_run_id
+         )
+         AND EXISTS (
+           SELECT 1
+             FROM strategy_decision_log d0
+            WHERE d0.date = m.signal_date
+              AND d0.symbol = m.symbol
+              AND d0.strategy_id = m.strategy_id
+              AND d0.strategy_version = m.strategy_version
+              AND d0.evaluable = 1
+              AND d0.evaluation_contract_version = 'strategy-evaluation-v2'
+         )
+         AND EXISTS (
+           SELECT 1
+             FROM canonical_selection_labels_v4 label0
+            WHERE label0.signal_date = m.signal_date
+              AND label0.symbol = m.symbol
+              AND label0.producer_run_id = m.producer_run_id
+              AND label0.label_schema_version = 'canonical-strategy-selection-label-v4'
+              AND label0.reference_contract_version = 'selection-reference-snapshot-v3'
+         )
+         AND (
+           m.signal_date < ?
+           OR (m.signal_date = ? AND m.strategy_id > ?)
+           OR (m.signal_date = ? AND m.strategy_id = ? AND m.symbol > ?)
+           OR (
+             m.signal_date = ?
+             AND m.strategy_id = ?
+             AND m.symbol = ?
+             AND m.strategy_version > ?
+           )
+         )
+       ORDER BY m.signal_date DESC, m.strategy_id ASC, m.symbol ASC, m.strategy_version ASC
+       LIMIT ?
+    )
+    SELECT p.signal_date AS date,
+           p.strategy_id,
+           p.strategy_version,
+           p.symbol,
            CASE
              WHEN json_valid(d.evidence_json)
              THEN CAST(json_extract(d.evidence_json, '$.feature_ref_diagnostics.weighted_score') AS REAL)
@@ -598,45 +669,54 @@ export async function listStrategyThresholdCalibrationEvidenceRows(
              ELSE NULL
            END AS raw_signals_json,
            label.residual_return_net AS reward_pct
-      FROM strategy_label_matrix_v4 m
+      FROM evidence_page p
       JOIN strategy_decision_log d
-        ON d.date = m.signal_date
-       AND d.symbol = m.symbol
-       AND d.strategy_id = m.strategy_id
-       AND d.strategy_version = m.strategy_version
+        ON d.date = p.signal_date
+       AND d.symbol = p.symbol
+       AND d.strategy_id = p.strategy_id
+       AND d.strategy_version = p.strategy_version
+       AND d.evaluable = 1
+       AND d.evaluation_contract_version = 'strategy-evaluation-v2'
       LEFT JOIN strategy_candidate_contexts c
         ON c.context_id = d.context_id
       JOIN canonical_selection_labels_v4 label
-        ON label.signal_date = m.signal_date
-       AND label.symbol = m.symbol
-       AND label.producer_run_id = m.producer_run_id
+        ON label.signal_date = p.signal_date
+       AND label.symbol = p.symbol
+       AND label.producer_run_id = p.producer_run_id
        AND label.label_schema_version = 'canonical-strategy-selection-label-v4'
        AND label.reference_contract_version = 'selection-reference-snapshot-v3'
-     WHERE m.signal_date >= ?
-       AND m.signal_date <= ?
-       AND m.reference_contract_version = 'selection-reference-snapshot-v3'
-       AND m.evaluable = 1
-       AND d.evaluable = 1
-       AND d.evaluation_contract_version = 'strategy-evaluation-v2'
-       AND EXISTS (
-         SELECT 1
-           FROM strategy_label_matrix_runs_v4 mr
-          WHERE mr.producer_run_id = m.producer_run_id
-            AND mr.status = 'ready'
-       )
-       AND EXISTS (
-         SELECT 1
-           FROM canonical_run_heads h
-          WHERE h.logical_run_key = 'screener:' || m.signal_date || ':TW:production:market_screener'
-            AND h.run_id = m.producer_run_id
-       )
-     ORDER BY m.signal_date DESC, m.strategy_id ASC, m.symbol ASC
-     LIMIT ?
-  `).bind(options.startDate, options.endDate, limit).all<StrategyThresholdCalibrationEvidenceRow & { raw_signals_json?: string | null }>()
-  return (results ?? []).map((row) => ({
-    ...row,
-    raw_signals: parseJson<Record<string, unknown> | null>(row.raw_signals_json, null),
+     ORDER BY p.signal_date DESC, p.strategy_id ASC, p.symbol ASC, p.strategy_version ASC
+  `).bind(
+      options.startDate,
+      options.endDate,
+      cursorDate,
+      cursorDate,
+      cursorStrategyId,
+      cursorDate,
+      cursorStrategyId,
+      cursorSymbol,
+      cursorDate,
+      cursorStrategyId,
+      cursorSymbol,
+      cursorStrategyVersion,
+      Math.min(pageSize, remaining),
+    ).all<StrategyThresholdCalibrationEvidenceQueryRow>()
+    const page = results ?? []
+    rows.push(...page)
+    if (page.length < Math.min(pageSize, remaining)) break
+    const last = page[page.length - 1]
+    cursorDate = last.date
+    cursorStrategyId = last.strategy_id
+    cursorSymbol = last.symbol
+    cursorStrategyVersion = last.strategy_version
+  }
+
+  return rows.map((row) => ({
+    date: row.date,
+    strategy_id: row.strategy_id,
+    strategy_version: row.strategy_version,
     weighted_score: finiteNumber(row.weighted_score),
+    raw_signals: parseJson<Record<string, unknown> | null>(row.raw_signals_json, null),
     reward_pct: finiteNumber(row.reward_pct),
   }))
 }

@@ -67,6 +67,9 @@ assert(migration.includes('CHECK(precondition_ok=1)'), 'failed cutover assertion
 
 const orchestrator = readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 assert(orchestrator.includes('finalizeStrategyLearningEvidenceV5'), 'production queue must use the canonical strategy finalizer')
+assert(learning.includes('strategy_learning_finalizer_stage_failed:'), 'finalizer failures must persist the exact failed stage')
+assert(learning.includes("'threshold_calibration'"), 'threshold calibration must have a distinct finalizer failure owner')
+assert(learning.includes("'adaptive_policy'"), 'adaptive policy must have a distinct finalizer failure owner')
 assert(orchestrator.includes('resolveEveningChainRunAuthority'), 'queue finalizer must revalidate durable canonical production authority')
 assert(orchestrator.includes('productionAuthority?.allowed === true'), 'production mutation must require resolved authority')
 assert(orchestrator.includes('queue_not_marked_production_eligible'), 'shadow reruns must remain fail-closed without queue eligibility')

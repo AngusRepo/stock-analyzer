@@ -3121,6 +3121,16 @@ export async function rebuildHistoricalStrategyEvidenceV5(
   }
 }
 
+async function runStrategyLearningFinalizerStage<T>(stage: string, task: () => Promise<T>): Promise<T> {
+  try {
+    return await task()
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    if (reason.startsWith('strategy_learning_finalizer_stage_failed:')) throw error
+    throw new Error(`strategy_learning_finalizer_stage_failed:${stage}:${reason}`)
+  }
+}
+
 export async function finalizeStrategyLearningEvidenceV5(
   db: D1Database,
   date: string,
@@ -3136,28 +3146,54 @@ export async function finalizeStrategyLearningEvidenceV5(
   const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
   const { reconcileSelectionDecisionEvidenceV4 } = await import('./selectionReferenceEvidence')
   const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
-  const decisionEvidence = await reconcileSelectionDecisionEvidenceV4(db, date)
-  const historicalEvidence = await rebuildHistoricalStrategyEvidenceV5(db, {
-    asOfDate: date,
-    maxDates: 2,
-    priorityDate: options.historicalPriorityDate,
-  })
-  const labels = await materializeCanonicalSelectionLabelsV4(db, { asOfDate: date })
-  const rewards = await refreshStrategyRewardLedger(db, { endDate: date, dryRun: false })
-  if (options.beforePromotion) await options.beforePromotion()
-  const marginalEdge = await refreshStrategyMarginalEdgeV4(db, date, { allowPromotion: options.allowPromotion === true })
+  const decisionEvidence = await runStrategyLearningFinalizerStage(
+    'decision_evidence',
+    () => reconcileSelectionDecisionEvidenceV4(db, date),
+  )
+  const historicalEvidence = await runStrategyLearningFinalizerStage(
+    'historical_evidence',
+    () => rebuildHistoricalStrategyEvidenceV5(db, {
+      asOfDate: date,
+      maxDates: 2,
+      priorityDate: options.historicalPriorityDate,
+    }),
+  )
+  const labels = await runStrategyLearningFinalizerStage(
+    'selection_labels',
+    () => materializeCanonicalSelectionLabelsV4(db, { asOfDate: date }),
+  )
+  const rewards = await runStrategyLearningFinalizerStage(
+    'reward_ledger',
+    () => refreshStrategyRewardLedger(db, { endDate: date, dryRun: false }),
+  )
+  if (options.beforePromotion) {
+    await runStrategyLearningFinalizerStage('before_promotion', options.beforePromotion)
+  }
+  const marginalEdge = await runStrategyLearningFinalizerStage(
+    'marginal_edge',
+    () => refreshStrategyMarginalEdgeV4(db, date, { allowPromotion: options.allowPromotion === true }),
+  )
   const { refreshStrategyRouteCalibration } = await import('./strategyRouteCalibration')
-  const routeCalibration = await refreshStrategyRouteCalibration(db, date, { allowPromotion: options.allowPromotion === true })
+  const routeCalibration = await runStrategyLearningFinalizerStage(
+    'route_calibration',
+    () => refreshStrategyRouteCalibration(db, date, { allowPromotion: options.allowPromotion === true }),
+  )
   const policy = options.persistPolicy === false
     ? null
-    : await refreshStrategyAdaptivePolicyState(db, { date, dryRun: false })
+    : await runStrategyLearningFinalizerStage(
+        'adaptive_policy',
+        () => refreshStrategyAdaptivePolicyState(db, { date, dryRun: false }),
+      )
   const thresholdCalibration = options.calibrateThresholds === false
     ? null
-    : await runStrategyThresholdAutoCalibration(db, {
-      runDate: date,
-      cadence: options.calibrationCadence ?? 'daily_drift',
-      dryRun: false,
-    })
+    : await runStrategyLearningFinalizerStage(
+        'threshold_calibration',
+        () => runStrategyThresholdAutoCalibration(db, {
+          runDate: date,
+          cadence: options.calibrationCadence ?? 'daily_drift',
+          dryRun: false,
+        }),
+      )
   return { decisionEvidence, historicalEvidence, labels, marginalEdge, routeCalibration, rewards, policy, thresholdCalibration }
 }
 

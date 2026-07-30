@@ -3,6 +3,7 @@ import {
   applyStrategyThresholdCalibrationArtifacts,
   buildStrategyThresholdAutoDecisions,
   classifyStrategyThresholdCalibrationCoverage,
+  listStrategyThresholdCalibrationEvidenceRows,
   summarizeStrategyThresholdCalibrationResult,
   type StrategyThresholdCalibrationArtifactRow,
   type StrategyThresholdCalibrationEvidenceRow,
@@ -205,6 +206,21 @@ function rawScalarEvidenceRows(): StrategyThresholdCalibrationEvidenceRow[] {
 }
 
 {
+  const source = fs.readFileSync('src/lib/strategyThresholdCalibration.ts', 'utf8')
+  const loader = source.slice(
+    source.indexOf('export async function listStrategyThresholdCalibrationEvidenceRows'),
+    source.indexOf('export function buildStrategyThresholdAutoDecisions'),
+  )
+  assert(loader.includes('const pageSize = Math.min(500, limit)'), 'threshold evidence reads must stay within bounded D1 pages')
+  assert(loader.includes('while (rows.length < limit)'), 'threshold evidence loader must exhaust the requested evidence budget')
+  assert(loader.includes('m.strategy_version > ?'), 'keyset cursor must include strategy version to avoid dropped duplicate symbols')
+  assert(loader.includes('ORDER BY m.signal_date DESC, m.strategy_id ASC, m.symbol ASC, m.strategy_version ASC'), 'keyset order must match the complete cursor identity')
+  assert(loader.includes('WITH evidence_page AS MATERIALIZED'), 'page limit must be materialized before joining large JSON evidence')
+  assert(loader.includes('FROM evidence_page p'), 'large evidence joins must consume only the bounded key page')
+  assert(!loader.includes('bind(options.startDate, options.endDate, limit)'), 'threshold evidence must not issue the legacy unbounded 50k join')
+}
+
+{
   const summary = summarizeStrategyThresholdCalibrationResult({
     runId: 'strategy-threshold-weekly-2026-07-07-test',
     runDate: '2026-07-07',
@@ -243,3 +259,57 @@ function rawScalarEvidenceRows(): StrategyThresholdCalibrationEvidenceRow[] {
   assert(summary.includes('approved=1'), 'summary must surface approved artifact count')
   assert(summary.includes('written=1'), 'summary must surface persisted artifact count')
 }
+
+async function verifyThresholdEvidenceKeysetPagination(): Promise<void> {
+  const makeRow = (symbol: string) => ({
+    date: '2026-07-15',
+    strategy_id: 'test_strategy',
+    strategy_version: 'strategy-spec-v1',
+    symbol,
+    weighted_score: 0.61,
+    raw_signals_json: '{"volumeExpansion20":1.4}',
+    reward_pct: 0.01,
+  })
+  const pages = [
+    Array.from({ length: 500 }, (_, index) => makeRow(String(index).padStart(4, '0'))),
+    [makeRow('0500'), makeRow('0501')],
+  ]
+  const bindCalls: unknown[][] = []
+  const sqlCalls: string[] = []
+  const db = {
+    prepare(sql: string) {
+      sqlCalls.push(sql)
+      return {
+        bind(...values: unknown[]) {
+          bindCalls.push(values)
+          return {
+            async all() {
+              return { results: pages.shift() ?? [] }
+            },
+          }
+        },
+      }
+    },
+  } as unknown as D1Database
+
+  const rows = await listStrategyThresholdCalibrationEvidenceRows(db, {
+    startDate: '2026-04-01',
+    endDate: '2026-07-15',
+    limit: 502,
+  })
+  assert(rows.length === 502, 'keyset pagination must preserve the complete requested evidence budget')
+  assert(bindCalls.length === 2, '502 evidence rows must use two bounded D1 queries')
+  assert(bindCalls[0][12] === 500, 'the first D1 query must be capped at 500 rows')
+  assert(bindCalls[1][2] === '2026-07-15', 'the next page must continue from the last signal date')
+  assert(bindCalls[1][4] === 'test_strategy', 'the next page must continue from the last strategy')
+  assert(bindCalls[1][7] === '0499', 'the next page must continue from the last symbol')
+  assert(bindCalls[1][11] === 'strategy-spec-v1', 'the next page must continue from the last strategy version')
+  assert(bindCalls[1][12] === 2, 'the final D1 query must request only the remaining rows')
+  assert(sqlCalls.every((sql) => sql.includes('m.strategy_version > ?')), 'every page must use the full unique cursor')
+  assert(rows[0].raw_signals?.volumeExpansion20 === 1.4, 'paged evidence must preserve parsed raw signals')
+}
+
+void verifyThresholdEvidenceKeysetPagination().catch((error) => {
+  console.error(error)
+  process.exitCode = 1
+})

@@ -40,7 +40,7 @@ const canonicalFinalizer = finalizer.slice(
   finalizer.indexOf('export async function runStrategyLearningClosure'),
 )
 assert(canonicalFinalizer.indexOf('options.beforePromotion') > canonicalFinalizer.indexOf('materializeCanonicalSelectionLabelsV4'))
-assert(canonicalFinalizer.indexOf('options.beforePromotion') < canonicalFinalizer.indexOf('const marginalEdge = await refreshStrategyMarginalEdgeV4'))
+assert(canonicalFinalizer.indexOf('options.beforePromotion') < canonicalFinalizer.indexOf('const marginalEdge = await runStrategyLearningFinalizerStage'))
 assert.match(finalizer, /ORDER BY CASE WHEN d\.date=\? THEN 0 ELSE 1 END, d\.date DESC/)
 assert.match(finalizer, /priorityDate: options\.historicalPriorityDate/)
 const directClosure = finalizer.slice(finalizer.indexOf('export async function runStrategyLearningClosure'))

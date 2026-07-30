@@ -1016,6 +1016,43 @@ async def spawn_walk_forward_orchestrator(payload: dict):
     return await fn.spawn.aio(payload)
 
 
+async def probe_modal_function_call(function_call_id: str) -> dict:
+    """Non-blocking terminal probe used by durable dispatch fences."""
+    import modal
+    from modal import exception as modal_exception
+
+    call_id = str(function_call_id or "").strip()
+    if not call_id:
+        return {"status": "unknown", "reason": "function_call_id_missing"}
+    try:
+        result = await modal.FunctionCall.from_id(call_id).get.aio(timeout=0)
+    except (TimeoutError, modal_exception.TimeoutError):
+        return {"status": "running", "function_call_id": call_id}
+    except (
+        modal_exception.AuthError,
+        modal_exception.ConnectionError,
+        modal_exception.InternalError,
+        modal_exception.ServiceError,
+    ) as exc:
+        return {
+            "status": "unknown",
+            "function_call_id": call_id,
+            "reason": f"modal_status_unavailable:{type(exc).__name__}",
+        }
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "function_call_id": call_id,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:500],
+        }
+    return {
+        "status": "completed",
+        "function_call_id": call_id,
+        "result_status": result.get("status") if isinstance(result, dict) else None,
+    }
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Cloud Run ML path（httpx 並行，fallback）
 # ══════════════════════════════════════════════════════════════════════════════

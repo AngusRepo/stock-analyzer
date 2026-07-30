@@ -849,3 +849,16 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         **current,
         "materialization_policy_version": "legacy-v1",
     })
+
+
+def test_oof_dispatch_fence_probes_modal_terminal_state_before_holding_lock():
+    router_source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
+    client_source = (ROOT / "ml-controller" / "services" / "modal_client.py").read_text(encoding="utf-8")
+
+    assert "probe_modal_function_call" in router_source
+    assert 'call_state["status"] == "running"' in router_source
+    assert "cohort_orchestrator_status_unavailable" in router_source
+    assert "terminal_{call_state['status']}" in router_source
+    assert "get.aio(timeout=0)" in client_source
+    assert '"status": "failed"' in client_source
+    assert '"status": "unknown"' in client_source

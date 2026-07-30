@@ -2151,13 +2151,37 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 except ValueError:
                     age_seconds = 24 * 3600
                 if dispatch.get("status") == "spawned" and age_seconds < 6 * 3600:
-                    return {
-                        "status": "pending",
-                        "reason": "cohort_orchestrator_active",
-                        "cadence": cadence,
-                        "cohort_id": cohort_id,
-                        "function_call_id": dispatch.get("function_call_id"),
-                    }
+                    from services import modal_client
+
+                    call_state = await modal_client.probe_modal_function_call(
+                        str(dispatch.get("function_call_id") or "")
+                    )
+                    if call_state["status"] == "running":
+                        return {
+                            "status": "pending",
+                            "reason": "cohort_orchestrator_active",
+                            "cadence": cadence,
+                            "cohort_id": cohort_id,
+                            "function_call_id": dispatch.get("function_call_id"),
+                        }
+                    if call_state["status"] == "unknown":
+                        return {
+                            "status": "pending",
+                            "reason": "cohort_orchestrator_status_unavailable",
+                            "cadence": cadence,
+                            "cohort_id": cohort_id,
+                            "function_call_id": dispatch.get("function_call_id"),
+                            "probe": call_state,
+                        }
+                    dispatch_blob.upload_from_string(
+                        json.dumps({
+                            **dispatch,
+                            "status": f"terminal_{call_state['status']}",
+                            "terminal_probe": call_state,
+                            "terminal_observed_at": datetime.now(timezone.utc).isoformat(),
+                        }, sort_keys=True),
+                        content_type="application/json",
+                    )
             plan = WalkForwardRequest(
                 start_date=start_date,
                 end_date=signal_end_date,

@@ -2000,7 +2000,8 @@ async function runDailyAllocatorEvReadiness(
   const priorOwner = servingState.expected_return_owner
   parts.push(`expected_return_serving_state=${servingState.state}`)
   parts.push(`expected_return_action_gate=${servingState.action_gate}`)
-  parts.push(`expected_mature_signal_date=${health.expected_mature_signal_date ?? 'unresolved'}`)
+  parts.push(`required_oof_max_date=${health.expected_mature_signal_date ?? 'unresolved'}`)
+  parts.push(`newly_mature_signal_date=${health.newly_mature_signal_date ?? 'unresolved'}`)
   parts.push(`oof_snapshot_max=${health.oof_max_dates.allocator_ev_snapshots ?? 'missing'}`)
   parts.push(`oof_l4_max=${health.oof_max_dates.l4_predictions ?? 'missing'}`)
 

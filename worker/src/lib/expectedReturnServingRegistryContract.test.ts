@@ -21,6 +21,9 @@ assert(!registry.includes('SELECT artifact_kind, MAX(max_date) AS max_date'))
 assert(registry.includes('champion_payload_table_version_mismatch'))
 assert(registry.includes("candidate_type IN ('l4_alpha_ev_refresh', 'allocator_ev_fusion_refresh')"))
 assert(registry.includes('production_candidate_not_champion_pointer'))
+assert(registry.includes('resolveExpectedOofCoverageDates'))
+assert(registry.includes('awaiting_current_close_oof_materialization'))
+assert(registry.includes('LIMIT 7'))
 
 assert(servingState.includes("state: 'production_primary' | 'safe_abstention' | 'no_eligible_owner'"))
 assert(servingState.includes("sourceOfTruth: 'model_champion_pointers+artifact_payloads'"))
@@ -45,6 +48,8 @@ const readinessBody = orchestrator.slice(readinessStart, readinessEnd)
 assert(readinessBody.includes('inspectExpectedReturnLifecycleHealth'))
 assert(!readinessBody.includes('runL4AlphaEvRefresh'))
 assert(!readinessBody.includes('runAllocatorEvFusionRefresh'))
+assert(readinessBody.includes('required_oof_max_date=${health.expected_mature_signal_date'))
+assert(readinessBody.includes('newly_mature_signal_date=${health.newly_mature_signal_date'))
 
 for (const owner of ['l4_alpha_ev', 'allocator_ev_fusion']) {
   assert(migration.includes(`'${owner}'`))

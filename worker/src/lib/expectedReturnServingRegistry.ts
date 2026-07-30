@@ -329,6 +329,17 @@ export async function commitExpectedReturnChampion(
   }
 }
 
+export function resolveExpectedOofCoverageDates(sessionDatesInput: string[]): {
+  requiredOofMaxDate: string
+  newlyMatureSignalDate: string
+} | null {
+  const sessionDates = [...new Set(sessionDatesInput.map((value) => String(value ?? '').slice(0, 10)).filter(Boolean))].sort()
+  if (sessionDates.length < 7) return null
+  return {
+    requiredOofMaxDate: sessionDates[sessionDates.length - 7],
+    newlyMatureSignalDate: sessionDates[sessionDates.length - 6],
+  }
+}
 export async function inspectExpectedReturnLifecycleHealth(
   env: Pick<Bindings, 'DB'>,
   runDate: string,
@@ -336,6 +347,7 @@ export async function inspectExpectedReturnLifecycleHealth(
   alerts: string[]
   warnings: string[]
   expected_mature_signal_date: string | null
+  newly_mature_signal_date: string | null
   oof_max_dates: Record<string, string | null>
   latest_candidates: Record<ExpectedReturnOwner, JsonRecord | null>
 }> {
@@ -404,12 +416,14 @@ export async function inspectExpectedReturnLifecycleHealth(
            AND source = 'finlab.price'
            AND date(date) <= date(?)
          ORDER BY session_date DESC
-         LIMIT 6
+         LIMIT 7
       )
      ORDER BY session_date ASC
   `).bind(runDate).all<{ session_date: string }>()
   const sessionDates = (sessions.results ?? []).map((row) => row.session_date)
-  const expectedMatureSignalDate = sessionDates.length === 6 ? sessionDates[0] : null
+  const coverageDates = resolveExpectedOofCoverageDates(sessionDates)
+  const expectedMatureSignalDate = coverageDates?.requiredOofMaxDate ?? null
+  const newlyMatureSignalDate = coverageDates?.newlyMatureSignalDate ?? null
   if (!expectedMatureSignalDate) {
     alerts.push('oof_expected_mature_signal_date_unresolved')
   } else {
@@ -417,6 +431,8 @@ export async function inspectExpectedReturnLifecycleHealth(
       const maxDate = oofMaxDates[kind]
       if (!maxDate || maxDate < expectedMatureSignalDate) {
         alerts.push(`${kind}:oof_max_date_stale:${maxDate ?? 'missing'}<${expectedMatureSignalDate}`)
+      } else if (newlyMatureSignalDate && maxDate < newlyMatureSignalDate) {
+        warnings.push(`${kind}:awaiting_current_close_oof_materialization:${maxDate}<${newlyMatureSignalDate}`)
       }
     }
   }
@@ -424,6 +440,7 @@ export async function inspectExpectedReturnLifecycleHealth(
     alerts: [...new Set(alerts)],
     warnings: [...new Set(warnings)],
     expected_mature_signal_date: expectedMatureSignalDate,
+    newly_mature_signal_date: newlyMatureSignalDate,
     oof_max_dates: oofMaxDates,
     latest_candidates: latestCandidates,
   }

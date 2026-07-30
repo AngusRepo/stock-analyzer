@@ -455,6 +455,7 @@ export async function persistSelectionEvidenceV4(
       persisted_cell_count=0,
       strategy_registry_checksum=excluded.strategy_registry_checksum,
       labeler_version=excluded.labeler_version,
+      reference_contract_version=excluded.reference_contract_version,
       error_code=NULL,
       updated_at=CURRENT_TIMESTAMP
   `).bind(
@@ -485,7 +486,14 @@ export async function persistSelectionEvidenceV4(
         stock_id=CASE
           WHEN selection_reference_snapshots_v1.stock_id IS NULL THEN excluded.stock_id
           ELSE selection_reference_snapshots_v1.stock_id
-        END
+        END,
+        strategy_labeled=1,
+        strategy_selected=excluded.strategy_selected,
+        strategy_labeler_version=excluded.strategy_labeler_version,
+        strategy_affinity_version=excluded.strategy_affinity_version,
+        strategy_registry_checksum=excluded.strategy_registry_checksum,
+        feature_contract_version=excluded.feature_contract_version,
+        evidence_artifact_id=excluded.evidence_artifact_id
     `).bind(
       row.signal_date, row.symbol, row.producer_run_id, stockIds.get(clean(row.symbol)), row.name,
       row.market_segment, row.sector, row.feature_available, row.feature_rejection_reason,

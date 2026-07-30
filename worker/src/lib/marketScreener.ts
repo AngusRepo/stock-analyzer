@@ -55,6 +55,7 @@ import { sha256Text } from './datasetSnapshots'
 import {
   buildSelectionEvidenceV4,
   persistSelectionEvidenceV4,
+  SELECTION_REFERENCE_CONTRACT_VERSION,
   strategyRegistryFingerprintPayload,
   type SelectionReferenceRowV1,
   type StrategyLabelMatrixRowV4,
@@ -277,7 +278,8 @@ export async function prepareStrategyRedundancyBackfill(
   const run = await env.DB.prepare(`
     SELECT mr.producer_run_id, mr.status, mr.strategy_count,
            mr.expected_cell_count, mr.persisted_cell_count,
-           mr.strategy_registry_checksum
+           mr.strategy_registry_checksum, mr.labeler_version,
+           mr.reference_contract_version
       FROM strategy_label_matrix_runs_v4 mr
      WHERE mr.signal_date=?
        AND EXISTS (
@@ -294,6 +296,8 @@ export async function prepareStrategyRedundancyBackfill(
     expected_cell_count: number
     persisted_cell_count: number
     strategy_registry_checksum: string
+    labeler_version: string | null
+    reference_contract_version: string | null
   }>()
   if (!run) throw new Error(`strategy_redundancy_matrix_run_missing:${asOfDate}`)
   const expectedCells = Math.max(0, Number(run.expected_cell_count ?? 0))
@@ -301,11 +305,18 @@ export async function prepareStrategyRedundancyBackfill(
   if (run.status !== 'ready' || expectedCells <= 0 || persistedCells !== expectedCells) {
     throw new Error(`strategy_redundancy_matrix_not_ready:${asOfDate}:${run.status}:${persistedCells}/${expectedCells}`)
   }
+  if (String(run.labeler_version ?? '').trim() !== 'strategy-decision-log-pit-reconstruction-v5') {
+    throw new Error(`strategy_redundancy_matrix_labeler_contract_invalid:${asOfDate}:${run.labeler_version ?? 'missing'}`)
+  }
+  if (String(run.reference_contract_version ?? '').trim() !== SELECTION_REFERENCE_CONTRACT_VERSION) {
+    throw new Error(`strategy_redundancy_reference_contract_invalid:${asOfDate}:${run.reference_contract_version ?? 'missing'}`)
+  }
 
   const matrix = await env.DB.prepare(`
     SELECT strategy_id, strategy_version, strategy_status, family_id,
            symbol, evaluable, strategy_hit, affinity,
-           strategy_registry_checksum
+           strategy_registry_checksum, labeler_version,
+           reference_contract_version
       FROM strategy_label_matrix_v4
      WHERE signal_date=? AND producer_run_id=?
      ORDER BY strategy_id, symbol
@@ -319,6 +330,8 @@ export async function prepareStrategyRedundancyBackfill(
     strategy_hit: number
     affinity: number
     strategy_registry_checksum: string
+    labeler_version: string | null
+    reference_contract_version: string | null
   }>()
   const rows = matrix.results ?? []
   if (rows.length !== expectedCells) {
@@ -327,6 +340,12 @@ export async function prepareStrategyRedundancyBackfill(
   const checksums = new Set(rows.map((row) => String(row.strategy_registry_checksum ?? '').trim()).filter(Boolean))
   if (checksums.size !== 1 || !checksums.has(String(run.strategy_registry_checksum ?? '').trim())) {
     throw new Error(`strategy_redundancy_registry_checksum_mismatch:${asOfDate}`)
+  }
+  if (rows.some((row) => String(row.labeler_version ?? '').trim() !== 'strategy-decision-log-pit-reconstruction-v5')) {
+    throw new Error(`strategy_redundancy_matrix_row_labeler_contract_invalid:${asOfDate}`)
+  }
+  if (rows.some((row) => String(row.reference_contract_version ?? '').trim() !== SELECTION_REFERENCE_CONTRACT_VERSION)) {
+    throw new Error(`strategy_redundancy_matrix_row_reference_contract_invalid:${asOfDate}`)
   }
 
   const strategyRows = new Map<string, {

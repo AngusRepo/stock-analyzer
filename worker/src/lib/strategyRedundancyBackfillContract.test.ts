@@ -14,6 +14,12 @@ test('strategy redundancy backfill reuses canonical PIT matrix and mature OOF la
   assert.match(screener, /canonical_run_heads/)
   assert.match(screener, /strategy_redundancy_matrix_count_mismatch/)
   assert.match(screener, /strategy_redundancy_registry_checksum_mismatch/)
+  assert.match(screener, /strategy_redundancy_matrix_labeler_contract_invalid/)
+  assert.match(screener, /strategy_redundancy_reference_contract_invalid/)
+  assert.match(screener, /strategy_redundancy_matrix_row_labeler_contract_invalid/)
+  assert.match(screener, /strategy_redundancy_matrix_row_reference_contract_invalid/)
+  assert.match(screener, /strategy-decision-log-pit-reconstruction-v5/)
+  assert.match(screener, /SELECTION_REFERENCE_CONTRACT_VERSION/)
   assert.match(screener, /loadMatureStrategyOofReturns\(env\.DB, asOfDate\)/)
   assert.match(screener, /mature_oof_residual_returns_with_same_day_overlap_diagnostic/)
   assert.doesNotMatch(screener.slice(

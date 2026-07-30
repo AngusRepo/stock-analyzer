@@ -52,7 +52,13 @@ export interface StrategyThresholdCalibrationEvidenceRow {
 
 type StrategyThresholdCalibrationEvidenceQueryRow = StrategyThresholdCalibrationEvidenceRow & {
   symbol: string
-  raw_signals_json?: string | null
+  context_id?: string | null
+  inline_raw_signals_json?: string | null
+}
+
+interface StrategyThresholdRawSignalsQueryRow {
+  context_id: string
+  raw_signals_json: string | null
 }
 
 export interface StrategyThresholdAutoCalibrationOptions {
@@ -586,7 +592,7 @@ export async function listStrategyThresholdCalibrationEvidenceRows(
   options: { startDate: string; endDate: string; limit?: number },
 ): Promise<StrategyThresholdCalibrationEvidenceRow[]> {
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 50_000), 100_000))
-  const pageSize = Math.min(500, limit)
+  const pageSize = Math.min(5_000, limit)
   const rows: StrategyThresholdCalibrationEvidenceQueryRow[] = []
   let cursorDate = '9999-12-31'
   let cursorStrategyId = ''
@@ -661,13 +667,12 @@ export async function listStrategyThresholdCalibrationEvidenceRows(
              THEN CAST(json_extract(d.evidence_json, '$.feature_ref_diagnostics.weighted_score') AS REAL)
              ELSE NULL
            END AS weighted_score,
+           d.context_id,
            CASE
-             WHEN json_valid(c.raw_signals_json)
-             THEN c.raw_signals_json
-             WHEN json_valid(d.context_json)
+             WHEN d.context_id IS NULL AND json_valid(d.context_json)
              THEN json_extract(d.context_json, '$.candidate.raw_signals')
              ELSE NULL
-           END AS raw_signals_json,
+           END AS inline_raw_signals_json,
            label.residual_return_net AS reward_pct
       FROM evidence_page p
       JOIN strategy_decision_log d
@@ -677,8 +682,6 @@ export async function listStrategyThresholdCalibrationEvidenceRows(
        AND d.strategy_version = p.strategy_version
        AND d.evaluable = 1
        AND d.evaluation_contract_version = 'strategy-evaluation-v2'
-      LEFT JOIN strategy_candidate_contexts c
-        ON c.context_id = d.context_id
       JOIN canonical_selection_labels_v4 label
         ON label.signal_date = p.signal_date
        AND label.symbol = p.symbol
@@ -711,12 +714,40 @@ export async function listStrategyThresholdCalibrationEvidenceRows(
     cursorStrategyVersion = last.strategy_version
   }
 
+  const rawSignalProjection = RAW_SCALAR_THRESHOLD_TARGETS
+    .map((target) => `'${target.signalKey}', json_extract(raw_signals_json, '$.${target.signalKey}')`)
+    .join(', ')
+  const contextIds = [...new Set(rows
+    .map((row) => row.context_id?.trim())
+    .filter((contextId): contextId is string => Boolean(contextId)))]
+  const rawSignalsByContext = new Map<string, Record<string, unknown>>()
+  for (let offset = 0; offset < contextIds.length; offset += 100) {
+    const chunk = contextIds.slice(offset, offset + 100)
+    const placeholders = chunk.map(() => '?').join(',')
+    const { results } = await db.prepare(`
+      SELECT context_id,
+             json_object(${rawSignalProjection}) AS raw_signals_json
+        FROM strategy_candidate_contexts
+       WHERE context_id IN (${placeholders})
+    `).bind(...chunk).all<StrategyThresholdRawSignalsQueryRow>()
+    for (const row of results ?? []) {
+      const parsed = parseJson<Record<string, unknown> | null>(row.raw_signals_json, null)
+      if (parsed) rawSignalsByContext.set(row.context_id, parsed)
+    }
+  }
+  const missingContextIds = contextIds.filter((contextId) => !rawSignalsByContext.has(contextId))
+  if (missingContextIds.length) {
+    throw new Error(`strategy_threshold_context_missing:${missingContextIds.slice(0, 5).join(',')}:count=${missingContextIds.length}`)
+  }
+
   return rows.map((row) => ({
     date: row.date,
     strategy_id: row.strategy_id,
     strategy_version: row.strategy_version,
     weighted_score: finiteNumber(row.weighted_score),
-    raw_signals: parseJson<Record<string, unknown> | null>(row.raw_signals_json, null),
+    raw_signals: row.context_id
+      ? rawSignalsByContext.get(row.context_id) ?? null
+      : parseJson<Record<string, unknown> | null>(row.inline_raw_signals_json, null),
     reward_pct: finiteNumber(row.reward_pct),
   }))
 }

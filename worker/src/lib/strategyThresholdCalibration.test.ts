@@ -211,12 +211,14 @@ function rawScalarEvidenceRows(): StrategyThresholdCalibrationEvidenceRow[] {
     source.indexOf('export async function listStrategyThresholdCalibrationEvidenceRows'),
     source.indexOf('export function buildStrategyThresholdAutoDecisions'),
   )
-  assert(loader.includes('const pageSize = Math.min(500, limit)'), 'threshold evidence reads must stay within bounded D1 pages')
+  assert(loader.includes('const pageSize = Math.min(5_000, limit)'), 'threshold evidence reads must stay within bounded D1 pages')
   assert(loader.includes('while (rows.length < limit)'), 'threshold evidence loader must exhaust the requested evidence budget')
   assert(loader.includes('m.strategy_version > ?'), 'keyset cursor must include strategy version to avoid dropped duplicate symbols')
   assert(loader.includes('ORDER BY m.signal_date DESC, m.strategy_id ASC, m.symbol ASC, m.strategy_version ASC'), 'keyset order must match the complete cursor identity')
   assert(loader.includes('WITH evidence_page AS MATERIALIZED'), 'page limit must be materialized before joining large JSON evidence')
   assert(loader.includes('FROM evidence_page p'), 'large evidence joins must consume only the bounded key page')
+  assert(!loader.includes('LEFT JOIN strategy_candidate_contexts c'), 'evidence pages must not repeat raw context JSON per strategy row')
+  assert(loader.includes('rawSignalsByContext'), 'raw signals must load once per unique context')
   assert(!loader.includes('bind(options.startDate, options.endDate, limit)'), 'threshold evidence must not issue the legacy unbounded 50k join')
 }
 
@@ -267,12 +269,12 @@ async function verifyThresholdEvidenceKeysetPagination(): Promise<void> {
     strategy_version: 'strategy-spec-v1',
     symbol,
     weighted_score: 0.61,
-    raw_signals_json: '{"volumeExpansion20":1.4}',
+    context_id: 'context-1',
     reward_pct: 0.01,
   })
   const pages = [
-    Array.from({ length: 500 }, (_, index) => makeRow(String(index).padStart(4, '0'))),
-    [makeRow('0500'), makeRow('0501')],
+    Array.from({ length: 5_000 }, (_, index) => makeRow(String(index).padStart(4, '0'))),
+    [makeRow('5000'), makeRow('5001')],
   ]
   const bindCalls: unknown[][] = []
   const sqlCalls: string[] = []
@@ -284,6 +286,9 @@ async function verifyThresholdEvidenceKeysetPagination(): Promise<void> {
           bindCalls.push(values)
           return {
             async all() {
+              if (sql.includes('FROM strategy_candidate_contexts')) {
+                return { results: [{ context_id: 'context-1', raw_signals_json: '{"volumeExpansion20":1.4}' }] }
+              }
               return { results: pages.shift() ?? [] }
             },
           }
@@ -295,17 +300,18 @@ async function verifyThresholdEvidenceKeysetPagination(): Promise<void> {
   const rows = await listStrategyThresholdCalibrationEvidenceRows(db, {
     startDate: '2026-04-01',
     endDate: '2026-07-15',
-    limit: 502,
+    limit: 5_002,
   })
-  assert(rows.length === 502, 'keyset pagination must preserve the complete requested evidence budget')
-  assert(bindCalls.length === 2, '502 evidence rows must use two bounded D1 queries')
-  assert(bindCalls[0][12] === 500, 'the first D1 query must be capped at 500 rows')
+  assert(rows.length === 5_002, 'keyset pagination must preserve the complete requested evidence budget')
+  assert(bindCalls.length === 3, '5,002 evidence rows must use two evidence pages and one deduplicated context query')
+  assert(bindCalls[0][12] === 5_000, 'the first scalar D1 query must be capped at 5,000 rows')
   assert(bindCalls[1][2] === '2026-07-15', 'the next page must continue from the last signal date')
   assert(bindCalls[1][4] === 'test_strategy', 'the next page must continue from the last strategy')
-  assert(bindCalls[1][7] === '0499', 'the next page must continue from the last symbol')
+  assert(bindCalls[1][7] === '4999', 'the next page must continue from the last symbol')
   assert(bindCalls[1][11] === 'strategy-spec-v1', 'the next page must continue from the last strategy version')
   assert(bindCalls[1][12] === 2, 'the final D1 query must request only the remaining rows')
-  assert(sqlCalls.every((sql) => sql.includes('m.strategy_version > ?')), 'every page must use the full unique cursor')
+  assert(sqlCalls.slice(0, 2).every((sql) => sql.includes('m.strategy_version > ?')), 'every evidence page must use the full unique cursor')
+  assert(bindCalls[2].length === 1 && bindCalls[2][0] === 'context-1', 'raw signals must load once for the shared context')
   assert(rows[0].raw_signals?.volumeExpansion20 === 1.4, 'paged evidence must preserve parsed raw signals')
 }
 

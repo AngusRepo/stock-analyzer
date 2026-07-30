@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { auditEveningChainEvidenceClosure } from './eveningChainEvidenceClosure'
 
-type Overrides = { identityRows?: number; matureOwner?: string | null; sectorBreadthRows?: number }
+type Overrides = { identityRows?: number; matureOwner?: string | null; sectorBreadthRows?: number; unavailableRows?: number }
 
 class FakeStatement {
   private args: unknown[] = []
@@ -50,10 +50,23 @@ class FakeD1 {
       return { reference_candidate_count: 100, expected_cell_count: 2500, persisted_cell_count: 2500 }
     }
     if (normalized.includes('COUNT(*) reference_rows') && normalized.includes('price_horizon_labels_v1')) {
-      return { reference_rows: 100, horizon_rows: 100, label_rows: 100 }
+      const unavailableRows = this.overrides.unavailableRows ?? 0
+      return {
+        reference_rows: 100,
+        horizon_rows: 100 - unavailableRows,
+        horizon_unavailable_rows: unavailableRows,
+        label_rows: 100 - unavailableRows,
+        label_unavailable_rows: unavailableRows,
+      }
     }
     if (normalized.includes('FROM price_horizon_projection_status')) {
-      return { status: 'success', candidate_count: 100, materialized_count: 100, rejected_count: 0 }
+      const unavailableRows = this.overrides.unavailableRows ?? 0
+      return {
+        status: unavailableRows ? 'incomplete' : 'success',
+        candidate_count: 100,
+        materialized_count: 100 - unavailableRows,
+        rejected_count: unavailableRows,
+      }
     }
     throw new Error(`unexpected SQL: ${normalized}`)
   }
@@ -68,6 +81,16 @@ const passing = await auditEveningChainEvidenceClosure(envFor(new FakeD1()), '20
 assert.equal(passing.referenceIdentityRows, 100)
 assert.equal(passing.matureSignalDate, '2026-07-22')
 assert.equal(passing.priceHorizonRows, 100)
+
+const passingWithUnavailable = await auditEveningChainEvidenceClosure(
+  envFor(new FakeD1({ unavailableRows: 18 })),
+  '2026-07-29',
+  'screener-2026-07-29',
+)
+assert.equal(passingWithUnavailable.priceHorizonRows, 82)
+assert.equal(passingWithUnavailable.priceHorizonUnavailableRows, 18)
+assert.equal(passingWithUnavailable.canonicalLabelRows, 82)
+assert.equal(passingWithUnavailable.canonicalUnavailableRows, 18)
 
 await assert.rejects(
   auditEveningChainEvidenceClosure(envFor(new FakeD1({ identityRows: 99 })), '2026-07-29', 'screener-2026-07-29'),

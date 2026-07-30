@@ -1,4 +1,5 @@
 import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
+import { PRICE_HORIZON_PROJECTION_VERSION } from './priceHorizonProjection'
 
 export const CANONICAL_SELECTION_LABEL_SCHEMA_VERSION = 'canonical-strategy-selection-label-v4'
 export const CANONICAL_SELECTION_ROUNDTRIP_COST_BPS = 18
@@ -7,16 +8,29 @@ interface ReferenceRow {
   signal_date: string
   symbol: string
   producer_run_id: string
+  stock_id: number
   market_segment: string | null
   sector: string | null
 }
 
-interface PriceRow {
-  symbol: string
-  date: string
-  open: number | string | null
-  close: number | string | null
-  adj_close: number | string | null
+interface PriceHorizonEvidenceRow {
+  stock_id: number
+  price_date: string
+  entry_date: string
+  entry_raw_open: number | string
+  entry_adjustment_factor: number | string
+  exit_date: string
+  exit_raw_close: number | string
+  exit_adjustment_factor: number | string
+  outcome_known_date: string
+}
+
+interface PriceHorizonRejectionRow {
+  stock_id: number
+  price_date: string
+  entry_date: string
+  exit_date: string
+  rejection_reason: string
 }
 
 interface PendingLabel {
@@ -152,7 +166,7 @@ async function listCanonicalReferences(
     if (startDate) { clauses.push('r.signal_date >= ?'); binds.push(startDate) }
     if (endDate) { clauses.push('r.signal_date <= ?'); binds.push(endDate) }
     const page = await db.prepare(`
-      SELECT r.signal_date, r.symbol, r.producer_run_id, r.market_segment, r.sector
+      SELECT r.signal_date, r.symbol, r.producer_run_id, r.stock_id, r.market_segment, r.sector
         FROM selection_reference_snapshots_v1 r
        WHERE ${clauses.join(' AND ')}
        ORDER BY r.signal_date, r.symbol
@@ -167,30 +181,48 @@ async function listCanonicalReferences(
   return rows
 }
 
-async function loadCanonicalPrices(db: D1Database, references: ReferenceRow[], asOfDate: string): Promise<Map<string, PriceRow[]>> {
-  const output = new Map<string, PriceRow[]>()
-  const symbols = [...new Set(references.map((row) => row.symbol))]
-  const minDate = references.map((row) => row.signal_date).sort()[0]
-  for (let offset = 0; offset < symbols.length; offset += 80) {
-    const chunk = symbols.slice(offset, offset + 80)
+async function loadPriceHorizonEvidence(
+  db: D1Database,
+  references: ReferenceRow[],
+): Promise<{
+  labels: Map<string, PriceHorizonEvidenceRow>
+  rejections: Map<string, PriceHorizonRejectionRow>
+}> {
+  const labels = new Map<string, PriceHorizonEvidenceRow>()
+  const rejections = new Map<string, PriceHorizonRejectionRow>()
+  const stockIds = [...new Set(references.map((row) => Number(row.stock_id)).filter((id) => Number.isInteger(id) && id > 0))]
+  const signalDates = references.map((row) => row.signal_date).sort()
+  const minDate = signalDates[0]
+  const maxDate = signalDates[signalDates.length - 1]
+  for (let offset = 0; offset < stockIds.length; offset += 80) {
+    const chunk = stockIds.slice(offset, offset + 80)
     const placeholders = chunk.map(() => '?').join(',')
-    const result = await db.prepare(`
-      SELECT stock_id symbol, date, open, close, adj_close
-        FROM canonical_market_daily
-       WHERE stock_id IN (${placeholders})
-         AND source = 'finlab.price'
-         AND date > ? AND date <= ?
-       ORDER BY stock_id, date
-    `).bind(...chunk, minDate, asOfDate).all<PriceRow>()
-    for (const row of result.results ?? []) {
-      const bucket = output.get(row.symbol) ?? []
-      bucket.push(row)
-      output.set(row.symbol, bucket)
+    const [labelResult, rejectionResult] = await Promise.all([
+      db.prepare(`
+        SELECT stock_id, price_date, entry_date, entry_raw_open, entry_adjustment_factor,
+               exit_date, exit_raw_close, exit_adjustment_factor, outcome_known_date
+          FROM price_horizon_labels_v1
+         WHERE stock_id IN (${placeholders})
+           AND price_date >= ? AND price_date <= ?
+           AND projection_version=?
+      `).bind(...chunk, minDate, maxDate, PRICE_HORIZON_PROJECTION_VERSION).all<PriceHorizonEvidenceRow>(),
+      db.prepare(`
+        SELECT stock_id, price_date, entry_date, exit_date, rejection_reason
+          FROM price_horizon_label_rejections_v1
+         WHERE stock_id IN (${placeholders})
+           AND price_date >= ? AND price_date <= ?
+           AND projection_version=?
+      `).bind(...chunk, minDate, maxDate, PRICE_HORIZON_PROJECTION_VERSION).all<PriceHorizonRejectionRow>(),
+    ])
+    for (const row of labelResult.results ?? []) {
+      labels.set(`${row.stock_id}|${row.price_date}`, row)
+    }
+    for (const row of rejectionResult.results ?? []) {
+      rejections.set(`${row.stock_id}|${row.price_date}`, row)
     }
   }
-  return output
+  return { labels, rejections }
 }
-
 export async function materializeCanonicalSelectionLabelsV4(
   db: D1Database,
   options: { asOfDate: string; startDate?: string; endDate?: string; transactionCostBps?: number },
@@ -200,36 +232,42 @@ export async function materializeCanonicalSelectionLabelsV4(
     : CANONICAL_SELECTION_ROUNDTRIP_COST_BPS
   const runId = `selection-label-v4-${options.asOfDate}-${options.startDate ?? 'all'}-${options.endDate ?? 'all'}`
   const references = await listCanonicalReferences(db, options.asOfDate, options.startDate, options.endDate)
-  const prices = references.length ? await loadCanonicalPrices(db, references, options.asOfDate) : new Map<string, PriceRow[]>()
+  const horizonEvidence = references.length
+    ? await loadPriceHorizonEvidence(db, references)
+    : { labels: new Map<string, PriceHorizonEvidenceRow>(), rejections: new Map<string, PriceHorizonRejectionRow>() }
   const mature: PendingLabel[] = []
   const rejections: Array<{ reference: ReferenceRow; reason: string }> = []
   let pending = 0
 
   for (const reference of references) {
-    const future = (prices.get(reference.symbol) ?? []).filter((row) => row.date > reference.signal_date)
-    if (future.length < 5) { pending++; continue }
-    const entry = future[0]
-    const exit = future[4]
-    const entryOpen = finite(entry.open)
-    const entryClose = finite(entry.close)
-    const entryAdjClose = finite(entry.adj_close)
-    const exitClose = finite(exit.close)
-    const exitAdjClose = finite(exit.adj_close)
-    if (entryOpen == null || entryOpen <= 0 || entryClose == null || entryClose <= 0 || entryAdjClose == null || entryAdjClose <= 0) {
-      rejections.push({ reference, reason: 'entry_raw_or_adjustment_factor_missing' })
+    const key = `${reference.stock_id}|${reference.signal_date}`
+    const horizon = horizonEvidence.labels.get(key)
+    const rejection = horizonEvidence.rejections.get(key)
+    if (!horizon) {
+      if (rejection && rejection.exit_date <= options.asOfDate) {
+        rejections.push({ reference, reason: `price_horizon_${clean(rejection.rejection_reason) || 'unavailable'}` })
+      } else {
+        pending++
+      }
       continue
     }
-    if (exitClose == null || exitClose <= 0 || exitAdjClose == null || exitAdjClose <= 0) {
-      rejections.push({ reference, reason: 'exit_raw_or_adjustment_factor_missing' })
+    if (horizon.outcome_known_date > options.asOfDate) { pending++; continue }
+    const entryOpen = finite(horizon.entry_raw_open)
+    const entryFactor = finite(horizon.entry_adjustment_factor)
+    const exitClose = finite(horizon.exit_raw_close)
+    const exitFactor = finite(horizon.exit_adjustment_factor)
+    if (
+      entryOpen == null || entryOpen <= 0 || entryFactor == null || entryFactor <= 0
+      || exitClose == null || exitClose <= 0 || exitFactor == null || exitFactor <= 0
+    ) {
+      rejections.push({ reference, reason: 'price_horizon_materialized_values_invalid' })
       continue
     }
-    const entryFactor = entryAdjClose / entryClose
-    const exitFactor = exitAdjClose / exitClose
     const grossReturn = (exitClose * exitFactor) / (entryOpen * entryFactor) - 1
     mature.push({
       reference,
-      entryDate: entry.date,
-      exitDate: exit.date,
+      entryDate: horizon.entry_date,
+      exitDate: horizon.exit_date,
       entryRawOpen: entryOpen,
       exitRawClose: exitClose,
       entryFactor,
@@ -238,7 +276,6 @@ export async function materializeCanonicalSelectionLabelsV4(
       absoluteReturnNet: grossReturn - costBps / 10_000,
     })
   }
-
   const labels = neutralize(mature)
   const labelStatements = labels.map((row) => db.prepare(`
     INSERT INTO canonical_selection_labels_v4 (
@@ -248,7 +285,7 @@ export async function materializeCanonicalSelectionLabelsV4(
       gross_return, transaction_cost_bps, absolute_return_net,
       benchmark_return_net, benchmark_scope, residual_return_net, cross_section_rank,
       adjustment_source, reference_contract_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'canonical_market_daily:finlab.price', ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'price_horizon_labels_v1:finlab_primary_canonical_mirror', ?)
     ON CONFLICT(signal_date, symbol, producer_run_id, label_schema_version) DO NOTHING
   `).bind(
     row.reference.signal_date, row.reference.symbol, CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
@@ -261,10 +298,26 @@ export async function materializeCanonicalSelectionLabelsV4(
   for (let offset = 0; offset < labelStatements.length; offset += 200) {
     await db.batch(labelStatements.slice(offset, offset + 200))
   }
+  const resolvedRejectionDeletes = labels.map((row) => db.prepare(`
+    DELETE FROM canonical_selection_label_rejections_v4
+     WHERE signal_date=? AND symbol=? AND producer_run_id=?
+  `).bind(row.reference.signal_date, row.reference.symbol, row.reference.producer_run_id))
+  for (let offset = 0; offset < resolvedRejectionDeletes.length; offset += 200) {
+    await db.batch(resolvedRejectionDeletes.slice(offset, offset + 200))
+  }
+  const rejectionDeletes = rejections.map(({ reference }) => db.prepare(`
+    DELETE FROM canonical_selection_label_rejections_v4
+     WHERE signal_date=? AND symbol=? AND producer_run_id=?
+  `).bind(reference.signal_date, reference.symbol, reference.producer_run_id))
+  for (let offset = 0; offset < rejectionDeletes.length; offset += 200) {
+    await db.batch(rejectionDeletes.slice(offset, offset + 200))
+  }
   const rejectionStatements = rejections.map(({ reference, reason }) => db.prepare(`
-    INSERT OR IGNORE INTO canonical_selection_label_rejections_v4 (
+    INSERT INTO canonical_selection_label_rejections_v4 (
       signal_date, symbol, producer_run_id, reason_code, as_of_date
     ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(signal_date, symbol, producer_run_id, reason_code) DO UPDATE SET
+      as_of_date=excluded.as_of_date
   `).bind(reference.signal_date, reference.symbol, reference.producer_run_id, reason, options.asOfDate))
   for (let offset = 0; offset < rejectionStatements.length; offset += 200) {
     await db.batch(rejectionStatements.slice(offset, offset + 200))

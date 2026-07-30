@@ -18,7 +18,9 @@ export type EveningChainEvidenceClosure = {
   matureSignalDate: string | null
   matureReferenceRows: number
   priceHorizonRows: number
+  priceHorizonUnavailableRows: number
   canonicalLabelRows: number
+  canonicalUnavailableRows: number
 }
 
 function dateOnly(value: unknown): string {
@@ -131,7 +133,9 @@ export async function auditEveningChainEvidenceClosure(
   const matureSignalDate = await resolveExpectedMatureSignalDate(env, businessDate)
   let matureReferenceRows = 0
   let priceHorizonRows = 0
+  let priceHorizonUnavailableRows = 0
   let canonicalLabelRows = 0
+  let canonicalUnavailableRows = 0
   if (matureSignalDate) {
     const matureHead = await env.DB.prepare(`
       SELECT run_id
@@ -172,17 +176,28 @@ export async function auditEveningChainEvidenceClosure(
              AND p.projection_version=?
         ) THEN 1 ELSE 0 END) horizon_rows,
         SUM(CASE WHEN EXISTS (
+          SELECT 1 FROM price_horizon_label_rejections_v1 p
+           WHERE p.price_date=r.signal_date AND p.stock_id=r.stock_id
+             AND p.projection_version=?
+        ) THEN 1 ELSE 0 END) horizon_unavailable_rows,
+        SUM(CASE WHEN EXISTS (
           SELECT 1 FROM canonical_selection_labels_v4 l
            WHERE l.signal_date=r.signal_date AND l.symbol=r.symbol
              AND l.producer_run_id=r.producer_run_id
              AND l.label_schema_version=?
              AND l.reference_contract_version=?
-        ) THEN 1 ELSE 0 END) label_rows
+        ) THEN 1 ELSE 0 END) label_rows,
+        SUM(CASE WHEN EXISTS (
+          SELECT 1 FROM canonical_selection_label_rejections_v4 x
+           WHERE x.signal_date=r.signal_date AND x.symbol=r.symbol
+             AND x.producer_run_id=r.producer_run_id
+        ) THEN 1 ELSE 0 END) label_unavailable_rows
         FROM selection_reference_snapshots_v1 r
        WHERE r.signal_date=? AND r.hard_gate_passed=1
          AND r.feature_contract_version=?
          AND r.producer_run_id=?
     `).bind(
+      PRICE_HORIZON_PROJECTION_VERSION,
       PRICE_HORIZON_PROJECTION_VERSION,
       CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
       SELECTION_REFERENCE_CONTRACT_VERSION,
@@ -192,21 +207,33 @@ export async function auditEveningChainEvidenceClosure(
     ).first<any>()
     matureReferenceRows = Number(coverage?.reference_rows ?? 0)
     priceHorizonRows = Number(coverage?.horizon_rows ?? 0)
+    priceHorizonUnavailableRows = Number(coverage?.horizon_unavailable_rows ?? 0)
     canonicalLabelRows = Number(coverage?.label_rows ?? 0)
+    canonicalUnavailableRows = Number(coverage?.label_unavailable_rows ?? 0)
     const projection = await opsDb.prepare(`
       SELECT status, candidate_count, materialized_count, rejected_count
         FROM price_horizon_projection_status
        WHERE signal_date=? AND projection_version=?
     `).bind(matureSignalDate, PRICE_HORIZON_PROJECTION_VERSION).first<any>()
+    const projectionMaterialized = Number(projection?.materialized_count ?? 0)
+    const projectionRejected = Number(projection?.rejected_count ?? 0)
+    const projectionCandidates = Number(projection?.candidate_count ?? 0)
+    const projectionCoverageComplete = ['success', 'incomplete'].includes(String(projection?.status ?? ''))
+      && projectionCandidates === matureReferenceRows
+      && projectionMaterialized === priceHorizonRows
+      && projectionRejected === priceHorizonUnavailableRows
+      && projectionMaterialized + projectionRejected === projectionCandidates
     if (
       matureReferenceRows <= 0
-      || projection?.status !== 'success'
-      || Number(projection?.rejected_count ?? 0) !== 0
-      || priceHorizonRows !== matureReferenceRows
-      || canonicalLabelRows !== matureReferenceRows
+      || !projectionCoverageComplete
+      || priceHorizonRows + priceHorizonUnavailableRows !== matureReferenceRows
+      || canonicalLabelRows + canonicalUnavailableRows !== matureReferenceRows
     ) {
       throw new Error(
-        `evening_chain_mature_evidence_incomplete:${matureSignalDate}:reference=${matureReferenceRows}:horizon=${priceHorizonRows}:labels=${canonicalLabelRows}:projection=${projection?.status ?? 'missing'}`,
+        `evening_chain_mature_evidence_incomplete:${matureSignalDate}:reference=${matureReferenceRows}`
+        + `:horizon=${priceHorizonRows}:horizon_unavailable=${priceHorizonUnavailableRows}`
+        + `:labels=${canonicalLabelRows}:label_unavailable=${canonicalUnavailableRows}`
+        + `:projection=${projection?.status ?? 'missing'}`,
       )
     }
   }
@@ -225,7 +252,9 @@ export async function auditEveningChainEvidenceClosure(
     matureSignalDate,
     matureReferenceRows,
     priceHorizonRows,
+    priceHorizonUnavailableRows,
     canonicalLabelRows,
+    canonicalUnavailableRows,
   }
 }
 
@@ -236,7 +265,7 @@ export function summarizeEveningChainEvidenceClosure(audit: EveningChainEvidence
     `similarity_artifact=${audit.similarityArtifactStatus}`,
     `sector_breadth=${audit.sectorBreadthRows}/${audit.sectorRows}`,
     `mature_date=${audit.matureSignalDate ?? 'none'}`,
-    `price_horizon=${audit.priceHorizonRows}/${audit.matureReferenceRows}`,
-    `canonical_labels=${audit.canonicalLabelRows}/${audit.matureReferenceRows}`,
+    `price_horizon=${audit.priceHorizonRows}+${audit.priceHorizonUnavailableRows}/${audit.matureReferenceRows}`,
+    `canonical_labels=${audit.canonicalLabelRows}+${audit.canonicalUnavailableRows}/${audit.matureReferenceRows}`,
   ].join(' ')
 }

@@ -179,13 +179,17 @@ async def _run() -> int:
             )
             status = str(result.get("status") or "").lower()
             if result.get("dependency_retry_required"):
-                callback_status = "running"
+                reason = (
+                    result.get("reason")
+                    or (result.get("full_fit_dispatch") or {}).get("reason")
+                    or (result.get("opb_refresh") or {}).get("error")
+                    or "dependency_retry_required"
+                )
+                raise RuntimeError(f"oof_dependency_retry_required:{reason}")
             if status in {"materialized", "idempotent_complete"}:
-                if callback_status != "running":
-                    callback_status = "success"
+                callback_status = "success"
             elif status in {"skipped", "pending"}:
-                if callback_status != "running":
-                    callback_status = "skipped"
+                callback_status = "skipped"
             else:
                 raise RuntimeError(f"unexpected OOF materialization status: {status or 'unknown'}")
     except Exception as exc:  # noqa: BLE001 - callback must close every terminal job state.
@@ -209,7 +213,7 @@ async def _run() -> int:
         payload["error"] = error
     await _callback_worker(payload)
     logger.info("[OofMaterializeJob] Finished %s", summary)
-    return 0 if callback_status in {"success", "skipped", "running"} else 1
+    return 0 if callback_status in {"success", "skipped"} else 1
 
 
 def main() -> None:

@@ -539,7 +539,7 @@ export async function runPostVerifyCallbackChain(
   // Historical reruns need it so strategy_decision_log can explain family/variant
   // ownership for the replayed business date.
   results.push(await logChainedTask(env, ctx, 'strategy-learning', () => enqueueStrategyLearningClosureTask(env, ctx), {
-    critical: false,
+    critical: true,
     timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
   }))
 

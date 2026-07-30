@@ -1296,7 +1296,12 @@ CREATE TABLE IF NOT EXISTS selection_reference_snapshots_v1 (
   allocation_selected INTEGER NOT NULL DEFAULT 0 CHECK(allocation_selected IN (0, 1)),
   decision_evidence_reconciled_at TEXT,
   strategy_labeler_version TEXT,
+  strategy_affinity_version TEXT,
   strategy_router_version TEXT,
+  strategy_router_score REAL,
+  strategy_challenger_affinity_version TEXT,
+  strategy_challenger_route_version TEXT,
+  strategy_challenger_route_score REAL,
   strategy_registry_checksum TEXT NOT NULL,
   feature_contract_version TEXT NOT NULL,
   evidence_artifact_id TEXT,
@@ -1313,6 +1318,10 @@ CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_contract_date
   ON selection_reference_snapshots_v1(feature_contract_version, signal_date, symbol, producer_run_id);
 CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_symbol
   ON selection_reference_snapshots_v1(symbol, signal_date DESC);
+CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_date_stock_identity
+  ON selection_reference_snapshots_v1(signal_date, hard_gate_passed, stock_id);
+CREATE INDEX IF NOT EXISTS idx_selection_reference_route_challenger_v1
+  ON selection_reference_snapshots_v1(signal_date, strategy_challenger_route_version, strategy_challenger_route_score);
 
 CREATE TABLE IF NOT EXISTS selection_reference_repair_runs_v1 (
   signal_date TEXT NOT NULL,
@@ -1330,6 +1339,22 @@ CREATE TABLE IF NOT EXISTS selection_reference_repair_runs_v1 (
   PRIMARY KEY(signal_date, producer_run_id)
 );
 
+CREATE TABLE IF NOT EXISTS selection_reference_identity_repair_runs_v1 (
+  run_id TEXT PRIMARY KEY,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('running', 'success', 'error')),
+  expected_rows INTEGER NOT NULL,
+  missing_before INTEGER NOT NULL,
+  repaired_rows INTEGER NOT NULL DEFAULT 0,
+  missing_after INTEGER,
+  last_error TEXT,
+  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_selection_reference_identity_repair_runs_v1_dates
+  ON selection_reference_identity_repair_runs_v1(start_date, end_date, status);
+
 CREATE TABLE IF NOT EXISTS strategy_label_matrix_v4 (
   signal_date TEXT NOT NULL,
   symbol TEXT NOT NULL,
@@ -1345,7 +1370,13 @@ CREATE TABLE IF NOT EXISTS strategy_label_matrix_v4 (
   unavailable_reason TEXT,
   weak_label REAL NOT NULL,
   affinity REAL NOT NULL,
+  affinity_version TEXT,
+  match_strength REAL NOT NULL DEFAULT 0,
+  threshold_margin REAL NOT NULL DEFAULT 0,
+  affinity_evidence_count INTEGER NOT NULL DEFAULT 0,
   position_weight REAL NOT NULL,
+  challenger_affinity REAL NOT NULL DEFAULT 0,
+  challenger_position_weight REAL NOT NULL DEFAULT 0,
   overlap REAL NOT NULL,
   label_reason TEXT,
   labeler_version TEXT NOT NULL,
@@ -1360,6 +1391,8 @@ CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_evaluable
   ON strategy_label_matrix_v4(signal_date, strategy_id, evaluable, strategy_hit);
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_symbol
   ON strategy_label_matrix_v4(symbol, signal_date DESC);
+CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_challenger_v1
+  ON strategy_label_matrix_v4(signal_date, strategy_id, evaluable, challenger_affinity);
 
 CREATE TABLE IF NOT EXISTS strategy_label_matrix_runs_v4 (
   producer_run_id TEXT PRIMARY KEY,
@@ -1408,6 +1441,55 @@ CREATE INDEX IF NOT EXISTS idx_strategy_reward_ledger_status
   ON strategy_reward_ledger(strategy_status, samples DESC);
 CREATE INDEX IF NOT EXISTS idx_strategy_reward_ledger_refresh
   ON strategy_reward_ledger(refresh_run_id, date_end);
+CREATE INDEX IF NOT EXISTS idx_strategy_reward_ledger_contract
+  ON strategy_reward_ledger(selection_contract_version, strategy_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_learning_daily_stats (
+  date TEXT NOT NULL,
+  strategy_id TEXT NOT NULL,
+  strategy_version TEXT NOT NULL,
+  decisions INTEGER NOT NULL DEFAULT 0,
+  evaluable_decisions INTEGER NOT NULL DEFAULT 0,
+  unavailable_decisions INTEGER NOT NULL DEFAULT 0,
+  matched INTEGER NOT NULL DEFAULT 0,
+  reward_samples INTEGER NOT NULL DEFAULT 0,
+  reward_hits INTEGER NOT NULL DEFAULT 0,
+  reward_sum REAL NOT NULL DEFAULT 0,
+  date_portfolio_return REAL,
+  reward_refresh_run_id TEXT,
+  decision_contract_version TEXT,
+  reward_contract_version TEXT,
+  projection_version TEXT NOT NULL DEFAULT 'strategy-learning-daily-v1',
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(date, strategy_id, strategy_version)
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_learning_daily_stats_strategy_date
+  ON strategy_learning_daily_stats(strategy_id, strategy_version, date DESC);
+CREATE INDEX IF NOT EXISTS idx_strategy_learning_daily_stats_date
+  ON strategy_learning_daily_stats(date DESC, strategy_id);
+CREATE INDEX IF NOT EXISTS idx_strategy_learning_daily_stats_decision_contract
+  ON strategy_learning_daily_stats(decision_contract_version, date DESC, strategy_id);
+CREATE INDEX IF NOT EXISTS idx_strategy_learning_daily_stats_reward_contract
+  ON strategy_learning_daily_stats(reward_contract_version, date DESC, strategy_id);
+
+CREATE TABLE IF NOT EXISTS strategy_learning_head (
+  strategy_id TEXT NOT NULL,
+  strategy_version TEXT NOT NULL,
+  lifetime_decisions INTEGER NOT NULL DEFAULT 0,
+  lifetime_evaluable_decisions INTEGER NOT NULL DEFAULT 0,
+  lifetime_unavailable_decisions INTEGER NOT NULL DEFAULT 0,
+  lifetime_matched INTEGER NOT NULL DEFAULT 0,
+  decision_dates INTEGER NOT NULL DEFAULT 0,
+  lifetime_reward_samples INTEGER NOT NULL DEFAULT 0,
+  lifetime_reward_hits INTEGER NOT NULL DEFAULT 0,
+  lifetime_reward_sum REAL NOT NULL DEFAULT 0,
+  reward_dates INTEGER NOT NULL DEFAULT 0,
+  latest_decision_date TEXT,
+  latest_reward_date TEXT,
+  projection_version TEXT NOT NULL DEFAULT 'strategy-learning-head-v1',
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(strategy_id, strategy_version)
+);
 
 CREATE TABLE IF NOT EXISTS strategy_policy_state (
   policy_id                TEXT PRIMARY KEY,
@@ -1418,6 +1500,63 @@ CREATE TABLE IF NOT EXISTS strategy_policy_state (
   evidence_json            TEXT NOT NULL DEFAULT '{}',
   updated_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS strategy_evidence_rebuild_runs_v5 (
+  signal_date TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK(status IN ('pending','success','blocked','failed')),
+  candidate_count INTEGER NOT NULL DEFAULT 0,
+  strategy_count INTEGER NOT NULL DEFAULT 0,
+  decision_rows INTEGER NOT NULL DEFAULT 0,
+  evaluable_rows INTEGER NOT NULL DEFAULT 0,
+  unavailable_rows INTEGER NOT NULL DEFAULT 0,
+  matrix_rows INTEGER NOT NULL DEFAULT 0,
+  labeler_version TEXT NOT NULL DEFAULT 'strategy-decision-log-pit-reconstruction-v5',
+  evaluation_contract_version TEXT,
+  source_checksum TEXT,
+  blocker_reason TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_evidence_rebuild_v5_status
+  ON strategy_evidence_rebuild_runs_v5(status, signal_date);
+
+CREATE TABLE IF NOT EXISTS strategy_replacement_decisions_v5 (
+  decision_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  as_of_date TEXT NOT NULL,
+  family_id TEXT NOT NULL,
+  candidate_strategy_id TEXT NOT NULL,
+  candidate_strategy_version TEXT NOT NULL,
+  replaced_strategy_id TEXT NOT NULL,
+  replaced_strategy_version TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('proposed','accepted','rejected')),
+  paired_dates INTEGER NOT NULL DEFAULT 0,
+  paired_delta_mean REAL,
+  paired_delta_lcb90 REAL,
+  candidate_absolute_mean REAL,
+  candidate_max_drawdown REAL,
+  replaced_max_drawdown REAL,
+  candidate_turnover REAL,
+  replaced_turnover REAL,
+  return_correlation REAL,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(run_id, candidate_strategy_id, candidate_strategy_version, replaced_strategy_id, replaced_strategy_version),
+  CHECK(json_valid(evidence_json))
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_replacement_v5_asof
+  ON strategy_replacement_decisions_v5(as_of_date DESC, status, family_id);
+
+CREATE TABLE IF NOT EXISTS strategy_replacement_cutover_guards_v5 (
+  guard_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  phase TEXT NOT NULL CHECK(phase IN ('pre','post','portfolio_post')),
+  precondition_ok INTEGER NOT NULL CHECK(precondition_ok=1),
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK(json_valid(evidence_json))
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_replacement_cutover_guards_v5_run
+  ON strategy_replacement_cutover_guards_v5(run_id, phase);
 
 CREATE TABLE IF NOT EXISTS scheduler_locks (
   lock_key   TEXT PRIMARY KEY,
@@ -2270,3 +2409,58 @@ CREATE TABLE IF NOT EXISTS data_domain_parity_checks (
 );
 CREATE INDEX IF NOT EXISTS idx_data_domain_parity_latest
   ON data_domain_parity_checks(domain, table_name, checked_at DESC);
+
+
+CREATE TABLE IF NOT EXISTS strategy_route_calibration_runs_v1 (
+  run_id TEXT PRIMARY KEY,
+  artifact_version TEXT NOT NULL,
+  as_of_date TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'pass', 'fail', 'promoted')),
+  candidate_route_version TEXT NOT NULL,
+  route_floor REAL,
+  sample_count INTEGER NOT NULL,
+  date_count INTEGER NOT NULL,
+  train_start_date TEXT,
+  train_end_date TEXT,
+  oos_start_date TEXT,
+  oos_end_date TEXT,
+  top_bucket_net_return REAL,
+  top_bucket_net_return_lcb90 REAL,
+  residual_spread REAL,
+  residual_spread_lcb90 REAL,
+  brier_score REAL,
+  climatology_brier_score REAL,
+  log_loss REAL,
+  gate_json TEXT NOT NULL,
+  evidence_artifact_id TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_route_calibration_runs_v1_date
+  ON strategy_route_calibration_runs_v1(as_of_date DESC, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_route_calibration_head_v1 (
+  singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+  run_id TEXT NOT NULL,
+  artifact_version TEXT NOT NULL,
+  candidate_route_version TEXT NOT NULL,
+  route_floor REAL NOT NULL,
+  promoted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(run_id) REFERENCES strategy_route_calibration_runs_v1(run_id)
+);
+
+CREATE TABLE IF NOT EXISTS strategy_redundancy_artifacts_v1 (
+  artifact_id TEXT PRIMARY KEY,
+  as_of_date TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'pass', 'fail')),
+  source_contract TEXT NOT NULL,
+  strategy_count INTEGER NOT NULL,
+  paired_date_count INTEGER NOT NULL,
+  oof_max_date TEXT,
+  edge_count INTEGER NOT NULL,
+  effective_strategy_count REAL,
+  graph_json TEXT NOT NULL,
+  evidence_artifact_id TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_redundancy_artifacts_v1_date
+  ON strategy_redundancy_artifacts_v1(as_of_date DESC, status, created_at DESC);

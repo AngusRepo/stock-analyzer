@@ -10,6 +10,7 @@
  */
 
 import type { Bindings } from '../types'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { getTradingConfig, type TradingConfig } from './tradingConfig'
 import { buildScreenerSeedRow, buildScreenerSeedUpsertSql } from './screenerSeedQuality'
 import { computeAndStoreIndicators, computeTechnicalIndicators } from './technicalIndicators'
@@ -769,7 +770,7 @@ async function writeScreenerFunnel(
       strategyRegistryChecksum: input.selectionEvidence.strategyRegistryChecksum,
       labelerVersion: input.selectionEvidence.labelerVersion,
       evidenceArtifactId: artifact.artifact_id,
-    })
+    }, databaseForDataDomain(env, 'core'))
 
     await env.DB.prepare(`
       INSERT INTO screener_funnel_runs

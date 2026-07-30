@@ -60,9 +60,12 @@ assert(
   'full-fit dispatch must remain retryable until every eligible artifact reaches registry closure',
 )
 assert(
-  walkForward.includes('opb_failed or full_fit_retry_required or forward_extension_retry_required') &&
+  walkForward.includes('if forward_extension_retry_required:') &&
+    walkForward.includes('"reason": "daily_forward_extension_not_materialized"') &&
+    walkForward.includes('"dependency_retry_required": True') &&
+    walkForward.includes('dependency_retry_required = opb_failed or full_fit_retry_required') &&
     walkForward.includes('if not req.dry_run and not dependency_retry_required'),
-  'failed OPB, full-fit, or frozen-forward evidence must leave lifecycle retryable instead of writing false closure',
+  'frozen-forward gaps must stop before stale materialization; failed OPB/full-fit must remain terminal and retryable',
 )
 assert(walkForward.indexOf('promoted = True') < walkForward.indexOf('/api/admin/trigger/opb-arm-prior-refresh'), 'OPB refresh must be event-driven only after successful EV promotion')
 

@@ -23,7 +23,7 @@ function csvArity(value: string): number {
 
 function assertInsertArity(table: string, expectedPlaceholders: number): void {
   const match = source.match(new RegExp(
-    `INSERT OR IGNORE INTO ${table}\\s*\\(([\\s\\S]*?)\\)\\s*VALUES\\s*\\(([\\s\\S]*?)\\)`,
+    `INSERT(?: OR IGNORE)? INTO ${table}\\s*\\(([\\s\\S]*?)\\)\\s*VALUES\\s*\\(([\\s\\S]*?)\\)`,
   ))
   assert.ok(match, `${table} INSERT must exist`)
   const columns = csvArity(match[1])
@@ -33,5 +33,5 @@ function assertInsertArity(table: string, expectedPlaceholders: number): void {
   assert.equal(placeholders, expectedPlaceholders, `${table} INSERT bind arity changed unexpectedly`)
 }
 
-assertInsertArity('selection_reference_snapshots_v1', 23)
+assertInsertArity('selection_reference_snapshots_v1', 24)
 assertInsertArity('strategy_label_matrix_v4', 25)

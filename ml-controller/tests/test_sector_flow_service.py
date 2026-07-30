@@ -79,6 +79,15 @@ def test_write_sector_flow_persists_cash_flow_fields(monkeypatch):
                 "total_net": -0.4322,
             }
         },
+        {
+            "PASSIVE_COMPONENT": {
+                "stock_count": 8,
+                "up_count": 6,
+                "turnover_value": 12_500_000.0,
+                "turnover_share": 0.125,
+                "turnover_share_delta": 0.015,
+            }
+        },
     )
 
     assert written == 1
@@ -89,8 +98,11 @@ def test_write_sector_flow_persists_cash_flow_fields(monkeypatch):
     assert "rrg_tail_json" in sql
     assert "updated_at" in sql
     assert "pit_lineage_version" in sql
+    assert "up_count" in sql
+    assert "turnover_share_delta" in sql
     params = captured["statements"][0][1]
-    assert params[-5:-2] == [-0.0142, -0.3681, -0.4322]
+    assert params[15:20] == [8, 6, 12_500_000.0, 0.125, 0.015]
+    assert params[20:23] == [-0.0142, -0.3681, -0.4322]
     assert params[-1] == sector_flow_service.SECTOR_FLOW_PIT_LINEAGE_VERSION
 
 
@@ -153,15 +165,17 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
     captured_classifications = []
 
     monkeypatch.setattr(sector_flow_service, "_load_symbol_cash_flows_5d", lambda as_of_date: {})
+    monkeypatch.setattr(sector_flow_service, "_load_symbol_session_state", lambda as_of_date: {})
     monkeypatch.setattr(sector_flow_service, "_load_stock_tags", lambda tag_type: {})
     monkeypatch.setattr(sector_flow_service, "_aggregate_tag_cash_flows", lambda tag_members, symbol_flows: {})
+    monkeypatch.setattr(sector_flow_service, "_aggregate_tag_session_stats", lambda tag_members, symbol_state: {})
     monkeypatch.setattr(sector_flow_service, "write_sector_flow_stock_details", lambda **kwargs: 0)
 
     def fake_compute(tag_type, as_of_date):
         captured_tag_types.append(tag_type)
         return []
 
-    def fake_write(points, classification, as_of_date, cash_flows=None):
+    def fake_write(points, classification, as_of_date, cash_flows=None, session_stats=None):
         captured_classifications.append(classification)
         return 0
 
@@ -178,3 +192,34 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
     assert summary["pit_lineage_version"] == sector_flow_service.SECTOR_FLOW_PIT_LINEAGE_VERSION
     assert summary["producer_position"] == "post_recommendation_for_next_decision_session"
     assert summary["same_signal_date_consumption_allowed"] is False
+
+
+def test_aggregate_tag_session_stats_computes_daily_breadth_and_turnover_acceleration():
+    stats = sector_flow_service._aggregate_tag_session_stats(
+        {"AI": ["2330", "2382"], "SHIPPING": ["2603"]},
+        {
+            "2330": {
+                "current_close": 110.0,
+                "previous_close": 100.0,
+                "current_turnover": 600.0,
+                "previous_turnover": 400.0,
+            },
+            "2382": {
+                "current_close": 90.0,
+                "previous_close": 100.0,
+                "current_turnover": 300.0,
+                "previous_turnover": 400.0,
+            },
+            "2603": {
+                "current_close": 50.0,
+                "previous_close": 48.0,
+                "current_turnover": 100.0,
+                "previous_turnover": 200.0,
+            },
+        },
+    )
+
+    assert stats["AI"]["stock_count"] == 2
+    assert stats["AI"]["up_count"] == 1
+    assert stats["AI"]["turnover_share"] == pytest.approx(0.9)
+    assert stats["AI"]["turnover_share_delta"] == pytest.approx(0.1)

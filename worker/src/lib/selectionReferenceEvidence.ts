@@ -63,6 +63,63 @@ export interface SelectionReferenceRowV1 {
   strategy_registry_checksum: string
 }
 
+async function resolveReferenceStockIds(
+  identityDb: D1Database,
+  references: SelectionReferenceRowV1[],
+): Promise<Map<string, number>> {
+  const symbols = [...new Set(references.map((row) => clean(row.symbol)).filter(Boolean))]
+  const stockIds = new Map<string, number>()
+  for (let offset = 0; offset < symbols.length; offset += 80) {
+    const chunk = symbols.slice(offset, offset + 80)
+    const placeholders = chunk.map(() => '?').join(',')
+    const result = await identityDb.prepare(`
+      SELECT id, symbol
+        FROM stocks
+       WHERE symbol IN (${placeholders})
+    `).bind(...chunk).all<{ id: number; symbol: string }>()
+    for (const row of result.results ?? []) {
+      const symbol = clean(row.symbol)
+      const stockId = Number(row.id)
+      if (symbol && Number.isInteger(stockId) && stockId > 0) stockIds.set(symbol, stockId)
+    }
+  }
+  const missing = symbols.filter((symbol) => !stockIds.has(symbol))
+  if (missing.length) {
+    throw new Error(
+      `selection_reference_stock_identity_incomplete:${stockIds.size}/${symbols.length}:missing=${missing.slice(0, 12).join(',')}`,
+    )
+  }
+  return stockIds
+}
+
+async function reconcileReferenceStockIds(
+  db: D1Database,
+  producerRunId: string,
+  references: SelectionReferenceRowV1[],
+  stockIds: Map<string, number>,
+): Promise<void> {
+  const existing = await db.prepare(`
+    SELECT symbol, stock_id
+      FROM selection_reference_snapshots_v1
+     WHERE producer_run_id=?
+  `).bind(producerRunId).all<{ symbol: string; stock_id: number | null }>()
+  for (const row of existing.results ?? []) {
+    const expected = stockIds.get(clean(row.symbol))
+    const actual = Number(row.stock_id)
+    if (expected && Number.isInteger(actual) && actual > 0 && actual !== expected) {
+      throw new Error(`selection_reference_stock_identity_conflict:${row.symbol}:${actual}/${expected}`)
+    }
+  }
+  const statements = references.map((row) => db.prepare(`
+    UPDATE selection_reference_snapshots_v1
+       SET stock_id=?
+     WHERE signal_date=? AND symbol=? AND producer_run_id=? AND stock_id IS NULL
+  `).bind(stockIds.get(clean(row.symbol)), row.signal_date, row.symbol, producerRunId))
+  for (let offset = 0; offset < statements.length; offset += 200) {
+    await db.batch(statements.slice(offset, offset + 200))
+  }
+}
+
 export interface StrategyLabelMatrixRowV4 {
   signal_date: string
   symbol: string
@@ -343,11 +400,13 @@ export async function persistSelectionEvidenceV4(
     labelerVersion: string
     evidenceArtifactId: string
   },
+  identityDb: D1Database = db,
 ): Promise<{ referenceRows: number; matrixRows: number }> {
   const expectedCells = input.references.length * input.strategyCount
   if (input.matrix.length !== expectedCells) {
     throw new Error(`strategy_label_matrix_expected_cells_mismatch:${input.matrix.length}/${expectedCells}`)
   }
+  const stockIds = await resolveReferenceStockIds(identityDb, input.references)
   const existing = await db.prepare(`
     SELECT status, reference_candidate_count, strategy_count, expected_cell_count,
            persisted_cell_count, strategy_registry_checksum, labeler_version, reference_contract_version
@@ -363,6 +422,21 @@ export async function persistSelectionEvidenceV4(
       && clean(existing.labeler_version) === input.labelerVersion
       && clean(existing.reference_contract_version) === SELECTION_REFERENCE_CONTRACT_VERSION
     if (!same) throw new Error('strategy_label_matrix_immutable_run_conflict')
+    await reconcileReferenceStockIds(db, input.producerRunId, input.references, stockIds)
+    const identityCoverage = await db.prepare(`
+      SELECT COUNT(*) row_count,
+             SUM(CASE WHEN stock_id IS NOT NULL THEN 1 ELSE 0 END) identity_count
+        FROM selection_reference_snapshots_v1
+       WHERE producer_run_id=?
+    `).bind(input.producerRunId).first<{ row_count: number; identity_count: number }>()
+    if (
+      Number(identityCoverage?.row_count ?? 0) !== input.references.length
+      || Number(identityCoverage?.identity_count ?? 0) !== input.references.length
+    ) {
+      throw new Error(
+        `selection_reference_stock_identity_coverage_mismatch:${identityCoverage?.identity_count ?? 0}/${input.references.length}`,
+      )
+    }
     return { referenceRows: input.references.length, matrixRows: expectedCells }
   }
 
@@ -396,8 +470,8 @@ export async function persistSelectionEvidenceV4(
 
   try {
     const referenceStatements = input.references.map((row) => db.prepare(`
-      INSERT OR IGNORE INTO selection_reference_snapshots_v1 (
-        signal_date, symbol, producer_run_id, name, market_segment, sector,
+      INSERT INTO selection_reference_snapshots_v1 (
+        signal_date, symbol, producer_run_id, stock_id, name, market_segment, sector,
         hard_gate_passed, hard_gate_reason, feature_available, feature_rejection_reason, strategy_labeled,
         strategy_selected, ml_selected, l4_selected, ev_owner_available, final_signal,
         selection_stage, rejection_reason, selection_propensity, score_v2, score_components,
@@ -405,10 +479,15 @@ export async function persistSelectionEvidenceV4(
         strategy_labeler_version, strategy_affinity_version, strategy_router_version, strategy_router_score,
         strategy_challenger_affinity_version, strategy_challenger_route_version, strategy_challenger_route_score,
         strategy_registry_checksum, feature_contract_version, evidence_artifact_id
-      ) VALUES (?, ?, ?, ?, ?, ?, 1, 'hard_filters_passed', ?, ?, 1, ?, 0, 0, 0, NULL,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'hard_filters_passed', ?, ?, 1, ?, 0, 0, 0, NULL,
                 ?, ?, 1.0, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(signal_date, symbol, producer_run_id) DO UPDATE SET
+        stock_id=CASE
+          WHEN selection_reference_snapshots_v1.stock_id IS NULL THEN excluded.stock_id
+          ELSE selection_reference_snapshots_v1.stock_id
+        END
     `).bind(
-      row.signal_date, row.symbol, row.producer_run_id, row.name,
+      row.signal_date, row.symbol, row.producer_run_id, stockIds.get(clean(row.symbol)), row.name,
       row.market_segment, row.sector, row.feature_available, row.feature_rejection_reason,
       row.strategy_selected, row.selection_stage, row.rejection_reason, row.score_v2,
       row.score_components, row.strategy_labeler_version, row.strategy_affinity_version,
@@ -447,12 +526,16 @@ export async function persistSelectionEvidenceV4(
     const counts = await db.prepare(`
       SELECT
         (SELECT COUNT(*) FROM selection_reference_snapshots_v1 WHERE producer_run_id = ? AND hard_gate_passed = 1) reference_rows,
+        (SELECT COUNT(*) FROM selection_reference_snapshots_v1 WHERE producer_run_id = ? AND hard_gate_passed = 1 AND stock_id IS NOT NULL) identity_rows,
         (SELECT COUNT(*) FROM strategy_label_matrix_v4 WHERE producer_run_id = ?) matrix_rows
-    `).bind(input.producerRunId, input.producerRunId).first<any>()
+    `).bind(input.producerRunId, input.producerRunId, input.producerRunId).first<any>()
     const referenceRows = Number(counts?.reference_rows ?? 0)
+    const identityRows = Number(counts?.identity_rows ?? 0)
     const matrixRows = Number(counts?.matrix_rows ?? 0)
-    if (referenceRows !== input.references.length || matrixRows !== expectedCells) {
-      throw new Error(`strategy_label_matrix_persisted_coverage_mismatch:${referenceRows}/${input.references.length}:${matrixRows}/${expectedCells}`)
+    if (referenceRows !== input.references.length || identityRows !== referenceRows || matrixRows !== expectedCells) {
+      throw new Error(
+        `strategy_label_matrix_persisted_coverage_mismatch:${referenceRows}/${input.references.length}:identity=${identityRows}/${referenceRows}:${matrixRows}/${expectedCells}`,
+      )
     }
     await db.prepare(`
       UPDATE strategy_label_matrix_runs_v4

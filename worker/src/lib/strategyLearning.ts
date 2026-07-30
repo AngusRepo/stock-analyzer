@@ -2779,7 +2779,7 @@ interface HistoricalStrategyContextRowV5 {
 
 export async function listHistoricalStrategyEvidenceV5Dates(
   db: D1Database,
-  options: { asOfDate: string; maxDates?: number },
+  options: { asOfDate: string; maxDates?: number; priorityDate?: string | null },
 ): Promise<string[]> {
   const maxDates = Math.max(1, Math.min(5, Math.floor(options.maxDates ?? 2)))
   const dateRows = await db.prepare(`
@@ -2793,15 +2793,15 @@ export async function listHistoricalStrategyEvidenceV5Dates(
          OR r.status NOT IN ('success','blocked')
        )
      GROUP BY d.date
-     ORDER BY d.date DESC
+     ORDER BY CASE WHEN d.date=? THEN 0 ELSE 1 END, d.date DESC
      LIMIT ?
-  `).bind(options.asOfDate, maxDates).all<{ date: string }>()
+  `).bind(options.asOfDate, options.priorityDate ?? '', maxDates).all<{ date: string }>()
   return (dateRows.results ?? []).map((row) => row.date)
 }
 
 export async function rebuildHistoricalStrategyEvidenceV5(
   db: D1Database,
-  options: { asOfDate: string; maxDates?: number },
+  options: { asOfDate: string; maxDates?: number; priorityDate?: string | null },
 ): Promise<{ attemptedDates: number; successfulDates: number; blockedDates: number; rebuiltDecisions: number; rebuiltMatrixRows: number }> {
   await ensureStrategyLearningTables(db)
   const candidateDates = await listHistoricalStrategyEvidenceV5Dates(db, options)
@@ -3111,18 +3111,25 @@ export async function finalizeStrategyLearningEvidenceV5(
     persistPolicy?: boolean
     calibrateThresholds?: boolean
     calibrationCadence?: StrategyThresholdCalibrationCadence
+    beforePromotion?: () => Promise<void>
+    historicalPriorityDate?: string | null
   } = {},
 ) {
   const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
   const { reconcileSelectionDecisionEvidenceV4 } = await import('./selectionReferenceEvidence')
   const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
   const decisionEvidence = await reconcileSelectionDecisionEvidenceV4(db, date)
-  const historicalEvidence = await rebuildHistoricalStrategyEvidenceV5(db, { asOfDate: date, maxDates: 2 })
+  const historicalEvidence = await rebuildHistoricalStrategyEvidenceV5(db, {
+    asOfDate: date,
+    maxDates: 2,
+    priorityDate: options.historicalPriorityDate,
+  })
   const labels = await materializeCanonicalSelectionLabelsV4(db, { asOfDate: date })
+  const rewards = await refreshStrategyRewardLedger(db, { endDate: date, dryRun: false })
+  if (options.beforePromotion) await options.beforePromotion()
   const marginalEdge = await refreshStrategyMarginalEdgeV4(db, date, { allowPromotion: options.allowPromotion === true })
   const { refreshStrategyRouteCalibration } = await import('./strategyRouteCalibration')
   const routeCalibration = await refreshStrategyRouteCalibration(db, date, { allowPromotion: options.allowPromotion === true })
-  const rewards = await refreshStrategyRewardLedger(db, { endDate: date, dryRun: false })
   const policy = options.persistPolicy === false
     ? null
     : await refreshStrategyAdaptivePolicyState(db, { date, dryRun: false })
@@ -3139,8 +3146,21 @@ export async function finalizeStrategyLearningEvidenceV5(
 export async function runStrategyLearningClosure(
   db: D1Database,
   date: string,
-  options: { allowPromotion?: boolean; persistPolicy?: boolean; calibrateThresholds?: boolean; calibrationCadence?: StrategyThresholdCalibrationCadence } = {},
+  options: {
+    allowPromotion?: boolean
+    persistPolicy?: boolean
+    calibrateThresholds?: boolean
+    calibrationCadence?: StrategyThresholdCalibrationCadence
+    historicalPriorityDate?: string | null
+  } = {},
 ): Promise<string> {
+  if (
+    options.allowPromotion === true
+    || options.persistPolicy === true
+    || options.calibrateThresholds === true
+  ) {
+    throw new Error('strategy_learning_direct_production_mutation_requires_evening_chain_audit')
+  }
   await ensureStrategyLearningTables(db)
   const seeded = await seedDefaultStrategySpecRegistry(db)
   let decisionCursor = ''
@@ -3159,7 +3179,12 @@ export async function runStrategyLearningClosure(
     decisionCursor = chunk.next_cursor_symbol
   }
   const { decisionEvidence, historicalEvidence, labels, marginalEdge, rewards, policy, thresholdCalibration }
-    = await finalizeStrategyLearningEvidenceV5(db, date, options)
+    = await finalizeStrategyLearningEvidenceV5(db, date, {
+      ...options,
+      allowPromotion: false,
+      persistPolicy: false,
+      calibrateThresholds: false,
+    })
   return [
     `seeded=${seeded.seeded}`,
     `spec_source=${decisionSpecSource}`,

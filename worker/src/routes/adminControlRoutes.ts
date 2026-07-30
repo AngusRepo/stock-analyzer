@@ -85,7 +85,7 @@ adminControlRoutes.post('/api/internal/d1/batch', async (c) => {
   })
 })
 
-function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
+export function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
   if (!body || typeof body !== 'object') throw new Error('JSON object body is required')
   const schemaByDomain = new Map<string, Set<string>>([
     ['screener_funnel', new Set([
@@ -94,6 +94,7 @@ function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
       'screener-funnel-evidence-index-v1',
     ])],
     ['screener_funnel_chunk', new Set(['screener-funnel-evidence-chunk-v1'])],
+    ['strategy_redundancy_oof', new Set(['strategy-redundancy-oof-evidence-v1'])],
     ['s12_research_minute_bars', new Set(['s12-research-minute-bars-v2'])],
     ['s12_structure_batch', new Set(['s12-structure-batch-summary-v1'])],
   ])
@@ -108,6 +109,7 @@ function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
   const retentionByDomain = new Map<string, Set<string>>([
     ['screener_funnel', new Set(['canonical_model_evidence', 'failed_debug'])],
     ['screener_funnel_chunk', new Set(['canonical_model_evidence', 'failed_debug'])],
+    ['strategy_redundancy_oof', new Set(['canonical_model_evidence'])],
     ['s12_research_minute_bars', new Set(['raw_market_unreferenced'])],
     ['s12_structure_batch', new Set(['canonical_model_evidence', 'paper_shadow', 'failed_debug'])],
   ])
@@ -124,6 +126,30 @@ function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
   }
   if (body.metadata != null && (typeof body.metadata !== 'object' || Array.isArray(body.metadata))) {
     throw new Error('metadata must be an object')
+  }
+  if (body.domain === 'strategy_redundancy_oof') {
+    const payload = body.payload
+    if (
+      payload.schema_version !== 'strategy-similarity-evidence-v1'
+      || !['computed', 'blocked'].includes(String(payload.status ?? ''))
+      || payload.source !== 'modal_python'
+      || payload.evidence_only !== true
+      || payload.production_selector !== false
+      || payload.production_decision_path !== false
+      || payload.method !== 'networkx_connected_components_oof_residual_correlation'
+      || payload.input_scope !== 'mature_oof_residual_returns_with_same_day_overlap_diagnostic'
+      || !Number.isInteger(Number(payload.strategy_count))
+      || Number(payload.strategy_count) < 1
+      || Number(payload.eligible_oof_pair_count) !== rowCount
+      || !payload.strategy_cluster_id
+      || typeof payload.strategy_cluster_id !== 'object'
+      || Array.isArray(payload.strategy_cluster_id)
+      || !payload.pairwise_oof_evidence
+      || typeof payload.pairwise_oof_evidence !== 'object'
+      || Array.isArray(payload.pairwise_oof_evidence)
+    ) {
+      throw new Error('invalid strategy redundancy OOF artifact payload')
+    }
   }
   if (body.domain === 's12_research_minute_bars') {
     if (

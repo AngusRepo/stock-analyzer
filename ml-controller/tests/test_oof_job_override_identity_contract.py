@@ -9,14 +9,16 @@ def test_oof_materializer_override_role_is_minimal_and_reconciled():
     contract = json.loads(
         (ROOT / "infra" / "gcp-runtime-identities.json").read_text()
     )
-    role = contract["custom_roles"]["stockvisionOofJobRunner"]
+    role_name = contract["job_override_invokers"]["controller"]["active8-oof-materialize"]
+    role = contract["custom_roles"][role_name]
 
+    assert role_name == "stockvisionJobOverrideRunner"
     assert role["permissions"] == [
         "run.jobs.run",
         "run.jobs.runWithOverrides",
     ]
-    assert contract["job_override_invokers"] == {
-        "controller": {"active8-oof-materialize": "stockvisionOofJobRunner"}
+    assert set(contract["job_override_invokers"]["controller"]) >= {
+        "active8-oof-materialize",
     }
 
     script = (

@@ -247,7 +247,7 @@ export async function failStrategyLearningRun(
 ): Promise<void> {
   await db.prepare(`
     UPDATE strategy_learning_runs
-       SET status='error', lease_owner=NULL, lease_expires_at=NULL,
+       SET status='error', lease_owner=NULL, lease_expires_at=NULL, completed_at=NULL,
            last_error=?, updated_at=CURRENT_TIMESTAMP
      WHERE business_date=?
   `).bind(input.error.slice(0, 1000), input.businessDate).run()

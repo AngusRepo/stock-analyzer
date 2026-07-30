@@ -3195,6 +3195,7 @@ export async function processUpdateBatch(
       return
     }
     const canonicalRunId = state.canonical_run_id
+    const finalizerAttemptId = `${canonicalRunId}:finalize:${Date.now().toString(36)}`
     const claimed = await claimStrategyLearningPage(env.DB, {
       businessDate: triggerTime,
       runId: canonicalRunId,
@@ -3253,13 +3254,30 @@ export async function processUpdateBatch(
       })
 
       const currentBusinessDateRun = Boolean(msg.force) && triggerTime === twToday()
+      const {
+        auditEveningChainEvidenceClosure,
+        resolveExpectedMatureSignalDate,
+        summarizeEveningChainEvidenceClosure,
+      } = await import('./eveningChainEvidenceClosure')
+      const historicalPriorityDate = await resolveExpectedMatureSignalDate(env, triggerTime)
+      let closureSummary = ''
       const { decisionEvidence, historicalEvidence, labels, marginalEdge, rewards, policy, thresholdCalibration }
         = await finalizeStrategyLearningEvidenceV5(env.DB, triggerTime, {
           allowPromotion: currentBusinessDateRun,
           persistPolicy: currentBusinessDateRun,
           calibrateThresholds: currentBusinessDateRun,
           calibrationCadence: 'daily_drift',
+          historicalPriorityDate,
+          beforePromotion: async () => {
+            const closureAudit = await auditEveningChainEvidenceClosure(
+              env,
+              triggerTime,
+              String(state.producer_run_id ?? ''),
+            )
+            closureSummary = summarizeEveningChainEvidenceClosure(closureAudit)
+          },
         })
+      if (!closureSummary) throw new Error('evening_chain_evidence_closure_callback_missing')
       const summary = [
       `materialized_complete candidates=${coverage.candidateRows}/${coverage.expectedCandidates} rows=${coverage.decisionRows}/${coverage.expectedRows}`,
       `last_candidates=${chunk.candidate_count}`,
@@ -3276,25 +3294,44 @@ export async function processUpdateBatch(
       `reward_rows=${rewards.persisted_rows}`,
       `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
       `threshold_calibration=${thresholdCalibration ? thresholdCalibration.status : 'skipped_historical'}`,
+      `evidence_closure=${closureSummary}`,
       ].join(' ')
 
       await logSchedulerResult(env.KV, 'strategy-learning', {
-        status: 'success', summary, duration_ms: 0, run_id: canonicalRunId, run_date: triggerTime,
+        status: 'success', summary, duration_ms: 0, run_id: canonicalRunId,
+        attempt_id: finalizerAttemptId, run_date: triggerTime,
       })
       await logSchedulerResult(env.KV, 'post-verify-chain', {
         status: 'success', summary: `strategy-learning queue closed; ${summary}`,
-        duration_ms: 0, run_id: canonicalRunId, run_date: triggerTime,
+        duration_ms: 0, run_id: canonicalRunId, attempt_id: finalizerAttemptId, run_date: triggerTime,
       })
       await logSchedulerResult(env.KV, 'evening-chain', {
         status: 'success', summary: `root chain closed after queued strategy-learning: ${summary}`,
-        duration_ms: 0, run_id: canonicalRunId, run_date: triggerTime,
+        duration_ms: 0, run_id: canonicalRunId, attempt_id: finalizerAttemptId, run_date: triggerTime,
       })
       return
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
       await failStrategyLearningRun(env.DB, {
         businessDate: triggerTime,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage,
       })
+      await Promise.allSettled([
+        logSchedulerResult(env.KV, 'strategy-learning', {
+          status: 'error', summary: errorMessage, error: errorMessage, duration_ms: 0,
+          run_id: canonicalRunId, attempt_id: finalizerAttemptId, run_date: triggerTime,
+        }),
+        logSchedulerResult(env.KV, 'post-verify-chain', {
+          status: 'error', summary: `strategy-learning finalizer blocked: ${errorMessage}`,
+          error: errorMessage, duration_ms: 0, run_id: canonicalRunId,
+          attempt_id: finalizerAttemptId, run_date: triggerTime,
+        }),
+        logSchedulerResult(env.KV, 'evening-chain', {
+          status: 'error', summary: `root chain blocked by strategy-learning evidence audit: ${errorMessage}`,
+          error: errorMessage, duration_ms: 0, run_id: canonicalRunId,
+          attempt_id: finalizerAttemptId, run_date: triggerTime,
+        }),
+      ])
       throw error
     }
   }

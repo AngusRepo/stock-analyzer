@@ -37,6 +37,21 @@ class CashFlow(TypedDict):
     total_net: float
 
 
+class SymbolSessionState(TypedDict):
+    current_close: float
+    previous_close: float
+    current_turnover: float
+    previous_turnover: float
+
+
+class SectorSessionStats(TypedDict):
+    stock_count: int
+    up_count: int
+    turnover_value: float
+    turnover_share: float
+    turnover_share_delta: float
+
+
 def _tag_type_to_classification(tag_type: TagType) -> Classification:
     if tag_type == "concept":
         return "theme"
@@ -86,6 +101,75 @@ def _load_member_returns_5d(as_of_date: str) -> dict[str, float]:
         if ago5 > 0:
             returns[sym] = (latest - ago5) / ago5
     return returns
+
+
+def _load_symbol_session_state(as_of_date: str) -> dict[str, SymbolSessionState]:
+    rows = d1_client.query(
+        """
+        WITH sessions AS (
+          SELECT DISTINCT date
+            FROM stock_prices
+           WHERE date <= ?
+           ORDER BY date DESC
+           LIMIT 2
+        ),
+        bounds AS (
+          SELECT MAX(date) current_date, MIN(date) previous_date FROM sessions
+        )
+        SELECT s.symbol,
+               cur.close current_close, cur.volume current_volume,
+               prev.close previous_close, prev.volume previous_volume
+          FROM bounds b
+          JOIN stock_prices cur ON cur.date=b.current_date
+          JOIN stock_prices prev ON prev.stock_id=cur.stock_id AND prev.date=b.previous_date
+          JOIN stocks s ON s.id=cur.stock_id
+         WHERE b.current_date<>b.previous_date
+           AND cur.close>0 AND prev.close>0
+           AND cur.volume IS NOT NULL AND cur.volume>=0
+           AND prev.volume IS NOT NULL AND prev.volume>=0
+        """,
+        [as_of_date],
+    )
+    output: dict[str, SymbolSessionState] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").strip()
+        current_close = float(row.get("current_close") or 0)
+        previous_close = float(row.get("previous_close") or 0)
+        current_turnover = current_close * float(row.get("current_volume") or 0)
+        previous_turnover = previous_close * float(row.get("previous_volume") or 0)
+        if symbol and current_close > 0 and previous_close > 0:
+            output[symbol] = {
+                "current_close": current_close,
+                "previous_close": previous_close,
+                "current_turnover": current_turnover,
+                "previous_turnover": previous_turnover,
+            }
+    return output
+
+
+def _aggregate_tag_session_stats(
+    tag_members: dict[str, list[str]],
+    symbol_state: dict[str, SymbolSessionState],
+) -> dict[str, SectorSessionStats]:
+    market_current = sum(row["current_turnover"] for row in symbol_state.values())
+    market_previous = sum(row["previous_turnover"] for row in symbol_state.values())
+    output: dict[str, SectorSessionStats] = {}
+    for tag, members in tag_members.items():
+        rows = [symbol_state[symbol] for symbol in members if symbol in symbol_state]
+        if not rows:
+            continue
+        turnover_value = sum(row["current_turnover"] for row in rows)
+        previous_turnover = sum(row["previous_turnover"] for row in rows)
+        turnover_share = turnover_value / market_current if market_current > 0 else 0.0
+        previous_share = previous_turnover / market_previous if market_previous > 0 else 0.0
+        output[tag] = {
+            "stock_count": len(rows),
+            "up_count": sum(1 for row in rows if row["current_close"] > row["previous_close"]),
+            "turnover_value": turnover_value,
+            "turnover_share": turnover_share,
+            "turnover_share_delta": turnover_share - previous_share,
+        }
+    return output
 
 
 def _load_twii_return_5d(as_of_date: str) -> float:
@@ -497,6 +581,7 @@ def write_sector_flow(
     classification: Classification,
     as_of_date: str,
     cash_flows: Optional[dict[str, CashFlow]] = None,
+    session_stats: Optional[dict[str, SectorSessionStats]] = None,
 ) -> int:
     """
     Upsert sector_flow rows.
@@ -522,16 +607,25 @@ def write_sector_flow(
             "trust_net": 0.0,
             "total_net": 0.0,
         }
+        stats = (session_stats or {}).get(pt.sector)
+        if not stats or int(stats.get("stock_count") or 0) <= 0:
+            logger.warning(
+                "[sector_flow] skip incomplete PIT breadth sector=%s classification=%s date=%s",
+                pt.sector,
+                classification,
+                as_of_date,
+            )
+            continue
         statements.append((
             """
             INSERT INTO sector_flow (
               date, sector, classification, rs_ratio, rs_momentum, quadrant,
               rotation_velocity, rotation_acceleration, quadrant_age, transition_path,
               rotation_score, rotation_regime, rotation_hysteresis, rotation_window, rrg_tail_json,
-              stock_count, foreign_net, trust_net, total_net,
-              updated_at, pit_lineage_version
+              stock_count, up_count, turnover_value, turnover_share, turnover_share_delta,
+              foreign_net, trust_net, total_net, updated_at, pit_lineage_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date, sector, classification) DO UPDATE SET
               rs_ratio = excluded.rs_ratio,
               rs_momentum = excluded.rs_momentum,
@@ -546,6 +640,10 @@ def write_sector_flow(
               rotation_window = excluded.rotation_window,
               rrg_tail_json = excluded.rrg_tail_json,
               stock_count = excluded.stock_count,
+              up_count = excluded.up_count,
+              turnover_value = excluded.turnover_value,
+              turnover_share = excluded.turnover_share,
+              turnover_share_delta = excluded.turnover_share_delta,
               foreign_net = excluded.foreign_net,
               trust_net = excluded.trust_net,
               total_net = excluded.total_net,
@@ -568,7 +666,11 @@ def write_sector_flow(
                 pt.rotation_hysteresis,
                 pt.rotation_window,
                 json.dumps(pt.rrg_tail, ensure_ascii=False, sort_keys=True),
-                pt.member_count,
+                int(stats["stock_count"]),
+                int(stats["up_count"]),
+                round(float(stats["turnover_value"]), 4),
+                round(float(stats["turnover_share"]), 8),
+                round(float(stats["turnover_share_delta"]), 8),
                 round(float(flow.get("foreign_net") or 0.0), 4),
                 round(float(flow.get("trust_net") or 0.0), 4),
                 round(float(flow.get("total_net") or 0.0), 4),
@@ -613,12 +715,20 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
     ]
 
     symbol_flows = _load_symbol_cash_flows_5d(as_of_date)
+    symbol_session_state = _load_symbol_session_state(as_of_date)
     for tag_type, classification in paths:
         try:
             tag_members = _load_stock_tags(tag_type)
             pts = compute_sector_flow_for_tag_type(tag_type, as_of_date)
             tag_flows = _aggregate_tag_cash_flows(tag_members, symbol_flows)
-            written = write_sector_flow(pts, classification, as_of_date, tag_flows)
+            tag_session_stats = _aggregate_tag_session_stats(tag_members, symbol_session_state)
+            written = write_sector_flow(
+                pts,
+                classification,
+                as_of_date,
+                tag_flows,
+                tag_session_stats,
+            )
             counts = {"Leading": 0, "Weakening": 0, "Lagging": 0, "Improving": 0}
             regimes: dict[str, int] = {}
             for p in pts:
@@ -631,6 +741,8 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
                 "with_rs": sum(1 for p in pts if p.rs_ratio is not None),
                 "with_rotation": sum(1 for p in pts if p.rotation_score is not None),
                 "written": written,
+                "breadth_ready": sum(1 for row in tag_session_stats.values() if row["stock_count"] > 0),
+                "participation_ready": sum(1 for row in tag_session_stats.values() if row["turnover_value"] >= 0),
                 "quadrants": counts,
                 "rotation_regimes": regimes,
             }

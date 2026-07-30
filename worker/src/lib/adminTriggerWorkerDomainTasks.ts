@@ -1,4 +1,5 @@
 import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
+import { databaseForDataDomain } from './dataDomainRegistry'
 import { runVerifyV2 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
 import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
@@ -20,7 +21,7 @@ const D1_HEAVY_MAINTENANCE_TASKS = new Set([
   'orphan-reachability-gc', 'cleanup-dlq-replay', 'weekly-cleanup',
   'price-horizon-projection',
   'strategy-learning-finalize',
-  'selection-reference-repair',
+  'selection-reference-repair', 'selection-reference-identity-repair',
   'data-domain-shadow-backfill',
 ])
 const D1_MAINTENANCE_REQUEST_BUDGET_MS = 45_000
@@ -282,23 +283,46 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     'strategy-learning-finalize': async () => {
       const runDate = assertRunDate(requestedRunDate())
       const { finalizeStrategyLearningEvidenceV5 } = await import('./strategyLearning')
-      const { completeStrategyLearningRun, loadStrategyLearningRun } = await import('./strategyLearningRunState')
+      const {
+        completeStrategyLearningRun,
+        failStrategyLearningRun,
+        loadStrategyLearningRun,
+      } = await import('./strategyLearningRunState')
       const { logSchedulerResult } = await import('./schedulerRunLogger')
       const runState = await loadStrategyLearningRun(c.env.DB, runDate)
       if (!runState) throw new Error(`strategy_learning_run_missing:${runDate}`)
-      const coverage = await completeStrategyLearningRun(c.env.DB, {
-        businessDate: runDate,
-        runId: runState.canonical_run_id,
-      })
-      const currentBusinessDateRun = c.req.query('force_policy') === '1' && runDate === twToday()
-      const { decisionEvidence, historicalEvidence, labels, marginalEdge, rewards, policy, thresholdCalibration }
-        = await finalizeStrategyLearningEvidenceV5(c.env.DB, runDate, {
-          allowPromotion: currentBusinessDateRun,
-          persistPolicy: currentBusinessDateRun,
-          calibrateThresholds: currentBusinessDateRun,
-          calibrationCadence: 'daily_drift',
+      const finalizerAttemptId = `${runState.canonical_run_id}:manual-finalize:${Date.now().toString(36)}`
+      try {
+        const coverage = await completeStrategyLearningRun(c.env.DB, {
+          businessDate: runDate,
+          runId: runState.canonical_run_id,
         })
-      const summary = [
+        const currentBusinessDateRun = c.req.query('force_policy') === '1' && runDate === twToday()
+        const {
+          auditEveningChainEvidenceClosure,
+          resolveExpectedMatureSignalDate,
+          summarizeEveningChainEvidenceClosure,
+        } = await import('./eveningChainEvidenceClosure')
+        const historicalPriorityDate = await resolveExpectedMatureSignalDate(c.env, runDate)
+        let closureSummary = ''
+        const { decisionEvidence, historicalEvidence, labels, marginalEdge, rewards, policy, thresholdCalibration }
+          = await finalizeStrategyLearningEvidenceV5(c.env.DB, runDate, {
+            allowPromotion: currentBusinessDateRun,
+            persistPolicy: currentBusinessDateRun,
+            calibrateThresholds: currentBusinessDateRun,
+            calibrationCadence: 'daily_drift',
+            historicalPriorityDate,
+            beforePromotion: async () => {
+              const closureAudit = await auditEveningChainEvidenceClosure(
+                c.env,
+                runDate,
+                String(runState.producer_run_id ?? ''),
+              )
+              closureSummary = summarizeEveningChainEvidenceClosure(closureAudit)
+            },
+          })
+        if (!closureSummary) throw new Error('evening_chain_evidence_closure_callback_missing')
+        const summary = [
         `strategy_learning_finalize date=${runDate}`,
         `materialized_complete candidates=${coverage.candidateRows}/${coverage.expectedCandidates} rows=${coverage.decisionRows}/${coverage.expectedRows}`,
         `selection_decisions=${decisionEvidence.finalSignalRows}/${decisionEvidence.referenceRows}`,
@@ -316,11 +340,56 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         `refresh_run_id=${rewards.refresh_run_id ?? 'none'}`,
         `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
         `threshold_calibration=${thresholdCalibration ? thresholdCalibration.status : 'skipped_historical'}`,
+        `evidence_closure=${closureSummary}`,
+        ].join(' ')
+        await logSchedulerResult(c.env.KV, 'strategy-learning', { status: 'success', summary, duration_ms: 0, run_id: runState.canonical_run_id, attempt_id: finalizerAttemptId, run_date: runDate })
+        await logSchedulerResult(c.env.KV, 'post-verify-chain', { status: 'success', summary: `strategy-learning finalizer recovered; ${summary}`, duration_ms: 0, run_id: runState.canonical_run_id, attempt_id: finalizerAttemptId, run_date: runDate })
+        await logSchedulerResult(c.env.KV, 'evening-chain', { status: 'success', summary: `root chain closed by strategy-learning finalizer; ${summary}`, duration_ms: 0, run_id: runState.canonical_run_id, attempt_id: finalizerAttemptId, run_date: runDate })
+        return summary
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        await failStrategyLearningRun(c.env.DB, {
+          businessDate: runDate,
+          error: errorMessage,
+        })
+        await Promise.allSettled([
+          logSchedulerResult(c.env.KV, 'strategy-learning', {
+            status: 'error', summary: errorMessage, error: errorMessage, duration_ms: 0,
+            run_id: runState.canonical_run_id, attempt_id: finalizerAttemptId, run_date: runDate,
+          }),
+          logSchedulerResult(c.env.KV, 'post-verify-chain', {
+            status: 'error', summary: `strategy-learning finalizer blocked: ${errorMessage}`,
+            error: errorMessage, duration_ms: 0, run_id: runState.canonical_run_id,
+            attempt_id: finalizerAttemptId, run_date: runDate,
+          }),
+          logSchedulerResult(c.env.KV, 'evening-chain', {
+            status: 'error', summary: `root chain blocked by strategy-learning evidence audit: ${errorMessage}`,
+            error: errorMessage, duration_ms: 0, run_id: runState.canonical_run_id,
+            attempt_id: finalizerAttemptId, run_date: runDate,
+          }),
+        ])
+        throw error
+      }
+    },
+    'selection-reference-identity-repair': async () => {
+      const endDate = assertRunDate(c.req.query('end_date') ?? requestedRunDate())
+      const startDate = assertRunDate(c.req.query('start_date') ?? endDate)
+      const { repairSelectionReferenceStockIdentities } = await import('./selectionReferenceRepair')
+      const result = await repairSelectionReferenceStockIdentities(
+        databaseForDataDomain(c.env, 'core'),
+        databaseForDataDomain(c.env, 'learning'),
+        { startDate, endDate, dryRun: c.req.query('dry_run') === '1' },
+      )
+      return [
+        'selection_reference_identity_repair',
+        `range=${result.start_date}..${result.end_date}`,
+        `expected=${result.expected_rows}`,
+        `missing_before=${result.missing_before}`,
+        `repaired=${result.repaired_rows}`,
+        `missing_after=${result.missing_after}`,
+        `dry_run=${result.dry_run}`,
+        `run_id=${result.run_id}`,
       ].join(' ')
-      await logSchedulerResult(c.env.KV, 'strategy-learning', { status: 'success', summary, duration_ms: 0, run_id: runState.canonical_run_id, run_date: runDate })
-      await logSchedulerResult(c.env.KV, 'post-verify-chain', { status: 'success', summary: `strategy-learning finalizer recovered; ${summary}`, duration_ms: 0, run_id: runState.canonical_run_id, run_date: runDate })
-      await logSchedulerResult(c.env.KV, 'evening-chain', { status: 'success', summary: `root chain closed by strategy-learning finalizer; ${summary}`, duration_ms: 0, run_id: runState.canonical_run_id, run_date: runDate })
-      return summary
     },
     'selection-reference-repair': async () => {
       const runDate = assertRunDate(requestedRunDate())

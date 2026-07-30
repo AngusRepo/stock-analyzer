@@ -2165,6 +2165,16 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     forward_extension_retry_required = bool(
         not req.dry_run and daily_forward_extension_plan and not forward_extension_manifest_path
     )
+    if forward_extension_retry_required:
+        return {
+            "status": "pending",
+            "reason": "daily_forward_extension_not_materialized",
+            "cadence": cadence,
+            "cohort_id": cohort_id,
+            "knowledge_cutoff_date": knowledge_cutoff_date,
+            "daily_forward_extension": daily_forward_extension,
+            "dependency_retry_required": True,
+        }
     result = await materialize_walk_forward_oof(OofMaterializeRequest(
         cohort_id=cohort_id,
         knowledge_cutoff_date=knowledge_cutoff_date,
@@ -2182,9 +2192,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         and result["opb_refresh"].get("status") == "failed"
     )
     full_fit_retry_required = bool(result.get("full_fit_retry_required"))
-    dependency_retry_required = (
-        opb_failed or full_fit_retry_required or forward_extension_retry_required
-    )
+    dependency_retry_required = opb_failed or full_fit_retry_required
     if not req.dry_run and not dependency_retry_required:
         lifecycle_blob.upload_from_string(
             json.dumps({

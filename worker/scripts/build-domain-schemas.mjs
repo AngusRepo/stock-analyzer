@@ -42,7 +42,7 @@ for (const raw of sqlStatements(schema)) {
   const statement = raw.trim()
   if (!statement) continue
   const table = statement.match(/CREATE TABLE IF NOT EXISTS\s+([A-Za-z0-9_]+)/i)?.[1]
-    ?? statement.match(/CREATE INDEX IF NOT EXISTS\s+[A-Za-z0-9_]+\s+ON\s+([A-Za-z0-9_]+)/i)?.[1]
+    ?? statement.match(/CREATE(?:\s+UNIQUE)?\s+INDEX IF NOT EXISTS\s+[A-Za-z0-9_]+\s+ON\s+([A-Za-z0-9_]+)/i)?.[1]
     ?? statement.match(/INSERT(?: OR IGNORE)? INTO\s+([A-Za-z0-9_]+)/i)?.[1]
   if (!table) throw new Error('unclassified schema statement: ' + statement.slice(0, 120))
   const domain = owner.get(table) ?? (table.startsWith('paper_') ? 'paper' : null)

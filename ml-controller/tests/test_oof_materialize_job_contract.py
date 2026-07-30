@@ -92,7 +92,7 @@ def test_oof_materialize_job_contract_is_durable_and_deployed():
     assert "oof_materialize_job_main" in deploy
 
 
-def test_oof_materialize_job_reports_full_fit_pending_as_running(monkeypatch):
+def test_oof_materialize_job_reports_full_fit_pending_as_terminal_error(monkeypatch):
     callbacks = []
 
     async def fake_execute_lifecycle(**kwargs):
@@ -116,11 +116,11 @@ def test_oof_materialize_job_reports_full_fit_pending_as_running(monkeypatch):
     monkeypatch.setenv("OOF_MATERIALIZE_DISPATCH_FULL_FIT", "1")
     monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-pending")
 
-    assert asyncio.run(oof_materialize_job_main._run()) == 0
-    assert callbacks[0]["status"] == "running"
-    assert "error" not in callbacks[0]
+    assert asyncio.run(oof_materialize_job_main._run()) == 1
+    assert callbacks[0]["status"] == "error"
+    assert "oof_dependency_retry_required" in callbacks[0]["error"]
 
-def test_oof_materialize_job_keeps_prep_dependency_pending_retriable(monkeypatch):
+def test_oof_materialize_job_keeps_prep_dependency_terminal_and_retriable(monkeypatch):
     callbacks = []
 
     async def fake_execute_lifecycle(**_kwargs):
@@ -139,7 +139,7 @@ def test_oof_materialize_job_keeps_prep_dependency_pending_retriable(monkeypatch
     monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-07-25")
     monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-prep-pending")
 
-    assert asyncio.run(oof_materialize_job_main._run()) == 0
-    assert callbacks[0]["status"] == "running"
-    assert "error" not in callbacks[0]
+    assert asyncio.run(oof_materialize_job_main._run()) == 1
+    assert callbacks[0]["status"] == "error"
+    assert "oof_dependency_retry_required:immutable_sequence_behind_compute_snapshot" in callbacks[0]["error"]
     assert "immutable_sequence_behind_compute_snapshot" in callbacks[0]["summary"]

@@ -2271,6 +2271,31 @@ def walk_forward_orchestrator(payload: dict) -> dict:
             "cohort_id": cohort_id,
             "required_action": "repair_or_remove_invalid_resume_manifest",
         }
+    try:
+        from app.oof_artifact_recovery import recover_completed_oof_windows
+
+        recoverable_windows = [
+            window for window in windows if int(window["window_id"]) not in reused_windows
+        ]
+        artifact_recovered = recover_completed_oof_windows(
+            bucket=prep_bucket,
+            requested_windows=recoverable_windows,
+            models=models,
+            cohort_id=cohort_id,
+            prep_prefix=prep_prefix,
+            prep_manifest_checksum=prep_manifest_checksum,
+            sequence_prefix=sequence_prefix,
+            sequence_manifest_checksum=sequence_manifest_evidence["artifact_checksum"],
+            model_coverage=model_coverage,
+        )
+        reused_windows.update(artifact_recovered)
+    except Exception as exc:
+        return {
+            "status": "failed_preflight",
+            "error": str(exc),
+            "cohort_id": cohort_id,
+            "required_action": "repair_corrupt_exact_fold_artifacts",
+        }
     pending_windows = [
         window for window in windows if int(window["window_id"]) not in reused_windows
     ]
@@ -2542,9 +2567,14 @@ def walk_forward_orchestrator(payload: dict) -> dict:
     per_model_promotion_evidence = {}
     for model_name in active8_models:
         fold_metrics = []
+        artifact_contract_gaps = []
         for window_result in all_results:
             metrics = (window_result.get("model_metrics") or {}).get(model_name) or {}
             if metrics.get("oos_ic") is None:
+                continue
+            artifact_path = str(metrics.get("oof_artifact") or "").strip()
+            if metrics.get("status") != "ready" or not artifact_path:
+                artifact_contract_gaps.append(f"w{window_result['window_id']}")
                 continue
             fold_metrics.append({
                 "fold_id": f"w{window_result['window_id']}",
@@ -2553,14 +2583,24 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 "coverage": float(metrics.get("coverage") or 0.0),
                 "coverage_gate_semantics": metrics.get("coverage_gate_semantics"),
                 "coverage_mode": metrics.get("coverage_mode"),
-                "date_cluster_ics": _date_cluster_ics(str(metrics.get("oof_artifact") or "")),
+                "date_cluster_ics": _date_cluster_ics(artifact_path),
             })
-        per_model_promotion_evidence[model_name] = build_model_cpcv_evidence(
+        evidence = build_model_cpcv_evidence(
             model=model_name,
             fold_metrics=fold_metrics,
             stage="promotion",
             method="outer_purged_walk_forward_rank_ic",
         )
+        if artifact_contract_gaps:
+            evidence["decision"] = "FAIL"
+            evidence["passed"] = False
+            evidence["serving_disposition"] = "FAIL"
+            evidence["failed_gates"] = sorted(set([
+                *(evidence.get("failed_gates") or []),
+                "oof_fold_artifact_contract",
+            ]))
+            evidence["artifact_contract_gap_folds"] = artifact_contract_gaps
+        per_model_promotion_evidence[model_name] = evidence
 
     # 2026-04-19 N2: aggregate per-window FS stats
     fs_stats = []
@@ -2974,10 +3014,14 @@ def train_dlinear_universal(payload: dict) -> dict:
             f"[DLinearTrain] done version={version} "
             f"oos_ic={result.get('ic_tracking', {}).get('DLinear', {}).get('oos_ic')}"
         )
+        tracking = dict(result.get("ic_tracking", {}))
+        dlinear_tracking = dict(tracking.get("DLinear") or {})
+        dlinear_tracking.setdefault("model_cpcv", result["metadata"].get("model_cpcv"))
+        tracking["DLinear"] = dlinear_tracking
         return {
             "saved": saved,
             "metadata": result["metadata"],
-            "ic_tracking": result.get("ic_tracking", {}),
+            "ic_tracking": tracking,
             "version": version,
             "elapsed_s": result["metadata"].get("elapsed_s"),
             "type": "dlinear_universal",

@@ -65,6 +65,63 @@ MODEL_CONFIG: dict[str, dict[str, str]] = {
 }
 
 
+OOF_FOLD_MODEL_EVIDENCE_SCHEMA_VERSION = "active8-oof-fold-model-evidence-v1"
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, np.generic):
+        return _json_safe(value.item())
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    return value
+
+
+def _canonical_json_bytes(payload: dict[str, Any]) -> bytes:
+    return json.dumps(
+        _json_safe(payload),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _save_immutable_oof_fold_evidence(
+    bucket: Any,
+    *,
+    path: str,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    unsigned = _json_safe(dict(evidence))
+    unsigned.pop("evidence_checksum", None)
+    evidence_checksum = hashlib.sha256(_canonical_json_bytes(unsigned)).hexdigest()
+    payload = {**unsigned, "evidence_checksum": evidence_checksum}
+    raw = _canonical_json_bytes(payload)
+    blob = bucket.blob(path)
+
+    def verify_existing() -> dict[str, Any]:
+        existing = json.loads(blob.download_as_bytes().decode("utf-8").lstrip("\ufeff"))
+        stored_checksum = str(existing.pop("evidence_checksum", "")).removeprefix("sha256:")
+        actual_checksum = hashlib.sha256(_canonical_json_bytes(existing)).hexdigest()
+        if stored_checksum != actual_checksum or stored_checksum != evidence_checksum:
+            raise ValueError(f"oof_fold_evidence_immutable_conflict:{path}")
+        return {**existing, "evidence_checksum": stored_checksum, "path": path}
+
+    if blob.exists():
+        return verify_existing()
+    try:
+        blob.upload_from_string(raw, content_type="application/json", if_generation_match=0)
+    except Exception:
+        if blob.exists():
+            return verify_existing()
+        raise
+    return {**payload, "path": path}
+
+
 def _utc_version() -> str:
     return "v" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
@@ -494,6 +551,38 @@ def _train_dense_purged_oof(
         },
     )
     oos_ic = float(np.mean([metric["oos_ic"] for metric in daily_metrics]))
+    cohort_id = str(payload.get("cohort_id") or "")
+    fold_id = str(payload.get("fold_id") or payload.get("window_id") or "")
+    evidence_path = (
+        f"{gcs_prefix.rstrip('/')}/oof/{cohort_id}/{fold_id}/"
+        f"{model_name.lower()}.evidence.json"
+    )
+    fold_evidence = _save_immutable_oof_fold_evidence(
+        bucket,
+        path=evidence_path,
+        evidence={
+            "schema_version": OOF_FOLD_MODEL_EVIDENCE_SCHEMA_VERSION,
+            "generation_mode": "purged_oof",
+            "cohort_id": cohort_id,
+            "fold_id": fold_id,
+            "model_name": model_name,
+            "version": version,
+            "target_semantic_version": SEQUENCE_RETURN_SEMANTIC_VERSION,
+            "model_cpcv": model_cpcv,
+            "oos_ic": round(oos_ic, 6),
+            "oos_samples": len(all_rows),
+            "oos_dates": len({row["date"] for row in all_rows}),
+            "oof_artifact": str(oof_artifact.get("path") or ""),
+            "oof_artifact_checksum": str(oof_artifact.get("payload_checksum") or ""),
+            "split_metadata": {
+                "train_start": payload.get("train_start"),
+                "train_end": train_end,
+                "test_start": test_start,
+                "test_end": test_end,
+                "purge_horizon": pred_len,
+            },
+        },
+    )
     return {
         "metadata": {
             "version": version,
@@ -522,6 +611,8 @@ def _train_dense_purged_oof(
         "version": version,
         "type": f"{model_name.lower()}_purged_oof",
         "oof_artifact": oof_artifact,
+        "oof_evidence_path": fold_evidence["path"],
+        "oof_evidence_checksum": fold_evidence["evidence_checksum"],
     }
 
 

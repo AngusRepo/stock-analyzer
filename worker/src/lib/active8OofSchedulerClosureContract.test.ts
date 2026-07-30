@@ -43,6 +43,8 @@ assert(
 )
 assert(
   walkForward.includes('build_frozen_oof_forward_extension') &&
+    walkForward.indexOf('extension.get("error")') >= 0 &&
+    walkForward.indexOf('extension.get("error")') < walkForward.indexOf('daily_forward_extension_dispatched_training') &&
     walkForward.includes('daily_forward_extension_dispatched_training') &&
     walkForward.includes('daily_forward_extension_claimed_promotion_eligibility') &&
     walkForward.includes('forward_extension_manifest_path=forward_extension_manifest_path') &&

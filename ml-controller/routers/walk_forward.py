@@ -2140,6 +2140,11 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             extension = await modal_client.build_frozen_oof_forward_extension(
                 daily_forward_extension_plan
             )
+            if extension.get("error"):
+                raise ValueError(
+                    "daily_forward_extension_failed:"
+                    + str(extension.get("error"))[:500]
+                )
             if extension.get("training_dispatched") is not False:
                 raise ValueError("daily_forward_extension_dispatched_training")
             if extension.get("promotion_eligible") is not False:

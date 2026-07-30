@@ -179,13 +179,17 @@ async def _run() -> int:
             )
             status = str(result.get("status") or "").lower()
             if result.get("dependency_retry_required"):
+                forward_extension = result.get("daily_forward_extension") or {}
                 reason = (
                     result.get("reason")
+                    or forward_extension.get("reason")
                     or (result.get("full_fit_dispatch") or {}).get("reason")
                     or (result.get("opb_refresh") or {}).get("error")
                     or "dependency_retry_required"
                 )
-                raise RuntimeError(f"oof_dependency_retry_required:{reason}")
+                detail = str(forward_extension.get("reason") or "").strip()
+                suffix = f":{detail}" if detail and detail != reason else ""
+                raise RuntimeError(f"oof_dependency_retry_required:{reason}{suffix}")
             if status in {"materialized", "idempotent_complete"}:
                 callback_status = "success"
             elif status in {"skipped", "pending"}:

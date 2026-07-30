@@ -834,6 +834,7 @@ def test_daily_oof_materialization_reuses_checksum_verified_gcs_indexes():
 def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
     from routers.walk_forward import (
         OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION,
+        _oof_lifecycle_receipt_path,
         _oof_lifecycle_receipt_matches_active_policy,
     )
     from services.active8_oof_cohort_materializer import (
@@ -843,12 +844,50 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
     current = {
         "schema_version": OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION,
         "materialization_policy_version": OOF_PIT_ELIGIBILITY_POLICY_VERSION,
+        "status": "materialized",
+        "cadence": "daily",
+        "evidence_closure": {
+            "materialized": True,
+            "candidate_artifacts": True,
+        },
+        "full_fit_dispatch": {
+            "status": "ready",
+            "retry_required": False,
+        },
     }
-    assert _oof_lifecycle_receipt_matches_active_policy(current)
+    assert _oof_lifecycle_receipt_matches_active_policy(
+        current,
+        cadence="daily",
+        require_full_fit=False,
+    )
     assert not _oof_lifecycle_receipt_matches_active_policy({
         **current,
         "materialization_policy_version": "legacy-v1",
-    })
+    }, cadence="daily", require_full_fit=False)
+    assert not _oof_lifecycle_receipt_matches_active_policy(
+        current,
+        cadence="weekly",
+        require_full_fit=True,
+    )
+    weekly = {
+        **current,
+        "cadence": "weekly",
+        "full_fit_dispatch": {
+            "status": "completed",
+            "retry_required": False,
+        },
+    }
+    assert _oof_lifecycle_receipt_matches_active_policy(
+        weekly,
+        cadence="weekly",
+        require_full_fit=True,
+    )
+    assert _oof_lifecycle_receipt_path("cohort-1", "2026-07-29", "daily").endswith(
+        "/2026-07-29.daily.json"
+    )
+    assert _oof_lifecycle_receipt_path("cohort-1", "2026-07-29", "weekly").endswith(
+        "/2026-07-29.weekly.json"
+    )
 
 
 def test_oof_dispatch_fence_probes_modal_terminal_state_before_holding_lock():

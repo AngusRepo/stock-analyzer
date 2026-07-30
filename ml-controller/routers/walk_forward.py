@@ -1713,7 +1713,7 @@ OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
 OOF_COHORT_ID_VERSION = "v7-immutable-fold-evidence"
-OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v4-serving-owner"
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v5-cadence-owner"
 
 
 def _active_oof_materialization_policy_version() -> str:
@@ -1721,12 +1721,47 @@ def _active_oof_materialization_policy_version() -> str:
 
     return OOF_PIT_ELIGIBILITY_POLICY_VERSION
 
-def _oof_lifecycle_receipt_matches_active_policy(receipt: dict[str, Any]) -> bool:
 
+def _oof_lifecycle_receipt_path(
+    cohort_id: str,
+    knowledge_cutoff_date: str,
+    cadence: str,
+) -> str:
     return (
+        f"walk_forward/oof_cohorts/{cohort_id}/lifecycle/"
+        f"{knowledge_cutoff_date}.{cadence}.json"
+    )
+
+
+def _oof_lifecycle_receipt_matches_active_policy(
+    receipt: dict[str, Any],
+    *,
+    cadence: str,
+    require_full_fit: bool,
+) -> bool:
+    evidence = receipt.get("evidence_closure")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    full_fit = receipt.get("full_fit_dispatch")
+    full_fit = full_fit if isinstance(full_fit, dict) else {}
+
+    base_complete = (
         receipt.get("schema_version") == OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION
         and receipt.get("materialization_policy_version") == _active_oof_materialization_policy_version()
+        and receipt.get("cadence") == cadence
+        and receipt.get("status") == "materialized"
+        and evidence.get("materialized") is True
+        and evidence.get("candidate_artifacts") is True
     )
+    if not base_complete:
+        return False
+    if not require_full_fit:
+        return True
+    return (
+        full_fit.get("status") == "completed"
+        and full_fit.get("retry_required") is False
+    )
+
+
 OOF_LIFECYCLE_MIN_SESSIONS = OOF_MIN_MATURE_SESSIONS
 _OOF_TARGET_SEMANTIC_VERSION = (
     "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4"
@@ -2384,14 +2419,19 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 f"expected={req.expected_cohort_id} selected={cohort_id}"
             ),
         )
-    lifecycle_path = (
-        f"walk_forward/oof_cohorts/{cohort_id}/lifecycle/"
-        f"{knowledge_cutoff_date}.json"
+    lifecycle_path = _oof_lifecycle_receipt_path(
+        cohort_id,
+        knowledge_cutoff_date,
+        cadence,
     )
     lifecycle_blob = bucket.blob(lifecycle_path)
     if lifecycle_blob.exists():
         receipt = json.loads(lifecycle_blob.download_as_text())
-        if _oof_lifecycle_receipt_matches_active_policy(receipt):
+        if _oof_lifecycle_receipt_matches_active_policy(
+            receipt,
+            cadence=cadence,
+            require_full_fit=req.dispatch_full_fit,
+        ):
             return {
                 "status": "idempotent_complete",
                 "cadence": cadence,

@@ -36,8 +36,6 @@ class WalkForwardRequest(BaseModel):
     # 2026-04-19 N2: per-window feature selection controls
     fs_max_rounds: int = 60          # lighter than production 100; trade speed for slight precision loss
     fs_force_refresh: bool = False   # True = re-run FS even if walk_forward/w{id}/feature_pool.json exists
-    completion_task: str | None = None
-    completion_run_date: str | None = None
     cohort_id: str | None = None
     prep_gcs_prefix: str = "universal"
     sequence_gcs_prefix: str = "universal/sequence_long/latest"
@@ -305,8 +303,6 @@ async def walk_forward_run(req: WalkForwardRequest):
             "prep_gcs_prefix": req.prep_gcs_prefix,
             "sequence_gcs_prefix": req.sequence_gcs_prefix,
             "sequence_batch_count": req.sequence_batch_count,
-            "completion_task": req.completion_task,
-            "completion_run_date": req.completion_run_date,
             "resume_manifest_path": req.resume_manifest_path,
             # 2026-04-19 N2: per-window FS to eliminate look-ahead bias
             "fs_max_rounds": req.fs_max_rounds,
@@ -2125,9 +2121,24 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             )
             manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
         manifest_blob = bucket.blob(manifest_path)
+        dispatch_path = f"walk_forward/oof_cohorts/{cohort_id}/dispatch.json"
+        dispatch_blob = bucket.blob(dispatch_path)
         if manifest_blob.exists():
             manifest = json.loads(manifest_blob.download_as_text())
             if manifest.get("status") == "ready":
+                if dispatch_blob.exists():
+                    dispatch = json.loads(dispatch_blob.download_as_text())
+                    if dispatch.get("status") != "terminal_completed":
+                        dispatch_blob.upload_from_string(
+                            json.dumps({
+                                **dispatch,
+                                "status": "terminal_completed",
+                                "manifest_path": manifest_path,
+                                "manifest_checksum": manifest.get("manifest_checksum"),
+                                "terminal_observed_at": datetime.now(timezone.utc).isoformat(),
+                            }, sort_keys=True),
+                            content_type="application/json",
+                        )
                 selected = (manifest_path, manifest)
             else:
                 return {
@@ -2138,8 +2149,6 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                     "manifest_status": manifest.get("status"),
                 }
         else:
-            dispatch_path = f"walk_forward/oof_cohorts/{cohort_id}/dispatch.json"
-            dispatch_blob = bucket.blob(dispatch_path)
             if dispatch_blob.exists():
                 dispatch = json.loads(dispatch_blob.download_as_text())
                 spawned_at = str(dispatch.get("spawned_at") or "")
@@ -2193,8 +2202,6 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 prep_gcs_prefix=prep_gcs_prefix,
                 sequence_gcs_prefix=sequence_gcs_prefix,
                 resume_manifest_path=resume_manifest_path,
-                completion_task=f"active8-oof-{cadence}",
-                completion_run_date=knowledge_cutoff_date,
             )
             if req.dry_run:
                 preview = await walk_forward_dry_run(plan)

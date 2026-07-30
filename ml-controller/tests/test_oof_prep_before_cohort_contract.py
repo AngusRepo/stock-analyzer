@@ -25,11 +25,13 @@ def test_prep_selector_requires_semantic_signal_horizon_and_never_uses_created_a
     assert 'str(manifest["signal_date_max"])[:10]' in selector
 
 
-def test_oof_cohort_completion_metadata_is_forwarded_to_modal():
+def test_oof_cohort_completion_is_owned_by_durable_daily_scheduler():
     source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
-    assert '"completion_task": req.completion_task' in source
-    assert '"completion_run_date": req.completion_run_date' in source
-    assert 'completion_task=f"active8-oof-{cadence}"' in source
+    modal = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
+    assert "completion_task" not in source
+    assert "_trigger_worker_admin_task" not in modal
+    assert '"status": "terminal_completed"' in source
+    assert '"manifest_checksum": manifest.get("manifest_checksum")' in source
 
 
 def test_spawned_modal_cohort_is_durable_pending_not_a_job_failure():

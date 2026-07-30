@@ -16,8 +16,8 @@ const trainingPolicy = fs.readFileSync('../ml-service/app/training_policy.py', '
 const daily = manifest.jobs.find((job: any) => job.id === 'active8-oof-daily')
 const watchdog = manifest.jobs.find((job: any) => job.id === 'active8-oof-daily-watchdog')
 const weekly = manifest.jobs.find((job: any) => job.id === 'active8-oof-weekly')
-assert(daily?.task === 'active8-oof-daily' && daily?.schedule === '55 17 * * 1-5', 'daily must materialize ready OOF cohorts after native lifecycle closure')
-assert(watchdog?.task === 'active8-oof-daily' && watchdog?.schedule === '25,55 18-20 * * 1-5', 'watchdog must retry the same idempotent daily lifecycle after prep dependencies settle')
+assert(daily?.task === 'active8-oof-daily' && daily?.schedule === '55 17 * * *', 'daily must materialize ready OOF cohorts after native lifecycle closure')
+assert(watchdog?.task === 'active8-oof-daily' && watchdog?.schedule === '25,55 18-20 * * *', 'watchdog must retry the same idempotent daily lifecycle after prep dependencies settle')
 assert(weekly?.task === 'active8-oof-weekly' && weekly?.schedule === '5 23 * * 6', 'weekly must own deterministic purged OOF cohort generation')
 assert(!manifest.jobs.some((job: any) => ['l4-alpha-ev-refresh', 'allocator-ev-fusion-refresh', 'monthly-l4-alpha-ev-refresh', 'monthly-allocator-ev-fusion-refresh', 'opb-arm-prior-refresh', 'monthly-opb-arm-prior-refresh'].includes(job.id)), 'legacy independent EV/OPB refresh jobs must not race the canonical OOF lifecycle')
 

@@ -1,7 +1,8 @@
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
 
-export const PRICE_HORIZON_PROJECTION_VERSION = 'price_horizon_v2_reference_identity'
+export const PRICE_HORIZON_PROJECTION_VERSION = 'price_horizon_v3_canonical_reference_identity'
 export const PRICE_HORIZON_SOURCE = 'stock_prices:finlab_primary_canonical_mirror'
 const MIN_SESSION_SAMPLE_SIZE = 100
 const DEFAULT_LOOKBACK_DAYS = 120
@@ -349,8 +350,11 @@ async function loadCandidateStockIds(db: D1Database, signalDate: string): Promis
     SELECT COUNT(DISTINCT symbol) reference_rows,
            COUNT(DISTINCT CASE WHEN stock_id IS NOT NULL THEN symbol END) identified_reference_rows
       FROM selection_reference_snapshots_v1
-     WHERE signal_date=? AND hard_gate_passed=1
-  `).bind(signalDate).first<{ reference_rows: number; identified_reference_rows: number }>()
+     WHERE signal_date=? AND hard_gate_passed=1 AND feature_contract_version=?
+  `).bind(signalDate, SELECTION_REFERENCE_CONTRACT_VERSION).first<{
+    reference_rows: number
+    identified_reference_rows: number
+  }>()
   const { results } = await db.prepare(`
     SELECT DISTINCT stock_id
       FROM (
@@ -547,30 +551,6 @@ export async function materializePriceHorizonLabels(
         candidateCoverage.referenceRows > 0
         && candidateCoverage.identifiedReferenceRows !== candidateCoverage.referenceRows
       ) {
-        await opsDb.prepare(`
-          INSERT INTO price_horizon_projection_status (
-            signal_date, entry_date, exit_date, candidate_count, materialized_count,
-            rejected_count, status, source, projection_version
-          ) VALUES (?, ?, ?, ?, 0, ?, 'incomplete', ?, ?)
-          ON CONFLICT(signal_date) DO UPDATE SET
-            entry_date=excluded.entry_date,
-            exit_date=excluded.exit_date,
-            candidate_count=excluded.candidate_count,
-            materialized_count=0,
-            rejected_count=excluded.rejected_count,
-            status='incomplete',
-            source=excluded.source,
-            projection_version=excluded.projection_version,
-            updated_at=CURRENT_TIMESTAMP
-        `).bind(
-          horizon.signal_date,
-          horizon.entry_date,
-          horizon.exit_date,
-          candidates.length,
-          candidateCoverage.referenceRows - candidateCoverage.identifiedReferenceRows,
-          PRICE_HORIZON_SOURCE,
-          PRICE_HORIZON_PROJECTION_VERSION,
-        ).run()
         throw new Error(
           `price_horizon_reference_identity_incomplete:${horizon.signal_date}:${candidateCoverage.identifiedReferenceRows}/${candidateCoverage.referenceRows}`,
         )
@@ -598,7 +578,8 @@ export async function materializePriceHorizonLabels(
         horizon.signal_date,
         observations.labels.map((row) => row.stockId),
       )
-      const status = observations.rejections.length === 0 ? 'success' : 'incomplete'
+      // Explicit rejections are terminal unavailable outcomes, not missing projection work.
+      const status = 'success'
       await opsDb.prepare(`
         INSERT INTO price_horizon_projection_status (
           signal_date, entry_date, exit_date, candidate_count, materialized_count,

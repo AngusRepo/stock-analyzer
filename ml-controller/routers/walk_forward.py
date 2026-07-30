@@ -1724,6 +1724,33 @@ OOF_COHORT_ID_VERSION = "v7-immutable-fold-evidence"
 OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v5-cadence-owner"
 
 
+def _oof_lifecycle_materialization_controls(
+    *,
+    requested_dry_run: bool,
+    requested_promote: bool,
+    requested_dispatch_full_fit: bool,
+    forward_extension_manifest_path: str | None,
+) -> dict[str, bool]:
+    """Keep frozen forward inference shadow-only without blocking daily closure."""
+
+    frozen_forward_shadow = bool(str(forward_extension_manifest_path or "").strip())
+    if frozen_forward_shadow:
+        return {
+            "dry_run": True,
+            "confirm": False,
+            "promote": False,
+            "dispatch_full_fit": False,
+            "frozen_forward_shadow": True,
+        }
+    return {
+        "dry_run": requested_dry_run,
+        "confirm": not requested_dry_run,
+        "promote": requested_promote,
+        "dispatch_full_fit": requested_dispatch_full_fit,
+        "frozen_forward_shadow": False,
+    }
+
+
 def _active_oof_materialization_policy_version() -> str:
     from services.active8_oof_cohort_materializer import OOF_PIT_ELIGIBILITY_POLICY_VERSION
 
@@ -1752,18 +1779,33 @@ def _oof_lifecycle_receipt_matches_active_policy(
     full_fit = receipt.get("full_fit_dispatch")
     full_fit = full_fit if isinstance(full_fit, dict) else {}
 
-    base_complete = (
+    contract_current = (
         receipt.get("schema_version") == OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION
         and receipt.get("materialization_policy_version") == _active_oof_materialization_policy_version()
         and receipt.get("cadence") == cadence
-        and receipt.get("status") == "materialized"
+    )
+    materialized_complete = (
+        receipt.get("status") == "materialized"
         and evidence.get("materialized") is True
         and evidence.get("candidate_artifacts") is True
     )
-    if not base_complete:
+    forward = evidence.get("daily_forward_extension")
+    forward = forward if isinstance(forward, dict) else {}
+    shadow_complete = (
+        cadence == "daily"
+        and receipt.get("status") == "shadow_evaluated"
+        and evidence.get("shadow_evaluated") is True
+        and bool(str(forward.get("manifest_path") or "").strip())
+        and bool(str(forward.get("manifest_checksum") or "").strip())
+        and forward.get("promotion_eligible") is False
+        and forward.get("training_dispatched") is False
+    )
+    if not contract_current or not (materialized_complete or shadow_complete):
         return False
     if not require_full_fit:
         return True
+    if shadow_complete:
+        return False
     return (
         full_fit.get("status") == "completed"
         and full_fit.get("retry_required") is False
@@ -2494,18 +2536,32 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             "daily_forward_extension": daily_forward_extension,
             "dependency_retry_required": True,
         }
+    materialization_controls = _oof_lifecycle_materialization_controls(
+        requested_dry_run=req.dry_run,
+        requested_promote=req.promote,
+        requested_dispatch_full_fit=req.dispatch_full_fit,
+        forward_extension_manifest_path=forward_extension_manifest_path,
+    )
     result = await materialize_walk_forward_oof(OofMaterializeRequest(
         cohort_id=cohort_id,
         knowledge_cutoff_date=knowledge_cutoff_date,
         manifest_path=manifest_path,
-        dry_run=req.dry_run,
-        confirm=not req.dry_run,
-        promote=req.promote,
-        dispatch_full_fit=req.dispatch_full_fit,
+        dry_run=materialization_controls["dry_run"],
+        confirm=materialization_controls["confirm"],
+        promote=materialization_controls["promote"],
+        dispatch_full_fit=materialization_controls["dispatch_full_fit"],
         lifecycle_cadence=cadence,
         forward_extension_manifest_path=forward_extension_manifest_path,
     ))
     result["daily_forward_extension"] = daily_forward_extension
+    if materialization_controls["frozen_forward_shadow"]:
+        result["materialization_status"] = result.get("status")
+        result["status"] = "shadow_evaluated"
+        result["promoted"] = False
+        result["promotion_allowed"] = False
+        result["promotion_reason"] = (
+            "frozen_forward_oos_shadow_evidence_not_promotion_eligible"
+        )
     opb_failed = (
         isinstance(result.get("opb_refresh"), dict)
         and result["opb_refresh"].get("status") == "failed"
@@ -2525,13 +2581,30 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 "promotion_reason": result.get("promotion_reason"),
                 "evidence_closure": {
                     "materialized": result.get("status") == "materialized",
+                    "shadow_evaluated": result.get("status") == "shadow_evaluated",
                     "candidate_artifacts": bool(result.get("candidate_artifacts")),
                     "daily_forward_extension": daily_forward_extension,
                 },
                 "serving_closure": {
                     "alpha_champion_promoted": bool(result.get("promoted")),
-                    "status": "promoted" if result.get("promoted") else "quality_gate_not_passed_or_not_ready",
+                    "status": (
+                        "promoted"
+                        if result.get("promoted")
+                        else "shadow_evidence_only"
+                        if result.get("status") == "shadow_evaluated"
+                        else "quality_gate_not_passed_or_not_ready"
+                    ),
                 },
+                "shadow_evaluation": (
+                    {
+                        "physical_prediction_coverage": result.get("physical_prediction_coverage"),
+                        "forward_prediction_rows": result.get("forward_prediction_rows"),
+                        "l4_validation_packet": (result.get("l4_result") or {}).get("validation_packet"),
+                        "fusion_validation_packet": (result.get("fusion_result") or {}).get("validation_packet"),
+                    }
+                    if result.get("status") == "shadow_evaluated"
+                    else None
+                ),
                 "opb_refresh": result.get("opb_refresh"),
                 "full_fit_dispatch": result.get("full_fit_dispatch"),
                 "persistence": result.get("persistence"),

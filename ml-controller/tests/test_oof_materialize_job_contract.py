@@ -42,6 +42,34 @@ def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
     assert lifecycle_kwargs["dispatch_full_fit"] is False
 
 
+def test_oof_materialize_job_treats_daily_shadow_evaluation_as_terminal_success(monkeypatch):
+    callbacks = []
+
+    async def fake_execute_lifecycle(**_kwargs):
+        return {
+            "status": "shadow_evaluated",
+            "cohort_id": "cohort-1",
+            "promoted": False,
+            "promotion_reason": "frozen_forward_oos_shadow_evidence_not_promotion_eligible",
+        }
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(oof_materialize_job_main, "_execute_lifecycle", fake_execute_lifecycle)
+    monkeypatch.setattr(oof_materialize_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "daily")
+    monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-07-30")
+    monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-shadow")
+    monkeypatch.setenv("CLOUD_RUN_EXECUTION", "execution-shadow")
+
+    assert asyncio.run(oof_materialize_job_main._run()) == 0
+    assert callbacks[0]["status"] == "success"
+    assert callbacks[0]["run_id"] == "run-shadow"
+    assert "status=shadow_evaluated" in callbacks[0]["summary"]
+    assert "promoted=False" in callbacks[0]["summary"]
+
+
 def test_allocator_snapshot_mode_closes_scheduler_callback(monkeypatch):
     callbacks = []
     execution_kwargs = {}

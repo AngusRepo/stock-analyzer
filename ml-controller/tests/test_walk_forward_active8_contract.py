@@ -834,6 +834,7 @@ def test_daily_oof_materialization_reuses_checksum_verified_gcs_indexes():
 def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
     from routers.walk_forward import (
         OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION,
+        _oof_lifecycle_materialization_controls,
         _oof_lifecycle_receipt_path,
         _oof_lifecycle_receipt_matches_active_policy,
     )
@@ -882,6 +883,45 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         cadence="weekly",
         require_full_fit=True,
     )
+    shadow = {
+        **current,
+        "status": "shadow_evaluated",
+        "cadence": "daily",
+        "evidence_closure": {
+            "materialized": False,
+            "shadow_evaluated": True,
+            "candidate_artifacts": False,
+            "daily_forward_extension": {
+                "manifest_path": "walk_forward/oof_forward/cohort-1/2026-07-30.json",
+                "manifest_checksum": "a" * 64,
+                "promotion_eligible": False,
+                "training_dispatched": False,
+            },
+        },
+    }
+    assert _oof_lifecycle_receipt_matches_active_policy(
+        shadow,
+        cadence="daily",
+        require_full_fit=False,
+    )
+    assert not _oof_lifecycle_receipt_matches_active_policy(
+        shadow,
+        cadence="daily",
+        require_full_fit=True,
+    )
+    controls = _oof_lifecycle_materialization_controls(
+        requested_dry_run=False,
+        requested_promote=True,
+        requested_dispatch_full_fit=True,
+        forward_extension_manifest_path="walk_forward/oof_forward/cohort-1/2026-07-30.json",
+    )
+    assert controls == {
+        "dry_run": True,
+        "confirm": False,
+        "promote": False,
+        "dispatch_full_fit": False,
+        "frozen_forward_shadow": True,
+    }
     assert _oof_lifecycle_receipt_path("cohort-1", "2026-07-29", "daily").endswith(
         "/2026-07-29.daily.json"
     )

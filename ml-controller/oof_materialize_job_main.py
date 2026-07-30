@@ -195,7 +195,7 @@ async def _run() -> int:
                 detail = str(forward_extension.get("reason") or "").strip()
                 suffix = f":{detail}" if detail and detail != reason else ""
                 raise RuntimeError(f"oof_dependency_retry_required:{reason}{suffix}")
-            if status in {"materialized", "idempotent_complete"}:
+            if status in {"materialized", "shadow_evaluated", "idempotent_complete"}:
                 callback_status = "success"
             elif status in {"skipped", "pending", "spawned"}:
                 callback_status = "skipped"

@@ -1248,6 +1248,14 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
 
     if not req.dry_run and not req.confirm:
         raise HTTPException(status_code=400, detail="non-dry OOF materialization requires confirm=true")
+    if (
+        not req.dry_run
+        and os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="non-dry OOF materialization must run in the durable Cloud Run Job",
+        )
     if req.forward_extension_manifest_path and (not req.dry_run or req.promote):
         raise HTTPException(
             status_code=400,

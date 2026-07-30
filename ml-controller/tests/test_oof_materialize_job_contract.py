@@ -94,6 +94,12 @@ def test_oof_materialize_job_contract_is_durable_and_deployed():
     deploy = (ROOT / "deploy_ml_controller.sh").read_text(encoding="utf-8")
 
     assert "OOF_MATERIALIZE_JOB_EXECUTION" in router
+    endpoint = router[
+        router.index("async def materialize_walk_forward_oof"):
+        router.index("class OofLifecycleRequest")
+    ]
+    assert "non-dry OOF materialization must run in the durable Cloud Run Job" in endpoint
+    assert 'os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1"' in endpoint
     assert "CloudRunJobsClient(job_name=job_name).run_job" in router
     assert '"status": "spawned"' in router
     assert "The controller only dispatches a durable Cloud Run Job" in worker

@@ -1582,6 +1582,7 @@ OOF_LABEL_PURGE_SESSIONS = 5
 OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
+OOF_COHORT_ID_VERSION = "v6-exact-fold-artifacts"
 OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v4-serving-owner"
 
 
@@ -1766,6 +1767,94 @@ def _oof_manifest_observed_core_dates(bucket: object, manifest: dict) -> tuple[l
         "folds": fold_evidence,
     }
 
+def _sha256_contract_valid(value: object) -> bool:
+    raw = str(value or "").strip().lower()
+    if raw.startswith("sha256:"):
+        raw = raw[7:]
+    return len(raw) == 64 and all(char in "0123456789abcdef" for char in raw)
+
+
+def _oof_forward_parent_contract(bucket: object, manifest: dict[str, Any]) -> dict[str, Any]:
+    """Verify that the latest fold can serve immutable frozen-forward inference."""
+
+    reasons: list[str] = []
+    unsigned = {key: value for key, value in manifest.items() if key != "manifest_checksum"}
+    actual_checksum = hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    if manifest.get("schema_version") != "active8-oof-cohort-manifest-v4":
+        reasons.append("manifest_schema_not_exact_artifact_capable")
+    if str(manifest.get("manifest_checksum") or "") != actual_checksum:
+        reasons.append("manifest_checksum_mismatch")
+    if manifest.get("target_semantic_version") != _OOF_TARGET_SEMANTIC_VERSION:
+        reasons.append("target_semantic_mismatch")
+
+    windows = [row for row in (manifest.get("windows") or []) if isinstance(row, dict)]
+    if not windows:
+        reasons.append("windows_missing")
+        return {"ready": False, "reasons": reasons, "latest_window_id": None}
+    latest = max(windows, key=lambda row: int(row.get("window_id") or 0))
+    window_id = int(latest.get("window_id") or 0)
+    expected_version = f"{str(manifest.get('cohort_id') or '')}-w{window_id}"
+    metrics = latest.get("model_metrics") if isinstance(latest.get("model_metrics"), dict) else {}
+
+    def require_object(path: object, reason: str) -> None:
+        normalized = str(path or "").strip()
+        if not normalized:
+            reasons.append(reason)
+            return
+        try:
+            if not bucket.blob(normalized).exists():
+                reasons.append(f"{reason}:object_missing")
+        except Exception as exc:  # noqa: BLE001 - storage preflight must fail closed.
+            reasons.append(f"{reason}:storage_error:{type(exc).__name__}")
+
+    for model_name in ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"):
+        metric = metrics.get(model_name) if isinstance(metrics.get(model_name), dict) else {}
+        if metric.get("status") != "ready":
+            reasons.append(f"core_oof_metric_not_ready:{model_name}")
+        require_object(metric.get("oof_artifact"), f"core_oof_artifact_missing:{model_name}")
+        if not _sha256_contract_valid(metric.get("artifact_checksum")):
+            reasons.append(f"core_oof_checksum_invalid:{model_name}")
+
+    tree_result = latest.get("tree_result") if isinstance(latest.get("tree_result"), dict) else {}
+    registrations = (
+        tree_result.get("artifact_registrations")
+        if isinstance(tree_result.get("artifact_registrations"), dict)
+        else {}
+    )
+    for model_name in ("LightGBM", "XGBoost", "ExtraTrees"):
+        artifact = registrations.get(model_name) if isinstance(registrations.get(model_name), dict) else {}
+        if artifact.get("status") != "shadow_source" or artifact.get("promotion_eligible") is not False:
+            reasons.append(f"exact_tree_source_state_invalid:{model_name}")
+        if str(artifact.get("version") or "") != expected_version:
+            reasons.append(f"exact_tree_source_version_mismatch:{model_name}")
+        if not _sha256_contract_valid(artifact.get("checksum")):
+            reasons.append(f"exact_tree_source_checksum_invalid:{model_name}")
+        require_object(artifact.get("gcs_path"), f"exact_tree_source_artifact_missing:{model_name}")
+        require_object(artifact.get("metadata_path"), f"exact_tree_source_metadata_missing:{model_name}")
+
+    for model_name in ("TabM", "GNN"):
+        result = latest.get(f"{model_name}_result")
+        result = result if isinstance(result, dict) else {}
+        if result.get("status") != "ok":
+            reasons.append(f"exact_core_source_state_invalid:{model_name}")
+        if str(result.get("version") or "") != expected_version:
+            reasons.append(f"exact_core_source_version_mismatch:{model_name}")
+        if not _sha256_contract_valid(result.get("checksum")):
+            reasons.append(f"exact_core_source_checksum_invalid:{model_name}")
+        require_object(result.get("artifact_path"), f"exact_core_source_artifact_missing:{model_name}")
+        require_object(result.get("metadata_path"), f"exact_core_source_metadata_missing:{model_name}")
+
+    return {
+        "ready": not reasons,
+        "reasons": reasons,
+        "latest_window_id": window_id,
+        "expected_version": expected_version,
+        "manifest_checksum": actual_checksum,
+    }
+
+
 def _latest_ready_oof_manifest(bucket: object) -> tuple[str, dict] | None:
     import json
 
@@ -1777,7 +1866,11 @@ def _latest_ready_oof_manifest(bucket: object) -> tuple[str, dict] | None:
             manifest = json.loads(blob.download_as_text())
         except Exception:  # noqa: BLE001 - corrupt candidates are ignored, never promoted.
             continue
-        if manifest.get("status") == "ready" and manifest.get("generation_mode") == "purged_oof":
+        if (
+            manifest.get("status") == "ready"
+            and manifest.get("generation_mode") == "purged_oof"
+            and _oof_forward_parent_contract(bucket, manifest)["ready"]
+        ):
             ready.append((str(blob.name), manifest))
     if not ready:
         return None
@@ -1959,7 +2052,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 manifest_path = str(parent_path)
             else:
                 cohort_id = (
-                    f"active8-oof-v5-{start_date}-{signal_end_date}-"
+                    f"active8-oof-{OOF_COHORT_ID_VERSION}-{start_date}-{signal_end_date}-"
                     f"tr{OOF_TRAIN_SESSIONS}-te{OOF_TEST_SESSIONS}"
                 )
                 manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"
@@ -1974,7 +2067,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             start_date = cohort_dates[0]
             signal_end_date = cohort_dates[-1]
             cohort_id = (
-                f"active8-oof-v5-{start_date}-{signal_end_date}-"
+                f"active8-oof-{OOF_COHORT_ID_VERSION}-{start_date}-{signal_end_date}-"
                 f"tr{OOF_TRAIN_SESSIONS}-te{OOF_TEST_SESSIONS}"
             )
             manifest_path = f"walk_forward/oof_cohorts/{cohort_id}/manifest.json"

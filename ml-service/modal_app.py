@@ -2462,12 +2462,20 @@ def walk_forward_orchestrator(payload: dict) -> dict:
                 "artifact_checksum": oof_artifact.get("payload_checksum"),
                 **coverage,
             }
+        from app.oof_forward_source_contract import assess_fold_forward_sources
+
         missing_models = [
             model_name for model_name in models
             if (result["model_metrics"].get(model_name) or {}).get("status") != "ready"
             or model_name not in result["model_metrics"]
         ]
-        result["oof_fold_ready"] = not missing_models
+        forward_source_contract = assess_fold_forward_sources(
+            result,
+            cohort_id=cohort_id,
+        )
+        result["forward_source_contract"] = forward_source_contract
+        result["fold_blockers"] = list(forward_source_contract["reasons"])
+        result["oof_fold_ready"] = not missing_models and forward_source_contract["ready"]
         result["missing_oof_models"] = missing_models
         return result
 

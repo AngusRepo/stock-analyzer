@@ -16,6 +16,7 @@ import numpy as np
 
 from .model_store import _get_bucket, load_model
 from .oof_lineage import save_oof_prediction_artifact
+from .oof_forward_source_contract import assess_fold_forward_sources
 from .research_benchmarks.common import load_sequence_dataset
 from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
 
@@ -45,7 +46,7 @@ def _load_json(bucket: Any, path: str) -> dict[str, Any]:
 def _verify_base_manifest(bucket: Any, path: str) -> dict[str, Any]:
     manifest = _load_json(bucket, path)
     if (
-        manifest.get("schema_version") not in {"active8-oof-cohort-manifest-v3", "active8-oof-cohort-manifest-v4"}
+        manifest.get("schema_version") != "active8-oof-cohort-manifest-v4"
         or manifest.get("status") != "ready"
         or manifest.get("generation_mode") != "purged_oof"
         or manifest.get("manifest_checksum") != _manifest_checksum(manifest)
@@ -54,6 +55,14 @@ def _verify_base_manifest(bucket: Any, path: str) -> dict[str, Any]:
     windows = manifest.get("windows") or []
     if not windows:
         raise ValueError("forward_extension_base_windows_missing")
+    latest = max(windows, key=lambda row: int(row.get("window_id") or 0))
+    source_contract = assess_fold_forward_sources(
+        latest,
+        cohort_id=str(manifest.get("cohort_id") or ""),
+        bucket=bucket,
+    )
+    if not source_contract["ready"]:
+        raise ValueError("forward_extension_base_source_contract_invalid:" + ",".join(source_contract["reasons"][:10]))
     return manifest
 
 

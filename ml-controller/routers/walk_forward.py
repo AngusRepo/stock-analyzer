@@ -940,6 +940,136 @@ async def dispatch_oof_full_fit_training(
         webhook_row = webhook[0] if webhook else {}
         webhook_status = str(webhook_row.get("status") or "").lower()
         registry_repair: dict[str, Any] | None = None
+        terminal_payload_summary: str | None = None
+        terminal_payload_path = str(receipt.get("terminal_payload_path") or "")
+        terminal_payload_checksum = str(receipt.get("terminal_payload_checksum") or "")
+        modal_poll: dict[str, Any] | None = None
+
+        if terminal_payload_path:
+            try:
+                terminal_payload_summary = bucket.blob(terminal_payload_path).download_as_text()
+                actual_checksum = hashlib.sha256(
+                    terminal_payload_summary.encode("utf-8")
+                ).hexdigest()
+                if actual_checksum != terminal_payload_checksum:
+                    raise ValueError("oof_full_fit_terminal_payload_checksum_mismatch")
+                terminal_payload = json.loads(terminal_payload_summary)
+                webhook_status = str(terminal_payload.get("status") or "").lower()
+                webhook_row["payload_summary"] = terminal_payload_summary
+            except Exception as exc:  # noqa: BLE001 - corrupt terminal evidence is retryable infra failure.
+                webhook_status = "error"
+                modal_poll = {
+                    "status": "error",
+                    "error": f"terminal_payload_load_failed:{type(exc).__name__}:{exc}",
+                }
+        elif webhook_status not in {"completed", "error"}:
+            dispatch = receipt.get("dispatch") if isinstance(receipt.get("dispatch"), dict) else {}
+            orchestrator_result = (
+                dispatch.get("orchestrator_result")
+                if isinstance(dispatch.get("orchestrator_result"), dict)
+                else {}
+            )
+            function_call_id = str(orchestrator_result.get("function_call_id") or "")
+            if function_call_id:
+                from services import modal_client
+
+                modal_poll = await modal_client.poll_retrain_orchestrator(function_call_id)
+                if modal_poll.get("status") == "pending":
+                    return {
+                        **plan,
+                        **receipt,
+                        "status": "pending",
+                        "reason": "modal_full_fit_still_running",
+                        "modal_poll": modal_poll,
+                        "missing_models": missing,
+                        "retry_required": True,
+                        "receipt_path": receipt_path,
+                    }
+                if modal_poll.get("status") == "completed":
+                    modal_result = modal_poll.get("result")
+                    modal_result = modal_result if isinstance(modal_result, dict) else {}
+                    terminal_payload = modal_result.get("durable_followup_payload")
+                    if not isinstance(terminal_payload, dict):
+                        webhook_status = "error"
+                        modal_poll = {
+                            **modal_poll,
+                            "status": "error",
+                            "error": "durable_followup_payload_missing",
+                        }
+                    else:
+                        terminal_payload_summary = json.dumps(terminal_payload, sort_keys=True)
+                        terminal_payload_checksum = hashlib.sha256(
+                            terminal_payload_summary.encode("utf-8")
+                        ).hexdigest()
+                        terminal_payload_path = (
+                            f"walk_forward/oof_cohorts/{cohort_id}/full_fit/"
+                            f"{knowledge_cutoff_date}.{prior_run_id}.terminal.json"
+                        )
+                        terminal_blob = bucket.blob(terminal_payload_path)
+                        if terminal_blob.exists():
+                            existing = terminal_blob.download_as_text()
+                            if hashlib.sha256(existing.encode("utf-8")).hexdigest() != terminal_payload_checksum:
+                                raise RuntimeError("oof_full_fit_terminal_payload_immutable_conflict")
+                        else:
+                            terminal_blob.upload_from_string(
+                                terminal_payload_summary,
+                                content_type="application/json",
+                            )
+                        receipt = {
+                            **receipt,
+                            "function_call_id": function_call_id,
+                            "terminal_payload_path": terminal_payload_path,
+                            "terminal_payload_checksum": terminal_payload_checksum,
+                        }
+                        receipt_blob.upload_from_string(
+                            json.dumps(receipt, sort_keys=True),
+                            content_type="application/json",
+                        )
+                        webhook_status = str(terminal_payload.get("status") or "").lower()
+                        webhook_row["payload_summary"] = terminal_payload_summary
+                else:
+                    webhook_status = "error"
+            else:
+                webhook_status = "error"
+                modal_poll = {
+                    "status": "error",
+                    "error": "legacy_full_fit_dispatch_missing_function_call_id",
+                }
+
+        if (
+            webhook_status in {"completed", "error"}
+            and (modal_poll is not None or terminal_payload_path)
+        ):
+            from routers import retrain_trigger as retrain_trigger_router
+
+            try:
+                retrain_trigger_router.retrain_lock.release(
+                    str((receipt.get("dispatch") or {}).get("lock_key") or f"retrain:{knowledge_cutoff_date}"),
+                    expected_metadata={"run_id": prior_run_id},
+                )
+            except Exception as exc:  # noqa: BLE001 - lock TTL remains the final safety net.
+                logger.warning("OOF full-fit terminal lock release failed: %s", exc)
+            d1_client.execute(
+                """
+                UPDATE webhook_log
+                SET received_at = datetime('now'), source = ?, payload_summary = ?,
+                    status = ?, downstream_notes = ?
+                WHERE idempotency_key = ?
+                """,
+                [
+                    "ml-controller-durable-modal-poll",
+                    json.dumps({
+                        "run_id": prior_run_id,
+                        "cohort_id": cohort_id,
+                        "terminal_payload_path": terminal_payload_path or None,
+                        "terminal_payload_checksum": terminal_payload_checksum or None,
+                        "modal_poll": modal_poll,
+                    }, sort_keys=True),
+                    webhook_status,
+                    "durable_modal_poll_terminal",
+                    prior_run_id,
+                ],
+            )
         if webhook_status == "completed" and missing:
             registry_repair = _repair_completed_oof_registry_owner(
                 payload_summary=webhook_row.get("payload_summary"),

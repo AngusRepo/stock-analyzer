@@ -1064,27 +1064,27 @@ def retrain_orchestrator(payload: dict) -> dict:
 
     elapsed = round(time.time() - t0, 1)
     result["total_elapsed_s"] = elapsed
+    payload_out = build_retrain_followup_payload(
+        run_id=run_id,
+        lock_key=lock_key,
+        run_date=run_date,
+        is_monthly=bool(is_monthly),
+        batch_count=batch_count,
+        gcs_prefix=gcs_prefix,
+        candidate_version=candidate_version,
+        window_id=window_id,
+        result=result,
+        partial_results=partial_results,
+        elapsed_s=elapsed,
+        candidate_type=payload.get("candidate_type"),
+        promotion_allowed_models=payload.get("promotion_allowed_models"),
+        oof_promotion_evidence=payload.get("oof_promotion_evidence"),
+        oof_lifecycle_resume=payload.get("oof_lifecycle_resume"),
+    )
+    result["durable_followup_payload"] = payload_out
     if followup_webhook_url:
         try:
             import httpx
-
-            payload_out = build_retrain_followup_payload(
-                run_id=run_id,
-                lock_key=lock_key,
-                run_date=run_date,
-                is_monthly=bool(is_monthly),
-                batch_count=batch_count,
-                gcs_prefix=gcs_prefix,
-                candidate_version=candidate_version,
-                window_id=window_id,
-                result=result,
-                partial_results=partial_results,
-                elapsed_s=elapsed,
-                candidate_type=payload.get("candidate_type"),
-                promotion_allowed_models=payload.get("promotion_allowed_models"),
-                oof_promotion_evidence=payload.get("oof_promotion_evidence"),
-                oof_lifecycle_resume=payload.get("oof_lifecycle_resume"),
-            )
             headers = {"Content-Type": "application/json"}
             token = _controller_callback_token()
             if token:

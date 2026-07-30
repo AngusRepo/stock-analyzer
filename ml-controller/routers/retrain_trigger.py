@@ -854,6 +854,27 @@ def _build_followup_webhook_url(request: Request | None) -> str:
     return "http://localhost/retrain/followup"
 
 
+def _build_prebuilt_oof_dataset_snapshot(
+    *,
+    verified_prep: dict[str, object],
+    verified_feature_pool: dict[str, object],
+    verified_sequence: dict[str, object],
+    source_cohort_id: str,
+    source_manifest_checksum: str,
+) -> dict[str, object]:
+    """Bind prep V2 evidence under the immutable full-fit lineage contract."""
+
+    return {
+        **verified_prep,
+        "prep_schema_version": verified_prep.get("schema_version"),
+        "schema_version": "active8-oof-full-fit-prep-lineage-v1",
+        "source_cohort_id": source_cohort_id,
+        "source_manifest_checksum": source_manifest_checksum,
+        "feature_pool": verified_feature_pool,
+        "sequence": verified_sequence,
+    }
+
+
 def _upsert_retrain_status(
     run_id: str,
     *,
@@ -1106,7 +1127,7 @@ async def _dispatch_prebuilt_oof_full_fit(
         if value:
             sequence_contract[key] = int(value)
 
-    followup_webhook_url = _build_followup_webhook_url(request)
+    followup_webhook_url = ""
     payload = {
         "batch_count": verified["batch_count"],
         "is_monthly": is_monthly,
@@ -1123,14 +1144,13 @@ async def _dispatch_prebuilt_oof_full_fit(
         "oof_lifecycle_resume": req.oof_lifecycle_resume,
         "selection_params": training_policy.feature_selection_params(),
         "training_policy": training_policy.to_dict(),
-        "dataset_snapshot": {
-            "schema_version": "active8-oof-full-fit-prep-lineage-v1",
-            "source_cohort_id": req.prebuilt_prep_source_cohort_id,
-            "source_manifest_checksum": req.prebuilt_prep_source_manifest_checksum,
-            **verified,
-            "feature_pool": feature_pool_verified,
-            "sequence": sequence_verified,
-        },
+        "dataset_snapshot": _build_prebuilt_oof_dataset_snapshot(
+            verified_prep=verified,
+            verified_feature_pool=feature_pool_verified,
+            verified_sequence=sequence_verified,
+            source_cohort_id=str(req.prebuilt_prep_source_cohort_id),
+            source_manifest_checksum=str(req.prebuilt_prep_source_manifest_checksum),
+        ),
         "timesfm_l175_feature_release": {"requested": False},
         "followup_webhook_url": followup_webhook_url,
         "gcs_prefix": verified["gcs_prefix"],
@@ -1141,6 +1161,9 @@ async def _dispatch_prebuilt_oof_full_fit(
         **sequence_contract,
     }
     orchestrator_result = await retrain_orchestrator(payload=payload, fire_and_forget=True)
+    function_call_id = str(orchestrator_result.get("function_call_id") or "")
+    if not function_call_id.startswith("fc-"):
+        raise RuntimeError("prebuilt_oof_full_fit_function_call_id_missing")
     _upsert_retrain_status(
         run_id,
         status="orchestrator_dispatched",

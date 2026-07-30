@@ -45,3 +45,17 @@ def test_walk_forward_modal_spawn_is_non_blocking_async():
     assert "async def spawn_walk_forward_orchestrator" in modal_source
     assert "return await fn.spawn.aio(payload)" in modal_source
     assert "fn_call = await modal_client.spawn_walk_forward_orchestrator" in router_source
+
+def test_prebuilt_oof_full_fit_uses_durable_modal_result_not_shared_callback_secret():
+    trigger = (ROOT / "ml-controller" / "routers" / "retrain_trigger.py").read_text(encoding="utf-8")
+    router = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
+    modal_client = (ROOT / "ml-controller" / "services" / "modal_client.py").read_text(encoding="utf-8")
+    modal_app = (ROOT / "ml-service" / "modal_app.py").read_text(encoding="utf-8")
+
+    prebuilt = trigger[trigger.index("async def _dispatch_prebuilt_oof_full_fit"):trigger.index('@router.post("/universal/run")')]
+    assert 'followup_webhook_url = ""' in prebuilt
+    assert "prebuilt_oof_full_fit_function_call_id_missing" in prebuilt
+    assert "async def poll_retrain_orchestrator" in modal_client
+    assert 'result["durable_followup_payload"] = payload_out' in modal_app
+    assert "terminal_payload_checksum" in router
+    assert "legacy_full_fit_dispatch_missing_function_call_id" in router

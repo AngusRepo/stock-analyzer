@@ -94,6 +94,41 @@ def test_modal_predict_batch_chunks_payloads():
 
     assert [len(c) for c in chunks] == [10, 10, 5]
 
+def test_retrain_orchestrator_spawn_returns_durable_function_call_id(monkeypatch):
+    import asyncio
+
+    observations = []
+
+    class FakeCall:
+        object_id = "fc-oof-full-fit"
+
+    class AsyncSpawn:
+        async def aio(self, payload):
+            assert payload["candidate_type"] == "oof_full_fit_release"
+            return FakeCall()
+
+    class FakeFn:
+        spawn = AsyncSpawn()
+
+    async def fake_observation(*args, **kwargs):
+        observations.append({"args": args, "kwargs": kwargs})
+
+    monkeypatch.setattr(modal_client, "_USE_MODAL", True)
+    monkeypatch.setattr(modal_client, "_lookup", lambda _name: FakeFn())
+    monkeypatch.setattr(modal_client, "_record_modal_observation", fake_observation)
+
+    result = asyncio.run(modal_client.retrain_orchestrator(
+        {"candidate_type": "oof_full_fit_release", "is_monthly": False},
+        fire_and_forget=True,
+    ))
+
+    assert result == {
+        "status": "spawned",
+        "is_monthly": False,
+        "function_call_id": "fc-oof-full-fit",
+    }
+    assert observations[0]["kwargs"]["meta"]["function_call_id"] == "fc-oof-full-fit"
+
 
 def test_modal_predict_batch_v2_is_default_contract(monkeypatch):
     monkeypatch.delenv("MODAL_PREDICT_BATCH_V2", raising=False)

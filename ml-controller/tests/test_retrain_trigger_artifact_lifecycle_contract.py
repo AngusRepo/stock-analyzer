@@ -90,7 +90,34 @@ def test_exact_snapshot_rejects_missing_snapshot_component_or_wrong_date():
         ),
     )["reason"] == "exact_dataset_snapshot_feature_component_missing"
 
+def test_prebuilt_oof_dataset_snapshot_preserves_immutable_owner_schema():
+    snapshot = retrain_trigger._build_prebuilt_oof_dataset_snapshot(
+        verified_prep={
+            "schema_version": "active8-canonical-adjusted-prep-v2",
+            "manifest_checksum": "a" * 64,
+            "gcs_prefix": "universal/canonical_adjusted_v5/test",
+        },
+        verified_feature_pool={
+            "schema_version": "active8-oof-full-fit-feature-consensus-v1",
+            "artifact_checksum": "b" * 64,
+        },
+        verified_sequence={
+            "schema_version": "finlab-long-history-sequence-prep-v2",
+            "artifact_checksum": "c" * 64,
+        },
+        source_cohort_id="cohort-v7",
+        source_manifest_checksum="d" * 64,
+    )
+
+    assert snapshot["schema_version"] == "active8-oof-full-fit-prep-lineage-v1"
+    assert snapshot["prep_schema_version"] == "active8-canonical-adjusted-prep-v2"
+    assert snapshot["source_cohort_id"] == "cohort-v7"
+    assert snapshot["source_manifest_checksum"] == "d" * 64
+    assert snapshot["feature_pool"]["artifact_checksum"] == "b" * 64
+    assert snapshot["sequence"]["artifact_checksum"] == "c" * 64
+
 def test_prebuilt_canonical_prep_requires_verified_manifest_and_batches():
+
     prefix = "universal/canonical_adjusted_v5/test"
     batches = {
         f"{prefix}/prep/batch_0.npz": b"batch-zero",

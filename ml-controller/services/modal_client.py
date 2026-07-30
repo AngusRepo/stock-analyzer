@@ -1206,20 +1206,72 @@ async def retrain_orchestrator(payload: dict, fire_and_forget: bool = True) -> d
         if fire_and_forget:
             logger.info(f"[ml_client] Modal.spawn retrain_orchestrator (monthly={payload.get('is_monthly')})")
             t0 = time.time()
-            await fn.spawn.aio(payload)
+            call = await fn.spawn.aio(payload)
+            call_id = (
+                getattr(call, "object_id", None)
+                or getattr(call, "function_call_id", None)
+                or getattr(call, "call_id", None)
+            )
+            if not call_id:
+                raise RuntimeError("modal_retrain_orchestrator_function_call_id_missing")
             await _record_modal_observation(
                 "retrain_orchestrator",
                 wall_sec=time.time() - t0,
                 compute_sec=0.0,
                 source="modal_spawn",
-                meta={"call_type": "spawn", "is_monthly": payload.get("is_monthly")},
+                meta={
+                    "call_type": "spawn",
+                    "is_monthly": payload.get("is_monthly"),
+                    "function_call_id": str(call_id),
+                },
             )
-            return {"status": "spawned", "is_monthly": payload.get("is_monthly")}
+            return {
+                "status": "spawned",
+                "is_monthly": payload.get("is_monthly"),
+                "function_call_id": str(call_id),
+            }
         else:
             logger.info(f"[ml_client] Modal.remote retrain_orchestrator (await, monthly={payload.get('is_monthly')})")
             return await _modal_remote_call("retrain_orchestrator", payload)
     raise RuntimeError("retrain_orchestrator requires Modal (no HTTP fallback)")
 
+
+
+async def poll_retrain_orchestrator(function_call_id: str) -> dict:
+    """Poll a spawned Modal retrain without holding a Cloud Run request open."""
+
+    import modal
+    from modal import exception as modal_exception
+
+    call_id = str(function_call_id or "").strip()
+    if not call_id.startswith("fc-"):
+        return {
+            "status": "error",
+            "function_call_id": call_id or None,
+            "error": "modal_function_call_id_invalid",
+        }
+    call = modal.FunctionCall.from_id(call_id)
+    try:
+        result = await call.get.aio(timeout=0)
+    except (TimeoutError, modal_exception.TimeoutError):
+        return {"status": "pending", "function_call_id": call_id}
+    except Exception as exc:  # noqa: BLE001 - remote terminal errors are durable evidence.
+        return {
+            "status": "error",
+            "function_call_id": call_id,
+            "error": f"{type(exc).__name__}:{exc}",
+        }
+    if not isinstance(result, dict):
+        return {
+            "status": "error",
+            "function_call_id": call_id,
+            "error": "modal_retrain_orchestrator_result_invalid",
+        }
+    return {
+        "status": "completed",
+        "function_call_id": call_id,
+        "result": result,
+    }
 
 async def feature_selection(payload: dict | None = None, fire_and_forget: bool = False) -> dict:
     """觸發 V2 Feature Selection Pipeline (Silhouette → Target Permutation → Feature Pool).

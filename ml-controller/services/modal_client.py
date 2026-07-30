@@ -1007,13 +1007,13 @@ def spawn_pipeline_prediction_bundle(payload: dict) -> dict:
     }
 
 
-def spawn_walk_forward_orchestrator(payload: dict):
+async def spawn_walk_forward_orchestrator(payload: dict):
     """Spawn the Modal-resident walk-forward orchestrator and return its FunctionCall.
     Fire-and-forget from ml-controller side: orchestrator runs inside Modal for
     up to 4 hours, persists result to GCS walk_forward/runs/{start}_{end}.json.
     """
     fn = _lookup("walk_forward_orchestrator")
-    return fn.spawn(payload)
+    return await fn.spawn.aio(payload)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

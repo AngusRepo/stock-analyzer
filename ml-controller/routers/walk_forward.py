@@ -291,7 +291,7 @@ async def walk_forward_run(req: WalkForwardRequest):
 
     # Spawn Modal orchestrator (fire-and-forget)
     try:
-        fn_call = modal_client.spawn_walk_forward_orchestrator({
+        fn_call = await modal_client.spawn_walk_forward_orchestrator({
             "windows": windows_payload,
             "market_env": market_env,
             "batch_count": req.batch_count,

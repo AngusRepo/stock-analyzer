@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from routers.walk_forward import _latest_ready_oof_manifest
 
 
@@ -21,6 +23,11 @@ class Bucket:
     def list_blobs(self, prefix: str):
         assert prefix == "walk_forward/oof_cohorts/"
         return [Blob(name, payload) for name, payload in self._rows]
+
+
+def _select(rows: list[tuple[str, dict]]):
+    with patch("routers.walk_forward._oof_forward_parent_contract", return_value={"ready": True}):
+        return _latest_ready_oof_manifest(Bucket(rows))
 
 
 def _manifest(cohort_id: str, end_date: str, checksum: str) -> dict:
@@ -45,9 +52,7 @@ def test_valid_evidence_revision_supersedes_its_base() -> None:
             "base_manifest_checksum": "a" * 64,
         },
     }
-    selected = _latest_ready_oof_manifest(
-        Bucket([(base_path, base), (revision_path, revision)])
-    )
+    selected = _select([(base_path, base), (revision_path, revision)])
     assert selected is not None
     assert selected[0] == revision_path
 
@@ -64,9 +69,7 @@ def test_checksum_mismatch_cannot_supersede_base() -> None:
             "base_manifest_checksum": "c" * 64,
         },
     }
-    selected = _latest_ready_oof_manifest(
-        Bucket([(base_path, base), (revision_path, revision)])
-    )
+    selected = _select([(base_path, base), (revision_path, revision)])
     assert selected is not None
     assert selected[0] == base_path
 
@@ -85,8 +88,6 @@ def test_newer_end_date_still_wins_over_older_revision() -> None:
         },
     }
     newer = _manifest("newer", "2026-07-17", "d" * 64)
-    selected = _latest_ready_oof_manifest(
-        Bucket([(base_path, base), (revision_path, revision), (newer_path, newer)])
-    )
+    selected = _select([(base_path, base), (revision_path, revision), (newer_path, newer)])
     assert selected is not None
     assert selected[0] == newer_path

@@ -35,3 +35,11 @@ def test_oof_cohort_completion_metadata_is_forwarded_to_modal():
 def test_spawned_modal_cohort_is_durable_pending_not_a_job_failure():
     source = (ROOT / "ml-controller" / "oof_materialize_job_main.py").read_text(encoding="utf-8")
     assert 'status in {"skipped", "pending", "spawned"}' in source
+
+
+def test_walk_forward_modal_spawn_is_non_blocking_async():
+    modal_source = (ROOT / "ml-controller" / "services" / "modal_client.py").read_text(encoding="utf-8")
+    router_source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
+    assert "async def spawn_walk_forward_orchestrator" in modal_source
+    assert "return await fn.spawn.aio(payload)" in modal_source
+    assert "fn_call = await modal_client.spawn_walk_forward_orchestrator" in router_source

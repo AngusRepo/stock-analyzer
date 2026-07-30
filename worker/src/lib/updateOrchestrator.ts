@@ -24,6 +24,10 @@ import {
 } from './pipelineStageLease'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 import { refreshExpectedReturnServingState } from './expectedReturnServingState'
+import {
+  resolveEveningChainClosureDurationMs,
+  resolveEveningChainRunAuthority,
+} from './eveningChainRunAuthority'
 import { inspectExpectedReturnLifecycleHealth } from './expectedReturnServingRegistry'
 import { fetchPunishedStocks } from './twseApi'
 import {
@@ -34,7 +38,6 @@ import {
 } from './finlabSourceContract'
 
 import { triggerPendingS12FormalEv } from './s12FormalEvTrigger'
-import { twToday } from './dateUtils'
 const UPDATE_BATCH_SIZE = 40
 const UPDATE_SHARD_COUNT = 4
 const INDICATOR_BATCH_CONCURRENCY = 4
@@ -3267,7 +3270,16 @@ export async function processUpdateBatch(
       })
       materializationValidated = true
 
-      const currentBusinessDateRun = Boolean(msg.force) && triggerTime === twToday()
+      const productionAuthority = Boolean(msg.force)
+        ? await resolveEveningChainRunAuthority(env, {
+            businessDate: triggerTime,
+            canonicalRunId,
+          })
+        : null
+      const currentBusinessDateRun = productionAuthority?.allowed === true
+      const runScope = productionAuthority?.runScope ?? 'historical_replay'
+      const authorityReason = productionAuthority?.reason ?? 'queue_not_marked_production_eligible'
+      const chainDurationMs = await resolveEveningChainClosureDurationMs(env.DB, triggerTime)
       const {
         auditEveningChainEvidenceClosure,
         resolveExpectedMatureSignalDate,
@@ -3309,19 +3321,23 @@ export async function processUpdateBatch(
       `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
       `threshold_calibration=${thresholdCalibration ? thresholdCalibration.status : 'skipped_historical'}`,
       `evidence_closure=${closureSummary}`,
+      `run_scope=${runScope}`,
+      `production_authority=${authorityReason}`,
       ].join(' ')
 
       await logSchedulerResult(env.KV, 'strategy-learning', {
-        status: 'success', summary, duration_ms: 0, run_id: canonicalRunId,
-        attempt_id: finalizerAttemptId, run_date: triggerTime,
+        status: 'success', summary, duration_ms: chainDurationMs, run_id: canonicalRunId,
+        attempt_id: finalizerAttemptId, run_date: triggerTime, run_scope: runScope,
       })
       await logSchedulerResult(env.KV, 'post-verify-chain', {
         status: 'success', summary: `strategy-learning queue closed; ${summary}`,
-        duration_ms: 0, run_id: canonicalRunId, attempt_id: finalizerAttemptId, run_date: triggerTime,
+        duration_ms: chainDurationMs, run_id: canonicalRunId, attempt_id: finalizerAttemptId,
+        run_date: triggerTime, run_scope: runScope,
       })
       await logSchedulerResult(env.KV, 'evening-chain', {
         status: 'success', summary: `root chain closed after queued strategy-learning: ${summary}`,
-        duration_ms: 0, run_id: canonicalRunId, attempt_id: finalizerAttemptId, run_date: triggerTime,
+        duration_ms: chainDurationMs, run_id: canonicalRunId, attempt_id: finalizerAttemptId,
+        run_date: triggerTime, run_scope: runScope,
       })
       await markStrategyLearningRunFinalized(env.DB, { businessDate: triggerTime, runId: canonicalRunId })
       return

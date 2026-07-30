@@ -642,10 +642,13 @@ export function resolveSchedulerDisplayStatus(input: {
   )
   if (isHistoricalReplay) {
     const resolvedReplay = resolveSchedulerLogStatus(replayStatusLog, def, nowMs)
+    const runScope: SchedulerStatusScope = replayLog?.run_scope === 'live_canonical'
+      ? 'today'
+      : 'historical_replay'
     if (resolvedReplay.status) {
       return {
         status: resolvedReplay.status,
-        statusScope: 'historical_replay',
+        statusScope: runScope,
         statusRunDate: replayRunDate,
         staleReason: resolvedReplay.staleReason,
       }

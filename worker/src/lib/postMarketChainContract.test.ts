@@ -95,8 +95,8 @@ assert(
   'post-verify projection must be bounded and propagate the failing task into stage last_error',
 )
 assert(
-  postMarketChain.includes('isCurrentBusinessDate'),
-  'current-date-only tasks must be guarded so historical reruns cannot dirty current reports',
+  postMarketChain.includes('const productionEligible = productionAuthority.allowed'),
+  'production-only tasks must use resolved canonical authority so historical reruns cannot dirty current reports',
 )
 assert(
   postMarketChain.includes('verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}') &&
@@ -205,8 +205,12 @@ assert(
   'Strategy learning must run for historical reruns so strategy_decision_log can materialize replay-date family evidence',
 )
 assert(
-  postMarketChain.includes('force: isCurrentBusinessDate(runDate)'),
-  'historical strategy-learning reruns must not refresh live strategy_policy_state in queued closure',
+  postMarketChain.includes('resolveEveningChainRunAuthority'),
+  'post-verify must resolve production authority from durable canonical stage identity',
+)
+assert(
+  postMarketChain.includes('force: productionEligible'),
+  'queued learning tasks must preserve durable live-canonical eligibility across midnight',
 )
 assert(
   postMarketChain.includes("type: 'strategy_learning_materialize'") &&

@@ -14,6 +14,7 @@ export interface SchedulerRunLogEntry {
   run_id?: string
   attempt_id?: string
   run_date?: string
+  run_scope?: 'live_canonical' | 'historical_replay' | 'derived'
   error?: string
 }
 
@@ -210,6 +211,7 @@ export async function logSchedulerRunResult(
     run_id: result.run_id,
     attempt_id: result.attempt_id,
     run_date: today,
+    run_scope: result.run_scope,
     error: result.error,
     timestamp: new Date().toISOString(),
   }

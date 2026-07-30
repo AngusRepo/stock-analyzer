@@ -15,6 +15,7 @@ import {
 } from './allocatorEvDailyLifecycle'
 import { claimPipelineStage, enqueuePipelineStage, markPipelineStage } from './pipelineStageLease'
 import { materializePriceHorizonLabels } from './priceHorizonProjection'
+import { resolveEveningChainRunAuthority } from './eveningChainRunAuthority'
 
 export type ChainContext = {
   runDate?: string
@@ -51,10 +52,6 @@ function normalizeSummary(value: unknown): string {
   } catch {
     return String(value)
   }
-}
-
-function isCurrentBusinessDate(runDate?: string): boolean {
-  return !!runDate && runDate === twDateToday()
 }
 
 async function withObservabilityTimeout<T>(label: string, promise: Promise<T>): Promise<T> {
@@ -153,7 +150,7 @@ async function logChainedTask(
 }
 
 async function logSkippedHistoricalTask(env: Bindings, ctx: ChainContext, task: string): Promise<ChainedTask> {
-  const summary = `skipped historical callback run_date=${ctx.runDate ?? 'unknown'}; ${task} is current-date only`
+  const summary = `skipped non-production-authoritative callback run_date=${ctx.runDate ?? 'unknown'}; ${task} is live-canonical only`
   await logSchedulerResult(env.KV, task, {
     status: 'skipped',
     summary,
@@ -203,7 +200,11 @@ export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainCont
   ].join(' ')
 }
 
-async function enqueueMetaLearningShadowClosureTask(env: Bindings, ctx: ChainContext): Promise<string> {
+async function enqueueMetaLearningShadowClosureTask(
+  env: Bindings,
+  ctx: ChainContext,
+  productionEligible: boolean,
+): Promise<string> {
   const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const runId = ctx.upstreamRunId || `meta-learning-shadow-${runDate}-${Date.now()}`
   await env.UPDATE_QUEUE.send({
@@ -211,12 +212,16 @@ async function enqueueMetaLearningShadowClosureTask(env: Bindings, ctx: ChainCon
     cursor: 0,
     triggerTime: runDate,
     runId,
-    force: isCurrentBusinessDate(runDate),
+    force: productionEligible,
   })
   return `triggered meta-learning-shadow queue run_date=${runDate} run_id=${runId}`
 }
 
-async function enqueueStrategyLearningClosureTask(env: Bindings, ctx: ChainContext): Promise<string> {
+async function enqueueStrategyLearningClosureTask(
+  env: Bindings,
+  ctx: ChainContext,
+  productionEligible: boolean,
+): Promise<string> {
   const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const runId = ctx.upstreamRunId || `strategy-learning-${runDate}-${Date.now()}`
   await env.UPDATE_QUEUE.send({
@@ -225,7 +230,7 @@ async function enqueueStrategyLearningClosureTask(env: Bindings, ctx: ChainConte
     cursorKey: '',
     triggerTime: runDate,
     runId,
-    force: isCurrentBusinessDate(runDate),
+    force: productionEligible,
   })
   return `triggered strategy-learning queue run_date=${runDate} run_id=${runId}`
 }
@@ -488,6 +493,11 @@ export async function runPostVerifyCallbackChain(
 ): Promise<'success' | 'error'> {
   const startedAt = Date.now()
   const results: ChainedTask[] = []
+  const productionAuthority = await resolveEveningChainRunAuthority(env, {
+    businessDate: String(ctx.runDate ?? ''),
+    canonicalRunId: String(ctx.upstreamRunId ?? ''),
+  })
+  const productionEligible = productionAuthority.allowed
 
   const projectionTask = await logChainedTask(env, ctx, 'price-horizon-projection', async () => {
     const result = await materializePriceHorizonLabels(env, {
@@ -505,7 +515,7 @@ export async function runPostVerifyCallbackChain(
   }
 
   results.push(await logChainedTask(env, ctx, 'model-ic-rolling', () => runModelIcRollingRefresh(env, ctx.runDate)))
-  if (isCurrentBusinessDate(ctx.runDate)) {
+  if (productionEligible) {
     results.push(await logChainedTask(env, ctx, 'artifact-auto-promotion', () => runArtifactAutoPromotion(env), { critical: false }))
   } else {
     results.push(await logSkippedHistoricalTask(env, ctx, 'artifact-auto-promotion'))
@@ -514,14 +524,14 @@ export async function runPostVerifyCallbackChain(
     timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
   }))
 
-  if (isCurrentBusinessDate(ctx.runDate)) {
+  if (productionEligible) {
     results.push(await logChainedTask(env, ctx, 'paper-intraday-cache-clear', () => clearOpenPositionIntradayPriceCache(env), { critical: false }))
     results.push(await logChainedTask(env, ctx, 'linucb-reward-ledger', () => runLinUcbRewardLedgerRefresh(env, ctx.runDate)))
     results.push(await logChainedTask(env, ctx, 'adapt', () => runAdaptiveUpdate(env, { refreshLedger: false })))
     results.push(await logChainedTask(env, ctx, 'daily-report', () => generateDailyReport(env)))
     results.push(await logChainedTask(env, ctx, 'paper-active-postmarket', () => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
     results.push(await logChainedTask(env, ctx, 'obsidian-sync', () => runObsidianDaily(env, ctx.runDate!)))
-    results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask(env, ctx), {
+    results.push(await logChainedTask(env, ctx, 'meta-learning-shadow', () => enqueueMetaLearningShadowClosureTask(env, ctx, productionEligible), {
       critical: false,
       timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
     }))
@@ -538,7 +548,7 @@ export async function runPostVerifyCallbackChain(
   // Strategy learning is evidence materialization, not a live trading mutation.
   // Historical reruns need it so strategy_decision_log can explain family/variant
   // ownership for the replayed business date.
-  results.push(await logChainedTask(env, ctx, 'strategy-learning', () => enqueueStrategyLearningClosureTask(env, ctx), {
+  results.push(await logChainedTask(env, ctx, 'strategy-learning', () => enqueueStrategyLearningClosureTask(env, ctx, productionEligible), {
     critical: true,
     timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
   }))

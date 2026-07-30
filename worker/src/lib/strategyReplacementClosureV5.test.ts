@@ -67,7 +67,9 @@ assert(migration.includes('CHECK(precondition_ok=1)'), 'failed cutover assertion
 
 const orchestrator = readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 assert(orchestrator.includes('finalizeStrategyLearningEvidenceV5'), 'production queue must use the canonical strategy finalizer')
-assert(orchestrator.includes('Boolean(msg.force) && triggerTime === twToday()'), 'force cannot promote a historical business date')
+assert(orchestrator.includes('resolveEveningChainRunAuthority'), 'queue finalizer must revalidate durable canonical production authority')
+assert(orchestrator.includes('productionAuthority?.allowed === true'), 'production mutation must require resolved authority')
+assert(orchestrator.includes('queue_not_marked_production_eligible'), 'shadow reruns must remain fail-closed without queue eligibility')
 assert(orchestrator.includes('allowPromotion: currentBusinessDateRun'), 'only the current business-date queue may cut over production owners')
 
 console.log('strategyReplacementClosureV5 contract tests passed')

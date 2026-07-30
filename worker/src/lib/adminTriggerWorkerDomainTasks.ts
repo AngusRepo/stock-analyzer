@@ -5,6 +5,10 @@ import { twToday } from './dateUtils'
 import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
 import type { LegacyHotDataTarget } from './legacyHotDataRetirement'
 import { runWithMaintenanceLease, summarizeMaintenanceLeaseResult } from './maintenanceLease'
+import {
+  resolveEveningChainClosureDurationMs,
+  resolveEveningChainRunAuthority,
+} from './eveningChainRunAuthority'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 
 const RESCORE_SLOT_TASK_BY_CRON: Record<string, string> = {
@@ -301,7 +305,16 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           runId: runState.canonical_run_id,
         })
         materializationValidated = true
-        const currentBusinessDateRun = c.req.query('force_policy') === '1' && runDate === twToday()
+        const productionAuthority = c.req.query('force_policy') === '1'
+          ? await resolveEveningChainRunAuthority(c.env, {
+              businessDate: runDate,
+              canonicalRunId: runState.canonical_run_id,
+            })
+          : null
+        const currentBusinessDateRun = productionAuthority?.allowed === true
+        const runScope = productionAuthority?.runScope ?? 'historical_replay'
+        const authorityReason = productionAuthority?.reason ?? 'force_policy_not_requested'
+        const chainDurationMs = await resolveEveningChainClosureDurationMs(c.env.DB, runDate)
         const {
           auditEveningChainEvidenceClosure,
           resolveExpectedMatureSignalDate,
@@ -345,10 +358,23 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
         `threshold_calibration=${thresholdCalibration ? thresholdCalibration.status : 'skipped_historical'}`,
         `evidence_closure=${closureSummary}`,
+        `run_scope=${runScope}`,
+        `production_authority=${authorityReason}`,
         ].join(' ')
-        await logSchedulerResult(c.env.KV, 'strategy-learning', { status: 'success', summary, duration_ms: 0, run_id: runState.canonical_run_id, attempt_id: finalizerAttemptId, run_date: runDate })
-        await logSchedulerResult(c.env.KV, 'post-verify-chain', { status: 'success', summary: `strategy-learning finalizer recovered; ${summary}`, duration_ms: 0, run_id: runState.canonical_run_id, attempt_id: finalizerAttemptId, run_date: runDate })
-        await logSchedulerResult(c.env.KV, 'evening-chain', { status: 'success', summary: `root chain closed by strategy-learning finalizer; ${summary}`, duration_ms: 0, run_id: runState.canonical_run_id, attempt_id: finalizerAttemptId, run_date: runDate })
+        await logSchedulerResult(c.env.KV, 'strategy-learning', {
+          status: 'success', summary, duration_ms: chainDurationMs, run_id: runState.canonical_run_id,
+          attempt_id: finalizerAttemptId, run_date: runDate, run_scope: runScope,
+        })
+        await logSchedulerResult(c.env.KV, 'post-verify-chain', {
+          status: 'success', summary: `strategy-learning finalizer recovered; ${summary}`,
+          duration_ms: chainDurationMs, run_id: runState.canonical_run_id,
+          attempt_id: finalizerAttemptId, run_date: runDate, run_scope: runScope,
+        })
+        await logSchedulerResult(c.env.KV, 'evening-chain', {
+          status: 'success', summary: `root chain closed by strategy-learning finalizer; ${summary}`,
+          duration_ms: chainDurationMs, run_id: runState.canonical_run_id,
+          attempt_id: finalizerAttemptId, run_date: runDate, run_scope: runScope,
+        })
         await markStrategyLearningRunFinalized(c.env.DB, {
           businessDate: runDate,
           runId: runState.canonical_run_id,

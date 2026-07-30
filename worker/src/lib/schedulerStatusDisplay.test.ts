@@ -214,6 +214,27 @@ const logs: SchedulerDisplayLogCandidate[] = [
   const status = resolveSchedulerDisplayStatus({
     lastAttempt: {
       task: 'evening-chain',
+      status: 'success',
+      summary: 'live canonical chain completed after Taipei midnight',
+      duration_ms: 6_125_000,
+      run_date: '2026-07-30',
+      run_scope: 'live_canonical',
+      timestamp: '2026-07-30T17:06:00.000Z',
+    },
+    def: { id: 'evening-chain', group: 'pipeline_chain', chainIndex: 2 },
+    nextRun: '7/31 21:00',
+    today: '2026-07-31',
+    nowMs: Date.parse('2026-07-30T17:10:00.000Z'),
+  })
+  assert(status.status === 'success', 'cross-midnight live canonical completion must retain terminal status')
+  assert(status.statusScope === 'today', 'live canonical scope must not be mislabeled as historical replay')
+  assert(status.statusRunDate === '2026-07-30', 'live canonical scope must retain its business date')
+}
+
+{
+  const status = resolveSchedulerDisplayStatus({
+    lastAttempt: {
+      task: 'evening-chain',
       status: 'running',
       summary: 'old historical chain log',
       duration_ms: 0,

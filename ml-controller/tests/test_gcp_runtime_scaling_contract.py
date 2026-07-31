@@ -42,6 +42,9 @@ def test_scaler_has_repository_scoped_pull_permission_and_fail_open_calendar() -
     assert '"artifacts", "repositories", "add-iam-policy-binding"' in cutover
     assert "--role=roles/artifactregistry.reader" in cutover
     assert '*) desired=1; echo "TWSE calendar unavailable; fail-open min=1"' in sync
+    assert '"artifacts", "repositories", "add-iam-policy-binding"' in sync
+    assert '"--role=roles/artifactregistry.reader"' in sync
+    assert "scaler Artifact Registry reader binding missing after apply" in sync
     assert "warm-disabled service cannot be in min-1 job" in sync
     assert 'first_saturday_only' in sync
     assert 'TZ=Asia/Taipei date +%d' in sync

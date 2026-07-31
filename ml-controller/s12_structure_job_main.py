@@ -47,7 +47,7 @@ def _run_node(run_date: str, run_id: str, source: str) -> dict:
         check=False,
         capture_output=True,
         text=True,
-        timeout=int(os.environ.get("S12_STRUCTURE_JOB_TIMEOUT_SECONDS", "3600")),
+        timeout=int(os.environ.get("S12_STRUCTURE_JOB_TIMEOUT_SECONDS", "21600")),
     )
     if completed.stdout:
         logger.info("node stdout tail:\n%s", completed.stdout[-3000:])

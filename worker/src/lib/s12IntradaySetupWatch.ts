@@ -13,6 +13,7 @@ import {
   resolveS12TwCalibrationArtifact,
   type S12TwCalibrationArtifact,
 } from './s12TwEquityCalibration'
+import { inspectS12IntradaySessionLease } from './s12IntradaySessionLease'
 
 export const S12_SETUP_WATCH_STATES = new Set([
   'waiting_1h_demand_zone',
@@ -140,20 +141,18 @@ async function runBounded<T>(
   await Promise.all(workers)
 }
 
-function minuteBucketRunId(today: string): string {
-  const tw = new Date(Date.now() + 8 * 3600_000).toISOString()
-  return `s12-intraday-watch:${today}:${tw.slice(11, 16).replace(':', '')}`
+function sessionRunId(today: string): string {
+  return `s12-intraday-session:${today}`
 }
 
-async function triggerDurableSetupWatch(
+async function triggerDurableSetupWatchSession(
   env: Bindings,
   today: string,
-  symbols: string[],
 ): Promise<Pick<S12SetupWatchSummary, 'status' | 'run_id' | 'execution_id'>> {
   if (!env.ML_CONTROLLER_URL || !env.ML_CONTROLLER_SECRET) {
     throw new Error('s12_intraday_watch_controller_missing')
   }
-  const chainRunId = minuteBucketRunId(today)
+  const chainRunId = sessionRunId(today)
   const response = await fetch(`${env.ML_CONTROLLER_URL.replace(/\/$/, '')}/s12-structure/batch/run`, {
     method: 'POST',
     headers: {
@@ -163,8 +162,7 @@ async function triggerDurableSetupWatch(
     body: JSON.stringify({
       run_date: today,
       chain_run_id: chainRunId,
-      source: 'intraday_watch',
-      symbols,
+      source: 'intraday_session',
     }),
     signal: AbortSignal.timeout(10_000),
   })
@@ -290,6 +288,31 @@ export async function runS12IntradaySetupWatch(env: Bindings, today: string): Pr
   if (!seeds.length) {
     return { status: 'empty', source_trade_date: null, watched: 0, near_zone: 0, assessed: 0, ready_for_formal_ev: 0, still_waiting: 0, errors: 0 }
   }
+  const durableEnabled = enabledFlag((env as any).S12_DURABLE_STRUCTURE_JOB_ENABLED, true)
+  if (durableEnabled) {
+    const lease = await inspectS12IntradaySessionLease(env.DB, today)
+    if (lease?.active) {
+      return {
+        status: 'running', source_trade_date: seeds[0]?.source_trade_date ?? null,
+        watched: seeds.length, near_zone: 0, assessed: 0,
+        ready_for_formal_ev: 0, still_waiting: 0, errors: 0,
+        run_id: lease.run_id, execution_id: null,
+      }
+    }
+    const trigger = await triggerDurableSetupWatchSession(env, today)
+    return {
+      status: trigger.status,
+      source_trade_date: seeds[0]?.source_trade_date ?? null,
+      watched: seeds.length,
+      near_zone: 0,
+      assessed: 0,
+      ready_for_formal_ev: 0,
+      still_waiting: 0,
+      errors: 0,
+      run_id: trigger.run_id,
+      execution_id: trigger.execution_id,
+    }
+  }
   const quotes = await batchGetIntradayMonitoringOHLC(seeds.map((row) => row.symbol), {
     SHIOAJI_PROXY_URL: (env as any).SHIOAJI_PROXY_URL,
     PROXY_SERVICE_TOKEN: (env as any).PROXY_SERVICE_TOKEN,
@@ -308,21 +331,5 @@ export async function runS12IntradaySetupWatch(env: Bindings, today: string): Pr
       ready_for_formal_ev: 0, still_waiting: 0, errors: 0,
     }
   }
-  const durableEnabled = enabledFlag((env as any).S12_DURABLE_STRUCTURE_JOB_ENABLED, true)
-  if (!durableEnabled) {
-    return runS12IntradaySetupWatchBatch(env, today, { symbols: nearSymbols, concurrency: 4 })
-  }
-  const trigger = await triggerDurableSetupWatch(env, today, nearSymbols)
-  return {
-    status: trigger.status,
-    source_trade_date: seeds[0]?.source_trade_date ?? null,
-    watched: seeds.length,
-    near_zone: nearSymbols.length,
-    assessed: 0,
-    ready_for_formal_ev: 0,
-    still_waiting: 0,
-    errors: 0,
-    run_id: trigger.run_id,
-    execution_id: trigger.execution_id,
-  }
+  return runS12IntradaySetupWatchBatch(env, today, { symbols: nearSymbols, concurrency: 4 })
 }

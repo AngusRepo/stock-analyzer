@@ -44,6 +44,24 @@ def test_intraday_watch_requires_bounded_canonical_symbol_list(monkeypatch):
     assert jobs.overrides["S12_STRUCTURE_SYMBOLS_JSON"] == '["2330","006208"]'
 
 
+def test_intraday_session_uses_date_scoped_run_without_symbols(monkeypatch):
+    jobs = _Jobs()
+    monkeypatch.setattr(s12_structure, "_jobs", jobs)
+
+    result = asyncio.run(s12_structure.trigger_s12_structure_batch(
+        s12_structure.S12StructureRunRequest(
+            run_date="2026-07-31",
+            chain_run_id="s12-intraday-session:2026-07-31",
+            source="intraday_session",
+        )
+    ))
+
+    assert result["status"] == "triggered"
+    assert jobs.overrides is not None
+    assert jobs.overrides["S12_STRUCTURE_RUN_SOURCE"] == "intraday_session"
+    assert "S12_STRUCTURE_SYMBOLS_JSON" not in jobs.overrides
+
+
 @pytest.mark.parametrize("symbols", [None, [], ["bad-symbol"]])
 def test_intraday_watch_rejects_missing_or_invalid_symbols(symbols):
     with pytest.raises(HTTPException) as exc:

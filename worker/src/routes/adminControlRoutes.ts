@@ -798,7 +798,7 @@ async function handleSchedulerCallback(c: any) {
     if (String(body.status) === 'success') {
       const continuationType = callbackSource === 'evening_chain'
         ? 's12_structure_batch_complete'
-        : callbackSource === 'intraday_watch'
+        : (callbackSource === 'intraday_watch' || callbackSource === 'intraday_session')
           ? 's12_intraday_setup_watch_complete'
           : null
       if (continuationType) {
@@ -809,14 +809,14 @@ async function handleSchedulerCallback(c: any) {
           runId: callbackRunId,
         })
       }
-      const logTask = callbackSource === 'intraday_watch'
+      const logTask = (callbackSource === 'intraday_watch' || callbackSource === 'intraday_session')
         ? 's12-intraday-setup-watch'
         : 's12-structure-snapshot'
       await logSchedulerResult(c.env.KV, logTask, {
         status: continuationType ? 'triggered' : 'success',
         summary: callbackSource === 'evening_chain'
           ? `durable S12 callback accepted; finalizer queued date=${callbackRunDate} run_id=${callbackRunId}`
-          : callbackSource === 'intraday_watch'
+          : (callbackSource === 'intraday_watch' || callbackSource === 'intraday_session')
             ? `durable intraday S12 setup watch complete; formal EV queued date=${callbackRunDate} run_id=${callbackRunId}`
             : `durable S12 shadow complete without pipeline continuation date=${callbackRunDate} run_id=${callbackRunId}`,
         duration_ms: Number(body.duration_ms ?? 0),

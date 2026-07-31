@@ -40,7 +40,7 @@ OOF_MATERIALIZE_JOB_NAME="${OOF_MATERIALIZE_JOB_NAME:-active8-oof-materialize}"
 OPTUNA_JOB_TIMEOUT="${OPTUNA_JOB_TIMEOUT:-7200s}"
 OOF_MATERIALIZE_JOB_TIMEOUT="${OOF_MATERIALIZE_JOB_TIMEOUT:-3600s}"
 SCREENER_JOB_TIMEOUT="${SCREENER_JOB_TIMEOUT:-7200s}"
-S12_STRUCTURE_JOB_TIMEOUT="${S12_STRUCTURE_JOB_TIMEOUT:-3600s}"
+S12_STRUCTURE_JOB_TIMEOUT="${S12_STRUCTURE_JOB_TIMEOUT:-21600s}"
 STRATEGY_MINING_JOB_TIMEOUT="${STRATEGY_MINING_JOB_TIMEOUT:-28800s}"
 STOCKVISION_WORKER_URL="${STOCKVISION_WORKER_URL:-https://stockvision-worker.angus-solo-dev.workers.dev}"
 CF_D1_DB_ID="${CF_D1_DB_ID:-6401a5f6-5767-4fa8-a1a7-ec8d4739ac79}"
@@ -593,7 +593,7 @@ sync_s12_structure_job() {
       --args=-m \
       --args=s12_structure_job_main \
       --cpu="${S12_STRUCTURE_JOB_CPU:-2}" \
-      --memory="${S12_STRUCTURE_JOB_MEMORY:-4Gi}" \
+      --memory="${S12_STRUCTURE_JOB_MEMORY:-2Gi}" \
       --task-timeout="$S12_STRUCTURE_JOB_TIMEOUT" \
       --max-retries=1 \
       "${service_account_args[@]}" \
@@ -609,7 +609,7 @@ sync_s12_structure_job() {
       --args=-m \
       --args=s12_structure_job_main \
       --cpu="${S12_STRUCTURE_JOB_CPU:-2}" \
-      --memory="${S12_STRUCTURE_JOB_MEMORY:-4Gi}" \
+      --memory="${S12_STRUCTURE_JOB_MEMORY:-2Gi}" \
       --task-timeout="$S12_STRUCTURE_JOB_TIMEOUT" \
       --max-retries=1 \
       "${service_account_args[@]}" \

@@ -26,7 +26,7 @@ _jobs = CloudRunJobsClient(job_name=S12_STRUCTURE_JOB_NAME)
 class S12StructureRunRequest(BaseModel):
     run_date: str
     chain_run_id: str | None = None
-    source: Literal["evening_chain", "historical_shadow", "manual_repair", "intraday_watch"] = "evening_chain"
+    source: Literal["evening_chain", "historical_shadow", "manual_repair", "intraday_watch", "intraday_session"] = "evening_chain"
     symbols: list[str] | None = None
 
 

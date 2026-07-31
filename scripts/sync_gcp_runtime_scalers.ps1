@@ -14,6 +14,7 @@ $project = [string]$manifest.project_id
 $region = [string]$manifest.region
 $timezone = [string]$manifest.timezone
 $serviceAccount = [string]$manifest.scaler_service_account
+$repository = [string]$manifest.artifact_registry_repository
 $image = "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
 
 function Invoke-Gcloud([string[]]$Arguments) {
@@ -22,6 +23,25 @@ function Invoke-Gcloud([string[]]$Arguments) {
   & gcloud @Arguments
   if ($LASTEXITCODE -ne 0) {
     throw "gcloud failed ($LASTEXITCODE): $($Arguments -join ' ')"
+  }
+}
+
+if (-not $repository) {
+  throw "artifact_registry_repository is required for scaler image-deploy permission"
+}
+$scalerMember = "serviceAccount:$serviceAccount"
+Invoke-Gcloud @(
+  "artifacts", "repositories", "add-iam-policy-binding", $repository,
+  "--project=$project", "--location=$region", "--member=$scalerMember",
+  "--role=roles/artifactregistry.reader", "--quiet"
+)
+if ($Apply) {
+  $policy = & gcloud artifacts repositories get-iam-policy $repository `
+    --project=$project --location=$region --format=json | ConvertFrom-Json
+  if ($LASTEXITCODE -ne 0) { throw "failed to verify scaler Artifact Registry IAM" }
+  $reader = @($policy.bindings | Where-Object { $_.role -eq "roles/artifactregistry.reader" })
+  if (-not ($reader.members -contains $scalerMember)) {
+    throw "scaler Artifact Registry reader binding missing after apply: $scalerMember"
   }
 }
 

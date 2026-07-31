@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
 const route = fs.readFileSync('src/routes/other.ts', 'utf8')
-const intraday = fs.readFileSync('src/lib/paperEntryTasks.ts', 'utf8')
+const intraday = fs.readFileSync('src/lib/s12FormalEvTrigger.ts', 'utf8')
 
 assert(route.includes('s12_formal_ev_decisions'))
 assert(route.includes("formalEv?.action === 'potential_buy'"))

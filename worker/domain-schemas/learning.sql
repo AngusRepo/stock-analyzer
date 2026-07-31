@@ -1376,7 +1376,7 @@ CREATE TABLE IF NOT EXISTS strategy_route_calibration_runs_v1 (
   run_id TEXT PRIMARY KEY,
   artifact_version TEXT NOT NULL,
   as_of_date TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('pending', 'pass', 'fail', 'promoted')),
+  status TEXT NOT NULL CHECK(status IN ('pending', 'pending_maturity', 'pass', 'fail', 'promoted')),
   candidate_route_version TEXT NOT NULL,
   route_floor REAL,
   sample_count INTEGER NOT NULL,

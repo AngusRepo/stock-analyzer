@@ -6,6 +6,9 @@ import test from 'node:test'
 const ROOT = process.cwd()
 const screener = fs.readFileSync(path.join(ROOT, 'src/lib/marketScreener.ts'), 'utf8')
 const routes = fs.readFileSync(path.join(ROOT, 'src/routes/adminWriteRoutes.ts'), 'utf8')
+const schema = fs.readFileSync(path.join(ROOT, 'schema.sql'), 'utf8')
+const learningSchema = fs.readFileSync(path.join(ROOT, 'domain-schemas/learning.sql'), 'utf8')
+const statusMigration = fs.readFileSync(path.join(ROOT, 'migrations/0095_strategy_redundancy_pending_maturity.sql'), 'utf8')
 
 test('strategy redundancy backfill reuses canonical PIT matrix and mature OOF labels', () => {
   assert.match(screener, /prepareStrategyRedundancyBackfill/)
@@ -38,4 +41,13 @@ test('admin redundancy backfill is bounded and cannot mutate strategy policy', (
   assert.match(route, /prepareStrategyRedundancyBackfill/)
   assert.match(route, /rebuildStrategyRedundancyArtifactForDate/)
   assert.doesNotMatch(route, /refreshStrategyAdaptivePolicyState|promotion|strategy_weights/)
+})
+
+test('redundancy artifact schemas accept the explicit pending maturity state', () => {
+  const statusContract = /status TEXT NOT NULL CHECK\(status IN \('pending', 'pending_maturity', 'pass', 'fail'\)\)/
+  assert.match(schema, statusContract)
+  assert.match(learningSchema, statusContract)
+  assert.match(statusMigration, statusContract)
+  assert.match(statusMigration, /INSERT INTO strategy_redundancy_artifacts_v1/)
+  assert.match(statusMigration, /DROP TABLE strategy_redundancy_artifacts_v1_legacy_0095/)
 })

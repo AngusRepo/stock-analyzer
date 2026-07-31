@@ -2527,7 +2527,7 @@ CREATE TABLE IF NOT EXISTS strategy_route_calibration_head_v1 (
 CREATE TABLE IF NOT EXISTS strategy_redundancy_artifacts_v1 (
   artifact_id TEXT PRIMARY KEY,
   as_of_date TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('pending', 'pass', 'fail')),
+  status TEXT NOT NULL CHECK(status IN ('pending', 'pending_maturity', 'pass', 'fail')),
   source_contract TEXT NOT NULL,
   strategy_count INTEGER NOT NULL,
   paired_date_count INTEGER NOT NULL,

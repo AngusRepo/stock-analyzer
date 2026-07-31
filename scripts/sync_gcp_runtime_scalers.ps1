@@ -110,15 +110,24 @@ done
     Replace("__REGION__", $region)
 }
 
+$existingScalerJobs = @()
+$existingSchedules = @()
+if ($Apply) {
+  $existingScalerJobs = @(& gcloud run jobs list `
+    --project=$project --region=$region --format="value(metadata.name)")
+  if ($LASTEXITCODE -ne 0) { throw "failed to list existing runtime scaler jobs" }
+
+  $existingSchedules = @(& gcloud scheduler jobs list `
+    --project=$project --location=$region --format="value(name)")
+  if ($LASTEXITCODE -ne 0) { throw "failed to list existing runtime scaler schedules" }
+  $existingSchedules = @($existingSchedules | ForEach-Object { ($_ -split '/')[-1] })
+}
+
 foreach ($entry in $manifest.scaler_jobs.PSObject.Properties) {
   $jobName = [string]$entry.Name
   $script = New-ScalerScript $entry.Value
   $scriptB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
-  $verb = "create"
-  if ($Apply) {
-    & gcloud run jobs describe $jobName --project=$project --region=$region --format="value(metadata.name)" 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { $verb = "update" }
-  }
+  $verb = if ($existingScalerJobs -contains $jobName) { "update" } else { "create" }
   Invoke-Gcloud @(
     "run", "jobs", $verb, $jobName,
     "--project=$project", "--region=$region", "--image=$image",
@@ -131,9 +140,11 @@ foreach ($entry in $manifest.scaler_jobs.PSObject.Properties) {
 }
 
 foreach ($schedule in $manifest.schedules) {
+  $scheduleName = [string]$schedule.name
+  $verb = if ($existingSchedules -contains $scheduleName) { "update" } else { "create" }
   $uri = "https://$region-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$project/jobs/$($schedule.job):run"
   Invoke-Gcloud @(
-    "scheduler", "jobs", "update", "http", [string]$schedule.name,
+    "scheduler", "jobs", $verb, "http", $scheduleName,
     "--project=$project", "--location=$region",
     "--schedule=$([string]$schedule.cron)", "--time-zone=$timezone",
     "--uri=$uri", "--http-method=POST",

@@ -5,7 +5,7 @@
  * 讓使用者看到每個階段選了哪些股票、為什麼選
  */
 import { useQuery } from '@tanstack/react-query'
-import { recommendationsApi, paperApi } from '@/lib/api'
+import { dashboardV4Api, recommendationsApi, paperApi } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import AppShell from '@/components/AppShell'
@@ -15,6 +15,8 @@ import {
 import { useState } from 'react'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
+import PipelineMaturityContribution from '@/components/PipelineMaturityContribution'
+import type { PipelineDecisionMaturityPacket } from '@/lib/pipelineMaturityContract'
 
 // ─── Signal config ─────────────────────────────────────────────────────────
 const SIGNAL_STYLE: Record<string, { label: string; cls: string }> = {
@@ -847,6 +849,19 @@ export default function PipelinePage() {
   const allRecs = recommendationRowsFromPayload(recData)
   const recDate = recData?.date ?? today
   const pendingBuys = pbData?.pendingBuys ?? []
+
+  const {
+    data: maturityData,
+    isLoading: maturityLoading,
+    error: maturityError,
+    refetch: refetchMaturity,
+  } = useQuery<PipelineDecisionMaturityPacket>({
+    queryKey: ['pipeline', 'decision-maturity', recDate],
+    queryFn: () => dashboardV4Api.pipelineMaturity(recDate) as Promise<PipelineDecisionMaturityPacket>,
+    enabled: isAuthenticated && Boolean(recDate),
+    staleTime: 5 * 60_000,
+  })
+
   const pbDate = pbData?.date ?? ''
   const pendingSourceRecoDate = typeof pbData?.execution_policy?.source_reco_date === 'string'
     ? pbData.execution_policy.source_reco_date
@@ -946,6 +961,13 @@ export default function PipelinePage() {
             <RecommendationSummaryColumn rows={recommendationRows} />
           </div>
         )}
+
+        <PipelineMaturityContribution
+          data={maturityData}
+          loading={maturityLoading}
+          error={maturityError as Error | null}
+          onRetry={() => { void refetchMaturity() }}
+        />
       </div>
     </AppShell>
   )

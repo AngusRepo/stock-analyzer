@@ -378,6 +378,9 @@ export const dashboardV4Api = {
     const query = params.toString()
     return get<DashboardV4ChartPacket>(`/dashboard/v4/stocks/${stockId}/chart${query ? `?${query}` : ''}`)
   },
+  pipelineMaturity: (date?: string) =>
+    get<any>(`/dashboard/v4/pipeline/maturity${date ? `?date=${encodeURIComponent(date)}` : ''}`),
+
 }
 
 export const deployGateApi = {

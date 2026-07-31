@@ -5,6 +5,10 @@ const MIN_TRAIN_DATES = 3
 const MIN_OOS_DATES = 3
 const PURGE_DATES = 5
 const MIN_TOTAL_DATES = MIN_TRAIN_DATES + PURGE_DATES + MIN_OOS_DATES
+export const STRATEGY_ROUTE_MIN_TRAIN_DATES = MIN_TRAIN_DATES
+export const STRATEGY_ROUTE_MIN_OOS_DATES = MIN_OOS_DATES
+export const STRATEGY_ROUTE_PURGE_DATES = PURGE_DATES
+export const STRATEGY_ROUTE_MIN_TOTAL_DATES = MIN_TOTAL_DATES
 const LOOKBACK_CALENDAR_DAYS = 540
 const PAGE_SIZE = 1000
 
@@ -155,8 +159,8 @@ export function evaluateStrategyRouteCalibration(
     && finite(row.residual_return_net) != null
   ))
   const dates = [...new Set(valid.map((row) => row.signal_date))].sort()
-  const oosCount = Math.max(MIN_OOS_DATES, Math.floor(dates.length * 0.3))
-  const trainEnd = Math.max(0, dates.length - oosCount - PURGE_DATES)
+  const oosCount = Math.max(STRATEGY_ROUTE_MIN_OOS_DATES, Math.floor(dates.length * 0.3))
+  const trainEnd = Math.max(0, dates.length - oosCount - STRATEGY_ROUTE_PURGE_DATES)
   const trainDates = dates.slice(0, trainEnd)
   const purgeDates = dates.slice(trainEnd, Math.max(trainEnd, dates.length - oosCount))
   const oosDates = dates.slice(Math.max(trainEnd, dates.length - oosCount))
@@ -186,9 +190,9 @@ export function evaluateStrategyRouteCalibration(
   const spreads = oos.map((row) => row.spread)
   const calibration = calibrationMetrics(valid, trainSet, oosSet)
   const gates = {
-    enough_total_dates: dates.length >= MIN_TOTAL_DATES,
-    enough_train_dates: trainDates.length >= MIN_TRAIN_DATES,
-    enough_oos_dates: oos.length >= MIN_OOS_DATES,
+    enough_total_dates: dates.length >= STRATEGY_ROUTE_MIN_TOTAL_DATES,
+    enough_train_dates: trainDates.length >= STRATEGY_ROUTE_MIN_TRAIN_DATES,
+    enough_oos_dates: oos.length >= STRATEGY_ROUTE_MIN_OOS_DATES,
     route_floor_selected_on_train_only: routeFloor != null,
     top_bucket_cost_net_return_lcb90_positive: (lcb90(topBucket) ?? Number.NEGATIVE_INFINITY) > 0,
     residual_spread_lcb90_positive: (lcb90(spreads) ?? Number.NEGATIVE_INFINITY) > 0,

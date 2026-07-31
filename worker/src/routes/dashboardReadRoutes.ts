@@ -126,6 +126,15 @@ dashboardReadRoutes.get('/api/dashboard/v4/expected-return/status', async (c) =>
   return c.json({ date, serving, candidates, maturity })
 })
 
+dashboardReadRoutes.get('/api/dashboard/v4/pipeline/maturity', async (c) => {
+  const authError = await requireValidToken(c)
+  if (authError) return authError
+
+  const date = c.req.query('date') ?? twToday()
+  const { buildPipelineDecisionMaturityPacket } = await import('../lib/pipelineDecisionMaturity')
+  return c.json(await buildPipelineDecisionMaturityPacket(c.env, date))
+})
+
 dashboardReadRoutes.get('/api/backtest/latest', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError

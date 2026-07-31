@@ -63,7 +63,7 @@ assert(chain.includes("job.lastStatus === 'sleep') return 'out_of_window'") && c
 assert(chainCss.includes('.obs-chain__stage.is-out_of_window'), 'out-of-window stages must retain the neutral chain style')
 assert(chain.includes('Weekly validation & research chain'), 'weekly scheduler topology must be first-class rather than rendered as unmapped inventory')
 assert(chain.includes("['allocator-ev-feature-snapshot-backfill']") && chain.includes("['allocator-ev-lifecycle-watchdog']") && chain.includes("['active8-oof-daily']"), 'daily lifecycle evidence stages must be mapped')
-assert(chain.includes("['weekly-backtest', 'alpha-quality']") && chain.includes("['weekly-optuna', 'sector-leaders']"), 'weekly validation and research owners must be mapped')
+assert(chain.includes("['weekly-backtest', 'alpha-quality', 'active8-oof-weekly']") && chain.includes("['weekly-optuna', 'sector-leaders']"), 'weekly validation and research owners must be mapped')
 assert(chain.includes('Monthly artifact chain'), 'monthly scope should own artifact cadence')
 assert(api.includes("statusScope?: 'today' | 'historical_replay' | 'schedule'"), 'scheduler API must expose historical replay scope')
 assert(api.includes('statusRunDate?: string | null'), 'scheduler API must expose the effective replay date')
@@ -91,9 +91,11 @@ assert(
 assert(
   chain.includes("scope.columns.length >= 16 ? 'is-dense' : ''")
     && chainCss.includes('.obs-chain__sequence.is-dense .obs-chain__connector')
-    && chainCss.includes('clamp(8px, .5vw, 12px)')
-    && chainCss.includes('clamp(74px, 3.75vw, 98px)'),
-  'long desktop chains must compact connector spacing while preserving a readable node-width floor',
+    && chainCss.includes('overflow-x: hidden')
+    && chainCss.includes('justify-content: space-between')
+    && chainCss.includes('clamp(4px, .35vw, 9px)')
+    && chainCss.includes('clamp(64px, 3.45vw, 92px)'),
+  'long desktop chains must fill the viewport without a horizontal scrollbar or trailing blank block',
 )
 
 for (const animation of ['obs-running-breathe', 'obs-running-orbit', 'obs-completed-burst', 'obs-progress-flow', 'obs-progress-head']) {

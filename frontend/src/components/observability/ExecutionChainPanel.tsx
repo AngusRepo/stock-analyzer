@@ -126,6 +126,7 @@ const STAGES: Record<string, StageDefinition> = {
   'adaptive-meta-policy-replay': { id: 'adaptive-meta-policy-replay', label: 'Meta replay', icon: BrainCircuit, optional: true },
   'strategy-threshold-calibration': { id: 'strategy-threshold-calibration', label: 'Threshold calibration', icon: Settings2, optional: true },
   'linucb-multiplier-replay': { id: 'linucb-multiplier-replay', label: 'LinUCB replay', icon: BrainCircuit, optional: true },
+  'active8-oof-daily': { id: 'active8-oof-daily', label: 'Active-8 OOF daily', icon: Layers3 },
   'active8-oof-weekly': { id: 'active8-oof-weekly', label: 'Active-8 OOF', icon: Layers3 },
   'sector-leaders': { id: 'sector-leaders', label: 'Sector leaders', icon: Target, optional: true },
   'monthly-strategy-mining': { id: 'monthly-strategy-mining', label: 'Strategy mining', icon: ScanSearch },
@@ -166,6 +167,7 @@ const SCOPES: ChainScope[] = [
       ['paper-active-postmarket'],
       ['obsidian-sync'],
       ['meta-learning-shadow', 'strategy-learning'],
+      ['active8-oof-daily'],
     ],
   },
   {

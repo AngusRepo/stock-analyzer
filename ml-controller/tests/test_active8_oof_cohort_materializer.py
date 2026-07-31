@@ -788,6 +788,63 @@ def test_forward_extension_manifest_is_shadow_only_and_bound_to_base():
         )
 
 
+def test_forward_shadow_coverage_is_complete_checksum_bound_and_non_promotable():
+    from services.active8_oof_cohort_materializer import (
+        OOF_FORWARD_COVERAGE_POLICY_VERSION,
+        persist_verified_oof_forward_coverage,
+    )
+
+    captured = []
+
+    def batch_fn(statements, **kwargs):
+        captured.extend(statements)
+        assert kwargs["chunk_size"] == 2
+        return {"error_count": 0}
+
+    extension = {
+        "manifest_checksum": "b" * 64,
+        "base_cohort_id": "cohort-1",
+        "base_manifest_checksum": "a" * 64,
+        "dates": ["2026-07-22", "2026-07-23"],
+        "promotion_eligible": False,
+        "training_dispatched": False,
+    }
+    result = persist_verified_oof_forward_coverage(
+        cohort_id="cohort-1",
+        base_manifest_checksum="a" * 64,
+        extension_manifest_path="forward/manifest.json",
+        extension_manifest=extension,
+        knowledge_cutoff_date="2026-07-30",
+        snapshot_rows=[
+            {"snapshot_date": "2026-07-22"},
+            {"snapshot_date": "2026-07-23"},
+        ],
+        l4_predictions=[
+            {"prediction_date": "2026-07-22"},
+            {"prediction_date": "2026-07-23"},
+        ],
+        batch_fn=batch_fn,
+    )
+    assert result["status"] == "verified"
+    assert result["promotion_eligible"] is False
+    assert result["training_dispatched"] is False
+    assert len(captured) == 2
+    assert all(row[1][-2] == OOF_FORWARD_COVERAGE_POLICY_VERSION for row in captured)
+    assert all("promotion_eligible=0" in row[0] for row in captured)
+
+    with pytest.raises(RuntimeError, match="active8_oof_forward_coverage_incomplete"):
+        persist_verified_oof_forward_coverage(
+            cohort_id="cohort-1",
+            base_manifest_checksum="a" * 64,
+            extension_manifest_path="forward/manifest.json",
+            extension_manifest=extension,
+            knowledge_cutoff_date="2026-07-30",
+            snapshot_rows=[{"snapshot_date": "2026-07-22"}],
+            l4_predictions=[{"prediction_date": "2026-07-22"}],
+            batch_fn=lambda *_args, **_kwargs: {"error_count": 0},
+        )
+
+
 def test_prep_only_source_stops_before_training_dispatch():
     source = (ROOT / "ml-controller" / "routers" / "retrain_trigger.py").read_text(encoding="utf-8")
     request_pos = source.index("prep_only: bool")

@@ -349,6 +349,8 @@ export async function inspectExpectedReturnLifecycleHealth(
   expected_mature_signal_date: string | null
   newly_mature_signal_date: string | null
   oof_max_dates: Record<string, string | null>
+  oof_base_max_dates: Record<string, string | null>
+  oof_shadow_max_dates: Record<string, string | null>
   latest_candidates: Record<ExpectedReturnOwner, JsonRecord | null>
 }> {
   const alerts: string[] = []
@@ -402,11 +404,49 @@ export async function inspectExpectedReturnLifecycleHealth(
         LIMIT 1
      )
   `).all<{ artifact_kind: string; max_date: string | null }>()
+  const oofBaseMaxDates: Record<string, string | null> = {
+    allocator_ev_snapshots: null,
+    l4_predictions: null,
+  }
+  for (const row of maxRows.results ?? []) oofBaseMaxDates[row.artifact_kind] = row.max_date
+  const shadowRows = await env.DB.prepare(`
+    SELECT current.artifact_kind, MAX(current.max_date) AS max_date
+      FROM active8_oof_forward_extension_coverage current
+      JOIN active8_oof_cohorts cohort
+        ON cohort.cohort_id = current.cohort_id
+       AND cohort.status = 'ready'
+     WHERE current.coverage_status = 'verified'
+       AND current.promotion_eligible = 0
+       AND current.training_dispatched = 0
+       AND current.policy_version = 'verified-frozen-forward-monitoring-v1'
+       AND current.knowledge_cutoff_date <= date(?)
+       AND current.cohort_id = (
+         SELECT candidate.cohort_id
+           FROM active8_oof_materialized_artifacts candidate
+           JOIN active8_oof_cohorts candidate_cohort
+             ON candidate_cohort.cohort_id = candidate.cohort_id
+            AND candidate_cohort.status = 'ready'
+          WHERE candidate.artifact_kind = current.artifact_kind
+          ORDER BY candidate.updated_at DESC, candidate.cohort_id DESC
+          LIMIT 1
+       )
+     GROUP BY current.artifact_kind
+  `).bind(runDate).all<{ artifact_kind: string; max_date: string | null }>()
+  const oofShadowMaxDates: Record<string, string | null> = {
+    allocator_ev_snapshots: null,
+    l4_predictions: null,
+  }
+  for (const row of shadowRows.results ?? []) oofShadowMaxDates[row.artifact_kind] = row.max_date
   const oofMaxDates: Record<string, string | null> = {
     allocator_ev_snapshots: null,
     l4_predictions: null,
   }
-  for (const row of maxRows.results ?? []) oofMaxDates[row.artifact_kind] = row.max_date
+  for (const kind of Object.keys(oofMaxDates)) {
+    const candidates = [oofBaseMaxDates[kind], oofShadowMaxDates[kind]]
+      .filter((value): value is string => Boolean(value))
+      .sort()
+    oofMaxDates[kind] = candidates.at(-1) ?? null
+  }
   const sessions = await env.DB.prepare(`
     SELECT session_date
       FROM (
@@ -442,6 +482,8 @@ export async function inspectExpectedReturnLifecycleHealth(
     expected_mature_signal_date: expectedMatureSignalDate,
     newly_mature_signal_date: newlyMatureSignalDate,
     oof_max_dates: oofMaxDates,
+    oof_base_max_dates: oofBaseMaxDates,
+    oof_shadow_max_dates: oofShadowMaxDates,
     latest_candidates: latestCandidates,
   }
 }

@@ -286,6 +286,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     }
 
     const t0 = Date.now()
+    const syncRunId = buildRunId(task)
     try {
       const result = await fn()
       const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
@@ -293,6 +294,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         status: classifySchedulerSummary(summary),
         summary,
         duration_ms: Date.now() - t0,
+        run_id: syncRunId,
         run_date: requestedRunDate,
       })
       return c.json({ success: true, message: `${task} 執行成功`, triggered_at: new Date().toISOString(), result })
@@ -304,6 +306,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           status: 'error',
           summary: e?.message ?? 'Unknown error',
           duration_ms: Date.now() - t0,
+          run_id: syncRunId,
           error: String(e),
           run_date: requestedRunDate,
         },

@@ -159,7 +159,7 @@
 
 .obs-chain__viewport {
   position: relative;
-  overflow-x: auto;
+  overflow-x: hidden;
   overscroll-behavior-inline: contain;
   border-top: 1px solid rgba(126,148,176,.1);
   border-bottom: 1px solid rgba(126,148,176,.1);
@@ -176,19 +176,26 @@
 }
 
 .obs-chain__sequence.is-dense {
-  padding-inline: 4px;
+  width: 100%;
+  min-width: 0;
+  justify-content: space-between;
+  padding-inline: 8px;
+}
+
+.obs-chain__sequence.is-dense .obs-chain__segment {
+  min-width: 0;
 }
 
 .obs-chain__sequence.is-dense .obs-chain__connector {
-  width: clamp(8px, .5vw, 12px);
+  width: clamp(4px, .35vw, 9px);
 }
 
 .obs-chain__sequence.is-dense .obs-chain__column {
-  width: clamp(74px, 3.75vw, 98px);
+  width: clamp(64px, 3.45vw, 92px);
 }
 
 .obs-chain__sequence.is-dense .obs-chain__column.is-parallel {
-  width: clamp(82px, 4.1vw, 106px);
+  width: clamp(70px, 3.8vw, 98px);
 }
 
 .obs-chain__sequence.is-dense .obs-chain__stage {

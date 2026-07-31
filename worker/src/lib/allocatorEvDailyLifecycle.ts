@@ -478,6 +478,31 @@ export async function runAllocatorEvLifecycleWatchdog(
     })
     throw new Error(`allocator_ev_missing_point_in_time_lineage:${businessDate}:${reason}`)
   }
+  const postPipelineStage = await env.DB.prepare(`
+    SELECT status, canonical_run_id, updated_at
+      FROM pipeline_stage_runs
+     WHERE business_date=? AND stage='post_pipeline_chain'
+  `).bind(businessDate).first<{
+    status?: string | null
+    canonical_run_id?: string | null
+    updated_at?: string | null
+  }>()
+  const stageTimestamp = String(postPipelineStage?.updated_at ?? '').trim()
+  const stageTimestampUtc = stageTimestamp && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(stageTimestamp)
+    ? `${stageTimestamp.replace(' ', 'T')}Z`
+    : stageTimestamp
+  const stageAgeMs = Date.now() - Date.parse(stageTimestampUtc)
+  const callbackGraceActive = !snapshot.ready
+    && ['queued', 'running', 'waiting'].includes(String(postPipelineStage?.status ?? ''))
+    && Number.isFinite(stageAgeMs)
+    && stageAgeMs >= 0
+    && stageAgeMs < 15 * 60_000
+  if (callbackGraceActive) {
+    return `allocator EV lifecycle awaiting durable callback date=${businessDate} `
+      + `stage=${postPipelineStage?.status} age_seconds=${Math.floor(stageAgeMs / 1000)} `
+      + `run_id=${postPipelineStage?.canonical_run_id ?? 'unknown'} `
+      + `lineage=${snapshot.nativeLineageRows} expected=${snapshot.expectedRows} actual=${snapshot.actualRows}`
+  }
   const lifecycle = await readAllocatorEvLifecycle(env.DB, businessDate)
   const postVerifyReached = lifecycle && ['replay_pending_maturity', 'replay_enqueued', 'replay_complete'].includes(lifecycle.state)
   const postPipelineReached = lifecycle

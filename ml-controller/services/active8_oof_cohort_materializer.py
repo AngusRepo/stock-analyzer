@@ -48,6 +48,7 @@ OOF_MATERIALIZED_ARTIFACT_KINDS = {
     "allocator_ev_snapshots": "snapshot_date",
     "l4_predictions": "prediction_date",
 }
+OOF_FORWARD_COVERAGE_POLICY_VERSION = "verified-frozen-forward-monitoring-v1"
 
 
 def _loads(value: Any) -> dict[str, Any]:
@@ -1342,6 +1343,120 @@ def persist_l4_oof_predictions(
     if result.get("error_count"):
         raise RuntimeError(f"l4_oof_prediction_materialization_failed:{result}")
     return {"status": "ready", "rows": len(predictions), "result": result}
+
+
+def persist_verified_oof_forward_coverage(
+    *,
+    cohort_id: str,
+    base_manifest_checksum: str,
+    extension_manifest_path: str,
+    extension_manifest: dict[str, Any],
+    knowledge_cutoff_date: str,
+    snapshot_rows: list[dict[str, Any]],
+    l4_predictions: list[dict[str, Any]],
+    batch_fn: Callable[..., dict[str, Any]] = d1_client.batch_execute,
+) -> dict[str, Any]:
+    """Persist monitoring-only coverage after verified frozen-forward evaluation."""
+
+    expected_dates = sorted({
+        str(value or "")[:10]
+        for value in (extension_manifest.get("dates") or [])
+        if str(value or "")[:10]
+    })
+    extension_checksum = str(extension_manifest.get("manifest_checksum") or "").lower()
+    if (
+        not expected_dates
+        or len(extension_checksum) != 64
+        or any(char not in "0123456789abcdef" for char in extension_checksum)
+        or extension_manifest.get("promotion_eligible") is not False
+        or extension_manifest.get("training_dispatched") is not False
+        or str(extension_manifest.get("base_cohort_id") or "") != cohort_id
+        or str(extension_manifest.get("base_manifest_checksum") or "") != base_manifest_checksum
+        or knowledge_cutoff_date < expected_dates[-1]
+    ):
+        raise ValueError("active8_oof_forward_coverage_contract_invalid")
+
+    rows_by_kind = {
+        "allocator_ev_snapshots": (snapshot_rows, "snapshot_date"),
+        "l4_predictions": (l4_predictions, "prediction_date"),
+    }
+    sql = """
+        INSERT INTO active8_oof_forward_extension_coverage (
+          cohort_id, extension_manifest_checksum, artifact_kind,
+          base_manifest_checksum, extension_manifest_path, knowledge_cutoff_date,
+          min_date, max_date, date_count, row_count, date_checksum,
+          coverage_status, promotion_eligible, training_dispatched,
+          policy_version, verified_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?,
+                  CASE WHEN ? = 'verified' THEN CURRENT_TIMESTAMP ELSE NULL END,
+                  CURRENT_TIMESTAMP)
+        ON CONFLICT(cohort_id, extension_manifest_checksum, artifact_kind)
+        DO UPDATE SET
+          base_manifest_checksum=excluded.base_manifest_checksum,
+          extension_manifest_path=excluded.extension_manifest_path,
+          knowledge_cutoff_date=excluded.knowledge_cutoff_date,
+          min_date=excluded.min_date,
+          max_date=excluded.max_date,
+          date_count=excluded.date_count,
+          row_count=excluded.row_count,
+          date_checksum=excluded.date_checksum,
+          coverage_status=excluded.coverage_status,
+          promotion_eligible=0,
+          training_dispatched=0,
+          policy_version=excluded.policy_version,
+          verified_at=excluded.verified_at,
+          updated_at=CURRENT_TIMESTAMP
+    """
+    statements: list[tuple[str, list[Any]]] = []
+    evidence: dict[str, Any] = {}
+    all_verified = True
+    for artifact_kind, (rows, date_field) in rows_by_kind.items():
+        extension_rows = [
+            row for row in rows
+            if str(row.get(date_field) or "")[:10] in expected_dates
+        ]
+        actual_dates = sorted({
+            str(row.get(date_field) or "")[:10]
+            for row in extension_rows
+            if str(row.get(date_field) or "")[:10]
+        })
+        status = "verified" if actual_dates == expected_dates and extension_rows else "partial"
+        all_verified = all_verified and status == "verified"
+        date_checksum = hashlib.sha256(
+            json.dumps(actual_dates, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        min_date = actual_dates[0] if actual_dates else expected_dates[0]
+        max_date = actual_dates[-1] if actual_dates else expected_dates[0]
+        statements.append((sql, [
+            cohort_id, extension_checksum, artifact_kind,
+            base_manifest_checksum, extension_manifest_path, knowledge_cutoff_date,
+            min_date, max_date, len(actual_dates), len(extension_rows), date_checksum,
+            status, OOF_FORWARD_COVERAGE_POLICY_VERSION, status,
+        ]))
+        evidence[artifact_kind] = {
+            "status": status,
+            "rows": len(extension_rows),
+            "dates": len(actual_dates),
+            "min_date": min_date,
+            "max_date": max_date,
+            "date_checksum": date_checksum,
+        }
+
+    result = batch_fn(statements, timeout=30.0, chunk_size=2)
+    if result.get("error_count"):
+        raise RuntimeError(f"active8_oof_forward_coverage_persistence_failed:{result}")
+    if not all_verified:
+        raise RuntimeError(
+            "active8_oof_forward_coverage_incomplete:"
+            + json.dumps(evidence, sort_keys=True)
+        )
+    return {
+        "status": "verified",
+        "promotion_eligible": False,
+        "training_dispatched": False,
+        "extension_manifest_checksum": extension_checksum,
+        "artifacts": evidence,
+    }
 
 
 def build_fusion_oof_rows(

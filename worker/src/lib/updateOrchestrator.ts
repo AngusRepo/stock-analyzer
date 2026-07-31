@@ -2000,7 +2000,11 @@ async function repairFinalizeContinuationIfNeeded(
 async function runDailyAllocatorEvReadiness(
   env: Bindings,
   triggerTime: string,
-): Promise<{ ok: boolean; summary: string }> {
+): Promise<{
+  ok: boolean
+  state: 'ready' | 'degraded' | 'fatal'
+  summary: string
+}> {
   const started = Date.now()
   const parts: string[] = []
   const health = await inspectExpectedReturnLifecycleHealth(env, triggerTime)
@@ -2012,6 +2016,10 @@ async function runDailyAllocatorEvReadiness(
   parts.push(`newly_mature_signal_date=${health.newly_mature_signal_date ?? 'unresolved'}`)
   parts.push(`oof_snapshot_max=${health.oof_max_dates.allocator_ev_snapshots ?? 'missing'}`)
   parts.push(`oof_l4_max=${health.oof_max_dates.l4_predictions ?? 'missing'}`)
+  parts.push(`oof_snapshot_base=${health.oof_base_max_dates.allocator_ev_snapshots ?? 'missing'}`)
+  parts.push(`oof_l4_base=${health.oof_base_max_dates.l4_predictions ?? 'missing'}`)
+  parts.push(`oof_snapshot_shadow=${health.oof_shadow_max_dates.allocator_ev_snapshots ?? 'missing'}`)
+  parts.push(`oof_l4_shadow=${health.oof_shadow_max_dates.l4_predictions ?? 'missing'}`)
 
   for (const owner of ['l4_alpha_ev', 'allocator_ev_fusion'] as const) {
     const artifactState = servingState.artifacts[owner]
@@ -2071,17 +2079,27 @@ async function runDailyAllocatorEvReadiness(
 
   const hardAlerts = [...new Set([...health.alerts, ...servingState.hard_alerts])]
   const warnings = [...new Set([...health.warnings, ...servingState.warnings])]
+  const safeProductionLane = servingState.state === 'production_primary'
+    ? Boolean(priorOwner && servingState.action_gate === 'expected_return_owner')
+    : servingState.state === 'safe_abstention'
+      && servingState.action_gate === 'validated_s12_only'
+  const state: 'ready' | 'degraded' | 'fatal' = !safeProductionLane
+    ? 'fatal'
+    : hardAlerts.length > 0 || warnings.length > 0
+      ? 'degraded'
+      : 'ready'
+  parts.push(`readiness_state=${state}`)
   if (hardAlerts.length > 0) parts.push(`hard_alerts=${hardAlerts.join(',')}`)
   if (warnings.length > 0) parts.push(`warnings=${warnings.join(',')}`)
   const summary = `allocator EV model readiness before pipeline for ${triggerTime}; ${parts.join(' | ')}`
   await logSchedulerResult(env.KV, 'allocator-ev-readiness', {
-    status: hardAlerts.length > 0 ? 'error' : 'success',
+    status: state === 'fatal' ? 'error' : 'success',
     summary,
     duration_ms: Date.now() - started,
-    error: hardAlerts.length > 0 ? hardAlerts.join(',') : undefined,
+    error: state === 'fatal' ? hardAlerts.join(',') || 'no_validated_expected_return_lane' : undefined,
     run_date: triggerTime,
   })
-  return { ok: true, summary }
+  return { ok: state !== 'fatal', state, summary }
 }
 
 async function continuePostScreenerPipeline(

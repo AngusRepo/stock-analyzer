@@ -380,6 +380,7 @@ class OofMaterializeRequest(BaseModel):
     prediction_storage_mode: str = "gcs_indexed_v1"
     lifecycle_cadence: str = "daily"
     forward_extension_manifest_path: str | None = None
+    persist_forward_shadow_coverage: bool = False
 
 
 class OofRetentionArchiveRequest(BaseModel):
@@ -1261,6 +1262,15 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             status_code=400,
             detail="frozen forward extension is dry-run shadow evidence only and requires promote=false",
         )
+    if req.persist_forward_shadow_coverage and (
+        not req.forward_extension_manifest_path
+        or req.lifecycle_cadence != "daily"
+        or os.environ.get("OOF_MATERIALIZE_JOB_EXECUTION", "").strip() != "1"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="forward shadow coverage may only be recorded by the daily durable OOF lifecycle",
+        )
     from services.walk_forward_retrain import _get_bucket
     from services.active8_oof_cohort_materializer import (
         build_oof_snapshot_rows,
@@ -1275,6 +1285,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         load_verified_oof_forward_extension,
         load_verified_oof_manifest,
         persist_oof_cohort,
+        persist_verified_oof_forward_coverage,
     )
     from services.l4_alpha_ev_artifact_builder import (
         build_l4_alpha_ev_artifact_from_rows,
@@ -1410,6 +1421,17 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             generation_mode="purged_oof",
             cohort_id=req.cohort_id,
         )
+        forward_shadow_coverage = None
+        if forward_extension and req.persist_forward_shadow_coverage:
+            forward_shadow_coverage = persist_verified_oof_forward_coverage(
+                cohort_id=req.cohort_id,
+                base_manifest_checksum=str(manifest["manifest_checksum"]),
+                extension_manifest_path=str(req.forward_extension_manifest_path),
+                extension_manifest=forward_extension,
+                knowledge_cutoff_date=req.knowledge_cutoff_date,
+                snapshot_rows=snapshot_rows,
+                l4_predictions=l4_predictions,
+            )
         if forward_extension:
             for result in (l4_result, fusion_result):
                 artifact = result.get("artifact") if isinstance(result, dict) else None
@@ -1656,6 +1678,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "base_prediction_rows": len(prediction_rows) - len(forward_prediction_rows),
             "forward_prediction_rows": len(forward_prediction_rows),
             "forward_extension": forward_extension,
+            "forward_shadow_coverage": forward_shadow_coverage,
             "physical_prediction_coverage": {
                 "date_count": len(physical_prediction_dates),
                 "min_date": physical_prediction_dates[0] if physical_prediction_dates else None,
@@ -1721,7 +1744,7 @@ OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
 OOF_COHORT_ID_VERSION = "v7-immutable-fold-evidence"
-OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v5-cadence-owner"
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v6-forward-coverage"
 
 
 def _oof_lifecycle_materialization_controls(
@@ -1791,6 +1814,12 @@ def _oof_lifecycle_receipt_matches_active_policy(
     )
     forward = evidence.get("daily_forward_extension")
     forward = forward if isinstance(forward, dict) else {}
+    forward_coverage = evidence.get("forward_shadow_coverage")
+    forward_coverage = forward_coverage if isinstance(forward_coverage, dict) else {}
+    coverage_artifacts = forward_coverage.get("artifacts")
+    coverage_artifacts = coverage_artifacts if isinstance(coverage_artifacts, dict) else {}
+    snapshot_coverage = coverage_artifacts.get("allocator_ev_snapshots")
+    l4_coverage = coverage_artifacts.get("l4_predictions")
     shadow_complete = (
         cadence == "daily"
         and receipt.get("status") == "shadow_evaluated"
@@ -1799,6 +1828,11 @@ def _oof_lifecycle_receipt_matches_active_policy(
         and bool(str(forward.get("manifest_checksum") or "").strip())
         and forward.get("promotion_eligible") is False
         and forward.get("training_dispatched") is False
+        and forward_coverage.get("status") == "verified"
+        and forward_coverage.get("promotion_eligible") is False
+        and forward_coverage.get("training_dispatched") is False
+        and isinstance(snapshot_coverage, dict) and snapshot_coverage.get("status") == "verified"
+        and isinstance(l4_coverage, dict) and l4_coverage.get("status") == "verified"
     )
     if not contract_current or not (materialized_complete or shadow_complete):
         return False
@@ -2552,6 +2586,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
         dispatch_full_fit=materialization_controls["dispatch_full_fit"],
         lifecycle_cadence=cadence,
         forward_extension_manifest_path=forward_extension_manifest_path,
+        persist_forward_shadow_coverage=bool(
+            materialization_controls["frozen_forward_shadow"] and not req.dry_run
+        ),
     ))
     result["daily_forward_extension"] = daily_forward_extension
     if materialization_controls["frozen_forward_shadow"]:
@@ -2584,6 +2621,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                     "shadow_evaluated": result.get("status") == "shadow_evaluated",
                     "candidate_artifacts": bool(result.get("candidate_artifacts")),
                     "daily_forward_extension": daily_forward_extension,
+                    "forward_shadow_coverage": result.get("forward_shadow_coverage"),
                 },
                 "serving_closure": {
                     "alpha_champion_promoted": bool(result.get("promoted")),
@@ -2599,6 +2637,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                     {
                         "physical_prediction_coverage": result.get("physical_prediction_coverage"),
                         "forward_prediction_rows": result.get("forward_prediction_rows"),
+                        "forward_shadow_coverage": result.get("forward_shadow_coverage"),
                         "l4_validation_packet": (result.get("l4_result") or {}).get("validation_packet"),
                         "fusion_validation_packet": (result.get("fusion_result") or {}).get("validation_packet"),
                     }

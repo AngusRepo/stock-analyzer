@@ -897,12 +897,31 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
                 "promotion_eligible": False,
                 "training_dispatched": False,
             },
+            "forward_shadow_coverage": {
+                "status": "verified",
+                "promotion_eligible": False,
+                "training_dispatched": False,
+                "artifacts": {
+                    "allocator_ev_snapshots": {"status": "verified"},
+                    "l4_predictions": {"status": "verified"},
+                },
+            },
         },
     }
     assert _oof_lifecycle_receipt_matches_active_policy(
         shadow,
         cadence="daily",
         require_full_fit=False,
+    )
+    missing_coverage = {
+        **shadow,
+        "evidence_closure": {
+            **shadow["evidence_closure"],
+            "forward_shadow_coverage": None,
+        },
+    }
+    assert not _oof_lifecycle_receipt_matches_active_policy(
+        missing_coverage, cadence="daily", require_full_fit=False
     )
     assert not _oof_lifecycle_receipt_matches_active_policy(
         shadow,
@@ -922,6 +941,11 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         "dispatch_full_fit": False,
         "frozen_forward_shadow": True,
     }
+    request_source = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
+    assert "persist_forward_shadow_coverage" in request_source
+    assert "forward shadow coverage may only be recorded by the daily durable OOF lifecycle" in request_source
+    assert 'materialization_controls["frozen_forward_shadow"] and not req.dry_run' in request_source
+    assert '"forward_shadow_coverage": result.get("forward_shadow_coverage")' in request_source
     assert _oof_lifecycle_receipt_path("cohort-1", "2026-07-29", "daily").endswith(
         "/2026-07-29.daily.json"
     )

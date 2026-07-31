@@ -345,9 +345,17 @@ async def backfill_rrg(req: RrgBackfillRequest):
     targets = req.dates or ([req.date] if req.date else [_today_tw()])
 
     results = []
+    today_tw = _today_tw()
     for d in targets:
         try:
-            summary = await asyncio.to_thread(run_sector_flow_pipeline, d)
+            reconstruction_mode = (
+                "historical_reconstruction"
+                if d < today_tw
+                else "native"
+            )
+            summary = await asyncio.to_thread(
+                run_sector_flow_pipeline, d, reconstruction_mode=reconstruction_mode,
+            )
             results.append(summary)
         except Exception as e:
             logger.error(f"RRG backfill failed for {d}: {e}")

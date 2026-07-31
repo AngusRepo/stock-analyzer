@@ -1691,13 +1691,18 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
 ): Promise<string> {
   const startedAt = Date.now()
   try {
+    const { recoverMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
     const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
     const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
     const { refreshStrategyRewardLedger } = await import('./strategyLearning')
+    const recovery = await recoverMatureSelectionEvidence(env, asOfDate, {
+      maxRecoveryDates: 4,
+    })
     const labels = await materializeCanonicalSelectionLabelsV4(env.DB, { asOfDate })
     const marginalEdge = await refreshStrategyMarginalEdgeV4(env.DB, asOfDate)
     const rewards = await refreshStrategyRewardLedger(env.DB, { endDate: asOfDate, dryRun: false })
     const summary = [
+      `mature_recovery=${recovery.summary}`,
       `labels=${labels.persisted_rows}`,
       `pending=${labels.pending_rows}`,
       `unavailable=${labels.unavailable_rows}`,
@@ -3286,8 +3291,12 @@ export async function processUpdateBatch(
         summarizeEveningChainEvidenceClosure,
       } = await import('./eveningChainEvidenceClosure')
       const historicalPriorityDate = await resolveExpectedMatureSignalDate(env, triggerTime)
+      const { recoverMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
+      const matureRecovery = await recoverMatureSelectionEvidence(env, triggerTime, {
+        maxRecoveryDates: 4,
+      })
       let closureSummary = ''
-      const { decisionEvidence, historicalEvidence, labels, marginalEdge, rewards, policy, thresholdCalibration }
+      const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, thresholdCalibration }
         = await finalizeStrategyLearningEvidenceV5(env.DB, triggerTime, {
           allowPromotion: currentBusinessDateRun,
           persistPolicy: currentBusinessDateRun,
@@ -3308,6 +3317,7 @@ export async function processUpdateBatch(
       `materialized_complete candidates=${coverage.candidateRows}/${coverage.expectedCandidates} rows=${coverage.decisionRows}/${coverage.expectedRows}`,
       `last_candidates=${chunk?.candidate_count ?? 0}`,
       `last_decision_rows=${chunk?.persisted_rows ?? 0}`,
+      `mature_recovery=${matureRecovery.summary}`,
       `selection_decisions=${decisionEvidence.finalSignalRows}/${decisionEvidence.referenceRows}`,
       `selection_ev_owner=${decisionEvidence.evOwnerRows}`,
       `strategy_pit_rebuild=${historicalEvidence.successfulDates}/${historicalEvidence.attemptedDates}`,
@@ -3316,6 +3326,9 @@ export async function processUpdateBatch(
       `selection_pending=${labels.pending_rows}`,
       `selection_unavailable=${labels.unavailable_rows}`,
       `strategy_edge=${marginalEdge.status}:eligible=${marginalEdge.eligibleStrategies}:dates=${marginalEdge.sampleDates}`,
+      `route_backfill_eligible=${routeBackfillEligibility.filter((row) => row.status === 'eligible').length}`,
+      `route_backfill_unavailable=${routeBackfillEligibility.filter((row) => row.status === 'unavailable').length}`,
+      `route_backfill_pending=${routeBackfillEligibility.filter((row) => row.status === 'pending_maturity').length}`,
       `reward_source_rows=${rewards.source_rows}`,
       `reward_rows=${rewards.persisted_rows}`,
       `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
@@ -3798,6 +3811,7 @@ export async function processUpdateBatch(
       loadFusionSnapshotReplayCoverage,
       loadFusionSnapshotSymbols,
       loadSignedEligibleRepairSymbolsByHistoricalDate,
+      isS12ReplayRetryableUnavailableReason,
       runS12HistoricalReplayForDate,
     } = await import('./s12ReplayTradeOutcome')
     if (replayScope === 'fusion_snapshot_structure') {
@@ -3882,7 +3896,15 @@ export async function processUpdateBatch(
         ? await loadSignedEligibleRepairSymbolsByHistoricalDate(env.DB, triggerTime)
         : []
     const terminalDataSourceReason = String(result.terminal_data_source_reason ?? '').trim()
+    const retryableUnavailableOnly = replayScope === 'fusion_snapshot_missing'
+      && Number(result.attempted ?? 0) > 0
+      && result.outcomes.length > 0
+      && result.outcomes.every((outcome) => (
+        outcome.observation_kind === 'unavailable'
+        && isS12ReplayRetryableUnavailableReason(outcome.status_reason)
+      ))
     const dynamicCohortStalled = dynamicCohortScope
+      && !retryableUnavailableOnly
       && !terminalDataSourceReason
       && Number(cohortSymbols?.length ?? 0) > 0
       && remainingReplaySymbols.length >= Number(cohortSymbols?.length ?? 0)
@@ -3890,7 +3912,7 @@ export async function processUpdateBatch(
         replayScope === 'signed_eligible_repair'
         || Number(result.persisted ?? 0) === 0
       )
-    const hasMore = terminalDataSourceReason || dynamicCohortStalled
+    const hasMore = terminalDataSourceReason || dynamicCohortStalled || retryableUnavailableOnly
       ? false
       : dynamicCohortScope
       ? remainingReplaySymbols.length > 0 && Number(result.persisted ?? 0) > 0
@@ -3949,6 +3971,7 @@ export async function processUpdateBatch(
       `setup_only=${result.setup_only}`,
       `skipped=${result.skipped}`,
       `persisted=${result.persisted}`,
+      `retryable_unavailable_only=${retryableUnavailableOnly ? 1 : 0}`,
       replayCoverage
         ? `coverage=${replayCoverage.replayRows}/${replayCoverage.totalSnapshotRows}`
           + ` mature_missing=${replayCoverage.matureMissingRows}`
@@ -4000,6 +4023,8 @@ export async function processUpdateBatch(
         upstreamRunId: runId,
         lastError: replayCoverage && replayCoverage.pendingMaturityRows > 0
           ? `waiting for stock-specific five-session maturity symbols=${replayCoverage.pendingMaturityRows}`
+          : retryableUnavailableOnly
+            ? `waiting for retryable S12 lifecycle bars symbols=${remainingReplaySymbols.length}`
           : `waiting for complete five-session replay data symbols=${remainingReplaySymbols.length}`,
       })
     }

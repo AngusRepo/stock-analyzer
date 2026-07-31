@@ -16,6 +16,7 @@ Mapping:
 """
 from __future__ import annotations
 import json
+import hashlib
 import logging
 from datetime import datetime, timezone
 from typing import Literal, Optional, TypedDict
@@ -196,47 +197,234 @@ def _load_twii_return_5d(as_of_date: str) -> float:
     return (float(latest) - float(prev5)) / float(prev5)
 
 
-def _load_stock_tags(tag_type: TagType) -> dict[str, list[str]]:
-    """
-    Load {tag_name: [symbols]} for a given tag_type.
+def _taxonomy_snapshot_identity(
+    tag_type: TagType,
+    as_of_date: str,
+    tag_members: dict[str, list[str]],
+) -> tuple[str, str]:
+    payload = [
+        (tag, symbol)
+        for tag, symbols in sorted(tag_members.items())
+        for symbol in sorted(set(symbols))
+    ]
+    checksum = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"sector-taxonomy-{as_of_date}-{tag_type}-{checksum[:16]}", checksum
 
-    V4.1: self-built concepts remain in stock_tags, while FinLab taxonomy is
-    the primary structured source for industry / industry_theme / subindustry.
-    """
+
+def _load_persisted_taxonomy_snapshot(
+    tag_type: TagType,
+    as_of_date: str,
+) -> dict[str, list[str]] | None:
+    manifests = d1_client.query(
+        """
+        SELECT snapshot_id, membership_checksum, expected_row_count, persisted_row_count, status
+          FROM sector_taxonomy_snapshot_runs_v1
+         WHERE snapshot_date=? AND tag_type=?
+         LIMIT 1
+        """,
+        [as_of_date, tag_type],
+    )
+    if not manifests or str(manifests[0].get("status") or "") != "ready":
+        return None
+    manifest = manifests[0]
+    snapshot_id = str(manifest.get("snapshot_id") or "").strip()
+    expected_checksum = str(manifest.get("membership_checksum") or "").strip()
+    expected_count = int(manifest.get("expected_row_count") or 0)
+    rows = d1_client.query(
+        """
+        SELECT tag, symbol
+          FROM sector_taxonomy_membership_snapshots_v1
+         WHERE snapshot_date=? AND tag_type=? AND snapshot_id=?
+         ORDER BY tag, symbol
+        """,
+        [as_of_date, tag_type, snapshot_id],
+    )
+    by_tag: dict[str, list[str]] = {}
+    for row in rows:
+        tag = str(row.get("tag") or "").strip()
+        symbol = str(row.get("symbol") or "").strip()
+        if tag and symbol:
+            by_tag.setdefault(tag, []).append(symbol)
+    actual_snapshot_id, actual_checksum = _taxonomy_snapshot_identity(tag_type, as_of_date, by_tag)
+    if (
+        not snapshot_id
+        or len(rows) != expected_count
+        or int(manifest.get("persisted_row_count") or 0) != expected_count
+        or actual_snapshot_id != snapshot_id
+        or actual_checksum != expected_checksum
+    ):
+        raise RuntimeError(f"sector_taxonomy_snapshot_integrity_failed:{as_of_date}:{tag_type}")
+    return by_tag
+
+
+def _persist_taxonomy_snapshot(
+    tag_type: TagType,
+    as_of_date: str,
+    rows: list[dict],
+    tag_members: dict[str, list[str]],
+) -> tuple[str, str]:
+    snapshot_id, checksum = _taxonomy_snapshot_identity(tag_type, as_of_date, tag_members)
+    expected_count = sum(len(set(symbols)) for symbols in tag_members.values())
+    existing = d1_client.query(
+        """
+        SELECT snapshot_id, membership_checksum, status
+          FROM sector_taxonomy_snapshot_runs_v1
+         WHERE snapshot_date=? AND tag_type=?
+         LIMIT 1
+        """,
+        [as_of_date, tag_type],
+    )
+    if existing:
+        existing_id = str(existing[0].get("snapshot_id") or "").strip()
+        existing_checksum = str(existing[0].get("membership_checksum") or "").strip()
+        if existing_id != snapshot_id or existing_checksum != checksum:
+            raise RuntimeError(f"sector_taxonomy_snapshot_immutable_conflict:{as_of_date}:{tag_type}")
+        if str(existing[0].get("status") or "") == "ready":
+            return snapshot_id, checksum
+
+    d1_client.execute(
+        """
+        INSERT INTO sector_taxonomy_snapshot_runs_v1 (
+          snapshot_date, tag_type, snapshot_id, membership_checksum,
+          expected_row_count, persisted_row_count, status
+        ) VALUES (?, ?, ?, ?, ?, 0, 'writing')
+        ON CONFLICT(snapshot_date, tag_type) DO UPDATE SET
+          snapshot_id=excluded.snapshot_id,
+          membership_checksum=excluded.membership_checksum,
+          expected_row_count=excluded.expected_row_count,
+          persisted_row_count=0,
+          status='writing',
+          error_code=NULL,
+          updated_at=CURRENT_TIMESTAMP
+        """,
+        [as_of_date, tag_type, snapshot_id, checksum, expected_count],
+    )
+
+    canonical_rows: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        tag = str(row.get("tag") or "").strip()
+        symbol = str(row.get("symbol") or "").strip()
+        if tag and symbol:
+            canonical_rows.setdefault((tag, symbol), row)
+    statements: list[tuple[str, list]] = []
+    for (tag, symbol), row in sorted(canonical_rows.items()):
+        source = str(row.get("source") or "stock_tags").strip() or "stock_tags"
+        source_as_of = str(row.get("source_as_of_date") or as_of_date).strip() or as_of_date
+        statements.append((
+            """
+            INSERT OR IGNORE INTO sector_taxonomy_membership_snapshots_v1 (
+              snapshot_date, snapshot_id, tag_type, tag, symbol, source,
+              source_as_of_date, source_lineage_json, membership_checksum
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """.strip(),
+            [
+                as_of_date, snapshot_id, tag_type, tag, symbol, source,
+                source_as_of, row.get("lineage_json"), checksum,
+            ],
+        ))
+    try:
+        if statements:
+            d1_client.batch_execute(statements, chunk_size=100)
+        counts = d1_client.query(
+            """
+            SELECT COUNT(*) row_count,
+                   MIN(membership_checksum) min_checksum,
+                   MAX(membership_checksum) max_checksum
+              FROM sector_taxonomy_membership_snapshots_v1
+             WHERE snapshot_date=? AND tag_type=? AND snapshot_id=?
+            """,
+            [as_of_date, tag_type, snapshot_id],
+        )
+        persisted_count = int((counts[0] if counts else {}).get("row_count") or 0)
+        min_checksum = str((counts[0] if counts else {}).get("min_checksum") or "")
+        max_checksum = str((counts[0] if counts else {}).get("max_checksum") or "")
+        if (
+            persisted_count != expected_count
+            or (expected_count > 0 and min_checksum != checksum)
+            or (expected_count > 0 and max_checksum != checksum)
+        ):
+            raise RuntimeError(
+                f"sector_taxonomy_snapshot_write_incomplete:{as_of_date}:{tag_type}:"
+                f"{persisted_count}/{expected_count}"
+            )
+        d1_client.execute(
+            """
+            UPDATE sector_taxonomy_snapshot_runs_v1
+               SET persisted_row_count=?, status='ready', error_code=NULL,
+                   completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+             WHERE snapshot_date=? AND tag_type=? AND snapshot_id=?
+            """,
+            [persisted_count, as_of_date, tag_type, snapshot_id],
+        )
+    except Exception as exc:
+        d1_client.execute(
+            """
+            UPDATE sector_taxonomy_snapshot_runs_v1
+               SET status='failed', error_code=?, updated_at=CURRENT_TIMESTAMP
+             WHERE snapshot_date=? AND tag_type=? AND snapshot_id=?
+            """,
+            [str(exc)[:500], as_of_date, tag_type, snapshot_id],
+        )
+        raise
+    return snapshot_id, checksum
+
+
+def _load_stock_tags(
+    tag_type: TagType,
+    as_of_date: str | None = None,
+    *,
+    reconstruction_mode: str = "native",
+) -> dict[str, list[str]]:
+    """Load the exact taxonomy membership available for this decision date."""
+    if as_of_date:
+        persisted = _load_persisted_taxonomy_snapshot(tag_type, as_of_date)
+        if persisted is not None:
+            return persisted
+        if reconstruction_mode == "historical_reconstruction":
+            raise RuntimeError(f"historical_taxonomy_snapshot_missing:{as_of_date}:{tag_type}")
+
     rows: list[dict] = []
     if tag_type != "concept":
         try:
-            rows.extend(d1_client.query(
-                """
-                SELECT tag, symbol
-                FROM finlab_taxonomy_tags
-                WHERE tag_type = ?
-                """,
-                [tag_type],
-            ))
+            sql = """
+                SELECT tag, symbol, source, as_of_date source_as_of_date, lineage_json
+                  FROM finlab_taxonomy_tags
+                 WHERE tag_type = ?
+            """
+            params: list = [tag_type]
+            if as_of_date:
+                sql += " AND date(as_of_date) <= date(?)"
+                params.append(as_of_date)
+            rows.extend(d1_client.query(sql, params))
         except Exception as exc:
             logger.warning("[sector_flow] FinLab taxonomy load failed for %s: %s", tag_type, exc)
     try:
-        rows.extend(d1_client.query(
-            """
-            SELECT tag, symbol
-            FROM stock_tags
-            WHERE tag_type = ?
-            """,
-            [tag_type],
-        ))
+        sql = """
+            SELECT tag, symbol, source, updated_at source_as_of_date, NULL lineage_json
+              FROM stock_tags
+             WHERE tag_type = ?
+        """
+        params = [tag_type]
+        if as_of_date:
+            sql += " AND date(updated_at) <= date(?)"
+            params.append(as_of_date)
+        rows.extend(d1_client.query(sql, params))
     except Exception as exc:
         logger.warning("[sector_flow] stock_tags load failed for %s: %s", tag_type, exc)
 
     by_tag: dict[str, list[str]] = {}
     seen: set[tuple[str, str]] = set()
-    for r in rows:
-        tag = str(r.get("tag") or "").strip()
-        sym = str(r.get("symbol") or "").strip()
-        key = (tag, sym)
-        if tag and sym and key not in seen:
+    for row in rows:
+        tag = str(row.get("tag") or "").strip()
+        symbol = str(row.get("symbol") or "").strip()
+        key = (tag, symbol)
+        if tag and symbol and key not in seen:
             seen.add(key)
-            by_tag.setdefault(tag, []).append(sym)
+            by_tag.setdefault(tag, []).append(symbol)
+    if as_of_date and by_tag:
+        _persist_taxonomy_snapshot(tag_type, as_of_date, rows, by_tag)
     return by_tag
 
 
@@ -474,15 +662,21 @@ def _load_prev_rs_ratios(
     sql = """
     SELECT sector, rs_ratio FROM sector_flow
     WHERE classification = ?
+      AND pit_lineage_version = ?
       AND rs_ratio IS NOT NULL
       AND date = (
         SELECT date FROM sector_flow
-        WHERE classification = ? AND rs_ratio IS NOT NULL AND date < ?
+        WHERE classification = ?
+          AND pit_lineage_version = ?
+          AND rs_ratio IS NOT NULL AND date < ?
         ORDER BY date DESC LIMIT 1 OFFSET 4
       )
     ORDER BY sector
     """
-    rows = d1_client.query(sql, [classification, classification, as_of_date])
+    rows = d1_client.query(sql, [
+        classification, SECTOR_FLOW_PIT_LINEAGE_VERSION,
+        classification, SECTOR_FLOW_PIT_LINEAGE_VERSION, as_of_date,
+    ])
     return {
         r["sector"]: float(r["rs_ratio"])
         for r in rows
@@ -506,18 +700,24 @@ def _load_rrg_history(
     SELECT sector, date, rs_ratio, rs_momentum, quadrant
     FROM sector_flow
     WHERE classification = ?
+      AND pit_lineage_version = ?
       AND rs_ratio IS NOT NULL
       AND date IN (
         SELECT date
         FROM sector_flow
-        WHERE classification = ? AND rs_ratio IS NOT NULL AND date < ?
+        WHERE classification = ?
+          AND pit_lineage_version = ?
+          AND rs_ratio IS NOT NULL AND date < ?
         GROUP BY date
         ORDER BY date DESC
         LIMIT ?
       )
     ORDER BY sector ASC, date ASC
     """
-    rows = d1_client.query(sql, [classification, classification, as_of_date, int(tail_window)])
+    rows = d1_client.query(sql, [
+        classification, SECTOR_FLOW_PIT_LINEAGE_VERSION,
+        classification, SECTOR_FLOW_PIT_LINEAGE_VERSION, as_of_date, int(tail_window),
+    ])
     out: dict[str, list[RrgHistoryPoint]] = {}
     for row in rows:
         sector = str(row.get("sector") or "").strip()
@@ -538,12 +738,15 @@ def _load_rrg_history(
 def compute_sector_flow_for_tag_type(
     tag_type: TagType,
     as_of_date: str,
+    *,
+    tag_members: Optional[dict[str, list[str]]] = None,
 ) -> list[RrgPoint]:
     """
     Compute RrgPoints for all tags of a given tag_type as of a date.
     Pure computation — does NOT write to D1 (call write_sector_flow to persist).
     """
-    tag_members = _load_stock_tags(tag_type)
+    if tag_members is None:
+        tag_members = _load_stock_tags(tag_type)
     returns = _load_member_returns_5d(as_of_date)
     twii_ret = _load_twii_return_5d(as_of_date)
     classification = _tag_type_to_classification(tag_type)
@@ -582,6 +785,11 @@ def write_sector_flow(
     as_of_date: str,
     cash_flows: Optional[dict[str, CashFlow]] = None,
     session_stats: Optional[dict[str, SectorSessionStats]] = None,
+    *,
+    taxonomy_snapshot_id: str,
+    taxonomy_membership_checksum: str,
+    knowledge_cutoff_date: str,
+    reconstruction_mode: str,
 ) -> int:
     """
     Upsert sector_flow rows.
@@ -623,9 +831,10 @@ def write_sector_flow(
               rotation_velocity, rotation_acceleration, quadrant_age, transition_path,
               rotation_score, rotation_regime, rotation_hysteresis, rotation_window, rrg_tail_json,
               stock_count, up_count, turnover_value, turnover_share, turnover_share_delta,
-              foreign_net, trust_net, total_net, updated_at, pit_lineage_version
+              foreign_net, trust_net, total_net, updated_at, pit_lineage_version,
+              taxonomy_snapshot_id, taxonomy_membership_checksum, knowledge_cutoff_date, reconstruction_mode
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date, sector, classification) DO UPDATE SET
               rs_ratio = excluded.rs_ratio,
               rs_momentum = excluded.rs_momentum,
@@ -648,7 +857,11 @@ def write_sector_flow(
               trust_net = excluded.trust_net,
               total_net = excluded.total_net,
               updated_at = excluded.updated_at,
-              pit_lineage_version = excluded.pit_lineage_version
+              pit_lineage_version = excluded.pit_lineage_version,
+              taxonomy_snapshot_id = excluded.taxonomy_snapshot_id,
+              taxonomy_membership_checksum = excluded.taxonomy_membership_checksum,
+              knowledge_cutoff_date = excluded.knowledge_cutoff_date,
+              reconstruction_mode = excluded.reconstruction_mode
             """.strip(),
             [
                 as_of_date,
@@ -676,6 +889,10 @@ def write_sector_flow(
                 round(float(flow.get("total_net") or 0.0), 4),
                 available_at,
                 SECTOR_FLOW_PIT_LINEAGE_VERSION,
+                taxonomy_snapshot_id,
+                taxonomy_membership_checksum,
+                knowledge_cutoff_date,
+                reconstruction_mode,
             ],
         ))
 
@@ -687,7 +904,43 @@ def write_sector_flow(
     return written
 
 
-def run_sector_flow_pipeline(as_of_date: str) -> dict:
+def _persist_sector_flow_rebuild_run(
+    *,
+    run_id: str,
+    signal_date: str,
+    status: Literal["pass", "blocked", "failed"],
+    reconstruction_mode: str,
+    taxonomy_snapshot_ids: dict[str, str],
+    membership_checksums: dict[str, str],
+    rows_written: int,
+    blockers: list[str],
+) -> None:
+    d1_client.execute(
+        """
+        INSERT INTO sector_flow_pit_rebuild_runs_v1 (
+          run_id, signal_date, status, reconstruction_mode,
+          taxonomy_snapshot_ids_json, membership_checksums_json,
+          rows_written, blocker_json, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        [
+            run_id,
+            signal_date,
+            status,
+            reconstruction_mode,
+            json.dumps(taxonomy_snapshot_ids, ensure_ascii=False, sort_keys=True),
+            json.dumps(membership_checksums, ensure_ascii=False, sort_keys=True),
+            rows_written,
+            json.dumps(blockers, ensure_ascii=False, sort_keys=True),
+        ],
+    )
+
+
+def run_sector_flow_pipeline(
+    as_of_date: str,
+    *,
+    reconstruction_mode: Literal["native", "historical_reconstruction"] = "native",
+) -> dict:
     """
     Full pipeline: compute concept + industry_theme + subindustry + industry,
     write all to sector_flow.
@@ -700,11 +953,17 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
     Subindustry is optional: if no rows exist for that tag_type the path
     silently writes 0 rows.
     """
+    run_id = (
+        f"sector-flow:{as_of_date}:{reconstruction_mode}:"
+        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+    )
     summary: dict = {
         "as_of_date": as_of_date,
         "pit_lineage_version": SECTOR_FLOW_PIT_LINEAGE_VERSION,
         "producer_position": "post_recommendation_for_next_decision_session",
+        "reconstruction_mode": reconstruction_mode,
         "same_signal_date_consumption_allowed": False,
+        "rebuild_run_id": run_id,
     }
 
     paths: list[tuple[TagType, Classification]] = [
@@ -717,10 +976,22 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
     symbol_flows = _load_symbol_cash_flows_5d(as_of_date)
     symbol_session_state = _load_symbol_session_state(as_of_date)
     failures: list[str] = []
+    taxonomy_snapshot_ids: dict[str, str] = {}
+    membership_checksums: dict[str, str] = {}
+    rows_written = 0
     for tag_type, classification in paths:
         try:
-            tag_members = _load_stock_tags(tag_type)
-            pts = compute_sector_flow_for_tag_type(tag_type, as_of_date)
+            tag_members = _load_stock_tags(
+                tag_type,
+                as_of_date,
+                reconstruction_mode=reconstruction_mode,
+            )
+            taxonomy_snapshot_id, taxonomy_checksum = _taxonomy_snapshot_identity(
+                tag_type, as_of_date, tag_members,
+            )
+            taxonomy_snapshot_ids[tag_type] = taxonomy_snapshot_id
+            membership_checksums[tag_type] = taxonomy_checksum
+            pts = compute_sector_flow_for_tag_type(tag_type, as_of_date, tag_members=tag_members)
             tag_flows = _aggregate_tag_cash_flows(tag_members, symbol_flows)
             tag_session_stats = _aggregate_tag_session_stats(tag_members, symbol_session_state)
             written = write_sector_flow(
@@ -729,8 +1000,13 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
                 as_of_date,
                 tag_flows,
                 tag_session_stats,
+                taxonomy_snapshot_id=taxonomy_snapshot_id,
+                taxonomy_membership_checksum=taxonomy_checksum,
+                knowledge_cutoff_date=as_of_date,
+                reconstruction_mode=reconstruction_mode,
             )
             counts = {"Leading": 0, "Weakening": 0, "Lagging": 0, "Improving": 0}
+            rows_written += int(written)
             regimes: dict[str, int] = {}
             for p in pts:
                 if p.quadrant:
@@ -743,6 +1019,9 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
                 "with_rotation": sum(1 for p in pts if p.rotation_score is not None),
                 "written": written,
                 "breadth_ready": sum(1 for row in tag_session_stats.values() if row["stock_count"] > 0),
+                "taxonomy_snapshot_id": taxonomy_snapshot_id,
+                "taxonomy_membership_checksum": taxonomy_checksum,
+                "knowledge_cutoff_date": as_of_date,
                 "participation_ready": sum(1 for row in tag_session_stats.values() if row["turnover_value"] >= 0),
                 "quadrants": counts,
                 "rotation_regimes": regimes,
@@ -782,10 +1061,36 @@ def run_sector_flow_pipeline(as_of_date: str) -> dict:
         "failures": failures,
     }
     if failures:
+        status: Literal["blocked", "failed"] = (
+            "blocked"
+            if any("historical_taxonomy_snapshot_missing" in failure for failure in failures)
+            else "failed"
+        )
+        _persist_sector_flow_rebuild_run(
+            run_id=run_id,
+            signal_date=as_of_date,
+            status=status,
+            reconstruction_mode=reconstruction_mode,
+            taxonomy_snapshot_ids=taxonomy_snapshot_ids,
+            membership_checksums=membership_checksums,
+            rows_written=rows_written,
+            blockers=failures,
+        )
         raise RuntimeError(
             "sector_flow_pit_incomplete:"
             + json.dumps(summary["closure"], ensure_ascii=False, sort_keys=True)
         )
+
+    _persist_sector_flow_rebuild_run(
+        run_id=run_id,
+        signal_date=as_of_date,
+        status="pass",
+        reconstruction_mode=reconstruction_mode,
+        taxonomy_snapshot_ids=taxonomy_snapshot_ids,
+        membership_checksums=membership_checksums,
+        rows_written=rows_written,
+        blockers=[],
+    )
 
     logger.info(f"[sector_flow] Pipeline complete: {summary}")
     return summary

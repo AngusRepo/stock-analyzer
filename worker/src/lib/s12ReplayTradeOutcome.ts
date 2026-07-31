@@ -31,6 +31,18 @@ import { acquireS12ResearchLease, releaseS12ResearchLease } from './s12ResearchL
 export type S12ReplayOutcomeStatus = 'executed' | 'setup_only' | 'skipped'
 export type S12ReplayObservationKind = 'executed' | 'not_executed' | 'unavailable'
 
+export const S12_REPLAY_RETRYABLE_UNAVAILABLE_REASONS = [
+  'missing_intraday_bars',
+  'missing_entry_session_bars',
+  'missing_post_entry_bars',
+  'missing_five_session_lifecycle_bars',
+  'unresolved_execution_date',
+] as const
+
+export function isS12ReplayRetryableUnavailableReason(value: unknown): boolean {
+  return (S12_REPLAY_RETRYABLE_UNAVAILABLE_REASONS as readonly string[]).includes(String(value ?? '').trim())
+}
+
 export interface S12ReplayOutcome {
   schema_version: 's12-replay-trade-outcome-v3'
   symbol: string
@@ -177,6 +189,13 @@ export async function loadFusionSnapshotMissingReplaySymbols(
          SELECT 1 FROM s12_replay_trade_outcomes replay
           WHERE replay.signal_date=r.signal_date AND replay.symbol=r.symbol
             AND replay.source='s12_multisession_structure_replay_v3'
+            AND NOT (
+              COALESCE(json_extract(replay.detail_json, '$.observation_kind'), '')='unavailable'
+              AND COALESCE(json_extract(replay.detail_json, '$.status_reason'), '') IN (
+                'missing_intraday_bars', 'missing_entry_session_bars', 'missing_post_entry_bars',
+                'missing_five_session_lifecycle_bars', 'unresolved_execution_date'
+              )
+            )
        )
   `).bind(signalDate, maturityAsOfDate).all<{ symbol: string }>()
   const missing = new Set((result.results ?? []).map((row) => String(row.symbol)))
@@ -213,6 +232,13 @@ export async function loadFusionSnapshotReplayCoverage(
           SELECT 1 FROM s12_replay_trade_outcomes replay
            WHERE replay.signal_date=? AND replay.symbol=cohort.symbol
              AND replay.source='s12_multisession_structure_replay_v3'
+             AND NOT (
+               COALESCE(json_extract(replay.detail_json, '$.observation_kind'), '')='unavailable'
+               AND COALESCE(json_extract(replay.detail_json, '$.status_reason'), '') IN (
+                 'missing_intraday_bars', 'missing_entry_session_bars', 'missing_post_entry_bars',
+                 'missing_five_session_lifecycle_bars', 'unresolved_execution_date'
+               )
+             )
         ) has_replay,
         (
           SELECT COUNT(DISTINCT date(cmd.date))
@@ -337,6 +363,13 @@ export async function loadReplayReadySignalDates(
          SELECT 1 FROM s12_replay_trade_outcomes replay
           WHERE replay.signal_date=r.signal_date AND replay.symbol=r.symbol
             AND replay.source='s12_multisession_structure_replay_v3'
+            AND NOT (
+              COALESCE(json_extract(replay.detail_json, '$.observation_kind'), '')='unavailable'
+              AND COALESCE(json_extract(replay.detail_json, '$.status_reason'), '') IN (
+                'missing_intraday_bars', 'missing_entry_session_bars', 'missing_post_entry_bars',
+                'missing_five_session_lifecycle_bars', 'unresolved_execution_date'
+              )
+            )
        )
      GROUP BY r.signal_date
      ORDER BY r.signal_date
@@ -484,13 +517,7 @@ function assessmentSnapshot(assessment?: S12IntradayAssessment | null): Pick<
 function replayObservationKind(status: S12ReplayOutcomeStatus, reason: string): S12ReplayObservationKind {
   if (status === 'executed') return 'executed'
   if (status === 'setup_only') return 'not_executed'
-  if ([
-    'missing_intraday_bars',
-    'missing_entry_session_bars',
-    'missing_post_entry_bars',
-    'missing_five_session_lifecycle_bars',
-    'unresolved_execution_date',
-  ].includes(reason)) return 'unavailable'
+  if (isS12ReplayRetryableUnavailableReason(reason)) return 'unavailable'
   return 'not_executed'
 }
 
@@ -925,6 +952,19 @@ export async function persistS12ReplayOutcome(
     outcome.source,
     JSON.stringify(outcome),
   ).run()
+  if (!isS12ReplayRetryableUnavailableReason(outcome.status_reason)) {
+    await db.prepare(`
+      DELETE FROM s12_replay_trade_outcomes
+       WHERE signal_date=? AND symbol=?
+         AND source='s12_multisession_structure_replay_v3'
+         AND setup_id<>?
+         AND COALESCE(json_extract(detail_json, '$.observation_kind'), '')='unavailable'
+         AND COALESCE(json_extract(detail_json, '$.status_reason'), '') IN (
+           'missing_intraday_bars', 'missing_entry_session_bars', 'missing_post_entry_bars',
+           'missing_five_session_lifecycle_bars', 'unresolved_execution_date'
+         )
+    `).bind(outcome.signal_date, outcome.symbol, setupId).run()
+  }
 }
 
 export async function runS12HistoricalReplayForDate(

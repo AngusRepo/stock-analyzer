@@ -48,6 +48,143 @@ def test_load_stock_tags_uses_finlab_taxonomy_with_stock_tags_overlay(monkeypatc
     assert tags["AI_SERVER"] == ["2330", "2382"]
     assert tags["MEMORY"] == ["3665"]
 
+def test_historical_taxonomy_reconstruction_requires_exact_snapshot(monkeypatch):
+    monkeypatch.setattr(sector_flow_service.d1_client, "query", lambda *args, **kwargs: [])
+
+    with pytest.raises(
+        RuntimeError,
+        match="historical_taxonomy_snapshot_missing:2026-06-20:industry_theme",
+    ):
+        sector_flow_service._load_stock_tags(
+            "industry_theme",
+            "2026-06-20",
+            reconstruction_mode="historical_reconstruction",
+        )
+
+
+def test_native_taxonomy_load_freezes_exact_membership(monkeypatch):
+    captured = {}
+
+    def fake_query(sql, params=None):
+        if "COUNT(*) row_count" in sql:
+            checksum = captured["statements"][0][1][-1]
+            return [{"row_count": 1, "min_checksum": checksum, "max_checksum": checksum}]
+        if "sector_taxonomy_snapshot_runs_v1" in sql:
+            return []
+        if "sector_taxonomy_membership_snapshots_v1" in sql:
+            return []
+        if "FROM finlab_taxonomy_tags" in sql:
+            return [{
+                "tag": "AI_SERVER", "symbol": "2330", "source": "finlab",
+                "source_as_of_date": "2026-07-30", "lineage_json": "{}",
+            }]
+        if "FROM stock_tags" in sql:
+            return [{
+                "tag": "AI_SERVER", "symbol": "2330", "source": "overlay",
+                "source_as_of_date": "2026-07-30", "lineage_json": None,
+            }]
+        return []
+
+    def fake_batch(statements, **kwargs):
+        captured["statements"] = statements
+        return {"total": len(statements)}
+
+    def fake_execute(sql, params=None):
+        captured.setdefault("execute", []).append((sql, params))
+        return {"success": True}
+
+    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
+    monkeypatch.setattr(sector_flow_service.d1_client, "batch_execute", fake_batch)
+    monkeypatch.setattr(sector_flow_service.d1_client, "execute", fake_execute)
+
+    tags = sector_flow_service._load_stock_tags("industry_theme", "2026-07-30")
+
+    assert tags == {"AI_SERVER": ["2330"]}
+    assert len(captured["statements"]) == 1
+    sql, params = captured["statements"][0]
+    assert "sector_taxonomy_membership_snapshots_v1" in sql
+    assert params[0] == "2026-07-30"
+    assert params[2:5] == ["industry_theme", "AI_SERVER", "2330"]
+    assert len(captured["execute"]) == 2
+    assert "status='ready'" in captured["execute"][1][0]
+
+
+def test_ready_taxonomy_snapshot_rejects_partial_membership(monkeypatch):
+    snapshot_id, checksum = sector_flow_service._taxonomy_snapshot_identity(
+        "industry_theme", "2026-07-30", {"AI_SERVER": ["2330", "2382"]},
+    )
+
+    def fake_query(sql, params=None):
+        if "sector_taxonomy_snapshot_runs_v1" in sql:
+            return [{
+                "snapshot_id": snapshot_id,
+                "membership_checksum": checksum,
+                "expected_row_count": 2,
+                "persisted_row_count": 2,
+                "status": "ready",
+            }]
+        if "sector_taxonomy_membership_snapshots_v1" in sql:
+            return [{"tag": "AI_SERVER", "symbol": "2330"}]
+        return []
+
+    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
+
+    with pytest.raises(
+        RuntimeError,
+        match="sector_taxonomy_snapshot_integrity_failed:2026-07-30:industry_theme",
+    ):
+        sector_flow_service._load_persisted_taxonomy_snapshot("industry_theme", "2026-07-30")
+
+
+def test_empty_ready_taxonomy_snapshot_is_valid(monkeypatch):
+    snapshot_id, checksum = sector_flow_service._taxonomy_snapshot_identity(
+        "subindustry", "2026-07-30", {},
+    )
+
+    def fake_query(sql, params=None):
+        if "sector_taxonomy_snapshot_runs_v1" in sql:
+            return [{
+                "snapshot_id": snapshot_id,
+                "membership_checksum": checksum,
+                "expected_row_count": 0,
+                "persisted_row_count": 0,
+                "status": "ready",
+            }]
+        if "sector_taxonomy_membership_snapshots_v1" in sql:
+            return []
+        return []
+
+    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
+
+    assert sector_flow_service._load_stock_tags(
+        "subindustry", "2026-07-30", reconstruction_mode="historical_reconstruction",
+    ) == {}
+
+
+def test_persist_empty_taxonomy_snapshot_marks_ready(monkeypatch):
+    captured = []
+
+    def fake_query(sql, params=None):
+        if "COUNT(*) row_count" in sql:
+            return [{"row_count": 0, "min_checksum": None, "max_checksum": None}]
+        return []
+
+    def fake_execute(sql, params=None):
+        captured.append((sql, params))
+        return {"success": True}
+
+    monkeypatch.setattr(sector_flow_service.d1_client, "query", fake_query)
+    monkeypatch.setattr(sector_flow_service.d1_client, "execute", fake_execute)
+
+    snapshot_id, checksum = sector_flow_service._persist_taxonomy_snapshot(
+        "subindustry", "2026-07-30", [], {},
+    )
+
+    assert snapshot_id.startswith("sector-taxonomy-2026-07-30-subindustry-")
+    assert len(checksum) == 64
+    assert len(captured) == 2
+    assert "status='ready'" in captured[1][0]
+
 
 def test_write_sector_flow_persists_cash_flow_fields(monkeypatch):
     captured = {}
@@ -88,6 +225,10 @@ def test_write_sector_flow_persists_cash_flow_fields(monkeypatch):
                 "turnover_share_delta": 0.015,
             }
         },
+        taxonomy_snapshot_id="snapshot-1",
+        taxonomy_membership_checksum="checksum-1",
+        knowledge_cutoff_date="2026-04-30",
+        reconstruction_mode="native",
     )
 
     assert written == 1
@@ -103,13 +244,20 @@ def test_write_sector_flow_persists_cash_flow_fields(monkeypatch):
     params = captured["statements"][0][1]
     assert params[15:20] == [8, 6, 12_500_000.0, 0.125, 0.015]
     assert params[20:23] == [-0.0142, -0.3681, -0.4322]
-    assert params[-1] == sector_flow_service.SECTOR_FLOW_PIT_LINEAGE_VERSION
+    assert params[-5:] == [
+        sector_flow_service.SECTOR_FLOW_PIT_LINEAGE_VERSION,
+        "snapshot-1", "checksum-1", "2026-04-30", "native",
+    ]
 
 
 def test_load_rrg_history_builds_per_sector_tail(monkeypatch):
     def fake_query(sql, params=None):
         assert "rrg_tail_json" not in sql
-        assert params == ["industry", "industry", "2026-06-20", 60]
+        assert params == [
+            "industry", sector_flow_service.SECTOR_FLOW_PIT_LINEAGE_VERSION,
+            "industry", sector_flow_service.SECTOR_FLOW_PIT_LINEAGE_VERSION,
+            "2026-06-20", 60,
+        ]
         return [
             {"sector": "AI", "date": "2026-06-18", "rs_ratio": 98.2, "rs_momentum": 0.6, "quadrant": "Improving"},
             {"sector": "AI", "date": "2026-06-19", "rs_ratio": 101.0, "rs_momentum": 1.2, "quadrant": "Leading"},
@@ -166,10 +314,11 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
 
     monkeypatch.setattr(sector_flow_service, "_load_symbol_cash_flows_5d", lambda as_of_date: {})
     monkeypatch.setattr(sector_flow_service, "_load_symbol_session_state", lambda as_of_date: {})
+    monkeypatch.setattr(sector_flow_service.d1_client, "execute", lambda *args, **kwargs: {"success": True})
     monkeypatch.setattr(
         sector_flow_service,
         "_load_stock_tags",
-        lambda tag_type: {tag_type: ["2330"]},
+        lambda tag_type, *args, **kwargs: {tag_type: ["2330"]},
     )
     monkeypatch.setattr(sector_flow_service, "_aggregate_tag_cash_flows", lambda tag_members, symbol_flows: {})
     monkeypatch.setattr(
@@ -188,7 +337,7 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
     )
     monkeypatch.setattr(sector_flow_service, "write_sector_flow_stock_details", lambda **kwargs: 1)
 
-    def fake_compute(tag_type, as_of_date):
+    def fake_compute(tag_type, as_of_date, **kwargs):
         captured_tag_types.append(tag_type)
         return [RrgPoint(
             sector=tag_type,
@@ -199,7 +348,7 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
             theme_return_5d=0.01,
         )]
 
-    def fake_write(points, classification, as_of_date, cash_flows=None, session_stats=None):
+    def fake_write(points, classification, as_of_date, cash_flows=None, session_stats=None, **kwargs):
         captured_classifications.append(classification)
         return len(points)
 
@@ -222,10 +371,11 @@ def test_run_sector_flow_pipeline_includes_industry_theme_path(monkeypatch):
 def test_run_sector_flow_pipeline_fails_closed_when_a_required_path_errors(monkeypatch):
     monkeypatch.setattr(sector_flow_service, "_load_symbol_cash_flows_5d", lambda as_of_date: {})
     monkeypatch.setattr(sector_flow_service, "_load_symbol_session_state", lambda as_of_date: {})
+    monkeypatch.setattr(sector_flow_service.d1_client, "execute", lambda *args, **kwargs: {"success": True})
     monkeypatch.setattr(
         sector_flow_service,
         "_load_stock_tags",
-        lambda tag_type: {tag_type: ["2330"]},
+        lambda tag_type, *args, **kwargs: {tag_type: ["2330"]},
     )
     monkeypatch.setattr(sector_flow_service, "_aggregate_tag_cash_flows", lambda *args: {})
     monkeypatch.setattr(
@@ -244,7 +394,7 @@ def test_run_sector_flow_pipeline_fails_closed_when_a_required_path_errors(monke
     )
     monkeypatch.setattr(sector_flow_service, "write_sector_flow_stock_details", lambda **kwargs: 1)
 
-    def fake_compute(tag_type, as_of_date):
+    def fake_compute(tag_type, as_of_date, **kwargs):
         if tag_type == "industry_theme":
             raise RuntimeError("upstream unavailable")
         return [RrgPoint(

@@ -2,6 +2,7 @@ import {
   S12_REPLAY_ENGINE_SIGNATURE,
   loadL0PassedSymbolsByHistoricalDate,
   loadSignedEligibleRepairSymbolsByHistoricalDate,
+  isS12ReplayRetryableUnavailableReason,
   persistS12ReplayOutcome,
   resolveNextExecutableSessionDate,
   runS12HistoricalReplayForDate,
@@ -429,7 +430,10 @@ async function runPersistenceTests(): Promise<void> {
       replay_cohort_signature: `${S12_REPLAY_ENGINE_SIGNATURE}|entry=reaction_ready|calibration=uncalibrated`,
     },
   })
-  assert(binds.length === 1, 'persist should execute one upsert')
+  assert(binds.length === 2, 'terminal persist should upsert and remove superseded retryable unavailable rows')
+  assert(binds[1][0] === '2026-07-02' && binds[1][1] === '8091', 'retry cleanup should use signal-date identity')
+  assert(isS12ReplayRetryableUnavailableReason('missing_intraday_bars'), 'missing bars must remain retryable')
+  assert(!isS12ReplayRetryableUnavailableReason('executed_reaction_ready'), 'executed outcomes must be terminal')
   assert(binds[0][0] === '8091' && binds[0][1] === 'OTC', 'persist should bind symbol and market')
   assert(binds[0][2] === '2026-07-02' && binds[0][3] === '2026-07-03', 'persist should separate signal and execution dates')
   assert(binds[0][20] === 1, 'persist should bind sample eligibility')

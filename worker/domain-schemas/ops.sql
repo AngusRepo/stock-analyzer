@@ -31,6 +31,22 @@ CREATE INDEX IF NOT EXISTS idx_observability_events_date ON observability_events
 
 CREATE INDEX IF NOT EXISTS idx_observability_events_domain ON observability_events(domain, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS sector_flow_pit_rebuild_runs_v1 (
+  run_id TEXT PRIMARY KEY,
+  signal_date TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('running', 'pass', 'blocked', 'failed')),
+  reconstruction_mode TEXT NOT NULL CHECK(reconstruction_mode IN ('native', 'historical_reconstruction')),
+  taxonomy_snapshot_ids_json TEXT NOT NULL,
+  membership_checksums_json TEXT NOT NULL,
+  rows_written INTEGER NOT NULL DEFAULT 0,
+  blocker_json TEXT NOT NULL DEFAULT '[]',
+  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sector_flow_pit_rebuild_runs_v1_date
+  ON sector_flow_pit_rebuild_runs_v1(signal_date, status, started_at DESC);
+
 CREATE TABLE IF NOT EXISTS screener_funnel_runs (
   run_id          TEXT PRIMARY KEY,
   date            TEXT NOT NULL,

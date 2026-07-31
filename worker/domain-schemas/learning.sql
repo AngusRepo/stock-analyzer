@@ -274,6 +274,26 @@ CREATE TABLE IF NOT EXISTS trade_performance (
 
 CREATE INDEX IF NOT EXISTS idx_trade_perf ON trade_performance(stock_id, model_name);
 
+CREATE TABLE IF NOT EXISTS strategy_route_backfill_eligibility_v1 (
+  signal_date TEXT NOT NULL,
+  producer_run_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('eligible', 'unavailable', 'pending_maturity')),
+  reference_rows INTEGER NOT NULL,
+  mature_label_rows INTEGER NOT NULL,
+  matrix_rows INTEGER NOT NULL,
+  evaluable_matrix_rows INTEGER NOT NULL,
+  threshold_margin_rows INTEGER NOT NULL,
+  challenger_affinity_rows INTEGER NOT NULL,
+  challenger_route_rows INTEGER NOT NULL,
+  blocker_json TEXT NOT NULL,
+  audited_as_of_date TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(signal_date, producer_run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_route_backfill_eligibility_v1_status
+  ON strategy_route_backfill_eligibility_v1(status, signal_date);
+
 CREATE TABLE IF NOT EXISTS dataset_snapshots (
   snapshot_id     TEXT PRIMARY KEY,
   kind            TEXT NOT NULL,

@@ -2798,7 +2798,10 @@ export async function listHistoricalStrategyEvidenceV5Dates(
                FROM strategy_label_matrix_runs_v4 mr
               WHERE mr.signal_date=d.date
                 AND mr.status='ready'
-                AND mr.labeler_version='strategy-decision-log-pit-reconstruction-v5'
+                AND mr.labeler_version IN (
+                  'strategy-labeler-v1',
+                  'strategy-decision-log-pit-reconstruction-v5'
+                )
                 AND mr.reference_contract_version='selection-reference-snapshot-v3'
                 AND mr.expected_cell_count > 0
                 AND mr.persisted_cell_count=mr.expected_cell_count
@@ -3002,7 +3005,10 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         && Number(existingMatrix.strategy_count) === strategyKeys.size
         && Number(existingMatrix.expected_cell_count) === expectedMatrixRows
         && Number(existingMatrix.persisted_cell_count) === expectedMatrixRows
-        && cleanToken(existingMatrix.labeler_version) === labelerVersion
+        && [
+          'strategy-labeler-v1',
+          labelerVersion,
+        ].includes(cleanToken(existingMatrix.labeler_version))
         && cleanToken(existingMatrix.reference_contract_version) === SELECTION_REFERENCE_CONTRACT_VERSION
         && existingMatrixRows === expectedMatrixRows
       if (reusableExistingMatrix) {
@@ -3166,6 +3172,11 @@ export async function finalizeStrategyLearningEvidenceV5(
     'reward_ledger',
     () => refreshStrategyRewardLedger(db, { endDate: date, dryRun: false }),
   )
+  const { auditStrategyRouteBackfillEligibility } = await import('./strategyRouteBackfillEligibility')
+  const routeBackfillEligibility = await runStrategyLearningFinalizerStage(
+    'route_backfill_eligibility',
+    () => auditStrategyRouteBackfillEligibility(db, date),
+  )
   if (options.beforePromotion) {
     await runStrategyLearningFinalizerStage('before_promotion', options.beforePromotion)
   }
@@ -3194,7 +3205,17 @@ export async function finalizeStrategyLearningEvidenceV5(
           dryRun: false,
         }),
       )
-  return { decisionEvidence, historicalEvidence, labels, marginalEdge, routeCalibration, rewards, policy, thresholdCalibration }
+  return {
+    decisionEvidence,
+    historicalEvidence,
+    labels,
+    marginalEdge,
+    routeBackfillEligibility,
+    routeCalibration,
+    rewards,
+    policy,
+    thresholdCalibration,
+  }
 }
 
 export async function runStrategyLearningClosure(

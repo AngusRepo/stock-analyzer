@@ -3,6 +3,11 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
 import { CANONICAL_SELECTION_LABEL_SCHEMA_VERSION } from './canonicalSelectionLabels'
 import { PRICE_HORIZON_PROJECTION_VERSION } from './priceHorizonProjection'
+import {
+  inspectMatureSelectionEvidenceGaps,
+  isMatureSelectionEvidenceGapRecoverable,
+  resolveExpectedMatureSignalDate,
+} from './matureSelectionEvidenceRecovery'
 
 export type EveningChainEvidenceClosure = {
   businessDate: string
@@ -20,7 +25,9 @@ export type EveningChainEvidenceClosure = {
   priceHorizonRows: number
   priceHorizonUnavailableRows: number
   canonicalLabelRows: number
+  matureBlockedDates: string[]
   canonicalUnavailableRows: number
+  matureBacklogDates: string[]
 }
 
 function dateOnly(value: unknown): string {
@@ -29,21 +36,7 @@ function dateOnly(value: unknown): string {
   return date
 }
 
-export async function resolveExpectedMatureSignalDate(
-  env: Bindings,
-  businessDateInput: string,
-): Promise<string | null> {
-  const businessDate = dateOnly(businessDateInput)
-  const marketDb = databaseForDataDomain(env, 'market')
-  const expectedMatureSession = await marketDb.prepare(`
-    SELECT session_date
-      FROM market_trading_sessions
-     WHERE session_date < ?
-     ORDER BY session_date DESC
-     LIMIT 1 OFFSET 4
-  `).bind(businessDate).first<{ session_date: string | null }>()
-  return String(expectedMatureSession?.session_date ?? '').slice(0, 10) || null
-}
+export { resolveExpectedMatureSignalDate } from './matureSelectionEvidenceRecovery'
 
 export async function auditEveningChainEvidenceClosure(
   env: Bindings,
@@ -238,6 +231,16 @@ export async function auditEveningChainEvidenceClosure(
     }
   }
 
+  const matureBacklog = await inspectMatureSelectionEvidenceGaps(env, businessDate)
+  const recoverableBacklog = matureBacklog.gaps.filter(isMatureSelectionEvidenceGapRecoverable)
+  if (recoverableBacklog.length > 0) {
+    throw new Error(
+      `evening_chain_mature_evidence_backlog:${recoverableBacklog.map((gap) => (
+        `${gap.signalDate}:${gap.blockers.join('|')}`
+      )).join(',')}`,
+    )
+  }
+
   return {
     businessDate,
     referenceRows,
@@ -255,6 +258,8 @@ export async function auditEveningChainEvidenceClosure(
     priceHorizonUnavailableRows,
     canonicalLabelRows,
     canonicalUnavailableRows,
+    matureBacklogDates: recoverableBacklog.map((gap) => gap.signalDate),
+    matureBlockedDates: matureBacklog.gaps.filter((gap) => !isMatureSelectionEvidenceGapRecoverable(gap)).map((gap) => gap.signalDate),
   }
 }
 
@@ -267,5 +272,7 @@ export function summarizeEveningChainEvidenceClosure(audit: EveningChainEvidence
     `mature_date=${audit.matureSignalDate ?? 'none'}`,
     `price_horizon=${audit.priceHorizonRows}+${audit.priceHorizonUnavailableRows}/${audit.matureReferenceRows}`,
     `canonical_labels=${audit.canonicalLabelRows}+${audit.canonicalUnavailableRows}/${audit.matureReferenceRows}`,
+    `mature_blocked=${audit.matureBlockedDates.join(',') || 'none'}`,
+    `mature_backlog=${audit.matureBacklogDates.join(',') || 'none'}`,
   ].join(' ')
 }

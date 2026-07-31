@@ -13,6 +13,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'stock_prices', 'technical_indicators', 'financials', 'canonical_fundamental_features',
     'chip_data', 'news', 'factor_scores', 'sector_flow', 'market_breadth',
     'market_trading_sessions', 'intraday_minute_bars',
+    'sector_taxonomy_membership_snapshots_v1', 'sector_taxonomy_snapshot_runs_v1',
   ]),
   learning: new Set([
     'predictions', 's12_replay_trade_outcomes', 's12_structure_snapshots',
@@ -30,6 +31,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'strategy_label_matrix_v4', 'strategy_label_matrix_runs_v4', 'selection_reference_repair_runs_v1',
     'selection_reference_identity_repair_runs_v1',
     'strategy_route_calibration_runs_v1', 'strategy_route_calibration_head_v1',
+    'strategy_route_backfill_eligibility_v1',
     'strategy_redundancy_artifacts_v1',
     'strategy_reward_ledger', 'strategy_learning_daily_stats', 'strategy_learning_head',
     'strategy_policy_state', 'strategy_evidence_rebuild_runs_v5',
@@ -50,6 +52,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'domain_projection_outbox', 'domain_projection_inbox', 'data_domain_cutovers',
     'data_retention_policies', 'data_retention_runs', 'storage_capacity_daily',
     'price_horizon_projection_status', 'price_horizon_projection_runs',
+    'sector_flow_pit_rebuild_runs_v1',
     'data_domain_backfill_cursors', 'data_domain_parity_checks',
     'data_retention_cursors', 'data_retention_run_items',
     's12_structure_batch_runs', 's12_structure_batch_shards',

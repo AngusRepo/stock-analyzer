@@ -224,6 +224,10 @@ CREATE TABLE IF NOT EXISTS sector_flow (
   rotation_regime TEXT,
   rotation_hysteresis TEXT,
   rotation_window INTEGER,
+  taxonomy_snapshot_id TEXT,
+  taxonomy_membership_checksum TEXT,
+  knowledge_cutoff_date TEXT,
+  reconstruction_mode TEXT,
   rrg_tail_json   TEXT,
   UNIQUE(date, sector, classification)
 );
@@ -235,6 +239,47 @@ CREATE INDEX IF NOT EXISTS idx_sector_flow_rotation_regime ON sector_flow(date, 
 CREATE INDEX IF NOT EXISTS idx_sector_flow_rotation_score ON sector_flow(date, classification, rotation_score DESC);
 
 CREATE INDEX IF NOT EXISTS idx_sector_flow_pit_lineage ON sector_flow(pit_lineage_version, date DESC, updated_at);
+
+CREATE TABLE IF NOT EXISTS sector_taxonomy_membership_snapshots_v1 (
+  snapshot_date TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL,
+  tag_type TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  source TEXT NOT NULL,
+  source_as_of_date TEXT NOT NULL,
+  source_lineage_json TEXT,
+  membership_checksum TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(snapshot_date, tag_type, tag, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sector_taxonomy_snapshot_v1_date_type
+  ON sector_taxonomy_membership_snapshots_v1(snapshot_date, tag_type, tag);
+
+CREATE INDEX IF NOT EXISTS idx_sector_taxonomy_snapshot_v1_id
+  ON sector_taxonomy_membership_snapshots_v1(snapshot_id, membership_checksum);
+
+CREATE TABLE IF NOT EXISTS sector_taxonomy_snapshot_runs_v1 (
+  snapshot_date TEXT NOT NULL,
+  tag_type TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL,
+  membership_checksum TEXT NOT NULL,
+  expected_row_count INTEGER NOT NULL,
+  persisted_row_count INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL CHECK(status IN ('writing', 'ready', 'failed')),
+  error_code TEXT,
+  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(snapshot_date, tag_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sector_taxonomy_snapshot_runs_v1_status
+  ON sector_taxonomy_snapshot_runs_v1(status, snapshot_date, tag_type);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sector_taxonomy_snapshot_runs_v1_id
+  ON sector_taxonomy_snapshot_runs_v1(snapshot_id);
 
 CREATE INDEX IF NOT EXISTS idx_prices_date_stock ON stock_prices(date, stock_id);
 

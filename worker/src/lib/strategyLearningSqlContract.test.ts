@@ -49,7 +49,7 @@ assert.match(source, /SET evaluable=\?, unavailable_reason=\?, evaluation_contra
 assert.match(source, /COALESCE\(r\.evaluation_contract_version, ''\) <> 'strategy-evaluation-v2'/)
 assert.match(source, /existingMatrix\.reference_contract_version\) === SELECTION_REFERENCE_CONTRACT_VERSION/)
 assert.match(source, /SET status='success'[\s\S]*evaluation_contract_version='strategy-evaluation-v2'/)
-assert.match(source, /r\.status='success'[\s\S]*NOT EXISTS[\s\S]*mr\.labeler_version='strategy-decision-log-pit-reconstruction-v5'/)
+assert.match(source, /r\.status='success'[\s\S]*NOT EXISTS[\s\S]*mr\.labeler_version IN \(\s*'strategy-labeler-v1',\s*'strategy-decision-log-pit-reconstruction-v5'\s*\)/)
 assert.match(source, /mr\.reference_contract_version='selection-reference-snapshot-v3'/)
 assert.match(source, /mr\.persisted_cell_count=mr\.expected_cell_count/)
 assert.match(source, /h\.run_id=mr\.producer_run_id/)

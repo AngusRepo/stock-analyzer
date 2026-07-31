@@ -1997,7 +1997,7 @@ async function repairFinalizeContinuationIfNeeded(
   return true
 }
 
-async function runDailyAllocatorEvReadiness(
+export async function runDailyAllocatorEvReadiness(
   env: Bindings,
   triggerTime: string,
 ): Promise<{

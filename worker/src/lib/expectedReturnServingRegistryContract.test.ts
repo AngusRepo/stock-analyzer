@@ -5,6 +5,7 @@ const registry = fs.readFileSync('src/lib/expectedReturnServingRegistry.ts', 'ut
 const servingState = fs.readFileSync('src/lib/expectedReturnServingState.ts', 'utf8')
 const promotionRoute = fs.readFileSync('src/routes/adminConfigCoreRoutes.ts', 'utf8')
 const orchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
+const triggerTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 const migration = fs.readFileSync('migrations/0087_expected_return_serving_baseline.sql', 'utf8')
 
 assert(registry.includes('FROM model_champion_pointers p'))
@@ -60,6 +61,9 @@ assert(readinessBody.includes("state: 'ready' | 'degraded' | 'fatal'"))
 assert(readinessBody.includes("servingState.state === 'safe_abstention'"))
 assert(readinessBody.includes("status: state === 'fatal' ? 'error' : 'success'"))
 assert(!readinessBody.includes('return { ok: true, summary }'))
+assert(orchestrator.includes('export async function runDailyAllocatorEvReadiness'))
+assert(triggerTasks.includes("'allocator-ev-readiness': async () =>"))
+assert(triggerTasks.includes('return runDailyAllocatorEvReadiness(c.env, requestedRunDate() || twToday())'))
 
 for (const owner of ['l4_alpha_ev', 'allocator_ev_fusion']) {
   assert(migration.includes(`'${owner}'`))

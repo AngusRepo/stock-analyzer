@@ -30,6 +30,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'monthly-optuna', 'monthly-l4-alpha-ev-refresh', 'monthly-allocator-ev-fusion-refresh', 'monthly-opb-arm-prior-refresh', 'monthly-strategy-mining', 'weekly-drift-retrain',
   'finlab-v4-backfill',
   'finlab-backfill-watchdog',
+  'allocator-ev-readiness',
   'allocator-ev-lifecycle-watchdog',
   'active8-oof-lifecycle', 'active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly',
   'external-evidence',

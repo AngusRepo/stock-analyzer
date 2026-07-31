@@ -30,6 +30,8 @@ assert.match(reference, /score_components/)
 assert.match(reference, /expected_return_owner_unavailable/)
 assert.match(canonicalLabels, /r\.feature_contract_version = \?/)
 assert.match(canonicalLabels, /NOT EXISTS \(SELECT 1 FROM canonical_selection_labels_v4/)
+assert.match(canonicalLabels, /ON CONFLICT\(signal_date, symbol, producer_run_id, label_schema_version\) DO UPDATE SET/)
+assert.match(canonicalLabels, /reference_contract_version=excluded\.reference_contract_version/)
 assert.match(canonicalLabels, /SELECTION_REFERENCE_CONTRACT_VERSION/)
 const thresholdEvidenceLoader = thresholdCalibration.slice(
   thresholdCalibration.indexOf('export async function listStrategyThresholdCalibrationEvidenceRows'),

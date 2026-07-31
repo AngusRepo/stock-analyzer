@@ -286,7 +286,25 @@ export async function materializeCanonicalSelectionLabelsV4(
       benchmark_return_net, benchmark_scope, residual_return_net, cross_section_rank,
       adjustment_source, reference_contract_version
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'price_horizon_labels_v1:finlab_primary_canonical_mirror', ?)
-    ON CONFLICT(signal_date, symbol, producer_run_id, label_schema_version) DO NOTHING
+    ON CONFLICT(signal_date, symbol, producer_run_id, label_schema_version) DO UPDATE SET
+      market_segment=excluded.market_segment,
+      sector=excluded.sector,
+      entry_date=excluded.entry_date,
+      exit_date=excluded.exit_date,
+      outcome_known_date=excluded.outcome_known_date,
+      entry_raw_open=excluded.entry_raw_open,
+      exit_raw_close=excluded.exit_raw_close,
+      entry_adjustment_factor=excluded.entry_adjustment_factor,
+      exit_adjustment_factor=excluded.exit_adjustment_factor,
+      gross_return=excluded.gross_return,
+      transaction_cost_bps=excluded.transaction_cost_bps,
+      absolute_return_net=excluded.absolute_return_net,
+      benchmark_return_net=excluded.benchmark_return_net,
+      benchmark_scope=excluded.benchmark_scope,
+      residual_return_net=excluded.residual_return_net,
+      cross_section_rank=excluded.cross_section_rank,
+      adjustment_source=excluded.adjustment_source,
+      reference_contract_version=excluded.reference_contract_version
   `).bind(
     row.reference.signal_date, row.reference.symbol, CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
     row.reference.producer_run_id, row.reference.market_segment, row.reference.sector,

@@ -50,4 +50,5 @@ test('redundancy artifact schemas accept the explicit pending maturity state', (
   assert.match(statusMigration, statusContract)
   assert.match(statusMigration, /INSERT INTO strategy_redundancy_artifacts_v1/)
   assert.match(statusMigration, /DROP TABLE strategy_redundancy_artifacts_v1_legacy_0095/)
+  assert.doesNotMatch(statusMigration, /BEGIN TRANSACTION|COMMIT;/)
 })

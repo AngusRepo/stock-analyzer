@@ -1,6 +1,4 @@
 -- Keep artifact lifecycle state explicit while preserving the existing compact ledger.
-BEGIN TRANSACTION;
-
 DROP INDEX IF EXISTS idx_strategy_redundancy_artifacts_v1_date;
 
 ALTER TABLE strategy_redundancy_artifacts_v1
@@ -36,5 +34,3 @@ DROP TABLE strategy_redundancy_artifacts_v1_legacy_0095;
 
 CREATE INDEX idx_strategy_redundancy_artifacts_v1_date
   ON strategy_redundancy_artifacts_v1(as_of_date DESC, status, created_at DESC);
-
-COMMIT;

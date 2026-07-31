@@ -125,7 +125,7 @@ function resolveScreenerRunDate(runDate?: string | null): string {
 }
 
 type L125StrategySimilarityEvidenceLoad = {
-  status: 'modal_python' | 'unavailable_blocked' | 'invalid_blocked' | 'empty_blocked'
+  status: 'modal_python' | 'pending_maturity' | 'unavailable_blocked' | 'invalid_blocked' | 'empty_blocked'
   evidence: StrategySimilarityGraphEvidence | null
   error?: string
   payload_strategy_count: number
@@ -247,8 +247,9 @@ export async function loadL125StrategySimilarityGraphEvidence(
     const artifactId = await persistStrategyRedundancyArtifact(env, asOfDate, raw, payloadStrategyCount)
     const blockedReason = modalStrategySimilarityBlockedReason(raw)
     if (blockedReason) {
+      const pendingMaturity = blockedReason === 'insufficient_paired_mature_oof_residual_returns'
       return {
-        status: 'unavailable_blocked',
+        status: pendingMaturity ? 'pending_maturity' : 'unavailable_blocked',
         evidence: null,
         payload_strategy_count: payloadStrategyCount,
         artifact_id: artifactId,
@@ -423,13 +424,13 @@ export async function prepareStrategyRedundancyBackfill(
 export async function rebuildStrategyRedundancyArtifactForDate(env: Bindings, asOfDate: string) {
   const prepared = await prepareStrategyRedundancyBackfill(env, asOfDate)
   const result = await loadL125StrategySimilarityGraphEvidence(env, prepared.payload, asOfDate)
-  if (result.status !== 'modal_python' || !result.artifact_id) {
+  if (!['modal_python', 'pending_maturity'].includes(result.status) || !result.artifact_id) {
     throw new Error(`strategy_redundancy_artifact_not_ready:${asOfDate}:${result.status}:${result.error ?? 'unknown'}`)
   }
   return {
     ...prepared,
     payload: undefined,
-    status: 'ready',
+    status: result.status === 'modal_python' ? 'ready' : 'pending_maturity',
     artifact_id: result.artifact_id,
   }
 }

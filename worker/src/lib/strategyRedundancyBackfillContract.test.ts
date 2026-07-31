@@ -25,6 +25,9 @@ test('strategy redundancy backfill reuses canonical PIT matrix and mature OOF la
   assert.match(screener, /SELECTION_REFERENCE_CONTRACT_VERSION/)
   assert.match(screener, /loadMatureStrategyOofReturns\(env\.DB, asOfDate\)/)
   assert.match(screener, /mature_oof_residual_returns_with_same_day_overlap_diagnostic/)
+  assert.match(screener, /status: pendingMaturity \? 'pending_maturity' : 'unavailable_blocked'/)
+  assert.match(screener, /\['modal_python', 'pending_maturity'\]\.includes\(result\.status\)/)
+  assert.match(screener, /result\.status === 'modal_python' \? 'ready' : 'pending_maturity'/)
   assert.doesNotMatch(screener.slice(
     screener.indexOf('export async function prepareStrategyRedundancyBackfill'),
     screener.indexOf('function chunkArray'),
@@ -40,6 +43,8 @@ test('admin redundancy backfill is bounded and cannot mutate strategy policy', (
   assert.match(route, /spanDays > 31/)
   assert.match(route, /prepareStrategyRedundancyBackfill/)
   assert.match(route, /rebuildStrategyRedundancyArtifactForDate/)
+  assert.match(route, /status: 'eligible'/)
+  assert.match(route, /status: result\.status/)
   assert.doesNotMatch(route, /refreshStrategyAdaptivePolicyState|promotion|strategy_weights/)
 })
 

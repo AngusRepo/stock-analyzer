@@ -620,10 +620,17 @@ adminWriteRoutes.post('/api/admin/strategy/redundancy/backfill', async (c) => {
   const results: Array<Record<string, unknown>> = []
   for (const date of dates) {
     try {
-      const result = dryRun
-        ? await prepareStrategyRedundancyBackfill(c.env, date)
-        : await rebuildStrategyRedundancyArtifactForDate(c.env, date)
-      results.push({ ...result, payload: undefined, status: dryRun ? 'eligible' : 'ready' })
+      if (dryRun) {
+        const result = await prepareStrategyRedundancyBackfill(c.env, date)
+        results.push({ ...result, payload: undefined, status: 'eligible' })
+      } else {
+        const result = await rebuildStrategyRedundancyArtifactForDate(c.env, date)
+        results.push({
+          ...result,
+          payload: undefined,
+          status: result.status,
+        })
+      }
     } catch (error) {
       results.push({
         as_of_date: date,

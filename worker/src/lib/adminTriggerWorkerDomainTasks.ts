@@ -321,8 +321,12 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
           summarizeEveningChainEvidenceClosure,
         } = await import('./eveningChainEvidenceClosure')
         const historicalPriorityDate = await resolveExpectedMatureSignalDate(c.env, runDate)
+        const { recoverMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
+        const matureRecovery = await recoverMatureSelectionEvidence(c.env, runDate, {
+          maxRecoveryDates: 4,
+        })
         let closureSummary = ''
-        const { decisionEvidence, historicalEvidence, labels, marginalEdge, rewards, policy, thresholdCalibration }
+        const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, thresholdCalibration }
           = await finalizeStrategyLearningEvidenceV5(c.env.DB, runDate, {
             allowPromotion: currentBusinessDateRun,
             persistPolicy: currentBusinessDateRun,
@@ -342,6 +346,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         const summary = [
         `strategy_learning_finalize date=${runDate}`,
         `materialized_complete candidates=${coverage.candidateRows}/${coverage.expectedCandidates} rows=${coverage.decisionRows}/${coverage.expectedRows}`,
+        `mature_recovery=${matureRecovery.summary}`,
         `selection_decisions=${decisionEvidence.finalSignalRows}/${decisionEvidence.referenceRows}`,
         `selection_ev_owner=${decisionEvidence.evOwnerRows}`,
         `strategy_pit_rebuild=${historicalEvidence.successfulDates}/${historicalEvidence.attemptedDates}`,
@@ -351,6 +356,9 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         `selection_pending=${labels.pending_rows}`,
         `selection_unavailable=${labels.unavailable_rows}`,
         `strategy_edge=${marginalEdge.status}:eligible=${marginalEdge.eligibleStrategies}:dates=${marginalEdge.sampleDates}`,
+        `route_backfill_eligible=${routeBackfillEligibility.filter((row) => row.status === 'eligible').length}`,
+        `route_backfill_unavailable=${routeBackfillEligibility.filter((row) => row.status === 'unavailable').length}`,
+        `route_backfill_pending=${routeBackfillEligibility.filter((row) => row.status === 'pending_maturity').length}`,
         `reward_source_rows=${rewards.source_rows}`,
         `reward_rows=${rewards.persisted_rows}`,
         `reward_stale_retired=${rewards.stale_rows_retired}`,

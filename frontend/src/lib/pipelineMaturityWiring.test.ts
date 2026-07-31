@@ -12,7 +12,10 @@ const contract = fs.readFileSync(path.join(root, 'lib/pipelineMaturityContract.t
 test('Pipeline page renders maturity evidence after the daily flow', () => {
   assert(page.includes('dashboardV4Api.pipelineMaturity(recDate)'))
   assert(page.includes('<PipelineMaturityContribution'))
-  assert(page.indexOf('<PipelineMaturityContribution') > page.indexOf('<RecommendationSummaryColumn'))
+  assert(page.indexOf('<PipelineMaturityContribution') > page.indexOf('<ExecutionFlowColumn'))
+  assert(!page.includes('RecommendationSummaryColumn'))
+  assert(!page.includes('title="今日推薦股票"'))
+  assert(panel.includes('grid items-start gap-3 p-4 lg:grid-cols-2'))
   assert(api.includes('/dashboard/v4/pipeline/maturity'))
 })
 

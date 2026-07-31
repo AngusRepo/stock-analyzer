@@ -175,6 +175,26 @@
   padding: 27px 22px 23px;
 }
 
+.obs-chain__sequence.is-dense {
+  padding-inline: 4px;
+}
+
+.obs-chain__sequence.is-dense .obs-chain__connector {
+  width: clamp(8px, .5vw, 12px);
+}
+
+.obs-chain__sequence.is-dense .obs-chain__column {
+  width: clamp(74px, 3.75vw, 98px);
+}
+
+.obs-chain__sequence.is-dense .obs-chain__column.is-parallel {
+  width: clamp(82px, 4.1vw, 106px);
+}
+
+.obs-chain__sequence.is-dense .obs-chain__stage {
+  width: 100%;
+}
+
 .obs-chain__segment { display: flex; align-items: center; }
 .obs-chain__connector { position: relative; width: 34px; height: 3px; flex: none; overflow: visible; background: #354559; }
 .obs-chain__connector::before { content: ''; position: absolute; top: -3px; right: -1px; width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 6px solid #56677c; }

@@ -464,7 +464,7 @@ export default function ExecutionChainPanel({
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [justCompleted, setJustCompleted] = useState<Set<string>>(new Set())
   const previousStatuses = useRef<Record<string, SchedulerJob['lastStatus']>>({})
-  const trackRef = useRef<HTMLDivElement | null>(null)
+  const viewportRef = useRef<HTMLDivElement | null>(null)
 
   const jobMap = useMemo(() => new Map(jobs.map((job) => [job.id, job])), [jobs])
   const scope = SCOPES.find((item) => item.id === scopeId) ?? SCOPES[0]
@@ -520,8 +520,29 @@ export default function ExecutionChainPanel({
   useEffect(() => {
     setSelectedId(currentId)
     const timer = window.setTimeout(() => {
-      trackRef.current?.querySelector<HTMLElement>(`[data-chain-stage="${currentId}"]`)?.scrollIntoView({
-        behavior: 'smooth', block: 'nearest', inline: 'center',
+      const viewport = viewportRef.current
+      const stage = viewport?.querySelector<HTMLElement>(`[data-chain-stage="${currentId}"]`)
+      if (!viewport || !stage) return
+
+      if (viewport.scrollWidth <= viewport.clientWidth + 1) {
+        viewport.scrollLeft = 0
+        return
+      }
+
+      const viewportBounds = viewport.getBoundingClientRect()
+      const stageBounds = stage.getBoundingClientRect()
+      const edgePadding = 24
+      const isVisible = stageBounds.left >= viewportBounds.left + edgePadding
+        && stageBounds.right <= viewportBounds.right - edgePadding
+      if (isVisible) return
+
+      const stageCenter = stageBounds.left - viewportBounds.left
+        + viewport.scrollLeft
+        + stageBounds.width / 2
+      const maxScrollLeft = viewport.scrollWidth - viewport.clientWidth
+      viewport.scrollTo({
+        left: Math.max(0, Math.min(stageCenter - viewport.clientWidth / 2, maxScrollLeft)),
+        behavior: 'smooth',
       })
     }, 120)
     return () => window.clearTimeout(timer)
@@ -596,12 +617,12 @@ export default function ExecutionChainPanel({
           )}
           <div className="obs-chain__phase sv-num">
             <span>{scope.relation === 'event' ? 'event-driven' : 'mixed triggers'}</span>
-            <strong>{branchStageCount > 0 ? `${mainStageCount} main · ${branchStageCount} branch` : `${Math.min(currentStageIndex + 1, stageIds.length)} / ${stageIds.length}`}</strong>
+            <strong>{branchStageCount > 0 ? `${mainStageCount} main · ${branchStageCount} branch` : `Step ${Math.min(currentStageIndex + 1, stageIds.length)} / ${stageIds.length}`}</strong>
           </div>
         </div>
       </div>
 
-      <div className={`obs-chain__topology ${scope.id === 'intraday' ? 'is-intraday' : ''}`} ref={trackRef}>
+      <div className={`obs-chain__topology ${scope.id === 'intraday' ? 'is-intraday' : ''}`}>
         <section className="obs-chain__main-lane" aria-labelledby={scope.id === 'intraday' ? 'intraday-main-flow-title' : 'obs-chain-title'}>
           {scope.id === 'intraday' && (
             <div className="obs-chain__lane-head">
@@ -610,8 +631,8 @@ export default function ExecutionChainPanel({
               <p>Pre-market warmup &rarr; intraday guard &rarr; EOD &rarr; close refresh &rarr; daily snapshot.</p>
             </div>
           )}
-          <div className="obs-chain__viewport">
-        <div className="obs-chain__sequence">
+          <div className="obs-chain__viewport" ref={viewportRef}>
+        <div className={`obs-chain__sequence ${scope.columns.length >= 16 ? 'is-dense' : ''}`}>
           {scope.columns.map((column, index) => {
             const previousColumn = scope.columns[index - 1] ?? []
             const connection = connectorStatus(

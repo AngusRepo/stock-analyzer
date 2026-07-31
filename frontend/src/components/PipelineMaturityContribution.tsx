@@ -110,17 +110,17 @@ function MetricCell({ metric }: { metric: PipelineMaturityMetric }) {
       ? 'text-rose-300'
       : 'text-[#dfe7f5]'
   return (
-    <div className="min-w-0 border-b border-white/[0.06] py-2.5 last:border-b-0 md:border-b-0 md:border-r md:px-3 md:last:border-r-0">
+    <div className="min-w-0 border-b border-white/[0.06] py-3 last:border-b-0 sm:border-b-0 sm:border-r sm:px-3 sm:last:border-r-0">
       <div className="flex items-start justify-between gap-2">
-        <p className="min-w-0 text-[11px] leading-4 text-[#8f9bb0]">{metric.label}</p>
+        <p className="min-w-0 text-xs leading-5 text-slate-500">{metric.label}</p>
         {metric.passed === true ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" /> : null}
         {metric.passed === false ? <CircleAlert className="h-3.5 w-3.5 shrink-0 text-rose-400" /> : null}
       </div>
       <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <span className={`sv-num break-all text-sm font-semibold ${tone}`}>{displayValue(metric)}</span>
-        {target ? <span className="sv-num text-[10px] text-[#66748a]">門檻 {target}</span> : null}
+        {target ? <span className="sv-num text-[11px] text-slate-600">門檻 {target}</span> : null}
       </div>
-      {metric.note ? <p className="mt-1 text-[10px] leading-4 text-[#66748a]">{metric.note}</p> : null}
+      {metric.note ? <p className="mt-1 text-[11px] leading-4 text-slate-600">{metric.note}</p> : null}
     </div>
   )
 }
@@ -135,28 +135,28 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
       : `尚差 ${progress.remaining} ${progress.unit} · ${progress.current}/${progress.required}`
     : '沒有可計算的數量門檻'
   return (
-    <details open className="group border-t border-white/[0.08] first:border-t-0">
-      <summary className="grid cursor-pointer list-none gap-4 px-4 py-4 marker:hidden md:grid-cols-[minmax(220px,0.9fr)_minmax(250px,1.25fr)_minmax(220px,0.85fr)] md:items-center lg:px-5">
+    <details open className="group overflow-hidden rounded-[18px] border border-white/[0.07] bg-white/[0.032]">
+      <summary className="grid cursor-pointer list-none gap-4 px-4 py-4 marker:hidden">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/[0.1] bg-black/25 text-[#d6a85f]">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-white/[0.08] bg-black/20 text-amber-300">
               {stageIcon(stage.id)}
             </span>
             <div className="min-w-0">
-              <p className="sv-num text-[10px] font-semibold text-[#d6a85f]">{stage.layer}</p>
-              <h3 className="break-words text-sm font-semibold text-[#f5f7fb]">{stage.title}</h3>
+              <p className="sv-num text-[11px] font-semibold text-amber-300">{stage.layer}</p>
+              <h3 className="break-words text-sm font-bold text-slate-100">{stage.title}</h3>
             </div>
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            <Badge variant="outline" className={`h-auto whitespace-normal px-2 py-0.5 text-[9px] ${status.cls}`}>{status.label}</Badge>
-            <Badge variant="outline" className={`h-auto whitespace-normal px-2 py-0.5 text-[9px] ${mode.cls}`}>{mode.label}</Badge>
+            <Badge variant="outline" className={`h-auto whitespace-normal rounded-full px-2 py-0.5 text-[11px] ${status.cls}`}>{status.label}</Badge>
+            <Badge variant="outline" className={`h-auto whitespace-normal rounded-full px-2 py-0.5 text-[11px] ${mode.cls}`}>{mode.label}</Badge>
           </div>
         </div>
 
         <div className="min-w-0">
-          <div className="flex items-center justify-between gap-3 text-[11px]">
-            <span className="text-[#a5afc2]">成熟進度</span>
-            <span className="sv-num text-right text-[#dfe7f5]">{progressLabel}</span>
+          <div className="flex items-center justify-between gap-3 text-xs">
+            <span className="font-semibold text-slate-500">成熟進度</span>
+            <span className="sv-num text-right text-slate-300">{progressLabel}</span>
           </div>
           <div className="mt-2 h-2 overflow-hidden rounded-sm bg-black/35">
             <div
@@ -164,57 +164,57 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
               style={{ width: `${Math.max(2, Math.round((progress?.ratio ?? 0) * 100))}%` }}
             />
           </div>
-          <p className="mt-2 break-words text-[11px] leading-5 text-[#8f9bb0]">{stage.decision}</p>
+          <p className="mt-2 break-words text-xs leading-5 text-slate-500">{stage.decision}</p>
         </div>
 
-        <div className="min-w-0 border-l-0 border-white/[0.08] md:border-l md:pl-4">
-          <p className="text-[10px] font-semibold text-[#8f9bb0]">本階段實際貢獻</p>
-          <p className="mt-1 break-words text-[11px] leading-5 text-[#dfe7f5]">{stage.production_effect}</p>
+        <div className="min-w-0 border-t border-white/[0.07] pt-3">
+          <p className="text-xs font-semibold text-slate-500">本階段實際貢獻</p>
+          <p className="mt-1 break-words text-sm leading-6 text-slate-300">{stage.production_effect}</p>
         </div>
       </summary>
 
       <div className="border-t border-white/[0.06] bg-black/[0.12] px-4 py-4 lg:px-5">
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(260px,0.75fr)]">
+        <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.5fr)_minmax(240px,0.8fr)]">
           <div className="min-w-0">
             <div className="mb-3 flex items-start gap-2">
               <Activity className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" />
               <div>
-                <p className="text-xs font-semibold text-[#f5f7fb]">責任邊界與決策用途</p>
-                <p className="mt-1 text-[11px] leading-5 text-[#9aa4b7]">{stage.contribution}</p>
+                <p className="text-xs font-semibold text-slate-100">責任邊界與決策用途</p>
+                <p className="mt-1 text-xs leading-5 text-slate-400">{stage.contribution}</p>
               </div>
             </div>
-            <div className="grid rounded-md border border-white/[0.07] bg-[#0d1016]/70 px-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid border-y border-white/[0.07] px-1 sm:grid-cols-2">
               {stage.metrics.map((item) => <MetricCell key={item.key} metric={item} />)}
             </div>
           </div>
 
           <div className="min-w-0 space-y-3">
             <div>
-              <p className="text-[10px] font-semibold text-[#8f9bb0]">尚未通過 / Blockers</p>
+              <p className="text-xs font-semibold text-slate-500">尚未通過 / Blockers</p>
               {stage.blockers.length ? (
                 <div className="mt-2 space-y-1.5">
                   {stage.blockers.map((blocker) => (
                     <div key={blocker} className="border-l-2 border-rose-400/45 pl-2">
-                      <p className="text-[11px] leading-4 text-rose-200">{blockerText(blocker)}</p>
-                      <code className="mt-0.5 block break-all text-[9px] leading-4 text-[#66748a]">{blocker}</code>
+                      <p className="text-xs leading-5 text-rose-200">{blockerText(blocker)}</p>
+                      <code className="mt-0.5 block break-all text-[11px] leading-4 text-slate-600">{blocker}</code>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="mt-2 flex items-center gap-1.5 text-[11px] text-emerald-300">
+                <p className="mt-2 flex items-center gap-1.5 text-xs text-emerald-300">
                   <CheckCircle2 className="h-3.5 w-3.5" /> 目前沒有 blocker
                 </p>
               )}
             </div>
 
             <div className="border-t border-white/[0.07] pt-3">
-              <p className="flex items-center gap-1.5 text-[10px] font-semibold text-[#8f9bb0]"><Database className="h-3.5 w-3.5" /> Lineage</p>
-              <dl className="mt-2 grid grid-cols-[84px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[10px] leading-4">
-                <dt className="text-[#66748a]">Evidence</dt><dd className="sv-num break-all text-[#a5afc2]">{stage.lineage.evidence_date ?? '-'}</dd>
-                <dt className="text-[#66748a]">OOF max</dt><dd className="sv-num break-all text-[#a5afc2]">{stage.lineage.oof_max_date ?? '-'}</dd>
-                <dt className="text-[#66748a]">Version</dt><dd className="sv-num break-all text-[#a5afc2]">{stage.version ?? '-'}</dd>
-                <dt className="text-[#66748a]">Artifact</dt><dd className="sv-num break-all text-[#a5afc2]">{stage.lineage.artifact_id ?? '-'}</dd>
-                <dt className="text-[#66748a]">Source</dt><dd className="break-words text-[#a5afc2]">{stage.lineage.source}</dd>
+              <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-500"><Database className="h-3.5 w-3.5" /> Lineage</p>
+              <dl className="mt-2 grid grid-cols-[84px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[11px] leading-4">
+                <dt className="text-slate-600">Evidence</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.evidence_date ?? '-'}</dd>
+                <dt className="text-slate-600">OOF max</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.oof_max_date ?? '-'}</dd>
+                <dt className="text-slate-600">Version</dt><dd className="sv-num break-all text-slate-400">{stage.version ?? '-'}</dd>
+                <dt className="text-slate-600">Artifact</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.artifact_id ?? '-'}</dd>
+                <dt className="text-slate-600">Source</dt><dd className="break-words text-slate-400">{stage.lineage.source}</dd>
               </dl>
             </div>
           </div>
@@ -237,16 +237,18 @@ export default function PipelineMaturityContribution({
 }) {
   if (loading) {
     return (
-      <section className="overflow-hidden rounded-lg border border-[#283140] bg-[#111319]/95" aria-label="成熟度與決策貢獻載入中">
+      <section className="overflow-hidden rounded-[24px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))]" aria-label="成熟度與決策貢獻載入中">
         <div className="p-5"><div className="h-5 w-64 animate-pulse rounded bg-white/[0.08]" /></div>
-        {[1, 2, 3].map((row) => <div key={row} className="h-28 animate-pulse border-t border-white/[0.06] bg-white/[0.02]" />)}
+        <div className="grid gap-3 p-4 lg:grid-cols-2">
+          {[1, 2, 3, 4, 5, 6].map((row) => <div key={row} className="h-64 animate-pulse rounded-[18px] border border-white/[0.06] bg-white/[0.032]" />)}
+        </div>
       </section>
     )
   }
 
   if (error || !data) {
     return (
-      <section className="rounded-lg border border-rose-400/25 bg-rose-400/[0.06] p-5">
+      <section className="rounded-[24px] border border-rose-400/25 bg-rose-400/[0.06] p-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-3">
             <CircleAlert className="mt-0.5 h-5 w-5 shrink-0 text-rose-300" />
@@ -277,33 +279,33 @@ export default function PipelineMaturityContribution({
   ]
 
   return (
-    <section className="overflow-hidden rounded-lg border border-[#283140] bg-[#111319]/95 shadow-[0_18px_60px_rgba(0,0,0,0.18)]" aria-labelledby="pipeline-maturity-title">
-      <div className="border-b border-white/[0.08] bg-[linear-gradient(110deg,rgba(214,168,95,0.10),transparent_42%)] px-4 py-4 lg:px-5">
+    <section className="overflow-hidden rounded-[24px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_18px_52px_rgba(0,0,0,0.42)]" aria-labelledby="pipeline-maturity-title">
+      <div className="border-b border-white/[0.08] px-5 py-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-[10px] font-semibold text-[#d6a85f]">Decision ownership & evidence maturity</p>
-            <h2 id="pipeline-maturity-title" className="mt-1 text-base font-semibold text-[#fff7e8]">成熟度與決策貢獻</h2>
-            <p className="mt-1 max-w-4xl text-xs leading-5 text-[#8f9bb0]">
+            <p className="text-[11px] font-semibold text-amber-300">Decision ownership & evidence maturity</p>
+            <h2 id="pipeline-maturity-title" className="mt-1 text-base font-semibold text-slate-100">成熟度與決策貢獻</h2>
+            <p className="mt-1 max-w-4xl text-xs leading-5 text-slate-500">
               分開呈現資料門檻、OOS 品質門檻與 production 權限。進度滿格只代表資料足夠，不代表 artifact 已通過或已接手。
             </p>
           </div>
-          <div className="flex items-center gap-2 text-[10px] text-[#66748a]">
+          <div className="flex items-center gap-2 text-[11px] text-slate-600">
             <Clock3 className="h-3.5 w-3.5" />
             <span className="sv-num">evidence {data.requested_date} · generated {new Date(data.generated_at).toLocaleString('zh-TW', { hour12: false })}</span>
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-2 border-y border-white/[0.07] md:grid-cols-5">
+        <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
           {summaryItems.map((item) => (
-            <div key={item.label} className="min-w-0 border-b border-r border-white/[0.07] px-3 py-2.5 last:border-r-0 md:border-b-0">
-              <p className="truncate text-[10px] text-[#66748a]" title={item.label}>{item.label}</p>
-              <p className="mt-1 break-words sv-num text-sm font-semibold text-[#dfe7f5]">{item.value}</p>
+            <div key={item.label} className="min-w-0 rounded-[14px] border border-white/[0.06] bg-white/[0.032] px-3 py-3">
+              <p className="truncate text-[11px] font-semibold text-slate-500" title={item.label}>{item.label}</p>
+              <p className="mt-2 break-words sv-num text-sm font-bold text-slate-100">{item.value}</p>
             </div>
           ))}
         </div>
       </div>
 
-      <div>
+      <div className="grid items-start gap-3 p-4 lg:grid-cols-2">
         {data.stages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
       </div>
     </section>

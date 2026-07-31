@@ -82,7 +82,19 @@ assert(page.includes('schedulerRefreshInterval(query.state.data?.jobs)'), 'sched
 assert(page.includes('refetchIntervalInBackground: false'), 'OBS realtime polling must stop when the page is in the background')
 assert(chain.includes("return jobs?.some((job) => job.lastStatus === 'running') ? 3_000 : 15_000"), 'running chains must sync every 3s and idle chains every 15s')
 assert(chain.includes('previousStatuses') && chain.includes('justCompleted'), 'callback success transition must trigger a completion visual')
-assert(chain.includes('scrollIntoView') && chain.includes('currentId'), 'current callback stage must auto-focus when it changes')
+assert(
+  chain.includes('viewportRef')
+    && chain.includes('viewport.scrollWidth <= viewport.clientWidth + 1')
+    && chain.includes('viewport.scrollTo'),
+  'current callback stage must focus only inside an overflowing chain viewport',
+)
+assert(
+  chain.includes("scope.columns.length >= 16 ? 'is-dense' : ''")
+    && chainCss.includes('.obs-chain__sequence.is-dense .obs-chain__connector')
+    && chainCss.includes('clamp(8px, .5vw, 12px)')
+    && chainCss.includes('clamp(74px, 3.75vw, 98px)'),
+  'long desktop chains must compact connector spacing while preserving a readable node-width floor',
+)
 
 for (const animation of ['obs-running-breathe', 'obs-running-orbit', 'obs-completed-burst', 'obs-progress-flow', 'obs-progress-head']) {
   assert(chainCss.includes(`@keyframes ${animation}`), `missing execution-chain animation ${animation}`)

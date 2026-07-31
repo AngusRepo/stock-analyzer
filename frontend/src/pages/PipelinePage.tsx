@@ -720,28 +720,6 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Re
   )
 }
 
-function RecommendationSummaryColumn({ rows }: { rows: any[] }) {
-  return (
-    <PipelineColumn
-      className="xl:col-span-4"
-      title="今日推薦股票"
-      subtitle="包含 BUY 與 HOLD；按 Score V2 最終分排序。"
-    >
-      {rows.length ? (
-        <div className="grid max-h-[640px] gap-2 overflow-y-auto pr-1 lg:grid-cols-2">
-          {rows.map((rec: any, index: number) => (
-            <StockRow key={rec.stock_id ?? rec.symbol ?? index} rec={rec} rank={index + 1} />
-          ))}
-        </div>
-      ) : (
-        <p className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-4 text-sm text-[#9aa4b7]">
-          今日沒有 BUY/HOLD 推薦列。
-        </p>
-      )}
-    </PipelineColumn>
-  )
-}
-
 function ExecutionFlowColumn({
   pendingBuys,
   pbDate,
@@ -958,7 +936,6 @@ export default function PipelinePage() {
               qfList={qfList}
               candidateCount={l4BuyCount}
             />
-            <RecommendationSummaryColumn rows={recommendationRows} />
           </div>
         )}
 

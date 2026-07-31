@@ -9,6 +9,7 @@ type Row = {
   matrix_rows: number
   expected_matrix_rows: number
   evaluable_matrix_rows: number
+  matched_matrix_rows: number
   threshold_margin_rows: number
   challenger_route_rows: number
   challenger_affinity_rows: number
@@ -37,29 +38,29 @@ async function main(): Promise<void> {
     {
       signal_date: '2026-07-15', producer_run_id: 'run-15', reference_rows: 10,
       mature_label_rows: 10, matrix_rows: 100, expected_matrix_rows: 100,
-      evaluable_matrix_rows: 20,
+      evaluable_matrix_rows: 20, matched_matrix_rows: 8,
       challenger_affinity_rows: 10,
-      threshold_margin_rows: 20, challenger_route_rows: 10,
+      threshold_margin_rows: 8, challenger_route_rows: 10,
     },
     {
       signal_date: '2026-07-16', producer_run_id: 'run-16', reference_rows: 10,
       mature_label_rows: 10, matrix_rows: 100, expected_matrix_rows: 100,
-      evaluable_matrix_rows: 20,
+      evaluable_matrix_rows: 20, matched_matrix_rows: 8,
       challenger_affinity_rows: 10,
-      threshold_margin_rows: 20, challenger_route_rows: 9,
+      threshold_margin_rows: 8, challenger_route_rows: 9,
     },
     {
       signal_date: '2026-07-17', producer_run_id: 'run-17', reference_rows: 10,
       mature_label_rows: 9, matrix_rows: 100, expected_matrix_rows: 100,
-      evaluable_matrix_rows: 20,
+      evaluable_matrix_rows: 20, matched_matrix_rows: 8,
       challenger_affinity_rows: 10,
-      threshold_margin_rows: 20, challenger_route_rows: 10,
+      threshold_margin_rows: 8, challenger_route_rows: 10,
     },
     {
       signal_date: '2026-07-18', producer_run_id: 'run-18', reference_rows: 10,
       mature_label_rows: 9, matrix_rows: 100, expected_matrix_rows: 100,
-      evaluable_matrix_rows: 20, challenger_affinity_rows: 10,
-      threshold_margin_rows: 19, challenger_route_rows: 9,
+      evaluable_matrix_rows: 20, matched_matrix_rows: 8, challenger_affinity_rows: 10,
+      threshold_margin_rows: 7, challenger_route_rows: 9,
     },
   ])
 

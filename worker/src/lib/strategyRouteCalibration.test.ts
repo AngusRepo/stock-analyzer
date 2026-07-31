@@ -33,7 +33,7 @@ assert.equal(pass.purgeDates.length, 5, 'five signal dates must be purged betwee
 const tenDateBoundary = evaluateStrategyRouteCalibration(
   informative.filter((row) => row.signal_date <= date(9)),
 )
-assert.equal(tenDateBoundary.status, 'fail', 'three train, five purge, and three OOS dates require 11 mature dates')
+assert.equal(tenDateBoundary.status, 'pending_maturity', 'three train, five purge, and three OOS dates require 11 mature dates')
 assert.equal(tenDateBoundary.gates.enough_total_dates, false, '10 mature dates must not be reported as calibration-ready')
 
 const noEdge = informative.map((row, index) => ({

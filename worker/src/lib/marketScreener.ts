@@ -142,6 +142,8 @@ async function persistStrategyRedundancyArtifact(
   const checksum = (await sha256Text(rawGraphJson)).slice(0, 20)
   const artifactId = `strategy-redundancy-oof-v1-${asOfDate}-${checksum}`
   const sourceContract = String(raw.input_scope ?? '').trim()
+  const pendingMaturity = raw.status === 'blocked'
+    && raw.blocked_reason === 'insufficient_paired_mature_oof_residual_returns'
   const pass = raw.status === 'computed'
     && raw.method === 'networkx_connected_components_oof_residual_correlation'
     && sourceContract === 'mature_oof_residual_returns_with_same_day_overlap_diagnostic'
@@ -171,6 +173,9 @@ async function persistStrategyRedundancyArtifact(
     strategy_cluster_uniqueness_score: raw.strategy_cluster_uniqueness_score ?? {},
     eligible_oof_pair_count: raw.eligible_oof_pair_count ?? 0,
     paired_date_max: raw.paired_date_max ?? 0,
+    eligible_paired_date_max: raw.eligible_paired_date_max ?? 0,
+    paired_date_requirement: raw.paired_date_requirement ?? 5,
+    pair_count_with_any_overlap: raw.pair_count_with_any_overlap ?? 0,
     oof_max_date: raw.oof_max_date ?? null,
     r2_artifact_id: evidenceManifest.artifact_id,
     r2_key: evidenceManifest.r2_key,
@@ -197,7 +202,7 @@ async function persistStrategyRedundancyArtifact(
   `).bind(
     artifactId,
     asOfDate,
-    pass ? 'pass' : 'fail',
+    pass ? 'pass' : pendingMaturity ? 'pending_maturity' : 'fail',
     sourceContract || 'missing',
     Math.max(0, Math.floor(Number(raw.strategy_count ?? payloadStrategyCount) || 0)),
     Math.max(0, Math.floor(Number(raw.paired_date_max ?? 0) || 0)),
@@ -315,7 +320,8 @@ export async function prepareStrategyRedundancyBackfill(
   if (run.status !== 'ready' || expectedCells <= 0 || persistedCells !== expectedCells) {
     throw new Error(`strategy_redundancy_matrix_not_ready:${asOfDate}:${run.status}:${persistedCells}/${expectedCells}`)
   }
-  if (String(run.labeler_version ?? '').trim() !== 'strategy-decision-log-pit-reconstruction-v5') {
+  const matrixLabelerVersion = String(run.labeler_version ?? '').trim()
+  if (!['strategy-labeler-v1', 'strategy-decision-log-pit-reconstruction-v6'].includes(matrixLabelerVersion)) {
     throw new Error(`strategy_redundancy_matrix_labeler_contract_invalid:${asOfDate}:${run.labeler_version ?? 'missing'}`)
   }
   if (String(run.reference_contract_version ?? '').trim() !== SELECTION_REFERENCE_CONTRACT_VERSION) {
@@ -351,7 +357,7 @@ export async function prepareStrategyRedundancyBackfill(
   if (checksums.size !== 1 || !checksums.has(String(run.strategy_registry_checksum ?? '').trim())) {
     throw new Error(`strategy_redundancy_registry_checksum_mismatch:${asOfDate}`)
   }
-  if (rows.some((row) => String(row.labeler_version ?? '').trim() !== 'strategy-decision-log-pit-reconstruction-v5')) {
+  if (rows.some((row) => String(row.labeler_version ?? '').trim() !== matrixLabelerVersion)) {
     throw new Error(`strategy_redundancy_matrix_row_labeler_contract_invalid:${asOfDate}`)
   }
   if (rows.some((row) => String(row.reference_contract_version ?? '').trim() !== SELECTION_REFERENCE_CONTRACT_VERSION)) {
@@ -578,6 +584,8 @@ export async function loadMatureStrategyOofReturns(
        AND EXISTS (
          SELECT 1 FROM strategy_label_matrix_runs_v4 mr
           WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
+            AND mr.reference_contract_version=?
+            AND mr.labeler_version IN ('strategy-labeler-v1', 'strategy-decision-log-pit-reconstruction-v6')
        )
        AND EXISTS (
          SELECT 1 FROM canonical_run_heads h
@@ -587,7 +595,7 @@ export async function loadMatureStrategyOofReturns(
      GROUP BY m.strategy_id, m.signal_date
     HAVING COUNT(*) >= 3
      ORDER BY m.strategy_id, m.signal_date
-  `).bind(asOfDate, asOfDate).all<{
+  `).bind(asOfDate, asOfDate, SELECTION_REFERENCE_CONTRACT_VERSION).all<{
     strategy_id: string
     signal_date: string
     residual_return: number | string

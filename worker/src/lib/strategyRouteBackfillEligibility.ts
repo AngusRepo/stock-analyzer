@@ -10,6 +10,7 @@ type EligibilityRow = {
   matrix_rows: number | string
   expected_matrix_rows: number | string
   evaluable_matrix_rows: number | string
+  matched_matrix_rows: number | string
   challenger_affinity_rows: number | string
   threshold_margin_rows: number | string
   challenger_route_rows: number | string
@@ -23,6 +24,7 @@ export type StrategyRouteBackfillEligibility = {
   matureLabelRows: number
   matrixRows: number
   evaluableMatrixRows: number
+  matchedMatrixRows: number
   challengerAffinityRows: number
   thresholdMarginRows: number
   challengerRouteRows: number
@@ -73,12 +75,17 @@ export async function auditStrategyRouteBackfillEligibility(
               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id
                 AND m.evaluable=1
            ), 0) evaluable_matrix_rows,
+           COALESCE((
+             SELECT COUNT(*) FROM strategy_label_matrix_v4 m
+              WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id
+                AND m.evaluable=1 AND m.strategy_hit=1
+           ), 0) matched_matrix_rows,
            SUM(CASE WHEN r.strategy_challenger_affinity_version=?
                     THEN 1 ELSE 0 END) challenger_affinity_rows,
            COALESCE((
              SELECT COUNT(*) FROM strategy_label_matrix_v4 m
               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id
-                AND m.evaluable=1 AND m.affinity_evidence_count>0
+                AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
            ), 0) threshold_margin_rows,
            SUM(CASE WHEN r.strategy_challenger_route_version=?
                      AND r.strategy_challenger_route_score IS NOT NULL
@@ -112,6 +119,7 @@ export async function auditStrategyRouteBackfillEligibility(
     const matrixRows = count(row.matrix_rows)
     const expectedMatrixRows = count(row.expected_matrix_rows)
     const evaluableMatrixRows = count(row.evaluable_matrix_rows)
+    const matchedMatrixRows = count(row.matched_matrix_rows)
     const challengerAffinityRows = count(row.challenger_affinity_rows)
     const thresholdMarginRows = count(row.threshold_margin_rows)
     const challengerRouteRows = count(row.challenger_route_rows)
@@ -121,7 +129,8 @@ export async function auditStrategyRouteBackfillEligibility(
     if (expectedMatrixRows <= 0 || matrixRows !== expectedMatrixRows) blockers.push('canonical_strategy_matrix_missing')
     if (challengerAffinityRows !== referenceRows) blockers.push('challenger_affinity_version_missing')
     if (evaluableMatrixRows <= 0) blockers.push('strategy_matrix_no_evaluable_cells')
-    if (thresholdMarginRows !== evaluableMatrixRows) blockers.push('threshold_margin_evidence_incomplete')
+    if (matchedMatrixRows <= 0) blockers.push('strategy_matrix_no_strategy_hits')
+    if (thresholdMarginRows !== matchedMatrixRows) blockers.push('threshold_margin_evidence_incomplete')
     if (challengerRouteRows !== referenceRows) {
       blockers.push('full_route_pit_inputs_not_persisted')
       blockers.push('challenger_route_score_missing')
@@ -139,6 +148,7 @@ export async function auditStrategyRouteBackfillEligibility(
       matureLabelRows,
       matrixRows,
       evaluableMatrixRows,
+      matchedMatrixRows,
       challengerAffinityRows,
       thresholdMarginRows,
       challengerRouteRows,
@@ -151,15 +161,16 @@ export async function auditStrategyRouteBackfillEligibility(
       await db.batch(output.slice(offset, offset + 100).map((row) => db.prepare(`
         INSERT INTO strategy_route_backfill_eligibility_v1 (
           signal_date, producer_run_id, status, reference_rows, mature_label_rows,
-          matrix_rows, evaluable_matrix_rows, challenger_affinity_rows,
+          matrix_rows, evaluable_matrix_rows, matched_matrix_rows, challenger_affinity_rows,
           threshold_margin_rows, challenger_route_rows, blocker_json, audited_as_of_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(signal_date, producer_run_id) DO UPDATE SET
           status=excluded.status,
           reference_rows=excluded.reference_rows,
           mature_label_rows=excluded.mature_label_rows,
           matrix_rows=excluded.matrix_rows,
           evaluable_matrix_rows=excluded.evaluable_matrix_rows,
+          matched_matrix_rows=excluded.matched_matrix_rows,
           challenger_affinity_rows=excluded.challenger_affinity_rows,
           threshold_margin_rows=excluded.threshold_margin_rows,
           challenger_route_rows=excluded.challenger_route_rows,
@@ -174,6 +185,7 @@ export async function auditStrategyRouteBackfillEligibility(
         row.matureLabelRows,
         row.matrixRows,
         row.evaluableMatrixRows,
+        row.matchedMatrixRows,
         row.challengerAffinityRows,
         row.thresholdMarginRows,
         row.challengerRouteRows,

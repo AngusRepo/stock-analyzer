@@ -77,6 +77,9 @@ def _jaccard(left: set[str], right: set[str]) -> float:
     return len(left & right) / union_size
 
 
+MIN_PAIRED_OOF_DATES = 5
+
+
 def _paired_oof_similarity(
     left: list[dict[str, Any]],
     right: list[dict[str, Any]],
@@ -87,7 +90,7 @@ def _paired_oof_similarity(
     right_by_date = {row["signal_date"]: float(row["residual_return"]) for row in right}
     dates = sorted(set(left_by_date) & set(right_by_date))
     overlap = _jaccard(left_symbols, right_symbols)
-    if len(dates) < 5:
+    if len(dates) < MIN_PAIRED_OOF_DATES:
         return {
             "eligible": False,
             "paired_dates": len(dates),
@@ -407,8 +410,15 @@ def build_strategy_similarity_evidence(payload: dict[str, Any] | None) -> dict[s
 
     eligible_pair_count = sum(1 for evidence in pairwise_evidence.values() if evidence["eligible"])
     paired_date_max = max(
+        (int(evidence["paired_dates"]) for evidence in pairwise_evidence.values()),
+        default=0,
+    )
+    eligible_paired_date_max = max(
         (int(evidence["paired_dates"]) for evidence in pairwise_evidence.values() if evidence["eligible"]),
         default=0,
+    )
+    pair_count_with_any_overlap = sum(
+        1 for evidence in pairwise_evidence.values() if int(evidence["paired_dates"]) > 0
     )
     oof_dates = sorted({
         row["signal_date"]
@@ -445,6 +455,9 @@ def build_strategy_similarity_evidence(payload: dict[str, Any] | None) -> dict[s
         "same_day_jaccard_max": round(max_same_day_overlap, 8),
         "eligible_oof_pair_count": eligible_pair_count,
         "paired_date_max": paired_date_max,
+        "eligible_paired_date_max": eligible_paired_date_max,
+        "paired_date_requirement": MIN_PAIRED_OOF_DATES,
+        "pair_count_with_any_overlap": pair_count_with_any_overlap,
         "oof_max_date": oof_dates[-1] if oof_dates else None,
         "pairwise_oof_evidence": pairwise_evidence,
         "strategy_cluster_id": strategy_cluster_id,

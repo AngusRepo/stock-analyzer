@@ -42,7 +42,7 @@ class FakeD1 {
       return { reference_rows: 100, identity_rows: this.overrides.identityRows ?? 100, artifact_rows: 100, reconciled_rows: 100 }
     }
     if (normalized.includes('FROM strategy_label_matrix_runs_v4 r')) {
-      return { expected_cell_count: 2500, persisted_cell_count: 2500, matrix_rows: 2500 }
+      return { expected_cell_count: 2500, persisted_cell_count: 2500, matrix_rows: 2500, matched_rows: 400, threshold_evidence_rows: 400 }
     }
     if (normalized.includes('FROM strategy_redundancy_artifacts_v1')) {
       return { status: 'pass', evidence_artifact_id: 'artifact:strategy_redundancy_oof:test' }

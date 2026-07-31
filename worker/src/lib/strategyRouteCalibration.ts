@@ -25,7 +25,7 @@ interface DateSummary {
 }
 
 export interface StrategyRouteCalibrationResult {
-  status: 'pass' | 'fail'
+  status: 'pass' | 'fail' | 'pending_maturity'
   routeFloor: number | null
   sampleCount: number
   dateCount: number
@@ -197,7 +197,9 @@ export function evaluateStrategyRouteCalibration(
       && calibration.brier < calibration.climatologyBrier,
   }
   return {
-    status: Object.values(gates).every(Boolean) ? 'pass' : 'fail',
+    status: !gates.enough_total_dates
+      ? 'pending_maturity'
+      : Object.values(gates).every(Boolean) ? 'pass' : 'fail',
     routeFloor,
     sampleCount: valid.length,
     dateCount: dates.length,
@@ -228,7 +230,7 @@ export async function refreshStrategyRouteCalibration(
   db: D1Database,
   asOfDate: string,
   options: { allowPromotion?: boolean } = {},
-): Promise<{ runId: string; status: 'pass' | 'fail' | 'promoted'; result: StrategyRouteCalibrationResult }> {
+): Promise<{ runId: string; status: 'pass' | 'fail' | 'pending_maturity' | 'promoted'; result: StrategyRouteCalibrationResult }> {
   const endMs = Date.parse(asOfDate + 'T00:00:00Z')
   if (!Number.isFinite(endMs)) throw new Error('invalid_strategy_route_calibration_date:' + asOfDate)
   const startDate = new Date(endMs - LOOKBACK_CALENDAR_DAYS * 86_400_000).toISOString().slice(0, 10)
@@ -268,7 +270,7 @@ export async function refreshStrategyRouteCalibration(
   const result = evaluateStrategyRouteCalibration(rows)
   const runId = `${STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION}-${asOfDate}-${await fingerprint(rows)}`
   const promoted = result.status === 'pass' && options.allowPromotion === true && result.routeFloor != null
-  const status: 'pass' | 'fail' | 'promoted' = promoted ? 'promoted' : result.status
+  const status: 'pass' | 'fail' | 'pending_maturity' | 'promoted' = promoted ? 'promoted' : result.status
   await db.prepare(`
     INSERT INTO strategy_route_calibration_runs_v1 (
       run_id, artifact_version, as_of_date, status, candidate_route_version, route_floor,

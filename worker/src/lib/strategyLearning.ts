@@ -41,6 +41,7 @@ import {
 } from './strategyThresholdCalibration'
 
 export const STRATEGY_LEARNING_VERSION = 'strategy-learning-v5'
+export const STRATEGY_EVIDENCE_RECONSTRUCTION_LABELER_VERSION = 'strategy-decision-log-pit-reconstruction-v6'
 
 export interface StrategySpecRegistryRow {
   strategy_id: string
@@ -434,7 +435,7 @@ const SCHEMA_DDL = [
     evaluable_rows INTEGER NOT NULL DEFAULT 0,
     unavailable_rows INTEGER NOT NULL DEFAULT 0,
     matrix_rows INTEGER NOT NULL DEFAULT 0,
-    labeler_version TEXT NOT NULL DEFAULT 'strategy-decision-log-pit-reconstruction-v5',
+    labeler_version TEXT NOT NULL DEFAULT 'strategy-decision-log-pit-reconstruction-v6',
     evaluation_contract_version TEXT,
     source_checksum TEXT,
     blocker_reason TEXT,
@@ -2800,7 +2801,7 @@ export async function listHistoricalStrategyEvidenceV5Dates(
                 AND mr.status='ready'
                 AND mr.labeler_version IN (
                   'strategy-labeler-v1',
-                  'strategy-decision-log-pit-reconstruction-v5'
+                  'strategy-decision-log-pit-reconstruction-v6'
                 )
                 AND mr.reference_contract_version='selection-reference-snapshot-v3'
                 AND mr.expected_cell_count > 0
@@ -2849,11 +2850,14 @@ export async function rebuildHistoricalStrategyEvidenceV5(
 
   for (const date of candidateDates) {
     await db.prepare(`
-      INSERT INTO strategy_evidence_rebuild_runs_v5(signal_date, status, evaluation_contract_version, updated_at)
-      VALUES (?, 'pending', 'strategy-evaluation-v2', CURRENT_TIMESTAMP)
+      INSERT INTO strategy_evidence_rebuild_runs_v5(
+        signal_date, status, labeler_version, evaluation_contract_version, updated_at
+      )
+      VALUES (?, 'pending', ?, 'strategy-evaluation-v2', CURRENT_TIMESTAMP)
       ON CONFLICT(signal_date) DO UPDATE SET
-        status='pending', evaluation_contract_version='strategy-evaluation-v2', blocker_reason=NULL, updated_at=CURRENT_TIMESTAMP
-    `).bind(date).run()
+        status='pending', labeler_version=excluded.labeler_version,
+        evaluation_contract_version='strategy-evaluation-v2', blocker_reason=NULL, updated_at=CURRENT_TIMESTAMP
+    `).bind(date, STRATEGY_EVIDENCE_RECONSTRUCTION_LABELER_VERSION).run()
     try {
       const referencesResult = await db.prepare(`
         SELECT r.signal_date, r.symbol, r.producer_run_id, r.name, r.market_segment, r.sector,
@@ -2949,7 +2953,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         const assessment = spec && evaluability.evaluable
           ? assessCandidateAgainstStrategySpecs(candidate, [spec])
           : { matches: [], tags: [], watchPoints: [] }
-        const matched = evaluability.evaluable && assessment.matches.length > 0
+        const match = evaluability.evaluable ? assessment.matches[0] ?? null : null
+        const matched = match != null
         const unavailableReason = evaluability.evaluable ? null : evaluability.unavailableReasons.join('|')
         if (evaluability.evaluable) evaluableRows += 1
         else unavailableRows += 1
@@ -2980,13 +2985,13 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           JSON.stringify(evidence),
           date, row.symbol, row.strategy_id, row.strategy_version,
         ))
-        return { row, spec, evaluability, matched }
+        return { row, spec, evaluability, matched, match }
       })
       for (let offset = 0; offset < decisionUpdates.length; offset += STRATEGY_LEARNING_D1_BATCH_SIZE) {
         await db.batch(decisionUpdates.slice(offset, offset + STRATEGY_LEARNING_D1_BATCH_SIZE))
       }
 
-      const labelerVersion = 'strategy-decision-log-pit-reconstruction-v5'
+      const labelerVersion = STRATEGY_EVIDENCE_RECONSTRUCTION_LABELER_VERSION
       const expectedMatrixRows = references.length * strategyKeys.size
       const existingMatrix = await db.prepare(`
         SELECT status, reference_candidate_count, strategy_count, expected_cell_count,
@@ -3022,7 +3027,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           `).bind(producerRunId).run()
           await db.prepare('DELETE FROM strategy_label_matrix_v4 WHERE producer_run_id=?').bind(producerRunId).run()
         }
-        const matrix = rebuilt.map(({ row, spec, evaluability, matched }) => {
+        const matrix = rebuilt.map(({ row, spec, evaluability, matched, match }) => {
           if (!spec) throw new Error('matrix_strategy_spec_version_missing:' + row.strategy_id + '|' + row.strategy_version)
           const governance = governanceByKey.get(row.strategy_id + '|' + row.strategy_version)
           return {
@@ -3041,9 +3046,9 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             weak_label: evaluability.evaluable ? (matched ? 1 : 0) : 0,
             affinity: evaluability.evaluable ? (matched ? 1 : 0) : 0,
             affinity_version: 'strategy-affinity-binary-pit-reconstruction-v1',
-            match_strength: 0,
-            threshold_margin: 0,
-            affinity_evidence_count: 0,
+            match_strength: match?.matchStrength ?? 0,
+            threshold_margin: match?.thresholdMargin ?? 0,
+            affinity_evidence_count: match?.evidenceCount ?? 0,
             position_weight: 0,
             challenger_affinity: 0,
             challenger_position_weight: 0,
@@ -3086,17 +3091,29 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         })
         matrixRows = persisted.matrixRows
       }
+      const marginCoverage = await db.prepare(`
+        SELECT
+          SUM(CASE WHEN evaluable=1 AND strategy_hit=1 THEN 1 ELSE 0 END) matched_rows,
+          SUM(CASE WHEN evaluable=1 AND strategy_hit=1 AND affinity_evidence_count>0 THEN 1 ELSE 0 END) threshold_evidence_rows
+          FROM strategy_label_matrix_v4
+         WHERE signal_date=? AND producer_run_id=?
+      `).bind(date, producerRunId).first<{ matched_rows: number | string; threshold_evidence_rows: number | string }>()
+      const matchedRows = Number(marginCoverage?.matched_rows ?? 0)
+      const thresholdEvidenceRows = Number(marginCoverage?.threshold_evidence_rows ?? 0)
+      if (matchedRows <= 0 || thresholdEvidenceRows !== matchedRows) {
+        throw new Error(`threshold_margin_evidence_incomplete:${date}:${thresholdEvidenceRows}/${matchedRows}`)
+      }
       await materializeStrategyDecisionDailyStats(db, date)
       await db.prepare(`
         UPDATE strategy_evidence_rebuild_runs_v5
            SET status='success', candidate_count=?, strategy_count=?, decision_rows=?,
                evaluable_rows=?, unavailable_rows=?, matrix_rows=?,
-               source_checksum=?, evaluation_contract_version='strategy-evaluation-v2',
+               source_checksum=?, labeler_version=?, evaluation_contract_version='strategy-evaluation-v2',
                blocker_reason=NULL, updated_at=CURRENT_TIMESTAMP
          WHERE signal_date=?
       `).bind(
         referenceSymbols.size, strategyKeys.size, decisions.length,
-        evaluableRows, unavailableRows, matrixRows, [...checksums][0], date,
+        evaluableRows, unavailableRows, matrixRows, [...checksums][0], labelerVersion, date,
       ).run()
       successfulDates += 1
       rebuiltDecisions += decisions.length
@@ -3110,10 +3127,10 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         : 'failed'
       await db.prepare(`
         UPDATE strategy_evidence_rebuild_runs_v5
-           SET status=?, evaluation_contract_version='strategy-evaluation-v2',
+           SET status=?, labeler_version=?, evaluation_contract_version='strategy-evaluation-v2',
                blocker_reason=?, updated_at=CURRENT_TIMESTAMP
          WHERE signal_date=?
-      `).bind(status, reason, date).run()
+      `).bind(status, STRATEGY_EVIDENCE_RECONSTRUCTION_LABELER_VERSION, reason, date).run()
       blockedDates += 1
     }
   }

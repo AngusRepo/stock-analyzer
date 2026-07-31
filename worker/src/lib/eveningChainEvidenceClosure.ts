@@ -17,6 +17,8 @@ export type EveningChainEvidenceClosure = {
   decisionReconciledRows: number
   matrixRows: number
   expectedMatrixRows: number
+  matchedMatrixRows: number
+  thresholdEvidenceRows: number
   similarityArtifactStatus: string
   sectorRows: number
   sectorBreadthRows: number
@@ -78,19 +80,27 @@ export async function auditEveningChainEvidenceClosure(
 
   const matrix = await learningDb.prepare(`
     SELECT r.expected_cell_count, r.persisted_cell_count,
-           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id) matrix_rows
+           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id) matrix_rows,
+           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
+           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0) threshold_evidence_rows
       FROM strategy_label_matrix_runs_v4 r
      WHERE r.signal_date=? AND r.status='ready' AND r.producer_run_id=?
      LIMIT 1
   `).bind(businessDate, producerRunId).first<any>()
   const matrixRows = Number(matrix?.matrix_rows ?? 0)
   const expectedMatrixRows = Number(matrix?.expected_cell_count ?? 0)
+  const matchedMatrixRows = Number(matrix?.matched_rows ?? 0)
+  const thresholdEvidenceRows = Number(matrix?.threshold_evidence_rows ?? 0)
   if (
     expectedMatrixRows <= 0
     || Number(matrix?.persisted_cell_count ?? 0) !== expectedMatrixRows
     || matrixRows !== expectedMatrixRows
   ) {
     throw new Error(`evening_chain_strategy_matrix_incomplete:${matrixRows}/${expectedMatrixRows}`)
+  }
+
+  if (matchedMatrixRows <= 0 || thresholdEvidenceRows !== matchedMatrixRows) {
+    throw new Error(`evening_chain_threshold_margin_evidence_incomplete:${thresholdEvidenceRows}/${matchedMatrixRows}`)
   }
 
   const similarity = await learningDb.prepare(`
@@ -100,7 +110,7 @@ export async function auditEveningChainEvidenceClosure(
      ORDER BY created_at DESC
      LIMIT 1
   `).bind(businessDate).first<{ status: string; evidence_artifact_id: string | null }>()
-  if (!similarity?.evidence_artifact_id || !['pass', 'fail'].includes(String(similarity.status))) {
+  if (!similarity?.evidence_artifact_id || !['pass', 'pending_maturity', 'fail'].includes(String(similarity.status))) {
     throw new Error(`evening_chain_similarity_artifact_incomplete:${businessDate}`)
   }
 
@@ -249,6 +259,8 @@ export async function auditEveningChainEvidenceClosure(
     decisionReconciledRows,
     matrixRows,
     expectedMatrixRows,
+    matchedMatrixRows,
+    thresholdEvidenceRows,
     similarityArtifactStatus: String(similarity.status),
     sectorRows,
     sectorBreadthRows,
@@ -267,6 +279,7 @@ export function summarizeEveningChainEvidenceClosure(audit: EveningChainEvidence
   return [
     `reference_identity=${audit.referenceIdentityRows}/${audit.referenceRows}`,
     `strategy_matrix=${audit.matrixRows}/${audit.expectedMatrixRows}`,
+    `threshold_margin=${audit.thresholdEvidenceRows}/${audit.matchedMatrixRows}`,
     `similarity_artifact=${audit.similarityArtifactStatus}`,
     `sector_breadth=${audit.sectorBreadthRows}/${audit.sectorRows}`,
     `mature_date=${audit.matureSignalDate ?? 'none'}`,

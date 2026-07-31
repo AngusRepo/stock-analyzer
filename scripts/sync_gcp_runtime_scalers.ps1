@@ -125,7 +125,7 @@ if ($Apply) {
 
 foreach ($entry in $manifest.scaler_jobs.PSObject.Properties) {
   $jobName = [string]$entry.Name
-  $script = New-ScalerScript $entry.Value
+  $script = (New-ScalerScript $entry.Value).Replace("`r`n", "`n").Replace("`r", "`n")
   $scriptB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
   $verb = if ($existingScalerJobs -contains $jobName) { "update" } else { "create" }
   Invoke-Gcloud @(

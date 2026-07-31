@@ -49,6 +49,7 @@ def test_scaler_has_repository_scoped_pull_permission_and_fail_open_calendar() -
     assert "& gcloud scheduler jobs list" in sync
     assert '"scheduler", "jobs", $verb, "http"' in sync
     assert "gcloud run jobs describe $jobName" not in sync
+    assert '.Replace("`r`n", "`n").Replace("`r", "`n")' in sync
     assert "warm-disabled service cannot be in min-1 job" in sync
     assert 'first_saturday_only' in sync
     assert 'TZ=Asia/Taipei date +%d' in sync

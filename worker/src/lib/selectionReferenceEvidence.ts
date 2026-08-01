@@ -139,6 +139,7 @@ export interface StrategyLabelMatrixRowV4 {
   affinity_evidence_count: number
   position_weight: number
   challenger_affinity: number
+  challenger_affinity_version: string | null
   challenger_position_weight: number
   overlap: number
   evaluable: number
@@ -276,6 +277,7 @@ export function buildSelectionEvidenceV4(input: {
         affinity_evidence_count: finite(candidate.strategy_affinity_evidence_count_vector?.[spec.id]),
         position_weight: finite(candidate.strategy_position_weight_vector?.[spec.id]),
         challenger_affinity: finite(candidate.strategy_challenger_affinity_vector?.[spec.id]),
+        challenger_affinity_version: clean(candidate.strategy_challenger_affinity_version) || null,
         challenger_position_weight: finite(candidate.strategy_challenger_position_weight_vector?.[spec.id]),
         overlap: finite(candidate.strategy_overlap_vector?.[spec.id]),
         evaluable,
@@ -514,16 +516,17 @@ export async function persistSelectionEvidenceV4(
         strategy_status, alpha_bucket, family_id, production_owner,
         strategy_hit, weak_label, affinity, affinity_version, match_strength,
         threshold_margin, affinity_evidence_count, position_weight,
-        challenger_affinity, challenger_position_weight, overlap,
+        challenger_affinity, challenger_affinity_version, challenger_position_weight, overlap,
         evaluable, unavailable_reason, label_reason, labeler_version,
         strategy_registry_checksum, reference_contract_version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
     `).bind(
       row.signal_date, row.symbol, row.producer_run_id, row.strategy_id,
       row.strategy_version, row.strategy_status, row.alpha_bucket, row.family_id,
       row.production_owner, row.strategy_hit, row.weak_label, row.affinity,
       row.affinity_version, row.match_strength, row.threshold_margin, row.affinity_evidence_count,
-      row.position_weight, row.challenger_affinity, row.challenger_position_weight,
+      row.position_weight, row.challenger_affinity, row.challenger_affinity_version,
+      row.challenger_position_weight,
       row.overlap, row.evaluable, row.unavailable_reason, row.labeler_version,
       row.strategy_registry_checksum, SELECTION_REFERENCE_CONTRACT_VERSION,
     ))

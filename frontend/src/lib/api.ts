@@ -611,6 +611,8 @@ export type StrategyLearningResponse = {
     learning: {
       evidence_available: boolean
       reward_owner: 'selection_edge_v4' | 's12_execution_replay_v3_net'
+      reward_unit: 'return_fraction' | 'r_multiple'
+      reward_cost_basis: 'net_after_roundtrip_cost'
       decisions: number
       evaluable_decisions: number
       unavailable_decisions: number
@@ -639,7 +641,12 @@ export type StrategyLearningResponse = {
       rolling_date_return_lcb90: number | null
       latest_decision_date: string | null
       latest_reward_date: string | null
-      status: 'learning' | 'no_decisions' | 'no_reward' | 'unavailable'
+      first_decision_date: string | null
+      first_matched_date: string | null
+      mature_label_max_date: string | null
+      reward_state: 'ready' | 'pending_maturity' | 'no_matches' | 'reward_join_missing' | 'unavailable'
+      reward_status_reason: string
+      status: 'learning' | 'pending_maturity' | 'no_matches' | 'reward_join_missing' | 'no_decisions' | 'unavailable'
     }
   }>
   promotion_gate: StrategyPromotionGate[]

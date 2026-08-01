@@ -4,6 +4,7 @@ import {
   type S12TimingPolicy,
 } from './s12IntradayStructure'
 import { S12_REPLAY_ENGINE_SIGNATURE } from './s12ReplayContract'
+import { CANONICAL_SELECTION_ROUNDTRIP_COST_BPS } from './canonicalSelectionLabels'
 
 export type S12TwCalibrationCadence = 'weekly' | 'monthly' | 'regime_shift'
 
@@ -113,6 +114,9 @@ const TABLE_DDL = [
   `CREATE INDEX IF NOT EXISTS idx_s12_tw_calibration_active
      ON s12_tw_calibration_artifacts(status, superseded_at, entry_cohort, market_segment, alpha_bucket, entry_time_bucket, approved_at DESC)`,
 ]
+export const S12_TW_CALIBRATION_RETURN_BASIS = 'net_after_roundtrip_cost' as const
+export const S12_TW_CALIBRATION_RETURN_UNIT = 'r_multiple' as const
+
 
 function finite(value: unknown): number | null {
   const n = Number(value)
@@ -277,6 +281,9 @@ export function resolveS12TwCalibrationArtifact(
   ]
   const asOfDate = String(requested.asOfDate ?? '').trim()
   const eligible = artifacts.filter((row) => (
+    row.metrics.return_basis === S12_TW_CALIBRATION_RETURN_BASIS &&
+    row.metrics.return_unit === S12_TW_CALIBRATION_RETURN_UNIT &&
+    Number(row.metrics.roundtrip_cost_bps) === CANONICAL_SELECTION_ROUNDTRIP_COST_BPS &&
     row.status === 'approved' &&
     (!asOfDate || row.validationEnd < asOfDate)
   ))
@@ -313,14 +320,14 @@ async function loadEvidence(db: D1Database, startDate: string, endDate: string):
   const { results } = await db.prepare(`
     SELECT o.symbol, o.trade_date, o.assessment_state,
            COALESCE(NULLIF(TRIM(o.market), ''), s.market, 'UNKNOWN') AS market,
-           o.entry_ms, o.entry_price, o.stop_price, o.trade_pnl_r,
+           o.entry_ms, o.entry_price, o.stop_price, o.pnl_pct,
            o.max_favorable_pct, o.max_adverse_pct, o.detail_json
       FROM s12_replay_trade_outcomes o
       LEFT JOIN stocks s ON s.symbol = o.symbol
      WHERE o.trade_date >= ?
        AND o.trade_date <= ?
        AND o.sample_eligible = 1
-       AND o.trade_pnl_r IS NOT NULL
+       AND o.pnl_pct IS NOT NULL
        AND json_extract(o.detail_json, '$.replay_diagnostics.replay_engine_signature') = ?
        AND json_extract(o.detail_json, '$.replay_diagnostics.replay_cohort_signature') IS NOT NULL
      ORDER BY o.trade_date ASC, o.symbol ASC
@@ -333,8 +340,11 @@ async function loadEvidence(db: D1Database, startDate: string, endDate: string):
     const entry = finite(row.entry_price)
     const stop = finite(row.stop_price)
     const atr = finite(detailValue(assessmentDetail, 'atr15m'))
-    const pnlR = finite(row.trade_pnl_r)
-    if (pnlR == null) continue
+    const grossPnlPct = finite(row.pnl_pct)
+    const stopRiskPct = entry != null && stop != null && entry > stop ? (entry - stop) / entry : null
+    if (grossPnlPct == null || stopRiskPct == null || stopRiskPct <= 0) continue
+    const netPnlPct = grossPnlPct - CANONICAL_SELECTION_ROUNDTRIP_COST_BPS / 10_000
+    const pnlR = netPnlPct / stopRiskPct
     const entryCohort = String(row.assessment_state ?? payload.assessment_state ?? '').trim().toLowerCase()
     if (entryCohort !== 'reaction_ready' && entryCohort !== 'limited_takeover_ready') continue
     evidence.push({
@@ -350,7 +360,7 @@ async function loadEvidence(db: D1Database, startDate: string, endDate: string):
       mutationScore: finite(detailValue(assessmentDetail, 'equity_mutation_score')),
       fastVwapSignals: countPipeValues(detailValue(assessmentDetail, 'vwap_fast_reasons')),
       fastVwapBlockers: countPipeValues(detailValue(assessmentDetail, 'vwap_fast_blockers')),
-      stopRiskPct: entry != null && stop != null && entry > stop ? (entry - stop) / entry : null,
+      stopRiskPct,
       stopRiskAtr: entry != null && stop != null && atr != null && atr > 0 && entry > stop ? (entry - stop) / atr : null,
       sessionMoveAtr: finite(detailValue(assessmentDetail, 'session_60m_move_atr')),
       sessionClosePosition: finite(detailValue(assessmentDetail, 'session_60m_close_position')),
@@ -476,6 +486,9 @@ function buildArtifactCandidate(
     sampleCount: rows.length,
     dateCount: dates.length,
     metrics: {
+      return_basis: S12_TW_CALIBRATION_RETURN_BASIS,
+      return_unit: S12_TW_CALIBRATION_RETURN_UNIT,
+      roundtrip_cost_bps: CANONICAL_SELECTION_ROUNDTRIP_COST_BPS,
       train_samples: train.length,
       validation_samples: validation.length,
       selected_validation_samples: selectedValidation.length,

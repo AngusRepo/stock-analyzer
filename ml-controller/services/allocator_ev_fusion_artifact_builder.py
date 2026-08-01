@@ -576,6 +576,8 @@ def _samples(
         "sparse_date_rows_rejected": sparse_date_rows_rejected,
         "raw_date_counts": dict(sorted(raw_day_counts.items())),
         "date_count": len({row["date"] for row in out}),
+        "oof_min_date": min((row["date"] for row in out), default=None),
+        "oof_max_date": max((row["date"] for row in out), default=None),
         "s12_ready_count": s12_ready_count,
         "s12_available_count": s12_available_count,
         "s12_available_date_count": len({row["date"] for row in out if row["features"]["s12_available"] > 0.0}),

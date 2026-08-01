@@ -85,6 +85,9 @@
   .obs-standalone__group-card[aria-label='Pipeline support'] .obs-standalone__group-header { align-items: flex-start; flex-direction: column; }
   .obs-standalone__group-card[aria-label='Pipeline support'] .obs-standalone__group-stats { justify-content: flex-start; }
   .obs-standalone__group-card[aria-label='Pipeline support'] .obs-standalone__job-grid { grid-template-columns: 1fr; }
+  .obs-standalone__group-card:first-child:last-child[aria-label='Daily operations'] .obs-standalone__job-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1120px) {

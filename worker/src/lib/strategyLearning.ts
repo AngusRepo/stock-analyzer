@@ -23,7 +23,7 @@ import type { OhlcvRow } from './ohlcvTradePlanLevels'
 import type { Bindings } from '../types'
 import { writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
-import { CANONICAL_SELECTION_ROUNDTRIP_COST_BPS } from './canonicalSelectionLabels'
+import { CANONICAL_SELECTION_LABEL_SCHEMA_VERSION, CANONICAL_SELECTION_ROUNDTRIP_COST_BPS } from './canonicalSelectionLabels'
 import { S12_REPLAY_ENGINE_SIGNATURE } from './s12ReplayContract'
 import {
   applyStrategyThresholdCalibrationArtifacts,
@@ -228,6 +228,8 @@ export interface StrategyLearningSummary {
     learning: {
       evidence_available: boolean
       reward_owner: 'selection_edge_v4' | 's12_execution_replay_v3_net'
+      reward_unit: 'return_fraction' | 'r_multiple'
+      reward_cost_basis: 'net_after_roundtrip_cost'
       decisions: number
       evaluable_decisions: number
       unavailable_decisions: number
@@ -256,7 +258,12 @@ export interface StrategyLearningSummary {
       rolling_date_return_lcb90: number | null
       latest_decision_date: string | null
       latest_reward_date: string | null
-      status: 'learning' | 'no_decisions' | 'no_reward' | 'unavailable'
+      first_decision_date: string | null
+      first_matched_date: string | null
+      mature_label_max_date: string | null
+      reward_state: 'ready' | 'pending_maturity' | 'no_matches' | 'reward_join_missing' | 'unavailable'
+      reward_status_reason: string
+      status: 'learning' | 'pending_maturity' | 'no_matches' | 'reward_join_missing' | 'no_decisions' | 'unavailable'
     }
   }>
   promotion_gate: StrategyPromotionGateRow[]
@@ -2611,6 +2618,32 @@ export async function buildStrategyLearningSummary(
   const headBySpec = new Map(
     headRows.map((row) => [row.strategy_id + '|' + row.strategy_version, row]),
   )
+  const [matureLabelRow, firstEvidenceRowsResult] = await Promise.all([
+    db.prepare(`
+      SELECT MAX(signal_date) AS mature_label_max_date
+        FROM canonical_selection_labels_v4
+       WHERE label_schema_version = ?
+         AND outcome_known_date <= ?
+    `).bind(CANONICAL_SELECTION_LABEL_SCHEMA_VERSION, date).first<{ mature_label_max_date: string | null }>(),
+    db.prepare(`
+      SELECT strategy_id,
+             strategy_version,
+             MIN(CASE WHEN evaluable_decisions > 0 THEN date END) AS first_decision_date,
+             MIN(CASE WHEN matched > 0 THEN date END) AS first_matched_date
+        FROM strategy_learning_daily_stats
+       WHERE date <= ?
+         AND decision_contract_version = 'strategy-evaluation-v2'
+       GROUP BY strategy_id, strategy_version
+    `).bind(date).all<{
+      strategy_id: string
+      strategy_version: string
+      first_decision_date: string | null
+      first_matched_date: string | null
+    }>(),
+  ])
+  const matureLabelMaxDate = matureLabelRow?.mature_label_max_date ?? null
+  const firstEvidenceBySpec = new Map((firstEvidenceRowsResult.results ?? []).map((row) => [row.strategy_id + '|' + row.strategy_version, row]))
+
 
   const lifetimeMddRows = canUseLatestHead
     ? (await db.prepare(`
@@ -2694,6 +2727,27 @@ export async function buildStrategyLearningSummary(
       const lifetimeSamples = usesS12ExecutionReward ? s12ExecutionMetrics.lifetimeSamples : Number(head?.lifetime_reward_samples ?? 0)
       const lifetimeHits = usesS12ExecutionReward ? s12ExecutionMetrics.lifetimeHits : Number(head?.lifetime_reward_hits ?? 0)
       const lifetimeRewardSum = usesS12ExecutionReward ? s12ExecutionMetrics.lifetimeRewardSum : Number(head?.lifetime_reward_sum ?? 0)
+      const firstEvidence = firstEvidenceBySpec.get(key)
+      const firstDecisionDate = firstEvidence?.first_decision_date ?? null
+      const firstMatchedDate = firstEvidence?.first_matched_date ?? null
+      const rewardState = lifetimeSamples > 0
+        ? 'ready' as const
+        : lifetimeUnavailable > 0 && lifetimeEvaluable === 0
+          ? 'unavailable' as const
+          : lifetimeMatched === 0
+            ? 'no_matches' as const
+            : matureLabelMaxDate == null || firstMatchedDate == null || firstMatchedDate > matureLabelMaxDate
+              ? 'pending_maturity' as const
+              : 'reward_join_missing' as const
+      const rewardStatusReason = rewardState === 'ready'
+        ? `reward evidence available through ${usesS12ExecutionReward ? s12ExecutionMetrics.latestRewardDate ?? 'unknown' : head?.latest_reward_date ?? 'unknown'}`
+        : rewardState === 'pending_maturity'
+          ? `matched decisions start ${firstMatchedDate ?? 'unknown'}; canonical T+5 labels mature through ${matureLabelMaxDate ?? 'none'}`
+          : rewardState === 'no_matches'
+            ? 'evaluable decisions exist but no strategy setup matched'
+            : rewardState === 'reward_join_missing'
+              ? `matched decisions are mature through ${matureLabelMaxDate}; reward join requires repair`
+              : 'strategy evidence is unavailable'
       const rollingDecisions = decisionRows.reduce((sum, row) => sum + Number(row.decisions ?? 0), 0)
       const rollingEvaluable = decisionRows.reduce((sum, row) => sum + Number(row.evaluable_decisions ?? 0), 0)
       const rollingUnavailable = decisionRows.reduce((sum, row) => sum + Number(row.unavailable_decisions ?? 0), 0)
@@ -2715,6 +2769,8 @@ export async function buildStrategyLearningSummary(
         learning: {
           evidence_available: true,
           reward_owner: usesS12ExecutionReward ? 's12_execution_replay_v3_net' : 'selection_edge_v4',
+          reward_unit: usesS12ExecutionReward ? 'r_multiple' : 'return_fraction',
+          reward_cost_basis: 'net_after_roundtrip_cost',
           decisions: lifetimeDecisions,
           evaluable_decisions: lifetimeEvaluable,
           unavailable_decisions: lifetimeUnavailable,
@@ -2743,13 +2799,22 @@ export async function buildStrategyLearningSummary(
           rolling_date_return_lcb90: usesS12ExecutionReward ? s12ExecutionMetrics.rollingDateReturnLcb90 : selectionDateReturnStats.lcb90,
           latest_decision_date: head?.latest_decision_date ?? null,
           latest_reward_date: usesS12ExecutionReward ? s12ExecutionMetrics.latestRewardDate : (head?.latest_reward_date ?? null),
+          first_decision_date: firstDecisionDate,
+          first_matched_date: firstMatchedDate,
+          mature_label_max_date: matureLabelMaxDate,
+          reward_state: rewardState,
+          reward_status_reason: rewardStatusReason,
           status: lifetimeSamples > 0
             ? 'learning'
-            : lifetimeEvaluable > 0
-              ? 'no_reward'
-              : lifetimeUnavailable > 0
-                ? 'unavailable'
-                : 'no_decisions',
+            : rewardState === 'pending_maturity'
+              ? 'pending_maturity'
+              : rewardState === 'no_matches'
+                ? 'no_matches'
+                : rewardState === 'reward_join_missing'
+                  ? 'reward_join_missing'
+                  : rewardState === 'unavailable'
+                    ? 'unavailable'
+                    : 'no_decisions',
         },
       }
     }),
@@ -3051,6 +3116,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             affinity_evidence_count: match?.evidenceCount ?? 0,
             position_weight: 0,
             challenger_affinity: 0,
+            challenger_affinity_version: null,
             challenger_position_weight: 0,
             overlap: 0,
             labeler_version: labelerVersion,

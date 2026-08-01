@@ -350,6 +350,13 @@
 
 .obs-chain__topology, .obs-chain__main-lane { min-width: 0; }
 .obs-chain__lane-head { display: none; }
+.obs-chain__topology.is-weekly .obs-chain__viewport { overflow: hidden; }
+.obs-chain__topology.is-weekly .obs-chain__sequence { width: 100%; min-width: 0; min-height: 360px; justify-content: space-between; padding: 22px 12px; }
+.obs-chain__topology.is-weekly .obs-chain__segment { min-width: 0; flex: 1 1 0; justify-content: center; }
+.obs-chain__topology.is-weekly .obs-chain__column,
+.obs-chain__topology.is-weekly .obs-chain__column.is-parallel { width: min(112px, 100%); }
+.obs-chain__topology.is-weekly .obs-chain__connector { width: clamp(6px, 1vw, 16px); }
+
 
 @media (min-width: 1180px) {
   .obs-chain__topology.is-intraday {

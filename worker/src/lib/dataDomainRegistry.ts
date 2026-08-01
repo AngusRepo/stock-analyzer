@@ -29,6 +29,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'active8_oof_retention_ledger', 's12_formal_ev_decisions',
     'strategy_spec_registry', 'strategy_decision_log', 'selection_reference_snapshots_v1',
     'strategy_label_matrix_v4', 'strategy_label_matrix_runs_v4', 'selection_reference_repair_runs_v1',
+    'active8_oof_forward_extension_coverage',
     'selection_reference_identity_repair_runs_v1',
     'strategy_route_calibration_runs_v1', 'strategy_route_calibration_head_v1',
     'strategy_route_backfill_eligibility_v1',

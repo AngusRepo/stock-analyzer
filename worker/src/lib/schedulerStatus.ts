@@ -607,12 +607,12 @@ export function resolveSchedulerDisplayStatus(input: {
   const activeRunDate = String(activeReplayRunDate ?? '').trim()
   const activeLogRunDate = String(activeReplayLog?.run_date ?? '').trim()
   const replayObservedToday = timestampTwDate(activeReplayLog?.timestamp) === today
-    || timestampTwDate(activeReplayHeartbeatAt ?? undefined) === today
+  const rootHeartbeatObservedToday = def.id === 'evening-chain' && timestampTwDate(activeReplayHeartbeatAt ?? undefined) === today
   const hasActiveReplayLog = Boolean(
     activeRunDate
     && activeRunDate !== today
     && activeLogRunDate === activeRunDate
-    && (activeReplayIsRunning || replayObservedToday),
+    && (activeReplayIsRunning || replayObservedToday || rootHeartbeatObservedToday),
   )
   const resolvedToday = resolveSchedulerLogStatus(todayLog, def, nowMs)
   if (resolvedToday.status && !hasActiveReplayLog) {

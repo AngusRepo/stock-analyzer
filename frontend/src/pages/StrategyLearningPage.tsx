@@ -8,14 +8,26 @@ import { strategyLabApi, type StrategyLearningResponse, type StrategyPromotionGa
 type LearningRow = StrategyLearningResponse['specs'][number]
 
 function pct(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(Number(value))) return '-'
+  if (value == null || !Number.isFinite(Number(value))) return 'Unavailable'
   return `${(Number(value) * 100).toFixed(1)}%`
 }
+function rewardMetric(value: number | null | undefined, unit: 'return_fraction' | 'r_multiple'): string {
+  if (value == null || !Number.isFinite(Number(value))) return 'Unavailable'
+  return unit === 'r_multiple' ? `${Number(value).toFixed(3)}R` : pct(value)
+}
+
+function signedClass(value: number | null | undefined): string {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric === 0) return 'text-slate-300'
+  return numeric > 0 ? 'text-rose-300' : 'text-emerald-300'
+}
+
 
 function statusClass(status: string): string {
   if (status === 'active' || status === 'active_monitor' || status === 'learning') return 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200'
   if (status === 'shadow' || status === 'candidate' || status === 'candidate_ready') return 'border-cyan-400/30 bg-cyan-400/10 text-cyan-200'
-  if (status === 'research' || status === 'not_ready' || status === 'no_reward') return 'border-amber-400/30 bg-amber-400/10 text-amber-200'
+  if (status === 'reward_join_missing') return 'border-rose-400/30 bg-rose-400/10 text-rose-200'
+  if (status === 'research' || status === 'not_ready' || status === 'no_reward' || status === 'pending_maturity' || status === 'no_matches') return 'border-amber-400/30 bg-amber-400/10 text-amber-200'
   return 'border-slate-600 bg-slate-800/50 text-slate-300'
 }
 
@@ -26,6 +38,8 @@ function registryLearningRow(spec: StrategySpec): LearningRow {
       evidence_available: false,
       reward_owner: 'selection_edge_v4',
       decisions: 0,
+      reward_unit: 'return_fraction',
+      reward_cost_basis: 'net_after_roundtrip_cost',
       evaluable_decisions: 0,
       unavailable_decisions: 0,
       matched: 0,
@@ -53,6 +67,11 @@ function registryLearningRow(spec: StrategySpec): LearningRow {
       rolling_date_return_lcb90: null,
       latest_decision_date: null,
       latest_reward_date: null,
+      first_decision_date: null,
+      first_matched_date: null,
+      mature_label_max_date: null,
+      reward_state: 'unavailable',
+      reward_status_reason: 'reward ledger unavailable',
       status: 'unavailable',
     },
   }
@@ -90,6 +109,11 @@ function StrategyLedgerGroup({
           const weight = Number(policyWeights[row.id] ?? 0)
           const evidence = gate?.missing_evidence ?? []
           const evidenceLabels = gate ? (evidence.length ? evidence : ['evidence ready']) : ['reward ledger unavailable']
+          const rewardPending = row.learning.reward_state === 'pending_maturity'
+          const rewardMissing = row.learning.reward_state === 'reward_join_missing'
+          const noMatches = row.learning.reward_state === 'no_matches'
+          const rewardCount = rewardPending ? 'Pending T+5' : rewardMissing ? 'Join missing' : noMatches ? 'No setups' : String(row.learning.samples)
+          const rollingMature = rewardPending ? 'Pending T+5' : rewardMissing ? 'Join missing' : noMatches ? 'No setups' : String(row.learning.rolling_reward_dates)
           return (
             <article key={`${row.id}:${row.version}`} className="min-w-0 space-y-4 bg-slate-950/70 px-4 py-4 lg:px-5">
               <div className="min-w-0">
@@ -113,19 +137,23 @@ function StrategyLedgerGroup({
                   <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.rolling_evaluable_decisions : '-'}</dd>
                   <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>unavailable {row.learning.rolling_unavailable_decisions} / {row.learning.rolling_sessions} sessions</> : 'unavailable'}</div>
                 </div>
-                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Lifetime rewards</dt><dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.samples : '-'}</dd></div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
+                  <dt className="text-xs text-slate-500">Lifetime rewards</dt>
+                  <dd className={`mt-1 font-mono text-sm ${rewardMissing ? 'text-rose-300' : rewardPending || noMatches ? 'text-amber-200' : 'text-slate-200'}`}>{row.learning.evidence_available ? rewardCount : '-'}</dd>
+                  <div className="mt-1 text-xs leading-4 text-slate-500">{row.learning.reward_status_reason}</div>
+                </div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
                   <dt className="text-xs text-slate-500">Rolling mature dates</dt>
-                  <dd className="mt-1 font-mono text-sm text-cyan-200">{row.learning.evidence_available ? row.learning.rolling_reward_dates : '-'}</dd>
-                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>LCB90 {pct(row.learning.rolling_date_return_lcb90)}</> : 'unavailable'}</div>
+                  <dd className="mt-1 font-mono text-sm text-cyan-200">{row.learning.evidence_available ? rollingMature : '-'}</dd>
+                  <div className={`mt-1 text-xs ${signedClass(row.learning.rolling_date_return_lcb90)}`}>{row.learning.evidence_available ? rewardPending || rewardMissing || noMatches ? rollingMature : <>LCB90 {rewardMetric(row.learning.rolling_date_return_lcb90, row.learning.reward_unit)}</> : 'Unavailable'}</div>
                 </div>
-                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Rolling hit / avg</dt><dd className="mt-1 font-mono text-sm text-cyan-200">{pct(row.learning.rolling_hit_rate)} / {pct(row.learning.rolling_avg_return_pct)}</dd></div>
-                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Rolling MDD</dt><dd className="mt-1 font-mono text-sm text-amber-200">{pct(row.learning.rolling_max_drawdown_pct)}</dd></div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Rolling hit / avg</dt><dd className="mt-1 font-mono text-sm text-slate-300">{rewardPending || rewardMissing || noMatches ? rollingMature : <>{pct(row.learning.rolling_hit_rate)} / <span className={signedClass(row.learning.rolling_avg_return_pct)}>{rewardMetric(row.learning.rolling_avg_return_pct, row.learning.reward_unit)}</span></>}</dd></div>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2"><dt className="text-xs text-slate-500">Rolling MDD</dt><dd className={`mt-1 font-mono text-sm ${signedClass(row.learning.rolling_max_drawdown_pct)}`}>{rewardPending || rewardMissing || noMatches ? rollingMature : rewardMetric(row.learning.rolling_max_drawdown_pct, row.learning.reward_unit)}</dd></div>
               </dl>
 
               <div className="grid gap-3">
                 <div className="rounded-xl border border-slate-800 bg-slate-900/35 p-3">
-                  <div className="flex justify-between gap-3 text-xs text-slate-500"><span>Policy weight</span><span className="font-mono text-slate-300">{hasWeight ? pct(weight) : '-'}</span></div>
+                  <div className="flex justify-between gap-3 text-xs text-slate-500"><span>Policy weight</span><span className="font-mono text-slate-300">{hasWeight ? pct(weight) : 'Not allocated'}</span></div>
                   <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800">
                     <div className="h-full bg-emerald-300" style={{ width: `${hasWeight ? Math.max(0, Math.min(100, weight * 100)) : 0}%` }} />
                   </div>

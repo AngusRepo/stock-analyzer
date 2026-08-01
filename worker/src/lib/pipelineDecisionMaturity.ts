@@ -38,7 +38,7 @@ export interface PipelineMaturityMetric {
   value: number | string | boolean | null
   target?: number | string | boolean | null
   comparator?: 'gte' | 'gt' | 'lt' | 'eq'
-  unit?: 'rows' | 'dates' | 'ratio' | 'return' | 'score' | 'count' | 'status'
+  unit?: 'rows' | 'dates' | 'ratio' | 'return' | 'r_multiple' | 'score' | 'count' | 'status'
   passed?: boolean | null
   note?: string
 }
@@ -57,10 +57,18 @@ export interface PipelineMaturityStage {
   production_effect: string
   blockers: string[]
   metrics: PipelineMaturityMetric[]
+  history?: Array<{
+    evidence_date: string
+    value: number | null
+    target: number | null
+    unit: PipelineMaturityMetric['unit']
+  }>
   lineage: {
     requested_date: string
     evidence_date: string | null
     oof_max_date?: string | null
+    oof_applicable?: boolean
+    evidence_semantics?: string
     artifact_id?: string | null
     model_version?: string | null
     source: string
@@ -133,6 +141,10 @@ type EvCandidateRow = {
   fusion_corr_delta_lcb90: number | string | null
   fusion_spread_delta_lcb90: number | string | null
   fusion_top_trade_ev_lcb90: number | string | null
+  fusion_oof_max_date: string | null
+  fusion_final_comparison_decision: string | null
+  fusion_final_comparison_samples: number | string | null
+  fusion_final_comparison_dates: number | string | null
   walk_forward_passed: number | boolean | null
   execution_decision: string | null
   execution_probability_decision: string | null
@@ -315,7 +327,7 @@ export async function buildPipelineDecisionMaturityPacket(
                WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1
-                 AND m.affinity_evidence_count>0 AND m.affinity_version=?) threshold_rows,
+                 AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) threshold_rows,
              r.updated_at
         FROM strategy_label_matrix_runs_v4 r
        WHERE r.signal_date=? AND r.producer_run_id=?
@@ -375,6 +387,9 @@ export async function buildPipelineDecisionMaturityPacket(
              MAX(approved_at) approved_at
         FROM s12_tw_calibration_artifacts
        WHERE status='approved' AND superseded_at IS NULL AND validation_end<?
+         AND json_extract(metrics_json, '$.return_basis')='net_after_roundtrip_cost'
+         AND json_extract(metrics_json, '$.return_unit')='r_multiple'
+         AND CAST(json_extract(metrics_json, '$.roundtrip_cost_bps') AS REAL)=18
     `).bind(requestedDate).first<any>()),
     safeQuery(() => learningDb.prepare(`
       SELECT assessment_state, COALESCE(NULLIF(TRIM(market), ''), 'UNKNOWN') market_segment,
@@ -449,9 +464,13 @@ export async function buildPipelineDecisionMaturityPacket(
              json_extract(offline_evidence_json, '$.validation_packet.oos_metrics.date_mean_top_quintile_return_lcb90') l4_top_lcb90,
              json_extract(offline_evidence_json, '$.validation_packet.oos_metrics.prediction_target_corr_lcb90') selection_corr_lcb90,
              json_extract(offline_evidence_json, '$.validation_packet.oos_metrics.top_bottom_spread_lcb90') selection_spread_lcb90,
-             json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.corr_delta_lcb90') fusion_corr_delta_lcb90,
-             json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.spread_delta_lcb90') fusion_spread_delta_lcb90,
+             json_extract(offline_evidence_json, '$.validation_packet.selection_champion_comparison.corr_delta_lcb90') fusion_corr_delta_lcb90,
+             json_extract(offline_evidence_json, '$.validation_packet.selection_champion_comparison.spread_delta_lcb90') fusion_spread_delta_lcb90,
              json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.top_trade_ev_lcb90') fusion_top_trade_ev_lcb90,
+             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.oof_max_date') fusion_oof_max_date,
+             json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.decision') fusion_final_comparison_decision,
+             json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.sample_count') fusion_final_comparison_samples,
+             json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.oos_date_count') fusion_final_comparison_dates,
              json_extract(offline_evidence_json, '$.validation_packet.walk_forward.passed') walk_forward_passed,
              json_extract(offline_evidence_json, '$.validation_packet.execution_model.decision') execution_decision,
              json_extract(offline_evidence_json, '$.validation_packet.execution_probability_model.decision') execution_probability_decision,
@@ -501,6 +520,8 @@ export async function buildPipelineDecisionMaturityPacket(
       lineage: {
         requested_date: requestedDate,
         evidence_date: head.signal_date,
+        oof_applicable: false,
+        evidence_semantics: 'Daily canonical decision-universe coverage; this is not cumulative and not OOF.',
         artifact_id: head.run_id,
         source: 'canonical selection reference + strategy matrix',
         updated_at: matrixRow.updated_at ?? null,
@@ -549,6 +570,8 @@ export async function buildPipelineDecisionMaturityPacket(
         requested_date: requestedDate,
         evidence_date: redundancyRow.as_of_date,
         oof_max_date: redundancyRow.oof_max_date ?? null,
+        oof_applicable: true,
+        evidence_semantics: 'Latest paired mature residual-return cutoff; as_of_date can be newer than oof_max_date.',
         artifact_id: redundancyRow.evidence_artifact_id ?? redundancyRow.artifact_id,
         source: redundancyRow.source_contract,
         updated_at: redundancyRow.created_at,
@@ -605,6 +628,9 @@ export async function buildPipelineDecisionMaturityPacket(
         requested_date: requestedDate,
         evidence_date: route.as_of_date,
         artifact_id: route.run_id,
+        oof_max_date: route.oos_end_date ?? null,
+        oof_applicable: true,
+        evidence_semantics: 'Train/purge/OOS route calibration cutoff; independent from daily affinity coverage.',
         source: 'purged chronological route calibration',
         updated_at: route.created_at,
       },
@@ -652,7 +678,7 @@ export async function buildPipelineDecisionMaturityPacket(
         gateMetric('validation_samples', 'Validation samples', candidateMetrics.validation_samples, 12, 'rows'),
         gateMetric('selected_validation_samples', 'Selected validation samples', candidateMetrics.selected_validation_samples, 10, 'rows'),
         gateMetric('validation_coverage', 'Validation coverage', candidateMetrics.validation_coverage, 0.35, 'ratio'),
-        gateMetric('validation_mean_r', 'Selected validation mean R', candidateMetrics.selected_validation_mean_r, 0, 'return'),
+        gateMetric('validation_mean_r', candidateMetrics.return_basis === 'net_after_roundtrip_cost' ? 'Selected validation mean net R' : 'Selected validation mean legacy gross R', candidateMetrics.selected_validation_mean_r, 0, 'r_multiple'),
         gateMetric('validation_hit_rate', 'Selected validation hit rate', candidateMetrics.selected_validation_hit_rate, 0.45, 'ratio'),
         metric('structure_ready', 'Today execution-ready', s12Structure.value?.ready_rows ?? null, { unit: 'count' }),
         metric('structure_setup', 'Today setup/wait', s12Structure.value?.setup_rows ?? null, { unit: 'count' }),
@@ -664,6 +690,8 @@ export async function buildPipelineDecisionMaturityPacket(
         evidence_date: s12Candidate?.validation_end ?? s12Raw?.max_date ?? s12LatestRun?.run_date ?? null,
         artifact_id: approved ? null : s12Candidate?.artifact_id ?? s12LatestRun?.run_id ?? null,
         source: 'strict S12 V3 replay + walk-forward Taiwan-equity calibration',
+        oof_applicable: false,
+        evidence_semantics: 'Latest completed cost-net Taiwan-equity calibration; it is not a daily OOF cutoff.',
         updated_at: s12Candidate?.created_at ?? s12LatestRun?.created_at ?? null,
       },
     })
@@ -725,6 +753,8 @@ export async function buildPipelineDecisionMaturityPacket(
         evidence_date: l4?.source_run_date ?? candidateState?.l4_alpha_ev.candidate_end_date ?? null,
         oof_max_date: maturity?.indexedL4PitMaxDate ?? null,
         artifact_id: l4?.artifact_id ?? candidateState?.l4_alpha_ev.artifact_id ?? null,
+        oof_applicable: true,
+        evidence_semantics: 'Purged Active-8 OOF and five-session net-label cutoff.',
         model_version: l4?.version ?? l4Serving?.model_version ?? null,
         source: 'purged Active-8 OOF + canonical five-session net labels',
         updated_at: l4?.updated_at ?? candidateState?.l4_alpha_ev.updated_at ?? null,
@@ -778,9 +808,10 @@ export async function buildPipelineDecisionMaturityPacket(
         gateMetric('sector_dates', 'PIT sector-alpha dates', fusion?.sector_dates, Math.max(1, finite(fusion?.min_sector_dates, 8)), 'dates'),
         gateMetric('selection_corr_lcb90', 'Selection corr LCB90', fusion?.selection_corr_lcb90, 0, 'ratio', 'gt'),
         gateMetric('selection_spread_lcb90', 'Selection spread LCB90', fusion?.selection_spread_lcb90, 0, 'return', 'gt'),
-        gateMetric('champion_corr_delta', 'Corr delta vs canonical L4 LCB90', fusion?.fusion_corr_delta_lcb90, 0, 'ratio', 'gte'),
-        gateMetric('champion_spread_delta', 'Spread delta vs canonical L4 LCB90', fusion?.fusion_spread_delta_lcb90, 0, 'return', 'gte'),
+        gateMetric('champion_corr_delta', 'Selection corr delta vs canonical L4 LCB90', fusion?.fusion_corr_delta_lcb90, 0, 'ratio', 'gte'),
+        gateMetric('champion_spread_delta', 'Selection spread delta vs canonical L4 LCB90', fusion?.fusion_spread_delta_lcb90, 0, 'return', 'gte'),
         gateMetric('top_trade_ev_lcb90', 'Final top trade EV LCB90', fusion?.fusion_top_trade_ev_lcb90, 0, 'return', 'gt'),
+        metric('final_champion_comparison', 'Final trade EV paired comparison', fusion?.fusion_final_comparison_decision, { unit: 'status', note: `${finite(fusion?.fusion_final_comparison_samples)}/paired rows across ${finite(fusion?.fusion_final_comparison_dates)} dates; selection comparison is reported separately.` }),
         metric('execution_expert', 'Conditional execution expert', fusion?.execution_decision, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusion?.execution_decision == null ? null : fusion.execution_decision === 'PASS' }),
         metric('execution_probability', 'Execution probability expert', fusion?.execution_probability_decision, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusion?.execution_probability_decision == null ? null : fusion.execution_probability_decision === 'PASS' }),
       ],
@@ -790,9 +821,122 @@ export async function buildPipelineDecisionMaturityPacket(
         artifact_id: fusion?.artifact_id ?? candidateState?.allocator_ev_fusion.artifact_id ?? null,
         model_version: fusion?.version ?? fusionServing?.model_version ?? null,
         source: 'canonical L4 + strict S12 V3 replay + market/sector PIT context',
+        oof_max_date: fusion?.fusion_oof_max_date ?? null,
+        oof_applicable: true,
+        evidence_semantics: 'Purged OOF sample cutoff; final execution comparison can remain pending after selection comparison is available.',
         updated_at: fusion?.updated_at ?? candidateState?.allocator_ev_fusion.updated_at ?? null,
       },
     })
+  }
+
+  const [thresholdHistory, redundancyHistory, routeHistory, s12History, l4History, fusionHistory] = await Promise.all([
+    safeQuery(() => learningDb.prepare(`
+      WITH recent_dates AS (
+        SELECT signal_date
+          FROM strategy_label_matrix_runs_v4
+         WHERE signal_date <= ? AND status = 'ready'
+         GROUP BY signal_date
+         ORDER BY signal_date DESC
+         LIMIT 7
+      ), ranked_runs AS (
+        SELECT producer_run_id, signal_date,
+               ROW_NUMBER() OVER (PARTITION BY signal_date ORDER BY updated_at DESC, producer_run_id DESC) ordinal
+          FROM strategy_label_matrix_runs_v4 runs
+          JOIN recent_dates USING (signal_date)
+         WHERE runs.status = 'ready'
+      )
+      SELECT run.signal_date evidence_date,
+             SUM(CASE WHEN matrix.evaluable=1 AND matrix.strategy_hit=1
+                       AND matrix.affinity_evidence_count>0
+                       AND matrix.challenger_affinity_version=? THEN 1 ELSE 0 END) value,
+             SUM(CASE WHEN matrix.evaluable=1 AND matrix.strategy_hit=1 THEN 1 ELSE 0 END) target
+        FROM ranked_runs run
+        JOIN strategy_label_matrix_v4 matrix ON matrix.producer_run_id=run.producer_run_id
+       WHERE run.ordinal=1
+       GROUP BY run.signal_date
+       ORDER BY run.signal_date DESC
+       LIMIT 7
+    `).bind(requestedDate, STRATEGY_ROUTE_CHALLENGER_VERSION).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+    safeQuery(() => learningDb.prepare(`
+      SELECT as_of_date evidence_date, paired_date_count value,
+             json_extract(graph_json, '$.paired_date_requirement') target
+        FROM strategy_redundancy_artifacts_v1
+       WHERE as_of_date <= ?
+       ORDER BY as_of_date DESC, created_at DESC
+       LIMIT 7
+    `).bind(requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+    safeQuery(() => learningDb.prepare(`
+      SELECT as_of_date evidence_date, date_count value, ? target
+        FROM strategy_route_calibration_runs_v1
+       WHERE as_of_date <= ?
+       ORDER BY as_of_date DESC, created_at DESC
+       LIMIT 7
+    `).bind(STRATEGY_ROUTE_MIN_TOTAL_DATES, requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+    safeQuery(() => learningDb.prepare(`
+      WITH ranked AS (
+        SELECT validation_end evidence_date,
+               json_extract(metrics_json, '$.selected_validation_mean_r') value,
+               ROW_NUMBER() OVER (PARTITION BY validation_end ORDER BY sample_count DESC, created_at DESC) ordinal
+          FROM s12_tw_calibration_artifacts
+         WHERE validation_end <= ? AND superseded_at IS NULL
+      )
+      SELECT evidence_date, value, 0 target
+        FROM ranked
+       WHERE ordinal=1
+       ORDER BY evidence_date DESC
+       LIMIT 7
+    `).bind(requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+    safeQuery(() => learningDb.prepare(`
+      WITH ranked AS (
+        SELECT source_run_date evidence_date,
+               json_extract(offline_evidence_json, '$.validation_packet.oos_metrics.date_mean_cross_section_corr_lcb90') value,
+               ROW_NUMBER() OVER (PARTITION BY source_run_date ORDER BY updated_at DESC, artifact_id DESC) ordinal
+          FROM model_artifact_registry
+         WHERE model_name='l4_alpha_ev' AND source_run_date <= ?
+      )
+      SELECT evidence_date, value, 0 target
+        FROM ranked
+       WHERE ordinal=1 AND evidence_date IS NOT NULL
+       ORDER BY evidence_date DESC
+       LIMIT 7
+    `).bind(requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+    safeQuery(() => learningDb.prepare(`
+      WITH ranked AS (
+        SELECT source_run_date evidence_date,
+               json_extract(offline_evidence_json, '$.validation_packet.selection_champion_comparison.spread_delta_lcb90') value,
+               ROW_NUMBER() OVER (PARTITION BY source_run_date ORDER BY updated_at DESC, artifact_id DESC) ordinal
+          FROM model_artifact_registry
+         WHERE model_name='allocator_ev_fusion' AND source_run_date <= ?
+      )
+      SELECT evidence_date, value, 0 target
+        FROM ranked
+       WHERE ordinal=1 AND evidence_date IS NOT NULL
+       ORDER BY evidence_date DESC
+       LIMIT 7
+    `).bind(requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+  ])
+  const historyByStage = new Map<PipelineMaturityStage['id'], {
+    rows: Array<{ evidence_date: string; value: number | null; target: number | null }>
+    unit: PipelineMaturityMetric['unit']
+  }>([
+    ['threshold_margin_affinity_v2', { rows: thresholdHistory.value ?? [], unit: 'rows' }],
+    ['oof_redundancy', { rows: redundancyHistory.value ?? [], unit: 'dates' }],
+    ['route_score_v2', { rows: routeHistory.value ?? [], unit: 'dates' }],
+    ['s12', { rows: s12History.value ?? [], unit: 'r_multiple' }],
+    ['l4', { rows: l4History.value ?? [], unit: 'ratio' }],
+    ['fusion', { rows: fusionHistory.value ?? [], unit: 'return' }],
+  ])
+  for (const stage of stages) {
+    const history = historyByStage.get(stage.id)
+    stage.history = (history?.rows ?? [])
+      .filter((row) => validDate(String(row.evidence_date ?? '')))
+      .map((row) => ({
+        evidence_date: row.evidence_date,
+        value: optionalFinite(row.value),
+        target: optionalFinite(row.target),
+        unit: history?.unit,
+      }))
+      .reverse()
   }
 
   return {

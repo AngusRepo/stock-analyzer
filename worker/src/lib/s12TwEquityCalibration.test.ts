@@ -44,7 +44,7 @@ function artifact(
     validationEnd: '2026-07-07',
     sampleCount: 80,
     dateCount: 20,
-    metrics: {},
+    metrics: { return_basis: 'net_after_roundtrip_cost', return_unit: 'r_multiple', roundtrip_cost_bps: 18 },
     createdAt: '2026-07-08T00:00:00.000Z',
     approvedAt: '2026-07-08T00:00:00.000Z',
   }
@@ -55,6 +55,14 @@ const artifacts = [
   artifact('listed-alpha', 'LISTED', 'high', null),
   artifact('listed-alpha-opening', 'LISTED', 'high', 'opening'),
 ]
+const legacyGrossArtifact = {
+  ...artifacts[0],
+  artifactId: 'legacy-gross-r',
+  metrics: {},
+}
+assert(resolveS12TwCalibrationArtifact([legacyGrossArtifact], {
+  entryCohort: 'reaction_ready', marketSegment: 'LISTED', alphaBucket: null, entryTimeBucket: null,
+}) == null, 'serving resolver must reject legacy gross-R artifacts without the canonical net-R contract')
 
 assert(resolveS12TwCalibrationArtifact(artifacts, {
   entryCohort: 'reaction_ready',

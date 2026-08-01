@@ -502,3 +502,60 @@ const logs: SchedulerDisplayLogCandidate[] = [
   })
   assert(status === null, 'older durable state must not overwrite newer scheduler evidence')
 }
+{
+  const unrelatedStage = resolveSchedulerDisplayStatus({
+    lastAttempt: {
+      task: 'screener',
+      status: 'success',
+      summary: '7/31 canonical screener completed',
+      duration_ms: 1_000,
+      run_date: '2026-07-31',
+      timestamp: '2026-07-31T14:00:00.000Z',
+    },
+    activeReplayLog: {
+      task: 'screener',
+      status: 'success',
+      summary: '7/31 canonical screener completed',
+      duration_ms: 1_000,
+      run_date: '2026-07-31',
+      timestamp: '2026-07-31T14:00:00.000Z',
+    },
+    activeReplayRunDate: '2026-07-31',
+    activeReplayHeartbeatAt: '2026-08-01T01:05:00.000Z',
+    activeReplayIsRunning: false,
+    def: { id: 'screener', group: 'pipeline_chain', chainIndex: 6 },
+    nextRun: '8/3 21:38',
+    today: '2026-08-01',
+    nowMs: Date.parse('2026-08-01T01:06:00.000Z'),
+  })
+  assert(unrelatedStage.status === 'sleep', 'a terminal child replay heartbeat must not turn unrelated 7/31 stages yellow on 8/1')
+  assert(unrelatedStage.statusScope === 'schedule', 'unrelated stages must return to non-trading-day schedule scope')
+
+  const replayedStage = resolveSchedulerDisplayStatus({
+    lastAttempt: {
+      task: 'active8-oof-daily',
+      status: 'success',
+      summary: '7/31 shadow coverage repaired on 8/1',
+      duration_ms: 1_000,
+      run_date: '2026-07-31',
+      timestamp: '2026-08-01T01:05:00.000Z',
+    },
+    activeReplayLog: {
+      task: 'active8-oof-daily',
+      status: 'success',
+      summary: '7/31 shadow coverage repaired on 8/1',
+      duration_ms: 1_000,
+      run_date: '2026-07-31',
+      timestamp: '2026-08-01T01:05:00.000Z',
+    },
+    activeReplayRunDate: '2026-07-31',
+    activeReplayHeartbeatAt: '2026-08-01T01:05:00.000Z',
+    activeReplayIsRunning: false,
+    def: { id: 'active8-oof-daily', group: 'pipeline_chain', chainIndex: 23 },
+    nextRun: '8/3 00:55',
+    today: '2026-08-01',
+    nowMs: Date.parse('2026-08-01T01:06:00.000Z'),
+  })
+  assert(replayedStage.status === 'success', 'the stage actually repaired on 8/1 must remain green')
+  assert(replayedStage.statusScope === 'historical_replay', 'the repaired stage must retain its 7/31 replay scope')
+}

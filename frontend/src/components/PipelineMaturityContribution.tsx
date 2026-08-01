@@ -75,7 +75,7 @@ function stageIcon(id: PipelineMaturityStage['id']) {
 
 function displayValue(metric: PipelineMaturityMetric): string {
   const value = metric.value
-  if (value == null || value === '') return '-'
+  if (value == null || value === '') return metric.note ? 'Pending' : 'Unavailable'
   if (typeof value === 'boolean') return value ? 'PASS' : 'FAIL'
   if (typeof value === 'string') return value.replace(/_/g, ' ')
   if (!Number.isFinite(value)) return '-'
@@ -83,6 +83,7 @@ function displayValue(metric: PipelineMaturityMetric): string {
     return value.toLocaleString('zh-TW', { maximumFractionDigits: 0 })
   }
   if (metric.unit === 'return') return `${(value * 100).toFixed(3)}%`
+  if (metric.unit === 'r_multiple') return `${value.toFixed(3)}R`
   if (metric.unit === 'score') return value.toFixed(2)
   return value.toFixed(4)
 }
@@ -134,6 +135,19 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
       ? `資料門檻完成 · ${progress.current}/${progress.required} ${progress.unit}`
       : `尚差 ${progress.remaining} ${progress.unit} · ${progress.current}/${progress.required}`
     : '沒有可計算的數量門檻'
+  const history = stage.history ?? []
+  const latestHistory = history[history.length - 1] ?? null
+  const previousHistory = history[history.length - 2] ?? null
+  const historyDelta = latestHistory?.value != null && previousHistory?.value != null
+    ? latestHistory.value - previousHistory.value
+    : null
+  const historyMetric = (value: number | null) => displayValue({
+    key: 'history',
+    label: 'history',
+    value,
+    unit: latestHistory?.unit,
+  })
+  const historyTrend = history.slice(-4).map((point) => `${point.evidence_date.slice(5)} ${displayValue({ key: 'history', label: 'history', value: point.value, unit: point.unit })}`).join(' | ')
   return (
     <details open className="group overflow-hidden rounded-[18px] border border-white/[0.07] bg-white/[0.032]">
       <summary className="grid cursor-pointer list-none gap-4 px-4 py-4 marker:hidden">
@@ -210,11 +224,15 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             <div className="border-t border-white/[0.07] pt-3">
               <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-500"><Database className="h-3.5 w-3.5" /> Lineage</p>
               <dl className="mt-2 grid grid-cols-[84px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[11px] leading-4">
-                <dt className="text-slate-600">Evidence</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.evidence_date ?? '-'}</dd>
-                <dt className="text-slate-600">OOF max</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.oof_max_date ?? '-'}</dd>
-                <dt className="text-slate-600">Version</dt><dd className="sv-num break-all text-slate-400">{stage.version ?? '-'}</dd>
-                <dt className="text-slate-600">Artifact</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.artifact_id ?? '-'}</dd>
+                <dt className="text-slate-600">Evidence</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.evidence_date ?? 'Unavailable'}</dd>
+                <dt className="text-slate-600">Previous</dt><dd className="sv-num break-all text-slate-400">{previousHistory?.evidence_date ?? 'First evidence'}</dd>
+                <dt className="text-slate-600">Delta</dt><dd className="sv-num break-all text-cyan-300">{historyDelta == null ? 'Not comparable' : `${historyDelta > 0 ? '+' : ''}${historyMetric(historyDelta)}`}</dd>
+                <dt className="text-slate-600">Trend</dt><dd className="sv-num break-words text-slate-400">{historyTrend || 'No prior history'}</dd>
+                <dt className="text-slate-600">OOF max</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.oof_applicable === false ? 'N/A (not OOF)' : stage.lineage.oof_max_date ?? 'Unavailable'}</dd>
+                <dt className="text-slate-600">Version</dt><dd className="sv-num break-all text-slate-400">{stage.version ?? 'Unavailable'}</dd>
+                <dt className="text-slate-600">Artifact</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.artifact_id ?? 'Not applicable'}</dd>
                 <dt className="text-slate-600">Source</dt><dd className="break-words text-slate-400">{stage.lineage.source}</dd>
+                {stage.lineage.evidence_semantics ? <><dt className="text-slate-600">Cutoff</dt><dd className="break-words text-slate-400">{stage.lineage.evidence_semantics}</dd></> : null}
               </dl>
             </div>
           </div>

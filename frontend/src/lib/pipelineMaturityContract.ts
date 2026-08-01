@@ -15,7 +15,7 @@ export type PipelineMaturityMetric = {
   value: number | string | boolean | null
   target?: number | string | boolean | null
   comparator?: 'gte' | 'gt' | 'lt' | 'eq'
-  unit?: 'rows' | 'dates' | 'ratio' | 'return' | 'score' | 'count' | 'status'
+  unit?: 'rows' | 'dates' | 'ratio' | 'return' | 'r_multiple' | 'score' | 'count' | 'status'
   passed?: boolean | null
   note?: string
 }
@@ -41,12 +41,20 @@ export type PipelineMaturityStage = {
   production_effect: string
   blockers: string[]
   metrics: PipelineMaturityMetric[]
+  history?: Array<{
+    evidence_date: string
+    value: number | null
+    target: number | null
+    unit: PipelineMaturityMetric['unit']
+  }>
   lineage: {
     requested_date: string
     evidence_date: string | null
     oof_max_date?: string | null
     artifact_id?: string | null
     model_version?: string | null
+    oof_applicable?: boolean
+    evidence_semantics?: string
     source: string
     updated_at?: string | null
   }

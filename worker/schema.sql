@@ -1452,6 +1452,7 @@ CREATE TABLE IF NOT EXISTS strategy_label_matrix_v4 (
   affinity_evidence_count INTEGER NOT NULL DEFAULT 0,
   position_weight REAL NOT NULL,
   challenger_affinity REAL NOT NULL DEFAULT 0,
+  challenger_affinity_version TEXT,
   challenger_position_weight REAL NOT NULL DEFAULT 0,
   overlap REAL NOT NULL,
   label_reason TEXT,
@@ -1469,6 +1470,8 @@ CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_symbol
   ON strategy_label_matrix_v4(symbol, signal_date DESC);
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_challenger_v1
   ON strategy_label_matrix_v4(signal_date, strategy_id, evaluable, challenger_affinity);
+CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_challenger_v2
+  ON strategy_label_matrix_v4(signal_date, challenger_affinity_version, strategy_id, evaluable, challenger_affinity);
 
 CREATE TABLE IF NOT EXISTS strategy_label_matrix_runs_v4 (
   producer_run_id TEXT PRIMARY KEY,

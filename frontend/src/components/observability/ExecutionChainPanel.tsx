@@ -219,48 +219,11 @@ const SCOPES: ChainScope[] = [
     relation: 'mixed',
     columns: [
       ['weekly-audit', 'storage-integrity-audit', 'model-ic-full-check'],
-    ],
-    branches: [
-      {
-        id: 'weekly-validation',
-        label: 'Validation evidence',
-        description: 'Independent validation workloads sharing the same point-in-time weekly evidence cutoff.',
-        anchorId: 'weekly-audit',
-        relation: 'shared_context',
-        columns: [['weekly-backtest', 'alpha-quality', 'active8-oof-weekly']],
-      },
-      {
-        id: 'weekly-research',
-        label: 'Research workloads',
-        description: 'Independent Optuna and sector research schedules; neither is an execution dependency of the other.',
-        anchorId: 'weekly-audit',
-        relation: 'shared_context',
-        columns: [['weekly-optuna', 'sector-leaders']],
-      },
-      {
-        id: 'weekly-policy',
-        label: 'Adaptive policy evidence',
-        description: 'Independent policy replay and calibration schedules sharing weekly evidence.',
-        anchorId: 'weekly-audit',
-        relation: 'shared_context',
-        columns: [['adaptive-meta-policy-replay', 'strategy-threshold-calibration', 'linucb-multiplier-replay']],
-      },
-      {
-        id: 'weekly-maintenance',
-        label: 'Maintenance',
-        description: 'Independent cleanup cadence; not an upstream dependency of research or validation.',
-        anchorId: 'weekly-audit',
-        relation: 'shared_context',
-        columns: [['weekly-cleanup']],
-      },
-      {
-        id: 'weekly-retrain',
-        label: 'Approval-gated drift response',
-        description: 'Independent drift evidence and approval-gated retraining workload.',
-        anchorId: 'weekly-audit',
-        relation: 'evidence',
-        columns: [['weekly-drift-retrain']],
-      },
+      ['weekly-backtest', 'alpha-quality', 'active8-oof-weekly'],
+      ['weekly-optuna', 'sector-leaders'],
+      ['adaptive-meta-policy-replay', 'strategy-threshold-calibration', 'linucb-multiplier-replay'],
+      ['weekly-cleanup'],
+      ['weekly-drift-retrain'],
     ],
   },
   {
@@ -624,7 +587,7 @@ export default function ExecutionChainPanel({
         </div>
       </div>
 
-      <div className={`obs-chain__topology ${scope.id === 'intraday' ? 'is-intraday' : ''}`}>
+      <div className={`obs-chain__topology is-${scope.id}`}>
         <section className="obs-chain__main-lane" aria-labelledby={scope.id === 'intraday' ? 'intraday-main-flow-title' : 'obs-chain-title'}>
           {scope.id === 'intraday' && (
             <div className="obs-chain__lane-head">

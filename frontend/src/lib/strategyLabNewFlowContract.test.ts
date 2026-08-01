@@ -27,5 +27,10 @@ assert(!page.includes('MetaLearningDecisionDesk'), 'The focused page should not 
 assert(!page.includes('ModelUpgradeLaunchpad'), 'Model research controls belong in Model Pool, not the reward ledger page')
 assert(!page.includes('Pre-trade Spec + Dry-run'), 'Strategy Lab should not repeat pre-trade spec/dry-run UI')
 assert(page.includes('production effect false'), 'Adaptive policy should remain explicitly shadow-only')
+assert(page.includes('Candidate readiness thresholds'), 'Strategy cards must expose candidate readiness thresholds and current evidence')
+assert(page.includes('Atomic replacement thresholds'), 'Strategy cards must expose paired one-in-one-out replacement thresholds')
+assert(page.includes('replacement_gate'), 'Strategy cards must consume canonical replacement evidence from the API')
+assert(page.includes('Full portfolio gates'), 'Cross-family replacement must show portfolio-level gates')
+assert(page.includes('No paired proposal for this strategy'), 'Missing pair evidence must be explicit instead of rendering ambiguous dashes')
 
 console.log('strategyLabNewFlowContract: OK')

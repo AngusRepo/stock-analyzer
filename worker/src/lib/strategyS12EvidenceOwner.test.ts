@@ -74,7 +74,9 @@ assert.match(schemaSource, /signal_date\s+TEXT/, 'fresh D1 schema must include S
 assert.match(schemaSource, /idx_s12_replay_trade_outcomes_signal_date/, 'fresh D1 schema must index S12 replay signal dates')
 
 const edgeSource = readFileSync('src/lib/strategyMarginalEdgeV4.ts', 'utf8')
-assert.match(edgeSource, /m\.family_id <> 'SMC_STRUCTURE_RECLAIM'/, 'selection Edge V5 must exclude the S12 execution family')
+assert.doesNotMatch(edgeSource, /m\.family_id <> 'SMC_STRUCTURE_RECLAIM'/, 'selection Edge V6 must retain daily SMRC evidence')
+assert.match(edgeSource, /eligible_owner\.variant_id NOT LIKE 's12_%'/, 'selection Edge V6 must exclude all S12 execution variants while retaining daily SMRC')
+assert.match(edgeSource, /eligible_owner\.promotion_status <> 'retired'/, 'retired S12 lineage must not re-enter selection replacement')
 
 console.log('strategyS12EvidenceOwner tests passed')
 

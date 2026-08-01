@@ -16,6 +16,7 @@ import {
   type StrategySpecRegistryRow,
   type StrategyLearningSummary,
 } from './strategyLearning'
+import { STRATEGY_REPLACEMENT_POLICY_V6 } from './strategyMarginalEdgeV4'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -66,6 +67,16 @@ function strategyLearningEvidence(
     ...overrides,
   }
 }
+function strategyReplacementGateEvidence(): StrategyLearningSummary['replacement_gate'] {
+  return {
+    policy: STRATEGY_REPLACEMENT_POLICY_V6,
+    evidence_status: 'pending',
+    status_reason: 'test fixture has no paired replacement run',
+    latest_run: null,
+    decisions: [],
+  }
+}
+
 
 {
   assert(!shouldRetireStaleStrategyRewardRows({
@@ -690,6 +701,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
       }),
     }],
     promotion_gate: [],
+    replacement_gate: strategyReplacementGateEvidence(),
     policy_state_preview: {} as any,
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)
@@ -713,6 +725,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
 
     }],
     promotion_gate: [],
+    replacement_gate: strategyReplacementGateEvidence(),
     policy_state_preview: {} as any,
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)
@@ -760,6 +773,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
       }),
     }],
     promotion_gate: [],
+    replacement_gate: strategyReplacementGateEvidence(),
     policy_state_preview: {} as any,
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)
@@ -781,6 +795,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
 
     }],
     promotion_gate: [],
+    replacement_gate: strategyReplacementGateEvidence(),
     policy_state_preview: {} as any,
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)
@@ -818,6 +833,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
       }),
     }],
     promotion_gate: [],
+    replacement_gate: strategyReplacementGateEvidence(),
     policy_state_preview: {} as any,
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)

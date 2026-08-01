@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import {
-  evaluatePairedStrategyReplacementsV5,
+  evaluatePairedStrategyReplacementsV6,
   evaluateStrategyMarginalEdgesV4,
   evaluateStrategyPortfolioEdgeV4,
   type OutcomeCell,
@@ -52,7 +52,7 @@ const portfolio = evaluateStrategyPortfolioEdgeV4(cells, new Map([['A|v1', 1]]))
 assert.equal(portfolio.length, 12)
 assert(portfolio.every((row) => row.residualReturn > 0 && row.absoluteReturn > 0))
 
-const replacement = evaluatePairedStrategyReplacementsV5(
+const replacement = evaluatePairedStrategyReplacementsV6(
   cells,
   result,
   new Map([['B|v1', 1]]),
@@ -65,6 +65,27 @@ assert(replacement.finalWeights.has('A|v1'))
 assert(!replacement.finalWeights.has('B|v1'))
 assert(replacement.globalPaired.lcb90! > 0)
 assert(replacement.globalRiskPass)
+
+const crossFamilyCells = cells
+  .filter((row) => row.strategy_id !== 'A')
+  .concat(cells.filter((row) => row.strategy_id === 'A').map((row) => ({
+    ...row,
+    strategy_id: 'C',
+    family_id: 'REVENUE_QUALITY_MOMENTUM',
+  })))
+const crossFamilyEdges = evaluateStrategyMarginalEdgesV4(crossFamilyCells)
+const crossFamilyReplacement = evaluatePairedStrategyReplacementsV6(
+  crossFamilyCells,
+  crossFamilyEdges,
+  new Map([['B|v1', 1]]),
+)
+assert.equal(crossFamilyReplacement.accepted.length, 1, 'cross-family replacement should pass only through paired portfolio gates')
+assert.equal(crossFamilyReplacement.accepted[0].candidateKey, 'C|v1')
+assert.equal(crossFamilyReplacement.accepted[0].replacementScope, 'cross_family')
+assert.equal(crossFamilyReplacement.accepted[0].incumbentFamilyId, 'TREND_RECLAIM_CONTINUATION')
+assert.equal(crossFamilyReplacement.globalCorrelationPass, true)
+assert.equal(crossFamilyReplacement.globalTurnoverPass, true)
+assert.equal(crossFamilyReplacement.globalRiskPass, true)
 
 const insufficient = evaluateStrategyMarginalEdgesV4(cells.filter((row) => row.signal_date <= '2026-07-05'))
 assert.equal(

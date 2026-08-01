@@ -3,7 +3,7 @@ import { Activity, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { strategyLabApi, type StrategyLearningResponse, type StrategyPromotionGate, type StrategySpec } from '@/lib/api'
+import { strategyLabApi, type StrategyLearningResponse, type StrategyPromotionGate, type StrategyReplacementDecisionSummary, type StrategyReplacementGateSummary, type StrategySpec } from '@/lib/api'
 
 type LearningRow = StrategyLearningResponse['specs'][number]
 
@@ -29,6 +29,177 @@ function statusClass(status: string): string {
   if (status === 'reward_join_missing') return 'border-rose-400/30 bg-rose-400/10 text-rose-200'
   if (status === 'research' || status === 'not_ready' || status === 'no_reward' || status === 'pending_maturity' || status === 'no_matches') return 'border-amber-400/30 bg-amber-400/10 text-amber-200'
   return 'border-slate-600 bg-slate-800/50 text-slate-300'
+}
+
+function gateResultClass(pass: boolean | null): string {
+  if (pass == null) return 'text-slate-500'
+  return pass ? 'text-emerald-300' : 'text-rose-300'
+}
+
+function gateResultLabel(pass: boolean | null): string {
+  if (pass == null) return 'PENDING'
+  return pass ? 'PASS' : 'FAIL'
+}
+
+function bestReplacementDecision(
+  row: LearningRow,
+  replacement: StrategyReplacementGateSummary | null,
+): { decision: StrategyReplacementDecisionSummary; role: 'candidate' | 'incumbent' } | null {
+  if (!replacement) return null
+  const key = `${row.id}:${row.version}`
+  const ranked = replacement.decisions
+    .reduce<Array<{ decision: StrategyReplacementDecisionSummary; role: 'candidate' | 'incumbent' }>>((items, decision) => {
+      if (`${decision.candidate_strategy_id}:${decision.candidate_strategy_version}` === key) {
+        items.push({ decision, role: 'candidate' })
+      }
+      else if (`${decision.replaced_strategy_id}:${decision.replaced_strategy_version}` === key) {
+        items.push({ decision, role: 'incumbent' })
+      }
+      return items
+    }, [])
+    .sort((left, right) => {
+      const statusRank = { accepted: 0, proposed: 1, rejected: 2 }
+      const statusDelta = statusRank[left.decision.status] - statusRank[right.decision.status]
+      if (statusDelta !== 0) return statusDelta
+      return Number(right.decision.paired_delta_lcb90 ?? Number.NEGATIVE_INFINITY)
+        - Number(left.decision.paired_delta_lcb90 ?? Number.NEGATIVE_INFINITY)
+    })
+  return ranked[0] ?? null
+}
+
+function compactStrategyId(strategyId: string): string {
+  return strategyId.replace(/^stock_tech_/, '').replace(/_v\d+$/, '').replace(/_/g, ' ')
+}
+
+function GateMetric({
+  label,
+  value,
+  target,
+  pass,
+}: {
+  label: string
+  value: string
+  target: string
+  pass: boolean | null
+}) {
+  return (
+    <div className="flex min-w-0 items-baseline justify-between gap-2 border-b border-slate-800/60 py-1 last:border-0">
+      <span className="truncate text-slate-500">{label}</span>
+      <span className="shrink-0 text-right font-mono text-slate-300">
+        {value} <span className="text-slate-600">/ {target}</span>{' '}
+        <span className={gateResultClass(pass)}>{gateResultLabel(pass)}</span>
+      </span>
+    </div>
+  )
+}
+
+function StrategyGateDetails({
+  row,
+  gate,
+  paired,
+  replacementGate,
+}: {
+  row: LearningRow
+  gate: StrategyPromotionGate | undefined
+  paired: { decision: StrategyReplacementDecisionSummary; role: 'candidate' | 'incumbent' } | null
+  replacementGate: StrategyReplacementGateSummary | null
+}) {
+  if (!gate) {
+    return <p className="mt-3 text-xs text-slate-500">Promotion threshold evidence is unavailable.</p>
+  }
+  const thresholds = gate.thresholds
+  const evidence = gate.evidence
+  const isS12ExecutionOwner = row.learning.reward_owner === 's12_execution_replay_v3_net'
+  const decision = paired?.decision ?? null
+  const policy = replacementGate?.policy ?? null
+  const run = replacementGate?.latest_run ?? null
+  const mddPass = evidence.max_drawdown_pct == null ? null : evidence.max_drawdown_pct >= thresholds.min_max_drawdown
+  const readiness = [
+    { label: 'Evaluable decisions', value: String(evidence.decisions), target: `>= ${thresholds.min_evaluable_decisions}`, pass: evidence.decisions >= thresholds.min_evaluable_decisions },
+    { label: 'Setup match rate', value: pct(evidence.match_rate), target: `>= ${pct(thresholds.min_match_rate)}`, pass: evidence.match_rate == null ? null : evidence.match_rate >= thresholds.min_match_rate },
+    { label: 'Reward samples', value: String(evidence.samples), target: `>= ${thresholds.min_reward_samples}`, pass: evidence.samples >= thresholds.min_reward_samples },
+    { label: 'Hit rate', value: pct(evidence.hit_rate), target: `>= ${pct(thresholds.min_hit_rate)}`, pass: evidence.hit_rate == null ? null : evidence.hit_rate >= thresholds.min_hit_rate },
+    { label: 'Cost-net average', value: rewardMetric(evidence.avg_return_pct, row.learning.reward_unit), target: '> 0', pass: evidence.avg_return_pct == null ? null : evidence.avg_return_pct > thresholds.min_avg_cost_net_return_exclusive },
+    { label: 'Date LCB90', value: rewardMetric(evidence.date_return_lcb90, row.learning.reward_unit), target: '> 0', pass: evidence.date_return_lcb90 == null ? null : evidence.date_return_lcb90 > thresholds.min_date_return_lcb90_exclusive },
+    { label: 'Max drawdown', value: rewardMetric(evidence.max_drawdown_pct, row.learning.reward_unit), target: `>= ${rewardMetric(thresholds.min_max_drawdown, row.learning.reward_unit)}`, pass: mddPass },
+    { label: 'Mature dates', value: String(evidence.mature_dates), target: `>= ${thresholds.min_mature_dates}`, pass: evidence.mature_dates >= thresholds.min_mature_dates },
+  ]
+
+  let pairMetrics: Array<{ label: string; value: string; target: string; pass: boolean | null }> = []
+  if (decision && policy) {
+    const pairMddPass = decision.candidate_max_drawdown == null || decision.incumbent_max_drawdown == null
+      ? null
+      : decision.candidate_max_drawdown >= decision.incumbent_max_drawdown - policy.max_drawdown_degradation
+    const pairTurnoverPass = decision.candidate_turnover == null || decision.incumbent_turnover == null
+      ? null
+      : decision.candidate_turnover <= decision.incumbent_turnover + policy.max_turnover_increase
+    const pairCorrelationPass = decision.return_correlation == null
+      ? null
+      : decision.return_correlation <= policy.max_duplicate_return_correlation
+        || (decision.candidate_max_drawdown != null && decision.incumbent_max_drawdown != null && decision.candidate_max_drawdown > decision.incumbent_max_drawdown)
+        || (decision.candidate_turnover != null && decision.incumbent_turnover != null && decision.candidate_turnover < decision.incumbent_turnover)
+    pairMetrics = [
+      { label: 'Paired dates', value: String(decision.paired_dates), target: `>= ${policy.min_paired_dates}`, pass: decision.paired_dates >= policy.min_paired_dates },
+      { label: 'Residual delta LCB90', value: pct(decision.paired_delta_lcb90), target: '> 0', pass: decision.paired_delta_lcb90 == null ? null : decision.paired_delta_lcb90 > policy.min_paired_delta_lcb90_exclusive },
+      { label: 'Candidate cost-net mean', value: pct(decision.candidate_absolute_cost_net_mean), target: '> 0', pass: decision.candidate_absolute_cost_net_mean == null ? null : decision.candidate_absolute_cost_net_mean > policy.min_candidate_absolute_cost_net_mean_exclusive },
+      { label: 'MDD vs incumbent', value: `${pct(decision.candidate_max_drawdown)} / ${pct(decision.incumbent_max_drawdown)}`, target: `within ${pct(policy.max_drawdown_degradation)}`, pass: pairMddPass },
+      { label: 'Turnover vs incumbent', value: `${pct(decision.candidate_turnover)} / ${pct(decision.incumbent_turnover)}`, target: `within ${pct(policy.max_turnover_increase)}`, pass: pairTurnoverPass },
+      { label: 'Return correlation', value: decision.return_correlation == null ? 'Unavailable' : decision.return_correlation.toFixed(3), target: `<= ${policy.max_duplicate_return_correlation.toFixed(2)} or risk improves`, pass: pairCorrelationPass },
+    ]
+  }
+  const counterpart = decision
+    ? paired?.role === 'candidate'
+      ? decision.replaced_strategy_id
+      : decision.candidate_strategy_id
+    : null
+
+  return (
+    <div className="mt-3 space-y-3 border-t border-slate-800 pt-3 text-[11px]">
+      <div>
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <span className="font-semibold text-slate-300">Candidate readiness thresholds</span>
+          <span className="text-slate-500">rolling evidence</span>
+        </div>
+        <div className="grid gap-x-4 md:grid-cols-2">
+          {readiness.map((item) => <GateMetric key={item.label} {...item} />)}
+        </div>
+      </div>
+
+      <div className="border-t border-slate-800 pt-3">
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <span className="font-semibold text-slate-300">Atomic replacement thresholds</span>
+          <span className="font-mono text-slate-500">{run ? `${run.as_of_date} ? ${run.sample_dates} dates ? ${run.status}` : replacementGate?.evidence_status ?? 'unavailable'}</span>
+        </div>
+        {isS12ExecutionOwner ? (
+          <p className="text-slate-500">Not applicable: S12 is owned by execution calibration, not selection-strategy replacement.</p>
+        ) : decision && policy ? (
+          <>
+            <p className="mb-1 text-slate-500">
+              {paired?.role === 'candidate' ? 'Replace' : 'Challenged by'}{' '}
+              <span className="text-slate-300">{compactStrategyId(counterpart ?? '')}</span>{' '}
+              ? {decision.replacement_scope ?? 'scope unavailable'} ? <span className={statusClass(decision.status)}>{decision.status}</span>
+            </p>
+            <div className="grid gap-x-4 md:grid-cols-2">
+              {pairMetrics.map((item) => <GateMetric key={item.label} {...item} />)}
+            </div>
+            <p className="mt-2 text-slate-500">
+              Full portfolio gates: cost-net LCB <span className={gateResultClass(run?.promotion_gates.full_portfolio_positive_cost_net_lcb ?? null)}>{gateResultLabel(run?.promotion_gates.full_portfolio_positive_cost_net_lcb ?? null)}</span>
+              {' ? '}correlation <span className={gateResultClass(run?.portfolio_risk.correlation_pass ?? null)}>{gateResultLabel(run?.portfolio_risk.correlation_pass ?? null)}</span>
+              {' ? '}turnover <span className={gateResultClass(run?.portfolio_risk.turnover_pass ?? null)}>{gateResultLabel(run?.portfolio_risk.turnover_pass ?? null)}</span>
+              {' ? '}owner coverage <span className={gateResultClass(run?.promotion_gates.registry_and_serving_owner_coverage_complete ?? null)}>{gateResultLabel(run?.promotion_gates.registry_and_serving_owner_coverage_complete ?? null)}</span>
+            </p>
+            {decision.rejection_reasons.length > 0 && <p className="mt-1 text-amber-200">Blocked: {decision.rejection_reasons.join(', ').replace(/_/g, ' ')}</p>}
+          </>
+        ) : policy ? (
+          <p className="leading-5 text-slate-500">
+            No paired proposal for this strategy in the latest V6 run. Required: {policy.min_paired_dates}+ paired dates, residual LCB90 &gt; 0, cost-net mean &gt; 0, MDD within {pct(policy.max_drawdown_degradation)}, turnover within {pct(policy.max_turnover_increase)}, and correlation &le; {policy.max_duplicate_return_correlation.toFixed(2)} unless risk improves. Cross-family replacement also requires every full-portfolio gate to pass.
+          </p>
+        ) : (
+          <p className="text-slate-500">Replacement policy evidence is unavailable.</p>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function registryLearningRow(spec: StrategySpec): LearningRow {
@@ -83,6 +254,7 @@ function StrategyLedgerGroup({
   rows,
   gateById,
   policyWeights,
+  replacementGate,
   empty,
 }: {
   title: string
@@ -90,6 +262,7 @@ function StrategyLedgerGroup({
   rows: LearningRow[]
   gateById: Map<string, StrategyPromotionGate>
   policyWeights: Record<string, number>
+  replacementGate: StrategyReplacementGateSummary | null
   empty: string
 }) {
   return (
@@ -107,6 +280,7 @@ function StrategyLedgerGroup({
           const gate = gateById.get(`${row.id}:${row.version}`)
           const hasWeight = Object.prototype.hasOwnProperty.call(policyWeights, row.id)
           const weight = Number(policyWeights[row.id] ?? 0)
+          const paired = bestReplacementDecision(row, replacementGate)
           const evidence = gate?.missing_evidence ?? []
           const evidenceLabels = gate ? (evidence.length ? evidence : ['evidence ready']) : ['reward ledger unavailable']
           const rewardPending = row.learning.reward_state === 'pending_maturity'
@@ -169,6 +343,7 @@ function StrategyLedgerGroup({
                       <span key={item} className={`rounded-md border px-2 py-1 text-xs ${evidence.length ? 'border-amber-400/20 bg-amber-400/[0.06] text-amber-200' : gate ? 'border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200' : 'border-slate-600/40 bg-slate-800/50 text-slate-400'}`}>{item.replace(/_/g, ' ')}</span>
                     ))}
                   </div>
+                  <StrategyGateDetails row={row} gate={gate} paired={paired} replacementGate={replacementGate} />
                 </div>
               </div>
             </article>
@@ -286,6 +461,7 @@ export default function StrategyLearningPage() {
                 rows={activeRows}
                 gateById={gateById}
                 policyWeights={policy?.strategy_weights ?? {}}
+                replacementGate={learning?.replacement_gate ?? null}
                 empty="目前沒有 active strategy reward rows。"
               />
               <StrategyLedgerGroup
@@ -294,6 +470,7 @@ export default function StrategyLearningPage() {
                 rows={learningRows}
                 gateById={gateById}
                 policyWeights={policy?.strategy_weights ?? {}}
+                replacementGate={learning?.replacement_gate ?? null}
                 empty="目前沒有 learning、shadow 或 candidate strategy rows。"
               />
             </div>

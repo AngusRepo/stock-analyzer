@@ -39,6 +39,7 @@ import {
   type StrategyThresholdAutoCalibrationResult,
   type StrategyThresholdCalibrationCadence,
 } from './strategyThresholdCalibration'
+import { STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION, STRATEGY_REPLACEMENT_POLICY_V6 } from './strategyMarginalEdgeV4'
 
 export const STRATEGY_LEARNING_VERSION = 'strategy-learning-v5'
 export const STRATEGY_EVIDENCE_RECONSTRUCTION_LABELER_VERSION = 'strategy-decision-log-pit-reconstruction-v6'
@@ -167,6 +168,67 @@ export type StrategyLearningStage =
   | 'L2_paper_active'
   | 'L3_production_allocation'
 
+export interface StrategyPromotionThresholds {
+  min_evaluable_decisions: number
+  min_match_rate: number
+  min_reward_samples: number
+  min_hit_rate: number
+  min_avg_cost_net_return_exclusive: number
+  min_max_drawdown: number
+  min_mature_dates: number
+  min_date_return_lcb90_exclusive: number
+}
+
+export interface StrategyReplacementDecisionSummary {
+  run_id: string
+  as_of_date: string
+  candidate_strategy_id: string
+  candidate_strategy_version: string
+  replaced_strategy_id: string
+  replaced_strategy_version: string
+  candidate_family_id: string
+  incumbent_family_id: string | null
+  replacement_scope: 'same_family' | 'cross_family' | null
+  status: 'proposed' | 'accepted' | 'rejected'
+  paired_dates: number
+  paired_delta_mean: number | null
+  paired_delta_lcb90: number | null
+  candidate_absolute_cost_net_mean: number | null
+  candidate_max_drawdown: number | null
+  incumbent_max_drawdown: number | null
+  candidate_turnover: number | null
+  incumbent_turnover: number | null
+  return_correlation: number | null
+  rejection_reasons: string[]
+  promotion_allowed: boolean
+}
+
+export interface StrategyReplacementGateSummary {
+  policy: typeof STRATEGY_REPLACEMENT_POLICY_V6
+  evidence_status: 'ready' | 'pending' | 'unavailable'
+  status_reason: string
+  latest_run: {
+    run_id: string
+    as_of_date: string
+    status: 'shadow' | 'promoted' | 'failed'
+    strategy_count: number
+    eligible_strategy_count: number
+    sample_dates: number
+    created_at: string
+    portfolio_risk: {
+      baseline_max_drawdown: number | null
+      final_max_drawdown: number | null
+      baseline_turnover: number | null
+      final_turnover: number | null
+      return_correlation: number | null
+      correlation_pass: boolean | null
+      turnover_pass: boolean | null
+    }
+    promotion_gates: Record<string, boolean>
+  } | null
+  decisions: StrategyReplacementDecisionSummary[]
+}
+
 export interface StrategyPromotionGateRow {
   strategy_id: string
   strategy_version: string
@@ -180,6 +242,7 @@ export interface StrategyPromotionGateRow {
   l3_requires_wei_approval: boolean
   production_effect: false
   missing_evidence: string[]
+  thresholds: StrategyPromotionThresholds
   evidence: {
     decisions: number
     total_decisions: number
@@ -267,6 +330,7 @@ export interface StrategyLearningSummary {
     }
   }>
   promotion_gate: StrategyPromotionGateRow[]
+  replacement_gate: StrategyReplacementGateSummary
   policy_state_preview: StrategyAdaptivePolicyState
 }
 
@@ -284,6 +348,16 @@ const PROMOTION_MIN_AVG_RETURN = 0
 const PROMOTION_MIN_MAX_DRAWDOWN = -0.08
 const PROMOTION_MIN_MATURE_DATES = 10
 const PROMOTION_MIN_DATE_RETURN_LCB90 = 0
+export const STRATEGY_PROMOTION_THRESHOLDS = Object.freeze({
+  min_evaluable_decisions: PROMOTION_MIN_DECISIONS,
+  min_match_rate: PROMOTION_MIN_MATCH_RATE,
+  min_reward_samples: PROMOTION_MIN_SAMPLES,
+  min_hit_rate: PROMOTION_MIN_HIT_RATE,
+  min_avg_cost_net_return_exclusive: PROMOTION_MIN_AVG_RETURN,
+  min_max_drawdown: PROMOTION_MIN_MAX_DRAWDOWN,
+  min_mature_dates: PROMOTION_MIN_MATURE_DATES,
+  min_date_return_lcb90_exclusive: PROMOTION_MIN_DATE_RETURN_LCB90,
+}) satisfies StrategyPromotionThresholds
 const STRATEGY_LEARNING_ROLLING_SESSIONS = 60
 const STRATEGY_DAILY_RECONCILIATION_CALENDAR_DAYS = 21
 const ACTIVE_COOLDOWN_MIN_SAMPLES = 30
@@ -2178,7 +2252,9 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
     if (evidence.samples < PROMOTION_MIN_SAMPLES) missing.push(`samples_lt_${PROMOTION_MIN_SAMPLES}`)
     if (evidence.hit_rate == null || evidence.hit_rate < PROMOTION_MIN_HIT_RATE) missing.push(`hit_rate_lt_${PROMOTION_MIN_HIT_RATE}`)
     if (evidence.avg_return_pct == null || evidence.avg_return_pct <= PROMOTION_MIN_AVG_RETURN) missing.push('avg_return_not_positive')
-    if (evidence.max_drawdown_pct != null && evidence.max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN) {
+    if (evidence.max_drawdown_pct == null) {
+      missing.push('max_drawdown_missing')
+    } else if (evidence.max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN) {
       missing.push(`max_drawdown_lt_${PROMOTION_MIN_MAX_DRAWDOWN}`)
     }
     if (evidence.mature_dates < PROMOTION_MIN_MATURE_DATES) {
@@ -2240,6 +2316,7 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       l3_requires_wei_approval: false,
       production_effect: false,
       missing_evidence: activeCooldown ? activeCooldownReasons : activeMonitor ? [] : missing,
+      thresholds: STRATEGY_PROMOTION_THRESHOLDS,
       evidence,
     }
   })
@@ -2563,6 +2640,182 @@ async function loadS12ExecutionLearningMetrics(
   }
 }
 
+async function loadStrategyReplacementGateSummary(
+  db: D1Database,
+  date: string,
+): Promise<StrategyReplacementGateSummary> {
+  try {
+    const run = await db.prepare(`
+      SELECT run_id,
+             as_of_date,
+             status,
+             strategy_count,
+             eligible_strategy_count,
+             sample_dates,
+             evidence_json,
+             created_at
+        FROM strategy_marginal_edge_runs_v4
+       WHERE as_of_date <= ?
+         AND json_extract(evidence_json, '$.schema_version') = ?
+       ORDER BY as_of_date DESC, created_at DESC
+       LIMIT 1
+    `).bind(date, STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION).first<{
+      run_id: string
+      as_of_date: string
+      status: 'shadow' | 'promoted' | 'failed'
+      strategy_count: number
+      eligible_strategy_count: number
+      sample_dates: number
+      evidence_json: string
+      created_at: string
+    }>()
+
+    if (!run) {
+      return {
+        policy: STRATEGY_REPLACEMENT_POLICY_V6,
+        evidence_status: 'pending',
+        status_reason: 'No contract-valid V6 replacement run exists on or before this date.',
+        latest_run: null,
+        decisions: [],
+      }
+    }
+
+    const runEvidence = parseJson<{
+      portfolio_risk?: {
+        baseline_max_drawdown?: unknown
+        final_max_drawdown?: unknown
+        baseline_turnover?: unknown
+        final_turnover?: unknown
+        return_correlation?: unknown
+        correlation_pass?: unknown
+        turnover_pass?: unknown
+      }
+      promotion_gates?: Record<string, unknown>
+    }>(run.evidence_json, {})
+    const portfolioRisk = runEvidence.portfolio_risk ?? {}
+    const promotionGates = Object.fromEntries(
+      Object.entries(runEvidence.promotion_gates ?? {})
+        .filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'),
+    )
+    const { results } = await db.prepare(`
+      SELECT run_id,
+             as_of_date,
+             family_id,
+             candidate_strategy_id,
+             candidate_strategy_version,
+             replaced_strategy_id,
+             replaced_strategy_version,
+             status,
+             paired_dates,
+             paired_delta_mean,
+             paired_delta_lcb90,
+             candidate_absolute_mean,
+             candidate_max_drawdown,
+             replaced_max_drawdown,
+             candidate_turnover,
+             replaced_turnover,
+             return_correlation,
+             evidence_json
+        FROM strategy_replacement_decisions_v5
+       WHERE run_id = ?
+       ORDER BY CASE status WHEN 'accepted' THEN 0 WHEN 'proposed' THEN 1 ELSE 2 END,
+                paired_delta_lcb90 DESC,
+                candidate_strategy_id,
+                replaced_strategy_id
+    `).bind(run.run_id).all<{
+      run_id: string
+      as_of_date: string
+      family_id: string
+      candidate_strategy_id: string
+      candidate_strategy_version: string
+      replaced_strategy_id: string
+      replaced_strategy_version: string
+      status: 'proposed' | 'accepted' | 'rejected'
+      paired_dates: number
+      paired_delta_mean: number | null
+      paired_delta_lcb90: number | null
+      candidate_absolute_mean: number | null
+      candidate_max_drawdown: number | null
+      replaced_max_drawdown: number | null
+      candidate_turnover: number | null
+      replaced_turnover: number | null
+      return_correlation: number | null
+      evidence_json: string
+    }>()
+    const decisions = (results ?? []).map((row): StrategyReplacementDecisionSummary => {
+      const evidence = parseJson<{
+        rejection_reasons?: unknown
+        promotion_allowed?: unknown
+        replacement_scope?: unknown
+        incumbent_family_id?: unknown
+      }>(row.evidence_json, {})
+      const scope = evidence.replacement_scope === 'same_family' || evidence.replacement_scope === 'cross_family'
+        ? evidence.replacement_scope
+        : null
+      return {
+        run_id: row.run_id,
+        as_of_date: row.as_of_date,
+        candidate_strategy_id: row.candidate_strategy_id,
+        candidate_strategy_version: row.candidate_strategy_version,
+        replaced_strategy_id: row.replaced_strategy_id,
+        replaced_strategy_version: row.replaced_strategy_version,
+        candidate_family_id: row.family_id,
+        incumbent_family_id: typeof evidence.incumbent_family_id === 'string' ? evidence.incumbent_family_id : null,
+        replacement_scope: scope,
+        status: row.status,
+        paired_dates: Number(row.paired_dates ?? 0),
+        paired_delta_mean: finiteNumber(row.paired_delta_mean),
+        paired_delta_lcb90: finiteNumber(row.paired_delta_lcb90),
+        candidate_absolute_cost_net_mean: finiteNumber(row.candidate_absolute_mean),
+        candidate_max_drawdown: finiteNumber(row.candidate_max_drawdown),
+        incumbent_max_drawdown: finiteNumber(row.replaced_max_drawdown),
+        candidate_turnover: finiteNumber(row.candidate_turnover),
+        incumbent_turnover: finiteNumber(row.replaced_turnover),
+        return_correlation: finiteNumber(row.return_correlation),
+        rejection_reasons: Array.isArray(evidence.rejection_reasons)
+          ? evidence.rejection_reasons.filter((value): value is string => typeof value === 'string')
+          : [],
+        promotion_allowed: evidence.promotion_allowed === true,
+      }
+    })
+    return {
+      policy: STRATEGY_REPLACEMENT_POLICY_V6,
+      evidence_status: 'ready',
+      status_reason: decisions.length > 0
+        ? `${decisions.length} paired replacement decisions loaded from ${run.run_id}.`
+        : `V6 run ${run.run_id} completed without a paired replacement proposal.`,
+      latest_run: {
+        run_id: run.run_id,
+        as_of_date: run.as_of_date,
+        status: run.status,
+        strategy_count: Number(run.strategy_count ?? 0),
+        eligible_strategy_count: Number(run.eligible_strategy_count ?? 0),
+        sample_dates: Number(run.sample_dates ?? 0),
+        created_at: run.created_at,
+        portfolio_risk: {
+          baseline_max_drawdown: finiteNumber(portfolioRisk.baseline_max_drawdown),
+          final_max_drawdown: finiteNumber(portfolioRisk.final_max_drawdown),
+          baseline_turnover: finiteNumber(portfolioRisk.baseline_turnover),
+          final_turnover: finiteNumber(portfolioRisk.final_turnover),
+          return_correlation: finiteNumber(portfolioRisk.return_correlation),
+          correlation_pass: typeof portfolioRisk.correlation_pass === 'boolean' ? portfolioRisk.correlation_pass : null,
+          turnover_pass: typeof portfolioRisk.turnover_pass === 'boolean' ? portfolioRisk.turnover_pass : null,
+        },
+        promotion_gates: promotionGates,
+      },
+      decisions,
+    }
+  } catch (cause) {
+    return {
+      policy: STRATEGY_REPLACEMENT_POLICY_V6,
+      evidence_status: 'unavailable',
+      status_reason: cause instanceof Error ? cause.message : 'Replacement evidence query failed.',
+      latest_run: null,
+      decisions: [],
+    }
+  }
+}
+
 export async function buildStrategyLearningSummary(
   db: D1Database,
   date: string,
@@ -2702,7 +2955,10 @@ export async function buildStrategyLearningSummary(
          ORDER BY date, strategy_id, strategy_version
       `).bind(windowStart, date).all<StrategyLearningDailyStatsRow>()).results ?? []
     : []
-  const s12ExecutionMetrics = await loadS12ExecutionLearningMetrics(db, date, windowStart)
+  const [s12ExecutionMetrics, replacementGate] = await Promise.all([
+    loadS12ExecutionLearningMetrics(db, date, windowStart),
+    loadStrategyReplacementGateSummary(db, date),
+  ])
   const dailyBySpec = new Map<string, StrategyLearningDailyStatsRow[]>()
   for (const row of dailyRows) {
     const key = row.strategy_id + '|' + row.strategy_version
@@ -2819,6 +3075,7 @@ export async function buildStrategyLearningSummary(
       }
     }),
     promotion_gate: [],
+    replacement_gate: replacementGate,
     policy_state_preview: {} as StrategyAdaptivePolicyState,
   } as StrategyLearningSummary
   summary.promotion_gate = evaluateStrategyPromotionGate(summary)

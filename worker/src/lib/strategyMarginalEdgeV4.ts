@@ -1,10 +1,23 @@
-export const STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION = 'strategy-marginal-edge-v5'
+export const STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION = 'strategy-marginal-edge-v6'
 const MIN_EDGE_DATES = 10
 const REPLACEMENT_MDD_TOLERANCE = 0.02
 const REPLACEMENT_TURNOVER_TOLERANCE = 0.15
 const REPLACEMENT_DUPLICATE_CORRELATION = 0.95
 const EDGE_LOOKBACK_CALENDAR_DAYS = 540
 const EDGE_PAGE_SIZE = 1000
+
+export const STRATEGY_REPLACEMENT_POLICY_V6 = Object.freeze({
+  schema_version: STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION,
+  min_paired_dates: MIN_EDGE_DATES,
+  min_paired_delta_lcb90_exclusive: 0,
+  min_candidate_absolute_cost_net_mean_exclusive: 0,
+  max_drawdown_degradation: REPLACEMENT_MDD_TOLERANCE,
+  max_turnover_increase: REPLACEMENT_TURNOVER_TOLERANCE,
+  max_duplicate_return_correlation: REPLACEMENT_DUPLICATE_CORRELATION,
+  requires_full_portfolio_gates: true,
+  replacement_mode: 'atomic_one_in_one_out' as const,
+  outcome: 'sector_or_market_neutral_cost_net_return' as const,
+})
 
 // One-sided 90% lower confidence bound. Small date cohorts require Student-t,
 // not a normal approximation that understates uncertainty.
@@ -206,10 +219,12 @@ export function evaluateStrategyPortfolioEdgeV4(
 }
 
 
-export interface StrategyReplacementProposalV5 {
+export interface StrategyReplacementProposalV6 {
   candidateKey: string
   incumbentKey: string
   familyId: string
+  incumbentFamilyId: string
+  replacementScope: 'same_family' | 'cross_family'
   pairedDates: number
   pairedDeltaMean: number | null
   pairedDeltaLcb90: number | null
@@ -310,18 +325,53 @@ function pairedPortfolioSummary(
     .map((row) => row.residualReturn - incumbentByDate.get(row.signalDate)!))
 }
 
-export function evaluatePairedStrategyReplacementsV5(
+function pairedPortfolioCorrelation(
+  candidate: StrategyPortfolioDateReturnV4[],
+  incumbent: StrategyPortfolioDateReturnV4[],
+): number | null {
+  const incumbentByDate = new Map(incumbent.map((row) => [row.signalDate, row.residualReturn]))
+  const paired = candidate.filter((row) => incumbentByDate.has(row.signalDate))
+  return pearson(
+    paired.map((row) => row.residualReturn),
+    paired.map((row) => incumbentByDate.get(row.signalDate)!),
+  )
+}
+
+function strategyPortfolioSelections(
+  cells: OutcomeCell[],
+  strategyWeights: Map<string, number>,
+): Array<{ date: string; symbols: Set<string> }> {
+  const byDate = new Map<string, Set<string>>()
+  for (const cell of cells) {
+    if (Number(cell.strategy_hit) !== 1 || (strategyWeights.get(strategyKey(cell)) ?? 0) <= 0) continue
+    const symbols = byDate.get(cell.signal_date) ?? new Set<string>()
+    symbols.add(cell.symbol)
+    byDate.set(cell.signal_date, symbols)
+  }
+  return [...byDate.entries()]
+    .map(([date, symbols]) => ({ date, symbols }))
+    .sort((left, right) => left.date.localeCompare(right.date))
+}
+
+export function evaluatePairedStrategyReplacementsV6(
   cells: OutcomeCell[],
   edges: StrategyEdgeResult[],
   baselineWeights: Map<string, number>,
 ): {
-  proposals: StrategyReplacementProposalV5[]
-  accepted: StrategyReplacementProposalV5[]
+  proposals: StrategyReplacementProposalV6[]
+  accepted: StrategyReplacementProposalV6[]
   finalWeights: Map<string, number>
   baselineDates: StrategyPortfolioDateReturnV4[]
   finalDates: StrategyPortfolioDateReturnV4[]
   globalPaired: ConfidenceSummary
   globalAbsoluteMean: number | null
+  globalReturnCorrelation: number | null
+  baselineMaxDrawdown: number | null
+  finalMaxDrawdown: number | null
+  baselineTurnover: number | null
+  finalTurnover: number | null
+  globalCorrelationPass: boolean
+  globalTurnoverPass: boolean
   globalRiskPass: boolean
 } {
   const familyByKey = new Map<string, string>()
@@ -330,7 +380,7 @@ export function evaluatePairedStrategyReplacementsV5(
     if (!familyByKey.has(key)) familyByKey.set(key, String(cell.family_id || 'UNKNOWN'))
   }
   const baselineDates = evaluateStrategyPortfolioEdgeV4(cells, baselineWeights)
-  const proposals: StrategyReplacementProposalV5[] = []
+  const proposals: StrategyReplacementProposalV6[] = []
   for (const edge of edges.filter((row) => row.productionEligible)) {
     const candidateKey = edge.strategyId + '|' + edge.strategyVersion
     if (baselineWeights.has(candidateKey)) continue
@@ -338,7 +388,8 @@ export function evaluatePairedStrategyReplacementsV5(
     const candidateSeries = strategyDateSeries(cells, candidateKey)
     const candidateByDate = new Map(candidateSeries.map((row) => [row.date, row]))
     for (const [incumbentKey, incumbentWeight] of baselineWeights.entries()) {
-      if ((familyByKey.get(incumbentKey) ?? 'UNKNOWN') !== familyId) continue
+      const incumbentFamilyId = familyByKey.get(incumbentKey) ?? 'UNKNOWN'
+      const replacementScope = incumbentFamilyId === familyId ? 'same_family' : 'cross_family'
       const incumbentSeries = strategyDateSeries(cells, incumbentKey)
       const incumbentByDate = new Map(incumbentSeries.map((row) => [row.date, row]))
       const proposalWeights = new Map(baselineWeights)
@@ -387,6 +438,8 @@ export function evaluatePairedStrategyReplacementsV5(
         candidateKey,
         incumbentKey,
         familyId,
+        incumbentFamilyId,
+        replacementScope,
         pairedDates: paired.dates,
         pairedDeltaMean: paired.mean,
         pairedDeltaLcb90: paired.lcb90,
@@ -402,7 +455,7 @@ export function evaluatePairedStrategyReplacementsV5(
     }
   }
 
-  const accepted: StrategyReplacementProposalV5[] = []
+  const accepted: StrategyReplacementProposalV6[] = []
   const usedCandidates = new Set<string>()
   const usedIncumbents = new Set<string>()
   for (const proposal of proposals
@@ -425,6 +478,18 @@ export function evaluatePairedStrategyReplacementsV5(
   const globalAbsoluteMean = mean(finalDates.map((row) => row.absoluteReturn))
   const baselineMdd = maxDrawdown(baselineDates.map((row) => row.absoluteReturn))
   const finalMdd = maxDrawdown(finalDates.map((row) => row.absoluteReturn))
+  const baselineTurnover = strategyTurnover(strategyPortfolioSelections(cells, baselineWeights))
+  const finalTurnover = strategyTurnover(strategyPortfolioSelections(cells, finalWeights))
+  const globalReturnCorrelation = pairedPortfolioCorrelation(finalDates, baselineDates)
+  const globalTurnoverPass = baselineTurnover != null
+    && finalTurnover != null
+    && finalTurnover <= baselineTurnover + REPLACEMENT_TURNOVER_TOLERANCE
+  const globalCorrelationPass = globalReturnCorrelation != null
+    && (
+      globalReturnCorrelation <= REPLACEMENT_DUPLICATE_CORRELATION
+      || (baselineMdd != null && finalMdd != null && finalMdd > baselineMdd)
+      || (baselineTurnover != null && finalTurnover != null && finalTurnover < baselineTurnover)
+    )
   const globalRiskPass = accepted.length > 0
     && globalPaired.dates >= MIN_EDGE_DATES
     && globalPaired.lcb90 != null
@@ -434,6 +499,8 @@ export function evaluatePairedStrategyReplacementsV5(
     && baselineMdd != null
     && finalMdd != null
     && finalMdd >= baselineMdd - REPLACEMENT_MDD_TOLERANCE
+    && globalTurnoverPass
+    && globalCorrelationPass
   if (!globalRiskPass) {
     accepted.splice(0, accepted.length)
     return {
@@ -444,6 +511,13 @@ export function evaluatePairedStrategyReplacementsV5(
       finalDates: baselineDates,
       globalPaired,
       globalAbsoluteMean,
+      globalReturnCorrelation,
+      baselineMaxDrawdown: baselineMdd,
+      finalMaxDrawdown: finalMdd,
+      baselineTurnover,
+      finalTurnover,
+      globalCorrelationPass,
+      globalTurnoverPass,
       globalRiskPass: false,
     }
   }
@@ -455,6 +529,13 @@ export function evaluatePairedStrategyReplacementsV5(
     finalDates,
     globalPaired,
     globalAbsoluteMean,
+    globalReturnCorrelation,
+    baselineMaxDrawdown: baselineMdd,
+    finalMaxDrawdown: finalMdd,
+    baselineTurnover,
+    finalTurnover,
+    globalCorrelationPass,
+    globalTurnoverPass,
     globalRiskPass: true,
   }
 }
@@ -495,7 +576,15 @@ export async function refreshStrategyMarginalEdgeV4(
          AND l.label_schema_version='canonical-strategy-selection-label-v4'
        WHERE m.signal_date BETWEEN ? AND ?
          AND m.strategy_status IN ('active', 'candidate', 'shadow')
-         AND m.family_id <> 'SMC_STRUCTURE_RECLAIM'
+         AND EXISTS (
+           SELECT 1 FROM strategy_spec_registry eligible_owner
+            WHERE eligible_owner.strategy_id=m.strategy_id
+              AND eligible_owner.version=m.strategy_version
+              AND eligible_owner.owner_type='strategy'
+              AND eligible_owner.status IN ('active','candidate','shadow')
+              AND eligible_owner.promotion_status <> 'retired'
+              AND eligible_owner.variant_id NOT LIKE 's12_%'
+         )
          AND EXISTS (
            SELECT 1 FROM strategy_label_matrix_runs_v4 mr
             WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
@@ -539,6 +628,7 @@ export async function refreshStrategyMarginalEdgeV4(
     SELECT strategy_id, version
       FROM strategy_spec_registry
      WHERE owner_type='strategy' AND status='active' AND promotion_status='production'
+       AND variant_id NOT LIKE 's12_%'
      ORDER BY strategy_id, version
   `).all<{ strategy_id: string; version: string }>()
   const registryActiveKeys = new Set((registryActiveRows.results ?? []).map((row) => row.strategy_id + '|' + row.version))
@@ -560,7 +650,7 @@ export async function refreshStrategyMarginalEdgeV4(
   }
   const servingCoverageComplete = registryActiveKeys.size === championWeights.size
     && [...registryActiveKeys].every((key) => championWeights.has(key))
-  const replacement = evaluatePairedStrategyReplacementsV5(cells, edges, championWeights)
+  const replacement = evaluatePairedStrategyReplacementsV6(cells, edges, championWeights)
   const candidateDates = replacement.finalDates
   const championDates = replacement.baselineDates
   const championByDate = new Map(championDates.map((row) => [row.signalDate, row]))
@@ -570,7 +660,7 @@ export async function refreshStrategyMarginalEdgeV4(
   const finalOwnerKeys = new Set(replacement.finalWeights.keys())
 
   const fingerprint = await sourceFingerprint(cells)
-  const runId = `strategy-marginal-edge-v5-${asOfDate}-${fingerprint}`
+  const runId = `strategy-marginal-edge-v6-${asOfDate}-${fingerprint}`
   if (previousHead?.run_id === runId) {
     const existing = await db.prepare('SELECT status FROM strategy_marginal_edge_runs_v4 WHERE run_id=?')
       .bind(runId).first<{ status?: string }>()
@@ -622,14 +712,26 @@ export async function refreshStrategyMarginalEdgeV4(
       accepted: replacement.accepted,
       rejected: replacement.proposals.filter((row) => !replacement.accepted.includes(row)),
     },
+    portfolio_risk: {
+      baseline_max_drawdown: replacement.baselineMaxDrawdown,
+      final_max_drawdown: replacement.finalMaxDrawdown,
+      baseline_turnover: replacement.baselineTurnover,
+      final_turnover: replacement.finalTurnover,
+      return_correlation: replacement.globalReturnCorrelation,
+      correlation_pass: replacement.globalCorrelationPass,
+      turnover_pass: replacement.globalTurnoverPass,
+    },
     promotion_gates: {
-      accepted_same_family_replacement_exists: replacement.accepted.length > 0,
+      accepted_edge_gated_replacement_exists: replacement.accepted.length > 0,
       full_portfolio_positive_cost_net_lcb: replacement.globalRiskPass,
+      full_portfolio_correlation_pass: replacement.globalCorrelationPass,
+      full_portfolio_turnover_pass: replacement.globalTurnoverPass,
       registry_and_serving_owner_coverage_complete: servingCoverageComplete,
       paired_champion_improvement_lcb: paired.lcb90 != null && paired.lcb90 > 0,
       active_count_unchanged: championWeights.size === replacement.finalWeights.size,
       no_hard_top_k: true,
       candidate_and_shadow_strategies_evaluated: true,
+      s12_execution_owner_excluded_from_selection_replacement: true,
       registry_cutover_is_atomic_one_in_one_out: true,
       promotion_allowed_for_business_date: promotionAllowed,
     },
@@ -660,7 +762,7 @@ export async function refreshStrategyMarginalEdgeV4(
       finalOwnerKeys.has(row.strategyId + '|' + row.strategyVersion) ? 1 : 0,
       replacement.finalWeights.get(row.strategyId + '|' + row.strategyVersion) ?? 0,
       JSON.stringify({
-        method: 'date_clustered_leave_one_strategy_out_then_same_family_paired_replacement_v5',
+        method: 'date_clustered_leave_one_strategy_out_then_edge_gated_cross_family_replacement_v6',
         outcome: 'sector_or_market_neutral_cost_net_return',
         lcb: 'student_t_one_sided_90pct_date_clustered',
         min_dates: MIN_EDGE_DATES,
@@ -727,7 +829,7 @@ export async function refreshStrategyMarginalEdgeV4(
           return_correlation=excluded.return_correlation,
           evidence_json=excluded.evidence_json
       `).bind(
-        `strategy-replacement-v5:${runId}:${candidateId}:${incumbentId}`,
+        `strategy-replacement-v6:${runId}:${candidateId}:${incumbentId}`,
         runId, asOfDate, proposal.familyId,
         candidateId, candidateVersion, incumbentId, incumbentVersion,
         decisionStatus,
@@ -739,7 +841,10 @@ export async function refreshStrategyMarginalEdgeV4(
           rejection_reasons: decisionStatus === 'accepted' ? [] : rejectionReasons,
           promotion_allowed: promotionAllowed,
           no_hard_top_k: true,
-          same_family_required: true,
+          replacement_scope: proposal.replacementScope,
+          candidate_family_id: proposal.familyId,
+          incumbent_family_id: proposal.incumbentFamilyId,
+          cross_family_requires_full_portfolio_gates: true,
           outcome: 'sector_or_market_neutral_cost_net_return',
         }),
       )
@@ -830,15 +935,15 @@ export async function refreshStrategyMarginalEdgeV4(
           event_id, date, severity, domain, source, status, title, summary,
           owner, impact, next_action, evidence, created_at
         )
-        SELECT ?, ?, 'info', 'strategy', 'strategy_marginal_edge_v5', 'promoted',
+        SELECT ?, ?, 'info', 'strategy', 'strategy_marginal_edge_v6', 'promoted',
                'Atomic strategy replacement promoted', ?, 'strategy-learning',
-               'Production active count remains stable through same-family one-in-one-out replacement.',
+               'Production active count remains stable through edge-gated one-in-one-out replacement.',
                'Monitor date-clustered cost-net edge, risk and turnover parity.', ?, CURRENT_TIMESTAMP
          WHERE NOT EXISTS (
            SELECT 1 FROM observability_events WHERE event_id=? AND date=?
          )
       `).bind(
-        `strategy-edge-v5-promotion:${runId}`,
+        `strategy-edge-v6-promotion:${runId}`,
         asOfDate,
         `replacements=${replacement.accepted.map((row) => row.candidateKey + '->' + row.incumbentKey).join(',')}`,
         JSON.stringify({
@@ -850,7 +955,7 @@ export async function refreshStrategyMarginalEdgeV4(
           paired_champion_delta_lcb90: paired.lcb90,
           no_hard_top_k: true,
         }),
-        `strategy-edge-v5-promotion:${runId}`,
+        `strategy-edge-v6-promotion:${runId}`,
         asOfDate,
       ))
       await db.batch(cutoverStatements)

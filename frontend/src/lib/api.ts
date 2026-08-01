@@ -650,6 +650,7 @@ export type StrategyLearningResponse = {
     }
   }>
   promotion_gate: StrategyPromotionGate[]
+  replacement_gate: StrategyReplacementGateSummary
   policy_state_preview: StrategyAdaptivePolicyState
 }
 
@@ -666,6 +667,16 @@ export type StrategyPromotionGate = {
   l3_requires_wei_approval?: boolean
   production_effect: false
   missing_evidence: string[]
+  thresholds: {
+    min_evaluable_decisions: number
+    min_match_rate: number
+    min_reward_samples: number
+    min_hit_rate: number
+    min_avg_cost_net_return_exclusive: number
+    min_max_drawdown: number
+    min_mature_dates: number
+    min_date_return_lcb90_exclusive: number
+  }
   evidence: {
     decisions: number
     total_decisions: number
@@ -681,6 +692,67 @@ export type StrategyPromotionGate = {
     date_return_lcb90: number | null
     lifetime_decisions: number
   }
+}
+
+export type StrategyReplacementDecisionSummary = {
+  run_id: string
+  as_of_date: string
+  candidate_strategy_id: string
+  candidate_strategy_version: string
+  replaced_strategy_id: string
+  replaced_strategy_version: string
+  candidate_family_id: string
+  incumbent_family_id: string | null
+  replacement_scope: 'same_family' | 'cross_family' | null
+  status: 'proposed' | 'accepted' | 'rejected'
+  paired_dates: number
+  paired_delta_mean: number | null
+  paired_delta_lcb90: number | null
+  candidate_absolute_cost_net_mean: number | null
+  candidate_max_drawdown: number | null
+  incumbent_max_drawdown: number | null
+  candidate_turnover: number | null
+  incumbent_turnover: number | null
+  return_correlation: number | null
+  rejection_reasons: string[]
+  promotion_allowed: boolean
+}
+
+export type StrategyReplacementGateSummary = {
+  policy: {
+    schema_version: string
+    min_paired_dates: number
+    min_paired_delta_lcb90_exclusive: number
+    min_candidate_absolute_cost_net_mean_exclusive: number
+    max_drawdown_degradation: number
+    max_turnover_increase: number
+    max_duplicate_return_correlation: number
+    requires_full_portfolio_gates: true
+    replacement_mode: 'atomic_one_in_one_out'
+    outcome: 'sector_or_market_neutral_cost_net_return'
+  }
+  evidence_status: 'ready' | 'pending' | 'unavailable'
+  status_reason: string
+  latest_run: {
+    run_id: string
+    as_of_date: string
+    status: 'shadow' | 'promoted' | 'failed'
+    strategy_count: number
+    eligible_strategy_count: number
+    sample_dates: number
+    created_at: string
+    portfolio_risk: {
+      baseline_max_drawdown: number | null
+      final_max_drawdown: number | null
+      baseline_turnover: number | null
+      final_turnover: number | null
+      return_correlation: number | null
+      correlation_pass: boolean | null
+      turnover_pass: boolean | null
+    }
+    promotion_gates: Record<string, boolean>
+  } | null
+  decisions: StrategyReplacementDecisionSummary[]
 }
 
 export type StrategyAdaptivePolicyState = {

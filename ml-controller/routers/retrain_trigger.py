@@ -181,6 +181,54 @@ def _exact_dataset_snapshot_rejection(
     return None
 
 
+def _resolve_monthly_retrain_business_date(
+    *,
+    requested_run_date: str | None,
+    cutoff_date: str,
+) -> tuple[str, dict[str, object]]:
+    """Resolve scheduler wall-clock time to the latest complete market session.
+
+    A first-Sunday monthly run must train on Friday's immutable compute snapshot,
+    not silently fall back to mutable D1 data because no Sunday snapshot exists.
+    Explicit run_date values remain exact business-date requests.
+    """
+    if requested_run_date:
+        return requested_run_date, {
+            "mode": "explicit_business_date",
+            "cutoff_date": cutoff_date,
+            "business_date": requested_run_date,
+        }
+
+    from services.active8_prep_lifecycle import _latest_market_session
+    from services.dataset_snapshots import latest_dataset_snapshot
+
+    expected_business_date, market_session_evidence = _latest_market_session(
+        cutoff_date,
+        query_fn=d1_client.query,
+    )
+    snapshot = latest_dataset_snapshot(
+        kind="backtest_dataset",
+        as_of_business_date=cutoff_date,
+        access_tier="compute",
+    )
+    if not snapshot or snapshot.get("manifest_errors"):
+        raise ValueError("monthly_compute_snapshot_missing_or_invalid")
+
+    snapshot_business_date = str(snapshot.get("business_date") or "")[:10]
+    if snapshot_business_date != expected_business_date:
+        raise ValueError(
+            "monthly_compute_snapshot_behind_market_session:"
+            f"expected={expected_business_date}:actual={snapshot_business_date or 'missing'}"
+        )
+    return snapshot_business_date, {
+        "mode": "latest_complete_market_session",
+        "cutoff_date": cutoff_date,
+        "business_date": snapshot_business_date,
+        "snapshot_id": snapshot.get("snapshot_id"),
+        **market_session_evidence,
+    }
+
+
 def _force_https(url: str) -> str:
     parsed = urlsplit(url.strip())
     if parsed.scheme != "http":
@@ -1211,7 +1259,30 @@ async def trigger_universal_retrain(
     run_id = f"universal-{tw_now.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
     # ?? Idempotency check (P0-4, persistent via GCS) ?????????????????????????
-    run_date = req.run_date or tw_now.date().isoformat()
+    scheduler_date = tw_now.date().isoformat()
+    if req.force_monthly:
+        try:
+            run_date, monthly_business_date_resolution = _resolve_monthly_retrain_business_date(
+                requested_run_date=req.run_date,
+                cutoff_date=scheduler_date,
+            )
+        except Exception as exc:
+            logger.error("[retrain/universal] monthly business-date resolution failed: %s", exc)
+            return {
+                "status": "rejected",
+                "error": f"monthly_business_date_resolution_failed:{type(exc).__name__}:{exc}",
+                "scheduler_date": scheduler_date,
+            }
+        logger.info(
+            "[retrain/universal] monthly business-date resolved: scheduler_date=%s "
+            "business_date=%s snapshot_id=%s",
+            scheduler_date,
+            run_date,
+            monthly_business_date_resolution.get("snapshot_id"),
+        )
+    else:
+        run_date = req.run_date or scheduler_date
+        monthly_business_date_resolution = None
     prep_output_gcs_prefix = str(req.prep_output_gcs_prefix or "").strip().rstrip("/")
     if req.prep_only and (
         not prep_output_gcs_prefix
@@ -1401,7 +1472,7 @@ async def trigger_universal_retrain(
         snapshot_maps = None
 
     snapshot_rejection = _exact_dataset_snapshot_rejection(
-        require_exact=req.require_exact_dataset_snapshot,
+        require_exact=req.require_exact_dataset_snapshot or req.force_monthly,
         run_date=run_date,
         snapshot_maps=snapshot_maps,
     )

@@ -79,6 +79,54 @@ def test_load_training_maps_requires_exact_snapshot_date(monkeypatch):
     }
 
 
+def test_monthly_business_date_resolves_weekend_to_complete_snapshot(monkeypatch):
+    monkeypatch.setattr(
+        "services.active8_prep_lifecycle._latest_market_session",
+        lambda cutoff, query_fn: ("2026-07-31", {"market_session_price_rows": 2301}),
+    )
+    monkeypatch.setattr(
+        "services.dataset_snapshots.latest_dataset_snapshot",
+        lambda **kwargs: {
+            "snapshot_id": "backtest_dataset:2026-07-31:test",
+            "business_date": "2026-07-31",
+            "manifest_errors": [],
+        },
+    )
+
+    business_date, evidence = retrain_trigger._resolve_monthly_retrain_business_date(
+        requested_run_date=None,
+        cutoff_date="2026-08-02",
+    )
+
+    assert business_date == "2026-07-31"
+    assert evidence["mode"] == "latest_complete_market_session"
+    assert evidence["snapshot_id"] == "backtest_dataset:2026-07-31:test"
+
+
+def test_monthly_business_date_rejects_snapshot_behind_market_session(monkeypatch):
+    monkeypatch.setattr(
+        "services.active8_prep_lifecycle._latest_market_session",
+        lambda cutoff, query_fn: ("2026-07-31", {}),
+    )
+    monkeypatch.setattr(
+        "services.dataset_snapshots.latest_dataset_snapshot",
+        lambda **kwargs: {
+            "snapshot_id": "backtest_dataset:2026-07-30:test",
+            "business_date": "2026-07-30",
+            "manifest_errors": [],
+        },
+    )
+
+    try:
+        retrain_trigger._resolve_monthly_retrain_business_date(
+            requested_run_date=None,
+            cutoff_date="2026-08-02",
+        )
+    except ValueError as exc:
+        assert "monthly_compute_snapshot_behind_market_session" in str(exc)
+    else:
+        raise AssertionError("stale monthly snapshot must fail closed")
+
 def test_timesfm_feature_release_coverage_requires_breadth_and_history():
     failed = retrain_trigger._timesfm_l175_release_coverage(
         {"stocks_with_history": 396, "history_dates": 7},

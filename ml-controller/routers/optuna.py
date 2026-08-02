@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -1023,7 +1024,7 @@ def run_ga_optimizer(req: GAOptimizerReq = Body(default=GAOptimizerReq())):
     }
 
 
-def _run_optuna_sweep_source(source: str, runner) -> dict[str, Any]:
+def _run_optuna_sweep_source_inner(source: str, runner) -> dict[str, Any]:
     try:
         result = runner()
         if isinstance(result, dict) and result.get("status") in {"skipped", "insufficient_data"}:
@@ -1063,6 +1064,21 @@ def _run_optuna_sweep_source(source: str, runner) -> dict[str, Any]:
             "status": "error",
             "summary": f"{source}:ERROR({type(exc).__name__}: {str(exc)[:180]})",
         }
+
+
+def _run_optuna_sweep_source(source: str, runner) -> dict[str, Any]:
+    started = time.monotonic()
+    logger.info("[Optuna/research_sweep] source=%s start", source)
+    result = _run_optuna_sweep_source_inner(source, runner)
+    elapsed_seconds = round(time.monotonic() - started, 3)
+    result["elapsed_seconds"] = elapsed_seconds
+    logger.info(
+        "[Optuna/research_sweep] source=%s finish status=%s elapsed_seconds=%.3f",
+        source,
+        result.get("status"),
+        elapsed_seconds,
+    )
+    return result
 
 
 def _commit_research_sweep_candidate(
@@ -1118,6 +1134,7 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
     must go through /research_sweep/run so Cloud Run Job owns the long lifecycle
     and Worker only receives final callback status.
     """
+    sweep_started = time.monotonic()
     common = {
         "cadence": req.cadence,
         "n_trials": req.n_trials,
@@ -1184,6 +1201,7 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
             logger.exception("[Optuna/research_sweep] composite staging failed")
             failures.append(f"composite_staging:ERROR({type(exc).__name__}: {str(exc)[:180]})")
             staging = {"status": "error", "reason": str(exc)}
+    total_elapsed_seconds = round(time.monotonic() - sweep_started, 3)
     return {
         "status": "error" if failures else "completed",
         "cadence": req.cadence,
@@ -1194,6 +1212,15 @@ def execute_research_sweep(req: OptunaResearchSweepReq) -> dict[str, Any]:
         "incomplete": incomplete,
         "staging": staging,
         "ga": next((item for item in results if item["source"] == "ga_optimizer"), None),
+        "performance": {
+            "total_elapsed_seconds": total_elapsed_seconds,
+            "source_elapsed_seconds": {
+                item["source"]: item.get("elapsed_seconds") for item in results
+            },
+            "n_trials": req.n_trials,
+            "search_subset_size": req.subset_size,
+            "post_sweep_validation": "parameter_candidate_full_universe_replay",
+        },
     }
 
 

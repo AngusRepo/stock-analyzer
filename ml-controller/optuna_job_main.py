@@ -310,6 +310,7 @@ async def _run() -> int:
             "candidate_ids": candidate_ids,
             "push_results": [item for item in (composite, ga_learning_state) if item],
             "snapshot": staging,
+            "performance": result.get("performance") if isinstance(result, dict) else None,
         }
         payload.update({
             "sandbox_id": composite.get("sandbox_id"),

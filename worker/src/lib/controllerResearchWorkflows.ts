@@ -212,7 +212,10 @@ export async function runMonthlyOptunaResearch(env: Bindings, runDate?: string) 
   return runOptunaResearch(env, {
     cadence: 'monthly',
     nTrials: 300,
-    subsetSize: 1500,
+    // Discovery stays broad in parameter space, but does not replay the full
+    // universe for every trial. The successful composite is already sent to
+    // parameter-candidate validation, which performs the full-universe replay.
+    subsetSize: 400,
     runDate,
     ga: {
       populationSize: 36,

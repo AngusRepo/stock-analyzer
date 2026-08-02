@@ -29,6 +29,12 @@ assert(
   'monthly-optuna must not alias weekly optuna and must preserve requested run_date',
 )
 assert(workflows.includes("cadence: 'monthly'"), 'monthly optuna must pass a monthly cadence contract')
+assert(
+  workflows.includes("cadence: 'monthly',\n    nTrials: 300,\n    // Discovery stays broad") &&
+    workflows.includes('subsetSize: 400,') &&
+    workflows.includes("'/config_pool/parameter_candidates/validation_chain/run'"),
+  'monthly optuna must use bounded stratified discovery and full-universe candidate validation instead of replaying 1500 symbols for every trial',
+)
 assert(workflows.includes('remote_execution_id'), 'monthly optuna/strategy mining summaries must expose normalized remote_execution_id')
 assert(
   workflows.includes('dispatch_ack=${data.dispatch_ack') &&

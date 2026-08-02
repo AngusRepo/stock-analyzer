@@ -376,6 +376,14 @@ def test_research_sweep_two_phase_commit_stages_once_after_all_sources_succeed(m
     assert pushes[0]["params"]["sources"]["screener"] == {"minPrice": 20}
     assert pushes[0]["meta"]["run_id"] == "execution-two-phase"
     assert all(req.push_kv is False and req.dry_run is True for _, req in calls)
+    assert out["performance"]["total_elapsed_seconds"] >= 0
+    assert out["performance"]["search_subset_size"] == 100
+    assert out["performance"]["post_sweep_validation"] == "parameter_candidate_full_universe_replay"
+    assert set(out["performance"]["source_elapsed_seconds"]) == {
+        "barrier", "signal", "sltp", "screener", "conformal",
+        "risk_params", "rrg", "alpha_framework", "ga_optimizer",
+    }
+    assert all(item["elapsed_seconds"] >= 0 for item in out["results"])
 
 
 def test_research_sweep_failure_performs_zero_pushes(monkeypatch):

@@ -12,9 +12,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+import httpx
 import pandas as pd
 
 from services import d1_client
@@ -99,21 +99,23 @@ def _callback_worker_scheduler(payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("STRATEGY_MINING_CALLBACK_TOKEN missing; strategy mining callback cannot close")
 
     body = _json_dumps(payload).encode("utf-8")
-    request = Request(
-        f"{worker_url}/api/internal/strategy-mining/callback",
-        data=body,
-        headers={
-            "Authorization": f"Bearer {worker_auth}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
+    url = f"{worker_url}/api/internal/strategy-mining/callback"
+    headers = {
+        "Authorization": f"Bearer {worker_auth}",
+        "Content-Type": "application/json",
+        "User-Agent": "StockVision-Strategy-Mining/1.0",
+    }
     last_error: Exception | None = None
     for attempt in range(1, 4):
         try:
-            with urlopen(request, timeout=15.0) as response:
-                status_code = int(getattr(response, "status", response.getcode()))
-                response_text = response.read(300).decode("utf-8", errors="replace")
+            response = httpx.post(
+                url,
+                headers=headers,
+                content=body,
+                timeout=15.0,
+            )
+            status_code = int(response.status_code)
+            response_text = response.text[:300]
             if status_code != 200:
                 raise RuntimeError(f"strategy mining callback HTTP {status_code}: {response_text}")
             return {

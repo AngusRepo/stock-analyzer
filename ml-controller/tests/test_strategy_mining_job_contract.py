@@ -11,19 +11,8 @@ from services import d1_client
 
 
 class _CallbackResponse:
-    status = 200
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-    def getcode(self):
-        return self.status
-
-    def read(self, _limit):
-        return b'{"ok":true}'
+    status_code = 200
+    text = '{"ok":true}'
 
 
 def test_finlab_confirm_dedupes_exact_factor_sets_before_backtest_persist():
@@ -78,14 +67,15 @@ def test_strategy_mining_terminal_callback_uses_scheduler_contract(monkeypatch):
     monkeypatch.setenv("STOCKVISION_WORKER_URL", "https://worker.example.test")
     monkeypatch.setenv("STRATEGY_MINING_CALLBACK_TOKEN", "test-token")
 
-    def fake_urlopen(request, timeout):
-        observed["url"] = request.full_url
-        observed["authorization"] = request.headers["Authorization"]
-        observed["body"] = request.data.decode("utf-8")
+    def fake_post(url, *, headers, content, timeout):
+        observed["url"] = url
+        observed["authorization"] = headers["Authorization"]
+        observed["user_agent"] = headers["User-Agent"]
+        observed["body"] = content.decode("utf-8")
         observed["timeout"] = timeout
         return _CallbackResponse()
 
-    monkeypatch.setattr(job, "urlopen", fake_urlopen)
+    monkeypatch.setattr(job.httpx, "post", fake_post)
     result = _callback_worker_scheduler({
         "task": "monthly-strategy-mining",
         "status": "success",
@@ -97,6 +87,7 @@ def test_strategy_mining_terminal_callback_uses_scheduler_contract(monkeypatch):
     assert observed["authorization"] == "Bearer test-token"
     assert '"task":"monthly-strategy-mining"' in observed["body"]
     assert observed["timeout"] == 15.0
+    assert observed["user_agent"] == "StockVision-Strategy-Mining/1.0"
 
 
 def test_strategy_mining_d1_gateway_uses_dedicated_token(monkeypatch):
@@ -161,6 +152,7 @@ def test_strategy_mining_modal_app_isolated_from_broad_cloudflare_secret():
     assert 'modal.Secret.from_name("stockvision-strategy-mining")' in dedicated
     assert 'modal.Secret.from_name("stockvision-finlab")' in dedicated
     assert 'modal.Secret.from_name("gcs-credentials")' in dedicated
+    assert '.add_local_dir(str(APP_DIR), remote_path="/root/app")' in dedicated
     assert "stockvision-cf" not in dedicated
     assert "CF_API_TOKEN" not in dedicated
     assert "STOCKVISION_AUTH_TOKEN" not in dedicated

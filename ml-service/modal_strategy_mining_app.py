@@ -12,6 +12,7 @@ import modal
 SERVICE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SERVICE_DIR.parent
 TOOLS_DIR = REPO_ROOT / "tools"
+APP_DIR = SERVICE_DIR / "app"
 CONTROLLER_SERVICES_DIR = REPO_ROOT / "ml-controller" / "services"
 FEATURE_REGISTRY_DIR = REPO_ROOT / "data" / "feature_registry"
 FINLAB_SOURCE_CONTRACT = REPO_ROOT / "data" / "finlab_source_contract.json"
@@ -29,6 +30,7 @@ image = (
     .apt_install("libgomp1", "ocl-icd-libopencl1")
     .pip_install_from_requirements(str(REQUIREMENTS))
     .add_local_dir(str(TOOLS_DIR), remote_path="/root/tools")
+    .add_local_dir(str(APP_DIR), remote_path="/root/app")
     .add_local_dir(str(CONTROLLER_SERVICES_DIR), remote_path="/root/services")
     .add_local_dir(str(FEATURE_REGISTRY_DIR), remote_path="/root/data/feature_registry")
     .add_local_file(str(FINLAB_SOURCE_CONTRACT), remote_path="/root/data/finlab_source_contract.json")

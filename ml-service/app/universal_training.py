@@ -115,6 +115,12 @@ def _controller_callback_token() -> str:
     )
 
 
+def requires_immutable_oof_snapshot(req: UniversalTrainRequest) -> bool:
+    """Only canonical purged-OOF full-fit artifacts own immutable OOF lineage."""
+
+    return str(req.generation_mode or "native").strip().lower() == "purged_oof"
+
+
 def _date_min_max_for_manifest(dates: np.ndarray) -> tuple[str | None, str | None]:
     """Return stable manifest date bounds without NumPy string min/max.
 
@@ -1416,7 +1422,10 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
         rows=len(X),
         dates=dates_arr,
     )
-    if not walk_forward_mode and req.dataset_snapshot:
+    immutable_oof_mode = requires_immutable_oof_snapshot(req)
+    if not walk_forward_mode and immutable_oof_mode:
+        if not req.dataset_snapshot:
+            raise RuntimeError("immutable OOF snapshot contract missing for versioned full-fit registration")
         prep_freshness = validate_immutable_oof_snapshot_for_registration(
             req.dataset_snapshot,
             gcs_prefix=gcs_prefix,

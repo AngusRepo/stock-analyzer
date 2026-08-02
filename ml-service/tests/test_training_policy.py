@@ -613,3 +613,21 @@ def test_immutable_oof_snapshot_rejects_future_label_or_row_mismatch():
             label_known_dates=np.array(["2026-07-15", "2026-07-20"]),
             run_date="2026-07-17",
         )
+
+
+def test_native_monthly_compute_snapshot_does_not_claim_immutable_oof_lineage():
+    req = universal_training.UniversalTrainRequest(
+        generation_mode="native",
+        dataset_snapshot={
+            "schema_version": "dataset-snapshot-manifest-v1",
+            "business_date": "2026-07-31",
+        },
+    )
+
+    assert universal_training.requires_immutable_oof_snapshot(req) is False
+
+
+def test_purged_oof_full_fit_requires_immutable_oof_lineage():
+    req = universal_training.UniversalTrainRequest(generation_mode="purged_oof")
+
+    assert universal_training.requires_immutable_oof_snapshot(req) is True

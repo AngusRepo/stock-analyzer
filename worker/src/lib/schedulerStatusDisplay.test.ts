@@ -91,6 +91,9 @@ const logs: SchedulerDisplayLogCandidate[] = [
     assert(dates.length === 7, 'scheduler status scan window must stay bounded for Cloudflare Worker KV subrequest budget')
     assert(dates.includes('2026-05-03'), 'scheduler scan window must include weekends so weekly/monthly jobs can show lastRun')
     assert(estimateSchedulerStatusKvReads() < 50, 'scheduler status must stay below Cloudflare Worker subrequest limits')
+    const anchoredDates = getSchedulerScanDates('2026-08-02')
+    assert(anchoredDates[0] === '2026-08-02', 'scheduler scan must honor an explicit readiness run date after timezone rollover')
+    assert(anchoredDates[6] === '2026-07-27', 'anchored scheduler scan must preserve the bounded seven-day window')
   } finally {
     Date.now = originalNow
   }

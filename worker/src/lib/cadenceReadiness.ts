@@ -41,8 +41,9 @@ function terminal(status: string): boolean {
 export async function runCadenceReadiness(
   env: Bindings,
   cadence: CadenceReadiness,
+  runDate?: string,
 ): Promise<string> {
-  const scheduler = await getSchedulerStatus(env)
+  const scheduler = await getSchedulerStatus(env, runDate)
   const jobs = new Map(scheduler.jobs.map((job) => [job.id, job]))
   const required = REQUIRED_TASKS[cadence]
   const missing = required.filter((task) => !jobs.has(task))

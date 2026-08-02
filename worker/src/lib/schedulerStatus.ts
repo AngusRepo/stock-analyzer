@@ -268,9 +268,12 @@ function inferShortRunConcern(def: JobDef, log?: CronLogEntry): {
   return { durationConcern: null }
 }
 
-export function getSchedulerScanDates(): string[] {
+export function getSchedulerScanDates(anchorDate?: string): string[] {
   const dates: string[] = []
-  const now = new Date(Date.now() + 8 * 3600_000)
+  const normalizedAnchor = String(anchorDate ?? '').trim()
+  const now = /^\d{4}-\d{2}-\d{2}$/.test(normalizedAnchor)
+    ? new Date(`${normalizedAnchor}T00:00:00.000Z`)
+    : new Date(Date.now() + 8 * 3600_000)
   for (let i = 0; i < SCHEDULER_STATUS_SCAN_DAYS; i += 1) {
     const d = new Date(now)
     d.setDate(d.getDate() - i)
@@ -692,8 +695,8 @@ function isCurrentCadenceCycle(date: string, today: string, group: JobDef['group
   return false
 }
 
-export async function getSchedulerStatus(env: Bindings) {
-  const dates = getSchedulerScanDates()
+export async function getSchedulerStatus(env: Bindings, anchorDate?: string) {
+  const dates = getSchedulerScanDates(anchorDate)
   const displayDates = dates.slice(0, 7)
   const today = dates[0]
 

@@ -544,6 +544,8 @@ def test_full_fit_base_payload_preserves_exact_dataset_and_feature_lineage():
             "gcs_prefix": "universal/canonical_adjusted_v4/immutable",
             "feature_pool_path": "walk_forward/cohort/full_fit/feature_pool.json",
             "dataset_snapshot": snapshot,
+            "generation_mode": "oof_full_fit_release",
+            "cohort_id": "cohort-1",
         },
         candidate_version="v-full-fit",
     )
@@ -551,6 +553,9 @@ def test_full_fit_base_payload_preserves_exact_dataset_and_feature_lineage():
     assert payload["gcs_prefix"] == "universal/canonical_adjusted_v4/immutable"
     assert payload["feature_pool_path"] == "walk_forward/cohort/full_fit/feature_pool.json"
     assert payload["dataset_snapshot"] == snapshot
+    assert payload["generation_mode"] == "oof_full_fit_release"
+    assert payload["cohort_id"] == "cohort-1"
+    assert build_group_train_payload(payload, "tree")["generation_mode"] == "oof_full_fit_release"
     assert build_group_train_payload(payload, "tree")["gcs_prefix"] == payload["gcs_prefix"]
 
 

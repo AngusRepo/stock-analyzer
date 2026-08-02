@@ -775,6 +775,8 @@ class UniversalTrainingPolicy:
             "gcs_prefix",
             "feature_pool_path",
             "dataset_snapshot",
+            "generation_mode",
+            "cohort_id",
         ):
             if payload.get(key) is not None:
                 base_payload[key] = payload[key]

@@ -151,7 +151,8 @@ def test_strategy_mining_modal_app_isolated_from_broad_cloudflare_secret():
     assert 'modal.App(name="stockvision-strategy-mining"' in dedicated
     assert 'modal.Secret.from_name("stockvision-strategy-mining")' in dedicated
     assert 'modal.Secret.from_name("stockvision-finlab")' in dedicated
-    assert 'modal.Secret.from_name("gcs-credentials")' in dedicated
+    assert 'modal.Secret.from_name("stockvision-modal-gcs-writer")' in dedicated
+    assert 'setup_modal_container_env()' in dedicated
     assert '.add_local_dir(str(APP_DIR), remote_path="/root/app")' in dedicated
     assert "stockvision-cf" not in dedicated
     assert "CF_API_TOKEN" not in dedicated

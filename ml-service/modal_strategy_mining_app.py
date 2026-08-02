@@ -42,7 +42,7 @@ image = (
 )
 
 app = modal.App(name="stockvision-strategy-mining", image=image)
-gcs_secret = modal.Secret.from_name("gcs-credentials")
+gcs_secret = modal.Secret.from_name("stockvision-modal-gcs-writer")
 finlab_secret = modal.Secret.from_name("stockvision-finlab")
 strategy_mining_secret = modal.Secret.from_name("stockvision-strategy-mining")
 
@@ -94,6 +94,9 @@ def strategy_mining_research(payload: dict) -> dict:
             env_updates[key] = str(value)
 
     with patched_env(env_updates):
+        from app.runtime_env import setup_modal_container_env
+
+        setup_modal_container_env()
         job = importlib.import_module("strategy_mining_job_main")
         exit_code = int(job.main())
     status = "completed" if exit_code == 0 else "error"

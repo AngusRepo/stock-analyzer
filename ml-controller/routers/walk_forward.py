@@ -897,7 +897,7 @@ async def dispatch_oof_full_fit_training(
         for model_name in (receipt.get("eligible_models") or [])
         if str(model_name)
     }
-    if (
+    completed_receipt = (
         receipt.get("status") == "completed"
         and receipt.get("retry_required") is False
         and str(receipt.get("cohort_id") or "") == cohort_id
@@ -906,14 +906,57 @@ async def dispatch_oof_full_fit_training(
         and not receipt.get("missing_models")
         and not receipt.get("failed_models")
         and release_registry.get("status") == "materialized"
-    ):
-        return {
+    )
+    artifact_states = (
+        receipt.get("artifact_states")
+        if isinstance(receipt.get("artifact_states"), dict)
+        else {}
+    )
+    recoverable_retry_limit = (
+        receipt.get("status") == "blocked"
+        and receipt.get("reason") == "full_fit_retry_limit_reached"
+        and str(receipt.get("cohort_id") or "") == cohort_id
+        and str(receipt.get("knowledge_cutoff_date") or "") == knowledge_cutoff_date
+        and receipt_eligible == set(plan["eligible_models"])
+        and not receipt.get("missing_models")
+        and set(artifact_states) == set(plan["eligible_models"])
+        and all(
+            state in {"offline_passed", "offline_strong_pass"}
+            for state in artifact_states.values()
+        )
+        and release_registry.get("status") == "materialized"
+    )
+    if recoverable_retry_limit:
+        terminal_path = str(receipt.get("terminal_payload_path") or "")
+        terminal_checksum = str(receipt.get("terminal_payload_checksum") or "")
+        terminal_raw = bucket.blob(terminal_path).download_as_text() if terminal_path else ""
+        terminal_payload = json.loads(terminal_raw) if terminal_raw else {}
+        recoverable_retry_limit = (
+            bool(terminal_raw)
+            and hashlib.sha256(terminal_raw.encode("utf-8")).hexdigest() == terminal_checksum
+            and terminal_payload.get("status") == "completed"
+            and str(terminal_payload.get("run_id") or "") == str(receipt.get("run_id") or "")
+        )
+    if completed_receipt or recoverable_retry_limit:
+        normalized = {
             **plan,
             **receipt,
+            "status": "completed",
             "reason": "immutable_full_fit_receipt_complete",
+            "missing_models": [],
+            "failed_models": [],
             "retry_required": False,
             "receipt_path": receipt_path,
         }
+        if recoverable_retry_limit:
+            receipt_blob.upload_from_string(
+                json.dumps(
+                    {key: value for key, value in normalized.items() if key != "receipt_path"},
+                    sort_keys=True,
+                ),
+                content_type="application/json",
+            )
+        return normalized
     attempt = int(receipt.get("attempt") or 0)
     prior_run_id = str(receipt.get("run_id") or "")
     if prior_run_id:

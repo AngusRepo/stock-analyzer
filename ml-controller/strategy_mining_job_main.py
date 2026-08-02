@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -86,6 +87,45 @@ def _env_int(name: str, default: int) -> int:
     if not raw:
         return default
     return int(raw)
+
+
+def _callback_worker_scheduler(payload: dict[str, Any]) -> dict[str, Any]:
+    worker_url = os.environ.get("STOCKVISION_WORKER_URL", "").strip().rstrip("/")
+    worker_auth = os.environ.get("STRATEGY_MINING_CALLBACK_TOKEN", "").strip()
+    if not worker_url:
+        raise RuntimeError("STOCKVISION_WORKER_URL missing; strategy mining callback cannot close")
+    if not worker_auth:
+        raise RuntimeError("STRATEGY_MINING_CALLBACK_TOKEN missing; strategy mining callback cannot close")
+
+    body = _json_dumps(payload).encode("utf-8")
+    request = Request(
+        f"{worker_url}/api/internal/strategy-mining/callback",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {worker_auth}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            with urlopen(request, timeout=15.0) as response:
+                status_code = int(getattr(response, "status", response.getcode()))
+                response_text = response.read(300).decode("utf-8", errors="replace")
+            if status_code != 200:
+                raise RuntimeError(f"strategy mining callback HTTP {status_code}: {response_text}")
+            return {
+                "attempted": True,
+                "ok": True,
+                "attempt": attempt,
+                "status_code": status_code,
+            }
+        except Exception as exc:  # noqa: BLE001 - bounded retry, then fail closed.
+            last_error = exc
+            if attempt < 3:
+                time.sleep(float(attempt))
+    raise RuntimeError(f"strategy mining callback failed after 3 attempts: {last_error}") from last_error
 
 
 def _env_float(name: str, default: float) -> float:
@@ -314,6 +354,11 @@ def _build_args(alpha: Any, *, run_date: str, output_dir: Path) -> argparse.Name
         deap_generations=0,
         pymoo_population=48,
         pymoo_generations=6,
+        pymoo_search_mode="top_k_v1",
+        pymoo_labeler_population=32,
+        pymoo_labeler_generations=4,
+        labeler_min_percentile=0.55,
+        labeler_max_percentile=0.85,
         finlab_confirm_top_n=8,
         pbo_folds=8,
         promote_min_validation_sharpe=1.0,
@@ -339,6 +384,11 @@ def _build_args(alpha: Any, *, run_date: str, output_dir: Path) -> argparse.Name
         ("STRATEGY_MINING_MIN_FACTORS", "min_factors", int),
         ("STRATEGY_MINING_MAX_FACTORS", "max_factors", int),
         ("STRATEGY_MINING_FINLAB_CONFIRM_TOP_N", "finlab_confirm_top_n", int),
+        ("STRATEGY_MINING_PYMOO_SEARCH_MODE", "pymoo_search_mode", str),
+        ("STRATEGY_MINING_PYMOO_LABELER_POPULATION", "pymoo_labeler_population", int),
+        ("STRATEGY_MINING_PYMOO_LABELER_GENERATIONS", "pymoo_labeler_generations", int),
+        ("STRATEGY_MINING_LABELER_MIN_PERCENTILE", "labeler_min_percentile", float),
+        ("STRATEGY_MINING_LABELER_MAX_PERCENTILE", "labeler_max_percentile", float),
         ("STRATEGY_MINING_PBO_FOLDS", "pbo_folds", int),
         ("STRATEGY_MINING_PROMOTE_MIN_VALIDATION_SHARPE", "promote_min_validation_sharpe", float),
         ("STRATEGY_MINING_PROMOTE_MIN_HOLDOUT_SHARPE", "promote_min_holdout_sharpe", float),
@@ -739,7 +789,7 @@ def _persist_ledger(run_id: str, report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def main() -> int:
+def _run_strategy_mining() -> int:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
     started = time.time()
     run_date = _run_date()
@@ -750,6 +800,7 @@ def main() -> int:
     run_id = os.environ.get("STRATEGY_MINING_RUN_ID", "").strip()
     if not run_id:
         run_id = f"strategy-mining-{run_date}-{_now_tw().strftime('%Y%m%d%H%M%S')}"
+    os.environ["STRATEGY_MINING_RUN_ID"] = run_id
     output_dir = Path(os.environ.get("STRATEGY_MINING_OUTPUT_DIR", "") or f"/tmp/strategy_mining/{run_id}")
 
     LOGGER.info("strategy mining job starting run_id=%s run_date=%s", run_id, run_date)
@@ -800,6 +851,50 @@ def main() -> int:
         LOGGER.exception("strategy mining job failed run_id=%s", run_id)
         print(json.dumps({"status": "error", "run_id": run_id, **telemetry}, ensure_ascii=False, default=_json_default))
         return 1
+
+
+def main() -> int:
+    started = time.time()
+    terminal_error: str | None = None
+    try:
+        exit_code = int(_run_strategy_mining())
+    except Exception as exc:  # Includes setup/login/import failures before the inner run ledger exists.
+        exit_code = 1
+        terminal_error = f"{type(exc).__name__}:{exc}"
+        LOGGER.exception("strategy mining failed before the run ledger was initialized")
+        print(_json_dumps({
+            "status": "error",
+            "run_id": os.environ.get("STRATEGY_MINING_RUN_ID") or None,
+            "error": terminal_error,
+        }))
+
+    run_date = os.environ.get("STRATEGY_MINING_RUN_DATE", "").strip() or _now_tw().date().isoformat()
+    run_id = os.environ.get("STRATEGY_MINING_RUN_ID", "").strip() or f"strategy-mining-untracked-{run_date}"
+    scheduler_status = "success" if exit_code == 0 else "error"
+    summary = (
+        f"monthly Pymoo strategy mining {scheduler_status} "
+        f"run_id={run_id} backend={os.environ.get('STRATEGY_MINING_BACKEND', 'job')}"
+    )
+    callback_payload: dict[str, Any] = {
+        "task": "monthly-strategy-mining",
+        "status": scheduler_status,
+        "summary": summary,
+        "duration_ms": int(max(time.time() - started, 0.0) * 1000),
+        "run_id": run_id,
+        "run_date": run_date,
+        "metadata": {
+            "cadence": os.environ.get("STRATEGY_MINING_CADENCE", "monthly"),
+            "backend": os.environ.get("STRATEGY_MINING_BACKEND", "job"),
+        },
+    }
+    if exit_code != 0:
+        callback_payload["error"] = terminal_error or "strategy_mining_exit_code=1"
+    try:
+        _callback_worker_scheduler(callback_payload)
+    except Exception:
+        LOGGER.exception("strategy mining terminal callback failed run_id=%s", run_id)
+        return 1
+    return exit_code
 
 
 if __name__ == "__main__":

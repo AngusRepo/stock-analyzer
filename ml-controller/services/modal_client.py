@@ -459,6 +459,14 @@ def _lookup(fn_name: str):
         raise RuntimeError(f"Modal lookup failed: {_APP_NAME}/{fn_name} → {e}")
 
 
+def _lookup_in_app(app_name: str, fn_name: str):
+    import modal
+    try:
+        return modal.Function.from_name(app_name, fn_name)
+    except Exception as e:
+        raise RuntimeError(f"Modal lookup failed: {app_name}/{fn_name} ??{e}") from e
+
+
 async def _modal_remote_call(function_name: str, payload: dict, *, source: str = "modal_function") -> dict:
     t0 = time.time()
     try:
@@ -1223,22 +1231,75 @@ async def strategy_mining_research(payload: dict | None = None, fire_and_forget:
     payload = payload or {}
     if not _USE_MODAL:
         raise RuntimeError("strategy_mining_research requires Modal credentials")
-    fn = _lookup("strategy_mining_research")
+    strategy_app_name = (
+        os.environ.get("STRATEGY_MINING_MODAL_APP_NAME", "stockvision-strategy-mining").strip()
+        or "stockvision-strategy-mining"
+    )
+    fn = _lookup_in_app(strategy_app_name, "strategy_mining_research")
     if fire_and_forget:
         logger.info("[ml_client] Modal.spawn strategy_mining_research")
         t0 = time.time()
         call = await fn.spawn.aio(payload)
         call_id = getattr(call, "object_id", None) or getattr(call, "function_call_id", None) or str(call)
+        if not call_id:
+            raise RuntimeError("strategy_mining_modal_dispatch_missing_function_call_id")
+
+        ack_timeout = min(
+            max(float(os.environ.get("STRATEGY_MINING_DISPATCH_ACK_TIMEOUT_SECONDS", "5") or 5), 0.5),
+            15.0,
+        )
+        dispatch_ack = "accepted_running"
+        try:
+            immediate_result = await call.get.aio(timeout=ack_timeout)
+        except TimeoutError:
+            # No terminal output within the bounded window means Modal accepted
+            # the call and it is still queued/running. This is the expected path.
+            immediate_result = None
+        except Exception as exc:
+            raise RuntimeError(
+                f"strategy_mining_modal_dispatch_rejected:{type(exc).__name__}:{exc}"
+            ) from exc
+        else:
+            dispatch_ack = "completed_during_ack"
+            if isinstance(immediate_result, dict) and str(immediate_result.get("status", "")).lower() in {
+                "error",
+                "failed",
+            }:
+                raise RuntimeError(
+                    "strategy_mining_modal_immediate_failure:"
+                    f"{immediate_result.get('error') or immediate_result.get('status')}"
+                )
         await _record_modal_observation(
             "strategy_mining_research",
             wall_sec=time.time() - t0,
             compute_sec=0.0,
             source="modal_spawn",
-            meta={"call_type": "spawn", "run_date": payload.get("run_date")},
+            meta={
+                "call_type": "spawn",
+                "run_date": payload.get("run_date"),
+                "run_id": payload.get("run_id"),
+                "function_call_id": call_id,
+                "dispatch_ack": dispatch_ack,
+            },
         )
-        return {"status": "spawned", "backend": "modal", "function_call_id": call_id}
+        return {
+            "status": "spawned",
+            "backend": "modal",
+            "function_call_id": call_id,
+            "dispatch_ack": dispatch_ack,
+        }
     logger.info("[ml_client] Modal.remote strategy_mining_research")
-    result = await _modal_remote_call("strategy_mining_research", payload)
+    t0 = time.time()
+    try:
+        result = await fn.remote.aio(payload)
+    finally:
+        await _record_modal_observation(
+            "strategy_mining_research",
+            wall_sec=time.time() - t0,
+            compute_sec=0.0,
+            source="modal_function",
+            meta={"call_type": "remote", "run_id": payload.get("run_id")},
+        )
     if isinstance(result, dict):
         result.setdefault("backend", "modal")
     return result

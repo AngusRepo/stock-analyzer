@@ -44,6 +44,7 @@ CF_D1_DB_ID="${CF_D1_DB_ID:-6401a5f6-5767-4fa8-a1a7-ec8d4739ac79}"
 CF_KV_NAMESPACE_ID="${CF_KV_NAMESPACE_ID:-39dcebcf5b6848c98f269ef9a48dc3f8}"
 CF_API_TOKEN_SECRET="${CF_API_TOKEN_SECRET:-stockvision-cf-api-token:latest}"
 STOCKVISION_AUTH_TOKEN_SECRET="${STOCKVISION_AUTH_TOKEN_SECRET:-stockvision-stockvision-auth-token:latest}"
+STRATEGY_MINING_CALLBACK_TOKEN_SECRET="${STRATEGY_MINING_CALLBACK_TOKEN_SECRET:-stockvision-strategy-mining-callback-token:latest}"
 ML_CONTROLLER_SECRET_SECRET="${ML_CONTROLLER_SECRET_SECRET:-stockvision-ml-controller-secret:latest}"
 MODAL_TOKEN_ID_SECRET="${MODAL_TOKEN_ID_SECRET:-stockvision-modal-token-id:latest}"
 MODAL_TOKEN_SECRET_SECRET="${MODAL_TOKEN_SECRET_SECRET:-stockvision-modal-token-secret:latest}"
@@ -56,6 +57,7 @@ SHIOAJI_CERT_PASSWORD_SECRET="${SHIOAJI_CERT_PASSWORD_SECRET:-stockvision-finlab
 SHIOAJI_CERT_PFX_SECRET="${SHIOAJI_CERT_PFX_SECRET:-stockvision-finlab-exec-shioaji-cert-pfx:latest}"
 SHIOAJI_CERT_MOUNT_PATH="${SHIOAJI_CERT_MOUNT_PATH:-/secrets/shioaji/cert.pfx}"
 BASE_SECRET_BINDINGS="FINLAB_API_KEY=${FINLAB_API_KEY_SECRET},CF_API_TOKEN=${CF_API_TOKEN_SECRET},STOCKVISION_AUTH_TOKEN=${STOCKVISION_AUTH_TOKEN_SECRET},ML_CONTROLLER_SECRET=${ML_CONTROLLER_SECRET_SECRET},MODAL_TOKEN_ID=${MODAL_TOKEN_ID_SECRET},MODAL_TOKEN_SECRET=${MODAL_TOKEN_SECRET_SECRET}"
+STRATEGY_MINING_SECRET_BINDINGS="FINLAB_API_KEY=${FINLAB_API_KEY_SECRET},STRATEGY_MINING_CALLBACK_TOKEN=${STRATEGY_MINING_CALLBACK_TOKEN_SECRET}"
 SHIOAJI_SECRET_BINDINGS="SHIOAJI_API_KEY=${SHIOAJI_API_KEY_SECRET},SHIOAJI_SECRET_KEY=${SHIOAJI_SECRET_KEY_SECRET},SHIOAJI_ACCOUNT_ID=${SHIOAJI_ACCOUNT_ID_SECRET},SHIOAJI_CERT_PERSON_ID=${SHIOAJI_CERT_PERSON_ID_SECRET},SHIOAJI_CERT_PASSWORD=${SHIOAJI_CERT_PASSWORD_SECRET},${SHIOAJI_CERT_MOUNT_PATH}=${SHIOAJI_CERT_PFX_SECRET}"
 RUN_SECRET_BINDINGS="${BASE_SECRET_BINDINGS},${SHIOAJI_SECRET_BINDINGS}"
 PIPELINE_STATE_SPACE_OVERLAY_MODE="${PIPELINE_STATE_SPACE_OVERLAY_MODE:-disabled}"
@@ -637,7 +639,7 @@ sync_strategy_mining_job() {
         --task-timeout="$STRATEGY_MINING_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
-        --update-secrets="$RUN_SECRET_BINDINGS" \
+        --set-secrets="$STRATEGY_MINING_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Strategy mining job update failed" >&2
       exit 4
@@ -656,7 +658,7 @@ sync_strategy_mining_job() {
         --task-timeout="$STRATEGY_MINING_JOB_TIMEOUT" \
         --max-retries=0 \
         "${service_account_args[@]}" \
-        --set-secrets="$RUN_SECRET_BINDINGS" \
+        --set-secrets="$STRATEGY_MINING_SECRET_BINDINGS" \
         --env-vars-file="$env_file"; then
       echo "??Strategy mining job create failed" >&2
       exit 4
@@ -728,6 +730,7 @@ run_preflight() {
   require_nonempty "OOF_MATERIALIZE_JOB_NAME" "Required by Active-8 OOF durable materialization"
   require_nonempty "CF_API_TOKEN_SECRET" "Secret Manager reference for Cloudflare API token, e.g. stockvision-cf-api-token:latest"
   require_nonempty "STOCKVISION_AUTH_TOKEN_SECRET" "Secret Manager reference for Worker service token, e.g. stockvision-stockvision-auth-token:latest"
+  require_nonempty "STRATEGY_MINING_CALLBACK_TOKEN_SECRET" "Secret Manager reference for the dedicated Pymoo callback token"
   require_nonempty "FINLAB_API_KEY_SECRET" "Secret Manager reference for FinLab SDK auth, e.g. finlab-api-key:latest"
   require_nonempty "ML_CONTROLLER_SECRET_SECRET" "Secret Manager reference for ml-controller auth token, e.g. stockvision-ml-controller-secret:latest"
   require_nonempty "MODAL_TOKEN_ID_SECRET" "Secret Manager reference for Modal token id, e.g. stockvision-modal-token-id:latest"
@@ -738,6 +741,7 @@ run_preflight() {
   done
   print_preflight_value "CF_API_TOKEN_SECRET"
   print_preflight_value "STOCKVISION_AUTH_TOKEN_SECRET"
+  print_preflight_value "STRATEGY_MINING_CALLBACK_TOKEN_SECRET"
   print_preflight_value "FINLAB_API_KEY_SECRET"
   print_preflight_value "ML_CONTROLLER_SECRET_SECRET"
   print_preflight_value "MODAL_TOKEN_ID_SECRET"
@@ -815,7 +819,7 @@ if [ ! -d "$MLC_DIR" ] || [ ! -f "$MLC_DIR/main.py" ]; then
   echo "❌ ERROR: ml-controller source not found at $MLC_DIR" >&2
   exit 1
 fi
-if [ "$WITH_MODAL" = "1" ] && { [ ! -d "$MLS_DIR" ] || [ ! -f "$MLS_DIR/modal_app.py" ]; }; then
+if [ "$WITH_MODAL" = "1" ] && { [ ! -d "$MLS_DIR" ] || [ ! -f "$MLS_DIR/modal_app.py" ] || [ ! -f "$MLS_DIR/modal_strategy_mining_app.py" ]; }; then
   echo "❌ ERROR: ml-service source not found at $MLS_DIR (required only by --with-modal)" >&2
   exit 1
 fi
@@ -863,9 +867,12 @@ echo ""
 VERIFY_JOB_ENV_FILE=$(mktemp -t verify_job_env.XXXXXX.yaml 2>/dev/null || echo "/tmp/verify_job_env.$$.yaml")
 VERIFY_JOB_META_FILE=$(mktemp -t verify_job_meta.XXXXXX.txt 2>/dev/null || echo "/tmp/verify_job_meta.$$.txt")
 OOF_MATERIALIZE_JOB_ENV_FILE=$(mktemp -t oof_materialize_job_env.XXXXXX.yaml 2>/dev/null || echo "/tmp/oof_materialize_job_env.$$.yaml")
-trap 'rm -f "$VERIFY_JOB_ENV_FILE" "$VERIFY_JOB_META_FILE" "$OOF_MATERIALIZE_JOB_ENV_FILE"' EXIT
+STRATEGY_MINING_JOB_ENV_FILE=$(mktemp -t strategy_mining_job_env.XXXXXX.yaml 2>/dev/null || echo "/tmp/strategy_mining_job_env.$$.yaml")
+trap 'rm -f "$VERIFY_JOB_ENV_FILE" "$VERIFY_JOB_META_FILE" "$OOF_MATERIALIZE_JOB_ENV_FILE" "$STRATEGY_MINING_JOB_ENV_FILE"' EXIT
 build_verify_job_env_file "$VERIFY_JOB_ENV_FILE" "$VERIFY_JOB_META_FILE"
 cp "$VERIFY_JOB_ENV_FILE" "$OOF_MATERIALIZE_JOB_ENV_FILE"
+cp "$VERIFY_JOB_ENV_FILE" "$STRATEGY_MINING_JOB_ENV_FILE"
+printf 'STRATEGY_MINING_D1_WORKER_ONLY: "1"\n' >> "$STRATEGY_MINING_JOB_ENV_FILE"
 printf 'OOF_MATERIALIZE_JOB_EXECUTION: "1"\n' >> "$OOF_MATERIALIZE_JOB_ENV_FILE"
 load_verify_job_template "$VERIFY_JOB_META_FILE"
 
@@ -888,7 +895,7 @@ echo ""
 sync_verify_job "$VERIFY_JOB_ENV_FILE"
 sync_screener_job "$VERIFY_JOB_ENV_FILE"
 sync_optuna_job "$VERIFY_JOB_ENV_FILE"
-sync_strategy_mining_job "$VERIFY_JOB_ENV_FILE"
+sync_strategy_mining_job "$STRATEGY_MINING_JOB_ENV_FILE"
 sync_oof_materialize_job "$OOF_MATERIALIZE_JOB_ENV_FILE"
 
 echo "=== Step 4/4: Verify Service and Job image match ==="
@@ -992,6 +999,11 @@ if [ "$WITH_MODAL" = "1" ]; then
     exit 6
   fi
   MODAL_RESULT="Modal         : deployed tag=${SOURCE_SHA}"
+  if ! PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}" \
+    "$MODAL_PYTHON_BIN" -m modal deploy --tag "$SOURCE_SHA" "$MLS_DIR/modal_strategy_mining_app.py"; then
+    echo "ERROR: dedicated strategy-mining Modal deploy failed" >&2
+    exit 6
+  fi
   echo ""
 fi
 

@@ -2697,63 +2697,6 @@ def feature_selection_pipeline(payload: dict) -> dict:
 
 
 @app.function(
-    cpu=4,
-    memory=16384,
-    timeout=14400,
-    scaledown_window=60,
-    max_containers=1,
-)
-def strategy_mining_research(payload: dict) -> dict:
-    """Run monthly pymoo NSGA-III + novelty strategy mining in Modal.
-
-    Reuses strategy_mining_job_main so D1 ledger writes, GCS artifacts,
-    promotion packets, and fail-closed contracts stay identical to the Cloud
-    Run Job path. The controller owns orchestration only.
-    """
-    _setup_env()
-    import importlib
-    import os
-    from contextlib import contextmanager
-
-    @contextmanager
-    def patched_env(updates: dict[str, str]):
-        previous = {key: os.environ.get(key) for key in updates}
-        try:
-            for key, value in updates.items():
-                os.environ[key] = str(value)
-            yield
-        finally:
-            for key, value in previous.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-    env_updates = {
-        "STRATEGY_MINING_RUN_DATE": str(payload.get("run_date") or ""),
-        "STRATEGY_MINING_CADENCE": str(payload.get("cadence") or "monthly"),
-        "STRATEGY_MINING_PERSIST": "1" if payload.get("persist", True) else "0",
-        "STRATEGY_MINING_TRIGGER_SOURCE": str(payload.get("trigger_source") or "modal_controller"),
-    }
-    optional_env = {
-        "STRATEGY_MINING_RUN_ID": payload.get("run_id"),
-        "STRATEGY_MINING_OUTPUT_DIR": payload.get("output_dir"),
-        "STRATEGY_MINING_FINLAB_CONFIRM_TOP_N": payload.get("finlab_confirm_top_n"),
-        "STRATEGY_MINING_PYMOO_POPULATION": payload.get("pymoo_population"),
-        "STRATEGY_MINING_PYMOO_GENERATIONS": payload.get("pymoo_generations"),
-    }
-    for key, value in optional_env.items():
-        if value is not None and str(value).strip():
-            env_updates[key] = str(value)
-
-    with patched_env(env_updates):
-        job = importlib.import_module("strategy_mining_job_main")
-        exit_code = int(job.main())
-    status = "completed" if exit_code == 0 else "error"
-    return {"status": status, "exit_code": exit_code, "backend": "modal"}
-
-
-@app.function(
     cpu=2,
     memory=4096,
     timeout=1800,

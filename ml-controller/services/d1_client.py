@@ -36,7 +36,14 @@ CF_API_TOKEN  = os.environ.get("CF_API_TOKEN", "")
 CF_ACCOUNT_ID = os.environ.get("CF_ACCOUNT_ID", "")
 CF_D1_DB_ID   = os.environ.get("CF_D1_DB_ID", "")
 WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
-WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
+STRATEGY_MINING_D1_WORKER_ONLY = os.environ.get(
+    "STRATEGY_MINING_D1_WORKER_ONLY", ""
+).strip().lower() in {"1", "true", "yes", "on"}
+WORKER_AUTH = (
+    os.environ.get("STRATEGY_MINING_CALLBACK_TOKEN", "").strip()
+    if STRATEGY_MINING_D1_WORKER_ONLY
+    else os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
+)
 MAX_D1_RETRIES = int(os.environ.get("D1_CLIENT_MAX_RETRIES", "3"))
 
 
@@ -211,6 +218,9 @@ def query(sql: str, params: list[Any] | None = None, timeout: float = 60.0) -> l
         logger.warning("[AllocatorContractGuard] D1 mutation passed to query() was no-op: %s", _first_sql_token(sql))
         return []
     """Read query — returns list of row dicts."""
+    if STRATEGY_MINING_D1_WORKER_ONLY:
+        result = _worker_strategy_mining_statement(sql, params or [], timeout=timeout)
+        return result.get("results", []) or []
     body: dict = {"sql": sql}
     if params:
         body["params"] = params
@@ -236,6 +246,13 @@ def execute(sql: str, params: list[Any] | None = None, timeout: float = 60.0) ->
     if allocator_contract_guard_enabled():
         logger.warning("[AllocatorContractGuard] D1 execute() no-op: %s", _first_sql_token(sql))
         return {"success": True, "meta": _noop_write_meta(1), "results": []}
+    if STRATEGY_MINING_D1_WORKER_ONLY:
+        result = _worker_strategy_mining_statement(sql, params or [], timeout=timeout)
+        return {
+            "success": bool(result.get("success", True)),
+            "meta": result.get("meta", {}) or {},
+            "results": result.get("results", []) or [],
+        }
     body: dict = {"sql": sql}
     if params:
         body["params"] = params
@@ -295,7 +312,12 @@ def batch_execute(
             raise
         except RuntimeError as e:
             worker_error = e
-            logger.warning("[d1_client] worker batch failed, falling back to D1 raw batch: %s", e)
+            action = "failing closed" if STRATEGY_MINING_D1_WORKER_ONLY else "falling back to D1 raw batch"
+            logger.warning("[d1_client] worker batch failed, %s: %s", action, e)
+
+    if STRATEGY_MINING_D1_WORKER_ONLY:
+        detail = f"worker={worker_error or 'not_configured'}; worker_only=true; statements={len(statements)}"
+        raise D1DurableBatchRetryRequired(detail) from worker_error
 
     try:
         return _raw_batch_execute(statements, timeout=timeout, chunk_size=chunk_size)
@@ -426,7 +448,12 @@ def _worker_batch_execute(
     if httpx is None:
         raise RuntimeError("Worker D1 batch failed: httpx not installed")
 
-    url = f"{WORKER_URL.rstrip('/')}/api/internal/d1/batch"
+    path = (
+        "/api/internal/strategy-mining/d1"
+        if STRATEGY_MINING_D1_WORKER_ONLY
+        else "/api/internal/d1/batch"
+    )
+    url = f"{WORKER_URL.rstrip('/')}{path}"
     headers = {
         "Authorization": f"Bearer {WORKER_AUTH}",
         "Content-Type": "application/json",
@@ -475,3 +502,32 @@ def _worker_batch_execute(
         "mode": "worker_d1_batch",
         "chunk_size": chunk,
     }
+
+
+def _worker_strategy_mining_statement(
+    sql: str,
+    params: list[Any],
+    *,
+    timeout: float,
+) -> dict:
+    if not WORKER_URL or not WORKER_AUTH:
+        raise RuntimeError("Strategy mining D1 gateway requires Worker URL and dedicated callback token")
+    if httpx is None:
+        raise RuntimeError("Strategy mining D1 gateway failed: httpx not installed")
+    url = f"{WORKER_URL.rstrip('/')}/api/internal/strategy-mining/d1"
+    try:
+        resp = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {WORKER_AUTH}", "Content-Type": "application/json"},
+            json={"statements": [{"sql": sql, "params": params or []}], "max_statements": 1},
+            timeout=timeout,
+        )
+    except httpx.RequestError as exc:
+        raise RuntimeError(f"Strategy mining D1 gateway network error: {exc}") from exc
+    if resp.status_code != 200:
+        raise RuntimeError(f"Strategy mining D1 gateway HTTP {resp.status_code}: {resp.text[:300]}")
+    payload = resp.json()
+    results = payload.get("results") or []
+    if not payload.get("ok") or len(results) != 1:
+        raise RuntimeError(f"Strategy mining D1 gateway invalid response: {payload}")
+    return results[0]

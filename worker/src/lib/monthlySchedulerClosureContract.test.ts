@@ -30,6 +30,12 @@ assert(
 )
 assert(workflows.includes("cadence: 'monthly'"), 'monthly optuna must pass a monthly cadence contract')
 assert(workflows.includes('remote_execution_id'), 'monthly optuna/strategy mining summaries must expose normalized remote_execution_id')
+assert(
+  workflows.includes('dispatch_ack=${data.dispatch_ack') &&
+  workflows.includes('monthly strategy mining dispatch not confirmed'),
+  'monthly strategy mining must fail closed unless Modal returns a bounded dispatch acknowledgement',
+)
+assert(workflows.includes('run_id=${runId}'), 'monthly strategy mining must expose its Worker-owned durable run_id')
 
 assert(followup.includes('/api/admin/scheduler-callback'), 'retrain followup must notify Worker scheduler callback')
 assert(followup.includes('"monthly-retrain"'), 'monthly retrain followup must callback task=monthly-retrain')

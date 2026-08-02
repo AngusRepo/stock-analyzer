@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 from pathlib import Path
@@ -85,6 +86,105 @@ def test_state_space_shadow_spawn_passes_callback_context(monkeypatch):
     assert observed["payload"]["callback_token"] == "service-token"
     assert result["callback_configured"] is True
     assert result["function_call_id"] == "fc-state-space"
+
+
+def test_strategy_mining_spawn_requires_bounded_modal_ack(monkeypatch):
+    observed = {}
+
+    class FakeGet:
+        async def aio(self, *, timeout):
+            observed["ack_timeout"] = timeout
+            raise TimeoutError
+
+    class FakeCall:
+        object_id = "fc-strategy-mining"
+        get = FakeGet()
+
+    class FakeSpawn:
+        async def aio(self, payload):
+            observed["payload"] = payload
+            return FakeCall()
+
+    class FakeFn:
+        spawn = FakeSpawn()
+
+    async def fake_observation(*_args, **kwargs):
+        observed["meta"] = kwargs["meta"]
+
+    monkeypatch.setattr(modal_client, "_USE_MODAL", True)
+    monkeypatch.setattr(modal_client, "_lookup_in_app", lambda _app, _name: FakeFn())
+    monkeypatch.setattr(modal_client, "_record_modal_observation", fake_observation)
+    monkeypatch.setenv("STRATEGY_MINING_DISPATCH_ACK_TIMEOUT_SECONDS", "2")
+
+    result = asyncio.run(modal_client.strategy_mining_research({
+        "run_date": "2026-08-01",
+        "run_id": "strategy-mining-2026-08-01-test",
+    }))
+
+    assert result == {
+        "status": "spawned",
+        "backend": "modal",
+        "function_call_id": "fc-strategy-mining",
+        "dispatch_ack": "accepted_running",
+    }
+    assert observed["ack_timeout"] == 2.0
+    assert observed["meta"]["run_id"] == "strategy-mining-2026-08-01-test"
+
+
+def test_strategy_mining_spawn_rejects_immediate_remote_failure(monkeypatch):
+    class FakeGet:
+        async def aio(self, *, timeout):
+            return {"status": "error", "error": "image import failed"}
+
+    class FakeCall:
+        object_id = "fc-strategy-mining-failed"
+        get = FakeGet()
+
+    class FakeSpawn:
+        async def aio(self, _payload):
+            return FakeCall()
+
+    class FakeFn:
+        spawn = FakeSpawn()
+
+    monkeypatch.setattr(modal_client, "_USE_MODAL", True)
+    monkeypatch.setattr(modal_client, "_lookup_in_app", lambda _app, _name: FakeFn())
+
+    with pytest.raises(RuntimeError, match="strategy_mining_modal_immediate_failure"):
+        asyncio.run(modal_client.strategy_mining_research({"run_date": "2026-08-01"}))
+
+
+def test_strategy_mining_remote_uses_dedicated_modal_app(monkeypatch):
+    observed = {}
+
+    class FakeRemote:
+        async def aio(self, payload):
+            observed["payload"] = payload
+            return {"status": "completed"}
+
+    class FakeFn:
+        remote = FakeRemote()
+
+    async def fake_observation(*_args, **kwargs):
+        observed["meta"] = kwargs["meta"]
+
+    def fake_lookup(app_name, fn_name):
+        observed["app_name"] = app_name
+        observed["fn_name"] = fn_name
+        return FakeFn()
+
+    monkeypatch.setattr(modal_client, "_USE_MODAL", True)
+    monkeypatch.setattr(modal_client, "_lookup_in_app", fake_lookup)
+    monkeypatch.setattr(modal_client, "_record_modal_observation", fake_observation)
+
+    result = asyncio.run(modal_client.strategy_mining_research(
+        {"run_id": "strategy-mining-2026-08-01-test"}, fire_and_forget=False
+    ))
+
+    assert observed["app_name"] == "stockvision-strategy-mining"
+    assert observed["fn_name"] == "strategy_mining_research"
+    assert observed["meta"]["call_type"] == "remote"
+    assert result == {"status": "completed", "backend": "modal"}
 
 
 def test_modal_predict_batch_chunks_payloads():

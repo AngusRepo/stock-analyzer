@@ -26,6 +26,11 @@
     "deap_generations": 0,
     "pymoo_population": 48,
     "pymoo_generations": 6,
+    "pymoo_search_mode": "parallel_shadow",
+    "pymoo_labeler_population": 32,
+    "pymoo_labeler_generations": 4,
+    "labeler_min_percentile": 0.55,
+    "labeler_max_percentile": 0.85,
     "finlab_confirm_top_n": 8,
     "finlab_confirm_top_n_bounds": [6, 24],
     "pbo_folds": 8,
@@ -37,6 +42,21 @@
     "promote_min_deflated_sharpe_probability": 0.95,
     "promote_family_factor_jaccard": 0.5,
     "promote_family_category_jaccard": 0.67
+  },
+  "labeler_search_v2": {
+    "execution_mode": "parallel_shadow",
+    "label_scope": "all_l0_candidates",
+    "stock_selection_contract": "percentile_threshold_labels_not_fixed_top_k",
+    "objectives": [
+      "validation_sharpe",
+      "holdout_sharpe",
+      "turnover",
+      "label_matrix_novelty",
+      "label_entropy"
+    ],
+    "finlab_confirmation_required": true,
+    "promotion_effect": "none_until_existing_shadow_learning_and_promotion_gates_pass",
+    "v1_control_retained": true
   },
   "adaptive_controller": {
     "enabled_after_first_telemetry": true,

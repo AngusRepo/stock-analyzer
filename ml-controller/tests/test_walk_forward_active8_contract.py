@@ -615,6 +615,75 @@ def test_dispatch_completed_oof_callback_repairs_registry_without_retraining(mon
 
 
 
+def test_dispatch_reuses_completed_full_fit_receipt_across_cadences(monkeypatch):
+    import json
+    from routers import walk_forward
+    from services import d1_client
+
+    receipt = {
+        "schema_version": "active8-oof-full-fit-receipt-v1",
+        "status": "completed",
+        "cohort_id": "cohort-v3",
+        "knowledge_cutoff_date": "2026-07-17",
+        "run_id": "universal-oof-owner",
+        "attempt": 3,
+        "eligible_models": ["DLinear"],
+        "artifact_states": {"DLinear": "offline_strong_pass"},
+        "missing_models": [],
+        "failed_models": [],
+        "retry_required": False,
+        "release_registry": {
+            "status": "materialized",
+            "candidate_type": "oof_full_fit_release",
+            "failed_models": ["DLinear"],
+        },
+    }
+
+    class Blob:
+        def exists(self):
+            return True
+
+        def download_as_text(self):
+            return json.dumps(receipt)
+
+        def upload_from_string(self, _value, content_type=None):
+            raise AssertionError("completed immutable receipt must not be rewritten")
+
+    class Bucket:
+        def blob(self, path):
+            assert path == "walk_forward/oof_cohorts/cohort-v3/full_fit/2026-07-17.json"
+            return Blob()
+
+    plan = {
+        "status": "ready",
+        "eligible_models": ["DLinear"],
+        "tree_models": [],
+        "feature_consensus": {},
+        "train_model_groups": ["sequence"],
+        "artifact_lifecycle_targets": [],
+        "promotion_evidence": {"DLinear": {"decision": "PASS"}},
+    }
+    monkeypatch.setattr(walk_forward, "build_oof_full_fit_dispatch_plan", lambda _manifest: plan)
+    monkeypatch.setattr(
+        d1_client,
+        "query",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("completed immutable receipt must not query mutable registry state")
+        ),
+    )
+
+    result = asyncio.run(walk_forward.dispatch_oof_full_fit_training(
+        manifest={"cohort_id": "cohort-v3", "manifest_checksum": "a" * 64},
+        knowledge_cutoff_date="2026-07-17",
+        bucket=Bucket(),
+        lifecycle_cadence="weekly",
+    ))
+
+    assert result["status"] == "completed"
+    assert result["retry_required"] is False
+    assert result["reason"] == "immutable_full_fit_receipt_complete"
+    assert result["release_registry"]["failed_models"] == ["DLinear"]
+
 def test_completed_oof_release_alias_preserves_immutable_lineage(monkeypatch):
     import json
     from routers import walk_forward

@@ -887,6 +887,33 @@ async def dispatch_oof_full_fit_training(
     if receipt_blob.exists():
         receipt = json.loads(receipt_blob.download_as_text())
 
+    release_registry = (
+        receipt.get("release_registry")
+        if isinstance(receipt.get("release_registry"), dict)
+        else {}
+    )
+    receipt_eligible = {
+        str(model_name)
+        for model_name in (receipt.get("eligible_models") or [])
+        if str(model_name)
+    }
+    if (
+        receipt.get("status") == "completed"
+        and receipt.get("retry_required") is False
+        and str(receipt.get("cohort_id") or "") == cohort_id
+        and str(receipt.get("knowledge_cutoff_date") or "") == knowledge_cutoff_date
+        and receipt_eligible == set(plan["eligible_models"])
+        and not receipt.get("missing_models")
+        and not receipt.get("failed_models")
+        and release_registry.get("status") == "materialized"
+    ):
+        return {
+            **plan,
+            **receipt,
+            "reason": "immutable_full_fit_receipt_complete",
+            "retry_required": False,
+            "receipt_path": receipt_path,
+        }
     attempt = int(receipt.get("attempt") or 0)
     prior_run_id = str(receipt.get("run_id") or "")
     if prior_run_id:

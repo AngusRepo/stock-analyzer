@@ -58,7 +58,9 @@ def _load_lifecycle_weights_from_model_pool(trading_cfg: dict) -> dict[str, floa
         weights: dict[str, float] = {}
         for name, entry in (pool.get("models") or {}).items():
             status = entry.get("status", "active")
-            if status == "degraded":
+            if entry.get("serving_eligible") is False or str(entry.get("serving_block_reason") or "").strip():
+                weights[name] = 0.0
+            elif status == "degraded":
                 weights[name] = degraded_dampening
             elif status in ("retired", "challenger"):
                 weights[name] = 0.0

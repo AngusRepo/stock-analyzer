@@ -2075,6 +2075,8 @@ async def lineage():
 
             out[name] = {
                 "status": entry.get("status"),
+                "model_slot_status": entry.get("model_slot_status"),
+                "serving_eligible": entry.get("serving_eligible"),
                 "version": version,
                 "balance_family": entry.get("balance_family"),
                 "model_type": entry.get("model_type"),

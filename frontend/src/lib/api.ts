@@ -1179,6 +1179,8 @@ export type ModelPoolLifecycleDiagnosis = {
 
 export type ModelPoolLineageModel = {
   status?: string
+  model_slot_status?: string
+  serving_eligible?: boolean
   version?: string
   balance_family?: string
   model_type?: string

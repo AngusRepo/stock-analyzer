@@ -687,7 +687,10 @@ def predict_stock_v2(req: PredictRequest) -> dict:
 
     def _resolve_model_pool_status(name: str) -> str:
         if isinstance(pool_models.get(name), dict):
-            return str((pool_models.get(name) or {}).get("status") or "active")
+            entry = pool_models.get(name) or {}
+            if entry.get("serving_eligible") is False or str(entry.get("serving_block_reason") or "").strip():
+                return "challenger"
+            return str(entry.get("status") or "active")
         slot = formal_slots.get(name) if isinstance(formal_slots, dict) else None
         if isinstance(slot, dict):
             slot_status = str(slot.get("status") or "").strip()

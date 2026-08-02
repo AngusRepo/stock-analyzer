@@ -243,6 +243,8 @@ type GrafanaModelRecord = {
   model?: ModelPoolLineageModel
   family: ReturnType<typeof modelFamily>
   status: string
+  slotStatus: string
+  servingStatus: string
   statusTone: WorkstationTone
   fleetTone: WorkstationTone
   artifactVersion: string
@@ -888,6 +890,12 @@ function buildGrafanaRecord({
     ))),
   ])
   const rawStatus = release?.state ?? model?.status ?? 'no_data'
+  const slotStatus = model?.model_slot_status ?? 'active'
+  const servingStatus = model?.serving_eligible === false || model?.serving_block_reason
+    ? 'artifact blocked'
+    : isServing(model)
+      ? 'artifact serving'
+      : 'artifact pending'
   const statusTone = blockers.length
     ? maxTone([toneFromStatus(rawStatus), queueTone, 'warn'])
     : maxTone([toneFromStatus(rawStatus), queueTone])
@@ -906,6 +914,8 @@ function buildGrafanaRecord({
     model,
     family: modelFamily(candidate.id, model),
     status: rawStatus,
+    slotStatus,
+    servingStatus,
     statusTone,
     fleetTone,
     artifactVersion: release?.version ?? model?.version ?? 'no artifact',
@@ -1165,6 +1175,7 @@ function FleetStatusStrip({
               <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${record.fleetTone === 'ok' ? 'bg-emerald-400' : record.fleetTone === 'warn' ? 'bg-amber-300' : record.fleetTone === 'error' ? 'bg-rose-400' : record.fleetTone === 'info' ? 'bg-sky-400' : 'bg-slate-500'}`} />
             </div>
             <p className="mt-1 truncate text-[12px] text-[#90a0b8]">{record.family} / {record.dataset?.window ?? 'model-specific'}</p>
+            <p className="mt-1 truncate sv-num text-[11px] normal-case text-[#a7b5c8]">slot {record.slotStatus} / {record.servingStatus}</p>
             <div className={`mt-2 border px-2 py-1.5 text-center sv-num text-[12px] font-semibold ${grafanaCellClass(record.fleetTone)}`}>
               {statusLabel(record.fleetTone)}
             </div>

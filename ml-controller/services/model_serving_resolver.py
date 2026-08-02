@@ -344,7 +344,12 @@ def build_pool_from_champion_pointers(
             for key in SEQUENCE_CONTRACT_FIELDS:
                 entry.pop(key, None)
         entry["version"] = version or str(entry.get("version") or "")
-        entry["status"] = "retired" if block_reason else "active"
+        # Artifact compatibility is a serving concern, not a model-family
+        # lifecycle decision. Active-8 slots remain governed/retrainable even
+        # when their current champion cannot satisfy the latest contract.
+        entry["model_slot_status"] = "active"
+        entry["status"] = "degraded" if block_reason else "active"
+        entry["serving_eligible"] = not bool(block_reason)
         entry["serving_owner"] = "model_champion_pointers"
         entry["serving_artifact_id"] = artifact_id
         entry["serving_block_reason"] = block_reason
@@ -418,7 +423,7 @@ def build_model_pool_reconcile_plan(
         block_reason = str(champion.get("serving_block_reason") or "").strip()
         if str(champion.get("status") or "").strip().lower() != "active" or block_reason:
             current = current or {}
-            retirement_patch = {
+            blocked_patch = {
                 key: champion.get(key)
                 for key in (
                     "version",
@@ -436,25 +441,25 @@ def build_model_pool_reconcile_plan(
             }
             if model_name in SEQUENCE_ALPHA_MODELS:
                 for key in SEQUENCE_CONTRACT_FIELDS:
-                    retirement_patch[key] = champion.get(key)
-            retirement_patch["status"] = "retired"
-            retirement_patch["production_weight"] = 0.0
-            retirement_patch["serving_owner"] = None
-            retirement_patch["serving_artifact_id"] = None
+                    blocked_patch[key] = champion.get(key)
+            blocked_patch["model_slot_status"] = "active"
+            blocked_patch["status"] = "degraded"
+            blocked_patch["serving_eligible"] = False
+            blocked_patch["production_weight"] = 0.0
             diff = {
                 key: {"from": current.get(key), "to": value}
-                for key, value in retirement_patch.items()
+                for key, value in blocked_patch.items()
                 if current.get(key) != value
             }
             if diff:
                 actions.append({
-                    "action": "retire_invalid_model_pool_pointer",
+                    "action": "block_incompatible_model_pool_artifact",
                     "model_name": model_name,
                     "section": section,
                     "champion_section": champion_section,
                     "reason": block_reason or f"champion_status_{champion.get('status') or 'missing'}",
                     "diff": diff,
-                    "patch": retirement_patch,
+                    "patch": blocked_patch,
                 })
             continue
 
@@ -470,6 +475,8 @@ def build_model_pool_reconcile_plan(
             "offline_gate_decision",
             "live_gate_status",
             "target_semantic_version",
+            "model_slot_status",
+            "serving_eligible",
             "serving_ic_prior",
             "serving_ic_source",
             *SEQUENCE_CONTRACT_FIELDS,
@@ -529,7 +536,7 @@ def apply_model_pool_reconcile_plan(
     for action in plan.get("actions") or []:
         if not isinstance(action, dict) or action.get("action") not in {
             "update_model_pool_pointer",
-            "retire_invalid_model_pool_pointer",
+            "block_incompatible_model_pool_artifact",
         }:
             continue
         model_name = str(action.get("model_name") or "").strip()

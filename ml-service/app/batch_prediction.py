@@ -465,9 +465,12 @@ def _model_pool_status(pool: dict | None) -> dict[str, str]:
 
     def resolve(name: str) -> str:
         if isinstance(pool_models.get(name), dict):
-            status = str((pool_models.get(name) or {}).get("status") or "").strip()
+            entry = pool_models.get(name) or {}
+            status = str(entry.get("status") or "").strip()
             if not status:
                 raise ModelPoolUnavailable(f"model_pool status missing for {name}")
+            if entry.get("serving_eligible") is False or str(entry.get("serving_block_reason") or "").strip():
+                return "challenger"
             return status
         slot = formal_slots.get(name) if isinstance(formal_slots, dict) else None
         if isinstance(slot, dict):

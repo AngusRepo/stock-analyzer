@@ -266,7 +266,7 @@ function StrategyLedgerGroup({
   empty: string
 }) {
   return (
-    <section className="h-full overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70">
+    <section className="sv-readable-card-content h-full overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70">
       <header className="flex min-h-[112px] flex-wrap items-end justify-between gap-3 border-b border-slate-800 px-4 py-4 lg:px-5">
         <div>
           <h2 className="font-['Space_Grotesk'] text-lg font-semibold text-slate-100">{title}</h2>

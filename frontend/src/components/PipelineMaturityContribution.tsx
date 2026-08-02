@@ -255,7 +255,7 @@ export default function PipelineMaturityContribution({
 }) {
   if (loading) {
     return (
-      <section className="overflow-hidden rounded-[24px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))]" aria-label="成熟度與決策貢獻載入中">
+      <section className="sv-readable-card-content overflow-hidden rounded-[24px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))]" aria-label="成熟度與決策貢獻載入中">
         <div className="p-5"><div className="h-5 w-64 animate-pulse rounded bg-white/[0.08]" /></div>
         <div className="grid gap-3 p-4 lg:grid-cols-2">
           {[1, 2, 3, 4, 5, 6].map((row) => <div key={row} className="h-64 animate-pulse rounded-[18px] border border-white/[0.06] bg-white/[0.032]" />)}
@@ -266,7 +266,7 @@ export default function PipelineMaturityContribution({
 
   if (error || !data) {
     return (
-      <section className="rounded-[24px] border border-rose-400/25 bg-rose-400/[0.06] p-5">
+      <section className="sv-readable-card-content rounded-[24px] border border-rose-400/25 bg-rose-400/[0.06] p-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-3">
             <CircleAlert className="mt-0.5 h-5 w-5 shrink-0 text-rose-300" />
@@ -297,7 +297,7 @@ export default function PipelineMaturityContribution({
   ]
 
   return (
-    <section className="overflow-hidden rounded-[24px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_18px_52px_rgba(0,0,0,0.42)]" aria-labelledby="pipeline-maturity-title">
+    <section className="sv-readable-card-content overflow-hidden rounded-[24px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_18px_52px_rgba(0,0,0,0.42)]" aria-labelledby="pipeline-maturity-title">
       <div className="border-b border-white/[0.08] px-5 py-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>

@@ -78,7 +78,9 @@ def test_d1_champion_pool_retires_failed_artifact_without_model_pool_fallback():
     )
 
     entry = pool["models"]["PatchTST"]
-    assert entry["status"] == "retired"
+    assert entry["status"] == "degraded"
+    assert entry["model_slot_status"] == "active"
+    assert entry["serving_eligible"] is False
     assert entry["version"] == "vBad"
     assert entry["gcs_path"] == "universal/patchtst/vBad.zip"
     assert entry["serving_block_reason"] == "offline_gate_fail"
@@ -116,7 +118,9 @@ def test_patchtst_d1_champion_rejects_legacy_pt_artifact():
     )
 
     entry = pool["models"]["PatchTST"]
-    assert entry["status"] == "retired"
+    assert entry["status"] == "degraded"
+    assert entry["model_slot_status"] == "active"
+    assert entry["serving_eligible"] is False
     assert entry["version"] == "vLegacy"
     assert entry["gcs_path"] == "universal/patchtst/vLegacy.pt"
     assert entry["serving_block_reason"] == "artifact_extension_pt_expected_zip"

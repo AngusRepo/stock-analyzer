@@ -134,6 +134,8 @@ def _require_model_pool_status(entry: dict[str, Any], model_name: str, stage: st
     status = str((entry or {}).get("status") or "").strip()
     if status not in MODEL_POOL_ALLOWED_STATUSES:
         raise RuntimeError(f"model_pool_contract:{stage}:invalid lifecycle status for {model_name}: {status or '<missing>'}")
+    if (entry or {}).get("serving_eligible") is False or str((entry or {}).get("serving_block_reason") or "").strip():
+        return "challenger"
     return status
 
 

@@ -77,7 +77,7 @@ def test_build_pool_from_d1_champion_pointer_serves_production_artifact():
     }
 
 
-def test_d1_champion_retires_artifact_with_legacy_target_semantic():
+def test_d1_champion_blocks_legacy_target_without_retiring_active8_slot():
     pool = resolver.build_pool_from_champion_pointers(
         pointers=[{
             "model_name": "XGBoost",
@@ -107,11 +107,13 @@ def test_d1_champion_retires_artifact_with_legacy_target_semantic():
     )
 
     entry = pool["models"]["XGBoost"]
-    assert entry["status"] == "retired"
+    assert entry["status"] == "degraded"
+    assert entry["model_slot_status"] == "active"
+    assert entry["serving_eligible"] is False
     assert entry["serving_block_reason"].startswith("artifact_target_semantic_")
 
 
-def test_build_pool_from_d1_champion_pointer_retires_archived_or_failed_artifact():
+def test_build_pool_blocks_archived_artifact_without_retiring_active8_slot():
     pool = resolver.build_pool_from_champion_pointers(
         pointers=[{
             "model_name": "PatchTST",
@@ -134,7 +136,9 @@ def test_build_pool_from_d1_champion_pointer_retires_archived_or_failed_artifact
     )
 
     entry = pool["models"]["PatchTST"]
-    assert entry["status"] == "retired"
+    assert entry["status"] == "degraded"
+    assert entry["model_slot_status"] == "active"
+    assert entry["serving_eligible"] is False
     assert entry["version"] == "vBad"
     assert entry["serving_block_reason"] == "artifact_state_archived"
 
@@ -163,7 +167,9 @@ def test_patchtst_d1_champion_rejects_legacy_pt_artifact():
     )
 
     entry = pool["models"]["PatchTST"]
-    assert entry["status"] == "retired"
+    assert entry["status"] == "degraded"
+    assert entry["model_slot_status"] == "active"
+    assert entry["serving_eligible"] is False
     assert entry["version"] == "vLegacy"
     assert entry["serving_block_reason"] == "artifact_extension_pt_expected_zip"
 
@@ -246,7 +252,7 @@ def test_model_pool_reconcile_plan_clears_stale_serving_block_reason():
     assert patched["models"]["TabM"]["serving_block_reason"] is None
 
 
-def test_model_pool_reconcile_plan_retires_archived_d1_champion_pointer():
+def test_model_pool_reconcile_plan_blocks_archived_pointer_without_retiring_slot():
     plan = resolver.build_model_pool_reconcile_plan(
         model_pool={"models": {"PatchTST": {"status": "active", "version": "vBad"}}},
         champion_pool={
@@ -264,24 +270,24 @@ def test_model_pool_reconcile_plan_retires_archived_d1_champion_pointer():
     assert plan["apply_allowed"] is True
     assert plan["blocked"] == []
     assert plan["action_count"] == 1
-    assert plan["actions"][0]["action"] == "retire_invalid_model_pool_pointer"
+    assert plan["actions"][0]["action"] == "block_incompatible_model_pool_artifact"
     assert plan["actions"][0]["patch"] == {
         "version": "vBad",
-        "status": "retired",
-        "production_weight": 0.0,
-        "serving_owner": None,
-        "serving_artifact_id": None,
+        "status": "degraded",
         "serving_block_reason": "artifact_state_archived",
         "seq_len": None,
         "pred_len": None,
         "sequence_contract": None,
+        "model_slot_status": "active",
+        "serving_eligible": False,
+        "production_weight": 0.0,
     }
 
     patched = resolver.apply_model_pool_reconcile_plan(
         model_pool={"models": {"PatchTST": {"status": "active", "version": "vBad"}}},
         plan=plan,
     )
-    assert patched["models"]["PatchTST"]["status"] == "retired"
+    assert patched["models"]["PatchTST"]["status"] == "degraded"
     assert patched["models"]["PatchTST"]["production_weight"] == 0.0
     assert patched["models"]["PatchTST"]["serving_block_reason"] == "artifact_state_archived"
 

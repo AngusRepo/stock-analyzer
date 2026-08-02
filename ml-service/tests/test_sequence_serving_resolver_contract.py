@@ -94,7 +94,9 @@ def test_sequence_artifact_without_exact_contract_is_not_served():
     )
 
     entry = pool["models"]["DLinear"]
-    assert entry["status"] == "retired"
+    assert entry["status"] == "degraded"
+    assert entry["model_slot_status"] == "active"
+    assert entry["serving_eligible"] is False
     assert entry["serving_block_reason"] == "artifact_sequence_contract_missing_or_invalid"
     assert "seq_len" not in entry
     assert "sequence_contract" not in entry

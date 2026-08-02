@@ -318,7 +318,11 @@ def build_pool_from_champion_pointers(
             for key in SEQUENCE_CONTRACT_FIELDS:
                 entry.pop(key, None)
         entry["version"] = version or str(entry.get("version") or "")
-        entry["status"] = "retired" if block_reason else "active"
+        # Artifact compatibility is a serving concern, not a model-family
+        # lifecycle decision. Active-8 remains eligible for the next retrain.
+        entry["model_slot_status"] = "active"
+        entry["status"] = "degraded" if block_reason else "active"
+        entry["serving_eligible"] = not bool(block_reason)
         entry["serving_owner"] = "model_champion_pointers"
         entry["serving_artifact_id"] = artifact_id
         entry["serving_block_reason"] = block_reason

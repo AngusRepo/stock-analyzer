@@ -714,6 +714,21 @@ export async function getSchedulerStatus(env: Bindings) {
       allLogs[date] = mergeDirectSchedulerLog(aggregateLogs, directRootLog)
     }),
   )
+  const cadenceDirectReads = JOB_DEFS.flatMap((def) => (
+    def.group === 'weekly' || def.group === 'monthly'
+      ? dates
+        .filter((date) => isCurrentCadenceCycle(date, today, def.group) && (def.group === 'weekly' || Number(date.slice(8, 10)) <= 7 || date === today))
+        .map((date) => ({ def, date }))
+      : []
+  ))
+  const cadenceDirectLogs = await Promise.all(cadenceDirectReads.map(async ({ def, date }) => ({
+    date,
+    log: await env.KV.get(`scheduler:run:${def.id}:${date}`, 'json') as CronLogEntry | null,
+  })))
+  for (const { date, log } of cadenceDirectLogs) {
+    allLogs[date] = mergeDirectSchedulerLog(allLogs[date] ?? [], log)
+  }
+
   const durableStageStates = await durableStageStatesPromise
   const { activeChainDate, chainStatusDate } = selectSchedulerChainDates(dates, allLogs)
   if (chainStatusDate) {

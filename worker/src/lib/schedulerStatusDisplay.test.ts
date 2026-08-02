@@ -101,6 +101,7 @@ const logs: SchedulerDisplayLogCandidate[] = [
   const loggerSource = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
   const policySource = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
   assert(statusSource.includes('directFallback: false'), 'scheduler status must not per-task scan KV logs')
+  assert(statusSource.includes('const cadenceDirectReads = JOB_DEFS.flatMap') && statusSource.includes('isCurrentCadenceCycle(date, today, def.group)'), 'weekly/monthly current-cycle status must directly recover task logs lost from concurrent daily aggregate writes')
   assert(statusSource.includes('skipKvPolicy: true'), 'scheduler status nextRun must not probe KV policy per card')
   assert(statusSource.includes("id: 's12-structure-snapshot'") && statusSource.includes("'s12-structure-snapshot',"), 'S12 runtime logs must be exposed as a first-class chain stage')
   assert(loggerSource.includes('scheduler:run:daily:'), 'scheduler logger must maintain daily aggregate logs for OBS')

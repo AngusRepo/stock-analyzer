@@ -1058,7 +1058,12 @@ def build_feature_matrix(
     #   Reference: Qlib (Microsoft) CSZFillna uses cross-sectional mean;
     #   we use per-column median (more robust to outliers).
     target_cols = ["target_5d", "target_dir"]
-    feature_cols = [c for c in df.columns if c not in target_cols and c != "date"]
+    feature_cols = [
+        c for c in df.columns
+        if c not in target_cols
+        and c != "date"
+        and df.schema[c].is_numeric()
+    ]
     df = df.with_columns(pl.exclude(target_cols + ["date"]).forward_fill())
     median_fills = []
     for col in feature_cols:

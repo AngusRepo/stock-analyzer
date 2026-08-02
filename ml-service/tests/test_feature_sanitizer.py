@@ -60,6 +60,7 @@ def test_build_feature_matrix_materializes_formal137_contract():
         close = 100 + idx * 0.1
         prices.append({
             "date": (start + timedelta(days=idx)).isoformat(),
+            "created_at": (start + timedelta(days=idx)).isoformat() + "T00:00:00Z",
             "open": close - 0.2,
             "high": close + 1,
             "low": close - 1,

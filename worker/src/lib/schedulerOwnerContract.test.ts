@@ -117,6 +117,8 @@ const weeklyS12Calibration = manifest.jobs.find((job: any) => job.id === 'weekly
 assert(weeklyS12Calibration?.task === 's12-smcvwap-calibration', 'weekly S12 calibration must have a first-class GCP Scheduler owner')
 assert(weeklyS12Calibration?.schedule === '45 22 * * 6', 'weekly S12 calibration must run Sunday TW 06:45')
 assert(weeklyS12Calibration?.query === 'sync=1&cadence=weekly', 'weekly S12 calibration must run synchronously with explicit cadence')
+assert(schedulerRunLogger.includes("'s12-smcvwap-calibration': 'S12 SMC/VWAP Calibration'"), 'S12 scheduler result must survive canonical log registry filtering')
+assert(schedulerRunLogger.includes("'weekly-readiness': 'Weekly Readiness'") && schedulerRunLogger.includes("'monthly-readiness': 'Monthly Readiness'"), 'cadence roots must survive canonical log registry filtering')
 
 for (const replay of [
   ['adaptive-meta-policy-replay', '40 22 * * 6'],

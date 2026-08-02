@@ -224,6 +224,33 @@ async def factor_ic_audit(req: FactorAuditRequest, request: Request):
     }
 
 
+@app.post("/feature-drift")
+async def feature_drift(req: PredictRequest, request: Request):
+    """Compare the older 80% and latest 20% feature distributions."""
+    await verify_service_token(request)
+    from .factor_monitor import detect_feature_drift
+    from .features import FEATURE_COLS
+
+    chips_input = req.chips if req.market.upper() not in ("US", "NYSE", "NASDAQ") else []
+    df = build_feature_matrix(req.prices, req.indicators, chips_input, req.sentiment_scores, req.market_env)
+    if df.height < 30:
+        return {"error": "insufficient data for drift detection", "sample_count": df.height}
+
+    split_idx = int(df.height * 0.8)
+    df_train = df.slice(0, split_idx)
+    df_recent = df.slice(split_idx)
+    drift_results = detect_feature_drift(df_train, df_recent, FEATURE_COLS)
+    drifted_count = sum(1 for row in drift_results if row["drifted"])
+
+    return {
+        "stock_id": req.stock_id,
+        "symbol": req.symbol,
+        "drift_results": drift_results,
+        "drifted_count": drifted_count,
+        "total_features": len(drift_results),
+        "needs_retrain": drifted_count > len(drift_results) * 0.3,
+    }
+
 @app.post("/meta-learning/neural-shadow/train")
 async def neural_meta_shadow_train_endpoint(req: NeuralMetaBanditRequest, request: Request):
     """Train NeuralUCB/NeuralTS/NeuCB research challenger and return evidence only."""

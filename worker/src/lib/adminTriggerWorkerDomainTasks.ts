@@ -3,6 +3,7 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 import { runVerifyV2 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
 import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
+import { runCadenceReadiness } from './cadenceReadiness'
 import type { LegacyHotDataTarget } from './legacyHotDataRetirement'
 import { runWithMaintenanceLease, summarizeMaintenanceLeaseResult } from './maintenanceLease'
 import {
@@ -951,6 +952,8 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       return analyzeMAE(c.env)
     },
     pipeline: () => deps.runMLAndRiskV2(requestedRunDate()),
+    'weekly-readiness': () => runCadenceReadiness(c.env, 'weekly'),
+    'monthly-readiness': () => runCadenceReadiness(c.env, 'monthly'),
     'weekly-cleanup': async () => {
       const cleanup = await runWeeklyCleanup(c.env)
       const lifecycle = await deps.runWeeklyLifecycleCheck()

@@ -559,3 +559,52 @@ const logs: SchedulerDisplayLogCandidate[] = [
   assert(replayedStage.status === 'success', 'the stage actually repaired on 8/1 must remain green')
   assert(replayedStage.statusScope === 'historical_replay', 'the repaired stage must retain its 7/31 replay scope')
 }
+{
+  const status = resolveSchedulerDisplayStatus({
+    lastAttempt: {
+      task: 'weekly-audit',
+      status: 'success',
+      summary: 'Friday weekly audit closed',
+      duration_ms: 1000,
+      run_date: '2026-07-31',
+      timestamp: '2026-07-31T10:30:00.000Z',
+    },
+    cadenceCycleLog: {
+      task: 'weekly-audit',
+      status: 'success',
+      summary: 'Friday weekly audit closed',
+      duration_ms: 1000,
+      run_date: '2026-07-31',
+      timestamp: '2026-07-31T10:30:00.000Z',
+    },
+    def: { id: 'weekly-audit', group: 'weekly' },
+    nextRun: '8/7 18:30',
+    today: '2026-08-02',
+    nowMs: Date.parse('2026-08-02T09:00:00.000Z'),
+  })
+  assert(status.status === 'success', 'Friday success must remain closed throughout the same weekly cycle')
+  assert(status.statusScope === 'cadence_cycle', 'weekly cross-date status must identify cadence-cycle authority')
+  assert(status.statusRunDate === '2026-07-31', 'weekly cycle must preserve the actual run date')
+}
+
+{
+  const triggered = {
+    task: 'monthly-optuna',
+    status: 'triggered' as const,
+    summary: 'callback expected',
+    duration_ms: 0,
+    run_date: '2026-08-01',
+    timestamp: '2026-08-01T08:00:00.000Z',
+  }
+  const status = resolveSchedulerDisplayStatus({
+    lastAttempt: triggered,
+    cadenceCycleLog: triggered,
+    def: { id: 'monthly-optuna', group: 'monthly' },
+    nextRun: '9/5 16:00',
+    today: '2026-08-02',
+    nowMs: Date.parse('2026-08-02T09:00:00.000Z'),
+  })
+  assert(status.status === 'failed', 'stale monthly callback must remain visible instead of becoming out-of-window')
+  assert(status.statusScope === 'cadence_cycle', 'monthly stale callback must retain current-cycle authority')
+  assert(status.staleReason?.includes('no final callback'), 'monthly stale callback must explain missing closure')
+}

@@ -78,10 +78,12 @@ export async function runWeeklyICAudit(env: Bindings) {
   }
 
   for (const row of (data.details ?? [])) {
+    const feature = String(row.feature ?? '').trim()
+    if (!feature) continue
     await env.DB.prepare(`
       INSERT OR REPLACE INTO factor_scores (feature, ic_mean, ic_std, icir, ic_trend, effective, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-    `).bind(row.feature, row.ic_mean, row.ic_std, row.icir, row.ic_trend, row.effective ? 1 : 0)
+    `).bind(feature, row.ic_mean ?? row.ic ?? null, row.ic_std ?? null, row.icir ?? null, row.ic_trend ?? null, row.effective ? 1 : 0)
       .run().catch(() => {})
   }
 }
@@ -244,20 +246,21 @@ export async function fetchWeeklyShareholding(env: Bindings): Promise<void> {
     const idMap = new Map<string, number>()
     for (const stock of dbStocks ?? []) idMap.set(stock.symbol, stock.id)
 
-    type TdccRow = {
-      '證券代號': string
-      '持股/單位數分級': string
-      '人數': string
-      '股數(單位數)': string
-      '佔集保庫存數比例(%)': string
-      '資料日期': string
+    type TdccRow = Record<string, unknown>
+    const tdccText = (row: TdccRow, keys: string[]): string => {
+      for (const key of keys) {
+        const value = row[key]
+        if (value != null) return String(value).trim()
+      }
+      return ''
     }
 
     const bySymbol = new Map<string, { date: string; rows: TdccRow[] }>()
     for (const row of body as TdccRow[]) {
-      const symbol = (row['證券代號'] ?? '').trim()
+      const symbol = tdccText(row, ['證券代號', 'SecuritiesCompanyCode'])
       if (!symbol || !idMap.has(symbol)) continue
-      if (!bySymbol.has(symbol)) bySymbol.set(symbol, { date: row['資料日期'] ?? '', rows: [] })
+      const date = tdccText(row, ['資料日期', '\ufeff資料日期', 'Date'])
+      if (!bySymbol.has(symbol)) bySymbol.set(symbol, { date, rows: [] })
       bySymbol.get(symbol)!.rows.push(row)
     }
 
@@ -270,14 +273,17 @@ export async function fetchWeeklyShareholding(env: Bindings): Promise<void> {
         isoDate = `${parseInt(parts[0]) + 1911}-${parts[1]}-${parts[2]}`
       }
 
-      const totalShares = rows.reduce((sum, row) => sum + (parseInt(row['股數(單位數)'].replace(/,/g, '')) || 0), 0)
-      const totalHolders = rows.reduce((sum, row) => sum + (parseInt(row['人數'].replace(/,/g, '')) || 0), 0)
+      const shareCount = (row: TdccRow) => parseInt(tdccText(row, ['股數', '股數(單位數)', 'Shares']).replace(/,/g, '')) || 0
+      const holdingLevel = (row: TdccRow) => tdccText(row, ['持股分級', '持股/單位數分級', 'HoldingSharesLevel'])
+
+      const totalShares = rows.reduce((sum, row) => sum + shareCount(row), 0)
+      const totalHolders = rows.reduce((sum, row) => sum + (parseInt(tdccText(row, ['人數', 'NumberOfPeople']).replace(/,/g, '')) || 0), 0)
       const retailShares = rows
-        .filter((row) => retailLevels.has(row['持股/單位數分級']))
-        .reduce((sum, row) => sum + (parseInt(row['股數(單位數)'].replace(/,/g, '')) || 0), 0)
+        .filter((row) => retailLevels.has(holdingLevel(row)))
+        .reduce((sum, row) => sum + shareCount(row), 0)
       const largeShares = rows
-        .filter((row) => largeLevels.has(row['持股/單位數分級']))
-        .reduce((sum, row) => sum + (parseInt(row['股數(單位數)'].replace(/,/g, '')) || 0), 0)
+        .filter((row) => largeLevels.has(holdingLevel(row)))
+        .reduce((sum, row) => sum + shareCount(row), 0)
 
       statements.push(env.DB.prepare(`
         INSERT INTO shareholding (stock_id, date, total_shares, holder_count, retail_shares, retail_pct, large_holder_shares, large_holder_pct)

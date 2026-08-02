@@ -43,6 +43,7 @@ type StageDefinition = {
   label: string
   icon: LucideIcon
   optional?: boolean
+  dependsOn?: string
 }
 
 type ChainBranch = {
@@ -118,21 +119,23 @@ const STAGES: Record<string, StageDefinition> = {
   'weekly-backtest': { id: 'weekly-backtest', label: 'Validation / MC', icon: BarChart3 },
   'alpha-quality': { id: 'alpha-quality', label: 'Alpha quality', icon: Activity },
   'weekly-audit': { id: 'weekly-audit', label: 'Weekly audit', icon: ShieldCheck },
+  'weekly-readiness': { id: 'weekly-readiness', label: 'Weekly root', icon: Link2 },
   'storage-integrity-audit': { id: 'storage-integrity-audit', label: 'Storage integrity', icon: ShieldCheck },
   'model-ic-full-check': { id: 'model-ic-full-check', label: 'Model IC full', icon: Activity },
   'weekly-cleanup': { id: 'weekly-cleanup', label: 'Weekly cleanup', icon: Archive },
   'weekly-drift-retrain': { id: 'weekly-drift-retrain', label: 'Drift retrain', icon: BrainCircuit, optional: true },
   'weekly-optuna': { id: 'weekly-optuna', label: 'Drift research', icon: Microscope, optional: true },
   'adaptive-meta-policy-replay': { id: 'adaptive-meta-policy-replay', label: 'Meta replay', icon: BrainCircuit, optional: true },
-  'strategy-threshold-calibration': { id: 'strategy-threshold-calibration', label: 'Threshold calibration', icon: Settings2, optional: true },
+  's12-smcvwap-calibration': { id: 's12-smcvwap-calibration', label: 'S12 calibration', icon: Settings2, optional: true },
   'linucb-multiplier-replay': { id: 'linucb-multiplier-replay', label: 'LinUCB replay', icon: BrainCircuit, optional: true },
   'active8-oof-daily': { id: 'active8-oof-daily', label: 'Active-8 OOF daily', icon: Layers3 },
   'active8-oof-weekly': { id: 'active8-oof-weekly', label: 'Active-8 OOF', icon: Layers3 },
   'sector-leaders': { id: 'sector-leaders', label: 'Sector leaders', icon: Target, optional: true },
   'monthly-strategy-mining': { id: 'monthly-strategy-mining', label: 'Strategy mining', icon: ScanSearch },
+  'monthly-readiness': { id: 'monthly-readiness', label: 'Monthly root', icon: Link2 },
   'monthly-optuna': { id: 'monthly-optuna', label: 'Monthly search', icon: Microscope },
   'monthly-retrain': { id: 'monthly-retrain', label: 'Monthly retrain', icon: BrainCircuit },
-  'active8-oof-monthly': { id: 'active8-oof-monthly', label: 'Active-8 cohort', icon: Layers3 },
+  'active8-oof-monthly': { id: 'active8-oof-monthly', label: 'Active-8 cohort', icon: Layers3, dependsOn: 'monthly-retrain' },
   'storage-capacity-report': { id: 'storage-capacity-report', label: 'Storage capacity', icon: Database, optional: true },
 }
 
@@ -216,12 +219,13 @@ const SCOPES: ChainScope[] = [
     label: 'Weekly research',
     title: 'Weekly validation & research chain',
     description: 'Point-in-time validation, adaptive research, calibration, and approval-gated retrain evidence.',
+    orchestratorId: 'weekly-readiness',
     relation: 'mixed',
     columns: [
       ['weekly-audit', 'storage-integrity-audit', 'model-ic-full-check'],
       ['weekly-backtest', 'alpha-quality', 'active8-oof-weekly'],
       ['weekly-optuna', 'sector-leaders'],
-      ['adaptive-meta-policy-replay', 'strategy-threshold-calibration', 'linucb-multiplier-replay'],
+      ['adaptive-meta-policy-replay', 's12-smcvwap-calibration', 'linucb-multiplier-replay'],
       ['weekly-cleanup'],
       ['weekly-drift-retrain'],
     ],
@@ -230,6 +234,7 @@ const SCOPES: ChainScope[] = [
     id: 'monthly',
     label: 'Monthly artifact',
     title: 'Monthly artifact chain',
+    orchestratorId: 'monthly-readiness',
     description: '策略挖掘、搜尋、重訓與月度 cohort；promotion evidence 由模型池承接。',
     relation: 'mixed',
     columns: [
@@ -433,7 +438,25 @@ export default function ExecutionChainPanel({
 
   const jobMap = useMemo(() => new Map(jobs.map((job) => [job.id, job])), [jobs])
   const scope = SCOPES.find((item) => item.id === scopeId) ?? SCOPES[0]
-  const scopedJobMap = useMemo(() => buildAttemptAwareJobMap(jobMap, scope, inferOrchestratorStage), [jobMap, scope])
+  const scopedJobMap = useMemo(() => {
+    const attemptAware = buildAttemptAwareJobMap(jobMap, scope, inferOrchestratorStage)
+    const next = new Map(attemptAware)
+    scopeExecutionStageIds(scope).forEach((id) => {
+      const definition = STAGES[id]
+      const job = next.get(id)
+      const upstream = definition?.dependsOn ? next.get(definition.dependsOn) : undefined
+      if (!job || !upstream || job.lastStatus !== 'sleep' || !['running', 'failed', 'waiting'].includes(upstream.lastStatus)) return
+      next.set(id, {
+        ...job,
+        lastStatus: 'waiting',
+        summary: `Waiting for ${definition.dependsOn} terminal callback`,
+        statusScope: upstream.statusScope,
+        statusRunDate: upstream.statusRunDate,
+        displayNote: 'Callback-owned downstream stage has not started because its upstream owner is not complete.',
+      })
+    })
+    return next
+  }, [jobMap, scope])
   const stageIds = scopeExecutionStageIds(scope)
   const orchestratorJob = scope.orchestratorId ? scopedJobMap.get(scope.orchestratorId) : undefined
   const orchestratorStatus = visualStatus(orchestratorJob)
@@ -457,7 +480,9 @@ export default function ExecutionChainPanel({
   const selectedJob = scopedJobMap.get(selectedId ?? currentId)
   const selectedDefinition = STAGES[selectedId ?? currentId] ?? STAGES[currentId]
 
-  const expectedJobs = scopeJobs.filter((job): job is SchedulerJob => Boolean(job && visualStatus(job) !== 'skipped'))
+  const expectedJobs = scopeJobs.filter((job): job is SchedulerJob => Boolean(
+    job && visualStatus(job) !== 'skipped' && !STAGES[job.id]?.optional,
+  ))
   const progressJobs = expectedJobs.length > 0 ? expectedJobs : scopeJobs.filter((job): job is SchedulerJob => Boolean(job))
   const completedCount = progressJobs.filter((job) => ['completed', 'noop'].includes(visualStatus(job))).length
   const progress = progressJobs.length > 0 ? Math.round((completedCount / progressJobs.length) * 100) : 0

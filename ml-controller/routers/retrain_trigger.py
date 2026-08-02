@@ -49,6 +49,7 @@ router = APIRouter(prefix="/retrain", tags=["retrain"])
 # services.retrain_lock for design (GCS CAS via if_generation_match).
 _LOCK_TTL_SECONDS = 600  # 10 ??
 _UNIVERSAL_LOCK_TTL_SECONDS = int(os.environ.get("UNIVERSAL_RETRAIN_LOCK_TTL_SECONDS", str(12 * 3600)))
+_PREP_ONLY_LOCK_TTL_SECONDS = int(os.environ.get("UNIVERSAL_PREP_ONLY_LOCK_TTL_SECONDS", str(2 * 3600)))
 _UNIVERSAL_PREP_CONCURRENCY_DEFAULT = 3
 _UNIVERSAL_PREP_CONCURRENCY_MAX = 5
 TIMESFM_L175_L2_FEATURE_RELEASE_CANDIDATE_TYPE = "timesfm_l175_l2_feature_release"
@@ -1244,9 +1245,10 @@ async def trigger_universal_retrain(
             }
     lock_scope = hashlib.sha256(prep_output_gcs_prefix.encode("utf-8")).hexdigest()[:12]
     lock_key = f"prep-only:{run_date}:{lock_scope}" if req.prep_only else f"retrain:{run_date}"
+    lock_ttl_seconds = _PREP_ONLY_LOCK_TTL_SECONDS if req.prep_only else _UNIVERSAL_LOCK_TTL_SECONDS
     lock_result = retrain_lock.acquire(
         lock_key,
-        ttl_seconds=_UNIVERSAL_LOCK_TTL_SECONDS,
+        ttl_seconds=lock_ttl_seconds,
         metadata={
             "run_id": run_id,
             "run_date": run_date,
@@ -1284,7 +1286,7 @@ async def trigger_universal_retrain(
             "limit": req.limit,
             "force_monthly": req.force_monthly,
             "lock_backend": lock_result.backend,
-            "lock_ttl_seconds": _UNIVERSAL_LOCK_TTL_SECONDS,
+            "lock_ttl_seconds": lock_ttl_seconds,
         },
         downstream_notes="lock_acquired",
     )

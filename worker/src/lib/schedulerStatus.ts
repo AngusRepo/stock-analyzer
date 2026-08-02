@@ -23,7 +23,7 @@ type SchedulerResolvedStatus = {
   staleRunning: boolean
   staleReason?: string
 }
-export type SchedulerStatusScope = 'today' | 'historical_replay' | 'schedule'
+export type SchedulerStatusScope = 'today' | 'historical_replay' | 'schedule' | 'cadence_cycle'
 export type SchedulerDisplayStatus = {
   status: SchedulerLastStatus
   statusScope: SchedulerStatusScope
@@ -90,12 +90,14 @@ const JOB_DEFS: JobDef[] = [
   { id: 'post-close-price-refresh', name: 'Post-close Price Refresh', schedule: 'Weekdays 13:40', cron: '40 5 * * 1-5', group: 'intraday' },
 
   { id: 'weekly-audit', name: 'Weekly Audit', schedule: 'Friday 18:30', cron: '30 10 * * 5', group: 'weekly' },
+  { id: 'weekly-readiness', name: 'Weekly Readiness', schedule: 'Sunday 12:00', cron: '0 12 * * 0 taipei', group: 'weekly' },
   { id: 'weekly-cleanup', name: 'Weekly Cleanup', schedule: 'Sunday 04:00 (no retrain)', cron: '0 20 * * 6', group: 'weekly' },
   { id: 'weekly-backtest', name: 'Weekly Validation/MC', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
   { id: 'alpha-quality', name: 'Alpha Quality', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
   { id: 'weekly-optuna', name: 'Weekly Optuna', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
   { id: 'adaptive-meta-policy-replay', name: 'Adaptive Meta Policy Replay', schedule: 'Sunday 06:40', cron: '40 22 * * 6', group: 'weekly' },
   { id: 'strategy-threshold-calibration', name: 'Strategy Threshold Calibration', schedule: 'Sunday 06:45', cron: '45 22 * * 6', group: 'weekly' },
+  { id: 's12-smcvwap-calibration', name: 'S12 SMC/VWAP Calibration', schedule: 'Sunday 06:45 / First Sat 16:20', cron: '45 22 * * 6', group: 'weekly' },
   { id: 'linucb-multiplier-replay', name: 'LinUCB Multiplier Replay', schedule: 'Sunday 06:50', cron: '50 22 * * 6', group: 'weekly' },
   { id: 'active8-oof-weekly', name: 'Active-8 OOF Weekly Cohort', schedule: 'Sunday 07:05', cron: '5 23 * * 6', group: 'weekly' },
 
@@ -105,6 +107,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'active8-oof-monthly', name: 'Active-8 OOF Monthly Cohort', schedule: 'After monthly retrain callback', cron: 'event-driven', group: 'monthly' },
 
   { id: 'monthly-strategy-mining', name: 'Monthly Strategy Mining', schedule: 'First Sat 10:00', cron: 'first saturday of month 10:00 taipei', group: 'monthly' },
+  { id: 'monthly-readiness', name: 'Monthly Readiness', schedule: 'First Sunday 12:30', cron: 'first sunday of month 12:30 taipei', group: 'monthly' },
   { id: 'monthly-retrain', name: 'Monthly Universal Retrain', schedule: 'First Sunday 02:00', cron: 'first sunday of month 02:00 taipei', group: 'monthly' },
   { id: 'storage-capacity-report', name: 'Storage Capacity Report', schedule: 'First day 04:30', cron: '30 4 1 * * taipei', group: 'monthly' },
 
@@ -583,6 +586,7 @@ function timestampTwDate(timestamp?: string): string | null {
 export function resolveSchedulerDisplayStatus(input: {
   todayLog?: CronLogEntry
   lastAttempt?: CronLogEntry
+  cadenceCycleLog?: CronLogEntry
   activeReplayLog?: CronLogEntry
   activeReplayRunDate?: string | null
   activeReplayHeartbeatAt?: string | null
@@ -595,6 +599,7 @@ export function resolveSchedulerDisplayStatus(input: {
   const {
     todayLog,
     lastAttempt,
+    cadenceCycleLog,
     activeReplayLog,
     activeReplayRunDate,
     activeReplayHeartbeatAt,
@@ -621,6 +626,18 @@ export function resolveSchedulerDisplayStatus(input: {
       statusScope: 'today',
       statusRunDate: today,
       staleReason: resolvedToday.staleReason,
+    }
+  }
+
+  if (!hasActiveReplayLog && cadenceCycleLog && (def.group === 'weekly' || def.group === 'monthly')) {
+    const resolvedCycle = resolveSchedulerLogStatus(cadenceCycleLog, def, nowMs)
+    if (resolvedCycle.status) {
+      return {
+        status: resolvedCycle.status,
+        statusScope: 'cadence_cycle',
+        statusRunDate: String(cadenceCycleLog.run_date || timestampTwDate(cadenceCycleLog.timestamp) || today),
+        staleReason: resolvedCycle.staleReason,
+      }
     }
   }
 
@@ -660,6 +677,19 @@ export function resolveSchedulerDisplayStatus(input: {
     statusScope: 'schedule',
     statusRunDate: null,
   }
+}
+
+function startOfWeeklyCycle(today: string): string {
+  const date = new Date(`${today}T00:00:00.000Z`)
+  const mondayOffset = (date.getUTCDay() + 6) % 7
+  date.setUTCDate(date.getUTCDate() - mondayOffset)
+  return date.toISOString().slice(0, 10)
+}
+
+function isCurrentCadenceCycle(date: string, today: string, group: JobDef['group']): boolean {
+  if (group === 'weekly') return date >= startOfWeeklyCycle(today) && date <= today
+  if (group === 'monthly') return date.slice(0, 7) === today.slice(0, 7) && date <= today
+  return false
 }
 
 export async function getSchedulerStatus(env: Bindings) {
@@ -723,6 +753,10 @@ export async function getSchedulerStatus(env: Bindings) {
     }))
     const { lastAttempt, lastEffective } = selectSchedulerDisplayLogs(displayLogs)
     const lastLog = lastAttempt ?? lastEffective
+    const cadenceCycleLog = displayLogs.find(({ date, log }) => (
+      Boolean(log) && isCurrentCadenceCycle(date, today, def.group)
+    ))?.log
+
 
     const history7d = displayDates.map((date) => {
       const log = getJobDisplayLog(allLogs[date], def)
@@ -738,6 +772,7 @@ export async function getSchedulerStatus(env: Bindings) {
       activeReplayHeartbeatAt,
       activeReplayIsRunning: Boolean(activeChainDate && chainStatusDate === activeChainDate),
       def,
+      cadenceCycleLog,
       nextRun,
       today,
     })

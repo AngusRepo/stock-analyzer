@@ -42,6 +42,7 @@
     { "id": "weekly-s12-smcvwap-calibration", "schedule": "45 22 * * 6", "task": "s12-smcvwap-calibration", "query": "sync=1&cadence=weekly", "description": "Sunday TW 06:45 S12 Taiwan-equity walk-forward calibration, guarded promotion, and last-known-good freeze" },
     { "id": "active8-oof-weekly", "schedule": "5 23 * * 6", "task": "active8-oof-weekly", "query": "sync=1", "description": "Sunday TW 07:05 generate one deterministic 60/10 purged-OOF Active-8 cohort; daily owner materializes and promotes after ready" },
 
+    { "id": "weekly-readiness", "schedule": "0 12 * * 0", "timeZone": "Asia/Taipei", "task": "weekly-readiness", "query": "sync=1", "description": "Sunday TW 12:00 weekly required-job terminal closure and fail-close summary" },
     { "id": "adaptive-meta-policy-replay", "schedule": "40 22 * * 6", "task": "adaptive-meta-policy-replay", "query": "sync=1&persist=1", "headers": { "X-Confirm-Meta-Learning": "true" }, "description": "Sunday TW 06:40 persisted evidence-only active-9 replay comparing LinUCB, NeuralUCB, NeuralTS, and NeuCB" },
     { "id": "linucb-multiplier-replay", "schedule": "50 22 * * 6", "task": "linucb-multiplier-replay", "query": "sync=1&persist=1", "headers": { "X-Confirm-Meta-Learning": "true" }, "description": "Sunday TW 06:50 persisted evidence-only active-9 replay for LinUCB bandit_* multiplier constants" },
     { "id": "sector-leaders", "schedule": "30 22 * * 6", "task": "sector-leaders", "query": "sync=1", "description": "Sunday TW 06:30 sector leader correlation refresh" },
@@ -51,6 +52,7 @@
     { "id": "monthly-strategy-mining", "schedule": "first saturday of month 10:00", "timeZone": "Asia/Taipei", "task": "monthly-strategy-mining", "query": "sync=1&persist=1", "description": "Monthly first Saturday TW 10:00 pymoo NSGA-III + novelty strategy mining preflight/research ledger" },
     { "id": "monthly-retrain", "schedule": "first sunday of month 02:00", "timeZone": "Asia/Taipei", "task": "monthly-retrain", "query": "sync=1", "description": "Monthly first Sunday TW 02:00 universal retrain lifecycle" },
     { "id": "optuna-queue", "schedule": "0 */6 * * *", "task": "optuna-queue", "query": "sync=1", "description": "Every six hours Optuna queue processor" },
+    { "id": "monthly-readiness", "schedule": "first sunday of month 12:30", "timeZone": "Asia/Taipei", "task": "monthly-readiness", "query": "sync=1", "description": "Monthly first Sunday TW 12:30 required-job terminal closure and fail-close summary" },
     { "id": "us-leading", "schedule": "30 22 * * 0-4", "task": "us-leading", "description": "TW 06:30 US leading signal" },
     { "id": "news-analyst", "schedule": "45 22 * * 0-4", "task": "news-analyst", "description": "TW 06:45 news analyst" },
     { "id": "morning-setup", "schedule": "15 23 * * 0-4", "task": "morning-setup", "description": "TW 07:15 morning setup and debate" },

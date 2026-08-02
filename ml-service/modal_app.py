@@ -72,6 +72,10 @@ def _controller_callback_token() -> str:
         or ""
     )
 
+
+def _retrain_followup_token() -> str:
+    return os.environ.get("RETRAIN_CALLBACK_TOKEN") or _controller_callback_token()
+
 # Modal image built with the v1.x API.
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -110,6 +114,12 @@ except Exception:
     print("[modal_app] stockvision-cf secret not found, Optuna routes will fail")
     cf_secret = modal.Secret.from_dict({})
 
+try:
+    retrain_callback_secret = modal.Secret.from_name("stockvision-retrain-callback")
+except Exception:
+    print("[modal_app] stockvision-retrain-callback secret not found, legacy retrain callback auth remains active")
+    retrain_callback_secret = modal.Secret.from_dict({})
+
 runtime_env_secret = modal.Secret.from_dict({
     key: value
     for key, value in {
@@ -123,7 +133,7 @@ runtime_env_secret = modal.Secret.from_dict({
 app = modal.App(
     name="stockvision-ml",
     image=image,
-    secrets=[gcs_secret, cf_secret, finlab_secret, runtime_env_secret],
+    secrets=[gcs_secret, cf_secret, finlab_secret, retrain_callback_secret, runtime_env_secret],
 )
 
 # Shared container environment setup.
@@ -1086,7 +1096,7 @@ def retrain_orchestrator(payload: dict) -> dict:
         try:
             import httpx
             headers = {"Content-Type": "application/json"}
-            token = _controller_callback_token()
+            token = _retrain_followup_token()
             if token:
                 headers["X-Service-Token"] = token
             resp = httpx.post(

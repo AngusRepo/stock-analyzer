@@ -48,6 +48,7 @@ CF_KV_NAMESPACE_ID="${CF_KV_NAMESPACE_ID:-39dcebcf5b6848c98f269ef9a48dc3f8}"
 CF_API_TOKEN_SECRET="${CF_API_TOKEN_SECRET:-stockvision-cf-api-token:latest}"
 STOCKVISION_AUTH_TOKEN_SECRET="${STOCKVISION_AUTH_TOKEN_SECRET:-stockvision-stockvision-auth-token:latest}"
 STRATEGY_MINING_CALLBACK_TOKEN_SECRET="${STRATEGY_MINING_CALLBACK_TOKEN_SECRET:-stockvision-strategy-mining-callback-token:latest}"
+RETRAIN_CALLBACK_TOKEN_SECRET="${RETRAIN_CALLBACK_TOKEN_SECRET:-stockvision-retrain-callback-token:latest}"
 ML_CONTROLLER_SECRET_SECRET="${ML_CONTROLLER_SECRET_SECRET:-stockvision-ml-controller-secret:latest}"
 MODAL_TOKEN_ID_SECRET="${MODAL_TOKEN_ID_SECRET:-stockvision-modal-token-id:latest}"
 MODAL_TOKEN_SECRET_SECRET="${MODAL_TOKEN_SECRET_SECRET:-stockvision-modal-token-secret:latest}"
@@ -64,6 +65,7 @@ BASE_SECRET_BINDINGS="FINLAB_API_KEY=${FINLAB_API_KEY_SECRET},CF_API_TOKEN=${CF_
 STRATEGY_MINING_SECRET_BINDINGS="FINLAB_API_KEY=${FINLAB_API_KEY_SECRET},STRATEGY_MINING_CALLBACK_TOKEN=${STRATEGY_MINING_CALLBACK_TOKEN_SECRET}"
 SHIOAJI_SECRET_BINDINGS="SHIOAJI_API_KEY=${SHIOAJI_API_KEY_SECRET},SHIOAJI_SECRET_KEY=${SHIOAJI_SECRET_KEY_SECRET},SHIOAJI_ACCOUNT_ID=${SHIOAJI_ACCOUNT_ID_SECRET},SHIOAJI_CERT_PERSON_ID=${SHIOAJI_CERT_PERSON_ID_SECRET},SHIOAJI_CERT_PASSWORD=${SHIOAJI_CERT_PASSWORD_SECRET},${SHIOAJI_CERT_MOUNT_PATH}=${SHIOAJI_CERT_PFX_SECRET}"
 RUN_SECRET_BINDINGS="${BASE_SECRET_BINDINGS},${SHIOAJI_SECRET_BINDINGS}"
+SERVICE_SECRET_BINDINGS="${RUN_SECRET_BINDINGS},RETRAIN_CALLBACK_TOKEN=${RETRAIN_CALLBACK_TOKEN_SECRET}"
 S12_STRUCTURE_SECRET_BINDINGS="CF_API_TOKEN=${CF_API_TOKEN_SECRET},STOCKVISION_AUTH_TOKEN=${STOCKVISION_AUTH_TOKEN_SECRET},PROXY_SERVICE_TOKEN=${PROXY_SERVICE_TOKEN_SECRET}"
 PIPELINE_STATE_SPACE_OVERLAY_MODE="${PIPELINE_STATE_SPACE_OVERLAY_MODE:-disabled}"
 PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS="${PIPELINE_STATE_SPACE_OVERLAY_SOFT_DEADLINE_SECONDS:-120}"
@@ -809,6 +811,7 @@ run_preflight() {
   require_nonempty "STRATEGY_MINING_CALLBACK_TOKEN_SECRET" "Secret Manager reference for the dedicated Pymoo callback token"
   require_nonempty "FINLAB_API_KEY_SECRET" "Secret Manager reference for FinLab SDK auth, e.g. finlab-api-key:latest"
   require_nonempty "ML_CONTROLLER_SECRET_SECRET" "Secret Manager reference for ml-controller auth token, e.g. stockvision-ml-controller-secret:latest"
+  require_nonempty "RETRAIN_CALLBACK_TOKEN_SECRET" "Dedicated Secret Manager reference for Modal POST /retrain/followup"
   require_nonempty "MODAL_TOKEN_ID_SECRET" "Secret Manager reference for Modal token id, e.g. stockvision-modal-token-id:latest"
   require_nonempty "MODAL_TOKEN_SECRET_SECRET" "Secret Manager reference for Modal token secret, e.g. stockvision-modal-token-secret:latest"
 
@@ -820,6 +823,7 @@ run_preflight() {
   print_preflight_value "STRATEGY_MINING_CALLBACK_TOKEN_SECRET"
   print_preflight_value "FINLAB_API_KEY_SECRET"
   print_preflight_value "ML_CONTROLLER_SECRET_SECRET"
+  print_preflight_value "RETRAIN_CALLBACK_TOKEN_SECRET"
   print_preflight_value "MODAL_TOKEN_ID_SECRET"
   print_preflight_value "MODAL_TOKEN_SECRET_SECRET"
   print_preflight_value "SCREENER_JOB_TIMEOUT"
@@ -921,7 +925,7 @@ if ! gcloud run deploy "$SERVICE" \
     --service-account="$SERVICE_RUNTIME_SERVICE_ACCOUNT" \
     --update-labels="$PROVENANCE_LABELS" \
     --update-env-vars="$RUNTIME_ENV_VARS" \
-    --update-secrets="$RUN_SECRET_BINDINGS" \
+    --update-secrets="$SERVICE_SECRET_BINDINGS" \
     --quiet; then
   echo "❌ Service deploy failed" >&2
   exit 2

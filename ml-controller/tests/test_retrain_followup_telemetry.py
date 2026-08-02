@@ -273,6 +273,13 @@ def test_retrain_followup_enriches_timesfm_foundation_evidence(monkeypatch):
     assert written[0]["offline_gate_decision"] in {"PASS", "STRONG_PASS"}
 
 
+def test_retrain_followup_prefers_dedicated_token_when_configured(monkeypatch):
+    monkeypatch.setenv("RETRAIN_CALLBACK_TOKEN", "retrain-only-token")
+    monkeypatch.setenv("ML_CONTROLLER_SECRET", "legacy-controller-token")
+
+    assert followup_router._valid_service_tokens() == ["retrain-only-token"]
+
+
 def test_retrain_followup_accepts_modal_service_token(monkeypatch):
     monkeypatch.setattr(followup_router, "_valid_service_tokens", lambda: ["service-secret"])
 

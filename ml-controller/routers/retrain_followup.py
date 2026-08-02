@@ -136,6 +136,10 @@ _ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").strip().lower()
 
 
 def _valid_service_tokens() -> list[str]:
+    dedicated = os.environ.get("RETRAIN_CALLBACK_TOKEN", "").strip()
+    if dedicated:
+        return [dedicated]
+
     tokens = [
         os.environ.get("INTERNAL_TOKEN", ""),
         os.environ.get("ML_CONTROLLER_TOKEN", ""),

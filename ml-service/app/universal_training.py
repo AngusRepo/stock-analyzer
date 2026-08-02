@@ -106,7 +106,8 @@ def _ic_summary_value(metrics: dict) -> float | None:
 
 def _controller_callback_token() -> str:
     return (
-        os.environ.get("ML_CONTROLLER_TOKEN")
+        os.environ.get("RETRAIN_CALLBACK_TOKEN")
+        or os.environ.get("ML_CONTROLLER_TOKEN")
         or os.environ.get("INTERNAL_TOKEN")
         or os.environ.get("ML_CONTROLLER_SECRET")
         or os.environ.get("STOCKVISION_AUTH_TOKEN")

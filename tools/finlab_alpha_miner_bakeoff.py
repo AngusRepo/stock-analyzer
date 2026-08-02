@@ -44,6 +44,11 @@ MONTHLY_CONFIGURABLE_DEFAULTS = {
     "deap_generations": 0,
     "pymoo_population": 48,
     "pymoo_generations": 6,
+    "pymoo_search_mode": "top_k_v1",
+    "pymoo_labeler_population": 32,
+    "pymoo_labeler_generations": 4,
+    "labeler_min_percentile": 0.55,
+    "labeler_max_percentile": 0.85,
     "finlab_confirm_top_n": 8,
     "pbo_folds": 8,
     "promote_min_validation_sharpe": 1.0,
@@ -104,6 +109,7 @@ class Candidate:
     weights: list[float]
     combine: str = "weighted_sum"
     transform: str = "rank_pct"
+    label_threshold: float | None = None
 
 
 def _load_module(path: Path, name: str):
@@ -236,6 +242,67 @@ def _position_from_score(score: pd.DataFrame, top_k: int, tradable: pd.DataFrame
     masked = score.where(tradable)
     rank = masked.rank(axis=1, ascending=False, method="first")
     return (rank <= top_k).astype(bool)
+
+
+def _labels_from_score(
+    score: pd.DataFrame,
+    threshold_percentile: float,
+    tradable: pd.DataFrame,
+) -> pd.DataFrame:
+    """Assign a positive/negative label to every tradable L0 candidate."""
+    threshold = min(max(float(threshold_percentile), 0.0), 1.0)
+    eligible = tradable.reindex(index=score.index, columns=score.columns).fillna(False).astype(bool)
+    percentile = score.where(eligible).rank(axis=1, pct=True, method="average")
+    return ((percentile >= threshold) & eligible).fillna(False).astype(bool)
+
+
+def _label_matrix_metrics(labels: pd.DataFrame, tradable: pd.DataFrame) -> dict[str, Any]:
+    eligible = tradable.reindex(index=labels.index, columns=labels.columns).fillna(False).astype(bool)
+    eligible_count = int(eligible.to_numpy(dtype=bool).sum())
+    positive_count = int((labels & eligible).to_numpy(dtype=bool).sum())
+    coverage = float(positive_count / eligible_count) if eligible_count else 0.0
+    if 0.0 < coverage < 1.0:
+        entropy = float(
+            -(coverage * math.log2(coverage) + (1.0 - coverage) * math.log2(1.0 - coverage))
+        )
+    else:
+        entropy = 0.0
+    daily_positive = (labels & eligible).sum(axis=1)
+    daily_eligible = eligible.sum(axis=1).replace(0, np.nan)
+    daily_coverage = (daily_positive / daily_eligible).replace([np.inf, -np.inf], np.nan).dropna()
+    return {
+        "label_scope": "all_l0_candidates",
+        "eligible_cell_count": eligible_count,
+        "positive_label_count": positive_count,
+        "positive_label_rate": coverage,
+        "label_entropy": entropy,
+        "mean_daily_positive_labels": float(daily_positive.mean()) if len(daily_positive) else 0.0,
+        "mean_daily_label_rate": float(daily_coverage.mean()) if len(daily_coverage) else 0.0,
+        "daily_label_rate_std": float(daily_coverage.std(ddof=0)) if len(daily_coverage) else 0.0,
+    }
+
+
+_UINT8_BIT_COUNTS = np.unpackbits(np.arange(256, dtype=np.uint8)[:, None], axis=1).sum(axis=1)
+
+
+def _label_signature(labels: pd.DataFrame) -> np.ndarray:
+    # Deterministic bounded sketch: all dates at weekly stride and at most 256 symbols.
+    sampled = labels.iloc[::5, :256].to_numpy(dtype=bool, copy=False).reshape(-1)
+    return np.packbits(sampled)
+
+
+def _label_matrix_novelty(signature: np.ndarray, archive: list[np.ndarray]) -> float:
+    if not archive:
+        return 1.0
+    max_jaccard = 0.0
+    for prior in archive:
+        length = min(len(signature), len(prior))
+        if length <= 0:
+            continue
+        intersection = int(_UINT8_BIT_COUNTS[np.bitwise_and(signature[:length], prior[:length])].sum())
+        union = int(_UINT8_BIT_COUNTS[np.bitwise_or(signature[:length], prior[:length])].sum())
+        max_jaccard = max(max_jaccard, float(intersection / union) if union else 1.0)
+    return min(max(1.0 - max_jaccard, 0.0), 1.0)
 
 
 def _rebalance_position(position: pd.DataFrame, resample: str) -> pd.DataFrame:
@@ -1154,6 +1221,7 @@ def _evaluate_candidate(
     similarity_pair_map: dict[tuple[str, str], float],
     similarity_feature_meta: dict[str, dict[str, Any]],
     market_regimes: pd.Series,
+    label_archive: list[np.ndarray],
 ) -> dict[str, Any]:
     score = _candidate_score(candidate, values, meta)
     if score is None:
@@ -1163,7 +1231,17 @@ def _evaluate_candidate(
             "status": "no_score",
             "fitness": -999.0,
         }
-    raw_position = _position_from_score(score.loc[: args.end_date], args.top_k, tradable).loc[args.start_date: args.end_date]
+    is_labeler_v2 = candidate.algorithm == "pymoo_labeler_v2"
+    if is_labeler_v2:
+        threshold = float(candidate.label_threshold or getattr(args, "labeler_min_percentile", 0.55))
+        raw_position = _labels_from_score(
+            score.loc[: args.end_date],
+            threshold,
+            tradable,
+        ).loc[args.start_date: args.end_date]
+    else:
+        threshold = None
+        raw_position = _position_from_score(score.loc[: args.end_date], args.top_k, tradable).loc[args.start_date: args.end_date]
     position = _rebalance_position(raw_position, args.resample)
     returns = _portfolio_returns(position, close, fee_tax_cost=args.fee_tax_cost)
     train = returns.loc[args.train_start: args.train_end]
@@ -1183,6 +1261,13 @@ def _evaluate_candidate(
         feature_meta=similarity_feature_meta,
     )
     novelty = float(novelty_evidence["novelty"])
+    label_metrics = _label_matrix_metrics(raw_position, tradable) if is_labeler_v2 else {}
+    label_signature = _label_signature(raw_position) if is_labeler_v2 else None
+    label_matrix_novelty = (
+        _label_matrix_novelty(label_signature, label_archive)
+        if label_signature is not None
+        else 0.0
+    )
     turnover = _mean_turnover(position)
     complexity = len(candidate.factor_ids)
     deflated = _deflated_sharpe_proxy(validation_metrics["sharpe"], n_trials_hint, max(1, len(validation)))
@@ -1204,6 +1289,11 @@ def _evaluate_candidate(
         - validation_turnover * 0.15
         - complexity * 0.015
     )
+    if is_labeler_v2:
+        fitness += (
+            label_matrix_novelty * 0.20
+            + float(label_metrics.get("label_entropy") or 0.0) * 0.10
+        )
     return {
         "candidate_id": candidate.candidate_id,
         "algorithm": candidate.algorithm,
@@ -1220,6 +1310,11 @@ def _evaluate_candidate(
         "max_archive_similarity": novelty_evidence["max_archive_similarity"],
         "max_similarity": novelty_evidence["max_similarity"],
         "similarity_novelty_method": novelty_evidence["similarity_novelty_method"],
+        "search_contract": "label_all_l0_v2" if is_labeler_v2 else "portfolio_top_k_v1",
+        "label_threshold_percentile": threshold,
+        "label_matrix_novelty": label_matrix_novelty,
+        "label_matrix_metrics": label_metrics,
+        "_label_signature": label_signature,
         "turnover": turnover,
         "validation_turnover": validation_turnover,
         "fitness": fitness,
@@ -1400,6 +1495,11 @@ def _run_pymoo(
     evaluate,
     args: argparse.Namespace,
     archive: list[set[str]],
+    label_archive: list[np.ndarray],
+    *,
+    search_contract: str,
+    population: int,
+    generations: int,
 ) -> list[dict[str, Any]]:
     from pymoo.algorithms.moo.nsga3 import NSGA3
     from pymoo.core.problem import ElementwiseProblem
@@ -1409,7 +1509,8 @@ def _run_pymoo(
 
     rows: list[dict[str, Any]] = []
     eval_counter = 0
-    n_var = args.max_factors * 2 + 1
+    is_labeler_v2 = search_contract == "label_all_l0_v2"
+    n_var = args.max_factors * 2 + (2 if is_labeler_v2 else 1)
 
     class AlphaProblem(ElementwiseProblem):
         def __init__(self):
@@ -1432,32 +1533,51 @@ def _run_pymoo(
                     selected.append(fid)
                 idx += 1
             weights = [0.05 + float(x[args.max_factors + i]) for i in range(len(selected))]
-            cand = Candidate(f"pymoo_nsga3_novelty_{eval_counter:04d}", "pymoo_nsga3_novelty", selected, weights)
+            if is_labeler_v2:
+                min_threshold = float(getattr(args, "labeler_min_percentile", 0.55))
+                max_threshold = float(getattr(args, "labeler_max_percentile", 0.85))
+                threshold = min_threshold + float(x[-2]) * (max_threshold - min_threshold)
+                algorithm_name = "pymoo_labeler_v2"
+                candidate_id = f"pymoo_labeler_v2_{eval_counter:04d}"
+            else:
+                threshold = None
+                algorithm_name = "pymoo_nsga3_novelty"
+                candidate_id = f"pymoo_nsga3_novelty_{eval_counter:04d}"
+            cand = Candidate(candidate_id, algorithm_name, selected, weights, label_threshold=threshold)
             eval_counter += 1
-            row = evaluate(cand, n_trials_hint=args.pymoo_population * args.pymoo_generations)
+            row = evaluate(cand, n_trials_hint=population * generations)
+            signature = row.pop("_label_signature", None)
             rows.append(row)
             if row.get("status") == "ok":
                 archive.append(set(cand.factor_ids))
+                if isinstance(signature, np.ndarray):
+                    label_archive.append(signature)
             validation = row.get("validation") or {}
             holdout = row.get("holdout") or {}
-            out["F"] = [
+            out["F"] = ([
+                -float(validation.get("sharpe") or -999.0),
+                -float(holdout.get("sharpe") or -999.0),
+                float(row.get("turnover") or 0.0),
+                -float(row.get("label_matrix_novelty") or 0.0),
+                -float((row.get("label_matrix_metrics") or {}).get("label_entropy") or 0.0),
+            ] if is_labeler_v2 else [
                 -float(validation.get("sharpe") or -999.0),
                 abs(float(validation.get("max_drawdown") or 0.0)),
                 float(row.get("turnover") or 0.0),
                 -float(row.get("novelty") or 0.0),
                 float(row.get("complexity") or args.max_factors),
-            ]
+            ])
 
     ref_dirs = get_reference_directions("das-dennis", 5, n_partitions=2)
-    algorithm = NSGA3(pop_size=args.pymoo_population, ref_dirs=ref_dirs)
+    algorithm = NSGA3(pop_size=population, ref_dirs=ref_dirs)
     minimize(
         AlphaProblem(),
         algorithm,
-        get_termination("n_gen", args.pymoo_generations),
-        seed=args.seed + 37,
+        get_termination("n_gen", generations),
+        seed=args.seed + (73 if is_labeler_v2 else 37),
         verbose=False,
     )
-    return rows[: args.pymoo_population * args.pymoo_generations]
+    return rows[: population * generations]
 
 
 def _pbo_by_algorithm(rows: list[dict[str, Any]], n_folds: int) -> dict[str, dict[str, Any]]:
@@ -1712,7 +1832,14 @@ def _finlab_confirm(
         score = _candidate_score(cand, values, meta)
         if score is None:
             continue
-        position = _position_from_score(score.loc[: args.end_date], args.top_k, tradable).loc[args.start_date: args.end_date]
+        if row.get("search_contract") == "label_all_l0_v2":
+            position = _labels_from_score(
+                score.loc[: args.end_date],
+                float(row.get("label_threshold_percentile") or args.labeler_min_percentile),
+                tradable,
+            ).loc[args.start_date: args.end_date]
+        else:
+            position = _position_from_score(score.loc[: args.end_date], args.top_k, tradable).loc[args.start_date: args.end_date]
         confirm = ab._run_sim(
             row_id=f"alpha_miner_{cand.candidate_id}",
             kind="alpha_miner_confirm",
@@ -1758,6 +1885,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "related_cluster_floor": RELATED_CLUSTER_SIMILARITY_FLOOR,
     }
     archive: list[set[str]] = []
+    label_archive: list[np.ndarray] = []
 
     def evaluate(cand: Candidate, *, n_trials_hint: int) -> dict[str, Any]:
         return _evaluate_candidate(
@@ -1772,6 +1900,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             similarity_pair_map=similarity_pair_map,
             similarity_feature_meta=similarity_feature_meta,
             market_regimes=market_regimes,
+            label_archive=label_archive,
         )
 
     rows: list[dict[str, Any]] = []
@@ -1787,8 +1916,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         _progress(f"running DEAP evolution: population={args.deap_population}, generations={args.deap_generations}")
         rows.extend(_run_deap(factor_ids, evaluate, args, archive))
     if (run_all or enabled == "pymoo") and args.pymoo_population > 0 and args.pymoo_generations > 0:
-        _progress(f"running pymoo NSGA-III + novelty: population={args.pymoo_population}, generations={args.pymoo_generations}")
-        rows.extend(_run_pymoo(factor_ids, evaluate, args, archive))
+        search_mode = str(getattr(args, "pymoo_search_mode", "top_k_v1") or "top_k_v1")
+        if search_mode in {"top_k_v1", "parallel_shadow"}:
+            _progress(f"running pymoo V1 top-k: population={args.pymoo_population}, generations={args.pymoo_generations}")
+            rows.extend(_run_pymoo(
+                factor_ids, evaluate, args, archive, label_archive,
+                search_contract="portfolio_top_k_v1",
+                population=args.pymoo_population,
+                generations=args.pymoo_generations,
+            ))
+        if search_mode in {"labeler_v2", "parallel_shadow"}:
+            _progress(
+                "running pymoo V2 full-L0 labeler: "
+                f"population={args.pymoo_labeler_population}, generations={args.pymoo_labeler_generations}"
+            )
+            rows.extend(_run_pymoo(
+                factor_ids, evaluate, args, archive, label_archive,
+                search_contract="label_all_l0_v2",
+                population=args.pymoo_labeler_population,
+                generations=args.pymoo_labeler_generations,
+            ))
 
     _progress(f"summarizing {len(rows)} candidates")
     summary = _summarize(rows, pbo_folds=args.pbo_folds)
@@ -1850,6 +1997,11 @@ def main() -> int:
     parser.add_argument("--holdout-end", default="2026-06-15")
     parser.add_argument("--universe", choices=["sii", "sii_otc"], default="sii")
     parser.add_argument("--top-k", type=int, default=10)
+    parser.add_argument("--pymoo-search-mode", choices=["top_k_v1", "labeler_v2", "parallel_shadow"], default="top_k_v1")
+    parser.add_argument("--pymoo-labeler-population", type=int, default=32)
+    parser.add_argument("--pymoo-labeler-generations", type=int, default=4)
+    parser.add_argument("--labeler-min-percentile", type=float, default=0.55)
+    parser.add_argument("--labeler-max-percentile", type=float, default=0.85)
     parser.add_argument("--max-symbols", type=int, default=0)
     parser.add_argument("--min-factors", type=int, default=2)
     parser.add_argument("--max-factors", type=int, default=8)

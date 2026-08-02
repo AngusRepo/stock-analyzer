@@ -1,6 +1,10 @@
 const D1_BATCH_ALLOWED_DML = new Set(['INSERT', 'UPDATE', 'DELETE', 'REPLACE'])
 
-export function normalizeSingleD1BatchStatement(rawSql: unknown, index: number): string {
+export function normalizeSingleD1BatchStatement(
+  rawSql: unknown,
+  index: number,
+  allowedVerbs: ReadonlySet<string> = D1_BATCH_ALLOWED_DML,
+): string {
   const sql = typeof rawSql === 'string' ? rawSql.trim() : ''
   if (!sql) throw new Error(`statement ${index}: sql is required`)
 
@@ -64,8 +68,8 @@ export function normalizeSingleD1BatchStatement(rawSql: unknown, index: number):
 
   const normalized = (terminator >= 0 ? sql.slice(0, terminator) : sql).trim()
   const verb = normalized.split(/\s+/, 1)[0]?.toUpperCase()
-  if (!D1_BATCH_ALLOWED_DML.has(verb)) {
-    throw new Error(`statement ${index}: only INSERT/UPDATE/DELETE/REPLACE are allowed`)
+  if (!allowedVerbs.has(verb)) {
+    throw new Error(`statement ${index}: SQL verb ${verb || 'missing'} is not allowed`)
   }
   return normalized
 }

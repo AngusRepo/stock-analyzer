@@ -4,6 +4,7 @@ import { invalidateModelPoolReadCache } from './modelPoolReadCache'
 import { readCurrentExpectedReturnServingState } from './expectedReturnServingState'
 import { nextTwTradingDate } from './schedulerPolicy'
 import { twToday } from './dateUtils'
+import { strategyMiningDispatchKey } from './strategyMiningGateway'
 
 function requireController(env: Bindings): void {
   if (!env.ML_CONTROLLER_URL) {
@@ -457,11 +458,24 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
 export async function runMonthlyStrategyMining(env: Bindings, runDate?: string) {
   requireController(env)
 
+  const dispatchRunDate = runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+  const runId = `strategy-mining-${dispatchRunDate}-${crypto.randomUUID()}`
+  const dispatchKey = strategyMiningDispatchKey(runId)
+  const pendingDispatch = {
+    run_id: runId,
+    run_date: dispatchRunDate,
+    status: 'pending',
+    created_at: new Date().toISOString(),
+  }
+  await env.KV.put(dispatchKey, JSON.stringify(pendingDispatch), { expirationTtl: 7 * 24 * 60 * 60 })
+
+
   const resp = await controllerFetch(env, '/strategy_mining/monthly_pymoo/run', {
     method: 'POST',
     jsonBody: {
+      run_id: runId,
       cadence: 'monthly',
-      run_date: runDate,
+      run_date: dispatchRunDate,
       persist: true,
       dry_run: false,
       trigger_source: 'worker_scheduler',
@@ -477,13 +491,29 @@ export async function runMonthlyStrategyMining(env: Bindings, runDate?: string) 
     throw new Error(`monthly strategy mining ${data.status}: ${(data.errors ?? data.error ?? data.detail ?? []).toString().slice(0, 300)}`)
   }
   if (data.status === 'triggered') {
+    if (String(data.run_id ?? '') !== runId) {
+      throw new Error(`monthly strategy mining run_id mismatch: expected=${runId} actual=${data.run_id ?? 'missing'}`)
+    }
     const remote = normalizeRemoteExecution(data)
+    const current = await env.KV.get(dispatchKey, 'json') as Record<string, unknown> | null
+    await env.KV.put(dispatchKey, JSON.stringify({
+      ...pendingDispatch,
+      ...(current ?? {}),
+      status: current?.terminal_status ? 'terminal' : 'accepted',
+      backend: remote.backend,
+      remote_execution_id: remote.remoteExecutionId,
+      function_call_id: remote.functionCallId,
+      dispatch_ack: data.dispatch_ack,
+      accepted_at: new Date().toISOString(),
+    }), { expirationTtl: 7 * 24 * 60 * 60 })
     return [
       'triggered monthly_pymoo_strategy_mining',
+      `run_id=${runId}`,
       `backend=${remote.backend}`,
       `remote_execution_id=${remote.remoteExecutionId ?? 'unknown'}`,
       `execution_id=${remote.executionId ?? 'unknown'}`,
       remote.functionCallId ? `function_call_id=${remote.functionCallId}` : null,
+      `dispatch_ack=${data.dispatch_ack ?? 'missing'}`,
       'callback expected',
     ].filter(Boolean).join(' ')
   }
@@ -497,13 +527,11 @@ export async function runMonthlyStrategyMining(env: Bindings, runDate?: string) 
       'callback expected',
     ].join(' ')
   }
-  const pool = data.feature_pool && typeof data.feature_pool === 'object' ? data.feature_pool as Record<string, any> : {}
-  return [
-    'monthly_pymoo_strategy_mining preflight_ready',
-    `features=${pool.eligible_for_alpha_mining ?? 'unknown'}`,
-    `triggered=${data.triggered === true ? '1' : '0'}`,
-    'production_effect=none',
-  ].join(' ')
+  throw new Error(
+    `monthly strategy mining dispatch not confirmed: status=${data.status ?? 'missing'} `
+    + `triggered=${data.triggered === true ? '1' : '0'} `
+    + `reason=${data.trigger_reason ?? data.detail ?? 'unexpected_controller_response'}`,
+  )
 }
 
 function isFailureSummary(value: string): boolean {

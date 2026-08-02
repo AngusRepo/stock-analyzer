@@ -6,6 +6,10 @@ import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
 import type { EvidenceArtifactWriteInput } from '../lib/evidenceArtifactContract'
 import { normalizeSingleD1BatchStatement } from '../lib/d1BatchStatement'
 import {
+  handleStrategyMiningCallback,
+  handleStrategyMiningD1Gateway,
+} from '../lib/strategyMiningGateway'
+import {
   LegacyEvidenceResolveError,
   resolveLegacyScreenerEvidence,
 } from '../lib/legacyEvidenceResolver'
@@ -84,6 +88,9 @@ adminControlRoutes.post('/api/internal/d1/batch', async (c) => {
     mode: 'worker_d1_batch',
   })
 })
+
+adminControlRoutes.post('/api/internal/strategy-mining/d1', handleStrategyMiningD1Gateway)
+adminControlRoutes.post('/api/internal/strategy-mining/callback', handleStrategyMiningCallback)
 
 export function parseScreenerArtifactInput(body: any): EvidenceArtifactWriteInput {
   if (!body || typeof body !== 'object') throw new Error('JSON object body is required')

@@ -53,6 +53,8 @@ export type Bindings = {
   PAGES_ORIGIN?: string
   // AI Team 服務間共享 token（Paper Trading auth）
   STOCKVISION_AUTH_TOKEN?: string
+  // Dedicated least-privilege token for Pymoo D1 gateway and terminal callback.
+  STRATEGY_MINING_CALLBACK_TOKEN?: string
   // Discord Webhook URL（Paper Trading 事件推送）
   DISCORD_WEBHOOK_URL?: string
   LINE_CHANNEL_ACCESS_TOKEN?: string

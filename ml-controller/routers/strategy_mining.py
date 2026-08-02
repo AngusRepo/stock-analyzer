@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -28,6 +31,12 @@ router = APIRouter(prefix="/strategy_mining", tags=["strategy_mining"])
 
 
 class MonthlyPymooRunReq(BaseModel):
+    run_id: str | None = Field(
+        default=None,
+        min_length=20,
+        max_length=160,
+        pattern=r"^strategy-mining-[A-Za-z0-9._:-]+$",
+    )
     run_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     cadence: str = Field(default="monthly", pattern="^monthly$")
     persist: bool = True
@@ -148,9 +157,15 @@ async def run_monthly_pymoo_strategy_mining(req: MonthlyPymooRunReq):
 
     backend = os.environ.get("STRATEGY_MINING_BACKEND", "modal").strip().lower() or "modal"
     if backend != "cloud_run":
+        now_tw = datetime.now(ZoneInfo("Asia/Taipei"))
+        mining_run_date = req.run_date or now_tw.date().isoformat()
+        run_id = req.run_id or (
+            f"strategy-mining-{mining_run_date}-{now_tw.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+        )
         try:
             spawned = await modal_client.strategy_mining_research({
-                "run_date": req.run_date or "",
+                "run_date": mining_run_date,
+                "run_id": run_id,
                 "cadence": req.cadence,
                 "persist": req.persist,
                 "trigger_source": req.trigger_source,
@@ -161,24 +176,39 @@ async def run_monthly_pymoo_strategy_mining(req: MonthlyPymooRunReq):
             packet["modal_trigger_error"] = str(exc)
         else:
             function_call_id = spawned.get("function_call_id")
+            dispatch_ack = spawned.get("dispatch_ack")
+            if not function_call_id or dispatch_ack not in {"accepted_running", "completed_during_ack"}:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "strategy_mining_modal_dispatch_unconfirmed:"
+                        f"function_call_id={function_call_id or 'missing'}:"
+                        f"dispatch_ack={dispatch_ack or 'missing'}"
+                    ),
+                )
             return {
                 **packet,
                 "status": "triggered",
                 "triggered": True,
                 "backend": "modal",
+                "run_id": run_id,
                 "function_call_id": function_call_id,
+                "dispatch_ack": dispatch_ack,
                 "execution_id": function_call_id,
                 "remote_execution_id": function_call_id,
                 "summary": (
                     "monthly_pymoo_strategy_mining triggered "
+                    f"run_id={run_id} "
                     f"backend=modal remote_execution_id={function_call_id or 'unknown'} "
-                    f"function_call_id={function_call_id or 'unknown'} callback expected"
+                    f"function_call_id={function_call_id or 'unknown'} "
+                    f"dispatch_ack={dispatch_ack} callback expected"
                 ),
             }
 
     try:
         execution = _strategy_mining_job_client().run_job({
             "STRATEGY_MINING_RUN_DATE": req.run_date or "",
+            "STRATEGY_MINING_RUN_ID": req.run_id or "",
             "STRATEGY_MINING_CADENCE": req.cadence,
             "STRATEGY_MINING_PERSIST": "1" if req.persist else "0",
             "STRATEGY_MINING_TRIGGER_SOURCE": req.trigger_source,

@@ -21,8 +21,12 @@ VALIDATION_INPUTS = (
     "worker/src/lib/schedulerDependencyMap.ts",
     "ml-controller/main.py",
     "ml-controller/routers/strategy_mining.py",
+    "ml-controller/services/d1_client.py",
     "ml-controller/services/modal_client.py",
-    "ml-service/modal_app.py",
+    "ml-service/modal_strategy_mining_app.py",
+    "worker/src/lib/controllerResearchWorkflows.ts",
+    "worker/src/lib/strategyMiningGateway.ts",
+    "worker/src/routes/adminControlRoutes.ts",
     "worker/migration_strategy_mining_ledger_2026_06_18.sql",
     "tools/finlab_alpha_miner_bakeoff.py",
     "data/feature_registry/alpha_mining_promotion_contract_v1.json",
@@ -118,13 +122,35 @@ def build_validation_payload() -> dict[str, Any]:
         ],
         "ml-controller/services/modal_client.py": [
             "async def strategy_mining_research",
-            "_lookup(\"strategy_mining_research\")",
+            "_lookup_in_app(strategy_app_name, \"strategy_mining_research\")",
+            "stockvision-strategy-mining",
             "\"backend\": \"modal\"",
         ],
-        "ml-service/modal_app.py": [
+        "ml-controller/services/d1_client.py": [
+            "STRATEGY_MINING_D1_WORKER_ONLY",
+            "/api/internal/strategy-mining/d1",
+            "STRATEGY_MINING_CALLBACK_TOKEN",
+        ],
+        "ml-service/modal_strategy_mining_app.py": [
+            'modal.App(name="stockvision-strategy-mining"',
             "def strategy_mining_research",
             "strategy_mining_job_main",
-            "STRATEGY_MINING_RUN_DATE",
+            "stockvision-strategy-mining",
+        ],
+        "worker/src/lib/controllerResearchWorkflows.ts": [
+            "strategyMiningDispatchKey",
+            "crypto.randomUUID()",
+            "run_id: runId",
+        ],
+        "worker/src/lib/strategyMiningGateway.ts": [
+            "STRATEGY_MINING_CALLBACK_TOKEN",
+            "STRATEGY_MINING_TABLES",
+            "handleStrategyMiningD1Gateway",
+            "handleStrategyMiningCallback",
+        ],
+        "worker/src/routes/adminControlRoutes.ts": [
+            "/api/internal/strategy-mining/d1",
+            "/api/internal/strategy-mining/callback",
         ],
         "worker/migration_strategy_mining_ledger_2026_06_18.sql": [
             "CREATE TABLE IF NOT EXISTS strategy_mining_runs",

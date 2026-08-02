@@ -116,9 +116,12 @@ def _controller_callback_token() -> str:
 
 
 def requires_immutable_oof_snapshot(req: UniversalTrainRequest) -> bool:
-    """Only canonical purged-OOF full-fit artifacts own immutable OOF lineage."""
+    """Require cohort-bound lineage for OOF folds and their release refits."""
 
-    return str(req.generation_mode or "native").strip().lower() == "purged_oof"
+    return str(req.generation_mode or "native").strip().lower() in {
+        "purged_oof",
+        "oof_full_fit_release",
+    }
 
 
 def _date_min_max_for_manifest(dates: np.ndarray) -> tuple[str | None, str | None]:

@@ -1191,6 +1191,8 @@ async def _dispatch_prebuilt_oof_full_fit(
         "promotion_allowed_models": req.promotion_allowed_models,
         "oof_promotion_evidence": req.oof_promotion_evidence,
         "oof_lifecycle_resume": req.oof_lifecycle_resume,
+        "generation_mode": "oof_full_fit_release",
+        "cohort_id": str(req.prebuilt_prep_source_cohort_id),
         "selection_params": training_policy.feature_selection_params(),
         "training_policy": training_policy.to_dict(),
         "dataset_snapshot": _build_prebuilt_oof_dataset_snapshot(

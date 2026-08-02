@@ -25,6 +25,8 @@ def test_universal_retrain_request_forwards_artifact_lifecycle_fields():
     assert '"artifact_lifecycle_targets": req.artifact_lifecycle_targets' in source
     assert '"artifact_lifecycle_contracts": req.artifact_lifecycle_contracts' in source
     assert '"artifact_lifecycle_only": req.artifact_lifecycle_only' in source
+    assert '"generation_mode": "oof_full_fit_release"' in source
+    assert '"cohort_id": str(req.prebuilt_prep_source_cohort_id)' in source
     assert '"sequence_gcs_prefix"] = sequence_gcs_prefix' in source
     assert "**sequence_contract" in source
     assert '@router.post("/universal/run")' in source

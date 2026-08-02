@@ -631,3 +631,9 @@ def test_purged_oof_full_fit_requires_immutable_oof_lineage():
     req = universal_training.UniversalTrainRequest(generation_mode="purged_oof")
 
     assert universal_training.requires_immutable_oof_snapshot(req) is True
+
+
+def test_oof_release_refit_requires_immutable_oof_lineage_without_fold_mode():
+    req = universal_training.UniversalTrainRequest(generation_mode="oof_full_fit_release")
+
+    assert universal_training.requires_immutable_oof_snapshot(req) is True

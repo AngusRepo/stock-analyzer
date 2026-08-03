@@ -275,7 +275,7 @@ export async function backfillDataDomainTableShadow(
     INSERT INTO ${identifier(table)} (${columnSql}) VALUES (${valuesSql})
     ON CONFLICT (${primaryKeys.map(identifier).join(", ")}) ${updateSql}
   `).bind(...columns.map((column) => row[column] ?? null)))
-  for (let offset = 0; offset < statements.length; offset += 50) await target.batch(statements.slice(offset, offset + 50))
+  for (let offset = 0; offset < statements.length; offset += 500) await target.batch(statements.slice(offset, offset + 500))
   const verify = await target.prepare(`
     SELECT ${columnSql} FROM ${identifier(table)}
      ${keyset.sql}

@@ -70,7 +70,7 @@ export function domainBackfillRowsPerStatement(columnCount: number): number {
 }
 
 export function domainBackfillParityBatchLimit(copyBatchLimit: number): number {
-  return Math.max(1, Math.min(Math.floor(copyBatchLimit) * 4, 2000))
+  return Math.max(1, Math.min(Math.floor(copyBatchLimit) * 8, 4000))
 }
 
 async function upsertDomainRows(

@@ -30,6 +30,10 @@ const D1_HEAVY_MAINTENANCE_TASKS = new Set([
   'data-domain-shadow-backfill',
 ])
 const D1_MAINTENANCE_REQUEST_BUDGET_MS = 45_000
+const PAPER_SHADOW_BACKFILL_ACTIVE_KEY = 'data-domain-shadow-backfill:paper:active'
+const AUDIT_JSON_NON_PAPER_TARGETS_DURING_BACKFILL = [
+  'strategy_decision_log', 'screener_funnel_items', 'canonical_screener_funnel_items',
+]
 
 type WarmupSummary = {
   ok: boolean
@@ -676,12 +680,22 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       } = await import('./auditJsonArchive')
       const confirmPhrase = c.req.query('confirm_archive') ?? c.req.query('confirm')
       const dryRun = confirmPhrase !== AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE
+      const requestedAuditTargets = c.req.queries('target') ?? (c.req.query('targets') ? [c.req.query('targets')] : null)
+      const paperShadowBackfillActive = Boolean(await c.env.KV.get(PAPER_SHADOW_BACKFILL_ACTIVE_KEY))
+      const auditTargets = paperShadowBackfillActive
+        ? (requestedAuditTargets?.length
+          ? requestedAuditTargets.filter((target) => target !== 'paper_execution_events')
+          : AUDIT_JSON_NON_PAPER_TARGETS_DURING_BACKFILL)
+        : requestedAuditTargets
+      if (paperShadowBackfillActive && auditTargets?.length === 0) {
+        return 'audit_json_retention skipped=paper_execution_events reason=paper_shadow_backfill_active'
+      }
       const result = await runAuditJsonArchiveRetention(c.env, {
         businessDate: requestedRunDate(),
         retentionDays: Number.parseInt(c.req.query('retention_days') ?? `${AUDIT_JSON_RETENTION_DEFAULT_DAYS}`, 10),
         limitPerTable: Number.parseInt(c.req.query('limit_per_table') ?? `${AUDIT_JSON_ARCHIVE_DEFAULT_LIMIT_PER_TABLE}`, 10),
         minBlobBytes: Number.parseInt(c.req.query('min_blob_bytes') ?? `${AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES}`, 10),
-        targets: c.req.queries('target') ?? (c.req.query('targets') ? [c.req.query('targets')] : null),
+        targets: auditTargets,
         dryRun,
         confirmPhrase,
       })
@@ -786,7 +800,12 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 1, 5)
       const dryRun = c.req.query('confirm_retirement') !== LEGACY_HOT_DATA_RETIREMENT_CONFIRM_PHRASE
       const summaries: string[] = []
+      const paperShadowBackfillActive = Boolean(await c.env.KV.get(PAPER_SHADOW_BACKFILL_ACTIVE_KEY))
       for (const target of targets) {
+        if (paperShadowBackfillActive && target === 'superseded_pending_events') {
+          summaries.push('superseded_pending_events:skipped=paper_shadow_backfill_active')
+          continue
+        }
         let archived = 0
         let deleted = 0
         let artifacts = 0

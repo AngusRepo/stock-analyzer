@@ -3535,6 +3535,22 @@ export async function finalizeStrategyLearningEvidenceV5(
         'adaptive_policy',
         () => refreshStrategyAdaptivePolicyState(db, { date, dryRun: false }),
       )
+  const productionPolicy = policy == null
+    ? null
+    : await runStrategyLearningFinalizerStage(
+        'production_policy',
+        async () => {
+          const [{ specs }, { refreshStrategyProductionContributionPolicy }] = await Promise.all([
+            listStrategySpecsForLearning(db),
+            import('./strategyProductionPolicyService'),
+          ])
+          return refreshStrategyProductionContributionPolicy(db, {
+            knowledgeCutoffDate: date,
+            strategies: specs,
+            gates: policy.promotion_gate,
+          })
+        },
+      )
   const thresholdCalibration = options.calibrateThresholds === false
     ? null
     : await runStrategyLearningFinalizerStage(
@@ -3554,6 +3570,7 @@ export async function finalizeStrategyLearningEvidenceV5(
     routeCalibration,
     rewards,
     policy,
+    productionPolicy,
     thresholdCalibration,
   }
 }

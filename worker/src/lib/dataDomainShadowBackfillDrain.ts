@@ -11,7 +11,33 @@ import { logSchedulerResult } from './schedulerRunLogger'
 const ACTIVE_TTL_SECONDS = 6 * 3600
 const DEFAULT_MAX_ATTEMPTS = 5000
 const MAX_ATTEMPTS = 20_000
+const STALE_PROGRESS_MS = 5 * 60 * 1000
 
+type ActiveState = {
+  run_id: string
+  started_at: string | null
+}
+
+function parseActiveState(value: string): ActiveState {
+  try {
+    const parsed = JSON.parse(value) as Partial<ActiveState>
+    if (typeof parsed.run_id === 'string' && parsed.run_id.trim()) {
+      return { run_id: parsed.run_id, started_at: typeof parsed.started_at === 'string' ? parsed.started_at : null }
+    }
+  } catch {}
+  return { run_id: value, started_at: null }
+}
+
+export function isDataDomainShadowProgressStale(
+  activeStartedAt: string | null,
+  progressUpdatedAt: string | null,
+  nowMs = Date.now(),
+): boolean {
+  const reference = progressUpdatedAt || activeStartedAt
+  if (!reference) return false
+  const referenceMs = Date.parse(reference)
+  return Number.isFinite(referenceMs) && nowMs - referenceMs >= STALE_PROGRESS_MS
+}
 function activeKey(domain: DataDomain): string {
   return `data-domain-shadow-backfill:${domain}:active`
 }
@@ -78,10 +104,19 @@ export async function enqueueDataDomainShadowBackfill(
   const runId = input.runId ?? `data-domain-shadow-backfill:${input.domain}:${input.runDate}:${crypto.randomUUID()}`
   const key = activeKey(input.domain)
   const existing = await env.KV.get(key)
-  if (existing) return { queued: false, runId: existing }
+  if (existing) {
+    const active = parseActiveState(existing)
+    const progress = await env.KV.get(progressKey(input.domain), 'json') as { updated_at?: string | null } | null
+    if (!isDataDomainShadowProgressStale(active.started_at, progress?.updated_at ?? null)) {
+      return { queued: false, runId: active.run_id }
+    }
+    await env.KV.delete(key)
+  }
   const maxAttempts = Math.max(1, Math.min(Math.floor(input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS), MAX_ATTEMPTS))
 
-  await env.KV.put(key, runId, { expirationTtl: ACTIVE_TTL_SECONDS })
+  await env.KV.put(key, JSON.stringify({ run_id: runId, started_at: new Date().toISOString() }), {
+    expirationTtl: ACTIVE_TTL_SECONDS,
+  })
   try {
     await (env.UPDATE_QUEUE as any).send(queueMessage({
       domain: input.domain,
@@ -157,7 +192,10 @@ export async function processDataDomainShadowBackfillDrain(
 
   const nextTable = result.status === 'shadow_progress' ? table : await nextIncompleteTable(env, domain)
   if (nextTable) {
-    await env.KV.put(activeKey(domain), runId, { expirationTtl: ACTIVE_TTL_SECONDS })
+    await env.KV.put(activeKey(domain), JSON.stringify({
+      run_id: runId,
+      started_at: new Date().toISOString(),
+    }), { expirationTtl: ACTIVE_TTL_SECONDS })
     await (env.UPDATE_QUEUE as any).send(queueMessage({
       domain,
       table: nextTable,

@@ -14,7 +14,7 @@ interface TableColumn {
 export interface DomainShadowBackfillResult {
   domain: DataDomain
   table: string
-  status: 'shadow_progress' | 'shadow_table_complete'
+  status: 'shadow_progress' | 'shadow_parity_progress' | 'shadow_table_complete'
   source_rows: number
   target_rows: number
   batch_rows: number
@@ -23,6 +23,8 @@ export interface DomainShadowBackfillResult {
   domain_tables_completed?: number
   domain_tables_total?: number
   domain_shadow_ready?: boolean
+  parity_rows_scanned?: number
+  parity_rows_repaired?: number
 }
 
 function identifier(value: string): string {
@@ -47,6 +49,18 @@ async function checksumText(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
+export async function domainBackfillRollingManifest(
+  previousManifest: string | null,
+  batchChecksum: string,
+  batchRows: number,
+): Promise<string> {
+  return checksumText(JSON.stringify({
+    previous_manifest: previousManifest,
+    batch_checksum: batchChecksum,
+    batch_rows: batchRows,
+  }))
+}
+
 export function domainBackfillBatchLimit(value?: number): number {
   return Math.max(1, Math.min(Math.floor(value ?? 500), 500))
 }
@@ -55,39 +69,53 @@ export function domainBackfillRowsPerStatement(columnCount: number): number {
   return Math.max(1, Math.floor(100 / Math.max(1, Math.floor(columnCount))))
 }
 
-async function verifiedCopyBatchManifest(
-  db: D1Database,
-  domain: DataDomain,
+async function upsertDomainRows(
+  target: D1Database,
   table: string,
-  sourceRows: number,
-  targetRows: number,
-): Promise<string | null> {
-  if (sourceRows !== targetRows) return null
-  const result = await db.prepare(`
-    SELECT check_id, source_count, target_count, source_checksum, target_checksum
-      FROM data_domain_parity_checks
-     WHERE domain=? AND table_name=? AND check_kind='batch' AND status='pass'
-     ORDER BY check_id
-  `).bind(domain, table).all<{
-    check_id: string
-    source_count: number | string
-    target_count: number | string
-    source_checksum: string | null
-    target_checksum: string | null
-  }>()
-  const rows = result.results ?? []
-  let verifiedRows = 0
-  const parts: string[] = []
-  for (const row of rows) {
-    const sourceCount = Number(row.source_count ?? 0)
-    const targetCount = Number(row.target_count ?? 0)
-    if (sourceCount <= 0 || sourceCount !== targetCount) return null
-    if (!row.source_checksum || row.source_checksum !== row.target_checksum) return null
-    verifiedRows += sourceCount
-    parts.push(`${row.check_id}:${sourceCount}:${row.source_checksum}`)
+  columns: string[],
+  primaryKeys: string[],
+  rows: Record<string, unknown>[],
+): Promise<void> {
+  if (!rows.length) return
+  const columnSql = columns.map(identifier).join(', ')
+  const valuesSql = columns.map(() => '?').join(', ')
+  const nonKeys = columns.filter((column) => !primaryKeys.includes(column))
+  const updateSql = nonKeys.length
+    ? `DO UPDATE SET ${nonKeys.map((column) => `${identifier(column)}=excluded.${identifier(column)}`).join(', ')}`
+    : 'DO NOTHING'
+  const rowsPerStatement = domainBackfillRowsPerStatement(columns.length)
+  const statements: D1PreparedStatement[] = []
+  for (let offset = 0; offset < rows.length; offset += rowsPerStatement) {
+    const statementRows = rows.slice(offset, offset + rowsPerStatement)
+    const multiValueSql = statementRows.map(() => `(${valuesSql})`).join(', ')
+    statements.push(target.prepare(`
+      INSERT INTO ${identifier(table)} (${columnSql}) VALUES ${multiValueSql}
+      ON CONFLICT (${primaryKeys.map(identifier).join(', ')}) ${updateSql}
+    `).bind(...statementRows.flatMap((row) => columns.map((column) => row[column] ?? null))))
   }
-  if (verifiedRows !== sourceRows) return null
-  return checksumText(JSON.stringify(parts))
+  for (let offset = 0; offset < statements.length; offset += 50) {
+    await target.batch(statements.slice(offset, offset + 50))
+  }
+}
+
+type ManifestProgressEvidence = {
+  cursor?: unknown[] | null
+  rows_scanned?: number
+  repaired_rows?: number
+  expected_source_rows?: number
+  expected_target_rows?: number
+  source_manifest?: string | null
+  target_manifest?: string | null
+}
+
+function parseManifestProgress(value: unknown): ManifestProgressEvidence {
+  if (typeof value !== 'string' || !value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' ? parsed as ManifestProgressEvidence : {}
+  } catch {
+    throw new Error('domain_shadow_manifest_progress_invalid')
+  }
 }
 
 async function tableColumns(db: D1Database, table: string): Promise<TableColumn[]> {
@@ -176,11 +204,11 @@ export async function backfillDataDomainTableShadow(
     if (sourceRows !== targetRows) throw new Error(`domain_shadow_count_mismatch:${domain}:${table}:${sourceRows}/${targetRows}`)
 
     const fullChecksumLimit = 1000
+    const columnSql = columns.map(identifier).join(", ")
     let sourceFullChecksum: string | null = null
     let targetFullChecksum: string | null = null
     let parityStatus: 'pass' | 'blocked' = 'blocked'
     if (sourceRows <= fullChecksumLimit) {
-      const columnSql = columns.map(identifier).join(", ")
       const sourceFull = await env.DB.prepare(`
         SELECT ${columnSql} FROM ${identifier(table)} ORDER BY ${order}
       `).all<Record<string, unknown>>()
@@ -194,11 +222,125 @@ export async function backfillDataDomainTableShadow(
       }
       parityStatus = 'pass'
     } else {
-      sourceFullChecksum = await verifiedCopyBatchManifest(env.DB, domain, table, sourceRows, targetRows)
-      if (!sourceFullChecksum) {
-        throw new Error(`domain_shadow_verified_batch_manifest_incomplete:${domain}:${table}`)
+      const progressId = `domain-parity:${domain}:${table}:manifest-progress`
+      const progressRow = await env.DB.prepare(`
+        SELECT evidence_json
+          FROM data_domain_parity_checks
+         WHERE check_id=?
+      `).bind(progressId).first<{ evidence_json?: string }>()
+      const progress = parseManifestProgress(progressRow?.evidence_json)
+      if (
+        (progress.expected_source_rows !== undefined && Number(progress.expected_source_rows) !== sourceRows)
+        || (progress.expected_target_rows !== undefined && Number(progress.expected_target_rows) !== targetRows)
+      ) {
+        throw new Error(`domain_shadow_source_changed_during_parity:${domain}:${table}`)
       }
-      targetFullChecksum = sourceFullChecksum
+      const manifestCursor = Array.isArray(progress.cursor) ? progress.cursor : null
+      const manifestKeyset = domainBackfillKeysetWhere(primaryKeys, manifestCursor)
+      const sourcePageResult = await env.DB.prepare(`
+        SELECT ${columnSql}
+          FROM ${identifier(table)}
+          ${manifestKeyset.sql}
+         ORDER BY ${order}
+         LIMIT ?
+      `).bind(...manifestKeyset.binds, limit).all<Record<string, unknown>>()
+      const sourcePage = sourcePageResult.results ?? []
+      const rowsScanned = Math.max(0, Math.floor(Number(progress.rows_scanned ?? 0)))
+      const repairedRows = Math.max(0, Math.floor(Number(progress.repaired_rows ?? 0)))
+
+      if (sourcePage.length) {
+        let targetPageResult = await target.prepare(`
+          SELECT ${columnSql}
+            FROM ${identifier(table)}
+            ${manifestKeyset.sql}
+           ORDER BY ${order}
+           LIMIT ?
+        `).bind(...manifestKeyset.binds, limit).all<Record<string, unknown>>()
+        let targetPage = targetPageResult.results ?? []
+        const sourcePageChecksum = await checksumRows(sourcePage, columns)
+        let targetPageChecksum = await checksumRows(targetPage, columns)
+        let nextRepairedRows = repairedRows
+        if (sourcePageChecksum !== targetPageChecksum) {
+          await upsertDomainRows(target, table, columns, primaryKeys, sourcePage)
+          targetPageResult = await target.prepare(`
+            SELECT ${columnSql}
+              FROM ${identifier(table)}
+              ${manifestKeyset.sql}
+             ORDER BY ${order}
+             LIMIT ?
+          `).bind(...manifestKeyset.binds, limit).all<Record<string, unknown>>()
+          targetPage = targetPageResult.results ?? []
+          targetPageChecksum = await checksumRows(targetPage, columns)
+          if (sourcePageChecksum !== targetPageChecksum) {
+            throw new Error(`domain_shadow_parity_repair_failed:${domain}:${table}`)
+          }
+          nextRepairedRows += sourcePage.length
+        }
+        const last = sourcePage.at(-1)!
+        const nextManifestCursor = primaryKeys.map((column) => last[column] ?? null)
+        const nextRowsScanned = rowsScanned + sourcePage.length
+        const sourceManifest = await domainBackfillRollingManifest(
+          progress.source_manifest ?? null,
+          sourcePageChecksum,
+          sourcePage.length,
+        )
+        const targetManifest = await domainBackfillRollingManifest(
+          progress.target_manifest ?? null,
+          targetPageChecksum,
+          targetPage.length,
+        )
+        const evidence = {
+          schema_version: DATA_DOMAIN_SHADOW_SCHEMA_VERSION,
+          parity_scope: 'resumable_full_table_manifest',
+          cursor: nextManifestCursor,
+          rows_scanned: nextRowsScanned,
+          repaired_rows: nextRepairedRows,
+          expected_source_rows: sourceRows,
+          expected_target_rows: targetRows,
+          source_manifest: sourceManifest,
+          target_manifest: targetManifest,
+        }
+        await env.DB.prepare(`
+          INSERT INTO data_domain_parity_checks(
+            check_id, domain, table_name, check_kind, status, source_count, target_count,
+            source_checksum, target_checksum, evidence_json
+          ) VALUES (?, ?, ?, 'manifest_progress', 'blocked', ?, ?, ?, ?, ?)
+          ON CONFLICT(check_id) DO UPDATE SET
+            status='blocked', source_count=excluded.source_count, target_count=excluded.target_count,
+            source_checksum=excluded.source_checksum, target_checksum=excluded.target_checksum,
+            evidence_json=excluded.evidence_json, checked_at=CURRENT_TIMESTAMP
+        `).bind(
+          progressId, domain, table, nextRowsScanned, nextRowsScanned,
+          sourceManifest, targetManifest, JSON.stringify(evidence),
+        ).run()
+        return {
+          domain,
+          table,
+          status: 'shadow_parity_progress',
+          source_rows: sourceRows,
+          target_rows: targetRows,
+          batch_rows: sourcePage.length,
+          batch_checksum: sourcePageChecksum,
+          cursor: nextManifestCursor,
+          parity_rows_scanned: nextRowsScanned,
+          parity_rows_repaired: nextRepairedRows,
+        }
+      }
+
+      if (rowsScanned !== sourceRows || !progress.source_manifest || !progress.target_manifest) {
+        throw new Error(`domain_shadow_manifest_incomplete:${domain}:${table}:${rowsScanned}/${sourceRows}`)
+      }
+      if (progress.source_manifest !== progress.target_manifest) {
+        throw new Error(`domain_shadow_manifest_mismatch:${domain}:${table}`)
+      }
+      sourceFullChecksum = progress.source_manifest
+      targetFullChecksum = progress.target_manifest
+      await env.DB.prepare(`
+        UPDATE data_domain_parity_checks
+           SET status='pass', source_count=?, target_count=?,
+               source_checksum=?, target_checksum=?, checked_at=CURRENT_TIMESTAMP
+         WHERE check_id=?
+      `).bind(sourceRows, targetRows, sourceFullChecksum, targetFullChecksum, progressId).run()
       parityStatus = 'pass'
     }
 
@@ -216,7 +358,7 @@ export async function backfillDataDomainTableShadow(
       sourceRows, targetRows, sourceFullChecksum, targetFullChecksum,
       JSON.stringify({
         schema_version: DATA_DOMAIN_SHADOW_SCHEMA_VERSION,
-        parity_scope: sourceRows <= fullChecksumLimit ? 'full_table_checksum' : 'verified_copy_batch_manifest',
+        parity_scope: sourceRows <= fullChecksumLimit ? 'full_table_checksum' : 'resumable_full_table_manifest',
         full_checksum_limit: fullChecksumLimit,
       }),
     ).run()
@@ -270,22 +412,7 @@ export async function backfillDataDomainTableShadow(
   }
 
   const columnSql = columns.map(identifier).join(", ")
-  const valuesSql = columns.map(() => '?').join(', ')
-  const nonKeys = columns.filter((column) => !primaryKeys.includes(column))
-  const updateSql = nonKeys.length
-    ? `DO UPDATE SET ${nonKeys.map((column) => `${identifier(column)}=excluded.${identifier(column)}`).join(", ")}`
-    : 'DO NOTHING'
-  const rowsPerStatement = domainBackfillRowsPerStatement(columns.length)
-  const statements: D1PreparedStatement[] = []
-  for (let offset = 0; offset < rows.length; offset += rowsPerStatement) {
-    const statementRows = rows.slice(offset, offset + rowsPerStatement)
-    const multiValueSql = statementRows.map(() => `(${valuesSql})`).join(', ')
-    statements.push(target.prepare(`
-      INSERT INTO ${identifier(table)} (${columnSql}) VALUES ${multiValueSql}
-      ON CONFLICT (${primaryKeys.map(identifier).join(", ")}) ${updateSql}
-    `).bind(...statementRows.flatMap((row) => columns.map((column) => row[column] ?? null))))
-  }
-  for (let offset = 0; offset < statements.length; offset += 50) await target.batch(statements.slice(offset, offset + 50))
+  await upsertDomainRows(target, table, columns, primaryKeys, rows)
   const verify = await target.prepare(`
     SELECT ${columnSql} FROM ${identifier(table)}
      ${keyset.sql}

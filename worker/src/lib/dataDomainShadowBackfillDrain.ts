@@ -190,7 +190,8 @@ export async function processDataDomainShadowBackfillDrain(
     return
   }
 
-  const nextTable = result.status === 'shadow_progress' ? table : await nextIncompleteTable(env, domain)
+  const nextTable = ['shadow_progress', 'shadow_parity_progress'].includes(result.status)
+    ? table : await nextIncompleteTable(env, domain)
   if (nextTable) {
     await env.KV.put(activeKey(domain), JSON.stringify({
       run_id: runId,

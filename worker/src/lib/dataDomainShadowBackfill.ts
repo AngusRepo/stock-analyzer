@@ -369,11 +369,17 @@ export async function backfillDataDomainTableShadow(
     ).run()
 
     await env.DB.prepare(`
-      INSERT INTO data_domain_backfill_cursors(domain, table_name, status, cursor_json, updated_at)
-      VALUES (?, ?, 'complete', ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(domain,table_name) DO UPDATE SET status='complete', cursor_json=excluded.cursor_json,
-        error_code=NULL, updated_at=CURRENT_TIMESTAMP
-    `).bind(domain, table, JSON.stringify(cursor)).run()
+      INSERT INTO data_domain_backfill_cursors(
+        domain, table_name, status, cursor_json, rows_copied, last_batch_rows,
+        last_source_checksum, last_target_checksum, updated_at
+      ) VALUES (?, ?, 'complete', ?, ?, 0, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(domain,table_name) DO UPDATE SET
+        status='complete', cursor_json=excluded.cursor_json, rows_copied=excluded.rows_copied,
+        last_batch_rows=0, last_source_checksum=excluded.last_source_checksum,
+        last_target_checksum=excluded.last_target_checksum, error_code=NULL, updated_at=CURRENT_TIMESTAMP
+    `).bind(
+      domain, table, JSON.stringify(cursor), sourceRows, sourceFullChecksum, targetFullChecksum,
+    ).run()
     const ownedTables = tablesForDataDomain(domain)
     const completedResult = await env.DB.prepare(`
       SELECT table_name

@@ -51,6 +51,10 @@ export function domainBackfillBatchLimit(value?: number): number {
   return Math.max(1, Math.min(Math.floor(value ?? 500), 500))
 }
 
+export function domainBackfillRowsPerStatement(columnCount: number): number {
+  return Math.max(1, Math.floor(100 / Math.max(1, Math.floor(columnCount))))
+}
+
 async function verifiedCopyBatchManifest(
   db: D1Database,
   domain: DataDomain,
@@ -271,10 +275,16 @@ export async function backfillDataDomainTableShadow(
   const updateSql = nonKeys.length
     ? `DO UPDATE SET ${nonKeys.map((column) => `${identifier(column)}=excluded.${identifier(column)}`).join(", ")}`
     : 'DO NOTHING'
-  const statements = rows.map((row) => target.prepare(`
-    INSERT INTO ${identifier(table)} (${columnSql}) VALUES (${valuesSql})
-    ON CONFLICT (${primaryKeys.map(identifier).join(", ")}) ${updateSql}
-  `).bind(...columns.map((column) => row[column] ?? null)))
+  const rowsPerStatement = domainBackfillRowsPerStatement(columns.length)
+  const statements: D1PreparedStatement[] = []
+  for (let offset = 0; offset < rows.length; offset += rowsPerStatement) {
+    const statementRows = rows.slice(offset, offset + rowsPerStatement)
+    const multiValueSql = statementRows.map(() => `(${valuesSql})`).join(', ')
+    statements.push(target.prepare(`
+      INSERT INTO ${identifier(table)} (${columnSql}) VALUES ${multiValueSql}
+      ON CONFLICT (${primaryKeys.map(identifier).join(", ")}) ${updateSql}
+    `).bind(...statementRows.flatMap((row) => columns.map((column) => row[column] ?? null))))
+  }
   for (let offset = 0; offset < statements.length; offset += 50) await target.batch(statements.slice(offset, offset + 50))
   const verify = await target.prepare(`
     SELECT ${columnSql} FROM ${identifier(table)}

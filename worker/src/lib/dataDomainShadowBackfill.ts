@@ -69,6 +69,10 @@ export function domainBackfillRowsPerStatement(columnCount: number): number {
   return Math.max(1, Math.floor(100 / Math.max(1, Math.floor(columnCount))))
 }
 
+export function domainBackfillParityBatchLimit(copyBatchLimit: number): number {
+  return Math.max(1, Math.min(Math.floor(copyBatchLimit) * 4, 2000))
+}
+
 async function upsertDomainRows(
   target: D1Database,
   table: string,
@@ -237,13 +241,14 @@ export async function backfillDataDomainTableShadow(
       }
       const manifestCursor = Array.isArray(progress.cursor) ? progress.cursor : null
       const manifestKeyset = domainBackfillKeysetWhere(primaryKeys, manifestCursor)
+      const parityLimit = domainBackfillParityBatchLimit(limit)
       const sourcePageResult = await env.DB.prepare(`
         SELECT ${columnSql}
           FROM ${identifier(table)}
           ${manifestKeyset.sql}
          ORDER BY ${order}
          LIMIT ?
-      `).bind(...manifestKeyset.binds, limit).all<Record<string, unknown>>()
+      `).bind(...manifestKeyset.binds, parityLimit).all<Record<string, unknown>>()
       const sourcePage = sourcePageResult.results ?? []
       const rowsScanned = Math.max(0, Math.floor(Number(progress.rows_scanned ?? 0)))
       const repairedRows = Math.max(0, Math.floor(Number(progress.repaired_rows ?? 0)))
@@ -255,7 +260,7 @@ export async function backfillDataDomainTableShadow(
             ${manifestKeyset.sql}
            ORDER BY ${order}
            LIMIT ?
-        `).bind(...manifestKeyset.binds, limit).all<Record<string, unknown>>()
+        `).bind(...manifestKeyset.binds, parityLimit).all<Record<string, unknown>>()
         let targetPage = targetPageResult.results ?? []
         const sourcePageChecksum = await checksumRows(sourcePage, columns)
         let targetPageChecksum = await checksumRows(targetPage, columns)
@@ -268,7 +273,7 @@ export async function backfillDataDomainTableShadow(
               ${manifestKeyset.sql}
              ORDER BY ${order}
              LIMIT ?
-          `).bind(...manifestKeyset.binds, limit).all<Record<string, unknown>>()
+          `).bind(...manifestKeyset.binds, parityLimit).all<Record<string, unknown>>()
           targetPage = targetPageResult.results ?? []
           targetPageChecksum = await checksumRows(targetPage, columns)
           if (sourcePageChecksum !== targetPageChecksum) {

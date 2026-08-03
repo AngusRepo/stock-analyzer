@@ -31,13 +31,23 @@ const D1_HEAVY_MAINTENANCE_TASKS = new Set([
 ])
 const D1_MAINTENANCE_REQUEST_BUDGET_MS = 45_000
 const PAPER_SHADOW_BACKFILL_ACTIVE_KEY = 'data-domain-shadow-backfill:paper:active'
-const AUDIT_JSON_NON_PAPER_TARGETS_DURING_BACKFILL = [
+const AUDIT_JSON_NON_PAPER_TARGETS_DURING_PARITY_PROTECTION = [
   'strategy_decision_log', 'screener_funnel_items', 'canonical_screener_funnel_items',
 ]
 
 type WarmupSummary = {
   ok: boolean
   summary: string
+}
+
+async function paperShadowSourceMutationProtected(env: any): Promise<boolean> {
+  const [active, cutover] = await Promise.all([
+    env.KV.get(PAPER_SHADOW_BACKFILL_ACTIVE_KEY),
+    env.DB.prepare('SELECT status FROM data_domain_cutovers WHERE domain=?')
+      .bind('paper').first(),
+  ])
+  const cutoverStatus = String((cutover as { status?: string } | null)?.status ?? 'legacy')
+  return Boolean(active) || ['shadow', 'read_cutover', 'write_cutover'].includes(cutoverStatus)
 }
 
 function inferIntradayRescoreCron(rawCron?: string | null): string {
@@ -681,14 +691,14 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const confirmPhrase = c.req.query('confirm_archive') ?? c.req.query('confirm')
       const dryRun = confirmPhrase !== AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE
       const requestedAuditTargets = c.req.queries('target') ?? (c.req.query('targets') ? [c.req.query('targets')] : null)
-      const paperShadowBackfillActive = Boolean(await c.env.KV.get(PAPER_SHADOW_BACKFILL_ACTIVE_KEY))
-      const auditTargets = paperShadowBackfillActive
+      const paperShadowProtected = await paperShadowSourceMutationProtected(c.env)
+      const auditTargets = paperShadowProtected
         ? (requestedAuditTargets?.length
           ? requestedAuditTargets.filter((target) => target !== 'paper_execution_events')
-          : AUDIT_JSON_NON_PAPER_TARGETS_DURING_BACKFILL)
+          : AUDIT_JSON_NON_PAPER_TARGETS_DURING_PARITY_PROTECTION)
         : requestedAuditTargets
-      if (paperShadowBackfillActive && auditTargets?.length === 0) {
-        return 'audit_json_retention skipped=paper_execution_events reason=paper_shadow_backfill_active'
+      if (paperShadowProtected && auditTargets?.length === 0) {
+        return 'audit_json_retention skipped=paper_execution_events reason=paper_shadow_parity_protected'
       }
       const result = await runAuditJsonArchiveRetention(c.env, {
         businessDate: requestedRunDate(),
@@ -800,10 +810,10 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const maxChunks = parseBoundedPositiveInt(c.req.query('max_chunks'), 1, 5)
       const dryRun = c.req.query('confirm_retirement') !== LEGACY_HOT_DATA_RETIREMENT_CONFIRM_PHRASE
       const summaries: string[] = []
-      const paperShadowBackfillActive = Boolean(await c.env.KV.get(PAPER_SHADOW_BACKFILL_ACTIVE_KEY))
+      const paperShadowProtected = await paperShadowSourceMutationProtected(c.env)
       for (const target of targets) {
-        if (paperShadowBackfillActive && target === 'superseded_pending_events') {
-          summaries.push('superseded_pending_events:skipped=paper_shadow_backfill_active')
+        if (paperShadowProtected && target === 'superseded_pending_events') {
+          summaries.push('superseded_pending_events:skipped=paper_shadow_parity_protected')
           continue
         }
         let archived = 0

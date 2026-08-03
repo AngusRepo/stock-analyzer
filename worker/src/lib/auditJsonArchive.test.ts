@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert'
 import {
   AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE,
   AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES,
+  auditJsonRowsPerUpdateStatement,
   runAuditJsonArchiveRetention,
 } from './auditJsonArchive'
 
@@ -132,9 +133,12 @@ async function main() {
   assert.match(candidateSql, /canonical_run_heads/)
   assert.match(candidateSql, /latest\.status = 'success'/)
 
-  const pointerParams = db.batchParams.find((params) => String(params[0]).includes('"archived_to_r2":true'))
-  assert(pointerParams)
-  const pointer = JSON.parse(String(pointerParams[0]))
+  assert.equal(auditJsonRowsPerUpdateStatement(1), 33)
+  assert.equal(auditJsonRowsPerUpdateStatement(2), 20)
+  assert(db.batchParams.every((params) => params.length <= 100))
+  const pointerValue = db.batchParams.flat().find((value) => String(value).includes('"archived_to_r2":true'))
+  assert(pointerValue)
+  const pointer = JSON.parse(String(pointerValue))
   assert.equal(pointer.archived_to_r2, true)
   assert.equal(pointer.archive_kind, 'd1_audit_json_archive')
   assert.equal(pointer.table, 'screener_funnel_items')

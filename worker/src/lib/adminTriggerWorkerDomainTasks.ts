@@ -669,6 +669,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const {
         AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE,
         AUDIT_JSON_ARCHIVE_DEFAULT_LIMIT_PER_TABLE,
+        AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES,
         AUDIT_JSON_RETENTION_DEFAULT_DAYS,
         runAuditJsonArchiveRetention,
         summarizeAuditJsonArchiveRun,
@@ -679,6 +680,7 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         businessDate: requestedRunDate(),
         retentionDays: Number.parseInt(c.req.query('retention_days') ?? `${AUDIT_JSON_RETENTION_DEFAULT_DAYS}`, 10),
         limitPerTable: Number.parseInt(c.req.query('limit_per_table') ?? `${AUDIT_JSON_ARCHIVE_DEFAULT_LIMIT_PER_TABLE}`, 10),
+        minBlobBytes: Number.parseInt(c.req.query('min_blob_bytes') ?? `${AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES}`, 10),
         targets: c.req.queries('target') ?? (c.req.query('targets') ? [c.req.query('targets')] : null),
         dryRun,
         confirmPhrase,

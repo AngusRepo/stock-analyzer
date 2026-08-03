@@ -10,6 +10,7 @@ assert(audit, 'audit JSON retention scheduler must exist')
 assert.equal(audit.schedule, '*/15 17-22 * * *')
 assert.match(String(audit.query), /retention_days=30/)
 assert.match(String(audit.query), /limit_per_table=500/)
+assert.match(String(audit.query), /min_blob_bytes=1024/)
 assert.match(String(audit.query), /confirm_archive=ARCHIVE_D1_AUDIT_JSON_TO_R2/)
 
 for (const domain of ['execution', 'paper']) {

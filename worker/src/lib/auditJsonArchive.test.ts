@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 import {
   AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE,
+  AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES,
   runAuditJsonArchiveRetention,
 } from './auditJsonArchive'
 
@@ -83,6 +84,7 @@ class FakeR2 {
 }
 
 async function main() {
+  assert.equal(AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES, 1024)
   const dryDb = new FakeD1()
   const dryR2 = new FakeR2()
   const dryRun = await runAuditJsonArchiveRetention({

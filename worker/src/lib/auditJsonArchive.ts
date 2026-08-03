@@ -20,6 +20,7 @@ export const AUDIT_JSON_RETENTION_MIN_DAYS = 30
 export const AUDIT_JSON_RETENTION_MAX_DAYS = 3650
 export const AUDIT_JSON_ARCHIVE_DEFAULT_LIMIT_PER_TABLE = 250
 export const AUDIT_JSON_ARCHIVE_MAX_LIMIT_PER_TABLE = 1000
+export const AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES = 1024
 
 export type AuditJsonArchiveTargetId =
   | 'paper_execution_events'
@@ -399,7 +400,7 @@ export async function buildAuditJsonRetentionPlan(
     AUDIT_JSON_RETENTION_MAX_DAYS,
   )
   const cutoffDate = isoDateOffset(businessDate, -retentionDays)
-  const minBlobBytes = clampInt(options.minBlobBytes, 64, 1, 1_000_000)
+  const minBlobBytes = clampInt(options.minBlobBytes, AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES, 1, 1_000_000)
   const tables: AuditJsonRetentionPlanTable[] = []
 
   for (const target of selectedTargets(options.targets)) {
@@ -476,7 +477,7 @@ export async function runAuditJsonArchiveRetention(
     AUDIT_JSON_RETENTION_MAX_DAYS,
   )
   const cutoffDate = isoDateOffset(businessDate, -retentionDays)
-  const minBlobBytes = clampInt(options.minBlobBytes, 64, 1, 1_000_000)
+  const minBlobBytes = clampInt(options.minBlobBytes, AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES, 1, 1_000_000)
   const limitPerTable = clampInt(
     options.limitPerTable,
     AUDIT_JSON_ARCHIVE_DEFAULT_LIMIT_PER_TABLE,

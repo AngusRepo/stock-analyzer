@@ -125,7 +125,7 @@ export async function processDataDomainShadowBackfillDrain(
     taskName: `data-domain-shadow-backfill:${domain}`,
     leaseGroup: 'd1_heavy_maintenance',
     leaseSeconds: 300,
-    run: () => backfillDataDomainTableShadow(env, { domain, table, limit: 50 }),
+    run: () => backfillDataDomainTableShadow(env, { domain, table, limit: 500 }),
   })
   if ('skipped' in leased && leased.skipped) {
     await (env.UPDATE_QUEUE as any).send(queueMessage({ domain, table, runDate: msg.triggerTime, runId, attempt, maxAttempts }), {
@@ -165,7 +165,7 @@ export async function processDataDomainShadowBackfillDrain(
       runId,
       attempt: attempt + 1,
       maxAttempts,
-    }), { delaySeconds: 5 })
+    }), { delaySeconds: 1 })
     return
   }
 

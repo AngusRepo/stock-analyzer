@@ -42,6 +42,50 @@ async function checksumRows(rows: Record<string, unknown>[], columns: string[]):
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('')
 }
 
+async function checksumText(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+export function domainBackfillBatchLimit(value?: number): number {
+  return Math.max(1, Math.min(Math.floor(value ?? 500), 500))
+}
+
+async function verifiedCopyBatchManifest(
+  db: D1Database,
+  domain: DataDomain,
+  table: string,
+  sourceRows: number,
+  targetRows: number,
+): Promise<string | null> {
+  if (sourceRows !== targetRows) return null
+  const result = await db.prepare(`
+    SELECT check_id, source_count, target_count, source_checksum, target_checksum
+      FROM data_domain_parity_checks
+     WHERE domain=? AND table_name=? AND check_kind='batch' AND status='pass'
+     ORDER BY check_id
+  `).bind(domain, table).all<{
+    check_id: string
+    source_count: number | string
+    target_count: number | string
+    source_checksum: string | null
+    target_checksum: string | null
+  }>()
+  const rows = result.results ?? []
+  let verifiedRows = 0
+  const parts: string[] = []
+  for (const row of rows) {
+    const sourceCount = Number(row.source_count ?? 0)
+    const targetCount = Number(row.target_count ?? 0)
+    if (sourceCount <= 0 || sourceCount !== targetCount) return null
+    if (!row.source_checksum || row.source_checksum !== row.target_checksum) return null
+    verifiedRows += sourceCount
+    parts.push(`${row.check_id}:${sourceCount}:${row.source_checksum}`)
+  }
+  if (verifiedRows !== sourceRows) return null
+  return checksumText(JSON.stringify(parts))
+}
+
 async function tableColumns(db: D1Database, table: string): Promise<TableColumn[]> {
   const result = await db.prepare(`PRAGMA table_info(${identifier(table)})`).all<TableColumn>()
   return (result.results ?? []).sort((left, right) => Number(left.cid) - Number(right.cid))
@@ -110,7 +154,7 @@ export async function backfillDataDomainTableShadow(
   `).bind(domain, table).first<{ cursor_json?: string | null }>()
   const cursor = parseCursor(cursorRow?.cursor_json)
   const keyset = domainBackfillKeysetWhere(primaryKeys, cursor)
-  const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 50), 50))
+  const limit = domainBackfillBatchLimit(options.limit)
   const order = primaryKeys.map(identifier).join(", ")
   const selected = await env.DB.prepare(`
     SELECT ${columns.map(identifier).join(", ")}
@@ -145,6 +189,13 @@ export async function backfillDataDomainTableShadow(
         throw new Error(`domain_shadow_full_checksum_mismatch:${domain}:${table}`)
       }
       parityStatus = 'pass'
+    } else {
+      sourceFullChecksum = await verifiedCopyBatchManifest(env.DB, domain, table, sourceRows, targetRows)
+      if (!sourceFullChecksum) {
+        throw new Error(`domain_shadow_verified_batch_manifest_incomplete:${domain}:${table}`)
+      }
+      targetFullChecksum = sourceFullChecksum
+      parityStatus = 'pass'
     }
 
     await env.DB.prepare(`
@@ -161,7 +212,7 @@ export async function backfillDataDomainTableShadow(
       sourceRows, targetRows, sourceFullChecksum, targetFullChecksum,
       JSON.stringify({
         schema_version: DATA_DOMAIN_SHADOW_SCHEMA_VERSION,
-        parity_scope: parityStatus === 'pass' ? 'full_table_checksum' : 'manifest_checksum_required',
+        parity_scope: sourceRows <= fullChecksumLimit ? 'full_table_checksum' : 'verified_copy_batch_manifest',
         full_checksum_limit: fullChecksumLimit,
       }),
     ).run()
@@ -225,12 +276,12 @@ export async function backfillDataDomainTableShadow(
     ON CONFLICT (${primaryKeys.map(identifier).join(", ")}) ${updateSql}
   `).bind(...columns.map((column) => row[column] ?? null)))
   for (let offset = 0; offset < statements.length; offset += 50) await target.batch(statements.slice(offset, offset + 50))
-  const tupleClauses = rows.map(() => `(${primaryKeys.map((column) => `${identifier(column)}=?`).join(" AND ")})`)
   const verify = await target.prepare(`
     SELECT ${columnSql} FROM ${identifier(table)}
-     WHERE ${tupleClauses.join(" OR ")}
+     ${keyset.sql}
      ORDER BY ${order}
-  `).bind(...rows.flatMap((row) => primaryKeys.map((column) => row[column] ?? null))).all<Record<string, unknown>>()
+     LIMIT ?
+  `).bind(...keyset.binds, limit).all<Record<string, unknown>>()
   const targetRows = verify.results ?? []
   const sourceChecksum = await checksumRows(rows, columns)
   const targetChecksum = await checksumRows(targetRows, columns)

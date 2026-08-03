@@ -1,4 +1,4 @@
--- Generated from schema.sql plus production snapshot fallback; do not edit by hand.
+-- Immutable baseline for the core D1 binding.
 CREATE TABLE IF NOT EXISTS users (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   google_id   TEXT NOT NULL UNIQUE,

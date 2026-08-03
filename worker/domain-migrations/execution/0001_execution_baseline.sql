@@ -1,4 +1,4 @@
--- Generated from schema.sql plus production snapshot fallback; do not edit by hand.
+-- Immutable baseline for the execution D1 binding.
 CREATE TABLE IF NOT EXISTS broker_execution_intents (
   intent_id TEXT PRIMARY KEY,
   idempotency_key TEXT NOT NULL UNIQUE,

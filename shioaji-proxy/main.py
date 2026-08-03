@@ -20,6 +20,8 @@ import os
 import time
 import threading
 import math
+import json
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
@@ -34,6 +36,8 @@ PERSON_ID  = os.environ.get("SHIOAJI_PERSON_ID", "")
 ACCOUNT_ID = os.environ.get("SHIOAJI_ACCOUNT_ID", "")
 SERVICE_TOKEN = os.environ.get("PROXY_SERVICE_TOKEN", "")  # Worker 驗證用
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").strip().lower()
+STOP_BREACH_WEBHOOK_URL = os.environ.get("STOP_BREACH_WEBHOOK_URL", "").strip()
+STOP_BREACH_WEBHOOK_TOKEN = os.environ.get("STOP_BREACH_WEBHOOK_TOKEN", SERVICE_TOKEN).strip()
 
 # ── 全域狀態 ────────────────────────────────────────────────────────────────
 api = None
@@ -50,6 +54,9 @@ odd_bidask_subscribed: set[str] = set()
 watched_orderbook_symbols: dict[str, float] = {}
 watched_odd_orderbook_symbols: dict[str, float] = {}
 subscription_recovery: dict[str, dict] = {}
+orderbook_watch_rejections: dict[str, dict] = {}
+stop_watches: dict[str, dict] = {}
+stop_breaches: dict[str, dict] = {}
 _state_lock = threading.RLock()
 _session_call_lock = threading.Lock()
 _broker_query_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shioaji-broker-query")
@@ -78,6 +85,7 @@ _quote_session_event_at: str | None = None
 _quote_session_event: str | None = None
 # F4: Rolling price buffer for momentum confirmation (30 entries ≈ 30 min at 1 tick/min)
 _price_buffer: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
+_stop_breach_dispatch_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stop-breach-dispatch")
 
 TW_TZ = timezone(timedelta(hours=8))
 TW_SESSION_OPEN_MINUTE = 9 * 60
@@ -486,6 +494,17 @@ def orderbook_watch_ttl_seconds() -> float:
     return _env_float("SHIOAJI_ORDERBOOK_WATCH_TTL_SECONDS", 3600.0, 60.0, 8 * 3600.0)
 
 
+def orderbook_watch_capacity(lot_type: str = "board_lot") -> int:
+    normalized_lot_type = normalize_lot_type(lot_type)
+    env_name = (
+        "SHIOAJI_MAX_ODD_LOT_ORDERBOOK_WATCH_SYMBOLS"
+        if normalized_lot_type == "odd_lot"
+        else "SHIOAJI_MAX_ORDERBOOK_WATCH_SYMBOLS"
+    )
+    default = 40 if normalized_lot_type == "odd_lot" else 80
+    return _env_int(env_name, default, 1, 200)
+
+
 def orderbook_recovery_cooldown_seconds() -> float:
     return _env_float("SHIOAJI_ORDERBOOK_RECOVERY_COOLDOWN_SECONDS", 8.0, 1.0, 120.0)
 
@@ -528,17 +547,39 @@ def watch_orderbook_symbols(
     now = time.time()
     ttl = ttl_seconds if ttl_seconds is not None else orderbook_watch_ttl_seconds()
     clean: list[str] = []
-    watch_store = watched_odd_orderbook_symbols if normalize_lot_type(lot_type) == "odd_lot" else watched_orderbook_symbols
+    lot_type = normalize_lot_type(lot_type)
+    watch_store = watched_odd_orderbook_symbols if lot_type == "odd_lot" else watched_orderbook_symbols
+    capacity = orderbook_watch_capacity(lot_type)
     with _state_lock:
+        expired = [symbol for symbol, expires_at in watch_store.items() if expires_at < now]
+        for symbol in expired:
+            watch_store.pop(symbol, None)
+            subscription_recovery.pop(f"{lot_type}:{symbol}", None)
         for symbol in symbols:
             normalized = str(symbol).strip().upper()
             if not normalized or normalized in clean:
+                continue
+            if normalized not in watch_store and len(watch_store) >= capacity:
+                key = f"{lot_type}:{normalized}"
+                orderbook_watch_rejections[key] = {
+                    "symbol": normalized,
+                    "lot_type": lot_type,
+                    "reason": "watch_capacity_exceeded",
+                    "capacity": capacity,
+                    "watch_count": len(watch_store),
+                    "rejected_at": get_tw_now().isoformat(),
+                }
+                print(
+                    f"[Shioaji] Orderbook watch rejected: {key} "
+                    f"watch_count={len(watch_store)} capacity={capacity}"
+                )
                 continue
             clean.append(normalized)
             watch_store[normalized] = max(
                 watch_store.get(normalized, 0),
                 now + ttl,
             )
+            orderbook_watch_rejections.pop(f"{lot_type}:{normalized}", None)
     return clean
 
 
@@ -548,7 +589,10 @@ def active_orderbook_watch_symbols(lot_type: str = "board_lot") -> list[str]:
     static_symbols = [] if odd_lot else static_watchlist_symbols()
     watch_store = watched_odd_orderbook_symbols if odd_lot else watched_orderbook_symbols
     with _state_lock:
+        capacity = orderbook_watch_capacity(lot_type)
         for symbol in static_symbols:
+            if symbol not in watch_store and len(watch_store) >= capacity:
+                continue
             watch_store[symbol] = max(
                 watch_store.get(symbol, 0),
                 now + max(orderbook_watch_ttl_seconds(), 3600.0),
@@ -590,6 +634,7 @@ def orderbook_health_summary(symbols: list[str] | None = None, lot_type: str = "
     stale = 0
     waiting = 0
     samples: list[dict] = []
+    market_hours = is_market_hours()
     with _state_lock:
         for symbol in target_symbols:
             depth = depth_store.get(symbol)
@@ -597,12 +642,16 @@ def orderbook_health_summary(symbols: list[str] | None = None, lot_type: str = "
             if depth and orderbook_is_fresh(depth, symbol, lot_type):
                 fresh += 1
                 status = "fresh"
-            elif depth:
+            elif depth and market_hours:
                 stale += 1
                 status = "stale"
-            else:
+            elif not depth and market_hours:
                 waiting += 1
                 status = "waiting_callback"
+            elif depth:
+                status = "market_closed_cached"
+            else:
+                status = "market_closed"
             if len(samples) < 12:
                 confirmation_time, confirmation_mode = orderbook_effective_confirmation(depth, symbol, lot_type)
                 samples.append({
@@ -622,9 +671,18 @@ def orderbook_health_summary(symbols: list[str] | None = None, lot_type: str = "
     return {
         "lot_type": lot_type,
         "watch_count": len(target_symbols),
+        "watch_capacity": orderbook_watch_capacity(lot_type),
+        "watch_capacity_remaining": max(0, orderbook_watch_capacity(lot_type) - len(target_symbols)),
+        "market_hours": market_hours,
         "fresh_bidasks": fresh,
         "stale_bidasks": stale,
         "waiting_bidasks": waiting,
+        "deferred_bidasks": 0 if market_hours else len(target_symbols),
+        "recent_rejections": [
+            dict(value)
+            for key, value in orderbook_watch_rejections.items()
+            if key.startswith(f"{lot_type}:")
+        ][-12:],
         "samples": samples,
     }
 
@@ -648,6 +706,87 @@ def normalize_stock_tick(tick, callback_epoch: int) -> dict:
         "updated_at": datetime.now(TW_TZ).isoformat(),
         "session_epoch": callback_epoch,
     }
+
+
+def _active_stop_watch(symbol: str, now: float | None = None) -> dict | None:
+    current = time.time() if now is None else now
+    watch = stop_watches.get(symbol)
+    if not watch:
+        return None
+    if float(watch.get("expires_at_epoch") or 0) <= current:
+        stop_watches.pop(symbol, None)
+        return None
+    return watch
+
+
+def _dispatch_stop_breach(payload: dict) -> None:
+    if not STOP_BREACH_WEBHOOK_URL:
+        return
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if STOP_BREACH_WEBHOOK_TOKEN:
+        headers["Authorization"] = f"Bearer {STOP_BREACH_WEBHOOK_TOKEN}"
+    request = urllib.request.Request(
+        STOP_BREACH_WEBHOOK_URL,
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2.0) as response:
+            if int(response.status) < 200 or int(response.status) >= 300:
+                raise RuntimeError(f"stop_breach_webhook_http_{response.status}")
+        with _state_lock:
+            current = stop_breaches.get(str(payload.get("intent_key") or ""))
+            if current:
+                current["webhook_delivered_at"] = get_tw_now().isoformat()
+                current["webhook_error"] = None
+    except Exception as exc:
+        with _state_lock:
+            current = stop_breaches.get(str(payload.get("intent_key") or ""))
+            if current:
+                current["webhook_error"] = str(exc)[:240]
+        print(f"[StopBreach] webhook failed intent={payload.get('intent_key')}: {exc}")
+
+
+def _latch_stop_breach(symbol: str, tick: dict) -> dict | None:
+    watch = _active_stop_watch(symbol)
+    if not watch:
+        return None
+    trigger_price = float(tick.get("price") or 0)
+    stop_price = float(watch.get("stop_price") or 0)
+    if trigger_price <= 0 or stop_price <= 0 or trigger_price > stop_price:
+        return None
+    intent_key = str(watch.get("intent_key") or "").strip()
+    if not intent_key or intent_key in stop_breaches:
+        return None
+    payload = {
+        "schema_version": "paper-stop-breach-v1",
+        "intent_key": intent_key,
+        "account_id": int(watch.get("account_id") or 1),
+        "symbol": symbol,
+        "entry_date": watch.get("entry_date"),
+        "requested_shares": int(watch.get("requested_shares") or 0),
+        "stop_price": stop_price,
+        "stop_version": str(watch.get("stop_version") or ""),
+        "trigger_price": trigger_price,
+        "trigger_time": tick.get("timestamp"),
+        "received_at": tick.get("updated_at") or get_tw_now().isoformat(),
+        "session_epoch": int(tick.get("session_epoch") or _session_epoch),
+        "source": "shioaji_tick_callback",
+        "webhook_delivered_at": None,
+        "webhook_error": None,
+    }
+    stop_breaches[intent_key] = payload
+    print(
+        f"[StopBreach] latched {symbol} price={trigger_price} stop={stop_price} "
+        f"epoch={payload['session_epoch']} intent={intent_key}"
+    )
+    try:
+        _stop_breach_dispatch_executor.submit(_dispatch_stop_breach, dict(payload))
+    except Exception as exc:
+        payload["webhook_error"] = str(exc)[:240]
+    return payload
 
 
 def _handle_quote_session_event(
@@ -723,6 +862,7 @@ def init_shioaji():
                 now_ts = time.time()
                 if not buf or now_ts - buf[-1][0] >= 30:  # at most 1 entry per 30 sec
                     buf.append((now_ts, normalized_tick["price"]))
+                _latch_stop_breach(symbol, normalized_tick)
 
         @api.on_bidask_stk_v1()
         def on_bidask(exchange, bidask):
@@ -901,6 +1041,10 @@ def _finish_orderbook_recovery(symbol: str, lot_type: str = "board_lot") -> None
         state = subscription_recovery.get(recovery_key)
         if state:
             state["inflight"] = False
+            if not is_market_hours():
+                state["consecutive_failures"] = 0
+                state["next_attempt_at"] = 0.0
+                state["last_reason"] = "deferred_until_market_open"
 
 
 def _confirm_orderbook_recovery(symbol: str, depth: dict, lot_type: str = "board_lot") -> None:
@@ -982,7 +1126,8 @@ def recover_orderbook_symbol(symbol: str, reason: str, lot_type: str = "board_lo
     lot_type = normalize_lot_type(lot_type)
     if not symbol or not _quote_session_up:
         return
-    watch_orderbook_symbols([symbol], lot_type=lot_type)
+    if symbol not in watch_orderbook_symbols([symbol], lot_type=lot_type):
+        return
     if streaming_control_busy():
         return
     failures, should_attempt = _mark_orderbook_recovery(symbol, reason, lot_type)
@@ -996,7 +1141,8 @@ def recover_orderbook_symbol_async(symbol: str, reason: str, lot_type: str = "bo
     lot_type = normalize_lot_type(lot_type)
     if not symbol or not _quote_session_up:
         return
-    watch_orderbook_symbols([symbol], lot_type=lot_type)
+    if symbol not in watch_orderbook_symbols([symbol], lot_type=lot_type):
+        return
     if streaming_control_busy():
         return
     failures, should_attempt = _mark_orderbook_recovery(symbol, reason, lot_type)
@@ -1151,6 +1297,7 @@ def verify_token(authorization: str | None):
 # ── Endpoints ───────────────────────────────────────────────────────────────
 def orderbook_recovery_health_summary() -> dict:
     now = time.time()
+    market_hours = is_market_hours()
     with _state_lock:
         rows = [
             {
@@ -1163,9 +1310,11 @@ def orderbook_recovery_health_summary() -> dict:
             }
             for key, state in subscription_recovery.items()
         ]
-    active = [row for row in rows if row["inflight"] or row["consecutive_failures"] > 0]
+    active = [row for row in rows if market_hours and (row["inflight"] or row["consecutive_failures"] > 0)]
     return {
         "tracked_symbols": len(rows),
+        "market_hours": market_hours,
+        "status": "active" if market_hours else "deferred_until_market_open",
         "active_recoveries": sum(1 for row in active if row["inflight"]),
         "backoff_symbols": sum(1 for row in active if row["retry_in_ms"] > 0),
         "samples": active[:12],
@@ -1262,6 +1411,25 @@ class BatchRequest(BaseModel):
     symbols: list[str]
     lot_type: str = "board_lot"
 
+class StopWatchItem(BaseModel):
+    intent_key: str
+    account_id: int = 1
+    symbol: str
+    entry_date: str | None = None
+    requested_shares: int
+    stop_price: float
+    stop_version: str
+
+
+class StopWatchRequest(BaseModel):
+    watches: list[StopWatchItem]
+    ttl_seconds: int = 180
+
+
+class StopBreachRequest(BaseModel):
+    intent_keys: list[str] | None = None
+
+
 
 @app.post("/quotes")
 def batch_quotes(req: BatchRequest, authorization: str | None = Header(default=None)):
@@ -1301,6 +1469,65 @@ def batch_quotes(req: BatchRequest, authorization: str | None = Header(default=N
 def batch_snapshots(req: BatchRequest, authorization: str | None = Header(default=None)):
     """相容 alias；execution snapshot 同樣只讀 streaming tick cache。"""
     return batch_quotes(req, authorization)
+
+@app.post("/execution/stop-watches")
+def register_stop_watches(req: StopWatchRequest, authorization: str | None = Header(default=None)):
+    """Register position stops evaluated synchronously inside the Tick callback."""
+    verify_token(authorization)
+    now = time.time()
+    ttl_seconds = max(30, min(int(req.ttl_seconds), 900))
+    registered: list[str] = []
+    with _state_lock:
+        for item in req.watches:
+            symbol = item.symbol.upper().strip()
+            intent_key = item.intent_key.strip()
+            if not symbol or not intent_key or item.stop_price <= 0 or item.requested_shares <= 0:
+                continue
+            stop_watches[symbol] = {
+                "intent_key": intent_key,
+                "account_id": item.account_id,
+                "symbol": symbol,
+                "entry_date": item.entry_date,
+                "requested_shares": item.requested_shares,
+                "stop_price": item.stop_price,
+                "stop_version": item.stop_version,
+                "expires_at_epoch": now + ttl_seconds,
+                "registered_at": get_tw_now().isoformat(),
+                "session_epoch": _session_epoch,
+            }
+            registered.append(symbol)
+            watch_orderbook_symbols([symbol], ttl_seconds=ttl_seconds)
+    for symbol in registered:
+        recover_orderbook_symbol_async(symbol, "position_stop_watch")
+    return {
+        "status": "ok",
+        "registered": len(registered),
+        "symbols": registered,
+        "ttl_seconds": ttl_seconds,
+        "session_epoch": _session_epoch,
+        "tw_time": get_tw_now().isoformat(),
+    }
+
+
+@app.post("/execution/stop-breaches")
+def read_stop_breaches(req: StopBreachRequest, authorization: str | None = Header(default=None)):
+    """Return latched breaches without consuming them; Worker D1 is the durable owner."""
+    verify_token(authorization)
+    keys = {key.strip() for key in (req.intent_keys or []) if key.strip()}
+    with _state_lock:
+        data = [
+            dict(payload)
+            for key, payload in stop_breaches.items()
+            if not keys or key in keys
+        ]
+    return {
+        "status": "ok",
+        "count": len(data),
+        "data": data,
+        "session_epoch": _session_epoch,
+        "tw_time": get_tw_now().isoformat(),
+    }
+
 
 
 @app.get("/snapshot/{symbol}")
@@ -1513,7 +1740,14 @@ def _orderbook_payload(
         if not api or not connected:
             return 503, _orderbook_diagnostic(symbol, "proxy_disconnected", message="Shioaji not connected", lot_type=lot_type)
 
-        watch_orderbook_symbols([symbol], lot_type=lot_type)
+        accepted = watch_orderbook_symbols([symbol], lot_type=lot_type)
+        if symbol not in accepted:
+            return 429, _orderbook_diagnostic(
+                symbol,
+                "watch_capacity_exceeded",
+                message=f"Orderbook watch capacity is {orderbook_watch_capacity(lot_type)}",
+                lot_type=lot_type,
+            )
         depth = depth_store.get(symbol)
         if refresh and (not depth or not orderbook_is_fresh(depth, symbol, lot_type)):
             recover_orderbook_symbol_async(
@@ -1624,11 +1858,19 @@ def batch_orderbooks(req: BatchRequest, authorization: str | None = Header(defau
             clean_symbols.append(normalized)
 
     lot_type = normalize_lot_type(req.lot_type)
-    watch_orderbook_symbols(clean_symbols, lot_type=lot_type)
+    accepted_symbols = watch_orderbook_symbols(clean_symbols, lot_type=lot_type)
+    rejected_symbols = [symbol for symbol in clean_symbols if symbol not in accepted_symbols]
+    for symbol in rejected_symbols:
+        errors[symbol] = _orderbook_diagnostic(
+            symbol,
+            "watch_capacity_exceeded",
+            message=f"Orderbook watch capacity is {orderbook_watch_capacity(lot_type)}",
+            lot_type=lot_type,
+        )
     depth_store = _depth_store(lot_type)
     refresh_symbols: list[str] = []
     with _state_lock:
-        for symbol in clean_symbols:
+        for symbol in accepted_symbols:
             depth = dict(depth_store.get(symbol) or {})
             if not depth or not orderbook_is_fresh(depth, symbol, lot_type):
                 refresh_symbols.append(symbol)
@@ -1652,14 +1894,14 @@ def batch_orderbooks(req: BatchRequest, authorization: str | None = Header(defau
                 break
             time.sleep(0.05)
 
-    for symbol in clean_symbols:
+    for symbol in accepted_symbols:
         status_code, payload = _orderbook_payload(symbol, refresh=False, lot_type=lot_type)
         if status_code == 200:
             data[symbol] = payload
         else:
             errors[symbol] = payload
 
-    return {
+    payload = {
         "status": "ok" if not errors else "partial" if data else "empty",
         "count": len(data),
         "error_count": len(errors),
@@ -1668,9 +1910,12 @@ def batch_orderbooks(req: BatchRequest, authorization: str | None = Header(defau
         "lot_type": lot_type,
         "max_quote_age_ms": orderbook_max_age_ms(),
         "refresh_wait_seconds": orderbook_refresh_wait_seconds(),
-        "orderbook_watch": orderbook_health_summary(clean_symbols, lot_type),
+        "orderbook_watch": orderbook_health_summary(accepted_symbols, lot_type),
         "tw_time": get_tw_now().isoformat(),
     }
+    if clean_symbols and not data:
+        raise HTTPException(503, payload)
+    return payload
 
 
 # ── TWSE/TPEX Chips Proxy（CF Workers IP 被擋，透過 GCP proxy）────────────────

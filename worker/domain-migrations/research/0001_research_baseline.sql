@@ -1,4 +1,4 @@
--- Generated from schema.sql plus production snapshot fallback; do not edit by hand.
+-- Immutable baseline for the research D1 binding.
 CREATE TABLE IF NOT EXISTS input_snapshots (
   snapshot_id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL,

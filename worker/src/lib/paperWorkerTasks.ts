@@ -9,6 +9,7 @@ import { recordPaperExecutionEvent } from './paperExecutionEvents'
 import { reconcilePendingBuyDebates, setupMorningPendingBuys } from './pendingBuyOrchestrator'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from './paperAccountValue'
 import { buildStockVisionSellOrderIntent } from './stockvisionOrderIntent'
+import { writeDailyExecutionPaperClosureArtifacts } from './dailyExecutionPaperLineage'
 
 const ACCOUNT_ID = 1
 
@@ -175,6 +176,7 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     positionsValue: finalPosValue,
     totalValue,
   })
+  await writeDailyExecutionPaperClosureArtifacts(env, today)
 
   console.log(`[Snapshot] total_value=NT$${Math.round(totalValue).toLocaleString()} pnl=${pnlPct.toFixed(2)}%`)
 

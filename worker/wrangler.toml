@@ -16,41 +16,49 @@ crons = []
 binding = "DB"
 database_name = "stockvision-db"
 database_id = "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79"
+migrations_dir = "migrations"
 
 [[d1_databases]]
 binding = "MARKET_DB"
 database_name = "stockvision-market-db"
 database_id = "067bbeb0-1247-416a-96dd-138315345319"
+migrations_dir = "domain-migrations/market"
 
 [[d1_databases]]
 binding = "LEARNING_DB"
 database_name = "stockvision-learning-db"
 database_id = "73599848-b73b-4bac-9144-df638b877dbc"
+migrations_dir = "domain-migrations/learning"
 
 [[d1_databases]]
 binding = "OPS_DB"
 database_name = "stockvision-ops-db"
 database_id = "d9914406-bb36-45a4-bdc4-fe565ed910d3"
+migrations_dir = "domain-migrations/ops"
 
 [[d1_databases]]
 binding = "CORE_DB"
 database_name = "stockvision-core-db"
 database_id = "8cc0ab1f-088c-4c21-b282-bcd4c790c7da"
+migrations_dir = "domain-migrations/core"
 
 [[d1_databases]]
 binding = "EXECUTION_DB"
 database_name = "stockvision-execution-db"
 database_id = "731b3c7e-ad14-4e0e-b38e-4de53c5a83fa"
+migrations_dir = "domain-migrations/execution"
 
 [[d1_databases]]
 binding = "PAPER_DB"
 database_name = "stockvision-paper-db"
 database_id = "bd0a99b2-077b-4d57-8971-07ff8c7f19e1"
+migrations_dir = "domain-migrations/paper"
 
 [[d1_databases]]
 binding = "RESEARCH_DB"
 database_name = "stockvision-research-db"
 database_id = "9332506a-ef37-43d4-9ea3-5aa70b1561d2"
+migrations_dir = "domain-migrations/research"
 
 [[kv_namespaces]]
 binding = "KV"

@@ -1,4 +1,4 @@
--- Generated from schema.sql plus production snapshot fallback; do not edit by hand.
+-- Immutable baseline for the paper D1 binding.
 CREATE TABLE IF NOT EXISTS paper_accounts (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   name          TEXT NOT NULL DEFAULT 'AI 模擬帳戶',

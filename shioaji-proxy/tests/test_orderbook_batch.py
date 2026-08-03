@@ -499,11 +499,15 @@ def test_batch_orderbook_refresh_uses_one_shared_deadline(monkeypatch):
     monkeypatch.setattr(proxy, "recover_orderbook_symbol_async", lambda *_args, **_kwargs: None)
 
     started = time.monotonic()
-    result = proxy.batch_orderbooks(proxy.BatchRequest(symbols=["4123", "4541"]))
+    try:
+        proxy.batch_orderbooks(proxy.BatchRequest(symbols=["4123", "4541"]))
+        raise AssertionError("execution-critical empty batch must fail closed")
+    except proxy.HTTPException as exc:
+        assert exc.status_code == 503
+        assert exc.detail["status"] == "empty"
+        assert exc.detail["error_count"] == 2
     elapsed = time.monotonic() - started
 
-    assert result["status"] == "empty"
-    assert result["error_count"] == 2
     assert elapsed < 0.18
 
 

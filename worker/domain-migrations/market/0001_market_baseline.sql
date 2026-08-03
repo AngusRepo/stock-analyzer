@@ -1,4 +1,4 @@
--- Generated from schema.sql plus production snapshot fallback; do not edit by hand.
+-- Immutable baseline for the market D1 binding.
 CREATE TABLE IF NOT EXISTS stock_prices (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   stock_id   INTEGER NOT NULL,

@@ -81,6 +81,23 @@ export async function loadSetupWatchSeeds(db: D1Database, today: string): Promis
               AND COALESCE(json_extract(dr.score_components, '$.eligibleForAllocation'), 1) = 1
               AND COALESCE(json_extract(dr.score_components, '$.reason'), '') <> 'formal_ml_gate_filtered'
          )
+         AND (
+           EXISTS (
+             SELECT 1
+               FROM pending_buy_items pbi
+               JOIN pending_buy_runs pbr ON pbr.id = pbi.run_id
+              WHERE pbr.trade_date = ?
+                AND pbi.symbol = ss.symbol
+                AND COALESCE(pbi.execution_status, 'pending')
+                    NOT IN ('filled', 'skipped', 'cancelled', 'expired', 'rejected')
+           )
+           OR EXISTS (
+             SELECT 1
+               FROM watchlist explicit_watch
+               JOIN stocks watched_stock ON watched_stock.id = explicit_watch.stock_id
+              WHERE watched_stock.symbol = ss.symbol
+           )
+         )
     )
     SELECT symbol, trade_date AS source_trade_date, state, demand_zone_low, demand_zone_high
       FROM latest
@@ -98,8 +115,8 @@ export async function loadSetupWatchSeeds(db: D1Database, today: string): Promis
             )
        )
      ORDER BY symbol
-     LIMIT 200
-  `).bind(today, today).all<SetupWatchSeed>()
+     LIMIT 50
+  `).bind(today, today, today).all<SetupWatchSeed>()
   return results ?? []
 }
 

@@ -33,6 +33,21 @@ if (!sourceBranch || sourceBranch !== productionBranch) {
   throw new Error(`source branch ${sourceBranch || '<detached>'} does not match PRODUCTION_BRANCH=${productionBranch}`)
 }
 
+const canonicalProductionBranch = String(process.env.CANONICAL_PRODUCTION_BRANCH ?? 'main').trim()
+const allowNonMainProductionDeploy = process.env.ALLOW_NON_MAIN_PRODUCTION_DEPLOY === '1'
+const canonicalRemoteRef = `refs/remotes/origin/${canonicalProductionBranch}`
+const canonicalSourceSha = run('git', ['rev-parse', canonicalRemoteRef], { capture: true })
+if (productionBranch === canonicalProductionBranch) {
+  if (sourceSha !== canonicalSourceSha) {
+    throw new Error(`canonical production deploy requires HEAD=${canonicalRemoteRef} (${canonicalSourceSha}), got ${sourceSha}`)
+  }
+} else {
+  if (!allowNonMainProductionDeploy) {
+    throw new Error(`non-canonical production branch ${productionBranch} is blocked; merge to ${canonicalProductionBranch} first`)
+  }
+  run('git', ['merge-base', '--is-ancestor', canonicalRemoteRef, sourceSha])
+}
+
 const dirty = run('git', ['status', '--porcelain', '--untracked-files=all', '--', 'worker', 'infra/gcp-scheduler-jobs.json', 'tools/deploy_worker_with_provenance.mjs'], { capture: true })
 if (dirty) throw new Error(`Worker deployment inputs are dirty:\n${dirty}`)
 if (!existsSync(manifestPath)) throw new Error(`missing scheduler manifest: ${manifestPath}`)

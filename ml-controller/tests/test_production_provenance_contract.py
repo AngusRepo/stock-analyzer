@@ -45,6 +45,11 @@ def test_cloudflare_deploy_messages_are_single_cli_arguments_on_windows() -> Non
     assert ",scheduler=${schedulerSha256}" in worker_wrapper
     assert " scheduler=${schedulerManifestSha256}" not in pages_wrapper
     assert ",scheduler=${schedulerManifestSha256}" in pages_wrapper
+    for wrapper in (worker_wrapper, pages_wrapper):
+        assert "CANONICAL_PRODUCTION_BRANCH" in wrapper
+        assert "ALLOW_NON_MAIN_PRODUCTION_DEPLOY" in wrapper
+        assert "canonical production deploy requires HEAD=" in wrapper
+        assert "'merge-base', '--is-ancestor'" in wrapper
     assert "CLOUDFLARE_PAGES_PRODUCTION_BRANCH is required" in pages_wrapper
     assert "'--branch', pagesProductionBranch" in pages_wrapper
     assert "wranglerCli, 'pages', 'deploy'" in pages_wrapper

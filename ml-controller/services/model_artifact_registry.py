@@ -2113,7 +2113,11 @@ def build_artifact_action_context(
     }
 
 
-def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def build_candidate_selection(
+    rows: list[dict[str, Any]],
+    *,
+    champion_pointers: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Read-only release-train selection policy.
 
     Monthly artifacts are the primary release train. Weekly artifacts are drift
@@ -2122,6 +2126,11 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
     gate slot.
     """
     grouped: dict[str, list[dict[str, Any]]] = {}
+    pointer_by_model = {
+        str(pointer.get("model_name") or ""): pointer
+        for pointer in (champion_pointers or [])
+        if pointer.get("model_name")
+    }
     suppressed: list[dict[str, Any]] = []
     for row in rows:
         model_name = str(row.get("model_name") or "unknown")
@@ -2140,11 +2149,30 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
         latest_monthly = max(release_train, key=_artifact_time_key, default=None)
         latest_active_monthly = latest_monthly if latest_monthly and not _legacy_shadow_selection_row(latest_monthly) else None
         best_monthly = latest_active_monthly
-        serving_release = max(
-            [r for r in release_train if r.get("state") == "production"],
-            key=_artifact_time_key,
-            default=None,
+        pointer = pointer_by_model.get(model_name) or {}
+        pointer_artifact_id = str(pointer.get("champion_artifact_id") or "").strip()
+        pointer_version = str(pointer.get("champion_version") or "").strip()
+        serving_release = next(
+            (
+                row
+                for row in items
+                if pointer_artifact_id
+                and str(row.get("artifact_id") or "").strip() == pointer_artifact_id
+            ),
+            None,
         )
+        if serving_release is None and pointer_version:
+            serving_release = max(
+                [row for row in items if str(row.get("version") or "").strip() == pointer_version],
+                key=_artifact_time_key,
+                default=None,
+            )
+        if serving_release is None:
+            serving_release = max(
+                [row for row in items if row.get("state") == "production"],
+                key=_artifact_time_key,
+                default=None,
+            )
         best_weekly = max(active_weekly, key=_candidate_rank, default=None)
 
         selected_monthly = (
@@ -2163,11 +2191,7 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
             weekly_superseded_by = monthly_superseder
             selected_weekly = None
 
-        archive_candidates = [
-            r.get("artifact_id")
-            for r in items
-            if r is not selected_monthly and r is not selected_weekly and r is not serving_release
-        ]
+
         superseded_candidates = [
             superseded_candidate_id
             for superseded_candidate_id in [
@@ -2175,6 +2199,10 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
             ]
             if superseded_candidate_id
         ]
+        # This is an action queue, not registry history. Candidate-not-better
+        # rows are supplied by promotion suppression; selection only owns
+        # explicit release-train supersession.
+        archive_candidates = list(dict.fromkeys(superseded_candidates))
 
         weekly_context = (
             _build_superseded_action_context(
@@ -2206,7 +2234,8 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "policy": {
                 "monthly": "select latest non-legacy active-8 direct-alpha monthly or TimesFM L1.75 feature-release artifact only if offline_passed or stronger",
                 "weekly": "select only non-legacy offline_strong_pass unless a newer promotion-ready monthly release supersedes it",
-                "serving_release_artifact": "latest monthly_release artifact already marked production; audit evidence only, not a candidate queue slot",
+                "serving_release_artifact": "canonical champion pointer artifact, independent of candidate type; falls back to a production registry row only when the pointer is unavailable",
+                "archive_candidates": "actionable superseded candidates only; terminal and historical registry rows are not an archive queue",
                 "live_shadow_slots": {
                     "monthly": 1,
                     "weekly": 1,
@@ -2218,7 +2247,7 @@ def build_candidate_selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "status": "ok",
         "source_of_truth": "model_artifact_registry",
-        "selection_policy": "release_train_v1",
+        "selection_policy": "release_train_v2_pointer_owned",
         "suppressed_count": len(suppressed),
         "suppressed": suppressed,
         "models": selections,

@@ -1020,7 +1020,7 @@ def test_candidate_selection_keeps_weekly_out_unless_strong_pass():
     model = selection["models"]["XGBoost"]
     assert model["monthly_release_candidate"]["artifact_id"] == "XGBoost:vM:monthly_release"
     assert model["weekly_drift_candidate"]["artifact_id"] == "XGBoost:vW2:weekly_drift"
-    assert "XGBoost:vW1:weekly_drift" in model["archive_candidates"]
+    assert "XGBoost:vW1:weekly_drift" not in model["archive_candidates"]
     assert model["action_context"]["weekly_drift_candidate"]["root_cause"] == "live_shadow_not_started"
     assert "verify-v2" in model["action_context"]["weekly_drift_candidate"]["scheduler_dependency"]
 
@@ -1088,6 +1088,77 @@ def test_candidate_selection_keeps_weekly_suppressed_after_monthly_promotes():
     assert model["weekly_drift_candidate"] is None
     assert "XGBoost:v20260517170259:monthly_release" not in model["archive_candidates"]
     assert model["superseded_candidates"] == ["XGBoost:v20260509200349:weekly_drift"]
+
+
+def test_candidate_selection_uses_pointer_owned_oof_champion_and_keeps_history_out_of_archive_queue():
+    selection = registry.build_candidate_selection(
+        [
+            {
+                "artifact_id": "DLinear:vChampion:oof_full_fit_release",
+                "model_name": "DLinear",
+                "version": "vChampion",
+                "candidate_type": "oof_full_fit_release",
+                "state": "production",
+                "updated_at": "2026-07-21T00:00:00Z",
+            },
+            {
+                "artifact_id": "DLinear:vLatest:monthly_release",
+                "model_name": "DLinear",
+                "version": "vLatest",
+                "candidate_type": "monthly_release",
+                "state": "offline_failed",
+                "updated_at": "2026-08-02T00:00:00Z",
+            },
+            {
+                "artifact_id": "DLinear:vArchived:monthly_release",
+                "model_name": "DLinear",
+                "version": "vArchived",
+                "candidate_type": "monthly_release",
+                "state": "archived",
+                "updated_at": "2026-06-30T00:00:00Z",
+            },
+        ],
+        champion_pointers=[{
+            "model_name": "DLinear",
+            "champion_version": "vChampion",
+            "champion_artifact_id": "DLinear:vChampion:oof_full_fit_release",
+        }],
+    )
+
+    model = selection["models"]["DLinear"]
+    assert model["serving_release_artifact"]["artifact_id"] == "DLinear:vChampion:oof_full_fit_release"
+    assert model["latest_monthly_release_artifact"]["artifact_id"] == "DLinear:vLatest:monthly_release"
+    assert model["archive_candidates"] == []
+    assert selection["selection_policy"] == "release_train_v2_pointer_owned"
+
+
+def test_candidate_selection_pointer_artifact_id_wins_over_same_version_fallback():
+    rows = [
+        {
+            "artifact_id": "PatchTST:vShared:oof_full_fit_release",
+            "model_name": "PatchTST",
+            "version": "vShared",
+            "candidate_type": "oof_full_fit_release",
+            "state": "production",
+        },
+        {
+            "artifact_id": "PatchTST:vShared:monthly_release",
+            "model_name": "PatchTST",
+            "version": "vShared",
+            "candidate_type": "monthly_release",
+            "state": "offline_failed",
+        },
+    ]
+    selection = registry.build_candidate_selection(
+        rows,
+        champion_pointers=[{
+            "model_name": "PatchTST",
+            "champion_version": "vShared",
+            "champion_artifact_id": "PatchTST:vShared:oof_full_fit_release",
+        }],
+    )
+
+    assert selection["models"]["PatchTST"]["serving_release_artifact"]["candidate_type"] == "oof_full_fit_release"
 
 
 def test_artifact_action_context_explains_failed_offline_gate():
@@ -1286,7 +1357,7 @@ def test_candidate_selection_keeps_legacy_shadowing_weekly_out_of_selected_slot(
 
     model = selection["models"]["XGBoost"]
     assert model["weekly_drift_candidate"] is None
-    assert "XGBoost:vW:weekly_drift" in model["archive_candidates"]
+    assert "XGBoost:vW:weekly_drift" not in model["archive_candidates"]
 
 
 def test_candidate_selection_prefers_new_active8_monthly_over_legacy_shadowing():
@@ -1312,7 +1383,7 @@ def test_candidate_selection_prefers_new_active8_monthly_over_legacy_shadowing()
     model = selection["models"]["ExtraTrees"]
     assert model["monthly_release_candidate"]["artifact_id"] == "ExtraTrees:vNew:monthly_release"
     assert model["latest_monthly_release_artifact"]["artifact_id"] == "ExtraTrees:vNew:monthly_release"
-    assert "ExtraTrees:vOld:monthly_release" in model["archive_candidates"]
+    assert "ExtraTrees:vOld:monthly_release" not in model["archive_candidates"]
 
 
 def test_candidate_selection_does_not_fallback_to_old_monthly_when_latest_failed():
@@ -1340,7 +1411,7 @@ def test_candidate_selection_does_not_fallback_to_old_monthly_when_latest_failed
     model = selection["models"]["PatchTST"]
     assert model["monthly_release_candidate"] is None
     assert model["latest_monthly_release_artifact"]["artifact_id"] == "PatchTST:vNew:monthly_release"
-    assert "PatchTST:vOld:monthly_release" in model["archive_candidates"]
+    assert "PatchTST:vOld:monthly_release" not in model["archive_candidates"]
 
 
 def test_build_artifact_records_enriches_cpcv_from_followup_train_stage():

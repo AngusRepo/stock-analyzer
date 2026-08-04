@@ -1600,7 +1600,8 @@ async def artifact_registry_selection(model_name: str | None = None, limit: int 
     """
     try:
         rows = list_artifact_registry(model_name=model_name, limit=limit)
-        return build_candidate_selection(rows)
+        pointers = list_champion_pointers(model_name=model_name)
+        return build_candidate_selection(rows, champion_pointers=pointers)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"artifact_registry selection failed: {e}")
 

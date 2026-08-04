@@ -55,6 +55,10 @@ assert(workbench.includes('selectedModelId'), 'Model Pool gate inspector must be
 assert(workbench.includes('onSelectModel'), 'Model Pool fleet/timeline/alert rows must update the selected inspector model')
 assert(workbench.includes('aria-pressed={isSelected}'), 'Selectable model rows must expose pressed state')
 assert(workbench.includes('selectedArtifactEvidence'), 'Evidence matrix must read artifact offline/live evidence instead of weekly IC only')
+assert(workbench.includes('return selectionCandidate(row) ?? row?.serving_release_artifact ?? null'), 'Fleet PBO/CPCV must read the selected candidate or canonical serving champion, not a rejected latest retrain')
+assert(workbench.includes('Active-8 retrain rejected'), 'Latest failed retrains must remain visible as non-serving diagnosis')
+assert(workbench.includes('min-w-[240px] whitespace-normal'), 'Best artifact vs champion heading must wrap without clipping')
+assert(!workbench.includes('compactVersion(compare.candidate, 22)') && !workbench.includes('compactVersion(compare.champion, 22)'), 'Best artifact vs champion values must not be truncated')
 assert(workbench.includes('OOS IC') && workbench.includes('PBO/CPCV') && workbench.includes('COMPARE'), 'Evidence matrix must include OOS IC, PBO/CPCV, and champion compare gates')
 assert(!workbench.includes("label: 'STATE'"), 'Evidence matrix must not duplicate fleet status as a STATE column')
 assert(workbench.includes('PBO ${formatMetric(pboValue, 2)}<${formatMetric(pboMax, 2)}'), 'PBO/CPCV cells must expose values and thresholds')
@@ -81,9 +85,11 @@ assert(workbench.includes('candidate gate, not current prod artifact'), 'Candida
 assert(workbench.includes('Candidate vs current champion'), 'Candidate release readiness must expose the selected candidate artifact against the current champion baseline')
 assert(workbench.includes('evaluation_pending') && workbench.includes('no completed evaluation run'), 'Research state diagnostics must explain evaluation_pending root cause')
 assert(workbench.includes('needs_attention') && workbench.includes('evidence is incomplete'), 'Research state diagnostics must explain needs_attention root cause')
-assert(workbench.includes('Artifact compare'), 'Evidence table must show candidate-vs-champion artifact comparison instead of duplicating PBO/CPCV')
+assert(workbench.includes('Best artifact vs champion'), 'Evidence table must show candidate-vs-champion artifact comparison instead of duplicating PBO/CPCV')
 assert(workbench.includes('OOS IC delta') && workbench.includes('metricDetail'), 'Candidate compare must expose candidate-vs-champion metric deltas')
-assert(workbench.includes('registry, dataset, pointer, candidate compare, promotion pressure, and missing evidence'), 'Model Pool cockpit must show dataset, pointer, candidate compare, promotion pressure, and missing evidence in the evidence table')
+for (const heading of ['Dataset', 'Pointer', 'Review pressure', 'Best artifact vs champion', 'Missing evidence']) {
+  assert(workbench.includes(heading), `Evidence table should include ${heading}`)
+}
 assert(!workbench.includes(['Snapshot', 'of the active-8 evidence chain'].join(' ')), 'Model Pool cockpit must remove the unclear snapshot copy')
 
 for (const id of ['TabM', 'GNN', 'iTransformer']) {

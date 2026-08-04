@@ -191,7 +191,7 @@ function selectedPromotionRow(
 }
 
 function releaseArtifact(row?: SelectionModelRow) {
-  return row?.latest_monthly_release_artifact ?? selectionCandidate(row) ?? row?.serving_release_artifact ?? null
+  return selectionCandidate(row) ?? row?.serving_release_artifact ?? null
 }
 
 function promotionPressureTone(rows: PromotionQueueRow[]): WorkstationTone {
@@ -1063,12 +1063,10 @@ function candidateHousekeepingSummary(
   selection?: ModelArtifactSelectionResponse,
   promotionQueue?: ModelArtifactPromotionQueueResponse,
 ) {
-  const archiveIds = [...new Set(
-    Object.values(selection?.models ?? {})
-      .flatMap((row) => Array.isArray(row.archive_candidates) ? row.archive_candidates : [])
-      .map((id) => String(id ?? '').trim())
-      .filter(Boolean),
-  )]
+  const selectionArchiveIds = Object.values(selection?.models ?? {})
+    .flatMap((row) => Array.isArray(row.archive_candidates) ? row.archive_candidates : [])
+    .map((id) => String(id ?? '').trim())
+    .filter(Boolean)
   const suppressedById = new Map<string, NonNullable<ModelArtifactSelectionResponse['suppressed']>[number]>()
   for (const row of [...(selection?.suppressed ?? []), ...(promotionQueue?.suppressed ?? [])]) {
     const key = String(row.artifact_id ?? `${row.model_name}:${row.candidate_version ?? row.candidate_type}`).trim()
@@ -1077,15 +1075,27 @@ function candidateHousekeepingSummary(
   const suppressed = [...suppressedById.values()]
   const notBetter = suppressed.filter((row) => row.artifact_compare?.metric_status === 'candidate_not_better')
   const superseded = suppressed.filter((row) => String(row.reason ?? '').toLowerCase().includes('superseded'))
+  const archiveIds = [...new Set([
+    ...selectionArchiveIds,
+    ...notBetter.map((row) => String(row.artifact_id ?? '').trim()),
+    ...superseded.map((row) => String(row.artifact_id ?? '').trim()),
+  ].filter(Boolean))]
   const selectedSlots = Object.values(selection?.models ?? {}).reduce((sum, row) => (
     sum + (row.monthly_release_candidate ? 1 : 0) + (row.weekly_drift_candidate ? 1 : 0)
   ), 0)
+  const latestRejected = Object.entries(selection?.models ?? {})
+    .filter(([modelName]) => PRODUCTION_SLOT_MODELS.has(modelName))
+    .map(([, row]) => row.latest_monthly_release_artifact)
+    .filter((row): row is NonNullable<typeof row> => (
+      row?.state === 'offline_failed' || row?.state === 'registration_failed'
+    ))
   return {
     archiveIds,
     suppressed,
     notBetter,
     superseded,
     selectedSlots,
+    latestRejected,
   }
 }
 
@@ -1099,17 +1109,19 @@ function CandidateHousekeepingPanel({
   const summary = candidateHousekeepingSummary(selection, promotionQueue)
   const notBetterPreview = summary.notBetter.slice(0, 6)
   const archivePreview = summary.archiveIds.slice(0, 12)
+  const rejectedPreview = summary.latestRejected.slice(0, 8)
   return (
     <GrafanaPanel
       title="Candidate housekeeping"
-      kicker="serving champion / selected review slots / archive-ready candidates"
+      kicker="serving champion / selected review slots / action-only archive queue"
     >
       <div className="grid gap-3 bg-[#0b1118] p-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <div className="grid gap-2 sm:grid-cols-2">
           <GrafanaStat label="Review slots" value={summary.selectedSlots} detail="monthly + weekly selected by policy" tone={summary.selectedSlots ? 'info' : 'neutral'} />
-          <GrafanaStat label="Archive-ready" value={summary.archiveIds.length} detail="not selected, not serving" tone={summary.archiveIds.length ? 'warn' : 'ok'} />
+          <GrafanaStat label="Archive-ready" value={summary.archiveIds.length} detail="superseded or candidate-not-better only" tone={summary.archiveIds.length ? 'warn' : 'ok'} />
           <GrafanaStat label="Not better" value={summary.notBetter.length} detail="candidate OOS IC <= champion" tone={summary.notBetter.length ? 'warn' : 'ok'} />
           <GrafanaStat label="Superseded" value={summary.superseded.length} detail="newer release train owns review slot" tone={summary.superseded.length ? 'info' : 'ok'} />
+          <GrafanaStat label="Active-8 retrain rejected" value={summary.latestRejected.length} detail="diagnosis only; never production fleet health" tone={summary.latestRejected.length ? 'warn' : 'ok'} />
         </div>
         <div className="min-w-0 rounded-xl border border-[#263247] bg-[#090f16] p-3">
           <div className="mb-2 flex items-center justify-between gap-3">
@@ -1138,6 +1150,25 @@ function CandidateHousekeepingPanel({
               )
             })}
           </div>
+          {rejectedPreview.length > 0 && (
+            <div className="mt-3 border-t border-[#263247] pt-3">
+              <p className="mb-2 text-[12px] font-semibold text-[#f2ead8]">Active-8 retrain rejected</p>
+              <div className="flex flex-wrap gap-1.5">
+                {rejectedPreview.map((row) => {
+                  const failedGates = asStringList(row.offline_gate_failed_gates)
+                  return (
+                    <span
+                      key={row.artifact_id ?? `${row.model_name}-${row.version}`}
+                      className="max-w-full rounded-full border border-rose-300/20 bg-rose-300/[0.07] px-2.5 py-1 sv-num text-[11px] normal-case text-rose-100"
+                      title={`${row.artifact_id ?? row.version ?? row.model_name}: ${failedGates.join(', ') || 'offline gate failed'}`}
+                    >
+                      {row.model_name}: {failedGates.length ? failedGates.map(humanizeToken).join(', ') : 'offline gate failed'}
+                    </span>
+                  )
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </GrafanaPanel>
@@ -1411,7 +1442,7 @@ function EvidenceTablePanel({
   return (
     <GrafanaPanel title="Evidence table" kicker="one selected best artifact per model, compared only with the current champion">
       <div className="overflow-x-auto bg-[#0b1118] p-3">
-        <table className="w-full min-w-[1240px] border-separate border-spacing-y-2 text-left">
+        <table className="w-full min-w-[1380px] border-separate border-spacing-y-2 text-left">
           <thead className="sv-num text-[12px] normal-case text-[#90a0b8]">
             <tr>
               <th className="px-3 py-2 font-medium">Model</th>
@@ -1421,7 +1452,7 @@ function EvidenceTablePanel({
               <th className="px-3 py-2 font-medium">Pointer</th>
               <th className="px-3 py-2 font-medium" title="Latest research registry state for this model artifact lane.">Research state</th>
               <th className="px-3 py-2 font-medium" title="Promotion queue load plus blockers that need review before release.">Review pressure</th>
-              <th className="px-3 py-2 font-medium">Best artifact vs champion</th>
+              <th className="min-w-[240px] whitespace-normal px-3 py-2 font-medium leading-5">Best artifact vs champion</th>
               <th className="px-3 py-2 font-medium">Missing evidence</th>
             </tr>
           </thead>
@@ -1472,13 +1503,13 @@ function EvidenceTablePanel({
                     {pressureLabel}
                   </span>
                 </td>
-                <td className="border-y border-[#263247] px-3 py-3" title={compare.title}>
+                <td className="min-w-[240px] max-w-[340px] border-y border-[#263247] px-3 py-3" title={compare.title}>
                   <span className={`inline-block border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(compare.tone)}`}>
                     {compare.compareReady ? 'ready' : compare.hasCandidate ? 'baseline' : compare.hasReleaseArtifact ? 'serving' : 'no candidate'}
                   </span>
                   <dl className="mt-2 grid max-w-[300px] gap-1 sv-num text-[12px] leading-5">
-                    <div className="grid grid-cols-[68px_1fr] gap-2"><dt className="text-[#70809b]">candidate</dt><dd className="break-all text-[#dce3ea]">{compactVersion(compare.candidate, 22)}</dd></div>
-                    <div className="grid grid-cols-[68px_1fr] gap-2"><dt className="text-[#70809b]">champion</dt><dd className="break-all text-[#dce3ea]">{compactVersion(compare.champion, 22)}</dd></div>
+                    <div className="grid grid-cols-[68px_1fr] gap-2"><dt className="text-[#70809b]">candidate</dt><dd className="break-all text-[#dce3ea]">{compare.candidate}</dd></div>
+                    <div className="grid grid-cols-[68px_1fr] gap-2"><dt className="text-[#70809b]">champion</dt><dd className="break-all text-[#dce3ea]">{compare.champion}</dd></div>
                   </dl>
                   <p className="mt-1 max-w-[260px] sv-num text-[12px] leading-5 text-[#dce3ea]">{compare.metricDetail}</p>
                 </td>

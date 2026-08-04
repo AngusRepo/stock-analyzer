@@ -254,6 +254,11 @@ assert(
   'Neural meta-learning shadows must share one bounded reward cohort and execute in parallel',
 )
 assert(
+  metaShadowClosureBlock.includes('if (decisionRows.length === 0)') &&
+    metaShadowClosureBlock.includes('not_run_no_current_decision_context'),
+  'Meta shadow must close reward hydration without a neural 500 when the current decision cohort is not ready',
+)
+assert(
   postMarketChain.includes('recordWorkerTaskComputeProfile'),
   'post-market callback tasks must emit compute profile events from the shared task logger',
 )

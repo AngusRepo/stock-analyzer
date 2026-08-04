@@ -180,6 +180,18 @@ export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainCont
     limit: 5000,
     requireOutcome: false,
   })
+  if (decisionRows.length === 0) {
+    return [
+      `reward_hydrated=${hydration.hydrated_decisions}`,
+      'decision_contexts=0',
+      `registry_created=${registry.created.length}`,
+      `registry_total=${registry.total}`,
+      'neural_ucb=not_run_no_current_decision_context',
+      'neural_ts=not_run_no_current_decision_context',
+      'neucb=not_run_no_current_decision_context',
+    ].join(' ')
+  }
+
   const [neuralUcb, neuralTs, neuCb] = await Promise.all([
     runNeuralMetaShadow(env, {
       policyId: 'NeuralUCB',

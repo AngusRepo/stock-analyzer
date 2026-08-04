@@ -215,6 +215,11 @@ def build_shadow_decisions(
     baseline_actions: Sequence[str],
     mode: DecisionMode = "ucb",
 ) -> list[dict]:
+    if not symbols:
+        if baseline_actions or np.asarray(contexts).size:
+            raise ValueError("empty symbols require empty contexts and baseline_actions")
+        return []
+
     contexts = _validate_contexts(contexts, expected_dim=policy.context_dim)
     if len(symbols) != len(contexts) or len(baseline_actions) != len(contexts):
         raise ValueError("symbols, contexts and baseline_actions must have the same length")

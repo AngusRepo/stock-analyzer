@@ -61,6 +61,36 @@ def test_shadow_decisions_compare_baseline_to_neural_policy():
     assert set(decisions[0]).issuperset({"symbol", "baseline_action", "shadow_action", "context", "evidence"})
 
 
+def test_shadow_decisions_accept_empty_current_decision_cohort():
+    contexts = np.array(
+        [
+            [1.0] + [0.0] * 11,
+            [-1.0] + [0.0] * 11,
+            [0.8] + [0.0] * 11,
+            [-0.8] + [0.0] * 11,
+        ],
+        dtype="float32",
+    )
+    model = train_neural_meta_bandit(
+        contexts,
+        np.array([0, 1, 0, 1], dtype=np.int64),
+        np.array([0.8, 0.7, 0.75, 0.65], dtype="float32"),
+        arm_names=["tree_family", "sequence_family"],
+        config=NeuralMetaBanditConfig(policy_id="NeuralUCB", epochs=5, seed=11),
+    )
+
+    decisions = build_shadow_decisions(
+        model,
+        business_date="2026-08-04",
+        symbols=[],
+        contexts=np.asarray([], dtype="float32"),
+        baseline_actions=[],
+        mode="ucb",
+    )
+
+    assert decisions == []
+
+
 def test_neucb_scores_with_context_dependent_uncertainty():
     contexts = np.array(
         [

@@ -18,6 +18,7 @@ import httpx
 import pandas as pd
 
 from services import d1_client
+from services.finlab_auth import login_finlab_sdk
 from services.strategy_mining_evidence import build_strategy_mining_evidence
 
 
@@ -425,12 +426,9 @@ def _assert_runtime_files() -> None:
 
 
 def _login_finlab() -> None:
-    api_key = os.environ.get("FINLAB_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("FINLAB_API_KEY_missing_for_strategy_mining")
     from finlab import login
 
-    login(api_key)
+    login_finlab_sdk(login)
 
 
 def _ledger_candidate_id(run_id: str, raw_candidate_id: str) -> str:

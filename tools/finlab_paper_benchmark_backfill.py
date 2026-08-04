@@ -14,6 +14,10 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
+for candidate in (ROOT, ROOT / "ml-controller"):
+    if str(candidate) not in sys.path:
+        sys.path.insert(0, str(candidate))
+
 DEFAULT_SYMBOLS = ["00981A", "00631L", "00403A"]
 PRICE_KEYS = {
     "open": "price:開盤價",
@@ -67,8 +71,9 @@ def d1_exec(sql: str, params: list[Any] | None = None) -> None:
 
 def login_finlab() -> None:
     from finlab import login
+    from services.finlab_auth import login_finlab_sdk
 
-    login(require_env("FINLAB_API_KEY"))
+    login_finlab_sdk(login)
 
 
 def get_finlab_wide(key: str) -> pd.DataFrame:

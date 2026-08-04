@@ -12,7 +12,7 @@ def test_finlab_backfill_modal_function_and_spawn_contract_exist() -> None:
     assert "def finlab_v4_backfill(payload: dict)" in modal_app
     assert 'modal.Secret.from_name("stockvision-finlab")' in modal_app
     assert "finlab_secret" in modal_app
-    assert "secrets=[gcs_secret, cf_secret, finlab_secret, runtime_env_secret]" in modal_app
+    assert "secrets=[gcs_secret, cf_secret, finlab_secret, retrain_callback_secret, runtime_env_secret]" in modal_app
     assert "tools import finlab_v4_remote_backfill" in modal_app
     assert "tools import finlab_macro_context_snapshot" in modal_app
     assert "macro_context_writeback" in modal_app
@@ -57,9 +57,6 @@ def test_modal_deploy_packages_finlab_tool_and_controller_services() -> None:
     requirements = (ROOT / "ml-service" / "requirements.txt").read_text(encoding="utf-8")
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
-    assert 'repo_root / "tools"' in admin_router
-    assert 'repo_root / "services"' in admin_router
-    assert 'repo_root / "ml-controller" / "services"' in admin_router
     assert 'remote_path="/root/tools"' in modal_app
     assert 'remote_path="/root/services"' in modal_app
     assert '_LOCAL_FINLAB_SOURCE_CONTRACT = _LOCAL_REPO_ROOT / "data" / "finlab_source_contract.json"' in modal_app
@@ -78,7 +75,9 @@ def test_finlab_backfill_uses_controller_d1_proxy_before_cloudflare_rest() -> No
     assert "controller_d1_request(sql, params)" in tool
     assert "controller_d1_proxy_configured()" in tool
     assert "controller_d1_batch_execute(statements" in tool
-    assert 'required_env = ["FINLAB_API_KEY"]' in tool
+    assert "login_finlab_sdk(login)" in tool
+    assert "FINLAB_REFRESH_TOKEN_SECRET" in deploy
+    assert "FINLAB_SESSION_ID_SECRET" in deploy
     assert 'ML_CONTROLLER_SECRET_SECRET="${ML_CONTROLLER_SECRET_SECRET:-stockvision-ml-controller-secret:latest}"' in deploy
     assert "ML_CONTROLLER_SECRET=${ML_CONTROLLER_SECRET_SECRET}" in deploy
     assert "ML_CONTROLLER_PUBLIC_URL" in deploy

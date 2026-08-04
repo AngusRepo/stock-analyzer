@@ -11,6 +11,7 @@ import os
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Literal
 
+from services.finlab_auth import login_finlab_sdk
 from services.market_segment_policy import normalize_segment
 
 
@@ -410,19 +411,14 @@ class FinLabReadOnlyAdapter:
     def _sdk_data(self) -> Any:
         if self._data_module is not None:
             return self._data_module
-        if not self.api_key:
-            raise RuntimeError("finlab_api_key_missing")
         try:
             import finlab
             from finlab import data, login
         except ImportError as exc:
             raise RuntimeError("finlab_sdk_not_installed") from exc
 
-        # FinLab SDK 2.0.7 still supports token login but warns that passing an
-        # api_token is deprecated after 2026-08-01. V4 production work must
-        # migrate this wrapper to FinLab's new auth flow before promotion.
         if not self._logged_in:
-            login(self.api_key)
+            login_finlab_sdk(login, legacy_api_key=self.api_key)
             self._logged_in = True
         self._data_module = data
         _ = finlab

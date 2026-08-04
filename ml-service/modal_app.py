@@ -125,6 +125,8 @@ runtime_env_secret = modal.Secret.from_dict({
     for key, value in {
         "GCS_BUCKET_NAME": os.environ.get("GCS_BUCKET_NAME", "stockvision-models").strip(),
         "FINLAB_API_KEY": os.environ.get("FINLAB_API_KEY", "").strip(),
+        "FINLAB_REFRESH_TOKEN": os.environ.get("FINLAB_REFRESH_TOKEN", "").strip(),
+        "FINLAB_SESSION_ID": os.environ.get("FINLAB_SESSION_ID", "").strip(),
     }.items()
     if value
 })

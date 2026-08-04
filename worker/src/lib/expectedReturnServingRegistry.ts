@@ -400,7 +400,7 @@ export async function inspectExpectedReturnLifecycleHealth(
            ON candidate_cohort.cohort_id = candidate.cohort_id
           AND candidate_cohort.status = 'ready'
         WHERE candidate.artifact_kind = current.artifact_kind
-        ORDER BY candidate.updated_at DESC, candidate.cohort_id DESC
+        ORDER BY candidate.max_date DESC, candidate.updated_at DESC, candidate.cohort_id DESC
         LIMIT 1
      )
   `).all<{ artifact_kind: string; max_date: string | null }>()
@@ -427,7 +427,7 @@ export async function inspectExpectedReturnLifecycleHealth(
              ON candidate_cohort.cohort_id = candidate.cohort_id
             AND candidate_cohort.status = 'ready'
           WHERE candidate.artifact_kind = current.artifact_kind
-          ORDER BY candidate.updated_at DESC, candidate.cohort_id DESC
+          ORDER BY candidate.max_date DESC, candidate.updated_at DESC, candidate.cohort_id DESC
           LIMIT 1
        )
      GROUP BY current.artifact_kind

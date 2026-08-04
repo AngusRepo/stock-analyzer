@@ -1,3 +1,8 @@
+import {
+  metaPolicyRewardForSourceRow,
+  modelFamilyArm,
+  type LinUcbRewardSourceRow,
+} from './metaLearningRewardLedger'
 import type { MetaLearningTrackId } from './metaLearningResearchTrack'
 
 export type ShadowPolicyId = Extract<MetaLearningTrackId, 'NeuralUCB' | 'NeuralTS' | 'NeuCB'>
@@ -146,4 +151,118 @@ export async function persistMetaShadowDecisionRows(db: D1Database, rows: MetaSh
     persisted += 1
   }
   return persisted
+}
+
+export interface MetaShadowRewardHydrationReport {
+  source_rows: number
+  eligible_decisions: number
+  hydrated_decisions: number
+  unmatched_decisions: number
+  end_date: string
+}
+
+type HydrationSourceRow = LinUcbRewardSourceRow & {
+  decision_id: string
+  business_date: string
+  symbol: string
+  arm_id: string
+  evidence_json?: string | null
+}
+
+function parseEvidence(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'string' || !value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+function decisionArmMatchesModel(armId: string, modelName: unknown): boolean {
+  const family = modelFamilyArm(modelName)
+  if (armId === 'feature_family') {
+    return ['tree_family', 'tabular_neural_family', 'graph_family'].includes(family)
+  }
+  return family === armId
+}
+
+export async function hydrateMatureMetaShadowDecisionRewards(
+  db: D1Database,
+  options: { endDate: string; limit?: number; nowIso?: string },
+): Promise<MetaShadowRewardHydrationReport> {
+  const limit = Math.max(1, Math.min(options.limit ?? 20000, 50000))
+  const nowIso = options.nowIso ?? new Date().toISOString()
+  const { results } = await db.prepare(`
+    SELECT d.decision_id,
+           d.business_date,
+           d.symbol,
+           d.arm_id,
+           d.evidence_json,
+           p.model_name,
+           p.direction_correct,
+           p.trade_pnl_pct,
+           p.actual_return_pct
+      FROM meta_shadow_decisions d
+      JOIN predictions p
+        ON CAST(p.stock_id AS TEXT) = d.symbol
+       AND date(p.prediction_date) = date(d.business_date)
+     WHERE d.counterfactual_reward IS NULL
+       AND date(d.business_date) <= date(?)
+       AND p.verified_at IS NOT NULL
+       AND (p.direction_correct IS NOT NULL OR p.trade_pnl_pct IS NOT NULL OR p.actual_return_pct IS NOT NULL)
+     ORDER BY date(d.business_date) ASC, d.decision_id ASC, p.model_name ASC
+     LIMIT ?
+  `).bind(options.endDate, limit).all<HydrationSourceRow>()
+
+  const buckets = new Map<string, {
+    row: HydrationSourceRow
+    rewards: number[]
+    models: Set<string>
+  }>()
+  for (const row of results ?? []) {
+    const bucket = buckets.get(row.decision_id) ?? { row, rewards: [], models: new Set<string>() }
+    if (row.arm_id === 'do_nothing') {
+      bucket.rewards.push(0)
+    } else if (decisionArmMatchesModel(row.arm_id, row.model_name)) {
+      const reward = metaPolicyRewardForSourceRow(row)
+      if (reward != null) bucket.rewards.push(reward)
+      if (row.model_name) bucket.models.add(String(row.model_name))
+    }
+    buckets.set(row.decision_id, bucket)
+  }
+
+  let hydrated = 0
+  for (const { row, rewards, models } of buckets.values()) {
+    if (rewards.length === 0) continue
+    const reward = Math.round((rewards.reduce((sum, value) => sum + value, 0) / rewards.length) * 1_000_000) / 1_000_000
+    const evidence = {
+      ...parseEvidence(row.evidence_json),
+      outcome_hydration: {
+        status: 'verified_mature_outcome',
+        hydrated_at: nowIso,
+        reward_policy: 'direction_hit_edge_0.30_plus_clipped_pnl_0.15_normalized',
+        model_family_arm: row.arm_id,
+        source_models: [...models].sort(),
+        source_samples: rewards.length,
+      },
+    }
+    const result = await db.prepare(`
+      UPDATE meta_shadow_decisions
+         SET counterfactual_reward = ?, evidence_json = ?
+       WHERE decision_id = ?
+         AND counterfactual_reward IS NULL
+    `).bind(reward, JSON.stringify(evidence), row.decision_id).run()
+    hydrated += Number(result.meta?.changes ?? 0)
+  }
+
+  return {
+    source_rows: (results ?? []).length,
+    eligible_decisions: buckets.size,
+    hydrated_decisions: hydrated,
+    unmatched_decisions: Math.max(0, buckets.size - hydrated),
+    end_date: options.endDate,
+  }
 }

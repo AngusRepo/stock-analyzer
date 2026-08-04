@@ -845,6 +845,72 @@ def test_forward_shadow_coverage_is_complete_checksum_bound_and_non_promotable()
         )
 
 
+def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypatch):
+    from services import active8_oof_cohort_materializer as materializer
+
+    blobs = {}
+    writes = []
+
+    class Blob:
+        def __init__(self, path):
+            self.path = path
+
+        def upload_from_string(self, payload, content_type=None):
+            blobs[self.path] = bytes(payload)
+            assert content_type == "application/json"
+
+    class Bucket:
+        def blob(self, path):
+            return Blob(path)
+
+    def execute(sql, params):
+        writes.append((sql, params))
+        return {"changes": 1}
+
+    monkeypatch.setattr(materializer.d1_client, "execute", execute)
+    extension = {
+        "manifest_checksum": "b" * 64,
+        "base_cohort_id": "cohort-1",
+        "base_manifest_checksum": "a" * 64,
+        "dates": ["2026-07-22", "2026-07-23"],
+        "promotion_eligible": False,
+        "training_dispatched": False,
+    }
+    result = materializer.archive_ev_shadow_evaluation_packets(
+        bucket=Bucket(),
+        cohort_id="cohort-1",
+        business_date="2026-07-30",
+        base_manifest_checksum="a" * 64,
+        extension_manifest=extension,
+        l4_result={
+            "artifact": {"model_version": "l4-v1"},
+            "validation_packet": {
+                "decision": "FAIL",
+                "quality_decision_before_shadow_policy": "PASS",
+            },
+        },
+        fusion_result={
+            "artifact": {"model_version": "fusion-v1"},
+            "validation_packet": {
+                "decision": "FAIL",
+                "quality_decision_before_shadow_policy": "FAIL",
+            },
+        },
+        forward_row_count=20,
+    )
+    assert set(result) == {"l4_alpha_ev", "allocator_ev_fusion"}
+    assert all(packet["policy_decision"] == "shadow_only" for packet in result.values())
+    assert result["l4_alpha_ev"]["quality_decision"] == "PASS"
+    assert len(writes) == 2
+    assert all("expected_return_shadow_evaluation_packets" in sql for sql, _ in writes)
+    assert all("model_artifact_registry" not in sql for sql, _ in writes)
+    assert len(blobs) == 2
+
+    migration = (ROOT / "worker" / "migrations" / "0100_expected_return_shadow_evaluation_packets.sql").read_text()
+    assert "policy_decision TEXT NOT NULL CHECK(policy_decision = 'shadow_only')" in migration
+    assert "model_artifact_registry" not in migration
+
+
 def test_prep_only_source_stops_before_training_dispatch():
     source = (ROOT / "ml-controller" / "routers" / "retrain_trigger.py").read_text(encoding="utf-8")
     request_pos = source.index("prep_only: bool")

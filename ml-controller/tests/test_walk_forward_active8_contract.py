@@ -1052,12 +1052,26 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
                     "l4_predictions": {"status": "verified"},
                 },
             },
+            "shadow_evaluation_packets": {
+                "l4_alpha_ev": {"policy_decision": "shadow_only"},
+                "allocator_ev_fusion": {"policy_decision": "shadow_only"},
+            },
         },
     }
     assert _oof_lifecycle_receipt_matches_active_policy(
         shadow,
         cadence="daily",
         require_full_fit=False,
+    )
+    missing_packets = {
+        **shadow,
+        "evidence_closure": {
+            **shadow["evidence_closure"],
+            "shadow_evaluation_packets": None,
+        },
+    }
+    assert not _oof_lifecycle_receipt_matches_active_policy(
+        missing_packets, cadence="daily", require_full_fit=False
     )
     missing_coverage = {
         **shadow,

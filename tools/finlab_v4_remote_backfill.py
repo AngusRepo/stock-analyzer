@@ -23,6 +23,8 @@ for candidate in (ROOT, ROOT / "ml-controller"):
     if str(candidate) not in sys.path:
         sys.path.insert(0, str(candidate))
 
+from services.finlab_auth import login_finlab_sdk
+
 
 @dataclass(frozen=True)
 class DatasetSpec:
@@ -1681,8 +1683,7 @@ def materialize_specs(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     from finlab import data, login
 
-    api_key = os.environ["FINLAB_API_KEY"]
-    login(api_key)
+    login_finlab_sdk(login)
     start = source_start_date or start_date_for_years(years)
     counts = d1_counts(start)
     dataset_summaries: list[dict[str, Any]] = []

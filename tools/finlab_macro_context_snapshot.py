@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,10 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
+for candidate in (ROOT, ROOT / "ml-controller"):
+    if str(candidate) not in sys.path:
+        sys.path.insert(0, str(candidate))
+
 FIELDS = {
     "tw_business_indicators": {
         "景氣對策信號(分)": "tw_business_indicators:景氣對策信號(分)",
@@ -60,11 +65,9 @@ def sql_quote(value: Any) -> str:
 
 def login_finlab() -> None:
     from finlab import login
+    from services.finlab_auth import login_finlab_sdk
 
-    api_key = os.environ.get("FINLAB_API_KEY")
-    if not api_key:
-        raise RuntimeError("missing env FINLAB_API_KEY")
-    login(api_key)
+    login_finlab_sdk(login)
 
 
 def latest_value(api_key: str) -> tuple[str | None, float | None]:

@@ -37,6 +37,9 @@ void (async () => {
     })
 
     assert(rows.length === 1, 'list runner should return D1 rows')
+    assert(state.sql?.includes('WITH recent AS'), 'replay must bound the most recent eligible rows before chronological replay')
+    assert(state.sql?.includes('ORDER BY date(p.prediction_date) DESC'), 'replay limit must select newest rows, not oldest rows')
+    assert(state.sql?.includes('FROM recent p'), 'replay payload must consume the bounded recent CTE')
     assert(state.sql?.includes('p.verified_at IS NOT NULL'), 'replay source must require verified predictions')
     assert(state.sql?.includes('p.actual_return_pct IS NOT NULL'), 'replay source must require realized returns')
     assert(state.sql?.includes("json_extract(p.forecast_data, '$.rank_score')"), 'replay source must project rank_score from forecast_data')

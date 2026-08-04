@@ -18,6 +18,7 @@ export interface NeuralShadowRunOptions {
   dryRun?: boolean
   timeoutMs?: number
   sourceRows?: LinUcbRewardSourceRow[]
+  decisionRows?: LinUcbRewardSourceRow[]
 }
 
 export async function runNeuralMetaShadow(env: Bindings, options: NeuralShadowRunOptions) {
@@ -30,6 +31,7 @@ export async function runNeuralMetaShadow(env: Bindings, options: NeuralShadowRu
   })
   const payload = buildNeuralMetaBanditTrainingPayload(options.policyId, rows, {
     businessDate: options.endDate,
+    decisionRows: options.decisionRows,
     maxRows: options.limit,
   })
   if (payload.contexts.length < payload.arm_names.length * 2) {

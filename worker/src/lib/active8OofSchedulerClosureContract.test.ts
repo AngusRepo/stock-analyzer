@@ -12,12 +12,13 @@ const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8'
 const walkForward = fs.readFileSync('../ml-controller/routers/walk_forward.py', 'utf8')
 const retrainFollowup = fs.readFileSync('../ml-controller/routers/retrain_followup.py', 'utf8')
 const trainingPolicy = fs.readFileSync('../ml-service/app/training_policy.py', 'utf8')
+const shadowPacketMigration = fs.readFileSync('migrations/0100_expected_return_shadow_evaluation_packets.sql', 'utf8')
 
 const daily = manifest.jobs.find((job: any) => job.id === 'active8-oof-daily')
 const watchdog = manifest.jobs.find((job: any) => job.id === 'active8-oof-daily-watchdog')
 const weekly = manifest.jobs.find((job: any) => job.id === 'active8-oof-weekly')
 assert(daily?.task === 'active8-oof-daily' && daily?.schedule === '55 17 * * *', 'daily must materialize ready OOF cohorts after native lifecycle closure')
-assert(watchdog?.task === 'active8-oof-daily' && watchdog?.schedule === '25,55 18-20 * * *', 'watchdog must retry the same idempotent daily lifecycle after prep dependencies settle')
+assert(watchdog?.task === 'active8-oof-daily' && watchdog?.schedule === '25,55 18-23 * * *', 'watchdog must retry the same idempotent daily lifecycle until the immutable-prep freshness watermark closes')
 assert(weekly?.task === 'active8-oof-weekly' && weekly?.schedule === '5 23 * * 6', 'weekly must own deterministic purged OOF cohort generation')
 assert(!manifest.jobs.some((job: any) => ['l4-alpha-ev-refresh', 'allocator-ev-fusion-refresh', 'monthly-l4-alpha-ev-refresh', 'monthly-allocator-ev-fusion-refresh', 'opb-arm-prior-refresh', 'monthly-opb-arm-prior-refresh'].includes(job.id)), 'legacy independent EV/OPB refresh jobs must not race the canonical OOF lifecycle')
 
@@ -37,7 +38,7 @@ assert(walkForward.includes('cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSION
 assert(walkForward.includes('train_window_days=OOF_TRAIN_SESSIONS') && walkForward.includes('test_window_days=OOF_TEST_SESSIONS'), 'OOF cohort must use the canonical 60/10 purged walk-forward windows')
 assert(walkForward.includes('active8-oof-dispatch-v1') && walkForward.includes('cohort_orchestrator_active'), 'OOF generation must have a durable idempotent dispatch fence')
 assert(
-  walkForward.includes('active8-oof-lifecycle-receipt-v5-cadence-owner') &&
+  walkForward.includes('active8-oof-lifecycle-receipt-v8-freshness-watermark') &&
     walkForward.includes('_oof_lifecycle_receipt_matches_active_policy'),
   'materialization/promotion must invalidate stale receipts when the active PIT policy changes',
 )
@@ -56,6 +57,13 @@ assert(
   'lifecycle receipts must not conflate materialized evidence with a promoted serving champion',
 )
 assert(
+  walkForward.includes('archive_ev_shadow_evaluation_packets') &&
+    walkForward.includes('shadow_evaluation_packets') &&
+    shadowPacketMigration.includes("policy_decision = 'shadow_only'") &&
+    !shadowPacketMigration.includes('model_artifact_registry'),
+  'daily frozen-forward L4/Fusion evaluation packets must persist separately from promotion candidates',
+)
+assert(
   walkForward.includes('active8-oof-full-fit-receipt-v1') &&
     walkForward.includes('FROM model_artifact_registry') &&
     walkForward.includes('full_fit_retry_limit_reached'),
@@ -69,6 +77,13 @@ assert(
     walkForward.includes('if not req.dry_run and not dependency_retry_required'),
   'frozen-forward gaps must stop before stale materialization; failed OPB/full-fit must remain terminal and retryable',
 )
+assert(
+  walkForward.includes('"mature_max_date"') &&
+    walkForward.includes('"calendar": calendar_evidence'),
+  'OOF lifecycle and receipts must expose the immutable-prep mature watermark to durable callbacks',
+)
+const oofJob = fs.readFileSync('../ml-controller/oof_materialize_job_main.py', 'utf8')
+assert(oofJob.includes('oof_freshness_closure_failed') && oofJob.includes('effective_oof_max_behind_immutable_prep'), 'terminal OOF success must fail closed when effective max is stale')
 assert(walkForward.indexOf('promoted = True') < walkForward.indexOf('/api/admin/trigger/opb-arm-prior-refresh'), 'OPB refresh must be event-driven only after successful EV promotion')
 
 const monthlyHandoff = retrainFollowup.indexOf('run_walk_forward_oof_lifecycle')

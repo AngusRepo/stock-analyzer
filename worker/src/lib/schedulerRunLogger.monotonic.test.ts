@@ -22,8 +22,8 @@ function entry(
 }
 
 assert(
-  resolveMonotonicSchedulerEntry(entry('error'), entry('success')).status === 'error',
-  'same-run error must be terminal and cannot be overwritten by success',
+  resolveMonotonicSchedulerEntry(entry('error'), entry('success')).status === 'success',
+  'same logical run success must close a prior attempt error',
 )
 assert(
   resolveMonotonicSchedulerEntry(entry('success'), entry('running')).status === 'success',
@@ -52,8 +52,15 @@ assert(
   resolveMonotonicSchedulerEntry(
     entry('error', 'logical-run', 'execution-1'),
     entry('success', 'logical-run', 'execution-1'),
-  ).status === 'error',
-  'the same execution attempt must not overwrite its terminal error',
+  ).status === 'success',
+  'verified success must close a prior error within the same logical run',
+ )
+assert(
+  resolveMonotonicSchedulerEntry(
+    entry('success', 'logical-run', 'execution-1'),
+    entry('error', 'logical-run', 'execution-2'),
+  ).status === 'success',
+  'a parallel attempt error must not regress a closed logical run',
 )
 
 {

@@ -7,13 +7,14 @@ Strategy Lab / OBS review.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
 import numpy as np
 
 PolicyId = Literal["NeuralUCB", "NeuralTS", "NeuCB"]
-DecisionMode = Literal["ucb", "ts", "greedy"]
+DecisionMode = Literal["ucb", "ts", "neucb", "greedy"]
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,10 @@ class _RewardNet:
     def predict(self, x: np.ndarray) -> np.ndarray:
         h = np.maximum(0.0, x @ self.w1 + self.b1)
         return (h @ self.w2 + self.b2).reshape(-1)
+
+    def representation_uncertainty(self, x: np.ndarray) -> np.ndarray:
+        hidden = np.maximum(0.0, x @ self.w1 + self.b1)
+        return np.sqrt(np.maximum(np.mean(hidden ** 2, axis=1), 1e-8))
 
     def train_step(self, x: np.ndarray, y: np.ndarray, learning_rate: float) -> float:
         h_pre = x @ self.w1 + self.b1
@@ -89,6 +94,10 @@ class TrainedNeuralMetaBandit:
         self.arm_counts = arm_counts.astype("float32")
         self.training_report = training_report
 
+        seed_material = f"{config.seed}:{config.policy_id}".encode("utf-8")
+        seed_offset = int.from_bytes(hashlib.sha256(seed_material).digest()[:4], "big")
+        self._rng = np.random.default_rng(seed_offset)
+
     @property
     def arm_count(self) -> int:
         return len(self.arm_names)
@@ -108,8 +117,10 @@ class TrainedNeuralMetaBandit:
                 bonus = self.config.ucb_alpha / np.sqrt(max(float(self.arm_counts[arm_idx]), 1.0))
                 pred = pred + bonus
             elif mode == "ts":
-                rng = np.random.default_rng(self.config.seed + arm_idx)
-                pred = pred + rng.normal(0.0, self.config.ts_noise, size=pred.shape)
+                pred = pred + self._rng.normal(0.0, self.config.ts_noise, size=pred.shape)
+            elif mode == "neucb":
+                uncertainty = self.model.representation_uncertainty(self._design_matrix(contexts, arm_idx))
+                pred = pred + self.config.ucb_alpha * uncertainty / np.sqrt(max(float(self.arm_counts[arm_idx]), 1.0))
             scores.append(pred)
         return np.stack(scores, axis=1)
 
@@ -162,7 +173,9 @@ def train_neural_meta_bandit(
     """Train a neural reward model on context + chosen arm evidence."""
 
     x, a, y = _validate_training_arrays(contexts, arms, rewards, arm_names)
-    np.random.seed(config.seed)
+    seed_material = f"{config.seed}:{config.policy_id}".encode("utf-8")
+    policy_seed = int.from_bytes(hashlib.sha256(seed_material).digest()[:4], "big")
+    np.random.seed(policy_seed)
     arm_count = len(arm_names)
     one_hot = np.zeros((len(x), arm_count), dtype="float32")
     one_hot[np.arange(len(x)), a] = 1.0
@@ -202,6 +215,11 @@ def build_shadow_decisions(
     baseline_actions: Sequence[str],
     mode: DecisionMode = "ucb",
 ) -> list[dict]:
+    if not symbols:
+        if baseline_actions or np.asarray(contexts).size:
+            raise ValueError("empty symbols require empty contexts and baseline_actions")
+        return []
+
     contexts = _validate_contexts(contexts, expected_dim=policy.context_dim)
     if len(symbols) != len(contexts) or len(baseline_actions) != len(contexts):
         raise ValueError("symbols, contexts and baseline_actions must have the same length")

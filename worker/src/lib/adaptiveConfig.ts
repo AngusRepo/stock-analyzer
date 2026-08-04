@@ -68,8 +68,8 @@ export const ADAPTIVE_META_LAYER_GOVERNANCE: AdaptiveMetaLayerGovernance = {
     Conformal: 'prediction uncertainty calibration and coverage guard',
     Stacking: 'meta learner for ensemble blending after base-model predictions',
     GAOptimizer: 'meta optimizer for ensemble weights, strategy params, and risk params',
-    NeuralUCB: 'counterfactual meta-router for nonlinear model-weight and threshold policy comparison',
-    NeuralTS: 'counterfactual Thompson sampler to audit NeuralUCB optimism before production consideration',
+    NeuralUCB: 'guarded dynamic meta-router for nonlinear model-weight comparison with bounded canary and rollback',
+    NeuralTS: 'guarded Thompson challenger eligible for the same bounded canary and rollback controller',
     OnlinePortfolioBandit: 'production allocator controller for sparse_tangent_inverse_risk knobs; production-capable without replacing the final weight engine',
     NeuCB: 'research-only neural contextual bandit benchmark until experiment registry evidence exists',
   },
@@ -107,6 +107,7 @@ export interface AdaptiveParams {
   bandit_max_mult: number
   bandit_force_explore: boolean
   bandit_context?: Record<string, unknown>
+  model_allocator?: Record<string, unknown>
   computed_at: string
   market_risk_score: number
   recent_accuracy_30d: number
@@ -211,6 +212,11 @@ function normalizeThresholdComponents(value: unknown): AdaptiveThresholdComponen
   return value as AdaptiveThresholdComponents
 }
 
+function normalizeModelAllocator(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return { ...(value as Record<string, unknown>) }
+}
+
 function normalizeRegimeOverride(value: unknown): AdaptiveRegimeOverride {
   if (!value || typeof value !== 'object') return {}
   const raw = value as Record<string, unknown>
@@ -289,6 +295,7 @@ export function normalizeAdaptiveParams(
     bandit_max_mult: finiteNumber(raw.bandit_max_mult, DEFAULT_ADAPTIVE_PARAMS.bandit_max_mult),
     bandit_force_explore: finiteBoolean(raw.bandit_force_explore, DEFAULT_ADAPTIVE_PARAMS.bandit_force_explore),
     bandit_context: raw.bandit_context && typeof raw.bandit_context === 'object' ? raw.bandit_context as Record<string, unknown> : undefined,
+    model_allocator: normalizeModelAllocator(raw.model_allocator),
     computed_at: computedAt,
     market_risk_score: finiteNumber(raw.market_risk_score, DEFAULT_ADAPTIVE_PARAMS.market_risk_score),
     recent_accuracy_30d: finiteNumber(raw.recent_accuracy_30d, DEFAULT_ADAPTIVE_PARAMS.recent_accuracy_30d),

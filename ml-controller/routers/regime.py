@@ -12,6 +12,8 @@ Design: memory/project_regime_pipeline_broken.md (Sprint 4-2 revisit / 2026-04-1
 """
 from __future__ import annotations
 
+import asyncio
+import uuid
 import os
 import json
 import logging
@@ -233,6 +235,58 @@ def _fetch_market_env_via_payload_builder(run_date: str | None = None) -> dict:
     return env_dict
 
 
+REGIME_TRANSIENT_UPSTREAM_STATUSES = {408, 429, 502, 503, 504}
+REGIME_UPSTREAM_MAX_ATTEMPTS = 2
+
+
+async def _request_regime_current(
+    client: httpx.AsyncClient,
+    *,
+    market_env: dict[str, Any],
+    force_retrain: bool,
+    headers: dict[str, str],
+    request_id: str,
+    retry_delay_seconds: float = 0.75,
+) -> dict[str, Any]:
+    last_detail = "unknown upstream failure"
+    for attempt in range(1, REGIME_UPSTREAM_MAX_ATTEMPTS + 1):
+        try:
+            response = await client.post(
+                f"{ML_SERVICE_URL}/regime/current",
+                headers=headers,
+                json={"market_env": market_env, "force_retrain": force_retrain},
+                timeout=120.0,
+            )
+        except httpx.RequestError as exc:
+            last_detail = f"{type(exc).__name__}: {exc}"
+            logger.error(
+                "[Regime] upstream_request_error request_id=%s attempt=%s/%s detail=%s",
+                request_id, attempt, REGIME_UPSTREAM_MAX_ATTEMPTS, last_detail,
+            )
+            if attempt < REGIME_UPSTREAM_MAX_ATTEMPTS:
+                await asyncio.sleep(retry_delay_seconds)
+                continue
+            raise HTTPException(status_code=502, detail=f"ml-service /regime/current request failed: {last_detail}")
+
+        if response.status_code == 200:
+            try:
+                return response.json()
+            except ValueError as exc:
+                logger.error("[Regime] upstream_invalid_json request_id=%s detail=%s", request_id, exc)
+                raise HTTPException(status_code=502, detail="ml-service /regime/current returned invalid JSON")
+
+        last_detail = f"HTTP {response.status_code}: {response.text[:200]}"
+        logger.error(
+            "[Regime] upstream_non_200 request_id=%s attempt=%s/%s status=%s body=%s",
+            request_id, attempt, REGIME_UPSTREAM_MAX_ATTEMPTS, response.status_code, response.text[:200],
+        )
+        if response.status_code in REGIME_TRANSIENT_UPSTREAM_STATUSES and attempt < REGIME_UPSTREAM_MAX_ATTEMPTS:
+            await asyncio.sleep(retry_delay_seconds)
+            continue
+        raise HTTPException(status_code=502, detail=f"ml-service /regime/current {last_detail}")
+    raise HTTPException(status_code=502, detail=f"ml-service /regime/current {last_detail}")
+
+
 @router.post("/regime/compute")
 async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
     """Compute current market regime via ml-service HMM and push Worker market_regime_state.
@@ -248,12 +302,13 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
     if not ML_SERVICE_URL:
         raise HTTPException(status_code=500, detail="ML_SERVICE_URL not set")
 
-    logger.info(f"[Regime] compute start (force_retrain={req.force_retrain})")
+    request_id = uuid.uuid4().hex
+    logger.info("[Regime] compute_start request_id=%s force_retrain=%s run_date=%s", request_id, req.force_retrain, req.run_date)
 
     try:
         market_env = _fetch_market_env_via_payload_builder(req.run_date)
     except Exception as e:
-        logger.error(f"[Regime] load_market_env failed: {e}")
+        logger.error("[Regime] load_market_env_failed request_id=%s detail=%s", request_id, e)
         raise HTTPException(status_code=502, detail=f"load_market_env failed: {e}")
 
     if not market_env.get("history"):
@@ -263,16 +318,13 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
         headers = {"Content-Type": "application/json"}
         if ML_SERVICE_SECRET:
             headers["X-Service-Token"] = ML_SERVICE_SECRET
-        resp = await client.post(
-            f"{ML_SERVICE_URL}/regime/current",
+        info = await _request_regime_current(
+            client,
+            market_env=market_env,
+            force_retrain=req.force_retrain,
             headers=headers,
-            json={"market_env": market_env, "force_retrain": req.force_retrain},
-            timeout=120.0,
+            request_id=request_id,
         )
-        if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"ml-service /regime/current HTTP {resp.status_code}: {resp.text[:200]}")
-
-        info = resp.json()
         label_en  = info.get("regime_label_en", "sideways")
         reg_idx   = int(info.get("regime_index", 2))
         hmm_state = info.get("hmm_state", -1)

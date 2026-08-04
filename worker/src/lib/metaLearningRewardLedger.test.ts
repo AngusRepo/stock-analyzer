@@ -1,6 +1,8 @@
 import {
   buildNeuralMetaBanditTrainingPayload,
   buildLinUcbRewardLedgerRows,
+  metaPolicyRewardForSourceRow,
+  modelFamilyArm,
   normalizeMetaReward,
 } from './metaLearningRewardLedger'
 
@@ -85,6 +87,7 @@ function assert(condition: unknown, message: string): void {
       stock_id: '2330',
       model_name: 'XGBoost',
       actual_return_pct: 1,
+      direction_correct: 1,
       alpha_bucket: 'breakout',
       ml_vote_summary: JSON.stringify({ ic_4w_avg: 0.1, coverage: 0.8 }),
     },
@@ -93,15 +96,47 @@ function assert(condition: unknown, message: string): void {
       stock_id: '4938',
       model_name: 'PatchTST',
       actual_return_pct: -2,
+      direction_correct: 0,
       ml_vote_summary: JSON.stringify({ ic_4w_avg: -0.02, coverage: 0.7 }),
     },
-  ], { businessDate: '2026-05-06' })
+  ], {
+    businessDate: '2026-08-04',
+    decisionRows: [
+      { date: '2026-08-04', stock_id: '2330', model_name: 'DLinear', rank_score: 0.4 },
+      { date: '2026-08-04', stock_id: '2330', model_name: 'XGBoost', rank_score: 0.9 },
+      { date: '2026-08-04', stock_id: '2454', model_name: 'GNN', rank_score: 0.8 },
+    ],
+  })
 
   assert(payload.policy_id === 'NeuralUCB', 'payload should target requested policy')
   assert(payload.contexts.length === 2, 'payload should include reward-bearing rows')
   assert(payload.contexts[0].length === 12, 'payload should use expanded 12d meta context')
-  assert(payload.arm_names.join(',') === 'feature_family,time_series_family,do_nothing', 'payload should use stable meta-family arms')
-  assert(payload.arms[0] === 0 && payload.arms[1] === 1, 'payload should map model names to family arms')
+  assert(
+    payload.arm_names.join(',') === 'tree_family,tabular_neural_family,graph_family,time_series_family,do_nothing',
+    'payload should expose independently selectable model-family arms',
+  )
+  assert(payload.arms[0] === 0 && payload.arms[1] === 3, 'payload should map model names to independent family arms')
+  assert(payload.business_date === '2026-08-04', 'decision evidence should use the current business date')
+  assert(payload.decision_symbols.join(',') === '2330,2454', 'decision rows should be deduplicated by symbol')
+  assert(
+    payload.decision_baseline_actions.join(',') === 'tree_family,graph_family',
+    'highest ranked current row should define each symbol baseline action',
+  )
+  assert(payload.symbols.join(',') === payload.decision_symbols.join(','), 'legacy symbols should mirror decision symbols')
+}
+
+{
+  assert(modelFamilyArm('XGBoost') === 'tree_family', 'XGBoost should map to tree family')
+  assert(modelFamilyArm('TabM') === 'tabular_neural_family', 'TabM should map to tabular neural family')
+  assert(modelFamilyArm('GNN') === 'graph_family', 'GNN should map to graph family')
+  assert(modelFamilyArm('PatchTST') === 'time_series_family', 'PatchTST should map to time-series family')
+  assert(modelFamilyArm('UnknownModel') === 'do_nothing', 'unknown model should fail closed to do-nothing')
+
+  const correct = metaPolicyRewardForSourceRow({ direction_correct: 1, actual_return_pct: -1 })
+  const wrong = metaPolicyRewardForSourceRow({ direction_correct: 0, actual_return_pct: 1 })
+  assert((correct ?? 0) > 0, 'direction hit should stay positive despite a small negative return')
+  assert((wrong ?? 0) < 0, 'direction miss should stay negative despite a small positive return')
+  assert(metaPolicyRewardForSourceRow({}) == null, 'unmatured rows must not fabricate rewards')
 }
 
 {

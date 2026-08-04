@@ -78,14 +78,20 @@ export function getBearerToken(authHeader?: string | null): string | null {
   return token.length > 0 ? token : null
 }
 
-export function hasServiceToken(token: string | null | undefined, serviceToken?: string): boolean {
-  return Boolean(token && serviceToken && token === serviceToken)
+export function hasServiceToken(
+  token: string | null | undefined,
+  serviceToken?: string,
+  previousServiceToken?: string,
+): boolean {
+  return Boolean(
+    token && ((serviceToken && token === serviceToken) || (previousServiceToken && token === previousServiceToken)),
+  )
 }
 
 async function getJwtOrServicePayload(c: AppContext): Promise<Record<string, unknown> | null> {
   const token = getBearerToken(c.req.header('Authorization'))
   if (!token) return isLocalAuthBypass(c) ? localDevPayload() : null
-  if (hasServiceToken(token, c.env.STOCKVISION_AUTH_TOKEN)) {
+  if (hasServiceToken(token, c.env.STOCKVISION_AUTH_TOKEN, c.env.STOCKVISION_AUTH_TOKEN_PREVIOUS)) {
     return { role: 'service', sub: 'service' }
   }
   return verifyJWT(token, c.env.JWT_SECRET)
@@ -94,7 +100,7 @@ async function getJwtOrServicePayload(c: AppContext): Promise<Record<string, unk
 export async function requireServiceToken(c: AppContext): Promise<Response | null> {
   if (isLocalAuthBypass(c)) return null
   const token = getBearerToken(c.req.header('Authorization'))
-  if (hasServiceToken(token, c.env.STOCKVISION_AUTH_TOKEN)) return null
+  if (hasServiceToken(token, c.env.STOCKVISION_AUTH_TOKEN, c.env.STOCKVISION_AUTH_TOKEN_PREVIOUS)) return null
   return c.json({ error: 'Unauthorized' }, 401)
 }
 

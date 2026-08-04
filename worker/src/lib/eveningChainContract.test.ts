@@ -98,8 +98,11 @@ assert(updateOrchestrator.includes('sendBatch'), 'indicator queue root trigger m
 assert(updateOrchestrator.includes('markShardComplete'), 'indicator queue must wait for all shards before starting screener/pipeline')
 assert(
   updateOrchestrator.includes('acquireFinalizeLock') &&
-    updateOrchestrator.includes('INSERT OR IGNORE INTO scheduler_locks'),
-  'indicator queue finalizer must use an atomic D1 lock; KV get/put is not safe for concurrent finalizers',
+    updateOrchestrator.includes('ON CONFLICT(lock_key) DO UPDATE SET') &&
+    updateOrchestrator.includes('scheduler_locks.expires_at <= excluded.created_at') &&
+    updateOrchestrator.includes('renewFinalizeLock') &&
+    updateOrchestrator.includes('finalizer lease lost before continuation stage'),
+  'indicator queue finalizer must use an expiring renewable D1 lease with fenced atomic takeover',
 )
 assert(
   schedulerLockMigration.includes('CREATE TABLE IF NOT EXISTS scheduler_locks') &&
@@ -192,8 +195,9 @@ assert(
   updateOrchestrator.includes('repairFinalizeContinuationIfNeeded') &&
     updateOrchestrator.includes('hasSuccessfulScreenerRun') &&
     updateOrchestrator.includes('hasPipelineEvidence') &&
-    updateOrchestrator.includes('stale-lock-repair'),
-  'indicator queue finalizer must repair stale/orphaned locks so screener seed rows cannot strand the chain before pipeline',
+    updateOrchestrator.includes('expired-lease-repair') &&
+    updateOrchestrator.includes('Finalize repair takeover lost to another continuation'),
+  'indicator queue finalizer must atomically repair expired leases so screener seed rows cannot strand the chain before pipeline',
 )
 assert(
   updateOrchestrator.includes('deferFinalizeContinuation') &&

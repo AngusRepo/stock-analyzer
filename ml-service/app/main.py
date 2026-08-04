@@ -8,6 +8,7 @@ Current ensemble groups:
   - L2 feature sidecar: TimesFM
   - State-space overlays: KalmanFilter / MarkovSwitching
 """
+import asyncio
 import os
 import numpy as np
 import polars as pl
@@ -158,6 +159,9 @@ class NeuralMetaBanditRequest(BaseModel):
     business_date: str
     symbols: list[str]
     baseline_actions: list[str]
+    decision_contexts: list[list[float]] | None = None
+    decision_symbols: list[str] | None = None
+    decision_baseline_actions: list[str] | None = None
     epochs: int = Field(default=120, ge=1, le=2000)
     hidden_dim: int = Field(default=32, ge=4, le=256)
     learning_rate: float = Field(default=0.01, gt=0, le=1)
@@ -264,7 +268,7 @@ async def neural_meta_shadow_train_endpoint(req: NeuralMetaBanditRequest, reques
     contexts = np.asarray(req.contexts, dtype="float32")
     arms = np.asarray(req.arms, dtype=np.int64)
     rewards = np.asarray(req.rewards, dtype="float32")
-    mode = "ts" if req.policy_id == "NeuralTS" else "greedy" if req.policy_id == "NeuCB" else "ucb"
+    mode = "ts" if req.policy_id == "NeuralTS" else "neucb" if req.policy_id == "NeuCB" else "ucb"
     policy = train_neural_meta_bandit(
         contexts,
         arms,
@@ -278,12 +282,24 @@ async def neural_meta_shadow_train_endpoint(req: NeuralMetaBanditRequest, reques
             seed=req.seed,
         ),
     )
+    decision_symbols = req.decision_symbols if req.decision_symbols is not None else req.symbols
+    decision_baseline_actions = (
+        req.decision_baseline_actions
+        if req.decision_baseline_actions is not None
+        else req.baseline_actions
+    )
+    decision_contexts = np.asarray(
+        req.decision_contexts
+        if req.decision_contexts is not None
+        else contexts[:len(decision_symbols)],
+        dtype="float32",
+    )
     decisions = build_shadow_decisions(
         policy,
         business_date=req.business_date,
-        symbols=req.symbols,
-        contexts=contexts[:len(req.symbols)],
-        baseline_actions=req.baseline_actions,
+        symbols=decision_symbols,
+        contexts=decision_contexts,
+        baseline_actions=decision_baseline_actions,
         mode=mode,
     )
     return {
@@ -808,10 +824,8 @@ class RegimeRequest(BaseModel):
     force_retrain: bool = False     # if True, retrain HMM from history
 
 
-@app.post("/regime/current")
-async def regime_current(req: RegimeRequest, request: Request):
-    # Return the current HMM market regime.
-    await verify_service_token(request)
+def _compute_regime_current(req: RegimeRequest) -> dict:
+    """Run synchronous GCS/HMM work outside the ASGI event loop."""
     from datetime import datetime, timezone, timedelta
     from .regime import (
         RegimeDetector,
@@ -856,6 +870,14 @@ async def regime_current(req: RegimeRequest, request: Request):
         "feature_date":        latest_market_feature_date(req.market_env),
         "computed_at":         datetime.now(TW_TZ).isoformat(),
     }
+
+
+@app.post("/regime/current")
+async def regime_current(req: RegimeRequest, request: Request):
+    # GCS download + joblib + HMM prediction are synchronous. Keeping them on
+    # the event loop caused sibling requests to time out under Modal concurrency.
+    await verify_service_token(request)
+    return await asyncio.to_thread(_compute_regime_current, req)
 
 
 # Walk-forward endpoints (Sprint 6b / 2026-04-18 #32)

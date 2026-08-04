@@ -87,6 +87,13 @@ export async function listAdaptiveMetaPolicyReplayRows(
   binds.push(limit)
 
   const { results } = await db.prepare(`
+    WITH recent AS (
+      SELECT p.*
+        FROM predictions p
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY date(p.prediction_date) DESC, p.stock_id DESC, p.model_name DESC
+       LIMIT ?
+    )
     SELECT
       p.prediction_date AS date,
       p.stock_id,
@@ -157,14 +164,12 @@ export async function listAdaptiveMetaPolicyReplayRows(
         CASE WHEN json_valid(dr.alpha_context) THEN json_extract(dr.alpha_context, '$.market_risk_score') END,
         CASE WHEN json_valid(dr.score_components) THEN json_extract(dr.score_components, '$.market_risk') END
       ) AS market_risk
-    FROM predictions p
+    FROM recent p
     LEFT JOIN stocks s ON s.id = p.stock_id
     LEFT JOIN daily_recommendations dr
       ON dr.stock_id = p.stock_id
      AND dr.date = p.prediction_date
-    WHERE ${clauses.join(' AND ')}
     ORDER BY date(p.prediction_date) ASC, p.stock_id ASC, p.model_name ASC
-    LIMIT ?
   `).bind(...binds).all<AdaptiveMetaPolicyReplayRow>()
 
   return results ?? []
@@ -209,6 +214,11 @@ export async function runAdaptiveMetaPolicyReplay(
     limit: options.limit ?? 20000,
   })
 
+  const actualSourceDates = rows
+    .map((row) => String(row.date ?? '').slice(0, 10))
+    .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+    .sort()
+
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (env.ML_SERVICE_SECRET) headers['X-Service-Token'] = env.ML_SERVICE_SECRET
   const response = await fetch(`${mlUrl}/meta-learning/adaptive-policy-replay`, {
@@ -252,6 +262,8 @@ export async function runAdaptiveMetaPolicyReplay(
     source_query: {
       start_date: startDate,
       end_date: endDate,
+      actual_date_start: actualSourceDates[0] ?? null,
+      actual_date_end: actualSourceDates.at(-1) ?? null,
       source_rows: rows.length,
       active_models: [...ACTIVE_MODELS],
     },

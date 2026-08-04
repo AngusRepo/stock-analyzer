@@ -18,6 +18,7 @@ import httpx
 import pandas as pd
 
 from services import d1_client
+from services.finlab_auth import login_finlab_sdk
 from services.strategy_mining_evidence import build_strategy_mining_evidence
 
 
@@ -425,12 +426,9 @@ def _assert_runtime_files() -> None:
 
 
 def _login_finlab() -> None:
-    api_key = os.environ.get("FINLAB_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("FINLAB_API_KEY_missing_for_strategy_mining")
     from finlab import login
 
-    login(api_key)
+    login_finlab_sdk(login)
 
 
 def _ledger_candidate_id(run_id: str, raw_candidate_id: str) -> str:
@@ -756,6 +754,7 @@ def _persist_promotion_packets(run_id: str, report: dict[str, Any]) -> dict[str,
                 "common_candidate_matrix": research_evidence.get("common_candidate_matrix"),
                 "pbo": research_evidence.get("pbo"),
                 "walk_forward": research_evidence.get("walk_forward"),
+                "multiple_testing": research_evidence.get("multiple_testing"),
                 "candidate": evidence or None,
             },
         }

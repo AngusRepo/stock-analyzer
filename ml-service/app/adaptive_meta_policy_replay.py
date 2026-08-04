@@ -486,7 +486,7 @@ class _NeuralReplayPolicy:
         if self.method == "NeuralTS":
             return "ts"
         if self.method == "NeuCB":
-            return "greedy"
+            return "neucb"
         return "ucb"
 
     def select(self, context: np.ndarray, available: Sequence[str]) -> str:
@@ -503,7 +503,9 @@ class _NeuralReplayPolicy:
                 policy_id=policy_id,  # type: ignore[arg-type]
                 epochs=self.cfg.neural_epochs,
                 seed=self.cfg.seed,
-                ucb_alpha=0.15 if self.method == "NeuralUCB" else 0.0,
+                ucb_alpha=0.15
+                if self.method == "NeuralUCB"
+                else 0.10 if self.method == "NeuCB" else 0.0,
             ),
         )
         scores = model.score_actions(np.asarray([context], dtype="float32"), mode=self._mode())  # type: ignore[arg-type]

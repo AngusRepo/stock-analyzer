@@ -50,7 +50,10 @@ export interface AllocatorEvMaturityCoverage {
   indexedL4PitRows: number
   indexedL4PitDates: number
   indexedL4PitMaxDate: string | null
+  indexedL4PitBaseMaxDate: string | null
   indexedL4PitCohortId: string | null
+  shadowL4PitMaxDate: string | null
+  shadowL4PitCohortId: string | null
   incompatibleOrLegacyL4Rows: number
   latestSnapshotDate: string | null
   state: 'awaiting_first_point_in_time_l4' | 'accumulating_point_in_time_l4'
@@ -65,7 +68,7 @@ export async function inspectAllocatorEvMaturityCoverage(
   asOfDate: string,
 ): Promise<AllocatorEvMaturityCoverage> {
   if (!validDate(asOfDate)) throw new Error(`invalid allocator EV maturity date: ${asOfDate}`)
-  const [row, indexed] = await Promise.all([
+  const [row, indexed, shadow] = await Promise.all([
     db.prepare(`
     WITH classified AS (
       SELECT snapshot_date,
@@ -117,9 +120,31 @@ export async function inspectAllocatorEvMaturityCoverage(
          AND a.row_count > 0
          AND a.date_count > 0
          AND date(a.max_date) <= date(?)
-       ORDER BY a.updated_at DESC, c.updated_at DESC, a.cohort_id DESC
+       ORDER BY a.max_date DESC, a.updated_at DESC, c.updated_at DESC, a.cohort_id DESC
        LIMIT 1
     `).bind(asOfDate).first<{
+      cohort_id?: string | null
+      row_count?: number
+      date_count?: number
+      max_date?: string | null
+    }>(),
+    db.prepare(`
+      SELECT f.cohort_id, f.row_count, f.date_count, f.max_date
+        FROM active8_oof_forward_extension_coverage f
+        JOIN active8_oof_cohorts c ON c.cohort_id = f.cohort_id
+       WHERE f.artifact_kind = 'l4_predictions'
+         AND c.status = 'ready'
+         AND f.coverage_status = 'verified'
+         AND f.promotion_eligible = 0
+         AND f.training_dispatched = 0
+         AND f.policy_version = 'verified-frozen-forward-monitoring-v1'
+         AND f.row_count > 0
+         AND f.date_count > 0
+         AND date(f.knowledge_cutoff_date) <= date(?)
+         AND date(f.max_date) <= date(?)
+       ORDER BY f.max_date DESC, f.knowledge_cutoff_date DESC, f.updated_at DESC, f.cohort_id DESC
+       LIMIT 1
+    `).bind(asOfDate, asOfDate).first<{
       cohort_id?: string | null
       row_count?: number
       date_count?: number
@@ -132,6 +157,10 @@ export async function inspectAllocatorEvMaturityCoverage(
   const indexedL4PitDates = Number(indexed?.date_count ?? 0)
   const strictL4PitRows = Math.max(nativeStrictL4PitRows, indexedL4PitRows)
   const strictL4PitDates = Math.max(nativeStrictL4PitDates, indexedL4PitDates)
+  const indexedL4PitMaxDate = [indexed?.max_date, shadow?.max_date]
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1) ?? null
   return {
     asOfDate,
     snapshotRows: Number(row?.snapshot_rows ?? 0),
@@ -140,8 +169,11 @@ export async function inspectAllocatorEvMaturityCoverage(
     strictL4PitDates,
     indexedL4PitRows,
     indexedL4PitDates,
-    indexedL4PitMaxDate: indexed?.max_date ?? null,
+    indexedL4PitMaxDate,
+    indexedL4PitBaseMaxDate: indexed?.max_date ?? null,
     indexedL4PitCohortId: indexed?.cohort_id ?? null,
+    shadowL4PitMaxDate: shadow?.max_date ?? null,
+    shadowL4PitCohortId: shadow?.cohort_id ?? null,
     incompatibleOrLegacyL4Rows: Number(row?.incompatible_or_legacy_l4_rows ?? 0),
     latestSnapshotDate: row?.latest_snapshot_date ?? null,
     state: strictL4PitRows > 0

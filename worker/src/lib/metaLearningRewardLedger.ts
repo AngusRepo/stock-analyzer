@@ -7,6 +7,8 @@ export interface LinUcbRewardSourceRow {
   date?: string | null
   stock_id?: string | null
   model_name?: string | null
+  direction_correct?: number | boolean | null
+  rank_score?: number | string | null
   market_segment?: string | null
   recommendation_lane?: string | null
   has_buy_signal?: number | boolean | null
@@ -47,6 +49,7 @@ export interface LinUcbRewardRefreshOptions {
   endDate?: string
   limit?: number
   nowIso?: string
+  requireOutcome?: boolean
 }
 
 export interface LinUcbRewardRefreshReport {
@@ -66,6 +69,9 @@ export interface NeuralMetaBanditTrainingPayload {
   business_date: string
   symbols: string[]
   baseline_actions: string[]
+  decision_contexts: number[][]
+  decision_symbols: string[]
+  decision_baseline_actions: string[]
 }
 
 type Bucket = {
@@ -147,6 +153,26 @@ function rewardForRow(row: LinUcbRewardSourceRow): number | null {
   return normalizeMetaReward(row.actual_return_pct)
 }
 
+export function metaPolicyRewardForSourceRow(row: LinUcbRewardSourceRow): number | null {
+  const components: Array<{ value: number; weight: number }> = []
+  if (row.direction_correct === true || row.direction_correct === 1) {
+    components.push({ value: 1, weight: 0.30 })
+  } else if (row.direction_correct === false || row.direction_correct === 0) {
+    components.push({ value: -1, weight: 0.30 })
+  }
+  const pnl = normalizeMetaReward(row.trade_pnl_pct) ?? normalizeMetaReward(row.actual_return_pct)
+  if (pnl != null) {
+    components.push({ value: clamp(pnl / 0.20, -1, 1), weight: 0.15 })
+  }
+  if (components.length === 0) return null
+  const weight = components.reduce((sum, component) => sum + component.weight, 0)
+  return Math.round(clamp(
+    components.reduce((sum, component) => sum + component.value * component.weight, 0) / weight,
+    -1,
+    1,
+  ) * 1_000_000) / 1_000_000
+}
+
 function armIdsForRow(row: LinUcbRewardSourceRow): string[] {
   const segment = normalizedMarketSegment(row.market_segment)
   const lane = normalizedToken(row.recommendation_lane, 'unknown')
@@ -160,16 +186,16 @@ function armIdsForRow(row: LinUcbRewardSourceRow): string[] {
   ]
 }
 
-function modelFamilyArm(modelName: unknown): string {
+export function modelFamilyArm(modelName: unknown): string {
   const name = String(modelName ?? '').toLowerCase()
   if (['xgboost', 'extratrees', 'lightgbm'].some((part) => name.includes(part))) {
-    return 'feature_family'
+    return 'tree_family'
   }
   if (['tabm'].some((part) => name.includes(part))) {
-    return 'feature_family'
+    return 'tabular_neural_family'
   }
   if (['gnn'].some((part) => name.includes(part))) {
-    return 'feature_family'
+    return 'graph_family'
   }
   if (['dlinear', 'patchtst', 'itransformer', 'timesfm'].some((part) => name.includes(part))) {
     return 'time_series_family'
@@ -257,27 +283,40 @@ export function buildLinUcbRewardLedgerRows(
 export function buildNeuralMetaBanditTrainingPayload(
   policyId: 'NeuralUCB' | 'NeuralTS' | 'NeuCB',
   rows: LinUcbRewardSourceRow[],
-  options: { businessDate?: string; maxRows?: number } = {},
+  options: { businessDate?: string; maxRows?: number; decisionRows?: LinUcbRewardSourceRow[] } = {},
 ): NeuralMetaBanditTrainingPayload {
-  const armNames = ['feature_family', 'time_series_family', 'do_nothing']
+  const armNames = ['tree_family', 'tabular_neural_family', 'graph_family', 'time_series_family', 'do_nothing']
   const armIndex = new Map(armNames.map((name, idx) => [name, idx]))
   const contexts: number[][] = []
   const arms: number[] = []
   const rewards: number[] = []
-  const symbols: string[] = []
-  const baselineActions: string[] = []
   const maxRows = Math.max(1, Math.min(options.maxRows ?? 5000, 20000))
   for (const row of rows) {
     if (contexts.length >= maxRows) break
-    const reward = rewardForRow(row)
+    const reward = metaPolicyRewardForSourceRow(row)
     if (reward == null) continue
     const family = modelFamilyArm(row.model_name)
     contexts.push(expandedContextForSourceRow(row).vector)
-    arms.push(armIndex.get(family) ?? armIndex.get('do_nothing') ?? 2)
+    arms.push(armIndex.get(family) ?? armIndex.get('do_nothing') ?? 4)
     rewards.push(reward)
-    symbols.push(String(row.stock_id ?? 'unknown'))
-    baselineActions.push(family)
   }
+
+  const decisionRows = options.decisionRows ?? rows
+  const bestDecisionRowBySymbol = new Map<string, { row: LinUcbRewardSourceRow; rank: number }>()
+  for (const row of decisionRows) {
+    const symbol = String(row.stock_id ?? '').trim()
+    if (!symbol) continue
+    const rank = toFiniteNumber(row.rank_score) ?? Number.NEGATIVE_INFINITY
+    const previous = bestDecisionRowBySymbol.get(symbol)
+    if (!previous || rank > previous.rank) bestDecisionRowBySymbol.set(symbol, { row, rank })
+  }
+  const selectedDecisionRows = [...bestDecisionRowBySymbol.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .slice(0, 1000)
+  const decisionContexts = selectedDecisionRows.map(([, item]) => expandedContextForSourceRow(item.row).vector)
+  const decisionSymbols = selectedDecisionRows.map(([symbol]) => symbol)
+  const decisionBaselineActions = selectedDecisionRows.map(([, item]) => modelFamilyArm(item.row.model_name))
+
   return {
     policy_id: policyId,
     contexts,
@@ -285,8 +324,11 @@ export function buildNeuralMetaBanditTrainingPayload(
     rewards,
     arm_names: armNames,
     business_date: options.businessDate ?? rows.find((row) => row.date)?.date ?? new Date().toISOString().slice(0, 10),
-    symbols: symbols.slice(0, 200),
-    baseline_actions: baselineActions.slice(0, 200),
+    symbols: decisionSymbols,
+    baseline_actions: decisionBaselineActions,
+    decision_contexts: decisionContexts,
+    decision_symbols: decisionSymbols,
+    decision_baseline_actions: decisionBaselineActions,
   }
 }
 
@@ -295,7 +337,9 @@ export async function listLinUcbRewardSourceRows(
   options: LinUcbRewardRefreshOptions = {},
 ): Promise<LinUcbRewardSourceRow[]> {
   const limit = Math.max(1, Math.min(options.limit ?? 5000, 20000))
-  const clauses = ['(p.trade_pnl_pct IS NOT NULL OR p.actual_return_pct IS NOT NULL)']
+  const clauses: string[] = options.requireOutcome === false
+    ? []
+    : ['(p.trade_pnl_pct IS NOT NULL OR p.actual_return_pct IS NOT NULL)']
   const binds: unknown[] = []
   if (options.startDate) {
     clauses.push('dr.date >= ?')
@@ -305,12 +349,19 @@ export async function listLinUcbRewardSourceRows(
     clauses.push('dr.date <= ?')
     binds.push(options.endDate)
   }
+  const whereClause = clauses.length > 0 ? clauses.join(' AND ') : '1 = 1'
   binds.push(limit)
 
   const { results } = await db.prepare(`
     SELECT dr.date,
            dr.stock_id,
            p.model_name,
+           p.direction_correct,
+           COALESCE(
+             CASE WHEN json_valid(p.forecast_data) THEN json_extract(p.forecast_data, '$.rank_score') END,
+             CASE WHEN json_valid(p.forecast_data) THEN json_extract(p.forecast_data, '$.ensemble_v2.avg_rank') END,
+             p.direction_accuracy
+           ) AS rank_score,
            dr.market_segment,
            dr.recommendation_lane,
            dr.has_buy_signal,
@@ -378,7 +429,7 @@ export async function listLinUcbRewardSourceRows(
       JOIN predictions p
         ON p.stock_id = dr.stock_id
        AND p.prediction_date = dr.date
-     WHERE ${clauses.join(' AND ')}
+     WHERE ${whereClause}
      ORDER BY dr.date DESC, dr.rank ASC
      LIMIT ?
   `).bind(...binds).all<LinUcbRewardSourceRow>()

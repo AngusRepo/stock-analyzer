@@ -444,6 +444,8 @@ def _deflated_sharpe_stats(returns: pd.Series, n_trials: int) -> dict[str, float
             "daily_sharpe": 0.0,
             "skew": 0.0,
             "kurtosis": 3.0,
+            "sample_count": n_obs,
+            "trials": max(2, int(n_trials)),
         }
     std = float(clean.std(ddof=0))
     if std <= 1e-12:
@@ -454,6 +456,8 @@ def _deflated_sharpe_stats(returns: pd.Series, n_trials: int) -> dict[str, float
             "daily_sharpe": 0.0,
             "skew": 0.0,
             "kurtosis": 3.0,
+            "sample_count": n_obs,
+            "trials": max(2, int(n_trials)),
         }
 
     from scipy.stats import norm
@@ -478,6 +482,38 @@ def _deflated_sharpe_stats(returns: pd.Series, n_trials: int) -> dict[str, float
         "daily_sharpe": daily_sharpe,
         "skew": skew,
         "kurtosis": kurtosis,
+        "sample_count": n_obs,
+        "trials": n,
+    }
+
+
+def _rebase_deflated_sharpe_trials(stats: dict[str, Any], n_trials: int) -> dict[str, Any]:
+    """Recompute DSR against the full run-wide search family, not one algorithm lane."""
+
+    from scipy.stats import norm
+
+    n_obs = int(stats.get("sample_count") or 0)
+    daily_sharpe = float(stats.get("daily_sharpe") or 0.0)
+    skew = float(stats.get("skew") or 0.0)
+    kurtosis = float(stats.get("kurtosis") or 3.0)
+    trials = max(2, int(n_trials))
+    if n_obs <= 3 or daily_sharpe == 0.0:
+        return {**stats, "probability": 0.0, "z_score": 0.0, "trials": trials}
+    gamma = 0.5772156649015329
+    trial_threshold = (
+        (1.0 - gamma) * norm.ppf(1.0 - 1.0 / trials)
+        + gamma * norm.ppf(1.0 - 1.0 / (trials * math.e))
+    )
+    variance_term = 1.0 - skew * daily_sharpe + ((kurtosis - 1.0) / 4.0) * daily_sharpe * daily_sharpe
+    sigma_sr = math.sqrt(max(variance_term, 1e-12) / max(1, n_obs - 1))
+    minimum_daily_sharpe = float(trial_threshold * sigma_sr)
+    z_score = float((daily_sharpe - minimum_daily_sharpe) / max(sigma_sr, 1e-12))
+    return {
+        **stats,
+        "probability": float(norm.cdf(z_score)),
+        "z_score": z_score,
+        "minimum_annualized_sharpe": minimum_daily_sharpe * math.sqrt(252.0),
+        "trials": trials,
     }
 
 
@@ -1937,6 +1973,23 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 generations=args.pymoo_labeler_generations,
             ))
 
+    effective_trials = max(2, sum(1 for row in rows if row.get("status") == "ok"))
+    for row in rows:
+        if row.get("status") != "ok":
+            continue
+        prior_stats = row.get("deflated_sharpe") or {}
+        prior_probability = float(prior_stats.get("probability") or 0.0)
+        prior_proxy = float(row.get("deflated_sharpe_proxy") or 0.0)
+        rebased_stats = _rebase_deflated_sharpe_trials(prior_stats, effective_trials)
+        rebased_proxy = _deflated_sharpe_proxy(
+            float((row.get("validation") or {}).get("sharpe") or 0.0),
+            effective_trials,
+            max(1, int(rebased_stats.get("sample_count") or 0)),
+        )
+        row["deflated_sharpe"] = rebased_stats
+        row["deflated_sharpe_proxy"] = rebased_proxy
+        row["fitness"] = float(row.get("fitness") or 0.0) + 0.15 * (float(rebased_stats["probability"]) - prior_probability) + 0.05 * (rebased_proxy - prior_proxy)
+
     _progress(f"summarizing {len(rows)} candidates")
     summary = _summarize(rows, pbo_folds=args.pbo_folds)
     adaptive_families = _adaptive_strategy_families(
@@ -1965,6 +2018,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "decision_effect": "none",
         "runtime_seconds": round(time.time() - t0, 3),
         "config": vars(args),
+        "multiple_testing": {
+            "deflated_sharpe_trial_scope": "all_successful_candidates_across_enabled_search_lanes",
+            "effective_trials": effective_trials,
+            "selection_stage": "validation",
+            "holdout_stage": "newey_west_hac_plus_holm_bonferroni_in_strategy_mining_evidence",
+        },
         "factor_universe": {
             **universe_info,
             "factor_ids": factor_ids,

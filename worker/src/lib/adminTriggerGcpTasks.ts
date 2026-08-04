@@ -48,6 +48,18 @@ export function buildAdminGcpTriggerTaskMap(c: any, deps: TriggerDeps): Record<s
     'active8-oof-daily': () => runActive8OofLifecycle(c.env, requestedRunDate(), 'daily'),
     'active8-oof-weekly': () => runActive8OofLifecycle(c.env, requestedRunDate(), 'weekly'),
     'active8-oof-monthly': () => runActive8OofLifecycle(c.env, requestedRunDate(), 'monthly'),
+    'meta-learning-shadow': async () => {
+      const runDate = requestedRunDate() || twToday()
+      const runId = `meta-learning-shadow-${runDate}-${Date.now()}`
+      await c.env.UPDATE_QUEUE.send({
+        type: 'meta_learning_shadow_closure',
+        cursor: 0,
+        triggerTime: runDate,
+        runId,
+        force: false,
+      })
+      return `triggered meta-learning-shadow queue run_date=${runDate} run_id=${runId}`
+    },
     'allocator-ev-readiness': async () => {
       const { runDailyAllocatorEvReadiness } = await import('./updateOrchestrator')
       return runDailyAllocatorEvReadiness(c.env, requestedRunDate() || twToday())

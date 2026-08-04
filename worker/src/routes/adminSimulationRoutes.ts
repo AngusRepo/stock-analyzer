@@ -1,11 +1,12 @@
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../types'
+import { hasServiceToken } from '../lib/auth'
 
 export const adminSimulationRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 function requireServiceToken(c: any) {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN) {
+  if (!hasServiceToken(token, c.env.STOCKVISION_AUTH_TOKEN, c.env.STOCKVISION_AUTH_TOKEN_PREVIOUS)) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
   return null

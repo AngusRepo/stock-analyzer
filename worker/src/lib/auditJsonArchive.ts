@@ -353,6 +353,12 @@ async function loadCandidateRows(
   return results ?? []
 }
 
+export function auditJsonRowsPerUpdateStatement(blobColumnCount: number): number {
+  // Each row contributes one key and one pointer per blob column to every CASE,
+  // plus one key in the WHERE IN clause. D1 allows at most 100 bound params.
+  return Math.max(1, Math.floor(100 / ((2 * blobColumnCount) + 1)))
+}
+
 async function scrubArchivedRows(
   env: Pick<Bindings, 'DB'>,
   target: AuditJsonTargetConfig,
@@ -360,27 +366,30 @@ async function scrubArchivedRows(
   pointerFor: (row: Record<string, unknown>, blobColumn: string) => string,
 ): Promise<number> {
   if (!rows.length) return 0
-  const setClause = target.blobColumns.map((column) => `${column} = ?`).join(', ')
+  const rowsPerStatement = auditJsonRowsPerUpdateStatement(target.blobColumns.length)
   const statements: D1PreparedStatement[] = []
-  for (const row of rows) {
-    const key = rowKey(row, target)
+  for (let i = 0; i < rows.length; i += rowsPerStatement) {
+    const chunk = rows.slice(i, i + rowsPerStatement)
+    const setClause = target.blobColumns.map((column) => {
+      const cases = chunk.map(() => 'WHEN ? THEN ?').join(' ')
+      return `${column} = CASE ${target.keyColumn} ${cases} ELSE ${column} END`
+    }).join(', ')
+    const binds = target.blobColumns.flatMap((column) => (
+      chunk.flatMap((row) => [rowKey(row, target), pointerFor(row, column)])
+    ))
+    const keys = chunk.map((row) => rowKey(row, target))
     statements.push(
       env.DB.prepare(`
         UPDATE ${target.table}
            SET ${setClause}
-         WHERE ${target.keyColumn} = ?
-      `).bind(
-        ...target.blobColumns.map((column) => pointerFor(row, column)),
-        key,
-      ),
+         WHERE ${target.keyColumn} IN (${keys.map(() => '?').join(', ')})
+      `).bind(...binds, ...keys),
     )
   }
-  let updated = 0
   for (let i = 0; i < statements.length; i += 50) {
     await env.DB.batch(statements.slice(i, i + 50))
-    updated += statements.slice(i, i + 50).length
   }
-  return updated
+  return rows.length
 }
 
 export async function buildAuditJsonRetentionPlan(

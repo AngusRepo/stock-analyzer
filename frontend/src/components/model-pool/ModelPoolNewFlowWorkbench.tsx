@@ -191,7 +191,9 @@ function selectedPromotionRow(
 }
 
 function releaseArtifact(row?: SelectionModelRow) {
-  return selectionCandidate(row) ?? row?.serving_release_artifact ?? null
+  // Fleet health is owned by the serving champion. A challenger is evaluated
+  // separately and must not replace serving evidence merely because it is newer.
+  return row?.serving_release_artifact ?? selectionCandidate(row) ?? null
 }
 
 function promotionPressureTone(rows: PromotionQueueRow[]): WorkstationTone {
@@ -526,76 +528,73 @@ function pboCpcvCell(candidateId: string, evidence: ReturnType<typeof selectedAr
     evidence.modelCpcv.pbo,
     evidence.modelCpcv.probability_of_backtest_overfitting,
   )
-  const pboMax = firstFiniteNumber(evidence.pboPolicy.max_pbo)
+  const pboMax = firstFiniteNumber(evidence.pboPolicy.max_pbo, evidence.pbo.max_pbo)
   const pboRequiredRaw = evidence.pboPolicy.required
-  const pboRequired = typeof pboRequiredRaw === 'boolean'
-    ? pboRequiredRaw
-    : pboValue != null || pboMax != null
-  const pboPolicyMissing = pboRequired && pboMax == null
+  // Active-8 artifacts need explicit validation evidence. Missing policy is a
+  // blocker, not implicit proof that PBO/CPCV does not apply.
+  const pboRequired = pboRequiredRaw !== false
   const oosMeanReturn = firstFiniteNumber(evidence.pbo.oos_mean_return, evidence.metrics.pbo_oos_mean_return)
   const minOosMeanReturn = firstFiniteNumber(evidence.pboPolicy.min_oos_mean_return) ?? 0
-  const cpcvMinIc = firstFiniteNumber(
-    evidence.cpcvPolicy.min_oos_ic_mean,
-    evidence.cpcvPolicy.min_rank_ic,
-    evidence.gateCpcvPolicy.min_oos_ic_mean,
-  )
-  const decision = firstText(
+  const cpcvDecision = firstText(
     evidence.metrics.model_cpcv_decision,
     evidence.modelCpcv.decision,
+    evidence.foundationForecastValidation.decision,
+  ) ?? (typeof evidence.modelCpcv.passed === 'boolean' ? (evidence.modelCpcv.passed ? 'PASS' : 'FAIL') : null)
+  const pboDecision = firstText(
     evidence.pbo.go_live_verdict,
     evidence.pbo.decision,
     evidence.pbo.status,
-  ) ?? (typeof evidence.modelCpcv.passed === 'boolean' ? (evidence.modelCpcv.passed ? 'PASS' : 'FAIL') : null)
+  ) ?? (
+    pboValue != null && pboMax != null
+      ? (pboValue <= pboMax ? 'PASS' : 'FAIL')
+      : null
+  )
   const failedGates = uniqueTokens([
     ...evidence.rowFailedGates,
     ...asStringList(evidence.gate.failed_gates),
     ...asStringList(evidence.modelCpcv.failed_gates),
     ...asStringList(evidence.foundationForecastValidation.failed_gates),
   ])
-  const pboNotApplicableDetail = candidateId === 'TimesFM'
-    ? 'PBO 不適用：TimesFM 單一官方 config；改看 OOS/LIVE/coverage'
-    : 'PBO 不適用：單一官方 config；改看 OOS/LIVE/coverage'
-  const pboNotApplicableTitle = candidateId === 'TimesFM'
-    ? 'PBO 不適用：TimesFM 目前是單一官方 config，沒有多組候選挑 winner；改看 OOS/LIVE/coverage。'
-    : `PBO 不適用：${firstText(evidence.pboPolicy.reason, evidence.pboPolicy.method) ?? 'single official config or family policy'}`
+  const pboNotApplicableDetail = 'PBO 不適用（policy 明確標示）'
+  const pboNotApplicableTitle = `PBO 不適用：${firstText(evidence.pboPolicy.reason, evidence.pboPolicy.method) ?? `${candidateId} artifact policy explicitly sets required=false`}`
   const pboDetail = !pboRequired
     ? pboNotApplicableDetail
-    : pboPolicyMissing
-      ? 'PBO policy missing'
-      : pboValue == null
-        ? `PBO value missing / max ${formatMetric(pboMax, 2)}`
-        : pboMax == null
-          ? `PBO ${formatMetric(pboValue, 2)} / max missing`
-          : pboValue <= pboMax
-            ? `PBO ${formatMetric(pboValue, 2)}<${formatMetric(pboMax, 2)} PASS`
-            : `PBO ${formatMetric(pboValue, 2)}>${formatMetric(pboMax, 2)} FAIL`
-  const cpcvDetail = decision
-    ? `CPCV ${gateToken(decision)}${cpcvMinIc != null ? ` / min IC ${formatMetric(cpcvMinIc, 3)}` : ''}`
-    : cpcvMinIc == null
-      ? 'CPCV policy pending'
-      : `CPCV min IC ${formatMetric(cpcvMinIc, 3)}`
+    : pboValue == null || pboMax == null
+      ? 'PBO evidence 缺失'
+      : `PBO ${formatMetric(pboValue, 3)} ${pboValue <= pboMax ? '≤' : '>'} ${formatMetric(pboMax, 2)} ${pboValue <= pboMax ? '通過' : '未通過'}`
+  const cpcvIc = firstFiniteNumber(evidence.modelCpcv.oos_ic_mean, evidence.foundationForecastValidation.oos_ic_mean)
+  const cpcvFolds = firstFiniteNumber(evidence.modelCpcv.folds, evidence.foundationForecastValidation.folds)
+  const cpcvDetail = cpcvDecision
+    ? `CPCV ${gateToken(cpcvDecision) === 'PASS' ? '通過' : '未通過'}${cpcvFolds != null ? ` · ${Math.trunc(cpcvFolds)} folds` : ''}${cpcvIc != null ? ` · IC ${formatMetric(cpcvIc, 3)}` : ''}`
+    : 'CPCV evidence 缺失'
   const detailParts = [
     failedGates.length ? `fail gates: ${failedGates.map((item) => humanizeToken(item)).join(', ')}` : null,
     pboDetail,
     cpcvDetail,
   ].filter(Boolean)
   const titleParts = [
-    `${candidateId}: PBO/CPCV ${decision ?? 'unavailable'}`,
+    `${candidateId}: PBO=${pboDecision ?? (pboRequired ? 'missing' : 'not_required')}, CPCV=${cpcvDecision ?? 'missing'}`,
     failedGates.length ? `failed_gates=${failedGates.join(',')}` : null,
     !pboRequired
       ? pboNotApplicableTitle
       : `PBO=${formatMetric(pboValue, 3)} <= max ${formatMetric(pboMax, 2)}`,
     `PBO OOS return=${formatMetric(oosMeanReturn, 4)} >= ${formatMetric(minOosMeanReturn, 4)}`,
   ].filter(Boolean)
-  const tone = decision
-    ? toneFromGate(decision)
-    : pboPolicyMissing || cpcvMinIc == null
-      ? 'warn'
-      : !pboRequired
-        ? 'info'
-        : 'neutral'
+  const pboFailed = pboRequired && gateToken(pboDecision) === 'FAIL'
+  const cpcvFailed = gateToken(cpcvDecision) === 'FAIL'
+  const pboPassed = !pboRequired || gateToken(pboDecision) === 'PASS'
+  const cpcvPassed = gateToken(cpcvDecision) === 'PASS'
+  const tone: WorkstationTone = pboFailed || cpcvFailed
+    ? 'error'
+    : pboPassed && cpcvPassed
+      ? 'ok'
+      : 'warn'
   return {
-    value: decision ? gateToken(decision) : !pboRequired ? 'N/R' : 'N/A',
+    value: pboFailed || cpcvFailed
+      ? '未通過'
+      : pboPassed && cpcvPassed
+        ? '通過'
+        : '待補證據',
     detail: detailParts.join('\n'),
     title: titleParts.join(' | '),
     tone,
@@ -1075,11 +1074,7 @@ function candidateHousekeepingSummary(
   const suppressed = [...suppressedById.values()]
   const notBetter = suppressed.filter((row) => row.artifact_compare?.metric_status === 'candidate_not_better')
   const superseded = suppressed.filter((row) => String(row.reason ?? '').toLowerCase().includes('superseded'))
-  const archiveIds = [...new Set([
-    ...selectionArchiveIds,
-    ...notBetter.map((row) => String(row.artifact_id ?? '').trim()),
-    ...superseded.map((row) => String(row.artifact_id ?? '').trim()),
-  ].filter(Boolean))]
+  const archiveIds = [...new Set(selectionArchiveIds)]
   const selectedSlots = Object.values(selection?.models ?? {}).reduce((sum, row) => (
     sum + (row.monthly_release_candidate ? 1 : 0) + (row.weekly_drift_candidate ? 1 : 0)
   ), 0)

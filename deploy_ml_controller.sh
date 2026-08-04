@@ -31,6 +31,8 @@ SERVICE_RUNTIME_SERVICE_ACCOUNT="${SERVICE_RUNTIME_SERVICE_ACCOUNT:-stockvision-
 JOB_RUNTIME_SERVICE_ACCOUNT="${JOB_RUNTIME_SERVICE_ACCOUNT:-stockvision-pipeline@${GCP_PROJECT_ID}.iam.gserviceaccount.com}"
 BUILD_SERVICE_ACCOUNT="${BUILD_SERVICE_ACCOUNT:-stockvision-cloudrun-builder@${GCP_PROJECT_ID}.iam.gserviceaccount.com}"
 PRODUCTION_BRANCH="${PRODUCTION_BRANCH:-}"
+CANONICAL_PRODUCTION_BRANCH="${CANONICAL_PRODUCTION_BRANCH:-main}"
+ALLOW_NON_MAIN_PRODUCTION_DEPLOY="${ALLOW_NON_MAIN_PRODUCTION_DEPLOY:-0}"
 PIPELINE_JOB_NAME="${PIPELINE_JOB_NAME:-pipeline-v2}"
 VERIFY_JOB_NAME="${VERIFY_JOB_NAME:-verify-v2}"
 SCREENER_JOB_NAME="${SCREENER_JOB_NAME:-screener-v2}"
@@ -178,6 +180,24 @@ load_release_provenance() {
     require_nonempty "PRODUCTION_BRANCH" "Set the explicitly approved production branch"
     if [ "$SOURCE_BRANCH" != "$PRODUCTION_BRANCH" ]; then
       echo "ERROR: source branch $SOURCE_BRANCH does not match PRODUCTION_BRANCH=$PRODUCTION_BRANCH" >&2
+      exit 7
+    fi
+    CANONICAL_REMOTE_REF="refs/remotes/origin/$CANONICAL_PRODUCTION_BRANCH"
+    if ! git -C "$SCRIPT_DIR" show-ref --verify --quiet "$CANONICAL_REMOTE_REF"; then
+      echo "ERROR: $CANONICAL_REMOTE_REF is missing; fetch origin before production deploy" >&2
+      exit 7
+    fi
+    CANONICAL_REMOTE_SHA=$(git -C "$SCRIPT_DIR" rev-parse "$CANONICAL_REMOTE_REF")
+    if [ "$PRODUCTION_BRANCH" = "$CANONICAL_PRODUCTION_BRANCH" ]; then
+      if [ "$SOURCE_SHA" != "$CANONICAL_REMOTE_SHA" ]; then
+        echo "ERROR: canonical production deploy requires HEAD=$CANONICAL_REMOTE_REF ($CANONICAL_REMOTE_SHA), got $SOURCE_SHA" >&2
+        exit 7
+      fi
+    elif [ "$ALLOW_NON_MAIN_PRODUCTION_DEPLOY" != "1" ]; then
+      echo "ERROR: non-canonical production branch $PRODUCTION_BRANCH is blocked; merge to $CANONICAL_PRODUCTION_BRANCH first" >&2
+      exit 7
+    elif ! git -C "$SCRIPT_DIR" merge-base --is-ancestor "$CANONICAL_REMOTE_REF" "$SOURCE_SHA"; then
+      echo "ERROR: emergency production branch $PRODUCTION_BRANCH does not contain latest $CANONICAL_REMOTE_REF" >&2
       exit 7
     fi
     if [ -n "$(git -C "$SCRIPT_DIR" status --porcelain --untracked-files=all)" ]; then

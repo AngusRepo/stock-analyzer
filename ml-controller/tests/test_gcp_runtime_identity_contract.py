@@ -55,6 +55,11 @@ def test_controller_deploy_is_fail_closed_on_identity_and_provenance() -> None:
     assert '--build-service-account="projects/${GCP_PROJECT_ID}/serviceAccounts/${BUILD_SERVICE_ACCOUNT}"' in script
     assert "*-compute@developer.gserviceaccount.com*" in script
     assert "PRODUCTION_BRANCH" in script
+    assert 'CANONICAL_PRODUCTION_BRANCH="${CANONICAL_PRODUCTION_BRANCH:-main}"' in script
+    assert 'ALLOW_NON_MAIN_PRODUCTION_DEPLOY="${ALLOW_NON_MAIN_PRODUCTION_DEPLOY:-0}"' in script
+    assert 'show-ref --verify --quiet "$CANONICAL_REMOTE_REF"' in script
+    assert 'merge-base --is-ancestor "$CANONICAL_REMOTE_REF" "$SOURCE_SHA"' in script
+    assert "canonical production deploy requires HEAD=" in script
     assert "STOCKVISION_SOURCE_SHA" in script
     assert "STOCKVISION_SCHEDULER_MANIFEST_SHA256" in script
     assert 'PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"' in script

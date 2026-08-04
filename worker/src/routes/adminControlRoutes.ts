@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../types'
-import { requireAdminOrServiceToken } from '../lib/auth'
+import { hasServiceToken, requireAdminOrServiceToken } from '../lib/auth'
 import { resolveFinLabDispatchFence } from '../lib/finLabDispatchFence'
 import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
 import type { EvidenceArtifactWriteInput } from '../lib/evidenceArtifactContract'
@@ -39,7 +39,7 @@ const REPORT_ARTIFACT_TASKS = new Set([
 
 function requireServiceToken(c: any) {
   const token = c.req.header('Authorization')?.replace('Bearer ', '')
-  if (!token || token !== c.env.STOCKVISION_AUTH_TOKEN) {
+  if (!hasServiceToken(token, c.env.STOCKVISION_AUTH_TOKEN, c.env.STOCKVISION_AUTH_TOKEN_PREVIOUS)) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
   return null

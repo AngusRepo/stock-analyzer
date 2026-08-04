@@ -95,7 +95,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'l4-alpha-ev-refresh': { kind: 'research', holidayGated: false, description: 'weekly production-gated L4 alpha EV artifact refresh' },
   'allocator-ev-fusion-refresh': { kind: 'research', holidayGated: false, description: 'weekly production-gated allocator EV fusion artifact refresh' },
   'monthly-opb-arm-prior-refresh': { kind: 'research', holidayGated: false, description: 'monthly production-gated OPB counterfactual arm-prior refresh' },
-  'adaptive-meta-policy-replay': { kind: 'research', holidayGated: false, description: 'weekly evidence-only active-8 adaptive meta-policy replay' },
+  'adaptive-meta-policy-replay': { kind: 'research', holidayGated: false, description: 'weekly guarded dynamic active-8 Meta policy replay with bounded canary and rollback' },
   'linucb-multiplier-replay': { kind: 'research', holidayGated: false, description: 'weekly evidence-only LinUCB bandit multiplier replay' },
   'weekly-drift-retrain': { kind: 'research', holidayGated: false, description: 'evidence-gated weekly drift candidate; automatic promotion only after full serving gates pass' },
   'sector-leaders': { kind: 'research', holidayGated: false, description: 'weekly sector leader refresh' },

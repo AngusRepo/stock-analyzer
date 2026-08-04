@@ -294,6 +294,11 @@ export async function runAdaptiveUpdate(env: AdaptiveEngineEnv, options: { refre
   const ledgerContext = options.refreshLedger === false
     ? { reward_ledger: 'meta_reward_ledger', reward_ledger_status: 'handled_by_post_verify_chain', context_version: 'meta-context-v2' }
     : await refreshLinUcbLedgerForAdaptive(env, today)
+  // The Meta controller is the sole owner of model_allocator. Risk-assess owns
+  // the remaining daily adaptive fields and must not erase a live Meta canary.
+  if (current.model_allocator && typeof current.model_allocator === 'object') {
+    params.model_allocator = current.model_allocator
+  }
   const currentBanditContext = params.bandit_context && typeof params.bandit_context === 'object' && !Array.isArray(params.bandit_context)
     ? params.bandit_context
     : {}

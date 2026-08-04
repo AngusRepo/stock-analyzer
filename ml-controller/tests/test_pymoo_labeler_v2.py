@@ -69,3 +69,18 @@ def test_monthly_config_runs_v1_control_and_v2_labeler_in_parallel_shadow():
     assert config["labeler_search_v2"]["label_scope"] == "all_l0_candidates"
     assert config["labeler_search_v2"]["v1_control_retained"] is True
     assert config["labeler_search_v2"]["promotion_effect"].startswith("none_until")
+
+
+def test_deflated_sharpe_is_rebased_to_the_full_search_family():
+    returns = pd.Series(
+        [0.002, 0.001, 0.003, -0.001, 0.0025, 0.0015] * 20,
+        dtype=float,
+    )
+    lane_stats = miner._deflated_sharpe_stats(returns, 32)
+    global_stats = miner._rebase_deflated_sharpe_trials(lane_stats, 416)
+
+    assert lane_stats["sample_count"] == len(returns)
+    assert lane_stats["trials"] == 32
+    assert global_stats["trials"] == 416
+    assert global_stats["minimum_annualized_sharpe"] > lane_stats["minimum_annualized_sharpe"]
+    assert global_stats["probability"] < lane_stats["probability"]

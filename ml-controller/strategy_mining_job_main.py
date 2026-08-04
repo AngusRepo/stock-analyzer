@@ -754,6 +754,7 @@ def _persist_promotion_packets(run_id: str, report: dict[str, Any]) -> dict[str,
                 "common_candidate_matrix": research_evidence.get("common_candidate_matrix"),
                 "pbo": research_evidence.get("pbo"),
                 "walk_forward": research_evidence.get("walk_forward"),
+                "multiple_testing": research_evidence.get("multiple_testing"),
                 "candidate": evidence or None,
             },
         }

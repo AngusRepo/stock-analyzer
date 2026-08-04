@@ -17,6 +17,8 @@ def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
             "cohort_id": "cohort-1",
             "promoted": False,
             "promotion_reason": "quality_or_operational_parity_not_passed",
+            "calendar": {"mature_max_date": "2026-07-17", "calendar_source": "immutable_canonical_adjusted_prep"},
+            "physical_prediction_coverage": {"max_date": "2026-07-17"},
         }
 
     async def fake_callback(payload):
@@ -40,6 +42,7 @@ def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
     assert "status=materialized" in callback["summary"]
     assert "cohort=cohort-1" in callback["summary"]
     assert lifecycle_kwargs["dispatch_full_fit"] is False
+    assert callback["metadata"]["oof_freshness"]["status"] == "fresh"
 
 
 def test_oof_materialize_job_treats_daily_shadow_evaluation_as_terminal_success(monkeypatch):
@@ -51,6 +54,8 @@ def test_oof_materialize_job_treats_daily_shadow_evaluation_as_terminal_success(
             "cohort_id": "cohort-1",
             "promoted": False,
             "promotion_reason": "frozen_forward_oos_shadow_evidence_not_promotion_eligible",
+            "calendar": {"mature_max_date": "2026-07-30", "calendar_source": "immutable_canonical_adjusted_prep"},
+            "physical_prediction_coverage": {"max_date": "2026-07-30"},
         }
 
     async def fake_callback(payload):
@@ -68,6 +73,52 @@ def test_oof_materialize_job_treats_daily_shadow_evaluation_as_terminal_success(
     assert callbacks[0]["run_id"] == "run-shadow"
     assert "status=shadow_evaluated" in callbacks[0]["summary"]
     assert "promoted=False" in callbacks[0]["summary"]
+
+
+def test_oof_materialize_job_fails_closed_when_effective_max_is_stale(monkeypatch):
+    callbacks = []
+
+    async def fake_execute_lifecycle(**_kwargs):
+        return {
+            "status": "shadow_evaluated",
+            "cohort_id": "cohort-stale",
+            "calendar": {
+                "mature_max_date": "2026-07-30",
+                "calendar_source": "immutable_canonical_adjusted_prep",
+            },
+            "physical_prediction_coverage": {"max_date": "2026-07-27"},
+        }
+
+    async def fake_callback(payload):
+        callbacks.append(payload)
+
+    monkeypatch.setattr(oof_materialize_job_main, "_execute_lifecycle", fake_execute_lifecycle)
+    monkeypatch.setattr(oof_materialize_job_main, "_callback_worker", fake_callback)
+    monkeypatch.setenv("OOF_MATERIALIZE_MODE", "oof_lifecycle")
+    monkeypatch.setenv("OOF_MATERIALIZE_CADENCE", "daily")
+    monkeypatch.setenv("OOF_MATERIALIZE_END_DATE", "2026-08-04")
+    monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-stale")
+
+    assert asyncio.run(oof_materialize_job_main._run()) == 1
+    assert callbacks[0]["status"] == "error"
+    assert callbacks[0]["metadata"]["oof_freshness"]["status"] == "failed"
+    assert callbacks[0]["metadata"]["oof_freshness"]["expected_max_date"] == "2026-07-30"
+    assert callbacks[0]["metadata"]["oof_freshness"]["effective_max_date"] == "2026-07-27"
+    assert "oof_freshness_closure_failed" in callbacks[0]["error"]
+
+
+def test_oof_freshness_uses_v8_idempotent_receipt_coverage():
+    evidence = oof_materialize_job_main._oof_freshness_evidence({
+        "status": "idempotent_complete",
+        "receipt": {
+            "cohort_id": "cohort-receipt",
+            "calendar": {"mature_max_date": "2026-07-30"},
+            "physical_prediction_coverage": {"max_date": "2026-07-30"},
+        },
+    })
+
+    assert evidence["status"] == "fresh"
+    assert evidence["cohort_id"] == "cohort-receipt"
 
 
 def test_allocator_snapshot_mode_closes_scheduler_callback(monkeypatch):

@@ -135,6 +135,44 @@ def _full_fit_continuation_active(result: dict[str, Any]) -> bool:
     )
 
 
+def _oof_freshness_evidence(result: dict[str, Any]) -> dict[str, Any]:
+    receipt = result.get("receipt")
+    receipt = receipt if isinstance(receipt, dict) else {}
+    calendar = result.get("calendar")
+    calendar = calendar if isinstance(calendar, dict) else receipt.get("calendar")
+    calendar = calendar if isinstance(calendar, dict) else {}
+    shadow = receipt.get("shadow_evaluation")
+    shadow = shadow if isinstance(shadow, dict) else {}
+    coverage = result.get("physical_prediction_coverage")
+    coverage = coverage if isinstance(coverage, dict) else receipt.get("physical_prediction_coverage")
+    coverage = coverage if isinstance(coverage, dict) else shadow.get("physical_prediction_coverage")
+    coverage = coverage if isinstance(coverage, dict) else {}
+    expected_max = str(calendar.get("mature_max_date") or "")[:10]
+    effective_max = str(coverage.get("max_date") or "")[:10]
+    if not expected_max:
+        status = "failed"
+        reason = "expected_mature_max_missing"
+    elif not effective_max:
+        status = "failed"
+        reason = "effective_oof_max_missing"
+    elif effective_max < expected_max:
+        status = "failed"
+        reason = "effective_oof_max_behind_immutable_prep"
+    else:
+        status = "fresh"
+        reason = "effective_oof_max_reached_immutable_prep"
+    return {
+        "schema_version": "active8-oof-freshness-v1",
+        "status": status,
+        "reason": reason,
+        "source": calendar.get("calendar_source"),
+        "prep_manifest_checksum": calendar.get("prep_manifest_checksum"),
+        "expected_max_date": expected_max or None,
+        "effective_max_date": effective_max or None,
+        "cohort_id": result.get("cohort_id") or receipt.get("cohort_id"),
+    }
+
+
 async def _run() -> int:
     mode = os.environ.get("OOF_MATERIALIZE_MODE", "oof_lifecycle").strip().lower()
     cadence = os.environ.get("OOF_MATERIALIZE_CADENCE", "daily").strip().lower()
@@ -158,6 +196,7 @@ async def _run() -> int:
     callback_status = "error"
     error: str | None = None
     result: dict[str, Any] = {}
+    freshness: dict[str, Any] | None = None
 
     try:
         if mode == "allocator_snapshot":
@@ -211,6 +250,13 @@ async def _run() -> int:
                     suffix = f":{detail}" if detail and detail != reason else ""
                     raise RuntimeError(f"oof_dependency_retry_required:{reason}{suffix}")
             elif status in {"materialized", "shadow_evaluated", "idempotent_complete"}:
+                freshness = _oof_freshness_evidence(result)
+                if freshness["status"] != "fresh":
+                    raise RuntimeError(
+                        "oof_freshness_closure_failed:"
+                        f"{freshness['reason']}:expected={freshness['expected_max_date']}:"
+                        f"effective={freshness['effective_max_date']}"
+                    )
                 callback_status = "success"
             elif status in {"skipped", "pending", "spawned"}:
                 callback_status = "skipped"
@@ -231,6 +277,12 @@ async def _run() -> int:
         "run_id": run_id,
         "attempt_id": execution_id,
     }
+    if mode == "oof_lifecycle":
+        freshness = freshness or _oof_freshness_evidence(result)
+        payload["metadata"] = {"oof_freshness": freshness, "cadence": cadence}
+        calendar = result.get("calendar")
+        calendar = calendar if isinstance(calendar, dict) else {}
+        payload["run_date"] = end_date or str(calendar.get("cutoff") or "")[:10]
     if end_date:
         payload["run_date"] = end_date
     if error:

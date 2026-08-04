@@ -1831,7 +1831,7 @@ OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
 OOF_COHORT_ID_VERSION = "v7-immutable-fold-evidence"
-OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v7-shadow-evaluation-packets"
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v8-freshness-watermark"
 
 
 def _oof_lifecycle_materialization_controls(
@@ -2051,6 +2051,8 @@ def _oof_lifecycle_calendar(
         "sequence_gcs_prefix": str(manifest.get("sequence_gcs_prefix") or ""),
         "observed_dates": len(coverage_by_date),
         "mature_dates": len(dates),
+        "mature_min_date": dates[0] if dates else None,
+        "mature_max_date": dates[-1] if dates else None,
         "mature_rows": mature_rows,
         "coverage_reference_rows": reference,
         "coverage_threshold_rows": threshold,
@@ -2614,6 +2616,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 "cadence": cadence,
                 "cohort_id": cohort_id,
                 "knowledge_cutoff_date": knowledge_cutoff_date,
+                "calendar": calendar_evidence,
                 "receipt": receipt,
             }
     if daily_forward_extension_plan and not req.dry_run:
@@ -2707,6 +2710,8 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                 "cohort_id": cohort_id,
                 "cadence": cadence,
                 "knowledge_cutoff_date": knowledge_cutoff_date,
+                "calendar": calendar_evidence,
+                "physical_prediction_coverage": result.get("physical_prediction_coverage"),
                 "promoted": bool(result.get("promoted")),
                 "promotion_reason": result.get("promotion_reason"),
                 "evidence_closure": {
@@ -2747,7 +2752,12 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             }, sort_keys=True),
             content_type="application/json",
         )
-    return {"cadence": cadence, "dependency_retry_required": dependency_retry_required, **result}
+    return {
+        "cadence": cadence,
+        "calendar": calendar_evidence,
+        "dependency_retry_required": dependency_retry_required,
+        **result,
+    }
 
 @router.post("/walk_forward/oof/retention/archive")
 async def archive_walk_forward_oof(req: OofRetentionArchiveRequest):

@@ -184,7 +184,16 @@ async function runAdaptiveMetaPolicyReplayTask(c: any, endDate?: string): Promis
     neuralEpochs: parseBoundedPositiveInt(c.req.query('neural_epochs'), 80, 1000),
     persist,
   })
-  return String(result.summary ?? `adaptive_meta_replay status=${result.status ?? 'unknown'}`)
+  const summary = String(result.summary ?? `adaptive_meta_replay status=${result.status ?? 'unknown'}`)
+  if (!persist) return summary
+  const { reconcileAdaptiveMetaPolicy } = await import('./adaptiveMetaPolicyController')
+  const runDate = String(result.source_query?.end_date ?? endDate ?? '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(runDate)) {
+    throw new Error('adaptive meta-policy controller missing replay end date')
+  }
+  const transition = await reconcileAdaptiveMetaPolicy(c.env, result, runDate)
+  return `${summary} meta_controller=${transition.decision} phase=${transition.next_state.phase} `
+    + `streak=${transition.next_state.consecutive_passes} mutation=${transition.mutation} reason=${transition.reason}`
 }
 
 async function runLinUcbMultiplierReplayTask(c: any, endDate?: string): Promise<string> {

@@ -501,6 +501,29 @@ async function handleSchedulerCallback(c: any) {
     ? body.metadata as Record<string, unknown>
     : undefined
 
+  if (['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly'].includes(body.task)) {
+    const { persistActive8OofFreshnessAudit } = await import('../lib/active8OofFreshness')
+    const freshness = await persistActive8OofFreshnessAudit(c.env, {
+      task: body.task,
+      runId: callbackRunId,
+      attemptId: callbackAttemptId,
+      runDate: callbackRunDate,
+      cadence: typeof callbackMetadata?.cadence === 'string' ? callbackMetadata.cadence : undefined,
+      callbackStatus: body.status,
+      evidence: callbackMetadata?.oof_freshness,
+    })
+    if (body.status === 'success' && freshness.status !== 'fresh') {
+      body.status = 'error'
+      body.error = [
+        'active8_oof_freshness_closure_failed',
+        freshness.reason,
+        `expected=${freshness.expectedMaxDate ?? 'missing'}`,
+        `effective=${freshness.effectiveMaxDate ?? 'missing'}`,
+      ].join(':')
+      body.summary = `${String(body.summary ?? '')} ${body.error}`.trim()
+    }
+  }
+
   if (body.task === 'finlab-v4-backfill' && callbackRunDate) {
     const current = await c.env.KV.get(
       `scheduler:run:finlab-v4-backfill:${callbackRunDate}`,

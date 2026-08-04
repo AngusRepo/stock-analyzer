@@ -29,6 +29,72 @@ def _finite_list(value: Any) -> list[float]:
     return out
 
 
+def _newey_west_positive_mean_p_value(values: list[float]) -> dict[str, Any]:
+    """One-sided H0: E[r] <= 0 with an automatic Newey-West lag."""
+
+    n = len(values)
+    if n < 5:
+        return {"status": "pending", "reason": "observations_insufficient", "n_observations": n}
+    mean = sum(values) / n
+    centered = [value - mean for value in values]
+    lag = min(n - 1, max(1, int(math.floor(4.0 * (n / 100.0) ** (2.0 / 9.0)))))
+    short_run_variance = sum(value * value for value in centered) / n
+    long_run_variance = short_run_variance
+    for offset in range(1, lag + 1):
+        covariance = sum(
+            centered[index] * centered[index - offset]
+            for index in range(offset, n)
+        ) / n
+        long_run_variance += 2.0 * (1.0 - offset / (lag + 1.0)) * covariance
+    # Negative sample autocovariance must not make a large-search test less conservative than iid.
+    standard_error = math.sqrt(max(long_run_variance, short_run_variance) / n)
+    if standard_error <= 1e-15:
+        z_score = math.inf if mean > 0.0 else -math.inf
+        p_value = 0.0 if mean > 0.0 else 1.0
+    else:
+        z_score = mean / standard_error
+        p_value = 0.5 * math.erfc(z_score / math.sqrt(2.0))
+    return {
+        "status": "computed",
+        "method": "newey_west_hac_one_sided_positive_mean",
+        "n_observations": n,
+        "lag": lag,
+        "mean_return": round(mean, 10),
+        "standard_error": round(standard_error, 10),
+        "z_score": z_score,
+        "raw_p_value": min(1.0, max(0.0, p_value)),
+    }
+
+
+def _holm_bonferroni(
+    tests: dict[str, dict[str, Any]],
+    *,
+    alpha: float = 0.05,
+) -> dict[str, Any]:
+    computed = {
+        candidate_id: item
+        for candidate_id, item in tests.items()
+        if item.get("status") == "computed"
+    }
+    ordered = sorted(computed, key=lambda candidate_id: float(computed[candidate_id]["raw_p_value"]))
+    adjusted: dict[str, float] = {}
+    running_max = 0.0
+    family_size = len(ordered)
+    for rank, candidate_id in enumerate(ordered, start=1):
+        raw = float(computed[candidate_id]["raw_p_value"])
+        running_max = max(running_max, min(1.0, (family_size - rank + 1) * raw))
+        adjusted[candidate_id] = running_max
+    return {
+        "status": "computed" if family_size >= 2 else "pending",
+        "method": "holm_bonferroni",
+        "alpha": alpha,
+        "family_size": family_size,
+        "hypothesis": "holdout_mean_return_gt_zero",
+        "raw_test_method": "newey_west_hac_one_sided_positive_mean",
+        "adjusted_p_values": adjusted,
+    }
+
+
 def _walk_forward(matrix: dict[str, list[float]]) -> dict[str, Any]:
     if len(matrix) < 2:
         return {
@@ -134,6 +200,11 @@ def build_strategy_mining_evidence(
         "reason": pbo_result.verdict_reason,
     }
     walk_forward = _walk_forward(matrix)
+    hac_tests = {
+        candidate_id: _newey_west_positive_mean_p_value(item["daily_returns"])
+        for candidate_id, item in usable.items()
+    }
+    multiple_testing = _holm_bonferroni(hac_tests)
     candidate_evidence: dict[str, dict[str, Any]] = {}
     for candidate_id, item in usable.items():
         mc = _run_monte_carlo(
@@ -152,6 +223,11 @@ def build_strategy_mining_evidence(
             failed_gates.append("purged_walk_forward")
         if candidate_mean <= 0.0 or candidate_positive_ratio < 0.5:
             failed_gates.append("candidate_holdout_partition_return")
+        adjusted_p_value = multiple_testing["adjusted_p_values"].get(candidate_id)
+        if multiple_testing.get("status") != "computed" or adjusted_p_value is None:
+            failed_gates.append("multiple_testing_evidence_missing")
+        elif float(adjusted_p_value) > float(multiple_testing["alpha"]):
+            failed_gates.append("holdout_hac_holm_bonferroni")
         if mc.go_live_verdict != "PASS":
             failed_gates.append("regime_block_bootstrap_monte_carlo")
         candidate_evidence[candidate_id] = {
@@ -159,6 +235,15 @@ def build_strategy_mining_evidence(
             "failed_gates": failed_gates,
             "holdout_partition_mean_return": round(candidate_mean, 8),
             "holdout_positive_partition_ratio": round(candidate_positive_ratio, 6),
+            "multiple_testing": {
+                **hac_tests[candidate_id],
+                "adjustment_method": multiple_testing["method"],
+                "family_size": multiple_testing["family_size"],
+                "alpha": multiple_testing["alpha"],
+                "adjusted_p_value": adjusted_p_value,
+                "passed": adjusted_p_value is not None
+                and float(adjusted_p_value) <= float(multiple_testing["alpha"]),
+            },
             "monte_carlo": {
                 "status": "pass" if mc.go_live_verdict == "PASS" else "failed",
                 "method": mc.simulation_method,
@@ -190,5 +275,9 @@ def build_strategy_mining_evidence(
         },
         "pbo": pbo,
         "walk_forward": walk_forward,
+        "multiple_testing": {
+            **multiple_testing,
+            "candidate_tests": hac_tests,
+        },
         "candidate_evidence": candidate_evidence,
     }

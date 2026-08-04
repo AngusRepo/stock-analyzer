@@ -120,7 +120,19 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
         f"cohort={result.get('cohort_id', 'none')}",
         f"promoted={bool(result.get('promoted'))}",
         f"reason={result.get('promotion_reason') or result.get('reason') or 'none'}",
+        f"full_fit={str((result.get('full_fit_dispatch') or {}).get('status') or 'none')}",
     ])
+
+
+def _full_fit_continuation_active(result: dict[str, Any]) -> bool:
+    full_fit = result.get("full_fit_dispatch")
+    full_fit = full_fit if isinstance(full_fit, dict) else {}
+    return (
+        result.get("dependency_retry_required") is True
+        and full_fit.get("retry_required") is True
+        and str(full_fit.get("status") or "").lower() in {"dispatched", "pending"}
+        and not full_fit.get("failed_models")
+    )
 
 
 async def _run() -> int:
@@ -184,18 +196,21 @@ async def _run() -> int:
             )
             status = str(result.get("status") or "").lower()
             if result.get("dependency_retry_required"):
-                forward_extension = result.get("daily_forward_extension") or {}
-                reason = (
-                    result.get("reason")
-                    or forward_extension.get("reason")
-                    or (result.get("full_fit_dispatch") or {}).get("reason")
-                    or (result.get("opb_refresh") or {}).get("error")
-                    or "dependency_retry_required"
-                )
-                detail = str(forward_extension.get("reason") or "").strip()
-                suffix = f":{detail}" if detail and detail != reason else ""
-                raise RuntimeError(f"oof_dependency_retry_required:{reason}{suffix}")
-            if status in {"materialized", "shadow_evaluated", "idempotent_complete"}:
+                if _full_fit_continuation_active(result):
+                    callback_status = "triggered"
+                else:
+                    forward_extension = result.get("daily_forward_extension") or {}
+                    reason = (
+                        result.get("reason")
+                        or forward_extension.get("reason")
+                        or (result.get("full_fit_dispatch") or {}).get("reason")
+                        or (result.get("opb_refresh") or {}).get("error")
+                        or "dependency_retry_required"
+                    )
+                    detail = str(forward_extension.get("reason") or "").strip()
+                    suffix = f":{detail}" if detail and detail != reason else ""
+                    raise RuntimeError(f"oof_dependency_retry_required:{reason}{suffix}")
+            elif status in {"materialized", "shadow_evaluated", "idempotent_complete"}:
                 callback_status = "success"
             elif status in {"skipped", "pending", "spawned"}:
                 callback_status = "skipped"
@@ -222,7 +237,7 @@ async def _run() -> int:
         payload["error"] = error
     await _callback_worker(payload)
     logger.info("[OofMaterializeJob] Finished %s", summary)
-    return 0 if callback_status in {"success", "skipped"} else 1
+    return 0 if callback_status in {"success", "skipped", "triggered"} else 1
 
 
 def main() -> None:

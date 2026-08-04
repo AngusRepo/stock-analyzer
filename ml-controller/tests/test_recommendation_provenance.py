@@ -1835,6 +1835,59 @@ def test_sparse_tangent_allocation_fails_closed_when_allocator_ev_fusion_artifac
     assert "required_s12_feature_missing_from_artifact" in allocation["allocator_ev_fusion"]["blockers"]
 
 
+def test_sparse_tangent_allocation_uses_verified_s12_when_fusion_is_safe_abstention_baseline():
+    rows = [{
+        "symbol": "3661",
+        "chip_score": 22.0,
+        "tech_score": 23.0,
+        "confidence": 0.78,
+        "signal": "HOLD",
+        "has_buy_signal": 0,
+        "score": 82.0,
+        "s12_trade_ev": {
+            "schema_version": "s12-trade-ev-v1",
+            "status": "loaded",
+            "trade_expected_return_net_pct": 0.012,
+            "trade_expected_return_source": "s12_replay_trade_outcomes:symbol",
+            "bootstrap_scope": "symbol",
+            "sample_policy": "verified_s12_symbol_replay",
+        },
+        "score_components": _score_components(final_score=82.0, ml_edge=20.0),
+    }]
+    baseline = {
+        "artifact_contract_version": "allocator-ev-fusion-contract-v12",
+        "expected_return_owner": "allocator_ev_fusion",
+        "feature_semantic_version": "allocator-ev-fusion-market-conditioned-components-v3-lineage-bound",
+        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+        "model_version": "allocator-ev-fusion-abstention-baseline-v1",
+        "output_is_net_of_costs": True,
+        "primary_expected_return_allowed": False,
+        "promotion_state": "safe_abstention",
+        "serving_mode": "abstention_baseline",
+        "validation_packet": {
+            "alpha_quality_passed": False,
+            "decision": "PASS",
+            "scope": "operational_safety_only",
+        },
+    }
+
+    promoted = apply_sparse_tangent_allocation(
+        rows,
+        ranking_config={"enabled": True, "promoteMinForecastPct": 0.005, "promoteMinMlEdge": 0.0},
+        alpha_policy={
+            **_sparse_policy(buy_signal_count=1, slate_size=1),
+            "allocatorEvFusion": baseline,
+        },
+    )
+
+    allocation = promoted[0]["alpha_allocation"]
+    assert promoted[0]["signal"] == "BUY"
+    assert allocation["eligible_for_sparse"] is True
+    assert allocation["expected_return_owner"] == "s12_trade_ev"
+    assert allocation["expected_return"] == pytest.approx(0.012)
+    assert allocation["allocator_ev_fusion"]["status"] == "candidate_fallback_required"
+
+
 def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):
     pytest.importorskip("httpx")
     from services import modal_client

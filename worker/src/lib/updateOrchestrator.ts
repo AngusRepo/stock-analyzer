@@ -44,7 +44,7 @@ const INDICATOR_BATCH_CONCURRENCY = 4
 const NEWS_BATCH_CONCURRENCY = 2
 const FINALIZE_RECHECK_DELAY_MS = 30_000
 const FINALIZE_RECHECK_MAX_ATTEMPTS = 10
-const FINALIZE_ORPHAN_REPAIR_DELAY_MS = 2 * 60_000
+const FINALIZE_LEASE_TTL_MS = 20 * 60_000
 const FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS = 2 * 60
 const FINALIZE_CONTINUATION_MAX_ATTEMPTS = 45
 const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
@@ -1598,10 +1598,13 @@ async function ensureSameDateRegimeReady(
     return `regime=${current.label} idx=${current.regime_index} kv=verified source=existing`
   }
 
+  const attemptId = `${source}:${Date.now().toString(36)}:${crypto.randomUUID()}`
   await logSchedulerResult(env.KV, 'regime-compute', {
     status: 'running',
     summary: `pre-screener regime-compute started for ${triggerTime}; run_id=${runId ?? 'n/a'}; source=${source}`,
     duration_ms: 0,
+    run_id: runId,
+    attempt_id: attemptId,
     run_date: triggerTime,
   })
   const startedAt = Date.now()
@@ -1611,6 +1614,8 @@ async function ensureSameDateRegimeReady(
       status: 'success',
       summary: `pre-screener ${summary}; source=${source}`,
       duration_ms: Date.now() - startedAt,
+      run_id: runId,
+      attempt_id: attemptId,
       run_date: triggerTime,
     })
     return summary
@@ -1620,6 +1625,8 @@ async function ensureSameDateRegimeReady(
       summary: `pre-screener regime-compute failed for ${triggerTime}; source=${source}`,
       duration_ms: Date.now() - startedAt,
       error: error instanceof Error ? error.message : String(error),
+      run_id: runId,
+      attempt_id: attemptId,
       run_date: triggerTime,
     })
     throw error
@@ -1640,9 +1647,13 @@ async function finalizeUpdateChain(
   }
 
   const finalKey = `cron:indicator-queue:${triggerTime}:${runId}:finalized`
+  if (await env.KV.get(finalKey)) {
+    console.log(`[Queue] Finalize continuation already closed for ${triggerTime} ${runId}`)
+    return
+  }
   try {
-    const acquired = await acquireFinalizeLock(env, triggerTime, runId)
-    if (!acquired) {
+    const leaseOwner = await acquireFinalizeLock(env, triggerTime, runId)
+    if (!leaseOwner) {
       console.log(`[Queue] Finalize already acquired for ${triggerTime} ${runId}`)
       const repaired = await repairFinalizeContinuationIfNeeded(env, deps, triggerTime, runId, shardCount)
       if (!repaired) {
@@ -1650,8 +1661,8 @@ async function finalizeUpdateChain(
       }
       return
     }
+    await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'lock-acquired', leaseOwner)
     await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
-    await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'lock-acquired')
   } catch (error) {
     await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, error instanceof Error ? error.message : String(error))
   }
@@ -1737,7 +1748,9 @@ async function runFinalizeContinuation(
   runId: string,
   shardCount: number,
   source: string,
+  leaseOwner: string,
 ): Promise<void> {
+  await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
   console.log('[Queue] All shards done. Running alert check and event-driven pipeline...')
   await logSchedulerResult(env.KV, 'indicator-queue', {
     status: 'success',
@@ -1763,10 +1776,13 @@ async function runFinalizeContinuation(
     console.warn('[Queue] Dataset manifest write failed:', e)
   }
   await checkAlerts(env)
+  await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
   const matureStrategyEvidence = await refreshMatureStrategyEvidenceBeforeScreener(env, triggerTime, runId)
   console.log(`[Queue] Mature strategy evidence refreshed before screener: ${matureStrategyEvidence}`)
+  await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
   const regimeSummary = await ensureSameDateRegimeReady(env, triggerTime, runId, 'indicator-finalizer')
   console.log(`[Queue] Same-date regime ready before screener: ${regimeSummary}`)
+  await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
 
   const runAsyncScreener = deps.runMarketScreenerAsync
   if (runAsyncScreener) {
@@ -1808,6 +1824,7 @@ async function runFinalizeContinuation(
         run_date: triggerTime,
       })
       console.warn('[Queue] Event-driven screener-v2 trigger failed:', e)
+      throw e
     }
     return
   }
@@ -1852,7 +1869,7 @@ async function runFinalizeContinuation(
       run_date: triggerTime,
     })
     console.warn('[Queue] Event-driven screener failed:', e)
-    return
+    throw e
   }
 
   await enqueuePostScreenerPipelineContinuation(env, {
@@ -1863,17 +1880,26 @@ async function runFinalizeContinuation(
   })
 }
 
-async function acquireFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<boolean> {
+async function acquireFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<string | null> {
   const lockKey = `indicator-finalize:${triggerTime}:${runId}`
   const now = new Date().toISOString()
-  const expiresAt = new Date(Date.now() + 7 * 86400 * 1000).toISOString()
+  const leaseOwner = `indicator_finalize:${crypto.randomUUID()}`
+  const expiresAt = new Date(Date.now() + FINALIZE_LEASE_TTL_MS).toISOString()
   try {
     const result = await env.DB.prepare(`
-      INSERT OR IGNORE INTO scheduler_locks (lock_key, owner, run_date, run_id, created_at, expires_at)
-      VALUES (?, 'indicator_finalize', ?, ?, ?, ?)
-    `).bind(lockKey, triggerTime, runId, now, expiresAt).run()
+      INSERT INTO scheduler_locks (lock_key, owner, run_date, run_id, created_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(lock_key) DO UPDATE SET
+        owner=excluded.owner,
+        run_date=excluded.run_date,
+        run_id=excluded.run_id,
+        created_at=excluded.created_at,
+        expires_at=excluded.expires_at
+      WHERE scheduler_locks.expires_at IS NULL
+         OR scheduler_locks.expires_at <= excluded.created_at
+    `).bind(lockKey, leaseOwner, triggerTime, runId, now, expiresAt).run()
     const changes = Number(result.meta?.changes ?? 0)
-    return changes > 0
+    return changes > 0 ? leaseOwner : null
   } catch (error) {
     // Fail closed: without an atomic lock, multiple finalizers can advance the same chain.
     await logSchedulerResult(env.KV, 'evening-chain', {
@@ -1887,20 +1913,54 @@ async function acquireFinalizeLock(env: Bindings, triggerTime: string, runId: st
   }
 }
 
-async function loadFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<{ created_at?: string | null } | null> {
+async function renewFinalizeLock(
+  env: Bindings,
+  triggerTime: string,
+  runId: string,
+  leaseOwner: string,
+): Promise<boolean> {
+  const lockKey = `indicator-finalize:${triggerTime}:${runId}`
+  const now = new Date().toISOString()
+  const expiresAt = new Date(Date.now() + FINALIZE_LEASE_TTL_MS).toISOString()
+  const result = await env.DB.prepare(`
+    UPDATE scheduler_locks
+       SET expires_at = ?
+     WHERE lock_key = ?
+       AND owner = ?
+       AND run_date = ?
+       AND run_id = ?
+       AND expires_at > ?
+  `).bind(expiresAt, lockKey, leaseOwner, triggerTime, runId, now).run()
+  return Number(result.meta?.changes ?? 0) > 0
+}
+
+async function assertFinalizeLockRenewed(
+  env: Bindings,
+  triggerTime: string,
+  runId: string,
+  leaseOwner: string,
+): Promise<void> {
+  if (!await renewFinalizeLock(env, triggerTime, runId, leaseOwner)) {
+    throw new Error(`finalizer lease lost before continuation stage: ${triggerTime} run_id=${runId}`)
+  }
+}
+
+type FinalizeLockRow = { owner?: string | null; expires_at?: string | null }
+
+async function loadFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<FinalizeLockRow | null> {
   const lockKey = `indicator-finalize:${triggerTime}:${runId}`
   return await env.DB.prepare(`
-    SELECT created_at
+    SELECT owner, expires_at
       FROM scheduler_locks
      WHERE lock_key = ?
      LIMIT 1
-  `).bind(lockKey).first<{ created_at?: string | null }>()
+  `).bind(lockKey).first<FinalizeLockRow>()
 }
 
-function finalizeLockIsRepairable(lock: { created_at?: string | null } | null): boolean {
-  const createdAtMs = lock?.created_at ? Date.parse(lock.created_at) : NaN
-  if (!Number.isFinite(createdAtMs)) return true
-  return Date.now() - createdAtMs >= FINALIZE_ORPHAN_REPAIR_DELAY_MS
+function finalizeLockIsRepairable(lock: FinalizeLockRow | null): boolean {
+  if (!lock) return true
+  const expiresAtMs = lock.expires_at ? Date.parse(lock.expires_at) : NaN
+  return !Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()
 }
 
 async function hasSuccessfulScreenerRun(db: D1Database, triggerTime: string): Promise<boolean> {
@@ -1952,14 +2012,24 @@ async function repairFinalizeContinuationIfNeeded(
   runId: string,
   shardCount: number,
 ): Promise<boolean> {
+  const finalKey = `cron:indicator-queue:${triggerTime}:${runId}:finalized`
+  if (await env.KV.get(finalKey)) return true
+
   const lock = await loadFinalizeLock(env, triggerTime, runId)
   if (!finalizeLockIsRepairable(lock)) {
-    console.log(`[Queue] Finalize lock is recent; waiting for original finalizer ${triggerTime} ${runId}`)
+    console.log(`[Queue] Finalize lease is active; waiting for original finalizer ${triggerTime} ${runId}`)
+    return false
+  }
+
+  const leaseOwner = await acquireFinalizeLock(env, triggerTime, runId)
+  if (!leaseOwner) {
+    console.log(`[Queue] Finalize repair takeover lost to another continuation ${triggerTime} ${runId}`)
     return false
   }
 
   if (await hasPipelineEvidence(env, triggerTime)) {
     console.log(`[Queue] Finalize continuation already reached pipeline for ${triggerTime} ${runId}`)
+    await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
     return true
   }
 
@@ -1984,16 +2054,18 @@ async function repairFinalizeContinuationIfNeeded(
       shardCount,
       attempt: 1,
     })
+    await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
     return true
   }
 
   await logSchedulerResult(env.KV, 'evening-chain', {
     status: 'running',
-    summary: `event-driven chain repairing stale finalizer lock before screener for ${triggerTime}; run_id=${runId}`,
+    summary: `event-driven chain repairing expired finalizer lease before screener for ${triggerTime}; run_id=${runId}`,
     duration_ms: 0,
     run_date: triggerTime,
   })
-  await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'stale-lock-repair')
+  await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'expired-lease-repair', leaseOwner)
+  await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
   return true
 }
 

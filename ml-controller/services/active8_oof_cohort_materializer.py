@@ -1522,6 +1522,116 @@ def build_fusion_oof_rows(
     return rows
 
 
+def archive_ev_shadow_evaluation_packets(
+    *,
+    bucket: Any,
+    cohort_id: str,
+    business_date: str,
+    base_manifest_checksum: str,
+    extension_manifest: dict[str, Any],
+    l4_result: dict[str, Any],
+    fusion_result: dict[str, Any],
+    forward_row_count: int,
+) -> dict[str, Any]:
+    """Persist daily evaluation evidence without creating a promotion candidate."""
+
+    extension_checksum = str(extension_manifest.get("manifest_checksum") or "").lower()
+    dates = sorted({
+        str(value or "")[:10]
+        for value in (extension_manifest.get("dates") or [])
+        if str(value or "")[:10]
+    })
+    if (
+        len(base_manifest_checksum) != 64
+        or len(extension_checksum) != 64
+        or not dates
+        or forward_row_count <= 0
+        or extension_manifest.get("promotion_eligible") is not False
+        or extension_manifest.get("training_dispatched") is not False
+        or str(extension_manifest.get("base_cohort_id") or "") != cohort_id
+        or str(extension_manifest.get("base_manifest_checksum") or "") != base_manifest_checksum
+    ):
+        raise ValueError("expected_return_shadow_evaluation_contract_invalid")
+
+    output: dict[str, Any] = {}
+    for model_name, result in (
+        ("l4_alpha_ev", l4_result),
+        ("allocator_ev_fusion", fusion_result),
+    ):
+        artifact = dict(result.get("artifact") or {})
+        validation = dict(result.get("validation_packet") or {})
+        model_version = str(artifact.get("model_version") or "unknown")
+        payload = {
+            "schema_version": "expected-return-shadow-evaluation-packet-v1",
+            "business_date": business_date,
+            "cohort_id": cohort_id,
+            "base_manifest_checksum": base_manifest_checksum,
+            "extension_manifest_checksum": extension_checksum,
+            "model_name": model_name,
+            "model_version": model_version,
+            "oof_min_date": dates[0],
+            "oof_max_date": dates[-1],
+            "oof_date_count": len(dates),
+            "oof_row_count": forward_row_count,
+            "quality_decision": str(
+                validation.get("quality_decision_before_shadow_policy")
+                or validation.get("decision")
+                or "PENDING"
+            ).upper(),
+            "policy_decision": "shadow_only",
+            "validation_packet": validation,
+        }
+        encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        checksum = hashlib.sha256(encoded).hexdigest()
+        path = (
+            f"universal/ev_shadow_evaluations/{cohort_id}/{business_date}/"
+            f"{model_name}/{checksum}.json"
+        )
+        bucket.blob(path).upload_from_string(encoded, content_type="application/json")
+        evaluation_id = hashlib.sha256(
+            f"{cohort_id}:{extension_checksum}:{model_name}".encode("utf-8")
+        ).hexdigest()
+        d1_client.execute(
+            """
+            INSERT INTO expected_return_shadow_evaluation_packets (
+              evaluation_id, business_date, cohort_id, base_manifest_checksum,
+              extension_manifest_checksum, model_name, model_version,
+              oof_min_date, oof_max_date, oof_date_count, oof_row_count,
+              quality_decision, policy_decision, validation_packet_json,
+              artifact_path, artifact_checksum, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'shadow_only', ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(evaluation_id) DO UPDATE SET
+              business_date=excluded.business_date,
+              model_version=excluded.model_version,
+              oof_min_date=excluded.oof_min_date,
+              oof_max_date=excluded.oof_max_date,
+              oof_date_count=excluded.oof_date_count,
+              oof_row_count=excluded.oof_row_count,
+              quality_decision=excluded.quality_decision,
+              validation_packet_json=excluded.validation_packet_json,
+              artifact_path=excluded.artifact_path,
+              artifact_checksum=excluded.artifact_checksum,
+              updated_at=CURRENT_TIMESTAMP
+            """,
+            [
+                evaluation_id, business_date, cohort_id, base_manifest_checksum,
+                extension_checksum, model_name, model_version,
+                dates[0], dates[-1], len(dates), forward_row_count,
+                payload["quality_decision"], json.dumps(validation, ensure_ascii=False),
+                path, checksum,
+            ],
+        )
+        output[model_name] = {
+            "evaluation_id": evaluation_id,
+            "path": path,
+            "checksum": checksum,
+            "quality_decision": payload["quality_decision"],
+            "policy_decision": "shadow_only",
+            "oof_max_date": dates[-1],
+        }
+    return output
+
+
 def archive_ev_candidate_artifacts(
     *,
     bucket: Any,

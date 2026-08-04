@@ -12,6 +12,7 @@ const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8'
 const walkForward = fs.readFileSync('../ml-controller/routers/walk_forward.py', 'utf8')
 const retrainFollowup = fs.readFileSync('../ml-controller/routers/retrain_followup.py', 'utf8')
 const trainingPolicy = fs.readFileSync('../ml-service/app/training_policy.py', 'utf8')
+const shadowPacketMigration = fs.readFileSync('migrations/0100_expected_return_shadow_evaluation_packets.sql', 'utf8')
 
 const daily = manifest.jobs.find((job: any) => job.id === 'active8-oof-daily')
 const watchdog = manifest.jobs.find((job: any) => job.id === 'active8-oof-daily-watchdog')
@@ -37,7 +38,7 @@ assert(walkForward.includes('cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSION
 assert(walkForward.includes('train_window_days=OOF_TRAIN_SESSIONS') && walkForward.includes('test_window_days=OOF_TEST_SESSIONS'), 'OOF cohort must use the canonical 60/10 purged walk-forward windows')
 assert(walkForward.includes('active8-oof-dispatch-v1') && walkForward.includes('cohort_orchestrator_active'), 'OOF generation must have a durable idempotent dispatch fence')
 assert(
-  walkForward.includes('active8-oof-lifecycle-receipt-v5-cadence-owner') &&
+  walkForward.includes('active8-oof-lifecycle-receipt-v7-shadow-evaluation-packets') &&
     walkForward.includes('_oof_lifecycle_receipt_matches_active_policy'),
   'materialization/promotion must invalidate stale receipts when the active PIT policy changes',
 )
@@ -54,6 +55,13 @@ assert(
 assert(
   walkForward.includes('"evidence_closure"') && walkForward.includes('"serving_closure"'),
   'lifecycle receipts must not conflate materialized evidence with a promoted serving champion',
+)
+assert(
+  walkForward.includes('archive_ev_shadow_evaluation_packets') &&
+    walkForward.includes('shadow_evaluation_packets') &&
+    shadowPacketMigration.includes("policy_decision = 'shadow_only'") &&
+    !shadowPacketMigration.includes('model_artifact_registry'),
+  'daily frozen-forward L4/Fusion evaluation packets must persist separately from promotion candidates',
 )
 assert(
   walkForward.includes('active8-oof-full-fit-receipt-v1') &&

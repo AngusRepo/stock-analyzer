@@ -135,7 +135,7 @@ def test_oof_materialize_job_contract_is_durable_and_deployed():
     assert "oof_materialize_job_main" in deploy
 
 
-def test_oof_materialize_job_reports_full_fit_pending_as_terminal_error(monkeypatch):
+def test_oof_materialize_job_reports_full_fit_dispatch_as_triggered_continuation(monkeypatch):
     callbacks = []
 
     async def fake_execute_lifecycle(**kwargs):
@@ -145,7 +145,11 @@ def test_oof_materialize_job_reports_full_fit_pending_as_terminal_error(monkeypa
             "status": "materialized",
             "cohort_id": "cohort-1",
             "dependency_retry_required": True,
-            "full_fit_dispatch": {"status": "dispatched", "retry_required": True},
+            "full_fit_dispatch": {
+                "status": "dispatched",
+                "reason": "eligible_models_ready",
+                "retry_required": True,
+            },
         }
 
     async def fake_callback(payload):
@@ -159,9 +163,10 @@ def test_oof_materialize_job_reports_full_fit_pending_as_terminal_error(monkeypa
     monkeypatch.setenv("OOF_MATERIALIZE_DISPATCH_FULL_FIT", "1")
     monkeypatch.setenv("OOF_MATERIALIZE_RUN_ID", "run-pending")
 
-    assert asyncio.run(oof_materialize_job_main._run()) == 1
-    assert callbacks[0]["status"] == "error"
-    assert "oof_dependency_retry_required" in callbacks[0]["error"]
+    assert asyncio.run(oof_materialize_job_main._run()) == 0
+    assert callbacks[0]["status"] == "triggered"
+    assert "error" not in callbacks[0]
+    assert "full_fit=dispatched" in callbacks[0]["summary"]
 
 def test_oof_materialize_job_keeps_prep_dependency_terminal_and_retriable(monkeypatch):
     callbacks = []

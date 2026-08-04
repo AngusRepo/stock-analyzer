@@ -4,6 +4,7 @@ import { runArtifactAutoPromotion, runModelIcRollingRefresh, runObsidianDaily, r
 import { generateDailyReport } from './dailyReport'
 import { ensureMetaLearningResearchRegistry } from './metaLearningResearchTrack'
 import { runNeuralMetaShadow } from './metaLearningShadowRunner'
+import { hydrateMatureMetaShadowDecisionRewards } from './metaLearningShadowDecisions'
 import { listLinUcbRewardSourceRows } from './metaLearningRewardLedger'
 import { clearOpenPositionIntradayPriceCache } from './paperIntradayPriceCache'
 import { classifySchedulerSummary, logSchedulerResult, type SchedulerRunStatus } from './schedulerRunLogger'
@@ -163,10 +164,21 @@ async function logSkippedHistoricalTask(env: Bindings, ctx: ChainContext, task: 
 }
 
 export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): Promise<string> {
+  const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const registry = await ensureMetaLearningResearchRegistry(env.KV)
+  const hydration = await hydrateMatureMetaShadowDecisionRewards(env.DB, {
+    endDate: runDate,
+    limit: 50000,
+  })
   const sourceRows = await listLinUcbRewardSourceRows(env.DB, {
-    endDate: ctx.runDate,
+    endDate: runDate,
     limit: 5000,
+  })
+  const decisionRows = await listLinUcbRewardSourceRows(env.DB, {
+    startDate: runDate,
+    endDate: runDate,
+    limit: 5000,
+    requireOutcome: false,
   })
   const [neuralUcb, neuralTs, neuCb] = await Promise.all([
     runNeuralMetaShadow(env, {
@@ -175,6 +187,7 @@ export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainCont
       dryRun: false,
       timeoutMs: META_SHADOW_POLICY_TIMEOUT_MS,
       sourceRows,
+      decisionRows,
     }),
     runNeuralMetaShadow(env, {
       policyId: 'NeuralTS',
@@ -182,6 +195,7 @@ export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainCont
       dryRun: false,
       timeoutMs: META_SHADOW_POLICY_TIMEOUT_MS,
       sourceRows,
+      decisionRows,
     }),
     runNeuralMetaShadow(env, {
       policyId: 'NeuCB',
@@ -189,9 +203,12 @@ export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainCont
       dryRun: false,
       timeoutMs: META_SHADOW_POLICY_TIMEOUT_MS,
       sourceRows,
+      decisionRows,
     }),
   ])
   return [
+    `reward_hydrated=${hydration.hydrated_decisions}`,
+    `decision_contexts=${decisionRows.length}`,
     `registry_created=${registry.created.length}`,
     `registry_total=${registry.total}`,
     `neural_ucb=${normalizeSummary(neuralUcb)}`,

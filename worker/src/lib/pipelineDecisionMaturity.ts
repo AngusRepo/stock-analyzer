@@ -151,6 +151,21 @@ type EvCandidateRow = {
   promotion_tier: string | null
 }
 
+type EvShadowEvaluationRow = {
+  model_name: 'l4_alpha_ev' | 'allocator_ev_fusion'
+  evaluation_id: string
+  business_date: string
+  model_version: string
+  oof_max_date: string
+  oof_date_count: number | string
+  oof_row_count: number | string
+  quality_decision: string
+  policy_decision: string
+  updated_at: string | null
+  l4_corr_lcb90: number | string | null
+  fusion_spread_delta_lcb90: number | string | null
+}
+
 function validDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value)
 }
@@ -308,7 +323,7 @@ export async function buildPipelineDecisionMaturityPacket(
   `).bind(requestedDate).first<CanonicalHead>())
   const head = canonicalHead.value
 
-  const [reference, matrix, redundancy, routeRun, routeHead, s12Run, s12Artifact, s12Approved, s12Evidence, s12Structure, evRows, serving, candidateReport, l4Maturity] = await Promise.all([
+  const [reference, matrix, redundancy, routeRun, routeHead, s12Run, s12Artifact, s12Approved, s12Evidence, s12Structure, evRows, evShadowRows, serving, candidateReport, l4Maturity] = await Promise.all([
     safeQuery(() => head ? learningDb.prepare(`
       SELECT COUNT(*) reference_rows,
              SUM(CASE WHEN strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) affinity_v2_rows,
@@ -477,6 +492,26 @@ export async function buildPipelineDecisionMaturityPacket(
              json_extract(offline_evidence_json, '$.validation_packet.promotion.tier') promotion_tier
         FROM ranked WHERE ordinal=1
     `).bind(requestedDate).all<EvCandidateRow>().then((result) => result.results ?? [])),
+    safeQuery(() => learningDb.prepare(`
+      WITH ranked AS (
+        SELECT evaluation_id, business_date, model_name, model_version,
+               oof_max_date, oof_date_count, oof_row_count,
+               quality_decision, policy_decision, validation_packet_json, updated_at,
+               ROW_NUMBER() OVER (
+                 PARTITION BY model_name
+                 ORDER BY business_date DESC, oof_max_date DESC, updated_at DESC, evaluation_id DESC
+               ) ordinal
+          FROM expected_return_shadow_evaluation_packets
+         WHERE business_date <= ?
+           AND policy_decision = 'shadow_only'
+      )
+      SELECT evaluation_id, business_date, model_name, model_version,
+             oof_max_date, oof_date_count, oof_row_count,
+             quality_decision, policy_decision, updated_at,
+             json_extract(validation_packet_json, '$.oos_metrics.date_mean_cross_section_corr_lcb90') l4_corr_lcb90,
+             json_extract(validation_packet_json, '$.selection_champion_comparison.spread_delta_lcb90') fusion_spread_delta_lcb90
+        FROM ranked WHERE ordinal=1
+    `).bind(requestedDate).all<EvShadowEvaluationRow>().then((result) => result.results ?? [])),
     safeQuery(() => readCurrentExpectedReturnServingState({ ...env, DB: learningDb }, requestedDate)),
     safeQuery(() => inspectExpectedReturnCandidateEvidence(learningDb)),
     safeQuery(() => inspectAllocatorEvMaturityCoverage(learningDb, requestedDate)),
@@ -701,8 +736,10 @@ export async function buildPipelineDecisionMaturityPacket(
   const servingState = serving.value
   const candidateState = candidateReport.value?.candidates
   const maturity = l4Maturity.value
+  const evShadow = new Map((evShadowRows.value ?? []).map((row) => [row.model_name, row]))
 
   const l4 = evCandidates.get('l4_alpha_ev')
+  const l4Shadow = evShadow.get('l4_alpha_ev')
   const l4Serving = servingState?.artifacts.l4_alpha_ev
   if (!l4 && !l4Serving) {
     stages.push(unavailableStage('l4', 'L4', 'Canonical L4 alpha EV', requestedDate, 'model_artifact_registry + allocator_ev_feature_snapshots', [evRows.error, serving.error, candidateReport.error, l4Maturity.error]))
@@ -747,22 +784,25 @@ export async function buildPipelineDecisionMaturityPacket(
         metric('walk_forward', 'Walk-forward stable', l4?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4?.walk_forward_passed == null ? null : Boolean(l4.walk_forward_passed) }),
         metric('strict_pit_rows', 'Materialized strict L4 PIT', maturity?.strictL4PitRows ?? null, { unit: 'rows' }),
         metric('strict_pit_dates', 'Materialized strict L4 PIT dates', maturity?.strictL4PitDates ?? null, { unit: 'dates' }),
+        metric('frozen_forward_quality', 'Latest frozen-forward shadow quality', l4Shadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: l4Shadow == null ? null : l4Shadow.quality_decision === 'PASS' }),
+        metric('frozen_forward_dates', 'Latest frozen-forward shadow dates', l4Shadow?.oof_date_count ?? null, { unit: 'dates', note: 'Monitoring-only; never training or promotion evidence.' }),
       ],
       lineage: {
         requested_date: requestedDate,
-        evidence_date: l4?.source_run_date ?? candidateState?.l4_alpha_ev.candidate_end_date ?? null,
-        oof_max_date: maturity?.indexedL4PitMaxDate ?? null,
+        evidence_date: l4Shadow?.business_date ?? l4?.source_run_date ?? candidateState?.l4_alpha_ev.candidate_end_date ?? null,
+        oof_max_date: l4Shadow?.oof_max_date ?? maturity?.indexedL4PitMaxDate ?? null,
         artifact_id: l4?.artifact_id ?? candidateState?.l4_alpha_ev.artifact_id ?? null,
         oof_applicable: true,
         evidence_semantics: 'Purged Active-8 OOF and five-session net-label cutoff.',
         model_version: l4?.version ?? l4Serving?.model_version ?? null,
-        source: 'purged Active-8 OOF + canonical five-session net labels',
-        updated_at: l4?.updated_at ?? candidateState?.l4_alpha_ev.updated_at ?? null,
+        source: l4Shadow ? 'purged Active-8 OOF candidate + frozen-forward shadow evaluation packet' : 'purged Active-8 OOF + canonical five-session net labels',
+        updated_at: l4Shadow?.updated_at ?? l4?.updated_at ?? candidateState?.l4_alpha_ev.updated_at ?? null,
       },
     })
   }
 
   const fusion = evCandidates.get('allocator_ev_fusion')
+  const fusionShadow = evShadow.get('allocator_ev_fusion')
   const fusionServing = servingState?.artifacts.allocator_ev_fusion
   if (!fusion && !fusionServing) {
     stages.push(unavailableStage('fusion', 'L4+', 'Fusion final trade EV', requestedDate, 'model_artifact_registry + allocator EV snapshots', [evRows.error, serving.error, candidateReport.error]))
@@ -814,17 +854,19 @@ export async function buildPipelineDecisionMaturityPacket(
         metric('final_champion_comparison', 'Final trade EV paired comparison', fusion?.fusion_final_comparison_decision, { unit: 'status', note: `${finite(fusion?.fusion_final_comparison_samples)}/paired rows across ${finite(fusion?.fusion_final_comparison_dates)} dates; selection comparison is reported separately.` }),
         metric('execution_expert', 'Conditional execution expert', fusion?.execution_decision, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusion?.execution_decision == null ? null : fusion.execution_decision === 'PASS' }),
         metric('execution_probability', 'Execution probability expert', fusion?.execution_probability_decision, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusion?.execution_probability_decision == null ? null : fusion.execution_probability_decision === 'PASS' }),
+        metric('frozen_forward_quality', 'Latest frozen-forward shadow quality', fusionShadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusionShadow == null ? null : fusionShadow.quality_decision === 'PASS' }),
+        metric('frozen_forward_dates', 'Latest frozen-forward shadow dates', fusionShadow?.oof_date_count ?? null, { unit: 'dates', note: 'Monitoring-only; never training or promotion evidence.' }),
       ],
       lineage: {
         requested_date: requestedDate,
-        evidence_date: fusion?.source_run_date ?? candidateState?.allocator_ev_fusion.candidate_end_date ?? null,
+        evidence_date: fusionShadow?.business_date ?? fusion?.source_run_date ?? candidateState?.allocator_ev_fusion.candidate_end_date ?? null,
         artifact_id: fusion?.artifact_id ?? candidateState?.allocator_ev_fusion.artifact_id ?? null,
         model_version: fusion?.version ?? fusionServing?.model_version ?? null,
-        source: 'canonical L4 + strict S12 V3 replay + market/sector PIT context',
-        oof_max_date: fusion?.fusion_oof_max_date ?? null,
+        source: fusionShadow ? 'Fusion candidate + frozen-forward shadow evaluation packet' : 'canonical L4 + strict S12 V3 replay + market/sector PIT context',
+        oof_max_date: fusionShadow?.oof_max_date ?? fusion?.fusion_oof_max_date ?? null,
         oof_applicable: true,
         evidence_semantics: 'Purged OOF sample cutoff; final execution comparison can remain pending after selection comparison is available.',
-        updated_at: fusion?.updated_at ?? candidateState?.allocator_ev_fusion.updated_at ?? null,
+        updated_at: fusionShadow?.updated_at ?? fusion?.updated_at ?? candidateState?.allocator_ev_fusion.updated_at ?? null,
       },
     })
   }
@@ -887,33 +929,51 @@ export async function buildPipelineDecisionMaturityPacket(
        LIMIT 7
     `).bind(requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
-      WITH ranked AS (
+      WITH evidence AS (
         SELECT source_run_date evidence_date,
                json_extract(offline_evidence_json, '$.validation_packet.oos_metrics.date_mean_cross_section_corr_lcb90') value,
-               ROW_NUMBER() OVER (PARTITION BY source_run_date ORDER BY updated_at DESC, artifact_id DESC) ordinal
+               updated_at, artifact_id evidence_id
           FROM model_artifact_registry
-         WHERE model_name='l4_alpha_ev' AND source_run_date <= ?
+         WHERE model_name='l4_alpha_ev' AND candidate_type='l4_alpha_ev_refresh' AND source_run_date <= ?
+        UNION ALL
+        SELECT business_date,
+               json_extract(validation_packet_json, '$.oos_metrics.date_mean_cross_section_corr_lcb90'),
+               updated_at, evaluation_id
+          FROM expected_return_shadow_evaluation_packets
+         WHERE model_name='l4_alpha_ev' AND business_date <= ?
+      ), ranked AS (
+        SELECT evidence_date, value, updated_at, evidence_id,
+               ROW_NUMBER() OVER (PARTITION BY evidence_date ORDER BY updated_at DESC, evidence_id DESC) ordinal FROM evidence
       )
       SELECT evidence_date, value, 0 target
         FROM ranked
        WHERE ordinal=1 AND evidence_date IS NOT NULL
        ORDER BY evidence_date DESC
        LIMIT 7
-    `).bind(requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+    `).bind(requestedDate, requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
-      WITH ranked AS (
+      WITH evidence AS (
         SELECT source_run_date evidence_date,
                json_extract(offline_evidence_json, '$.validation_packet.selection_champion_comparison.spread_delta_lcb90') value,
-               ROW_NUMBER() OVER (PARTITION BY source_run_date ORDER BY updated_at DESC, artifact_id DESC) ordinal
+               updated_at, artifact_id evidence_id
           FROM model_artifact_registry
-         WHERE model_name='allocator_ev_fusion' AND source_run_date <= ?
+         WHERE model_name='allocator_ev_fusion' AND candidate_type='allocator_ev_fusion_refresh' AND source_run_date <= ?
+        UNION ALL
+        SELECT business_date,
+               json_extract(validation_packet_json, '$.selection_champion_comparison.spread_delta_lcb90'),
+               updated_at, evaluation_id
+          FROM expected_return_shadow_evaluation_packets
+         WHERE model_name='allocator_ev_fusion' AND business_date <= ?
+      ), ranked AS (
+        SELECT evidence_date, value, updated_at, evidence_id,
+               ROW_NUMBER() OVER (PARTITION BY evidence_date ORDER BY updated_at DESC, evidence_id DESC) ordinal FROM evidence
       )
       SELECT evidence_date, value, 0 target
         FROM ranked
        WHERE ordinal=1 AND evidence_date IS NOT NULL
        ORDER BY evidence_date DESC
        LIMIT 7
-    `).bind(requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+    `).bind(requestedDate, requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
   ])
   const historyByStage = new Map<PipelineMaturityStage['id'], {
     rows: Array<{ evidence_date: string; value: number | null; target: number | null }>

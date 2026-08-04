@@ -362,6 +362,25 @@ def materialize_allocator_ev_fusion(
     artifact = policy_artifact(policy)
     if artifact is None:
         return None
+    if str(artifact.get("serving_mode") or "").strip().lower() == "abstention_baseline":
+        return {
+            **artifact,
+            "schema_version": SCHEMA_VERSION,
+            "status": "candidate_fallback_required",
+            "expected_return_owner": OWNER,
+            "expected_return": None,
+            "expected_return_mean": None,
+            "expected_return_source": "allocator_ev_fusion:safe_abstention_fallback_required",
+            "primary_expected_return_allowed": False,
+            "selection_alpha_owner": "l4_alpha_ev",
+            "execution_trade_owner": "s12_trade_ev",
+            "l4_alpha_ev": l4_payload,
+            "s12_trade_ev": s12_payload,
+            "feature_values": {},
+            "diagnostic_role": "safe_abstention_baseline_not_expected_return_owner",
+            "semantic": "baseline_preserves_fail_closed_state_without_masking_validated_fallback_owner",
+            "blockers": ["alpha_champion_not_promoted"],
+        }
 
     blockers: list[str] = []
     contract_version = str(artifact.get("artifact_contract_version") or "").strip()

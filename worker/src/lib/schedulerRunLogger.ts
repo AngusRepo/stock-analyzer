@@ -188,8 +188,15 @@ export function resolveMonotonicSchedulerEntry(
 ): SchedulerRunLogEntry {
   if (!previous || previous.run_date !== incoming.run_date) return incoming
   const explicitNewRun = Boolean(incoming.run_id) && previous.run_id !== incoming.run_id
-  const explicitNewAttempt = Boolean(incoming.attempt_id) && previous.attempt_id !== incoming.attempt_id
-  if (explicitNewRun || explicitNewAttempt) return incoming
+  if (explicitNewRun) return incoming
+  const sameLogicalRun = Boolean(incoming.run_id) && previous.run_id === incoming.run_id
+  if (sameLogicalRun) {
+    if (previous.status === 'success' && incoming.status !== 'success') return previous
+    if (incoming.status === 'success') return incoming
+  }
+  const explicitNewAttempt = Boolean(incoming.attempt_id)
+    && previous.attempt_id !== incoming.attempt_id
+  if (explicitNewAttempt) return incoming
   if (previous.status === 'error' && incoming.status !== 'error') return previous
   if (previous.status === 'success' && ['running', 'triggered', 'skipped'].includes(incoming.status)) return previous
   return incoming

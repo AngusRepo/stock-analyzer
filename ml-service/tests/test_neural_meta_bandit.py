@@ -61,7 +61,7 @@ def test_shadow_decisions_compare_baseline_to_neural_policy():
     assert set(decisions[0]).issuperset({"symbol", "baseline_action", "shadow_action", "context", "evidence"})
 
 
-def test_neucb_scores_as_greedy_neural_contextual_benchmark():
+def test_neucb_scores_with_context_dependent_uncertainty():
     contexts = np.array(
         [
             [1.0] + [0.0] * 11,
@@ -75,6 +75,7 @@ def test_neucb_scores_as_greedy_neural_contextual_benchmark():
     rewards = np.array([0.8, 0.7, 0.78, 0.68], dtype="float32")
 
     model = train_neural_meta_bandit(
+
         contexts,
         arms,
         rewards,
@@ -82,6 +83,38 @@ def test_neucb_scores_as_greedy_neural_contextual_benchmark():
         config=NeuralMetaBanditConfig(policy_id="NeuCB", epochs=50, seed=9),
     )
 
-    scores = model.score_actions(contexts[:2], mode="greedy")
+    scores = model.score_actions(contexts[:2], mode="neucb")
     assert scores.shape == (2, 2)
     assert model.training_report.policy_id == "NeuCB"
+
+
+def test_neural_policy_families_do_not_share_identical_models_or_scores():
+    rng = np.random.default_rng(19)
+    contexts = rng.normal(size=(60, 12)).astype("float32")
+    arms = np.asarray([idx % 3 for idx in range(len(contexts))], dtype=np.int64)
+    rewards = (0.2 * contexts[:, 0] + 0.1 * arms).astype("float32")
+    arm_names = ["tree_family", "time_series_family", "do_nothing"]
+
+    models = {
+        policy_id: train_neural_meta_bandit(
+            contexts,
+            arms,
+            rewards,
+            arm_names=arm_names,
+            config=NeuralMetaBanditConfig(
+                policy_id=policy_id,
+                epochs=20,
+                seed=7,
+                ucb_alpha=0.10,
+            ),
+        )
+        for policy_id in ("NeuralUCB", "NeuralTS", "NeuCB")
+    }
+    scores = {
+        "NeuralUCB": models["NeuralUCB"].score_actions(contexts[:4], mode="ucb"),
+        "NeuralTS": models["NeuralTS"].score_actions(contexts[:4], mode="ts"),
+        "NeuCB": models["NeuCB"].score_actions(contexts[:4], mode="neucb"),
+    }
+
+    assert not np.allclose(scores["NeuralUCB"], scores["NeuralTS"])
+    assert not np.allclose(scores["NeuralUCB"], scores["NeuCB"])

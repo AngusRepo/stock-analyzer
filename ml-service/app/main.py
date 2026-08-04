@@ -7,8 +7,8 @@ Current ensemble groups:
   - Time-series alpha models: DLinear / PatchTST / iTransformer
   - L2 feature sidecar: TimesFM
   - State-space overlays: KalmanFilter / MarkovSwitching
-import asyncio
 """
+import asyncio
 import os
 import numpy as np
 import polars as pl

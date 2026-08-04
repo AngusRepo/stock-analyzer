@@ -11,6 +11,8 @@ const researchWorkflows = fs.readFileSync('src/lib/controllerResearchWorkflows.t
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const strategyLearning = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
 const logger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
+const adminTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
+const schedulerPolicy = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const controllerDailyWorkflows = fs.readFileSync('src/lib/controllerDailyWorkflows.ts', 'utf8')
 const pipelineCallbackBlock = callbackRoutes.slice(
   callbackRoutes.indexOf("if (body.task === 'pipeline'"),
@@ -283,6 +285,16 @@ assert(logger.includes("'post-pipeline-chain'"), 'post-pipeline-chain must be vi
 assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'linucb-reward-ledger'"), 'LinUCB reward ledger must be visible in scheduler/OBS logs')
 assert(logger.includes("'meta-learning-shadow'"), 'Neural shadow closure must be visible in scheduler/OBS logs')
+assert(
+  adminTasks.includes("'meta-learning-shadow': async () =>") &&
+    adminTasks.includes("type: 'meta_learning_shadow_closure'") &&
+    adminTasks.includes('force: false'),
+  'Meta shadow must have an evidence-only standalone admin retry path',
+)
+assert(
+  schedulerPolicy.includes("'meta-learning-shadow': { kind: 'research', holidayGated: false"),
+  'Meta shadow standalone retry must not be blocked by a market-session window',
+)
 assert(logger.includes("'strategy-learning'"), 'Strategy learning closure must be visible in scheduler/OBS logs')
 assert(logger.includes("'s12-replay-backfill'"), 'S12 replay backfill must be visible in scheduler/OBS logs')
 assert(logger.includes("'paper-intraday-cache-clear'"), 'paper intraday cache cleanup must be visible in scheduler/OBS logs')

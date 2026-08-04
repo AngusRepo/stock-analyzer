@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import ast
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -60,3 +62,17 @@ def test_regime_current_does_not_retry_non_transient_400():
     assert exc_info.value.status_code == 502
     assert "HTTP 400" in str(exc_info.value.detail)
     assert client.calls == 1
+
+
+def test_modal_regime_to_thread_has_runtime_asyncio_import():
+    source_path = Path(__file__).parents[2] / "ml-service" / "app" / "main.py"
+    source = source_path.read_text(encoding="utf-8-sig")
+    module = ast.parse(source)
+    imported_names = {
+        alias.name
+        for node in module.body
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    assert "asyncio" in imported_names
+    assert "await asyncio.to_thread(_compute_regime_current, req)" in source

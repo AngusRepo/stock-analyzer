@@ -43,10 +43,11 @@ def _l4_payload(value: float) -> dict:
         "validation_packet": {"decision": "PASS", "failed_gates": []},
         "resolver_method": "test_meta_calibrator",
         "model_version": "l4-test",
-        "feature_snapshot_version": "l4-features-test",
+        "feature_snapshot_version": "l4-directional-score-components-v2-lineage-bound",
         "trained_until": "2026-01-01",
         "horizon_days": 5,
         "cost_model_bps": 18.0,
+        "output_is_net_of_costs": True,
     }
 
 
@@ -150,6 +151,25 @@ def _row(day: str, idx: int) -> dict:
                 "bull_alignment_pct": 0.40 + (day_number % 3) * 0.08,
                 "regime_surface": regime_surface,
                 "reconstruction": "test_native",
+            },
+            "pit_sector_alpha_expert": {
+                "status": "loaded",
+                "point_in_time": True,
+                "features": {
+                    "sector_alpha_available": 1.0,
+                    "sector_formal_rs_rank": 0.4,
+                    "sector_thematic_rs_rank": 0.45,
+                    "sector_rs_consensus": 0.42,
+                    "sector_momentum_consensus": 0.1,
+                    "sector_rotation_consensus": 0.05,
+                    "sector_flow_consensus": 0.08,
+                    "sector_cross_layer_dispersion": 0.02,
+                    "sector_breadth_balance": 0.1,
+                    "sector_breadth_available": 1.0,
+                    "sector_participation_acceleration": 0.03,
+                    "sector_participation_available": 1.0,
+                    "sector_membership_coverage": 0.9,
+                },
             },
         }),
         "alpha_allocation": json.dumps({
@@ -436,7 +456,7 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     assert "replay_diagnostics.outcome_known_date" in observed[0]["sql"]
     assert "AS l4_executable_return_pct" in observed[0]["sql"]
     assert "price_horizon_labels_v1" in observed[0]["sql"]
-    assert "projection_version = 'price_horizon_v1'" in observed[0]["sql"]
+    assert "projection_version = 'price_horizon_v3_canonical_reference_identity'" in observed[0]["sql"]
     assert "LEAD(" not in observed[0]["sql"]
     assert "ph.exit_raw_close * ph.exit_adjustment_factor" in observed[0]["sql"]
     assert "ph.entry_raw_open * ph.entry_adjustment_factor" in observed[0]["sql"]
@@ -483,12 +503,14 @@ def test_snapshot_candidate_query_avoids_correlated_evidence_lookups():
     assert "selection_reference_snapshots_v1" in captured["sql"]
     assert "canonical_run_heads" in captured["sql"]
     assert "reference_feature_rejection_reason" in captured["sql"]
-    assert "COALESCE(dr.score_components, r.score_components)" in captured["sql"]
+    assert "r.score_components score_components" in captured["sql"]
+    assert "WHERE r.score_components IS NOT NULL" in captured["sql"]
+    assert "COALESCE(dr.score_components, r.score_components)" not in captured["sql"]
     assert "r.feature_available" in captured["sql"]
     assert "FROM daily_recommendations dr" in captured["sql"]
     assert "JOIN canonical_reference r" in captured["sql"]
     assert "FROM canonical_reference r" not in captured["sql"]
-    assert "json_extract(dr.score_components, '$.version')='score_v2'" in captured["sql"]
+    assert "json_extract(r.score_components, '$.version')='score_v2'" in captured["sql"]
     assert captured["params"] == [
         "2026-06-18",
         None,
@@ -734,6 +756,10 @@ def test_allocator_ev_fusion_feature_vector_accepts_backfill_only_l4_under_canon
         }),
         "allocator_ev_feature_snapshot_source": SNAPSHOT_BACKFILL_SOURCE,
         "allocator_ev_feature_snapshot_guard": SNAPSHOT_BACKFILL_AS_OF_GUARD,
+        "snapshot_lineage_cohort_id": "native:2026-07-07",
+        "snapshot_generation_mode": "native",
+        "snapshot_model_set_signature": "LightGBM@vTest|XGBoost@vTest",
+        "snapshot_target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
     }
 
     features = _feature_vector(row)
@@ -869,7 +895,7 @@ def test_allocator_ev_feature_snapshot_backfill_uses_fitted_fail_artifact_only_f
     assert result["written"] == 0
 
 
-def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_payloads():
+def test_allocator_ev_feature_snapshot_backfill_reuses_l4_but_removes_candidate_time_s12():
     l4_training_rows = []
     for day_idx in range(30):
         day = f"2026-06-{day_idx + 1:02d}"

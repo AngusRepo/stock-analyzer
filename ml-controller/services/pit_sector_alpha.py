@@ -496,7 +496,7 @@ def sector_alpha_feature_values(row: dict[str, Any]) -> dict[str, float]:
         for name in SECTOR_ALPHA_FEATURE_NAMES
         if name != "sector_defensive_rs_interaction"
     }
-    market_features = market_context_feature_values(row, l4_value=None, s12_value=None)
+    market_features = market_context_feature_values(row, l4_value=None)
     values["sector_defensive_rs_interaction"] = (
         values["sector_rs_consensus"]
         * float(market_features.get("regime_defensive_probability") or 0.0)

@@ -70,10 +70,10 @@ def test_controller_deploy_is_fail_closed_on_identity_and_provenance() -> None:
 def test_every_shared_cloud_run_job_receives_release_provenance_labels() -> None:
     script = (ROOT / "deploy_ml_controller.sh").read_text(encoding="utf-8")
 
-    # Service + primary pipeline Job + five shared Job update paths.
-    assert script.count('--update-labels="$PROVENANCE_LABELS"') == 7
-    # All five shared Job create paths carry the same release identity.
-    assert script.count('--labels="$PROVENANCE_LABELS"') == 5
+    # Service + primary pipeline Job + six shared Job update paths.
+    assert script.count('--update-labels="$PROVENANCE_LABELS"') == 8
+    # All six shared Job create paths carry the same release identity.
+    assert script.count('--labels="$PROVENANCE_LABELS"') == 6
 
 
 def test_cutover_requires_explicit_apply_and_separate_role_removal() -> None:

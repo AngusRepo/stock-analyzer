@@ -67,7 +67,7 @@ async def _run() -> int:
         "S12_STRUCTURE_RUN_ID",
         os.environ.get("CLOUD_RUN_EXECUTION", f"s12-structure-{int(time.time())}-{uuid.uuid4().hex[:8]}"),
     ).strip()
-    source = os.environ.get("S12_STRUCTURE_RUN_SOURCE", "evening_chain").strip()
+    source = os.environ.get("S12_STRUCTURE_RUN_SOURCE", "historical_shadow").strip()
     chain_run_id = os.environ.get("S12_STRUCTURE_CHAIN_RUN_ID", "").strip()
     from services.allocator_contract_guard import assert_allocator_contract_run_date
     assert_allocator_contract_run_date(run_date, label="s12-structure-batch")

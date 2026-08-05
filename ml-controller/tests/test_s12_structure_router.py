@@ -6,7 +6,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from pydantic import ValidationError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 run_v2_stub = ModuleType("google.cloud.run_v2")
@@ -25,7 +25,7 @@ class _Jobs:
         return SimpleNamespace(execution_id="exec-1", execution_name="projects/p/locations/r/executions/exec-1")
 
 
-def test_intraday_watch_requires_bounded_canonical_symbol_list(monkeypatch):
+def test_historical_shadow_accepts_optional_bounded_canonical_symbol_list(monkeypatch):
     jobs = _Jobs()
     monkeypatch.setattr(s12_structure, "_jobs", jobs)
 
@@ -33,43 +33,48 @@ def test_intraday_watch_requires_bounded_canonical_symbol_list(monkeypatch):
         s12_structure.S12StructureRunRequest(
             run_date="2026-07-27",
             chain_run_id="minute-0901",
-            source="intraday_watch",
+            source="historical_shadow",
             symbols=["2330", "2330", "006208"],
         )
     ))
 
     assert result["status"] == "triggered"
     assert jobs.overrides is not None
-    assert jobs.overrides["S12_STRUCTURE_RUN_SOURCE"] == "intraday_watch"
+    assert jobs.overrides["S12_STRUCTURE_RUN_SOURCE"] == "historical_shadow"
     assert jobs.overrides["S12_STRUCTURE_SYMBOLS_JSON"] == '["2330","006208"]'
 
 
-def test_intraday_session_uses_date_scoped_run_without_symbols(monkeypatch):
+def test_manual_repair_uses_date_scoped_research_run_without_symbols(monkeypatch):
     jobs = _Jobs()
     monkeypatch.setattr(s12_structure, "_jobs", jobs)
 
     result = asyncio.run(s12_structure.trigger_s12_structure_batch(
         s12_structure.S12StructureRunRequest(
             run_date="2026-07-31",
-            chain_run_id="s12-intraday-session:2026-07-31",
-            source="intraday_session",
+            chain_run_id="s12-manual-repair:2026-07-31",
+            source="manual_repair",
         )
     ))
 
     assert result["status"] == "triggered"
     assert jobs.overrides is not None
-    assert jobs.overrides["S12_STRUCTURE_RUN_SOURCE"] == "intraday_session"
+    assert jobs.overrides["S12_STRUCTURE_RUN_SOURCE"] == "manual_repair"
     assert "S12_STRUCTURE_SYMBOLS_JSON" not in jobs.overrides
 
 
-@pytest.mark.parametrize("symbols", [None, [], ["bad-symbol"]])
-def test_intraday_watch_rejects_missing_or_invalid_symbols(symbols):
-    with pytest.raises(HTTPException) as exc:
+@pytest.mark.parametrize("source", ["evening_chain", "intraday_watch", "intraday_session"])
+def test_retired_serving_sources_are_rejected_at_validation(source):
+    with pytest.raises(ValidationError):
+        s12_structure.S12StructureRunRequest(run_date="2026-07-27", source=source)
+
+
+def test_research_run_rejects_invalid_symbols():
+    with pytest.raises(Exception) as exc:
         asyncio.run(s12_structure.trigger_s12_structure_batch(
             s12_structure.S12StructureRunRequest(
                 run_date="2026-07-27",
-                source="intraday_watch",
-                symbols=symbols,
+                source="historical_shadow",
+                symbols=["bad-symbol"],
             )
         ))
-    assert exc.value.status_code == 400
+    assert getattr(exc.value, "status_code", None) == 400

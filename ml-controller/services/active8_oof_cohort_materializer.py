@@ -7,7 +7,7 @@ import hashlib
 import io
 import json
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -30,16 +30,24 @@ from services.fusion_market_context import (
     recorded_market_context,
 )
 from services.price_horizon_projection_contract import OOF_PRICE_HORIZON_SOURCE
+from services.pit_sector_alpha import unavailable_sector_alpha
+from services.oof_retention_policy import (
+    build_oof_date_eligibility_rows,
+    persist_oof_date_eligibility,
+)
 from services.worker_evidence_archive_client import resolve_legacy_screener_evidence
 
 TARGET_SEMANTIC_VERSION = LABEL_SCHEMA_VERSION
 SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
 D1_IN_CLAUSE_CHUNK_SIZE = 80
 OOF_MATERIALIZED_ARTIFACT_SCHEMA_VERSION = "active8-oof-materialized-jsonl-gzip-v1"
+OOF_PIT_ELIGIBILITY_POLICY_VERSION = "recorded-score-v2-r2-sector-before-next-session-open-v4"
+OOF_POLICY_REPLACEMENT_REASON = "add-recorded-decision-cutoff-sector-pit-evidence"
 OOF_MATERIALIZED_ARTIFACT_KINDS = {
     "allocator_ev_snapshots": "snapshot_date",
     "l4_predictions": "prediction_date",
 }
+OOF_FORWARD_COVERAGE_POLICY_VERSION = "verified-frozen-forward-monitoring-v1"
 
 
 def _loads(value: Any) -> dict[str, Any]:
@@ -88,6 +96,7 @@ def archive_oof_materialized_rows(
         raise ValueError("active8_oof_materialized_artifact_manifest_checksum_invalid")
     if any(str(row.get("cohort_id") or "") != cohort_id for row in rows):
         raise ValueError("active8_oof_materialized_artifact_cohort_mismatch")
+    date_set_checksum = hashlib.sha256("\n".join(dates).encode("utf-8")).hexdigest()
     metadata = {
         "schema_version": OOF_MATERIALIZED_ARTIFACT_SCHEMA_VERSION,
         "cohort_id": cohort_id,
@@ -97,6 +106,8 @@ def archive_oof_materialized_rows(
         "date_count": len(dates),
         "min_date": dates[0] if dates else None,
         "max_date": dates[-1] if dates else None,
+        "eligibility_policy_version": OOF_PIT_ELIGIBILITY_POLICY_VERSION,
+        "date_set_checksum": date_set_checksum,
     }
     ordered_rows = sorted(
         rows,
@@ -127,6 +138,7 @@ def archive_oof_materialized_rows(
         "format_version": OOF_MATERIALIZED_ARTIFACT_SCHEMA_VERSION,
         "compressed_bytes": len(encoded),
         "uncompressed_bytes": len(uncompressed),
+        "dates": dates,
     }
 
 
@@ -142,7 +154,8 @@ def load_oof_materialized_rows(
     index_rows = query_fn(
         """
         SELECT artifact_path, artifact_checksum, format_version, row_count,
-               date_count, min_date, max_date, source_manifest_checksum
+               date_count, min_date, max_date, source_manifest_checksum,
+               eligibility_policy_version, date_set_checksum
         FROM active8_oof_materialized_artifacts
         WHERE cohort_id = ? AND artifact_kind = ?
         """,
@@ -169,6 +182,8 @@ def load_oof_materialized_rows(
         "date_count": int(index["date_count"]),
         "min_date": index.get("min_date"),
         "max_date": index.get("max_date"),
+        "eligibility_policy_version": index.get("eligibility_policy_version"),
+        "date_set_checksum": index.get("date_set_checksum"),
     }
     for key, value in expected.items():
         if metadata.get(key) != value:
@@ -282,14 +297,101 @@ def load_indexed_oof_ev_rows(
 def persist_oof_materialized_artifact_indexes(
     artifacts: list[dict[str, Any]],
     *,
+    eligibility_rows: list[dict[str, Any]] | None = None,
+    query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
     batch_fn: Callable[..., dict[str, Any]] = d1_client.batch_execute,
 ) -> dict[str, Any]:
+    eligibility_rows = eligibility_rows or []
+    legal_by_scope: dict[str, set[str]] = defaultdict(set)
+    for row in eligibility_rows:
+        if row.get("eligibility_status") == "legal":
+            legal_by_scope[str(row.get("evidence_scope") or "")].add(
+                str(row.get("prediction_date") or "")[:10]
+            )
+    scope_by_kind = {
+        "allocator_ev_snapshots": "snapshot",
+        "l4_predictions": "l4",
+    }
+    cohort_ids = sorted({str(row["cohort_id"]) for row in artifacts})
+    existing_rows = query_fn(
+        f"""
+        SELECT cohort_id, artifact_kind, artifact_path, artifact_checksum,
+               format_version, row_count, date_count, min_date, max_date,
+               compressed_bytes, uncompressed_bytes, source_manifest_checksum,
+               eligibility_policy_version, date_set_checksum
+        FROM active8_oof_materialized_artifacts
+        WHERE cohort_id IN ({','.join('?' for _ in cohort_ids)})
+        """,
+        cohort_ids,
+    ) if cohort_ids else []
+    existing_by_key = {
+        (str(row["cohort_id"]), str(row["artifact_kind"])): row
+        for row in existing_rows
+    }
+    history_sql = """
+        INSERT OR IGNORE INTO active8_oof_materialized_artifact_history (
+          cohort_id, artifact_kind, artifact_path, artifact_checksum,
+          format_version, row_count, date_count, min_date, max_date,
+          compressed_bytes, uncompressed_bytes, source_manifest_checksum,
+          eligibility_policy_version, date_set_checksum,
+          replaced_by_checksum, replacement_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    statements: list[tuple[str, list[Any]]] = []
+    for artifact in artifacts:
+        existing = existing_by_key.get((artifact["cohort_id"], artifact["artifact_kind"]))
+        artifact["replacement_reason"] = None
+        if existing and existing.get("artifact_checksum") != artifact["artifact_checksum"]:
+            same_manifest = (
+                existing.get("source_manifest_checksum")
+                == artifact.get("source_manifest_checksum")
+            )
+            strict_forward = (
+                same_manifest
+                and existing.get("eligibility_policy_version")
+                == OOF_PIT_ELIGIBILITY_POLICY_VERSION
+                and int(artifact["date_count"]) > int(existing.get("date_count") or 0)
+                and int(artifact["row_count"]) >= int(existing.get("row_count") or 0)
+                and artifact.get("min_date") == existing.get("min_date")
+                and str(artifact.get("max_date") or "") > str(existing.get("max_date") or "")
+            )
+            scope = scope_by_kind[artifact["artifact_kind"]]
+            policy_upgrade = (
+                same_manifest
+                and existing.get("eligibility_policy_version")
+                != OOF_PIT_ELIGIBILITY_POLICY_VERSION
+                and artifact.get("eligibility_policy_version")
+                == OOF_PIT_ELIGIBILITY_POLICY_VERSION
+                and bool(artifact.get("dates"))
+                and int(artifact.get("date_count") or 0) > 0
+                and set(artifact.get("dates") or []).issubset(legal_by_scope[scope])
+            )
+            if not strict_forward and not policy_upgrade:
+                raise ValueError(
+                    "active8_oof_materialized_artifact_replacement_invalid:"
+                    f"{artifact['artifact_kind']}"
+                )
+            reason = "strict-forward-extension" if strict_forward else OOF_POLICY_REPLACEMENT_REASON
+            artifact["replacement_reason"] = reason
+            statements.append((history_sql, [
+                existing["cohort_id"], existing["artifact_kind"],
+                existing["artifact_path"], existing["artifact_checksum"],
+                existing["format_version"], existing["row_count"],
+                existing["date_count"], existing.get("min_date"),
+                existing.get("max_date"), existing["compressed_bytes"],
+                existing["uncompressed_bytes"],
+                existing["source_manifest_checksum"],
+                existing.get("eligibility_policy_version") or "legacy-unversioned",
+                existing.get("date_set_checksum"), artifact["artifact_checksum"], reason,
+            ]))
+
     sql = """
         INSERT INTO active8_oof_materialized_artifacts (
           cohort_id, artifact_kind, artifact_path, artifact_checksum,
           format_version, row_count, date_count, min_date, max_date,
-          compressed_bytes, uncompressed_bytes, source_manifest_checksum
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          compressed_bytes, uncompressed_bytes, source_manifest_checksum,
+          eligibility_policy_version, date_set_checksum, replacement_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(cohort_id, artifact_kind) DO UPDATE SET
           artifact_path=excluded.artifact_path,
           artifact_checksum=excluded.artifact_checksum,
@@ -300,25 +402,34 @@ def persist_oof_materialized_artifact_indexes(
           max_date=excluded.max_date,
           compressed_bytes=excluded.compressed_bytes,
           uncompressed_bytes=excluded.uncompressed_bytes,
-          source_manifest_checksum=excluded.source_manifest_checksum
-        WHERE active8_oof_materialized_artifacts.artifact_checksum = excluded.artifact_checksum
-          AND active8_oof_materialized_artifacts.source_manifest_checksum = excluded.source_manifest_checksum
+          source_manifest_checksum=excluded.source_manifest_checksum,
+          eligibility_policy_version=excluded.eligibility_policy_version,
+          date_set_checksum=excluded.date_set_checksum,
+          replacement_reason=excluded.replacement_reason,
+          updated_at=CURRENT_TIMESTAMP
+        WHERE active8_oof_materialized_artifacts.source_manifest_checksum = excluded.source_manifest_checksum
+          AND (
+            active8_oof_materialized_artifacts.artifact_checksum = excluded.artifact_checksum
+            OR excluded.replacement_reason IN (
+              'strict-forward-extension',
+              'remove-post-next-open-native-pit-rows',
+              'restore-checksum-verified-recorded-pit-evidence',
+              'add-recorded-decision-cutoff-sector-pit-evidence'
+            )
+          )
     """
-    result = batch_fn(
-        [(sql, [
-            row["cohort_id"], row["artifact_kind"], row["artifact_path"],
-            row["artifact_checksum"], row["format_version"], row["row_count"],
-            row["date_count"], row["min_date"], row["max_date"],
-            row["compressed_bytes"], row["uncompressed_bytes"],
-            row["source_manifest_checksum"],
-        ]) for row in artifacts],
-        timeout=60.0,
-        chunk_size=10,
-    )
+    statements.extend((sql, [
+        row["cohort_id"], row["artifact_kind"], row["artifact_path"],
+        row["artifact_checksum"], row["format_version"], row["row_count"],
+        row["date_count"], row["min_date"], row["max_date"],
+        row["compressed_bytes"], row["uncompressed_bytes"],
+        row["source_manifest_checksum"], row["eligibility_policy_version"],
+        row["date_set_checksum"], row.get("replacement_reason"),
+    ]) for row in artifacts)
+    result = batch_fn(statements, timeout=60.0, chunk_size=10)
     if result.get("error_count"):
         raise RuntimeError(f"active8_oof_materialized_artifact_index_failed:{result}")
     return result
-
 def load_verified_oof_manifest(
     manifest_path: str,
     *,
@@ -330,6 +441,7 @@ def load_verified_oof_manifest(
         "active8-oof-cohort-manifest-v1",
         "active8-oof-cohort-manifest-v2",
         "active8-oof-cohort-manifest-v3",
+        "active8-oof-cohort-manifest-v4",
     }:
         raise ValueError("active8_oof_manifest_schema_invalid")
     if manifest.get("generation_mode") != "purged_oof":
@@ -343,6 +455,7 @@ def load_verified_oof_manifest(
     if manifest.get("schema_version") in {
         "active8-oof-cohort-manifest-v2",
         "active8-oof-cohort-manifest-v3",
+        "active8-oof-cohort-manifest-v4",
     }:
         parent = manifest.get("parent_manifest") or {}
         reused = [window for window in manifest.get("windows") or [] if window.get("source_cohort_id")]
@@ -352,7 +465,10 @@ def load_verified_oof_manifest(
             or not str(parent.get("cohort_id") or "").strip()
         ):
             raise ValueError("active8_oof_parent_manifest_lineage_missing")
-    if manifest.get("schema_version") == "active8-oof-cohort-manifest-v3":
+    if manifest.get("schema_version") in {
+        "active8-oof-cohort-manifest-v3",
+        "active8-oof-cohort-manifest-v4",
+    }:
         prep = manifest.get("prep_manifest") or {}
         if (
             len(str(prep.get("manifest_checksum") or "")) != 64
@@ -372,7 +488,17 @@ def load_verified_oof_manifest(
             or any(len(str(value or "")) != 64 for value in batch_checksums.values())
         ):
             raise ValueError("active8_oof_sequence_manifest_lineage_invalid")
+    if manifest.get("schema_version") == "active8-oof-cohort-manifest-v4":
+        for window in manifest.get("windows") or []:
+            if (
+                not str(window.get("source_prep_gcs_prefix") or "").strip()
+                or len(str(window.get("source_prep_manifest_checksum") or "")) != 64
+                or not str(window.get("source_sequence_gcs_prefix") or "").strip()
+                or len(str(window.get("source_sequence_manifest_checksum") or "")) != 64
+            ):
+                raise ValueError("active8_oof_fold_input_lineage_invalid")
     return manifest, raw
+
 
 
 def _load_prediction_artifact(
@@ -688,6 +814,7 @@ def build_oof_snapshot_rows(
     source_manifest_checksum: str,
     fundamental_quality_by_key: dict[tuple[str, str], dict[str, Any]] | None = None,
     market_context_by_date: dict[tuple[str, str], dict[str, Any]] | None = None,
+    sector_alpha_by_key: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     stack_rows, stack_evidence = build_chronological_oof_stack(prediction_rows)
     native_by_key = {
@@ -696,18 +823,25 @@ def build_oof_snapshot_rows(
     }
     fundamental_quality_by_key = fundamental_quality_by_key or {}
     market_context_by_date = market_context_by_date or {}
+    sector_alpha_by_key = sector_alpha_by_key or {}
     fundamental_pit_rows = 0
     market_context_rows = 0
+    sector_alpha_rows = 0
     snapshots: list[dict[str, Any]] = []
     rejected = defaultdict(int)
+    stacker_eligible_by_date: Counter[str] = Counter()
+    native_matched_by_date: Counter[str] = Counter()
+    snapshot_rows_by_date: Counter[str] = Counter()
     for stacked in stack_rows:
         if not stacked["eligible_for_efficacy"]:
             rejected["stacker_warmup"] += 1
             continue
+        stacker_eligible_by_date[stacked["prediction_date"]] += 1
         native = native_by_key.get((stacked["prediction_date"], stacked["symbol"]))
         if native is None:
             rejected["native_pit_components_missing"] += 1
             continue
+        native_matched_by_date[stacked["prediction_date"]] += 1
         try:
             score_payload = _counterfactual_score_v2(
                 _loads(native.get("score_components")),
@@ -758,9 +892,16 @@ def build_oof_snapshot_rows(
             market_context_rows += 1
         alpha_context = _loads(native.get("alpha_context"))
         alpha_context["market_regime_context"] = market_context
+        sector_expert = sector_alpha_by_key.get((signal_date, stacked["symbol"]))
+        if not isinstance(sector_expert, dict):
+            sector_expert = unavailable_sector_alpha(signal_date, "oof_sector_alpha_not_loaded")
+        alpha_context["pit_sector_alpha_expert"] = sector_expert
+        if sector_expert.get("status") == "loaded" and sector_expert.get("point_in_time") is True:
+            sector_alpha_rows += 1
         forecast.pop("s12_trade_ev", None)
         allocation = _loads(native.get("alpha_allocation"))
         allocation.pop("s12_trade_ev", None)
+        snapshot_rows_by_date[stacked["prediction_date"]] += 1
         snapshots.append({
             "cohort_id": cohort_id,
             "fold_id": stacked["fold_id"],
@@ -795,7 +936,12 @@ def build_oof_snapshot_rows(
         "fundamental_pit_coverage": round(fundamental_pit_rows / max(1, len(snapshots)), 6),
         "market_context_rows": market_context_rows,
         "market_context_coverage": round(market_context_rows / max(1, len(snapshots)), 6),
+        "sector_alpha_rows": sector_alpha_rows,
+        "sector_alpha_coverage": round(sector_alpha_rows / max(1, len(snapshots)), 6),
         "rejected": dict(sorted(rejected.items())),
+        "stacker_eligible_by_date": dict(sorted(stacker_eligible_by_date.items())),
+        "native_matched_by_date": dict(sorted(native_matched_by_date.items())),
+        "snapshot_rows_by_date": dict(sorted(snapshot_rows_by_date.items())),
     }
 
 
@@ -889,7 +1035,7 @@ def load_native_pit_component_rows(
         [list[dict[str, Any]]], dict[int, dict[str, Any]]
     ] = resolve_legacy_screener_evidence,
 ) -> list[dict[str, Any]]:
-    """Load same-day non-ML ScoreV2/S12 inputs without reconstructing future data."""
+    """Load same-day non-ML ScoreV2 inputs without reconstructing future data."""
 
     dates = sorted({row["prediction_date"] for row in prediction_rows})
     if not dates:
@@ -997,7 +1143,7 @@ def load_native_pit_component_rows(
                 OR (
                   json_extract(i.evidence, '$.schema_version') = 'legacy-screener-evidence-pointer-v1'
                   AND json_extract(i.evidence, '$.artifact_id') LIKE 'artifact:legacy_screener_funnel_evidence:%'
-                  AND json_extract(i.evidence, '$.r2_key') LIKE 'evidence/class=superseded_run/domain=legacy_screener_funnel_evidence/%'
+                  AND substr(json_extract(i.evidence, '$.r2_key'), 1, 69) = 'evidence/class=superseded_run/domain=legacy_screener_funnel_evidence/'
                   AND json_extract(i.evidence, '$.checksum') LIKE 'sha256:%'
                   AND CAST(json_extract(i.evidence, '$.row_id') AS INTEGER) = i.id
                 )
@@ -1054,7 +1200,7 @@ def load_native_pit_component_rows(
                 OR (
                   json_extract(i.evidence, '$.schema_version') = 'legacy-screener-evidence-pointer-v1'
                   AND json_extract(i.evidence, '$.artifact_id') LIKE 'artifact:legacy_screener_funnel_evidence:%'
-                  AND json_extract(i.evidence, '$.r2_key') LIKE 'evidence/class=superseded_run/domain=legacy_screener_funnel_evidence/%'
+                  AND substr(json_extract(i.evidence, '$.r2_key'), 1, 69) = 'evidence/class=superseded_run/domain=legacy_screener_funnel_evidence/'
                   AND json_extract(i.evidence, '$.checksum') LIKE 'sha256:%'
                   AND CAST(json_extract(i.evidence, '$.row_id') AS INTEGER) = i.id
                 )
@@ -1131,7 +1277,22 @@ def load_native_pit_component_rows(
                 "market_heat_expected_return": None,
                 "native_component_source": RECORDED_PIT_COMPONENT_SOURCE,
             }
-    return list(rows_by_key.values())
+    rows = list(rows_by_key.values())
+    for row in rows:
+        prediction_date = str(row.get("prediction_date") or "")[:10]
+        decision_cutoff = str(
+            row.get("decision_universe_frozen_at")
+            or row.get("native_created_at")
+            or ""
+        ).strip()
+        if decision_cutoff:
+            row["decision_universe_frozen_at"] = decision_cutoff
+        elif prediction_date:
+            # Match the conservative market-close cutoff persisted on OOF rows.
+            row["decision_universe_frozen_at"] = (
+                f"{prediction_date}T13:30:00+08:00"
+            )
+    return rows
 
 
 def persist_l4_oof_predictions(
@@ -1163,6 +1324,120 @@ def persist_l4_oof_predictions(
     if result.get("error_count"):
         raise RuntimeError(f"l4_oof_prediction_materialization_failed:{result}")
     return {"status": "ready", "rows": len(predictions), "result": result}
+
+
+def persist_verified_oof_forward_coverage(
+    *,
+    cohort_id: str,
+    base_manifest_checksum: str,
+    extension_manifest_path: str,
+    extension_manifest: dict[str, Any],
+    knowledge_cutoff_date: str,
+    snapshot_rows: list[dict[str, Any]],
+    l4_predictions: list[dict[str, Any]],
+    batch_fn: Callable[..., dict[str, Any]] = d1_client.batch_execute,
+) -> dict[str, Any]:
+    """Persist monitoring-only coverage after verified frozen-forward evaluation."""
+
+    expected_dates = sorted({
+        str(value or "")[:10]
+        for value in (extension_manifest.get("dates") or [])
+        if str(value or "")[:10]
+    })
+    extension_checksum = str(extension_manifest.get("manifest_checksum") or "").lower()
+    if (
+        not expected_dates
+        or len(extension_checksum) != 64
+        or any(char not in "0123456789abcdef" for char in extension_checksum)
+        or extension_manifest.get("promotion_eligible") is not False
+        or extension_manifest.get("training_dispatched") is not False
+        or str(extension_manifest.get("base_cohort_id") or "") != cohort_id
+        or str(extension_manifest.get("base_manifest_checksum") or "") != base_manifest_checksum
+        or knowledge_cutoff_date < expected_dates[-1]
+    ):
+        raise ValueError("active8_oof_forward_coverage_contract_invalid")
+
+    rows_by_kind = {
+        "allocator_ev_snapshots": (snapshot_rows, "snapshot_date"),
+        "l4_predictions": (l4_predictions, "prediction_date"),
+    }
+    sql = """
+        INSERT INTO active8_oof_forward_extension_coverage (
+          cohort_id, extension_manifest_checksum, artifact_kind,
+          base_manifest_checksum, extension_manifest_path, knowledge_cutoff_date,
+          min_date, max_date, date_count, row_count, date_checksum,
+          coverage_status, promotion_eligible, training_dispatched,
+          policy_version, verified_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?,
+                  CASE WHEN ? = 'verified' THEN CURRENT_TIMESTAMP ELSE NULL END,
+                  CURRENT_TIMESTAMP)
+        ON CONFLICT(cohort_id, extension_manifest_checksum, artifact_kind)
+        DO UPDATE SET
+          base_manifest_checksum=excluded.base_manifest_checksum,
+          extension_manifest_path=excluded.extension_manifest_path,
+          knowledge_cutoff_date=excluded.knowledge_cutoff_date,
+          min_date=excluded.min_date,
+          max_date=excluded.max_date,
+          date_count=excluded.date_count,
+          row_count=excluded.row_count,
+          date_checksum=excluded.date_checksum,
+          coverage_status=excluded.coverage_status,
+          promotion_eligible=0,
+          training_dispatched=0,
+          policy_version=excluded.policy_version,
+          verified_at=excluded.verified_at,
+          updated_at=CURRENT_TIMESTAMP
+    """
+    statements: list[tuple[str, list[Any]]] = []
+    evidence: dict[str, Any] = {}
+    all_verified = True
+    for artifact_kind, (rows, date_field) in rows_by_kind.items():
+        extension_rows = [
+            row for row in rows
+            if str(row.get(date_field) or "")[:10] in expected_dates
+        ]
+        actual_dates = sorted({
+            str(row.get(date_field) or "")[:10]
+            for row in extension_rows
+            if str(row.get(date_field) or "")[:10]
+        })
+        status = "verified" if actual_dates == expected_dates and extension_rows else "partial"
+        all_verified = all_verified and status == "verified"
+        date_checksum = hashlib.sha256(
+            json.dumps(actual_dates, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        min_date = actual_dates[0] if actual_dates else expected_dates[0]
+        max_date = actual_dates[-1] if actual_dates else expected_dates[0]
+        statements.append((sql, [
+            cohort_id, extension_checksum, artifact_kind,
+            base_manifest_checksum, extension_manifest_path, knowledge_cutoff_date,
+            min_date, max_date, len(actual_dates), len(extension_rows), date_checksum,
+            status, OOF_FORWARD_COVERAGE_POLICY_VERSION, status,
+        ]))
+        evidence[artifact_kind] = {
+            "status": status,
+            "rows": len(extension_rows),
+            "dates": len(actual_dates),
+            "min_date": min_date,
+            "max_date": max_date,
+            "date_checksum": date_checksum,
+        }
+
+    result = batch_fn(statements, timeout=30.0, chunk_size=2)
+    if result.get("error_count"):
+        raise RuntimeError(f"active8_oof_forward_coverage_persistence_failed:{result}")
+    if not all_verified:
+        raise RuntimeError(
+            "active8_oof_forward_coverage_incomplete:"
+            + json.dumps(evidence, sort_keys=True)
+        )
+    return {
+        "status": "verified",
+        "promotion_eligible": False,
+        "training_dispatched": False,
+        "extension_manifest_checksum": extension_checksum,
+        "artifacts": evidence,
+    }
 
 
 def build_fusion_oof_rows(
@@ -1226,6 +1501,116 @@ def build_fusion_oof_rows(
             "trade_pnl_pct": None,
         })
     return rows
+
+
+def archive_ev_shadow_evaluation_packets(
+    *,
+    bucket: Any,
+    cohort_id: str,
+    business_date: str,
+    base_manifest_checksum: str,
+    extension_manifest: dict[str, Any],
+    l4_result: dict[str, Any],
+    fusion_result: dict[str, Any],
+    forward_row_count: int,
+) -> dict[str, Any]:
+    """Persist daily evaluation evidence without creating a promotion candidate."""
+
+    extension_checksum = str(extension_manifest.get("manifest_checksum") or "").lower()
+    dates = sorted({
+        str(value or "")[:10]
+        for value in (extension_manifest.get("dates") or [])
+        if str(value or "")[:10]
+    })
+    if (
+        len(base_manifest_checksum) != 64
+        or len(extension_checksum) != 64
+        or not dates
+        or forward_row_count <= 0
+        or extension_manifest.get("promotion_eligible") is not False
+        or extension_manifest.get("training_dispatched") is not False
+        or str(extension_manifest.get("base_cohort_id") or "") != cohort_id
+        or str(extension_manifest.get("base_manifest_checksum") or "") != base_manifest_checksum
+    ):
+        raise ValueError("expected_return_shadow_evaluation_contract_invalid")
+
+    output: dict[str, Any] = {}
+    for model_name, result in (
+        ("l4_alpha_ev", l4_result),
+        ("allocator_ev_fusion", fusion_result),
+    ):
+        artifact = dict(result.get("artifact") or {})
+        validation = dict(result.get("validation_packet") or {})
+        model_version = str(artifact.get("model_version") or "unknown")
+        payload = {
+            "schema_version": "expected-return-shadow-evaluation-packet-v1",
+            "business_date": business_date,
+            "cohort_id": cohort_id,
+            "base_manifest_checksum": base_manifest_checksum,
+            "extension_manifest_checksum": extension_checksum,
+            "model_name": model_name,
+            "model_version": model_version,
+            "oof_min_date": dates[0],
+            "oof_max_date": dates[-1],
+            "oof_date_count": len(dates),
+            "oof_row_count": forward_row_count,
+            "quality_decision": str(
+                validation.get("quality_decision_before_shadow_policy")
+                or validation.get("decision")
+                or "PENDING"
+            ).upper(),
+            "policy_decision": "shadow_only",
+            "validation_packet": validation,
+        }
+        encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        checksum = hashlib.sha256(encoded).hexdigest()
+        path = (
+            f"universal/ev_shadow_evaluations/{cohort_id}/{business_date}/"
+            f"{model_name}/{checksum}.json"
+        )
+        bucket.blob(path).upload_from_string(encoded, content_type="application/json")
+        evaluation_id = hashlib.sha256(
+            f"{cohort_id}:{extension_checksum}:{model_name}".encode("utf-8")
+        ).hexdigest()
+        d1_client.execute(
+            """
+            INSERT INTO expected_return_shadow_evaluation_packets (
+              evaluation_id, business_date, cohort_id, base_manifest_checksum,
+              extension_manifest_checksum, model_name, model_version,
+              oof_min_date, oof_max_date, oof_date_count, oof_row_count,
+              quality_decision, policy_decision, validation_packet_json,
+              artifact_path, artifact_checksum, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'shadow_only', ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(evaluation_id) DO UPDATE SET
+              business_date=excluded.business_date,
+              model_version=excluded.model_version,
+              oof_min_date=excluded.oof_min_date,
+              oof_max_date=excluded.oof_max_date,
+              oof_date_count=excluded.oof_date_count,
+              oof_row_count=excluded.oof_row_count,
+              quality_decision=excluded.quality_decision,
+              validation_packet_json=excluded.validation_packet_json,
+              artifact_path=excluded.artifact_path,
+              artifact_checksum=excluded.artifact_checksum,
+              updated_at=CURRENT_TIMESTAMP
+            """,
+            [
+                evaluation_id, business_date, cohort_id, base_manifest_checksum,
+                extension_checksum, model_name, model_version,
+                dates[0], dates[-1], len(dates), forward_row_count,
+                payload["quality_decision"], json.dumps(validation, ensure_ascii=False),
+                path, checksum,
+            ],
+        )
+        output[model_name] = {
+            "evaluation_id": evaluation_id,
+            "path": path,
+            "checksum": checksum,
+            "quality_decision": payload["quality_decision"],
+            "policy_decision": "shadow_only",
+            "oof_max_date": dates[-1],
+        }
+    return output
 
 
 def archive_ev_candidate_artifacts(
@@ -1325,6 +1710,7 @@ def persist_oof_cohort(
     snapshot_rows: list[dict[str, Any]],
     l4_predictions: list[dict[str, Any]] | None = None,
     bucket: Any | None = None,
+    knowledge_cutoff_date: str | None = None,
     dry_run: bool = True,
     prediction_storage_mode: str = "gcs_indexed_v1",
     query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
@@ -1345,6 +1731,19 @@ def persist_oof_cohort(
         identities = {tuple(str(row.get(field) or "") for field in fields) for row in rows}
         if len(identities) != len(rows):
             raise ValueError(f"active8_oof_{identity_name}_identity_duplicate")
+    eligibility_rows = build_oof_date_eligibility_rows(
+        cohort_id=cohort_id,
+        source_manifest_checksum=str(manifest.get("manifest_checksum") or ""),
+        prediction_rows=prediction_rows,
+        snapshot_rows=snapshot_rows,
+        l4_prediction_rows=list(l4_predictions or []),
+        knowledge_cutoff_date=str(
+            knowledge_cutoff_date
+            or manifest.get("knowledge_cutoff_date")
+            or max((str(row.get("label_known_date") or "")[:10] for row in prediction_rows), default="")
+        ),
+        target_semantic_version=TARGET_SEMANTIC_VERSION,
+    )
     if dry_run:
         return {
             "status": "dry_run",
@@ -1355,7 +1754,15 @@ def persist_oof_cohort(
             "l4_prediction_rows": len(l4_predictions or []),
             "fold_artifact_rows": len(fold_artifact_rows),
             "prediction_storage_mode": prediction_storage_mode,
+            "date_eligibility": {
+                scope: sum(
+                    row["evidence_scope"] == scope and row["eligibility_status"] == "legal"
+                    for row in eligibility_rows
+                )
+                for scope in ("active8_oof", "snapshot", "l4", "fusion")
+            },
         }
+    refreshing_ready = False
     existing = query_fn(
         "SELECT status, artifact_manifest_checksum, prediction_storage_mode FROM active8_oof_cohorts WHERE cohort_id = ?",
         [cohort_id],
@@ -1365,8 +1772,8 @@ def persist_oof_cohort(
         same_lineage = row.get("artifact_manifest_checksum") == manifest["manifest_checksum"]
         same_storage = row.get("prediction_storage_mode") == prediction_storage_mode
         if row.get("status") == "ready" and same_lineage and same_storage:
-            return {"status": "idempotent_ready", "cohort_id": cohort_id}
-        if row.get("status") != "building" or not same_lineage or not same_storage:
+            refreshing_ready = True
+        elif row.get("status") != "building" or not same_lineage or not same_storage:
             raise ValueError("active8_oof_cohort_id_collision")
 
     model_signature = build_model_set_signature(
@@ -1494,6 +1901,12 @@ def persist_oof_cohort(
         row["label_known_date"], row["model_set_signature"], row["target_semantic_version"],
         row["source_manifest_checksum"],
     ]) for row in snapshot_rows]
+    eligibility_result = persist_oof_date_eligibility(
+        eligibility_rows,
+        batch_fn=batch_fn,
+    )
+    if eligibility_result.get("error_count"):
+        raise RuntimeError(f"active8_oof_date_eligibility_failed:{eligibility_result}")
     materialized_artifacts: list[dict[str, Any]] = []
     if prediction_storage_mode == "gcs_indexed_v1":
         if bucket is None:
@@ -1516,6 +1929,8 @@ def persist_oof_cohort(
         ]
         index_result = persist_oof_materialized_artifact_indexes(
             materialized_artifacts,
+            eligibility_rows=eligibility_rows,
+            query_fn=query_fn,
             batch_fn=batch_fn,
         )
         persisted_indexes = query_fn(
@@ -1612,18 +2027,28 @@ def persist_oof_cohort(
         )
     ):
         raise RuntimeError("active8_oof_materialization_count_mismatch")
-    d1_client.execute(
-        """
-        UPDATE active8_oof_cohorts
-        SET status = 'ready', completed_folds = expected_folds,
-            prediction_rows = ?, prediction_dates = ?, ready_at = CURRENT_TIMESTAMP,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE cohort_id = ? AND status = 'building'
-        """,
-        [len(prediction_rows), prediction_dates, cohort_id],
-    )
+    if refreshing_ready:
+        d1_client.execute(
+            """
+            UPDATE active8_oof_cohorts
+            SET prediction_rows = ?, prediction_dates = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE cohort_id = ? AND status = 'ready'
+            """,
+            [len(prediction_rows), prediction_dates, cohort_id],
+        )
+    else:
+        d1_client.execute(
+            """
+            UPDATE active8_oof_cohorts
+            SET status = 'ready', completed_folds = expected_folds,
+                prediction_rows = ?, prediction_dates = ?, ready_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE cohort_id = ? AND status = 'building'
+            """,
+            [len(prediction_rows), prediction_dates, cohort_id],
+        )
     return {
-        "status": "ready",
+        "status": "ready_refreshed" if refreshing_ready else "ready",
         "cohort_id": cohort_id,
         "prediction_storage_mode": prediction_storage_mode,
         "prediction_result": prediction_result,
@@ -1631,4 +2056,5 @@ def persist_oof_cohort(
         "snapshot_result": snapshot_result,
         "l4_result": l4_result,
         "counts": counts,
+        "eligibility_result": eligibility_result,
     }

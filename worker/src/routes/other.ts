@@ -4022,31 +4022,6 @@ recommendations.get('/daily', async (c) => {
   }
 
   // 解析 watch_points JSON
-  const formalEvBySymbol = new Map<string, any>()
-  const currentTwDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
-  if (requestedOrToday === currentTwDate) {
-    const { results: formalRows } = await c.env.DB.prepare(`
-      WITH ranked AS (
-        SELECT d.*,
-               ROW_NUMBER() OVER (
-                 PARTITION BY d.symbol
-                 ORDER BY datetime(d.updated_at) DESC, datetime(d.created_at) DESC, d.decision_id DESC
-               ) rn
-          FROM s12_formal_ev_decisions d
-         WHERE d.observation_date=?
-           AND d.source_trade_date=?
-      )
-      SELECT * FROM ranked WHERE rn=1
-    `).bind(currentTwDate, date).all<any>().catch(() => ({ results: [] as any[] }))
-    for (const row of formalRows ?? []) {
-      const symbol = String(row.symbol ?? '').trim()
-      if (!symbol) continue
-      let evidence: any = null
-      try { evidence = JSON.parse(row.evidence_json || '{}') } catch { evidence = null }
-      formalEvBySymbol.set(symbol, { ...row, evidence })
-    }
-  }
-
   const tradingConfig = await getTradingConfig(c.env.KV)
   const recs = (results ?? []).map((r: any) => {
     const forecastData = parsePredictionForecastData(r.prediction_forecast_data) ?? {}
@@ -4109,15 +4084,8 @@ recommendations.get('/daily', async (c) => {
           layer05_hard_gate: hardGateSummary,
         }
       : { layer05_hard_gate: hardGateSummary }
-    const formalEv = formalEvBySymbol.get(symbol) ?? null
-    const formalPotentialBuy = formalEv?.action === 'potential_buy'
     return {
       ...r,
-      signal_raw: formalPotentialBuy ? (r.signal_raw ?? r.signal) : r.signal_raw,
-      signal: formalPotentialBuy ? 'POTENTIAL_BUY' : r.signal,
-      has_buy_signal: formalPotentialBuy ? 0 : r.has_buy_signal,
-      ranking_promoted: formalPotentialBuy ? false : r.ranking_promoted,
-      intraday_s12_formal_ev: formalEv,
       market_segment: r.market_segment || board.boardType,
       board_type: board.boardType,
       tradability_tier: board.tradabilityTier,

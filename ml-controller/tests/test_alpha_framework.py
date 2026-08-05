@@ -541,8 +541,7 @@ def _sparse_recommendation_row(
         "signal_source": "ensemble_v2",
         "confidence": 0.72,
         "ml_forecast_pct": forecast_pct,
-        "trade_expected_return_net_pct": forecast_pct,
-        "trade_expected_return_source": "s12_trade_ev_test",
+        "market_heat_expected_return": forecast_pct,
         "recommendation_lane": "tradable",
         "eligible_for_pending_buy": True,
         "has_buy_signal": 1 if signal == "BUY" else 0,
@@ -550,6 +549,37 @@ def _sparse_recommendation_row(
         "watch_points": [],
     }
 
+
+def _test_fusion_policy_value_artifact() -> dict:
+    return {
+        "artifact_contract_version": "allocator-ev-fusion-contract-v13",
+        "feature_semantic_version": "allocator-ev-fusion-s12-policy-value-day-t-causal-v4-lineage-bound",
+        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+        "expected_return_owner": "allocator_ev_fusion",
+        "promotion_state": "production_primary",
+        "promotion_tier": "primary",
+        "primary_expected_return_allowed": True,
+        "validation_packet": {"decision": "PASS"},
+        "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
+        "resolver_method": "test_day_t_policy_value",
+        "model_version": "fusion-v13-test",
+        "feature_snapshot_version": "fusion-v13-test-features",
+        "trained_until": "2026-07-01",
+        "horizon_days": 5,
+        "cost_model_bps": 18.0,
+        "output_is_net_of_costs": True,
+        "policy_value_head_count": 2,
+        "policy_value_heads": ["execution_probability_model", "conditional_execution_return_model"],
+        "conditional_execution_return_model": {
+            "status": "fitted", "decision": "PASS", "intercept": 0.0,
+            "coefficients": {"market_heat_expected_return": 1.0, "l4_expected_return": 0.0},
+        },
+        "execution_probability_model": {
+            "status": "fitted", "decision": "PASS", "link_function": "identity", "intercept": 1.0,
+            "coefficients": {"l4_available": 0.0},
+        },
+        "output_clip": {"min": -0.08, "max": 0.08},
+    }
 
 def test_sparse_allocator_marks_positive_zero_weight_as_potential_buy(monkeypatch):
     def _fake_sparse_allocator(candidates, return_history, **kwargs):
@@ -582,6 +612,7 @@ def test_sparse_allocator_marks_positive_zero_weight_as_potential_buy(monkeypatc
                 "controller": "SparseTangent",
                 "buy_signal_count": 1,
             }
+            ,"allocatorEvFusion": _test_fusion_policy_value_artifact()
         },
         confidence_floor=0.60,
         return_history={},
@@ -635,8 +666,8 @@ def _missing_ev_formal_ml_row(symbol: str, *, hard_block: bool = False) -> dict:
         final_score=77.0,
         signal="HOLD",
     )
-    row.pop("trade_expected_return_net_pct")
-    row.pop("trade_expected_return_source")
+    row.pop("trade_expected_return_net_pct", None)
+    row.pop("trade_expected_return_source", None)
     row["score_components"] = {
         **row["score_components"],
         "mlEdgePolicy": {"signal": "BUY"},
@@ -655,9 +686,9 @@ def _missing_ev_formal_ml_row(symbol: str, *, hard_block: bool = False) -> dict:
 
 def test_sparse_allocator_exposes_missing_ev_formal_ml_as_non_executable_potential(monkeypatch):
     def _fake_sparse_allocator(candidates, return_history, **kwargs):
-        assert [row["symbol"] for row in candidates] == ["AAA"]
+        assert candidates == []
         return {
-            "weights": {"AAA": 1.0},
+            "weights": {},
             "candidate_diagnostics": {},
             "allocation_objective": "test_sparse_allocator",
             "evaluated_candidate_count": len(candidates),
@@ -669,9 +700,7 @@ def test_sparse_allocator_exposes_missing_ev_formal_ml_as_non_executable_potenti
         _fake_sparse_allocator,
     )
     rows = [
-        _sparse_recommendation_row("AAA", forecast_pct=0.04, final_score=82.0),
         _missing_ev_formal_ml_row("OBS"),
-        _missing_ev_formal_ml_row("BLOCKED", hard_block=True),
     ]
 
     allocated = recommendation_service._apply_sparse_tangent_buy_selection(
@@ -700,11 +729,6 @@ def test_sparse_allocator_exposes_missing_ev_formal_ml_as_non_executable_potenti
         "non_executable_formal_ml_observation_missing_expected_return_v1"
     )
     assert observed["alpha_allocation"]["potential_buy_active_family_count"] == 3
-
-    blocked = by_symbol["BLOCKED"]
-    assert blocked["signal"] == "HOLD"
-    assert blocked["has_buy_signal"] == 0
-    assert blocked["alpha_allocation"]["potential_buy"] is False
 
 
 def test_potential_buy_is_not_a_formal_buy_signal():

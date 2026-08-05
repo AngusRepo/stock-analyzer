@@ -8,13 +8,10 @@ import {
   createNoopQueue,
 } from './cloudflareRestBindings'
 import {
-  runS12DurableStructureBatch,
-  type S12DurableRunSource,
-} from '../lib/s12DurableStructureBatch'
-import { runS12IntradaySetupWatchBatch } from '../lib/s12IntradaySetupWatch'
-import { runS12IntradaySession } from '../lib/s12IntradaySession'
+  runS12ResearchStructureSnapshots,
+} from '../lib/s12ResearchStructureSnapshots'
 
-type S12StructureRunSource = S12DurableRunSource | 'intraday_watch' | 'intraday_session'
+type S12StructureRunSource = 'historical_shadow' | 'manual_repair'
 
 type Args = {
   date?: string
@@ -74,9 +71,9 @@ async function main(): Promise<void> {
     args.runId || process.env.S12_STRUCTURE_RUN_ID || `s12-structure-${runDate}-${Date.now()}`,
   )
   const source = String(
-    args.source || process.env.S12_STRUCTURE_RUN_SOURCE || 'evening_chain',
+    args.source || process.env.S12_STRUCTURE_RUN_SOURCE || 'historical_shadow',
   ) as S12StructureRunSource
-  if (!['evening_chain', 'historical_shadow', 'manual_repair', 'intraday_watch', 'intraday_session'].includes(source)) {
+  if (!['historical_shadow', 'manual_repair'].includes(source)) {
     throw new Error(`invalid_s12_structure_run_source:${source}`)
   }
   let symbols: string[] = []
@@ -86,22 +83,17 @@ async function main(): Promise<void> {
     symbols = Array.from(new Set(parsed.map((value) => String(value).trim()).filter(Boolean)))
   }
   const bindings = buildBindings()
-  const summary = source === 'intraday_session'
-    ? await runS12IntradaySession(bindings, runDate, {
-        runId,
-        concurrency: Number(process.env.S12_INTRADAY_WATCH_CONCURRENCY || 4),
-      })
-    : source === 'intraday_watch'
-    ? await runS12IntradaySetupWatchBatch(bindings, runDate, {
-        symbols,
-        concurrency: Number(process.env.S12_INTRADAY_WATCH_CONCURRENCY || 4),
-      })
-    : await runS12DurableStructureBatch(bindings, runDate, {
-        runId,
-        source,
-        shardSize: Number(process.env.S12_STRUCTURE_SHARD_SIZE || 48),
-        concurrency: Number(process.env.S12_STRUCTURE_CONCURRENCY || 12),
-      })
+  const researchSymbols = symbols.length > 0
+    ? symbols.map((symbol) => ({ symbol }))
+    : undefined
+  const summary = await runS12ResearchStructureSnapshots(bindings, runDate, {
+    symbols: researchSymbols,
+    limit: researchSymbols?.length,
+    source: source === 'manual_repair'
+      ? 's12_research_structure_reconstruction'
+      : 's12_research_structure_snapshot',
+    pendingRunId: runId,
+  })
   console.log(JSON.stringify({
     task: 's12-structure-batch',
     status: 'success',

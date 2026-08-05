@@ -1,4 +1,4 @@
-"""Cloud Run Job trigger for the durable S12 structure batch."""
+"""Cloud Run Job trigger for research-only S12 historical structure replay."""
 from __future__ import annotations
 
 import json
@@ -26,7 +26,7 @@ _jobs = CloudRunJobsClient(job_name=S12_STRUCTURE_JOB_NAME)
 class S12StructureRunRequest(BaseModel):
     run_date: str
     chain_run_id: str | None = None
-    source: Literal["evening_chain", "historical_shadow", "manual_repair", "intraday_watch", "intraday_session"] = "evening_chain"
+    source: Literal["historical_shadow", "manual_repair"] = "historical_shadow"
     symbols: list[str] | None = None
 
 
@@ -45,10 +45,6 @@ async def trigger_s12_structure_batch(req: S12StructureRunRequest):
     invalid_symbols = [value for value in symbols if re.fullmatch(r"[0-9A-Z]{4,8}", value) is None]
     if invalid_symbols:
         raise HTTPException(status_code=400, detail=f"invalid Taiwan symbols: {invalid_symbols[:5]}")
-    if req.source == "intraday_watch" and not symbols:
-        raise HTTPException(status_code=400, detail="intraday_watch requires symbols")
-    if req.source != "intraday_watch" and symbols:
-        raise HTTPException(status_code=400, detail="symbols are only valid for intraday_watch")
     chain_run_id = (req.chain_run_id or "").strip()
     identity = f"{run_date}:{req.source}:{chain_run_id}:{','.join(symbols)}"
     run_id = f"s12-structure-{run_date}-{uuid.uuid5(uuid.NAMESPACE_URL, identity).hex[:16]}"

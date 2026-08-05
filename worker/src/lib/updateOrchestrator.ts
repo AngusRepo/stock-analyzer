@@ -37,7 +37,6 @@ import {
   finLabSentinelFieldForLane,
 } from './finlabSourceContract'
 
-import { triggerPendingS12FormalEv } from './s12FormalEvTrigger'
 const UPDATE_BATCH_SIZE = 40
 const UPDATE_SHARD_COUNT = 4
 const INDICATOR_BATCH_CONCURRENCY = 4
@@ -3541,110 +3540,21 @@ export async function processUpdateBatch(
   }
 
   if (msg.type === 's12_intraday_setup_watch_complete') {
-    const triggerTime = msg.triggerTime
-    const runId = msg.runId || ''
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime) || !runId) {
-      throw new Error('invalid_s12_intraday_setup_watch_completion_message')
-    }
-    const summary = await triggerPendingS12FormalEv(env, triggerTime)
-    await logSchedulerResult(env.KV, 's12-intraday-setup-watch', {
-      status: summary.status === 'empty' ? 'success' : summary.status,
-      summary: `formal EV continuation ${summary.status}; ready=${summary.ready_count} date=${triggerTime} run_id=${runId}`,
-      duration_ms: 0,
-      run_id: runId,
-      run_date: triggerTime,
-    }, env)
+    const triggerTime = String(msg.triggerTime ?? '').slice(0, 10)
+    const runId = msg.runId || `s12-intraday-setup-watch-${triggerTime}-deprecated`
+    console.log(
+      `[Queue] Deprecated S12 intraday setup-watch completion drained without serving side effects date=${triggerTime} run_id=${runId}`,
+    )
     return
   }
 
 
   if (msg.type === 's12_structure_batch_complete') {
-    const triggerTime = msg.triggerTime
-    const runId = msg.runId || ''
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime) || !runId) {
-      throw new Error('invalid_s12_structure_batch_completion_message')
-    }
-    const coverage = await env.DB.prepare(`
-      SELECT COUNT(*) reference_rows,
-             SUM(CASE WHEN s.symbol IS NOT NULL THEN 1 ELSE 0 END) persisted_rows,
-             SUM(CASE WHEN s.ready=1 THEN 1 ELSE 0 END) ready_rows,
-             SUM(CASE WHEN s.state='data_unavailable' THEN 1 ELSE 0 END) unavailable_rows,
-             SUM(CASE WHEN s.symbol IS NOT NULL AND s.ready=0
-                       AND s.state<>'data_unavailable' THEN 1 ELSE 0 END) blocked_rows
-        FROM selection_reference_snapshots_v1 r
-        LEFT JOIN s12_structure_snapshots s
-          ON s.trade_date=r.signal_date AND s.symbol=r.symbol
-         AND s.source='s12_candidate_snapshot' AND s.pending_run_id=?
-       WHERE r.signal_date=?
-         AND EXISTS (
-           SELECT 1 FROM canonical_run_heads h
-            WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
-              AND h.run_id=r.producer_run_id
-         )
-    `).bind(runId, triggerTime).first<{
-      reference_rows?: number
-      persisted_rows?: number
-      ready_rows?: number
-      unavailable_rows?: number
-      blocked_rows?: number
-    }>()
-    const referenceRows = Number(coverage?.reference_rows ?? 0)
-    const persistedRows = Number(coverage?.persisted_rows ?? 0)
-    if (referenceRows <= 0 || persistedRows !== referenceRows) {
-      const summary = `durable S12 canonical snapshot coverage=${persistedRows}/${referenceRows} date=${triggerTime} run_id=${runId}`
-      await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-        status: 'error', summary, duration_ms: 0, run_id: runId, run_date: triggerTime,
-      }, env)
-      await logSchedulerResult(env.KV, 'evening-chain', {
-        status: 'error',
-        summary: `event-driven chain stopped: ${summary}`,
-        duration_ms: 0,
-        run_id: runId,
-        run_date: triggerTime,
-      }, env)
-      return
-    }
-    await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-      status: 'success',
-      summary: `durable S12 canonical snapshots complete coverage=${persistedRows}/${referenceRows} ready=${Number(coverage?.ready_rows ?? 0)} blocked=${Number(coverage?.blocked_rows ?? 0)} unavailable=${Number(coverage?.unavailable_rows ?? 0)} date=${triggerTime} run_id=${runId}`,
-      duration_ms: 0,
-      run_id: runId,
-      run_date: triggerTime,
-    }, env)
-    const stage = `s12_snapshot_pipeline:${runId}`
-    const stageState = await enqueuePipelineStage(env.DB, {
-      businessDate: triggerTime,
-      stage,
-      runId,
-      resumeWaiting: true,
-    })
-    const ownerId = `s12-durable-finalizer:${runId}:${crypto.randomUUID()}`
-    const claim = await claimPipelineStage(env.DB, {
-      businessDate: triggerTime,
-      stage,
-      ownerId,
-      leaseSeconds: 900,
-    })
-    if (!claim) {
-      console.log(`[Queue] Duplicate durable S12 finalizer suppressed date=${triggerTime} run_id=${runId} status=${stageState.row.status}`)
-      return
-    }
-    try {
-      await continuePostScreenerPipeline(env, deps, triggerTime, runId, true)
-      await markPipelineStage(env.DB, {
-        businessDate: triggerTime,
-        stage,
-        status: 'success',
-      })
-    } catch (error) {
-      await markPipelineStage(env.DB, {
-        businessDate: triggerTime,
-        stage,
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      })
-      throw error
-    }
+    const triggerTime = String(msg.triggerTime ?? '').slice(0, 10)
+    const runId = msg.runId || `s12-structure-batch-${triggerTime}-deprecated`
+    console.log(
+      `[Queue] Deprecated S12 serving batch completion drained without pipeline continuation date=${triggerTime} run_id=${runId}`,
+    )
     return
   }
 

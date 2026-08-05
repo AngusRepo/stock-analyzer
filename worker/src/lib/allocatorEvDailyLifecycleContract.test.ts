@@ -16,8 +16,10 @@ const dashboardReadRoutes = fs.readFileSync('src/routes/dashboardReadRoutes.ts',
 
 assert(migration.includes('allocator_ev_daily_lifecycle'), 'daily allocator EV lifecycle must be durable in D1')
 assert(lifecycle.includes('inspectAllocatorSnapshotClosure'), 'watchdog must verify snapshot readback')
-assert(lifecycle.includes('recoverCompletedS12DurableCallback'), 'watchdog must recover a lost durable S12 success callback')
-assert(lifecycle.includes("type: 's12_structure_batch_complete'"), 'watchdog must requeue only the idempotent S12 completion finalizer')
+assert(!lifecycle.includes('recoverCompletedS12DurableCallback'), 'watchdog must not revive retired S12 serving callbacks')
+assert(!lifecycle.includes("type: 's12_structure_batch_complete'"), 'watchdog must not enqueue retired S12 serving finalizers')
+assert(orchestrator.includes("if (msg.type === 's12_structure_batch_complete')"), 'legacy S12 completion messages must remain drainable during cutover')
+assert(orchestrator.includes('drained without pipeline continuation'), 'legacy S12 completion messages must have no serving side effects')
 assert(lifecycle.includes('inspectAllocatorEvMaturityCoverage'), 'watchdog must expose strict expected-return maturity coverage')
 assert(lifecycle.includes("'$.l4_alpha_ev.artifact_contract_version'"), 'L4 PIT maturity must require the current artifact contract')
 assert(lifecycle.includes("'$.l4_alpha_ev.point_in_time_prediction_lineage.schema_version'"), 'L4 PIT maturity must require explicit point-in-time lineage')

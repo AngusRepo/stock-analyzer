@@ -824,50 +824,22 @@ async function handleSchedulerCallback(c: any) {
     if (!callbackRunDate || !callbackRunId) {
       return c.json({ error: 'S12 structure callback missing run_date or run_id' }, 400)
     }
-    const callbackSource = String(body.metadata?.source ?? 'evening_chain')
-    if (String(body.status) === 'success') {
-      const continuationType = callbackSource === 'evening_chain'
-        ? 's12_structure_batch_complete'
-        : (callbackSource === 'intraday_watch' || callbackSource === 'intraday_session')
-          ? 's12_intraday_setup_watch_complete'
-          : null
-      if (continuationType) {
-        await c.env.UPDATE_QUEUE.send({
-          type: continuationType,
-          cursor: 0,
-          triggerTime: callbackRunDate,
-          runId: callbackRunId,
-        })
-      }
-      const logTask = (callbackSource === 'intraday_watch' || callbackSource === 'intraday_session')
-        ? 's12-intraday-setup-watch'
-        : 's12-structure-snapshot'
-      await logSchedulerResult(c.env.KV, logTask, {
-        status: continuationType ? 'triggered' : 'success',
-        summary: callbackSource === 'evening_chain'
-          ? `durable S12 callback accepted; finalizer queued date=${callbackRunDate} run_id=${callbackRunId}`
-          : (callbackSource === 'intraday_watch' || callbackSource === 'intraday_session')
-            ? `durable intraday S12 setup watch complete; formal EV queued date=${callbackRunDate} run_id=${callbackRunId}`
-            : `durable S12 shadow complete without pipeline continuation date=${callbackRunDate} run_id=${callbackRunId}`,
-        duration_ms: Number(body.duration_ms ?? 0),
-        run_id: callbackRunId,
-        run_date: callbackRunDate,
-      }, c.env as any)
-    } else {
-      const summary = `durable S12 structure batch failed: ${String(body.summary ?? body.error ?? body.status)}`
-      await logSchedulerResult(c.env.KV, 's12-structure-snapshot', {
-        status: 'error', summary, duration_ms: Number(body.duration_ms ?? 0),
-        error: body.error != null ? String(body.error) : undefined,
-        run_id: callbackRunId, run_date: callbackRunDate,
-      }, c.env as any)
-      if (callbackSource === 'evening_chain') {
-        await logSchedulerResult(c.env.KV, 'evening-chain', {
-          status: 'error', summary: `root chain stopped: ${summary}`, duration_ms: 0,
-          error: body.error != null ? String(body.error) : undefined,
-          run_id: callbackRunId, run_date: callbackRunDate,
-        }, c.env as any)
-      }
-    }
+    const callbackSource = String(body.metadata?.source ?? 'unknown')
+    const researchOnly = ['historical_shadow', 'manual_repair'].includes(callbackSource)
+    const callbackSucceeded = String(body.status) === 'success'
+    const retiredServingSource = ['evening_chain', 'intraday_watch', 'intraday_session', 'unknown'].includes(callbackSource)
+    await logSchedulerResult(c.env.KV, 's12-research-structure', {
+      status: retiredServingSource ? 'skipped' : callbackSucceeded ? 'success' : 'error',
+      summary: retiredServingSource
+        ? `retired S12 serving callback drained without pipeline continuation source=${callbackSource} date=${callbackRunDate} run_id=${callbackRunId}`
+        : callbackSucceeded
+          ? `research-only S12 structure callback complete source=${callbackSource} date=${callbackRunDate} run_id=${callbackRunId}`
+          : `research-only S12 structure callback failed source=${callbackSource}: ${String(body.summary ?? body.error ?? body.status)}`,
+      duration_ms: Number(body.duration_ms ?? 0),
+      error: !callbackSucceeded && researchOnly && body.error != null ? String(body.error) : undefined,
+      run_id: callbackRunId,
+      run_date: callbackRunDate,
+    }, c.env as any)
   }
 
   const verifyCanContinue =    body.task === 'verify-v2' &&

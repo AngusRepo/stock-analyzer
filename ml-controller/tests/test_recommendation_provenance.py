@@ -1806,7 +1806,7 @@ def test_fusion_rejects_legacy_third_head_and_candidate_time_s12_features():
     assert any(blocker.startswith("candidate_time_s12_feature_forbidden:") for blocker in allocation["allocator_ev_fusion"]["blockers"])
 
 
-def test_sparse_tangent_allocation_falls_back_to_canonical_owner_when_allocator_ev_fusion_artifact_is_invalid():
+def test_sparse_tangent_allocation_fails_closed_when_allocator_ev_fusion_artifact_is_invalid():
     rows = [{
         "symbol": "3661",
         "chip_score": 22.0,
@@ -1841,16 +1841,15 @@ def test_sparse_tangent_allocation_falls_back_to_canonical_owner_when_allocator_
     )
 
     allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "BUY"
-    assert allocation["expected_return_owner"] == "s12_trade_ev"
-    assert allocation["expected_return"] == pytest.approx(0.006)
-    assert allocation["expected_return_source"] == "s12_replay_trade_outcomes"
+    assert promoted[0]["signal"] == "HOLD"
+    assert allocation["expected_return_owner"] == "risk_abstention"
+    assert allocation["expected_return"] == pytest.approx(0.0)
     assert allocation["allocator_ev_fusion"]["status"] == "rejected"
     assert "validation_packet_not_pass" in allocation["allocator_ev_fusion"]["blockers"]
     assert "third_selection_serving_head_forbidden" in allocation["allocator_ev_fusion"]["blockers"]
 
 
-def test_sparse_tangent_allocation_uses_verified_s12_when_fusion_is_safe_abstention_baseline():
+def test_sparse_tangent_allocation_rejects_legacy_safe_abstention_baseline_without_s12_fallback():
     rows = [{
         "symbol": "3661",
         "chip_score": 22.0,
@@ -1896,11 +1895,11 @@ def test_sparse_tangent_allocation_uses_verified_s12_when_fusion_is_safe_abstent
     )
 
     allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "BUY"
-    assert allocation["eligible_for_sparse"] is True
-    assert allocation["expected_return_owner"] == "s12_trade_ev"
-    assert allocation["expected_return"] == pytest.approx(0.012)
-    assert allocation["allocator_ev_fusion"]["status"] == "candidate_fallback_required"
+    assert promoted[0]["signal"] == "HOLD"
+    assert allocation["eligible_for_sparse"] is False
+    assert allocation["expected_return_owner"] == "risk_abstention"
+    assert allocation["expected_return"] == pytest.approx(0.0)
+    assert allocation["allocator_ev_fusion"]["status"] == "rejected"
 
 
 def test_batch_predict_http_fallback_uses_predict_v2(monkeypatch):

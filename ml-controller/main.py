@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from services.modal_client import batch_predict_contract
 from services.trading_config_loader import DEFAULT_REQUIRED_CONFIG
 
-from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2, finlab, external_evidence, strategy_similarity, strategy_mining, screener, l4_alpha_ev, allocator_ev_fusion, opb_arm_prior, s12_structure, s12_formal_ev
+from routers import predict, retrain, retrain_trigger, retrain_followup, verify, recommend, risk, status, sector_flow, backtest, lifecycle, pipeline, audit, adversarial, obsidian, intraday, regime, walk_forward, debate, model_pool, config_pool, admin, research_benchmark, dataset_snapshots, meta_learning, paper_challenger, breeze2, finlab, external_evidence, strategy_similarity, strategy_mining, screener, l4_alpha_ev, allocator_ev_fusion, opb_arm_prior, s12_structure
 # 2026-04-07 Phase 1.6: Optuna routes 從 Modal 移到 Cloud Run
 try:
     from routers import optuna as optuna_router
@@ -120,7 +120,6 @@ app.include_router(l4_alpha_ev.router, dependencies=[Depends(verify_token)])
 app.include_router(allocator_ev_fusion.router, dependencies=[Depends(verify_token)])
 app.include_router(opb_arm_prior.router, dependencies=[Depends(verify_token)])
 app.include_router(s12_structure.router, dependencies=[Depends(verify_token)])
-app.include_router(s12_formal_ev.router, dependencies=[Depends(verify_token)])
 # 2026-04-07 Phase 1.6: optuna routes 從 Modal 移到 Cloud Run
 if optuna_router:
     app.include_router(optuna_router.router, dependencies=[Depends(verify_token)])

@@ -41,6 +41,38 @@ def _candidate(symbol: str, score: float, expected_return: float) -> dict:
     }
 
 
+def _fusion_policy_value_artifact() -> dict:
+    return {
+        "artifact_contract_version": "allocator-ev-fusion-contract-v13",
+        "feature_semantic_version": "allocator-ev-fusion-s12-policy-value-day-t-causal-v4-lineage-bound",
+        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+        "expected_return_owner": "allocator_ev_fusion",
+        "promotion_state": "production_primary",
+        "promotion_tier": "primary",
+        "primary_expected_return_allowed": True,
+        "validation_packet": {"decision": "PASS"},
+        "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
+        "resolver_method": "test_day_t_policy_value",
+        "model_version": "fusion-v13-opb-test",
+        "feature_snapshot_version": "fusion-v13-test-features",
+        "trained_until": "2026-07-01",
+        "horizon_days": 5,
+        "cost_model_bps": 18.0,
+        "output_is_net_of_costs": True,
+        "policy_value_head_count": 2,
+        "policy_value_heads": ["execution_probability_model", "conditional_execution_return_model"],
+        "conditional_execution_return_model": {
+            "status": "fitted", "decision": "PASS", "intercept": 0.0,
+            "coefficients": {"market_heat_expected_return": 1.0, "l4_expected_return": 0.0},
+        },
+        "execution_probability_model": {
+            "status": "fitted", "decision": "PASS", "link_function": "identity", "intercept": 1.0,
+            "coefficients": {"l4_available": 0.0},
+        },
+        "output_clip": {"min": -0.08, "max": 0.08},
+    }
+
+
 def _recommendation_row(symbol: str, score: float, forecast_pct: float) -> dict:
     return {
         "symbol": symbol,
@@ -50,8 +82,7 @@ def _recommendation_row(symbol: str, score: float, forecast_pct: float) -> dict:
         "signal_source": "ensemble_v2",
         "confidence": 0.72,
         "ml_forecast_pct": forecast_pct,
-        "trade_expected_return_net_pct": forecast_pct,
-        "trade_expected_return_source": "s12_trade_ev_test",
+        "market_heat_expected_return": forecast_pct,
         "recommendation_lane": "tradable",
         "eligible_for_pending_buy": True,
         "has_buy_signal": 0,
@@ -282,7 +313,8 @@ def test_recommendation_service_uses_opb_packet_without_full_exposure_renormaliz
                 "engine": "sparse_tangent_inverse_risk",
                 "controller": "OnlinePortfolioBandit",
                 "buy_signal_count": 3,
-            }
+            },
+            "allocator_ev_fusion": _fusion_policy_value_artifact(),
         },
         confidence_floor=0.60,
         return_history={},

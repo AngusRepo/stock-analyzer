@@ -18,7 +18,13 @@ from services.evidence_contracts import (
     SUPPORTED_ALLOCATOR_EV_FEATURE_SEMANTICS,
     SUPPORTED_ALLOCATOR_EV_SERVING_CONTRACT_PAIRS,
 )
+from services.expected_return_cost_contract import (
+    ExpectedReturnCostContractError,
+    expected_return_cost_contract_blockers,
+    normalize_expected_return_to_net,
+)
 from services.fusion_market_context import market_context_feature_values
+from services.pit_sector_alpha import sector_alpha_feature_values
 
 
 SCHEMA_VERSION = "allocator-ev-fusion-v1"
@@ -189,6 +195,7 @@ def _feature_values(
         "ensemble_directional_margin": (avg_rank - 0.5) if avg_rank is not None else 0.0,
         "score_v2_available": 1.0 if all(value is not None for value in score_values) else 0.0,
         "ensemble_rank_available": 1.0 if avg_rank is not None else 0.0,
+        **sector_alpha_feature_values(row),
         **market_context_feature_values(
             row,
             l4_value=l4_value,
@@ -304,8 +311,7 @@ def materialize_allocator_ev_fusion(
             blockers.append(f"{key}_missing")
     if artifact.get("horizon_days") is None and artifact.get("horizon_bars") is None:
         blockers.append("horizon_missing")
-    if artifact.get("cost_model_bps") is None:
-        blockers.append("cost_model_bps_missing")
+    blockers.extend(expected_return_cost_contract_blockers(artifact))
 
     values = _feature_values(
         l4_value=l4_value,
@@ -343,10 +349,18 @@ def materialize_allocator_ev_fusion(
                 execution_probability = max(0.0, min(1.0, execution_probability))
         execution_residual_adjustment = execution_probability * raw_execution_residual
     expected_return = execution_residual_adjustment
-    if artifact.get("output_is_net_of_costs") is False:
-        cost_bps = _float_or_none(artifact.get("cost_model_bps"))
-        if cost_bps is not None:
-            expected_return -= cost_bps / 10000.0
+    try:
+        expected_return, cost_metadata = normalize_expected_return_to_net(
+            expected_return,
+            artifact,
+        )
+    except ExpectedReturnCostContractError as exc:
+        return _rejected_payload(
+            artifact,
+            str(exc).split(","),
+            l4_payload=l4_payload,
+            feature_values=values,
+        )
     clip = artifact.get("output_clip") if isinstance(artifact.get("output_clip"), dict) else {}
     min_value = _float_or_none(clip.get("min"))
     max_value = _float_or_none(clip.get("max"))
@@ -358,6 +372,7 @@ def materialize_allocator_ev_fusion(
     return {
         **artifact,
         "schema_version": SCHEMA_VERSION,
+        **cost_metadata,
         "status": "loaded",
         "expected_return_owner": OWNER,
         "expected_return": round(expected_return, 10),

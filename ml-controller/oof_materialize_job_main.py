@@ -141,6 +141,8 @@ def _full_fit_continuation_active(result: dict[str, Any]) -> bool:
 
 
 def _oof_freshness_evidence(result: dict[str, Any]) -> dict[str, Any]:
+    prep_lifecycle = result.get("prep_lifecycle")
+    prep_lifecycle = prep_lifecycle if isinstance(prep_lifecycle, dict) else {}
     receipt = result.get("receipt")
     receipt = receipt if isinstance(receipt, dict) else {}
     calendar = result.get("calendar")
@@ -180,6 +182,7 @@ def _oof_freshness_evidence(result: dict[str, Any]) -> dict[str, Any]:
         "schema_version": "active8-oof-freshness-v1",
         "status": status,
         "reason": reason,
+        "business_date": str(prep_lifecycle.get("business_date") or "")[:10] or None,
         "source": calendar.get("calendar_source"),
         "prep_manifest_checksum": calendar.get("prep_manifest_checksum"),
         "expected_max_date": expected_max or None,

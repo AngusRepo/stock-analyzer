@@ -501,9 +501,15 @@ async function handleSchedulerCallback(c: any) {
     ? body.metadata as Record<string, unknown>
     : undefined
   let active8FreshnessStatus: string | null = null
+  let active8FreshnessBusinessDate: string | null = null
 
   if (['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly'].includes(body.task)) {
     const { persistActive8OofFreshnessAudit } = await import('../lib/active8OofFreshness')
+    const freshnessEvidence = callbackMetadata?.oof_freshness
+    const freshnessBusinessDate = freshnessEvidence && typeof freshnessEvidence === 'object'
+      && typeof (freshnessEvidence as Record<string, unknown>).business_date === 'string'
+      ? String((freshnessEvidence as Record<string, unknown>).business_date).slice(0, 10)
+      : null
     const freshness = await persistActive8OofFreshnessAudit(c.env, {
       task: body.task,
       runId: callbackRunId,
@@ -511,9 +517,10 @@ async function handleSchedulerCallback(c: any) {
       runDate: callbackRunDate,
       cadence: typeof callbackMetadata?.cadence === 'string' ? callbackMetadata.cadence : undefined,
       callbackStatus: body.status,
-      evidence: callbackMetadata?.oof_freshness,
+      evidence: freshnessEvidence,
     })
     active8FreshnessStatus = freshness.status
+    active8FreshnessBusinessDate = freshnessBusinessDate
     if (body.status === 'success' && freshness.status !== 'fresh') {
       body.status = 'error'
       body.error = [
@@ -567,18 +574,21 @@ async function handleSchedulerCallback(c: any) {
     && callbackRunDate
   ) {
     c.executionCtx.waitUntil((async () => {
+      const readinessRunDate = active8FreshnessBusinessDate ?? callbackRunDate
       try {
         const { runDailyAllocatorEvReadiness } = await import('../lib/updateOrchestrator')
-        await runDailyAllocatorEvReadiness(c.env, callbackRunDate)
+        await runDailyAllocatorEvReadiness(c.env, readinessRunDate, {
+          knowledgeCutoffDate: callbackRunDate,
+        })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         await logSchedulerResult(c.env.KV, 'allocator-ev-readiness', {
           status: 'error',
-          summary: `OOF freshness follow-up readiness failed for ${callbackRunDate}: ${message}`,
+          summary: `OOF freshness follow-up readiness failed for ${readinessRunDate}: ${message}`,
           duration_ms: 0,
           error: message,
           run_id: callbackRunId,
-          run_date: callbackRunDate,
+          run_date: readinessRunDate,
         })
       }
     })())

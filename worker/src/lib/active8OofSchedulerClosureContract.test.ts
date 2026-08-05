@@ -8,6 +8,7 @@ const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 
 const workflows = fs.readFileSync('src/lib/controllerResearchWorkflows.ts', 'utf8')
 const adminTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
+const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const policies = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const walkForward = fs.readFileSync('../ml-controller/routers/walk_forward.py', 'utf8')
@@ -34,7 +35,11 @@ for (const task of ['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-mont
 assert(policies.includes("'active8-oof-daily': { kind: 'maintenance', holidayGated: false"), 'post-midnight daily OOF continuation must not be skipped by the next calendar day weekend/holiday gate')
 assert(adminControlRoutes.includes("body.task === 'active8-oof-daily'"), 'daily OOF callback must own an event-driven follow-up')
 assert(adminControlRoutes.includes("active8FreshnessStatus === 'fresh'"), 'Allocator follow-up must run only after the durable OOF freshness audit passes')
-assert(adminControlRoutes.includes('runDailyAllocatorEvReadiness(c.env, callbackRunDate)'), 'fresh daily OOF callback must re-evaluate Allocator readiness for the same business date')
+assert(adminControlRoutes.includes('readinessRunDate = active8FreshnessBusinessDate ?? callbackRunDate'), 'fresh daily OOF callback must prefer immutable prep business date over the post-midnight scheduler date')
+assert(adminControlRoutes.includes('runDailyAllocatorEvReadiness(c.env, readinessRunDate, {'), 'fresh daily OOF callback must re-evaluate Allocator readiness for the immutable prep business date')
+assert(adminControlRoutes.includes('knowledgeCutoffDate: callbackRunDate'), 'post-midnight OOF follow-up must inspect evidence using the callback knowledge cutoff')
+assert(updateOrchestrator.includes('inspectExpectedReturnLifecycleHealth(env, knowledgeCutoffDate)'), 'Allocator lifecycle health must use the callback knowledge cutoff')
+assert(updateOrchestrator.includes('refreshExpectedReturnServingState(env, knowledgeCutoffDate)'), 'Allocator serving state must use the callback knowledge cutoff')
 assert(!adminControlRoutes.includes("active8FreshnessStatus === 'fresh'\n    && callbackRunDate\n    &&"), 'OOF follow-up must not silently add an unrelated promotion or training condition')
 
 assert(walkForward.includes('@router.post("/walk_forward/oof/lifecycle")'), 'controller must expose the shared OOF lifecycle owner')
@@ -89,6 +94,7 @@ assert(
 )
 const oofJob = fs.readFileSync('../ml-controller/oof_materialize_job_main.py', 'utf8')
 assert(oofJob.includes('oof_freshness_closure_failed') && oofJob.includes('effective_oof_max_behind_immutable_prep'), 'terminal OOF success must fail closed when effective max is stale')
+assert(oofJob.includes('"business_date": str(prep_lifecycle.get("business_date")'), 'OOF callback freshness metadata must carry the immutable prep business date across midnight')
 assert(walkForward.indexOf('promoted = True') < walkForward.indexOf('/api/admin/trigger/opb-arm-prior-refresh'), 'OPB refresh must be event-driven only after successful EV promotion')
 
 const monthlyHandoff = retrainFollowup.indexOf('run_walk_forward_oof_lifecycle')

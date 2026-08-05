@@ -19,6 +19,7 @@ def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
             "promotion_reason": "quality_or_operational_parity_not_passed",
             "calendar": {"mature_max_date": "2026-07-17", "calendar_source": "immutable_canonical_adjusted_prep"},
             "physical_prediction_coverage": {"max_date": "2026-07-17"},
+            "prep_lifecycle": {"business_date": "2026-07-16"},
         }
 
     async def fake_callback(payload):
@@ -43,6 +44,7 @@ def test_oof_materialize_job_closes_scheduler_callback(monkeypatch):
     assert "cohort=cohort-1" in callback["summary"]
     assert lifecycle_kwargs["dispatch_full_fit"] is False
     assert callback["metadata"]["oof_freshness"]["status"] == "fresh"
+    assert callback["metadata"]["oof_freshness"]["business_date"] == "2026-07-16"
 
 
 def test_oof_materialize_job_treats_daily_shadow_evaluation_as_terminal_success(monkeypatch):

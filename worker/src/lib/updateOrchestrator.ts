@@ -2069,6 +2069,9 @@ async function repairFinalizeContinuationIfNeeded(
 export async function runDailyAllocatorEvReadiness(
   env: Bindings,
   triggerTime: string,
+  options: {
+    knowledgeCutoffDate?: string
+  } = {},
 ): Promise<{
   ok: boolean
   state: 'ready' | 'degraded' | 'fatal'
@@ -2076,8 +2079,10 @@ export async function runDailyAllocatorEvReadiness(
 }> {
   const started = Date.now()
   const parts: string[] = []
-  const health = await inspectExpectedReturnLifecycleHealth(env, triggerTime)
-  const servingState = await refreshExpectedReturnServingState(env, triggerTime)
+  const knowledgeCutoffDate = options.knowledgeCutoffDate ?? triggerTime
+  const health = await inspectExpectedReturnLifecycleHealth(env, knowledgeCutoffDate)
+  const servingState = await refreshExpectedReturnServingState(env, knowledgeCutoffDate)
+  parts.push(`knowledge_cutoff_date=${knowledgeCutoffDate}`)
   const priorOwner = servingState.expected_return_owner === 'allocator_ev_fusion'
     ? 'allocator_ev_fusion'
     : null
@@ -2119,7 +2124,7 @@ export async function runDailyAllocatorEvReadiness(
   if (priorOwner) {
     const opbStarted = Date.now()
     try {
-      const opbSummary = await runOpbArmPriorRefresh(env, triggerTime, priorOwner)
+      const opbSummary = await runOpbArmPriorRefresh(env, knowledgeCutoffDate, priorOwner)
       parts.push(`opb_prior=${opbSummary}`)
       await logSchedulerResult(env.KV, 'opb-arm-prior-refresh', {
         status: 'success',

@@ -351,12 +351,14 @@ export async function inspectAllocatorSnapshotClosure(
   const runNativeLineageRows = Number(run?.native_lineage_rows ?? 0)
   const reconstructedLineageRows = Number(run?.reconstructed_lineage_rows ?? 0)
   const rejectedLineageRows = Number(run?.rejected_lineage_rows ?? 0)
+  const recommendationRows = Number(lineage?.recommendation_rows ?? 0)
   const recommendationMaxCreatedAt = lineage?.recommendation_max_created_at ?? null
   const snapshotMaxGeneratedAt = actual?.max_generated_at ?? null
   const snapshotFresh = Boolean(recommendationMaxCreatedAt && snapshotMaxGeneratedAt)
     && Date.parse(String(snapshotMaxGeneratedAt)) >= Date.parse(`${recommendationMaxCreatedAt}Z`)
   const commonReady = run?.status === 'ready'
     && expectedRows > 0
+    && recommendationRows === expectedRows
     && publishedRows === expectedRows
     && actualRows === expectedRows
     && snapshotFresh
@@ -365,13 +367,12 @@ export async function inspectAllocatorSnapshotClosure(
     && reconstructedLineageRows === 0
     && rejectedLineageRows === 0
   const reconstructedReady = options.allowPointInTimeReconstruction === true
-    && Number(lineage?.row_count ?? 0) >= expectedRows
     && reconstructedLineageRows > 0
     && runNativeLineageRows + reconstructedLineageRows === expectedRows
     && rejectedLineageRows === 0
   return {
     businessDate,
-    recommendationRows: Number(lineage?.recommendation_rows ?? 0),
+    recommendationRows,
     recommendationMaxCreatedAt,
     nativeLineageRows: Number(lineage?.row_count ?? 0),
     runNativeLineageRows,

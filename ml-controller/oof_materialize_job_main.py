@@ -93,10 +93,6 @@ async def _execute_allocator_snapshot(
         l4_min_samples=_bounded_int("OOF_MATERIALIZE_L4_MIN_SAMPLES", 500, 50, 10000),
         l4_min_dates=_bounded_int("OOF_MATERIALIZE_L4_MIN_DATES", 20, 5, 252),
         l4_training_limit=_bounded_int("OOF_MATERIALIZE_L4_TRAINING_LIMIT", 6000, 500, 20000),
-        s12_lookback_days=_bounded_int("OOF_MATERIALIZE_S12_LOOKBACK_DAYS", 120, 30, 365),
-        s12_limit=_bounded_int("OOF_MATERIALIZE_S12_LIMIT", 5000, 500, 20000),
-        s12_min_samples=_bounded_int("OOF_MATERIALIZE_S12_MIN_SAMPLES", 30, 5, 1000),
-        s12_min_sample_dates=_bounded_int("OOF_MATERIALIZE_S12_MIN_SAMPLE_DATES", 8, 2, 252),
         lineage_cohort_id=lineage_cohort_id,
     )
 

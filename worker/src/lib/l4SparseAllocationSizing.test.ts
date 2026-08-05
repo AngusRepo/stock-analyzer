@@ -21,17 +21,13 @@ function assert(condition: unknown, message: string): void {
     vwap_fast_acceptance: true,
     vwap_slow_context: 'overhead_supply',
     htf_hard_block: false,
-  })
+  } as any)
   assert(point?.startsWith('l4_sparse_allocation:weight=0.18'), 'watch point should expose L4 sparse allocation weight')
   const parsed = l4SparseSizingFromWatchPoints(['other', point])
   assert(parsed?.weight === 0.18, 'parser should recover allocation weight')
   assert(parsed?.allocationRank === 2, 'parser should recover allocation rank')
   assert(parsed?.allocationCapacity === 5, 'parser should recover allocation capacity')
-  assert(parsed?.s12ContextMultiplier === 0.81, 'parser should recover S12 context multiplier')
-  assert(parsed?.s12ContextHaircuts.includes('1h_short_risk_haircut'), 'parser should recover S12 context haircuts')
-  assert(parsed?.vwapFastAcceptance === true, 'parser should recover fast VWAP acceptance')
-  assert(parsed?.vwapSlowContext === 'overhead_supply', 'parser should recover slow VWAP context')
-  assert(parsed?.htfHardBlock === false, 'parser should recover high-timeframe hard block')
+  assert(!point?.includes('s12_'), 'evening allocation watch points must ignore candidate-time S12 fields')
 }
 
 {

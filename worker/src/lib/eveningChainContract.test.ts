@@ -73,21 +73,14 @@ assert(
   'mature strategy labels/edge/rewards must refresh fail-closed before the current-day screener consumes priors',
 )
 assert(
-  updateOrchestrator.indexOf("ensureSameDateRegimeReady(env, triggerTime, runId, 'indicator-finalizer')") > 0 &&
-    updateOrchestrator.indexOf("ensureSameDateRegimeReady(env, triggerTime, runId, 'indicator-finalizer')") <
-      updateOrchestrator.indexOf('const runAsyncScreener = deps.runMarketScreenerAsync'),
-  'same-date HMM regime PIT must be materialized and verified before screener consumes regime-adaptive policy',
-)
-assert(
   controllerDailyWorkflows.includes('assertRegimeComputeClosure(data, runDate)') &&
     controllerDailyWorkflows.includes('readMarketRegimeState(env.KV)') &&
-    controllerDailyWorkflows.includes('market_regime_state readback mismatch') &&
-    controllerDailyWorkflows.includes('REGIME_KV_READBACK_DELAYS_MS'),
+    controllerDailyWorkflows.includes('market_regime_state readback mismatch'),
   'regime compute must verify same-date KV persistence and posterior surface before downstream stages',
 )
 assert(updateOrchestrator.includes('refreshExpectedReturnServingState'), 'daily readiness must persist canonical expected-return serving state')
 assert(expectedReturnServingState.includes("'retired_incompatible'"), 'stale promoted artifacts must be explicitly retired from serving without rewriting evidence')
-assert(expectedReturnServingState.includes("'validated_s12_only'"), 'no-owner production behavior must remain explicit and fail closed')
+assert(expectedReturnServingState.includes("'fusion_primary_required'"), 'no-owner production behavior must require a primary Fusion artifact and fail closed')
 const schedulerLockMigration = fs.readFileSync('migration_scheduler_locks.sql', 'utf8')
 const runBulkFetchStart = updateOrchestrator.indexOf('export async function runBulkFetch')
 const runBulkFetchEnd = updateOrchestrator.indexOf('export async function runQueueUpdate', runBulkFetchStart)
@@ -98,11 +91,8 @@ assert(updateOrchestrator.includes('sendBatch'), 'indicator queue root trigger m
 assert(updateOrchestrator.includes('markShardComplete'), 'indicator queue must wait for all shards before starting screener/pipeline')
 assert(
   updateOrchestrator.includes('acquireFinalizeLock') &&
-    updateOrchestrator.includes('ON CONFLICT(lock_key) DO UPDATE SET') &&
-    updateOrchestrator.includes('scheduler_locks.expires_at <= excluded.created_at') &&
-    updateOrchestrator.includes('renewFinalizeLock') &&
-    updateOrchestrator.includes('finalizer lease lost before continuation stage'),
-  'indicator queue finalizer must use an expiring renewable D1 lease with fenced atomic takeover',
+    updateOrchestrator.includes('INSERT OR IGNORE INTO scheduler_locks'),
+  'indicator queue finalizer must use an atomic D1 lock; KV get/put is not safe for concurrent finalizers',
 )
 assert(
   schedulerLockMigration.includes('CREATE TABLE IF NOT EXISTS scheduler_locks') &&
@@ -195,16 +185,8 @@ assert(
   updateOrchestrator.includes('repairFinalizeContinuationIfNeeded') &&
     updateOrchestrator.includes('hasSuccessfulScreenerRun') &&
     updateOrchestrator.includes('hasPipelineEvidence') &&
-    updateOrchestrator.includes('expired-lease-repair') &&
-    updateOrchestrator.includes('Finalize repair takeover lost to another continuation'),
-  'indicator queue finalizer must atomically repair expired leases so screener seed rows cannot strand the chain before pipeline',
-)
-assert(
-  updateOrchestrator.includes('deferFinalizeContinuation') &&
-    updateOrchestrator.includes('checkEveningChainSourceReadiness(env, triggerTime)') &&
-    updateOrchestrator.includes('continuationAttempt: continuationAttempt + 1') &&
-    updateOrchestrator.includes('FINALIZE_CONTINUATION_MAX_ATTEMPTS'),
-  'indicator finalizer must durably retry the same run and recheck canonical source readiness before screener',
+    updateOrchestrator.includes('stale-lock-repair'),
+  'indicator queue finalizer must repair stale/orphaned locks so screener seed rows cannot strand the chain before pipeline',
 )
 assert(
   updateOrchestrator.includes("logSchedulerResult(env.KV, 'update'") &&
@@ -218,49 +200,34 @@ assert(
 )
 assert(
   updateOrchestrator.includes('runDailyAllocatorEvReadiness') &&
-    updateOrchestrator.includes('inspectExpectedReturnLifecycleHealth') &&
-    updateOrchestrator.includes('refreshExpectedReturnServingState') &&
+    updateOrchestrator.includes('runL4AlphaEvRefresh') &&
+    updateOrchestrator.includes('runAllocatorEvFusionRefresh') &&
     updateOrchestrator.includes('runOpbArmPriorRefresh') &&
     updateOrchestrator.indexOf('const evReadiness = await runDailyAllocatorEvReadiness') <
       updateOrchestrator.indexOf('const summary = await deps.runMLAndRiskV2'),
-  'evening-chain must inspect current L4/fusion serving readiness before triggering pipeline without nightly retraining',
+  'evening-chain must refresh L4/fusion model readiness before triggering pipeline',
 )
 assert(
-  updateOrchestrator.includes("owner === 'l4_alpha_ev' ? 'l4-alpha-ev-refresh' : 'allocator-ev-fusion-refresh'") &&
-    updateOrchestrator.includes("logSchedulerResult(env.KV, task") &&
-    updateOrchestrator.includes('expected_return_serving_state=') &&
-    updateOrchestrator.includes('expected_return_action_gate=') &&
-    updateOrchestrator.includes('ownerAlerts.length > 0') &&
-    updateOrchestrator.includes('allocator EV readiness failed before pipeline'),
-  'allocator EV readiness must expose owner alerts and stop the chain before pipeline when serving is invalid',
+  updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh'") &&
+    updateOrchestrator.includes('fusion_degraded=') &&
+    updateOrchestrator.includes('pipeline continues for evidence coverage but BUY/allocation fail closed because Fusion is the sole expected-return owner'),
+  'allocator EV fusion validation failure must remain visible while expected-return action gates stay fail closed',
 )
 assert(
-  updateOrchestrator.includes('refreshExpectedReturnServingState') &&
-    updateOrchestrator.includes('candidate_gate=') &&
+  updateOrchestrator.includes('l4_challenger_rejected=') &&
+    updateOrchestrator.includes('l4_champion_retained=') &&
+    updateOrchestrator.includes('l4_unavailable=') &&
+    updateOrchestrator.includes('refreshExpectedReturnServingState') &&
     expectedReturnServingState.includes("artifact.promotion_state !== requiredPromotionState") &&
     expectedReturnServingState.includes("String(artifact.validation_packet?.decision ?? '').toUpperCase() !== 'PASS'") &&
-    expectedReturnServingState.includes("action_gate: owner ? 'expected_return_owner' : 'validated_s12_only'"),
+    expectedReturnServingState.includes("action_gate: owner ? 'expected_return_owner' : 'fusion_primary_required'"),
   'L4 readiness must retain a compatible champion or continue observation with BUY/allocation fail closed',
 )
 assert(
-  updateOrchestrator.includes('analysis_continues=1 execution_fail_closed=1') &&
-    updateOrchestrator.includes("s.state='data_unavailable'") &&
-    updateOrchestrator.includes('s.pending_run_id=?') &&
-    updateOrchestrator.includes('persistedRows !== referenceRows') &&
-    updateOrchestrator.includes('blocked=${blockedRows}'),
-  'S12 unavailable observations must stay visible and execution-fail-closed while only incomplete canonical coverage blocks the lifecycle',
-)
-const s12FinalizerStart = updateOrchestrator.indexOf('const finalizerStage = `s12_snapshot_pipeline:${runId}`')
-const s12FinalizerEnd = updateOrchestrator.indexOf("if (msg.type === 's12_replay_backfill_chunk')", s12FinalizerStart)
-const s12Finalizer = updateOrchestrator.slice(s12FinalizerStart, s12FinalizerEnd)
-assert(
-  s12FinalizerStart >= 0 &&
-    s12Finalizer.includes('enqueuePipelineStage') &&
-    s12Finalizer.includes('claimPipelineStage') &&
-    s12Finalizer.includes('markPipelineStage') &&
-    s12Finalizer.indexOf('claimPipelineStage') < s12Finalizer.indexOf('continuePostScreenerPipeline') &&
-    s12Finalizer.includes('Duplicate S12 snapshot finalizer suppressed'),
-  'at-least-once S12 snapshot queue delivery must claim one durable per-run finalizer before triggering pipeline',
+  updateOrchestrator.includes('Deprecated S12 candidate snapshot message drained without serving side effects') &&
+    updateOrchestrator.includes("msg.type === 's12_replay_backfill_chunk'") &&
+    !updateOrchestrator.includes("type: 's12_candidate_snapshot_chunk'"),
+  'production evening S12 candidate snapshots must be removed while mature historical replay labels remain available',
 )
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')
@@ -319,8 +286,8 @@ assert(
 
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
 assert(
-  postMarketChain.includes('verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}'),
-  'post-pipeline chain must trigger verify-v2 with a deterministic snapshot-owned idempotency key',
+  postMarketChain.includes('runVerifyV2(env, ctx.runDate, `verify_v2:${ctx.runDate}`)'),
+  'post-pipeline chain must trigger verify-v2 with a deterministic date-level idempotency key',
 )
 assert(
   postMarketChain.indexOf("'model-ic-rolling', () => runModelIcRollingRefresh") <

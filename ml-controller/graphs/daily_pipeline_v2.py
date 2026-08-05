@@ -2788,7 +2788,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     if l4_serving_preflight.get("ready") is not True:
         logger.error(
             "[Pipeline V2] configured L4 artifact is not serving-compatible; "
-            "rows will explicitly abstain or use a validated S12 owner: %s",
+            "Fusion will treat the upstream L4 feature as unavailable: %s",
             l4_serving_preflight,
         )
     allocator_ev_fusion_policy = (
@@ -2802,17 +2802,11 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         alpha_policy.setdefault("allocatorEvFusion", allocator_ev_fusion_policy)
         alpha_policy.setdefault("allocator_ev_fusion", allocator_ev_fusion_policy)
     fusion_serving_preflight = assess_allocator_ev_fusion_policy(alpha_policy)
-    serving_owner = (
-        "allocator_ev_fusion"
-        if fusion_serving_preflight.get("ready") is True
-        else "l4_alpha_ev"
-        if l4_serving_preflight.get("ready") is True
-        else None
-    )
+    serving_owner = "allocator_ev_fusion" if fusion_serving_preflight.get("ready") is True else None
     expected_return_serving_preflight = {
         "schema_version": "expected-return-serving-preflight-v1",
         "expected_return_owner": serving_owner,
-        "action_gate": "expected_return_owner" if serving_owner else "validated_s12_only",
+        "action_gate": "expected_return_owner" if serving_owner else "fusion_primary_required",
         "artifacts": {
             "l4_alpha_ev": l4_serving_preflight,
             "allocator_ev_fusion": fusion_serving_preflight,
@@ -2953,10 +2947,6 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         if symbol in state["predictions"]:
             if allocation:
                 state["predictions"][symbol]["alpha_allocation"] = allocation
-            if isinstance(row.get("s12_trade_ev"), dict):
-                state["predictions"][symbol]["s12_trade_ev"] = row["s12_trade_ev"]
-                state["predictions"][symbol]["trade_expected_return_net_pct"] = row.get("trade_expected_return_net_pct")
-                state["predictions"][symbol]["trade_expected_return_source"] = row.get("trade_expected_return_source")
 
     # Track which symbols were filtered out (for D1 delete in write_d1)
     final_syms = {r["symbol"] for r in final}
@@ -2995,8 +2985,6 @@ async def node_recommend(state: PipelineStateV2) -> dict:
 
     allowed_owners = {
         "allocator_ev_fusion",
-        "l4_alpha_ev",
-        "s12_trade_ev",
         "risk_abstention",
     }
     owner_counts: dict[str, int] = {}

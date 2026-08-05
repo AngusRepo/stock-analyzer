@@ -99,7 +99,7 @@ assert.match(updateOrchestrator, /leaseRetryAttempt: leaseRetryAttempt \+ 1/)
 assert.match(updateOrchestrator, /scope=\$\{replayScope\}/)
 assert.match(updateOrchestrator, /msg\.type === 's12_research_recovery'/)
 assert.match(updateOrchestrator, /loadS12ResearchUsageStatus/)
-assert.match(updateOrchestrator, /source: 's12_candidate_snapshot_reconstruction'/)
+assert.match(updateOrchestrator, /source: 's12_research_structure_reconstruction'/)
 assert.match(updateOrchestrator, /runAllocatorEvFeatureSnapshotBackfill/)
 
 const replaySource = fs.readFileSync('src/lib/s12ReplayTradeOutcome.ts', 'utf8')

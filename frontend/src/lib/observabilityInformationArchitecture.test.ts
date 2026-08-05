@@ -37,13 +37,13 @@ assert(!page.includes('<ReadinessFlowMap'), 'OBS should no longer render the old
 assert(!page.includes('<SchedulerReadinessGroupBoard'), 'OBS should no longer render the scheduler card wall')
 assert(!page.includes('<SchedulerShortcutDeck'), 'Source Gates should not duplicate scheduler scope cards')
 
-for (const scope of ['Daily readiness', 'Intraday guard', 'Weekly research', 'Monthly artifact']) {
+for (const scope of ['Daily readiness', 'Intraday guard', 'Monthly artifact']) {
   assert(chain.includes(scope), `execution chain must expose ${scope}`)
 }
 assert(!chain.includes("id: 'daily_ops'"), 'independent daily jobs must not be forced into a fake chain')
 assert(chain.includes("relation: 'event'") && chain.includes("relation: 'mixed'"), 'chain must distinguish event-only and mixed-trigger scopes')
-assert(chain.includes("['screener'],") && chain.includes("['regime-compute'],") && chain.includes("['s12-structure-snapshot'],") && chain.includes("['allocator-ev-readiness'],"), 'daily chain must expose the verified screener -> regime -> S12 -> allocator sequence')
-assert(chain.includes("id: 'weekly'"), 'weekly validation dependencies must have an explicit evidence topology')
+assert(chain.includes("['screener'],") && chain.includes("['regime-compute'],") && chain.includes("['allocator-ev-readiness'],") && !chain.includes("['s12-structure-snapshot'],"), 'daily chain must expose screener -> regime -> allocator without a duplicate S12 evening stage')
+assert(!chain.includes("id: 'weekly'"), 'schedule-driven weekly jobs must stay in grouped inventory rather than a fake dependency chain')
 assert(chain.includes("orchestratorId: 'evening-chain'") && !chain.includes("      ['evening-chain'],"), 'Evening Chain must render as parent orchestration rather than an earlier sequential step')
 assert(chain.includes('function scopeExecutionStageIds') && chain.includes('Parent orchestration · terminal callback'), 'parent orchestration must be excluded from step progress and explain terminal-callback ownership')
 assert(chain.includes('const STATUS_ICON') && chain.includes('<StageStatusMarker status={status} />'), 'every chain plot must use a semantic Lucide status marker')
@@ -55,17 +55,13 @@ assert(chain.includes('function scopeStageIds') && chain.includes('scope.branche
 assert(chain.includes("'context with' : 'shares inputs with'") && chain.includes('${mainStageCount} main') && chain.includes('${branchStageCount} branch'), 'branch UI must state shared-input semantics and avoid a fake sequential phase number')
 assert(!chain.includes("'intraday-rescore': {") && !chain.includes('Next up') && !chain.includes('obs-chain__detail--next'), 'legacy aggregate re-score and redundant Next Up detail must stay removed')
 assert(chainCss.includes('.obs-chain__branches') && chainCss.includes('.obs-chain__branch-sequence') && chainCss.includes('grid-template-columns: minmax(0,1fr)'), 'execution branches and single-column selected detail must have explicit responsive styling')
-assert(chain.includes('obs-chain__topology is-${scope.id}') && chain.includes('Intraday main flow'), 'scope-specific topology classes must keep intraday branches and weekly compact layout explicit')
+assert(chain.includes("obs-chain__topology ${scope.id === 'intraday' ? 'is-intraday' : ''}") && chain.includes('Intraday main flow'), 'intraday topology must place the pre-market branch, main flow, and re-score branch in one explicit layout')
 assert(chainCss.includes('grid-template-columns: minmax(210px,.68fr) minmax(620px,2.25fr) minmax(240px,.75fr)') && chainCss.includes('minmax(760px,2.7fr)') && chainCss.includes('.obs-chain__branch:nth-child(1)') && chainCss.includes('.obs-chain__branch:nth-child(2)'), 'desktop intraday topology must enlarge the main lane between pre-market left and re-score right')
 assert(chain.includes("['model-ic-rolling']") && !chain.includes('buildScopedJobMap') && !chain.includes('model-ic-tracker'), 'daily chain must consume the isolated rolling identity without timestamp inference')
 assert(chain.includes("job.id === 'intraday-check' && job.lastStatus === 'skip'") && chain.includes("noop: 'Checked · no action'"), 'an executed intraday heartbeat with no action must not look unexecuted')
 assert(chain.includes("job.lastStatus === 'sleep') return 'out_of_window'") && chain.includes("out_of_window: 'Not in window'"), 'sleep must render as Not in window rather than Not started')
 assert(chainCss.includes('.obs-chain__stage.is-out_of_window'), 'out-of-window stages must retain the neutral chain style')
-assert(chain.includes('Weekly validation & research chain'), 'weekly scheduler topology must be first-class rather than rendered as unmapped inventory')
-assert(chain.includes("['allocator-ev-feature-snapshot-backfill']") && chain.includes("['allocator-ev-lifecycle-watchdog']") && chain.includes("['active8-oof-daily']"), 'daily lifecycle evidence stages must be mapped')
-assert(chain.includes("['weekly-backtest', 'alpha-quality', 'active8-oof-weekly']") && chain.includes("['weekly-optuna', 'sector-leaders']"), 'weekly validation and research owners must be mapped')
 assert(chain.includes('Monthly artifact chain'), 'monthly scope should own artifact cadence')
-assert(chainCss.includes('.obs-chain__topology.is-weekly .obs-chain__sequence') && !chain.includes("id: 'weekly-validation'"), 'weekly research owners must share one compact row instead of sparse branch cards')
 assert(api.includes("statusScope?: 'today' | 'historical_replay' | 'schedule'"), 'scheduler API must expose historical replay scope')
 assert(api.includes('statusRunDate?: string | null'), 'scheduler API must expose the effective replay date')
 assert(chain.includes('function statusLabel') && chain.includes('Historical replay · ${formatReplayDate(job.statusRunDate)} · ${label}'), 'historical replay stages must identify their effective date and runtime status')
@@ -73,10 +69,9 @@ assert(chain.includes('function statusLabel') && chain.includes('Historical repl
 assert(fs.existsSync(standalonePath) && fs.existsSync(standaloneCssPath), 'standalone job registry and isolated CSS should exist')
 assert(chain.includes('StandaloneJobRegistry') && chain.includes('MAPPED_JOB_IDS'), 'execution chain must account for jobs outside visual topology')
 assert(standalone.includes('.filter((job) => !mappedJobIds.has(job.id))'), 'every unmapped API job must enter the runtime registry')
-assert(standalone.includes('Standalone root') && standalone.includes('Topology missing') && standalone.includes('Consolidation tracked') && standalone.includes('Retirement candidate'), 'registry must distinguish true topology gaps from governed consolidation states')
+assert(standalone.includes('Standalone root') && standalone.includes('Unmapped dependency'), 'registry must distinguish independent jobs from missing topology')
 assert(standalone.includes('{jobs.length} / {jobs.length} accounted'), 'registry must expose full scheduler coverage')
 assert(standaloneCss.includes('.obs-standalone__group-card') && standaloneCss.includes('.obs-standalone__job-grid') && !standaloneCss.includes('.obs-standalone__rows'), 'standalone jobs must use the previous grouped-card presentation')
-assert(standaloneCss.includes("first-child:last-child[aria-label='Daily operations']") && standaloneCss.includes('repeat(4, minmax(0, 1fr))'), 'a sole Daily operations group must render four cards per desktop row')
 assert(standalone.includes("['weekly', 'pipeline_chain', 'daily', 'intraday', 'monthly']") && standaloneCss.includes("[aria-label='Weekly operations'] { grid-column: span 4;") && standaloneCss.includes("[aria-label='Pipeline support'] { grid-column: span 2;") && standaloneCss.includes("[aria-label='Daily operations'] { grid-column: span 4;"), 'standalone desktop top row must stay Weekly 4 / Pipeline 2 / Daily 4')
 
 assert(page.includes('schedulerApi.status'), 'execution chain must use the formal scheduler status API')
@@ -84,21 +79,7 @@ assert(page.includes('schedulerRefreshInterval(query.state.data?.jobs)'), 'sched
 assert(page.includes('refetchIntervalInBackground: false'), 'OBS realtime polling must stop when the page is in the background')
 assert(chain.includes("return jobs?.some((job) => job.lastStatus === 'running') ? 3_000 : 15_000"), 'running chains must sync every 3s and idle chains every 15s')
 assert(chain.includes('previousStatuses') && chain.includes('justCompleted'), 'callback success transition must trigger a completion visual')
-assert(
-  chain.includes('viewportRef')
-    && chain.includes('viewport.scrollWidth <= viewport.clientWidth + 1')
-    && chain.includes('viewport.scrollTo'),
-  'current callback stage must focus only inside an overflowing chain viewport',
-)
-assert(
-  chain.includes("scope.columns.length >= 16 ? 'is-dense' : ''")
-    && chainCss.includes('.obs-chain__sequence.is-dense .obs-chain__connector')
-    && chainCss.includes('overflow-x: hidden')
-    && chainCss.includes('justify-content: space-between')
-    && chainCss.includes('clamp(4px, .35vw, 9px)')
-    && chainCss.includes('clamp(64px, 3.45vw, 92px)'),
-  'long desktop chains must fill the viewport without a horizontal scrollbar or trailing blank block',
-)
+assert(chain.includes('scrollIntoView') && chain.includes('currentId'), 'current callback stage must auto-focus when it changes')
 
 for (const animation of ['obs-running-breathe', 'obs-running-orbit', 'obs-completed-burst', 'obs-progress-flow', 'obs-progress-head']) {
   assert(chainCss.includes(`@keyframes ${animation}`), `missing execution-chain animation ${animation}`)

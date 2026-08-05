@@ -231,7 +231,7 @@ const forecastData = {
     eligible_for_sparse: true,
     allocation_rank: 1,
     expected_return: 0.0315,
-    expected_return_source: 's12_trade_ev_test',
+    expected_return_source: 'allocator_ev_fusion:test',
     s12_trade_ev: {
       status: 'loaded',
       expected_R: 1.42,
@@ -292,14 +292,8 @@ const forecastData = {
   assert(allocation?.eligible_for_sparse === true, 'L4 sparse summary should expose candidate eligibility')
   assert(allocation?.allocation_rank === 1, 'L4 sparse summary should expose sparse capacity rank')
   assert(allocation?.expected_return === 0.0315, 'L4 sparse summary should expose expected edge')
-  assert(allocation?.expected_return_source === 's12_trade_ev_test', 'L4 sparse summary should expose expected edge source')
-  assert(allocation?.expected_R === 1.42, 'L4 sparse summary should expose S12 expected R')
-  assert((allocation?.s12_trade_ev as any)?.win_rate === 0.61, 'L4 sparse summary should keep compact S12 trade EV payload')
-  assert(allocation?.vwap_fast_acceptance === true, 'L4 sparse summary should expose S12 fast VWAP acceptance')
-  assert(allocation?.vwap_slow_context === 'overhead_supply', 'L4 sparse summary should expose S12 slow VWAP context')
-  assert(allocation?.htf_hard_block === false, 'L4 sparse summary should expose S12 high-timeframe hard block')
-  assert(allocation?.s12_context_multiplier === 0.81, 'L4 sparse summary should expose S12 context multiplier')
-  assert(allocation?.s12_context_haircuts.includes('1h_short_risk_haircut'), 'L4 sparse summary should expose S12 context haircuts')
+  assert(allocation?.expected_return_source === 'allocator_ev_fusion:test', 'sparse summary should expose Fusion expected edge source')
+  assert(!('s12_trade_ev' in (allocation as any)), 'evening summary must not expose candidate-time S12 trade EV')
   assert(allocation?.positive_expected_edge === true, 'L4 sparse summary should expose positive edge decision')
   assert(allocation?.risk_estimate === 0.0182, 'L4 sparse summary should expose risk estimate')
   assert(allocation?.risk_estimate_source === 'return_history_sample_std', 'L4 sparse summary should expose risk estimate source')

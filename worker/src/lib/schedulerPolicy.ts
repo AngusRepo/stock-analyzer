@@ -48,7 +48,6 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'obsidian-sync': { kind: 'trading_day', holidayGated: true, description: 'daily trading-note sync' },
   'obsidian-daily': { kind: 'trading_day', holidayGated: true, description: 'daily trading-note sync' },
   'regime-compute': { kind: 'trading_day', holidayGated: true, description: 'daily market regime compute' },
-  's12-structure-snapshot': { kind: 'trading_day', holidayGated: true, description: 'event-driven S12 structure snapshot before allocator EV readiness' },
   'allocator-ev-readiness': { kind: 'trading_day', holidayGated: true, description: 'in-chain L4 alpha and allocator EV readiness before pipeline allocation' },
   'opb-arm-prior-refresh': { kind: 'research', holidayGated: false, description: 'production-gated OPB counterfactual arm-prior refresh' },
   'allocator-ev-feature-snapshot-backfill': { kind: 'trading_day', holidayGated: true, description: 'post-pipeline point-in-time allocator feature snapshot before verify' },

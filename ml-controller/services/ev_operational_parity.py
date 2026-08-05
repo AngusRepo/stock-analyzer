@@ -7,7 +7,6 @@ from typing import Any
 
 from services.allocator_ev_fusion import materialize_allocator_ev_fusion
 from services.l4_alpha_ev_resolver import extract_l4_alpha_ev
-from services.s12_trade_ev import extract_s12_trade_ev
 from services.l4_alpha_ev_artifact_builder import FEATURE_NAMES, _feature_vector
 from services.l4_alpha_ev_producer import _feature_value, materialize_l4_alpha_ev
 
@@ -63,11 +62,6 @@ def assess_ev_operational_parity(
         }
         for key in ("l4_alpha_ev", "alpha_ev", "alpha_ev_prediction"):
             parsed_row.pop(key, None)
-        allocation = parsed_row["alpha_allocation"]
-        if isinstance(allocation.get("s12_trade_ev"), dict):
-            parsed_row["s12_trade_ev"] = allocation["s12_trade_ev"]
-        elif isinstance(prediction.get("s12_trade_ev"), dict):
-            parsed_row["s12_trade_ev"] = prediction["s12_trade_ev"]
         builder_features = _feature_vector(parsed_row)
         if builder_features is None:
             continue
@@ -91,16 +85,12 @@ def assess_ev_operational_parity(
             l4_loaded += 1
             parsed_row["l4_alpha_ev"] = l4_payload
         l4_value, l4_source, resolved_l4_payload = extract_l4_alpha_ev(parsed_row)
-        s12_value, s12_source, s12_payload = extract_s12_trade_ev(parsed_row)
         alpha_context = parsed_row.get("alpha_context") or {}
         fusion_payload = materialize_allocator_ev_fusion(
             parsed_row,
             l4_value=l4_value,
             l4_source=l4_source,
             l4_payload=resolved_l4_payload,
-            s12_value=s12_value,
-            s12_source=s12_source,
-            s12_payload=s12_payload,
             market_heat_expected_return=float(alpha_context.get("market_heat_expected_return") or 0.0),
             policy=fusion_candidate,
         )

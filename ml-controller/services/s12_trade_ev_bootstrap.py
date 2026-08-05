@@ -620,51 +620,22 @@ def _s12_entry_context_from_row(row: dict[str, Any], prediction: dict[str, Any] 
 
 
 def _s12_context_not_ready_reason(context: dict[str, Any]) -> str | None:
-    state = str(context.get("state") or "").strip().lower()
     ready = _boolish(context.get("ready"))
-    if not state and ready is None:
-        return None
-    structure_class = _s12_structure_class(context)
-    if structure_class == "execution_ready":
-        return None
-    return f"s12_state_{state}" if state else "s12_structure_unavailable"
-
-
-def _s12_structure_class(context: dict[str, Any]) -> str:
     state = str(context.get("state") or "").strip().lower()
-    ready = _boolish(context.get("ready"))
-    invalidated = _boolish(context.get("invalidated"))
-    if invalidated is True or state == "invalidated":
-        return "invalidated"
-    if not state or state == "data_unavailable":
-        return "unavailable"
-    if state in {"waiting_session_60m_bearish_risk", "bearish_defense_ready"}:
-        return "risk_blocked"
-    if ready is True and state in {"reaction_ready", "limited_takeover_ready"}:
-        return "execution_ready"
-    return "setup_waiting"
+    if state and state not in {"reaction_ready", "limited_takeover_ready"}:
+        return f"s12_state_{state}"
+    if ready is False:
+        return "s12_ready_false"
+    return None
 
 
-def _mark_nonexecution_ev(
-    ev: dict[str, Any],
-    *,
-    reason: str,
-    context: dict[str, Any],
-    structure_class: str,
-) -> dict[str, Any]:
+def _mark_setup_only_ev(ev: dict[str, Any], *, reason: str, context: dict[str, Any]) -> dict[str, Any]:
     out = dict(ev)
-    out["status"] = "setup_only" if structure_class == "setup_waiting" else structure_class
-    out["structure_class"] = structure_class
+    out["status"] = "setup_only"
     out["trade_expected_return_net_pct"] = None
     out["expected_R"] = None
-    if structure_class == "setup_waiting":
-        out["trade_expected_return_source"] = "s12_structural_setup_cold_start_ev"
-        out["sample_policy"] = "s12_structural_setup_cold_start_no_replay"
-    else:
-        out["trade_expected_return_source"] = (
-            f"s12_structure_{structure_class}_no_trade_ev"
-        )
-        out["sample_policy"] = "s12_structure_nonexecution_no_replay"
+    out["trade_expected_return_source"] = "s12_structural_setup_cold_start_ev"
+    out["sample_policy"] = "s12_structural_setup_cold_start_no_replay"
     out["execution_ready"] = False
     out["execution_gate_required"] = "s12_reaction_or_limited_takeover_ready"
     out["execution_blocked_reason"] = reason
@@ -1213,12 +1184,13 @@ def load_s12_structure_snapshots(
              ORDER BY symbol,
                       CASE WHEN state = 'data_unavailable' THEN 1 ELSE 0 END,
                       CASE source
-                        WHEN 's12_intraday_setup_watch' THEN 0
-                        WHEN 's12_candidate_snapshot' THEN 1
-                        WHEN 's12_candidate_snapshot_reconstruction' THEN 2
-                        WHEN 's12_intraday_structure' THEN 3
-                        WHEN 's12_holding_defense' THEN 4
-                        ELSE 5
+                        WHEN 's12_research_structure_snapshot' THEN 0
+                        WHEN 's12_research_structure_reconstruction' THEN 1
+                        WHEN 's12_candidate_snapshot' THEN 2
+                        WHEN 's12_candidate_snapshot_reconstruction' THEN 3
+                        WHEN 's12_intraday_structure' THEN 4
+                        WHEN 's12_holding_defense' THEN 5
+                        ELSE 6
                       END,
                       datetime(updated_at) DESC,
                       id DESC
@@ -1528,12 +1500,7 @@ class S12TradeEvBootstrapProvider:
             },
         })
         if not_ready_reason:
-            cold = _mark_nonexecution_ev(
-                cold,
-                reason=not_ready_reason,
-                context=s12_entry_context,
-                structure_class=_s12_structure_class(s12_entry_context),
-            )
+            cold = _mark_setup_only_ev(cold, reason=not_ready_reason, context=s12_entry_context)
         return cold
 
     def summary(self) -> dict[str, Any]:

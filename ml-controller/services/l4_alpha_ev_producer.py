@@ -218,14 +218,6 @@ def _feature_value(name: str, row: dict[str, Any], prediction: dict[str, Any] | 
     risk_overlay = alpha.get("risk_overlay") if isinstance(alpha.get("risk_overlay"), dict) else {}
     score_components = _dict_payload(row.get("score_components"))
     final_score = _float_or_none(score_components.get("finalScore") or row.get("score"))
-    s12_payload = row.get("s12_trade_ev") if isinstance(row.get("s12_trade_ev"), dict) else {}
-    s12_context = (
-        s12_payload.get("candidate_s12_entry_context")
-        if isinstance(s12_payload.get("candidate_s12_entry_context"), dict)
-        else {}
-    )
-    if not s12_context and isinstance(s12_payload.get("s12_entry_context"), dict):
-        s12_context = s12_payload["s12_entry_context"]
     values = {
         "score_final_norm": None if final_score is None else final_score / 100.0,
         "ml_edge_norm": None if _component(row, "mlEdge") is None else _component(row, "mlEdge") / 25.0,
@@ -251,11 +243,6 @@ def _feature_value(name: str, row: dict[str, Any], prediction: dict[str, Any] | 
         ),
         "risk_overlay_penalty_norm": (
             None if _float_or_none(risk_overlay.get("penalty")) is None else _float_or_none(risk_overlay.get("penalty")) / 10.0
-        ),
-        "s12_context_multiplier_minus_1": (
-            None
-            if _float_or_none(s12_context.get("reward_confidence_multiplier")) is None
-            else _float_or_none(s12_context.get("reward_confidence_multiplier")) - 1.0
         ),
     }
     values.update(sector_alpha_feature_values({**row, "alpha_context": alpha}))

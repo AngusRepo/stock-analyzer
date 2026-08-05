@@ -336,8 +336,12 @@ export async function reconcileSelectionDecisionEvidenceV4(
     const mlEvidence = parseObject(row.ml_vote_summary)
     const mlEvaluated = Boolean(finalSignal && mlEvidence && Number.isFinite(Number(row.ml_score)))
     const expectedReturnOwner = clean(allocation?.expected_return_owner)
-    const l4OwnerAvailable = ['l4_alpha_ev', 'allocator_ev_fusion'].includes(expectedReturnOwner)
-    const evOwnerAvailable = l4OwnerAvailable || expectedReturnOwner === 's12_trade_ev'
+    const evOwnerAvailable = expectedReturnOwner === 'allocator_ev_fusion'
+    const fusionEvidence = parseObject(allocation?.allocator_ev_fusion)
+    const l4Evidence = parseObject(allocation?.l4_alpha_ev)
+      ?? parseObject(fusionEvidence?.l4_alpha_ev)
+    const l4FeatureAvailable = Boolean(
+      l4Evidence && ['loaded', 'verified'].includes(clean(l4Evidence.status).toLowerCase()))
     const allocationSelected = allocation?.selected === true || Number(allocation?.selected) === 1
     if (mlEvaluated) mlEvaluatedRows++
     if (evOwnerAvailable) evOwnerRows++
@@ -366,7 +370,7 @@ export async function reconcileSelectionDecisionEvidenceV4(
        WHERE signal_date=? AND symbol=? AND producer_run_id=?
     `).bind(
       mlEvaluated ? 1 : 0,
-      l4OwnerAvailable ? 1 : 0,
+      l4FeatureAvailable ? 1 : 0,
       evOwnerAvailable ? 1 : 0,
       allocationSelected ? 1 : 0,
       finalSignal,

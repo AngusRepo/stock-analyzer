@@ -984,10 +984,11 @@ def test_s12_structure_snapshots_merge_into_cold_start_ev():
     assert any("FROM s12_structure_snapshots" in sql for sql in calls)
     snapshot_sql = next(sql for sql in calls if "FROM s12_structure_snapshots" in sql)
     assert "CASE WHEN state = 'data_unavailable' THEN 1 ELSE 0 END" in snapshot_sql
-    assert "WHEN 's12_intraday_setup_watch' THEN 0" in snapshot_sql
-    assert "WHEN 's12_candidate_snapshot' THEN 1" in snapshot_sql
-    assert "WHEN 's12_candidate_snapshot_reconstruction' THEN 2" in snapshot_sql
-    assert "WHEN 's12_intraday_structure' THEN 3" in snapshot_sql
+    assert "WHEN 's12_research_structure_snapshot' THEN 0" in snapshot_sql
+    assert "WHEN 's12_research_structure_reconstruction' THEN 1" in snapshot_sql
+    assert "WHEN 's12_candidate_snapshot' THEN 2" in snapshot_sql
+    assert "WHEN 's12_candidate_snapshot_reconstruction' THEN 3" in snapshot_sql
+    assert "WHEN 's12_intraday_structure' THEN 4" in snapshot_sql
     assert snapshots["8091"]["s12_structure_stop"] == 96
     assert provider.summary()["structure_snapshots"] == 1
     assert ev["status"] == "loaded"
@@ -1097,33 +1098,11 @@ def test_s12_unavailable_structure_snapshot_never_emits_trade_ev():
         "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
     })
 
-    assert ev["status"] == "unavailable"
-    assert ev["structure_class"] == "unavailable"
+    assert ev["status"] == "setup_only"
     assert ev["trade_expected_return_net_pct"] is None
     assert ev["expected_R"] is None
     assert ev["execution_ready"] is False
     assert ev["execution_blocked_reason"] == "s12_state_data_unavailable"
-
-
-def test_s12_bearish_risk_is_not_mislabeled_as_setup_waiting():
-    provider = S12TradeEvBootstrapProvider([], run_date="2026-07-24", min_samples=30, roundtrip_cost_bps=0)
-
-    ev = provider.build_for_row({
-        "symbol": "8091",
-        "current_price": 100,
-        "market_segment": "LISTED",
-        "alpha_context": {"edge_bucket": "breakout", "regime": "bull"},
-        "s12_entry_context": {
-            "state": "waiting_session_60m_bearish_risk",
-            "ready": False,
-            "detail_available": True,
-        },
-    })
-
-    assert ev["status"] == "risk_blocked"
-    assert ev["structure_class"] == "risk_blocked"
-    assert ev["trade_expected_return_net_pct"] is None
-    assert ev["execution_blocked_reason"] == "s12_state_waiting_session_60m_bearish_risk"
 
 
 def test_extract_s12_trade_ev_treats_setup_only_as_unavailable():

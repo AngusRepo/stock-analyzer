@@ -2,6 +2,7 @@ import type { Bindings } from '../types'
 import {
   assessS12IntradayStructureFromBaseBars,
   s12TimingPolicyFromEnv,
+  type S12IntradayAssessment,
 } from './s12IntradayStructure'
 import {
   loadS12HistoricalReplayBars,
@@ -18,11 +19,10 @@ import {
   type S12TwCalibrationArtifact,
 } from './s12TwEquityCalibration'
 import { acquireS12ResearchLease, releaseS12ResearchLease } from './s12ResearchLease'
-import { classifyS12Structure } from './s12StructureTaxonomy'
 
 const M15_MS = 15 * 60_000
 
-export interface S12PipelineSeedSymbol {
+export interface S12ResearchCohortSymbol {
   symbol: string
   name?: string | null
   rank?: number | null
@@ -30,8 +30,8 @@ export interface S12PipelineSeedSymbol {
   stage?: string | null
 }
 
-export interface S12CandidateSnapshotSummary {
-  schema_version: 's12-candidate-structure-snapshot-summary-v3'
+export interface S12ResearchSnapshotSummary {
+  schema_version: 's12-research-structure-snapshot-summary-v1'
   trade_date: string
   source: string
   candidate_count: number
@@ -39,8 +39,6 @@ export interface S12CandidateSnapshotSummary {
   persisted: number
   ready: number
   setup_only: number
-  risk_blocked: number
-  invalidated: number
   unavailable: number
   blocked: number
   skipped: number
@@ -59,12 +57,24 @@ function lastBarEndMs(bars: Array<{ startMs: number }>): number {
   return Number.isFinite(last?.startMs) ? Number(last?.startMs) + M15_MS : Date.now()
 }
 
-export async function loadS12PipelineSeedSymbolsByDate(
+function isSetupOnly(assessment: S12IntradayAssessment): boolean {
+  return [
+    'waiting_sweep',
+    'waiting_choch',
+    'waiting_bos',
+    'waiting_retest',
+    'waiting_reaction',
+    'waiting_1h_demand_zone',
+    'waiting_15m_zone_touch',
+  ].includes(String(assessment.state ?? ''))
+}
+
+export async function loadS12ResearchCohortSymbolsByDate(
   db: D1Database,
   tradeDate: string,
   limit = 1000,
   afterSymbol = '',
-): Promise<S12PipelineSeedSymbol[]> {
+): Promise<S12ResearchCohortSymbol[]> {
   const cappedLimit = Math.max(1, Math.min(2000, Math.floor(limit)))
   const { results } = await db.prepare(`
     SELECT r.symbol, r.name, NULL rank, r.score_v2 score_after, r.selection_stage stage
@@ -78,7 +88,7 @@ export async function loadS12PipelineSeedSymbolsByDate(
        )
      ORDER BY r.symbol
      LIMIT ?
-  `).bind(tradeDate, afterSymbol, cappedLimit + 1).all<S12PipelineSeedSymbol>()
+  `).bind(tradeDate, afterSymbol, cappedLimit + 1).all<S12ResearchCohortSymbol>()
   return (results ?? []).map((row) => ({
     symbol: String(row.symbol ?? '').trim(),
     name: row.name ?? null,
@@ -88,20 +98,19 @@ export async function loadS12PipelineSeedSymbolsByDate(
   })).filter((row) => row.symbol)
 }
 
-export async function runS12CandidateStructureSnapshots(
+export async function runS12ResearchStructureSnapshots(
   env: Bindings,
   tradeDate: string,
   options: {
     limit?: number
-    symbols?: S12PipelineSeedSymbol[]
+    symbols?: S12ResearchCohortSymbol[]
     loadBars?: typeof loadS12HistoricalReplayBars
-    researchTimeoutMs?: number
-    source?: 's12_candidate_snapshot' | 's12_candidate_snapshot_reconstruction'
+    source?: 's12_research_structure_snapshot' | 's12_research_structure_reconstruction'
     pendingRunId?: string
   } = {},
-): Promise<S12CandidateSnapshotSummary> {
-  const snapshotSource = options.source ?? 's12_candidate_snapshot'
-  const leaseRunId = `s12-candidate:${snapshotSource}:${tradeDate}:${crypto.randomUUID()}`
+): Promise<S12ResearchSnapshotSummary> {
+  const snapshotSource = options.source ?? 's12_research_structure_snapshot'
+  const leaseRunId = `s12-research-structure:${snapshotSource}:${tradeDate}:${crypto.randomUUID()}`
   const leaseAcquired = options.loadBars
     ? false
     : await acquireS12ResearchLease(env.DB, leaseRunId, tradeDate)
@@ -109,20 +118,15 @@ export async function runS12CandidateStructureSnapshots(
     throw new Error(`s12_research_lease_busy:${tradeDate}`)
   }
   try {
-  const limit = Math.min(2000, positiveLimit(options.limit ?? (env as any).S12_PREPIPELINE_SNAPSHOT_LIMIT, 1000))
-  const candidates = options.symbols ?? await loadS12PipelineSeedSymbolsByDate(env.DB, tradeDate, limit)
+  const limit = Math.min(2000, positiveLimit(options.limit ?? (env as any).S12_RESEARCH_SNAPSHOT_LIMIT, 1000))
+  const candidates = options.symbols ?? await loadS12ResearchCohortSymbolsByDate(env.DB, tradeDate, limit)
   const selected = candidates.slice(0, limit)
-  const loadBars = options.loadBars ?? ((targetEnv, targetSymbol, targetDate) => (
-    loadS12HistoricalReplayBars(targetEnv, targetSymbol, targetDate, {
-      researchTimeoutMs: options.researchTimeoutMs,
-    })))
+  const loadBars = options.loadBars ?? loadS12HistoricalReplayBars
   const basePolicy = s12TimingPolicyFromEnv(env as any)
   const calibrationArtifacts = await listApprovedS12TwCalibrationArtifacts(env.DB, { includeSuperseded: true }).catch(() => [])
   let persisted = 0
   let ready = 0
   let setupOnly = 0
-  let riskBlocked = 0
-  let invalidated = 0
   let unavailable = 0
   let blocked = 0
   let skipped = 0
@@ -217,30 +221,21 @@ export async function runS12CandidateStructureSnapshots(
         },
       })
       if (ok) persisted += 1
-      const structureClass = classifyS12Structure(assessment)
-      if (structureClass === 'execution_ready') ready += 1
-      else if (structureClass === 'setup_waiting') setupOnly += 1
-      else if (structureClass === 'risk_blocked') {
-        riskBlocked += 1
+      if (assessment.ready) ready += 1
+      else if (isSetupOnly(assessment)) setupOnly += 1
+      else {
         blocked += 1
-        skipped += 1
-      } else if (structureClass === 'invalidated') {
-        invalidated += 1
-        blocked += 1
-        skipped += 1
-      } else {
-        unavailable += 1
         skipped += 1
       }
     } catch (error) {
       errors += 1
       recordSkipReason(error instanceof Error ? error.message : String(error))
-      console.warn(`[S12CandidateSnapshot] ${row.symbol} skipped:`, error instanceof Error ? error.message : String(error))
+      console.warn(`[S12ResearchStructureSnapshot] ${row.symbol} skipped:`, error instanceof Error ? error.message : String(error))
     }
   }
 
   return {
-    schema_version: 's12-candidate-structure-snapshot-summary-v3',
+    schema_version: 's12-research-structure-snapshot-summary-v1',
     trade_date: tradeDate,
     source: snapshotSource,
     candidate_count: candidates.length,
@@ -248,8 +243,6 @@ export async function runS12CandidateStructureSnapshots(
     persisted,
     ready,
     setup_only: setupOnly,
-    risk_blocked: riskBlocked,
-    invalidated,
     unavailable,
     blocked,
     skipped,

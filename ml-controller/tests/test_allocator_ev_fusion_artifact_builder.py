@@ -17,7 +17,6 @@ from services.allocator_ev_fusion_artifact_builder import (  # noqa: E402
     load_allocator_ev_fusion_training_rows,
 )
 from services.allocator_ev_feature_snapshot_backfill import (  # noqa: E402
-    _s12_ev_materialization_kind,
     build_allocator_ev_feature_snapshots_for_date,
     load_allocator_ev_snapshot_candidate_rows,
 )
@@ -29,11 +28,6 @@ from services.l4_alpha_ev_resolver import (  # noqa: E402
 )
 from services.ev_lineage_contract import prediction_timing_blockers  # noqa: E402
 from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION  # noqa: E402
-from services.evidence_contracts import (  # noqa: E402
-    L4_ARTIFACT_CONTRACT_VERSION,
-    L4_FEATURE_SEMANTIC_VERSION,
-    LABEL_SCHEMA_VERSION,
-)
 
 
 def _l4_payload(value: float) -> dict:
@@ -53,37 +47,7 @@ def _l4_payload(value: float) -> dict:
         "trained_until": "2026-01-01",
         "horizon_days": 5,
         "cost_model_bps": 18.0,
-        "output_is_net_of_costs": True,
     }
-
-
-def _oof_l4_payload(value: float, *, prediction_date: str) -> dict:
-    checksum = "a" * 64
-    trained_until = (date.fromisoformat(prediction_date) - timedelta(days=1)).isoformat()
-    payload = _l4_payload(value)
-    payload.update({
-        "artifact_contract_version": L4_ARTIFACT_CONTRACT_VERSION,
-        "feature_snapshot_version": L4_FEATURE_SEMANTIC_VERSION,
-        "label_schema_version": LABEL_SCHEMA_VERSION,
-        "approval_state": "purged_oof_evidence_only",
-        "purged_oof_evidence_only": True,
-        "generation_mode": "purged_oof",
-        "cohort_id": "cohort-v7",
-        "fold_id": "w4",
-        "source_manifest_checksum": checksum,
-        "trained_until": trained_until,
-        "point_in_time_prediction_lineage": {
-            "schema_version": "l4-point-in-time-prediction-lineage-v1",
-            "as_of_guard": "label_known_date_strictly_before_prediction_date",
-            "cohort_id": "cohort-v7",
-            "fold_id": "w4",
-            "prediction_date": prediction_date,
-            "trained_until": trained_until,
-            "source_manifest_checksum": checksum,
-            "feature_semantic_version": L4_FEATURE_SEMANTIC_VERSION,
-        },
-    })
-    return payload
 
 
 def _ensemble_forecast(avg_rank: float = 0.65, confidence: float = 0.72) -> str:
@@ -172,17 +136,6 @@ def _row(day: str, idx: int) -> dict:
         "s12_replay_status": "executed" if replay_executed else "not_triggered",
         "alpha_context": json.dumps({
             "market_heat_expected_return": 0.003 + (idx % 5) * 0.0005,
-            "pit_sector_alpha_expert": {
-                "status": "loaded",
-                "point_in_time": True,
-                "signal_date": day,
-                "source_date": day,
-                "features": {
-                    "sector_alpha_available": 1.0,
-                    "sector_rs_consensus": max(-1.0, min(1.0, l4 * 50.0)),
-                    "sector_momentum_consensus": max(-1.0, min(1.0, s12 * 50.0)),
-                },
-            },
             "market_regime_context": {
                 "schema_version": "fusion-market-context-pit-v1",
                 "signal_date": day,
@@ -229,45 +182,41 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["primary_expected_return_allowed"] is True
     assert artifact["validation_packet"]["decision"] == "PASS"
     packet = artifact["validation_packet"]
-    assert packet["schema_version"] == "allocator-ev-fusion-validation-packet-v13"
+    assert packet["schema_version"] == "allocator-ev-fusion-validation-packet-v14"
     assert set(packet["gate_layers"]) == {
-        "evidence_accrual", "data_validity", "forecast_skill", "statistical_validity", "economic_utility"
+        "data_validity", "forecast_skill", "statistical_validity", "economic_utility"
     }
-    assert packet["gate_layers"]["evidence_accrual"]["decision"] == "READY"
-    assert packet["maturity_policy"]["operational_split_guardrails"]["interpretation"] == (
-        "operational_evaluation_floor_not_statistical_proof_or_industry_constant"
-    )
     assert packet["gate_layers"]["forecast_skill"]["primary_probability_score"] == (
         "date_clustered_log_loss_advantage_lcb90"
     )
     assert packet["validation_scope"]["effective_sample_unit"] == "prediction_date"
     assert artifact["validation_packet"]["sample_audit"]["l4_available_count"] > 0
-    assert artifact["validation_packet"]["sample_audit"]["s12_structure_available_count"] > 0
+    assert artifact["validation_packet"]["sample_audit"]["candidate_time_s12_feature_count"] == 0
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
     assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v13"
     assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v13"
     assert artifact["validation_packet"]["validation_scope"]["selection_target"] == (
         "same_date_cross_section_residual_of_five_session_net_return"
     )
-    assert artifact["resolver_method"] == "sector_market_conditioned_cross_fitted_rank_two_part_trade_ev_fusion"
-    assert "l4_expected_return" in artifact["coefficients"]
-    assert "s12_trade_expected_return" in artifact["coefficients"]
-    assert artifact["coefficients"]["l4_expected_return"] != 0
-    assert artifact["selection_model"]["decision"] == "PASS"
-    assert artifact["selection_model"]["target"] == "selection_rank_target"
-    assert artifact["selection_model"]["calibration_target"] == "selection_target"
-    assert artifact["selection_model"]["rank_model"]
-    assert artifact["selection_model"]["calibration_model"]["method"] == "expanding_window_oof_rank_score_linear_ev_calibration"
-    assert artifact["execution_model"]["decision"] == "PASS"
+    assert artifact["resolver_method"] == "day_t_causal_s12_policy_value_hurdle_fusion"
+    assert artifact["policy_value_head_count"] == 2
+    assert artifact["policy_value_heads"] == [
+        "execution_probability_model", "conditional_execution_return_model"
+    ]
+    assert "coefficients" not in artifact
+    assert "selection_model" not in artifact
+    selection_diagnostic = artifact["validation_packet"]["selection_diagnostic_model_not_served"]
+    assert selection_diagnostic["decision"] == "PASS"
+    assert selection_diagnostic["target"] == "selection_rank_target"
+    assert selection_diagnostic["calibration_target"] == "selection_target"
+    assert artifact["conditional_execution_return_model"]["decision"] == "PASS"
     assert artifact["execution_probability_model"]["decision"] == "PASS"
-    assert artifact["execution_model"]["coefficients"]["s12_trade_expected_return"] != 0
+    assert all(not name.startswith("s12_") for name in artifact["conditional_execution_return_model"]["coefficients"])
     assert artifact["validation_packet"]["champion_comparison"]["decision"] == "PASS"
     assert artifact["validation_packet"]["champion_comparison"]["top_trade_ev_lcb90"] > 0
     assert artifact["validation_packet"]["sample_audit"]["market_context_available_coverage"] == 1.0
-    assert artifact["validation_packet"]["sample_audit"]["sector_alpha_available_coverage"] == 1.0
     assert "market_return_5d" in artifact["feature_names"]
     assert "l4_defensive_regime_interaction" in artifact["feature_names"]
-    assert "sector_rs_consensus" in artifact["feature_names"]
 
 def test_allocator_ev_fusion_multiple_testing_fails_closed_without_corrected_evidence():
     rows = [
@@ -378,45 +327,6 @@ def test_fusion_purged_oof_uses_snapshot_date_and_recorded_market_lineage():
     assert audit["invalid_reason_counts"] == {}
 
 
-def test_fusion_purged_oof_accepts_current_l4_contract_and_audits_rejections():
-    row = _row("2026-05-01", 1)
-    row["generation_mode"] = "purged_oof"
-    row["label_adjustment_source"] = "canonical_market_daily:finlab.price"
-    forecast = json.loads(row["forecast_data"])
-    forecast["ensemble_v2"].update({
-        "generation_mode": "purged_oof",
-        "semantic_version": "active8-purged-oof-chronological-ridge-v3",
-    })
-    row["forecast_data"] = json.dumps(forecast)
-    allocation = json.loads(row["alpha_allocation"])
-    allocation["l4_alpha_ev"] = _oof_l4_payload(0.012, prediction_date="2026-05-01")
-    row["alpha_allocation"] = json.dumps(allocation)
-
-    samples, audit = _samples([row], min_cross_section_samples_per_date=1)
-    assert samples[0]["features"]["l4_available"] == 1.0
-    assert samples[0]["features"]["l4_expected_return"] == 0.012
-    assert audit["l4_resolver_blocker_counts"] == {}
-
-    rejected_payload = _oof_l4_payload(0.012, prediction_date="2026-05-01")
-    rejected_payload["feature_snapshot_version"] = "legacy-incompatible-feature"
-    rejected_row = {
-        **row,
-        "alpha_allocation": json.dumps({
-            **allocation,
-            "l4_alpha_ev": rejected_payload,
-        }),
-    }
-    rejected_samples, rejected_audit = _samples(
-        [rejected_row],
-        min_cross_section_samples_per_date=1,
-    )
-    assert rejected_samples[0]["features"]["l4_available"] == 0.0
-    assert rejected_audit["l4_resolver_blocker_counts"] == {
-        "production_approval_missing": 1,
-        "purged_oof_feature_semantic_version_incompatible": 1,
-    }
-
-
 def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_samples():
     rows = [_row("2026-05-01", idx) for idx in range(10)]
 
@@ -433,21 +343,10 @@ def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_sampl
     assert artifact["promotion_tier"] == "shadow"
     assert artifact["primary_expected_return_allowed"] is False
     assert artifact["validation_packet"]["decision"] == "FAIL"
-    assert artifact["maturity_policy"]["state"] == "evidence_accruing"
-    assert artifact["maturity_policy"]["recommendation_continuity"] == {
-        "shadow_or_assistive_fusion_can_suppress_buy": False,
-        "canonical_expected_return_owner_retained_until_primary": True,
-        "candidate_drop_allowed": False,
-        "minimum_fill_allowed": False,
-        "top_k_truncation_allowed": False,
-    }
-    assert artifact["validation_packet"]["gate_layers"]["data_validity"]["decision"] == "PASS"
-    assert artifact["validation_packet"]["gate_layers"]["evidence_accrual"]["decision"] == "ACCRUING"
-    assert "evidence_accrual:date_count_below_assistive_evaluation_floor" in artifact["validation_packet"]["failed_gates"]
     assert "selection:insufficient_samples" in artifact["validation_packet"]["failed_gates"]
 
 
-def test_allocator_ev_fusion_assistive_learning_tier_is_reachable_without_ev_ownership():
+def test_allocator_ev_fusion_stays_shadow_until_primary_evidence_floor():
     rows = [
         _row(f"2026-06-{day_idx + 1:02d}", symbol_idx)
         for day_idx in range(20)
@@ -464,10 +363,8 @@ def test_allocator_ev_fusion_assistive_learning_tier_is_reachable_without_ev_own
 
     artifact = out["artifact"]
     assert out["status"] == "ok"
-    assert artifact["promotion_tier"] == "assistive"
-    assert artifact["promotion_state"] == "production_assistive"
-    assert artifact["assistive_learning_signal_allowed"] is True
-    assert artifact["assistive_expected_return_allowed"] is False
+    assert artifact["promotion_tier"] == "shadow"
+    assert artifact["promotion_state"] == "shadow"
     assert artifact["primary_expected_return_allowed"] is False
     assert artifact["validation_packet"]["decision"] == "PASS"
     assert "primary_insufficient_dates" in artifact["promotion_blockers"]
@@ -532,24 +429,14 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     assert rows == []
     assert len(observed) == 1
     assert "allocator_ev_feature_snapshots fs" in observed[0]["sql"]
-    assert "LEFT JOIN predictions p" in observed[0]["sql"]
-    assert "date(fs.snapshot_date) AS prediction_date" in observed[0]["sql"]
-    assert "ph.stock_id = fs.stock_id" in observed[0]["sql"]
-    assert "ph.price_date = date(fs.snapshot_date)" in observed[0]["sql"]
-    assert "date(p.prediction_date) AS prediction_date" not in observed[0]["sql"]
-    assert "ph.stock_id = p.stock_id" not in observed[0]["sql"]
-    assert "ORDER BY date(fs.snapshot_date)" in observed[0]["sql"]
     assert "s12_replay_trade_outcomes" in observed[0]["sql"]
     assert "AS s12_replay_pnl_pct" in observed[0]["sql"]
     assert "fs.snapshot_source = ?" in observed[0]["sql"]
     assert "fs.as_of_guard = ?" in observed[0]["sql"]
-    assert "LEFT JOIN allocator_ev_snapshot_runs snapshot_run" in observed[0]["sql"]
-    assert "snapshot_run.native_lineage_rows AS snapshot_revalidation_native_lineage_rows" in observed[0]["sql"]
-    assert "snapshot_run.reconstructed_lineage_rows AS snapshot_revalidation_reconstructed_lineage_rows" in observed[0]["sql"]
     assert "replay_diagnostics.outcome_known_date" in observed[0]["sql"]
     assert "AS l4_executable_return_pct" in observed[0]["sql"]
     assert "price_horizon_labels_v1" in observed[0]["sql"]
-    assert "projection_version = 'price_horizon_v3_canonical_reference_identity'" in observed[0]["sql"]
+    assert "projection_version = 'price_horizon_v1'" in observed[0]["sql"]
     assert "LEAD(" not in observed[0]["sql"]
     assert "ph.exit_raw_close * ph.exit_adjustment_factor" in observed[0]["sql"]
     assert "ph.entry_raw_open * ph.entry_adjustment_factor" in observed[0]["sql"]
@@ -596,15 +483,12 @@ def test_snapshot_candidate_query_avoids_correlated_evidence_lookups():
     assert "selection_reference_snapshots_v1" in captured["sql"]
     assert "canonical_run_heads" in captured["sql"]
     assert "reference_feature_rejection_reason" in captured["sql"]
+    assert "COALESCE(dr.score_components, r.score_components)" in captured["sql"]
     assert "r.feature_available" in captured["sql"]
     assert "FROM daily_recommendations dr" in captured["sql"]
     assert "JOIN canonical_reference r" in captured["sql"]
     assert "FROM canonical_reference r" not in captured["sql"]
-    assert "r.score_components score_components" in captured["sql"]
-    assert "WHERE r.score_components IS NOT NULL" in captured["sql"]
-    assert "json_extract(r.score_components, '$.version')='score_v2'" in captured["sql"]
-    assert "COALESCE(dr.score_components, r.score_components)" not in captured["sql"]
-    assert "json_extract(dr.score_components, '$.version')='score_v2'" not in captured["sql"]
+    assert "json_extract(dr.score_components, '$.version')='score_v2'" in captured["sql"]
     assert captured["params"] == [
         "2026-06-18",
         None,
@@ -722,8 +606,7 @@ def test_snapshot_candidate_query_accepts_calendar_next_session_without_future_c
         limit=200,
     )
 
-    assert "SELECT COALESCE(" in captured["sql"]
-    assert "r.score_components score_components" in captured["sql"]
+    assert "COALESCE" in captured["sql"]
     assert captured["params"][:2] == ["2026-07-14", "2026-07-15"]
 
 
@@ -742,10 +625,6 @@ def test_20260714_prediction_timestamp_is_before_20260715_market_open():
     }) == ["prediction_generated_at_not_before_next_session_open"]
 
 
-def test_s12_ev_materialization_kind_does_not_report_cold_as_direct():
-    assert _s12_ev_materialization_kind(0.01, "s12_replay_trade_outcomes:market_segment") == "replay_direct"
-    assert _s12_ev_materialization_kind(-0.01, "s12_structural_cold_start_ev") == "structural_cold"
-    assert _s12_ev_materialization_kind(None, "s12_replay_trade_outcomes:symbol") == "unavailable"
 
 
 def test_allocator_fusion_rejects_unproven_adjustment_factor_lineage():
@@ -756,78 +635,6 @@ def test_allocator_fusion_rejects_unproven_adjustment_factor_lineage():
 
     assert samples == []
     assert audit["adjustment_lineage_counts"] == {"missing": 1}
-
-
-
-def test_fusion_snapshot_lineage_accepts_native_ledger_revalidation_and_quarantines_reconstructed():
-    row = _row("2026-07-20", 1)
-    forecast = json.loads(row["forecast_data"])
-    target_semantic = forecast["ensemble_v2"].pop("target_semantic_version")
-    forecast["model_score_lineage"] = {"target_semantic_version": target_semantic}
-    row["forecast_data"] = json.dumps(forecast)
-    row.update({
-        "allocator_ev_feature_snapshot_source": SNAPSHOT_BACKFILL_SOURCE,
-        "allocator_ev_feature_snapshot_guard": SNAPSHOT_BACKFILL_AS_OF_GUARD,
-        "snapshot_generation_mode": "native",
-        "snapshot_revalidation_run_id": "allocator-snapshot-20260720-native",
-        "snapshot_revalidation_status": "ready",
-        "snapshot_revalidation_expected_rows": 1,
-        "snapshot_revalidation_published_rows": 1,
-        "snapshot_revalidation_native_lineage_rows": 1,
-        "snapshot_revalidation_reconstructed_lineage_rows": 0,
-        "snapshot_revalidation_rejected_lineage_rows": 0,
-        "snapshot_revalidation_error_code": None,
-    })
-
-    samples, audit = _samples([row], min_cross_section_samples_per_date=1)
-
-    assert len(samples) == 1
-    assert audit["snapshot_lineage_blocker_counts"] == {}
-    assert audit["snapshot_lineage_receipts"] == [{
-        "schema_version": "allocator-ev-snapshot-lineage-receipt-v1",
-        "status": "verified",
-        "receipt_source": "allocator_snapshot_ledger_revalidation_v1",
-        "snapshot_date": "2026-07-20",
-        "lineage_cohort_id": "allocator-snapshot-20260720-native",
-        "generation_mode": "native",
-        "model_set_signature": "LightGBM@vTest|XGBoost@vTest",
-        "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
-        "revalidation_run_id": "allocator-snapshot-20260720-native",
-        "point_in_time_only": True,
-    }]
-
-    reconstructed = {
-        **row,
-        "snapshot_revalidation_native_lineage_rows": 0,
-        "snapshot_revalidation_reconstructed_lineage_rows": 1,
-    }
-    rejected, rejected_audit = _samples(
-        [reconstructed],
-        min_cross_section_samples_per_date=1,
-    )
-    assert rejected == []
-    assert rejected_audit["invalid_reason_counts"] == {"snapshot_lineage_unverified": 1}
-    assert rejected_audit["snapshot_lineage_blocker_counts"] == {
-        "snapshot_native_lineage_receipt_missing": 1,
-    }
-
-
-def test_fusion_snapshot_lineage_accepts_recorded_receipt_without_legacy_run():
-    row = _row("2026-07-22", 1)
-    row.update({
-        "allocator_ev_feature_snapshot_source": SNAPSHOT_BACKFILL_SOURCE,
-        "allocator_ev_feature_snapshot_guard": SNAPSHOT_BACKFILL_AS_OF_GUARD,
-        "snapshot_lineage_cohort_id": "pipeline-v2:2026-07-22",
-        "snapshot_generation_mode": "native",
-        "snapshot_model_set_signature": "LightGBM@vTest|XGBoost@vTest",
-        "snapshot_target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
-    })
-
-    samples, audit = _samples([row], min_cross_section_samples_per_date=1)
-
-    assert len(samples) == 1
-    assert audit["snapshot_lineage_receipts"][0]["receipt_source"] == "recorded_snapshot_lineage_v1"
-    assert audit["snapshot_lineage_receipts"][0]["lineage_cohort_id"] == "pipeline-v2:2026-07-22"
 
 
 def test_load_allocator_ev_fusion_training_rows_prefers_asof_snapshot_rows():
@@ -886,18 +693,6 @@ def test_load_allocator_ev_fusion_training_rows_falls_back_when_snapshot_table_m
     rows = load_allocator_ev_fusion_training_rows(query_fn, end_date="2026-07-07", lookback_days=45, limit=123)
 
     assert rows == [daily_row]
-
-
-def test_load_allocator_ev_fusion_training_rows_does_not_hide_snapshot_query_errors():
-    def query_fn(sql: str, _params: list[object]) -> list[dict]:
-        if "allocator_ev_feature_snapshots fs" in sql:
-            raise RuntimeError("no such column: allocator_ev_feature_snapshots.invalid_lineage")
-        return []
-
-    with pytest.raises(RuntimeError, match="no such column"):
-        load_allocator_ev_fusion_training_rows(
-            query_fn, end_date="2026-07-07", lookback_days=45, limit=123
-        )
 
 
 def test_allocator_ev_fusion_feature_vector_accepts_backfill_only_l4_under_canonical_guard():
@@ -1158,7 +953,7 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
     assert result["snapshots_built"] == 1
     assert result["l4_usage_mode"] == "not_fit_eligible"
     assert result["reused_l4_payloads"] == 1
-    assert result["reused_s12_payloads"] == 0
+    assert result["candidate_time_s12_feature_count"] == 0
     assert result["skip_reasons"] == {}
 
 
@@ -1220,7 +1015,6 @@ def test_allocator_ev_feature_snapshot_backfill_keeps_raw_features_when_l4_canno
     assert result["l4_usage_mode"] == "not_fit_eligible"
     assert result["snapshots_built"] == 1
     assert result["snapshots_without_l4"] == 1
-    assert result["l4_materialization_blockers"] == {"materializer_returned_none": 1}
     allocation = json.loads(written[1][1][8])
     assert "l4_alpha_ev" not in allocation
     assert allocation["snapshot_l4_available"] is False
@@ -1323,7 +1117,7 @@ def test_allocator_ev_feature_snapshot_backfill_recomputes_opaque_s12_payload():
         dry_run=True,
     )
 
-    assert result["reused_s12_payloads"] == 0
+    assert result["candidate_time_s12_feature_count"] == 0
 
 
 def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload_as_unavailable_feature():
@@ -1379,7 +1173,7 @@ def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload
     audit = out["artifact"]["validation_packet"]["sample_audit"]
     assert audit["sample_count"] == len(rows)
     assert audit["missing_feature_rows"] == 0
-    assert audit["s12_available_count"] < len(rows)
+    assert audit["candidate_time_s12_feature_count"] == 0
 
 
 def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_missing():
@@ -1409,8 +1203,8 @@ def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_miss
 
     assert audit["sample_count"] == 1
     assert samples[0]["features"]["l4_available"] == 0.0
-    assert samples[0]["features"]["s12_available"] == 0.0
-    assert samples[0]["features"]["s12_execution_ready"] == 0.0
+    assert all(not name.startswith("s12_") for name in samples[0]["features"])
+    assert audit["candidate_time_s12_feature_count"] == 0
     assert samples[0]["features"]["score_v2_available"] == 1.0
     assert samples[0]["execution_target"] is None
 
@@ -1478,10 +1272,9 @@ def test_execution_replay_label_is_kept_when_prior_s12_ev_was_unavailable():
 
     samples, audit = _samples([row], execution_cost_bps=18.0, min_cross_section_samples_per_date=1)
 
-    assert audit["s12_available_count"] == 0
+    assert audit["candidate_time_s12_feature_count"] == 0
     assert audit["execution_sample_count"] == 1
-    assert samples[0]["features"]["s12_available"] == 0.0
-    assert samples[0]["features"]["s12_execution_ready"] == 0.0
+    assert all(not name.startswith("s12_") for name in samples[0]["features"])
     assert samples[0]["execution_target"] == pytest.approx(0.0132)
     assert samples[0]["realized_trade_ev_target"] == pytest.approx(0.0132)
     assert samples[0]["execution_probability_target"] == 1.0

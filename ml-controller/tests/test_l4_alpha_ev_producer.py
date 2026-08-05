@@ -355,7 +355,7 @@ def test_materialize_l4_alpha_ev_rejects_s12_context_in_selection_owner():
     assert "canonical_feature_set_mismatch" in payload["blockers"]
 
 
-def test_filter_and_score_materializes_l4_alpha_ev_for_allocator(monkeypatch):
+def test_filter_and_score_keeps_l4_as_upstream_evidence_without_fusion_owner(monkeypatch):
     monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     screener_rec = {
         "id": 1,
@@ -394,8 +394,8 @@ def test_filter_and_score_materializes_l4_alpha_ev_for_allocator(monkeypatch):
     assert final[0]["l4_alpha_ev"]["status"] == "loaded"
     assert prediction["l4_alpha_ev"]["status"] == "loaded"
     assert prediction["ensemble_v2"]["l4_alpha_ev"]["status"] == "loaded"
-    assert promoted[0]["alpha_allocation"]["expected_return_owner"] == "l4_alpha_ev"
-    assert promoted[0]["alpha_allocation"]["expected_return"] > 0
+    assert promoted[0]["alpha_allocation"]["expected_return_owner"] == "risk_abstention"
+    assert promoted[0]["alpha_allocation"]["expected_return"] == 0
     assert promoted[0]["alpha_allocation"]["l4_alpha_ev"]["status"] == "loaded"
 
 

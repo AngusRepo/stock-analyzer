@@ -1,4 +1,4 @@
-import type { EvidenceArtifactReader, EvidenceArtifactWriter } from './lib/evidenceArtifactContract'
+import type { EvidenceArtifactWriter } from './lib/evidenceArtifactContract'
 
 export type R2Bucket = any
 
@@ -21,7 +21,6 @@ export type Bindings = {
   KV: KVNamespace
   ARTIFACTS?: R2Bucket
   EVIDENCE_ARTIFACT_WRITER?: EvidenceArtifactWriter
-  EVIDENCE_ARTIFACT_READER?: EvidenceArtifactReader
   JWT_SECRET: string
   GOOGLE_CLIENT_ID: string
   GOOGLE_CLIENT_SECRET: string
@@ -53,8 +52,6 @@ export type Bindings = {
   PAGES_ORIGIN?: string
   // AI Team 服務間共享 token（Paper Trading auth）
   STOCKVISION_AUTH_TOKEN?: string
-  // Temporary overlap only for coordinated zero-downtime service-token rotation.
-  STOCKVISION_AUTH_TOKEN_PREVIOUS?: string
   // Dedicated least-privilege token for Pymoo D1 gateway and terminal callback.
   STRATEGY_MINING_CALLBACK_TOKEN?: string
   // Discord Webhook URL（Paper Trading 事件推送）
@@ -66,7 +63,6 @@ export type Bindings = {
   // Shioaji 即時報價 Proxy（Cloud Run）
   SHIOAJI_PROXY_URL?: string
   S12_RESEARCH_KBARS_URL?: string
-  S12_DURABLE_STRUCTURE_JOB_ENABLED?: string
   PROXY_SERVICE_TOKEN?: string
   DAILY_PRICE_SOURCE?: string
   FINLAB_DAILY_PRICE_PRIMARY_ENABLED?: string
@@ -324,8 +320,6 @@ export interface UpdateQueueMsg {
     | 'finalize_update'
     | 'post_screener_pipeline'
     | 's12_candidate_snapshot_chunk'
-    | 's12_structure_batch_complete'
-    | 's12_intraday_setup_watch_complete'
     | 'news_batch'
     | 'source_readiness_retry'
     | 'finlab_backfill_complete'
@@ -352,7 +346,6 @@ export interface UpdateQueueMsg {
   shardIndex?: number // 多 shard 平行更新時的 shard index
   shardCount?: number // 多 shard 平行更新時的總 shard 數
   attempt?: number    // finalize watchdog retry count
-  continuationAttempt?: number // durable finalizer continuation retry count
   leaseRetryAttempt?: number // bounded deferred retry for serialized S12 research traffic
   maintenanceTask?:
     | 'legacy-evidence-migration'

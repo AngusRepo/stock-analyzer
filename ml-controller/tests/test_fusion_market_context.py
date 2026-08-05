@@ -51,12 +51,11 @@ def test_runtime_context_uses_exact_signal_date_history_and_interactions():
         market_segment="LISTED",
     )
     row = {"prediction_date": "2026-07-22", "market_regime_context": context}
-    values = market_context_feature_values(row, l4_value=0.02, s12_value=0.01)
+    values = market_context_feature_values(row, l4_value=0.02)
 
     assert context["market_context_available"] is True
     assert values["regime_defensive_probability"] == pytest.approx(0.90)
     assert values["l4_defensive_regime_interaction"] == pytest.approx(0.018)
-    assert values["s12_defensive_regime_interaction"] == pytest.approx(0.009)
     assert values["market_breadth_balance"] == pytest.approx(-0.56)
 
 

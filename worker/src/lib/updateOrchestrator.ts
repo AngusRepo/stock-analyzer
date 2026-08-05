@@ -9,26 +9,20 @@ import { computeAndStoreIndicators } from './technicalIndicators'
 import { fetchAndStoreStockData } from '../routes/stocks'
 import { assertMarketDataReady, loadMarketDataReadinessStats } from './marketDataReadiness'
 import { runRegimeCompute } from './controllerDailyWorkflows'
-import { readMarketRegimeState } from './marketRegimeState'
 import {
+  runAllocatorEvFusionRefresh,
   runAllocatorEvFeatureSnapshotBackfill,
   runFinLabV4Backfill,
+  runL4AlphaEvRefresh,
   runOpbArmPriorRefresh,
 } from './controllerResearchWorkflows'
 import { runOfficialMarketSummaryRefresh } from './officialMarketSummaryRefresh'
 import { enqueuePostScreenerPipelineContinuation } from './postScreenerContinuation'
-import {
-  claimPipelineStage,
-  enqueuePipelineStage,
-  markPipelineStage,
-} from './pipelineStageLease'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
-import { refreshExpectedReturnServingState } from './expectedReturnServingState'
 import {
-  resolveEveningChainClosureDurationMs,
-  resolveEveningChainRunAuthority,
-} from './eveningChainRunAuthority'
-import { inspectExpectedReturnLifecycleHealth } from './expectedReturnServingRegistry'
+  readCurrentExpectedReturnServingState,
+  refreshExpectedReturnServingState,
+} from './expectedReturnServingState'
 import { fetchPunishedStocks } from './twseApi'
 import {
   finLabCanonicalDatasetsForLane,
@@ -37,16 +31,13 @@ import {
   finLabSentinelFieldForLane,
 } from './finlabSourceContract'
 
-import { triggerPendingS12FormalEv } from './s12FormalEvTrigger'
 const UPDATE_BATCH_SIZE = 40
 const UPDATE_SHARD_COUNT = 4
 const INDICATOR_BATCH_CONCURRENCY = 4
 const NEWS_BATCH_CONCURRENCY = 2
 const FINALIZE_RECHECK_DELAY_MS = 30_000
 const FINALIZE_RECHECK_MAX_ATTEMPTS = 10
-const FINALIZE_LEASE_TTL_MS = 20 * 60_000
-const FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS = 2 * 60
-const FINALIZE_CONTINUATION_MAX_ATTEMPTS = 45
+const FINALIZE_ORPHAN_REPAIR_DELAY_MS = 2 * 60_000
 const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
 const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
 const SOURCE_READINESS_FINLAB_REFRESH_COOLDOWN_SECONDS = 45 * 60
@@ -54,8 +45,6 @@ const FINLAB_PENDING_WATCHDOG_STALE_MS = 15 * 60_000
 const FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS = 3
 const STRATEGY_LEARNING_QUEUE_CHUNK_SIZE = 80
 const S12_REPLAY_QUEUE_CHUNK_SIZE = 20
-const S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE = 1
-const S12_CANDIDATE_SNAPSHOT_RESEARCH_TIMEOUT_MS = 10_000
 const S12_REPLAY_LEASE_RETRY_BASE_DELAY_SECONDS = 60
 const S12_REPLAY_LEASE_RETRY_MAX_DELAY_SECONDS = 180
 const S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS = 60
@@ -1587,112 +1576,22 @@ export async function runQueueUpdate(env: Bindings, runDate?: string, force = fa
   }
 }
 
-async function ensureSameDateRegimeReady(
-  env: Bindings,
-  triggerTime: string,
-  runId: string | undefined,
-  source: string,
-): Promise<string> {
-  const current = await readMarketRegimeState(env.KV)
-  if (current?.source === 'hmm' && current.run_date === triggerTime) {
-    return `regime=${current.label} idx=${current.regime_index} kv=verified source=existing`
-  }
-
-  const attemptId = `${source}:${Date.now().toString(36)}:${crypto.randomUUID()}`
-  await logSchedulerResult(env.KV, 'regime-compute', {
-    status: 'running',
-    summary: `pre-screener regime-compute started for ${triggerTime}; run_id=${runId ?? 'n/a'}; source=${source}`,
-    duration_ms: 0,
-    run_id: runId,
-    attempt_id: attemptId,
-    run_date: triggerTime,
-  })
-  const startedAt = Date.now()
-  try {
-    const summary = String(await runRegimeCompute(env, triggerTime))
-    await logSchedulerResult(env.KV, 'regime-compute', {
-      status: 'success',
-      summary: `pre-screener ${summary}; source=${source}`,
-      duration_ms: Date.now() - startedAt,
-      run_id: runId,
-      attempt_id: attemptId,
-      run_date: triggerTime,
-    })
-    return summary
-  } catch (error) {
-    await logSchedulerResult(env.KV, 'regime-compute', {
-      status: 'error',
-      summary: `pre-screener regime-compute failed for ${triggerTime}; source=${source}`,
-      duration_ms: Date.now() - startedAt,
-      error: error instanceof Error ? error.message : String(error),
-      run_id: runId,
-      attempt_id: attemptId,
-      run_date: triggerTime,
-    })
-    throw error
-  }
-}
 async function finalizeUpdateChain(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
   triggerTime: string,
   runId: string,
   shardCount: number,
-  continuationAttempt = 1,
 ): Promise<void> {
-  const readiness = await checkEveningChainSourceReadiness(env, triggerTime)
-  if (!readiness.ok) {
-    await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, `canonical source not ready: ${readiness.summary}`)
-    return
-  }
-
   const finalKey = `cron:indicator-queue:${triggerTime}:${runId}:finalized`
-  if (await env.KV.get(finalKey)) {
-    console.log(`[Queue] Finalize continuation already closed for ${triggerTime} ${runId}`)
+  const acquired = await acquireFinalizeLock(env, triggerTime, runId)
+  if (!acquired) {
+    console.log(`[Queue] Finalize already acquired for ${triggerTime} ${runId}`)
+    await repairFinalizeContinuationIfNeeded(env, deps, triggerTime, runId, shardCount)
     return
   }
-  try {
-    const leaseOwner = await acquireFinalizeLock(env, triggerTime, runId)
-    if (!leaseOwner) {
-      console.log(`[Queue] Finalize already acquired for ${triggerTime} ${runId}`)
-      const repaired = await repairFinalizeContinuationIfNeeded(env, deps, triggerTime, runId, shardCount)
-      if (!repaired) {
-        await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, 'finalizer lease is still owned by the original continuation')
-      }
-      return
-    }
-    await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'lock-acquired', leaseOwner)
-    await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
-  } catch (error) {
-    await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, error instanceof Error ? error.message : String(error))
-  }
-}
-
-async function deferFinalizeContinuation(
-  env: Bindings,
-  triggerTime: string,
-  runId: string,
-  shardCount: number,
-  continuationAttempt: number,
-  reason: string,
-): Promise<void> {
-  if (continuationAttempt >= FINALIZE_CONTINUATION_MAX_ATTEMPTS) {
-    await logSchedulerResult(env.KV, 'evening-chain', {
-      status: 'error',
-      summary: `indicator finalizer continuation exhausted for ${triggerTime}; run_id=${runId}`,
-      duration_ms: 0, error: reason, run_id: runId, run_date: triggerTime,
-    })
-    throw new Error(`indicator finalizer continuation exhausted: ${reason}`)
-  }
-  await logSchedulerResult(env.KV, 'evening-chain', {
-    status: 'running',
-    summary: `indicator finalizer deferred for ${triggerTime}; run_id=${runId}; continuation_attempt=${continuationAttempt}; reason=${reason}`,
-    duration_ms: 0, run_id: runId, run_date: triggerTime,
-  })
-  await env.UPDATE_QUEUE.send({
-    type: 'finalize_update', cursor: 0, triggerTime, runId, shardCount, attempt: 1,
-    continuationAttempt: continuationAttempt + 1,
-  }, { delaySeconds: FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS } as any)
+  await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
+  await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'lock-acquired')
 }
 
 export async function refreshMatureStrategyEvidenceBeforeScreener(
@@ -1702,18 +1601,13 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
 ): Promise<string> {
   const startedAt = Date.now()
   try {
-    const { recoverMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
     const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
     const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
     const { refreshStrategyRewardLedger } = await import('./strategyLearning')
-    const recovery = await recoverMatureSelectionEvidence(env, asOfDate, {
-      maxRecoveryDates: 4,
-    })
     const labels = await materializeCanonicalSelectionLabelsV4(env.DB, { asOfDate })
     const marginalEdge = await refreshStrategyMarginalEdgeV4(env.DB, asOfDate)
     const rewards = await refreshStrategyRewardLedger(env.DB, { endDate: asOfDate, dryRun: false })
     const summary = [
-      `mature_recovery=${recovery.summary}`,
       `labels=${labels.persisted_rows}`,
       `pending=${labels.pending_rows}`,
       `unavailable=${labels.unavailable_rows}`,
@@ -1748,9 +1642,7 @@ async function runFinalizeContinuation(
   runId: string,
   shardCount: number,
   source: string,
-  leaseOwner: string,
 ): Promise<void> {
-  await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
   console.log('[Queue] All shards done. Running alert check and event-driven pipeline...')
   await logSchedulerResult(env.KV, 'indicator-queue', {
     status: 'success',
@@ -1776,13 +1668,8 @@ async function runFinalizeContinuation(
     console.warn('[Queue] Dataset manifest write failed:', e)
   }
   await checkAlerts(env)
-  await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
   const matureStrategyEvidence = await refreshMatureStrategyEvidenceBeforeScreener(env, triggerTime, runId)
   console.log(`[Queue] Mature strategy evidence refreshed before screener: ${matureStrategyEvidence}`)
-  await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
-  const regimeSummary = await ensureSameDateRegimeReady(env, triggerTime, runId, 'indicator-finalizer')
-  console.log(`[Queue] Same-date regime ready before screener: ${regimeSummary}`)
-  await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
 
   const runAsyncScreener = deps.runMarketScreenerAsync
   if (runAsyncScreener) {
@@ -1824,7 +1711,6 @@ async function runFinalizeContinuation(
         run_date: triggerTime,
       })
       console.warn('[Queue] Event-driven screener-v2 trigger failed:', e)
-      throw e
     }
     return
   }
@@ -1869,7 +1755,7 @@ async function runFinalizeContinuation(
       run_date: triggerTime,
     })
     console.warn('[Queue] Event-driven screener failed:', e)
-    throw e
+    return
   }
 
   await enqueuePostScreenerPipelineContinuation(env, {
@@ -1880,26 +1766,17 @@ async function runFinalizeContinuation(
   })
 }
 
-async function acquireFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<string | null> {
+async function acquireFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<boolean> {
   const lockKey = `indicator-finalize:${triggerTime}:${runId}`
   const now = new Date().toISOString()
-  const leaseOwner = `indicator_finalize:${crypto.randomUUID()}`
-  const expiresAt = new Date(Date.now() + FINALIZE_LEASE_TTL_MS).toISOString()
+  const expiresAt = new Date(Date.now() + 7 * 86400 * 1000).toISOString()
   try {
     const result = await env.DB.prepare(`
-      INSERT INTO scheduler_locks (lock_key, owner, run_date, run_id, created_at, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(lock_key) DO UPDATE SET
-        owner=excluded.owner,
-        run_date=excluded.run_date,
-        run_id=excluded.run_id,
-        created_at=excluded.created_at,
-        expires_at=excluded.expires_at
-      WHERE scheduler_locks.expires_at IS NULL
-         OR scheduler_locks.expires_at <= excluded.created_at
-    `).bind(lockKey, leaseOwner, triggerTime, runId, now, expiresAt).run()
+      INSERT OR IGNORE INTO scheduler_locks (lock_key, owner, run_date, run_id, created_at, expires_at)
+      VALUES (?, 'indicator_finalize', ?, ?, ?, ?)
+    `).bind(lockKey, triggerTime, runId, now, expiresAt).run()
     const changes = Number(result.meta?.changes ?? 0)
-    return changes > 0 ? leaseOwner : null
+    return changes > 0
   } catch (error) {
     // Fail closed: without an atomic lock, multiple finalizers can advance the same chain.
     await logSchedulerResult(env.KV, 'evening-chain', {
@@ -1913,54 +1790,20 @@ async function acquireFinalizeLock(env: Bindings, triggerTime: string, runId: st
   }
 }
 
-async function renewFinalizeLock(
-  env: Bindings,
-  triggerTime: string,
-  runId: string,
-  leaseOwner: string,
-): Promise<boolean> {
-  const lockKey = `indicator-finalize:${triggerTime}:${runId}`
-  const now = new Date().toISOString()
-  const expiresAt = new Date(Date.now() + FINALIZE_LEASE_TTL_MS).toISOString()
-  const result = await env.DB.prepare(`
-    UPDATE scheduler_locks
-       SET expires_at = ?
-     WHERE lock_key = ?
-       AND owner = ?
-       AND run_date = ?
-       AND run_id = ?
-       AND expires_at > ?
-  `).bind(expiresAt, lockKey, leaseOwner, triggerTime, runId, now).run()
-  return Number(result.meta?.changes ?? 0) > 0
-}
-
-async function assertFinalizeLockRenewed(
-  env: Bindings,
-  triggerTime: string,
-  runId: string,
-  leaseOwner: string,
-): Promise<void> {
-  if (!await renewFinalizeLock(env, triggerTime, runId, leaseOwner)) {
-    throw new Error(`finalizer lease lost before continuation stage: ${triggerTime} run_id=${runId}`)
-  }
-}
-
-type FinalizeLockRow = { owner?: string | null; expires_at?: string | null }
-
-async function loadFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<FinalizeLockRow | null> {
+async function loadFinalizeLock(env: Bindings, triggerTime: string, runId: string): Promise<{ created_at?: string | null } | null> {
   const lockKey = `indicator-finalize:${triggerTime}:${runId}`
   return await env.DB.prepare(`
-    SELECT owner, expires_at
+    SELECT created_at
       FROM scheduler_locks
      WHERE lock_key = ?
      LIMIT 1
-  `).bind(lockKey).first<FinalizeLockRow>()
+  `).bind(lockKey).first<{ created_at?: string | null }>()
 }
 
-function finalizeLockIsRepairable(lock: FinalizeLockRow | null): boolean {
-  if (!lock) return true
-  const expiresAtMs = lock.expires_at ? Date.parse(lock.expires_at) : NaN
-  return !Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()
+function finalizeLockIsRepairable(lock: { created_at?: string | null } | null): boolean {
+  const createdAtMs = lock?.created_at ? Date.parse(lock.created_at) : NaN
+  if (!Number.isFinite(createdAtMs)) return true
+  return Date.now() - createdAtMs >= FINALIZE_ORPHAN_REPAIR_DELAY_MS
 }
 
 async function hasSuccessfulScreenerRun(db: D1Database, triggerTime: string): Promise<boolean> {
@@ -2011,26 +1854,16 @@ async function repairFinalizeContinuationIfNeeded(
   triggerTime: string,
   runId: string,
   shardCount: number,
-): Promise<boolean> {
-  const finalKey = `cron:indicator-queue:${triggerTime}:${runId}:finalized`
-  if (await env.KV.get(finalKey)) return true
-
+): Promise<void> {
   const lock = await loadFinalizeLock(env, triggerTime, runId)
   if (!finalizeLockIsRepairable(lock)) {
-    console.log(`[Queue] Finalize lease is active; waiting for original finalizer ${triggerTime} ${runId}`)
-    return false
-  }
-
-  const leaseOwner = await acquireFinalizeLock(env, triggerTime, runId)
-  if (!leaseOwner) {
-    console.log(`[Queue] Finalize repair takeover lost to another continuation ${triggerTime} ${runId}`)
-    return false
+    console.log(`[Queue] Finalize lock is recent; waiting for original finalizer ${triggerTime} ${runId}`)
+    return
   }
 
   if (await hasPipelineEvidence(env, triggerTime)) {
     console.log(`[Queue] Finalize continuation already reached pipeline for ${triggerTime} ${runId}`)
-    await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
-    return true
+    return
   }
 
   if (await hasSuccessfulScreenerRun(env.DB, triggerTime)) {
@@ -2054,69 +1887,115 @@ async function repairFinalizeContinuationIfNeeded(
       shardCount,
       attempt: 1,
     })
-    await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
-    return true
+    return
   }
 
   await logSchedulerResult(env.KV, 'evening-chain', {
     status: 'running',
-    summary: `event-driven chain repairing expired finalizer lease before screener for ${triggerTime}; run_id=${runId}`,
+    summary: `event-driven chain repairing stale finalizer lock before screener for ${triggerTime}; run_id=${runId}`,
     duration_ms: 0,
     run_date: triggerTime,
   })
-  await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'expired-lease-repair', leaseOwner)
-  await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
-  return true
+  await runFinalizeContinuation(env, deps, triggerTime, runId, shardCount, 'stale-lock-repair')
 }
 
-export async function runDailyAllocatorEvReadiness(
+async function runDailyAllocatorEvReadiness(
   env: Bindings,
   triggerTime: string,
-): Promise<{
-  ok: boolean
-  state: 'ready' | 'degraded' | 'fatal'
-  summary: string
-}> {
+): Promise<{ ok: boolean; summary: string }> {
   const started = Date.now()
   const parts: string[] = []
-  const health = await inspectExpectedReturnLifecycleHealth(env, triggerTime)
-  const servingState = await refreshExpectedReturnServingState(env, triggerTime)
-  const priorOwner = servingState.expected_return_owner
-  parts.push(`expected_return_serving_state=${servingState.state}`)
-  parts.push(`expected_return_action_gate=${servingState.action_gate}`)
-  parts.push(`required_oof_max_date=${health.expected_mature_signal_date ?? 'unresolved'}`)
-  parts.push(`newly_mature_signal_date=${health.newly_mature_signal_date ?? 'unresolved'}`)
-  parts.push(`oof_snapshot_max=${health.oof_max_dates.allocator_ev_snapshots ?? 'missing'}`)
-  parts.push(`oof_l4_max=${health.oof_max_dates.l4_predictions ?? 'missing'}`)
-  parts.push(`oof_snapshot_base=${health.oof_base_max_dates.allocator_ev_snapshots ?? 'missing'}`)
-  parts.push(`oof_l4_base=${health.oof_base_max_dates.l4_predictions ?? 'missing'}`)
-  parts.push(`oof_snapshot_shadow=${health.oof_shadow_max_dates.allocator_ev_snapshots ?? 'missing'}`)
-  parts.push(`oof_l4_shadow=${health.oof_shadow_max_dates.l4_predictions ?? 'missing'}`)
+  let l4ChampionAvailable = false
+  let fusionChampionAvailable = false
 
-  for (const owner of ['l4_alpha_ev', 'allocator_ev_fusion'] as const) {
-    const artifactState = servingState.artifacts[owner]
-    const candidate = health.latest_candidates[owner]
-    const task = owner === 'l4_alpha_ev' ? 'l4-alpha-ev-refresh' : 'allocator-ev-fusion-refresh'
-    const candidateDecision = String(candidate?.offline_gate_decision ?? 'missing')
-    const candidateVersion = String(candidate?.version ?? 'missing')
-    const ownerAlerts = [...health.alerts, ...servingState.hard_alerts]
-      .filter((alert) => alert.startsWith(`${owner}:`))
-    parts.push(`${owner}_serving=${artifactState.artifact_state}:${artifactState.model_version ?? 'none'}`)
-    parts.push(`${owner}_latest_candidate=${candidateVersion}:${candidateDecision}`)
-    await logSchedulerResult(env.KV, task, {
-      status: ownerAlerts.length > 0 ? 'error' : artifactState.eligible ? 'success' : 'skipped',
-      summary: [
-        `canonical OOF owner inspection for ${triggerTime}`,
-        `serving=${artifactState.artifact_state}`,
-        `version=${artifactState.model_version ?? 'none'}`,
-        `candidate=${candidateVersion}`,
-        `candidate_gate=${candidateDecision}`,
-        ownerAlerts.length > 0 ? `alerts=${ownerAlerts.join(',')}` : '',
-      ].filter(Boolean).join(' '),
+  const loadApprovedL4Champion = async (): Promise<Record<string, any> | null> => {
+    const rawConfig = await env.KV.get('trading:config', 'json') as Record<string, any> | null
+    const ensembleV2 = rawConfig?.ensemble_v2 && typeof rawConfig.ensemble_v2 === 'object'
+      ? rawConfig.ensemble_v2 as Record<string, any>
+      : {}
+    const champion = ensembleV2.l4AlphaEv ?? ensembleV2.l4_alpha_ev
+    const state = await readCurrentExpectedReturnServingState(env, triggerTime)
+    return state.artifacts.l4_alpha_ev.eligible ? champion as Record<string, any> : null
+  }
+
+  const loadApprovedFusionChampion = async (): Promise<Record<string, any> | null> => {
+    const rawConfig = await env.KV.get('trading:config', 'json') as Record<string, any> | null
+    const ensembleV2 = rawConfig?.ensemble_v2 && typeof rawConfig.ensemble_v2 === 'object'
+      ? rawConfig.ensemble_v2 as Record<string, any>
+      : {}
+    const champion = ensembleV2.allocatorEvFusion ?? ensembleV2.allocator_ev_fusion
+    const state = await readCurrentExpectedReturnServingState(env, triggerTime)
+    return state.artifacts.allocator_ev_fusion.eligible ? champion as Record<string, any> : null
+  }
+
+  try {
+    const l4Started = Date.now()
+    const l4Summary = await runL4AlphaEvRefresh(env, triggerTime, 'weekly')
+    parts.push(`l4=${l4Summary}`)
+    const champion = await loadApprovedL4Champion()
+    l4ChampionAvailable = champion !== null
+    if (!l4ChampionAvailable) {
+      parts.push('l4_unavailable=refresh completed without a production-approved contract-compatible champion')
+      parts.push('l4_role=fusion_upstream_feature_only')
+    }
+    await logSchedulerResult(env.KV, 'l4-alpha-ev-refresh', {
+      status: 'success',
+      summary: `daily-chain ${l4Summary}`,
+      duration_ms: Date.now() - l4Started,
+      run_date: triggerTime,
+    })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    const champion = await loadApprovedL4Champion()
+    l4ChampionAvailable = champion !== null
+    await logSchedulerResult(env.KV, 'l4-alpha-ev-refresh', {
+      status: 'error',
+      summary: l4ChampionAvailable
+        ? `daily-chain L4 alpha EV challenger rejected for ${triggerTime}; retained champion=${champion.model_version}`
+        : `daily-chain L4 alpha EV refresh failed for ${triggerTime}; no production-approved champion available`,
       duration_ms: Date.now() - started,
+      error: message,
+      run_date: triggerTime,
+    })
+    if (l4ChampionAvailable) {
+      parts.push(`l4_challenger_rejected=${message}`)
+      parts.push(`l4_champion_retained=${champion.model_version}`)
+    } else {
+      parts.push(`l4_unavailable=${message}`)
+      parts.push('l4_role=fusion_upstream_feature_unavailable')
+    }
+  }
+
+  try {
+    const fusionStarted = Date.now()
+    const fusionSummary = await runAllocatorEvFusionRefresh(env, triggerTime, 'weekly')
+    parts.push(`fusion=${fusionSummary}`)
+    fusionChampionAvailable = (await loadApprovedFusionChampion()) !== null
+    await logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh', {
+      status: 'success',
+      summary: `daily-chain ${fusionSummary}`,
+      duration_ms: Date.now() - fusionStarted,
+      run_date: triggerTime,
+    })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    fusionChampionAvailable = (await loadApprovedFusionChampion()) !== null
+    parts.push(`fusion_degraded=${message}`)
+    await logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh', {
+      status: 'error',
+      summary: `daily-chain allocator EV fusion unavailable; pipeline continues for evidence coverage but BUY/allocation fail closed because Fusion is the sole expected-return owner for ${triggerTime}`,
+      duration_ms: Date.now() - started,
+      error: message,
       run_date: triggerTime,
     })
   }
+
+  const servingState = await refreshExpectedReturnServingState(env, triggerTime)
+  const priorOwner = servingState.expected_return_owner === 'allocator_ev_fusion'
+    ? 'allocator_ev_fusion'
+    : null
+  parts.push(`expected_return_serving_state=${servingState.state}`)
+  parts.push(`expected_return_action_gate=${servingState.action_gate}`)
   if (priorOwner) {
     const opbStarted = Date.now()
     try {
@@ -2143,35 +2022,20 @@ export async function runDailyAllocatorEvReadiness(
     parts.push('opb_prior_not_ready=no_production_expected_return_owner')
     await logSchedulerResult(env.KV, 'opb-arm-prior-refresh', {
       status: 'skipped',
-      summary: 'daily-chain OPB prior retained; no production L4/Fusion expected-return owner',
+      summary: 'daily-chain OPB prior retained; no production-primary Fusion expected-return owner',
       duration_ms: 0,
       run_date: triggerTime,
     })
   }
 
-  const hardAlerts = [...new Set([...health.alerts, ...servingState.hard_alerts])]
-  const warnings = [...new Set([...health.warnings, ...servingState.warnings])]
-  const safeProductionLane = servingState.state === 'production_primary'
-    ? Boolean(priorOwner && servingState.action_gate === 'expected_return_owner')
-    : servingState.state === 'safe_abstention'
-      && servingState.action_gate === 'validated_s12_only'
-  const state: 'ready' | 'degraded' | 'fatal' = !safeProductionLane
-    ? 'fatal'
-    : hardAlerts.length > 0 || warnings.length > 0
-      ? 'degraded'
-      : 'ready'
-  parts.push(`readiness_state=${state}`)
-  if (hardAlerts.length > 0) parts.push(`hard_alerts=${hardAlerts.join(',')}`)
-  if (warnings.length > 0) parts.push(`warnings=${warnings.join(',')}`)
   const summary = `allocator EV model readiness before pipeline for ${triggerTime}; ${parts.join(' | ')}`
   await logSchedulerResult(env.KV, 'allocator-ev-readiness', {
-    status: state === 'fatal' ? 'error' : 'success',
+    status: 'success',
     summary,
     duration_ms: Date.now() - started,
-    error: state === 'fatal' ? hardAlerts.join(',') || 'no_validated_expected_return_lane' : undefined,
     run_date: triggerTime,
   })
-  return { ok: state !== 'fatal', state, summary }
+  return { ok: true, summary }
 }
 
 async function continuePostScreenerPipeline(
@@ -2182,52 +2046,56 @@ async function continuePostScreenerPipeline(
   snapshotsReady = false,
 ): Promise<void> {
   if (!snapshotsReady) {
-    await ensureSameDateRegimeReady(env, triggerTime, runId, 'post-screener-callback')
-
-    const snapshotRunId = runId ?? `s12-candidate-snapshot-${triggerTime}-${Date.now().toString(36)}`
-    await logSchedulerResult(env.KV, 's12-structure-snapshot', {
+    await logSchedulerResult(env.KV, 'regime-compute', {
       status: 'running',
-      summary: `pre-pipeline S12 canonical snapshot chunks queued for ${triggerTime}; run_id=${snapshotRunId}`,
+      summary: `pre-pipeline regime-compute started for ${triggerTime}; run_id=${runId ?? 'n/a'}`,
       duration_ms: 0,
-      run_id: snapshotRunId,
       run_date: triggerTime,
     })
-    const durableEnabled = ['1', 'true', 'yes', 'on'].includes(
-      String((env as any).S12_DURABLE_STRUCTURE_JOB_ENABLED ?? '').trim().toLowerCase(),
-    )
-    if (durableEnabled) {
-      if (!env.ML_CONTROLLER_URL || !env.ML_CONTROLLER_SECRET) throw new Error('s12_structure_controller_missing')
-      const response = await fetch(`${env.ML_CONTROLLER_URL.replace(/\/$/, '')}/s12-structure/batch/run`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Controller-Token': env.ML_CONTROLLER_SECRET,
-        },
-        body: JSON.stringify({
-          run_date: triggerTime,
-          chain_run_id: snapshotRunId,
-          source: 'evening_chain',
-        }),
-        signal: AbortSignal.timeout(30_000),
-      })
-      const payload = await response.json().catch(() => ({})) as any
-      if (!response.ok) {
-        throw new Error(`s12_structure_batch_trigger_${response.status}:${JSON.stringify(payload).slice(0, 300)}`)
-      }
-      await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-        status: 'triggered',
-        summary: `durable S12 structure job triggered date=${triggerTime} run_id=${payload.run_id ?? 'unknown'} execution=${payload.execution_id ?? 'unknown'} callback expected`,
-        duration_ms: 0,
-        run_id: payload.run_id ?? snapshotRunId,
+
+    try {
+      const startedAt = Date.now()
+      const regimeSummary = String(await runRegimeCompute(env, triggerTime))
+      const regimeStatus = regimeSummary.includes('kv=ok') ? 'success' : 'error'
+      await logSchedulerResult(env.KV, 'regime-compute', {
+        status: regimeStatus,
+        summary: `pre-pipeline ${regimeSummary}`,
+        duration_ms: Date.now() - startedAt,
         run_date: triggerTime,
-      }, env)
+      })
+      if (regimeStatus !== 'success') {
+        await logSchedulerResult(env.KV, 'evening-chain', {
+          status: 'error',
+          summary: `event-driven chain stopped: regime-compute did not update KV before pipeline for ${triggerTime}; ${regimeSummary}`,
+          duration_ms: 0,
+          run_id: runId,
+          run_date: triggerTime,
+        })
+        return
+      }
+      console.log(`[Queue] Event-driven: regime-compute completed before pipeline for ${triggerTime}`)
+    } catch (e) {
+      await logSchedulerResult(env.KV, 'evening-chain', {
+        status: 'error',
+        summary: `event-driven chain stopped: regime-compute failed before pipeline for ${triggerTime}`,
+        duration_ms: 0,
+        error: String(e),
+        run_id: runId,
+        run_date: triggerTime,
+      })
+      await logSchedulerResult(env.KV, 'regime-compute', {
+        status: 'error',
+        summary: e instanceof Error ? e.message : String(e),
+        duration_ms: 0,
+        error: String(e),
+        run_date: triggerTime,
+      })
+      console.warn('[Queue] Event-driven regime-compute failed:', e)
       return
     }
-    await env.UPDATE_QUEUE.send({
-      type: 's12_candidate_snapshot_chunk', cursor: 0, cursorKey: '',
-      triggerTime, runId: snapshotRunId, attempt: 1,
-    })
-    return
+
+    // Candidate-time S12 is intentionally absent here. Fusion consumes day-t
+    // causal L0-L4 evidence; S12 remains the next-session execution policy.
   }
 
   const evReadiness = await runDailyAllocatorEvReadiness(env, triggerTime)
@@ -3005,9 +2873,9 @@ export async function processUpdateBatch(
       return
     }
 
-    const { runS12CandidateStructureSnapshots } = await import('./s12CandidateStructureSnapshots')
-    const reconstruction = await runS12CandidateStructureSnapshots(env, triggerTime, {
-      source: 's12_candidate_snapshot_reconstruction',
+    const { runS12ResearchStructureSnapshots } = await import('./s12ResearchStructureSnapshots')
+    const reconstruction = await runS12ResearchStructureSnapshots(env, triggerTime, {
+      source: 's12_research_structure_reconstruction',
     })
     const terminalSourceFailure = Object.keys(reconstruction.skip_reasons).some((reason) => (
       reason.includes('shioaji_research_bandwidth_exhausted')
@@ -3263,9 +3131,10 @@ export async function processUpdateBatch(
     }
 
     const {
-      finalizeStrategyLearningEvidenceV5,
       listStrategySpecsForLearning,
       materializeStrategyDecisionLogChunk,
+      refreshStrategyAdaptivePolicyState,
+      refreshStrategyRewardLedger,
       seedDefaultStrategySpecRegistry,
     } = await import('./strategyLearning')
     if (!requestedCursor) {
@@ -3276,10 +3145,8 @@ export async function processUpdateBatch(
       checkpointStrategyLearningPage,
       claimStrategyLearningPage,
       completeStrategyLearningRun,
-      deferStrategyLearningFinalizer,
       failStrategyLearningRun,
       initializeStrategyLearningRun,
-      markStrategyLearningRunFinalized,
     } = await import('./strategyLearningRunState')
     const state = await initializeStrategyLearningRun(env.DB, {
       businessDate: triggerTime,
@@ -3290,19 +3157,12 @@ export async function processUpdateBatch(
       console.log(`[Queue] strategy-learning already complete date=${triggerTime} run_id=${state.canonical_run_id}`)
       return
     }
-    const expectedCandidates = Math.max(0, Number(state.expected_candidates ?? 0))
-    const expectedRows = Math.max(0, Number(state.expected_decision_rows ?? 0))
-    const materializationAlreadyComplete = expectedCandidates > 0
-      && expectedRows > 0
-      && Number(state.processed_candidates) === expectedCandidates
-      && Number(state.persisted_decision_rows) === expectedRows
     const durableCursor = String(state.cursor_symbol ?? '')
     if (requestedCursor && requestedCursor !== durableCursor) {
       console.log(`[Queue] stale strategy-learning cursor ignored date=${triggerTime} requested=${requestedCursor} durable=${durableCursor}`)
       return
     }
     const canonicalRunId = state.canonical_run_id
-    const finalizerAttemptId = `${canonicalRunId}:finalize:${Date.now().toString(36)}`
     const claimed = await claimStrategyLearningPage(env.DB, {
       businessDate: triggerTime,
       runId: canonicalRunId,
@@ -3314,11 +3174,8 @@ export async function processUpdateBatch(
       return
     }
 
-    let materializationValidated = materializationAlreadyComplete
     try {
-      let chunk: Awaited<ReturnType<typeof materializeStrategyDecisionLogChunk>> | null = null
-      if (!materializationAlreadyComplete) {
-        chunk = await materializeStrategyDecisionLogChunk(env.DB, {
+      const chunk = await materializeStrategyDecisionLogChunk(env.DB, {
         date: triggerTime,
         afterSymbol: durableCursor,
         limit: STRATEGY_LEARNING_QUEUE_CHUNK_SIZE,
@@ -3357,121 +3214,52 @@ export async function processUpdateBatch(
         })
         return
       }
-      }
 
       const coverage = await completeStrategyLearningRun(env.DB, {
         businessDate: triggerTime,
         runId: canonicalRunId,
       })
-      materializationValidated = true
 
-      const productionAuthority = Boolean(msg.force)
-        ? await resolveEveningChainRunAuthority(env, {
-            businessDate: triggerTime,
-            canonicalRunId,
-          })
-        : null
-      const currentBusinessDateRun = productionAuthority?.allowed === true
-      const runScope = productionAuthority?.runScope ?? 'historical_replay'
-      const authorityReason = productionAuthority?.reason ?? 'queue_not_marked_production_eligible'
-      const chainDurationMs = await resolveEveningChainClosureDurationMs(env.DB, triggerTime)
-      const {
-        auditEveningChainEvidenceClosure,
-        resolveExpectedMatureSignalDate,
-        summarizeEveningChainEvidenceClosure,
-      } = await import('./eveningChainEvidenceClosure')
-      const historicalPriorityDate = await resolveExpectedMatureSignalDate(env, triggerTime)
-      const { recoverMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
-      const matureRecovery = await recoverMatureSelectionEvidence(env, triggerTime, {
-        maxRecoveryDates: 4,
-      })
-      let closureSummary = ''
-      const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, productionPolicy }
-        = await finalizeStrategyLearningEvidenceV5(env.DB, triggerTime, {
-          allowPromotion: currentBusinessDateRun,
-          persistPolicy: currentBusinessDateRun,
-          historicalPriorityDate,
-          beforePromotion: async () => {
-            const closureAudit = await auditEveningChainEvidenceClosure(
-              env,
-              triggerTime,
-              String(state.producer_run_id ?? ''),
-            )
-            closureSummary = summarizeEveningChainEvidenceClosure(closureAudit)
-          },
-        })
-      if (!closureSummary) throw new Error('evening_chain_evidence_closure_callback_missing')
+      const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
+      const { reconcileSelectionDecisionEvidenceV4 } = await import('./selectionReferenceEvidence')
+      const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
+      const decisionEvidence = await reconcileSelectionDecisionEvidenceV4(env.DB, triggerTime)
+      const labels = await materializeCanonicalSelectionLabelsV4(env.DB, { asOfDate: triggerTime })
+      const marginalEdge = await refreshStrategyMarginalEdgeV4(env.DB, triggerTime)
+      const rewards = await refreshStrategyRewardLedger(env.DB, { endDate: triggerTime, dryRun: false })
+      const policy = await refreshStrategyAdaptivePolicyState(env.DB, { date: triggerTime, dryRun: false })
       const summary = [
       `materialized_complete candidates=${coverage.candidateRows}/${coverage.expectedCandidates} rows=${coverage.decisionRows}/${coverage.expectedRows}`,
-      `last_candidates=${chunk?.candidate_count ?? 0}`,
-      `last_decision_rows=${chunk?.persisted_rows ?? 0}`,
-      `mature_recovery=${matureRecovery.summary}`,
+      `last_candidates=${chunk.candidate_count}`,
+      `last_decision_rows=${chunk.persisted_rows}`,
       `selection_decisions=${decisionEvidence.finalSignalRows}/${decisionEvidence.referenceRows}`,
       `selection_ev_owner=${decisionEvidence.evOwnerRows}`,
-      `strategy_pit_rebuild=${historicalEvidence.successfulDates}/${historicalEvidence.attemptedDates}`,
-      `strategy_pit_blocked=${historicalEvidence.blockedDates}`,
       `selection_labels=${labels.persisted_rows}`,
       `selection_pending=${labels.pending_rows}`,
       `selection_unavailable=${labels.unavailable_rows}`,
       `strategy_edge=${marginalEdge.status}:eligible=${marginalEdge.eligibleStrategies}:dates=${marginalEdge.sampleDates}`,
-      `route_backfill_eligible=${routeBackfillEligibility.filter((row) => row.status === 'eligible').length}`,
-      `route_backfill_unavailable=${routeBackfillEligibility.filter((row) => row.status === 'unavailable').length}`,
-      `route_backfill_pending=${routeBackfillEligibility.filter((row) => row.status === 'pending_maturity').length}`,
       `reward_source_rows=${rewards.source_rows}`,
       `reward_rows=${rewards.persisted_rows}`,
       `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
-      `production_policy=${productionPolicy ? productionPolicy.state.status : 'skipped_historical'}`,
-      `evidence_closure=${closureSummary}`,
-      `run_scope=${runScope}`,
-      `production_authority=${authorityReason}`,
       ].join(' ')
 
       await logSchedulerResult(env.KV, 'strategy-learning', {
-        status: 'success', summary, duration_ms: chainDurationMs, run_id: canonicalRunId,
-        attempt_id: finalizerAttemptId, run_date: triggerTime, run_scope: runScope,
+        status: 'success', summary, duration_ms: 0, run_id: canonicalRunId, run_date: triggerTime,
       })
       await logSchedulerResult(env.KV, 'post-verify-chain', {
         status: 'success', summary: `strategy-learning queue closed; ${summary}`,
-        duration_ms: chainDurationMs, run_id: canonicalRunId, attempt_id: finalizerAttemptId,
-        run_date: triggerTime, run_scope: runScope,
+        duration_ms: 0, run_id: canonicalRunId, run_date: triggerTime,
       })
       await logSchedulerResult(env.KV, 'evening-chain', {
         status: 'success', summary: `root chain closed after queued strategy-learning: ${summary}`,
-        duration_ms: chainDurationMs, run_id: canonicalRunId, attempt_id: finalizerAttemptId,
-        run_date: triggerTime, run_scope: runScope,
+        duration_ms: 0, run_id: canonicalRunId, run_date: triggerTime,
       })
-      await markStrategyLearningRunFinalized(env.DB, { businessDate: triggerTime, runId: canonicalRunId })
       return
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      if (materializationValidated) {
-        await deferStrategyLearningFinalizer(env.DB, {
-          businessDate: triggerTime,
-          runId: canonicalRunId,
-          error: errorMessage,
-        })
-      } else {
-        await failStrategyLearningRun(env.DB, {
-          businessDate: triggerTime,
-          error: errorMessage,
-        })
-      }
-      await Promise.allSettled([
-        logSchedulerResult(env.KV, 'strategy-learning', {
-          status: 'error', summary: errorMessage, error: errorMessage, duration_ms: 0,
-          run_id: canonicalRunId, attempt_id: finalizerAttemptId, run_date: triggerTime,
-        }),
-        logSchedulerResult(env.KV, 'post-verify-chain', {
-          status: 'error', summary: `strategy-learning finalizer blocked: ${errorMessage}`,
-          error: errorMessage, duration_ms: 0, run_id: canonicalRunId,
-          attempt_id: finalizerAttemptId, run_date: triggerTime,
-        }),
-        logSchedulerResult(env.KV, 'evening-chain', {
-          status: 'error', summary: `root chain blocked by strategy-learning evidence audit: ${errorMessage}`,
-          error: errorMessage, duration_ms: 0, run_id: canonicalRunId,
-          attempt_id: finalizerAttemptId, run_date: triggerTime,
-        }),
-      ])
+      await failStrategyLearningRun(env.DB, {
+        businessDate: triggerTime,
+        error: error instanceof Error ? error.message : String(error),
+      })
       throw error
     }
   }
@@ -3485,17 +3273,6 @@ export async function processUpdateBatch(
     }
 
     try {
-      const readiness = await checkEveningChainSourceReadiness(env, triggerTime)
-      if (hasFinLabRefreshableMissing(readiness)) {
-        const retrySummary = await runDailyUpdate(env, true, triggerTime)
-        await logSchedulerResult(env.KV, 'evening-chain', {
-          status: 'running',
-          summary: `canonical source retry dispatched for ${triggerTime}; ${retrySummary}`,
-          duration_ms: 0,
-          run_date: triggerTime,
-        })
-        return
-      }
       const bulkSummary = await runBulkFetch(env, false, triggerTime)
       await runQueueUpdate(env, triggerTime, false)
       await logSchedulerResult(env.KV, 'evening-chain', {
@@ -3537,16 +3314,13 @@ export async function processUpdateBatch(
     const runId = msg.runId || `${triggerTime}-single`
     const shardCount = Number.isFinite(msg.shardCount) && Number(msg.shardCount) > 0 ? Number(msg.shardCount) : 1
     const attempt = Number.isFinite(msg.attempt) ? Number(msg.attempt) : 1
-    const continuationAttempt = Number.isFinite(msg.continuationAttempt)
-      ? Number(msg.continuationAttempt)
-      : 1
     const donePrefix = `cron:indicator-queue:${triggerTime}:${runId}:done:`
     await new Promise((resolve) => setTimeout(resolve, FINALIZE_RECHECK_DELAY_MS))
     const done = await env.KV.list({ prefix: donePrefix })
     const doneCount = new Set(done.keys.map((k) => k.name)).size
 
     if (doneCount >= shardCount) {
-      await finalizeUpdateChain(env, deps, triggerTime, runId, shardCount, continuationAttempt)
+      await finalizeUpdateChain(env, deps, triggerTime, runId, shardCount)
       return
     }
 
@@ -3565,7 +3339,6 @@ export async function processUpdateBatch(
         runId,
         shardCount,
         attempt: attempt + 1,
-        continuationAttempt,
       })
       return
     }
@@ -3584,289 +3357,12 @@ export async function processUpdateBatch(
     return
   }
 
-  if (msg.type === 's12_intraday_setup_watch_complete') {
-    const triggerTime = msg.triggerTime
-    const runId = msg.runId || ''
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime) || !runId) {
-      throw new Error('invalid_s12_intraday_setup_watch_completion_message')
-    }
-    const summary = await triggerPendingS12FormalEv(env, triggerTime)
-    await logSchedulerResult(env.KV, 's12-intraday-setup-watch', {
-      status: summary.status === 'empty' ? 'success' : summary.status,
-      summary: `formal EV continuation ${summary.status}; ready=${summary.ready_count} date=${triggerTime} run_id=${runId}`,
-      duration_ms: 0,
-      run_id: runId,
-      run_date: triggerTime,
-    }, env)
-    return
-  }
-
-
-  if (msg.type === 's12_structure_batch_complete') {
-    const triggerTime = msg.triggerTime
-    const runId = msg.runId || ''
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime) || !runId) {
-      throw new Error('invalid_s12_structure_batch_completion_message')
-    }
-    const coverage = await env.DB.prepare(`
-      SELECT COUNT(*) reference_rows,
-             SUM(CASE WHEN s.symbol IS NOT NULL THEN 1 ELSE 0 END) persisted_rows,
-             SUM(CASE WHEN s.ready=1 THEN 1 ELSE 0 END) ready_rows,
-             SUM(CASE WHEN s.state='data_unavailable' THEN 1 ELSE 0 END) unavailable_rows,
-             SUM(CASE WHEN s.symbol IS NOT NULL AND s.ready=0
-                       AND s.state<>'data_unavailable' THEN 1 ELSE 0 END) blocked_rows
-        FROM selection_reference_snapshots_v1 r
-        LEFT JOIN s12_structure_snapshots s
-          ON s.trade_date=r.signal_date AND s.symbol=r.symbol
-         AND s.source='s12_candidate_snapshot' AND s.pending_run_id=?
-       WHERE r.signal_date=?
-         AND EXISTS (
-           SELECT 1 FROM canonical_run_heads h
-            WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
-              AND h.run_id=r.producer_run_id
-         )
-    `).bind(runId, triggerTime).first<{
-      reference_rows?: number
-      persisted_rows?: number
-      ready_rows?: number
-      unavailable_rows?: number
-      blocked_rows?: number
-    }>()
-    const referenceRows = Number(coverage?.reference_rows ?? 0)
-    const persistedRows = Number(coverage?.persisted_rows ?? 0)
-    if (referenceRows <= 0 || persistedRows !== referenceRows) {
-      const summary = `durable S12 canonical snapshot coverage=${persistedRows}/${referenceRows} date=${triggerTime} run_id=${runId}`
-      await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-        status: 'error', summary, duration_ms: 0, run_id: runId, run_date: triggerTime,
-      }, env)
-      await logSchedulerResult(env.KV, 'evening-chain', {
-        status: 'error',
-        summary: `event-driven chain stopped: ${summary}`,
-        duration_ms: 0,
-        run_id: runId,
-        run_date: triggerTime,
-      }, env)
-      return
-    }
-    await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-      status: 'success',
-      summary: `durable S12 canonical snapshots complete coverage=${persistedRows}/${referenceRows} ready=${Number(coverage?.ready_rows ?? 0)} blocked=${Number(coverage?.blocked_rows ?? 0)} unavailable=${Number(coverage?.unavailable_rows ?? 0)} date=${triggerTime} run_id=${runId}`,
-      duration_ms: 0,
-      run_id: runId,
-      run_date: triggerTime,
-    }, env)
-    const stage = `s12_snapshot_pipeline:${runId}`
-    const stageState = await enqueuePipelineStage(env.DB, {
-      businessDate: triggerTime,
-      stage,
-      runId,
-      resumeWaiting: true,
-    })
-    const ownerId = `s12-durable-finalizer:${runId}:${crypto.randomUUID()}`
-    const claim = await claimPipelineStage(env.DB, {
-      businessDate: triggerTime,
-      stage,
-      ownerId,
-      leaseSeconds: 900,
-    })
-    if (!claim) {
-      console.log(`[Queue] Duplicate durable S12 finalizer suppressed date=${triggerTime} run_id=${runId} status=${stageState.row.status}`)
-      return
-    }
-    try {
-      await continuePostScreenerPipeline(env, deps, triggerTime, runId, true)
-      await markPipelineStage(env.DB, {
-        businessDate: triggerTime,
-        stage,
-        status: 'success',
-      })
-    } catch (error) {
-      await markPipelineStage(env.DB, {
-        businessDate: triggerTime,
-        stage,
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      })
-      throw error
-    }
-    return
-  }
-
   if (msg.type === 's12_candidate_snapshot_chunk') {
-    const triggerTime = msg.triggerTime
-    const runId = msg.runId || `s12-candidate-snapshot-${triggerTime}-${Date.now().toString(36)}`
-    const afterSymbol = String(msg.cursorKey ?? '').trim()
-    const attempt = Math.max(1, Number(msg.attempt ?? 1))
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(triggerTime)) {
-      console.log(`[Queue] Invalid S12 candidate snapshot date ${triggerTime}, skipping.`)
-      return
-    }
-    const {
-      loadS12PipelineSeedSymbolsByDate,
-      runS12CandidateStructureSnapshots,
-    } = await import('./s12CandidateStructureSnapshots')
-    const candidates = await loadS12PipelineSeedSymbolsByDate(
-      env.DB, triggerTime, S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE, afterSymbol,
+    const triggerTime = String(msg.triggerTime ?? '').slice(0, 10)
+    const runId = msg.runId || `s12-candidate-snapshot-${triggerTime}-deprecated`
+    console.log(
+      `[Queue] Deprecated S12 candidate snapshot message drained without serving side effects date=${triggerTime} run_id=${runId}`,
     )
-    const symbols = candidates.slice(0, S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE)
-    if (!symbols.length) {
-      await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-        status: 'error',
-        summary: `pre-pipeline S12 canonical reference set empty for ${triggerTime}; run_id=${runId}`,
-        duration_ms: 0,
-        run_id: runId,
-        run_date: triggerTime,
-      }, env)
-      return
-    }
-    let snapshotResult
-    try {
-      snapshotResult = await runS12CandidateStructureSnapshots(env, triggerTime, {
-        limit: S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE,
-        symbols,
-        pendingRunId: runId,
-        researchTimeoutMs: S12_CANDIDATE_SNAPSHOT_RESEARCH_TIMEOUT_MS,
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (!message.startsWith('s12_research_lease_busy:')) throw error
-      const leaseRetryAttempt = Math.max(0, Number(msg.leaseRetryAttempt ?? 0))
-      if (leaseRetryAttempt >= S12_REPLAY_LEASE_RETRY_MAX_ATTEMPTS) throw error
-      const delaySeconds = s12ReplayLeaseRetryDelaySeconds(triggerTime, leaseRetryAttempt + 1)
-      await env.UPDATE_QUEUE.send({
-        ...msg,
-        leaseRetryAttempt: leaseRetryAttempt + 1,
-      }, { delaySeconds } as any)
-      await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-        status: 'running',
-        summary: `pre-pipeline S12 research lease busy; date=${triggerTime} after=${afterSymbol || 'start'} deferred_attempt=${leaseRetryAttempt + 1} delay_seconds=${delaySeconds}`,
-        duration_ms: 0,
-        run_id: runId,
-        run_date: triggerTime,
-      })
-      return
-    }
-    const complete = snapshotResult.attempted === symbols.length
-      && snapshotResult.persisted === symbols.length
-      && snapshotResult.errors === 0
-    if (!complete) {
-      if (attempt < 3) {
-        await env.UPDATE_QUEUE.send({ ...msg, attempt: attempt + 1 }, { delaySeconds: 60 } as any)
-        await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-          status: 'running',
-          summary: `pre-pipeline S12 chunk retry date=${triggerTime} after=${afterSymbol || 'start'} persisted=${snapshotResult.persisted}/${symbols.length} errors=${snapshotResult.errors} attempt=${attempt + 1}/3`,
-          duration_ms: 0,
-          run_id: runId,
-          run_date: triggerTime,
-        })
-        return
-      }
-      await logSchedulerResult(env.KV, 'evening-chain', {
-        status: 'error',
-        summary: `event-driven chain stopped: incomplete S12 snapshot chunk date=${triggerTime} after=${afterSymbol || 'start'} persisted=${snapshotResult.persisted}/${symbols.length} errors=${snapshotResult.errors}`,
-        duration_ms: 0,
-        run_id: runId,
-        run_date: triggerTime,
-      }, env)
-      return
-    }
-    const hasMore = candidates.length > S12_CANDIDATE_SNAPSHOT_CHUNK_SIZE
-    const cursorKey = symbols[symbols.length - 1].symbol
-    if (hasMore) {
-      await env.UPDATE_QUEUE.send({
-        type: 's12_candidate_snapshot_chunk', cursor: 0, cursorKey,
-        triggerTime, runId, attempt: 1,
-      })
-      await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-        status: 'running',
-        summary: `pre-pipeline S12 chunk complete date=${triggerTime} through=${cursorKey} persisted=${snapshotResult.persisted} ready=${snapshotResult.ready} unavailable=${snapshotResult.unavailable}${snapshotResult.unavailable > 0 ? ' analysis_continues=1 execution_fail_closed=1' : ''} queued_next=1`,
-        duration_ms: 0,
-        run_id: runId,
-        run_date: triggerTime,
-      })
-      return
-    }
-    const coverage = await env.DB.prepare(`
-      SELECT COUNT(*) reference_rows,
-             SUM(CASE WHEN s.symbol IS NOT NULL THEN 1 ELSE 0 END) persisted_rows
-             ,SUM(CASE WHEN s.ready=1 THEN 1 ELSE 0 END) ready_rows
-             ,SUM(CASE WHEN s.state='data_unavailable' THEN 1 ELSE 0 END) unavailable_rows
-             ,SUM(CASE WHEN s.symbol IS NOT NULL AND s.ready=0 AND s.state<>'data_unavailable' THEN 1 ELSE 0 END) blocked_rows
-        FROM selection_reference_snapshots_v1 r
-        LEFT JOIN s12_structure_snapshots s
-          ON s.trade_date=r.signal_date AND s.symbol=r.symbol
-         AND s.source='s12_candidate_snapshot' AND s.pending_run_id=?
-       WHERE r.signal_date=?
-         AND EXISTS (
-           SELECT 1 FROM canonical_run_heads h
-            WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
-              AND h.run_id=r.producer_run_id
-         )
-    `).bind(runId, triggerTime).first<{
-      reference_rows?: number
-      persisted_rows?: number
-      ready_rows?: number
-      unavailable_rows?: number
-      blocked_rows?: number
-    }>()
-    const referenceRows = Number(coverage?.reference_rows ?? 0)
-    const persistedRows = Number(coverage?.persisted_rows ?? 0)
-    const readyRows = Number(coverage?.ready_rows ?? 0)
-    const unavailableRows = Number(coverage?.unavailable_rows ?? 0)
-    const blockedRows = Number(coverage?.blocked_rows ?? 0)
-    if (referenceRows <= 0 || persistedRows !== referenceRows) {
-      await logSchedulerResult(env.KV, 'evening-chain', {
-        status: 'error',
-        summary: `event-driven chain stopped: S12 canonical snapshot coverage=${persistedRows}/${referenceRows} date=${triggerTime} run_id=${runId}`,
-        duration_ms: 0,
-        run_id: runId,
-        run_date: triggerTime,
-      }, env)
-      return
-    }
-    await logSchedulerResult(env.KV, 's12-structure-snapshot', {
-      status: 'success',
-      summary: `pre-pipeline S12 canonical snapshots complete coverage=${persistedRows}/${referenceRows} ready=${readyRows} blocked=${blockedRows} unavailable=${unavailableRows}${unavailableRows > 0 ? ' analysis_continues=1 execution_fail_closed=1' : ''} date=${triggerTime} run_id=${runId}`,
-      duration_ms: 0,
-      run_id: runId,
-      run_date: triggerTime,
-    })
-    const finalizerStage = `s12_snapshot_pipeline:${runId}`
-    const finalizerState = await enqueuePipelineStage(env.DB, {
-      businessDate: triggerTime,
-      stage: finalizerStage,
-      runId,
-      resumeWaiting: true,
-    })
-    const finalizerOwner = `s12-snapshot-finalizer:${runId}:${crypto.randomUUID()}`
-    const finalizerClaim = await claimPipelineStage(env.DB, {
-      businessDate: triggerTime,
-      stage: finalizerStage,
-      ownerId: finalizerOwner,
-      leaseSeconds: 900,
-    })
-    if (!finalizerClaim) {
-      console.log(
-        `[Queue] Duplicate S12 snapshot finalizer suppressed date=${triggerTime} run_id=${runId} status=${finalizerState.row.status}`,
-      )
-      return
-    }
-    try {
-      await continuePostScreenerPipeline(env, deps, triggerTime, runId, true)
-      await markPipelineStage(env.DB, {
-        businessDate: triggerTime,
-        stage: finalizerStage,
-        status: 'success',
-      })
-    } catch (error) {
-      await markPipelineStage(env.DB, {
-        businessDate: triggerTime,
-        stage: finalizerStage,
-        status: 'error',
-        error: error instanceof Error ? error.message : String(error),
-      })
-      throw error
-    }
     return
   }
 
@@ -3899,19 +3395,18 @@ export async function processUpdateBatch(
       loadFusionSnapshotReplayCoverage,
       loadFusionSnapshotSymbols,
       loadSignedEligibleRepairSymbolsByHistoricalDate,
-      isS12ReplayRetryableUnavailableReason,
       runS12HistoricalReplayForDate,
     } = await import('./s12ReplayTradeOutcome')
     if (replayScope === 'fusion_snapshot_structure') {
       const symbols = await loadFusionSnapshotSymbols(env.DB, triggerTime, UPDATE_BATCH_SIZE, offset)
-      const { runS12CandidateStructureSnapshots } = await import('./s12CandidateStructureSnapshots')
-      const snapshotResult = await runS12CandidateStructureSnapshots(env, triggerTime, {
+      const { runS12ResearchStructureSnapshots } = await import('./s12ResearchStructureSnapshots')
+      const snapshotResult = await runS12ResearchStructureSnapshots(env, triggerTime, {
         limit: UPDATE_BATCH_SIZE,
         symbols,
       })
       const nextOffset = offset + symbols.length
       const hasMore = symbols.length === UPDATE_BATCH_SIZE
-      await logSchedulerResult(env.KV, 's12-structure-snapshot', {
+      await logSchedulerResult(env.KV, 's12-research-recovery', {
         status: hasMore ? 'running' : 'success',
         summary: `historical canonical cohort date=${triggerTime} offset=${offset} attempted=${snapshotResult.attempted} persisted=${snapshotResult.persisted} ready=${snapshotResult.ready} setup=${snapshotResult.setup_only} skipped=${snapshotResult.skipped} errors=${snapshotResult.errors} ${hasMore ? 'queued_next=1' : 'complete=1'}`,
         duration_ms: 0,
@@ -3945,7 +3440,6 @@ export async function processUpdateBatch(
         symbols: cohortSymbols,
         maturityAsOfDate,
         signedEligibleRepair: replayScope === 'signed_eligible_repair',
-        persistUnavailableOutcomes: dynamicCohortScope,
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -3984,15 +3478,7 @@ export async function processUpdateBatch(
         ? await loadSignedEligibleRepairSymbolsByHistoricalDate(env.DB, triggerTime)
         : []
     const terminalDataSourceReason = String(result.terminal_data_source_reason ?? '').trim()
-    const retryableUnavailableOnly = replayScope === 'fusion_snapshot_missing'
-      && Number(result.attempted ?? 0) > 0
-      && result.outcomes.length > 0
-      && result.outcomes.every((outcome) => (
-        outcome.observation_kind === 'unavailable'
-        && isS12ReplayRetryableUnavailableReason(outcome.status_reason)
-      ))
     const dynamicCohortStalled = dynamicCohortScope
-      && !retryableUnavailableOnly
       && !terminalDataSourceReason
       && Number(cohortSymbols?.length ?? 0) > 0
       && remainingReplaySymbols.length >= Number(cohortSymbols?.length ?? 0)
@@ -4000,7 +3486,7 @@ export async function processUpdateBatch(
         replayScope === 'signed_eligible_repair'
         || Number(result.persisted ?? 0) === 0
       )
-    const hasMore = terminalDataSourceReason || dynamicCohortStalled || retryableUnavailableOnly
+    const hasMore = terminalDataSourceReason || dynamicCohortStalled
       ? false
       : dynamicCohortScope
       ? remainingReplaySymbols.length > 0 && Number(result.persisted ?? 0) > 0
@@ -4059,7 +3545,6 @@ export async function processUpdateBatch(
       `setup_only=${result.setup_only}`,
       `skipped=${result.skipped}`,
       `persisted=${result.persisted}`,
-      `retryable_unavailable_only=${retryableUnavailableOnly ? 1 : 0}`,
       replayCoverage
         ? `coverage=${replayCoverage.replayRows}/${replayCoverage.totalSnapshotRows}`
           + ` mature_missing=${replayCoverage.matureMissingRows}`
@@ -4111,8 +3596,6 @@ export async function processUpdateBatch(
         upstreamRunId: runId,
         lastError: replayCoverage && replayCoverage.pendingMaturityRows > 0
           ? `waiting for stock-specific five-session maturity symbols=${replayCoverage.pendingMaturityRows}`
-          : retryableUnavailableOnly
-            ? `waiting for retryable S12 lifecycle bars symbols=${remainingReplaySymbols.length}`
           : `waiting for complete five-session replay data symbols=${remainingReplaySymbols.length}`,
       })
     }

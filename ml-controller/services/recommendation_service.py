@@ -70,6 +70,8 @@ POTENTIAL_BUY_SIGNAL = "POTENTIAL_BUY"
 POTENTIAL_BUY_SELECTION_REASON = "positive_edge_but_zero_weight_due_to_better_alternative"
 POTENTIAL_BUY_POLICY = "positive_expected_edge_zero_sparse_weight_not_final_buy"
 POTENTIAL_BUY_MIN_EXPECTED_RETURN = 0.005
+OBSERVATIONAL_POTENTIAL_BUY_SELECTION_REASON = "formal_ml_buy_awaiting_validated_expected_return"
+OBSERVATIONAL_POTENTIAL_BUY_POLICY = "non_executable_formal_ml_observation_missing_expected_return_v1"
 FORMAL_BUY_SIGNALS = {"BUY", "STRONG_BUY"}
 
 
@@ -2651,6 +2653,93 @@ def _is_sparse_potential_buy_evidence(evidence: dict[str, Any]) -> bool:
     return math.isfinite(single_name_weight) and single_name_weight <= 0.0
 
 
+def _observational_potential_buy_evidence(
+    row: dict[str, Any],
+    allocation_evidence: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Expose unresolved formal alpha as non-executable observation evidence.
+
+    This lane never relaxes the sparse allocator or pending-buy contract. It only
+    prevents a validated upstream BUY from being collapsed into an opaque HOLD
+    while its canonical expected-return owner is still missing.
+    """
+    lane = str(row.get("recommendation_lane") or "tradable").strip().lower()
+    if lane != "tradable" or row.get("eligible_for_pending_buy") is False:
+        return None
+
+    score_components = row.get("score_components")
+    if isinstance(score_components, str):
+        try:
+            score_components = json.loads(score_components)
+        except (TypeError, json.JSONDecodeError):
+            score_components = {}
+    if not isinstance(score_components, dict):
+        score_components = {}
+
+    ml_policy = score_components.get("mlEdgePolicy")
+    if not isinstance(ml_policy, dict):
+        ml_policy = row.get("ml_edge_policy") if isinstance(row.get("ml_edge_policy"), dict) else {}
+    formal_signal = _normalized_signal(ml_policy.get("signal") or row.get("signal_raw"))
+    if not _is_formal_buy_signal(formal_signal):
+        return None
+
+    family_evidence = score_components.get("coreFamilyEvidence")
+    if not isinstance(family_evidence, dict):
+        family_evidence = (
+            row.get("core_family_evidence")
+            if isinstance(row.get("core_family_evidence"), dict)
+            else {}
+        )
+    try:
+        active_family_count = int(family_evidence.get("active_family_count") or 0)
+    except (TypeError, ValueError):
+        return None
+    if (
+        family_evidence.get("formal_model_contract_passed") is not True
+        or family_evidence.get("evidence_status") != "sufficient_family_breadth"
+        or active_family_count < 2
+    ):
+        return None
+
+    resolver = allocation_evidence.get("allocator_edge_resolver")
+    if not isinstance(resolver, dict) or resolver.get("expected_return_owner") != "risk_abstention":
+        return None
+    abstention_reason = str(
+        resolver.get("abstention_reason")
+        or allocation_evidence.get("expected_return_source")
+        or ""
+    ).strip()
+    s12_trade_ev = allocation_evidence.get("s12_trade_ev")
+    s12_status = str(
+        (s12_trade_ev or {}).get("status") if isinstance(s12_trade_ev, dict) else ""
+    ).strip().lower()
+    missing_expected_return = (
+        _expected_return_source_missing(abstention_reason)
+        or (s12_status == "setup_only" and abstention_reason == "s12_trade_ev_setup_only")
+    )
+    if not abstention_reason or not missing_expected_return:
+        return None
+    if s12_status in {"loaded", "verified", "risk_blocked", "invalidated"}:
+        return None
+    if allocation_evidence.get("s12_htf_hard_block") is True:
+        return None
+
+    alpha_context = row.get("alpha_context") if isinstance(row.get("alpha_context"), dict) else {}
+    risk_overlay = alpha_context.get("risk_overlay") if isinstance(alpha_context.get("risk_overlay"), dict) else {}
+    if risk_overlay.get("skip") is True:
+        return None
+
+    return {
+        "potential_buy_kind": "formal_alpha_observation",
+        "potential_buy_execution_eligible": False,
+        "potential_buy_formal_signal": formal_signal,
+        "potential_buy_active_family_count": active_family_count,
+        "potential_buy_expected_return_state": "missing_validated_owner",
+        "potential_buy_expected_return_abstention_reason": abstention_reason,
+        "potential_buy_s12_status": s12_status or "missing",
+    }
+
+
 def _row_expected_return(row: dict, alpha_policy: dict | None = None) -> float:
     value, _source = _row_expected_return_with_source(row, alpha_policy=alpha_policy)
     return value
@@ -4209,7 +4298,13 @@ def _apply_sparse_tangent_buy_selection(
                 selected=False,
                 weight=float(weights.get(symbol, 0.0) or 0.0),
             )
-            is_potential_buy = _is_sparse_potential_buy_evidence(allocation_evidence)
+            is_optimizer_potential_buy = _is_sparse_potential_buy_evidence(allocation_evidence)
+            observation_evidence = (
+                None
+                if is_optimizer_potential_buy
+                else _observational_potential_buy_evidence(row, allocation_evidence)
+            )
+            is_potential_buy = is_optimizer_potential_buy or observation_evidence is not None
             row["alpha_allocation"] = {
                 **(alpha_allocation if isinstance(alpha_allocation, dict) else {}),
                 **allocation_contract,
@@ -4217,21 +4312,39 @@ def _apply_sparse_tangent_buy_selection(
                 "controller": controller,
                 **allocation_evidence,
                 "potential_buy": is_potential_buy,
+                **(observation_evidence or {}),
             }
             if is_potential_buy:
                 _preserve_signal_raw(row)
                 row["signal"] = POTENTIAL_BUY_SIGNAL
-                row["signal_source"] = "sparse_tangent_inverse_risk_potential_buy"
+                row["signal_source"] = (
+                    "sparse_tangent_inverse_risk_potential_buy"
+                    if is_optimizer_potential_buy
+                    else "formal_ml_observation_potential_buy"
+                )
                 row["has_buy_signal"] = 0
                 row["ranking_promoted"] = False
                 row["sparse_tangent_selected"] = False
-                row["alpha_allocation"]["potential_buy_policy"] = POTENTIAL_BUY_POLICY
-                row["alpha_allocation"]["potential_buy_reason"] = POTENTIAL_BUY_SELECTION_REASON
-                row["alpha_allocation"]["potential_buy_min_expected_return"] = POTENTIAL_BUY_MIN_EXPECTED_RETURN
+                row["alpha_allocation"]["potential_buy_policy"] = (
+                    POTENTIAL_BUY_POLICY
+                    if is_optimizer_potential_buy
+                    else OBSERVATIONAL_POTENTIAL_BUY_POLICY
+                )
+                row["alpha_allocation"]["potential_buy_reason"] = (
+                    POTENTIAL_BUY_SELECTION_REASON
+                    if is_optimizer_potential_buy
+                    else OBSERVATIONAL_POTENTIAL_BUY_SELECTION_REASON
+                )
+                if is_optimizer_potential_buy:
+                    row["alpha_allocation"]["potential_buy_min_expected_return"] = POTENTIAL_BUY_MIN_EXPECTED_RETURN
                 watch_points = row.get("watch_points")
                 if not isinstance(watch_points, list):
                     watch_points = []
-                watch_points.append("allocation:potential_buy:positive_edge_zero_weight")
+                watch_points.append(
+                    "allocation:potential_buy:positive_edge_zero_weight"
+                    if is_optimizer_potential_buy
+                    else "allocation:potential_buy:formal_ml_awaiting_validated_expected_return"
+                )
                 row["watch_points"] = watch_points
 
     logger.info(

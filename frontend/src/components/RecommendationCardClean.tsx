@@ -172,6 +172,10 @@ type SparseAllocationSummary = {
   allocation_rank?: number | string | null
   selection_reason?: string | null
   potential_buy_reason?: string | null
+  potential_buy?: boolean | number | string | null
+  potential_buy_policy?: string | null
+  potential_buy_kind?: string | null
+  potential_buy_execution_eligible?: boolean | number | string | null
   sparse_weight_state?: string | null
   buy_signal_count?: number | string | null
   return_history_coverage?: number | string | null
@@ -1870,7 +1874,10 @@ function SparseAllocationBlock({ allocation }: { allocation: SparseAllocationSum
   const selectionPolicy = allocation.selection_policy ?? 'positive_expected_edge_sparse_weights_no_forced_fill'
   const upstreamPolicy = allocation.upstream_conflict_policy ?? 'l3_5_flags_conflict_l4_decides_weight_not_drop'
   const allocationWeight = allocation.allocation_weight ?? allocation.single_name_weight
-  const selectionReason = allocation.selection_reason ?? allocation.potential_buy_reason ?? allocation.sparse_weight_state ?? 'reason unavailable'
+  const potentialBuy = boolFromValue(allocation.potential_buy)
+  const selectionReason = potentialBuy
+    ? allocation.potential_buy_reason ?? allocation.selection_reason ?? allocation.sparse_weight_state ?? 'reason unavailable'
+    : allocation.selection_reason ?? allocation.sparse_weight_state ?? 'reason unavailable'
 
   return (
     <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] p-3 text-xs">
@@ -1882,7 +1889,11 @@ function SparseAllocationBlock({ allocation }: { allocation: SparseAllocationSum
         <div className="rounded-md border border-border/40 bg-background/50 p-2">
           <p className="text-[10px] normal-case text-muted-foreground">decision</p>
           <p className={cn('mt-0.5 sv-num text-sm font-semibold', selected ? 'text-emerald-600 dark:text-emerald-300' : 'text-muted-foreground')}>
-            {selected ? `BUY weight ${allocationWeightText(allocationWeight)}` : 'not selected / potential'}
+            {selected
+              ? `BUY weight ${allocationWeightText(allocationWeight)}`
+              : potentialBuy
+                ? 'POTENTIAL BUY · non-executable'
+                : 'not selected'}
           </p>
         </div>
         <div className="rounded-md border border-border/40 bg-background/50 p-2">

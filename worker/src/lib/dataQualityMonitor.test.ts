@@ -9,6 +9,7 @@ import {
   buildScreenerSourceOfTruthCheck,
   buildPendingBuyDateSanityCheck,
   buildPendingBuyAllocatorOwnerCheck,
+  buildRecommendationDecisionAvailabilityCheck,
   buildBoardLaneContractCheck,
   buildDatasetSnapshotManifestCheck,
   buildRetrainFollowupClosureCheck,
@@ -479,6 +480,75 @@ void (async () => {
   })
   assert(check.status === 'fail', 'pending buys must fail when WATCH_BUY or missing recommendation rows enter execution pool')
   assert(check.summary.includes('watch=1'), 'pending-buy allocator owner check should expose watch leakage count')
+}
+
+{
+  const check = buildRecommendationDecisionAvailabilityCheck({
+    observedDays: 5,
+    upstreamSignalDays: 5,
+    recentStrandedDays: 5,
+    consecutiveStrandedDays: 5,
+    finalBuyRows: 0,
+    potentialBuyRows: 0,
+    latestUpstreamFormalBuyCount: 24,
+    latestFinalBuyCount: 0,
+    latestPotentialBuyCount: 0,
+    latestDate: '2026-08-04',
+  })
+  assert(check.status === 'fail', 'three or more consecutive stranded formal BUY sessions must fail')
+}
+
+{
+  const check = buildRecommendationDecisionAvailabilityCheck({
+    observedDays: 5,
+    upstreamSignalDays: 5,
+    recentStrandedDays: 4,
+    consecutiveStrandedDays: 0,
+    finalBuyRows: 0,
+    potentialBuyRows: 7,
+    latestUpstreamFormalBuyCount: 21,
+    latestFinalBuyCount: 0,
+    latestPotentialBuyCount: 7,
+    latestDate: '2026-08-05',
+  })
+  assert(check.status === 'ok', 'latest non-executable potential decisions must close current availability incident')
+  assert(
+    check.metrics?.potential_buy_execution_contract === 'non_executable_has_buy_signal_zero',
+    'availability closure must keep potential BUY outside execution',
+  )
+}
+
+{
+  const check = buildRecommendationDecisionAvailabilityCheck({
+    observedDays: 5,
+    upstreamSignalDays: 0,
+    recentStrandedDays: 0,
+    consecutiveStrandedDays: 0,
+    finalBuyRows: 0,
+    potentialBuyRows: 0,
+    latestUpstreamFormalBuyCount: 0,
+    latestFinalBuyCount: 0,
+    latestPotentialBuyCount: 0,
+    latestDate: '2026-08-05',
+  })
+  assert(check.status === 'ok', 'zero decisions are not an availability incident when upstream has no formal BUY')
+}
+
+{
+  const check = buildRecommendationDecisionAvailabilityCheck({
+    observedDays: 0,
+    upstreamSignalDays: 0,
+    recentStrandedDays: 0,
+    consecutiveStrandedDays: 0,
+    finalBuyRows: 0,
+    potentialBuyRows: 0,
+    latestUpstreamFormalBuyCount: 0,
+    latestFinalBuyCount: 0,
+    latestPotentialBuyCount: 0,
+    latestDate: null,
+    queryError: 'recommendation_decision_availability_query_failed',
+  })
+  assert(check.status === 'fail', 'availability telemetry must fail closed when its D1 query fails')
 }
 
 {

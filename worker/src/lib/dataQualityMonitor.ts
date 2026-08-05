@@ -103,6 +103,15 @@ interface CountRow {
   freshness_status?: string | null
   latest_materialization?: string | null
   root_cause?: string | null
+  observed_days?: number
+  upstream_signal_days?: number
+  recent_stranded_days?: number
+  consecutive_stranded_days?: number
+  final_buy_rows?: number
+  potential_buy_rows?: number
+  latest_upstream_formal_buy_count?: number
+  latest_final_buy_count?: number
+  latest_potential_buy_count?: number
 }
 
 interface MarketDashboardMaterializationSource {
@@ -842,6 +851,61 @@ export function buildPendingBuyAllocatorOwnerCheck(input: {
   }
 }
 
+export function buildRecommendationDecisionAvailabilityCheck(input: {
+  observedDays: number
+  upstreamSignalDays: number
+  recentStrandedDays: number
+  consecutiveStrandedDays: number
+  finalBuyRows: number
+  potentialBuyRows: number
+  latestUpstreamFormalBuyCount: number
+  latestFinalBuyCount: number
+  latestPotentialBuyCount: number
+  latestDate?: string | null
+  queryError?: string | null
+}): DataQualityCheck {
+  const observedDays = Number(input.observedDays ?? 0)
+  const upstreamSignalDays = Number(input.upstreamSignalDays ?? 0)
+  const recentStrandedDays = Number(input.recentStrandedDays ?? 0)
+  const consecutiveStrandedDays = Number(input.consecutiveStrandedDays ?? 0)
+  const latestUpstreamFormalBuyCount = Number(input.latestUpstreamFormalBuyCount ?? 0)
+  const latestFinalBuyCount = Number(input.latestFinalBuyCount ?? 0)
+  const latestPotentialBuyCount = Number(input.latestPotentialBuyCount ?? 0)
+  const latestDecisionCount = latestFinalBuyCount + latestPotentialBuyCount
+  const status: DataQualityStatus = input.queryError || observedDays <= 0
+    ? 'fail'
+    : latestUpstreamFormalBuyCount <= 0 || latestDecisionCount > 0
+    ? 'ok'
+    : consecutiveStrandedDays >= 3
+      ? 'fail'
+      : 'warn'
+  return {
+    id: 'recommendation_decision_availability',
+    label: 'Recommendation decision availability',
+    status,
+    summary: input.queryError
+      ? `availability query failed: ${input.queryError}`
+      : status === 'ok'
+      ? `latest=${input.latestDate ?? 'missing'} upstream=${latestUpstreamFormalBuyCount} BUY=${latestFinalBuyCount} potential=${latestPotentialBuyCount}`
+      : `formal upstream BUY evidence stranded for ${consecutiveStrandedDays} consecutive sessions; latest decisions=0`,
+    metrics: {
+      latest_date: input.latestDate ?? null,
+      observed_days: observedDays,
+      upstream_signal_days: upstreamSignalDays,
+      recent_stranded_days: recentStrandedDays,
+      consecutive_stranded_days: consecutiveStrandedDays,
+      final_buy_rows: Number(input.finalBuyRows ?? 0),
+      potential_buy_rows: Number(input.potentialBuyRows ?? 0),
+      latest_upstream_formal_buy_count: latestUpstreamFormalBuyCount,
+      latest_final_buy_count: latestFinalBuyCount,
+      latest_potential_buy_count: latestPotentialBuyCount,
+      failure_slo: '3_consecutive_trading_sessions_with_formal_upstream_buy_and_zero_buy_or_potential',
+      potential_buy_execution_contract: 'non_executable_has_buy_signal_zero',
+      query_error: input.queryError ?? null,
+    },
+  }
+}
+
 function normalizedDate(value: string | null | undefined): string | null {
   const raw = String(value ?? '').trim()
   return raw ? raw.slice(0, 10) : null
@@ -1537,6 +1601,54 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
     ).catch((): CountRow => ({})),
   ])
 
+  const recommendationDecisionAvailabilityStats = await firstCount(
+    env.DB,
+    `WITH latest_days AS (
+       SELECT date
+         FROM daily_recommendations
+        WHERE date <= ?
+        GROUP BY date
+        ORDER BY date DESC
+        LIMIT 5
+     ), daily AS (
+       SELECT dr.date,
+              SUM(CASE WHEN json_valid(dr.score_components)
+                         AND json_extract(dr.score_components, '$.mlEdgePolicy.signal') IN ('BUY', 'STRONG_BUY')
+                         AND COALESCE(json_extract(dr.score_components, '$.coreFamilyEvidence.formal_model_contract_passed'), 0) = 1
+                         AND COALESCE(json_extract(dr.score_components, '$.coreFamilyEvidence.active_family_count'), 0) >= 2
+                       THEN 1 ELSE 0 END) AS upstream_formal_buy_count,
+              SUM(CASE WHEN COALESCE(dr.has_buy_signal, 0) = 1 AND dr.signal = 'BUY' THEN 1 ELSE 0 END) AS final_buy_count,
+              SUM(CASE WHEN dr.signal = 'POTENTIAL_BUY'
+                         OR (json_valid(dr.alpha_allocation)
+                             AND COALESCE(json_extract(dr.alpha_allocation, '$.potential_buy'), 0) = 1)
+                       THEN 1 ELSE 0 END) AS potential_buy_count
+         FROM daily_recommendations dr
+         JOIN latest_days ld ON ld.date = dr.date
+        GROUP BY dr.date
+     ), ordered AS (
+       SELECT *,
+              ROW_NUMBER() OVER (ORDER BY date DESC) AS recency_rank,
+              CASE WHEN upstream_formal_buy_count > 0
+                         AND final_buy_count + potential_buy_count = 0
+                   THEN 1 ELSE 0 END AS stranded
+         FROM daily
+     )
+     SELECT COUNT(*) AS observed_days,
+            SUM(CASE WHEN upstream_formal_buy_count > 0 THEN 1 ELSE 0 END) AS upstream_signal_days,
+            SUM(stranded) AS recent_stranded_days,
+            SUM(final_buy_count) AS final_buy_rows,
+            SUM(potential_buy_count) AS potential_buy_rows,
+            MAX(CASE WHEN recency_rank = 1 THEN date END) AS latest_date,
+            MAX(CASE WHEN recency_rank = 1 THEN upstream_formal_buy_count ELSE 0 END) AS latest_upstream_formal_buy_count,
+            MAX(CASE WHEN recency_rank = 1 THEN final_buy_count ELSE 0 END) AS latest_final_buy_count,
+            MAX(CASE WHEN recency_rank = 1 THEN potential_buy_count ELSE 0 END) AS latest_potential_buy_count,
+            CASE WHEN MAX(CASE WHEN recency_rank = 1 THEN stranded ELSE 0 END) = 0 THEN 0
+                 ELSE COALESCE(MIN(CASE WHEN stranded = 0 THEN recency_rank END) - 1, COUNT(*))
+            END AS consecutive_stranded_days
+       FROM ordered`,
+    targetDate,
+  ).catch((): CountRow => ({ root_cause: 'recommendation_decision_availability_query_failed' }))
+
   const predictionRows = (predictionGroups.results ?? []).reduce((sum, row) => sum + Number(row.count ?? 0), 0)
   const checks: DataQualityCheck[] = [
     buildFreshnessCheck({
@@ -1770,6 +1882,19 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       invalidAllocatorCount: Number(pendingBuyStats.pending_buy_invalid_allocator_count ?? 0),
       watchSourceCount: Number(pendingBuyStats.pending_buy_watch_source_count ?? 0),
       missingRecommendationCount: Number(pendingBuyStats.pending_buy_missing_recommendation_count ?? 0),
+    }),
+    buildRecommendationDecisionAvailabilityCheck({
+      observedDays: Number(recommendationDecisionAvailabilityStats.observed_days ?? 0),
+      upstreamSignalDays: Number(recommendationDecisionAvailabilityStats.upstream_signal_days ?? 0),
+      recentStrandedDays: Number(recommendationDecisionAvailabilityStats.recent_stranded_days ?? 0),
+      consecutiveStrandedDays: Number(recommendationDecisionAvailabilityStats.consecutive_stranded_days ?? 0),
+      finalBuyRows: Number(recommendationDecisionAvailabilityStats.final_buy_rows ?? 0),
+      potentialBuyRows: Number(recommendationDecisionAvailabilityStats.potential_buy_rows ?? 0),
+      latestUpstreamFormalBuyCount: Number(recommendationDecisionAvailabilityStats.latest_upstream_formal_buy_count ?? 0),
+      latestFinalBuyCount: Number(recommendationDecisionAvailabilityStats.latest_final_buy_count ?? 0),
+      latestPotentialBuyCount: Number(recommendationDecisionAvailabilityStats.latest_potential_buy_count ?? 0),
+      latestDate: recommendationDecisionAvailabilityStats.latest_date ?? null,
+      queryError: recommendationDecisionAvailabilityStats.root_cause ?? null,
     }),
     buildSurfaceRoleConsistencyCheck({
       recommendationRole: 'recommendation_candidate',

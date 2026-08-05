@@ -38,6 +38,7 @@ import { buildScoreV2PayloadFromProjectedScores } from '@/lib/scoreV2ViewModel'
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 const POTENTIAL_BUY_MIN_EXPECTED_RETURN = 0.005
+const OBSERVATIONAL_POTENTIAL_BUY_POLICY = 'non_executable_formal_ml_observation_missing_expected_return_v1'
 
 function isTWMarketOpen(): boolean {
   const h = (new Date().getUTCHours() + 8) % 24
@@ -149,6 +150,13 @@ function isPotentialBuyRecommendation(rec: any): boolean {
     || allocation?.potential_buy === 1
     || l4Allocation?.potential_buy === true
     || l4Allocation?.potential_buy === 1
+  const hasExplicitObservationPolicy = [allocation, l4Allocation].some((payload) => (
+    payload?.potential_buy_policy === OBSERVATIONAL_POTENTIAL_BUY_POLICY
+    && (
+      payload?.potential_buy_execution_eligible === false
+      || payload?.potential_buy_execution_eligible === 0
+    )
+  ))
   const points = Array.isArray(rec?.watch_points)
     ? rec.watch_points
     : typeof rec?.watch_points === 'string'
@@ -156,6 +164,7 @@ function isPotentialBuyRecommendation(rec: any): boolean {
       : []
   const hasWatchPoint = points.some((point: any) => String(point).includes('allocation:potential_buy'))
   if (!hasPotentialBuyEvidence && !hasWatchPoint) return false
+  if (hasExplicitObservationPolicy) return true
   const expectedReturn = potentialBuyExpectedReturn(rec)
   return expectedReturn != null && expectedReturn >= POTENTIAL_BUY_MIN_EXPECTED_RETURN
 }

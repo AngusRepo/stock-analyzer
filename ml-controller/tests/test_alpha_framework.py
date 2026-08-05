@@ -628,6 +628,85 @@ def test_sparse_allocator_marks_positive_zero_weight_as_potential_buy(monkeypatc
     assert ccc["alpha_allocation"]["selection_reason"] == "no_positive_expected_edge"
 
 
+def _missing_ev_formal_ml_row(symbol: str, *, hard_block: bool = False) -> dict:
+    row = _sparse_recommendation_row(
+        symbol,
+        forecast_pct=0.0,
+        final_score=77.0,
+        signal="HOLD",
+    )
+    row.pop("trade_expected_return_net_pct")
+    row.pop("trade_expected_return_source")
+    row["score_components"] = {
+        **row["score_components"],
+        "mlEdgePolicy": {"signal": "BUY"},
+        "coreFamilyEvidence": {
+            "formal_model_contract_passed": True,
+            "evidence_status": "sufficient_family_breadth",
+            "active_family_count": 3,
+        },
+    }
+    row["s12_trade_ev"] = {
+        "status": "risk_blocked" if hard_block else "setup_only",
+        "s12_entry_context": {"htf_hard_block": hard_block},
+    }
+    return row
+
+
+def test_sparse_allocator_exposes_missing_ev_formal_ml_as_non_executable_potential(monkeypatch):
+    def _fake_sparse_allocator(candidates, return_history, **kwargs):
+        assert [row["symbol"] for row in candidates] == ["AAA"]
+        return {
+            "weights": {"AAA": 1.0},
+            "candidate_diagnostics": {},
+            "allocation_objective": "test_sparse_allocator",
+            "evaluated_candidate_count": len(candidates),
+        }
+
+    monkeypatch.setattr(
+        recommendation_service,
+        "allocate_sparse_tangent_with_evidence",
+        _fake_sparse_allocator,
+    )
+    rows = [
+        _sparse_recommendation_row("AAA", forecast_pct=0.04, final_score=82.0),
+        _missing_ev_formal_ml_row("OBS"),
+        _missing_ev_formal_ml_row("BLOCKED", hard_block=True),
+    ]
+
+    allocated = recommendation_service._apply_sparse_tangent_buy_selection(
+        rows,
+        {"enabled": True, "promoteMinForecastPct": 0.0, "promoteMinMlEdge": 0.0},
+        {
+            "allocation": {
+                "engine": "sparse_tangent_inverse_risk",
+                "controller": "SparseTangent",
+                "buy_signal_count": 1,
+            }
+        },
+        confidence_floor=0.60,
+        return_history={},
+    )
+    by_symbol = {row["symbol"]: row for row in allocated}
+
+    observed = by_symbol["OBS"]
+    assert observed["signal"] == "POTENTIAL_BUY"
+    assert observed["has_buy_signal"] == 0
+    assert observed["sparse_tangent_selected"] is False
+    assert observed["alpha_allocation"]["eligible_for_sparse"] is False
+    assert observed["alpha_allocation"]["potential_buy"] is True
+    assert observed["alpha_allocation"]["potential_buy_execution_eligible"] is False
+    assert observed["alpha_allocation"]["potential_buy_policy"] == (
+        "non_executable_formal_ml_observation_missing_expected_return_v1"
+    )
+    assert observed["alpha_allocation"]["potential_buy_active_family_count"] == 3
+
+    blocked = by_symbol["BLOCKED"]
+    assert blocked["signal"] == "HOLD"
+    assert blocked["has_buy_signal"] == 0
+    assert blocked["alpha_allocation"]["potential_buy"] is False
+
+
 def test_potential_buy_is_not_a_formal_buy_signal():
     assert recommendation_service._is_formal_buy_signal("BUY") is True
     assert recommendation_service._is_formal_buy_signal("STRONG_BUY") is True

@@ -463,7 +463,7 @@ def test_opb_reward_ledger_sql_materializes_canonical_adjusted_selection_outcome
         INSERT INTO price_horizon_labels_v1 VALUES (
           1, '2026-07-01', '2026-07-02', 100.0, 1.0,
           '2026-07-08', 110.0, 1.0, '2026-07-08',
-          'stock_prices:finlab_primary_canonical_mirror', 'price_horizon_v1'
+          'stock_prices:finlab_primary_canonical_mirror', 'price_horizon_v3_canonical_reference_identity'
         )
         """
     )

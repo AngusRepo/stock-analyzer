@@ -531,7 +531,7 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     assert "replay_diagnostics.outcome_known_date" in observed[0]["sql"]
     assert "AS l4_executable_return_pct" in observed[0]["sql"]
     assert "price_horizon_labels_v1" in observed[0]["sql"]
-    assert "projection_version = 'price_horizon_v1'" in observed[0]["sql"]
+    assert "projection_version = 'price_horizon_v3_canonical_reference_identity'" in observed[0]["sql"]
     assert "LEAD(" not in observed[0]["sql"]
     assert "ph.exit_raw_close * ph.exit_adjustment_factor" in observed[0]["sql"]
     assert "ph.entry_raw_open * ph.entry_adjustment_factor" in observed[0]["sql"]

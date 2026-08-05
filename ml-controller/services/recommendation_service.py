@@ -2787,8 +2787,11 @@ def _canonical_expected_return_from_row(
         if status == "loaded" and value is not None and primary_allowed:
             return value, str(fusion_payload.get("expected_return_source") or "allocator_ev_fusion"), fusion_payload
         fusion_loaded_non_primary = status in {"loaded", "candidate_fallback_required"}
-        if status == "rejected":
-            return None, str(fusion_payload.get("expected_return_source") or "allocator_ev_fusion_rejected"), fusion_payload
+        # A rejected Fusion candidate is diagnostic evidence, not an owner.
+        # Keep the payload on the row for audit, then fall back to the
+        # independently validated canonical S12/L4 owners below. Returning
+        # here would let a stale or not-yet-mature Fusion config suppress an
+        # otherwise valid BUY candidate.
 
     if fusion_loaded_non_primary and alpha_ev_value is not None:
         return alpha_ev_value, alpha_ev_source, alpha_ev_payload

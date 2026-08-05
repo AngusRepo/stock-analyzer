@@ -1792,7 +1792,7 @@ def test_fusion_v5_candidate_without_direct_s12_uses_two_part_model_availability
     assert allocation["allocator_ev_fusion"]["execution_probability"] == pytest.approx(0.5)
 
 
-def test_sparse_tangent_allocation_fails_closed_when_allocator_ev_fusion_artifact_is_invalid():
+def test_sparse_tangent_allocation_falls_back_to_canonical_owner_when_allocator_ev_fusion_artifact_is_invalid():
     rows = [{
         "symbol": "3661",
         "chip_score": 22.0,
@@ -1827,9 +1827,10 @@ def test_sparse_tangent_allocation_fails_closed_when_allocator_ev_fusion_artifac
     )
 
     allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_source"] == "allocator_ev_fusion:artifact_validation_failed_no_expected_return"
+    assert promoted[0]["signal"] == "BUY"
+    assert allocation["expected_return_owner"] == "s12_trade_ev"
+    assert allocation["expected_return"] == pytest.approx(0.006)
+    assert allocation["expected_return_source"] == "s12_replay_trade_outcomes"
     assert allocation["allocator_ev_fusion"]["status"] == "rejected"
     assert "validation_packet_not_pass" in allocation["allocator_ev_fusion"]["blockers"]
     assert "required_s12_feature_missing_from_artifact" in allocation["allocator_ev_fusion"]["blockers"]

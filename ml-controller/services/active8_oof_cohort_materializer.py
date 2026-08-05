@@ -21,7 +21,6 @@ from services.active8_oof_stacker import (
     build_chronological_oof_stack,
 )
 from services.ev_lineage_contract import build_model_set_signature
-from services.s12_trade_ev_bootstrap import S12TradeEvBootstrapProvider
 from services.model_artifact_registry import upsert_artifact_record
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
 from services.fundamental_quality import score_fundamental_quality
@@ -687,7 +686,6 @@ def build_oof_snapshot_rows(
     *,
     cohort_id: str,
     source_manifest_checksum: str,
-    s12_provider_factory: Callable[[str], S12TradeEvBootstrapProvider] | None = None,
     fundamental_quality_by_key: dict[tuple[str, str], dict[str, Any]] | None = None,
     market_context_by_date: dict[tuple[str, str], dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -696,10 +694,6 @@ def build_oof_snapshot_rows(
         (str(row.get("prediction_date") or row.get("date") or "")[:10], str(row.get("symbol") or "")): row
         for row in native_rows
     }
-    provider_factory = s12_provider_factory or (
-        lambda run_date: S12TradeEvBootstrapProvider.for_run_date(run_date)
-    )
-    providers: dict[str, S12TradeEvBootstrapProvider] = {}
     fundamental_quality_by_key = fundamental_quality_by_key or {}
     market_context_by_date = market_context_by_date or {}
     fundamental_pit_rows = 0
@@ -764,22 +758,9 @@ def build_oof_snapshot_rows(
             market_context_rows += 1
         alpha_context = _loads(native.get("alpha_context"))
         alpha_context["market_regime_context"] = market_context
-        candidate = {
-            **native,
-            "symbol": stacked["symbol"],
-            "market_segment": stacked["market_segment"],
-            "prediction_date": stacked["prediction_date"],
-            "score_components": score_payload,
-            "forecast_data": forecast,
-            "alpha_context": alpha_context,
-        }
-        if stacked["prediction_date"] not in providers:
-            providers[stacked["prediction_date"]] = provider_factory(stacked["prediction_date"])
-        provider = providers[stacked["prediction_date"]]
-        s12_payload = provider.build_for_row(candidate, prediction=forecast)
-        forecast["s12_trade_ev"] = s12_payload
+        forecast.pop("s12_trade_ev", None)
         allocation = _loads(native.get("alpha_allocation"))
-        allocation["s12_trade_ev"] = s12_payload
+        allocation.pop("s12_trade_ev", None)
         snapshots.append({
             "cohort_id": cohort_id,
             "fold_id": stacked["fold_id"],
@@ -795,8 +776,8 @@ def build_oof_snapshot_rows(
             "market_heat_expected_return": native.get("market_heat_expected_return"),
             "recommendation_lane": native.get("recommendation_lane"),
             "l4_model_version": None,
-            "s12_source": s12_payload.get("trade_expected_return_source") or s12_payload.get("source"),
-            "s12_asof_date": stacked["prediction_date"],
+            "s12_source": None,
+            "s12_asof_date": None,
             "label_known_date": stacked["label_known_date"],
             "model_set_signature": signature,
             "target_semantic_version": TARGET_SEMANTIC_VERSION,

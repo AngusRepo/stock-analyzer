@@ -69,13 +69,13 @@ const fakeDb = {
                   {
                     symbol: '2330', producer_run_id: 'run', ml_score: 0.72,
                     ml_vote_summary: '{"models":8}',
-                    alpha_allocation: '{"expected_return_owner":"l4_alpha_ev","selected":true}',
+                    alpha_allocation: '{"expected_return_owner":"allocator_ev_fusion","selected":true,"l4_alpha_ev":{"status":"loaded"}}',
                     signal: 'BUY', score_components: null,
                   },
                   {
                     symbol: '2317', producer_run_id: 'run', ml_score: 0.64,
                     ml_vote_summary: '{"models":8}',
-                    alpha_allocation: '{"expected_return_owner":"s12_trade_ev","selected":false}',
+                    alpha_allocation: '{"expected_return_owner":"risk_abstention","selected":false,"l4_alpha_ev":{"status":"loaded"}}',
                     signal: 'HOLD', score_components: null,
                   },
                 ],
@@ -99,12 +99,12 @@ async function runBehaviorTest(): Promise<void> {
   assert.deepEqual(reconciled, {
     referenceRows: 2,
     mlEvaluatedRows: 2,
-    evOwnerRows: 2,
+    evOwnerRows: 1,
     allocationSelectedRows: 1,
     finalSignalRows: 2,
   })
   assert.deepEqual(updates[0].binds.slice(0, 5), [1, 1, 1, 1, 'BUY'])
-  assert.deepEqual(updates[1].binds.slice(0, 5), [1, 0, 1, 0, 'HOLD'])
+  assert.deepEqual(updates[1].binds.slice(0, 5), [1, 1, 0, 0, 'HOLD'])
 
   console.log('selectionReferenceEvidence tests passed')
 

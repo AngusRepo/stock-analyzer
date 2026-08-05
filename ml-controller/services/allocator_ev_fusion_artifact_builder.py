@@ -17,13 +17,6 @@ from services.evidence_contracts import (
 )
 from services.ev_lineage_contract import ev_feature_lineage_blockers
 
-from services.allocator_ev_fusion import (
-    _s12_execution_ready,
-    _s12_multiplier,
-    _s12_structure_features,
-    _target_quality_numeric,
-    _target_quality_state,
-)
 from services.l4_alpha_ev_resolver import (
     PURGED_OOF_USAGE_SCOPE,
     SNAPSHOT_BACKFILL_AS_OF_GUARD,
@@ -31,7 +24,6 @@ from services.l4_alpha_ev_resolver import (
     SNAPSHOT_BACKFILL_USAGE_SCOPE,
     extract_l4_alpha_ev,
 )
-from services.s12_trade_ev import extract_s12_trade_ev
 from services.price_horizon_projection_contract import (
     OOF_PRICE_HORIZON_SOURCE,
     PRICE_HORIZONS_CTE,
@@ -39,7 +31,6 @@ from services.price_horizon_projection_contract import (
     expected_price_horizon_source,
 )
 from services.fusion_market_context import (
-    EXECUTION_MARKET_CONTEXT_FEATURE_NAMES,
     MARKET_CONTEXT_FEATURE_NAMES,
     market_context_feature_values,
     market_regime_bucket,
@@ -58,26 +49,8 @@ SELECTION_FEATURE_NAMES = [
     "ensemble_rank_available",
     *MARKET_CONTEXT_FEATURE_NAMES,
 ]
-EXECUTION_FEATURE_NAMES = [
-    *SELECTION_FEATURE_NAMES,
-    "s12_trade_expected_return",
-    "s12_available",
-    "s12_execution_ready",
-    "s12_context_multiplier",
-    "s12_target_quality_score",
-    "s12_structure_available",
-    "s12_risk_pct",
-    "s12_target1_r",
-    "s12_target2_r",
-    "s12_equity_mutation_score",
-    "s12_vwap_fast_acceptance",
-    "s12_htf_hard_block",
-    "s12_full_reaction_ready",
-    "s12_limited_takeover_ready",
-    "l4_s12_edge_agreement",
-    *EXECUTION_MARKET_CONTEXT_FEATURE_NAMES,
-]
-FEATURE_NAMES = list(dict.fromkeys([*SELECTION_FEATURE_NAMES, *EXECUTION_FEATURE_NAMES]))
+EXECUTION_FEATURE_NAMES = list(SELECTION_FEATURE_NAMES)
+FEATURE_NAMES = list(SELECTION_FEATURE_NAMES)
 
 TEMPORAL_TRAIN_FRACTION = 0.75
 PRIMARY_MIN_DATES = 40
@@ -87,8 +60,6 @@ PRIMARY_MIN_S12_AVAILABLE_SAMPLES = 300
 PRIMARY_MIN_S12_AVAILABLE_DATES = 10
 PRIMARY_MIN_L4_PIT_SAMPLES = 300
 PRIMARY_MIN_L4_PIT_DATES = 10
-PRIMARY_MIN_S12_STRUCTURE_SAMPLES = 300
-PRIMARY_MIN_S12_STRUCTURE_DATES = 10
 PRIMARY_MIN_MARKET_CONTEXT_SAMPLES = 300
 PRIMARY_MIN_MARKET_CONTEXT_DATES = 10
 ASSISTIVE_MIN_DATES = 20
@@ -150,15 +121,13 @@ def _row_for_extractors(row: dict[str, Any]) -> dict[str, Any]:
     allocation = _loads(row.get("alpha_allocation"))
     forecast_data = _loads(row.get("forecast_data"))
     for source in (allocation, forecast_data):
-        for key in ("l4_alpha_ev", "alpha_ev", "alpha_ev_prediction", "s12_trade_ev"):
+        for key in ("l4_alpha_ev", "alpha_ev", "alpha_ev_prediction"):
             if isinstance(source.get(key), dict) and key not in out:
                 out[key] = source[key]
         fusion = source.get("allocator_ev_fusion") if isinstance(source.get("allocator_ev_fusion"), dict) else {}
         if fusion:
             if isinstance(fusion.get("l4_alpha_ev"), dict) and "l4_alpha_ev" not in out:
                 out["l4_alpha_ev"] = fusion["l4_alpha_ev"]
-            if isinstance(fusion.get("s12_trade_ev"), dict) and "s12_trade_ev" not in out:
-                out["s12_trade_ev"] = fusion["s12_trade_ev"]
     return out
 
 
@@ -273,32 +242,18 @@ def _feature_vector(row: dict[str, Any]) -> dict[str, float] | None:
             )
     if not l4_point_in_time:
         l4_value = None
-    s12_value, _s12_source, s12_payload = extract_s12_trade_ev(extractor_row)
     l4_available = 1.0 if l4_value is not None else 0.0
     if l4_value is None:
         l4_value = 0.0
-    s12_available = 1.0
-    if s12_value is None:
-        s12_value = 0.0
-        s12_available = 0.0
-    target_state = _target_quality_state(s12_payload)
     return {
         **_selection_raw_features(row),
         "l4_expected_return": float(l4_value),
         "l4_available": l4_available,
         "l4_point_in_time_available": l4_available,
-        "s12_trade_expected_return": float(s12_value),
-        "s12_available": s12_available,
-        "s12_execution_ready": _s12_execution_ready(s12_payload),
-        "s12_context_multiplier": _s12_multiplier(s12_payload),
-        "s12_target_quality_score": _target_quality_numeric(target_state),
         "market_heat_expected_return": _market_heat(row),
-        "l4_s12_edge_agreement": 1.0 if (l4_value > 0 and s12_value > 0) or (l4_value <= 0 and s12_value <= 0) else 0.0,
-        **_s12_structure_features(s12_payload),
         **market_context_feature_values(
             row,
             l4_value=l4_value,
-            s12_value=s12_value,
         ),
     }
 
@@ -403,7 +358,6 @@ def _samples(
         replay_archetype = str(row.get("s12_replay_archetype") or "").strip().lower()
         observation_kind = _s12_replay_observation_kind(row)
         execution_observed = observation_kind in {"executed", "not_executed"}
-        s12_available = float(features.get("s12_available") or 0.0) > 0.0
         execution_target = (
             trade_target - max(0.0, execution_cost_bps) / 10000.0
             if trade_target is not None
@@ -478,31 +432,9 @@ def _samples(
         denominator = max(1, len(ranked) - 1)
         for idx, sample in enumerate(ranked):
             sample["selection_rank_target"] = (idx / denominator) - 0.5 if len(ranked) > 1 else 0.0
-    s12_ready_count = sum(
-        1
-        for sample in out
-        if float(sample["features"].get("s12_execution_ready") or 0.0) > 0.0
-    )
-    s12_available_count = sum(
-        1
-        for sample in out
-        if float(sample["features"].get("s12_available") or 0.0) > 0.0
-    )
     l4_available_samples = [
         sample for sample in out
         if float(sample["features"].get("l4_available") or 0.0) > 0.0
-    ]
-    s12_structure_samples = [
-        sample for sample in out
-        if float(sample["features"].get("s12_structure_available") or 0.0) > 0.0
-    ]
-    full_reaction_samples = [
-        sample for sample in out
-        if float(sample["features"].get("s12_full_reaction_ready") or 0.0) > 0.0
-    ]
-    limited_takeover_samples = [
-        sample for sample in out
-        if float(sample["features"].get("s12_limited_takeover_ready") or 0.0) > 0.0
     ]
     execution_samples = [sample for sample in out if sample["execution_target"] is not None]
     execution_observation_samples = [
@@ -543,21 +475,11 @@ def _samples(
         "sparse_date_rows_rejected": sparse_date_rows_rejected,
         "raw_date_counts": dict(sorted(raw_day_counts.items())),
         "date_count": len({row["date"] for row in out}),
-        "s12_ready_count": s12_ready_count,
-        "s12_available_count": s12_available_count,
-        "s12_available_date_count": len({row["date"] for row in out if row["features"]["s12_available"] > 0.0}),
         "l4_available_count": len(l4_available_samples),
         "l4_available_date_count": len({row["date"] for row in l4_available_samples}),
         "l4_available_coverage": round(len(l4_available_samples) / len(out), 8) if out else 0.0,
         "l4_point_in_time_available_count": len(l4_available_samples),
         "l4_point_in_time_available_date_count": len({row["date"] for row in l4_available_samples}),
-        "s12_structure_available_count": len(s12_structure_samples),
-        "s12_structure_available_date_count": len({row["date"] for row in s12_structure_samples}),
-        "s12_structure_available_coverage": round(len(s12_structure_samples) / len(out), 8) if out else 0.0,
-        "s12_full_reaction_count": len(full_reaction_samples),
-        "s12_full_reaction_date_count": len({row["date"] for row in full_reaction_samples}),
-        "s12_limited_takeover_count": len(limited_takeover_samples),
-        "s12_limited_takeover_date_count": len({row["date"] for row in limited_takeover_samples}),
         "execution_sample_count": len(execution_samples),
         "execution_date_count": len({row["date"] for row in execution_samples}),
         "execution_observation_count": len(execution_observation_samples),
@@ -584,8 +506,9 @@ def _samples(
             archetype: sum(1 for row in out if row.get("execution_archetype") == archetype)
             for archetype in sorted({str(row.get("execution_archetype")) for row in out if row.get("execution_archetype")})
         },
-        "s12_ready_coverage": round(s12_ready_count / len(out), 8) if out else 0.0,
-        "s12_available_coverage": round(s12_available_count / len(out), 8) if out else 0.0,
+        "candidate_time_s12_feature_count": 0,
+        "candidate_time_s12_serving_allowed": False,
+        "execution_policy_label_owner": "s12_replay_trade_outcomes",
         "target_policy": {
             "selection": "same_date_sector_or_segment_or_market_cross_section_residual_of_five_session_net_return",
             "selection_absolute_audit": "next_session_adjusted_open_to_fifth_session_adjusted_close_net_of_costs",
@@ -1042,7 +965,7 @@ def _paired_canonical_l4_comparison(
     return {
         "schema_version": "allocator-ev-fusion-champion-comparison-v1",
         "champion": "canonical_l4",
-        "challenger": "allocator_ev_fusion_v12_selection_model",
+        "challenger": "allocator_ev_fusion_v13_day_t_selection_model",
         "comparison_unit": "paired_prediction_date_same_candidates",
         "decision": "PASS" if not blockers else "FAIL",
         "failed_gates": blockers,
@@ -1073,7 +996,7 @@ def _paired_final_trade_ev_comparison(
         return {
             "schema_version": "allocator-ev-fusion-final-champion-comparison-v1",
             "champion": "canonical_l4",
-            "challenger": "allocator_ev_fusion_v12_final_trade_ev",
+            "challenger": "allocator_ev_fusion_v13_s12_policy_value",
             "comparison_target": "realized_multisession_trade_ev_net_of_costs",
             "decision": "FAIL",
             "failed_gates": blockers,
@@ -1207,7 +1130,7 @@ def _paired_final_trade_ev_comparison(
     return {
         "schema_version": "allocator-ev-fusion-final-champion-comparison-v1",
         "champion": "canonical_l4",
-        "challenger": "allocator_ev_fusion_v12_final_trade_ev",
+        "challenger": "allocator_ev_fusion_v13_s12_policy_value",
         "comparison_target": "realized_multisession_trade_ev_net_of_costs",
         "comparison_unit": "paired_prediction_date_same_candidates",
         "decision": "PASS" if not blockers else "FAIL",
@@ -1645,8 +1568,6 @@ def _promotion_tier(
     execution_date_count = int(diagnostics.get("execution_date_count") or 0)
     l4_available_count = int(diagnostics.get("l4_point_in_time_available_count") or 0)
     l4_available_date_count = int(diagnostics.get("l4_point_in_time_available_date_count") or 0)
-    structure_count = int(diagnostics.get("s12_structure_available_count") or 0)
-    structure_date_count = int(diagnostics.get("s12_structure_available_date_count") or 0)
     market_context_count = int(diagnostics.get("market_context_available_count") or 0)
     market_context_date_count = int(diagnostics.get("market_context_available_date_count") or 0)
     top_mean = float(oos_metrics.get("top_quintile_mean_return") or 0.0)
@@ -1672,10 +1593,6 @@ def _promotion_tier(
         blockers.append("primary_l4_pit_samples_low")
     if l4_available_date_count < PRIMARY_MIN_L4_PIT_DATES:
         blockers.append("primary_l4_pit_dates_low")
-    if structure_count < PRIMARY_MIN_S12_STRUCTURE_SAMPLES:
-        blockers.append("primary_s12_structure_samples_low")
-    if structure_date_count < PRIMARY_MIN_S12_STRUCTURE_DATES:
-        blockers.append("primary_s12_structure_dates_low")
     if market_context_count < PRIMARY_MIN_MARKET_CONTEXT_SAMPLES:
         blockers.append("primary_market_context_samples_low")
     if market_context_date_count < PRIMARY_MIN_MARKET_CONTEXT_DATES:
@@ -1694,52 +1611,6 @@ def _promotion_tier(
     if not blockers:
         return "primary", []
 
-    selection_corr_lcb = _float_or_none(selection_champion_comparison.get("corr_delta_lcb90"))
-    selection_spread_lcb = _float_or_none(selection_champion_comparison.get("spread_delta_lcb90"))
-    prediction_corr = _float_or_none(selection_champion_comparison.get("fusion_l4_prediction_corr_mean"))
-    final_top_trade_lcb = _float_or_none(champion_comparison.get("top_trade_ev_lcb90"))
-    s12_execution_coefficient = abs(
-        float((execution_model.get("coefficients") or {}).get("s12_trade_expected_return") or 0.0)
-    )
-    assistive_noninferior = (
-        int(selection_champion_comparison.get("oos_date_count") or 0) >= ASSISTIVE_MIN_OOS_DATES
-        and selection_corr_lcb is not None
-        and selection_corr_lcb >= -0.05
-        and selection_spread_lcb is not None
-        and selection_spread_lcb >= -0.005
-    )
-    assistive_diverse = (
-        (prediction_corr is not None and abs(prediction_corr) <= 0.995)
-        or s12_execution_coefficient > 1e-9
-    )
-    assistive_economic_utility = final_top_trade_lcb is not None and final_top_trade_lcb > 0.0
-    assistive_ok = (
-        sample_count >= ASSISTIVE_MIN_SAMPLES
-        and date_count >= ASSISTIVE_MIN_DATES
-        and top_mean > 0.0
-        and spread > 0.0
-        and corr > 0.0
-        and bool(walk_forward.get("passed"))
-        and l4_available_count >= ASSISTIVE_MIN_EXPERT_SAMPLES
-        and l4_available_date_count >= ASSISTIVE_MIN_EXPERT_DATES
-        and structure_count >= ASSISTIVE_MIN_EXPERT_SAMPLES
-        and structure_date_count >= ASSISTIVE_MIN_EXPERT_DATES
-        and market_context_count >= ASSISTIVE_MIN_EXPERT_SAMPLES
-        and market_context_date_count >= ASSISTIVE_MIN_EXPERT_DATES
-        and execution_model.get("decision") == "PASS"
-        and execution_probability_model.get("decision") == "PASS"
-        and assistive_noninferior
-        and assistive_diverse
-        and assistive_economic_utility
-    )
-    if assistive_ok:
-        return "assistive", blockers
-    if not assistive_noninferior:
-        blockers.append("assistive_not_noninferior_to_canonical_l4")
-    if not assistive_diverse:
-        blockers.append("assistive_diversity_not_demonstrated")
-    if not assistive_economic_utility:
-        blockers.append("assistive_portfolio_utility_not_positive")
     return "shadow", blockers
 
 
@@ -1889,7 +1760,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
     if decision != "PASS":
         promotion_blockers = [*data_validity_failed_gates, *component_failed_gates, *statistical_failed_gates]
     validation_packet = {
-        "schema_version": "allocator-ev-fusion-validation-packet-v13",
+        "schema_version": "allocator-ev-fusion-validation-packet-v14",
         "decision": decision,
         "failed_gates": failed_gates,
         "gate_layers": {
@@ -1908,7 +1779,6 @@ def build_allocator_ev_fusion_artifact_from_rows(
                 "decision": "PASS" if not economic_utility_failed_gates else "FAIL",
                 "failed_gates": economic_utility_failed_gates,
                 "primary_requires_superiority": True,
-                "assistive_requires_noninferiority_diversity_and_positive_utility": True,
             },
         },
         "benchmark_panel": benchmark_panel,
@@ -1925,20 +1795,19 @@ def build_allocator_ev_fusion_artifact_from_rows(
             "effective_sample_unit": "prediction_date",
             "temporal_train_fraction": TEMPORAL_TRAIN_FRACTION,
             "primary_minimum_oos_dates": PRIMARY_MIN_OOS_DATES,
-            "assistive_minimum_oos_dates": ASSISTIVE_MIN_OOS_DATES,
             "lookback_days": lookback_days,
             "feature_era": CANONICAL_SCORE_FEATURE_VERSION,
             "point_in_time_features_required": True,
             "purged_signal_date_groups": LABEL_PURGE_DATE_GROUPS,
         },
         "sample_audit": diagnostics,
-        "train_metrics": selection_model["train_metrics"],
-        "oos_metrics": selection_model["oos_metrics"],
-        "walk_forward": selection_model["walk_forward"],
-        "selection_model": selection_model,
-        "execution_model": execution_model,
+        "selection_diagnostic_train_metrics_not_served": selection_model["train_metrics"],
+        "selection_diagnostic_oos_metrics_not_served": selection_model["oos_metrics"],
+        "selection_diagnostic_walk_forward_not_served": selection_model["walk_forward"],
+        "selection_diagnostic_model_not_served": selection_model,
+        "conditional_execution_return_model": execution_model,
         "execution_probability_model": execution_probability_model,
-        "selection_champion_comparison": selection_champion_comparison,
+        "selection_diagnostic_comparison_not_served": selection_champion_comparison,
         "champion_comparison": champion_comparison,
         "promotion": {
             "schema_version": "allocator-ev-fusion-promotion-v4",
@@ -1952,11 +1821,9 @@ def build_allocator_ev_fusion_artifact_from_rows(
                 "min_samples": max(min_samples, PRIMARY_MIN_SAMPLES),
                 "min_execution_samples": PRIMARY_MIN_S12_AVAILABLE_SAMPLES,
                 "min_execution_dates": PRIMARY_MIN_S12_AVAILABLE_DATES,
-                "s12_coverage_is_diagnostic_only": True,
+                "candidate_time_s12_features_forbidden": True,
                 "min_l4_point_in_time_samples": PRIMARY_MIN_L4_PIT_SAMPLES,
                 "min_l4_point_in_time_dates": PRIMARY_MIN_L4_PIT_DATES,
-                "min_s12_structure_samples": PRIMARY_MIN_S12_STRUCTURE_SAMPLES,
-                "min_s12_structure_dates": PRIMARY_MIN_S12_STRUCTURE_DATES,
                 "min_market_context_samples": PRIMARY_MIN_MARKET_CONTEXT_SAMPLES,
                 "min_market_context_dates": PRIMARY_MIN_MARKET_CONTEXT_DATES,
                 "execution_expert_validation_passed": True,
@@ -1972,45 +1839,38 @@ def build_allocator_ev_fusion_artifact_from_rows(
         },
     }
     artifact = {
-        "schema_version": "allocator-ev-fusion-artifact-v12",
+        "schema_version": "allocator-ev-fusion-artifact-v13",
         "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
         "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
         "label_schema_version": LABEL_SCHEMA_VERSION,
         "expected_return_owner": "allocator_ev_fusion",
         "promotion_state": (
             "offline_quality_passed_operational_parity_required"
-            if generation_mode == "purged_oof" and promotion_tier in {"primary", "assistive"}
+            if generation_mode == "purged_oof" and promotion_tier == "primary"
             else "production_primary" if promotion_tier == "primary"
-            else "production_assistive" if promotion_tier == "assistive"
             else "shadow"
         ),
         "promotion_tier": promotion_tier,
         "primary_expected_return_allowed": promotion_tier == "primary" and generation_mode == "native",
-        "assistive_expected_return_allowed": False,
-        "assistive_learning_signal_allowed": promotion_tier in {"assistive", "primary"},
         "operational_parity_required": generation_mode == "purged_oof",
         "promotion_blockers": promotion_blockers,
         "validation_packet": validation_packet,
-        "resolver_method": "market_conditioned_cross_fitted_rank_two_part_trade_ev_fusion",
-        "model_version": f"allocator-ev-fusion-cross-fit-v12-{trained_until.replace('-', '')}",
-        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v12-pit-market-context",
+        "resolver_method": "day_t_causal_s12_policy_value_hurdle_fusion",
+        "model_version": f"allocator-ev-fusion-policy-value-v13-{trained_until.replace('-', '')}",
+        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v13-day-t-causal",
         "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
         "trained_until": trained_until,
         "horizon_days": 5,
         "cost_model_bps": cost_model_bps,
         "output_is_net_of_costs": True,
         "feature_names": FEATURE_NAMES,
-        "selection_model": selection_model,
-        "execution_model": execution_model,
-        "execution_probability_model": execution_probability_model,
-        "intercept": selection_model["intercept"],
-        "coefficients": {
-            **selection_model["coefficients"],
-            **{name: 0.0 for name in EXECUTION_FEATURE_NAMES if name not in SELECTION_FEATURE_NAMES},
-        },
+        "policy_value_head_count": 2,
+        "policy_value_heads": ["execution_probability_model", "conditional_execution_return_model"],
+        "conditional_execution_return_model": {**execution_model, "head_semantic": "conditional_execution_return_model"},
+        "execution_probability_model": {**execution_probability_model, "head_semantic": "execution_probability_model"},
         "output_clip": {"min": -0.08, "max": 0.08},
         "training_data": {
-            "source": "as-of ScoreV2/L4/S12 snapshots joined to executable adjusted five-session net labels and canonical replay outcomes",
+            "source": "as-of ScoreV2/L4/market snapshots joined to next-session canonical S12 replay policy outcomes",
             "trained_until": trained_until,
             "knowledge_cutoff_date": knowledge_cutoff_date or trained_until,
             "generated_at": datetime.now(timezone.utc).isoformat(),

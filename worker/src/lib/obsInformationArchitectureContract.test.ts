@@ -33,7 +33,7 @@ assert(obs.includes('ExecutionChainPanel'), 'OBS must render the callback-driven
 assert(!obs.includes('<ReadinessFlowMap'), 'OBS must not render the old readiness step-card grid')
 assert(!obs.includes('<SchedulerReadinessGroupBoard'), 'OBS must not render the old scheduler card wall')
 assert(!obs.includes('<SchedulerShortcutDeck'), 'OBS Source Gates must not duplicate scheduler scope cards')
-assert(executionChain.includes("['screener'],") && executionChain.includes("['regime-compute'],") && executionChain.includes("['s12-structure-snapshot'],") && executionChain.includes("['allocator-ev-readiness'],"), 'daily execution chain must expose the verified screener -> regime -> S12 -> allocator sequence')
+assert(executionChain.includes("['screener'],") && executionChain.includes("['regime-compute'],") && executionChain.includes("['allocator-ev-readiness'],") && !executionChain.includes("['s12-structure-snapshot'],"), 'daily execution chain must expose screener -> regime -> allocator without a duplicate S12 evening stage')
 assert(!executionChain.includes("id: 'daily_ops'"), 'independent scheduled roots must not be represented as a fake daily chain')
 assert(!executionChain.includes("id: 'weekly'") && executionChain.includes('Monthly artifact'), 'weekly cadence jobs must remain grouped inventory; monthly artifact keeps its owned lifecycle')
 assert(executionChain.includes("['morning-setup'],") && executionChain.includes("['pre-market-warmup'],") && executionChain.includes("['intraday-check'],") && executionChain.includes("['eod-exit'],") && executionChain.includes("['post-close-price-refresh'],") && executionChain.includes("['daily-snapshot'],"), 'intraday main line must preserve verified readiness and post-close dependencies')

@@ -19,9 +19,6 @@ MARKET_CONTEXT_FEATURE_NAMES = [
     "regime_surface_available",
     "l4_defensive_regime_interaction",
 ]
-EXECUTION_MARKET_CONTEXT_FEATURE_NAMES = [
-    "s12_defensive_regime_interaction",
-]
 
 
 def _loads(value: Any) -> dict[str, Any]:
@@ -383,7 +380,6 @@ def market_context_feature_values(
     row: dict[str, Any],
     *,
     l4_value: float | None,
-    s12_value: float | None,
 ) -> dict[str, float]:
     signal_date = str(row.get("prediction_date") or row.get("snapshot_date") or row.get("date") or "")[:10]
     context = recorded_market_context(row, signal_date=signal_date) or missing_market_context(
@@ -403,7 +399,6 @@ def market_context_feature_values(
         "market_context_available": 1.0 if context.get("market_context_available") else 0.0,
         "regime_surface_available": 1.0 if context.get("regime_surface_available") else 0.0,
         "l4_defensive_regime_interaction": float(l4_value or 0.0) * defensive,
-        "s12_defensive_regime_interaction": float(s12_value or 0.0) * defensive,
     }
 
 

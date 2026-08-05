@@ -23,7 +23,7 @@ export interface ExpectedReturnServingState {
   schema_version: 'expected-return-serving-state-v1'
   state: 'production_primary' | 'no_eligible_owner'
   expected_return_owner: ExpectedReturnOwner | null
-  action_gate: 'expected_return_owner' | 'validated_s12_only'
+  action_gate: 'expected_return_owner' | 'fusion_primary_required'
   run_date: string | null
   evaluated_at: string
   source_of_truth: 'trading:config+strict_contract'
@@ -72,6 +72,36 @@ function evaluateArtifact(
     : 'production_approved'
   if (artifact.expected_return_owner !== owner) blockers.push('expected_return_owner_mismatch')
   if (artifact.promotion_state !== requiredPromotionState) blockers.push('promotion_state_not_serving')
+  if (owner === 'allocator_ev_fusion') {
+    const policyHeads = Array.isArray(artifact.policy_value_heads)
+      ? artifact.policy_value_heads.map((value: unknown) => String(value ?? '').trim())
+      : []
+    const requiredHeads = ['execution_probability_model', 'conditional_execution_return_model']
+    if (artifact.policy_value_head_count !== 2) blockers.push('policy_value_head_count_not_two')
+    if (policyHeads.length !== 2 || requiredHeads.some((head) => !policyHeads.includes(head))) {
+      blockers.push('policy_value_heads_incompatible')
+    }
+    if (artifactObject(artifact.selection_model) || artifact.intercept != null || artifactObject(artifact.coefficients)) {
+      blockers.push('third_selection_serving_head_forbidden')
+    }
+    const probabilityModel = artifactObject(artifact.execution_probability_model)
+    const returnModel = artifactObject(artifact.conditional_execution_return_model)
+    if (!probabilityModel) blockers.push('execution_probability_model_missing')
+    if (!returnModel) blockers.push('conditional_execution_return_model_missing')
+    for (const [head, model] of [
+      ['execution_probability_model', probabilityModel],
+      ['conditional_execution_return_model', returnModel],
+    ] as const) {
+      if (!model) continue
+      const coefficients = artifactObject(model.coefficients) ?? {}
+      const featureNames = Object.keys(coefficients)
+      if (!featureNames.some((name) => name.startsWith('l4_'))) blockers.push(`${head}_l4_feature_missing`)
+      if (featureNames.some((name) => name.startsWith('s12_') || name === 'l4_s12_edge_agreement')) {
+        blockers.push(`${head}_candidate_time_s12_feature_forbidden`)
+      }
+    }
+  }
+
   if (owner === 'allocator_ev_fusion' && artifact.primary_expected_return_allowed !== true) {
     blockers.push('primary_expected_return_not_allowed')
   }
@@ -129,17 +159,13 @@ export function resolveExpectedReturnServingState(
     artifactObject(ensembleV2.allocatorEvFusion ?? ensembleV2.allocator_ev_fusion),
     ALLOCATOR_EV_FUSION_CONTRACT,
   )
-  const owner: ExpectedReturnOwner | null = fusion.eligible
-    ? 'allocator_ev_fusion'
-    : l4.eligible
-      ? 'l4_alpha_ev'
-      : null
+  const owner: ExpectedReturnOwner | null = fusion.eligible ? 'allocator_ev_fusion' : null
 
   return {
     schema_version: 'expected-return-serving-state-v1',
     state: owner ? 'production_primary' : 'no_eligible_owner',
     expected_return_owner: owner,
-    action_gate: owner ? 'expected_return_owner' : 'validated_s12_only',
+    action_gate: owner ? 'expected_return_owner' : 'fusion_primary_required',
     run_date: options.runDate ?? null,
     evaluated_at: options.evaluatedAt ?? new Date().toISOString(),
     source_of_truth: 'trading:config+strict_contract',

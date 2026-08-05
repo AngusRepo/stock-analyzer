@@ -63,7 +63,6 @@ export type Bindings = {
   // Shioaji 即時報價 Proxy（Cloud Run）
   SHIOAJI_PROXY_URL?: string
   S12_RESEARCH_KBARS_URL?: string
-  S12_INTRADAY_SETUP_WATCH_ENABLED?: string
   PROXY_SERVICE_TOKEN?: string
   DAILY_PRICE_SOURCE?: string
   FINLAB_DAILY_PRICE_PRIMARY_ENABLED?: string

@@ -196,6 +196,7 @@ def test_core_family_evidence_strict_active8_rejects_missing_ensemble_output():
             "iTransformer": 0.58,
         },
         "model_score_lineage": {
+            "required_core_models": ["LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"],
             "schema_version": MODEL_SCORE_LINEAGE_SCHEMA_VERSION,
             "semantic_version": MODEL_SCORE_SEMANTIC_VERSION,
             "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,

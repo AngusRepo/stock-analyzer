@@ -8,18 +8,13 @@ export const L4_ALPHA_EV_CONTRACT = Object.freeze({
 })
 
 export const ALLOCATOR_EV_FUSION_CONTRACT = Object.freeze({
-  artifactContractVersion: 'allocator-ev-fusion-contract-v12',
-  featureSemanticVersion: 'allocator-ev-fusion-market-conditioned-components-v3-lineage-bound',
+  artifactContractVersion: 'allocator-ev-fusion-contract-v13',
+  featureSemanticVersion: 'allocator-ev-fusion-s12-policy-value-day-t-causal-v4-lineage-bound',
   labelSchemaVersion: EVIDENCE_LABEL_SCHEMA_VERSION,
   compatiblePairs: Object.freeze([
     Object.freeze({
-      artifactContractVersion: 'allocator-ev-fusion-contract-v11',
-      featureSemanticVersion: 'allocator-ev-fusion-directional-components-v2-lineage-bound',
-      labelSchemaVersion: EVIDENCE_LABEL_SCHEMA_VERSION,
-    }),
-    Object.freeze({
-      artifactContractVersion: 'allocator-ev-fusion-contract-v12',
-      featureSemanticVersion: 'allocator-ev-fusion-market-conditioned-components-v3-lineage-bound',
+      artifactContractVersion: 'allocator-ev-fusion-contract-v13',
+      featureSemanticVersion: 'allocator-ev-fusion-s12-policy-value-day-t-causal-v4-lineage-bound',
       labelSchemaVersion: EVIDENCE_LABEL_SCHEMA_VERSION,
     }),
   ]),

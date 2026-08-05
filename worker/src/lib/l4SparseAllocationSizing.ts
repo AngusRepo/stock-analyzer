@@ -5,11 +5,6 @@ export interface L4SparseAllocationSizingEvidence {
   expectedReturn: number | null
   riskEstimate: number | null
   selectionReason: string | null
-  s12ContextMultiplier: number | null
-  s12ContextHaircuts: string[]
-  vwapFastAcceptance: boolean | null
-  vwapSlowContext: string | null
-  htfHardBlock: boolean | null
 }
 
 const WATCH_PREFIX = 'l4_sparse_allocation:'
@@ -39,30 +34,6 @@ function compactText(value: unknown): string | null {
   return text.replace(/[;:=\s]+/g, '_').slice(0, 80)
 }
 
-function compactBoolean(value: unknown): string | null {
-  if (value === true || value === 1 || String(value ?? '').trim().toLowerCase() === 'true') return '1'
-  if (value === false || value === 0 || String(value ?? '').trim().toLowerCase() === 'false') return '0'
-  return null
-}
-
-function parseCompactBoolean(value: unknown): boolean | null {
-  const text = String(value ?? '').trim().toLowerCase()
-  if (text === '1' || text === 'true') return true
-  if (text === '0' || text === 'false') return false
-  return null
-}
-
-function compactStringList(value: unknown): string | null {
-  if (!Array.isArray(value)) return null
-  const items = value.map(compactText).filter(Boolean).slice(0, 4)
-  return items.length ? items.join('|') : null
-}
-
-function parseCompactStringList(value: unknown): string[] {
-  const text = String(value ?? '').trim()
-  if (!text) return []
-  return text.split('|').map((item) => item.trim()).filter(Boolean)
-}
 
 export function buildL4SparseAllocationWatchPoint(source: {
   allocation_weight?: number | null
@@ -72,11 +43,6 @@ export function buildL4SparseAllocationWatchPoint(source: {
   expected_return?: number | null
   risk_estimate?: number | null
   selection_reason?: string | null
-  s12_context_multiplier?: number | null
-  s12_context_haircuts?: string[] | null
-  vwap_fast_acceptance?: boolean | null
-  vwap_slow_context?: string | null
-  htf_hard_block?: boolean | null
 } | null | undefined): string | null {
   const weight = clampWeight(source?.allocation_weight)
   if (weight == null) return null
@@ -89,11 +55,6 @@ export function buildL4SparseAllocationWatchPoint(source: {
     compactNumber(source?.expected_return) ? `expected_return=${compactNumber(source?.expected_return)}` : null,
     compactNumber(source?.risk_estimate) ? `risk_estimate=${compactNumber(source?.risk_estimate)}` : null,
     compactText(source?.selection_reason) ? `reason=${compactText(source?.selection_reason)}` : null,
-    compactNumber(source?.s12_context_multiplier) ? `s12_ctx_mult=${compactNumber(source?.s12_context_multiplier, 4)}` : null,
-    compactBoolean(source?.vwap_fast_acceptance) ? `s12_fast_vwap=${compactBoolean(source?.vwap_fast_acceptance)}` : null,
-    compactText(source?.vwap_slow_context) ? `s12_slow_vwap=${compactText(source?.vwap_slow_context)}` : null,
-    compactBoolean(source?.htf_hard_block) ? `s12_htf_block=${compactBoolean(source?.htf_hard_block)}` : null,
-    compactStringList(source?.s12_context_haircuts) ? `s12_haircuts=${compactStringList(source?.s12_context_haircuts)}` : null,
   ].filter(Boolean)
   return `${WATCH_PREFIX}${parts.join(';')}`
 }
@@ -116,11 +77,6 @@ export function parseL4SparseAllocationWatchPoint(point: string | null | undefin
     expectedReturn: finiteNumber(fields.get('expected_return')),
     riskEstimate: finiteNumber(fields.get('risk_estimate')),
     selectionReason: fields.get('reason') ?? null,
-    s12ContextMultiplier: finiteNumber(fields.get('s12_ctx_mult')),
-    s12ContextHaircuts: parseCompactStringList(fields.get('s12_haircuts')),
-    vwapFastAcceptance: parseCompactBoolean(fields.get('s12_fast_vwap')),
-    vwapSlowContext: fields.get('s12_slow_vwap') ?? null,
-    htfHardBlock: parseCompactBoolean(fields.get('s12_htf_block')),
   }
 }
 

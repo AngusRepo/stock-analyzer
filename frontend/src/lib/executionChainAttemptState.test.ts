@@ -34,7 +34,7 @@ const scope: AttemptAwareChainScope = {
   orchestratorId: 'evening-chain',
   columns: [
     ['update'],
-    ['s12-structure-snapshot'],
+    ['regime-compute'],
     ['allocator-ev-readiness'],
     ['pipeline'],
     ['post-pipeline-chain'],
@@ -42,7 +42,7 @@ const scope: AttemptAwareChainScope = {
 }
 
 const inferStage = (summary?: string | null): string | null => (
-  /s12/i.test(String(summary ?? '')) ? 's12-structure-snapshot' : null
+  /regime/i.test(String(summary ?? '')) ? 'regime-compute' : null
 )
 
 {
@@ -52,7 +52,7 @@ const inferStage = (summary?: string | null): string | null => (
       statusRunDate: null,
     })],
     ['update', job('update', 'success')],
-    ['s12-structure-snapshot', job('s12-structure-snapshot', 'running', {
+    ['regime-compute', job('regime-compute', 'running', {
       statusScope: 'historical_replay',
       statusRunDate: '2026-07-24',
       runId: '2026-07-24-ms1uujzd',
@@ -65,7 +65,7 @@ const inferStage = (summary?: string | null): string | null => (
   const resolved = buildAttemptAwareJobMap(base, scope, inferStage)
 
   assert(resolved.get('update')?.lastStatus === 'success', 'completed upstream stage must remain completed')
-  assert(resolved.get('s12-structure-snapshot')?.lastStatus === 'running', 'direct running stage must remain current')
+  assert(resolved.get('regime-compute')?.lastStatus === 'running', 'direct running stage must remain current')
   assert(resolved.get('allocator-ev-readiness')?.lastStatus === 'waiting', 'first downstream stage must suppress older success')
   assert(resolved.get('pipeline')?.lastStatus === 'waiting', 'later downstream stage must suppress older success')
   assert(resolved.get('post-pipeline-chain')?.lastStatus === 'waiting', 'callback stage must suppress older success')
@@ -76,23 +76,23 @@ const inferStage = (summary?: string | null): string | null => (
 {
   const base = new Map<string, SchedulerJob>([
     ['evening-chain', job('evening-chain', 'running', {
-      summary: 'waiting for S12 structure snapshot callback',
+      summary: 'waiting for HMM regime callback',
       statusScope: 'historical_replay',
       statusRunDate: '2026-07-24',
     })],
-    ['s12-structure-snapshot', job('s12-structure-snapshot', 'sleep')],
+    ['regime-compute', job('regime-compute', 'sleep')],
     ['allocator-ev-readiness', job('allocator-ev-readiness', 'success')],
   ])
 
   const resolved = buildAttemptAwareJobMap(base, scope, inferStage)
-  assert(resolved.get('s12-structure-snapshot')?.lastStatus === 'running', 'parent hint must remain a fallback when direct status is absent')
+  assert(resolved.get('regime-compute')?.lastStatus === 'running', 'parent hint must remain a fallback when direct status is absent')
   assert(resolved.get('allocator-ev-readiness')?.lastStatus === 'waiting', 'parent-derived current stage must suppress downstream history')
 }
 
 {
   const base = new Map<string, SchedulerJob>([
     ['evening-chain', job('evening-chain', 'waiting')],
-    ['s12-structure-snapshot', job('s12-structure-snapshot', 'sleep')],
+    ['regime-compute', job('regime-compute', 'sleep')],
   ])
   assert(buildAttemptAwareJobMap(base, scope, inferStage) === base, 'inactive chain without direct running evidence must remain unchanged')
 }

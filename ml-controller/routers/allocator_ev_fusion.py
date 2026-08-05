@@ -51,10 +51,6 @@ class AllocatorEvFeatureSnapshotBackfillReq(BaseModel):
     l4_min_samples: int = Field(default=500, ge=50, le=10000)
     l4_min_dates: int = Field(default=20, ge=5, le=252)
     l4_training_limit: int = Field(default=6000, ge=500, le=20000)
-    s12_lookback_days: int = Field(default=120, ge=30, le=365)
-    s12_limit: int = Field(default=5000, ge=500, le=20000)
-    s12_min_samples: int = Field(default=30, ge=5, le=1000)
-    s12_min_sample_dates: int = Field(default=8, ge=2, le=252)
     durable: bool = False
     upstream_run_id: str | None = None
 
@@ -360,10 +356,6 @@ async def backfill_allocator_ev_feature_snapshots_route(req: AllocatorEvFeatureS
                 "OOF_MATERIALIZE_L4_MIN_SAMPLES": str(req.l4_min_samples),
                 "OOF_MATERIALIZE_L4_MIN_DATES": str(req.l4_min_dates),
                 "OOF_MATERIALIZE_L4_TRAINING_LIMIT": str(req.l4_training_limit),
-                "OOF_MATERIALIZE_S12_LOOKBACK_DAYS": str(req.s12_lookback_days),
-                "OOF_MATERIALIZE_S12_LIMIT": str(req.s12_limit),
-                "OOF_MATERIALIZE_S12_MIN_SAMPLES": str(req.s12_min_samples),
-                "OOF_MATERIALIZE_S12_MIN_SAMPLE_DATES": str(req.s12_min_sample_dates),
                 "OOF_MATERIALIZE_RUN_ID": run_id,
                 "OOF_MATERIALIZE_CALLBACK_TASK": "allocator-ev-feature-snapshot-backfill",
             },
@@ -393,10 +385,6 @@ async def backfill_allocator_ev_feature_snapshots_route(req: AllocatorEvFeatureS
         l4_min_samples=req.l4_min_samples,
         l4_min_dates=req.l4_min_dates,
         l4_training_limit=req.l4_training_limit,
-        s12_lookback_days=req.s12_lookback_days,
-        s12_limit=req.s12_limit,
-        s12_min_samples=req.s12_min_samples,
-        s12_min_sample_dates=req.s12_min_sample_dates,
     )
     return {
         **result,
@@ -407,10 +395,7 @@ async def backfill_allocator_ev_feature_snapshots_route(req: AllocatorEvFeatureS
             f"written={result.get('written')} skipped_days={result.get('skipped_days')} "
             "l4_backfill_only_days="
             f"{result.get('l4_snapshot_backfill_only_days')} "
-            f"s12_direct={result.get('snapshots_with_s12_direct_ev')} "
-            f"s12_structure={result.get('snapshots_with_s12_structure')} "
-            f"s12_limited={result.get('snapshots_with_s12_limited_takeover')} "
-            f"s12_reaction={result.get('snapshots_with_s12_full_reaction')} "
+            f"candidate_time_s12_features={result.get('candidate_time_s12_feature_count')} "
             "skip_reasons="
             f"{json.dumps(result.get('skip_reasons') or {}, separators=(',', ':'))}"
         ),

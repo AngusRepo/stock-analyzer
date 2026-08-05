@@ -15,7 +15,7 @@ def _native_rows(count=20):
             "forecast_data": json.dumps({"ensemble_v2": {"avg_rank": 0.6}}),
             "score_components": json.dumps({"version": "score_v2"}),
             "alpha_context": json.dumps({"market_heat_expected_return": 0.001}),
-            "alpha_allocation": json.dumps({"s12_trade_ev": {"expected_return": 0.002}}),
+            "alpha_allocation": json.dumps({}),
         }
         for idx in range(count)
     ]
@@ -38,11 +38,6 @@ def _patch_materializers(monkeypatch, parity_module, *, serving_value=1.0):
         parity_module,
         "extract_l4_alpha_ev",
         lambda row: (0.01, "artifact", {"status": "loaded"}),
-    )
-    monkeypatch.setattr(
-        parity_module,
-        "extract_s12_trade_ev",
-        lambda row: (0.002, "direct", {"status": "loaded"}),
     )
     monkeypatch.setattr(
         parity_module,

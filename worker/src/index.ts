@@ -86,7 +86,7 @@ const adminTriggerRoutes = createAdminTriggerRoutes({
     runAllocatorEvFusionRefresh: (runDate?: string, cadence?: 'weekly' | 'monthly') => runAllocatorEvFusionRefreshWorkflow(c.env, runDate, cadence),
     runOpbArmPriorRefresh: (
       runDate: string,
-      expectedReturnOwner: 'auto' | 'l4_alpha_ev' | 'allocator_ev_fusion',
+      expectedReturnOwner: 'auto' | 'allocator_ev_fusion',
     ) => runOpbArmPriorRefreshWorkflow(c.env, runDate, expectedReturnOwner),
     runAllocatorEvFeatureSnapshotBackfill: (params) => runAllocatorEvFeatureSnapshotBackfillWorkflow(c.env, params),
     runOptunaQueueProcessor: () => runOptunaQueueProcessorWorkflow(c.env),

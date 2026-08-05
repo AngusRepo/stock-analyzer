@@ -11,7 +11,7 @@ assert.match(
 
 const consumers = [
   './canonicalSelectionLabels.ts',
-  './s12CandidateStructureSnapshots.ts',
+  './s12ResearchStructureSnapshots.ts',
   './s12ReplayTradeOutcome.ts',
   './strategyMarginalEdgeV4.ts',
   './strategyLearningRunState.ts',

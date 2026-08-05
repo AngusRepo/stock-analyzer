@@ -7,7 +7,6 @@ from typing import Any, Callable
 
 from services import d1_client
 from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION
-from services.allocator_ev_fusion import _s12_structure_features
 from services.ev_lineage_contract import (
     attach_next_session_open_evidence,
     attach_same_run_model_version_evidence,
@@ -27,8 +26,6 @@ from services.l4_alpha_ev_resolver import (
     SNAPSHOT_BACKFILL_USAGE_SCOPE,
     resolve_l4_alpha_ev,
 )
-from services.s12_trade_ev_bootstrap import S12TradeEvBootstrapProvider
-from services.s12_trade_ev import extract_s12_trade_ev
 from services.fusion_market_context import (
     context_for_market_segment,
     load_pit_market_contexts,
@@ -210,17 +207,6 @@ def _existing_l4_payload(allocation: dict[str, Any], *, snapshot_date: str) -> d
     return payload
 
 
-def _s12_ev_materialization_kind(value: float | None, source: str) -> str:
-    if value is None:
-        return "unavailable"
-    normalized = str(source or "").strip()
-    if normalized.startswith("s12_replay_trade_outcomes:"):
-        return "replay_direct"
-    if normalized == "s12_structural_cold_start_ev":
-        return "structural_cold"
-    return "other_trade_ev"
-
-
 def _build_l4_asof_artifact(
     query_fn: QueryFn,
     *,
@@ -349,7 +335,6 @@ def _snapshot_staging_statement(
     target_semantic_version: str,
 ) -> tuple[str, list[Any]]:
     l4 = alpha_allocation.get("l4_alpha_ev") if isinstance(alpha_allocation.get("l4_alpha_ev"), dict) else {}
-    s12 = alpha_allocation.get("s12_trade_ev") if isinstance(alpha_allocation.get("s12_trade_ev"), dict) else {}
     return (
         """
         INSERT INTO allocator_ev_feature_snapshot_staging (
@@ -415,7 +400,7 @@ def _snapshot_staging_statement(
             row.get("recommendation_lane"),
             SNAPSHOT_SOURCE,
             l4.get("model_version"),
-            s12.get("trade_expected_return_source") or s12.get("source"),
+            None,
             AS_OF_GUARD,
             row.get("recommendation_date") or snapshot_date,
             generated_at,
@@ -598,10 +583,6 @@ def build_allocator_ev_feature_snapshots_for_date(
     l4_min_samples: int = 500,
     l4_min_dates: int = 20,
     l4_training_limit: int = 6000,
-    s12_lookback_days: int = 120,
-    s12_limit: int = 5000,
-    s12_min_samples: int = 30,
-    s12_min_sample_dates: int = 8,
     lineage_cohort_id: str | None = None,
 ) -> dict[str, Any]:
     generated_at = datetime.now(timezone.utc).isoformat()
@@ -667,26 +648,11 @@ def build_allocator_ev_feature_snapshots_for_date(
         end_at=generated_values[-1] if generated_values else f"{snapshot_date}T23:59:59Z",
     )
 
-    provider = S12TradeEvBootstrapProvider.for_run_date(
-        snapshot_date,
-        query_fn=query_fn,
-        lookback_days=s12_lookback_days,
-        limit=s12_limit,
-        min_samples=s12_min_samples,
-        min_sample_dates=s12_min_sample_dates,
-    )
     statements: list[tuple[str, list[Any]]] = []
     skipped = 0
     skip_reasons: dict[str, int] = {}
     reused_l4 = 0
-    reused_s12 = 0
     snapshots_without_l4 = 0
-    snapshots_with_s12_trade_ev = 0
-    snapshots_with_s12_direct_ev = 0
-    snapshots_with_s12_cold_ev = 0
-    snapshots_with_s12_structure = 0
-    snapshots_with_s12_limited_takeover = 0
-    snapshots_with_s12_full_reaction = 0
     native_lineage_rows = 0
     reconstructed_lineage_rows = 0
     rejected_lineage_rows = 0
@@ -792,40 +758,16 @@ def build_allocator_ev_feature_snapshots_for_date(
         if not isinstance(l4_payload, dict) or l4_payload.get("status") != "loaded":
             l4_payload = None
             snapshots_without_l4 += 1
-        # Replay EV is cheap to recompute and its validity depends on the
-        # snapshot-date cutoff. Reusing an opaque recommendation payload can
-        # silently retain samples that no longer satisfy the active lineage contract.
-        s12_payload = provider.build_for_row(row, prediction=prediction)
-        if not isinstance(s12_payload, dict):
-            skipped += 1
-            skip_reasons["s12_payload_missing"] = skip_reasons.get("s12_payload_missing", 0) + 1
-            continue
-        s12_value, s12_source, _ = extract_s12_trade_ev({"s12_trade_ev": s12_payload})
-        s12_kind = _s12_ev_materialization_kind(s12_value, s12_source)
-        s12_features = _s12_structure_features(s12_payload)
-        if s12_value is not None:
-            snapshots_with_s12_trade_ev += 1
-        if s12_kind == "replay_direct":
-            snapshots_with_s12_direct_ev += 1
-        elif s12_kind == "structural_cold":
-            snapshots_with_s12_cold_ev += 1
-        if s12_features["s12_structure_available"] > 0.0:
-            snapshots_with_s12_structure += 1
-        if s12_features["s12_limited_takeover_ready"] > 0.0:
-            snapshots_with_s12_limited_takeover += 1
-        if s12_features["s12_full_reaction_ready"] > 0.0:
-            snapshots_with_s12_full_reaction += 1
         alpha_allocation = {
             **{
                 key: value for key, value in existing.items()
-                if key not in {"l4_alpha_ev", "alpha_ev", "alpha_ev_prediction", "allocator_ev_fusion"}
+                if key not in {"l4_alpha_ev", "alpha_ev", "alpha_ev_prediction", "allocator_ev_fusion", "s12_trade_ev"}
             },
-            "s12_trade_ev": s12_payload,
             "snapshot_source": SNAPSHOT_SOURCE,
             "as_of_guard": AS_OF_GUARD,
             "snapshot_l4_usage_mode": l4_usage_mode,
             "snapshot_l4_available": l4_payload is not None,
-            "s12_snapshot_materialization_policy": "strict_pit_recompute_no_opaque_payload_reuse",
+            "execution_policy_label_join": "mature_s12_replay_outcomes_only_after_snapshot",
             "l4_alpha_ev_diagnostic": {
                 "status": "loaded" if l4_payload is not None else "unavailable",
                 "usage_mode": l4_usage_mode,
@@ -925,21 +867,15 @@ def build_allocator_ev_feature_snapshots_for_date(
             for key, value in l4_result.items()
             if key not in {"artifact"}
         },
-        "s12": provider.summary(),
+        "execution_policy_label_join": "mature_s12_replay_outcomes_after_snapshot",
+        "candidate_time_s12_feature_count": 0,
         "candidate_rows": len(candidates),
         "candidate_total_rows": candidate_total,
         "snapshots_built": len(statements),
         "snapshots_skipped": skipped,
         "skip_reasons": skip_reasons,
         "reused_l4_payloads": reused_l4,
-        "reused_s12_payloads": reused_s12,
         "snapshots_without_l4": snapshots_without_l4,
-        "snapshots_with_s12_trade_ev": snapshots_with_s12_trade_ev,
-        "snapshots_with_s12_direct_ev": snapshots_with_s12_direct_ev,
-        "snapshots_with_s12_cold_ev": snapshots_with_s12_cold_ev,
-        "snapshots_with_s12_structure": snapshots_with_s12_structure,
-        "snapshots_with_s12_limited_takeover": snapshots_with_s12_limited_takeover,
-        "snapshots_with_s12_full_reaction": snapshots_with_s12_full_reaction,
         "champion_history_load": champion_history_load,
         "next_session_evidence_load": next_session_evidence_load,
         "row_model_version_evidence_load": row_version_evidence_load,
@@ -973,10 +909,6 @@ def backfill_allocator_ev_feature_snapshots(
     l4_min_samples: int = 500,
     l4_min_dates: int = 20,
     l4_training_limit: int = 6000,
-    s12_lookback_days: int = 120,
-    s12_limit: int = 5000,
-    s12_min_samples: int = 30,
-    s12_min_sample_dates: int = 8,
     lineage_cohort_id: str | None = None,
 ) -> dict[str, Any]:
     if next_session_date and start_date != end_date:
@@ -993,10 +925,6 @@ def backfill_allocator_ev_feature_snapshots(
             l4_min_samples=l4_min_samples,
             l4_min_dates=l4_min_dates,
             l4_training_limit=l4_training_limit,
-            s12_lookback_days=s12_lookback_days,
-            s12_limit=s12_limit,
-            s12_min_samples=s12_min_samples,
-            s12_min_sample_dates=s12_min_sample_dates,
             lineage_cohort_id=(
                 lineage_cohort_id
                 if start_date == end_date or not lineage_cohort_id
@@ -1026,12 +954,7 @@ def backfill_allocator_ev_feature_snapshots(
             1 for row in rows if row.get("l4_usage_mode") == "snapshot_backfill_only"
         ),
         "snapshots_without_l4": sum(int(row.get("snapshots_without_l4") or 0) for row in rows),
-        "snapshots_with_s12_trade_ev": sum(int(row.get("snapshots_with_s12_trade_ev") or 0) for row in rows),
-        "snapshots_with_s12_direct_ev": sum(int(row.get("snapshots_with_s12_direct_ev") or 0) for row in rows),
-        "snapshots_with_s12_cold_ev": sum(int(row.get("snapshots_with_s12_cold_ev") or 0) for row in rows),
-        "snapshots_with_s12_structure": sum(int(row.get("snapshots_with_s12_structure") or 0) for row in rows),
-        "snapshots_with_s12_limited_takeover": sum(int(row.get("snapshots_with_s12_limited_takeover") or 0) for row in rows),
-        "snapshots_with_s12_full_reaction": sum(int(row.get("snapshots_with_s12_full_reaction") or 0) for row in rows),
+        "candidate_time_s12_feature_count": 0,
         "stale_rows_deleted": sum(int(row.get("stale_rows_deleted") or 0) for row in rows),
         "skip_reasons": aggregate_skip_reasons,
         "results": rows,

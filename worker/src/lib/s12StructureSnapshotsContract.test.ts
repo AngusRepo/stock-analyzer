@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { loadS12PipelineSeedSymbolsByDate, runS12CandidateStructureSnapshots } from './s12CandidateStructureSnapshots'
+import { loadS12ResearchCohortSymbolsByDate, runS12ResearchStructureSnapshots } from './s12ResearchStructureSnapshots'
 import { buildS12SnapshotEntryContext } from './s12StructureSnapshots'
 
 const schema = readFileSync('schema.sql', 'utf8')
 const migration = readFileSync('migration_s12_structure_snapshots_2026_07_08.sql', 'utf8')
 const helper = readFileSync('src/lib/s12StructureSnapshots.ts', 'utf8')
-const candidateProducer = readFileSync('src/lib/s12CandidateStructureSnapshots.ts', 'utf8')
+const researchProducer = readFileSync('src/lib/s12ResearchStructureSnapshots.ts', 'utf8')
 const entryTasks = readFileSync('src/lib/paperEntryTasks.ts', 'utf8')
 const exitTasks = readFileSync('src/lib/paperExitTasks.ts', 'utf8')
 const updateOrchestrator = readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
@@ -17,16 +17,13 @@ assert(migration.includes('idx_s12_structure_snapshots_date_symbol'), 'migration
 assert(helper.includes('ON CONFLICT(trade_date, symbol, source) DO UPDATE SET'), 'snapshot helper must upsert latest structure')
 assert(entryTasks.includes("source: 's12_intraday_structure'"), 'entry sidecar must persist S12 structure snapshots')
 assert(exitTasks.includes("source: 's12_holding_defense'"), 'holding defense must persist S12 structure snapshots')
-assert(candidateProducer.includes('selection_reference_snapshots_v1'), 'candidate snapshot producer must use the canonical L0 reference universe')
-assert(candidateProducer.includes("options.source ?? 's12_candidate_snapshot'"), 'candidate snapshot producer must default to the native distinct source')
-assert(candidateProducer.includes("'s12_candidate_snapshot_reconstruction'"), 'historical reconstruction must preserve a distinct source')
-assert(candidateProducer.includes('S12_PREPIPELINE_SNAPSHOT_LIMIT'), 'candidate snapshot producer must expose a bounded pre-pipeline limit')
-assert(updateOrchestrator.includes("await import('./s12CandidateStructureSnapshots')"), 'event-driven chain must load the S12 snapshot producer before pipeline')
-assert(
-  updateOrchestrator.indexOf('runS12CandidateStructureSnapshots(env, triggerTime)') <
-    updateOrchestrator.indexOf('deps.runMLAndRiskV2(env, triggerTime'),
-  'S12 candidate snapshots must run before pipeline/recommendation trigger',
-)
+assert(researchProducer.includes('selection_reference_snapshots_v1'), 'research snapshot producer must use the canonical L0 reference cohort')
+assert(researchProducer.includes("options.source ?? 's12_research_structure_snapshot'"), 'research snapshot producer must use a research-only source')
+assert(researchProducer.includes("'s12_research_structure_reconstruction'"), 'historical reconstruction must preserve a distinct research source')
+assert(researchProducer.includes('S12_RESEARCH_SNAPSHOT_LIMIT'), 'research snapshot producer must expose a bounded research limit')
+assert(updateOrchestrator.includes("await import('./s12ResearchStructureSnapshots')"), 'research recovery and historical replay must load the research-only producer')
+assert(!updateOrchestrator.includes("await import('./s12CandidateStructureSnapshots')"), 'production chain must not retain the candidate snapshot module')
+assert(!updateOrchestrator.includes('runS12CandidateStructureSnapshots(env, triggerTime)'), 'production chain must not run candidate S12 snapshots before recommendation')
 
 const context = buildS12SnapshotEntryContext({
   engineVersion: 's12_smcvwap_tw_equity_v2',
@@ -85,7 +82,7 @@ async function runBehaviorTests(): Promise<void> {
     },
   } as any
 
-  const symbols = await loadS12PipelineSeedSymbolsByDate(fakeDb, '2026-07-07', 160)
+  const symbols = await loadS12ResearchCohortSymbolsByDate(fakeDb, '2026-07-07', 160)
   assert.equal(symbols.length, 1)
   assert.equal(symbols[0].symbol, '8091')
   assert.match(queries[0].sql, /selection_reference_snapshots_v1/)
@@ -113,7 +110,7 @@ async function runBehaviorTests(): Promise<void> {
       },
     },
   } as any
-  const summary = await runS12CandidateStructureSnapshots(fakeEnv, '2026-07-07', {
+  const summary = await runS12ResearchStructureSnapshots(fakeEnv, '2026-07-07', {
     symbols,
     loadBars: async () => ({
       bars: [],

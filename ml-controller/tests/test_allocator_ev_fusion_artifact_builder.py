@@ -17,7 +17,6 @@ from services.allocator_ev_fusion_artifact_builder import (  # noqa: E402
     load_allocator_ev_fusion_training_rows,
 )
 from services.allocator_ev_feature_snapshot_backfill import (  # noqa: E402
-    _s12_ev_materialization_kind,
     build_allocator_ev_feature_snapshots_for_date,
     load_allocator_ev_snapshot_candidate_rows,
 )
@@ -183,7 +182,7 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["primary_expected_return_allowed"] is True
     assert artifact["validation_packet"]["decision"] == "PASS"
     packet = artifact["validation_packet"]
-    assert packet["schema_version"] == "allocator-ev-fusion-validation-packet-v13"
+    assert packet["schema_version"] == "allocator-ev-fusion-validation-packet-v14"
     assert set(packet["gate_layers"]) == {
         "data_validity", "forecast_skill", "statistical_validity", "economic_utility"
     }
@@ -192,25 +191,27 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     )
     assert packet["validation_scope"]["effective_sample_unit"] == "prediction_date"
     assert artifact["validation_packet"]["sample_audit"]["l4_available_count"] > 0
-    assert artifact["validation_packet"]["sample_audit"]["s12_structure_available_count"] > 0
+    assert artifact["validation_packet"]["sample_audit"]["candidate_time_s12_feature_count"] == 0
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
-    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v12"
-    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v12"
+    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v13"
+    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v13"
     assert artifact["validation_packet"]["validation_scope"]["selection_target"] == (
         "same_date_cross_section_residual_of_five_session_net_return"
     )
-    assert artifact["resolver_method"] == "market_conditioned_cross_fitted_rank_two_part_trade_ev_fusion"
-    assert "l4_expected_return" in artifact["coefficients"]
-    assert "s12_trade_expected_return" in artifact["coefficients"]
-    assert artifact["coefficients"]["l4_expected_return"] != 0
-    assert artifact["selection_model"]["decision"] == "PASS"
-    assert artifact["selection_model"]["target"] == "selection_rank_target"
-    assert artifact["selection_model"]["calibration_target"] == "selection_target"
-    assert artifact["selection_model"]["rank_model"]
-    assert artifact["selection_model"]["calibration_model"]["method"] == "expanding_window_oof_rank_score_linear_ev_calibration"
-    assert artifact["execution_model"]["decision"] == "PASS"
+    assert artifact["resolver_method"] == "day_t_causal_s12_policy_value_hurdle_fusion"
+    assert artifact["policy_value_head_count"] == 2
+    assert artifact["policy_value_heads"] == [
+        "execution_probability_model", "conditional_execution_return_model"
+    ]
+    assert "coefficients" not in artifact
+    assert "selection_model" not in artifact
+    selection_diagnostic = artifact["validation_packet"]["selection_diagnostic_model_not_served"]
+    assert selection_diagnostic["decision"] == "PASS"
+    assert selection_diagnostic["target"] == "selection_rank_target"
+    assert selection_diagnostic["calibration_target"] == "selection_target"
+    assert artifact["conditional_execution_return_model"]["decision"] == "PASS"
     assert artifact["execution_probability_model"]["decision"] == "PASS"
-    assert artifact["execution_model"]["coefficients"]["s12_trade_expected_return"] != 0
+    assert all(not name.startswith("s12_") for name in artifact["conditional_execution_return_model"]["coefficients"])
     assert artifact["validation_packet"]["champion_comparison"]["decision"] == "PASS"
     assert artifact["validation_packet"]["champion_comparison"]["top_trade_ev_lcb90"] > 0
     assert artifact["validation_packet"]["sample_audit"]["market_context_available_coverage"] == 1.0
@@ -345,7 +346,7 @@ def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_sampl
     assert "selection:insufficient_samples" in artifact["validation_packet"]["failed_gates"]
 
 
-def test_allocator_ev_fusion_assistive_learning_tier_is_reachable_without_ev_ownership():
+def test_allocator_ev_fusion_stays_shadow_until_primary_evidence_floor():
     rows = [
         _row(f"2026-06-{day_idx + 1:02d}", symbol_idx)
         for day_idx in range(20)
@@ -362,10 +363,8 @@ def test_allocator_ev_fusion_assistive_learning_tier_is_reachable_without_ev_own
 
     artifact = out["artifact"]
     assert out["status"] == "ok"
-    assert artifact["promotion_tier"] == "assistive"
-    assert artifact["promotion_state"] == "production_assistive"
-    assert artifact["assistive_learning_signal_allowed"] is True
-    assert artifact["assistive_expected_return_allowed"] is False
+    assert artifact["promotion_tier"] == "shadow"
+    assert artifact["promotion_state"] == "shadow"
     assert artifact["primary_expected_return_allowed"] is False
     assert artifact["validation_packet"]["decision"] == "PASS"
     assert "primary_insufficient_dates" in artifact["promotion_blockers"]
@@ -626,10 +625,6 @@ def test_20260714_prediction_timestamp_is_before_20260715_market_open():
     }) == ["prediction_generated_at_not_before_next_session_open"]
 
 
-def test_s12_ev_materialization_kind_does_not_report_cold_as_direct():
-    assert _s12_ev_materialization_kind(0.01, "s12_replay_trade_outcomes:market_segment") == "replay_direct"
-    assert _s12_ev_materialization_kind(-0.01, "s12_structural_cold_start_ev") == "structural_cold"
-    assert _s12_ev_materialization_kind(None, "s12_replay_trade_outcomes:symbol") == "unavailable"
 
 
 def test_allocator_fusion_rejects_unproven_adjustment_factor_lineage():
@@ -958,7 +953,7 @@ def test_allocator_ev_feature_snapshot_backfill_reuses_persisted_candidate_time_
     assert result["snapshots_built"] == 1
     assert result["l4_usage_mode"] == "not_fit_eligible"
     assert result["reused_l4_payloads"] == 1
-    assert result["reused_s12_payloads"] == 0
+    assert result["candidate_time_s12_feature_count"] == 0
     assert result["skip_reasons"] == {}
 
 
@@ -1122,7 +1117,7 @@ def test_allocator_ev_feature_snapshot_backfill_recomputes_opaque_s12_payload():
         dry_run=True,
     )
 
-    assert result["reused_s12_payloads"] == 0
+    assert result["candidate_time_s12_feature_count"] == 0
 
 
 def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload_as_unavailable_feature():
@@ -1178,7 +1173,7 @@ def test_allocator_ev_fusion_artifact_builder_keeps_explicit_s12_invalid_payload
     audit = out["artifact"]["validation_packet"]["sample_audit"]
     assert audit["sample_count"] == len(rows)
     assert audit["missing_feature_rows"] == 0
-    assert audit["s12_available_count"] < len(rows)
+    assert audit["candidate_time_s12_feature_count"] == 0
 
 
 def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_missing():
@@ -1208,8 +1203,8 @@ def test_allocator_ev_fusion_keeps_raw_selection_sample_when_l4_and_s12_are_miss
 
     assert audit["sample_count"] == 1
     assert samples[0]["features"]["l4_available"] == 0.0
-    assert samples[0]["features"]["s12_available"] == 0.0
-    assert samples[0]["features"]["s12_execution_ready"] == 0.0
+    assert all(not name.startswith("s12_") for name in samples[0]["features"])
+    assert audit["candidate_time_s12_feature_count"] == 0
     assert samples[0]["features"]["score_v2_available"] == 1.0
     assert samples[0]["execution_target"] is None
 
@@ -1277,10 +1272,9 @@ def test_execution_replay_label_is_kept_when_prior_s12_ev_was_unavailable():
 
     samples, audit = _samples([row], execution_cost_bps=18.0, min_cross_section_samples_per_date=1)
 
-    assert audit["s12_available_count"] == 0
+    assert audit["candidate_time_s12_feature_count"] == 0
     assert audit["execution_sample_count"] == 1
-    assert samples[0]["features"]["s12_available"] == 0.0
-    assert samples[0]["features"]["s12_execution_ready"] == 0.0
+    assert all(not name.startswith("s12_") for name in samples[0]["features"])
     assert samples[0]["execution_target"] == pytest.approx(0.0132)
     assert samples[0]["realized_trade_ev_target"] == pytest.approx(0.0132)
     assert samples[0]["execution_probability_target"] == 1.0

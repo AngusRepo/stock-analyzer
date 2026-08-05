@@ -1,296 +1,188 @@
+from __future__ import annotations
+
+import math
 import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from services.allocator_ev_fusion import materialize_allocator_ev_fusion  # noqa: E402
+from services.allocator_ev_fusion import (  # noqa: E402
+    assess_allocator_ev_fusion_policy,
+    materialize_allocator_ev_fusion,
+)
+from services.evidence_contracts import (  # noqa: E402
+    ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
+    ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
+    LABEL_SCHEMA_VERSION,
+)
 
 
-def _artifact() -> dict:
-    return {
-        "schema_version": "allocator-ev-fusion-artifact-v1",
-        "artifact_contract_version": "allocator-ev-fusion-contract-v11",
-        "feature_semantic_version": "allocator-ev-fusion-directional-components-v2-lineage-bound",
-        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+def _artifact(**overrides):
+    artifact = {
+        "schema_version": "allocator-ev-fusion-artifact-v13",
+        "artifact_contract_version": ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
+        "feature_semantic_version": ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
+        "label_schema_version": LABEL_SCHEMA_VERSION,
         "expected_return_owner": "allocator_ev_fusion",
-        "promotion_state": "production_approved",
-        "validation_packet": {"decision": "PASS"},
-        "resolver_method": "ridge_allocator_ev_fusion",
-        "model_version": "allocator-ev-fusion-test",
-        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v1",
-        "trained_until": "2026-07-06",
+        "promotion_state": "production_primary",
+        "promotion_tier": "primary",
+        "primary_expected_return_allowed": True,
+        "validation_packet": {"decision": "PASS", "failed_gates": []},
+        "resolver_method": "day_t_causal_s12_policy_value_hurdle_fusion",
+        "model_version": "allocator-ev-fusion-policy-value-v13-test",
+        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v13-day-t-causal",
+        "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
+        "trained_until": "2026-08-01",
         "horizon_days": 5,
-        "cost_model_bps": 0,
+        "cost_model_bps": 18.0,
         "output_is_net_of_costs": True,
-        "feature_names": [
-            "l4_expected_return",
-            "s12_trade_expected_return",
-            "l4_s12_edge_agreement",
+        "policy_value_head_count": 2,
+        "policy_value_heads": [
+            "execution_probability_model",
+            "conditional_execution_return_model",
         ],
-        "intercept": 0.0,
-        "coefficients": {
-            "l4_expected_return": 1.0,
-            "s12_trade_expected_return": 1.0,
-            "l4_s12_edge_agreement": 0.01,
-        },
-    }
-
-
-def test_allocator_ev_fusion_materializer_serves_edge_agreement_feature():
-    payload = materialize_allocator_ev_fusion(
-        {},
-        l4_value=0.02,
-        l4_source="l4_alpha_ev:test",
-        l4_payload={"expected_return_owner": "l4_alpha_ev"},
-        s12_value=0.01,
-        s12_source="s12_trade_ev:test",
-        s12_payload={"status": "loaded"},
-        market_heat_expected_return=0.0,
-        policy={"allocatorEvFusion": _artifact()},
-    )
-
-    assert payload is not None
-    assert payload["status"] == "loaded"
-    assert payload["feature_values"]["l4_s12_edge_agreement"] == pytest.approx(1.0)
-    assert payload["expected_return"] == pytest.approx(0.04)
-
-
-def test_allocator_fusion_serving_migration_accepts_only_exact_legacy_contract_pair():
-    legacy = {
-        **_artifact(),
-        "artifact_contract_version": "allocator-ev-fusion-contract-v9",
-        "label_schema_version": "next-session-raw-open-to-fifth-session-raw-close-canonical-finlab-factor-net-v3",
-    }
-    kwargs = {
-        "l4_value": 0.02,
-        "l4_source": "l4:test",
-        "l4_payload": {},
-        "s12_value": 0.01,
-        "s12_source": "s12:test",
-        "s12_payload": {"status": "loaded"},
-        "market_heat_expected_return": 0.0,
-    }
-    accepted = materialize_allocator_ev_fusion(
-        {}, policy={"allocatorEvFusion": legacy}, **kwargs
-    )
-    hybrid = materialize_allocator_ev_fusion(
-        {},
-        policy={"allocatorEvFusion": {**legacy, "label_schema_version": _artifact()["label_schema_version"]}},
-        **kwargs,
-    )
-
-    assert accepted["status"] == "loaded"
-    assert hybrid["status"] == "rejected"
-    assert "artifact_label_contract_pair_incompatible" in hybrid["blockers"]
-
-
-def test_allocator_ev_fusion_materializer_marks_edge_disagreement_zero():
-    payload = materialize_allocator_ev_fusion(
-        {},
-        l4_value=0.02,
-        l4_source="l4_alpha_ev:test",
-        l4_payload={"expected_return_owner": "l4_alpha_ev"},
-        s12_value=-0.01,
-        s12_source="s12_trade_ev:test",
-        s12_payload={"status": "loaded"},
-        market_heat_expected_return=0.0,
-        policy={"allocatorEvFusion": _artifact()},
-    )
-
-    assert payload is not None
-    assert payload["status"] == "loaded"
-    assert payload["feature_values"]["l4_s12_edge_agreement"] == pytest.approx(0.0)
-    assert payload["expected_return"] == pytest.approx(0.01)
-
-
-def test_allocator_ev_fusion_materializer_uses_availability_features_instead_of_disabling_execution_model():
-    artifact = {
-        **_artifact(),
-        "schema_version": "allocator-ev-fusion-artifact-v3",
-        "resolver_method": "two_stage_allocator_ev_fusion",
-        "selection_model": {
+        "conditional_execution_return_model": {
             "status": "fitted",
-            "intercept": 0.0,
-            "feature_names": ["l4_expected_return"],
-            "coefficients": {"l4_expected_return": 1.0},
-        },
-        "execution_model": {
-            "status": "fitted",
-            "intercept": -0.001,
-            "feature_names": ["s12_trade_expected_return"],
-            "coefficients": {"s12_trade_expected_return": 0.5},
-        },
-    }
-    with_s12 = materialize_allocator_ev_fusion(
-        {},
-        l4_value=0.02,
-        l4_source="l4:test",
-        l4_payload={},
-        s12_value=0.01,
-        s12_source="s12:test",
-        s12_payload={"status": "loaded"},
-        market_heat_expected_return=0.0,
-        policy={"allocatorEvFusion": artifact},
-    )
-    without_s12 = materialize_allocator_ev_fusion(
-        {},
-        l4_value=0.02,
-        l4_source="l4:test",
-        l4_payload={},
-        s12_value=None,
-        s12_source="s12:missing",
-        s12_payload={"status": "invalid_structure"},
-        market_heat_expected_return=0.0,
-        policy={"allocatorEvFusion": artifact},
-    )
-
-    assert with_s12["expected_return"] == pytest.approx(0.024)
-    assert with_s12["s12_execution_model_applied"] is True
-    assert without_s12["expected_return"] == pytest.approx(0.019)
-    assert without_s12["s12_execution_model_applied"] is True
-
-
-def test_allocator_ev_fusion_materializer_probability_weights_execution_residual():
-    artifact = {
-        **_artifact(),
-        "resolver_method": "rank_calibrated_two_part_allocator_ev_fusion",
-        "selection_model": {
-            "status": "fitted",
-            "intercept": 0.0,
-            "coefficients": {"l4_expected_return": 1.0},
-        },
-        "execution_model": {
-            "status": "fitted",
-            "intercept": 0.0,
-            "coefficients": {"s12_trade_expected_return": 0.4},
+            "decision": "PASS",
+            "head_semantic": "conditional_execution_return_model",
+            "intercept": 0.02,
+            "coefficients": {
+                "l4_expected_return": 0.0,
+                "market_heat_expected_return": 0.0,
+            },
         },
         "execution_probability_model": {
             "status": "fitted",
-            "intercept": 0.5,
-            "coefficients": {"s12_trade_expected_return": 0.0},
-        },
-    }
-    payload = materialize_allocator_ev_fusion(
-        {},
-        l4_value=0.02,
-        l4_source="l4:test",
-        l4_payload={},
-        s12_value=0.01,
-        s12_source="s12:test",
-        s12_payload={"status": "loaded"},
-        market_heat_expected_return=0.0,
-        policy={"allocatorEvFusion": artifact},
-    )
-
-    assert payload["execution_probability"] == pytest.approx(0.5)
-    assert payload["raw_execution_residual"] == pytest.approx(0.004)
-    assert payload["execution_residual_adjustment"] == pytest.approx(0.002)
-    assert payload["expected_return"] == pytest.approx(0.022)
-
-
-def test_allocator_ev_fusion_v5_uses_execution_probability_times_conditional_trade_return():
-    artifact = {
-        **_artifact(),
-        "schema_version": "allocator-ev-fusion-artifact-v5",
-        "resolver_method": "cross_fitted_rank_two_part_trade_ev_fusion",
-        "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
-        "selection_model": {
-            "status": "fitted",
-            "intercept": 0.0,
-            "coefficients": {"l4_expected_return": 1.0},
-        },
-        "execution_model": {
-            "status": "fitted",
-            "intercept": 0.0,
-            "coefficients": {"s12_trade_expected_return": 1.0},
-        },
-        "execution_probability_model": {
-            "status": "fitted",
+            "decision": "PASS",
+            "head_semantic": "execution_probability_model",
             "link_function": "logit",
-            "intercept": 0.0,
-            "coefficients": {"s12_trade_expected_return": 0.0},
-        },
-    }
-    payload = materialize_allocator_ev_fusion(
-        {},
-        l4_value=0.02,
-        l4_source="l4:test",
-        l4_payload={},
-        s12_value=0.01,
-        s12_source="s12:test",
-        s12_payload={"status": "loaded"},
-        market_heat_expected_return=0.0,
-        policy={"allocatorEvFusion": artifact},
-    )
-
-    assert payload["selection_expected_return"] == pytest.approx(0.02)
-    assert payload["execution_probability"] == pytest.approx(0.5)
-    assert payload["raw_execution_residual"] == pytest.approx(0.01)
-    assert payload["expected_return"] == pytest.approx(0.005)
-
-
-
-def test_allocator_ev_fusion_v12_serves_market_regime_interactions():
-    artifact = {
-        **_artifact(),
-        "schema_version": "allocator-ev-fusion-artifact-v12",
-        "artifact_contract_version": "allocator-ev-fusion-contract-v12",
-        "feature_semantic_version": "allocator-ev-fusion-market-conditioned-components-v3-lineage-bound",
-        "resolver_method": "market_conditioned_cross_fitted_rank_two_part_trade_ev_fusion",
-        "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
-        "selection_model": {
-            "status": "fitted",
-            "intercept": 0.0,
-            "coefficients": {"l4_expected_return": 1.0},
-        },
-        "execution_model": {
-            "status": "fitted",
             "intercept": 0.0,
             "coefficients": {
-                "s12_trade_expected_return": 1.0,
-                "l4_defensive_regime_interaction": 2.0,
+                "l4_available": 0.0,
             },
         },
-        "execution_probability_model": {
-            "status": "fitted",
-            "link_function": "logit",
-            "intercept": 0.0,
-            "coefficients": {"s12_trade_expected_return": 0.0},
-        },
+        "output_clip": {"min": -0.08, "max": 0.08},
     }
-    row = {
-        "prediction_date": "2026-07-21",
-        "alpha_context": {
-            "market_regime_context": {
-                "schema_version": "fusion-market-context-pit-v1",
-                "signal_date": "2026-07-21",
-                "source_date": "2026-07-21",
-                "market_return_5d": -0.08,
-                "market_bias_20d": -0.05,
-                "risk_score": 80.0,
-                "advance_ratio": 0.20,
-                "regime_surface": {"bull": 0.0, "bear": 0.5, "volatile": 0.25, "sideways": 0.25},
-            },
-        },
-    }
+    artifact.update(overrides)
+    return artifact
 
-    payload = materialize_allocator_ev_fusion(
-        row,
-        l4_value=0.02,
-        l4_source="l4:test",
-        l4_payload={},
-        s12_value=0.01,
-        s12_source="s12:test",
-        s12_payload={"status": "loaded"},
-        market_heat_expected_return=0.0,
+
+def _materialize(artifact, *, row=None, l4_value=0.01):
+    return materialize_allocator_ev_fusion(
+        row or {},
+        l4_value=l4_value,
+        l4_source="l4_alpha_ev:test",
+        l4_payload={"status": "loaded", "expected_return_owner": "l4_alpha_ev"},
+        market_heat_expected_return=0.003,
         policy={"allocatorEvFusion": artifact},
     )
 
+
+def test_materializer_serves_two_head_policy_value_only():
+    payload = _materialize(_artifact())
+
+    assert payload is not None
     assert payload["status"] == "loaded"
-    assert payload["feature_values"]["regime_defensive_probability"] == pytest.approx(0.75)
-    assert payload["feature_values"]["l4_defensive_regime_interaction"] == pytest.approx(0.015)
-    assert payload["raw_execution_residual"] == pytest.approx(0.04)
+    assert payload["expected_return_owner"] == "allocator_ev_fusion"
+    assert payload["policy_value_head_count"] == 2
     assert payload["execution_probability"] == pytest.approx(0.5)
-    assert payload["expected_return"] == pytest.approx(0.02)
+    assert payload["conditional_execution_return"] == pytest.approx(0.02)
+    assert payload["policy_value"] == pytest.approx(0.01)
+    assert payload["expected_return"] == pytest.approx(0.01)
+    assert "selection_expected_return" not in payload
+    assert "s12_trade_ev" not in payload
+    assert payload["selection_feature_owner"] == "l4_alpha_ev"
+    assert payload["execution_policy_owner"] == "s12_intraday_structure_v1"
+
+
+def test_materializer_uses_day_t_features_for_both_heads():
+    artifact = _artifact(
+        conditional_execution_return_model={
+            "status": "fitted",
+            "decision": "PASS",
+            "intercept": 0.0,
+            "coefficients": {"l4_expected_return": 1.0},
+        },
+        execution_probability_model={
+            "status": "fitted",
+            "decision": "PASS",
+            "link_function": "logit",
+            "intercept": 0.0,
+            "coefficients": {"l4_available": math.log(3.0)},
+        },
+    )
+    payload = _materialize(artifact, l4_value=0.04)
+
+    assert payload["status"] == "loaded"
+    assert payload["execution_probability"] == pytest.approx(0.75)
+    assert payload["conditional_execution_return"] == pytest.approx(0.04)
+    assert payload["expected_return"] == pytest.approx(0.03)
+    assert payload["feature_values"]["l4_expected_return"] == pytest.approx(0.04)
+    assert all(not name.startswith("s12_") for name in payload["feature_values"])
+
+
+def test_materializer_rejects_third_selection_serving_head():
+    artifact = _artifact(
+        selection_model={
+            "status": "fitted",
+            "intercept": 0.0,
+            "coefficients": {"l4_expected_return": 1.0},
+        },
+    )
+    payload = _materialize(artifact)
+
+    assert payload["status"] == "rejected"
+    assert "third_selection_serving_head_forbidden" in payload["blockers"]
+
+
+def test_materializer_rejects_candidate_time_s12_features_in_either_head():
+    artifact = _artifact(
+        conditional_execution_return_model={
+            "status": "fitted",
+            "decision": "PASS",
+            "intercept": 0.0,
+            "coefficients": {
+                "l4_expected_return": 1.0,
+                "s12_trade_expected_return": 1.0,
+            },
+        },
+    )
+    payload = _materialize(artifact)
+
+    assert payload["status"] == "rejected"
+    assert "candidate_time_s12_feature_forbidden:s12_trade_expected_return" in payload["blockers"]
+
+
+def test_materializer_rejects_legacy_contract_and_non_primary_artifact():
+    legacy = _artifact(artifact_contract_version="allocator-ev-fusion-contract-v12")
+    legacy_payload = _materialize(legacy)
+    assert legacy_payload["status"] == "rejected"
+    assert "artifact_contract_version_incompatible" in legacy_payload["blockers"]
+
+    shadow = _artifact(
+        promotion_state="shadow",
+        promotion_tier="shadow",
+        primary_expected_return_allowed=False,
+    )
+    shadow_payload = _materialize(shadow)
+    assert shadow_payload["status"] == "rejected"
+    assert "production_approval_missing" in shadow_payload["blockers"]
+    readiness = assess_allocator_ev_fusion_policy({"allocatorEvFusion": shadow})
+    assert readiness["ready"] is False
+    assert "production_approval_missing" in readiness["blockers"]
+    assert "primary_expected_return_not_allowed" in readiness["blockers"]
+
+
+def test_materializer_public_api_has_no_candidate_s12_arguments():
+    with pytest.raises(TypeError):
+        materialize_allocator_ev_fusion(
+            {},
+            l4_value=0.01,
+            l4_source="l4:test",
+            l4_payload={},
+            s12_value=0.02,
+            market_heat_expected_return=0.0,
+            policy={"allocatorEvFusion": _artifact()},
+        )

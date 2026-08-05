@@ -80,7 +80,7 @@ assert(
 )
 assert(updateOrchestrator.includes('refreshExpectedReturnServingState'), 'daily readiness must persist canonical expected-return serving state')
 assert(expectedReturnServingState.includes("'retired_incompatible'"), 'stale promoted artifacts must be explicitly retired from serving without rewriting evidence')
-assert(expectedReturnServingState.includes("'validated_s12_only'"), 'no-owner production behavior must remain explicit and fail closed')
+assert(expectedReturnServingState.includes("'fusion_primary_required'"), 'no-owner production behavior must require a primary Fusion artifact and fail closed')
 const schedulerLockMigration = fs.readFileSync('migration_scheduler_locks.sql', 'utf8')
 const runBulkFetchStart = updateOrchestrator.indexOf('export async function runBulkFetch')
 const runBulkFetchEnd = updateOrchestrator.indexOf('export async function runQueueUpdate', runBulkFetchStart)
@@ -210,8 +210,7 @@ assert(
 assert(
   updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh'") &&
     updateOrchestrator.includes('fusion_degraded=') &&
-    updateOrchestrator.includes('pipeline continues with validated L4 alpha EV or S12 trade EV') &&
-    updateOrchestrator.includes('BUY/allocation remain fail closed when expected return is unavailable'),
+    updateOrchestrator.includes('pipeline continues for evidence coverage but BUY/allocation fail closed because Fusion is the sole expected-return owner'),
   'allocator EV fusion validation failure must remain visible while expected-return action gates stay fail closed',
 )
 assert(
@@ -221,16 +220,14 @@ assert(
     updateOrchestrator.includes('refreshExpectedReturnServingState') &&
     expectedReturnServingState.includes("artifact.promotion_state !== requiredPromotionState") &&
     expectedReturnServingState.includes("String(artifact.validation_packet?.decision ?? '').toUpperCase() !== 'PASS'") &&
-    expectedReturnServingState.includes("action_gate: owner ? 'expected_return_owner' : 'validated_s12_only'"),
+    expectedReturnServingState.includes("action_gate: owner ? 'expected_return_owner' : 'fusion_primary_required'"),
   'L4 readiness must retain a compatible champion or continue observation with BUY/allocation fail closed',
 )
 assert(
-  updateOrchestrator.includes('analysis_continues=1 execution_fail_closed=1') &&
-    updateOrchestrator.includes("s.state='data_unavailable'") &&
-    updateOrchestrator.includes('s.pending_run_id=?') &&
-    updateOrchestrator.includes('persistedRows !== referenceRows') &&
-    updateOrchestrator.includes('blocked=${blockedRows}'),
-  'S12 unavailable observations must stay visible and execution-fail-closed while only incomplete canonical coverage blocks the lifecycle',
+  updateOrchestrator.includes('Deprecated S12 candidate snapshot message drained without serving side effects') &&
+    updateOrchestrator.includes("msg.type === 's12_replay_backfill_chunk'") &&
+    !updateOrchestrator.includes("type: 's12_candidate_snapshot_chunk'"),
+  'production evening S12 candidate snapshots must be removed while mature historical replay labels remain available',
 )
 
 const mlPipelineTrigger = fs.readFileSync('src/lib/mlPipelineTrigger.ts', 'utf8')

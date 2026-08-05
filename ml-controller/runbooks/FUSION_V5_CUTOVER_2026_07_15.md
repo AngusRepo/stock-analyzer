@@ -1,5 +1,9 @@
 # Fusion V5 Cutover Review - 2026-07-15
 
+> Superseded on 2026-08-05 by `FUSION_V13_S12_POLICY_VALUE_CUTOVER_2026_08_05.md`.
+> V5 mixed L4/S12 ownership, assistive tier, candidate-time S12 serving inputs, and L4 rollback
+> are no longer valid production procedures.
+
 ## Decision boundary
 
 Fusion V5 may replace canonical L4 as the production expected-return owner only when the

@@ -54,8 +54,15 @@ def test_oof_materialize_job_treats_daily_shadow_evaluation_as_terminal_success(
             "cohort_id": "cohort-1",
             "promoted": False,
             "promotion_reason": "frozen_forward_oos_shadow_evidence_not_promotion_eligible",
-            "calendar": {"mature_max_date": "2026-07-30", "calendar_source": "immutable_canonical_adjusted_prep"},
-            "physical_prediction_coverage": {"max_date": "2026-07-30"},
+            "calendar": {
+                "mature_max_date": "2026-07-30",
+                "calendar_source": "immutable_canonical_adjusted_prep",
+                "parent_physical_coverage": {"max_date": "2026-07-22"},
+            },
+            "physical_prediction_coverage": {
+                "base_max_date": "2026-07-22",
+                "max_date": "2026-07-30",
+            },
         }
 
     async def fake_callback(payload):
@@ -73,6 +80,10 @@ def test_oof_materialize_job_treats_daily_shadow_evaluation_as_terminal_success(
     assert callbacks[0]["run_id"] == "run-shadow"
     assert "status=shadow_evaluated" in callbacks[0]["summary"]
     assert "promoted=False" in callbacks[0]["summary"]
+    assert "oof_base_max=2026-07-22" in callbacks[0]["summary"]
+    assert "effective_oof_max=2026-07-30" in callbacks[0]["summary"]
+    assert "expected_oof_max=2026-07-30" in callbacks[0]["summary"]
+    assert "coverage_mode=frozen_forward_shadow" in callbacks[0]["summary"]
 
 
 def test_oof_materialize_job_fails_closed_when_effective_max_is_stale(monkeypatch):
@@ -112,12 +123,18 @@ def test_oof_freshness_uses_v8_idempotent_receipt_coverage():
         "status": "idempotent_complete",
         "receipt": {
             "cohort_id": "cohort-receipt",
-            "calendar": {"mature_max_date": "2026-07-30"},
+            "calendar": {
+                "mature_max_date": "2026-07-30",
+                "parent_physical_coverage": {"max_date": "2026-07-22"},
+            },
             "physical_prediction_coverage": {"max_date": "2026-07-30"},
         },
     })
 
     assert evidence["status"] == "fresh"
+    assert evidence["base_max_date"] == "2026-07-22"
+    assert evidence["effective_max_date"] == "2026-07-30"
+    assert evidence["coverage_mode"] == "frozen_forward_shadow"
     assert evidence["cohort_id"] == "cohort-receipt"
 
 

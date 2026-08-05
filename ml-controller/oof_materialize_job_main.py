@@ -114,14 +114,23 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
                 result.get("l4_materialization_blockers") or {}, separators=(",", ":"), sort_keys=True
             ),
         ])
-    return " ".join([
+    parts = [
         f"run_id={run_id}",
         f"status={result.get('status', 'unknown')}",
         f"cohort={result.get('cohort_id', 'none')}",
         f"promoted={bool(result.get('promoted'))}",
         f"reason={result.get('promotion_reason') or result.get('reason') or 'none'}",
         f"full_fit={str((result.get('full_fit_dispatch') or {}).get('status') or 'none')}",
-    ])
+    ]
+    freshness = _oof_freshness_evidence(result)
+    if freshness.get("expected_max_date") or freshness.get("effective_max_date"):
+        parts.extend([
+            f"oof_base_max={freshness.get('base_max_date') or 'missing'}",
+            f"effective_oof_max={freshness.get('effective_max_date') or 'missing'}",
+            f"expected_oof_max={freshness.get('expected_max_date') or 'missing'}",
+            f"coverage_mode={freshness.get('coverage_mode') or 'unknown'}",
+        ])
+    return " ".join(parts)
 
 
 def _full_fit_continuation_active(result: dict[str, Any]) -> bool:
@@ -147,8 +156,18 @@ def _oof_freshness_evidence(result: dict[str, Any]) -> dict[str, Any]:
     coverage = coverage if isinstance(coverage, dict) else receipt.get("physical_prediction_coverage")
     coverage = coverage if isinstance(coverage, dict) else shadow.get("physical_prediction_coverage")
     coverage = coverage if isinstance(coverage, dict) else {}
+    parent_coverage = calendar.get("parent_physical_coverage")
+    parent_coverage = parent_coverage if isinstance(parent_coverage, dict) else {}
     expected_max = str(calendar.get("mature_max_date") or "")[:10]
     effective_max = str(coverage.get("max_date") or "")[:10]
+    base_max = str(coverage.get("base_max_date") or parent_coverage.get("max_date") or "")[:10]
+    coverage_mode = (
+        "frozen_forward_shadow"
+        if base_max and effective_max and effective_max > base_max
+        else "base_materialized"
+        if effective_max
+        else "missing"
+    )
     if not expected_max:
         status = "failed"
         reason = "expected_mature_max_missing"
@@ -169,6 +188,8 @@ def _oof_freshness_evidence(result: dict[str, Any]) -> dict[str, Any]:
         "prep_manifest_checksum": calendar.get("prep_manifest_checksum"),
         "expected_max_date": expected_max or None,
         "effective_max_date": effective_max or None,
+        "base_max_date": base_max or None,
+        "coverage_mode": coverage_mode,
         "cohort_id": result.get("cohort_id") or receipt.get("cohort_id"),
     }
 

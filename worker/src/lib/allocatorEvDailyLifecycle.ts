@@ -571,8 +571,10 @@ export async function runAllocatorEvLifecycleWatchdog(
   }
   if (!snapshot.ready && businessDate < twTodayDate()) {
     return `skipped: allocator EV native snapshot repair window closed for historical date=${businessDate} `
+      + `recommendations=${snapshot.recommendationRows} lineage=${snapshot.nativeLineageRows} `
       + `run_native=${snapshot.runNativeLineageRows} reconstructed=${snapshot.reconstructedLineageRows} `
-      + `rejected=${snapshot.rejectedLineageRows} expected=${snapshot.expectedRows} actual=${snapshot.actualRows}; `
+      + `rejected=${snapshot.rejectedLineageRows} expected=${snapshot.expectedRows} published=${snapshot.publishedRows} actual=${snapshot.actualRows} `
+      + `recommendation_max=${snapshot.recommendationMaxCreatedAt ?? 'missing'} snapshot_max=${snapshot.snapshotMaxGeneratedAt ?? 'missing'}; `
       + `${maturitySummary(maturity)}`
   }
 

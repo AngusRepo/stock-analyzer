@@ -20,8 +20,8 @@ const promotedState = buildStrategyProductionContributionFirewall({
     { strategy_id: 'candidate-c', decision: 'active_cooldown' },
   ],
   base: {
-    source: 'promoted_marginal_edge_v6',
-    run_id: 'edge-v6-2026-08-02',
+    source: 'adaptive_strategy_policy_v2',
+    run_id: 'adaptive-v2-2026-08-02',
     weights: {
       'active-a': 0.6,
       'active-b': 0.3,
@@ -43,7 +43,7 @@ assert.equal(promotedState.evidence.raw_labels_preserved, true)
 assert.equal(promotedState.evidence.experimental_threshold_deltas_applied, false)
 assert.equal(promotedState.evidence.complete_non_retired_weight_map, true)
 assert.equal(promotedState.evidence.positive_weight_count, 2)
-assert.equal(promotedState.base_weight_run_id, 'edge-v6-2026-08-02')
+assert.equal(promotedState.base_weight_run_id, 'adaptive-v2-2026-08-02')
 
 const unitWeightState = buildStrategyProductionContributionFirewall({
   knowledgeCutoffDate: '2026-08-02',
@@ -68,8 +68,8 @@ const reorderedState = buildStrategyProductionContributionFirewall({
     { strategy_id: 'active-b', decision: 'active_cooldown' },
   ],
   base: {
-    source: 'promoted_marginal_edge_v6',
-    run_id: 'edge-v6-2026-08-02',
+    source: 'adaptive_strategy_policy_v2',
+    run_id: 'adaptive-v2-2026-08-02',
     weights: {
       'candidate-c': 0.1,
       'active-b': 0.3,

@@ -8,14 +8,13 @@ const screener = fs.readFileSync(path.join(root, 'marketScreener.ts'), 'utf8')
 const labels = fs.readFileSync(path.join(root, 'canonicalSelectionLabels.ts'), 'utf8')
 const reference = fs.readFileSync(path.join(root, 'selectionReferenceEvidence.ts'), 'utf8')
 const canonicalLabels = fs.readFileSync(path.join(root, 'canonicalSelectionLabels.ts'), 'utf8')
-const thresholdCalibration = fs.readFileSync(path.join(root, 'strategyThresholdCalibration.ts'), 'utf8')
 const evaluableMigration = fs.readFileSync(path.join(root, '../../migrations/0090_daily_technical_strategy_producer_closure.sql'), 'utf8')
 
 assert.match(learning, /canonical_selection_labels_v4/)
 assert.match(learning, /residual_return_net/)
 assert.doesNotMatch(learning.slice(learning.indexOf('export async function listStrategyRewardSourceRows'), learning.indexOf('export async function persistStrategyRewardLedgerRows')), /trade_pnl_pct|actual_return_pct/)
-assert.match(screener, /policyState\?\.status === 'active'/)
-assert.doesNotMatch(screener, /strategyWeights: policyState\?\.strategy_weights/)
+assert.match(screener, /productionPolicyState\?\.state\.strategy_weights/)
+assert.doesNotMatch(screener, /getLatestStrategyPolicyState/)
 assert.match(labels, /price_horizon_labels_v1/)
 assert.match(labels, /price_horizon_label_rejections_v1/)
 assert.match(labels, /PRICE_HORIZON_PROJECTION_VERSION/)
@@ -33,16 +32,6 @@ assert.match(canonicalLabels, /NOT EXISTS \(SELECT 1 FROM canonical_selection_la
 assert.match(canonicalLabels, /ON CONFLICT\(signal_date, symbol, producer_run_id, label_schema_version\) DO UPDATE SET/)
 assert.match(canonicalLabels, /reference_contract_version=excluded\.reference_contract_version/)
 assert.match(canonicalLabels, /SELECTION_REFERENCE_CONTRACT_VERSION/)
-const thresholdEvidenceLoader = thresholdCalibration.slice(
-  thresholdCalibration.indexOf('export async function listStrategyThresholdCalibrationEvidenceRows'),
-  thresholdCalibration.indexOf('export function buildStrategyThresholdAutoDecisions'),
-)
-assert.match(thresholdEvidenceLoader, /canonical_selection_labels_v4/)
-assert.match(thresholdEvidenceLoader, /strategy-evaluation-v2/)
-assert.match(thresholdEvidenceLoader, /selection-reference-snapshot-v3/)
-assert.match(thresholdEvidenceLoader, /canonical_run_heads/)
-assert.doesNotMatch(thresholdEvidenceLoader, /JOIN predictions|trade_pnl_pct|actual_return_pct/)
-
 console.log('strategySelectionEdgeV4Contract tests passed')
 const dailyTechnicalCandidateIds = [
   'stock_tech_s03_vcp_contraction_breakout_v1',

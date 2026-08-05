@@ -47,7 +47,7 @@ const directClosure = finalizer.slice(finalizer.indexOf('export async function r
 assert.match(directClosure, /strategy_learning_direct_production_mutation_requires_evening_chain_audit/)
 assert.match(directClosure, /allowPromotion: false/)
 assert.match(directClosure, /persistPolicy: false/)
-assert.match(directClosure, /calibrateThresholds: false/)
+assert.match(canonicalFinalizer, /adaptiveState: policy\.policy_state/)
 
 const strategyQueue = orchestrator.slice(
   orchestrator.indexOf("if (msg.type === 'strategy_learning_materialize')"),
@@ -85,11 +85,10 @@ const weekly = weeklyDag.slice(
   weeklyDag.indexOf("id: 'weekly'"),
   weeklyDag.indexOf("id: 'monthly'"),
 )
-assert.match(weekly, /id: 'weekly-validation'/)
-assert.match(weekly, /id: 'weekly-research'/)
-assert.match(weekly, /id: 'weekly-policy'/)
-assert.match(weekly, /id: 'weekly-maintenance'/)
-assert.match(weekly, /id: 'weekly-retrain'/)
-assert.doesNotMatch(weekly, /\['weekly-optuna', 'sector-leaders'\],\s*\['adaptive-meta-policy-replay'\]/)
+assert.match(weekly, /\['weekly-backtest', 'alpha-quality', 'active8-oof-weekly'\]/)
+assert.match(weekly, /\['weekly-optuna', 'sector-leaders'\]/)
+assert.match(weekly, /\['adaptive-meta-policy-replay', 's12-smcvwap-calibration', 'linucb-multiplier-replay'\]/)
+assert.match(weekly, /\['weekly-cleanup'\]/)
+assert.match(weekly, /\['weekly-drift-retrain'\]/)
 
 assert.match(schemaGenerator, /CREATE\(\?:\\s\+UNIQUE\)\?\\s\+INDEX/)

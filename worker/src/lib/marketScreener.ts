@@ -3587,27 +3587,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     passesLayer1TopUpQualityGuard = strategyCandidatePoolModule.passesLayer1TopUpQualityGuard
     const currentRegime = canonicalRegimeState.family
     runtimeStrategyRegime = currentRegime
-    const { specs, source, registryRowCount, activeCount } = await listStrategySpecsForLearning(env.DB)
+    const { specs, source, registryRowCount, activeCount } = await listStrategySpecsForLearning(env.DB, { asOfDate: endDate })
     runtimeStrategySpecs = specs
     const strategyIds = specs
       .filter((spec: StrategySpec) => spec.status !== 'retired')
       .map((spec: StrategySpec) => spec.id)
-    const [{ loadStrategyProductionPolicyBefore }, { loadPromotedStrategyMarginalEdgeWeightsBefore }] = await Promise.all([
-      import('./strategyProductionPolicyStore'),
-      import('./strategyMarginalEdgePointInTime'),
-    ])
-    const [productionPolicyLoad, marginalEdgeLoad, strategyOofLoad] = await Promise.all([
+    const { loadStrategyProductionPolicyBefore } = await import('./strategyProductionPolicyStore')
+    const [productionPolicyLoad, strategyOofLoad] = await Promise.all([
       loadStrategyProductionPolicyBefore(env.DB, endDate, strategyIds)
-        .then((value) => ({ value, error: null as string | null }))
-        .catch((error) => ({
-          value: null,
-          error: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
-        })),
-      loadPromotedStrategyMarginalEdgeWeightsBefore(
-        env.DB,
-        strategyIds,
-        endDate,
-      )
         .then((value) => ({ value, error: null as string | null }))
         .catch((error) => ({
           value: null,
@@ -3621,10 +3608,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         })),
     ])
     const productionPolicyState = productionPolicyLoad.value
-    const marginalEdgeState = marginalEdgeLoad.value
     const strategyOofReturns = strategyOofLoad.returns
     const activeStrategyWeights = productionPolicyState?.state.strategy_weights
-      ?? marginalEdgeState?.weights
     const strategySimilarityPayload = buildStrategySimilarityEvidencePayload(
       strategySourceUniverse as any,
       specs,
@@ -3763,17 +3748,13 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       promoted_route_calibration_load_error: promotedRouteCalibrationLoad.error,
       effective_strategy_weight_source: productionPolicyState
         ? 'strategy-production-contribution-firewall-v1'
-        : marginalEdgeState
-          ? 'promoted-marginal-edge-v6-point-in-time'
-          : 'runtime-default',
+        : 'runtime-default',
       strategy_production_policy_id: productionPolicyState?.state.policy_id ?? null,
       strategy_production_policy_version: productionPolicyState?.state.version ?? null,
       strategy_production_policy_knowledge_cutoff_date: productionPolicyState?.state.knowledge_cutoff_date ?? null,
       strategy_production_policy_checksum: productionPolicyState?.checksum ?? null,
       strategy_production_policy_quarantined_strategy_ids: productionPolicyState?.state.quarantined_strategy_ids ?? [],
       strategy_production_policy_load_error: productionPolicyLoad.error,
-      promoted_marginal_edge_run_id: marginalEdgeState?.runId ?? null,
-      promoted_marginal_edge_load_error: marginalEdgeLoad.error,
       previous_l15_slate_count: layer1BreadthPlan.telemetry.previous_slate_count ?? null,
       l15_temporal_intersection_count: layer1BreadthPlan.telemetry.temporal_intersection_count ?? null,
       l15_temporal_jaccard: layer1BreadthPlan.telemetry.temporal_jaccard ?? null,

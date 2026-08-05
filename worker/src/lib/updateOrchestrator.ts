@@ -3386,12 +3386,10 @@ export async function processUpdateBatch(
         maxRecoveryDates: 4,
       })
       let closureSummary = ''
-      const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, thresholdCalibration }
+      const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, productionPolicy }
         = await finalizeStrategyLearningEvidenceV5(env.DB, triggerTime, {
           allowPromotion: currentBusinessDateRun,
           persistPolicy: currentBusinessDateRun,
-          calibrateThresholds: currentBusinessDateRun,
-          calibrationCadence: 'daily_drift',
           historicalPriorityDate,
           beforePromotion: async () => {
             const closureAudit = await auditEveningChainEvidenceClosure(
@@ -3422,7 +3420,7 @@ export async function processUpdateBatch(
       `reward_source_rows=${rewards.source_rows}`,
       `reward_rows=${rewards.persisted_rows}`,
       `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
-      `threshold_calibration=${thresholdCalibration ? thresholdCalibration.status : 'skipped_historical'}`,
+      `production_policy=${productionPolicy ? productionPolicy.state.status : 'skipped_historical'}`,
       `evidence_closure=${closureSummary}`,
       `run_scope=${runScope}`,
       `production_authority=${authorityReason}`,

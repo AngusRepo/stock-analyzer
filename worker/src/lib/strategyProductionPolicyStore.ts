@@ -90,7 +90,11 @@ function parseWeights(value: string, expectedStrategyIds: readonly string[]): Re
 }
 
 function parseBaseWeightSource(value: string): StrategyProductionBaseWeightSource {
-  if (value === 'promoted_marginal_edge_v6' || value === 'runtime_default_unit_weights') return value
+  if (
+    value === 'adaptive_strategy_policy_v2'
+    || value === 'promoted_marginal_edge_v6'
+    || value === 'runtime_default_unit_weights'
+  ) return value
   throw new Error(`invalid_strategy_production_policy_base_source:${value}`)
 }
 

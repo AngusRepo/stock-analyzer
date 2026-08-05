@@ -208,7 +208,7 @@ def _row(day: str, idx: int) -> dict:
 
 def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos_passes():
     rows = []
-    for day_idx in range(32):
+    for day_idx in range(48):
         day = (date(2026, 4, 1) + timedelta(days=day_idx)).isoformat()
         for symbol_idx in range(64):
             rows.append(_row(day, symbol_idx))
@@ -228,6 +228,15 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert artifact["promotion_tier"] == "primary"
     assert artifact["primary_expected_return_allowed"] is True
     assert artifact["validation_packet"]["decision"] == "PASS"
+    packet = artifact["validation_packet"]
+    assert packet["schema_version"] == "allocator-ev-fusion-validation-packet-v13"
+    assert set(packet["gate_layers"]) == {
+        "data_validity", "forecast_skill", "statistical_validity", "economic_utility"
+    }
+    assert packet["gate_layers"]["forecast_skill"]["primary_probability_score"] == (
+        "date_clustered_log_loss_advantage_lcb90"
+    )
+    assert packet["validation_scope"]["effective_sample_unit"] == "prediction_date"
     assert artifact["validation_packet"]["sample_audit"]["l4_available_count"] > 0
     assert artifact["validation_packet"]["sample_audit"]["s12_structure_available_count"] > 0
     assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
@@ -256,6 +265,65 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert "l4_defensive_regime_interaction" in artifact["feature_names"]
     assert "sector_rs_consensus" in artifact["feature_names"]
 
+def test_allocator_ev_fusion_multiple_testing_fails_closed_without_corrected_evidence():
+    rows = [
+        _row((date(2026, 4, 1) + timedelta(days=day_idx)).isoformat(), symbol_idx)
+        for day_idx in range(48)
+        for symbol_idx in range(64)
+    ]
+
+    rejected = build_allocator_ev_fusion_artifact_from_rows(
+        rows,
+        trained_until="2026-07-07",
+        min_samples=200,
+        min_dates=20,
+        l2=0.15,
+        search_trial_count=24,
+    )
+
+    rejected_artifact = rejected["artifact"]
+    assert rejected["status"] == "failed_validation"
+    assert rejected_artifact["promotion_tier"] == "shadow"
+    assert rejected_artifact["validation_packet"]["gate_layers"]["statistical_validity"]["decision"] == "FAIL"
+    assert "multiple_testing:approved_correction_missing" in rejected_artifact["validation_packet"]["failed_gates"]
+
+    corrected = build_allocator_ev_fusion_artifact_from_rows(
+        rows,
+        trained_until="2026-07-07",
+        min_samples=200,
+        min_dates=20,
+        l2=0.15,
+        search_trial_count=24,
+        multiple_testing_evidence={
+            "method": "hansen_spa",
+            "passed": True,
+            "adjusted_p_value": 0.04,
+        },
+    )
+
+    corrected_artifact = corrected["artifact"]
+    assert corrected["status"] == "ok"
+    assert corrected_artifact["promotion_tier"] == "primary"
+    assert corrected_artifact["validation_packet"]["gate_layers"]["statistical_validity"]["decision"] == "PASS"
+
+
+def test_allocator_ev_fusion_benchmark_panel_identity_mismatch_fails_closed():
+    rows = [
+        _row((date(2026, 4, 1) + timedelta(days=day_idx)).isoformat(), symbol_idx)
+        for day_idx in range(48)
+        for symbol_idx in range(64)
+    ]
+
+    out = build_allocator_ev_fusion_artifact_from_rows(
+        rows,
+        trained_until="2026-07-07",
+        min_samples=200,
+        min_dates=20,
+        l2=0.15,
+        benchmark_panel_id="fusion-panel-v1:stale-panel",
+    )
+
+
 
 def test_fusion_challenger_must_beat_canonical_l4_on_paired_oos_dates():
     samples = []
@@ -279,7 +347,7 @@ def test_fusion_challenger_must_beat_canonical_l4_on_paired_oos_dates():
     )
 
     assert comparison["decision"] == "FAIL"
-    assert comparison["oos_date_count"] == 4
+    assert comparison["oos_date_count"] == 5
     assert "fusion_corr_delta_lcb90_inferior_to_canonical_l4" in comparison["failed_gates"]
     assert "fusion_spread_delta_lcb90_inferior_to_canonical_l4" in comparison["failed_gates"]
 
@@ -367,7 +435,7 @@ def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_sampl
 def test_allocator_ev_fusion_assistive_learning_tier_is_reachable_without_ev_ownership():
     rows = [
         _row(f"2026-06-{day_idx + 1:02d}", symbol_idx)
-        for day_idx in range(10)
+        for day_idx in range(20)
         for symbol_idx in range(64)
     ]
 

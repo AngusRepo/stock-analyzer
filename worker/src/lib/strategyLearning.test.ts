@@ -1,6 +1,7 @@
 import { DEFAULT_STRATEGY_SPECS } from './strategySpec'
 import * as fs from 'node:fs'
 import {
+  applyStrategyAdaptivePolicyThresholds,
   buildStrategyAdaptivePolicyState,
   buildStrategyDecisionRows,
   buildStrategyRewardDailyStatsRows,
@@ -329,11 +330,11 @@ class FakeCandidateFeatureD1 {
 {
   const activeSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active')
   const candidateSpecs = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'candidate')
-  assert(activeSpecs.length === 5, 'bootstrap strategy manifest should expose exactly 5 base production strategies')
-  assert(candidateSpecs.length === 3, 'bootstrap strategy manifest should keep the demoted FinLab owners in candidate pool')
+  assert(activeSpecs.length === 7, 'bootstrap strategy manifest should expose the five retained owners plus 0081 and FinLab reversion')
+  assert(candidateSpecs.length === 2, 'bootstrap strategy manifest should keep only unpromoted FinLab owners in candidate pool')
   assert(activeSpecs.filter((spec) => spec.id.startsWith('research_consolidated_')).length === 0, 'research consolidated strategies must not remain in bootstrap runtime defaults')
   assert(activeSpecs.filter((spec) => spec.id.startsWith('alphabuilders_multifactor_')).length === 1, 'bootstrap should keep only the retained AlphaBuilders production label')
-  assert(activeSpecs.filter((spec) => spec.id.startsWith('alpha_miner_pymoo_nsga3_novelty_')).length === 0, 'pymoo mined strategies must live in D1 registry/migration, not TS bootstrap defaults')
+  assert(activeSpecs.some((spec) => spec.id === 'alpha_miner_pymoo_nsga3_novelty_0081'), 'source-approved Pymoo 0081 must survive bootstrap seeding')
   assert(activeSpecs.some((spec) => spec.id === 'trend_following_seed_v1'), 'existing active strategies must stay active')
   assert(!activeSpecs.some((spec) => spec.id === 'finlab_ai_skill_discovery_v1'), 'daily factor/strategy discovery lane must not remain active')
 }
@@ -710,7 +711,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   assert(gate[0].missing_evidence.includes('mature_dates_lt_10'), 'promotion must require independent mature dates')
   assert(gate[0].missing_evidence.includes('date_return_lcb90_not_positive'), 'promotion must require positive cross-date confidence')
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
-  assert(policy.strategy_weights[spec.id] == null, 'immature lifetime evidence must not receive adaptive weight')
+  assert(policy.strategy_weights[spec.id] === 0, 'shadow evidence must stay observable but receive zero production weight')
 }
 
 {
@@ -737,10 +738,12 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   assert(gate[0].production_effect === false, 'strategy gate must not mutate production')
 
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
-  assert(policy.status === 'shadow', 'adaptive policy should remain shadow by default')
-  assert(policy.evidence.production_effect === false, 'adaptive policy preview must not affect production')
-  assert(policy.evidence.requires_approval_to_activate === true, 'adaptive policy activation should require approval')
-  assert(Math.abs(Object.values(policy.strategy_weights).reduce((sum, weight) => sum + weight, 0) - 1) < 0.00001, 'strategy weights should normalize to 1')
+  assert(policy.status === 'active', 'Adaptive policy is the sole active threshold and weight owner')
+  assert(policy.evidence.production_effect === true, 'PIT policy must explicitly declare its production effect')
+  assert(policy.evidence.requires_approval_to_activate === false, 'daily policy refresh must not depend on a manual activation toggle')
+  assert(policy.strategy_weights[spec.id] === 0, 'candidate-ready shadow strategy must remain full-universe observable without production weight')
+  assert(policy.lifecycle_recommendations[spec.id].recommended_status === 'active', 'candidate-ready shadow strategy must surface an active lifecycle recommendation')
+  assert(policy.evidence.threshold_owner === 'adaptive_strategy_policy', 'threshold ownership must be unambiguous')
 }
 
 {
@@ -844,7 +847,10 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
 
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
   assert(policy.strategy_weights[spec.id] === 0, 'negative-edge cooldown strategies must have zero production contribution')
-  assert(policy.threshold_deltas[spec.id].minVolumeExpansion20 === 0.12, 'cooldown should tighten raw-signal thresholds')
+  assert(policy.threshold_deltas[spec.id].minVolumeExpansion20 === 0.08, 'cooldown should tighten raw-signal thresholds within the bounded policy')
+  assert(policy.lifecycle_recommendations[spec.id].recommended_status === 'shadow', 'cooldown lifecycle recommendation should return the strategy to shadow')
+  const applied = applyStrategyAdaptivePolicyThresholds([spec], policy)
+  assert(applied[0].thresholds.minVolumeExpansion20 === 0.98, 'active policy must apply the bounded volume threshold delta')
 }
 
 {

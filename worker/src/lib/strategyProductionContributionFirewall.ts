@@ -18,6 +18,7 @@ export type StrategyPromotionDecision =
 
 export type StrategyProductionBaseWeightSource =
   | 'promoted_marginal_edge_v6'
+  | 'adaptive_strategy_policy_v2'
   | 'runtime_default_unit_weights'
 
 export interface StrategyProductionFirewallStrategy {
@@ -134,7 +135,10 @@ export function buildStrategyProductionContributionFirewall(input: {
   )
 
   let normalizedPromotedWeights = false
-  if (input.base.source === 'promoted_marginal_edge_v6') {
+  if (
+    input.base.source === 'adaptive_strategy_policy_v2'
+    || input.base.source === 'promoted_marginal_edge_v6'
+  ) {
     const positiveWeightTotal = Object.values(strategyWeights).reduce((total, weight) => total + weight, 0)
     if (positiveWeightTotal > 0) {
       for (const strategyId of Object.keys(strategyWeights)) {

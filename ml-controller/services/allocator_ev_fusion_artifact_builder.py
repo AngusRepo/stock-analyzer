@@ -81,19 +81,22 @@ EXECUTION_FEATURE_NAMES = [
 ]
 FEATURE_NAMES = list(dict.fromkeys([*SELECTION_FEATURE_NAMES, *EXECUTION_FEATURE_NAMES]))
 
-PRIMARY_MIN_DATES = 20
+TEMPORAL_TRAIN_FRACTION = 0.75
+PRIMARY_MIN_DATES = 40
+PRIMARY_MIN_OOS_DATES = 10
 PRIMARY_MIN_SAMPLES = 1500
 PRIMARY_MIN_S12_AVAILABLE_SAMPLES = 300
-PRIMARY_MIN_S12_AVAILABLE_DATES = 8
+PRIMARY_MIN_S12_AVAILABLE_DATES = 10
 PRIMARY_MIN_L4_PIT_SAMPLES = 300
-PRIMARY_MIN_L4_PIT_DATES = 8
+PRIMARY_MIN_L4_PIT_DATES = 10
 PRIMARY_MIN_S12_STRUCTURE_SAMPLES = 300
-PRIMARY_MIN_S12_STRUCTURE_DATES = 8
+PRIMARY_MIN_S12_STRUCTURE_DATES = 10
 PRIMARY_MIN_MARKET_CONTEXT_SAMPLES = 300
-PRIMARY_MIN_MARKET_CONTEXT_DATES = 8
+PRIMARY_MIN_MARKET_CONTEXT_DATES = 10
 PRIMARY_MIN_SECTOR_ALPHA_SAMPLES = 300
 PRIMARY_MIN_SECTOR_ALPHA_DATES = 8
-ASSISTIVE_MIN_DATES = 10
+ASSISTIVE_MIN_DATES = 20
+ASSISTIVE_MIN_OOS_DATES = 5
 ASSISTIVE_MIN_SAMPLES = 500
 ASSISTIVE_MIN_EXPERT_SAMPLES = 100
 ASSISTIVE_MIN_EXPERT_DATES = 10
@@ -884,6 +887,88 @@ def _date_cluster_lcb90(values: list[float]) -> float | None:
     return _mean(values) - critical_value * standard_error
 
 
+def _benchmark_panel_contract(
+    samples: list[dict[str, Any]],
+    *,
+    cost_model_bps: float,
+    expected_panel_id: str | None,
+) -> dict[str, Any]:
+    rows = [
+        {
+            "date": str(sample.get("date") or ""),
+            "symbol": str(sample.get("symbol") or ""),
+            "selection_target": round(float(sample.get("selection_target") or 0.0), 10),
+            "execution_target": (
+                None if sample.get("execution_target") is None
+                else round(float(sample["execution_target"]), 10)
+            ),
+            "execution_probability_target": sample.get("execution_probability_target"),
+        }
+        for sample in sorted(
+            samples,
+            key=lambda item: (str(item.get("date") or ""), str(item.get("symbol") or "")),
+        )
+    ]
+    payload = {
+        "schema_version": "allocator-ev-fusion-benchmark-panel-v1",
+        "label_schema_version": LABEL_SCHEMA_VERSION,
+        "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+        "cost_model_bps": round(float(cost_model_bps), 8),
+        "rows": rows,
+    }
+    checksum = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    computed_id = f"fusion-panel-v1:{checksum}"
+    return {
+        "schema_version": "allocator-ev-fusion-benchmark-panel-v1",
+        "panel_id": computed_id,
+        "expected_panel_id": expected_panel_id,
+        "locked": expected_panel_id in {None, computed_id},
+        "comparison_scope": "same_dates_symbols_labels_costs_and_feature_semantics",
+        "row_count": len(rows),
+        "date_count": len({row["date"] for row in rows}),
+        "label_schema_version": LABEL_SCHEMA_VERSION,
+        "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
+        "cost_model_bps": round(float(cost_model_bps), 8),
+    }
+
+
+def _multiple_testing_gate(
+    search_trial_count: int,
+    evidence: dict[str, Any] | None,
+) -> dict[str, Any]:
+    trials = max(1, int(search_trial_count))
+    record = evidence if isinstance(evidence, dict) else {}
+    method = str(record.get("method") or "").strip().lower()
+    allowed_methods = {"white_reality_check", "hansen_spa", "deflated_sharpe_ratio"}
+    adjusted_p_value = _float_or_none(record.get("adjusted_p_value"))
+    passed = (
+        trials == 1
+        or (
+            method in allowed_methods
+            and record.get("passed") is True
+            and (adjusted_p_value is None or adjusted_p_value <= 0.10)
+        )
+    )
+    failed_gates: list[str] = []
+    if trials > 1 and method not in allowed_methods:
+        failed_gates.append("approved_correction_missing")
+    if trials > 1 and record.get("passed") is not True:
+        failed_gates.append("corrected_test_not_passed")
+    if trials > 1 and adjusted_p_value is not None and adjusted_p_value > 0.10:
+        failed_gates.append("adjusted_p_value_gt_0_10")
+    return {
+        "schema_version": "fusion-multiple-testing-gate-v1",
+        "decision": "PASS" if passed else "FAIL",
+        "failed_gates": sorted(set(failed_gates)),
+        "search_trial_count": trials,
+        "method": method or ("not_required_single_trial" if trials == 1 else None),
+        "adjusted_p_value": adjusted_p_value,
+        "passed": passed,
+    }
+
+
 def _date_cluster_ucb90(values: list[float]) -> float | None:
     if len(values) < 2:
         return None
@@ -931,7 +1016,7 @@ def _paired_canonical_l4_comparison(
     """Compare Fusion and canonical L4 on identical OOS dates and candidates."""
 
     dates = sorted({str(sample["date"]) for sample in samples})
-    split_idx = max(1, round(len(dates) * 0.8)) if dates else 0
+    split_idx = max(1, round(len(dates) * TEMPORAL_TRAIN_FRACTION)) if dates else 0
     test_dates = set(dates[split_idx:])
     test = [
         sample for sample in samples
@@ -944,6 +1029,7 @@ def _paired_canonical_l4_comparison(
 
     correlation_deltas: list[float] = []
     spread_deltas: list[float] = []
+    prediction_correlations: list[float] = []
     daily: list[dict[str, Any]] = []
     for day, rows in sorted(by_date.items()):
         if len(rows) < 3:
@@ -953,6 +1039,9 @@ def _paired_canonical_l4_comparison(
         canonical_predictions = [float(row["features"]["l4_expected_return"]) for row in rows]
         fusion_corr = _corr(fusion_predictions, targets)
         canonical_corr = _corr(canonical_predictions, targets)
+        prediction_corr = _corr(fusion_predictions, canonical_predictions)
+        if prediction_corr is not None:
+            prediction_correlations.append(prediction_corr)
 
         def spread(predictions: list[float]) -> float:
             ranked = sorted(zip(predictions, targets, strict=True), key=lambda item: item[0])
@@ -974,6 +1063,7 @@ def _paired_canonical_l4_comparison(
             "samples": len(rows),
             "fusion_corr": None if fusion_corr is None else round(fusion_corr, 8),
             "canonical_l4_corr": None if canonical_corr is None else round(canonical_corr, 8),
+            "fusion_l4_prediction_corr": None if prediction_corr is None else round(prediction_corr, 8),
             "corr_delta": None if correlation_delta is None else round(correlation_delta, 8),
             "fusion_spread": round(fusion_spread, 8),
             "canonical_l4_spread": round(canonical_spread, 8),
@@ -982,7 +1072,7 @@ def _paired_canonical_l4_comparison(
 
     corr_delta_lcb90 = _date_cluster_lcb90(correlation_deltas)
     spread_delta_lcb90 = _date_cluster_lcb90(spread_deltas)
-    minimum_oos_dates = max(4, math.ceil(PRIMARY_MIN_DATES * 0.2))
+    minimum_oos_dates = PRIMARY_MIN_OOS_DATES
     blockers: list[str] = []
     if len(daily) < minimum_oos_dates:
         blockers.append("paired_oos_dates_insufficient")
@@ -1000,6 +1090,7 @@ def _paired_canonical_l4_comparison(
         "samples": len(test),
         "oos_date_count": len(daily),
         "minimum_oos_dates": minimum_oos_dates,
+        "fusion_l4_prediction_corr_mean": round(_mean(prediction_correlations), 8) if prediction_correlations else None,
         "corr_delta_mean": round(_mean(correlation_deltas), 8) if correlation_deltas else None,
         "corr_delta_lcb90": None if corr_delta_lcb90 is None else round(corr_delta_lcb90, 8),
         "spread_delta_mean": round(_mean(spread_deltas), 8) if spread_deltas else None,
@@ -1033,7 +1124,7 @@ def _paired_final_trade_ev_comparison(
         }
 
     dates = sorted({str(sample["date"]) for sample in samples})
-    split_idx = max(1, round(len(dates) * 0.8)) if dates else 0
+    split_idx = max(1, round(len(dates) * TEMPORAL_TRAIN_FRACTION)) if dates else 0
     test_dates = set(dates[split_idx:])
     test = [
         sample for sample in samples
@@ -1118,7 +1209,7 @@ def _paired_final_trade_ev_comparison(
             "regime_bucket": regime_bucket,
         })
 
-    minimum_oos_dates = max(4, math.ceil(PRIMARY_MIN_DATES * 0.2))
+    minimum_oos_dates = PRIMARY_MIN_OOS_DATES
     corr_delta_lcb90 = _date_cluster_lcb90(correlation_deltas)
     spread_delta_lcb90 = _date_cluster_lcb90(spread_deltas)
     top_trade_ev_lcb90 = _date_cluster_lcb90(daily_top_trade_ev)
@@ -1262,7 +1353,7 @@ def _fit_expert(
     min_feature_support_dates: int = 2,
 ) -> dict[str, Any]:
     dates = sorted({sample["date"] for sample in samples})
-    split_idx = max(1, round(len(dates) * 0.8)) if dates else 0
+    split_idx = max(1, round(len(dates) * TEMPORAL_TRAIN_FRACTION)) if dates else 0
     train_dates = set(dates[:max(0, split_idx - LABEL_PURGE_DATE_GROUPS)])
     test_dates = set(dates[split_idx:])
     train = [sample for sample in samples if sample["date"] in train_dates]
@@ -1436,7 +1527,7 @@ def _fit_execution_probability_expert(
 
     targets = [float(sample["execution_probability_target"]) for sample in samples]
     dates = sorted({sample["date"] for sample in samples})
-    split_idx = max(1, round(len(dates) * 0.8)) if dates else 0
+    split_idx = max(1, round(len(dates) * TEMPORAL_TRAIN_FRACTION)) if dates else 0
     train_dates = set(dates[:max(0, split_idx - LABEL_PURGE_DATE_GROUPS)])
     test_dates = set(dates[split_idx:])
     train = [sample for sample in samples if sample["date"] in train_dates]
@@ -1484,25 +1575,53 @@ def _fit_execution_probability_expert(
 
         def probability_metrics(rows: list[dict[str, Any]], matrix: list[list[float]]) -> dict[str, Any]:
             ys = [int(sample["execution_probability_target"]) for sample in rows]
-            probabilities = model.predict_proba(scaler.transform(matrix))[:, 1]
+            probabilities = [
+                max(1e-12, min(1.0 - 1e-12, float(value)))
+                for value in model.predict_proba(scaler.transform(matrix))[:, 1]
+            ]
             prevalence = max(1e-6, min(1.0 - 1e-6, _mean(train_targets)))
             baseline = [prevalence] * len(ys)
+            daily_advantages: list[float] = []
+            for day in sorted({str(sample["date"]) for sample in rows}):
+                indices = [idx for idx, sample in enumerate(rows) if str(sample["date"]) == day]
+                model_losses = [
+                    -(ys[idx] * math.log(probabilities[idx]) + (1 - ys[idx]) * math.log(1.0 - probabilities[idx]))
+                    for idx in indices
+                ]
+                baseline_losses = [
+                    -(ys[idx] * math.log(prevalence) + (1 - ys[idx]) * math.log(1.0 - prevalence))
+                    for idx in indices
+                ]
+                daily_advantages.append(_mean(baseline_losses) - _mean(model_losses))
+            brier = float(brier_score_loss(ys, probabilities))
+            brier_baseline = float(brier_score_loss(ys, baseline))
+            logloss = float(log_loss(ys, probabilities, labels=[0, 1]))
+            logloss_baseline = float(log_loss(ys, baseline, labels=[0, 1]))
+            logloss_lcb90 = _date_cluster_lcb90(daily_advantages)
             return {
                 "samples": len(rows),
+                "dates": len({str(sample["date"]) for sample in rows}),
                 "mean_target": round(_mean(ys), 8),
-                "brier_score": round(float(brier_score_loss(ys, probabilities)), 8),
-                "brier_climatology": round(float(brier_score_loss(ys, baseline)), 8),
-                "log_loss": round(float(log_loss(ys, probabilities, labels=[0, 1])), 8),
-                "log_loss_climatology": round(float(log_loss(ys, baseline, labels=[0, 1])), 8),
+                "training_prevalence": round(prevalence, 8),
+                "base_rate_drift_abs": round(abs(_mean(ys) - prevalence), 8),
+                "brier_score": round(brier, 8),
+                "brier_climatology": round(brier_baseline, 8),
+                "brier_skill_score": round(1.0 - (brier / brier_baseline), 8) if brier_baseline > 0 else None,
+                "log_loss": round(logloss, 8),
+                "log_loss_climatology": round(logloss_baseline, 8),
+                "log_loss_advantage_mean": round(_mean(daily_advantages), 8) if daily_advantages else None,
+                "log_loss_advantage_lcb90": None if logloss_lcb90 is None else round(logloss_lcb90, 8),
+                "proper_score_primary": "date_clustered_log_loss_advantage_vs_training_prevalence",
                 "roc_auc": round(float(roc_auc_score(ys, probabilities)), 8) if len(set(ys)) > 1 else None,
             }
 
         train_metrics = probability_metrics(train, train_x)
         oos_metrics = probability_metrics(test, test_x)
-        if float(oos_metrics["brier_score"]) >= float(oos_metrics["brier_climatology"]):
-            blockers.append("oos_brier_not_better_than_climatology")
-        if float(oos_metrics["log_loss"]) >= float(oos_metrics["log_loss_climatology"]):
-            blockers.append("oos_log_loss_not_better_than_climatology")
+        if (
+            oos_metrics.get("log_loss_advantage_lcb90") is None
+            or float(oos_metrics["log_loss_advantage_lcb90"]) <= 0.0
+        ):
+            blockers.append("oos_log_loss_advantage_lcb90_not_positive")
         validation_intercept = intercept
         validation_coefs = dict(coefs)
         if not blockers:
@@ -1555,6 +1674,7 @@ def _promotion_tier(
     walk_forward: dict[str, Any],
     execution_model: dict[str, Any],
     execution_probability_model: dict[str, Any],
+    selection_champion_comparison: dict[str, Any],
     champion_comparison: dict[str, Any],
     min_dates: int,
     min_samples: int,
@@ -1621,9 +1741,28 @@ def _promotion_tier(
     if not blockers:
         return "primary", []
 
+    selection_corr_lcb = _float_or_none(selection_champion_comparison.get("corr_delta_lcb90"))
+    selection_spread_lcb = _float_or_none(selection_champion_comparison.get("spread_delta_lcb90"))
+    prediction_corr = _float_or_none(selection_champion_comparison.get("fusion_l4_prediction_corr_mean"))
+    final_top_trade_lcb = _float_or_none(champion_comparison.get("top_trade_ev_lcb90"))
+    s12_execution_coefficient = abs(
+        float((execution_model.get("coefficients") or {}).get("s12_trade_expected_return") or 0.0)
+    )
+    assistive_noninferior = (
+        int(selection_champion_comparison.get("oos_date_count") or 0) >= ASSISTIVE_MIN_OOS_DATES
+        and selection_corr_lcb is not None
+        and selection_corr_lcb >= -0.05
+        and selection_spread_lcb is not None
+        and selection_spread_lcb >= -0.005
+    )
+    assistive_diverse = (
+        (prediction_corr is not None and abs(prediction_corr) <= 0.995)
+        or s12_execution_coefficient > 1e-9
+    )
+    assistive_economic_utility = final_top_trade_lcb is not None and final_top_trade_lcb > 0.0
     assistive_ok = (
-        sample_count >= min(min_samples, ASSISTIVE_MIN_SAMPLES)
-        and date_count >= min(min_dates, ASSISTIVE_MIN_DATES)
+        sample_count >= ASSISTIVE_MIN_SAMPLES
+        and date_count >= ASSISTIVE_MIN_DATES
         and top_mean > 0.0
         and spread > 0.0
         and corr > 0.0
@@ -1638,9 +1777,18 @@ def _promotion_tier(
         and sector_alpha_date_count >= ASSISTIVE_MIN_EXPERT_DATES
         and execution_model.get("decision") == "PASS"
         and execution_probability_model.get("decision") == "PASS"
+        and assistive_noninferior
+        and assistive_diverse
+        and assistive_economic_utility
     )
     if assistive_ok:
         return "assistive", blockers
+    if not assistive_noninferior:
+        blockers.append("assistive_not_noninferior_to_canonical_l4")
+    if not assistive_diverse:
+        blockers.append("assistive_diversity_not_demonstrated")
+    if not assistive_economic_utility:
+        blockers.append("assistive_portfolio_utility_not_positive")
     return "shadow", blockers
 
 
@@ -1656,6 +1804,9 @@ def build_allocator_ev_fusion_artifact_from_rows(
     knowledge_cutoff_date: str | None = None,
     generation_mode: str = "native",
     cohort_id: str | None = None,
+    search_trial_count: int = 1,
+    multiple_testing_evidence: dict[str, Any] | None = None,
+    benchmark_panel_id: str | None = None,
 ) -> dict[str, Any]:
     if generation_mode not in {"native", "purged_oof"}:
         raise ValueError("fusion_generation_mode_invalid")
@@ -1669,12 +1820,18 @@ def build_allocator_ev_fusion_artifact_from_rows(
         ):
             raise ValueError("fusion_oof_mixed_or_missing_cohort_lineage")
     samples, diagnostics = _samples(rows, execution_cost_bps=cost_model_bps)
+    benchmark_panel = _benchmark_panel_contract(
+        samples,
+        cost_model_bps=cost_model_bps,
+        expected_panel_id=benchmark_panel_id,
+    )
+    multiple_testing = _multiple_testing_gate(search_trial_count, multiple_testing_evidence)
     selection_model = _fit_expert(
         samples,
         feature_names=SELECTION_FEATURE_NAMES,
         target_key="selection_rank_target",
-        min_samples=min(min_samples, ASSISTIVE_MIN_SAMPLES),
-        min_dates=min(min_dates, ASSISTIVE_MIN_DATES),
+        min_samples=ASSISTIVE_MIN_SAMPLES,
+        min_dates=ASSISTIVE_MIN_DATES,
         l2=l2,
         minimum_spread=max(0.0, cost_model_bps) / 10000.0,
         calibration_target_key="selection_target",
@@ -1726,27 +1883,46 @@ def build_allocator_ev_fusion_artifact_from_rows(
         execution_model=execution_model,
         execution_probability_model=execution_probability_model,
     )
-    failed_gates = [
+    component_failed_gates = [
         f"{component}:{gate}"
         for component, model in (
             ("selection", selection_model),
             ("execution", execution_model),
             ("execution_probability", execution_probability_model),
+        )
+        for gate in (model.get("failed_gates") or [])
+    ]
+    data_validity_failed_gates: list[str] = []
+    if int(diagnostics.get("sample_count") or 0) < ASSISTIVE_MIN_SAMPLES:
+        data_validity_failed_gates.append("sample_count_below_assistive_floor")
+    if int(diagnostics.get("date_count") or 0) < ASSISTIVE_MIN_DATES:
+        data_validity_failed_gates.append("date_count_below_assistive_floor")
+    if not benchmark_panel["locked"]:
+        data_validity_failed_gates.append("benchmark_panel_identity_mismatch")
+    statistical_failed_gates = [
+        f"multiple_testing:{gate}" for gate in multiple_testing["failed_gates"]
+    ]
+    economic_utility_failed_gates = [
+        f"{component}:{gate}"
+        for component, model in (
             ("selection_champion", selection_champion_comparison),
             ("final_champion", champion_comparison),
         )
         for gate in (model.get("failed_gates") or [])
     ]
-    assistive_failed_gates = [
-        f"{component}:{gate}"
-        for component, model in (
-            ("selection", selection_model),
-            ("execution", execution_model),
-            ("execution_probability", execution_probability_model),
-        )
-        for gate in (model.get("failed_gates") or [])
+    failed_gates = [
+        *[f"data_validity:{gate}" for gate in data_validity_failed_gates],
+        *component_failed_gates,
+        *statistical_failed_gates,
+        *economic_utility_failed_gates,
     ]
-    decision = "PASS" if not assistive_failed_gates else "FAIL"
+    decision = (
+        "PASS"
+        if not data_validity_failed_gates
+        and not component_failed_gates
+        and not statistical_failed_gates
+        else "FAIL"
+    )
     promotion_tier, promotion_blockers = _promotion_tier(
         decision=decision,
         diagnostics=diagnostics,
@@ -1754,16 +1930,38 @@ def build_allocator_ev_fusion_artifact_from_rows(
         walk_forward=selection_model["walk_forward"],
         execution_model=execution_model,
         execution_probability_model=execution_probability_model,
+        selection_champion_comparison=selection_champion_comparison,
         champion_comparison=champion_comparison,
         min_dates=min_dates,
         min_samples=min_samples,
     )
     if decision != "PASS":
-        promotion_blockers = assistive_failed_gates
+        promotion_blockers = [*data_validity_failed_gates, *component_failed_gates, *statistical_failed_gates]
     validation_packet = {
-        "schema_version": "allocator-ev-fusion-validation-packet-v12",
+        "schema_version": "allocator-ev-fusion-validation-packet-v13",
         "decision": decision,
         "failed_gates": failed_gates,
+        "gate_layers": {
+            "data_validity": {
+                "decision": "PASS" if not data_validity_failed_gates else "FAIL",
+                "failed_gates": data_validity_failed_gates,
+                "hard_fail": True,
+            },
+            "forecast_skill": {
+                "decision": "PASS" if not component_failed_gates else "FAIL",
+                "failed_gates": component_failed_gates,
+                "primary_probability_score": "date_clustered_log_loss_advantage_lcb90",
+            },
+            "statistical_validity": multiple_testing,
+            "economic_utility": {
+                "decision": "PASS" if not economic_utility_failed_gates else "FAIL",
+                "failed_gates": economic_utility_failed_gates,
+                "primary_requires_superiority": True,
+                "assistive_requires_noninferiority_diversity_and_positive_utility": True,
+            },
+        },
+        "benchmark_panel": benchmark_panel,
+        "multiple_testing": multiple_testing,
         "primary_champion_failed_gates": champion_comparison.get("failed_gates") or [],
         "validation_scope": {
             "owner": "allocator_ev_fusion",
@@ -1772,7 +1970,11 @@ def build_allocator_ev_fusion_artifact_from_rows(
             "execution_probability_target": "next_session_canonical_execution_indicator_by_archetype",
             "execution_target": "five_session_canonical_lifecycle_net_pnl_when_executed",
             "rowwise_label_coalesce": False,
-            "method": "date_split_oos_plus_walk_forward",
+            "method": "date_clustered_temporal_oos_plus_walk_forward",
+            "effective_sample_unit": "prediction_date",
+            "temporal_train_fraction": TEMPORAL_TRAIN_FRACTION,
+            "primary_minimum_oos_dates": PRIMARY_MIN_OOS_DATES,
+            "assistive_minimum_oos_dates": ASSISTIVE_MIN_OOS_DATES,
             "lookback_days": lookback_days,
             "feature_era": CANONICAL_SCORE_FEATURE_VERSION,
             "point_in_time_features_required": True,
@@ -1788,12 +1990,14 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "selection_champion_comparison": selection_champion_comparison,
         "champion_comparison": champion_comparison,
         "promotion": {
-            "schema_version": "allocator-ev-fusion-promotion-v3",
+            "schema_version": "allocator-ev-fusion-promotion-v4",
             "tier": promotion_tier,
             "automatic": True,
             "failed_gates": promotion_blockers,
             "primary_requirements": {
                 "min_dates": max(min_dates, PRIMARY_MIN_DATES),
+                "min_oos_dates": PRIMARY_MIN_OOS_DATES,
+                "effective_sample_unit": "prediction_date",
                 "min_samples": max(min_samples, PRIMARY_MIN_SAMPLES),
                 "min_execution_samples": PRIMARY_MIN_S12_AVAILABLE_SAMPLES,
                 "min_execution_dates": PRIMARY_MIN_S12_AVAILABLE_DATES,
@@ -1870,6 +2074,9 @@ def build_allocator_ev_fusion_artifact_from_rows(
             **diagnostics,
             "generation_mode": generation_mode,
             "cohort_id": cohort_id,
+            "benchmark_panel_id": benchmark_panel["panel_id"],
+            "search_trial_count": multiple_testing["search_trial_count"],
+            "multiple_testing_method": multiple_testing["method"],
             "efficacy_evidence_mode": "purged_oof" if generation_mode == "purged_oof" else "native",
         },
     }

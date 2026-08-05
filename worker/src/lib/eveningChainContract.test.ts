@@ -213,7 +213,17 @@ assert(
   updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-readiness'") &&
     updateOrchestrator.includes("status: state === 'fatal' ? 'error' : 'success'") &&
     updateOrchestrator.includes('no_validated_expected_return_lane'),
-  'Fusion readiness failure must remain visible and fail closed before ML/risk serving',
+  'Fusion readiness failure must remain visible and fail BUY/allocation closed',
+)
+const allocatorReadinessGuardStart = updateOrchestrator.indexOf('if (!evReadiness.ok)')
+const pipelineTriggerStart = updateOrchestrator.indexOf('const summary = await deps.runMLAndRiskV2', allocatorReadinessGuardStart)
+const allocatorReadinessGuardBody = updateOrchestrator.slice(allocatorReadinessGuardStart, pipelineTriggerStart)
+assert(
+  allocatorReadinessGuardStart >= 0 &&
+    pipelineTriggerStart > allocatorReadinessGuardStart &&
+    allocatorReadinessGuardBody.includes('BUY/allocation remains fail-closed while the evidence-only pipeline continues') &&
+    !allocatorReadinessGuardBody.includes('\n    return\n'),
+  'missing Fusion must preserve explicit risk abstention while allowing ML/recommendation evidence to continue',
 )
 assert(
   updateOrchestrator.includes('refreshExpectedReturnServingState') &&

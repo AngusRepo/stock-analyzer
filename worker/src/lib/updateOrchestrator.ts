@@ -2188,14 +2188,12 @@ async function continuePostScreenerPipeline(
   const evReadiness = await runDailyAllocatorEvReadiness(env, triggerTime)
   if (!evReadiness.ok) {
     await logSchedulerResult(env.KV, 'evening-chain', {
-      status: 'error',
-      summary: `event-driven chain stopped: allocator EV readiness failed before pipeline for ${triggerTime}; ${evReadiness.summary}`,
+      status: 'running',
+      summary: `allocator EV unavailable for ${triggerTime}; BUY/allocation remains fail-closed while the evidence-only pipeline continues; ${evReadiness.summary}`,
       duration_ms: 0,
-      error: evReadiness.summary,
       run_id: runId,
       run_date: triggerTime,
     })
-    return
   }
 
   try {

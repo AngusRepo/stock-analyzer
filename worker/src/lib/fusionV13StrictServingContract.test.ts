@@ -8,6 +8,7 @@ function validFusion(): Record<string, any> {
     promotion_state: 'production_primary',
     primary_expected_return_allowed: true,
     validation_packet: { decision: 'PASS' },
+    output_is_net_of_costs: true,
     artifact_contract_version: ALLOCATOR_EV_FUSION_CONTRACT.artifactContractVersion,
     feature_semantic_version: ALLOCATOR_EV_FUSION_CONTRACT.featureSemanticVersion,
     label_schema_version: ALLOCATOR_EV_FUSION_CONTRACT.labelSchemaVersion,

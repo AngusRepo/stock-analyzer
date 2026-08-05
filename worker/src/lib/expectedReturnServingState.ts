@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { hydrateExpectedReturnConfigFromPointers } from './expectedReturnServingRegistry'
 import { ALLOCATOR_EV_FUSION_CONTRACT, L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
 
 export const EXPECTED_RETURN_SERVING_STATE_KEY = 'expected-return:serving-state:v1'
@@ -17,6 +18,7 @@ export interface ExpectedReturnArtifactServingState {
   model_version: string | null
   promotion_state: string | null
   blockers: string[]
+  serving_available: boolean
 }
 
 export interface ExpectedReturnServingState {
@@ -26,11 +28,13 @@ export interface ExpectedReturnServingState {
   action_gate: 'expected_return_owner' | 'fusion_primary_required'
   run_date: string | null
   evaluated_at: string
-  source_of_truth: 'trading:config+strict_contract'
+  source_of_truth: 'candidate_projection' | 'model_champion_pointers+artifact_payloads'
   artifacts: {
     l4_alpha_ev: ExpectedReturnArtifactServingState
     allocator_ev_fusion: ExpectedReturnArtifactServingState
   }
+  hard_alerts: string[]
+  warnings: string[]
 }
 
 type ArtifactContract = {
@@ -63,6 +67,7 @@ function evaluateArtifact(
       model_version: null,
       promotion_state: null,
       blockers: ['artifact_missing'],
+      serving_available: false,
     }
   }
 
@@ -71,6 +76,8 @@ function evaluateArtifact(
     ? 'production_primary'
     : 'production_approved'
   if (artifact.expected_return_owner !== owner) blockers.push('expected_return_owner_mismatch')
+  if (artifact.output_is_net_of_costs !== true) blockers.push('expected_return_not_net_of_costs')
+  if (artifact.serving_mode === 'abstention_baseline') blockers.push('abstention_baseline_not_serving')
   if (artifact.promotion_state !== requiredPromotionState) blockers.push('promotion_state_not_serving')
   if (owner === 'allocator_ev_fusion') {
     const policyHeads = Array.isArray(artifact.policy_value_heads)
@@ -141,12 +148,18 @@ function evaluateArtifact(
     model_version: modelVersion || null,
     promotion_state: String(artifact.promotion_state ?? '').trim() || null,
     blockers,
+    serving_available: blockers.length === 0,
   }
 }
 
 export function resolveExpectedReturnServingState(
   rawConfig: Record<string, any> | null | undefined,
-  options: { runDate?: string | null; evaluatedAt?: string } = {},
+  options: {
+    runDate?: string | null
+    evaluatedAt?: string
+    sourceOfTruth?: ExpectedReturnServingState['source_of_truth']
+    alerts?: string[]
+  } = {},
 ): ExpectedReturnServingState {
   const ensembleV2 = artifactObject(rawConfig?.ensemble_v2) ?? {}
   const l4 = evaluateArtifact(
@@ -160,6 +173,9 @@ export function resolveExpectedReturnServingState(
     ALLOCATOR_EV_FUSION_CONTRACT,
   )
   const owner: ExpectedReturnOwner | null = fusion.eligible ? 'allocator_ev_fusion' : null
+  const warnings = [l4, fusion]
+    .filter((item) => item.blockers.includes('abstention_baseline_not_serving'))
+    .map((item) => `${item.owner}:abstention_baseline_not_serving`)
 
   return {
     schema_version: 'expected-return-serving-state-v1',
@@ -168,28 +184,40 @@ export function resolveExpectedReturnServingState(
     action_gate: owner ? 'expected_return_owner' : 'fusion_primary_required',
     run_date: options.runDate ?? null,
     evaluated_at: options.evaluatedAt ?? new Date().toISOString(),
-    source_of_truth: 'trading:config+strict_contract',
+    source_of_truth: options.sourceOfTruth ?? 'candidate_projection',
     artifacts: {
       l4_alpha_ev: l4,
       allocator_ev_fusion: fusion,
     },
+    hard_alerts: [...new Set(options.alerts ?? [])],
+    warnings,
   }
 }
 
 export async function refreshExpectedReturnServingState(
-  env: Pick<Bindings, 'KV'>,
+  env: Pick<Bindings, 'KV' | 'DB'>,
   runDate?: string | null,
 ): Promise<ExpectedReturnServingState> {
   const rawConfig = await env.KV.get('trading:config', 'json') as Record<string, any> | null
-  const state = resolveExpectedReturnServingState(rawConfig, { runDate })
+  const hydrated = await hydrateExpectedReturnConfigFromPointers(env.DB, rawConfig ?? {})
+  const state = resolveExpectedReturnServingState(hydrated.config, {
+    runDate,
+    sourceOfTruth: 'model_champion_pointers+artifact_payloads',
+    alerts: hydrated.alerts,
+  })
   await env.KV.put(EXPECTED_RETURN_SERVING_STATE_KEY, JSON.stringify(state))
   return state
 }
 
 export async function readCurrentExpectedReturnServingState(
-  env: Pick<Bindings, 'KV'>,
+  env: Pick<Bindings, 'KV' | 'DB'>,
   runDate?: string | null,
 ): Promise<ExpectedReturnServingState> {
   const rawConfig = await env.KV.get('trading:config', 'json') as Record<string, any> | null
-  return resolveExpectedReturnServingState(rawConfig, { runDate })
+  const hydrated = await hydrateExpectedReturnConfigFromPointers(env.DB, rawConfig ?? {})
+  return resolveExpectedReturnServingState(hydrated.config, {
+    runDate,
+    sourceOfTruth: 'model_champion_pointers+artifact_payloads',
+    alerts: hydrated.alerts,
+  })
 }

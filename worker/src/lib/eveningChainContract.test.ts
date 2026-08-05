@@ -91,7 +91,8 @@ assert(updateOrchestrator.includes('sendBatch'), 'indicator queue root trigger m
 assert(updateOrchestrator.includes('markShardComplete'), 'indicator queue must wait for all shards before starting screener/pipeline')
 assert(
   updateOrchestrator.includes('acquireFinalizeLock') &&
-    updateOrchestrator.includes('INSERT OR IGNORE INTO scheduler_locks'),
+    updateOrchestrator.includes('ON CONFLICT(lock_key) DO UPDATE SET') &&
+    updateOrchestrator.includes('assertFinalizeLockRenewed'),
   'indicator queue finalizer must use an atomic D1 lock; KV get/put is not safe for concurrent finalizers',
 )
 assert(
@@ -185,7 +186,7 @@ assert(
   updateOrchestrator.includes('repairFinalizeContinuationIfNeeded') &&
     updateOrchestrator.includes('hasSuccessfulScreenerRun') &&
     updateOrchestrator.includes('hasPipelineEvidence') &&
-    updateOrchestrator.includes('stale-lock-repair'),
+    updateOrchestrator.includes('expired-lease-repair'),
   'indicator queue finalizer must repair stale/orphaned locks so screener seed rows cannot strand the chain before pipeline',
 )
 assert(
@@ -200,28 +201,27 @@ assert(
 )
 assert(
   updateOrchestrator.includes('runDailyAllocatorEvReadiness') &&
-    updateOrchestrator.includes('runL4AlphaEvRefresh') &&
-    updateOrchestrator.includes('runAllocatorEvFusionRefresh') &&
+    updateOrchestrator.includes('inspectExpectedReturnLifecycleHealth') &&
+    !updateOrchestrator.includes('runL4AlphaEvRefresh') &&
+    !updateOrchestrator.includes('runAllocatorEvFusionRefresh') &&
     updateOrchestrator.includes('runOpbArmPriorRefresh') &&
     updateOrchestrator.indexOf('const evReadiness = await runDailyAllocatorEvReadiness') <
       updateOrchestrator.indexOf('const summary = await deps.runMLAndRiskV2'),
-  'evening-chain must refresh L4/fusion model readiness before triggering pipeline',
+  'evening-chain must inspect pointer-backed L4/Fusion readiness before triggering pipeline',
 )
 assert(
-  updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-fusion-refresh'") &&
-    updateOrchestrator.includes('fusion_degraded=') &&
-    updateOrchestrator.includes('pipeline continues for evidence coverage but BUY/allocation fail closed because Fusion is the sole expected-return owner'),
-  'allocator EV fusion validation failure must remain visible while expected-return action gates stay fail closed',
+  updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-readiness'") &&
+    updateOrchestrator.includes("status: state === 'fatal' ? 'error' : 'success'") &&
+    updateOrchestrator.includes('no_validated_expected_return_lane'),
+  'Fusion readiness failure must remain visible and fail closed before ML/risk serving',
 )
 assert(
-  updateOrchestrator.includes('l4_challenger_rejected=') &&
-    updateOrchestrator.includes('l4_champion_retained=') &&
-    updateOrchestrator.includes('l4_unavailable=') &&
-    updateOrchestrator.includes('refreshExpectedReturnServingState') &&
+  updateOrchestrator.includes('refreshExpectedReturnServingState') &&
     expectedReturnServingState.includes("artifact.promotion_state !== requiredPromotionState") &&
     expectedReturnServingState.includes("String(artifact.validation_packet?.decision ?? '').toUpperCase() !== 'PASS'") &&
-    expectedReturnServingState.includes("action_gate: owner ? 'expected_return_owner' : 'fusion_primary_required'"),
-  'L4 readiness must retain a compatible champion or continue observation with BUY/allocation fail closed',
+    expectedReturnServingState.includes("action_gate: owner ? 'expected_return_owner' : 'fusion_primary_required'") &&
+    expectedReturnServingState.includes('hydrateExpectedReturnConfigFromPointers'),
+  'D1 champion pointers must remain source of truth while only strict Fusion can own expected return',
 )
 assert(
   updateOrchestrator.includes('Deprecated S12 candidate snapshot message drained without serving side effects') &&
@@ -286,7 +286,7 @@ assert(
 
 const postMarketChain = fs.readFileSync('src/lib/postMarketChain.ts', 'utf8')
 assert(
-  postMarketChain.includes('runVerifyV2(env, ctx.runDate, `verify_v2:${ctx.runDate}`)'),
+  postMarketChain.includes('`verify_v2:${ctx.runDate}:${snapshotClosure.snapshotRunId}`'),
   'post-pipeline chain must trigger verify-v2 with a deterministic date-level idempotency key',
 )
 assert(

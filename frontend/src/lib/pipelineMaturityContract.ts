@@ -4,10 +4,9 @@ export type PipelineMaturityStatus =
   | 'collecting'
   | 'failed_quality'
   | 'blocked'
-  | 'abstaining'
   | 'unavailable'
 
-export type PipelineContributionMode = 'production' | 'shadow' | 'evidence_only' | 'abstention'
+export type PipelineContributionMode = 'production' | 'shadow' | 'evidence_only'
 
 export type PipelineMaturityMetric = {
   key: string
@@ -65,7 +64,7 @@ export type PipelineDecisionMaturityPacket = {
   requested_date: string
   generated_at: string
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
-  action_gate: 'expected_return_owner' | 'validated_s12_only'
+  action_gate: 'expected_return_owner' | 'fusion_primary_required'
   summary: {
     production: number
     shadow: number

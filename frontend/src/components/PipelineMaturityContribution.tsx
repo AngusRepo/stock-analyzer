@@ -25,7 +25,6 @@ const STATUS_STYLE: Record<PipelineMaturityStatus, { label: string; cls: string 
   collecting: { label: '累積中', cls: 'border-amber-400/30 bg-amber-400/10 text-amber-200' },
   failed_quality: { label: '品質未過', cls: 'border-rose-400/30 bg-rose-400/10 text-rose-200' },
   blocked: { label: 'Blocked', cls: 'border-rose-400/30 bg-rose-400/10 text-rose-200' },
-  abstaining: { label: 'Safe abstention', cls: 'border-slate-400/30 bg-slate-400/10 text-slate-200' },
   unavailable: { label: 'Unavailable', cls: 'border-slate-400/30 bg-slate-400/10 text-slate-300' },
 }
 
@@ -33,7 +32,6 @@ const MODE_STYLE = {
   production: { label: '正式貢獻', cls: 'border-emerald-400/25 text-emerald-200' },
   shadow: { label: 'Shadow learning', cls: 'border-violet-400/25 text-violet-200' },
   evidence_only: { label: 'Evidence only', cls: 'border-amber-400/25 text-amber-200' },
-  abstention: { label: '不出手基線', cls: 'border-slate-400/25 text-slate-200' },
 } as const
 
 const BLOCKER_LABELS: Record<string, string> = {

@@ -18,10 +18,9 @@ export type PipelineMaturityStatus =
   | 'collecting'
   | 'failed_quality'
   | 'blocked'
-  | 'abstaining'
   | 'unavailable'
 
-export type PipelineContributionMode = 'production' | 'shadow' | 'evidence_only' | 'abstention'
+export type PipelineContributionMode = 'production' | 'shadow' | 'evidence_only'
 
 export interface PipelineMaturityProgress {
   current: number
@@ -81,7 +80,7 @@ export interface PipelineDecisionMaturityPacket {
   requested_date: string
   generated_at: string
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
-  action_gate: 'expected_return_owner' | 'validated_s12_only'
+  action_gate: 'expected_return_owner' | 'fusion_primary_required'
   summary: {
     production: number
     shadow: number
@@ -291,7 +290,6 @@ function candidateStatus(
   minDates: number,
 ): PipelineMaturityStatus {
   if (servingState === 'serving') return 'serving'
-  if (servingState === 'abstention_baseline') return 'abstaining'
   if (String(decision ?? '').toUpperCase() === 'FAIL' && dateCount >= minDates) return 'failed_quality'
   if (dateCount < minDates) return 'collecting'
   return 'blocked'
@@ -299,7 +297,6 @@ function candidateStatus(
 
 function contributionModeForServing(state: string | undefined): PipelineContributionMode {
   if (state === 'serving') return 'production'
-  if (state === 'abstention_baseline') return 'abstention'
   return 'shadow'
 }
 
@@ -768,9 +765,7 @@ export async function buildPipelineDecisionMaturityPacket(
       contribution: '把 Active-8、Score V2、基本面、籌碼、技術面與 PIT sector alpha 校準成五日成本後絕對報酬。',
       production_effect: l4Serving?.artifact_state === 'serving'
         ? '提供 L4 expected return，與風險/流動性 gate 一起決定 BUY/HOLD。'
-        : l4Serving?.artifact_state === 'abstention_baseline'
-          ? '只提供 contract-valid abstention，不宣稱 alpha，不會硬產生 BUY。'
-          : '候選只保存 OOF evidence；不改寫 production expected return。',
+        : '候選只保存 OOF evidence；不改寫 production expected return。',
       blockers,
       metrics: [
         gateMetric('samples', 'Usable OOF samples', sampleCount, minSamples, 'rows'),
@@ -1004,7 +999,7 @@ export async function buildPipelineDecisionMaturityPacket(
     requested_date: requestedDate,
     generated_at: new Date().toISOString(),
     current_expected_return_owner: servingState?.expected_return_owner ?? null,
-    action_gate: servingState?.action_gate ?? 'validated_s12_only',
+    action_gate: servingState?.action_gate ?? 'fusion_primary_required',
     summary: {
       production: stages.filter((stage) => stage.contribution_mode === 'production').length,
       shadow: stages.filter((stage) => stage.contribution_mode === 'shadow').length,

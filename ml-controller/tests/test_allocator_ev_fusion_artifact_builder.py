@@ -517,6 +517,13 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     assert rows == []
     assert len(observed) == 1
     assert "allocator_ev_feature_snapshots fs" in observed[0]["sql"]
+    assert "LEFT JOIN predictions p" in observed[0]["sql"]
+    assert "date(fs.snapshot_date) AS prediction_date" in observed[0]["sql"]
+    assert "ph.stock_id = fs.stock_id" in observed[0]["sql"]
+    assert "ph.price_date = date(fs.snapshot_date)" in observed[0]["sql"]
+    assert "date(p.prediction_date) AS prediction_date" not in observed[0]["sql"]
+    assert "ph.stock_id = p.stock_id" not in observed[0]["sql"]
+    assert "ORDER BY date(fs.snapshot_date)" in observed[0]["sql"]
     assert "s12_replay_trade_outcomes" in observed[0]["sql"]
     assert "AS s12_replay_pnl_pct" in observed[0]["sql"]
     assert "fs.snapshot_source = ?" in observed[0]["sql"]
@@ -785,6 +792,18 @@ def test_load_allocator_ev_fusion_training_rows_falls_back_when_snapshot_table_m
     rows = load_allocator_ev_fusion_training_rows(query_fn, end_date="2026-07-07", lookback_days=45, limit=123)
 
     assert rows == [daily_row]
+
+
+def test_load_allocator_ev_fusion_training_rows_does_not_hide_snapshot_query_errors():
+    def query_fn(sql: str, _params: list[object]) -> list[dict]:
+        if "allocator_ev_feature_snapshots fs" in sql:
+            raise RuntimeError("no such column: allocator_ev_feature_snapshots.invalid_lineage")
+        return []
+
+    with pytest.raises(RuntimeError, match="no such column"):
+        load_allocator_ev_fusion_training_rows(
+            query_fn, end_date="2026-07-07", lookback_days=45, limit=123
+        )
 
 
 def test_allocator_ev_fusion_feature_vector_accepts_backfill_only_l4_under_canonical_guard():

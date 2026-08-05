@@ -2329,9 +2329,9 @@ def load_allocator_ev_fusion_training_rows(
             f"""
             WITH {PRICE_HORIZONS_CTE}
             SELECT
-                p.stock_id,
+                fs.stock_id,
                 fs.symbol,
-                date(p.prediction_date) AS prediction_date,
+                date(fs.snapshot_date) AS prediction_date,
                 fs.forecast_data,
                 ph.source AS label_adjustment_source,
                 ((ph.exit_raw_close * ph.exit_adjustment_factor)
@@ -2380,15 +2380,15 @@ def load_allocator_ev_fusion_training_rows(
                 fs.snapshot_source AS allocator_ev_feature_snapshot_source,
                 fs.as_of_guard AS allocator_ev_feature_snapshot_guard
             FROM allocator_ev_feature_snapshots fs
-            JOIN predictions p
+            LEFT JOIN predictions p
               ON p.stock_id = fs.stock_id
              AND p.prediction_date = fs.snapshot_date
              AND p.model_name = 'ensemble'
             JOIN stocks st
               ON st.id = fs.stock_id
             JOIN price_horizons ph
-              ON ph.stock_id = p.stock_id
-             AND ph.price_date = date(p.prediction_date)
+              ON ph.stock_id = fs.stock_id
+             AND ph.price_date = date(fs.snapshot_date)
             WHERE ph.entry_raw_open > 0
               AND ph.exit_raw_close > 0
               AND ph.entry_adjustment_factor > 0
@@ -2397,9 +2397,9 @@ def load_allocator_ev_fusion_training_rows(
               AND fs.snapshot_source = ?
               AND fs.as_of_guard = ?
               AND fs.alpha_allocation IS NOT NULL
-              AND date(p.prediction_date) <= date(?)
-              AND date(p.prediction_date) >= date(?, ?)
-            ORDER BY date(p.prediction_date) ASC, fs.symbol ASC
+              AND date(fs.snapshot_date) <= date(?)
+              AND date(fs.snapshot_date) >= date(?, ?)
+            ORDER BY date(fs.snapshot_date) ASC, fs.symbol ASC
             LIMIT ?
             """,
             [
@@ -2417,7 +2417,8 @@ def load_allocator_ev_fusion_training_rows(
         )
         snapshot_available = True
     except Exception as exc:  # noqa: BLE001 - migration may not be deployed yet.
-        if "allocator_ev_feature_snapshots" not in str(exc):
+        message = str(exc).lower()
+        if "no such table" not in message or "allocator_ev_feature_snapshots" not in message:
             raise
 
     if snapshot_available:

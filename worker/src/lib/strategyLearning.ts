@@ -3462,11 +3462,22 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           FROM strategy_label_matrix_runs_v4
          WHERE producer_run_id=?
       `).bind(producerRunId).first<any>()
-      const existingMatrixRows = existingMatrix
-        ? Number((await db.prepare(
-          'SELECT COUNT(*) AS count FROM strategy_label_matrix_v4 WHERE producer_run_id=?',
-        ).bind(producerRunId).first<{ count: number }>())?.count ?? 0)
-        : 0
+      const existingMatrixCoverage = existingMatrix
+        ? await db.prepare(`
+          SELECT COUNT(*) AS count,
+                 SUM(CASE WHEN evaluable=1 AND strategy_hit=1 THEN 1 ELSE 0 END) AS matched_rows,
+                 SUM(CASE WHEN evaluable=1 AND strategy_hit=1 AND affinity_evidence_count>0 THEN 1 ELSE 0 END) AS threshold_evidence_rows
+            FROM strategy_label_matrix_v4
+           WHERE producer_run_id=?
+        `).bind(producerRunId).first<{
+          count: number | string
+          matched_rows: number | string
+          threshold_evidence_rows: number | string
+        }>()
+        : null
+      const existingMatrixRows = Number(existingMatrixCoverage?.count ?? 0)
+      const existingMatrixMatchedRows = Number(existingMatrixCoverage?.matched_rows ?? 0)
+      const existingMatrixThresholdEvidenceRows = Number(existingMatrixCoverage?.threshold_evidence_rows ?? 0)
       let matrixRows = 0
       const reusableExistingMatrix = existingMatrix?.status === 'ready'
         && Number(existingMatrix.reference_candidate_count) === references.length
@@ -3479,6 +3490,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         ].includes(cleanToken(existingMatrix.labeler_version))
         && cleanToken(existingMatrix.reference_contract_version) === SELECTION_REFERENCE_CONTRACT_VERSION
         && existingMatrixRows === expectedMatrixRows
+        && existingMatrixMatchedRows > 0
+        && existingMatrixThresholdEvidenceRows === existingMatrixMatchedRows
       if (reusableExistingMatrix) {
         matrixRows = expectedMatrixRows
       } else {

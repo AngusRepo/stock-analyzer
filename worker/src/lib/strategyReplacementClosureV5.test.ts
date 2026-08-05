@@ -41,6 +41,10 @@ assert.equal((historicalRebuild.match(/r\.hard_gate_passed=1/g) ?? []).length, 3
   'reference, decision, and context sets must share the canonical L0 hard-gate predicate')
 assert(historicalRebuild.includes('superseded_by_strategy_decision_log_pit_reconstruction_v5'),
   'legacy ready matrices must be durably superseded before V5 replacement')
+assert(historicalRebuild.includes('existingMatrixMatchedRows > 0'),
+  'legacy ready matrix reuse must require matched strategy evidence')
+assert(historicalRebuild.includes('existingMatrixThresholdEvidenceRows === existingMatrixMatchedRows'),
+  'legacy ready matrix reuse must require complete threshold-margin evidence')
 assert(selectionEvidence.includes('reference_candidate_count=excluded.reference_candidate_count'),
   'matrix retry must replace stale run metadata with the current canonical universe')
 assert(selectionEvidence.includes('producer_run_id = ? AND hard_gate_passed = 1'),

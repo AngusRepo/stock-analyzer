@@ -292,13 +292,23 @@ export async function inspectAllocatorSnapshotClosure(
   }
   const [lineage, run, actual] = await Promise.all([
     db.prepare(`
+      WITH canonical_reference AS (
+        SELECT r.*
+          FROM selection_reference_snapshots_v1 r
+         WHERE r.signal_date = ?
+           AND EXISTS (
+             SELECT 1 FROM canonical_run_heads h
+              WHERE h.logical_run_key = 'screener:' || r.signal_date || ':TW:production:market_screener'
+                AND h.run_id = r.producer_run_id
+           )
+      )
       SELECT
         COUNT(*) AS recommendation_rows,
         MAX(dr.created_at) AS recommendation_max_created_at,
         COALESCE(SUM(CASE WHEN EXISTS (
           SELECT 1
             FROM predictions p
-           WHERE p.stock_id = dr.stock_id
+           WHERE p.stock_id = COALESCE(dr.stock_id, st.id)
              AND p.prediction_date >= dr.date
              AND p.prediction_date < date(dr.date, '+1 day')
              AND p.model_name = 'ensemble'
@@ -312,10 +322,12 @@ export async function inspectAllocatorSnapshotClosure(
              )
         ) THEN 1 ELSE 0 END), 0) AS row_count
         FROM daily_recommendations dr
-       WHERE dr.date = ?
-         AND dr.score_components IS NOT NULL
-         AND json_extract(dr.score_components, '$.version') = 'score_v2'
-    `).bind(nextSessionOpenUtc, nextSessionOpenUtc, businessDate).first<{
+        JOIN canonical_reference r
+          ON r.signal_date = dr.date AND r.symbol = dr.symbol
+        LEFT JOIN stocks st ON st.symbol = dr.symbol
+       WHERE r.score_components IS NOT NULL
+         AND json_extract(r.score_components, '$.version') = 'score_v2'
+    `).bind(businessDate, nextSessionOpenUtc, nextSessionOpenUtc).first<{
       recommendation_rows?: number
       recommendation_max_created_at?: string | null
       row_count?: number

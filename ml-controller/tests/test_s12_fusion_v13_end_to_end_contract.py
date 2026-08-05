@@ -58,6 +58,8 @@ def test_fusion_v13_is_one_artifact_with_exactly_two_serving_heads():
     assert "production_assistive" not in materializer
     assert "assistive_" not in router
     assert "L4/S12 feature snapshots" not in router
+    assert "ASSISTIVE_" not in builder
+    assert "assistive_floor" not in builder
 
 
 def test_jobs_and_observability_drop_s12_candidate_stage_but_keep_research_replay():

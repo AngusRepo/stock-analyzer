@@ -1,5 +1,7 @@
 import {
   S12_REPLAY_ENGINE_SIGNATURE,
+  loadFusionSnapshotMissingReplaySymbols,
+  loadReplayReadySignalDates,
   loadL0PassedSymbolsByHistoricalDate,
   loadSignedEligibleRepairSymbolsByHistoricalDate,
   isS12ReplayRetryableUnavailableReason,
@@ -353,6 +355,57 @@ async function runAsyncTests(): Promise<void> {
     repairRows.length === 1 && repairRows[0].symbol === '8091',
     'signed repair loader should intersect pending legacy-eligible samples with the canonical L0 universe',
   )
+
+  const fallbackQueries: string[] = []
+  const sealedFallbackDb = {
+    prepare(sql: string) {
+      fallbackQueries.push(sql)
+      return {
+        bind(..._params: unknown[]) {
+          return {
+            async all() {
+              if (sql.includes('SELECT fs.symbol')) {
+                return {
+                  results: [{
+                    symbol: '2330',
+                    name: 'TSMC',
+                    score_after: 80,
+                    rank: 1,
+                    market: 'TWSE',
+                    market_segment: 'LISTED',
+                    alpha_context: '{}',
+                    alpha_allocation: '{}',
+                    replay_cohort_source: 'allocator_snapshot_ledger_revalidation_v1',
+                    replay_cohort_id: 'allocator-snapshot:2026-07-20:sealed',
+                    replay_model_set_signature: 'LightGBM@v1|XGBoost@v1',
+                    replay_target_semantic_version: 'next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4',
+                    completed_sessions: 5,
+                    has_terminal_replay: 0,
+                  }],
+                }
+              }
+              if (sql.includes('SELECT fs.snapshot_date signal_date')) {
+                return { results: [{ signal_date: '2026-07-20' }] }
+              }
+              return { results: [] }
+            },
+          }
+        },
+      }
+    },
+  } as any
+  const fallbackRows = await loadFusionSnapshotMissingReplaySymbols(
+    sealedFallbackDb,
+    '2026-07-20',
+    '2026-08-05',
+  )
+  assert(fallbackRows.length === 1 && fallbackRows[0].symbol === '2330', 'sealed Fusion snapshot fallback must recover an otherwise invisible replay cohort')
+  assert(fallbackRows[0].replay_cohort_source === 'allocator_snapshot_ledger_revalidation_v1', 'fallback must preserve an explicit revalidation receipt source')
+  const fallbackDates = await loadReplayReadySignalDates(sealedFallbackDb, '2026-08-05', 5)
+  assert(fallbackDates.length === 1 && fallbackDates[0] === '2026-07-20', 'ready-date discovery must include sealed snapshot fallback dates')
+  assert(fallbackQueries.some((sql) => sql.includes('allocator_ev_snapshot_runs')), 'fallback must require the immutable snapshot run ledger')
+  assert(fallbackQueries.some((sql) => sql.includes('native_lineage_rows=sr.published_rows')), 'fallback must require complete native lineage')
+  assert(fallbackQueries.some((sql) => sql.includes('target_semantic_version')), 'fallback must require exact target semantics')
 
   const executionDateDb = {
     prepare(sql: string) {

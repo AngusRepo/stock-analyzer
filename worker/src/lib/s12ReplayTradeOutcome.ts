@@ -9,6 +9,7 @@ import {
   s12ResearchTerminalDataSourceReason,
 } from './s12RuntimeBars'
 import type { Bindings } from '../types'
+import { EVIDENCE_LABEL_SCHEMA_VERSION } from './evidenceContracts'
 import {
   S12_REPLAY_ENGINE_SIGNATURE,
   S12_REPLAY_FIVE_SESSION_UPPER_MULTIPLIER,
@@ -41,6 +42,162 @@ export const S12_REPLAY_RETRYABLE_UNAVAILABLE_REASONS = [
 
 export function isS12ReplayRetryableUnavailableReason(value: unknown): boolean {
   return (S12_REPLAY_RETRYABLE_UNAVAILABLE_REASONS as readonly string[]).includes(String(value ?? '').trim())
+}
+
+const SEALED_FUSION_SNAPSHOT_SOURCE = 'allocator_ev_asof_backfill_v2'
+const SEALED_FUSION_REVALIDATION_SOURCE = 'allocator_snapshot_ledger_revalidation_v1'
+
+const TERMINAL_REPLAY_EXISTS_SQL = `
+  SELECT 1 FROM s12_replay_trade_outcomes replay
+   WHERE replay.signal_date=fs.snapshot_date AND replay.symbol=fs.symbol
+     AND replay.source='s12_multisession_structure_replay_v3'
+     AND NOT (
+       COALESCE(json_extract(replay.detail_json, '$.observation_kind'), '')='unavailable'
+       AND COALESCE(json_extract(replay.detail_json, '$.status_reason'), '') IN (
+         'missing_intraday_bars', 'missing_entry_session_bars', 'missing_post_entry_bars',
+         'missing_five_session_lifecycle_bars', 'unresolved_execution_date'
+       )
+     )
+`
+
+const SEALED_FUSION_SNAPSHOT_PREDICATE = `
+  fs.snapshot_source='${SEALED_FUSION_SNAPSHOT_SOURCE}'
+  AND fs.as_of_guard='${ALLOCATOR_EV_SNAPSHOT_AS_OF_GUARD}'
+  AND fs.generation_mode='native'
+  AND json_extract(fs.score_components, '$.version')='score_v2'
+  AND COALESCE(
+    NULLIF(fs.model_set_signature, ''),
+    NULLIF(json_extract(fs.forecast_data, '$.ensemble_v2.model_set_signature'), '')
+  ) IS NOT NULL
+  AND COALESCE(
+    NULLIF(fs.target_semantic_version, ''),
+    NULLIF(json_extract(fs.forecast_data, '$.ensemble_v2.target_semantic_version'), ''),
+    NULLIF(json_extract(fs.forecast_data, '$.model_score_lineage.target_semantic_version'), '')
+  )='${EVIDENCE_LABEL_SCHEMA_VERSION}'
+  AND EXISTS (
+    SELECT 1 FROM allocator_ev_snapshot_runs sr
+     WHERE sr.snapshot_date=fs.snapshot_date
+       AND sr.snapshot_source=fs.snapshot_source
+       AND sr.as_of_guard=fs.as_of_guard
+       AND sr.status='ready'
+       AND sr.error_code IS NULL
+       AND sr.expected_rows=sr.published_rows
+       AND sr.published_rows>0
+       AND sr.native_lineage_rows=sr.published_rows
+       AND sr.reconstructed_lineage_rows=0
+       AND sr.rejected_lineage_rows=0
+  )
+`
+
+interface SealedFusionSnapshotReplayRow extends S12L0PassedSymbol {
+  completed_sessions: number
+  has_terminal_replay: number
+}
+
+async function loadSealedFusionSnapshotReplayRows(
+  db: D1Database,
+  signalDate: string,
+  maturityAsOfDate: string,
+): Promise<SealedFusionSnapshotReplayRow[]> {
+  const { results } = await db.prepare(`
+    SELECT fs.symbol,
+           st.name,
+           fs.score score_after,
+           dr.rank,
+           NULL evidence,
+           st.market,
+           fs.market_segment,
+           fs.alpha_context,
+           fs.alpha_allocation,
+           '${SEALED_FUSION_REVALIDATION_SOURCE}' replay_cohort_source,
+           COALESCE(
+             NULLIF(fs.lineage_cohort_id, ''),
+             (
+               SELECT sr.run_id FROM allocator_ev_snapshot_runs sr
+                WHERE sr.snapshot_date=fs.snapshot_date
+                  AND sr.snapshot_source=fs.snapshot_source
+                  AND sr.as_of_guard=fs.as_of_guard
+                  AND sr.status='ready'
+                  AND sr.error_code IS NULL
+                  AND sr.expected_rows=sr.published_rows
+                  AND sr.native_lineage_rows=sr.published_rows
+                  AND sr.reconstructed_lineage_rows=0
+                  AND sr.rejected_lineage_rows=0
+                ORDER BY datetime(sr.created_at) DESC, sr.run_id DESC
+                LIMIT 1
+             )
+           ) replay_cohort_id,
+           COALESCE(
+             NULLIF(fs.model_set_signature, ''),
+             json_extract(fs.forecast_data, '$.ensemble_v2.model_set_signature')
+           ) replay_model_set_signature,
+           COALESCE(
+             NULLIF(fs.target_semantic_version, ''),
+             NULLIF(json_extract(fs.forecast_data, '$.ensemble_v2.target_semantic_version'), ''),
+             json_extract(fs.forecast_data, '$.model_score_lineage.target_semantic_version')
+           ) replay_target_semantic_version,
+           (
+             SELECT COUNT(DISTINCT date(cmd.date))
+               FROM canonical_market_daily cmd
+              WHERE cmd.stock_id=fs.symbol AND cmd.source='finlab.price'
+                AND date(cmd.date)>date(fs.snapshot_date)
+                AND date(cmd.date)<=date(?)
+                AND cmd.open>0 AND cmd.high>0 AND cmd.low>0 AND cmd.close>0
+           ) completed_sessions,
+           EXISTS (${TERMINAL_REPLAY_EXISTS_SQL}) has_terminal_replay
+      FROM allocator_ev_feature_snapshots fs
+      LEFT JOIN daily_recommendations dr
+        ON dr.date=fs.snapshot_date AND dr.symbol=fs.symbol
+      LEFT JOIN stocks st ON st.symbol=fs.symbol
+     WHERE fs.snapshot_date=?
+       AND ${SEALED_FUSION_SNAPSHOT_PREDICATE}
+     ORDER BY COALESCE(dr.rank, 999999), fs.symbol
+  `).bind(maturityAsOfDate, signalDate).all<SealedFusionSnapshotReplayRow>()
+  return (results ?? []).map((row) => ({
+    ...row,
+    symbol: String(row.symbol ?? '').trim(),
+    completed_sessions: Number(row.completed_sessions ?? 0),
+    has_terminal_replay: Number(row.has_terminal_replay ?? 0),
+  })).filter((row) => row.symbol)
+}
+
+async function loadSealedFusionSnapshotReplayReadyDates(
+  db: D1Database,
+  asOfDate: string,
+  limit: number,
+): Promise<string[]> {
+  const { results } = await db.prepare(`
+    SELECT fs.snapshot_date signal_date
+      FROM allocator_ev_feature_snapshots fs
+     WHERE date(fs.snapshot_date)<date(?)
+       AND ${SEALED_FUSION_SNAPSHOT_PREDICATE}
+       AND EXISTS (
+         SELECT 1 FROM canonical_market_daily cmd
+          WHERE cmd.stock_id=fs.symbol AND cmd.source='finlab.price'
+            AND date(cmd.date)>date(fs.snapshot_date) AND date(cmd.date)<=date(?)
+            AND cmd.open>0 AND cmd.high>0 AND cmd.low>0 AND cmd.close>0
+          GROUP BY cmd.stock_id HAVING COUNT(DISTINCT date(cmd.date))>=5
+       )
+       AND NOT EXISTS (${TERMINAL_REPLAY_EXISTS_SQL})
+     GROUP BY fs.snapshot_date
+     ORDER BY fs.snapshot_date
+     LIMIT ?
+  `).bind(asOfDate, asOfDate, limit).all<{ signal_date?: string | null }>()
+  return (results ?? []).map((row) => String(row.signal_date ?? '').slice(0, 10))
+    .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
+}
+
+function replayCohortLineage(row: S12L0PassedSymbol): Record<string, unknown> | null {
+  const source = String(row.replay_cohort_source ?? '').trim()
+  if (!source) return null
+  return {
+    schema_version: 's12-replay-cohort-lineage-receipt-v1',
+    source,
+    cohort_id: String(row.replay_cohort_id ?? '').trim() || null,
+    model_set_signature: String(row.replay_model_set_signature ?? '').trim() || null,
+    target_semantic_version: String(row.replay_target_semantic_version ?? '').trim() || null,
+    point_in_time: true,
+  }
 }
 
 export interface S12ReplayOutcome {
@@ -164,15 +321,19 @@ export interface S12L0PassedSymbol {
   market?: string | null
   alpha_context?: string | null
   alpha_allocation?: string | null
+  replay_cohort_source?: string | null
+  replay_cohort_id?: string | null
+  replay_model_set_signature?: string | null
+  replay_target_semantic_version?: string | null
 }
+
 
 export async function loadFusionSnapshotMissingReplaySymbols(
   db: D1Database,
   signalDate: string,
   maturityAsOfDate = '9999-12-31',
 ): Promise<S12L0PassedSymbol[]> {
-  const all = await loadL0PassedSymbolsByHistoricalDate(db, signalDate)
-  if (!all.length) return []
+  const canonical = await loadL0PassedSymbolsByHistoricalDate(db, signalDate)
   const result = await db.prepare(`
     SELECT r.symbol
       FROM selection_reference_snapshots_v1 r
@@ -198,8 +359,16 @@ export async function loadFusionSnapshotMissingReplaySymbols(
             )
        )
   `).bind(signalDate, maturityAsOfDate).all<{ symbol: string }>()
-  const missing = new Set((result.results ?? []).map((row) => String(row.symbol)))
-  return all.filter((row) => missing.has(row.symbol))
+  const canonicalMissing = new Set((result.results ?? []).map((row) => String(row.symbol)))
+  const selected = canonical.filter((row) => canonicalMissing.has(row.symbol))
+  const selectedSymbols = new Set(selected.map((row) => row.symbol))
+  const fallback = await loadSealedFusionSnapshotReplayRows(db, signalDate, maturityAsOfDate)
+  for (const row of fallback) {
+    if (row.completed_sessions < 5 || row.has_terminal_replay === 1 || selectedSymbols.has(row.symbol)) continue
+    selected.push(row)
+    selectedSymbols.add(row.symbol)
+  }
+  return selected
 }
 
 export interface FusionSnapshotReplayCoverage {
@@ -208,6 +377,7 @@ export interface FusionSnapshotReplayCoverage {
   matureMissingRows: number
   pendingMaturityRows: number
 }
+
 
 export async function loadFusionSnapshotReplayCoverage(
   db: D1Database,
@@ -257,11 +427,20 @@ export async function loadFusionSnapshotReplayCoverage(
   `).bind(signalDate, signalDate, signalDate, maturityAsOfDate).first<{
     total_snapshot_rows?: number; replay_rows?: number; mature_missing_rows?: number; pending_maturity_rows?: number
   }>()
-  return {
+  const canonicalCoverage = {
     totalSnapshotRows: Number(row?.total_snapshot_rows ?? 0),
     replayRows: Number(row?.replay_rows ?? 0),
     matureMissingRows: Number(row?.mature_missing_rows ?? 0),
     pendingMaturityRows: Number(row?.pending_maturity_rows ?? 0),
+  }
+  if (canonicalCoverage.totalSnapshotRows > 0) return canonicalCoverage
+
+  const fallback = await loadSealedFusionSnapshotReplayRows(db, signalDate, maturityAsOfDate)
+  return {
+    totalSnapshotRows: fallback.length,
+    replayRows: fallback.filter((item) => item.has_terminal_replay === 1).length,
+    matureMissingRows: fallback.filter((item) => item.has_terminal_replay !== 1 && item.completed_sessions >= 5).length,
+    pendingMaturityRows: fallback.filter((item) => item.has_terminal_replay !== 1 && item.completed_sessions < 5).length,
   }
 }
 
@@ -338,6 +517,7 @@ export async function resolveNextExecutableSessionDate(
   return executionDate || null
 }
 
+
 export async function loadReplayReadySignalDates(
   db: D1Database,
   asOfDate: string,
@@ -375,8 +555,10 @@ export async function loadReplayReadySignalDates(
      ORDER BY r.signal_date
      LIMIT ?
   `).bind(asOfDate, asOfDate, cappedLimit).all<{ signal_date?: string | null }>()
-  return (results ?? []).map((row) => String(row.signal_date ?? '').slice(0, 10))
+  const canonicalDates = (results ?? []).map((row) => String(row.signal_date ?? '').slice(0, 10))
     .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
+  const fallbackDates = await loadSealedFusionSnapshotReplayReadyDates(db, asOfDate, cappedLimit)
+  return [...new Set([...canonicalDates, ...fallbackDates])].sort().slice(0, cappedLimit)
 }
 
 const M15_MS = 15 * 60_000
@@ -782,7 +964,11 @@ export async function loadL0PassedSymbolsByHistoricalDate(
   const { results } = await db.prepare(`
     SELECT r.symbol, r.name, r.score_v2 score_after, NULL rank,
            r.rejection_reason evidence, st.market, r.market_segment,
-           dr.alpha_context, dr.alpha_allocation
+           dr.alpha_context, dr.alpha_allocation,
+           'canonical_selection_reference_v1' replay_cohort_source,
+           r.producer_run_id replay_cohort_id,
+           NULL replay_model_set_signature,
+           NULL replay_target_semantic_version
       FROM selection_reference_snapshots_v1 r
       LEFT JOIN daily_recommendations dr
         ON dr.date=r.signal_date AND dr.symbol=r.symbol
@@ -803,6 +989,10 @@ export async function loadL0PassedSymbolsByHistoricalDate(
     evidence: row.evidence ?? null, market: row.market ?? null,
     market_segment: row.market_segment ?? null, alpha_context: row.alpha_context ?? null,
     alpha_allocation: row.alpha_allocation ?? null,
+    replay_cohort_source: row.replay_cohort_source ?? null,
+    replay_cohort_id: row.replay_cohort_id ?? null,
+    replay_model_set_signature: row.replay_model_set_signature ?? null,
+    replay_target_semantic_version: row.replay_target_semantic_version ?? null,
   })).filter((row) => row.symbol)
 }
 
@@ -1016,6 +1206,7 @@ export async function runS12HistoricalReplayForDate(
             execution_date_contract: 'next_stock_specific_session_after_signal',
             outcome_known_date: options.maturityAsOfDate ?? signalDate,
             outcome_known_at_contract: 'unresolved_stock_specific_session',
+            replay_cohort_lineage: replayCohortLineage(row),
           },
         }, 'skipped', 'unresolved_execution_date', null)
         outcomes.push(outcome)
@@ -1074,6 +1265,7 @@ export async function runS12HistoricalReplayForDate(
             execution_date_contract: 'next_stock_specific_session_after_signal',
             outcome_known_date: options.maturityAsOfDate ?? executionDate,
             outcome_known_at_contract: 'mature_reference_unavailable_lifecycle',
+            replay_cohort_lineage: replayCohortLineage(row),
           },
         }, 'skipped', 'missing_five_session_lifecycle_bars', null)
         outcomes.push(outcome)
@@ -1120,6 +1312,7 @@ export async function runS12HistoricalReplayForDate(
         exit_horizon_contract: 'up_to_five_stock_specific_sessions_after_entry',
         outcome_known_date: outcomeKnownDate,
         outcome_known_at_contract: 'fifth_stock_specific_session_available',
+        replay_cohort_lineage: replayCohortLineage(row),
         calibration_artifact_id: calibration?.artifactId ?? null,
         calibration_scope: calibration?.scope ?? null,
       },

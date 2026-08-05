@@ -231,8 +231,12 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     packet = artifact["validation_packet"]
     assert packet["schema_version"] == "allocator-ev-fusion-validation-packet-v13"
     assert set(packet["gate_layers"]) == {
-        "data_validity", "forecast_skill", "statistical_validity", "economic_utility"
+        "evidence_accrual", "data_validity", "forecast_skill", "statistical_validity", "economic_utility"
     }
+    assert packet["gate_layers"]["evidence_accrual"]["decision"] == "READY"
+    assert packet["maturity_policy"]["operational_split_guardrails"]["interpretation"] == (
+        "operational_evaluation_floor_not_statistical_proof_or_industry_constant"
+    )
     assert packet["gate_layers"]["forecast_skill"]["primary_probability_score"] == (
         "date_clustered_log_loss_advantage_lcb90"
     )
@@ -429,6 +433,17 @@ def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_sampl
     assert artifact["promotion_tier"] == "shadow"
     assert artifact["primary_expected_return_allowed"] is False
     assert artifact["validation_packet"]["decision"] == "FAIL"
+    assert artifact["maturity_policy"]["state"] == "evidence_accruing"
+    assert artifact["maturity_policy"]["recommendation_continuity"] == {
+        "shadow_or_assistive_fusion_can_suppress_buy": False,
+        "canonical_expected_return_owner_retained_until_primary": True,
+        "candidate_drop_allowed": False,
+        "minimum_fill_allowed": False,
+        "top_k_truncation_allowed": False,
+    }
+    assert artifact["validation_packet"]["gate_layers"]["data_validity"]["decision"] == "PASS"
+    assert artifact["validation_packet"]["gate_layers"]["evidence_accrual"]["decision"] == "ACCRUING"
+    assert "evidence_accrual:date_count_below_assistive_evaluation_floor" in artifact["validation_packet"]["failed_gates"]
     assert "selection:insufficient_samples" in artifact["validation_packet"]["failed_gates"]
 
 
@@ -528,6 +543,9 @@ def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evid
     assert "AS s12_replay_pnl_pct" in observed[0]["sql"]
     assert "fs.snapshot_source = ?" in observed[0]["sql"]
     assert "fs.as_of_guard = ?" in observed[0]["sql"]
+    assert "LEFT JOIN allocator_ev_snapshot_runs snapshot_run" in observed[0]["sql"]
+    assert "snapshot_run.native_lineage_rows AS snapshot_revalidation_native_lineage_rows" in observed[0]["sql"]
+    assert "snapshot_run.reconstructed_lineage_rows AS snapshot_revalidation_reconstructed_lineage_rows" in observed[0]["sql"]
     assert "replay_diagnostics.outcome_known_date" in observed[0]["sql"]
     assert "AS l4_executable_return_pct" in observed[0]["sql"]
     assert "price_horizon_labels_v1" in observed[0]["sql"]
@@ -578,12 +596,15 @@ def test_snapshot_candidate_query_avoids_correlated_evidence_lookups():
     assert "selection_reference_snapshots_v1" in captured["sql"]
     assert "canonical_run_heads" in captured["sql"]
     assert "reference_feature_rejection_reason" in captured["sql"]
-    assert "COALESCE(dr.score_components, r.score_components)" in captured["sql"]
     assert "r.feature_available" in captured["sql"]
     assert "FROM daily_recommendations dr" in captured["sql"]
     assert "JOIN canonical_reference r" in captured["sql"]
     assert "FROM canonical_reference r" not in captured["sql"]
-    assert "json_extract(dr.score_components, '$.version')='score_v2'" in captured["sql"]
+    assert "r.score_components score_components" in captured["sql"]
+    assert "WHERE r.score_components IS NOT NULL" in captured["sql"]
+    assert "json_extract(r.score_components, '$.version')='score_v2'" in captured["sql"]
+    assert "COALESCE(dr.score_components, r.score_components)" not in captured["sql"]
+    assert "json_extract(dr.score_components, '$.version')='score_v2'" not in captured["sql"]
     assert captured["params"] == [
         "2026-06-18",
         None,
@@ -701,7 +722,8 @@ def test_snapshot_candidate_query_accepts_calendar_next_session_without_future_c
         limit=200,
     )
 
-    assert "COALESCE" in captured["sql"]
+    assert "SELECT COALESCE(" in captured["sql"]
+    assert "r.score_components score_components" in captured["sql"]
     assert captured["params"][:2] == ["2026-07-14", "2026-07-15"]
 
 
@@ -734,6 +756,78 @@ def test_allocator_fusion_rejects_unproven_adjustment_factor_lineage():
 
     assert samples == []
     assert audit["adjustment_lineage_counts"] == {"missing": 1}
+
+
+
+def test_fusion_snapshot_lineage_accepts_native_ledger_revalidation_and_quarantines_reconstructed():
+    row = _row("2026-07-20", 1)
+    forecast = json.loads(row["forecast_data"])
+    target_semantic = forecast["ensemble_v2"].pop("target_semantic_version")
+    forecast["model_score_lineage"] = {"target_semantic_version": target_semantic}
+    row["forecast_data"] = json.dumps(forecast)
+    row.update({
+        "allocator_ev_feature_snapshot_source": SNAPSHOT_BACKFILL_SOURCE,
+        "allocator_ev_feature_snapshot_guard": SNAPSHOT_BACKFILL_AS_OF_GUARD,
+        "snapshot_generation_mode": "native",
+        "snapshot_revalidation_run_id": "allocator-snapshot-20260720-native",
+        "snapshot_revalidation_status": "ready",
+        "snapshot_revalidation_expected_rows": 1,
+        "snapshot_revalidation_published_rows": 1,
+        "snapshot_revalidation_native_lineage_rows": 1,
+        "snapshot_revalidation_reconstructed_lineage_rows": 0,
+        "snapshot_revalidation_rejected_lineage_rows": 0,
+        "snapshot_revalidation_error_code": None,
+    })
+
+    samples, audit = _samples([row], min_cross_section_samples_per_date=1)
+
+    assert len(samples) == 1
+    assert audit["snapshot_lineage_blocker_counts"] == {}
+    assert audit["snapshot_lineage_receipts"] == [{
+        "schema_version": "allocator-ev-snapshot-lineage-receipt-v1",
+        "status": "verified",
+        "receipt_source": "allocator_snapshot_ledger_revalidation_v1",
+        "snapshot_date": "2026-07-20",
+        "lineage_cohort_id": "allocator-snapshot-20260720-native",
+        "generation_mode": "native",
+        "model_set_signature": "LightGBM@vTest|XGBoost@vTest",
+        "target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
+        "revalidation_run_id": "allocator-snapshot-20260720-native",
+        "point_in_time_only": True,
+    }]
+
+    reconstructed = {
+        **row,
+        "snapshot_revalidation_native_lineage_rows": 0,
+        "snapshot_revalidation_reconstructed_lineage_rows": 1,
+    }
+    rejected, rejected_audit = _samples(
+        [reconstructed],
+        min_cross_section_samples_per_date=1,
+    )
+    assert rejected == []
+    assert rejected_audit["invalid_reason_counts"] == {"snapshot_lineage_unverified": 1}
+    assert rejected_audit["snapshot_lineage_blocker_counts"] == {
+        "snapshot_native_lineage_receipt_missing": 1,
+    }
+
+
+def test_fusion_snapshot_lineage_accepts_recorded_receipt_without_legacy_run():
+    row = _row("2026-07-22", 1)
+    row.update({
+        "allocator_ev_feature_snapshot_source": SNAPSHOT_BACKFILL_SOURCE,
+        "allocator_ev_feature_snapshot_guard": SNAPSHOT_BACKFILL_AS_OF_GUARD,
+        "snapshot_lineage_cohort_id": "pipeline-v2:2026-07-22",
+        "snapshot_generation_mode": "native",
+        "snapshot_model_set_signature": "LightGBM@vTest|XGBoost@vTest",
+        "snapshot_target_semantic_version": MODEL_TARGET_SEMANTIC_VERSION,
+    })
+
+    samples, audit = _samples([row], min_cross_section_samples_per_date=1)
+
+    assert len(samples) == 1
+    assert audit["snapshot_lineage_receipts"][0]["receipt_source"] == "recorded_snapshot_lineage_v1"
+    assert audit["snapshot_lineage_receipts"][0]["lineage_cohort_id"] == "pipeline-v2:2026-07-22"
 
 
 def test_load_allocator_ev_fusion_training_rows_prefers_asof_snapshot_rows():

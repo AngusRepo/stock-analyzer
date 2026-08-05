@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from scipy.stats import t as student_t
 
+from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION
 from services.evidence_contracts import (
     ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
     CANONICAL_ROUNDTRIP_COST_RATE,
@@ -82,8 +83,8 @@ EXECUTION_FEATURE_NAMES = [
 FEATURE_NAMES = list(dict.fromkeys([*SELECTION_FEATURE_NAMES, *EXECUTION_FEATURE_NAMES]))
 
 TEMPORAL_TRAIN_FRACTION = 0.75
-PRIMARY_MIN_DATES = 40
 PRIMARY_MIN_OOS_DATES = 10
+PRIMARY_MIN_DATES = math.ceil(PRIMARY_MIN_OOS_DATES / (1.0 - TEMPORAL_TRAIN_FRACTION))
 PRIMARY_MIN_SAMPLES = 1500
 PRIMARY_MIN_S12_AVAILABLE_SAMPLES = 300
 PRIMARY_MIN_S12_AVAILABLE_DATES = 10
@@ -95,8 +96,8 @@ PRIMARY_MIN_MARKET_CONTEXT_SAMPLES = 300
 PRIMARY_MIN_MARKET_CONTEXT_DATES = 10
 PRIMARY_MIN_SECTOR_ALPHA_SAMPLES = 300
 PRIMARY_MIN_SECTOR_ALPHA_DATES = 8
-ASSISTIVE_MIN_DATES = 20
 ASSISTIVE_MIN_OOS_DATES = 5
+ASSISTIVE_MIN_DATES = math.ceil(ASSISTIVE_MIN_OOS_DATES / (1.0 - TEMPORAL_TRAIN_FRACTION))
 ASSISTIVE_MIN_SAMPLES = 500
 ASSISTIVE_MIN_EXPERT_SAMPLES = 100
 ASSISTIVE_MIN_EXPERT_DATES = 10
@@ -359,6 +360,153 @@ def _s12_replay_observation_kind(row: dict[str, Any]) -> str:
     return "unavailable"
 
 
+def _snapshot_lineage_receipt(
+    row: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Verify legacy snapshot rows without treating a code refactor as a data reset."""
+    source = str(row.get("allocator_ev_feature_snapshot_source") or "").strip()
+    if source != SNAPSHOT_BACKFILL_SOURCE:
+        return None, []
+    guard = str(row.get("allocator_ev_feature_snapshot_guard") or "").strip()
+
+    forecast = _loads(row.get("forecast_data"))
+    ensemble = (
+        forecast.get("ensemble_v2")
+        if isinstance(forecast.get("ensemble_v2"), dict)
+        else {}
+    )
+    ensemble_model_score_lineage = (
+        ensemble.get("model_score_lineage")
+        if isinstance(ensemble.get("model_score_lineage"), dict)
+        else {}
+    )
+    root_model_score_lineage = (
+        forecast.get("model_score_lineage")
+        if isinstance(forecast.get("model_score_lineage"), dict)
+        else {}
+    )
+    recorded_cohort_id = str(row.get("snapshot_lineage_cohort_id") or "").strip()
+    generation_mode = str(row.get("snapshot_generation_mode") or "").strip().lower()
+    recorded_model_set = str(row.get("snapshot_model_set_signature") or "").strip()
+    recorded_target_semantic = str(row.get("snapshot_target_semantic_version") or "").strip()
+    resolved_model_set = recorded_model_set or str(ensemble.get("model_set_signature") or "").strip()
+    resolved_target_semantic = recorded_target_semantic or str(
+        ensemble.get("target_semantic_version")
+        or ensemble_model_score_lineage.get("target_semantic_version")
+        or root_model_score_lineage.get("target_semantic_version")
+        or ""
+    ).strip()
+    recorded_complete = bool(
+        guard == SNAPSHOT_BACKFILL_AS_OF_GUARD
+        and recorded_cohort_id
+        and generation_mode == "native"
+        and recorded_model_set
+        and recorded_target_semantic == MODEL_TARGET_SEMANTIC_VERSION
+    )
+
+    run_id = str(row.get("snapshot_revalidation_run_id") or "").strip()
+    expected_rows = int(row.get("snapshot_revalidation_expected_rows") or 0)
+    published_rows = int(row.get("snapshot_revalidation_published_rows") or 0)
+    native_rows = int(row.get("snapshot_revalidation_native_lineage_rows") or 0)
+    reconstructed_rows = int(row.get("snapshot_revalidation_reconstructed_lineage_rows") or 0)
+    rejected_rows = int(row.get("snapshot_revalidation_rejected_lineage_rows") or 0)
+    run_complete = bool(
+        run_id
+        and str(row.get("snapshot_revalidation_status") or "").strip().lower() == "ready"
+        and not str(row.get("snapshot_revalidation_error_code") or "").strip()
+        and expected_rows > 0
+        and published_rows == expected_rows
+        and native_rows == published_rows
+        and reconstructed_rows == 0
+        and rejected_rows == 0
+    )
+    ledger_revalidated = bool(
+        not recorded_complete
+        and guard == SNAPSHOT_BACKFILL_AS_OF_GUARD
+        and generation_mode == "native"
+        and run_complete
+        and resolved_model_set
+        and resolved_target_semantic == MODEL_TARGET_SEMANTIC_VERSION
+    )
+    if recorded_complete or ledger_revalidated:
+        receipt_source = (
+            "recorded_snapshot_lineage_v1"
+            if recorded_complete
+            else "allocator_snapshot_ledger_revalidation_v1"
+        )
+        return {
+            "schema_version": "allocator-ev-snapshot-lineage-receipt-v1",
+            "status": "verified",
+            "receipt_source": receipt_source,
+            "snapshot_date": str(row.get("prediction_date") or row.get("snapshot_date") or "")[:10],
+            "lineage_cohort_id": recorded_cohort_id or run_id,
+            "generation_mode": generation_mode or "native",
+            "model_set_signature": resolved_model_set,
+            "target_semantic_version": resolved_target_semantic,
+            "revalidation_run_id": run_id or None,
+            "point_in_time_only": True,
+        }, []
+
+    blockers: list[str] = []
+    if guard != SNAPSHOT_BACKFILL_AS_OF_GUARD:
+        blockers.append("snapshot_as_of_guard_incompatible")
+    if generation_mode != "native":
+        blockers.append("snapshot_generation_mode_not_native")
+    if not resolved_model_set:
+        blockers.append("snapshot_model_set_signature_missing")
+    if not resolved_target_semantic:
+        blockers.append("snapshot_target_semantic_version_missing")
+    elif resolved_target_semantic != MODEL_TARGET_SEMANTIC_VERSION:
+        blockers.append("snapshot_target_semantic_version_incompatible")
+    if not recorded_cohort_id and not run_complete:
+        blockers.append("snapshot_native_lineage_receipt_missing")
+    if not blockers:
+        blockers.append("snapshot_lineage_incomplete")
+    return None, blockers
+
+
+def _fusion_maturity_policy(diagnostics: dict[str, Any]) -> dict[str, Any]:
+    date_count = int(diagnostics.get("date_count") or 0)
+    sample_count = int(diagnostics.get("sample_count") or 0)
+    state = (
+        "primary_evaluable"
+        if date_count >= PRIMARY_MIN_DATES and sample_count >= PRIMARY_MIN_SAMPLES
+        else "assistive_evaluable"
+        if date_count >= ASSISTIVE_MIN_DATES and sample_count >= ASSISTIVE_MIN_SAMPLES
+        else "evidence_accruing"
+    )
+    return {
+        "schema_version": "allocator-ev-fusion-maturity-policy-v1",
+        "state": state,
+        "observed_dates": date_count,
+        "observed_samples": sample_count,
+        "dates_to_assistive_evaluation": max(0, ASSISTIVE_MIN_DATES - date_count),
+        "dates_to_primary_evaluation": max(0, PRIMARY_MIN_DATES - date_count),
+        "operational_split_guardrails": {
+            "temporal_train_fraction": TEMPORAL_TRAIN_FRACTION,
+            "assistive_minimum_oos_dates": ASSISTIVE_MIN_OOS_DATES,
+            "assistive_minimum_total_dates": ASSISTIVE_MIN_DATES,
+            "primary_minimum_oos_dates": PRIMARY_MIN_OOS_DATES,
+            "primary_minimum_total_dates": PRIMARY_MIN_DATES,
+            "derivation": "ceil(minimum_oos_dates/(1-temporal_train_fraction))",
+            "interpretation": "operational_evaluation_floor_not_statistical_proof_or_industry_constant",
+            "empirical_power_calibration_required": True,
+        },
+        "semantic_continuity": {
+            "compatible_historical_receipts_retained": True,
+            "code_refactor_alone_resets_maturity": False,
+            "incompatible_or_unverifiable_rows_quarantined": True,
+        },
+        "recommendation_continuity": {
+            "shadow_or_assistive_fusion_can_suppress_buy": False,
+            "canonical_expected_return_owner_retained_until_primary": True,
+            "candidate_drop_allowed": False,
+            "minimum_fill_allowed": False,
+            "top_k_truncation_allowed": False,
+        },
+    }
+
+
 def _samples(
     rows: list[dict[str, Any]],
     *,
@@ -374,7 +522,27 @@ def _samples(
     adjustment_lineage_counts: dict[str, int] = {}
     l4_resolver_blocker_counts: dict[str, int] = {}
     invalid_reason_counts: dict[str, int] = {}
+    snapshot_lineage_blocker_counts: dict[str, int] = {}
+    snapshot_lineage_receipts: dict[str, dict[str, Any]] = {}
     for row in rows:
+        snapshot_receipt, snapshot_blockers = _snapshot_lineage_receipt(row)
+        if snapshot_receipt:
+            receipt_key = ":".join([
+                str(snapshot_receipt.get("snapshot_date") or ""),
+                str(snapshot_receipt.get("lineage_cohort_id") or ""),
+                str(snapshot_receipt.get("receipt_source") or ""),
+            ])
+            snapshot_lineage_receipts[receipt_key] = snapshot_receipt
+        if snapshot_blockers:
+            invalid += 1
+            invalid_reason_counts["snapshot_lineage_unverified"] = (
+                invalid_reason_counts.get("snapshot_lineage_unverified", 0) + 1
+            )
+            for blocker in snapshot_blockers:
+                snapshot_lineage_blocker_counts[blocker] = (
+                    snapshot_lineage_blocker_counts.get(blocker, 0) + 1
+                )
+            continue
         feature_era = _score_feature_era(row)
         feature_era_counts[feature_era] = feature_era_counts.get(feature_era, 0) + 1
         if feature_era != CANONICAL_SCORE_FEATURE_VERSION:
@@ -568,6 +736,13 @@ def _samples(
         },
         "adjustment_lineage_counts": dict(sorted(adjustment_lineage_counts.items())),
         "invalid_reason_counts": dict(sorted(invalid_reason_counts.items())),
+        "snapshot_lineage_blocker_counts": dict(sorted(snapshot_lineage_blocker_counts.items())),
+        "snapshot_lineage_receipts": [snapshot_lineage_receipts[key] for key in sorted(snapshot_lineage_receipts)],
+        "snapshot_lineage_policy": {
+            "mode": "recorded_or_native_ledger_revalidated",
+            "legacy_null_lineage_accepted_without_receipt": False,
+            "reconstructed_lineage_fit_eligible": False,
+        },
         "feature_era_policy": {
             "mode": "strict_canonical_only",
             "accepted_versions": [CANONICAL_SCORE_FEATURE_VERSION],
@@ -1892,11 +2067,13 @@ def build_allocator_ev_fusion_artifact_from_rows(
         )
         for gate in (model.get("failed_gates") or [])
     ]
-    data_validity_failed_gates: list[str] = []
+    maturity_policy = _fusion_maturity_policy(diagnostics)
+    evidence_accrual_pending_gates: list[str] = []
     if int(diagnostics.get("sample_count") or 0) < ASSISTIVE_MIN_SAMPLES:
-        data_validity_failed_gates.append("sample_count_below_assistive_floor")
+        evidence_accrual_pending_gates.append("sample_count_below_assistive_evaluation_floor")
     if int(diagnostics.get("date_count") or 0) < ASSISTIVE_MIN_DATES:
-        data_validity_failed_gates.append("date_count_below_assistive_floor")
+        evidence_accrual_pending_gates.append("date_count_below_assistive_evaluation_floor")
+    data_validity_failed_gates: list[str] = []
     if not benchmark_panel["locked"]:
         data_validity_failed_gates.append("benchmark_panel_identity_mismatch")
     statistical_failed_gates = [
@@ -1911,6 +2088,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
         for gate in (model.get("failed_gates") or [])
     ]
     failed_gates = [
+        *[f"evidence_accrual:{gate}" for gate in evidence_accrual_pending_gates],
         *[f"data_validity:{gate}" for gate in data_validity_failed_gates],
         *component_failed_gates,
         *statistical_failed_gates,
@@ -1918,7 +2096,8 @@ def build_allocator_ev_fusion_artifact_from_rows(
     ]
     decision = (
         "PASS"
-        if not data_validity_failed_gates
+        if not evidence_accrual_pending_gates
+        and not data_validity_failed_gates
         and not component_failed_gates
         and not statistical_failed_gates
         else "FAIL"
@@ -1936,12 +2115,23 @@ def build_allocator_ev_fusion_artifact_from_rows(
         min_samples=min_samples,
     )
     if decision != "PASS":
-        promotion_blockers = [*data_validity_failed_gates, *component_failed_gates, *statistical_failed_gates]
+        promotion_blockers = [
+            *evidence_accrual_pending_gates,
+            *data_validity_failed_gates,
+            *component_failed_gates,
+            *statistical_failed_gates,
+        ]
     validation_packet = {
         "schema_version": "allocator-ev-fusion-validation-packet-v13",
         "decision": decision,
         "failed_gates": failed_gates,
         "gate_layers": {
+            "evidence_accrual": {
+                "decision": "READY" if not evidence_accrual_pending_gates else "ACCRUING",
+                "pending_gates": evidence_accrual_pending_gates,
+                "hard_fail": False,
+                "maturity_policy": maturity_policy,
+            },
             "data_validity": {
                 "decision": "PASS" if not data_validity_failed_gates else "FAIL",
                 "failed_gates": data_validity_failed_gates,
@@ -1961,6 +2151,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
             },
         },
         "benchmark_panel": benchmark_panel,
+        "maturity_policy": maturity_policy,
         "multiple_testing": multiple_testing,
         "primary_champion_failed_gates": champion_comparison.get("failed_gates") or [],
         "validation_scope": {
@@ -2036,6 +2227,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
             else "shadow"
         ),
         "promotion_tier": promotion_tier,
+        "maturity_policy": maturity_policy,
         "primary_expected_return_allowed": promotion_tier == "primary" and generation_mode == "native",
         "assistive_expected_return_allowed": False,
         "assistive_learning_signal_allowed": promotion_tier in {"assistive", "primary"},
@@ -2378,8 +2570,31 @@ def load_allocator_ev_fusion_training_rows(
                 st.sector,
                 fs.recommendation_lane,
                 fs.snapshot_source AS allocator_ev_feature_snapshot_source,
-                fs.as_of_guard AS allocator_ev_feature_snapshot_guard
+                fs.as_of_guard AS allocator_ev_feature_snapshot_guard,
+                fs.lineage_cohort_id AS snapshot_lineage_cohort_id,
+                fs.generation_mode AS snapshot_generation_mode,
+                fs.model_set_signature AS snapshot_model_set_signature,
+                fs.target_semantic_version AS snapshot_target_semantic_version,
+                snapshot_run.run_id AS snapshot_revalidation_run_id,
+                snapshot_run.status AS snapshot_revalidation_status,
+                snapshot_run.expected_rows AS snapshot_revalidation_expected_rows,
+                snapshot_run.published_rows AS snapshot_revalidation_published_rows,
+                snapshot_run.native_lineage_rows AS snapshot_revalidation_native_lineage_rows,
+                snapshot_run.reconstructed_lineage_rows AS snapshot_revalidation_reconstructed_lineage_rows,
+                snapshot_run.rejected_lineage_rows AS snapshot_revalidation_rejected_lineage_rows,
+                snapshot_run.error_code AS snapshot_revalidation_error_code
             FROM allocator_ev_feature_snapshots fs
+            LEFT JOIN allocator_ev_snapshot_runs snapshot_run
+              ON snapshot_run.run_id = (
+                  SELECT candidate_run.run_id
+                  FROM allocator_ev_snapshot_runs candidate_run
+                  WHERE date(candidate_run.snapshot_date) = date(fs.snapshot_date)
+                    AND candidate_run.snapshot_source = fs.snapshot_source
+                    AND candidate_run.as_of_guard = fs.as_of_guard
+                    AND candidate_run.status = 'ready'
+                  ORDER BY datetime(candidate_run.created_at) DESC, candidate_run.run_id DESC
+                  LIMIT 1
+              )
             LEFT JOIN predictions p
               ON p.stock_id = fs.stock_id
              AND p.prediction_date = fs.snapshot_date

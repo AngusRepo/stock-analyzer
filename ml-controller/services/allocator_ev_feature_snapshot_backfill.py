@@ -143,8 +143,8 @@ def load_allocator_ev_snapshot_candidate_rows(
             r.signal_date recommendation_date,
             p.generated_at prediction_generated_at,
             p.forecast_data,
-            COALESCE(dr.score, r.score_v2) score,
-            COALESCE(dr.score_components, r.score_components) score_components,
+            COALESCE(r.score_v2, dr.score) score,
+            r.score_components score_components,
             dr.alpha_context,
             dr.alpha_allocation existing_alpha_allocation,
             COALESCE(r.market_segment, dr.market_segment, st.market) market_segment,
@@ -156,9 +156,9 @@ def load_allocator_ev_snapshot_candidate_rows(
               WHEN r.feature_available!=1 THEN COALESCE(r.feature_rejection_reason, 'reference_feature_unavailable')
               WHEN st.id IS NULL THEN 'missing_stock_identity'
               WHEN p.id IS NULL THEN 'missing_point_in_time_ensemble_prediction'
-              WHEN COALESCE(dr.score_components, r.score_components) IS NULL THEN 'missing_score_v2_components'
-              WHEN json_valid(COALESCE(dr.score_components, r.score_components))!=1 THEN 'invalid_score_v2_json'
-              WHEN json_extract(COALESCE(dr.score_components, r.score_components), '$.version')!='score_v2' THEN 'invalid_score_v2_semantic'
+              WHEN r.score_components IS NULL THEN 'missing_score_v2_components'
+              WHEN json_valid(r.score_components)!=1 THEN 'invalid_score_v2_json'
+              WHEN json_extract(r.score_components, '$.version')!='score_v2' THEN 'invalid_score_v2_semantic'
               ELSE NULL
             END reference_feature_rejection_reason,
             COUNT(*) OVER () candidate_total_count
@@ -169,9 +169,9 @@ def load_allocator_ev_snapshot_candidate_rows(
         LEFT JOIN ranked_prediction_ids rp
           ON rp.stock_id=st.id AND rp.prediction_rank=1
         LEFT JOIN predictions p ON p.id=rp.id
-        WHERE dr.score_components IS NOT NULL
-          AND json_extract(dr.score_components, '$.version')='score_v2'
-        ORDER BY COALESCE(dr.rank, 999999), COALESCE(dr.score, r.score_v2) DESC, r.symbol
+        WHERE r.score_components IS NOT NULL
+          AND json_extract(r.score_components, '$.version')='score_v2'
+        ORDER BY COALESCE(dr.rank, 999999), r.score_v2 DESC, r.symbol
         LIMIT ?
         """,
         [snapshot_date, supplied_next_session, snapshot_date, next_date, snapshot_date, next_date, int(limit)],

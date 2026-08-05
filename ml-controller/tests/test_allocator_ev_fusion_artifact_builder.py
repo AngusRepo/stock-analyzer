@@ -370,7 +370,7 @@ def test_allocator_ev_fusion_stays_shadow_until_primary_evidence_floor():
     assert "primary_insufficient_dates" in artifact["promotion_blockers"]
 
 
-def test_allocator_ev_fusion_artifact_builder_rejects_assistive_without_replay_execution_labels():
+def test_allocator_ev_fusion_artifact_builder_rejects_training_without_replay_execution_labels():
     rows = []
     for day_idx in range(6):
         day = f"2026-06-{day_idx + 1:02d}"

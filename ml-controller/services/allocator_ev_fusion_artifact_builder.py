@@ -62,11 +62,10 @@ PRIMARY_MIN_L4_PIT_SAMPLES = 300
 PRIMARY_MIN_L4_PIT_DATES = 10
 PRIMARY_MIN_MARKET_CONTEXT_SAMPLES = 300
 PRIMARY_MIN_MARKET_CONTEXT_DATES = 10
-ASSISTIVE_MIN_DATES = 20
-ASSISTIVE_MIN_OOS_DATES = 5
-ASSISTIVE_MIN_SAMPLES = 500
-ASSISTIVE_MIN_EXPERT_SAMPLES = 100
-ASSISTIVE_MIN_EXPERT_DATES = 10
+VALIDATION_MIN_DATES = 20
+VALIDATION_MIN_SAMPLES = 500
+VALIDATION_MIN_EXPERT_SAMPLES = 100
+VALIDATION_MIN_EXPERT_DATES = 10
 CANONICAL_SCORE_FEATURE_VERSION = "score_v2"
 CANONICAL_SCORE_SEMANTIC_VERSION = "score-v2-active8-components-v3"
 CANONICAL_ENSEMBLE_SEMANTIC_VERSION = "active8-ic-weighted-rank-v4"
@@ -1652,8 +1651,8 @@ def build_allocator_ev_fusion_artifact_from_rows(
         samples,
         feature_names=SELECTION_FEATURE_NAMES,
         target_key="selection_rank_target",
-        min_samples=ASSISTIVE_MIN_SAMPLES,
-        min_dates=ASSISTIVE_MIN_DATES,
+        min_samples=VALIDATION_MIN_SAMPLES,
+        min_dates=VALIDATION_MIN_DATES,
         l2=l2,
         minimum_spread=max(0.0, cost_model_bps) / 10000.0,
         calibration_target_key="selection_target",
@@ -1665,15 +1664,15 @@ def build_allocator_ev_fusion_artifact_from_rows(
     execution_probability_model = _fit_execution_probability_expert(
         execution_observation_samples,
         l2=l2,
-        min_samples=ASSISTIVE_MIN_EXPERT_SAMPLES,
-        min_dates=ASSISTIVE_MIN_EXPERT_DATES,
+        min_samples=VALIDATION_MIN_EXPERT_SAMPLES,
+        min_dates=VALIDATION_MIN_EXPERT_DATES,
     )
     execution_model = _fit_expert(
         execution_samples,
         feature_names=EXECUTION_FEATURE_NAMES,
         target_key="execution_target",
-        min_samples=ASSISTIVE_MIN_EXPERT_SAMPLES,
-        min_dates=ASSISTIVE_MIN_EXPERT_DATES,
+        min_samples=VALIDATION_MIN_EXPERT_SAMPLES,
+        min_dates=VALIDATION_MIN_EXPERT_DATES,
         l2=l2,
         min_feature_support_samples=30,
         min_feature_support_dates=3,
@@ -1715,10 +1714,10 @@ def build_allocator_ev_fusion_artifact_from_rows(
         for gate in (model.get("failed_gates") or [])
     ]
     data_validity_failed_gates: list[str] = []
-    if int(diagnostics.get("sample_count") or 0) < ASSISTIVE_MIN_SAMPLES:
-        data_validity_failed_gates.append("sample_count_below_assistive_floor")
-    if int(diagnostics.get("date_count") or 0) < ASSISTIVE_MIN_DATES:
-        data_validity_failed_gates.append("date_count_below_assistive_floor")
+    if int(diagnostics.get("sample_count") or 0) < VALIDATION_MIN_SAMPLES:
+        data_validity_failed_gates.append("sample_count_below_validation_floor")
+    if int(diagnostics.get("date_count") or 0) < VALIDATION_MIN_DATES:
+        data_validity_failed_gates.append("date_count_below_validation_floor")
     if not benchmark_panel["locked"]:
         data_validity_failed_gates.append("benchmark_panel_identity_mismatch")
     statistical_failed_gates = [

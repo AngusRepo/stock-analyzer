@@ -184,8 +184,6 @@ def _registry_record(
         "promotion_state": promotion_state,
         "promotion_tier": artifact.get("promotion_tier"),
         "primary_expected_return_allowed": artifact.get("primary_expected_return_allowed"),
-        "assistive_expected_return_allowed": artifact.get("assistive_expected_return_allowed"),
-        "assistive_learning_signal_allowed": artifact.get("assistive_learning_signal_allowed"),
         "validation_packet": validation,
         "training_data": artifact.get("training_data"),
         "promoted_to_trading_config": promoted,
@@ -230,8 +228,9 @@ def _registry_record(
 async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq) -> dict[str, Any]:
     """Build and optionally promote the allocator EV fusion artifact.
 
-    This artifact is the production allocator expected-return owner that combines
-    L4 selection alpha EV and S12 execution trade EV. Promotion is fail-closed:
+    This artifact is the sole production allocator expected-return owner. It estimates
+    next-session S12 policy value from day-t L0-L4/ScoreV2/market features; S12 enters
+    only through mature historical replay labels. Promotion is fail-closed:
     only a PASS validation packet with a production_primary
     artifact mutates Worker trading:config.
     """
@@ -404,7 +403,7 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
 
 @router.post("/feature_snapshots/backfill")
 async def backfill_allocator_ev_feature_snapshots_route(req: AllocatorEvFeatureSnapshotBackfillReq) -> dict[str, Any]:
-    """Build no-leakage as-of L4/S12 feature snapshots for fusion training.
+    """Build no-leakage day-t L0-L4 feature snapshots for Fusion training.
 
     This route writes an independent training snapshot table only. It never
     mutates historical daily_recommendations rows.

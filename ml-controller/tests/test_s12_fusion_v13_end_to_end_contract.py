@@ -47,6 +47,7 @@ def test_fusion_v13_is_one_artifact_with_exactly_two_serving_heads():
     materializer = _read("ml-controller/services/allocator_ev_fusion.py")
     builder = _read("ml-controller/services/allocator_ev_fusion_artifact_builder.py")
     contracts = _read("ml-controller/services/evidence_contracts.py")
+    router = _read("ml-controller/routers/allocator_ev_fusion.py")
 
     assert "allocator-ev-fusion-contract-v13" in contracts
     assert '"policy_value_head_count": 2' in builder
@@ -55,6 +56,8 @@ def test_fusion_v13_is_one_artifact_with_exactly_two_serving_heads():
     assert "execution_probability * raw_execution_residual" in materializer
     assert "candidate_time_s12_feature_forbidden" in materializer
     assert "production_assistive" not in materializer
+    assert "assistive_" not in router
+    assert "L4/S12 feature snapshots" not in router
 
 
 def test_jobs_and_observability_drop_s12_candidate_stage_but_keep_research_replay():

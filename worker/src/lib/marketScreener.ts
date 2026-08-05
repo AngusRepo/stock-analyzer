@@ -3214,7 +3214,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     labelerVersion: string
   } | null = null
   try {
-    const [{ listStrategySpecsForLearning, getLatestStrategyPolicyState }, strategyCandidatePoolModule, strategyPortfolioMetricsModule] = await Promise.all([
+    const [{ listStrategySpecsForLearning, getStrategyPolicyStateBeforeDate }, strategyCandidatePoolModule, strategyPortfolioMetricsModule] = await Promise.all([
       import('./strategyLearning'),
       import('./strategyCandidatePool'),
       import('./strategyPortfolioMetrics'),
@@ -3225,17 +3225,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const currentRegime = canonicalRegimeState.family
     runtimeStrategyRegime = currentRegime
     const [{ specs, source, registryRowCount, activeCount }, policyState] = await Promise.all([
-      listStrategySpecsForLearning(env.DB),
-      getLatestStrategyPolicyState(env.DB).catch(() => null),
+      listStrategySpecsForLearning(env.DB, { asOfDate: endDate }),
+      getStrategyPolicyStateBeforeDate(env.DB, endDate).catch(() => null),
     ])
     runtimeStrategySpecs = specs
-    const { loadPromotedStrategyMarginalEdgeWeightsV4 } = await import('./strategyMarginalEdgeV4')
-    const marginalEdgeState = await loadPromotedStrategyMarginalEdgeWeightsV4(
-      env.DB,
-      specs.map((spec: StrategySpec) => spec.id),
-    ).catch(() => null)
-    const activeStrategyWeights = marginalEdgeState?.weights
-      ?? (policyState?.status === 'active' ? policyState.strategy_weights : undefined)
+    const activeStrategyWeights = policyState?.status === 'active' ? policyState.strategy_weights : undefined
     const strategyPortfolioMetrics = await loadStrategyPortfolioMetricOverrides(env.DB, {
       regime: currentRegime,
       marketSegment: 'all',

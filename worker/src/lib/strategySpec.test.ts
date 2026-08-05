@@ -18,6 +18,7 @@ function assert(condition: unknown, message: string): void {
 const BASE_RUNTIME_STRATEGY_IDS = [
   'trend_following_seed_v1',
   'breakout_vol_expansion_seed_v1',
+  'alpha_miner_pymoo_nsga3_novelty_0081',
   'defensive_accumulation_seed_v1',
   'finlab_ai_skill_quality_trend_v1',
   'finlab_ai_skill_reversion_value_v1',
@@ -29,14 +30,15 @@ const BASE_RUNTIME_STRATEGY_IDS = [
 const ACTIVE_PRODUCTION_STRATEGY_IDS = [
   'trend_following_seed_v1',
   'breakout_vol_expansion_seed_v1',
+  'alpha_miner_pymoo_nsga3_novelty_0081',
   'defensive_accumulation_seed_v1',
+  'finlab_ai_skill_reversion_value_v1',
   'finlab_ai_skill_broker_accumulation_reclaim_v1',
   'alphabuilders_multifactor_revenue_quality_momentum_v1',
 ] as const
 
 const CANDIDATE_STRATEGY_IDS = [
   'finlab_ai_skill_quality_trend_v1',
-  'finlab_ai_skill_reversion_value_v1',
   'finlab_ai_skill_revenue_revision_breakout_v1',
 ] as const
 
@@ -46,7 +48,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   const ids = DEFAULT_STRATEGY_SPECS.map((spec) => spec.id)
   const activeIds = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active').map((spec) => spec.id)
   const candidateIds = DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'candidate').map((spec) => spec.id)
-  assert(DEFAULT_STRATEGY_SPECS.length === 8, 'bootstrap manifest should expose exactly 8 base runtime strategies')
+  assert(DEFAULT_STRATEGY_SPECS.length === 9, 'bootstrap manifest should expose exactly 9 source-approved runtime strategies')
   assert(
     JSON.stringify(ids) === JSON.stringify(BASE_RUNTIME_STRATEGY_IDS),
     `bootstrap manifest ids changed unexpectedly: ${ids.join(',')}`,
@@ -82,7 +84,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
 
 {
   const activeIds = new Set(DEFAULT_STRATEGY_SPECS.filter((spec) => spec.status === 'active').map((spec) => spec.id))
-  assert([...activeIds].filter((id) => id.startsWith('alpha_miner_pymoo_nsga3_novelty_')).length === 0, 'mined strategies must live in D1 strategy_spec_registry, not TS bootstrap defaults')
+  assert([...activeIds].filter((id) => id.startsWith('alpha_miner_pymoo_nsga3_novelty_')).length === 1 && activeIds.has('alpha_miner_pymoo_nsga3_novelty_0081'), '0081 is the sole source-approved Pymoo production bootstrap strategy')
   assert([...activeIds].filter((id) => id.startsWith('alphabuilders_multifactor_')).length === 1, 'only one AlphaBuilders strategy should remain production active')
 }
 

@@ -3239,9 +3239,7 @@ export async function processUpdateBatch(
       const labels = await materializeCanonicalSelectionLabelsV4(env.DB, { asOfDate: triggerTime })
       const marginalEdge = await refreshStrategyMarginalEdgeV4(env.DB, triggerTime)
       const rewards = await refreshStrategyRewardLedger(env.DB, { endDate: triggerTime, dryRun: false })
-      const policy = msg.force
-        ? await refreshStrategyAdaptivePolicyState(env.DB, { date: triggerTime, dryRun: false })
-        : null
+      const policy = await refreshStrategyAdaptivePolicyState(env.DB, { date: triggerTime, dryRun: false })
       const summary = [
       `materialized_complete candidates=${coverage.candidateRows}/${coverage.expectedCandidates} rows=${coverage.decisionRows}/${coverage.expectedRows}`,
       `last_candidates=${chunk.candidate_count}`,

@@ -5,7 +5,7 @@ from pathlib import Path
 SOURCE = (Path(__file__).resolve().parents[1] / "routers/allocator_ev_fusion.py").read_text(encoding="utf-8")
 
 
-def test_allocator_ev_fusion_refresh_route_accepts_v2_promotion_states() -> None:
+def test_allocator_ev_fusion_refresh_route_allows_only_primary_to_mutate_config() -> None:
     tree = ast.parse(SOURCE)
     function = next(
         node
@@ -18,7 +18,7 @@ def test_allocator_ev_fusion_refresh_route_accepts_v2_promotion_states() -> None
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
     assert "production_primary" in constants
-    assert "production_assistive" in constants
+    assert "production_assistive" not in constants
     assert "production_approved" not in constants
 
 

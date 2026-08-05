@@ -93,6 +93,15 @@ export interface StrategyFeatureRefWeightedScore {
   min: number
   terms: StrategyFeatureRefTerm[]
   calibration?: StrategyFeatureRefWeightedScoreCalibration
+  adaptivePolicy?: StrategyFeatureRefWeightedScoreAdaptivePolicy
+}
+
+export interface StrategyFeatureRefWeightedScoreAdaptivePolicy {
+  policyId: string
+  policyVersion: string
+  knowledgeCutoffDate: string
+  baselineMin: number
+  effectiveMin: number
 }
 
 export interface StrategyFeatureRefWeightedScoreCalibration {
@@ -856,10 +865,22 @@ function activeWeightedScoreCalibration(
 
 function effectiveWeightedScoreMin(weighted: StrategyFeatureRefWeightedScore): {
   min: number
-  source: 'spec_min' | 'active_calibration'
+  source: 'spec_min' | 'active_calibration' | 'adaptive_strategy_policy'
   calibration: StrategyFeatureRefWeightedScoreCalibration | null
 } {
   const calibration = activeWeightedScoreCalibration(weighted)
+  const adaptivePolicy = weighted.adaptivePolicy
+  const adaptiveMin = finiteNumber(adaptivePolicy?.effectiveMin)
+  if (
+    adaptivePolicy
+    && cleanText(adaptivePolicy.policyId)
+    && cleanText(adaptivePolicy.knowledgeCutoffDate)
+    && adaptiveMin != null
+    && adaptiveMin >= 0
+    && adaptiveMin <= 1
+  ) {
+    return { min: adaptiveMin, source: 'adaptive_strategy_policy', calibration }
+  }
   if (calibration) {
     return {
       min: calibration.calibratedMin,
@@ -908,6 +929,10 @@ export function explainFeatureRefDsl(raw: StrategyRawSignals, dsl?: StrategyFeat
     spec_min: weighted.min,
     effective_min: effective.min,
     threshold_source: effective.source,
+    adaptive_policy_id: weighted.adaptivePolicy?.policyId ?? null,
+    adaptive_policy_version: weighted.adaptivePolicy?.policyVersion ?? null,
+    adaptive_knowledge_cutoff_date: weighted.adaptivePolicy?.knowledgeCutoffDate ?? null,
+    adaptive_baseline_min: weighted.adaptivePolicy?.baselineMin ?? null,
     calibration_id: effective.calibration?.calibrationId ?? null,
     calibration_status: effective.calibration?.status ?? null,
     passes_weighted_score: weightedScore == null ? false : weightedScore >= effective.min,
@@ -1132,6 +1157,61 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     createdBy: 'p5_strategy_governance',
   },
   {
+    id: 'alpha_miner_pymoo_nsga3_novelty_0081',
+    version: STRATEGY_SPEC_VERSION,
+    name: 'Pymoo NSGA-III novelty 0081 breadth trend impulse',
+    status: 'active',
+    owner: 'strategy',
+    familyId: 'TREND_RECLAIM_CONTINUATION',
+    variantId: 'pymoo_nsga3_novelty_0081_formal137_v1',
+    ownerType: 'strategy',
+    promotionStatus: 'production',
+    alphaBucket: 'trend_following',
+    supportedRegimes: ['bull', 'sideways', 'volatile'],
+    thesis: 'Combine breadth, trend and price-impulse formal137 signals discovered by Pymoo NSGA-III while preserving full-universe L0 labeling.',
+    thresholds: {
+      minPrice: 10,
+      minVolumeExpansion20: 0.7,
+      featureRefs: {
+        weightedScore: {
+          min: 0.62,
+          terms: [
+            { featureRef: 'KLOW2', signal: 'factorSignals.KLOW2', weight: 0.415128 },
+            { featureRef: 'advance_ratio', signal: 'factorSignals.advance_ratio', weight: 0.117772 },
+            { featureRef: 'CNTD_20', signal: 'factorSignals.CNTD_20', weight: 0.20684 },
+            { featureRef: 'KSFT', signal: 'factorSignals.KSFT', weight: 0.260259 },
+          ],
+          calibration: {
+            schemaVersion: 'strategy-feature-ref-weighted-score-calibration-v1',
+            calibrationId: 'alpha_miner_pymoo_nsga3_novelty_0081:formal137-scale:v20260622',
+            status: 'active',
+            method: 'validation_fold_top_after_base_gates',
+            originalMin: 0.62,
+            calibratedMin: 0.382732,
+            validationFold: { startDate: '2026-06-22', endDate: '2026-06-22', excludedDates: ['2026-06-23'] },
+            targetDailyMatches: 16,
+            observed: {
+              validationRows: 820,
+              validationCompleteFeatureRows: 820,
+              validationMatchesAtOriginalMin: 0,
+              validationMatchesAtCalibratedMin: 16,
+              holdoutDate: '2026-06-23',
+              holdoutMatchesAtCalibratedMin: 11,
+            },
+            sourceRefs: ['strategy_decision_log:2026-06-22', 'holdout:2026-06-23'],
+            frozenAt: '2026-06-24T00:00:00Z',
+          },
+        },
+      },
+    },
+    candidatePolicy: { poolQuota: 16, costBudget: 18, evidenceRequirements: ['formal137_feature_refs', 'raw_breadth', 'raw_trend', 'raw_impulse'], maxMlShare: 0.22 },
+    riskNotes: [
+      'Promoted in the 2026-08-05 equal-count rotation from S04 based on reconstructed reward-ledger evidence; historical 2026-06-25 FinLab replay was negative and remains contrary evidence.',
+      'Adaptive policy may only adjust the effective weighted-score threshold within bounded PIT rules; the original calibration lineage remains immutable.',
+    ],
+    createdBy: 'p5_strategy_governance',
+  },
+  {
     id: 'defensive_accumulation_seed_v1',
     version: STRATEGY_SPEC_VERSION,
     name: 'Defensive accumulation seed',
@@ -1184,12 +1264,12 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     id: 'finlab_ai_skill_reversion_value_v1',
     version: STRATEGY_SPEC_VERSION,
     name: 'FinLab AI reversion value',
-    status: 'candidate',
+    status: 'active',
     owner: 'strategy',
     familyId: 'REVENUE_QUALITY_MOMENTUM',
     variantId: 'quality_value_reversion_v1',
     ownerType: 'strategy',
-    promotionStatus: 'candidate',
+    promotionStatus: 'production',
     alphaBucket: 'mean_reversion',
     supportedRegimes: ['sideways', 'bear', 'volatile'],
     thesis: 'Use raw valuation, profitability and mild reversion evidence to admit neglected value-reversion candidates that improve L1 diversity.',
@@ -1202,7 +1282,10 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
       minVolumeExpansion20: 0.75,
     },
     candidatePolicy: { poolQuota: 16, costBudget: 18, evidenceRequirements: ['finlab_canonical_fundamental', 'raw_valuation', 'raw_profitability', 'raw_reversion'], maxMlShare: 0.22 },
-    riskNotes: ['Moved to candidate strategy pool after 2026-06-25 active-owner consolidation; monthly backtest can re-promote if evidence beats active owners.'],
+    riskNotes: [
+      'Promoted in the 2026-08-05 equal-count rotation from S01 after positive reconstructed reward-ledger evidence.',
+      'Value and reversion inputs remain PIT constrained; missing valuation evidence fails closed.',
+    ],
     createdBy: 'p5_strategy_governance',
   },
   {

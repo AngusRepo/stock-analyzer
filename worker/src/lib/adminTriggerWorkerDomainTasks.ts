@@ -283,11 +283,12 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
       const { reconcileSelectionDecisionEvidenceV4 } = await import('./selectionReferenceEvidence')
       const { refreshStrategyMarginalEdgeV4 } = await import('./strategyMarginalEdgeV4')
-      const { refreshStrategyRewardLedger } = await import('./strategyLearning')
+      const { refreshStrategyAdaptivePolicyState, refreshStrategyRewardLedger } = await import('./strategyLearning')
       const decisionEvidence = await reconcileSelectionDecisionEvidenceV4(c.env.DB, runDate)
       const labels = await materializeCanonicalSelectionLabelsV4(c.env.DB, { asOfDate: runDate })
       const marginalEdge = await refreshStrategyMarginalEdgeV4(c.env.DB, runDate)
       const rewards = await refreshStrategyRewardLedger(c.env.DB, { endDate: runDate, dryRun: false })
+      const policy = await refreshStrategyAdaptivePolicyState(c.env.DB, { date: runDate, dryRun: false })
       return [
         `strategy_learning_finalize date=${runDate}`,
         `selection_decisions=${decisionEvidence.finalSignalRows}/${decisionEvidence.referenceRows}`,
@@ -298,25 +299,8 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         `reward_rows=${rewards.persisted_rows}`,
         `reward_stale_retired=${rewards.stale_rows_retired}`,
         `refresh_run_id=${rewards.refresh_run_id ?? 'none'}`,
+        `adaptive_policy=${policy.policy_state.status}:eligible=${policy.policy_state.evidence.eligible_strategy_count}`,
       ].join(' ')
-    },
-    'strategy-threshold-calibration': async () => {
-      const { runStrategyThresholdAutoCalibration } = await import('./strategyLearning')
-      const cadence = c.req.query('cadence') === 'monthly'
-        ? 'monthly'
-        : c.req.query('cadence') === 'daily_drift'
-          ? 'daily_drift'
-          : c.req.query('cadence') === 'regime_shift'
-            ? 'regime_shift'
-            : 'weekly'
-      const result = await runStrategyThresholdAutoCalibration(c.env.DB, {
-        runDate: requestedRunDate() ?? twToday(),
-        cadence,
-        startDate: c.req.query('start_date') || undefined,
-        endDate: c.req.query('end_date') || undefined,
-        dryRun: c.req.query('dry_run') === '1',
-      })
-      return result.summary
     },
     's12-smcvwap-calibration': async () => {
       const { runS12TwCalibration } = await import('./s12TwEquityCalibration')

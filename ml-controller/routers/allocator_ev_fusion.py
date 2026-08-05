@@ -36,6 +36,9 @@ class AllocatorEvFusionRefreshReq(BaseModel):
     promote: bool = True
     dry_run: bool = False
     trigger_source: str = "worker_scheduler"
+    search_trial_count: int = Field(default=1, ge=1, le=10000)
+    multiple_testing_evidence: dict[str, Any] | None = None
+    benchmark_panel_id: str | None = Field(default=None, max_length=200)
 
 
 class AllocatorEvFeatureSnapshotBackfillReq(BaseModel):
@@ -112,8 +115,6 @@ def _promotion_config_allowed(artifact: dict[str, Any] | None, decision: str) ->
     tier = str(artifact.get("promotion_tier") or "").strip()
     if state == "production_primary" and tier == "primary":
         return artifact.get("primary_expected_return_allowed") is True
-    if state == "production_assistive" and tier == "assistive":
-        return artifact.get("assistive_learning_signal_allowed") is True
     return False
 
 
@@ -196,7 +197,7 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
 
     This artifact is the production allocator expected-return owner that combines
     L4 selection alpha EV and S12 execution trade EV. Promotion is fail-closed:
-    only a PASS validation packet with a production_primary/production_assistive
+    only a PASS validation packet with a production_primary
     artifact mutates Worker trading:config.
     """
 
@@ -220,6 +221,9 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
         min_samples=min_samples,
         min_dates=min_dates,
         knowledge_cutoff_date=req.end_date or end_date,
+        search_trial_count=req.search_trial_count,
+        multiple_testing_evidence=req.multiple_testing_evidence,
+        benchmark_panel_id=req.benchmark_panel_id,
     )
     artifact = result.get("artifact") if isinstance(result, dict) else None
     validation = result.get("validation_packet") if isinstance(result, dict) else None

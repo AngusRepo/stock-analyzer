@@ -23,20 +23,6 @@ import type { OhlcvRow } from './ohlcvTradePlanLevels'
 import type { Bindings } from '../types'
 import { writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
-import {
-  applyStrategyThresholdCalibrationArtifacts,
-  buildStrategyThresholdAutoDecisions,
-  classifyStrategyThresholdCalibrationCoverage,
-  defaultStrategyThresholdCalibrationWindow,
-  ensureStrategyThresholdCalibrationTables,
-  listLatestApprovedStrategyThresholdCalibrations,
-  listStrategyThresholdCalibrationEvidenceRows,
-  persistStrategyThresholdAutoCalibrationResult,
-  summarizeStrategyThresholdCalibrationResult,
-  type StrategyThresholdAutoCalibrationOptions,
-  type StrategyThresholdAutoCalibrationResult,
-  type StrategyThresholdCalibrationCadence,
-} from './strategyThresholdCalibration'
 
 export const STRATEGY_LEARNING_VERSION = 'strategy-learning-v4'
 
@@ -188,23 +174,41 @@ export interface StrategyPromotionGateRow {
   }
 }
 
+export interface StrategyAdaptiveThresholdDelta {
+  minCloseAboveMa20Pct?: number
+  minVolumeExpansion20?: number
+  minBrokerCount?: number
+  minRevenueGrowthYoY?: number
+  maxReturn20d?: number
+  maxPe?: number
+  maxPb?: number
+  weightedScoreMin?: number
+}
+
+export interface StrategyAdaptiveLifecycleRecommendation {
+  current_status: StrategySpecStatus
+  recommended_status: 'shadow' | 'candidate' | 'active'
+  decision: StrategyPromotionDecision
+  production_weight: number
+  automatic_effect: 'weight_and_threshold_only'
+  reasons: string[]
+}
+
 export interface StrategyAdaptivePolicyState {
   policy_id: string
   version: string
   status: 'shadow' | 'candidate' | 'active' | 'retired'
   strategy_weights: Record<string, number>
-  threshold_deltas: Record<string, {
-    minCloseAboveMa20Pct?: number
-    minVolumeExpansion20?: number
-    minBrokerCount?: number
-    minRevenueGrowthYoY?: number
-  }>
+  threshold_deltas: Record<string, StrategyAdaptiveThresholdDelta>
+  lifecycle_recommendations: Record<string, StrategyAdaptiveLifecycleRecommendation>
   evidence: {
     version: string
     date: string
     source: 'strategy_reward_ledger'
-    production_effect: false
-    requires_approval_to_activate: true
+    production_effect: boolean
+    requires_approval_to_activate: boolean
+    threshold_owner: 'adaptive_strategy_policy'
+    pit_rule: 'knowledge_cutoff_lt_signal_date'
     eligible_strategy_count: number
     missing_evidence: Record<string, string[]>
   }
@@ -247,7 +251,8 @@ export interface StrategyLearningSummary {
   policy_state_preview: StrategyAdaptivePolicyState
 }
 
-export const STRATEGY_POLICY_ID = 'strategy-adaptive-shadow-v1'
+export const STRATEGY_POLICY_ID = 'strategy-adaptive-lifecycle-v2'
+export const STRATEGY_ADAPTIVE_POLICY_VERSION = 'strategy-adaptive-lifecycle-v2'
 const LEGACY_RETIRED_STRATEGY_SPEC_IDS = [
   'finlab_ai_skill_shadow_v1',
   'finlab_ai_skill_discovery_v1',
@@ -407,6 +412,21 @@ const SCHEMA_DDL = [
     evidence_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
+  `CREATE TABLE IF NOT EXISTS strategy_adaptive_policy_history_v2 (
+    policy_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('shadow','candidate','active','retired')),
+    knowledge_cutoff_date TEXT NOT NULL,
+    strategy_weights_json TEXT NOT NULL DEFAULT '{}',
+    threshold_deltas_json TEXT NOT NULL DEFAULT '{}',
+    lifecycle_recommendations_json TEXT NOT NULL DEFAULT '{}',
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    state_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (policy_id, knowledge_cutoff_date, state_hash)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_strategy_adaptive_policy_history_v2_pit
+    ON strategy_adaptive_policy_history_v2(policy_id, status, knowledge_cutoff_date DESC, created_at DESC)`,
 ] as const
 
 function safeJson(value: unknown): string {
@@ -632,7 +652,6 @@ export async function ensureStrategyLearningTables(db: D1Database): Promise<void
   await db.prepare(`CREATE INDEX IF NOT EXISTS idx_strategy_reward_ledger_refresh
     ON strategy_reward_ledger(refresh_run_id, date_end)`).run()
   await ensureStrategyRegistryGovernanceColumns(db)
-  await ensureStrategyThresholdCalibrationTables(db)
 }
 
 async function ensureStrategyRegistryGovernanceColumns(db: D1Database): Promise<void> {
@@ -856,6 +875,7 @@ export const demoteStaleActiveDiscoveryStrategySpecs = retireGeneratedDiscoveryS
 
 export async function listStrategySpecsForLearning(
   db: D1Database,
+  options: { asOfDate?: string; applyAdaptivePolicy?: boolean } = {},
 ): Promise<{ specs: StrategySpec[]; source: 'registry'; registryRowCount: number; activeCount: number }> {
   assertOwnerCanOwn('strategy', 'strategy_spec')
   await ensureStrategyLearningTables(db)
@@ -898,9 +918,13 @@ export async function listStrategySpecsForLearning(
   if (registrySpecs.length === 0) {
     throw new Error('strategy_spec_registry_empty_seed_required')
   }
-  const latestThresholdCalibrations = await listLatestApprovedStrategyThresholdCalibrations(db)
-  const calibratedSpecs = applyStrategyThresholdCalibrationArtifacts(registrySpecs, latestThresholdCalibrations)
-  const specs = calibratedSpecs.filter((spec) => spec.status !== 'retired')
+  const runtimeSpecs = registrySpecs.filter((spec) => spec.status !== 'retired')
+  const policyState = options.asOfDate && options.applyAdaptivePolicy !== false
+    ? await getStrategyPolicyStateBeforeDate(db, options.asOfDate)
+    : null
+  const specs = policyState
+    ? applyStrategyAdaptivePolicyThresholds(runtimeSpecs, policyState)
+    : runtimeSpecs
   if (specs.length === 0) {
     throw new Error('strategy_spec_registry_no_runtime_specs_seed_required')
   }
@@ -1373,7 +1397,7 @@ export async function materializeStrategyDecisionLog(
   persisted_rows: number
   preview: StrategyDecisionLogRow[]
 }> {
-  const { specs, source } = await listStrategySpecsForLearning(db)
+  const { specs, source } = await listStrategySpecsForLearning(db, { asOfDate: options.date })
   const candidates = await listStrategyLearningCandidates(db, options.date, options.limit)
   const rows = buildStrategyDecisionRows(options.date, candidates, specs)
   const dryRun = options.dryRun !== false
@@ -1850,7 +1874,7 @@ export async function materializeStrategyDecisionLogChunk(
 }> {
   const afterSymbol = cleanToken(options.afterSymbol)
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 80), 250))
-  const { specs, source } = await listStrategySpecsForLearning(db)
+  const { specs, source } = await listStrategySpecsForLearning(db, { asOfDate: options.date })
   const candidatePage = await listStrategyLearningCandidates(db, options.date, limit + 1, afterSymbol)
   const hasMore = candidatePage.length > limit
   const candidates = candidatePage.slice(0, limit)
@@ -2090,6 +2114,119 @@ function strategyPolicyScore(spec: StrategyLearningSummary['specs'][number], gat
   const gateBonus = gate.decision === 'candidate_ready' || gate.decision === 'active_monitor' ? 0.08 : 0
   return Math.max(0, 0.01 + sampleConfidence + hitLift + returnLift + gateBonus - drawdownPenalty)
 }
+function clampPolicyValue(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value))
+}
+
+function adaptiveThresholdDelta(
+  spec: StrategyLearningSummary['specs'][number],
+  gate: StrategyPromotionGateRow,
+): StrategyAdaptiveThresholdDelta {
+  const healthy = spec.learning.rolling_reward_dates >= PROMOTION_MIN_MATURE_DATES
+    && spec.learning.rolling_date_return_lcb90 != null
+    && spec.learning.rolling_date_return_lcb90 > 0
+    && spec.learning.rolling_avg_return_pct != null
+    && spec.learning.rolling_avg_return_pct > 0
+    && spec.learning.rolling_hit_rate != null
+    && spec.learning.rolling_hit_rate >= 0.58
+  if (gate.decision === 'active_cooldown') {
+    return {
+      minVolumeExpansion20: 0.08,
+      minCloseAboveMa20Pct: 0.01,
+      minRevenueGrowthYoY: 1,
+      maxReturn20d: -0.02,
+      maxPe: -3,
+      maxPb: -0.3,
+      weightedScoreMin: 0.025,
+    }
+  }
+  const weak = (spec.learning.rolling_max_drawdown_pct != null
+      && spec.learning.rolling_max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN)
+    || (spec.learning.rolling_avg_return_pct != null
+      && spec.learning.rolling_avg_return_pct <= 0)
+  if (healthy) {
+    return {
+      minVolumeExpansion20: -0.03,
+      minCloseAboveMa20Pct: -0.003,
+      minBrokerCount: spec.learning.rolling_hit_rate >= 0.6 ? -1 : 0,
+      maxReturn20d: 0.01,
+      maxPe: 2,
+      maxPb: 0.2,
+      weightedScoreMin: -0.015,
+    }
+  }
+  if (weak) {
+    return {
+      minVolumeExpansion20: 0.05,
+      minCloseAboveMa20Pct: 0.005,
+      minRevenueGrowthYoY: 1,
+      maxReturn20d: -0.01,
+      maxPe: -2,
+      maxPb: -0.2,
+      weightedScoreMin: 0.015,
+    }
+  }
+  return {}
+}
+
+function applyOptionalThresholdDelta(
+  baseline: number | undefined,
+  delta: number | undefined,
+  minimum: number,
+  maximum: number,
+): number | undefined {
+  if (baseline == null || delta == null || !Number.isFinite(baseline) || !Number.isFinite(delta)) return baseline
+  return round6(clampPolicyValue(baseline + delta, minimum, maximum)) ?? baseline
+}
+
+export function applyStrategyAdaptivePolicyThresholds(
+  specs: readonly StrategySpec[],
+  state: StrategyAdaptivePolicyState | null,
+): StrategySpec[] {
+  if (!state || state.status !== 'active') return [...specs]
+  return specs.map((spec) => {
+    if (spec.status !== 'active') return spec
+    const delta = state.threshold_deltas[spec.id]
+    if (!delta) return spec
+    const weightedScore = spec.thresholds.featureRefs?.weightedScore
+    const calibration = weightedScore?.calibration?.status === 'active'
+      ? weightedScore.calibration
+      : null
+    const weightedBaseline = calibration?.calibratedMin ?? weightedScore?.min
+    const weightedEffective = weightedBaseline == null
+      ? null
+      : applyOptionalThresholdDelta(weightedBaseline, delta.weightedScoreMin, 0, 1) ?? weightedBaseline
+    return {
+      ...spec,
+      thresholds: {
+        ...spec.thresholds,
+        minCloseAboveMa20Pct: applyOptionalThresholdDelta(spec.thresholds.minCloseAboveMa20Pct, delta.minCloseAboveMa20Pct, -0.15, 0.15),
+        minVolumeExpansion20: applyOptionalThresholdDelta(spec.thresholds.minVolumeExpansion20, delta.minVolumeExpansion20, 0.5, 2),
+        minBrokerCount: applyOptionalThresholdDelta(spec.thresholds.minBrokerCount, delta.minBrokerCount, 1, 20),
+        minRevenueGrowthYoY: applyOptionalThresholdDelta(spec.thresholds.minRevenueGrowthYoY, delta.minRevenueGrowthYoY, -50, 100),
+        maxReturn20d: applyOptionalThresholdDelta(spec.thresholds.maxReturn20d, delta.maxReturn20d, -0.3, 0.3),
+        maxPe: applyOptionalThresholdDelta(spec.thresholds.maxPe, delta.maxPe, 5, 60),
+        maxPb: applyOptionalThresholdDelta(spec.thresholds.maxPb, delta.maxPb, 0.5, 10),
+        featureRefs: weightedScore && weightedEffective != null
+          ? {
+            ...spec.thresholds.featureRefs,
+            weightedScore: {
+              ...weightedScore,
+              adaptivePolicy: {
+                policyId: state.policy_id,
+                policyVersion: state.version,
+                knowledgeCutoffDate: state.evidence.date,
+                baselineMin: weightedBaseline ?? weightedScore.min,
+                effectiveMin: weightedEffective,
+              },
+            },
+          }
+          : spec.thresholds.featureRefs,
+      },
+    }
+  })
+}
+
 export function buildStrategyAdaptivePolicyState(
   summary: StrategyLearningSummary,
   options: { nowIso?: string } = {},
@@ -2097,99 +2234,149 @@ export function buildStrategyAdaptivePolicyState(
   const nowIso = options.nowIso ?? new Date().toISOString()
   const gates = summary.promotion_gate.length ? summary.promotion_gate : evaluateStrategyPromotionGate(summary)
   const gateById = new Map(gates.map((gate) => [`${gate.strategy_id}|${gate.strategy_version}`, gate]))
-  const scored = summary.specs
-    .filter((spec) => spec.status !== 'retired' && spec.status !== 'research')
+  const strategyWeights: Record<string, number> = {}
+  const thresholdDeltas: Record<string, StrategyAdaptiveThresholdDelta> = {}
+  const lifecycleRecommendations: Record<string, StrategyAdaptiveLifecycleRecommendation> = {}
+  const activeScores = summary.specs
+    .filter((spec) => spec.status === 'active')
     .map((spec) => {
       const gate = gateById.get(`${spec.id}|${spec.version}`)
-      return { spec, gate, score: gate ? strategyPolicyScore(spec, gate) : 0 }
+      const score = gate?.decision === 'active_cooldown'
+        ? 0
+        : Math.max(strategyPolicyScore(spec, gate ?? {
+          strategy_id: spec.id,
+          strategy_version: spec.version,
+          strategy_status: spec.status,
+          alpha_bucket: spec.alphaBucket,
+          current_stage: stageForStrategyStatus(spec.status),
+          recommended_stage: stageForStrategyStatus(spec.status),
+          decision: 'active_monitor',
+          recommended_next_status: 'active',
+          requires_wei_approval: false,
+          l3_requires_wei_approval: false,
+          production_effect: false,
+          missing_evidence: [],
+          evidence: gateEvidenceFromSpec(spec),
+        }), 0.1)
+      return { spec, gate, score }
     })
-    .filter((row): row is { spec: StrategyLearningSummary['specs'][number]; gate: StrategyPromotionGateRow; score: number } => row.gate != null && row.score > 0)
-  const total = scored.reduce((sum, row) => sum + row.score, 0)
-  const strategyWeights: Record<string, number> = {}
-  const thresholdDeltas: StrategyAdaptivePolicyState['threshold_deltas'] = {}
-  for (const row of scored) {
-    strategyWeights[row.spec.id] = total > 0 ? round6(row.score / total) ?? 0 : 0
-    const rewardHealthy = row.spec.learning.rolling_reward_dates >= PROMOTION_MIN_MATURE_DATES
-      && row.spec.learning.rolling_date_return_lcb90 != null
-      && row.spec.learning.rolling_date_return_lcb90 > 0
-      && row.spec.learning.rolling_avg_return_pct != null
-      && row.spec.learning.rolling_avg_return_pct > 0
-      && row.spec.learning.rolling_hit_rate != null
-      && row.spec.learning.rolling_hit_rate >= 0.58
-    const drawdownWeak = row.spec.learning.rolling_max_drawdown_pct != null
-      && row.spec.learning.rolling_max_drawdown_pct < PROMOTION_MIN_MAX_DRAWDOWN
-    thresholdDeltas[row.spec.id] = rewardHealthy
-      ? {
-        minVolumeExpansion20: -0.05,
-        minCloseAboveMa20Pct: -0.005,
-        minBrokerCount: row.spec.learning.rolling_hit_rate != null && row.spec.learning.rolling_hit_rate >= 0.6 ? -1 : 0,
-      }
-      : drawdownWeak || row.spec.learning.rolling_avg_return_pct == null || row.spec.learning.rolling_avg_return_pct <= 0
-        ? { minVolumeExpansion20: 0.08, minCloseAboveMa20Pct: 0.01, minRevenueGrowthYoY: 1 }
-        : { minVolumeExpansion20: 0 }
-  }
-  for (const gate of gates.filter((row) => row.decision === 'active_cooldown')) {
-    strategyWeights[gate.strategy_id] = 0
-    thresholdDeltas[gate.strategy_id] = {
-      minVolumeExpansion20: 0.12,
-      minCloseAboveMa20Pct: 0.015,
-      minRevenueGrowthYoY: 1,
+  const total = activeScores.reduce((sum, row) => sum + row.score, 0)
+  for (const spec of summary.specs.filter((row) => row.status !== 'retired' && row.status !== 'research')) {
+    const gate = gateById.get(`${spec.id}|${spec.version}`)
+    const active = activeScores.find((row) => row.spec.id === spec.id)
+    const weight = active && total > 0 ? round6(active.score / total) ?? 0 : 0
+    strategyWeights[spec.id] = weight
+    if (spec.status === 'active' && gate) thresholdDeltas[spec.id] = adaptiveThresholdDelta(spec, gate)
+    const decision = gate?.decision ?? 'not_ready'
+    const recommendedStatus = decision === 'candidate_ready'
+      ? 'active'
+      : decision === 'active_cooldown'
+        ? 'shadow'
+        : spec.status === 'active'
+          ? 'active'
+          : spec.status === 'candidate'
+            ? 'candidate'
+            : 'shadow'
+    lifecycleRecommendations[spec.id] = {
+      current_status: spec.status,
+      recommended_status: recommendedStatus,
+      decision,
+      production_weight: weight,
+      automatic_effect: 'weight_and_threshold_only',
+      reasons: gate?.missing_evidence ?? ['promotion_gate_missing'],
     }
   }
-
   return {
     policy_id: STRATEGY_POLICY_ID,
-    version: STRATEGY_LEARNING_VERSION,
-    status: 'shadow',
+    version: STRATEGY_ADAPTIVE_POLICY_VERSION,
+    status: 'active',
     strategy_weights: strategyWeights,
     threshold_deltas: thresholdDeltas,
+    lifecycle_recommendations: lifecycleRecommendations,
     evidence: {
       version: STRATEGY_LEARNING_VERSION,
       date: summary.date,
       source: 'strategy_reward_ledger',
-      production_effect: false,
-      requires_approval_to_activate: true,
-      eligible_strategy_count: scored.length,
+      production_effect: true,
+      requires_approval_to_activate: false,
+      threshold_owner: 'adaptive_strategy_policy',
+      pit_rule: 'knowledge_cutoff_lt_signal_date',
+      eligible_strategy_count: Object.values(strategyWeights).filter((weight) => weight > 0).length,
       missing_evidence: Object.fromEntries(gates.map((gate) => [gate.strategy_id, gate.missing_evidence])),
     },
     updated_at: nowIso,
   }
 }
 
-export async function getLatestStrategyPolicyState(db: D1Database): Promise<StrategyAdaptivePolicyState | null> {
-  await ensureStrategyLearningTables(db)
-  const row = await db.prepare(`
-    SELECT policy_id, version, status, strategy_weights_json, threshold_deltas_json, evidence_json, updated_at
-      FROM strategy_policy_state
-     WHERE policy_id = ?
-     LIMIT 1
-  `).bind(STRATEGY_POLICY_ID).first<{
-    policy_id: string
-    version: string
-    status: StrategyAdaptivePolicyState['status']
-    strategy_weights_json: string
-    threshold_deltas_json: string
-    evidence_json: string
-    updated_at: string
-  }>()
-  if (!row) return null
+interface StrategyPolicyStateRow {
+  policy_id: string
+  version: string
+  status: StrategyAdaptivePolicyState['status']
+  strategy_weights_json: string
+  threshold_deltas_json: string
+  lifecycle_recommendations_json?: string | null
+  evidence_json: string
+  updated_at: string
+}
+
+function parseStrategyPolicyStateRow(row: StrategyPolicyStateRow): StrategyAdaptivePolicyState {
+  const evidence = parseJson(row.evidence_json, {}) as Partial<StrategyAdaptivePolicyState['evidence']> & {
+    lifecycle_recommendations?: Record<string, StrategyAdaptiveLifecycleRecommendation>
+  }
+  const lifecycleRecommendations = row.lifecycle_recommendations_json
+    ? parseJson(row.lifecycle_recommendations_json, evidence.lifecycle_recommendations ?? {})
+    : evidence.lifecycle_recommendations ?? {}
   return {
     policy_id: row.policy_id,
     version: row.version,
     status: row.status,
     strategy_weights: parseJson(row.strategy_weights_json, {}),
     threshold_deltas: parseJson(row.threshold_deltas_json, {}),
-    evidence: parseJson(row.evidence_json, {
-      version: row.version,
-      date: '',
+    lifecycle_recommendations: lifecycleRecommendations,
+    evidence: {
+      version: evidence.version ?? row.version,
+      date: evidence.date ?? '',
       source: 'strategy_reward_ledger',
-      production_effect: false,
-      requires_approval_to_activate: true,
-      eligible_strategy_count: 0,
-      missing_evidence: {},
-    }),
+      production_effect: evidence.production_effect === true,
+      requires_approval_to_activate: evidence.requires_approval_to_activate !== false,
+      threshold_owner: 'adaptive_strategy_policy',
+      pit_rule: 'knowledge_cutoff_lt_signal_date',
+      eligible_strategy_count: evidence.eligible_strategy_count ?? 0,
+      missing_evidence: evidence.missing_evidence ?? {},
+    },
     updated_at: row.updated_at,
   }
+}
+
+export async function getLatestStrategyPolicyState(db: D1Database): Promise<StrategyAdaptivePolicyState | null> {
+  await ensureStrategyLearningTables(db)
+  const row = await db.prepare(`
+    SELECT policy_id, version, status, strategy_weights_json, threshold_deltas_json,
+           json_extract(evidence_json, '$.lifecycle_recommendations') AS lifecycle_recommendations_json,
+           evidence_json, updated_at
+      FROM strategy_policy_state
+     WHERE policy_id = ?
+     LIMIT 1
+  `).bind(STRATEGY_POLICY_ID).first<StrategyPolicyStateRow>()
+  return row ? parseStrategyPolicyStateRow(row) : null
+}
+
+export async function getStrategyPolicyStateBeforeDate(
+  db: D1Database,
+  signalDate: string,
+): Promise<StrategyAdaptivePolicyState | null> {
+  await ensureStrategyLearningTables(db)
+  const row = await db.prepare(`
+    SELECT policy_id, version, status, strategy_weights_json, threshold_deltas_json,
+           lifecycle_recommendations_json, evidence_json, created_at AS updated_at
+      FROM strategy_adaptive_policy_history_v2
+     WHERE policy_id = ?
+       AND status = 'active'
+       AND knowledge_cutoff_date < ?
+     ORDER BY knowledge_cutoff_date DESC, created_at DESC
+     LIMIT 1
+  `).bind(STRATEGY_POLICY_ID, signalDate).first<StrategyPolicyStateRow>()
+  return row ? parseStrategyPolicyStateRow(row) : null
 }
 
 export async function persistStrategyPolicyState(db: D1Database, state: StrategyAdaptivePolicyState): Promise<number> {
@@ -2212,10 +2399,40 @@ export async function persistStrategyPolicyState(db: D1Database, state: Strategy
     state.status,
     safeJson(state.strategy_weights),
     safeJson(state.threshold_deltas),
-    safeJson(state.evidence),
+    safeJson({ ...state.evidence, lifecycle_recommendations: state.lifecycle_recommendations }),
     state.updated_at,
   ).run()
-  return 1
+  const stateHash = await sha256Text(safeJson({
+    policy_id: state.policy_id,
+    version: state.version,
+    status: state.status,
+    knowledge_cutoff_date: state.evidence.date,
+    strategy_weights: state.strategy_weights,
+    threshold_deltas: state.threshold_deltas,
+    lifecycle_recommendations: state.lifecycle_recommendations,
+    evidence: state.evidence,
+  }))
+  await db.prepare(`
+    INSERT INTO strategy_adaptive_policy_history_v2 (
+      policy_id, version, status, knowledge_cutoff_date,
+      strategy_weights_json, threshold_deltas_json, lifecycle_recommendations_json,
+      evidence_json, state_hash, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(policy_id, knowledge_cutoff_date, state_hash) DO NOTHING
+  `).bind(
+    state.policy_id,
+    state.version,
+    state.status,
+    state.evidence.date,
+    safeJson(state.strategy_weights),
+    safeJson(state.threshold_deltas),
+    safeJson(state.lifecycle_recommendations),
+    safeJson(state.evidence),
+    stateHash,
+    state.updated_at,
+  ).run()
+  return 2
 }
 
 export async function refreshStrategyAdaptivePolicyState(
@@ -2242,67 +2459,6 @@ export async function refreshStrategyAdaptivePolicyState(
     promotion_gate: summary.promotion_gate,
     persisted_rows: persisted,
   }
-}
-
-export async function runStrategyThresholdAutoCalibration(
-  db: D1Database,
-  options: Partial<StrategyThresholdAutoCalibrationOptions> & {
-    runDate: string
-    cadence?: StrategyThresholdCalibrationCadence
-    dryRun?: boolean
-  },
-): Promise<StrategyThresholdAutoCalibrationResult> {
-  await ensureStrategyLearningTables(db)
-  const cadence = options.cadence ?? 'weekly'
-  const window = defaultStrategyThresholdCalibrationWindow({
-    ...options,
-    runDate: options.runDate,
-    cadence,
-  })
-  const { specs } = await listStrategySpecsForLearning(db)
-  const coverage = classifyStrategyThresholdCalibrationCoverage(specs)
-  const evidenceRows = await listStrategyThresholdCalibrationEvidenceRows(db, {
-    startDate: window.startDate,
-    endDate: window.endDate,
-  })
-  const { guardrails, decisions } = buildStrategyThresholdAutoDecisions(specs, evidenceRows, {
-    ...options,
-    runDate: options.runDate,
-    cadence,
-    startDate: window.startDate,
-    endDate: window.endDate,
-  })
-  const runId = `strategy-threshold-${cadence}-${options.runDate}-${Date.now().toString(36)}`
-  const status: StrategyThresholdAutoCalibrationResult['status'] = decisions.length === 0
-    ? 'skipped'
-    : decisions.every((decision) => decision.status === 'approved')
-      ? 'success'
-      : 'partial'
-  const baseResult = {
-    runId,
-    runDate: options.runDate,
-    cadence,
-    status,
-    specsSeen: specs.filter((spec) => spec.status === 'active' || spec.status === 'candidate').length,
-    eligibleSpecs: coverage.eligible.length,
-    unsupportedSpecs: coverage.unsupported,
-    decisions,
-    guardrails,
-    summary: '',
-  }
-  const artifactsWritten = await persistStrategyThresholdAutoCalibrationResult(db, baseResult, {
-    dryRun: options.dryRun,
-    validationStart: window.startDate,
-    validationEnd: window.endDate,
-  })
-  const result: StrategyThresholdAutoCalibrationResult = {
-    ...baseResult,
-    mode: options.dryRun === false ? 'persisted' : 'dry_run',
-    artifactsWritten,
-    summary: '',
-  }
-  result.summary = summarizeStrategyThresholdCalibrationResult(result)
-  return result
 }
 
 export async function buildStrategyLearningSummary(
@@ -2484,7 +2640,7 @@ export async function buildStrategyLearningSummary(
 export async function runStrategyLearningClosure(
   db: D1Database,
   date: string,
-  options: { persistPolicy?: boolean; calibrateThresholds?: boolean; calibrationCadence?: StrategyThresholdCalibrationCadence } = {},
+  options: { persistPolicy?: boolean } = {},
 ): Promise<string> {
   await ensureStrategyLearningTables(db)
   const seeded = await seedDefaultStrategySpecRegistry(db)
@@ -2513,13 +2669,6 @@ export async function runStrategyLearningClosure(
   const policy = options.persistPolicy === false
     ? null
     : await refreshStrategyAdaptivePolicyState(db, { date, dryRun: false })
-  const thresholdCalibration = options.calibrateThresholds === false
-    ? null
-    : await runStrategyThresholdAutoCalibration(db, {
-      runDate: date,
-      cadence: options.calibrationCadence ?? 'daily_drift',
-      dryRun: false,
-    })
   return [
     `seeded=${seeded.seeded}`,
     `spec_source=${decisionSpecSource}`,
@@ -2538,7 +2687,5 @@ export async function runStrategyLearningClosure(
     `daily_reward_stale_cleared=${rewards.stale_daily_rewards_cleared}`,
     `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
     `policy_eligible=${policy ? policy.policy_state.evidence.eligible_strategy_count : 'n/a'}`,
-    `threshold_calibration=${thresholdCalibration ? thresholdCalibration.status : 'skipped'}`,
-    `threshold_artifacts=${thresholdCalibration ? thresholdCalibration.artifactsWritten : 0}`,
   ].join(' ')
 }

@@ -15,7 +15,6 @@ import {
   summarizeWeeklyValidationChain,
 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
-import { runStrategyThresholdAutoCalibration } from './strategyLearning'
 
 interface GcpCronDeps {
   cron: string
@@ -74,14 +73,6 @@ export async function handleGcpDomainCron(deps: GcpCronDeps): Promise<boolean> {
   }
 
   if (cron === '45 22 * * 6') {
-    runWithLog('strategy-threshold-calibration', async () => {
-      const result = await runStrategyThresholdAutoCalibration(env.DB, {
-        runDate: twToday(),
-        cadence: 'weekly',
-        dryRun: false,
-      })
-      return result.summary
-    })
     runWithLog('s12-smcvwap-calibration', async () => {
       const { runS12TwCalibration } = await import('./s12TwEquityCalibration')
       const result = await runS12TwCalibration(env.DB, {

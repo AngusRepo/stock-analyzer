@@ -353,7 +353,12 @@ export async function runPostPipelineCallbackChain(
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return 'error'
   }
-  let snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, { kv: env.KV })
+  let snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
+    // This stage owns the explicit PIT backfill. Reconstruction may close the
+    // operational evidence chain, while Fusion promotion remains native-only.
+    allowPointInTimeReconstruction: true,
+    kv: env.KV,
+  })
   await recordAllocatorEvLifecycle(env.DB, {
     businessDate: ctx.runDate,
     state: 'lineage_ready',
@@ -415,7 +420,10 @@ export async function runPostPipelineCallbackChain(
     await logChainSummary(env, ctx, 'post-pipeline-chain', startedAt, results)
     return 'waiting'
   }
-  snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, { kv: env.KV })
+  snapshotClosure = await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
+    allowPointInTimeReconstruction: true,
+    kv: env.KV,
+  })
   if (snapshotTask.status === 'error' || !snapshotClosure.ready) {
     const error = snapshotTask.status === 'error'
       ? snapshotTask.summary

@@ -368,6 +368,7 @@ export async function inspectAllocatorSnapshotClosure(
     && Number(lineage?.row_count ?? 0) >= expectedRows
     && reconstructedLineageRows > 0
     && runNativeLineageRows + reconstructedLineageRows === expectedRows
+    && rejectedLineageRows === 0
   return {
     businessDate,
     recommendationRows: Number(lineage?.recommendation_rows ?? 0),
@@ -442,7 +443,10 @@ export async function runAllocatorEvLifecycleWatchdog(
 ): Promise<string> {
   const businessDate = await resolveLifecycleBusinessDate(env.DB, requestedDate)
   const [snapshot, maturity] = await Promise.all([
-    inspectAllocatorSnapshotClosure(env.DB, businessDate, { kv: env.KV }),
+    inspectAllocatorSnapshotClosure(env.DB, businessDate, {
+      allowPointInTimeReconstruction: true,
+      kv: env.KV,
+    }),
     inspectAllocatorEvMaturityCoverage(env.DB, businessDate),
   ])
   if (snapshot.nativeLineageRows <= 0) {
@@ -574,7 +578,10 @@ export async function runAllocatorEvLifecycleWatchdog(
       ? 'allocator EV lifecycle watchdog post-pipeline recovery failed'
       : null,
   })
-  const repaired = await inspectAllocatorSnapshotClosure(env.DB, businessDate, { kv: env.KV })
+  const repaired = await inspectAllocatorSnapshotClosure(env.DB, businessDate, {
+    allowPointInTimeReconstruction: true,
+    kv: env.KV,
+  })
   if (!repaired.ready) {
     throw new Error(
       `allocator EV lifecycle repair incomplete date=${businessDate} lineage=${repaired.nativeLineageRows} `

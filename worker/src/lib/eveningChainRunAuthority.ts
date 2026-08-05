@@ -41,11 +41,11 @@ export async function resolveEveningChainRunAuthority(
   }>()
   const queuedAt = String(stage?.queued_at ?? '').trim() || null
   const queuedTaipeiDate = String(stage?.queued_taipei_date ?? '').trim() || null
-  if (!queuedAt || queuedTaipeiDate !== input.businessDate) {
+  if (!queuedAt) {
     return {
       allowed: false,
       runScope: 'historical_replay',
-      reason: queuedAt ? 'canonical_stage_started_outside_business_date' : 'canonical_post_verify_stage_missing',
+      reason: 'canonical_post_verify_stage_missing',
       queuedAt,
       queuedTaipeiDate,
       nextSessionOpenUtc: null,
@@ -58,10 +58,16 @@ export async function resolveEveningChainRunAuthority(
     'evening-chain',
     input.businessDate,
   )
+  const crossMidnightCarryover = queuedTaipeiDate !== input.businessDate
+    && boundary.reason === 'pre_next_session_open_historical_write_window'
+  const allowed = boundary.allowed
+    && (queuedTaipeiDate === input.businessDate || crossMidnightCarryover)
   return {
-    allowed: boundary.allowed,
-    runScope: boundary.allowed ? 'live_canonical' : 'historical_replay',
-    reason: boundary.reason,
+    allowed,
+    runScope: allowed ? 'live_canonical' : 'historical_replay',
+    reason: allowed && crossMidnightCarryover
+      ? 'canonical_stage_cross_midnight_before_next_session_open'
+      : boundary.reason,
     queuedAt,
     queuedTaipeiDate,
     nextSessionOpenUtc: boundary.nextSessionOpenUtc,

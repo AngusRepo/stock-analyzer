@@ -15,7 +15,6 @@ import {
   GitCompareArrows,
   RefreshCw,
   Route,
-  ShieldCheck,
   SlidersHorizontal,
 } from 'lucide-react'
 
@@ -66,7 +65,6 @@ function stageIcon(id: PipelineMaturityStage['id']) {
   if (id === 'threshold_margin_affinity_v2') return <SlidersHorizontal className={cls} />
   if (id === 'oof_redundancy') return <GitCompareArrows className={cls} />
   if (id === 'route_score_v2') return <Route className={cls} />
-  if (id === 's12') return <ShieldCheck className={cls} />
   if (id === 'l4') return <BrainCircuit className={cls} />
   return <Activity className={cls} />
 }

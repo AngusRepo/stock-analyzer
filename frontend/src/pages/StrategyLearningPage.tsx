@@ -168,7 +168,7 @@ function StrategyGateDetails({
       <div className="border-t border-slate-800 pt-3">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
           <span className="font-semibold text-slate-300">Atomic replacement thresholds</span>
-          <span className="font-mono text-slate-500">{run ? `${run.as_of_date} ? ${run.sample_dates} dates ? ${run.status}` : replacementGate?.evidence_status ?? 'unavailable'}</span>
+          <span className="font-mono text-slate-500">{run ? `Evidence as of ${run.as_of_date} · mature paired dates ${run.sample_dates} · ${run.status === 'shadow' ? 'shadow（不影響 production）' : run.status}` : replacementGate?.evidence_status ?? 'evidence not ready'}</span>
         </div>
         {isS12ExecutionOwner ? (
           <p className="text-slate-500">Not applicable: S12 is owned by execution calibration, not selection-strategy replacement.</p>
@@ -177,16 +177,16 @@ function StrategyGateDetails({
             <p className="mb-1 text-slate-500">
               {paired?.role === 'candidate' ? 'Replace' : 'Challenged by'}{' '}
               <span className="text-slate-300">{compactStrategyId(counterpart ?? '')}</span>{' '}
-              ? {decision.replacement_scope ?? 'scope unavailable'} ? <span className={statusClass(decision.status)}>{decision.status}</span>
+              · {decision.replacement_scope ?? 'scope unavailable'} · <span className={statusClass(decision.status)}>{decision.status}</span>
             </p>
             <div className="grid gap-x-4 md:grid-cols-2">
               {pairMetrics.map((item) => <GateMetric key={item.label} {...item} />)}
             </div>
             <p className="mt-2 text-slate-500">
               Full portfolio gates: cost-net LCB <span className={gateResultClass(run?.promotion_gates.full_portfolio_positive_cost_net_lcb ?? null)}>{gateResultLabel(run?.promotion_gates.full_portfolio_positive_cost_net_lcb ?? null)}</span>
-              {' ? '}correlation <span className={gateResultClass(run?.portfolio_risk.correlation_pass ?? null)}>{gateResultLabel(run?.portfolio_risk.correlation_pass ?? null)}</span>
-              {' ? '}turnover <span className={gateResultClass(run?.portfolio_risk.turnover_pass ?? null)}>{gateResultLabel(run?.portfolio_risk.turnover_pass ?? null)}</span>
-              {' ? '}owner coverage <span className={gateResultClass(run?.promotion_gates.registry_and_serving_owner_coverage_complete ?? null)}>{gateResultLabel(run?.promotion_gates.registry_and_serving_owner_coverage_complete ?? null)}</span>
+              {' · '}correlation <span className={gateResultClass(run?.portfolio_risk.correlation_pass ?? null)}>{gateResultLabel(run?.portfolio_risk.correlation_pass ?? null)}</span>
+              {' · '}turnover <span className={gateResultClass(run?.portfolio_risk.turnover_pass ?? null)}>{gateResultLabel(run?.portfolio_risk.turnover_pass ?? null)}</span>
+              {' · '}owner coverage <span className={gateResultClass(run?.promotion_gates.registry_and_serving_owner_coverage_complete ?? null)}>{gateResultLabel(run?.promotion_gates.registry_and_serving_owner_coverage_complete ?? null)}</span>
             </p>
             {decision.rejection_reasons.length > 0 && <p className="mt-1 text-amber-200">Blocked: {decision.rejection_reasons.join(', ').replace(/_/g, ' ')}</p>}
           </>
@@ -301,15 +301,15 @@ function StrategyLedgerGroup({
 
               <dl className="grid grid-cols-2 gap-2 2xl:grid-cols-3">
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
-                  <dt className="text-xs text-slate-500">Evaluable decisions</dt>
+                  <dt className="text-xs text-slate-500">可評估決策</dt>
                   <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.evaluable_decisions : '-'}</dd>
-                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>unavailable {row.learning.unavailable_decisions} / total {row.learning.decisions}</> : 'unavailable'}</div>
+                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>PIT 欄位不足 {row.learning.unavailable_decisions} · 總決策 {row.learning.decisions}</> : 'evidence not ready'}</div>
                   <div className="mt-1 text-xs text-slate-500">{row.learning.reward_owner === 's12_execution_replay_v3_net' ? 'S12 execution reward' : 'selection edge reward'}</div>
                 </div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
-                  <dt className="text-xs text-slate-500">Rolling evaluable</dt>
+                  <dt className="text-xs text-slate-500">滾動可評估</dt>
                   <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.rolling_evaluable_decisions : '-'}</dd>
-                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>unavailable {row.learning.rolling_unavailable_decisions} / {row.learning.rolling_sessions} sessions</> : 'unavailable'}</div>
+                  <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>PIT 欄位不足 {row.learning.rolling_unavailable_decisions} · {row.learning.rolling_sessions} 個決策日</> : 'evidence not ready'}</div>
                 </div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
                   <dt className="text-xs text-slate-500">Lifetime rewards</dt>

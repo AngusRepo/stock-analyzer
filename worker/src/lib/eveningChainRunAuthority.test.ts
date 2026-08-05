@@ -74,6 +74,7 @@ try {
     expectedRunId: 'verify-2026-07-30-canonical',
     queuedAt: '2026-07-30 16:05:00',
     queuedTaipeiDate: '2026-07-31',
+    nextSessionDate: '2026-07-31',
   })
   const wrongDate = await resolveEveningChainRunAuthority(
     { DB: wrongDateDb, KV: {} as KVNamespace },
@@ -82,8 +83,20 @@ try {
       canonicalRunId: 'verify-2026-07-30-canonical',
     },
   )
-  assert.equal(wrongDate.allowed, false)
-  assert.equal(wrongDate.reason, 'canonical_stage_started_outside_business_date')
+  assert.equal(wrongDate.allowed, true)
+  assert.equal(wrongDate.reason, 'canonical_stage_cross_midnight_before_next_session_open')
+
+  Date.now = () => Date.parse('2026-07-31T01:00:00.000Z')
+  const afterOpen = await resolveEveningChainRunAuthority(
+    { DB: wrongDateDb, KV: {} as KVNamespace },
+    {
+      businessDate: '2026-07-30',
+      canonicalRunId: 'verify-2026-07-30-canonical',
+    },
+  )
+  assert.equal(afterOpen.allowed, false)
+  assert.equal(afterOpen.reason, 'next_executable_session_opened_use_snapshot_only_repair')
+  Date.now = () => Date.parse('2026-07-30T17:00:00.000Z')
 
   const durationMs = await resolveEveningChainClosureDurationMs(db, '2026-07-30')
   assert.equal(durationMs, 4 * 60 * 60 * 1000)

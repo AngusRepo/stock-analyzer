@@ -168,7 +168,6 @@ const SCOPES: ChainScope[] = [
       ['paper-active-postmarket'],
       ['obsidian-sync'],
       ['meta-learning-shadow', 'strategy-learning'],
-      ['active8-oof-daily'],
     ],
   },
   {
@@ -283,9 +282,18 @@ const STATUS_ICON: Record<VisualStatus, LucideIcon> = {
   skipped: Minus,
 }
 
+function isAllocatorSafeAbstention(job?: SchedulerJob): boolean {
+  if (!job || job.id !== 'allocator-ev-readiness' || job.lastStatus !== 'failed') return false
+  const evidence = [job.lastError, job.summary, ...(job.details ?? [])]
+    .filter(Boolean)
+    .join(' ')
+  return /no_validated_expected_return_lane|no_eligible_owner|expected_return_serving_state=no_eligible_owner/i.test(evidence)
+}
+
 function visualStatus(job?: SchedulerJob): VisualStatus {
   if (!job) return 'not_started'
   if (job.lastStatus === 'success') return 'completed'
+  if (isAllocatorSafeAbstention(job)) return 'noop'
   if (job.id === 'intraday-check' && job.lastStatus === 'skip') return 'noop'
   if (job.lastStatus === 'running') return 'running'
   if (job.lastStatus === 'waiting') return 'waiting'
@@ -304,6 +312,7 @@ function formatReplayDate(runDate?: string | null): string {
 
 function statusLabel(job?: SchedulerJob): string {
   const label = STATUS_LABEL[visualStatus(job)]
+  if (isAllocatorSafeAbstention(job)) return 'Checked · safe abstention'
   if (job?.recoveredFromStatus === 'failed' && job.lastStatus === 'success') {
     const replay = job.statusScope === 'historical_replay' && job.statusRunDate ? `Historical replay \u00b7 ${formatReplayDate(job.statusRunDate)} \u00b7 ` : ''
     return `${replay}Recovered`
@@ -389,6 +398,9 @@ function formatUpdatedAt(value: number): string {
 
 function statusSummary(job?: SchedulerJob): string {
   if (!job) return '正式 API 尚未回傳此 job。'
+  if (isAllocatorSafeAbstention(job)) {
+    return `No validated Fusion owner; BUY/allocation remains fail-closed. ${job?.summary ?? ''}`.trim()
+  }
   if (job.lastError) return job.lastError
   if (job.summary) return job.summary
   if (job.lastStatus === 'running') return '已收到 start/trigger evidence，等待 final callback。'
@@ -401,6 +413,7 @@ function statusSummary(job?: SchedulerJob): string {
 function JobStatusSummary({ job, fallback }: { job?: SchedulerJob; fallback?: string }) {
   const summary = job ? statusSummary(job) : (fallback ?? 'No runtime evidence.')
   if (!job?.lastError) return <p className="obs-chain__summary">{summary}</p>
+  if (isAllocatorSafeAbstention(job)) return <p className="obs-chain__summary">{summary}</p>
 
   return (
     <details className="obs-chain__error-disclosure">
@@ -739,7 +752,7 @@ export default function ExecutionChainPanel({
       </div>
 
       <div className="obs-chain__details">
-        <article className={`obs-chain__detail obs-chain__detail--selected ${selectedJob?.lastError ? 'has-error' : ''}`}>
+        <article className={`obs-chain__detail obs-chain__detail--selected ${selectedJob?.lastError && !isAllocatorSafeAbstention(selectedJob) ? 'has-error' : ''}`}>
           <div className="obs-chain__detail-title">
             <span className={`obs-chain__detail-dot is-${visualStatus(selectedJob)}`} />
             <div>

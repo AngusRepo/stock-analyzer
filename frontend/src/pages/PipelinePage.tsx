@@ -610,6 +610,7 @@ function FunnelSummaryColumn({ summary, fallbackCount }: { summary: any; fallbac
 
 function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: ReturnType<typeof buildScreenerSectorSummary> }) {
   const strategies = Array.isArray(summary?.strategies) ? summary.strategies : []
+  const canonicalMatrixReady = summary?.raw_matrix_status === 'canonical_v4'
   const pairwise = Array.isArray(summary?.pairwise) ? summary.pairwise : []
   const strongestPairs = [...pairwise]
     .sort((a: any, b: any) => Number(b.jaccard ?? -1) - Number(a.jaccard ?? -1))
@@ -620,6 +621,11 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Re
       title="Active strategy"
       subtitle={summary?.source_of_truth ?? 'strategy_pool_ids 尚未彙總；等待後端 funnel summary。'}
     >
+      {!canonicalMatrixReady && (
+        <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.08] px-3 py-2 text-xs leading-5 text-amber-100">
+          今日 canonical strategy matrix 尚未就緒；下方 legacy fallback 不顯示為 0，避免把缺資料誤讀成策略零命中。
+        </div>
+      )}
       <div className="grid min-w-0 gap-3 text-sm lg:grid-cols-3">
         <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.06] p-3">
           <p className="text-xs text-cyan-200/80">策略數</p>
@@ -652,7 +658,7 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Re
                   <div className="flex items-center justify-between gap-2">
                     <span className={`truncate sv-num font-semibold ${accent.text}`} title={row.strategy_id}>{row.strategy_id}</span>
                     <Badge variant="outline" className="border-white/[0.12] bg-black/20 sv-num text-[10px]">
-                      {countValue(row.selected_count)} 檔
+                      {canonicalMatrixReady ? countValue(row.selected_count) : '—'} 檔
                     </Badge>
                   </div>
                   <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/30">
@@ -807,7 +813,9 @@ export default function PipelinePage() {
   } = useQuery({
     queryKey: ['recommendations', 'daily', today],
     queryFn: () => recommendationsApi.daily(),
-    staleTime: 10 * 60_000,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
   })
 
   // Stage 4: T2 Debate filtered pending buys
@@ -837,7 +845,9 @@ export default function PipelinePage() {
     queryKey: ['pipeline', 'decision-maturity', recDate],
     queryFn: () => dashboardV4Api.pipelineMaturity(recDate) as Promise<PipelineDecisionMaturityPacket>,
     enabled: isAuthenticated && Boolean(recDate),
-    staleTime: 5 * 60_000,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
   })
 
   const pbDate = pbData?.date ?? ''

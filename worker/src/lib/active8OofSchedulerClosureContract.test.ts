@@ -7,6 +7,7 @@ function assert(condition: unknown, message: string): void {
 const manifest = JSON.parse(fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8'))
 const workflows = fs.readFileSync('src/lib/controllerResearchWorkflows.ts', 'utf8')
 const adminTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
+const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const policies = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const walkForward = fs.readFileSync('../ml-controller/routers/walk_forward.py', 'utf8')
@@ -31,6 +32,10 @@ for (const task of ['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-mont
   assert(triggerRoutes.includes(`'${task}'`), `${task} must be synchronous and long-running observable work`)
 }
 assert(policies.includes("'active8-oof-daily': { kind: 'maintenance', holidayGated: false"), 'post-midnight daily OOF continuation must not be skipped by the next calendar day weekend/holiday gate')
+assert(adminControlRoutes.includes("body.task === 'active8-oof-daily'"), 'daily OOF callback must own an event-driven follow-up')
+assert(adminControlRoutes.includes("active8FreshnessStatus === 'fresh'"), 'Allocator follow-up must run only after the durable OOF freshness audit passes')
+assert(adminControlRoutes.includes('runDailyAllocatorEvReadiness(c.env, callbackRunDate)'), 'fresh daily OOF callback must re-evaluate Allocator readiness for the same business date')
+assert(!adminControlRoutes.includes("active8FreshnessStatus === 'fresh'\n    && callbackRunDate\n    &&"), 'OOF follow-up must not silently add an unrelated promotion or training condition')
 
 assert(walkForward.includes('@router.post("/walk_forward/oof/lifecycle")'), 'controller must expose the shared OOF lifecycle owner')
 assert(walkForward.includes('label_known_dates') && walkForward.includes('known <= cutoff'), 'OOF cohort generation must use row-level immutable label-known dates')

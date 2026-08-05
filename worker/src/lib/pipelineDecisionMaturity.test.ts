@@ -51,7 +51,8 @@ test('pipeline maturity API preserves canonical lineage and explicit evidence fi
   assert.match(source, /'r_multiple'/)
   assert.match(source, /historyByStage/)
   assert.match(source, /oof_applicable/)
-  assert.match(source, /s12_tw_calibration_artifacts/)
+  assert.doesNotMatch(source, /id: 's12'/)
+  assert.doesNotMatch(source, /s12_tw_calibration_artifacts/)
   assert.match(source, /model_artifact_registry/)
   assert.match(source, /expected_return_shadow_evaluation_packets/)
   assert.match(source, /candidate_type IN \('l4_alpha_ev_refresh', 'allocator_ev_fusion_refresh'\)/)
@@ -66,10 +67,12 @@ test('pipeline maturity API preserves canonical lineage and explicit evidence fi
   assert.match(migration, /reference\.producer_run_id = matrix\.producer_run_id/)
   assert.match(migration, /BETWEEN '2026-07-29' AND '2026-07-31'/)
   assert.match(migration, /stock_tech_s12_multitimeframe_smc_reclaim_v1/)
-  for (const stage of ['threshold_margin_affinity_v2', 'oof_redundancy', 'route_score_v2', 's12', 'l4', 'fusion']) {
+  for (const stage of ['threshold_margin_affinity_v2', 'oof_redundancy', 'route_score_v2', 'l4', 'fusion']) {
     assert(source.includes(`'${stage}'`), `missing maturity stage ${stage}`)
   }
+  assert.match(source, /canonical L0-L4 \+ market\/sector PIT context/)
   const routeStart = routes.indexOf("/api/dashboard/v4/pipeline/maturity")
   assert(routeStart >= 0)
   assert(routes.slice(routeStart, routeStart + 360).includes('requireValidToken'))
+  assert(routes.slice(routeStart, routeStart + 420).includes("Cache-Control', 'no-store, max-age=0"))
 })

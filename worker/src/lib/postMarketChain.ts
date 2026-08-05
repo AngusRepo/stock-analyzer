@@ -22,6 +22,7 @@ export type ChainContext = {
   runDate?: string
   upstreamRunId?: string
   recoveryAttempt?: number
+  runScope?: 'live_canonical' | 'historical_replay' | 'derived'
 }
 
 export function resolveChainAttemptId(ctx: ChainContext): string | undefined {
@@ -107,6 +108,7 @@ async function emitChainedTaskObservability(
       run_id: ctx.upstreamRunId,
       attempt_id: resolveChainAttemptId(ctx),
       run_date: ctx.runDate,
+      run_scope: ctx.runScope,
     }, env)),
     withObservabilityTimeout(`${task} compute profile`, recordWorkerTaskComputeProfile(env, {
       task,
@@ -159,6 +161,7 @@ async function logSkippedHistoricalTask(env: Bindings, ctx: ChainContext, task: 
     run_id: ctx.upstreamRunId,
     attempt_id: resolveChainAttemptId(ctx),
     run_date: ctx.runDate,
+    run_scope: ctx.runScope,
   }, env)
   return { task, summary, status: 'skipped' }
 }
@@ -317,6 +320,7 @@ async function logChainSummary(
     run_id: ctx.upstreamRunId,
     attempt_id: resolveChainAttemptId(ctx),
     run_date: ctx.runDate,
+    run_scope: ctx.runScope,
   }, env)
   if (task === 'post-verify-chain') {
     await logSchedulerResult(env.KV, 'evening-chain', {
@@ -328,6 +332,7 @@ async function logChainSummary(
       run_id: ctx.upstreamRunId,
       attempt_id: resolveChainAttemptId(ctx),
       run_date: ctx.runDate,
+      run_scope: ctx.runScope,
     }, env)
   }
 }
@@ -535,6 +540,7 @@ export async function runPostVerifyCallbackChain(
     canonicalRunId: String(ctx.upstreamRunId ?? ''),
   })
   const productionEligible = productionAuthority.allowed
+  ctx = { ...ctx, runScope: productionAuthority.runScope }
 
   const projectionTask = await logChainedTask(env, ctx, 'price-horizon-projection', async () => {
     const result = await materializePriceHorizonLabels(env, {

@@ -500,6 +500,7 @@ async function handleSchedulerCallback(c: any) {
   const callbackMetadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
     ? body.metadata as Record<string, unknown>
     : undefined
+  let active8FreshnessStatus: string | null = null
 
   if (['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly'].includes(body.task)) {
     const { persistActive8OofFreshnessAudit } = await import('../lib/active8OofFreshness')
@@ -512,6 +513,7 @@ async function handleSchedulerCallback(c: any) {
       callbackStatus: body.status,
       evidence: callbackMetadata?.oof_freshness,
     })
+    active8FreshnessStatus = freshness.status
     if (body.status === 'success' && freshness.status !== 'fresh') {
       body.status = 'error'
       body.error = [
@@ -557,6 +559,30 @@ async function handleSchedulerCallback(c: any) {
     attempt_id: callbackAttemptId,
     run_date: callbackRunDate,
   })
+
+  if (
+    body.task === 'active8-oof-daily'
+    && body.status === 'success'
+    && active8FreshnessStatus === 'fresh'
+    && callbackRunDate
+  ) {
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { runDailyAllocatorEvReadiness } = await import('../lib/updateOrchestrator')
+        await runDailyAllocatorEvReadiness(c.env, callbackRunDate)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        await logSchedulerResult(c.env.KV, 'allocator-ev-readiness', {
+          status: 'error',
+          summary: `OOF freshness follow-up readiness failed for ${callbackRunDate}: ${message}`,
+          duration_ms: 0,
+          error: message,
+          run_id: callbackRunId,
+          run_date: callbackRunDate,
+        })
+      }
+    })())
+  }
 
   if (body.task === 'optuna-per-regime' && ['success', 'error', 'skipped'].includes(String(body.status))) {
     const queueEntryId = nullableText(body.queue_entry_id ?? body.metadata?.queue_entry_id)

@@ -1,4 +1,4 @@
-import { useMemo, type ComponentType, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ComponentType, type CSSProperties, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -20,6 +20,7 @@ import { MarketRiskDetailBreakdown } from '@/components/MarketRiskDetailBreakdow
 import { RecommendationCardClean } from '@/components/RecommendationCardClean'
 import { marketApi, recommendationsApi } from '@/lib/api'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
+import { queryTtl, recommendationDailyKey } from '@/lib/queryPolicy'
 
 type Tone = 'red' | 'green' | 'blue' | 'amber' | 'slate'
 
@@ -52,6 +53,7 @@ type RiskFactor = {
 }
 
 const HOME_RECOMMENDATION_LIMIT = 80
+const HOME_INITIAL_RECOMMENDATION_LIMIT = 12
 const POTENTIAL_BUY_MIN_EXPECTED_RETURN = 0.005
 const OBSERVATIONAL_POTENTIAL_BUY_POLICY = 'non_executable_formal_ml_observation_missing_expected_return_v1'
 const EMBEDDED_NEWS_LIMIT = 9
@@ -1459,33 +1461,24 @@ function selectHomeRecommendationRows(rows: any[], limit = HOME_RECOMMENDATION_L
 
   const buyRows = rows.filter(isBuySignalRecommendation)
   const potentialRows = rows.filter((row) => !isBuySignalRecommendation(row) && isPotentialBuyRecommendation(row))
-  const priorityRows = [...buyRows, ...potentialRows].filter(takeUnique).slice(0, limit)
-  const remainingCapacity = Math.max(0, limit - priorityRows.length)
-  const fillerRows = rows
-    .filter((row, index) => takeUnique(row, index))
+  return [...buyRows, ...potentialRows]
+    .filter(takeUnique)
     .sort((a, b) => recommendationScoreValue(b) - recommendationScoreValue(a))
-    .slice(0, remainingCapacity)
-
-  return [...priorityRows, ...fillerRows].map((row) => {
-    if (recommendationSignalText(row) !== 'POTENTIAL_BUY' || isPotentialBuyRecommendation(row)) return row
-    return {
-      ...row,
-      signal: 'HOLD',
-      signal_raw: row?.signal_raw ?? row?.signal,
-    }
-  })
+    .slice(0, limit)
 }
 
 function RecommendationPanel() {
+  const [visibleCount, setVisibleCount] = useState(HOME_INITIAL_RECOMMENDATION_LIMIT)
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['recommendations', 'daily', 'home'],
+    queryKey: recommendationDailyKey(),
     queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }),
-    staleTime: 30 * 60 * 1000,
+    staleTime: queryTtl.dailyDecision,
     retry: 1,
   })
   const { tradable, researchOnly } = splitRecommendationLanes<any>(data)
-  const allRows = recommendationRowsFromPayload(data)
-  const displayRows = selectHomeRecommendationRows(allRows)
+  const allRows = useMemo(() => recommendationRowsFromPayload(data), [data])
+  const eligibleRows = useMemo(() => selectHomeRecommendationRows(allRows), [allRows])
+  const displayRows = eligibleRows.slice(0, visibleCount)
   const buyCount = allRows.filter(isBuySignalRecommendation).length
   const potentialBuyCount = allRows.filter((row) => !isBuySignalRecommendation(row) && isPotentialBuyRecommendation(row)).length
   const heatValues = allRows
@@ -1493,12 +1486,16 @@ function RecommendationPanel() {
     .filter((value): value is number => value != null)
   const avgHeat = heatValues.length ? heatValues.reduce((sum, item) => sum + item, 0) / heatValues.length : null
 
+  useEffect(() => {
+    setVisibleCount(HOME_INITIAL_RECOMMENDATION_LIMIT)
+  }, [data?.date])
+
   return (
     <section className={panelClass('overflow-hidden')}>
       <SectionHeader
         icon={Sparkles}
         title="選股推薦名單"
-        action={<SourceBadge>{data?.date ?? 'latest'} · 顯示 {displayRows.length}/{allRows.length} 檔</SourceBadge>}
+        action={<SourceBadge>{data?.date ?? 'latest'} · 顯示 {displayRows.length}/{eligibleRows.length} 檔</SourceBadge>}
       />
       <div className="border-t border-white/[0.06] bg-[#101116] px-5 py-4">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
@@ -1548,10 +1545,21 @@ function RecommendationPanel() {
           </div>
         </div>
       ) : displayRows.length ? (
-        <div className="grid gap-3 bg-[#101116] p-4 lg:grid-cols-2">
-          {displayRows.map((rec: any, index: number) => (
-            <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? index} rec={rec} rank={index + 1} context="home" />
-          ))}
+        <div className="bg-[#101116] p-4">
+          <div className="grid gap-3 lg:grid-cols-2">
+            {displayRows.map((rec: any, index: number) => (
+              <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? index} rec={rec} rank={index + 1} context="home" />
+            ))}
+          </div>
+          {displayRows.length < eligibleRows.length && (
+            <button
+              type="button"
+              className="mt-4 w-full rounded-xl border border-white/[0.08] bg-white/[0.035] px-4 py-3 text-sm font-semibold text-slate-300 transition-colors hover:bg-white/[0.065]"
+              onClick={() => setVisibleCount((count) => Math.min(eligibleRows.length, count + HOME_INITIAL_RECOMMENDATION_LIMIT))}
+            >
+              顯示更多（尚有 {eligibleRows.length - displayRows.length} 檔）
+            </button>
+          )}
         </div>
       ) : (
         <div className="bg-[#111216] p-8 text-center text-sm text-slate-500">

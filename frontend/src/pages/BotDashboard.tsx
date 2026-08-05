@@ -34,6 +34,7 @@ import {
   WorkstationPill,
 } from '@/components/workstation/WorkstationChrome'
 import { buildScoreV2PayloadFromProjectedScores } from '@/lib/scoreV2ViewModel'
+import { queryTtl, recommendationDailyKey } from '@/lib/queryPolicy'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -515,7 +516,12 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     queryFn: () => paperApi.pendingBuys(),
     staleTime: 5 * 60_000,
   })
-  const buys: any[] = Array.isArray(pbData?.pendingBuys) ? pbData.pendingBuys : []
+  const allPendingBuys: any[] = Array.isArray(pbData?.pendingBuys) ? pbData.pendingBuys : []
+  const buys = allPendingBuys.filter((item) => {
+    const status = String(item?.debate_status ?? '').toLowerCase()
+    const verdict = String(item?.debate_verdict ?? '').toUpperCase()
+    return status === 'completed' && ['APPROVE', 'DOWNGRADE'].includes(verdict)
+  })
   const showingDate = pbData?.date ?? ''
   const isStalePending = Boolean(pbData?.is_stale)
   const pendingState = pbData?.state
@@ -554,7 +560,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   if (!buys.length) {
     return (
       <div className="space-y-3">
-        <FallbackRecommendations onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
+        <FallbackRecommendations date={pendingSourceRecoDate} onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
         <div className="px-1 text-xs text-muted-foreground/60 sv-num">{showingDate || 'today'} pending buys execution state</div>
         <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
         <div className="rounded-xl border border-muted/40 bg-background/40 p-3 text-xs text-muted-foreground">
@@ -569,7 +575,8 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
 
   return (
     <div className="space-y-2">
-      <div className="px-1 text-xs text-muted-foreground/60 sv-num">{showingDate} · L4 sparse final-buy execution pool</div>
+      <FallbackRecommendations date={pendingSourceRecoDate} onSelectSymbol={onSelectSymbol} selectedSymbol={selectedSymbol} />
+      <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-emerald-300 sv-num">{showingDate} · 已通過 debate 的 pending BUY</div>
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
       {buys.map((b: any, idx: number) => {
         const qf = qfMap.get(b.symbol)
@@ -720,26 +727,22 @@ function CandidateRecommendationColumn({
   )
 }
 
-function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
+function FallbackRecommendations({ date, onSelectSymbol, selectedSymbol }: { date?: string; onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
   const { data: recData, isLoading } = useQuery({
-    queryKey: ['recommendations', 'daily', 'latest'],
-    queryFn: () => recommendationsApi.daily(),
-    staleTime: 5 * 60_000,
+    queryKey: recommendationDailyKey(date),
+    queryFn: () => recommendationsApi.daily(date),
+    staleTime: queryTtl.dailyDecision,
   })
   const rows = recommendationRowsFromPayload(recData)
   const buyRecs = rows.filter(isBuySignalRecommendation)
-  const potentialBuyRecs = rows.filter((row) => !isBuySignalRecommendation(row) && isPotentialBuyRecommendation(row))
   const strategyPortfolioHealth = recData?.strategy_portfolio_intelligence_health
   if (isLoading) return <div className="text-muted-foreground text-sm p-4 sv-num">Loading...</div>
   return (
     <div className="bot-fallback-recommendations space-y-3">
-      <div className="px-1 text-[11px] text-muted-foreground/60 sv-num">{recData?.date} BUY SIGNAL 候選（與晨間概覽同源）</div>
+      <div className="px-1 text-[11px] font-semibold text-red-200/80 sv-num">{recData?.date} · evening chain 正式 BUY / STRONG BUY</div>
       <div className="px-1 flex items-center gap-2 flex-wrap text-[11px] sv-num">
         <Badge variant="outline" className="h-6 px-2 text-[11px] border-red-300/40 bg-red-500/12 text-red-100">
           BUY {buyRecs.length}
-        </Badge>
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-yellow-200/55 bg-yellow-300/20 text-yellow-50">
-          potential BUY {potentialBuyRecs.length}
         </Badge>
         <Badge variant="outline" className="h-6 px-2 text-[11px] border-sky-500/30 text-sky-300">
           source: daily recommendations
@@ -758,23 +761,15 @@ function FallbackRecommendations({ onSelectSymbol, selectedSymbol }: { onSelectS
             L1.25 {strategyPortfolioHealth.portfolio_metric_status ?? 'unknown'} metrics {strategyPortfolioHealth.metric_count_max ?? 0}
           </Badge>
         )}
-        <span className="text-muted-foreground/70">以 daily recommendations 的正式 BUY SIGNAL 為準；pending buys 仍由 L4 / debate / quote sanity 決定。</span>
+        <span className="text-muted-foreground/70">此區只顯示 evening chain 的正式買進訊號；potential BUY 留在首頁觀察區。</span>
       </div>
 
-      <div className="grid gap-3 xl:grid-cols-2">
+      <div className="grid gap-3">
         <CandidateRecommendationColumn
-          title="BUY 候選"
-          subtitle="evening chain 正式買進訊號，可進入 L4 / pending-buy 決策。"
+          title="BUY / STRONG BUY"
+          subtitle="evening chain 正式買進訊號；是否成為 pending BUY 由下一交易日 debate 決定。"
           tone="buy"
           rows={buyRecs}
-          selectedSymbol={selectedSymbol}
-          onSelectSymbol={onSelectSymbol}
-        />
-        <CandidateRecommendationColumn
-          title="potential BUY 候選"
-          subtitle="正期望值但 sparse allocation 未給權重，保留作次順位觀察。"
-          tone="potential"
-          rows={potentialBuyRecs}
           selectedSymbol={selectedSymbol}
           onSelectSymbol={onSelectSymbol}
         />

@@ -515,13 +515,13 @@ function StrategyLearningPanel({
                   </div>
                   <div className="grid grid-cols-2 gap-2 xl:block xl:space-y-1">
                     <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1">
-                      <span className="text-slate-500">evaluable </span><span className="text-slate-200">{row.learning.evaluable_decisions}</span>
-                      <div className="text-[10px] text-slate-500">unavailable {row.learning.unavailable_decisions} / total {row.learning.decisions}</div>
+                      <span className="text-slate-500">可評估決策 </span><span className="text-slate-200">{row.learning.evaluable_decisions}</span>
+                      <div className="text-[10px] text-slate-500">PIT 欄位不足 {row.learning.unavailable_decisions} · 總決策 {row.learning.decisions}</div>
                       <div className="text-[10px] text-slate-500">{row.learning.reward_owner === 's12_execution_replay_v3_net' ? 'S12 execution reward' : 'selection edge reward'}</div>
                     </div>
                     <div className="rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1">
-                      <span className="text-slate-500">rolling evaluable </span><span className="text-slate-200">{row.learning.rolling_evaluable_decisions}</span>
-                      <div className="text-[10px] text-slate-500">unavailable {row.learning.rolling_unavailable_decisions} / {row.learning.rolling_sessions} sessions</div>
+                      <span className="text-slate-500">滾動可評估 </span><span className="text-slate-200">{row.learning.rolling_evaluable_decisions}</span>
+                      <div className="text-[10px] text-slate-500">PIT 欄位不足 {row.learning.rolling_unavailable_decisions} · {row.learning.rolling_sessions} 個決策日</div>
                     </div>
                   </div>
                   <div className="grid grid-cols-3 gap-2 xl:block xl:space-y-1">
@@ -531,7 +531,7 @@ function StrategyLearningPanel({
                   </div>
                   <div>
                     <div className="flex justify-between gap-2 text-[10px] normal-case text-slate-500">
-                      <span>shadow</span><span>{pct(weight)}</span>
+                      <span>Shadow policy weight（不影響 production）</span><span>{pct(weight)}</span>
                     </div>
                     <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-800">
                       <div className="h-full bg-gradient-to-r from-emerald-300 to-cyan-300" style={{ width: `${Math.max(0, Math.min(100, weight * 100))}%` }} />

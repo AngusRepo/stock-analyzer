@@ -20,7 +20,7 @@ export type PipelineMaturityMetric = {
 }
 
 export type PipelineMaturityStage = {
-  id: 'threshold_margin_affinity_v2' | 'oof_redundancy' | 'route_score_v2' | 's12' | 'l4' | 'fusion'
+  id: 'threshold_margin_affinity_v2' | 'oof_redundancy' | 'route_score_v2' | 'l4' | 'fusion'
   layer: string
   title: string
   version: string | null

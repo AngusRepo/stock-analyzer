@@ -46,7 +46,7 @@ assert(
 for (const text of [
   'function buildDailyPipelineSummaries',
   'daily_pipeline_funnel_summary_v1',
-  'daily_active_strategy_summary_v1',
+  'daily_active_strategy_summary_v2',
   'screener_funnel_runs + screener_funnel_items',
   'funnel_summary: pipelineSummaries.funnel_summary',
   'strategy_summary: pipelineSummaries.strategy_summary',

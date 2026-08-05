@@ -132,6 +132,7 @@ dashboardReadRoutes.get('/api/dashboard/v4/pipeline/maturity', async (c) => {
 
   const date = c.req.query('date') ?? twToday()
   const { buildPipelineDecisionMaturityPacket } = await import('../lib/pipelineDecisionMaturity')
+  c.header('Cache-Control', 'no-store, max-age=0')
   return c.json(await buildPipelineDecisionMaturityPacket(c.env, date))
 })
 

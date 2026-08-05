@@ -3,7 +3,6 @@ import { inspectAllocatorEvMaturityCoverage } from './allocatorEvDailyLifecycle'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { inspectExpectedReturnCandidateEvidence } from './expectedReturnCandidateEvidence'
 import { readCurrentExpectedReturnServingState } from './expectedReturnServingState'
-import { S12_REPLAY_ENGINE_SIGNATURE } from './s12ReplayContract'
 import {
   STRATEGY_ROUTE_CHALLENGER_VERSION,
   STRATEGY_ROUTE_MIN_OOS_DATES,
@@ -43,7 +42,7 @@ export interface PipelineMaturityMetric {
 }
 
 export interface PipelineMaturityStage {
-  id: 'threshold_margin_affinity_v2' | 'oof_redundancy' | 'route_score_v2' | 's12' | 'l4' | 'fusion'
+  id: 'threshold_margin_affinity_v2' | 'oof_redundancy' | 'route_score_v2' | 'l4' | 'fusion'
   layer: string
   title: string
   version: string | null
@@ -306,9 +305,6 @@ export async function buildPipelineDecisionMaturityPacket(
 ): Promise<PipelineDecisionMaturityPacket> {
   if (!validDate(requestedDate)) throw new Error(`invalid_pipeline_maturity_date:${requestedDate}`)
   const learningDb = databaseForDataDomain(env, 'learning')
-  const replayStart = new Date(`${requestedDate}T00:00:00.000Z`)
-  replayStart.setUTCDate(replayStart.getUTCDate() - 90)
-  const replayStartDate = replayStart.toISOString().slice(0, 10)
 
   const canonicalHead = await safeQuery(() => env.DB.prepare(`
     SELECT substr(logical_run_key, 10, 10) signal_date, run_id
@@ -320,7 +316,7 @@ export async function buildPipelineDecisionMaturityPacket(
   `).bind(requestedDate).first<CanonicalHead>())
   const head = canonicalHead.value
 
-  const [reference, matrix, redundancy, routeRun, routeHead, s12Run, s12Artifact, s12Approved, s12Evidence, s12Structure, evRows, evShadowRows, serving, candidateReport, l4Maturity] = await Promise.all([
+  const [reference, matrix, redundancy, routeRun, routeHead, evRows, evShadowRows, serving, candidateReport, l4Maturity] = await Promise.all([
     safeQuery(() => head ? learningDb.prepare(`
       SELECT COUNT(*) reference_rows,
              SUM(CASE WHEN strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) affinity_v2_rows,
@@ -375,61 +371,6 @@ export async function buildPipelineDecisionMaturityPacket(
         JOIN strategy_route_calibration_runs_v1 r ON r.run_id=h.run_id
        WHERE h.singleton_id=1 AND r.status='promoted' AND r.as_of_date<=?
        LIMIT 1
-    `).bind(requestedDate).first<any>()),
-    safeQuery(() => learningDb.prepare(`
-      SELECT run_id, run_date, cadence, status, scopes_seen,
-             artifacts_written, summary_json, created_at
-        FROM s12_tw_calibration_runs
-       WHERE run_date<=?
-       ORDER BY run_date DESC, created_at DESC
-       LIMIT 1
-    `).bind(requestedDate).first<any>()),
-    safeQuery(() => learningDb.prepare(`
-      SELECT artifact_id, run_id, status, cadence, market_segment, entry_cohort,
-             alpha_bucket, entry_time_bucket, validation_start, validation_end,
-             sample_count, date_count, metrics_json, approved_at, created_at
-        FROM s12_tw_calibration_artifacts
-       WHERE validation_end<=? AND superseded_at IS NULL
-       ORDER BY validation_end DESC, sample_count DESC, created_at DESC
-       LIMIT 1
-    `).bind(requestedDate).first<any>()),
-    safeQuery(() => learningDb.prepare(`
-      SELECT COUNT(*) artifact_count, MAX(validation_end) validation_end,
-             MAX(sample_count) sample_count, MAX(date_count) date_count,
-             MAX(approved_at) approved_at
-        FROM s12_tw_calibration_artifacts
-       WHERE status='approved' AND superseded_at IS NULL AND validation_end<?
-         AND json_extract(metrics_json, '$.return_basis')='net_after_roundtrip_cost'
-         AND json_extract(metrics_json, '$.return_unit')='r_multiple'
-         AND CAST(json_extract(metrics_json, '$.roundtrip_cost_bps') AS REAL)=18
-    `).bind(requestedDate).first<any>()),
-    safeQuery(() => learningDb.prepare(`
-      SELECT assessment_state, COALESCE(NULLIF(TRIM(market), ''), 'UNKNOWN') market_segment,
-             COUNT(*) sample_count, COUNT(DISTINCT trade_date) date_count,
-             MAX(trade_date) max_date
-        FROM s12_replay_trade_outcomes
-       WHERE trade_date BETWEEN ? AND ?
-         AND sample_eligible=1 AND trade_pnl_r IS NOT NULL
-         AND assessment_state IN ('reaction_ready', 'limited_takeover_ready')
-         AND json_extract(detail_json, '$.replay_diagnostics.replay_engine_signature')=?
-         AND json_extract(detail_json, '$.replay_diagnostics.replay_cohort_signature') IS NOT NULL
-       GROUP BY assessment_state, COALESCE(NULLIF(TRIM(market), ''), 'UNKNOWN')
-       ORDER BY date_count DESC, sample_count DESC
-       LIMIT 1
-    `).bind(replayStartDate, requestedDate, S12_REPLAY_ENGINE_SIGNATURE).first<any>()),
-    safeQuery(() => learningDb.prepare(`
-      WITH latest AS (
-        SELECT symbol, state, ready, invalidated, detail,
-               ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY updated_at DESC, source ASC) ordinal
-          FROM s12_structure_snapshots
-         WHERE trade_date=? AND source LIKE 's12_candidate_snapshot%'
-      )
-      SELECT COUNT(*) total_rows,
-             SUM(CASE WHEN ready=1 THEN 1 ELSE 0 END) ready_rows,
-             SUM(CASE WHEN ready=0 AND invalidated=0 AND state NOT LIKE 'unavailable%' THEN 1 ELSE 0 END) setup_rows,
-             SUM(CASE WHEN invalidated=1 THEN 1 ELSE 0 END) invalidated_rows,
-             SUM(CASE WHEN state LIKE 'unavailable%' THEN 1 ELSE 0 END) unavailable_rows
-        FROM latest WHERE ordinal=1
     `).bind(requestedDate).first<any>()),
     safeQuery(() => learningDb.prepare(`
       WITH ranked AS (
@@ -669,65 +610,6 @@ export async function buildPipelineDecisionMaturityPacket(
     })
   }
 
-  const s12LatestRun = s12Run.value
-  const s12Candidate = s12Artifact.value
-  const s12Active = s12Approved.value
-  const s12Raw = s12Evidence.value
-  if (!s12LatestRun && !s12Candidate && !s12Raw) {
-    stages.push(unavailableStage('s12', 'L3.5', 'S12 execution edge', requestedDate, 's12_replay_trade_outcomes + s12_tw_calibration_artifacts', [s12Run.error, s12Artifact.error, s12Evidence.error]))
-  } else {
-    const runSummary = jsonRecord(s12LatestRun?.summary_json)
-    const candidateMetrics = jsonRecord(s12Candidate?.metrics_json)
-    const activeCount = finite(s12Active?.artifact_count)
-    const sampleCount = Math.max(finite(s12Candidate?.sample_count), finite(s12Raw?.sample_count))
-    const dateCount = Math.max(finite(s12Candidate?.date_count), finite(s12Raw?.date_count))
-    const approved = activeCount > 0
-    const qualityFailed = !approved && (s12LatestRun?.status === 'frozen' || s12Candidate?.status === 'rejected')
-    const status: PipelineMaturityStatus = approved ? 'serving' : qualityFailed ? 'failed_quality' : 'collecting'
-    const failedGates = Array.isArray(candidateMetrics.failed_gates)
-      ? candidateMetrics.failed_gates.map(String)
-      : Object.keys(jsonRecord(runSummary.failed_gate_distribution))
-    stages.push({
-      id: 's12',
-      layer: 'L3.5',
-      title: 'S12 execution edge',
-      version: 's12-tw-v3-calibration',
-      status,
-      contribution_mode: approved ? 'production' : 'shadow',
-      maturity_kind: 'calibration',
-      progress: maturityProgress(dateCount, 10, 'dates'),
-      decision: approved
-        ? `${activeCount} 個正式 calibration scope 可依結構判斷 execution readiness、停損與 TP。`
-        : `樣本 ${sampleCount}/40、日期 ${dateCount}/10 已${sampleCount >= 40 && dateCount >= 10 ? '達資料門檻，但 OOS 品質未過' : '仍在累積'}。`,
-      contribution: 'S12 不負責橫截面選股；它估計結構可執行性、P(execution) 與成交後條件式 net PnL。',
-      production_effect: approved
-        ? '正式 calibration artifact 可調整 S12 entry/stop/TP policy；每檔仍需當日 structure gate。'
-        : 'S12 structure 仍可用 base policy 產生 ready/wait/invalidated evidence，但 calibration 不接手 production policy。',
-      blockers: approved ? [] : failedGates.length ? failedGates : ['s12_calibration_not_approved'],
-      metrics: [
-        gateMetric('samples', 'Best scoped replay samples', sampleCount, 40, 'rows'),
-        gateMetric('dates', 'Best scoped replay dates', dateCount, 10, 'dates'),
-        gateMetric('validation_samples', 'Validation samples', candidateMetrics.validation_samples, 12, 'rows'),
-        gateMetric('selected_validation_samples', 'Selected validation samples', candidateMetrics.selected_validation_samples, 10, 'rows'),
-        gateMetric('validation_coverage', 'Validation coverage', candidateMetrics.validation_coverage, 0.35, 'ratio'),
-        gateMetric('validation_mean_r', candidateMetrics.return_basis === 'net_after_roundtrip_cost' ? 'Selected validation mean net R' : 'Selected validation mean legacy gross R', candidateMetrics.selected_validation_mean_r, 0, 'r_multiple'),
-        gateMetric('validation_hit_rate', 'Selected validation hit rate', candidateMetrics.selected_validation_hit_rate, 0.45, 'ratio'),
-        metric('structure_ready', 'Today execution-ready', s12Structure.value?.ready_rows ?? null, { unit: 'count' }),
-        metric('structure_setup', 'Today setup/wait', s12Structure.value?.setup_rows ?? null, { unit: 'count' }),
-        metric('structure_invalidated', 'Today invalidated', s12Structure.value?.invalidated_rows ?? null, { unit: 'count' }),
-        metric('structure_unavailable', 'Today unavailable', s12Structure.value?.unavailable_rows ?? null, { unit: 'count' }),
-      ],
-      lineage: {
-        requested_date: requestedDate,
-        evidence_date: s12Candidate?.validation_end ?? s12Raw?.max_date ?? s12LatestRun?.run_date ?? null,
-        artifact_id: approved ? null : s12Candidate?.artifact_id ?? s12LatestRun?.run_id ?? null,
-        source: 'strict S12 V3 replay + walk-forward Taiwan-equity calibration',
-        oof_applicable: false,
-        evidence_semantics: 'Latest completed cost-net Taiwan-equity calibration; it is not a daily OOF cutoff.',
-        updated_at: s12Candidate?.created_at ?? s12LatestRun?.created_at ?? null,
-      },
-    })
-  }
 
   const evCandidates = new Map((evRows.value ?? []).map((row) => [row.model_name, row]))
   const servingState = serving.value
@@ -857,7 +739,7 @@ export async function buildPipelineDecisionMaturityPacket(
         evidence_date: fusionShadow?.business_date ?? fusion?.source_run_date ?? candidateState?.allocator_ev_fusion.candidate_end_date ?? null,
         artifact_id: fusion?.artifact_id ?? candidateState?.allocator_ev_fusion.artifact_id ?? null,
         model_version: fusion?.version ?? fusionServing?.model_version ?? null,
-        source: fusionShadow ? 'Fusion candidate + frozen-forward shadow evaluation packet' : 'canonical L4 + strict S12 V3 replay + market/sector PIT context',
+        source: fusionShadow ? 'Fusion candidate + frozen-forward shadow evaluation packet' : 'canonical L0-L4 + market/sector PIT context',
         oof_max_date: fusionShadow?.oof_max_date ?? fusion?.fusion_oof_max_date ?? null,
         oof_applicable: true,
         evidence_semantics: 'Purged OOF sample cutoff; final execution comparison can remain pending after selection comparison is available.',
@@ -866,7 +748,7 @@ export async function buildPipelineDecisionMaturityPacket(
     })
   }
 
-  const [thresholdHistory, redundancyHistory, routeHistory, s12History, l4History, fusionHistory] = await Promise.all([
+  const [thresholdHistory, redundancyHistory, routeHistory, l4History, fusionHistory] = await Promise.all([
     safeQuery(() => learningDb.prepare(`
       WITH recent_dates AS (
         SELECT signal_date
@@ -909,20 +791,6 @@ export async function buildPipelineDecisionMaturityPacket(
        ORDER BY as_of_date DESC, created_at DESC
        LIMIT 7
     `).bind(STRATEGY_ROUTE_MIN_TOTAL_DATES, requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
-    safeQuery(() => learningDb.prepare(`
-      WITH ranked AS (
-        SELECT validation_end evidence_date,
-               json_extract(metrics_json, '$.selected_validation_mean_r') value,
-               ROW_NUMBER() OVER (PARTITION BY validation_end ORDER BY sample_count DESC, created_at DESC) ordinal
-          FROM s12_tw_calibration_artifacts
-         WHERE validation_end <= ? AND superseded_at IS NULL
-      )
-      SELECT evidence_date, value, 0 target
-        FROM ranked
-       WHERE ordinal=1
-       ORDER BY evidence_date DESC
-       LIMIT 7
-    `).bind(requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
       WITH evidence AS (
         SELECT source_run_date evidence_date,
@@ -977,7 +845,6 @@ export async function buildPipelineDecisionMaturityPacket(
     ['threshold_margin_affinity_v2', { rows: thresholdHistory.value ?? [], unit: 'rows' }],
     ['oof_redundancy', { rows: redundancyHistory.value ?? [], unit: 'dates' }],
     ['route_score_v2', { rows: routeHistory.value ?? [], unit: 'dates' }],
-    ['s12', { rows: s12History.value ?? [], unit: 'r_multiple' }],
     ['l4', { rows: l4History.value ?? [], unit: 'ratio' }],
     ['fusion', { rows: fusionHistory.value ?? [], unit: 'return' }],
   ])

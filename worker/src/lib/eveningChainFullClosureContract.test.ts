@@ -48,6 +48,9 @@ assert.match(directClosure, /strategy_learning_direct_production_mutation_requir
 assert.match(directClosure, /allowPromotion: false/)
 assert.match(directClosure, /persistPolicy: false/)
 assert.match(canonicalFinalizer, /adaptiveState: policy\.policy_state/)
+assert.match(canonicalFinalizer, /cachedStageResults/)
+assert.match(canonicalFinalizer, /onStageTransition/)
+assert.match(canonicalFinalizer, /onStageComplete/)
 
 const strategyQueue = orchestrator.slice(
   orchestrator.indexOf("if (msg.type === 'strategy_learning_materialize')"),
@@ -73,6 +76,12 @@ assert.match(strategyQueue, /durable finalizer queued/)
 assert.match(strategyQueue, /policyMutationAllowed: msg\.policyMutationAllowed/)
 assert.match(strategyQueue, /allowPromotion: policyMutationAllowed/)
 assert.match(strategyQueue, /persistPolicy: policyMutationAllowed/)
+assert.match(strategyQueue, /strategy_learning_lease_retry_exhausted/)
+assert.match(strategyQueue, /lease busy; durable retry scheduled/)
+assert.match(strategyQueue, /finalizerCacheMode = policyMutationAllowed \? 'policy-mutation' : 'evidence-only'/)
+assert.match(strategyQueue, /expirationTtl: 7 \* 24 \* 3600/)
+assert.match(strategyQueue, /cachedStageResults: finalizerStageResults/)
+assert.match(strategyQueue, /onStageComplete: persistFinalizerStage/)
 assert.match(strategyQueue, /root chain blocked by strategy-learning evidence audit/)
 assert.match(domainTasks, /manual-finalize/)
 assert.match(domainTasks, /root chain blocked by strategy-learning evidence audit/)

@@ -3331,7 +3331,27 @@ export async function processUpdateBatch(
       leaseSeconds: 300,
     })
     if (!claimed) {
-      console.log(`[Queue] strategy-learning page already claimed date=${triggerTime} cursor=${durableCursor}`)
+      const leaseRetryAttempt = Math.max(0, Number(msg.leaseRetryAttempt ?? 0))
+      if (leaseRetryAttempt >= 8) {
+        throw new Error(`strategy_learning_lease_retry_exhausted:${triggerTime}:${durableCursor}`)
+      }
+      const delaySeconds = 60
+      await env.UPDATE_QUEUE.send({
+        ...msg,
+        type: 'strategy_learning_materialize',
+        cursor: 0,
+        cursorKey: durableCursor,
+        triggerTime,
+        runId: canonicalRunId,
+        leaseRetryAttempt: leaseRetryAttempt + 1,
+      }, { delaySeconds } as any)
+      await logSchedulerResult(env.KV, 'strategy-learning', {
+        status: 'running',
+        summary: `lease busy; durable retry scheduled cursor=${durableCursor} attempt=${leaseRetryAttempt + 1}/8 delay_seconds=${delaySeconds}`,
+        duration_ms: 0,
+        run_id: canonicalRunId,
+        run_date: triggerTime,
+      })
       return
     }
 
@@ -3376,6 +3396,7 @@ export async function processUpdateBatch(
           runId: canonicalRunId,
           force: Boolean(msg.force),
           policyMutationAllowed: msg.policyMutationAllowed,
+          leaseRetryAttempt: 0,
         })
         return
       }
@@ -3396,6 +3417,7 @@ export async function processUpdateBatch(
         runId: canonicalRunId,
         force: Boolean(msg.force),
         policyMutationAllowed: msg.policyMutationAllowed,
+        leaseRetryAttempt: 0,
       })
       return
       }
@@ -3417,6 +3439,35 @@ export async function processUpdateBatch(
       const authorityReason = productionAuthority?.reason ?? 'queue_not_marked_production_eligible'
       const policyMutationAllowed = currentBusinessDateRun
         && msg.policyMutationAllowed !== false
+      const finalizerCacheMode = policyMutationAllowed ? 'policy-mutation' : 'evidence-only'
+      const finalizerCacheKey = `strategy-learning:finalizer:${triggerTime}:${canonicalRunId}:${finalizerCacheMode}:v1`
+      const cachedFinalizer = await env.KV.get(finalizerCacheKey, 'json') as {
+        canonical_run_id?: string
+        stages?: Record<string, unknown>
+      } | null
+      const finalizerStageResults: Record<string, unknown> = cachedFinalizer?.canonical_run_id === canonicalRunId
+        ? { ...(cachedFinalizer.stages ?? {}) }
+        : {}
+      const persistFinalizerStage = async (stage: string, result: unknown): Promise<void> => {
+        finalizerStageResults[stage] = result ?? null
+        await env.KV.put(finalizerCacheKey, JSON.stringify({
+          canonical_run_id: canonicalRunId,
+          run_date: triggerTime,
+          mode: finalizerCacheMode,
+          stages: finalizerStageResults,
+          updated_at: new Date().toISOString(),
+        }), { expirationTtl: 7 * 24 * 3600 })
+      }
+      const logFinalizerStage = async (stage: string, status: 'running' | 'cached' | 'success' | 'error', reason?: string): Promise<void> => {
+        await logSchedulerResult(env.KV, 'strategy-learning', {
+          status: status === 'error' ? 'error' : 'running',
+          summary: `finalizer_stage=${stage} stage_status=${status} cache_mode=${finalizerCacheMode}${reason ? ` reason=${reason.slice(0, 500)}` : ''}`,
+          duration_ms: 0,
+          run_id: canonicalRunId,
+          run_date: triggerTime,
+          run_scope: runScope,
+        })
+      }
       const chainDurationMs = await resolveEveningChainClosureDurationMs(env.DB, triggerTime)
       const {
         auditEveningChainEvidenceClosure,
@@ -3425,15 +3476,30 @@ export async function processUpdateBatch(
       } = await import('./eveningChainEvidenceClosure')
       const historicalPriorityDate = await resolveExpectedMatureSignalDate(env, triggerTime)
       const { recoverMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
-      const matureRecovery = await recoverMatureSelectionEvidence(env, triggerTime, {
-        maxRecoveryDates: 4,
-      })
+      let matureRecovery: Awaited<ReturnType<typeof recoverMatureSelectionEvidence>>
+      if (Object.prototype.hasOwnProperty.call(finalizerStageResults, 'mature_recovery')) {
+        await logFinalizerStage('mature_recovery', 'cached')
+        matureRecovery = finalizerStageResults.mature_recovery as typeof matureRecovery
+      } else {
+        const matureRecoveryStartedAt = Date.now()
+        await logFinalizerStage('mature_recovery', 'running')
+        matureRecovery = await recoverMatureSelectionEvidence(env, triggerTime, {
+          maxRecoveryDates: 4,
+        })
+        await persistFinalizerStage('mature_recovery', matureRecovery)
+        await logFinalizerStage(
+          'mature_recovery', 'success', `duration_ms=${Date.now() - matureRecoveryStartedAt}`,
+        )
+      }
       let closureSummary = ''
       const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, productionPolicy }
         = await finalizeStrategyLearningEvidenceV5(env.DB, triggerTime, {
           allowPromotion: policyMutationAllowed,
           persistPolicy: policyMutationAllowed,
           historicalPriorityDate,
+          cachedStageResults: finalizerStageResults,
+          onStageTransition: logFinalizerStage,
+          onStageComplete: persistFinalizerStage,
           resolveHistoricalRegime: async (signalDate) => {
             const { readHistoricalHmmRegimeFamily } = await import('./marketRegimeState')
             return readHistoricalHmmRegimeFamily(env.KV, signalDate)
@@ -3445,8 +3511,12 @@ export async function processUpdateBatch(
               String(state.producer_run_id ?? ''),
             )
             closureSummary = summarizeEveningChainEvidenceClosure(closureAudit)
+            return closureSummary
           },
         })
+      if (!closureSummary && typeof finalizerStageResults.before_promotion === 'string') {
+        closureSummary = finalizerStageResults.before_promotion
+      }
       if (!closureSummary) throw new Error('evening_chain_evidence_closure_callback_missing')
       const summary = [
       `materialized_complete candidates=${coverage.candidateRows}/${coverage.expectedCandidates} rows=${coverage.decisionRows}/${coverage.expectedRows}`,

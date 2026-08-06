@@ -3762,11 +3762,48 @@ export async function rebuildHistoricalStrategyEvidenceV5(
   }
 }
 
-async function runStrategyLearningFinalizerStage<T>(stage: string, task: () => Promise<T>): Promise<T> {
+type StrategyLearningFinalizerStageRuntime = {
+  cachedStageResults?: Record<string, unknown>
+  onStageTransition?: (stage: string, status: 'running' | 'cached' | 'success' | 'error', reason?: string) => Promise<void>
+  onStageComplete?: (stage: string, result: unknown) => Promise<void>
+}
+
+async function emitStrategyLearningFinalizerStage(
+  runtime: StrategyLearningFinalizerStageRuntime,
+  stage: string,
+  status: 'running' | 'cached' | 'success' | 'error',
+  reason?: string,
+): Promise<void> {
   try {
-    return await task()
+    await runtime.onStageTransition?.(stage, status, reason)
+  } catch (error) {
+    console.warn(`[StrategyLearningFinalizer] telemetry_failed stage=${stage} status=${status}`, error)
+  }
+}
+
+async function runStrategyLearningFinalizerStage<T>(
+  stage: string,
+  task: () => Promise<T>,
+  runtime: StrategyLearningFinalizerStageRuntime = {},
+): Promise<T> {
+  if (Object.prototype.hasOwnProperty.call(runtime.cachedStageResults ?? {}, stage)) {
+    await emitStrategyLearningFinalizerStage(runtime, stage, 'cached')
+    return runtime.cachedStageResults?.[stage] as T
+  }
+  const startedAt = Date.now()
+  await emitStrategyLearningFinalizerStage(runtime, stage, 'running')
+  try {
+    const result = await task()
+    try {
+      await runtime.onStageComplete?.(stage, result ?? null)
+    } catch (error) {
+      console.warn(`[StrategyLearningFinalizer] checkpoint_failed stage=${stage}`, error)
+    }
+    await emitStrategyLearningFinalizerStage(runtime, stage, 'success', `duration_ms=${Date.now() - startedAt}`)
+    return result
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
+    await emitStrategyLearningFinalizerStage(runtime, stage, 'error', reason)
     if (reason.startsWith('strategy_learning_finalizer_stage_failed:')) throw error
     throw new Error(`strategy_learning_finalizer_stage_failed:${stage}:${reason}`)
   }
@@ -3778,9 +3815,12 @@ export async function finalizeStrategyLearningEvidenceV5(
   options: {
     allowPromotion?: boolean
     persistPolicy?: boolean
-    beforePromotion?: () => Promise<void>
+    beforePromotion?: () => Promise<unknown>
     historicalPriorityDate?: string | null
     resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
+    cachedStageResults?: Record<string, unknown>
+    onStageTransition?: StrategyLearningFinalizerStageRuntime['onStageTransition']
+    onStageComplete?: StrategyLearningFinalizerStageRuntime['onStageComplete']
   } = {},
 ) {
   const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
@@ -3789,6 +3829,7 @@ export async function finalizeStrategyLearningEvidenceV5(
   const decisionEvidence = await runStrategyLearningFinalizerStage(
     'decision_evidence',
     () => reconcileSelectionDecisionEvidenceV4(db, date),
+    options,
   )
   const historicalEvidence = await runStrategyLearningFinalizerStage(
     'historical_evidence',
@@ -3798,37 +3839,44 @@ export async function finalizeStrategyLearningEvidenceV5(
       priorityDate: options.historicalPriorityDate,
       resolveHistoricalRegime: options.resolveHistoricalRegime,
     }),
+    options,
   )
   const labels = await runStrategyLearningFinalizerStage(
     'selection_labels',
     () => materializeCanonicalSelectionLabelsV4(db, { asOfDate: date }),
+    options,
   )
   const rewards = await runStrategyLearningFinalizerStage(
     'reward_ledger',
     () => refreshStrategyRewardLedger(db, { endDate: date, dryRun: false }),
+    options,
   )
   const { auditStrategyRouteBackfillEligibility } = await import('./strategyRouteBackfillEligibility')
   const routeBackfillEligibility = await runStrategyLearningFinalizerStage(
     'route_backfill_eligibility',
     () => auditStrategyRouteBackfillEligibility(db, date),
+    options,
   )
   if (options.beforePromotion) {
-    await runStrategyLearningFinalizerStage('before_promotion', options.beforePromotion)
+    await runStrategyLearningFinalizerStage('before_promotion', options.beforePromotion, options)
   }
   const marginalEdge = await runStrategyLearningFinalizerStage(
     'marginal_edge',
     () => refreshStrategyMarginalEdgeV4(db, date, { allowPromotion: options.allowPromotion === true }),
+    options,
   )
   const { refreshStrategyRouteCalibration } = await import('./strategyRouteCalibration')
   const routeCalibration = await runStrategyLearningFinalizerStage(
     'route_calibration',
     () => refreshStrategyRouteCalibration(db, date, { allowPromotion: options.allowPromotion === true }),
+    options,
   )
   const policy = options.persistPolicy === false
     ? null
     : await runStrategyLearningFinalizerStage(
         'adaptive_policy',
         () => refreshStrategyAdaptivePolicyState(db, { date, dryRun: false }),
+        options,
       )
   const productionPolicy = policy == null
     ? null
@@ -3846,6 +3894,7 @@ export async function finalizeStrategyLearningEvidenceV5(
             adaptiveState: policy.policy_state,
           })
         },
+        options,
       )
   return {
     decisionEvidence,

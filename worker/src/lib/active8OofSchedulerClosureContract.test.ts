@@ -40,6 +40,11 @@ assert(adminControlRoutes.includes('runDailyAllocatorEvReadiness(c.env, readines
 assert(adminControlRoutes.includes('knowledgeCutoffDate: callbackRunDate'), 'post-midnight OOF follow-up must inspect evidence using the callback knowledge cutoff')
 assert(updateOrchestrator.includes('inspectExpectedReturnLifecycleHealth(env, knowledgeCutoffDate)'), 'Allocator lifecycle health must use the callback knowledge cutoff')
 assert(updateOrchestrator.includes('refreshExpectedReturnServingState(env, knowledgeCutoffDate)'), 'Allocator serving state must use the callback knowledge cutoff')
+assert(updateOrchestrator.includes("'safe_abstain'"), 'completed Allocator inspection without a production owner must have a terminal safe-abstain state')
+assert(updateOrchestrator.includes('const operationallyHealthy = hardAlerts.length === 0'), 'only hard lifecycle/serving alerts may fail the Allocator job operationally')
+assert(/!safeProductionLane\s+\? 'safe_abstain'/.test(updateOrchestrator), 'missing quality-qualified owner must abstain without fabricating an execution error')
+assert(updateOrchestrator.includes("status: state === 'fatal' ? 'error' : 'success'"), 'safe abstention must close Scheduler green while preserving fatal infrastructure errors')
+assert(updateOrchestrator.includes('action_ready=${safeProductionLane ? 1 : 0}'), 'Allocator summary must separate job completion from BUY/allocation readiness')
 assert(!adminControlRoutes.includes("active8FreshnessStatus === 'fresh'\n    && callbackRunDate\n    &&"), 'OOF follow-up must not silently add an unrelated promotion or training condition')
 
 assert(walkForward.includes('@router.post("/walk_forward/oof/lifecycle")'), 'controller must expose the shared OOF lifecycle owner')

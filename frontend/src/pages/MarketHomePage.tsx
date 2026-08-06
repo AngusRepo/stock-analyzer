@@ -1460,7 +1460,14 @@ function selectHomeRecommendationRows(rows: any[], limit = HOME_RECOMMENDATION_L
   }
 
   const buyRows = rows.filter(isBuySignalRecommendation)
-  const potentialRows = rows.filter((row) => !isBuySignalRecommendation(row) && isPotentialBuyRecommendation(row))
+  const potentialRows = rows
+    .filter((row) => !isBuySignalRecommendation(row) && isPotentialBuyRecommendation(row))
+    .map((row) => ({
+      ...row,
+      signal: 'POTENTIAL_BUY',
+      home_canonical_signal: recommendationSignalText(row) || null,
+      home_display_lane: 'potential_buy',
+    }))
   return [...buyRows, ...potentialRows]
     .filter(takeUnique)
     .sort((a, b) => recommendationScoreValue(b) - recommendationScoreValue(a))

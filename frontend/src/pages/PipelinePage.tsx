@@ -210,7 +210,7 @@ function layerTraceRowsFromRec(rec: any): LayerTraceRow[] {
     },
     {
       layer: 'L2',
-      title: 'TimesFM Enrichment',
+      title: '3ML Coarse / TimesFM Enrichment',
       status: l2 ? boolMetric(l2.l2_feature_input_active, 'active', textMetric(l2.reason_code, 'observe')) : 'no evidence',
       detail: l2?.decision_policy ?? 'TimesFM L2 enrichment evidence not found',
       metrics: [
@@ -221,7 +221,7 @@ function layerTraceRowsFromRec(rec: any): LayerTraceRow[] {
     },
     {
       layer: 'L3',
-      title: '8ML Formal',
+      title: 'Formal ML Family Vote',
       status: l3 ? textMetric(l3.decision ?? 'formal vote') : 'no evidence',
       detail: l3?.decision_policy ?? 'formal family-vote evidence not found',
       metrics: [
@@ -232,9 +232,9 @@ function layerTraceRowsFromRec(rec: any): LayerTraceRow[] {
     },
     {
       layer: 'L3.5',
-      title: 'Evidence Fusion',
-      status: l35 ? textMetric(l35.conflict_level ?? l35.decision ?? 'fused') : 'no evidence',
-      detail: l35?.selection_policy ?? 'L1.5/L3 fusion evidence not found',
+      title: 'L1.5 ↔ L3 Conflict Audit',
+      status: `observe-only · ${l35 ? textMetric(l35.conflict_level ?? l35.decision ?? 'fused') : 'no evidence'}`,
+      detail: `${l35?.selection_policy ?? 'L1.5/L3 conflict evidence not found'}; telemetry only, never a serving gate`,
       metrics: [
         `route ${percentMetric(l35?.layer1_route_score)}`,
         `family ${percentMetric(l35?.layer3_formal_family_score)}`,

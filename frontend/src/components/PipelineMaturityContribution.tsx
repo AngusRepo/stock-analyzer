@@ -298,9 +298,9 @@ export default function PipelineMaturityContribution({
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="text-[11px] font-semibold text-amber-300">Decision ownership & evidence maturity</p>
-            <h2 id="pipeline-maturity-title" className="mt-1 text-base font-semibold text-slate-100">成熟度與決策貢獻</h2>
+            <h2 id="pipeline-maturity-title" className="mt-1 text-base font-semibold text-slate-100">成熟度監控（非完整流程圖）</h2>
             <p className="mt-1 max-w-4xl text-xs leading-5 text-slate-500">
-              分開呈現資料門檻、OOS 品質門檻與 production 權限。進度滿格只代表資料足夠，不代表 artifact 已通過或已接手。
+              本區只列需要獨立成熟度門檻的 owner，不代表流程跳過 L2/L3。完整 runtime 為 L0 → L0.5 → L1 → L1.25 → L1.5 → L2 → L3 → L4 → L4+；L3.5 只保留 observe-only conflict telemetry，不是 serving gate。
             </p>
           </div>
           <div className="flex items-center gap-2 text-[11px] text-slate-600">

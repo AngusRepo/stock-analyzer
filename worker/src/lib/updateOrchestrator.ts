@@ -2074,7 +2074,7 @@ export async function runDailyAllocatorEvReadiness(
   } = {},
 ): Promise<{
   ok: boolean
-  state: 'ready' | 'degraded' | 'fatal'
+  state: 'ready' | 'degraded' | 'safe_abstain' | 'fatal'
   summary: string
 }> {
   const started = Date.now()
@@ -2157,11 +2157,15 @@ export async function runDailyAllocatorEvReadiness(
   const warnings = [...new Set([...health.warnings, ...servingState.warnings])]
   const safeProductionLane = servingState.state === 'production_primary'
     && Boolean(priorOwner && servingState.action_gate === 'expected_return_owner')
-  const state: 'ready' | 'degraded' | 'fatal' = !safeProductionLane
+  const operationallyHealthy = hardAlerts.length === 0
+  const state: 'ready' | 'degraded' | 'safe_abstain' | 'fatal' = !operationallyHealthy
     ? 'fatal'
-    : hardAlerts.length > 0 || warnings.length > 0
+    : !safeProductionLane
+      ? 'safe_abstain'
+      : warnings.length > 0
       ? 'degraded'
       : 'ready'
+  parts.push(`action_ready=${safeProductionLane ? 1 : 0}`)
   parts.push(`readiness_state=${state}`)
   if (hardAlerts.length > 0) parts.push(`hard_alerts=${hardAlerts.join(',')}`)
   if (warnings.length > 0) parts.push(`warnings=${warnings.join(',')}`)

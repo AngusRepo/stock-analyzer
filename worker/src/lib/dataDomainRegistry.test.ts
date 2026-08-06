@@ -9,6 +9,7 @@ import {
   shadowDatabaseForDataDomain,
   MULTI_D1_STRICT_ROUTING_READY,
   tablesForDataDomain,
+  tablesForDataDomainShadowBackfill,
 } from './dataDomainRegistry'
 
 const sqlFiles = [
@@ -36,6 +37,15 @@ if (dataDomainForTable('unknown_future_table') !== null) {
 }
 
 const legacy = { kind: 'legacy' } as unknown as D1Database
+const opsControlTables = [
+  'maintenance_task_leases',
+  'data_domain_cutovers',
+  'data_domain_backfill_cursors',
+  'data_domain_parity_checks',
+]
+assert(opsControlTables.every((table) => tablesForDataDomain('ops').includes(table)))
+assert(opsControlTables.every((table) => !tablesForDataDomainShadowBackfill('ops').includes(table)))
+
 const market = { kind: 'market' } as unknown as D1Database
 const shadowEnv = { DB: legacy, MARKET_DB: market }
 assert.equal(databaseForDataDomain(shadowEnv, 'market'), legacy)

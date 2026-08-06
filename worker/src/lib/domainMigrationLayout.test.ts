@@ -21,6 +21,21 @@ for (const [binding, migrationsDir] of Object.entries(expected)) {
 
 const execution = fs.readFileSync('domain-migrations/execution/0001_execution_baseline.sql', 'utf8')
 const paper = fs.readFileSync('domain-migrations/paper/0001_paper_baseline.sql', 'utf8')
+const learningBaseline = fs.readFileSync('domain-migrations/learning/0001_learning_baseline.sql', 'utf8')
+const learningIncremental = fs.readFileSync('domain-migrations/learning/0002_learning_policy_evidence.sql', 'utf8')
+for (const table of [
+  'strategy_production_policy_history_v1',
+  'expected_return_shadow_evaluation_packets',
+  'adaptive_meta_policy_decisions',
+  'active8_oof_freshness_sla',
+  'strategy_adaptive_policy_history_v2',
+]) assert.match(learningIncremental, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
+
+assert.match(
+  learningBaseline,
+  /CREATE TABLE IF NOT EXISTS strategy_decision_log[\s\S]*created_at[\s\S]*context_id[\s\S]*evidence_artifact_id[\s\S]*evaluable[\s\S]*evaluation_contract_version/,
+)
+
 assert.equal((execution.match(/CREATE TABLE IF NOT EXISTS broker_/g) ?? []).length, 3)
 assert.equal((paper.match(/CREATE TABLE IF NOT EXISTS paper_/g) ?? []).length, 11)
 assert.match(paper, /CREATE TABLE IF NOT EXISTS paper_execution_events/)

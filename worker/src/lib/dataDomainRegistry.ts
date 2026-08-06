@@ -45,6 +45,11 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'strategy_marginal_edge_head_v4',
     'price_horizon_labels_v1', 'price_horizon_label_rejections_v1',
     'allocator_ev_daily_lifecycle',
+    'strategy_production_policy_history_v1', 'expected_return_shadow_evaluation_packets',
+    'adaptive_meta_policy_decisions', 'active8_oof_freshness_sla',
+    'strategy_adaptive_policy_history_v2',
+
+
   ]),
   ops: new Set([
     'system_logs', 'observability_events', 'screener_funnel_runs', 'screener_funnel_items',
@@ -76,6 +81,16 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   ]),
 }
 
+const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<string>>> = {
+  ops: new Set([
+    'maintenance_task_leases',
+    'data_domain_cutovers',
+    'data_domain_backfill_cursors',
+    'data_domain_parity_checks',
+  ]),
+}
+
+
 export function dataDomainForTable(tableName: string): DataDomain | null {
   const normalized = tableName.trim().toLowerCase()
   for (const [domain, tables] of Object.entries(DOMAIN_TABLES) as Array<[DataDomain, ReadonlySet<string>]>) {
@@ -87,6 +102,11 @@ export function dataDomainForTable(tableName: string): DataDomain | null {
 
 export function tablesForDataDomain(domain: DataDomain): string[] {
   return [...DOMAIN_TABLES[domain]].sort()
+}
+
+export function tablesForDataDomainShadowBackfill(domain: DataDomain): string[] {
+  const excluded = SHADOW_BACKFILL_EXCLUDED_TABLES[domain] ?? new Set<string>()
+  return tablesForDataDomain(domain).filter((table) => !excluded.has(table))
 }
 
 function domainBindings(env: Pick<Bindings, 'DB'> & Partial<Bindings>): Partial<Record<DataDomain, D1Database | undefined>> {

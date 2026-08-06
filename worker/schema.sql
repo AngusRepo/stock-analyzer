@@ -1263,15 +1263,17 @@ CREATE TABLE IF NOT EXISTS strategy_decision_log (
   strategy_version         TEXT NOT NULL,
   strategy_status          TEXT NOT NULL,
   alpha_bucket             TEXT NOT NULL,
-  evaluable                INTEGER NOT NULL DEFAULT 0 CHECK(evaluable IN (0, 1)),
-  unavailable_reason       TEXT,
-  evaluation_contract_version TEXT NOT NULL DEFAULT 'strategy-evaluation-legacy-unverified',
   matched                  INTEGER NOT NULL DEFAULT 0,
   match_score              REAL,
   reason_code              TEXT NOT NULL,
   context_json             TEXT NOT NULL DEFAULT '{}',
   evidence_json            TEXT NOT NULL DEFAULT '{}',
   created_at               TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  context_id               TEXT,
+  evidence_artifact_id     TEXT,
+  evaluable                INTEGER NOT NULL DEFAULT 0 CHECK(evaluable IN (0, 1)),
+  unavailable_reason       TEXT,
+  evaluation_contract_version TEXT NOT NULL DEFAULT 'strategy-evaluation-legacy-unverified',
   UNIQUE(date, symbol, strategy_id, strategy_version)
 );
 CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_date

@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { dataDomainForTable, shadowDatabaseForDataDomain, tablesForDataDomain, type DataDomain } from './dataDomainRegistry'
+import { dataDomainForTable, shadowDatabaseForDataDomain, tablesForDataDomainShadowBackfill, type DataDomain } from './dataDomainRegistry'
 
 export const DATA_DOMAIN_SHADOW_SCHEMA_VERSION = 'data-domain-shadow-backfill-v1'
 
@@ -172,7 +172,7 @@ export async function backfillDataDomainTableShadow(
 ): Promise<DomainShadowBackfillResult> {
   const domain = options.domain
   const table = String(options.table ?? "").trim().toLowerCase()
-  if (dataDomainForTable(table) !== domain || !tablesForDataDomain(domain).includes(table)) {
+  if (dataDomainForTable(table) !== domain || !tablesForDataDomainShadowBackfill(domain).includes(table)) {
     throw new Error(`domain_table_ownership_mismatch:${domain}:${table}`)
   }
   const target = shadowDatabaseForDataDomain(env, domain)
@@ -380,7 +380,7 @@ export async function backfillDataDomainTableShadow(
     `).bind(
       domain, table, JSON.stringify(cursor), sourceRows, sourceFullChecksum, targetFullChecksum,
     ).run()
-    const ownedTables = tablesForDataDomain(domain)
+    const ownedTables = tablesForDataDomainShadowBackfill(domain)
     const completedResult = await env.DB.prepare(`
       SELECT table_name
         FROM data_domain_backfill_cursors

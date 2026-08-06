@@ -6,7 +6,7 @@ import {
 } from './dataDomainShadowBackfill'
 import {
   shadowDatabaseForDataDomain,
-  tablesForDataDomain,
+  tablesForDataDomainShadowBackfill,
   type DataDomain,
 } from './dataDomainRegistry'
 import { runWithMaintenanceLease } from './maintenanceLease'
@@ -81,7 +81,7 @@ async function completedDomainTables(env: Bindings, domain: DataDomain): Promise
 
 async function nextIncompleteTable(env: Bindings, domain: DataDomain): Promise<string | null> {
   const completedSet = new Set(await completedDomainTables(env, domain))
-  return tablesForDataDomain(domain).find((table) => !completedSet.has(table)) ?? null
+  return tablesForDataDomainShadowBackfill(domain).find((table) => !completedSet.has(table)) ?? null
 }
 
 async function tableRowCount(db: D1Database, table: string): Promise<number> {
@@ -112,7 +112,7 @@ export async function nextDataDomainIncrementalCatchupTable(
   const target = shadowDatabaseForDataDomain(env, domain)
   if (!target) throw new Error(`data_domain_shadow_binding_missing:${domain}`)
   const completedSet = new Set(await completedDomainTables(env, domain))
-  for (const table of tablesForDataDomain(domain)) {
+  for (const table of tablesForDataDomainShadowBackfill(domain)) {
     if (!completedSet.has(table)) continue
     const [sourceRows, targetRows] = await Promise.all([
       tableRowCount(env.DB, table),
@@ -131,7 +131,7 @@ async function domainChecksumReady(env: Bindings, domain: DataDomain): Promise<b
      WHERE domain=? AND check_kind='full_table' AND status='pass'
   `).bind(domain).all<{ table_name: string }>()
   const parityTables = (parity.results ?? []).map((row) => String(row.table_name))
-  return isDomainShadowCutoverReady(tablesForDataDomain(domain), completedTables, parityTables)
+  return isDomainShadowCutoverReady(tablesForDataDomainShadowBackfill(domain), completedTables, parityTables)
 }
 
 export async function enqueueDataDomainShadowBackfill(
@@ -185,9 +185,12 @@ export async function processDataDomainShadowBackfillDrain(
   const attempt = Math.max(0, Math.floor(msg.attempt ?? 0))
   const maxAttempts = Math.max(1, Math.min(Math.floor(msg.maxAttempts ?? DEFAULT_MAX_ATTEMPTS), MAX_ATTEMPTS))
   const runId = msg.runId ?? `data-domain-shadow-backfill:${domain}:${msg.triggerTime}:queue`
-  const table = msg.dataDomainTable
-    || await nextIncompleteTable(env, domain)
-    || await nextDataDomainIncrementalCatchupTable(env, domain)
+  const backfillTables = tablesForDataDomainShadowBackfill(domain)
+  const requestedTable = msg.dataDomainTable
+  const table = requestedTable && backfillTables.includes(requestedTable)
+    ? requestedTable
+    : await nextIncompleteTable(env, domain)
+      || await nextDataDomainIncrementalCatchupTable(env, domain)
   if (!table) {
     const checksumReady = await domainChecksumReady(env, domain)
     await env.KV.delete(activeKey(domain))

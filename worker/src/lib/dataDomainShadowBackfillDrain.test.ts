@@ -7,6 +7,8 @@ const admin = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8'
 const types = fs.readFileSync('src/types.ts', 'utf8')
 
 assert(drain.includes("leaseGroup: 'd1_heavy_maintenance'"))
+assert(drain.includes('tablesForDataDomainShadowBackfill'))
+assert(drain.includes('requestedTable && backfillTables.includes(requestedTable)'))
 assert(drain.includes('nextIncompleteTable'))
 assert(drain.includes("status: result.domain_shadow_ready ? 'success' : 'error'"))
 assert(drain.includes("status: checksumReady ? 'success' : 'error'"))

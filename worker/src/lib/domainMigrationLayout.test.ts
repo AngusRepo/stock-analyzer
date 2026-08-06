@@ -24,6 +24,7 @@ const paper = fs.readFileSync('domain-migrations/paper/0001_paper_baseline.sql',
 const learningBaseline = fs.readFileSync('domain-migrations/learning/0001_learning_baseline.sql', 'utf8')
 const learningIncremental = fs.readFileSync('domain-migrations/learning/0002_learning_policy_evidence.sql', 'utf8')
 const learningForwardExtension = fs.readFileSync('domain-migrations/learning/0003_learning_active8_forward_extension.sql', 'utf8')
+const opsIncremental = fs.readFileSync('domain-migrations/ops/0002_ops_retention_s12_pit.sql', 'utf8')
 for (const table of [
   'strategy_production_policy_history_v1',
   'expected_return_shadow_evaluation_packets',
@@ -32,6 +33,13 @@ for (const table of [
   'strategy_adaptive_policy_history_v2',
 ]) assert.match(learningIncremental, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
 assert.match(learningForwardExtension, /CREATE TABLE IF NOT EXISTS active8_oof_forward_extension_coverage/)
+for (const table of [
+  'data_retention_cursors',
+  'data_retention_run_items',
+  's12_structure_batch_runs',
+  's12_structure_batch_shards',
+  'sector_flow_pit_rebuild_runs_v1',
+]) assert.match(opsIncremental, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
 
 assert.match(
   learningBaseline,

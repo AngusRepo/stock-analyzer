@@ -16,6 +16,7 @@ assert(page.includes('Learning + Reward Ledger'), 'Strategy Lab should expose on
 assert(page.includes('Active strategies'), 'Strategy Lab should separate currently active strategies')
 assert(page.includes('Learning + shadowing strategies'), 'Strategy Lab should separate research, shadow, and candidate strategies')
 assert(page.includes("row.status === 'active'"), 'Active strategy grouping must use the canonical active status')
+assert(page.includes('{row.learning.today_matched}'), 'strategy cards must expose daily matched count instead of forcing users to infer it from reward or policy fields')
 assert(page.includes("row.status === 'research' || row.status === 'shadow' || row.status === 'candidate'"), 'Learning/shadowing grouping must use canonical lifecycle statuses')
 assert(page.includes("row.status !== 'retired'"), 'Retired strategies should stay outside both primary groups')
 assert(page.includes('strategyLabApi.learning()'), 'The focused page should load the canonical reward ledger response')

@@ -304,6 +304,7 @@ function StrategyLedgerGroup({
                   <dt className="text-xs text-slate-500">可評估決策</dt>
                   <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.evaluable_decisions : '-'}</dd>
                   <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>PIT 欄位不足 {row.learning.unavailable_decisions} · 總決策 {row.learning.decisions}</> : 'evidence not ready'}</div>
+                  <div className="mt-1 text-xs text-cyan-300">{'\u4eca\u65e5\u53ef\u8a55\u4f30'} {row.learning.today_evaluable_decisions} {'\u00b7'} {'\u547d\u4e2d'} {row.learning.today_matched} {'\u00b7'} PIT {'\u6b04\u4f4d\u4e0d\u8db3'} {row.learning.today_unavailable_decisions}</div>
                   <div className="mt-1 text-xs text-slate-500">{row.learning.reward_owner === 's12_execution_replay_v3_net' ? 'S12 execution reward' : 'selection edge reward'}</div>
                 </div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">

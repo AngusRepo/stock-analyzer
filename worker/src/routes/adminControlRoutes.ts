@@ -579,6 +579,8 @@ async function handleSchedulerCallback(c: any) {
         const { runDailyAllocatorEvReadiness } = await import('../lib/updateOrchestrator')
         await runDailyAllocatorEvReadiness(c.env, readinessRunDate, {
           knowledgeCutoffDate: callbackRunDate,
+          runId: `${callbackRunId ?? `active8-oof-daily:${callbackRunDate}`}:allocator-readiness:${callbackAttemptId ?? Date.now()}`,
+          attemptId: callbackAttemptId,
         })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)

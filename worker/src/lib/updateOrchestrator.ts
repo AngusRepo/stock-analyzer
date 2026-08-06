@@ -2071,6 +2071,8 @@ export async function runDailyAllocatorEvReadiness(
   triggerTime: string,
   options: {
     knowledgeCutoffDate?: string
+    runId?: string
+    attemptId?: string
   } = {},
 ): Promise<{
   ok: boolean
@@ -2078,6 +2080,7 @@ export async function runDailyAllocatorEvReadiness(
   summary: string
 }> {
   const started = Date.now()
+  const schedulerRunId = options.runId ?? `allocator-ev-readiness:${triggerTime}:${started}`
   const parts: string[] = []
   const knowledgeCutoffDate = options.knowledgeCutoffDate ?? triggerTime
   const health = await inspectExpectedReturnLifecycleHealth(env, knowledgeCutoffDate)
@@ -2118,6 +2121,8 @@ export async function runDailyAllocatorEvReadiness(
         ownerAlerts.length > 0 ? `alerts=${ownerAlerts.join(',')}` : '',
       ].filter(Boolean).join(' '),
       duration_ms: Date.now() - started,
+      run_id: schedulerRunId,
+      attempt_id: options.attemptId,
       run_date: triggerTime,
     })
   }
@@ -2130,6 +2135,8 @@ export async function runDailyAllocatorEvReadiness(
         status: 'success',
         summary: `daily-chain ${opbSummary}`,
         duration_ms: Date.now() - opbStarted,
+        run_id: schedulerRunId,
+        attempt_id: options.attemptId,
         run_date: triggerTime,
       })
     } catch (e) {
@@ -2140,6 +2147,8 @@ export async function runDailyAllocatorEvReadiness(
         summary: `daily-chain OPB prior retained; challenger not ready owner=${priorOwner}`,
         duration_ms: Date.now() - opbStarted,
         error: message,
+        run_id: schedulerRunId,
+        attempt_id: options.attemptId,
         run_date: triggerTime,
       })
     }
@@ -2149,6 +2158,8 @@ export async function runDailyAllocatorEvReadiness(
       status: 'skipped',
       summary: 'daily-chain OPB prior retained; no production-primary Fusion expected-return owner',
       duration_ms: 0,
+      run_id: schedulerRunId,
+      attempt_id: options.attemptId,
       run_date: triggerTime,
     })
   }
@@ -2175,6 +2186,8 @@ export async function runDailyAllocatorEvReadiness(
     summary,
     duration_ms: Date.now() - started,
     error: state === 'fatal' ? hardAlerts.join(',') || 'no_validated_expected_return_lane' : undefined,
+    run_id: schedulerRunId,
+    attempt_id: options.attemptId,
     run_date: triggerTime,
   })
   return { ok: state !== 'fatal', state, summary }

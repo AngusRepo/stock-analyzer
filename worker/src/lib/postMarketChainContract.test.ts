@@ -22,6 +22,10 @@ const verifyCallbackBlock = callbackRoutes.slice(
   callbackRoutes.indexOf("const verifyCanContinue"),
   callbackRoutes.indexOf("if (body.task === 'verify-v2' && String(body.status) === 'error')"),
 )
+const allocatorSnapshotCallbackBlock = callbackRoutes.slice(
+  callbackRoutes.indexOf("body.task === 'allocator-ev-feature-snapshot-backfill'"),
+  callbackRoutes.indexOf("if (body.task === 'pipeline'"),
+)
 const postScreenerContinuationBlock = updateOrchestrator.slice(
   updateOrchestrator.indexOf('async function continuePostScreenerPipeline'),
   updateOrchestrator.indexOf('async function markShardComplete'),
@@ -287,10 +291,11 @@ assert(
   'terminal pipeline/verify callback failures must close evening-chain as error instead of leaving it triggered; durable continuation failures retry in queue',
 )
 assert(
-  callbackRoutes.includes('isTransientD1Reset(callbackError)') &&
-    callbackRoutes.includes('allocator:snapshot-transient-retry:') &&
-    callbackRoutes.includes("type: 'allocator_ev_lifecycle_recovery'") &&
-    callbackRoutes.includes("status: 'running'"),
+  allocatorSnapshotCallbackBlock.includes('isTransientD1Reset(callbackError)') &&
+    allocatorSnapshotCallbackBlock.includes('allocator:snapshot-transient-retry:') &&
+    allocatorSnapshotCallbackBlock.includes("type: 'allocator_ev_lifecycle_recovery'") &&
+    allocatorSnapshotCallbackBlock.includes("status: 'running'") &&
+    allocatorSnapshotCallbackBlock.includes("status: 'error'"),
   'allocator snapshot D1 transient callbacks must schedule bounded deduped recovery instead of closing root error',
 )
 assert(

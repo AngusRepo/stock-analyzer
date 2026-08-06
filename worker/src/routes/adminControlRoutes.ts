@@ -833,6 +833,12 @@ async function handleSchedulerCallback(c: any) {
           run_date: callbackRunDate,
         }, c.env as any)
       } else {
+        await markPipelineStage(c.env.DB, {
+          businessDate: callbackRunDate,
+          stage: 'post_pipeline_chain',
+          status: 'error',
+          error: callbackError,
+        })
         await logSchedulerResult(c.env.KV, 'evening-chain', {
           status: body.status === 'skipped' ? 'skipped' : 'error',
           summary: `root chain stopped at allocator snapshot callback: ${String(body.summary ?? body.status)}`,

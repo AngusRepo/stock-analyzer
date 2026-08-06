@@ -861,7 +861,16 @@ def load_l4_alpha_ev_training_rows(
             p.prediction_date AS prediction_date,
             p.generated_at AS prediction_generated_at,
             datetime(ph.entry_date, '+1 hour') AS next_session_open_at,
-            p.forecast_data,
+            json_object(
+              'ensemble_v2', json_object(
+                'avg_rank', json_extract(p.forecast_data, '$.ensemble_v2.avg_rank'),
+                'semantic_version', json_extract(p.forecast_data, '$.ensemble_v2.semantic_version'),
+                'generation_mode', json_extract(p.forecast_data, '$.ensemble_v2.generation_mode'),
+                'artifact_versions', json(COALESCE(json_extract(p.forecast_data, '$.ensemble_v2.artifact_versions'), '{{}}')),
+                'contributing_models', json(COALESCE(json_extract(p.forecast_data, '$.ensemble_v2.contributing_models'), '[]')),
+                'model_set_signature', json_extract(p.forecast_data, '$.ensemble_v2.model_set_signature')
+              )
+            ) AS forecast_data,
             ph.source AS label_adjustment_source,
             ((ph.exit_raw_close * ph.exit_adjustment_factor)
               / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} AS l4_executable_return_pct,
@@ -872,8 +881,23 @@ def load_l4_alpha_ev_training_rows(
             ph.entry_adjustment_factor AS l4_entry_adjustment_factor,
             ph.exit_adjustment_factor AS l4_exit_adjustment_factor,
             dr.score,
-            dr.score_components,
-            dr.alpha_context,
+            json_object(
+              'version', json_extract(dr.score_components, '$.version'),
+              'semanticVersion', json_extract(dr.score_components, '$.semanticVersion'),
+              'finalScore', json_extract(dr.score_components, '$.finalScore'),
+              'total', json_extract(dr.score_components, '$.total'),
+              'components', json_object(
+                'mlEdge', json_extract(dr.score_components, '$.components.mlEdge'),
+                'fundamentalQuality', json_extract(dr.score_components, '$.components.fundamentalQuality'),
+                'chipFlow', json_extract(dr.score_components, '$.components.chipFlow'),
+                'technicalStructure', json_extract(dr.score_components, '$.components.technicalStructure')
+              )
+            ) AS score_components,
+            json_object(
+              'pit_sector_alpha_expert', json(COALESCE(json_extract(dr.alpha_context, '$.pit_sector_alpha_expert'), '{{}}')),
+              'market_regime_context', json(COALESCE(json_extract(dr.alpha_context, '$.market_regime_context'), '{{}}')),
+              'regime_surface', json(COALESCE(json_extract(dr.alpha_context, '$.regime_surface'), '{{}}'))
+            ) AS alpha_context,
             dr.market_segment,
             dr.recommendation_lane
         FROM predictions p INDEXED BY idx_pred_date_model_stock

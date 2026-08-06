@@ -497,3 +497,22 @@ adminReadRoutes.get('/api/admin/cron-logs', async (c) => {
   const logs = await getCronLogs(c.env.KV, date)
   return c.json({ date, logs })
 })
+
+adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
+  const authError = await requireAdminOrServiceToken(c)
+  if (authError) return authError
+
+  const [
+    { inspectDataDomainCutoverReadiness },
+    { inspectLatestEveningChainClosure },
+  ] = await Promise.all([
+    import('../lib/dataDomainCutoverReadiness'),
+    import('../lib/dataDomainShadowBackfillDrain'),
+  ])
+  const latestEveningChain = await inspectLatestEveningChainClosure(c.env.KV)
+  const report = await inspectDataDomainCutoverReadiness(c.env.DB, c.req.query('domain'), {
+    upstreamTerminalReady: latestEveningChain.terminalSuccess,
+    parityNotBefore: latestEveningChain.timestamp,
+  })
+  return c.json({ success: true, latest_evening_chain: latestEveningChain, ...report })
+})

@@ -1,7 +1,8 @@
 export function isTransientD1Reset(error: unknown): boolean {
-  return /D1_ERROR|storage operation exceeded timeout|CPU time limit|object .* reset|connection reset|temporar/i.test(
-    String(error),
-  )
+  const message = String(error)
+  return /D1_ERROR|storage operation exceeded timeout|CPU time limit|object .* reset|connection reset|temporar/i.test(message)
+    || /D1 request failed:\s*HTTP\s*(?:429|5\d\d)/i.test(message)
+    || /["']?code["']?\s*:\s*7010\b/i.test(message)
 }
 
 export function tagD1StageError(

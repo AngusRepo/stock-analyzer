@@ -286,6 +286,19 @@ assert(
     callbackRoutes.includes('root chain stopped in post-pipeline callback chain'),
   'terminal pipeline/verify callback failures must close evening-chain as error instead of leaving it triggered; durable continuation failures retry in queue',
 )
+assert(
+  callbackRoutes.includes('isTransientD1Reset(callbackError)') &&
+    callbackRoutes.includes('allocator:snapshot-transient-retry:') &&
+    callbackRoutes.includes("type: 'allocator_ev_lifecycle_recovery'") &&
+    callbackRoutes.includes("status: 'running'"),
+  'allocator snapshot D1 transient callbacks must schedule bounded deduped recovery instead of closing root error',
+)
+assert(
+  pipelineStageLease.includes("status='queued'") &&
+    pipelineStageLease.includes('completed_at=NULL') &&
+    pipelineStageLease.includes("status IN ('waiting', 'error')"),
+  'durable stage recovery must clear terminal timestamps when resuming waiting/error state',
+)
 assert(logger.includes("'post-pipeline-chain'"), 'post-pipeline-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'post-verify-chain'"), 'post-verify-chain must be visible in scheduler/OBS logs')
 assert(logger.includes("'linucb-reward-ledger'"), 'LinUCB reward ledger must be visible in scheduler/OBS logs')

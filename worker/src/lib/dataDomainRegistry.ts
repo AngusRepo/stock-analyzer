@@ -2,7 +2,33 @@ import type { Bindings } from '../types'
 
 export type DataDomain = 'core' | 'market' | 'learning' | 'ops' | 'execution' | 'paper' | 'research'
 
-export const MULTI_D1_STRICT_ROUTING_READY = false
+export const DATA_DOMAINS: readonly DataDomain[] = [
+  'core', 'market', 'learning', 'ops', 'execution', 'paper', 'research',
+]
+
+export const MULTI_D1_ROUTING_CONTRACT_GATES = {
+  active_domain_ready_guard: true,
+  invalid_domain_config_fail_closed: true,
+  shadow_owned_registry_complete: true,
+  direct_legacy_db_paths_closed: false,
+  cross_domain_read_models_closed: false,
+  active_read_write_readback_probes_automated: false,
+  rollback_restore_probes_automated: false,
+} as const
+
+export const MULTI_D1_PROJECTION_CONTRACT_GATES = {
+  typed_outbox_producers_wired: false,
+  idempotent_inbox_consumers_wired: false,
+  replay_and_dead_letter_recovery_automated: false,
+  freshness_sla_and_zero_error_gate_automated: false,
+} as const
+
+export const MULTI_D1_STRICT_ROUTING_READY = Object.values(
+  MULTI_D1_ROUTING_CONTRACT_GATES,
+).every(Boolean)
+export const MULTI_D1_PROJECTION_CONTRACT_READY = Object.values(
+  MULTI_D1_PROJECTION_CONTRACT_GATES,
+).every(Boolean)
 
 const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   core: new Set([
@@ -123,13 +149,40 @@ function domainBindings(env: Pick<Bindings, 'DB'> & Partial<Bindings>): Partial<
 }
 
 export function activeDataDomains(env: Partial<Bindings>): Set<DataDomain> {
-  const allowed = new Set<DataDomain>(['core', 'market', 'learning', 'ops', 'execution', 'paper', 'research'])
+  const allowed = new Set<DataDomain>(DATA_DOMAINS)
   return new Set(
     String(env.MULTI_D1_ACTIVE_DOMAINS ?? '')
       .split(',')
       .map((value) => value.trim().toLowerCase())
       .filter((value): value is DataDomain => allowed.has(value as DataDomain)),
   )
+}
+
+export function invalidActiveDataDomains(env: Partial<Bindings>): string[] {
+  const allowed = new Set<string>(DATA_DOMAINS)
+  return String(env.MULTI_D1_ACTIVE_DOMAINS ?? '')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter((value) => value && !allowed.has(value))
+}
+
+export function resolveDataDomainRoute(input: {
+  domain: DataDomain
+  activeDomains: Set<DataDomain>
+  invalidDomains?: string[]
+  strictRequested: boolean
+  routingReady: boolean
+}): 'legacy' | 'domain' {
+  if (input.invalidDomains?.length) {
+    throw new Error(`multi_d1_active_domain_invalid:${[...new Set(input.invalidDomains)].sort().join(',')}`)
+  }
+  if ((input.strictRequested || input.activeDomains.size > 0) && !input.routingReady) {
+    throw new Error('multi_d1_strict_routing_not_closed')
+  }
+  if (input.strictRequested && input.activeDomains.size === 0) {
+    throw new Error('multi_d1_strict_active_domains_missing')
+  }
+  return input.activeDomains.has(input.domain) ? 'domain' : 'legacy'
 }
 
 export function shadowDatabaseForDataDomain(
@@ -144,12 +197,13 @@ export function databaseForDataDomain(
   domain: DataDomain,
 ): D1Database {
   const bindings = domainBindings(env)
-  const strict = String(env.MULTI_D1_STRICT ?? '').toLowerCase() === 'true'
-  if (strict && !MULTI_D1_STRICT_ROUTING_READY) {
-    throw new Error('multi_d1_strict_routing_not_closed')
-  }
-  const active = activeDataDomains(env).has(domain)
-  if (!active) return env.DB
+  const active = activeDataDomains(env)
+  const route = resolveDataDomainRoute({
+    domain, activeDomains: active, invalidDomains: invalidActiveDataDomains(env),
+    strictRequested: String(env.MULTI_D1_STRICT ?? '').toLowerCase() === 'true',
+    routingReady: MULTI_D1_STRICT_ROUTING_READY,
+  })
+  if (route === 'legacy') return env.DB
   const selected = bindings[domain]
   if (selected) return selected
   throw new Error(`data_domain_binding_missing:${domain}`)

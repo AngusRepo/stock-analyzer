@@ -10,7 +10,8 @@ import {
   type DataDomain,
 } from './dataDomainRegistry'
 import { runWithMaintenanceLease } from './maintenanceLease'
-import { logSchedulerResult } from './schedulerRunLogger'
+import { twDaysAgo } from './dateUtils'
+import { logSchedulerResult, type SchedulerRunLogEntry } from './schedulerRunLogger'
 
 const ACTIVE_TTL_SECONDS = 6 * 3600
 const DEFAULT_MAX_ATTEMPTS = 5000
@@ -93,7 +94,142 @@ async function tableRowCount(db: D1Database, table: string): Promise<number> {
   return Math.max(0, Number(row?.row_count ?? 0))
 }
 
-const DOMAIN_BACKFILL_ORDER: DataDomain[] = ['ops', 'learning', 'market', 'research', 'core']
+type TableFreshnessWatermark = {
+  column: string
+  value: string | number | null
+}
+
+const TABLE_FRESHNESS_COLUMNS = [
+  'updated_at',
+  'last_updated',
+  'modified_at',
+  'event_time',
+  'received_at',
+  'created_at',
+] as const
+
+async function tableFreshnessWatermark(
+  db: D1Database,
+  table: string,
+): Promise<TableFreshnessWatermark | null> {
+  const trustedTable = table.replace(/[^a-z0-9_]/g, '')
+  if (trustedTable !== table) throw new Error(`invalid_data_domain_table:${table}`)
+  const columns = await db.prepare(`PRAGMA table_info("${trustedTable}")`).all<{ name?: string }>()
+  const available = new Set((columns.results ?? []).map((row) => String(row.name ?? '')))
+  const column = TABLE_FRESHNESS_COLUMNS.find((candidate) => available.has(candidate))
+  if (!column) return null
+  const row = await db.prepare(
+    `SELECT MAX("${column}") AS watermark FROM "${trustedTable}"`,
+  ).first<{ watermark?: string | number | null }>()
+  return { column, value: row?.watermark ?? null }
+}
+
+function sameFreshnessWatermark(
+  source: TableFreshnessWatermark | null,
+  target: TableFreshnessWatermark | null,
+): boolean {
+  if (!source && !target) return true
+  return Boolean(source && target && source.column === target.column && source.value === target.value)
+}
+
+async function resetDataDomainTableForCatchup(
+  env: Bindings,
+  domain: DataDomain,
+  table: string,
+  reason: string,
+): Promise<void> {
+  const cutover = await env.DB.prepare(`
+    SELECT status FROM data_domain_cutovers WHERE domain=?
+  `).bind(domain).first<{ status?: string }>()
+  const status = String(cutover?.status ?? 'legacy')
+  if (!['legacy', 'shadow'].includes(status)) {
+    throw new Error(`domain_cutover_source_changed:${domain}:${status}`)
+  }
+  await env.DB.batch([
+    env.DB.prepare(`
+      UPDATE data_domain_backfill_cursors
+         SET status='running', cursor_json=NULL, rows_copied=0, last_batch_rows=0,
+             last_source_checksum=NULL, last_target_checksum=NULL, error_code=NULL,
+             updated_at=CURRENT_TIMESTAMP
+       WHERE domain=? AND table_name=?
+    `).bind(domain, table),
+    env.DB.prepare(`
+      UPDATE data_domain_parity_checks
+         SET status='blocked',
+             evidence_json=json_object(
+               'schema_version', 'data-domain-shadow-backfill-v1',
+               'invalidated_reason', ?
+             ),
+             checked_at=CURRENT_TIMESTAMP
+       WHERE domain=? AND table_name=? AND check_kind='full_table'
+    `).bind(reason, domain, table),
+    env.DB.prepare(`
+      DELETE FROM data_domain_parity_checks WHERE check_id=?
+    `).bind(`domain-parity:${domain}:${table}:manifest-progress`),
+    env.DB.prepare(`
+      UPDATE data_domain_cutovers
+         SET status='legacy', source_row_count=NULL, target_row_count=NULL,
+             source_checksum=NULL, target_checksum=NULL, parity_checked_at=NULL,
+             updated_at=CURRENT_TIMESTAMP
+       WHERE domain=? AND status='shadow'
+    `).bind(domain),
+  ])
+}
+
+const DOMAIN_BACKFILL_ORDER: DataDomain[] = ['execution', 'paper', 'ops', 'learning', 'market', 'research', 'core']
+
+export type LatestEveningChainClosure = {
+  runDate: string | null
+  status: string
+  runScope: string | null
+  timestamp: string | null
+  terminalSuccess: boolean
+  reason: string
+}
+
+export function resolveLatestEveningChainClosure(
+  entries: Array<SchedulerRunLogEntry | null>,
+): LatestEveningChainClosure {
+  const latest = entries
+    .filter((entry): entry is SchedulerRunLogEntry => Boolean(entry?.run_date))
+    .sort((left, right) => (
+      String(right.run_date).localeCompare(String(left.run_date))
+      || String(right.timestamp ?? '').localeCompare(String(left.timestamp ?? ''))
+    ))[0]
+  if (!latest) {
+    return {
+      runDate: null,
+      status: 'missing',
+      runScope: null,
+      timestamp: null,
+      terminalSuccess: false,
+      reason: 'latest_evening_chain_missing',
+    }
+  }
+  const liveCanonical = latest.run_scope === 'live_canonical'
+  const terminalSuccess = latest.status === 'success' && liveCanonical
+  return {
+    runDate: latest.run_date ?? null,
+    status: latest.status,
+    runScope: latest.run_scope ?? null,
+    timestamp: latest.timestamp ?? null,
+    terminalSuccess,
+    reason: terminalSuccess
+      ? 'latest_evening_chain_live_canonical_success'
+      : `latest_evening_chain_not_terminal_live_success:${latest.status}:${latest.run_scope ?? 'unknown_scope'}`,
+  }
+}
+
+export async function inspectLatestEveningChainClosure(
+  kv: KVNamespace,
+): Promise<LatestEveningChainClosure> {
+  const entries = await Promise.all(
+    Array.from({ length: 8 }, (_, days) => twDaysAgo(days))
+      .map((date) => kv.get(`scheduler:run:evening-chain:${date}`, 'json') as Promise<SchedulerRunLogEntry | null>),
+  )
+  return resolveLatestEveningChainClosure(entries)
+}
+
 
 export async function nextDataDomainBackfillDomain(env: Bindings): Promise<DataDomain | null> {
   for (const domain of DOMAIN_BACKFILL_ORDER) {
@@ -105,6 +241,26 @@ export async function nextDataDomainBackfillDomain(env: Bindings): Promise<DataD
   return null
 }
 
+export async function enqueueNextDataDomainShadowBackfill(
+  env: Bindings,
+  input: { runDate: string; maxAttempts?: number },
+): Promise<{ caughtUp: boolean; domain: DataDomain | null; queued: boolean; runId: string | null }> {
+  const domain = await nextDataDomainBackfillDomain(env)
+  if (!domain) return { caughtUp: true, domain: null, queued: false, runId: null }
+  const queued = await enqueueDataDomainShadowBackfill(env, {
+    domain,
+    runDate: input.runDate,
+    maxAttempts: input.maxAttempts,
+  })
+  return {
+    caughtUp: false,
+    domain,
+    queued: queued.queued,
+    runId: queued.runId,
+  }
+}
+
+
 export async function nextDataDomainIncrementalCatchupTable(
   env: Bindings,
   domain: DataDomain,
@@ -114,11 +270,21 @@ export async function nextDataDomainIncrementalCatchupTable(
   const completedSet = new Set(await completedDomainTables(env, domain))
   for (const table of tablesForDataDomainShadowBackfill(domain)) {
     if (!completedSet.has(table)) continue
-    const [sourceRows, targetRows] = await Promise.all([
+    const [sourceRows, targetRows, sourceWatermark, targetWatermark] = await Promise.all([
       tableRowCount(env.DB, table),
       tableRowCount(target, table),
+      tableFreshnessWatermark(env.DB, table),
+      tableFreshnessWatermark(target, table),
     ])
-    if (sourceRows !== targetRows) return table
+    const reason = sourceRows !== targetRows
+      ? `row_count_changed:${sourceRows}/${targetRows}`
+      : !sameFreshnessWatermark(sourceWatermark, targetWatermark)
+        ? `freshness_watermark_changed:${JSON.stringify(sourceWatermark)}/${JSON.stringify(targetWatermark)}`
+        : null
+    if (reason) {
+      await resetDataDomainTableForCatchup(env, domain, table, reason)
+      return table
+    }
   }
   return null
 }

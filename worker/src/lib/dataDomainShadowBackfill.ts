@@ -166,6 +166,52 @@ export function isDomainShadowCutoverReady(
     && isDomainShadowCopyComplete(ownedTables, checksumParityTables)
 }
 
+export type DomainAggregateParityRow = {
+  table_name: string
+  status: string
+  source_count: number | string | null
+  target_count: number | string | null
+  source_checksum: string | null
+  target_checksum: string | null
+}
+
+export type DomainAggregateParitySnapshot = {
+  source_row_count: number
+  target_row_count: number
+  source_checksum: string
+  target_checksum: string
+}
+
+export async function buildDataDomainAggregateParitySnapshot(
+  ownedTables: string[],
+  parityRows: DomainAggregateParityRow[],
+): Promise<DomainAggregateParitySnapshot | null> {
+  const latest = new Map<string, DomainAggregateParityRow>()
+  for (const row of parityRows) {
+    if (!latest.has(row.table_name)) latest.set(row.table_name, row)
+  }
+  const sourceManifest: Array<Record<string, unknown>> = []
+  const targetManifest: Array<Record<string, unknown>> = []
+  for (const table of [...ownedTables].sort()) {
+    const row = latest.get(table)
+    if (
+      !row
+      || row.status !== 'pass'
+      || Number(row.source_count ?? 0) !== Number(row.target_count ?? 0)
+      || !row.source_checksum
+      || row.source_checksum !== row.target_checksum
+    ) return null
+    sourceManifest.push({ table, rows: Number(row.source_count ?? 0), checksum: row.source_checksum })
+    targetManifest.push({ table, rows: Number(row.target_count ?? 0), checksum: row.target_checksum })
+  }
+  return {
+    source_row_count: sourceManifest.reduce((sum, row) => sum + Number(row.rows), 0),
+    target_row_count: targetManifest.reduce((sum, row) => sum + Number(row.rows), 0),
+    source_checksum: await checksumText(JSON.stringify(sourceManifest)),
+    target_checksum: await checksumText(JSON.stringify(targetManifest)),
+  }
+}
+
 function parseCursor(value: unknown): unknown[] | null {
   if (typeof value !== 'string' || !value.trim()) return null
   const parsed = JSON.parse(value)
@@ -207,6 +253,33 @@ export async function backfillDataDomainTableShadow(
      LIMIT ?
   `).bind(...keyset.binds, limit).all<Record<string, unknown>>()
   const rows = selected.results ?? []
+  if (rows.length) {
+    const activeCutover = await env.DB.prepare(`
+      SELECT status FROM data_domain_cutovers WHERE domain=?
+    `).bind(domain).first<{ status?: string }>()
+    const activeStatus = String(activeCutover?.status ?? 'legacy')
+    if (!['legacy', 'shadow'].includes(activeStatus)) {
+      throw new Error(`domain_cutover_source_changed:${domain}:${activeStatus}`)
+    }
+    await env.DB.prepare(`
+      UPDATE data_domain_cutovers
+         SET status='legacy', source_row_count=NULL, target_row_count=NULL,
+             source_checksum=NULL, target_checksum=NULL, parity_checked_at=NULL,
+             updated_at=CURRENT_TIMESTAMP
+       WHERE domain=? AND status='shadow'
+    `).bind(domain).run()
+    await env.DB.prepare(`
+      UPDATE data_domain_parity_checks
+         SET status='blocked',
+             evidence_json=json_set(evidence_json, '$.invalidated_reason', 'source_rows_changed'),
+             checked_at=CURRENT_TIMESTAMP
+       WHERE domain=? AND table_name=? AND check_kind='full_table'
+    `).bind(domain, table).run()
+    await env.DB.prepare(`
+      DELETE FROM data_domain_parity_checks
+       WHERE check_id=?
+    `).bind(`domain-parity:${domain}:${table}:manifest-progress`).run()
+  }
   if (!rows.length) {
     const sourceCount = await env.DB.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`).first<{ count: number | string }>()
     const targetCount = await target.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`).first<{ count: number | string }>()
@@ -394,26 +467,59 @@ export async function backfillDataDomainTableShadow(
        WHERE domain=? AND status='complete'
     `).bind(domain).all<{ table_name: string }>()
     const parityResult = await env.DB.prepare(`
-      SELECT table_name
+      SELECT table_name, status, source_count, target_count, source_checksum, target_checksum
         FROM data_domain_parity_checks
-       WHERE domain=? AND check_kind='full_table' AND status='pass'
-    `).bind(domain).all<{ table_name: string }>()
+       WHERE domain=? AND check_kind='full_table'
+       ORDER BY checked_at DESC
+    `).bind(domain).all<DomainAggregateParityRow>()
     const completedTables = (completedResult.results ?? []).map((row) => String(row.table_name))
-    const parityTables = (parityResult.results ?? []).map((row) => String(row.table_name))
-    const domainShadowReady = isDomainShadowCutoverReady(ownedTables, completedTables, parityTables)
+    const parityRows = parityResult.results ?? []
+    const parityTables = parityRows
+      .filter((row) => row.status === 'pass')
+      .map((row) => String(row.table_name))
+    const copyAndTableParityReady = isDomainShadowCutoverReady(
+      ownedTables,
+      completedTables,
+      parityTables,
+    )
+    const aggregateSnapshot = copyAndTableParityReady
+      ? await buildDataDomainAggregateParitySnapshot(ownedTables, parityRows)
+      : null
+    const domainShadowReady = Boolean(
+      aggregateSnapshot
+      && aggregateSnapshot.source_checksum === aggregateSnapshot.target_checksum,
+    )
     const currentCutover = await env.DB.prepare(`
       SELECT status FROM data_domain_cutovers WHERE domain=?
     `).bind(domain).first<{ status?: string }>()
     if (!domainShadowReady && currentCutover?.status && !['legacy', 'shadow'].includes(currentCutover.status)) {
       throw new Error(`domain_cutover_inconsistent:${domain}:${currentCutover.status}`)
     }
+    const aggregateCheckedAt = domainShadowReady ? new Date().toISOString() : null
     await env.DB.prepare(`
-      INSERT INTO data_domain_cutovers(domain,status,source_binding,target_binding)
-      VALUES (?, ?, 'DB', ?)
+      INSERT INTO data_domain_cutovers(
+        domain, status, source_binding, target_binding,
+        source_row_count, target_row_count, source_checksum, target_checksum, parity_checked_at
+      ) VALUES (?, ?, 'DB', ?, ?, ?, ?, ?, ?)
       ON CONFLICT(domain) DO UPDATE SET
         status=CASE WHEN data_domain_cutovers.status IN ('legacy','shadow') THEN excluded.status ELSE data_domain_cutovers.status END,
-        target_binding=excluded.target_binding, updated_at=CURRENT_TIMESTAMP
-    `).bind(domain, domainShadowReady ? 'shadow' : 'legacy', `${domain.toUpperCase()}_DB`).run()
+        target_binding=excluded.target_binding,
+        source_row_count=CASE WHEN data_domain_cutovers.status IN ('legacy','shadow') THEN excluded.source_row_count ELSE data_domain_cutovers.source_row_count END,
+        target_row_count=CASE WHEN data_domain_cutovers.status IN ('legacy','shadow') THEN excluded.target_row_count ELSE data_domain_cutovers.target_row_count END,
+        source_checksum=CASE WHEN data_domain_cutovers.status IN ('legacy','shadow') THEN excluded.source_checksum ELSE data_domain_cutovers.source_checksum END,
+        target_checksum=CASE WHEN data_domain_cutovers.status IN ('legacy','shadow') THEN excluded.target_checksum ELSE data_domain_cutovers.target_checksum END,
+        parity_checked_at=CASE WHEN data_domain_cutovers.status IN ('legacy','shadow') THEN excluded.parity_checked_at ELSE data_domain_cutovers.parity_checked_at END,
+        updated_at=CURRENT_TIMESTAMP
+    `).bind(
+      domain,
+      domainShadowReady ? 'shadow' : 'legacy',
+      `${domain.toUpperCase()}_DB`,
+      aggregateSnapshot?.source_row_count ?? null,
+      aggregateSnapshot?.target_row_count ?? null,
+      aggregateSnapshot?.source_checksum ?? null,
+      aggregateSnapshot?.target_checksum ?? null,
+      aggregateCheckedAt,
+    ).run()
     return {
       domain,
       table,

@@ -478,13 +478,14 @@ export async function runAllocatorEvLifecycleWatchdog(
     throw new Error(`allocator_ev_missing_point_in_time_lineage:${businessDate}:${reason}`)
   }
   const postPipelineStage = await env.DB.prepare(`
-    SELECT status, canonical_run_id, updated_at
+    SELECT status, canonical_run_id, updated_at, attempt_count
       FROM pipeline_stage_runs
      WHERE business_date=? AND stage='post_pipeline_chain'
   `).bind(businessDate).first<{
     status?: string | null
     canonical_run_id?: string | null
     updated_at?: string | null
+    attempt_count?: number | string | null
   }>()
   const stageTimestamp = String(postPipelineStage?.updated_at ?? '').trim()
   const stageTimestampUtc = stageTimestamp && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(stageTimestamp)
@@ -578,33 +579,15 @@ export async function runAllocatorEvLifecycleWatchdog(
       + `${maturitySummary(maturity)}`
   }
 
-  const { runPostPipelineCallbackChain } = await import('./postMarketChain')
-  const { markPipelineStage } = await import('./pipelineStageLease')
-  const postPipelineStatus = await runPostPipelineCallbackChain(env, {
-    runDate: businessDate,
-    upstreamRunId: lifecycle?.upstream_run_id || `allocator-ev-lifecycle-watchdog-${businessDate}`,
-    recoveryAttempt: Math.max(1, Number(lifecycle?.attempt_count ?? 0) + 1),
-  })
-  await markPipelineStage(env.DB, {
+  const { queuePostPipelineStage } = await import('./pipelineStageLease')
+  const recoveryAttempt = Math.max(1, Number(postPipelineStage?.attempt_count ?? 1))
+  const continuation = await queuePostPipelineStage(env, {
     businessDate,
-    stage: 'post_pipeline_chain',
-    status: postPipelineStatus,
-    error: postPipelineStatus === 'error'
-      ? 'allocator EV lifecycle watchdog post-pipeline recovery failed'
-      : null,
+    runId: lifecycle?.upstream_run_id || `allocator-ev-lifecycle-watchdog-${businessDate}`,
+    resumeWaiting: true,
+    attempt: recoveryAttempt,
   })
-  const repaired = await inspectAllocatorSnapshotClosure(env.DB, businessDate, {
-    allowPointInTimeReconstruction: true,
-    kv: env.KV,
-  })
-  if (!repaired.ready) {
-    throw new Error(
-      `allocator EV lifecycle repair incomplete date=${businessDate} lineage=${repaired.nativeLineageRows} `
-      + `run_native=${repaired.runNativeLineageRows} reconstructed=${repaired.reconstructedLineageRows} `
-      + `rejected=${repaired.rejectedLineageRows} expected=${repaired.expectedRows} `
-      + `published=${repaired.publishedRows} actual=${repaired.actualRows}; ${maturitySummary(maturity)}`,
-    )
-  }
-  const repairedMaturity = await inspectAllocatorEvMaturityCoverage(env.DB, businessDate)
-  return `allocator EV lifecycle repaired date=${businessDate} snapshot_rows=${repaired.actualRows}; ${maturitySummary(repairedMaturity)}`
+  return continuation.queued
+    ? `allocator EV lifecycle recovery queued date=${businessDate} attempt=${recoveryAttempt} run_id=${continuation.canonicalRunId}`
+    : `allocator EV lifecycle recovery current date=${businessDate} status=${continuation.status} run_id=${continuation.canonicalRunId}`
 }

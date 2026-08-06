@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import {
+  buildDataDomainAggregateParitySnapshot,
   domainBackfillBatchLimit,
   domainBackfillKeysetWhere,
   domainBackfillParityBatchLimit,
@@ -62,6 +63,31 @@ async function testRollingManifests(): Promise<void> {
   )
   assert.equal(firstManifest, repeatedManifest)
   assert.notEqual(secondManifest, reorderedManifest)
+
+  const aggregate = await buildDataDomainAggregateParitySnapshot(
+    ['items', 'runs'],
+    [
+      {
+        table_name: 'runs', status: 'pass', source_count: 2, target_count: 2,
+        source_checksum: 'runs-same', target_checksum: 'runs-same',
+      },
+      {
+        table_name: 'items', status: 'pass', source_count: 3, target_count: 3,
+        source_checksum: 'items-same', target_checksum: 'items-same',
+      },
+    ],
+  )
+  assert(aggregate)
+  assert.equal(aggregate.source_row_count, 5)
+  assert.equal(aggregate.target_row_count, 5)
+  assert.equal(aggregate.source_checksum, aggregate.target_checksum)
+  assert.equal(await buildDataDomainAggregateParitySnapshot(
+    ['runs'],
+    [{
+      table_name: 'runs', status: 'pass', source_count: 2, target_count: 2,
+      source_checksum: 'source', target_checksum: 'target',
+    }],
+  ), null)
 }
 
 void testRollingManifests().then(() => {

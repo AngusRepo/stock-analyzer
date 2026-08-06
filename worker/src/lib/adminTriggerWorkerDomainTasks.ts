@@ -910,17 +910,19 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     },
     'data-domain-shadow-backfill-next': async () => {
       const {
-        enqueueDataDomainShadowBackfill,
-        nextDataDomainBackfillDomain,
+        enqueueNextDataDomainShadowBackfill,
+        inspectLatestEveningChainClosure,
       } = await import('./dataDomainShadowBackfillDrain')
-      const domain = await nextDataDomainBackfillDomain(c.env)
-      if (!domain) return 'data_domain_shadow_backfill_next all_domains_caught_up=true'
-      const queued = await enqueueDataDomainShadowBackfill(c.env, {
-        domain,
-        runDate: requestedRunDate() || twToday(),
+      const closure = await inspectLatestEveningChainClosure(c.env.KV)
+      if (!closure.terminalSuccess) {
+        return `skipped: data_domain_shadow_backfill_next ${closure.reason} run_date=${closure.runDate ?? 'missing'}`
+      }
+      const next = await enqueueNextDataDomainShadowBackfill(c.env, {
+        runDate: closure.runDate!,
         maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 5000, 20000),
       })
-      return `data_domain_shadow_backfill_next domain=${domain} queued=${queued.queued} run_id=${queued.runId}`
+      if (next.caughtUp) return 'data_domain_shadow_backfill_next all_domains_caught_up=true'
+      return `data_domain_shadow_backfill_next domain=${next.domain} queued=${next.queued} run_id=${next.runId}`
     },
     'storage-health-check': async () => {
       const { runStorageHealthCheck } = await import('./artifactLifecycle')

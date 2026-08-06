@@ -13,6 +13,7 @@ import {
   LegacyEvidenceResolveError,
   resolveLegacyScreenerEvidence,
 } from '../lib/legacyEvidenceResolver'
+import { isTransientD1Reset } from '../lib/d1TransientRetry'
 import { markPipelineStage, queuePostPipelineStage, queuePostVerifyStage } from '../lib/pipelineStageLease'
 
 export const adminControlRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -793,14 +794,55 @@ async function handleSchedulerCallback(c: any) {
         run_date: callbackRunDate,
       }, c.env as any)
     } else {
-      await logSchedulerResult(c.env.KV, 'evening-chain', {
-        status: body.status === 'skipped' ? 'skipped' : 'error',
-        summary: `root chain stopped at allocator snapshot callback: ${String(body.summary ?? body.status)}`,
-        duration_ms: 0,
-        error: body.error != null ? String(body.error) : undefined,
-        run_id: callbackRunId,
-        run_date: callbackRunDate,
-      }, c.env as any)
+      const callbackError = String(body.error ?? body.summary ?? body.status)
+      const transientD1Failure = body.status === 'error' && isTransientD1Reset(callbackError)
+      const stage = transientD1Failure
+        ? await c.env.DB.prepare(`
+            SELECT attempt_count FROM pipeline_stage_runs
+             WHERE business_date=? AND stage='post_pipeline_chain'
+          `).bind(callbackRunDate).first() as { attempt_count?: number | string | null } | null
+        : null
+      const nextAttempt = Math.max(1, Number(stage?.attempt_count ?? 1))
+      if (transientD1Failure && nextAttempt < 3) {
+        const callbackAttemptId = String(body.attempt_id ?? 'unknown-attempt')
+        const retryDedupeKey = `allocator:snapshot-transient-retry:${callbackRunDate}:${callbackRunId}:${callbackAttemptId}`
+        const alreadyScheduled = Boolean(await c.env.KV.get(retryDedupeKey))
+        if (!alreadyScheduled) {
+          await markPipelineStage(c.env.DB, {
+            businessDate: callbackRunDate,
+            stage: 'post_pipeline_chain',
+            status: 'waiting',
+            error: callbackError,
+          })
+          await (c.env.UPDATE_QUEUE as any).send({
+            type: 'allocator_ev_lifecycle_recovery',
+            cursor: 0,
+            triggerTime: callbackRunDate,
+            runId: callbackRunId,
+            attempt: nextAttempt,
+          }, { delaySeconds: Math.min(300, 60 * (2 ** (nextAttempt - 1))) })
+          await c.env.KV.put(retryDedupeKey, new Date().toISOString(), { expirationTtl: 86400 })
+        }
+        await logSchedulerResult(c.env.KV, 'evening-chain', {
+          status: 'running',
+          summary: `allocator snapshot transient D1 failure scheduled=${!alreadyScheduled} attempt=${nextAttempt}/2; awaiting durable recovery`,
+          duration_ms: 0,
+          error: callbackError,
+          run_id: callbackRunId,
+          attempt_id: callbackAttemptId,
+          run_date: callbackRunDate,
+        }, c.env as any)
+      } else {
+        await logSchedulerResult(c.env.KV, 'evening-chain', {
+          status: body.status === 'skipped' ? 'skipped' : 'error',
+          summary: `root chain stopped at allocator snapshot callback: ${String(body.summary ?? body.status)}`,
+          duration_ms: 0,
+          error: body.error != null ? String(body.error) : undefined,
+          run_id: callbackRunId,
+          attempt_id: body.attempt_id != null ? String(body.attempt_id) : undefined,
+          run_date: callbackRunDate,
+        }, c.env as any)
+      }
     }
   }
 

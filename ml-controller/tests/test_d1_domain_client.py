@@ -11,11 +11,20 @@ def test_domain_database_id_prefers_specific_then_legacy(monkeypatch):
     assert d1_domain_client.database_id_for_domain("market") == "legacy"
 
     monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "market")
+    try:
+        d1_domain_client.database_id_for_domain("market")
+    except RuntimeError as exc:
+        assert str(exc) == "multi_d1_strict_routing_not_closed"
+    else:
+        raise AssertionError("active domains must remain closed while the routing contract is incomplete")
+    monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", True)
     assert d1_domain_client.database_id_for_domain("market") == "market-db"
 
 
 def test_domain_database_id_fails_closed_in_strict_mode(monkeypatch):
+    monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", True)
     monkeypatch.setenv("CF_D1_DB_ID", "legacy")
+    monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "learning")
     monkeypatch.delenv("CF_D1_LEARNING_DB_ID", raising=False)
     monkeypatch.setenv("MULTI_D1_STRICT", "true")
     try:
@@ -27,6 +36,7 @@ def test_domain_database_id_fails_closed_in_strict_mode(monkeypatch):
 
 
 def test_domain_client_routes_query_to_resolved_database(monkeypatch):
+    monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", True)
     monkeypatch.setenv("CF_D1_OPS_DB_ID", "ops-db")
     monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "ops")
     monkeypatch.delenv("MULTI_D1_STRICT", raising=False)
@@ -43,6 +53,7 @@ def test_domain_client_routes_query_to_resolved_database(monkeypatch):
 
 
 def test_active_domain_fails_closed_when_specific_id_is_missing(monkeypatch):
+    monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", True)
     monkeypatch.setenv("CF_D1_DB_ID", "legacy")
     monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "execution")
     monkeypatch.delenv("CF_D1_EXECUTION_DB_ID", raising=False)
@@ -54,3 +65,27 @@ def test_active_domain_fails_closed_when_specific_id_is_missing(monkeypatch):
         assert "execution" in str(exc)
     else:
         raise AssertionError("an active domain must not silently fall back to legacy")
+
+
+def test_invalid_active_domain_fails_closed(monkeypatch):
+    monkeypatch.setenv("CF_D1_DB_ID", "legacy")
+    monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "market,typo")
+    try:
+        d1_domain_client.database_id_for_domain("market")
+    except RuntimeError as exc:
+        assert str(exc) == "multi_d1_active_domain_invalid:typo"
+    else:
+        raise AssertionError("invalid active domain configuration must fail closed")
+
+
+def test_strict_requires_an_explicit_active_domain_set(monkeypatch):
+    monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", True)
+    monkeypatch.setenv("CF_D1_DB_ID", "legacy")
+    monkeypatch.delenv("MULTI_D1_ACTIVE_DOMAINS", raising=False)
+    monkeypatch.setenv("MULTI_D1_STRICT", "true")
+    try:
+        d1_domain_client.database_id_for_domain("market")
+    except RuntimeError as exc:
+        assert str(exc) == "multi_d1_strict_active_domains_missing"
+    else:
+        raise AssertionError("strict routing must not silently activate every domain")

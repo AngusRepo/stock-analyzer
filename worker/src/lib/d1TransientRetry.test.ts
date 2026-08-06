@@ -7,6 +7,12 @@ assert.equal(
   isTransientD1Reset(new Error('D1_ERROR: D1 DB storage operation exceeded timeout which caused object to be reset')),
   true,
 )
+assert.equal(
+  isTransientD1Reset(new Error('D1 request failed: HTTP 503: {"errors":[{"code":7010,"message":"Service unavailable"}]}')),
+  true,
+)
+assert.equal(isTransientD1Reset(new Error('D1 request failed: HTTP 400')), false)
+assert.equal(isTransientD1Reset(new Error('upstream service unavailable')), false)
 assert.equal(isTransientD1Reset(new Error('UNIQUE constraint failed')), false)
 
 let attempts = 0

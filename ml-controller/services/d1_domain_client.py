@@ -30,6 +30,8 @@ _DOMAIN_ENV = {
     D1DataDomain.RESEARCH: "CF_D1_RESEARCH_DB_ID",
 }
 
+MULTI_D1_STRICT_ROUTING_READY = False
+
 
 def _active_domains() -> set[D1DataDomain]:
     values = {
@@ -37,13 +39,22 @@ def _active_domains() -> set[D1DataDomain]:
         for value in os.environ.get("MULTI_D1_ACTIVE_DOMAINS", "").split(",")
         if value.strip()
     }
+    allowed = {domain.value for domain in D1DataDomain}
+    invalid = sorted(values - allowed)
+    if invalid:
+        raise RuntimeError(f"multi_d1_active_domain_invalid:{','.join(invalid)}")
     return {domain for domain in D1DataDomain if domain.value in values}
 
 
 def database_id_for_domain(domain: D1DataDomain | str) -> str:
     resolved_domain = D1DataDomain(domain)
     strict = os.environ.get("MULTI_D1_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
-    domain_active = strict or resolved_domain in _active_domains()
+    active_domains = _active_domains()
+    if (strict or active_domains) and not MULTI_D1_STRICT_ROUTING_READY:
+        raise RuntimeError("multi_d1_strict_routing_not_closed")
+    if strict and not active_domains:
+        raise RuntimeError("multi_d1_strict_active_domains_missing")
+    domain_active = resolved_domain in active_domains
     if domain_active:
         specific = os.environ.get(_DOMAIN_ENV[resolved_domain], "").strip()
         if specific:

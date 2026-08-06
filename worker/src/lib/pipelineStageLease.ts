@@ -65,7 +65,7 @@ export async function enqueuePipelineStage(
     const resumed = await db.prepare(`
       UPDATE pipeline_stage_runs
          SET status='queued', queued_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
-             lease_owner=NULL, lease_expires_at=NULL, last_error=NULL
+             lease_owner=NULL, lease_expires_at=NULL, completed_at=NULL, last_error=NULL
        WHERE business_date=? AND stage=?
          AND (
            status IN ('waiting', 'error')
@@ -153,7 +153,7 @@ export async function markPipelineStage(
   await db.prepare(`
     UPDATE pipeline_stage_runs
        SET status=?, last_error=?, lease_owner=NULL, lease_expires_at=NULL,
-           completed_at=CASE WHEN ? IN ('success', 'error') THEN CURRENT_TIMESTAMP ELSE completed_at END,
+           completed_at=CASE WHEN ? IN ('success', 'error') THEN CURRENT_TIMESTAMP ELSE NULL END,
            updated_at=CURRENT_TIMESTAMP
      WHERE business_date=? AND stage=?
   `).bind(

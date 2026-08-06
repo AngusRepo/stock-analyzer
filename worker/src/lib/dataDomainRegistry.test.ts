@@ -6,8 +6,13 @@ import {
   assertSingleDomainOwnership,
   databaseForDataDomain,
   dataDomainForTable,
+  invalidActiveDataDomains,
+  MULTI_D1_PROJECTION_CONTRACT_GATES,
+  MULTI_D1_PROJECTION_CONTRACT_READY,
+  MULTI_D1_ROUTING_CONTRACT_GATES,
   shadowDatabaseForDataDomain,
   MULTI_D1_STRICT_ROUTING_READY,
+  resolveDataDomainRoute,
   tablesForDataDomain,
   tablesForDataDomainShadowBackfill,
 } from './dataDomainRegistry'
@@ -51,12 +56,30 @@ const market = { kind: 'market' } as unknown as D1Database
 const shadowEnv = { DB: legacy, MARKET_DB: market }
 assert.equal(databaseForDataDomain(shadowEnv, 'market'), legacy)
 assert.equal(shadowDatabaseForDataDomain(shadowEnv, 'market'), market)
-assert.equal(databaseForDataDomain({ ...shadowEnv, MULTI_D1_ACTIVE_DOMAINS: 'market' }, 'market'), market)
 assert(activeDataDomains({ MULTI_D1_ACTIVE_DOMAINS: ' market,ops ' }).has('ops'))
-assert.throws(() => databaseForDataDomain({ DB: legacy, MULTI_D1_ACTIVE_DOMAINS: 'learning' }, 'learning'), /data_domain_binding_missing:learning/)
+assert.deepEqual(invalidActiveDataDomains({ MULTI_D1_ACTIVE_DOMAINS: ' market,unknown,ops,bad ' }), ['unknown', 'bad'])
+assert.throws(
+  () => databaseForDataDomain({ ...shadowEnv, MULTI_D1_ACTIVE_DOMAINS: 'market' }, 'market'),
+  /multi_d1_strict_routing_not_closed/,
+)
 
 assert.equal(MULTI_D1_STRICT_ROUTING_READY, false)
+assert.equal(MULTI_D1_PROJECTION_CONTRACT_READY, false)
+assert.equal(MULTI_D1_ROUTING_CONTRACT_GATES.direct_legacy_db_paths_closed, false)
+assert.equal(MULTI_D1_PROJECTION_CONTRACT_GATES.typed_outbox_producers_wired, false)
 assert.throws(
   () => databaseForDataDomain({ ...shadowEnv, MULTI_D1_STRICT: 'true' }, 'market'),
   /multi_d1_strict_routing_not_closed/,
 )
+assert.equal(resolveDataDomainRoute({
+  domain: 'market', activeDomains: new Set(['market']), strictRequested: true, routingReady: true,
+}), 'domain')
+assert.equal(resolveDataDomainRoute({
+  domain: 'learning', activeDomains: new Set(['market']), strictRequested: true, routingReady: true,
+}), 'legacy')
+assert.throws(() => resolveDataDomainRoute({
+  domain: 'market', activeDomains: new Set(), strictRequested: true, routingReady: true,
+}), /multi_d1_strict_active_domains_missing/)
+assert.throws(() => resolveDataDomainRoute({
+  domain: 'market', activeDomains: new Set(['market']), invalidDomains: ['unknown'], strictRequested: false, routingReady: true,
+}), /multi_d1_active_domain_invalid:unknown/)

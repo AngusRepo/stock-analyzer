@@ -3465,6 +3465,36 @@ export async function processUpdateBatch(
         run_date: triggerTime, run_scope: runScope,
       })
       await markStrategyLearningRunFinalized(env.DB, { businessDate: triggerTime, runId: canonicalRunId })
+      if (currentBusinessDateRun) {
+        try {
+          const { enqueueNextDataDomainShadowBackfill } = await import('./dataDomainShadowBackfillDrain')
+          const next = await enqueueNextDataDomainShadowBackfill(env, { runDate: triggerTime })
+          await logSchedulerResult(env.KV, 'data-domain-shadow-backfill-next', {
+            status: next.caughtUp ? 'success' : next.queued ? 'triggered' : 'running',
+            summary: next.caughtUp
+              ? 'post-chain coordinator all_domains_caught_up=true'
+              : `post-chain coordinator domain=${next.domain} queued=${next.queued} run_id=${next.runId}`,
+            duration_ms: 0,
+            run_id: canonicalRunId,
+            run_date: triggerTime,
+            run_scope: 'derived',
+          }, env)
+        } catch (backfillError) {
+          const backfillMessage = backfillError instanceof Error
+            ? backfillError.message
+            : String(backfillError)
+          console.error('[Queue] post-chain data-domain backfill enqueue failed:', backfillError)
+          await logSchedulerResult(env.KV, 'data-domain-shadow-backfill-next', {
+            status: 'error',
+            summary: `post-chain coordinator enqueue failed: ${backfillMessage}`,
+            error: backfillMessage,
+            duration_ms: 0,
+            run_id: canonicalRunId,
+            run_date: triggerTime,
+            run_scope: 'derived',
+          }, env)
+        }
+      }
       return
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)

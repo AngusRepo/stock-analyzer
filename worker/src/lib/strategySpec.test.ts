@@ -719,3 +719,47 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
     symbol: '1000', raw_signals: { technicalIndicators: { contractSignal: 0 } },
   }, [spec]).matches.length, 'evaluable non-match must stay a valid negative observation')
 }
+{
+  const spec = DEFAULT_STRATEGY_SPECS.find((row) => row.id === 'finlab_ai_skill_reversion_value_v1')!
+  const providerNullPeCandidate = {
+    symbol: '1101',
+    market_segment: 'LISTED_OTC',
+    current_price: 24.05,
+    raw_signals: {
+      pe: null,
+      pb: 0.77,
+      dividendYield: 3.34,
+      return20d: 0.0278,
+      volumeExpansion20: 0.9458,
+    },
+  }
+  const providerNull = assessStrategySpecEvaluability(providerNullPeCandidate, spec)
+  assert(providerNull.evaluable, 'same-date valuation row with provider-null PE must be an evaluable no-match')
+  assert(
+    providerNull.deterministicNoMatchReasons?.includes('provider_not_applicable:pe'),
+    'provider-null PE must keep an explicit not-applicable reason',
+  )
+  assert(
+    assessCandidateAgainstStrategySpecs(providerNullPeCandidate, [spec]).matches.length === 0,
+    'provider-null PE must never pass maxPe even though the decision is evaluable',
+  )
+
+  const emergingCandidate = {
+    symbol: '3184',
+    market_segment: 'EMERGING',
+    current_price: 16.1,
+    raw_signals: {
+      pe: null,
+      pb: null,
+      return20d: -0.47,
+      volumeExpansion20: 0.37,
+    },
+  }
+  const outOfDomain = assessStrategySpecEvaluability(emergingCandidate, spec)
+  assert(outOfDomain.evaluable, 'out-of-universe market segment is a deterministic no-match, not missing strategy data')
+  assert(
+    outOfDomain.deterministicNoMatchReasons?.some((reason) => reason.startsWith('market_segment_out_of_scope:EMERGING')),
+    'out-of-universe decision must retain explicit market-domain evidence',
+  )
+  assert(assessCandidateAgainstStrategySpecs(emergingCandidate, [spec]).matches.length === 0, 'emerging must not match the listed/OTC value strategy')
+}

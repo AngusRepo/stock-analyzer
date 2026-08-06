@@ -61,3 +61,43 @@ assert(
 assert(result.laneCounts.tradable === 1, 'only 7820 should count as tradable')
 assert(result.laneCounts.emerging_watchlist === 0, 'emerging research lane should stay disabled')
 assert(result.laneCounts.research_only === 1, '3585 should count as research-only after emerging retirement')
+
+const staleMisclassifiedEmerging = splitPriceRowsByBoard([
+  {
+    symbol: '3184',
+    market: 'OTC',
+    date: '2026-07-01',
+    open: 16,
+    high: 16.5,
+    low: 15.8,
+    close: 16.1,
+    volume: 100000,
+    avg_price: 16.1,
+  },
+  {
+    symbol: '2330',
+    market: 'TWSE',
+    date: '2026-08-04',
+    open: 1200,
+    high: 1210,
+    low: 1190,
+    close: 1205,
+    volume: 1000000,
+    avg_price: 1203,
+  },
+  {
+    symbol: '2330',
+    market: 'TWSE',
+    date: '2026-08-05',
+    open: 1205,
+    high: 1220,
+    low: 1200,
+    close: 1215,
+    volume: 1200000,
+    avg_price: 1212,
+  },
+], '2026-08-05')
+
+assert(!staleMisclassifiedEmerging.allPrices.some((row) => row.stock_id === '3184'), 'stale 7/1 symbol must not enter the 8/5 L0 universe even when stocks.market says OTC')
+assert(staleMisclassifiedEmerging.allPrices.filter((row) => row.stock_id === '2330').length === 2, 'fresh symbols should retain their PIT history after the latest-date gate')
+assert(staleMisclassifiedEmerging.laneCounts.stale_excluded === 1, 'stale symbol exclusion must be explicit telemetry')

@@ -70,4 +70,16 @@ assert(
     updateOrchestrator.includes('await runDailyUpdate(env, true, triggerTime)'),
   'source readiness retry must redispatch scoped FinLab canonical lanes before legacy supplemental bulk fetch',
 )
+
+const dailyPrimaryLanes = controllerResearchWorkflows.match(
+  /FINLAB_DAILY_PRIMARY_LANES_DEFAULT\s*=\s*'([^']+)'/,
+)?.[1] ?? ''
+assert(
+  !dailyPrimaryLanes.includes('emerging_price_diversity'),
+  'retired emerging price lane must not re-enter the daily primary refresh',
+)
+assert(
+  updateOrchestrator.includes('sourceKeyCanonicalParityReadiness') && updateOrchestrator.includes('parity=exact'),
+  'daily FinLab valuation readiness must close raw-to-canonical row parity automatically',
+)
 console.log('sourceReadinessProbeAutomationContract.test.ts passed')

@@ -131,16 +131,16 @@ function toCanonicalScreenerPrice(row: ScreenerPriceRow, researchOnly = false): 
   }
 }
 
-export function splitPriceRowsByBoard(rows: ScreenerPriceRow[]): {
+export function splitPriceRowsByBoard(rows: ScreenerPriceRow[], requiredLatestDate?: string): {
   allPrices: CanonicalScreenerPrice[]
   emergingResearchPrices: CanonicalScreenerPrice[]
   tpexSymbols: Set<string>
-  laneCounts: { tradable: number; emerging_watchlist: number; research_only: number }
+  laneCounts: { tradable: number; emerging_watchlist: number; research_only: number; stale_excluded: number }
 } {
   const allPrices: CanonicalScreenerPrice[] = []
   const emergingResearchPrices: CanonicalScreenerPrice[] = []
   const tpexSymbols = new Set<string>()
-  const laneCounts = { tradable: 0, emerging_watchlist: 0, research_only: 0 }
+  const laneCounts = { tradable: 0, emerging_watchlist: 0, research_only: 0, stale_excluded: 0 }
   const rowsBySymbol = new Map<string, ScreenerPriceRow[]>()
 
   for (const row of rows) {
@@ -154,6 +154,10 @@ export function splitPriceRowsByBoard(rows: ScreenerPriceRow[]): {
   for (const symbolRows of rowsBySymbol.values()) {
     symbolRows.sort((a, b) => String(a.date).localeCompare(String(b.date)))
     const latest = symbolRows[symbolRows.length - 1]
+    if (requiredLatestDate && latest.date !== requiredLatestDate) {
+      laneCounts.stale_excluded += 1
+      continue
+    }
     const board = classifyBoard(latest)
     if (board.recommendationLane === 'tradable') {
       for (const row of symbolRows) {
@@ -371,7 +375,7 @@ export async function loadMarketDataFromD1(
   emergingResearchPrices: CanonicalScreenerPrice[]
   allChips: CanonicalScreenerChip[]
   tpexSymbols: Set<string>
-  laneCounts: { tradable: number; emerging_watchlist: number; research_only: number }
+  laneCounts: { tradable: number; emerging_watchlist: number; research_only: number; stale_excluded: number }
   chipSourceSummary: Record<string, number>
 }> {
   const lookbackDays = Math.ceil(priceDays * 1.5) + 7
@@ -393,7 +397,7 @@ export async function loadMarketDataFromD1(
       emergingResearchPrices: [],
       allChips: [],
       tpexSymbols: new Set(),
-      laneCounts: { tradable: 0, emerging_watchlist: 0, research_only: 0 },
+      laneCounts: { tradable: 0, emerging_watchlist: 0, research_only: 0, stale_excluded: 0 },
       chipSourceSummary: {},
     }
   }
@@ -411,7 +415,7 @@ export async function loadMarketDataFromD1(
   ).bind(minDate, maxDate)
    .all<ScreenerPriceRow>()
 
-  const { allPrices, tpexSymbols, laneCounts } = splitPriceRowsByBoard(priceRows ?? [])
+  const { allPrices, tpexSymbols, laneCounts } = splitPriceRowsByBoard(priceRows ?? [], maxDate)
 
   const { results: chipDateRows } = await env.DB.prepare(
     `SELECT DISTINCT date FROM chip_data

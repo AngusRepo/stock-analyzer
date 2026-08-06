@@ -1439,7 +1439,12 @@ function mergeFundamentalSignals(
       ;(next as Record<string, unknown>)[field] = value
     }
   }
-  next.source = [existing.source, patch.source].filter(Boolean).join('+') || null
+  next.source = [...new Set(
+    [existing.source, patch.source]
+      .flatMap((source) => String(source ?? '').split('+'))
+      .map((source) => source.trim())
+      .filter(Boolean),
+  )].join('+') || null
   map.set(key, next)
 }
 
@@ -1514,18 +1519,24 @@ async function loadStrategyRawFundamentalSignals(
         SELECT stock_id AS symbol,
                available_date,
                period,
+               source,
                ${canonicalColumns}
           FROM canonical_fundamental_features
          WHERE stock_id IN (${placeholders})
            AND available_date <= ?
            AND as_of_date <= ?
            AND source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation')
+           AND (
+             source = 'finlab.fundamental_factor_diversity'
+             OR (source = 'finlab.daily_valuation' AND available_date = ?)
+           )
            AND (${nonNullPredicate})
          ORDER BY stock_id, available_date DESC, period DESC
-      `).bind(...chunk, endDate, endDate).all<{
+      `).bind(...chunk, endDate, endDate, endDate).all<{
         symbol: string
         available_date: string | null
         period: string | null
+        source: string | null
         revenue_growth_yoy: number | null
         gross_margin: number | null
         operating_margin: number | null
@@ -1553,7 +1564,7 @@ async function loadStrategyRawFundamentalSignals(
       }>()
       telemetry.canonicalRowsScanned += (results ?? []).length
       for (const row of results ?? []) {
-        const patch: StrategyRawFundamentalSignals = { source: 'finlab.fundamental_features' }
+        const patch: StrategyRawFundamentalSignals = { source: row.source }
         const rowRecord = row as Record<RawFundamentalColumn, unknown>
         for (const [field, column] of RAW_FUNDAMENTAL_FIELDS) {
           const value = finiteOrNull(rowRecord[column])

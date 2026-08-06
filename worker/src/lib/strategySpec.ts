@@ -25,6 +25,7 @@ export interface StrategyCandidateInput {
   name?: string
   sector?: string
   industry?: string
+  market_segment?: string | null
   score_v2?: unknown
   current_price?: number | null
   raw_signals?: StrategyRawSignals | string | null
@@ -67,6 +68,7 @@ export interface StrategySpecThresholds {
   featureRefs?: StrategyFeatureRefDsl
   includeIndustries?: string[]
   excludeIndustries?: string[]
+  includeMarketSegments?: string[]
 }
 
 export type StrategySignalOperator = '>=' | '>' | '<=' | '<' | '==' | '!='
@@ -237,6 +239,7 @@ export interface StrategySpecEvaluability {
   missingSignals: string[]
   missingFeatureRefs: string[]
   unavailableReasons: string[]
+  deterministicNoMatchReasons?: string[]
   signalDiagnostics: Array<{
     group: 'all' | 'any' | 'not'
     signal: string
@@ -419,6 +422,31 @@ function industryAllowed(candidate: StrategyCandidateInput, thresholds: Strategy
   if (includes.length && !includes.includes(industry)) return false
   if (excludes.length && excludes.includes(industry)) return false
   return true
+}
+
+function normalizeMarketSegment(value: unknown): string {
+  return cleanText(value).toUpperCase().replace(/[\s-]+/g, '_')
+}
+
+function marketSegmentDomain(
+  candidate: StrategyCandidateInput,
+  thresholds: StrategySpecThresholds,
+): { state: 'in_scope' | 'out_of_scope' | 'missing'; segment: string; allowed: string[] } {
+  const allowed = (thresholds.includeMarketSegments ?? [])
+    .map(normalizeMarketSegment)
+    .filter(Boolean)
+  if (!allowed.length) return { state: 'in_scope', segment: '', allowed }
+  const segment = normalizeMarketSegment(candidate.market_segment)
+  if (!segment) return { state: 'missing', segment, allowed }
+  return {
+    state: allowed.includes(segment) ? 'in_scope' : 'out_of_scope',
+    segment,
+    allowed,
+  }
+}
+
+function marketSegmentAllowed(candidate: StrategyCandidateInput, thresholds: StrategySpecThresholds): boolean {
+  return marketSegmentDomain(candidate, thresholds).state === 'in_scope'
 }
 
 function meetsMinimum(value: unknown, min: number | undefined): boolean {
@@ -935,7 +963,15 @@ function missingConfiguredThresholdSignals(raw: StrategyRawSignals, thresholds: 
   ]
   const missing = scalarSignals
     .filter(([, threshold]) => threshold != null)
-    .filter(([signal]) => finiteNumber(raw[signal]) == null)
+    .filter(([signal]) => {
+      if (finiteNumber(raw[signal]) != null) return false
+      // A same-date valuation row with another observed valuation field means
+      // FinLab deliberately published PE/PB as not applicable (for example,
+      // trailing earnings <= 0). That is an evaluable no-match, not a fetch gap.
+      if (signal === 'pe' && (finiteNumber(raw.pb) != null || finiteNumber(raw.dividendYield) != null)) return false
+      if (signal === 'pb' && (finiteNumber(raw.pe) != null || finiteNumber(raw.dividendYield) != null)) return false
+      return true
+    })
     .map(([signal]) => String(signal))
   for (const key of new Set([
     ...Object.keys(thresholds.minTechnicalIndicators ?? {}),
@@ -966,6 +1002,28 @@ export function assessStrategySpecEvaluability(
       signalDiagnostics: [],
     }
   }
+  const marketDomain = marketSegmentDomain(candidate, spec.thresholds)
+  if (marketDomain.state === 'out_of_scope') {
+    return {
+      evaluable: true,
+      missingSignals: [],
+      missingFeatureRefs: [],
+      unavailableReasons: [],
+      deterministicNoMatchReasons: [
+        `market_segment_out_of_scope:${marketDomain.segment}:allowed=${marketDomain.allowed.join(',')}`,
+      ],
+      signalDiagnostics: [],
+    }
+  }
+  if (marketDomain.state === 'missing') {
+    return {
+      evaluable: false,
+      missingSignals: ['market_segment'],
+      missingFeatureRefs: [],
+      unavailableReasons: ['missing_signal:market_segment'],
+      signalDiagnostics: [],
+    }
+  }
   const raw = deriveStrategyRawSignals(candidate)
   const signalDiagnostics = explainSignalDsl(raw, spec.thresholds.dsl)
   const missingSignals = [
@@ -987,6 +1045,14 @@ export function assessStrategySpecEvaluability(
     missingSignals: cleanMissingSignals,
     missingFeatureRefs,
     unavailableReasons,
+    deterministicNoMatchReasons: [
+      ...(spec.thresholds.maxPe != null && raw.pe == null && (raw.pb != null || raw.dividendYield != null)
+        ? ['provider_not_applicable:pe']
+        : []),
+      ...(spec.thresholds.maxPb != null && raw.pb == null && (raw.pe != null || raw.dividendYield != null)
+        ? ['provider_not_applicable:pb']
+        : []),
+    ],
     signalDiagnostics,
   }
 }
@@ -1216,6 +1282,7 @@ export function assessCandidateAgainstStrategySpecs(
       continue
     }
     const t = spec.thresholds
+    if (!marketSegmentAllowed(candidate, t)) continue
     if (!industryAllowed(candidate, t)) continue
     if (!meetsPrice(candidate, t)) continue
     if (!meetsMinimum(scores.seedScore, t.minSeedScore)) continue
@@ -1422,16 +1489,17 @@ const DEFAULT_STRATEGY_SPEC_DRAFTS: StrategySpec[] = [
     thesis: 'Use raw valuation, profitability and mild reversion evidence to admit neglected value-reversion candidates that improve L1 diversity.',
     thresholds: {
       minPrice: 10,
-      minEps: 0,
       maxPe: 28,
       maxPb: 3,
       maxReturn20d: 0.08,
       minVolumeExpansion20: 0.75,
+      includeMarketSegments: ['LISTED_OTC'],
     },
     candidatePolicy: { poolQuota: 16, costBudget: 18, evidenceRequirements: ['finlab_canonical_fundamental', 'raw_valuation', 'raw_profitability', 'raw_reversion'], maxMlShare: 0.22 },
     riskNotes: [
       'Promoted in the 2026-08-05 equal-count rotation from S01 after positive reconstructed reward-ledger evidence.',
       'Value and reversion inputs remain PIT constrained; missing valuation evidence fails closed.',
+      'FinLab daily PE is the trailing-earnings profitability owner; provider-null PE on a same-date valuation row is an evaluable no-match, not missing evidence.',
     ],
     createdBy: 'p5_strategy_governance',
   },

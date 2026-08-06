@@ -32,21 +32,26 @@ assert(
 assert(
   block.includes('AND available_date <= ?') &&
     block.includes('AND as_of_date <= ?') &&
-    block.includes('bind(...chunk, endDate, endDate)'),
-  'historical screener fundamentals must enforce available and materialization time at the decision date',
+    block.includes("source = 'finlab.daily_valuation' AND available_date = ?") &&
+    block.includes('bind(...chunk, endDate, endDate, endDate)'),
+  'historical screener fundamentals must use PIT financial statements but require exact-date daily valuation',
 )
 
 const updateOrchestrator = readFileSync(join(process.cwd(), 'src/lib/updateOrchestrator.ts'), 'utf8')
 assert(
-  updateOrchestrator.includes("source = 'finlab.daily_valuation' AND (pe IS NOT NULL OR pb IS NOT NULL)") &&
-    updateOrchestrator.includes("source = 'finlab.daily_valuation' AND pe IS NOT NULL") &&
-    updateOrchestrator.includes("source = 'finlab.daily_valuation' AND pb IS NOT NULL"),
-  'daily valuation readiness must be owned only by finlab.daily_valuation rows',
+  updateOrchestrator.includes('sourceKeyCanonicalParityReadiness') &&
+    updateOrchestrator.includes("source='finlab.daily_valuation' AND pe IS NOT NULL") &&
+    updateOrchestrator.includes("source='finlab.daily_valuation' AND pb IS NOT NULL"),
+  'daily valuation readiness must compare FinLab raw target rows with exact canonical PE/PB rows',
 )
 assert(
-  updateOrchestrator.includes('available_date = ? AND as_of_date <= ?') &&
+  (updateOrchestrator.includes('available_date = ? AND as_of_date <= ?') || updateOrchestrator.includes('available_date=? AND as_of_date<=?')) &&
     updateOrchestrator.includes('AND f.as_of_date <= ?'),
   'FinLab readiness and legacy mirror must not admit rows materialized after the target date',
+)
+assert(
+  block.includes('const patch: StrategyRawFundamentalSignals = { source: row.source }'),
+  'raw fundamental evidence must retain the canonical row owner instead of relabeling valuation as fundamental features',
 )
 
 for (const field of [

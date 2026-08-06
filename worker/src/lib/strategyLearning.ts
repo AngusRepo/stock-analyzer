@@ -1253,6 +1253,7 @@ export async function listStrategyLearningCandidates(
     SELECT r.symbol,
            COALESCE(dr.name, r.name, fc.name) AS name,
            COALESCE(dr.sector, r.sector) AS sector,
+           r.market_segment,
            dr.industry,
            COALESCE(dr.score_components, r.score_components) AS score_components,
            dr.current_price,
@@ -3346,6 +3347,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         throw new Error('reference_lineage_incomplete')
       }
       const references = [...new Map(referenceRows.map((row) => [cleanToken(row.symbol), row])).values()]
+      const referenceBySymbol = new Map(references.map((row) => [cleanToken(row.symbol), row]))
       const producerRunId = [...producerRunIds][0]
       const decisionResult = await db.prepare(`
         SELECT d.date, d.symbol, d.name, d.strategy_id, d.strategy_version,
@@ -3400,6 +3402,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           symbol: row.symbol,
           name: row.name ?? undefined,
           industry: firstCleanToken(context?.context_industry, fullContext?.candidate?.industry) ?? undefined,
+          market_segment: referenceBySymbol.get(cleanToken(row.symbol))?.market_segment ?? undefined,
           current_price: firstFinite(context?.context_current_price, fullContext?.candidate?.current_price),
           raw_signals: rawSignals,
           score_v2: contextRaw.score_v2 ?? fullContext?.score_v2 ?? null,

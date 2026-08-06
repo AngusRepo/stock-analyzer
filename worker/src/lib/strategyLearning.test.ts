@@ -875,3 +875,9 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   )
   assert(negative.evaluable === 1 && negative.matched === 0, 'present but failing signal must remain an evaluable negative')
 }
+
+{
+  const source = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
+  assert(source.includes('r.market_segment,\n           dr.industry'), 'daily strategy candidates must preserve selection-reference market_segment lineage')
+  assert(source.includes('market_segment: referenceBySymbol.get'), 'historical strategy rebuild must preserve selection-reference market_segment lineage')
+}

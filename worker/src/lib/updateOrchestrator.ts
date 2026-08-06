@@ -271,6 +271,56 @@ async function countReadinessRows(
   }
 }
 
+async function sourceKeyCanonicalParityReadiness(
+  db: D1Database,
+  options: {
+    key: string
+    targetDate: string
+    lane: string
+    field: string
+    canonicalSql: string
+    canonicalParams: unknown[]
+  },
+): Promise<ReadinessCheck> {
+  try {
+    const [sourceKey, canonical] = await Promise.all([
+      db.prepare(`
+        SELECT status, target_rows, latest_date
+          FROM source_key_report
+         WHERE target_date=? AND lane=? AND field=?
+         ORDER BY updated_at DESC
+         LIMIT 1
+      `).bind(options.targetDate, options.lane, options.field).first<{
+        status: string | null
+        target_rows: number | null
+        latest_date: string | null
+      }>(),
+      db.prepare(options.canonicalSql).bind(...options.canonicalParams).first<{ count: number | null }>(),
+    ])
+    const status = String(sourceKey?.status ?? '').toLowerCase()
+    const expected = Number(sourceKey?.target_rows ?? 0)
+    const actual = Number(canonical?.count ?? 0)
+    const latestDate = sourceKey?.latest_date ?? null
+    const sourceReady = (status === 'ok' || status === 'skipped_reused')
+      && expected > 0
+      && latestDate === options.targetDate
+    const parity = sourceReady && actual === expected
+    return {
+      key: options.key,
+      ok: parity,
+      summary: parity
+        ? `${options.key} canonical=${actual} raw=${expected} parity=exact`
+        : `${options.key} waiting: status=${status || 'missing'} latest=${latestDate ?? 'missing'} canonical=${actual} raw=${expected}`,
+    }
+  } catch (e) {
+    return {
+      key: options.key,
+      ok: false,
+      summary: `${options.key} parity query failed: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
+}
+
 function taipeiDateFromIso(value: string | null | undefined): string | null {
   const ms = Date.parse(String(value ?? ''))
   if (!Number.isFinite(ms)) return null
@@ -447,27 +497,22 @@ async function checkEveningChainSourceReadiness(
       [targetDate],
       1000,
     ),
-    countReadinessRows(
-      env.DB,
-      'canonical_fundamental_features:valuation_daily_union',
-      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND as_of_date <= ? AND source = 'finlab.daily_valuation' AND (pe IS NOT NULL OR pb IS NOT NULL)",
-      [targetDate, targetDate],
-      1500,
-    ),
-    countReadinessRows(
-      env.DB,
-      'canonical_fundamental_features:valuation_daily_pe',
-      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND as_of_date <= ? AND source = 'finlab.daily_valuation' AND pe IS NOT NULL",
-      [targetDate, targetDate],
-      1000,
-    ),
-    countReadinessRows(
-      env.DB,
-      'canonical_fundamental_features:valuation_daily_pb',
-      "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date = ? AND as_of_date <= ? AND source = 'finlab.daily_valuation' AND pb IS NOT NULL",
-      [targetDate, targetDate],
-      1500,
-    ),
+    sourceKeyCanonicalParityReadiness(env.DB, {
+      key: 'canonical_fundamental_features:valuation_daily_pe',
+      targetDate,
+      lane: 'fundamental_factor_diversity',
+      field: 'pe',
+      canonicalSql: "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date=? AND as_of_date<=? AND source='finlab.daily_valuation' AND pe IS NOT NULL",
+      canonicalParams: [targetDate, targetDate],
+    }),
+    sourceKeyCanonicalParityReadiness(env.DB, {
+      key: 'canonical_fundamental_features:valuation_daily_pb',
+      targetDate,
+      lane: 'fundamental_factor_diversity',
+      field: 'pb',
+      canonicalSql: "SELECT COUNT(*) AS count FROM canonical_fundamental_features WHERE available_date=? AND as_of_date<=? AND source='finlab.daily_valuation' AND pb IS NOT NULL",
+      canonicalParams: [targetDate, targetDate],
+    }),
   ])
   checks.push(...canonicalChecks)
 

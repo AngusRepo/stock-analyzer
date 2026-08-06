@@ -17,3 +17,13 @@ assert.match(eligibility, /thresholdMarginRows !== matchedMatrixRows/)
 assert.match(closure, /evening_chain_threshold_margin_evidence_incomplete/)
 assert.match(closure, /evening_chain_challenger_affinity_projection_incomplete/)
 assert.match(learning, /threshold_margin_evidence_incomplete/)
+assert.match(
+  learning,
+  /WITH decision_dates AS \([\s\S]*GROUP BY date[\s\S]*valid_runs AS \(/,
+  'historical candidate discovery must validate each date once instead of once per decision row',
+)
+assert.match(
+  learning,
+  /m\.signal_date=mr\.signal_date[\s\S]*sr\.signal_date=mr\.signal_date/,
+  'historical completeness checks must constrain matrix and reference scans by their leading date indexes',
+)

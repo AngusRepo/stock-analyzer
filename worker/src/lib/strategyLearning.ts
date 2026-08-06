@@ -3248,60 +3248,72 @@ export async function listHistoricalStrategyEvidenceV5Dates(
 ): Promise<string[]> {
   const maxDates = Math.max(1, Math.min(5, Math.floor(options.maxDates ?? 2)))
   const dateRows = await db.prepare(`
+    WITH decision_dates AS (
+      SELECT date
+        FROM strategy_decision_log
+       WHERE date<=?
+       GROUP BY date
+    ),
+    valid_runs AS (
+      SELECT mr.signal_date
+        FROM strategy_label_matrix_runs_v4 mr
+       WHERE mr.signal_date<=?
+         AND mr.status='ready'
+         AND mr.labeler_version IN (
+           'strategy-labeler-v1',
+           'strategy-decision-log-pit-reconstruction-v6'
+         )
+         AND mr.reference_contract_version='selection-reference-snapshot-v3'
+         AND mr.expected_cell_count > 0
+         AND mr.persisted_cell_count=mr.expected_cell_count
+         AND (
+           SELECT COUNT(*)
+             FROM strategy_label_matrix_v4 m
+            WHERE m.signal_date=mr.signal_date
+              AND m.producer_run_id=mr.producer_run_id
+              AND m.challenger_affinity_version='strategy-threshold-margin-affinity-v2'
+         )=mr.expected_cell_count
+         AND (
+           SELECT COUNT(*)
+             FROM strategy_label_matrix_v4 m
+            WHERE m.signal_date=mr.signal_date
+              AND m.producer_run_id=mr.producer_run_id
+              AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
+         )=(
+           SELECT COUNT(*)
+             FROM strategy_label_matrix_v4 m
+            WHERE m.signal_date=mr.signal_date
+              AND m.producer_run_id=mr.producer_run_id
+              AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
+              AND m.challenger_affinity_version='strategy-threshold-margin-affinity-v2'
+         )
+         AND (
+           SELECT COUNT(*)
+             FROM selection_reference_snapshots_v1 sr
+            WHERE sr.signal_date=mr.signal_date
+              AND sr.producer_run_id=mr.producer_run_id
+              AND sr.strategy_challenger_affinity_version='strategy-threshold-margin-affinity-v2'
+         )=mr.reference_candidate_count
+         AND EXISTS (
+           SELECT 1 FROM canonical_run_heads h
+            WHERE h.logical_run_key='screener:' || mr.signal_date || ':TW:production:market_screener'
+              AND h.run_id=mr.producer_run_id
+         )
+       GROUP BY mr.signal_date
+    )
     SELECT d.date
-      FROM strategy_decision_log d
+      FROM decision_dates d
       LEFT JOIN strategy_evidence_rebuild_runs_v5 r ON r.signal_date=d.date
-     WHERE d.date<=?
-       AND (
+      LEFT JOIN valid_runs v ON v.signal_date=d.date
+     WHERE (
          r.signal_date IS NULL
          OR COALESCE(r.evaluation_contract_version, '') <> 'strategy-evaluation-v2'
          OR r.status NOT IN ('success','blocked')
-         OR (
-           r.status='success'
-           AND NOT EXISTS (
-             SELECT 1
-               FROM strategy_label_matrix_runs_v4 mr
-              WHERE mr.signal_date=d.date
-                AND mr.status='ready'
-                AND mr.labeler_version IN (
-                  'strategy-labeler-v1',
-                  'strategy-decision-log-pit-reconstruction-v6'
-                )
-                AND mr.reference_contract_version='selection-reference-snapshot-v3'
-                AND mr.expected_cell_count > 0
-                AND mr.persisted_cell_count=mr.expected_cell_count
-                AND (
-                  SELECT COUNT(*)
-                    FROM strategy_label_matrix_v4 m
-                   WHERE m.producer_run_id=mr.producer_run_id
-                     AND m.challenger_affinity_version='strategy-threshold-margin-affinity-v2'
-                )=mr.expected_cell_count
-                AND (
-                  SELECT COUNT(*)
-                    FROM strategy_label_matrix_v4 m
-                   WHERE m.producer_run_id=mr.producer_run_id
-                     AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
-                )=(
-                  SELECT COUNT(*)
-                    FROM strategy_label_matrix_v4 m
-                   WHERE m.producer_run_id=mr.producer_run_id
-                     AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
-                     AND m.challenger_affinity_version='strategy-threshold-margin-affinity-v2'
-                )
-                AND (SELECT COUNT(*) FROM selection_reference_snapshots_v1 sr
-                      WHERE sr.producer_run_id=mr.producer_run_id AND sr.strategy_challenger_affinity_version='strategy-threshold-margin-affinity-v2')=mr.reference_candidate_count
-                AND EXISTS (
-                  SELECT 1 FROM canonical_run_heads h
-                   WHERE h.logical_run_key='screener:' || mr.signal_date || ':TW:production:market_screener'
-                     AND h.run_id=mr.producer_run_id
-                )
-           )
-         )
+         OR (r.status='success' AND v.signal_date IS NULL)
        )
-     GROUP BY d.date
      ORDER BY CASE WHEN d.date=? THEN 0 ELSE 1 END, d.date DESC
      LIMIT ?
-  `).bind(options.asOfDate, options.priorityDate ?? '', maxDates).all<{ date: string }>()
+  `).bind(options.asOfDate, options.asOfDate, options.priorityDate ?? '', maxDates).all<{ date: string }>()
   return (dateRows.results ?? []).map((row) => row.date)
 }
 

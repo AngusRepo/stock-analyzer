@@ -3246,7 +3246,7 @@ interface HistoricalStrategyContextRowV5 {
 
 export async function listHistoricalStrategyEvidenceV5Dates(
   db: D1Database,
-  options: { asOfDate: string; maxDates?: number; priorityDate?: string | null },
+  options: { asOfDate: string; maxDates?: number; priorityDate?: string | null; priorityOnly?: boolean },
 ): Promise<string[]> {
   const maxDates = Math.max(1, Math.min(5, Math.floor(options.maxDates ?? 2)))
   const dateRows = await db.prepare(`
@@ -3316,7 +3316,11 @@ export async function listHistoricalStrategyEvidenceV5Dates(
      ORDER BY CASE WHEN d.date=? THEN 0 ELSE 1 END, d.date DESC
      LIMIT ?
   `).bind(options.asOfDate, options.asOfDate, options.priorityDate ?? '', maxDates).all<{ date: string }>()
-  return (dateRows.results ?? []).map((row) => row.date)
+  const dates = (dateRows.results ?? []).map((row) => row.date)
+  if (!options.priorityOnly) return dates
+  const priorityDate = String(options.priorityDate ?? '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(priorityDate)) return []
+  return dates.filter((date) => date === priorityDate)
 }
 
 export async function rebuildHistoricalStrategyEvidenceV5(
@@ -3325,6 +3329,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
     asOfDate: string
     maxDates?: number
     priorityDate?: string | null
+    priorityOnly?: boolean
     resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
   },
 ): Promise<{ attemptedDates: number; successfulDates: number; blockedDates: number; rebuiltDecisions: number; rebuiltMatrixRows: number }> {
@@ -3838,6 +3843,7 @@ export async function finalizeStrategyLearningEvidenceV5(
       // Keep the critical chain bounded; the next canonical date drains the next PIT repair.
       maxDates: 1,
       priorityDate: options.historicalPriorityDate,
+      priorityOnly: true,
       resolveHistoricalRegime: options.resolveHistoricalRegime,
     }),
     options,

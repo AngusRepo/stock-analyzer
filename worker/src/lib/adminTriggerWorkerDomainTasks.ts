@@ -355,6 +355,10 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
             allowPromotion: currentBusinessDateRun,
             persistPolicy: currentBusinessDateRun,
             historicalPriorityDate,
+            resolveHistoricalRegime: async (signalDate) => {
+              const { readHistoricalHmmRegimeFamily } = await import('./marketRegimeState')
+              return readHistoricalHmmRegimeFamily(c.env.KV, signalDate)
+            },
             beforePromotion: async () => {
               const closureAudit = await auditEveningChainEvidenceClosure(
                 c.env,

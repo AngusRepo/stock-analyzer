@@ -563,7 +563,12 @@ adminWriteRoutes.post('/api/admin/strategy/evidence-v5/rebuild', async (c) => {
     }, 400)
   }
 
-  const report = await rebuildHistoricalStrategyEvidenceV5(c.env.DB, { asOfDate, maxDates })
+  const { readHistoricalHmmRegimeFamily } = await import('../lib/marketRegimeState')
+  const report = await rebuildHistoricalStrategyEvidenceV5(c.env.DB, {
+    asOfDate,
+    maxDates,
+    resolveHistoricalRegime: (signalDate) => readHistoricalHmmRegimeFamily(c.env.KV, signalDate),
+  })
   return c.json({
     success: report.blockedDates === 0,
     mode: 'persisted',

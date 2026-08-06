@@ -9,7 +9,7 @@ import {
   resolveStrategyCapacityBudget,
   type StrategyCandidatePoolCandidate,
 } from './strategyCandidatePool'
-import { ACTIVE_8_ML_TEACHERS, buildMultiStrategyPleRoutingPlan, buildStrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
+import { ACTIVE_8_ML_TEACHERS, assessStrategyThresholdMarginAffinity, buildMultiStrategyPleRoutingPlan, buildStrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
 import { coerceModalStrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
 
 function assert(condition: unknown, message: string): void {
@@ -451,6 +451,10 @@ const candidates: StrategyCandidatePoolCandidate[] = Array.from({ length: 90 }, 
     previousSlateSymbols: ['7777', '8888'],
   })
   const routed = plan.l0Annotated[0] as any
+  const looseProjection = assessStrategyThresholdMarginAffinity(marginCandidate, baseSpec, { regime: 'bull' })
+  const tightProjection = assessStrategyThresholdMarginAffinity(marginCandidate, tightSpec, { regime: 'bull' })
+  assert(looseProjection.challengerAffinity === routed.strategy_challenger_affinity_vector.loose_margin_v1, 'shared PIT projector must equal native loose-strategy affinity')
+  assert(tightProjection.challengerAffinity === routed.strategy_challenger_affinity_vector.tight_margin_v1, 'shared PIT projector must equal native tight-strategy affinity')
   assert(routed.strategy_affinity_vector.loose_margin_v1 === routed.strategy_affinity_vector.tight_margin_v1, 'incumbent affinity must remain unchanged until challenger promotion')
   assert(routed.strategy_challenger_affinity_vector.loose_margin_v1 > routed.strategy_challenger_affinity_vector.tight_margin_v1, 'challenger affinity must follow each strategy threshold margin')
   assert(routed.strategy_router_components.challenger_raw_active_strategy_support > routed.strategy_router_components.challenger_residualized_active_strategy_support, 'correlated strategy hits must receive diminishing challenger support')

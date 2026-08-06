@@ -497,6 +497,7 @@ export async function persistSelectionEvidenceV4(
         strategy_selected=excluded.strategy_selected,
         strategy_labeler_version=excluded.strategy_labeler_version,
         strategy_affinity_version=excluded.strategy_affinity_version,
+        strategy_challenger_affinity_version=excluded.strategy_challenger_affinity_version,
         strategy_registry_checksum=excluded.strategy_registry_checksum,
         feature_contract_version=excluded.feature_contract_version,
         evidence_artifact_id=excluded.evidence_artifact_id

@@ -188,6 +188,18 @@ interface CandidateLabelState<T extends StrategyCandidatePoolCandidate> {
   labels: StrategyLabel[]
 }
 
+export interface StrategyThresholdMarginAffinityAssessment {
+  evaluable: boolean
+  unavailableReasons: string[]
+  matched: boolean
+  match: ReturnType<typeof assessCandidateAgainstStrategySpecs>['matches'][number] | null
+  configuredWeight: number
+  regimeWeight: number
+  productionOwner: boolean
+  statusMultiplier: number
+  challengerAffinity: number
+}
+
 export interface MultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCandidate = StrategyCandidatePoolCandidate> {
   version: typeof MULTI_STRATEGY_PLE_ROUTER_VERSION
   labeler_version: typeof STRATEGY_LABELER_VERSION
@@ -319,6 +331,44 @@ function specCanEnterMlSlate(spec: StrategySpec): boolean {
   return spec.status === 'active' && spec.ownerType === 'strategy' && spec.promotionStatus === 'production'
 }
 
+export function assessStrategyThresholdMarginAffinity(
+  candidate: StrategyCandidateInput,
+  specInput: StrategySpec,
+  options: Pick<MultiStrategyPleRoutingOptions, 'regime' | 'strategyWeights'> = {},
+): StrategyThresholdMarginAffinityAssessment {
+  const spec = normalizeStrategySpecGovernance(specInput)
+  const regimeWeight = specRegimeWeight(spec, options.regime)
+  const evaluability = assessStrategySpecEvaluability(candidate, spec)
+  const assessment = regimeWeight > 0 && evaluability.evaluable
+    ? assessCandidateAgainstStrategySpecs(candidate, [spec])
+    : { matches: [] }
+  const match = assessment.matches[0] ?? null
+  const configuredWeight = options.strategyWeights == null
+    ? 1
+    : finiteNumber(options.strategyWeights[spec.id]) ?? 0
+  const productionOwner = specCanEnterMlSlate(spec) && configuredWeight > 0
+  const statusMultiplier = productionOwner
+    ? 1
+    : spec.status === 'candidate'
+      ? 0.75
+      : spec.status === 'shadow'
+        ? 0.55
+        : 0.3
+  return {
+    evaluable: evaluability.evaluable,
+    unavailableReasons: evaluability.unavailableReasons,
+    matched: match != null,
+    match,
+    configuredWeight,
+    regimeWeight,
+    productionOwner,
+    statusMultiplier,
+    challengerAffinity: match
+      ? round3(clamp(match.matchStrength * 100 * configuredWeight * regimeWeight * statusMultiplier, 0, 100))
+      : 0,
+  }
+}
+
 function strategyInputFromCandidate(candidate: StrategyCandidatePoolCandidate): StrategyCandidateInput {
   return {
     ...candidate,
@@ -408,19 +458,16 @@ function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
     const labels: StrategyLabel[] = []
     const rawQuality = rawSignalQuality(candidate)
     for (const spec of normalizedSpecs) {
-      const regimeWeight = specRegimeWeight(spec, options.regime)
-      const evaluability = assessStrategySpecEvaluability(candidate, spec)
-      const evaluable = evaluability.evaluable
-      const assessment = regimeWeight > 0 && evaluable
-        ? assessCandidateAgainstStrategySpecs(candidate, [spec])
-        : { matches: [] }
-      const match = assessment.matches[0] ?? null
-      const matched = match != null
-      const configuredWeight = options.strategyWeights == null
-        ? 1
-        : finiteNumber(options.strategyWeights[spec.id]) ?? 0
-      const productionOwner = specCanEnterMlSlate(spec) && configuredWeight > 0
-      const statusMultiplier = productionOwner ? 1 : spec.status === 'candidate' ? 0.75 : spec.status === 'shadow' ? 0.55 : 0.3
+      const thresholdAssessment = assessStrategyThresholdMarginAffinity(candidate, spec, options)
+      const {
+        evaluable,
+        match,
+        matched,
+        configuredWeight,
+        regimeWeight,
+        productionOwner,
+        statusMultiplier,
+      } = thresholdAssessment
       labels.push({
         strategy_id: spec.id,
         family_id: spec.familyId!,
@@ -430,7 +477,7 @@ function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
         status: spec.status,
         production_owner: productionOwner,
         affinity: matched ? round3(clamp(rawQuality * configuredWeight * regimeWeight * statusMultiplier, 0, 100)) : 0,
-        challenger_affinity: matched ? round3(clamp(match.matchStrength * 100 * configuredWeight * regimeWeight * statusMultiplier, 0, 100)) : 0,
+        challenger_affinity: thresholdAssessment.challengerAffinity,
         match_strength: match?.matchStrength ?? 0,
         threshold_margin: match?.thresholdMargin ?? 0,
         affinity_evidence_count: match?.evidenceCount ?? 0,
@@ -439,7 +486,7 @@ function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
         position_weight: 0,
         overlap: 0,
         evaluable,
-        unavailable_reason: evaluability.evaluable ? null : evaluability.unavailableReasons.join('|'),
+        unavailable_reason: evaluable ? null : thresholdAssessment.unavailableReasons.join('|'),
       })
     }
     const matchedAffinityTotal = labels.reduce((sum, item) => sum + (item.strategy_hit > 0 ? item.affinity : 0), 0)

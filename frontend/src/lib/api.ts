@@ -760,17 +760,23 @@ export type StrategyAdaptivePolicyState = {
   version: string
   status: 'shadow' | 'candidate' | 'active' | 'retired'
   strategy_weights: Record<string, number>
-  threshold_deltas: Record<string, {
-    minSeedScore?: number
-    minChipScore?: number
-    minTechScore?: number
+  threshold_deltas: Record<string, Record<string, number>>
+  lifecycle_recommendations: Record<string, {
+    current_status: StrategySpecStatus
+    recommended_status: 'shadow' | 'candidate' | 'active'
+    decision: 'not_ready' | 'candidate_ready' | 'active_monitor' | 'active_cooldown'
+    production_weight: number
+    automatic_effect: 'weight_and_threshold_only'
+    reasons: string[]
   }>
   evidence: {
     version: string
     date: string
     source: 'strategy_reward_ledger'
-    production_effect: false
-    requires_approval_to_activate: true
+    production_effect: boolean
+    requires_approval_to_activate: boolean
+    threshold_owner: 'adaptive_strategy_policy'
+    pit_rule: 'knowledge_cutoff_lt_signal_date'
     eligible_strategy_count: number
     missing_evidence: Record<string, string[]>
   }

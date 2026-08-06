@@ -57,6 +57,8 @@ const BLOCKER_LABELS: Record<string, string> = {
   champion_pointer_missing: 'Champion pointer 不存在',
   validation_not_pass: 'Artifact validation 尚未 PASS',
   promotion_state_not_serving: '尚未進入 serving promotion state',
+  threshold_margin_evidence_incomplete: '策略命中的 raw threshold margin 尚未完整',
+  challenger_affinity_projection_incomplete: 'Raw margin 已存在，但 challenger affinity projection 尚未完整',
   primary_expected_return_not_allowed: '尚未取得 primary expected-return 權限',
 }
 

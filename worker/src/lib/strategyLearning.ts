@@ -3270,6 +3270,26 @@ export async function listHistoricalStrategyEvidenceV5Dates(
                 AND mr.reference_contract_version='selection-reference-snapshot-v3'
                 AND mr.expected_cell_count > 0
                 AND mr.persisted_cell_count=mr.expected_cell_count
+                AND (
+                  SELECT COUNT(*)
+                    FROM strategy_label_matrix_v4 m
+                   WHERE m.producer_run_id=mr.producer_run_id
+                     AND m.challenger_affinity_version='strategy-threshold-margin-affinity-v2'
+                )=mr.expected_cell_count
+                AND (
+                  SELECT COUNT(*)
+                    FROM strategy_label_matrix_v4 m
+                   WHERE m.producer_run_id=mr.producer_run_id
+                     AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
+                )=(
+                  SELECT COUNT(*)
+                    FROM strategy_label_matrix_v4 m
+                   WHERE m.producer_run_id=mr.producer_run_id
+                     AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
+                     AND m.challenger_affinity_version='strategy-threshold-margin-affinity-v2'
+                )
+                AND (SELECT COUNT(*) FROM selection_reference_snapshots_v1 sr
+                      WHERE sr.producer_run_id=mr.producer_run_id AND sr.strategy_challenger_affinity_version='strategy-threshold-margin-affinity-v2')=mr.reference_candidate_count
                 AND EXISTS (
                   SELECT 1 FROM canonical_run_heads h
                    WHERE h.logical_run_key='screener:' || mr.signal_date || ':TW:production:market_screener'
@@ -3287,26 +3307,21 @@ export async function listHistoricalStrategyEvidenceV5Dates(
 
 export async function rebuildHistoricalStrategyEvidenceV5(
   db: D1Database,
-  options: { asOfDate: string; maxDates?: number; priorityDate?: string | null },
+  options: {
+    asOfDate: string
+    maxDates?: number
+    priorityDate?: string | null
+    resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
+  },
 ): Promise<{ attemptedDates: number; successfulDates: number; blockedDates: number; rebuiltDecisions: number; rebuiltMatrixRows: number }> {
   await ensureStrategyLearningTables(db)
   const candidateDates = await listHistoricalStrategyEvidenceV5Dates(db, options)
-  const registryRows = await db.prepare(`
-    SELECT strategy_id, version, name, status, owner, alpha_bucket,
-           family_id, variant_id, owner_type, promotion_status,
-           supported_regimes_json, thesis, thresholds_json, candidate_policy_json,
-           risk_notes_json, source_refs_json, created_by, created_at, updated_at
-      FROM strategy_spec_registry
-  `).all<StrategySpecRegistryRow>()
-  const specByKey = new Map((registryRows.results ?? []).map((row) => [
-    row.strategy_id + '|' + row.version,
-    registryRowToStrategySpec(row),
-  ]))
-  const governanceByKey = new Map((registryRows.results ?? []).map((row) => [
-    row.strategy_id + '|' + row.version,
-    row,
-  ]))
   const { persistSelectionEvidenceV4, SELECTION_REFERENCE_CONTRACT_VERSION } = await import('./selectionReferenceEvidence')
+  const {
+    assessStrategyThresholdMarginAffinity,
+    STRATEGY_AFFINITY_CHALLENGER_VERSION,
+  } = await import('./multiStrategyPleRouter')
+  const { loadStrategyProductionPolicyBefore } = await import('./strategyProductionPolicyStore')
   let successfulDates = 0
   let blockedDates = 0
   let rebuiltDecisions = 0
@@ -3387,6 +3402,11 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       `).bind(date, producerRunId).all<HistoricalStrategyContextRowV5>()
       const contextBySymbol = new Map((contextResult.results ?? []).map((row) => [row.symbol, row]))
       const decisionUpdates: D1PreparedStatement[] = []
+      const { specs: effectiveSpecs } = await listStrategySpecsForLearning(db, { asOfDate: date })
+      const specByKey = new Map(effectiveSpecs.map((spec) => [
+        spec.id + '|' + spec.version,
+        spec,
+      ]))
       let evaluableRows = 0
       let unavailableRows = 0
       const rebuilt = decisions.map((row) => {
@@ -3451,7 +3471,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           JSON.stringify(evidence),
           date, row.symbol, row.strategy_id, row.strategy_version,
         ))
-        return { row, spec, evaluability, matched, match }
+        return { row, spec, candidate, evaluability, matched, match }
       })
       for (let offset = 0; offset < decisionUpdates.length; offset += STRATEGY_LEARNING_D1_BATCH_SIZE) {
         await db.batch(decisionUpdates.slice(offset, offset + STRATEGY_LEARNING_D1_BATCH_SIZE))
@@ -3469,18 +3489,24 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         ? await db.prepare(`
           SELECT COUNT(*) AS count,
                  SUM(CASE WHEN evaluable=1 AND strategy_hit=1 THEN 1 ELSE 0 END) AS matched_rows,
-                 SUM(CASE WHEN evaluable=1 AND strategy_hit=1 AND affinity_evidence_count>0 THEN 1 ELSE 0 END) AS threshold_evidence_rows
+                 SUM(CASE WHEN evaluable=1 AND strategy_hit=1 AND affinity_evidence_count>0 THEN 1 ELSE 0 END) AS threshold_evidence_rows,
+                 SUM(CASE WHEN challenger_affinity_version=? THEN 1 ELSE 0 END) AS challenger_projection_rows,
+                 SUM(CASE WHEN evaluable=1 AND strategy_hit=1 AND affinity_evidence_count>0 AND challenger_affinity_version=? THEN 1 ELSE 0 END) AS projected_threshold_rows
             FROM strategy_label_matrix_v4
            WHERE producer_run_id=?
-        `).bind(producerRunId).first<{
+        `).bind(STRATEGY_AFFINITY_CHALLENGER_VERSION, STRATEGY_AFFINITY_CHALLENGER_VERSION, producerRunId).first<{
           count: number | string
           matched_rows: number | string
           threshold_evidence_rows: number | string
+          challenger_projection_rows: number | string
+          projected_threshold_rows: number | string
         }>()
         : null
       const existingMatrixRows = Number(existingMatrixCoverage?.count ?? 0)
       const existingMatrixMatchedRows = Number(existingMatrixCoverage?.matched_rows ?? 0)
       const existingMatrixThresholdEvidenceRows = Number(existingMatrixCoverage?.threshold_evidence_rows ?? 0)
+      const existingMatrixProjectionRows = Number(existingMatrixCoverage?.challenger_projection_rows ?? 0)
+      const existingMatrixProjectedThresholdRows = Number(existingMatrixCoverage?.projected_threshold_rows ?? 0)
       let matrixRows = 0
       const reusableExistingMatrix = existingMatrix?.status === 'ready'
         && Number(existingMatrix.reference_candidate_count) === references.length
@@ -3495,9 +3521,20 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         && existingMatrixRows === expectedMatrixRows
         && existingMatrixMatchedRows > 0
         && existingMatrixThresholdEvidenceRows === existingMatrixMatchedRows
+        && existingMatrixProjectionRows === expectedMatrixRows
+        && existingMatrixProjectedThresholdRows === existingMatrixMatchedRows
       if (reusableExistingMatrix) {
         matrixRows = expectedMatrixRows
       } else {
+        const regime = await options.resolveHistoricalRegime?.(date) ?? null
+        if (!regime) throw new Error(`strategy_regime_pit_missing:${date}`)
+        const strategyIds = effectiveSpecs
+          .filter((spec) => spec.status !== 'retired')
+          .map((spec) => spec.id)
+        const productionPolicy = await loadStrategyProductionPolicyBefore(db, date, strategyIds)
+        const strategyWeights = productionPolicy?.state.strategy_weights
+        if (!productionPolicy) throw new Error(`strategy_production_policy_pit_missing:${date}`)
+
         if (existingMatrix) {
           await db.prepare(`
             UPDATE strategy_label_matrix_runs_v4
@@ -3506,9 +3543,9 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           `).bind(producerRunId).run()
           await db.prepare('DELETE FROM strategy_label_matrix_v4 WHERE producer_run_id=?').bind(producerRunId).run()
         }
-        const matrix = rebuilt.map(({ row, spec, evaluability, matched, match }) => {
+        const matrix = rebuilt.map(({ row, spec, candidate }) => {
           if (!spec) throw new Error('matrix_strategy_spec_version_missing:' + row.strategy_id + '|' + row.strategy_version)
-          const governance = governanceByKey.get(row.strategy_id + '|' + row.strategy_version)
+          const thresholdAffinity = assessStrategyThresholdMarginAffinity(candidate, spec, { regime, strategyWeights })
           return {
             signal_date: date,
             symbol: row.symbol,
@@ -3518,19 +3555,19 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             strategy_status: row.strategy_status,
             alpha_bucket: row.alpha_bucket,
             family_id: cleanToken(spec.familyId) || 'UNKNOWN',
-            production_owner: row.strategy_status === 'active' && governance?.owner_type === 'strategy' ? 1 : 0,
-            strategy_hit: evaluability.evaluable && matched ? 1 : 0,
-            evaluable: evaluability.evaluable ? 1 : 0,
-            unavailable_reason: evaluability.evaluable ? null : evaluability.unavailableReasons.join('|'),
-            weak_label: evaluability.evaluable ? (matched ? 1 : 0) : 0,
-            affinity: evaluability.evaluable ? (matched ? 1 : 0) : 0,
+            production_owner: thresholdAffinity.productionOwner ? 1 : 0,
+            strategy_hit: thresholdAffinity.matched ? 1 : 0,
+            evaluable: thresholdAffinity.evaluable ? 1 : 0,
+            unavailable_reason: thresholdAffinity.evaluable ? null : thresholdAffinity.unavailableReasons.join('|'),
+            weak_label: thresholdAffinity.matched ? 1 : 0,
+            affinity: thresholdAffinity.matched ? 1 : 0,
             affinity_version: 'strategy-affinity-binary-pit-reconstruction-v1',
-            match_strength: match?.matchStrength ?? 0,
-            threshold_margin: match?.thresholdMargin ?? 0,
-            affinity_evidence_count: match?.evidenceCount ?? 0,
+            match_strength: thresholdAffinity.match?.matchStrength ?? 0,
+            threshold_margin: thresholdAffinity.match?.thresholdMargin ?? 0,
+            affinity_evidence_count: thresholdAffinity.match?.evidenceCount ?? 0,
             position_weight: 0,
-            challenger_affinity: 0,
-            challenger_affinity_version: null,
+            challenger_affinity: thresholdAffinity.challengerAffinity,
+            challenger_affinity_version: STRATEGY_AFFINITY_CHALLENGER_VERSION,
             challenger_position_weight: 0,
             overlap: 0,
             labeler_version: labelerVersion,
@@ -3558,7 +3595,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             strategy_affinity_version: 'strategy-affinity-binary-pit-reconstruction-v1',
             strategy_router_version: cleanToken(row.strategy_router_version) || null,
             strategy_router_score: null,
-            strategy_challenger_affinity_version: null,
+            strategy_challenger_affinity_version: STRATEGY_AFFINITY_CHALLENGER_VERSION,
             strategy_challenger_route_version: null,
             strategy_challenger_route_score: null,
             strategy_registry_checksum: [...checksums][0],
@@ -3574,14 +3611,26 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       const marginCoverage = await db.prepare(`
         SELECT
           SUM(CASE WHEN evaluable=1 AND strategy_hit=1 THEN 1 ELSE 0 END) matched_rows,
-          SUM(CASE WHEN evaluable=1 AND strategy_hit=1 AND affinity_evidence_count>0 THEN 1 ELSE 0 END) threshold_evidence_rows
+          SUM(CASE WHEN evaluable=1 AND strategy_hit=1 AND affinity_evidence_count>0 THEN 1 ELSE 0 END) threshold_evidence_rows,
+          SUM(CASE WHEN challenger_affinity_version=? THEN 1 ELSE 0 END) challenger_projection_rows,
+          SUM(CASE WHEN evaluable=1 AND strategy_hit=1 AND affinity_evidence_count>0 AND challenger_affinity_version=? THEN 1 ELSE 0 END) projected_threshold_rows
           FROM strategy_label_matrix_v4
          WHERE signal_date=? AND producer_run_id=?
-      `).bind(date, producerRunId).first<{ matched_rows: number | string; threshold_evidence_rows: number | string }>()
+      `).bind(STRATEGY_AFFINITY_CHALLENGER_VERSION, STRATEGY_AFFINITY_CHALLENGER_VERSION, date, producerRunId).first<{
+        matched_rows: number | string
+        threshold_evidence_rows: number | string
+        challenger_projection_rows: number | string
+        projected_threshold_rows: number | string
+      }>()
       const matchedRows = Number(marginCoverage?.matched_rows ?? 0)
       const thresholdEvidenceRows = Number(marginCoverage?.threshold_evidence_rows ?? 0)
+      const challengerProjectionRows = Number(marginCoverage?.challenger_projection_rows ?? 0)
+      const projectedThresholdRows = Number(marginCoverage?.projected_threshold_rows ?? 0)
       if (matchedRows <= 0 || thresholdEvidenceRows !== matchedRows) {
         throw new Error(`threshold_margin_evidence_incomplete:${date}:${thresholdEvidenceRows}/${matchedRows}`)
+      }
+      if (challengerProjectionRows !== expectedMatrixRows || projectedThresholdRows !== matchedRows) {
+        throw new Error(`challenger_affinity_projection_incomplete:${date}:${challengerProjectionRows}/${expectedMatrixRows}:${projectedThresholdRows}/${matchedRows}`)
       }
       await materializeStrategyDecisionDailyStats(db, date)
       await db.prepare(`
@@ -3642,6 +3691,7 @@ export async function finalizeStrategyLearningEvidenceV5(
     persistPolicy?: boolean
     beforePromotion?: () => Promise<void>
     historicalPriorityDate?: string | null
+    resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
   } = {},
 ) {
   const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
@@ -3657,6 +3707,7 @@ export async function finalizeStrategyLearningEvidenceV5(
       asOfDate: date,
       maxDates: 2,
       priorityDate: options.historicalPriorityDate,
+      resolveHistoricalRegime: options.resolveHistoricalRegime,
     }),
   )
   const labels = await runStrategyLearningFinalizerStage(
@@ -3727,6 +3778,7 @@ export async function runStrategyLearningClosure(
     allowPromotion?: boolean
     persistPolicy?: boolean
     historicalPriorityDate?: string | null
+    resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
   } = {},
 ): Promise<string> {
   if (options.allowPromotion === true || options.persistPolicy === true) {

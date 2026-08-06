@@ -255,6 +255,7 @@ function StrategyLedgerGroup({
   gateById,
   policyWeights,
   replacementGate,
+  requestedDate,
   empty,
 }: {
   title: string
@@ -263,6 +264,7 @@ function StrategyLedgerGroup({
   gateById: Map<string, StrategyPromotionGate>
   policyWeights: Record<string, number>
   replacementGate: StrategyReplacementGateSummary | null
+  requestedDate: string | null
   empty: string
 }) {
   return (
@@ -288,6 +290,10 @@ function StrategyLedgerGroup({
           const noMatches = row.learning.reward_state === 'no_matches'
           const rewardCount = rewardPending ? 'Pending T+5' : rewardMissing ? 'Join missing' : noMatches ? 'No setups' : String(row.learning.samples)
           const rollingMature = rewardPending ? 'Pending T+5' : rewardMissing ? 'Join missing' : noMatches ? 'No setups' : String(row.learning.rolling_reward_dates)
+          const currentDecisionPending = Boolean(requestedDate && row.learning.today_decisions === 0 && row.learning.latest_decision_date !== requestedDate)
+          const currentDecisionLabel = currentDecisionPending
+            ? `${requestedDate} 尚未產生；最新 decision date ${row.learning.latest_decision_date ?? '無歷史資料'}`
+            : `${requestedDate ?? row.learning.latest_decision_date ?? '今日'} 可評估 ${row.learning.today_evaluable_decisions} · 命中 ${row.learning.today_matched} · PIT 欄位不足 ${row.learning.today_unavailable_decisions}`
           return (
             <article key={`${row.id}:${row.version}`} className="min-w-0 space-y-4 bg-slate-950/70 px-4 py-4 lg:px-5">
               <div className="min-w-0">
@@ -304,7 +310,7 @@ function StrategyLedgerGroup({
                   <dt className="text-xs text-slate-500">可評估決策</dt>
                   <dd className="mt-1 font-mono text-sm text-slate-200">{row.learning.evidence_available ? row.learning.evaluable_decisions : '-'}</dd>
                   <div className="mt-1 text-xs text-slate-500">{row.learning.evidence_available ? <>PIT 欄位不足 {row.learning.unavailable_decisions} · 總決策 {row.learning.decisions}</> : 'evidence not ready'}</div>
-                  <div className="mt-1 text-xs text-cyan-300">{'\u4eca\u65e5\u53ef\u8a55\u4f30'} {row.learning.today_evaluable_decisions} {'\u00b7'} {'\u547d\u4e2d'} {row.learning.today_matched} {'\u00b7'} PIT {'\u6b04\u4f4d\u4e0d\u8db3'} {row.learning.today_unavailable_decisions}</div>
+                  <div className={`mt-1 text-xs ${currentDecisionPending ? 'text-amber-300' : 'text-cyan-300'}`}>{currentDecisionLabel}</div>
                   <div className="mt-1 text-xs text-slate-500">{row.learning.reward_owner === 's12_execution_replay_v3_net' ? 'S12 execution reward' : 'selection edge reward'}</div>
                 </div>
                 <div className="rounded-lg border border-slate-800/80 bg-slate-900/45 p-2">
@@ -448,7 +454,7 @@ export default function StrategyLearningPage() {
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Active strategies</div><div className="mt-2 font-mono text-2xl text-emerald-200">{activeRows.length}</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Learning + shadowing</div><div className="mt-2 font-mono text-2xl text-cyan-200">{learningRows.length}</div></div>
               <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4"><div className="text-xs text-slate-500">Lifetime decision / reward rows</div><div className="mt-2 font-mono text-2xl text-slate-100">{learning ? totals.decisions : '-'} / {learning ? totals.samples : '-'}</div></div>
-              <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">Adaptive policy</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-emerald-100"><ShieldCheck className="h-4 w-4" /> {policy?.status ?? 'unavailable'}</div><div className="mt-1 text-xs text-slate-500">{learning ? 'production effect false' : 'ledger unavailable'}</div></div>
+              <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-4"><div className="text-xs text-slate-400">Adaptive policy</div><div className="mt-2 flex items-center gap-2 font-mono text-lg text-emerald-100"><ShieldCheck className="h-4 w-4" /> {policy?.status ?? 'unavailable'}</div><div className="mt-1 text-xs text-slate-500">{learning ? policy?.evidence.production_effect ? `production active · owner ${policy.evidence.threshold_owner}` : 'shadow only · no production effect' : 'ledger unavailable'}</div></div>
             </section>
 
             {error && <div className="rounded-xl border border-rose-400/25 bg-rose-400/[0.06] p-4 text-sm text-rose-200">{error}</div>}
@@ -463,6 +469,7 @@ export default function StrategyLearningPage() {
                 gateById={gateById}
                 policyWeights={policy?.strategy_weights ?? {}}
                 replacementGate={learning?.replacement_gate ?? null}
+                requestedDate={learning?.date ?? null}
                 empty="目前沒有 active strategy reward rows。"
               />
               <StrategyLedgerGroup
@@ -472,16 +479,17 @@ export default function StrategyLearningPage() {
                 gateById={gateById}
                 policyWeights={policy?.strategy_weights ?? {}}
                 replacementGate={learning?.replacement_gate ?? null}
+                requestedDate={learning?.date ?? null}
                 empty="目前沒有 learning、shadow 或 candidate strategy rows。"
               />
             </div>
 
             <footer className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-              <p className="max-w-2xl text-xs leading-5 text-slate-500">Decision log → verify/paper outcome → reward ledger → adaptive shadow policy。這些操作不直接下單，也不改模型 vote。</p>
+              <p className="max-w-2xl text-xs leading-5 text-slate-500">Decision log → verify/paper outcome → reward ledger → Adaptive strategy policy。自動效果只限策略權重與門檻；不直接下單，也不改模型 vote。</p>
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" disabled={busy != null} onClick={() => void runAction('decision log', () => strategyLabApi.materializeDecisionLog({ limit: 500, dry_run: false, confirm: true }), 'Decision log 已更新。')}>Materialize decision log</Button>
                 <Button size="sm" variant="outline" disabled={busy != null} onClick={() => void runAction('reward ledger', () => strategyLabApi.refreshStrategyRewardLedger({ limit: 5000, dry_run: false, confirm: true }), 'Reward ledger 已更新。')}>Refresh reward ledger</Button>
-                <Button size="sm" variant="outline" disabled={busy != null} onClick={() => void runAction('shadow policy', () => strategyLabApi.refreshStrategyPolicyState({ dry_run: false, confirm: true }), 'Adaptive shadow policy 已更新。')}>Refresh shadow policy</Button>
+                <Button size="sm" variant="outline" disabled={busy != null} onClick={() => void runAction('adaptive policy', () => strategyLabApi.refreshStrategyPolicyState({ dry_run: false, confirm: true }), 'Adaptive strategy policy 已更新。')}>Refresh adaptive policy</Button>
               </div>
             </footer>
           </>

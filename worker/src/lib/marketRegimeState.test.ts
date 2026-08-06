@@ -6,6 +6,9 @@ import {
   LEGACY_REGIME_KEY,
   LEGACY_REGIME_META_KEY,
   MARKET_REGIME_STATE_KEY,
+  marketRegimeStateArchiveKey,
+  readHistoricalHmmRegimeFamily,
+  readMarketRegimeStateForDate,
   buildMarketRegimeState,
   normalizeRegimeLabel,
   persistMarketRegimeState,
@@ -68,6 +71,10 @@ void (async () => {
     },
   })
   await persistMarketRegimeState(kv, state)
+  const archiveKey = marketRegimeStateArchiveKey('2026-05-16')
+  assert((kv as any).store.has(archiveKey), 'date-keyed HMM archive must be written for PIT reconstruction')
+  assert((await readMarketRegimeStateForDate(kv, '2026-05-16'))?.family === 'bear', 'date reader must resolve exact archived regime')
+  assert(await readHistoricalHmmRegimeFamily(kv, '2026-05-17') === null, 'HMM date reader must not reuse a different date')
 
   assert((kv as any).store.has(MARKET_REGIME_STATE_KEY), 'new market_regime_state key must be written')
   assert((kv as any).store.get(LEGACY_REGIME_KEY) === 'bear_market', 'legacy ml:regime mirror must remain during migration')

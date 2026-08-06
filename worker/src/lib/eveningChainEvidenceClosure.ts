@@ -3,6 +3,7 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
 import { CANONICAL_SELECTION_LABEL_SCHEMA_VERSION } from './canonicalSelectionLabels'
 import { PRICE_HORIZON_PROJECTION_VERSION } from './priceHorizonProjection'
+import { STRATEGY_ROUTE_CHALLENGER_VERSION } from './strategyRouteCalibration'
 import {
   inspectMatureSelectionEvidenceGaps,
   isMatureSelectionEvidenceGapRecoverable,
@@ -14,10 +15,13 @@ export type EveningChainEvidenceClosure = {
   referenceRows: number
   referenceIdentityRows: number
   referenceArtifactRows: number
+  referenceProjectionRows: number
   decisionReconciledRows: number
   matrixRows: number
   expectedMatrixRows: number
   matchedMatrixRows: number
+  challengerProjectionRows: number
+  projectedThresholdRows: number
   thresholdEvidenceRows: number
   similarityArtifactStatus: string
   sectorRows: number
@@ -56,17 +60,19 @@ export async function auditEveningChainEvidenceClosure(
     SELECT COUNT(*) reference_rows,
            SUM(CASE WHEN r.stock_id IS NOT NULL THEN 1 ELSE 0 END) identity_rows,
            SUM(CASE WHEN r.evidence_artifact_id IS NOT NULL THEN 1 ELSE 0 END) artifact_rows,
-           SUM(CASE WHEN r.decision_evidence_reconciled_at IS NOT NULL THEN 1 ELSE 0 END) reconciled_rows
+           SUM(CASE WHEN r.decision_evidence_reconciled_at IS NOT NULL THEN 1 ELSE 0 END) reconciled_rows,
+           SUM(CASE WHEN r.strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) reference_projection_rows
       FROM selection_reference_snapshots_v1 r
      WHERE r.signal_date=?
        AND r.hard_gate_passed=1
        AND r.feature_contract_version=?
        AND r.producer_run_id=?
-  `).bind(businessDate, SELECTION_REFERENCE_CONTRACT_VERSION, producerRunId).first<any>()
+  `).bind(STRATEGY_ROUTE_CHALLENGER_VERSION, businessDate, SELECTION_REFERENCE_CONTRACT_VERSION, producerRunId).first<any>()
   const referenceRows = Number(current?.reference_rows ?? 0)
   const referenceIdentityRows = Number(current?.identity_rows ?? 0)
   const referenceArtifactRows = Number(current?.artifact_rows ?? 0)
   const decisionReconciledRows = Number(current?.reconciled_rows ?? 0)
+  const referenceProjectionRows = Number(current?.reference_projection_rows ?? 0)
   if (referenceRows <= 0) throw new Error(`evening_chain_reference_universe_missing:${businessDate}`)
   if (referenceIdentityRows !== referenceRows) {
     throw new Error(`evening_chain_reference_identity_incomplete:${referenceIdentityRows}/${referenceRows}`)
@@ -82,15 +88,19 @@ export async function auditEveningChainEvidenceClosure(
     SELECT r.expected_cell_count, r.persisted_cell_count,
            (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id) matrix_rows,
            (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
-           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0) threshold_evidence_rows
+           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0) threshold_evidence_rows,
+           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.challenger_affinity_version=?) challenger_projection_rows,
+           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) projected_threshold_rows
       FROM strategy_label_matrix_runs_v4 r
      WHERE r.signal_date=? AND r.status='ready' AND r.producer_run_id=?
      LIMIT 1
-  `).bind(businessDate, producerRunId).first<any>()
+  `).bind(STRATEGY_ROUTE_CHALLENGER_VERSION, STRATEGY_ROUTE_CHALLENGER_VERSION, businessDate, producerRunId).first<any>()
   const matrixRows = Number(matrix?.matrix_rows ?? 0)
   const expectedMatrixRows = Number(matrix?.expected_cell_count ?? 0)
   const matchedMatrixRows = Number(matrix?.matched_rows ?? 0)
   const thresholdEvidenceRows = Number(matrix?.threshold_evidence_rows ?? 0)
+  const challengerProjectionRows = Number(matrix?.challenger_projection_rows ?? 0)
+  const projectedThresholdRows = Number(matrix?.projected_threshold_rows ?? 0)
   if (
     expectedMatrixRows <= 0
     || Number(matrix?.persisted_cell_count ?? 0) !== expectedMatrixRows
@@ -102,6 +112,10 @@ export async function auditEveningChainEvidenceClosure(
   if (matchedMatrixRows <= 0 || thresholdEvidenceRows !== matchedMatrixRows) {
     throw new Error(`evening_chain_threshold_margin_evidence_incomplete:${thresholdEvidenceRows}/${matchedMatrixRows}`)
   }
+  if (referenceProjectionRows !== referenceRows || challengerProjectionRows !== expectedMatrixRows || projectedThresholdRows !== matchedMatrixRows) {
+    throw new Error(`evening_chain_challenger_affinity_projection_incomplete:${referenceProjectionRows}/${referenceRows}:${challengerProjectionRows}/${expectedMatrixRows}:${projectedThresholdRows}/${matchedMatrixRows}`)
+  }
+
 
   const similarity = await learningDb.prepare(`
     SELECT status, evidence_artifact_id
@@ -257,10 +271,13 @@ export async function auditEveningChainEvidenceClosure(
     referenceIdentityRows,
     referenceArtifactRows,
     decisionReconciledRows,
+    referenceProjectionRows,
     matrixRows,
     expectedMatrixRows,
     matchedMatrixRows,
     thresholdEvidenceRows,
+    challengerProjectionRows,
+    projectedThresholdRows,
     similarityArtifactStatus: String(similarity.status),
     sectorRows,
     sectorBreadthRows,
@@ -280,6 +297,7 @@ export function summarizeEveningChainEvidenceClosure(audit: EveningChainEvidence
     `reference_identity=${audit.referenceIdentityRows}/${audit.referenceRows}`,
     `strategy_matrix=${audit.matrixRows}/${audit.expectedMatrixRows}`,
     `threshold_margin=${audit.thresholdEvidenceRows}/${audit.matchedMatrixRows}`,
+    `threshold_projection=${audit.projectedThresholdRows}/${audit.matchedMatrixRows}:matrix=${audit.challengerProjectionRows}/${audit.expectedMatrixRows}:reference=${audit.referenceProjectionRows}/${audit.referenceRows}`,
     `similarity_artifact=${audit.similarityArtifactStatus}`,
     `sector_breadth=${audit.sectorBreadthRows}/${audit.sectorRows}`,
     `mature_date=${audit.matureSignalDate ?? 'none'}`,

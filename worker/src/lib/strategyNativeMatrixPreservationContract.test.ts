@@ -15,6 +15,11 @@ assert.match(
 )
 assert.match(
   source,
-  /if \(reusableExistingMatrix\) \{\s*matrixRows = expectedMatrixRows\s*\} else \{\s*if \(existingMatrix\)/,
+  /if \(reusableExistingMatrix\) \{\s*matrixRows = expectedMatrixRows\s*\} else \{[\s\S]*if \(existingMatrix\)[\s\S]*DELETE FROM strategy_label_matrix_v4/,
   'matrix deletion must remain inside the incomplete/non-native repair branch',
+)
+assert.match(
+  source,
+  /existingMatrixProjectionRows === expectedMatrixRows[\s\S]*existingMatrixProjectedThresholdRows === existingMatrixMatchedRows/,
+  'historical repair must only reuse a matrix whose challenger projection is complete',
 )

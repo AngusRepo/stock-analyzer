@@ -451,9 +451,9 @@ function StrategyLearningPanel({
           </div>
           <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
             <div className="text-slate-400">Adaptive policy</div>
-            <div className="mt-1 text-xl font-semibold text-emerald-100">{policy?.status ?? 'shadow'}</div>
+            <div className="mt-1 text-xl font-semibold text-emerald-100">{policy?.status ?? 'unavailable'}</div>
             <div className="mt-1 text-[11px] text-emerald-200/80">
-              eligible {policy?.evidence?.eligible_strategy_count ?? 0} / production effect false
+              eligible {policy?.evidence?.eligible_strategy_count ?? 0} / {policy?.evidence.production_effect ? 'production active' : 'shadow only'}
             </div>
           </div>
         </div>
@@ -461,14 +461,14 @@ function StrategyLearningPanel({
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="flex items-center gap-2 text-sm font-semibold text-cyan-100">
-                <ShieldCheck className="h-4 w-4" /> Adaptive Policy Shadow State
+                <ShieldCheck className="h-4 w-4" /> Adaptive Strategy Policy State
               </div>
               <div className="mt-1 text-slate-400">
-                reward ledger 只產生策略權重與門檻 delta 建議；不改 production strategy，不改 model vote，不下單。
+                Adaptive policy 是策略門檻與權重的唯一 owner；不改 model vote，也不直接下單。
               </div>
             </div>
             <Badge variant="outline" className="border-amber-500/25 bg-amber-500/10 text-amber-200">
-              Wei approval required to activate
+              {policy?.evidence.requires_approval_to_activate ? 'Wei approval required to activate' : 'Automatic weight + threshold effect active'}
             </Badge>
           </div>
           <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-[0.8fr_1.2fr]">

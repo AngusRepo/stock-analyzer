@@ -335,12 +335,17 @@ export async function buildPipelineDecisionMaturityPacket(
                WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1
-                 AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) threshold_rows,
+                 AND m.affinity_evidence_count>0) raw_threshold_rows,
+             (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
+               WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1
+                 AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) projected_threshold_rows,
+             (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
+               WHERE m.producer_run_id=r.producer_run_id AND m.challenger_affinity_version=?) challenger_projection_cells,
              r.updated_at
         FROM strategy_label_matrix_runs_v4 r
        WHERE r.signal_date=? AND r.producer_run_id=?
        LIMIT 1
-    `).bind(STRATEGY_ROUTE_CHALLENGER_VERSION, head.signal_date, head.run_id).first<any>() : Promise.resolve(null)),
+    `).bind(STRATEGY_ROUTE_CHALLENGER_VERSION, STRATEGY_ROUTE_CHALLENGER_VERSION, head.signal_date, head.run_id).first<any>() : Promise.resolve(null)),
     safeQuery(() => learningDb.prepare(`
       SELECT artifact_id, as_of_date, status, source_contract, strategy_count,
              paired_date_count, oof_max_date, edge_count, effective_strategy_count,
@@ -466,8 +471,14 @@ export async function buildPipelineDecisionMaturityPacket(
     ))
   } else {
     const matched = finite(matrixRow.matched_rows)
-    const covered = finite(matrixRow.threshold_rows)
-    const complete = matched > 0 && covered === matched
+    const rawCovered = finite(matrixRow.raw_threshold_rows)
+    const projected = finite(matrixRow.projected_threshold_rows)
+    const projectionCells = finite(matrixRow.challenger_projection_cells)
+    const referenceProjectionRows = finite(referenceRow.affinity_v2_rows)
+    const rawComplete = matched > 0 && rawCovered === matched
+    const projectionComplete = projected === matched && projectionCells === finite(matrixRow.expected_cell_count) && referenceProjectionRows === finite(referenceRow.reference_rows)
+    const complete = rawComplete && projectionComplete
+    const blockers = [...(rawComplete ? [] : ['threshold_margin_evidence_incomplete']), ...(projectionComplete ? [] : ['challenger_affinity_projection_incomplete'])]
     stages.push({
       id: 'threshold_margin_affinity_v2',
       layer: 'L1',
@@ -476,19 +487,23 @@ export async function buildPipelineDecisionMaturityPacket(
       status: complete ? 'ready' : 'blocked',
       contribution_mode: 'shadow',
       maturity_kind: 'daily_coverage',
-      progress: maturityProgress(covered, matched, 'rows'),
+      progress: maturityProgress(projected, matched, 'rows'),
       decision: complete
-        ? `當日 ${covered}/${matched} 筆策略命中都有自己的 threshold margin evidence。`
-        : `當日只有 ${covered}/${matched} 筆策略命中具備 threshold margin evidence。`,
+        ? `當日 ${projected}/${matched} 筆策略命中均有 threshold margin 與 challenger affinity projection。`
+        : rawComplete
+          ? `Raw threshold margin 已完整 ${rawCovered}/${matched}；但 challenger projection 只有 ${projected}/${matched}，全矩陣 ${projectionCells}/${finite(matrixRow.expected_cell_count)}。`
+          : `Raw threshold margin 只有 ${rawCovered}/${matched}，尚未具備完整 projection 前置證據。`,
       contribution: '用各策略自己的門檻距離與 signal strength 產生 challenger affinity，避免所有策略共用同一份 raw quality。',
       production_effect: '目前只餵給 challenger route；不直接改變 incumbent route、L4 或 BUY/HOLD。',
-      blockers: complete ? [] : ['threshold_margin_evidence_incomplete'],
+      blockers,
       metrics: [
-        gateMetric('threshold_rows', 'Threshold evidence', covered, matched, 'rows'),
-        gateMetric('reference_rows', 'Reference universe', referenceRow.reference_rows, referenceRow.reference_rows, 'rows'),
+        gateMetric('raw_threshold_rows', 'Raw threshold margin', rawCovered, matched, 'rows'),
+        gateMetric('projected_threshold_rows', 'Projected strategy hits', projected, matched, 'rows'),
+        gateMetric('challenger_projection_cells', 'Projected PIT matrix cells', projectionCells, finite(matrixRow.expected_cell_count), 'rows'),
+        gateMetric('reference_projection_rows', 'Projected reference universe', referenceProjectionRows, finite(referenceRow.reference_rows), 'rows'),
         metric('strategy_count', 'Strategy count', matrixRow.strategy_count, { unit: 'count' }),
         metric('matrix_cells', 'PIT matrix cells', matrixRow.persisted_cell_count, { target: matrixRow.expected_cell_count, comparator: 'eq', unit: 'rows', passed: finite(matrixRow.persisted_cell_count) === finite(matrixRow.expected_cell_count) }),
-        metric('challenger_route_rows', 'Challenger scored symbols', referenceRow.challenger_route_rows, { target: referenceRow.reference_rows, comparator: 'eq', unit: 'rows', passed: finite(referenceRow.challenger_route_rows) === finite(referenceRow.reference_rows) }),
+        metric('challenger_route_rows', 'Downstream challenger route rows', referenceRow.challenger_route_rows, { unit: 'rows', note: 'Route V2 是下游 calibration，不列入本 L1 daily coverage gate。' }),
       ],
       lineage: {
         requested_date: requestedDate,

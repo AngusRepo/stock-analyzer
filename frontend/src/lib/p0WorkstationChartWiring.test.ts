@@ -48,7 +48,7 @@ assert(strategyLabPage.includes('Learning + shadowing strategies'), 'Strategy La
 assert(!strategyLabPage.includes('Action Lanes'), 'Strategy Lab should remove unrelated experiment action lanes')
 assert(!strategyLabPage.includes('Registry / Evidence Inspector'), 'Strategy Lab should remove unrelated registry inspector UI')
 assert(!strategyLabPage.includes('Pre-trade Spec + Dry-run'), 'Strategy Lab should remove pre-trade spec and dry-run duplication')
-assert(strategyLabPage.includes('production effect false'), 'Strategy adaptive state must remain shadow-only')
+assert(strategyLabPage.includes('policy?.evidence.production_effect'), 'Strategy adaptive state must render the backend production-effect contract')
 assert(viteConfig.includes("devOptions: { enabled: process.env.VITE_PWA_DEV === '1' }"), 'Vite PWA dev service worker should remain opt-in')
 
 console.log('p0WorkstationChartWiring: OK')

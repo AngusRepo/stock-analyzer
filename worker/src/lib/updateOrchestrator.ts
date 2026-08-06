@@ -3411,6 +3411,10 @@ export async function processUpdateBatch(
           allowPromotion: currentBusinessDateRun,
           persistPolicy: currentBusinessDateRun,
           historicalPriorityDate,
+          resolveHistoricalRegime: async (signalDate) => {
+            const { readHistoricalHmmRegimeFamily } = await import('./marketRegimeState')
+            return readHistoricalHmmRegimeFamily(env.KV, signalDate)
+          },
           beforePromotion: async () => {
             const closureAudit = await auditEveningChainEvidenceClosure(
               env,

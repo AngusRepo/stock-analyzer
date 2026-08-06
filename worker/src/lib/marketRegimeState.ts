@@ -1,4 +1,5 @@
 export const MARKET_REGIME_STATE_KEY = 'market_regime_state'
+export const MARKET_REGIME_STATE_ARCHIVE_PREFIX = 'market_regime_state:date:'
 export const LEGACY_REGIME_KEY = 'ml:regime'
 export const LEGACY_REGIME_META_KEY = 'ml:regime:meta'
 
@@ -189,6 +190,22 @@ export async function readMarketRegimeState(kv: KVNamespace): Promise<MarketRegi
   })
 }
 
+export function marketRegimeStateArchiveKey(runDate: string): string {
+  return `${MARKET_REGIME_STATE_ARCHIVE_PREFIX}${runDate}`
+}
+
+export async function readMarketRegimeStateForDate(kv: KVNamespace, runDate: string): Promise<MarketRegimeState | null> {
+  const archived = parseMarketRegimeState(await readJson(kv, marketRegimeStateArchiveKey(runDate)))
+  if (archived?.run_date === runDate) return archived
+  const current = await readMarketRegimeState(kv)
+  return current?.run_date === runDate ? current : null
+}
+
+export async function readHistoricalHmmRegimeFamily(kv: KVNamespace, runDate: string): Promise<MarketRegimeFamily | null> {
+  const state = await readMarketRegimeStateForDate(kv, runDate)
+  return state?.source === 'hmm' ? state.family : null
+}
+
 export async function readCurrentLegacyRegimeLabel(kv: KVNamespace): Promise<MarketRegimeLegacyLabel | null> {
   return (await readMarketRegimeState(kv))?.label ?? null
 }
@@ -200,11 +217,15 @@ export async function readCurrentRegimeFamily(kv: KVNamespace): Promise<MarketRe
 export async function persistMarketRegimeState(
   kv: KVNamespace,
   state: MarketRegimeState,
-  options: { expirationTtl?: number } = {},
+  options: { expirationTtl?: number; archiveExpirationTtl?: number } = {},
 ): Promise<void> {
   const ttl = options.expirationTtl ?? 2 * 86400
+  const archiveTtl = options.archiveExpirationTtl ?? 400 * 86400
   const pushedAt = new Date().toISOString()
   const payload: MarketRegimeState = { ...state, downstream_contract: contract(), pushed_at: pushedAt }
+  if (payload.run_date) {
+    await kv.put(marketRegimeStateArchiveKey(payload.run_date), JSON.stringify(payload), { expirationTtl: archiveTtl })
+  }
   await kv.put(MARKET_REGIME_STATE_KEY, JSON.stringify(payload), { expirationTtl: ttl })
   await kv.put(LEGACY_REGIME_KEY, payload.label, { expirationTtl: ttl })
   await kv.put(LEGACY_REGIME_META_KEY, JSON.stringify({

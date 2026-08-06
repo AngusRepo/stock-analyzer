@@ -165,9 +165,9 @@ function toneBar(tone: Tone) {
 
 function panelClass(className?: string) {
   return cx(
-    'rounded-[24px] border border-white/[0.09]',
+    'sv-home-glass-panel rounded-[24px] border border-white/[0.09]',
     'bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))]',
-    'shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_18px_52px_rgba(0,0,0,0.42)] backdrop-blur-xl',
+    'backdrop-blur-xl',
     className,
   )
 }
@@ -987,40 +987,39 @@ function MarketOverviewBlock() {
   ], [indices])
 
   return (
-    <section className={panelClass('overflow-hidden')}>
-      <SectionHeader
-        icon={BarChart3}
-        title="市場概況與風險"
-        action={<SourceBadge>{shortDate(risk?.date ?? indices?.updatedAt)}</SourceBadge>}
-      />
-
-      <div className="border-t border-white/[0.055] bg-white/[0.045]">
-        <div className="space-y-px bg-white/[0.045]">
+    <section className="space-y-4" aria-label="市場概況與風險">
+      <div className={panelClass('overflow-hidden')}>
+        <SectionHeader
+          icon={BarChart3}
+          title="市場概況與風險"
+          action={<SourceBadge>{shortDate(risk?.date ?? indices?.updatedAt)}</SourceBadge>}
+        />
+        <div className="border-t border-white/[0.055] bg-white/[0.045]">
           <div className="grid bg-[#101116] md:grid-cols-2 xl:grid-cols-4">
             {indexTiles.map((tile) => <IndexTileCard key={tile.label} tile={tile} />)}
           </div>
-          <div className="bg-[#101116] p-4">
+          <div className="border-t border-white/[0.055] bg-[#101116] p-4">
             <MarketStatsRibbonClean risk={risk} />
-          </div>
-          <div className="grid items-start gap-4 bg-[#101116] px-4 pb-4 xl:grid-cols-[minmax(360px,0.92fr)_minmax(420px,1.02fr)] 2xl:grid-cols-[minmax(460px,1.06fr)_minmax(420px,0.78fr)_minmax(340px,0.78fr)]">
-            <div className="grid gap-4 xl:self-stretch">
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-[minmax(290px,1.18fr)_minmax(220px,0.82fr)]">
-                <FearGreedCard risk={risk} />
-                <BusinessSignalCard risk={risk} />
-              </div>
-              <HedgeSentimentCard risk={risk} />
-            </div>
-            <div className="grid gap-4 xl:self-stretch">
-              <MarketRiskDetailBreakdown risk={risk} />
-              <GlobalEventContextCard risk={risk} />
-            </div>
-            <div className="grid gap-4 self-stretch xl:col-span-2 2xl:col-span-1">
-              <NewsBlock embedded />
-            </div>
           </div>
         </div>
       </div>
 
+      <div className="sv-home-deferred-section grid items-start gap-4 xl:grid-cols-[minmax(360px,0.92fr)_minmax(420px,1.02fr)] 2xl:grid-cols-[minmax(460px,1.06fr)_minmax(420px,0.78fr)_minmax(340px,0.78fr)]">
+        <div className={panelClass('grid gap-4 p-4 xl:self-stretch')}>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-[minmax(290px,1.18fr)_minmax(220px,0.82fr)]">
+            <FearGreedCard risk={risk} />
+            <BusinessSignalCard risk={risk} />
+          </div>
+          <HedgeSentimentCard risk={risk} />
+        </div>
+        <div className={panelClass('grid gap-4 p-4 xl:self-stretch')}>
+          <MarketRiskDetailBreakdown risk={risk} />
+          <GlobalEventContextCard risk={risk} />
+        </div>
+        <div className="grid gap-4 self-stretch xl:col-span-2 2xl:col-span-1">
+          <NewsBlock embedded />
+        </div>
+      </div>
     </section>
   )
 }
@@ -1082,7 +1081,7 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
   const newsItems = asArray<any>(data)
   const rows = embedded ? pickBalancedNews(newsItems, EMBEDDED_NEWS_LIMIT) : newsItems.slice(0, 12)
   const sectionClass = embedded
-    ? 'flex h-full min-h-0 flex-col overflow-hidden rounded-[20px] border border-white/[0.07] bg-white/[0.032]'
+    ? 'sv-home-glass-panel flex h-full min-h-0 flex-col overflow-hidden rounded-[20px] border border-white/[0.07] bg-white/[0.032]'
     : panelClass('overflow-hidden')
   const gridClass = embedded
     ? 'grid min-h-0 flex-1 auto-rows-fr bg-[#111216]'
@@ -1603,7 +1602,7 @@ export default function MarketHomePage() {
           </div>
 
           <MarketOverviewBlock />
-          <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(360px,1fr)]">
+          <div className="sv-home-deferred-section grid items-start gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(360px,1fr)]">
             <RecommendationPanel />
             <ThemeFlowPanel compact />
           </div>

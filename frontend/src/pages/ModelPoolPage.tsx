@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Loader2, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import ModelPoolNewFlowWorkbench from '@/components/model-pool/ModelPoolNewFlowWorkbench'
@@ -390,36 +390,40 @@ function PromotionQueuePanelV2({
 }
 
 export default function ModelPoolPage() {
-  const queryClient = useQueryClient()
   const { data, error, isLoading, isFetching, refetch } = useQuery<ModelPoolLineage>({
     queryKey: ['model-pool', 'lineage'],
     queryFn: modelPoolApi.lineage,
     retry: false,
     staleTime: 60_000,
+    refetchOnMount: 'always',
   })
   const modelUpgradeStatus = useQuery({
     queryKey: ['strategy-lab', 'model-upgrade-status'],
     queryFn: strategyLabApi.modelUpgradeStatus,
     retry: false,
     staleTime: 60_000,
+    refetchOnMount: 'always',
   })
   const artifactSelection = useQuery({
     queryKey: ['model-pool', 'artifact-selection'],
     queryFn: () => modelPoolApi.artifactSelection(200),
     retry: false,
     staleTime: 60_000,
+    refetchOnMount: 'always',
   })
   const artifactPromotionQueue = useQuery({
     queryKey: ['model-pool', 'artifact-promotion-queue'],
     queryFn: () => modelPoolApi.artifactPromotionQueue(200),
     retry: false,
     staleTime: 60_000,
+    refetchOnMount: 'always',
   })
   const championPointers = useQuery<ModelChampionPointersResponse>({
     queryKey: ['model-pool', 'champion-pointers'],
     queryFn: () => modelPoolApi.championPointers(200),
     retry: false,
     staleTime: 60_000,
+    refetchOnMount: 'always',
   })
   const [modelPoolSnapshot, setModelPoolSnapshot] = useState<ModelPoolWorkbenchSnapshot | null>(null)
   const modelPoolFetching = (
@@ -436,8 +440,8 @@ export default function ModelPoolPage() {
     artifactPromotionQueue.data &&
     championPointers.data,
   )
-  const refreshModelPoolSnapshot = useCallback(() => {
-    void Promise.allSettled([
+  const refreshModelPoolSnapshot = useCallback(async () => {
+    await Promise.allSettled([
       refetch(),
       modelUpgradeStatus.refetch(),
       artifactSelection.refetch(),
@@ -466,11 +470,6 @@ export default function ModelPoolPage() {
     modelUpgradeStatus.data,
   ])
 
-  useEffect(() => {
-    const timer = window.setInterval(refreshModelPoolSnapshot, 60_000)
-    return () => window.clearInterval(timer)
-  }, [refreshModelPoolSnapshot])
-
   const promotionController = useMutation({
     mutationFn: ({ artifactId, approved, confirm }: { artifactId: string; approved: boolean; confirm: boolean }) => modelPoolApi.promotionController({
       artifact_id: artifactId,
@@ -479,10 +478,8 @@ export default function ModelPoolPage() {
       approved_by: approved ? 'Wei' : undefined,
       reason: approved ? 'wei_approval_from_model_pool_ui' : confirm ? 'auto_promotion_from_model_pool_ui' : 'dry_run_from_model_pool_ui',
     }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['model-pool', 'artifact-promotion-queue'] })
-      queryClient.invalidateQueries({ queryKey: ['model-pool', 'champion-pointers'] })
-      queryClient.invalidateQueries({ queryKey: ['model-pool', 'artifact-selection'] })
+    onSuccess: async () => {
+      await refreshModelPoolSnapshot()
     },
   })
 

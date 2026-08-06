@@ -16,6 +16,6 @@ assert.ok(
   'completed migration must return before scanning screener_funnel_items',
 )
 assert.match(scheduler, /"id": "legacy-evidence-migration"/)
-assert.match(scheduler, /limit=100&max_chunks=1/)
+assert.match(scheduler, /limit=500&max_chunks=5/)
 
 console.log('legacy evidence migration contract tests passed')

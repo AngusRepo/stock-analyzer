@@ -3835,7 +3835,8 @@ export async function finalizeStrategyLearningEvidenceV5(
     'historical_evidence',
     () => rebuildHistoricalStrategyEvidenceV5(db, {
       asOfDate: date,
-      maxDates: 2,
+      // Keep the critical chain bounded; the next canonical date drains the next PIT repair.
+      maxDates: 1,
       priorityDate: options.historicalPriorityDate,
       resolveHistoricalRegime: options.resolveHistoricalRegime,
     }),

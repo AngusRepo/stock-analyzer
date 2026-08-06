@@ -51,6 +51,7 @@ assert.match(canonicalFinalizer, /adaptiveState: policy\.policy_state/)
 assert.match(canonicalFinalizer, /cachedStageResults/)
 assert.match(canonicalFinalizer, /onStageTransition/)
 assert.match(canonicalFinalizer, /onStageComplete/)
+assert.match(canonicalFinalizer, /maxDates: 1/)
 
 const strategyQueue = orchestrator.slice(
   orchestrator.indexOf("if (msg.type === 'strategy_learning_materialize')"),

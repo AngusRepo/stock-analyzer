@@ -277,17 +277,22 @@ async function enqueuePostScreenerPipelineContinuation(c: any, runDate?: string)
 async function enqueueStrategyLearningMaterialization(c: any, runDate?: string): Promise<string> {
   const triggerTime = assertRunDate(runDate)
   const runId = `manual-strategy-learning-${triggerTime}-${Date.now().toString(36)}`
+  const forcePolicy = c.req.query('force_policy') === '1'
+  const productionRecovery = c.req.query('production_recovery') === '1'
   await c.env.UPDATE_QUEUE.send({
     type: 'strategy_learning_materialize',
     cursor: 0,
     triggerTime,
     runId,
-    force: c.req.query('force_policy') === '1',
+    force: forcePolicy || productionRecovery,
+    policyMutationAllowed: forcePolicy,
   })
 
   return [
     `triggered strategy-learning materialization for ${triggerTime}`,
     `run_id=${runId}`,
+    `production_recovery=${productionRecovery}`,
+    `policy_mutation=${forcePolicy}`,
     'callback expected',
   ].join('; ')
 }

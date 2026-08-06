@@ -42,6 +42,9 @@ assert.equal(malformed.summary, 'targets=unknown')
 const source = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 assert.match(source, /'strategy-learning': \(\) => enqueueStrategyLearningMaterialization/)
 assert.match(source, /type: 'strategy_learning_materialize'/)
+assert.match(source, /production_recovery/)
+assert.match(source, /policyMutationAllowed: forcePolicy/)
+assert.match(source, /force: forcePolicy \|\| productionRecovery/)
 assert.match(source, /'strategy-learning-finalize': async/)
 assert.match(
   source,

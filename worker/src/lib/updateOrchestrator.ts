@@ -3323,9 +3323,10 @@ export async function processUpdateBatch(
     }
     const canonicalRunId = state.canonical_run_id
     const finalizerAttemptId = `${canonicalRunId}:finalize:${Date.now().toString(36)}`
+    const leaseOwner = `${canonicalRunId}:lease:${crypto.randomUUID()}`
     const claimed = await claimStrategyLearningPage(env.DB, {
       businessDate: triggerTime,
-      runId: canonicalRunId,
+      runId: leaseOwner,
       cursorSymbol: durableCursor,
       leaseSeconds: 300,
     })
@@ -3374,14 +3375,34 @@ export async function processUpdateBatch(
           triggerTime,
           runId: canonicalRunId,
           force: Boolean(msg.force),
+          policyMutationAllowed: msg.policyMutationAllowed,
         })
         return
       }
+
+      materializationValidated = true
+      await logSchedulerResult(env.KV, 'strategy-learning', {
+        status: 'running',
+        summary: `materialization complete candidates=${state.expected_candidates} decision_rows=${state.expected_decision_rows}; durable finalizer queued`,
+        duration_ms: 0,
+        run_id: canonicalRunId,
+        run_date: triggerTime,
+      })
+      await env.UPDATE_QUEUE.send({
+        type: 'strategy_learning_materialize',
+        cursor: 0,
+        cursorKey: chunk.next_cursor_symbol,
+        triggerTime,
+        runId: canonicalRunId,
+        force: Boolean(msg.force),
+        policyMutationAllowed: msg.policyMutationAllowed,
+      })
+      return
       }
 
       const coverage = await completeStrategyLearningRun(env.DB, {
         businessDate: triggerTime,
-        runId: canonicalRunId,
+        runId: leaseOwner,
       })
       materializationValidated = true
 
@@ -3394,6 +3415,8 @@ export async function processUpdateBatch(
       const currentBusinessDateRun = productionAuthority?.allowed === true
       const runScope = productionAuthority?.runScope ?? 'historical_replay'
       const authorityReason = productionAuthority?.reason ?? 'queue_not_marked_production_eligible'
+      const policyMutationAllowed = currentBusinessDateRun
+        && msg.policyMutationAllowed !== false
       const chainDurationMs = await resolveEveningChainClosureDurationMs(env.DB, triggerTime)
       const {
         auditEveningChainEvidenceClosure,
@@ -3408,8 +3431,8 @@ export async function processUpdateBatch(
       let closureSummary = ''
       const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, productionPolicy }
         = await finalizeStrategyLearningEvidenceV5(env.DB, triggerTime, {
-          allowPromotion: currentBusinessDateRun,
-          persistPolicy: currentBusinessDateRun,
+          allowPromotion: policyMutationAllowed,
+          persistPolicy: policyMutationAllowed,
           historicalPriorityDate,
           resolveHistoricalRegime: async (signalDate) => {
             const { readHistoricalHmmRegimeFamily } = await import('./marketRegimeState')
@@ -3448,6 +3471,7 @@ export async function processUpdateBatch(
       `evidence_closure=${closureSummary}`,
       `run_scope=${runScope}`,
       `production_authority=${authorityReason}`,
+      `policy_mutation=${policyMutationAllowed}`,
       ].join(' ')
 
       await logSchedulerResult(env.KV, 'strategy-learning', {

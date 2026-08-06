@@ -216,16 +216,25 @@ export async function completeStrategyLearningRun(
       expectedRows,
     }
   }
-  const coverage = await db.prepare(`
-    SELECT COUNT(DISTINCT d.symbol) AS candidate_rows,
-           COUNT(*) AS decision_rows
-      FROM strategy_decision_log d
-      JOIN strategy_spec_registry s
-        ON s.strategy_id=d.strategy_id AND s.version=d.strategy_version
-     WHERE d.date=? AND s.status <> 'retired'
-  `).bind(input.businessDate).first<{ candidate_rows: number; decision_rows: number }>()
-  const candidateRows = Math.max(0, Number(coverage?.candidate_rows ?? 0))
-  const decisionRows = Math.max(0, Number(coverage?.decision_rows ?? 0))
+  const durableCoverageComplete = expectedCandidates > 0
+    && expectedRows > 0
+    && Boolean(state.cursor_symbol)
+    && Math.max(0, Number(state.processed_candidates ?? 0)) === expectedCandidates
+    && Math.max(0, Number(state.persisted_decision_rows ?? 0)) === expectedRows
+  let candidateRows = Math.max(0, Number(state.processed_candidates ?? 0))
+  let decisionRows = Math.max(0, Number(state.persisted_decision_rows ?? 0))
+  if (!durableCoverageComplete) {
+    const coverage = await db.prepare(`
+      SELECT COUNT(DISTINCT d.symbol) AS candidate_rows,
+             COUNT(*) AS decision_rows
+        FROM strategy_decision_log d
+        JOIN strategy_spec_registry s
+          ON s.strategy_id=d.strategy_id AND s.version=d.strategy_version
+       WHERE d.date=? AND s.status <> 'retired'
+    `).bind(input.businessDate).first<{ candidate_rows: number; decision_rows: number }>()
+    candidateRows = Math.max(0, Number(coverage?.candidate_rows ?? 0))
+    decisionRows = Math.max(0, Number(coverage?.decision_rows ?? 0))
+  }
   if (candidateRows !== expectedCandidates || decisionRows !== expectedRows) {
     const error = `strategy_learning_incomplete:candidates=${candidateRows}/${expectedCandidates}:rows=${decisionRows}/${expectedRows}`
     await failStrategyLearningRun(db, { businessDate: input.businessDate, error })

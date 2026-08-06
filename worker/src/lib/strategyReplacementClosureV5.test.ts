@@ -35,6 +35,9 @@ assert(learning.includes('priorityOnly: true'), 'critical finalizer must not blo
 assert(!learning.includes('d.strategy_status, d.alpha_bucket, d.context_json, d.evidence_json'), 'historical decision query must not duplicate large JSON per strategy row')
 assert(learning.includes('GROUP BY d.symbol'), 'historical context must be loaded once per symbol')
 assert(learning.includes('evidence_json=json_patch'), 'historical evidence must merge in D1 without a read-modify-write payload')
+const historicalSelector = learning.slice(learning.indexOf('export async function listHistoricalStrategyEvidenceV5Dates'), learning.indexOf('export async function rebuildHistoricalStrategyEvidenceV5'))
+assert(historicalSelector.indexOf('if (options.priorityOnly)') < historicalSelector.indexOf('WITH decision_dates'),
+  'priority-only live closure must return from the single-date ledger fast path before the full-history CTE')
 const historicalRebuild = learning.slice(learning.indexOf('export async function rebuildHistoricalStrategyEvidenceV5'), learning.indexOf('export async function finalizeStrategyLearningEvidenceV5'))
 assert(historicalRebuild.includes('new Map(referenceRows.map'), 'raw reference lineage must be deduplicated by symbol after validation')
 assert(!historicalRebuild.includes('JOIN selection_reference_snapshots_v1 r'),

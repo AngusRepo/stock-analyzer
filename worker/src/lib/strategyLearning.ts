@@ -3249,6 +3249,27 @@ export async function listHistoricalStrategyEvidenceV5Dates(
   options: { asOfDate: string; maxDates?: number; priorityDate?: string | null; priorityOnly?: boolean },
 ): Promise<string[]> {
   const maxDates = Math.max(1, Math.min(5, Math.floor(options.maxDates ?? 2)))
+  if (options.priorityOnly) {
+    const priorityDate = String(options.priorityDate ?? '').slice(0, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(priorityDate)) return []
+    const ledger = await db.prepare(`
+      SELECT status, evaluation_contract_version
+        FROM strategy_evidence_rebuild_runs_v5
+       WHERE signal_date=?
+       LIMIT 1
+    `).bind(priorityDate).first<{ status: string; evaluation_contract_version: string | null }>()
+    if (
+      ['success', 'blocked'].includes(String(ledger?.status ?? ''))
+      && String(ledger?.evaluation_contract_version ?? '') === 'strategy-evaluation-v2'
+    ) return []
+    const decisionDate = await db.prepare(`
+      SELECT date
+        FROM strategy_decision_log
+       WHERE date=?
+       LIMIT 1
+    `).bind(priorityDate).first<{ date: string }>()
+    return decisionDate?.date === priorityDate ? [priorityDate] : []
+  }
   const dateRows = await db.prepare(`
     WITH decision_dates AS (
       SELECT date
@@ -3316,11 +3337,7 @@ export async function listHistoricalStrategyEvidenceV5Dates(
      ORDER BY CASE WHEN d.date=? THEN 0 ELSE 1 END, d.date DESC
      LIMIT ?
   `).bind(options.asOfDate, options.asOfDate, options.priorityDate ?? '', maxDates).all<{ date: string }>()
-  const dates = (dateRows.results ?? []).map((row) => row.date)
-  if (!options.priorityOnly) return dates
-  const priorityDate = String(options.priorityDate ?? '').slice(0, 10)
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(priorityDate)) return []
-  return dates.filter((date) => date === priorityDate)
+  return (dateRows.results ?? []).map((row) => row.date)
 }
 
 export async function rebuildHistoricalStrategyEvidenceV5(

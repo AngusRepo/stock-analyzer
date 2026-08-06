@@ -353,6 +353,7 @@ export interface UpdateQueueMsg {
   attempt?: number    // finalize watchdog retry count
   continuationAttempt?: number // durable finalizer continuation retry count
   leaseRetryAttempt?: number // bounded deferred retry for serialized S12 research traffic
+  dataDomainErrorAttempt?: number // bounded consecutive error retry for shadow backfill
   policyMutationAllowed?: boolean // live recovery can close lineage without promoting strategy policy
   maintenanceTask?:
     | 'legacy-evidence-migration'

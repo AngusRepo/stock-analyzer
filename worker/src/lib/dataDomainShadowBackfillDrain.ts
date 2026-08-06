@@ -58,6 +58,7 @@ function queueMessage(input: {
   runId: string
   attempt: number
   maxAttempts: number
+  errorAttempt?: number
 }): UpdateQueueMsg {
   return {
     type: 'data_domain_shadow_backfill',
@@ -66,6 +67,7 @@ function queueMessage(input: {
     runId: input.runId,
     attempt: input.attempt,
     maxAttempts: input.maxAttempts,
+    dataDomainErrorAttempt: input.errorAttempt,
     dataDomain: input.domain,
     dataDomainTable: input.table,
   }
@@ -350,6 +352,7 @@ export async function processDataDomainShadowBackfillDrain(
   if (!domain) throw new Error('data_domain_shadow_backfill_domain_missing')
   const attempt = Math.max(0, Math.floor(msg.attempt ?? 0))
   const maxAttempts = Math.max(1, Math.min(Math.floor(msg.maxAttempts ?? DEFAULT_MAX_ATTEMPTS), MAX_ATTEMPTS))
+  const errorAttempt = Math.max(0, Math.floor(msg.dataDomainErrorAttempt ?? 0))
   const runId = msg.runId ?? `data-domain-shadow-backfill:${domain}:${msg.triggerTime}:queue`
   const backfillTables = tablesForDataDomainShadowBackfill(domain)
   const requestedTable = msg.dataDomainTable
@@ -370,12 +373,58 @@ export async function processDataDomainShadowBackfillDrain(
     return
   }
 
-  const leased = await runWithMaintenanceLease(env.DB, {
-    taskName: `data-domain-shadow-backfill:${domain}`,
-    leaseGroup: 'd1_heavy_maintenance',
-    leaseSeconds: 300,
-    run: () => backfillDataDomainTableShadow(env, { domain, table, limit: 500 }),
-  })
+  let leased: DomainShadowBackfillResult | { skipped: true; reason: string }
+  try {
+    leased = await runWithMaintenanceLease(env.DB, {
+      taskName: `data-domain-shadow-backfill:${domain}`,
+      leaseGroup: 'd1_heavy_maintenance',
+      leaseSeconds: 300,
+      run: () => backfillDataDomainTableShadow(env, { domain, table, limit: 500 }),
+    })
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    const errorCode = errorMessage.slice(0, 1000)
+    const nextAttempt = attempt + 1
+    const nextErrorAttempt = errorAttempt + 1
+    await env.DB.prepare(`
+      INSERT INTO data_domain_backfill_cursors(
+        domain, table_name, status, cursor_json, rows_copied, last_batch_rows,
+        last_source_checksum, last_target_checksum, error_code, updated_at
+      ) VALUES (?, ?, 'error', NULL, 0, 0, NULL, NULL, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(domain,table_name) DO UPDATE SET
+        status='error', last_batch_rows=0, error_code=excluded.error_code,
+        updated_at=CURRENT_TIMESTAMP
+    `).bind(domain, table, errorCode).run()
+    await env.KV.put(progressKey(domain), JSON.stringify({
+      run_id: runId,
+      attempt,
+      error_attempt: nextErrorAttempt,
+      table,
+      error: errorCode,
+      updated_at: new Date().toISOString(),
+    }), { expirationTtl: ACTIVE_TTL_SECONDS })
+    if (nextAttempt >= maxAttempts || nextErrorAttempt >= 3) {
+      await env.KV.delete(activeKey(domain))
+      await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
+        status: 'error',
+        summary: `domain=${domain} table=${table} consecutive_errors=${nextErrorAttempt} error=${errorCode} run_id=${runId}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: msg.triggerTime,
+      }, env)
+      return
+    }
+    await (env.UPDATE_QUEUE as any).send(queueMessage({
+      domain,
+      table,
+      runDate: msg.triggerTime,
+      runId,
+      attempt: nextAttempt,
+      maxAttempts,
+      errorAttempt: nextErrorAttempt,
+    }), { delaySeconds: 30 * (2 ** errorAttempt) })
+    return
+  }
   if ('skipped' in leased && leased.skipped) {
     await (env.UPDATE_QUEUE as any).send(queueMessage({ domain, table, runDate: msg.triggerTime, runId, attempt, maxAttempts }), {
       delaySeconds: 30,

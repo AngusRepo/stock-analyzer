@@ -61,11 +61,29 @@ const assertParentBeforeChild = (domain: Parameters<typeof tablesForDataDomainSh
 assertParentBeforeChild('ops', 'data_retention_policies', 'data_retention_runs')
 assertParentBeforeChild('ops', 'data_retention_runs', 'data_retention_run_items')
 assertParentBeforeChild('ops', 's12_structure_batch_runs', 's12_structure_batch_shards')
+assertParentBeforeChild('ops', 'screener_funnel_runs', 'screener_funnel_items')
+assertParentBeforeChild('execution', 'broker_execution_intents', 'broker_execution_legs')
+assertParentBeforeChild('execution', 'broker_execution_legs', 'broker_execution_events')
 assertParentBeforeChild('learning', 'active8_oof_cohorts', 'active8_oof_predictions')
 assertParentBeforeChild('learning', 'allocator_ev_snapshot_runs', 'allocator_ev_feature_snapshot_staging')
 assertParentBeforeChild('learning', 'model_artifact_registry', 'expected_return_artifact_payloads')
 assertParentBeforeChild('learning', 'strategy_marginal_edge_runs_v4', 'strategy_marginal_edge_dates_v4')
 assertParentBeforeChild('learning', 'strategy_route_calibration_runs_v1', 'strategy_route_calibration_head_v1')
+
+const schemaSql = fs.readFileSync('schema.sql', 'utf8')
+for (const match of schemaSql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([A-Za-z0-9_]+)\s*\(([\s\S]*?)\n\);/g)) {
+  const child = match[1].toLowerCase()
+  const childDomain = dataDomainForTable(child)
+  if (!childDomain) continue
+  const ownedTables = tablesForDataDomainShadowBackfill(childDomain)
+  if (!ownedTables.includes(child)) continue
+  for (const reference of match[2].matchAll(/REFERENCES\s+([A-Za-z0-9_]+)/gi)) {
+    const parent = reference[1].toLowerCase()
+    if (dataDomainForTable(parent) === childDomain && ownedTables.includes(parent)) {
+      assertParentBeforeChild(childDomain, parent, child)
+    }
+  }
+}
 
 const market = { kind: 'market' } as unknown as D1Database
 const shadowEnv = { DB: legacy, MARKET_DB: market }

@@ -27,3 +27,28 @@ assert.match(
   /m\.signal_date=mr\.signal_date[\s\S]*sr\.signal_date=mr\.signal_date/,
   'historical completeness checks must constrain matrix and reference scans by their leading date indexes',
 )
+assert.match(
+  router,
+  /export function resolveStrategyThresholdMarginAffinityPolicy/,
+  'daily routing and historical projection must share one policy owner',
+)
+assert.match(
+  learning,
+  /decisionContractComplete[\s\S]*projectionSourceReady[\s\S]*resolveStrategyThresholdMarginAffinityPolicy/,
+  'historical projection fast path must require complete v2 decisions and a complete raw matrix',
+)
+assert.match(
+  learning,
+  /COALESCE\(match_strength, 0\) \* \?[\s\S]*challenger_affinity_version=\?/,
+  'fast path must project stored native match strength into the versioned challenger affinity column',
+)
+assert.match(
+  learning,
+  /const rebuilt = projectedExistingMatrix \? \[\] : decisions\.map/,
+  'complete projection must skip per-cell JSON reconstruction',
+)
+assert.match(
+  learning,
+  /const contextResult = projectedExistingMatrix \? null : await db\.prepare/,
+  'complete projection must skip loading large PIT contexts',
+)

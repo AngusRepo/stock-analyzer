@@ -3232,6 +3232,8 @@ interface HistoricalStrategyDecisionRowV5 {
   strategy_version: string
   strategy_status: StrategySpecStatus
   alpha_bucket: string
+  evaluable: number | string | null
+  evaluation_contract_version: string | null
 }
 
 interface HistoricalStrategyContextRowV5 {
@@ -3331,6 +3333,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
   const { persistSelectionEvidenceV4, SELECTION_REFERENCE_CONTRACT_VERSION } = await import('./selectionReferenceEvidence')
   const {
     assessStrategyThresholdMarginAffinity,
+    resolveStrategyThresholdMarginAffinityPolicy,
     STRATEGY_AFFINITY_CHALLENGER_VERSION,
   } = await import('./multiStrategyPleRouter')
   const { loadStrategyProductionPolicyBefore } = await import('./strategyProductionPolicyStore')
@@ -3378,7 +3381,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       const producerRunId = [...producerRunIds][0]
       const decisionResult = await db.prepare(`
         SELECT d.date, d.symbol, d.name, d.strategy_id, d.strategy_version,
-               d.strategy_status, d.alpha_bucket
+               d.strategy_status, d.alpha_bucket, d.evaluable,
+               d.evaluation_contract_version
           FROM strategy_decision_log d
          WHERE d.date=?
            AND EXISTS (
@@ -3396,7 +3400,87 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       if (!strategyKeys.size || decisions.length !== expectedCells) {
         throw new Error(`decision_grid_incomplete:${decisions.length}/${expectedCells}`)
       }
-      const contextResult = await db.prepare(`
+      const labelerVersion = STRATEGY_EVIDENCE_RECONSTRUCTION_LABELER_VERSION
+      const expectedMatrixRows = references.length * strategyKeys.size
+      const { specs: effectiveSpecs } = await listStrategySpecsForLearning(db, { asOfDate: date })
+      const specByKey = new Map(effectiveSpecs.map((spec) => [
+        spec.id + '|' + spec.version,
+        spec,
+      ]))
+      const decisionContractComplete = decisions.every((row) => (
+        cleanToken(row.evaluation_contract_version) === 'strategy-evaluation-v2'
+        && (Number(row.evaluable) === 0 || Number(row.evaluable) === 1)
+      ))
+      let projectedExistingMatrix = false
+      if (decisionContractComplete) {
+        const projectionSource = await db.prepare(`
+          SELECT mr.status, mr.reference_candidate_count, mr.strategy_count,
+                 mr.expected_cell_count, mr.persisted_cell_count,
+                 mr.labeler_version, mr.reference_contract_version,
+                 COUNT(m.symbol) AS matrix_rows,
+                 SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 THEN 1 ELSE 0 END) AS matched_rows,
+                 SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0 THEN 1 ELSE 0 END) AS threshold_evidence_rows
+            FROM strategy_label_matrix_runs_v4 mr
+            LEFT JOIN strategy_label_matrix_v4 m
+              ON m.signal_date=mr.signal_date AND m.producer_run_id=mr.producer_run_id
+           WHERE mr.signal_date=? AND mr.producer_run_id=?
+           GROUP BY mr.producer_run_id
+        `).bind(date, producerRunId).first<any>()
+        const projectionSourceReady = projectionSource?.status === 'ready'
+          && Number(projectionSource.reference_candidate_count) === references.length
+          && Number(projectionSource.strategy_count) === strategyKeys.size
+          && Number(projectionSource.expected_cell_count) === expectedMatrixRows
+          && Number(projectionSource.persisted_cell_count) === expectedMatrixRows
+          && ['strategy-labeler-v1', labelerVersion].includes(cleanToken(projectionSource.labeler_version))
+          && cleanToken(projectionSource.reference_contract_version) === SELECTION_REFERENCE_CONTRACT_VERSION
+          && Number(projectionSource.matrix_rows) === expectedMatrixRows
+          && Number(projectionSource.matched_rows) > 0
+          && Number(projectionSource.threshold_evidence_rows) === Number(projectionSource.matched_rows)
+        if (projectionSourceReady) {
+          const regime = await options.resolveHistoricalRegime?.(date) ?? null
+          if (!regime) throw new Error(`strategy_regime_pit_missing:${date}`)
+          const strategyIds = effectiveSpecs
+            .filter((spec) => spec.status !== 'retired')
+            .map((spec) => spec.id)
+          const productionPolicy = await loadStrategyProductionPolicyBefore(db, date, strategyIds)
+          const strategyWeights = productionPolicy?.state.strategy_weights
+          if (!productionPolicy) throw new Error(`strategy_production_policy_pit_missing:${date}`)
+          const projectionUpdates: D1PreparedStatement[] = []
+          for (const key of strategyKeys) {
+            const spec = specByKey.get(key)
+            if (!spec) throw new Error('matrix_strategy_spec_version_missing:' + key)
+            const policy = resolveStrategyThresholdMarginAffinityPolicy(spec, { regime, strategyWeights })
+            const affinityScale = 100 * policy.configuredWeight * policy.regimeWeight * policy.statusMultiplier
+            projectionUpdates.push(db.prepare(`
+              UPDATE strategy_label_matrix_v4
+                 SET production_owner=?,
+                     challenger_affinity=CASE
+                       WHEN evaluable=1 AND strategy_hit=1
+                       THEN ROUND(MIN(100.0, MAX(0.0, COALESCE(match_strength, 0) * ?)), 3)
+                       ELSE 0
+                     END,
+                     challenger_affinity_version=?
+               WHERE signal_date=? AND producer_run_id=?
+                 AND strategy_id=? AND strategy_version=?
+            `).bind(
+              policy.productionOwner ? 1 : 0,
+              affinityScale,
+              STRATEGY_AFFINITY_CHALLENGER_VERSION,
+              date, producerRunId, spec.id, spec.version,
+            ))
+          }
+          for (let offset = 0; offset < projectionUpdates.length; offset += STRATEGY_LEARNING_D1_BATCH_SIZE) {
+            await db.batch(projectionUpdates.slice(offset, offset + STRATEGY_LEARNING_D1_BATCH_SIZE))
+          }
+          await db.prepare(`
+            UPDATE selection_reference_snapshots_v1
+               SET strategy_challenger_affinity_version=?
+             WHERE signal_date=? AND producer_run_id=?
+          `).bind(STRATEGY_AFFINITY_CHALLENGER_VERSION, date, producerRunId).run()
+          projectedExistingMatrix = true
+        }
+      }
+      const contextResult = projectedExistingMatrix ? null : await db.prepare(`
         SELECT d.symbol, d.context_json,
                c.raw_signals_json AS context_raw_signals_json,
                c.current_price AS context_current_price,
@@ -3412,16 +3496,11 @@ export async function rebuildHistoricalStrategyEvidenceV5(
            )
          GROUP BY d.symbol
       `).bind(date, producerRunId).all<HistoricalStrategyContextRowV5>()
-      const contextBySymbol = new Map((contextResult.results ?? []).map((row) => [row.symbol, row]))
+      const contextBySymbol = new Map((contextResult?.results ?? []).map((row) => [row.symbol, row]))
       const decisionUpdates: D1PreparedStatement[] = []
-      const { specs: effectiveSpecs } = await listStrategySpecsForLearning(db, { asOfDate: date })
-      const specByKey = new Map(effectiveSpecs.map((spec) => [
-        spec.id + '|' + spec.version,
-        spec,
-      ]))
-      let evaluableRows = 0
-      let unavailableRows = 0
-      const rebuilt = decisions.map((row) => {
+      let evaluableRows = projectedExistingMatrix ? decisions.filter((row) => Number(row.evaluable) === 1).length : 0
+      let unavailableRows = projectedExistingMatrix ? decisions.filter((row) => Number(row.evaluable) === 0).length : 0
+      const rebuilt = projectedExistingMatrix ? [] : decisions.map((row) => {
         const key = row.strategy_id + '|' + row.strategy_version
         const spec = specByKey.get(key)
         const context = contextBySymbol.get(row.symbol)
@@ -3489,8 +3568,6 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         await db.batch(decisionUpdates.slice(offset, offset + STRATEGY_LEARNING_D1_BATCH_SIZE))
       }
 
-      const labelerVersion = STRATEGY_EVIDENCE_RECONSTRUCTION_LABELER_VERSION
-      const expectedMatrixRows = references.length * strategyKeys.size
       const existingMatrix = await db.prepare(`
         SELECT status, reference_candidate_count, strategy_count, expected_cell_count,
                persisted_cell_count, labeler_version, reference_contract_version

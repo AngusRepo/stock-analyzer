@@ -200,6 +200,13 @@ export interface StrategyThresholdMarginAffinityAssessment {
   challengerAffinity: number
 }
 
+export interface StrategyThresholdMarginAffinityPolicy {
+  configuredWeight: number
+  regimeWeight: number
+  productionOwner: boolean
+  statusMultiplier: number
+}
+
 export interface MultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCandidate = StrategyCandidatePoolCandidate> {
   version: typeof MULTI_STRATEGY_PLE_ROUTER_VERSION
   labeler_version: typeof STRATEGY_LABELER_VERSION
@@ -331,18 +338,11 @@ function specCanEnterMlSlate(spec: StrategySpec): boolean {
   return spec.status === 'active' && spec.ownerType === 'strategy' && spec.promotionStatus === 'production'
 }
 
-export function assessStrategyThresholdMarginAffinity(
-  candidate: StrategyCandidateInput,
-  specInput: StrategySpec,
-  options: Pick<MultiStrategyPleRoutingOptions, 'regime' | 'strategyWeights'> = {},
-): StrategyThresholdMarginAffinityAssessment {
-  const spec = normalizeStrategySpecGovernance(specInput)
+function resolveNormalizedStrategyThresholdMarginAffinityPolicy(
+  spec: StrategySpec,
+  options: Pick<MultiStrategyPleRoutingOptions, 'regime' | 'strategyWeights'>,
+): StrategyThresholdMarginAffinityPolicy {
   const regimeWeight = specRegimeWeight(spec, options.regime)
-  const evaluability = assessStrategySpecEvaluability(candidate, spec)
-  const assessment = regimeWeight > 0 && evaluability.evaluable
-    ? assessCandidateAgainstStrategySpecs(candidate, [spec])
-    : { matches: [] }
-  const match = assessment.matches[0] ?? null
   const configuredWeight = options.strategyWeights == null
     ? 1
     : finiteNumber(options.strategyWeights[spec.id]) ?? 0
@@ -354,17 +354,39 @@ export function assessStrategyThresholdMarginAffinity(
       : spec.status === 'shadow'
         ? 0.55
         : 0.3
+  return { configuredWeight, regimeWeight, productionOwner, statusMultiplier }
+}
+
+export function resolveStrategyThresholdMarginAffinityPolicy(
+  specInput: StrategySpec,
+  options: Pick<MultiStrategyPleRoutingOptions, 'regime' | 'strategyWeights'> = {},
+): StrategyThresholdMarginAffinityPolicy {
+  return resolveNormalizedStrategyThresholdMarginAffinityPolicy(
+    normalizeStrategySpecGovernance(specInput),
+    options,
+  )
+}
+
+export function assessStrategyThresholdMarginAffinity(
+  candidate: StrategyCandidateInput,
+  specInput: StrategySpec,
+  options: Pick<MultiStrategyPleRoutingOptions, 'regime' | 'strategyWeights'> = {},
+): StrategyThresholdMarginAffinityAssessment {
+  const spec = normalizeStrategySpecGovernance(specInput)
+  const policy = resolveNormalizedStrategyThresholdMarginAffinityPolicy(spec, options)
+  const evaluability = assessStrategySpecEvaluability(candidate, spec)
+  const assessment = policy.regimeWeight > 0 && evaluability.evaluable
+    ? assessCandidateAgainstStrategySpecs(candidate, [spec])
+    : { matches: [] }
+  const match = assessment.matches[0] ?? null
   return {
     evaluable: evaluability.evaluable,
     unavailableReasons: evaluability.unavailableReasons,
     matched: match != null,
     match,
-    configuredWeight,
-    regimeWeight,
-    productionOwner,
-    statusMultiplier,
+    ...policy,
     challengerAffinity: match
-      ? round3(clamp(match.matchStrength * 100 * configuredWeight * regimeWeight * statusMultiplier, 0, 100))
+      ? round3(clamp(match.matchStrength * 100 * policy.configuredWeight * policy.regimeWeight * policy.statusMultiplier, 0, 100))
       : 0,
   }
 }

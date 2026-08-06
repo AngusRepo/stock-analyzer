@@ -82,6 +82,7 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
 }
 
 const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<string>>> = {
+  learning: new Set(['entry_model_replay_reports']),
   ops: new Set([
     'maintenance_task_leases',
     'data_domain_cutovers',

@@ -45,6 +45,7 @@ const opsControlTables = [
 ]
 assert(opsControlTables.every((table) => tablesForDataDomain('ops').includes(table)))
 assert(opsControlTables.every((table) => !tablesForDataDomainShadowBackfill('ops').includes(table)))
+assert(!tablesForDataDomainShadowBackfill('learning').includes('entry_model_replay_reports'))
 
 const market = { kind: 'market' } as unknown as D1Database
 const shadowEnv = { DB: legacy, MARKET_DB: market }

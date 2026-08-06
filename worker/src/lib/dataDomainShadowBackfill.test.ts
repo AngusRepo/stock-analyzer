@@ -5,6 +5,7 @@ import {
   domainBackfillParityBatchLimit,
   domainBackfillRollingManifest,
   domainBackfillRowsPerStatement,
+  isDomainTableSchemaCompatible,
   isDomainShadowCopyComplete,
   isDomainShadowCutoverReady,
 } from './dataDomainShadowBackfill'
@@ -34,6 +35,23 @@ assert.equal(domainBackfillRowsPerStatement(0), 100)
 assert.equal(isDataDomainShadowProgressStale(null, null, Date.parse('2026-08-03T12:10:00Z')), false)
 assert.equal(isDataDomainShadowProgressStale('2026-08-03T12:06:00Z', null, Date.parse('2026-08-03T12:10:00Z')), false)
 assert.equal(isDataDomainShadowProgressStale('2026-08-03T12:00:00Z', '2026-08-03T12:04:59Z', Date.parse('2026-08-03T12:10:00Z')), true)
+const schemaA = [
+  { cid: 0, name: 'id', type: 'INTEGER', notnull: 0, pk: 1 },
+  { cid: 1, name: 'value', type: 'TEXT', notnull: 1, pk: 0 },
+]
+const schemaReordered = [
+  { cid: 0, name: 'value', type: 'TEXT', notnull: 1, pk: 0 },
+  { cid: 1, name: 'id', type: 'INTEGER', notnull: 0, pk: 1 },
+]
+assert.equal(isDomainTableSchemaCompatible(schemaA, schemaReordered), true)
+assert.equal(isDomainTableSchemaCompatible(schemaA, [
+  { cid: 0, name: 'id', type: 'INTEGER', notnull: 0, pk: 1 },
+]), false)
+assert.equal(isDomainTableSchemaCompatible(schemaA, [
+  { cid: 0, name: 'id', type: 'TEXT', notnull: 0, pk: 1 },
+  { cid: 1, name: 'value', type: 'TEXT', notnull: 1, pk: 0 },
+]), false)
+
 
 async function testRollingManifests(): Promise<void> {
   const firstManifest = await domainBackfillRollingManifest(null, 'batch-a', 500)

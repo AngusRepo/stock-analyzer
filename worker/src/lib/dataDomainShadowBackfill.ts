@@ -3,7 +3,7 @@ import { dataDomainForTable, shadowDatabaseForDataDomain, tablesForDataDomainSha
 
 export const DATA_DOMAIN_SHADOW_SCHEMA_VERSION = 'data-domain-shadow-backfill-v1'
 
-interface TableColumn {
+export interface TableColumn {
   cid: number
   name: string
   type: string
@@ -127,15 +127,22 @@ async function tableColumns(db: D1Database, table: string): Promise<TableColumn[
   return (result.results ?? []).sort((left, right) => Number(left.cid) - Number(right.cid))
 }
 
+export function isDomainTableSchemaCompatible(source: TableColumn[], target: TableColumn[]): boolean {
+  if (!source.length || !target.length) return false
+  // D1 additive migrations may append columns in a different physical order.
+  const shape = (columns: TableColumn[]) => columns.map((column) => [
+    column.name, String(column.type ?? '').toUpperCase(), Number(column.notnull), Number(column.pk),
+  ]).sort((left, right) => String(left[0]).localeCompare(String(right[0])))
+  if (JSON.stringify(shape(source)) !== JSON.stringify(shape(target))) {
+    return false
+  }
+  return true
+}
+
 function assertSchemaParity(source: TableColumn[], target: TableColumn[], table: string): void {
   if (!source.length) throw new Error(`domain_source_table_missing:${table}`)
   if (!target.length) throw new Error(`domain_target_schema_missing:${table}`)
-  const shape = (columns: TableColumn[]) => columns.map((column) => [
-    column.name, String(column.type ?? '').toUpperCase(), Number(column.notnull), Number(column.pk),
-  ])
-  if (JSON.stringify(shape(source)) !== JSON.stringify(shape(target))) {
-    throw new Error(`domain_table_schema_mismatch:${table}`)
-  }
+  if (!isDomainTableSchemaCompatible(source, target)) throw new Error(`domain_table_schema_mismatch:${table}`)
 }
 
 export function domainBackfillKeysetWhere(primaryKeys: string[], cursor: unknown[] | null): { sql: string; binds: unknown[] } {

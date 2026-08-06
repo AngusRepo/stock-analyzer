@@ -23,6 +23,7 @@ const execution = fs.readFileSync('domain-migrations/execution/0001_execution_ba
 const paper = fs.readFileSync('domain-migrations/paper/0001_paper_baseline.sql', 'utf8')
 const learningBaseline = fs.readFileSync('domain-migrations/learning/0001_learning_baseline.sql', 'utf8')
 const learningIncremental = fs.readFileSync('domain-migrations/learning/0002_learning_policy_evidence.sql', 'utf8')
+const learningForwardExtension = fs.readFileSync('domain-migrations/learning/0003_learning_active8_forward_extension.sql', 'utf8')
 for (const table of [
   'strategy_production_policy_history_v1',
   'expected_return_shadow_evaluation_packets',
@@ -30,6 +31,7 @@ for (const table of [
   'active8_oof_freshness_sla',
   'strategy_adaptive_policy_history_v2',
 ]) assert.match(learningIncremental, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
+assert.match(learningForwardExtension, /CREATE TABLE IF NOT EXISTS active8_oof_forward_extension_coverage/)
 
 assert.match(
   learningBaseline,

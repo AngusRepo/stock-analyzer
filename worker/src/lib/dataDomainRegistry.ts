@@ -117,6 +117,49 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
   ]),
 }
 
+// Shadow copies must respect the same foreign-key topology as the legacy DB.
+// Keep this map next to the ownership registry so every durable backfill path
+// receives parent rows before child rows, independent of alphabetical names.
+const SHADOW_BACKFILL_DEPENDENCIES: Readonly<Record<string, readonly string[]>> = {
+  active8_oof_fold_artifacts: ['active8_oof_cohorts'],
+  active8_oof_materialized_artifacts: ['active8_oof_cohorts'],
+  active8_oof_predictions: ['active8_oof_cohorts'],
+  allocator_ev_feature_snapshot_staging: ['allocator_ev_snapshot_runs'],
+  allocator_ev_oof_snapshots: ['active8_oof_cohorts'],
+  data_retention_cursors: ['data_retention_policies'],
+  data_retention_run_items: ['data_retention_runs'],
+  data_retention_runs: ['data_retention_policies'],
+  expected_return_artifact_payloads: ['model_artifact_registry'],
+  l4_oof_predictions: ['active8_oof_cohorts'],
+  s12_structure_batch_shards: ['s12_structure_batch_runs'],
+  strategy_marginal_edge_dates_v4: ['strategy_marginal_edge_runs_v4'],
+  strategy_marginal_edge_head_v4: ['strategy_marginal_edge_runs_v4'],
+  strategy_marginal_edge_v4: ['strategy_marginal_edge_runs_v4'],
+  strategy_route_backfill_eligibility_v1: ['strategy_route_calibration_runs_v1'],
+  strategy_route_calibration_head_v1: ['strategy_route_calibration_runs_v1'],
+}
+
+function orderShadowBackfillTables(tables: string[]): string[] {
+  const tableSet = new Set(tables)
+  const depthCache = new Map<string, number>()
+
+  const depth = (table: string, visiting = new Set<string>()): number => {
+    const cached = depthCache.get(table)
+    if (cached !== undefined) return cached
+    if (visiting.has(table)) throw new Error(`data_domain_shadow_dependency_cycle:${table}`)
+    visiting.add(table)
+    const parentDepths = (SHADOW_BACKFILL_DEPENDENCIES[table] ?? [])
+      .filter((parent) => tableSet.has(parent))
+      .map((parent) => depth(parent, visiting) + 1)
+    visiting.delete(table)
+    const value = parentDepths.length ? Math.max(...parentDepths) : 0
+    depthCache.set(table, value)
+    return value
+  }
+
+  return [...tables].sort((left, right) => depth(left) - depth(right) || left.localeCompare(right))
+}
+
 
 export function dataDomainForTable(tableName: string): DataDomain | null {
   const normalized = tableName.trim().toLowerCase()
@@ -133,7 +176,9 @@ export function tablesForDataDomain(domain: DataDomain): string[] {
 
 export function tablesForDataDomainShadowBackfill(domain: DataDomain): string[] {
   const excluded = SHADOW_BACKFILL_EXCLUDED_TABLES[domain] ?? new Set<string>()
-  return tablesForDataDomain(domain).filter((table) => !excluded.has(table))
+  return orderShadowBackfillTables(
+    tablesForDataDomain(domain).filter((table) => !excluded.has(table)),
+  )
 }
 
 function domainBindings(env: Pick<Bindings, 'DB'> & Partial<Bindings>): Partial<Record<DataDomain, D1Database | undefined>> {

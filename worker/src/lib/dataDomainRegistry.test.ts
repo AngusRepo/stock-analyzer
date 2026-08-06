@@ -52,6 +52,21 @@ assert(opsControlTables.every((table) => tablesForDataDomain('ops').includes(tab
 assert(opsControlTables.every((table) => !tablesForDataDomainShadowBackfill('ops').includes(table)))
 assert(!tablesForDataDomainShadowBackfill('learning').includes('entry_model_replay_reports'))
 
+const assertParentBeforeChild = (domain: Parameters<typeof tablesForDataDomainShadowBackfill>[0], parent: string, child: string) => {
+  const tables = tablesForDataDomainShadowBackfill(domain)
+  assert(tables.indexOf(parent) >= 0, `missing parent ${parent}`)
+  assert(tables.indexOf(child) >= 0, `missing child ${child}`)
+  assert(tables.indexOf(parent) < tables.indexOf(child), `${parent} must precede ${child}`)
+}
+assertParentBeforeChild('ops', 'data_retention_policies', 'data_retention_runs')
+assertParentBeforeChild('ops', 'data_retention_runs', 'data_retention_run_items')
+assertParentBeforeChild('ops', 's12_structure_batch_runs', 's12_structure_batch_shards')
+assertParentBeforeChild('learning', 'active8_oof_cohorts', 'active8_oof_predictions')
+assertParentBeforeChild('learning', 'allocator_ev_snapshot_runs', 'allocator_ev_feature_snapshot_staging')
+assertParentBeforeChild('learning', 'model_artifact_registry', 'expected_return_artifact_payloads')
+assertParentBeforeChild('learning', 'strategy_marginal_edge_runs_v4', 'strategy_marginal_edge_dates_v4')
+assertParentBeforeChild('learning', 'strategy_route_calibration_runs_v1', 'strategy_route_calibration_head_v1')
+
 const market = { kind: 'market' } as unknown as D1Database
 const shadowEnv = { DB: legacy, MARKET_DB: market }
 assert.equal(databaseForDataDomain(shadowEnv, 'market'), legacy)

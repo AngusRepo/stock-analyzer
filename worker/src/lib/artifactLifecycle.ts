@@ -1,6 +1,8 @@
 import type { Bindings } from '../types'
+import { resolveExpectedCompletedDataDate } from './dataQualityMonitor'
 import { sha256Text } from './datasetSnapshots'
 import { collectStorageCapacityTelemetry, type StorageCapacityRow } from './storageCapacityTelemetry'
+import { inspectSplitDomainSchemaReadiness, type DomainSchemaReadiness } from './storageReadiness'
 import type {
   EvidenceArtifactManifest,
   EvidenceArtifactWriteInput,
@@ -660,13 +662,11 @@ export async function runOrphanReachabilityGc(
   return { scanned: (listed.objects ?? []).length, deleted, referenced }
 }
 
-export async function runStorageHealthCheck(
-  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
-): Promise<{
+export interface StorageHealthResult {
   healthy: boolean
-  enforcement_scope: 'scheduler_execution_only'
-  admission_control: false
-  blocks_storage_producers: false
+  enforcement_scope: 'scheduler_and_producer_admission'
+  admission_control: true
+  blocks_storage_producers: true
   blocks_trading_path: false
   integrity_blocked: number
   cleanup_backlog_over_24h: number
@@ -676,6 +676,13 @@ export async function runStorageHealthCheck(
   allocator_snapshot_incomplete_runs: number
   allocator_snapshot_staging_orphans: number
   artifact_hard_ref_drift: number
+  artifact_active_references: number
+  artifact_true_orphan_references: number
+  artifact_true_orphan_ids: string[]
+  domain_schema: DomainSchemaReadiness[]
+  expected_lineage_date: string | null
+  canonical_execution_lineage_ready: boolean
+  paper_shadow_lineage_ready: boolean
   legacy_retention_backlog_cohorts: number
   legacy_retention_progress_24h: number
   legacy_retention_stalled: boolean
@@ -684,7 +691,11 @@ export async function runStorageHealthCheck(
   capacity_status: StorageCapacityRow['status'] | 'unknown'
   capacity_error: string | null
   capacity_domains: Array<{ domain: string; binding_name: string; utilization_pct: number; status: string }>
-}> {
+}
+
+export async function runStorageHealthCheck(
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
+): Promise<StorageHealthResult> {
   let capacityRows: StorageCapacityRow[] = []
   let capacityError: string | null = null
   try {
@@ -727,6 +738,47 @@ export async function runStorageHealthCheck(
         WHERE r.artifact_id=a.artifact_id AND r.active=1
      )
   `).first<any>()
+  const hardReferenceReachability = await env.DB.prepare(`
+    SELECT COUNT(*) active_references,
+           SUM(CASE WHEN a.artifact_id IS NULL THEN 1 ELSE 0 END) true_orphan_references
+      FROM artifact_hard_references r
+      LEFT JOIN run_artifacts a ON a.artifact_id=r.artifact_id
+     WHERE r.active=1
+  `).first<any>()
+  const hardReferenceOrphanIds = await env.DB.prepare(`
+    SELECT DISTINCT r.artifact_id
+      FROM artifact_hard_references r
+      LEFT JOIN run_artifacts a ON a.artifact_id=r.artifact_id
+     WHERE r.active=1 AND a.artifact_id IS NULL
+     ORDER BY r.artifact_id
+     LIMIT 25
+  `).all<{ artifact_id: string }>()
+  const domainSchema = await inspectSplitDomainSchemaReadiness(env)
+  const expectedLineageDate = env.KV
+    ? await resolveExpectedCompletedDataDate(env.KV, undefined, undefined, 14 * 60 + 35)
+    : null
+  let executionLineageReady = false
+  let paperLineageReady = false
+  if (expectedLineageDate) {
+    const lineage = await env.DB.prepare(`
+      SELECT domain, status, checksum_verified_at,
+             ROW_NUMBER() OVER (PARTITION BY domain ORDER BY created_at DESC, artifact_id DESC) ordinal
+        FROM run_artifacts
+       WHERE business_date=?
+         AND domain IN ('execution_daily_closure','paper_daily_closure')
+    `).bind(expectedLineageDate).all<{
+      domain: string
+      status: string
+      checksum_verified_at: string | null
+      ordinal: number
+    }>()
+    for (const row of lineage.results ?? []) {
+      if (Number(row.ordinal) !== 1) continue
+      const ready = row.status === 'ready' && Boolean(row.checksum_verified_at)
+      if (row.domain === 'execution_daily_closure') executionLineageReady = ready
+      if (row.domain === 'paper_daily_closure') paperLineageReady = ready
+    }
+  }
   const legacyRetention = await env.DB.prepare(`
     SELECT
       (
@@ -811,18 +863,23 @@ export async function runStorageHealthCheck(
   const allocatorSnapshotIncompleteRuns = Number(allocatorSnapshotLifecycle?.incomplete_runs ?? 0)
   const allocatorSnapshotStagingOrphans = Number(allocatorSnapshotLifecycle?.staging_orphans ?? 0)
   const artifactHardRefDrift = Number(hardReferences?.drift_count ?? 0)
+  const artifactActiveReferences = Number(hardReferenceReachability?.active_references ?? 0)
+  const artifactTrueOrphanReferences = Number(hardReferenceReachability?.true_orphan_references ?? 0)
+  const domainSchemaReady = domainSchema.every((row) => row.ready)
   const legacyRetentionBacklog = Number(legacyRetention?.backlog_cohorts ?? 0)
   const legacyRetentionProgress24h = Number(legacyRetention?.progress_24h ?? 0)
   const legacyRetentionStalled = legacyRetentionBacklog > 0 && legacyRetentionProgress24h === 0
   return {
-    enforcement_scope: 'scheduler_execution_only',
-    admission_control: false,
-    blocks_storage_producers: false,
+    enforcement_scope: 'scheduler_and_producer_admission',
+    admission_control: true,
+    blocks_storage_producers: true,
     blocks_trading_path: false,
     healthy: integrityBlocked === 0 && backlog === 0 && dlqPending === 0 &&
       allocatorSnapshotRows > 0 && allocatorSnapshotDates > 0 &&
       allocatorSnapshotIncompleteRuns === 0 && allocatorSnapshotStagingOrphans === 0 &&
-      artifactHardRefDrift === 0 && !legacyRetentionStalled &&
+      artifactHardRefDrift === 0 && artifactTrueOrphanReferences === 0 && domainSchemaReady &&
+      (expectedLineageDate == null || (executionLineageReady && paperLineageReady)) &&
+      !legacyRetentionStalled &&
       capacityError == null && capacityRows.length > 0 && !capacityDrain,
     integrity_blocked: integrityBlocked,
     cleanup_backlog_over_24h: backlog,
@@ -832,6 +889,13 @@ export async function runStorageHealthCheck(
     allocator_snapshot_incomplete_runs: allocatorSnapshotIncompleteRuns,
     allocator_snapshot_staging_orphans: allocatorSnapshotStagingOrphans,
     artifact_hard_ref_drift: artifactHardRefDrift,
+    artifact_active_references: artifactActiveReferences,
+    artifact_true_orphan_references: artifactTrueOrphanReferences,
+    artifact_true_orphan_ids: (hardReferenceOrphanIds.results ?? []).map((row) => row.artifact_id),
+    domain_schema: domainSchema,
+    expected_lineage_date: expectedLineageDate,
+    canonical_execution_lineage_ready: executionLineageReady,
+    paper_shadow_lineage_ready: paperLineageReady,
     legacy_retention_backlog_cohorts: legacyRetentionBacklog,
     legacy_retention_progress_24h: legacyRetentionProgress24h,
     legacy_retention_stalled: legacyRetentionStalled,

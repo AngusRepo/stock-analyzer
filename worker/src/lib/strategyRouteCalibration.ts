@@ -46,6 +46,14 @@ export interface StrategyRouteCalibrationResult {
   gates: Record<string, boolean>
 }
 
+export interface StrategyRouteCurrentCoverage {
+  referenceRows: number
+  thresholdAffinityRows: number
+  challengerRouteRows: number
+  thresholdAffinityComplete: boolean
+  challengerRouteComplete: boolean
+}
+
 function finite(value: unknown): number | null {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
@@ -230,6 +238,44 @@ async function fingerprint(rows: StrategyRouteObservation[]): Promise<string> {
   return [...new Uint8Array(digest)].slice(0, 10).map((value) => value.toString(16).padStart(2, '0')).join('')
 }
 
+export async function inspectStrategyRouteCurrentCoverage(
+  db: D1Database,
+  asOfDate: string,
+): Promise<StrategyRouteCurrentCoverage> {
+  const row = await db.prepare(`
+    SELECT COUNT(*) reference_rows,
+           SUM(CASE WHEN r.strategy_challenger_affinity_version=? THEN 1 ELSE 0 END) threshold_affinity_rows,
+           SUM(CASE WHEN r.strategy_challenger_route_version=?
+                     AND r.strategy_challenger_route_score IS NOT NULL THEN 1 ELSE 0 END) challenger_route_rows
+      FROM selection_reference_snapshots_v1 r
+     WHERE r.signal_date=?
+       AND r.hard_gate_passed=1
+       AND EXISTS (
+         SELECT 1 FROM canonical_run_heads h
+          WHERE h.logical_run_key='screener:' || r.signal_date || ':TW:production:market_screener'
+            AND h.run_id=r.producer_run_id
+       )
+  `).bind(
+    STRATEGY_ROUTE_CHALLENGER_VERSION,
+    STRATEGY_ROUTE_CHALLENGER_VERSION,
+    asOfDate,
+  ).first<{
+    reference_rows?: number | string
+    threshold_affinity_rows?: number | string
+    challenger_route_rows?: number | string
+  }>()
+  const referenceRows = Math.max(0, Number(row?.reference_rows ?? 0))
+  const thresholdAffinityRows = Math.max(0, Number(row?.threshold_affinity_rows ?? 0))
+  const challengerRouteRows = Math.max(0, Number(row?.challenger_route_rows ?? 0))
+  return {
+    referenceRows,
+    thresholdAffinityRows,
+    challengerRouteRows,
+    thresholdAffinityComplete: referenceRows > 0 && thresholdAffinityRows === referenceRows,
+    challengerRouteComplete: referenceRows > 0 && challengerRouteRows === referenceRows,
+  }
+}
+
 export async function refreshStrategyRouteCalibration(
   db: D1Database,
   asOfDate: string,
@@ -271,9 +317,20 @@ export async function refreshStrategyRouteCalibration(
     cursorDate = pageRows.at(-1)!.signal_date
     cursorSymbol = pageRows.at(-1)!.symbol
   }
-  const result = evaluateStrategyRouteCalibration(rows)
+  const evaluated = evaluateStrategyRouteCalibration(rows)
+  const currentCoverage = await inspectStrategyRouteCurrentCoverage(db, asOfDate)
+  const currentCoverageReady = currentCoverage.thresholdAffinityComplete
+    && currentCoverage.challengerRouteComplete
+  const result: StrategyRouteCalibrationResult = {
+    ...evaluated,
+    gates: {
+      ...evaluated.gates,
+      current_day_threshold_affinity_complete: currentCoverage.thresholdAffinityComplete,
+      current_day_challenger_route_complete: currentCoverage.challengerRouteComplete,
+    },
+  }
   const runId = `${STRATEGY_ROUTE_CALIBRATION_ARTIFACT_VERSION}-${asOfDate}-${await fingerprint(rows)}`
-  const promoted = result.status === 'pass' && options.allowPromotion === true && result.routeFloor != null
+  const promoted = result.status === 'pass' && currentCoverageReady && options.allowPromotion === true && result.routeFloor != null
   const status: 'pass' | 'fail' | 'pending_maturity' | 'promoted' = promoted ? 'promoted' : result.status
   await db.prepare(`
     INSERT INTO strategy_route_calibration_runs_v1 (
@@ -297,7 +354,17 @@ export async function refreshStrategyRouteCalibration(
     result.topBucketNetReturn, result.topBucketNetReturnLcb90,
     result.residualSpread, result.residualSpreadLcb90,
     result.brierScore, result.climatologyBrierScore, result.logLoss,
-    JSON.stringify({ ...result.gates, purge_dates: result.purgeDates, no_top_k: true, point_in_time: true }),
+    JSON.stringify({
+      ...result.gates,
+      _metadata: {
+        purge_dates: result.purgeDates,
+        no_top_k: true,
+        point_in_time: true,
+        current_day_reference_rows: currentCoverage.referenceRows,
+        current_day_threshold_affinity_rows: currentCoverage.thresholdAffinityRows,
+        current_day_challenger_route_rows: currentCoverage.challengerRouteRows,
+      },
+    }),
   ).run()
   if (promoted) {
     await db.prepare(`

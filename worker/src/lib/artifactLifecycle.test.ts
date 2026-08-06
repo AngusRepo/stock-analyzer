@@ -239,21 +239,45 @@ async function testD1EvidenceScrubBisectsFailedBatchInsteadOfRetryingEveryRow():
   )
 }
 
+function readyDomainDb(baseline: string, tables: string[]): MockDb {
+  const db = new MockDb()
+  db.allHandler = (statement) => {
+    if (statement.sql.includes('FROM d1_migrations')) return [{ name: baseline }]
+    if (statement.sql.includes('FROM sqlite_schema')) return tables.map((name) => ({ name }))
+    return []
+  }
+  return db
+}
+
+const executionDomainDb = readyDomainDb('0001_execution_baseline.sql', [
+  'broker_execution_intents', 'broker_execution_legs', 'broker_execution_events',
+])
+const paperDomainDb = readyDomainDb('0001_paper_baseline.sql', [
+  'paper_accounts', 'paper_orders', 'paper_positions', 'paper_settlements', 'paper_daily_snapshots',
+  'paper_execution_events', 'paper_order_intents', 'paper_exit_intents', 'paper_challenger_candidates',
+  'paper_challenger_daily_metrics', 'paper_decision_attribution',
+])
+
 async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): Promise<void> {
   const healthyDb = new MockDb()
   healthyDb.queryMeta = { size_after: 7_000_000_000 }
   healthyDb.firstHandler = (statement) => {
     if (statement.sql.includes('artifact_cleanup_dlq')) return { count: 0 }
     if (statement.sql.includes('FROM allocator_ev_feature_snapshots')) return { row_count: 1600, date_count: 10 }
+    if (statement.sql.includes('active_references')) return { active_references: 1998, true_orphan_references: 0 }
     if (statement.sql.includes('AS backlog_cohorts')) return { backlog_cohorts: 7, progress_24h: 10 }
     return { integrity_blocked: 0, cleanup_backlog_over_24h: 0 }
   }
-  const healthy = await runStorageHealthCheck({ DB: healthyDb as any })
+  const splitBindings = { EXECUTION_DB: executionDomainDb as any, PAPER_DB: paperDomainDb as any }
+  const healthy = await runStorageHealthCheck({ DB: healthyDb as any, ...splitBindings })
   assert.equal(healthy.healthy, true)
-  assert.equal(healthy.enforcement_scope, 'scheduler_execution_only')
-  assert.equal(healthy.admission_control, false)
-  assert.equal(healthy.blocks_storage_producers, false)
+  assert.equal(healthy.enforcement_scope, 'scheduler_and_producer_admission')
+  assert.equal(healthy.admission_control, true)
+  assert.equal(healthy.blocks_storage_producers, true)
   assert.equal(healthy.blocks_trading_path, false)
+  assert.equal(healthy.artifact_active_references, 1998)
+  assert.equal(healthy.artifact_true_orphan_references, 0)
+  assert.equal(healthy.domain_schema.every((row) => row.ready), true)
   assert.equal(healthy.d1_bytes, 7_000_000_000)
   assert.equal(healthy.allocator_ev_snapshot_dates, 10)
   assert.equal(healthy.legacy_retention_stalled, false)
@@ -261,7 +285,7 @@ async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): 
   const overCapacityDb = new MockDb()
   overCapacityDb.queryMeta = { size_after: 8_864_489_472 }
   overCapacityDb.firstHandler = healthyDb.firstHandler
-  const overCapacity = await runStorageHealthCheck({ DB: overCapacityDb as any })
+  const overCapacity = await runStorageHealthCheck({ DB: overCapacityDb as any, ...splitBindings })
   assert.equal(overCapacity.healthy, false)
   assert.equal(overCapacity.d1_utilization, 0.8864489472)
 
@@ -269,18 +293,19 @@ async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): 
   missingAllocatorDb.queryMeta = { size_after: 7_000_000_000 }
   missingAllocatorDb.firstHandler = (statement) => {
     if (statement.sql.includes('artifact_cleanup_dlq')) return { count: 0 }
+    if (statement.sql.includes('active_references')) return { active_references: 0, true_orphan_references: 0 }
     if (statement.sql.includes('FROM allocator_ev_feature_snapshots')) return { row_count: 0, date_count: 0 }
     if (statement.sql.includes('AS backlog_cohorts')) return { backlog_cohorts: 0, progress_24h: 0 }
     return { integrity_blocked: 0, cleanup_backlog_over_24h: 0 }
   }
-  const missingAllocator = await runStorageHealthCheck({ DB: missingAllocatorDb as any })
+  const missingAllocator = await runStorageHealthCheck({ DB: missingAllocatorDb as any, ...splitBindings })
   assert.equal(missingAllocator.healthy, false)
   assert.equal(missingAllocator.allocator_ev_snapshot_rows, 0)
 
   const unknownDb = new MockDb()
   unknownDb.queryMeta = {}
   unknownDb.firstHandler = healthyDb.firstHandler
-  const unknown = await runStorageHealthCheck({ DB: unknownDb as any })
+  const unknown = await runStorageHealthCheck({ DB: unknownDb as any, ...splitBindings })
   assert.equal(unknown.healthy, false)
   assert.equal(unknown.d1_bytes, null)
 }

@@ -498,6 +498,22 @@ export async function persistSelectionEvidenceV4(
         strategy_labeler_version=excluded.strategy_labeler_version,
         strategy_affinity_version=excluded.strategy_affinity_version,
         strategy_challenger_affinity_version=excluded.strategy_challenger_affinity_version,
+        strategy_router_version=COALESCE(
+          excluded.strategy_router_version,
+          selection_reference_snapshots_v1.strategy_router_version
+        ),
+        strategy_router_score=COALESCE(
+          excluded.strategy_router_score,
+          selection_reference_snapshots_v1.strategy_router_score
+        ),
+        strategy_challenger_route_version=COALESCE(
+          excluded.strategy_challenger_route_version,
+          selection_reference_snapshots_v1.strategy_challenger_route_version
+        ),
+        strategy_challenger_route_score=COALESCE(
+          excluded.strategy_challenger_route_score,
+          selection_reference_snapshots_v1.strategy_challenger_route_score
+        ),
         strategy_registry_checksum=excluded.strategy_registry_checksum,
         feature_contract_version=excluded.feature_contract_version,
         evidence_artifact_id=excluded.evidence_artifact_id

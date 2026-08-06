@@ -59,12 +59,28 @@ export type PipelineMaturityStage = {
   }
 }
 
+export type StrategyRouteBundleMaturity = {
+  version: string
+  status: PipelineMaturityStatus
+  contribution_mode: PipelineContributionMode
+  threshold_coverage_ready: boolean
+  current_route_coverage_complete: boolean
+  current_route_rows: number
+  current_reference_rows: number
+  route_calibration_status: string | null
+  route_mature_dates: number
+  route_required_dates: number
+  promoted_run_id: string | null
+  blockers: string[]
+}
+
 export type PipelineDecisionMaturityPacket = {
   schema_version: 'pipeline-decision-maturity-v1'
   requested_date: string
   generated_at: string
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
   action_gate: 'expected_return_owner' | 'fusion_primary_required'
+  strategy_route_bundle?: StrategyRouteBundleMaturity
   summary: {
     production: number
     shadow: number

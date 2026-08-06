@@ -4,7 +4,11 @@ import {
   isDomainShadowCutoverReady,
   type DomainShadowBackfillResult,
 } from './dataDomainShadowBackfill'
-import { tablesForDataDomain, type DataDomain } from './dataDomainRegistry'
+import {
+  shadowDatabaseForDataDomain,
+  tablesForDataDomain,
+  type DataDomain,
+} from './dataDomainRegistry'
 import { runWithMaintenanceLease } from './maintenanceLease'
 import { logSchedulerResult } from './schedulerRunLogger'
 
@@ -80,6 +84,45 @@ async function nextIncompleteTable(env: Bindings, domain: DataDomain): Promise<s
   return tablesForDataDomain(domain).find((table) => !completedSet.has(table)) ?? null
 }
 
+async function tableRowCount(db: D1Database, table: string): Promise<number> {
+  const trustedTable = table.replace(/[^a-z0-9_]/g, '')
+  if (trustedTable !== table) throw new Error(`invalid_data_domain_table:${table}`)
+  const row = await db.prepare(`SELECT COUNT(*) AS row_count FROM "${trustedTable}"`).first<{
+    row_count?: number | string
+  }>()
+  return Math.max(0, Number(row?.row_count ?? 0))
+}
+
+const DOMAIN_BACKFILL_ORDER: DataDomain[] = ['ops', 'learning', 'market', 'research', 'core']
+
+export async function nextDataDomainBackfillDomain(env: Bindings): Promise<DataDomain | null> {
+  for (const domain of DOMAIN_BACKFILL_ORDER) {
+    const incomplete = await nextIncompleteTable(env, domain)
+    if (incomplete) return domain
+    const incremental = await nextDataDomainIncrementalCatchupTable(env, domain)
+    if (incremental) return domain
+  }
+  return null
+}
+
+export async function nextDataDomainIncrementalCatchupTable(
+  env: Bindings,
+  domain: DataDomain,
+): Promise<string | null> {
+  const target = shadowDatabaseForDataDomain(env, domain)
+  if (!target) throw new Error(`data_domain_shadow_binding_missing:${domain}`)
+  const completedSet = new Set(await completedDomainTables(env, domain))
+  for (const table of tablesForDataDomain(domain)) {
+    if (!completedSet.has(table)) continue
+    const [sourceRows, targetRows] = await Promise.all([
+      tableRowCount(env.DB, table),
+      tableRowCount(target, table),
+    ])
+    if (sourceRows !== targetRows) return table
+  }
+  return null
+}
+
 async function domainChecksumReady(env: Bindings, domain: DataDomain): Promise<boolean> {
   const completedTables = await completedDomainTables(env, domain)
   const parity = await env.DB.prepare(`
@@ -142,7 +185,9 @@ export async function processDataDomainShadowBackfillDrain(
   const attempt = Math.max(0, Math.floor(msg.attempt ?? 0))
   const maxAttempts = Math.max(1, Math.min(Math.floor(msg.maxAttempts ?? DEFAULT_MAX_ATTEMPTS), MAX_ATTEMPTS))
   const runId = msg.runId ?? `data-domain-shadow-backfill:${domain}:${msg.triggerTime}:queue`
-  const table = msg.dataDomainTable || await nextIncompleteTable(env, domain)
+  const table = msg.dataDomainTable
+    || await nextIncompleteTable(env, domain)
+    || await nextDataDomainIncrementalCatchupTable(env, domain)
   if (!table) {
     const checksumReady = await domainChecksumReady(env, domain)
     await env.KV.delete(activeKey(domain))
@@ -191,7 +236,9 @@ export async function processDataDomainShadowBackfillDrain(
   }
 
   const nextTable = ['shadow_progress', 'shadow_parity_progress'].includes(result.status)
-    ? table : await nextIncompleteTable(env, domain)
+    ? table
+    : await nextIncompleteTable(env, domain)
+      || await nextDataDomainIncrementalCatchupTable(env, domain)
   if (nextTable) {
     await env.KV.put(activeKey(domain), JSON.stringify({
       run_id: runId,

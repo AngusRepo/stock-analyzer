@@ -1,6 +1,8 @@
 import type { Bindings } from '../types'
 import { writeEvidenceArtifact, type EvidenceArtifactManifest } from './artifactLifecycle'
-import { activeDataDomains, MULTI_D1_STRICT_ROUTING_READY } from './dataDomainRegistry'
+import {
+  activeDataDomains, databaseForDataDomain, MULTI_D1_STRICT_ROUTING_READY,
+} from './dataDomainRegistry'
 
 export const DAILY_EXECUTION_PAPER_LINEAGE_SCHEMA_VERSION = 'daily-execution-paper-lineage-v1'
 
@@ -38,6 +40,7 @@ export async function writeDailyExecutionPaperClosureArtifacts(
   businessDate: string,
 ): Promise<DailyExecutionPaperClosureResult> {
   const activeDomains = [...activeDataDomains(env)].sort()
+  const canonicalPaperDb = databaseForDataDomain(env, 'paper')
   const [
     legacyBrokerIntents,
     legacyBrokerEvents,
@@ -65,7 +68,7 @@ export async function writeDailyExecutionPaperClosureArtifacts(
     countRows(env.DB, 'SELECT COUNT(*) count FROM paper_execution_events WHERE trade_date=?', businessDate),
     countRows(env.PAPER_DB, 'SELECT COUNT(*) count FROM paper_orders WHERE date(created_at)=date(?)', businessDate),
     countRows(env.PAPER_DB, 'SELECT COUNT(*) count FROM paper_execution_events WHERE trade_date=?', businessDate),
-    paperSnapshot(env.DB, businessDate),
+    paperSnapshot(canonicalPaperDb, businessDate),
   ])
 
   const executionRows = (legacyBrokerIntents ?? 0) + (legacyBrokerEvents ?? 0)
@@ -122,4 +125,39 @@ export async function writeDailyExecutionPaperClosureArtifacts(
   })
 
   return { execution, paper, activity_status: activityStatus }
+}
+
+export async function ensureDailyExecutionPaperClosureArtifacts(
+  env: Bindings,
+  businessDate: string,
+): Promise<{ status: 'reused' | 'written'; business_date: string; execution_ready: boolean; paper_ready: boolean }> {
+  const canonicalPaperDb = databaseForDataDomain(env, 'paper')
+  const snapshot = await canonicalPaperDb.prepare(`
+    SELECT COUNT(*) count FROM paper_daily_snapshots WHERE date=?
+  `).bind(businessDate).first<CountResult>()
+  if (Number(snapshot?.count ?? 0) < 1) throw new Error(`daily_paper_snapshot_not_ready:${businessDate}`)
+
+  const existing = await env.DB.prepare(`
+    SELECT domain, status, checksum_verified_at,
+           ROW_NUMBER() OVER (PARTITION BY domain ORDER BY created_at DESC, artifact_id DESC) ordinal
+      FROM run_artifacts
+     WHERE business_date=?
+       AND domain IN ('execution_daily_closure','paper_daily_closure')
+  `).bind(businessDate).all<{
+    domain: string
+    status: string
+    checksum_verified_at: string | null
+    ordinal: number
+  }>()
+  const readyDomains = new Set((existing.results ?? [])
+    .filter((row) => Number(row.ordinal) === 1 && row.status === 'ready' && Boolean(row.checksum_verified_at))
+    .map((row) => row.domain))
+  const executionReady = readyDomains.has('execution_daily_closure')
+  const paperReady = readyDomains.has('paper_daily_closure')
+  if (executionReady && paperReady) {
+    return { status: 'reused', business_date: businessDate, execution_ready: true, paper_ready: true }
+  }
+
+  await writeDailyExecutionPaperClosureArtifacts(env, businessDate)
+  return { status: 'written', business_date: businessDate, execution_ready: true, paper_ready: true }
 }

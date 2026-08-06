@@ -27,7 +27,7 @@ const D1_HEAVY_MAINTENANCE_TASKS = new Set([
   'price-horizon-projection',
   'strategy-learning-finalize',
   'selection-reference-repair', 'selection-reference-identity-repair',
-  'data-domain-shadow-backfill',
+  'data-domain-shadow-backfill', 'data-domain-shadow-backfill-next',
 ])
 const D1_MAINTENANCE_REQUEST_BUDGET_MS = 45_000
 const PAPER_SHADOW_BACKFILL_ACTIVE_KEY = 'data-domain-shadow-backfill:paper:active'
@@ -589,6 +589,11 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
       return result.summary
     },
     'daily-snapshot': () => deps.runDailySnapshot(requestedRunDate()),
+    'daily-execution-paper-lineage': async () => {
+      const { ensureDailyExecutionPaperClosureArtifacts } = await import('./dailyExecutionPaperLineage')
+      const result = await ensureDailyExecutionPaperClosureArtifacts(c.env, requestedRunDate() || twToday())
+      return `daily_execution_paper_lineage ${JSON.stringify(result)}`
+    },
     warmup: () => deps.runMorningWarmup(),
     'ml-warmup': () => runMlControllerWarmup(c.env),
     'pre-market-warmup': async () => {
@@ -902,6 +907,20 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         reset: c.req.query('reset') === '1',
       })
       return `data_domain_shadow_backfill ${JSON.stringify(result)}`
+    },
+    'data-domain-shadow-backfill-next': async () => {
+      const {
+        enqueueDataDomainShadowBackfill,
+        nextDataDomainBackfillDomain,
+      } = await import('./dataDomainShadowBackfillDrain')
+      const domain = await nextDataDomainBackfillDomain(c.env)
+      if (!domain) return 'data_domain_shadow_backfill_next all_domains_caught_up=true'
+      const queued = await enqueueDataDomainShadowBackfill(c.env, {
+        domain,
+        runDate: requestedRunDate() || twToday(),
+        maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 5000, 20000),
+      })
+      return `data_domain_shadow_backfill_next domain=${domain} queued=${queued.queued} run_id=${queued.runId}`
     },
     'storage-health-check': async () => {
       const { runStorageHealthCheck } = await import('./artifactLifecycle')

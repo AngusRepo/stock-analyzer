@@ -73,6 +73,21 @@ export interface PipelineMaturityStage {
     updated_at?: string | null
   }
 }
+export interface StrategyRouteBundleMaturity {
+  version: string
+  status: PipelineMaturityStatus
+  contribution_mode: PipelineContributionMode
+  threshold_coverage_ready: boolean
+  current_route_coverage_complete: boolean
+  current_route_rows: number
+  current_reference_rows: number
+  route_calibration_status: string | null
+  route_mature_dates: number
+  route_required_dates: number
+  promoted_run_id: string | null
+  blockers: string[]
+}
+
 
 export interface PipelineDecisionMaturityPacket {
   schema_version: 'pipeline-decision-maturity-v1'
@@ -80,6 +95,7 @@ export interface PipelineDecisionMaturityPacket {
   generated_at: string
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
   action_gate: 'expected_return_owner' | 'fusion_primary_required'
+  strategy_route_bundle: StrategyRouteBundleMaturity
   summary: {
     production: number
     shadow: number
@@ -598,7 +614,7 @@ export async function buildPipelineDecisionMaturityPacket(
       production_effect: promoted
         ? '通過 train/purge/OOS、成本後 top bucket、residual spread 與 calibration gate 後才作用於 production。'
         : 'shadow learning only；不因候選分數較高而改寫今日 production route。',
-      blockers: promoted ? [] : Object.entries(gates).filter(([, passed]) => passed !== true).map(([gate]) => gate),
+      blockers: promoted ? [] : Object.entries(gates).filter(([, passed]) => passed === false).map(([gate]) => gate),
       metrics: [
         gateMetric('mature_dates', 'Mature labeled dates', dateCount, STRATEGY_ROUTE_MIN_TOTAL_DATES, 'dates'),
         gateMetric('train_dates', 'Train dates', STRATEGY_ROUTE_MIN_TRAIN_DATES, STRATEGY_ROUTE_MIN_TRAIN_DATES, 'dates'),
@@ -876,7 +892,46 @@ export async function buildPipelineDecisionMaturityPacket(
       .reverse()
   }
 
+  const thresholdStage = stages.find((stage) => stage.id === 'threshold_margin_affinity_v2')
+  const routeStage = stages.find((stage) => stage.id === 'route_score_v2')
+  const currentReferenceRows = finite(referenceRow?.reference_rows)
+  const currentRouteRows = finite(referenceRow?.challenger_route_rows)
+  const thresholdCoverageReady = thresholdStage?.status === 'ready' || thresholdStage?.status === 'serving'
+  const currentRouteCoverageComplete = currentReferenceRows > 0 && currentRouteRows === currentReferenceRows
+  const routePromoted = Boolean(promotedRoute?.run_id && promotedRoute.candidate_route_version === STRATEGY_ROUTE_CHALLENGER_VERSION)
+  const bundleBlockers = [...new Set([
+    ...(thresholdStage?.blockers ?? []),
+    ...(!currentRouteCoverageComplete ? ['current_day_challenger_route_incomplete'] : []),
+    ...(routeStage?.blockers ?? []),
+    ...(route?.status === 'pass' && !routePromoted ? ['joint_promotion_not_committed'] : []),
+  ])]
+  const strategyRouteBundle: StrategyRouteBundleMaturity = {
+    version: STRATEGY_ROUTE_CHALLENGER_VERSION,
+    status: routePromoted && thresholdCoverageReady && currentRouteCoverageComplete
+      ? 'serving'
+      : !thresholdCoverageReady || !currentRouteCoverageComplete
+        ? 'blocked'
+        : route?.status === 'pending_maturity'
+          ? 'collecting'
+          : route?.status === 'pass'
+            ? 'ready'
+            : route?.status === 'fail'
+              ? 'failed_quality'
+              : 'unavailable',
+    contribution_mode: routePromoted && thresholdCoverageReady && currentRouteCoverageComplete ? 'production' : 'shadow',
+    threshold_coverage_ready: thresholdCoverageReady,
+    current_route_coverage_complete: currentRouteCoverageComplete,
+    current_route_rows: currentRouteRows,
+    current_reference_rows: currentReferenceRows,
+    route_calibration_status: route?.status ?? null,
+    route_mature_dates: finite(route?.date_count),
+    route_required_dates: STRATEGY_ROUTE_MIN_TOTAL_DATES,
+    promoted_run_id: routePromoted ? promotedRoute.run_id : null,
+    blockers: bundleBlockers,
+  }
+
   return {
+    strategy_route_bundle: strategyRouteBundle,
     schema_version: 'pipeline-decision-maturity-v1',
     requested_date: requestedDate,
     generated_at: new Date().toISOString(),

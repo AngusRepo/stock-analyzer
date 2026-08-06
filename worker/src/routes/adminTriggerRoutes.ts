@@ -19,6 +19,7 @@ export function resolveSchedulerTaskAlias(task: string): string {
 const SYNC_REQUIRED_TASKS = new Set([
   'evening-chain',
   'market-close-refresh',
+  'daily-execution-paper-lineage',
   'update', 'pipeline', 'post-screener-pipeline',
   'intraday-rescore',
   'alpha-quality', 'sector-leaders', 'optuna-queue',
@@ -45,6 +46,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'orphan-reachability-gc', 'cleanup-dlq-replay', 'storage-health-check', 'storage-health-gate',
   'storage-integrity-audit', 'storage-capacity-report',
   'data-domain-shadow-backfill',
+  'data-domain-shadow-backfill-next',
   'monthly-retrain',
 ])
 
@@ -146,6 +148,24 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           message: `${task} ${summary}`,
         })
       }
+    }
+
+    const { inspectStorageAdmission } = await import('../lib/storageAdmissionControl')
+    const storageAdmission = await inspectStorageAdmission(c.env, task)
+    if (!storageAdmission.allowed) {
+      const summary = `blocked by storage admission: ${storageAdmission.reason} utilization=${storageAdmission.utilizationPct ?? 'unknown'}%`
+      await logSchedulerResult(c.env.KV, task, {
+        status: 'error',
+        summary,
+        duration_ms: 0,
+        run_date: requestedRunDate,
+        strict: true,
+      }, c.env as any)
+      return c.json({
+        success: false,
+        error: summary,
+        storage_admission: storageAdmission,
+      }, 507)
     }
 
     const syncMode = c.req.query('sync') === '1'

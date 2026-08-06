@@ -60,6 +60,10 @@ const BLOCKER_LABELS: Record<string, string> = {
   threshold_margin_evidence_incomplete: '策略命中的 raw threshold margin 尚未完整',
   challenger_affinity_projection_incomplete: 'Raw margin 已存在，但 challenger affinity projection 尚未完整',
   primary_expected_return_not_allowed: '尚未取得 primary expected-return 權限',
+  current_day_threshold_affinity_complete: '當日 Threshold V2 affinity 尚未完整',
+  current_day_challenger_route_complete: '當日 Route V2 分數尚未完整持久化',
+  current_day_challenger_route_incomplete: '當日通過 L0 的股票尚未全部留下 Route V2 分數',
+  joint_promotion_not_committed: 'Threshold V2 與 Route V2 尚未共同完成 promotion commit',
 }
 
 function stageIcon(id: PipelineMaturityStage['id']) {
@@ -293,6 +297,7 @@ export default function PipelineMaturityContribution({
     { label: '累積中', value: String(data.summary.collecting) },
     { label: '品質未過 / blocked', value: String(data.summary.failed_or_blocked) },
   ]
+  const strategyRouteBundle = data.strategy_route_bundle
 
   return (
     <section className="sv-readable-card-content overflow-hidden rounded-[24px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_18px_52px_rgba(0,0,0,0.42)]" aria-labelledby="pipeline-maturity-title">
@@ -320,6 +325,38 @@ export default function PipelineMaturityContribution({
           ))}
         </div>
       </div>
+
+      {strategyRouteBundle ? (
+        <div className="mx-4 mt-4 rounded-[18px] border border-cyan-400/20 bg-cyan-400/[0.045] p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Route className="h-4 w-4 text-cyan-300" />
+                <h3 className="text-sm font-semibold text-slate-100">Threshold V2 + Route V2 joint promotion</h3>
+                <Badge variant="outline" className={`h-auto rounded-full px-2 py-0.5 text-[11px] ${STATUS_STYLE[strategyRouteBundle.status].cls}`}>
+                  {STATUS_STYLE[strategyRouteBundle.status].label}
+                </Badge>
+                <Badge variant="outline" className={`h-auto rounded-full px-2 py-0.5 text-[11px] ${MODE_STYLE[strategyRouteBundle.contribution_mode].cls}`}>
+                  {MODE_STYLE[strategyRouteBundle.contribution_mode].label}
+                </Badge>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-slate-400">
+                Threshold 完整只代表當日策略門檻資料可用；必須同時具備全 universe Route 分數、purged OOS 品質通過與同一份 promotion commit，才會進 production。
+              </p>
+            </div>
+            <div className="grid shrink-0 grid-cols-3 gap-2 text-center text-xs">
+              <div className="rounded-xl border border-white/[0.07] px-3 py-2"><p className="text-slate-500">Threshold</p><p className="mt-1 font-semibold text-slate-100">{strategyRouteBundle.threshold_coverage_ready ? 'ready' : 'blocked'}</p></div>
+              <div className="rounded-xl border border-white/[0.07] px-3 py-2"><p className="text-slate-500">Route rows</p><p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.current_route_rows}/{strategyRouteBundle.current_reference_rows}</p></div>
+              <div className="rounded-xl border border-white/[0.07] px-3 py-2"><p className="text-slate-500">Mature dates</p><p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.route_mature_dates}/{strategyRouteBundle.route_required_dates}</p></div>
+            </div>
+          </div>
+          {strategyRouteBundle.blockers.length ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {strategyRouteBundle.blockers.map((blocker) => <span key={blocker} className="rounded-full border border-rose-400/20 bg-rose-400/[0.06] px-2 py-1 text-[11px] text-rose-200">{blockerText(blocker)}</span>)}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="grid items-start gap-3 p-4 lg:grid-cols-2">
         {data.stages.map((stage) => <StageRow key={stage.id} stage={stage} />)}

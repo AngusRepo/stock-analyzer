@@ -113,21 +113,21 @@
 
   /* ─── Word Cloud 漂浮動畫 ────────────────────────────────────────────── */
   @keyframes wc-float-1 {
-    0%, 100% { transform: translate(0, 0) rotate(var(--wc-rot)); }
-    25% { transform: translate(calc(var(--wc-dx) * 1px), calc(var(--wc-dy) * -1px)) rotate(calc(var(--wc-rot) + 1.5deg)); }
-    50% { transform: translate(calc(var(--wc-dx) * -0.5px), calc(var(--wc-dy) * 1px)) rotate(var(--wc-rot)); }
-    75% { transform: translate(calc(var(--wc-dx) * 0.8px), calc(var(--wc-dy) * 0.5px)) rotate(calc(var(--wc-rot) - 1deg)); }
+    0%, 100% { transform: translate3d(0, 0, 0) rotate(var(--wc-rot)); }
+    25% { transform: translate3d(calc(var(--wc-dx) * 1px), calc(var(--wc-dy) * -1px), 0) rotate(calc(var(--wc-rot) + 1.5deg)); }
+    50% { transform: translate3d(calc(var(--wc-dx) * -0.5px), calc(var(--wc-dy) * 1px), 0) rotate(var(--wc-rot)); }
+    75% { transform: translate3d(calc(var(--wc-dx) * 0.8px), calc(var(--wc-dy) * 0.5px), 0) rotate(calc(var(--wc-rot) - 1deg)); }
   }
   @keyframes wc-float-2 {
-    0%, 100% { transform: translate(0, 0) rotate(var(--wc-rot)); }
-    33% { transform: translate(calc(var(--wc-dx) * -1px), calc(var(--wc-dy) * 0.7px)) rotate(calc(var(--wc-rot) - 2deg)); }
-    66% { transform: translate(calc(var(--wc-dx) * 0.6px), calc(var(--wc-dy) * -0.8px)) rotate(calc(var(--wc-rot) + 1deg)); }
+    0%, 100% { transform: translate3d(0, 0, 0) rotate(var(--wc-rot)); }
+    33% { transform: translate3d(calc(var(--wc-dx) * -1px), calc(var(--wc-dy) * 0.7px), 0) rotate(calc(var(--wc-rot) - 2deg)); }
+    66% { transform: translate3d(calc(var(--wc-dx) * 0.6px), calc(var(--wc-dy) * -0.8px), 0) rotate(calc(var(--wc-rot) + 1deg)); }
   }
   @keyframes wc-float-3 {
-    0%, 100% { transform: translate(0, 0) rotate(var(--wc-rot)); }
-    20% { transform: translate(calc(var(--wc-dx) * 0.7px), calc(var(--wc-dy) * 1px)) rotate(calc(var(--wc-rot) + 2deg)); }
-    50% { transform: translate(calc(var(--wc-dx) * -1px), calc(var(--wc-dy) * -0.5px)) rotate(var(--wc-rot)); }
-    80% { transform: translate(calc(var(--wc-dx) * 0.3px), calc(var(--wc-dy) * -1px)) rotate(calc(var(--wc-rot) - 1.5deg)); }
+    0%, 100% { transform: translate3d(0, 0, 0) rotate(var(--wc-rot)); }
+    20% { transform: translate3d(calc(var(--wc-dx) * 0.7px), calc(var(--wc-dy) * 1px), 0) rotate(calc(var(--wc-rot) + 2deg)); }
+    50% { transform: translate3d(calc(var(--wc-dx) * -1px), calc(var(--wc-dy) * -0.5px), 0) rotate(var(--wc-rot)); }
+    80% { transform: translate3d(calc(var(--wc-dx) * 0.3px), calc(var(--wc-dy) * -1px), 0) rotate(calc(var(--wc-rot) - 1.5deg)); }
   }
 
   * {
@@ -387,11 +387,28 @@
   .sv-home-glass-panel {
     box-shadow: none !important;
     contain: layout paint;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
   }
 
   .sv-home-deferred-section {
     content-visibility: auto;
     contain-intrinsic-size: auto 760px;
+  }
+
+  .sv-home-keyword-cloud {
+    contain: paint;
+    isolation: isolate;
+  }
+
+  .sv-home-keyword {
+    backface-visibility: hidden;
+    transform: translate3d(0, 0, 0) rotate(var(--wc-rot));
+    will-change: transform;
+  }
+
+  .sv-home-keyword-cloud[data-animate='false'] .sv-home-keyword {
+    animation-play-state: paused !important;
   }
 
   .sv-stockintelli-page *,
@@ -527,6 +544,12 @@
     .sv-app-header {
       -webkit-backdrop-filter: none !important;
       backdrop-filter: none !important;
+    }
+
+    .sv-home-keyword {
+      animation: none !important;
+      transform: rotate(var(--wc-rot));
+      will-change: auto;
     }
   }
 

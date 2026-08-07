@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ComponentType, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -167,7 +167,6 @@ function panelClass(className?: string) {
   return cx(
     'sv-home-glass-panel rounded-[24px] border border-white/[0.09]',
     'bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))]',
-    'backdrop-blur-xl',
     className,
   )
 }
@@ -1239,6 +1238,8 @@ function flowRowValue(row: any): number | null {
 }
 
 function HotKeywordCloud({ rows }: { rows: any[] }) {
+  const cloudRef = useRef<HTMLDivElement>(null)
+  const [isAnimationVisible, setIsAnimationVisible] = useState(false)
   const seen = new Set<string>()
   const keywords = rows
     .map((row) => {
@@ -1254,11 +1255,31 @@ function HotKeywordCloud({ rows }: { rows: any[] }) {
     })
     .filter((item): item is { keyword: string; value: number | null; tone: Tone } => Boolean(item))
     .slice(0, 14)
+  const hasKeywords = keywords.length > 0
 
-  if (!keywords.length) return null
+  useEffect(() => {
+    const node = cloudRef.current
+    if (!hasKeywords || !node) {
+      setIsAnimationVisible(false)
+      return
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => setIsAnimationVisible(entry.isIntersecting),
+      { rootMargin: '160px 0px' },
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [hasKeywords])
+
+  if (!hasKeywords) return null
 
   return (
-    <div className="mt-5 overflow-hidden border-t border-white/[0.07] pt-4">
+    <div
+      ref={cloudRef}
+      className="sv-home-keyword-cloud mt-5 overflow-hidden border-t border-white/[0.07] pt-4"
+      data-animate={isAnimationVisible ? 'true' : 'false'}
+    >
       <p className="mb-3 text-sm font-bold text-slate-200">熱門關鍵字</p>
       <div className="relative min-h-[104px] rounded-[18px] border border-white/[0.055] bg-[#0b0d12] px-3 py-4">
         <div className="flex flex-wrap justify-center gap-x-5 gap-y-4">
@@ -1276,7 +1297,7 @@ function HotKeywordCloud({ rows }: { rows: any[] }) {
                 key={item.keyword}
                 style={style}
                 className={cx(
-                  'inline-flex rounded-full border px-3 py-1.5 font-extrabold leading-none tracking-normal shadow-[0_0_24px_rgba(0,0,0,0.25)]',
+                  'sv-home-keyword inline-flex rounded-full border px-3 py-1.5 font-extrabold leading-none tracking-normal',
                   size,
                   item.tone === 'red'
                     ? 'border-red-400/25 bg-red-500/[0.07] text-red-300'

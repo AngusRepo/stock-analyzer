@@ -3921,7 +3921,7 @@ export async function processUpdateBatch(
       }
       return
     }
-    const replayCoverage = replayScope === 'fusion_snapshot_missing' && !hasMore
+    const replayCoverage = replayScope === 'fusion_snapshot_missing'
       ? await loadFusionSnapshotReplayCoverage(env.DB, triggerTime, maturityAsOfDate)
       : null
     const replayClosed = !hasMore && (
@@ -3970,6 +3970,17 @@ export async function processUpdateBatch(
       run_id: runId,
       run_date: statusRunDate,
     }, env)
+    if (hasMore && replayCoverage) {
+      const { recordAllocatorEvLifecycle } = await import('./allocatorEvDailyLifecycle')
+      await recordAllocatorEvLifecycle(env.DB, {
+        businessDate: triggerTime,
+        state: 'replay_enqueued',
+        replayRows: replayCoverage.replayRows,
+        replayMaturityAsOfDate: maturityAsOfDate,
+        upstreamRunId: runId,
+        lastError: null,
+      })
+    }
     if (hasMore) {
       await env.UPDATE_QUEUE.send({
         type: 's12_replay_backfill_chunk',

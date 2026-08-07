@@ -48,4 +48,26 @@ assert(oneHeadBlockers.includes('policy_value_head_count_not_two'))
 assert(oneHeadBlockers.includes('policy_value_heads_incompatible'))
 assert(oneHeadBlockers.includes('conditional_execution_return_model_missing'))
 
+const abstention = validFusion()
+abstention.promotion_state = 'safe_abstention'
+abstention.primary_expected_return_allowed = false
+abstention.serving_mode = 'abstention_baseline'
+abstention.benchmark_role = 'same_contract_no_trade_policy_value_baseline'
+abstention.validation_packet = {
+  decision: 'PASS',
+  scope: 'operational_safety_only',
+  alpha_quality_passed: false,
+}
+abstention.execution_probability_model = {
+  model_type: 'constant_abstention_control',
+  intercept: 0,
+  coefficients: { l4_available: 0 },
+}
+abstention.conditional_execution_return_model = {
+  model_type: 'constant_abstention_control',
+  intercept: 0,
+  coefficients: { l4_expected_return: 0 },
+}
+assert.deepEqual(evaluate(abstention).blockers, ['abstention_baseline_not_serving'])
+
 console.log('Fusion v13 strict serving contract tests passed')

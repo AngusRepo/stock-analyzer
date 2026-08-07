@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 
 const registry = fs.readFileSync('src/lib/expectedReturnServingRegistry.ts', 'utf8')
@@ -7,6 +8,8 @@ const promotionRoute = fs.readFileSync('src/routes/adminConfigCoreRoutes.ts', 'u
 const orchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const triggerTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 const migration = fs.readFileSync('migrations/0087_expected_return_serving_baseline.sql', 'utf8')
+const v13BaselineMigration = fs.readFileSync('migrations/0104_fusion_v13_abstention_baseline.sql', 'utf8')
+const v13LearningMigration = fs.readFileSync('domain-migrations/learning/0004_fusion_v13_abstention_baseline.sql', 'utf8')
 
 assert(registry.includes('FROM model_champion_pointers p'))
 assert(registry.includes('LEFT JOIN expected_return_artifact_payloads x'))
@@ -58,7 +61,7 @@ assert(!readinessBody.includes('runL4AlphaEvRefresh'))
 assert(!readinessBody.includes('runAllocatorEvFusionRefresh'))
 assert(readinessBody.includes('required_oof_max_date=${health.expected_mature_signal_date'))
 assert(readinessBody.includes('newly_mature_signal_date=${health.newly_mature_signal_date'))
-assert(readinessBody.includes("state: 'ready' | 'degraded' | 'fatal'"))
+assert(readinessBody.includes("state: 'ready' | 'degraded' | 'safe_abstain' | 'fatal'"))
 assert(readinessBody.includes("servingState.state === 'production_primary'"))
 assert(readinessBody.includes("servingState.action_gate === 'expected_return_owner'"))
 assert(readinessBody.includes("status: state === 'fatal' ? 'error' : 'success'"))
@@ -77,5 +80,23 @@ assert(migration.includes("promotion_decision = 'baseline_retained_for_rollback'
 assert(migration.includes('pointer.champion_artifact_id != model_artifact_registry.artifact_id'))
 assert(migration.includes('UPDATE model_champion_history'))
 assert(migration.includes('SET retired_at = COALESCE(retired_at, CURRENT_TIMESTAMP)'))
+
+for (const sql of [v13BaselineMigration, v13LearningMigration]) {
+  assert(sql.includes('allocator-ev-fusion-contract-v13'))
+  assert(sql.includes('same_contract_no_trade_policy_value_baseline'))
+  assert(sql.includes('policy_value_head_count'))
+  assert(sql.includes('execution_probability_model'))
+  assert(sql.includes('conditional_execution_return_model'))
+  assert(sql.includes('constant_abstention_control'))
+  assert(sql.includes('2c6d04e83a8c121d83762cbaa1c8210fdb81352d66d5216984a0179fdccf66cd'))
+  assert(sql.includes('allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v1'))
+  assert(sql.includes('superseded_by_v13_abstention_baseline'))
+  const payloadMatch = sql.match(
+    /'(\{"artifact_contract_version":"allocator-ev-fusion-contract-v13".*?\})',\s*'([a-f0-9]{64})'/s,
+  )
+  assert(payloadMatch, 'v13 baseline canonical payload and checksum must be adjacent')
+  assert.doesNotThrow(() => JSON.parse(payloadMatch[1]))
+  assert.equal(crypto.createHash('sha256').update(payloadMatch[1]).digest('hex'), payloadMatch[2])
+}
 
 console.log('expectedReturnServingRegistryContract tests passed')

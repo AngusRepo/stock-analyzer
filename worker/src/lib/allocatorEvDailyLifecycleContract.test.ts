@@ -93,6 +93,8 @@ assert(controllerResearch.includes("state: 'snapshot_ready'"), 'manual and sched
 assert(orchestrator.includes("state: 'replay_complete'"), 'final replay chunk must close the signal-date lifecycle')
 assert(orchestrator.includes('remainingReplaySymbols.length === 0'), 'replay lifecycle must verify no cohort symbols remain before closure')
 assert(orchestrator.includes('replayCoverage.replayRows === replayCoverage.totalSnapshotRows'), 'replay lifecycle must require full snapshot cohort outcome coverage')
+assert(orchestrator.includes('if (hasMore && replayCoverage)'), 'every successful replay chunk must persist monotonic lifecycle coverage')
+assert(orchestrator.includes('replayRows: replayCoverage.replayRows'), 'chunk progress must expose actual replay coverage instead of sticky zero telemetry')
 assert(orchestrator.includes('replayCoverage.pendingMaturityRows === 0'), 'replay lifecycle must not close while stock-specific sessions are immature')
 assert(orchestrator.includes('waiting_for_replay_maturity='), 'stock-specific replay maturity must remain observable')
 assert(orchestrator.includes('waiting_for_replay_data='), 'incomplete replay data must remain observable and retryable')

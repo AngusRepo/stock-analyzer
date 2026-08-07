@@ -234,6 +234,18 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert all(not name.startswith("s12_") for name in artifact["conditional_execution_return_model"]["coefficients"])
     assert artifact["validation_packet"]["champion_comparison"]["decision"] == "PASS"
     assert artifact["validation_packet"]["champion_comparison"]["top_trade_ev_lcb90"] > 0
+    no_trade = artifact["validation_packet"]["no_trade_baseline_comparison"]
+    assert no_trade["baseline_artifact_id"] == (
+        "allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v13"
+    )
+    assert no_trade["artifact_contract_version"] == artifact["artifact_contract_version"]
+    assert no_trade["policy_value_head_count"] == artifact["policy_value_head_count"]
+    assert no_trade["comparison_panel_id"] == packet["benchmark_panel"]["panel_id"]
+    assert no_trade["same_oof_rows_and_dates_required"] is True
+    assert no_trade["baseline_trade_ev"] == 0.0
+    assert no_trade["challenger_top_trade_ev_lcb90"] > 0
+    assert no_trade["decision"] == "PASS"
+    assert artifact["comparison_baseline_artifact_id"] == no_trade["baseline_artifact_id"]
     assert artifact["validation_packet"]["sample_audit"]["market_context_available_coverage"] == 1.0
     assert "market_return_5d" in artifact["feature_names"]
     assert "l4_defensive_regime_interaction" in artifact["feature_names"]

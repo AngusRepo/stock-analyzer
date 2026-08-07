@@ -19,6 +19,19 @@ export type PipelineMaturityMetric = {
   note?: string
 }
 
+export type PipelineMaturityEvidenceScope = {
+  key: 'serving_control' | 'offline_candidate' | 'frozen_forward_shadow'
+  label: string
+  status: PipelineMaturityStatus
+  business_date: string | null
+  oof_max_date?: string | null
+  version: string | null
+  artifact_id?: string | null
+  blockers: string[]
+  metrics: PipelineMaturityMetric[]
+  note: string
+}
+
 export type PipelineMaturityStage = {
   id: 'threshold_margin_affinity_v2' | 'oof_redundancy' | 'route_score_v2' | 'l4' | 'fusion'
   layer: string
@@ -40,6 +53,7 @@ export type PipelineMaturityStage = {
   production_effect: string
   blockers: string[]
   metrics: PipelineMaturityMetric[]
+  evidence_scopes?: PipelineMaturityEvidenceScope[]
   history?: Array<{
     evidence_date: string
     value: number | null

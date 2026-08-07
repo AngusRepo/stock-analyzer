@@ -885,15 +885,13 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
         l4_result={
             "artifact": {"model_version": "l4-v1"},
             "validation_packet": {
-                "decision": "FAIL",
-                "quality_decision_before_shadow_policy": "PASS",
+                "decision": "PASS",
             },
         },
         fusion_result={
             "artifact": {"model_version": "fusion-v1"},
             "validation_packet": {
                 "decision": "FAIL",
-                "quality_decision_before_shadow_policy": "FAIL",
             },
         },
         forward_row_count=20,
@@ -905,6 +903,16 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
     assert all("expected_return_shadow_evaluation_packets" in sql for sql, _ in writes)
     assert all("model_artifact_registry" not in sql for sql, _ in writes)
     assert len(blobs) == 2
+
+    router = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text()
+    forward_policy_start = router.index('if forward_extension:')
+    forward_policy = router[
+        forward_policy_start:
+        router.index('full_fit_plan = build_oof_full_fit_dispatch_plan', forward_policy_start)
+    ]
+    assert 'packet["decision"] = "FAIL"' not in forward_policy
+    assert 'frozen_forward_oos_shadow_only' not in forward_policy
+    assert 'packet["monitoring_policy"]' in forward_policy
 
     migration = (ROOT / "worker" / "migrations" / "0100_expected_return_shadow_evaluation_packets.sql").read_text()
     assert "policy_decision TEXT NOT NULL CHECK(policy_decision = 'shadow_only')" in migration

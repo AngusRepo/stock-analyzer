@@ -54,6 +54,14 @@ function artifactObject(value: unknown): Record<string, any> | null {
     : null
 }
 
+function isZeroControlHead(model: Record<string, any> | null): boolean {
+  if (!model || model.model_type !== 'constant_abstention_control') return false
+  if (Number(model.intercept ?? Number.NaN) !== 0) return false
+  const coefficients = artifactObject(model.coefficients)
+  if (!coefficients || Object.keys(coefficients).length === 0) return false
+  return Object.values(coefficients).every((value) => Number(value) === 0)
+}
+
 function evaluateArtifact(
   owner: ExpectedReturnOwner,
   artifact: Record<string, any> | null,
@@ -72,13 +80,19 @@ function evaluateArtifact(
   }
 
   const blockers: string[] = []
+  const abstentionBaseline = artifact.serving_mode === 'abstention_baseline'
   const requiredPromotionState = owner === 'allocator_ev_fusion'
     ? 'production_primary'
     : 'production_approved'
   if (artifact.expected_return_owner !== owner) blockers.push('expected_return_owner_mismatch')
   if (artifact.output_is_net_of_costs !== true) blockers.push('expected_return_not_net_of_costs')
-  if (artifact.serving_mode === 'abstention_baseline') blockers.push('abstention_baseline_not_serving')
-  if (artifact.promotion_state !== requiredPromotionState) blockers.push('promotion_state_not_serving')
+  if (abstentionBaseline) {
+    if (artifact.promotion_state !== 'safe_abstention') blockers.push('abstention_promotion_state_invalid')
+    if (artifact.validation_packet?.scope !== 'operational_safety_only') blockers.push('abstention_validation_scope_invalid')
+    if (artifact.validation_packet?.alpha_quality_passed !== false) blockers.push('abstention_alpha_claim_invalid')
+  } else if (artifact.promotion_state !== requiredPromotionState) {
+    blockers.push('promotion_state_not_serving')
+  }
   if (owner === 'allocator_ev_fusion') {
     const policyHeads = Array.isArray(artifact.policy_value_heads)
       ? artifact.policy_value_heads.map((value: unknown) => String(value ?? '').trim())
@@ -107,10 +121,21 @@ function evaluateArtifact(
         blockers.push(`${head}_candidate_time_s12_feature_forbidden`)
       }
     }
+    if (abstentionBaseline) {
+      if (artifact.benchmark_role !== 'same_contract_no_trade_policy_value_baseline') {
+        blockers.push('abstention_baseline_role_invalid')
+      }
+      if (!isZeroControlHead(probabilityModel)) blockers.push('execution_probability_baseline_head_not_zero')
+      if (!isZeroControlHead(returnModel)) blockers.push('conditional_execution_return_baseline_head_not_zero')
+    }
   }
 
-  if (owner === 'allocator_ev_fusion' && artifact.primary_expected_return_allowed !== true) {
-    blockers.push('primary_expected_return_not_allowed')
+  if (owner === 'allocator_ev_fusion') {
+    if (abstentionBaseline) {
+      if (artifact.primary_expected_return_allowed !== false) blockers.push('abstention_primary_permission_invalid')
+    } else if (artifact.primary_expected_return_allowed !== true) {
+      blockers.push('primary_expected_return_not_allowed')
+    }
   }
   if (String(artifact.validation_packet?.decision ?? '').toUpperCase() !== 'PASS') {
     blockers.push('validation_not_pass')
@@ -135,6 +160,7 @@ function evaluateArtifact(
   }
   const modelVersion = String(artifact.model_version ?? '').trim()
   if (!modelVersion) blockers.push('model_version_missing')
+  if (abstentionBaseline) blockers.push('abstention_baseline_not_serving')
 
   const incompatible = blockers.some((blocker) => blocker.endsWith('_incompatible'))
   return {

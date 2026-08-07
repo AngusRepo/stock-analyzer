@@ -33,6 +33,38 @@ function validFusion(): Record<string, any> {
   }
 }
 
+function validFusionV13Baseline(): Record<string, any> {
+  return {
+    expected_return_owner: 'allocator_ev_fusion',
+    promotion_state: 'safe_abstention',
+    primary_expected_return_allowed: false,
+    serving_mode: 'abstention_baseline',
+    benchmark_role: 'same_contract_no_trade_policy_value_baseline',
+    validation_packet: {
+      decision: 'PASS',
+      scope: 'operational_safety_only',
+      alpha_quality_passed: false,
+    },
+    output_is_net_of_costs: true,
+    artifact_contract_version: ALLOCATOR_EV_FUSION_CONTRACT.artifactContractVersion,
+    feature_semantic_version: ALLOCATOR_EV_FUSION_CONTRACT.featureSemanticVersion,
+    label_schema_version: ALLOCATOR_EV_FUSION_CONTRACT.labelSchemaVersion,
+    model_version: 'allocator-ev-fusion-abstention-baseline-v13',
+    policy_value_head_count: 2,
+    policy_value_heads: ['execution_probability_model', 'conditional_execution_return_model'],
+    execution_probability_model: {
+      model_type: 'constant_abstention_control',
+      intercept: 0,
+      coefficients: { l4_available: 0 },
+    },
+    conditional_execution_return_model: {
+      model_type: 'constant_abstention_control',
+      intercept: 0,
+      coefficients: { l4_expected_return: 0 },
+    },
+  }
+}
+
 const stale = resolveExpectedReturnServingState({
   ensemble_v2: {
     l4AlphaEv: {
@@ -98,5 +130,22 @@ const l4Fallback = resolveExpectedReturnServingState({
 assert.equal(l4Fallback.expected_return_owner, null)
 assert.equal(l4Fallback.action_gate, 'fusion_primary_required')
 assert.equal(l4Fallback.artifacts.allocator_ev_fusion.artifact_state, 'candidate_not_ready')
+
+const baselineState = resolveExpectedReturnServingState({
+  ensemble_v2: { allocatorEvFusion: validFusionV13Baseline() },
+})
+assert.equal(baselineState.expected_return_owner, null)
+assert.equal(baselineState.artifacts.allocator_ev_fusion.artifact_state, 'candidate_not_ready')
+assert.deepEqual(
+  baselineState.artifacts.allocator_ev_fusion.blockers,
+  ['abstention_baseline_not_serving'],
+)
+
+const unsafeBaseline = validFusionV13Baseline()
+unsafeBaseline.execution_probability_model.coefficients.l4_available = 0.2
+assert(
+  resolveExpectedReturnServingState({ ensemble_v2: { allocatorEvFusion: unsafeBaseline } })
+    .artifacts.allocator_ev_fusion.blockers.includes('execution_probability_baseline_head_not_zero'),
+)
 
 console.log('expectedReturnServingState tests passed')

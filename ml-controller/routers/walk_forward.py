@@ -1512,14 +1512,11 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                     artifact["promotion_state"] = "shadow_only"
                 packet = result.get("validation_packet") if isinstance(result, dict) else None
                 if isinstance(packet, dict):
-                    packet["quality_decision_before_shadow_policy"] = str(
-                        packet.get("decision") or "PENDING"
-                    ).upper()
-                    packet["decision"] = "FAIL"
-                    failed = list(packet.get("failed_gates") or [])
-                    if "frozen_forward_oos_shadow_only" not in failed:
-                        failed.append("frozen_forward_oos_shadow_only")
-                    packet["failed_gates"] = failed
+                    packet["monitoring_policy"] = {
+                        "policy_decision": "shadow_only",
+                        "promotion_eligible": False,
+                        "training_dispatched": False,
+                    }
                     packet["forward_extension"] = {
                         "manifest_path": req.forward_extension_manifest_path,
                         "manifest_checksum": forward_extension["manifest_checksum"],

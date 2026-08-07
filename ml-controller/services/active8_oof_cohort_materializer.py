@@ -1555,8 +1555,8 @@ def archive_ev_shadow_evaluation_packets(
             "oof_date_count": len(dates),
             "oof_row_count": forward_row_count,
             "quality_decision": str(
-                validation.get("quality_decision_before_shadow_policy")
-                or validation.get("decision")
+                validation.get("decision")
+                or validation.get("quality_decision_before_shadow_policy")
                 or "PENDING"
             ).upper(),
             "policy_decision": "shadow_only",

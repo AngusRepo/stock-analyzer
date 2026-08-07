@@ -53,6 +53,17 @@ const BLOCKER_LABELS: Record<string, string> = {
   oos_top_quintile_return_not_positive: 'OOS top quintile 平均成本後報酬未轉正',
   oos_date_cluster_top_quintile_return_lcb90_not_positive: 'OOS top quintile 報酬 LCB90 未轉正',
   walk_forward_not_stable: 'Purged walk-forward 跨窗不穩定',
+  oos_prediction_target_corr_lcb90_not_positive: 'OOS 預測與實現報酬的相關性 LCB90 未轉正',
+  oos_top_bottom_spread_lcb90_not_economic: 'OOS top-bottom 成本後 spread 的 LCB90 尚未具經濟性',
+  oos_log_loss_advantage_lcb90_not_positive: 'Execution probability 的 log-loss 優勢 LCB90 未轉正',
+  paired_oos_dates_insufficient: '可做同日期 paired comparison 的 OOS 日期不足',
+  conditional_execution_expert_not_validated: 'Conditional execution return expert 的 OOS gate 未通過',
+  execution_probability_expert_not_validated: 'Execution probability expert 的 OOS gate 未通過',
+  artifact_contract_version_incompatible: 'Serving artifact contract 與目前版本不相容',
+  policy_value_head_count_not_two: 'Fusion serving artifact 不是規定的兩個 policy-value heads',
+  policy_value_heads_incompatible: 'Fusion policy-value head 名稱或組合不相容',
+  execution_probability_model_missing: 'Execution probability head 缺失',
+  conditional_execution_return_model_missing: 'Conditional execution return head 缺失',
   artifact_missing: '正式 artifact 不存在',
   champion_pointer_missing: 'Champion pointer 不存在',
   validation_not_pass: 'Artifact validation 尚未 PASS',
@@ -138,6 +149,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
       : `尚差 ${progress.remaining} ${progress.unit} · ${progress.current}/${progress.required}`
     : '沒有可計算的數量門檻'
   const history = stage.history ?? []
+  const evidenceScopes = stage.evidence_scopes ?? []
   const latestHistory = history[history.length - 1] ?? null
   const previousHistory = history[history.length - 2] ?? null
   const historyDelta = latestHistory?.value != null && previousHistory?.value != null
@@ -199,15 +211,64 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                 <p className="mt-1 text-xs leading-5 text-slate-400">{stage.contribution}</p>
               </div>
             </div>
-            <div className="grid border-y border-white/[0.07] px-1 sm:grid-cols-2">
-              {stage.metrics.map((item) => <MetricCell key={item.key} metric={item} />)}
-            </div>
+            {evidenceScopes.length ? (
+              <div className="space-y-3">
+                {evidenceScopes.map((scope) => {
+                  const scopeStatus = STATUS_STYLE[scope.status]
+                  return (
+                    <section key={scope.key} className="overflow-hidden rounded-xl border border-white/[0.07] bg-black/[0.12]">
+                      <div className="flex flex-wrap items-start justify-between gap-2 border-b border-white/[0.06] px-3 py-2.5">
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-slate-200">{scope.label}</p>
+                          <p className="mt-1 break-words text-[11px] leading-4 text-slate-500">{scope.note}</p>
+                        </div>
+                        <Badge variant="outline" className={`h-auto rounded-full px-2 py-0.5 text-[10px] ${scopeStatus.cls}`}>{scopeStatus.label}</Badge>
+                      </div>
+                      <dl className="grid grid-cols-[78px_minmax(0,1fr)] gap-x-2 gap-y-1 border-b border-white/[0.06] px-3 py-2 text-[10px] leading-4">
+                        <dt className="text-slate-600">Business</dt><dd className="sv-num break-all text-slate-400">{scope.business_date ?? 'N/A'}</dd>
+                        <dt className="text-slate-600">OOF max</dt><dd className="sv-num break-all text-slate-400">{scope.oof_max_date ?? 'N/A'}</dd>
+                        <dt className="text-slate-600">Version</dt><dd className="sv-num break-all text-slate-400">{scope.version ?? 'Unavailable'}</dd>
+                      </dl>
+                      <div className="grid px-1 sm:grid-cols-2">
+                        {scope.metrics.map((item) => <MetricCell key={`${scope.key}:${item.key}`} metric={item} />)}
+                      </div>
+                    </section>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="grid border-y border-white/[0.07] px-1 sm:grid-cols-2">
+                {stage.metrics.map((item) => <MetricCell key={item.key} metric={item} />)}
+              </div>
+            )}
           </div>
 
           <div className="min-w-0 space-y-3">
             <div>
               <p className="text-xs font-semibold text-slate-500">尚未通過 / Blockers</p>
-              {stage.blockers.length ? (
+              {evidenceScopes.length ? (
+                <div className="mt-2 space-y-3">
+                  {evidenceScopes.map((scope) => (
+                    <div key={scope.key} className="rounded-lg border border-white/[0.06] px-2.5 py-2">
+                      <p className="text-[11px] font-semibold text-slate-400">{scope.label}</p>
+                      {scope.blockers.length ? (
+                        <div className="mt-1.5 space-y-1.5">
+                          {scope.blockers.map((blocker) => (
+                            <div key={blocker} className="border-l-2 border-rose-400/45 pl-2">
+                              <p className="text-xs leading-5 text-rose-200">{blockerText(blocker)}</p>
+                              <code className="mt-0.5 block break-all text-[11px] leading-4 text-slate-600">{blocker}</code>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-1.5 flex items-center gap-1.5 text-xs text-emerald-300">
+                          <CheckCircle2 className="h-3.5 w-3.5" /> 此 scope 無 blocker
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : stage.blockers.length ? (
                 <div className="mt-2 space-y-1.5">
                   {stage.blockers.map((blocker) => (
                     <div key={blocker} className="border-l-2 border-rose-400/45 pl-2">

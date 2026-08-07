@@ -79,6 +79,9 @@ MIN_CROSS_SECTION_SAMPLES_PER_DATE = 20
 LABEL_PURGE_DATE_GROUPS = 5
 ARTIFACT_CONTRACT_VERSION = ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION
 FEATURE_SEMANTIC_VERSION = ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION
+NO_TRADE_BASELINE_ARTIFACT_ID = (
+    "allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v13"
+)
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -1876,6 +1879,27 @@ def build_allocator_ev_fusion_artifact_from_rows(
         execution_model=execution_model,
         execution_probability_model=execution_probability_model,
     )
+    top_trade_ev_lcb90 = _float_or_none(champion_comparison.get("top_trade_ev_lcb90"))
+    no_trade_baseline_comparison = {
+        "schema_version": "allocator-ev-fusion-no-trade-comparison-v1",
+        "baseline_artifact_id": NO_TRADE_BASELINE_ARTIFACT_ID,
+        "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
+        "policy_value_head_count": 2,
+        "policy_value_heads": [
+            "execution_probability_model",
+            "conditional_execution_return_model",
+        ],
+        "comparison_target": "realized_multisession_trade_ev_net_of_costs",
+        "comparison_panel_id": benchmark_panel["panel_id"],
+        "same_oof_rows_and_dates_required": True,
+        "baseline_trade_ev": 0.0,
+        "challenger_top_trade_ev_lcb90": top_trade_ev_lcb90,
+        "decision": (
+            "PASS"
+            if top_trade_ev_lcb90 is not None and top_trade_ev_lcb90 > 0.0
+            else "FAIL"
+        ),
+    }
     component_failed_gates = [
         f"{component}:{gate}"
         for component, model in (
@@ -1954,6 +1978,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
             },
         },
         "benchmark_panel": benchmark_panel,
+        "no_trade_baseline_comparison": no_trade_baseline_comparison,
         "maturity_policy": maturity_policy,
         "multiple_testing": multiple_testing,
         "primary_champion_failed_gates": champion_comparison.get("failed_gates") or [],
@@ -2035,6 +2060,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "model_version": f"allocator-ev-fusion-policy-value-v13-{trained_until.replace('-', '')}",
         "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v13-day-t-causal",
         "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
+        "comparison_baseline_artifact_id": NO_TRADE_BASELINE_ARTIFACT_ID,
         "trained_until": trained_until,
         "horizon_days": 5,
         "cost_model_bps": cost_model_bps,

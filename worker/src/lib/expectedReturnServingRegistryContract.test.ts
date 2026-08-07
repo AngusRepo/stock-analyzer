@@ -39,7 +39,10 @@ assert(servingState.includes("state: 'production_primary' | 'no_eligible_owner'"
 assert(servingState.includes("sourceOfTruth: 'model_champion_pointers+artifact_payloads'"))
 assert(servingState.includes("artifact.serving_mode === 'abstention_baseline'"))
 assert(servingState.includes("blockers.push('abstention_baseline_not_serving')"))
-assert(servingState.includes('policy_value_head_count_not_two'))
+assert(servingState.includes('policy_value_head_count_not_one'))
+assert(servingState.includes('residual_adjustment_model_missing'))
+assert(servingState.includes("alert.startsWith('allocator_ev_fusion:')"))
+assert(registry.includes("owner === 'l4_alpha_ev' ? alerts : warnings"))
 
 const promoteStart = promotionRoute.indexOf("adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote'")
 const promoteEnd = promotionRoute.indexOf("adminConfigCoreRoutes.post('/api/admin/config/push-defaults'", promoteStart)

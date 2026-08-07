@@ -20,10 +20,10 @@ SUPPORTED_L4_FEATURE_SEMANTICS = {
     L4_ARTIFACT_CONTRACT_VERSION: L4_FEATURE_SEMANTIC_VERSION,
 }
 
-# Fusion v13 is the only production serving contract.
+# Fusion v14 is a residual overlay on the canonical L4 base EV.
 
-ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION = "allocator-ev-fusion-contract-v13"
-ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION = "allocator-ev-fusion-s12-policy-value-day-t-causal-v4-lineage-bound"
+ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION = "allocator-ev-fusion-contract-v14"
+ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION = "allocator-ev-fusion-l4-residual-overlay-day-t-causal-v1-lineage-bound"
 SUPPORTED_ALLOCATOR_EV_SERVING_CONTRACT_PAIRS = frozenset({
     (
         ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,

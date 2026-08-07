@@ -328,10 +328,11 @@ export async function runOpbArmPriorRefresh(
   if (expectedReturnOwner === 'auto') {
     const servingState = await readCurrentExpectedReturnServingState(env, runDate)
     if (servingState.expected_return_owner !== 'allocator_ev_fusion') {
+      const l4State = servingState.artifacts.l4_alpha_ev
       const fusionState = servingState.artifacts.allocator_ev_fusion
       throw new Error(
-        'OPB arm prior refresh requires a contract-compatible production-primary Fusion owner; '
-        + `fusion=${fusionState.artifact_state}[${fusionState.blockers.join(',')}]`,
+        'OPB arm prior refresh requires a contract-compatible canonical L4 expected-return base; '
+        + `l4=${l4State.artifact_state}[${l4State.blockers.join(',')}] fusion_overlay=${fusionState.artifact_state}`,
       )
     }
     resolvedOwner = servingState.expected_return_owner

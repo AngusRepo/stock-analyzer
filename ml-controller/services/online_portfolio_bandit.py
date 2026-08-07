@@ -41,6 +41,8 @@ def resolve_portfolio_bandit_arms(
     artifact: dict[str, Any] | None,
     *,
     expected_return_owner: str | None,
+    expected_return_contract_version: str | None,
+    expected_return_semantic: str | None,
 ) -> tuple[tuple[PortfolioBanditArm, ...], dict[str, Any]]:
     """Apply a validated, owner-specific replay prior without changing arm knobs."""
 
@@ -57,6 +59,24 @@ def resolve_portfolio_bandit_arms(
             "reason": "expected_return_owner_mismatch",
             "artifact_owner": artifact_owner or None,
             "runtime_owner": owner or None,
+        }
+    runtime_contract = str(expected_return_contract_version or "").strip()
+    artifact_contract = str(artifact.get("source_expected_return_contract_version") or "").strip()
+    if not runtime_contract or artifact_contract != runtime_contract:
+        return DEFAULT_ARMS, {
+            "status": "default_static_prior",
+            "reason": "expected_return_contract_mismatch",
+            "artifact_contract": artifact_contract or None,
+            "runtime_contract": runtime_contract or None,
+        }
+    runtime_semantic = str(expected_return_semantic or "").strip()
+    artifact_semantic = str(artifact.get("source_expected_return_semantic") or "").strip()
+    if not runtime_semantic or artifact_semantic != runtime_semantic:
+        return DEFAULT_ARMS, {
+            "status": "default_static_prior",
+            "reason": "expected_return_semantic_mismatch",
+            "artifact_semantic": artifact_semantic or None,
+            "runtime_semantic": runtime_semantic or None,
         }
     priors = artifact.get("arm_priors") if isinstance(artifact.get("arm_priors"), list) else []
     by_id = {
@@ -83,6 +103,8 @@ def resolve_portfolio_bandit_arms(
         "artifact_id": artifact.get("artifact_id"),
         "model_version": artifact.get("model_version"),
         "expected_return_owner": artifact_owner,
+        "source_expected_return_contract_version": artifact_contract,
+        "source_expected_return_semantic": artifact_semantic,
     }
 
 

@@ -25,7 +25,7 @@ export interface ExpectedReturnServingState {
   schema_version: 'expected-return-serving-state-v1'
   state: 'production_primary' | 'no_eligible_owner'
   expected_return_owner: ExpectedReturnOwner | null
-  action_gate: 'expected_return_owner' | 'fusion_primary_required'
+  action_gate: 'expected_return_owner' | 'canonical_l4_required'
   run_date: string | null
   evaluated_at: string
   source_of_truth: 'candidate_projection' | 'model_champion_pointers+artifact_payloads'
@@ -33,6 +33,7 @@ export interface ExpectedReturnServingState {
     l4_alpha_ev: ExpectedReturnArtifactServingState
     allocator_ev_fusion: ExpectedReturnArtifactServingState
   }
+  overlay_status: 'applied' | 'abstained' | 'unavailable'
   hard_alerts: string[]
   warnings: string[]
 }
@@ -54,13 +55,6 @@ function artifactObject(value: unknown): Record<string, any> | null {
     : null
 }
 
-function isZeroControlHead(model: Record<string, any> | null): boolean {
-  if (!model || model.model_type !== 'constant_abstention_control') return false
-  if (Number(model.intercept ?? Number.NaN) !== 0) return false
-  const coefficients = artifactObject(model.coefficients)
-  if (!coefficients || Object.keys(coefficients).length === 0) return false
-  return Object.values(coefficients).every((value) => Number(value) === 0)
-}
 
 function evaluateArtifact(
   owner: ExpectedReturnOwner,
@@ -97,36 +91,23 @@ function evaluateArtifact(
     const policyHeads = Array.isArray(artifact.policy_value_heads)
       ? artifact.policy_value_heads.map((value: unknown) => String(value ?? '').trim())
       : []
-    const requiredHeads = ['execution_probability_model', 'conditional_execution_return_model']
-    if (artifact.policy_value_head_count !== 2) blockers.push('policy_value_head_count_not_two')
-    if (policyHeads.length !== 2 || requiredHeads.some((head) => !policyHeads.includes(head))) {
+    if (artifact.policy_value_head_count !== 1) blockers.push('policy_value_head_count_not_one')
+    if (policyHeads.length !== 1 || policyHeads[0] !== 'residual_adjustment_model') {
       blockers.push('policy_value_heads_incompatible')
     }
     if (artifactObject(artifact.selection_model) || artifact.intercept != null || artifactObject(artifact.coefficients)) {
       blockers.push('third_selection_serving_head_forbidden')
     }
-    const probabilityModel = artifactObject(artifact.execution_probability_model)
-    const returnModel = artifactObject(artifact.conditional_execution_return_model)
-    if (!probabilityModel) blockers.push('execution_probability_model_missing')
-    if (!returnModel) blockers.push('conditional_execution_return_model_missing')
-    for (const [head, model] of [
-      ['execution_probability_model', probabilityModel],
-      ['conditional_execution_return_model', returnModel],
-    ] as const) {
-      if (!model) continue
-      const coefficients = artifactObject(model.coefficients) ?? {}
-      const featureNames = Object.keys(coefficients)
-      if (!featureNames.some((name) => name.startsWith('l4_'))) blockers.push(`${head}_l4_feature_missing`)
-      if (featureNames.some((name) => name.startsWith('s12_') || name === 'l4_s12_edge_agreement')) {
-        blockers.push(`${head}_candidate_time_s12_feature_forbidden`)
-      }
+    if (artifactObject(artifact.execution_probability_model) || artifactObject(artifact.conditional_execution_return_model)) {
+      blockers.push('legacy_s12_serving_heads_forbidden')
     }
-    if (abstentionBaseline) {
-      if (artifact.benchmark_role !== 'same_contract_no_trade_policy_value_baseline') {
-        blockers.push('abstention_baseline_role_invalid')
-      }
-      if (!isZeroControlHead(probabilityModel)) blockers.push('execution_probability_baseline_head_not_zero')
-      if (!isZeroControlHead(returnModel)) blockers.push('conditional_execution_return_baseline_head_not_zero')
+    const residualModel = artifactObject(artifact.residual_adjustment_model)
+    if (!residualModel) blockers.push('residual_adjustment_model_missing')
+    const residualCoefficients = artifactObject(residualModel?.coefficients) ?? {}
+    const featureNames = Object.keys(residualCoefficients)
+    if (featureNames.length === 0) blockers.push('residual_adjustment_coefficients_missing')
+    if (featureNames.some((name) => name.startsWith('s12_') || name === 'l4_s12_edge_agreement')) {
+      blockers.push('residual_adjustment_model_candidate_time_s12_feature_forbidden')
     }
   }
 
@@ -198,16 +179,32 @@ export function resolveExpectedReturnServingState(
     artifactObject(ensembleV2.allocatorEvFusion ?? ensembleV2.allocator_ev_fusion),
     ALLOCATOR_EV_FUSION_CONTRACT,
   )
-  const owner: ExpectedReturnOwner | null = fusion.eligible ? 'allocator_ev_fusion' : null
-  const warnings = [l4, fusion]
-    .filter((item) => item.blockers.includes('abstention_baseline_not_serving'))
-    .map((item) => `${item.owner}:abstention_baseline_not_serving`)
+  const owner: ExpectedReturnOwner | null = l4.eligible ? 'allocator_ev_fusion' : null
+  const overlayStatus: ExpectedReturnServingState['overlay_status'] = !l4.eligible
+    ? 'unavailable'
+    : fusion.eligible
+      ? 'applied'
+      : 'abstained'
+  const inputAlerts = [...new Set(options.alerts ?? [])]
+  const overlayAlerts = l4.eligible
+    ? inputAlerts.filter((alert) => alert.startsWith('allocator_ev_fusion:'))
+    : []
+  const hardAlerts = l4.eligible
+    ? inputAlerts.filter((alert) => !alert.startsWith('allocator_ev_fusion:'))
+    : inputAlerts
+  const warnings = [
+    ...[l4, fusion]
+      .filter((item) => item.blockers.includes('abstention_baseline_not_serving'))
+      .map((item) => `${item.owner}:abstention_baseline_not_serving`),
+    ...(l4.eligible && !fusion.eligible ? fusion.blockers.map((blocker) => `allocator_ev_fusion:overlay_abstained:${blocker}`) : []),
+    ...overlayAlerts.map((alert) => `overlay_warning:${alert}`),
+  ]
 
   return {
     schema_version: 'expected-return-serving-state-v1',
     state: owner ? 'production_primary' : 'no_eligible_owner',
     expected_return_owner: owner,
-    action_gate: owner ? 'expected_return_owner' : 'fusion_primary_required',
+    action_gate: owner ? 'expected_return_owner' : 'canonical_l4_required',
     run_date: options.runDate ?? null,
     evaluated_at: options.evaluatedAt ?? new Date().toISOString(),
     source_of_truth: options.sourceOfTruth ?? 'candidate_projection',
@@ -215,8 +212,9 @@ export function resolveExpectedReturnServingState(
       l4_alpha_ev: l4,
       allocator_ev_fusion: fusion,
     },
-    hard_alerts: [...new Set(options.alerts ?? [])],
-    warnings,
+    overlay_status: overlayStatus,
+    hard_alerts: hardAlerts,
+    warnings: [...new Set(warnings)],
   }
 }
 

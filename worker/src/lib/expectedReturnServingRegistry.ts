@@ -358,7 +358,10 @@ export async function inspectExpectedReturnLifecycleHealth(
   const projections = await loadExpectedReturnPointerProjections(env.DB)
   for (const owner of Object.keys(projections) as ExpectedReturnOwner[]) {
     const projection = projections[owner]
-    if (!projection.valid) alerts.push(...projection.blockers.map((item) => `${owner}:${item}`))
+    if (!projection.valid) {
+      const target = owner === 'l4_alpha_ev' ? alerts : warnings
+      target.push(...projection.blockers.map((item) => `${owner}:${item}`))
+    }
     if (projection.serving_mode === 'abstention_baseline') warnings.push(`${owner}:alpha_champion_not_promoted`)
   }
   const candidateRows = await env.DB.prepare(`
@@ -383,7 +386,8 @@ export async function inspectExpectedReturnLifecycleHealth(
       candidate?.state === 'production'
       && projections[owner].champion_artifact_id !== `${owner}:${candidate.version}`
     ) {
-      alerts.push(`${owner}:production_candidate_not_champion_pointer`)
+      const target = owner === 'l4_alpha_ev' ? alerts : warnings
+      target.push(`${owner}:production_candidate_not_champion_pointer`)
     }
   }
   const maxRows = await env.DB.prepare(`
@@ -468,9 +472,10 @@ export async function inspectExpectedReturnLifecycleHealth(
     alerts.push('oof_expected_mature_signal_date_unresolved')
   } else {
     for (const kind of ['allocator_ev_snapshots', 'l4_predictions']) {
+      const target = kind === 'l4_predictions' ? alerts : warnings
       const maxDate = oofMaxDates[kind]
       if (!maxDate || maxDate < expectedMatureSignalDate) {
-        alerts.push(`${kind}:oof_max_date_stale:${maxDate ?? 'missing'}<${expectedMatureSignalDate}`)
+        target.push(`${kind}:oof_max_date_stale:${maxDate ?? 'missing'}<${expectedMatureSignalDate}`)
       } else if (newlyMatureSignalDate && maxDate < newlyMatureSignalDate) {
         warnings.push(`${kind}:awaiting_current_close_oof_materialization:${maxDate}<${newlyMatureSignalDate}`)
       }

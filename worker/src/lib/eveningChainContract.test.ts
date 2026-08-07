@@ -33,7 +33,7 @@ assert(
 assert(
   walkForward.includes('/api/admin/trigger/opb-arm-prior-refresh') &&
     walkForward.indexOf('promoted = True') < walkForward.indexOf('/api/admin/trigger/opb-arm-prior-refresh'),
-  'OPB priors must refresh event-driven only after OOF L4/Fusion promotion succeeds',
+  'OPB priors must refresh event-driven only after OOF expected-return evidence promotion succeeds',
 )
 assert(
   !jobs.some((job) => job.task === 'source-readiness-probe' || job.id.startsWith('source-readiness-probe')),
@@ -80,7 +80,7 @@ assert(
 )
 assert(updateOrchestrator.includes('refreshExpectedReturnServingState'), 'daily readiness must persist canonical expected-return serving state')
 assert(expectedReturnServingState.includes("'retired_incompatible'"), 'stale promoted artifacts must be explicitly retired from serving without rewriting evidence')
-assert(expectedReturnServingState.includes("'fusion_primary_required'"), 'no-owner production behavior must require a primary Fusion artifact and fail closed')
+assert(expectedReturnServingState.includes("'canonical_l4_required'"), 'no-owner production behavior must require a canonical L4 base and fail closed')
 const schedulerLockMigration = fs.readFileSync('migration_scheduler_locks.sql', 'utf8')
 const runBulkFetchStart = updateOrchestrator.indexOf('export async function runBulkFetch')
 const runBulkFetchEnd = updateOrchestrator.indexOf('export async function runQueueUpdate', runBulkFetchStart)
@@ -213,7 +213,7 @@ assert(
   updateOrchestrator.includes("logSchedulerResult(env.KV, 'allocator-ev-readiness'") &&
     updateOrchestrator.includes("status: state === 'fatal' ? 'error' : 'success'") &&
     updateOrchestrator.includes('no_validated_expected_return_lane'),
-  'Fusion readiness failure must remain visible and fail BUY/allocation closed',
+  'canonical L4 readiness failure must remain visible and fail BUY/allocation closed',
 )
 const allocatorReadinessGuardStart = updateOrchestrator.indexOf('if (!evReadiness.ok)')
 const pipelineTriggerStart = updateOrchestrator.indexOf('const summary = await deps.runMLAndRiskV2', allocatorReadinessGuardStart)
@@ -223,15 +223,16 @@ assert(
     pipelineTriggerStart > allocatorReadinessGuardStart &&
     allocatorReadinessGuardBody.includes('BUY/allocation remains fail-closed while the evidence-only pipeline continues') &&
     !allocatorReadinessGuardBody.includes('\n    return\n'),
-  'missing Fusion must preserve explicit risk abstention while allowing ML/recommendation evidence to continue',
+  'missing canonical L4 must preserve explicit risk abstention while allowing ML/recommendation evidence to continue',
 )
 assert(
   updateOrchestrator.includes('refreshExpectedReturnServingState') &&
     expectedReturnServingState.includes("artifact.promotion_state !== requiredPromotionState") &&
     expectedReturnServingState.includes("String(artifact.validation_packet?.decision ?? '').toUpperCase() !== 'PASS'") &&
-    expectedReturnServingState.includes("action_gate: owner ? 'expected_return_owner' : 'fusion_primary_required'") &&
+    expectedReturnServingState.includes("action_gate: owner ? 'expected_return_owner' : 'canonical_l4_required'") &&
+    expectedReturnServingState.includes('overlay_status: overlayStatus') &&
     expectedReturnServingState.includes('hydrateExpectedReturnConfigFromPointers'),
-  'D1 champion pointers must remain source of truth while only strict Fusion can own expected return',
+  'D1 champion pointers must remain source of truth while L4 owns the base and Fusion is an optional validated overlay',
 )
 assert(
   updateOrchestrator.includes('Deprecated S12 candidate snapshot message drained without serving side effects') &&

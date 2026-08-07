@@ -206,46 +206,43 @@ def test_allocator_ev_fusion_artifact_builder_emits_production_artifact_when_oos
     assert set(packet["gate_layers"]) == {
         "data_validity", "forecast_skill", "statistical_validity", "economic_utility"
     }
-    assert packet["gate_layers"]["forecast_skill"]["primary_probability_score"] == (
-        "date_clustered_log_loss_advantage_lcb90"
+    assert packet["gate_layers"]["forecast_skill"]["primary_score"] == (
+        "residual_oos_corr_and_spread_lcb90"
     )
     assert packet["validation_scope"]["effective_sample_unit"] == "prediction_date"
-    assert artifact["validation_packet"]["sample_audit"]["l4_available_count"] > 0
-    assert artifact["validation_packet"]["sample_audit"]["candidate_time_s12_feature_count"] == 0
-    assert artifact["validation_packet"]["promotion"]["tier"] == "primary"
-    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v13"
-    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v13"
-    assert artifact["validation_packet"]["validation_scope"]["selection_target"] == (
-        "same_date_cross_section_residual_of_five_session_net_return"
+    assert packet["validation_scope"]["base_expected_return_owner"] == "l4_alpha_ev"
+    assert packet["validation_scope"]["residual_target"] == (
+        "canonical_five_session_net_return_minus_point_in_time_l4_alpha_ev"
     )
-    assert artifact["resolver_method"] == "day_t_causal_s12_policy_value_hurdle_fusion"
-    assert artifact["policy_value_head_count"] == 2
-    assert artifact["policy_value_heads"] == [
-        "execution_probability_model", "conditional_execution_return_model"
-    ]
+    assert packet["sample_audit"]["l4_available_count"] > 0
+    assert packet["sample_audit"]["candidate_time_s12_feature_count"] == 0
+    assert packet["promotion"]["tier"] == "primary"
+    assert artifact["schema_version"] == "allocator-ev-fusion-artifact-v14"
+    assert artifact["artifact_contract_version"] == "allocator-ev-fusion-contract-v14"
+    assert artifact["resolver_method"] == "day_t_causal_l4_residual_overlay"
+    assert artifact["policy_value_head_count"] == 1
+    assert artifact["policy_value_heads"] == ["residual_adjustment_model"]
+    assert artifact["residual_adjustment_model"]["decision"] == "PASS"
+    assert artifact["residual_adjustment_model"]["target"] == "residual_target"
     assert "coefficients" not in artifact
     assert "selection_model" not in artifact
-    selection_diagnostic = artifact["validation_packet"]["selection_diagnostic_model_not_served"]
+    assert "conditional_execution_return_model" not in artifact
+    assert "execution_probability_model" not in artifact
+    selection_diagnostic = packet["selection_diagnostic_model_not_served"]
     assert selection_diagnostic["decision"] == "PASS"
-    assert selection_diagnostic["target"] == "selection_rank_target"
-    assert selection_diagnostic["calibration_target"] == "selection_target"
-    assert artifact["conditional_execution_return_model"]["decision"] == "PASS"
-    assert artifact["execution_probability_model"]["decision"] == "PASS"
-    assert all(not name.startswith("s12_") for name in artifact["conditional_execution_return_model"]["coefficients"])
-    assert artifact["validation_packet"]["champion_comparison"]["decision"] == "PASS"
-    assert artifact["validation_packet"]["champion_comparison"]["top_trade_ev_lcb90"] > 0
-    no_trade = artifact["validation_packet"]["no_trade_baseline_comparison"]
-    assert no_trade["baseline_artifact_id"] == (
-        "allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v13"
-    )
-    assert no_trade["artifact_contract_version"] == artifact["artifact_contract_version"]
-    assert no_trade["policy_value_head_count"] == artifact["policy_value_head_count"]
-    assert no_trade["comparison_panel_id"] == packet["benchmark_panel"]["panel_id"]
-    assert no_trade["same_oof_rows_and_dates_required"] is True
-    assert no_trade["baseline_trade_ev"] == 0.0
-    assert no_trade["challenger_top_trade_ev_lcb90"] > 0
-    assert no_trade["decision"] == "PASS"
-    assert artifact["comparison_baseline_artifact_id"] == no_trade["baseline_artifact_id"]
+    assert packet["shadow_diagnostics"]["promotion_effect"] is False
+    assert packet["champion_comparison"]["decision"] == "PASS"
+    assert packet["champion_comparison"]["top_trade_ev_lcb90"] > 0
+    l4_base = packet["l4_base_comparison"]
+    assert l4_base["baseline_artifact_id"] == "allocator_ev_fusion:canonical-l4-base-v14"
+    assert l4_base["artifact_contract_version"] == artifact["artifact_contract_version"]
+    assert l4_base["policy_value_head_count"] == artifact["policy_value_head_count"]
+    assert l4_base["comparison_panel_id"] == packet["benchmark_panel"]["panel_id"]
+    assert l4_base["same_oof_rows_and_dates_required"] is True
+    assert l4_base["baseline_owner"] == "l4_alpha_ev"
+    assert l4_base["challenger_top_trade_ev_lcb90"] > 0
+    assert l4_base["decision"] == "PASS"
+    assert artifact["comparison_baseline_artifact_id"] == l4_base["baseline_artifact_id"]
     assert artifact["validation_packet"]["sample_audit"]["market_context_available_coverage"] == 1.0
     assert "market_return_5d" in artifact["feature_names"]
     assert "l4_defensive_regime_interaction" in artifact["feature_names"]
@@ -375,7 +372,7 @@ def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_sampl
     assert artifact["promotion_tier"] == "shadow"
     assert artifact["primary_expected_return_allowed"] is False
     assert artifact["validation_packet"]["decision"] == "FAIL"
-    assert "selection:insufficient_samples" in artifact["validation_packet"]["failed_gates"]
+    assert "residual_adjustment:insufficient_samples" in artifact["validation_packet"]["failed_gates"]
 
 
 def test_allocator_ev_fusion_stays_shadow_until_primary_evidence_floor():
@@ -402,7 +399,7 @@ def test_allocator_ev_fusion_stays_shadow_until_primary_evidence_floor():
     assert "primary_insufficient_dates" in artifact["promotion_blockers"]
 
 
-def test_allocator_ev_fusion_artifact_builder_rejects_training_without_replay_execution_labels():
+def test_allocator_ev_fusion_artifact_builder_keeps_missing_replay_labels_shadow_only():
     rows = []
     for day_idx in range(6):
         day = f"2026-06-{day_idx + 1:02d}"
@@ -446,7 +443,9 @@ def test_allocator_ev_fusion_artifact_builder_rejects_training_without_replay_ex
     assert artifact["promotion_tier"] == "shadow"
     assert artifact["promotion_state"] == "shadow"
     assert artifact["primary_expected_return_allowed"] is False
-    assert "execution:insufficient_samples" in artifact["promotion_blockers"]
+    assert any(gate.startswith("residual_adjustment:") for gate in artifact["promotion_blockers"])
+    assert not any(gate.startswith("execution:") for gate in artifact["promotion_blockers"])
+    assert artifact["validation_packet"]["shadow_diagnostics"]["promotion_effect"] is False
 
 
 def test_load_allocator_ev_fusion_training_rows_queries_verified_allocation_evidence():
@@ -1372,7 +1371,7 @@ def test_allocator_ev_fusion_prefers_canonical_s12_replay_outcome_label():
 
 
 
-def test_allocator_ev_fusion_missing_market_context_cannot_promote():
+def test_allocator_ev_fusion_missing_unused_market_context_is_diagnostic_only():
     rows = []
     for day_idx in range(32):
         day = (date(2026, 4, 1) + timedelta(days=day_idx)).isoformat()
@@ -1395,6 +1394,7 @@ def test_allocator_ev_fusion_missing_market_context_cannot_promote():
     artifact = out["artifact"]
     assert artifact["promotion_tier"] == "shadow"
     assert artifact["primary_expected_return_allowed"] is False
-    assert "primary_market_context_samples_low" in artifact["promotion_blockers"]
-    assert "primary_market_context_dates_low" in artifact["promotion_blockers"]
+    assert "primary_market_context_samples_low" not in artifact["promotion_blockers"]
+    assert "primary_market_context_dates_low" not in artifact["promotion_blockers"]
+    assert artifact["validation_packet"]["promotion"]["primary_requirements"]["optional_context_features_gate_only_when_supported_by_training_window"] is True
     assert artifact["validation_packet"]["sample_audit"]["market_context_available_coverage"] == 0.0

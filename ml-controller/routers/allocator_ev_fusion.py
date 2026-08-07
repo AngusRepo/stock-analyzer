@@ -228,11 +228,12 @@ def _registry_record(
 async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq) -> dict[str, Any]:
     """Build and optionally promote the allocator EV fusion artifact.
 
-    This artifact is the sole production allocator expected-return owner. It estimates
-    next-session S12 policy value from day-t L0-L4/ScoreV2/market features; S12 enters
-    only through mature historical replay labels. Promotion is fail-closed:
-    only a PASS validation packet with a production_primary
-    artifact mutates Worker trading:config.
+    Canonical point-in-time L4 remains the base expected-return owner. This
+    artifact may contribute only one validated residual adjustment; S12 replay
+    experts remain shadow diagnostics and have no serving or promotion effect.
+    Promotion is fail-closed: only an explicit promote request for a PASS native
+    artifact with production_primary status may mutate Worker trading:config.
+    OOF artifacts and promote=false requests are registry evidence only.
     """
 
     defaults = _defaults_for_cadence(req.cadence)

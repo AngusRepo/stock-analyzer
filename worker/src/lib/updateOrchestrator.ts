@@ -2201,7 +2201,7 @@ export async function runDailyAllocatorEvReadiness(
     parts.push('opb_prior_not_ready=no_production_expected_return_owner')
     await logSchedulerResult(env.KV, 'opb-arm-prior-refresh', {
       status: 'skipped',
-      summary: 'daily-chain OPB prior retained; no production-primary Fusion expected-return owner',
+      summary: 'daily-chain OPB prior retained; canonical L4 expected-return base is not serving',
       duration_ms: 0,
       run_id: schedulerRunId,
       attempt_id: options.attemptId,

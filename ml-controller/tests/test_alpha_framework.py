@@ -526,6 +526,27 @@ def _sparse_score_v2(final_score: float, ml_edge: float) -> dict:
     }
 
 
+def _sparse_l4_alpha_ev(value: float) -> dict:
+    return {
+        "schema_version": "l4-alpha-ev-v1",
+        "artifact_contract_version": "l4-alpha-ev-contract-v4",
+        "feature_semantic_version": "l4-directional-score-components-v2-lineage-bound",
+        "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
+        "expected_return_owner": "l4_alpha_ev",
+        "expected_return_mean": value,
+        "expected_return_source": "l4_alpha_ev:test_fixture",
+        "promotion_state": "production_approved",
+        "validation_packet": {"decision": "PASS", "failed_gates": []},
+        "resolver_method": "test_fixture",
+        "model_version": "l4-v4-sparse-test",
+        "feature_snapshot_version": "l4-v4-test-features",
+        "trained_until": "2026-07-01",
+        "horizon_days": 5,
+        "cost_model_bps": 18.0,
+        "output_is_net_of_costs": True,
+    }
+
+
 def _sparse_recommendation_row(
     symbol: str,
     *,
@@ -541,6 +562,7 @@ def _sparse_recommendation_row(
         "signal_source": "ensemble_v2",
         "confidence": 0.72,
         "ml_forecast_pct": forecast_pct,
+        "l4_alpha_ev": _sparse_l4_alpha_ev(forecast_pct),
         "market_heat_expected_return": forecast_pct,
         "recommendation_lane": "tradable",
         "eligible_for_pending_buy": True,
@@ -552,33 +574,30 @@ def _sparse_recommendation_row(
 
 def _test_fusion_policy_value_artifact() -> dict:
     return {
-        "artifact_contract_version": "allocator-ev-fusion-contract-v13",
-        "feature_semantic_version": "allocator-ev-fusion-s12-policy-value-day-t-causal-v4-lineage-bound",
+        "artifact_contract_version": "allocator-ev-fusion-contract-v14",
+        "feature_semantic_version": "allocator-ev-fusion-l4-residual-overlay-day-t-causal-v1-lineage-bound",
         "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "expected_return_owner": "allocator_ev_fusion",
+        "base_expected_return_owner": "l4_alpha_ev",
         "promotion_state": "production_primary",
         "promotion_tier": "primary",
         "primary_expected_return_allowed": True,
         "validation_packet": {"decision": "PASS"},
-        "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
-        "resolver_method": "test_day_t_policy_value",
-        "model_version": "fusion-v13-test",
-        "feature_snapshot_version": "fusion-v13-test-features",
+        "expected_return_semantic": "l4_base_expected_return_plus_validated_residual_adjustment",
+        "resolver_method": "day_t_causal_l4_residual_overlay",
+        "model_version": "fusion-v14-test",
+        "feature_snapshot_version": "fusion-v14-test-features",
         "trained_until": "2026-07-01",
         "horizon_days": 5,
         "cost_model_bps": 18.0,
         "output_is_net_of_costs": True,
-        "policy_value_head_count": 2,
-        "policy_value_heads": ["execution_probability_model", "conditional_execution_return_model"],
-        "conditional_execution_return_model": {
+        "policy_value_head_count": 1,
+        "policy_value_heads": ["residual_adjustment_model"],
+        "residual_adjustment_model": {
             "status": "fitted", "decision": "PASS", "intercept": 0.0,
-            "coefficients": {"market_heat_expected_return": 1.0, "l4_expected_return": 0.0},
+            "coefficients": {"market_heat_expected_return": 0.0},
         },
-        "execution_probability_model": {
-            "status": "fitted", "decision": "PASS", "link_function": "identity", "intercept": 1.0,
-            "coefficients": {"l4_available": 0.0},
-        },
-        "output_clip": {"min": -0.08, "max": 0.08},
+        "residual_output_clip": {"min": -0.08, "max": 0.08},
     }
 
 def test_sparse_allocator_marks_positive_zero_weight_as_potential_buy(monkeypatch):
@@ -666,6 +685,7 @@ def _missing_ev_formal_ml_row(symbol: str, *, hard_block: bool = False) -> dict:
         final_score=77.0,
         signal="HOLD",
     )
+    row.pop("l4_alpha_ev", None)
     row.pop("trade_expected_return_net_pct", None)
     row.pop("trade_expected_return_source", None)
     row["score_components"] = {

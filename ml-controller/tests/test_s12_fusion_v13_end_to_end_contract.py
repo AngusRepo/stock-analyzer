@@ -43,17 +43,22 @@ def test_s12_has_no_evening_candidate_or_expected_return_serving_owner():
     assert 'parsed_row["s12_trade_ev"]' not in parity
 
 
-def test_fusion_v13_is_one_artifact_with_exactly_two_serving_heads():
+def test_fusion_v14_is_l4_base_plus_one_residual_head_with_s12_shadow_only():
     materializer = _read("ml-controller/services/allocator_ev_fusion.py")
     builder = _read("ml-controller/services/allocator_ev_fusion_artifact_builder.py")
     contracts = _read("ml-controller/services/evidence_contracts.py")
     router = _read("ml-controller/routers/allocator_ev_fusion.py")
 
-    assert "allocator-ev-fusion-contract-v13" in contracts
-    assert '"policy_value_head_count": 2' in builder
+    assert "allocator-ev-fusion-contract-v14" in contracts
+    assert '"policy_value_head_count": 1' in builder
+    assert '"policy_value_heads": ["residual_adjustment_model"]' in builder
+    assert '"base_expected_return_owner": "l4_alpha_ev"' in builder
+    assert '"shadow_diagnostics": {' in builder
+    assert '"promotion_effect": False' in builder
     assert '"execution_probability_model"' in builder
     assert '"conditional_execution_return_model"' in builder
-    assert "execution_probability * raw_execution_residual" in materializer
+    assert "final_expected_return = base_expected_return + residual_adjustment" in materializer
+    assert "legacy_s12_serving_heads_forbidden" in materializer
     assert "candidate_time_s12_feature_forbidden" in materializer
     assert "production_assistive" not in materializer
     assert "assistive_" not in router

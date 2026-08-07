@@ -46,6 +46,10 @@ from services.active_model_policy import ACTIVE_ALPHA_MODELS, gnn_return_history
 from services.ensemble_v2 import ENSEMBLE_V2_SEMANTIC_VERSION, build_formal_model_input_contract
 from services.fundamental_quality import score_fundamental_quality
 from services.market_segment_policy import normalize_segment, policy_for_segment
+from services.evidence_contracts import (
+    ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
+    ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
+)
 from services.portfolio_allocation import (
     allocate_sparse_tangent_with_evidence,
     apply_categorical_exposure_cap,
@@ -531,11 +535,11 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
                 "expected_return": ev2.get("expected_return"),
                 "expected_return_source": (
                     ev2.get("expected_return_source")
-                    or "allocator_ev_fusion_primary_required"
+                    or "l4_alpha_ev_missing_no_expected_return"
                 ),
-                "expected_return_owner": "allocator_ev_fusion",
+                "expected_return_owner": "risk_abstention",
                 "trade_expected_return_net_pct": None,
-                "trade_expected_return_source": "intraday_s12_execution_policy_not_evening_ev",
+                "trade_expected_return_source": "candidate_time_s12_not_evening_ev_owner",
                 "l4_alpha_ev": l4_alpha_ev,
                 "signal_source": ev2.get("signal_source") or "ensemble_v2",
                 "signal_raw": ev2.get("signal_raw") or legacy_signal,
@@ -549,10 +553,10 @@ def _effective_prediction_view(ml: dict | None, use_ensemble_v2: bool = True) ->
         "forecast_return_5bar": legacy_forecast,
         "forecast_return_5bar_source": "legacy_forecast_pct",
         "expected_return": None,
-        "expected_return_source": "allocator_ev_fusion_primary_required",
-        "expected_return_owner": "allocator_ev_fusion",
+        "expected_return_source": "l4_alpha_ev_missing_no_expected_return",
+        "expected_return_owner": "risk_abstention",
         "trade_expected_return_net_pct": None,
-        "trade_expected_return_source": "intraday_s12_execution_policy_not_evening_ev",
+        "trade_expected_return_source": "candidate_time_s12_not_evening_ev_owner",
         "l4_alpha_ev": ml.get("l4_alpha_ev") or ml.get("alpha_ev") or ml.get("alpha_ev_prediction"),
         "signal_source": "legacy",
         "signal_raw": legacy_signal,
@@ -2131,7 +2135,7 @@ def _can_promote_ranking_candidate(row: dict, ranking_config: dict, alpha_policy
         row["promotion_blocked_forecast_pct_source"] = forecast_pct_source or expected_return_source
         row["promotion_blocked_expected_return_source"] = expected_return_source
         row["promotion_blocked_expected_return_policy"] = (
-            "requires_production_primary_allocator_ev_fusion_positive_expected_return"
+            "requires_valid_canonical_l4_base_with_optional_validated_fusion_residual"
         )
         return False
     min_forecast = float(ranking_config.get("promoteMinForecastPct", 0.0))
@@ -2664,15 +2668,16 @@ def _observational_potential_buy_evidence(
         or allocation_evidence.get("expected_return_source")
         or ""
     ).strip()
-    missing_fusion = (
+    missing_canonical_l4 = (
         abstention_reason in {
             "allocator_ev_fusion_primary_required",
+            "l4_alpha_ev_missing_no_expected_return",
             "allocator_ev_fusion_required",
             "allocator_ev_fusion_missing",
         }
         or _expected_return_source_missing(abstention_reason)
     )
-    if not missing_fusion:
+    if not missing_canonical_l4:
         return None
     return {
         "selection_reason": OBSERVATIONAL_POTENTIAL_BUY_SELECTION_REASON,
@@ -2680,7 +2685,7 @@ def _observational_potential_buy_evidence(
         "potential_buy_reason": OBSERVATIONAL_POTENTIAL_BUY_SELECTION_REASON,
         "potential_buy_formal_signal": formal_signal,
         "potential_buy_active_family_count": active_family_count,
-        "potential_buy_expected_return_state": "fusion_primary_unavailable",
+        "potential_buy_expected_return_state": "canonical_l4_unavailable",
         "potential_buy_executable": False,
         "potential_buy_execution_eligible": False,
         "eligible_for_sparse": False,
@@ -2708,6 +2713,7 @@ _MISSING_EXPECTED_RETURN_SOURCES = {
     "missing_calibrated_forecast_pct_no_expected_return",
     "no_positive_lifecycle_weight_no_expected_return",
     "missing_expected_return_no_allocation_edge",
+    "l4_alpha_ev_missing_no_expected_return",
     "allocator_ev_fusion_primary_required",
     "allocator_ev_fusion_required",
     "allocator_ev_fusion_missing",
@@ -2744,6 +2750,8 @@ def _canonical_expected_return_from_row(
     market_heat_expected_return: float = 0.0,
 ) -> tuple[float | None, str, dict[str, Any] | None]:
     alpha_ev_value, alpha_ev_source, alpha_ev_payload = extract_l4_alpha_ev(row)
+    if isinstance(alpha_ev_payload, dict):
+        row["l4_alpha_ev"] = alpha_ev_payload
     fusion_payload = materialize_allocator_ev_fusion(
         row,
         l4_value=alpha_ev_value,
@@ -2759,20 +2767,58 @@ def _canonical_expected_return_from_row(
         primary_allowed = fusion_payload.get("primary_expected_return_allowed") is True
         if status == "loaded" and value is not None and primary_allowed:
             return value, str(fusion_payload.get("expected_return_source") or "allocator_ev_fusion"), fusion_payload
-        if status == "rejected":
-            return None, str(fusion_payload.get("expected_return_source") or "allocator_ev_fusion_rejected"), fusion_payload
 
-    fallback_payload = fusion_payload if isinstance(fusion_payload, dict) else {
-        "status": "missing",
+    artifact_blockers = list(fusion_payload.get("blockers") or []) if isinstance(fusion_payload, dict) else ["production_primary_artifact_missing"]
+    if alpha_ev_value is None:
+        fallback_payload = dict(fusion_payload) if isinstance(fusion_payload, dict) else {}
+        fallback_payload.update({
+            "status": fallback_payload.get("status") or "missing",
+            "overlay_status": "unavailable",
+            "overlay_candidate_artifact_contract_version": fallback_payload.get("artifact_contract_version"),
+            "artifact_contract_version": ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
+            "feature_semantic_version": ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
+            "expected_return_semantic": "l4_base_expected_return_plus_validated_residual_adjustment",
+            "expected_return_owner": "risk_abstention",
+            "expected_return": None,
+            "expected_return_mean": None,
+            "expected_return_source": alpha_ev_source or "l4_alpha_ev_missing",
+            "selection_feature_owner": "l4_alpha_ev",
+            "base_expected_return_owner": "l4_alpha_ev",
+            "base_expected_return": None,
+            "fusion_residual_adjustment": 0.0,
+            "final_expected_return": None,
+            "primary_expected_return_allowed": False,
+            "fusion_adjustment_allowed": False,
+            "l4_alpha_ev": alpha_ev_payload,
+            "blockers": list(dict.fromkeys([*artifact_blockers, "l4_base_expected_return_missing"])),
+        })
+        row["allocator_ev_fusion"] = fallback_payload
+        return None, str(fallback_payload["expected_return_source"]), fallback_payload
+
+    fallback_payload = dict(fusion_payload) if isinstance(fusion_payload, dict) else {}
+    fallback_payload.update({
+        "status": fallback_payload.get("status") or "missing",
+        "overlay_status": "abstained",
+        "overlay_candidate_artifact_contract_version": fallback_payload.get("artifact_contract_version"),
+        "artifact_contract_version": ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
+        "feature_semantic_version": ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
+        "expected_return_semantic": "l4_base_expected_return_plus_validated_residual_adjustment",
         "expected_return_owner": "allocator_ev_fusion",
-        "expected_return": None,
-        "expected_return_source": "allocator_ev_fusion:primary_required_no_expected_return",
+        "expected_return": round(alpha_ev_value, 10),
+        "expected_return_mean": round(alpha_ev_value, 10),
+        "expected_return_source": "allocator_ev_fusion:l4_base_overlay_abstained",
         "selection_feature_owner": "l4_alpha_ev",
+        "base_expected_return_owner": "l4_alpha_ev",
+        "base_expected_return": round(alpha_ev_value, 10),
+        "fusion_residual_adjustment": 0.0,
+        "final_expected_return": round(alpha_ev_value, 10),
+        "primary_expected_return_allowed": False,
+        "fusion_adjustment_allowed": False,
         "l4_alpha_ev": alpha_ev_payload,
-        "blockers": ["production_primary_artifact_missing"],
-    }
+        "blockers": artifact_blockers,
+    })
     row["allocator_ev_fusion"] = fallback_payload
-    return None, str(fallback_payload["expected_return_source"]), fallback_payload
+    return alpha_ev_value, str(fallback_payload["expected_return_source"]), fallback_payload
 
 
 def _expected_return_uncertainty_adjustment(row: dict, value: float) -> tuple[float, dict[str, Any] | None]:
@@ -2880,10 +2926,10 @@ def _allocator_edge_resolver(
     source = str(expected_return_source or "").strip()
     expected_return_owner = "allocator_ev_fusion"
     target_quality = {
-        "target_quality_state": "historical_s12_replay_policy_labels",
+        "target_quality_state": "canonical_five_session_price_horizon_labels",
         "reward_confidence_multiplier": 1.0,
         "candidate_time_s12_features": 0,
-        "serving_role": "diagnostic_only",
+        "s12_serving_role": "retired",
     }
     edge_quality = _allocator_edge_quality(
         row,
@@ -2897,9 +2943,16 @@ def _allocator_edge_resolver(
         "expected_return": round(float(expected_return), 10),
         "expected_return_source": source,
         "payload_status": payload_dict.get("status"),
+        "expected_return_contract_version": payload_dict.get("artifact_contract_version"),
+        "expected_return_semantic": payload_dict.get("expected_return_semantic"),
         "payload_semantic": payload_dict.get("semantic"),
+        "overlay_status": payload_dict.get("overlay_status"),
         "selection_feature_owner": payload_dict.get("selection_feature_owner"),
-        "execution_policy_owner": payload_dict.get("execution_policy_owner"),
+        "base_expected_return_owner": payload_dict.get("base_expected_return_owner"),
+        "base_expected_return": payload_dict.get("base_expected_return"),
+        "fusion_residual_adjustment": payload_dict.get("fusion_residual_adjustment"),
+        "final_expected_return": payload_dict.get("final_expected_return"),
+        "fusion_adjustment_allowed": payload_dict.get("fusion_adjustment_allowed"),
         "validation_decision": payload_dict.get("validation_decision"),
         "approval_state": payload_dict.get("approval_state"),
         "model_version": payload_dict.get("model_version"),
@@ -2910,15 +2963,15 @@ def _allocator_edge_resolver(
         "execution_gate_required": payload_dict.get("execution_gate_required"),
         "market_heat_expected_return": round(float(market_heat_expected_return), 10),
         "market_heat_role": "diagnostic_context_not_expected_return_owner",
-        "policy": "allocator_expected_edge_accepts_production_primary_fusion_only",
-        "adjustment_applied": False,
+        "policy": "allocator_expected_edge_accepts_valid_l4_plus_optional_validated_fusion_residual",
+        "adjustment_applied": payload_dict.get("overlay_status") == "applied",
         "allocator_edge_quality_score": edge_quality["allocator_edge_quality_score"],
         "edge_quality": edge_quality,
-        "execution_policy_label_quality": target_quality,
+        "residual_label_quality": target_quality,
         "conditional_admission_allowed": False,
-        "conditional_admission_policy": "disabled_single_fusion_owner",
+        "conditional_admission_policy": "retired_s12_serving_path",
     }
-    evidence["candidate_contract"] = "production_allocator_ev_fusion_day_t_policy_value"
+    evidence["candidate_contract"] = "production_allocator_ev_fusion_l4_residual_overlay"
     row["_allocator_edge_resolver"] = evidence
     return expected_return, source, evidence
 
@@ -2945,7 +2998,7 @@ def _allocator_abstention_resolver(
         "abstention": True,
         "abstention_reason": source or "missing_expected_return_no_allocation_edge",
         "candidate_contract": "explicit_no_trade_abstention",
-        "policy": "no_production_primary_fusion_means_abstain_without_fabricating_expected_return",
+        "policy": "invalid_or_missing_canonical_l4_means_abstain_without_score_rank_or_s12_fallback",
         "l4_candidate": {
             "status": l4_payload.get("status"),
             "model_version": l4_payload.get("model_version"),
@@ -3450,6 +3503,16 @@ def _apply_sparse_tangent_buy_selection(
             "expected_return": expected_return,
             "expected_return_source": expected_return_source,
             "expected_return_owner": expected_return_owner or None,
+            "expected_return_contract_version": (
+                (row.get("_allocator_edge_resolver") or {}).get("expected_return_contract_version")
+                if isinstance(row.get("_allocator_edge_resolver"), dict)
+                else None
+            ),
+            "expected_return_semantic": (
+                (row.get("_allocator_edge_resolver") or {}).get("expected_return_semantic")
+                if isinstance(row.get("_allocator_edge_resolver"), dict)
+                else None
+            ),
             "allocator_edge_quality_score": (
                 (row.get("_allocator_edge_resolver") or {}).get("allocator_edge_quality_score")
                 if isinstance(row.get("_allocator_edge_resolver"), dict)
@@ -3529,10 +3592,24 @@ def _apply_sparse_tangent_buy_selection(
                 for row in allocation_candidates
                 if str(row.get("expected_return_owner") or "").strip()
             }
+            expected_return_contracts = {
+                str(row.get("expected_return_contract_version") or "").strip()
+                for row in allocation_candidates
+                if str(row.get("expected_return_contract_version") or "").strip()
+            }
+            expected_return_semantics = {
+                str(row.get("expected_return_semantic") or "").strip()
+                for row in allocation_candidates
+                if str(row.get("expected_return_semantic") or "").strip()
+            }
             runtime_owner = next(iter(expected_return_owners)) if len(expected_return_owners) == 1 else None
+            runtime_contract = next(iter(expected_return_contracts)) if len(expected_return_contracts) == 1 else None
+            runtime_semantic = next(iter(expected_return_semantics)) if len(expected_return_semantics) == 1 else None
             resolved_arms, prior_artifact_evidence = resolve_portfolio_bandit_arms(
                 allocation.get("opb_arm_prior"),
                 expected_return_owner=runtime_owner,
+                expected_return_contract_version=runtime_contract,
+                expected_return_semantic=runtime_semantic,
             )
 
             opb_packet = build_online_portfolio_bandit_l2_packet(

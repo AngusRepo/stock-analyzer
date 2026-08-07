@@ -55,11 +55,10 @@ function fusionCandidate(ownerParity = parity) {
       artifact_contract_version: ALLOCATOR_EV_FUSION_CONTRACT.artifactContractVersion,
       feature_semantic_version: ALLOCATOR_EV_FUSION_CONTRACT.featureSemanticVersion,
       label_schema_version: ALLOCATOR_EV_FUSION_CONTRACT.labelSchemaVersion,
-      model_version: 'fusion-v13-20260724',
-      policy_value_head_count: 2,
-      policy_value_heads: ['execution_probability_model', 'conditional_execution_return_model'],
-      execution_probability_model: { coefficients: { l4_available: 0.4 } },
-      conditional_execution_return_model: { coefficients: { l4_expected_return: 0.6 } },
+      model_version: 'fusion-v14-20260724',
+      policy_value_head_count: 1,
+      policy_value_heads: ['residual_adjustment_model'],
+      residual_adjustment_model: { coefficients: { l4_expected_return: 0.25 } },
       trained_until: '2026-07-09',
       output_is_net_of_costs: true,
       validation_packet: validation,
@@ -88,7 +87,8 @@ const staleConfig = {
 const l4Plan = buildExpectedReturnOwnerPromotionPlan(staleConfig, 'l4_alpha_ev', l4Candidate())
 assert.equal(l4Plan.eligible, true)
 assert.equal(l4Plan.serving_state.artifacts.l4_alpha_ev.eligible, true)
-assert.equal(l4Plan.serving_state.expected_return_owner, null)
+assert.equal(l4Plan.serving_state.expected_return_owner, 'allocator_ev_fusion')
+assert.equal(l4Plan.serving_state.overlay_status, 'abstained')
 
 const tamperedL4 = { ...l4Candidate(), artifact_checksum: 'c'.repeat(64) }
 const tamperedPlan = buildExpectedReturnOwnerPromotionPlan(
@@ -133,6 +133,7 @@ const fusionPlan = buildExpectedReturnOwnerPromotionPlan(
 )
 assert.equal(fusionPlan.eligible, true)
 assert.equal(fusionPlan.serving_state.expected_return_owner, 'allocator_ev_fusion')
+assert.equal(fusionPlan.serving_state.overlay_status, 'applied')
 
 const route = fs.readFileSync('src/routes/adminConfigCoreRoutes.ts', 'utf8')
 const start = route.indexOf("adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote'")

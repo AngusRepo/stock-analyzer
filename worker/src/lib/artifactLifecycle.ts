@@ -664,6 +664,9 @@ export async function runOrphanReachabilityGc(
 
 export interface StorageHealthResult {
   healthy: boolean
+  blocking_reasons: string[]
+  capacity_only_blocker: boolean
+  artifact_active_references_are_orphans: false
   enforcement_scope: 'scheduler_and_producer_admission'
   admission_control: true
   blocks_storage_producers: true
@@ -865,22 +868,47 @@ export async function runStorageHealthCheck(
   const artifactHardRefDrift = Number(hardReferences?.drift_count ?? 0)
   const artifactActiveReferences = Number(hardReferenceReachability?.active_references ?? 0)
   const artifactTrueOrphanReferences = Number(hardReferenceReachability?.true_orphan_references ?? 0)
-  const domainSchemaReady = domainSchema.every((row) => row.ready)
   const legacyRetentionBacklog = Number(legacyRetention?.backlog_cohorts ?? 0)
   const legacyRetentionProgress24h = Number(legacyRetention?.progress_24h ?? 0)
   const legacyRetentionStalled = legacyRetentionBacklog > 0 && legacyRetentionProgress24h === 0
+  const blockingReasons: string[] = []
+  if (integrityBlocked > 0) blockingReasons.push(`integrity_blocked:${integrityBlocked}`)
+  if (backlog > 0) blockingReasons.push(`cleanup_backlog_over_24h:${backlog}`)
+  if (dlqPending > 0) blockingReasons.push(`dlq_pending:${dlqPending}`)
+  if (allocatorSnapshotRows <= 0) blockingReasons.push('allocator_ev_snapshot_rows_missing')
+  if (allocatorSnapshotDates <= 0) blockingReasons.push('allocator_ev_snapshot_dates_missing')
+  if (allocatorSnapshotIncompleteRuns > 0) blockingReasons.push(`allocator_snapshot_incomplete_runs:${allocatorSnapshotIncompleteRuns}`)
+  if (allocatorSnapshotStagingOrphans > 0) blockingReasons.push(`allocator_snapshot_staging_orphans:${allocatorSnapshotStagingOrphans}`)
+  if (artifactHardRefDrift > 0) blockingReasons.push(`artifact_hard_ref_drift:${artifactHardRefDrift}`)
+  if (artifactTrueOrphanReferences > 0) blockingReasons.push(`artifact_true_orphan_references:${artifactTrueOrphanReferences}`)
+  for (const row of domainSchema.filter((item) => !item.ready)) {
+    blockingReasons.push(
+      `domain_schema_not_ready:${row.domain}:pending=${row.pending_migrations}:missing=${row.missing_tables.length}`,
+    )
+  }
+  if (expectedLineageDate != null && !executionLineageReady) {
+    blockingReasons.push(`canonical_execution_lineage_not_ready:${expectedLineageDate}`)
+  }
+  if (expectedLineageDate != null && !paperLineageReady) {
+    blockingReasons.push(`paper_shadow_lineage_not_ready:${expectedLineageDate}`)
+  }
+  if (legacyRetentionStalled) blockingReasons.push(`legacy_retention_stalled:cohorts=${legacyRetentionBacklog}`)
+  if (capacityError != null) blockingReasons.push(`capacity_error:${capacityError}`)
+  if (capacityRows.length === 0) blockingReasons.push('capacity_telemetry_missing')
+  if (capacityDrain) {
+    const draining = capacityRows.filter((row) => row.status === 'drain' || row.status === 'critical')
+    blockingReasons.push(`capacity_drain:${draining.map((row) => `${row.domain}=${row.utilization_pct.toFixed(4)}%`).join(',')}`)
+  }
+  const capacityOnlyBlocker = blockingReasons.length === 1 && blockingReasons[0].startsWith('capacity_drain:')
   return {
     enforcement_scope: 'scheduler_and_producer_admission',
     admission_control: true,
     blocks_storage_producers: true,
     blocks_trading_path: false,
-    healthy: integrityBlocked === 0 && backlog === 0 && dlqPending === 0 &&
-      allocatorSnapshotRows > 0 && allocatorSnapshotDates > 0 &&
-      allocatorSnapshotIncompleteRuns === 0 && allocatorSnapshotStagingOrphans === 0 &&
-      artifactHardRefDrift === 0 && artifactTrueOrphanReferences === 0 && domainSchemaReady &&
-      (expectedLineageDate == null || (executionLineageReady && paperLineageReady)) &&
-      !legacyRetentionStalled &&
-      capacityError == null && capacityRows.length > 0 && !capacityDrain,
+    healthy: blockingReasons.length === 0,
+    blocking_reasons: blockingReasons,
+    capacity_only_blocker: capacityOnlyBlocker,
+    artifact_active_references_are_orphans: false,
     integrity_blocked: integrityBlocked,
     cleanup_backlog_over_24h: backlog,
     dlq_pending: dlqPending,

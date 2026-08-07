@@ -10,12 +10,17 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from services.evidence_contracts import (
+    ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
+    ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
+)
 from services import d1_client
 from services.allocator_ev_fusion_artifact_builder import load_allocator_ev_fusion_training_rows
 from services.l4_alpha_ev_resolver import SNAPSHOT_BACKFILL_USAGE_SCOPE, extract_l4_alpha_ev
 from services.online_portfolio_bandit import DEFAULT_ARMS, build_online_portfolio_bandit_l2_packet
 
-SCHEMA_VERSION = "opb-arm-prior-artifact-v1"
+SCHEMA_VERSION = "opb-arm-prior-artifact-v2"
+EXPECTED_RETURN_SEMANTIC = "l4_base_expected_return_plus_validated_residual_adjustment"
 LABEL_HORIZON_SESSIONS = 5
 DEFAULT_ROUNDTRIP_COST_BPS = 18.0
 
@@ -49,6 +54,12 @@ def _counterfactual_expected_return(
     if owner == "allocator_ev_fusion":
         payload = allocation.get("allocator_ev_fusion")
         if not isinstance(payload, dict):
+            return None, None, None
+        if str(payload.get("artifact_contract_version") or "").strip() != ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION:
+            return None, None, None
+        if str(payload.get("feature_semantic_version") or "").strip() != ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION:
+            return None, None, None
+        if str(payload.get("expected_return_semantic") or "").strip() != EXPECTED_RETURN_SEMANTIC:
             return None, None, None
         value = _finite(payload.get("expected_return"))
         allowed = payload.get("primary_expected_return_allowed") is True
@@ -235,6 +246,8 @@ def build_opb_arm_prior_artifact(
         "artifact_id": f"opb_arm_prior:{model_version}",
         "model_version": model_version,
         "expected_return_owner": expected_return_owner,
+        "source_expected_return_contract_version": ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION if expected_return_owner == "allocator_ev_fusion" else None,
+        "source_expected_return_semantic": EXPECTED_RETURN_SEMANTIC if expected_return_owner == "allocator_ev_fusion" else None,
         "source_model_versions": sorted(source_versions),
         "trained_until": trained_until,
         "generated_at": datetime.now(timezone.utc).isoformat(),

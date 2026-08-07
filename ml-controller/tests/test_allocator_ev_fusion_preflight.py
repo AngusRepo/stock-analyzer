@@ -13,7 +13,7 @@ from services.evidence_contracts import (  # noqa: E402
 
 def _artifact() -> dict:
     return {
-        "schema_version": "allocator-ev-fusion-artifact-v13",
+        "schema_version": "allocator-ev-fusion-artifact-v14",
         "artifact_contract_version": ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
         "feature_semantic_version": ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
         "label_schema_version": LABEL_SCHEMA_VERSION,
@@ -22,37 +22,32 @@ def _artifact() -> dict:
         "promotion_tier": "primary",
         "primary_expected_return_allowed": True,
         "validation_packet": {"decision": "PASS"},
-        "resolver_method": "day_t_causal_s12_policy_value_hurdle_fusion",
-        "model_version": "allocator-ev-fusion-policy-value-v13-test",
-        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v13-day-t-causal",
+        "resolver_method": "day_t_causal_l4_residual_overlay",
+        "model_version": "allocator-ev-fusion-residual-v14-test",
+        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v14-day-t-causal",
         "trained_until": "2026-08-01",
         "horizon_days": 5,
         "cost_model_bps": 18,
         "output_is_net_of_costs": True,
-        "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
-        "policy_value_head_count": 2,
-        "conditional_execution_return_model": {
+        "expected_return_semantic": "l4_base_expected_return_plus_validated_residual_adjustment",
+        "policy_value_head_count": 1,
+        "policy_value_heads": ["residual_adjustment_model"],
+        "residual_adjustment_model": {
             "status": "fitted",
             "intercept": 0.01,
-            "coefficients": {"l4_expected_return": 1.0},
-        },
-        "execution_probability_model": {
-            "status": "fitted",
-            "link_function": "logit",
-            "intercept": 0.0,
-            "coefficients": {"l4_available": 1.0},
+            "coefficients": {"l4_expected_return": 0.5},
         },
     }
 
 
-def test_allocator_ev_fusion_policy_preflight_uses_v13_two_head_runtime_contract():
+def test_allocator_ev_fusion_policy_preflight_uses_v14_residual_runtime_contract():
     accepted = assess_allocator_ev_fusion_policy({"allocatorEvFusion": _artifact()})
     rejected = assess_allocator_ev_fusion_policy(
         {"allocatorEvFusion": {**_artifact(), "artifact_contract_version": "legacy"}}
     )
 
     assert accepted["ready"] is True
-    assert accepted["artifact_model_version"] == "allocator-ev-fusion-policy-value-v13-test"
+    assert accepted["artifact_model_version"] == "allocator-ev-fusion-residual-v14-test"
     assert accepted["blockers"] == []
     assert rejected["ready"] is False
     assert "artifact_contract_version_incompatible" in rejected["blockers"]
@@ -65,6 +60,7 @@ def test_daily_pipeline_exposes_fusion_only_serving_preflight():
 
     assert "fusion_serving_preflight = assess_allocator_ev_fusion_policy(alpha_policy)" in source
     assert '"schema_version": "expected-return-serving-preflight-v1"' in source
-    assert 'serving_owner = "allocator_ev_fusion"' in source
-    assert '"action_gate": "expected_return_owner" if serving_owner else "fusion_primary_required"' in source
+    assert 'serving_owner = "allocator_ev_fusion" if l4_serving_preflight.get("ready") is True else None' in source
+    assert '"action_gate": "expected_return_owner" if serving_owner else "canonical_l4_required"' in source
+    assert '"overlay_status": "applied" if serving_owner and fusion_serving_preflight.get("ready") is True else "abstained" if serving_owner else "unavailable"' in source
     assert '"expected_return_serving_preflight": expected_return_serving_preflight' in source

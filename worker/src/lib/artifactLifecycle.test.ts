@@ -271,11 +271,14 @@ async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): 
   const splitBindings = { EXECUTION_DB: executionDomainDb as any, PAPER_DB: paperDomainDb as any }
   const healthy = await runStorageHealthCheck({ DB: healthyDb as any, ...splitBindings })
   assert.equal(healthy.healthy, true)
+  assert.deepEqual(healthy.blocking_reasons, [])
+  assert.equal(healthy.capacity_only_blocker, false)
   assert.equal(healthy.enforcement_scope, 'scheduler_and_producer_admission')
   assert.equal(healthy.admission_control, true)
   assert.equal(healthy.blocks_storage_producers, true)
   assert.equal(healthy.blocks_trading_path, false)
   assert.equal(healthy.artifact_active_references, 1998)
+  assert.equal(healthy.artifact_active_references_are_orphans, false)
   assert.equal(healthy.artifact_true_orphan_references, 0)
   assert.equal(healthy.domain_schema.every((row) => row.ready), true)
   assert.equal(healthy.d1_bytes, 7_000_000_000)
@@ -288,6 +291,8 @@ async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): 
   const overCapacity = await runStorageHealthCheck({ DB: overCapacityDb as any, ...splitBindings })
   assert.equal(overCapacity.healthy, false)
   assert.equal(overCapacity.d1_utilization, 0.8864489472)
+  assert.equal(overCapacity.capacity_only_blocker, true)
+  assert.deepEqual(overCapacity.blocking_reasons, ['capacity_drain:legacy=88.6449%'])
 
   const missingAllocatorDb = new MockDb()
   missingAllocatorDb.queryMeta = { size_after: 7_000_000_000 }
@@ -301,6 +306,8 @@ async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): 
   const missingAllocator = await runStorageHealthCheck({ DB: missingAllocatorDb as any, ...splitBindings })
   assert.equal(missingAllocator.healthy, false)
   assert.equal(missingAllocator.allocator_ev_snapshot_rows, 0)
+  assert.equal(missingAllocator.capacity_only_blocker, false)
+  assert(missingAllocator.blocking_reasons.includes('allocator_ev_snapshot_rows_missing'))
 
   const unknownDb = new MockDb()
   unknownDb.queryMeta = {}

@@ -93,7 +93,7 @@ export type PipelineDecisionMaturityPacket = {
   requested_date: string
   generated_at: string
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null
-  action_gate: 'expected_return_owner' | 'fusion_primary_required'
+  action_gate: 'expected_return_owner' | 'canonical_l4_required'
   strategy_route_bundle?: StrategyRouteBundleMaturity
   summary: {
     production: number

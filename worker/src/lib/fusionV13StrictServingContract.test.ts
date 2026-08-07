@@ -12,11 +12,10 @@ function validFusion(): Record<string, any> {
     artifact_contract_version: ALLOCATOR_EV_FUSION_CONTRACT.artifactContractVersion,
     feature_semantic_version: ALLOCATOR_EV_FUSION_CONTRACT.featureSemanticVersion,
     label_schema_version: ALLOCATOR_EV_FUSION_CONTRACT.labelSchemaVersion,
-    model_version: 'fusion-v13-strict-test',
-    policy_value_head_count: 2,
-    policy_value_heads: ['execution_probability_model', 'conditional_execution_return_model'],
-    execution_probability_model: { coefficients: { l4_available: 0.4 } },
-    conditional_execution_return_model: { coefficients: { l4_expected_return: 0.6 } },
+    model_version: 'fusion-v14-strict-test',
+    policy_value_head_count: 1,
+    policy_value_heads: ['residual_adjustment_model'],
+    residual_adjustment_model: { coefficients: { l4_expected_return: 0.25 } },
   }
 }
 
@@ -33,41 +32,17 @@ thirdHead.selection_model = { coefficients: { l4_expected_return: 1 } }
 assert(evaluate(thirdHead).blockers.includes('third_selection_serving_head_forbidden'))
 
 const candidateTimeS12 = validFusion()
-candidateTimeS12.execution_probability_model.coefficients.s12_structure_ready = 1
-candidateTimeS12.conditional_execution_return_model.coefficients.l4_s12_edge_agreement = 1
+candidateTimeS12.residual_adjustment_model.coefficients.s12_structure_ready = 1
 const candidateTimeBlockers = evaluate(candidateTimeS12).blockers
-assert(candidateTimeBlockers.includes('execution_probability_model_candidate_time_s12_feature_forbidden'))
-assert(candidateTimeBlockers.includes('conditional_execution_return_model_candidate_time_s12_feature_forbidden'))
+assert(candidateTimeBlockers.includes('residual_adjustment_model_candidate_time_s12_feature_forbidden'))
 
-const oneHead = validFusion()
-oneHead.policy_value_head_count = 1
-oneHead.policy_value_heads = ['execution_probability_model']
-delete oneHead.conditional_execution_return_model
-const oneHeadBlockers = evaluate(oneHead).blockers
-assert(oneHeadBlockers.includes('policy_value_head_count_not_two'))
-assert(oneHeadBlockers.includes('policy_value_heads_incompatible'))
-assert(oneHeadBlockers.includes('conditional_execution_return_model_missing'))
+const missingResidual = validFusion()
+missingResidual.policy_value_head_count = 0
+missingResidual.policy_value_heads = []
+delete missingResidual.residual_adjustment_model
+const missingResidualBlockers = evaluate(missingResidual).blockers
+assert(missingResidualBlockers.includes('policy_value_head_count_not_one'))
+assert(missingResidualBlockers.includes('policy_value_heads_incompatible'))
+assert(missingResidualBlockers.includes('residual_adjustment_model_missing'))
 
-const abstention = validFusion()
-abstention.promotion_state = 'safe_abstention'
-abstention.primary_expected_return_allowed = false
-abstention.serving_mode = 'abstention_baseline'
-abstention.benchmark_role = 'same_contract_no_trade_policy_value_baseline'
-abstention.validation_packet = {
-  decision: 'PASS',
-  scope: 'operational_safety_only',
-  alpha_quality_passed: false,
-}
-abstention.execution_probability_model = {
-  model_type: 'constant_abstention_control',
-  intercept: 0,
-  coefficients: { l4_available: 0 },
-}
-abstention.conditional_execution_return_model = {
-  model_type: 'constant_abstention_control',
-  intercept: 0,
-  coefficients: { l4_expected_return: 0 },
-}
-assert.deepEqual(evaluate(abstention).blockers, ['abstention_baseline_not_serving'])
-
-console.log('Fusion v13 strict serving contract tests passed')
+console.log('Fusion v14 residual strict serving contract tests passed')

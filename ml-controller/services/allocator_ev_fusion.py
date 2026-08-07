@@ -1,9 +1,9 @@
 """Allocator expected-return fusion owner.
 
-This owner estimates the net value of handing an evening candidate to the
-next-session S12 execution policy. Serving uses only decision-time L4/ScoreV2/
-market features. S12 affects the learned target through historical replay
-outcomes; candidate-time S12 state is never a serving input or EV owner.
+Canonical L4 remains the base expected-return estimator. Fusion may add only a
+validated residual adjustment learned from decision-time L4/ScoreV2/market
+features. Missing, rejected, or incompatible Fusion artifacts are handled by
+the recommendation layer as a zero adjustment; S12 is never a serving owner.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from services.fusion_market_context import market_context_feature_values
 from services.pit_sector_alpha import sector_alpha_feature_values
 
 
-SCHEMA_VERSION = "allocator-ev-fusion-v1"
+SCHEMA_VERSION = "allocator-ev-fusion-v2"
 OWNER = "allocator_ev_fusion"
 APPROVED_STATES = {
     "production_primary",
@@ -39,9 +39,6 @@ POLICY_KEYS = (
     "allocatorEVFusion",
     "allocationEvFusion",
 )
-REQUIRED_FEATURE_PREFIXES = {
-    "l4": ("l4_expected_return", "l4_"),
-}
 REQUIRED_ARTIFACT_CONTRACT_VERSION = ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION
 REQUIRED_FEATURE_SEMANTIC_VERSION = ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION
 REQUIRED_LABEL_SCHEMA_VERSION = LABEL_SCHEMA_VERSION
@@ -213,13 +210,18 @@ def _rejected_payload(
         **artifact,
         "schema_version": SCHEMA_VERSION,
         "status": "rejected",
+        "overlay_status": "rejected",
         "expected_return_owner": OWNER,
         "expected_return": None,
         "expected_return_mean": None,
         "expected_return_source": "allocator_ev_fusion:artifact_validation_failed_no_expected_return",
         "selection_feature_owner": "l4_alpha_ev",
-        "execution_policy_owner": "s12_intraday_structure_v1",
-        "execution_policy_label_source": "s12_replay_trade_outcomes",
+        "base_expected_return_owner": "l4_alpha_ev",
+        "base_expected_return": None,
+        "fusion_residual_adjustment": 0.0,
+        "final_expected_return": None,
+        "fusion_adjustment_allowed": False,
+        "primary_expected_return_allowed": False,
         "l4_alpha_ev": l4_payload,
         "feature_values": feature_values or {},
         "blockers": list(dict.fromkeys(blockers)),
@@ -258,60 +260,46 @@ def materialize_allocator_ev_fusion(
     if str(artifact.get("feature_semantic_version") or "").strip() != expected_feature_semantic:
         blockers.append("feature_semantic_version_incompatible")
     method = _resolver_method(artifact)
-    if artifact.get("expected_return_semantic") != "execution_probability_times_conditional_replay_net_return":
+    if artifact.get("expected_return_semantic") != "l4_base_expected_return_plus_validated_residual_adjustment":
         blockers.append("policy_value_semantic_incompatible")
     if _validation_decision(artifact) not in PASS_STATES:
         blockers.append("validation_packet_not_pass")
     if _approval_state(artifact) not in APPROVED_STATES:
         blockers.append("production_approval_missing")
-    execution_model = artifact.get("conditional_execution_return_model") if isinstance(artifact.get("conditional_execution_return_model"), dict) else None
-    execution_probability_model = (
-        artifact.get("execution_probability_model")
-        if isinstance(artifact.get("execution_probability_model"), dict)
+    residual_model = (
+        artifact.get("residual_adjustment_model")
+        if isinstance(artifact.get("residual_adjustment_model"), dict)
         else None
     )
     if isinstance(artifact.get("selection_model"), dict) or _coefficients(artifact):
         blockers.append("third_selection_serving_head_forbidden")
-    execution_coefs = _coefficients(execution_model) if execution_model and execution_model.get("status") == "fitted" else None
-    execution_probability_coefs = (
-        _coefficients(execution_probability_model)
-        if execution_probability_model and execution_probability_model.get("status") == "fitted"
-        else None
-    )
-    if execution_model and execution_model.get("status") == "fitted" and not execution_coefs:
-        blockers.append("execution_learned_coefficients_missing")
-    if (
-        execution_probability_model
-        and execution_probability_model.get("status") == "fitted"
-        and not execution_probability_coefs
-    ):
-        blockers.append("execution_probability_coefficients_missing")
-    if not execution_coefs:
-        blockers.append("execution_learned_coefficients_missing")
-    if not execution_probability_coefs:
-        blockers.append("execution_probability_coefficients_missing")
-    active_coefs = {**(execution_coefs or {}), **(execution_probability_coefs or {})}
-    for label, prefixes in REQUIRED_FEATURE_PREFIXES.items():
-        if not any(name == prefixes[0] or name.startswith(prefixes[1]) for name in active_coefs):
-            blockers.append(f"required_{label}_feature_missing_from_policy_value_heads")
+    if isinstance(artifact.get("conditional_execution_return_model"), dict) or isinstance(artifact.get("execution_probability_model"), dict):
+        blockers.append("legacy_s12_serving_heads_forbidden")
+    residual_coefs = _coefficients(residual_model) if residual_model and residual_model.get("status") == "fitted" else None
+    if not residual_coefs:
+        blockers.append("residual_adjustment_coefficients_missing")
+    if int(artifact.get("policy_value_head_count") or 0) != 1:
+        blockers.append("policy_value_head_count_not_one")
+    if artifact.get("policy_value_heads") != ["residual_adjustment_model"]:
+        blockers.append("policy_value_heads_incompatible")
+    active_coefs = dict(residual_coefs or {})
     forbidden_s12_features = sorted(
         name
         for name in active_coefs
         if name.startswith("s12_") or name == "l4_s12_edge_agreement"
     )
     blockers.extend(f"candidate_time_s12_feature_forbidden:{name}" for name in forbidden_s12_features)
-    execution_intercept = _float_or_none((execution_model or {}).get("intercept", 0.0))
-    if execution_coefs and execution_intercept is None:
-        blockers.append("execution_intercept_invalid")
-    execution_probability_intercept = _float_or_none((execution_probability_model or {}).get("intercept", 0.0))
-    if execution_probability_coefs and execution_probability_intercept is None:
-        blockers.append("execution_probability_intercept_invalid")
+    residual_intercept = _float_or_none((residual_model or {}).get("intercept", 0.0))
+    if residual_coefs and residual_intercept is None:
+        blockers.append("residual_adjustment_intercept_invalid")
     for key in ("model_version", "feature_snapshot_version", "trained_until"):
         if not str(artifact.get(key) or "").strip():
             blockers.append(f"{key}_missing")
     if artifact.get("horizon_days") is None and artifact.get("horizon_bars") is None:
         blockers.append("horizon_missing")
     blockers.extend(expected_return_cost_contract_blockers(artifact))
+    if l4_value is None:
+        blockers.append("l4_base_expected_return_missing")
 
     values = _feature_values(
         l4_value=l4_value,
@@ -331,27 +319,12 @@ def materialize_allocator_ev_fusion(
             feature_values=values,
         )
 
-    execution_residual_adjustment = 0.0
-    execution_model_applied = bool(execution_coefs)
-    execution_probability = 1.0 if execution_model_applied else 0.0
-    raw_execution_residual = 0.0
-    if execution_model_applied:
-        raw_execution_residual = float(execution_intercept or 0.0)
-        for name, coef in (execution_coefs or {}).items():
-            raw_execution_residual += coef * values[name]
-        if execution_probability_coefs:
-            execution_probability = float(execution_probability_intercept or 0.0)
-            for name, coef in execution_probability_coefs.items():
-                execution_probability += coef * values[name]
-            if str((execution_probability_model or {}).get("link_function") or "").lower() == "logit":
-                execution_probability = 1.0 / (1.0 + math.exp(-max(-40.0, min(40.0, execution_probability))))
-            else:
-                execution_probability = max(0.0, min(1.0, execution_probability))
-        execution_residual_adjustment = execution_probability * raw_execution_residual
-    expected_return = execution_residual_adjustment
+    raw_residual_adjustment = float(residual_intercept or 0.0)
+    for name, coef in (residual_coefs or {}).items():
+        raw_residual_adjustment += coef * values[name]
     try:
-        expected_return, cost_metadata = normalize_expected_return_to_net(
-            expected_return,
+        residual_adjustment, cost_metadata = normalize_expected_return_to_net(
+            raw_residual_adjustment,
             artifact,
         )
     except ExpectedReturnCostContractError as exc:
@@ -361,40 +334,46 @@ def materialize_allocator_ev_fusion(
             l4_payload=l4_payload,
             feature_values=values,
         )
-    clip = artifact.get("output_clip") if isinstance(artifact.get("output_clip"), dict) else {}
+    clip = artifact.get("residual_output_clip") if isinstance(artifact.get("residual_output_clip"), dict) else {}
     min_value = _float_or_none(clip.get("min"))
     max_value = _float_or_none(clip.get("max"))
     if min_value is not None:
-        expected_return = max(min_value, expected_return)
+        residual_adjustment = max(min_value, residual_adjustment)
     if max_value is not None:
-        expected_return = min(max_value, expected_return)
+        residual_adjustment = min(max_value, residual_adjustment)
+    base_expected_return = float(l4_value)
+    final_expected_return = base_expected_return + residual_adjustment
+    primary_allowed = _primary_expected_return_allowed(artifact)
 
     return {
         **artifact,
         "schema_version": SCHEMA_VERSION,
         **cost_metadata,
         "status": "loaded",
+        "overlay_status": "applied",
         "expected_return_owner": OWNER,
-        "expected_return": round(expected_return, 10),
-        "expected_return_mean": round(expected_return, 10),
-        "policy_value": round(execution_residual_adjustment, 10),
-        "conditional_execution_return": round(raw_execution_residual, 10),
-        "policy_value_head_count": 2,
-        "execution_probability": round(execution_probability, 10),
-        "conditional_execution_return_model_applied": execution_model_applied,
-        "expected_return_source": f"allocator_ev_fusion:{method or 'formal_meta_calibrator'}",
+        "expected_return": round(final_expected_return, 10),
+        "expected_return_mean": round(final_expected_return, 10),
+        "policy_value": round(final_expected_return, 10),
+        "base_expected_return_owner": "l4_alpha_ev",
+        "base_expected_return": round(base_expected_return, 10),
+        "raw_fusion_residual_adjustment": round(raw_residual_adjustment, 10),
+        "fusion_residual_adjustment": round(residual_adjustment, 10),
+        "final_expected_return": round(final_expected_return, 10),
+        "policy_value_head_count": 1,
+        "residual_adjustment_model_applied": True,
+        "fusion_adjustment_allowed": primary_allowed,
+        "expected_return_source": f"allocator_ev_fusion:{method or 'l4_residual_overlay'}",
         "selection_feature_owner": "l4_alpha_ev",
-        "execution_policy_owner": "s12_intraday_structure_v1",
-        "execution_policy_label_source": "s12_replay_trade_outcomes",
         "l4_alpha_ev": l4_payload,
-        "l4_expected_return": None if l4_value is None else round(l4_value, 10),
+        "l4_expected_return": round(base_expected_return, 10),
         "l4_expected_return_source": l4_source,
         "market_heat_expected_return": round(market_heat_expected_return, 10),
         "feature_values": {key: round(value, 10) for key, value in values.items()},
         "promotion_tier": _promotion_tier(artifact),
-        "primary_expected_return_allowed": _primary_expected_return_allowed(artifact),
-        "diagnostic_role": "primary_expected_return_owner",
-        "semantic": "evening_policy_value_equals_s12_execution_probability_times_conditional_net_return_using_day_t_causal_features",
+        "primary_expected_return_allowed": primary_allowed,
+        "diagnostic_role": "validated_residual_adjustment_over_canonical_l4",
+        "semantic": "final_expected_return_equals_canonical_l4_plus_validated_residual_adjustment",
         "blockers": [],
     }
 
@@ -429,5 +408,5 @@ def assess_allocator_ev_fusion_policy(policy: dict[str, Any] | None) -> dict[str
         "feature_semantic_version": (artifact or {}).get("feature_semantic_version"),
         "label_schema_version": (artifact or {}).get("label_schema_version"),
         "blockers": blockers,
-        "policy": "fusion_serves_only_after_owner_quality_parity_and_current_contract_pass",
+        "policy": "fusion_residual_overlay_serves_only_after_quality_and_same_contract_l4_parity",
     }

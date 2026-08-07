@@ -2788,7 +2788,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     if l4_serving_preflight.get("ready") is not True:
         logger.error(
             "[Pipeline V2] configured L4 artifact is not serving-compatible; "
-            "Fusion will treat the upstream L4 feature as unavailable: %s",
+            "expected-return allocation will fail closed while evidence continues: %s",
             l4_serving_preflight,
         )
     allocator_ev_fusion_policy = (
@@ -2802,11 +2802,12 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         alpha_policy.setdefault("allocatorEvFusion", allocator_ev_fusion_policy)
         alpha_policy.setdefault("allocator_ev_fusion", allocator_ev_fusion_policy)
     fusion_serving_preflight = assess_allocator_ev_fusion_policy(alpha_policy)
-    serving_owner = "allocator_ev_fusion" if fusion_serving_preflight.get("ready") is True else None
+    serving_owner = "allocator_ev_fusion" if l4_serving_preflight.get("ready") is True else None
     expected_return_serving_preflight = {
         "schema_version": "expected-return-serving-preflight-v1",
         "expected_return_owner": serving_owner,
-        "action_gate": "expected_return_owner" if serving_owner else "fusion_primary_required",
+        "action_gate": "expected_return_owner" if serving_owner else "canonical_l4_required",
+        "overlay_status": "applied" if serving_owner and fusion_serving_preflight.get("ready") is True else "abstained" if serving_owner else "unavailable",
         "artifacts": {
             "l4_alpha_ev": l4_serving_preflight,
             "allocator_ev_fusion": fusion_serving_preflight,

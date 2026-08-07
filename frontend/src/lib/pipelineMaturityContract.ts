@@ -27,6 +27,7 @@ export type PipelineMaturityEvidenceScope = {
   oof_max_date?: string | null
   version: string | null
   artifact_id?: string | null
+  updated_at?: string | null
   blockers: string[]
   metrics: PipelineMaturityMetric[]
   note: string
@@ -70,6 +71,7 @@ export type PipelineMaturityStage = {
     evidence_semantics?: string
     source: string
     updated_at?: string | null
+    comparison_contract?: string | null
   }
 }
 

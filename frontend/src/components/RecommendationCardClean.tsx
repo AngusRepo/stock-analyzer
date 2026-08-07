@@ -3105,6 +3105,9 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
   const SigIcon = sig.icon
   const isHomeContext = context === 'home'
   const showFullDecisionDetail = !isHomeContext
+  const isUpstreamObservation = isHomeContext
+    && rec?.home_potential_buy_kind === 'upstream_observation_non_executable'
+    && recommendationSignalKey(rec) === 'POTENTIAL_BUY'
   const watchPoints = normalizeWatchPoints(rec.watch_points)
   const noticePoints = displayWatchPoints(watchPoints)
   const alphaContext = alphaContextFromRec(rec, watchPoints)
@@ -3199,6 +3202,9 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
               <SigIcon className="mr-1 h-3 w-3" />
               {sig.label}
             </Badge>
+            {isUpstreamObservation ? (
+              <Badge variant="outline" className="border-amber-300/25 bg-amber-400/[0.08] px-2 py-0.5 text-[11px] text-amber-200">上游觀察 · 不可執行</Badge>
+            ) : null}
             <span className={cn('flex items-center gap-1 text-xs font-semibold', signedFlowClass(chipBadge.signedValue))}>
               <Users className="h-3 w-3" />
               {chipBadge.label} {chipBadge.text}

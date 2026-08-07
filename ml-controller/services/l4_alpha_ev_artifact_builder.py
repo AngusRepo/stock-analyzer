@@ -268,6 +268,11 @@ def _samples(
         "sparse_dates_rejected": sparse_dates,
         "sparse_date_rows_rejected": sparse_date_rows_rejected,
         "date_count": len({row["date"] for row in out}),
+        "evidence_max_date": max((row["date"] for row in out), default=None),
+        "oof_max_date": (
+            max((row["date"] for row in out), default=None)
+            if generation_modes == {"purged_oof"} else None
+        ),
         "feature_profile": feature_profile,
         "degenerate_features": sorted(
             name for name, profile in feature_profile.items() if profile["degenerate"]

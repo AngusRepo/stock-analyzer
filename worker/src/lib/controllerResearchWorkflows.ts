@@ -237,7 +237,7 @@ export async function runActive8OofLifecycle(
       cadence,
       end_date: runDate,
       dry_run: false,
-      promote: true,
+      promote: cadence !== 'daily',
       dispatch_full_fit: cadence !== 'daily',
     },
     // The controller only dispatches a durable Cloud Run Job. The terminal

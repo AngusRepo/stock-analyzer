@@ -9,7 +9,7 @@ import { listLinUcbRewardSourceRows } from './metaLearningRewardLedger'
 import { clearOpenPositionIntradayPriceCache } from './paperIntradayPriceCache'
 import { classifySchedulerSummary, logSchedulerResult, type SchedulerRunStatus } from './schedulerRunLogger'
 import { recordWorkerTaskComputeProfile } from './computeProfileEvents'
-import { runAllocatorEvFeatureSnapshotBackfill } from './controllerResearchWorkflows'
+import { runActive8OofLifecycle, runAllocatorEvFeatureSnapshotBackfill } from './controllerResearchWorkflows'
 import {
   inspectAllocatorSnapshotClosure,
   recordAllocatorEvLifecycle,
@@ -553,6 +553,21 @@ export async function runPostVerifyCallbackChain(
   }, { timeoutMs: 240_000 })
   results.push(projectionTask)
   if (projectionTask.status === 'error') {
+    await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
+    return 'error'
+  }
+
+  const oofFreshnessTask = productionEligible
+    ? await logChainedTask(
+      env,
+      ctx,
+      'active8-oof-daily',
+      () => runActive8OofLifecycle(env, ctx.runDate, 'daily'),
+      { critical: true, timeoutMs: 60_000 },
+    )
+    : await logSkippedHistoricalTask(env, ctx, 'active8-oof-daily')
+  results.push(oofFreshnessTask)
+  if (oofFreshnessTask.status === 'error') {
     await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
     return 'error'
   }

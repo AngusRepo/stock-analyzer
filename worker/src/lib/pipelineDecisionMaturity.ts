@@ -1,6 +1,7 @@
 import type { Bindings } from '../types'
 import { inspectAllocatorEvMaturityCoverage } from './allocatorEvDailyLifecycle'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { ALLOCATOR_EV_FUSION_CONTRACT, L4_ALPHA_EV_CONTRACT } from './evidenceContracts'
 import { inspectExpectedReturnCandidateEvidence } from './expectedReturnCandidateEvidence'
 import { readCurrentExpectedReturnServingState } from './expectedReturnServingState'
 import {
@@ -49,6 +50,7 @@ export interface PipelineMaturityEvidenceScope {
   oof_max_date?: string | null
   version: string | null
   artifact_id?: string | null
+  updated_at?: string | null
   blockers: string[]
   metrics: PipelineMaturityMetric[]
   note: string
@@ -85,6 +87,7 @@ export interface PipelineMaturityStage {
     model_version?: string | null
     source: string
     updated_at?: string | null
+    comparison_contract?: string | null
   }
 }
 export interface StrategyRouteBundleMaturity {
@@ -128,6 +131,7 @@ type EvCandidateRow = {
   model_name: 'l4_alpha_ev' | 'allocator_ev_fusion'
   artifact_id: string | null
   version: string | null
+  artifact_contract_version: string | null
   state: string | null
   source_run_date: string | null
   offline_gate_decision: string | null
@@ -161,7 +165,7 @@ type EvCandidateRow = {
   fusion_corr_delta_lcb90: number | string | null
   fusion_spread_delta_lcb90: number | string | null
   fusion_top_trade_ev_lcb90: number | string | null
-  fusion_oof_max_date: string | null
+  oof_max_date: string | null
   fusion_final_comparison_decision: string | null
   fusion_final_comparison_samples: number | string | null
   fusion_final_comparison_dates: number | string | null
@@ -454,16 +458,29 @@ export async function buildPipelineDecisionMaturityPacket(
     `).bind(requestedDate).first<any>()),
     safeQuery(() => learningDb.prepare(`
       WITH ranked AS (
-        SELECT model_name, artifact_id, version, state, source_run_date,
+        SELECT model_name, artifact_id, version,
+               COALESCE(
+                 json_extract(offline_evidence_json, '$.artifact_contract_version'),
+                 CASE
+                   WHEN model_name='l4_alpha_ev' AND version LIKE 'l4-alpha-ev-ridge-v5-%' THEN 'l4-alpha-ev-contract-v5'
+                   WHEN model_name='allocator_ev_fusion' AND version LIKE 'allocator-ev-fusion-residual-v14-%' THEN 'allocator-ev-fusion-contract-v14'
+                 END
+               ) artifact_contract_version,
+               state, source_run_date,
                offline_gate_decision, offline_gate_failed_gates,
                live_gate_status, updated_at, offline_evidence_json,
-               ROW_NUMBER() OVER (PARTITION BY model_name ORDER BY updated_at DESC, artifact_id DESC) ordinal
+               ROW_NUMBER() OVER (PARTITION BY model_name ORDER BY source_run_date DESC, updated_at DESC, artifact_id DESC) ordinal
           FROM model_artifact_registry
          WHERE model_name IN ('l4_alpha_ev', 'allocator_ev_fusion')
            AND candidate_type IN ('l4_alpha_ev_refresh', 'allocator_ev_fusion_refresh')
            AND COALESCE(source_run_date, '')<=?
+           AND (
+             (model_name='l4_alpha_ev' AND COALESCE(json_extract(offline_evidence_json, '$.artifact_contract_version'), CASE WHEN version LIKE 'l4-alpha-ev-ridge-v5-%' THEN 'l4-alpha-ev-contract-v5' END)=?)
+             OR
+             (model_name='allocator_ev_fusion' AND COALESCE(json_extract(offline_evidence_json, '$.artifact_contract_version'), CASE WHEN version LIKE 'allocator-ev-fusion-residual-v14-%' THEN 'allocator-ev-fusion-contract-v14' END)=?)
+           )
       )
-      SELECT model_name, artifact_id, version, state, source_run_date,
+      SELECT model_name, artifact_id, version, artifact_contract_version, state, source_run_date,
              offline_gate_decision, offline_gate_failed_gates, live_gate_status, updated_at,
              json_extract(offline_evidence_json, '$.validation_packet.sample_audit.sample_count') sample_count,
              json_extract(offline_evidence_json, '$.validation_packet.sample_audit.date_count') date_count,
@@ -504,7 +521,7 @@ export async function buildPipelineDecisionMaturityPacket(
                 json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.spread_delta_lcb90')
              ) fusion_spread_delta_lcb90,
              json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.top_trade_ev_lcb90') fusion_top_trade_ev_lcb90,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.oof_max_date') fusion_oof_max_date,
+             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.oof_max_date') oof_max_date,
              json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.decision') fusion_final_comparison_decision,
              json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.sample_count') fusion_final_comparison_samples,
              json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.oos_date_count') fusion_final_comparison_dates,
@@ -526,7 +543,11 @@ export async function buildPipelineDecisionMaturityPacket(
               json_extract(offline_evidence_json, '$.validation_packet.multiple_testing.adjusted_p_value') multiple_testing_adjusted_p,
              json_extract(offline_evidence_json, '$.validation_packet.promotion.tier') promotion_tier
         FROM ranked WHERE ordinal=1
-    `).bind(requestedDate).all<EvCandidateRow>().then((result) => result.results ?? [])),
+    `).bind(
+      requestedDate,
+      L4_ALPHA_EV_CONTRACT.artifactContractVersion,
+      ALLOCATOR_EV_FUSION_CONTRACT.artifactContractVersion,
+    ).all<EvCandidateRow>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
       WITH ranked AS (
         SELECT evaluation_id, business_date, model_name, model_version,
@@ -827,8 +848,10 @@ export async function buildPipelineDecisionMaturityPacket(
           label: 'Registered offline candidate',
           status: candidateStatus(undefined, l4?.offline_gate_decision, dateCount, minDates),
           business_date: l4?.source_run_date ?? null,
+          oof_max_date: l4?.oof_max_date ?? null,
           version: l4?.version ?? null,
           artifact_id: l4?.artifact_id ?? null,
+          updated_at: l4?.updated_at ?? null,
           blockers: candidateBlockers,
           metrics: candidateMetrics,
           note: 'Registry candidate 的 offline gate；不混用較新的 frozen-forward packet。',
@@ -841,6 +864,7 @@ export async function buildPipelineDecisionMaturityPacket(
           oof_max_date: l4Shadow?.oof_max_date ?? null,
           version: l4Shadow?.model_version ?? null,
           artifact_id: l4Shadow?.evaluation_id ?? null,
+          updated_at: l4Shadow?.updated_at ?? null,
           blockers: shadowQualityBlockers(l4Shadow),
           metrics: shadowMetrics,
           note: 'Monitoring-only；只驗證新成熟日期，不作 training 或 promotion evidence。',
@@ -848,14 +872,15 @@ export async function buildPipelineDecisionMaturityPacket(
       ],
       lineage: {
         requested_date: requestedDate,
-        evidence_date: l4?.source_run_date ?? candidateState?.l4_alpha_ev.candidate_end_date ?? null,
-        oof_max_date: maturity?.indexedL4PitMaxDate ?? null,
-        artifact_id: l4?.artifact_id ?? candidateState?.l4_alpha_ev.artifact_id ?? null,
+        evidence_date: l4Shadow?.business_date ?? l4?.source_run_date ?? candidateState?.l4_alpha_ev.candidate_end_date ?? null,
+        oof_max_date: l4Shadow?.oof_max_date ?? l4?.oof_max_date ?? maturity?.indexedL4PitMaxDate ?? null,
+        artifact_id: l4Shadow?.evaluation_id ?? l4?.artifact_id ?? candidateState?.l4_alpha_ev.artifact_id ?? null,
         oof_applicable: true,
         evidence_semantics: 'Purged Active-8 OOF and five-session net-label cutoff.',
-        model_version: l4?.version ?? l4Serving?.model_version ?? null,
+        model_version: l4Shadow?.model_version ?? l4?.version ?? l4Serving?.model_version ?? null,
         source: 'registered offline candidate; serving control and frozen-forward shadow are separate evidence scopes',
-        updated_at: l4?.updated_at ?? candidateState?.l4_alpha_ev.updated_at ?? null,
+        updated_at: l4Shadow?.updated_at ?? l4?.updated_at ?? candidateState?.l4_alpha_ev.updated_at ?? null,
+        comparison_contract: l4?.artifact_contract_version ?? L4_ALPHA_EV_CONTRACT.artifactContractVersion,
       },
     })
   }
@@ -951,9 +976,10 @@ export async function buildPipelineDecisionMaturityPacket(
           label: 'Registered offline candidate',
           status: candidateStatus(undefined, fusion?.offline_gate_decision, dateCount, minDates),
           business_date: fusion?.source_run_date ?? null,
-          oof_max_date: fusion?.fusion_oof_max_date ?? null,
+          oof_max_date: fusion?.oof_max_date ?? null,
           version: fusion?.version ?? null,
           artifact_id: fusion?.artifact_id ?? null,
+          updated_at: fusion?.updated_at ?? null,
           blockers: candidateBlockers,
           metrics: candidateMetrics,
           note: 'Registry candidate 的 offline gate；與較新的 frozen-forward packet 分開。',
@@ -966,6 +992,7 @@ export async function buildPipelineDecisionMaturityPacket(
           oof_max_date: fusionShadow?.oof_max_date ?? null,
           version: fusionShadow?.model_version ?? null,
           artifact_id: fusionShadow?.evaluation_id ?? null,
+          updated_at: fusionShadow?.updated_at ?? null,
           blockers: shadowQualityBlockers(fusionShadow),
           metrics: shadowMetrics,
           note: 'Monitoring-only；以同一 OOF rows/dates 比較 canonical L4 與 L4 + residual。S12 diagnostics 不影響 promotion。',
@@ -973,14 +1000,15 @@ export async function buildPipelineDecisionMaturityPacket(
       ],
       lineage: {
         requested_date: requestedDate,
-        evidence_date: fusion?.source_run_date ?? candidateState?.allocator_ev_fusion.candidate_end_date ?? null,
-        artifact_id: fusion?.artifact_id ?? candidateState?.allocator_ev_fusion.artifact_id ?? null,
-        model_version: fusion?.version ?? fusionServing?.model_version ?? null,
+        evidence_date: fusionShadow?.business_date ?? fusion?.source_run_date ?? candidateState?.allocator_ev_fusion.candidate_end_date ?? null,
+        artifact_id: fusionShadow?.evaluation_id ?? fusion?.artifact_id ?? candidateState?.allocator_ev_fusion.artifact_id ?? null,
+        model_version: fusionShadow?.model_version ?? fusion?.version ?? fusionServing?.model_version ?? null,
         source: 'registered offline candidate; serving control and frozen-forward shadow are separate evidence scopes',
-        oof_max_date: fusion?.fusion_oof_max_date ?? null,
+        oof_max_date: fusionShadow?.oof_max_date ?? fusion?.oof_max_date ?? null,
         oof_applicable: true,
         evidence_semantics: 'Purged OOF residual target; paired same-contract canonical L4 comparison; candidate-time S12 is not a serving feature.',
-        updated_at: fusion?.updated_at ?? candidateState?.allocator_ev_fusion.updated_at ?? null,
+        updated_at: fusionShadow?.updated_at ?? fusion?.updated_at ?? candidateState?.allocator_ev_fusion.updated_at ?? null,
+        comparison_contract: fusion?.artifact_contract_version ?? ALLOCATOR_EV_FUSION_CONTRACT.artifactContractVersion,
       },
     })
   }
@@ -1035,13 +1063,14 @@ export async function buildPipelineDecisionMaturityPacket(
                ROW_NUMBER() OVER (PARTITION BY source_run_date ORDER BY updated_at DESC, artifact_id DESC) ordinal
           FROM model_artifact_registry
          WHERE model_name='l4_alpha_ev' AND candidate_type='l4_alpha_ev_refresh' AND source_run_date <= ?
+           AND COALESCE(json_extract(offline_evidence_json, '$.artifact_contract_version'), CASE WHEN version LIKE 'l4-alpha-ev-ridge-v5-%' THEN 'l4-alpha-ev-contract-v5' END)=?
       )
       SELECT evidence_date, value, 0 target
         FROM ranked
        WHERE ordinal=1 AND evidence_date IS NOT NULL
        ORDER BY evidence_date DESC
        LIMIT 7
-    `).bind(requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+    `).bind(requestedDate, L4_ALPHA_EV_CONTRACT.artifactContractVersion).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
       WITH ranked AS (
         SELECT source_run_date evidence_date,
@@ -1049,13 +1078,14 @@ export async function buildPipelineDecisionMaturityPacket(
                ROW_NUMBER() OVER (PARTITION BY source_run_date ORDER BY updated_at DESC, artifact_id DESC) ordinal
           FROM model_artifact_registry
          WHERE model_name='allocator_ev_fusion' AND candidate_type='allocator_ev_fusion_refresh' AND source_run_date <= ?
+           AND COALESCE(json_extract(offline_evidence_json, '$.artifact_contract_version'), CASE WHEN version LIKE 'allocator-ev-fusion-residual-v14-%' THEN 'allocator-ev-fusion-contract-v14' END)=?
       )
       SELECT evidence_date, value, 0 target
         FROM ranked
        WHERE ordinal=1 AND evidence_date IS NOT NULL
        ORDER BY evidence_date DESC
        LIMIT 7
-    `).bind(requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+    `).bind(requestedDate, ALLOCATOR_EV_FUSION_CONTRACT.artifactContractVersion).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
   ])
   const historyByStage = new Map<PipelineMaturityStage['id'], {
     rows: Array<{ evidence_date: string; value: number | null; target: number | null }>

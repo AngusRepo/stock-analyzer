@@ -159,8 +159,14 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     : '沒有可計算的數量門檻'
   const history = stage.history ?? []
   const evidenceScopes = stage.evidence_scopes ?? []
+  const offlineScope = evidenceScopes.find((scope) => scope.key === 'offline_candidate') ?? null
+  const scopedHistory = evidenceScopes.length > 0
   const latestHistory = history[history.length - 1] ?? null
   const previousHistory = history[history.length - 2] ?? null
+  const lineageEvidenceDate = scopedHistory ? latestHistory?.evidence_date ?? offlineScope?.business_date ?? null : stage.lineage.evidence_date
+  const lineageOofMaxDate = scopedHistory ? offlineScope?.oof_max_date ?? null : stage.lineage.oof_max_date
+  const lineageVersion = scopedHistory ? offlineScope?.version ?? null : stage.version
+  const lineageArtifact = scopedHistory ? offlineScope?.artifact_id ?? null : stage.lineage.artifact_id
   const historyDelta = latestHistory?.value != null && previousHistory?.value != null
     ? latestHistory.value - previousHistory.value
     : null
@@ -236,7 +242,9 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                       <dl className="grid grid-cols-[78px_minmax(0,1fr)] gap-x-2 gap-y-1 border-b border-white/[0.06] px-3 py-2 text-[10px] leading-4">
                         <dt className="text-slate-600">Business</dt><dd className="sv-num break-all text-slate-400">{scope.business_date ?? 'N/A'}</dd>
                         <dt className="text-slate-600">OOF max</dt><dd className="sv-num break-all text-slate-400">{scope.oof_max_date ?? 'N/A'}</dd>
+                        <dt className="text-slate-600">Updated</dt><dd className="sv-num break-all text-slate-400">{scope.updated_at ?? 'N/A'}</dd>
                         <dt className="text-slate-600">Version</dt><dd className="sv-num break-all text-slate-400">{scope.version ?? 'Unavailable'}</dd>
+                        <dt className="text-slate-600">Artifact</dt><dd className="sv-num break-all text-slate-400">{scope.artifact_id ?? 'N/A'}</dd>
                       </dl>
                       <div className="grid px-1 sm:grid-cols-2">
                         {scope.metrics.map((item) => <MetricCell key={`${scope.key}:${item.key}`} metric={item} />)}
@@ -294,15 +302,16 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             </div>
 
             <div className="border-t border-white/[0.07] pt-3">
-              <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-500"><Database className="h-3.5 w-3.5" /> Lineage</p>
+              <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-500"><Database className="h-3.5 w-3.5" /> {scopedHistory ? '同 contract offline history' : 'Lineage'}</p>
               <dl className="mt-2 grid grid-cols-[84px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[11px] leading-4">
-                <dt className="text-slate-600">Evidence</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.evidence_date ?? 'Unavailable'}</dd>
-                <dt className="text-slate-600">Previous</dt><dd className="sv-num break-all text-slate-400">{previousHistory?.evidence_date ?? 'First evidence'}</dd>
-                <dt className="text-slate-600">Delta</dt><dd className="sv-num break-all text-cyan-300">{historyDelta == null ? 'Not comparable' : `${historyDelta > 0 ? '+' : ''}${historyMetric(historyDelta)}`}</dd>
-                <dt className="text-slate-600">Trend</dt><dd className="sv-num break-words text-slate-400">{historyTrend || 'No prior history'}</dd>
-                <dt className="text-slate-600">OOF max</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.oof_applicable === false ? 'N/A (not OOF)' : stage.lineage.oof_max_date ?? 'Unavailable'}</dd>
-                <dt className="text-slate-600">Version</dt><dd className="sv-num break-all text-slate-400">{stage.version ?? 'Unavailable'}</dd>
-                <dt className="text-slate-600">Artifact</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.artifact_id ?? 'Not applicable'}</dd>
+                <dt className="text-slate-600">Evidence</dt><dd className="sv-num break-all text-slate-400">{lineageEvidenceDate ?? '尚無 evidence'}</dd>
+                <dt className="text-slate-600">Previous</dt><dd className="sv-num break-all text-slate-400">{previousHistory?.evidence_date ?? (scopedHistory ? '尚無同 contract 前一筆' : 'First evidence')}</dd>
+                <dt className="text-slate-600">Delta</dt><dd className="sv-num break-all text-cyan-300">{historyDelta == null ? (scopedHistory ? '尚無同 contract 可比較數值' : 'Not comparable') : `${historyDelta > 0 ? '+' : ''}${historyMetric(historyDelta)}`}</dd>
+                <dt className="text-slate-600">Trend</dt><dd className="sv-num break-words text-slate-400">{historyTrend || (scopedHistory ? '尚無同 contract 歷史' : 'No prior history')}</dd>
+                <dt className="text-slate-600">OOF max</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.oof_applicable === false ? 'N/A (not OOF)' : lineageOofMaxDate ?? '尚無 OOF evidence'}</dd>
+                <dt className="text-slate-600">Version</dt><dd className="sv-num break-all text-slate-400">{lineageVersion ?? 'Unavailable'}</dd>
+                <dt className="text-slate-600">Artifact</dt><dd className="sv-num break-all text-slate-400">{lineageArtifact ?? 'Not applicable'}</dd>
+                {stage.lineage.comparison_contract ? <><dt className="text-slate-600">Contract</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.comparison_contract}</dd></> : null}
                 <dt className="text-slate-600">Source</dt><dd className="break-words text-slate-400">{stage.lineage.source}</dd>
                 {stage.lineage.evidence_semantics ? <><dt className="text-slate-600">Cutoff</dt><dd className="break-words text-slate-400">{stage.lineage.evidence_semantics}</dd></> : null}
               </dl>
@@ -412,6 +421,9 @@ export default function PipelineMaturityContribution({
               </div>
               <p className="mt-2 text-xs leading-5 text-slate-400">
                 Threshold 完整只代表當日策略門檻資料可用；必須同時具備全 universe Route 分數、purged OOS 品質通過與同一份 promotion commit，才會進 production。
+              </p>
+              <p className="mt-1 text-[11px] leading-5 text-slate-500">
+                L1 Threshold V2 與 L1.5 Route V2 是同一組 challenger，必須一起 promotion；L1.25 是既有 production redundancy control，獨立持續貢獻，不參與這次 joint promotion。
               </p>
             </div>
             <div className="grid shrink-0 grid-cols-3 gap-2 text-center text-xs">

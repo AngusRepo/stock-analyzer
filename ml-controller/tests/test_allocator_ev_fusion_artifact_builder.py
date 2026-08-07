@@ -354,6 +354,9 @@ def test_fusion_purged_oof_uses_snapshot_date_and_recorded_market_lineage():
     assert audit["date_count"] == 1
     assert audit["raw_date_counts"] == {"2026-05-01": 20}
     assert audit["invalid_reason_counts"] == {}
+    assert audit["generation_mode_counts"] == {"purged_oof": 20}
+    assert audit["evidence_max_date"] == "2026-05-01"
+    assert audit["oof_max_date"] == "2026-05-01"
 
 
 def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_samples():

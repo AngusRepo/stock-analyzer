@@ -431,6 +431,7 @@ def _samples(
     missing_features = 0
     rejected_feature_era_rows = 0
     feature_era_counts: dict[str, int] = {}
+    generation_mode_counts: dict[str, int] = {}
     lineage_blocker_counts: dict[str, int] = {}
     adjustment_lineage_counts: dict[str, int] = {}
     invalid_reason_counts: dict[str, int] = {}
@@ -461,6 +462,9 @@ def _samples(
         adjustment_source = str(row.get("label_adjustment_source") or "missing")
         adjustment_lineage_counts[adjustment_source] = adjustment_lineage_counts.get(adjustment_source, 0) + 1
         generation_mode = str(row.get("generation_mode") or "native").strip().lower()
+        generation_mode_counts[generation_mode] = (
+            generation_mode_counts.get(generation_mode, 0) + 1
+        )
         expected_adjustment_source = expected_price_horizon_source(generation_mode)
         features = _feature_vector(row)
         selection_gross_target = (
@@ -639,6 +643,12 @@ def _samples(
         "sparse_dates_rejected": sparse_dates,
         "sparse_date_rows_rejected": sparse_date_rows_rejected,
         "raw_date_counts": dict(sorted(raw_day_counts.items())),
+        "generation_mode_counts": dict(sorted(generation_mode_counts.items())),
+        "evidence_max_date": max((row["date"] for row in out), default=None),
+        "oof_max_date": (
+            max((row["date"] for row in out), default=None)
+            if set(generation_mode_counts) == {"purged_oof"} else None
+        ),
         "date_count": len({row["date"] for row in out}),
         "l4_available_count": len(l4_available_samples),
         "l4_available_date_count": len({row["date"] for row in l4_available_samples}),

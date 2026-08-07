@@ -26,6 +26,7 @@ assert(!manifest.jobs.some((job: any) => ['l4-alpha-ev-refresh', 'allocator-ev-f
 
 assert(workflows.includes("'/walk_forward/oof/lifecycle'"), 'all Worker cadence tasks must call the same controller OOF lifecycle owner')
 assert(workflows.includes("dispatch_full_fit: cadence !== 'daily'"), 'daily evidence materialization must not implicitly dispatch Active-8 full-fit training')
+assert(workflows.includes("promote: cadence !== 'daily'"), 'daily evidence freshness must be explicitly reject-only and never request promotion')
 assert(workflows.includes("evidence_mode: 'purged_oof'"), 'manual Fusion refresh must use formal purged OOF evidence')
 for (const task of ['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly']) {
   assert(adminTasks.includes(`'${task}'`), `${task} must have an admin trigger handler`)
@@ -56,9 +57,12 @@ assert(walkForward.includes('cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSION
 assert(walkForward.includes('train_window_days=OOF_TRAIN_SESSIONS') && walkForward.includes('test_window_days=OOF_TEST_SESSIONS'), 'OOF cohort must use the canonical 60/10 purged walk-forward windows')
 assert(walkForward.includes('active8-oof-dispatch-v1') && walkForward.includes('cohort_orchestrator_active'), 'OOF generation must have a durable idempotent dispatch fence')
 assert(
-  walkForward.includes('active8-oof-lifecycle-receipt-v8-freshness-watermark') &&
-    walkForward.includes('_oof_lifecycle_receipt_matches_active_policy'),
-  'materialization/promotion must invalidate stale receipts when the active PIT policy changes',
+  walkForward.includes('active8-oof-lifecycle-receipt-v9-post-close-watermark') &&
+    walkForward.includes('_oof_lifecycle_receipt_matches_active_policy') &&
+    walkForward.includes('expected_calendar=calendar_evidence') &&
+    walkForward.includes('"prep_manifest_checksum"') &&
+    walkForward.includes('"mature_max_date"'),
+  'materialization must invalidate a same-day receipt when immutable prep or the mature max watermark advances after close',
 )
 assert(
   walkForward.includes('build_frozen_oof_forward_extension') &&

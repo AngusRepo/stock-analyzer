@@ -168,6 +168,20 @@ assert(
   'post-verify chain must enqueue S12 replay backfill after daily recommendations are available',
 )
 assert(
+  postMarketChain.indexOf("'price-horizon-projection'") <
+    postMarketChain.indexOf("'active8-oof-daily'") &&
+    postMarketChain.indexOf("'active8-oof-daily'") <
+    postMarketChain.indexOf("'model-ic-rolling', () => runModelIcRollingRefresh"),
+  'post-verify must trigger the same idempotent Active-8 daily owner after labels mature and before downstream evidence refresh',
+)
+assert(
+  postMarketChain.includes("logSkippedHistoricalTask(env, ctx, 'active8-oof-daily')") &&
+    postMarketChain.includes("runActive8OofLifecycle(env, ctx.runDate, 'daily')") &&
+    researchWorkflows.includes("promote: cadence !== 'daily'") &&
+    researchWorkflows.includes("dispatch_full_fit: cadence !== 'daily'"),
+  'post-close OOF freshness must be production-only, reject-only, and must not train or promote',
+)
+assert(
   strategyLearning.includes('listStrategyLearningCandidates(db, options.date, limit + 1, afterSymbol)') &&
     strategyLearning.includes('const hasMore = candidatePage.length > limit') &&
     strategyLearning.includes('const candidates = candidatePage.slice(0, limit)') &&

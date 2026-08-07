@@ -11,7 +11,7 @@ function validL4(): Record<string, any> {
     artifact_contract_version: L4_ALPHA_EV_CONTRACT.artifactContractVersion,
     feature_semantic_version: L4_ALPHA_EV_CONTRACT.featureSemanticVersion,
     label_schema_version: L4_ALPHA_EV_CONTRACT.labelSchemaVersion,
-    model_version: 'l4-v4-test',
+    model_version: 'l4-v5-test',
   }
 }
 
@@ -53,6 +53,18 @@ const l4Primary = resolveExpectedReturnServingState({
 assert.equal(l4Primary.expected_return_owner, 'allocator_ev_fusion')
 assert.equal(l4Primary.overlay_status, 'abstained')
 assert.equal(l4Primary.artifacts.l4_alpha_ev.artifact_state, 'serving')
+
+const legacyV4L4 = {
+  ...validL4(),
+  artifact_contract_version: 'l4-alpha-ev-contract-v4',
+  feature_semantic_version: 'l4-directional-score-components-v2-lineage-bound',
+  model_version: 'l4-v4-legacy-serving',
+}
+const legacyV4Compatible = resolveExpectedReturnServingState({
+  ensemble_v2: { l4_alpha_ev: legacyV4L4 },
+})
+assert.equal(legacyV4Compatible.artifacts.l4_alpha_ev.artifact_state, 'serving')
+assert(!legacyV4Compatible.artifacts.l4_alpha_ev.blockers.includes('artifact_contract_version_incompatible'))
 
 const fusionPrimary = resolveExpectedReturnServingState({
   ensemble_v2: {

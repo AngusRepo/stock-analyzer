@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ComponentType, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -167,7 +167,6 @@ function panelClass(className?: string) {
   return cx(
     'sv-home-glass-panel rounded-[24px] border border-white/[0.09]',
     'bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))]',
-    'backdrop-blur-xl',
     className,
   )
 }
@@ -1239,6 +1238,8 @@ function flowRowValue(row: any): number | null {
 }
 
 function HotKeywordCloud({ rows }: { rows: any[] }) {
+  const cloudRef = useRef<HTMLDivElement>(null)
+  const [isAnimationVisible, setIsAnimationVisible] = useState(false)
   const seen = new Set<string>()
   const keywords = rows
     .map((row) => {
@@ -1254,11 +1255,31 @@ function HotKeywordCloud({ rows }: { rows: any[] }) {
     })
     .filter((item): item is { keyword: string; value: number | null; tone: Tone } => Boolean(item))
     .slice(0, 14)
+  const hasKeywords = keywords.length > 0
 
-  if (!keywords.length) return null
+  useEffect(() => {
+    const node = cloudRef.current
+    if (!hasKeywords || !node) {
+      setIsAnimationVisible(false)
+      return
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => setIsAnimationVisible(entry.isIntersecting),
+      { rootMargin: '160px 0px' },
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [hasKeywords])
+
+  if (!hasKeywords) return null
 
   return (
-    <div className="mt-5 overflow-hidden border-t border-white/[0.07] pt-4">
+    <div
+      ref={cloudRef}
+      className="sv-home-keyword-cloud mt-5 overflow-hidden border-t border-white/[0.07] pt-4"
+      data-animate={isAnimationVisible ? 'true' : 'false'}
+    >
       <p className="mb-3 text-sm font-bold text-slate-200">熱門關鍵字</p>
       <div className="relative min-h-[104px] rounded-[18px] border border-white/[0.055] bg-[#0b0d12] px-3 py-4">
         <div className="flex flex-wrap justify-center gap-x-5 gap-y-4">
@@ -1276,7 +1297,7 @@ function HotKeywordCloud({ rows }: { rows: any[] }) {
                 key={item.keyword}
                 style={style}
                 className={cx(
-                  'inline-flex rounded-full border px-3 py-1.5 font-extrabold leading-none tracking-normal shadow-[0_0_24px_rgba(0,0,0,0.25)]',
+                  'sv-home-keyword inline-flex rounded-full border px-3 py-1.5 font-extrabold leading-none tracking-normal',
                   size,
                   item.tone === 'red'
                     ? 'border-red-400/25 bg-red-500/[0.07] text-red-300'
@@ -1407,6 +1428,18 @@ function potentialBuyExpectedReturn(rec: any): number | null {
   return null
 }
 
+function isObservationalPotentialBuyRecommendation(rec: any): boolean {
+  const allocation = parseRecord(rec?.alpha_allocation)
+  const l4Allocation = parseRecord(rec?.l4_sparse_allocation)
+  return [allocation, l4Allocation].some((payload) => (
+    payload?.potential_buy_policy === OBSERVATIONAL_POTENTIAL_BUY_POLICY
+    && (
+      payload?.potential_buy_execution_eligible === false
+      || payload?.potential_buy_execution_eligible === 0
+    )
+  ))
+}
+
 function isPotentialBuyRecommendation(rec: any): boolean {
   const allocation = parseRecord(rec?.alpha_allocation)
   const l4Allocation = parseRecord(rec?.l4_sparse_allocation)
@@ -1416,13 +1449,7 @@ function isPotentialBuyRecommendation(rec: any): boolean {
     || allocation?.potential_buy === 1
     || l4Allocation?.potential_buy === true
     || l4Allocation?.potential_buy === 1
-  const hasExplicitObservationPolicy = [allocation, l4Allocation].some((payload) => (
-    payload?.potential_buy_policy === OBSERVATIONAL_POTENTIAL_BUY_POLICY
-    && (
-      payload?.potential_buy_execution_eligible === false
-      || payload?.potential_buy_execution_eligible === 0
-    )
-  ))
+  const hasExplicitObservationPolicy = isObservationalPotentialBuyRecommendation(rec)
   const points = Array.isArray(rec?.watch_points)
     ? rec.watch_points
     : typeof rec?.watch_points === 'string'
@@ -1466,6 +1493,9 @@ function selectHomeRecommendationRows(rows: any[], limit = HOME_RECOMMENDATION_L
       signal: 'POTENTIAL_BUY',
       home_canonical_signal: recommendationSignalText(row) || null,
       home_display_lane: 'potential_buy',
+      home_potential_buy_kind: isObservationalPotentialBuyRecommendation(row)
+        ? 'upstream_observation_non_executable'
+        : 'validated_expected_return',
     }))
   return [...buyRows, ...potentialRows]
     .filter(takeUnique)
@@ -1487,6 +1517,9 @@ function RecommendationPanel() {
   const displayRows = eligibleRows.slice(0, visibleCount)
   const buyCount = allRows.filter(isBuySignalRecommendation).length
   const potentialBuyCount = allRows.filter((row) => !isBuySignalRecommendation(row) && isPotentialBuyRecommendation(row)).length
+  const observationalPotentialBuyCount = allRows.filter((row) => (
+    !isBuySignalRecommendation(row) && isPotentialBuyRecommendation(row) && isObservationalPotentialBuyRecommendation(row)
+  )).length
   const heatValues = allRows
     .map((row: any) => asNumber(row?.market_heat_score ?? row?.strategy_router_components?.market_heat_score ?? row?.score_components?.market_heat_score))
     .filter((value): value is number => value != null)
@@ -1511,7 +1544,7 @@ function RecommendationPanel() {
                 BUY {buyCount}
               </span>
               <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2.5 py-1 text-[11px] font-bold text-amber-300">
-                potential BUY {potentialBuyCount}
+                potential BUY {potentialBuyCount} · 上游觀察 {observationalPotentialBuyCount}
               </span>
               <span className="rounded-full border border-emerald-400/20 bg-emerald-400/[0.07] px-2.5 py-1 text-[11px] font-bold text-emerald-300">
                 可交易 {tradable.length}

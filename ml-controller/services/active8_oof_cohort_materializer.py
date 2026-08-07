@@ -1685,6 +1685,9 @@ def archive_ev_candidate_artifacts(
             "offline_gate_failed_gates": json.dumps(validation.get("failed_gates") or []),
             "offline_evidence_json": json.dumps({
                 "cohort_id": cohort_id,
+                "artifact_contract_version": artifact.get("artifact_contract_version"),
+                "feature_semantic_version": artifact.get("feature_semantic_version"),
+                "label_schema_version": artifact.get("label_schema_version"),
                 "validation_packet": validation,
                 "training_data": artifact.get("training_data"),
             }, ensure_ascii=False),

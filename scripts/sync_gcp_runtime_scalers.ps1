@@ -18,11 +18,15 @@ $repository = [string]$manifest.artifact_registry_repository
 $image = "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
 
 function Invoke-Gcloud([string[]]$Arguments) {
-  Write-Host ("gcloud " + ($Arguments -join " "))
+  $displayArguments = @($Arguments | ForEach-Object {
+    if ($_ -like '--set-env-vars=SCALER_SCRIPT_B64=*') { '--set-env-vars=SCALER_SCRIPT_B64=<redacted>' } else { $_ }
+  })
+  Write-Host ("gcloud " + ($displayArguments -join " "))
   if (-not $Apply) { return }
-  & gcloud @Arguments
-  if ($LASTEXITCODE -ne 0) {
-    throw "gcloud failed ($LASTEXITCODE): $($Arguments -join ' ')"
+  $gcloudOutput = & gcloud @Arguments 2>&1
+  $gcloudExitCode = $LASTEXITCODE
+  if ($gcloudExitCode -ne 0) {
+    throw "gcloud failed ($gcloudExitCode): $($displayArguments -join ' ')"
   }
 }
 

@@ -102,11 +102,37 @@ def test_contract_migration_rotates_only_known_abstention_baselines():
             ),
             (
                 "allocator_ev_fusion",
-                "allocator-ev-fusion-abstention-baseline-v1",
-                "allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v1",
+                "allocator-ev-fusion-abstention-baseline-v13",
+                "allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v13",
             ),
         ],
     )
+    abstention_json = json.dumps({
+        "promotion_state": "safe_abstention",
+        "validation_packet": {"alpha_quality_passed": False},
+    })
+    connection.executemany(
+        """
+        INSERT INTO expected_return_artifact_payloads (
+          artifact_id, model_name, model_version, serving_mode,
+          artifact_json, payload_checksum
+        ) VALUES (?, ?, ?, 'abstention_baseline', ?, ?)
+        """,
+        [
+            (
+                "l4_alpha_ev:l4-alpha-ev-abstention-baseline-v1",
+                "l4_alpha_ev", "l4-alpha-ev-abstention-baseline-v1",
+                abstention_json, "old-l4",
+            ),
+            (
+                "allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v13",
+                "allocator_ev_fusion",
+                "allocator-ev-fusion-abstention-baseline-v13",
+                abstention_json, "old-fusion",
+            ),
+        ],
+    )
+
 
     apply_migration(connection)
 
@@ -129,6 +155,10 @@ def test_contract_migration_rotates_only_known_abstention_baselines():
         """
         SELECT model_name, artifact_json, payload_checksum
           FROM expected_return_artifact_payloads
+         WHERE artifact_id IN (
+           'l4_alpha_ev:l4-alpha-ev-ridge-v5-sector-abstention-baseline-v1',
+           'allocator_ev_fusion:allocator-ev-fusion-residual-v14-abstention-baseline-v1'
+         )
          ORDER BY model_name
         """
     ).fetchall()
@@ -164,6 +194,29 @@ def test_contract_migration_never_overwrites_learned_alpha_champions():
             ),
         ],
     )
+    learned_json = json.dumps({
+        "promotion_state": "production_primary",
+        "validation_packet": {"alpha_quality_passed": True},
+    })
+    connection.executemany(
+        """
+        INSERT INTO expected_return_artifact_payloads (
+          artifact_id, model_name, model_version, serving_mode,
+          artifact_json, payload_checksum
+        ) VALUES (?, ?, ?, 'alpha', ?, ?)
+        """,
+        [
+            (
+                "l4_alpha_ev:learned-l4", "l4_alpha_ev", "learned-l4",
+                learned_json, "learned-l4-checksum",
+            ),
+            (
+                "allocator_ev_fusion:learned-fusion", "allocator_ev_fusion",
+                "learned-fusion", learned_json, "learned-fusion-checksum",
+            ),
+        ],
+    )
+
 
     apply_migration(connection)
 

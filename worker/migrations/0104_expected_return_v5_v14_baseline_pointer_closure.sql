@@ -99,7 +99,19 @@ UPDATE model_champion_pointers
        promotion_evidence_json = '{"schema_version":"expected-return-pointer-promotion-v1","serving_mode":"abstention_baseline","alpha_quality_passed":false,"artifact_contract_version":"l4-alpha-ev-contract-v5"}',
        updated_at = CURRENT_TIMESTAMP
  WHERE model_name = 'l4_alpha_ev'
-   AND champion_artifact_id = 'l4_alpha_ev:l4-alpha-ev-abstention-baseline-v1';
+   AND champion_artifact_id != 'l4_alpha_ev:l4-alpha-ev-ridge-v5-sector-abstention-baseline-v1'
+   AND EXISTS (
+     SELECT 1 FROM expected_return_artifact_payloads prior
+      WHERE prior.artifact_id = model_champion_pointers.champion_artifact_id
+        AND prior.model_name = 'l4_alpha_ev'
+        AND prior.serving_mode = 'abstention_baseline'
+        AND json_valid(prior.artifact_json)
+        AND json_extract(prior.artifact_json, '$.promotion_state') = 'safe_abstention'
+        AND COALESCE(
+          json_extract(prior.artifact_json, '$.validation_packet.alpha_quality_passed'),
+          0
+        ) = 0
+   );
 
 INSERT INTO model_champion_pointers (
   model_name, champion_version, champion_artifact_id,
@@ -124,7 +136,19 @@ UPDATE model_champion_pointers
        promotion_evidence_json = '{"schema_version":"expected-return-pointer-promotion-v1","serving_mode":"abstention_baseline","alpha_quality_passed":false,"artifact_contract_version":"allocator-ev-fusion-contract-v14"}',
        updated_at = CURRENT_TIMESTAMP
  WHERE model_name = 'allocator_ev_fusion'
-   AND champion_artifact_id = 'allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v1';
+   AND champion_artifact_id != 'allocator_ev_fusion:allocator-ev-fusion-residual-v14-abstention-baseline-v1'
+   AND EXISTS (
+     SELECT 1 FROM expected_return_artifact_payloads prior
+      WHERE prior.artifact_id = model_champion_pointers.champion_artifact_id
+        AND prior.model_name = 'allocator_ev_fusion'
+        AND prior.serving_mode = 'abstention_baseline'
+        AND json_valid(prior.artifact_json)
+        AND json_extract(prior.artifact_json, '$.promotion_state') = 'safe_abstention'
+        AND COALESCE(
+          json_extract(prior.artifact_json, '$.validation_packet.alpha_quality_passed'),
+          0
+        ) = 0
+   );
 
 UPDATE model_artifact_registry
    SET state = 'archived',
@@ -132,7 +156,8 @@ UPDATE model_artifact_registry
        updated_at = CURRENT_TIMESTAMP
  WHERE artifact_id IN (
    'l4_alpha_ev:l4-alpha-ev-abstention-baseline-v1',
-   'allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v1'
+   'allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v1',
+   'allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v13'
  )
    AND NOT EXISTS (
      SELECT 1 FROM model_champion_pointers pointer
@@ -187,7 +212,8 @@ UPDATE model_champion_history
    SET retired_at = COALESCE(retired_at, CURRENT_TIMESTAMP)
  WHERE artifact_id IN (
    'l4_alpha_ev:l4-alpha-ev-abstention-baseline-v1',
-   'allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v1'
+   'allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v1',
+   'allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v13'
  )
    AND EXISTS (
      SELECT 1 FROM model_champion_pointers pointer

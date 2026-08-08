@@ -15,7 +15,8 @@ assert.ok(
   migration.indexOf("cursor?.status === 'complete'") < migration.indexOf('SELECT sfi.id'),
   'completed migration must return before scanning screener_funnel_items',
 )
-assert.match(scheduler, /"id": "legacy-evidence-migration"/)
+assert.doesNotMatch(scheduler, /"id": "legacy-evidence-migration"/)
+assert.match(scheduler, /"legacy-evidence-migration"/)
 assert.match(scheduler, /limit=500&max_chunks=5/)
 
 console.log('legacy evidence migration contract tests passed')

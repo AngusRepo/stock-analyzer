@@ -56,7 +56,8 @@ void (async () => {
   assert.match(orchestrator, /processMaintenanceBacklogDrain/)
   const scheduler = fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8')
   assert.match(scheduler, /legacy-strategy-evidence-migration[^\n]+durable=1/)
-  assert.match(scheduler, /d1-evidence-scrub[^\n]+max_cycles=4/)
+  assert.doesNotMatch(scheduler, /"id": "d1-evidence-scrub"/)
+  assert.match(scheduler, /"d1-evidence-scrub"/)
 })().catch((error) => {
   throw error
 })

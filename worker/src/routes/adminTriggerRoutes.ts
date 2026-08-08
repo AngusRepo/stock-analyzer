@@ -23,7 +23,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'update', 'pipeline', 'post-screener-pipeline',
   'intraday-rescore',
   'alpha-quality', 'sector-leaders', 'optuna-queue',
-  'weekly-cleanup', 'weekly-backtest',
+  'weekly-backtest',
   'weekly-readiness', 'monthly-readiness',
   'model-ic-full-check',
   'weekly-optuna', 'adaptive-meta-policy-replay', 'linucb-multiplier-replay',
@@ -35,7 +35,6 @@ const SYNC_REQUIRED_TASKS = new Set([
   'allocator-ev-readiness',
   'allocator-ev-lifecycle-watchdog',
   'active8-oof-lifecycle', 'active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly',
-  'external-evidence',
   'strategy-learning', 'strategy-learning-finalize',
   'selection-reference-repair', 'selection-reference-identity-repair',
   's12-smcvwap-calibration',
@@ -49,6 +48,10 @@ const SYNC_REQUIRED_TASKS = new Set([
   'data-domain-shadow-backfill-next',
   'monthly-retrain',
 ])
+
+function isDurableQueueTask(task: string): task is 'external-evidence' | 'weekly-cleanup' {
+  return task === 'external-evidence' || task === 'weekly-cleanup'
+}
 
 function buildRunId(task: string): string {
   const suffix = Math.random().toString(36).slice(2, 10)
@@ -154,6 +157,21 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     const storageAdmission = await inspectStorageAdmission(c.env, task)
     if (!storageAdmission.allowed) {
       const summary = `blocked by storage admission: ${storageAdmission.reason} utilization=${storageAdmission.utilizationPct ?? 'unknown'}%`
+      if (task === 'optuna-queue') {
+        await logSchedulerResult(c.env.KV, task, {
+          status: 'skipped',
+          summary,
+          duration_ms: 0,
+          run_date: requestedRunDate,
+        }, c.env as any)
+        return c.json({
+          success: true,
+          skipped: true,
+          task,
+          reason: summary,
+          storage_admission: storageAdmission,
+        })
+      }
       await logSchedulerResult(c.env.KV, task, {
         status: 'error',
         summary,
@@ -258,6 +276,50 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         duration_ms: 0,
         run_date: requestedRunDate,
       })
+      // HTTP waitUntil is capped after response; these 100s+ tasks require the 15-minute Queue consumer owner.
+      if (isDurableQueueTask(task)) {
+        const runDate = requestedRunDate ?? twToday()
+        try {
+          await c.env.UPDATE_QUEUE.send({
+            type: 'scheduled_admin_task',
+            scheduledTask: task,
+            cursor: 0,
+            triggerTime: runDate,
+            runId,
+          })
+        } catch (error) {
+          const summary = error instanceof Error ? error.message : String(error)
+          await logSchedulerResult(c.env.KV, task, {
+            status: 'error',
+            summary: `durable queue enqueue failed: ${summary}`,
+            duration_ms: Date.now() - t0,
+            run_id: runId,
+            run_date: runDate,
+            strict: true,
+          }, c.env as any)
+          await putRunLog(c.env.KV, task, runId, {
+            status: 'error',
+            summary: `durable queue enqueue failed: ${summary}`,
+            duration_ms: Date.now() - t0,
+            run_date: runDate,
+          })
+          return c.json({
+            success: false,
+            error: `durable queue enqueue failed: ${summary}`,
+            task,
+            run_id: runId,
+          }, 503)
+        }
+        return c.json({
+          success: true,
+          message: `${task} queued for durable execution`,
+          triggered_at: new Date().toISOString(),
+          mode: 'durable_queue',
+          run_id: runId,
+          run_date: runDate,
+        }, 202)
+      }
+
       c.executionCtx.waitUntil((async () => {
         try {
           const result = await fn()

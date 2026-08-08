@@ -2993,6 +2993,12 @@ export async function processUpdateBatch(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,
 ): Promise<void> {
+  if (msg.type === 'scheduled_admin_task') {
+    const { processDurableSchedulerTask } = await import('./durableSchedulerTask')
+    await processDurableSchedulerTask(msg, env)
+    return
+  }
+
   if (msg.type === 'data_domain_shadow_backfill') {
     const { processDataDomainShadowBackfillDrain } = await import('./dataDomainShadowBackfillDrain')
     await processDataDomainShadowBackfillDrain(env, msg)

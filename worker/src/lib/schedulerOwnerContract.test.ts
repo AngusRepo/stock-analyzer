@@ -116,7 +116,15 @@ assert(cronGcpDomainTasks.includes("runWithLog('model-ic-full-check'") && !cronG
 const weeklyS12Calibration = manifest.jobs.find((job: any) => job.id === 'weekly-s12-smcvwap-calibration')
 assert(weeklyS12Calibration?.task === 's12-smcvwap-calibration', 'weekly S12 calibration must have a first-class GCP Scheduler owner')
 assert(weeklyS12Calibration?.schedule === '45 22 * * 6', 'weekly S12 calibration must run Sunday TW 06:45')
-assert(weeklyS12Calibration?.query === 'sync=1&cadence=weekly', 'weekly S12 calibration must run synchronously with explicit cadence')
+assert(weeklyS12Calibration?.query === 'sync=1&cadence=auto', 'weekly S12 owner must select monthly cadence after the first Saturday')
+assert(!manifest.jobs.some((job: any) => job.id === 'monthly-s12-smcvwap-calibration'), 'duplicated monthly S12 scheduler must stay retired')
+for (const retired of ['legacy-evidence-migration', 'd1-evidence-scrub', 'cleanup-dlq-replay', 'monthly-s12-smcvwap-calibration']) {
+  assert(manifest.deleteJobIds?.includes(retired), `${retired} must be explicitly allowlisted for deletion`)
+}
+const externalEvidence = manifest.jobs.find((job: any) => job.id === 'external-evidence')
+const weeklyCleanup = manifest.jobs.find((job: any) => job.id === 'weekly-cleanup')
+assert(externalEvidence && !externalEvidence.query, 'external evidence must use observable async execution instead of sync request timeout')
+assert(weeklyCleanup && !weeklyCleanup.query, 'weekly cleanup must use observable async execution instead of sync request timeout')
 assert(schedulerRunLogger.includes("'s12-smcvwap-calibration': 'S12 SMC/VWAP Calibration'"), 'S12 scheduler result must survive canonical log registry filtering')
 assert(schedulerRunLogger.includes("'weekly-readiness': 'Weekly Readiness'") && schedulerRunLogger.includes("'monthly-readiness': 'Monthly Readiness'"), 'cadence roots must survive canonical log registry filtering')
 
@@ -148,7 +156,6 @@ for (const critical of [
   'rescore-1230',
   'alpha-quality',
   'sector-leaders',
-  'weekly-cleanup',
   'weekly-backtest',
   'weekly-optuna',
   'adaptive-meta-policy-replay',
@@ -157,7 +164,6 @@ for (const critical of [
   'monthly-strategy-mining',
   'monthly-retrain',
   'optuna-queue',
-  'external-evidence',
   'model-ic-full-check',
 ]) {
   const job = manifest.jobs.find((j: any) => j.id === critical)

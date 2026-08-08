@@ -64,7 +64,6 @@
     "ml-controller-min-1-monthly-sat": "ml-controller-monthly-min-1",
     "ml-controller-min-1-sunday-research": "ml-controller-min-1",
     "ml-controller-min-1-trading-open": "ml-controller-min-1",
-    "ml-controller-min-1-evening": "ml-controller-min-1",
     "realtime-runtime-min-0-trading-close": "realtime-runtime-min-0",
     "realtime-runtime-min-1-trading-open": "realtime-runtime-min-1"
   },

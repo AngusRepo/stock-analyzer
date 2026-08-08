@@ -8,6 +8,12 @@ function assert(condition: unknown, message: string): void {
 
 const route = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
 const logger = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
+const syncRequiredStart = route.indexOf('const SYNC_REQUIRED_TASKS')
+const syncRequiredBlock = route.slice(syncRequiredStart, route.indexOf('])', syncRequiredStart) + 2)
+assert(!syncRequiredBlock.includes("'external-evidence'"), 'external evidence must allow async execution')
+assert(!syncRequiredBlock.includes("'weekly-cleanup'"), 'weekly cleanup must allow async execution')
+assert(syncRequiredBlock.includes("'optuna-queue'"), 'optuna queue must keep synchronous admission visibility')
+assert(route.includes("if (task === 'optuna-queue')") && route.includes("status: 'skipped'"), 'storage admission must record an expected optuna block as skipped')
 
 assert(route.includes('SYNC_REQUIRED_TASKS'), 'admin trigger must define sync-required tasks')
 assert(route.includes("'update', 'pipeline'"), 'update/pipeline must not use unobservable background mode')

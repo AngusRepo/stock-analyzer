@@ -38,14 +38,11 @@ const RETENTION_DAYS: Record<RetentionClass, number | null> = {
 
 export const STORAGE_LIFECYCLE_SCHEDULE = [
   { task: 'legacy-hot-data-retirement', cron: '10 1-5 * * *', timezone: 'Asia/Taipei' },
-  { task: 'legacy-evidence-migration', cron: '40 1-5 * * *', timezone: 'Asia/Taipei' },
   { task: 'legacy-strategy-evidence-migration', cron: '50 1-5 * * *', timezone: 'Asia/Taipei' },
   { task: 'audit-json-retention', cron: '*/15 1-6 * * *', timezone: 'Asia/Taipei' },
   { task: 'artifact-reconcile', cron: '5 2 * * *', timezone: 'Asia/Taipei' },
-  { task: 'd1-evidence-scrub', cron: '*/20 2-6 * * *', timezone: 'Asia/Taipei' },
   { task: 'r2-retention-sweep', cron: '40 2 * * *', timezone: 'Asia/Taipei' },
   { task: 'orphan-reachability-gc', cron: '0 3 * * *', timezone: 'Asia/Taipei' },
-  { task: 'cleanup-dlq-replay', cron: '20 3 * * *', timezone: 'Asia/Taipei' },
   { task: 'storage-health-check', cron: '45 6 * * *', timezone: 'Asia/Taipei' },
   { task: 'storage-integrity-audit', cron: '30 3 * * 0', timezone: 'Asia/Taipei' },
   { task: 'weekly-cleanup-v2', cron: '0 4 * * 0', timezone: 'Asia/Taipei' },

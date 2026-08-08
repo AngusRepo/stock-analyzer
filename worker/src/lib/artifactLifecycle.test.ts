@@ -313,10 +313,9 @@ async function testStorageHealthCheckUsesD1ResultSizeAndReportsTruthfulScope(): 
 async function main(): Promise<void> {
   assert.equal(STORAGE_LIFECYCLE_SCHEDULE.some((row) => row.task === 'storage-health-check'), true)
   assert.equal(STORAGE_LIFECYCLE_SCHEDULE.some((row) => String(row.task) === 'storage-health-gate'), false)
-  assert.equal(
-    STORAGE_LIFECYCLE_SCHEDULE.some((row) => row.task === 'd1-evidence-scrub' && row.cron === '*/20 2-6 * * *'),
-    true,
-  )
+  for (const retired of ['legacy-evidence-migration', 'd1-evidence-scrub', 'cleanup-dlq-replay']) {
+    assert.equal(STORAGE_LIFECYCLE_SCHEDULE.some((row) => row.task === retired), false)
+  }
   await testR2FirstWriteVerifiesBeforeManifest()
   await testIdenticalRunBecomesReused()
   await testContentAddressDoesNotDuplicateAcrossRunIds()

@@ -130,9 +130,13 @@ const schedulerManifest = fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'u
 assert.match(schedulerManifest, /"id": "audit-json-retention"/)
 assert.match(schedulerManifest, /confirm_archive=ARCHIVE_D1_AUDIT_JSON_TO_R2/)
 assert.match(schedulerManifest, /"id": "artifact-reconcile"/)
-assert.match(schedulerManifest, /"id": "d1-evidence-scrub"/)
+assert.doesNotMatch(schedulerManifest, /"id": "d1-evidence-scrub"/)
+assert.doesNotMatch(schedulerManifest, /"id": "legacy-evidence-migration"/)
+assert.doesNotMatch(schedulerManifest, /"id": "cleanup-dlq-replay"/)
 assert.match(schedulerManifest, /legacy-strategy-evidence-migration[^\n]+durable=1/)
-assert.match(schedulerManifest, /d1-evidence-scrub[^\n]+durable=1/)
+for (const retired of ['d1-evidence-scrub', 'legacy-evidence-migration', 'cleanup-dlq-replay']) {
+  assert.match(schedulerManifest, new RegExp(`"${retired}"`))
+}
 assert.match(source, /D1_MAINTENANCE_REQUEST_BUDGET_MS = 45_000/)
 assert.match(source, /leaseSeconds: 300/)
 assert.match(schedulerManifest, /"id": "storage-health-check"/)

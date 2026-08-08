@@ -2,7 +2,7 @@ import type { TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { runVerifyV2 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
-import { runMorningWarmup, runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
+import { runMorningWarmup } from './localMaintenance'
 import { runCadenceReadiness } from './cadenceReadiness'
 import type { LegacyHotDataTarget } from './legacyHotDataRetirement'
 import { runWithMaintenanceLease, summarizeMaintenanceLeaseResult } from './maintenanceLease'
@@ -490,13 +490,11 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     },
     's12-smcvwap-calibration': async () => {
       const { runS12TwCalibration } = await import('./s12TwEquityCalibration')
-      const cadence = c.req.query('cadence') === 'monthly'
-        ? 'monthly'
-        : c.req.query('cadence') === 'regime_shift'
-          ? 'regime_shift'
-          : 'weekly'
+      const { resolveS12CalibrationCadence } = await import('./s12CalibrationCadence')
+      const runDate = requestedRunDate() ?? twToday()
+      const cadence = resolveS12CalibrationCadence(c.req.query('cadence'), runDate)
       const result = await runS12TwCalibration(c.env.DB, {
-        runDate: requestedRunDate() ?? twToday(),
+        runDate,
         cadence,
         dryRun: c.req.query('dry_run') === '1',
       })
@@ -1005,13 +1003,8 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     'weekly-readiness': () => runCadenceReadiness(c.env, 'weekly', requestedRunDate()),
     'monthly-readiness': () => runCadenceReadiness(c.env, 'monthly', requestedRunDate()),
     'weekly-cleanup': async () => {
-      const cleanup = await runWeeklyCleanup(c.env)
-      const lifecycle = await deps.runWeeklyLifecycleCheck()
-      const maintenance = await runWeeklyLocalMaintenance(c.env)
-      if (!cleanup.ok || !maintenance.ok) {
-        throw new Error(`weekly cleanup failed ${JSON.stringify({ cleanup, maintenance })}`)
-      }
-      return `weekly_cleanup_v2 cleanup=${JSON.stringify(cleanup)} maintenance=${JSON.stringify(maintenance)} lifecycle dry-run=${String(lifecycle)}`
+      const { runWeeklyCleanupClosure } = await import('./durableSchedulerTask')
+      return runWeeklyCleanupClosure(c.env, deps.runWeeklyLifecycleCheck)
     },
     'sector-leaders': async () => {
       const { computeSectorLeaders } = await import('./sectorCorrelation')

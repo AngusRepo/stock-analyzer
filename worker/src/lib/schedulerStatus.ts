@@ -71,14 +71,11 @@ const JOB_DEFS: JobDef[] = [
   { id: 'external-evidence', name: 'External Evidence', schedule: 'Weekdays 23:15', cron: '15 15 * * 1-5', group: 'daily' },
   { id: 'debate-memory-retention', name: 'Debate Memory Retention', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },
   { id: 'artifact-reconcile', name: 'Artifact Reconcile', schedule: 'Daily 02:05', cron: '5 18 * * *', group: 'daily' },
-  { id: 'legacy-evidence-migration', name: 'Legacy Evidence Migration', schedule: 'Daily 01:40??5:40 hourly', cron: '40 17-21 * * *', group: 'daily' },
   { id: 'data-domain-shadow-backfill-next', name: 'Multi-D1 Sequential Backfill', schedule: 'Daily 00:30', cron: '30 16 * * *', group: 'daily' },
   { id: 'legacy-strategy-evidence-migration', name: 'Legacy Strategy Evidence Migration', schedule: 'Daily 01:50??5:50 hourly', cron: '50 17-21 * * *', group: 'daily' },
   { id: 'legacy-hot-data-retirement', name: 'Legacy Hot Data Retirement', schedule: 'Daily 01:10??5:10 hourly', cron: '10 17-21 * * *', group: 'daily' },
-  { id: 'd1-evidence-scrub', name: 'D1 Evidence Scrub', schedule: 'Daily 02:20', cron: '20 18 * * *', group: 'daily' },
   { id: 'r2-retention-sweep', name: 'R2 Retention Sweep', schedule: 'Daily 02:40', cron: '40 18 * * *', group: 'daily' },
   { id: 'orphan-reachability-gc', name: 'Orphan Reachability GC', schedule: 'Daily 03:00', cron: '0 19 * * *', group: 'daily' },
-  { id: 'cleanup-dlq-replay', name: 'Cleanup DLQ Replay', schedule: 'Daily 03:20', cron: '20 19 * * *', group: 'daily' },
   { id: 'storage-health-check', name: 'Storage Health Check', schedule: 'Daily 06:45', cron: '45 22 * * *', group: 'daily' },
   { id: 'storage-integrity-audit', name: 'Storage Integrity Audit', schedule: 'Sunday 03:30', cron: '30 19 * * 6', group: 'weekly' },
 
@@ -97,7 +94,7 @@ const JOB_DEFS: JobDef[] = [
   { id: 'alpha-quality', name: 'Alpha Quality', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
   { id: 'weekly-optuna', name: 'Weekly Optuna', schedule: 'Sunday 06:30', cron: '30 22 * * 6', group: 'weekly' },
   { id: 'adaptive-meta-policy-replay', name: 'Adaptive Meta Policy Replay', schedule: 'Sunday 06:40', cron: '40 22 * * 6', group: 'weekly' },
-  { id: 's12-smcvwap-calibration', name: 'S12 SMC/VWAP Calibration', schedule: 'Sunday 06:45 / First Sat 16:20', cron: '45 22 * * 6', group: 'weekly' },
+  { id: 's12-smcvwap-calibration', name: 'S12 SMC/VWAP Calibration', schedule: 'Sunday 06:45 (monthly cadence after first Sat)', cron: '45 22 * * 6', group: 'weekly' },
   { id: 'linucb-multiplier-replay', name: 'LinUCB Multiplier Replay', schedule: 'Sunday 06:50', cron: '50 22 * * 6', group: 'weekly' },
   { id: 'active8-oof-weekly', name: 'Active-8 OOF Weekly Cohort', schedule: 'Sunday 07:05', cron: '5 23 * * 6', group: 'weekly' },
 

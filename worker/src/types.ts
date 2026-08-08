@@ -336,6 +336,7 @@ export interface UpdateQueueMsg {
     | 'post_pipeline_chain'
     | 'post_verify_chain'
     | 'maintenance_backlog_drain'
+    | 'scheduled_admin_task'
     | 'data_domain_shadow_backfill'
   newsStocks?: Array<{
     id: number
@@ -364,6 +365,7 @@ export interface UpdateQueueMsg {
   dataDomainTable?: string
   maintenanceCycle?: number
   maxMaintenanceCycles?: number
+  scheduledTask?: 'external-evidence' | 'weekly-cleanup'
   force?: boolean
 }
 

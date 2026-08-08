@@ -5,6 +5,7 @@
   "timezone": "Asia/Taipei",
   "artifact_registry_repository": "cloud-run-source-deploy",
   "scaler_service_account": "cloud-run-scaler@gen-lang-client-0602998820.iam.gserviceaccount.com",
+  "delete_schedule_ids": ["ml-controller-min-1-evening"],
   "service_policies": {
     "ml-controller": {
       "cpu": "4",
@@ -88,17 +89,16 @@
     {"name": "realtime-runtime-min-0-trading-close", "job": "realtime-runtime-min-0", "cron": "31 13 * * 1-5"},
     {"name": "ml-controller-min-1-trading-open", "job": "ml-controller-min-1", "cron": "40 8 * * 1-5"},
     {"name": "ml-controller-min-0-trading-midday", "job": "ml-controller-min-0", "cron": "0 14 * * 1-5"},
-    {"name": "ml-controller-min-1-evening", "job": "ml-controller-min-1", "cron": "30 20 * * 1-5"},
     {"name": "ml-controller-min-0-night", "job": "ml-controller-min-0", "cron": "0 0 * * 2-6"},
-    {"name": "ml-controller-min-1-monthly-sat", "job": "ml-controller-monthly-min-1", "cron": "50 9 * * 6"},
-    {"name": "ml-controller-min-0-monthly-sat", "job": "ml-controller-monthly-min-0", "cron": "30 16 * * 6"},
+    {"name": "ml-controller-min-1-monthly-sat", "job": "ml-controller-monthly-min-1", "cron": "first saturday of month 09:50"},
+    {"name": "ml-controller-min-0-monthly-sat", "job": "ml-controller-monthly-min-0", "cron": "first saturday of month 16:30"},
     {"name": "ml-controller-min-1-sunday-research", "job": "ml-controller-min-1", "cron": "0 1 * * 0"},
     {"name": "ml-controller-min-0-sunday-research", "job": "ml-controller-min-0", "cron": "0 7 * * 0"}
   ],
   "evening_window_policy": {
-    "enabled": true,
-    "classification": "reliability_optimization_not_correctness_dependency",
-    "reason": "controller cold starts measured in tens of seconds; callback correctness remains durable queue owned",
+    "enabled": false,
+    "classification": "retired_low_value_warm_window",
+    "reason": "callback correctness is durable queue owned and the weekday evening warm window is not a correctness dependency",
     "reassess_after_successful_native_chains": 10
   }
 }

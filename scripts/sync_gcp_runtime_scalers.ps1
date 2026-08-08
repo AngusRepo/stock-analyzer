@@ -122,6 +122,15 @@ if ($Apply) {
   if ($LASTEXITCODE -ne 0) { throw "failed to list existing runtime scaler schedules" }
   $existingSchedules = @($existingSchedules | ForEach-Object { ($_ -split '/')[-1] })
 }
+$managedSchedules = [System.Collections.Generic.HashSet[string]]::new()
+foreach ($schedule in $manifest.schedules) {
+  if ($schedule.name) { [void]$managedSchedules.Add([string]$schedule.name) }
+}
+$deleteScheduleIds = [System.Collections.Generic.HashSet[string]]::new()
+foreach ($scheduleId in @($manifest.delete_schedule_ids)) {
+  if ($scheduleId) { [void]$deleteScheduleIds.Add([string]$scheduleId) }
+}
+
 
 foreach ($entry in $manifest.scaler_jobs.PSObject.Properties) {
   $jobName = [string]$entry.Name
@@ -137,6 +146,20 @@ foreach ($entry in $manifest.scaler_jobs.PSObject.Properties) {
     "--set-env-vars=SCALER_SCRIPT_B64=$scriptB64",
     "--labels=stockvision-owner=runtime-scaling-manifest-v1", "--quiet"
   )
+  Invoke-Gcloud @(
+    "run", "jobs", "add-iam-policy-binding", $jobName,
+    "--project=$project", "--region=$region", "--member=$scalerMember",
+    "--role=roles/run.invoker", "--quiet"
+  )
+  if ($Apply) {
+    $jobPolicy = & gcloud run jobs get-iam-policy $jobName --project=$project --region=$region --format=json | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw "failed to verify scaler job IAM: $jobName" }
+    $invoker = @($jobPolicy.bindings | Where-Object { $_.role -eq "roles/run.invoker" })
+    if (-not ($invoker.members -contains $scalerMember)) {
+      throw "scaler job run.invoker binding missing after apply: $jobName $scalerMember"
+    }
+  }
+
 }
 
 foreach ($schedule in $manifest.schedules) {
@@ -152,4 +175,15 @@ foreach ($schedule in $manifest.schedules) {
     "--oauth-token-scope=https://www.googleapis.com/auth/cloud-platform",
     "--quiet"
   )
+}
+
+foreach ($scheduleName in $existingSchedules) {
+  if (-not $managedSchedules.Contains($scheduleName) -and $deleteScheduleIds.Contains($scheduleName)) {
+    Invoke-Gcloud @(
+      "scheduler", "jobs", "delete", $scheduleName,
+      "--project=$project", "--location=$region", "--quiet"
+    )
+  } elseif (-not $managedSchedules.Contains($scheduleName)) {
+    Write-Host "preserve unmanaged runtime scaler schedule: $scheduleName"
+  }
 }

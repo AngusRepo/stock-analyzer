@@ -1512,14 +1512,11 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                     artifact["promotion_state"] = "shadow_only"
                 packet = result.get("validation_packet") if isinstance(result, dict) else None
                 if isinstance(packet, dict):
-                    packet["quality_decision_before_shadow_policy"] = str(
-                        packet.get("decision") or "PENDING"
-                    ).upper()
-                    packet["decision"] = "FAIL"
-                    failed = list(packet.get("failed_gates") or [])
-                    if "frozen_forward_oos_shadow_only" not in failed:
-                        failed.append("frozen_forward_oos_shadow_only")
-                    packet["failed_gates"] = failed
+                    packet["monitoring_policy"] = {
+                        "policy_decision": "shadow_only",
+                        "promotion_eligible": False,
+                        "training_dispatched": False,
+                    }
                     packet["forward_extension"] = {
                         "manifest_path": req.forward_extension_manifest_path,
                         "manifest_checksum": forward_extension["manifest_checksum"],
@@ -1831,7 +1828,7 @@ OOF_MIN_MATURE_SESSIONS = (
     OOF_TRAIN_SESSIONS + OOF_TEST_SESSIONS * OOF_PROMOTION_MIN_FOLDS
 )
 OOF_COHORT_ID_VERSION = "v7-immutable-fold-evidence"
-OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v8-freshness-watermark"
+OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v9-post-close-watermark"
 
 
 def _oof_lifecycle_materialization_controls(
@@ -1883,16 +1880,29 @@ def _oof_lifecycle_receipt_matches_active_policy(
     *,
     cadence: str,
     require_full_fit: bool,
+    expected_calendar: dict[str, Any] | None = None,
 ) -> bool:
     evidence = receipt.get("evidence_closure")
     evidence = evidence if isinstance(evidence, dict) else {}
     full_fit = receipt.get("full_fit_dispatch")
     full_fit = full_fit if isinstance(full_fit, dict) else {}
+    receipt_calendar = receipt.get("calendar")
+    receipt_calendar = receipt_calendar if isinstance(receipt_calendar, dict) else {}
+    calendar_watermark_current = expected_calendar is None or all(
+        receipt_calendar.get(key) == expected_calendar.get(key)
+        for key in (
+            "cutoff",
+            "prep_manifest_checksum",
+            "mature_max_date",
+            "mature_dates",
+        )
+    )
 
     contract_current = (
         receipt.get("schema_version") == OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION
         and receipt.get("materialization_policy_version") == _active_oof_materialization_policy_version()
         and receipt.get("cadence") == cadence
+        and calendar_watermark_current
     )
     materialized_complete = (
         receipt.get("status") == "materialized"
@@ -2610,6 +2620,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
             receipt,
             cadence=cadence,
             require_full_fit=req.dispatch_full_fit,
+            expected_calendar=calendar_evidence,
         ):
             return {
                 "status": "idempotent_complete",

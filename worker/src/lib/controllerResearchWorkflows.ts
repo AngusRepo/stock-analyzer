@@ -817,7 +817,18 @@ export async function runFinLabV4Backfill(
   return `triggered finlab-v4-backfill run_id=${runId} function_call_id=${functionCallId} dispatch_attempt=${dispatchAttempt} callback expected`
 }
 
-export async function runExternalEvidenceMaterialize(env: Bindings, runDate?: string) {
+export interface ExternalEvidenceMaterializeResult {
+  summary: string
+  targetDate: string
+  receipt: Record<string, unknown>
+  d1Stats: Record<string, unknown>
+  controllerDurationMs: number
+}
+
+export async function runExternalEvidenceMaterializeDetailed(
+  env: Bindings,
+  runDate?: string,
+): Promise<ExternalEvidenceMaterializeResult> {
   requireController(env)
 
   const resp = await controllerFetch(env, '/external-evidence/materialize', {
@@ -832,18 +843,60 @@ export async function runExternalEvidenceMaterialize(env: Bindings, runDate?: st
   })
   const text = await resp.text().catch(() => '')
   if (!resp.ok) {
-    throw new Error(`external evidence materialize HTTP${resp.status}${text ? `(${text.slice(0, 300)})` : ''}`)
+    throw new Error(
+      'external evidence materialize HTTP'
+      + resp.status
+      + (text ? '(' + text.slice(0, 300) + ')' : ''),
+    )
   }
   const result = text ? JSON.parse(text) as Record<string, any> : {}
   if (result.status === 'failed' || result.status === 'error') {
-    throw new Error(`external evidence materialize failed: ${result.error ?? result.status}`)
+    throw new Error('external evidence materialize failed: ' + String(result.error ?? result.status))
   }
+
   const targetDate = String(result.target_date ?? runDate ?? 'latest')
   const gdeltStatus = String(result.gdelt_status ?? 'unknown')
   const gdeltItems = Number(result.gdelt_items_built ?? 0)
   const features = Number(result.stock_theme_features_upserted ?? 0)
-  return `external evidence target=${targetDate} gdelt=${gdeltStatus} items=${gdeltItems} stock_theme_features=${features}`
+  const receipt = result.materialization_receipt && typeof result.materialization_receipt === 'object'
+    ? result.materialization_receipt as Record<string, unknown>
+    : {}
+  const d1Stats = result.d1_stats && typeof result.d1_stats === 'object'
+    ? result.d1_stats as Record<string, unknown>
+    : {}
+  if (receipt.status !== 'ready') {
+    throw new Error(
+      'external evidence materialization receipt incomplete: '
+      + JSON.stringify(receipt).slice(0, 500),
+    )
+  }
+
+  const summary = [
+    'external evidence',
+    'receipt=' + String(receipt.status),
+    'target=' + targetDate,
+    'gdelt=' + gdeltStatus,
+    'items=' + gdeltItems,
+    'stock_theme_features=' + features,
+    'd1_queries=' + Number(d1Stats.logical_queries ?? 0),
+    'd1_http_attempts=' + Number(d1Stats.http_attempts ?? 0),
+    'd1_retries=' + Number(d1Stats.retries ?? 0),
+    'write_batches=' + Number(d1Stats.write_batches ?? 0),
+  ].join(' ')
+
+  return {
+    summary,
+    targetDate,
+    receipt,
+    d1Stats,
+    controllerDurationMs: Number(result.duration_ms ?? 0),
+  }
 }
+
+export async function runExternalEvidenceMaterialize(env: Bindings, runDate?: string): Promise<string> {
+  return (await runExternalEvidenceMaterializeDetailed(env, runDate)).summary
+}
+
 
 export async function runOptunaQueueProcessor(env: Bindings) {
   requireController(env)

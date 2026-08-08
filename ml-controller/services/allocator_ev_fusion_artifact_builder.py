@@ -52,21 +52,16 @@ SELECTION_FEATURE_NAMES = [
     *SECTOR_ALPHA_FEATURE_NAMES,
     *MARKET_CONTEXT_FEATURE_NAMES,
 ]
+RESIDUAL_FEATURE_NAMES = list(SELECTION_FEATURE_NAMES)
 EXECUTION_FEATURE_NAMES = list(SELECTION_FEATURE_NAMES)
-FEATURE_NAMES = list(SELECTION_FEATURE_NAMES)
 
 TEMPORAL_TRAIN_FRACTION = 0.75
 PRIMARY_MIN_OOS_DATES = 10
+VALIDATION_MIN_OOS_DATES = 5
 PRIMARY_MIN_DATES = math.ceil(PRIMARY_MIN_OOS_DATES / (1.0 - TEMPORAL_TRAIN_FRACTION))
 PRIMARY_MIN_SAMPLES = 1500
-PRIMARY_MIN_S12_AVAILABLE_SAMPLES = 300
-PRIMARY_MIN_S12_AVAILABLE_DATES = 10
 PRIMARY_MIN_L4_PIT_SAMPLES = 300
 PRIMARY_MIN_L4_PIT_DATES = 10
-PRIMARY_MIN_MARKET_CONTEXT_SAMPLES = 300
-PRIMARY_MIN_MARKET_CONTEXT_DATES = 10
-PRIMARY_MIN_SECTOR_ALPHA_SAMPLES = 300
-PRIMARY_MIN_SECTOR_ALPHA_DATES = 8
 VALIDATION_MIN_DATES = 20
 VALIDATION_MIN_SAMPLES = 500
 VALIDATION_MIN_EXPERT_SAMPLES = 100
@@ -79,6 +74,9 @@ MIN_CROSS_SECTION_SAMPLES_PER_DATE = 20
 LABEL_PURGE_DATE_GROUPS = 5
 ARTIFACT_CONTRACT_VERSION = ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION
 FEATURE_SEMANTIC_VERSION = ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION
+L4_BASELINE_ARTIFACT_ID = (
+    "allocator_ev_fusion:canonical-l4-base-v14"
+)
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -433,6 +431,7 @@ def _samples(
     missing_features = 0
     rejected_feature_era_rows = 0
     feature_era_counts: dict[str, int] = {}
+    generation_mode_counts: dict[str, int] = {}
     lineage_blocker_counts: dict[str, int] = {}
     adjustment_lineage_counts: dict[str, int] = {}
     invalid_reason_counts: dict[str, int] = {}
@@ -463,6 +462,9 @@ def _samples(
         adjustment_source = str(row.get("label_adjustment_source") or "missing")
         adjustment_lineage_counts[adjustment_source] = adjustment_lineage_counts.get(adjustment_source, 0) + 1
         generation_mode = str(row.get("generation_mode") or "native").strip().lower()
+        generation_mode_counts[generation_mode] = (
+            generation_mode_counts.get(generation_mode, 0) + 1
+        )
         expected_adjustment_source = expected_price_horizon_source(generation_mode)
         features = _feature_vector(row)
         selection_gross_target = (
@@ -587,6 +589,11 @@ def _samples(
         sample for sample in out
         if float(sample["features"].get("l4_available") or 0.0) > 0.0
     ]
+    for sample in l4_available_samples:
+        sample["residual_target"] = (
+            float(sample["actual_return_target"])
+            - float(sample["features"]["l4_expected_return"])
+        )
     execution_samples = [sample for sample in out if sample["execution_target"] is not None]
     execution_observation_samples = [
         sample for sample in out if sample["execution_probability_target"] is not None
@@ -636,6 +643,12 @@ def _samples(
         "sparse_dates_rejected": sparse_dates,
         "sparse_date_rows_rejected": sparse_date_rows_rejected,
         "raw_date_counts": dict(sorted(raw_day_counts.items())),
+        "generation_mode_counts": dict(sorted(generation_mode_counts.items())),
+        "evidence_max_date": max((row["date"] for row in out), default=None),
+        "oof_max_date": (
+            max((row["date"] for row in out), default=None)
+            if set(generation_mode_counts) == {"purged_oof"} else None
+        ),
         "date_count": len({row["date"] for row in out}),
         "l4_available_count": len(l4_available_samples),
         "l4_available_date_count": len({row["date"] for row in l4_available_samples}),
@@ -673,17 +686,22 @@ def _samples(
         },
         "candidate_time_s12_feature_count": 0,
         "candidate_time_s12_serving_allowed": False,
-        "execution_policy_label_owner": "s12_replay_trade_outcomes",
+        "serving_target_owner": "canonical_five_session_price_horizon_minus_l4_alpha_ev",
+        "s12_replay_role": "shadow_diagnostic_only",
         "target_policy": {
             "selection": "same_date_sector_or_segment_or_market_cross_section_residual_of_five_session_net_return",
             "selection_absolute_audit": "next_session_adjusted_open_to_fifth_session_adjusted_close_net_of_costs",
-            "final_trade_ev": "absolute_s12_realized_trade_ev_net_of_costs_not_cross_section_rank",
+            "base_expected_return": "canonical_point_in_time_l4_alpha_ev",
+            "residual_adjustment": "five_session_net_return_minus_canonical_point_in_time_l4_alpha_ev",
+            "final_expected_return": "canonical_l4_alpha_ev_plus_validated_residual_adjustment",
             "selection_label_schema_version": LABEL_SCHEMA_VERSION,
+            "price_horizon_label_known_at": "fifth_session_close_strictly_before_as_of_date",
             "execution_trade_return": "five_session_canonical_s12_lifecycle_pnl_net_of_roundtrip_cost_when_executed",
             "full_trade_ev": "zero_only_for_observed_non_execution;unavailable_excluded;executed_uses_multisession_canonical_replay_net_pnl",
             "execution_label_availability": "replay_execution_outcome_independent_of_prior_s12_ev_availability",
             "execution_probability": "canonical_s12_replay_execution_indicator",
             "label_known_at": "replay_exit_ms_strictly_before_as_of_date",
+            "s12_execution_targets_role": "shadow_diagnostic_only_not_serving_or_promotion",
             "actual_trade_outcome_role": "audit_only_not_training_label",
             "rowwise_label_coalesce": False,
         },
@@ -1130,7 +1148,7 @@ def _paired_canonical_l4_comparison(
     return {
         "schema_version": "allocator-ev-fusion-champion-comparison-v1",
         "champion": "canonical_l4",
-        "challenger": "allocator_ev_fusion_v13_day_t_selection_model",
+        "challenger": "allocator_ev_fusion_v14_selection_diagnostic_not_served",
         "comparison_unit": "paired_prediction_date_same_candidates",
         "decision": "PASS" if not blockers else "FAIL",
         "failed_gates": blockers,
@@ -1149,23 +1167,21 @@ def _paired_canonical_l4_comparison(
 def _paired_final_trade_ev_comparison(
     samples: list[dict[str, Any]],
     *,
-    execution_model: dict[str, Any],
-    execution_probability_model: dict[str, Any],
+    residual_model: dict[str, Any],
 ) -> dict[str, Any]:
     blockers: list[str] = []
-    if execution_model.get("decision") != "PASS":
-        blockers.append("conditional_execution_expert_not_validated")
-    if execution_probability_model.get("decision") != "PASS":
-        blockers.append("execution_probability_expert_not_validated")
+    if residual_model.get("decision") != "PASS":
+        blockers.append("residual_adjustment_model_not_validated")
     if blockers:
         return {
-            "schema_version": "allocator-ev-fusion-final-champion-comparison-v1",
-            "champion": "canonical_l4",
-            "challenger": "allocator_ev_fusion_v13_s12_policy_value",
-            "comparison_target": "realized_multisession_trade_ev_net_of_costs",
+            "schema_version": "allocator-ev-fusion-final-champion-comparison-v2",
+            "champion": "canonical_l4_v14_same_contract",
+            "challenger": "canonical_l4_plus_fusion_residual_v14",
+            "comparison_target": "canonical_five_session_net_return",
             "decision": "FAIL",
             "failed_gates": blockers,
             "samples": 0,
+            "sample_count": 0,
             "oos_date_count": 0,
             "daily": [],
         }
@@ -1176,28 +1192,18 @@ def _paired_final_trade_ev_comparison(
     test = [
         sample for sample in samples
         if sample["date"] in test_dates
-        and sample.get("realized_trade_ev_target") is not None
+        and sample.get("residual_target") is not None
         and float(sample["features"].get("l4_available") or 0.0) > 0.0
     ]
-    execution_validation_model = (
-        execution_model.get("validation_model")
-        if isinstance(execution_model.get("validation_model"), dict)
-        else execution_model
+    residual_validation_model = (
+        residual_model.get("validation_model")
+        if isinstance(residual_model.get("validation_model"), dict)
+        else residual_model
     )
-    probability_validation_model = (
-        execution_probability_model.get("validation_model")
-        if isinstance(execution_probability_model.get("validation_model"), dict)
-        else execution_probability_model
-    )
-    execution_intercept = float(execution_validation_model.get("intercept") or 0.0)
-    execution_coefs = {
+    residual_intercept = float(residual_validation_model.get("intercept") or 0.0)
+    residual_coefs = {
         str(name): float(value)
-        for name, value in (execution_validation_model.get("coefficients") or {}).items()
-    }
-    probability_intercept = float(probability_validation_model.get("intercept") or 0.0)
-    probability_coefs = {
-        str(name): float(value)
-        for name, value in (probability_validation_model.get("coefficients") or {}).items()
+        for name, value in (residual_validation_model.get("coefficients") or {}).items()
     }
 
     by_date: dict[str, list[dict[str, Any]]] = {}
@@ -1218,12 +1224,13 @@ def _paired_final_trade_ev_comparison(
     for day, rows in sorted(by_date.items()):
         if len(rows) < 3:
             continue
-        targets = [float(row["realized_trade_ev_target"]) for row in rows]
-        conditional = [_predict(row, execution_intercept, execution_coefs) for row in rows]
-        probability_logits = [_predict(row, probability_intercept, probability_coefs) for row in rows]
-        probabilities = [1.0 / (1.0 + math.exp(-max(-40.0, min(40.0, value)))) for value in probability_logits]
-        fusion_predictions = [probability * value for probability, value in zip(probabilities, conditional, strict=True)]
+        targets = [float(row["actual_return_target"]) for row in rows]
         canonical_predictions = [float(row["features"]["l4_expected_return"]) for row in rows]
+        residual_adjustments = [_predict(row, residual_intercept, residual_coefs) for row in rows]
+        fusion_predictions = [
+            base + adjustment
+            for base, adjustment in zip(canonical_predictions, residual_adjustments, strict=True)
+        ]
         fusion_corr = _corr(fusion_predictions, targets)
         canonical_corr = _corr(canonical_predictions, targets)
         fusion_spread = spread(fusion_predictions, targets)
@@ -1252,11 +1259,11 @@ def _paired_final_trade_ev_comparison(
             "fusion_spread": round(fusion_spread, 8),
             "canonical_l4_spread": round(canonical_spread, 8),
             "spread_delta": round(spread_delta, 8),
-            "fusion_top_trade_ev_mean": round(top_trade_ev, 8),
+            "fusion_top_five_session_ev_mean": round(top_trade_ev, 8),
             "regime_bucket": regime_bucket,
         })
 
-    minimum_oos_dates = PRIMARY_MIN_OOS_DATES
+    minimum_oos_dates = VALIDATION_MIN_OOS_DATES
     corr_delta_lcb90 = _date_cluster_lcb90(correlation_deltas)
     spread_delta_lcb90 = _date_cluster_lcb90(spread_deltas)
     top_trade_ev_lcb90 = _date_cluster_lcb90(daily_top_trade_ev)
@@ -1265,7 +1272,7 @@ def _paired_final_trade_ev_comparison(
     minimum_supported_regime_dates = 3
     for regime in sorted({str(row.get("regime_bucket") or "unclassified") for row in daily}):
         values = [
-            float(row["fusion_top_trade_ev_mean"])
+            float(row["fusion_top_five_session_ev_mean"])
             for row in daily
             if row.get("regime_bucket") == regime
         ]
@@ -1292,15 +1299,24 @@ def _paired_final_trade_ev_comparison(
     if top_trade_ev_lcb90 is None or top_trade_ev_lcb90 <= 0.0:
         blockers.append("fusion_top_trade_ev_lcb90_not_positive")
     blockers.extend(regime_blockers)
+    recent_daily = daily[-2:]
+    recent_deterioration = bool(
+        len(recent_daily) == 2
+        and all(float(row.get("spread_delta") or 0.0) < 0.0 for row in recent_daily)
+        and all(row.get("corr_delta") is not None and float(row["corr_delta"]) < 0.0 for row in recent_daily)
+    )
+    if recent_deterioration:
+        blockers.append("recent_two_oos_dates_both_corr_and_spread_inferior")
     return {
-        "schema_version": "allocator-ev-fusion-final-champion-comparison-v1",
-        "champion": "canonical_l4",
-        "challenger": "allocator_ev_fusion_v13_s12_policy_value",
-        "comparison_target": "realized_multisession_trade_ev_net_of_costs",
+        "schema_version": "allocator-ev-fusion-final-champion-comparison-v2",
+        "champion": "canonical_l4_v14_same_contract",
+        "challenger": "canonical_l4_plus_fusion_residual_v14",
+        "comparison_target": "canonical_five_session_net_return",
         "comparison_unit": "paired_prediction_date_same_candidates",
         "decision": "PASS" if not blockers else "FAIL",
         "failed_gates": blockers,
         "samples": len(test),
+        "sample_count": len(test),
         "oos_date_count": len(daily),
         "minimum_oos_dates": minimum_oos_dates,
         "corr_delta_mean": round(_mean(correlation_deltas), 8) if correlation_deltas else None,
@@ -1309,6 +1325,10 @@ def _paired_final_trade_ev_comparison(
         "spread_delta_lcb90": None if spread_delta_lcb90 is None else round(spread_delta_lcb90, 8),
         "top_trade_ev_mean": round(_mean(daily_top_trade_ev), 8) if daily_top_trade_ev else None,
         "top_trade_ev_lcb90": None if top_trade_ev_lcb90 is None else round(top_trade_ev_lcb90, 8),
+        "recent_deterioration_guard": {
+            "evaluated_dates": [row["date"] for row in recent_daily],
+            "both_corr_and_spread_inferior": recent_deterioration,
+        },
         "regime_stability": {
             "method": "date_clustered_one_sided_90pct_interval",
             "minimum_supported_regime_dates": minimum_supported_regime_dates,
@@ -1717,29 +1737,16 @@ def _promotion_tier(
     *,
     decision: str,
     diagnostics: dict[str, Any],
-    oos_metrics: dict[str, Any],
-    walk_forward: dict[str, Any],
-    execution_model: dict[str, Any],
-    execution_probability_model: dict[str, Any],
-    selection_champion_comparison: dict[str, Any],
+    residual_model: dict[str, Any],
     champion_comparison: dict[str, Any],
     min_dates: int,
     min_samples: int,
 ) -> tuple[str, list[str]]:
     blockers: list[str] = []
-    sample_count = int(diagnostics.get("sample_count") or 0)
-    date_count = int(diagnostics.get("date_count") or 0)
-    execution_sample_count = int(diagnostics.get("execution_sample_count") or 0)
-    execution_date_count = int(diagnostics.get("execution_date_count") or 0)
+    sample_count = int(residual_model.get("sample_count") or 0)
+    date_count = int(residual_model.get("date_count") or 0)
     l4_available_count = int(diagnostics.get("l4_point_in_time_available_count") or 0)
     l4_available_date_count = int(diagnostics.get("l4_point_in_time_available_date_count") or 0)
-    market_context_count = int(diagnostics.get("market_context_available_count") or 0)
-    market_context_date_count = int(diagnostics.get("market_context_available_date_count") or 0)
-    sector_alpha_count = int(diagnostics.get("sector_alpha_available_count") or 0)
-    sector_alpha_date_count = int(diagnostics.get("sector_alpha_available_date_count") or 0)
-    top_mean = float(oos_metrics.get("top_quintile_mean_return") or 0.0)
-    spread = float(oos_metrics.get("top_bottom_spread") or 0.0)
-    corr = float(oos_metrics.get("prediction_target_corr") or 0.0)
 
     if decision != "PASS":
         return "shadow", ["validation_not_pass"]
@@ -1748,36 +1755,18 @@ def _promotion_tier(
         blockers.append("primary_insufficient_samples")
     if date_count < max(min_dates, PRIMARY_MIN_DATES):
         blockers.append("primary_insufficient_dates")
-    if execution_sample_count < PRIMARY_MIN_S12_AVAILABLE_SAMPLES:
-        blockers.append("primary_execution_samples_low")
-    if execution_date_count < PRIMARY_MIN_S12_AVAILABLE_DATES:
-        blockers.append("primary_execution_dates_low")
-    if execution_model.get("decision") != "PASS":
-        blockers.append("primary_s12_execution_expert_not_validated")
-    if execution_probability_model.get("decision") != "PASS":
-        blockers.append("primary_s12_execution_probability_not_validated")
+    if residual_model.get("decision") != "PASS":
+        blockers.append("primary_residual_adjustment_model_not_validated")
     if l4_available_count < PRIMARY_MIN_L4_PIT_SAMPLES:
         blockers.append("primary_l4_pit_samples_low")
     if l4_available_date_count < PRIMARY_MIN_L4_PIT_DATES:
         blockers.append("primary_l4_pit_dates_low")
-    if market_context_count < PRIMARY_MIN_MARKET_CONTEXT_SAMPLES:
-        blockers.append("primary_market_context_samples_low")
-    if market_context_date_count < PRIMARY_MIN_MARKET_CONTEXT_DATES:
-        blockers.append("primary_market_context_dates_low")
-    if sector_alpha_count < PRIMARY_MIN_SECTOR_ALPHA_SAMPLES:
-        blockers.append("primary_sector_alpha_samples_low")
-    if sector_alpha_date_count < PRIMARY_MIN_SECTOR_ALPHA_DATES:
-        blockers.append("primary_sector_alpha_dates_low")
     if champion_comparison.get("decision") != "PASS":
         blockers.append("primary_not_superior_to_canonical_l4")
-    if top_mean <= 0.0:
-        blockers.append("primary_top_bucket_not_positive")
-    if spread <= 0.0:
-        blockers.append("primary_top_bottom_spread_not_positive")
-    if corr <= 0.0:
-        blockers.append("primary_oos_corr_not_positive")
-    if not walk_forward.get("passed"):
-        blockers.append("primary_walk_forward_not_stable")
+    if int(champion_comparison.get("oos_date_count") or 0) < PRIMARY_MIN_OOS_DATES:
+        blockers.append("primary_paired_oos_dates_insufficient")
+    if not residual_model.get("walk_forward", {}).get("passed"):
+        blockers.append("primary_residual_walk_forward_not_stable")
 
     if not blockers:
         return "primary", []
@@ -1819,6 +1808,19 @@ def build_allocator_ev_fusion_artifact_from_rows(
         expected_panel_id=benchmark_panel_id,
     )
     multiple_testing = _multiple_testing_gate(search_trial_count, multiple_testing_evidence)
+    residual_samples = [
+        sample for sample in samples
+        if sample.get("residual_target") is not None
+    ]
+    residual_model = _fit_expert(
+        residual_samples,
+        feature_names=RESIDUAL_FEATURE_NAMES,
+        target_key="residual_target",
+        min_samples=VALIDATION_MIN_SAMPLES,
+        min_dates=VALIDATION_MIN_DATES,
+        l2=l2,
+        minimum_spread=0.0,
+    )
     selection_model = _fit_expert(
         samples,
         feature_names=SELECTION_FEATURE_NAMES,
@@ -1873,23 +1875,31 @@ def build_allocator_ev_fusion_artifact_from_rows(
     )
     champion_comparison = _paired_final_trade_ev_comparison(
         samples,
-        execution_model=execution_model,
-        execution_probability_model=execution_probability_model,
+        residual_model=residual_model,
     )
+    top_trade_ev_lcb90 = _float_or_none(champion_comparison.get("top_trade_ev_lcb90"))
+    l4_base_comparison = {
+        "schema_version": "allocator-ev-fusion-l4-base-comparison-v1",
+        "baseline_artifact_id": L4_BASELINE_ARTIFACT_ID,
+        "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
+        "policy_value_head_count": 1,
+        "policy_value_heads": ["residual_adjustment_model"],
+        "comparison_target": "canonical_five_session_net_return",
+        "comparison_panel_id": benchmark_panel["panel_id"],
+        "same_oof_rows_and_dates_required": True,
+        "baseline_owner": "l4_alpha_ev",
+        "challenger_top_trade_ev_lcb90": top_trade_ev_lcb90,
+        "decision": champion_comparison.get("decision"),
+    }
     component_failed_gates = [
-        f"{component}:{gate}"
-        for component, model in (
-            ("selection", selection_model),
-            ("execution", execution_model),
-            ("execution_probability", execution_probability_model),
-        )
-        for gate in (model.get("failed_gates") or [])
+        f"residual_adjustment:{gate}"
+        for gate in (residual_model.get("failed_gates") or [])
     ]
     maturity_policy = _fusion_maturity_policy(diagnostics)
     data_validity_failed_gates: list[str] = []
-    if int(diagnostics.get("sample_count") or 0) < VALIDATION_MIN_SAMPLES:
+    if int(residual_model.get("sample_count") or 0) < VALIDATION_MIN_SAMPLES:
         data_validity_failed_gates.append("sample_count_below_validation_floor")
-    if int(diagnostics.get("date_count") or 0) < VALIDATION_MIN_DATES:
+    if int(residual_model.get("date_count") or 0) < VALIDATION_MIN_DATES:
         data_validity_failed_gates.append("date_count_below_validation_floor")
     if not benchmark_panel["locked"]:
         data_validity_failed_gates.append("benchmark_panel_identity_mismatch")
@@ -1897,12 +1907,8 @@ def build_allocator_ev_fusion_artifact_from_rows(
         f"multiple_testing:{gate}" for gate in multiple_testing["failed_gates"]
     ]
     economic_utility_failed_gates = [
-        f"{component}:{gate}"
-        for component, model in (
-            ("selection_champion", selection_champion_comparison),
-            ("final_champion", champion_comparison),
-        )
-        for gate in (model.get("failed_gates") or [])
+        f"residual_champion:{gate}"
+        for gate in (champion_comparison.get("failed_gates") or [])
     ]
     failed_gates = [
         *[f"data_validity:{gate}" for gate in data_validity_failed_gates],
@@ -1915,22 +1921,19 @@ def build_allocator_ev_fusion_artifact_from_rows(
         if not data_validity_failed_gates
         and not component_failed_gates
         and not statistical_failed_gates
+        and not economic_utility_failed_gates
         else "FAIL"
     )
     promotion_tier, promotion_blockers = _promotion_tier(
         decision=decision,
         diagnostics=diagnostics,
-        oos_metrics=selection_model["oos_metrics"],
-        walk_forward=selection_model["walk_forward"],
-        execution_model=execution_model,
-        execution_probability_model=execution_probability_model,
-        selection_champion_comparison=selection_champion_comparison,
+        residual_model=residual_model,
         champion_comparison=champion_comparison,
         min_dates=min_dates,
         min_samples=min_samples,
     )
     if decision != "PASS":
-        promotion_blockers = [*data_validity_failed_gates, *component_failed_gates, *statistical_failed_gates]
+        promotion_blockers = [*data_validity_failed_gates, *component_failed_gates, *statistical_failed_gates, *economic_utility_failed_gates]
     validation_packet = {
         "schema_version": "allocator-ev-fusion-validation-packet-v14",
         "decision": decision,
@@ -1944,7 +1947,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
             "forecast_skill": {
                 "decision": "PASS" if not component_failed_gates else "FAIL",
                 "failed_gates": component_failed_gates,
-                "primary_probability_score": "date_clustered_log_loss_advantage_lcb90",
+                "primary_score": "residual_oos_corr_and_spread_lcb90",
             },
             "statistical_validity": multiple_testing,
             "economic_utility": {
@@ -1954,15 +1957,17 @@ def build_allocator_ev_fusion_artifact_from_rows(
             },
         },
         "benchmark_panel": benchmark_panel,
+        "l4_base_comparison": l4_base_comparison,
         "maturity_policy": maturity_policy,
         "multiple_testing": multiple_testing,
         "primary_champion_failed_gates": champion_comparison.get("failed_gates") or [],
         "validation_scope": {
             "owner": "allocator_ev_fusion",
-            "selection_target": "same_date_cross_section_residual_of_five_session_net_return",
+            "base_expected_return_owner": "l4_alpha_ev",
+            "residual_target": "canonical_five_session_net_return_minus_point_in_time_l4_alpha_ev",
+            "final_expected_return": "point_in_time_l4_alpha_ev_plus_validated_residual_adjustment",
             "label_schema_version": LABEL_SCHEMA_VERSION,
-            "execution_probability_target": "next_session_canonical_execution_indicator_by_archetype",
-            "execution_target": "five_session_canonical_lifecycle_net_pnl_when_executed",
+            "s12_execution_targets_role": "shadow_diagnostic_only_not_serving_or_promotion",
             "rowwise_label_coalesce": False,
             "method": "date_clustered_temporal_oos_plus_walk_forward",
             "effective_sample_unit": "prediction_date",
@@ -1974,13 +1979,17 @@ def build_allocator_ev_fusion_artifact_from_rows(
             "purged_signal_date_groups": LABEL_PURGE_DATE_GROUPS,
         },
         "sample_audit": diagnostics,
+        "residual_adjustment_model": residual_model,
         "selection_diagnostic_train_metrics_not_served": selection_model["train_metrics"],
         "selection_diagnostic_oos_metrics_not_served": selection_model["oos_metrics"],
         "selection_diagnostic_walk_forward_not_served": selection_model["walk_forward"],
         "selection_diagnostic_model_not_served": selection_model,
-        "conditional_execution_return_model": execution_model,
-        "execution_probability_model": execution_probability_model,
         "selection_diagnostic_comparison_not_served": selection_champion_comparison,
+        "shadow_diagnostics": {
+            "promotion_effect": False,
+            "conditional_execution_return_model": execution_model,
+            "execution_probability_model": execution_probability_model,
+        },
         "champion_comparison": champion_comparison,
         "promotion": {
             "schema_version": "allocator-ev-fusion-promotion-v4",
@@ -1992,29 +2001,23 @@ def build_allocator_ev_fusion_artifact_from_rows(
                 "min_oos_dates": PRIMARY_MIN_OOS_DATES,
                 "effective_sample_unit": "prediction_date",
                 "min_samples": max(min_samples, PRIMARY_MIN_SAMPLES),
-                "min_execution_samples": PRIMARY_MIN_S12_AVAILABLE_SAMPLES,
-                "min_execution_dates": PRIMARY_MIN_S12_AVAILABLE_DATES,
                 "candidate_time_s12_features_forbidden": True,
+                "s12_shadow_diagnostics_have_promotion_effect": False,
                 "min_l4_point_in_time_samples": PRIMARY_MIN_L4_PIT_SAMPLES,
                 "min_l4_point_in_time_dates": PRIMARY_MIN_L4_PIT_DATES,
-                "min_market_context_samples": PRIMARY_MIN_MARKET_CONTEXT_SAMPLES,
-                "min_market_context_dates": PRIMARY_MIN_MARKET_CONTEXT_DATES,
-                "min_sector_alpha_samples": PRIMARY_MIN_SECTOR_ALPHA_SAMPLES,
-                "min_sector_alpha_dates": PRIMARY_MIN_SECTOR_ALPHA_DATES,
-                "execution_expert_validation_passed": True,
-                "final_top_trade_ev_lcb90_positive": True,
+                "optional_context_features_gate_only_when_supported_by_training_window": True,
+                "residual_adjustment_model_validation_passed": True,
+                "final_top_five_session_ev_lcb90_positive": True,
                 "supported_regime_upper_bound_not_negative": True,
-                "execution_probability_validation_passed": True,
-                "paired_canonical_l4_champion_comparison_passed": True,
-                "top_bucket_return_positive": True,
-                "top_bottom_spread_positive": True,
-                "oos_corr_positive": True,
-                "walk_forward_passed": True,
+                "paired_same_contract_canonical_l4_comparison_passed": True,
+                "residual_walk_forward_passed": True,
+                "recent_two_oos_dates_not_jointly_inferior": True,
+                "multiple_testing_gate_passed": True,
             },
         },
     }
     artifact = {
-        "schema_version": "allocator-ev-fusion-artifact-v13",
+        "schema_version": "allocator-ev-fusion-artifact-v14",
         "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
         "feature_semantic_version": FEATURE_SEMANTIC_VERSION,
         "label_schema_version": LABEL_SCHEMA_VERSION,
@@ -2031,22 +2034,26 @@ def build_allocator_ev_fusion_artifact_from_rows(
         "operational_parity_required": generation_mode == "purged_oof",
         "promotion_blockers": promotion_blockers,
         "validation_packet": validation_packet,
-        "resolver_method": "day_t_causal_s12_policy_value_hurdle_fusion",
-        "model_version": f"allocator-ev-fusion-policy-value-v13-{trained_until.replace('-', '')}",
-        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v13-day-t-causal",
-        "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
+        "resolver_method": "day_t_causal_l4_residual_overlay",
+        "model_version": f"allocator-ev-fusion-residual-v14-{trained_until.replace('-', '')}",
+        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v14-day-t-causal",
+        "expected_return_semantic": "l4_base_expected_return_plus_validated_residual_adjustment",
+        "base_expected_return_owner": "l4_alpha_ev",
+        "comparison_baseline_artifact_id": L4_BASELINE_ARTIFACT_ID,
         "trained_until": trained_until,
         "horizon_days": 5,
         "cost_model_bps": cost_model_bps,
         "output_is_net_of_costs": True,
-        "feature_names": FEATURE_NAMES,
-        "policy_value_head_count": 2,
-        "policy_value_heads": ["execution_probability_model", "conditional_execution_return_model"],
-        "conditional_execution_return_model": {**execution_model, "head_semantic": "conditional_execution_return_model"},
-        "execution_probability_model": {**execution_probability_model, "head_semantic": "execution_probability_model"},
-        "output_clip": {"min": -0.08, "max": 0.08},
+        "feature_names": residual_model.get("feature_names") or RESIDUAL_FEATURE_NAMES,
+        "policy_value_head_count": 1,
+        "policy_value_heads": ["residual_adjustment_model"],
+        "residual_adjustment_model": {
+            **residual_model,
+            "head_semantic": "canonical_five_session_net_return_minus_point_in_time_l4_alpha_ev",
+        },
+        "residual_output_clip": {"min": -0.08, "max": 0.08},
         "training_data": {
-            "source": "as-of ScoreV2/L4/market snapshots joined to next-session canonical S12 replay policy outcomes",
+            "source": "as-of ScoreV2/L4/market snapshots joined to canonical five-session price-horizon outcomes",
             "trained_until": trained_until,
             "knowledge_cutoff_date": knowledge_cutoff_date or trained_until,
             "generated_at": datetime.now(timezone.utc).isoformat(),

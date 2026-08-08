@@ -1555,8 +1555,8 @@ def archive_ev_shadow_evaluation_packets(
             "oof_date_count": len(dates),
             "oof_row_count": forward_row_count,
             "quality_decision": str(
-                validation.get("quality_decision_before_shadow_policy")
-                or validation.get("decision")
+                validation.get("decision")
+                or validation.get("quality_decision_before_shadow_policy")
                 or "PENDING"
             ).upper(),
             "policy_decision": "shadow_only",
@@ -1685,6 +1685,9 @@ def archive_ev_candidate_artifacts(
             "offline_gate_failed_gates": json.dumps(validation.get("failed_gates") or []),
             "offline_evidence_json": json.dumps({
                 "cohort_id": cohort_id,
+                "artifact_contract_version": artifact.get("artifact_contract_version"),
+                "feature_semantic_version": artifact.get("feature_semantic_version"),
+                "label_schema_version": artifact.get("label_schema_version"),
                 "validation_packet": validation,
                 "training_data": artifact.get("training_data"),
             }, ensure_ascii=False),

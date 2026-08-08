@@ -1,6 +1,6 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
-import { runExternalEvidenceMaterialize } from './controllerResearchWorkflows'
+import { runExternalEvidenceMaterializeDetailed } from './controllerResearchWorkflows'
 import { runWithMaintenanceLease, summarizeMaintenanceLeaseResult } from './maintenanceLease'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 
@@ -39,14 +39,53 @@ export async function runWeeklyCleanupClosure(
   return `weekly_cleanup_v2 cleanup=${JSON.stringify(cleanup)} maintenance=${JSON.stringify(maintenance)} lifecycle dry-run=${String(lifecycle)}`
 }
 
-async function runDurableTask(task: NonNullable<UpdateQueueMsg['scheduledTask']>, env: Bindings, runDate: string): Promise<string> {
-  if (task === 'external-evidence') return runExternalEvidenceMaterialize(env, runDate)
-  return summarizeMaintenanceLeaseResult(await runWithMaintenanceLease(env.DB, {
-    taskName: 'weekly-cleanup',
-    leaseGroup: 'd1_heavy_maintenance',
-    leaseSeconds: 300,
-    run: () => runWeeklyCleanupClosure(env),
-  }))
+type DurableTaskResult = {
+  summary: string
+  receipt?: Record<string, unknown>
+  d1Stats?: Record<string, unknown>
+}
+
+async function putTerminalReceipt(
+  kv: KVNamespace,
+  task: string,
+  runDate: string,
+  runId: string,
+  result: DurableTaskResult,
+): Promise<void> {
+  await kv.put(
+    'scheduler:terminal:' + task + ':' + runDate,
+    JSON.stringify({
+      schema_version: 'scheduler_terminal_receipt_v1',
+      task,
+      run_date: runDate,
+      run_id: runId,
+      status: 'success',
+      summary: result.summary,
+      materialization_receipt: result.receipt ?? null,
+      d1_stats: result.d1Stats ?? null,
+      completed_at: new Date().toISOString(),
+    }),
+    { expirationTtl: 30 * 86400 },
+  )
+}
+
+async function runDurableTask(
+  task: NonNullable<UpdateQueueMsg['scheduledTask']>,
+  env: Bindings,
+  runDate: string,
+): Promise<DurableTaskResult> {
+  if (task === 'external-evidence') {
+    const result = await runExternalEvidenceMaterializeDetailed(env, runDate)
+    return { summary: result.summary, receipt: result.receipt, d1Stats: result.d1Stats }
+  }
+  return {
+    summary: summarizeMaintenanceLeaseResult(await runWithMaintenanceLease(env.DB, {
+      taskName: 'weekly-cleanup',
+      leaseGroup: 'd1_heavy_maintenance',
+      leaseSeconds: 300,
+      run: () => runWeeklyCleanupClosure(env),
+    })),
+  }
 }
 
 export async function processDurableSchedulerTask(msg: UpdateQueueMsg, env: Bindings): Promise<void> {
@@ -59,17 +98,23 @@ export async function processDurableSchedulerTask(msg: UpdateQueueMsg, env: Bind
   const startedAt = Date.now()
 
   try {
-    const summary = await runDurableTask(task, env, runDate)
-    const status = classifySchedulerSummary(summary)
+    const taskResult = await runDurableTask(task, env, runDate)
+    const status = classifySchedulerSummary(taskResult.summary)
     const result = {
       status,
-      summary,
+      summary: taskResult.summary,
+      details: taskResult.receipt
+        ? ['materialization_receipt=' + JSON.stringify(taskResult.receipt)]
+        : undefined,
       duration_ms: Date.now() - startedAt,
       run_id: runId,
       run_date: runDate,
     } as const
     await logSchedulerResult(env.KV, task, result, env)
-    await putManualRunLog(env.KV, task, runId, result)
+    await putManualRunLog(env.KV, task, runId, { ...result, ...taskResult })
+    if (status === 'success') {
+      await putTerminalReceipt(env.KV, task, runDate, runId, taskResult)
+    }
   } catch (error) {
     const summary = error instanceof Error ? error.message : String(error)
     const result = {

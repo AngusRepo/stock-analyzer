@@ -99,6 +99,7 @@ const TASK_NAMES: Record<string, string> = {
   'active8-oof-weekly': 'Active-8 OOF Weekly Cohort',
   'active8-oof-monthly': 'Active-8 OOF Monthly Cohort',
   'weekly-cleanup': 'Weekly Cleanup',
+  'external-evidence': 'External Evidence',
   'weekly-backtest': 'Weekly Backtest/MC',
   'alpha-quality': 'Alpha Quality',
   'weekly-optuna': 'Weekly Optuna',

@@ -993,6 +993,12 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         "materialization_policy_version": OOF_PIT_ELIGIBILITY_POLICY_VERSION,
         "status": "materialized",
         "cadence": "daily",
+        "calendar": {
+            "cutoff": "2026-08-07",
+            "prep_manifest_checksum": "a" * 64,
+            "mature_max_date": "2026-07-31",
+            "mature_dates": 111,
+        },
         "evidence_closure": {
             "materialized": True,
             "candidate_artifacts": True,
@@ -1006,6 +1012,23 @@ def test_oof_lifecycle_receipt_is_bound_to_active_materialization_policy():
         current,
         cadence="daily",
         require_full_fit=False,
+    )
+    assert _oof_lifecycle_receipt_matches_active_policy(
+        current,
+        cadence="daily",
+        require_full_fit=False,
+        expected_calendar=current["calendar"],
+    )
+    assert not _oof_lifecycle_receipt_matches_active_policy(
+        current,
+        cadence="daily",
+        require_full_fit=False,
+        expected_calendar={
+            **current["calendar"],
+            "prep_manifest_checksum": "b" * 64,
+            "mature_max_date": "2026-08-01",
+            "mature_dates": 112,
+        },
     )
     assert not _oof_lifecycle_receipt_matches_active_policy({
         **current,

@@ -114,6 +114,8 @@ export async function loadExternalEvidenceRiskOverlays(
       const params = [
         date,
         date,
+        date,
+        date,
         ...chunk.map(symbol => `%"${symbol}"%`),
       ]
       const { results } = await db.prepare(`
@@ -123,6 +125,14 @@ export async function loadExternalEvidenceRiskOverlays(
          WHERE accepted = 1
            AND date(published_at) >= date(?, '-10 days')
            AND date(published_at) <= date(?)
+           AND EXISTS (
+             SELECT 1
+               FROM source_quality_metrics quality
+              WHERE quality.source = external_evidence_items.source_id
+                AND date(quality.as_of_date) >= date(?, '-4 days')
+                AND date(quality.as_of_date) <= date(?)
+                AND quality.freshness_status IN ('present', 'degraded_context_only')
+           )
            AND (${symbolPredicates})
          ORDER BY source_quality_score DESC, entity_linking_confidence DESC, published_at DESC
          LIMIT 240

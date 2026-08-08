@@ -5,6 +5,8 @@ import os
 import re
 import ssl
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -40,29 +42,78 @@ GENERATED_AT = datetime.now(timezone.utc).isoformat()
 SSL_CTX = ssl._create_unverified_context()
 UA = "Mozilla/5.0 StockVision/4.1 ExternalEvidenceMaterializer"
 
+D1_MAX_BOUND_PARAMS = 90
+D1_MAX_ATTEMPTS = 4
+D1_RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
+D1_STATS: dict[str, int] = {
+    "logical_queries": 0,
+    "http_attempts": 0,
+    "retries": 0,
+    "write_batches": 0,
+    "rows_submitted": 0,
+}
+
+
+def reset_d1_stats() -> None:
+    for key in D1_STATS:
+        D1_STATS[key] = 0
+
 
 def d1(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
-    req = urllib.request.Request(
-        D1_ENDPOINT,
-        data=json.dumps({"sql": sql, "params": params or []}).encode("utf-8"),
-        headers={"Authorization": f"Bearer {CF_TOKEN}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")
-        raise RuntimeError(f"D1 HTTP {exc.code}: {detail[:1200]}") from exc
-    if not body.get("success"):
-        raise RuntimeError(json.dumps(body, ensure_ascii=False)[:1000])
-    result = body.get("result") or []
-    if not result:
-        return []
-    first = result[0]
-    if not first.get("success", True):
-        raise RuntimeError(json.dumps(first, ensure_ascii=False)[:1000])
-    return first.get("results") or []
+    D1_STATS["logical_queries"] += 1
+    request_body = json.dumps({"sql": sql, "params": params or []}).encode("utf-8")
+    last_error: Exception | None = None
+    for attempt in range(D1_MAX_ATTEMPTS):
+        D1_STATS["http_attempts"] += 1
+        req = urllib.request.Request(
+            D1_ENDPOINT,
+            data=request_body,
+            headers={"Authorization": f"Bearer {CF_TOKEN}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            if not body.get("success"):
+                message = json.dumps(body, ensure_ascii=False)[:1200]
+                retryable_body = any(
+                    marker in message.lower()
+                    for marker in ("overloaded", "rate limit", "temporarily unavailable", '"code": 7429')
+                )
+                if retryable_body and attempt + 1 < D1_MAX_ATTEMPTS:
+                    raise urllib.error.URLError(message)
+                raise RuntimeError(message)
+            result = body.get("result") or []
+            if not result:
+                return []
+            first = result[0]
+            if not first.get("success", True):
+                raise RuntimeError(json.dumps(first, ensure_ascii=False)[:1000])
+            return first.get("results") or []
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")
+            last_error = RuntimeError(f"D1 HTTP {exc.code}: {detail[:1200]}")
+            retryable = exc.code in D1_RETRYABLE_HTTP_CODES
+        except urllib.error.URLError as exc:
+            last_error = RuntimeError(f"D1 transport error: {exc.reason}")
+            retryable = True
+        if not retryable or attempt + 1 >= D1_MAX_ATTEMPTS:
+            raise last_error
+        D1_STATS["retries"] += 1
+        time.sleep(2**attempt)
+    raise last_error or RuntimeError("D1 request failed")
+
+
+def chunks(rows: list[dict[str, Any]], columns_per_row: int) -> list[list[dict[str, Any]]]:
+    batch_size = max(1, D1_MAX_BOUND_PARAMS // columns_per_row)
+    return [rows[index:index + batch_size] for index in range(0, len(rows), batch_size)]
+
+
+def dedupe_rows(rows: list[dict[str, Any]], keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    unique: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in rows:
+        unique[tuple(row.get(key) for key in keys)] = row
+    return list(unique.values())
 
 
 def resolve_run_dates() -> None:
@@ -589,53 +640,61 @@ def build_stock_features(
 
 
 def upsert_external(rows: list[dict[str, Any]]) -> None:
-    for row in rows:
+    columns = (
+        "source_id", "source_kind", "title", "published_at", "source_url", "symbols_json", "themes_json",
+        "allowed_use", "decision_effect", "source_quality_score", "entity_linking_confidence",
+        "spam_filter_status", "accepted", "packet_checksum", "raw_json",
+    )
+    unique_rows = dedupe_rows(rows, ("source_id", "source_url", "published_at"))
+    for batch in chunks(unique_rows, len(columns)):
+        values = ", ".join(["(" + ", ".join(["?"] * len(columns)) + ")"] * len(batch))
+        params = [row.get(column) for row in batch for column in columns]
         d1(
-            """
+            f"""
+            WITH incoming ({", ".join(columns)}) AS (
+              VALUES {values}
+            )
             INSERT INTO external_evidence_items (
               source_id, source_kind, title, published_at, source_url, symbols_json, themes_json,
               allowed_use, decision_effect, source_quality_score, entity_linking_confidence,
               spam_filter_status, accepted, packet_checksum, raw_json
             )
-            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            WHERE NOT EXISTS (
-              SELECT 1 FROM external_evidence_items
-              WHERE source_id = ? AND source_url = ? AND published_at = ?
-              LIMIT 1
-            )
+            SELECT i.source_id, i.source_kind, i.title, i.published_at, i.source_url,
+                   i.symbols_json, i.themes_json, i.allowed_use, i.decision_effect,
+                   i.source_quality_score, i.entity_linking_confidence, i.spam_filter_status,
+                   i.accepted, i.packet_checksum, i.raw_json
+              FROM incoming i
+             WHERE NOT EXISTS (
+               SELECT 1
+                 FROM external_evidence_items existing
+                WHERE existing.source_id = i.source_id
+                  AND existing.source_url = i.source_url
+                  AND existing.published_at = i.published_at
+                LIMIT 1
+             )
             """,
-            [
-                row.get("source_id"),
-                row.get("source_kind"),
-                row.get("title"),
-                row.get("published_at"),
-                row.get("source_url"),
-                row.get("symbols_json"),
-                row.get("themes_json"),
-                row.get("allowed_use"),
-                row.get("decision_effect"),
-                row.get("source_quality_score"),
-                row.get("entity_linking_confidence"),
-                row.get("spam_filter_status"),
-                row.get("accepted"),
-                row.get("packet_checksum"),
-                row.get("raw_json"),
-                row.get("source_id"),
-                row.get("source_url"),
-                row.get("published_at"),
-            ],
+            params,
         )
+        D1_STATS["write_batches"] += 1
+        D1_STATS["rows_submitted"] += len(batch)
 
 
 def upsert_theme(rows: list[dict[str, Any]]) -> None:
-    for row in rows:
+    columns = (
+        "date", "concept", "source", "score", "sentiment_avg", "evidence_count", "symbols_json",
+        "top_titles", "allowed_use", "decision_effect", "generated_at",
+    )
+    unique_rows = dedupe_rows(rows, ("date", "concept", "source"))
+    for batch in chunks(unique_rows, len(columns)):
+        values = ", ".join(["(" + ", ".join(["?"] * len(columns)) + ")"] * len(batch))
+        params = [row.get(column) for row in batch for column in columns]
         d1(
-            """
+            f"""
             INSERT INTO theme_signals (
               date, concept, source, score, sentiment_avg, evidence_count, symbols_json,
               top_titles, allowed_use, decision_effect, generated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES {values}
             ON CONFLICT(date, concept, source) DO UPDATE SET
               score=excluded.score,
               sentiment_avg=excluded.sentiment_avg,
@@ -646,31 +705,28 @@ def upsert_theme(rows: list[dict[str, Any]]) -> None:
               decision_effect=excluded.decision_effect,
               generated_at=excluded.generated_at
             """,
-            [
-                row.get("date"),
-                row.get("concept"),
-                row.get("source"),
-                row.get("score"),
-                row.get("sentiment_avg"),
-                row.get("evidence_count"),
-                row.get("symbols_json"),
-                row.get("top_titles"),
-                row.get("allowed_use"),
-                row.get("decision_effect"),
-                row.get("generated_at"),
-            ],
+            params,
         )
+        D1_STATS["write_batches"] += 1
+        D1_STATS["rows_submitted"] += len(batch)
 
 
 def upsert_features(rows: list[dict[str, Any]]) -> None:
-    for row in rows:
+    columns = (
+        "date", "symbol", "concept", "score", "evidence_count", "source_breakdown_json",
+        "top_titles", "generated_at",
+    )
+    unique_rows = dedupe_rows(rows, ("date", "symbol", "concept"))
+    for batch in chunks(unique_rows, len(columns)):
+        values = ", ".join(["(" + ", ".join(["?"] * len(columns)) + ")"] * len(batch))
+        params = [row.get(column) for row in batch for column in columns]
         d1(
-            """
+            f"""
             INSERT INTO stock_theme_features (
               date, symbol, concept, score, evidence_count, source_breakdown_json,
               top_titles, generated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES {values}
             ON CONFLICT(date, symbol, concept) DO UPDATE SET
               score=excluded.score,
               evidence_count=excluded.evidence_count,
@@ -678,17 +734,10 @@ def upsert_features(rows: list[dict[str, Any]]) -> None:
               top_titles=excluded.top_titles,
               generated_at=excluded.generated_at
             """,
-            [
-                row.get("date"),
-                row.get("symbol"),
-                row.get("concept"),
-                row.get("score"),
-                row.get("evidence_count"),
-                row.get("source_breakdown_json"),
-                row.get("top_titles"),
-                row.get("generated_at"),
-            ],
+            params,
         )
+        D1_STATS["write_batches"] += 1
+        D1_STATS["rows_submitted"] += len(batch)
 
 
 def upsert_quality(
@@ -708,8 +757,14 @@ def upsert_quality(
         missing_rate = 0.5
     if rows > 0 and latest:
         parsed_date = str(latest)[:10]
-        if re.match(r"^\d{4}-\d{2}-\d{2}$", parsed_date) and parsed_date < "2026-04-18":
-            freshness_status = "stale"
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", parsed_date):
+            try:
+                latest_day = datetime.fromisoformat(parsed_date).date()
+                as_of_day = datetime.fromisoformat(AS_OF_DATE[:10]).date()
+                if latest_day < as_of_day - timedelta(days=4):
+                    freshness_status = "stale"
+            except ValueError:
+                freshness_status = "invalid_date"
     d1(
         """
         INSERT INTO source_quality_metrics (
@@ -741,7 +796,46 @@ def upsert_quality(
     )
 
 
-def main() -> None:
+def build_materialization_receipt(
+    expected_theme_rows: int,
+    expected_feature_rows: int,
+) -> dict[str, Any]:
+    rows = d1(
+        """
+        SELECT
+          (SELECT COUNT(*) FROM theme_signals WHERE generated_at=?) AS theme_rows,
+          (SELECT COUNT(*) FROM stock_theme_features WHERE generated_at=?) AS feature_rows,
+          (SELECT COUNT(*) FROM source_quality_metrics
+            WHERE as_of_date=?
+              AND source IN ('official_rss','company_ir_rss','gdelt_events')) AS quality_rows
+        """,
+        [GENERATED_AT, GENERATED_AT, AS_OF_DATE],
+    )
+    actual = rows[0] if rows else {}
+    actual_theme = int(actual.get("theme_rows") or 0)
+    actual_features = int(actual.get("feature_rows") or 0)
+    quality_rows = int(actual.get("quality_rows") or 0)
+    ready = (
+        actual_theme == expected_theme_rows
+        and actual_features == expected_feature_rows
+        and quality_rows == 3
+    )
+    return {
+        "status": "ready" if ready else "incomplete",
+        "target_date": TARGET_DATE,
+        "as_of_date": AS_OF_DATE,
+        "generated_at": GENERATED_AT,
+        "expected_theme_rows": expected_theme_rows,
+        "actual_theme_rows": actual_theme,
+        "expected_feature_rows": expected_feature_rows,
+        "actual_feature_rows": actual_features,
+        "source_quality_rows": quality_rows,
+    }
+
+
+def main() -> dict[str, Any]:
+    started = time.perf_counter()
+    reset_d1_stats()
     d1("SELECT 1 AS ok")
     resolve_run_dates()
     recommendations = d1(
@@ -812,6 +906,15 @@ def main() -> None:
             root = "no_accepted_rows"
         upsert_quality(source, dataset, by_source.get(source, 0), latest_by_source.get(source), avg_confidence, root)
 
+    expected_theme_rows = len(dedupe_rows(theme_rows, ("date", "concept", "source")))
+    expected_feature_rows = len(dedupe_rows(feature_rows, ("date", "symbol", "concept")))
+    materialization_receipt = build_materialization_receipt(expected_theme_rows, expected_feature_rows)
+    if materialization_receipt["status"] != "ready":
+        raise RuntimeError(
+            "external evidence materialization incomplete: "
+            + json.dumps(materialization_receipt, ensure_ascii=False, sort_keys=True)
+        )
+
     post = d1(
         """
         SELECT source_id, COUNT(*) AS rows,
@@ -831,30 +934,30 @@ def main() -> None:
         ORDER BY source, dataset
         """
     )
-    print(
-        json.dumps(
-            {
-                "target_date": TARGET_DATE,
-                "recommendation_symbols": len(symbols),
-                "official_items_built": len(official_items),
-                "company_ir_items_built": len(company_ir_items),
-                "company_ir_status": company_ir_status,
-                "gdelt_items_built": len(gdelt_items),
-                "gdelt_status": gdelt_status,
-                "packet_quality": packet.get("quality_summary"),
-                "evidence_rows_written_or_existing": len(evidence_rows),
-                "external_theme_rows_upserted": len(external_theme_rows),
-                "finlab_taxonomy_theme_rows_upserted": len(taxonomy_theme_rows),
-                "theme_rows_upserted": len(theme_rows),
-                "stock_theme_features_upserted": len(feature_rows),
-                "post_external_evidence_by_source": post,
-                "source_quality_metrics": quality,
-            },
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-    )
+    result = {
+        "status": "ok",
+        "target_date": TARGET_DATE,
+        "as_of_date": AS_OF_DATE,
+        "recommendation_symbols": len(symbols),
+        "official_items_built": len(official_items),
+        "company_ir_items_built": len(company_ir_items),
+        "company_ir_status": company_ir_status,
+        "gdelt_items_built": len(gdelt_items),
+        "gdelt_status": gdelt_status,
+        "packet_quality": packet.get("quality_summary"),
+        "evidence_rows_written_or_existing": len(evidence_rows),
+        "external_theme_rows_upserted": len(external_theme_rows),
+        "finlab_taxonomy_theme_rows_upserted": len(taxonomy_theme_rows),
+        "theme_rows_upserted": len(theme_rows),
+        "stock_theme_features_upserted": len(feature_rows),
+        "post_external_evidence_by_source": post,
+        "source_quality_metrics": quality,
+        "materialization_receipt": materialization_receipt,
+        "d1_stats": dict(D1_STATS),
+        "duration_ms": int((time.perf_counter() - started) * 1000),
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return result
 
 
 if __name__ == "__main__":

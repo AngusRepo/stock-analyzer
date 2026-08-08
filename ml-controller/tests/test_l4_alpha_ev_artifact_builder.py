@@ -180,6 +180,8 @@ def test_l4_alpha_ev_artifact_builder_uses_snapshot_date_for_oof_rows():
     audit = out["artifact"]["validation_packet"]["sample_audit"]
     assert audit["sample_count"] == 100
     assert audit["date_count"] == 5
+    assert audit["evidence_max_date"] == "2026-06-05"
+    assert audit["oof_max_date"] is None
 
 
 def test_l4_alpha_ev_artifact_builder_reports_oof_semantic_by_generation_mode():
@@ -209,6 +211,8 @@ def test_l4_alpha_ev_artifact_builder_reports_oof_semantic_by_generation_mode():
 
     audit = out["artifact"]["validation_packet"]["sample_audit"]
     assert audit["ensemble_generation_mode_counts"] == {"purged_oof": 100}
+    assert audit["evidence_max_date"] == "2026-06-05"
+    assert audit["oof_max_date"] == "2026-06-05"
     assert audit["required_ensemble_semantic_version"] == (
         "active8-purged-oof-chronological-ridge-v3"
     )

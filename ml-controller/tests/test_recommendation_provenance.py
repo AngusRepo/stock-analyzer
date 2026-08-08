@@ -219,40 +219,34 @@ def _l4_alpha_ev(value: float, *, method: str = "stacked_meta_calibrator") -> di
 
 def _allocator_ev_fusion_artifact(**overrides) -> dict:
     artifact = {
-        "schema_version": "allocator-ev-fusion-artifact-v13",
-        "artifact_contract_version": "allocator-ev-fusion-contract-v13",
-        "feature_semantic_version": "allocator-ev-fusion-s12-policy-value-day-t-causal-v4-lineage-bound",
+        "schema_version": "allocator-ev-fusion-artifact-v14",
+        "artifact_contract_version": "allocator-ev-fusion-contract-v14",
+        "feature_semantic_version": "allocator-ev-fusion-l4-residual-overlay-day-t-causal-v1-lineage-bound",
         "label_schema_version": "next-session-canonical-adjusted-open-to-fifth-session-canonical-adjusted-close-net-v4",
         "expected_return_owner": "allocator_ev_fusion",
         "promotion_state": "production_primary",
         "promotion_tier": "primary",
         "primary_expected_return_allowed": True,
         "validation_packet": {"decision": "PASS", "failed_gates": []},
-        "resolver_method": "day_t_causal_s12_policy_value_hurdle_fusion",
-        "model_version": "allocator-ev-fusion-20260708",
-        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v13-day-t-causal",
+        "resolver_method": "day_t_causal_l4_residual_overlay",
+        "model_version": "allocator-ev-fusion-residual-v14-20260708",
+        "feature_snapshot_version": "allocator-ev-fusion-feature-snapshot-v14-day-t-causal",
         "trained_until": "2026-07-07",
         "horizon_days": 5,
         "cost_model_bps": 18.0,
         "output_is_net_of_costs": True,
-        "expected_return_semantic": "execution_probability_times_conditional_replay_net_return",
-        "policy_value_head_count": 2,
-        "policy_value_heads": ["execution_probability_model", "conditional_execution_return_model"],
+        "expected_return_semantic": "l4_base_expected_return_plus_validated_residual_adjustment",
+        "base_expected_return_owner": "l4_alpha_ev",
+        "policy_value_head_count": 1,
+        "policy_value_heads": ["residual_adjustment_model"],
         "feature_names": ["l4_expected_return", "l4_available"],
-        "conditional_execution_return_model": {
+        "residual_adjustment_model": {
             "status": "fitted",
             "intercept": 0.0,
-            "coefficients": {"l4_expected_return": 1.0},
-            "head_semantic": "conditional_execution_return_model",
+            "coefficients": {"l4_expected_return": 0.0},
+            "head_semantic": "canonical_five_session_net_return_minus_point_in_time_l4_alpha_ev",
         },
-        "execution_probability_model": {
-            "status": "fitted",
-            "intercept": 40.0,
-            "link_function": "logit",
-            "coefficients": {"l4_available": 0.0},
-            "head_semantic": "execution_probability_model",
-        },
-        "output_clip": {"min": -0.08, "max": 0.08},
+        "residual_output_clip": {"min": -0.08, "max": 0.08},
     }
     artifact.update(overrides)
     return artifact
@@ -791,7 +785,7 @@ def test_sparse_tangent_allocation_marks_signal_source():
     assert allocation["selection_reason"] == "selected_positive_edge_sparse_weight"
     assert allocation["sparse_weight_state"] == "selected_positive_sparse_weight"
     assert allocation["expected_return"] == 0.03
-    assert allocation["expected_return_source"] == "allocator_ev_fusion:day_t_causal_s12_policy_value_hurdle_fusion"
+    assert allocation["expected_return_source"] == "allocator_ev_fusion:day_t_causal_l4_residual_overlay"
     assert allocation["positive_expected_edge"] is True
     assert allocation["eligible_for_sparse"] is True
     assert allocation["allocation_rank"] == 1
@@ -830,7 +824,7 @@ def test_sparse_tangent_allocation_rejects_legacy_row_level_expected_return():
     allocation = promoted[0]["alpha_allocation"]
     assert promoted[0]["signal"] == "HOLD"
     assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["expected_return_owner"] == "risk_abstention"
     assert allocation["positive_expected_edge"] is False
 
 
@@ -958,7 +952,7 @@ def test_sparse_tangent_allocation_explains_missing_expected_return_input():
     assert allocation["selection_reason"] == "not_eligible_for_sparse_input"
     assert allocation["sparse_input_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
     assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_source"] == "allocator_ev_fusion:primary_required_no_expected_return"
+    assert allocation["expected_return_source"] == "l4_alpha_ev_missing_no_expected_return"
     assert allocation["expected_return_owner"] == "risk_abstention"
     assert allocation["allocator_edge_resolver"]["abstention"] is True
     assert allocation["expected_return_abstention"]["candidate_contract"] == "explicit_no_trade_abstention"
@@ -1192,7 +1186,7 @@ def test_sparse_tangent_allocation_blocks_score_only_expected_return_fallback():
     assert promoted[0]["signal"] == "HOLD"
     assert promoted[0].get("sparse_tangent_selected") is not True
     assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_source"] == "allocator_ev_fusion:primary_required_no_expected_return"
+    assert allocation["expected_return_source"] == "l4_alpha_ev_missing_no_expected_return"
     assert allocation["positive_expected_edge"] is False
     assert allocation["selection_reason"] == "not_eligible_for_sparse_input"
     assert allocation["sparse_input_blocked_reason"] == "forecast_pct_missing_no_expected_return_input"
@@ -1241,10 +1235,10 @@ def test_sparse_tangent_allocation_does_not_persist_candidate_time_s12_payload()
     assert promoted[0]["signal"] == "HOLD"
     assert "s12_trade_ev" not in allocation
     assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
-    assert allocation["allocator_edge_resolver"]["conditional_admission_allowed"] is False
-    assert allocation["allocator_edge_resolver"]["execution_policy_label_quality"]["candidate_time_s12_features"] == 0
-    assert allocation["selection_reason"] == "no_positive_expected_edge"
+    assert allocation["expected_return_owner"] == "risk_abstention"
+    assert allocation["allocator_edge_resolver"]["abstention"] is True
+    assert allocation["allocator_edge_resolver"]["candidate_contract"] == "explicit_no_trade_abstention"
+    assert allocation["selection_reason"] == "not_eligible_for_sparse_input"
 
 
 def test_sparse_tangent_allocation_ignores_s12_setup_ev_in_evening_allocation():
@@ -1279,10 +1273,10 @@ def test_sparse_tangent_allocation_ignores_s12_setup_ev_in_evening_allocation():
     allocation = promoted[0]["alpha_allocation"]
     assert promoted[0]["signal"] == "HOLD"
     assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["expected_return_owner"] == "risk_abstention"
     assert "s12_trade_ev" not in allocation
-    assert allocation["allocator_edge_resolver"]["execution_policy_label_quality"]["serving_role"] == "diagnostic_only"
-    assert allocation["allocator_edge_resolver"]["conditional_admission_allowed"] is False
+    assert allocation["allocator_edge_resolver"]["abstention"] is True
+    assert allocation["allocator_edge_resolver"]["candidate_contract"] == "explicit_no_trade_abstention"
 
 
 def test_sparse_tangent_allocation_records_allocator_edge_resolver_without_heat_override():
@@ -1326,14 +1320,14 @@ def test_sparse_tangent_allocation_records_allocator_edge_resolver_without_heat_
     allocation = promoted[0]["alpha_allocation"]
     resolver = allocation["allocator_edge_resolver"]
     assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
-    assert resolver["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["expected_return_owner"] == "risk_abstention"
+    assert resolver["expected_return_owner"] == "risk_abstention"
     assert resolver["expected_return"] == 0.0
-    assert resolver["market_heat_expected_return"] == pytest.approx(0.0088)
-    assert resolver["market_heat_role"] == "diagnostic_context_not_expected_return_owner"
-    assert resolver["adjustment_applied"] is False
-    assert resolver["allocator_edge_quality_score"] > 60
-    assert resolver["conditional_admission_allowed"] is False
+    assert resolver["abstention"] is True
+    assert resolver["candidate_contract"] == "explicit_no_trade_abstention"
+    assert resolver["expected_return_source"] == "l4_alpha_ev_missing_no_expected_return"
+    assert resolver["policy"] == "invalid_or_missing_canonical_l4_means_abstain_without_score_rank_or_s12_fallback"
+    assert resolver["primary_expected_return_available"] is False
     assert "s12_trade_ev" not in allocation
 
 
@@ -1379,8 +1373,8 @@ def test_sparse_tangent_allocation_rejects_positive_candidate_time_s12_as_condit
     assert promoted[0]["signal"] == "HOLD"
     assert allocation["expected_return"] == 0.0
     assert allocation["promotion_conditional_admission"] is False
-    assert allocation["allocator_edge_resolver"]["expected_return_owner"] == "allocator_ev_fusion"
-    assert allocation["allocator_edge_resolver"]["conditional_admission_allowed"] is False
+    assert allocation["allocator_edge_resolver"]["expected_return_owner"] == "risk_abstention"
+    assert allocation["allocator_edge_resolver"]["abstention"] is True
 
 
 def test_sparse_tangent_allocation_ignores_negative_candidate_s12_peer_replay():
@@ -1442,8 +1436,8 @@ def test_sparse_tangent_allocation_ignores_negative_candidate_s12_peer_replay():
     assert promoted[0]["has_buy_signal"] == 0
     assert allocation["selected"] is False
     assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
-    assert allocation["allocator_edge_resolver"]["conditional_admission_allowed"] is False
+    assert allocation["expected_return_owner"] == "risk_abstention"
+    assert allocation["allocator_edge_resolver"]["abstention"] is True
     assert "s12_trade_ev" not in allocation
 
 
@@ -1499,8 +1493,8 @@ def test_sparse_tangent_allocation_does_not_use_positive_peer_replay_as_candidat
     assert promoted[0]["signal"] == "HOLD"
     assert allocation["expected_return"] == 0.0
     assert allocation["promotion_conditional_admission"] is False
-    assert allocation["allocator_edge_resolver"]["conditional_admission_allowed"] is False
-    assert allocation["allocator_edge_resolver"]["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["allocator_edge_resolver"]["abstention"] is True
+    assert allocation["allocator_edge_resolver"]["expected_return_owner"] == "risk_abstention"
 
 
 def test_sparse_tangent_allocation_does_not_accept_market_heat_as_expected_edge():
@@ -1532,7 +1526,7 @@ def test_sparse_tangent_allocation_does_not_accept_market_heat_as_expected_edge(
     assert promoted[0]["signal"] == "HOLD"
     assert promoted[0].get("sparse_tangent_selected") is not True
     assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_source"] == "allocator_ev_fusion:primary_required_no_expected_return"
+    assert allocation["expected_return_source"] == "l4_alpha_ev_missing_no_expected_return"
     assert allocation["market_heat_score"] == pytest.approx(0.82)
     assert allocation["market_heat_expected_return"] == pytest.approx(0.0042)
     assert allocation["positive_expected_edge"] is False
@@ -1568,12 +1562,12 @@ def test_sparse_tangent_allocation_uses_validated_l4_as_fusion_upstream():
     resolver = allocation["allocator_edge_resolver"]
     assert promoted[0]["signal"] == "BUY"
     assert allocation["expected_return"] == pytest.approx(0.021)
-    assert allocation["expected_return_source"] == "allocator_ev_fusion:day_t_causal_s12_policy_value_hurdle_fusion"
+    assert allocation["expected_return_source"] == "allocator_ev_fusion:day_t_causal_l4_residual_overlay"
     assert allocation["expected_return_owner"] == "allocator_ev_fusion"
     assert allocation["l4_alpha_ev"]["validation_decision"] == "PASS"
     assert "s12_trade_ev" not in allocation
     assert resolver["expected_return_owner"] == "allocator_ev_fusion"
-    assert resolver["candidate_contract"] == "production_allocator_ev_fusion_day_t_policy_value"
+    assert resolver["candidate_contract"] == "production_allocator_ev_fusion_l4_residual_overlay"
 
 
 def test_sparse_tangent_allocation_does_not_turn_unvalidated_l4_into_fallback_edge():
@@ -1602,10 +1596,10 @@ def test_sparse_tangent_allocation_does_not_turn_unvalidated_l4_into_fallback_ed
     assert promoted[0]["signal"] == "HOLD"
     assert allocation["selected"] is False
     assert allocation["expected_return"] == 0.0
-    assert allocation["expected_return_source"] == "allocator_ev_fusion:day_t_causal_s12_policy_value_hurdle_fusion"
+    assert allocation["expected_return_source"] == "l4_alpha_ev:stacked_meta_calibrator_validation_failed_no_expected_return"
     assert "validation_packet_not_pass" in allocation["l4_alpha_ev"]["blockers"]
-    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
-    assert allocation["allocator_edge_resolver"]["conditional_admission_allowed"] is False
+    assert allocation["expected_return_owner"] == "risk_abstention"
+    assert allocation["allocator_edge_resolver"]["abstention"] is True
     assert "empirical_bucket_not_production_alpha_ev_owner" in allocation["l4_alpha_ev"]["blockers"]
 
 
@@ -1703,11 +1697,11 @@ def test_sparse_tangent_allocation_uses_allocator_ev_fusion_when_artifact_is_con
     assert allocation["l4_alpha_ev"]["expected_return_owner"] == "l4_alpha_ev"
     assert "s12_trade_ev" not in allocation
     assert resolver["expected_return_owner"] == "allocator_ev_fusion"
-    assert resolver["candidate_contract"] == "production_allocator_ev_fusion_day_t_policy_value"
+    assert resolver["candidate_contract"] == "production_allocator_ev_fusion_l4_residual_overlay"
     assert resolver["conditional_admission_allowed"] is False
 
 
-def test_sparse_tangent_allocation_rejects_legacy_assistive_fusion_state():
+def test_sparse_tangent_allocation_abstains_assistive_fusion_to_valid_l4():
     s12_payload = {
         "schema_version": "s12-trade-ev-v1",
         "status": "loaded",
@@ -1746,16 +1740,18 @@ def test_sparse_tangent_allocation_rejects_legacy_assistive_fusion_state():
     )
 
     allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert allocation["expected_return_owner"] == "risk_abstention"
-    assert allocation["expected_return"] == 0.0
+    assert promoted[0]["signal"] == "BUY"
+    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["expected_return"] == pytest.approx(0.018)
     assert allocation["allocator_ev_fusion"]["status"] == "rejected"
     assert allocation["allocator_ev_fusion"]["promotion_tier"] == "assistive"
     assert allocation["allocator_ev_fusion"]["primary_expected_return_allowed"] is False
     assert "production_approval_missing" in allocation["allocator_ev_fusion"]["blockers"]
+    assert allocation["allocator_ev_fusion"]["overlay_status"] == "abstained"
+    assert allocation["allocator_ev_fusion"]["fusion_residual_adjustment"] == 0.0
 
 
-def test_fusion_rejects_legacy_third_head_and_candidate_time_s12_features():
+def test_legacy_fusion_heads_are_rejected_without_discarding_valid_l4():
     rows = [{
         "symbol": "3661",
         "chip_score": 22.0,
@@ -1798,15 +1794,16 @@ def test_fusion_rejects_legacy_third_head_and_candidate_time_s12_features():
     )
 
     allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert allocation["expected_return_owner"] == "risk_abstention"
-    assert allocation["expected_return"] == 0.0
+    assert promoted[0]["signal"] == "BUY"
+    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["expected_return"] == pytest.approx(0.018)
     assert allocation["allocator_ev_fusion"]["status"] == "rejected"
     assert "third_selection_serving_head_forbidden" in allocation["allocator_ev_fusion"]["blockers"]
-    assert any(blocker.startswith("candidate_time_s12_feature_forbidden:") for blocker in allocation["allocator_ev_fusion"]["blockers"])
+    assert "legacy_s12_serving_heads_forbidden" in allocation["allocator_ev_fusion"]["blockers"]
+    assert allocation["allocator_ev_fusion"]["overlay_status"] == "abstained"
 
 
-def test_sparse_tangent_allocation_fails_closed_when_allocator_ev_fusion_artifact_is_invalid():
+def test_sparse_tangent_allocation_abstains_invalid_fusion_to_valid_l4():
     rows = [{
         "symbol": "3661",
         "chip_score": 22.0,
@@ -1841,12 +1838,13 @@ def test_sparse_tangent_allocation_fails_closed_when_allocator_ev_fusion_artifac
     )
 
     allocation = promoted[0]["alpha_allocation"]
-    assert promoted[0]["signal"] == "HOLD"
-    assert allocation["expected_return_owner"] == "risk_abstention"
-    assert allocation["expected_return"] == pytest.approx(0.0)
+    assert promoted[0]["signal"] == "BUY"
+    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["expected_return"] == pytest.approx(0.018)
     assert allocation["allocator_ev_fusion"]["status"] == "rejected"
     assert "validation_packet_not_pass" in allocation["allocator_ev_fusion"]["blockers"]
     assert "third_selection_serving_head_forbidden" in allocation["allocator_ev_fusion"]["blockers"]
+    assert allocation["allocator_ev_fusion"]["overlay_status"] == "abstained"
 
 
 def test_sparse_tangent_allocation_rejects_legacy_safe_abstention_baseline_without_s12_fallback():

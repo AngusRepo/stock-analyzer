@@ -6,6 +6,7 @@ import io
 import json
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -14,6 +15,7 @@ from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/external-evidence", tags=["external-evidence"])
+_MATERIALIZE_LOCK = threading.Lock()
 
 
 class ExternalEvidenceMaterializeRequest(BaseModel):
@@ -24,6 +26,12 @@ class ExternalEvidenceMaterializeRequest(BaseModel):
 
 
 def _parse_last_json(stdout: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(stdout)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
     for line in reversed([line.strip() for line in stdout.splitlines() if line.strip()]):
         try:
             parsed = json.loads(line)
@@ -62,6 +70,9 @@ def materialize_external_evidence(req: ExternalEvidenceMaterializeRequest = Body
         if path and path not in sys.path:
             sys.path.insert(0, path)
 
+    if not _MATERIALIZE_LOCK.acquire(timeout=5):
+        raise HTTPException(status_code=409, detail="external evidence materializer already running")
+
     old_target = os.environ.get("TARGET_DATE")
     old_as_of = os.environ.get("AS_OF_DATE")
     try:
@@ -82,9 +93,9 @@ def materialize_external_evidence(req: ExternalEvidenceMaterializeRequest = Body
         started = time.time()
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
-            module.main()
+            result = module.main()
         output = stdout.getvalue()
-        parsed = _parse_last_json(output)
+        parsed = result if isinstance(result, dict) else _parse_last_json(output)
         gdelt_quality = next(
             (
                 row for row in parsed.get("source_quality_metrics", [])
@@ -101,6 +112,8 @@ def materialize_external_evidence(req: ExternalEvidenceMaterializeRequest = Body
             "gdelt_status": parsed.get("gdelt_status"),
             "gdelt_items_built": parsed.get("gdelt_items_built"),
             "stock_theme_features_upserted": parsed.get("stock_theme_features_upserted"),
+            "materialization_receipt": parsed.get("materialization_receipt"),
+            "d1_stats": parsed.get("d1_stats"),
             "source_quality_root_cause": gdelt_quality.get("metrics_json") if isinstance(gdelt_quality, dict) else None,
             "summary": parsed,
             "stdout_tail": output[-4000:],
@@ -118,3 +131,4 @@ def materialize_external_evidence(req: ExternalEvidenceMaterializeRequest = Body
             os.environ.pop("AS_OF_DATE", None)
         else:
             os.environ["AS_OF_DATE"] = old_as_of
+        _MATERIALIZE_LOCK.release()

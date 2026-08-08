@@ -151,6 +151,7 @@ export async function loadRecommendationEvidenceLinks(
       const symbolPredicates = chunk.map(() => 'symbols_json LIKE ?').join(' OR ')
       const params = [
         date,
+        date,
         ...chunk.map((symbol) => `%"${symbol}"%`),
       ]
       const { results } = await db.prepare(`
@@ -159,6 +160,7 @@ export async function loadRecommendationEvidenceLinks(
           FROM external_evidence_items
          WHERE accepted = 1
            AND date(published_at) >= date(?, '-10 days')
+           AND date(published_at) <= date(?)
            AND source_id IN ('ptt', 'anue', 'd1_news', 'official_rss', 'company_ir_rss', 'gdelt_events')
            AND (${symbolPredicates})
          ORDER BY source_quality_score DESC, entity_linking_confidence DESC, published_at DESC
@@ -195,9 +197,10 @@ export async function loadRecommendationEvidenceLinks(
           JOIN stocks s ON s.id = n.stock_id
          WHERE s.symbol IN (${placeholders})
            AND date(n.published_at) >= date(?, '-10 days')
+           AND date(n.published_at) <= date(?)
          ORDER BY n.published_at DESC
          LIMIT 240
-      `).bind(...chunk, date).all<NewsFallbackRow>()
+      `).bind(...chunk, date, date).all<NewsFallbackRow>()
       for (const row of results ?? []) {
         const symbol = cleanSymbol(row.symbol)
         const target = targetBySymbol.get(symbol)

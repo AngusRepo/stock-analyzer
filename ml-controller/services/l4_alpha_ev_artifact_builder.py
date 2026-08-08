@@ -9,7 +9,7 @@ from typing import Any, Callable
 from scipy.stats import t as student_t
 
 from services.evidence_contracts import (
-    CANONICAL_ROUNDTRIP_COST_RATE,
+
     L4_ARTIFACT_CONTRACT_VERSION,
     L4_FEATURE_SEMANTIC_VERSION,
     LABEL_SCHEMA_VERSION,
@@ -20,6 +20,7 @@ from services.ev_lineage_contract import (
     attach_same_run_model_version_evidence,
     ev_feature_lineage_blockers,
 )
+from services.expected_return_artifact_identity import attach_expected_return_artifact_identity
 from services.price_horizon_projection_contract import (
     OOF_PRICE_HORIZON_SOURCE,
     PRICE_HORIZONS_CTE,
@@ -665,6 +666,7 @@ def build_l4_alpha_ev_artifact_from_rows(
             "efficacy_evidence_mode": "purged_oof" if generation_mode == "purged_oof" else "native",
         },
     }
+    attach_expected_return_artifact_identity(artifact)
     return {
         "status": "ok" if decision == "PASS" else "failed_validation",
         "artifact": artifact,
@@ -823,7 +825,7 @@ def load_l4_alpha_ev_oof_training_rows(
           fs.model_set_signature,
           ph.source label_adjustment_source,
           ((ph.exit_raw_close * ph.exit_adjustment_factor)
-            / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} l4_executable_return_pct,
+            / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 l4_executable_return_pct,
           ph.entry_date l4_entry_date,
           ph.exit_date l4_exit_date
         FROM allocator_ev_oof_snapshots fs
@@ -878,7 +880,7 @@ def load_l4_alpha_ev_training_rows(
             ) AS forecast_data,
             ph.source AS label_adjustment_source,
             ((ph.exit_raw_close * ph.exit_adjustment_factor)
-              / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} AS l4_executable_return_pct,
+              / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 AS l4_executable_return_pct,
             ph.entry_date AS l4_entry_date,
             ph.exit_date AS l4_exit_date,
             ph.entry_raw_open AS l4_entry_raw_open,

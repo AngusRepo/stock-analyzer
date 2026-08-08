@@ -1365,6 +1365,9 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
     from services.allocator_ev_fusion_artifact_builder import (
         build_allocator_ev_fusion_artifact_from_rows,
     )
+    from services.expected_return_serving_forward_guard import (
+        evaluate_serving_forward_guard,
+    )
     from services.fusion_market_context import load_pit_market_contexts
     from services import d1_client
 
@@ -1494,6 +1497,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
         )
         shadow_evaluation_packets = None
         forward_shadow_coverage = None
+        serving_forward_guard = None
         if forward_extension and req.persist_forward_shadow_coverage:
             forward_shadow_coverage = persist_verified_oof_forward_coverage(
                 cohort_id=req.cohort_id,
@@ -1534,6 +1538,9 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                     l4_result=l4_result,
                     fusion_result=fusion_result,
                     forward_row_count=len(forward_prediction_rows),
+                )
+                serving_forward_guard = evaluate_serving_forward_guard(
+                    as_of_date=req.knowledge_cutoff_date,
                 )
         full_fit_plan = build_oof_full_fit_dispatch_plan(manifest)
         persistence = (
@@ -1763,6 +1770,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             "forward_extension": forward_extension,
             "forward_shadow_coverage": forward_shadow_coverage,
             "shadow_evaluation_packets": shadow_evaluation_packets,
+            "serving_forward_guard": serving_forward_guard,
             "physical_prediction_coverage": {
                 "date_count": len(physical_prediction_dates),
                 "min_date": physical_prediction_dates[0] if physical_prediction_dates else None,
@@ -2732,6 +2740,7 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
                     "daily_forward_extension": daily_forward_extension,
                     "forward_shadow_coverage": result.get("forward_shadow_coverage"),
                     "shadow_evaluation_packets": result.get("shadow_evaluation_packets"),
+                    "serving_forward_guard": result.get("serving_forward_guard"),
                 },
                 "serving_closure": {
                     "alpha_champion_promoted": bool(result.get("promoted")),

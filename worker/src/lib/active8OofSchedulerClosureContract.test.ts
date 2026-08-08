@@ -11,6 +11,7 @@ const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', '
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const policies = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
 const triggerRoutes = fs.readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')
+const scheduleReadRoutes = fs.readFileSync('src/routes/scheduleReadRoutes.ts', 'utf8')
 const walkForward = fs.readFileSync('../ml-controller/routers/walk_forward.py', 'utf8')
 const retrainFollowup = fs.readFileSync('../ml-controller/routers/retrain_followup.py', 'utf8')
 const trainingPolicy = fs.readFileSync('../ml-service/app/training_policy.py', 'utf8')
@@ -23,6 +24,7 @@ assert(daily?.task === 'active8-oof-daily' && daily?.schedule === '55 17 * * *',
 assert(watchdog?.task === 'active8-oof-daily' && watchdog?.schedule === '25,55 18-23 * * *', 'watchdog must retry the same idempotent daily lifecycle until the immutable-prep freshness watermark closes')
 assert(weekly?.task === 'active8-oof-weekly' && weekly?.schedule === '5 23 * * 6', 'weekly must own deterministic purged OOF cohort generation')
 assert(!manifest.jobs.some((job: any) => ['l4-alpha-ev-refresh', 'allocator-ev-fusion-refresh', 'monthly-l4-alpha-ev-refresh', 'monthly-allocator-ev-fusion-refresh', 'opb-arm-prior-refresh', 'monthly-opb-arm-prior-refresh'].includes(job.id)), 'legacy independent EV/OPB refresh jobs must not race the canonical OOF lifecycle')
+assert(!['l4-alpha-ev-refresh', 'allocator-ev-fusion-refresh', 'monthly-l4-alpha-ev-refresh', 'monthly-allocator-ev-fusion-refresh', 'opb-arm-prior-refresh', 'monthly-opb-arm-prior-refresh'].some((task) => scheduleReadRoutes.includes(`task: '${task}'`)), 'schedule UI must not advertise legacy independent EV/OPB jobs removed from the canonical manifest')
 
 assert(workflows.includes("'/walk_forward/oof/lifecycle'"), 'all Worker cadence tasks must call the same controller OOF lifecycle owner')
 assert(workflows.includes("dispatch_full_fit: cadence !== 'daily'"), 'daily evidence materialization must not implicitly dispatch Active-8 full-fit training')
@@ -56,7 +58,7 @@ assert(walkForward.includes('cohort_dates = mature_dates[-OOF_MIN_MATURE_SESSION
 assert(walkForward.includes('train_window_days=OOF_TRAIN_SESSIONS') && walkForward.includes('test_window_days=OOF_TEST_SESSIONS'), 'OOF cohort must use the canonical 60/10 purged walk-forward windows')
 assert(walkForward.includes('active8-oof-dispatch-v1') && walkForward.includes('cohort_orchestrator_active'), 'OOF generation must have a durable idempotent dispatch fence')
 assert(
-  walkForward.includes('active8-oof-lifecycle-receipt-v8-freshness-watermark') &&
+  walkForward.includes('active8-oof-lifecycle-receipt-v9-post-close-watermark') &&
     walkForward.includes('_oof_lifecycle_receipt_matches_active_policy'),
   'materialization/promotion must invalidate stale receipts when the active PIT policy changes',
 )

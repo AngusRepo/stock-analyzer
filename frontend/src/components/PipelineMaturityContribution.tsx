@@ -150,6 +150,61 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     unit: latestHistory?.unit,
   })
   const historyTrend = history.slice(-4).map((point) => `${point.evidence_date.slice(5)} ${displayValue({ key: 'history', label: 'history', value: point.value, unit: point.unit })}`).join(' | ')
+  const blockerGroups = stage.blocker_groups?.length
+    ? stage.blocker_groups
+    : [{ scope: 'stage', title: 'Blockers', blockers: stage.blockers }]
+  const evidenceScopes = stage.lineage.evidence_scopes
+  const evidenceScopeRows = [
+    evidenceScopes?.offline_candidate ? {
+      scope: 'offline_candidate',
+      title: 'Offline candidate',
+      rows: [
+        ['Artifact', evidenceScopes.offline_candidate.artifact_id],
+        ['Model', evidenceScopes.offline_candidate.model_version],
+        ['Contract', evidenceScopes.offline_candidate.artifact_contract_version],
+        ['Validation', evidenceScopes.offline_candidate.validation_schema_version],
+        ['Run date', evidenceScopes.offline_candidate.source_run_date],
+        ['OOF max', evidenceScopes.offline_candidate.oof_max_date],
+      ],
+    } : null,
+    evidenceScopes?.serving_pointer ? {
+      scope: 'serving_pointer',
+      title: 'Production serving pointer',
+      rows: [
+        ['Artifact', evidenceScopes.serving_pointer.artifact_id],
+        ['Model', evidenceScopes.serving_pointer.model_version],
+        ['Contract', evidenceScopes.serving_pointer.artifact_contract_version],
+        ['Mode', evidenceScopes.serving_pointer.serving_mode],
+        ['Updated', evidenceScopes.serving_pointer.updated_at],
+      ],
+    } : null,
+    evidenceScopes?.frozen_forward ? {
+      scope: 'frozen_forward',
+      title: 'Active-8 cohort causal shadow (not serving artifact)',
+      rows: [
+        ['Evaluation', evidenceScopes.frozen_forward.evaluation_id],
+        ['Model', evidenceScopes.frozen_forward.model_version],
+        ['Validation', evidenceScopes.frozen_forward.validation_schema_version],
+        ['Business date', evidenceScopes.frozen_forward.business_date],
+        ['OOF max', evidenceScopes.frozen_forward.oof_max_date],
+      ],
+    } : null,
+    evidenceScopes?.runtime_guard ? {
+      scope: 'runtime_guard',
+      title: 'Actual serving artifact T+5 guard',
+      rows: [
+        ['Artifact', evidenceScopes.runtime_guard.artifact_id],
+        ['Fingerprint', evidenceScopes.runtime_guard.model_fingerprint],
+        ['Model', evidenceScopes.runtime_guard.model_version],
+        ['State', evidenceScopes.runtime_guard.state],
+        ['Evaluable dates', String(evidenceScopes.runtime_guard.evaluable_date_count)],
+        ['Degraded streak', String(evidenceScopes.runtime_guard.degraded_streak)],
+        ['Recovery streak', String(evidenceScopes.runtime_guard.recovery_streak)],
+        ['Last date', evidenceScopes.runtime_guard.last_prediction_date],
+        ['Lineage bound', evidenceScopes.runtime_guard.lineage_bound ? 'Yes' : 'No'],
+      ],
+    } : null,
+  ].filter((item): item is { scope: string; title: string; rows: Array<Array<string | null>> } => item != null)
   return (
     <details open className="group overflow-hidden rounded-[18px] border border-white/[0.07] bg-white/[0.032]">
       <summary className="grid cursor-pointer list-none gap-4 px-4 py-4 marker:hidden">
@@ -207,12 +262,19 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
           <div className="min-w-0 space-y-3">
             <div>
               <p className="text-xs font-semibold text-slate-500">尚未通過 / Blockers</p>
-              {stage.blockers.length ? (
-                <div className="mt-2 space-y-1.5">
-                  {stage.blockers.map((blocker) => (
-                    <div key={blocker} className="border-l-2 border-rose-400/45 pl-2">
-                      <p className="text-xs leading-5 text-rose-200">{blockerText(blocker)}</p>
-                      <code className="mt-0.5 block break-all text-[11px] leading-4 text-slate-600">{blocker}</code>
+              {blockerGroups.some((group) => group.blockers.length) ? (
+                <div className="mt-2 space-y-3">
+                  {blockerGroups.map((group) => (
+                    <div key={group.scope}>
+                      <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{group.title}</p>
+                      <div className="space-y-1.5">
+                        {group.blockers.length ? group.blockers.map((blocker) => (
+                          <div key={blocker} className="border-l-2 border-rose-400/45 pl-2">
+                            <p className="text-xs leading-5 text-rose-200">{blockerText(blocker)}</p>
+                            <code className="mt-0.5 block break-all text-[11px] leading-4 text-slate-600">{blocker}</code>
+                          </div>
+                        )) : <p className="text-[11px] text-emerald-300">No blockers in this scope</p>}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -236,6 +298,23 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                 <dt className="text-slate-600">Source</dt><dd className="break-words text-slate-400">{stage.lineage.source}</dd>
                 {stage.lineage.evidence_semantics ? <><dt className="text-slate-600">Cutoff</dt><dd className="break-words text-slate-400">{stage.lineage.evidence_semantics}</dd></> : null}
               </dl>
+              {evidenceScopeRows.length ? (
+                <div className="mt-3 grid gap-2">
+                  {evidenceScopeRows.map((scope) => (
+                    <div key={scope.scope} className="rounded-lg border border-white/[0.07] bg-black/15 p-2">
+                      <p className="text-[11px] font-semibold text-cyan-200">{scope.title}</p>
+                      <dl className="mt-1 grid grid-cols-[76px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[10px] leading-4">
+                        {scope.rows.map(([label, value]) => (
+                          <div key={label} className="contents">
+                            <dt className="text-slate-600">{label}</dt>
+                            <dd className="sv-num break-all text-slate-400">{value ?? 'Missing'}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

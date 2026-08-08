@@ -4,8 +4,8 @@ import type { ExpectedReturnOwner } from './expectedReturnServingState'
 type JsonRecord = Record<string, any>
 
 export const EXPECTED_RETURN_BASELINE_VERSIONS: Record<ExpectedReturnOwner, string> = {
-  l4_alpha_ev: 'l4-alpha-ev-abstention-baseline-v1',
-  allocator_ev_fusion: 'allocator-ev-fusion-abstention-baseline-v1',
+  l4_alpha_ev: 'l4-alpha-ev-ridge-v5-sector-abstention-baseline-v1',
+  allocator_ev_fusion: 'allocator-ev-fusion-residual-v14-abstention-baseline-v1',
 }
 
 type PointerProjectionRow = {
@@ -367,7 +367,7 @@ export async function inspectExpectedReturnLifecycleHealth(
       FROM model_artifact_registry
      WHERE model_name IN ('l4_alpha_ev', 'allocator_ev_fusion')
        AND candidate_type IN ('l4_alpha_ev_refresh', 'allocator_ev_fusion_refresh')
-     ORDER BY updated_at DESC
+     ORDER BY source_run_date DESC, updated_at DESC, version DESC
   `).all<Record<string, any>>()
   const latestCandidates: Record<ExpectedReturnOwner, JsonRecord | null> = {
     l4_alpha_ev: null,

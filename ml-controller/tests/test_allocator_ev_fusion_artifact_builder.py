@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import sys
 from datetime import date, timedelta
@@ -357,6 +358,24 @@ def test_fusion_purged_oof_uses_snapshot_date_and_recorded_market_lineage():
     assert audit["generation_mode_counts"] == {"purged_oof": 20}
     assert audit["evidence_max_date"] == "2026-05-01"
     assert audit["oof_max_date"] == "2026-05-01"
+
+
+def test_allocator_ev_fusion_selection_target_deducts_roundtrip_cost_exactly_once():
+    row = _row("2026-06-01", 1)
+    row["l4_executable_return_pct"] = 0.03
+
+    samples, audit = _samples(
+        [row],
+        execution_cost_bps=18.0,
+        min_cross_section_samples_per_date=1,
+    )
+
+    assert audit["sample_count"] == 1
+    assert samples[0]["actual_return_target"] == pytest.approx(0.0282)
+    assert samples[0]["selection_target"] == pytest.approx(0.0)
+    assert "CANONICAL_ROUNDTRIP_COST_RATE" not in inspect.getsource(
+        load_allocator_ev_fusion_training_rows
+    )
 
 
 def test_allocator_ev_fusion_artifact_builder_fails_closed_on_insufficient_samples():

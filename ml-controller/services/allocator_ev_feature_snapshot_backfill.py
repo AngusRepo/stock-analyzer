@@ -1,6 +1,7 @@
 """No-leakage as-of feature snapshot backfill for allocator EV fusion."""
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
@@ -60,6 +61,37 @@ def _dumps(value: Any) -> str | None:
     if value is None:
         return None
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _canonical_payload_checksum(value: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _recorded_serving_fusion_projection(
+    existing_allocation: dict[str, Any],
+) -> dict[str, Any]:
+    fusion = existing_allocation.get("allocator_ev_fusion")
+    if not isinstance(fusion, dict):
+        return {}
+    payload = dict(fusion)
+    try:
+        checksum = _canonical_payload_checksum(payload)
+    except (TypeError, ValueError):
+        return {}
+    return {
+        "recorded_serving_allocator_ev_fusion": payload,
+        "recorded_serving_allocator_ev_fusion_checksum": checksum,
+        "recorded_serving_allocator_ev_fusion_source": (
+            "daily_recommendations.alpha_allocation"
+        ),
+    }
 
 
 def _date_range(start_date: str, end_date: str) -> list[str]:
@@ -796,6 +828,7 @@ def build_allocator_ev_feature_snapshots_for_date(
             "ev_lineage_status": lineage_status,
             "ev_lineage_audit": lineage_result.get("audit"),
         }
+        alpha_allocation.update(_recorded_serving_fusion_projection(existing))
         if l4_payload is not None:
             alpha_allocation["l4_alpha_ev"] = l4_payload
         statements.append(

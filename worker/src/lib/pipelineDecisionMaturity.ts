@@ -2,6 +2,14 @@ import type { Bindings } from '../types'
 import { inspectAllocatorEvMaturityCoverage } from './allocatorEvDailyLifecycle'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { inspectExpectedReturnCandidateEvidence } from './expectedReturnCandidateEvidence'
+import {
+  adaptExpectedReturnCandidate,
+  adaptExpectedReturnShadow,
+  type ExpectedReturnCandidateDbRow,
+  type ExpectedReturnCandidateEvidence,
+  type ExpectedReturnShadowDbRow,
+  type ExpectedReturnShadowEvidence,
+} from './expectedReturnMaturityEvidence'
 import { readCurrentExpectedReturnServingState } from './expectedReturnServingState'
 import {
   STRATEGY_ROUTE_CHALLENGER_VERSION,
@@ -41,6 +49,12 @@ export interface PipelineMaturityMetric {
   note?: string
 }
 
+export interface PipelineMaturityBlockerGroup {
+  scope: 'offline_candidate' | 'serving_pointer' | 'frozen_forward' | 'runtime_guard'
+  title: string
+  blockers: string[]
+}
+
 export interface PipelineMaturityStage {
   id: 'threshold_margin_affinity_v2' | 'oof_redundancy' | 'route_score_v2' | 'l4' | 'fusion'
   layer: string
@@ -54,6 +68,7 @@ export interface PipelineMaturityStage {
   contribution: string
   production_effect: string
   blockers: string[]
+  blocker_groups?: PipelineMaturityBlockerGroup[]
   metrics: PipelineMaturityMetric[]
   history?: Array<{
     evidence_date: string
@@ -71,6 +86,43 @@ export interface PipelineMaturityStage {
     model_version?: string | null
     source: string
     updated_at?: string | null
+    evidence_scopes?: {
+      offline_candidate?: {
+        artifact_id: string | null
+        model_version: string | null
+        artifact_contract_version: string | null
+        validation_schema_version: string | null
+        source_run_date: string | null
+        updated_at: string | null
+        oof_max_date: string | null
+      }
+      serving_pointer?: {
+        artifact_id: string | null
+        model_version: string | null
+        artifact_contract_version: string | null
+        serving_mode: string | null
+        updated_at: string | null
+      }
+      frozen_forward?: {
+        evaluation_id: string
+        model_version: string
+        validation_schema_version: string | null
+        business_date: string
+        oof_max_date: string
+        updated_at: string | null
+      }
+      runtime_guard?: {
+        artifact_id: string
+        model_fingerprint: string
+        model_version: string
+        state: string
+        evaluable_date_count: number
+        degraded_streak: number
+        recovery_streak: number
+        last_prediction_date: string
+        lineage_bound: boolean
+      }
+    }
   }
 }
 export interface StrategyRouteBundleMaturity {
@@ -109,76 +161,6 @@ export interface PipelineDecisionMaturityPacket {
 type QueryResult<T> = { value: T | null; error: string | null }
 
 type CanonicalHead = { signal_date: string; run_id: string }
-
-type EvCandidateRow = {
-  model_name: 'l4_alpha_ev' | 'allocator_ev_fusion'
-  artifact_id: string | null
-  version: string | null
-  state: string | null
-  source_run_date: string | null
-  offline_gate_decision: string | null
-  offline_gate_failed_gates: string | null
-  live_gate_status: string | null
-  updated_at: string | null
-  sample_count: number | string | null
-  date_count: number | string | null
-  fit_min_samples: number | string | null
-  fit_min_dates: number | string | null
-  sector_samples: number | string | null
-  sector_dates: number | string | null
-  min_sector_samples: number | string | null
-  min_sector_dates: number | string | null
-  l4_samples: number | string | null
-  l4_dates: number | string | null
-  structure_samples: number | string | null
-  structure_dates: number | string | null
-  execution_samples: number | string | null
-  execution_dates: number | string | null
-  market_samples: number | string | null
-  market_dates: number | string | null
-  min_primary_samples: number | string | null
-  min_primary_dates: number | string | null
-  min_l4_samples: number | string | null
-  min_l4_dates: number | string | null
-  min_structure_samples: number | string | null
-  min_structure_dates: number | string | null
-  min_execution_samples: number | string | null
-  min_execution_dates: number | string | null
-  min_market_samples: number | string | null
-  min_market_dates: number | string | null
-  l4_corr_lcb90: number | string | null
-  l4_spread_lcb90: number | string | null
-  l4_top_return: number | string | null
-  l4_top_lcb90: number | string | null
-  selection_corr_lcb90: number | string | null
-  selection_spread_lcb90: number | string | null
-  fusion_corr_delta_lcb90: number | string | null
-  fusion_spread_delta_lcb90: number | string | null
-  fusion_top_trade_ev_lcb90: number | string | null
-  fusion_oof_max_date: string | null
-  fusion_final_comparison_decision: string | null
-  fusion_final_comparison_samples: number | string | null
-  fusion_final_comparison_dates: number | string | null
-  walk_forward_passed: number | boolean | null
-  execution_decision: string | null
-  execution_probability_decision: string | null
-  promotion_tier: string | null
-}
-
-type EvShadowEvaluationRow = {
-  model_name: 'l4_alpha_ev' | 'allocator_ev_fusion'
-  evaluation_id: string
-  business_date: string
-  model_version: string
-  oof_max_date: string
-  oof_date_count: number | string
-  oof_row_count: number | string
-  quality_decision: string
-  policy_decision: string
-  updated_at: string | null
-  l4_corr_lcb90: number | string | null
-  fusion_spread_delta_lcb90: number | string | null
-}
 
 function validDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value)
@@ -398,59 +380,20 @@ export async function buildPipelineDecisionMaturityPacket(
         SELECT model_name, artifact_id, version, state, source_run_date,
                offline_gate_decision, offline_gate_failed_gates,
                live_gate_status, updated_at, offline_evidence_json,
-               ROW_NUMBER() OVER (PARTITION BY model_name ORDER BY updated_at DESC, artifact_id DESC) ordinal
+               ROW_NUMBER() OVER (
+                 PARTITION BY model_name
+                 ORDER BY source_run_date DESC, updated_at DESC, artifact_id DESC
+               ) ordinal
           FROM model_artifact_registry
          WHERE model_name IN ('l4_alpha_ev', 'allocator_ev_fusion')
            AND candidate_type IN ('l4_alpha_ev_refresh', 'allocator_ev_fusion_refresh')
            AND COALESCE(source_run_date, '')<=?
       )
       SELECT model_name, artifact_id, version, state, source_run_date,
-             offline_gate_decision, offline_gate_failed_gates, live_gate_status, updated_at,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.sample_count') sample_count,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.date_count') date_count,
-             json_extract(offline_evidence_json, '$.validation_packet.validation_scope.fit_min_samples') fit_min_samples,
-             json_extract(offline_evidence_json, '$.validation_packet.validation_scope.fit_min_dates') fit_min_dates,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.sector_alpha_available_count') sector_samples,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.sector_alpha_available_date_count') sector_dates,
-             json_extract(offline_evidence_json, '$.validation_packet.validation_scope.min_sector_alpha_samples') min_sector_samples,
-             json_extract(offline_evidence_json, '$.validation_packet.validation_scope.min_sector_alpha_dates') min_sector_dates,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.l4_available_count') l4_samples,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.l4_available_date_count') l4_dates,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.s12_structure_available_count') structure_samples,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.s12_structure_available_date_count') structure_dates,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.execution_sample_count') execution_samples,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.execution_date_count') execution_dates,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.market_context_available_count') market_samples,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.market_context_available_date_count') market_dates,
-             json_extract(offline_evidence_json, '$.validation_packet.promotion.primary_requirements.min_samples') min_primary_samples,
-             json_extract(offline_evidence_json, '$.validation_packet.promotion.primary_requirements.min_dates') min_primary_dates,
-             json_extract(offline_evidence_json, '$.validation_packet.promotion.primary_requirements.min_l4_point_in_time_samples') min_l4_samples,
-             json_extract(offline_evidence_json, '$.validation_packet.promotion.primary_requirements.min_l4_point_in_time_dates') min_l4_dates,
-             json_extract(offline_evidence_json, '$.validation_packet.promotion.primary_requirements.min_s12_structure_samples') min_structure_samples,
-             json_extract(offline_evidence_json, '$.validation_packet.promotion.primary_requirements.min_s12_structure_dates') min_structure_dates,
-             json_extract(offline_evidence_json, '$.validation_packet.promotion.primary_requirements.min_execution_samples') min_execution_samples,
-             json_extract(offline_evidence_json, '$.validation_packet.promotion.primary_requirements.min_execution_dates') min_execution_dates,
-             json_extract(offline_evidence_json, '$.validation_packet.promotion.primary_requirements.min_market_context_samples') min_market_samples,
-             json_extract(offline_evidence_json, '$.validation_packet.promotion.primary_requirements.min_market_context_dates') min_market_dates,
-             json_extract(offline_evidence_json, '$.validation_packet.oos_metrics.date_mean_cross_section_corr_lcb90') l4_corr_lcb90,
-             json_extract(offline_evidence_json, '$.validation_packet.oos_metrics.date_mean_top_bottom_spread_lcb90') l4_spread_lcb90,
-             json_extract(offline_evidence_json, '$.validation_packet.oos_metrics.top_quintile_mean_return') l4_top_return,
-             json_extract(offline_evidence_json, '$.validation_packet.oos_metrics.date_mean_top_quintile_return_lcb90') l4_top_lcb90,
-             json_extract(offline_evidence_json, '$.validation_packet.oos_metrics.prediction_target_corr_lcb90') selection_corr_lcb90,
-             json_extract(offline_evidence_json, '$.validation_packet.oos_metrics.top_bottom_spread_lcb90') selection_spread_lcb90,
-             json_extract(offline_evidence_json, '$.validation_packet.selection_champion_comparison.corr_delta_lcb90') fusion_corr_delta_lcb90,
-             json_extract(offline_evidence_json, '$.validation_packet.selection_champion_comparison.spread_delta_lcb90') fusion_spread_delta_lcb90,
-             json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.top_trade_ev_lcb90') fusion_top_trade_ev_lcb90,
-             json_extract(offline_evidence_json, '$.validation_packet.sample_audit.oof_max_date') fusion_oof_max_date,
-             json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.decision') fusion_final_comparison_decision,
-             json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.sample_count') fusion_final_comparison_samples,
-             json_extract(offline_evidence_json, '$.validation_packet.champion_comparison.oos_date_count') fusion_final_comparison_dates,
-             json_extract(offline_evidence_json, '$.validation_packet.walk_forward.passed') walk_forward_passed,
-             json_extract(offline_evidence_json, '$.validation_packet.execution_model.decision') execution_decision,
-             json_extract(offline_evidence_json, '$.validation_packet.execution_probability_model.decision') execution_probability_decision,
-             json_extract(offline_evidence_json, '$.validation_packet.promotion.tier') promotion_tier
+             offline_gate_decision, offline_gate_failed_gates,
+             live_gate_status, updated_at, offline_evidence_json
         FROM ranked WHERE ordinal=1
-    `).bind(requestedDate).all<EvCandidateRow>().then((result) => result.results ?? [])),
+    `).bind(requestedDate).all<ExpectedReturnCandidateDbRow>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
       WITH ranked AS (
         SELECT evaluation_id, business_date, model_name, model_version,
@@ -466,11 +409,9 @@ export async function buildPipelineDecisionMaturityPacket(
       )
       SELECT evaluation_id, business_date, model_name, model_version,
              oof_max_date, oof_date_count, oof_row_count,
-             quality_decision, policy_decision, updated_at,
-             json_extract(validation_packet_json, '$.oos_metrics.date_mean_cross_section_corr_lcb90') l4_corr_lcb90,
-             json_extract(validation_packet_json, '$.selection_champion_comparison.spread_delta_lcb90') fusion_spread_delta_lcb90
+             quality_decision, policy_decision, validation_packet_json, updated_at
         FROM ranked WHERE ordinal=1
-    `).bind(requestedDate).all<EvShadowEvaluationRow>().then((result) => result.results ?? [])),
+    `).bind(requestedDate).all<ExpectedReturnShadowDbRow>().then((result) => result.results ?? [])),
     safeQuery(() => readCurrentExpectedReturnServingState({ ...env, DB: learningDb }, requestedDate)),
     safeQuery(() => inspectExpectedReturnCandidateEvidence(learningDb)),
     safeQuery(() => inspectAllocatorEvMaturityCoverage(learningDb, requestedDate)),
@@ -642,11 +583,19 @@ export async function buildPipelineDecisionMaturityPacket(
   }
 
 
-  const evCandidates = new Map((evRows.value ?? []).map((row) => [row.model_name, row]))
+  const evCandidates = new Map<string, ExpectedReturnCandidateEvidence>(
+    (evRows.value ?? []).map((row) => {
+      const evidence = adaptExpectedReturnCandidate(row)
+      return [evidence.model_name, evidence]
+    }),
+  )
   const servingState = serving.value
+  const runtimeGuard = servingState?.runtime_forward_guard
   const candidateState = candidateReport.value?.candidates
   const maturity = l4Maturity.value
-  const evShadow = new Map((evShadowRows.value ?? []).map((row) => [row.model_name, row]))
+  const evShadow = new Map<string, ExpectedReturnShadowEvidence>(
+    (evShadowRows.value ?? []).map((row) => [row.model_name, adaptExpectedReturnShadow(row)]),
+  )
 
   const l4 = evCandidates.get('l4_alpha_ev')
   const l4Shadow = evShadow.get('l4_alpha_ev')
@@ -658,11 +607,29 @@ export async function buildPipelineDecisionMaturityPacket(
     const minDates = Math.max(1, finite(l4?.fit_min_dates, 20))
     const sampleCount = finite(l4?.sample_count)
     const dateCount = finite(l4?.date_count)
-    const status = candidateStatus(l4Serving?.artifact_state, l4?.offline_gate_decision, dateCount, minDates)
-    const blockers = [...new Set([
-      ...stringArray(l4?.offline_gate_failed_gates),
-      ...(l4Serving?.blockers ?? []),
-    ])]
+    const offlineBlockers = l4?.offline_gate_failed_gates ?? ['offline_candidate_missing']
+    const servingBlockers = l4Serving?.blockers ?? ['serving_pointer_missing']
+    const shadowBlockers = l4Shadow?.failed_gates ?? ['frozen_forward_packet_missing']
+    const status = l4 && !l4.identity_valid
+      ? 'blocked'
+      : candidateStatus(l4Serving?.artifact_state, l4?.offline_gate_decision, dateCount, minDates)
+    const blockerGroups: PipelineMaturityBlockerGroup[] = [
+      {
+        scope: 'offline_candidate',
+        title: 'Offline candidate',
+        blockers: offlineBlockers,
+      },
+      {
+        scope: 'serving_pointer',
+        title: 'Production serving pointer',
+        blockers: servingBlockers,
+      },
+      {
+        scope: 'frozen_forward',
+        title: 'Active-8 cohort causal shadow (not serving artifact)',
+        blockers: shadowBlockers,
+      },
+    ]
     stages.push({
       id: 'l4',
       layer: 'L4',
@@ -679,32 +646,68 @@ export async function buildPipelineDecisionMaturityPacket(
       production_effect: l4Serving?.artifact_state === 'serving'
         ? '提供 L4 expected return，與風險/流動性 gate 一起決定 BUY/HOLD。'
         : '候選只保存 OOF evidence；不改寫 production expected return。',
-      blockers,
+      blockers: offlineBlockers,
+      blocker_groups: blockerGroups,
       metrics: [
         gateMetric('samples', 'Usable OOF samples', sampleCount, minSamples, 'rows'),
         gateMetric('dates', 'Usable OOF dates', dateCount, minDates, 'dates'),
-        gateMetric('sector_samples', 'PIT sector alpha samples', l4?.sector_samples, Math.max(1, finite(l4?.min_sector_samples, 300)), 'rows'),
-        gateMetric('sector_dates', 'PIT sector alpha dates', l4?.sector_dates, Math.max(1, finite(l4?.min_sector_dates, 8)), 'dates'),
-        gateMetric('corr_lcb90', 'Date-clustered corr LCB90', l4?.l4_corr_lcb90, 0, 'ratio', 'gt'),
-        gateMetric('spread_lcb90', 'Top-bottom spread LCB90', l4?.l4_spread_lcb90, 0, 'return', 'gt'),
-        gateMetric('top_return', 'Top quintile mean net return', l4?.l4_top_return, 0, 'return', 'gt'),
-        gateMetric('top_lcb90', 'Top quintile return LCB90', l4?.l4_top_lcb90, 0, 'return', 'gt'),
-        metric('walk_forward', 'Walk-forward stable', l4?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4?.walk_forward_passed == null ? null : Boolean(l4.walk_forward_passed) }),
+        gateMetric('sector_samples', 'Offline candidate PIT sector-alpha samples', l4?.sector_samples, Math.max(1, finite(l4?.min_sector_samples, 300)), 'rows'),
+        gateMetric('sector_dates', 'Offline candidate PIT sector-alpha dates', l4?.sector_dates, Math.max(1, finite(l4?.min_sector_dates, 8)), 'dates'),
+        gateMetric('corr_lcb90', 'Offline candidate corr LCB90', l4?.l4_corr_lcb90, 0, 'ratio', 'gt'),
+        gateMetric('spread_lcb90', 'Offline candidate spread LCB90', l4?.l4_spread_lcb90, 0, 'return', 'gt'),
+        gateMetric('top_return', 'Offline candidate top-quintile mean', l4?.l4_top_return, 0, 'return', 'gt'),
+        gateMetric('top_lcb90', 'Offline candidate top-quintile LCB90', l4?.l4_top_lcb90, 0, 'return', 'gt'),
+        metric('walk_forward', 'Offline candidate walk-forward', l4?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4?.walk_forward_passed == null ? null : l4.walk_forward_passed }),
         metric('strict_pit_rows', 'Materialized strict L4 PIT', maturity?.strictL4PitRows ?? null, { unit: 'rows' }),
         metric('strict_pit_dates', 'Materialized strict L4 PIT dates', maturity?.strictL4PitDates ?? null, { unit: 'dates' }),
-        metric('frozen_forward_quality', 'Latest frozen-forward shadow quality', l4Shadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: l4Shadow == null ? null : l4Shadow.quality_decision === 'PASS' }),
-        metric('frozen_forward_dates', 'Latest frozen-forward shadow dates', l4Shadow?.oof_date_count ?? null, { unit: 'dates', note: 'Monitoring-only; never training or promotion evidence.' }),
+        gateMetric('shadow_sector_samples', 'Latest shadow PIT sector-alpha samples', l4Shadow?.sector_samples, Math.max(1, finite(l4?.min_sector_samples, 300)), 'rows'),
+        gateMetric('shadow_sector_dates', 'Latest shadow PIT sector-alpha dates', l4Shadow?.sector_dates, Math.max(1, finite(l4?.min_sector_dates, 8)), 'dates'),
+        gateMetric('shadow_corr_lcb90', 'Latest shadow corr LCB90', l4Shadow?.l4_corr_lcb90, 0, 'ratio', 'gt'),
+        gateMetric('shadow_spread_lcb90', 'Latest shadow spread LCB90', l4Shadow?.l4_spread_lcb90, 0, 'return', 'gt'),
+        gateMetric('shadow_top_return', 'Latest shadow top-quintile mean', l4Shadow?.l4_top_return, 0, 'return', 'gt'),
+        gateMetric('shadow_top_lcb90', 'Latest shadow top-quintile LCB90', l4Shadow?.l4_top_lcb90, 0, 'return', 'gt'),
+        metric('shadow_walk_forward', 'Latest shadow walk-forward', l4Shadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: l4Shadow?.walk_forward_passed ?? null }),
+        metric('frozen_forward_quality', 'Active-8 cohort causal shadow quality', l4Shadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: l4Shadow == null ? null : l4Shadow.quality_decision === 'PASS' }),
+        metric('frozen_forward_dates', 'Active-8 cohort causal shadow dates', l4Shadow?.oof_date_count ?? null, { unit: 'dates', note: 'Rebuilds causal validation on a fixed Active-8 cohort; it is not the production serving artifact, training evidence, or promotion evidence.' }),
       ],
       lineage: {
         requested_date: requestedDate,
-        evidence_date: l4Shadow?.business_date ?? l4?.source_run_date ?? candidateState?.l4_alpha_ev.candidate_end_date ?? null,
-        oof_max_date: l4Shadow?.oof_max_date ?? maturity?.indexedL4PitMaxDate ?? null,
-        artifact_id: l4?.artifact_id ?? candidateState?.l4_alpha_ev.artifact_id ?? null,
+        evidence_date: l4?.source_run_date ?? null,
+        oof_max_date: l4?.fusion_oof_max_date ?? null,
+        artifact_id: l4?.artifact_id ?? null,
         oof_applicable: true,
         evidence_semantics: 'Purged Active-8 OOF and five-session net-label cutoff.',
-        model_version: l4?.version ?? l4Serving?.model_version ?? null,
-        source: l4Shadow ? 'purged Active-8 OOF candidate + frozen-forward shadow evaluation packet' : 'purged Active-8 OOF + canonical five-session net labels',
-        updated_at: l4Shadow?.updated_at ?? l4?.updated_at ?? candidateState?.l4_alpha_ev.updated_at ?? null,
+        model_version: l4?.version ?? null,
+        source: 'offline candidate; production pointer and frozen-forward shadow are separate evidence scopes',
+        updated_at: l4?.updated_at ?? null,
+        evidence_scopes: {
+          offline_candidate: {
+            artifact_id: l4?.artifact_id ?? null,
+            model_version: l4?.version ?? null,
+            artifact_contract_version: l4?.artifact_contract_version ?? null,
+            validation_schema_version: l4?.validation_schema_version ?? null,
+            source_run_date: l4?.source_run_date ?? null,
+            updated_at: l4?.updated_at ?? null,
+            oof_max_date: l4?.fusion_oof_max_date ?? null,
+          },
+          serving_pointer: {
+            artifact_id: l4Serving?.artifact_id ?? null,
+            model_version: l4Serving?.model_version ?? null,
+            artifact_contract_version: l4Serving?.artifact_contract_version ?? null,
+            serving_mode: l4Serving?.serving_mode ?? null,
+            updated_at: l4Serving?.pointer_updated_at ?? null,
+          },
+          ...(l4Shadow ? {
+            frozen_forward: {
+              evaluation_id: l4Shadow.evaluation_id,
+              model_version: l4Shadow.model_version,
+              validation_schema_version: l4Shadow.validation_schema_version,
+              business_date: l4Shadow.business_date,
+              oof_max_date: l4Shadow.oof_max_date,
+              updated_at: l4Shadow.updated_at,
+            },
+          } : {}),
+        },
       },
     })
   }
@@ -719,11 +722,41 @@ export async function buildPipelineDecisionMaturityPacket(
     const minDates = Math.max(1, finite(fusion?.min_primary_dates, 20))
     const sampleCount = finite(fusion?.sample_count)
     const dateCount = finite(fusion?.date_count)
-    const status = candidateStatus(fusionServing?.artifact_state, fusion?.offline_gate_decision, dateCount, minDates)
-    const blockers = [...new Set([
-      ...stringArray(fusion?.offline_gate_failed_gates),
-      ...(fusionServing?.blockers ?? []),
-    ])]
+    const offlineBlockers = fusion?.offline_gate_failed_gates ?? ['offline_candidate_missing']
+    const servingBlockers = fusionServing?.blockers ?? ['serving_pointer_missing']
+    const shadowBlockers = fusionShadow?.failed_gates ?? ['frozen_forward_packet_missing']
+    const runtimeGuardBound = Boolean(
+      runtimeGuard
+      && runtimeGuard.artifact_id === fusionServing?.artifact_id
+      && runtimeGuard.model_fingerprint === fusionServing?.model_fingerprint
+    )
+    const runtimeGuardBlockers = runtimeGuardBound && runtimeGuard?.state === 'residual_bypass'
+      ? ['serving_forward_guard_residual_bypass_active'] : []
+    const status = fusion && !fusion.identity_valid
+      ? 'blocked'
+      : candidateStatus(fusionServing?.artifact_state, fusion?.offline_gate_decision, dateCount, minDates)
+    const blockerGroups: PipelineMaturityBlockerGroup[] = [
+      {
+        scope: 'offline_candidate',
+        title: 'Offline candidate',
+        blockers: offlineBlockers,
+      },
+      {
+        scope: 'serving_pointer',
+        title: 'Production serving pointer',
+        blockers: servingBlockers,
+      },
+      {
+        scope: 'frozen_forward',
+        title: 'Active-8 cohort causal shadow (not serving artifact)',
+        blockers: shadowBlockers,
+      },
+      {
+        scope: 'runtime_guard',
+        title: 'Actual serving artifact T+5 guard',
+        blockers: runtimeGuardBlockers,
+      },
+    ]
     stages.push({
       id: 'fusion',
       layer: 'L4+',
@@ -736,45 +769,102 @@ export async function buildPipelineDecisionMaturityPacket(
       decision: fusionServing?.artifact_state === 'serving'
         ? 'Fusion 是 production primary expected-return owner。'
         : `候選資料 ${sampleCount}/${minSamples} rows、${dateCount}/${minDates} dates；tier ${fusion?.promotion_tier ?? 'shadow'}。`,
-      contribution: '把 L4 selection alpha 與 S12 execution probability/conditional PnL 結合為 P(execution) × E(net PnL | execution)。',
+      contribution: '以 canonical L4 expected return 為 base，只疊加通過驗證的 v14 residual adjustment；S12 僅保留 shadow diagnostic。',
       production_effect: fusionServing?.artifact_state === 'serving'
-        ? '取代單獨 L4 作 final trade EV owner，再交給 allocator/OBP 做風險與部位決策。'
-        : '未通過 paired champion、execution expert 與品質 gate 前維持 shadow，不能壓過 canonical L4。',
-      blockers,
+        ? '以 L4 base 加上已驗證 residual 作 final trade EV；sparse allocator 仍是選擇與權重 owner。'
+        : 'Residual 未通過時 adjustment 固定為 0，不得抹除或否決合格 canonical L4 base EV。',
+      blockers: offlineBlockers,
+      blocker_groups: blockerGroups,
       metrics: [
-        gateMetric('samples', 'Fusion usable samples', sampleCount, minSamples, 'rows'),
-        gateMetric('dates', 'Fusion usable dates', dateCount, minDates, 'dates'),
-        gateMetric('l4_samples', 'L4 PIT samples', fusion?.l4_samples, Math.max(1, finite(fusion?.min_l4_samples, 300)), 'rows'),
-        gateMetric('l4_dates', 'L4 PIT dates', fusion?.l4_dates, Math.max(1, finite(fusion?.min_l4_dates, 8)), 'dates'),
-        gateMetric('structure_samples', 'S12 structure samples', fusion?.structure_samples, Math.max(1, finite(fusion?.min_structure_samples, 300)), 'rows'),
-        gateMetric('structure_dates', 'S12 structure dates', fusion?.structure_dates, Math.max(1, finite(fusion?.min_structure_dates, 8)), 'dates'),
-        gateMetric('execution_samples', 'S12 executed samples', fusion?.execution_samples, Math.max(1, finite(fusion?.min_execution_samples, 300)), 'rows'),
-        gateMetric('execution_dates', 'S12 executed dates', fusion?.execution_dates, Math.max(1, finite(fusion?.min_execution_dates, 8)), 'dates'),
-        gateMetric('market_samples', 'PIT market-context samples', fusion?.market_samples, Math.max(1, finite(fusion?.min_market_samples, 300)), 'rows'),
-        gateMetric('market_dates', 'PIT market-context dates', fusion?.market_dates, Math.max(1, finite(fusion?.min_market_dates, 8)), 'dates'),
-        gateMetric('sector_samples', 'PIT sector-alpha samples', fusion?.sector_samples, Math.max(1, finite(fusion?.min_sector_samples, 300)), 'rows'),
-        gateMetric('sector_dates', 'PIT sector-alpha dates', fusion?.sector_dates, Math.max(1, finite(fusion?.min_sector_dates, 8)), 'dates'),
-        gateMetric('selection_corr_lcb90', 'Selection corr LCB90', fusion?.selection_corr_lcb90, 0, 'ratio', 'gt'),
-        gateMetric('selection_spread_lcb90', 'Selection spread LCB90', fusion?.selection_spread_lcb90, 0, 'return', 'gt'),
-        gateMetric('champion_corr_delta', 'Selection corr delta vs canonical L4 LCB90', fusion?.fusion_corr_delta_lcb90, 0, 'ratio', 'gte'),
-        gateMetric('champion_spread_delta', 'Selection spread delta vs canonical L4 LCB90', fusion?.fusion_spread_delta_lcb90, 0, 'return', 'gte'),
-        gateMetric('top_trade_ev_lcb90', 'Final top trade EV LCB90', fusion?.fusion_top_trade_ev_lcb90, 0, 'return', 'gt'),
-        metric('final_champion_comparison', 'Final trade EV paired comparison', fusion?.fusion_final_comparison_decision, { unit: 'status', note: `${finite(fusion?.fusion_final_comparison_samples)}/paired rows across ${finite(fusion?.fusion_final_comparison_dates)} dates; selection comparison is reported separately.` }),
-        metric('execution_expert', 'Conditional execution expert', fusion?.execution_decision, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusion?.execution_decision == null ? null : fusion.execution_decision === 'PASS' }),
-        metric('execution_probability', 'Execution probability expert', fusion?.execution_probability_decision, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusion?.execution_probability_decision == null ? null : fusion.execution_probability_decision === 'PASS' }),
-        metric('frozen_forward_quality', 'Latest frozen-forward shadow quality', fusionShadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusionShadow == null ? null : fusionShadow.quality_decision === 'PASS' }),
-        metric('frozen_forward_dates', 'Latest frozen-forward shadow dates', fusionShadow?.oof_date_count ?? null, { unit: 'dates', note: 'Monitoring-only; never training or promotion evidence.' }),
+        gateMetric('samples', 'Offline candidate usable samples', sampleCount, minSamples, 'rows'),
+        gateMetric('dates', 'Offline candidate usable dates', dateCount, minDates, 'dates'),
+        gateMetric('l4_samples', 'Offline candidate L4 PIT samples', fusion?.l4_samples, Math.max(1, finite(fusion?.min_l4_samples, 300)), 'rows'),
+        gateMetric('l4_dates', 'Offline candidate L4 PIT dates', fusion?.l4_dates, Math.max(1, finite(fusion?.min_l4_dates, 8)), 'dates'),
+        metric('structure_samples', 'S12 shadow diagnostic structure samples', fusion?.structure_samples, { unit: 'rows', note: 'Diagnostic only; not a Fusion v14 serving gate.' }),
+        metric('structure_dates', 'S12 shadow diagnostic structure dates', fusion?.structure_dates, { unit: 'dates', note: 'Diagnostic only; not a Fusion v14 serving gate.' }),
+        metric('execution_samples', 'S12 shadow diagnostic executed samples', fusion?.execution_samples, { unit: 'rows', note: 'Diagnostic only; not a Fusion v14 serving gate.' }),
+        metric('execution_dates', 'S12 shadow diagnostic executed dates', fusion?.execution_dates, { unit: 'dates', note: 'Diagnostic only; not a Fusion v14 serving gate.' }),
+        gateMetric('market_samples', 'Offline candidate PIT market-context samples', fusion?.market_samples, Math.max(1, finite(fusion?.min_market_samples, 300)), 'rows'),
+        gateMetric('market_dates', 'Offline candidate PIT market-context dates', fusion?.market_dates, Math.max(1, finite(fusion?.min_market_dates, 8)), 'dates'),
+        gateMetric('sector_samples', 'Offline candidate PIT sector-alpha samples', fusion?.sector_samples, Math.max(1, finite(fusion?.min_sector_samples, 300)), 'rows'),
+        gateMetric('sector_dates', 'Offline candidate PIT sector-alpha dates', fusion?.sector_dates, Math.max(1, finite(fusion?.min_sector_dates, 8)), 'dates'),
+        gateMetric('residual_corr_lcb90', 'Residual adjustment corr LCB90', fusion?.residual_corr_lcb90, 0, 'ratio', 'gt'),
+        gateMetric('residual_spread_lcb90', 'Residual adjustment spread LCB90', fusion?.residual_spread_lcb90, 0, 'return', 'gt'),
+        metric('selection_corr_lcb90', 'Selection diagnostic corr LCB90', fusion?.selection_corr_lcb90, { unit: 'ratio', note: 'Reported for diagnosis only; the v14 serving head is residual_adjustment_model.' }),
+        metric('selection_spread_lcb90', 'Selection diagnostic spread LCB90', fusion?.selection_spread_lcb90, { unit: 'return', note: 'Reported for diagnosis only; the v14 serving head is residual_adjustment_model.' }),
+        metric('champion_corr_delta', 'Selection diagnostic corr delta vs canonical L4 LCB90', fusion?.fusion_corr_delta_lcb90, { unit: 'ratio', note: 'Not a v14 serving gate.' }),
+        metric('champion_spread_delta', 'Selection diagnostic spread delta vs canonical L4 LCB90', fusion?.fusion_spread_delta_lcb90, { unit: 'return', note: 'Not a v14 serving gate.' }),
+        gateMetric('top_trade_ev_lcb90', 'Offline candidate final top trade EV LCB90', fusion?.fusion_top_trade_ev_lcb90, 0, 'return', 'gt'),
+        metric('final_champion_comparison', 'Offline candidate final trade EV paired comparison', fusion?.fusion_final_comparison_reason ? 'NOT_EVALUATED' : fusion?.fusion_final_comparison_decision, {
+          unit: 'status',
+          passed: fusion?.fusion_final_comparison_reason ? null : fusion?.fusion_final_comparison_decision == null ? null : fusion.fusion_final_comparison_decision === 'PASS',
+          note: fusion?.fusion_final_comparison_reason ?? (finite(fusion?.fusion_final_comparison_samples) + '/paired rows across ' + finite(fusion?.fusion_final_comparison_dates) + ' dates.'),
+        }),
+        metric('execution_expert', 'Shadow diagnostic conditional execution expert', fusion?.execution_decision, { unit: 'status', passed: null, note: 'Diagnostic only; not served by Fusion v14.' }),
+        metric('execution_probability', 'Shadow diagnostic execution probability expert', fusion?.execution_probability_decision, { unit: 'status', passed: null, note: 'Diagnostic only; not served by Fusion v14.' }),
+        gateMetric('shadow_sector_samples', 'Latest shadow PIT sector-alpha samples', fusionShadow?.sector_samples, Math.max(1, finite(fusion?.min_sector_samples, 300)), 'rows'),
+        gateMetric('shadow_sector_dates', 'Latest shadow PIT sector-alpha dates', fusionShadow?.sector_dates, Math.max(1, finite(fusion?.min_sector_dates, 8)), 'dates'),
+        gateMetric('shadow_residual_corr_lcb90', 'Latest shadow residual corr LCB90', fusionShadow?.residual_corr_lcb90, 0, 'ratio', 'gt'),
+        gateMetric('shadow_residual_spread_lcb90', 'Latest shadow residual spread LCB90', fusionShadow?.residual_spread_lcb90, 0, 'return', 'gt'),
+        metric('shadow_walk_forward', 'Latest shadow residual walk-forward', fusionShadow?.walk_forward_passed, { target: true, comparator: 'eq', unit: 'status', passed: fusionShadow?.walk_forward_passed ?? null }),
+        metric('frozen_forward_quality', 'Active-8 cohort causal shadow quality', fusionShadow?.quality_decision ?? null, { target: 'PASS', comparator: 'eq', unit: 'status', passed: fusionShadow == null ? null : fusionShadow.quality_decision === 'PASS' }),
+        metric('frozen_forward_dates', 'Active-8 cohort causal shadow dates', fusionShadow?.oof_date_count ?? null, { unit: 'dates', note: 'Rebuilds causal validation on a fixed Active-8 cohort; it is not the production serving artifact.' }),
+        metric('serving_forward_guard_state', 'Actual serving artifact T+5 guard', runtimeGuardBound ? runtimeGuard?.state ?? null : runtimeGuard ? 'IDENTITY_MISMATCH' : null, { unit: 'status', passed: runtimeGuardBound ? runtimeGuard?.state !== 'residual_bypass' : null, note: 'Bound by artifact ID and model fingerprint; it can only bypass the Fusion residual back to canonical L4.' }),
+        metric('serving_forward_evaluable_dates', 'Serving-forward evaluable dates', runtimeGuardBound ? runtimeGuard?.evaluable_date_count ?? 0 : null, { unit: 'dates' }),
+        metric('serving_forward_degraded_streak', 'Serving-forward degraded streak', runtimeGuardBound ? runtimeGuard?.degraded_streak ?? 0 : null, { unit: 'dates', target: 3, comparator: 'lt', passed: runtimeGuardBound ? (runtimeGuard?.degraded_streak ?? 0) < 3 : null }),
+        metric('serving_forward_recovery_streak', 'Serving-forward recovery streak', runtimeGuardBound ? runtimeGuard?.recovery_streak ?? 0 : null, { unit: 'dates' }),
       ],
       lineage: {
         requested_date: requestedDate,
-        evidence_date: fusionShadow?.business_date ?? fusion?.source_run_date ?? candidateState?.allocator_ev_fusion.candidate_end_date ?? null,
-        artifact_id: fusion?.artifact_id ?? candidateState?.allocator_ev_fusion.artifact_id ?? null,
-        model_version: fusion?.version ?? fusionServing?.model_version ?? null,
-        source: fusionShadow ? 'Fusion candidate + frozen-forward shadow evaluation packet' : 'canonical L0-L4 + market/sector PIT context',
-        oof_max_date: fusionShadow?.oof_max_date ?? fusion?.fusion_oof_max_date ?? null,
+        evidence_date: fusion?.source_run_date ?? null,
+        artifact_id: fusion?.artifact_id ?? null,
+        model_version: fusion?.version ?? null,
+        source: 'offline candidate; production pointer and frozen-forward shadow are separate evidence scopes',
+        oof_max_date: fusion?.fusion_oof_max_date ?? null,
         oof_applicable: true,
-        evidence_semantics: 'Purged OOF sample cutoff; final execution comparison can remain pending after selection comparison is available.',
-        updated_at: fusionShadow?.updated_at ?? fusion?.updated_at ?? candidateState?.allocator_ev_fusion.updated_at ?? null,
+        evidence_semantics: 'Fusion v14 residual-adjustment candidate uses purged OOF evidence; monitoring shadow is never promotion evidence.',
+        updated_at: fusion?.updated_at ?? null,
+        evidence_scopes: {
+          offline_candidate: {
+            artifact_id: fusion?.artifact_id ?? null,
+            model_version: fusion?.version ?? null,
+            artifact_contract_version: fusion?.artifact_contract_version ?? null,
+            validation_schema_version: fusion?.validation_schema_version ?? null,
+            source_run_date: fusion?.source_run_date ?? null,
+            oof_max_date: fusion?.fusion_oof_max_date ?? null,
+            updated_at: fusion?.updated_at ?? null,
+          },
+          serving_pointer: {
+            artifact_id: fusionServing?.artifact_id ?? null,
+            model_version: fusionServing?.model_version ?? null,
+            artifact_contract_version: fusionServing?.artifact_contract_version ?? null,
+            serving_mode: fusionServing?.serving_mode ?? null,
+            updated_at: fusionServing?.pointer_updated_at ?? null,
+          },
+          ...(runtimeGuard ? {
+            runtime_guard: {
+              artifact_id: runtimeGuard.artifact_id,
+              model_fingerprint: runtimeGuard.model_fingerprint,
+              model_version: runtimeGuard.model_version,
+              state: runtimeGuard.state,
+              evaluable_date_count: runtimeGuard.evaluable_date_count,
+              degraded_streak: runtimeGuard.degraded_streak,
+              recovery_streak: runtimeGuard.recovery_streak,
+              last_prediction_date: runtimeGuard.last_prediction_date,
+              lineage_bound: runtimeGuardBound,
+            },
+          } : {}),
+          ...(fusionShadow ? {
+            frozen_forward: {
+              evaluation_id: fusionShadow.evaluation_id,
+              model_version: fusionShadow.model_version,
+              validation_schema_version: fusionShadow.validation_schema_version,
+              business_date: fusionShadow.business_date,
+              oof_max_date: fusionShadow.oof_max_date,
+              updated_at: fusionShadow.updated_at,
+            },
+          } : {}),
+        },
       },
     })
   }
@@ -823,51 +913,65 @@ export async function buildPipelineDecisionMaturityPacket(
        LIMIT 7
     `).bind(STRATEGY_ROUTE_MIN_TOTAL_DATES, requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
-      WITH evidence AS (
-        SELECT source_run_date evidence_date,
-               json_extract(offline_evidence_json, '$.validation_packet.oos_metrics.date_mean_cross_section_corr_lcb90') value,
-               updated_at, artifact_id evidence_id
+      WITH ranked AS (
+        SELECT model_name, artifact_id, version, state, source_run_date,
+               offline_gate_decision, offline_gate_failed_gates,
+               live_gate_status, updated_at, offline_evidence_json,
+               ROW_NUMBER() OVER (
+                 PARTITION BY source_run_date
+                 ORDER BY updated_at DESC, artifact_id DESC
+               ) ordinal
           FROM model_artifact_registry
-         WHERE model_name='l4_alpha_ev' AND candidate_type='l4_alpha_ev_refresh' AND source_run_date <= ?
-        UNION ALL
-        SELECT business_date,
-               json_extract(validation_packet_json, '$.oos_metrics.date_mean_cross_section_corr_lcb90'),
-               updated_at, evaluation_id
-          FROM expected_return_shadow_evaluation_packets
-         WHERE model_name='l4_alpha_ev' AND business_date <= ?
-      ), ranked AS (
-        SELECT evidence_date, value, updated_at, evidence_id,
-               ROW_NUMBER() OVER (PARTITION BY evidence_date ORDER BY updated_at DESC, evidence_id DESC) ordinal FROM evidence
+         WHERE model_name='l4_alpha_ev'
+           AND candidate_type='l4_alpha_ev_refresh'
+           AND source_run_date <= ?
       )
-      SELECT evidence_date, value, 0 target
+      SELECT model_name, artifact_id, version, state, source_run_date,
+             offline_gate_decision, offline_gate_failed_gates,
+             live_gate_status, updated_at, offline_evidence_json
         FROM ranked
-       WHERE ordinal=1 AND evidence_date IS NOT NULL
-       ORDER BY evidence_date DESC
+       WHERE ordinal=1
+       ORDER BY source_run_date DESC
        LIMIT 7
-    `).bind(requestedDate, requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+    `).bind(requestedDate).all<ExpectedReturnCandidateDbRow>().then((result) =>
+      (result.results ?? []).map((row) => {
+        const evidence = adaptExpectedReturnCandidate(row)
+        return {
+          evidence_date: evidence.source_run_date ?? '',
+          value: evidence.l4_corr_lcb90,
+          target: 0,
+        }
+      }))),
     safeQuery(() => learningDb.prepare(`
-      WITH evidence AS (
-        SELECT source_run_date evidence_date,
-               json_extract(offline_evidence_json, '$.validation_packet.selection_champion_comparison.spread_delta_lcb90') value,
-               updated_at, artifact_id evidence_id
+      WITH ranked AS (
+        SELECT model_name, artifact_id, version, state, source_run_date,
+               offline_gate_decision, offline_gate_failed_gates,
+               live_gate_status, updated_at, offline_evidence_json,
+               ROW_NUMBER() OVER (
+                 PARTITION BY source_run_date
+                 ORDER BY updated_at DESC, artifact_id DESC
+               ) ordinal
           FROM model_artifact_registry
-         WHERE model_name='allocator_ev_fusion' AND candidate_type='allocator_ev_fusion_refresh' AND source_run_date <= ?
-        UNION ALL
-        SELECT business_date,
-               json_extract(validation_packet_json, '$.selection_champion_comparison.spread_delta_lcb90'),
-               updated_at, evaluation_id
-          FROM expected_return_shadow_evaluation_packets
-         WHERE model_name='allocator_ev_fusion' AND business_date <= ?
-      ), ranked AS (
-        SELECT evidence_date, value, updated_at, evidence_id,
-               ROW_NUMBER() OVER (PARTITION BY evidence_date ORDER BY updated_at DESC, evidence_id DESC) ordinal FROM evidence
+         WHERE model_name='allocator_ev_fusion'
+           AND candidate_type='allocator_ev_fusion_refresh'
+           AND source_run_date <= ?
       )
-      SELECT evidence_date, value, 0 target
+      SELECT model_name, artifact_id, version, state, source_run_date,
+             offline_gate_decision, offline_gate_failed_gates,
+             live_gate_status, updated_at, offline_evidence_json
         FROM ranked
-       WHERE ordinal=1 AND evidence_date IS NOT NULL
-       ORDER BY evidence_date DESC
+       WHERE ordinal=1
+       ORDER BY source_run_date DESC
        LIMIT 7
-    `).bind(requestedDate, requestedDate).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+    `).bind(requestedDate).all<ExpectedReturnCandidateDbRow>().then((result) =>
+      (result.results ?? []).map((row) => {
+        const evidence = adaptExpectedReturnCandidate(row)
+        return {
+          evidence_date: evidence.source_run_date ?? '',
+          value: evidence.residual_spread_lcb90,
+          target: 0,
+        }
+      }))),
   ])
   const historyByStage = new Map<PipelineMaturityStage['id'], {
     rows: Array<{ evidence_date: string; value: number | null; target: number | null }>

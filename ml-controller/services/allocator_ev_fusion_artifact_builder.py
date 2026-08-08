@@ -12,11 +12,12 @@ from scipy.stats import t as student_t
 from services.active8_score_semantics import MODEL_TARGET_SEMANTIC_VERSION
 from services.evidence_contracts import (
     ALLOCATOR_EV_ARTIFACT_CONTRACT_VERSION,
-    CANONICAL_ROUNDTRIP_COST_RATE,
+
     ALLOCATOR_EV_FEATURE_SEMANTIC_VERSION,
     LABEL_SCHEMA_VERSION,
 )
 from services.ev_lineage_contract import ev_feature_lineage_blockers
+from services.expected_return_artifact_identity import attach_expected_return_artifact_identity
 
 from services.l4_alpha_ev_resolver import (
     PURGED_OOF_USAGE_SCOPE,
@@ -2066,6 +2067,7 @@ def build_allocator_ev_fusion_artifact_from_rows(
             "efficacy_evidence_mode": "purged_oof" if generation_mode == "purged_oof" else "native",
         },
     }
+    attach_expected_return_artifact_identity(artifact)
     return {
         "status": "ok" if decision == "PASS" else "failed_validation",
         "artifact": artifact,
@@ -2212,7 +2214,7 @@ def load_allocator_ev_fusion_oof_training_rows(
           'purged_oof_label_known_date_strict' allocator_ev_feature_snapshot_guard,
           ph.source label_adjustment_source,
           ((ph.exit_raw_close * ph.exit_adjustment_factor)
-            / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} l4_executable_return_pct,
+            / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 l4_executable_return_pct,
           NULL trade_pnl_pct,
           l4.prediction_json l4_prediction_json,
           (
@@ -2310,7 +2312,7 @@ def load_allocator_ev_fusion_training_rows(
                 fs.forecast_data,
                 ph.source AS label_adjustment_source,
                 ((ph.exit_raw_close * ph.exit_adjustment_factor)
-                  / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} AS l4_executable_return_pct,
+                  / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 AS l4_executable_return_pct,
                 p.trade_pnl_pct,
                 (
                     SELECT o.pnl_pct
@@ -2432,7 +2434,7 @@ def load_allocator_ev_fusion_training_rows(
             p.forecast_data,
             ph.source AS label_adjustment_source,
             ((ph.exit_raw_close * ph.exit_adjustment_factor)
-              / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 - {CANONICAL_ROUNDTRIP_COST_RATE:.8f} AS l4_executable_return_pct,
+              / (ph.entry_raw_open * ph.entry_adjustment_factor)) - 1.0 AS l4_executable_return_pct,
             p.trade_pnl_pct,
             (
                 SELECT o.pnl_pct

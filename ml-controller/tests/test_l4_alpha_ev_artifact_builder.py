@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import inspect
 import json
 import sys
 from pathlib import Path
+
+import pytest
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -90,6 +93,18 @@ def test_l4_purged_oof_accepts_only_recorded_canonical_market_lineage():
     samples, audit = _samples(rows, min_cross_section_samples_per_date=1)
     assert len(samples) == 19
     assert audit["invalid_reason_counts"] == {"adjustment_source_mismatch:purged_oof": 1}
+
+
+def test_l4_target_deducts_roundtrip_cost_exactly_once():
+    rows = [_row("2026-05-01", idx, target=0.03) for idx in range(20)]
+
+    samples, audit = _samples(rows, cost_model_bps=18.0)
+
+    assert audit["sample_count"] == 20
+    assert samples[0]["target"] == pytest.approx(0.0282)
+    assert "CANONICAL_ROUNDTRIP_COST_RATE" not in inspect.getsource(
+        load_l4_alpha_ev_training_rows
+    )
 
 
 def test_l4_date_cluster_metrics_equal_weight_trading_dates():

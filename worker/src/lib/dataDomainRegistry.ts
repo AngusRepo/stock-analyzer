@@ -72,6 +72,8 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
     'price_horizon_labels_v1', 'price_horizon_label_rejections_v1',
     'allocator_ev_daily_lifecycle',
     'strategy_production_policy_history_v1', 'expected_return_shadow_evaluation_packets',
+    'expected_return_serving_forward_evaluations',
+    'expected_return_forward_guard_state',
     'adaptive_meta_policy_decisions', 'active8_oof_freshness_sla',
     'strategy_adaptive_policy_history_v2',
 

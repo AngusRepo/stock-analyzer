@@ -39,6 +39,11 @@ export type PipelineMaturityStage = {
   contribution: string
   production_effect: string
   blockers: string[]
+  blocker_groups?: Array<{
+    scope: 'offline_candidate' | 'serving_pointer' | 'frozen_forward' | 'runtime_guard'
+    title: string
+    blockers: string[]
+  }>
   metrics: PipelineMaturityMetric[]
   history?: Array<{
     evidence_date: string
@@ -56,6 +61,43 @@ export type PipelineMaturityStage = {
     evidence_semantics?: string
     source: string
     updated_at?: string | null
+    evidence_scopes?: {
+      offline_candidate?: {
+        artifact_id: string | null
+        model_version: string | null
+        artifact_contract_version: string | null
+        validation_schema_version: string | null
+        source_run_date: string | null
+        oof_max_date: string | null
+        updated_at: string | null
+      }
+      serving_pointer?: {
+        artifact_id: string | null
+        model_version: string | null
+        artifact_contract_version: string | null
+        serving_mode: string | null
+        updated_at: string | null
+      }
+      frozen_forward?: {
+        evaluation_id: string
+        model_version: string
+        validation_schema_version: string | null
+        business_date: string
+        oof_max_date: string
+        updated_at: string | null
+      }
+      runtime_guard?: {
+        artifact_id: string
+        model_fingerprint: string
+        model_version: string
+        state: string
+        evaluable_date_count: number
+        degraded_streak: number
+        recovery_streak: number
+        last_prediction_date: string
+        lineage_bound: boolean
+      }
+    }
   }
 }
 

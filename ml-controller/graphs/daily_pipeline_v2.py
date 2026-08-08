@@ -32,6 +32,9 @@ from services.expected_return_calibration import load_expected_return_calibratio
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
 from services.l4_alpha_ev_producer import assess_l4_policy_cutover
 from services.allocator_ev_fusion import assess_allocator_ev_fusion_policy
+from services.expected_return_serving_forward_guard import (
+    load_allocator_ev_fusion_forward_guard,
+)
 from services.payload_builder import (
     DAILY_RECOMMENDATION_PIPELINE_COLUMNS,
     PredictPayload,
@@ -2798,6 +2801,11 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         or (trading_cfg.get("ensemble_v2", {}) or {}).get("allocator_ev_fusion")
     )
     if isinstance(allocator_ev_fusion_policy, dict):
+        allocator_ev_fusion_policy = dict(allocator_ev_fusion_policy)
+        allocator_ev_fusion_policy["runtime_forward_guard"] = await asyncio.to_thread(
+            load_allocator_ev_fusion_forward_guard,
+            allocator_ev_fusion_policy,
+        )
         alpha_policy = dict(alpha_policy) if isinstance(alpha_policy, dict) else {}
         alpha_policy.setdefault("allocatorEvFusion", allocator_ev_fusion_policy)
         alpha_policy.setdefault("allocator_ev_fusion", allocator_ev_fusion_policy)

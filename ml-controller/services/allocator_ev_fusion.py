@@ -23,6 +23,7 @@ from services.expected_return_cost_contract import (
     expected_return_cost_contract_blockers,
     normalize_expected_return_to_net,
 )
+from services.expected_return_artifact_identity import expected_return_artifact_identity
 from services.fusion_market_context import market_context_feature_values
 from services.pit_sector_alpha import sector_alpha_feature_values
 
@@ -241,7 +242,22 @@ def materialize_allocator_ev_fusion(
     if artifact is None:
         return None
 
+    artifact = dict(artifact)
+    try:
+        identity = expected_return_artifact_identity(artifact)
+    except ValueError:
+        identity = {}
+    artifact.update(identity)
+    guard = _dict_payload(artifact.get("runtime_forward_guard"))
+    guard_matches = bool(
+        guard.get("lineage_bound") is True
+        and guard.get("artifact_id") == artifact.get("artifact_id")
+        and guard.get("model_fingerprint") == artifact.get("model_fingerprint")
+    )
+
     blockers: list[str] = []
+    if guard_matches and guard.get("action") == "residual_bypass":
+        blockers.append("serving_forward_guard_residual_bypass_active")
     contract_version = str(artifact.get("artifact_contract_version") or "").strip()
     label_version = str(artifact.get("label_schema_version") or "").strip()
     supported_contract_versions = {pair[0] for pair in SUPPORTED_ALLOCATOR_EV_SERVING_CONTRACT_PAIRS}

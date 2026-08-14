@@ -19,6 +19,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+from services.bounded_json import (
+    BoundedJsonContractError,
+    assert_bounded_json_fields_complete,
+    bounded_json_dumps,
+)
+
 try:
     import httpx
 except ImportError:  # pragma: no cover - only hit in slim unit-test envs
@@ -579,6 +585,15 @@ async def run_monte_carlo_mdd(
                 "source_payload_sha256": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
             }
             raw = json.loads(raw_text)
+            consumed_field = "all_returns" if raw.get("all_returns") else "trades"
+            try:
+                assert_bounded_json_fields_complete(raw, (consumed_field,))
+            except BoundedJsonContractError as exc:
+                return {
+                    "error": str(exc),
+                    "status": "failed",
+                    "evidence_complete": False,
+                }
             trade_returns, trade_regimes = _extract_backtest_returns_and_regimes(raw)
 
         else:
@@ -618,7 +633,7 @@ async def run_monte_carlo_mdd(
             bucket = f"{int(mdd * 100)}%"
             buckets[bucket] = buckets.get(bucket, 0) + 1
 
-        raw_json = json.dumps({
+        raw_json = bounded_json_dumps({
             "distribution": mdds_for_dist,
             "histogram": buckets,
             "source": source,
@@ -630,7 +645,20 @@ async def run_monte_carlo_mdd(
             "min_full_tail_risk_trades": mc.min_full_tail_risk_trades,
             "data_quality": data_quality_info or None,
             "source_provenance": source_provenance,
-        }, ensure_ascii=False)
+        },
+        ensure_ascii=False,
+        preserve_exact_keys=(
+            "source",
+            "n_trades",
+            "simulation_method",
+            "block_size",
+            "regime_counts",
+            "tail_risk_status",
+            "min_full_tail_risk_trades",
+            "data_quality",
+            "source_provenance",
+        ),
+    )
 
         success = await _d1_exec(
             client,
@@ -655,7 +683,7 @@ async def run_monte_carlo_mdd(
                 mc.mdd_best,
                 mc.go_live_verdict,
                 mc.verdict_reason,
-                raw_json[:50000],
+                raw_json,
             ],
         )
 

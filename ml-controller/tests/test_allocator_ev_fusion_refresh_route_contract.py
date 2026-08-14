@@ -5,24 +5,17 @@ from pathlib import Path
 SOURCE = (Path(__file__).resolve().parents[1] / "routers/allocator_ev_fusion.py").read_text(encoding="utf-8")
 
 
-def test_allocator_ev_fusion_refresh_route_allows_only_primary_to_mutate_config() -> None:
-    tree = ast.parse(SOURCE)
-    function = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_promotion_config_allowed"
-    )
-    constants = {
-        node.value
-        for node in ast.walk(function)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-    }
-    assert "production_primary" in constants
-    assert "production_assistive" not in constants
-    assert "production_approved" not in constants
+def test_allocator_ev_fusion_refresh_rejects_direct_promotion_to_active8_owner() -> None:
+    assert "promote: bool = False" in SOURCE
+    assert "if req.promote:" in SOURCE
+    assert "status_code=409" in SOURCE
+    assert 'DIRECT_REFRESH_PROMOTION_OWNER = "active8_oof_lifecycle"' in SOURCE
+    assert 'DIRECT_REFRESH_PROMOTION_ENDPOINT = "/walk_forward/oof/lifecycle"' in SOURCE
+    assert SOURCE.index("if req.promote:") < SOURCE.index("defaults = _defaults_for_cadence")
+    assert "_promotion_config_allowed" not in SOURCE
 
 
-def test_allocator_ev_fusion_refresh_route_writes_registry_before_config_promotion() -> None:
+def test_allocator_ev_fusion_refresh_persists_registry_without_direct_config_promotion() -> None:
     tree = ast.parse(SOURCE)
     refresh = next(
         node
@@ -35,18 +28,18 @@ def test_allocator_ev_fusion_refresh_route_writes_registry_before_config_promoti
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     ]
     assert "upsert_artifact_record" in calls
-    assert "worker_fetch" in calls
-    assert calls.index("upsert_artifact_record") < calls.index("worker_fetch")
+    assert "worker_fetch" not in calls
+    assert '"/api/admin/config"' not in SOURCE
 
 
 def test_allocator_ev_fusion_dry_run_does_not_write_registry() -> None:
     assert "if isinstance(artifact, dict) and not req.dry_run:" in SOURCE
 
 
-def test_allocator_ev_fusion_refresh_route_sends_config_snapshot_meta() -> None:
-    assert '"meta"' in SOURCE
-    assert '"source": "allocator_ev_fusion_refresh"' in SOURCE
-    assert '"push_id": f"allocator_ev_fusion:' in SOURCE
+def test_allocator_ev_fusion_refresh_never_allows_production_mutation() -> None:
+    assert '"production_mutation_allowed": False' in SOURCE
+    assert '"production_mutation_allowed": bool(' not in SOURCE
+    assert "worker_fetch" not in SOURCE
 
 
 def test_allocator_ev_fusion_failed_challenger_preserves_existing_champion() -> None:
@@ -64,14 +57,26 @@ def test_allocator_ev_fusion_registry_maps_promotion_to_lifecycle_states() -> No
         node.value for node in ast.walk(function)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
-    assert {"production", "approval_required", "offline_passed", "offline_failed"} <= constants
-    assert "shadow" not in constants
+    assert {"offline_passed", "offline_failed"} <= constants
+    assert {"production", "approval_required"}.isdisjoint(constants)
 
 
 def test_mature_snapshot_query_uses_canonical_writer_contract() -> None:
     assert "SNAPSHOT_BACKFILL_SOURCE" in SOURCE
-    assert "SNAPSHOT_BACKFILL_AS_OF_GUARD" in SOURCE
     assert "trained_until_strictly_before_snapshot_date'" not in SOURCE
+
+    assert "SNAPSHOT_BACKFILL_AS_OF_GUARD" in SOURCE
+
+
+def test_fusion_registry_envelope_uses_formal_direct_identity_v1() -> None:
+    assert '"identity_schema_version": "expected-return-candidate-identity-v1"' in SOURCE
+    assert '"identity_schema_version": "expected-return-candidate-identity-v2"' not in SOURCE
+    assert '"expected_return_owner": artifact.get("expected_return_owner")' in SOURCE
+    assert '"model_version": model_version' in SOURCE
+    assert '"artifact_checksum": artifact_checksum' not in SOURCE
+    assert '"cadence": cadence' in SOURCE
+    assert '"checksum": artifact_checksum' in SOURCE
+    assert '"production_mutation_allowed": False' in SOURCE
 
 
 def test_purged_oof_refresh_is_explicit_and_fail_closed() -> None:

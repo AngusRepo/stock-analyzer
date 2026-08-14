@@ -51,6 +51,7 @@ const TASK_NAMES: Record<string, string> = {
   recommendation: 'Daily Recommendation',
   screener: 'Screener',
   'screener-v2': 'Screener V2 Job Trigger',
+  'screener-v2-watchdog': 'Screener V2 Same-day Recovery',
   'us-leading': 'US Leading',
   'news-analyst': 'News Analyst',
   'morning-setup': 'Morning Setup',
@@ -299,11 +300,9 @@ export async function getSchedulerRunLogs(
     }
   }
 
-  if (aggregate || !directFallback) {
-    return fillMissingSchedulerLogs(tasks, results)
-  }
+  if (!directFallback) return fillMissingSchedulerLogs(tasks, results)
 
-  const entries = await Promise.all(
+  const directEntries = await Promise.all(
     tasks.map(async (task) => {
       const canonical = await kv.get(`scheduler:run:${task}:${date}`, 'json') as SchedulerRunLogEntry | null
       if (canonical || !legacyFallback) return canonical
@@ -311,11 +310,15 @@ export async function getSchedulerRunLogs(
     }),
   )
 
-  for (const entry of entries) {
-    if (entry) results.push(entry)
+  const merged = new Map(results.map((entry) => [entry.task, entry]))
+  for (const entry of directEntries) {
+    if (!entry?.task || !tasks.includes(entry.task)) continue
+    // Per-task canonical keys are written before the best-effort daily aggregate.
+    // They are therefore the source of truth when concurrent aggregate RMW loses an update.
+    merged.set(entry.task, entry)
   }
 
-  return fillMissingSchedulerLogs(tasks, results)
+  return fillMissingSchedulerLogs(tasks, [...merged.values()])
 }
 
 function fillMissingSchedulerLogs(tasks: string[], results: SchedulerRunLogEntry[]): SchedulerRunLogEntry[] {

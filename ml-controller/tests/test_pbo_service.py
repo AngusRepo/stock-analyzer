@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from services.pbo_service import (  # noqa: E402
     DEFAULT_EMBARGO_DAYS,
+    _backtest_trade_evidence_incomplete_reason,
     _resolve_dynamic_embargo_days,
     _run_cpcv,
     _run_cscv_rank_logit_pbo,
@@ -77,3 +78,27 @@ def test_cpcv_records_dynamic_embargo_metadata():
     assert result.embargo_days == 7
     assert result.embargo_source == "trade_horizon"
     assert result.n_partitions == 5
+
+
+def test_pbo_rejects_capped_backtest_trade_evidence():
+    trades = [{"profit_ratio": 0.01}] * 500
+    raw = {
+        "summary": {"total_trades": 620},
+        "trades": trades,
+        "trades_complete": False,
+    }
+
+    assert _backtest_trade_evidence_incomplete_reason(raw, trades) == (
+        "backtest_trade_evidence_incomplete:stored=500:expected=620"
+    )
+
+
+def test_pbo_accepts_complete_backtest_trade_evidence():
+    trades = [{"profit_ratio": 0.01}] * 40
+    raw = {
+        "summary": {"total_trades": 40},
+        "trades": trades,
+        "trades_complete": True,
+    }
+
+    assert _backtest_trade_evidence_incomplete_reason(raw, trades) is None

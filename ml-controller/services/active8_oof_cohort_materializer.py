@@ -1619,12 +1619,14 @@ def archive_ev_candidate_artifacts(
     cohort_id: str,
     source_run_date: str,
     manifest_path: str,
+    lifecycle_cadence: str,
     l4_result: dict[str, Any],
     fusion_result: dict[str, Any],
     parity: dict[str, Any] | None,
     promoted: bool | dict[str, bool],
+    register_candidate: bool = True,
 ) -> dict[str, Any]:
-    """Persist complete candidate JSON and its automatic promotion evidence."""
+    """Persist candidate or promotion-receipt JSON without mutating candidate identity twice."""
 
     output = {}
     promoted_by_owner = (
@@ -1666,7 +1668,7 @@ def archive_ev_candidate_artifacts(
             if model_name == "l4_alpha_ev"
             else "allocator_ev_fusion_refresh"
         )
-        upsert_artifact_record({
+        registry_record = {
             "artifact_id": f"{model_name}:{model_version}",
             "model_name": model_name,
             "version": model_version,
@@ -1684,6 +1686,11 @@ def archive_ev_candidate_artifacts(
             "offline_gate_decision": decision,
             "offline_gate_failed_gates": json.dumps(validation.get("failed_gates") or []),
             "offline_evidence_json": json.dumps({
+                "identity_schema_version": "expected-return-candidate-identity-v2",
+                "expected_return_owner": artifact.get("expected_return_owner"),
+                "model_version": model_version,
+                "artifact_checksum": checksum,
+                "cadence": lifecycle_cadence,
                 "cohort_id": cohort_id,
                 "artifact_contract_version": artifact.get("artifact_contract_version"),
                 "feature_semantic_version": artifact.get("feature_semantic_version"),
@@ -1701,8 +1708,15 @@ def archive_ev_candidate_artifacts(
             "live_evidence_json": json.dumps(parity or {}, ensure_ascii=False),
             "promotion_decision": "primary" if owner_promoted else "shadow",
             "approval_state": artifact.get("promotion_state") or "approval_required",
-        })
-        output[model_name] = {"path": path, "checksum": checksum, "state": state}
+        }
+        if register_candidate:
+            upsert_artifact_record(registry_record)
+        output[model_name] = {
+            "path": path,
+            "checksum": checksum,
+            "state": state,
+            "registry_registered": register_candidate,
+        }
     return output
 
 

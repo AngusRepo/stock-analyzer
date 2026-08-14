@@ -8,9 +8,41 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal
 
-from services import d1_client
+from services.d1_domain_client import D1DataDomain, DomainD1Client, client_for_domain
 from services.evidence_contracts import LABEL_SCHEMA_VERSION
 from services.model_validation_policy import resolve_model_validation_policy
+
+
+class _LearningArtifactRegistryD1Client:
+    @staticmethod
+    def _client() -> DomainD1Client:
+        return client_for_domain(D1DataDomain.LEARNING)
+
+    def query(
+        self,
+        sql: str,
+        params: list[Any] | None = None,
+        timeout: float = 60.0,
+    ) -> list[dict]:
+        return self._client().query(sql, params, timeout)
+
+    def execute(
+        self,
+        sql: str,
+        params: list[Any] | None = None,
+        timeout: float = 60.0,
+    ) -> dict:
+        return self._client().execute(sql, params, timeout)
+
+    def atomic_batch_execute(
+        self,
+        statements: list[tuple[str, list[Any]]],
+        timeout: float = 30.0,
+    ) -> dict:
+        return self._client().atomic_batch_execute(statements, timeout)
+
+
+d1_client = _LearningArtifactRegistryD1Client()
 
 CandidateType = Literal[
     "monthly_release",

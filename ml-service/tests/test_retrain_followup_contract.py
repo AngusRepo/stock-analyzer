@@ -26,6 +26,12 @@ def test_retrain_callback_token_prefers_dedicated_token(monkeypatch):
     assert _controller_callback_token() == "retrain-only-token"
 
 
+def test_retrain_callback_token_strips_header_whitespace(monkeypatch):
+    monkeypatch.setenv("RETRAIN_CALLBACK_TOKEN", "  retrain-only-token\r\n")
+
+    assert _controller_callback_token() == "retrain-only-token"
+
+
 def test_modal_retrain_callback_mounts_dedicated_secret():
     modal_source = (Path(__file__).resolve().parents[1] / "modal_app.py").read_text(encoding="utf-8")
 

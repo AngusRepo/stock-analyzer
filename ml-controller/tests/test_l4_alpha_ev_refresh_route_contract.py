@@ -51,7 +51,7 @@ def test_l4_alpha_ev_refresh_exposes_lineage_reconstruction_audit() -> None:
     assert '"champion_history_load": champion_history_load' in source
 
 
-def test_l4_alpha_ev_refresh_route_writes_registry_before_config_promotion() -> None:
+def test_l4_alpha_ev_refresh_persists_registry_without_direct_config_promotion() -> None:
     source = SOURCE_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
     refresh = next(
@@ -65,15 +65,18 @@ def test_l4_alpha_ev_refresh_route_writes_registry_before_config_promotion() -> 
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     ]
     assert "upsert_artifact_record" in calls
-    assert "worker_fetch" in calls
-    assert calls.index("upsert_artifact_record") < calls.index("worker_fetch")
+    assert "worker_fetch" not in calls
+    assert '"/api/admin/config"' not in source
 
 
-def test_l4_alpha_ev_refresh_route_sends_config_snapshot_meta() -> None:
+def test_l4_alpha_ev_refresh_rejects_direct_promotion_to_active8_owner() -> None:
     source = SOURCE_PATH.read_text(encoding="utf-8")
-    assert '"meta"' in source
-    assert '"source": "l4_alpha_ev_refresh"' in source
-    assert '"push_id": f"l4_alpha_ev:' in source
+    assert "promote: bool = False" in source
+    assert "if req.promote:" in source
+    assert "status_code=409" in source
+    assert 'DIRECT_REFRESH_PROMOTION_OWNER = "active8_oof_lifecycle"' in source
+    assert 'DIRECT_REFRESH_PROMOTION_ENDPOINT = "/walk_forward/oof/lifecycle"' in source
+    assert source.index("if req.promote:") < source.index("defaults = _defaults_for_cadence")
 
 
 def test_l4_alpha_ev_dry_run_does_not_write_registry() -> None:
@@ -92,5 +95,17 @@ def test_l4_alpha_ev_registry_maps_promotion_to_lifecycle_states() -> None:
         node.value for node in ast.walk(function)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     }
-    assert {"production", "approval_required", "offline_passed", "offline_failed"} <= constants
-    assert "production_approved" not in constants
+    assert {"offline_passed", "offline_failed"} <= constants
+    assert {"production", "approval_required"}.isdisjoint(constants)
+
+
+def test_l4_registry_envelope_uses_formal_direct_identity_v1() -> None:
+    source = SOURCE_PATH.read_text(encoding="utf-8")
+    assert '"identity_schema_version": "expected-return-candidate-identity-v1"' in source
+    assert '"identity_schema_version": "expected-return-candidate-identity-v2"' not in source
+    assert '"expected_return_owner": artifact.get("expected_return_owner")' in source
+    assert '"model_version": model_version' in source
+    assert '"artifact_checksum": artifact_checksum' not in source
+    assert '"cadence": cadence' in source
+    assert '"checksum": artifact_checksum' in source
+    assert '"production_mutation_allowed": False' in source

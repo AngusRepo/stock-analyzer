@@ -3183,7 +3183,36 @@ export function scoreMultiFactor(
 /**
  * Bottom-up ?典??湧?∩蜓瘚?嚗2嚗?
  */
-export async function runBottomUpScreener(env: Bindings, runDate?: string | null): Promise<{
+export interface BottomUpScreenerRunOptions {
+  producerRunId?: string | null
+}
+
+function resolveScreenerProducerRunId(runDate: string, value?: string | null): string {
+  const candidate = String(value ?? '').trim()
+  if (!candidate) return `screener-${runDate}-${Date.now()}`
+  if (candidate.length > 200 || !/^[A-Za-z0-9._:-]+$/.test(candidate)) {
+    throw new Error('invalid_screener_producer_run_id')
+  }
+  return candidate
+}
+
+function screenerInfrastructureFingerprint(error: unknown): string {
+  const candidate = error && typeof error === 'object' ? error as Record<string, unknown> : {}
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  const errorClass = error instanceof Error && error.name ? error.name : 'unknown_error'
+  const statusCandidate = Number(candidate.status ?? (candidate.response as any)?.status)
+  const statusMatch = message.match(/(?:HTTP|status)\s*[:=]?\s*(\d{3})/i)
+  const codeCandidate = String(candidate.code ?? '').trim()
+  const codeMatch = message.match(/(?:code)\s*[:=]?\s*([A-Za-z0-9_-]{1,32})/i)
+  const parts = [`class=${errorClass}`]
+  if (Number.isFinite(statusCandidate)) parts.push(`status=${Math.floor(statusCandidate)}`)
+  else if (statusMatch?.[1]) parts.push(`status=${statusMatch[1]}`)
+  if (/^[A-Za-z0-9_-]{1,32}$/.test(codeCandidate)) parts.push(`code=${codeCandidate}`)
+  else if (codeMatch?.[1]) parts.push(`code=${codeMatch[1]}`)
+  return parts.join(':')
+}
+
+export async function runBottomUpScreener(env: Bindings, runDate?: string | null, options: BottomUpScreenerRunOptions = {}): Promise<{
   hotSectors: SectorHeatScore[]
   candidates: ScreenerCandidate[]
   emergingResearchCandidates?: ScreenerCandidate[]
@@ -3207,7 +3236,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
   const adaptiveParams = await getAdaptiveParamsForRegime(env.KV, canonicalRegimeState.family)
   const screenerPolicy = resolveScreenerPolicy(cfg, adaptiveParams)
-  const runId = `screener-${endDate}-${Date.now()}`
+  const runId = resolveScreenerProducerRunId(endDate, options.producerRunId)
   const funnelItems: ScreenerFunnelItemInput[] = []
 
   // ?? 鞈???嚗像銵???
@@ -3268,13 +3297,13 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       `lanes=${JSON.stringify(marketData.laneCounts)} chip_sources=${JSON.stringify(chipSourceSummary)}`,
     )
   } catch (e) {
-    console.error('[Screener v2] Data fetch failed:', e)
-    return { hotSectors: [], candidates: [] }
+    throw new Error(
+      `screener_market_data_load_failed:run_date=${endDate}:${screenerInfrastructureFingerprint(e)}`,
+    )
   }
 
   if (!allPrices.length) {
-    console.warn('[Screener v2] No price data, aborting')
-    return { hotSectors: [], candidates: [] }
+    throw new Error(`screener_market_data_empty:run_date=${endDate}`)
   }
 
   // ?? ?蔭?⊥?????

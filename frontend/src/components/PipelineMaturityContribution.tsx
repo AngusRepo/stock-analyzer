@@ -77,7 +77,13 @@ function stageIcon(id: PipelineMaturityStage['id']) {
 
 function displayValue(metric: PipelineMaturityMetric): string {
   const value = metric.value
-  if (value == null || value === '') return metric.note ? 'Pending' : 'Unavailable'
+  if (value == null || value === '') {
+    if (metric.availability === 'pending') return 'Pending'
+    if (metric.availability === 'not_applicable') return 'N/A'
+    if (metric.availability === 'missing') return 'Missing'
+    if (metric.availability === 'blocked') return 'Blocked'
+    return 'Unavailable'
+  }
   if (typeof value === 'boolean') return value ? 'PASS' : 'FAIL'
   if (typeof value === 'string') return value.replace(/_/g, ' ')
   if (!Number.isFinite(value)) return '-'
@@ -124,6 +130,7 @@ function MetricCell({ metric }: { metric: PipelineMaturityMetric }) {
         {target ? <span className="sv-num text-[11px] text-slate-600">門檻 {target}</span> : null}
       </div>
       {metric.note ? <p className="mt-1 text-[11px] leading-4 text-slate-600">{metric.note}</p> : null}
+      {metric.reason_code ? <code className="mt-1 block break-all text-[10px] leading-4 text-slate-700">{metric.reason_code}</code> : null}
     </div>
   )
 }
@@ -139,8 +146,13 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     : '沒有可計算的數量門檻'
   const history = stage.history ?? []
   const latestHistory = history[history.length - 1] ?? null
-  const previousHistory = history[history.length - 2] ?? null
-  const historyDelta = latestHistory?.value != null && previousHistory?.value != null
+  const priorFiniteHistory = [...history.slice(0, -1)].reverse().find((point) => point.value != null && point.identity_valid !== false) ?? null
+  const previousHistory = [...history.slice(0, -1)].reverse().find((point) => (
+    point.value != null
+    && point.identity_valid !== false
+    && point.artifact_contract_version === latestHistory?.artifact_contract_version
+  )) ?? null
+  const historyDelta = latestHistory?.value != null && latestHistory.identity_valid !== false && previousHistory?.value != null
     ? latestHistory.value - previousHistory.value
     : null
   const historyMetric = (value: number | null) => displayValue({
@@ -149,7 +161,18 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     value,
     unit: latestHistory?.unit,
   })
-  const historyTrend = history.slice(-4).map((point) => `${point.evidence_date.slice(5)} ${displayValue({ key: 'history', label: 'history', value: point.value, unit: point.unit })}`).join(' | ')
+  const historyComparison = historyDelta != null
+    ? `${historyDelta > 0 ? '+' : ''}${historyMetric(historyDelta)}`
+    : latestHistory?.value == null || latestHistory.identity_valid === false
+      ? 'Current evidence unavailable or identity-blocked'
+      : priorFiniteHistory && priorFiniteHistory.artifact_contract_version !== latestHistory.artifact_contract_version
+        ? `First comparable ${latestHistory.artifact_contract_version ?? 'contract'} evidence · prior ${priorFiniteHistory.artifact_contract_version ?? 'contract unknown'}`
+        : 'First comparable evidence'
+  const historyTrend = history
+    .filter((point) => point.value != null
+      && point.identity_valid !== false
+      && point.artifact_contract_version === latestHistory?.artifact_contract_version)
+    .slice(-4).map((point) => `${point.evidence_date.slice(5)} ${displayValue({ key: 'history', label: 'history', value: point.value, unit: point.unit })}`).join(' | ')
   const blockerGroups = stage.blocker_groups?.length
     ? stage.blocker_groups
     : [{ scope: 'stage', title: 'Blockers', blockers: stage.blockers }]
@@ -157,8 +180,14 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
   const evidenceScopeRows = [
     evidenceScopes?.offline_candidate ? {
       scope: 'offline_candidate',
-      title: 'Offline candidate',
+      title: `${evidenceScopes.offline_candidate.cadence} offline candidate`,
       rows: [
+        ['Cadence', evidenceScopes.offline_candidate.cadence],
+        ['Role', evidenceScopes.offline_candidate.role],
+        ['Date means', evidenceScopes.offline_candidate.date_semantic],
+        ['Availability', evidenceScopes.offline_candidate.availability],
+        ['Reason', evidenceScopes.offline_candidate.reason_code],
+        ['Identity', evidenceScopes.offline_candidate.identity_assurance],
         ['Artifact', evidenceScopes.offline_candidate.artifact_id],
         ['Model', evidenceScopes.offline_candidate.model_version],
         ['Contract', evidenceScopes.offline_candidate.artifact_contract_version],
@@ -169,29 +198,42 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     } : null,
     evidenceScopes?.serving_pointer ? {
       scope: 'serving_pointer',
-      title: 'Production serving pointer',
+      title: 'event-driven current production serving pointer',
       rows: [
         ['Artifact', evidenceScopes.serving_pointer.artifact_id],
+        ['Cadence', evidenceScopes.serving_pointer.cadence],
+        ['Role', evidenceScopes.serving_pointer.role],
+        ['Date means', evidenceScopes.serving_pointer.date_semantic],
+        ['Availability', evidenceScopes.serving_pointer.availability],
+        ['Reason', evidenceScopes.serving_pointer.reason_code],
+        ['State', evidenceScopes.serving_pointer.artifact_state],
         ['Model', evidenceScopes.serving_pointer.model_version],
         ['Contract', evidenceScopes.serving_pointer.artifact_contract_version],
         ['Mode', evidenceScopes.serving_pointer.serving_mode],
-        ['Updated', evidenceScopes.serving_pointer.updated_at],
+        ['Effective at', evidenceScopes.serving_pointer.updated_at],
+        ['Observed at', evidenceScopes.serving_pointer.observed_at],
       ],
     } : null,
     evidenceScopes?.frozen_forward ? {
       scope: 'frozen_forward',
-      title: 'Active-8 cohort causal shadow (not serving artifact)',
+      title: 'daily Active-8 monitoring shadow (not serving artifact)',
       rows: [
+        ['Cohort', evidenceScopes.frozen_forward.cohort_id],
         ['Evaluation', evidenceScopes.frozen_forward.evaluation_id],
         ['Model', evidenceScopes.frozen_forward.model_version],
         ['Validation', evidenceScopes.frozen_forward.validation_schema_version],
         ['Business date', evidenceScopes.frozen_forward.business_date],
+        ['Cadence', evidenceScopes.frozen_forward.cadence],
+        ['Role', evidenceScopes.frozen_forward.role],
+        ['Date means', evidenceScopes.frozen_forward.date_semantic],
+        ['Availability', evidenceScopes.frozen_forward.availability],
+        ['Reason', evidenceScopes.frozen_forward.reason_code],
         ['OOF max', evidenceScopes.frozen_forward.oof_max_date],
       ],
     } : null,
     evidenceScopes?.runtime_guard ? {
       scope: 'runtime_guard',
-      title: 'Actual serving artifact T+5 guard',
+      title: 'daily actual-serving-artifact T+5 guard',
       rows: [
         ['Artifact', evidenceScopes.runtime_guard.artifact_id],
         ['Fingerprint', evidenceScopes.runtime_guard.model_fingerprint],
@@ -200,6 +242,11 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
         ['Evaluable dates', String(evidenceScopes.runtime_guard.evaluable_date_count)],
         ['Degraded streak', String(evidenceScopes.runtime_guard.degraded_streak)],
         ['Recovery streak', String(evidenceScopes.runtime_guard.recovery_streak)],
+        ['Cadence', evidenceScopes.runtime_guard.cadence],
+        ['Role', evidenceScopes.runtime_guard.role],
+        ['Date means', evidenceScopes.runtime_guard.date_semantic],
+        ['Availability', evidenceScopes.runtime_guard.availability],
+        ['Reason', evidenceScopes.runtime_guard.reason_code],
         ['Last date', evidenceScopes.runtime_guard.last_prediction_date],
         ['Lineage bound', evidenceScopes.runtime_guard.lineage_bound ? 'Yes' : 'No'],
       ],
@@ -288,11 +335,13 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             <div className="border-t border-white/[0.07] pt-3">
               <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-500"><Database className="h-3.5 w-3.5" /> Lineage</p>
               <dl className="mt-2 grid grid-cols-[84px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[11px] leading-4">
-                <dt className="text-slate-600">Evidence</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.evidence_date ?? 'Unavailable'}</dd>
+                <dt className="text-slate-600">{stage.lineage.date_semantic === 'candidate_cutoff' ? 'Candidate cutoff' : 'Evidence'}</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.evidence_date ?? 'Unavailable'}</dd>
+                {stage.lineage.cadence ? <><dt className="text-slate-600">Cadence</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.cadence}</dd></> : null}
+                {stage.lineage.role ? <><dt className="text-slate-600">Role</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.role}</dd></> : null}
                 <dt className="text-slate-600">Previous</dt><dd className="sv-num break-all text-slate-400">{previousHistory?.evidence_date ?? 'First evidence'}</dd>
-                <dt className="text-slate-600">Delta</dt><dd className="sv-num break-all text-cyan-300">{historyDelta == null ? 'Not comparable' : `${historyDelta > 0 ? '+' : ''}${historyMetric(historyDelta)}`}</dd>
+                <dt className="text-slate-600">Delta</dt><dd className="sv-num break-words text-cyan-300">{historyComparison}</dd>
                 <dt className="text-slate-600">Trend</dt><dd className="sv-num break-words text-slate-400">{historyTrend || 'No prior history'}</dd>
-                <dt className="text-slate-600">OOF max</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.oof_applicable === false ? 'N/A (not OOF)' : stage.lineage.oof_max_date ?? 'Unavailable'}</dd>
+                <dt className="text-slate-600">OOF through</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.oof_applicable === false ? 'N/A (not OOF)' : stage.lineage.oof_max_date ?? `Unavailable · ${stage.lineage.oof_unavailable_reason ?? 'reason_unknown'}`}</dd>
                 <dt className="text-slate-600">Version</dt><dd className="sv-num break-all text-slate-400">{stage.version ?? 'Unavailable'}</dd>
                 <dt className="text-slate-600">Artifact</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.artifact_id ?? 'Not applicable'}</dd>
                 <dt className="text-slate-600">Source</dt><dd className="break-words text-slate-400">{stage.lineage.source}</dd>
@@ -307,7 +356,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                         {scope.rows.map(([label, value]) => (
                           <div key={label} className="contents">
                             <dt className="text-slate-600">{label}</dt>
-                            <dd className="sv-num break-all text-slate-400">{value ?? 'Missing'}</dd>
+                            <dd className="sv-num break-all text-slate-400">{value ?? (label === 'Reason' ? 'None' : 'Missing')}</dd>
                           </div>
                         ))}
                       </dl>

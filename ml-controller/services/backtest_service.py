@@ -32,6 +32,7 @@ from typing import Optional
 
 import httpx
 import polars as pl
+from services.bounded_json import bounded_json_dumps
 from services.research_data_access import (
     latest_snapshot_business_end_date,
     resolve_research_data_access,
@@ -771,8 +772,9 @@ async def run_full_backtest(run_date: str | None = None) -> dict:
         today = wall_clock_date
         # Store full profit_ratio list for Monte Carlo (compact), trades truncated for display
         all_returns = [t["profit_ratio"] for t in all_trades]
-        raw_json = json.dumps({
+        raw_json = bounded_json_dumps({
             "trades": all_trades[:500],
+            "trades_complete": len(all_trades) <= 500,
             "all_returns": all_returns,  # full list for Monte Carlo source=backtest
             "exit_distribution": exit_dist,
             "summary": {
@@ -793,7 +795,7 @@ async def run_full_backtest(run_date: str | None = None) -> dict:
                 "execution_contract": "prediction_date_t_close_to_t_plus_1_open_v1",
                 "signal_diagnostics": signal_diagnostics,
             },
-        }, ensure_ascii=False)
+        }, ensure_ascii=False, preserve_exact_keys=("all_returns", "trades", "trades_complete"))
 
         success = await _d1_exec(
             client,
@@ -815,7 +817,7 @@ async def run_full_backtest(run_date: str | None = None) -> dict:
                 result.cagr,
                 result.profit_factor,
                 result.expectancy,
-                raw_json[:50000],
+                raw_json,
             ],
         )
 

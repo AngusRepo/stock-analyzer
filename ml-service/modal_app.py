@@ -14,6 +14,11 @@ import modal
 from datetime import datetime, timezone
 from pathlib import Path
 from app.runtime_env import get_gcs_bucket_name, setup_modal_container_env
+from app.callback_security import (
+    normalize_callback_token,
+    sanitize_callback_error,
+    sanitize_callback_url,
+)
 
 # Local code mounted into the Modal image during deploy.
 _LOCAL_APP_DIR     = Path(__file__).parent / "app"
@@ -64,17 +69,19 @@ _LOCAL_CONTROLLER_SERVICES_DIR = (
 
 
 def _controller_callback_token() -> str:
-    return (
-        os.environ.get("ML_CONTROLLER_TOKEN")
-        or os.environ.get("INTERNAL_TOKEN")
-        or os.environ.get("ML_CONTROLLER_SECRET")
-        or os.environ.get("STOCKVISION_AUTH_TOKEN")
-        or ""
-    )
+    return normalize_callback_token([
+        os.environ.get("ML_CONTROLLER_TOKEN"),
+        os.environ.get("INTERNAL_TOKEN"),
+        os.environ.get("ML_CONTROLLER_SECRET"),
+        os.environ.get("STOCKVISION_AUTH_TOKEN"),
+    ])
 
 
 def _retrain_followup_token() -> str:
-    return os.environ.get("RETRAIN_CALLBACK_TOKEN") or _controller_callback_token()
+    return normalize_callback_token([
+        os.environ.get("RETRAIN_CALLBACK_TOKEN"),
+        _controller_callback_token(),
+    ])
 
 # Modal image built with the v1.x API.
 image = (
@@ -1112,13 +1119,17 @@ def retrain_orchestrator(payload: dict) -> dict:
                 raise RuntimeError(f"followup webhook returned HTTP {resp.status_code}")
             result["followup"] = {
                 "status_code": resp.status_code,
-                "url": str(resp.url),
+                "url": sanitize_callback_url(resp.url),
                 "payload_status": payload_out["status"],
             }
-            print(f"[Orchestrator] followup webhook POST {resp.request.url} -> HTTP {resp.status_code}")
+            print(f"[Orchestrator] followup webhook -> HTTP {resp.status_code}")
         except Exception as e:
-            result["followup"] = {"error": str(e), "url": followup_webhook_url}
-            print(f"[Orchestrator] followup webhook failed: {e}")
+            safe_error = sanitize_callback_error(e, locals().get("token"))
+            result["followup"] = {
+                "error": safe_error,
+                "url": sanitize_callback_url(followup_webhook_url),
+            }
+            print(f"[Orchestrator] followup webhook failed: {safe_error}")
     print(f"[Orchestrator] Flow B complete in {elapsed}s")
     return result
 
@@ -1327,7 +1338,11 @@ def _post_pipeline_prediction_callback(input_payload: dict, bundle: dict, elapse
                 "text": exc.read().decode("utf-8", errors="replace")[:500],
             }
         except Exception as exc:
-            last_error = {"status": "error", "attempt": attempt, "error": f"{type(exc).__name__}: {exc}"}
+            last_error = {
+                "status": "error",
+                "attempt": attempt,
+                "error": sanitize_callback_error(exc, token),
+            }
         time.sleep(min(attempt * 2, 5))
     return last_error or {"status": "error", "error": "unknown_callback_failure"}
 
@@ -3195,11 +3210,12 @@ def _post_state_space_shadow_callback(input_payload: dict, result: dict, elapsed
             follow_redirects=True,
         )
         if resp.status_code < 200 or resp.status_code >= 300:
-            raise RuntimeError(f"shadow callback returned HTTP {resp.status_code}: {resp.text[:300]}")
-        return {"ok": True, "status_code": resp.status_code, "url": str(resp.url)}
+            raise RuntimeError(f"shadow callback returned HTTP {resp.status_code}")
+        return {"ok": True, "status_code": resp.status_code, "url": sanitize_callback_url(resp.url)}
     except Exception as exc:  # noqa: BLE001 - shadow callback must never hide compute output.
-        print(f"[StateSpaceUniversal] shadow callback failed: {exc}")
-        return {"ok": False, "error": str(exc), "url": callback_url}
+        safe_error = sanitize_callback_error(exc, locals().get("token"))
+        print(f"[StateSpaceUniversal] shadow callback failed: {safe_error}")
+        return {"ok": False, "error": safe_error, "url": sanitize_callback_url(callback_url)}
 
 
 @app.function(
@@ -3429,7 +3445,11 @@ def _post_worker_scheduler_callback(payload: dict, result: dict, status: str, su
         except urllib.error.HTTPError as exc:
             last_error = {"status": "error", "code": exc.code, "attempt": attempt, "text": exc.read().decode("utf-8", errors="replace")[:500]}
         except Exception as exc:
-            last_error = {"status": "error", "attempt": attempt, "error": f"{type(exc).__name__}: {exc}"}
+            last_error = {
+                "status": "error",
+                "attempt": attempt,
+                "error": sanitize_callback_error(exc, callback_token, controller_token),
+            }
         time.sleep(min(attempt * 2, 5))
     return last_error or {"status": "error", "error": "unknown_callback_failure"}
 

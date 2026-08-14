@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { shadowDatabaseForDataDomain, tablesForDataDomain, type DataDomain } from './dataDomainRegistry'
+import { shadowDatabaseForDataDomain, tablesForDataDomainRouteReady, type DataDomain } from './dataDomainRegistry'
 
 const DOMAIN_BASELINES: Partial<Record<DataDomain, string>> = {
   execution: '0001_execution_baseline.sql',
@@ -24,7 +24,7 @@ async function inspectDomain(
   domain: 'execution' | 'paper',
 ): Promise<DomainSchemaReadiness> {
   const expectedMigration = DOMAIN_BASELINES[domain]!
-  const expectedTables = tablesForDataDomain(domain)
+  const expectedTables = tablesForDataDomainRouteReady(domain)
   const db = shadowDatabaseForDataDomain(env, domain)
   if (!db) {
     return {

@@ -3556,6 +3556,92 @@ def _merge_pipeline_state_update(state: PipelineStateV2, update: dict | None) ->
         state["errors"] = list(state.get("errors") or []) + list(errors)
 
 
+PIPELINE_ADVISORY_ERROR_PREFIXES = ("llm_reasons:",)
+
+
+def classify_pipeline_terminal_errors(errors: Any) -> dict[str, list[str]]:
+    """Separate advisory enrichment failures from data/serving closure failures."""
+    normalized = [str(item).strip() for item in (errors or []) if str(item).strip()]
+    advisory = [
+        item
+        for item in normalized
+        if item.lower().startswith(PIPELINE_ADVISORY_ERROR_PREFIXES)
+    ]
+    critical = [item for item in normalized if item not in advisory]
+    return {"critical": critical, "advisory": advisory}
+
+
+def classify_pipeline_terminal_invariants(metrics: Any) -> list[str]:
+    """Validate serving/data closure without treating safe abstention as failure."""
+    values = metrics if isinstance(metrics, dict) else {}
+    blockers: list[str] = []
+
+    def _int(name: str) -> int:
+        try:
+            return int(values.get(name, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    prediction_seed_symbols = _int("prediction_seed_symbols")
+    prediction_symbols = _int("prediction_symbols")
+    if prediction_seed_symbols <= 0:
+        blockers.append("pipeline_terminal_invariant:prediction_seed_symbols_missing")
+    if _int("predictions_written") <= 0:
+        blockers.append("pipeline_terminal_invariant:prediction_rows_missing")
+    if prediction_symbols <= 0:
+        blockers.append("pipeline_terminal_invariant:prediction_symbols_missing")
+    if prediction_seed_symbols > 0 and prediction_symbols != prediction_seed_symbols:
+        blockers.append(
+            "pipeline_terminal_invariant:prediction_symbol_count_mismatch:"
+            f"actual={prediction_symbols}:expected={prediction_seed_symbols}"
+        )
+    if values.get("prediction_symbol_closure_passed") is not True:
+        blockers.append("pipeline_terminal_invariant:prediction_symbol_closure_failed")
+    if "incomplete_active_model_symbols" not in values:
+        blockers.append("pipeline_terminal_invariant:active_model_symbol_closure_missing")
+    else:
+        incomplete_models = _int("incomplete_active_model_symbols")
+        if incomplete_models != 0:
+            blockers.append(
+                "pipeline_terminal_invariant:active_model_symbol_closure_failed:"
+                f"count={incomplete_models}"
+            )
+
+    recommendation_seed_rows = _int("recommendation_seed_rows")
+    recommendation_closed_rows = _int("recommendation_closed_rows")
+    if recommendation_seed_rows <= 0:
+        blockers.append("pipeline_terminal_invariant:recommendation_seed_rows_missing")
+    if "recommendation_closed_rows" not in values:
+        blockers.append("pipeline_terminal_invariant:recommendation_closed_rows_missing")
+    elif recommendation_seed_rows > 0 and recommendation_closed_rows != recommendation_seed_rows:
+        blockers.append(
+            "pipeline_terminal_invariant:recommendation_row_count_mismatch:"
+            f"actual={recommendation_closed_rows}:expected={recommendation_seed_rows}"
+        )
+    if values.get("recommendation_row_closure_passed") is not True:
+        blockers.append("pipeline_terminal_invariant:recommendation_row_closure_failed")
+    return blockers
+
+
+def _pipeline_terminal_result(state: PipelineStateV2, *, run_date: str, elapsed: float) -> dict:
+    classified = classify_pipeline_terminal_errors(state.get("errors"))
+    invariant_errors = classify_pipeline_terminal_invariants(state.get("metrics"))
+    critical_errors = [*classified["critical"], *invariant_errors]
+    result = {
+        "status": "error" if critical_errors else "completed",
+        "run_date": run_date,
+        "elapsed_s": round(elapsed, 1),
+        "metrics": state.get("metrics", {}),
+        "errors": list(state.get("errors") or []),
+        "advisory_errors": classified["advisory"],
+        "critical_errors": critical_errors,
+        "terminal_invariant_errors": invariant_errors,
+    }
+    if critical_errors:
+        result["error"] = "; ".join(critical_errors[:3])
+    return result
+
+
 async def _run_pipeline_nodes(state: PipelineStateV2, nodes: list[Any]) -> PipelineStateV2:
     for node in nodes:
         _merge_pipeline_state_update(state, await node(state))
@@ -3666,13 +3752,7 @@ async def run_pipeline_v2(run_date: str = "", producer_run_id: str = "") -> dict
         final_state = await graph.ainvoke(initial_state)
         elapsed = asyncio.get_event_loop().time() - t0
         logger.info(f"[Pipeline V2] Completed in {elapsed:.1f}s: {final_state.get('metrics', {})}")
-        return {
-            "status": "completed",
-            "run_date": run_date,
-            "elapsed_s": round(elapsed, 1),
-            "metrics": final_state.get("metrics", {}),
-            "errors": final_state.get("errors", []),
-        }
+        return _pipeline_terminal_result(final_state, run_date=run_date, elapsed=elapsed)
     except Exception as e:
         elapsed = asyncio.get_event_loop().time() - t0
         logger.exception(f"[Pipeline V2] Failed after {elapsed:.1f}s")
@@ -3828,13 +3908,7 @@ async def run_pipeline_v2_from_modal_prediction_callback(callback_payload: dict)
             node_export_dataset_snapshot,
         ])
         elapsed = asyncio.get_event_loop().time() - t0
-        return {
-            "status": "completed",
-            "run_date": state["run_date"],
-            "elapsed_s": round(elapsed, 1),
-            "metrics": state.get("metrics", {}),
-            "errors": state.get("errors", []),
-        }
+        return _pipeline_terminal_result(state, run_date=state["run_date"], elapsed=elapsed)
     except Exception as e:  # noqa: BLE001
         elapsed = asyncio.get_event_loop().time() - t0
         logger.exception("[Pipeline V2] async Modal prediction continuation failed after %.1fs", elapsed)

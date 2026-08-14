@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from typing import Any
+
+from services.bounded_json import bounded_json_dumps
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -70,8 +71,12 @@ def build_replay_backtest_insert(
         "all_returns": [t["profit_ratio"] for t in trades],
         "all_regimes": [str(t.get("entry_regime") or "unknown") for t in trades],
         "trades": trades[:500],
+        "trades_complete": len(trades) <= 500,
     }
-    raw_json = json.dumps(raw, ensure_ascii=False)
+    raw_json = bounded_json_dumps(
+        raw,
+        preserve_exact_keys=("all_returns", "all_regimes", "trades", "trades_complete"),
+    )
     sql = """
         INSERT OR REPLACE INTO backtest_results
         (run_date, strategy, timerange, total_trades, win_rate,
@@ -92,7 +97,7 @@ def build_replay_backtest_insert(
         _num(getattr(metrics, "cagr", 0.0)),
         _num(getattr(metrics, "profit_factor", 0.0)),
         _num(getattr(metrics, "expectancy", 0.0)),
-        raw_json[:50000],
+        raw_json,
     ]
     return sql, params
 

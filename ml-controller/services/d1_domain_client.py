@@ -133,6 +133,39 @@ class DomainD1Client:
             database_id=self.database_id,
         )
 
+    def atomic_batch_execute(
+        self,
+        statements: list[tuple[str, list[Any]]],
+        timeout: float = 30.0,
+    ) -> dict:
+        if not statements:
+            return {
+                "total": 0,
+                "success_count": 0,
+                "error_count": 0,
+                "changes_total": 0,
+                "mode": "atomic_empty",
+                "atomic": True,
+            }
+        if len(statements) > 500:
+            raise RuntimeError(f"Atomic D1 batch exceeds 500 statements: {len(statements)}")
+        if allocator_contract_guard_enabled():
+            raise RuntimeError("Atomic D1 batch cannot run while allocator contract guard is enabled")
+
+        result = d1_client._raw_batch_execute(
+            statements,
+            timeout=timeout,
+            chunk_size=len(statements),
+            database_id=self.database_id,
+        )
+        if (
+            int(result.get("success_count") or 0) != len(statements)
+            or int(result.get("error_count") or 0) != 0
+            or bool(result.get("partial_failure"))
+        ):
+            raise RuntimeError(f"Atomic domain D1 batch did not fully commit: {result}")
+        return {**result, "atomic": True}
+
 
 def client_for_domain(domain: D1DataDomain | str) -> DomainD1Client:
     return DomainD1Client(D1DataDomain(domain))

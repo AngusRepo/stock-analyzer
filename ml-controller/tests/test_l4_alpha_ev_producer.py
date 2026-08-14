@@ -355,7 +355,7 @@ def test_materialize_l4_alpha_ev_rejects_s12_context_in_selection_owner():
     assert "canonical_feature_set_mismatch" in payload["blockers"]
 
 
-def test_filter_and_score_keeps_l4_as_upstream_evidence_without_fusion_owner(monkeypatch):
+def test_filter_and_score_keeps_valid_l4_base_when_fusion_residual_abstains(monkeypatch):
     monkeypatch.setattr(recommendation_service, "_is_use_ensemble_v2", lambda: True)
     screener_rec = {
         "id": 1,
@@ -394,9 +394,16 @@ def test_filter_and_score_keeps_l4_as_upstream_evidence_without_fusion_owner(mon
     assert final[0]["l4_alpha_ev"]["status"] == "loaded"
     assert prediction["l4_alpha_ev"]["status"] == "loaded"
     assert prediction["ensemble_v2"]["l4_alpha_ev"]["status"] == "loaded"
-    assert promoted[0]["alpha_allocation"]["expected_return_owner"] == "risk_abstention"
-    assert promoted[0]["alpha_allocation"]["expected_return"] == 0
-    assert promoted[0]["alpha_allocation"]["l4_alpha_ev"]["status"] == "loaded"
+    allocation = promoted[0]["alpha_allocation"]
+    assert allocation["expected_return_owner"] == "allocator_ev_fusion"
+    assert allocation["expected_return"] == pytest.approx(final[0]["l4_alpha_ev"]["expected_return"])
+    assert allocation["expected_return_source"] == "allocator_ev_fusion:l4_base_overlay_abstained"
+    assert allocation["l4_alpha_ev"]["status"] == "loaded"
+    assert allocation["allocator_edge_resolver"]["base_expected_return_owner"] == "l4_alpha_ev"
+    assert allocation["allocator_edge_resolver"]["fusion_residual_adjustment"] == 0.0
+    assert allocation["allocator_edge_resolver"]["fusion_adjustment_allowed"] is False
+    assert allocation["allocator_ev_fusion"]["primary_expected_return_allowed"] is False
+    assert allocation["allocator_ev_fusion"]["overlay_status"] == "abstained"
 
 
 def test_materialize_l4_alpha_ev_normalizes_gross_artifact_once_and_marks_net():

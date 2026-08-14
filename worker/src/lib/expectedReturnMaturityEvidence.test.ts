@@ -15,6 +15,8 @@ function row(
     model_name,
     artifact_id: `${model_name}:${version}`,
     version,
+    candidate_type: model_name === 'l4_alpha_ev' ? 'l4_alpha_ev_refresh' : 'allocator_ev_fusion_refresh',
+    training_run_id: 'active8_oof:weekly-20260809',
     state: 'offline_failed',
     source_run_date: '2026-08-08',
     offline_gate_decision: 'FAIL',
@@ -126,6 +128,59 @@ assert.equal(fusion.residual_spread_lcb90, -0.056756)
 assert.equal(fusion.selection_corr_lcb90, 0.05)
 assert.equal(fusion.execution_decision, 'FAIL')
 assert.equal(fusion.fusion_final_comparison_reason, 'residual_adjustment_model_not_validated')
+assert.equal(fusion.identity_assurance, 'explicit_payload_v1')
+
+const missingIdentityArtifact = { ...fusionArtifact } as Record<string, unknown>
+delete missingIdentityArtifact.expected_return_owner
+delete missingIdentityArtifact.model_version
+const missingIdentity = adaptExpectedReturnCandidate({
+  ...row('allocator_ev_fusion', fusionVersion, missingIdentityArtifact),
+  candidate_type: 'allocator_ev_fusion_refresh',
+  training_run_id: 'active8_oof:weekly-20260809',
+  checksum: 'candidate-checksum',
+})
+assert.equal(missingIdentity.identity_valid, false)
+assert(missingIdentity.identity_blockers.includes('candidate_artifact_owner_missing'))
+assert(missingIdentity.identity_blockers.includes('candidate_payload_version_missing'))
+assert(!missingIdentity.identity_blockers.includes('candidate_artifact_owner_mismatch'))
+assert.equal(missingIdentity.residual_corr_lcb90, null)
+
+const v2Artifact = {
+  ...fusionArtifact,
+  identity_schema_version: 'expected-return-candidate-identity-v2',
+  artifact_checksum: 'candidate-checksum',
+  cadence: 'weekly',
+}
+const v2 = adaptExpectedReturnCandidate({
+  ...row('allocator_ev_fusion', fusionVersion, v2Artifact),
+  candidate_type: 'allocator_ev_fusion_refresh',
+  training_run_id: 'active8_oof:weekly-20260809',
+  checksum: 'candidate-checksum',
+})
+assert.equal(v2.identity_valid, true)
+assert.equal(v2.identity_assurance, 'explicit_payload_v2')
+assert.equal(v2.cadence, 'weekly')
+assert.equal(v2.fusion_oof_max_date, '2026-07-31')
+
+const manualCadence = adaptExpectedReturnCandidate({
+  ...row('allocator_ev_fusion', fusionVersion, { ...v2Artifact, cadence: 'manual' }),
+  checksum: 'candidate-checksum',
+})
+assert.equal(manualCadence.cadence, 'manual')
+const unknownCadence = adaptExpectedReturnCandidate({
+  ...row('allocator_ev_fusion', fusionVersion, { ...v2Artifact, cadence: 'wekly' }),
+  checksum: 'candidate-checksum',
+})
+assert.equal(unknownCadence.cadence, 'unknown')
+
+const checksumMismatch = adaptExpectedReturnCandidate({
+  ...row('allocator_ev_fusion', fusionVersion, v2Artifact),
+  candidate_type: 'allocator_ev_fusion_refresh',
+  training_run_id: 'active8_oof:weekly-20260809',
+  checksum: 'different-checksum',
+})
+assert.equal(checksumMismatch.identity_valid, false)
+assert(checksumMismatch.identity_blockers.includes('candidate_artifact_checksum_mismatch'))
 
 const mismatched = adaptExpectedReturnCandidate({
   ...row('allocator_ev_fusion', fusionVersion, fusionArtifact),
@@ -136,8 +191,21 @@ assert(mismatched.identity_blockers.includes('candidate_artifact_id_version_mism
 assert(mismatched.identity_blockers.includes('candidate_model_version_unsupported'))
 assert.equal(mismatched.residual_corr_lcb90, null)
 
+const wrongCandidateType = adaptExpectedReturnCandidate({
+  ...row('allocator_ev_fusion', fusionVersion, fusionArtifact),
+  candidate_type: 'l4_alpha_ev_refresh',
+})
+assert.equal(wrongCandidateType.identity_valid, false)
+assert(wrongCandidateType.identity_blockers.includes('candidate_type_owner_mismatch'))
+assert.equal(wrongCandidateType.residual_corr_lcb90, null)
+
 const shadow = adaptExpectedReturnShadow({
   evaluation_id: 'fusion-shadow:2026-08-08',
+  cohort_id: 'cohort-20260808',
+  base_manifest_checksum: 'a'.repeat(64),
+  extension_manifest_checksum: 'b'.repeat(64),
+  artifact_path: 'universal/ev_shadow_evaluations/cohort-20260808/fusion.json',
+  artifact_checksum: 'c'.repeat(64),
   business_date: '2026-08-08',
   model_name: 'allocator_ev_fusion',
   model_version: fusionVersion,
@@ -156,6 +224,11 @@ assert.equal(shadow.walk_forward_passed, false)
 
 const wrongShadowSchema = adaptExpectedReturnShadow({
   evaluation_id: 'fusion-shadow:v13',
+  cohort_id: 'cohort-20260808',
+  base_manifest_checksum: 'a'.repeat(64),
+  extension_manifest_checksum: 'b'.repeat(64),
+  artifact_path: 'universal/ev_shadow_evaluations/cohort-20260808/fusion-v13.json',
+  artifact_checksum: 'd'.repeat(64),
   business_date: '2026-08-08',
   model_name: 'allocator_ev_fusion',
   model_version: fusionVersion,

@@ -38,3 +38,24 @@ test('maturity panel exposes independent maturity owners without pretending to b
   assert(page.includes("title: 'L1.5 ↔ L3 Conflict Audit'"))
   assert(page.includes('telemetry only, never a serving gate'))
 })
+
+test('maturity lineage labels cadence, role, availability, and comparable contract explicitly', () => {
+  assert(contract.includes("schema_version: 'pipeline-decision-maturity-v2'"))
+  for (const field of ['cadence', 'role', 'date_semantic', 'availability', 'reason_code']) {
+    assert(contract.includes(field), `missing maturity evidence scope field: ${field}`)
+  }
+  for (const label of [
+    'Candidate cutoff',
+    'OOF through',
+    '${evidenceScopes.offline_candidate.cadence} offline candidate',
+    'event-driven current production serving pointer',
+    'daily Active-8 monitoring shadow',
+    'First comparable',
+  ]) {
+    assert(panel.includes(label), `missing explicit maturity label: ${label}`)
+  }
+  assert(!panel.includes("return metric.note ? 'Pending' : 'Unavailable'"))
+  assert(panel.includes("metric.availability === 'pending'"))
+  assert(panel.includes('point.artifact_contract_version === latestHistory?.artifact_contract_version'))
+  assert(panel.includes('Current evidence unavailable or identity-blocked'))
+})

@@ -42,7 +42,7 @@ from services.modal_client import _modal_resource_spec
 logger = logging.getLogger("retrain_followup")
 router = APIRouter()
 WORKER_URL = os.environ.get("STOCKVISION_WORKER_URL", "").strip()
-WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "")
+WORKER_AUTH = os.environ.get("STOCKVISION_AUTH_TOKEN", "").strip()
 
 
 async def _run_monthly_oof_lifecycle(run_date: str | None) -> dict[str, Any]:
@@ -204,6 +204,18 @@ def _build_scheduler_callback_payload(payload: RetrainFollowupPayload) -> dict[s
     return {k: v for k, v in callback.items() if v is not None}
 
 
+def _safe_callback_detail(value: Any, *, max_chars: int = 300) -> str:
+    text = f"{type(value).__name__}: {value}" if isinstance(value, BaseException) else str(value)
+    if WORKER_AUTH:
+        text = text.replace(WORKER_AUTH, "[REDACTED]")
+    lowered = text.lower()
+    bearer_at = lowered.find("bearer ")
+    if bearer_at >= 0:
+        token_end = text.find(" ", bearer_at + 7)
+        text = text[:bearer_at] + "Bearer [REDACTED]" + (text[token_end:] if token_end >= 0 else "")
+    return text[:max_chars]
+
+
 async def _callback_worker_scheduler(payload: RetrainFollowupPayload) -> dict[str, Any]:
     if not WORKER_URL:
         return {"attempted": False, "ok": False, "reason": "STOCKVISION_WORKER_URL missing"}
@@ -222,15 +234,16 @@ async def _callback_worker_scheduler(payload: RetrainFollowupPayload) -> dict[st
             "ok": resp.status_code == 200,
             "status_code": resp.status_code,
             "task": callback_payload.get("task"),
-            "response": resp.text[:300],
+            "response": _safe_callback_detail(resp.text),
         }
     except Exception as exc:  # noqa: BLE001 - followup persistence remains authoritative.
-        logger.warning("[RetrainFollowup] Worker scheduler callback failed: %s", exc)
+        safe_error = _safe_callback_detail(exc)
+        logger.warning("[RetrainFollowup] Worker scheduler callback failed: %s", safe_error)
         return {
             "attempted": True,
             "ok": False,
             "task": callback_payload.get("task"),
-            "error": str(exc),
+            "error": safe_error,
         }
 
 

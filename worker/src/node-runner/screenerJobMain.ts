@@ -82,7 +82,7 @@ function buildBindings(): Bindings {
   } as unknown as Bindings
 }
 
-async function latestFunnelRun(env: Bindings, date: string): Promise<{
+async function funnelRunByProducerId(env: Bindings, date: string, producerRunId: string): Promise<{
   run_id?: string
   universe_count?: number
   candidate_count?: number
@@ -93,10 +93,9 @@ async function latestFunnelRun(env: Bindings, date: string): Promise<{
     SELECT run_id, universe_count, candidate_count, final_count, emerging_count
       FROM screener_funnel_runs
      WHERE date = ?
+       AND run_id = ?
        AND status = 'success'
-     ORDER BY created_at DESC
-     LIMIT 1
-  `).bind(date).first<{
+  `).bind(date, producerRunId).first<{
     run_id?: string
     universe_count?: number
     candidate_count?: number
@@ -113,13 +112,20 @@ async function main(): Promise<void> {
   const env = buildBindings()
 
   const startedAt = Date.now()
-  const result = await runBottomUpScreener(env, runDate)
-  const funnel = await latestFunnelRun(env, runDate)
+  const result = await runBottomUpScreener(env, runDate, { producerRunId: runId })
+  const funnel = await funnelRunByProducerId(env, runDate, runId)
   const elapsedMs = Date.now() - startedAt
+  const universeCount = Number(funnel?.universe_count ?? 0)
+  if (!funnel?.run_id || !Number.isFinite(universeCount) || universeCount <= 0) {
+    throw new Error(
+      `screener_completion_invalid:run_date=${runDate}:funnel=${funnel?.run_id ? 'present' : 'missing'}:universe=${universeCount}`,
+    )
+  }
+
   const summary = [
     `run_id=${runId}`,
     funnel?.run_id ? `screener_funnel_run_id=${funnel.run_id}` : null,
-    `universe=${Number(funnel?.universe_count ?? 0)}`,
+    `universe=${universeCount}`,
     `candidates=${Number(funnel?.candidate_count ?? 0)}`,
     `final=${Number(funnel?.final_count ?? result.candidates.length ?? 0)}`,
     `emerging=${Number(funnel?.emerging_count ?? result.emergingResearchCandidates?.length ?? 0)}`,
@@ -136,7 +142,7 @@ async function main(): Promise<void> {
     run_date: runDate,
     metrics: {
       screener_funnel_run_id: funnel?.run_id ?? null,
-      universe_count: Number(funnel?.universe_count ?? 0),
+      universe_count: universeCount,
       candidate_count: Number(funnel?.candidate_count ?? 0),
       final_count: Number(funnel?.final_count ?? result.candidates.length ?? 0),
       emerging_count: Number(funnel?.emerging_count ?? result.emergingResearchCandidates?.length ?? 0),

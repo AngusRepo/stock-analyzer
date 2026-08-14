@@ -2,6 +2,16 @@ import type { Bindings } from '../types'
 
 export type DataDomain = 'core' | 'market' | 'learning' | 'ops' | 'execution' | 'paper' | 'research'
 
+export type TableDisposition = 'full_scalar' | 'compact_projection' | 'active_window' | 'legacy_only'
+
+export interface TableOwnershipMetadata {
+  table: string
+  domain: DataDomain
+  disposition: TableDisposition
+  route_ready: boolean
+  shadow_ready: boolean
+}
+
 export const DATA_DOMAINS: readonly DataDomain[] = [
   'core', 'market', 'learning', 'ops', 'execution', 'paper', 'research',
 ]
@@ -109,6 +119,97 @@ const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   ]),
 }
 
+// These tables exist in the production legacy D1 but do not yet exist in the
+// corresponding domain schemas. Ownership is explicit so schema drift cannot
+// remain invisible, while route_ready/shadow_ready stay false until a table's
+// target migration, parity proof, retention policy, and read/write cutover are
+// independently closed. Adding a table here must never enqueue row backfill.
+const DEFERRED_PRODUCTION_TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
+  { table: 'stock_analysis_reports', domain: 'core', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+
+  { table: 'canonical_broker_flow_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'canonical_broker_rank_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'canonical_chip_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'canonical_futures_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'canonical_institutional_amount_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'canonical_market_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'canonical_market_index_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'canonical_market_summary_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'canonical_regime_context_daily', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'canonical_revenue_monthly', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'canonical_trading_restrictions', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'concept_buzz', domain: 'market', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'external_evidence_items', domain: 'market', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'finlab_taxonomy_tags', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'margin_data', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'market_regime_factor_packets', domain: 'market', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'monthly_revenue', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'screener_momentum_snapshots', domain: 'market', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'screener_selection_history', domain: 'market', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'sector_flow_stocks', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'sector_heat', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'sector_leaders', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'shareholding', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'source_quality_metrics', domain: 'market', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'stock_profiles', domain: 'market', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'stock_tags', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'stock_theme_features', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'stock_trading_restrictions', domain: 'market', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'theme_signals', domain: 'market', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'us_market_signals', domain: 'market', disposition: 'active_window', route_ready: false, shadow_ready: false },
+
+  { table: 'config_lifecycle_events', domain: 'learning', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'config_lifecycle_state', domain: 'learning', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'meta_reward_ledger', domain: 'learning', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'meta_shadow_decisions', domain: 'learning', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'model_health_daily', domain: 'learning', disposition: 'legacy_only', route_ready: false, shadow_ready: false },
+  { table: 'model_lifecycle_events', domain: 'learning', disposition: 'legacy_only', route_ready: false, shadow_ready: false },
+  { table: 'model_lifecycle_state', domain: 'learning', disposition: 'legacy_only', route_ready: false, shadow_ready: false },
+  { table: 'persona_opinions', domain: 'learning', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'strategy_candidate_contexts', domain: 'learning', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'strategy_threshold_calibration_artifacts', domain: 'learning', disposition: 'legacy_only', route_ready: false, shadow_ready: false },
+  { table: 'strategy_threshold_calibration_runs', domain: 'learning', disposition: 'legacy_only', route_ready: false, shadow_ready: false },
+
+  { table: 'artifact_cleanup_cursors', domain: 'ops', disposition: 'legacy_only', route_ready: false, shadow_ready: false },
+  { table: 'artifact_cleanup_dlq', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'artifact_d1_scrub_queue', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'canonical_run_heads', domain: 'ops', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'compute_efficiency_reports', domain: 'ops', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'compute_profile_events', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'cost_events', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'data_source_inventory', domain: 'ops', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'finlab_backfill_runs', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'finlab_materialization_manifest', domain: 'ops', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'gap_fill_candidates', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'pipeline_runs', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'run_artifacts', domain: 'ops', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'source_diff_report', domain: 'ops', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'source_key_attempts', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'source_key_report', domain: 'ops', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'webhook_log', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'weekly_audit_reports', domain: 'ops', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+
+  { table: 'risk_audit_log', domain: 'execution', disposition: 'active_window', route_ready: false, shadow_ready: false },
+
+  { table: 'debate_memory', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'decision_logs', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'exit_shadow_log', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'pending_buy_filter_audit', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'pending_buy_items', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'pending_buy_runs', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'promotion_audit_events', domain: 'paper', disposition: 'active_window', route_ready: false, shadow_ready: false },
+
+  { table: 'active_strategy_backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'debate_ab_log', domain: 'research', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'monte_carlo_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'pbo_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'strategy_backtest_results', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'strategy_mining_candidates', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+  { table: 'strategy_mining_runs', domain: 'research', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'strategy_promotion_ledger', domain: 'research', disposition: 'active_window', route_ready: false, shadow_ready: false },
+  { table: 'strategy_similarity_matrix', domain: 'research', disposition: 'compact_projection', route_ready: false, shadow_ready: false },
+]
 const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<string>>> = {
   learning: new Set(['entry_model_replay_reports']),
   ops: new Set([
@@ -119,6 +220,18 @@ const SHADOW_BACKFILL_EXCLUDED_TABLES: Partial<Record<DataDomain, ReadonlySet<st
   ]),
 }
 
+const TABLE_OWNERSHIP: readonly TableOwnershipMetadata[] = [
+  ...(Object.entries(DOMAIN_TABLES) as Array<[DataDomain, ReadonlySet<string>]>).flatMap(([domain, tables]) => (
+    [...tables].map((table): TableOwnershipMetadata => ({
+      table,
+      domain,
+      disposition: 'full_scalar',
+      route_ready: true,
+      shadow_ready: !(SHADOW_BACKFILL_EXCLUDED_TABLES[domain] ?? new Set<string>()).has(table),
+    }))
+  )),
+  ...DEFERRED_PRODUCTION_TABLE_OWNERSHIP,
+]
 // Shadow copies must respect the same foreign-key topology as the legacy DB.
 // Keep this map next to the ownership registry so every durable backfill path
 // receives parent rows before child rows, independent of alphabetical names.
@@ -173,23 +286,55 @@ function orderShadowBackfillTables(tables: string[]): string[] {
 }
 
 
-export function dataDomainForTable(tableName: string): DataDomain | null {
+function ownershipEntriesForTable(tableName: string): TableOwnershipMetadata[] {
   const normalized = tableName.trim().toLowerCase()
-  for (const [domain, tables] of Object.entries(DOMAIN_TABLES) as Array<[DataDomain, ReadonlySet<string>]>) {
-    if (tables.has(normalized)) return domain
+  return TABLE_OWNERSHIP.filter((entry) => entry.table === normalized)
+}
+
+export function assertOwnershipEntries(entries: readonly TableOwnershipMetadata[]): void {
+  const owners = new Map<string, DataDomain[]>()
+  for (const entry of entries) {
+    const table = entry.table.trim().toLowerCase()
+    if (!table) throw new Error('data_domain_ownership_table_empty')
+    const domains = owners.get(table) ?? []
+    domains.push(entry.domain)
+    owners.set(table, domains)
   }
-  if (normalized.startsWith('paper_')) return 'paper'
-  return null
+  const duplicates = [...owners.entries()]
+    .filter(([, domains]) => domains.length !== 1)
+    .map(([table, domains]) => `${table}:${domains.sort().join('|')}`)
+    .sort()
+  if (duplicates.length) throw new Error(`duplicate_data_domain_ownership:${duplicates.join(',')}`)
+}
+
+export function tableOwnershipMetadata(tableName: string): TableOwnershipMetadata | null {
+  const entries = ownershipEntriesForTable(tableName)
+  if (entries.length > 1) {
+    throw new Error(`duplicate_data_domain_ownership:${tableName.trim().toLowerCase()}:${entries.map((entry) => entry.domain).sort().join('|')}`)
+  }
+  return entries[0] ?? null
+}
+
+export function dataDomainForTable(tableName: string): DataDomain | null {
+  return tableOwnershipMetadata(tableName)?.domain ?? null
 }
 
 export function tablesForDataDomain(domain: DataDomain): string[] {
-  return [...DOMAIN_TABLES[domain]].sort()
+  return [...new Set(TABLE_OWNERSHIP.filter((entry) => entry.domain === domain).map((entry) => entry.table))].sort()
+}
+
+export function tablesForDataDomainRouteReady(domain: DataDomain): string[] {
+  return TABLE_OWNERSHIP
+    .filter((entry) => entry.domain === domain && entry.route_ready)
+    .map((entry) => entry.table)
+    .sort()
 }
 
 export function tablesForDataDomainShadowBackfill(domain: DataDomain): string[] {
-  const excluded = SHADOW_BACKFILL_EXCLUDED_TABLES[domain] ?? new Set<string>()
   return orderShadowBackfillTables(
-    tablesForDataDomain(domain).filter((table) => !excluded.has(table)),
+    TABLE_OWNERSHIP
+      .filter((entry) => entry.domain === domain && entry.shadow_ready)
+      .map((entry) => entry.table),
   )
 }
 
@@ -266,6 +411,9 @@ export function databaseForDataDomain(
   throw new Error(`data_domain_binding_missing:${domain}`)
 }
 export function assertSingleDomainOwnership(tableNames: string[]): void {
-  const missing = tableNames.filter((table) => !dataDomainForTable(table))
-  if (missing.length) throw new Error(`unowned_data_domain_tables:${missing.sort().join(',')}`)
+  assertOwnershipEntries(TABLE_OWNERSHIP)
+  const missing = [...new Set(tableNames.map((table) => table.trim().toLowerCase()))]
+    .filter((table) => ownershipEntriesForTable(table).length === 0)
+    .sort()
+  if (missing.length) throw new Error(`unowned_data_domain_tables:${missing.join(',')}`)
 }

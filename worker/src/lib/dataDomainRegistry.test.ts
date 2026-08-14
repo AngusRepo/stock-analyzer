@@ -3,6 +3,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   activeDataDomains,
+  DATA_DOMAINS,
+  assertOwnershipEntries,
   assertSingleDomainOwnership,
   databaseForDataDomain,
   dataDomainForTable,
@@ -13,32 +15,109 @@ import {
   shadowDatabaseForDataDomain,
   MULTI_D1_STRICT_ROUTING_READY,
   resolveDataDomainRoute,
+  tableOwnershipMetadata,
   tablesForDataDomain,
+  tablesForDataDomainRouteReady,
   tablesForDataDomainShadowBackfill,
+  type TableOwnershipMetadata,
 } from './dataDomainRegistry'
 
-const sqlFiles = [
+const tableNamesFromSql = (file: string): string[] => (
+  [...fs.readFileSync(file, 'utf8').matchAll(/^CREATE TABLE(?: IF NOT EXISTS)?\s+["`[]?([A-Za-z0-9_]+)/gmi)]
+    .map((match) => match[1].toLowerCase())
+)
+
+const productionSnapshot = path.join('bootstrap', 'schema.production.snapshot.sql')
+const migrationTransientTables = new Set([
+  'active8_oof_date_eligibility_v3',
+  'chip_data_new',
+  'd1_migrations',
+  'model_artifact_registry_new',
+  'model_artifact_registry_oof_release_new',
+  'pending_buy_debate_turns',
+  'sector_flow_new',
+])
+const productionSqlFiles = [
   'schema.sql',
+  productionSnapshot,
+  ...fs.readdirSync('.')
+    .filter((name) => /^migration.*\.sql$/i.test(name))
+    .map((name) => path.join('.', name)),
   ...fs.readdirSync('migrations')
     .filter((name) => name.endsWith('.sql'))
     .map((name) => path.join('migrations', name)),
 ]
-const tableNames = [...new Set(sqlFiles.flatMap((file) => (
-  [...fs.readFileSync(file, 'utf8').matchAll(/^CREATE TABLE IF NOT EXISTS\s+([A-Za-z0-9_]+)/gm)]
-    .map((match) => match[1].toLowerCase())
-)))]
+const domainSqlFiles = DATA_DOMAINS.flatMap((domain) => [
+  path.join('domain-schemas', `${domain}.sql`),
+  ...fs.readdirSync(path.join('domain-migrations', domain))
+    .filter((name) => name.endsWith('.sql'))
+    .map((name) => path.join('domain-migrations', domain, name)),
+])
+const productionCreatedTables = [...new Set(productionSqlFiles.flatMap(tableNamesFromSql))]
+const productionTableNames = productionCreatedTables.filter((table) => !migrationTransientTables.has(table))
+assert.deepEqual(
+  productionCreatedTables.filter((table) => !tableOwnershipMetadata(table)).sort(),
+  [...migrationTransientTables].sort(),
+  'every migration-created table must be explicitly owned or explicitly transient',
+)
+assert.equal(productionTableNames.length, 229, 'production schema table count changed; ownership review is required')
+const tableNames = [...new Set([...productionTableNames, ...domainSqlFiles.flatMap(tableNamesFromSql)])]
 assertSingleDomainOwnership(tableNames)
 
 for (const table of new Set(tableNames)) {
   const owner = dataDomainForTable(table)
   if (!owner) throw new Error(`missing owner for ${table}`)
-  if (!tablesForDataDomain(owner).includes(table) && !table.startsWith('paper_')) {
+  if (!tablesForDataDomain(owner).includes(table)) {
     throw new Error(`registry reverse lookup mismatch for ${table}`)
   }
 }
 
 if (dataDomainForTable('unknown_future_table') !== null) {
   throw new Error('unknown tables must fail closed instead of silently defaulting to core')
+}
+assert.equal(dataDomainForTable('paper_unregistered_future_table'), null, 'paper prefix must not bypass explicit ownership')
+assert.throws(
+  () => assertSingleDomainOwnership([...tableNames, 'unknown_future_table']),
+  /unowned_data_domain_tables:unknown_future_table/,
+)
+
+const duplicateOwnership: TableOwnershipMetadata[] = [
+  { table: 'duplicate_table', domain: 'core', disposition: 'full_scalar', route_ready: false, shadow_ready: false },
+  { table: 'duplicate_table', domain: 'ops', disposition: 'active_window', route_ready: false, shadow_ready: false },
+]
+assert.throws(() => assertOwnershipEntries(duplicateOwnership), /duplicate_data_domain_ownership:duplicate_table:core\|ops/)
+
+const deferredProductionTables = productionTableNames.filter((table) => tableOwnershipMetadata(table)?.route_ready === false)
+assert.equal(deferredProductionTables.length, 78, 'production tables without target schema readiness require explicit review')
+assert.equal(
+  deferredProductionTables.filter((table) => tableOwnershipMetadata(table)?.disposition === 'legacy_only').length,
+  6,
+  'legacy-only table count changed; retirement evidence must be reviewed',
+)
+for (const table of deferredProductionTables) {
+  const metadata = tableOwnershipMetadata(table)
+  assert(metadata, `missing metadata for deferred production table ${table}`)
+  assert.equal(metadata.route_ready, false, `${table} must not route before target schema closure`)
+  assert.equal(metadata.shadow_ready, false, `${table} must not enter row backfill before projection closure`)
+  assert(!tablesForDataDomainShadowBackfill(metadata.domain).includes(table), `${table} leaked into shadow backfill`)
+}
+
+for (const domain of DATA_DOMAINS) {
+  const targetFiles = [
+    path.join('domain-schemas', `${domain}.sql`),
+    ...fs.readdirSync(path.join('domain-migrations', domain))
+      .filter((name) => name.endsWith('.sql'))
+      .map((name) => path.join('domain-migrations', domain, name)),
+  ]
+  const targetTables = new Set(targetFiles.flatMap(tableNamesFromSql))
+  for (const table of tablesForDataDomainRouteReady(domain)) {
+    assert(targetTables.has(table), `${domain}.${table} route_ready without target schema`)
+  }
+  for (const table of tablesForDataDomainShadowBackfill(domain)) {
+    const metadata = tableOwnershipMetadata(table)
+    assert(metadata?.route_ready, `${domain}.${table} shadow_ready without route_ready`)
+    assert(targetTables.has(table), `${domain}.${table} shadow_ready without target schema`)
+  }
 }
 
 const legacy = { kind: 'legacy' } as unknown as D1Database

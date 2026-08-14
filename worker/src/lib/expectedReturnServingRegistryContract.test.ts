@@ -42,9 +42,24 @@ assert(servingState.includes('alpha_champion_not_promoted'))
 assert(!servingState.includes('abstention_baseline_not_serving'))
 assert(servingState.includes('policy_value_head_count_not_one'))
 
+const configGetStart = promotionRoute.indexOf("adminConfigCoreRoutes.get('/api/admin/config'")
+const configGetEnd = promotionRoute.indexOf("adminConfigCoreRoutes.put('/api/admin/config'", configGetStart)
+const configGetBody = promotionRoute.slice(configGetStart, configGetEnd)
+assert(promotionRoute.includes("import { databaseForDataDomain } from '../lib/dataDomainRegistry'"))
+assert(configGetBody.includes("const learningDb = databaseForDataDomain(c.env, 'learning')"))
+assert(!configGetBody.includes('hydrateExpectedReturnConfigFromPointers(c.env.DB'))
 const promoteStart = promotionRoute.indexOf("adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote'")
 const promoteEnd = promotionRoute.indexOf("adminConfigCoreRoutes.post('/api/admin/config/push-defaults'", promoteStart)
 const promoteBody = promotionRoute.slice(promoteStart, promoteEnd)
+assert(promoteBody.includes("const learningDb = databaseForDataDomain(c.env, 'learning')"))
+for (const call of [
+  'hydrateExpectedReturnConfigFromPointers', 'recordParameterCandidateFromSandbox',
+  'recordParameterCandidateEvidence', 'validatePromotionPacketForProd',
+  'commitExpectedReturnChampion', 'markParameterCandidatePromoted',
+]) {
+  assert(promoteBody.includes(`${call}(learningDb`), `${call} must use the learning domain database`)
+}
+assert(!promoteBody.includes('c.env.DB'))
 assert(
   promoteBody.indexOf('pointerCommit = await commitExpectedReturnChampion')
     < promoteBody.indexOf('snapshot = await setTradingConfig'),
@@ -83,8 +98,8 @@ assert(migration.includes('UPDATE model_champion_history'))
 assert(migration.includes('SET retired_at = COALESCE(retired_at, CURRENT_TIMESTAMP)'))
 assert(contractMigration.includes('l4-alpha-ev-contract-v5'))
 assert(contractMigration.includes('allocator-ev-fusion-contract-v14'))
-assert(contractMigration.includes("champion_artifact_id = 'l4_alpha_ev:l4-alpha-ev-abstention-baseline-v1'"))
-assert(contractMigration.includes("champion_artifact_id = 'allocator_ev_fusion:allocator-ev-fusion-abstention-baseline-v1'"))
+assert(contractMigration.includes("champion_artifact_id = 'l4_alpha_ev:l4-alpha-ev-ridge-v5-sector-abstention-baseline-v1'"))
+assert(contractMigration.includes("champion_artifact_id = 'allocator_ev_fusion:allocator-ev-fusion-residual-v14-abstention-baseline-v1'"))
 assert(!contractMigration.includes('ON CONFLICT(model_name) DO UPDATE'))
 
 console.log('expectedReturnServingRegistryContract tests passed')

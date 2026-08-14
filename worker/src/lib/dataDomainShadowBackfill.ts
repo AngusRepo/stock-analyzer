@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { dataDomainForTable, shadowDatabaseForDataDomain, tablesForDataDomainShadowBackfill, type DataDomain } from './dataDomainRegistry'
+import { assertExpectedReturnCandidateIdentityBackfillRows } from './expectedReturnCandidateIdentityBackfillGuard'
 
 export const DATA_DOMAIN_SHADOW_SCHEMA_VERSION = 'data-domain-shadow-backfill-v1'
 
@@ -14,7 +15,7 @@ export interface TableColumn {
 export interface DomainShadowBackfillResult {
   domain: DataDomain
   table: string
-  status: 'shadow_progress' | 'shadow_parity_progress' | 'shadow_table_complete'
+  status: 'shadow_progress' | 'shadow_delete_reconciliation_progress' | 'shadow_parity_progress' | 'shadow_table_complete'
   source_rows: number
   target_rows: number
   batch_rows: number
@@ -25,6 +26,8 @@ export interface DomainShadowBackfillResult {
   domain_shadow_ready?: boolean
   parity_rows_scanned?: number
   parity_rows_repaired?: number
+  reconciliation_rows_scanned?: number
+  reconciliation_rows_deleted?: number
 }
 
 function identifier(value: string): string {
@@ -99,6 +102,252 @@ async function upsertDomainRows(
   }
   for (let offset = 0; offset < statements.length; offset += 50) {
     await target.batch(statements.slice(offset, offset + 50))
+  }
+}
+
+type ForeignKeyColumn = {
+  id: number
+  seq: number
+  table: string
+  from: string
+  to: string
+}
+
+function keySignature(row: Record<string, unknown>, columns: string[]): string {
+  return JSON.stringify(columns.map((column) => row[column] ?? null))
+}
+
+async function loadRowsByKeys(
+  db: D1Database,
+  table: string,
+  selectedColumns: string[],
+  keyColumns: string[],
+  keyRows: Record<string, unknown>[],
+): Promise<Record<string, unknown>[]> {
+  if (!keyRows.length) return []
+  const unique = new Map(keyRows.map((row) => [keySignature(row, keyColumns), row]))
+  const rows = [...unique.values()]
+  const rowsPerQuery = Math.max(1, Math.floor(90 / keyColumns.length))
+  const found: Record<string, unknown>[] = []
+  for (let offset = 0; offset < rows.length; offset += rowsPerQuery) {
+    const page = rows.slice(offset, offset + rowsPerQuery)
+    const tupleColumns = keyColumns.map(identifier).join(', ')
+    const tupleValues = page.map(() => `(${keyColumns.map(() => '?').join(', ')})`).join(', ')
+    const result = await db.prepare(`
+      SELECT ${selectedColumns.map(identifier).join(', ')}
+        FROM ${identifier(table)}
+       WHERE (${tupleColumns}) IN (${tupleValues})
+    `).bind(...page.flatMap((row) => keyColumns.map((column) => row[column] ?? null)))
+      .all<Record<string, unknown>>()
+    found.push(...(result.results ?? []))
+  }
+  return found
+}
+
+type ForeignKeySyncState = {
+  visitedRowKeys: Set<string>
+  rowPaths: ReadonlyMap<string, readonly ForeignKeyPathNode[]>
+}
+
+type ForeignKeyPathNode = {
+  table: string
+  rowKey: string
+}
+
+type DomainTableShape = {
+  columns: string[]
+  primaryKeys: string[]
+}
+
+function foreignKeyRowIdentity(table: string, primaryKeys: string[], row: Record<string, unknown>): string {
+  return `${table}:${keySignature(row, primaryKeys)}`
+}
+
+async function domainTableShape(
+  source: D1Database,
+  target: D1Database,
+  table: string,
+): Promise<DomainTableShape> {
+  const sourceColumns = await tableColumns(source, table)
+  const targetColumns = await tableColumns(target, table)
+  assertSchemaParity(sourceColumns, targetColumns, table)
+  const primaryKeys = sourceColumns
+    .filter((column) => Number(column.pk) > 0)
+    .sort((left, right) => Number(left.pk) - Number(right.pk))
+    .map((column) => column.name)
+  if (!primaryKeys.length) throw new Error(`domain_backfill_primary_key_missing:${table}`)
+  return { columns: sourceColumns.map((column) => column.name), primaryKeys }
+}
+
+async function syncForeignKeyAncestorsRecursive(
+  source: D1Database,
+  target: D1Database,
+  domain: DataDomain,
+  table: string,
+  childRows: Record<string, unknown>[],
+  state: ForeignKeySyncState,
+  knownPrimaryKeys?: string[],
+): Promise<void> {
+  if (!childRows.length) return
+  const owner = dataDomainForTable(table)
+  if (owner !== domain) {
+    throw new Error(`domain_shadow_foreign_key_owner_mismatch:${table}:${table}`)
+  }
+  const primaryKeys = knownPrimaryKeys ?? (await domainTableShape(source, target, table)).primaryKeys
+
+  const foreignKeysResult = await target.prepare(`PRAGMA foreign_key_list(${identifier(table)})`).all<ForeignKeyColumn>()
+  const groups = new Map<number, ForeignKeyColumn[]>()
+  for (const foreignKey of foreignKeysResult.results ?? []) {
+    const group = groups.get(Number(foreignKey.id)) ?? []
+    group.push(foreignKey)
+    groups.set(Number(foreignKey.id), group)
+  }
+  for (const group of groups.values()) {
+    const ordered = [...group].sort((left, right) => Number(left.seq) - Number(right.seq))
+    const parentTable = String(ordered[0]?.table ?? '').trim().toLowerCase()
+    if (!parentTable) continue
+    if (dataDomainForTable(parentTable) !== domain) {
+      throw new Error(`domain_shadow_foreign_key_owner_mismatch:${table}:${parentTable}`)
+    }
+    const childColumns = ordered.map((row) => String(row.from))
+    const parentLookupColumns = ordered.map((row) => String(row.to))
+    const keyRowsWithPaths = childRows
+      .filter((row) => childColumns.every((column) => row[column] != null))
+      .map((row) => {
+        const childRowKey = foreignKeyRowIdentity(table, primaryKeys, row)
+        return {
+          keyRow: Object.fromEntries(parentLookupColumns.map((column, index) => [column, row[childColumns[index]]])),
+          path: state.rowPaths.get(childRowKey) ?? [{ table, rowKey: childRowKey }],
+        }
+      })
+    const keyRows = keyRowsWithPaths.map(({ keyRow }) => keyRow)
+    if (!keyRows.length) continue
+
+    const parentShape = await domainTableShape(source, target, parentTable)
+    const parentRows = await loadRowsByKeys(
+      source,
+      parentTable,
+      parentShape.columns,
+      parentLookupColumns,
+      keyRows,
+    )
+    const requested = new Set(keyRows.map((row) => keySignature(row, parentLookupColumns)))
+    const available = new Set(parentRows.map((row) => keySignature(row, parentLookupColumns)))
+    const missing = [...requested].filter((key) => !available.has(key))
+    if (missing.length) {
+      throw new Error(`domain_shadow_foreign_key_source_missing:${table}:${parentTable}:${missing.length}`)
+    }
+    const parentRowsByLookupKey = new Map(parentRows.map((row) => [
+      keySignature(row, parentLookupColumns),
+      row,
+    ]))
+    const uniqueParentRows = new Map<string, Record<string, unknown>>()
+    const parentRowPaths = new Map<string, readonly ForeignKeyPathNode[]>()
+    for (const request of keyRowsWithPaths) {
+      const parentRow = parentRowsByLookupKey.get(keySignature(request.keyRow, parentLookupColumns))
+      if (!parentRow) continue
+      const parentRowKey = foreignKeyRowIdentity(parentTable, parentShape.primaryKeys, parentRow)
+      const cycleIndex = request.path.findIndex((node) => node.rowKey === parentRowKey)
+      if (cycleIndex >= 0) {
+        const cyclePath = [...request.path.slice(cycleIndex).map((node) => node.table), parentTable]
+        throw new Error(`domain_shadow_foreign_key_cycle:${cyclePath.join('>')}:${parentRowKey}`)
+      }
+      uniqueParentRows.set(parentRowKey, parentRow)
+      if (!parentRowPaths.has(parentRowKey)) {
+        parentRowPaths.set(parentRowKey, [...request.path, { table: parentTable, rowKey: parentRowKey }])
+      }
+    }
+    const unsyncedParentRows = [...uniqueParentRows.entries()]
+      .filter(([key]) => !state.visitedRowKeys.has(key))
+      .map(([, row]) => row)
+    if (!unsyncedParentRows.length) continue
+
+    await syncForeignKeyAncestorsRecursive(
+      source,
+      target,
+      domain,
+      parentTable,
+      unsyncedParentRows,
+      { visitedRowKeys: state.visitedRowKeys, rowPaths: parentRowPaths },
+      parentShape.primaryKeys,
+    )
+    await upsertDomainRows(target, parentTable, parentShape.columns, parentShape.primaryKeys, unsyncedParentRows)
+    for (const row of unsyncedParentRows) {
+      state.visitedRowKeys.add(foreignKeyRowIdentity(parentTable, parentShape.primaryKeys, row))
+    }
+  }
+}
+
+export async function syncForeignKeyAncestors(
+  source: D1Database,
+  target: D1Database,
+  domain: DataDomain,
+  table: string,
+  childRows: Record<string, unknown>[],
+  knownPrimaryKeys?: string[],
+): Promise<void> {
+  return syncForeignKeyAncestorsRecursive(
+    source,
+    target,
+    domain,
+    table,
+    childRows,
+    { visitedRowKeys: new Set(), rowPaths: new Map() },
+    knownPrimaryKeys,
+  )
+}
+
+async function deleteTargetRowsByKeys(
+  target: D1Database,
+  table: string,
+  primaryKeys: string[],
+  rows: Record<string, unknown>[],
+): Promise<void> {
+  if (!rows.length) return
+  const rowsPerStatement = Math.max(1, Math.floor(90 / primaryKeys.length))
+  const statements: D1PreparedStatement[] = []
+  for (let offset = 0; offset < rows.length; offset += rowsPerStatement) {
+    const page = rows.slice(offset, offset + rowsPerStatement)
+    const tuples = page.map(() => `(${primaryKeys.map(() => '?').join(', ')})`).join(', ')
+    statements.push(target.prepare(`
+      DELETE FROM ${identifier(table)}
+       WHERE (${primaryKeys.map(identifier).join(', ')}) IN (${tuples})
+    `).bind(...page.flatMap((row) => primaryKeys.map((column) => row[column] ?? null))))
+  }
+  for (let offset = 0; offset < statements.length; offset += 50) {
+    await target.batch(statements.slice(offset, offset + 50))
+  }
+}
+
+async function reconcileTargetOnlyPage(
+  source: D1Database,
+  target: D1Database,
+  table: string,
+  primaryKeys: string[],
+  cursor: unknown[] | null,
+  limit: number,
+): Promise<{ done: boolean; scanned: number; deleted: number; cursor: unknown[] | null }> {
+  const keyset = domainBackfillKeysetWhere(primaryKeys, cursor)
+  const order = primaryKeys.map(identifier).join(', ')
+  const targetPageResult = await target.prepare(`
+    SELECT ${primaryKeys.map(identifier).join(', ')}
+      FROM ${identifier(table)}
+      ${keyset.sql}
+     ORDER BY ${order}
+     LIMIT ?
+  `).bind(...keyset.binds, limit).all<Record<string, unknown>>()
+  const targetPage = targetPageResult.results ?? []
+  if (!targetPage.length) return { done: true, scanned: 0, deleted: 0, cursor }
+  const sourceRows = await loadRowsByKeys(source, table, primaryKeys, primaryKeys, targetPage)
+  const sourceKeys = new Set(sourceRows.map((row) => keySignature(row, primaryKeys)))
+  const staleRows = targetPage.filter((row) => !sourceKeys.has(keySignature(row, primaryKeys)))
+  await deleteTargetRowsByKeys(target, table, primaryKeys, staleRows)
+  const last = targetPage.at(-1)!
+  return {
+    done: false,
+    scanned: targetPage.length,
+    deleted: staleRows.length,
+    cursor: primaryKeys.map((column) => last[column] ?? null),
   }
 }
 
@@ -253,6 +502,7 @@ export async function backfillDataDomainTableShadow(
      LIMIT ?
   `).bind(...keyset.binds, limit).all<Record<string, unknown>>()
   const rows = selected.results ?? []
+  assertExpectedReturnCandidateIdentityBackfillRows(domain, table, rows)
   if (rows.length) {
     const activeCutover = await env.DB.prepare(`
       SELECT status FROM data_domain_cutovers WHERE domain=?
@@ -277,14 +527,101 @@ export async function backfillDataDomainTableShadow(
     `).bind(domain, table).run()
     await env.DB.prepare(`
       DELETE FROM data_domain_parity_checks
-       WHERE check_id=?
-    `).bind(`domain-parity:${domain}:${table}:manifest-progress`).run()
+       WHERE check_id IN (?, ?)
+    `).bind(
+      `domain-parity:${domain}:${table}:manifest-progress`,
+      `domain-parity:${domain}:${table}:delete-progress`,
+    ).run()
   }
   if (!rows.length) {
     const sourceCount = await env.DB.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`).first<{ count: number | string }>()
     const targetCount = await target.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`).first<{ count: number | string }>()
-    const sourceRows = Number(sourceCount?.count ?? 0)
-    const targetRows = Number(targetCount?.count ?? 0)
+    let sourceRows = Number(sourceCount?.count ?? 0)
+    let targetRows = Number(targetCount?.count ?? 0)
+    const deleteProgressId = `domain-parity:${domain}:${table}:delete-progress`
+    if (targetRows > sourceRows) {
+      const progressRow = await env.DB.prepare(`
+        SELECT evidence_json FROM data_domain_parity_checks WHERE check_id=?
+      `).bind(deleteProgressId).first<{ evidence_json?: string | null }>()
+      const progress = parseManifestProgress(progressRow?.evidence_json)
+      const reconciliation = await reconcileTargetOnlyPage(
+        env.DB,
+        target,
+        table,
+        primaryKeys,
+        Array.isArray(progress.cursor) ? progress.cursor : null,
+        domainBackfillParityBatchLimit(limit),
+      )
+      const scanned = Math.max(0, Number(progress.rows_scanned ?? 0)) + reconciliation.scanned
+      const deleted = Math.max(0, Number(progress.repaired_rows ?? 0)) + reconciliation.deleted
+      if (!reconciliation.done) {
+        await env.DB.prepare(`
+          INSERT INTO data_domain_parity_checks(
+            check_id, domain, table_name, check_kind, status, source_count, target_count,
+            source_checksum, target_checksum, evidence_json
+          ) VALUES (?, ?, ?, 'delete_reconciliation', 'blocked', ?, ?, NULL, NULL, ?)
+          ON CONFLICT(check_id) DO UPDATE SET
+            status='blocked', source_count=excluded.source_count, target_count=excluded.target_count,
+            evidence_json=excluded.evidence_json, checked_at=CURRENT_TIMESTAMP
+        `).bind(
+          deleteProgressId,
+          domain,
+          table,
+          sourceRows,
+          targetRows,
+          JSON.stringify({
+            schema_version: 'data-domain-shadow-delete-reconciliation-v1',
+            cursor: reconciliation.cursor,
+            rows_scanned: scanned,
+            repaired_rows: deleted,
+            expected_source_rows: sourceRows,
+          }),
+        ).run()
+        return {
+          domain,
+          table,
+          status: 'shadow_delete_reconciliation_progress',
+          source_rows: sourceRows,
+          target_rows: targetRows - reconciliation.deleted,
+          batch_rows: reconciliation.scanned,
+          batch_checksum: null,
+          cursor: reconciliation.cursor,
+          reconciliation_rows_scanned: scanned,
+          reconciliation_rows_deleted: deleted,
+        }
+      }
+      await env.DB.prepare('DELETE FROM data_domain_parity_checks WHERE check_id=?')
+        .bind(deleteProgressId).run()
+      const [sourceAfter, targetAfter] = await Promise.all([
+        env.DB.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`).first<{ count: number | string }>(),
+        target.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`).first<{ count: number | string }>(),
+      ])
+      sourceRows = Number(sourceAfter?.count ?? 0)
+      targetRows = Number(targetAfter?.count ?? 0)
+    }
+    if (targetRows < sourceRows) {
+      await env.DB.batch([
+        env.DB.prepare(`
+          UPDATE data_domain_backfill_cursors
+             SET status='running', cursor_json=NULL, rows_copied=0, last_batch_rows=0,
+                 last_source_checksum=NULL, last_target_checksum=NULL,
+                 error_code='source_growth_recopy_required', updated_at=CURRENT_TIMESTAMP
+           WHERE domain=? AND table_name=?
+        `).bind(domain, table),
+        env.DB.prepare(`DELETE FROM data_domain_parity_checks WHERE check_id IN (?, ?)`)
+          .bind(`domain-parity:${domain}:${table}:manifest-progress`, deleteProgressId),
+      ])
+      return {
+        domain,
+        table,
+        status: 'shadow_progress',
+        source_rows: sourceRows,
+        target_rows: targetRows,
+        batch_rows: 0,
+        batch_checksum: null,
+        cursor: null,
+      }
+    }
     if (sourceRows !== targetRows) throw new Error(`domain_shadow_count_mismatch:${domain}:${table}:${sourceRows}/${targetRows}`)
 
     const fullChecksumLimit = 1000
@@ -536,6 +873,7 @@ export async function backfillDataDomainTableShadow(
   }
 
   const columnSql = columns.map(identifier).join(", ")
+  await syncForeignKeyAncestors(env.DB, target, domain, table, rows, primaryKeys)
   await upsertDomainRows(target, table, columns, primaryKeys, rows)
   const verify = await target.prepare(`
     SELECT ${columnSql} FROM ${identifier(table)}

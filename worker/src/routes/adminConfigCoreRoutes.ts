@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { requireServiceToken } from '../lib/auth'
+import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import type { Bindings, Variables } from '../types'
 
 export const adminConfigCoreRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -7,17 +8,19 @@ export const adminConfigCoreRoutes = new Hono<{ Bindings: Bindings; Variables: V
 adminConfigCoreRoutes.get('/api/admin/config', async (c) => {
   const authError = await requireServiceToken(c)
   if (authError) return authError
+  const learningDb = databaseForDataDomain(c.env, 'learning')
 
   const { getTradingConfig } = await import('../lib/tradingConfig')
   const { hydrateExpectedReturnConfigFromPointers } = await import('../lib/expectedReturnServingRegistry')
   const config = await getTradingConfig(c.env.KV)
-  const hydrated = await hydrateExpectedReturnConfigFromPointers(c.env.DB, config as any)
+  const hydrated = await hydrateExpectedReturnConfigFromPointers(learningDb, config as any)
   return c.json(hydrated.config)
 })
 
 adminConfigCoreRoutes.put('/api/admin/config', async (c) => {
   const authError = await requireServiceToken(c)
   if (authError) return authError
+  const learningDb = databaseForDataDomain(c.env, 'learning')
 
   const body = await c.req.json<any>().catch(() => null)
   if (!body) return c.json({ error: 'Invalid JSON' }, 400)
@@ -94,7 +97,7 @@ adminConfigCoreRoutes.put('/api/admin/config', async (c) => {
   const candidateId = typeof body.candidate_id === 'string' ? body.candidate_id : undefined
   const promotionPacketId = typeof body.promotion_packet_id === 'string' ? body.promotion_packet_id : undefined
   const overrideReason = String(body.override_reason ?? body.reason ?? '').trim()
-  const promotionGate = await validatePromotionPacketForProd(c.env.DB, {
+  const promotionGate = await validatePromotionPacketForProd(learningDb, {
     candidateId,
     promotionPacketId,
   })
@@ -107,7 +110,7 @@ adminConfigCoreRoutes.put('/api/admin/config', async (c) => {
     }, 400)
   }
   const overrideAudit = !promotionGate.ok
-    ? await recordProductionOverride(c.env.DB, {
+    ? await recordProductionOverride(learningDb, {
       route: '/api/admin/config',
       reason: overrideReason,
       candidateId,
@@ -133,6 +136,7 @@ adminConfigCoreRoutes.put('/api/admin/config', async (c) => {
 adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c) => {
   const authError = await requireServiceToken(c)
   if (authError) return authError
+  const learningDb = databaseForDataDomain(c.env, 'learning')
 
   const body = await c.req.json<{
     l4_alpha_ev?: Record<string, any>
@@ -153,7 +157,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
 
   const rawCurrent = await getTradingConfig(c.env.KV) as unknown as Record<string, any>
   const { hydrateExpectedReturnConfigFromPointers } = await import('../lib/expectedReturnServingRegistry')
-  let current = (await hydrateExpectedReturnConfigFromPointers(c.env.DB, rawCurrent)).config
+  let current = (await hydrateExpectedReturnConfigFromPointers(learningDb, rawCurrent)).config
   const outcomes: Record<string, any> = {}
   const orderedCandidates = [
     ['l4_alpha_ev', body.l4_alpha_ev],
@@ -172,7 +176,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
       artifact_checksum: String(rawCandidate.artifact_checksum ?? ''),
     }
     const plan = buildExpectedReturnOwnerPromotionPlan(current, owner, candidate)
-    await recordParameterCandidateFromSandbox(c.env.DB, {
+    await recordParameterCandidateFromSandbox(learningDb, {
       source: 'expected_return_oof',
       candidateId: plan.candidate_id,
       cadence: String(rawCandidate.cadence ?? 'oof'),
@@ -232,7 +236,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
         validation_packet: { decision: plan.eligible ? 'PASS' : 'FAIL' },
       },
     }
-    const recorded = await recordParameterCandidateEvidence(c.env.DB, {
+    const recorded = await recordParameterCandidateEvidence(learningDb, {
       candidateId: plan.candidate_id,
       evidenceType: 'expected_return_owner_quality_and_parity',
       decision: plan.eligible ? 'PASS' : 'FAIL',
@@ -248,7 +252,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
       continue
     }
 
-    const promotionGate = await validatePromotionPacketForProd(c.env.DB, {
+    const promotionGate = await validatePromotionPacketForProd(learningDb, {
       candidateId: plan.candidate_id,
       promotionPacketId: recorded.promotion_packet_id,
     })
@@ -269,7 +273,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
     const { commitExpectedReturnChampion } = await import('../lib/expectedReturnServingRegistry')
     let pointerCommit: Awaited<ReturnType<typeof commitExpectedReturnChampion>>
     try {
-      pointerCommit = await commitExpectedReturnChampion(c.env.DB, {
+      pointerCommit = await commitExpectedReturnChampion(learningDb, {
         owner,
         artifact: plan.serving_artifact ?? {},
         artifactPath: candidate.artifact_path,
@@ -298,7 +302,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
       // D1 pointer + payload is the serving authority. KV is a repairable projection.
       configProjectionError = error instanceof Error ? error.message : String(error)
     }
-    await markParameterCandidatePromoted(c.env.DB, {
+    await markParameterCandidatePromoted(learningDb, {
       candidateId: plan.candidate_id,
       promotionPacketId: recorded.promotion_packet_id,
       detail: { expected_return_owner: owner, model_version: plan.model_version },
@@ -330,6 +334,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
 adminConfigCoreRoutes.post('/api/admin/config/push-defaults', async (c) => {
   const authError = await requireServiceToken(c)
   if (authError) return authError
+  const learningDb = databaseForDataDomain(c.env, 'learning')
   const body = await c.req.json<any>().catch(() => null) ?? {}
 
   const { getTradingConfig, setTradingConfig, buildChampionTradingConfig } = await import('../lib/tradingConfig')
@@ -352,7 +357,7 @@ adminConfigCoreRoutes.post('/api/admin/config/push-defaults', async (c) => {
       hint: `Use ${PRODUCTION_OVERRIDE_HEADER}: true with override_reason.`,
     }, 400)
   }
-  const overrideAudit = await recordProductionOverride(c.env.DB, {
+  const overrideAudit = await recordProductionOverride(learningDb, {
     route: '/api/admin/config/push-defaults',
     reason: overrideReason,
     detail: { source: 'push_defaults' },

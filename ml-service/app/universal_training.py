@@ -18,6 +18,10 @@ import polars as pl
 from joblib import load as joblib_load
 from pydantic import BaseModel
 
+from .callback_security import (
+    normalize_callback_token,
+    sanitize_callback_error,
+)
 from .artifact_contract import (
     build_model_artifact_metadata,
     build_training_run_manifest,
@@ -105,14 +109,13 @@ def _ic_summary_value(metrics: dict) -> float | None:
 
 
 def _controller_callback_token() -> str:
-    return (
-        os.environ.get("RETRAIN_CALLBACK_TOKEN")
-        or os.environ.get("ML_CONTROLLER_TOKEN")
-        or os.environ.get("INTERNAL_TOKEN")
-        or os.environ.get("ML_CONTROLLER_SECRET")
-        or os.environ.get("STOCKVISION_AUTH_TOKEN")
-        or ""
-    )
+    return normalize_callback_token([
+        os.environ.get("RETRAIN_CALLBACK_TOKEN"),
+        os.environ.get("ML_CONTROLLER_TOKEN"),
+        os.environ.get("INTERNAL_TOKEN"),
+        os.environ.get("ML_CONTROLLER_SECRET"),
+        os.environ.get("STOCKVISION_AUTH_TOKEN"),
+    ])
 
 
 def requires_immutable_oof_snapshot(req: UniversalTrainRequest) -> bool:
@@ -1628,9 +1631,10 @@ def train_universal_from_gcs(req: UniversalTrainRequest) -> dict:
             )
             if _resp.status_code < 200 or _resp.status_code >= 300:
                 raise RuntimeError(f"followup webhook returned HTTP {_resp.status_code}")
-            print(f"[TrainUniversal] followup webhook POST {req.followup_webhook_url} -> HTTP {_resp.status_code}")
+            print(f"[TrainUniversal] followup webhook -> HTTP {_resp.status_code}")
         except Exception as webhook_err:
-            print(f"[TrainUniversal] followup webhook failed (safety-net cron will catch): {webhook_err}")
+            safe_error = sanitize_callback_error(webhook_err, locals().get("_token"))
+            print(f"[TrainUniversal] followup webhook failed (safety-net cron will catch): {safe_error}")
 
     return {
         "type": "universal",

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 
 import pytest
@@ -318,8 +319,15 @@ def test_candidate_and_promotion_packets_are_checksum_addressed(monkeypatch):
             return _Blob(path)
 
     monkeypatch.setattr(materializer, "upsert_artifact_record", registry.append)
-    result = {
-        "artifact": {"model_version": "candidate-v1"},
+    l4_result = {
+        "artifact": {"model_version": "candidate-v1", "expected_return_owner": "l4_alpha_ev"},
+        "validation_packet": {"decision": "PASS", "failed_gates": []},
+    }
+    fusion_result = {
+        "artifact": {
+            "model_version": "candidate-v1",
+            "expected_return_owner": "allocator_ev_fusion",
+        },
         "validation_packet": {"decision": "PASS", "failed_gates": []},
     }
     candidate = materializer.archive_ev_candidate_artifacts(
@@ -327,25 +335,45 @@ def test_candidate_and_promotion_packets_are_checksum_addressed(monkeypatch):
         cohort_id="cohort-1",
         source_run_date="2026-07-15",
         manifest_path="manifest.json",
-        l4_result=result,
-        fusion_result=result,
+        l4_result=l4_result,
+        lifecycle_cadence="weekly",
+        fusion_result=fusion_result,
         parity={"decision": "PASS"},
         promoted=False,
     )
+    candidate_registry = [dict(record) for record in registry]
     receipt = materializer.archive_ev_candidate_artifacts(
         bucket=_Bucket(),
         cohort_id="cohort-1",
         source_run_date="2026-07-15",
         manifest_path="manifest.json",
-        l4_result=result,
-        fusion_result=result,
+        l4_result=l4_result,
+        lifecycle_cadence="weekly",
+        fusion_result=fusion_result,
         parity={"decision": "PASS"},
         promoted={"l4_alpha_ev": True, "allocator_ev_fusion": False},
+        register_candidate=False,
     )
 
     assert candidate["l4_alpha_ev"]["path"] != receipt["l4_alpha_ev"]["path"]
     assert receipt["l4_alpha_ev"]["state"] == "production"
     assert receipt["allocator_ev_fusion"]["state"] == "offline_passed"
+    assert all(item["registry_registered"] is True for item in candidate.values())
+    assert all(item["registry_registered"] is False for item in receipt.values())
+    assert len(registry) == 2
+    assert registry == candidate_registry
+    registry_by_owner = {record["model_name"]: record for record in registry}
+    for owner in ("l4_alpha_ev", "allocator_ev_fusion"):
+        assert registry_by_owner[owner]["artifact_path"] == candidate[owner]["path"]
+        assert registry_by_owner[owner]["checksum"] == candidate[owner]["checksum"]
+        assert registry_by_owner[owner]["artifact_path"] != receipt[owner]["path"]
+        assert registry_by_owner[owner]["checksum"] != receipt[owner]["checksum"]
+    evidence = [json.loads(record["offline_evidence_json"]) for record in registry]
+    assert all(item["cadence"] == "weekly" for item in evidence)
+    assert all(item["identity_schema_version"] == "expected-return-candidate-identity-v2" for item in evidence)
+    assert all(item["model_version"] == "candidate-v1" for item in evidence)
+    assert all(item["expected_return_owner"] == record["model_name"] for item, record in zip(evidence, registry))
+    assert all(item["artifact_checksum"] == record["checksum"] for item, record in zip(evidence, registry))
     assert all(record["checksum"] in record["artifact_path"] for record in registry)
     assert len(uploaded) == 4
 

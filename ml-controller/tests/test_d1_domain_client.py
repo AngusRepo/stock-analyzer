@@ -52,6 +52,31 @@ def test_domain_client_routes_query_to_resolved_database(monkeypatch):
     assert captured["database_id"] == "ops-db"
 
 
+def test_domain_client_routes_atomic_batch_to_resolved_database(monkeypatch):
+    monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", True)
+    monkeypatch.setenv("CF_D1_LEARNING_DB_ID", "learning-db")
+    monkeypatch.setenv("MULTI_D1_ACTIVE_DOMAINS", "learning")
+    monkeypatch.delenv("MULTI_D1_STRICT", raising=False)
+    captured = {}
+
+    def fake_raw(statements, timeout=30.0, chunk_size=250, database_id=None):
+        captured.update(statements=statements, timeout=timeout, chunk_size=chunk_size, database_id=database_id)
+        return {
+            "total": len(statements),
+            "success_count": len(statements),
+            "error_count": 0,
+            "partial_failure": False,
+        }
+
+    monkeypatch.setattr(d1_domain_client.d1_client, "_raw_batch_execute", fake_raw)
+    result = d1_domain_client.client_for_domain("learning").atomic_batch_execute([("UPDATE x SET y=1", [])])
+
+    assert result["atomic"] is True
+    assert captured["database_id"] == "learning-db"
+    assert captured["chunk_size"] == 1
+    assert captured["statements"] == [("UPDATE x SET y=1", [])]
+
+
 def test_active_domain_fails_closed_when_specific_id_is_missing(monkeypatch):
     monkeypatch.setattr(d1_domain_client, "MULTI_D1_STRICT_ROUTING_READY", True)
     monkeypatch.setenv("CF_D1_DB_ID", "legacy")

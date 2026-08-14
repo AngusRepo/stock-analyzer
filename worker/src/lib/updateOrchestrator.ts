@@ -21,6 +21,7 @@ import {
   claimPipelineStage,
   enqueuePipelineStage,
   markPipelineStage,
+  markPipelineStageFenced,
 } from './pipelineStageLease'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 import { refreshExpectedReturnServingState } from './expectedReturnServingState'
@@ -1829,7 +1830,13 @@ async function runFinalizeContinuation(
   const runAsyncScreener = deps.runMarketScreenerAsync
   if (runAsyncScreener) {
     try {
-      const screenerResult = await runAsyncScreener(env, triggerTime, { chainRunId: runId })
+      const { triggerCanonicalScreenerStage } = await import('./screenerRecoveryWatchdog')
+      const screenerResult = await triggerCanonicalScreenerStage(env, {
+        businessDate: triggerTime,
+        canonicalRunId: runId,
+        trigger: runAsyncScreener,
+        ownerId: `${runId}:finalizer`,
+      })
       const screenerSummary = typeof screenerResult === 'string'
         ? screenerResult
         : JSON.stringify(screenerResult)?.slice(0, 500) ?? ''
@@ -2088,13 +2095,12 @@ async function repairFinalizeContinuationIfNeeded(
       duration_ms: 0,
       run_date: triggerTime,
     })
-    await env.UPDATE_QUEUE.send({
-      type: 'post_screener_pipeline',
-      cursor: 0,
+    await enqueuePostScreenerPipelineContinuation(env, {
       triggerTime,
       runId,
       shardCount,
-      attempt: 1,
+      source: 'expired-finalizer-repair',
+      summary: `event-driven chain repaired orphaned post-screener continuation for ${triggerTime}; run_id=${runId}`,
     })
     await env.KV.put(finalKey, '1', { expirationTtl: 7 * 86400 })
     return true
@@ -3734,7 +3740,49 @@ export async function processUpdateBatch(
       console.log(`[Queue] Invalid post-screener continuation date ${triggerTime}, skipping.`)
       return
     }
-    await continuePostScreenerPipeline(env, deps, triggerTime, runId)
+    const { POST_SCREENER_CONTINUATION_STAGE } = await import('./postScreenerContinuation')
+    const state = await enqueuePipelineStage(env.DB, {
+      businessDate: triggerTime,
+      stage: POST_SCREENER_CONTINUATION_STAGE,
+      runId,
+      resumeWaiting: true,
+      adoptRunIdOnResume: false,
+    })
+    if (state.row.canonical_run_id !== runId) {
+      console.warn(
+        `[Queue] Ignored stale post-screener continuation date=${triggerTime} incoming=${runId} canonical=${state.row.canonical_run_id}`,
+      )
+      return
+    }
+    const ownerId = `${runId}:post-screener:${crypto.randomUUID()}`
+    const claimed = await claimPipelineStage(env.DB, {
+      businessDate: triggerTime,
+      stage: POST_SCREENER_CONTINUATION_STAGE,
+      ownerId,
+      leaseSeconds: 1800,
+    })
+    if (!claimed) {
+      console.log(`[Queue] Duplicate post-screener continuation ignored date=${triggerTime} run_id=${runId}`)
+      return
+    }
+    try {
+      await continuePostScreenerPipeline(env, deps, triggerTime, runId)
+      await markPipelineStageFenced(env.DB, {
+        businessDate: triggerTime,
+        stage: POST_SCREENER_CONTINUATION_STAGE,
+        canonicalRunId: runId,
+        status: 'success',
+      })
+    } catch (error) {
+      await markPipelineStageFenced(env.DB, {
+        businessDate: triggerTime,
+        stage: POST_SCREENER_CONTINUATION_STAGE,
+        canonicalRunId: runId,
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
     return
   }
 

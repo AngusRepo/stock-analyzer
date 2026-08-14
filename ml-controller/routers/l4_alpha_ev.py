@@ -19,10 +19,14 @@ from services.ev_lineage_contract import (
     reconstruct_rows_with_point_in_time_lineage,
 )
 from services.model_artifact_registry import upsert_artifact_record
-from services.worker_config_client import worker_fetch
 
 
 router = APIRouter(prefix="/l4_alpha_ev", tags=["l4_alpha_ev"])
+
+
+DIRECT_REFRESH_PROMOTION_OWNER = "active8_oof_lifecycle"
+DIRECT_REFRESH_PROMOTION_ENDPOINT = "/walk_forward/oof/lifecycle"
+DIRECT_REFRESH_PROMOTION_DETAIL = "direct_refresh_promotion_disabled_use_active8_oof_lifecycle"
 
 
 class L4AlphaEvRefreshReq(BaseModel):
@@ -32,7 +36,7 @@ class L4AlphaEvRefreshReq(BaseModel):
     min_samples: int | None = Field(default=None, ge=100, le=10000)
     min_dates: int | None = Field(default=None, ge=5, le=252)
     limit: int = Field(default=6000, ge=500, le=20000)
-    promote: bool = True
+    promote: bool = False
     dry_run: bool = False
     trigger_source: str = "worker_scheduler"
 
@@ -84,11 +88,7 @@ def _artifact_checksum(artifact: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _registry_lifecycle_state(*, decision: str, promoted: bool, promotion_error: str | None) -> str:
-    if promoted:
-        return "production"
-    if promotion_error:
-        return "approval_required"
+def _registry_lifecycle_state(*, decision: str) -> str:
     return "offline_passed" if decision == "PASS" else "offline_failed"
 
 
@@ -100,37 +100,34 @@ def _registry_record(
     end_date: str,
     lookback_days: int,
     rows_loaded: int,
-    promoted: bool = False,
-    promotion_error: str | None = None,
 ) -> dict[str, Any]:
     model_version = str(artifact.get("model_version") or "unknown")
     decision = str(validation.get("decision") or "PENDING").upper()
     failed_gates = validation.get("failed_gates") if isinstance(validation.get("failed_gates"), list) else []
-    promotion_state = str(artifact.get("promotion_state") or "approval_required")
+    artifact_checksum = _artifact_checksum(artifact)
     evidence = {
+        "identity_schema_version": "expected-return-candidate-identity-v1",
+        "expected_return_owner": artifact.get("expected_return_owner"),
+        "model_version": model_version,
         "cadence": cadence,
         "end_date": end_date,
         "lookback_days": lookback_days,
         "rows_loaded": rows_loaded,
-        "promotion_state": promotion_state,
         "artifact_contract_version": artifact.get("artifact_contract_version"),
         "feature_semantic_version": artifact.get("feature_semantic_version"),
         "label_schema_version": artifact.get("label_schema_version"),
         "validation_packet": validation,
         "training_data": artifact.get("training_data"),
-        "promoted_to_trading_config": promoted,
-        "promotion_error": promotion_error,
+        "direct_refresh_mode": "candidate_research_only",
+        "production_mutation_allowed": False,
+        "promotion_owner": DIRECT_REFRESH_PROMOTION_OWNER,
     }
     return {
         "artifact_id": f"l4_alpha_ev:{model_version}",
         "model_name": "l4_alpha_ev",
         "version": model_version,
         "candidate_type": "l4_alpha_ev_refresh",
-        "state": _registry_lifecycle_state(
-            decision=decision,
-            promoted=promoted,
-            promotion_error=promotion_error,
-        ),
+        "state": _registry_lifecycle_state(decision=decision),
         "artifact_path": None,
         "metadata_path": None,
         "training_run_id": f"l4_alpha_ev_refresh:{cadence}:{end_date}",
@@ -139,34 +136,36 @@ def _registry_record(
         "evaluation_baseline_version": None,
         "final_compared_to": None,
         "feature_policy_version": artifact.get("feature_snapshot_version"),
-        "checksum": _artifact_checksum(artifact),
+        "checksum": artifact_checksum,
         "source_run_date": end_date,
         "is_monthly": 1 if cadence == "monthly" else 0,
         "offline_gate_status": "passed" if decision == "PASS" else "failed",
         "offline_gate_decision": decision,
         "offline_gate_failed_gates": json.dumps(failed_gates, ensure_ascii=False),
         "offline_evidence_json": json.dumps(evidence, ensure_ascii=False),
-        "live_gate_status": "promoted" if promoted else ("promotion_failed" if promotion_error else "not_started"),
+        "live_gate_status": "not_started",
         "live_evidence_json": json.dumps(
-            {"promoted_to_trading_config": promoted, "promotion_error": promotion_error},
+            {"production_mutation_allowed": False, "promotion_owner": DIRECT_REFRESH_PROMOTION_OWNER},
             ensure_ascii=False,
         ),
-        "promotion_decision": "primary" if promotion_state == "production_approved" else "shadow",
-        "approval_state": promotion_state,
+        "promotion_decision": "active8_oof_lifecycle_only",
+        "approval_state": "not_required",
     }
 
 
 @router.post("/refresh")
 async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, Any]:
-    """Build and optionally promote the formal L4 alpha EV artifact.
+    """Build and persist a research candidate; Active8 OOF lifecycle owns promotion."""
 
-    This is intentionally separate from universal retrain and Optuna research:
-    L4 alpha EV is a downstream selection expected-return calibrator. The route
-    promotes only a production-approved PASS artifact that matches the active
-    producer contract. A failed candidate leaves config untouched but does not
-    claim that an older config remains compatible with the current producer.
-    """
-
+    if req.promote:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": DIRECT_REFRESH_PROMOTION_DETAIL,
+                "promotion_owner": DIRECT_REFRESH_PROMOTION_OWNER,
+                "promotion_endpoint": DIRECT_REFRESH_PROMOTION_ENDPOINT,
+            },
+        )
     defaults = _defaults_for_cadence(req.cadence)
     knowledge_cutoff_date = req.end_date or datetime.now(timezone.utc).date().isoformat()
     end_date = _latest_mature_prediction_date(knowledge_cutoff_date)
@@ -215,7 +214,6 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
         }
     cutover_readiness = assess_l4_artifact_cutover(artifact if isinstance(artifact, dict) else None)
     decision = str((validation or {}).get("decision") or "").upper()
-    promotion_state = str((artifact or {}).get("promotion_state") or "")
     registry_error: str | None = None
     if isinstance(artifact, dict) and not req.dry_run:
         try:
@@ -229,70 +227,10 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
                     rows_loaded=len(rows),
                 )
             )
-        except Exception as exc:  # noqa: BLE001 - config promotion gate remains authoritative.
+        except Exception as exc:  # noqa: BLE001 - surface candidate registry persistence failure.
             registry_error = str(exc)
 
-    promoted = False
-    promotion_error: str | None = None
-    if req.promote and not req.dry_run:
-        if (
-            not isinstance(artifact, dict)
-            or promotion_state != "production_approved"
-            or decision != "PASS"
-            or cutover_readiness["ready"] is not True
-        ):
-            return {
-                **result,
-                "status": "failed_validation",
-                "promoted": False,
-                "registry_error": registry_error,
-                "production_mutation_allowed": False,
-                "cutover_readiness": cutover_readiness,
-                "existing_config_preserved_but_compatibility_not_assumed": True,
-                "summary": (
-                    "l4_alpha_ev_refresh failed_validation "
-                    f"cadence={req.cadence} end_date={end_date} decision={decision or 'UNKNOWN'}"
-                ),
-            }
-        try:
-            await worker_fetch(
-                "/api/admin/config",
-                method="PUT",
-                json_body={
-                    "ensemble_v2": {
-                        "l4AlphaEv": artifact,
-                        "l4_alpha_ev": artifact,
-                    },
-                    "meta": {
-                        "source": "l4_alpha_ev_refresh",
-                        "push_id": f"l4_alpha_ev:{req.cadence}:{end_date}:{(artifact or {}).get('model_version', 'unknown')}",
-                    },
-                },
-                timeout=30.0,
-            )
-            promoted = True
-        except Exception as exc:  # noqa: BLE001 - surface Worker details to scheduler.
-            promotion_error = str(exc)
-
-    status = "promoted" if promoted else ("validated" if decision == "PASS" else "failed_validation")
-    if promotion_error:
-        status = "promotion_failed"
-    if isinstance(artifact, dict) and (promoted or promotion_error):
-        try:
-            upsert_artifact_record(
-                _registry_record(
-                    artifact=artifact,
-                    validation=validation if isinstance(validation, dict) else {},
-                    cadence=req.cadence,
-                    end_date=end_date,
-                    lookback_days=lookback_days,
-                    rows_loaded=len(rows),
-                    promoted=promoted,
-                    promotion_error=promotion_error,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 - surface registry failure without masking promotion result.
-            registry_error = registry_error or str(exc)
+    status = "validated" if decision == "PASS" else "failed_validation"
 
     return {
         **result,
@@ -307,17 +245,16 @@ async def refresh_l4_alpha_ev_artifact(req: L4AlphaEvRefreshReq) -> dict[str, An
         "lineage_rows_rejected": max(0, len(rows) - len(lineage_rows)),
         "lineage_reconstruction": lineage_audit,
         "champion_history_load": champion_history_load,
-        "promoted": promoted,
-        "promotion_error": promotion_error,
+        "promoted": False,
         "registry_error": registry_error,
         "cutover_readiness": cutover_readiness,
-        "production_mutation_allowed": bool(
-            req.promote and not req.dry_run and decision == "PASS" and cutover_readiness["ready"]
-        ),
+        "production_mutation_allowed": False,
+        "promotion_owner": DIRECT_REFRESH_PROMOTION_OWNER,
+        "promotion_endpoint": DIRECT_REFRESH_PROMOTION_ENDPOINT,
         "summary": (
             f"l4_alpha_ev_refresh status={status} cadence={req.cadence} "
             f"end_date={end_date} model_version={(artifact or {}).get('model_version', 'unknown')} "
             f"decision={decision or 'UNKNOWN'} lineage={len(lineage_rows)}/{len(rows)} "
-            f"promoted={1 if promoted else 0}"
+            "mode=candidate_research_only"
         ),
     }

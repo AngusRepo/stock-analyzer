@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { resolveLatestEveningChainClosure } from './dataDomainShadowBackfillDrain'
+import {
+  resolveDataDomainShadowBackfillContinuation,
+  resolveLatestEveningChainClosure,
+} from './dataDomainShadowBackfillDrain'
 
 const drain = fs.readFileSync('src/lib/dataDomainShadowBackfillDrain.ts', 'utf8')
 const orchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
@@ -9,7 +12,11 @@ const types = fs.readFileSync('src/types.ts', 'utf8')
 
 assert(drain.includes("leaseGroup: 'd1_heavy_maintenance'"))
 assert(drain.includes('tablesForDataDomainShadowBackfill'))
-assert(drain.includes('requestedTable && backfillTables.includes(requestedTable)'))
+assert(drain.includes('msg.dataDomainRequestedTable'))
+assert(drain.includes('data_domain_shadow_backfill_scope_mismatch'))
+assert(drain.includes('dataDomainRequestedTable: input.requestedTable'))
+assert(drain.includes('requestedTable: input.table'))
+assert((drain.match(/\n\s+requestedTable,/g) ?? []).length >= 3)
 assert(drain.includes('nextIncompleteTable'))
 assert(drain.includes("status: result.domain_shadow_ready ? 'success' : 'error'"))
 assert(drain.includes("status: checksumReady ? 'success' : 'error'"))
@@ -23,6 +30,20 @@ assert(admin.includes("c.req.query('durable') === '1'"))
 assert(admin.includes('enqueueDataDomainShadowBackfill'))
 assert(types.includes("| 'data_domain_shadow_backfill'"))
 assert(types.includes('dataDomainTable?: string'))
+assert(types.includes('dataDomainRequestedTable?: string'))
+assert(drain.indexOf("continuation === 'requested_table_complete'") < drain.indexOf('attempt + 1 >= maxAttempts'))
+assert.equal(resolveDataDomainShadowBackfillContinuation(
+  'model_artifact_registry',
+  'shadow_table_complete',
+), 'requested_table_complete')
+assert.equal(resolveDataDomainShadowBackfillContinuation(
+  undefined,
+  'shadow_table_complete',
+), 'next_domain_table')
+assert.equal(resolveDataDomainShadowBackfillContinuation(
+  'model_artifact_registry',
+  'shadow_progress',
+), 'same_table')
 
 assert(drain.includes('inspectLatestEveningChainClosure'))
 assert(drain.includes('enqueueNextDataDomainShadowBackfill'))

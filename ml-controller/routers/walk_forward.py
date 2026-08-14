@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import statistics
-from typing import Any
+from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
@@ -378,7 +378,7 @@ class OofMaterializeRequest(BaseModel):
     promote: bool = True
     dispatch_full_fit: bool = False
     prediction_storage_mode: str = "gcs_indexed_v1"
-    lifecycle_cadence: str = "daily"
+    lifecycle_cadence: Literal["daily", "weekly", "monthly", "manual"] = "daily"
     forward_extension_manifest_path: str | None = None
     persist_forward_shadow_coverage: bool = False
 
@@ -1626,6 +1626,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 cohort_id=req.cohort_id,
                 source_run_date=req.knowledge_cutoff_date,
                 manifest_path=path,
+                lifecycle_cadence=req.lifecycle_cadence,
                 l4_result=l4_result,
                 fusion_result=fusion_result,
                 parity=parity,
@@ -1725,10 +1726,12 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                         cohort_id=req.cohort_id,
                         source_run_date=req.knowledge_cutoff_date,
                         manifest_path=path,
+                        lifecycle_cadence=req.lifecycle_cadence,
                         l4_result=l4_result,
                         fusion_result=fusion_result,
                         parity=parity,
                         promoted=promoted_by_owner,
+                        register_candidate=False,
                     )
                 except Exception as exc:  # noqa: BLE001 - config mutation already has Worker audit snapshot.
                     promotion_receipt_error = str(exc)
@@ -1746,6 +1749,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 cohort_id=req.cohort_id,
                 source_run_date=req.knowledge_cutoff_date,
                 manifest_path=path,
+                lifecycle_cadence=req.lifecycle_cadence,
                 l4_result=l4_result,
                 fusion_result=fusion_result,
                 parity=parity,

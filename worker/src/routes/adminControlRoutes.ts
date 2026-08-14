@@ -503,6 +503,10 @@ async function handleSchedulerCallback(c: any) {
     : undefined
   let active8FreshnessStatus: string | null = null
   let active8FreshnessBusinessDate: string | null = null
+  let screenerCallbackMetadata: Record<string, any> = {}
+  let screenerChainRunId: string | undefined
+  let screenerShouldContinue = false
+  let screenerCallbackLineageAccepted = false
 
   if (['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly'].includes(body.task)) {
     const { persistActive8OofFreshnessAudit } = await import('../lib/active8OofFreshness')
@@ -555,6 +559,48 @@ async function handleSchedulerCallback(c: any) {
         active_run_id: current?.run_id ?? null,
         active_dispatch_attempt: fence.activeAttempt,
       })
+    }
+  }
+
+  if (body.task === 'screener' && ['success', 'error', 'skipped'].includes(String(body.status))) {
+    screenerCallbackMetadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+      ? body.metadata as Record<string, any>
+      : {}
+    screenerChainRunId = typeof body.chain_run_id === 'string'
+      ? body.chain_run_id
+      : typeof screenerCallbackMetadata.chain_run_id === 'string'
+        ? screenerCallbackMetadata.chain_run_id
+        : undefined
+    screenerShouldContinue = Boolean(
+      screenerChainRunId
+      || body.continue_post_screener_pipeline
+      || screenerCallbackMetadata.continue_post_screener_pipeline,
+    )
+    screenerCallbackLineageAccepted = !screenerShouldContinue
+    if (screenerShouldContinue) {
+      if (!callbackRunDate || !screenerChainRunId || !callbackRunId) {
+        return c.json({
+          error: 'screener callback missing run_date, chain_run_id, or producer run_id',
+        }, 400)
+      }
+      const { recordCanonicalScreenerCallback } = await import('../lib/screenerRecoveryWatchdog')
+      const receipt = await recordCanonicalScreenerCallback(c.env.DB, {
+        businessDate: callbackRunDate,
+        canonicalRunId: screenerChainRunId,
+        producerRunId: callbackRunId,
+        status: body.status,
+        error: String(body.error ?? body.summary ?? body.status),
+      })
+      if (!receipt.accepted) {
+        return c.json({
+          success: false,
+          ignored: true,
+          reason: receipt.reason,
+          canonical_run_id: receipt.canonicalRunId,
+          producer_run_id: receipt.producerRunId,
+        }, 409)
+      }
+      screenerCallbackLineageAccepted = true
     }
   }
 
@@ -732,39 +778,27 @@ async function handleSchedulerCallback(c: any) {
   }
 
   if (body.task === 'screener' && ['success', 'error', 'skipped'].includes(String(body.status))) {
-    const metadata = body.metadata && typeof body.metadata === 'object' ? body.metadata : {}
-    const chainRunId = typeof body.chain_run_id === 'string'
-      ? body.chain_run_id
-      : typeof metadata.chain_run_id === 'string'
-        ? metadata.chain_run_id
-        : undefined
-    const shouldContinue = Boolean(
-      chainRunId ||
-      body.continue_post_screener_pipeline ||
-      metadata.continue_post_screener_pipeline,
-    )
-
     if (callbackRunDate) {
       await c.env.KV.delete(`lock:screener:${callbackRunDate}`).catch(() => {})
     }
 
-    if (body.status === 'success' && callbackRunDate && shouldContinue) {
-      const continuationRunId = chainRunId || callbackRunId || `screener-callback-${callbackRunDate}`
+    if (body.status === 'success' && callbackRunDate && screenerShouldContinue && screenerCallbackLineageAccepted) {
+      const continuationRunId = screenerChainRunId || callbackRunId || `screener-callback-${callbackRunDate}`
       const { enqueuePostScreenerPipelineContinuation } = await import('../lib/postScreenerContinuation')
       await enqueuePostScreenerPipelineContinuation(c.env, {
         triggerTime: callbackRunDate,
         runId: continuationRunId,
-        shardCount: Number(body.shard_count ?? metadata.shard_count ?? 1),
+        shardCount: Number(body.shard_count ?? screenerCallbackMetadata.shard_count ?? 1),
         source: 'screener-v2-callback',
         summary: `event-driven chain accepted screener-v2 callback for ${callbackRunDate}; screener_run_id=${callbackRunId ?? 'n/a'}; chain_run_id=${continuationRunId}`,
       })
-    } else if (body.status !== 'success' && callbackRunDate && shouldContinue) {
+    } else if (body.status !== 'success' && callbackRunDate && screenerShouldContinue && screenerCallbackLineageAccepted) {
       await logSchedulerResult(c.env.KV, 'evening-chain', {
         status: body.status === 'skipped' ? 'skipped' : 'error',
         summary: `root chain stopped at screener callback: ${String(body.summary ?? body.status)}`,
         duration_ms: 0,
         error: body.error != null ? String(body.error) : undefined,
-        run_id: chainRunId || callbackRunId,
+        run_id: screenerChainRunId || callbackRunId,
         run_date: callbackRunDate,
       }, c.env as any)
     }

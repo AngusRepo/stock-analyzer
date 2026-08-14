@@ -165,6 +165,40 @@ export async function markPipelineStage(
   ).run()
 }
 
+export async function markPipelineStageFenced(
+  db: D1Database,
+  input: {
+    businessDate: string
+    stage: string
+    canonicalRunId: string
+    status: Extract<PipelineStageStatus, 'waiting' | 'success' | 'error'>
+    cursorKey?: string | null
+    error?: string | null
+  },
+): Promise<boolean> {
+  const updated = await db.prepare(`
+    UPDATE pipeline_stage_runs
+       SET status=?, last_error=?, lease_owner=NULL, lease_expires_at=NULL,
+           completed_at=CASE WHEN ? IN ('success', 'error') THEN CURRENT_TIMESTAMP ELSE NULL END,
+           updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=? AND stage=? AND canonical_run_id=?
+       AND (? IS NULL OR cursor_key=?)
+       AND (status<>'success' OR ?='success')
+    RETURNING status
+  `).bind(
+    input.status,
+    input.error?.slice(0, 1000) ?? null,
+    input.status,
+    input.businessDate,
+    input.stage,
+    input.canonicalRunId,
+    input.cursorKey ?? null,
+    input.cursorKey ?? null,
+    input.status,
+  ).first<{ status: PipelineStageStatus }>()
+  return Boolean(updated)
+}
+
 export async function queuePostPipelineStage(
   env: Pick<Bindings, 'DB' | 'UPDATE_QUEUE'>,
   input: {

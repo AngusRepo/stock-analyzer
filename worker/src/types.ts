@@ -363,6 +363,7 @@ export interface UpdateQueueMsg {
   maxAttempts?: number
   dataDomain?: 'core' | 'market' | 'learning' | 'ops' | 'execution' | 'paper' | 'research'
   dataDomainTable?: string
+  dataDomainRequestedTable?: string // explicit single-table scope; distinct from the current table of a domain-wide drain
   maintenanceCycle?: number
   maxMaintenanceCycles?: number
   scheduledTask?: 'external-evidence' | 'weekly-cleanup'

@@ -54,6 +54,7 @@ function progressKey(domain: DataDomain): string {
 function queueMessage(input: {
   domain: DataDomain
   table?: string
+  requestedTable?: string
   runDate: string
   runId: string
   attempt: number
@@ -70,7 +71,16 @@ function queueMessage(input: {
     dataDomainErrorAttempt: input.errorAttempt,
     dataDomain: input.domain,
     dataDomainTable: input.table,
+    dataDomainRequestedTable: input.requestedTable,
   }
+}
+
+export function resolveDataDomainShadowBackfillContinuation(
+  requestedTable: string | undefined,
+  status: DomainShadowBackfillResult['status'],
+): 'same_table' | 'requested_table_complete' | 'next_domain_table' {
+  if (status !== 'shadow_table_complete') return 'same_table'
+  return requestedTable ? 'requested_table_complete' : 'next_domain_table'
 }
 
 async function completedDomainTables(env: Bindings, domain: DataDomain): Promise<string[]> {
@@ -166,8 +176,11 @@ async function resetDataDomainTableForCatchup(
        WHERE domain=? AND table_name=? AND check_kind='full_table'
     `).bind(reason, domain, table),
     env.DB.prepare(`
-      DELETE FROM data_domain_parity_checks WHERE check_id=?
-    `).bind(`domain-parity:${domain}:${table}:manifest-progress`),
+      DELETE FROM data_domain_parity_checks WHERE check_id IN (?, ?)
+    `).bind(
+      `domain-parity:${domain}:${table}:manifest-progress`,
+      `domain-parity:${domain}:${table}:delete-progress`,
+    ),
     env.DB.prepare(`
       UPDATE data_domain_cutovers
          SET status='legacy', source_row_count=NULL, target_row_count=NULL,
@@ -312,6 +325,9 @@ export async function enqueueDataDomainShadowBackfill(
     maxAttempts?: number
   },
 ): Promise<{ queued: boolean; runId: string }> {
+  if (input.table && !tablesForDataDomainShadowBackfill(input.domain).includes(input.table)) {
+    throw new Error(`data_domain_shadow_backfill_requested_table_not_owned:${input.domain}:${input.table}`)
+  }
   const runId = input.runId ?? `data-domain-shadow-backfill:${input.domain}:${input.runDate}:${crypto.randomUUID()}`
   const key = activeKey(input.domain)
   const existing = await env.KV.get(key)
@@ -332,6 +348,7 @@ export async function enqueueDataDomainShadowBackfill(
     await (env.UPDATE_QUEUE as any).send(queueMessage({
       domain: input.domain,
       table: input.table,
+      requestedTable: input.table,
       runDate: input.runDate,
       runId,
       attempt: 0,
@@ -355,11 +372,21 @@ export async function processDataDomainShadowBackfillDrain(
   const errorAttempt = Math.max(0, Math.floor(msg.dataDomainErrorAttempt ?? 0))
   const runId = msg.runId ?? `data-domain-shadow-backfill:${domain}:${msg.triggerTime}:queue`
   const backfillTables = tablesForDataDomainShadowBackfill(domain)
-  const requestedTable = msg.dataDomainTable
-  const table = requestedTable && backfillTables.includes(requestedTable)
-    ? requestedTable
-    : await nextIncompleteTable(env, domain)
-      || await nextDataDomainIncrementalCatchupTable(env, domain)
+  const currentTable = msg.dataDomainTable
+  const requestedTable = msg.dataDomainRequestedTable
+  if (currentTable && !backfillTables.includes(currentTable)) {
+    throw new Error(`data_domain_shadow_backfill_table_not_owned:${domain}:${currentTable}`)
+  }
+  if (requestedTable && !backfillTables.includes(requestedTable)) {
+    throw new Error(`data_domain_shadow_backfill_requested_table_not_owned:${domain}:${requestedTable}`)
+  }
+  if (requestedTable && currentTable && requestedTable !== currentTable) {
+    throw new Error(`data_domain_shadow_backfill_scope_mismatch:${domain}:${requestedTable}:${currentTable}`)
+  }
+  const table = currentTable
+    ?? requestedTable
+    ?? (await nextIncompleteTable(env, domain)
+      || await nextDataDomainIncrementalCatchupTable(env, domain))
   if (!table) {
     const checksumReady = await domainChecksumReady(env, domain)
     await env.KV.delete(activeKey(domain))
@@ -417,6 +444,7 @@ export async function processDataDomainShadowBackfillDrain(
     await (env.UPDATE_QUEUE as any).send(queueMessage({
       domain,
       table,
+      requestedTable,
       runDate: msg.triggerTime,
       runId,
       attempt: nextAttempt,
@@ -426,7 +454,15 @@ export async function processDataDomainShadowBackfillDrain(
     return
   }
   if ('skipped' in leased && leased.skipped) {
-    await (env.UPDATE_QUEUE as any).send(queueMessage({ domain, table, runDate: msg.triggerTime, runId, attempt, maxAttempts }), {
+    await (env.UPDATE_QUEUE as any).send(queueMessage({
+      domain,
+      table,
+      requestedTable,
+      runDate: msg.triggerTime,
+      runId,
+      attempt,
+      maxAttempts,
+    }), {
       delaySeconds: 30,
     })
     return
@@ -441,6 +477,19 @@ export async function processDataDomainShadowBackfillDrain(
     updated_at: new Date().toISOString(),
   }), { expirationTtl: ACTIVE_TTL_SECONDS })
 
+  const continuation = resolveDataDomainShadowBackfillContinuation(requestedTable, result.status)
+  if (continuation === 'requested_table_complete') {
+    await env.KV.delete(activeKey(domain))
+    await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
+      status: 'success',
+      summary: `domain=${domain} table=${table} requested_table_complete=true table_checksum_ready=true source_rows=${result.source_rows} target_rows=${result.target_rows} run_id=${runId}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: msg.triggerTime,
+    }, env)
+    return
+  }
+
   if (attempt + 1 >= maxAttempts) {
     await env.KV.delete(activeKey(domain))
     await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
@@ -453,7 +502,7 @@ export async function processDataDomainShadowBackfillDrain(
     return
   }
 
-  const nextTable = ['shadow_progress', 'shadow_parity_progress'].includes(result.status)
+  const nextTable = continuation === 'same_table'
     ? table
     : await nextIncompleteTable(env, domain)
       || await nextDataDomainIncrementalCatchupTable(env, domain)
@@ -465,6 +514,7 @@ export async function processDataDomainShadowBackfillDrain(
     await (env.UPDATE_QUEUE as any).send(queueMessage({
       domain,
       table: nextTable,
+      requestedTable,
       runDate: msg.triggerTime,
       runId,
       attempt: attempt + 1,

@@ -964,6 +964,16 @@ def test_ev_oof_candidates_use_formal_registry_candidate_types():
     assert '"allocator_ev_fusion_refresh"' in source
     archive_block = source[source.index("def archive_ev_candidate_artifacts"):source.index("def persist_oof_cohort")]
     assert '"candidate_type": "model_family_shadow"' not in archive_block
+    assert '"identity_schema_version": "expected-return-candidate-identity-v2"' in archive_block
+    assert '"expected_return_owner": artifact.get("expected_return_owner")' in archive_block
+    assert '"model_version": model_version' in archive_block
+    assert '"artifact_checksum": checksum' in archive_block
+    assert '"cadence": lifecycle_cadence' in archive_block
+    router = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
+    assert router.count("lifecycle_cadence=req.lifecycle_cadence") >= 3
+    receipt_block = router[router.index("if promoted:"):router.index("full_fit_dispatch = full_fit_plan")]
+    assert "register_candidate=False" in receipt_block
+    assert router.count("register_candidate=False") == 1
 
 def test_daily_oof_materialization_reuses_checksum_verified_gcs_indexes():
     router = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
@@ -1154,3 +1164,26 @@ def test_oof_cohort_version_owns_immutable_fold_evidence_contract():
     from routers.walk_forward import OOF_COHORT_ID_VERSION
 
     assert OOF_COHORT_ID_VERSION == "v7-immutable-fold-evidence"
+
+
+def test_oof_materialize_request_rejects_unknown_cadence():
+    from pydantic import ValidationError
+    from routers.walk_forward import OofMaterializeRequest
+
+    try:
+        OofMaterializeRequest(
+            cohort_id="cohort-v3",
+            knowledge_cutoff_date="2026-08-09",
+            lifecycle_cadence="weekyl",
+        )
+    except ValidationError as exc:
+        assert "lifecycle_cadence" in str(exc)
+    else:
+        raise AssertionError("unknown lifecycle cadence must fail closed")
+
+    manual = OofMaterializeRequest(
+        cohort_id="cohort-v3",
+        knowledge_cutoff_date="2026-08-09",
+        lifecycle_cadence="manual",
+    )
+    assert manual.lifecycle_cadence == "manual"

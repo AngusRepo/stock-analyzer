@@ -255,18 +255,17 @@ async function enqueuePostScreenerPipelineContinuation(c: any, runDate?: string)
   }
 
   const runId = `manual-post-screener-${triggerTime}-${Date.now().toString(36)}`
-  await c.env.UPDATE_QUEUE.send({
-    type: 'post_screener_pipeline',
-    cursor: 0,
+  const { enqueuePostScreenerPipelineContinuation } = await import('./postScreenerContinuation')
+  const continuation = await enqueuePostScreenerPipelineContinuation(c.env, {
     triggerTime,
     runId,
     shardCount: 1,
-    attempt: 1,
+    source: 'manual-admin-trigger',
   })
 
   return [
-    `triggered post-screener pipeline continuation for ${triggerTime}`,
-    `run_id=${runId}`,
+    `${continuation.queued ? 'triggered' : 'locked'} post-screener pipeline continuation for ${triggerTime}`,
+    `run_id=${continuation.canonicalRunId}`,
     `screener_run_id=${screener.run_id}`,
     `final=${Number(screener.final_count ?? 0)}`,
     `emerging=${Number(screener.emerging_count ?? 0)}`,
@@ -307,6 +306,16 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
     'screener-v2': () => {
       if (!deps.runScreenerV2) throw new Error('screener-v2 trigger dependency not configured')
       return deps.runScreenerV2(requestedRunDate())
+    },
+    'screener-v2-watchdog': async () => {
+      if (!deps.runScreenerV2) throw new Error('screener-v2 trigger dependency not configured')
+      const runDate = assertRunDate(requestedRunDate() || twToday())
+      const { runScreenerRecoveryWatchdog } = await import('./screenerRecoveryWatchdog')
+      return runScreenerRecoveryWatchdog(
+        c.env,
+        (_env, date, options) => deps.runScreenerV2!(date, options),
+        runDate,
+      )
     },
     update: () => deps.runDailyUpdate(!!c.req.query('force'), requestedRunDate()),
     ml: () => deps.runMLAndRiskV2(requestedRunDate()),

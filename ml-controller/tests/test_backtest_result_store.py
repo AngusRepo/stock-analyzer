@@ -73,6 +73,7 @@ def test_build_replay_backtest_insert_preserves_mode_b_and_regime_arrays():
     assert raw["mode"] == "B"
     assert raw["all_returns"] == [0.03, -0.01]
     assert raw["all_regimes"] == ["green", "red"]
+    assert raw["trades_complete"] is True
     assert raw["partition_returns"] == [0.01, 0.02]
     assert raw["absolute_confidence"] == "moderate"
     assert raw["parity_audit"] == parity_audit

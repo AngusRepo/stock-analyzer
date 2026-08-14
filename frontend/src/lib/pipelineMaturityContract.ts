@@ -17,6 +17,8 @@ export type PipelineMaturityMetric = {
   unit?: 'rows' | 'dates' | 'ratio' | 'return' | 'r_multiple' | 'score' | 'count' | 'status'
   passed?: boolean | null
   note?: string
+  availability?: 'available' | 'pending' | 'not_applicable' | 'missing' | 'blocked'
+  reason_code?: string | null
 }
 
 export type PipelineMaturityStage = {
@@ -50,6 +52,8 @@ export type PipelineMaturityStage = {
     value: number | null
     target: number | null
     unit: PipelineMaturityMetric['unit']
+    artifact_contract_version?: string | null
+    identity_valid?: boolean
   }>
   lineage: {
     requested_date: string
@@ -61,8 +65,18 @@ export type PipelineMaturityStage = {
     evidence_semantics?: string
     source: string
     updated_at?: string | null
+    cadence?: 'daily' | 'weekly' | 'monthly' | 'manual' | 'event-driven' | 'unknown'
+    role?: 'candidate' | 'serving' | 'monitoring' | 'runtime_guard'
+    date_semantic?: 'candidate_cutoff' | 'current_pointer_effective_at' | 'monitoring_business_date' | 'latest_prediction_date'
+    oof_unavailable_reason?: string | null
     evidence_scopes?: {
       offline_candidate?: {
+        cadence: 'daily' | 'weekly' | 'monthly' | 'manual' | 'event-driven' | 'unknown'
+        role: 'candidate'
+        date_semantic: 'candidate_cutoff'
+        availability: 'available' | 'blocked' | 'missing'
+        reason_code: string | null
+        identity_assurance: string | null
         artifact_id: string | null
         model_version: string | null
         artifact_contract_version: string | null
@@ -72,6 +86,13 @@ export type PipelineMaturityStage = {
         updated_at: string | null
       }
       serving_pointer?: {
+        cadence: 'event-driven'
+        role: 'serving'
+        date_semantic: 'current_pointer_effective_at'
+        availability: 'available' | 'blocked' | 'missing'
+        artifact_state: string | null
+        observed_at: string | null
+        reason_code: string | null
         artifact_id: string | null
         model_version: string | null
         artifact_contract_version: string | null
@@ -79,14 +100,25 @@ export type PipelineMaturityStage = {
         updated_at: string | null
       }
       frozen_forward?: {
-        evaluation_id: string
-        model_version: string
+        cadence: 'daily'
+        role: 'monitoring'
+        date_semantic: 'monitoring_business_date'
+        availability: 'available' | 'blocked' | 'missing'
+        reason_code: string | null
+        evaluation_id: string | null
+        cohort_id: string | null
+        model_version: string | null
         validation_schema_version: string | null
-        business_date: string
-        oof_max_date: string
+        business_date: string | null
+        oof_max_date: string | null
         updated_at: string | null
       }
       runtime_guard?: {
+        cadence: 'daily'
+        role: 'runtime_guard'
+        date_semantic: 'latest_prediction_date'
+        availability: 'available' | 'blocked'
+        reason_code: string | null
         artifact_id: string
         model_fingerprint: string
         model_version: string
@@ -117,7 +149,7 @@ export type StrategyRouteBundleMaturity = {
 }
 
 export type PipelineDecisionMaturityPacket = {
-  schema_version: 'pipeline-decision-maturity-v1'
+  schema_version: 'pipeline-decision-maturity-v2'
   requested_date: string
   generated_at: string
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | null

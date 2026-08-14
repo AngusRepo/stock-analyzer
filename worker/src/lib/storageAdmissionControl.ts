@@ -6,6 +6,15 @@ const CRITICAL_UTILIZATION_PCT = 85
 
 const DRAIN_BLOCKED_TASKS = new Set([
   'weekly-optuna',
+  'weekly-backtest',
+  'monte-carlo',
+  'pbo',
+  'allocator-ev-feature-snapshot-backfill',
+  'selection-reference-repair',
+  'selection-reference-identity-repair',
+  's12-smcvwap-calibration',
+  'legacy-evidence-migration',
+  'legacy-strategy-evidence-migration',
   'monthly-optuna',
   'monthly-strategy-mining',
   'optuna-queue',
@@ -22,6 +31,11 @@ const DRAIN_BLOCKED_TASKS = new Set([
 const CRITICAL_BLOCKED_TASKS = new Set([
   ...DRAIN_BLOCKED_TASKS,
   'weekly-drift-retrain',
+  'strategy-learning',
+  'strategy-learning-finalize',
+  'external-evidence',
+  'active8-oof-lifecycle',
+  'active8-oof-daily',
   'monthly-retrain',
   'active8-oof-weekly',
   'active8-oof-monthly',
@@ -52,28 +66,48 @@ export function classifyStorageAdmission(
   utilizationPct: number | null,
 ): StorageAdmissionDecision {
   const managed = isStorageAdmissionManagedTask(task)
-  if (!managed) {
-    return { allowed: true, managed, task, utilizationPct, status: 'healthy', reason: 'trading_or_maintenance_path_exempt' }
-  }
   if (utilizationPct == null || !Number.isFinite(utilizationPct)) {
-    return { allowed: false, managed, task, utilizationPct: null, status: 'unknown', reason: 'legacy_d1_capacity_unknown' }
+    return {
+      allowed: !managed,
+      managed,
+      task,
+      utilizationPct: null,
+      status: 'unknown',
+      reason: managed ? 'legacy_d1_capacity_unknown' : 'legacy_d1_capacity_unknown_exempt',
+    }
   }
   if (utilizationPct >= CRITICAL_UTILIZATION_PCT) {
     return {
-      allowed: !CRITICAL_BLOCKED_TASKS.has(task), managed, task, utilizationPct, status: 'critical',
-      reason: CRITICAL_BLOCKED_TASKS.has(task) ? 'critical_blocks_high_write_producer' : 'critical_exempt',
+      allowed: !managed,
+      managed,
+      task,
+      utilizationPct,
+      status: 'critical',
+      reason: managed ? 'critical_blocks_high_write_producer' : 'critical_exempt_trading_or_capacity_reducing_path',
     }
   }
   if (utilizationPct >= DRAIN_UTILIZATION_PCT) {
+    const drainBlocked = DRAIN_BLOCKED_TASKS.has(task)
     return {
-      allowed: !DRAIN_BLOCKED_TASKS.has(task), managed, task, utilizationPct, status: 'drain',
-      reason: DRAIN_BLOCKED_TASKS.has(task) ? 'drain_blocks_expansion_or_research_write' : 'drain_allows_guarded_model_refresh',
+      allowed: !drainBlocked,
+      managed,
+      task,
+      utilizationPct,
+      status: 'drain',
+      reason: drainBlocked
+        ? 'drain_blocks_expansion_or_research_write'
+        : managed
+          ? 'drain_allows_guarded_model_refresh'
+          : 'drain_exempt_trading_or_capacity_reducing_path',
     }
   }
   return {
-    allowed: true, managed, task, utilizationPct,
+    allowed: true,
+    managed,
+    task,
+    utilizationPct,
     status: utilizationPct >= 65 ? 'warning' : 'healthy',
-    reason: 'capacity_available',
+    reason: managed ? 'capacity_available' : 'capacity_available_exempt',
   }
 }
 
@@ -81,7 +115,6 @@ export async function inspectStorageAdmission(
   env: Pick<Bindings, 'DB'>,
   task: string,
 ): Promise<StorageAdmissionDecision> {
-  if (!isStorageAdmissionManagedTask(task)) return classifyStorageAdmission(task, 0)
   try {
     const probe = await env.DB.prepare('SELECT 1 AS storage_admission_probe').all()
     const usedBytes = Number(probe.meta?.size_after)

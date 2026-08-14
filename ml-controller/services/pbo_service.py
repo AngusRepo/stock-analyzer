@@ -24,6 +24,12 @@ from datetime import datetime, timezone
 from itertools import combinations
 from typing import Optional
 
+from services.bounded_json import (
+    BoundedJsonContractError,
+    assert_bounded_json_fields_complete,
+    bounded_json_dumps,
+)
+
 try:
     import httpx
 except ModuleNotFoundError:  # keep pure PBO math unit-testable without HTTP deps
@@ -316,6 +322,21 @@ def _extract_strategy_partition_returns(raw: dict) -> dict[str, list[float]]:
     return {}
 
 
+def _backtest_trade_evidence_incomplete_reason(raw: dict, trades: list[dict]) -> str | None:
+    if not trades:
+        return None
+    try:
+        expected = int((raw.get("summary") or {}).get("total_trades", 0) or 0)
+    except (TypeError, ValueError):
+        expected = 0
+    if raw.get("trades_complete") is False or expected > len(trades):
+        return (
+            "backtest_trade_evidence_incomplete:"
+            f"stored={len(trades)}:expected={expected}"
+        )
+    return None
+
+
 def _run_cpcv(
     trades: list[dict],
     n_partitions: int = DEFAULT_N_PARTITIONS,
@@ -521,6 +542,21 @@ async def run_pbo_analysis(
                 return {"error": f"No backtest results found for run_date={expected_run_date}", "status": "failed"}
 
             raw = json.loads(row[0]["raw_results"])
+            consumed_fields = (
+                ("strategy_returns_by_partition",)
+                if raw.get("strategy_returns_by_partition")
+                else ("candidate_partition_returns",)
+                if raw.get("candidate_partition_returns")
+                else ("trades",)
+            )
+            try:
+                assert_bounded_json_fields_complete(raw, consumed_fields)
+            except BoundedJsonContractError as exc:
+                return {
+                    "error": str(exc),
+                    "status": "failed",
+                    "evidence_complete": False,
+                }
             source_provenance = {
                 "source_table": "backtest_results",
                 "source_row_id": row[0].get("id"),
@@ -533,14 +569,16 @@ async def run_pbo_analysis(
             if not trades and not strategy_partition_returns:
                 return {"error": "No trade details in backtest results", "status": "failed"}
 
-            # Warn if trades were truncated (backtest stores max 500)
-            total_from_summary = raw.get("summary", {}).get("total_trades", 0)
-            if trades and total_from_summary > len(trades):
+            # CPCV/PBO cannot treat a capped trade sample as complete evidence.
+            incomplete_reason = _backtest_trade_evidence_incomplete_reason(raw, trades)
+            if incomplete_reason:
                 trades_truncated = True
-                logger.warning(
-                    f"[PBO] Trades truncated: {len(trades)}/{total_from_summary}. "
-                    f"PBO accuracy may be reduced."
-                )
+                return {
+                    "error": incomplete_reason,
+                    "status": "failed",
+                    "evidence_complete": False,
+                    "trades_truncated": True,
+                }
 
         elif source == "paper":
             logger.info("[PBO] Fetching paper_orders from D1...")
@@ -586,7 +624,7 @@ async def run_pbo_analysis(
         # ── Step 3: Write to D1 ──
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        raw_json = json.dumps({
+        raw_json = bounded_json_dumps({
             "method": pbo.method,
             "partition_details": pbo.partition_details,
             "n_combinations": pbo.n_combinations,
@@ -599,7 +637,19 @@ async def run_pbo_analysis(
             "selected_strategy_counts": pbo.selected_strategy_counts,
             "source": source,
             "source_provenance": source_provenance or None,
-        }, ensure_ascii=False)
+        },
+        ensure_ascii=False,
+        preserve_exact_keys=(
+            "method",
+            "n_combinations",
+            "oos_mean_return",
+            "is_mean_return",
+            "embargo_days",
+            "embargo_source",
+            "source",
+            "source_provenance",
+        ),
+    )
 
         success = await _d1_exec(
             client,
@@ -612,7 +662,7 @@ async def run_pbo_analysis(
                 today, source, pbo.n_partitions, pbo.n_combinations, pbo.n_trades,
                 pbo.pbo, pbo.n_oos_negative, pbo.oos_mean_return, pbo.is_mean_return,
                 pbo.degradation, pbo.go_live_verdict, pbo.verdict_reason,
-                raw_json[:50000],
+                raw_json,
             ],
         )
 

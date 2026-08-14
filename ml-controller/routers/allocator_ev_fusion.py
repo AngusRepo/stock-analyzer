@@ -21,10 +21,14 @@ from services.l4_alpha_ev_resolver import (
     SNAPSHOT_BACKFILL_SOURCE,
 )
 from services.model_artifact_registry import upsert_artifact_record
-from services.worker_config_client import worker_fetch
 
 
 router = APIRouter(prefix="/allocator_ev_fusion", tags=["allocator_ev_fusion"])
+
+
+DIRECT_REFRESH_PROMOTION_OWNER = "active8_oof_lifecycle"
+DIRECT_REFRESH_PROMOTION_ENDPOINT = "/walk_forward/oof/lifecycle"
+DIRECT_REFRESH_PROMOTION_DETAIL = "direct_refresh_promotion_disabled_use_active8_oof_lifecycle"
 
 
 class AllocatorEvFusionRefreshReq(BaseModel):
@@ -36,7 +40,7 @@ class AllocatorEvFusionRefreshReq(BaseModel):
     min_samples: int | None = Field(default=None, ge=100, le=10000)
     min_dates: int | None = Field(default=None, ge=5, le=252)
     limit: int | None = Field(default=None, ge=500, le=20000)
-    promote: bool = True
+    promote: bool = False
     dry_run: bool = False
     trigger_source: str = "worker_scheduler"
 
@@ -143,21 +147,7 @@ def _artifact_checksum(artifact: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _promotion_config_allowed(artifact: dict[str, Any] | None, decision: str) -> bool:
-    if not isinstance(artifact, dict) or decision != "PASS":
-        return False
-    state = str(artifact.get("promotion_state") or "").strip()
-    tier = str(artifact.get("promotion_tier") or "").strip()
-    if state == "production_primary" and tier == "primary":
-        return artifact.get("primary_expected_return_allowed") is True
-    return False
-
-
-def _registry_lifecycle_state(*, decision: str, promoted: bool, promotion_error: str | None) -> str:
-    if promoted:
-        return "production"
-    if promotion_error:
-        return "approval_required"
+def _registry_lifecycle_state(*, decision: str) -> str:
     return "offline_passed" if decision == "PASS" else "offline_failed"
 
 
@@ -169,19 +159,19 @@ def _registry_record(
     end_date: str,
     lookback_days: int,
     rows_loaded: int,
-    promoted: bool = False,
-    promotion_error: str | None = None,
 ) -> dict[str, Any]:
     model_version = str(artifact.get("model_version") or "unknown")
     decision = str(validation.get("decision") or "PENDING").upper()
     failed_gates = validation.get("failed_gates") if isinstance(validation.get("failed_gates"), list) else []
-    promotion_state = str(artifact.get("promotion_state") or "shadow")
+    artifact_checksum = _artifact_checksum(artifact)
     evidence = {
+        "identity_schema_version": "expected-return-candidate-identity-v1",
+        "expected_return_owner": artifact.get("expected_return_owner"),
+        "model_version": model_version,
         "cadence": cadence,
         "end_date": end_date,
         "lookback_days": lookback_days,
         "rows_loaded": rows_loaded,
-        "promotion_state": promotion_state,
         "promotion_tier": artifact.get("promotion_tier"),
         "primary_expected_return_allowed": artifact.get("primary_expected_return_allowed"),
         "artifact_contract_version": artifact.get("artifact_contract_version"),
@@ -189,19 +179,16 @@ def _registry_record(
         "label_schema_version": artifact.get("label_schema_version"),
         "validation_packet": validation,
         "training_data": artifact.get("training_data"),
-        "promoted_to_trading_config": promoted,
-        "promotion_error": promotion_error,
+        "direct_refresh_mode": "candidate_research_only",
+        "production_mutation_allowed": False,
+        "promotion_owner": DIRECT_REFRESH_PROMOTION_OWNER,
     }
     return {
         "artifact_id": f"allocator_ev_fusion:{model_version}",
         "model_name": "allocator_ev_fusion",
         "version": model_version,
         "candidate_type": "allocator_ev_fusion_refresh",
-        "state": _registry_lifecycle_state(
-            decision=decision,
-            promoted=promoted,
-            promotion_error=promotion_error,
-        ),
+        "state": _registry_lifecycle_state(decision=decision),
         "artifact_path": None,
         "metadata_path": None,
         "training_run_id": f"allocator_ev_fusion_refresh:{cadence}:{end_date}",
@@ -210,35 +197,36 @@ def _registry_record(
         "evaluation_baseline_version": None,
         "final_compared_to": None,
         "feature_policy_version": artifact.get("feature_snapshot_version"),
-        "checksum": _artifact_checksum(artifact),
+        "checksum": artifact_checksum,
         "source_run_date": end_date,
         "is_monthly": 1 if cadence == "monthly" else 0,
         "offline_gate_status": "passed" if decision == "PASS" else "failed",
         "offline_gate_decision": decision,
         "offline_gate_failed_gates": json.dumps(failed_gates, ensure_ascii=False),
         "offline_evidence_json": json.dumps(evidence, ensure_ascii=False),
-        "live_gate_status": "promoted" if promoted else ("promotion_failed" if promotion_error else "not_started"),
+        "live_gate_status": "not_started",
         "live_evidence_json": json.dumps(
-            {"promoted_to_trading_config": promoted, "promotion_error": promotion_error},
+            {"production_mutation_allowed": False, "promotion_owner": DIRECT_REFRESH_PROMOTION_OWNER},
             ensure_ascii=False,
         ),
-        "promotion_decision": str(artifact.get("promotion_tier") or "shadow"),
-        "approval_state": promotion_state,
+        "promotion_decision": "active8_oof_lifecycle_only",
+        "approval_state": "not_required",
     }
 
 
 @router.post("/refresh")
 async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq) -> dict[str, Any]:
-    """Build and optionally promote the allocator EV fusion artifact.
+    """Build and persist a research candidate; Active8 OOF lifecycle owns promotion."""
 
-    Canonical point-in-time L4 remains the base expected-return owner. This
-    artifact may contribute only one validated residual adjustment; S12 replay
-    experts remain shadow diagnostics and have no serving or promotion effect.
-    Promotion is fail-closed: only an explicit promote request for a PASS native
-    artifact with production_primary status may mutate Worker trading:config.
-    OOF artifacts and promote=false requests are registry evidence only.
-    """
-
+    if req.promote:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": DIRECT_REFRESH_PROMOTION_DETAIL,
+                "promotion_owner": DIRECT_REFRESH_PROMOTION_OWNER,
+                "promotion_endpoint": DIRECT_REFRESH_PROMOTION_ENDPOINT,
+            },
+        )
     defaults = _defaults_for_cadence(req.cadence)
     lookback_days = req.lookback_days or defaults["lookback_days"]
     min_samples = req.min_samples or defaults["min_samples"]
@@ -313,69 +301,10 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
                     rows_loaded=len(rows),
                 )
             )
-        except Exception as exc:  # noqa: BLE001 - config promotion gate remains authoritative.
+        except Exception as exc:  # noqa: BLE001 - surface candidate registry persistence failure.
             registry_error = str(exc)
 
-    promoted = False
-    promotion_error: str | None = None
-    stale_config_cleared = False
-    stale_config_clear_error: str | None = None
-    if req.promote and not req.dry_run:
-        if not _promotion_config_allowed(artifact, decision):
-            return {
-                **result,
-                "status": "failed_validation",
-                "promoted": False,
-                "existing_champion_preserved": True,
-                "stale_config_cleared": False,
-                "stale_config_clear_error": None,
-                "registry_error": registry_error,
-                "production_mutation_allowed": False,
-                "summary": (
-                    "allocator_ev_fusion_refresh failed_validation "
-                    f"cadence={req.cadence} end_date={end_date} decision={decision or 'UNKNOWN'} "
-                    "existing_champion_preserved=1"
-                ),
-            }
-        try:
-            await worker_fetch(
-                "/api/admin/config",
-                method="PUT",
-                json_body={
-                    "ensemble_v2": {
-                        "allocatorEvFusion": artifact,
-                        "allocator_ev_fusion": artifact,
-                    },
-                    "meta": {
-                        "source": "allocator_ev_fusion_refresh",
-                        "push_id": f"allocator_ev_fusion:{req.cadence}:{end_date}:{(artifact or {}).get('model_version', 'unknown')}",
-                    },
-                },
-                timeout=30.0,
-            )
-            promoted = True
-        except Exception as exc:  # noqa: BLE001 - surface Worker details to scheduler.
-            promotion_error = str(exc)
-
-    status = "promoted" if promoted else ("validated" if decision == "PASS" else "failed_validation")
-    if promotion_error:
-        status = "promotion_failed"
-    if isinstance(artifact, dict) and (promoted or promotion_error):
-        try:
-            upsert_artifact_record(
-                _registry_record(
-                    artifact=artifact,
-                    validation=validation if isinstance(validation, dict) else {},
-                    cadence=req.cadence,
-                    end_date=end_date,
-                    lookback_days=lookback_days,
-                    rows_loaded=len(rows),
-                    promoted=promoted,
-                    promotion_error=promotion_error,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 - surface registry failure without masking promotion result.
-            registry_error = registry_error or str(exc)
+    status = "validated" if decision == "PASS" else "failed_validation"
 
     return {
         **result,
@@ -389,18 +318,18 @@ async def refresh_allocator_ev_fusion_artifact(req: AllocatorEvFusionRefreshReq)
         "min_dates": min_dates,
         "row_limit": row_limit,
         "rows_loaded": len(rows),
-        "promoted": promoted,
-        "promotion_error": promotion_error,
-        "stale_config_cleared": stale_config_cleared,
-        "stale_config_clear_error": stale_config_clear_error,
+        "promoted": False,
+        "existing_champion_preserved": True,
         "registry_error": registry_error,
-        "production_mutation_allowed": bool(req.promote and not req.dry_run and decision == "PASS"),
+        "production_mutation_allowed": False,
+        "promotion_owner": DIRECT_REFRESH_PROMOTION_OWNER,
+        "promotion_endpoint": DIRECT_REFRESH_PROMOTION_ENDPOINT,
         "summary": (
             f"allocator_ev_fusion_refresh status={status} cadence={req.cadence} "
             f"evidence_mode={req.evidence_mode} cohort_id={cohort_id or 'none'} "
             f"end_date={end_date} model_version={(artifact or {}).get('model_version', 'unknown')} "
             f"decision={decision or 'UNKNOWN'} tier={(artifact or {}).get('promotion_tier', 'unknown')} "
-            f"promoted={1 if promoted else 0}"
+            "mode=candidate_research_only"
         ),
     }
 

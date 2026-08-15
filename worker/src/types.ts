@@ -360,10 +360,17 @@ export interface UpdateQueueMsg {
     | 'legacy-evidence-migration'
     | 'legacy-strategy-evidence-migration'
     | 'd1-evidence-scrub'
+    | 'audit-json-retention'
   maxAttempts?: number
+  maintenanceTargets?: string[]
+  maintenanceRetentionDays?: number
+  maintenanceLimitPerTable?: number
+  maintenanceMinBlobBytes?: number
   dataDomain?: 'core' | 'market' | 'learning' | 'ops' | 'execution' | 'paper' | 'research'
   dataDomainTable?: string
   dataDomainRequestedTable?: string // explicit single-table scope; distinct from the current table of a domain-wide drain
+  dataDomainParityNotBefore?: string // immutable full-parity freshness fence for one resumable drain session
+  dataDomainGlobalSweep?: boolean // continue across domains under the same parity freshness fence
   maintenanceCycle?: number
   maxMaintenanceCycles?: number
   scheduledTask?: 'external-evidence' | 'weekly-cleanup'

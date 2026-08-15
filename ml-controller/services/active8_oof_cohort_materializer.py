@@ -48,6 +48,10 @@ OOF_MATERIALIZED_ARTIFACT_KINDS = {
     "l4_predictions": "prediction_date",
 }
 OOF_FORWARD_COVERAGE_POLICY_VERSION = "verified-frozen-forward-monitoring-v1"
+EXPECTED_RETURN_SHADOW_EVALUATION_IDENTITY_VERSION = (
+    "expected-return-shadow-evaluation-identity-v2"
+)
+EXPECTED_RETURN_SHADOW_EVALUATOR_VERSION = "expected-return-frozen-forward-evaluator-v2"
 
 
 def _loads(value: Any) -> dict[str, Any]:
@@ -950,7 +954,11 @@ def load_fundamental_quality_pit_by_key(
     *,
     query_fn: Callable[..., list[dict[str, Any]]] = d1_client.query,
 ) -> dict[tuple[str, str], dict[str, Any]]:
-    """Resolve formal fundamental scores using only rows available on each prediction date."""
+    """Resolve formal fundamental scores using only immutable rows available by prediction date.
+
+    Legacy canonical_revenue_monthly is mutable by natural key and has no trustworthy
+    observation revision, so historical OOF must exclude it until append-only v2 exists.
+    """
 
     keys = sorted({
         (str(row.get("prediction_date") or "")[:10], str(row.get("symbol") or "").strip())
@@ -961,23 +969,10 @@ def load_fundamental_quality_pit_by_key(
         return {}
     symbols = sorted({symbol for _date, symbol in keys})
     max_date = max(date for date, _symbol in keys)
-    revenue_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
     financial_by_symbol: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for offset in range(0, len(symbols), D1_IN_CLAUSE_CHUNK_SIZE):
         chunk = symbols[offset:offset + D1_IN_CLAUSE_CHUNK_SIZE]
         placeholders = ",".join("?" for _ in chunk)
-        revenue_rows = query_fn(
-            f"""
-            SELECT stock_id, revenue_month, market_segment, revenue, mom, yoy,
-                   source, as_of_date
-            FROM canonical_revenue_monthly
-            WHERE stock_id IN ({placeholders})
-            ORDER BY stock_id, revenue_month
-            """,
-            chunk,
-        )
-        for row in revenue_rows or []:
-            revenue_by_symbol[str(row.get("stock_id") or "")].append(dict(row))
         financial_rows = query_fn(
             f"""
             SELECT stock_id, period, market_segment, report_date, available_date,
@@ -1005,23 +1000,26 @@ def load_fundamental_quality_pit_by_key(
 
     out: dict[tuple[str, str], dict[str, Any]] = {}
     for prediction_date, symbol in keys:
-        revenue_rows = revenue_by_symbol.get(symbol, [])
         financial_rows = financial_by_symbol.get(symbol, [])
         payload = score_fundamental_quality(
             decision_date=prediction_date,
-            revenue_rows=revenue_rows,
+            revenue_rows=[],
             financial_rows=financial_rows,
         )
         no_lookahead = payload.get("noLookahead") or {}
+        no_lookahead["legacyMonthlyRevenueStatus"] = "PIT_UNAVAILABLE"
+        no_lookahead["legacyMonthlyRevenueReason"] = (
+            "canonical_revenue_monthly_mutable_natural_key_without_observation_revision"
+        )
+        payload["noLookahead"] = no_lookahead
         available_rows = (
-            len(revenue_rows) - int(no_lookahead.get("droppedFutureRevenueRows") or 0)
-            + len(financial_rows) - int(no_lookahead.get("droppedFutureFinancialRows") or 0)
+            len(financial_rows) - int(no_lookahead.get("droppedFutureFinancialRows") or 0)
         )
         if available_rows <= 0:
             continue
         payload["sourceRowCounts"] = {
             "available": available_rows,
-            "loadedRevenue": len(revenue_rows),
+            "loadedRevenue": 0,
             "loadedFinancial": len(financial_rows),
         }
         out[(prediction_date, symbol)] = payload
@@ -1542,8 +1540,27 @@ def archive_ev_shadow_evaluation_packets(
         artifact = dict(result.get("artifact") or {})
         validation = dict(result.get("validation_packet") or {})
         model_version = str(artifact.get("model_version") or "unknown")
+        subject_artifact_checksum = hashlib.sha256(
+            json.dumps(artifact, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        evaluator_contract = {
+            "evaluator_version": EXPECTED_RETURN_SHADOW_EVALUATOR_VERSION,
+            "model_name": model_name,
+            "artifact_contract_version": artifact.get("artifact_contract_version"),
+            "feature_semantic_version": artifact.get("feature_semantic_version"),
+            "label_schema_version": artifact.get("label_schema_version"),
+            "validation_schema_version": validation.get("schema_version"),
+            "policy_decision": "shadow_only",
+        }
+        evaluator_contract_checksum = hashlib.sha256(
+            json.dumps(evaluator_contract, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
         payload = {
-            "schema_version": "expected-return-shadow-evaluation-packet-v1",
+            "schema_version": "expected-return-shadow-evaluation-packet-v2",
+            "identity_schema_version": EXPECTED_RETURN_SHADOW_EVALUATION_IDENTITY_VERSION,
+            "subject_artifact_checksum": subject_artifact_checksum,
+            "evaluator_contract_checksum": evaluator_contract_checksum,
+            "evaluator_contract": evaluator_contract,
             "business_date": business_date,
             "cohort_id": cohort_id,
             "base_manifest_checksum": base_manifest_checksum,
@@ -1569,33 +1586,46 @@ def archive_ev_shadow_evaluation_packets(
             f"{model_name}/{checksum}.json"
         )
         bucket.blob(path).upload_from_string(encoded, content_type="application/json")
+        evaluation_identity = {
+            "identity_schema_version": EXPECTED_RETURN_SHADOW_EVALUATION_IDENTITY_VERSION,
+            "cohort_id": cohort_id,
+            "extension_manifest_checksum": extension_checksum,
+            "model_name": model_name,
+            "subject_artifact_checksum": subject_artifact_checksum,
+            "evaluator_contract_checksum": evaluator_contract_checksum,
+            "evidence_checksum": checksum,
+        }
         evaluation_id = hashlib.sha256(
-            f"{cohort_id}:{extension_checksum}:{model_name}".encode("utf-8")
+            json.dumps(evaluation_identity, sort_keys=True).encode("utf-8")
         ).hexdigest()
         d1_client.execute(
             """
             INSERT INTO expected_return_shadow_evaluation_packets (
-              evaluation_id, business_date, cohort_id, base_manifest_checksum,
+              evaluation_id, identity_schema_version, subject_artifact_checksum,
+              evaluator_contract_checksum, business_date, cohort_id, base_manifest_checksum,
               extension_manifest_checksum, model_name, model_version,
               oof_min_date, oof_max_date, oof_date_count, oof_row_count,
               quality_decision, policy_decision, validation_packet_json,
               artifact_path, artifact_checksum, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'shadow_only', ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(evaluation_id) DO UPDATE SET
-              business_date=excluded.business_date,
-              model_version=excluded.model_version,
-              oof_min_date=excluded.oof_min_date,
-              oof_max_date=excluded.oof_max_date,
-              oof_date_count=excluded.oof_date_count,
-              oof_row_count=excluded.oof_row_count,
-              quality_decision=excluded.quality_decision,
-              validation_packet_json=excluded.validation_packet_json,
-              artifact_path=excluded.artifact_path,
-              artifact_checksum=excluded.artifact_checksum,
-              updated_at=CURRENT_TIMESTAMP
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'shadow_only', ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(evaluation_id) DO UPDATE SET evaluation_id=NULL
+            WHERE NOT (
+              expected_return_shadow_evaluation_packets.identity_schema_version
+                IS excluded.identity_schema_version
+              AND expected_return_shadow_evaluation_packets.subject_artifact_checksum
+                IS excluded.subject_artifact_checksum
+              AND expected_return_shadow_evaluation_packets.evaluator_contract_checksum
+                IS excluded.evaluator_contract_checksum
+              AND expected_return_shadow_evaluation_packets.artifact_checksum
+                IS excluded.artifact_checksum
+              AND expected_return_shadow_evaluation_packets.artifact_path
+                IS excluded.artifact_path
+            )
             """,
             [
-                evaluation_id, business_date, cohort_id, base_manifest_checksum,
+                evaluation_id, EXPECTED_RETURN_SHADOW_EVALUATION_IDENTITY_VERSION,
+                subject_artifact_checksum, evaluator_contract_checksum,
+                business_date, cohort_id, base_manifest_checksum,
                 extension_checksum, model_name, model_version,
                 dates[0], dates[-1], len(dates), forward_row_count,
                 payload["quality_decision"], json.dumps(validation, ensure_ascii=False),
@@ -1604,6 +1634,8 @@ def archive_ev_shadow_evaluation_packets(
         )
         output[model_name] = {
             "evaluation_id": evaluation_id,
+            "subject_artifact_checksum": subject_artifact_checksum,
+            "evaluator_contract_checksum": evaluator_contract_checksum,
             "path": path,
             "checksum": checksum,
             "quality_decision": payload["quality_decision"],
@@ -1669,7 +1701,7 @@ def archive_ev_candidate_artifacts(
             else "allocator_ev_fusion_refresh"
         )
         registry_record = {
-            "artifact_id": f"{model_name}:{model_version}",
+            "artifact_id": f"{model_name}:{model_version}:{checksum}",
             "model_name": model_name,
             "version": model_version,
             "candidate_type": candidate_type,
@@ -1686,7 +1718,7 @@ def archive_ev_candidate_artifacts(
             "offline_gate_decision": decision,
             "offline_gate_failed_gates": json.dumps(validation.get("failed_gates") or []),
             "offline_evidence_json": json.dumps({
-                "identity_schema_version": "expected-return-candidate-identity-v2",
+                "identity_schema_version": "expected-return-candidate-identity-v3",
                 "expected_return_owner": artifact.get("expected_return_owner"),
                 "model_version": model_version,
                 "artifact_checksum": checksum,
@@ -1710,8 +1742,9 @@ def archive_ev_candidate_artifacts(
             "approval_state": artifact.get("promotion_state") or "approval_required",
         }
         if register_candidate:
-            upsert_artifact_record(registry_record)
+            upsert_artifact_record(registry_record, immutable_identity=True)
         output[model_name] = {
+            "artifact_id": registry_record["artifact_id"],
             "path": path,
             "checksum": checksum,
             "state": state,

@@ -1,16 +1,54 @@
-export const STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION = 'strategy-marginal-edge-v6'
+import {
+  STRATEGY_FORMAL_LABELER_VERSION,
+  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+} from './strategySpec'
+
+export const STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION_V6 = 'strategy-marginal-edge-v6'
+export const STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION = 'strategy-marginal-edge-v7'
 const MIN_EDGE_DATES = 10
 const REPLACEMENT_MDD_TOLERANCE = 0.02
 const REPLACEMENT_TURNOVER_TOLERANCE = 0.15
 const REPLACEMENT_DUPLICATE_CORRELATION = 0.95
 const EDGE_LOOKBACK_CALENDAR_DAYS = 540
 const EDGE_PAGE_SIZE = 1000
+const T_PLUS_OUTCOME_HORIZON_TRADING_DAYS = 5
+const REPLACEMENT_HAC_LAG = T_PLUS_OUTCOME_HORIZON_TRADING_DAYS - 1
+const MIN_EFFECTIVE_PAIRED_DATES = 30
+const MINIMUM_ECONOMIC_PAIRED_DELTA = 0.001
+const MIN_REPLACEMENT_POWER = 0.8
+const REPLACEMENT_FAMILYWISE_ALPHA = 0.05
+const ONE_SIDED_95_Z = 1.6448536269514722
+export const STRATEGY_REPLACEMENT_POLICY_VERSION_V7 = 'strategy-replacement-policy-v7-hac4-holm-power80-v1'
 
 export const STRATEGY_REPLACEMENT_POLICY_V6 = Object.freeze({
-  schema_version: STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION,
+  schema_version: STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION_V6,
   min_paired_dates: MIN_EDGE_DATES,
   min_paired_delta_lcb90_exclusive: 0,
   min_candidate_absolute_cost_net_mean_exclusive: 0,
+  max_drawdown_degradation: REPLACEMENT_MDD_TOLERANCE,
+  max_turnover_increase: REPLACEMENT_TURNOVER_TOLERANCE,
+  max_duplicate_return_correlation: REPLACEMENT_DUPLICATE_CORRELATION,
+  requires_full_portfolio_gates: true,
+  replacement_mode: 'atomic_one_in_one_out' as const,
+  outcome: 'sector_or_market_neutral_cost_net_return' as const,
+})
+
+export const STRATEGY_REPLACEMENT_POLICY_V7 = Object.freeze({
+  schema_version: STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION,
+  policy_version: STRATEGY_REPLACEMENT_POLICY_VERSION_V7,
+  outcome_horizon_trading_days: T_PLUS_OUTCOME_HORIZON_TRADING_DAYS,
+  dependence_adjustment: 'newey_west_bartlett' as const,
+  hac_lag: REPLACEMENT_HAC_LAG,
+  min_paired_dates: MIN_EDGE_DATES,
+  min_effective_paired_dates: MIN_EFFECTIVE_PAIRED_DATES,
+  min_paired_delta_lcb95_hac_exclusive: 0,
+  minimum_economic_paired_delta: MINIMUM_ECONOMIC_PAIRED_DELTA,
+  min_power_at_minimum_economic_delta: MIN_REPLACEMENT_POWER,
+  multiple_testing: 'holm_bonferroni' as const,
+  familywise_alpha: REPLACEMENT_FAMILYWISE_ALPHA,
+  min_candidate_absolute_cost_net_mean_exclusive: 0,
+  min_candidate_absolute_cost_net_lcb95_hac_exclusive: 0,
+  min_final_portfolio_absolute_cost_net_lcb95_hac_exclusive: 0,
   max_drawdown_degradation: REPLACEMENT_MDD_TOLERANCE,
   max_turnover_increase: REPLACEMENT_TURNOVER_TOLERANCE,
   max_duplicate_return_correlation: REPLACEMENT_DUPLICATE_CORRELATION,
@@ -176,6 +214,173 @@ function confidenceSummary(values: number[]): ConfidenceSummary {
   }
 }
 
+export interface DependenceAdjustedConfidenceV7 {
+  dates: number
+  mean: number | null
+  hacLag: number
+  hacLongRunVariance: number | null
+  hacStandardError: number | null
+  effectiveDates: number | null
+  lcb95Hac: number | null
+  oneSidedPValue: number | null
+  powerAtMinimumEconomicDelta: number | null
+}
+
+export interface HolmCorrectionInputV7 {
+  key: string
+  pValue: number | null
+}
+
+export interface HolmCorrectionResultV7 {
+  key: string
+  familySize: number
+  rank: number
+  rawPValue: number
+  adjustedPValue: number
+  criticalAlpha: number
+  rejected: boolean
+}
+
+function standardNormalCdf(value: number): number {
+  if (value === Infinity) return 1
+  if (value === -Infinity) return 0
+  const absolute = Math.abs(value)
+  const t = 1 / (1 + 0.2316419 * absolute)
+  const density = 0.3989422804014327 * Math.exp(-0.5 * absolute * absolute)
+  const tail = density * t * (
+    0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))
+  )
+  const cdf = 1 - tail
+  return value >= 0 ? cdf : 1 - cdf
+}
+
+function oneSidedNormalCritical(alpha: number): number | null {
+  if (!Number.isFinite(alpha) || alpha <= 0 || alpha >= 0.5) return null
+  let lower = 0
+  let upper = 8
+  for (let iteration = 0; iteration < 80; iteration += 1) {
+    const midpoint = (lower + upper) / 2
+    if (1 - standardNormalCdf(midpoint) > alpha) lower = midpoint
+    else upper = midpoint
+  }
+  return (lower + upper) / 2
+}
+
+export function evaluatePowerAtMinimumEconomicDeltaV7(
+  standardError: number | null,
+  alpha: number,
+): number | null {
+  if (standardError == null || !Number.isFinite(standardError) || standardError < 0) return null
+  if (standardError <= Number.EPSILON) return 1
+  const critical = oneSidedNormalCritical(alpha)
+  if (critical == null) return null
+  return Math.max(0, Math.min(1, standardNormalCdf(
+    MINIMUM_ECONOMIC_PAIRED_DELTA / standardError - critical,
+  )))
+}
+
+/**
+ * Newey-West/Bartlett inference for chronological T+5 overlapping returns.
+ * The long-run variance is conservatively floored at the IID variance so
+ * negative sample autocorrelation cannot manufacture extra effective dates.
+ */
+export function evaluateDependenceAdjustedMeanV7(
+  input: number[],
+  requestedLag = REPLACEMENT_HAC_LAG,
+): DependenceAdjustedConfidenceV7 {
+  const values = input.filter((value) => Number.isFinite(value))
+  const dates = values.length
+  const average = mean(values)
+  const requestedLagInteger = Number.isFinite(requestedLag) ? Math.trunc(requestedLag) : REPLACEMENT_HAC_LAG
+  const lag = Math.min(Math.max(REPLACEMENT_HAC_LAG, requestedLagInteger), Math.max(0, dates - 1))
+  if (average == null || dates < 2) {
+    return {
+      dates,
+      mean: average,
+      hacLag: lag,
+      hacLongRunVariance: null,
+      hacStandardError: null,
+      effectiveDates: null,
+      lcb95Hac: null,
+      oneSidedPValue: null,
+      powerAtMinimumEconomicDelta: null,
+    }
+  }
+
+  const centered = values.map((value) => value - average)
+  const gamma0 = centered.reduce((sum, value) => sum + value * value, 0) / dates
+  let rawLongRunVariance = gamma0
+  for (let offset = 1; offset <= lag; offset += 1) {
+    let covariance = 0
+    for (let index = offset; index < dates; index += 1) {
+      covariance += centered[index] * centered[index - offset]
+    }
+    covariance /= dates
+    const bartlettWeight = 1 - offset / (lag + 1)
+    rawLongRunVariance += 2 * bartlettWeight * covariance
+  }
+  const longRunVariance = Math.max(0, gamma0, rawLongRunVariance)
+  const standardError = Math.sqrt(longRunVariance / dates)
+  const effectiveDates = gamma0 <= Number.EPSILON || longRunVariance <= Number.EPSILON
+    ? dates
+    : Math.max(1, Math.min(dates, dates * gamma0 / longRunVariance))
+  const lcb95Hac = average - ONE_SIDED_95_Z * standardError
+  const zScore = standardError <= Number.EPSILON
+    ? (average > 0 ? Infinity : average < 0 ? -Infinity : 0)
+    : average / standardError
+  const oneSidedPValue = Math.max(0, Math.min(1, 1 - standardNormalCdf(zScore)))
+  const powerAtMinimumEconomicDelta = evaluatePowerAtMinimumEconomicDeltaV7(standardError, 0.05)
+  return {
+    dates,
+    mean: average,
+    hacLag: lag,
+    hacLongRunVariance: longRunVariance,
+    hacStandardError: standardError,
+    effectiveDates,
+    lcb95Hac,
+    oneSidedPValue,
+    powerAtMinimumEconomicDelta,
+  }
+}
+
+export function applyHolmCorrectionV7(
+  inputs: HolmCorrectionInputV7[],
+  alpha = REPLACEMENT_FAMILYWISE_ALPHA,
+): HolmCorrectionResultV7[] {
+  const familySize = inputs.length
+  if (!familySize) return []
+  const sorted = inputs.map((row, originalIndex) => ({
+    key: row.key,
+    originalIndex,
+    pValue: row.pValue == null || !Number.isFinite(row.pValue)
+      ? 1
+      : Math.max(0, Math.min(1, row.pValue)),
+  })).sort((left, right) => left.pValue - right.pValue
+    || left.key.localeCompare(right.key)
+    || left.originalIndex - right.originalIndex)
+  const output = new Array<HolmCorrectionResultV7>(familySize)
+  let priorAdjusted = 0
+  let rejectionSequenceOpen = true
+  sorted.forEach((row, index) => {
+    const remaining = familySize - index
+    const criticalAlpha = alpha / remaining
+    const adjustedPValue = Math.min(1, Math.max(priorAdjusted, row.pValue * remaining))
+    const rejected = rejectionSequenceOpen && row.pValue <= criticalAlpha
+    if (!rejected) rejectionSequenceOpen = false
+    priorAdjusted = adjustedPValue
+    output[row.originalIndex] = {
+      key: row.key,
+      familySize,
+      rank: index + 1,
+      rawPValue: row.pValue,
+      adjustedPValue,
+      criticalAlpha,
+      rejected,
+    }
+  })
+  return output
+}
+
 export function evaluateStrategyPortfolioEdgeV4(
   cells: OutcomeCell[],
   strategyWeights: Map<string, number>,
@@ -236,6 +441,28 @@ export interface StrategyReplacementProposalV6 {
   returnCorrelation: number | null
   pass: boolean
   rejectionReasons: string[]
+}
+
+export interface StrategyReplacementProposalV7 extends StrategyReplacementProposalV6 {
+  statisticalPolicyVersion: typeof STRATEGY_REPLACEMENT_POLICY_VERSION_V7
+  hacLag: number
+  effectivePairedDates: number | null
+  pairedDeltaHacStandardError: number | null
+  pairedDeltaLcb95Hac: number | null
+  pairedDeltaOneSidedPValue: number | null
+  pairedDeltaPowerAtMinimumEconomicDelta: number | null
+  candidateAbsoluteEffectiveDates: number | null
+  candidateAbsoluteHacStandardError: number | null
+  candidateAbsoluteLcb95Hac: number | null
+  holmFamilySize: number
+  holmRank: number | null
+  holmCriticalAlpha: number | null
+  holmAdjustedPValue: number | null
+  holmRejected: boolean
+}
+
+export interface StrategyPairedConfidenceV7 extends DependenceAdjustedConfidenceV7 {
+  lcb90IidDiagnostic: number | null
 }
 
 function strategyKey(row: Pick<OutcomeCell, 'strategy_id' | 'strategy_version'>): string {
@@ -323,6 +550,20 @@ function pairedPortfolioSummary(
   return confidenceSummary(candidate
     .filter((row) => incumbentByDate.has(row.signalDate))
     .map((row) => row.residualReturn - incumbentByDate.get(row.signalDate)!))
+}
+
+function pairedPortfolioSummaryV7(
+  candidate: StrategyPortfolioDateReturnV4[],
+  incumbent: StrategyPortfolioDateReturnV4[],
+): StrategyPairedConfidenceV7 {
+  const incumbentByDate = new Map(incumbent.map((row) => [row.signalDate, row.residualReturn]))
+  const deltas = candidate
+    .filter((row) => incumbentByDate.has(row.signalDate))
+    .map((row) => row.residualReturn - incumbentByDate.get(row.signalDate)!)
+  return {
+    ...evaluateDependenceAdjustedMeanV7(deltas),
+    lcb90IidDiagnostic: confidenceSummary(deltas).lcb90,
+  }
 }
 
 function pairedPortfolioCorrelation(
@@ -540,6 +781,288 @@ export function evaluatePairedStrategyReplacementsV6(
   }
 }
 
+export interface StrategyReplacementEvaluationV7 {
+  proposals: StrategyReplacementProposalV7[]
+  accepted: StrategyReplacementProposalV7[]
+  finalWeights: Map<string, number>
+  baselineDates: StrategyPortfolioDateReturnV4[]
+  finalDates: StrategyPortfolioDateReturnV4[]
+  globalPaired: StrategyPairedConfidenceV7
+  globalAbsoluteMean: number | null
+  globalAbsoluteConfidence: DependenceAdjustedConfidenceV7
+  globalReturnCorrelation: number | null
+  baselineMaxDrawdown: number | null
+  finalMaxDrawdown: number | null
+  baselineTurnover: number | null
+  finalTurnover: number | null
+  globalCorrelationPass: boolean
+  globalTurnoverPass: boolean
+  globalEffectiveSamplePass: boolean
+  globalPowerPass: boolean
+  globalRiskPass: boolean
+  globalRejectionReasons: string[]
+  holmFamilySize: number
+}
+
+/**
+ * V7 preserves the V6 atomic/risk contract and adds a separate statistical
+ * policy: T+5 HAC(4), one-sided 95% LCB, Holm family-wise control, effective
+ * sample size, and 80% power at the versioned minimum economic effect.
+ */
+export function evaluatePairedStrategyReplacementsV7(
+  cells: OutcomeCell[],
+  edges: StrategyEdgeResult[],
+  baselineWeights: Map<string, number>,
+): StrategyReplacementEvaluationV7 {
+  const familyByKey = new Map<string, string>()
+  for (const cell of cells) {
+    const key = strategyKey(cell)
+    if (!familyByKey.has(key)) familyByKey.set(key, String(cell.family_id || 'UNKNOWN'))
+  }
+  const baselineDates = evaluateStrategyPortfolioEdgeV4(cells, baselineWeights)
+  const proposals: StrategyReplacementProposalV7[] = []
+  for (const edge of edges.filter((row) => row.productionEligible)) {
+    const candidateKey = edge.strategyId + '|' + edge.strategyVersion
+    if (baselineWeights.has(candidateKey)) continue
+    const familyId = familyByKey.get(candidateKey) ?? 'UNKNOWN'
+    const candidateSeries = strategyDateSeries(cells, candidateKey)
+    const candidateByDate = new Map(candidateSeries.map((row) => [row.date, row]))
+    for (const [incumbentKey, incumbentWeight] of baselineWeights.entries()) {
+      const incumbentFamilyId = familyByKey.get(incumbentKey) ?? 'UNKNOWN'
+      const replacementScope = incumbentFamilyId === familyId ? 'same_family' : 'cross_family'
+      const incumbentSeries = strategyDateSeries(cells, incumbentKey)
+      const incumbentByDate = new Map(incumbentSeries.map((row) => [row.date, row]))
+      const proposalWeights = new Map(baselineWeights)
+      proposalWeights.delete(incumbentKey)
+      proposalWeights.set(candidateKey, incumbentWeight > 0 ? incumbentWeight : 1)
+      const proposalDates = evaluateStrategyPortfolioEdgeV4(cells, proposalWeights)
+      const pairedLegacy = pairedPortfolioSummary(proposalDates, baselineDates)
+      const paired = pairedPortfolioSummaryV7(proposalDates, baselineDates)
+      const pairedIndividualDates = [...candidateByDate.keys()].filter((date) => incumbentByDate.has(date))
+      const returnCorrelation = pearson(
+        pairedIndividualDates.map((date) => candidateByDate.get(date)!.residual),
+        pairedIndividualDates.map((date) => incumbentByDate.get(date)!.residual),
+      )
+      const candidateMaxDrawdown = maxDrawdown(candidateSeries.map((row) => row.absolute))
+      const incumbentMaxDrawdown = maxDrawdown(incumbentSeries.map((row) => row.absolute))
+      const candidateTurnover = strategyTurnover(candidateSeries)
+      const incumbentTurnover = strategyTurnover(incumbentSeries)
+      const candidateAbsoluteMean = mean(candidateSeries.map((row) => row.absolute))
+      const candidateAbsoluteConfidence = evaluateDependenceAdjustedMeanV7(candidateSeries.map((row) => row.absolute))
+      const rejectionReasons: string[] = []
+      if (paired.dates < MIN_EDGE_DATES) rejectionReasons.push('paired_dates_below_minimum')
+      if (paired.effectiveDates == null || paired.effectiveDates < MIN_EFFECTIVE_PAIRED_DATES) {
+        rejectionReasons.push('effective_paired_dates_below_minimum')
+      }
+      if (paired.lcb95Hac == null || paired.lcb95Hac <= 0) {
+        rejectionReasons.push('paired_delta_lcb95_hac_not_positive')
+      }
+      if (candidateAbsoluteMean == null || candidateAbsoluteMean <= 0) {
+        rejectionReasons.push('candidate_absolute_cost_net_mean_not_positive')
+      }
+      if (candidateAbsoluteConfidence.lcb95Hac == null || candidateAbsoluteConfidence.lcb95Hac <= 0) {
+        rejectionReasons.push('candidate_absolute_cost_net_lcb95_hac_not_positive')
+      }
+      if (candidateMaxDrawdown == null || incumbentMaxDrawdown == null) {
+        rejectionReasons.push('drawdown_evidence_missing')
+      } else if (candidateMaxDrawdown < incumbentMaxDrawdown - REPLACEMENT_MDD_TOLERANCE) {
+        rejectionReasons.push('candidate_drawdown_materially_worse')
+      }
+      if (candidateTurnover == null || incumbentTurnover == null) {
+        rejectionReasons.push('turnover_evidence_missing')
+      } else if (candidateTurnover > incumbentTurnover + REPLACEMENT_TURNOVER_TOLERANCE) {
+        rejectionReasons.push('candidate_turnover_materially_worse')
+      }
+      if (returnCorrelation == null) {
+        rejectionReasons.push('paired_return_correlation_missing')
+      } else if (
+        returnCorrelation > REPLACEMENT_DUPLICATE_CORRELATION
+        && candidateMaxDrawdown != null
+        && incumbentMaxDrawdown != null
+        && candidateTurnover != null
+        && incumbentTurnover != null
+        && candidateMaxDrawdown <= incumbentMaxDrawdown
+        && candidateTurnover >= incumbentTurnover
+      ) {
+        rejectionReasons.push('highly_correlated_without_risk_or_turnover_improvement')
+      }
+      proposals.push({
+        candidateKey,
+        incumbentKey,
+        familyId,
+        incumbentFamilyId,
+        replacementScope,
+        pairedDates: paired.dates,
+        pairedDeltaMean: paired.mean,
+        pairedDeltaLcb90: pairedLegacy.lcb90,
+        statisticalPolicyVersion: STRATEGY_REPLACEMENT_POLICY_VERSION_V7,
+        hacLag: paired.hacLag,
+        effectivePairedDates: paired.effectiveDates,
+        pairedDeltaHacStandardError: paired.hacStandardError,
+        pairedDeltaLcb95Hac: paired.lcb95Hac,
+        pairedDeltaOneSidedPValue: paired.oneSidedPValue,
+        pairedDeltaPowerAtMinimumEconomicDelta: paired.powerAtMinimumEconomicDelta,
+        candidateAbsoluteEffectiveDates: candidateAbsoluteConfidence.effectiveDates,
+        candidateAbsoluteHacStandardError: candidateAbsoluteConfidence.hacStandardError,
+        candidateAbsoluteLcb95Hac: candidateAbsoluteConfidence.lcb95Hac,
+        holmFamilySize: 0,
+        holmRank: null,
+        holmCriticalAlpha: null,
+        holmAdjustedPValue: null,
+        holmRejected: false,
+        candidateAbsoluteMean,
+        candidateMaxDrawdown,
+        incumbentMaxDrawdown,
+        candidateTurnover,
+        incumbentTurnover,
+        returnCorrelation,
+        pass: false,
+        rejectionReasons,
+      })
+    }
+  }
+
+  const holm = applyHolmCorrectionV7(proposals.map((proposal) => ({
+    key: proposal.candidateKey + '->' + proposal.incumbentKey,
+    pValue: proposal.pairedDeltaOneSidedPValue,
+  })))
+  proposals.forEach((proposal, index) => {
+    const correction = holm[index]
+    proposal.holmFamilySize = correction?.familySize ?? proposals.length
+    proposal.holmRank = correction?.rank ?? null
+    proposal.holmCriticalAlpha = correction?.criticalAlpha ?? null
+    proposal.holmAdjustedPValue = correction?.adjustedPValue ?? null
+    proposal.holmRejected = correction?.rejected === true
+    proposal.pairedDeltaPowerAtMinimumEconomicDelta = evaluatePowerAtMinimumEconomicDeltaV7(
+      proposal.pairedDeltaHacStandardError,
+      proposal.holmCriticalAlpha ?? 0,
+    )
+    if (!proposal.holmRejected) proposal.rejectionReasons.push('holm_familywise_significance_not_met')
+    if (
+      proposal.pairedDeltaPowerAtMinimumEconomicDelta == null
+      || proposal.pairedDeltaPowerAtMinimumEconomicDelta < MIN_REPLACEMENT_POWER
+    ) proposal.rejectionReasons.push('paired_delta_power_below_80pct_at_holm_local_alpha')
+    proposal.pass = proposal.rejectionReasons.length === 0
+  })
+
+  const accepted: StrategyReplacementProposalV7[] = []
+  const usedCandidates = new Set<string>()
+  const usedIncumbents = new Set<string>()
+  for (const proposal of proposals
+    .filter((row) => row.pass)
+    .sort((left, right) => (right.pairedDeltaLcb95Hac ?? -Infinity) - (left.pairedDeltaLcb95Hac ?? -Infinity)
+      || left.candidateKey.localeCompare(right.candidateKey)
+      || left.incumbentKey.localeCompare(right.incumbentKey))) {
+    if (usedCandidates.has(proposal.candidateKey) || usedIncumbents.has(proposal.incumbentKey)) continue
+    accepted.push(proposal)
+    usedCandidates.add(proposal.candidateKey)
+    usedIncumbents.add(proposal.incumbentKey)
+  }
+
+  const finalWeights = new Map(baselineWeights)
+  for (const proposal of accepted) {
+    const weight = finalWeights.get(proposal.incumbentKey) ?? 1
+    finalWeights.delete(proposal.incumbentKey)
+    finalWeights.set(proposal.candidateKey, weight)
+  }
+  const finalDates = evaluateStrategyPortfolioEdgeV4(cells, finalWeights)
+  const globalPaired = pairedPortfolioSummaryV7(finalDates, baselineDates)
+  const globalAbsoluteMean = mean(finalDates.map((row) => row.absoluteReturn))
+  const globalAbsoluteConfidence = evaluateDependenceAdjustedMeanV7(finalDates.map((row) => row.absoluteReturn))
+  const baselineMdd = maxDrawdown(baselineDates.map((row) => row.absoluteReturn))
+  const finalMdd = maxDrawdown(finalDates.map((row) => row.absoluteReturn))
+  const baselineTurnover = strategyTurnover(strategyPortfolioSelections(cells, baselineWeights))
+  const finalTurnover = strategyTurnover(strategyPortfolioSelections(cells, finalWeights))
+  const globalReturnCorrelation = pairedPortfolioCorrelation(finalDates, baselineDates)
+  const globalTurnoverPass = baselineTurnover != null
+    && finalTurnover != null
+    && finalTurnover <= baselineTurnover + REPLACEMENT_TURNOVER_TOLERANCE
+  const globalCorrelationPass = globalReturnCorrelation != null
+    && (
+      globalReturnCorrelation <= REPLACEMENT_DUPLICATE_CORRELATION
+      || (baselineMdd != null && finalMdd != null && finalMdd > baselineMdd)
+      || (baselineTurnover != null && finalTurnover != null && finalTurnover < baselineTurnover)
+    )
+  const globalEffectiveSamplePass = globalPaired.effectiveDates != null
+    && globalPaired.effectiveDates >= MIN_EFFECTIVE_PAIRED_DATES
+  const globalPowerPass = globalPaired.powerAtMinimumEconomicDelta != null
+    && globalPaired.powerAtMinimumEconomicDelta >= MIN_REPLACEMENT_POWER
+  const globalRejectionReasons: string[] = []
+  if (!accepted.length) globalRejectionReasons.push('no_holm_accepted_replacement')
+  if (globalPaired.dates < MIN_EDGE_DATES) globalRejectionReasons.push('full_portfolio_paired_dates_below_minimum')
+  if (!globalEffectiveSamplePass) globalRejectionReasons.push('full_portfolio_effective_dates_below_minimum')
+  if (globalPaired.lcb95Hac == null || globalPaired.lcb95Hac <= 0) {
+    globalRejectionReasons.push('full_portfolio_delta_lcb95_hac_not_positive')
+  }
+  if (!globalPowerPass) globalRejectionReasons.push('full_portfolio_power_below_80pct')
+  if (globalAbsoluteMean == null || globalAbsoluteMean <= 0) {
+    globalRejectionReasons.push('full_portfolio_absolute_cost_net_mean_not_positive')
+  }
+  if (globalAbsoluteConfidence.lcb95Hac == null || globalAbsoluteConfidence.lcb95Hac <= 0) {
+    globalRejectionReasons.push('full_portfolio_absolute_cost_net_lcb95_hac_not_positive')
+  }
+  if (baselineMdd == null || finalMdd == null) {
+    globalRejectionReasons.push('full_portfolio_drawdown_evidence_missing')
+  } else if (finalMdd < baselineMdd - REPLACEMENT_MDD_TOLERANCE) {
+    globalRejectionReasons.push('full_portfolio_drawdown_materially_worse')
+  }
+  if (!globalTurnoverPass) globalRejectionReasons.push('full_portfolio_turnover_gate_failed')
+  if (!globalCorrelationPass) globalRejectionReasons.push('full_portfolio_correlation_gate_failed')
+  const globalRiskPass = globalRejectionReasons.length === 0
+
+  if (!globalRiskPass) {
+    for (const proposal of accepted) {
+      proposal.pass = false
+      proposal.rejectionReasons.push(...globalRejectionReasons)
+    }
+    accepted.splice(0, accepted.length)
+    return {
+      proposals,
+      accepted,
+      finalWeights: new Map(baselineWeights),
+      baselineDates,
+      finalDates: baselineDates,
+      globalPaired,
+      globalAbsoluteMean,
+      globalAbsoluteConfidence,
+      globalReturnCorrelation,
+      baselineMaxDrawdown: baselineMdd,
+      finalMaxDrawdown: finalMdd,
+      baselineTurnover,
+      finalTurnover,
+      globalCorrelationPass,
+      globalTurnoverPass,
+      globalEffectiveSamplePass,
+      globalPowerPass,
+      globalRiskPass: false,
+      globalRejectionReasons,
+      holmFamilySize: proposals.length,
+    }
+  }
+  return {
+    proposals,
+    accepted,
+    finalWeights,
+    baselineDates,
+    finalDates,
+    globalPaired,
+    globalAbsoluteMean,
+    globalAbsoluteConfidence,
+    globalReturnCorrelation,
+    baselineMaxDrawdown: baselineMdd,
+    finalMaxDrawdown: finalMdd,
+    baselineTurnover,
+    finalTurnover,
+    globalCorrelationPass,
+    globalTurnoverPass,
+    globalEffectiveSamplePass,
+    globalPowerPass,
+    globalRiskPass: true,
+    globalRejectionReasons,
+    holmFamilySize: proposals.length,
+  }
+}
+
 async function sourceFingerprint(cells: OutcomeCell[]): Promise<string> {
   const payload = JSON.stringify(cells.map((row) => [
     row.signal_date, row.symbol, row.strategy_id, row.strategy_version, row.family_id,
@@ -569,12 +1092,19 @@ export async function refreshStrategyMarginalEdgeV4(
              m.family_id, m.production_owner, m.strategy_hit,
              l.absolute_return_net, l.residual_return_net
         FROM strategy_label_matrix_v4 m
+        JOIN strategy_label_matrix_runs_v4 mr
+          ON mr.producer_run_id=m.producer_run_id
+         AND mr.signal_date=m.signal_date
+         AND mr.status='ready'
+         AND mr.labeler_version IN (?, ?)
+         AND m.labeler_version=mr.labeler_version
         JOIN canonical_selection_labels_v4 l
           ON l.signal_date=m.signal_date
          AND l.symbol=m.symbol
          AND l.producer_run_id=m.producer_run_id
          AND l.label_schema_version='canonical-strategy-selection-label-v4'
        WHERE m.signal_date BETWEEN ? AND ?
+         AND l.outcome_known_date <= ?
          AND m.strategy_status IN ('active', 'candidate', 'shadow')
          AND EXISTS (
            SELECT 1 FROM strategy_spec_registry eligible_owner
@@ -584,10 +1114,6 @@ export async function refreshStrategyMarginalEdgeV4(
               AND eligible_owner.status IN ('active','candidate','shadow')
               AND eligible_owner.promotion_status <> 'retired'
               AND eligible_owner.variant_id NOT LIKE 's12_%'
-         )
-         AND EXISTS (
-           SELECT 1 FROM strategy_label_matrix_runs_v4 mr
-            WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
          )
          AND EXISTS (
            SELECT 1 FROM canonical_run_heads h
@@ -603,7 +1129,9 @@ export async function refreshStrategyMarginalEdgeV4(
        ORDER BY m.signal_date, m.symbol, m.strategy_id, m.strategy_version
        LIMIT ?
     `).bind(
-      startDate, asOfDate,
+      STRATEGY_FORMAL_LABELER_VERSION,
+      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+      startDate, asOfDate, asOfDate,
       cursorDate,
       cursorDate, cursorSymbol,
       cursorDate, cursorSymbol, cursorStrategyId,
@@ -636,8 +1164,12 @@ export async function refreshStrategyMarginalEdgeV4(
     ? await db.prepare(`
         SELECT strategy_id, strategy_version, production_weight_raw
           FROM strategy_marginal_edge_v4
-         WHERE run_id=? AND production_eligible=1 AND edge_schema_version=?
-      `).bind(previousHead.run_id, STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION)
+         WHERE run_id=?
+           AND production_eligible=1
+           AND edge_schema_version IN (?, ?)
+      `).bind(
+        previousHead.run_id, STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION, STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION_V6,
+      )
         .all<{ strategy_id: string; strategy_version: string; production_weight_raw: number | string }>()
     : { results: [] }
   const championWeights = new Map((previousWeightRows.results ?? []).map((row) => [
@@ -650,17 +1182,18 @@ export async function refreshStrategyMarginalEdgeV4(
   }
   const servingCoverageComplete = registryActiveKeys.size === championWeights.size
     && [...registryActiveKeys].every((key) => championWeights.has(key))
-  const replacement = evaluatePairedStrategyReplacementsV6(cells, edges, championWeights)
+  const replacement = evaluatePairedStrategyReplacementsV7(cells, edges, championWeights)
   const candidateDates = replacement.finalDates
   const championDates = replacement.baselineDates
   const championByDate = new Map(championDates.map((row) => [row.signalDate, row]))
   const candidateResidual = confidenceSummary(candidateDates.map((row) => row.residualReturn))
   const candidateAbsoluteMean = replacement.globalAbsoluteMean
+  const candidateAbsoluteConfidence = replacement.globalAbsoluteConfidence
   const paired = replacement.globalPaired
   const finalOwnerKeys = new Set(replacement.finalWeights.keys())
 
   const fingerprint = await sourceFingerprint(cells)
-  const runId = `strategy-marginal-edge-v6-${asOfDate}-${fingerprint}`
+  const runId = `strategy-marginal-edge-v7-${asOfDate}-${fingerprint}`
   if (previousHead?.run_id === runId) {
     const existing = await db.prepare('SELECT status FROM strategy_marginal_edge_runs_v4 WHERE run_id=?')
       .bind(runId).first<{ status?: string }>()
@@ -686,6 +1219,7 @@ export async function refreshStrategyMarginalEdgeV4(
       sample_dates=excluded.sample_dates, evidence_json=excluded.evidence_json, error_code=NULL
   `).bind(runId, asOfDate, status, edges.length, replacement.accepted.length, sampleDates, JSON.stringify({
     schema_version: STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION,
+    replacement_policy: STRATEGY_REPLACEMENT_POLICY_V7,
     source: 'strategy_label_matrix_v4+canonical_selection_labels_v4',
     source_fingerprint: fingerprint,
     lookback_start_date: startDate,
@@ -700,12 +1234,22 @@ export async function refreshStrategyMarginalEdgeV4(
       residual_mean: candidateResidual.mean,
       residual_lcb90: candidateResidual.lcb90,
       absolute_mean: candidateAbsoluteMean,
+      absolute_effective_dates: candidateAbsoluteConfidence.effectiveDates,
+      absolute_hac_standard_error: candidateAbsoluteConfidence.hacStandardError,
+      absolute_lcb95_hac: candidateAbsoluteConfidence.lcb95Hac,
     },
     champion_comparison: {
       champion_run_id: previousHead?.run_id ?? null,
       paired_dates: paired.dates,
+      hac_lag: paired.hacLag,
+      effective_paired_dates: paired.effectiveDates,
       paired_residual_delta_mean: paired.mean,
-      paired_residual_delta_lcb90: paired.lcb90,
+      paired_residual_delta_lcb90_iid_diagnostic_only: paired.lcb90IidDiagnostic,
+      paired_residual_delta_hac_standard_error: paired.hacStandardError,
+      paired_residual_delta_lcb95_hac: paired.lcb95Hac,
+      paired_residual_delta_one_sided_p_value: paired.oneSidedPValue,
+      power_at_minimum_economic_delta: paired.powerAtMinimumEconomicDelta,
+      minimum_economic_delta: MINIMUM_ECONOMIC_PAIRED_DELTA,
     },
     replacements: {
       evaluated: replacement.proposals.length,
@@ -722,12 +1266,19 @@ export async function refreshStrategyMarginalEdgeV4(
       turnover_pass: replacement.globalTurnoverPass,
     },
     promotion_gates: {
-      accepted_edge_gated_replacement_exists: replacement.accepted.length > 0,
-      full_portfolio_positive_cost_net_lcb: replacement.globalRiskPass,
+      accepted_hac_holm_replacement_exists: replacement.accepted.length > 0,
+      statistical_policy_version: STRATEGY_REPLACEMENT_POLICY_VERSION_V7,
+      holm_family_size: replacement.holmFamilySize,
+      full_portfolio_positive_cost_net_lcb95_hac: paired.lcb95Hac != null && paired.lcb95Hac > 0,
+      full_portfolio_absolute_cost_net_lcb95_hac: candidateAbsoluteConfidence.lcb95Hac != null && candidateAbsoluteConfidence.lcb95Hac > 0,
+      full_portfolio_effective_sample_pass: replacement.globalEffectiveSamplePass,
+      full_portfolio_power_80pct_pass: replacement.globalPowerPass,
       full_portfolio_correlation_pass: replacement.globalCorrelationPass,
       full_portfolio_turnover_pass: replacement.globalTurnoverPass,
+      full_portfolio_all_gates_pass: replacement.globalRiskPass,
+      full_portfolio_rejection_reasons: replacement.globalRejectionReasons,
       registry_and_serving_owner_coverage_complete: servingCoverageComplete,
-      paired_champion_improvement_lcb: paired.lcb90 != null && paired.lcb90 > 0,
+      paired_champion_improvement_lcb95_hac: paired.lcb95Hac != null && paired.lcb95Hac > 0,
       active_count_unchanged: championWeights.size === replacement.finalWeights.size,
       no_hard_top_k: true,
       candidate_and_shadow_strategies_evaluated: true,
@@ -762,9 +1313,14 @@ export async function refreshStrategyMarginalEdgeV4(
       finalOwnerKeys.has(row.strategyId + '|' + row.strategyVersion) ? 1 : 0,
       replacement.finalWeights.get(row.strategyId + '|' + row.strategyVersion) ?? 0,
       JSON.stringify({
-        method: 'date_clustered_leave_one_strategy_out_then_edge_gated_cross_family_replacement_v6',
+        method: 'date_clustered_leave_one_strategy_out_then_hac_holm_cross_family_replacement_v7',
         outcome: 'sector_or_market_neutral_cost_net_return',
-        lcb: 'student_t_one_sided_90pct_date_clustered',
+        candidate_prefilter_lcb_diagnostic: 'student_t_one_sided_90pct_date_clustered',
+        replacement_lcb: 'newey_west_hac4_one_sided_95pct',
+        multiple_testing: 'holm_bonferroni_familywise_5pct',
+        min_effective_dates: MIN_EFFECTIVE_PAIRED_DATES,
+        min_power: MIN_REPLACEMENT_POWER,
+        minimum_economic_delta: MINIMUM_ECONOMIC_PAIRED_DELTA,
         min_dates: MIN_EDGE_DATES,
         lookback_calendar_days: EDGE_LOOKBACK_CALENDAR_DAYS,
         no_hard_top_k: true,
@@ -829,7 +1385,7 @@ export async function refreshStrategyMarginalEdgeV4(
           return_correlation=excluded.return_correlation,
           evidence_json=excluded.evidence_json
       `).bind(
-        `strategy-replacement-v6:${runId}:${candidateId}:${incumbentId}`,
+        `strategy-replacement-v7:${runId}:${candidateId}:${incumbentId}`,
         runId, asOfDate, proposal.familyId,
         candidateId, candidateVersion, incumbentId, incumbentVersion,
         decisionStatus,
@@ -838,6 +1394,23 @@ export async function refreshStrategyMarginalEdgeV4(
         proposal.candidateTurnover, proposal.incumbentTurnover, proposal.returnCorrelation,
         JSON.stringify({
           schema_version: STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION,
+          statistical_policy_version: proposal.statisticalPolicyVersion,
+          hac_lag: proposal.hacLag,
+          effective_paired_dates: proposal.effectivePairedDates,
+          paired_delta_hac_standard_error: proposal.pairedDeltaHacStandardError,
+          paired_delta_lcb95_hac: proposal.pairedDeltaLcb95Hac,
+          paired_delta_one_sided_p_value: proposal.pairedDeltaOneSidedPValue,
+          paired_delta_power_at_minimum_economic_delta: proposal.pairedDeltaPowerAtMinimumEconomicDelta,
+          candidate_absolute_effective_dates: proposal.candidateAbsoluteEffectiveDates,
+          candidate_absolute_hac_standard_error: proposal.candidateAbsoluteHacStandardError,
+          candidate_absolute_lcb95_hac: proposal.candidateAbsoluteLcb95Hac,
+          minimum_economic_delta: MINIMUM_ECONOMIC_PAIRED_DELTA,
+          holm_family_size: proposal.holmFamilySize,
+          holm_rank: proposal.holmRank,
+          holm_critical_alpha: proposal.holmCriticalAlpha,
+          holm_adjusted_p_value: proposal.holmAdjustedPValue,
+          holm_rejected: proposal.holmRejected,
+          paired_delta_lcb90_column_is_legacy_iid_diagnostic: true,
           rejection_reasons: decisionStatus === 'accepted' ? [] : rejectionReasons,
           promotion_allowed: promotionAllowed,
           no_hard_top_k: true,
@@ -935,7 +1508,7 @@ export async function refreshStrategyMarginalEdgeV4(
           event_id, date, severity, domain, source, status, title, summary,
           owner, impact, next_action, evidence, created_at
         )
-        SELECT ?, ?, 'info', 'strategy', 'strategy_marginal_edge_v6', 'promoted',
+        SELECT ?, ?, 'info', 'strategy', 'strategy_marginal_edge_v7', 'promoted',
                'Atomic strategy replacement promoted', ?, 'strategy-learning',
                'Production active count remains stable through edge-gated one-in-one-out replacement.',
                'Monitor date-clustered cost-net edge, risk and turnover parity.', ?, CURRENT_TIMESTAMP
@@ -943,19 +1516,24 @@ export async function refreshStrategyMarginalEdgeV4(
            SELECT 1 FROM observability_events WHERE event_id=? AND date=?
          )
       `).bind(
-        `strategy-edge-v6-promotion:${runId}`,
+        `strategy-edge-v7-promotion:${runId}`,
         asOfDate,
         `replacements=${replacement.accepted.map((row) => row.candidateKey + '->' + row.incumbentKey).join(',')}`,
         JSON.stringify({
           schema_version: STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION,
+          statistical_policy_version: STRATEGY_REPLACEMENT_POLICY_VERSION_V7,
           run_id: runId,
           replacements: replacement.accepted,
           production_owner_count_before: registryActiveKeys.size,
           production_owner_count_after: replacement.finalWeights.size,
-          paired_champion_delta_lcb90: paired.lcb90,
+          paired_champion_delta_lcb95_hac: paired.lcb95Hac,
+          effective_paired_dates: paired.effectiveDates,
+          power_at_minimum_economic_delta: paired.powerAtMinimumEconomicDelta,
+          final_portfolio_absolute_lcb95_hac: candidateAbsoluteConfidence.lcb95Hac,
+          holm_family_size: replacement.holmFamilySize,
           no_hard_top_k: true,
         }),
-        `strategy-edge-v6-promotion:${runId}`,
+        `strategy-edge-v7-promotion:${runId}`,
         asOfDate,
       ))
       await db.batch(cutoverStatements)

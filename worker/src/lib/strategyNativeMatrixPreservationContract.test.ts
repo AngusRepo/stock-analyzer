@@ -5,12 +5,12 @@ const source = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
 
 assert.match(
   source,
-  /mr\.labeler_version IN \(\s*'strategy-labeler-v1',\s*'strategy-decision-log-pit-reconstruction-v6'\s*\)/,
+  /mr\.labeler_version IN \([\s\S]*STRATEGY_FORMAL_LABELER_VERSION[\s\S]*STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION/,
   'historical repair discovery must treat a complete native matrix as closed',
 )
 assert.match(
   source,
-  /\[\s*'strategy-labeler-v1',\s*labelerVersion,\s*\]\.includes\(cleanToken\(existingMatrix\.labeler_version\)\)/,
+  /STRATEGY_FORMAL_LABELER_VERSIONS\.some\(\(version\) => version === cleanToken\(existingMatrix\.labeler_version\)\)/,
   'historical repair must reuse a complete native matrix instead of deleting Route V2 evidence',
 )
 assert.match(
@@ -22,4 +22,9 @@ assert.match(
   source,
   /existingMatrixProjectionRows === expectedMatrixRows[\s\S]*existingMatrixProjectedThresholdRows === existingMatrixMatchedRows/,
   'historical repair must only reuse a matrix whose challenger projection is complete',
+)
+assert.match(
+  source,
+  /existingMatrixContractRows === expectedMatrixRows/,
+  'historical repair must reject a mixed-labeler or mixed-contract matrix even when row counts match',
 )

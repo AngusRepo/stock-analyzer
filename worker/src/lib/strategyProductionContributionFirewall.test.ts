@@ -14,10 +14,11 @@ const promotedState = buildStrategyProductionContributionFirewall({
   knowledgeCutoffDate: '2026-08-02',
   strategies,
   gates: [
-    { strategy_id: 'active-b', decision: 'active_cooldown' },
-    { strategy_id: 'candidate-c', decision: 'candidate_ready' },
-    { strategy_id: 'shadow-d', decision: 'not_ready' },
-    { strategy_id: 'candidate-c', decision: 'active_cooldown' },
+    { strategy_id: 'active-a', decision: 'active_monitor', allocation_eligible: true },
+    { strategy_id: 'active-b', decision: 'active_cooldown', allocation_eligible: false },
+    { strategy_id: 'candidate-c', decision: 'candidate_ready', allocation_eligible: false },
+    { strategy_id: 'shadow-d', decision: 'not_ready', allocation_eligible: false },
+    { strategy_id: 'candidate-c', decision: 'active_cooldown', allocation_eligible: false },
   ],
   base: {
     source: 'adaptive_strategy_policy_v2',
@@ -32,9 +33,9 @@ const promotedState = buildStrategyProductionContributionFirewall({
 })
 
 assert.deepEqual(promotedState.strategy_weights, {
-  'active-a': 0.857142857143,
+  'active-a': 1,
   'active-b': 0,
-  'candidate-c': 0.142857142857,
+  'candidate-c': 0,
   'shadow-d': 0,
 })
 assert.deepEqual(promotedState.quarantined_strategy_ids, ['active-b'])
@@ -42,21 +43,24 @@ assert.deepEqual(promotedState.candidate_ready_strategy_ids, ['candidate-c'])
 assert.equal(promotedState.evidence.raw_labels_preserved, true)
 assert.equal(promotedState.evidence.experimental_threshold_deltas_applied, false)
 assert.equal(promotedState.evidence.complete_non_retired_weight_map, true)
-assert.equal(promotedState.evidence.positive_weight_count, 2)
+assert.equal(promotedState.evidence.positive_weight_count, 1)
 assert.equal(promotedState.base_weight_run_id, 'adaptive-v2-2026-08-02')
 
 const unitWeightState = buildStrategyProductionContributionFirewall({
   knowledgeCutoffDate: '2026-08-02',
   strategies,
-  gates: [{ strategy_id: 'active-b', decision: 'active_cooldown' }],
+  gates: [
+    { strategy_id: 'active-a', decision: 'active_monitor', allocation_eligible: true },
+    { strategy_id: 'active-b', decision: 'active_cooldown', allocation_eligible: false },
+  ],
   base: { source: 'runtime_default_unit_weights' },
 })
 
 assert.deepEqual(unitWeightState.strategy_weights, {
   'active-a': 1,
   'active-b': 0,
-  'candidate-c': 1,
-  'shadow-d': 1,
+  'candidate-c': 0,
+  'shadow-d': 0,
 })
 assert.equal(unitWeightState.evidence.normalized_promoted_weights, false)
 
@@ -64,8 +68,9 @@ const reorderedState = buildStrategyProductionContributionFirewall({
   knowledgeCutoffDate: '2026-08-02',
   strategies: [...strategies].reverse(),
   gates: [
-    { strategy_id: 'candidate-c', decision: 'candidate_ready' },
-    { strategy_id: 'active-b', decision: 'active_cooldown' },
+    { strategy_id: 'candidate-c', decision: 'candidate_ready', allocation_eligible: false },
+    { strategy_id: 'active-b', decision: 'active_cooldown', allocation_eligible: false },
+    { strategy_id: 'active-a', decision: 'active_monitor', allocation_eligible: true },
   ],
   base: {
     source: 'adaptive_strategy_policy_v2',

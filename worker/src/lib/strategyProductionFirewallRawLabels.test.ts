@@ -22,7 +22,10 @@ const cooldown: any = {
 const firewall = buildStrategyProductionContributionFirewall({
   knowledgeCutoffDate: '2026-08-02',
   strategies: [first, cooldown],
-  gates: [{ strategy_id: cooldown.id, decision: 'active_cooldown' }],
+  gates: [
+    { strategy_id: first.id, decision: 'active_monitor', allocation_eligible: true },
+    { strategy_id: cooldown.id, decision: 'active_cooldown', allocation_eligible: false },
+  ],
   base: { source: 'runtime_default_unit_weights' },
 })
 

@@ -17,6 +17,25 @@ export interface TradingRestrictionSet {
     canonicalLatestSourceDate: string | null
     officialCheckedAt: string | null
   }
+  evidenceStatus: TradingRestrictionEvidenceStatus
+}
+
+export type TradingRestrictionEvidenceMode = 'live_current' | 'historical_replay'
+export type TradingRestrictionEvidenceAuthority = 'LIVE_CURRENT' | 'UNKNOWN_LEGACY'
+export type TradingRestrictionEvidenceCompleteness = 'COMPLETE' | 'DEGRADED_KV_FALLBACK' | 'DATA_BLOCKED'
+
+export interface TradingRestrictionEvidenceStatus {
+  evidenceMode: TradingRestrictionEvidenceMode
+  authority: TradingRestrictionEvidenceAuthority
+  completeness: TradingRestrictionEvidenceCompleteness
+  promotionEligible: boolean
+  reason: string | null
+}
+
+export interface TradingRestrictionLoadOptions {
+  refreshOfficialIfStale?: boolean
+  refreshTtlMs?: number
+  evidenceMode?: TradingRestrictionEvidenceMode
 }
 
 export interface TradingRestrictionBuckets {
@@ -25,6 +44,21 @@ export interface TradingRestrictionBuckets {
   sourceCounts: Record<string, number>
   hardSourceCounts: Record<string, number>
   freshness: TradingRestrictionSet['freshness']
+  evidenceStatus: TradingRestrictionEvidenceStatus
+}
+
+interface RestrictionQueryResult<T> {
+  value: T
+  querySucceeded: boolean
+}
+
+interface CurrentKvRestrictions {
+  punished: string[]
+  attention: string[]
+  tpexPunished: string[]
+  tpexAttention: string[]
+  delisting: string[]
+  checkedAt: string | null
 }
 
 const FINLAB_TRADING_RESTRICTION_RETENTION_DAYS = 31
@@ -80,18 +114,29 @@ async function readSymbolList(kv: KVNamespace, key: string): Promise<string[]> {
 async function loadCanonicalRestrictions(
   db: D1Database,
   tradeDate: string,
-): Promise<{ symbols: string[]; sourceCounts: Record<string, number>; latestSourceDate: string | null }> {
+  evidenceMode: TradingRestrictionEvidenceMode,
+): Promise<RestrictionQueryResult<{ symbols: string[]; sourceCounts: Record<string, number>; latestSourceDate: string | null }>> {
   try {
     const finlabCutoff = finlabTradingRestrictionCutoff(tradeDate)
+    const activeClause = evidenceMode === 'live_current' ? 'AND COALESCE(active, 1) = 1' : ''
+    const historicalSourceDateClause = evidenceMode === 'historical_replay'
+      ? 'AND date(source_date) <= date(?)'
+      : ''
+    const bindValues = evidenceMode === 'historical_replay'
+      ? [tradeDate, tradeDate, finlabCutoff, tradeDate]
+      : [tradeDate, tradeDate, finlabCutoff]
+
     const { results } = await db.prepare(`
       SELECT symbol, source, MAX(source_date) AS latest_source_date
         FROM canonical_trading_restrictions
-       WHERE COALESCE(active, 1) = 1
+       WHERE 1 = 1
+         ${activeClause}
          AND (start_date IS NULL OR start_date <= ?)
          AND (end_date IS NULL OR end_date >= ?)
          AND (source != 'finlab.trading_attention' OR source_date >= ?)
+         ${historicalSourceDateClause}
        GROUP BY symbol, source
-    `).bind(tradeDate, tradeDate, finlabCutoff).all<{ symbol: string | null; source: string | null; latest_source_date: string | null }>()
+    `).bind(...bindValues).all<{ symbol: string | null; source: string | null; latest_source_date: string | null }>()
     const counts: Record<string, number> = {}
     let latest: string | null = null
     const symbols: string[] = []
@@ -102,25 +147,87 @@ async function loadCanonicalRestrictions(
       addSourceCount(counts, row.source || 'canonical_trading_restrictions')
       if (row.latest_source_date && (!latest || row.latest_source_date > latest)) latest = row.latest_source_date
     }
-    return { symbols, sourceCounts: counts, latestSourceDate: latest }
+    return { value: { symbols, sourceCounts: counts, latestSourceDate: latest }, querySucceeded: true }
   } catch {
-    return { symbols: [], sourceCounts: {}, latestSourceDate: null }
+    return { value: { symbols: [], sourceCounts: {}, latestSourceDate: null }, querySucceeded: false }
   }
 }
 
-async function loadGovernanceRestrictions(db: D1Database, tradeDate: string): Promise<string[]> {
+async function loadGovernanceRestrictions(
+  db: D1Database,
+  tradeDate: string,
+  evidenceMode: TradingRestrictionEvidenceMode,
+): Promise<RestrictionQueryResult<string[]>> {
   try {
+    const activeClause = evidenceMode === 'live_current' ? 'AND COALESCE(active, 1) = 1' : ''
     const { results } = await db.prepare(`
       SELECT symbol
         FROM stock_trading_restrictions
-       WHERE COALESCE(active, 1) = 1
+       WHERE 1 = 1
+         ${activeClause}
          AND (start_date IS NULL OR start_date <= ?)
          AND (end_date IS NULL OR end_date >= ?)
     `).bind(tradeDate, tradeDate).all<{ symbol: string | null }>()
-    return (results ?? []).map((row) => cleanSymbol(row.symbol)).filter(Boolean)
+    return {
+      value: (results ?? []).map((row) => cleanSymbol(row.symbol)).filter(Boolean),
+      querySucceeded: true,
+    }
   } catch {
-    return []
+    return { value: [], querySucceeded: false }
   }
+}
+
+async function loadCurrentKvRestrictions(kv: KVNamespace): Promise<CurrentKvRestrictions> {
+  const [punished, attention, tpexPunished, tpexAttention, delisting, checkedAt] = await Promise.all([
+    readSymbolList(kv, 'market:punished_stocks'),
+    readSymbolList(kv, 'market:attention_stocks'),
+    readSymbolList(kv, 'market:tpex_punished_stocks'),
+    readSymbolList(kv, 'market:tpex_attention_stocks'),
+    readSymbolList(kv, 'market:delisting_risk'),
+    kv.get('market:trading_restrictions:checked_at').catch(() => null),
+  ])
+  return { punished, attention, tpexPunished, tpexAttention, delisting, checkedAt }
+}
+
+function restrictionEvidenceStatus(
+  evidenceMode: TradingRestrictionEvidenceMode,
+  d1Complete: boolean,
+): TradingRestrictionEvidenceStatus {
+  if (evidenceMode === 'historical_replay') {
+    return {
+      evidenceMode,
+      authority: 'UNKNOWN_LEGACY',
+      completeness: 'DATA_BLOCKED',
+      promotionEligible: false,
+      reason: 'historical_restriction_rows_lack_verified_available_at_or_append_only_revision_lineage',
+    }
+  }
+  if (!d1Complete) {
+    return {
+      evidenceMode,
+      authority: 'LIVE_CURRENT',
+      completeness: 'DEGRADED_KV_FALLBACK',
+      promotionEligible: false,
+      reason: 'live_restriction_d1_incomplete_using_current_kv_safety_fallback',
+    }
+  }
+  return {
+    evidenceMode,
+    authority: 'LIVE_CURRENT',
+    completeness: 'COMPLETE',
+    promotionEligible: true,
+    reason: null,
+  }
+}
+
+export function assertTradingRestrictionPromotionAuthority(
+  tradeDate: string,
+  status: TradingRestrictionEvidenceStatus,
+): void {
+  if (status.evidenceMode !== 'historical_replay' || status.promotionEligible) return
+  throw new Error(
+    `trading_restriction_pit_authority_blocked:run_date=${tradeDate}:authority=${status.authority}:completeness=${status.completeness}:reason=${status.reason ?? 'unknown'}`,
+  )
 }
 
 async function reconcileOfficialRestrictions(
@@ -243,53 +350,48 @@ export async function refreshOfficialTradingRestrictions(env: Bindings, tradeDat
 export async function loadTradingRestrictionSet(
   env: Bindings,
   tradeDate: string,
-  options: { refreshOfficialIfStale?: boolean; refreshTtlMs?: number } = {},
+  options: TradingRestrictionLoadOptions = {},
 ): Promise<TradingRestrictionSet> {
   const target = new Set<string>()
   const sourceCounts: Record<string, number> = {}
+  const evidenceMode = options.evidenceMode ?? 'live_current'
 
-  const canonical = await loadCanonicalRestrictions(env.DB, tradeDate)
+  const canonicalResult = await loadCanonicalRestrictions(env.DB, tradeDate, evidenceMode)
+  const canonical = canonicalResult.value
   for (const symbol of canonical.symbols) target.add(symbol)
   for (const [source, count] of Object.entries(canonical.sourceCounts)) addSourceCount(sourceCounts, source, count)
 
-  const governance = await loadGovernanceRestrictions(env.DB, tradeDate)
+  const governanceResult = await loadGovernanceRestrictions(env.DB, tradeDate, evidenceMode)
+  const governance = governanceResult.value
   for (const symbol of governance) target.add(symbol)
   if (governance.length) addSourceCount(sourceCounts, 'stock_trading_restrictions', governance.length)
 
-  const [
-    cachedPunished,
-    cachedAttention,
-    cachedTpexPunished,
-    cachedTpexAttention,
-    cachedDelisting,
-    checkedAtRaw,
-  ] = await Promise.all([
-    readSymbolList(env.KV, 'market:punished_stocks'),
-    readSymbolList(env.KV, 'market:attention_stocks'),
-    readSymbolList(env.KV, 'market:tpex_punished_stocks'),
-    readSymbolList(env.KV, 'market:tpex_attention_stocks'),
-    readSymbolList(env.KV, 'market:delisting_risk'),
-    env.KV.get('market:trading_restrictions:checked_at'),
-  ])
-  const kvRows = [
-    ...cachedPunished,
-    ...cachedAttention,
-    ...cachedTpexPunished,
-    ...cachedTpexAttention,
-    ...cachedDelisting,
-  ]
-  for (const symbol of kvRows) target.add(symbol)
-  if (kvRows.length) addSourceCount(sourceCounts, 'kv_fallback', kvRows.length)
+  let currentKv: CurrentKvRestrictions | null = null
+  if (evidenceMode === 'live_current') {
+    currentKv = await loadCurrentKvRestrictions(env.KV)
+    const kvRows = [
+      ...currentKv.punished,
+      ...currentKv.attention,
+      ...currentKv.tpexPunished,
+      ...currentKv.tpexAttention,
+      ...currentKv.delisting,
+    ]
+    for (const symbol of kvRows) target.add(symbol)
+    if (kvRows.length) addSourceCount(sourceCounts, 'kv_fallback', kvRows.length)
 
-  const refreshTtlMs = options.refreshTtlMs ?? 12 * 60 * 60_000
-  const checkedAtMs = checkedAtRaw ? Date.parse(checkedAtRaw) : 0
-  const stale = !Number.isFinite(checkedAtMs) || Date.now() - checkedAtMs > refreshTtlMs
-  const canonicalFresh = Boolean(canonical.latestSourceDate && canonical.latestSourceDate >= tradeDate)
-  if (options.refreshOfficialIfStale && stale && !canonicalFresh) {
-    const officialCounts = await refreshOfficialTradingRestrictions(env, tradeDate).catch(() => ({}))
-    for (const [source, count] of Object.entries(officialCounts)) addSourceCount(sourceCounts, source, count)
-    for (const symbol of await readSymbolList(env.KV, 'market:punished_stocks')) target.add(symbol)
-    for (const symbol of await readSymbolList(env.KV, 'market:attention_stocks')) target.add(symbol)
+    const refreshTtlMs = options.refreshTtlMs ?? 12 * 60 * 60_000
+    const checkedAtMs = currentKv.checkedAt ? Date.parse(currentKv.checkedAt) : 0
+    const stale = !Number.isFinite(checkedAtMs) || Date.now() - checkedAtMs > refreshTtlMs
+    const canonicalFresh = Boolean(canonical.latestSourceDate && canonical.latestSourceDate >= tradeDate)
+    if (options.refreshOfficialIfStale && stale && !canonicalFresh) {
+      const officialCounts = await refreshOfficialTradingRestrictions(env, tradeDate).catch(() => ({}))
+      for (const [source, count] of Object.entries(officialCounts)) addSourceCount(sourceCounts, source, count)
+      currentKv = await loadCurrentKvRestrictions(env.KV)
+      for (const symbol of [
+        ...currentKv.punished, ...currentKv.attention, ...currentKv.tpexPunished,
+        ...currentKv.tpexAttention, ...currentKv.delisting,
+      ]) target.add(symbol)
+    }
   }
 
   return {
@@ -297,30 +399,42 @@ export async function loadTradingRestrictionSet(
     sourceCounts,
     freshness: {
       canonicalLatestSourceDate: canonical.latestSourceDate,
-      officialCheckedAt: checkedAtRaw,
+      officialCheckedAt: currentKv?.checkedAt ?? null,
     },
+    evidenceStatus: restrictionEvidenceStatus(evidenceMode, canonicalResult.querySucceeded && governanceResult.querySucceeded),
   }
 }
 
 export async function loadTradingRestrictionBuckets(
   env: Bindings,
   tradeDate: string,
-  options: { refreshOfficialIfStale?: boolean; refreshTtlMs?: number } = {},
+  options: TradingRestrictionLoadOptions = {},
 ): Promise<TradingRestrictionBuckets> {
   const allRestrictions = await loadTradingRestrictionSet(env, tradeDate, options)
   const hardBlockedSymbols = new Set<string>()
   const hardSourceCounts: Record<string, number> = {}
   const finlabCutoff = finlabTradingRestrictionCutoff(tradeDate)
+  const evidenceMode = options.evidenceMode ?? 'live_current'
+  const activeClause = evidenceMode === 'live_current' ? 'AND COALESCE(active, 1) = 1' : ''
+  const historicalSourceDateClause = evidenceMode === 'historical_replay'
+    ? 'AND date(source_date) <= date(?)'
+    : ''
+  const canonicalBindValues = evidenceMode === 'historical_replay'
+    ? [tradeDate, tradeDate, finlabCutoff, tradeDate]
+    : [tradeDate, tradeDate, finlabCutoff]
+  let canonicalDetailsSucceeded = true
 
   try {
     const { results } = await env.DB.prepare(`
       SELECT symbol, restriction_type, source
         FROM canonical_trading_restrictions
-       WHERE COALESCE(active, 1) = 1
+       WHERE 1 = 1
+         ${activeClause}
          AND (start_date IS NULL OR start_date <= ?)
          AND (end_date IS NULL OR end_date >= ?)
          AND (source != 'finlab.trading_attention' OR source_date >= ?)
-    `).bind(tradeDate, tradeDate, finlabCutoff).all<{ symbol: string | null; restriction_type: string | null; source: string | null }>()
+         ${historicalSourceDateClause}
+    `).bind(...canonicalBindValues).all<{ symbol: string | null; restriction_type: string | null; source: string | null }>()
     for (const row of results ?? []) {
       const symbol = cleanSymbol(row.symbol)
       if (!symbol || !isHardRestrictionType(row.restriction_type, row.source)) continue
@@ -329,16 +443,19 @@ export async function loadTradingRestrictionBuckets(
     }
   } catch {
     // Canonical restriction details are additive; continue with governance/KV hard sources.
+    canonicalDetailsSucceeded = false
   }
 
+  let governanceDetailsSucceeded = true
   try {
     const { results } = await env.DB.prepare(`
       SELECT symbol, restriction_type, source
         FROM stock_trading_restrictions
-       WHERE COALESCE(active, 1) = 1
+       WHERE 1 = 1
+         ${activeClause}
          AND (start_date IS NULL OR start_date <= ?)
          AND (end_date IS NULL OR end_date >= ?)
-         AND LOWER(COALESCE(restriction_type, '')) IN ('delisting','suspended','halted','untradable','data_untrusted','execution_block')
+         AND LOWER(COALESCE(restriction_type, '')) IN ('punished','disposition','delisting','suspended','halted','untradable','data_untrusted','execution_block')
     `).bind(tradeDate, tradeDate).all<{ symbol: string | null; restriction_type: string | null; source: string | null }>()
     for (const row of results ?? []) {
       const symbol = cleanSymbol(row.symbol)
@@ -348,13 +465,20 @@ export async function loadTradingRestrictionBuckets(
     }
   } catch {
     // Older D1 snapshots may not carry restriction_type.
+    governanceDetailsSucceeded = false
   }
 
-  const [delisting] = await Promise.all([
-    readSymbolList(env.KV, 'market:delisting_risk'),
-  ])
-  for (const symbol of delisting) hardBlockedSymbols.add(symbol)
-  if (delisting.length) addSourceCount(hardSourceCounts, 'market:delisting_risk', delisting.length)
+  if (evidenceMode === 'live_current') {
+    const currentKv = await loadCurrentKvRestrictions(env.KV)
+    for (const [key, symbols] of [
+      ['market:punished_stocks', currentKv.punished],
+      ['market:tpex_punished_stocks', currentKv.tpexPunished],
+      ['market:delisting_risk', currentKv.delisting],
+    ] as const) {
+      for (const symbol of symbols) hardBlockedSymbols.add(symbol)
+      if (symbols.length) addSourceCount(hardSourceCounts, key, symbols.length)
+    }
+  }
 
   return {
     hardBlockedSymbols,
@@ -362,5 +486,10 @@ export async function loadTradingRestrictionBuckets(
     sourceCounts: allRestrictions.sourceCounts,
     hardSourceCounts,
     freshness: allRestrictions.freshness,
+    evidenceStatus: restrictionEvidenceStatus(
+      evidenceMode,
+      allRestrictions.evidenceStatus.completeness === 'COMPLETE'
+        && canonicalDetailsSucceeded && governanceDetailsSucceeded,
+    ),
   }
 }

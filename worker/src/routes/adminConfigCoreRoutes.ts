@@ -167,6 +167,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
   for (const [owner, rawCandidate] of orderedCandidates) {
     if (!rawCandidate) continue
     const candidate = {
+      artifact_id: String(rawCandidate.artifact_id ?? ''),
       artifact: rawCandidate.artifact ?? {},
       validation_packet: rawCandidate.validation_packet ?? {},
       operational_parity: rawCandidate.operational_parity ?? {},
@@ -276,6 +277,7 @@ adminConfigCoreRoutes.post('/api/admin/config/expected-return/promote', async (c
       pointerCommit = await commitExpectedReturnChampion(learningDb, {
         owner,
         artifact: plan.serving_artifact ?? {},
+        artifactId: candidate.artifact_id,
         artifactPath: candidate.artifact_path,
         artifactChecksum: candidate.artifact_checksum,
         promotionPacketId: recorded.promotion_packet_id,

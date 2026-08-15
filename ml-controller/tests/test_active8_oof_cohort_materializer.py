@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import sqlite3
 import sys
 
 import pytest
@@ -318,7 +319,13 @@ def test_candidate_and_promotion_packets_are_checksum_addressed(monkeypatch):
         def blob(self, path):
             return _Blob(path)
 
-    monkeypatch.setattr(materializer, "upsert_artifact_record", registry.append)
+    immutable_flags = []
+
+    def insert_registry(record, **kwargs):
+        registry.append(record)
+        immutable_flags.append(kwargs.get("immutable_identity"))
+
+    monkeypatch.setattr(materializer, "upsert_artifact_record", insert_registry)
     l4_result = {
         "artifact": {"model_version": "candidate-v1", "expected_return_owner": "l4_alpha_ev"},
         "validation_packet": {"decision": "PASS", "failed_gates": []},
@@ -362,15 +369,18 @@ def test_candidate_and_promotion_packets_are_checksum_addressed(monkeypatch):
     assert all(item["registry_registered"] is False for item in receipt.values())
     assert len(registry) == 2
     assert registry == candidate_registry
+    assert immutable_flags == [True, True]
     registry_by_owner = {record["model_name"]: record for record in registry}
     for owner in ("l4_alpha_ev", "allocator_ev_fusion"):
         assert registry_by_owner[owner]["artifact_path"] == candidate[owner]["path"]
         assert registry_by_owner[owner]["checksum"] == candidate[owner]["checksum"]
         assert registry_by_owner[owner]["artifact_path"] != receipt[owner]["path"]
         assert registry_by_owner[owner]["checksum"] != receipt[owner]["checksum"]
+        assert registry_by_owner[owner]["artifact_id"] == candidate[owner]["artifact_id"]
+        assert registry_by_owner[owner]["artifact_id"].endswith(candidate[owner]["checksum"])
     evidence = [json.loads(record["offline_evidence_json"]) for record in registry]
     assert all(item["cadence"] == "weekly" for item in evidence)
-    assert all(item["identity_schema_version"] == "expected-return-candidate-identity-v2" for item in evidence)
+    assert all(item["identity_schema_version"] == "expected-return-candidate-identity-v3" for item in evidence)
     assert all(item["model_version"] == "candidate-v1" for item in evidence)
     assert all(item["expected_return_owner"] == record["model_name"] for item, record in zip(evidence, registry))
     assert all(item["artifact_checksum"] == record["checksum"] for item, record in zip(evidence, registry))
@@ -382,15 +392,7 @@ def test_fundamental_pit_loader_drops_future_rows_and_reuses_formal_owner():
     from services.active8_oof_cohort_materializer import load_fundamental_quality_pit_by_key
 
     def query(sql, params):
-        if "FROM canonical_revenue_monthly" in sql:
-            return [{
-                "stock_id": "2330",
-                "revenue_month": "2026-05",
-                "yoy": 20.0,
-                "mom": 5.0,
-                "source": "finlab.monthly_revenue",
-                "as_of_date": "2026-06-10",
-            }]
+        assert "FROM canonical_revenue_monthly" not in sql
         if "FROM canonical_fundamental_features" in sql:
             return [
                 {
@@ -423,7 +425,9 @@ def test_fundamental_pit_loader_drops_future_rows_and_reuses_formal_owner():
     assert payload["score"] > 0
     assert payload["noLookahead"]["decisionDate"] == "2026-06-25"
     assert payload["noLookahead"]["droppedFutureFinancialRows"] == 1
-    assert payload["sourceRowCounts"]["available"] == 2
+    assert payload["sourceRowCounts"]["available"] == 1
+    assert payload["noLookahead"]["legacyMonthlyRevenueStatus"] == "PIT_UNAVAILABLE"
+    assert "mutable_natural_key" in payload["noLookahead"]["legacyMonthlyRevenueReason"]
 
 
 def test_fundamental_pit_loader_chunks_below_d1_variable_limit():
@@ -445,10 +449,8 @@ def test_fundamental_pit_loader_chunks_below_d1_variable_limit():
     )
 
     assert result == {}
-    assert len(calls) == 6
-    revenue_param_counts = [len(params) for sql, params in calls if "canonical_revenue_monthly" in sql]
+    assert len(calls) == 3
     financial_param_counts = [len(params) for sql, params in calls if "canonical_fundamental_features" in sql]
-    assert revenue_param_counts == [80, 80, 45]
     assert financial_param_counts == [82, 82, 47]
 
 def test_counterfactual_score_uses_formal_pit_fundamental_owner_when_available():
@@ -929,8 +931,14 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
     assert result["l4_alpha_ev"]["quality_decision"] == "PASS"
     assert len(writes) == 2
     assert all("expected_return_shadow_evaluation_packets" in sql for sql, _ in writes)
+    assert all("subject_artifact_checksum" in sql for sql, _ in writes)
+    assert all("evaluator_contract_checksum" in sql for sql, _ in writes)
+    assert all("DO UPDATE SET evaluation_id=NULL" in sql for sql, _ in writes)
+    assert all("quality_decision=excluded" not in sql for sql, _ in writes)
     assert all("model_artifact_registry" not in sql for sql, _ in writes)
     assert len(blobs) == 2
+    assert all(len(packet["subject_artifact_checksum"]) == 64 for packet in result.values())
+    assert all(len(packet["evaluator_contract_checksum"]) == 64 for packet in result.values())
 
     router = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text()
     forward_policy_start = router.index('if forward_extension:')
@@ -945,6 +953,73 @@ def test_forward_shadow_evaluation_packets_are_separate_from_candidates(monkeypa
     migration = (ROOT / "worker" / "migrations" / "0100_expected_return_shadow_evaluation_packets.sql").read_text()
     assert "policy_decision TEXT NOT NULL CHECK(policy_decision = 'shadow_only')" in migration
     assert "model_artifact_registry" not in migration
+
+
+def test_shadow_evaluation_identity_v2_migration_preserves_legacy_and_allows_successors():
+    legacy = (
+        ROOT / "worker" / "migrations" / "0100_expected_return_shadow_evaluation_packets.sql"
+    ).read_text()
+    migration = (
+        ROOT / "worker" / "migrations"
+        / "0111_expected_return_shadow_evaluation_identity_v2.sql"
+    ).read_text()
+    db = sqlite3.connect(":memory:")
+    try:
+        db.executescript(legacy)
+        db.execute(
+            """
+            INSERT INTO expected_return_shadow_evaluation_packets (
+              evaluation_id, business_date, cohort_id, base_manifest_checksum,
+              extension_manifest_checksum, model_name, model_version,
+              oof_min_date, oof_max_date, oof_date_count, oof_row_count,
+              quality_decision, policy_decision, validation_packet_json,
+              artifact_path, artifact_checksum
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-id", "2026-08-01", "cohort-1", "a" * 64, "b" * 64,
+                "l4_alpha_ev", "v1", "2026-07-01", "2026-07-31", 20, 200,
+                "FAIL", "shadow_only", "{}", "legacy.json", "c" * 64,
+            ),
+        )
+        db.executescript(migration)
+        legacy_row = db.execute(
+            """
+            SELECT identity_schema_version, subject_artifact_checksum,
+                   evaluator_contract_checksum
+              FROM expected_return_shadow_evaluation_packets
+             WHERE evaluation_id='legacy-id'
+            """
+        ).fetchone()
+        assert legacy_row == (
+            "expected-return-shadow-evaluation-identity-legacy-v1", None, None,
+        )
+        insert = """
+          INSERT INTO expected_return_shadow_evaluation_packets (
+            evaluation_id, identity_schema_version, subject_artifact_checksum,
+            evaluator_contract_checksum, business_date, cohort_id,
+            base_manifest_checksum, extension_manifest_checksum, model_name,
+            model_version, oof_min_date, oof_max_date, oof_date_count, oof_row_count,
+            quality_decision, policy_decision, validation_packet_json,
+            artifact_path, artifact_checksum
+          ) VALUES (?, 'expected-return-shadow-evaluation-identity-v2', ?, ?, ?,
+                    'cohort-1', ?, ?, 'l4_alpha_ev', 'v1', ?, ?, 20, 200,
+                    ?, 'shadow_only', '{}', ?, ?)
+        """
+        common = ("d" * 64, "e" * 64, "2026-08-02", "a" * 64, "b" * 64,
+                  "2026-07-01", "2026-07-31")
+        db.execute(insert, ("successor-1", *common, "FAIL", "one.json", "f" * 64))
+        db.execute(insert, ("successor-2", *common, "PASS", "two.json", "0" * 64))
+        assert db.execute(
+            "SELECT COUNT(*) FROM expected_return_shadow_evaluation_packets"
+        ).fetchone()[0] == 3
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(
+                "UPDATE expected_return_shadow_evaluation_packets SET evaluation_id=NULL "
+                "WHERE evaluation_id='successor-1'"
+            )
+    finally:
+        db.close()
 
 
 def test_prep_only_source_stops_before_training_dispatch():

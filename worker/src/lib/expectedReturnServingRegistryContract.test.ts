@@ -4,6 +4,7 @@ import fs from 'node:fs'
 const registry = fs.readFileSync('src/lib/expectedReturnServingRegistry.ts', 'utf8')
 const servingState = fs.readFileSync('src/lib/expectedReturnServingState.ts', 'utf8')
 const promotionRoute = fs.readFileSync('src/routes/adminConfigCoreRoutes.ts', 'utf8')
+const walkForward = fs.readFileSync('../ml-controller/routers/walk_forward.py', 'utf8')
 const orchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const triggerTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
 const migration = fs.readFileSync('migrations/0087_expected_return_serving_baseline.sql', 'utf8')
@@ -22,7 +23,11 @@ assert(registry.includes('ORDER BY candidate.max_date DESC, candidate.updated_at
 assert(!registry.includes('SELECT artifact_kind, MAX(max_date) AS max_date'))
 assert(registry.includes('champion_payload_table_version_mismatch'))
 assert(registry.includes("candidate_type IN ('l4_alpha_ev_refresh', 'allocator_ev_fusion_refresh')"))
-assert(registry.includes('ORDER BY source_run_date DESC, updated_at DESC, version DESC'))
+assert(registry.includes('ORDER BY source_run_date DESC, updated_at DESC, version DESC, artifact_id DESC'))
+assert(registry.includes('input.artifactId.trim()'))
+assert(registry.includes('expected_return_registry_artifact_id_checksum_mismatch'))
+assert(registry.includes('expected_return_registry_artifact_path_checksum_mismatch'))
+assert(!registry.includes('const artifactId = `${input.owner}:${modelVersion}`'))
 assert(registry.includes('production_candidate_not_champion_pointer'))
 assert(registry.includes('resolveExpectedOofCoverageDates'))
 assert(registry.includes('awaiting_current_close_oof_materialization'))
@@ -59,6 +64,9 @@ for (const call of [
 ]) {
   assert(promoteBody.includes(`${call}(learningDb`), `${call} must use the learning domain database`)
 }
+assert(promoteBody.includes('artifact_id: String(rawCandidate.artifact_id'))
+assert(promoteBody.includes('artifactId: candidate.artifact_id'))
+assert.equal((walkForward.match(/"artifact_id": \(candidate_artifacts\.get\(/g) ?? []).length, 2)
 assert(!promoteBody.includes('c.env.DB'))
 assert(
   promoteBody.indexOf('pointerCommit = await commitExpectedReturnChampion')

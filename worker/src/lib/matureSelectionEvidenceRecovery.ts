@@ -9,6 +9,10 @@ import {
   materializePriceHorizonLabels,
 } from './priceHorizonProjection'
 import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
+import {
+  STRATEGY_FORMAL_LABELER_VERSION,
+  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+} from './strategySpec'
 
 const DEFAULT_LOOKBACK_DAYS = 180
 const DEFAULT_MAX_RECOVERY_DATES = 4
@@ -127,6 +131,12 @@ async function loadCoverageRows(
     const clauses = page.map(() => '(r.signal_date=? AND r.producer_run_id=?)').join(' OR ')
     const binds = page.flatMap((row) => [row.signal_date, row.run_id])
     const result = await db.prepare(`
+      WITH formal_runs AS (
+        SELECT producer_run_id, signal_date, expected_cell_count, persisted_cell_count, labeler_version
+          FROM strategy_label_matrix_runs_v4
+         WHERE status='ready' AND reference_contract_version=?
+           AND labeler_version IN (?, ?)
+      )
       SELECT r.signal_date, r.producer_run_id,
              COUNT(*) reference_rows,
              SUM(CASE WHEN r.stock_id IS NOT NULL THEN 1 ELSE 0 END) identity_rows,
@@ -150,36 +160,32 @@ async function loadCoverageRows(
              COALESCE((
                SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                 WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id
+                 AND m.labeler_version=mr.labeler_version
              ), 0) matrix_rows,
-             COALESCE((
-               SELECT expected_cell_count FROM strategy_label_matrix_runs_v4 mr
-                WHERE mr.signal_date=r.signal_date AND mr.producer_run_id=r.producer_run_id
-                  AND mr.status='ready' AND mr.reference_contract_version=?
-                LIMIT 1
-             ), 0) expected_matrix_rows,
-             COALESCE((
-               SELECT persisted_cell_count FROM strategy_label_matrix_runs_v4 mr
-                WHERE mr.signal_date=r.signal_date AND mr.producer_run_id=r.producer_run_id
-                  AND mr.status='ready' AND mr.reference_contract_version=?
-                LIMIT 1
-             ), 0) persisted_matrix_rows,
+             COALESCE(mr.expected_cell_count, 0) expected_matrix_rows,
+             COALESCE(mr.persisted_cell_count, 0) persisted_matrix_rows,
              SUM(CASE WHEN EXISTS (
                SELECT 1 FROM canonical_selection_label_rejections_v4 x
                 WHERE x.signal_date=r.signal_date AND x.symbol=r.symbol
                   AND x.producer_run_id=r.producer_run_id
              ) THEN 1 ELSE 0 END) label_unavailable_rows
         FROM selection_reference_snapshots_v1 r
+        JOIN formal_runs mr
+          ON mr.signal_date=r.signal_date
+         AND mr.producer_run_id=r.producer_run_id
+         AND mr.labeler_version=r.strategy_labeler_version
        WHERE r.hard_gate_passed=1
          AND r.feature_contract_version=?
          AND (${clauses})
        GROUP BY r.signal_date, r.producer_run_id
        ORDER BY r.signal_date
     `).bind(
+      SELECTION_REFERENCE_CONTRACT_VERSION,
+      STRATEGY_FORMAL_LABELER_VERSION,
+      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
       PRICE_HORIZON_PROJECTION_VERSION,
       PRICE_HORIZON_PROJECTION_VERSION,
       CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
-      SELECTION_REFERENCE_CONTRACT_VERSION,
-      SELECTION_REFERENCE_CONTRACT_VERSION,
       SELECTION_REFERENCE_CONTRACT_VERSION,
       SELECTION_REFERENCE_CONTRACT_VERSION,
       ...binds,

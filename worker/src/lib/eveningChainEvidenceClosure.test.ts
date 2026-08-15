@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { auditEveningChainEvidenceClosure } from './eveningChainEvidenceClosure'
+import { STRATEGY_FORMAL_LABELER_VERSION } from './strategySpec'
 
 type Overrides = {
   identityRows?: number
@@ -39,10 +40,24 @@ class FakeD1 {
   first(sql: string, _args: unknown[]): unknown {
     const normalized = sql.replace(/\s+/g, ' ').trim()
     if (normalized.includes('SUM(CASE WHEN r.stock_id IS NOT NULL')) {
-      return { reference_rows: 100, identity_rows: this.overrides.identityRows ?? 100, artifact_rows: 100, reconciled_rows: 100 }
+      return {
+        reference_rows: 100,
+        identity_rows: this.overrides.identityRows ?? 100,
+        artifact_rows: 100,
+        reconciled_rows: 100,
+        reference_projection_rows: 100,
+      }
     }
     if (normalized.includes('FROM strategy_label_matrix_runs_v4 r')) {
-      return { expected_cell_count: 2500, persisted_cell_count: 2500, matrix_rows: 2500, matched_rows: 400, threshold_evidence_rows: 400 }
+      return {
+        expected_cell_count: 2500,
+        persisted_cell_count: 2500,
+        matrix_rows: 2500,
+        matched_rows: 400,
+        threshold_evidence_rows: 400,
+        challenger_projection_rows: 2500,
+        projected_threshold_rows: 400,
+      }
     }
     if (normalized.includes('FROM strategy_redundancy_artifacts_v1')) {
       return { status: 'pass', evidence_artifact_id: 'artifact:strategy_redundancy_oof:test' }
@@ -58,7 +73,12 @@ class FakeD1 {
       return { run_id: producerRunId }
     }
     if (normalized.includes('FROM strategy_label_matrix_runs_v4')) {
-      return { reference_candidate_count: 100, expected_cell_count: 2500, persisted_cell_count: 2500 }
+      return {
+        reference_candidate_count: 100,
+        expected_cell_count: 2500,
+        persisted_cell_count: 2500,
+        labeler_version: STRATEGY_FORMAL_LABELER_VERSION,
+      }
     }
     if (normalized.includes('COUNT(*) reference_rows') && normalized.includes('price_horizon_labels_v1')) {
       const unavailableRows = this.overrides.unavailableRows ?? 0

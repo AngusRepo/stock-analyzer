@@ -2,6 +2,60 @@ import type { AlphaFrameworkBucket, AlphaFrameworkRegime } from './tradingConfig
 import { readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 
 export const STRATEGY_SPEC_VERSION = 'strategy-spec-v1'
+export const STRATEGY_FORMAL_LABELER_VERSION = 'strategy-labeler-v2-revenue-pit-fuse-v1'
+export const STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION =
+  'strategy-decision-log-pit-reconstruction-v7-revenue-pit-fuse-v1'
+export const STRATEGY_FORMAL_LABELER_VERSIONS = [
+  STRATEGY_FORMAL_LABELER_VERSION,
+  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+] as const
+
+export const MONTHLY_REVENUE_EVIDENCE_SCHEMA_VERSION = 'monthly-revenue-evidence-v1'
+export const MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON =
+  'PIT_UNAVAILABLE:canonical_revenue_monthly:legacy_mutable_no_knowledge_time'
+
+export type StrategyEvidenceMode = 'live_current' | 'historical_replay'
+
+export interface StrategySpecEvaluationOptions {
+  evidenceMode?: StrategyEvidenceMode
+}
+
+export interface MonthlyRevenueEvidence {
+  schemaVersion: typeof MONTHLY_REVENUE_EVIDENCE_SCHEMA_VERSION
+  status: 'LIVE_CURRENT_ONLY' | 'PIT_UNAVAILABLE'
+  source: 'canonical_revenue_monthly'
+  signalDate: string
+  observedTaipeiDate: string
+  reason: string | null
+}
+
+export interface LegacyMonthlyRevenueEvidenceResolution {
+  evidenceMode: StrategyEvidenceMode
+  queryAllowed: boolean
+  evidence: MonthlyRevenueEvidence
+}
+
+export function resolveLegacyMonthlyRevenueEvidence(options: {
+  signalDate: string
+  observedTaipeiDate: string
+  evidenceMode?: StrategyEvidenceMode
+}): LegacyMonthlyRevenueEvidenceResolution {
+  const evidenceMode = options.evidenceMode ?? 'historical_replay'
+  const queryAllowed = evidenceMode === 'live_current'
+    && options.signalDate === options.observedTaipeiDate
+  return {
+    evidenceMode,
+    queryAllowed,
+    evidence: {
+      schemaVersion: MONTHLY_REVENUE_EVIDENCE_SCHEMA_VERSION,
+      status: queryAllowed ? 'LIVE_CURRENT_ONLY' : 'PIT_UNAVAILABLE',
+      source: 'canonical_revenue_monthly',
+      signalDate: options.signalDate,
+      observedTaipeiDate: options.observedTaipeiDate,
+      reason: queryAllowed ? null : MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON,
+    },
+  }
+}
 
 export type StrategySpecStatus = 'research' | 'shadow' | 'candidate' | 'active' | 'retired'
 export type StrategyFamilyId =
@@ -171,6 +225,7 @@ export interface StrategyRawSignals {
   revenueGrowthYoY?: number | null
   monthlyRevenueYoY?: number | null
   monthlyRevenueMoM?: number | null
+  monthlyRevenueEvidence?: MonthlyRevenueEvidence | null
   grossMargin?: number | null
   operatingMargin?: number | null
   roe?: number | null
@@ -267,6 +322,7 @@ const FORBIDDEN_SPEC_KEYS = [
   'chipScore',
   'techScore',
   'momentumScore',
+
   'scoreBonus',
   'scoreBoost',
   'slateBoost',
@@ -321,6 +377,61 @@ function parseRecord(value: unknown): Record<string, unknown> | null {
 
 function cleanText(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function parseMonthlyRevenueEvidence(value: unknown): MonthlyRevenueEvidence | null {
+  const record = parseRecord(value)
+  if (!record) return null
+  const schemaVersion = cleanText(record.schemaVersion)
+  const status = cleanText(record.status)
+  const source = cleanText(record.source)
+  const signalDate = cleanText(record.signalDate)
+  const observedTaipeiDate = cleanText(record.observedTaipeiDate)
+  if (
+    schemaVersion !== MONTHLY_REVENUE_EVIDENCE_SCHEMA_VERSION
+    || !['LIVE_CURRENT_ONLY', 'PIT_UNAVAILABLE'].includes(status)
+    || source !== 'canonical_revenue_monthly'
+    || !signalDate
+    || !observedTaipeiDate
+  ) return null
+  return {
+    schemaVersion: MONTHLY_REVENUE_EVIDENCE_SCHEMA_VERSION,
+    status: status as MonthlyRevenueEvidence['status'],
+    source: 'canonical_revenue_monthly',
+    signalDate,
+    observedTaipeiDate,
+    reason: cleanText(record.reason) || null,
+  }
+}
+
+export function isMonthlyRevenueDerivedSignal(value: string): boolean {
+  const normalized = cleanText(value).replace(/[^a-z0-9]/gi, '').toLowerCase()
+  return normalized.includes('monthlyrevenue')
+    || normalized === 'finlabqualitycompositerank'
+    || normalized === 'finlabsectorqualitycompositerank'
+}
+
+function stripMonthlyRevenueDerivedSignals(
+  values: Record<string, number | null>,
+  usable: boolean,
+): Record<string, number | null> {
+  if (usable) return values
+  return Object.fromEntries(
+    Object.entries(values).filter(([name]) => !isMonthlyRevenueDerivedSignal(name)),
+  )
+}
+
+function usableMonthlyRevenueEvidence(
+  raw: Record<string, unknown>,
+  options: StrategySpecEvaluationOptions,
+): MonthlyRevenueEvidence | null {
+  if (options.evidenceMode !== 'live_current') return null
+  const evidence = parseMonthlyRevenueEvidence(raw.monthlyRevenueEvidence)
+  if (
+    evidence?.status !== 'LIVE_CURRENT_ONLY'
+    || evidence.signalDate !== evidence.observedTaipeiDate
+  ) return null
+  return evidence
 }
 
 export function inferStrategyFamilyId(spec: Pick<StrategySpec, 'id' | 'alphaBucket'>): StrategyFamilyId {
@@ -475,11 +586,26 @@ function scoreV2StorageRow(candidate: StrategyCandidateInput): ScoreV2StorageRow
   return { score_components: candidate.score_v2 }
 }
 
-export function deriveStrategyRawSignals(candidate: StrategyCandidateInput): StrategyRawSignals {
+export function deriveStrategyRawSignals(
+  candidate: StrategyCandidateInput,
+  options: StrategySpecEvaluationOptions = {},
+): StrategyRawSignals {
   const raw = parseRecord(candidate.raw_signals)
   if (!raw) return {}
   const rawTechnicalIndicators = parseRecord(raw.technicalIndicators)
   const rawFactorSignals = parseRecord(raw.factorSignals)
+  const parsedMonthlyRevenueEvidence = parseMonthlyRevenueEvidence(raw.monthlyRevenueEvidence)
+  const liveMonthlyRevenueEvidence = usableMonthlyRevenueEvidence(raw, options)
+  const monthlyRevenueUsable = liveMonthlyRevenueEvidence != null
+  const monthlyRevenueEvidence = parsedMonthlyRevenueEvidence == null
+    ? null
+    : monthlyRevenueUsable
+      ? parsedMonthlyRevenueEvidence
+      : {
+          ...parsedMonthlyRevenueEvidence,
+          status: 'PIT_UNAVAILABLE' as const,
+          reason: MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON,
+        }
   const base: StrategyRawSignals = {
     close: finiteNumber(raw.close),
     ma20: finiteNumber(raw.ma20),
@@ -505,8 +631,9 @@ export function deriveStrategyRawSignals(candidate: StrategyCandidateInput): Str
     brokerCount: finiteNumber(raw.brokerCount),
     brokerConcentration: finiteNumber(raw.brokerConcentration),
     revenueGrowthYoY: finiteNumber(raw.revenueGrowthYoY),
-    monthlyRevenueYoY: finiteNumber(raw.monthlyRevenueYoY),
-    monthlyRevenueMoM: finiteNumber(raw.monthlyRevenueMoM),
+    monthlyRevenueYoY: monthlyRevenueUsable ? finiteNumber(raw.monthlyRevenueYoY) : null,
+    monthlyRevenueMoM: monthlyRevenueUsable ? finiteNumber(raw.monthlyRevenueMoM) : null,
+    monthlyRevenueEvidence,
     grossMargin: finiteNumber(raw.grossMargin),
     operatingMargin: finiteNumber(raw.operatingMargin),
     roe: finiteNumber(raw.roe),
@@ -517,7 +644,7 @@ export function deriveStrategyRawSignals(candidate: StrategyCandidateInput): Str
     source: cleanText(raw.source) || null,
   }
   const technicalIndicators = {
-    ...numberMap(rawTechnicalIndicators),
+    ...stripMonthlyRevenueDerivedSignals(numberMap(rawTechnicalIndicators), monthlyRevenueUsable),
     closeAboveMa20Pct: base.closeAboveMa20Pct ?? null,
     closeAboveMa60Pct: base.closeAboveMa60Pct ?? null,
     volumeExpansion20: base.volumeExpansion20 ?? null,
@@ -532,7 +659,7 @@ export function deriveStrategyRawSignals(candidate: StrategyCandidateInput): Str
     vwap_bias_5d: base.vwapBias5d ?? null,
   }
   const factorSignals = {
-    ...numberMap(rawFactorSignals),
+    ...stripMonthlyRevenueDerivedSignals(numberMap(rawFactorSignals), monthlyRevenueUsable),
     foreignTrustNet5d: base.foreignTrustNet5d ?? null,
     brokerNetShares5d: base.brokerNetShares5d ?? null,
     brokerNetAmount5d: base.brokerNetAmount5d ?? null,
@@ -991,6 +1118,7 @@ function missingConfiguredThresholdSignals(raw: StrategyRawSignals, thresholds: 
 export function assessStrategySpecEvaluability(
   candidate: StrategyCandidateInput,
   spec: StrategySpec,
+  options: StrategySpecEvaluationOptions = {},
 ): StrategySpecEvaluability {
   const validation = validateStrategySpec(spec)
   if (!validation.ok) {
@@ -1024,7 +1152,7 @@ export function assessStrategySpecEvaluability(
       signalDiagnostics: [],
     }
   }
-  const raw = deriveStrategyRawSignals(candidate)
+  const raw = deriveStrategyRawSignals(candidate, options)
   const signalDiagnostics = explainSignalDsl(raw, spec.thresholds.dsl)
   const missingSignals = [
     ...unresolvedDslSignals(signalDiagnostics),
@@ -1036,10 +1164,20 @@ export function assessStrategySpecEvaluability(
   }
   const missingFeatureRefs = missingRequiredFeatureRefs(raw, spec.thresholds.featureRefs)
   const cleanMissingSignals = [...new Set(missingSignals.filter(Boolean))]
-  const unavailableReasons = [
-    ...cleanMissingSignals.map((signal) => 'missing_signal:' + signal),
-    ...missingFeatureRefs.map((featureRef) => 'missing_feature_ref:' + featureRef),
-  ]
+  const monthlyRevenuePitUnavailable = options.evidenceMode !== 'live_current'
+    || raw.monthlyRevenueEvidence?.status !== 'LIVE_CURRENT_ONLY'
+  const unavailableReasons = [...new Set([
+    ...cleanMissingSignals.map((signal) => (
+      monthlyRevenuePitUnavailable && isMonthlyRevenueDerivedSignal(signal)
+        ? MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON
+        : 'missing_signal:' + signal
+    )),
+    ...missingFeatureRefs.map((featureRef) => (
+      monthlyRevenuePitUnavailable && isMonthlyRevenueDerivedSignal(featureRef)
+        ? MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON
+        : 'missing_feature_ref:' + featureRef
+    )),
+  ])]
   return {
     evaluable: unavailableReasons.length === 0,
     missingSignals: cleanMissingSignals,
@@ -1153,9 +1291,10 @@ function conditionStrength(
 export function deriveStrategySpecMatchStrength(
   candidate: StrategyCandidateInput,
   spec: StrategySpec,
+  options: StrategySpecEvaluationOptions = {},
 ): { matchStrength: number; thresholdMargin: number; evidenceCount: number } {
   const scores = deriveStrategyThresholdScores(candidate)
-  const raw = deriveStrategyRawSignals(candidate)
+  const raw = deriveStrategyRawSignals(candidate, options)
   const t = spec.thresholds
   const strengths: number[] = []
   const addMin = (actual: unknown, expected?: number) => {
@@ -1264,11 +1403,12 @@ export function deriveStrategySpecMatchStrength(
 export function assessCandidateAgainstStrategySpecs(
   candidate: StrategyCandidateInput,
   specs: StrategySpec[],
+  options: StrategySpecEvaluationOptions = {},
 ): StrategySpecAssessment {
   const matches: StrategySpecMatch[] = []
   const watchPoints: string[] = []
   const scores = deriveStrategyThresholdScores(candidate)
-  const raw = deriveStrategyRawSignals(candidate)
+  const raw = deriveStrategyRawSignals(candidate, options)
 
   for (const spec of specs) {
     const validation = validateStrategySpec(spec)
@@ -1276,7 +1416,7 @@ export function assessCandidateAgainstStrategySpecs(
       watchPoints.push(`strategy_spec_invalid:${spec.id || 'unknown'}:${validation.errors.join(',')}`)
       continue
     }
-    const evaluability = assessStrategySpecEvaluability(candidate, spec)
+    const evaluability = assessStrategySpecEvaluability(candidate, spec, options)
     if (!evaluability.evaluable) {
       watchPoints.push('strategy_spec_unavailable:' + spec.id + ':' + evaluability.unavailableReasons.join('|'))
       continue
@@ -1291,7 +1431,7 @@ export function assessCandidateAgainstStrategySpecs(
     if (!meetsMinimum(scores.momentumScore, t.minMomentumScore)) continue
     if (!meetsRawSignalThresholds(raw, t)) continue
 
-    const strength = deriveStrategySpecMatchStrength(candidate, spec)
+    const strength = deriveStrategySpecMatchStrength(candidate, spec, options)
     matches.push({
       specId: spec.id,
       alphaBucket: spec.alphaBucket,

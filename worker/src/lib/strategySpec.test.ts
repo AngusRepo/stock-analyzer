@@ -1,9 +1,11 @@
 import {
   DEFAULT_STRATEGY_SPECS,
+  MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON,
   assessCandidateAgainstStrategySpecs,
   assessStrategySpecEvaluability,
   deriveStrategyRawSignals,
   deriveStrategyThresholdScores,
+  resolveLegacyMonthlyRevenueEvidence,
   validateStrategySpec,
 } from './strategySpec'
 import type { StrategySpec } from './strategySpec'
@@ -13,6 +15,14 @@ import { dryRunStrategySpec, listStrategySpecs } from './strategyLab'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
+}
+
+function liveMonthlyRevenueEvidence(date = '2026-08-15') {
+  return resolveLegacyMonthlyRevenueEvidence({
+    signalDate: date,
+    observedTaipeiDate: date,
+    evidenceMode: 'live_current',
+  }).evidence
 }
 
 const BASE_RUNTIME_STRATEGY_IDS = [
@@ -408,6 +418,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
     current_price: 85,
     raw_signals: {
       closeAboveMa20Pct: 0.025,
+      monthlyRevenueEvidence: liveMonthlyRevenueEvidence(),
       volumeExpansion20: 1.18,
       return20d: 0.04,
       revenueGrowthYoY: 9,
@@ -426,7 +437,7 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
         revenueGrowthYoY: 9,
       },
     },
-  }, DEFAULT_STRATEGY_SPECS)
+  }, DEFAULT_STRATEGY_SPECS, { evidenceMode: 'live_current' })
   assert(
     assessment.matches.some((match) => match.specId === 'finlab_ai_skill_revenue_revision_breakout_v1' && match.status === 'candidate'),
     'revenue revision strategy should remain matchable from the candidate pool',
@@ -454,13 +465,14 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
     symbol: '2454',
     current_price: 120,
     raw_signals: {
+      monthlyRevenueEvidence: liveMonthlyRevenueEvidence(),
       volumeExpansion20: 0.9,
       monthlyRevenueYoY: 12,
       monthlyRevenueMoM: 3,
       closeAboveMa20Pct: -0.01,
       factorSignals: { monthlyRevenueYoY: 12, monthlyRevenueMoM: 3 },
     },
-  }, DEFAULT_STRATEGY_SPECS)
+  }, DEFAULT_STRATEGY_SPECS, { evidenceMode: 'live_current' })
   assert(
     assessment.matches.some((match) => match.specId === 'alphabuilders_multifactor_revenue_quality_momentum_v1'),
     'retained AlphaBuilders revenue-quality strategy should match revenue plus price evidence',
@@ -762,4 +774,59 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
     'out-of-universe decision must retain explicit market-domain evidence',
   )
   assert(assessCandidateAgainstStrategySpecs(emergingCandidate, [spec]).matches.length === 0, 'emerging must not match the listed/OTC value strategy')
+}
+
+{
+  const sameDayLive = resolveLegacyMonthlyRevenueEvidence({
+    signalDate: '2026-08-15', observedTaipeiDate: '2026-08-15', evidenceMode: 'live_current',
+  })
+  const omittedMode = resolveLegacyMonthlyRevenueEvidence({
+    signalDate: '2026-08-15', observedTaipeiDate: '2026-08-15',
+  })
+  const explicitReplay = resolveLegacyMonthlyRevenueEvidence({
+    signalDate: '2026-08-15', observedTaipeiDate: '2026-08-15', evidenceMode: 'historical_replay',
+  })
+  const backdatedLive = resolveLegacyMonthlyRevenueEvidence({
+    signalDate: '2026-08-14', observedTaipeiDate: '2026-08-15', evidenceMode: 'live_current',
+  })
+  assert(sameDayLive.queryAllowed && sameDayLive.evidence.status === 'LIVE_CURRENT_ONLY', 'only explicit same-day live mode may query legacy monthly revenue')
+  for (const blocked of [omittedMode, explicitReplay, backdatedLive]) {
+    assert(!blocked.queryAllowed, 'omitted, replay, and date-mismatched modes must fail closed')
+    assert(blocked.evidence.reason === MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON, 'blocked monthly revenue evidence must retain the exact PIT reason')
+  }
+
+  const candidate = {
+    symbol: '3034',
+    raw_signals: {
+      monthlyRevenueEvidence: sameDayLive.evidence,
+      monthlyRevenueYoY: 18,
+      monthlyRevenueMoM: 4,
+      return20d: 0.08,
+      technicalIndicators: { monthlyRevenueYoY: 18, return20d: 0.08 },
+      factorSignals: {
+        monthlyRevenueMoM: 4,
+        finlabQualityCompositeRank: 0.9,
+        return20d: 0.08,
+      },
+    },
+  }
+  const historical = deriveStrategyRawSignals(candidate, { evidenceMode: 'historical_replay' })
+  assert(historical.monthlyRevenueYoY == null && historical.monthlyRevenueMoM == null, 'historical replay must scrub direct monthly revenue values')
+  assert(historical.technicalIndicators?.monthlyRevenueYoY == null, 'historical replay must scrub technical monthly aliases')
+  assert(historical.factorSignals?.monthlyRevenueMoM == null, 'historical replay must scrub factor monthly aliases')
+  assert(historical.factorSignals?.finlabQualityCompositeRank == null, 'historical replay must scrub monthly-derived quality composites')
+  assert(historical.return20d === 0.08 && historical.factorSignals?.return20d === 0.08, 'PIT scrub must preserve unrelated price signals')
+
+  const revenueSpec = DEFAULT_STRATEGY_SPECS.find((row) => row.id === 'finlab_ai_skill_revenue_revision_breakout_v1')!
+  const historicalEvaluation = assessStrategySpecEvaluability(candidate, revenueSpec, { evidenceMode: 'historical_replay' })
+  assert(!historicalEvaluation.evaluable, 'historical monthly revenue strategy must be unavailable')
+  assert(
+    historicalEvaluation.unavailableReasons.includes(MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON),
+    'historical monthly revenue strategy must expose the exact PIT unavailable reason',
+  )
+  const liveEvaluation = assessStrategySpecEvaluability(candidate, revenueSpec, { evidenceMode: 'live_current' })
+  assert(
+    !liveEvaluation.unavailableReasons.includes(MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON),
+    'explicit same-day live evidence must clear the monthly revenue PIT blocker',
+  )
 }

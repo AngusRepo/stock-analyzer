@@ -191,6 +191,9 @@ const AUDIT_JSON_TARGETS: AuditJsonTargetConfig[] = [
   },
 ]
 
+export const AUDIT_JSON_ARCHIVE_TARGET_IDS: readonly AuditJsonArchiveTargetId[] =
+  AUDIT_JSON_TARGETS.map((target) => target.id)
+
 const TARGET_BY_ID = new Map(AUDIT_JSON_TARGETS.map((target) => [target.id, target]))
 
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {

@@ -29,9 +29,9 @@ function twToday(): string {
   return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 }
 
-function resolveRunDate(value?: string): string {
+function resolveRunDate(value?: string, fallbackDate = twToday()): string {
   const trimmed = (value || '').trim()
-  if (!trimmed) return twToday()
+  if (!trimmed) return fallbackDate
   if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
     throw new Error(`Invalid screener date: ${trimmed}; expected YYYY-MM-DD`)
   }
@@ -106,13 +106,15 @@ async function funnelRunByProducerId(env: Bindings, date: string, producerRunId:
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2))
-  const runDate = resolveRunDate(args.date)
+  const observedTaipeiDate = twToday()
+  const runDate = resolveRunDate(args.date, observedTaipeiDate)
+  const evidenceMode = runDate === observedTaipeiDate ? 'live_current' : 'historical_replay'
   assertAllocatorContractRunDate(runDate, 'screener node runner')
   const runId = args.runId || `screener-node-${Date.now()}`
   const env = buildBindings()
 
   const startedAt = Date.now()
-  const result = await runBottomUpScreener(env, runDate, { producerRunId: runId })
+  const result = await runBottomUpScreener(env, runDate, { producerRunId: runId, evidenceMode })
   const funnel = await funnelRunByProducerId(env, runDate, runId)
   const elapsedMs = Date.now() - startedAt
   const universeCount = Number(funnel?.universe_count ?? 0)

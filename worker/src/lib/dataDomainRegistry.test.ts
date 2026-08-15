@@ -32,6 +32,7 @@ const migrationTransientTables = new Set([
   'active8_oof_date_eligibility_v3',
   'chip_data_new',
   'd1_migrations',
+  'data_domain_control_revisions',
   'model_artifact_registry_new',
   'model_artifact_registry_oof_release_new',
   'pending_buy_debate_turns',
@@ -61,7 +62,11 @@ assert.deepEqual(
   'every migration-created table must be explicitly owned or explicitly transient',
 )
 assert.equal(productionTableNames.length, 229, 'production schema table count changed; ownership review is required')
-const tableNames = [...new Set([...productionTableNames, ...domainSqlFiles.flatMap(tableNamesFromSql)])]
+const tableNames = [...new Set([
+  ...productionTableNames,
+  ...domainSqlFiles.flatMap(tableNamesFromSql)
+    .filter((table) => !migrationTransientTables.has(table)),
+])]
 assertSingleDomainOwnership(tableNames)
 
 for (const table of new Set(tableNames)) {
@@ -146,6 +151,9 @@ assertParentBeforeChild('execution', 'broker_execution_legs', 'broker_execution_
 assertParentBeforeChild('learning', 'active8_oof_cohorts', 'active8_oof_predictions')
 assertParentBeforeChild('learning', 'allocator_ev_snapshot_runs', 'allocator_ev_feature_snapshot_staging')
 assertParentBeforeChild('learning', 'model_artifact_registry', 'expected_return_artifact_payloads')
+assertParentBeforeChild('learning', 'model_artifact_registry', 'model_champion_history')
+assertParentBeforeChild('learning', 'expected_return_artifact_payloads', 'model_champion_pointers')
+assertParentBeforeChild('learning', 'model_champion_history', 'model_champion_pointers')
 assertParentBeforeChild('learning', 'strategy_marginal_edge_runs_v4', 'strategy_marginal_edge_dates_v4')
 assertParentBeforeChild('learning', 'strategy_route_calibration_runs_v1', 'strategy_route_calibration_head_v1')
 
@@ -178,6 +186,7 @@ assert.throws(
 assert.equal(MULTI_D1_STRICT_ROUTING_READY, false)
 assert.equal(MULTI_D1_PROJECTION_CONTRACT_READY, false)
 assert.equal(MULTI_D1_ROUTING_CONTRACT_GATES.direct_legacy_db_paths_closed, false)
+assert.equal(MULTI_D1_ROUTING_CONTRACT_GATES.writer_quiescence_shared_epoch_cas, false)
 assert.equal(MULTI_D1_PROJECTION_CONTRACT_GATES.typed_outbox_producers_wired, false)
 assert.throws(
   () => databaseForDataDomain({ ...shadowEnv, MULTI_D1_STRICT: 'true' }, 'market'),

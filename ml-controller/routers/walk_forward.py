@@ -1635,6 +1635,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
             if req.promote and l4_promotion_allowed:
                 promotion_payload: dict[str, Any] = {
                     "l4_alpha_ev": {
+                        "artifact_id": (candidate_artifacts.get("l4_alpha_ev") or {}).get("artifact_id"),
                         "artifact": l4_artifact,
                         "validation_packet": l4_result.get("validation_packet") or {},
                         "operational_parity": parity,
@@ -1647,6 +1648,7 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
                 }
                 if fusion_promotion_allowed:
                     promotion_payload["allocator_ev_fusion"] = {
+                        "artifact_id": (candidate_artifacts.get("allocator_ev_fusion") or {}).get("artifact_id"),
                         "artifact": fusion_artifact,
                         "validation_packet": fusion_result.get("validation_packet") or {},
                         "operational_parity": parity,

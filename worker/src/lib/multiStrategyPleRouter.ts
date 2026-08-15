@@ -1,4 +1,5 @@
 import {
+  STRATEGY_FORMAL_LABELER_VERSION,
   assessCandidateAgainstStrategySpecs,
   deriveStrategyRawSignals,
   deriveStrategyThresholdScores,
@@ -6,6 +7,7 @@ import {
   normalizeStrategySpecGovernance,
   validateStrategySpec,
   type StrategyCandidateInput,
+  type StrategyEvidenceMode,
   type StrategyFamilyId,
   type StrategyOwnerType,
   type StrategySpec,
@@ -17,7 +19,7 @@ import {
   type StrategySimilarityGraphEvidence,
 } from './strategyPortfolioMetrics'
 
-export const STRATEGY_LABELER_VERSION = 'strategy-labeler-v1'
+export const STRATEGY_LABELER_VERSION = STRATEGY_FORMAL_LABELER_VERSION
 export const STRATEGY_AFFINITY_VERSION = 'strategy-raw-quality-affinity-v1'
 export const STRATEGY_AFFINITY_CHALLENGER_VERSION = 'strategy-threshold-margin-affinity-v2'
 export const FINLAB_PORTFOLIO_INTELLIGENCE_VERSION = 'finlab-portfolio-intelligence-v1'
@@ -267,6 +269,7 @@ export interface MultiStrategyPleRoutingPlan<T extends StrategyCandidatePoolCand
 
 export interface MultiStrategyPleRoutingOptions {
   maxSlateSize: number
+  evidenceMode?: StrategyEvidenceMode
   regime?: AlphaFrameworkRegime | string | null
   strategyWeights?: Record<string, number>
   strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
@@ -370,13 +373,14 @@ export function resolveStrategyThresholdMarginAffinityPolicy(
 export function assessStrategyThresholdMarginAffinity(
   candidate: StrategyCandidateInput,
   specInput: StrategySpec,
-  options: Pick<MultiStrategyPleRoutingOptions, 'regime' | 'strategyWeights'> = {},
+  options: Pick<MultiStrategyPleRoutingOptions, 'regime' | 'strategyWeights' | 'evidenceMode'> = {},
 ): StrategyThresholdMarginAffinityAssessment {
   const spec = normalizeStrategySpecGovernance(specInput)
   const policy = resolveNormalizedStrategyThresholdMarginAffinityPolicy(spec, options)
-  const evaluability = assessStrategySpecEvaluability(candidate, spec)
+  const evaluationOptions = { evidenceMode: options.evidenceMode }
+  const evaluability = assessStrategySpecEvaluability(candidate, spec, evaluationOptions)
   const assessment = policy.regimeWeight > 0 && evaluability.evaluable
-    ? assessCandidateAgainstStrategySpecs(candidate, [spec])
+    ? assessCandidateAgainstStrategySpecs(candidate, [spec], evaluationOptions)
     : { matches: [] }
   const match = assessment.matches[0] ?? null
   return {
@@ -398,8 +402,8 @@ function strategyInputFromCandidate(candidate: StrategyCandidatePoolCandidate): 
   }
 }
 
-function rawSignalQuality(candidate: StrategyCandidatePoolCandidate): number {
-  const raw = deriveStrategyRawSignals(strategyInputFromCandidate(candidate))
+function rawSignalQuality(candidate: StrategyCandidatePoolCandidate, evidenceMode?: StrategyEvidenceMode): number {
+  const raw = deriveStrategyRawSignals(strategyInputFromCandidate(candidate), { evidenceMode })
   const trendScore =
     clamp((finiteNumber(raw.closeAboveMa20Pct) ?? 0) * 180, -12, 18)
     + clamp((finiteNumber(raw.closeAboveMa60Pct) ?? 0) * 120, -10, 14)
@@ -418,9 +422,9 @@ function rawSignalQuality(candidate: StrategyCandidatePoolCandidate): number {
   return round3(clamp(45 + trendScore * 0.32 + flowScore * 0.32 + qualityScore * 0.24, 0, 100))
 }
 
-function marketHeatScore(candidate: StrategyCandidatePoolCandidate): number {
+function marketHeatScore(candidate: StrategyCandidatePoolCandidate, evidenceMode?: StrategyEvidenceMode): number {
   const input = strategyInputFromCandidate(candidate)
-  const raw = deriveStrategyRawSignals(input)
+  const raw = deriveStrategyRawSignals(input, { evidenceMode })
   const scores = deriveStrategyThresholdScores(input)
   const return5d = finiteNumber(raw.return5d)
   const return20d = finiteNumber(raw.return20d)
@@ -478,7 +482,7 @@ function buildCandidateLabelStates<T extends StrategyCandidatePoolCandidate>(
 
   return candidates.map((candidate) => {
     const labels: StrategyLabel[] = []
-    const rawQuality = rawSignalQuality(candidate)
+    const rawQuality = rawSignalQuality(candidate, options.evidenceMode)
     for (const spec of normalizedSpecs) {
       const thresholdAssessment = assessStrategyThresholdMarginAffinity(candidate, spec, options)
       const {
@@ -878,7 +882,7 @@ export function buildStrategySimilarityEvidencePayload<T extends StrategyCandida
   specs: StrategySpec[],
   options: Pick<
     MultiStrategyPleRoutingOptions,
-    'regime' | 'strategyWeights' | 'strategySimilarityEdgeThreshold' | 'strategySimilarityThresholdQuantile'
+    'regime' | 'strategyWeights' | 'evidenceMode' | 'strategySimilarityEdgeThreshold' | 'strategySimilarityThresholdQuantile'
   > = {},
   oofReturnsByStrategy: Record<string, Array<{ signal_date: string; residual_return: number; sample_count: number }>> = {},
 ): StrategySimilarityEvidencePayload {
@@ -1098,7 +1102,7 @@ function annotateCandidate<T extends StrategyCandidatePoolCandidate>(
     ? round3(clamp(average(teacherValues.map((value) => clamp(value, 0, 1))), 0, 1))
     : 0
   const teacherAlignmentContribution = teacherValues.length ? round3(teacherAlignment * 5) : 0
-  const heatScore = marketHeatScore(state.candidate)
+  const heatScore = marketHeatScore(state.candidate, options.evidenceMode)
   const marketHeatContribution = round3(heatScore * 0.08)
   const diversityContribution = round3(clamp(avgDiversification + Math.min(0.18, crossFamilyBonus / 40), 0, 1))
   const riskAdjustedAffinity = round3(clamp(

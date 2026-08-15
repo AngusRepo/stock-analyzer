@@ -12,6 +12,7 @@ assert.match(String(audit.query), /retention_days=30/)
 assert.match(String(audit.query), /limit_per_table=500/)
 assert.match(String(audit.query), /min_blob_bytes=1024/)
 assert.match(String(audit.query), /confirm_archive=ARCHIVE_D1_AUDIT_JSON_TO_R2/)
+assert.match(String(audit.query), /durable=1/)
 
 for (const domain of ['execution', 'paper']) {
   const job = manifest.jobs.find((entry) => entry.id === `data-domain-shadow-backfill-${domain}`)

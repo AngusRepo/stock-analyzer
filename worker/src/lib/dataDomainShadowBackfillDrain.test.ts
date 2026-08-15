@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import {
   resolveDataDomainShadowBackfillContinuation,
   resolveLatestEveningChainClosure,
+  shouldContinueDataDomainGlobalSweep,
 } from './dataDomainShadowBackfillDrain'
 
 const drain = fs.readFileSync('src/lib/dataDomainShadowBackfillDrain.ts', 'utf8')
@@ -31,6 +32,10 @@ assert(admin.includes('enqueueDataDomainShadowBackfill'))
 assert(types.includes("| 'data_domain_shadow_backfill'"))
 assert(types.includes('dataDomainTable?: string'))
 assert(types.includes('dataDomainRequestedTable?: string'))
+assert(types.includes('dataDomainGlobalSweep?: boolean'))
+assert(drain.includes('dataDomainGlobalSweep: input.globalSweep'))
+assert(drain.includes('globalSweep: true'))
+assert((drain.match(/\n\s+globalSweep,/g) ?? []).length >= 3)
 assert(drain.indexOf("continuation === 'requested_table_complete'") < drain.indexOf('attempt + 1 >= maxAttempts'))
 assert.equal(resolveDataDomainShadowBackfillContinuation(
   'model_artifact_registry',
@@ -44,6 +49,35 @@ assert.equal(resolveDataDomainShadowBackfillContinuation(
   'model_artifact_registry',
   'shadow_progress',
 ), 'same_table')
+assert.equal(resolveDataDomainShadowBackfillContinuation(
+  undefined,
+  'shadow_delete_reconciliation_deferred',
+), 'next_domain_table')
+assert.equal(resolveDataDomainShadowBackfillContinuation(
+  'expected_return_artifact_payloads',
+  'shadow_delete_reconciliation_deferred',
+), 'requested_table_dependency_blocked')
+assert.equal(resolveDataDomainShadowBackfillContinuation(
+  'expected_return_artifact_payloads',
+  'shadow_table_complete',
+), 'requested_table_dependency_blocked')
+assert.equal(shouldContinueDataDomainGlobalSweep({
+  globalSweep: true,
+  domainShadowReady: true,
+}), true)
+assert.equal(shouldContinueDataDomainGlobalSweep({
+  globalSweep: false,
+  domainShadowReady: true,
+}), false)
+assert.equal(shouldContinueDataDomainGlobalSweep({
+  globalSweep: true,
+  requestedTable: 'model_artifact_registry',
+  domainShadowReady: true,
+}), false)
+assert.equal(shouldContinueDataDomainGlobalSweep({
+  globalSweep: true,
+  domainShadowReady: false,
+}), false)
 
 assert(drain.includes('inspectLatestEveningChainClosure'))
 assert(drain.includes('enqueueNextDataDomainShadowBackfill'))

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {
   buildDataDomainAggregateParitySnapshot,
   domainBackfillBatchLimit,
+  domainBackfillFinalCountFenceBlockers,
   domainBackfillKeysetWhere,
   domainBackfillParityBatchLimit,
   domainBackfillRollingManifest,
@@ -33,6 +34,21 @@ assert.equal(domainBackfillParityBatchLimit(50), 400)
 assert.equal(domainBackfillRowsPerStatement(13), 7)
 assert.equal(domainBackfillRowsPerStatement(100), 1)
 assert.equal(domainBackfillRowsPerStatement(0), 100)
+assert.deepEqual(domainBackfillFinalCountFenceBlockers({
+  expectedSourceRows: 100,
+  expectedTargetRows: 100,
+  liveSourceRows: 100,
+  liveTargetRows: 101,
+}), [
+  'live_target_count_drift:100/101',
+  'live_count_mismatch:100/101',
+])
+assert.deepEqual(domainBackfillFinalCountFenceBlockers({
+  expectedSourceRows: 100,
+  expectedTargetRows: 100,
+  liveSourceRows: 100,
+  liveTargetRows: 100,
+}), [])
 assert.equal(isDataDomainShadowProgressStale(null, null, Date.parse('2026-08-03T12:10:00Z')), false)
 assert.equal(isDataDomainShadowProgressStale('2026-08-03T12:06:00Z', null, Date.parse('2026-08-03T12:10:00Z')), false)
 assert.equal(isDataDomainShadowProgressStale('2026-08-03T12:00:00Z', '2026-08-03T12:04:59Z', Date.parse('2026-08-03T12:10:00Z')), true)
@@ -69,11 +85,11 @@ async function testRollingManifests(): Promise<void> {
     [
       {
         table_name: 'runs', status: 'pass', source_count: 2, target_count: 2,
-        source_checksum: 'runs-same', target_checksum: 'runs-same',
+        source_checksum: 'a'.repeat(64), target_checksum: 'a'.repeat(64),
       },
       {
         table_name: 'items', status: 'pass', source_count: 3, target_count: 3,
-        source_checksum: 'items-same', target_checksum: 'items-same',
+        source_checksum: 'b'.repeat(64), target_checksum: 'b'.repeat(64),
       },
     ],
   )
@@ -85,7 +101,7 @@ async function testRollingManifests(): Promise<void> {
     ['runs'],
     [{
       table_name: 'runs', status: 'pass', source_count: 2, target_count: 2,
-      source_checksum: 'source', target_checksum: 'target',
+      source_checksum: 'c'.repeat(64), target_checksum: 'd'.repeat(64),
     }],
   ), null)
 }

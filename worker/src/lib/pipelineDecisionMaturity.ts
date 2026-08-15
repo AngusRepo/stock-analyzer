@@ -10,6 +10,7 @@ import {
   type ExpectedReturnShadowEvidence,
 } from './expectedReturnMaturityEvidence'
 import { readCurrentExpectedReturnServingState } from './expectedReturnServingState'
+import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
 import {
   STRATEGY_ROUTE_CHALLENGER_VERSION,
   STRATEGY_ROUTE_MIN_OOS_DATES,
@@ -17,6 +18,10 @@ import {
   STRATEGY_ROUTE_MIN_TRAIN_DATES,
   STRATEGY_ROUTE_PURGE_DATES,
 } from './strategyRouteCalibration'
+import {
+  STRATEGY_FORMAL_LABELER_VERSION,
+  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+} from './strategySpec'
 
 export type PipelineMaturityStatus =
   | 'serving'
@@ -101,7 +106,12 @@ export interface PipelineMaturityStage {
         availability: 'available' | 'blocked' | 'missing'
         reason_code: string | null
         identity_assurance: string | null
+        identity_schema_version: string | null
         artifact_id: string | null
+        artifact_path: string | null
+        artifact_checksum: string | null
+        identity_valid: boolean
+        identity_blockers: string[]
         model_version: string | null
         artifact_contract_version: string | null
         validation_schema_version: string | null
@@ -130,6 +140,13 @@ export interface PipelineMaturityStage {
         availability: 'available' | 'blocked' | 'missing'
         reason_code: string | null
         evaluation_id: string | null
+        identity_schema_version: string | null
+        subject_artifact_checksum: string | null
+        evaluator_contract_checksum: string | null
+        artifact_path: string | null
+        artifact_checksum: string | null
+        identity_blockers: string[]
+        identity_valid: boolean
         cohort_id: string | null
         model_version: string | null
         validation_schema_version: string | null
@@ -392,25 +409,53 @@ export async function buildPipelineDecisionMaturityPacket(
              SUM(CASE WHEN allocation_selected=1 THEN 1 ELSE 0 END) allocation_selected_rows
         FROM selection_reference_snapshots_v1
        WHERE signal_date=? AND producer_run_id=? AND hard_gate_passed=1
-    `).bind(STRATEGY_ROUTE_CHALLENGER_VERSION, STRATEGY_ROUTE_CHALLENGER_VERSION, head.signal_date, head.run_id).first<any>() : Promise.resolve(null)),
+         AND EXISTS (
+           SELECT 1 FROM strategy_label_matrix_runs_v4 mr
+            WHERE mr.signal_date=selection_reference_snapshots_v1.signal_date
+              AND mr.producer_run_id=selection_reference_snapshots_v1.producer_run_id
+              AND mr.status='ready'
+              AND mr.reference_contract_version=?
+              AND mr.labeler_version IN (?, ?)
+              AND mr.labeler_version=selection_reference_snapshots_v1.strategy_labeler_version
+         )
+    `).bind(
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      head.signal_date,
+      head.run_id,
+      SELECTION_REFERENCE_CONTRACT_VERSION,
+      STRATEGY_FORMAL_LABELER_VERSION,
+      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+    ).first<any>() : Promise.resolve(null)),
     safeQuery(() => head ? learningDb.prepare(`
       SELECT r.status, r.reference_candidate_count, r.strategy_count,
              r.expected_cell_count, r.persisted_cell_count,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
+               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1
+               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
                  AND m.affinity_evidence_count>0) raw_threshold_rows,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1
+               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
                  AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) projected_threshold_rows,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.producer_run_id=r.producer_run_id AND m.challenger_affinity_version=?) challenger_projection_cells,
+               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.challenger_affinity_version=?) challenger_projection_cells,
              r.updated_at
         FROM strategy_label_matrix_runs_v4 r
        WHERE r.signal_date=? AND r.producer_run_id=?
+         AND r.status='ready'
+         AND r.reference_contract_version=?
+         AND r.labeler_version IN (?, ?)
        LIMIT 1
-    `).bind(STRATEGY_ROUTE_CHALLENGER_VERSION, STRATEGY_ROUTE_CHALLENGER_VERSION, head.signal_date, head.run_id).first<any>() : Promise.resolve(null)),
+    `).bind(
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      head.signal_date,
+      head.run_id,
+      SELECTION_REFERENCE_CONTRACT_VERSION,
+      STRATEGY_FORMAL_LABELER_VERSION,
+      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+    ).first<any>() : Promise.resolve(null)),
     safeQuery(() => learningDb.prepare(`
       SELECT artifact_id, as_of_date, status, source_contract, strategy_count,
              paired_date_count, oof_max_date, edge_count, effective_strategy_count,
@@ -445,7 +490,7 @@ export async function buildPipelineDecisionMaturityPacket(
     safeQuery(() => learningDb.prepare(`
       WITH ranked AS (
         SELECT model_name, artifact_id, version, candidate_type, training_run_id,
-               checksum, state, source_run_date,
+               checksum, artifact_path, state, source_run_date,
                offline_gate_decision, offline_gate_failed_gates,
                live_gate_status, updated_at, offline_evidence_json,
                ROW_NUMBER() OVER (
@@ -460,7 +505,7 @@ export async function buildPipelineDecisionMaturityPacket(
            AND source_run_date<=?
       )
       SELECT model_name, artifact_id, version, candidate_type, training_run_id,
-             checksum, state, source_run_date,
+             checksum, artifact_path, state, source_run_date,
              offline_gate_decision, offline_gate_failed_gates,
              live_gate_status, updated_at, offline_evidence_json
         FROM ranked WHERE ordinal=1
@@ -472,20 +517,36 @@ export async function buildPipelineDecisionMaturityPacket(
          WHERE business_date <= ? AND policy_decision='shadow_only'
          ORDER BY business_date DESC, updated_at DESC, evaluation_id DESC
          LIMIT 1
+      ),
+      ranked_batch AS (
+        SELECT p.evaluation_id, p.identity_schema_version,
+               p.subject_artifact_checksum, p.evaluator_contract_checksum,
+               p.cohort_id, p.base_manifest_checksum,
+               p.extension_manifest_checksum, p.artifact_path, p.artifact_checksum,
+               p.business_date, p.model_name, p.model_version,
+               p.oof_max_date, p.oof_date_count, p.oof_row_count,
+               p.quality_decision, p.policy_decision, p.validation_packet_json, p.updated_at,
+               ROW_NUMBER() OVER (
+                 PARTITION BY p.model_name
+                 ORDER BY p.updated_at DESC, p.evaluation_id DESC
+               ) ordinal
+          FROM expected_return_shadow_evaluation_packets p
+          JOIN latest_batch b
+            ON p.business_date=b.business_date
+           AND p.cohort_id=b.cohort_id
+           AND p.base_manifest_checksum=b.base_manifest_checksum
+           AND p.extension_manifest_checksum=b.extension_manifest_checksum
+         WHERE p.policy_decision='shadow_only'
       )
-      SELECT p.evaluation_id, p.cohort_id, p.base_manifest_checksum,
-             p.extension_manifest_checksum, p.artifact_path, p.artifact_checksum,
-             p.business_date, p.model_name, p.model_version,
-             p.oof_max_date, p.oof_date_count, p.oof_row_count,
-             p.quality_decision, p.policy_decision, p.validation_packet_json, p.updated_at
-        FROM expected_return_shadow_evaluation_packets p
-        JOIN latest_batch b
-          ON p.business_date=b.business_date
-         AND p.cohort_id=b.cohort_id
-         AND p.base_manifest_checksum=b.base_manifest_checksum
-         AND p.extension_manifest_checksum=b.extension_manifest_checksum
-       WHERE p.policy_decision='shadow_only'
-       ORDER BY p.model_name
+      SELECT evaluation_id, identity_schema_version,
+             subject_artifact_checksum, evaluator_contract_checksum,
+             cohort_id, base_manifest_checksum, extension_manifest_checksum,
+             artifact_path, artifact_checksum, business_date, model_name, model_version,
+             oof_max_date, oof_date_count, oof_row_count, quality_decision,
+             policy_decision, validation_packet_json, updated_at
+        FROM ranked_batch
+       WHERE ordinal=1
+       ORDER BY model_name
     `).bind(requestedDate).all<ExpectedReturnShadowDbRow>().then((result) => result.results ?? [])),
     safeQuery(() => readCurrentExpectedReturnServingState({ ...env, DB: learningDb }, requestedDate)),
     safeQuery(() => inspectAllocatorEvMaturityCoverage(learningDb, requestedDate)),
@@ -668,7 +729,8 @@ export async function buildPipelineDecisionMaturityPacket(
   const maturity = l4Maturity.value
   const shadowRows = evShadowRows.value ?? []
   const shadowModels = new Set(shadowRows.map((row) => row.model_name))
-  const shadowPairComplete = shadowModels.has('l4_alpha_ev')
+  const shadowPairComplete = shadowRows.length === 2
+    && shadowModels.has('l4_alpha_ev')
     && shadowModels.has('allocator_ev_fusion')
     && shadowModels.size === 2
   const shadowBatchReason = shadowRows.length === 0
@@ -782,7 +844,12 @@ export async function buildPipelineDecisionMaturityPacket(
             availability: !l4 ? 'missing' : l4.identity_valid ? 'available' : 'blocked',
             reason_code: !l4 ? 'offline_candidate_missing' : l4.identity_valid ? null : l4.identity_blockers[0] ?? 'candidate_identity_invalid',
             identity_assurance: l4?.identity_assurance ?? null,
+            identity_schema_version: l4?.identity_schema_version ?? null,
             artifact_id: l4?.artifact_id ?? null,
+            artifact_path: l4?.artifact_path ?? null,
+            artifact_checksum: l4?.checksum ?? null,
+            identity_valid: l4?.identity_valid ?? false,
+            identity_blockers: l4?.identity_blockers ?? ['offline_candidate_missing'],
             model_version: l4?.version ?? null,
             artifact_contract_version: l4?.artifact_contract_version ?? null,
             validation_schema_version: l4?.validation_schema_version ?? null,
@@ -812,6 +879,13 @@ export async function buildPipelineDecisionMaturityPacket(
             reason_code: shadowMetricScope.reason_code,
             evaluation_id: l4ShadowPacket?.evaluation_id ?? null,
             cohort_id: l4ShadowPacket?.cohort_id ?? null,
+            identity_schema_version: l4ShadowPacket?.identity_schema_version ?? null,
+            subject_artifact_checksum: l4ShadowPacket?.subject_artifact_checksum ?? null,
+            evaluator_contract_checksum: l4ShadowPacket?.evaluator_contract_checksum ?? null,
+            artifact_path: l4ShadowPacket?.artifact_path ?? null,
+            artifact_checksum: l4ShadowPacket?.artifact_checksum ?? null,
+            identity_blockers: l4ShadowPacket?.identity_blockers ?? ['frozen_forward_packet_missing'],
+            identity_valid: l4ShadowPacket?.identity_valid ?? false,
             model_version: l4ShadowPacket?.model_version ?? null,
             validation_schema_version: l4ShadowPacket?.validation_schema_version ?? null,
             business_date: l4ShadowPacket?.business_date ?? null,
@@ -922,10 +996,12 @@ export async function buildPipelineDecisionMaturityPacket(
         metric('champion_corr_delta', 'Selection diagnostic corr delta vs canonical L4 LCB90', fusion?.fusion_corr_delta_lcb90, { unit: 'ratio', ...candidateMetricScope, note: 'Not a v14 serving gate.' }),
         metric('champion_spread_delta', 'Selection diagnostic spread delta vs canonical L4 LCB90', fusion?.fusion_spread_delta_lcb90, { unit: 'return', ...candidateMetricScope, note: 'Not a v14 serving gate.' }),
         gateMetric('top_trade_ev_lcb90', 'Offline candidate final top trade EV LCB90', fusion?.fusion_top_trade_ev_lcb90, 0, 'return', 'gt', candidateMetricScope),
-        metric('final_champion_comparison', 'Offline candidate final trade EV paired comparison', fusion?.fusion_final_comparison_reason ? 'NOT_EVALUATED' : fusion?.fusion_final_comparison_decision, {
+        metric('final_champion_comparison', 'Offline candidate final trade EV paired comparison', fusion?.fusion_final_comparison_reason ? null : fusion?.fusion_final_comparison_decision, {
           unit: 'status',
           passed: fusion?.fusion_final_comparison_reason ? null : fusion?.fusion_final_comparison_decision == null ? null : fusion.fusion_final_comparison_decision === 'PASS',
           ...candidateMetricScope,
+          availability: fusion?.fusion_final_comparison_reason ? 'blocked' : candidateMetricScope.availability,
+          reason_code: fusion?.fusion_final_comparison_reason ?? candidateMetricScope.reason_code,
           note: fusion?.fusion_final_comparison_reason ?? (optionalFinite(fusion?.fusion_final_comparison_samples) != null && optionalFinite(fusion?.fusion_final_comparison_dates) != null ? `${optionalFinite(fusion?.fusion_final_comparison_samples)}/paired rows across ${optionalFinite(fusion?.fusion_final_comparison_dates)} dates.` : 'Paired comparison evidence unavailable.'),
         }),
         metric('execution_expert', 'Shadow diagnostic conditional execution expert', fusion?.execution_decision, { unit: 'status', passed: null, availability: fusion?.execution_decision == null ? 'not_applicable' : 'available', reason_code: fusion?.execution_decision == null ? 'diagnostic_not_served_by_fusion_v14' : null, note: 'Diagnostic only; not served by Fusion v14.' }),
@@ -964,9 +1040,14 @@ export async function buildPipelineDecisionMaturityPacket(
             availability: !fusion ? 'missing' : fusion.identity_valid ? 'available' : 'blocked',
             reason_code: !fusion ? 'offline_candidate_missing' : fusion.identity_valid ? null : fusion.identity_blockers[0] ?? 'candidate_identity_invalid',
             identity_assurance: fusion?.identity_assurance ?? null,
+            identity_schema_version: fusion?.identity_schema_version ?? null,
             artifact_id: fusion?.artifact_id ?? null,
             model_version: fusion?.version ?? null,
             artifact_contract_version: fusion?.artifact_contract_version ?? null,
+            artifact_path: fusion?.artifact_path ?? null,
+            artifact_checksum: fusion?.checksum ?? null,
+            identity_valid: fusion?.identity_valid ?? false,
+            identity_blockers: fusion?.identity_blockers ?? ['offline_candidate_missing'],
             validation_schema_version: fusion?.validation_schema_version ?? null,
             source_run_date: fusion?.source_run_date ?? null,
             oof_max_date: fusion?.fusion_oof_max_date ?? null,
@@ -1014,6 +1095,13 @@ export async function buildPipelineDecisionMaturityPacket(
             cohort_id: fusionShadowPacket?.cohort_id ?? null,
             model_version: fusionShadowPacket?.model_version ?? null,
             validation_schema_version: fusionShadowPacket?.validation_schema_version ?? null,
+            identity_schema_version: fusionShadowPacket?.identity_schema_version ?? null,
+            subject_artifact_checksum: fusionShadowPacket?.subject_artifact_checksum ?? null,
+            evaluator_contract_checksum: fusionShadowPacket?.evaluator_contract_checksum ?? null,
+            artifact_path: fusionShadowPacket?.artifact_path ?? null,
+            artifact_checksum: fusionShadowPacket?.artifact_checksum ?? null,
+            identity_blockers: fusionShadowPacket?.identity_blockers ?? ['frozen_forward_packet_missing'],
+            identity_valid: fusionShadowPacket?.identity_valid ?? false,
             business_date: fusionShadowPacket?.business_date ?? null,
             oof_max_date: fusionShadowPacket?.oof_max_date ?? null,
             updated_at: fusionShadowPacket?.updated_at ?? null,
@@ -1029,15 +1117,17 @@ export async function buildPipelineDecisionMaturityPacket(
         SELECT signal_date
           FROM strategy_label_matrix_runs_v4
          WHERE signal_date <= ? AND status = 'ready'
+           AND labeler_version IN (?, ?)
          GROUP BY signal_date
          ORDER BY signal_date DESC
          LIMIT 7
       ), ranked_runs AS (
-        SELECT producer_run_id, signal_date,
+        SELECT producer_run_id, signal_date, labeler_version,
                ROW_NUMBER() OVER (PARTITION BY signal_date ORDER BY updated_at DESC, producer_run_id DESC) ordinal
           FROM strategy_label_matrix_runs_v4 runs
           JOIN recent_dates USING (signal_date)
          WHERE runs.status = 'ready'
+           AND runs.labeler_version IN (?, ?)
       )
       SELECT run.signal_date evidence_date,
              SUM(CASE WHEN matrix.evaluable=1 AND matrix.strategy_hit=1
@@ -1045,12 +1135,21 @@ export async function buildPipelineDecisionMaturityPacket(
                        AND matrix.challenger_affinity_version=? THEN 1 ELSE 0 END) value,
              SUM(CASE WHEN matrix.evaluable=1 AND matrix.strategy_hit=1 THEN 1 ELSE 0 END) target
         FROM ranked_runs run
-        JOIN strategy_label_matrix_v4 matrix ON matrix.producer_run_id=run.producer_run_id
+        JOIN strategy_label_matrix_v4 matrix
+          ON matrix.producer_run_id=run.producer_run_id
+         AND matrix.labeler_version=run.labeler_version
        WHERE run.ordinal=1
        GROUP BY run.signal_date
        ORDER BY run.signal_date DESC
        LIMIT 7
-    `).bind(requestedDate, STRATEGY_ROUTE_CHALLENGER_VERSION).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
+    `).bind(
+      requestedDate,
+      STRATEGY_FORMAL_LABELER_VERSION,
+      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+      STRATEGY_FORMAL_LABELER_VERSION,
+      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+    ).all<{ evidence_date: string; value: number | null; target: number | null }>().then((result) => result.results ?? [])),
     safeQuery(() => learningDb.prepare(`
       SELECT as_of_date evidence_date, paired_date_count value,
              json_extract(graph_json, '$.paired_date_requirement') target
@@ -1069,7 +1168,7 @@ export async function buildPipelineDecisionMaturityPacket(
     safeQuery(() => learningDb.prepare(`
       WITH ranked AS (
         SELECT model_name, artifact_id, version, candidate_type, training_run_id,
-               checksum, state, source_run_date,
+               checksum, artifact_path, state, source_run_date,
                offline_gate_decision, offline_gate_failed_gates,
                live_gate_status, updated_at, offline_evidence_json,
                ROW_NUMBER() OVER (
@@ -1082,7 +1181,7 @@ export async function buildPipelineDecisionMaturityPacket(
            AND source_run_date <= ?
       )
       SELECT model_name, artifact_id, version, candidate_type, training_run_id,
-             checksum, state, source_run_date,
+             checksum, artifact_path, state, source_run_date,
              offline_gate_decision, offline_gate_failed_gates,
              live_gate_status, updated_at, offline_evidence_json
         FROM ranked
@@ -1103,7 +1202,7 @@ export async function buildPipelineDecisionMaturityPacket(
     safeQuery(() => learningDb.prepare(`
       WITH ranked AS (
         SELECT model_name, artifact_id, version, candidate_type, training_run_id,
-               checksum, state, source_run_date,
+               checksum, artifact_path, state, source_run_date,
                offline_gate_decision, offline_gate_failed_gates,
                live_gate_status, updated_at, offline_evidence_json,
                ROW_NUMBER() OVER (
@@ -1116,7 +1215,7 @@ export async function buildPipelineDecisionMaturityPacket(
            AND source_run_date <= ?
       )
       SELECT model_name, artifact_id, version, candidate_type, training_run_id,
-             checksum, state, source_run_date,
+             checksum, artifact_path, state, source_run_date,
              offline_gate_decision, offline_gate_failed_gates,
              live_gate_status, updated_at, offline_evidence_json
         FROM ranked

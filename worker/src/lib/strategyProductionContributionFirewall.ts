@@ -1,7 +1,9 @@
 export const STRATEGY_PRODUCTION_FIREWALL_POLICY_ID =
-  'strategy-production-contribution-firewall-v1' as const
+  'strategy-production-contribution-firewall-v2' as const
 
-export const STRATEGY_PRODUCTION_FIREWALL_VERSION = 1 as const
+export const STRATEGY_PRODUCTION_FIREWALL_VERSION = 2 as const
+export const STRATEGY_ALLOCATION_ELIGIBILITY_CONTRACT_VERSION =
+  'strategy-allocation-eligibility-v2' as const
 
 export type StrategyLifecycleStatus =
   | 'research'
@@ -29,6 +31,7 @@ export interface StrategyProductionFirewallStrategy {
 export interface StrategyProductionFirewallGate {
   strategy_id: string
   decision: StrategyPromotionDecision
+  allocation_eligible: boolean
 }
 
 export interface StrategyProductionFirewallBaseWeights {
@@ -54,6 +57,7 @@ export interface StrategyProductionFirewallState {
     raw_labels_preserved: true
     experimental_threshold_deltas_applied: false
     complete_non_retired_weight_map: true
+    allocation_eligibility_contract_version: typeof STRATEGY_ALLOCATION_ELIGIBILITY_CONTRACT_VERSION
     normalized_promoted_weights: boolean
     positive_weight_count: number
   }
@@ -86,6 +90,7 @@ function canonicalizePayload(input: {
   return JSON.stringify({
     policy_id: STRATEGY_PRODUCTION_FIREWALL_POLICY_ID,
     version: STRATEGY_PRODUCTION_FIREWALL_VERSION,
+    allocation_eligibility_contract_version: STRATEGY_ALLOCATION_ELIGIBILITY_CONTRACT_VERSION,
     knowledge_cutoff_date: input.knowledge_cutoff_date,
     strategy_weights: strategyWeights,
     quarantined_strategy_ids: [...input.quarantined_strategy_ids].sort(),
@@ -111,15 +116,16 @@ export function buildStrategyProductionContributionFirewall(input: {
     .sort((left, right) => left.id.localeCompare(right.id))
 
   const statusById = new Map(nonRetiredStrategies.map((strategy) => [strategy.id, strategy.status]))
-  const quarantinedStrategyIds = sortedUnique(
+  const allocationEligible = new Set(
     input.gates
-      .filter(
-        (gate) =>
-          gate.decision === 'active_cooldown' && statusById.get(gate.strategy_id) === 'active',
-      )
+      .filter((gate) => gate.allocation_eligible === true && statusById.get(gate.strategy_id) === 'active')
       .map((gate) => gate.strategy_id),
   )
-  const quarantinedSet = new Set(quarantinedStrategyIds)
+  const quarantinedStrategyIds = sortedUnique(
+    nonRetiredStrategies
+      .filter((strategy) => strategy.status === 'active' && !allocationEligible.has(strategy.id))
+      .map((strategy) => strategy.id),
+  )
   const candidateReadyStrategyIds = sortedUnique(
     input.gates
       .filter((gate) => gate.decision === 'candidate_ready' && statusById.has(gate.strategy_id))
@@ -129,8 +135,11 @@ export function buildStrategyProductionContributionFirewall(input: {
   const suppliedWeights = input.base.weights ?? undefined
   const strategyWeights = Object.fromEntries(
     nonRetiredStrategies.map((strategy) => {
+      if (strategy.status !== 'active' || !allocationEligible.has(strategy.id)) {
+        return [strategy.id, 0]
+      }
       const baseWeight = suppliedWeights ? sanitizeWeight(suppliedWeights[strategy.id]) : 1
-      return [strategy.id, quarantinedSet.has(strategy.id) ? 0 : baseWeight]
+      return [strategy.id, baseWeight]
     }),
   )
 
@@ -177,6 +186,7 @@ export function buildStrategyProductionContributionFirewall(input: {
       complete_non_retired_weight_map: true,
       normalized_promoted_weights: normalizedPromotedWeights,
       positive_weight_count: Object.values(strategyWeights).filter((weight) => weight > 0).length,
+      allocation_eligibility_contract_version: STRATEGY_ALLOCATION_ELIGIBILITY_CONTRACT_VERSION,
     },
   }
 }

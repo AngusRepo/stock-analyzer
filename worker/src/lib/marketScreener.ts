@@ -24,7 +24,7 @@ import { readMarketRegimeState } from './marketRegimeState'
 import { applyScreenerScoreCalibration, resolveScreenerPolicy } from './screenerPolicy'
 import { enrichScreenerCandidatesWithBreeze2, extractBreeze2WatchPoint, type Breeze2CandidateShape } from './breeze2Runtime'
 import { controllerPostJson } from './controllerClient'
-import { loadTradingRestrictionBuckets } from './tradingRestrictions'
+import { assertTradingRestrictionPromotionAuthority, loadTradingRestrictionBuckets } from './tradingRestrictions'
 import { isEtfPatternSymbol } from './boardTradability'
 import { buildPartialScreenerScoreV2, buildScoreV2Components, readScoreV2Snapshot, type ScoreV2StorageRow } from './scoreV2Taxonomy'
 import { loadExternalEvidenceRiskOverlays } from './newsThemeRiskOverlay'
@@ -32,7 +32,14 @@ import { buildPriceActionStructure } from './priceActionStructure'
 import { FINLAB_PORTFOLIO_INTELLIGENCE_VERSION, buildStrategySimilarityEvidencePayload, type StrategySimilarityEvidencePayload } from './multiStrategyPleRouter'
 import { coerceModalStrategySimilarityGraphEvidence, modalStrategySimilarityBlockedReason, type StrategySimilarityGraphEvidence } from './strategyPortfolioMetrics'
 import { loadRuntimeTeacherEvidence } from './runtimeTeacherEvidence'
-import type { StrategySpec } from './strategySpec'
+import {
+  STRATEGY_FORMAL_LABELER_VERSIONS,
+  isMonthlyRevenueDerivedSignal,
+  resolveLegacyMonthlyRevenueEvidence,
+  type MonthlyRevenueEvidence,
+  type StrategyEvidenceMode,
+  type StrategySpec,
+} from './strategySpec'
 import {
   materializeFormal137FeatureAliases,
   materializeFormal137UsSentimentScoreRank,
@@ -52,6 +59,7 @@ import {
 } from './v41DataRuntime'
 import { promoteCanonicalRun, registerPipelineRun, writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
+import { buildL0DropReasonConservation, compactL0DropReasonConservationReceipt } from './screenerFunnelEvidence'
 import {
   buildSelectionEvidenceV4,
   persistSelectionEvidenceV4,
@@ -322,7 +330,7 @@ export async function prepareStrategyRedundancyBackfill(
     throw new Error(`strategy_redundancy_matrix_not_ready:${asOfDate}:${run.status}:${persistedCells}/${expectedCells}`)
   }
   const matrixLabelerVersion = String(run.labeler_version ?? '').trim()
-  if (!['strategy-labeler-v1', 'strategy-decision-log-pit-reconstruction-v6'].includes(matrixLabelerVersion)) {
+  if (!STRATEGY_FORMAL_LABELER_VERSIONS.some((version) => version === matrixLabelerVersion)) {
     throw new Error(`strategy_redundancy_matrix_labeler_contract_invalid:${asOfDate}:${run.labeler_version ?? 'missing'}`)
   }
   if (String(run.reference_contract_version ?? '').trim() !== SELECTION_REFERENCE_CONTRACT_VERSION) {
@@ -444,7 +452,11 @@ function chunkArray<T>(items: T[], size: number): T[][] {
   return chunks
 }
 
-async function loadRestrictedScreenerSymbols(env: Bindings, runDate: string): Promise<{
+async function loadRestrictedScreenerSymbols(
+  env: Bindings,
+  runDate: string,
+  evidenceMode: StrategyEvidenceMode,
+): Promise<{
   hardBlockedSymbols: Set<string>
   riskEvidenceSymbols: Set<string>
   sourceCounts: Record<string, number>
@@ -452,6 +464,7 @@ async function loadRestrictedScreenerSymbols(env: Bindings, runDate: string): Pr
   const restricted = await loadTradingRestrictionBuckets(env, runDate, {
     refreshOfficialIfStale: true,
     refreshTtlMs: 12 * 60 * 60_000,
+    evidenceMode,
   })
   await env.KV.put(
     `market:trading_restrictions:summary:${runDate}`,
@@ -462,10 +475,12 @@ async function loadRestrictedScreenerSymbols(env: Bindings, runDate: string): Pr
       source_counts: restricted.sourceCounts,
       hard_source_counts: restricted.hardSourceCounts,
       freshness: restricted.freshness,
+      evidence_status: restricted.evidenceStatus,
       generated_at: new Date().toISOString(),
     }),
     { expirationTtl: 7 * 86400 },
   ).catch(() => {})
+  assertTradingRestrictionPromotionAuthority(runDate, restricted.evidenceStatus)
   return {
     hardBlockedSymbols: restricted.hardBlockedSymbols,
     riskEvidenceSymbols: restricted.riskEvidenceSymbols,
@@ -586,7 +601,8 @@ export async function loadMatureStrategyOofReturns(
          SELECT 1 FROM strategy_label_matrix_runs_v4 mr
           WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
             AND mr.reference_contract_version=?
-            AND mr.labeler_version IN ('strategy-labeler-v1', 'strategy-decision-log-pit-reconstruction-v6')
+            AND mr.labeler_version IN (?, ?)
+            AND mr.labeler_version=m.labeler_version
        )
        AND EXISTS (
          SELECT 1 FROM canonical_run_heads h
@@ -596,7 +612,12 @@ export async function loadMatureStrategyOofReturns(
      GROUP BY m.strategy_id, m.signal_date
     HAVING COUNT(*) >= 3
      ORDER BY m.strategy_id, m.signal_date
-  `).bind(asOfDate, asOfDate, SELECTION_REFERENCE_CONTRACT_VERSION).all<{
+  `).bind(
+    asOfDate,
+    asOfDate,
+    SELECTION_REFERENCE_CONTRACT_VERSION,
+    ...STRATEGY_FORMAL_LABELER_VERSIONS,
+  ).all<{
     strategy_id: string
     signal_date: string
     residual_return: number | string
@@ -1180,6 +1201,7 @@ interface StrategyRawFundamentalSignals {
   revenueGrowthYoY?: number | null
   monthlyRevenueYoY?: number | null
   monthlyRevenueMoM?: number | null
+  monthlyRevenueEvidence?: MonthlyRevenueEvidence | null
   grossMargin?: number | null
   operatingMargin?: number | null
   roe?: number | null
@@ -1291,6 +1313,10 @@ interface StrategyRawFundamentalLoadTelemetry {
   revenueRows: number
   revenueSymbols: number
   revenueErrors: string[]
+  monthlyRevenueEvidenceMode: StrategyEvidenceMode
+  monthlyRevenueEvidenceStatus: MonthlyRevenueEvidence['status']
+  monthlyRevenueEvidenceReason: string | null
+  monthlyRevenueQueryExecuted: boolean
   fieldCoverage: Record<RawFundamentalSignalField, number>
   sourceCoverage: Record<string, number>
 }
@@ -1455,7 +1481,10 @@ function emptyRawFundamentalCoverage(): Record<RawFundamentalSignalField, number
   }, {} as Record<RawFundamentalSignalField, number>)
 }
 
-function createRawFundamentalTelemetry(requestedSymbols: number): StrategyRawFundamentalLoadTelemetry {
+function createRawFundamentalTelemetry(
+  requestedSymbols: number,
+  monthlyRevenue: ReturnType<typeof resolveLegacyMonthlyRevenueEvidence>,
+): StrategyRawFundamentalLoadTelemetry {
   return {
     requestedSymbols,
     symbolsWithAnyFundamental: 0,
@@ -1465,6 +1494,10 @@ function createRawFundamentalTelemetry(requestedSymbols: number): StrategyRawFun
     revenueRows: 0,
     revenueSymbols: 0,
     revenueErrors: [],
+    monthlyRevenueEvidenceMode: monthlyRevenue.evidenceMode,
+    monthlyRevenueEvidenceStatus: monthlyRevenue.evidence.status,
+    monthlyRevenueEvidenceReason: monthlyRevenue.evidence.reason,
+    monthlyRevenueQueryExecuted: monthlyRevenue.queryAllowed && requestedSymbols > 0,
     fieldCoverage: emptyRawFundamentalCoverage(),
     sourceCoverage: {},
   }
@@ -1503,10 +1536,11 @@ async function loadStrategyRawFundamentalSignals(
   env: Bindings,
   symbols: string[],
   endDate: string,
+  monthlyRevenue: ReturnType<typeof resolveLegacyMonthlyRevenueEvidence>,
 ): Promise<StrategyRawFundamentalLoadResult> {
   const fundamentals = new Map<string, StrategyRawFundamentalSignals>()
   const uniqueSymbols = [...new Set(symbols.map((symbol) => String(symbol || '').trim()).filter(Boolean))]
-  const telemetry = createRawFundamentalTelemetry(uniqueSymbols.length)
+  const telemetry = createRawFundamentalTelemetry(uniqueSymbols.length, monthlyRevenue)
   if (!uniqueSymbols.length) return { fundamentals, telemetry }
   const revenueMonth = endDate.slice(0, 7)
 
@@ -1578,6 +1612,7 @@ async function loadStrategyRawFundamentalSignals(
       telemetry.canonicalErrors.push(`canonical_fundamental_features:${errorText(error)}`)
     }
 
+    if (monthlyRevenue.queryAllowed) {
     try {
       const { results } = await env.DB.prepare(`
         SELECT r.stock_id AS symbol, r.yoy, r.mom
@@ -1605,6 +1640,7 @@ async function loadStrategyRawFundamentalSignals(
       }
     } catch (error) {
       telemetry.revenueErrors.push(`canonical_revenue_monthly:${errorText(error)}`)
+    }
     }
   }
 
@@ -1718,6 +1754,7 @@ function deriveStrategyRawSignals(
   fundamentals?: StrategyRawFundamentalSignals,
   extraFactors?: StrategyRawFactorSignalPatch,
   stockTechnicalPrices?: CanonicalScreenerPrice[],
+  monthlyRevenueEvidence?: MonthlyRevenueEvidence,
 ): StrategyRawSignals {
   const latest = prices[prices.length - 1]
   const indicatorRows = prices
@@ -1862,6 +1899,18 @@ function deriveStrategyRawSignals(
   const brokerNetAmount5d = chipRows.reduce((sum, row) => sum + (finiteOrNull(row.estimatedAmount) ?? 0), 0)
   const latestBroker = [...chipRows].reverse().find((row) => row.brokerCount != null || row.concentration != null)
   const latestMargin = [...chipRows].reverse().find((row) => row.marginBalance != null || row.shortBalance != null)
+  const monthlyRevenueUsable = monthlyRevenueEvidence?.status === 'LIVE_CURRENT_ONLY'
+    && monthlyRevenueEvidence.signalDate === monthlyRevenueEvidence.observedTaipeiDate
+  const fundamentalSources = String(fundamentals?.source ?? '')
+    .split('+')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .filter((source) => monthlyRevenueUsable || source !== 'finlab.monthly_revenue')
+  const extraFactorSignals = Object.fromEntries(
+    Object.entries(extraFactors?.factorSignals ?? {}).filter(
+      ([name]) => monthlyRevenueUsable || !isMonthlyRevenueDerivedSignal(name),
+    ),
+  )
   const base: StrategyRawSignals = {
     close,
     ma10Bias,
@@ -1900,6 +1949,9 @@ function deriveStrategyRawSignals(
     brokerCount: finiteOrNull(latestBroker?.brokerCount),
     brokerConcentration: finiteOrNull(latestBroker?.concentration),
     ...(fundamentals ?? {}),
+    monthlyRevenueYoY: monthlyRevenueUsable ? fundamentals?.monthlyRevenueYoY ?? null : null,
+    monthlyRevenueMoM: monthlyRevenueUsable ? fundamentals?.monthlyRevenueMoM ?? null : null,
+    monthlyRevenueEvidence: monthlyRevenueEvidence ?? null,
     source: [
       'finlab.price',
       chipRows.some((row) => String(row.source || '').includes('institutional_investors_trading_summary'))
@@ -1911,7 +1963,7 @@ function deriveStrategyRawSignals(
       chipRows.some((row) => String(row.source || '') === 'finlab.rotc_broker_transactions')
         ? 'finlab.rotc_broker_transactions'
         : null,
-      fundamentals?.source ?? null,
+      ...fundamentalSources,
       extraFactors?.source ?? null,
     ].filter(Boolean).join('+'),
   }
@@ -2043,7 +2095,7 @@ function deriveStrategyRawSignals(
       cashAndCashEquivalentsIncreaseDecrease: base.cashAndCashEquivalentsIncreaseDecrease ?? null,
       otherPayables: base.otherPayables ?? null,
       capitalAmount: base.capitalAmount ?? null,
-      ...(extraFactors?.factorSignals ?? {}),
+      ...extraFactorSignals,
     },
   }
 }
@@ -2293,26 +2345,36 @@ function applyFinLabStyleFactorNormalization<T extends { raw_signals?: StrategyR
       telemetry.allocationCoverage.finlabTurnoverControlWeight = (telemetry.allocationCoverage.finlabTurnoverControlWeight ?? 0) + 1
     }
 
-    const qualityComposite = avg([
-      finiteOrNull(raw.factorSignals.finlabCsRoeRank),
-      finiteOrNull(raw.factorSignals.finlabCsEpsRank),
-      finiteOrNull(raw.factorSignals.finlabCsGrossMarginRank),
-      finiteOrNull(raw.factorSignals.finlabCsOperatingMarginRank),
-      finiteOrNull(raw.factorSignals.finlabCsRevenueGrowthYoYRank),
-      finiteOrNull(raw.factorSignals.finlabCsMonthlyRevenueYoYRank),
-    ].filter((value): value is number => value != null))
+    const liveMonthlyRevenueCompositeEvidence = raw.monthlyRevenueEvidence?.status === 'LIVE_CURRENT_ONLY'
+      && raw.monthlyRevenueEvidence.signalDate === raw.monthlyRevenueEvidence.observedTaipeiDate
+    if (!liveMonthlyRevenueCompositeEvidence) {
+      delete raw.factorSignals.finlabQualityCompositeRank
+      delete raw.factorSignals.finlabSectorQualityCompositeRank
+    }
+    const qualityComposite = liveMonthlyRevenueCompositeEvidence
+      ? avg([
+          finiteOrNull(raw.factorSignals.finlabCsRoeRank),
+          finiteOrNull(raw.factorSignals.finlabCsEpsRank),
+          finiteOrNull(raw.factorSignals.finlabCsGrossMarginRank),
+          finiteOrNull(raw.factorSignals.finlabCsOperatingMarginRank),
+          finiteOrNull(raw.factorSignals.finlabCsRevenueGrowthYoYRank),
+          finiteOrNull(raw.factorSignals.finlabCsMonthlyRevenueYoYRank),
+        ].filter((value): value is number => value != null))
+      : null
     const valueComposite = avg([
       finiteOrNull(raw.factorSignals.finlabCsPeCheapRank),
       finiteOrNull(raw.factorSignals.finlabCsPbCheapRank),
       finiteOrNull(raw.factorSignals.finlabCsDividendYieldRank),
     ].filter((value): value is number => value != null))
-    const sectorQualityComposite = avg([
-      finiteOrNull(raw.factorSignals.finlabSectorRoeRank),
-      finiteOrNull(raw.factorSignals.finlabSectorGrossMarginRank),
-      finiteOrNull(raw.factorSignals.finlabSectorOperatingMarginRank),
-      finiteOrNull(raw.factorSignals.finlabSectorRevenueGrowthYoYRank),
-      finiteOrNull(raw.factorSignals.finlabSectorMonthlyRevenueYoYRank),
-    ].filter((value): value is number => value != null))
+    const sectorQualityComposite = liveMonthlyRevenueCompositeEvidence
+      ? avg([
+          finiteOrNull(raw.factorSignals.finlabSectorRoeRank),
+          finiteOrNull(raw.factorSignals.finlabSectorGrossMarginRank),
+          finiteOrNull(raw.factorSignals.finlabSectorOperatingMarginRank),
+          finiteOrNull(raw.factorSignals.finlabSectorRevenueGrowthYoYRank),
+          finiteOrNull(raw.factorSignals.finlabSectorMonthlyRevenueYoYRank),
+        ].filter((value): value is number => value != null))
+      : null
 
     if (qualityComposite != null) {
       raw.factorSignals.finlabQualityCompositeRank = Math.round(qualityComposite * 10000) / 10000
@@ -3185,6 +3247,7 @@ export function scoreMultiFactor(
  */
 export interface BottomUpScreenerRunOptions {
   producerRunId?: string | null
+  evidenceMode?: StrategyEvidenceMode
 }
 
 function resolveScreenerProducerRunId(runDate: string, value?: string | null): string {
@@ -3222,6 +3285,11 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const cfg = await getTradingConfig(env.KV)
   const sc = cfg.screener
   const endDate = resolveScreenerRunDate(runDate)
+  const monthlyRevenue = resolveLegacyMonthlyRevenueEvidence({
+    signalDate: endDate,
+    observedTaipeiDate: today(),
+    evidenceMode: options.evidenceMode,
+  })
   const canonicalRegimeState = await readMarketRegimeState(env.KV)
   if (
     !canonicalRegimeState
@@ -3307,10 +3375,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   // ?? ?蔭?⊥?????
-  const restrictionPolicy = await loadRestrictedScreenerSymbols(env, endDate)
+  const restrictionPolicy = await loadRestrictedScreenerSymbols(env, endDate, monthlyRevenue.evidenceMode)
   const punishedSet = restrictionPolicy.hardBlockedSymbols
   const restrictionRiskSet = restrictionPolicy.riskEvidenceSymbols
-  debugLog.push(`[Guard] trading restriction policy hard_block=${punishedSet.size} risk_evidence=${restrictionRiskSet.size} (attention/disposition are not L0 hard blocks)`)
+  debugLog.push(`[Guard] trading restriction policy hard_block=${punishedSet.size} risk_evidence=${restrictionRiskSet.size} (attention/notice soft; disposition/punish hard)`)
 
   // ?? 霈???寧璆?mapping + 璁艙璅惜 ??
   const industryMap = await getIndustryMapping(env.DB, env.KV)
@@ -3382,10 +3450,23 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // ?? Step 1: Universe hard filter ??
   const universe: { stockId: string; prices: CanonicalScreenerPrice[] }[] = []
-  let skipPrice = 0, skipVol = 0, skipTurnover = 0, skipPunish = 0, skipVolZero = 0, skipEtf = 0
+  let skipPriceHistory = 0, skipPrice = 0, skipVol = 0, skipTurnover = 0, skipPunish = 0, skipVolZero = 0, skipEtf = 0
 
   for (const [stockId, prices] of data.prices) {
-    if (prices.length < 3) continue
+    if (prices.length < 3) {
+      skipPriceHistory++
+      pushFunnelItem(funnelItems, {
+        symbol: stockId,
+        stage: 'universe',
+        decision: 'drop',
+        reasonCode: 'insufficient_price_history',
+        evidence: {
+          price_row_count: prices.length,
+          minimum_required_price_rows: 3,
+        },
+      })
+      continue
+    }
     const latest = prices[prices.length - 1]
     const info = sectorMap[stockId]
 
@@ -3440,7 +3521,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       },
     })
   }
-  const universeMsg = `[Step 1] Universe: ${universe.length} passed | drops: price=${skipPrice} avgVol=${skipVol} turnover=${skipTurnover} restricted=${skipPunish} zeroVol=${skipVolZero} etf=${skipEtf} other=${data.prices.size - universe.length - skipPrice - skipVol - skipTurnover - skipPunish - skipVolZero - skipEtf}`
+  const universeMsg = `[Step 1] Universe: ${universe.length} passed | drops: priceHistory=${skipPriceHistory} price=${skipPrice} avgVol=${skipVol} turnover=${skipTurnover} restricted=${skipPunish} zeroVol=${skipVolZero} etf=${skipEtf}`
   debugLog.push(universeMsg)
   if (skipEtf > 0) debugLog.push(`[Step 1] hard gate excluded ETFs=${skipEtf}`)
 
@@ -3449,6 +3530,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     env,
     universe.map((row) => row.stockId),
     endDate,
+    monthlyRevenue,
   )
   const rawFundamentalSignals = rawFundamentalLoad.fundamentals
   const rawSectorRotationSignals = await loadStrategyRawSectorRotationSignals(
@@ -3511,6 +3593,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       rawFundamentalSignals.get(stockId),
       rawSectorRotationSignals.get(stockId),
       stockTechnicalLongData.prices.get(stockId),
+      monthlyRevenue.evidence,
     )
 
     scored.push({
@@ -3624,7 +3707,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     ])
     const { buildLayer1StrategyBreadthPlan } = strategyCandidatePoolModule
     const { loadStrategyPortfolioMetricOverrides } = strategyPortfolioMetricsModule
-    passesLayer1TopUpQualityGuard = strategyCandidatePoolModule.passesLayer1TopUpQualityGuard
+    passesLayer1TopUpQualityGuard = (candidate) => strategyCandidatePoolModule.passesLayer1TopUpQualityGuard(
+      candidate,
+      monthlyRevenue.evidenceMode,
+    )
     const currentRegime = canonicalRegimeState.family
     runtimeStrategyRegime = currentRegime
     const { specs, source, registryRowCount, activeCount } = await listStrategySpecsForLearning(env.DB, { asOfDate: endDate })
@@ -3632,7 +3718,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     const strategyIds = specs
       .filter((spec: StrategySpec) => spec.status !== 'retired')
       .map((spec: StrategySpec) => spec.id)
-    const { loadStrategyProductionPolicyBefore } = await import('./strategyProductionPolicyStore')
+    const { loadStrategyProductionPolicyBefore, resolveRuntimeStrategyWeights } = await import('./strategyProductionPolicyStore')
     const [productionPolicyLoad, strategyOofLoad] = await Promise.all([
       loadStrategyProductionPolicyBefore(env.DB, endDate, strategyIds)
         .then((value) => ({ value, error: null as string | null }))
@@ -3649,12 +3735,14 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     ])
     const productionPolicyState = productionPolicyLoad.value
     const strategyOofReturns = strategyOofLoad.returns
-    const activeStrategyWeights = productionPolicyState?.state.strategy_weights
+    const runtimeStrategyWeightResolution = resolveRuntimeStrategyWeights(strategyIds, productionPolicyState)
+    const activeStrategyWeights = runtimeStrategyWeightResolution.weights
     const strategySimilarityPayload = buildStrategySimilarityEvidencePayload(
       strategySourceUniverse as any,
       specs,
       {
         regime: currentRegime,
+        evidenceMode: monthlyRevenue.evidenceMode,
         strategyWeights: activeStrategyWeights,
       },
       strategyOofReturns,
@@ -3700,6 +3788,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         targetSize: screenerPolicy.sizing.candidatePoolSize,
         coarseMlQueueSize: coarseQueueSize,
         regime: currentRegime,
+        evidenceMode: monthlyRevenue.evidenceMode,
         strategyWeights: activeStrategyWeights,
         strategyPortfolioMetrics: strategyPortfolioMetrics.metrics,
         strategyPortfolioMetricSource: strategyPortfolioMetrics.telemetry.source,
@@ -3786,9 +3875,8 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       strategy_oof_return_load_error: strategyOofLoad.error,
       promoted_route_calibration_run_id: promotedRouteCalibration?.runId ?? null,
       promoted_route_calibration_load_error: promotedRouteCalibrationLoad.error,
-      effective_strategy_weight_source: productionPolicyState
-        ? 'strategy-production-contribution-firewall-v1'
-        : 'runtime-default',
+      effective_strategy_weight_source: runtimeStrategyWeightResolution.source,
+      strategy_production_policy_abstained: runtimeStrategyWeightResolution.abstained,
       strategy_production_policy_id: productionPolicyState?.state.policy_id ?? null,
       strategy_production_policy_version: productionPolicyState?.state.version ?? null,
       strategy_production_policy_knowledge_cutoff_date: productionPolicyState?.state.knowledge_cutoff_date ?? null,
@@ -4743,7 +4831,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
           ...((entry as any).strategy_watch_points ?? []),
         ])),
       }
-    }), runtimeStrategySpecs, { regime: runtimeStrategyRegime })
+    }), runtimeStrategySpecs, {
+      regime: runtimeStrategyRegime,
+      evidenceMode: monthlyRevenue.evidenceMode,
+    })
     const topUpCandidates = afterIndustryLimit
       .filter((candidate) => {
         const symbol = String(candidate.symbol || '').trim()
@@ -4789,7 +4880,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
     finalCandidates = dedupeScreenerCandidatesBySymbol(
       annotateCandidatesWithStrategySpecs([
         ...(selectedCandidates as any[]),
-      ] as ScreenerCandidate[], runtimeStrategySpecs),
+      ] as ScreenerCandidate[], runtimeStrategySpecs, {
+        evidenceMode: monthlyRevenue.evidenceMode,
+      }),
     )
     strategySelectionTelemetry = {
       ...(strategySelectionTelemetry ?? {}),
@@ -4893,6 +4986,9 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         annotateCandidatesWithStrategySpecs(
           emergingScored.sort((a, b) => b.score - a.score).slice(0, emergingMaxCandidates) as ScreenerCandidate[],
           runtimeStrategySpecs,
+          {
+            evidenceMode: monthlyRevenue.evidenceMode,
+          },
         ),
       ))
       debugLog.push(`[Step 5e] emerging research lane: ${emergingResearchCandidates.length}/${emergingScored.length} top ${emergingMaxCandidates}`)
@@ -5434,6 +5530,26 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   try {
     if (!selectionEvidence) throw new Error('canonical_strategy_selection_evidence_missing')
+    const l0DropReasonConservation = buildL0DropReasonConservation({
+      sourceUniverseSymbols: data.prices.keys(),
+      rows: funnelItems
+        .filter((item) => item.stage === 'universe')
+        .map((item) => ({
+          symbol: item.symbol,
+          stage: item.stage,
+          decision: item.decision,
+          reason_code: item.reasonCode,
+          evidence: item.evidence,
+        })),
+    })
+    const l0DropReasonConservationReceipt = compactL0DropReasonConservationReceipt(
+      l0DropReasonConservation,
+    )
+    debugLog.push(
+      `[Step 1 conservation] source=${l0DropReasonConservation.source_universe} `
+      + `pass=${l0DropReasonConservation.pass} drop=${l0DropReasonConservation.drop} `
+      + `reasons=${JSON.stringify(l0DropReasonConservation.primary_reason_counts)}`,
+    )
     await writeScreenerFunnel(env, {
       runId,
       date: endDate,
@@ -5455,6 +5571,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         l0RawSignalCoverageAudit,
         finLabFactorNormalization: finLabFactorNormalizationTelemetry,
         restrictedCount: punishedSet.size,
+        l0DropReasonConservation: l0DropReasonConservationReceipt,
         buzzConcepts: combinedBuzz.slice(0, 10).map(b => b.concept),
       },
       debugLog,

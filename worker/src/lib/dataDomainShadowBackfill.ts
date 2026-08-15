@@ -1,6 +1,49 @@
 import type { Bindings } from '../types'
-import { dataDomainForTable, shadowDatabaseForDataDomain, tablesForDataDomainShadowBackfill, type DataDomain } from './dataDomainRegistry'
+import {
+  activeDataDomains,
+  dataDomainForTable,
+  invalidActiveDataDomains,
+  shadowDatabaseForDataDomain,
+  tablesForDataDomainShadowBackfill,
+  type DataDomain,
+} from './dataDomainRegistry'
+import {
+  assertInactiveLearningShadowAuthority,
+  invalidateControlTableClosure,
+  type InactiveLearningShadowAuthority,
+} from './dataDomainControlTableParity'
+import {
+  dataDomainControlRevisionBlockers,
+  dataDomainControlRevisionEvidence,
+  loadDataDomainControlRevisionPair,
+  strictDataDomainControlRevision,
+  type DataDomainControlRevisionPair,
+} from './dataDomainControlRevision'
+import {
+  boundedDataDomainTableManifest,
+  checksumRollingManifest,
+  checksumRows,
+  checksumText,
+  dataDomainManifestPageLimit,
+  DATA_DOMAIN_CONTROL_FULL_TABLE_SCHEMA_VERSION,
+  DATA_DOMAIN_CONTROL_PROGRESS_SCHEMA_VERSION,
+  DATA_DOMAIN_DIRECT_MANIFEST_SCHEMA_VERSION,
+  DATA_DOMAIN_EXPECTED_RETURN_SEMANTIC_SCHEMA_VERSION,
+  DATA_DOMAIN_FULL_CHECKSUM_LIMIT,
+  DATA_DOMAIN_ROLLING_MANIFEST_SCHEMA_VERSION,
+  isAuthoritativeDataDomainFullTableParity,
+  type DataDomainControlTable,
+  isDataDomainControlTable,
+  isDataDomainFullTableParityFresh,
+} from './dataDomainShadowManifest'
 import { assertExpectedReturnCandidateIdentityBackfillRows } from './expectedReturnCandidateIdentityBackfillGuard'
+import {
+  assertExpectedReturnPointerSourceStable,
+  assertExpectedReturnPointerTargetClosure,
+  beginExpectedReturnPointerShadowGuard,
+  type ExpectedReturnPointerShadowGuard,
+} from './expectedReturnPointerShadowGuard'
+import { validateExpectedReturnControlSemanticPage } from './expectedReturnControlTableSemanticValidation'
 
 export const DATA_DOMAIN_SHADOW_SCHEMA_VERSION = 'data-domain-shadow-backfill-v1'
 
@@ -15,7 +58,7 @@ export interface TableColumn {
 export interface DomainShadowBackfillResult {
   domain: DataDomain
   table: string
-  status: 'shadow_progress' | 'shadow_delete_reconciliation_progress' | 'shadow_parity_progress' | 'shadow_table_complete'
+  status: 'shadow_progress' | 'shadow_delete_reconciliation_progress' | 'shadow_delete_reconciliation_deferred' | 'shadow_parent_revalidation_required' | 'shadow_parity_progress' | 'shadow_table_complete'
   source_rows: number
   target_rows: number
   batch_rows: number
@@ -35,33 +78,12 @@ function identifier(value: string): string {
   return `"${value}"`
 }
 
-function canonicalRows(rows: Record<string, unknown>[], columns: string[]): string {
-  return JSON.stringify(rows.map((row) => Object.fromEntries(columns.map((column) => [column, row[column] ?? null]))))
-}
-
-async function checksumRows(rows: Record<string, unknown>[], columns: string[]): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    new TextEncoder().encode(canonicalRows(rows, columns)),
-  )
-  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('')
-}
-
-async function checksumText(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
 export async function domainBackfillRollingManifest(
   previousManifest: string | null,
   batchChecksum: string,
   batchRows: number,
 ): Promise<string> {
-  return checksumText(JSON.stringify({
-    previous_manifest: previousManifest,
-    batch_checksum: batchChecksum,
-    batch_rows: batchRows,
-  }))
+  return checksumRollingManifest(previousManifest, batchChecksum, batchRows)
 }
 
 export function domainBackfillBatchLimit(value?: number): number {
@@ -74,6 +96,31 @@ export function domainBackfillRowsPerStatement(columnCount: number): number {
 
 export function domainBackfillParityBatchLimit(copyBatchLimit: number): number {
   return Math.max(1, Math.min(Math.floor(copyBatchLimit) * 8, 4000))
+}
+
+export function domainBackfillFinalCountFenceBlockers(input: {
+  expectedSourceRows: number
+  expectedTargetRows: number
+  liveSourceRows: number | null
+  liveTargetRows: number | null
+}): string[] {
+  const blockers: string[] = []
+  if (input.liveSourceRows == null) blockers.push('live_source_count_invalid')
+  if (input.liveTargetRows == null) blockers.push('live_target_count_invalid')
+  if (
+    input.liveSourceRows != null
+    && input.liveSourceRows !== input.expectedSourceRows
+  ) blockers.push(`live_source_count_drift:${input.expectedSourceRows}/${input.liveSourceRows}`)
+  if (
+    input.liveTargetRows != null
+    && input.liveTargetRows !== input.expectedTargetRows
+  ) blockers.push(`live_target_count_drift:${input.expectedTargetRows}/${input.liveTargetRows}`)
+  if (
+    input.liveSourceRows != null
+    && input.liveTargetRows != null
+    && input.liveSourceRows !== input.liveTargetRows
+  ) blockers.push(`live_count_mismatch:${input.liveSourceRows}/${input.liveTargetRows}`)
+  return blockers
 }
 
 async function upsertDomainRows(
@@ -127,7 +174,10 @@ async function loadRowsByKeys(
   if (!keyRows.length) return []
   const unique = new Map(keyRows.map((row) => [keySignature(row, keyColumns), row]))
   const rows = [...unique.values()]
-  const rowsPerQuery = Math.max(1, Math.floor(90 / keyColumns.length))
+  const rowsPerQuery = dataDomainManifestPageLimit(
+    table,
+    Math.max(1, Math.floor(90 / keyColumns.length)),
+  )
   const found: Record<string, unknown>[] = []
   for (let offset = 0; offset < rows.length; offset += rowsPerQuery) {
     const page = rows.slice(offset, offset + rowsPerQuery)
@@ -147,6 +197,7 @@ async function loadRowsByKeys(
 type ForeignKeySyncState = {
   visitedRowKeys: Set<string>
   rowPaths: ReadonlyMap<string, readonly ForeignKeyPathNode[]>
+  beforeAncestorWrite?: (table: string) => Promise<void>
 }
 
 type ForeignKeyPathNode = {
@@ -268,9 +319,14 @@ async function syncForeignKeyAncestorsRecursive(
       domain,
       parentTable,
       unsyncedParentRows,
-      { visitedRowKeys: state.visitedRowKeys, rowPaths: parentRowPaths },
+      {
+        visitedRowKeys: state.visitedRowKeys,
+        rowPaths: parentRowPaths,
+        beforeAncestorWrite: state.beforeAncestorWrite,
+      },
       parentShape.primaryKeys,
     )
+    await state.beforeAncestorWrite?.(parentTable)
     await upsertDomainRows(target, parentTable, parentShape.columns, parentShape.primaryKeys, unsyncedParentRows)
     for (const row of unsyncedParentRows) {
       state.visitedRowKeys.add(foreignKeyRowIdentity(parentTable, parentShape.primaryKeys, row))
@@ -285,6 +341,7 @@ export async function syncForeignKeyAncestors(
   table: string,
   childRows: Record<string, unknown>[],
   knownPrimaryKeys?: string[],
+  beforeAncestorWrite?: (table: string) => Promise<void>,
 ): Promise<void> {
   return syncForeignKeyAncestorsRecursive(
     source,
@@ -292,7 +349,7 @@ export async function syncForeignKeyAncestors(
     domain,
     table,
     childRows,
-    { visitedRowKeys: new Set(), rowPaths: new Map() },
+    { visitedRowKeys: new Set(), rowPaths: new Map(), beforeAncestorWrite },
     knownPrimaryKeys,
   )
 }
@@ -322,11 +379,18 @@ async function deleteTargetRowsByKeys(
 async function reconcileTargetOnlyPage(
   source: D1Database,
   target: D1Database,
+  domain: DataDomain,
   table: string,
   primaryKeys: string[],
   cursor: unknown[] | null,
   limit: number,
-): Promise<{ done: boolean; scanned: number; deleted: number; cursor: unknown[] | null }> {
+): Promise<{
+  done: boolean
+  scanned: number
+  deleted: number
+  cursor: unknown[] | null
+  blockedTables: string[]
+}> {
   const keyset = domainBackfillKeysetWhere(primaryKeys, cursor)
   const order = primaryKeys.map(identifier).join(', ')
   const targetPageResult = await target.prepare(`
@@ -337,10 +401,62 @@ async function reconcileTargetOnlyPage(
      LIMIT ?
   `).bind(...keyset.binds, limit).all<Record<string, unknown>>()
   const targetPage = targetPageResult.results ?? []
-  if (!targetPage.length) return { done: true, scanned: 0, deleted: 0, cursor }
+  if (!targetPage.length) {
+    return { done: true, scanned: 0, deleted: 0, cursor, blockedTables: [] }
+  }
   const sourceRows = await loadRowsByKeys(source, table, primaryKeys, primaryKeys, targetPage)
   const sourceKeys = new Set(sourceRows.map((row) => keySignature(row, primaryKeys)))
   const staleRows = targetPage.filter((row) => !sourceKeys.has(keySignature(row, primaryKeys)))
+  const blockedTables: string[] = []
+  if (staleRows.length) {
+    for (const childTable of tablesForDataDomainShadowBackfill(domain)) {
+      if (childTable === table) continue
+      const foreignKeys = await target.prepare(`PRAGMA foreign_key_list(${identifier(childTable)})`)
+        .all<ForeignKeyColumn>()
+      const groups = new Map<number, ForeignKeyColumn[]>()
+      for (const foreignKey of foreignKeys.results ?? []) {
+        if (String(foreignKey.table).trim().toLowerCase() !== table) continue
+        const group = groups.get(Number(foreignKey.id)) ?? []
+        group.push(foreignKey)
+        groups.set(Number(foreignKey.id), group)
+      }
+      for (const group of groups.values()) {
+        const ordered = [...group].sort((left, right) => Number(left.seq) - Number(right.seq))
+        const childColumns = ordered.map((row) => String(row.from))
+        const parentColumns = ordered.map((row, index) => String(row.to || primaryKeys[index] || ''))
+        if (parentColumns.some((column) => !primaryKeys.includes(column))) {
+          throw new Error(`domain_shadow_foreign_key_parent_key_unsupported:${childTable}:${table}`)
+        }
+        const rowsPerProbe = Math.max(1, Math.floor(90 / childColumns.length))
+        for (let offset = 0; offset < staleRows.length; offset += rowsPerProbe) {
+          const page = staleRows.slice(offset, offset + rowsPerProbe)
+          const tuples = page
+            .map(() => `(${childColumns.map(() => '?').join(', ')})`)
+            .join(', ')
+          const reference = await target.prepare(`
+            SELECT 1 present FROM ${identifier(childTable)}
+             WHERE (${childColumns.map(identifier).join(', ')}) IN (${tuples})
+             LIMIT 1
+          `).bind(...page.flatMap((row) => (
+            parentColumns.map((column) => row[column] ?? null)
+          ))).first<{ present?: number }>()
+          if (reference) {
+            blockedTables.push(childTable)
+            break
+          }
+        }
+      }
+    }
+  }
+  if (blockedTables.length) {
+    return {
+      done: false,
+      scanned: targetPage.length,
+      deleted: 0,
+      cursor,
+      blockedTables: [...new Set(blockedTables)],
+    }
+  }
   await deleteTargetRowsByKeys(target, table, primaryKeys, staleRows)
   const last = targetPage.at(-1)!
   return {
@@ -348,10 +464,161 @@ async function reconcileTargetOnlyPage(
     scanned: targetPage.length,
     deleted: staleRows.length,
     cursor: primaryKeys.map((column) => last[column] ?? null),
+    blockedTables: [],
   }
 }
 
+async function resetTargetOnlyDependentTables(
+  control: D1Database,
+  domain: DataDomain,
+  tables: readonly string[],
+  reason: string,
+  learningAuthority: InactiveLearningShadowAuthority | null,
+): Promise<void> {
+  const unique = [...new Set(tables)]
+  const controlTables = domain === 'learning'
+    ? unique.filter(isDataDomainControlTable)
+    : []
+  if (controlTables.length) {
+    await invalidateControlTableClosure(control, {
+      changedTables: controlTables as DataDomainControlTable[],
+      reason,
+      authority: learningAuthority!,
+    })
+  }
+  const genericTables = unique.filter((table) => !controlTables.includes(table as DataDomainControlTable))
+  if (!genericTables.length) return
+  const statements: D1PreparedStatement[] = []
+  for (const table of genericTables) {
+    statements.push(
+      control.prepare(`
+        INSERT INTO data_domain_backfill_cursors(
+          domain, table_name, status, cursor_json, rows_copied, last_batch_rows,
+          last_source_checksum, last_target_checksum, error_code, updated_at
+        ) VALUES (?, ?, 'running', NULL, 0, 0, NULL, NULL, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(domain,table_name) DO UPDATE SET
+          status='running', cursor_json=NULL, rows_copied=0, last_batch_rows=0,
+          last_source_checksum=NULL, last_target_checksum=NULL,
+          error_code=excluded.error_code, updated_at=CURRENT_TIMESTAMP
+      `).bind(domain, table, reason),
+      control.prepare(`
+        INSERT INTO data_domain_parity_checks(
+          check_id, domain, table_name, check_kind, status,
+          source_count, target_count, source_checksum, target_checksum, evidence_json
+        ) VALUES (?, ?, ?, 'full_table', 'blocked', NULL, NULL, NULL, NULL, ?)
+        ON CONFLICT(check_id) DO UPDATE SET
+          status='blocked', source_count=NULL, target_count=NULL,
+          source_checksum=NULL, target_checksum=NULL,
+          evidence_json=excluded.evidence_json, checked_at=CURRENT_TIMESTAMP
+      `).bind(
+        `domain-parity:${domain}:${table}:full-table`,
+        domain,
+        table,
+        JSON.stringify({
+          schema_version: 'data-domain-target-only-dependent-reset-v1',
+          invalidated_reason: reason,
+        }),
+      ),
+      control.prepare(`
+        DELETE FROM data_domain_parity_checks WHERE check_id IN (?, ?)
+      `).bind(
+        `domain-parity:${domain}:${table}:manifest-progress`,
+        `domain-parity:${domain}:${table}:delete-progress`,
+      ),
+    )
+  }
+  await control.batch(statements)
+}
+
+async function deferTargetOnlyDeleteReconciliation(
+  control: D1Database,
+  input: {
+    domain: DataDomain
+    table: string
+    cursor: unknown[] | null
+    sourceRows: number
+    targetRows: number
+    blockers: readonly string[]
+    learningAuthority: InactiveLearningShadowAuthority | null
+  },
+): Promise<void> {
+  const reason = `target_only_delete_waiting_for_dependents:${input.blockers.join('|')}`.slice(0, 1000)
+  if (input.domain === 'learning' && isDataDomainControlTable(input.table)) {
+    await invalidateControlTableClosure(control, {
+      changedTables: [input.table],
+      preserveCursorTables: [input.table],
+      reason,
+      authority: input.learningAuthority!,
+    })
+  }
+  await control.batch([
+    control.prepare(`
+      INSERT INTO data_domain_backfill_cursors(
+        domain, table_name, status, cursor_json, rows_copied, last_batch_rows,
+        last_source_checksum, last_target_checksum, error_code, updated_at
+      ) VALUES (?, ?, 'complete', ?, ?, 0, NULL, NULL, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(domain,table_name) DO UPDATE SET
+        status='complete', cursor_json=excluded.cursor_json, rows_copied=excluded.rows_copied,
+        last_batch_rows=0, last_source_checksum=NULL, last_target_checksum=NULL,
+        error_code=excluded.error_code, updated_at=CURRENT_TIMESTAMP
+    `).bind(
+      input.domain,
+      input.table,
+      JSON.stringify(input.cursor),
+      input.sourceRows,
+      reason,
+    ),
+    control.prepare(`
+      INSERT INTO data_domain_parity_checks(
+        check_id, domain, table_name, check_kind, status,
+        source_count, target_count, source_checksum, target_checksum, evidence_json
+      ) VALUES (?, ?, ?, 'full_table', 'blocked', NULL, NULL, NULL, NULL, ?)
+      ON CONFLICT(check_id) DO UPDATE SET
+        status='blocked', source_count=NULL, target_count=NULL,
+        source_checksum=NULL, target_checksum=NULL,
+        evidence_json=excluded.evidence_json, checked_at=CURRENT_TIMESTAMP
+    `).bind(
+      `domain-parity:${input.domain}:${input.table}:full-table`,
+      input.domain,
+      input.table,
+      JSON.stringify({
+        schema_version: 'data-domain-target-only-delete-deferred-v1',
+        invalidated_reason: reason,
+      }),
+    ),
+    control.prepare(`
+      INSERT INTO data_domain_parity_checks(
+        check_id, domain, table_name, check_kind, status,
+        source_count, target_count, source_checksum, target_checksum, evidence_json
+      ) VALUES (?, ?, ?, 'delete_reconciliation', 'blocked', ?, ?, NULL, NULL, ?)
+      ON CONFLICT(check_id) DO UPDATE SET
+        status='blocked', source_count=excluded.source_count, target_count=excluded.target_count,
+        source_checksum=NULL, target_checksum=NULL,
+        evidence_json=excluded.evidence_json, checked_at=CURRENT_TIMESTAMP
+    `).bind(
+      `domain-parity:${input.domain}:${input.table}:delete-progress`,
+      input.domain,
+      input.table,
+      input.sourceRows,
+      input.targetRows,
+      JSON.stringify({
+        schema_version: 'data-domain-target-only-delete-deferred-v1',
+        phase: 'waiting_for_dependents',
+        blockers: [...input.blockers],
+      }),
+    ),
+    control.prepare(`
+      UPDATE data_domain_cutovers
+         SET status='legacy', source_row_count=NULL, target_row_count=NULL,
+             source_checksum=NULL, target_checksum=NULL, parity_checked_at=NULL,
+             updated_at=CURRENT_TIMESTAMP
+       WHERE domain=? AND status IN ('legacy','shadow')
+    `).bind(input.domain),
+  ])
+}
+
 type ManifestProgressEvidence = {
+  schema_version?: string
   cursor?: unknown[] | null
   rows_scanned?: number
   repaired_rows?: number
@@ -359,6 +626,14 @@ type ManifestProgressEvidence = {
   expected_target_rows?: number
   source_manifest?: string | null
   target_manifest?: string | null
+  manifest_schema_version?: string
+  manifest_page_limit?: number
+  semantic_validation_schema_version?: string
+  semantic_rows_scanned?: number
+  semantic_rows_applicable?: number
+  semantic_rows_validated?: number
+  source_revision_start?: number
+  target_revision_observed?: number
 }
 
 function parseManifestProgress(value: unknown): ManifestProgressEvidence {
@@ -369,6 +644,69 @@ function parseManifestProgress(value: unknown): ManifestProgressEvidence {
   } catch {
     throw new Error('domain_shadow_manifest_progress_invalid')
   }
+}
+
+function nonnegativeSafeInteger(value: unknown): number | null {
+  if (typeof value !== 'number' && typeof value !== 'string') return null
+  if (typeof value === 'string' && !/^(0|[1-9][0-9]*)$/.test(value)) return null
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null
+}
+
+export async function invalidateGenericManifestProgress(
+  control: D1Database,
+  domain: DataDomain,
+  table: string,
+  reasonInput: string,
+): Promise<void> {
+  const cutover = await control.prepare(`
+    SELECT status FROM data_domain_cutovers WHERE domain=?
+  `).bind(domain).first<{ status?: string }>()
+  const status = cutover?.status ? String(cutover.status) : null
+  if (!status || !['legacy', 'shadow'].includes(status)) {
+    throw new Error(`domain_manifest_invalidation_cutover_blocked:${domain}:${status ?? 'missing'}`)
+  }
+  const reason = reasonInput.slice(0, 1000)
+  await control.batch([
+    control.prepare(`
+      UPDATE data_domain_backfill_cursors
+         SET status='complete', last_batch_rows=0,
+             last_source_checksum=NULL, last_target_checksum=NULL,
+             error_code=?, updated_at=CURRENT_TIMESTAMP
+       WHERE domain=? AND table_name=?
+    `).bind(reason, domain, table),
+    control.prepare(`
+      INSERT INTO data_domain_parity_checks(
+        check_id, domain, table_name, check_kind, status, source_count, target_count,
+        source_checksum, target_checksum, evidence_json
+      ) VALUES (?, ?, ?, 'full_table', 'blocked', NULL, NULL, NULL, NULL, ?)
+      ON CONFLICT(check_id) DO UPDATE SET
+        status='blocked', source_count=NULL, target_count=NULL,
+        source_checksum=NULL, target_checksum=NULL,
+        evidence_json=excluded.evidence_json, checked_at=CURRENT_TIMESTAMP
+    `).bind(
+      `domain-parity:${domain}:${table}:full-table`,
+      domain,
+      table,
+      JSON.stringify({
+        schema_version: 'data-domain-shadow-manifest-invalidation-v1',
+        invalidated_reason: reason,
+      }),
+    ),
+    control.prepare(`
+      DELETE FROM data_domain_parity_checks WHERE check_id IN (?, ?)
+    `).bind(
+      `domain-parity:${domain}:${table}:manifest-progress`,
+      `domain-parity:${domain}:${table}:delete-progress`,
+    ),
+    control.prepare(`
+      UPDATE data_domain_cutovers
+         SET status='legacy', source_row_count=NULL, target_row_count=NULL,
+             source_checksum=NULL, target_checksum=NULL, parity_checked_at=NULL,
+             updated_at=CURRENT_TIMESTAMP
+       WHERE domain=? AND status IN ('legacy','shadow')
+    `).bind(domain),
+  ])
 }
 
 async function tableColumns(db: D1Database, table: string): Promise<TableColumn[]> {
@@ -422,6 +760,8 @@ export type DomainAggregateParityRow = {
   target_count: number | string | null
   source_checksum: string | null
   target_checksum: string | null
+  evidence_json?: string | null
+  checked_at?: string | null
 }
 
 export type DomainAggregateParitySnapshot = {
@@ -434,6 +774,7 @@ export type DomainAggregateParitySnapshot = {
 export async function buildDataDomainAggregateParitySnapshot(
   ownedTables: string[],
   parityRows: DomainAggregateParityRow[],
+  parityNotBefore?: string | null,
 ): Promise<DomainAggregateParitySnapshot | null> {
   const latest = new Map<string, DomainAggregateParityRow>()
   for (const row of parityRows) {
@@ -445,10 +786,8 @@ export async function buildDataDomainAggregateParitySnapshot(
     const row = latest.get(table)
     if (
       !row
-      || row.status !== 'pass'
-      || Number(row.source_count ?? 0) !== Number(row.target_count ?? 0)
-      || !row.source_checksum
-      || row.source_checksum !== row.target_checksum
+      || !isAuthoritativeDataDomainFullTableParity(table, row)
+      || !isDataDomainFullTableParityFresh(table, row, parityNotBefore)
     ) return null
     sourceManifest.push({ table, rows: Number(row.source_count ?? 0), checksum: row.source_checksum })
     targetManifest.push({ table, rows: Number(row.target_count ?? 0), checksum: row.target_checksum })
@@ -470,15 +809,44 @@ function parseCursor(value: unknown): unknown[] | null {
 
 export async function backfillDataDomainTableShadow(
   env: Bindings,
-  options: { domain: DataDomain; table: string; limit?: number; reset?: boolean },
+  options: {
+    domain: DataDomain
+    table: string
+    limit?: number
+    reset?: boolean
+    parityNotBefore?: string | null
+  },
 ): Promise<DomainShadowBackfillResult> {
   const domain = options.domain
   const table = String(options.table ?? "").trim().toLowerCase()
   if (dataDomainForTable(table) !== domain || !tablesForDataDomainShadowBackfill(domain).includes(table)) {
     throw new Error(`domain_table_ownership_mismatch:${domain}:${table}`)
   }
+  const invalidDomains = invalidActiveDataDomains(env)
+  if (invalidDomains.length) {
+    throw new Error(`data_domain_shadow_active_domain_invalid:${invalidDomains.sort().join(',')}`)
+  }
+  if (
+    String(env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true'
+    || activeDataDomains(env).has(domain)
+  ) {
+    throw new Error(`data_domain_shadow_requires_inactive_target:${domain}`)
+  }
+  const learningAuthority: InactiveLearningShadowAuthority | null =
+    domain === 'learning'
+      ? assertInactiveLearningShadowAuthority(env)
+      : null
   const target = shadowDatabaseForDataDomain(env, domain)
   if (!target) throw new Error(`data_domain_shadow_binding_missing:${domain}`)
+  const shadowCutover = await env.DB.prepare(`
+    SELECT status FROM data_domain_cutovers WHERE domain=?
+  `).bind(domain).first<{ status?: string }>()
+  const shadowCutoverStatus = shadowCutover?.status ? String(shadowCutover.status) : null
+  if (!shadowCutoverStatus || !['legacy', 'shadow'].includes(shadowCutoverStatus)) {
+    throw new Error(
+      `domain_shadow_cutover_authority_blocked:${domain}:${shadowCutoverStatus ?? 'missing'}`,
+    )
+  }
   const sourceColumns = await tableColumns(env.DB, table)
   const targetColumns = await tableColumns(target, table)
   assertSchemaParity(sourceColumns, targetColumns, table)
@@ -487,12 +855,16 @@ export async function backfillDataDomainTableShadow(
     .map((column) => column.name)
   if (!primaryKeys.length) throw new Error(`domain_backfill_primary_key_missing:${table}`)
   const columns = sourceColumns.map((column) => column.name)
+  const pointerGuard: ExpectedReturnPointerShadowGuard | null =
+    domain === 'learning' && table === 'model_champion_pointers'
+      ? await beginExpectedReturnPointerShadowGuard(env, target, options.parityNotBefore)
+      : null
   const cursorRow = options.reset ? null : await env.DB.prepare(`
     SELECT cursor_json FROM data_domain_backfill_cursors WHERE domain=? AND table_name=?
   `).bind(domain, table).first<{ cursor_json?: string | null }>()
   const cursor = parseCursor(cursorRow?.cursor_json)
   const keyset = domainBackfillKeysetWhere(primaryKeys, cursor)
-  const limit = domainBackfillBatchLimit(options.limit)
+  const limit = dataDomainManifestPageLimit(table, domainBackfillBatchLimit(options.limit))
   const order = primaryKeys.map(identifier).join(", ")
   const selected = await env.DB.prepare(`
     SELECT ${columns.map(identifier).join(", ")}
@@ -504,12 +876,13 @@ export async function backfillDataDomainTableShadow(
   const rows = selected.results ?? []
   assertExpectedReturnCandidateIdentityBackfillRows(domain, table, rows)
   if (rows.length) {
-    const activeCutover = await env.DB.prepare(`
-      SELECT status FROM data_domain_cutovers WHERE domain=?
-    `).bind(domain).first<{ status?: string }>()
-    const activeStatus = String(activeCutover?.status ?? 'legacy')
-    if (!['legacy', 'shadow'].includes(activeStatus)) {
-      throw new Error(`domain_cutover_source_changed:${domain}:${activeStatus}`)
+    if (domain === 'learning' && isDataDomainControlTable(table)) {
+      await invalidateControlTableClosure(env.DB, {
+        changedTables: [table],
+        preserveCursorTables: [table],
+        reason: `control_table_source_rows_changed:${table}`,
+        authority: learningAuthority!,
+      })
     }
     await env.DB.prepare(`
       UPDATE data_domain_cutovers
@@ -543,15 +916,68 @@ export async function backfillDataDomainTableShadow(
       const progressRow = await env.DB.prepare(`
         SELECT evidence_json FROM data_domain_parity_checks WHERE check_id=?
       `).bind(deleteProgressId).first<{ evidence_json?: string | null }>()
+      if (!progressRow) {
+        if (domain === 'learning' && isDataDomainControlTable(table)) {
+          await invalidateControlTableClosure(env.DB, {
+            changedTables: [table],
+            preserveCursorTables: [table],
+            reason: `target_only_delete_reconciliation_started:${table}`,
+            authority: learningAuthority!,
+          })
+        } else {
+          await invalidateGenericManifestProgress(
+            env.DB,
+            domain,
+            table,
+            `target_only_delete_reconciliation_started:${domain}:${table}`,
+          )
+        }
+      }
       const progress = parseManifestProgress(progressRow?.evidence_json)
       const reconciliation = await reconcileTargetOnlyPage(
         env.DB,
         target,
+        domain,
         table,
         primaryKeys,
         Array.isArray(progress.cursor) ? progress.cursor : null,
-        domainBackfillParityBatchLimit(limit),
+        dataDomainManifestPageLimit(table, domainBackfillParityBatchLimit(limit)),
       )
+      await assertExpectedReturnPointerSourceStable(env, pointerGuard)
+      if (reconciliation.blockedTables.length) {
+        const blockers = reconciliation.blockedTables.map(
+          (dependent) => `${dependent}:physical_foreign_key_reference`,
+        )
+        const reason = `target_only_delete_dependency_reset:${blockers.join('|')}`.slice(0, 1000)
+        await resetTargetOnlyDependentTables(
+          env.DB,
+          domain,
+          reconciliation.blockedTables,
+          reason,
+          learningAuthority,
+        )
+        await deferTargetOnlyDeleteReconciliation(env.DB, {
+          domain,
+          table,
+          cursor: Array.isArray(progress.cursor) ? progress.cursor : null,
+          sourceRows,
+          targetRows,
+          blockers,
+          learningAuthority,
+        })
+        return {
+          domain,
+          table,
+          status: 'shadow_delete_reconciliation_deferred',
+          source_rows: sourceRows,
+          target_rows: targetRows,
+          batch_rows: reconciliation.scanned,
+          batch_checksum: null,
+          cursor: Array.isArray(progress.cursor) ? progress.cursor : null,
+          reconciliation_rows_scanned: Math.max(0, Number(progress.rows_scanned ?? 0)),
+          reconciliation_rows_deleted: Math.max(0, Number(progress.repaired_rows ?? 0)),
+        }
+      }
       const scanned = Math.max(0, Number(progress.rows_scanned ?? 0)) + reconciliation.scanned
       const deleted = Math.max(0, Number(progress.repaired_rows ?? 0)) + reconciliation.deleted
       if (!reconciliation.done) {
@@ -600,6 +1026,7 @@ export async function backfillDataDomainTableShadow(
       targetRows = Number(targetAfter?.count ?? 0)
     }
     if (targetRows < sourceRows) {
+      await assertExpectedReturnPointerSourceStable(env, pointerGuard)
       await env.DB.batch([
         env.DB.prepare(`
           UPDATE data_domain_backfill_cursors
@@ -624,20 +1051,41 @@ export async function backfillDataDomainTableShadow(
     }
     if (sourceRows !== targetRows) throw new Error(`domain_shadow_count_mismatch:${domain}:${table}:${sourceRows}/${targetRows}`)
 
-    const fullChecksumLimit = 1000
+    const fullChecksumLimit = DATA_DOMAIN_FULL_CHECKSUM_LIMIT
+    const controlTableRolling = domain === 'learning' && isDataDomainControlTable(table)
+    const semanticControlTable = domain === 'learning'
+      && (
+        table === 'expected_return_artifact_payloads'
+        || table === 'model_champion_history'
+      )
+    const useRollingManifest = controlTableRolling || sourceRows > fullChecksumLimit
     const columnSql = columns.map(identifier).join(", ")
     let sourceFullChecksum: string | null = null
     let targetFullChecksum: string | null = null
+    let actualManifestPageLimit: number | null = null
+    let semanticRowsScanned: number | null = null
+    let semanticRowsApplicable: number | null = null
+    let semanticRowsValidated: number | null = null
+    let controlRevisionForReceipt: DataDomainControlRevisionPair | null = null
     let parityStatus: 'pass' | 'blocked' = 'blocked'
-    if (sourceRows <= fullChecksumLimit) {
-      const sourceFull = await env.DB.prepare(`
-        SELECT ${columnSql} FROM ${identifier(table)} ORDER BY ${order}
-      `).all<Record<string, unknown>>()
-      const targetFull = await target.prepare(`
-        SELECT ${columnSql} FROM ${identifier(table)} ORDER BY ${order}
-      `).all<Record<string, unknown>>()
-      sourceFullChecksum = await checksumRows(sourceFull.results ?? [], columns)
-      targetFullChecksum = await checksumRows(targetFull.results ?? [], columns)
+    if (!useRollingManifest) {
+      actualManifestPageLimit = dataDomainManifestPageLimit(
+        table,
+        domainBackfillParityBatchLimit(limit),
+      )
+      const sourceFull = await boundedDataDomainTableManifest({
+        db: env.DB, table, columns, primaryKeys,
+        pageLimit: actualManifestPageLimit, mode: 'canonical',
+      })
+      const targetFull = await boundedDataDomainTableManifest({
+        db: target, table, columns, primaryKeys,
+        pageLimit: actualManifestPageLimit, mode: 'canonical',
+      })
+      if (sourceFull.rowCount !== sourceRows || targetFull.rowCount !== targetRows) {
+        throw new Error(`domain_shadow_source_changed_during_parity:${domain}:${table}`)
+      }
+      sourceFullChecksum = sourceFull.checksum
+      targetFullChecksum = targetFull.checksum
       if (sourceFullChecksum !== targetFullChecksum) {
         throw new Error(`domain_shadow_full_checksum_mismatch:${domain}:${table}`)
       }
@@ -649,16 +1097,133 @@ export async function backfillDataDomainTableShadow(
           FROM data_domain_parity_checks
          WHERE check_id=?
       `).bind(progressId).first<{ evidence_json?: string }>()
-      const progress = parseManifestProgress(progressRow?.evidence_json)
+      let progress: ManifestProgressEvidence = {}
+      let progressMalformed = false
+      try {
+        progress = parseManifestProgress(progressRow?.evidence_json)
+      } catch {
+        progressMalformed = true
+      }
       if (
         (progress.expected_source_rows !== undefined && Number(progress.expected_source_rows) !== sourceRows)
         || (progress.expected_target_rows !== undefined && Number(progress.expected_target_rows) !== targetRows)
       ) {
-        throw new Error(`domain_shadow_source_changed_during_parity:${domain}:${table}`)
+        if (controlTableRolling) {
+          await invalidateControlTableClosure(env.DB, {
+            changedTables: [table],
+            reason: `control_table_source_count_changed:${table}`,
+            authority: learningAuthority!,
+          })
+          return {
+            domain, table, status: 'shadow_progress', source_rows: sourceRows,
+            target_rows: targetRows, batch_rows: 0, batch_checksum: null, cursor: null,
+          }
+        }
+        await invalidateGenericManifestProgress(
+          env.DB,
+          domain,
+          table,
+          `domain_shadow_source_changed_during_parity:${domain}:${table}`,
+        )
+        return {
+          domain, table, status: 'shadow_parity_progress', source_rows: sourceRows,
+          target_rows: targetRows, batch_rows: 0, batch_checksum: null, cursor: null,
+          parity_rows_scanned: 0, parity_rows_repaired: 0,
+        }
       }
       const manifestCursor = Array.isArray(progress.cursor) ? progress.cursor : null
       const manifestKeyset = domainBackfillKeysetWhere(primaryKeys, manifestCursor)
-      const parityLimit = domainBackfillParityBatchLimit(limit)
+      const requestedParityLimit = dataDomainManifestPageLimit(
+        table,
+        domainBackfillParityBatchLimit(limit),
+      )
+      const recordedParityLimit = Number(progress.manifest_page_limit ?? 0)
+      const parsedProgressRows = nonnegativeSafeInteger(progress.rows_scanned)
+      const parsedRepairedRows = nonnegativeSafeInteger(progress.repaired_rows)
+      const progressRows = progressRow ? (parsedProgressRows ?? 0) : 0
+      const recordedSchema = String(progress.manifest_schema_version ?? '')
+      const requiredProgressSchema = controlTableRolling
+        ? DATA_DOMAIN_CONTROL_PROGRESS_SCHEMA_VERSION
+        : DATA_DOMAIN_SHADOW_SCHEMA_VERSION
+      const revisionBeforePage = controlTableRolling
+        ? await loadDataDomainControlRevisionPair(env.DB, target, table)
+        : null
+      const recordedSourceRevision = strictDataDomainControlRevision(
+        progress.source_revision_start,
+      )
+      const recordedTargetRevision = strictDataDomainControlRevision(
+        progress.target_revision_observed,
+      )
+      const invalidProgress = Boolean(progressRow) && (
+        progressMalformed
+        || (
+          parsedProgressRows === null
+          || parsedRepairedRows === null
+          || parsedRepairedRows > progressRows
+          || progressRows < 1
+          || !Array.isArray(progress.cursor)
+          || progress.cursor.length !== primaryKeys.length
+          || !/^[0-9a-f]{64}$/.test(String(progress.source_manifest ?? ''))
+          || !/^[0-9a-f]{64}$/.test(String(progress.target_manifest ?? ''))
+          || !Number.isInteger(recordedParityLimit)
+          || recordedParityLimit < 1
+          || recordedParityLimit !== dataDomainManifestPageLimit(table, recordedParityLimit)
+          || recordedSchema !== DATA_DOMAIN_ROLLING_MANIFEST_SCHEMA_VERSION
+          || String(progress.schema_version ?? '') !== requiredProgressSchema
+          || (controlTableRolling && (
+            recordedSourceRevision === null
+            || recordedTargetRevision === null
+            || recordedSourceRevision !== revisionBeforePage?.sourceRevision
+            || recordedTargetRevision !== revisionBeforePage?.targetRevision
+          ))
+          || (semanticControlTable && (() => {
+            const scanned = nonnegativeSafeInteger(progress.semantic_rows_scanned)
+            const applicable = nonnegativeSafeInteger(progress.semantic_rows_applicable)
+            const validated = nonnegativeSafeInteger(progress.semantic_rows_validated)
+            return String(progress.semantic_validation_schema_version ?? '')
+                !== DATA_DOMAIN_EXPECTED_RETURN_SEMANTIC_SCHEMA_VERSION
+              || scanned !== progressRows
+              || applicable === null
+              || validated === null
+              || applicable !== validated
+              || applicable > progressRows
+          })())
+        )
+      )
+      if (invalidProgress) {
+        if (controlTableRolling) {
+          await invalidateControlTableClosure(env.DB, {
+            changedTables: [table],
+            preserveCursorTables: [table],
+            reason: `control_table_manifest_progress_invalid:${table}`,
+            authority: learningAuthority!,
+          })
+          return {
+            domain, table, status: 'shadow_parity_progress', source_rows: sourceRows,
+            target_rows: targetRows, batch_rows: 0, batch_checksum: null, cursor: null,
+            parity_rows_scanned: 0, parity_rows_repaired: 0,
+          }
+        }
+        await invalidateGenericManifestProgress(
+          env.DB,
+          domain,
+          table,
+          `domain_shadow_manifest_progress_invalid:${domain}:${table}`,
+        )
+        return {
+          domain, table, status: 'shadow_parity_progress', source_rows: sourceRows,
+          target_rows: targetRows, batch_rows: 0, batch_checksum: null, cursor: null,
+          parity_rows_scanned: 0, parity_rows_repaired: 0,
+        }
+      }
+      const sourceRevisionStart = controlTableRolling
+        ? (progressRow ? recordedSourceRevision! : revisionBeforePage!.sourceRevision)
+        : null
+      const targetRevisionObserved = controlTableRolling
+        ? (progressRow ? recordedTargetRevision! : revisionBeforePage!.targetRevision)
+        : null
+      const parityLimit = progressRows > 0 ? recordedParityLimit : requestedParityLimit
+      actualManifestPageLimit = parityLimit
       const sourcePageResult = await env.DB.prepare(`
         SELECT ${columnSql}
           FROM ${identifier(table)}
@@ -667,10 +1232,15 @@ export async function backfillDataDomainTableShadow(
          LIMIT ?
       `).bind(...manifestKeyset.binds, parityLimit).all<Record<string, unknown>>()
       const sourcePage = sourcePageResult.results ?? []
-      const rowsScanned = Math.max(0, Math.floor(Number(progress.rows_scanned ?? 0)))
-      const repairedRows = Math.max(0, Math.floor(Number(progress.repaired_rows ?? 0)))
+      const rowsScanned = progressRows
+      const repairedRows = progressRow ? parsedRepairedRows! : 0
 
       if (sourcePage.length) {
+        const semanticPage = await validateExpectedReturnControlSemanticPage(
+          env.DB,
+          table,
+          sourcePage,
+        )
         let targetPageResult = await target.prepare(`
           SELECT ${columnSql}
             FROM ${identifier(table)}
@@ -682,7 +1252,8 @@ export async function backfillDataDomainTableShadow(
         const sourcePageChecksum = await checksumRows(sourcePage, columns)
         let targetPageChecksum = await checksumRows(targetPage, columns)
         let nextRepairedRows = repairedRows
-        if (sourcePageChecksum !== targetPageChecksum) {
+        const pageNeededRepair = sourcePageChecksum !== targetPageChecksum
+        if (pageNeededRepair) {
           await upsertDomainRows(target, table, columns, primaryKeys, sourcePage)
           targetPageResult = await target.prepare(`
             SELECT ${columnSql}
@@ -698,6 +1269,30 @@ export async function backfillDataDomainTableShadow(
           }
           nextRepairedRows += sourcePage.length
         }
+        await assertExpectedReturnPointerSourceStable(env, pointerGuard)
+        const revisionAfterPage = controlTableRolling
+          ? await loadDataDomainControlRevisionPair(env.DB, target, table)
+          : null
+        if (controlTableRolling) {
+          const expectedTargetRevision = revisionBeforePage!.targetRevision
+            + (pageNeededRepair ? sourcePage.length : 0)
+          if (
+            revisionAfterPage!.sourceRevision !== sourceRevisionStart
+            || revisionAfterPage!.targetRevision !== expectedTargetRevision
+          ) {
+            await invalidateControlTableClosure(env.DB, {
+              changedTables: [table],
+              preserveCursorTables: [table],
+              reason: `control_table_revision_drift_during_manifest:${table}:${sourceRevisionStart}/${revisionAfterPage!.sourceRevision}:${expectedTargetRevision}/${revisionAfterPage!.targetRevision}`,
+              authority: learningAuthority!,
+            })
+            return {
+              domain, table, status: 'shadow_parity_progress', source_rows: sourceRows,
+              target_rows: targetRows, batch_rows: 0, batch_checksum: null, cursor: null,
+              parity_rows_scanned: 0, parity_rows_repaired: 0,
+            }
+          }
+        }
         const last = sourcePage.at(-1)!
         const nextManifestCursor = primaryKeys.map((column) => last[column] ?? null)
         const nextRowsScanned = rowsScanned + sourcePage.length
@@ -712,7 +1307,7 @@ export async function backfillDataDomainTableShadow(
           targetPage.length,
         )
         const evidence = {
-          schema_version: DATA_DOMAIN_SHADOW_SCHEMA_VERSION,
+          schema_version: requiredProgressSchema,
           parity_scope: 'resumable_full_table_manifest',
           cursor: nextManifestCursor,
           rows_scanned: nextRowsScanned,
@@ -721,6 +1316,21 @@ export async function backfillDataDomainTableShadow(
           expected_target_rows: targetRows,
           source_manifest: sourceManifest,
           target_manifest: targetManifest,
+          manifest_schema_version: DATA_DOMAIN_ROLLING_MANIFEST_SCHEMA_VERSION,
+          manifest_page_limit: parityLimit,
+          ...(controlTableRolling ? {
+            source_revision_start: sourceRevisionStart,
+            target_revision_observed: revisionAfterPage!.targetRevision,
+          } : {}),
+          ...(semanticControlTable ? {
+            semantic_validation_schema_version: semanticPage.schemaVersion,
+            semantic_rows_scanned: Number(progress.semantic_rows_scanned ?? 0)
+              + semanticPage.rowsScanned,
+            semantic_rows_applicable: Number(progress.semantic_rows_applicable ?? 0)
+              + semanticPage.rowsApplicable,
+            semantic_rows_validated: Number(progress.semantic_rows_validated ?? 0)
+              + semanticPage.rowsValidated,
+          } : {}),
         }
         await env.DB.prepare(`
           INSERT INTO data_domain_parity_checks(
@@ -749,14 +1359,106 @@ export async function backfillDataDomainTableShadow(
         }
       }
 
+      if (
+        sourceRows === 0
+        && rowsScanned === 0
+        && !progress.source_manifest
+        && !progress.target_manifest
+      ) {
+        const emptyChecksum = await checksumRows([], columns)
+        progress.source_manifest = await domainBackfillRollingManifest(null, emptyChecksum, 0)
+        progress.target_manifest = progress.source_manifest
+        if (semanticControlTable) {
+          progress.semantic_validation_schema_version =
+            DATA_DOMAIN_EXPECTED_RETURN_SEMANTIC_SCHEMA_VERSION
+          progress.semantic_rows_scanned = 0
+          progress.semantic_rows_applicable = 0
+          progress.semantic_rows_validated = 0
+        }
+      }
+      const revisionBeforeFinalCounts = controlTableRolling
+        ? await loadDataDomainControlRevisionPair(env.DB, target, table)
+        : null
+      const [sourceCountAfterManifest, targetCountAfterManifest] = await Promise.all([
+        env.DB.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`)
+          .first<{ count?: number | string }>(),
+        target.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`)
+          .first<{ count?: number | string }>(),
+      ])
+      const finalSourceCount = nonnegativeSafeInteger(sourceCountAfterManifest?.count)
+      const finalTargetCount = nonnegativeSafeInteger(targetCountAfterManifest?.count)
+      const revisionAfterFinalCounts = controlTableRolling
+        ? await loadDataDomainControlRevisionPair(env.DB, target, table)
+        : null
+      const revisionDrift = controlTableRolling && (
+        revisionBeforeFinalCounts!.sourceRevision !== sourceRevisionStart
+        || revisionBeforeFinalCounts!.targetRevision !== targetRevisionObserved
+        || revisionAfterFinalCounts!.sourceRevision !== sourceRevisionStart
+        || revisionAfterFinalCounts!.targetRevision !== targetRevisionObserved
+      )
+      const finalCountBlockers = domainBackfillFinalCountFenceBlockers({
+        expectedSourceRows: sourceRows,
+        expectedTargetRows: targetRows,
+        liveSourceRows: finalSourceCount,
+        liveTargetRows: finalTargetCount,
+      })
+      if (revisionDrift || finalCountBlockers.length) {
+        const reason = [
+          `domain_shadow_live_count_drift_before_receipt:${domain}:${table}:${finalCountBlockers.join(',') || 'revision_only'}`,
+          ...(revisionDrift ? [
+            `control_table_revision_drift_before_receipt:${table}:${sourceRevisionStart}/${revisionAfterFinalCounts!.sourceRevision}:${targetRevisionObserved}/${revisionAfterFinalCounts!.targetRevision}`,
+          ] : []),
+        ].join('|')
+        if (controlTableRolling) {
+          await invalidateControlTableClosure(env.DB, {
+            changedTables: [table],
+            preserveCursorTables: [table],
+            reason,
+            authority: learningAuthority!,
+          })
+        } else {
+          await invalidateGenericManifestProgress(env.DB, domain, table, reason)
+        }
+        return {
+          domain, table, status: 'shadow_parity_progress', source_rows: sourceRows,
+          target_rows: targetRows, batch_rows: 0, batch_checksum: null, cursor: null,
+          parity_rows_scanned: 0, parity_rows_repaired: 0,
+        }
+      }
+      if (controlTableRolling) controlRevisionForReceipt = revisionAfterFinalCounts
       if (rowsScanned !== sourceRows || !progress.source_manifest || !progress.target_manifest) {
         throw new Error(`domain_shadow_manifest_incomplete:${domain}:${table}:${rowsScanned}/${sourceRows}`)
       }
       if (progress.source_manifest !== progress.target_manifest) {
         throw new Error(`domain_shadow_manifest_mismatch:${domain}:${table}`)
       }
+      const finalSemanticScanned = nonnegativeSafeInteger(progress.semantic_rows_scanned)
+      const finalSemanticApplicable = nonnegativeSafeInteger(progress.semantic_rows_applicable)
+      const finalSemanticValidated = nonnegativeSafeInteger(progress.semantic_rows_validated)
+      if (semanticControlTable && (
+        progress.semantic_validation_schema_version
+          !== DATA_DOMAIN_EXPECTED_RETURN_SEMANTIC_SCHEMA_VERSION
+        || finalSemanticScanned !== sourceRows
+        || finalSemanticApplicable === null
+        || finalSemanticValidated === null
+        || finalSemanticApplicable !== finalSemanticValidated
+        || finalSemanticApplicable > sourceRows
+      )) {
+        throw new Error(
+          `expected_return_control_semantic_incomplete:${table}:${String(
+            progress.semantic_rows_validated ?? 'missing',
+          )}/${sourceRows}`,
+        )
+      }
+      if (semanticControlTable) {
+        semanticRowsScanned = Number(progress.semantic_rows_scanned ?? -1)
+        semanticRowsApplicable = Number(progress.semantic_rows_applicable ?? -1)
+        semanticRowsValidated = Number(progress.semantic_rows_validated ?? -1)
+      }
+      await assertExpectedReturnPointerTargetClosure(env, target, pointerGuard)
       sourceFullChecksum = progress.source_manifest
       targetFullChecksum = progress.target_manifest
+      actualManifestPageLimit = parityLimit
       await env.DB.prepare(`
         UPDATE data_domain_parity_checks
            SET status='pass', source_count=?, target_count=?,
@@ -779,9 +1481,26 @@ export async function backfillDataDomainTableShadow(
       `domain-parity:${domain}:${table}:full-table`, domain, table, parityStatus,
       sourceRows, targetRows, sourceFullChecksum, targetFullChecksum,
       JSON.stringify({
-        schema_version: DATA_DOMAIN_SHADOW_SCHEMA_VERSION,
-        parity_scope: sourceRows <= fullChecksumLimit ? 'full_table_checksum' : 'resumable_full_table_manifest',
+        schema_version: controlTableRolling
+          ? DATA_DOMAIN_CONTROL_FULL_TABLE_SCHEMA_VERSION
+          : DATA_DOMAIN_SHADOW_SCHEMA_VERSION,
+        parity_scope: useRollingManifest ? 'resumable_full_table_manifest' : 'full_table_checksum',
         full_checksum_limit: fullChecksumLimit,
+        manifest_schema_version: useRollingManifest
+          ? DATA_DOMAIN_ROLLING_MANIFEST_SCHEMA_VERSION
+          : DATA_DOMAIN_DIRECT_MANIFEST_SCHEMA_VERSION,
+        manifest_page_limit: actualManifestPageLimit,
+        ...(controlTableRolling ? dataDomainControlRevisionEvidence(
+          controlRevisionForReceipt!,
+        ) : {}),
+        ...(semanticControlTable ? {
+          semantic_validation_schema_version:
+            DATA_DOMAIN_EXPECTED_RETURN_SEMANTIC_SCHEMA_VERSION,
+          semantic_validation_status: 'pass',
+          semantic_rows_scanned: semanticRowsScanned,
+          semantic_rows_applicable: semanticRowsApplicable,
+          semantic_rows_validated: semanticRowsValidated,
+        } : {}),
       }),
     ).run()
 
@@ -797,6 +1516,30 @@ export async function backfillDataDomainTableShadow(
     `).bind(
       domain, table, JSON.stringify(cursor), sourceRows, sourceFullChecksum, targetFullChecksum,
     ).run()
+    if (controlTableRolling) {
+      const postReceiptRevision = await loadDataDomainControlRevisionPair(env.DB, target, table)
+      const revisionBlockers = dataDomainControlRevisionBlockers({
+        receipt: {
+          evidence_json: JSON.stringify(dataDomainControlRevisionEvidence(
+            controlRevisionForReceipt!,
+          )),
+        },
+        live: postReceiptRevision,
+      })
+      if (revisionBlockers.length) {
+        await invalidateControlTableClosure(env.DB, {
+          changedTables: [table],
+          preserveCursorTables: [table],
+          reason: `control_table_revision_drift_after_receipt:${table}:${revisionBlockers.join('|')}`,
+          authority: learningAuthority!,
+        })
+        return {
+          domain, table, status: 'shadow_parity_progress', source_rows: sourceRows,
+          target_rows: targetRows, batch_rows: 0, batch_checksum: null, cursor: null,
+          parity_rows_scanned: 0, parity_rows_repaired: 0,
+        }
+      }
+    }
     const ownedTables = tablesForDataDomainShadowBackfill(domain)
     const completedResult = await env.DB.prepare(`
       SELECT table_name
@@ -804,15 +1547,35 @@ export async function backfillDataDomainTableShadow(
        WHERE domain=? AND status='complete'
     `).bind(domain).all<{ table_name: string }>()
     const parityResult = await env.DB.prepare(`
-      SELECT table_name, status, source_count, target_count, source_checksum, target_checksum
+      SELECT table_name, status, source_count, target_count, source_checksum, target_checksum,
+             evidence_json, checked_at
         FROM data_domain_parity_checks
        WHERE domain=? AND check_kind='full_table'
        ORDER BY checked_at DESC
     `).bind(domain).all<DomainAggregateParityRow>()
     const completedTables = (completedResult.results ?? []).map((row) => String(row.table_name))
     const parityRows = parityResult.results ?? []
+    const liveRevisionReady = new Set<string>()
+    if (domain === 'learning') {
+      for (const controlTable of ownedTables.filter(isDataDomainControlTable)) {
+        const receipt = parityRows.find((row) => row.table_name === controlTable)
+        if (!receipt) continue
+        const live = await loadDataDomainControlRevisionPair(env.DB, target, controlTable)
+        if (!dataDomainControlRevisionBlockers({ receipt, live }).length) {
+          liveRevisionReady.add(controlTable)
+        }
+      }
+    }
     const parityTables = parityRows
-      .filter((row) => row.status === 'pass')
+      .filter((row) => (
+        isAuthoritativeDataDomainFullTableParity(row.table_name, row)
+        && isDataDomainFullTableParityFresh(row.table_name, row, options.parityNotBefore)
+        && (
+          domain !== 'learning'
+          || !isDataDomainControlTable(row.table_name)
+          || liveRevisionReady.has(row.table_name)
+        )
+      ))
       .map((row) => String(row.table_name))
     const copyAndTableParityReady = isDomainShadowCutoverReady(
       ownedTables,
@@ -820,7 +1583,11 @@ export async function backfillDataDomainTableShadow(
       parityTables,
     )
     const aggregateSnapshot = copyAndTableParityReady
-      ? await buildDataDomainAggregateParitySnapshot(ownedTables, parityRows)
+      ? await buildDataDomainAggregateParitySnapshot(
+        ownedTables,
+        parityRows,
+        options.parityNotBefore,
+      )
       : null
     const domainShadowReady = Boolean(
       aggregateSnapshot
@@ -873,7 +1640,34 @@ export async function backfillDataDomainTableShadow(
   }
 
   const columnSql = columns.map(identifier).join(", ")
-  await syncForeignKeyAncestors(env.DB, target, domain, table, rows, primaryKeys)
+  const invalidatedAncestors = new Set<string>()
+  await syncForeignKeyAncestors(
+    env.DB,
+    target,
+    domain,
+    table,
+    rows,
+    primaryKeys,
+    async (ancestorTable) => {
+      if (invalidatedAncestors.has(ancestorTable)) return
+      invalidatedAncestors.add(ancestorTable)
+      if (domain === 'learning' && isDataDomainControlTable(ancestorTable)) {
+        await invalidateControlTableClosure(env.DB, {
+          changedTables: [ancestorTable],
+          preserveCursorTables: [ancestorTable],
+          reason: `foreign_key_ancestor_sync:${table}:${ancestorTable}`,
+          authority: learningAuthority!,
+        })
+      } else {
+        await invalidateGenericManifestProgress(
+          env.DB,
+          domain,
+          ancestorTable,
+          `foreign_key_ancestor_sync:${table}:${ancestorTable}`,
+        )
+      }
+    },
+  )
   await upsertDomainRows(target, table, columns, primaryKeys, rows)
   const verify = await target.prepare(`
     SELECT ${columnSql} FROM ${identifier(table)}
@@ -885,6 +1679,7 @@ export async function backfillDataDomainTableShadow(
   const sourceChecksum = await checksumRows(rows, columns)
   const targetChecksum = await checksumRows(targetRows, columns)
   if (sourceChecksum !== targetChecksum) throw new Error(`domain_shadow_checksum_mismatch:${domain}:${table}`)
+  await assertExpectedReturnPointerSourceStable(env, pointerGuard)
   const last = rows.at(-1)!
   const nextCursor = primaryKeys.map((column) => last[column] ?? null)
   await env.DB.prepare(`

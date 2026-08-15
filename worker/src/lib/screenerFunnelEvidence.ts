@@ -26,6 +26,58 @@ export interface ScreenerFunnelSummary {
   timeline: ScreenerFunnelStep[]
 }
 
+export const L0_DROP_REASON_CONSERVATION_SCHEMA_VERSION = 'l0-drop-reason-conservation-v1' as const
+export const L0_DROP_REASON_CONSERVATION_RUN_VERSION = 'l0-universe-terminal-decision-v1' as const
+export const L0_DROP_REASON_CONFIG_VERSION = 'l0-drop-reason-taxonomy-v1' as const
+
+export const L0_DROP_PRIMARY_REASON_TAXONOMY = [
+  'insufficient_price_history',
+  'etf_excluded',
+  'price_out_of_range',
+  'zero_volume',
+  'hard_trading_restriction_block',
+  'avg_volume_below_min',
+  'turnover_below_min',
+] as const
+
+export type L0DropPrimaryReason = typeof L0_DROP_PRIMARY_REASON_TAXONOMY[number]
+
+export interface L0DropReasonAssignment {
+  symbol: string
+  primary_reason: L0DropPrimaryReason
+  restriction_subreason?: string
+}
+
+export interface L0DropReasonConservationReport {
+  schema_version: typeof L0_DROP_REASON_CONSERVATION_SCHEMA_VERSION
+  run_version: typeof L0_DROP_REASON_CONSERVATION_RUN_VERSION
+  config_version: typeof L0_DROP_REASON_CONFIG_VERSION
+  source_stage: 'universe'
+  source_universe: number
+  pass: number
+  drop: number
+  primary_reason_counts: Record<string, number>
+  restriction_subreason_counts: Record<string, number>
+  primary_reason_precedence: typeof L0_DROP_PRIMARY_REASON_TAXONOMY
+  drop_assignments: L0DropReasonAssignment[]
+  conservation: {
+    source_universe_equals_pass_plus_drop: true
+    primary_reason_counts_equal_drop: true
+    every_drop_has_exactly_one_primary_reason: true
+  }
+  deterministic_order: 'symbol_asc_then_primary_reason_asc_then_restriction_subreason_asc'
+}
+
+export type L0DropReasonConservationReceipt =
+  Omit<L0DropReasonConservationReport, 'drop_assignments'> & {
+    drop_assignment_count: number
+  }
+
+export interface BuildL0DropReasonConservationInput {
+  sourceUniverseSymbols: Iterable<string>
+  rows: ScreenerFunnelRow[]
+}
+
 export interface StrategyPortfolioIntelligenceHealth {
   schema_version: 'daily_strategy_portfolio_intelligence_health_v1'
   layer: 'L1.25'
@@ -83,6 +135,199 @@ function toNullableNumber(value: unknown): number | null {
 
 function normalizeSymbol(value: unknown): string {
   return String(value ?? '').trim().toUpperCase()
+}
+
+const L0_SOURCE_STAGE = 'universe' as const
+const L0_TAXONOMY_CODE_PATTERN = /^[a-z0-9][a-z0-9_.:-]*$/
+const L0_DROP_PRIMARY_REASON_SET = new Set<string>(L0_DROP_PRIMARY_REASON_TAXONOMY)
+
+interface NormalizedL0TerminalOutcome {
+  symbol: string
+  decision: string
+  primaryReason: string
+  restrictionSubreason: string
+}
+
+function compareCanonicalText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+function normalizeL0TaxonomyCode(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function sortedCountRecord(counts: Map<string, number>): Record<string, number> {
+  const result: Record<string, number> = {}
+  for (const key of [...counts.keys()].sort(compareCanonicalText)) {
+    result[key] = counts.get(key) ?? 0
+  }
+  return result
+}
+
+function joinedSortedSymbols(symbols: Iterable<string>): string {
+  return [...new Set(symbols)].sort(compareCanonicalText).join(',')
+}
+
+/**
+ * Builds one terminal L0 outcome per explicit source-universe symbol. Missing,
+ * duplicate, or unclassified outcomes fail closed instead of becoming "other".
+ */
+export function buildL0DropReasonConservation(
+  input: BuildL0DropReasonConservationInput,
+): L0DropReasonConservationReport {
+  const sourceSymbols = new Set<string>()
+  const duplicateSourceSymbols = new Set<string>()
+  for (const rawSymbol of input.sourceUniverseSymbols) {
+    const symbol = normalizeSymbol(rawSymbol)
+    if (!symbol) throw new Error('l0_drop_reason_source_symbol_missing')
+    if (sourceSymbols.has(symbol)) duplicateSourceSymbols.add(symbol)
+    sourceSymbols.add(symbol)
+  }
+  if (duplicateSourceSymbols.size) {
+    throw new Error(`l0_drop_reason_duplicate_source_symbols:${joinedSortedSymbols(duplicateSourceSymbols)}`)
+  }
+
+  const outcomes = input.rows
+    .filter((row) => String(row.stage ?? '').trim() === L0_SOURCE_STAGE)
+    .map<NormalizedL0TerminalOutcome>((row) => {
+      const evidence = parseEvidence(row.evidence)
+      return {
+        symbol: normalizeSymbol(row.symbol),
+        decision: String(row.decision ?? '').trim().toLowerCase(),
+        primaryReason: normalizeL0TaxonomyCode(row.reason_code),
+        restrictionSubreason: normalizeL0TaxonomyCode(evidence.restriction_subreason),
+      }
+    })
+    .sort((a, b) => (
+      compareCanonicalText(a.symbol, b.symbol)
+      || compareCanonicalText(a.decision, b.decision)
+      || compareCanonicalText(a.primaryReason, b.primaryReason)
+      || compareCanonicalText(a.restrictionSubreason, b.restrictionSubreason)
+    ))
+
+  if (outcomes.some((outcome) => !outcome.symbol)) {
+    throw new Error('l0_drop_reason_outcome_symbol_missing')
+  }
+  const outsideSource = outcomes
+    .filter((outcome) => !sourceSymbols.has(outcome.symbol))
+    .map((outcome) => outcome.symbol)
+  if (outsideSource.length) {
+    throw new Error(`l0_drop_reason_outcome_outside_source_universe:${joinedSortedSymbols(outsideSource)}`)
+  }
+
+  const outcomesBySymbol = new Map<string, NormalizedL0TerminalOutcome[]>()
+  for (const outcome of outcomes) {
+    const existing = outcomesBySymbol.get(outcome.symbol)
+    if (existing) existing.push(outcome)
+    else outcomesBySymbol.set(outcome.symbol, [outcome])
+  }
+  const duplicateOutcomes = [...outcomesBySymbol.entries()]
+    .filter(([, rows]) => rows.length !== 1)
+    .map(([symbol]) => symbol)
+  if (duplicateOutcomes.length) {
+    throw new Error(`l0_drop_reason_multiple_terminal_outcomes:${joinedSortedSymbols(duplicateOutcomes)}`)
+  }
+  const missingOutcomes = [...sourceSymbols].filter((symbol) => !outcomesBySymbol.has(symbol))
+  if (missingOutcomes.length) {
+    throw new Error(`l0_drop_reason_terminal_outcome_missing:${joinedSortedSymbols(missingOutcomes)}`)
+  }
+
+  let pass = 0
+  const dropAssignments: L0DropReasonAssignment[] = []
+  const primaryReasonCounts = new Map<string, number>()
+  const restrictionSubreasonCounts = new Map<string, number>()
+  for (const symbol of [...sourceSymbols].sort(compareCanonicalText)) {
+    const outcome = outcomesBySymbol.get(symbol)?.[0]
+    if (!outcome) throw new Error(`l0_drop_reason_terminal_outcome_missing:${symbol}`)
+    if (outcome.decision === 'pass') {
+      if (outcome.restrictionSubreason) {
+        throw new Error(`l0_drop_reason_pass_has_restriction_subreason:${symbol}`)
+      }
+      pass += 1
+      continue
+    }
+    if (outcome.decision !== 'drop') {
+      throw new Error(`l0_drop_reason_invalid_terminal_decision:${symbol}:${outcome.decision || 'missing'}`)
+    }
+    if (!outcome.primaryReason) {
+      throw new Error(`l0_drop_reason_primary_reason_missing:${symbol}`)
+    }
+    if (!L0_TAXONOMY_CODE_PATTERN.test(outcome.primaryReason)) {
+      throw new Error(`l0_drop_reason_primary_reason_invalid:${symbol}:${outcome.primaryReason}`)
+    }
+    if (!L0_DROP_PRIMARY_REASON_SET.has(outcome.primaryReason)) {
+      throw new Error(`l0_drop_reason_primary_reason_unknown:${symbol}:${outcome.primaryReason}`)
+    }
+    if (outcome.restrictionSubreason && !L0_TAXONOMY_CODE_PATTERN.test(outcome.restrictionSubreason)) {
+      throw new Error(`l0_drop_reason_restriction_subreason_invalid:${symbol}:${outcome.restrictionSubreason}`)
+    }
+    if (outcome.restrictionSubreason && !outcome.primaryReason.includes('restriction')) {
+      throw new Error(`l0_drop_reason_restriction_subreason_without_restriction_primary:${symbol}`)
+    }
+    const primaryReason = outcome.primaryReason as L0DropPrimaryReason
+    primaryReasonCounts.set(
+      primaryReason,
+      (primaryReasonCounts.get(primaryReason) ?? 0) + 1,
+    )
+    if (outcome.restrictionSubreason) {
+      restrictionSubreasonCounts.set(
+        outcome.restrictionSubreason,
+        (restrictionSubreasonCounts.get(outcome.restrictionSubreason) ?? 0) + 1,
+      )
+    }
+    dropAssignments.push({
+      symbol,
+      primary_reason: primaryReason,
+      ...(outcome.restrictionSubreason
+        ? { restriction_subreason: outcome.restrictionSubreason }
+        : {}),
+    })
+  }
+
+  const primaryReasonCountRecord = sortedCountRecord(primaryReasonCounts)
+  const restrictionSubreasonCountRecord = sortedCountRecord(restrictionSubreasonCounts)
+  const drop = dropAssignments.length
+  const primaryReasonCountSum = Object.values(primaryReasonCountRecord)
+    .reduce((sum, count) => sum + count, 0)
+  if (sourceSymbols.size !== pass + drop) {
+    throw new Error(`l0_drop_reason_source_conservation_failed:${sourceSymbols.size}/${pass + drop}`)
+  }
+  if (primaryReasonCountSum !== drop) {
+    throw new Error(`l0_drop_reason_count_conservation_failed:${primaryReasonCountSum}/${drop}`)
+  }
+
+  return {
+    schema_version: L0_DROP_REASON_CONSERVATION_SCHEMA_VERSION,
+    run_version: L0_DROP_REASON_CONSERVATION_RUN_VERSION,
+    config_version: L0_DROP_REASON_CONFIG_VERSION,
+    source_stage: L0_SOURCE_STAGE,
+    source_universe: sourceSymbols.size,
+    pass,
+    drop,
+    primary_reason_counts: primaryReasonCountRecord,
+    restriction_subreason_counts: restrictionSubreasonCountRecord,
+    primary_reason_precedence: L0_DROP_PRIMARY_REASON_TAXONOMY,
+    drop_assignments: dropAssignments,
+    conservation: {
+      source_universe_equals_pass_plus_drop: true,
+      primary_reason_counts_equal_drop: true,
+      every_drop_has_exactly_one_primary_reason: true,
+    },
+    deterministic_order: 'symbol_asc_then_primary_reason_asc_then_restriction_subreason_asc',
+  }
+}
+
+export function compactL0DropReasonConservationReceipt(
+  report: L0DropReasonConservationReport,
+): L0DropReasonConservationReceipt {
+  const {
+    drop_assignments: dropAssignments,
+    ...receipt
+  } = report
+  return {
+    ...receipt,
+    drop_assignment_count: dropAssignments.length,
+  }
 }
 
 function pickLastByStage(steps: ScreenerFunnelStep[], stage: string): ScreenerFunnelStep | null {

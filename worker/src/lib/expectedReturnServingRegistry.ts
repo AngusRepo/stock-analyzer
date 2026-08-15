@@ -209,6 +209,7 @@ export async function commitExpectedReturnChampion(
   input: {
     owner: ExpectedReturnOwner
     artifact: JsonRecord
+    artifactId: string
     artifactPath: string
     artifactChecksum: string
     promotionPacketId: string
@@ -217,7 +218,17 @@ export async function commitExpectedReturnChampion(
   },
 ): Promise<{ artifact_id: string; previous_version: string | null; payload_checksum: string }> {
   const modelVersion = String(input.artifact.model_version ?? '').trim()
-  const artifactId = `${input.owner}:${modelVersion}`
+  const artifactChecksum = input.artifactChecksum.trim().toLowerCase()
+  const artifactId = input.artifactId.trim()
+  if (!/^[0-9a-f]{64}$/.test(artifactChecksum)) {
+    throw new Error('expected_return_registry_artifact_checksum_invalid')
+  }
+  if (artifactId !== `${input.owner}:${modelVersion}:${artifactChecksum}`) {
+    throw new Error('expected_return_registry_artifact_id_checksum_mismatch')
+  }
+  if (!input.artifactPath.endsWith(`/${artifactChecksum}.json`)) {
+    throw new Error('expected_return_registry_artifact_path_checksum_mismatch')
+  }
   const registry = await db.prepare(`
     SELECT artifact_id, model_name, version, state, artifact_path, checksum,
            offline_gate_decision
@@ -232,7 +243,7 @@ export async function commitExpectedReturnChampion(
   if (String(registry.artifact_path ?? '') !== input.artifactPath) {
     throw new Error('expected_return_registry_artifact_path_mismatch')
   }
-  if (String(registry.checksum ?? '').toLowerCase() !== input.artifactChecksum.toLowerCase()) {
+  if (String(registry.checksum ?? '').toLowerCase() !== artifactChecksum) {
     throw new Error('expected_return_registry_artifact_checksum_mismatch')
   }
   const previous = await db.prepare(`
@@ -249,10 +260,10 @@ export async function commitExpectedReturnChampion(
     promotion_packet_id: input.promotionPacketId,
     source_run_date: input.sourceRunDate,
     artifact_path: input.artifactPath,
-    artifact_checksum: input.artifactChecksum,
+    artifact_checksum: artifactChecksum,
     payload_checksum: payloadChecksum,
   })
-  const eventId = `expected-return:${input.owner}:${modelVersion}:${input.artifactChecksum.slice(0, 16)}`
+  const eventId = `expected-return:${input.owner}:${modelVersion}:${artifactChecksum.slice(0, 16)}`
   await db.batch([
     db.prepare(`
       INSERT INTO expected_return_artifact_payloads (
@@ -270,7 +281,7 @@ export async function commitExpectedReturnChampion(
         updated_at = CURRENT_TIMESTAMP
     `).bind(
       artifactId, input.owner, modelVersion, artifactJson, payloadChecksum,
-      input.artifactPath, input.artifactChecksum,
+      input.artifactPath, artifactChecksum,
       String(input.artifact.training_data?.cohort_id ?? ''),
     ),
     db.prepare(`
@@ -362,12 +373,12 @@ export async function inspectExpectedReturnLifecycleHealth(
     if (projection.serving_mode === 'abstention_baseline') warnings.push(`${owner}:alpha_champion_not_promoted`)
   }
   const candidateRows = await env.DB.prepare(`
-    SELECT model_name, version, state, offline_gate_decision,
+    SELECT artifact_id, model_name, version, state, offline_gate_decision,
            offline_gate_failed_gates, source_run_date, updated_at
       FROM model_artifact_registry
      WHERE model_name IN ('l4_alpha_ev', 'allocator_ev_fusion')
        AND candidate_type IN ('l4_alpha_ev_refresh', 'allocator_ev_fusion_refresh')
-     ORDER BY source_run_date DESC, updated_at DESC, version DESC
+     ORDER BY source_run_date DESC, updated_at DESC, version DESC, artifact_id DESC
   `).all<Record<string, any>>()
   const latestCandidates: Record<ExpectedReturnOwner, JsonRecord | null> = {
     l4_alpha_ev: null,
@@ -381,7 +392,7 @@ export async function inspectExpectedReturnLifecycleHealth(
     const candidate = latestCandidates[owner]
     if (
       candidate?.state === 'production'
-      && projections[owner].champion_artifact_id !== `${owner}:${candidate.version}`
+      && projections[owner].champion_artifact_id !== String(candidate.artifact_id ?? '')
     ) {
       alerts.push(`${owner}:production_candidate_not_champion_pointer`)
     }

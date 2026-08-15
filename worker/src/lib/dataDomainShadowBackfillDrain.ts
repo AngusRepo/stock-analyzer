@@ -1,14 +1,35 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
 import {
   backfillDataDomainTableShadow,
+  invalidateGenericManifestProgress,
   isDomainShadowCutoverReady,
   type DomainShadowBackfillResult,
 } from './dataDomainShadowBackfill'
 import {
+  activeDataDomains,
+  invalidActiveDataDomains,
   shadowDatabaseForDataDomain,
   tablesForDataDomainShadowBackfill,
   type DataDomain,
 } from './dataDomainRegistry'
+import {
+  assertInactiveLearningShadowAuthority,
+  controlTableReceiptBlockers,
+  controlTableRowCounts,
+  invalidateControlTableClosure,
+  isLegacyDirectControlReceipt,
+  loadControlTableReceipt,
+  verifyLegacyDirectControlReceipt,
+} from './dataDomainControlTableParity'
+import {
+  isAuthoritativeDataDomainFullTableParity,
+  isDataDomainControlTable,
+  isDataDomainFullTableParityFresh,
+} from './dataDomainShadowManifest'
+import {
+  dataDomainControlRevisionBlockers,
+  loadDataDomainControlRevisionPair,
+} from './dataDomainControlRevision'
 import { runWithMaintenanceLease } from './maintenanceLease'
 import { twDaysAgo } from './dateUtils'
 import { logSchedulerResult, type SchedulerRunLogEntry } from './schedulerRunLogger'
@@ -17,6 +38,44 @@ const ACTIVE_TTL_SECONDS = 6 * 3600
 const DEFAULT_MAX_ATTEMPTS = 5000
 const MAX_ATTEMPTS = 20_000
 const STALE_PROGRESS_MS = 5 * 60 * 1000
+
+type DataDomainShadowMutationAuthority = {
+  domain: DataDomain
+  cutoverStatus: 'legacy' | 'shadow'
+}
+
+function isDataDomainShadowAuthorityError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /^(data_domain_shadow_active_domain_invalid|data_domain_shadow_requires_inactive_target|data_domain_shadow_requires_strict_disabled|data_domain_shadow_authority_mismatch|domain_shadow_cutover_authority_blocked|domain_manifest_invalidation_cutover_blocked|domain_cutover_source_changed|domain_cutover_inconsistent|control_table_invalidation_cutover_blocked|data_domain_control_revision_|expected_return_pointer_shadow_guard_)/.test(message)
+}
+
+async function assertDataDomainShadowMutationAuthority(
+  env: Bindings,
+  domain: DataDomain,
+): Promise<DataDomainShadowMutationAuthority> {
+  const invalidDomains = invalidActiveDataDomains(env)
+  if (invalidDomains.length) {
+    throw new Error(`data_domain_shadow_active_domain_invalid:${invalidDomains.sort().join(',')}`)
+  }
+  if (String(env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true') {
+    throw new Error(`data_domain_shadow_requires_strict_disabled:${domain}`)
+  }
+  if (activeDataDomains(env).has(domain)) {
+    throw new Error(`data_domain_shadow_requires_inactive_target:${domain}`)
+  }
+  const cutover = await env.DB.prepare(`
+    SELECT status FROM data_domain_cutovers WHERE domain=?
+  `).bind(domain).first<{ status?: string }>()
+  const status = cutover?.status ? String(cutover.status) : null
+  if (status !== 'legacy' && status !== 'shadow') {
+    throw new Error(`domain_shadow_cutover_authority_blocked:${domain}:${status ?? 'missing'}`)
+  }
+  return { domain, cutoverStatus: status }
+}
+
+export function dataDomainParitySessionWatermark(nowMs = Date.now()): string {
+  return new Date(Math.floor(nowMs / 1000) * 1000).toISOString()
+}
 
 type ActiveState = {
   run_id: string
@@ -60,6 +119,8 @@ function queueMessage(input: {
   attempt: number
   maxAttempts: number
   errorAttempt?: number
+  parityNotBefore: string
+  globalSweep?: boolean
 }): UpdateQueueMsg {
   return {
     type: 'data_domain_shadow_backfill',
@@ -72,15 +133,36 @@ function queueMessage(input: {
     dataDomain: input.domain,
     dataDomainTable: input.table,
     dataDomainRequestedTable: input.requestedTable,
+    dataDomainParityNotBefore: input.parityNotBefore,
+    dataDomainGlobalSweep: input.globalSweep,
   }
 }
 
 export function resolveDataDomainShadowBackfillContinuation(
   requestedTable: string | undefined,
   status: DomainShadowBackfillResult['status'],
-): 'same_table' | 'requested_table_complete' | 'next_domain_table' {
+): 'same_table' | 'requested_table_complete' | 'requested_table_dependency_blocked' | 'next_domain_table' {
+  if (status === 'shadow_delete_reconciliation_deferred') {
+    return requestedTable ? 'requested_table_dependency_blocked' : 'next_domain_table'
+  }
   if (status !== 'shadow_table_complete') return 'same_table'
+  if (
+    requestedTable
+    && [
+      'expected_return_artifact_payloads',
+      'model_champion_history',
+      'model_champion_pointers',
+    ].includes(requestedTable)
+  ) return 'requested_table_dependency_blocked'
   return requestedTable ? 'requested_table_complete' : 'next_domain_table'
+}
+
+export function shouldContinueDataDomainGlobalSweep(input: {
+  globalSweep: boolean
+  requestedTable?: string
+  domainShadowReady: boolean
+}): boolean {
+  return input.globalSweep && !input.requestedTable && input.domainShadowReady
 }
 
 async function completedDomainTables(env: Bindings, domain: DataDomain): Promise<string[]> {
@@ -149,13 +231,17 @@ async function resetDataDomainTableForCatchup(
   domain: DataDomain,
   table: string,
   reason: string,
+  authority: DataDomainShadowMutationAuthority,
 ): Promise<void> {
+  if (authority.domain !== domain || !['legacy', 'shadow'].includes(authority.cutoverStatus)) {
+    throw new Error(`data_domain_shadow_authority_mismatch:${domain}`)
+  }
   const cutover = await env.DB.prepare(`
     SELECT status FROM data_domain_cutovers WHERE domain=?
   `).bind(domain).first<{ status?: string }>()
-  const status = String(cutover?.status ?? 'legacy')
-  if (!['legacy', 'shadow'].includes(status)) {
-    throw new Error(`domain_cutover_source_changed:${domain}:${status}`)
+  const status = cutover?.status ? String(cutover.status) : null
+  if (!status || !['legacy', 'shadow'].includes(status)) {
+    throw new Error(`domain_cutover_source_changed:${domain}:${status ?? 'missing'}`)
   }
   await env.DB.batch([
     env.DB.prepare(`
@@ -246,12 +332,30 @@ export async function inspectLatestEveningChainClosure(
 }
 
 
-export async function nextDataDomainBackfillDomain(env: Bindings): Promise<DataDomain | null> {
+export async function nextDataDomainBackfillDomain(
+  env: Bindings,
+  parityNotBefore = dataDomainParitySessionWatermark(),
+): Promise<DataDomain | null> {
+  const invalidDomains = invalidActiveDataDomains(env)
+  if (invalidDomains.length) {
+    throw new Error(`data_domain_shadow_active_domain_invalid:${invalidDomains.sort().join(',')}`)
+  }
+  if (String(env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true') {
+    throw new Error('data_domain_shadow_requires_strict_disabled:selector')
+  }
+  const activeDomains = activeDataDomains(env)
   for (const domain of DOMAIN_BACKFILL_ORDER) {
+    if (activeDomains.has(domain)) continue
+    await assertDataDomainShadowMutationAuthority(env, domain)
+    const incremental = await nextDataDomainIncrementalCatchupTable(
+      env,
+      domain,
+      parityNotBefore,
+      false,
+    )
+    if (incremental) return domain
     const incomplete = await nextIncompleteTable(env, domain)
     if (incomplete) return domain
-    const incremental = await nextDataDomainIncrementalCatchupTable(env, domain)
-    if (incremental) return domain
   }
   return null
 }
@@ -260,12 +364,15 @@ export async function enqueueNextDataDomainShadowBackfill(
   env: Bindings,
   input: { runDate: string; maxAttempts?: number },
 ): Promise<{ caughtUp: boolean; domain: DataDomain | null; queued: boolean; runId: string | null }> {
-  const domain = await nextDataDomainBackfillDomain(env)
+  const parityNotBefore = dataDomainParitySessionWatermark()
+  const domain = await nextDataDomainBackfillDomain(env, parityNotBefore)
   if (!domain) return { caughtUp: true, domain: null, queued: false, runId: null }
   const queued = await enqueueDataDomainShadowBackfill(env, {
     domain,
     runDate: input.runDate,
     maxAttempts: input.maxAttempts,
+    parityNotBefore,
+    globalSweep: true,
   })
   return {
     caughtUp: false,
@@ -279,39 +386,199 @@ export async function enqueueNextDataDomainShadowBackfill(
 export async function nextDataDomainIncrementalCatchupTable(
   env: Bindings,
   domain: DataDomain,
+  parityNotBefore?: string | null,
+  mutate = true,
 ): Promise<string | null> {
   const target = shadowDatabaseForDataDomain(env, domain)
   if (!target) throw new Error(`data_domain_shadow_binding_missing:${domain}`)
+  const mutationAuthority = await assertDataDomainShadowMutationAuthority(env, domain)
+  const learningAuthority = domain === 'learning'
+    ? assertInactiveLearningShadowAuthority(env)
+    : null
   const completedSet = new Set(await completedDomainTables(env, domain))
-  for (const table of tablesForDataDomainShadowBackfill(domain)) {
+  const orderedTables = tablesForDataDomainShadowBackfill(domain)
+  for (const table of [...orderedTables].reverse()) {
     if (!completedSet.has(table)) continue
-    const [sourceRows, targetRows, sourceWatermark, targetWatermark] = await Promise.all([
+    const [sourceRows, targetRows] = await Promise.all([
+      tableRowCount(env.DB, table),
+      tableRowCount(target, table),
+    ])
+    if (targetRows > sourceRows) {
+      const deferred = await env.DB.prepare(`
+        SELECT evidence_json
+          FROM data_domain_parity_checks
+         WHERE check_id=?
+      `).bind(`domain-parity:${domain}:${table}:delete-progress`)
+        .first<{ evidence_json?: string | null }>()
+      if (deferred?.evidence_json) {
+        try {
+          const evidence = JSON.parse(deferred.evidence_json) as {
+            phase?: unknown
+            blockers?: unknown
+          }
+          if (evidence.phase === 'waiting_for_dependents' && Array.isArray(evidence.blockers)) {
+            const deferredTables = new Set(evidence.blockers.flatMap((value) => {
+              if (typeof value !== 'string') return []
+              const dependent = value.split(':', 1)[0]?.trim()
+              return dependent && orderedTables.includes(dependent) ? [dependent] : []
+            }))
+            const pendingDependent = orderedTables.find((candidate) => (
+              deferredTables.has(candidate) && !completedSet.has(candidate)
+            ))
+            if (pendingDependent) return pendingDependent
+          }
+        } catch {}
+      }
+      return table
+    }
+  }
+  for (const table of orderedTables) {
+    if (!completedSet.has(table)) continue
+    if (domain === 'learning' && isDataDomainControlTable(table)) {
+      const [receipt, counts, liveRevision] = await Promise.all([
+        loadControlTableReceipt(env.DB, table),
+        controlTableRowCounts(env.DB, target, table),
+        loadDataDomainControlRevisionPair(env.DB, target, table),
+      ])
+      const receiptBlockers = controlTableReceiptBlockers({
+        table,
+        ...receipt,
+        parityNotBefore,
+      })
+      receiptBlockers.push(...dataDomainControlRevisionBlockers({
+        receipt: receipt.parity,
+        live: liveRevision,
+      }))
+      const liveCountsExact = counts.sourceCount === counts.targetCount
+      const receiptCountsExact = liveCountsExact
+        && counts.sourceCount === Number(receipt.parity?.source_count ?? -1)
+        && counts.targetCount === Number(receipt.parity?.target_count ?? -1)
+      if (!receiptBlockers.length && receiptCountsExact) continue
+      if (!mutate) return table
+
+      let preserveCursor = Boolean(
+        liveCountsExact
+        && receipt.cursor?.status === 'complete'
+        && Number(receipt.cursor.rows_copied ?? -1) === counts.sourceCount,
+      )
+      const reasons = [...receiptBlockers]
+      if (isLegacyDirectControlReceipt(receipt.parity)) {
+        const legacy = await verifyLegacyDirectControlReceipt(env.DB, env.DB, target, table)
+        preserveCursor = legacy.exact
+        reasons.push(...legacy.blockers)
+      }
+      if (!liveCountsExact) {
+        reasons.push(`live_count_mismatch:${counts.sourceCount}/${counts.targetCount}`)
+      }
+      const receiptCount = Number(receipt.parity?.source_count ?? -1)
+      if (liveCountsExact && receiptCount !== counts.sourceCount) {
+        reasons.push(`receipt_live_count_mismatch:${receiptCount}/${counts.sourceCount}`)
+      }
+      await invalidateControlTableClosure(env.DB, {
+        changedTables: [table],
+        preserveCursorTables: preserveCursor ? [table] : [],
+        reason: `control_table_receipt_refresh:${[...new Set(reasons)].join('|')}`,
+        authority: learningAuthority!,
+      })
+      return table
+    }
+    const [sourceRows, targetRows, sourceWatermark, targetWatermark, parityReceipt] = await Promise.all([
       tableRowCount(env.DB, table),
       tableRowCount(target, table),
       tableFreshnessWatermark(env.DB, table),
       tableFreshnessWatermark(target, table),
+      env.DB.prepare(`
+        SELECT status, source_count, target_count, source_checksum, target_checksum,
+               evidence_json, checked_at
+          FROM data_domain_parity_checks
+         WHERE domain=? AND table_name=? AND check_kind='full_table'
+         ORDER BY checked_at DESC, check_id DESC
+         LIMIT 1
+      `).bind(domain, table).first<{
+        status?: string | null
+        source_count?: number | string | null
+        target_count?: number | string | null
+        source_checksum?: string | null
+        target_checksum?: string | null
+        evidence_json?: string | null
+        checked_at?: string | null
+      }>(),
     ])
+    if (!isAuthoritativeDataDomainFullTableParity(table, parityReceipt)) return table
     const reason = sourceRows !== targetRows
       ? `row_count_changed:${sourceRows}/${targetRows}`
       : !sameFreshnessWatermark(sourceWatermark, targetWatermark)
         ? `freshness_watermark_changed:${JSON.stringify(sourceWatermark)}/${JSON.stringify(targetWatermark)}`
         : null
     if (reason) {
-      await resetDataDomainTableForCatchup(env, domain, table, reason)
+      if (!mutate) return table
+      await resetDataDomainTableForCatchup(env, domain, table, reason, mutationAuthority)
+      return table
+    }
+    const receiptSourceRows = Number(parityReceipt?.source_count ?? -1)
+    const receiptTargetRows = Number(parityReceipt?.target_count ?? -1)
+    const receiptCountsExact = receiptSourceRows === sourceRows
+      && receiptTargetRows === targetRows
+    const receiptFresh = isDataDomainFullTableParityFresh(
+      table,
+      parityReceipt,
+      parityNotBefore,
+    )
+    if (!receiptCountsExact || !receiptFresh) {
+      if (!mutate) return table
+      await invalidateGenericManifestProgress(
+        env.DB,
+        domain,
+        table,
+        `generic_receipt_refresh:${[
+          ...(!receiptCountsExact
+            ? [`live_count_receipt_mismatch:${receiptSourceRows}/${receiptTargetRows}:${sourceRows}/${targetRows}`]
+            : []),
+          ...(!receiptFresh ? ['session_watermark_stale'] : []),
+        ].join('|')}`,
+      )
       return table
     }
   }
   return null
 }
 
-async function domainChecksumReady(env: Bindings, domain: DataDomain): Promise<boolean> {
+async function domainChecksumReady(
+  env: Bindings,
+  domain: DataDomain,
+  parityNotBefore?: string | null,
+): Promise<boolean> {
+  const target = shadowDatabaseForDataDomain(env, domain)
+  if (!target) throw new Error(`data_domain_shadow_binding_missing:${domain}`)
   const completedTables = await completedDomainTables(env, domain)
   const parity = await env.DB.prepare(`
-    SELECT table_name
+    SELECT table_name, status, source_count, target_count,
+           source_checksum, target_checksum, evidence_json, checked_at
       FROM data_domain_parity_checks
      WHERE domain=? AND check_kind='full_table' AND status='pass'
-  `).bind(domain).all<{ table_name: string }>()
-  const parityTables = (parity.results ?? []).map((row) => String(row.table_name))
+  `).bind(domain).all<{
+    table_name: string
+    status?: string
+    source_count?: number | string | null
+    target_count?: number | string | null
+    source_checksum?: string | null
+    target_checksum?: string | null
+    evidence_json?: string | null
+    checked_at?: string | null
+  }>()
+  const parityTables: string[] = []
+  for (const row of parity.results ?? []) {
+    const table = String(row.table_name)
+    if (
+      !isAuthoritativeDataDomainFullTableParity(table, row)
+      || !isDataDomainFullTableParityFresh(table, row, parityNotBefore)
+    ) continue
+    if (domain === 'learning' && isDataDomainControlTable(table)) {
+      const live = await loadDataDomainControlRevisionPair(env.DB, target, table)
+      if (dataDomainControlRevisionBlockers({ receipt: row, live }).length) continue
+    }
+    parityTables.push(table)
+  }
   return isDomainShadowCutoverReady(tablesForDataDomainShadowBackfill(domain), completedTables, parityTables)
 }
 
@@ -323,10 +590,23 @@ export async function enqueueDataDomainShadowBackfill(
     table?: string
     runId?: string
     maxAttempts?: number
+    parityNotBefore?: string
+    globalSweep?: boolean
   },
 ): Promise<{ queued: boolean; runId: string }> {
   if (input.table && !tablesForDataDomainShadowBackfill(input.domain).includes(input.table)) {
     throw new Error(`data_domain_shadow_backfill_requested_table_not_owned:${input.domain}:${input.table}`)
+  }
+  if (
+    input.domain === 'learning'
+    && input.table
+    && [
+      'expected_return_artifact_payloads',
+      'model_champion_history',
+      'model_champion_pointers',
+    ].includes(input.table)
+  ) {
+    throw new Error(`data_domain_shadow_backfill_dependency_closure_required:${input.domain}:${input.table}`)
   }
   const runId = input.runId ?? `data-domain-shadow-backfill:${input.domain}:${input.runDate}:${crypto.randomUUID()}`
   const key = activeKey(input.domain)
@@ -340,8 +620,9 @@ export async function enqueueDataDomainShadowBackfill(
     await env.KV.delete(key)
   }
   const maxAttempts = Math.max(1, Math.min(Math.floor(input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS), MAX_ATTEMPTS))
+  const parityNotBefore = input.parityNotBefore ?? dataDomainParitySessionWatermark()
 
-  await env.KV.put(key, JSON.stringify({ run_id: runId, started_at: new Date().toISOString() }), {
+  await env.KV.put(key, JSON.stringify({ run_id: runId, started_at: parityNotBefore }), {
     expirationTtl: ACTIVE_TTL_SECONDS,
   })
   try {
@@ -353,6 +634,8 @@ export async function enqueueDataDomainShadowBackfill(
       runId,
       attempt: 0,
       maxAttempts,
+      parityNotBefore,
+      globalSweep: input.globalSweep,
     }))
     return { queued: true, runId }
   } catch (error) {
@@ -371,6 +654,9 @@ export async function processDataDomainShadowBackfillDrain(
   const maxAttempts = Math.max(1, Math.min(Math.floor(msg.maxAttempts ?? DEFAULT_MAX_ATTEMPTS), MAX_ATTEMPTS))
   const errorAttempt = Math.max(0, Math.floor(msg.dataDomainErrorAttempt ?? 0))
   const runId = msg.runId ?? `data-domain-shadow-backfill:${domain}:${msg.triggerTime}:queue`
+  const parityNotBefore = msg.dataDomainParityNotBefore
+    ?? dataDomainParitySessionWatermark()
+  const globalSweep = msg.dataDomainGlobalSweep === true
   const backfillTables = tablesForDataDomainShadowBackfill(domain)
   const currentTable = msg.dataDomainTable
   const requestedTable = msg.dataDomainRequestedTable
@@ -383,19 +669,64 @@ export async function processDataDomainShadowBackfillDrain(
   if (requestedTable && currentTable && requestedTable !== currentTable) {
     throw new Error(`data_domain_shadow_backfill_scope_mismatch:${domain}:${requestedTable}:${currentTable}`)
   }
+  if (
+    domain === 'learning'
+    && requestedTable
+    && [
+      'expected_return_artifact_payloads',
+      'model_champion_history',
+      'model_champion_pointers',
+    ].includes(requestedTable)
+  ) {
+    throw new Error(`data_domain_shadow_backfill_dependency_closure_required:${domain}:${requestedTable}`)
+  }
   const table = currentTable
     ?? requestedTable
-    ?? (await nextIncompleteTable(env, domain)
-      || await nextDataDomainIncrementalCatchupTable(env, domain))
+    ?? (await nextDataDomainIncrementalCatchupTable(env, domain, parityNotBefore)
+      || await nextIncompleteTable(env, domain))
   if (!table) {
-    const checksumReady = await domainChecksumReady(env, domain)
+    const checksumReady = await domainChecksumReady(env, domain, parityNotBefore)
     await env.KV.delete(activeKey(domain))
+    let sweepNext: Awaited<ReturnType<typeof enqueueDataDomainShadowBackfill>> | null = null
+    let sweepNextDomain: DataDomain | null = null
+    if (shouldContinueDataDomainGlobalSweep({
+      globalSweep,
+      requestedTable,
+      domainShadowReady: checksumReady,
+    })) {
+      sweepNextDomain = await nextDataDomainBackfillDomain(env, parityNotBefore)
+      if (sweepNextDomain) {
+        sweepNext = await enqueueDataDomainShadowBackfill(env, {
+          domain: sweepNextDomain,
+          runDate: msg.triggerTime,
+          maxAttempts,
+          parityNotBefore,
+          globalSweep: true,
+        })
+      }
+    }
     await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
       status: checksumReady ? 'success' : 'error',
-      summary: `domain=${domain} initial_copy_complete checksum_ready=${checksumReady} run_id=${runId}`,
+      summary: `domain=${domain} initial_copy_complete checksum_ready=${checksumReady} global_sweep=${globalSweep} sweep_next_domain=${sweepNextDomain ?? 'none'} sweep_next_queued=${sweepNext?.queued ?? false} run_id=${runId}`,
       duration_ms: 0,
       run_id: runId,
       run_date: msg.triggerTime,
+    }, env)
+    return
+  }
+
+  try {
+    await assertDataDomainShadowMutationAuthority(env, domain)
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    await env.KV.delete(activeKey(domain))
+    await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
+      status: 'error',
+      summary: `domain=${domain} table=${table} mutation_authority_blocked=true error=${errorMessage}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: msg.triggerTime,
+      error: errorMessage,
     }, env)
     return
   }
@@ -406,10 +737,27 @@ export async function processDataDomainShadowBackfillDrain(
       taskName: `data-domain-shadow-backfill:${domain}`,
       leaseGroup: 'd1_heavy_maintenance',
       leaseSeconds: 300,
-      run: () => backfillDataDomainTableShadow(env, { domain, table, limit: 500 }),
+      run: () => backfillDataDomainTableShadow(env, {
+        domain,
+        table,
+        limit: 500,
+        parityNotBefore,
+      }),
     })
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error)
+    if (isDataDomainShadowAuthorityError(error)) {
+      await env.KV.delete(activeKey(domain))
+      await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
+        status: 'error',
+        summary: `domain=${domain} table=${table} mutation_authority_changed=true error=${errorMessage}`,
+        duration_ms: 0,
+        run_id: runId,
+        run_date: msg.triggerTime,
+        error: errorMessage,
+      }, env)
+      return
+    }
     const errorCode = errorMessage.slice(0, 1000)
     const nextAttempt = attempt + 1
     const nextErrorAttempt = errorAttempt + 1
@@ -450,6 +798,8 @@ export async function processDataDomainShadowBackfillDrain(
       attempt: nextAttempt,
       maxAttempts,
       errorAttempt: nextErrorAttempt,
+      parityNotBefore,
+      globalSweep,
     }), { delaySeconds: 30 * (2 ** errorAttempt) })
     return
   }
@@ -462,6 +812,8 @@ export async function processDataDomainShadowBackfillDrain(
       runId,
       attempt,
       maxAttempts,
+      parityNotBefore,
+      globalSweep,
     }), {
       delaySeconds: 30,
     })
@@ -489,6 +841,17 @@ export async function processDataDomainShadowBackfillDrain(
     }, env)
     return
   }
+  if (continuation === 'requested_table_dependency_blocked') {
+    await env.KV.delete(activeKey(domain))
+    await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
+      status: 'error',
+      summary: `domain=${domain} table=${table} requested_table_dependency_closure_required=true run_id=${runId}`,
+      duration_ms: 0,
+      run_id: runId,
+      run_date: msg.triggerTime,
+    }, env)
+    return
+  }
 
   if (attempt + 1 >= maxAttempts) {
     await env.KV.delete(activeKey(domain))
@@ -504,12 +867,12 @@ export async function processDataDomainShadowBackfillDrain(
 
   const nextTable = continuation === 'same_table'
     ? table
-    : await nextIncompleteTable(env, domain)
-      || await nextDataDomainIncrementalCatchupTable(env, domain)
+    : await nextDataDomainIncrementalCatchupTable(env, domain, parityNotBefore)
+      || await nextIncompleteTable(env, domain)
   if (nextTable) {
     await env.KV.put(activeKey(domain), JSON.stringify({
       run_id: runId,
-      started_at: new Date().toISOString(),
+      started_at: parityNotBefore,
     }), { expirationTtl: ACTIVE_TTL_SECONDS })
     await (env.UPDATE_QUEUE as any).send(queueMessage({
       domain,
@@ -519,14 +882,34 @@ export async function processDataDomainShadowBackfillDrain(
       runId,
       attempt: attempt + 1,
       maxAttempts,
+      parityNotBefore,
+      globalSweep,
     }), { delaySeconds: 1 })
     return
   }
 
   await env.KV.delete(activeKey(domain))
+  let sweepNext: Awaited<ReturnType<typeof enqueueDataDomainShadowBackfill>> | null = null
+  let sweepNextDomain: DataDomain | null = null
+  if (shouldContinueDataDomainGlobalSweep({
+    globalSweep,
+    requestedTable,
+    domainShadowReady: Boolean(result.domain_shadow_ready),
+  })) {
+    sweepNextDomain = await nextDataDomainBackfillDomain(env, parityNotBefore)
+    if (sweepNextDomain) {
+      sweepNext = await enqueueDataDomainShadowBackfill(env, {
+        domain: sweepNextDomain,
+        runDate: msg.triggerTime,
+        maxAttempts,
+        parityNotBefore,
+        globalSweep: true,
+      })
+    }
+  }
   await logSchedulerResult(env.KV, 'data-domain-shadow-backfill', {
     status: result.domain_shadow_ready ? 'success' : 'error',
-    summary: `domain=${domain} tables_complete=true checksum_ready=${Boolean(result.domain_shadow_ready)} run_id=${runId}`,
+    summary: `domain=${domain} tables_complete=true checksum_ready=${Boolean(result.domain_shadow_ready)} global_sweep=${globalSweep} sweep_next_domain=${sweepNextDomain ?? 'none'} sweep_next_queued=${sweepNext?.queued ?? false} run_id=${runId}`,
     duration_ms: 0,
     run_id: runId,
     run_date: msg.triggerTime,

@@ -34,4 +34,4 @@ function assertInsertArity(table: string, expectedPlaceholders: number): void {
 }
 
 assertInsertArity('selection_reference_snapshots_v1', 24)
-assertInsertArity('strategy_label_matrix_v4', 26)
+assertInsertArity('strategy_label_matrix_v4', 27)

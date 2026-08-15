@@ -5,6 +5,7 @@ import {
   STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL,
   deserializeStrategyProductionPolicyRow,
   sha256StrategyProductionPolicyPayload,
+  resolveRuntimeStrategyWeights,
 } from './strategyProductionPolicyStore'
 
 async function main(): Promise<void> {
@@ -14,7 +15,10 @@ async function main(): Promise<void> {
       { id: 'active-a', status: 'active' },
       { id: 'active-b', status: 'active' },
     ],
-    gates: [{ strategy_id: 'active-b', decision: 'active_cooldown' }],
+    gates: [
+      { strategy_id: 'active-a', decision: 'active_monitor', allocation_eligible: true },
+      { strategy_id: 'active-b', decision: 'active_cooldown', allocation_eligible: false },
+    ],
     base: {
       source: 'promoted_marginal_edge_v6',
       run_id: 'edge-v6-2026-08-02',
@@ -42,6 +46,38 @@ async function main(): Promise<void> {
   assert.deepEqual(loaded.state.strategy_weights, { 'active-a': 1, 'active-b': 0 })
   assert.equal(loaded.checksum, checksum)
   assert.match(STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL, /knowledge_cutoff_date\s*<\s*\?/)
+  assert.throws(
+    () => deserializeStrategyProductionPolicyRow({
+      policy_id: 'strategy-production-contribution-firewall-v1',
+      knowledge_cutoff_date: state.knowledge_cutoff_date,
+      version: 1,
+      status: state.status,
+      strategy_weights_json: JSON.stringify({ 'active-a': 0.6, 'active-b': 0.4 }),
+      quarantined_strategy_ids_json: '[]',
+      candidate_ready_strategy_ids_json: '[]',
+      base_weight_source: state.base_weight_source,
+      base_weight_run_id: state.base_weight_run_id,
+      evidence_json: JSON.stringify({
+        ...state.evidence,
+        allocation_eligibility_contract_version: undefined,
+      }),
+      canonical_payload: state.canonical_payload,
+      checksum,
+      created_at: '2026-08-02T18:00:00.000Z',
+    }, ['active-a', 'active-b']),
+    /invalid_strategy_production_policy_identity/,
+  )
+
+  const missingPolicy = resolveRuntimeStrategyWeights(['active-b', 'active-a'], null)
+  assert.deepEqual(missingPolicy.weights, { 'active-a': 0, 'active-b': 0 })
+  assert.equal(missingPolicy.source, 'production_policy_unavailable_abstain')
+  assert.equal(missingPolicy.abstained, true)
+
+  const authoritativePolicy = resolveRuntimeStrategyWeights(['active-a', 'active-b'], loaded)
+  assert.deepEqual(authoritativePolicy.weights, { 'active-a': 1, 'active-b': 0 })
+  assert.equal(authoritativePolicy.source, 'authoritative_production_policy')
+  assert.equal(authoritativePolicy.abstained, false)
+
   assert.doesNotMatch(STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL, /knowledge_cutoff_date\s*<=\s*\?/)
 
   assert.throws(

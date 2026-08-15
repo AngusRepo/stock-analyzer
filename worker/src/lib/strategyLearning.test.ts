@@ -1,4 +1,8 @@
-import { DEFAULT_STRATEGY_SPECS } from './strategySpec'
+import {
+  DEFAULT_STRATEGY_SPECS,
+  MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON,
+  resolveLegacyMonthlyRevenueEvidence,
+} from './strategySpec'
 import * as fs from 'node:fs'
 import {
   applyStrategyAdaptivePolicyThresholds,
@@ -17,7 +21,7 @@ import {
   type StrategySpecRegistryRow,
   type StrategyLearningSummary,
 } from './strategyLearning'
-import { STRATEGY_REPLACEMENT_POLICY_V6 } from './strategyMarginalEdgeV4'
+import { STRATEGY_REPLACEMENT_POLICY_V7 } from './strategyMarginalEdgeV4'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -70,7 +74,7 @@ function strategyLearningEvidence(
 }
 function strategyReplacementGateEvidence(): StrategyLearningSummary['replacement_gate'] {
   return {
-    policy: STRATEGY_REPLACEMENT_POLICY_V6,
+    policy: STRATEGY_REPLACEMENT_POLICY_V7,
     evidence_status: 'pending',
     status_reason: 'test fixture has no paired replacement run',
     latest_run: null,
@@ -551,6 +555,59 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   assert(rows.length === DEFAULT_STRATEGY_SPECS.length, 'decision log should evaluate every strategy spec')
   assert(rows.some((row) => row.matched === 1), 'strong candidate should match at least one strategy')
   assert(rows.every((row) => row.decision_id.includes('2026-05-19-2330')), 'decision id should include date and symbol')
+{
+  const date = '2026-08-15'
+  const revenueSpec = DEFAULT_STRATEGY_SPECS.find((row) => row.id === 'finlab_ai_skill_revenue_revision_breakout_v1')!
+  const evidence = resolveLegacyMonthlyRevenueEvidence({
+    signalDate: date,
+    observedTaipeiDate: date,
+    evidenceMode: 'live_current',
+  }).evidence
+  const candidate = {
+    symbol: '3034',
+    current_price: 85,
+    raw_signals: {
+      monthlyRevenueEvidence: evidence,
+      closeAboveMa20Pct: 0.025,
+      volumeExpansion20: 1.18,
+      return20d: 0.04,
+      revenueGrowthYoY: 9,
+      monthlyRevenueYoY: 14,
+      monthlyRevenueMoM: 2,
+      roe: 13,
+      eps: 1.6,
+      technicalIndicators: {
+        rsi14: 56,
+        volumeExpansion20: 1.18,
+        closeAboveMa20Pct: 0.025,
+      },
+      factorSignals: {
+        monthlyRevenueYoY: 14,
+        monthlyRevenueMoM: 2,
+        revenueGrowthYoY: 9,
+      },
+    },
+  }
+  const [historical] = buildStrategyDecisionRows(
+    date,
+    [candidate],
+    [revenueSpec],
+    { nowIso: `${date}T00:00:00.000Z` },
+  )
+  assert(historical.evaluable === 0, 'stored LIVE metadata must not self-authorize historical learning')
+  assert(
+    historical.unavailable_reason?.includes(MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON) === true,
+    'historical learning must retain the exact monthly revenue PIT blocker',
+  )
+  const [live] = buildStrategyDecisionRows(
+    date,
+    [candidate],
+    [revenueSpec],
+    { nowIso: `${date}T00:00:00.000Z`, evidenceMode: 'live_current' },
+  )
+  assert(live.evaluable === 1 && live.matched === 1, 'only caller-authorized same-day live evidence may produce a positive revenue decision')
+}
+
 }
 
 {
@@ -841,6 +898,7 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   } satisfies StrategyLearningSummary
   const gate = evaluateStrategyPromotionGate(summary)
   assert(gate[0].decision === 'active_cooldown', 'weak active strategy evidence should trigger cooldown')
+  assert(gate[0].allocation_eligible === false, 'cooldown strategy must be ineligible for production allocation')
   assert(gate[0].recommended_next_status === 'candidate', 'active cooldown should recommend demotion to candidate')
   assert(gate[0].recommended_stage === 'L2_paper_active', 'cooldown should move weak active strategies back to paper-active review')
   assert(gate[0].missing_evidence.includes('active_avg_return_not_positive'), 'cooldown should expose weak return evidence')
@@ -848,9 +906,52 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
   const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
   assert(policy.strategy_weights[spec.id] === 0, 'negative-edge cooldown strategies must have zero production contribution')
   assert(policy.threshold_deltas[spec.id].minVolumeExpansion20 === 0.08, 'cooldown should tighten raw-signal thresholds within the bounded policy')
-  assert(policy.lifecycle_recommendations[spec.id].recommended_status === 'shadow', 'cooldown lifecycle recommendation should return the strategy to shadow')
+  assert(policy.lifecycle_recommendations[spec.id].recommended_status === 'candidate', 'cooldown lifecycle recommendation should return the strategy to paper-active candidate review')
   const applied = applyStrategyAdaptivePolicyThresholds([spec], policy)
   assert(applied[0].thresholds.minVolumeExpansion20 === 0.98, 'active policy must apply the bounded volume threshold delta')
+}
+
+{
+  const spec = { ...DEFAULT_STRATEGY_SPECS[0], status: 'active' as const }
+  const summary = {
+    version: 'strategy-learning-v4',
+    date: '2026-08-15',
+    spec_source: 'registry',
+    specs: [{
+      ...spec,
+      learning: strategyLearningEvidence({
+        decisions: 20,
+        evaluable_decisions: 20,
+        unavailable_decisions: 0,
+        rolling_decisions: 20,
+        rolling_evaluable_decisions: 20,
+        rolling_unavailable_decisions: 0,
+        samples: 20,
+        rolling_samples: 20,
+        hit_rate: 0.4,
+        rolling_hit_rate: 0.4,
+        avg_return_pct: -0.008,
+        rolling_avg_return_pct: -0.008,
+        max_drawdown_pct: -0.15,
+        rolling_max_drawdown_pct: -0.15,
+        rolling_reward_dates: 6,
+        rolling_date_return_mean: -0.008,
+        rolling_date_return_lcb90: -0.02,
+      }),
+    }],
+    promotion_gate: [],
+    replacement_gate: strategyReplacementGateEvidence(),
+    policy_state_preview: {} as any,
+  } satisfies StrategyLearningSummary
+  const gate = evaluateStrategyPromotionGate(summary)
+  assert(gate[0].decision === 'active_monitor', 'immature active evidence should remain observable without forced lifecycle demotion')
+  assert(gate[0].allocation_eligible === false, 'immature active evidence must be ineligible for production allocation')
+  assert(gate[0].recommended_stage === 'L2_paper_active', 'immature active evidence must collect locked-forward evidence in paper-active')
+  assert(gate[0].missing_evidence.includes('samples_lt_30'), 'immature active gate must disclose the sample deficit')
+  assert(gate[0].missing_evidence.includes('mature_dates_lt_10'), 'immature active gate must disclose the date deficit')
+  const policy = buildStrategyAdaptivePolicyState({ ...summary, promotion_gate: gate })
+  assert(policy.strategy_weights[spec.id] === 0, 'immature negative-edge active strategy must receive zero production weight')
+  assert(policy.evidence.eligible_strategy_count === 0, 'immature active strategy must not count as eligible')
 }
 
 {
@@ -878,6 +979,6 @@ runStrategyCandidateDailyFeatureHydrationTest().catch((error) => {
 
 {
   const source = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
-  assert(source.includes('r.market_segment,\n           dr.industry'), 'daily strategy candidates must preserve selection-reference market_segment lineage')
+  assert(/r\.market_segment,\r?\n\s+dr\.industry/.test(source), 'daily strategy candidates must preserve selection-reference market_segment lineage')
   assert(source.includes('market_segment: referenceBySymbol.get'), 'historical strategy rebuild must preserve selection-reference market_segment lineage')
 }

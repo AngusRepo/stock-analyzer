@@ -1,7 +1,11 @@
 import { Hono } from 'hono'
 
 import { loadLatestStockFinancialSnapshot, toLlmFinancialContext } from '../lib/fundamentalData'
-import { DEFAULT_STRATEGY_SPECS } from '../lib/strategySpec'
+import {
+  DEFAULT_STRATEGY_SPECS,
+  STRATEGY_FORMAL_LABELER_VERSION,
+  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+} from '../lib/strategySpec'
 
 // ── 安全的 ID 解析（parseInt NaN 防護）─────────────────────────────────────
 function parseId(s: string | undefined | null): number | null {
@@ -3409,20 +3413,44 @@ async function buildDailyPipelineSummaries(db: Bindings['DB'], date: string): Pr
        AND strategy_hit = 1
        AND EXISTS (
          SELECT 1 FROM strategy_label_matrix_runs_v4 mr
-          WHERE mr.producer_run_id=strategy_label_matrix_v4.producer_run_id AND mr.status='ready'
+          WHERE mr.producer_run_id=strategy_label_matrix_v4.producer_run_id
+            AND mr.status='ready'
+            AND mr.labeler_version IN (?, ?)
+            AND mr.labeler_version=strategy_label_matrix_v4.labeler_version
        )
-  `).bind(latestRun.run_id).all<any>().catch(() => ({ results: [] as any[] }))
+  `).bind(
+    latestRun.run_id,
+    STRATEGY_FORMAL_LABELER_VERSION,
+    STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+  ).all<any>().catch(() => ({ results: [] as any[] }))
   const referenceCount = await db.prepare(`
     SELECT COUNT(*) AS candidate_count
       FROM selection_reference_snapshots_v1
      WHERE producer_run_id = ?
        AND hard_gate_passed = 1
-  `).bind(latestRun.run_id).first<any>().catch(() => null)
+       AND EXISTS (
+         SELECT 1 FROM strategy_label_matrix_runs_v4 mr
+          WHERE mr.producer_run_id=selection_reference_snapshots_v1.producer_run_id
+            AND mr.status='ready'
+            AND mr.labeler_version IN (?, ?)
+            AND mr.labeler_version=selection_reference_snapshots_v1.strategy_labeler_version
+       )
+  `).bind(
+    latestRun.run_id,
+    STRATEGY_FORMAL_LABELER_VERSION,
+    STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+  ).first<any>().catch(() => null)
   const matrixRun = await db.prepare(`
     SELECT status, reference_candidate_count, expected_cell_count, persisted_cell_count
       FROM strategy_label_matrix_runs_v4
      WHERE producer_run_id=?
-  `).bind(latestRun.run_id).first<any>().catch(() => null)
+       AND status='ready'
+       AND labeler_version IN (?, ?)
+  `).bind(
+    latestRun.run_id,
+    STRATEGY_FORMAL_LABELER_VERSION,
+    STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+  ).first<any>().catch(() => null)
   const loadStageStrategyRows = async (stage: string) => db.prepare(`
     SELECT symbol, evidence
       FROM screener_funnel_items

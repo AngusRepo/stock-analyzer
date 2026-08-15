@@ -867,18 +867,17 @@ def build_artifact_records_from_retrain_followup(payload: Any) -> list[dict[str,
     return list(out_by_id.values())
 
 
-def upsert_artifact_record(record: dict[str, Any]) -> dict:
-    return d1_client.execute(
+def upsert_artifact_record(
+    record: dict[str, Any],
+    *,
+    immutable_identity: bool = False,
+) -> dict:
+    conflict_clause = (
         """
-        INSERT INTO model_artifact_registry (
-          artifact_id, model_name, version, candidate_type, state,
-          artifact_path, metadata_path, training_run_id, training_manifest_path,
-          trained_from_snapshot, evaluation_baseline_version, final_compared_to,
-          feature_policy_version, checksum, source_run_date, is_monthly,
-          offline_gate_status, offline_gate_decision, offline_gate_failed_gates,
-          offline_evidence_json, live_gate_status, live_evidence_json,
-          promotion_decision, approval_state, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+        ON CONFLICT(artifact_id) DO NOTHING
+        """
+        if immutable_identity
+        else """
         ON CONFLICT(artifact_id) DO UPDATE SET
           model_name = excluded.model_name,
           version = excluded.version,
@@ -904,6 +903,20 @@ def upsert_artifact_record(record: dict[str, Any]) -> dict:
           promotion_decision = excluded.promotion_decision,
           approval_state = excluded.approval_state,
           updated_at = CURRENT_TIMESTAMP
+        """
+    )
+    result = d1_client.execute(
+        f"""
+        INSERT INTO model_artifact_registry (
+          artifact_id, model_name, version, candidate_type, state,
+          artifact_path, metadata_path, training_run_id, training_manifest_path,
+          trained_from_snapshot, evaluation_baseline_version, final_compared_to,
+          feature_policy_version, checksum, source_run_date, is_monthly,
+          offline_gate_status, offline_gate_decision, offline_gate_failed_gates,
+          offline_evidence_json, live_gate_status, live_evidence_json,
+          promotion_decision, approval_state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
+        {conflict_clause}
         """,
         [
             record["artifact_id"],
@@ -933,6 +946,78 @@ def upsert_artifact_record(record: dict[str, Any]) -> dict:
             record.get("created_at"),
         ],
     )
+    if not immutable_identity:
+        return result
+
+    immutable_columns = (
+        "artifact_id",
+        "model_name",
+        "version",
+        "candidate_type",
+        "state",
+        "artifact_path",
+        "metadata_path",
+        "training_run_id",
+        "training_manifest_path",
+        "trained_from_snapshot",
+        "evaluation_baseline_version",
+        "final_compared_to",
+        "feature_policy_version",
+        "checksum",
+        "source_run_date",
+        "is_monthly",
+        "offline_gate_status",
+        "offline_gate_decision",
+        "offline_gate_failed_gates",
+        "offline_evidence_json",
+        "live_gate_status",
+        "live_evidence_json",
+        "promotion_decision",
+        "approval_state",
+    )
+    expected = {
+        "artifact_id": record["artifact_id"],
+        "model_name": record["model_name"],
+        "version": record["version"],
+        "candidate_type": record["candidate_type"],
+        "state": record["state"],
+        "artifact_path": record.get("artifact_path"),
+        "metadata_path": record.get("metadata_path"),
+        "training_run_id": record.get("training_run_id"),
+        "training_manifest_path": record.get("training_manifest_path"),
+        "trained_from_snapshot": record.get("trained_from_snapshot"),
+        "evaluation_baseline_version": record.get("evaluation_baseline_version"),
+        "final_compared_to": record.get("final_compared_to"),
+        "feature_policy_version": record.get("feature_policy_version"),
+        "checksum": record.get("checksum"),
+        "source_run_date": record.get("source_run_date"),
+        "is_monthly": int(record.get("is_monthly") or 0),
+        "offline_gate_status": record.get("offline_gate_status", "not_evaluated"),
+        "offline_gate_decision": record.get("offline_gate_decision", "PENDING"),
+        "offline_gate_failed_gates": record.get("offline_gate_failed_gates", "[]"),
+        "offline_evidence_json": record.get("offline_evidence_json", "{}"),
+        "live_gate_status": record.get("live_gate_status", "not_started"),
+        "live_evidence_json": record.get("live_evidence_json", "{}"),
+        "promotion_decision": record.get("promotion_decision", "not_evaluated"),
+        "approval_state": record.get("approval_state", "not_required"),
+    }
+    rows = d1_client.query(
+        f"SELECT {', '.join(immutable_columns)} "
+        "FROM model_artifact_registry WHERE artifact_id=? LIMIT 2",
+        [record["artifact_id"]],
+    )
+    if len(rows) != 1:
+        raise RuntimeError(f"immutable_artifact_persistence_missing:{record['artifact_id']}")
+    mismatches = [
+        column for column in immutable_columns
+        if rows[0].get(column) != expected[column]
+    ]
+    if mismatches:
+        raise ValueError(
+            f"immutable_artifact_identity_conflict:{record['artifact_id']}:"
+            f"{','.join(mismatches)}"
+        )
+    return {**result, "immutable_verified": True}
 
 
 def upsert_artifact_records(records: list[dict[str, Any]]) -> dict[str, Any]:

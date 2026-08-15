@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -112,6 +116,73 @@ def test_upsert_artifact_record_conflict_updates_promotion_metadata(monkeypatch)
         "approval_state",
     ):
         assert f"{field} = excluded.{field}" in sql
+
+
+def test_immutable_artifact_record_is_idempotent_and_rejects_identity_drift(monkeypatch):
+    schema_path = Path(__file__).resolve().parents[2] / "worker" / "domain-schemas" / "learning.sql"
+    schema = schema_path.read_text(encoding="utf-8")
+    start = schema.index("CREATE TABLE IF NOT EXISTS model_artifact_registry")
+    end = schema.index(";", start) + 1
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.executescript(schema[start:end])
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        cursor = connection.execute(sql, params or [])
+        connection.commit()
+        return {"success": True, "meta": {"changes": cursor.rowcount}}
+
+    def fake_query(sql, params=None, timeout=60.0):
+        return [dict(row) for row in connection.execute(sql, params or []).fetchall()]
+
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+    monkeypatch.setattr(registry.d1_client, "query", fake_query)
+    checksum = "a" * 64
+    record = {
+        "artifact_id": f"l4_alpha_ev:v1:{checksum}",
+        "model_name": "l4_alpha_ev",
+        "version": "v1",
+        "candidate_type": "l4_alpha_ev_refresh",
+        "state": "offline_failed",
+        "artifact_path": f"universal/ev_candidates/cohort/l4_alpha_ev/{checksum}.json",
+        "metadata_path": f"universal/ev_candidates/cohort/l4_alpha_ev/{checksum}.json",
+        "training_run_id": "active8_oof:cohort",
+        "checksum": checksum,
+        "offline_gate_status": "failed",
+        "offline_gate_decision": "FAIL",
+        "offline_gate_failed_gates": "[]",
+        "offline_evidence_json": "{}",
+        "live_gate_status": "not_started",
+        "live_evidence_json": "{}",
+        "promotion_decision": "shadow",
+        "approval_state": "approval_required",
+    }
+    first = registry.upsert_artifact_record(record, immutable_identity=True)
+    second = registry.upsert_artifact_record(record, immutable_identity=True)
+    assert first["immutable_verified"] is True
+    assert second["immutable_verified"] is True
+    assert connection.execute(
+        "SELECT COUNT(*) FROM model_artifact_registry WHERE artifact_id=?",
+        [record["artifact_id"]],
+    ).fetchone()[0] == 1
+
+    drifted = {
+        **record,
+        "artifact_path": "universal/ev_candidates/cohort/l4_alpha_ev/drifted.json",
+        "checksum": "b" * 64,
+    }
+    with pytest.raises(ValueError, match="immutable_artifact_identity_conflict"):
+        registry.upsert_artifact_record(drifted, immutable_identity=True)
+    persisted = connection.execute(
+        "SELECT artifact_id, artifact_path, checksum FROM model_artifact_registry WHERE artifact_id=?",
+        [record["artifact_id"]],
+    ).fetchone()
+    assert dict(persisted) == {
+        "artifact_id": record["artifact_id"],
+        "artifact_path": record["artifact_path"],
+        "checksum": checksum,
+    }
+    connection.close()
 
 
 def test_build_artifact_records_from_weekly_followup_failed_registration():

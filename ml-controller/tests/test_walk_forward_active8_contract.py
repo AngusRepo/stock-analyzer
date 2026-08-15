@@ -964,7 +964,8 @@ def test_ev_oof_candidates_use_formal_registry_candidate_types():
     assert '"allocator_ev_fusion_refresh"' in source
     archive_block = source[source.index("def archive_ev_candidate_artifacts"):source.index("def persist_oof_cohort")]
     assert '"candidate_type": "model_family_shadow"' not in archive_block
-    assert '"identity_schema_version": "expected-return-candidate-identity-v2"' in archive_block
+    assert '"identity_schema_version": "expected-return-candidate-identity-v3"' in archive_block
+    assert '"artifact_id": f"{model_name}:{model_version}:{checksum}"' in archive_block
     assert '"expected_return_owner": artifact.get("expected_return_owner")' in archive_block
     assert '"model_version": model_version' in archive_block
     assert '"artifact_checksum": checksum' in archive_block
@@ -972,6 +973,7 @@ def test_ev_oof_candidates_use_formal_registry_candidate_types():
     router = (ROOT / "ml-controller" / "routers" / "walk_forward.py").read_text(encoding="utf-8")
     assert router.count("lifecycle_cadence=req.lifecycle_cadence") >= 3
     receipt_block = router[router.index("if promoted:"):router.index("full_fit_dispatch = full_fit_plan")]
+    assert router.count('"artifact_id": (candidate_artifacts.get(') == 2
     assert "register_candidate=False" in receipt_block
     assert router.count("register_candidate=False") == 1
 

@@ -12,6 +12,7 @@ export interface ExpectedReturnCandidateDbRow {
   candidate_type?: string | null
   training_run_id?: string | null
   checksum?: string | null
+  artifact_path?: string | null
   state: string | null
   source_run_date: string | null
   offline_gate_decision: string | null
@@ -24,6 +25,8 @@ export interface ExpectedReturnCandidateDbRow {
 export interface ExpectedReturnCandidateEvidence {
   model_name: ExpectedReturnMaturityModel
   artifact_id: string | null
+  artifact_path: string | null
+  checksum: string | null
   version: string | null
   state: string | null
   source_run_date: string | null
@@ -33,7 +36,8 @@ export interface ExpectedReturnCandidateEvidence {
   artifact_contract_version: string | null
   validation_schema_version: string | null
   cadence: 'daily' | 'weekly' | 'monthly' | 'manual' | 'event-driven' | 'unknown'
-  identity_assurance: 'explicit_payload_v2' | 'explicit_payload_v1' | 'invalid'
+  identity_schema_version: string | null
+  identity_assurance: 'content_addressed_v3' | 'explicit_payload_v2' | 'explicit_payload_v1' | 'invalid'
   identity_valid: boolean
   identity_blockers: string[]
   offline_gate_failed_gates: string[]
@@ -87,6 +91,9 @@ export interface ExpectedReturnCandidateEvidence {
 
 export interface ExpectedReturnShadowDbRow {
   evaluation_id: string
+  identity_schema_version: string
+  subject_artifact_checksum: string | null
+  evaluator_contract_checksum: string | null
   cohort_id: string
   base_manifest_checksum: string
   extension_manifest_checksum: string
@@ -107,6 +114,9 @@ export interface ExpectedReturnShadowDbRow {
 export interface ExpectedReturnShadowEvidence {
   evaluation_id: string
   cohort_id: string
+  identity_schema_version: string
+  subject_artifact_checksum: string | null
+  evaluator_contract_checksum: string | null
   base_manifest_checksum: string
   extension_manifest_checksum: string
   artifact_path: string
@@ -213,8 +223,10 @@ function candidateCadence(artifact: JsonRecord): ExpectedReturnCandidateEvidence
 function candidateIdentityBlockers(row: ExpectedReturnCandidateDbRow, artifact: JsonRecord, packet: JsonRecord): string[] {
   const expected = expectedIdentity(row.model_name)
   const blockers: string[] = []
+  const identitySchema = stringOrNull(artifact.identity_schema_version)
+  const payloadChecksum = stringOrNull(artifact.artifact_checksum)
+  const registryChecksum = stringOrNull(row.checksum)
   if (!row.artifact_id || !row.version) blockers.push('candidate_registry_identity_missing')
-  if (row.artifact_id !== `${row.model_name}:${row.version}`) blockers.push('candidate_artifact_id_version_mismatch')
   if (row.candidate_type !== expected.candidateType) blockers.push('candidate_type_owner_mismatch')
   const payloadOwner = stringOrNull(artifact.expected_return_owner)
   const payloadVersion = stringOrNull(artifact.model_version)
@@ -222,13 +234,32 @@ function candidateIdentityBlockers(row: ExpectedReturnCandidateDbRow, artifact: 
   else if (payloadOwner !== row.model_name) blockers.push('candidate_artifact_owner_mismatch')
   if (!payloadVersion) blockers.push('candidate_payload_version_missing')
   else if (payloadVersion !== row.version) blockers.push('candidate_payload_version_mismatch')
-  const identitySchema = stringOrNull(artifact.identity_schema_version)
-  if (identitySchema === 'expected-return-candidate-identity-v2') {
-    const payloadChecksum = stringOrNull(artifact.artifact_checksum)
-    const registryChecksum = stringOrNull(row.checksum)
+  if (identitySchema === 'expected-return-candidate-identity-v3') {
+    if (!payloadChecksum || !registryChecksum) {
+      blockers.push('candidate_artifact_checksum_missing')
+    } else {
+      if (!/^[0-9a-f]{64}$/.test(payloadChecksum) || !/^[0-9a-f]{64}$/.test(registryChecksum)) {
+        blockers.push('candidate_artifact_checksum_invalid')
+      }
+      if (payloadChecksum !== registryChecksum) blockers.push('candidate_artifact_checksum_mismatch')
+      if (row.artifact_id !== `${row.model_name}:${row.version}:${registryChecksum}`) {
+        blockers.push('candidate_artifact_id_checksum_mismatch')
+      }
+      if (!String(row.artifact_path ?? '').endsWith(`/${registryChecksum}.json`)) {
+        blockers.push('candidate_artifact_path_checksum_mismatch')
+      }
+    }
+  } else if (identitySchema === 'expected-return-candidate-identity-v2') {
+    if (row.artifact_id !== `${row.model_name}:${row.version}`) {
+      blockers.push('candidate_artifact_id_version_mismatch')
+    }
     if (!payloadChecksum || !registryChecksum) blockers.push('candidate_artifact_checksum_missing')
     else if (payloadChecksum !== registryChecksum) blockers.push('candidate_artifact_checksum_mismatch')
-  } else if (identitySchema && identitySchema !== 'expected-return-candidate-identity-v1') {
+  } else if (identitySchema === 'expected-return-candidate-identity-v1') {
+    if (row.artifact_id !== `${row.model_name}:${row.version}`) {
+      blockers.push('candidate_artifact_id_version_mismatch')
+    }
+  } else {
     blockers.push('candidate_identity_schema_incompatible')
   }
   if (!String(row.version ?? '').startsWith(expected.modelVersionPrefix)) blockers.push('candidate_model_version_unsupported')
@@ -272,6 +303,8 @@ export function adaptExpectedReturnCandidate(row: ExpectedReturnCandidateDbRow):
     artifact_id: row.artifact_id,
     version: row.version,
     state: row.state,
+    artifact_path: stringOrNull(row.artifact_path),
+    checksum: stringOrNull(row.checksum),
     source_run_date: row.source_run_date,
     updated_at: row.updated_at,
     offline_gate_decision: row.offline_gate_decision,
@@ -279,9 +312,14 @@ export function adaptExpectedReturnCandidate(row: ExpectedReturnCandidateDbRow):
     artifact_contract_version: stringOrNull(artifact.artifact_contract_version),
     validation_schema_version: stringOrNull(packet.schema_version),
     cadence: candidateCadence(artifact),
+    identity_schema_version: stringOrNull(artifact.identity_schema_version),
     identity_assurance: identityBlockers.length
       ? 'invalid'
-      : artifact.identity_schema_version === 'expected-return-candidate-identity-v2' ? 'explicit_payload_v2' : 'explicit_payload_v1',
+      : artifact.identity_schema_version === 'expected-return-candidate-identity-v3'
+        ? 'content_addressed_v3'
+        : artifact.identity_schema_version === 'expected-return-candidate-identity-v2'
+          ? 'explicit_payload_v2'
+          : 'explicit_payload_v1',
     identity_valid: trusted,
     identity_blockers: identityBlockers,
     offline_gate_failed_gates: [...new Set([...stringArray(row.offline_gate_failed_gates), ...identityBlockers])],
@@ -340,12 +378,29 @@ export function adaptExpectedReturnShadow(row: ExpectedReturnShadowDbRow): Expec
   const packet = parseRecord(row.validation_packet_json)
   const expected = expectedIdentity(row.model_name)
   const blockers: string[] = []
+  const canonicalSha256 = (value: unknown): boolean => /^[0-9a-f]{64}$/.test(String(value ?? ''))
+  if (row.identity_schema_version === 'expected-return-shadow-evaluation-identity-legacy-v1') {
+    blockers.push('shadow_identity_legacy_unverified')
+  } else if (row.identity_schema_version === 'expected-return-shadow-evaluation-identity-v2') {
+    if (!canonicalSha256(row.evaluation_id)) blockers.push('shadow_evaluation_id_invalid')
+    if (!canonicalSha256(row.subject_artifact_checksum)) {
+      blockers.push('shadow_subject_artifact_checksum_invalid')
+    }
+    if (!canonicalSha256(row.evaluator_contract_checksum)) {
+      blockers.push('shadow_evaluator_contract_checksum_invalid')
+    }
+  } else {
+    blockers.push('shadow_identity_schema_incompatible')
+  }
   if (!row.evaluation_id || !row.cohort_id) blockers.push('shadow_lineage_identity_missing')
-  if (String(row.base_manifest_checksum ?? '').length !== 64
-      || String(row.extension_manifest_checksum ?? '').length !== 64) {
+  if (!canonicalSha256(row.base_manifest_checksum)
+      || !canonicalSha256(row.extension_manifest_checksum)) {
     blockers.push('shadow_manifest_checksum_invalid')
   }
-  if (!row.artifact_path || String(row.artifact_checksum ?? '').length !== 64) blockers.push('shadow_artifact_identity_invalid')
+  if (!canonicalSha256(row.artifact_checksum)
+      || !String(row.artifact_path ?? '').endsWith(`/${row.artifact_checksum}.json`)) {
+    blockers.push('shadow_artifact_identity_invalid')
+  }
   if (!row.model_version.startsWith(expected.modelVersionPrefix)) blockers.push('shadow_model_version_unsupported')
   if (packet.schema_version !== expected.validationSchema) blockers.push('shadow_validation_schema_incompatible')
   if (stringOrNull(packet.model_version) && packet.model_version !== row.model_version) blockers.push('shadow_payload_version_mismatch')
@@ -369,6 +424,9 @@ export function adaptExpectedReturnShadow(row: ExpectedReturnShadowDbRow): Expec
     cohort_id: row.cohort_id,
     base_manifest_checksum: row.base_manifest_checksum,
     extension_manifest_checksum: row.extension_manifest_checksum,
+    identity_schema_version: row.identity_schema_version,
+    subject_artifact_checksum: row.subject_artifact_checksum,
+    evaluator_contract_checksum: row.evaluator_contract_checksum,
     artifact_path: row.artifact_path,
     artifact_checksum: row.artifact_checksum,
     business_date: row.business_date,

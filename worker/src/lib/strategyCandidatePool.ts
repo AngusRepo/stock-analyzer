@@ -5,6 +5,7 @@ import {
   normalizeStrategySpecGovernance,
   validateStrategySpec,
   type StrategyCandidateInput,
+  type StrategyEvidenceMode,
   type StrategyFamilyId,
   type StrategyOwnerType,
   type StrategyPromotionStatus,
@@ -632,7 +633,7 @@ function candidateLiquidity(candidate: StrategyCandidatePoolCandidate): number |
     ?? finiteNumber(candidate.liquidity_value)
 }
 
-function candidatePoolThresholdScores(candidate: StrategyCandidatePoolCandidate): {
+function candidatePoolThresholdScores(candidate: StrategyCandidatePoolCandidate, evidenceMode?: StrategyEvidenceMode): {
   seedScore: number
   chipFlow: number
   technicalStructure: number
@@ -674,7 +675,7 @@ function addDynamicNearMissChecks(
   }
 }
 
-function thresholdNearMisses(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec): string[] | null {
+function thresholdNearMisses(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec, evidenceMode?: StrategyEvidenceMode): string[] | null {
   const thresholds = spec.thresholds
   const industry = cleanText(candidate.industry ?? candidate.sector)
   const includes = thresholds.includeIndustries?.map(cleanText).filter(Boolean) ?? []
@@ -682,12 +683,12 @@ function thresholdNearMisses(candidate: StrategyCandidatePoolCandidate, spec: St
   if (includes.length && !includes.includes(industry)) return null
   if (excludes.length && excludes.includes(industry)) return null
 
-  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate))
+  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate), { evidenceMode })
   const price = finiteNumber(candidate.current_price) ?? raw.close ?? null
   if (thresholds.minPrice != null && (price == null || price < thresholds.minPrice)) return null
   if (thresholds.maxPrice != null && (price == null || price > thresholds.maxPrice)) return null
 
-  const scores = candidatePoolThresholdScores(candidate)
+  const scores = candidatePoolThresholdScores(candidate, evidenceMode)
   const checks: Array<[string, unknown, number | undefined]> = [
     ['score', scores.seedScore, thresholds.minSeedScore],
     ['chip', scores.chipFlow, thresholds.minChipScore],
@@ -796,9 +797,9 @@ function aggregateStrategyIds<T extends StrategyCandidatePoolCandidate>(
   }
 }
 
-function strategyScore(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec, weight: number): number {
-  const scores = candidatePoolThresholdScores(candidate)
-  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate))
+function strategyScore(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec, weight: number, evidenceMode?: StrategyEvidenceMode): number {
+  const scores = candidatePoolThresholdScores(candidate, evidenceMode)
+  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate), { evidenceMode })
   const score = scores.seedScore
   const chip = scores.chipFlow
   const tech = scores.technicalStructure
@@ -844,9 +845,9 @@ function rawSignalSuitabilityScore(raw: ReturnType<typeof deriveStrategyRawSigna
   return clamp(45 + trendScore * 0.28 + flowScore * 0.28 + qualityScore * 0.3 + valuationScore * 0.14 + dynamicScore + liquidityBonus, 0, 100)
 }
 
-export function passesLayer1TopUpQualityGuard(candidate: StrategyCandidatePoolCandidate): boolean {
-  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate))
-  const scores = candidatePoolThresholdScores(candidate)
+export function passesLayer1TopUpQualityGuard(candidate: StrategyCandidatePoolCandidate, evidenceMode?: StrategyEvidenceMode): boolean {
+  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate), { evidenceMode })
+  const scores = candidatePoolThresholdScores(candidate, evidenceMode)
   const chip = finiteNumber(candidate.chip_score) ?? scores.chipFlow
   const tech = finiteNumber(candidate.tech_score) ?? scores.technicalStructure
   const closeAboveMa20Pct = finiteNumber(raw.closeAboveMa20Pct)
@@ -890,9 +891,9 @@ export function passesLayer1TopUpQualityGuard(candidate: StrategyCandidatePoolCa
   return constructiveTechnical || constructiveChip || constructiveQuality
 }
 
-function rawScoreForEntry(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec): number {
-  if (usesLegacyScoreThresholds(spec)) return candidatePoolThresholdScores(candidate).seedScore
-  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate))
+function rawScoreForEntry(candidate: StrategyCandidatePoolCandidate, spec: StrategySpec, evidenceMode?: StrategyEvidenceMode): number {
+  if (usesLegacyScoreThresholds(spec)) return candidatePoolThresholdScores(candidate, evidenceMode).seedScore
+  const raw = deriveStrategyRawSignals(strategyInputFromPoolCandidate(candidate), { evidenceMode })
   const liquidity = candidateLiquidity(candidate)
   const liquidityBonus = liquidity == null ? 0 : clamp(Math.log10(Math.max(liquidity, 1)) - 7, 0, 3)
   return Math.round(rawSignalSuitabilityScore(raw, liquidityBonus) * 1000) / 1000
@@ -954,6 +955,7 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
   specs: StrategySpec[],
   options: {
     regime?: AlphaFrameworkRegime | string | null
+    evidenceMode?: StrategyEvidenceMode
     policy?: StrategyCandidatePoolPolicy
     strategyWeights?: Record<string, number>
     strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
@@ -1079,12 +1081,14 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
       }
       const strictMatches = candidates
         .map((candidate) => {
-          const assessment = assessCandidateAgainstStrategySpecs(strategyInputFromPoolCandidate(candidate), [spec])
+          const assessment = assessCandidateAgainstStrategySpecs(strategyInputFromPoolCandidate(candidate), [spec], {
+            evidenceMode: options.evidenceMode,
+          })
           if (!assessment.matches.length) return null
-          const scored = strategyScore(candidate, spec, rWeight)
+          const scored = strategyScore(candidate, spec, rWeight, options.evidenceMode)
           return {
             candidate,
-            raw_score: rawScoreForEntry(candidate, spec),
+            raw_score: rawScoreForEntry(candidate, spec, options.evidenceMode),
             strategy_score: scored,
             reason: assessment.matches[0]?.reason ?? spec.thesis,
           } satisfies RawStrategyMatch
@@ -1148,12 +1152,12 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
         usedAdaptiveNearMatch = true
         const nearMatches = candidates
           .map((candidate) => {
-            const misses = thresholdNearMisses(candidate, spec)
+            const misses = thresholdNearMisses(candidate, spec, options.evidenceMode)
             if (!misses) return null
-            const scored = Math.round((strategyScore(candidate, spec, rWeight) * 0.92 - misses.length * 1.5) * 1000) / 1000
+            const scored = Math.round((strategyScore(candidate, spec, rWeight, options.evidenceMode) * 0.92 - misses.length * 1.5) * 1000) / 1000
             return {
               candidate,
-              raw_score: rawScoreForEntry(candidate, spec),
+              raw_score: rawScoreForEntry(candidate, spec, options.evidenceMode),
               strategy_score: scored,
               reason: `adaptive_near_match:${misses.join('|')}`,
             } satisfies RawStrategyMatch
@@ -1168,10 +1172,10 @@ export function buildStrategyCandidatePools<T extends StrategyCandidatePoolCandi
         usedAdaptiveNearMatch = true
         const nearMatches = candidates
           .map((candidate) => {
-            const scored = Math.round((strategyScore(candidate, spec, rWeight) * 0.86) * 1000) / 1000
+            const scored = Math.round((strategyScore(candidate, spec, rWeight, options.evidenceMode) * 0.86) * 1000) / 1000
             return {
               candidate,
-              raw_score: rawScoreForEntry(candidate, spec),
+              raw_score: rawScoreForEntry(candidate, spec, options.evidenceMode),
               strategy_score: scored,
               reason: 'adaptive_empty_pool_ranked_near_match',
             } satisfies RawStrategyMatch
@@ -1357,6 +1361,7 @@ export function planStrategyFirstCandidateSelection<T extends StrategyCandidateP
   specs: StrategySpec[],
   options: {
     regime?: AlphaFrameworkRegime | string | null
+    evidenceMode?: StrategyEvidenceMode
     capacity?: StrategyCapacityInput
     policy?: StrategyCandidatePoolPolicy
     strategyWeights?: Record<string, number>
@@ -1373,6 +1378,7 @@ export function planStrategyFirstCandidateSelection<T extends StrategyCandidateP
   }
   const pools = buildStrategyCandidatePools(candidates, specs, {
     regime: options.regime,
+    evidenceMode: options.evidenceMode,
     policy,
     strategyWeights: options.strategyWeights,
     strategyPortfolioMetrics: options.strategyPortfolioMetrics,
@@ -1388,6 +1394,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     targetSize: number
     coarseMlQueueSize: number
     regime?: AlphaFrameworkRegime | string | null
+    evidenceMode?: StrategyEvidenceMode
     strategyWeights?: Record<string, number>
     strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
     strategyPortfolioMetricSource?: string
@@ -1411,6 +1418,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
   const provisionalRouterPlan = buildMultiStrategyPleRoutingPlan(featureEnrichedUniverse, specs, {
     maxSlateSize: policy.hardTotalCap,
     regime: options.regime,
+    evidenceMode: options.evidenceMode,
     strategyWeights: options.strategyWeights,
     strategyPortfolioMetrics: options.strategyPortfolioMetrics,
     strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
@@ -1430,6 +1438,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
   const adaptiveTargetSizeBeforeDynamicQuota = adaptiveCapacity.target
   const selection = planStrategyFirstCandidateSelection(featureEnrichedUniverse, specs, {
     regime: options.regime,
+    evidenceMode: options.evidenceMode,
     strategyWeights: options.strategyWeights,
     strategyPortfolioMetrics: options.strategyPortfolioMetrics,
     strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
@@ -1443,6 +1452,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     ? buildMultiStrategyPleRoutingPlan(featureEnrichedUniverse, specs, {
         maxSlateSize: adaptiveTargetSize,
         regime: options.regime,
+        evidenceMode: options.evidenceMode,
         strategyWeights: options.strategyWeights,
         strategyPortfolioMetrics: options.strategyPortfolioMetrics,
         strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,

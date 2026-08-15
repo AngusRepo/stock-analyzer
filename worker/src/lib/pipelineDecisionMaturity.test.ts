@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 import { maturityProgress } from './pipelineDecisionMaturity'
 import {
@@ -79,6 +80,10 @@ test('pipeline maturity API preserves canonical lineage and explicit evidence fi
   assert.match(source, /oof_unavailable_reason/)
   assert.match(source, /artifact_contract_version: evidence\.artifact_contract_version/)
   assert.match(source, /identity_valid: evidence\.identity_valid/)
+  assert.doesNotMatch(source, /'NOT_EVALUATED'/)
+  assert.match(source, /fusion\?\.fusion_final_comparison_reason \? null/)
+  assert.match(source, /availability: fusion\?\.fusion_final_comparison_reason \? 'blocked'/)
+  assert.match(source, /reason_code: fusion\?\.fusion_final_comparison_reason \?\?/)
   assert.match(evidenceAdapter, /residual_adjustment_model_not_validated/)
   assert.match(evidenceAdapter, /allocator-ev-fusion-validation-packet-v14/)
   assert.match(evidenceAdapter, /l4-alpha-ev-ridge-v5-sector-/)
@@ -103,4 +108,45 @@ test('pipeline maturity API preserves canonical lineage and explicit evidence fi
   assert(routeStart >= 0)
   assert(routes.slice(routeStart, routeStart + 360).includes('requireValidToken'))
   assert(routes.slice(routeStart, routeStart + 420).includes("Cache-Control', 'no-store, max-age=0"))
+})
+test('shadow maturity SQL selects one deterministic successor and projects v2 identity', () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'src/lib/pipelineDecisionMaturity.ts'), 'utf8')
+  const endMarker = '`).bind(requestedDate).all<ExpectedReturnShadowDbRow>()'
+  const sqlEnd = source.indexOf(endMarker)
+  const startMarker = 'safeQuery(() => learningDb.prepare(`'
+  const markerStart = source.lastIndexOf(startMarker, sqlEnd)
+  assert(markerStart >= 0 && sqlEnd > markerStart, 'shadow maturity SQL not found')
+  const sql = source.slice(markerStart + startMarker.length, sqlEnd)
+  const db = new DatabaseSync(':memory:')
+  try {
+    db.exec(fs.readFileSync(path.join(process.cwd(), 'migrations/0100_expected_return_shadow_evaluation_packets.sql'), 'utf8'))
+    db.exec(fs.readFileSync(path.join(process.cwd(), 'migrations/0111_expected_return_shadow_evaluation_identity_v2.sql'), 'utf8'))
+    const insert = db.prepare(`INSERT INTO expected_return_shadow_evaluation_packets(
+      evaluation_id, identity_schema_version, subject_artifact_checksum,
+      evaluator_contract_checksum, business_date, cohort_id,
+      base_manifest_checksum, extension_manifest_checksum, model_name,
+      model_version, oof_min_date, oof_max_date, oof_date_count, oof_row_count,
+      quality_decision, policy_decision, validation_packet_json, artifact_path,
+      artifact_checksum, created_at, updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    const seed = (evaluationId: string, decision: string, checksum: string) => insert.run(
+      evaluationId, 'expected-return-shadow-evaluation-identity-v2',
+      'c'.repeat(64), 'd'.repeat(64), '2026-08-15', 'cohort-x',
+      'b'.repeat(64), 'e'.repeat(64), 'l4_alpha_ev',
+      'l4-alpha-ev-ridge-v5-sector-test', '2026-07-01', '2026-07-31',
+      20, 200, decision, 'shadow_only', '{}', `shadow/${checksum}.json`,
+      checksum, '2026-08-15T00:00:00Z', '2026-08-15T00:00:00Z',
+    )
+    seed('f'.repeat(64), 'PASS', 'a'.repeat(64))
+    seed('a'.repeat(64), 'FAIL', '9'.repeat(64))
+    const rows = db.prepare(sql).all('2026-08-15') as Array<Record<string, unknown>>
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].evaluation_id, 'f'.repeat(64))
+    assert.equal(rows[0].quality_decision, 'PASS')
+    assert.equal(rows[0].identity_schema_version, 'expected-return-shadow-evaluation-identity-v2')
+    assert.equal(rows[0].subject_artifact_checksum, 'c'.repeat(64))
+    assert.equal(rows[0].evaluator_contract_checksum, 'd'.repeat(64))
+  } finally {
+    db.close()
+  }
 })

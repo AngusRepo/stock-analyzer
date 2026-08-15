@@ -7,6 +7,19 @@ import {
   tablesForDataDomainShadowBackfill,
   type DataDomain,
 } from './dataDomainRegistry'
+import {
+  isAuthoritativeDataDomainFullTableParity,
+  isDataDomainControlTable,
+  isDataDomainFullTableParityFresh,
+} from './dataDomainShadowManifest'
+import {
+  dataDomainControlRevisionBlockers,
+  loadDataDomainControlRevisionPair,
+} from './dataDomainControlRevision'
+import {
+  buildDataDomainAggregateParitySnapshot,
+  type DomainAggregateParitySnapshot,
+} from './dataDomainShadowBackfill'
 
 type CursorRow = {
   table_name?: string
@@ -21,6 +34,7 @@ type ParityRow = {
   source_checksum?: string | null
   target_checksum?: string | null
   checked_at?: string | null
+  evidence_json?: string | null
 }
 
 type CutoverRow = {
@@ -56,22 +70,27 @@ function numeric(value: number | string | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-function exactParityPass(row: ParityRow | undefined): boolean {
-  return Boolean(
-    row
-    && row.status === 'pass'
-    && numeric(row.source_count) === numeric(row.target_count)
-    && String(row.source_checksum ?? '').length > 0
-    && row.source_checksum === row.target_checksum,
-  )
+function exactParityPass(
+  table: string,
+  row: ParityRow | undefined,
+  parityNotBefore?: string | null,
+): boolean {
+  return isAuthoritativeDataDomainFullTableParity(table, row)
+    && isDataDomainFullTableParityFresh(table, row, parityNotBefore)
 }
 
-function aggregateParityPass(row: CutoverRow | null): boolean {
+function aggregateParityPass(
+  row: CutoverRow | null,
+  expected: DomainAggregateParitySnapshot | null,
+): boolean {
   return Boolean(
     row
-    && numeric(row.source_row_count) === numeric(row.target_row_count)
-    && String(row.source_checksum ?? '').length > 0
-    && row.source_checksum === row.target_checksum
+    && expected
+    && numeric(row.source_row_count) === expected.source_row_count
+    && numeric(row.target_row_count) === expected.target_row_count
+    && row.source_checksum === expected.source_checksum
+    && row.target_checksum === expected.target_checksum
+    && expected.source_checksum === expected.target_checksum
     && row.parity_checked_at,
   )
 }
@@ -79,6 +98,7 @@ function aggregateParityPass(row: CutoverRow | null): boolean {
 export type DataDomainCutoverReadinessContext = {
   upstreamTerminalReady?: boolean
   parityNotBefore?: string | null
+  learningTargetDb?: D1Database
 }
 
 export async function inspectDataDomainCutoverReadiness(
@@ -108,7 +128,7 @@ export async function inspectDataDomainCutoverReadiness(
       `).bind(domain).all<CursorRow>(),
       db.prepare(`
         SELECT table_name, status, source_count, target_count,
-               source_checksum, target_checksum, checked_at
+               source_checksum, target_checksum, checked_at, evidence_json
           FROM data_domain_parity_checks
          WHERE domain=? AND check_kind='full_table'
          ORDER BY checked_at DESC
@@ -138,7 +158,56 @@ export async function inspectDataDomainCutoverReadiness(
       const table = String(row.table_name ?? '')
       if (owned.has(table) && !latestParity.has(table)) latestParity.set(table, row)
     }
-    const parityTables = [...owned].filter((table) => exactParityPass(latestParity.get(table))).length
+    const revisionReady = new Set<string>()
+    const revisionBlockers: string[] = []
+    if (domain === 'learning') {
+      const controlTables = [...owned].filter(isDataDomainControlTable)
+      if (!context.learningTargetDb) {
+        revisionBlockers.push('control_table_revision_target_binding_missing')
+      } else {
+        await Promise.all(controlTables.map(async (table) => {
+          try {
+            const live = await loadDataDomainControlRevisionPair(
+              db,
+              context.learningTargetDb!,
+              table,
+            )
+            const blockers = dataDomainControlRevisionBlockers({
+              receipt: latestParity.get(table),
+              live,
+            })
+            if (!blockers.length) revisionReady.add(table)
+            else revisionBlockers.push(...blockers.map(
+              (blocker) => `control_table_revision_fence:${table}:${blocker}`,
+            ))
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            revisionBlockers.push(`control_table_revision_fence:${table}:${message}`)
+          }
+        }))
+      }
+    }
+    const parityTables = [...owned].filter((table) => exactParityPass(
+      table,
+      latestParity.get(table),
+      context.parityNotBefore,
+    ) && (!isDataDomainControlTable(table) || revisionReady.has(table))).length
+    const aggregateSnapshot = parityTables === owned.size
+      ? await buildDataDomainAggregateParitySnapshot(
+          [...owned],
+          [...latestParity.values()].map((row) => ({
+            table_name: String(row.table_name ?? ''),
+            status: String(row.status ?? ''),
+            source_count: row.source_count ?? null,
+            target_count: row.target_count ?? null,
+            source_checksum: row.source_checksum ?? null,
+            target_checksum: row.target_checksum ?? null,
+            evidence_json: row.evidence_json ?? null,
+            checked_at: row.checked_at ?? null,
+          })),
+          context.parityNotBefore,
+        )
+      : null
     const pendingProjectionEvents = numeric(pending?.count)
     const projectionErrorEvents = numeric(errors?.count)
     const cutoverStatus = String(cutover?.status ?? 'legacy')
@@ -153,7 +222,10 @@ export async function inspectDataDomainCutoverReadiness(
     }
     if (completed.size !== owned.size) dataBlockers.push('initial_copy_incomplete')
     if (parityTables !== owned.size) dataBlockers.push('full_table_parity_incomplete_or_mismatch')
-    if (!aggregateParityPass(cutover)) dataBlockers.push('aggregate_parity_snapshot_missing_or_mismatch')
+    dataBlockers.push(...revisionBlockers.sort())
+    if (!aggregateParityPass(cutover, aggregateSnapshot)) {
+      dataBlockers.push('aggregate_parity_snapshot_missing_or_mismatch')
+    }
     if (pendingProjectionEvents > 0) dataBlockers.push('projection_catchup_not_zero')
     if (projectionErrorEvents > 0) dataBlockers.push('projection_errors_present')
     if (!['shadow', 'read_cutover', 'write_cutover', 'complete'].includes(cutoverStatus)) {

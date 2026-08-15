@@ -35,6 +35,25 @@ const AUDIT_JSON_NON_PAPER_TARGETS_DURING_PARITY_PROTECTION = [
   'strategy_decision_log', 'screener_funnel_items', 'canonical_screener_funnel_items',
 ]
 
+export function normalizeAndValidateAuditJsonTargets(
+  rawTargets: Array<string | null | undefined>,
+  allowedTargets: readonly string[],
+): string[] {
+  const normalizedTargets = rawTargets
+    .flatMap((target) => String(target ?? '').split(','))
+    .map((target) => target.trim())
+  if (normalizedTargets.some((target) => !target)) {
+    throw new Error('audit_json_retention_empty_target')
+  }
+  const requestedTargets = [...new Set(normalizedTargets)]
+  const allowlist = new Set(allowedTargets)
+  const unknownTargets = requestedTargets.filter((target) => !allowlist.has(target))
+  if (unknownTargets.length) {
+    throw new Error(`audit_json_retention_unknown_target:${unknownTargets.join(',')}`)
+  }
+  return requestedTargets
+}
+
 type WarmupSummary = {
   ok: boolean
   summary: string
@@ -766,27 +785,63 @@ export function buildAdminWorkerDomainTaskMap(c: any, deps: TriggerDeps): Record
         AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE,
         AUDIT_JSON_ARCHIVE_DEFAULT_LIMIT_PER_TABLE,
         AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES,
+        AUDIT_JSON_ARCHIVE_TARGET_IDS,
         AUDIT_JSON_RETENTION_DEFAULT_DAYS,
         runAuditJsonArchiveRetention,
         summarizeAuditJsonArchiveRun,
       } = await import('./auditJsonArchive')
       const confirmPhrase = c.req.query('confirm_archive') ?? c.req.query('confirm')
       const dryRun = confirmPhrase !== AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE
-      const requestedAuditTargets = c.req.queries('target') ?? (c.req.query('targets') ? [c.req.query('targets')] : null)
+      const durableRequested = c.req.query('durable') === '1'
+      const groupedAuditTargets = c.req.query('targets')
+      const requestedAuditTargets = normalizeAndValidateAuditJsonTargets([
+        ...(c.req.queries('target') ?? []),
+        ...(groupedAuditTargets === undefined ? [] : [groupedAuditTargets]),
+      ], AUDIT_JSON_ARCHIVE_TARGET_IDS)
+      if (durableRequested && dryRun) {
+        throw new Error('audit_json_durable_requires_confirm_archive')
+      }
+      const retentionDays = Number.parseInt(
+        c.req.query('retention_days') ?? `${AUDIT_JSON_RETENTION_DEFAULT_DAYS}`,
+        10,
+      )
+      const limitPerTable = Number.parseInt(
+        c.req.query('limit_per_table') ?? `${AUDIT_JSON_ARCHIVE_DEFAULT_LIMIT_PER_TABLE}`,
+        10,
+      )
+      const minBlobBytes = Number.parseInt(
+        c.req.query('min_blob_bytes') ?? `${AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES}`,
+        10,
+      )
       const paperShadowProtected = await paperShadowSourceMutationProtected(c.env)
       const auditTargets = paperShadowProtected
         ? (requestedAuditTargets?.length
           ? requestedAuditTargets.filter((target) => target !== 'paper_execution_events')
           : AUDIT_JSON_NON_PAPER_TARGETS_DURING_PARITY_PROTECTION)
-        : requestedAuditTargets
+        : (requestedAuditTargets.length ? requestedAuditTargets : null)
       if (paperShadowProtected && auditTargets?.length === 0) {
         return 'audit_json_retention skipped=paper_execution_events reason=paper_shadow_parity_protected'
       }
+      if (durableRequested) {
+        const { enqueueMaintenanceBacklogDrain } = await import('./maintenanceBacklogDrain')
+        const queued = await enqueueMaintenanceBacklogDrain(c.env, {
+          task: 'audit-json-retention',
+          runDate: requestedRunDate() || twToday(),
+          maxAttempts: parseBoundedPositiveInt(c.req.query('max_attempts'), 240, 240),
+          auditJsonOptions: {
+            targets: auditTargets?.length ? [...auditTargets] : [...AUDIT_JSON_ARCHIVE_TARGET_IDS],
+            retentionDays,
+            limitPerTable,
+            minBlobBytes,
+          },
+        })
+        return `audit_json_retention durable=true queued=${queued.queued} run_id=${queued.runId}`
+      }
       const result = await runAuditJsonArchiveRetention(c.env, {
         businessDate: requestedRunDate(),
-        retentionDays: Number.parseInt(c.req.query('retention_days') ?? `${AUDIT_JSON_RETENTION_DEFAULT_DAYS}`, 10),
-        limitPerTable: Number.parseInt(c.req.query('limit_per_table') ?? `${AUDIT_JSON_ARCHIVE_DEFAULT_LIMIT_PER_TABLE}`, 10),
-        minBlobBytes: Number.parseInt(c.req.query('min_blob_bytes') ?? `${AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES}`, 10),
+        retentionDays,
+        limitPerTable,
+        minBlobBytes,
         targets: auditTargets,
         dryRun,
         confirmPhrase,

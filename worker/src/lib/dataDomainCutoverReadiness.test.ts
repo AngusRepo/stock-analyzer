@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict'
 import { inspectDataDomainCutoverReadiness } from './dataDomainCutoverReadiness'
 import { tablesForDataDomainShadowBackfill } from './dataDomainRegistry'
+import {
+  DATA_DOMAIN_CONTROL_FULL_TABLE_SCHEMA_VERSION,
+  DATA_DOMAIN_EXPECTED_RETURN_SEMANTIC_SCHEMA_VERSION,
+  DATA_DOMAIN_ROLLING_MANIFEST_SCHEMA_VERSION,
+  isDataDomainControlTable,
+  isExpectedReturnSemanticControlTable,
+} from './dataDomainShadowManifest'
+import { dataDomainControlRevisionEvidence } from './dataDomainControlRevision'
+import { buildDataDomainAggregateParitySnapshot } from './dataDomainShadowBackfill'
 
 type MockOptions = {
   cursorRows?: Array<Record<string, unknown>>
@@ -8,12 +17,13 @@ type MockOptions = {
   cutover?: Record<string, unknown> | null
   pending?: number
   errors?: number
+  revisions?: Record<string, number>
 }
 
 function readinessDb(options: MockOptions): D1Database {
   return {
     prepare: (sql: string) => ({
-      bind: (..._binds: unknown[]) => ({
+      bind: (...binds: unknown[]) => ({
         all: async () => {
           if (sql.includes('data_domain_backfill_cursors')) {
             return { results: options.cursorRows ?? [] }
@@ -24,6 +34,10 @@ function readinessDb(options: MockOptions): D1Database {
           return { results: [] }
         },
         first: async () => {
+          if (sql.includes('data_domain_control_revisions')) {
+            const revision = options.revisions?.[String(binds[0])]
+            return revision === undefined ? null : { revision }
+          }
           if (sql.includes('data_domain_cutovers')) return options.cutover ?? null
           if (sql.includes("status = 'error'")) return { count: options.errors ?? 0 }
           if (sql.includes('domain_projection_outbox')) return { count: options.pending ?? 0 }
@@ -42,13 +56,13 @@ void (async () => {
     { table_name: 'data_domain_cutovers', status: 'complete' },
   ]
   const parityRows = [
-    ...owned.map((table_name) => ({
+    ...owned.map((table_name, index) => ({
       table_name,
       status: 'pass',
       source_count: 1,
       target_count: 1,
-      source_checksum: `checksum:${table_name}`,
-      target_checksum: `checksum:${table_name}`,
+      source_checksum: String(index % 10).repeat(64),
+      target_checksum: String(index % 10).repeat(64),
       checked_at: '2026-08-06T12:00:00Z',
     })),
     {
@@ -56,20 +70,22 @@ void (async () => {
       status: 'pass',
       source_count: 99,
       target_count: 99,
-      source_checksum: 'excluded',
-      target_checksum: 'excluded',
+      source_checksum: 'e'.repeat(64),
+      target_checksum: 'e'.repeat(64),
       checked_at: '2026-08-06T12:00:00Z',
     },
   ]
+  const opsAggregate = await buildDataDomainAggregateParitySnapshot(owned, parityRows)
+  assert(opsAggregate)
   const completeDb = readinessDb({
     cursorRows,
     parityRows,
     cutover: {
       status: 'shadow',
-      source_row_count: owned.length,
-      target_row_count: owned.length,
-      source_checksum: 'domain-checksum',
-      target_checksum: 'domain-checksum',
+      source_row_count: opsAggregate.source_row_count,
+      target_row_count: opsAggregate.target_row_count,
+      source_checksum: opsAggregate.source_checksum,
+      target_checksum: opsAggregate.target_checksum,
       parity_checked_at: '2026-08-06T12:00:00Z',
     },
   })
@@ -114,6 +130,26 @@ void (async () => {
     'aggregate_parity_snapshot_missing_or_mismatch',
   ))
 
+  const staleAggregate = await inspectDataDomainCutoverReadiness(
+    readinessDb({
+      cursorRows,
+      parityRows,
+      cutover: {
+        status: 'shadow',
+        source_row_count: opsAggregate.source_row_count,
+        target_row_count: opsAggregate.target_row_count,
+        source_checksum: 'stale-aggregate',
+        target_checksum: 'stale-aggregate',
+        parity_checked_at: '2026-08-06T12:00:00Z',
+      },
+    }),
+    'ops',
+  )
+  assert.equal(staleAggregate.domains[0].parity_tables, owned.length)
+  assert(staleAggregate.domains[0].data_blockers.includes(
+    'aggregate_parity_snapshot_missing_or_mismatch',
+  ))
+
   const [first, ...rest] = parityRows.filter((row) => owned.includes(String(row.table_name)))
   const stalePassAfterLatestFailure = await inspectDataDomainCutoverReadiness(
     readinessDb({
@@ -125,10 +161,10 @@ void (async () => {
       ],
       cutover: {
         status: 'shadow',
-        source_row_count: owned.length,
-        target_row_count: owned.length,
-        source_checksum: 'domain-checksum',
-        target_checksum: 'domain-checksum',
+        source_row_count: opsAggregate.source_row_count,
+        target_row_count: opsAggregate.target_row_count,
+        source_checksum: opsAggregate.source_checksum,
+        target_checksum: opsAggregate.target_checksum,
         parity_checked_at: '2026-08-06T12:00:00Z',
       },
     }),
@@ -138,6 +174,86 @@ void (async () => {
   assert(stalePassAfterLatestFailure.domains[0].data_blockers.includes(
     'full_table_parity_incomplete_or_mismatch',
   ))
+
+  const learningOwned = tablesForDataDomainShadowBackfill('learning')
+  const controlRevisions = Object.fromEntries(
+    learningOwned.filter(isDataDomainControlTable).map((table) => [table, 7]),
+  )
+  const learningParityRows = learningOwned.map((table_name, index) => {
+    const checksum = String(index % 10).repeat(64)
+    const controlEvidence = isDataDomainControlTable(table_name)
+      ? {
+          schema_version: DATA_DOMAIN_CONTROL_FULL_TABLE_SCHEMA_VERSION,
+          parity_scope: 'resumable_full_table_manifest',
+          manifest_schema_version: DATA_DOMAIN_ROLLING_MANIFEST_SCHEMA_VERSION,
+          manifest_page_limit: 25,
+          ...dataDomainControlRevisionEvidence({ sourceRevision: 7, targetRevision: 7 }),
+          ...(isExpectedReturnSemanticControlTable(table_name) ? {
+            semantic_validation_schema_version:
+              DATA_DOMAIN_EXPECTED_RETURN_SEMANTIC_SCHEMA_VERSION,
+            semantic_validation_status: 'pass',
+            semantic_rows_scanned: 1,
+            semantic_rows_applicable: 1,
+            semantic_rows_validated: 1,
+          } : {}),
+        }
+      : {}
+    return {
+      table_name,
+      status: 'pass',
+      source_count: 1,
+      target_count: 1,
+      source_checksum: checksum,
+      target_checksum: checksum,
+      checked_at: '2026-08-15T12:00:00Z',
+      evidence_json: JSON.stringify(controlEvidence),
+    }
+  })
+  const learningAggregate = await buildDataDomainAggregateParitySnapshot(
+    learningOwned,
+    learningParityRows,
+    '2026-08-15T11:59:59Z',
+  )
+  assert(learningAggregate)
+  const learningCutover = {
+    status: 'shadow',
+    source_row_count: learningAggregate.source_row_count,
+    target_row_count: learningAggregate.target_row_count,
+    source_checksum: learningAggregate.source_checksum,
+    target_checksum: learningAggregate.target_checksum,
+    parity_checked_at: '2026-08-15T12:00:00Z',
+  }
+  const learningReadyDb = readinessDb({
+    cursorRows: learningOwned.map((table_name) => ({ table_name, status: 'complete' })),
+    parityRows: learningParityRows,
+    revisions: controlRevisions,
+    cutover: learningCutover,
+  })
+  const learningReady = await inspectDataDomainCutoverReadiness(
+    learningReadyDb,
+    'learning',
+    {
+      parityNotBefore: '2026-08-15T11:59:59Z',
+      learningTargetDb: readinessDb({ revisions: controlRevisions }),
+    },
+  )
+  assert.equal(learningReady.domains[0].data_ready, true)
+
+  const staleTargetRevision = await inspectDataDomainCutoverReadiness(
+    learningReadyDb,
+    'learning',
+    {
+      parityNotBefore: '2026-08-15T11:59:59Z',
+      learningTargetDb: readinessDb({
+        revisions: { ...controlRevisions, model_artifact_registry: 8 },
+      }),
+    },
+  )
+  assert.equal(staleTargetRevision.domains[0].data_ready, false)
+  assert(staleTargetRevision.domains[0].data_blockers.includes(
+    'control_table_revision_fence:model_artifact_registry:target_revision_stale:7/8',
+  ))
+  assert.equal(staleTargetRevision.domains[0].parity_tables, learningOwned.length - 1)
 
   await assert.rejects(
     inspectDataDomainCutoverReadiness(completeDb, 'unknown'),

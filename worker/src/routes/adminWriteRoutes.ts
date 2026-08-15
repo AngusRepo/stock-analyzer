@@ -3,6 +3,10 @@ import { twToday } from '../lib/dateUtils'
 import { requireAdminJWT, requireAdminOrServiceToken, requireServiceToken } from '../lib/auth'
 import { runDailyUpdate } from '../lib/updateOrchestrator'
 import type { Bindings, Variables } from '../types'
+import {
+  STRATEGY_FORMAL_LABELER_VERSION,
+  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+} from '../lib/strategySpec'
 
 export const adminWriteRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -610,13 +614,30 @@ adminWriteRoutes.post('/api/admin/strategy/redundancy/backfill', async (c) => {
     SELECT DISTINCT mr.signal_date
       FROM strategy_label_matrix_runs_v4 mr
      WHERE mr.signal_date BETWEEN ? AND ?
+       AND mr.status='ready'
+       AND mr.labeler_version IN (?, ?)
+       AND NOT EXISTS (
+         SELECT 1 FROM strategy_label_matrix_v4 m
+          WHERE m.producer_run_id=mr.producer_run_id
+            AND m.labeler_version IS NOT mr.labeler_version
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM selection_reference_snapshots_v1 r
+          WHERE r.producer_run_id=mr.producer_run_id
+            AND r.strategy_labeler_version IS NOT mr.labeler_version
+       )
        AND EXISTS (
          SELECT 1 FROM canonical_run_heads h
           WHERE h.logical_run_key='screener:' || mr.signal_date || ':TW:production:market_screener'
             AND h.run_id=mr.producer_run_id
        )
      ORDER BY mr.signal_date
-  `).bind(startDate, endDate).all<{ signal_date: string }>()
+  `).bind(
+    startDate,
+    endDate,
+    STRATEGY_FORMAL_LABELER_VERSION,
+    STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+  ).all<{ signal_date: string }>()
   const dates = (dateRows.results ?? []).map((row) => row.signal_date)
   const {
     prepareStrategyRedundancyBackfill,

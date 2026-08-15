@@ -7,6 +7,9 @@ function assert(condition: unknown, message: string): void {
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const screenerJobMain = fs.readFileSync('src/node-runner/screenerJobMain.ts', 'utf8')
 const marketScreener = fs.readFileSync('src/lib/marketScreener.ts', 'utf8')
+const pipelineOrchestrator = fs.readFileSync('src/lib/pipelineOrchestrator.ts', 'utf8')
+const strategySpec = fs.readFileSync('src/lib/strategySpec.ts', 'utf8')
+const multiStrategyPleRouter = fs.readFileSync('src/lib/multiStrategyPleRouter.ts', 'utf8')
 const adminControlRoutes = fs.readFileSync('src/routes/adminControlRoutes.ts', 'utf8')
 const screenerJobTrigger = fs.readFileSync('src/lib/screenerJobTrigger.ts', 'utf8')
 const index = fs.readFileSync('src/index.ts', 'utf8')
@@ -51,11 +54,24 @@ assert(
 )
 
 assert(
-  screenerJobMain.includes('runBottomUpScreener(env, runDate, { producerRunId: runId })') &&
+  screenerJobMain.includes('const observedTaipeiDate = twToday()') &&
+    screenerJobMain.includes("runDate === observedTaipeiDate ? 'live_current' : 'historical_replay'") &&
+    screenerJobMain.includes('runBottomUpScreener(env, runDate, { producerRunId: runId, evidenceMode })') &&
     screenerJobMain.includes('funnelRunByProducerId') &&
     screenerJobMain.includes('AND run_id = ?') &&
-    marketScreener.includes('resolveScreenerProducerRunId(endDate, options.producerRunId)'),
+    marketScreener.includes('resolveScreenerProducerRunId(endDate, options.producerRunId)') &&
+    marketScreener.includes('evidenceMode?: StrategyEvidenceMode') &&
+    marketScreener.includes('evidenceMode: monthlyRevenue.evidenceMode') &&
+    pipelineOrchestrator.includes('resolveMarketScreenerEvidenceMode') &&
+    pipelineOrchestrator.includes('runBottomUpScreener(env, resolved.runDate, { evidenceMode: resolved.evidenceMode })'),
   'Cloud Run producer run id must be the exact screener funnel identity used by callback closure',
+)
+
+assert(
+  strategySpec.includes("STRATEGY_FORMAL_LABELER_VERSION = 'strategy-labeler-v2-revenue-pit-fuse-v1'") &&
+    multiStrategyPleRouter.includes('STRATEGY_LABELER_VERSION = STRATEGY_FORMAL_LABELER_VERSION') &&
+    !multiStrategyPleRouter.includes("STRATEGY_LABELER_VERSION = 'strategy-labeler-v1'"),
+  'screener router must publish only the formal PIT-safe strategy labeler identity',
 )
 
 assert(

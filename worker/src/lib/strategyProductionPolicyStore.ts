@@ -1,4 +1,5 @@
 import {
+  STRATEGY_ALLOCATION_ELIGIBILITY_CONTRACT_VERSION,
   STRATEGY_PRODUCTION_FIREWALL_POLICY_ID,
   STRATEGY_PRODUCTION_FIREWALL_VERSION,
   type StrategyProductionBaseWeightSource,
@@ -59,6 +60,34 @@ export interface LoadedStrategyProductionPolicy {
   checksum: string
   created_at: string
 }
+export type RuntimeStrategyWeightResolution = {
+  weights: Record<string, number>
+  source: 'authoritative_production_policy' | 'production_policy_unavailable_abstain'
+  abstained: boolean
+}
+
+export function resolveRuntimeStrategyWeights(
+  strategyIds: readonly string[],
+  policy: LoadedStrategyProductionPolicy | null | undefined,
+): RuntimeStrategyWeightResolution {
+  const ids = [...new Set(strategyIds.map((id) => String(id).trim()).filter(Boolean))].sort()
+  if (!policy) {
+    return {
+      weights: Object.fromEntries(ids.map((id) => [id, 0])),
+      source: 'production_policy_unavailable_abstain',
+      abstained: true,
+    }
+  }
+  return {
+    weights: Object.fromEntries(ids.map((id) => {
+      const value = Number(policy.state.strategy_weights[id])
+      return [id, Number.isFinite(value) && value > 0 ? value : 0]
+    })),
+    source: 'authoritative_production_policy',
+    abstained: false,
+  }
+}
+
 
 function parseJsonRecord(value: string): Record<string, unknown> {
   const parsed = JSON.parse(value) as unknown
@@ -116,6 +145,8 @@ export function deserializeStrategyProductionPolicyRow(
     || evidence.safety_reducing_only !== true
     || evidence.raw_labels_preserved !== true
     || evidence.experimental_threshold_deltas_applied !== false
+    || evidence.allocation_eligibility_contract_version
+      !== STRATEGY_ALLOCATION_ELIGIBILITY_CONTRACT_VERSION
     || evidence.complete_non_retired_weight_map !== true
   ) {
     throw new Error('invalid_strategy_production_policy_evidence')
@@ -139,6 +170,7 @@ export function deserializeStrategyProductionPolicyRow(
         raw_labels_preserved: true,
         experimental_threshold_deltas_applied: false,
         complete_non_retired_weight_map: true,
+        allocation_eligibility_contract_version: STRATEGY_ALLOCATION_ELIGIBILITY_CONTRACT_VERSION,
         normalized_promoted_weights: evidence.normalized_promoted_weights === true,
         positive_weight_count: Number(evidence.positive_weight_count) || 0,
       },

@@ -513,6 +513,7 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
   const report = await inspectDataDomainCutoverReadiness(c.env.DB, c.req.query('domain'), {
     upstreamTerminalReady: latestEveningChain.terminalSuccess,
     parityNotBefore: latestEveningChain.timestamp,
+    learningTargetDb: c.env.LEARNING_DB,
   })
   return c.json({ success: true, latest_evening_chain: latestEveningChain, ...report })
 })

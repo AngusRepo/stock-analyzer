@@ -1,6 +1,9 @@
 import { strict as assert } from 'node:assert'
 import * as fs from 'node:fs'
-import { summarizeMlControllerWarmupTargets } from './adminTriggerWorkerDomainTasks'
+import {
+  normalizeAndValidateAuditJsonTargets,
+  summarizeMlControllerWarmupTargets,
+} from './adminTriggerWorkerDomainTasks'
 
 const healthy = summarizeMlControllerWarmupTargets({
   targets: {
@@ -39,6 +42,27 @@ const malformed = summarizeMlControllerWarmupTargets({ targets: null })
 assert.equal(malformed.ok, false)
 assert.equal(malformed.summary, 'targets=unknown')
 
+assert.deepEqual(normalizeAndValidateAuditJsonTargets(
+  ['strategy_decision_log', 'screener_funnel_items,canonical_screener_funnel_items'],
+  ['strategy_decision_log', 'screener_funnel_items', 'canonical_screener_funnel_items'],
+), ['strategy_decision_log', 'screener_funnel_items', 'canonical_screener_funnel_items'])
+assert.throws(
+  () => normalizeAndValidateAuditJsonTargets(
+    ['strategy_decision_lgo'],
+    ['strategy_decision_log'],
+  ),
+  /audit_json_retention_unknown_target:strategy_decision_lgo/,
+)
+assert.deepEqual(normalizeAndValidateAuditJsonTargets([], ['strategy_decision_log']), [])
+assert.throws(
+  () => normalizeAndValidateAuditJsonTargets([''], ['strategy_decision_log']),
+  /audit_json_retention_empty_target/,
+)
+assert.throws(
+  () => normalizeAndValidateAuditJsonTargets(['strategy_decision_log,'], ['strategy_decision_log']),
+  /audit_json_retention_empty_target/,
+)
+
 const source = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 const finalizedTelemetry = fs.readFileSync('src/lib/strategyLearningFinalizedTelemetry.ts', 'utf8')
 assert.match(source, /'strategy-learning': \(\) => enqueueStrategyLearningMaterialization/)
@@ -67,6 +91,10 @@ assert.match(source, /reward_stale_retired/)
 assert.match(source, /callback expected/)
 assert.match(source, /'audit-json-retention': async/)
 assert.match(source, /AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE/)
+assert.match(source, /AUDIT_JSON_ARCHIVE_TARGET_IDS/)
+assert.match(source, /normalizeAndValidateAuditJsonTargets/)
+assert.match(source, /audit_json_durable_requires_confirm_archive/)
+assert.match(source, /auditJsonOptions:/)
 assert.match(source, /confirmPhrase !== AUDIT_JSON_ARCHIVE_CONFIRM_PHRASE/)
 assert.match(source, /PAPER_SHADOW_BACKFILL_ACTIVE_KEY/)
 assert.match(source, /paperShadowSourceMutationProtected/)
@@ -132,6 +160,7 @@ assert.match(schedulerPolicy, /'audit-json-retention'/)
 const schedulerManifest = fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8')
 assert.match(schedulerManifest, /"id": "audit-json-retention"/)
 assert.match(schedulerManifest, /confirm_archive=ARCHIVE_D1_AUDIT_JSON_TO_R2/)
+assert.match(schedulerManifest, /audit-json-retention[^\n]+durable=1/)
 assert.match(schedulerManifest, /"id": "artifact-reconcile"/)
 assert.doesNotMatch(schedulerManifest, /"id": "d1-evidence-scrub"/)
 assert.doesNotMatch(schedulerManifest, /"id": "legacy-evidence-migration"/)

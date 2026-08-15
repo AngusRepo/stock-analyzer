@@ -24,6 +24,7 @@ export const MULTI_D1_ROUTING_CONTRACT_GATES = {
   cross_domain_read_models_closed: false,
   active_read_write_readback_probes_automated: false,
   rollback_restore_probes_automated: false,
+  writer_quiescence_shared_epoch_cas: false,
 } as const
 
 export const MULTI_D1_PROJECTION_CONTRACT_GATES = {
@@ -254,6 +255,12 @@ const SHADOW_BACKFILL_DEPENDENCIES: Readonly<Record<string, readonly string[]>> 
   data_retention_run_items: ['data_retention_runs'],
   data_retention_runs: ['data_retention_policies'],
   expected_return_artifact_payloads: ['model_artifact_registry'],
+  model_champion_history: ['model_artifact_registry'],
+  model_champion_pointers: [
+    'model_artifact_registry',
+    'expected_return_artifact_payloads',
+    'model_champion_history',
+  ],
   l4_oof_predictions: ['active8_oof_cohorts'],
   s12_structure_batch_shards: ['s12_structure_batch_runs'],
   screener_funnel_items: ['screener_funnel_runs'],
@@ -336,6 +343,18 @@ export function tablesForDataDomainShadowBackfill(domain: DataDomain): string[] 
       .filter((entry) => entry.domain === domain && entry.shadow_ready)
       .map((entry) => entry.table),
   )
+}
+
+export function dependentTablesForDataDomainShadowBackfill(
+  domain: DataDomain,
+  parentTable: string,
+): string[] {
+  const owned = new Set(tablesForDataDomainShadowBackfill(domain))
+  return tablesForDataDomainShadowBackfill(domain)
+    .filter((table) => (
+      owned.has(table)
+      && (SHADOW_BACKFILL_DEPENDENCIES[table] ?? []).includes(parentTable)
+    ))
 }
 
 function domainBindings(env: Pick<Bindings, 'DB'> & Partial<Bindings>): Partial<Record<DataDomain, D1Database | undefined>> {

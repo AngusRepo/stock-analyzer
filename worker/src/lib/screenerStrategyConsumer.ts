@@ -3,6 +3,7 @@ import {
   normalizeStrategySpecGovernance,
   type StrategyCandidateInput,
   type StrategySpec,
+  type StrategySpecEvaluationOptions,
   type StrategySpecAssessment,
 } from './strategySpec'
 import { assertOwnerCanOwn } from './strategyOwnerFreeze'
@@ -38,10 +39,11 @@ function specSupportsRegime(spec: StrategySpec, regime?: string | null): boolean
 export function annotateCandidateWithStrategySpecs<T extends StrategyCandidateInput>(
   candidate: T,
   specs: StrategySpec[],
+  options: StrategySpecEvaluationOptions = {},
 ): T & StrategyAnnotatedCandidate {
   assertOwnerCanOwn('screener', 'candidate_discovery')
   assertOwnerCanOwn('strategy', 'strategy_spec')
-  const assessment = assessCandidateAgainstStrategySpecs(candidate, specs)
+  const assessment = assessCandidateAgainstStrategySpecs(candidate, specs, options)
   return {
     ...candidate,
     strategy_matches: [
@@ -62,19 +64,20 @@ export function annotateCandidateWithStrategySpecs<T extends StrategyCandidateIn
 export function annotateCandidatesWithStrategySpecs<T extends StrategyCandidateInput>(
   candidates: T[],
   specs: StrategySpec[],
+  options: StrategySpecEvaluationOptions = {},
 ): Array<T & StrategyAnnotatedCandidate> {
-  return candidates.map((candidate) => annotateCandidateWithStrategySpecs(candidate, specs))
+  return candidates.map((candidate) => annotateCandidateWithStrategySpecs(candidate, specs, options))
 }
 
 export function reconcileCandidateStrategyPoolAttribution<T extends StrategyPoolAttributionCandidate>(
   candidate: T,
   specs: StrategySpec[],
-  options: { regime?: string | null } = {},
+  options: StrategySpecEvaluationOptions & { regime?: string | null } = {},
 ): T {
   assertOwnerCanOwn('screener', 'candidate_discovery')
   assertOwnerCanOwn('strategy', 'strategy_spec')
   const normalizedSpecs = specs.map(normalizeStrategySpecGovernance)
-  const assessment = assessCandidateAgainstStrategySpecs(candidate, normalizedSpecs)
+  const assessment = assessCandidateAgainstStrategySpecs(candidate, normalizedSpecs, options)
   const specsById = new Map(normalizedSpecs.map((spec) => [spec.id, spec]))
   const productionMatches = assessment.matches
     .map((match) => specsById.get(match.specId))
@@ -137,7 +140,7 @@ export function reconcileCandidateStrategyPoolAttribution<T extends StrategyPool
 export function reconcileCandidatesStrategyPoolAttribution<T extends StrategyPoolAttributionCandidate>(
   candidates: T[],
   specs: StrategySpec[],
-  options: { regime?: string | null } = {},
+  options: StrategySpecEvaluationOptions & { regime?: string | null } = {},
 ): T[] {
   return candidates.map((candidate) => reconcileCandidateStrategyPoolAttribution(candidate, specs, options))
 }

@@ -5,6 +5,10 @@ import { CANONICAL_SELECTION_LABEL_SCHEMA_VERSION } from './canonicalSelectionLa
 import { PRICE_HORIZON_PROJECTION_VERSION } from './priceHorizonProjection'
 import { STRATEGY_ROUTE_CHALLENGER_VERSION } from './strategyRouteCalibration'
 import {
+  STRATEGY_FORMAL_LABELER_VERSION,
+  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+} from './strategySpec'
+import {
   inspectMatureSelectionEvidenceGaps,
   isMatureSelectionEvidenceGapRecoverable,
   resolveExpectedMatureSignalDate,
@@ -67,7 +71,24 @@ export async function auditEveningChainEvidenceClosure(
        AND r.hard_gate_passed=1
        AND r.feature_contract_version=?
        AND r.producer_run_id=?
-  `).bind(STRATEGY_ROUTE_CHALLENGER_VERSION, businessDate, SELECTION_REFERENCE_CONTRACT_VERSION, producerRunId).first<any>()
+       AND EXISTS (
+         SELECT 1 FROM strategy_label_matrix_runs_v4 mr
+          WHERE mr.signal_date=r.signal_date
+            AND mr.producer_run_id=r.producer_run_id
+            AND mr.status='ready'
+            AND mr.reference_contract_version=?
+            AND mr.labeler_version IN (?, ?)
+            AND mr.labeler_version=r.strategy_labeler_version
+       )
+  `).bind(
+    STRATEGY_ROUTE_CHALLENGER_VERSION,
+    businessDate,
+    SELECTION_REFERENCE_CONTRACT_VERSION,
+    producerRunId,
+    SELECTION_REFERENCE_CONTRACT_VERSION,
+    STRATEGY_FORMAL_LABELER_VERSION,
+    STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+  ).first<any>()
   const referenceRows = Number(current?.reference_rows ?? 0)
   const referenceIdentityRows = Number(current?.identity_rows ?? 0)
   const referenceArtifactRows = Number(current?.artifact_rows ?? 0)
@@ -86,15 +107,25 @@ export async function auditEveningChainEvidenceClosure(
 
   const matrix = await learningDb.prepare(`
     SELECT r.expected_cell_count, r.persisted_cell_count,
-           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id) matrix_rows,
-           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
-           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0) threshold_evidence_rows,
-           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.challenger_affinity_version=?) challenger_projection_rows,
-           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) projected_threshold_rows
+           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version) matrix_rows,
+           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
+           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0) threshold_evidence_rows,
+           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.challenger_affinity_version=?) challenger_projection_rows,
+           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) projected_threshold_rows
       FROM strategy_label_matrix_runs_v4 r
      WHERE r.signal_date=? AND r.status='ready' AND r.producer_run_id=?
+       AND r.reference_contract_version=?
+       AND r.labeler_version IN (?, ?)
      LIMIT 1
-  `).bind(STRATEGY_ROUTE_CHALLENGER_VERSION, STRATEGY_ROUTE_CHALLENGER_VERSION, businessDate, producerRunId).first<any>()
+  `).bind(
+    STRATEGY_ROUTE_CHALLENGER_VERSION,
+    STRATEGY_ROUTE_CHALLENGER_VERSION,
+    businessDate,
+    producerRunId,
+    SELECTION_REFERENCE_CONTRACT_VERSION,
+    STRATEGY_FORMAL_LABELER_VERSION,
+    STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+  ).first<any>()
   const matrixRows = Number(matrix?.matrix_rows ?? 0)
   const expectedMatrixRows = Number(matrix?.expected_cell_count ?? 0)
   const matchedMatrixRows = Number(matrix?.matched_rows ?? 0)
@@ -167,15 +198,23 @@ export async function auditEveningChainEvidenceClosure(
       throw new Error(`evening_chain_mature_canonical_head_missing:${matureSignalDate}`)
     }
     const matureMatrix = await learningDb.prepare(`
-      SELECT reference_candidate_count, expected_cell_count, persisted_cell_count
-        FROM strategy_label_matrix_runs_v4
+      SELECT reference_candidate_count, expected_cell_count, persisted_cell_count, labeler_version
+        FROM strategy_label_matrix_runs_v4 mr
        WHERE signal_date=? AND producer_run_id=? AND status='ready'
          AND reference_contract_version=?
+         AND labeler_version IN (?, ?)
+         AND NOT EXISTS (
+           SELECT 1 FROM strategy_label_matrix_v4 m
+            WHERE m.producer_run_id=mr.producer_run_id
+              AND m.labeler_version<>mr.labeler_version
+         )
        LIMIT 1
     `).bind(
       matureSignalDate,
       matureProducerRunId,
       SELECTION_REFERENCE_CONTRACT_VERSION,
+      STRATEGY_FORMAL_LABELER_VERSION,
+      STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
     ).first<any>()
     if (
       Number(matureMatrix?.reference_candidate_count ?? 0) <= 0
@@ -213,6 +252,7 @@ export async function auditEveningChainEvidenceClosure(
        WHERE r.signal_date=? AND r.hard_gate_passed=1
          AND r.feature_contract_version=?
          AND r.producer_run_id=?
+         AND r.strategy_labeler_version=?
     `).bind(
       PRICE_HORIZON_PROJECTION_VERSION,
       PRICE_HORIZON_PROJECTION_VERSION,
@@ -221,6 +261,7 @@ export async function auditEveningChainEvidenceClosure(
       matureSignalDate,
       SELECTION_REFERENCE_CONTRACT_VERSION,
       matureProducerRunId,
+      String(matureMatrix?.labeler_version ?? ''),
     ).first<any>()
     matureReferenceRows = Number(coverage?.reference_rows ?? 0)
     priceHorizonRows = Number(coverage?.horizon_rows ?? 0)

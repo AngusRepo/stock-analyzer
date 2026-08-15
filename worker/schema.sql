@@ -831,7 +831,7 @@ CREATE INDEX IF NOT EXISTS idx_dataset_snapshots_run
   ON dataset_snapshots(producer_run_id, kind);
 
 CREATE TABLE IF NOT EXISTS model_artifact_registry (
-  artifact_id                 TEXT PRIMARY KEY,
+  artifact_id                 TEXT NOT NULL PRIMARY KEY CHECK(length(trim(artifact_id)) > 0),
   model_name                  TEXT NOT NULL,
   version                     TEXT NOT NULL,
   candidate_type              TEXT NOT NULL CHECK(candidate_type IN ('monthly_release','weekly_drift','oof_full_fit_release','manual_hotfix','model_family_shadow','research_benchmark','timesfm_l175_l2_feature_release','l4_alpha_ev_refresh','allocator_ev_fusion_refresh','unknown')),
@@ -871,8 +871,7 @@ CREATE TABLE IF NOT EXISTS model_artifact_registry (
   promotion_decision          TEXT NOT NULL DEFAULT 'not_evaluated',
   approval_state              TEXT NOT NULL DEFAULT 'not_required',
   created_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(model_name, version, candidate_type)
+  updated_at                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_model_state
   ON model_artifact_registry(model_name, state, updated_at DESC);
@@ -880,6 +879,8 @@ CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_candidate_type
   ON model_artifact_registry(candidate_type, state, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_run
   ON model_artifact_registry(training_run_id, source_run_date);
+CREATE INDEX IF NOT EXISTS idx_model_artifact_registry_identity_v3
+  ON model_artifact_registry(model_name, version, candidate_type, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS model_champion_history (
   event_id       TEXT PRIMARY KEY,
@@ -912,7 +913,7 @@ CREATE INDEX IF NOT EXISTS idx_model_champion_pointers_updated
   ON model_champion_pointers(updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS expected_return_artifact_payloads (
-  artifact_id TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL PRIMARY KEY CHECK(length(trim(artifact_id)) > 0),
   model_name TEXT NOT NULL CHECK(model_name IN ('l4_alpha_ev','allocator_ev_fusion')),
   model_version TEXT NOT NULL,
   serving_mode TEXT NOT NULL CHECK(serving_mode IN ('alpha','abstention_baseline')),
@@ -923,12 +924,13 @@ CREATE TABLE IF NOT EXISTS expected_return_artifact_payloads (
   source_cohort_id TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY(artifact_id) REFERENCES model_artifact_registry(artifact_id) ON DELETE RESTRICT,
-  UNIQUE(model_name, model_version)
+  FOREIGN KEY(artifact_id) REFERENCES model_artifact_registry(artifact_id) ON DELETE RESTRICT
 );
 
 CREATE INDEX IF NOT EXISTS idx_expected_return_artifact_payloads_owner
   ON expected_return_artifact_payloads(model_name, serving_mode, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_expected_return_artifact_payloads_version
+  ON expected_return_artifact_payloads(model_name, model_version, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS allocator_ev_feature_snapshots (
   snapshot_date               TEXT NOT NULL,
@@ -1272,6 +1274,11 @@ CREATE TABLE IF NOT EXISTS strategy_decision_log (
   context_id               TEXT,
   evidence_artifact_id     TEXT,
   evaluable                INTEGER NOT NULL DEFAULT 0 CHECK(evaluable IN (0, 1)),
+  evaluability_status      TEXT NOT NULL DEFAULT 'UNKNOWN_LEGACY'
+    CHECK(evaluability_status IN (
+      'EVALUABLE','NOT_APPLICABLE_PHASE','NOT_APPLICABLE_OWNER','PENDING_AVAILABILITY',
+      'MISSING_SOURCE','STALE_SOURCE','SOURCE_ERROR','INVALID_SPEC','PIT_VIOLATION','UNKNOWN_LEGACY'
+    )),
   unavailable_reason       TEXT,
   evaluation_contract_version TEXT NOT NULL DEFAULT 'strategy-evaluation-legacy-unverified',
   UNIQUE(date, symbol, strategy_id, strategy_version)
@@ -1445,6 +1452,11 @@ CREATE TABLE IF NOT EXISTS strategy_label_matrix_v4 (
   production_owner INTEGER NOT NULL CHECK(production_owner IN (0, 1)),
   strategy_hit INTEGER NOT NULL CHECK(strategy_hit IN (0, 1)),
   evaluable INTEGER NOT NULL DEFAULT 0 CHECK(evaluable IN (0, 1)),
+  evaluability_status TEXT NOT NULL DEFAULT 'UNKNOWN_LEGACY'
+    CHECK(evaluability_status IN (
+      'EVALUABLE','NOT_APPLICABLE_PHASE','NOT_APPLICABLE_OWNER','PENDING_AVAILABILITY',
+      'MISSING_SOURCE','STALE_SOURCE','SOURCE_ERROR','INVALID_SPEC','PIT_VIOLATION','UNKNOWN_LEGACY'
+    )),
   unavailable_reason TEXT,
   weak_label REAL NOT NULL,
   affinity REAL NOT NULL,
@@ -1591,7 +1603,7 @@ CREATE TABLE IF NOT EXISTS strategy_evidence_rebuild_runs_v5 (
   evaluable_rows INTEGER NOT NULL DEFAULT 0,
   unavailable_rows INTEGER NOT NULL DEFAULT 0,
   matrix_rows INTEGER NOT NULL DEFAULT 0,
-  labeler_version TEXT NOT NULL DEFAULT 'strategy-decision-log-pit-reconstruction-v6',
+  labeler_version TEXT NOT NULL DEFAULT 'strategy-decision-log-pit-reconstruction-v7-revenue-pit-fuse-v1',
   evaluation_contract_version TEXT,
   source_checksum TEXT,
   blocker_reason TEXT,
@@ -2587,3 +2599,169 @@ CREATE TABLE IF NOT EXISTS expected_return_forward_guard_state (
 );
 CREATE INDEX IF NOT EXISTS idx_expected_return_forward_guard_state_updated
   ON expected_return_forward_guard_state(state, updated_at DESC);
+
+-- Fresh-schema parity for data-domain authority, revision fencing, and
+-- bounded expected-return history validation. Keep equivalent to 0107-0109.
+-- Every shadow mutation requires an explicit inactive cutover authority row.
+-- Missing authority is fail-closed in application code; this migration only
+-- seeds absent domains and never advances an existing cutover state.
+INSERT INTO data_domain_cutovers(domain, status, source_binding, target_binding)
+VALUES
+  ('core', 'legacy', 'DB', 'CORE_DB'),
+  ('market', 'legacy', 'DB', 'MARKET_DB'),
+  ('learning', 'legacy', 'DB', 'LEARNING_DB'),
+  ('ops', 'legacy', 'DB', 'OPS_DB'),
+  ('execution', 'legacy', 'DB', 'EXECUTION_DB'),
+  ('paper', 'legacy', 'DB', 'PAPER_DB'),
+  ('research', 'legacy', 'DB', 'RESEARCH_DB')
+ON CONFLICT(domain) DO NOTHING;
+
+
+-- Monotonic mutation epochs for the four Learning control tables in legacy DB.
+-- Rolling parity receipts bind these epochs so same-row-count UPDATEs cannot
+-- remain hidden behind a completed keyset cursor.
+CREATE TABLE IF NOT EXISTS data_domain_control_revisions (
+  table_name TEXT PRIMARY KEY CHECK(table_name IN (
+    'model_artifact_registry',
+    'expected_return_artifact_payloads',
+    'model_champion_history',
+    'model_champion_pointers'
+  )),
+  revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO data_domain_control_revisions(table_name, revision)
+VALUES
+  ('model_artifact_registry', 0),
+  ('expected_return_artifact_payloads', 0),
+  ('model_champion_history', 0),
+  ('model_champion_pointers', 0)
+ON CONFLICT(table_name) DO NOTHING;
+
+CREATE TRIGGER IF NOT EXISTS trg_model_artifact_registry_revision_insert
+AFTER INSERT ON model_artifact_registry
+BEGIN
+  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
+  VALUES ('model_artifact_registry', 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(table_name) DO UPDATE SET
+    revision=revision + 1,
+    updated_at=CURRENT_TIMESTAMP;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_model_artifact_registry_revision_update
+AFTER UPDATE ON model_artifact_registry
+BEGIN
+  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
+  VALUES ('model_artifact_registry', 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(table_name) DO UPDATE SET
+    revision=revision + 1,
+    updated_at=CURRENT_TIMESTAMP;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_model_artifact_registry_revision_delete
+AFTER DELETE ON model_artifact_registry
+BEGIN
+  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
+  VALUES ('model_artifact_registry', 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(table_name) DO UPDATE SET
+    revision=revision + 1,
+    updated_at=CURRENT_TIMESTAMP;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_expected_return_artifact_payloads_revision_insert
+AFTER INSERT ON expected_return_artifact_payloads
+BEGIN
+  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
+  VALUES ('expected_return_artifact_payloads', 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(table_name) DO UPDATE SET
+    revision=revision + 1,
+    updated_at=CURRENT_TIMESTAMP;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_expected_return_artifact_payloads_revision_update
+AFTER UPDATE ON expected_return_artifact_payloads
+BEGIN
+  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
+  VALUES ('expected_return_artifact_payloads', 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(table_name) DO UPDATE SET
+    revision=revision + 1,
+    updated_at=CURRENT_TIMESTAMP;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_expected_return_artifact_payloads_revision_delete
+AFTER DELETE ON expected_return_artifact_payloads
+BEGIN
+  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
+  VALUES ('expected_return_artifact_payloads', 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(table_name) DO UPDATE SET
+    revision=revision + 1,
+    updated_at=CURRENT_TIMESTAMP;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_model_champion_history_revision_insert
+AFTER INSERT ON model_champion_history
+BEGIN
+  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
+  VALUES ('model_champion_history', 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(table_name) DO UPDATE SET
+    revision=revision + 1,
+    updated_at=CURRENT_TIMESTAMP;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_model_champion_history_revision_update
+AFTER UPDATE ON model_champion_history
+BEGIN
+  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
+  VALUES ('model_champion_history', 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(table_name) DO UPDATE SET
+    revision=revision + 1,
+    updated_at=CURRENT_TIMESTAMP;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_model_champion_history_revision_delete
+AFTER DELETE ON model_champion_history
+BEGIN
+  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
+  VALUES ('model_champion_history', 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(table_name) DO UPDATE SET
+    revision=revision + 1,
+    updated_at=CURRENT_TIMESTAMP;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_model_champion_pointers_revision_insert
+AFTER INSERT ON model_champion_pointers
+BEGIN
+  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
+  VALUES ('model_champion_pointers', 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(table_name) DO UPDATE SET
+    revision=revision + 1,
+    updated_at=CURRENT_TIMESTAMP;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_model_champion_pointers_revision_update
+AFTER UPDATE ON model_champion_pointers
+BEGIN
+  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
+  VALUES ('model_champion_pointers', 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(table_name) DO UPDATE SET
+    revision=revision + 1,
+    updated_at=CURRENT_TIMESTAMP;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_model_champion_pointers_revision_delete
+AFTER DELETE ON model_champion_pointers
+BEGIN
+  INSERT INTO data_domain_control_revisions(table_name, revision, updated_at)
+  VALUES ('model_champion_pointers', 1, CURRENT_TIMESTAMP)
+  ON CONFLICT(table_name) DO UPDATE SET
+    revision=revision + 1,
+    updated_at=CURRENT_TIMESTAMP;
+END;
+
+
+-- Supports bounded keyset pagination for the two-owner expected-return
+-- history semantic guard.  event_id is the deterministic tie-breaker used by
+-- both interval adjacency and the resumable cursor.
+CREATE INDEX IF NOT EXISTS idx_model_champion_history_semantic_scan
+  ON model_champion_history(model_name, effective_at, event_id);

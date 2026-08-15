@@ -1,5 +1,8 @@
 import {
   DEFAULT_STRATEGY_SPECS,
+  STRATEGY_FORMAL_LABELER_VERSION,
+  STRATEGY_FORMAL_LABELER_VERSIONS,
+  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
   assessCandidateAgainstStrategySpecs,
   assessStrategySpecEvaluability,
   deriveStrategyRawSignals,
@@ -8,6 +11,7 @@ import {
   normalizeStrategySpecGovernance,
   validateStrategySpec,
   type StrategyCandidateInput,
+  type StrategyEvidenceMode,
   type StrategyFamilyId,
   type StrategyOwnerType,
   type StrategyPromotionStatus,
@@ -25,10 +29,16 @@ import { writeEvidenceArtifact } from './artifactLifecycle'
 import { sha256Text } from './datasetSnapshots'
 import { CANONICAL_SELECTION_LABEL_SCHEMA_VERSION, CANONICAL_SELECTION_ROUNDTRIP_COST_BPS } from './canonicalSelectionLabels'
 import { S12_REPLAY_ENGINE_SIGNATURE } from './s12ReplayContract'
-import { STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION, STRATEGY_REPLACEMENT_POLICY_V6 } from './strategyMarginalEdgeV4'
+import { STRATEGY_MARGINAL_EDGE_SCHEMA_VERSION, STRATEGY_REPLACEMENT_POLICY_V7 } from './strategyMarginalEdgeV4'
+import {
+  classifyStrategyEvaluability,
+  isNotApplicableStrategyEvaluability,
+  type StrategyEvaluabilityStatus,
+} from './strategyEvaluability'
 
 export const STRATEGY_LEARNING_VERSION = 'strategy-learning-v5'
-export const STRATEGY_EVIDENCE_RECONSTRUCTION_LABELER_VERSION = 'strategy-decision-log-pit-reconstruction-v6'
+export const STRATEGY_EVIDENCE_RECONSTRUCTION_LABELER_VERSION =
+  STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION
 
 export interface StrategySpecRegistryRow {
   strategy_id: string
@@ -67,6 +77,7 @@ export interface StrategyDecisionLogRow {
   strategy_status: StrategySpecStatus
   alpha_bucket: string
   evaluable: 0 | 1
+  evaluability_status: StrategyEvaluabilityStatus
   unavailable_reason: string | null
   evaluation_contract_version: 'strategy-evaluation-v2'
   matched: 0 | 1
@@ -190,7 +201,7 @@ export interface StrategyReplacementDecisionSummary {
 }
 
 export interface StrategyReplacementGateSummary {
-  policy: typeof STRATEGY_REPLACEMENT_POLICY_V6
+  policy: typeof STRATEGY_REPLACEMENT_POLICY_V7
   evidence_status: 'ready' | 'pending' | 'unavailable'
   status_reason: string
   latest_run: {
@@ -227,6 +238,7 @@ export interface StrategyPromotionGateRow {
   requires_wei_approval: boolean
   l3_requires_wei_approval: boolean
   production_effect: false
+  allocation_eligible: boolean
   missing_evidence: string[]
   thresholds: StrategyPromotionThresholds
   evidence: {
@@ -416,6 +428,11 @@ const SCHEMA_DDL = [
     strategy_status TEXT NOT NULL,
     alpha_bucket TEXT NOT NULL,
     evaluable INTEGER NOT NULL DEFAULT 0 CHECK(evaluable IN (0,1)),
+    evaluability_status TEXT NOT NULL DEFAULT 'UNKNOWN_LEGACY'
+      CHECK(evaluability_status IN (
+        'EVALUABLE','NOT_APPLICABLE_PHASE','NOT_APPLICABLE_OWNER','PENDING_AVAILABILITY',
+        'MISSING_SOURCE','STALE_SOURCE','SOURCE_ERROR','INVALID_SPEC','PIT_VIOLATION','UNKNOWN_LEGACY'
+      )),
     unavailable_reason TEXT,
     evaluation_contract_version TEXT NOT NULL DEFAULT 'strategy-evaluation-legacy-unverified',
     matched INTEGER NOT NULL DEFAULT 0,
@@ -536,7 +553,7 @@ const SCHEMA_DDL = [
     evaluable_rows INTEGER NOT NULL DEFAULT 0,
     unavailable_rows INTEGER NOT NULL DEFAULT 0,
     matrix_rows INTEGER NOT NULL DEFAULT 0,
-    labeler_version TEXT NOT NULL DEFAULT 'strategy-decision-log-pit-reconstruction-v6',
+    labeler_version TEXT NOT NULL DEFAULT 'strategy-decision-log-pit-reconstruction-v7-revenue-pit-fuse-v1',
     evaluation_contract_version TEXT,
     source_checksum TEXT,
     blocker_reason TEXT,
@@ -1091,9 +1108,9 @@ export async function listStrategySpecsForLearning(
   }
 }
 
-function matchScore(candidate: StrategyCandidateInput, matched: boolean): number | null {
+function matchScore(candidate: StrategyCandidateInput, matched: boolean, evidenceMode: StrategyEvidenceMode): number | null {
   if (!matched) return null
-  const raw = deriveStrategyRawSignals(candidate)
+  const raw = deriveStrategyRawSignals(candidate, { evidenceMode })
   const trend = Math.max(-0.2, Math.min(0.2, finiteNumber(raw.closeAboveMa20Pct) ?? 0)) * 2
   const volume = Math.max(0, Math.min(2, finiteNumber(raw.volumeExpansion20) ?? 0)) / 2
   const flow = Math.max(-1, Math.min(1, Math.sign(finiteNumber(raw.foreignTrustNet5d) ?? 0)))
@@ -1106,7 +1123,7 @@ export function buildStrategyDecisionRows(
   date: string,
   candidates: StrategyCandidateInput[],
   specs: StrategySpec[],
-  options: { nowIso?: string } = {},
+  options: { nowIso?: string; evidenceMode?: StrategyEvidenceMode } = {},
 ): StrategyDecisionLogRow[] {
   assertOwnerCanOwn('screener', 'candidate_discovery')
   assertOwnerCanOwn('strategy', 'strategy_spec')
@@ -1115,22 +1132,34 @@ export function buildStrategyDecisionRows(
   for (const candidate of candidates) {
     const symbol = cleanToken(candidate.symbol)
     if (!symbol) continue
+    const evaluationOptions = {
+      evidenceMode: options.evidenceMode ?? 'historical_replay',
+    }
     for (const spec of specs) {
       const validation = validateStrategySpec(spec)
-      const evaluability = assessStrategySpecEvaluability(candidate, spec)
-      const assessment = validation.ok && evaluability.evaluable
-        ? assessCandidateAgainstStrategySpecs(candidate, [spec])
+      const evaluability = assessStrategySpecEvaluability(candidate, spec, evaluationOptions)
+      const classification = classifyStrategyEvaluability({
+        spec,
+        specValid: validation.ok,
+        evaluable: evaluability.evaluable,
+        unavailableReasons: evaluability.unavailableReasons,
+        invalidReasons: validation.errors,
+      })
+      const assessment = classification.evaluable === 1
+        ? assessCandidateAgainstStrategySpecs(candidate, [spec], evaluationOptions)
         : { matches: [], tags: [], watchPoints: [] }
-      const matched = evaluability.evaluable && assessment.matches.length > 0
-      const unavailableReason = evaluability.evaluable ? null : evaluability.unavailableReasons.join('|')
+      const matched = classification.evaluable === 1 && assessment.matches.length > 0
+      const unavailableReason = classification.reason
       const reasonCode = !validation.ok
         ? `strategy_spec_invalid:${validation.errors.join('|')}`
-        : !evaluability.evaluable
+        : isNotApplicableStrategyEvaluability(classification.status)
+          ? `strategy_spec_not_applicable:${unavailableReason}`
+          : classification.evaluable === 0
           ? `strategy_spec_unavailable:${unavailableReason}`
           : matched
             ? 'strategy_spec_matched'
             : 'strategy_spec_no_match'
-      const rawSignals = deriveStrategyRawSignals(candidate)
+      const rawSignals = deriveStrategyRawSignals(candidate, evaluationOptions)
       const featureRefDiagnostics = explainFeatureRefDsl(rawSignals, spec.thresholds.featureRefs)
       const currentPrice = finiteNumber(candidate.current_price) ?? finiteNumber(rawSignals.close)
       const volumeExpansion20 = finiteNumber(rawSignals.volumeExpansion20)
@@ -1138,6 +1167,7 @@ export function buildStrategyDecisionRows(
         validation,
         matches: assessment.matches,
         tags: assessment.tags,
+        evaluability_status: classification.status,
         watch_points: assessment.watchPoints,
         evaluation_contract_version: 'strategy-evaluation-v2',
         evaluability,
@@ -1192,11 +1222,12 @@ export function buildStrategyDecisionRows(
         strategy_version: spec.version,
         strategy_status: spec.status,
         alpha_bucket: spec.alphaBucket,
-        evaluable: evaluability.evaluable ? 1 : 0,
+        evaluable: classification.evaluable,
+        evaluability_status: classification.status,
         unavailable_reason: unavailableReason,
         evaluation_contract_version: 'strategy-evaluation-v2',
         matched: matched ? 1 : 0,
-        match_score: matchScore(candidate, matched),
+        match_score: matchScore(candidate, matched, evaluationOptions.evidenceMode),
         reason_code: reasonCode,
         context_json: safeJson(context),
         evidence_json: safeJson(evidence),
@@ -1556,14 +1587,15 @@ export async function persistStrategyDecisionRows(
   const statements = persistedRows.map((row) => db.prepare(`
     INSERT INTO strategy_decision_log (
       decision_id, date, symbol, name, strategy_id, strategy_version,
-      strategy_status, alpha_bucket, evaluable, unavailable_reason, evaluation_contract_version,
+      strategy_status, alpha_bucket, evaluable, evaluability_status, unavailable_reason, evaluation_contract_version,
       matched, match_score, reason_code, context_json, evidence_json, created_at, context_id, evidence_artifact_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(date, symbol, strategy_id, strategy_version) DO UPDATE SET
       name=excluded.name,
       strategy_status=excluded.strategy_status,
       alpha_bucket=excluded.alpha_bucket,
+      evaluability_status=excluded.evaluability_status,
       evaluable=excluded.evaluable,
       unavailable_reason=excluded.unavailable_reason,
       evaluation_contract_version=excluded.evaluation_contract_version,
@@ -1584,6 +1616,7 @@ export async function persistStrategyDecisionRows(
     row.strategy_status,
     row.alpha_bucket,
     row.evaluable,
+    row.evaluability_status,
     row.unavailable_reason,
     row.evaluation_contract_version,
     row.matched,
@@ -1815,9 +1848,15 @@ export async function materializeStrategyDecisionDailyStats(
   const { results } = await db.prepare(`
     SELECT strategy_id,
            strategy_version,
-           COUNT(*) AS decisions,
-           SUM(CASE WHEN evaluable = 1 THEN 1 ELSE 0 END) AS evaluable_decisions,
-           SUM(CASE WHEN evaluable = 0 THEN 1 ELSE 0 END) AS unavailable_decisions,
+           SUM(CASE
+             WHEN evaluability_status NOT IN ('NOT_APPLICABLE_PHASE','NOT_APPLICABLE_OWNER') THEN 1 ELSE 0
+           END) AS decisions,
+           SUM(CASE WHEN evaluability_status = 'EVALUABLE' AND evaluable = 1 THEN 1 ELSE 0 END)
+             AS evaluable_decisions,
+           SUM(CASE
+             WHEN evaluability_status NOT IN ('EVALUABLE','NOT_APPLICABLE_PHASE','NOT_APPLICABLE_OWNER')
+             THEN 1 ELSE 0
+           END) AS unavailable_decisions,
            SUM(CASE WHEN matched = 1 THEN 1 ELSE 0 END) AS matched
       FROM strategy_decision_log
      WHERE date = ?
@@ -1987,7 +2026,16 @@ export async function listStrategyRewardSourceRows(
       'm.evaluable = 1',
       "m.reference_contract_version = 'selection-reference-snapshot-v3'",
       "l.label_schema_version = 'canonical-strategy-selection-label-v4'",
-      "EXISTS (SELECT 1 FROM strategy_label_matrix_runs_v4 mr WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready')",
+      `m.labeler_version IN (
+        '${STRATEGY_FORMAL_LABELER_VERSION}',
+        '${STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION}'
+      )`,
+      'r.strategy_labeler_version = m.labeler_version',
+      `EXISTS (
+        SELECT 1 FROM strategy_label_matrix_runs_v4 mr
+         WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
+           AND mr.labeler_version=m.labeler_version
+      )`,
       "EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || m.signal_date || ':TW:production:market_screener' AND h.run_id = m.producer_run_id)",
       `(
         m.signal_date > ?
@@ -2299,6 +2347,7 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       ].filter((reason): reason is string => reason != null)
       : []
     const activeCooldown = activeMonitor && activeCooldownReasons.length > 0
+    const allocationEligible = activeMonitor && !activeCooldown && missing.length === 0
     const ready = !activeMonitor && missing.length === 0
     const currentStage = stageForStrategyStatus(spec.status)
     const recommendedNextStatus = activeCooldown
@@ -2317,7 +2366,9 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
     const recommendedStage = activeCooldown
       ? 'L2_paper_active'
       : activeMonitor
-        ? 'L3_production_allocation'
+        ? allocationEligible
+          ? 'L3_production_allocation'
+          : 'L2_paper_active'
       : ready && spec.status === 'candidate'
         ? 'L3_production_allocation'
         : ready
@@ -2338,7 +2389,12 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
       requires_wei_approval: false,
       l3_requires_wei_approval: false,
       production_effect: false,
-      missing_evidence: activeCooldown ? activeCooldownReasons : activeMonitor ? [] : missing,
+      allocation_eligible: allocationEligible,
+      missing_evidence: activeCooldown
+        ? activeCooldownReasons
+        : activeMonitor && allocationEligible
+          ? []
+          : missing,
       thresholds: STRATEGY_PROMOTION_THRESHOLDS,
       evidence,
     }
@@ -2346,7 +2402,7 @@ export function evaluateStrategyPromotionGate(summary: StrategyLearningSummary):
 }
 
 function strategyPolicyScore(spec: StrategyLearningSummary['specs'][number], gate: StrategyPromotionGateRow): number {
-  if (gate.decision === 'active_cooldown') return 0
+  if (!gate.allocation_eligible || gate.decision === 'active_cooldown') return 0
   if (spec.learning.rolling_reward_dates < PROMOTION_MIN_MATURE_DATES) return 0
   if (spec.learning.rolling_date_return_lcb90 == null || spec.learning.rolling_date_return_lcb90 <= 0) return 0
   const samples = Math.max(0, spec.learning.rolling_samples)
@@ -2491,9 +2547,7 @@ export function buildStrategyAdaptivePolicyState(
     .filter((spec) => spec.status === 'active')
     .map((spec) => {
       const gate = gateById.get(`${spec.id}|${spec.version}`)
-      const score = gate?.decision === 'active_cooldown'
-        ? 0
-        : Math.max(gate ? strategyPolicyScore(spec, gate) : 0, 0.1)
+      const score = gate ? strategyPolicyScore(spec, gate) : 0
       return { spec, gate, score }
     })
   const total = activeScores.reduce((sum, row) => sum + row.score, 0)
@@ -2507,7 +2561,7 @@ export function buildStrategyAdaptivePolicyState(
     const recommendedStatus = decision === 'candidate_ready'
       ? 'active'
       : decision === 'active_cooldown'
-        ? 'shadow'
+        ? 'candidate'
         : spec.status === 'active'
           ? 'active'
           : spec.status === 'candidate'
@@ -2617,7 +2671,17 @@ export async function getStrategyPolicyStateBeforeDate(
 
 export async function persistStrategyPolicyState(db: D1Database, state: StrategyAdaptivePolicyState): Promise<number> {
   await ensureStrategyLearningTables(db)
-  await db.prepare(`
+  const stateHash = await sha256Text(safeJson({
+    policy_id: state.policy_id,
+    version: state.version,
+    status: state.status,
+    knowledge_cutoff_date: state.evidence.date,
+    strategy_weights: state.strategy_weights,
+    threshold_deltas: state.threshold_deltas,
+    lifecycle_recommendations: state.lifecycle_recommendations,
+    evidence: state.evidence,
+  }))
+  const currentStatement = db.prepare(`
     INSERT INTO strategy_policy_state (
       policy_id, version, status, strategy_weights_json, threshold_deltas_json, evidence_json, updated_at
     )
@@ -2637,18 +2701,8 @@ export async function persistStrategyPolicyState(db: D1Database, state: Strategy
     safeJson(state.threshold_deltas),
     safeJson({ ...state.evidence, lifecycle_recommendations: state.lifecycle_recommendations }),
     state.updated_at,
-  ).run()
-  const stateHash = await sha256Text(safeJson({
-    policy_id: state.policy_id,
-    version: state.version,
-    status: state.status,
-    knowledge_cutoff_date: state.evidence.date,
-    strategy_weights: state.strategy_weights,
-    threshold_deltas: state.threshold_deltas,
-    lifecycle_recommendations: state.lifecycle_recommendations,
-    evidence: state.evidence,
-  }))
-  await db.prepare(`
+  )
+  const historyStatement = db.prepare(`
     INSERT INTO strategy_adaptive_policy_history_v2 (
       policy_id, version, status, knowledge_cutoff_date,
       strategy_weights_json, threshold_deltas_json, lifecycle_recommendations_json,
@@ -2667,7 +2721,8 @@ export async function persistStrategyPolicyState(db: D1Database, state: Strategy
     safeJson(state.evidence),
     stateHash,
     state.updated_at,
-  ).run()
+  )
+  await db.batch([currentStatement, historyStatement])
   return 2
 }
 
@@ -2814,7 +2869,7 @@ async function loadStrategyReplacementGateSummary(
 
     if (!run) {
       return {
-        policy: STRATEGY_REPLACEMENT_POLICY_V6,
+        policy: STRATEGY_REPLACEMENT_POLICY_V7,
         evidence_status: 'pending',
         status_reason: 'No contract-valid V6 replacement run exists on or before this date.',
         latest_run: null,
@@ -2921,7 +2976,7 @@ async function loadStrategyReplacementGateSummary(
       }
     })
     return {
-      policy: STRATEGY_REPLACEMENT_POLICY_V6,
+      policy: STRATEGY_REPLACEMENT_POLICY_V7,
       evidence_status: 'ready',
       status_reason: decisions.length > 0
         ? `${decisions.length} paired replacement decisions loaded from ${run.run_id}.`
@@ -2949,7 +3004,7 @@ async function loadStrategyReplacementGateSummary(
     }
   } catch (cause) {
     return {
-      policy: STRATEGY_REPLACEMENT_POLICY_V6,
+      policy: STRATEGY_REPLACEMENT_POLICY_V7,
       evidence_status: 'unavailable',
       status_reason: cause instanceof Error ? cause.message : 'Replacement evidence query failed.',
       latest_run: null,
@@ -3227,6 +3282,7 @@ export async function buildStrategyLearningSummary(
 interface HistoricalStrategyDecisionRowV5 {
   date: string
   symbol: string
+  evaluability_status: StrategyEvaluabilityStatus | null
   name: string | null
   strategy_id: string
   strategy_version: string
@@ -3283,8 +3339,8 @@ export async function listHistoricalStrategyEvidenceV5Dates(
        WHERE mr.signal_date<=?
          AND mr.status='ready'
          AND mr.labeler_version IN (
-           'strategy-labeler-v1',
-           'strategy-decision-log-pit-reconstruction-v6'
+           '${STRATEGY_FORMAL_LABELER_VERSION}',
+           '${STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION}'
          )
          AND mr.reference_contract_version='selection-reference-snapshot-v3'
          AND mr.expected_cell_count > 0
@@ -3294,6 +3350,9 @@ export async function listHistoricalStrategyEvidenceV5Dates(
              FROM strategy_label_matrix_v4 m
             WHERE m.signal_date=mr.signal_date
               AND m.producer_run_id=mr.producer_run_id
+              AND m.labeler_version=mr.labeler_version
+              AND m.strategy_registry_checksum=mr.strategy_registry_checksum
+              AND m.reference_contract_version=mr.reference_contract_version
               AND m.challenger_affinity_version='strategy-threshold-margin-affinity-v2'
          )=mr.expected_cell_count
          AND (
@@ -3315,6 +3374,9 @@ export async function listHistoricalStrategyEvidenceV5Dates(
              FROM selection_reference_snapshots_v1 sr
             WHERE sr.signal_date=mr.signal_date
               AND sr.producer_run_id=mr.producer_run_id
+              AND sr.strategy_labeler_version=mr.labeler_version
+              AND sr.strategy_registry_checksum=mr.strategy_registry_checksum
+              AND sr.feature_contract_version=mr.reference_contract_version
               AND sr.strategy_challenger_affinity_version='strategy-threshold-margin-affinity-v2'
          )=mr.reference_candidate_count
          AND EXISTS (
@@ -3395,15 +3457,40 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       const producerRunIds = new Set(referenceRows.map((row) => cleanToken(row.producer_run_id)))
       const checksums = new Set(referenceRows.map((row) => cleanToken(row.strategy_registry_checksum)).filter(Boolean))
       const artifactIds = new Set(referenceRows.map((row) => cleanToken(row.evidence_artifact_id)).filter(Boolean))
-      if (!referenceRows.length || producerRunIds.size !== 1 || checksums.size !== 1 || artifactIds.size !== 1) {
+      const referenceLabelers = new Set(referenceRows.map((row) => cleanToken(row.strategy_labeler_version)).filter(Boolean))
+      if (!referenceRows.length || producerRunIds.size !== 1 || checksums.size !== 1 || artifactIds.size !== 1 || referenceLabelers.size !== 1) {
         throw new Error('reference_lineage_incomplete')
+      }
+      const referenceLabeler = [...referenceLabelers][0]
+      if (!STRATEGY_FORMAL_LABELER_VERSIONS.some((version) => version === referenceLabeler)) {
+        throw new Error(`legacy_strategy_matrix_pit_unavailable:${date}:${referenceLabeler || 'missing'}`)
       }
       const references = [...new Map(referenceRows.map((row) => [cleanToken(row.symbol), row])).values()]
       const referenceBySymbol = new Map(references.map((row) => [cleanToken(row.symbol), row]))
       const producerRunId = [...producerRunIds][0]
+      const sourceMatrixRun = await db.prepare(`
+        SELECT labeler_version, strategy_registry_checksum, reference_contract_version
+          FROM strategy_label_matrix_runs_v4
+         WHERE producer_run_id=?
+      `).bind(producerRunId).first<{
+        labeler_version?: string | null
+        strategy_registry_checksum?: string | null
+        reference_contract_version?: string | null
+      }>()
+      const sourceMatrixLabeler = cleanToken(sourceMatrixRun?.labeler_version)
+      const referenceChecksum = [...checksums][0]
+      if (
+        !sourceMatrixRun
+        || !STRATEGY_FORMAL_LABELER_VERSIONS.some((version) => version === sourceMatrixLabeler)
+        || sourceMatrixLabeler !== referenceLabeler
+        || cleanToken(sourceMatrixRun.strategy_registry_checksum) !== referenceChecksum
+        || cleanToken(sourceMatrixRun.reference_contract_version) !== SELECTION_REFERENCE_CONTRACT_VERSION
+      ) {
+        throw new Error(`legacy_strategy_matrix_pit_unavailable:${date}:${sourceMatrixLabeler || 'missing'}`)
+      }
       const decisionResult = await db.prepare(`
         SELECT d.date, d.symbol, d.name, d.strategy_id, d.strategy_version,
-               d.strategy_status, d.alpha_bucket, d.evaluable,
+               d.strategy_status, d.alpha_bucket, d.evaluable, d.evaluability_status,
                d.evaluation_contract_version
           FROM strategy_decision_log d
          WHERE d.date=?
@@ -3440,6 +3527,16 @@ export async function rebuildHistoricalStrategyEvidenceV5(
                  mr.expected_cell_count, mr.persisted_cell_count,
                  mr.labeler_version, mr.reference_contract_version,
                  COUNT(m.symbol) AS matrix_rows,
+                 SUM(CASE
+                   WHEN m.labeler_version=mr.labeler_version
+                    AND m.strategy_registry_checksum=mr.strategy_registry_checksum
+                    AND m.reference_contract_version=mr.reference_contract_version
+                   THEN 1 ELSE 0 END) AS contract_rows,
+                 (SELECT COUNT(*) FROM selection_reference_snapshots_v1 sr
+                   WHERE sr.signal_date=mr.signal_date AND sr.producer_run_id=mr.producer_run_id
+                     AND sr.strategy_labeler_version=mr.labeler_version
+                     AND sr.strategy_registry_checksum=mr.strategy_registry_checksum
+                     AND sr.feature_contract_version=mr.reference_contract_version) AS reference_contract_rows,
                  SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 THEN 1 ELSE 0 END) AS matched_rows,
                  SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0 THEN 1 ELSE 0 END) AS threshold_evidence_rows
             FROM strategy_label_matrix_runs_v4 mr
@@ -3453,9 +3550,11 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           && Number(projectionSource.strategy_count) === strategyKeys.size
           && Number(projectionSource.expected_cell_count) === expectedMatrixRows
           && Number(projectionSource.persisted_cell_count) === expectedMatrixRows
-          && ['strategy-labeler-v1', labelerVersion].includes(cleanToken(projectionSource.labeler_version))
+          && STRATEGY_FORMAL_LABELER_VERSIONS.some((version) => version === cleanToken(projectionSource.labeler_version))
           && cleanToken(projectionSource.reference_contract_version) === SELECTION_REFERENCE_CONTRACT_VERSION
           && Number(projectionSource.matrix_rows) === expectedMatrixRows
+          && Number(projectionSource.contract_rows) === expectedMatrixRows
+          && Number(projectionSource.reference_contract_rows) === references.length
           && Number(projectionSource.matched_rows) > 0
           && Number(projectionSource.threshold_evidence_rows) === Number(projectionSource.matched_rows)
         if (projectionSourceReady) {
@@ -3520,8 +3619,12 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       `).bind(date, producerRunId).all<HistoricalStrategyContextRowV5>()
       const contextBySymbol = new Map((contextResult?.results ?? []).map((row) => [row.symbol, row]))
       const decisionUpdates: D1PreparedStatement[] = []
-      let evaluableRows = projectedExistingMatrix ? decisions.filter((row) => Number(row.evaluable) === 1).length : 0
-      let unavailableRows = projectedExistingMatrix ? decisions.filter((row) => Number(row.evaluable) === 0).length : 0
+      let evaluableRows = projectedExistingMatrix
+        ? decisions.filter((row) => row.evaluability_status === 'EVALUABLE' && Number(row.evaluable) === 1).length : 0
+      let unavailableRows = projectedExistingMatrix
+        ? decisions.filter((row) => Number(row.evaluable) === 0
+          && !isNotApplicableStrategyEvaluability(row.evaluability_status)).length
+        : 0
       const rebuilt = projectedExistingMatrix ? [] : decisions.map((row) => {
         const key = row.strategy_id + '|' + row.strategy_version
         const spec = specByKey.get(key)
@@ -3531,7 +3634,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         const rawSignals = Object.keys(contextRaw).length
           ? Object.fromEntries(Object.entries(contextRaw).filter(([name]) => name !== 'score_v2'))
           : fullContext?.candidate?.raw_signals ?? null
-        const candidate: StrategyCandidateInput = {
+        const candidateInput: StrategyCandidateInput = {
           symbol: row.symbol,
           name: row.name ?? undefined,
           industry: firstCleanToken(context?.context_industry, fullContext?.candidate?.industry) ?? undefined,
@@ -3540,8 +3643,13 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           raw_signals: rawSignals,
           score_v2: contextRaw.score_v2 ?? fullContext?.score_v2 ?? null,
         }
+        const historicalEvidenceOptions = { evidenceMode: 'historical_replay' as const }
+        const candidate: StrategyCandidateInput = {
+          ...candidateInput,
+          raw_signals: deriveStrategyRawSignals(candidateInput, historicalEvidenceOptions),
+        }
         const evaluability = spec
-          ? assessStrategySpecEvaluability(candidate, spec)
+          ? assessStrategySpecEvaluability(candidate, spec, historicalEvidenceOptions)
           : {
               evaluable: false,
               missingSignals: [],
@@ -3549,14 +3657,25 @@ export async function rebuildHistoricalStrategyEvidenceV5(
               unavailableReasons: ['historical_strategy_spec_version_missing'],
               signalDiagnostics: [],
             }
-        const assessment = spec && evaluability.evaluable
-          ? assessCandidateAgainstStrategySpecs(candidate, [spec])
+        const classification = spec
+          ? classifyStrategyEvaluability({
+              spec,
+              specValid: true,
+              evaluable: evaluability.evaluable,
+              unavailableReasons: evaluability.unavailableReasons,
+            })
+          : {
+              status: 'INVALID_SPEC' as const, evaluable: 0 as const,
+              reason: 'historical_strategy_spec_version_missing', denominator: 'data_quality' as const,
+            }
+        const assessment = spec && classification.evaluable === 1
+          ? assessCandidateAgainstStrategySpecs(candidate, [spec], historicalEvidenceOptions)
           : { matches: [], tags: [], watchPoints: [] }
-        const match = evaluability.evaluable ? assessment.matches[0] ?? null : null
+        const match = classification.evaluable === 1 ? assessment.matches[0] ?? null : null
         const matched = match != null
-        const unavailableReason = evaluability.evaluable ? null : evaluability.unavailableReasons.join('|')
-        if (evaluability.evaluable) evaluableRows += 1
-        else unavailableRows += 1
+        const unavailableReason = classification.reason
+        if (classification.evaluable === 1) evaluableRows += 1
+        else if (!isNotApplicableStrategyEvaluability(classification.status)) unavailableRows += 1
         const evidence = {
           pit_reconstruction: {
             schema_version: 'strategy-decision-pit-reconstruction-v5',
@@ -3564,6 +3683,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             strategy_id: row.strategy_id,
             strategy_version: row.strategy_version,
             evaluability,
+            evaluability_status: classification.status,
             matched,
             assessment,
             knowledge_cutoff: date,
@@ -3572,15 +3692,19 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         }
         decisionUpdates.push(db.prepare(`
           UPDATE strategy_decision_log
-             SET evaluable=?, unavailable_reason=?, evaluation_contract_version='strategy-evaluation-v2',
+             SET evaluable=?, evaluability_status=?, unavailable_reason=?,
+                 evaluation_contract_version='strategy-evaluation-v2',
                  matched=?, match_score=?, reason_code=?, evidence_json=json_patch(CASE WHEN json_valid(evidence_json) THEN evidence_json ELSE '{}' END, ?)
            WHERE date=? AND symbol=? AND strategy_id=? AND strategy_version=?
         `).bind(
-          evaluability.evaluable ? 1 : 0,
+          classification.evaluable,
+          classification.status,
           unavailableReason,
           matched ? 1 : 0,
-          matchScore(candidate, matched),
-          evaluability.evaluable ? (matched ? 'strategy_spec_matched' : 'strategy_spec_no_match') : 'strategy_spec_unavailable:' + unavailableReason,
+          matchScore(candidate, matched, historicalEvidenceOptions.evidenceMode),
+          isNotApplicableStrategyEvaluability(classification.status)
+            ? 'strategy_spec_not_applicable:' + unavailableReason
+            : classification.evaluable === 1 ? (matched ? 'strategy_spec_matched' : 'strategy_spec_no_match') : 'strategy_spec_unavailable:' + unavailableReason,
           JSON.stringify(evidence),
           date, row.symbol, row.strategy_id, row.strategy_version,
         ))
@@ -3592,21 +3716,30 @@ export async function rebuildHistoricalStrategyEvidenceV5(
 
       const existingMatrix = await db.prepare(`
         SELECT status, reference_candidate_count, strategy_count, expected_cell_count,
-               persisted_cell_count, labeler_version, reference_contract_version
+               persisted_cell_count, strategy_registry_checksum, labeler_version, reference_contract_version
           FROM strategy_label_matrix_runs_v4
          WHERE producer_run_id=?
       `).bind(producerRunId).first<any>()
       const existingMatrixCoverage = existingMatrix
         ? await db.prepare(`
           SELECT COUNT(*) AS count,
+                 SUM(CASE WHEN labeler_version=? AND strategy_registry_checksum=? AND reference_contract_version=? THEN 1 ELSE 0 END) AS contract_rows,
                  SUM(CASE WHEN evaluable=1 AND strategy_hit=1 THEN 1 ELSE 0 END) AS matched_rows,
                  SUM(CASE WHEN evaluable=1 AND strategy_hit=1 AND affinity_evidence_count>0 THEN 1 ELSE 0 END) AS threshold_evidence_rows,
                  SUM(CASE WHEN challenger_affinity_version=? THEN 1 ELSE 0 END) AS challenger_projection_rows,
                  SUM(CASE WHEN evaluable=1 AND strategy_hit=1 AND affinity_evidence_count>0 AND challenger_affinity_version=? THEN 1 ELSE 0 END) AS projected_threshold_rows
             FROM strategy_label_matrix_v4
            WHERE producer_run_id=?
-        `).bind(STRATEGY_AFFINITY_CHALLENGER_VERSION, STRATEGY_AFFINITY_CHALLENGER_VERSION, producerRunId).first<{
+        `).bind(
+          cleanToken(existingMatrix.labeler_version),
+          cleanToken(existingMatrix.strategy_registry_checksum),
+          SELECTION_REFERENCE_CONTRACT_VERSION,
+          STRATEGY_AFFINITY_CHALLENGER_VERSION,
+          STRATEGY_AFFINITY_CHALLENGER_VERSION,
+          producerRunId,
+        ).first<{
           count: number | string
+          contract_rows: number | string
           matched_rows: number | string
           threshold_evidence_rows: number | string
           challenger_projection_rows: number | string
@@ -3614,6 +3747,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         }>()
         : null
       const existingMatrixRows = Number(existingMatrixCoverage?.count ?? 0)
+      const existingMatrixContractRows = Number(existingMatrixCoverage?.contract_rows ?? 0)
       const existingMatrixMatchedRows = Number(existingMatrixCoverage?.matched_rows ?? 0)
       const existingMatrixThresholdEvidenceRows = Number(existingMatrixCoverage?.threshold_evidence_rows ?? 0)
       const existingMatrixProjectionRows = Number(existingMatrixCoverage?.challenger_projection_rows ?? 0)
@@ -3624,12 +3758,10 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         && Number(existingMatrix.strategy_count) === strategyKeys.size
         && Number(existingMatrix.expected_cell_count) === expectedMatrixRows
         && Number(existingMatrix.persisted_cell_count) === expectedMatrixRows
-        && [
-          'strategy-labeler-v1',
-          labelerVersion,
-        ].includes(cleanToken(existingMatrix.labeler_version))
+        && STRATEGY_FORMAL_LABELER_VERSIONS.some((version) => version === cleanToken(existingMatrix.labeler_version))
         && cleanToken(existingMatrix.reference_contract_version) === SELECTION_REFERENCE_CONTRACT_VERSION
         && existingMatrixRows === expectedMatrixRows
+        && existingMatrixContractRows === expectedMatrixRows
         && existingMatrixMatchedRows > 0
         && existingMatrixThresholdEvidenceRows === existingMatrixMatchedRows
         && existingMatrixProjectionRows === expectedMatrixRows
@@ -3657,6 +3789,12 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         const matrix = rebuilt.map(({ row, spec, candidate }) => {
           if (!spec) throw new Error('matrix_strategy_spec_version_missing:' + row.strategy_id + '|' + row.strategy_version)
           const thresholdAffinity = assessStrategyThresholdMarginAffinity(candidate, spec, { regime, strategyWeights })
+          const classification = classifyStrategyEvaluability({
+            spec,
+            specValid: true,
+            evaluable: thresholdAffinity.evaluable,
+            unavailableReasons: thresholdAffinity.unavailableReasons,
+          })
           return {
             signal_date: date,
             symbol: row.symbol,
@@ -3667,9 +3805,10 @@ export async function rebuildHistoricalStrategyEvidenceV5(
             alpha_bucket: row.alpha_bucket,
             family_id: cleanToken(spec.familyId) || 'UNKNOWN',
             production_owner: thresholdAffinity.productionOwner ? 1 : 0,
-            strategy_hit: thresholdAffinity.matched ? 1 : 0,
-            evaluable: thresholdAffinity.evaluable ? 1 : 0,
-            unavailable_reason: thresholdAffinity.evaluable ? null : thresholdAffinity.unavailableReasons.join('|'),
+            strategy_hit: classification.evaluable === 1 && thresholdAffinity.matched ? 1 : 0,
+            evaluable: classification.evaluable,
+            evaluability_status: classification.status,
+            unavailable_reason: classification.reason,
             weak_label: thresholdAffinity.matched ? 1 : 0,
             affinity: thresholdAffinity.matched ? 1 : 0,
             affinity_version: 'strategy-affinity-binary-pit-reconstruction-v1',
@@ -3763,6 +3902,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       const status = reason.startsWith('reference_lineage_incomplete')
         || reason.startsWith('decision_grid_incomplete')
         || reason.startsWith('matrix_strategy_spec_version_missing')
+        || reason.startsWith('legacy_strategy_matrix_pit_unavailable')
         ? 'blocked'
         : 'failed'
       await db.prepare(`

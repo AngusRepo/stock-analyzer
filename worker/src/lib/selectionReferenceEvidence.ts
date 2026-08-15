@@ -1,8 +1,13 @@
 import {
+  STRATEGY_FORMAL_LABELER_VERSIONS,
   normalizeStrategySpecGovernance,
   validateStrategySpec,
   type StrategySpec,
 } from './strategySpec'
+import {
+  classifyStrategyEvaluability,
+  type StrategyEvaluabilityStatus,
+} from './strategyEvaluability'
 
 export const SELECTION_REFERENCE_CONTRACT_VERSION = 'selection-reference-snapshot-v3'
 export const STRATEGY_LABEL_MATRIX_VERSION = 'strategy-label-matrix-v4'
@@ -143,6 +148,7 @@ export interface StrategyLabelMatrixRowV4 {
   challenger_position_weight: number
   overlap: number
   evaluable: number
+  evaluability_status: StrategyEvaluabilityStatus
   unavailable_reason: string | null
   labeler_version: string
   strategy_registry_checksum: string
@@ -216,6 +222,7 @@ export function buildSelectionEvidenceV4(input: {
   const references: SelectionReferenceRowV1[] = []
   const matrix: StrategyLabelMatrixRowV4[] = []
   const seen = new Set<string>()
+  const labelerVersions = new Set<string>()
 
   for (const candidate of input.candidates) {
     const symbol = clean(candidate.symbol)
@@ -224,9 +231,11 @@ export function buildSelectionEvidenceV4(input: {
     const selected = clean(candidate.strategy_router_decision) === 'ml_slate'
     const scoreComponents = canonicalScoreV2Json(candidate.score_components)
     const labelerVersion = clean(candidate.strategy_labeler_version)
-    if (!labelerVersion) {
-      throw new Error(`strategy_labeler_version_missing:${symbol}`)
+    if (!STRATEGY_FORMAL_LABELER_VERSIONS.some((version) => version === labelerVersion)) {
+      throw new Error(`strategy_labeler_version_nonformal:${symbol}:${labelerVersion || 'missing'}`)
     }
+    labelerVersions.add(labelerVersion)
+    if (labelerVersions.size > 1) throw new Error('strategy_labeler_version_mixed_run')
     references.push({
       signal_date: input.signalDate,
       symbol,
@@ -255,9 +264,13 @@ export function buildSelectionEvidenceV4(input: {
       const owner = spec.status === 'active'
         && spec.ownerType === 'strategy'
         && spec.promotionStatus === 'production'
-      const evaluable = finite(candidate.strategy_evaluable_vector?.[spec.id], 0) > 0 ? 1 : 0
-      const unavailableReason = clean(candidate.strategy_unavailable_reason_vector?.[spec.id])
-        || (evaluable ? null : 'strategy_evaluability_missing')
+      const rawEvaluable = finite(candidate.strategy_evaluable_vector?.[spec.id], 0) > 0
+      const rawUnavailableReason = clean(candidate.strategy_unavailable_reason_vector?.[spec.id])
+        || (rawEvaluable ? '' : 'strategy_evaluability_missing')
+      const classification = classifyStrategyEvaluability({
+        spec, specValid: true, evaluable: rawEvaluable,
+        unavailableReasons: rawUnavailableReason ? [rawUnavailableReason] : [],
+      })
       matrix.push({
         signal_date: input.signalDate,
         symbol,
@@ -280,8 +293,9 @@ export function buildSelectionEvidenceV4(input: {
         challenger_affinity_version: clean(candidate.strategy_challenger_affinity_version) || null,
         challenger_position_weight: finite(candidate.strategy_challenger_position_weight_vector?.[spec.id]),
         overlap: finite(candidate.strategy_overlap_vector?.[spec.id]),
-        evaluable,
-        unavailable_reason: unavailableReason,
+        evaluable: classification.evaluable,
+        evaluability_status: classification.status,
+        unavailable_reason: classification.reason,
         labeler_version: labelerVersion,
         strategy_registry_checksum: input.strategyRegistryChecksum,
       })
@@ -412,6 +426,50 @@ export async function persistSelectionEvidenceV4(
   if (input.matrix.length !== expectedCells) {
     throw new Error(`strategy_label_matrix_expected_cells_mismatch:${input.matrix.length}/${expectedCells}`)
   }
+  if (!STRATEGY_FORMAL_LABELER_VERSIONS.some((version) => version === input.labelerVersion)) {
+    throw new Error(`strategy_label_matrix_nonformal_labeler:${input.labelerVersion || 'missing'}`)
+  }
+  const referenceKeys = new Set<string>()
+  for (const row of input.references) {
+    const symbol = clean(row.symbol)
+    const key = `${row.signal_date}|${symbol}|${row.producer_run_id}`
+    if (
+      !symbol
+      || row.signal_date !== input.signalDate
+      || row.producer_run_id !== input.producerRunId
+      || row.strategy_labeler_version !== input.labelerVersion
+      || row.strategy_registry_checksum !== input.strategyRegistryChecksum
+      || referenceKeys.has(key)
+    ) {
+      throw new Error(`selection_reference_contract_mismatch:${key}`)
+    }
+    referenceKeys.add(key)
+  }
+  const strategyKeys = new Set<string>()
+  const matrixKeys = new Set<string>()
+  for (const row of input.matrix) {
+    const symbol = clean(row.symbol)
+    const strategyKey = `${row.strategy_id}|${row.strategy_version}`
+    const referenceKey = `${row.signal_date}|${symbol}|${row.producer_run_id}`
+    const matrixKey = `${referenceKey}|${strategyKey}`
+    if (
+      !referenceKeys.has(referenceKey)
+      || row.signal_date !== input.signalDate
+      || row.producer_run_id !== input.producerRunId
+      || row.labeler_version !== input.labelerVersion
+      || row.strategy_registry_checksum !== input.strategyRegistryChecksum
+      || matrixKeys.has(matrixKey)
+    ) {
+      throw new Error(`strategy_label_matrix_row_contract_mismatch:${matrixKey}`)
+    }
+    strategyKeys.add(strategyKey)
+    matrixKeys.add(matrixKey)
+  }
+  if (referenceKeys.size !== input.references.length || strategyKeys.size !== input.strategyCount) {
+    throw new Error(
+      `strategy_label_matrix_grid_identity_mismatch:${referenceKeys.size}/${input.references.length}:${strategyKeys.size}/${input.strategyCount}`,
+    )
+  }
   const stockIds = await resolveReferenceStockIds(identityDb, input.references)
   const existing = await db.prepare(`
     SELECT status, reference_candidate_count, strategy_count, expected_cell_count,
@@ -429,18 +487,50 @@ export async function persistSelectionEvidenceV4(
       && clean(existing.reference_contract_version) === SELECTION_REFERENCE_CONTRACT_VERSION
     if (!same) throw new Error('strategy_label_matrix_immutable_run_conflict')
     await reconcileReferenceStockIds(db, input.producerRunId, input.references, stockIds)
-    const identityCoverage = await db.prepare(`
-      SELECT COUNT(*) row_count,
-             SUM(CASE WHEN stock_id IS NOT NULL THEN 1 ELSE 0 END) identity_count
-        FROM selection_reference_snapshots_v1
-       WHERE producer_run_id=?
-    `).bind(input.producerRunId).first<{ row_count: number; identity_count: number }>()
+    const [identityCoverage, matrixCoverage] = await Promise.all([
+      db.prepare(`
+        SELECT COUNT(*) row_count,
+               SUM(CASE WHEN stock_id IS NOT NULL THEN 1 ELSE 0 END) identity_count,
+               SUM(CASE
+                 WHEN signal_date=?
+                  AND strategy_labeler_version=?
+                  AND strategy_registry_checksum=?
+                  AND feature_contract_version=?
+                 THEN 1 ELSE 0 END) contract_count
+          FROM selection_reference_snapshots_v1
+         WHERE producer_run_id=?
+      `).bind(
+        input.signalDate,
+        input.labelerVersion,
+        input.strategyRegistryChecksum,
+        SELECTION_REFERENCE_CONTRACT_VERSION,
+        input.producerRunId,
+      ).first<{ row_count: number; identity_count: number; contract_count: number }>(),
+      db.prepare(`
+        SELECT COUNT(*) row_count,
+               SUM(CASE
+                 WHEN signal_date=? AND labeler_version=?
+                  AND strategy_registry_checksum=? AND reference_contract_version=?
+                 THEN 1 ELSE 0 END) contract_count
+          FROM strategy_label_matrix_v4
+         WHERE producer_run_id=?
+      `).bind(
+        input.signalDate,
+        input.labelerVersion,
+        input.strategyRegistryChecksum,
+        SELECTION_REFERENCE_CONTRACT_VERSION,
+        input.producerRunId,
+      ).first<{ row_count: number; contract_count: number }>(),
+    ])
     if (
       Number(identityCoverage?.row_count ?? 0) !== input.references.length
       || Number(identityCoverage?.identity_count ?? 0) !== input.references.length
+      || Number(identityCoverage?.contract_count ?? 0) !== input.references.length
+      || Number(matrixCoverage?.row_count ?? 0) !== expectedCells
+      || Number(matrixCoverage?.contract_count ?? 0) !== expectedCells
     ) {
       throw new Error(
-        `selection_reference_stock_identity_coverage_mismatch:${identityCoverage?.identity_count ?? 0}/${input.references.length}`,
+        `selection_reference_ready_contract_mismatch:${identityCoverage?.contract_count ?? 0}/${input.references.length}:${matrixCoverage?.contract_count ?? 0}/${expectedCells}`,
       )
     }
     return { referenceRows: input.references.length, matrixRows: expectedCells }
@@ -476,6 +566,10 @@ export async function persistSelectionEvidenceV4(
   ).run()
 
   try {
+    await db.batch([
+      db.prepare('DELETE FROM strategy_label_matrix_v4 WHERE producer_run_id=?').bind(input.producerRunId),
+      db.prepare('DELETE FROM selection_reference_snapshots_v1 WHERE producer_run_id=?').bind(input.producerRunId),
+    ])
     const referenceStatements = input.references.map((row) => db.prepare(`
       INSERT INTO selection_reference_snapshots_v1 (
         signal_date, symbol, producer_run_id, stock_id, name, market_segment, sector,
@@ -532,15 +626,21 @@ export async function persistSelectionEvidenceV4(
     }
 
     const matrixStatements = input.matrix.map((row) => db.prepare(`
-      INSERT OR IGNORE INTO strategy_label_matrix_v4 (
+      INSERT INTO strategy_label_matrix_v4 (
         signal_date, symbol, producer_run_id, strategy_id, strategy_version,
         strategy_status, alpha_bucket, family_id, production_owner,
         strategy_hit, weak_label, affinity, affinity_version, match_strength,
         threshold_margin, affinity_evidence_count, position_weight,
         challenger_affinity, challenger_affinity_version, challenger_position_weight, overlap,
-        evaluable, unavailable_reason, label_reason, labeler_version,
+        evaluable, evaluability_status, unavailable_reason, label_reason, labeler_version,
         strategy_registry_checksum, reference_contract_version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+      ) VALUES (
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, NULL, ?, ?, ?
+      )
     `).bind(
       row.signal_date, row.symbol, row.producer_run_id, row.strategy_id,
       row.strategy_version, row.strategy_status, row.alpha_bucket, row.family_id,
@@ -548,7 +648,7 @@ export async function persistSelectionEvidenceV4(
       row.affinity_version, row.match_strength, row.threshold_margin, row.affinity_evidence_count,
       row.position_weight, row.challenger_affinity, row.challenger_affinity_version,
       row.challenger_position_weight,
-      row.overlap, row.evaluable, row.unavailable_reason, row.labeler_version,
+      row.overlap, row.evaluable, row.evaluability_status, row.unavailable_reason, row.labeler_version,
       row.strategy_registry_checksum, SELECTION_REFERENCE_CONTRACT_VERSION,
     ))
     for (let offset = 0; offset < matrixStatements.length; offset += 250) {

@@ -313,6 +313,24 @@ function Assert-WorkerToken([string]$Token, [string]$Label) {
   [void](Invoke-WorkerJson -Path $WorkerProbePath -Token $Token -Operation "worker_auth:$Label")
 }
 
+function Assert-WorkerTokenEventually([string]$Token, [string]$Label) {
+  $delaysMs = @(0, 1000, 2000, 4000, 8000, 12000, 15000)
+  for ($attempt = 0; $attempt -lt $delaysMs.Count; $attempt += 1) {
+    if ($delaysMs[$attempt] -gt 0) {
+      Start-Sleep -Milliseconds $delaysMs[$attempt]
+    }
+    try {
+      Assert-WorkerToken -Token $Token -Label $Label
+      return
+    } catch {
+      if ($attempt -eq ($delaysMs.Count - 1)) {
+        throw "rotation_worker_probe_failed:$Label`:attempts=$($delaysMs.Count)"
+      }
+    }
+  }
+  throw "rotation_worker_probe_failed:$Label`:attempts=$($delaysMs.Count)"
+}
+
 function Get-SchedulerManifest {
   $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
   $jobs = @($manifest.jobs)
@@ -449,24 +467,35 @@ $modalAttempted = $false
 $schedulerAttempted = $false
 $gcpAttempted = $false
 $schedulerState = New-SchedulerSyncState
+$rotationStage = 'initialize'
 try {
+  $rotationStage = 'worker_overlap_publish'
   $message = "source=$ExpectedSourceSha,stockvision-auth-overlap"
   $workerAttempted = $true
   [void](Publish-WorkerSecretVersion -CurrentToken $newToken -PreviousToken $currentSecret.Value -Message $message)
+  $rotationStage = 'worker_overlap_probe'
   Assert-WorkerSourceSha
   Assert-WorkerToken -Token $currentSecret.Value -Label 'previous_overlap'
-  Assert-WorkerToken -Token $newToken -Label 'current_overlap'
+  Assert-WorkerTokenEventually -Token $newToken -Label 'current_overlap'
 
+  $rotationStage = 'gcp_secret_add'
   $gcpAttempted = $true
   $newVersionName = Add-SecretVersion -SecretId $AuthSecretId -Value $newToken -AccessToken $googleToken
+  $rotationStage = 'modal_secret_replace'
   $modalAttempted = $true
   Set-ModalSecret -WorkerToken $newToken -CloudflareApiToken $cloudflareSecret.Value
+  $rotationStage = 'scheduler_sync'
   $schedulerAttempted = $true
   Sync-SchedulerInventory -Manifest $manifest -Plan $schedulerPlan -State $schedulerState -AccessToken $googleToken -Token $newToken
-  Assert-WorkerToken -Token $newToken -Label 'current_complete'
+  $rotationStage = 'completion_probe'
+  Assert-WorkerTokenEventually -Token $newToken -Label 'current_complete'
   Assert-WorkerToken -Token $currentSecret.Value -Label 'previous_complete'
 } catch {
-  Write-RotationLog 'rotation failed; starting in-memory rollback'
+  $rotationFailureCode = [string]$_.Exception.Message
+  if ($rotationFailureCode -notmatch '^rotation_[a-zA-Z0-9_:,=.\-]+$') {
+    $rotationFailureCode = 'rotation_unclassified_failure'
+  }
+  Write-RotationLog "rotation failed stage=$rotationStage code=$rotationFailureCode; starting in-memory rollback"
   if ($schedulerAttempted) {
     try {
       Restore-SchedulerInventory -Manifest $manifest -Plan $schedulerPlan -State $schedulerState -AccessToken $googleToken -AppliedToken $newToken -OriginalToken $currentSecret.Value

@@ -55,6 +55,10 @@ def test_rotation_helper_keeps_tokens_out_of_native_argv_and_disk() -> None:
     assert '[string]::Join("`n", @($output | ForEach-Object { [string]$_ })).Trim()' in wrangler_json
     assert "ConvertFrom-Json -InputObject $payload -ErrorAction Stop" in wrangler_json
     assert "rotation_wrangler_json_empty:$Operation" in wrangler_json
+    assert "function Assert-WorkerTokenEventually" in source
+    assert "$delaysMs = @(0, 1000, 2000, 4000, 8000, 12000, 15000)" in source
+    assert "Assert-WorkerTokenEventually -Token $newToken -Label 'current_overlap'" in source
+    assert "Assert-WorkerTokenEventually -Token $newToken -Label 'current_complete'" in source
     for permissive_parser in ("Substring", "IndexOf", "[regex]", "-match"):
         assert permissive_parser not in wrangler_json
     assert "from modal.secret import _Secret" in source

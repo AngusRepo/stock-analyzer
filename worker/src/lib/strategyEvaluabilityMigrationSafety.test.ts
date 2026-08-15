@@ -22,6 +22,11 @@ assert.doesNotMatch(
   /\bCREATE\s+INDEX\b/i,
   'legacy near-capacity migration must not build large compatibility indexes',
 )
+assert.doesNotMatch(
+  executable,
+  /\bNOT\s+NULL\b|\bDEFAULT\b|\bCHECK\s*\(/i,
+  'legacy near-capacity ADD COLUMN must remain a metadata-only nullable TEXT',
+)
 assert.match(migration, /bounded, PIT-authoritative strategy evidence/)
 
 console.log('strategy evaluability migration safety tests passed')
